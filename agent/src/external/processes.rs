@@ -1,14 +1,17 @@
-use std::collections::HashMap;
 use axum::{
+    Json,
     extract::{Path, State, WebSocketUpgrade},
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use tokio::io::AsyncReadExt;
 
-use crate::{tmux::{ProcessKind, ProcessStatus}, AppState};
+use crate::{
+    AppState,
+    tmux::{ProcessKind, ProcessStatus},
+};
 
 #[derive(Debug, Deserialize)]
 pub struct CreateProcessRequest {
@@ -67,7 +70,8 @@ pub async fn create(
         ProcessKindReq::OneShot => ProcessKind::OneShot,
     };
 
-    let process = state.process_store
+    let process = state
+        .process_store
         .create(req.name, req.command, req.args, req.cwd, req.env, kind)
         .await
         .map_err(|e| {
@@ -87,7 +91,10 @@ pub async fn get_one(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<ProcessResponse>, StatusCode> {
-    state.process_store.get(&id).await
+    state
+        .process_store
+        .get(&id)
+        .await
         .map(|p| Json(p.into()))
         .ok_or(StatusCode::NOT_FOUND)
 }
@@ -96,7 +103,10 @@ pub async fn kill(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
-    state.process_store.kill(&id).await
+    state
+        .process_store
+        .kill(&id)
+        .await
         .map(|_| StatusCode::NO_CONTENT)
         .map_err(|e| {
             if e.to_string().contains("not found") {
@@ -120,10 +130,7 @@ pub async fn output_ws(
     ws.on_upgrade(move |socket| crate::terminal::handle_ws(socket, process.window_name, state))
 }
 
-pub async fn history(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Response {
+pub async fn history(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let log_path = state.process_store.log_path(&id);
     if !log_path.exists() {
         return StatusCode::NOT_FOUND.into_response();
@@ -131,9 +138,13 @@ pub async fn history(
 
     match tokio::fs::read(&log_path).await {
         Ok(data) => (
-            [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; charset=utf-8",
+            )],
             data,
-        ).into_response(),
+        )
+            .into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }

@@ -1,7 +1,7 @@
 <script lang="ts">
-	import type { PageData } from './$types';
+	import type { PageData, ActionData } from './$types';
 	import { enhance } from '$app/forms';
-	let { data }: { data: PageData } = $props();
+	let { data, form }: { data: PageData; form: ActionData } = $props();
 
 	const availableTools = [
 		{ name: 'claude', label: 'Claude Code' },
@@ -16,7 +16,6 @@
 	];
 
 	let selectedTools: string[] = $state([]);
-	let form = $state({ slug: '', displayName: '', storageGi: 10, error: '' });
 
 	function toggleTool(name: string) {
 		if (selectedTools.includes(name)) {
@@ -64,12 +63,12 @@
 
 	<div class="field">
 		<label for="storageGi">Workspace storage (GiB)</label>
-		<input id="storageGi" name="storageGi" type="number" min="1" max="{data.limits.maxPvcGi}" value={form.storageGi} />
+		<input id="storageGi" name="storageGi" type="number" min="1" max="{data.limits.maxPvcGi}" value="10" />
 		<span class="hint">Max {data.limits.maxPvcGi} GiB on {data.org.tier} tier</span>
 	</div>
 
-	{#if data.form?.error}
-		<div class="error">{data.form.error}</div>
+	{#if form?.error}
+		<div class="error">{form.error}</div>
 	{/if}
 
 	<div class="actions">

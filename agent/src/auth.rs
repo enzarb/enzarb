@@ -1,9 +1,9 @@
+use anyhow::{Result, anyhow};
+use jsonwebtoken::{Algorithm, DecodingKey, TokenData, Validation, decode, decode_header};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use anyhow::{anyhow, Result};
-use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, TokenData, Validation};
-use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 const JWKS_CACHE_TTL: Duration = Duration::from_secs(300); // 5 minutes
@@ -92,7 +92,9 @@ impl JwksCache {
         let kid = header.kid.unwrap_or_else(|| "default".to_string());
 
         let inner = self.inner.read().await;
-        let key = inner.keys.get(&kid)
+        let key = inner
+            .keys
+            .get(&kid)
             .ok_or_else(|| anyhow!("unknown key id: {}", kid))?;
 
         let mut validation = Validation::new(Algorithm::RS256);
@@ -103,7 +105,10 @@ impl JwksCache {
 
         // Verify the token authorizes access to this specific project
         if !claims.projects.contains_key(required_project_id) {
-            return Err(anyhow!("token does not authorize project {}", required_project_id));
+            return Err(anyhow!(
+                "token does not authorize project {}",
+                required_project_id
+            ));
         }
 
         Ok(claims)

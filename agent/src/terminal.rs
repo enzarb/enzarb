@@ -1,6 +1,6 @@
 use axum::extract::ws::{Message, WebSocket};
-use tokio::process::Command;
 use futures::{SinkExt, StreamExt};
+use tokio::process::Command;
 
 use crate::AppState;
 
@@ -22,7 +22,13 @@ pub async fn handle_ws(mut socket: WebSocket, window_name: String, state: AppSta
     let pipe_target = target.clone();
     let pipe_path = fifo_path.clone();
     let _ = Command::new("tmux")
-        .args(["pipe-pane", "-t", &pipe_target, "-o", &format!("cat >> {}", pipe_path)])
+        .args([
+            "pipe-pane",
+            "-t",
+            &pipe_target,
+            "-o",
+            &format!("cat >> {}", pipe_path),
+        ])
         .status()
         .await;
 
@@ -68,7 +74,11 @@ pub async fn handle_ws(mut socket: WebSocket, window_name: String, state: AppSta
             match fifo_reader.read(&mut buf).await {
                 Ok(0) => break,
                 Ok(n) => {
-                    if ws_tx.send(Message::Binary(buf[..n].to_vec().into())).await.is_err() {
+                    if ws_tx
+                        .send(Message::Binary(buf[..n].to_vec().into()))
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }

@@ -17,7 +17,10 @@ pub async fn bootstrap(project_id: &str) -> Result<()> {
 
     let mise_toml = home.join("mise.toml");
     if !mise_toml.exists() {
-        tracing::info!(project_id, "first boot: generating mise.toml from ENZARB_TOOLS");
+        tracing::info!(
+            project_id,
+            "first boot: generating mise.toml from ENZARB_TOOLS"
+        );
         write_mise_toml(&mise_toml).await?;
     }
 

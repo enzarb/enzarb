@@ -7,4 +7,5 @@ RUN CGO_ENABLED=0 go build -o /enzarb-billing ./billing/cmd/billing/
 
 FROM gcr.io/distroless/static:nonroot
 COPY --from=builder /enzarb-billing /enzarb-billing
+USER nonroot:nonroot
 ENTRYPOINT ["/enzarb-billing"]

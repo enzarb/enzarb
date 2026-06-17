@@ -1,9 +1,9 @@
 use axum::{
+    Json,
     body::Body,
     extract::{Query, State},
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
-    Json,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -33,17 +33,25 @@ pub async fn list(
     let abs = resolve_safe(&q.path)?;
 
     let mut entries = vec![];
-    let mut read_dir = tokio::fs::read_dir(&abs).await
+    let mut read_dir = tokio::fs::read_dir(&abs)
+        .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
     while let Ok(Some(entry)) = read_dir.next_entry().await {
         let meta = entry.metadata().await.ok();
         let kind = if let Some(m) = &meta {
-            if m.is_dir() { "dir" } else if m.is_symlink() { "symlink" } else { "file" }
+            if m.is_dir() {
+                "dir"
+            } else if m.is_symlink() {
+                "symlink"
+            } else {
+                "file"
+            }
         } else {
             "unknown"
         };
-        let rel_path = entry.path()
+        let rel_path = entry
+            .path()
             .strip_prefix(home_dir())
             .unwrap_or(&entry.path())
             .to_string_lossy()
@@ -54,7 +62,8 @@ pub async fn list(
             path: rel_path,
             kind: kind.to_string(),
             size: meta.as_ref().filter(|m| m.is_file()).map(|m| m.len()),
-            modified: meta.and_then(|m| m.modified().ok())
+            modified: meta
+                .and_then(|m| m.modified().ok())
                 .and_then(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339().into()),
         });
     }
@@ -63,10 +72,7 @@ pub async fn list(
     Ok(Json(entries))
 }
 
-pub async fn download(
-    State(_state): State<AppState>,
-    Query(q): Query<PathQuery>,
-) -> Response {
+pub async fn download(State(_state): State<AppState>, Query(q): Query<PathQuery>) -> Response {
     let abs = match resolve_safe(&q.path) {
         Ok(p) => p,
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
@@ -77,7 +83,8 @@ pub async fn download(
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
     };
 
-    let filename = abs.file_name()
+    let filename = abs
+        .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "download".to_string());
 
@@ -86,11 +93,15 @@ pub async fn download(
 
     (
         [
-            (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", filename)),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", filename),
+            ),
             (header::CONTENT_TYPE, "application/octet-stream".to_string()),
         ],
         body,
-    ).into_response()
+    )
+        .into_response()
 }
 
 pub async fn upload(
@@ -131,10 +142,7 @@ pub async fn upload(
     StatusCode::CREATED.into_response()
 }
 
-pub async fn delete(
-    State(_state): State<AppState>,
-    Query(q): Query<PathQuery>,
-) -> StatusCode {
+pub async fn delete(State(_state): State<AppState>, Query(q): Query<PathQuery>) -> StatusCode {
     let abs = match resolve_safe(&q.path) {
         Ok(p) => p,
         Err(_) => return StatusCode::BAD_REQUEST,
@@ -180,7 +188,9 @@ fn normalize_path(path: &Path) -> PathBuf {
     let mut components = vec![];
     for c in path.components() {
         match c {
-            std::path::Component::ParentDir => { components.pop(); }
+            std::path::Component::ParentDir => {
+                components.pop();
+            }
             std::path::Component::CurDir => {}
             other => components.push(other),
         }

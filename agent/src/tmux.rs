@@ -1,9 +1,9 @@
+use anyhow::{Result, anyhow};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use anyhow::{anyhow, Result};
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -88,7 +88,8 @@ impl ProcessStore {
     async fn rehydrate(&self) -> Result<()> {
         let processes: Vec<Process> = {
             let inner = self.inner.read().await;
-            inner.values()
+            inner
+                .values()
                 .filter(|p| p.kind == ProcessKind::Persistent)
                 .cloned()
                 .collect()
@@ -103,9 +104,15 @@ impl ProcessStore {
         Ok(())
     }
 
-    pub async fn create(&self, name: String, command: String, args: Vec<String>,
-                        cwd: Option<String>, env: HashMap<String, String>,
-                        kind: ProcessKind) -> Result<Process> {
+    pub async fn create(
+        &self,
+        name: String,
+        command: String,
+        args: Vec<String>,
+        cwd: Option<String>,
+        env: HashMap<String, String>,
+        kind: ProcessKind,
+    ) -> Result<Process> {
         let id = Uuid::new_v4().to_string();
         let window_name = format!("proc-{}", &id[..8]);
 
@@ -157,9 +164,12 @@ impl ProcessStore {
         let mut tmux_cmd = Command::new("tmux");
         tmux_cmd
             .arg("new-window")
-            .arg("-t").arg(TMUX_SESSION)
-            .arg("-n").arg(&process.window_name)
-            .arg("-c").arg(cwd);
+            .arg("-t")
+            .arg(TMUX_SESSION)
+            .arg("-n")
+            .arg(&process.window_name)
+            .arg("-c")
+            .arg(cwd);
 
         // Set env vars
         for (k, v) in &process.env {
@@ -178,11 +188,18 @@ impl ProcessStore {
     pub async fn kill(&self, id: &str) -> Result<()> {
         let process = {
             let inner = self.inner.read().await;
-            inner.get(id).cloned().ok_or_else(|| anyhow!("process not found: {}", id))?
+            inner
+                .get(id)
+                .cloned()
+                .ok_or_else(|| anyhow!("process not found: {}", id))?
         };
 
         let _ = Command::new("tmux")
-            .args(["kill-window", "-t", &format!("{}:{}", TMUX_SESSION, process.window_name)])
+            .args([
+                "kill-window",
+                "-t",
+                &format!("{}:{}", TMUX_SESSION, process.window_name),
+            ])
             .status()
             .await;
 

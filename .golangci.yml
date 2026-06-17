@@ -14,24 +14,23 @@ linters:
     - misspell
     - revive
     - unconvert
-
-linters-settings:
-  gosec:
-    excludes:
-      - G304  # file path from variable (intentional in file browser)
-  goimports:
-    local-prefixes: enzarb.dev/enzarb
-  revive:
-    rules:
-      - name: exported
-        disabled: true  # CRD types don't always have comments
+  settings:
+    gosec:
+      excludes:
+        - G304
+    goimports:
+      local-prefixes: enzarb.dev/enzarb
+    revive:
+      rules:
+        - name: exported
+          disabled: true
 
 issues:
   exclude-rules:
     - path: _test\.go
       linters: [gosec, errcheck]
     - path: operator/internal/admin/cli\.go
-      linters: [gosec]  # CLI reads user-supplied paths intentionally
+      linters: [gosec]
 
 run:
   timeout: 5m

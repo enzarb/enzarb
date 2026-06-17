@@ -1,14 +1,14 @@
-mod processes;
 mod files;
+mod processes;
 mod watch;
 
 use axum::{
+    Router,
     extract::{Request, State},
     http::{HeaderMap, StatusCode},
     middleware::{self, Next},
     response::Response,
     routing::{delete, get, post},
-    Router,
 };
 use tower_http::cors::CorsLayer;
 
@@ -18,7 +18,10 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         // Process management
         .route("/processes", post(processes::create).get(processes::list))
-        .route("/processes/:id", get(processes::get_one).delete(processes::kill))
+        .route(
+            "/processes/:id",
+            get(processes::get_one).delete(processes::kill),
+        )
         .route("/processes/:id/output", get(processes::output_ws))
         .route("/processes/:id/history", get(processes::history))
         // File operations
@@ -28,7 +31,10 @@ pub fn router(state: AppState) -> Router {
         // Watch (inotify SSE)
         .route("/watch", get(watch::watch))
         // Auth middleware on all routes
-        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ))
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
@@ -39,10 +45,12 @@ async fn auth_middleware(
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    let token = extract_bearer(&headers)
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let token = extract_bearer(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
 
-    state.jwks.validate(token, &state.project_id).await
+    state
+        .jwks
+        .validate(token, &state.project_id)
+        .await
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
 
     Ok(next.run(request).await)

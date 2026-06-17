@@ -131,7 +131,5 @@ export async function addCustomDomain(orgId: string, envName: string, fqdn: stri
 		plural: 'environments',
 		name: envName,
 		body: [{ op: 'replace', path: '/spec/customDomains', value: domains }]
-	}, undefined, undefined, undefined, undefined, {
-		headers: { 'Content-Type': 'application/json-patch+json' }
 	});
 }

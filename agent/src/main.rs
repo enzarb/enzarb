@@ -1,28 +1,28 @@
 mod auth;
+mod external;
 mod init;
 mod internal;
-mod external;
-mod tmux;
 mod terminal;
+mod tmux;
 
-use std::net::SocketAddr;
 use anyhow::Result;
+use std::net::SocketAddr;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| "project_agent=info,tower_http=info".into()))
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "project_agent=info,tower_http=info".into()),
+        )
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let project_id = std::env::var("ENZARB_PROJECT_ID")
-        .expect("ENZARB_PROJECT_ID must be set");
-    let org_id = std::env::var("ENZARB_ORG_ID")
-        .expect("ENZARB_ORG_ID must be set");
-    let project_slug = std::env::var("ENZARB_PROJECT_SLUG")
-        .expect("ENZARB_PROJECT_SLUG must be set");
+    let project_id = std::env::var("ENZARB_PROJECT_ID").expect("ENZARB_PROJECT_ID must be set");
+    let org_id = std::env::var("ENZARB_ORG_ID").expect("ENZARB_ORG_ID must be set");
+    let project_slug =
+        std::env::var("ENZARB_PROJECT_SLUG").expect("ENZARB_PROJECT_SLUG must be set");
 
     tracing::info!(project_id, org_id, project_slug, "starting project-agent");
 
