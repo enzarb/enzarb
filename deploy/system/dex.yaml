@@ -1,0 +1,38 @@
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: dex
+  namespace: kube-system
+spec:
+  chart: dex
+  repo: https://charts.dexidp.io
+  targetNamespace: enzarb-system
+  createNamespace: true
+  valuesContent: |-
+    config:
+      issuer: https://auth.enzarb.dev
+      storage:
+        type: postgres
+        config:
+          host: enzarb-db.enzarb-system
+          port: 5432
+          database: dex
+          user: dex
+          ssl:
+            mode: disable
+      web:
+        http: 0.0.0.0:5556
+      connectors:
+        - type: github
+          id: github
+          name: GitHub
+          config:
+            clientID: $GITHUB_CLIENT_ID
+            clientSecret: $GITHUB_CLIENT_SECRET
+            redirectURI: https://auth.enzarb.dev/callback
+      staticClients:
+        - id: enzarb-app
+          name: Enzarb
+          redirectURIs:
+            - https://enzarb.dev/auth/callback
+          secretEnv: DEX_ENZARB_APP_SECRET

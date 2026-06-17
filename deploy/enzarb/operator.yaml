@@ -1,0 +1,15 @@
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: enzarb-operator
+  namespace: kube-system
+spec:
+  chart: enzarb-operator
+  repo: https://charts.enzarb.dev/
+  targetNamespace: enzarb-system
+  createNamespace: true
+  valuesContent: |-
+    image:
+      repository: ghcr.io/enzarb/operator
+      tag: latest
+    leaderElection: true

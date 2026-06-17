@@ -1,0 +1,629 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  REGISTRY: ghcr.io
+  ORG: enzarb
+  GO_VERSION: "1.24"
+  NODE_VERSION: "22"
+  RUST_VERSION: stable
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LINT
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+  lint-go:
+    name: Lint / Go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.3
+
+      - uses: actions/setup-go@v6.4.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9.2.1
+        with:
+          version: latest
+          args: --timeout=5m ./operator/... ./metering/... ./billing/... ./workspace/credential-helper/...
+
+  lint-rust:
+    name: Lint / Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.3
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          workspaces: agent
+
+      - name: cargo fmt check
+        run: cargo fmt --manifest-path agent/Cargo.toml --check
+
+      - name: cargo clippy
+        run: cargo clippy --manifest-path agent/Cargo.toml --all-targets -- -D warnings
+
+  lint-js:
+    name: Lint / JS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.3
+
+      - uses: pnpm/action-setup@v6.0.9
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install
+        working-directory: app
+
+      - name: svelte-check
+        run: pnpm check
+        working-directory: app
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECURITY
+# ─────────────────────────────────────────────────────────────────────────────
+  security-go:
+    name: Security / Go (govulncheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.3
+
+      - uses: actions/setup-go@v6.4.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: govulncheck
+        run: govulncheck ./operator/... ./metering/... ./billing/... ./workspace/credential-helper/...
+
+  security-rust:
+    name: Security / Rust (cargo-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.3
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          workspaces: agent
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: cargo audit
+        run: cargo audit --manifest-path agent/Cargo.toml
+
+  security-containers:
+    name: Security / Containers (trivy)
+    runs-on: ubuntu-latest
+    # Scan Dockerfiles for misconfigurations without building images
+    steps:
+      - uses: actions/checkout@v6.0.3
+
+      - name: Trivy config scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          exit-code: 1
+          severity: CRITICAL,HIGH
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VERSION — calculate next semver from conventional commits since last tag
+# ─────────────────────────────────────────────────────────────────────────────
+  version:
+    name: Calculate version
+    runs-on: ubuntu-latest
+    # Run on push to main only after all checks pass
+    needs: [lint-go, lint-rust, lint-js, security-go, security-rust, security-containers]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    outputs:
+      version: ${{ steps.calc.outputs.version }}
+      version_bare: ${{ steps.calc.outputs.version_bare }}
+      prev_tag: ${{ steps.calc.outputs.prev_tag }}
+    steps:
+      - uses: actions/checkout@v6.0.3
+        with:
+          fetch-depth: 0  # full history for git log
+
+      - name: Calculate next semver
+        id: calc
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Find the most recent semver tag (v0.0.0 if none)
+          PREV_TAG=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+          PREV_TAG=${PREV_TAG:-v0.0.0}
+          echo "prev_tag=${PREV_TAG}" >> "$GITHUB_OUTPUT"
+
+          # Parse current version
+          BARE=${PREV_TAG#v}
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$BARE"
+          MAJOR=${MAJOR:-0}; MINOR=${MINOR:-0}; PATCH=${PATCH:-0}
+
+          # Read commits since last tag
+          if [ "$PREV_TAG" = "v0.0.0" ]; then
+            COMMITS=$(git log --pretty=format:"%s" 2>/dev/null || true)
+          else
+            COMMITS=$(git log "${PREV_TAG}..HEAD" --pretty=format:"%s" 2>/dev/null || true)
+          fi
+
+          # Determine bump level (highest wins: major > minor > patch)
+          BUMP=patch
+          while IFS= read -r msg; do
+            [ -z "$msg" ] && continue
+            # Breaking change: feat!: or fix!: or "BREAKING CHANGE:" in body
+            if echo "$msg" | grep -qP '^[a-z]+(\([^)]+\))?!:' || echo "$msg" | grep -qi 'BREAKING.CHANGE'; then
+              BUMP=major
+              break
+            fi
+            # New feature
+            if echo "$msg" | grep -qP '^feat(\([^)]+\))?:'; then
+              [ "$BUMP" != "major" ] && BUMP=minor
+            fi
+          done <<< "$COMMITS"
+
+          echo "Bump level: ${BUMP} (from ${PREV_TAG})"
+
+          case "$BUMP" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0;           PATCH=0 ;;
+            minor)                        MINOR=$((MINOR+1)); PATCH=0 ;;
+            patch)                                            PATCH=$((PATCH+1)) ;;
+          esac
+
+          VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+          VERSION_BARE="${MAJOR}.${MINOR}.${PATCH}"
+          echo "New version: ${VERSION}"
+          echo "version=${VERSION}"       >> "$GITHUB_OUTPUT"
+          echo "version_bare=${VERSION_BARE}" >> "$GITHUB_OUTPUT"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGING BRANCH — bump versions, commit, tag
+# ─────────────────────────────────────────────────────────────────────────────
+  staging-branch:
+    name: Create staging branch & tag
+    runs-on: ubuntu-latest
+    needs: [version]
+    outputs:
+      sha: ${{ steps.push.outputs.sha }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6.0.3
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name  "enzarb-release-bot"
+          git config user.email "release-bot@enzarb.dev"
+
+      - name: Create staging branch
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          BRANCH="staging/${VERSION}"
+          git checkout -b "$BRANCH"
+          echo "branch=${BRANCH}" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Bump Rust agent version
+        env:
+          VERSION_BARE: ${{ needs.version.outputs.version_bare }}
+        run: |
+          # cargo-edit's set-version is the clean way; fall back to sed
+          if cargo install cargo-edit --locked 2>/dev/null; then
+            cargo set-version --manifest-path agent/Cargo.toml "$VERSION_BARE"
+          else
+            sed -i "s/^version = \".*\"/version = \"${VERSION_BARE}\"/" agent/Cargo.toml
+          fi
+
+      - uses: pnpm/action-setup@v6.0.9
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Bump app version
+        env:
+          VERSION_BARE: ${{ needs.version.outputs.version_bare }}
+        run: |
+          cd app
+          pnpm version "$VERSION_BARE" --no-git-tag-version
+
+      - name: Bump Helm chart versions
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          VERSION_BARE: ${{ needs.version.outputs.version_bare }}
+        run: |
+          for chart in charts/*/Chart.yaml; do
+            sed -i \
+              -e "s/^version: .*/version: ${VERSION_BARE}/" \
+              -e "s/^appVersion: .*/appVersion: \"${VERSION_BARE}\"/" \
+              "$chart"
+          done
+
+      - name: Write VERSION file
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: echo "$VERSION" > VERSION
+
+      - name: Commit version bump
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          git add \
+            agent/Cargo.toml \
+            app/package.json \
+            charts/enzarb-operator/Chart.yaml \
+            charts/enzarb-app/Chart.yaml \
+            VERSION
+          git commit -m "chore: release ${VERSION} [skip ci]"
+
+      - name: Tag release
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          PREV_TAG: ${{ needs.version.outputs.prev_tag }}
+        run: |
+          # Generate release notes from conventional commits
+          if [ "$PREV_TAG" = "v0.0.0" ]; then
+            NOTES=$(git log --pretty=format:"- %s" | head -50)
+          else
+            NOTES=$(git log "${PREV_TAG}..HEAD~1" --pretty=format:"- %s")
+          fi
+          git tag -a "$VERSION" -m "Release ${VERSION}" -m "${NOTES}"
+
+      - name: Push branch and tag
+        id: push
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          git push origin "staging/${VERSION}"
+          git push origin "$VERSION"
+          SHA=$(git rev-parse HEAD)
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BUILD — all container images + Helm charts (from the tagged commit)
+# ─────────────────────────────────────────────────────────────────────────────
+  build-rust:
+    name: Build / Rust agent
+    runs-on: ubuntu-latest
+    needs: [staging-branch, version]
+    steps:
+      - uses: actions/checkout@v6.0.3
+        with:
+          ref: ${{ needs.staging-branch.outputs.sha }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          workspaces: agent
+
+      - name: Build agent (release)
+        run: cargo build --release --manifest-path agent/Cargo.toml
+
+      - name: Upload agent binary
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: project-agent
+          path: agent/target/release/project-agent
+          retention-days: 1
+
+  build-go:
+    name: Build / Go binaries
+    runs-on: ubuntu-latest
+    needs: [staging-branch, version]
+    steps:
+      - uses: actions/checkout@v6.0.3
+        with:
+          ref: ${{ needs.staging-branch.outputs.sha }}
+
+      - uses: actions/setup-go@v6.4.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Build all Go binaries
+        run: |
+          CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${{ needs.version.outputs.version }}" \
+            -o dist/enzarb-operator ./operator/cmd/operator/
+          CGO_ENABLED=0 go build -ldflags="-s -w" \
+            -o dist/enzarb-metering ./metering/cmd/metering/
+          CGO_ENABLED=0 go build -ldflags="-s -w" \
+            -o dist/enzarb-billing ./billing/cmd/billing/
+          CGO_ENABLED=0 go build -ldflags="-s -w" \
+            -o dist/docker-credential-k8s-sa ./workspace/credential-helper/
+
+      - name: Run Go tests
+        run: go test ./operator/... ./metering/... ./billing/...
+
+      - name: Upload Go binaries
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: go-binaries
+          path: dist/
+          retention-days: 1
+
+  build-app:
+    name: Build / SvelteKit app
+    runs-on: ubuntu-latest
+    needs: [staging-branch, version]
+    steps:
+      - uses: actions/checkout@v6.0.3
+        with:
+          ref: ${{ needs.staging-branch.outputs.sha }}
+
+      - uses: pnpm/action-setup@v6.0.9
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - name: Install and build
+        working-directory: app
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+  build-images:
+    name: Build & Push / Container images
+    runs-on: ubuntu-latest
+    needs: [build-rust, build-go, build-app, version, staging-branch]
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - name: workspace
+            context: workspace
+            dockerfile: workspace/Dockerfile
+            image: workspace
+            needs_artifacts: true
+          - name: operator
+            context: .
+            dockerfile: operator/Dockerfile
+            image: operator
+          - name: metering
+            context: .
+            dockerfile: metering/Dockerfile
+            image: metering
+          - name: billing
+            context: .
+            dockerfile: billing/Dockerfile
+            image: billing
+          - name: app
+            context: app
+            dockerfile: app/Dockerfile
+            image: app
+    steps:
+      - uses: actions/checkout@v6.0.3
+        with:
+          ref: ${{ needs.staging-branch.outputs.sha }}
+
+      - name: Download Go binaries
+        if: matrix.needs_artifacts != true || matrix.name != 'workspace'
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: go-binaries
+          path: dist/
+        continue-on-error: true
+
+      - name: Download agent binary + stage into workspace context
+        if: matrix.name == 'workspace'
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: project-agent
+          path: workspace/
+
+      - name: Stage credential helper into workspace context
+        if: matrix.name == 'workspace'
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: go-binaries
+          path: _go_dist/
+
+      - name: Copy credential helper
+        if: matrix.name == 'workspace'
+        run: |
+          cp _go_dist/docker-credential-k8s-sa workspace/docker-credential-k8s-sa
+          chmod +x workspace/project-agent workspace/docker-credential-k8s-sa
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4.1.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.1.0
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v4.2.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.name }}
+        uses: docker/build-push-action@v7.2.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.ORG }}/${{ matrix.image }}:${{ needs.version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.ORG }}/${{ matrix.image }}:latest
+          labels: |
+            org.opencontainers.image.version=${{ needs.version.outputs.version }}
+            org.opencontainers.image.revision=${{ needs.staging-branch.outputs.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  build-charts:
+    name: Build & Push / Helm charts
+    runs-on: ubuntu-latest
+    needs: [build-go, build-app, version, staging-branch]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6.0.3
+        with:
+          ref: ${{ needs.staging-branch.outputs.sha }}
+
+      - name: Install Helm
+        uses: azure/setup-helm@v5.0.0
+        with:
+          version: latest
+
+      - name: Log in to ghcr.io (Helm OCI)
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login \
+            ghcr.io --username "${{ github.actor }}" --password-stdin
+
+      - name: Lint charts
+        run: helm lint charts/enzarb-operator charts/enzarb-app
+
+      - name: Package charts
+        env:
+          VERSION_BARE: ${{ needs.version.outputs.version_bare }}
+        run: |
+          mkdir -p dist/charts
+          helm package charts/enzarb-operator --version "$VERSION_BARE" --app-version "$VERSION_BARE" --destination dist/charts/
+          helm package charts/enzarb-app      --version "$VERSION_BARE" --app-version "$VERSION_BARE" --destination dist/charts/
+
+      - name: Push charts to ghcr.io OCI registry
+        run: |
+          for pkg in dist/charts/*.tgz; do
+            helm push "$pkg" "oci://${{ env.REGISTRY }}/${{ env.ORG }}/charts"
+          done
+
+      - name: Upload packaged charts
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: helm-charts
+          path: dist/charts/
+          retention-days: 7
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RELEASE — GitHub release + cleanup staging branch
+# ─────────────────────────────────────────────────────────────────────────────
+  release:
+    name: Create GitHub release
+    runs-on: ubuntu-latest
+    needs: [build-images, build-charts, version, staging-branch]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6.0.3
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.staging-branch.outputs.sha }}
+
+      - name: Download Helm charts
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: helm-charts
+          path: dist/charts/
+
+      - name: Generate changelog
+        id: changelog
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          PREV_TAG: ${{ needs.version.outputs.prev_tag }}
+        run: |
+          if [ "$PREV_TAG" = "v0.0.0" ]; then
+            LOG=$(git log --pretty=format:"- %s (%h)" | head -50)
+          else
+            LOG=$(git log "${PREV_TAG}..HEAD~1" --pretty=format:"- %s (%h)")
+          fi
+
+          # Group by conventional commit type
+          BREAKING=$(echo "$LOG" | grep -P '^- [a-z]+(\([^)]+\))?!:' || true)
+          FEATURES=$(echo "$LOG" | grep -P '^- feat(\([^)]+\))?:' || true)
+          FIXES=$(echo "$LOG" | grep -P '^- fix(\([^)]+\))?:' || true)
+          OTHER=$(echo "$LOG" | grep -vP '^- (feat|fix|[a-z]+!):' || true)
+
+          {
+            echo "## What's Changed"
+            echo ""
+            [ -n "$BREAKING" ] && echo "### ⚠ Breaking Changes" && echo "$BREAKING" && echo ""
+            [ -n "$FEATURES" ] && echo "### ✨ Features"        && echo "$FEATURES" && echo ""
+            [ -n "$FIXES"    ] && echo "### 🐛 Bug Fixes"       && echo "$FIXES"    && echo ""
+            [ -n "$OTHER"    ] && echo "### 🔧 Other Changes"   && echo "$OTHER"    && echo ""
+            echo "---"
+            echo "**Container images** (ghcr.io/enzarb):"
+            echo '```'
+            echo "workspace:${{ needs.version.outputs.version }}"
+            echo "operator:${{ needs.version.outputs.version }}"
+            echo "metering:${{ needs.version.outputs.version }}"
+            echo "billing:${{ needs.version.outputs.version }}"
+            echo "app:${{ needs.version.outputs.version }}"
+            echo '```'
+            echo ""
+            echo "**Helm charts** (oci://ghcr.io/enzarb/charts):"
+            echo '```'
+            echo "helm install enzarb-operator oci://ghcr.io/enzarb/charts/enzarb-operator --version ${{ needs.version.outputs.version_bare }}"
+            echo "helm install enzarb-app      oci://ghcr.io/enzarb/charts/enzarb-app      --version ${{ needs.version.outputs.version_bare }}"
+            echo '```'
+          } > release-notes.md
+
+          # Pass multiline output via env file
+          {
+            echo "notes<<RELEASE_NOTES_EOF"
+            cat release-notes.md
+            echo "RELEASE_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v3.0.0
+        with:
+          tag_name: ${{ needs.version.outputs.version }}
+          name: ${{ needs.version.outputs.version }}
+          body: ${{ steps.changelog.outputs.notes }}
+          draft: false
+          prerelease: false
+          files: dist/charts/*.tgz
+
+      - name: Delete staging branch
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: git push origin --delete "staging/${VERSION}"

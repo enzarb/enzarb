@@ -1,0 +1,72 @@
+[tools]
+claude = "latest"
+node = "22"
+pnpm = "latest"
+go = "1.24"
+rust = "latest"
+kubectl = "latest"
+kubebuilder = "latest"
+
+[tasks.deploy-system]
+description = "Apply system HelmChart CRs"
+run = "kubectl apply -f deploy/system/"
+
+[tasks.deploy-enzarb]
+description = "Apply enzarb operator and app HelmChart CRs"
+run = "kubectl apply -f deploy/enzarb/"
+
+[tasks.deploy-all]
+description = "Deploy everything"
+depends = ["deploy-system", "deploy-enzarb"]
+
+[tasks.undeploy]
+description = "Remove all HelmChart CRs"
+run = "kubectl delete -f deploy/system/ -f deploy/enzarb/ --ignore-not-found"
+
+[tasks.status]
+description = "Show HelmChart and operator status"
+run = "kubectl get helmchart -A && kubectl get project,environment -A"
+
+[tasks.logs-operator]
+description = "Stream operator logs"
+run = "kubectl logs -n enzarb-system -l app=enzarb-operator -f"
+
+[tasks.admin]
+description = "Run operator admin CLI"
+run = "kubectl exec -n enzarb-system deploy/enzarb-operator -- enzarb admin"
+
+[tasks.build-agent]
+description = "Build project-agent binary"
+run = "cd agent && cargo build --release"
+
+[tasks.build-operator]
+description = "Build enzarb-operator binary"
+run = "cd operator && go build ./cmd/operator/"
+
+[tasks.build-app]
+description = "Build SvelteKit app"
+run = "cd app && pnpm build"
+
+[tasks.build-all]
+description = "Build all components"
+depends = ["build-agent", "build-operator", "build-app"]
+
+[tasks.test-agent]
+description = "Run agent tests"
+run = "cd agent && cargo test"
+
+[tasks.test-operator]
+description = "Run operator tests"
+run = "cd operator && go test ./..."
+
+[tasks.test-app]
+description = "Run app tests"
+run = "cd app && pnpm test"
+
+[tasks.test-all]
+description = "Run all tests"
+depends = ["test-agent", "test-operator", "test-app"]
+
+[tasks.dev-app]
+description = "Run SvelteKit dev server"
+run = "cd app && pnpm dev"

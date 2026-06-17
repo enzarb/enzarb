@@ -1,0 +1,13 @@
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: envoy-gateway
+  namespace: kube-system
+spec:
+  chart: gateway-helm
+  repo: https://charts.gateway.envoyproxy.io/
+  targetNamespace: envoy-gateway-system
+  createNamespace: true
+  valuesContent: |-
+    deployment:
+      replicas: 1

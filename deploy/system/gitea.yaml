@@ -1,0 +1,29 @@
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: gitea
+  namespace: kube-system
+spec:
+  chart: gitea
+  repo: https://dl.gitea.com/charts/
+  targetNamespace: enzarb-system
+  createNamespace: true
+  valuesContent: |-
+    gitea:
+      config:
+        server:
+          DOMAIN: gitea.enzarb.dev
+          ROOT_URL: https://gitea.enzarb.dev
+        database:
+          DB_TYPE: postgres
+          HOST: enzarb-db.enzarb-system:5432
+          NAME: gitea
+          USER: gitea
+        auth:
+          ENABLE_REVERSE_PROXY_AUTHENTICATION: true
+          REVERSE_PROXY_AUTHENTICATION_USER: X-Gitea-User
+    persistence:
+      enabled: true
+      size: 20Gi
+    postgresql:
+      enabled: false

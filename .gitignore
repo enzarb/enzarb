@@ -1,0 +1,24 @@
+# Go
+dist/
+/tmp/
+
+# Rust
+agent/target/
+
+# Node
+app/node_modules/
+app/.svelte-kit/
+app/build/
+
+# Workspace image staging (generated at build time)
+workspace/project-agent
+workspace/docker-credential-k8s-sa
+
+# Helm
+*.tgz
+
+# Editor
+.DS_Store
+.idea/
+.vscode/
+*.swp

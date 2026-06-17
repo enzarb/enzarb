@@ -1,0 +1,70 @@
+---
+apiVersion: postgres.ruckc.dev/v1alpha1
+kind: Cluster
+metadata:
+  name: enzarb-db
+  namespace: enzarb-system
+spec: {}
+---
+apiVersion: postgres.ruckc.dev/v1alpha1
+kind: Role
+metadata:
+  name: enzarb-app
+  namespace: enzarb-system
+spec:
+  clusterRef:
+    name: enzarb-db
+  name: enzarb_app
+---
+apiVersion: postgres.ruckc.dev/v1alpha1
+kind: Database
+metadata:
+  name: enzarb
+  namespace: enzarb-system
+spec:
+  clusterRef:
+    name: enzarb-db
+  name: enzarb
+  owner: enzarb_app
+---
+apiVersion: postgres.ruckc.dev/v1alpha1
+kind: Role
+metadata:
+  name: gitea
+  namespace: enzarb-system
+spec:
+  clusterRef:
+    name: enzarb-db
+  name: gitea
+---
+apiVersion: postgres.ruckc.dev/v1alpha1
+kind: Database
+metadata:
+  name: gitea
+  namespace: enzarb-system
+spec:
+  clusterRef:
+    name: enzarb-db
+  name: gitea
+  owner: gitea
+---
+apiVersion: postgres.ruckc.dev/v1alpha1
+kind: Role
+metadata:
+  name: dex
+  namespace: enzarb-system
+spec:
+  clusterRef:
+    name: enzarb-db
+  name: dex
+---
+apiVersion: postgres.ruckc.dev/v1alpha1
+kind: Database
+metadata:
+  name: dex
+  namespace: enzarb-system
+spec:
+  clusterRef:
+    name: enzarb-db
+  name: dex
+  owner: dex

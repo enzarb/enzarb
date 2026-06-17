@@ -1,0 +1,38 @@
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: zot
+  namespace: kube-system
+spec:
+  chart: zot
+  repo: https://zotregistry.dev/helm-charts/
+  targetNamespace: enzarb-system
+  createNamespace: true
+  valuesContent: |-
+    configFiles:
+      config.json: |-
+        {
+          "distSpecVersion": "1.1.0",
+          "storage": {
+            "rootDirectory": "/var/lib/registry",
+            "storageDriver": {
+              "name": "s3",
+              "regionendpoint": "http://rustfs.enzarb-system:9000",
+              "bucket": "zot-registry",
+              "region": "us-east-1",
+              "forcepathstyle": true
+            }
+          },
+          "http": {
+            "address": "0.0.0.0",
+            "port": "5000",
+            "auth": {
+              "bearer": {
+                "realm": "https://registry.enzarb.dev/auth/token",
+                "service": "registry.enzarb.dev",
+                "cert": "/etc/zot/tls/tls.crt"
+              }
+            }
+          },
+          "log": { "level": "info" }
+        }

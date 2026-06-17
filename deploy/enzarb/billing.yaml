@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: enzarb-billing
+  namespace: enzarb-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: enzarb-billing
+  template:
+    metadata:
+      labels:
+        app: enzarb-billing
+    spec:
+      serviceAccountName: enzarb-billing
+      containers:
+        - name: billing
+          image: ghcr.io/enzarb/billing:latest
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-db-app
+                  key: uri
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: enzarb-billing
+  namespace: enzarb-system

@@ -1,0 +1,4 @@
+{{- if .Values.installCRDs }}
+# CRDs are managed separately via crds/ directory for proper lifecycle handling.
+# Set installCRDs=true only on fresh installs; upgrades preserve existing CRDs.
+{{- end }}
