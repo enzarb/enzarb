@@ -17,7 +17,9 @@ FROM rust-deps AS rust-builder
 COPY agent/src ./src
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release
+    cargo build --release && \
+    cp /src/target/release/project-agent /project-agent && \
+    cp /src/target/release/docker-credential-k8s-sa /docker-credential-k8s-sa
 
 # ── Runtime ───────────────────────────────────────────────────────────────────
 FROM ubuntu:26.04
@@ -66,8 +68,8 @@ RUN usermod -l user -d /home/user -m ubuntu && groupmod -n user ubuntu
 
 # Gate on tests passing, then copy release binaries (root-owned)
 COPY --from=rust-test /test-ok /tmp/rust-test-ok
-COPY --from=rust-builder /src/target/release/project-agent          /usr/local/bin/project-agent
-COPY --from=rust-builder /src/target/release/docker-credential-k8s-sa /usr/local/bin/docker-credential-k8s-sa
+COPY --from=rust-builder /project-agent                /usr/local/bin/project-agent
+COPY --from=rust-builder /docker-credential-k8s-sa    /usr/local/bin/docker-credential-k8s-sa
 RUN chmod 755 /usr/local/bin/project-agent /usr/local/bin/docker-credential-k8s-sa \
     && rm /tmp/rust-test-ok
 
