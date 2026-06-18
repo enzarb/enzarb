@@ -498,7 +498,7 @@ func projectLabels(p *enzarbv1alpha1.Project) map[string]string {
 }
 
 func int64Ptr(i int64) *int64 { return &i }
-func boolPtr(b bool) *bool   { return &b }
+func boolPtr(b bool) *bool    { return &b }
 
 func toolsToJSON(tools []enzarbv1alpha1.ProjectTool) string {
 	if len(tools) == 0 {
