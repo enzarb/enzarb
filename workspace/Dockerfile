@@ -1,5 +1,5 @@
 # ── Rust: fetch deps (cached layer) ──────────────────────────────────────────
-FROM rust:1.87 AS rust-deps
+FROM rust:1 AS rust-deps
 WORKDIR /src
 COPY agent/Cargo.toml agent/Cargo.lock ./
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
