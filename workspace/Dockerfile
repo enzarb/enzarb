@@ -42,43 +42,17 @@ RUN curl -fsSL "https://github.com/krallin/tini/releases/download/v${TINI_VERSIO
 # Rename existing ubuntu user (UID 1000) to 'user' for consistency
 RUN usermod -l user -d /home/user -m ubuntu && groupmod -n user ubuntu
 
-# mise (tool version manager)
+# project-agent and credential helper: root-owned, world-executable
+COPY project-agent /usr/local/bin/project-agent
+COPY docker-credential-k8s-sa /usr/local/bin/docker-credential-k8s-sa
+RUN chmod 755 /usr/local/bin/project-agent /usr/local/bin/docker-credential-k8s-sa
+
+# mise (tool version manager) — installed as user so shims land in home (PVC)
 USER user
 RUN curl https://mise.run | sh
-
-# project-agent binary (built by GitHub Actions, copied at build time)
-COPY --chown=user:user project-agent /home/user/.local/bin/project-agent
-
-# docker credential helper for K8s SA token → registry auth
-COPY --chown=user:user docker-credential-k8s-sa /home/user/.local/bin/docker-credential-k8s-sa
-
-# Docker config pointing at credential helper
-RUN mkdir -p /home/user/.docker && echo '{"credHelpers":{"registry.enzarb.dev":"k8s-sa"}}' \
-    > /home/user/.docker/config.json
-
-# Default kubectl config uses in-cluster SA token
-RUN mkdir -p /home/user/.kube && printf '%s\n' \
-    'apiVersion: v1' \
-    'kind: Config' \
-    'clusters:' \
-    '- cluster:' \
-    '    server: https://kubernetes.default.svc' \
-    '    certificate-authority: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt' \
-    '  name: in-cluster' \
-    'contexts:' \
-    '- context:' \
-    '    cluster: in-cluster' \
-    '    user: sa' \
-    '  name: in-cluster' \
-    'current-context: in-cluster' \
-    'users:' \
-    '- name: sa' \
-    '  user:' \
-    '    tokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token' \
-    > /home/user/.kube/config
 
 WORKDIR /home/user
 
 ENV DOCKER_HOST=tcp://localhost:1234
 
-ENTRYPOINT ["/usr/local/bin/tini", "--", "/home/user/.local/bin/project-agent"]
+ENTRYPOINT ["/usr/local/bin/tini", "--", "/usr/local/bin/project-agent"]

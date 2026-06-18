@@ -240,6 +240,14 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName string, pr
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: saName,
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: boolPtr(true),
+						RunAsUser:    int64Ptr(1000),
+						RunAsGroup:   int64Ptr(1000),
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+					},
 					Containers: []corev1.Container{
 						{
 							Name:  "workspace",
@@ -268,8 +276,16 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName string, pr
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{Name: "home", MountPath: "/home/user"},
+								{Name: "tmp", MountPath: "/tmp"},
 								{Name: "registry-token", MountPath: "/var/run/secrets/enzarb/registry"},
 								{Name: "gitea-token", MountPath: "/var/run/secrets/enzarb/gitea"},
+							},
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: boolPtr(false),
+								ReadOnlyRootFilesystem:   boolPtr(true),
+								Capabilities: &corev1.Capabilities{
+									Drop: []corev1.Capability{"ALL"},
+								},
 							},
 							LivenessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
@@ -306,6 +322,14 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName string, pr
 							VolumeSource: corev1.VolumeSource{
 								PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 									ClaimName: pvcName,
+								},
+							},
+						},
+						{
+							Name: "tmp",
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{
+									Medium: corev1.StorageMediumMemory,
 								},
 							},
 						},
@@ -474,6 +498,7 @@ func projectLabels(p *enzarbv1alpha1.Project) map[string]string {
 }
 
 func int64Ptr(i int64) *int64 { return &i }
+func boolPtr(b bool) *bool   { return &b }
 
 func toolsToJSON(tools []enzarbv1alpha1.ProjectTool) string {
 	if len(tools) == 0 {
