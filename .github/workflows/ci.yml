@@ -629,4 +629,17 @@ jobs:
       - name: Delete staging branch
         env:
           VERSION: ${{ needs.version.outputs.version }}
-        run: git push origin --delete "staging/${VERSION}"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api repos/${{ github.repository }}/git/refs/heads/staging/${VERSION} -X DELETE
+
+      - name: Delete any other orphaned staging branches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api repos/${{ github.repository }}/branches \
+            --paginate --jq '.[].name' \
+            | grep '^staging/' \
+            | while read -r branch; do
+                echo "Deleting orphaned branch: $branch"
+                gh api "repos/${{ github.repository }}/git/refs/heads/${branch}" -X DELETE
+              done
