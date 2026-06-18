@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	tokenPath    = "/var/run/secrets/enzarb/registry/token"
+	tokenPath    = "/var/run/secrets/enzarb/registry/token" //nolint:gosec // not a credential, this is a file path
 	registryHost = "registry.enzarb.dev"
 )
 
@@ -32,9 +32,12 @@ func main() {
 		handleGet()
 	case "list":
 		// Return our registry so Docker knows we handle it
-		json.NewEncoder(os.Stdout).Encode(map[string]string{ //nolint:errcheck
+		if err := json.NewEncoder(os.Stdout).Encode(map[string]string{
 			registryHost: "sa-token",
-		})
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "encode list: %v\n", err)
+			os.Exit(1)
+		}
 	case "store", "erase":
 		// No-op: tokens come from the projected volume, not from docker login
 	default:
@@ -46,7 +49,10 @@ func main() {
 func handleGet() {
 	// Read server URL from stdin
 	var serverURL string
-	fmt.Fscan(os.Stdin, &serverURL)
+	if _, err := fmt.Fscan(os.Stdin, &serverURL); err != nil {
+		fmt.Fprintf(os.Stderr, "read stdin: %v\n", err)
+		os.Exit(1)
+	}
 	serverURL = strings.TrimSpace(serverURL)
 
 	if !strings.Contains(serverURL, registryHost) {
@@ -65,5 +71,8 @@ func handleGet() {
 		Username:  "sa-token",
 		Secret:    strings.TrimSpace(string(token)),
 	}
-	json.NewEncoder(os.Stdout).Encode(creds) //nolint:errcheck
+	if err := json.NewEncoder(os.Stdout).Encode(creds); err != nil {
+		fmt.Fprintf(os.Stderr, "encode creds: %v\n", err)
+		os.Exit(1)
+	}
 }

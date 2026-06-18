@@ -242,7 +242,7 @@ func (w *Worker) consumeHubble(ctx context.Context, path string) {
 	}()
 
 	for {
-		f, err := os.Open(path)
+		f, err := os.Open(path) //nolint:gosec // path is from env config, not user input
 		if err != nil {
 			slog.Warn("open hubble log", "err", err)
 			time.Sleep(5 * time.Second)
@@ -250,11 +250,15 @@ func (w *Worker) consumeHubble(ctx context.Context, path string) {
 		}
 
 		// Seek to end, then tail
-		f.Seek(0, 2) //nolint:errcheck
+		if _, err := f.Seek(0, 2); err != nil {
+			slog.Warn("seek hubble log", "err", err)
+			_ = f.Close()
+			continue
+		}
 		scanner := bufio.NewScanner(f)
 		for scanner.Scan() {
 			if ctx.Err() != nil {
-				f.Close()
+				_ = f.Close()
 				return
 			}
 			var flow HubbleFlow
@@ -285,7 +289,7 @@ func (w *Worker) consumeHubble(ctx context.Context, path string) {
 				counts[projectSlug].ingress += 1500
 			}
 		}
-		f.Close()
+		_ = f.Close()
 		time.Sleep(100 * time.Millisecond)
 	}
 }

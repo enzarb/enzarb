@@ -1,8 +1,8 @@
 package v1alpha1
 
 import (
-	"k8s.io/apimachinery/pkg/api/resource"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -11,7 +11,7 @@ import (
 
 var (
 	GroupVersion  = schema.GroupVersion{Group: "enzarb.io", Version: "v1alpha1"}
-	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}
+	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion} //nolint:staticcheck // deprecated but still functional; kubebuilder-generated code uses it
 	AddToScheme   = SchemeBuilder.AddToScheme
 )
 

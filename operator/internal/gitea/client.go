@@ -19,10 +19,10 @@ type Repo struct {
 }
 
 type CreateRepoRequest struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Private     bool   `json:"private"`
-	AutoInit    bool   `json:"auto_init"`
+	Name          string `json:"name"`
+	Description   string `json:"description,omitempty"`
+	Private       bool   `json:"private"`
+	AutoInit      bool   `json:"auto_init"`
 	DefaultBranch string `json:"default_branch,omitempty"`
 }
 
