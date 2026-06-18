@@ -234,22 +234,11 @@ jobs:
           git checkout -b "$BRANCH"
           echo "branch=${BRANCH}" >> "$GITHUB_ENV"
 
-      - uses: dtolnay/rust-toolchain@stable
-
       - name: Bump Rust agent version
         env:
           VERSION_BARE: ${{ needs.version.outputs.version_bare }}
         run: |
-          # cargo-edit's set-version is the clean way; fall back to sed
-          if cargo install cargo-edit --locked 2>/dev/null; then
-            cargo set-version --manifest-path agent/Cargo.toml "$VERSION_BARE"
-          else
-            sed -i "s/^version = \".*\"/version = \"${VERSION_BARE}\"/" agent/Cargo.toml
-          fi
-
-      - uses: actions/setup-node@v6.4.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
+          sed -i "s/^version = \".*\"/version = \"${VERSION_BARE}\"/" agent/Cargo.toml
 
       - name: Bump app version
         env:
