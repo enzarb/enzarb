@@ -39,8 +39,8 @@ RUN mkdir -p /usr/local/lib/docker/cli-plugins \
 RUN curl -fsSL "https://github.com/krallin/tini/releases/download/v${TINI_VERSION}/tini-amd64" \
     -o /usr/local/bin/tini && chmod +x /usr/local/bin/tini
 
-# Create non-root user
-RUN useradd -m -s /bin/bash -u 1000 user
+# Rename existing ubuntu user (UID 1000) to 'user' for consistency
+RUN usermod -l user -d /home/user -m ubuntu && groupmod -n user ubuntu
 
 # mise (tool version manager)
 USER user
