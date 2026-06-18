@@ -9,6 +9,17 @@ spec:
   targetNamespace: enzarb-system
   createNamespace: true
   valuesContent: |-
+    # S3 credentials are injected from the zot-s3-credentials Secret.
+    # Create it before deploying:
+    #   kubectl -n enzarb-system create secret generic zot-s3-credentials \
+    #     --from-literal=S3_ENDPOINT=http://<rook-ceph-rgw-svc>:80 \
+    #     --from-literal=S3_BUCKET=zot-registry \
+    #     --from-literal=S3_REGION=us-east-1 \
+    #     --from-literal=S3_ACCESS_KEY=<access-key> \
+    #     --from-literal=S3_SECRET_KEY=<secret-key>
+    envFrom:
+      - secretRef:
+          name: zot-s3-credentials
     configFiles:
       config.json: |-
         {
@@ -17,9 +28,11 @@ spec:
             "rootDirectory": "/var/lib/registry",
             "storageDriver": {
               "name": "s3",
-              "regionendpoint": "http://rustfs.enzarb-system:9000",
-              "bucket": "zot-registry",
-              "region": "us-east-1",
+              "regionendpoint": "$S3_ENDPOINT",
+              "bucket": "$S3_BUCKET",
+              "region": "$S3_REGION",
+              "accesskey": "$S3_ACCESS_KEY",
+              "secretkey": "$S3_SECRET_KEY",
               "forcepathstyle": true
             }
           },
