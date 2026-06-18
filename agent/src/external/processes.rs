@@ -7,10 +7,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::{
-    AppState,
-    tmux::ProcessKind,
-};
+use crate::{AppState, tmux::ProcessKind};
 
 #[derive(Debug, Deserialize)]
 pub struct CreateProcessRequest {
