@@ -26,11 +26,11 @@ export async function listRepos(orgSlug: string) {
 }
 
 export async function getRepoContents(orgSlug: string, repo: string, path: string, ref = 'main') {
-	return giteaFetch(`/repos/${orgSlug}/${repo}/contents/${path}?ref=${ref}`);
+	return giteaFetch(`/repos/${orgSlug}/${repo}/contents/${encodeURIComponent(path)}?ref=${encodeURIComponent(ref)}`);
 }
 
 export async function listRepoTree(orgSlug: string, repo: string, path: string, ref = 'main') {
-	return giteaFetch(`/repos/${orgSlug}/${repo}/git/trees/${ref}?recursive=false&token=${process.env.GITEA_ADMIN_TOKEN}`);
+	return giteaFetch(`/repos/${orgSlug}/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=false`);
 }
 
 export async function listBranches(orgSlug: string, repo: string) {

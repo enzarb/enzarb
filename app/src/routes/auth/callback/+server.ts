@@ -41,5 +41,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 		maxAge: 60 * 60 * 24 * 7
 	});
 
-	redirect(302, decodeURIComponent(state));
+	const destination = decodeURIComponent(state);
+	const safe = destination.startsWith('/') && !destination.startsWith('//') ? destination : '/';
+	redirect(302, safe);
 };

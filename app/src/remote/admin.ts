@@ -27,7 +27,7 @@ export async function listUsers() {
 }
 
 const CreateOrgSchema = z.object({
-	slug: z.string().regex(/^[a-z0-9-]+$/),
+	slug: z.string().min(1).max(63).regex(/^[a-z0-9-]+$/),
 	displayName: z.string().min(1),
 	tier: z.enum(['free', 'pro']).default('free')
 });

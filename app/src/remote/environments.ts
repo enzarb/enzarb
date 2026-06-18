@@ -27,7 +27,7 @@ export async function getEnvironments(orgId: string, projectSlug: string) {
 const CreateEnvSchema = z.object({
 	orgId: z.string(),
 	projectSlug: z.string(),
-	slug: z.string().regex(/^[a-z0-9-]+$/)
+	slug: z.string().min(1).max(63).regex(/^[a-z0-9-]+$/)
 });
 
 export async function createEnv(input: z.infer<typeof CreateEnvSchema>) {
@@ -47,7 +47,7 @@ export async function createEnv(input: z.infer<typeof CreateEnvSchema>) {
 const AddDomainSchema = z.object({
 	orgId: z.string(),
 	envName: z.string(),
-	fqdn: z.string()
+	fqdn: z.string().max(253).regex(/^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/)
 });
 
 export async function addDomain(input: z.infer<typeof AddDomainSchema>) {

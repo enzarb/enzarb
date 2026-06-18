@@ -37,7 +37,7 @@ export async function getProjectDetail(orgId: string, slug: string) {
 
 const CreateProjectSchema = z.object({
 	orgId: z.string(),
-	slug: z.string().regex(/^[a-z0-9-]+$/, 'Slug must be lowercase alphanumeric with dashes'),
+	slug: z.string().min(1).max(63).regex(/^[a-z0-9-]+$/, 'Slug must be lowercase alphanumeric with dashes'),
 	displayName: z.string().min(1),
 	tools: z.array(z.object({ name: z.string(), version: z.string().default('latest') })),
 	storageGi: z.number().int().min(1).default(10)
