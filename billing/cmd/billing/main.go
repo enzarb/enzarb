@@ -120,13 +120,13 @@ type PricingConfig struct {
 
 func defaultPricing() PricingConfig {
 	return PricingConfig{
-		CPUSecondsPerUnit:    0.0000139,
-		MemGiBSecondsPerUnit: 0.0000028,
-		NetIngressPerByte:    0.0000000001,
-		NetEgressPerByte:     0.0000000009,
+		CPUSecondsPerUnit:        0.0000139,
+		MemGiBSecondsPerUnit:     0.0000028,
+		NetIngressPerByte:        0.0000000001,
+		NetEgressPerByte:         0.0000000009,
 		StorageGiBSecondsPerUnit: 0.0000000385,
-		FreeCPUSeconds:       36000,
-		FreeMemGiBSeconds:    107374182,
+		FreeCPUSeconds:           36000,
+		FreeMemGiBSeconds:        107374182,
 	}
 }
 

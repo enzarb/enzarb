@@ -193,8 +193,8 @@ type HubbleFlow struct {
 }
 
 type HubbleEndpoint struct {
-	Namespace string `json:"namespace"`
-	PodName   string `json:"pod_name"`
+	Namespace string   `json:"namespace"`
+	PodName   string   `json:"pod_name"`
 	Labels    []string `json:"labels"`
 }
 
