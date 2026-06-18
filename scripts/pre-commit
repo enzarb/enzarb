@@ -51,14 +51,14 @@ has_changes() {
     echo "$STAGED" | grep -q "^$1"
 }
 
-GO_DIRS="./operator/... ./metering/... ./billing/... ./workspace/credential-helper/..."
+GO_DIRS="./operator/... ./metering/... ./billing/..."
 
 # STAGED_OVERRIDE=all skips the staged-file filter (used by `mise run lint`)
 if [ "${STAGED_OVERRIDE:-}" = "all" ]; then
     GO_CHANGED=true; RUST_CHANGED=true; JS_CHANGED=true; DOCKER_CHANGED=true
 else
     GO_CHANGED=false
-    for prefix in operator/ metering/ billing/ workspace/credential-helper/; do
+    for prefix in operator/ metering/ billing/; do
         if has_changes "$prefix"; then GO_CHANGED=true; break; fi
     done
     if has_changes ".golangci.yml" || has_changes "go.mod" || has_changes "go.sum"; then GO_CHANGED=true; fi
@@ -85,19 +85,19 @@ printf "\n${YELLOW}Running pre-commit checks...${NC}\n\n"
 if $GO_CHANGED; then
     echo "Go:"
     run_check "gofmt" bash -c \
-        'files=$(gofmt -l ./operator/... ./metering/... ./billing/... ./workspace/credential-helper/... 2>/dev/null | grep -v vendor || true); [ -z "$files" ] || (echo "$files"; exit 1)'
+        'files=$(gofmt -l ./operator/... ./metering/... ./billing/... 2>/dev/null | grep -v vendor || true); [ -z "$files" ] || (echo "$files"; exit 1)'
     if ! command -v golangci-lint &>/dev/null; then
         printf "  ${YELLOW}golangci-lint not found — skipping lint (run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)${NC}\n"
     else
         run_check "golangci-lint" golangci-lint run --timeout=5m \
-            ./operator/... ./metering/... ./billing/... ./workspace/credential-helper/...
+            ./operator/... ./metering/... ./billing/...
     fi
     if ! command -v govulncheck &>/dev/null; then
         printf "  ${YELLOW}govulncheck not found — skipping (run: go install golang.org/x/vuln/cmd/govulncheck@latest)${NC}\n"
     else
         run_check_allow_exit3 "govulncheck (-scan=package)" \
             govulncheck -scan=package \
-                ./operator/... ./metering/... ./billing/... ./workspace/credential-helper/...
+                ./operator/... ./metering/... ./billing/...
     fi
 fi
 

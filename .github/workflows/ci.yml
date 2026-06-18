@@ -36,7 +36,7 @@ jobs:
         uses: golangci/golangci-lint-action@v9.2.1
         with:
           version: latest
-          args: --timeout=5m ./operator/... ./metering/... ./billing/... ./workspace/credential-helper/...
+          args: --timeout=5m ./operator/... ./metering/... ./billing/...
 
   lint-rust:
     name: Lint / Rust
@@ -97,7 +97,7 @@ jobs:
 
       - name: govulncheck
         # exit 3 = vulns in required modules but not in called code (informational); fail only on exit 1 (called vuln) or 2 (scan error)
-        run: govulncheck -scan=package ./operator/... ./metering/... ./billing/... ./workspace/credential-helper/... || [ $? -eq 3 ]
+        run: govulncheck -scan=package ./operator/... ./metering/... ./billing/... || [ $? -eq 3 ]
 
   security-rust:
     name: Security / Rust (cargo-audit)

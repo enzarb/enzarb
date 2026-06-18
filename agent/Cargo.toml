@@ -7,6 +7,10 @@ edition = "2024"
 name = "project-agent"
 path = "src/main.rs"
 
+[[bin]]
+name = "docker-credential-k8s-sa"
+path = "src/bin/docker_credential_k8s_sa.rs"
+
 [dependencies]
 axum = { version = "0.8", features = ["ws", "macros"] }
 axum-extra = { version = "0.12.6", features = ["typed-header"] }
