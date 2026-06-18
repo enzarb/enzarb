@@ -109,13 +109,13 @@ func (w *InvoiceWorker) Work(ctx context.Context, job *river.Job[InvoiceArgs]) e
 }
 
 type PricingConfig struct {
-	CPUSecondsPerUnit    float64
-	MemGiBSecondsPerUnit float64
-	NetIngressPerByte    float64
-	NetEgressPerByte     float64
+	CPUSecondsPerUnit        float64
+	MemGiBSecondsPerUnit     float64
+	NetIngressPerByte        float64
+	NetEgressPerByte         float64
 	StorageGiBSecondsPerUnit float64
-	FreeCPUSeconds       float64
-	FreeMemGiBSeconds    float64
+	FreeCPUSeconds           float64
+	FreeMemGiBSeconds        float64
 }
 
 func defaultPricing() PricingConfig {

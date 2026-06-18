@@ -45,8 +45,8 @@ func (c *Client) EnsureOrg(orgSlug string) error {
 	}
 	_, err = c.http.R().
 		SetBody(map[string]string{
-			"username":    orgSlug,
-			"visibility":  "private",
+			"username":   orgSlug,
+			"visibility": "private",
 		}).
 		Post("/api/v1/orgs")
 	return err

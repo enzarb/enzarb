@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"os"
 
 	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
@@ -464,14 +463,6 @@ func (r *ProjectReconciler) ensureCertificate(ctx context.Context, ns string, pr
 		return r.Create(ctx, cert)
 	}
 	return err
-}
-
-// domainFromEnv reads ENZARB_DOMAIN env var, defaulting to "enzarb.dev".
-func domainFromEnv() string {
-	if d := os.Getenv("ENZARB_DOMAIN"); d != "" {
-		return d
-	}
-	return "enzarb.dev"
 }
 
 func projectLabels(p *enzarbv1alpha1.Project) map[string]string {

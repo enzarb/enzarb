@@ -18,7 +18,7 @@ const (
 type Credentials struct {
 	ServerURL string `json:"ServerURL"`
 	Username  string `json:"Username"`
-	Secret    string `json:"Secret"`
+	Secret    string `json:"Secret"` //nolint:gosec // G117: Docker credential helper protocol requires this field name
 }
 
 func main() {

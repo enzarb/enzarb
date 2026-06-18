@@ -35,11 +35,11 @@ type Project struct {
 }
 
 type ProjectSpec struct {
-	OrgID       string          `json:"orgId"`
-	Slug        string          `json:"slug"`
-	DisplayName string          `json:"displayName"`
-	Tools       []ProjectTool   `json:"tools,omitempty"`
-	Storage     ProjectStorage  `json:"storage,omitempty"`
+	OrgID       string                      `json:"orgId"`
+	Slug        string                      `json:"slug"`
+	DisplayName string                      `json:"displayName"`
+	Tools       []ProjectTool               `json:"tools,omitempty"`
+	Storage     ProjectStorage              `json:"storage,omitempty"`
 	Resources   corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
