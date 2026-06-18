@@ -1,0 +1,155 @@
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: letsencrypt
+  namespace: {{ .Release.Namespace }}
+spec:
+  acme:
+    server: {{ .Values.gateway.issuer.acmeServer }}
+    email: {{ .Values.gateway.issuer.email }}
+    privateKeySecretRef:
+      name: letsencrypt-account-key
+    solvers:
+      - http01:
+          gatewayHTTPRoute:
+            parentRefs:
+              - name: enzarb
+                namespace: {{ .Release.Namespace }}
+                kind: Gateway
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: enzarb
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    cert-manager.io/issuer: letsencrypt
+spec:
+  gatewayClassName: {{ .Values.gateway.className }}
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: Same
+    - name: https
+      port: 443
+      protocol: HTTPS
+      hostname: {{ .Values.gateway.domain | quote }}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: enzarb-tls
+      allowedRoutes:
+        namespaces:
+          from: Same
+    - name: https-auth
+      port: 443
+      protocol: HTTPS
+      hostname: {{ printf "auth.%s" .Values.gateway.domain | quote }}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: enzarb-auth-tls
+      allowedRoutes:
+        namespaces:
+          from: Same
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: enzarb-tls
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    cert-manager.io/issuer: letsencrypt
+spec:
+  secretName: enzarb-tls
+  issuerRef:
+    name: letsencrypt
+    kind: Issuer
+  dnsNames:
+    - {{ .Values.gateway.domain }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: enzarb-auth-tls
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    cert-manager.io/issuer: letsencrypt
+spec:
+  secretName: enzarb-auth-tls
+  issuerRef:
+    name: letsencrypt
+    kind: Issuer
+  dnsNames:
+    - {{ printf "auth.%s" .Values.gateway.domain }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: enzarb-app
+  namespace: {{ .Release.Namespace }}
+spec:
+  parentRefs:
+    - name: enzarb
+      sectionName: https
+  hostnames:
+    - {{ .Values.gateway.domain | quote }}
+  rules:
+    - backendRefs:
+        - name: enzarb-app
+          port: 3000
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: enzarb-app-redirect
+  namespace: {{ .Release.Namespace }}
+spec:
+  parentRefs:
+    - name: enzarb
+      sectionName: http
+  hostnames:
+    - {{ .Values.gateway.domain | quote }}
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: enzarb-auth
+  namespace: {{ .Release.Namespace }}
+spec:
+  parentRefs:
+    - name: enzarb
+      sectionName: https-auth
+  hostnames:
+    - {{ printf "auth.%s" .Values.gateway.domain | quote }}
+  rules:
+    - backendRefs:
+        - name: dex
+          port: 5556
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: enzarb-auth-redirect
+  namespace: {{ .Release.Namespace }}
+spec:
+  parentRefs:
+    - name: enzarb
+      sectionName: http
+  hostnames:
+    - {{ printf "auth.%s" .Values.gateway.domain | quote }}
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301

@@ -94,6 +94,13 @@ database:
     - name: dex
       owner: dex
 
+gateway:
+  className: cilium
+  domain: enzarb.dev
+  issuer:
+    email: curtis.ruck@gmail.com
+    acmeServer: https://acme-v02.api.letsencrypt.org/directory
+
 imagePullSecrets: []
 serviceAccountName:
   app: enzarb-app
