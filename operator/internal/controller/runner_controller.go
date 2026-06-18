@@ -154,8 +154,8 @@ type runnerPodFilter struct {
 	predicate.Funcs
 }
 
-func (runnerPodFilter) Create(_ event.CreateEvent) bool  { return false }
-func (runnerPodFilter) Delete(_ event.DeleteEvent) bool  { return false }
+func (runnerPodFilter) Create(_ event.CreateEvent) bool   { return false }
+func (runnerPodFilter) Delete(_ event.DeleteEvent) bool   { return false }
 func (runnerPodFilter) Generic(_ event.GenericEvent) bool { return false }
 func (runnerPodFilter) Update(e event.UpdateEvent) bool {
 	pod, ok := e.ObjectNew.(*corev1.Pod)

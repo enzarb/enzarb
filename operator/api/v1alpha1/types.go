@@ -100,9 +100,9 @@ type GatewayRef struct {
 }
 
 type EnvironmentStatus struct {
-	Namespace   string             `json:"namespace,omitempty"`
-	Domains     []DomainStatus     `json:"domains,omitempty"`
-	Conditions  []metav1.Condition `json:"conditions,omitempty"`
+	Namespace  string             `json:"namespace,omitempty"`
+	Domains    []DomainStatus     `json:"domains,omitempty"`
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 type DomainStatus struct {

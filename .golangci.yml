@@ -19,6 +19,7 @@ linters:
     gosec:
       excludes:
         - G304
+        - G117
     revive:
       rules:
         - name: exported

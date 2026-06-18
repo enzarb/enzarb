@@ -71,7 +71,7 @@ func handleGet() {
 		Username:  "sa-token",
 		Secret:    strings.TrimSpace(string(token)),
 	}
-	if err := json.NewEncoder(os.Stdout).Encode(creds); err != nil {
+	if err := json.NewEncoder(os.Stdout).Encode(creds); err != nil { //nolint:gosec // G117: Docker credential helper protocol requires "Secret" field name
 		fmt.Fprintf(os.Stderr, "encode creds: %v\n", err)
 		os.Exit(1)
 	}
