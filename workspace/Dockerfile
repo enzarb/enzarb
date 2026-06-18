@@ -31,15 +31,14 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV HOME=/home/user
 ENV PATH="/home/user/.local/bin:/home/user/.local/share/mise/shims:${PATH}"
 
-RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl gnupg \
+    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu noble stable" \
-    > /etc/apt/sources.list.d/docker.list \
+        > /etc/apt/sources.list.d/docker.list \
     && apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
         docker-ce-cli \
         git \
-        gnupg \
         tmux \
         jq \
         openssh-client \
