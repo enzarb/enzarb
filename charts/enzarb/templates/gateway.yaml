@@ -1,3 +1,16 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: enzarb
+  namespace: {{ .Release.Namespace }}
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        annotations:
+          io.cilium/lb-ipam-ips: {{ .Values.gateway.loadBalancerIP | quote }}
+---
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
@@ -26,6 +39,11 @@ metadata:
     cert-manager.io/issuer: letsencrypt
 spec:
   gatewayClassName: {{ .Values.gateway.className }}
+  infrastructure:
+    parametersRef:
+      group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      name: enzarb
   listeners:
     - name: http
       port: 80

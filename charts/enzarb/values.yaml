@@ -95,8 +95,9 @@ database:
       owner: dex
 
 gateway:
-  className: cilium
+  className: envoy
   domain: enzarb.dev
+  loadBalancerIP: "192.168.23.96"
   issuer:
     email: curtis.ruck@gmail.com
     acmeServer: https://acme-v02.api.letsencrypt.org/directory
