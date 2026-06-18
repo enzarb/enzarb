@@ -70,3 +70,12 @@ depends = ["test-agent", "test-operator", "test-app"]
 [tasks.dev-app]
 description = "Run SvelteKit dev server"
 run = "cd app && pnpm dev"
+
+[tasks.install-hooks]
+description = "Install git hooks (pre-commit)"
+run = "cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit && echo 'pre-commit hook installed'"
+
+[tasks.lint]
+description = "Run all linters (same as pre-commit, no staged-file filter)"
+run = "bash scripts/pre-commit"
+env = { STAGED_OVERRIDE = "all" }

@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# Pre-commit hook: runs CI checks scoped to staged files.
+# Install: mise run install-hooks  (or cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit)
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+PASS=0
+FAIL=0
+
+run_check() {
+    local label="$1"; shift
+    printf "  %-45s" "$label"
+    local out
+    if out=$("$@" 2>&1); then
+        printf "${GREEN}PASS${NC}\n"
+        PASS=$((PASS + 1))
+    else
+        printf "${RED}FAIL${NC}\n"
+        echo "$out" | sed 's/^/    /'
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+run_check_allow_exit3() {
+    local label="$1"; shift
+    printf "  %-45s" "$label"
+    local out
+    local exit_code=0
+    out=$("$@" 2>&1) || exit_code=$?
+    if [ $exit_code -eq 0 ] || [ $exit_code -eq 3 ]; then
+        printf "${GREEN}PASS${NC}\n"
+        PASS=$((PASS + 1))
+    else
+        printf "${RED}FAIL${NC}\n"
+        echo "$out" | sed 's/^/    /'
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+# Determine which areas have staged changes
+STAGED=$(git diff --cached --name-only)
+
+has_changes() {
+    echo "$STAGED" | grep -q "^$1"
+}
+
+GO_DIRS="./operator/... ./metering/... ./billing/... ./workspace/credential-helper/..."
+
+# STAGED_OVERRIDE=all skips the staged-file filter (used by `mise run lint`)
+if [ "${STAGED_OVERRIDE:-}" = "all" ]; then
+    GO_CHANGED=true; RUST_CHANGED=true; JS_CHANGED=true; DOCKER_CHANGED=true
+else
+    GO_CHANGED=false
+    for prefix in operator/ metering/ billing/ workspace/credential-helper/; do
+        if has_changes "$prefix"; then GO_CHANGED=true; break; fi
+    done
+    if has_changes ".golangci.yml" || has_changes "go.mod" || has_changes "go.sum"; then GO_CHANGED=true; fi
+
+    RUST_CHANGED=false
+    if has_changes "agent/"; then RUST_CHANGED=true; fi
+
+    JS_CHANGED=false
+    if has_changes "app/"; then JS_CHANGED=true; fi
+
+    DOCKER_CHANGED=false
+    if echo "$STAGED" | grep -q "Dockerfile"; then DOCKER_CHANGED=true; fi
+    if has_changes ".trivyignore"; then DOCKER_CHANGED=true; fi
+fi
+
+if ! $GO_CHANGED && ! $RUST_CHANGED && ! $JS_CHANGED && ! $DOCKER_CHANGED; then
+    printf "${YELLOW}No relevant changes detected — skipping all checks.${NC}\n"
+    exit 0
+fi
+
+printf "\n${YELLOW}Running pre-commit checks...${NC}\n\n"
+
+# ── Go ───────────────────────────────────────────────────────────────────────
+if $GO_CHANGED; then
+    echo "Go:"
+    if ! command -v golangci-lint &>/dev/null; then
+        printf "  ${YELLOW}golangci-lint not found — skipping lint (run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)${NC}\n"
+    else
+        run_check "golangci-lint" golangci-lint run --timeout=5m \
+            ./operator/... ./metering/... ./billing/... ./workspace/credential-helper/...
+    fi
+    if ! command -v govulncheck &>/dev/null; then
+        printf "  ${YELLOW}govulncheck not found — skipping (run: go install golang.org/x/vuln/cmd/govulncheck@latest)${NC}\n"
+    else
+        run_check_allow_exit3 "govulncheck (-scan=package)" \
+            govulncheck -scan=package \
+                ./operator/... ./metering/... ./billing/... ./workspace/credential-helper/...
+    fi
+fi
+
+# ── Rust ─────────────────────────────────────────────────────────────────────
+if $RUST_CHANGED; then
+    echo "Rust:"
+    run_check "cargo fmt --check" \
+        cargo fmt --manifest-path agent/Cargo.toml --check
+    run_check "cargo clippy" \
+        cargo clippy --manifest-path agent/Cargo.toml --all-targets -- -D warnings
+    if ! command -v cargo-audit &>/dev/null; then
+        printf "  ${YELLOW}cargo-audit not found — skipping (run: cargo install cargo-audit --locked)${NC}\n"
+    else
+        run_check "cargo audit" bash -c "cd agent && cargo audit"
+    fi
+fi
+
+# ── JS/Svelte ────────────────────────────────────────────────────────────────
+if $JS_CHANGED; then
+    echo "JS:"
+    if ! command -v pnpm &>/dev/null; then
+        printf "  ${YELLOW}pnpm not found — skipping svelte-check${NC}\n"
+    else
+        run_check "pnpm install" bash -c "cd app && pnpm install --frozen-lockfile"
+        run_check "svelte-check" bash -c "cd app && pnpm check"
+    fi
+fi
+
+# ── Containers ───────────────────────────────────────────────────────────────
+if $DOCKER_CHANGED; then
+    echo "Containers:"
+    if ! command -v trivy &>/dev/null; then
+        printf "  ${YELLOW}trivy not found — skipping config scan (run: mise use -g trivy or install from https://trivy.dev)${NC}\n"
+    else
+        run_check "trivy config scan (CRITICAL,HIGH)" \
+            trivy config --exit-code 1 --severity CRITICAL,HIGH --ignorefile .trivyignore .
+    fi
+fi
+
+# ── Summary ──────────────────────────────────────────────────────────────────
+echo ""
+if [ $FAIL -gt 0 ]; then
+    printf "${RED}${FAIL} check(s) failed, ${PASS} passed.${NC}\n\n"
+    exit 1
+else
+    printf "${GREEN}All ${PASS} check(s) passed.${NC}\n\n"
+fi
