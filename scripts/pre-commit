@@ -84,6 +84,8 @@ printf "\n${YELLOW}Running pre-commit checks...${NC}\n\n"
 # ── Go ───────────────────────────────────────────────────────────────────────
 if $GO_CHANGED; then
     echo "Go:"
+    run_check "gofmt" bash -c \
+        'files=$(gofmt -l ./operator/... ./metering/... ./billing/... ./workspace/credential-helper/... 2>/dev/null | grep -v vendor || true); [ -z "$files" ] || (echo "$files"; exit 1)'
     if ! command -v golangci-lint &>/dev/null; then
         printf "  ${YELLOW}golangci-lint not found — skipping lint (run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)${NC}\n"
     else
@@ -116,11 +118,11 @@ fi
 # ── JS/Svelte ────────────────────────────────────────────────────────────────
 if $JS_CHANGED; then
     echo "JS:"
-    if ! command -v pnpm &>/dev/null; then
-        printf "  ${YELLOW}pnpm not found — skipping svelte-check${NC}\n"
+    if ! command -v npm &>/dev/null; then
+        printf "  ${YELLOW}npm not found — skipping svelte-check${NC}\n"
     else
-        run_check "pnpm install" bash -c "cd app && pnpm install --frozen-lockfile"
-        run_check "svelte-check" bash -c "cd app && pnpm check"
+        run_check "npm ci" bash -c "cd app && npm ci"
+        run_check "svelte-check" bash -c "cd app && npm run check"
     fi
 fi
 
