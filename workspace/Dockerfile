@@ -56,25 +56,25 @@ RUN mkdir -p /home/user/.docker && echo '{"credHelpers":{"registry.enzarb.dev":"
     > /home/user/.docker/config.json
 
 # Default kubectl config uses in-cluster SA token
-RUN mkdir -p /home/user/.kube && echo '
-apiVersion: v1
-kind: Config
-clusters:
-- cluster:
-    server: https://kubernetes.default.svc
-    certificate-authority: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-  name: in-cluster
-contexts:
-- context:
-    cluster: in-cluster
-    user: sa
-  name: in-cluster
-current-context: in-cluster
-users:
-- name: sa
-  user:
-    tokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
-' > /home/user/.kube/config
+RUN mkdir -p /home/user/.kube && printf '%s\n' \
+    'apiVersion: v1' \
+    'kind: Config' \
+    'clusters:' \
+    '- cluster:' \
+    '    server: https://kubernetes.default.svc' \
+    '    certificate-authority: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt' \
+    '  name: in-cluster' \
+    'contexts:' \
+    '- context:' \
+    '    cluster: in-cluster' \
+    '    user: sa' \
+    '  name: in-cluster' \
+    'current-context: in-cluster' \
+    'users:' \
+    '- name: sa' \
+    '  user:' \
+    '    tokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token' \
+    > /home/user/.kube/config
 
 WORKDIR /home/user
 
