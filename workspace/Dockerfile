@@ -1,5 +1,5 @@
 # ── Rust: fetch deps (cached layer) ──────────────────────────────────────────
-FROM rust:latest AS rust-deps
+FROM rust:1.87 AS rust-deps
 WORKDIR /src
 COPY agent/Cargo.toml agent/Cargo.lock ./
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
@@ -31,37 +31,31 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV HOME=/home/user
 ENV PATH="/home/user/.local/bin:/home/user/.local/share/mise/shims:${PATH}"
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    git \
-    gnupg \
-    tmux \
-    jq \
-    openssh-client \
-    build-essential \
-    pkg-config \
-    libssl-dev \
-    python3 \
-    python3-pip \
-    && rm -rf /var/lib/apt/lists/*
-
-# Docker CE CLI (no daemon)
 RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu noble stable" \
     > /etc/apt/sources.list.d/docker.list \
-    && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli \
-    && rm -rf /var/lib/apt/lists/*
-
-# Docker buildx plugin
-RUN mkdir -p /usr/local/lib/docker/cli-plugins \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        docker-ce-cli \
+        git \
+        gnupg \
+        tmux \
+        jq \
+        openssh-client \
+        build-essential \
+        pkg-config \
+        libssl-dev \
+        python3 \
+        python3-pip \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /usr/local/lib/docker/cli-plugins \
     && curl -fsSL "https://github.com/docker/buildx/releases/download/v${BUILDX_VERSION}/buildx-v${BUILDX_VERSION}.linux-amd64" \
-    -o /usr/local/lib/docker/cli-plugins/docker-buildx \
-    && chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
-
-# tini (PID 1 signal forwarding)
-RUN curl -fsSL "https://github.com/krallin/tini/releases/download/v${TINI_VERSION}/tini-amd64" \
-    -o /usr/local/bin/tini && chmod +x /usr/local/bin/tini
+        -o /usr/local/lib/docker/cli-plugins/docker-buildx \
+    && chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx \
+    && curl -fsSL "https://github.com/krallin/tini/releases/download/v${TINI_VERSION}/tini-amd64" \
+        -o /usr/local/bin/tini \
+    && chmod +x /usr/local/bin/tini
 
 # Rename existing ubuntu user (UID 1000) to 'user' for consistency
 RUN usermod -l user -d /home/user -m ubuntu && groupmod -n user ubuntu
