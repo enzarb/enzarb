@@ -1,18 +1,16 @@
-FROM node:26.3.0-alpine AS builder
+FROM node:lts-alpine AS builder
 WORKDIR /app
-RUN npm install -g pnpm
-COPY package.json pnpm-lock.yaml ./
-RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
-    pnpm install --frozen-lockfile
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
 COPY . .
-RUN pnpm build
+RUN npm run build
 
-FROM node:26.3.0-alpine
+FROM node:lts-alpine
 WORKDIR /app
-RUN npm install -g pnpm
-COPY package.json pnpm-lock.yaml ./
-RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
-    pnpm install --frozen-lockfile --prod
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --omit=dev
 COPY --from=builder /app/build ./build
 ENV NODE_ENV=production
 EXPOSE 3000

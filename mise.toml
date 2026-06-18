@@ -1,8 +1,7 @@
 [tools]
 claude = "latest"
-node = "22"
-pnpm = "latest"
-go = "1.24"
+node = "lts"
+go = "1.26"
 rust = "latest"
 kubectl = "latest"
 kubebuilder = "latest"
@@ -45,7 +44,7 @@ run = "cd operator && go build ./cmd/operator/"
 
 [tasks.build-app]
 description = "Build SvelteKit app"
-run = "cd app && pnpm build"
+run = "cd app && npm run build"
 
 [tasks.build-all]
 description = "Build all components"
@@ -61,7 +60,7 @@ run = "cd operator && go test ./..."
 
 [tasks.test-app]
 description = "Run app tests"
-run = "cd app && pnpm test"
+run = "cd app && npm test"
 
 [tasks.test-all]
 description = "Run all tests"
@@ -69,7 +68,7 @@ depends = ["test-agent", "test-operator", "test-app"]
 
 [tasks.dev-app]
 description = "Run SvelteKit dev server"
-run = "cd app && pnpm dev"
+run = "cd app && npm run dev"
 
 [tasks.install-hooks]
 description = "Install git hooks (pre-commit)"

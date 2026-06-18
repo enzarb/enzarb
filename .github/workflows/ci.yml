@@ -14,7 +14,7 @@ env:
   REGISTRY: ghcr.io
   ORG: enzarb
   GO_VERSION: "1.26"
-  NODE_VERSION: "22"
+  NODE_VERSION: "lts/*"
   RUST_VERSION: stable
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -64,22 +64,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6.0.3
 
-      - uses: pnpm/action-setup@v6.0.9
-        with:
-          version: latest
-
       - uses: actions/setup-node@v6.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-          cache-dependency-path: app/pnpm-lock.yaml
+          cache: npm
+          cache-dependency-path: app/package-lock.json
 
       - name: Install dependencies
-        run: pnpm install
+        run: npm ci
         working-directory: app
 
       - name: svelte-check
-        run: pnpm check
+        run: npm run check
         working-directory: app
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -250,10 +246,6 @@ jobs:
           else
             sed -i "s/^version = \".*\"/version = \"${VERSION_BARE}\"/" agent/Cargo.toml
           fi
-
-      - uses: pnpm/action-setup@v6.0.9
-        with:
-          version: latest
 
       - uses: actions/setup-node@v6.4.0
         with:
