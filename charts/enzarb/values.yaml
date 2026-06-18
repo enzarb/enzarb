@@ -97,7 +97,7 @@ database:
 gateway:
   className: envoy
   domain: enzarb.dev
-  loadBalancerIP: "192.168.23.96"
+  loadBalancerIP: "192.168.23.93"
   issuer:
     email: curtis.ruck@gmail.com
     acmeServer: https://acme-v02.api.letsencrypt.org/directory
