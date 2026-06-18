@@ -14,4 +14,5 @@ RUN pnpm install --frozen-lockfile --prod
 COPY --from=builder /app/build ./build
 ENV NODE_ENV=production
 EXPOSE 3000
+USER node
 CMD ["node", "build"]

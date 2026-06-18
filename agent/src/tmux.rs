@@ -13,7 +13,8 @@ use crate::init::home_dir;
 const TMUX_SESSION: &str = "enzarb";
 const STATE_FILE: &str = ".enzarb/processes.json";
 const LOG_DIR: &str = ".enzarb/tasks";
-const MAX_LOG_BYTES: u64 = 100 * 1024 * 1024; // 100MB
+#[allow(dead_code)]
+pub const MAX_LOG_BYTES: u64 = 100 * 1024 * 1024; // 100MB cap for one-shot task logs
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]

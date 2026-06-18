@@ -1,10 +1,7 @@
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
-    response::sse::Event,
-    response::{IntoResponse, Response, Sse},
+    response::{IntoResponse, Response, Sse, sse::Event},
 };
-use futures::stream::Stream;
 use inotify::{Inotify, WatchMask};
 use serde::Deserialize;
 use std::path::PathBuf;

@@ -6,11 +6,10 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tokio::io::AsyncReadExt;
 
 use crate::{
     AppState,
-    tmux::{ProcessKind, ProcessStatus},
+    tmux::ProcessKind,
 };
 
 #[derive(Debug, Deserialize)]

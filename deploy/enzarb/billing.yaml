@@ -14,9 +14,19 @@ spec:
         app: enzarb-billing
     spec:
       serviceAccountName: enzarb-billing
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: billing
           image: ghcr.io/enzarb/billing:latest
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           env:
             - name: DATABASE_URL
               valueFrom:

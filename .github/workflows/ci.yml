@@ -118,7 +118,8 @@ jobs:
         run: cargo install cargo-audit --locked
 
       - name: cargo audit
-        run: cargo audit --manifest-path agent/Cargo.toml
+        run: cargo audit
+        working-directory: agent
 
   security-containers:
     name: Security / Containers (trivy)
@@ -134,6 +135,7 @@ jobs:
           scan-ref: .
           exit-code: 1
           severity: CRITICAL,HIGH
+          trivyignores: .trivyignore
 
 # ─────────────────────────────────────────────────────────────────────────────
 # VERSION — calculate next semver from conventional commits since last tag

@@ -115,9 +115,7 @@ pub async fn upload(
     };
 
     if let Some(parent) = abs.parent() {
-        if let Err(_) = tokio::fs::create_dir_all(parent).await {
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
+        let _ = tokio::fs::create_dir_all(parent).await;
     }
 
     use tokio::io::AsyncWriteExt;

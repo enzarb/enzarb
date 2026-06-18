@@ -1,0 +1,3 @@
+# The enzarb operator must be able to create/update/delete Services for project pods.
+# This permission is intentional and scoped to the operator's reconciliation needs.
+KSV-0056

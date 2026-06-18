@@ -8,7 +8,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     middleware::{self, Next},
     response::Response,
-    routing::{delete, get, post},
+    routing::{get, post},
 };
 use tower_http::cors::CorsLayer;
 
