@@ -2,8 +2,8 @@ apiVersion: v2
 name: enzarb-operator
 description: Kubernetes operator for the enzarb AI agent development platform
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.1.16
+appVersion: "0.1.16"
 home: https://enzarb.dev
 sources:
   - https://github.com/enzarb/enzarb
