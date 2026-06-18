@@ -12,8 +12,10 @@ spec:
     gitea:
       config:
         server:
-          DOMAIN: gitea.enzarb.dev
-          ROOT_URL: https://gitea.enzarb.dev
+          # Internal-only: accessible within the cluster via gitea-http.enzarb-system.svc:3000
+          DOMAIN: gitea-http.enzarb-system.svc.cluster.local
+          ROOT_URL: http://gitea-http.enzarb-system.svc.cluster.local:3000
+          LOCAL_ROOT_URL: http://gitea-http.enzarb-system.svc.cluster.local:3000
         database:
           DB_TYPE: postgres
           HOST: enzarb-db.enzarb-system:5432
@@ -22,8 +24,21 @@ spec:
         auth:
           ENABLE_REVERSE_PROXY_AUTHENTICATION: true
           REVERSE_PROXY_AUTHENTICATION_USER: X-Gitea-User
+      additionalConfigFromEnvs:
+        - name: GITEA__database__PASSWD
+          valueFrom:
+            secretKeyRef:
+              name: enzarb-db-gitea-credentials
+              key: password
+    service:
+      http:
+        type: ClusterIP
+      ssh:
+        type: ClusterIP
     persistence:
       enabled: true
       size: 20Gi
     postgresql:
+      enabled: false
+    postgresql-ha:
       enabled: false

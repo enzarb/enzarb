@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: enzarb-billing
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: enzarb-billing
+    app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: enzarb-billing
+  template:
+    metadata:
+      labels:
+        app: enzarb-billing
+        app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+    spec:
+      serviceAccountName: enzarb-billing
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: billing
+          image: "{{ .Values.billing.image.repository }}:{{ .Values.billing.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.billing.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          env:
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.dbSecret.name }}
+                  key: {{ .Values.app.dbSecret.hostKey }}
+            - name: DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.dbSecret.name }}
+                  key: {{ .Values.app.dbSecret.portKey }}
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.dbSecret.name }}
+                  key: {{ .Values.app.dbSecret.userKey }}
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.dbSecret.name }}
+                  key: {{ .Values.app.dbSecret.passwordKey }}
+            - name: DATABASE_URL
+              value: "postgres://$(DB_USER):$(DB_PASSWORD)@$(DB_HOST):$(DB_PORT)/{{ .Values.app.dbSecret.dbName }}"
+          resources: {{- toYaml .Values.billing.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: enzarb-billing
+  namespace: {{ .Release.Namespace }}

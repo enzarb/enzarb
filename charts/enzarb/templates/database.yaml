@@ -1,0 +1,29 @@
+apiVersion: pgop.ruck.io/v1alpha1
+kind: Cluster
+metadata:
+  name: {{ .Values.database.clusterName }}
+  namespace: {{ .Release.Namespace }}
+spec: {}
+{{- range .Values.database.roles }}
+---
+apiVersion: pgop.ruck.io/v1alpha1
+kind: Role
+metadata:
+  name: {{ . }}
+  namespace: {{ $.Release.Namespace }}
+spec:
+  clusterRef:
+    name: {{ $.Values.database.clusterName }}
+{{- end }}
+{{- range .Values.database.databases }}
+---
+apiVersion: pgop.ruck.io/v1alpha1
+kind: Database
+metadata:
+  name: {{ .name }}
+  namespace: {{ $.Release.Namespace }}
+spec:
+  clusterRef:
+    name: {{ $.Values.database.clusterName }}
+  owner: {{ .owner }}
+{{- end }}

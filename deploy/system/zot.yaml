@@ -17,6 +17,8 @@ spec:
     #     --from-literal=S3_REGION=us-east-1 \
     #     --from-literal=S3_ACCESS_KEY=<access-key> \
     #     --from-literal=S3_SECRET_KEY=<secret-key>
+    service:
+      type: ClusterIP
     envFrom:
       - secretRef:
           name: zot-s3-credentials

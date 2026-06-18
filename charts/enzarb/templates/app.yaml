@@ -7,7 +7,7 @@ metadata:
     app: enzarb-app
     app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 spec:
-  replicas: {{ .Values.replicaCount }}
+  replicas: {{ .Values.app.replicaCount }}
   selector:
     matchLabels:
       app: enzarb-app
@@ -17,7 +17,7 @@ spec:
         app: enzarb-app
         app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
     spec:
-      serviceAccountName: enzarb-app
+      serviceAccountName: {{ .Values.serviceAccountName.app }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets: {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -29,38 +29,55 @@ spec:
           type: RuntimeDefault
       containers:
         - name: app
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          image: "{{ .Values.app.image.repository }}:{{ .Values.app.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.app.image.pullPolicy }}
           ports:
             - name: http
               containerPort: 3000
           env:
             - name: ORIGIN
-              value: {{ .Values.env.ORIGIN | quote }}
-            - name: DATABASE_URL
+              value: {{ .Values.app.env.ORIGIN | quote }}
+            - name: DB_HOST
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.dbSecret.name }}
-                  key: {{ .Values.dbSecret.key }}
+                  name: {{ .Values.app.dbSecret.name }}
+                  key: {{ .Values.app.dbSecret.hostKey }}
+            - name: DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.dbSecret.name }}
+                  key: {{ .Values.app.dbSecret.portKey }}
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.dbSecret.name }}
+                  key: {{ .Values.app.dbSecret.userKey }}
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.dbSecret.name }}
+                  key: {{ .Values.app.dbSecret.passwordKey }}
+            - name: DATABASE_URL
+              value: "postgres://$(DB_USER):$(DB_PASSWORD)@$(DB_HOST):$(DB_PORT)/{{ .Values.app.dbSecret.dbName }}"
             - name: OIDC_ISSUER_URL
-              value: {{ .Values.oidc.issuerURL | quote }}
+              value: {{ .Values.app.oidc.issuerURL | quote }}
             - name: OIDC_CLIENT_ID
-              value: {{ .Values.oidc.clientID | quote }}
+              value: {{ .Values.app.oidc.clientID | quote }}
             - name: OIDC_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.oidc.secret.name }}
-                  key: {{ .Values.oidc.secret.clientSecretKey }}
+                  name: {{ .Values.app.oidc.secret.name }}
+                  key: {{ .Values.app.oidc.secret.clientSecretKey }}
             - name: JWT_PRIVATE_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.jwt.secret.name }}
-                  key: {{ .Values.jwt.secret.privateKeyKey }}
+                  name: {{ .Values.app.jwt.secret.name }}
+                  key: {{ .Values.app.jwt.secret.privateKeyKey }}
             - name: JWT_PUBLIC_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.jwt.secret.name }}
-                  key: {{ .Values.jwt.secret.publicKeyKey }}
+                  name: {{ .Values.app.jwt.secret.name }}
+                  key: {{ .Values.app.jwt.secret.publicKeyKey }}
           livenessProbe:
             httpGet:
               path: /health
@@ -79,7 +96,7 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
-          resources: {{- toYaml .Values.resources | nindent 12 }}
+          resources: {{- toYaml .Values.app.resources | nindent 12 }}
       volumes:
         - name: tmp
           emptyDir:
@@ -97,7 +114,7 @@ spec:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: enzarb-app
+  name: {{ .Values.serviceAccountName.app }}
   namespace: {{ .Release.Namespace }}
 ---
 apiVersion: v1

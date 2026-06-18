@@ -1,0 +1,18 @@
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: enzarb
+  namespace: kube-system
+spec:
+  chart: oci://ghcr.io/enzarb/charts/enzarb
+  version: 0.1.19
+  targetNamespace: enzarb-system
+  createNamespace: true
+  valuesContent: |-
+    app:
+      env:
+        ORIGIN: https://enzarb.dev
+    operator:
+      env:
+        ENZARB_DOMAIN: enzarb.dev
+        GITEA_URL: http://gitea-http.enzarb-system.svc.cluster.local:3000

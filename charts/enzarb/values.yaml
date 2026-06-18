@@ -1,0 +1,104 @@
+app:
+  replicaCount: 2
+  image:
+    repository: ghcr.io/enzarb/app
+    pullPolicy: IfNotPresent
+    tag: ""  # defaults to Chart.appVersion
+  env:
+    ORIGIN: https://enzarb.dev
+  dbSecret:
+    name: enzarb-db-enzarb-app-credentials
+    hostKey: host
+    portKey: port
+    userKey: username
+    passwordKey: password
+    dbName: enzarb
+  oidc:
+    issuerURL: https://auth.enzarb.dev
+    clientID: enzarb-app
+    secret:
+      name: enzarb-oidc
+      clientSecretKey: clientSecret
+  jwt:
+    secret:
+      name: enzarb-jwt
+      privateKeyKey: privateKey
+      publicKeyKey: publicKey
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 1
+      memory: 512Mi
+
+operator:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/enzarb/operator
+    pullPolicy: IfNotPresent
+    tag: ""  # defaults to Chart.appVersion
+  leaderElection: true
+  env:
+    ENZARB_DOMAIN: enzarb.dev
+    GITEA_URL: http://gitea-http.enzarb-system.svc.cluster.local:3000
+  giteaSecret:
+    name: enzarb-gitea-admin
+    tokenKey: token
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+billing:
+  image:
+    repository: ghcr.io/enzarb/billing
+    pullPolicy: IfNotPresent
+    tag: ""  # defaults to Chart.appVersion
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi
+
+metering:
+  image:
+    repository: ghcr.io/enzarb/metering
+    pullPolicy: IfNotPresent
+    tag: ""  # defaults to Chart.appVersion
+  hubbleLogPath: /var/run/cilium/hubble/events.log
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi
+
+database:
+  clusterName: enzarb-db
+  roles:
+    - enzarb-app
+    - gitea
+    - dex
+  databases:
+    - name: enzarb
+      owner: enzarb-app
+    - name: gitea
+      owner: gitea
+    - name: dex
+      owner: dex
+
+imagePullSecrets: []
+serviceAccountName:
+  app: enzarb-app
+  operator: enzarb-operator
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
