@@ -7,16 +7,14 @@ formatters:
 
 linters:
   enable:
-    - errcheck
-    - gosimple
     - govet
-    - ineffassign
     - staticcheck
-    - unused
     - gosec
     - misspell
     - revive
     - unconvert
+    - unused
+    - errcheck
   settings:
     gosec:
       excludes:
