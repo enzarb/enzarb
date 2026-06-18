@@ -239,6 +239,8 @@ jobs:
           VERSION_BARE: ${{ needs.version.outputs.version_bare }}
         run: |
           sed -i "s/^version = \".*\"/version = \"${VERSION_BARE}\"/" agent/Cargo.toml
+          # Keep Cargo.lock in sync so cargo fetch --locked doesn't fail
+          sed -i "/^name = \"project-agent\"/{n;s/^version = \".*\"/version = \"${VERSION_BARE}\"/}" agent/Cargo.lock
 
       - name: Bump app version
         env:
@@ -270,6 +272,7 @@ jobs:
         run: |
           git add \
             agent/Cargo.toml \
+            agent/Cargo.lock \
             app/package.json \
             charts/enzarb-operator/Chart.yaml \
             charts/enzarb-app/Chart.yaml \
