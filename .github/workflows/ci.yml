@@ -421,7 +421,6 @@ jobs:
             dockerfile: workspace/Dockerfile
             image: workspace
             needs_artifacts: true
-            platforms: linux/amd64
           - name: operator
             context: .
             dockerfile: operator/Dockerfile
@@ -490,7 +489,7 @@ jobs:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           push: true
-          platforms: ${{ matrix.platforms || 'linux/amd64,linux/arm64' }}
+          platforms: linux/amd64
           tags: |
             ${{ env.REGISTRY }}/${{ env.ORG }}/${{ matrix.image }}:${{ needs.version.outputs.version }}
             ${{ env.REGISTRY }}/${{ env.ORG }}/${{ matrix.image }}:latest
