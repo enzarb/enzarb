@@ -4,12 +4,9 @@ metadata:
   name: enzarb-operator
   namespace: kube-system
 spec:
-  chart: enzarb-operator
-  repo: https://charts.enzarb.dev/
+  chart: oci://ghcr.io/enzarb/charts/enzarb-operator
+  version: 0.1.19
   targetNamespace: enzarb-system
   createNamespace: true
   valuesContent: |-
-    image:
-      repository: ghcr.io/enzarb/operator
-      tag: latest
     leaderElection: true

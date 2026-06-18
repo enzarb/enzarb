@@ -18,6 +18,7 @@ spec:
           port: 5432
           database: dex
           user: dex
+          password: $DEX_DB_PASSWORD
           ssl:
             mode: disable
       web:
@@ -36,3 +37,13 @@ spec:
           redirectURIs:
             - https://enzarb.dev/auth/callback
           secretEnv: DEX_ENZARB_APP_SECRET
+    envFrom:
+      - secretRef:
+          name: enzarb-db-dex-credentials
+          optional: false
+    env:
+      - name: DEX_DB_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            name: enzarb-db-dex-credentials
+            key: password

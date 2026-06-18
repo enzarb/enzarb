@@ -4,14 +4,13 @@ metadata:
   name: enzarb-app
   namespace: kube-system
 spec:
-  chart: enzarb-app
-  repo: https://charts.enzarb.dev/
+  chart: oci://ghcr.io/enzarb/charts/enzarb-app
+  version: 0.1.19
   targetNamespace: enzarb-system
   createNamespace: true
   valuesContent: |-
     image:
       repository: ghcr.io/enzarb/app
-      tag: latest
     config:
       domain: enzarb.dev
       dexIssuer: https://auth.enzarb.dev

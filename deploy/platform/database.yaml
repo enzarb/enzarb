@@ -1,12 +1,12 @@
 ---
-apiVersion: postgres.ruckc.dev/v1alpha1
+apiVersion: pgop.ruck.io/v1alpha1
 kind: Cluster
 metadata:
   name: enzarb-db
   namespace: enzarb-system
 spec: {}
 ---
-apiVersion: postgres.ruckc.dev/v1alpha1
+apiVersion: pgop.ruck.io/v1alpha1
 kind: Role
 metadata:
   name: enzarb-app
@@ -14,9 +14,8 @@ metadata:
 spec:
   clusterRef:
     name: enzarb-db
-  name: enzarb_app
 ---
-apiVersion: postgres.ruckc.dev/v1alpha1
+apiVersion: pgop.ruck.io/v1alpha1
 kind: Database
 metadata:
   name: enzarb
@@ -24,10 +23,9 @@ metadata:
 spec:
   clusterRef:
     name: enzarb-db
-  name: enzarb
-  owner: enzarb_app
+  owner: enzarb-app
 ---
-apiVersion: postgres.ruckc.dev/v1alpha1
+apiVersion: pgop.ruck.io/v1alpha1
 kind: Role
 metadata:
   name: gitea
@@ -35,9 +33,8 @@ metadata:
 spec:
   clusterRef:
     name: enzarb-db
-  name: gitea
 ---
-apiVersion: postgres.ruckc.dev/v1alpha1
+apiVersion: pgop.ruck.io/v1alpha1
 kind: Database
 metadata:
   name: gitea
@@ -45,10 +42,9 @@ metadata:
 spec:
   clusterRef:
     name: enzarb-db
-  name: gitea
   owner: gitea
 ---
-apiVersion: postgres.ruckc.dev/v1alpha1
+apiVersion: pgop.ruck.io/v1alpha1
 kind: Role
 metadata:
   name: dex
@@ -56,9 +52,8 @@ metadata:
 spec:
   clusterRef:
     name: enzarb-db
-  name: dex
 ---
-apiVersion: postgres.ruckc.dev/v1alpha1
+apiVersion: pgop.ruck.io/v1alpha1
 kind: Database
 metadata:
   name: dex
@@ -66,5 +61,4 @@ metadata:
 spec:
   clusterRef:
     name: enzarb-db
-  name: dex
   owner: dex
