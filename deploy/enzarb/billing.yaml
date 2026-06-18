@@ -21,7 +21,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: billing
-          image: ghcr.io/enzarb/billing:v0.1.19
+          image: ghcr.io/enzarb/billing:v0.1.20
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

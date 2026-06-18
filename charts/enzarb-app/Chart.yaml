@@ -2,8 +2,8 @@ apiVersion: v2
 name: enzarb-app
 description: SvelteKit web application for the enzarb AI agent development platform
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.1.20
+appVersion: "v0.1.20"
 home: https://enzarb.dev
 sources:
   - https://github.com/enzarb/enzarb
