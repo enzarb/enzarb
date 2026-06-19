@@ -39,7 +39,7 @@ operator:
   image:
     repository: ghcr.io/enzarb/operator
     pullPolicy: IfNotPresent
-    tag: "v0.8.3"
+    tag: "v0.8.8"
   leaderElection: true
   env:
     ENZARB_DOMAIN: enzarb.dev
@@ -92,7 +92,7 @@ metering:
 workspace:
   image:
     repository: ghcr.io/enzarb/workspace
-    tag: "v0.8.6"
+    tag: "v0.8.8"
 database:
   clusterName: enzarb-db
   roles:
