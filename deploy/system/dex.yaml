@@ -42,6 +42,7 @@ spec:
           redirectURIs:
             - https://enzarb.dev/auth/callback
           secretEnv: DEX_ENZARB_APP_SECRET
+          skipApprovalScreen: true
     envFrom:
       - secretRef:
           name: enzarb-db-dex-credentials
