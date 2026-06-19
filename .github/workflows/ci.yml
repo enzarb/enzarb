@@ -460,14 +460,15 @@ jobs:
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
+          # Chart, image pins, deploy pin and VERSION always change (chart always bumps).
           git add \
-            agent/Cargo.toml \
-            agent/Cargo.lock \
-            app/package.json \
             charts/enzarb/Chart.yaml \
             charts/enzarb/values.yaml \
             deploy/enzarb/enzarb.yaml \
             VERSION
+          # Per-module version files only when that module actually changed.
+          [ "$SET_WORKSPACE" = "true" ] && git add agent/Cargo.toml agent/Cargo.lock
+          [ "$SET_APP" = "true" ]       && git add app/package.json
           git commit -m "chore: release ${VERSION} [skip ci]"
 
       - name: Tag release
@@ -689,6 +690,24 @@ jobs:
           draft: false
           prerelease: false
           files: dist/charts/*.tgz
+
+      - name: Merge release commit back to main
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          STAGING_SHA: ${{ needs.staging-branch.outputs.sha }}
+        run: |
+          git config user.name  "enzarb-release-bot"
+          git config user.email "release-bot@enzarb.dev"
+          git fetch origin main
+          # The release commit was branched from main HEAD at workflow start and
+          # carries [skip ci]. Fast-forward main onto it so the version bump and
+          # re-pinned image tags return to main (and don't show as drift next run).
+          if git merge-base --is-ancestor origin/main "$STAGING_SHA"; then
+            git push origin "${STAGING_SHA}:refs/heads/main"
+            echo "Fast-forwarded main to ${STAGING_SHA}"
+          else
+            echo "::warning::main advanced since the release branch was cut; skipping auto fast-forward. Reconcile staging/${VERSION} into main manually."
+          fi
 
       - name: Delete staging branch
         env:
