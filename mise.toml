@@ -7,12 +7,21 @@ kubectl = "latest"
 kubebuilder = "latest"
 
 [tasks.deploy-system]
-description = "Apply system HelmChart CRs"
-run = "kubectl apply -f deploy/system/"
+description = "Apply system HelmChart CRs and force re-reconciliation to upgrade to latest"
+run = """
+kubectl apply -f deploy/system/
+kubectl annotate helmchart -n kube-system dex gitea zot \
+  "enzarb.dev/last-deployed=$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite
+"""
 
 [tasks.deploy-enzarb]
-description = "Apply enzarb operator and app HelmChart CRs"
-run = "kubectl apply -f deploy/enzarb/"
+description = "Upgrade enzarb to latest release and apply"
+run = """
+LATEST=$(gh release list --repo enzarb/enzarb --limit 1 --json tagName --jq '.[0].tagName | ltrimstr("v")')
+echo "Deploying enzarb v${LATEST}"
+sed -i "s/^  version: .*/  version: ${LATEST}/" deploy/enzarb/enzarb.yaml
+kubectl apply -f deploy/enzarb/
+"""
 
 [tasks.deploy-all]
 description = "Deploy everything"
