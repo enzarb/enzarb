@@ -478,7 +478,7 @@ func (r *ProjectReconciler) ensureCertificate(ctx context.Context, ns string, pr
 			Spec: certmanagerv1.CertificateSpec{
 				SecretName: fmt.Sprintf("project-%s-tls", project.Spec.Slug),
 				DNSNames:   []string{r.Domain},
-				IssuerRef: cmmeta.ObjectReference{
+				IssuerRef: cmmeta.IssuerReference{
 					Name:  "letsencrypt-prod",
 					Kind:  "ClusterIssuer",
 					Group: "cert-manager.io",
