@@ -51,17 +51,14 @@
 		min-height: 100dvh;
 	}
 
-	/* Hero takes full viewport height */
 	.hero {
 		display: flex;
 		flex-direction: column;
 		justify-content: center;
 		align-items: center;
 		text-align: center;
-		min-height: 100dvh;
-		padding: 2rem;
-		padding-top: env(safe-area-inset-top, 2rem);
-		padding-bottom: env(safe-area-inset-bottom, 2rem);
+		padding: 5rem 2rem 4rem;
+		padding-top: max(5rem, env(safe-area-inset-top));
 	}
 
 	h1 {
@@ -100,7 +97,8 @@
 	.features {
 		background: var(--color-surface);
 		border-top: 1px solid var(--color-border);
-		padding: 5rem 2rem;
+		padding: 3rem 2rem;
+		flex: 1;
 	}
 
 	.feature-grid {
@@ -148,8 +146,9 @@
 	}
 
 	@media (max-width: 480px) {
-		h1 { font-size: 2.75rem; }
-		.tagline { font-size: 1rem; }
-		.features { padding: 3rem 1rem; }
+		h1 { font-size: 2.25rem; }
+		.tagline { font-size: 0.9375rem; }
+		.hero { padding: 3rem 1.25rem 2.5rem; }
+		.features { padding: 2rem 1rem; }
 	}
 </style>
