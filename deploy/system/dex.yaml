@@ -18,18 +18,19 @@ spec:
           port: 5432
           database: dex
           user: dex
-          password: $DEX_DB_PASSWORD
+          password: $password
           ssl:
             mode: disable
       web:
         http: 0.0.0.0:5556
       connectors:
-        - type: github
-          id: github
-          name: GitHub
+        - type: oidc
+          id: google
+          name: Google
           config:
-            clientID: $GITHUB_CLIENT_ID
-            clientSecret: $GITHUB_CLIENT_SECRET
+            issuer: https://accounts.google.com
+            clientID: 600997651205-98h88bt402cl69l9atah0q47rlkhvot0.apps.googleusercontent.com
+            clientSecret: $GOOGLE_CLIENT_SECRET
             redirectURI: https://auth.enzarb.dev/callback
       staticClients:
         - id: enzarb-app
@@ -41,9 +42,6 @@ spec:
       - secretRef:
           name: enzarb-db-dex-credentials
           optional: false
-    env:
-      - name: DEX_DB_PASSWORD
-        valueFrom:
-          secretKeyRef:
-            name: enzarb-db-dex-credentials
-            key: password
+      - secretRef:
+          name: enzarb-dex-google
+          optional: false
