@@ -1,6 +1,9 @@
 import { sql } from './db';
+import { createOrganization, waitForOrganizationReady } from './k8s';
 
 // Create an org and add a user as admin. No auth check — call only from trusted server-side code.
+// Also creates the cluster-scoped Organization CR and blocks (bounded) until the
+// operator has provisioned the org namespace, so project creation isn't racy.
 export async function createOrgWithAdmin(
 	slug: string,
 	displayName: string,
@@ -18,6 +21,15 @@ export async function createOrgWithAdmin(
 		VALUES (${orgId}, ${userId}, 'admin')
 		ON CONFLICT (org_id, user_id) DO NOTHING
 	`;
+
+	await createOrganization(orgId, slug, displayName);
+	// Block up to ~30s for the namespace; on timeout we proceed anyway — the org
+	// row exists and the CR will reconcile shortly. Project creation has its own
+	// readiness guard for the lingering race.
+	const ready = await waitForOrganizationReady(orgId);
+	if (!ready) {
+		console.warn(`org ${slug} (${orgId}) namespace not Ready within timeout; provisioning continues`);
+	}
 	return orgId;
 }
 

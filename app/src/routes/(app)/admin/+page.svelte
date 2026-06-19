@@ -1,10 +1,68 @@
 <script lang="ts">
-	import { listOrgs, listUsers, createOrgAdmin, setOrgTier, inviteMember } from '$lib/remote/admin.remote';
+	import { listOrgs, listDeletedOrgs, listUsers, createOrgAdmin, setOrgTier, deleteOrg, recoverOrg, inviteMember, getAdminSettings, updateAdminSettings } from '$lib/remote/admin.remote';
 	let showNewOrg = $state(false);
 	let inviteOrgId: string | null = $state(null);
 </script>
 
 <h2>Admin</h2>
+
+<section class="section">
+	<h3>Platform settings</h3>
+	{#await getAdminSettings() then settings}
+		<div class="card form-card">
+			<form {...updateAdminSettings}>
+				<h4>Free tier</h4>
+				<div class="fields">
+					<div class="field">
+						<label for="set-pvc">Max workspace storage (GiB)</label>
+						<input id="set-pvc" {...updateAdminSettings.fields.freeMaxPvcGi.as('text', String(settings.freeMaxPvcGi))} min="1" required />
+						{#each updateAdminSettings.fields.freeMaxPvcGi.issues() as issue}<p class="field-error">{issue.message}</p>{/each}
+					</div>
+					<div class="field">
+						<label for="set-retention">Deletion retention (days)</label>
+						<input id="set-retention" {...updateAdminSettings.fields.retentionDays.as('text', String(settings.retentionDays))} min="1" required />
+						{#each updateAdminSettings.fields.retentionDays.issues() as issue}<p class="field-error">{issue.message}</p>{/each}
+					</div>
+					<div class="field">
+						<label for="set-free-cpu">Free CPU seconds / month</label>
+						<input id="set-free-cpu" {...updateAdminSettings.fields.freeCPUSeconds.as('text', String(settings.pricing.freeCPUSeconds))} min="0" required />
+					</div>
+					<div class="field">
+						<label for="set-free-mem">Free memory GiB-seconds / month</label>
+						<input id="set-free-mem" {...updateAdminSettings.fields.freeMemGiBSeconds.as('text', String(settings.pricing.freeMemGiBSeconds))} min="0" required />
+					</div>
+				</div>
+
+				<h4>Billing rates</h4>
+				<div class="fields">
+					<div class="field">
+						<label for="set-cpu">CPU $ / second</label>
+						<input id="set-cpu" {...updateAdminSettings.fields.cpuSecondsPerUnit.as('text', String(settings.pricing.cpuSecondsPerUnit))} step="any" min="0" required />
+					</div>
+					<div class="field">
+						<label for="set-mem">Memory $ / GiB-second</label>
+						<input id="set-mem" {...updateAdminSettings.fields.memGiBSecondsPerUnit.as('text', String(settings.pricing.memGiBSecondsPerUnit))} step="any" min="0" required />
+					</div>
+					<div class="field">
+						<label for="set-storage">Storage $ / GiB-second</label>
+						<input id="set-storage" {...updateAdminSettings.fields.storageGiBSecondsPerUnit.as('text', String(settings.pricing.storageGiBSecondsPerUnit))} step="any" min="0" required />
+					</div>
+					<div class="field">
+						<label for="set-ingress">Network ingress $ / byte</label>
+						<input id="set-ingress" {...updateAdminSettings.fields.netIngressPerByte.as('text', String(settings.pricing.netIngressPerByte))} step="any" min="0" required />
+					</div>
+					<div class="field">
+						<label for="set-egress">Network egress $ / byte</label>
+						<input id="set-egress" {...updateAdminSettings.fields.netEgressPerByte.as('text', String(settings.pricing.netEgressPerByte))} step="any" min="0" required />
+					</div>
+				</div>
+				<div class="actions">
+					<button type="submit" class="btn btn-primary">Save settings</button>
+				</div>
+			</form>
+		</div>
+	{/await}
+</section>
 
 <section class="section">
 	<div class="section-header">
@@ -62,6 +120,15 @@
 					<td>{org.member_count}</td>
 					<td>
 						<button class="btn" onclick={() => (inviteOrgId = org.id)}>Invite</button>
+						<button
+							class="btn btn-danger"
+							onclick={async () => {
+								if (confirm(`Delete org "${org.slug}"? It can be recovered within the retention window.`)) {
+									await deleteOrg({ orgId: org.id });
+									await listOrgs().refresh();
+									await listDeletedOrgs().refresh();
+								}
+							}}>Delete</button>
 					</td>
 				</tr>
 				{#if inviteOrgId === org.id}
@@ -89,6 +156,35 @@
 	</table>
 </section>
 
+{#await listDeletedOrgs() then deletedOrgs}
+	{#if deletedOrgs.length}
+		<section class="section">
+			<h3>Deleted organizations</h3>
+			<table>
+				<thead><tr><th>Slug</th><th>Display name</th><th>Deleted</th><th>Actions</th></tr></thead>
+				<tbody>
+					{#each deletedOrgs as org}
+						<tr>
+							<td><code class="mono">{org.slug}</code></td>
+							<td>{org.display_name}</td>
+							<td class="muted">{new Date(org.deleted_at).toLocaleString()}</td>
+							<td>
+								<button
+									class="btn"
+									onclick={async () => {
+										await recoverOrg({ orgId: org.id });
+										await listOrgs().refresh();
+										await listDeletedOrgs().refresh();
+									}}>Recover</button>
+							</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		</section>
+	{/if}
+{/await}
+
 <section class="section">
 	<h3>Users</h3>
 	<table>
@@ -112,6 +208,8 @@
 	.section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
 	.section h3 { font-size: 14px; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
 	.form-card { margin-bottom: 1rem; }
+	.form-card h4 { font-size: 13px; font-weight: 600; margin: 0.5rem 0; }
+	.btn-danger { color: var(--color-danger); border-color: var(--color-danger); }
 	.fields { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1rem; }
 	.field label { display: block; font-weight: 500; margin-bottom: 0.25rem; font-size: 13px; }
 	.field-error { color: var(--color-danger); font-size: 12px; margin: 0.25rem 0 0; }

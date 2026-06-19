@@ -10,10 +10,10 @@ metadata:
   name: enzarb-app
 rules:
   - apiGroups: ["enzarb.io"]
-    resources: ["projects", "environments"]
+    resources: ["projects", "environments", "organizations"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["enzarb.io"]
-    resources: ["projects/status", "environments/status"]
+    resources: ["projects/status", "environments/status", "organizations/status"]
     verbs: ["get"]
   - apiGroups: [""]
     resources: ["namespaces", "pods"]
@@ -42,7 +42,7 @@ metadata:
   name: enzarb-operator
 rules:
   - apiGroups: ["enzarb.io"]
-    resources: ["projects", "environments", "projects/status", "environments/status"]
+    resources: ["projects", "environments", "organizations", "projects/status", "environments/status", "organizations/status", "organizations/finalizers"]
     verbs: ["*"]
   - apiGroups: [""]
     resources: ["namespaces", "serviceaccounts", "services", "persistentvolumeclaims", "configmaps", "pods"]

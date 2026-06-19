@@ -86,7 +86,7 @@ func (w *InvoiceWorker) Work(ctx context.Context, job *river.Job[InvoiceArgs]) e
 	end := job.Args.PeriodEnd
 	slog.Info("generating invoices", "period_start", start, "period_end", end)
 
-	pricing, err := pricingFromEnv()
+	pricing, err := pricingFromDB(ctx, w.db)
 	if err != nil {
 		return fmt.Errorf("pricing config: %w", err)
 	}
@@ -131,42 +131,49 @@ type PricingConfig struct {
 	FreeMemGiBSeconds        float64
 }
 
-func pricingFromEnv() (PricingConfig, error) {
-	parse := func(key string) (float64, error) {
-		v := os.Getenv(key)
-		if v == "" {
-			return 0, fmt.Errorf("missing required env var %s", key)
+// pricingFromDB loads pricing from the admin-editable app_settings table, which
+// is seeded with defaults by the app on migrate. Keys mirror app/src/lib/db.ts.
+func pricingFromDB(ctx context.Context, db *pgxpool.Pool) (PricingConfig, error) {
+	rows, err := db.Query(ctx, `SELECT key, value FROM app_settings WHERE key LIKE 'pricing_%'`)
+	if err != nil {
+		return PricingConfig{}, fmt.Errorf("load settings: %w", err)
+	}
+	defer rows.Close()
+
+	values := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return PricingConfig{}, err
+		}
+		values[k] = v
+	}
+	if err := rows.Err(); err != nil {
+		return PricingConfig{}, err
+	}
+
+	var errs []error
+	parse := func(key string) float64 {
+		v, ok := values[key]
+		if !ok {
+			errs = append(errs, fmt.Errorf("missing setting %s", key))
+			return 0
 		}
 		f, err := strconv.ParseFloat(v, 64)
 		if err != nil {
-			return 0, fmt.Errorf("invalid %s=%q: %w", key, v, err)
+			errs = append(errs, fmt.Errorf("invalid %s=%q: %w", key, v, err))
 		}
-		return f, nil
+		return f
 	}
 
-	var p PricingConfig
-	var err error
-	errs := []error{}
-	if p.CPUSecondsPerUnit, err = parse("BILLING_CPU_SECONDS_PER_UNIT"); err != nil {
-		errs = append(errs, err)
-	}
-	if p.MemGiBSecondsPerUnit, err = parse("BILLING_MEM_GIB_SECONDS_PER_UNIT"); err != nil {
-		errs = append(errs, err)
-	}
-	if p.NetIngressPerByte, err = parse("BILLING_NET_INGRESS_PER_BYTE"); err != nil {
-		errs = append(errs, err)
-	}
-	if p.NetEgressPerByte, err = parse("BILLING_NET_EGRESS_PER_BYTE"); err != nil {
-		errs = append(errs, err)
-	}
-	if p.StorageGiBSecondsPerUnit, err = parse("BILLING_STORAGE_GIB_SECONDS_PER_UNIT"); err != nil {
-		errs = append(errs, err)
-	}
-	if p.FreeCPUSeconds, err = parse("BILLING_FREE_CPU_SECONDS"); err != nil {
-		errs = append(errs, err)
-	}
-	if p.FreeMemGiBSeconds, err = parse("BILLING_FREE_MEM_GIB_SECONDS"); err != nil {
-		errs = append(errs, err)
+	p := PricingConfig{
+		CPUSecondsPerUnit:        parse("pricing_cpu_seconds_per_unit"),
+		MemGiBSecondsPerUnit:     parse("pricing_mem_gib_seconds_per_unit"),
+		NetIngressPerByte:        parse("pricing_net_ingress_per_byte"),
+		NetEgressPerByte:         parse("pricing_net_egress_per_byte"),
+		StorageGiBSecondsPerUnit: parse("pricing_storage_gib_seconds_per_unit"),
+		FreeCPUSeconds:           parse("pricing_free_cpu_seconds"),
+		FreeMemGiBSeconds:        parse("pricing_free_mem_gib_seconds"),
 	}
 	if len(errs) > 0 {
 		return PricingConfig{}, fmt.Errorf("%v", errs)

@@ -74,6 +74,9 @@ export async function migrate() {
 		)
 	`;
 	await sql`CREATE INDEX IF NOT EXISTS usage_events_org_period ON usage_events(org_id, recorded_at)`;
+	// Soft-delete marker for organizations; non-null = within the retention
+	// window (recoverable until the operator purges the Organization CR).
+	await sql`ALTER TABLE organizations ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`;
 	await sql`
 		CREATE TABLE IF NOT EXISTS invoices (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -85,4 +88,34 @@ export async function migrate() {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)
 	`;
+	// Admin-editable platform settings, stored as a key/value table and read by
+	// both the app and the billing worker. Seed defaults without clobbering
+	// any operator-edited values.
+	await sql`
+		CREATE TABLE IF NOT EXISTS app_settings (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)
+	`;
+	for (const [key, value] of Object.entries(defaultSettings)) {
+		await sql`
+			INSERT INTO app_settings (key, value) VALUES (${key}, ${value})
+			ON CONFLICT (key) DO NOTHING
+		`;
+	}
 }
+
+// Default platform settings, seeded on first migrate. Keys mirror SettingKey in
+// settings.ts; the billing worker (billing/cmd/billing) relies on the same keys.
+export const defaultSettings: Record<string, string> = {
+	free_max_pvc_gi: '5',
+	retention_days: '30',
+	pricing_cpu_seconds_per_unit: '0.0000139',
+	pricing_mem_gib_seconds_per_unit: '0.0000028',
+	pricing_net_ingress_per_byte: '0.0000000001',
+	pricing_net_egress_per_byte: '0.0000000009',
+	pricing_storage_gib_seconds_per_unit: '0.0000000385',
+	pricing_free_cpu_seconds: '36000',
+	pricing_free_mem_gib_seconds: '107374182'
+};

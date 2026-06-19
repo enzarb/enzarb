@@ -22,6 +22,8 @@ export interface TierConfig {
 export const tiers: Record<TierName, TierConfig> = {
 	free: {
 		maxProjects: 1,
+		// Default only; the effective free-tier limit is the admin-editable
+		// `free_max_pvc_gi` platform setting (see settings.ts).
 		maxPvcGi: 5,
 		cpuLimit: '500m',
 		memoryLimit: '512Mi',

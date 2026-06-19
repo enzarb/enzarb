@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
@@ -11,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -18,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
@@ -52,8 +55,48 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	orgNS := fmt.Sprintf("user-%s", project.Spec.OrgID)
 
-	if err := r.ensureNamespace(ctx, orgNS); err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensure namespace: %w", err)
+	// Real (hard) deletion in progress: run cleanup of resources that aren't
+	// garbage-collected by owner references (cluster-scoped CRB, cross-namespace
+	// HTTPRoute/Certificate), then drop the finalizer.
+	if !project.DeletionTimestamp.IsZero() {
+		return r.reconcileProjectDelete(ctx, &project, orgNS)
+	}
+
+	// Ensure the cleanup finalizer is present before provisioning anything that
+	// lives outside the project's namespace.
+	if !controllerutil.ContainsFinalizer(&project, projectFinalizer) {
+		controllerutil.AddFinalizer(&project, projectFinalizer)
+		if err := r.Update(ctx, &project); err != nil {
+			return ctrl.Result{}, fmt.Errorf("add finalizer: %w", err)
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	// Soft-deleted (retention window): keep data, scale the workspace to zero,
+	// and hard-delete once the purge time passes.
+	if purgeTime, ok := purgeAfter(&project); ok {
+		return r.reconcileProjectRetention(ctx, &project, orgNS, purgeTime)
+	}
+
+	// The namespace is provisioned and owned by the Organization reconciler, not
+	// here. If it doesn't exist yet, wait — never create it ourselves.
+	ns := &corev1.Namespace{}
+	if err := r.Get(ctx, types.NamespacedName{Name: orgNS}, ns); err != nil {
+		if errors.IsNotFound(err) {
+			logger.Info("waiting for org namespace", "namespace", orgNS)
+			project.Status.Phase = "Pending"
+			apimeta.SetStatusCondition(&project.Status.Conditions, metav1.Condition{
+				Type:    "Ready",
+				Status:  metav1.ConditionFalse,
+				Reason:  "NamespaceMissing",
+				Message: fmt.Sprintf("waiting for namespace %s to be provisioned", orgNS),
+			})
+			if err := r.Status().Update(ctx, &project); err != nil {
+				return ctrl.Result{}, fmt.Errorf("update status: %w", err)
+			}
+			return ctrl.Result{RequeueAfter: defaultRequeue}, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("get namespace: %w", err)
 	}
 
 	saName := fmt.Sprintf("%s-sa", project.Spec.Slug)
@@ -102,15 +145,100 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	return ctrl.Result{}, nil
 }
 
-func (r *ProjectReconciler) ensureNamespace(ctx context.Context, name string) error {
-	ns := &corev1.Namespace{}
-	err := r.Get(ctx, types.NamespacedName{Name: name}, ns)
-	if errors.IsNotFound(err) {
-		return r.Create(ctx, &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{Name: name},
-		})
+// projectFinalizer guards cleanup of resources outside the project's namespace
+// (cluster-scoped ClusterRoleBinding, enzarb-system HTTPRoute/Certificate) that
+// owner-reference GC can't reach.
+const projectFinalizer = "enzarb.io/project-cleanup"
+
+// reconcileProjectRetention handles a soft-deleted project: scale its workspace
+// to zero (retain the PVC/data), and hard-delete once the purge time arrives.
+func (r *ProjectReconciler) reconcileProjectRetention(ctx context.Context, project *enzarbv1alpha1.Project, ns string, purgeTime time.Time) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	if !time.Now().Before(purgeTime) {
+		logger.Info("purging soft-deleted project", "name", project.Name)
+		if err := r.Delete(ctx, project); err != nil {
+			return ctrl.Result{}, fmt.Errorf("purge project: %w", err)
+		}
+		return ctrl.Result{}, nil
 	}
-	return err
+
+	// Within the retention window: scale the workspace down to stop compute.
+	if err := r.scaleWorkspace(ctx, ns, project, 0); err != nil {
+		return ctrl.Result{}, fmt.Errorf("scale down workspace: %w", err)
+	}
+	project.Status.Phase = "PendingDeletion"
+	apimeta.SetStatusCondition(&project.Status.Conditions, metav1.Condition{
+		Type:    "Ready",
+		Status:  metav1.ConditionFalse,
+		Reason:  "Retained",
+		Message: fmt.Sprintf("soft-deleted; recoverable until %s", purgeTime.Format(time.RFC3339)),
+	})
+	if err := r.Status().Update(ctx, project); err != nil {
+		return ctrl.Result{}, fmt.Errorf("update status: %w", err)
+	}
+	return ctrl.Result{RequeueAfter: time.Until(purgeTime)}, nil
+}
+
+// scaleWorkspace sets the workspace Deployment replica count, tolerating a
+// not-yet-created deployment.
+func (r *ProjectReconciler) scaleWorkspace(ctx context.Context, ns string, project *enzarbv1alpha1.Project, replicas int32) error {
+	deployName := fmt.Sprintf("project-%s", project.Spec.Slug)
+	deploy := &appsv1.Deployment{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: deployName}, deploy); err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	if deploy.Spec.Replicas != nil && *deploy.Spec.Replicas == replicas {
+		return nil
+	}
+	deploy.Spec.Replicas = &replicas
+	return r.Update(ctx, deploy)
+}
+
+// reconcileProjectDelete cleans up out-of-namespace resources on hard deletion,
+// then removes the finalizer. In-namespace children (SA/PVC/Deployment/Service)
+// are garbage-collected via their owner references.
+func (r *ProjectReconciler) reconcileProjectDelete(ctx context.Context, project *enzarbv1alpha1.Project, ns string) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+	if !controllerutil.ContainsFinalizer(project, projectFinalizer) {
+		return ctrl.Result{}, nil
+	}
+
+	crbName := fmt.Sprintf("enzarb-%s-%s-deployer", project.Spec.OrgID, project.Spec.Slug)
+	if err := r.deleteIfExists(ctx, &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: crbName},
+	}); err != nil {
+		return ctrl.Result{}, fmt.Errorf("delete cluster role binding: %w", err)
+	}
+	routeName := fmt.Sprintf("project-%s-agent", project.Spec.Slug)
+	if err := r.deleteIfExists(ctx, &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{Name: routeName, Namespace: "enzarb-system"},
+	}); err != nil {
+		return ctrl.Result{}, fmt.Errorf("delete httproute: %w", err)
+	}
+	certName := fmt.Sprintf("project-%s-tls", project.Spec.Slug)
+	if err := r.deleteIfExists(ctx, &certmanagerv1.Certificate{
+		ObjectMeta: metav1.ObjectMeta{Name: certName, Namespace: "enzarb-system"},
+	}); err != nil {
+		return ctrl.Result{}, fmt.Errorf("delete certificate: %w", err)
+	}
+
+	controllerutil.RemoveFinalizer(project, projectFinalizer)
+	if err := r.Update(ctx, project); err != nil {
+		return ctrl.Result{}, fmt.Errorf("remove finalizer: %w", err)
+	}
+	logger.Info("project deleted", "name", project.Name, "namespace", ns)
+	return ctrl.Result{}, nil
+}
+
+func (r *ProjectReconciler) deleteIfExists(ctx context.Context, obj client.Object) error {
+	if err := r.Delete(ctx, obj); err != nil && !errors.IsNotFound(err) {
+		return err
+	}
+	return nil
 }
 
 func (r *ProjectReconciler) ensureServiceAccount(ctx context.Context, ns, name string, project *enzarbv1alpha1.Project) error {
@@ -123,6 +251,9 @@ func (r *ProjectReconciler) ensureServiceAccount(ctx context.Context, ns, name s
 				Namespace: ns,
 				Labels:    projectLabels(project),
 			},
+		}
+		if err := controllerutil.SetControllerReference(project, sa, r.Scheme); err != nil {
+			return err
 		}
 		return r.Create(ctx, sa)
 	}
@@ -174,6 +305,9 @@ func (r *ProjectReconciler) ensurePVC(ctx context.Context, ns, name string, proj
 				},
 			},
 		}
+		if err := controllerutil.SetControllerReference(project, pvc, r.Scheme); err != nil {
+			return err
+		}
 		return r.Create(ctx, pvc)
 	}
 	if err != nil {
@@ -193,6 +327,9 @@ func (r *ProjectReconciler) ensureDeployment(ctx context.Context, ns, saName, pv
 	deploy := &appsv1.Deployment{}
 	err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: deployName}, deploy)
 	desired := r.buildDeployment(ns, deployName, saName, pvcName, project)
+	if err := controllerutil.SetControllerReference(project, desired, r.Scheme); err != nil {
+		return err
+	}
 	if errors.IsNotFound(err) {
 		return r.Create(ctx, desired)
 	}
@@ -404,6 +541,9 @@ func (r *ProjectReconciler) ensureService(ctx context.Context, ns string, projec
 					{Name: "agent-internal", Port: 9090},
 				},
 			},
+		}
+		if err := controllerutil.SetControllerReference(project, svc, r.Scheme); err != nil {
+			return err
 		}
 		return r.Create(ctx, svc)
 	}

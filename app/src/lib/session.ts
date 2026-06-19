@@ -29,6 +29,7 @@ export async function getSession(event: RequestEvent): Promise<Session | null> {
 		FROM org_members om
 		JOIN organizations o ON o.id = om.org_id
 		WHERE om.user_id = ${row.user_id}
+		  AND o.deleted_at IS NULL
 	`;
 
 	return {

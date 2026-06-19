@@ -84,6 +84,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err = (&controller.OrganizationReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create OrganizationReconciler")
+		os.Exit(1)
+	}
+
 	if err = (&controller.EnvironmentReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),

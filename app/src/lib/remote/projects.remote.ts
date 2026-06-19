@@ -6,10 +6,14 @@ import {
 	listProjects,
 	getProject as k8sGetProject,
 	createProject as k8sCreateProject,
-	deleteProject
+	softDeleteProject,
+	recoverProject as k8sRecoverProject,
+	purgeAfterOf,
+	isOrgReady
 } from '$lib/k8s';
 import { sql } from '$lib/db';
-import { tiers } from '$lib/config';
+import { tiers, type TierConfig } from '$lib/config';
+import { getSettings } from '$lib/settings';
 import { mintProjectToken } from '$lib/jwt';
 
 function requireSession() {
@@ -32,9 +36,34 @@ async function getOrgTierValue(orgId: string) {
 	return (rows[0]?.tier ?? 'free') as keyof typeof tiers;
 }
 
+// Resolve tier limits, applying admin-configurable overrides (currently the
+// free-tier max workspace storage) on top of the static tier defaults.
+async function resolveTierLimits(tier: keyof typeof tiers): Promise<TierConfig> {
+	const limits = { ...tiers[tier] };
+	if (tier === 'free') {
+		const settings = await getSettings();
+		limits.maxPvcGi = settings.freeMaxPvcGi;
+	}
+	return limits;
+}
+
 export const getProjects = query(async () => {
 	const org = resolveNamespace();
-	return listProjects(org.id);
+	const projects = await listProjects(org.id);
+	// Hide soft-deleted projects from the normal listing.
+	return projects.filter((p: { metadata?: { annotations?: Record<string, string> } }) => !purgeAfterOf(p));
+});
+
+// Soft-deleted projects still within their recovery window.
+export const getDeletedProjects = query(async () => {
+	const org = resolveNamespace();
+	const projects = await listProjects(org.id);
+	return projects
+		.filter((p: { metadata?: { annotations?: Record<string, string> } }) => purgeAfterOf(p))
+		.map((p: { metadata?: { name?: string; annotations?: Record<string, string> } }) => ({
+			slug: p.metadata?.name,
+			purgeAfter: purgeAfterOf(p)
+		}));
 });
 
 export const getProject = query(async () => {
@@ -48,7 +77,7 @@ export const getProject = query(async () => {
 export const getOrgTierInfo = query(async () => {
 	const org = resolveNamespace();
 	const tier = await getOrgTierValue(org.id);
-	return { tier, limits: tiers[tier] };
+	return { tier, limits: await resolveTierLimits(tier) };
 });
 
 export const getAgentToken = query(async () => {
@@ -79,13 +108,20 @@ export const createProject = command(
 		const org = resolveNamespace('admin');
 
 		const tier = await getOrgTierValue(org.id);
-		const limits = tiers[tier];
+		const limits = await resolveTierLimits(tier);
 		const existing = await listProjects(org.id);
 		if (existing.length >= limits.maxProjects) {
 			error(422, `Free tier limited to ${limits.maxProjects} project(s). Upgrade to create more.`);
 		}
 		if (storageGi > limits.maxPvcGi) {
 			error(422, `Storage exceeds tier limit of ${limits.maxPvcGi}Gi`);
+		}
+
+		// The operator owns the org namespace via the Organization CR. If it isn't
+		// Ready yet (brand-new org racing project creation), ask the client to retry
+		// rather than letting the namespaced create 404.
+		if (!(await isOrgReady(org.id))) {
+			error(503, 'Workspace is still provisioning — please try again in a moment.');
 		}
 
 		await k8sCreateProject(org.id, {
@@ -100,5 +136,12 @@ export const createProject = command(
 
 export const removeProject = command(z.object({ slug: z.string() }), async ({ slug }) => {
 	const org = resolveNamespace('admin');
-	return deleteProject(org.id, slug);
+	const { retentionDays } = await getSettings();
+	// Soft delete: recoverable for retentionDays before the operator purges it.
+	return softDeleteProject(org.id, slug, retentionDays);
+});
+
+export const recoverProjectCommand = command(z.object({ slug: z.string() }), async ({ slug }) => {
+	const org = resolveNamespace('admin');
+	return k8sRecoverProject(org.id, slug);
 });

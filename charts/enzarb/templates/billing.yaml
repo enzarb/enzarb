@@ -1,17 +1,5 @@
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: enzarb-billing-pricing
-  namespace: {{ .Release.Namespace }}
-data:
-  BILLING_CPU_SECONDS_PER_UNIT: {{ .Values.billing.pricing.cpuSecondsPerUnit | quote }}
-  BILLING_MEM_GIB_SECONDS_PER_UNIT: {{ .Values.billing.pricing.memGiBSecondsPerUnit | quote }}
-  BILLING_NET_INGRESS_PER_BYTE: {{ .Values.billing.pricing.netIngressPerByte | quote }}
-  BILLING_NET_EGRESS_PER_BYTE: {{ .Values.billing.pricing.netEgressPerByte | quote }}
-  BILLING_STORAGE_GIB_SECONDS_PER_UNIT: {{ .Values.billing.pricing.storageGiBSecondsPerUnit | quote }}
-  BILLING_FREE_CPU_SECONDS: {{ .Values.billing.pricing.freeCPUSeconds | quote }}
-  BILLING_FREE_MEM_GIB_SECONDS: {{ .Values.billing.pricing.freeMemGiBSeconds | quote }}
----
+# Billing rates and free-tier allowances are admin-editable platform settings
+# stored in the database (app_settings table), not Helm values.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -50,9 +38,6 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: [ALL]
-          envFrom:
-            - configMapRef:
-                name: enzarb-billing-pricing
           env:
             - name: DB_HOST
               valueFrom:

@@ -18,6 +18,46 @@ var (
 func init() {
 	SchemeBuilder.Register(&Project{}, &ProjectList{})
 	SchemeBuilder.Register(&Environment{}, &EnvironmentList{})
+	SchemeBuilder.Register(&Organization{}, &OrganizationList{})
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:scope=Cluster,shortName=org
+// +kubebuilder:printcolumn:name="Slug",type=string,JSONPath=`.spec.slug`
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+
+// Organization is a cluster-scoped resource that owns a tenant's namespace. The
+// app creates one per org at org-creation time so the operator — not the app —
+// provisions and owns the `user-<orgId>` namespace before any namespace-scoped
+// Project is created inside it.
+type Organization struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   OrganizationSpec   `json:"spec,omitempty"`
+	Status OrganizationStatus `json:"status,omitempty"`
+}
+
+type OrganizationSpec struct {
+	OrgID       string `json:"orgId"`
+	Slug        string `json:"slug"`
+	DisplayName string `json:"displayName,omitempty"`
+}
+
+type OrganizationStatus struct {
+	Phase      string             `json:"phase,omitempty"`
+	Namespace  string             `json:"namespace,omitempty"`
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+
+type OrganizationList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []Organization `json:"items"`
 }
 
 // +kubebuilder:object:root=true
@@ -208,6 +248,52 @@ func (s *ProjectSpec) DeepCopyInto(out *ProjectSpec) {
 }
 
 func (s *ProjectStatus) DeepCopyInto(out *ProjectStatus) {
+	*out = *s
+	if s.Conditions != nil {
+		out.Conditions = make([]metav1.Condition, len(s.Conditions))
+		copy(out.Conditions, s.Conditions)
+	}
+}
+
+func (o *Organization) DeepCopyObject() runtime.Object {
+	if o == nil {
+		return nil
+	}
+	out := new(Organization)
+	o.DeepCopyInto(out)
+	return out
+}
+
+func (o *Organization) DeepCopyInto(out *Organization) {
+	*out = *o
+	out.TypeMeta = o.TypeMeta
+	o.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+	out.Spec = o.Spec
+	o.Status.DeepCopyInto(&out.Status)
+}
+
+func (ol *OrganizationList) DeepCopyObject() runtime.Object {
+	if ol == nil {
+		return nil
+	}
+	out := new(OrganizationList)
+	ol.DeepCopyInto(out)
+	return out
+}
+
+func (ol *OrganizationList) DeepCopyInto(out *OrganizationList) {
+	*out = *ol
+	out.TypeMeta = ol.TypeMeta
+	ol.ListMeta.DeepCopyInto(&out.ListMeta)
+	if ol.Items != nil {
+		out.Items = make([]Organization, len(ol.Items))
+		for i := range ol.Items {
+			ol.Items[i].DeepCopyInto(&out.Items[i])
+		}
+	}
+}
+
+func (s *OrganizationStatus) DeepCopyInto(out *OrganizationStatus) {
 	*out = *s
 	if s.Conditions != nil {
 		out.Conditions = make([]metav1.Condition, len(s.Conditions))
