@@ -66,10 +66,12 @@ COPY --from=rust-builder /docker-credential-k8s-sa    /usr/local/bin/docker-cred
 RUN chmod 755 /usr/local/bin/project-agent /usr/local/bin/docker-credential-k8s-sa \
     && rm /tmp/rust-test-ok
 
-# mise (tool version manager) — installed as user so shims land in home (PVC)
-USER user
-RUN curl https://mise.run | sh
+# mise (tool version manager) — install the binary to /usr/local/bin (outside
+# the home PVC) so it survives an empty PVC being mounted over /home/user.
+# Runtime data/shims still live in $HOME/.local/share/mise on the PVC.
+RUN curl https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh
 
+USER user
 WORKDIR /home/user
 
 ENV DOCKER_HOST=tcp://localhost:1234
