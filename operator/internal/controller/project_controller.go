@@ -387,6 +387,10 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName string, pr
 						RunAsNonRoot: boolPtr(true),
 						RunAsUser:    int64Ptr(1000),
 						RunAsGroup:   int64Ptr(1000),
+						// Chown mounted volumes to GID 1000 so the non-root agent
+						// can write to a freshly-provisioned home PVC (block volumes
+						// are owned by root until fsGroup is applied).
+						FSGroup: int64Ptr(1000),
 						SeccompProfile: &corev1.SeccompProfile{
 							Type: corev1.SeccompProfileTypeRuntimeDefault,
 						},
