@@ -42,8 +42,8 @@
 	.project-shell { display: flex; flex-direction: column; height: 100%; }
 	.project-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1rem; }
 	.back { font-size: 12px; color: var(--color-text-muted); display: block; margin-bottom: 0.25rem; }
-	.project-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--color-border); margin-bottom: 1.5rem; }
-	.tab { padding: 0.5rem 1rem; color: var(--color-text-muted); font-size: 13px; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+	.project-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--color-border); margin-bottom: 1.5rem; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+	.tab { padding: 0.5rem 1rem; color: var(--color-text-muted); font-size: 13px; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
 	.tab:hover { color: var(--color-text); text-decoration: none; }
 	.tab.active { color: var(--color-text); border-bottom-color: var(--color-accent); }
 	.project-content { flex: 1; }
