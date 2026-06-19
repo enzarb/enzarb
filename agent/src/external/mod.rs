@@ -1,5 +1,6 @@
 mod files;
 mod processes;
+mod tools;
 mod watch;
 
 use axum::{
@@ -8,7 +9,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     middleware::{self, Next},
     response::Response,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use tower_http::cors::CorsLayer;
 
@@ -28,6 +29,11 @@ pub fn router(state: AppState) -> Router {
         .route("/files", get(files::list).delete(files::delete))
         .route("/files/download", get(files::download))
         .route("/files/upload", post(files::upload))
+        // Tool management (mise) — mise.toml on the PVC is the source of truth
+        .route("/tools", get(tools::list).post(tools::add))
+        .route("/tools/registry", get(tools::registry))
+        .route("/tools/{name}", delete(tools::remove))
+        .route("/tools/{name}/versions", get(tools::versions))
         // Watch (inotify SSE)
         .route("/watch", get(watch::watch))
         // Auth middleware on all routes
