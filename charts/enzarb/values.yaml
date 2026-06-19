@@ -86,7 +86,7 @@ metering:
 workspace:
   image:
     repository: ghcr.io/enzarb/workspace
-    tag: "v0.8.8"
+    tag: "v0.10.4"
   # StorageClass for project home PVCs. Empty uses the cluster's default class.
   storageClass: ""
 database:
