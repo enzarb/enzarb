@@ -6,7 +6,9 @@
 	<section class="hero">
 		<h1>enzarb</h1>
 		<p class="tagline">AI-native cloud development. Persistent workspaces, integrated git, registry, and deployments.</p>
-		{#await getOptionalSession() then session}
+		{#await getOptionalSession()}
+			<a href="/auth/login" class="btn-primary">Get started free</a>
+		{:then session}
 			{#if session}
 				<a href="/dashboard" class="btn-primary">Go to Dashboard</a>
 			{:else}
