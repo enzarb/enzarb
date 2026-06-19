@@ -19,11 +19,11 @@ pub fn router(state: AppState) -> Router {
         // Process management
         .route("/processes", post(processes::create).get(processes::list))
         .route(
-            "/processes/:id",
+            "/processes/{id}",
             get(processes::get_one).delete(processes::kill),
         )
-        .route("/processes/:id/output", get(processes::output_ws))
-        .route("/processes/:id/history", get(processes::history))
+        .route("/processes/{id}/output", get(processes::output_ws))
+        .route("/processes/{id}/history", get(processes::history))
         // File operations
         .route("/files", get(files::list).delete(files::delete))
         .route("/files/download", get(files::download))
