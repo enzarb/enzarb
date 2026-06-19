@@ -61,6 +61,7 @@ export async function migrate() {
 	`;
 	await sql`CREATE INDEX IF NOT EXISTS sessions_user_id ON sessions(user_id)`;
 	await sql`CREATE INDEX IF NOT EXISTS sessions_expires_at ON sessions(expires_at)`;
+	await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT UNIQUE`;
 	await sql`
 		CREATE TABLE IF NOT EXISTS usage_events (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

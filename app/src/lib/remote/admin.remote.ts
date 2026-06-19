@@ -1,15 +1,16 @@
-import { error } from '@sveltejs/kit';
+import { query, form, command } from '$app/server';
 import { getRequestEvent } from '$app/server';
-import { sql } from '$lib/db';
+import { error } from '@sveltejs/kit';
 import { z } from 'zod/v4';
+import { sql } from '$lib/db';
 
 function requireAdmin() {
 	const { locals } = getRequestEvent();
 	if (!locals.session?.isAdmin) error(403, 'Admin required');
-	return locals.session;
+	return locals.session!;
 }
 
-export async function listOrgs() {
+export const listOrgs = query(async () => {
 	requireAdmin();
 	return sql`
 		SELECT o.id, o.slug, o.display_name, o.tier, o.created_at,
@@ -19,12 +20,12 @@ export async function listOrgs() {
 		GROUP BY o.id
 		ORDER BY o.created_at DESC
 	`;
-}
+});
 
-export async function listUsers() {
+export const listUsers = query(async () => {
 	requireAdmin();
 	return sql`SELECT id, email, is_admin, created_at FROM users ORDER BY created_at DESC`;
-}
+});
 
 const CreateOrgSchema = z.object({
 	slug: z.string().min(1).max(63).regex(/^[a-z0-9-]+$/),
@@ -32,24 +33,20 @@ const CreateOrgSchema = z.object({
 	tier: z.enum(['free', 'pro']).default('free')
 });
 
-export async function createOrg(input: z.infer<typeof CreateOrgSchema>) {
+export const createOrgAdmin = form(CreateOrgSchema, async ({ slug, displayName, tier }) => {
 	requireAdmin();
-	const parsed = CreateOrgSchema.parse(input);
-	const rows = await sql`
+	await sql`
 		INSERT INTO organizations (slug, display_name, tier)
-		VALUES (${parsed.slug}, ${parsed.displayName}, ${parsed.tier})
-		RETURNING id
+		VALUES (${slug}, ${displayName}, ${tier})
 	`;
-	return rows[0];
-}
+});
 
 const SetTierSchema = z.object({ orgId: z.string(), tier: z.enum(['free', 'pro']) });
 
-export async function setOrgTier(input: z.infer<typeof SetTierSchema>) {
+export const setOrgTier = command(SetTierSchema, async ({ orgId, tier }) => {
 	requireAdmin();
-	const parsed = SetTierSchema.parse(input);
-	await sql`UPDATE organizations SET tier = ${parsed.tier} WHERE id = ${parsed.orgId}`;
-}
+	await sql`UPDATE organizations SET tier = ${tier} WHERE id = ${orgId}`;
+});
 
 const InviteSchema = z.object({
 	orgId: z.string(),
@@ -57,14 +54,13 @@ const InviteSchema = z.object({
 	role: z.enum(['member', 'admin']).default('member')
 });
 
-export async function inviteMember(input: z.infer<typeof InviteSchema>) {
+export const inviteMember = form(InviteSchema, async ({ orgId, email, role }) => {
 	requireAdmin();
-	const parsed = InviteSchema.parse(input);
-	const users = await sql`SELECT id FROM users WHERE email = ${parsed.email}`;
+	const users = await sql`SELECT id FROM users WHERE email = ${email}`;
 	if (!users.length) error(404, 'User not found — they must log in first');
 	await sql`
 		INSERT INTO org_members (org_id, user_id, role)
-		VALUES (${parsed.orgId}, ${users[0].id}, ${parsed.role})
+		VALUES (${orgId}, ${users[0].id}, ${role})
 		ON CONFLICT (org_id, user_id) DO UPDATE SET role = EXCLUDED.role
 	`;
-}
+});

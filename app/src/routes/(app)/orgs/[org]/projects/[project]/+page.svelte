@@ -1,57 +1,57 @@
 <script lang="ts">
-	import type { PageData } from './$types';
-	let { data }: { data: PageData } = $props();
-	const { project } = data;
+	import { getProject } from '$lib/remote/projects.remote';
 </script>
 
-<div class="overview">
-	<div class="info-grid">
-		<div class="card">
-			<div class="card-label">Agent URL</div>
-			{#if project.status?.agentPath}
-				<code class="mono">https://enzarb.dev{project.status.agentPath}</code>
-			{:else}
-				<span class="muted">Provisioning…</span>
-			{/if}
-		</div>
-		<div class="card">
-			<div class="card-label">Service Account</div>
-			<code class="mono">{project.status?.serviceAccountName ?? '–'}</code>
-		</div>
-		<div class="card">
-			<div class="card-label">Storage</div>
-			<code class="mono">{project.spec.storage?.size ?? '–'}</code>
-		</div>
-		<div class="card">
-			<div class="card-label">Tools</div>
-			<div class="tools">
-				{#each project.spec.tools ?? [] as tool}
-					<span class="badge">{tool.name}@{tool.version ?? 'latest'}</span>
+{#await getProject() then project}
+	<div class="overview">
+		<div class="info-grid">
+			<div class="card">
+				<div class="card-label">Agent URL</div>
+				{#if project.status?.agentPath}
+					<code class="mono">https://enzarb.dev{project.status.agentPath}</code>
 				{:else}
-					<span class="muted">None selected</span>
-				{/each}
+					<span class="muted">Provisioning…</span>
+				{/if}
+			</div>
+			<div class="card">
+				<div class="card-label">Service Account</div>
+				<code class="mono">{project.status?.serviceAccountName ?? '–'}</code>
+			</div>
+			<div class="card">
+				<div class="card-label">Storage</div>
+				<code class="mono">{project.spec.storage?.size ?? '–'}</code>
+			</div>
+			<div class="card">
+				<div class="card-label">Tools</div>
+				<div class="tools">
+					{#each project.spec.tools ?? [] as tool}
+						<span class="badge">{tool.name}@{tool.version ?? 'latest'}</span>
+					{:else}
+						<span class="muted">None selected</span>
+					{/each}
+				</div>
 			</div>
 		</div>
-	</div>
 
-	{#if project.status?.conditions?.length}
-		<div class="conditions card">
-			<h3>Conditions</h3>
-			<table>
-				<thead><tr><th>Type</th><th>Status</th><th>Message</th></tr></thead>
-				<tbody>
-					{#each project.status.conditions as cond}
-						<tr>
-							<td>{cond.type}</td>
-							<td><span class="badge {cond.status === 'True' ? 'running' : 'error'}">{cond.status}</span></td>
-							<td class="muted">{cond.message ?? ''}</td>
-						</tr>
-					{/each}
-				</tbody>
-			</table>
-		</div>
-	{/if}
-</div>
+		{#if project.status?.conditions?.length}
+			<div class="conditions card">
+				<h3>Conditions</h3>
+				<table>
+					<thead><tr><th>Type</th><th>Status</th><th>Message</th></tr></thead>
+					<tbody>
+						{#each project.status.conditions as cond}
+							<tr>
+								<td>{cond.type}</td>
+								<td><span class="badge {cond.status === 'True' ? 'running' : 'error'}">{cond.status}</span></td>
+								<td class="muted">{cond.message ?? ''}</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
+		{/if}
+	</div>
+{/await}
 
 <style>
 	.info-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }

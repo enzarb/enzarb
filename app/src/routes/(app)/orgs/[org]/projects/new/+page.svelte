@@ -1,7 +1,7 @@
 <script lang="ts">
-	import type { PageData, ActionData } from './$types';
-	import { enhance } from '$app/forms';
-	let { data, form }: { data: PageData; form: ActionData } = $props();
+	import { createProject, getOrgTierInfo } from '$lib/remote/projects.remote';
+	import { page } from '$app/stores';
+	import { goto } from '$app/navigation';
 
 	const availableTools = [
 		{ name: 'claude', label: 'Claude Code' },
@@ -16,66 +16,83 @@
 	];
 
 	let selectedTools: string[] = $state([]);
+	let slug = $state('');
+	let displayName = $state('');
+	let storageGi = $state(10);
+	let submitting = $state(false);
+	let submitError = $state<string | null>(null);
 
 	function toggleTool(name: string) {
-		if (selectedTools.includes(name)) {
-			selectedTools = selectedTools.filter((t) => t !== name);
-		} else {
-			selectedTools = [...selectedTools, name];
+		selectedTools = selectedTools.includes(name)
+			? selectedTools.filter((t) => t !== name)
+			: [...selectedTools, name];
+	}
+
+	async function submit() {
+		submitting = true;
+		submitError = null;
+		try {
+			const result = await createProject({ slug, displayName, tools: selectedTools, storageGi });
+			await goto(`/orgs/${$page.params.org}/projects/${result.slug}`);
+		} catch (e: any) {
+			submitError = e?.body?.message ?? e?.message ?? 'Failed to create project';
+		} finally {
+			submitting = false;
 		}
 	}
 </script>
 
 <div class="page-header">
-	<a href="/orgs/{data.org.id}/projects" class="back">← Projects</a>
+	<a href="/orgs/{$page.params.org}/projects" class="back">← Projects</a>
 	<h2>New Project</h2>
 </div>
 
-<form method="POST" use:enhance class="new-project-form card">
-	<div class="field">
-		<label for="displayName">Display name</label>
-		<input id="displayName" name="displayName" type="text" required placeholder="My Awesome Project" />
-	</div>
-
-	<div class="field">
-		<label for="slug">Slug</label>
-		<input id="slug" name="slug" type="text" required pattern="[a-z0-9-]+" placeholder="my-awesome-project" />
-		<span class="hint">Lowercase letters, numbers, and dashes only</span>
-	</div>
-
-	<div class="field">
-		<label>Tools <span class="hint">(installed via mise on first boot)</span></label>
-		<div class="tool-grid">
-			{#each availableTools as tool}
-				<button
-					type="button"
-					class="tool-btn {selectedTools.includes(tool.name) ? 'selected' : ''}"
-					onclick={() => toggleTool(tool.name)}
-				>
-					{tool.label}
-				</button>
-			{/each}
+{#await getOrgTierInfo() then { limits, tier }}
+	<div class="new-project-form card">
+		<div class="field">
+			<label for="displayName">Display name</label>
+			<input id="displayName" type="text" bind:value={displayName} required placeholder="My Awesome Project" />
 		</div>
-		{#each selectedTools as tool}
-			<input type="hidden" name="tools" value={tool} />
-		{/each}
-	</div>
 
-	<div class="field">
-		<label for="storageGi">Workspace storage (GiB)</label>
-		<input id="storageGi" name="storageGi" type="number" min="1" max="{data.limits.maxPvcGi}" value="10" />
-		<span class="hint">Max {data.limits.maxPvcGi} GiB on {data.org.tier} tier</span>
-	</div>
+		<div class="field">
+			<label for="slug">Slug</label>
+			<input id="slug" type="text" bind:value={slug} required pattern="[a-z0-9-]+" placeholder="my-awesome-project" />
+			<span class="hint">Lowercase letters, numbers, and dashes only</span>
+		</div>
 
-	{#if form?.error}
-		<div class="error">{form.error}</div>
-	{/if}
+		<div class="field">
+			<label>Tools <span class="hint">(installed via mise on first boot)</span></label>
+			<div class="tool-grid">
+				{#each availableTools as tool}
+					<button
+						type="button"
+						class="tool-btn {selectedTools.includes(tool.name) ? 'selected' : ''}"
+						onclick={() => toggleTool(tool.name)}
+					>
+						{tool.label}
+					</button>
+				{/each}
+			</div>
+		</div>
 
-	<div class="actions">
-		<a href="/orgs/{data.org.id}/projects" class="btn">Cancel</a>
-		<button type="submit" class="btn btn-primary">Create project</button>
+		<div class="field">
+			<label for="storageGi">Workspace storage (GiB)</label>
+			<input id="storageGi" type="number" bind:value={storageGi} min="1" max={limits.maxPvcGi} />
+			<span class="hint">Max {limits.maxPvcGi} GiB on {tier} tier</span>
+		</div>
+
+		{#if submitError}
+			<div class="error">{submitError}</div>
+		{/if}
+
+		<div class="actions">
+			<a href="/orgs/{$page.params.org}/projects" class="btn">Cancel</a>
+			<button type="button" class="btn btn-primary" onclick={submit} disabled={submitting}>
+				{submitting ? 'Creating…' : 'Create project'}
+			</button>
+		</div>
 	</div>
-</form>
+{/await}
 
 <style>
 	.page-header { margin-bottom: 1.5rem; }

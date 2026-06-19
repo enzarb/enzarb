@@ -1,9 +1,10 @@
 <script lang="ts">
-	import type { PageData } from './$types';
+	import { getAgentToken } from '$lib/remote/projects.remote';
 	import { onMount, onDestroy } from 'svelte';
-	let { data }: { data: PageData } = $props();
 
-	let termEl: HTMLDivElement;
+	const agentBase = 'https://enzarb.dev/agent';
+
+	let termEl: HTMLDivElement | undefined = $state();
 	let terminal: any;
 	let ws: WebSocket | null = null;
 	let processes: any[] = $state([]);
@@ -11,20 +12,19 @@
 	let newCmd = $state('');
 	let newName = $state('');
 	let newKind: 'one-shot' | 'persistent' = $state('one-shot');
+	let agentToken: string | null = $state(null);
 
 	async function loadProcesses() {
-		if (!data.agentToken) return;
-		const res = await fetch(`${data.agentBase}/processes`, {
-			headers: { Authorization: `Bearer ${data.agentToken}` }
-		});
+		if (!agentToken) return;
+		const res = await fetch(`${agentBase}/processes`, { headers: { Authorization: `Bearer ${agentToken}` } });
 		if (res.ok) processes = await res.json();
 	}
 
 	async function createProcess() {
-		if (!data.agentToken || !newCmd.trim()) return;
-		const res = await fetch(`${data.agentBase}/processes`, {
+		if (!agentToken || !newCmd.trim()) return;
+		const res = await fetch(`${agentBase}/processes`, {
 			method: 'POST',
-			headers: { Authorization: `Bearer ${data.agentToken}`, 'Content-Type': 'application/json' },
+			headers: { Authorization: `Bearer ${agentToken}`, 'Content-Type': 'application/json' },
 			body: JSON.stringify({ name: newName || newCmd, command: newCmd, kind: newKind })
 		});
 		if (res.ok) {
@@ -36,20 +36,18 @@
 	}
 
 	async function killProcess(id: string) {
-		if (!data.agentToken) return;
-		await fetch(`${data.agentBase}/processes/${id}`, {
-			method: 'DELETE', headers: { Authorization: `Bearer ${data.agentToken}` }
-		});
+		if (!agentToken) return;
+		await fetch(`${agentBase}/processes/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${agentToken}` } });
 		await loadProcesses();
 		if (selectedPid === id) { ws?.close(); ws = null; selectedPid = null; }
 	}
 
 	function attachToProcess(id: string) {
-		if (!data.agentToken) return;
+		if (!agentToken) return;
 		ws?.close();
 		selectedPid = id;
-		const wsUrl = `${data.agentBase.replace('https://', 'wss://').replace('http://', 'ws://')}/processes/${id}/output`;
-		ws = new WebSocket(`${wsUrl}?token=${encodeURIComponent(data.agentToken)}`);
+		const wsUrl = `${agentBase.replace('https://', 'wss://').replace('http://', 'ws://')}/processes/${id}/output`;
+		ws = new WebSocket(`${wsUrl}?token=${encodeURIComponent(agentToken)}`);
 		ws.onmessage = (e) => {
 			const text = typeof e.data === 'string' ? e.data : new TextDecoder().decode(e.data);
 			terminal?.write(text);
@@ -58,14 +56,13 @@
 	}
 
 	onMount(async () => {
-		// Lazy-load xterm.js from CDN (no npm install needed in this phase)
+		try { agentToken = await getAgentToken(); } catch {}
 		const { Terminal } = await import('https://cdn.jsdelivr.net/npm/@xterm/xterm@5/+esm' as any);
 		const { FitAddon } = await import('https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0/+esm' as any);
 		terminal = new Terminal({ theme: { background: '#0f0f11', foreground: '#e8e8ed' }, fontFamily: 'JetBrains Mono, monospace' });
 		const fit = new FitAddon();
 		terminal.loadAddon(fit);
-		terminal.open(termEl);
-		fit.fit();
+		if (termEl) { terminal.open(termEl); fit.fit(); }
 		terminal.onData((d: string) => ws?.send(d));
 		await loadProcesses();
 	});

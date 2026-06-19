@@ -1,6 +1,8 @@
 <script lang="ts">
-	import type { PageData } from './$types';
-	let { data }: { data: PageData } = $props();
+	import { getGitTree } from '$lib/remote/files.remote';
+	import { getAgentToken } from '$lib/remote/projects.remote';
+
+	const agentBase = 'https://enzarb.dev/agent';
 
 	type FileEntry = { name: string; path: string; kind: string; size?: number; modified?: string };
 
@@ -8,32 +10,22 @@
 	let workingFiles: FileEntry[] = $state([]);
 	let currentPath: string = $state('');
 	let loading = $state(false);
-	let uploadInput: HTMLInputElement;
+	let uploadInput: HTMLInputElement | undefined = $state();
 
-	async function fetchFiles(path = '') {
-		if (!data.agentToken) return;
+	async function fetchFiles(token: string, path = '') {
 		loading = true;
 		try {
-			const token = data.agentToken;
-			const res = await fetch(
-				`${data.agentBase}/files?path=${encodeURIComponent(path)}`,
-				{ headers: { Authorization: `Bearer ${token}` } }
-			);
-			if (res.ok) {
-				workingFiles = await res.json();
-				currentPath = path;
-			}
-		} finally {
-			loading = false;
-		}
+			const res = await fetch(`${agentBase}/files?path=${encodeURIComponent(path)}`, {
+				headers: { Authorization: `Bearer ${token}` }
+			});
+			if (res.ok) { workingFiles = await res.json(); currentPath = path; }
+		} finally { loading = false; }
 	}
 
-	async function downloadFile(path: string, name: string) {
-		const token = data.agentToken;
-		const res = await fetch(
-			`${data.agentBase}/files/download?path=${encodeURIComponent(path)}`,
-			{ headers: { Authorization: `Bearer ${token}` } }
-		);
+	async function downloadFile(token: string, path: string, name: string) {
+		const res = await fetch(`${agentBase}/files/download?path=${encodeURIComponent(path)}`, {
+			headers: { Authorization: `Bearer ${token}` }
+		});
 		const blob = await res.blob();
 		const url = URL.createObjectURL(blob);
 		const a = document.createElement('a');
@@ -41,19 +33,15 @@
 		URL.revokeObjectURL(url);
 	}
 
-	async function uploadFile(e: Event) {
+	async function uploadFile(token: string, e: Event) {
 		const file = (e.target as HTMLInputElement).files?.[0];
-		if (!file || !data.agentToken) return;
-		const token = data.agentToken;
+		if (!file) return;
 		const uploadPath = currentPath ? `${currentPath}/${file.name}` : file.name;
-		await fetch(
-			`${data.agentBase}/files/upload?path=${encodeURIComponent(uploadPath)}`,
-			{ method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: file }
-		);
-		await fetchFiles(currentPath);
+		await fetch(`${agentBase}/files/upload?path=${encodeURIComponent(uploadPath)}`, {
+			method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: file
+		});
+		await fetchFiles(token, currentPath);
 	}
-
-	$effect(() => { if (activeTab === 'working') fetchFiles(); });
 
 	function formatSize(bytes?: number) {
 		if (!bytes) return '';
@@ -63,73 +51,75 @@
 	}
 </script>
 
-<div class="files-page">
-	<div class="tab-bar">
-		<button class="tab {activeTab === 'working' ? 'active' : ''}" onclick={() => activeTab = 'working'}>Working Directory</button>
-		<button class="tab {activeTab === 'git' ? 'active' : ''}" onclick={() => activeTab = 'git'}>Git Repository</button>
-	</div>
-
-	{#if activeTab === 'working'}
-		<div class="toolbar">
-			<div class="breadcrumb">
-				<button class="crumb" onclick={() => fetchFiles('')}>~</button>
-				{#each currentPath.split('/').filter(Boolean) as part, i}
-					<span>/</span>
-					<button class="crumb" onclick={() => fetchFiles(currentPath.split('/').slice(0, i + 1).join('/'))}>{part}</button>
-				{/each}
-			</div>
-			<div class="toolbar-actions">
-				<input type="file" bind:this={uploadInput} onchange={uploadFile} style="display:none" />
-				<button class="btn" onclick={() => uploadInput.click()}>Upload</button>
-			</div>
+{#await Promise.all([getAgentToken(), getGitTree({ path: '', ref: 'main' })]) then [agentToken, gitTree]}
+	<div class="files-page">
+		<div class="tab-bar">
+			<button class="tab {activeTab === 'working' ? 'active' : ''}" onclick={() => { activeTab = 'working'; fetchFiles(agentToken); }}>Working Directory</button>
+			<button class="tab {activeTab === 'git' ? 'active' : ''}" onclick={() => (activeTab = 'git')}>Git Repository</button>
 		</div>
-		{#if !data.agentToken}
-			<p class="muted">Agent not available — project may still be provisioning.</p>
-		{:else if loading}
-			<p class="muted">Loading…</p>
+
+		{#if activeTab === 'working'}
+			<div class="toolbar">
+				<div class="breadcrumb">
+					<button class="crumb" onclick={() => fetchFiles(agentToken, '')}>~</button>
+					{#each currentPath.split('/').filter(Boolean) as part, i}
+						<span>/</span>
+						<button class="crumb" onclick={() => fetchFiles(agentToken, currentPath.split('/').slice(0, i + 1).join('/'))}>{part}</button>
+					{/each}
+				</div>
+				<div class="toolbar-actions">
+					<input type="file" bind:this={uploadInput} onchange={(e) => uploadFile(agentToken, e)} style="display:none" />
+					<button class="btn" onclick={() => uploadInput?.click()}>Upload</button>
+				</div>
+			</div>
+			{#if !agentToken}
+				<p class="muted">Agent not available — project may still be provisioning.</p>
+			{:else if loading}
+				<p class="muted">Loading…</p>
+			{:else}
+				<table class="file-table">
+					<thead><tr><th>Name</th><th>Size</th><th>Modified</th><th></th></tr></thead>
+					<tbody>
+						{#each workingFiles as f}
+							<tr>
+								<td>
+									{#if f.kind === 'dir'}
+										<button class="file-link dir" onclick={() => fetchFiles(agentToken, f.path)}>📁 {f.name}</button>
+									{:else}
+										<span class="file-link">📄 {f.name}</span>
+									{/if}
+								</td>
+								<td class="muted">{formatSize(f.size)}</td>
+								<td class="muted">{f.modified ? new Date(f.modified).toLocaleDateString() : ''}</td>
+								<td>
+									{#if f.kind === 'file'}
+										<button class="btn" onclick={() => downloadFile(agentToken, f.path, f.name)}>Download</button>
+									{/if}
+								</td>
+							</tr>
+						{:else}
+							<tr><td colspan="4" class="muted">Empty directory</td></tr>
+						{/each}
+					</tbody>
+				</table>
+			{/if}
 		{:else}
 			<table class="file-table">
-				<thead><tr><th>Name</th><th>Size</th><th>Modified</th><th></th></tr></thead>
+				<thead><tr><th>Name</th><th>Type</th></tr></thead>
 				<tbody>
-					{#each workingFiles as f}
+					{#each Array.isArray(gitTree) ? gitTree : [] as entry}
 						<tr>
-							<td>
-								{#if f.kind === 'dir'}
-									<button class="file-link dir" onclick={() => fetchFiles(f.path)}>📁 {f.name}</button>
-								{:else}
-									<span class="file-link">📄 {f.name}</span>
-								{/if}
-							</td>
-							<td class="muted">{formatSize(f.size)}</td>
-							<td class="muted">{f.modified ? new Date(f.modified).toLocaleDateString() : ''}</td>
-							<td>
-								{#if f.kind === 'file'}
-									<button class="btn" onclick={() => downloadFile(f.path, f.name)}>Download</button>
-								{/if}
-							</td>
+							<td>{entry.type === 'dir' ? '📁' : '📄'} {entry.name}</td>
+							<td class="muted">{entry.type}</td>
 						</tr>
 					{:else}
-						<tr><td colspan="4" class="muted">Empty directory</td></tr>
+						<tr><td colspan="2" class="muted">No files or repository not yet initialized.</td></tr>
 					{/each}
 				</tbody>
 			</table>
 		{/if}
-	{:else}
-		<table class="file-table">
-			<thead><tr><th>Name</th><th>Type</th></tr></thead>
-			<tbody>
-				{#each Array.isArray(data.gitTree) ? data.gitTree : [] as entry}
-					<tr>
-						<td>{entry.type === 'dir' ? '📁' : '📄'} {entry.name}</td>
-						<td class="muted">{entry.type}</td>
-					</tr>
-				{:else}
-					<tr><td colspan="2" class="muted">No files or repository not yet initialized.</td></tr>
-				{/each}
-			</tbody>
-		</table>
-	{/if}
-</div>
+	</div>
+{/await}
 
 <style>
 	.files-page { display: flex; flex-direction: column; gap: 1rem; }

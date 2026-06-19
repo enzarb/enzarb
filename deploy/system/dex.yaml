@@ -23,6 +23,10 @@ spec:
             mode: disable
       web:
         http: 0.0.0.0:5556
+      frontend:
+        theme: custom
+        issuer: enzarb
+        logoURL: theme/logo.svg
       connectors:
         - type: oidc
           id: google
@@ -45,3 +49,10 @@ spec:
       - secretRef:
           name: enzarb-dex-google
           optional: false
+    volumes:
+      - name: theme
+        configMap:
+          name: dex-theme
+    volumeMounts:
+      - name: theme
+        mountPath: /srv/dex/web/themes/custom

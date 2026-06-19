@@ -1,0 +1,135 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dex-theme
+  namespace: enzarb-system
+data:
+  styles.css: |
+    /* enzarb theme for Dex */
+    :root {
+      --color-bg: #0f0f11;
+      --color-surface: #1a1a1f;
+      --color-surface-2: #25252c;
+      --color-border: #2e2e38;
+      --color-text: #e8e8ed;
+      --color-text-muted: #888898;
+      --color-accent: #6c6cff;
+      --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      background: var(--color-bg) !important;
+      color: var(--color-text) !important;
+      font-family: var(--font-sans) !important;
+      font-size: 14px;
+      margin: 0;
+    }
+
+    /* Header / logo area */
+    .theme-navbar {
+      background: var(--color-surface) !important;
+      border-bottom: 1px solid var(--color-border) !important;
+    }
+    .theme-navbar__logo-link {
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: -0.04em;
+      color: var(--color-text) !important;
+      text-decoration: none;
+    }
+
+    /* Main login card */
+    .theme-panel {
+      background: var(--color-surface) !important;
+      border: 1px solid var(--color-border) !important;
+      border-radius: 10px !important;
+      box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5) !important;
+    }
+
+    /* Form inputs */
+    .theme-form-row__textfield,
+    input[type=text],
+    input[type=password],
+    input[type=email] {
+      background: var(--color-surface-2) !important;
+      border: 1px solid var(--color-border) !important;
+      border-radius: 6px !important;
+      color: var(--color-text) !important;
+      font-family: var(--font-sans) !important;
+      font-size: 14px !important;
+      padding: 0.5rem 0.75rem !important;
+      width: 100% !important;
+      outline: none !important;
+      transition: border-color 0.15s;
+    }
+    input[type=text]:focus,
+    input[type=password]:focus,
+    input[type=email]:focus {
+      border-color: var(--color-accent) !important;
+    }
+
+    label {
+      color: var(--color-text) !important;
+      font-weight: 500 !important;
+      font-size: 13px !important;
+    }
+
+    /* Buttons */
+    .theme-btn,
+    button[type=submit],
+    input[type=submit],
+    .dex-btn {
+      background: var(--color-accent) !important;
+      border: none !important;
+      border-radius: 6px !important;
+      color: #fff !important;
+      cursor: pointer !important;
+      font-family: var(--font-sans) !important;
+      font-size: 14px !important;
+      font-weight: 600 !important;
+      padding: 0.75rem 1.5rem !important;
+      width: 100% !important;
+      transition: opacity 0.15s !important;
+    }
+    .theme-btn:hover,
+    button[type=submit]:hover,
+    input[type=submit]:hover {
+      opacity: 0.85 !important;
+    }
+
+    /* Connector / social login buttons */
+    .theme-btn--google,
+    a.dex-btn[href*=google] {
+      background: var(--color-surface-2) !important;
+      border: 1px solid var(--color-border) !important;
+      color: var(--color-text) !important;
+    }
+    .theme-btn--google:hover,
+    a.dex-btn[href*=google]:hover {
+      background: var(--color-border) !important;
+      opacity: 1 !important;
+    }
+
+    /* Links */
+    a {
+      color: var(--color-accent) !important;
+    }
+
+    /* Error / info messages */
+    .theme-form-row--error .theme-form-row__desc {
+      color: #e05252 !important;
+    }
+
+    /* Page title */
+    h2, h3 {
+      color: var(--color-text) !important;
+      font-weight: 600 !important;
+    }
+
+    /* Footer */
+    footer, .theme-footer {
+      color: var(--color-text-muted) !important;
+      font-size: 12px !important;
+    }

@@ -1,6 +1,5 @@
 <script lang="ts">
-	import type { PageData } from './$types';
-	let { data }: { data: PageData } = $props();
+	import { getUsageSummary, getUsageByProject, getInvoices } from '$lib/remote/billing.remote';
 
 	const resourceLabels: Record<string, string> = {
 		cpu_seconds: 'CPU', mem_gib_seconds: 'Memory',
@@ -14,7 +13,7 @@
 <section class="section">
 	<h3>This month's usage</h3>
 	<div class="usage-grid">
-		{#each data.summary as row}
+		{#each await getUsageSummary() as row}
 			<div class="card usage-card">
 				<div class="usage-label">{resourceLabels[row.resource_type] ?? row.resource_type}</div>
 				<div class="usage-value">{Number(row.total).toLocaleString()} <span class="unit">{row.unit}</span></div>
@@ -30,7 +29,7 @@
 	<table>
 		<thead><tr><th>Project</th><th>Resource</th><th>Total</th><th>Unit</th></tr></thead>
 		<tbody>
-			{#each data.byProject as row}
+			{#each await getUsageByProject() as row}
 				<tr>
 					<td><code class="mono">{row.project_id}</code></td>
 					<td>{resourceLabels[row.resource_type] ?? row.resource_type}</td>
@@ -49,7 +48,7 @@
 	<table>
 		<thead><tr><th>Period</th><th>Total</th><th>Status</th></tr></thead>
 		<tbody>
-			{#each data.invoices as inv}
+			{#each await getInvoices() as inv}
 				<tr>
 					<td>{new Date(inv.period_start).toLocaleDateString()} – {new Date(inv.period_end).toLocaleDateString()}</td>
 					<td>${(inv.total_cents / 100).toFixed(2)}</td>
@@ -66,7 +65,6 @@
 	.section { margin-bottom: 2rem; }
 	.section h3 { margin-bottom: 0.75rem; font-size: 14px; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
 	.usage-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 0.75rem; }
-	.usage-card { }
 	.usage-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--color-text-muted); margin-bottom: 0.375rem; }
 	.usage-value { font-size: 1.25rem; font-weight: 600; font-variant-numeric: tabular-nums; }
 	.unit { font-size: 12px; font-weight: 400; color: var(--color-text-muted); }

@@ -1,40 +1,42 @@
 <script lang="ts">
-	import type { LayoutData } from './$types';
+	import { getProject } from '$lib/remote/projects.remote';
 	import { page } from '$app/stores';
-	let { data, children }: { data: LayoutData; children: any } = $props();
 
-	const base = `/orgs/${data.org.id}/projects/${data.project.metadata.name}`;
-	const tabs = [
-		{ href: base, label: 'Overview' },
-		{ href: `${base}/files`, label: 'Files' },
-		{ href: `${base}/registry`, label: 'Registry' },
-		{ href: `${base}/deployments`, label: 'Deployments' },
-		{ href: `${base}/terminal`, label: 'Terminal' }
-	];
+	let { children } = $props();
 
-	function isActive(href: string) {
+	function isActive(base: string, href: string) {
 		if (href === base) return $page.url.pathname === base;
 		return $page.url.pathname.startsWith(href);
 	}
 </script>
 
-<div class="project-shell">
-	<div class="project-header">
-		<div>
-			<a href="/orgs/{data.org.id}/projects" class="back">← Projects</a>
-			<h2>{data.project.spec.displayName}</h2>
+{#await getProject() then project}
+	{@const base = `/orgs/${$page.params.org}/projects/${$page.params.project}`}
+	{@const tabs = [
+		{ href: base, label: 'Overview' },
+		{ href: `${base}/files`, label: 'Files' },
+		{ href: `${base}/registry`, label: 'Registry' },
+		{ href: `${base}/deployments`, label: 'Deployments' },
+		{ href: `${base}/terminal`, label: 'Terminal' }
+	]}
+	<div class="project-shell">
+		<div class="project-header">
+			<div>
+				<a href="/orgs/{$page.params.org}/projects" class="back">← Projects</a>
+				<h2>{project.spec.displayName}</h2>
+			</div>
+			<span class="badge {(project.status?.phase ?? 'pending').toLowerCase()}">{project.status?.phase ?? 'Pending'}</span>
 		</div>
-		<span class="badge {(data.project.status?.phase ?? 'pending').toLowerCase()}">{data.project.status?.phase ?? 'Pending'}</span>
+		<nav class="project-tabs">
+			{#each tabs as tab}
+				<a href={tab.href} class="tab {isActive(base, tab.href) ? 'active' : ''}">{tab.label}</a>
+			{/each}
+		</nav>
+		<div class="project-content">
+			{@render children()}
+		</div>
 	</div>
-	<nav class="project-tabs">
-		{#each tabs as tab}
-			<a href={tab.href} class="tab {isActive(tab.href) ? 'active' : ''}">{tab.label}</a>
-		{/each}
-	</nav>
-	<div class="project-content">
-		{@render children()}
-	</div>
-</div>
+{/await}
 
 <style>
 	.project-shell { display: flex; flex-direction: column; height: 100%; }

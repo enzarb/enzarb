@@ -1,6 +1,5 @@
 <script lang="ts">
-	import type { PageData } from './$types';
-	let { data }: { data: PageData } = $props();
+	import { getRepositories, getRepoTags } from '$lib/remote/registry.remote';
 	let selectedRepo: string | null = $state(null);
 	let tags: string[] = $state([]);
 	let loadingTags = $state(false);
@@ -8,53 +7,58 @@
 	async function loadTags(repo: string) {
 		selectedRepo = repo;
 		loadingTags = true;
-		const res = await fetch(`/api/registry/tags?repo=${encodeURIComponent(repo)}&org=${data.org?.id}`);
-		if (res.ok) tags = (await res.json()).tags ?? [];
-		loadingTags = false;
+		try {
+			const result = await getRepoTags(repo);
+			tags = result.tags ?? [];
+		} finally {
+			loadingTags = false;
+		}
 	}
 
 	const registryBase = 'registry.enzarb.dev';
 </script>
 
-<div class="registry-page">
-	<div class="registry-layout">
-		<div class="repo-list card">
-			<h3>Repositories</h3>
-			{#each data.repos as repo}
-				<button class="repo-item {selectedRepo === repo.name ? 'active' : ''}" onclick={() => loadTags(repo.name)}>
-					{repo.name}
-				</button>
-			{:else}
-				<p class="muted">No images yet.</p>
-				<p class="muted hint">Push an image with:</p>
-				<pre class="code">docker push {registryBase}/&lt;org&gt;/&lt;name&gt;:tag</pre>
-			{/each}
-		</div>
-
-		{#if selectedRepo}
-			<div class="tag-list card">
-				<h3>{selectedRepo}</h3>
-				{#if loadingTags}
-					<p class="muted">Loading tags…</p>
+{#await getRepositories() then repos}
+	<div class="registry-page">
+		<div class="registry-layout">
+			<div class="repo-list card">
+				<h3>Repositories</h3>
+				{#each repos as repo}
+					<button class="repo-item {selectedRepo === repo.name ? 'active' : ''}" onclick={() => loadTags(repo.name)}>
+						{repo.name}
+					</button>
 				{:else}
-					<table>
-						<thead><tr><th>Tag</th><th>Pull command</th></tr></thead>
-						<tbody>
-							{#each tags as tag}
-								<tr>
-									<td><span class="badge">{tag}</span></td>
-									<td><code class="mono small">docker pull {registryBase}/{selectedRepo}:{tag}</code></td>
-								</tr>
-							{:else}
-								<tr><td colspan="2" class="muted">No tags</td></tr>
-							{/each}
-						</tbody>
-					</table>
-				{/if}
+					<p class="muted">No images yet.</p>
+					<p class="muted hint">Push an image with:</p>
+					<pre class="code">docker push {registryBase}/&lt;org&gt;/&lt;name&gt;:tag</pre>
+				{/each}
 			</div>
-		{/if}
+
+			{#if selectedRepo}
+				<div class="tag-list card">
+					<h3>{selectedRepo}</h3>
+					{#if loadingTags}
+						<p class="muted">Loading tags…</p>
+					{:else}
+						<table>
+							<thead><tr><th>Tag</th><th>Pull command</th></tr></thead>
+							<tbody>
+								{#each tags as tag}
+									<tr>
+										<td><span class="badge">{tag}</span></td>
+										<td><code class="mono small">docker pull {registryBase}/{selectedRepo}:{tag}</code></td>
+									</tr>
+								{:else}
+									<tr><td colspan="2" class="muted">No tags</td></tr>
+								{/each}
+							</tbody>
+						</table>
+					{/if}
+				</div>
+			{/if}
+		</div>
 	</div>
-</div>
+{/await}
 
 <style>
 	.registry-layout { display: grid; grid-template-columns: 260px 1fr; gap: 1rem; }

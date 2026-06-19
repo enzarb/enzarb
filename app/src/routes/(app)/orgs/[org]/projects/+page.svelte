@@ -1,17 +1,17 @@
 <script lang="ts">
-	import type { PageData } from './$types';
-	let { data }: { data: PageData } = $props();
+	import { getProjects } from '$lib/remote/projects.remote';
+	import { page } from '$app/stores';
 </script>
 
 <div class="page-header">
 	<h2>Projects</h2>
-	<a href="/orgs/{data.org.id}/projects/new" class="btn btn-primary">New project</a>
+	<a href="/orgs/{$page.params.org}/projects/new" class="btn btn-primary">New project</a>
 </div>
 
 <div class="projects">
-	{#each data.projects as project}
+	{#each await getProjects() as project}
 		{@const status = project.status?.phase ?? 'Pending'}
-		<a href="/orgs/{data.org.id}/projects/{project.metadata.name}" class="card project-card">
+		<a href="/orgs/{$page.params.org}/projects/{project.metadata.name}" class="card project-card">
 			<div class="project-header">
 				<span class="project-name">{project.spec.displayName}</span>
 				<span class="badge {status.toLowerCase()}">{status}</span>
@@ -26,7 +26,7 @@
 			{/if}
 		</a>
 	{:else}
-		<p class="empty">No projects yet. <a href="/orgs/{data.org.id}/projects/new">Create one</a>.</p>
+		<p class="empty">No projects yet. <a href="/orgs/{$page.params.org}/projects/new">Create one</a>.</p>
 	{/each}
 </div>
 

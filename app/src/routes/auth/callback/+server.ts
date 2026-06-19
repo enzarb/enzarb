@@ -2,6 +2,7 @@ import { redirect, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { config } from '$lib/config';
 import { upsertUser, createSession } from '$lib/session';
+import { sql } from '$lib/db';
 
 export const GET: RequestHandler = async ({ url, cookies }) => {
 	const code = url.searchParams.get('code');
@@ -40,6 +41,14 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 		sameSite: 'lax',
 		maxAge: 60 * 60 * 24 * 7
 	});
+
+	// New users (no username set) go through onboarding
+	const userRows = await sql`SELECT username FROM users WHERE id = ${userId}`;
+	const hasUsername = userRows[0]?.username != null;
+	if (!hasUsername) {
+		const returnTo = encodeURIComponent(state);
+		redirect(302, `/onboarding?returnTo=${returnTo}`);
+	}
 
 	const destination = decodeURIComponent(state);
 	const safe = destination.startsWith('/') && !destination.startsWith('//') ? destination : '/';

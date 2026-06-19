@@ -1,7 +1,5 @@
 <script lang="ts">
-	import type { PageData, ActionData } from './$types';
-	import { enhance } from '$app/forms';
-	let { data, form }: { data: PageData; form: ActionData } = $props();
+	import { getEnvironments, createEnv, addDomain } from '$lib/remote/environments.remote';
 	let showNewEnv = $state(false);
 	let domainEnv: string | null = $state(null);
 </script>
@@ -9,33 +7,35 @@
 <div class="deployments-page">
 	<div class="page-header">
 		<h3>Environments</h3>
-		<button class="btn btn-primary" onclick={() => showNewEnv = !showNewEnv}>New environment</button>
+		<button class="btn btn-primary" onclick={() => (showNewEnv = !showNewEnv)}>New environment</button>
 	</div>
 
 	{#if showNewEnv}
-		<form method="POST" action="?/createEnv" use:enhance class="card new-env-form">
+		<div class="card new-env-form">
 			<h4>Create environment</h4>
-			<div class="field">
-				<label for="slug">Slug</label>
-				<input id="slug" name="slug" type="text" required pattern="[a-z0-9-]+" placeholder="staging" />
-			</div>
-			{#if form?.error}<div class="error">{form.error}</div>{/if}
-			<div class="actions">
-				<button type="button" class="btn" onclick={() => showNewEnv = false}>Cancel</button>
-				<button type="submit" class="btn btn-primary">Create</button>
-			</div>
-		</form>
+			<form {...createEnv}>
+				<div class="field">
+					<label for="env-slug">Slug</label>
+					<input id="env-slug" {...createEnv.fields.slug.as('text')} required pattern="[a-z0-9-]+" placeholder="staging" />
+					{#each createEnv.fields.slug.issues() as issue}<p class="field-error">{issue.message}</p>{/each}
+				</div>
+				<div class="actions">
+					<button type="button" class="btn" onclick={() => (showNewEnv = false)}>Cancel</button>
+					<button type="submit" class="btn btn-primary">Create</button>
+				</div>
+			</form>
+		</div>
 	{/if}
 
 	<div class="env-list">
-		{#each data.envs as env}
+		{#each await getEnvironments() as env}
 			<div class="card env-card">
 				<div class="env-header">
 					<div>
 						<span class="env-name">{env.spec.slug}</span>
 						<code class="mono small">{env.status?.namespace ?? 'Provisioning…'}</code>
 					</div>
-					<button class="btn" onclick={() => domainEnv = env.metadata.name}>Add domain</button>
+					<button class="btn" onclick={() => (domainEnv = env.metadata.name)}>Add domain</button>
 				</div>
 
 				{#if env.status?.domains?.length}
@@ -53,11 +53,12 @@
 				{/if}
 
 				{#if domainEnv === env.metadata.name}
-					<form method="POST" action="?/addDomain" use:enhance class="domain-form">
-						<input type="hidden" name="envName" value={env.metadata.name} />
-						<input name="fqdn" type="text" placeholder="app.yourdomain.com" required />
+					{@const domainForm = addDomain.for(env.metadata.name)}
+					<form {...domainForm} class="domain-form">
+						<input {...domainForm.fields.envName.as('hidden', env.metadata.name)} />
+						<input {...domainForm.fields.fqdn.as('text')} placeholder="app.yourdomain.com" required />
 						<button type="submit" class="btn btn-primary">Add</button>
-						<button type="button" class="btn" onclick={() => domainEnv = null}>Cancel</button>
+						<button type="button" class="btn" onclick={() => (domainEnv = null)}>Cancel</button>
 					</form>
 				{/if}
 			</div>
@@ -74,6 +75,7 @@
 	.new-env-form h4 { margin-bottom: 1rem; }
 	.field { margin-bottom: 1rem; }
 	label { display: block; font-weight: 500; margin-bottom: 0.25rem; }
+	.field-error { color: var(--color-danger); font-size: 12px; margin: 0.25rem 0 0; }
 	.actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
 	.env-list { display: flex; flex-direction: column; gap: 0.75rem; }
 	.env-card { display: flex; flex-direction: column; gap: 0.75rem; }
@@ -84,7 +86,6 @@
 	.domains { display: flex; flex-direction: column; gap: 0.5rem; }
 	.domain-row { display: flex; align-items: center; gap: 0.75rem; font-size: 13px; }
 	.domain-form { display: flex; gap: 0.5rem; align-items: center; }
-	.domain-form input { max-width: 280px; }
+	.domain-form input[type=text] { max-width: 280px; }
 	.muted { color: var(--color-text-muted); font-size: 13px; }
-	.error { color: var(--color-danger); }
 </style>
