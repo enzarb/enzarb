@@ -8,6 +8,18 @@ export default defineConfig({
 			experimental: {
 				remoteFunctions: true
 			},
+			// SvelteKit owns CSP so it can nonce its own inline (hydration) scripts.
+			// mode 'auto' = nonces for server-rendered inline scripts, hashes for static.
+			csp: {
+				mode: 'auto',
+				directives: {
+					'default-src': ['self'],
+					'script-src': ['self'],
+					'style-src': ['self', 'unsafe-inline'],
+					'img-src': ['self', 'data:'],
+					'frame-ancestors': ['none']
+				}
+			},
 			compilerOptions: {
 				runes: ({ filename }) =>
 					filename.split(/[/\\]/).includes('node_modules') ? undefined : true,
