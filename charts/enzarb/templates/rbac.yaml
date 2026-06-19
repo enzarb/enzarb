@@ -45,7 +45,7 @@ rules:
     resources: ["projects", "environments", "projects/status", "environments/status"]
     verbs: ["*"]
   - apiGroups: [""]
-    resources: ["namespaces", "serviceaccounts", "services", "persistentvolumeclaims", "configmaps"]
+    resources: ["namespaces", "serviceaccounts", "services", "persistentvolumeclaims", "configmaps", "pods"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["apps"]
     resources: ["deployments"]

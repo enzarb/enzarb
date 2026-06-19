@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -53,6 +55,14 @@ func main() {
 	if err := riverClient.Start(ctx); err != nil {
 		slog.Error("river start", "err", err)
 		os.Exit(1)
+	}
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	if err := riverClient.Stop(ctx); err != nil {
+		slog.Error("river stop", "err", err)
 	}
 }
 
