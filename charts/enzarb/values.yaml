@@ -87,6 +87,8 @@ workspace:
   image:
     repository: ghcr.io/enzarb/workspace
     tag: "v0.8.8"
+  # StorageClass for project home PVCs. Empty uses the cluster's default class.
+  storageClass: ""
 database:
   clusterName: enzarb-db
   roles:

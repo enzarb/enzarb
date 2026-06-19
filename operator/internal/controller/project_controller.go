@@ -288,7 +288,12 @@ func (r *ProjectReconciler) ensurePVC(ctx context.Context, ns, name string, proj
 	pvc := &corev1.PersistentVolumeClaim{}
 	err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, pvc)
 	if errors.IsNotFound(err) {
-		storageClass := "standard"
+		// If WORKSPACE_STORAGE_CLASS is unset, leave StorageClassName nil so the
+		// cluster's default StorageClass is used (portable across clusters).
+		var storageClassName *string
+		if sc := os.Getenv("WORKSPACE_STORAGE_CLASS"); sc != "" {
+			storageClassName = &sc
+		}
 		pvc = &corev1.PersistentVolumeClaim{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      name,
@@ -297,7 +302,7 @@ func (r *ProjectReconciler) ensurePVC(ctx context.Context, ns, name string, proj
 			},
 			Spec: corev1.PersistentVolumeClaimSpec{
 				AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-				StorageClassName: &storageClass,
+				StorageClassName: storageClassName,
 				Resources: corev1.VolumeResourceRequirements{
 					Requests: corev1.ResourceList{
 						corev1.ResourceStorage: project.Spec.Storage.Size,

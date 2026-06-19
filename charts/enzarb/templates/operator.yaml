@@ -37,6 +37,10 @@ spec:
           env:
             - name: WORKSPACE_IMAGE
               value: "{{ .Values.workspace.image.repository }}:{{ .Values.workspace.image.tag }}"
+            {{- with .Values.workspace.storageClass }}
+            - name: WORKSPACE_STORAGE_CLASS
+              value: {{ . | quote }}
+            {{- end }}
             - name: ENZARB_DOMAIN
               value: {{ .Values.operator.env.ENZARB_DOMAIN | quote }}
             - name: GITEA_URL
