@@ -39,7 +39,7 @@ operator:
   image:
     repository: ghcr.io/enzarb/operator
     pullPolicy: IfNotPresent
-    tag: "v0.1.19"
+    tag: "v0.8.3"
   leaderElection: true
   env:
     ENZARB_DOMAIN: enzarb.dev
@@ -58,7 +58,7 @@ billing:
   image:
     repository: ghcr.io/enzarb/billing
     pullPolicy: IfNotPresent
-    tag: "v0.1.19"
+    tag: "v0.8.3"
   pricing:
     cpuSecondsPerUnit: "0.0000139"
     memGiBSecondsPerUnit: "0.0000028"
@@ -78,7 +78,7 @@ metering:
   image:
     repository: ghcr.io/enzarb/metering
     pullPolicy: IfNotPresent
-    tag: "v0.1.19"
+    tag: "v0.8.3"
   hubbleLogPath: /var/run/cilium/hubble/events.log
   resources:
     requests:
