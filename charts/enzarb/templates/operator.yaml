@@ -29,12 +29,14 @@ spec:
           type: RuntimeDefault
       containers:
         - name: operator
-          image: "{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag | default .Chart.AppVersion }}"
+          image: "{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag }}"
           imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
           args:
             - --leader-elect={{ .Values.operator.leaderElection }}
             - --health-probe-bind-address=:8081
           env:
+            - name: WORKSPACE_IMAGE
+              value: "{{ .Values.workspace.image.repository }}:{{ .Values.workspace.image.tag }}"
             - name: ENZARB_DOMAIN
               value: {{ .Values.operator.env.ENZARB_DOMAIN | quote }}
             - name: GITEA_URL

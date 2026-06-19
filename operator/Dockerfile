@@ -6,7 +6,7 @@ RUN --mount=type=cache,target=/root/go/pkg/mod \
 COPY . .
 RUN --mount=type=cache,target=/root/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -o /enzarb-operator ./operator/cmd/operator/
+    CGO_ENABLED=0 go build -o /enzarb-operator ./cmd/operator/
 
 FROM gcr.io/distroless/static:nonroot
 COPY --from=builder /enzarb-operator /enzarb-operator

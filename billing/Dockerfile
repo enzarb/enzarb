@@ -6,7 +6,7 @@ RUN --mount=type=cache,target=/root/go/pkg/mod \
 COPY . .
 RUN --mount=type=cache,target=/root/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -o /enzarb-billing ./billing/cmd/billing/
+    CGO_ENABLED=0 go build -o /enzarb-billing ./cmd/billing/
 
 FROM gcr.io/distroless/static:nonroot
 COPY --from=builder /enzarb-billing /enzarb-billing

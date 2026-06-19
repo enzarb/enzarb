@@ -29,7 +29,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: metering
-          image: "{{ .Values.metering.image.repository }}:{{ .Values.metering.image.tag | default .Chart.AppVersion }}"
+          image: "{{ .Values.metering.image.repository }}:{{ .Values.metering.image.tag }}"
           imagePullPolicy: {{ .Values.metering.image.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false

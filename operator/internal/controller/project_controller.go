@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
 
 	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
@@ -251,7 +252,7 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName string, pr
 					Containers: []corev1.Container{
 						{
 							Name:  "workspace",
-							Image: "ghcr.io/enzarb/workspace:latest",
+							Image: workspaceImage(),
 							Env: []corev1.EnvVar{
 								{Name: "ENZARB_PROJECT_ID", Value: string(project.UID)},
 								{Name: "ENZARB_PROJECT_SLUG", Value: project.Spec.Slug},
@@ -495,6 +496,16 @@ func projectLabels(p *enzarbv1alpha1.Project) map[string]string {
 		"enzarb.io/project":            p.Spec.Slug,
 		"enzarb.io/org":                p.Spec.OrgID,
 	}
+}
+
+// workspaceImage returns the workspace container image, pinned via the
+// WORKSPACE_IMAGE env (set from the Helm chart's workspace.image values).
+// Falls back to a floating tag for local/dev when unset.
+func workspaceImage() string {
+	if img := os.Getenv("WORKSPACE_IMAGE"); img != "" {
+		return img
+	}
+	return "ghcr.io/enzarb/workspace:latest"
 }
 
 func int64Ptr(i int64) *int64 { return &i }

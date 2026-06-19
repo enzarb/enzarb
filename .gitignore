@@ -1,6 +1,10 @@
 # Go
 dist/
 /tmp/
+# Compiled service binaries (output of `go build` in each module)
+/operator/operator
+/metering/metering
+/billing/billing
 
 # Rust
 agent/target/

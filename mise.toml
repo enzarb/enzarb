@@ -51,13 +51,21 @@ run = "cd agent && cargo build --release"
 description = "Build enzarb-operator binary"
 run = "cd operator && go build ./cmd/operator/"
 
+[tasks.build-metering]
+description = "Build enzarb-metering binary"
+run = "cd metering && go build ./cmd/metering/"
+
+[tasks.build-billing]
+description = "Build enzarb-billing binary"
+run = "cd billing && go build ./cmd/billing/"
+
 [tasks.build-app]
 description = "Build SvelteKit app"
 run = "cd app && npm run build"
 
 [tasks.build-all]
 description = "Build all components"
-depends = ["build-agent", "build-operator", "build-app"]
+depends = ["build-agent", "build-operator", "build-metering", "build-billing", "build-app"]
 
 [tasks.test-agent]
 description = "Run agent tests"
@@ -67,13 +75,21 @@ run = "cd agent && cargo test"
 description = "Run operator tests"
 run = "cd operator && go test ./..."
 
+[tasks.test-metering]
+description = "Run metering tests"
+run = "cd metering && go test ./..."
+
+[tasks.test-billing]
+description = "Run billing tests"
+run = "cd billing && go test ./..."
+
 [tasks.test-app]
 description = "Run app tests"
 run = "cd app && npm test"
 
 [tasks.test-all]
 description = "Run all tests"
-depends = ["test-agent", "test-operator", "test-app"]
+depends = ["test-agent", "test-operator", "test-metering", "test-billing", "test-app"]
 
 [tasks.dev-app]
 description = "Run SvelteKit dev server"

@@ -17,13 +17,125 @@ env:
   NODE_VERSION: "lts/*"
   RUST_VERSION: stable
 
-# ─────────────────────────────────────────────────────────────────────────────
-# LINT
-# ─────────────────────────────────────────────────────────────────────────────
 jobs:
+# ─────────────────────────────────────────────────────────────────────────────
+# CHANGES — detect which components changed; drives scoped lint/build + bump set
+# ─────────────────────────────────────────────────────────────────────────────
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      app: ${{ steps.detect.outputs.app }}
+      operator: ${{ steps.detect.outputs.operator }}
+      metering: ${{ steps.detect.outputs.metering }}
+      billing: ${{ steps.detect.outputs.billing }}
+      workspace: ${{ steps.detect.outputs.workspace }}
+      agent: ${{ steps.detect.outputs.agent }}
+      go_any: ${{ steps.detect.outputs.go_any }}
+      docker_any: ${{ steps.detect.outputs.docker_any }}
+      images_json: ${{ steps.detect.outputs.images_json }}
+    steps:
+      - uses: actions/checkout@v6.0.3
+        with:
+          fetch-depth: 0  # full history + tags for diff baseline
+
+      - name: Detect changed components
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # ── Determine the file set to diff ──────────────────────────────────
+          REBUILD_ALL=false
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+            FILES=$(git diff --name-only "$BASE" HEAD)
+          else
+            PREV_TAG=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+            if [ -z "$PREV_TAG" ]; then
+              # First release ever — build everything.
+              REBUILD_ALL=true
+              FILES=""
+            else
+              FILES=$(git diff --name-only "${PREV_TAG}..HEAD")
+            fi
+          fi
+          echo "Changed files:"; echo "$FILES" | sed 's/^/  /'
+
+          app=false; operator=false; metering=false; billing=false
+          workspace=false; agent=false
+
+          # Paths that never trigger an image rebuild (chart-only releases).
+          is_inert() {
+            case "$1" in
+              charts/*|deploy/*|scripts/*|.github/*|*.md|mise.toml|.trivyignore|VERSION|go.work) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            case "$f" in
+              app/*)        app=true ;;
+              agent/*)      agent=true; workspace=true ;;
+              workspace/*)  workspace=true ;;
+              operator/*)   operator=true ;;
+              metering/*)   metering=true ;;
+              billing/*)    billing=true ;;
+              *)
+                if ! is_inert "$f"; then
+                  # Unmapped path: fail safe and rebuild everything.
+                  REBUILD_ALL=true
+                fi
+                ;;
+            esac
+          done <<< "$FILES"
+
+          if [ "$REBUILD_ALL" = "true" ]; then
+            echo "Unmapped/new path or first release — rebuilding all images."
+            app=true; operator=true; metering=true; billing=true
+            workspace=true; agent=true
+          fi
+
+          go_any=false
+          if $operator || $metering || $billing; then go_any=true; fi
+
+          docker_any=false
+          if echo "$FILES" | grep -qE 'Dockerfile|\.trivyignore'; then docker_any=true; fi
+          if [ "$REBUILD_ALL" = "true" ]; then docker_any=true; fi
+
+          # ── Build the dynamic image matrix (only changed images) ────────────
+          matrix='[]'
+          add() { matrix=$(echo "$matrix" | jq -c --arg n "$1" --arg c "$2" --arg d "$3" --arg i "$4" \
+            '. += [{"name":$n,"context":$c,"dockerfile":$d,"image":$i}]'); }
+          $app       && add app       app  app/Dockerfile       app
+          $operator  && add operator  operator operator/Dockerfile operator
+          $metering  && add metering  metering metering/Dockerfile metering
+          $billing   && add billing   billing  billing/Dockerfile  billing
+          $workspace && add workspace .    workspace/Dockerfile workspace
+          true
+
+          {
+            echo "app=$app"
+            echo "operator=$operator"
+            echo "metering=$metering"
+            echo "billing=$billing"
+            echo "workspace=$workspace"
+            echo "agent=$agent"
+            echo "go_any=$go_any"
+            echo "docker_any=$docker_any"
+            echo "images_json=$matrix"
+          } >> "$GITHUB_OUTPUT"
+          echo "Image matrix: $matrix"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LINT (scoped to changed components)
+# ─────────────────────────────────────────────────────────────────────────────
   lint-go:
     name: Lint / Go
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.go_any == 'true'
     steps:
       - uses: actions/checkout@v6.0.3
 
@@ -32,15 +144,19 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v9.2.1
-        with:
-          version: latest
-          args: --timeout=5m ./operator/... ./metering/... ./billing/...
+      - name: golangci-lint (per module)
+        run: |
+          for m in operator metering billing; do
+            echo "::group::golangci-lint $m"
+            (cd "$m" && go run github.com/golangci/golangci-lint/cmd/golangci-lint@latest run --timeout=5m ./...)
+            echo "::endgroup::"
+          done
 
   lint-rust:
     name: Lint / Rust
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.agent == 'true'
     steps:
       - uses: actions/checkout@v6.0.3
 
@@ -61,6 +177,8 @@ jobs:
   lint-js:
     name: Lint / JS
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.app == 'true'
     steps:
       - uses: actions/checkout@v6.0.3
 
@@ -79,11 +197,13 @@ jobs:
         working-directory: app
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECURITY
+# SECURITY (scoped to changed components)
 # ─────────────────────────────────────────────────────────────────────────────
   security-go:
     name: Security / Go (govulncheck)
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.go_any == 'true'
     steps:
       - uses: actions/checkout@v6.0.3
 
@@ -95,13 +215,20 @@ jobs:
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
 
-      - name: govulncheck
-        # exit 3 = vulns in required modules but not in called code (informational); fail only on exit 1 (called vuln) or 2 (scan error)
-        run: govulncheck -scan=package ./operator/... ./metering/... ./billing/... || [ $? -eq 3 ]
+      - name: govulncheck (per module)
+        # exit 3 = vulns in required modules but not in called code (informational); fail only on exit 1/2
+        run: |
+          for m in operator metering billing; do
+            echo "::group::govulncheck $m"
+            (cd "$m" && govulncheck -scan=package ./...) || [ $? -eq 3 ]
+            echo "::endgroup::"
+          done
 
   security-rust:
     name: Security / Rust (cargo-audit)
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.agent == 'true'
     steps:
       - uses: actions/checkout@v6.0.3
 
@@ -121,6 +248,8 @@ jobs:
   security-containers:
     name: Security / Containers (trivy)
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.docker_any == 'true'
     # Scan Dockerfiles for misconfigurations without building images
     steps:
       - uses: actions/checkout@v6.0.3
@@ -135,13 +264,33 @@ jobs:
           trivyignores: .trivyignore
 
 # ─────────────────────────────────────────────────────────────────────────────
+# CI GATE — single always-run aggregator. Make THIS the required status check.
+# Succeeds when every conditional job passed or was skipped; fails if any failed.
+# ─────────────────────────────────────────────────────────────────────────────
+  ci-passed:
+    name: CI passed
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [changes, lint-go, lint-rust, lint-js, security-go, security-rust, security-containers]
+    steps:
+      - name: Verify no upstream job failed
+        shell: bash
+        run: |
+          results='${{ toJSON(needs) }}'
+          echo "$results" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          if echo "$results" | jq -e 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled")' >/dev/null; then
+            echo "::error::One or more required jobs failed."
+            exit 1
+          fi
+          echo "All required jobs passed or were skipped."
+
+# ─────────────────────────────────────────────────────────────────────────────
 # VERSION — calculate next semver from conventional commits since last tag
 # ─────────────────────────────────────────────────────────────────────────────
   version:
     name: Calculate version
     runs-on: ubuntu-latest
-    # Run on push to main only after all checks pass
-    needs: [lint-go, lint-rust, lint-js, security-go, security-rust, security-containers]
+    needs: [ci-passed]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     outputs:
       version: ${{ steps.calc.outputs.version }}
@@ -205,12 +354,12 @@ jobs:
           echo "version_bare=${VERSION_BARE}" >> "$GITHUB_OUTPUT"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STAGING BRANCH — bump versions, commit, tag
+# STAGING BRANCH — bump chart + changed-component tags, commit, tag
 # ─────────────────────────────────────────────────────────────────────────────
   staging-branch:
     name: Create staging branch & tag
     runs-on: ubuntu-latest
-    needs: [version]
+    needs: [version, changes]
     outputs:
       sha: ${{ steps.push.outputs.sha }}
     permissions:
@@ -235,6 +384,7 @@ jobs:
           echo "branch=${BRANCH}" >> "$GITHUB_ENV"
 
       - name: Bump Rust agent version
+        if: needs.changes.outputs.workspace == 'true'
         env:
           VERSION_BARE: ${{ needs.version.outputs.version_bare }}
         run: |
@@ -243,13 +393,14 @@ jobs:
           sed -i "/^name = \"project-agent\"/{n;s/^version = \".*\"/version = \"${VERSION_BARE}\"/}" agent/Cargo.lock
 
       - name: Bump app version
+        if: needs.changes.outputs.app == 'true'
         env:
           VERSION_BARE: ${{ needs.version.outputs.version_bare }}
         run: |
           jq --arg v "$VERSION_BARE" '.version = $v' app/package.json > app/package.json.tmp
           mv app/package.json.tmp app/package.json
 
-      - name: Bump Helm chart versions
+      - name: Bump Helm chart version (always)
         env:
           VERSION: ${{ needs.version.outputs.version }}
           VERSION_BARE: ${{ needs.version.outputs.version_bare }}
@@ -260,6 +411,21 @@ jobs:
               -e "s/^appVersion: .*/appVersion: \"${VERSION}\"/" \
               "$chart"
           done
+
+      - name: Re-pin changed component image tags
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        # SET_* (job-level env) carry the change-detection booleans. Only changed
+        # components advance to the new version; unchanged components keep theirs.
+        run: |
+          v="$VERSION" yq -i '
+            .app.image.tag       = (strenv(SET_APP)       == "true" ? strenv(v) : .app.image.tag) |
+            .operator.image.tag  = (strenv(SET_OPERATOR)  == "true" ? strenv(v) : .operator.image.tag) |
+            .metering.image.tag  = (strenv(SET_METERING)  == "true" ? strenv(v) : .metering.image.tag) |
+            .billing.image.tag   = (strenv(SET_BILLING)   == "true" ? strenv(v) : .billing.image.tag) |
+            .workspace.image.tag = (strenv(SET_WORKSPACE) == "true" ? strenv(v) : .workspace.image.tag)
+          ' charts/enzarb/values.yaml
+          echo "Updated tags:"; yq '... | select(has("image")) | .image.tag' charts/enzarb/values.yaml 2>/dev/null || true
 
       - name: Write VERSION file
         env:
@@ -283,6 +449,7 @@ jobs:
             agent/Cargo.lock \
             app/package.json \
             charts/enzarb/Chart.yaml \
+            charts/enzarb/values.yaml \
             deploy/enzarb/enzarb.yaml \
             VERSION
           git commit -m "chore: release ${VERSION} [skip ci]"
@@ -309,40 +476,27 @@ jobs:
           git push origin "$VERSION"
           SHA=$(git rev-parse HEAD)
           echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+    env:
+      SET_APP: ${{ needs.changes.outputs.app }}
+      SET_OPERATOR: ${{ needs.changes.outputs.operator }}
+      SET_METERING: ${{ needs.changes.outputs.metering }}
+      SET_BILLING: ${{ needs.changes.outputs.billing }}
+      SET_WORKSPACE: ${{ needs.changes.outputs.workspace }}
 
 # ─────────────────────────────────────────────────────────────────────────────
-# BUILD — all container images + Helm charts (from the tagged commit)
+# BUILD — only the changed container images (+ Helm charts)
 # ─────────────────────────────────────────────────────────────────────────────
   build-images:
     name: Build & Push / Container images
     runs-on: ubuntu-latest
-    needs: [version, staging-branch]
+    needs: [version, staging-branch, changes]
+    if: needs.changes.outputs.images_json != '[]'
     permissions:
       contents: read
       packages: write
     strategy:
       matrix:
-        include:
-          - name: workspace
-            context: .
-            dockerfile: workspace/Dockerfile
-            image: workspace
-          - name: operator
-            context: .
-            dockerfile: operator/Dockerfile
-            image: operator
-          - name: metering
-            context: .
-            dockerfile: metering/Dockerfile
-            image: metering
-          - name: billing
-            context: .
-            dockerfile: billing/Dockerfile
-            image: billing
-          - name: app
-            context: app
-            dockerfile: app/Dockerfile
-            image: app
+        include: ${{ fromJSON(needs.changes.outputs.images_json) }}
     steps:
       - uses: actions/checkout@v6.0.3
         with:
@@ -431,6 +585,12 @@ jobs:
     name: Create GitHub release
     runs-on: ubuntu-latest
     needs: [build-images, build-charts, version, staging-branch]
+    # build-images may be skipped on a chart-only release — only require it not to have failed.
+    if: >-
+      always() &&
+      needs.build-charts.result == 'success' &&
+      needs.staging-branch.result == 'success' &&
+      (needs.build-images.result == 'success' || needs.build-images.result == 'skipped')
     permissions:
       contents: write
     steps:
@@ -463,6 +623,16 @@ jobs:
           FIXES=$(echo "$LOG" | grep -P '^- fix(\([^)]+\))?:' || true)
           OTHER=$(echo "$LOG" | grep -vP '^- (feat|fix|[a-z]+!):' || true)
 
+          # Per-component image tags come from the (already re-pinned) values.yaml.
+          IMAGES=$(yq -r '
+            [
+              "workspace:" + .workspace.image.tag,
+              "operator:"  + .operator.image.tag,
+              "metering:"  + .metering.image.tag,
+              "billing:"   + .billing.image.tag,
+              "app:"       + .app.image.tag
+            ] | .[]' charts/enzarb/values.yaml)
+
           {
             echo "## What's Changed"
             echo ""
@@ -471,13 +641,9 @@ jobs:
             [ -n "$FIXES"    ] && echo "### 🐛 Bug Fixes"       && echo "$FIXES"    && echo ""
             [ -n "$OTHER"    ] && echo "### 🔧 Other Changes"   && echo "$OTHER"    && echo ""
             echo "---"
-            echo "**Container images** (ghcr.io/enzarb):"
+            echo "**Container images** (ghcr.io/enzarb) — only changed components advanced this release:"
             echo '```'
-            echo "workspace:${{ needs.version.outputs.version }}"
-            echo "operator:${{ needs.version.outputs.version }}"
-            echo "metering:${{ needs.version.outputs.version }}"
-            echo "billing:${{ needs.version.outputs.version }}"
-            echo "app:${{ needs.version.outputs.version }}"
+            echo "$IMAGES"
             echo '```'
             echo ""
             echo "**Helm chart** (oci://ghcr.io/enzarb/charts):"

@@ -1,9 +1,12 @@
+# NOTE: image.tag is the per-component source of truth. CI advances only the
+# tags of components that actually changed in a release; unchanged components
+# keep their prior tag, so versions intentionally drift between components.
 app:
   replicaCount: 2
   image:
     repository: ghcr.io/enzarb/app
     pullPolicy: IfNotPresent
-    tag: ""  # defaults to Chart.appVersion
+    tag: "v0.1.19"
   env:
     ORIGIN: https://enzarb.dev
   dbSecret:
@@ -37,7 +40,7 @@ operator:
   image:
     repository: ghcr.io/enzarb/operator
     pullPolicy: IfNotPresent
-    tag: ""  # defaults to Chart.appVersion
+    tag: "v0.1.19"
   leaderElection: true
   env:
     ENZARB_DOMAIN: enzarb.dev
@@ -57,7 +60,7 @@ billing:
   image:
     repository: ghcr.io/enzarb/billing
     pullPolicy: IfNotPresent
-    tag: ""  # defaults to Chart.appVersion
+    tag: "v0.1.19"
   pricing:
     cpuSecondsPerUnit: "0.0000139"
     memGiBSecondsPerUnit: "0.0000028"
@@ -78,7 +81,7 @@ metering:
   image:
     repository: ghcr.io/enzarb/metering
     pullPolicy: IfNotPresent
-    tag: ""  # defaults to Chart.appVersion
+    tag: "v0.1.19"
   hubbleLogPath: /var/run/cilium/hubble/events.log
   resources:
     requests:
@@ -87,6 +90,13 @@ metering:
     limits:
       cpu: 250m
       memory: 128Mi
+
+# workspace is not a Deployment in this chart; its tag is injected into the
+# operator as WORKSPACE_IMAGE and used as the image for project pods.
+workspace:
+  image:
+    repository: ghcr.io/enzarb/workspace
+    tag: "v0.1.19"
 
 database:
   clusterName: enzarb-db

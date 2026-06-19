@@ -43,7 +43,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: billing
-          image: "{{ .Values.billing.image.repository }}:{{ .Values.billing.image.tag | default .Chart.AppVersion }}"
+          image: "{{ .Values.billing.image.repository }}:{{ .Values.billing.image.tag }}"
           imagePullPolicy: {{ .Values.billing.image.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false

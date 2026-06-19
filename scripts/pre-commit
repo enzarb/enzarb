@@ -51,7 +51,8 @@ has_changes() {
     echo "$STAGED" | grep -q "^$1"
 }
 
-GO_DIRS="./operator/... ./metering/... ./billing/..."
+# operator, metering, and billing are independent Go modules.
+GO_MODULES="operator metering billing"
 
 # STAGED_OVERRIDE=all skips the staged-file filter (used by `mise run lint`)
 if [ "${STAGED_OVERRIDE:-}" = "all" ]; then
@@ -61,7 +62,7 @@ else
     for prefix in operator/ metering/ billing/; do
         if has_changes "$prefix"; then GO_CHANGED=true; break; fi
     done
-    if has_changes ".golangci.yml" || has_changes "go.mod" || has_changes "go.sum"; then GO_CHANGED=true; fi
+    if has_changes ".golangci.yml" || has_changes "go.work"; then GO_CHANGED=true; fi
 
     RUST_CHANGED=false
     if has_changes "agent/"; then RUST_CHANGED=true; fi
@@ -85,19 +86,22 @@ printf "\n${YELLOW}Running pre-commit checks...${NC}\n\n"
 if $GO_CHANGED; then
     echo "Go:"
     run_check "gofmt" bash -c \
-        'files=$(gofmt -l ./operator/... ./metering/... ./billing/... 2>/dev/null | grep -v vendor || true); [ -z "$files" ] || (echo "$files"; exit 1)'
+        'files=$(gofmt -l operator metering billing 2>/dev/null | grep -v vendor || true); [ -z "$files" ] || (echo "$files"; exit 1)'
     if ! command -v golangci-lint &>/dev/null; then
         printf "  ${YELLOW}golangci-lint not found — skipping lint (run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)${NC}\n"
     else
-        run_check "golangci-lint" golangci-lint run --timeout=5m \
-            ./operator/... ./metering/... ./billing/...
+        for m in $GO_MODULES; do
+            run_check "golangci-lint ($m)" bash -c \
+                "cd $m && golangci-lint run --timeout=5m ./..."
+        done
     fi
     if ! command -v govulncheck &>/dev/null; then
         printf "  ${YELLOW}govulncheck not found — skipping (run: go install golang.org/x/vuln/cmd/govulncheck@latest)${NC}\n"
     else
-        run_check_allow_exit3 "govulncheck (-scan=package)" \
-            govulncheck -scan=package \
-                ./operator/... ./metering/... ./billing/...
+        for m in $GO_MODULES; do
+            run_check_allow_exit3 "govulncheck ($m)" bash -c \
+                "cd $m && govulncheck -scan=package ./..."
+        done
     fi
 fi
 
