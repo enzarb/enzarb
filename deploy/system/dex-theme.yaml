@@ -4,6 +4,16 @@ metadata:
   name: dex-theme
   namespace: enzarb-system
 data:
+  logo.svg: |
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+      <rect width="64" height="64" rx="12" fill="#0f0f11"/>
+      <rect x="14" y="16" width="22" height="6" rx="2" fill="#6c6cff"/>
+      <rect x="14" y="29" width="18" height="6" rx="2" fill="#6c6cff"/>
+      <rect x="14" y="42" width="22" height="6" rx="2" fill="#6c6cff"/>
+      <polygon points="42,16 52,16 42,43 52,43" fill="#9d9dff"/>
+      <rect x="42" y="43" width="10" height="5" rx="2" fill="#9d9dff"/>
+      <rect x="42" y="16" width="10" height="5" rx="2" fill="#9d9dff"/>
+    </svg>
   styles.css: |
     /* enzarb theme for Dex */
     :root {

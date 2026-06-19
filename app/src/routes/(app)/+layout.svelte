@@ -14,9 +14,9 @@
 					<li class="org-group">
 						<span class="org-label">{org.slug}</span>
 						<ul>
-							<li><a href="/orgs/{org.id}/projects">Projects</a></li>
-							<li><a href="/orgs/{org.id}/billing">Billing</a></li>
-							<li><a href="/orgs/{org.id}/settings">Settings</a></li>
+							<li><a href="/{org.slug}/projects">Projects</a></li>
+							<li><a href="/{org.slug}/billing">Billing</a></li>
+							<li><a href="/{org.slug}/settings">Settings</a></li>
 						</ul>
 					</li>
 				{/each}

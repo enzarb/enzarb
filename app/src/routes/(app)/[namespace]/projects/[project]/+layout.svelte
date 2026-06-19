@@ -11,7 +11,7 @@
 </script>
 
 {#await getProject() then project}
-	{@const base = `/orgs/${$page.params.org}/projects/${$page.params.project}`}
+	{@const base = `/${$page.params.namespace}/projects/${$page.params.project}`}
 	{@const tabs = [
 		{ href: base, label: 'Overview' },
 		{ href: `${base}/files`, label: 'Files' },
@@ -22,7 +22,7 @@
 	<div class="project-shell">
 		<div class="project-header">
 			<div>
-				<a href="/orgs/{$page.params.org}/projects" class="back">← Projects</a>
+				<a href="/{$page.params.namespace}/projects" class="back">← Projects</a>
 				<h2>{project.spec.displayName}</h2>
 			</div>
 			<span class="badge {(project.status?.phase ?? 'pending').toLowerCase()}">{project.status?.phase ?? 'Pending'}</span>

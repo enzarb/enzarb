@@ -33,7 +33,7 @@
 		submitError = null;
 		try {
 			const result = await createProject({ slug, displayName, tools: selectedTools, storageGi });
-			await goto(`/orgs/${$page.params.org}/projects/${result.slug}`);
+			await goto(`/${$page.params.namespace}/projects/${result.slug}`);
 		} catch (e: any) {
 			submitError = e?.body?.message ?? e?.message ?? 'Failed to create project';
 		} finally {
@@ -43,11 +43,13 @@
 </script>
 
 <div class="page-header">
-	<a href="/orgs/{$page.params.org}/projects" class="back">← Projects</a>
+	<a href="/{$page.params.namespace}/projects" class="back">← Projects</a>
 	<h2>New Project</h2>
 </div>
 
-{#await getOrgTierInfo() then { limits, tier }}
+{#await getOrgTierInfo()}
+	<p class="muted">Loading…</p>
+{:then { limits, tier }}
 	<div class="new-project-form card">
 		<div class="field">
 			<label for="displayName">Display name</label>
@@ -86,12 +88,14 @@
 		{/if}
 
 		<div class="actions">
-			<a href="/orgs/{$page.params.org}/projects" class="btn">Cancel</a>
+			<a href="/{$page.params.namespace}/projects" class="btn">Cancel</a>
 			<button type="button" class="btn btn-primary" onclick={submit} disabled={submitting}>
 				{submitting ? 'Creating…' : 'Create project'}
 			</button>
 		</div>
 	</div>
+{:catch e}
+	<p class="error">{e?.message ?? 'Failed to load tier info'}</p>
 {/await}
 
 <style>
@@ -117,5 +121,6 @@
 		color: var(--color-text);
 	}
 	.actions { display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 1.5rem; }
+	.muted { color: var(--color-text-muted); font-size: 13px; }
 	.error { color: var(--color-danger); padding: 0.75rem; background: #2a1a1a; border-radius: var(--radius); margin-bottom: 1rem; }
 </style>

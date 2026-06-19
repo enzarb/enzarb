@@ -4,17 +4,19 @@ import { error } from '@sveltejs/kit';
 import { z } from 'zod/v4';
 import { getRepoContents } from '$lib/gitea';
 
-function requireOrgMember(orgId: string) {
-	const { locals } = getRequestEvent();
+function resolveNamespace() {
+	const { locals, params } = getRequestEvent();
 	if (!locals.session) error(401, 'Unauthorized');
-	if (!locals.session.orgs.find((o) => o.id === orgId)) error(403, 'Forbidden');
+	const org = locals.session.orgs.find((o) => o.slug === params.namespace);
+	if (!org) error(403, 'Forbidden');
+	return org;
 }
 
 export const getGitTree = query(
 	z.object({ path: z.string().default(''), ref: z.string().default('main') }),
 	async ({ path, ref }) => {
 		const { params } = getRequestEvent();
-		requireOrgMember(params.org!);
-		return getRepoContents(params.org!, params.project!, path, ref);
+		const org = resolveNamespace();
+		return getRepoContents(org.id, params.project!, path, ref);
 	}
 );

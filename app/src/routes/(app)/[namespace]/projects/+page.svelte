@@ -5,13 +5,13 @@
 
 <div class="page-header">
 	<h2>Projects</h2>
-	<a href="/orgs/{$page.params.org}/projects/new" class="btn btn-primary">New project</a>
+	<a href="/{$page.params.namespace}/projects/new" class="btn btn-primary">New project</a>
 </div>
 
 <div class="projects">
 	{#each await getProjects() as project}
 		{@const status = project.status?.phase ?? 'Pending'}
-		<a href="/orgs/{$page.params.org}/projects/{project.metadata.name}" class="card project-card">
+		<a href="/{$page.params.namespace}/projects/{project.metadata.name}" class="card project-card">
 			<div class="project-header">
 				<span class="project-name">{project.spec.displayName}</span>
 				<span class="badge {status.toLowerCase()}">{status}</span>
@@ -26,7 +26,7 @@
 			{/if}
 		</a>
 	{:else}
-		<p class="empty">No projects yet. <a href="/orgs/{$page.params.org}/projects/new">Create one</a>.</p>
+		<p class="empty">No projects yet. <a href="/{$page.params.namespace}/projects/new">Create one</a>.</p>
 	{/each}
 </div>
 

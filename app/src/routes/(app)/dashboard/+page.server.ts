@@ -5,7 +5,7 @@ import type { PageServerLoad } from './$types';
 export const load: PageServerLoad = async ({ locals }) => {
 	const session = locals.session!;
 	if (session.orgs.length === 1) {
-		redirect(302, `/orgs/${session.orgs[0].id}/projects`);
+		redirect(302, `/${session.orgs[0].slug}/projects`);
 	}
 	return {};
 };

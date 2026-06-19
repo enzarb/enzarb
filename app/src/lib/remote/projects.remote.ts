@@ -18,9 +18,10 @@ function requireSession() {
 	return locals.session;
 }
 
-function requireOrgMember(orgId: string, minRole?: 'admin') {
-	const session = requireSession();
-	const org = session.orgs.find((o) => o.id === orgId);
+function resolveNamespace(minRole?: 'admin') {
+	const { locals, params } = getRequestEvent();
+	if (!locals.session) error(401, 'Unauthorized');
+	const org = locals.session.orgs.find((o) => o.slug === params.namespace);
 	if (!org) error(403, 'Not a member of this organization');
 	if (minRole === 'admin' && org.role === 'member') error(403, 'Admin required');
 	return org;
@@ -32,31 +33,29 @@ async function getOrgTierValue(orgId: string) {
 }
 
 export const getProjects = query(async () => {
-	const { params } = getRequestEvent();
-	requireOrgMember(params.org!);
-	return listProjects(params.org!);
+	const org = resolveNamespace();
+	return listProjects(org.id);
 });
 
 export const getProject = query(async () => {
 	const { params } = getRequestEvent();
-	requireOrgMember(params.org!);
-	const project = (await k8sGetProject(params.org!, params.project!)) as any;
+	const org = resolveNamespace();
+	const project = (await k8sGetProject(org.id, params.project!)) as any;
 	if (!project) error(404, 'Project not found');
 	return project;
 });
 
 export const getOrgTierInfo = query(async () => {
-	const { params } = getRequestEvent();
-	requireOrgMember(params.org!);
-	const tier = await getOrgTierValue(params.org!);
+	const org = resolveNamespace();
+	const tier = await getOrgTierValue(org.id);
 	return { tier, limits: tiers[tier] };
 });
 
 export const getAgentToken = query(async () => {
 	const { params } = getRequestEvent();
 	const session = requireSession();
-	requireOrgMember(params.org!);
-	const project = (await k8sGetProject(params.org!, params.project!)) as any;
+	const org = resolveNamespace();
+	const project = (await k8sGetProject(org.id, params.project!)) as any;
 	const projectId = project?.metadata?.uid;
 	if (!projectId) error(404, 'Project not found');
 	return mintProjectToken(session.userId, projectId, [
@@ -77,12 +76,11 @@ const CreateProjectSchema = z.object({
 export const createProject = command(
 	CreateProjectSchema,
 	async ({ slug, displayName, tools, storageGi }) => {
-		const { params } = getRequestEvent();
-		requireOrgMember(params.org!, 'admin');
+		const org = resolveNamespace('admin');
 
-		const tier = await getOrgTierValue(params.org!);
+		const tier = await getOrgTierValue(org.id);
 		const limits = tiers[tier];
-		const existing = await listProjects(params.org!);
+		const existing = await listProjects(org.id);
 		if (existing.length >= limits.maxProjects) {
 			error(422, `Free tier limited to ${limits.maxProjects} project(s). Upgrade to create more.`);
 		}
@@ -90,7 +88,7 @@ export const createProject = command(
 			error(422, `Storage exceeds tier limit of ${limits.maxPvcGi}Gi`);
 		}
 
-		await k8sCreateProject(params.org!, {
+		await k8sCreateProject(org.id, {
 			slug,
 			displayName,
 			tools: tools.map((name) => ({ name, version: 'latest' })),
@@ -101,7 +99,6 @@ export const createProject = command(
 );
 
 export const removeProject = command(z.object({ slug: z.string() }), async ({ slug }) => {
-	const { params } = getRequestEvent();
-	requireOrgMember(params.org!, 'admin');
-	return deleteProject(params.org!, slug);
+	const org = resolveNamespace('admin');
+	return deleteProject(org.id, slug);
 });

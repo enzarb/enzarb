@@ -35,7 +35,7 @@
 
 <div class="orgs">
 	{#each data.session.orgs as org}
-		<a href="/orgs/{org.id}/projects" class="card org-card">
+		<a href="/{org.slug}/projects" class="card org-card">
 			<div class="org-name">{org.slug}</div>
 			<div class="org-role badge">{org.role}</div>
 		</a>
