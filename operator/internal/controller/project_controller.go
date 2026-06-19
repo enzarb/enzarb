@@ -258,7 +258,9 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName string, pr
 								{Name: "ENZARB_PROJECT_SLUG", Value: project.Spec.Slug},
 								{Name: "ENZARB_ORG_ID", Value: project.Spec.OrgID},
 								{Name: "ENZARB_TOOLS", Value: toolsJSON},
-								{Name: "DOCKER_HOST", Value: "tcp://localhost:1234"},
+								// buildkitd sidecar speaks the BuildKit gRPC API, not the
+								// Docker daemon API — clients reach it via BUILDKIT_HOST.
+								{Name: "BUILDKIT_HOST", Value: "tcp://localhost:1234"},
 								{Name: "HOME", Value: "/home/user"},
 							},
 							Ports: []corev1.ContainerPort{
@@ -307,12 +309,23 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName string, pr
 						},
 						{
 							Name:  "buildkitd",
-							Image: "moby/buildkitd:rootless",
-							Args:  []string{"--addr", "tcp://0.0.0.0:1234"},
+							Image: "moby/buildkit:rootless",
+							Args: []string{
+								"--addr", "tcp://0.0.0.0:1234",
+								// Required to run rootless buildkitd in an unprivileged container.
+								"--oci-worker-no-process-sandbox",
+							},
 							Ports: []corev1.ContainerPort{{Name: "buildkitd", ContainerPort: 1234}},
 							SecurityContext: &corev1.SecurityContext{
+								RunAsUser:  int64Ptr(1000),
+								RunAsGroup: int64Ptr(1000),
+								// Rootless buildkit needs seccomp + AppArmor unconfined to
+								// set up its user-namespace worker without privileges.
 								SeccompProfile: &corev1.SeccompProfile{
 									Type: corev1.SeccompProfileTypeUnconfined,
+								},
+								AppArmorProfile: &corev1.AppArmorProfile{
+									Type: corev1.AppArmorProfileTypeUnconfined,
 								},
 							},
 						},

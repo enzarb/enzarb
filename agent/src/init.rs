@@ -35,7 +35,47 @@ pub async fn bootstrap(project_id: &str) -> Result<()> {
         tracing::warn!("mise install exited with non-zero status");
     }
 
+    setup_buildx().await;
+
     Ok(())
+}
+
+/// Register the buildkitd sidecar as the default `docker buildx` builder so
+/// `docker build`/`docker buildx build` use it out of the box. Best-effort:
+/// failures (e.g. no docker CLI, sidecar not ready yet) are logged, not fatal.
+async fn setup_buildx() {
+    let Ok(addr) = std::env::var("BUILDKIT_HOST") else {
+        tracing::debug!("BUILDKIT_HOST unset; skipping buildx setup");
+        return;
+    };
+
+    // Idempotent: `create` fails if the builder already exists, so check first.
+    let exists = Command::new("docker")
+        .args(["buildx", "inspect", "enzarb"])
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    let result = if exists {
+        Command::new("docker")
+            .args(["buildx", "use", "enzarb"])
+            .status()
+            .await
+    } else {
+        Command::new("docker")
+            .args([
+                "buildx", "create", "--name", "enzarb", "--driver", "remote", "--use", &addr,
+            ])
+            .status()
+            .await
+    };
+
+    match result {
+        Ok(s) if s.success() => tracing::info!("default buildx builder -> {addr}"),
+        Ok(s) => tracing::warn!("buildx setup exited with status {s}"),
+        Err(e) => tracing::warn!("buildx setup failed: {e}"),
+    }
 }
 
 async fn write_mise_toml(path: &PathBuf) -> Result<()> {
