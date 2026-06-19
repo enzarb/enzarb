@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -85,8 +86,10 @@ func (w *InvoiceWorker) Work(ctx context.Context, job *river.Job[InvoiceArgs]) e
 	end := job.Args.PeriodEnd
 	slog.Info("generating invoices", "period_start", start, "period_end", end)
 
-	// Get pricing config from enzarb-config (stored in DB as config table or env)
-	pricing := defaultPricing()
+	pricing, err := pricingFromEnv()
+	if err != nil {
+		return fmt.Errorf("pricing config: %w", err)
+	}
 
 	// Get all orgs
 	rows, err := w.db.Query(ctx, `SELECT id, slug, tier FROM organizations`)
@@ -128,16 +131,47 @@ type PricingConfig struct {
 	FreeMemGiBSeconds        float64
 }
 
-func defaultPricing() PricingConfig {
-	return PricingConfig{
-		CPUSecondsPerUnit:        0.0000139,
-		MemGiBSecondsPerUnit:     0.0000028,
-		NetIngressPerByte:        0.0000000001,
-		NetEgressPerByte:         0.0000000009,
-		StorageGiBSecondsPerUnit: 0.0000000385,
-		FreeCPUSeconds:           36000,
-		FreeMemGiBSeconds:        107374182,
+func pricingFromEnv() (PricingConfig, error) {
+	parse := func(key string) (float64, error) {
+		v := os.Getenv(key)
+		if v == "" {
+			return 0, fmt.Errorf("missing required env var %s", key)
+		}
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid %s=%q: %w", key, v, err)
+		}
+		return f, nil
 	}
+
+	var p PricingConfig
+	var err error
+	errs := []error{}
+	if p.CPUSecondsPerUnit, err = parse("BILLING_CPU_SECONDS_PER_UNIT"); err != nil {
+		errs = append(errs, err)
+	}
+	if p.MemGiBSecondsPerUnit, err = parse("BILLING_MEM_GIB_SECONDS_PER_UNIT"); err != nil {
+		errs = append(errs, err)
+	}
+	if p.NetIngressPerByte, err = parse("BILLING_NET_INGRESS_PER_BYTE"); err != nil {
+		errs = append(errs, err)
+	}
+	if p.NetEgressPerByte, err = parse("BILLING_NET_EGRESS_PER_BYTE"); err != nil {
+		errs = append(errs, err)
+	}
+	if p.StorageGiBSecondsPerUnit, err = parse("BILLING_STORAGE_GIB_SECONDS_PER_UNIT"); err != nil {
+		errs = append(errs, err)
+	}
+	if p.FreeCPUSeconds, err = parse("BILLING_FREE_CPU_SECONDS"); err != nil {
+		errs = append(errs, err)
+	}
+	if p.FreeMemGiBSeconds, err = parse("BILLING_FREE_MEM_GIB_SECONDS"); err != nil {
+		errs = append(errs, err)
+	}
+	if len(errs) > 0 {
+		return PricingConfig{}, fmt.Errorf("%v", errs)
+	}
+	return p, nil
 }
 
 func (w *InvoiceWorker) generateOrgInvoice(ctx context.Context, orgID, orgSlug, tier string, start, end time.Time, p PricingConfig) error {

@@ -58,6 +58,14 @@ billing:
     repository: ghcr.io/enzarb/billing
     pullPolicy: IfNotPresent
     tag: ""  # defaults to Chart.appVersion
+  pricing:
+    cpuSecondsPerUnit: "0.0000139"
+    memGiBSecondsPerUnit: "0.0000028"
+    netIngressPerByte: "0.0000000001"
+    netEgressPerByte: "0.0000000009"
+    storageGiBSecondsPerUnit: "0.0000000385"
+    freeCPUSeconds: "36000"
+    freeMemGiBSeconds: "107374182"
   resources:
     requests:
       cpu: 50m
