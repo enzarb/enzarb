@@ -23,6 +23,11 @@ spec:
             mode: disable
       web:
         http: 0.0.0.0:5556
+      oauth2:
+        # Skip the "Grant Access" consent screen for all clients. The
+        # per-staticClient skipApprovalScreen is not reliably honored; this
+        # global oauth2 toggle is the canonical Dex setting.
+        skipApprovalScreen: true
       frontend:
         theme: custom
         issuer: enzarb
