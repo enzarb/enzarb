@@ -423,14 +423,17 @@ jobs:
         # SET_* (job-level env) carry the change-detection booleans. Only changed
         # components advance to the new version; unchanged components keep theirs.
         run: |
-          v="$VERSION" yq -i '
-            .app.image.tag       = (strenv(SET_APP)       == "true" ? strenv(v) : .app.image.tag) |
-            .operator.image.tag  = (strenv(SET_OPERATOR)  == "true" ? strenv(v) : .operator.image.tag) |
-            .metering.image.tag  = (strenv(SET_METERING)  == "true" ? strenv(v) : .metering.image.tag) |
-            .billing.image.tag   = (strenv(SET_BILLING)   == "true" ? strenv(v) : .billing.image.tag) |
-            .workspace.image.tag = (strenv(SET_WORKSPACE) == "true" ? strenv(v) : .workspace.image.tag)
-          ' charts/enzarb/values.yaml
-          echo "Updated tags:"; yq '... | select(has("image")) | .image.tag' charts/enzarb/values.yaml 2>/dev/null || true
+          set_tag() {
+            VERSION="$VERSION" yq -i ".${1}.image.tag = strenv(VERSION)" charts/enzarb/values.yaml
+            echo "  pinned ${1} -> ${VERSION}"
+          }
+          [ "$SET_APP" = "true" ]       && set_tag app
+          [ "$SET_OPERATOR" = "true" ]  && set_tag operator
+          [ "$SET_METERING" = "true" ]  && set_tag metering
+          [ "$SET_BILLING" = "true" ]   && set_tag billing
+          [ "$SET_WORKSPACE" = "true" ] && set_tag workspace
+          echo "Resulting image tags:"
+          yq '{"app":.app.image.tag,"operator":.operator.image.tag,"metering":.metering.image.tag,"billing":.billing.image.tag,"workspace":.workspace.image.tag}' charts/enzarb/values.yaml
 
       - name: Write VERSION file
         env:
@@ -629,7 +632,7 @@ jobs:
           OTHER=$(echo "$LOG" | grep -vP '^- (feat|fix|[a-z]+!):' || true)
 
           # Per-component image tags come from the (already re-pinned) values.yaml.
-          IMAGES=$(yq -r '
+          IMAGES=$(yq '
             [
               "workspace:" + .workspace.image.tag,
               "operator:"  + .operator.image.tag,
