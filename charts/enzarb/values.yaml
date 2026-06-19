@@ -6,7 +6,7 @@ app:
   image:
     repository: ghcr.io/enzarb/app
     pullPolicy: IfNotPresent
-    tag: "v0.1.19"
+    tag: "v0.8.3"
   env:
     ORIGIN: https://enzarb.dev
   dbSecret:
@@ -34,13 +34,12 @@ app:
     limits:
       cpu: 1
       memory: 512Mi
-
 operator:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/operator
     pullPolicy: IfNotPresent
-    tag: "v0.1.19"
+    tag: "v0.8.3"
   leaderElection: true
   env:
     ENZARB_DOMAIN: enzarb.dev
@@ -55,12 +54,11 @@ operator:
     limits:
       cpu: 500m
       memory: 256Mi
-
 billing:
   image:
     repository: ghcr.io/enzarb/billing
     pullPolicy: IfNotPresent
-    tag: "v0.1.19"
+    tag: "v0.8.3"
   pricing:
     cpuSecondsPerUnit: "0.0000139"
     memGiBSecondsPerUnit: "0.0000028"
@@ -76,12 +74,11 @@ billing:
     limits:
       cpu: 250m
       memory: 128Mi
-
 metering:
   image:
     repository: ghcr.io/enzarb/metering
     pullPolicy: IfNotPresent
-    tag: "v0.1.19"
+    tag: "v0.8.3"
   hubbleLogPath: /var/run/cilium/hubble/events.log
   resources:
     requests:
@@ -90,14 +87,12 @@ metering:
     limits:
       cpu: 250m
       memory: 128Mi
-
 # workspace is not a Deployment in this chart; its tag is injected into the
 # operator as WORKSPACE_IMAGE and used as the image for project pods.
 workspace:
   image:
     repository: ghcr.io/enzarb/workspace
-    tag: "v0.1.19"
-
+    tag: "v0.8.3"
 database:
   clusterName: enzarb-db
   roles:
@@ -111,7 +106,6 @@ database:
       owner: gitea
     - name: dex
       owner: dex
-
 gateway:
   className: envoy
   domain: enzarb.dev
@@ -119,12 +113,10 @@ gateway:
   issuer:
     email: curtis.ruck@gmail.com
     acmeServer: https://acme-v02.api.letsencrypt.org/directory
-
 imagePullSecrets: []
 serviceAccountName:
   app: enzarb-app
   operator: enzarb-operator
-
 nodeSelector: {}
 tolerations: []
 affinity: {}
