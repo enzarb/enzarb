@@ -16,31 +16,25 @@ pub async fn bootstrap(project_id: &str) -> Result<()> {
     tokio::fs::create_dir_all(home.join(".enzarb/tasks")).await?;
 
     let mise_toml = home.join("mise.toml");
-    // Earlier agents wrote unquoted versions (`tool = latest`), which newer mise
-    // rejects as invalid TOML. Detect that specific malformation and regenerate
-    // (backing up the old file); leave any other existing config untouched.
+    // Earlier agents hand-wrote mise.toml with unquoted versions (`tool = latest`),
+    // which newer mise rejects as invalid TOML. Detect that specific malformation
+    // and back it up so we can re-seed via `mise use`; leave any other existing
+    // config untouched.
     let malformed = match tokio::fs::read_to_string(&mise_toml).await {
         Ok(c) => c.lines().any(|l| l.trim().ends_with("= latest")),
         Err(_) => false,
     };
-    if !mise_toml.exists() || malformed {
-        if malformed {
-            tracing::warn!("mise.toml has unquoted versions; regenerating");
-            let _ = tokio::fs::rename(&mise_toml, home.join("mise.toml.bak")).await;
-        } else {
-            tracing::info!(
-                project_id,
-                "first boot: generating mise.toml from ENZARB_TOOLS"
-            );
-        }
-        write_mise_toml(&mise_toml).await?;
+    if malformed {
+        tracing::warn!("mise.toml has unquoted versions; re-seeding via mise use");
+        let _ = tokio::fs::rename(&mise_toml, home.join("mise.toml.bak")).await;
     }
-
-    // mise refuses to use untrusted config files; trust ours before installing.
-    let _ = Command::new("mise")
-        .args(["trust", &mise_toml.to_string_lossy()])
-        .status()
-        .await;
+    // On first boot (or after a malformed file is cleared), let mise write its own
+    // config from ENZARB_TOOLS via `mise use` — it owns the format and trusts what
+    // it writes, rather than us templating the TOML by hand.
+    if !mise_toml.exists() {
+        tracing::info!(project_id, "seeding tools via mise use");
+        seed_tools(&home).await;
+    }
 
     tracing::info!("running mise install");
     let status = Command::new("mise")
@@ -139,23 +133,32 @@ async fn setup_buildx() {
     }
 }
 
-async fn write_mise_toml(path: &PathBuf) -> Result<()> {
+/// Seed the workspace's tools by running `mise use <tool>@<version>` for each
+/// entry in ENZARB_TOOLS, with the home directory as the working dir so mise
+/// manages `~/mise.toml`. Best-effort per tool.
+async fn seed_tools(home: &PathBuf) {
     let tools_json = std::env::var("ENZARB_TOOLS").unwrap_or_else(|_| "[]".to_string());
     let tools: Vec<Tool> = serde_json::from_str(&tools_json).unwrap_or_default();
 
-    let mut content = String::from("[tools]\n");
     for tool in tools {
-        // TOML string values must be quoted — mise rejects bare words like `latest`.
         let version = if tool.version.is_empty() {
             "latest"
         } else {
             &tool.version
         };
-        content.push_str(&format!("{} = \"{}\"\n", tool.name, version));
+        let spec = format!("{}@{}", tool.name, version);
+        match Command::new("mise")
+            .arg("use")
+            .arg(&spec)
+            .current_dir(home)
+            .status()
+            .await
+        {
+            Ok(s) if s.success() => tracing::info!("mise use {spec}"),
+            Ok(s) => tracing::warn!("mise use {spec} exited with status {s}"),
+            Err(e) => tracing::warn!("mise use {spec} failed: {e}"),
+        }
     }
-
-    tokio::fs::write(path, content).await?;
-    Ok(())
 }
 
 pub fn home_dir() -> PathBuf {
