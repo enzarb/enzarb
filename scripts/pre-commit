@@ -51,15 +51,15 @@ has_changes() {
     echo "$STAGED" | grep -q "^$1"
 }
 
-# operator, metering, and billing are independent Go modules.
-GO_MODULES="operator metering billing"
+# operator, metering, billing, and authd are independent Go modules.
+GO_MODULES="operator metering billing authd"
 
 # STAGED_OVERRIDE=all skips the staged-file filter (used by `mise run lint`)
 if [ "${STAGED_OVERRIDE:-}" = "all" ]; then
     GO_CHANGED=true; RUST_CHANGED=true; JS_CHANGED=true; DOCKER_CHANGED=true
 else
     GO_CHANGED=false
-    for prefix in operator/ metering/ billing/; do
+    for prefix in operator/ metering/ billing/ authd/; do
         if has_changes "$prefix"; then GO_CHANGED=true; break; fi
     done
     if has_changes ".golangci.yml" || has_changes "go.work"; then GO_CHANGED=true; fi
@@ -86,7 +86,7 @@ printf "\n${YELLOW}Running pre-commit checks...${NC}\n\n"
 if $GO_CHANGED; then
     echo "Go:"
     run_check "gofmt" bash -c \
-        'files=$(gofmt -l operator metering billing 2>/dev/null | grep -v vendor || true); [ -z "$files" ] || (echo "$files"; exit 1)'
+        'files=$(gofmt -l operator metering billing authd 2>/dev/null | grep -v vendor || true); [ -z "$files" ] || (echo "$files"; exit 1)'
     if ! command -v golangci-lint &>/dev/null; then
         printf "  ${YELLOW}golangci-lint not found — skipping lint (run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)${NC}\n"
     else
