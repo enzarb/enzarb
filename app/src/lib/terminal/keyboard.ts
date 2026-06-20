@@ -150,9 +150,11 @@ export function encode(key: KeyDef, mods: Mods): string {
 function c(code: string, shift: string): KeyDef {
 	return { label: code, shiftLabel: shift, code, shift };
 }
-// Letter: label shows uppercase, output respects Shift.
+// Letter: shows lowercase by default and uppercase under Shift (like a real
+// keyboard); output respects Shift.
 function l(letter: string): KeyDef {
-	return { label: letter.toUpperCase(), code: letter, shift: letter.toUpperCase() };
+	const upper = letter.toUpperCase();
+	return { label: letter, shiftLabel: upper, code: letter, shift: upper };
 }
 
 export const usQwerty: KeyboardLayout = {
