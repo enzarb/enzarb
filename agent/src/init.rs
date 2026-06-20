@@ -36,8 +36,75 @@ pub async fn bootstrap(project_id: &str) -> Result<()> {
     }
 
     setup_buildx().await;
+    setup_registry_auth().await;
+    setup_git().await;
 
     Ok(())
+}
+
+/// Register the docker credential helper for the project's registry so
+/// `docker`/`buildx` push/pull authenticate automatically with the pod's SA
+/// token. Writes `~/.docker/config.json` (HOME is on the writable PVC).
+async fn setup_registry_auth() {
+    let Ok(registry) = std::env::var("ENZARB_REGISTRY") else {
+        tracing::debug!("ENZARB_REGISTRY unset; skipping docker auth setup");
+        return;
+    };
+    let dir = home_dir().join(".docker");
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        tracing::warn!("create ~/.docker: {e}");
+        return;
+    }
+    // credHelpers maps the registry host to `docker-credential-k8s-sa`.
+    let config = serde_json::json!({ "credHelpers": { &registry: "k8s-sa" } });
+    if let Err(e) = tokio::fs::write(dir.join("config.json"), config.to_string()).await {
+        tracing::warn!("write docker config.json: {e}");
+        return;
+    }
+    tracing::info!("docker credential helper configured for {registry}");
+}
+
+/// Preconfigure git: the enzarb credential helper for the Gitea host, a default
+/// identity, and a clone of the project repo on first boot. Best-effort.
+async fn setup_git() {
+    let Ok(remote) = std::env::var("ENZARB_GIT_REMOTE") else {
+        tracing::debug!("ENZARB_GIT_REMOTE unset; skipping git setup");
+        return;
+    };
+    let Some(host) = remote
+        .split_once("://")
+        .and_then(|(_, rest)| rest.split('/').next())
+    else {
+        tracing::warn!("ENZARB_GIT_REMOTE has no host: {remote}");
+        return;
+    };
+
+    let slug = std::env::var("ENZARB_PROJECT_SLUG").unwrap_or_else(|_| "project".to_string());
+    let git = |args: &[&str]| {
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        async move { Command::new("git").args(&args).status().await }
+    };
+
+    // Scoped credential helper: git runs `git-credential-enzarb` only for this host.
+    let helper_key = format!("credential.https://{host}.helper");
+    let _ = git(&["config", "--global", &helper_key, "enzarb"]).await;
+    let _ = git(&["config", "--global", "user.name", &slug]).await;
+    let email = format!("{slug}@workspaces.{host}");
+    let _ = git(&["config", "--global", "user.email", &email]).await;
+
+    // Clone the repo on first boot if the working copy isn't there yet.
+    let dest = home_dir().join(&slug);
+    if !dest.join(".git").exists() {
+        match Command::new("git")
+            .args(["clone", &remote, &dest.to_string_lossy()])
+            .status()
+            .await
+        {
+            Ok(s) if s.success() => tracing::info!("cloned project repo to {}", dest.display()),
+            Ok(s) => tracing::warn!("git clone exited with status {s}"),
+            Err(e) => tracing::warn!("git clone failed: {e}"),
+        }
+    }
 }
 
 /// Register the buildkitd sidecar as the default `docker buildx` builder so

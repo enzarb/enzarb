@@ -24,6 +24,16 @@ spec:
         auth:
           ENABLE_REVERSE_PROXY_AUTHENTICATION: true
           REVERSE_PROXY_AUTHENTICATION_USER: X-Gitea-User
+          # We provision project users explicitly via the admin API (operator
+          # ensureGiteaRepo); do NOT auto-register arbitrary proxied identities.
+          ENABLE_REVERSE_PROXY_AUTO_REGISTRATION: false
+          # SECURITY: Gitea trusts X-Gitea-User, which authd sets only after
+          # validating the workspace SA token at the gateway. The primary control
+          # against a pod reaching gitea-http directly and spoofing this header is
+          # the NetworkPolicy `enzarb-gitea-ingress` (charts/enzarb), which limits
+          # ingress to the platform namespace and the Envoy gateway. Given that,
+          # trusting any immediate peer here is acceptable.
+          REVERSE_PROXY_TRUSTED_PROXIES: "*"
       additionalConfigFromEnvs:
         - name: GITEA__database__PASSWD
           valueFrom:

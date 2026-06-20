@@ -11,6 +11,10 @@ path = "src/main.rs"
 name = "docker-credential-k8s-sa"
 path = "src/bin/docker_credential_k8s_sa.rs"
 
+[[bin]]
+name = "git-credential-enzarb"
+path = "src/bin/git_credential_enzarb.rs"
+
 [dependencies]
 axum = { version = "0.8", features = ["ws", "macros"] }
 axum-extra = { version = "0.12.6", features = ["typed-header"] }

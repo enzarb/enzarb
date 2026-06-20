@@ -101,6 +101,12 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("get namespace: %w", err)
 	}
 
+	// Registry and Gitea paths are keyed by the human-readable org slug.
+	orgSlug, err := r.orgSlug(ctx, project.Spec.OrgID)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("resolve org slug: %w", err)
+	}
+
 	saName := fmt.Sprintf("%s-sa", project.Spec.Slug)
 	if err := r.ensureServiceAccount(ctx, orgNS, saName, &project); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensure service account: %w", err)
@@ -115,7 +121,7 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("ensure PVC: %w", err)
 	}
 
-	if err := r.ensureDeployment(ctx, orgNS, saName, pvcName, &project); err != nil {
+	if err := r.ensureDeployment(ctx, orgNS, saName, pvcName, orgSlug, &project); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensure deployment: %w", err)
 	}
 
@@ -123,7 +129,7 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("ensure service: %w", err)
 	}
 
-	if err := r.ensureGiteaRepo(ctx, orgNS, &project); err != nil {
+	if err := r.ensureGiteaRepo(ctx, orgSlug, &project); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensure gitea repo: %w", err)
 	}
 
@@ -333,11 +339,11 @@ func (r *ProjectReconciler) ensurePVC(ctx context.Context, ns, name string, proj
 	return nil
 }
 
-func (r *ProjectReconciler) ensureDeployment(ctx context.Context, ns, saName, pvcName string, project *enzarbv1alpha1.Project) error {
+func (r *ProjectReconciler) ensureDeployment(ctx context.Context, ns, saName, pvcName, orgSlug string, project *enzarbv1alpha1.Project) error {
 	deployName := fmt.Sprintf("project-%s", project.Spec.Slug)
 	deploy := &appsv1.Deployment{}
 	err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: deployName}, deploy)
-	desired := r.buildDeployment(ns, deployName, saName, pvcName, project)
+	desired := r.buildDeployment(ns, deployName, saName, pvcName, orgSlug, project)
 	if err := controllerutil.SetControllerReference(project, desired, r.Scheme); err != nil {
 		return err
 	}
@@ -352,7 +358,7 @@ func (r *ProjectReconciler) ensureDeployment(ctx context.Context, ns, saName, pv
 	return r.Update(ctx, deploy)
 }
 
-func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName string, project *enzarbv1alpha1.Project) *appsv1.Deployment {
+func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug string, project *enzarbv1alpha1.Project) *appsv1.Deployment {
 	labels := projectLabels(project)
 	replicas := int32(1)
 
@@ -415,6 +421,12 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName string, pr
 								{Name: "ENZARB_PROJECT_SLUG", Value: project.Spec.Slug},
 								{Name: "ENZARB_ORG_ID", Value: project.Spec.OrgID},
 								{Name: "ENZARB_TOOLS", Value: toolsJSON},
+								// Preconfigured registry + git coordinates (GHCR-style). The
+								// workspace's credential helpers auth to these automatically; the
+								// project may only push/pull within its own <orgSlug>/<slug> prefix.
+								{Name: "ENZARB_REGISTRY", Value: fmt.Sprintf("registry.%s", r.Domain)},
+								{Name: "ENZARB_IMAGE", Value: fmt.Sprintf("registry.%s/%s/%s", r.Domain, orgSlug, project.Spec.Slug)},
+								{Name: "ENZARB_GIT_REMOTE", Value: fmt.Sprintf("https://gitea.%s/%s/%s.git", r.Domain, orgSlug, project.Spec.Slug)},
 								// buildkitd sidecar speaks the BuildKit gRPC API, not the
 								// Docker daemon API — clients reach it via BUILDKIT_HOST.
 								{Name: "BUILDKIT_HOST", Value: "tcp://localhost:1234"},
@@ -570,22 +582,51 @@ func (r *ProjectReconciler) ensureService(ctx context.Context, ns string, projec
 	return err
 }
 
-func (r *ProjectReconciler) ensureGiteaRepo(ctx context.Context, ns string, project *enzarbv1alpha1.Project) error {
+func (r *ProjectReconciler) ensureGiteaRepo(ctx context.Context, orgSlug string, project *enzarbv1alpha1.Project) error {
 	if r.GiteaClient == nil {
 		return nil
 	}
-	orgSlug := project.Spec.OrgID
+	// Keyed by the human-readable org slug, matching the registry prefix and the
+	// X-Gitea-User identity authd asserts.
 	if err := r.GiteaClient.EnsureOrg(orgSlug); err != nil {
 		return fmt.Errorf("ensure gitea org: %w", err)
 	}
-	_, err := r.GiteaClient.CreateRepo(orgSlug, gitea.CreateRepoRequest{
+	if _, err := r.GiteaClient.CreateRepo(orgSlug, gitea.CreateRepoRequest{
 		Name:          project.Spec.Slug,
 		Description:   project.Spec.DisplayName,
 		Private:       true,
 		AutoInit:      true,
 		DefaultBranch: "main",
-	})
-	return err
+	}); err != nil {
+		return err
+	}
+
+	// Provision the per-project Gitea identity that authd asserts via
+	// reverse-proxy auth, and grant it write to only this repo. This is what
+	// keeps git private-by-default and isolated per project, mirroring the
+	// registry's <orgSlug>/<slug> scoping.
+	user := fmt.Sprintf("%s--%s", orgSlug, project.Spec.Slug)
+	email := fmt.Sprintf("%s@workspaces.%s", user, r.Domain)
+	if err := r.GiteaClient.EnsureUser(user, email); err != nil {
+		return fmt.Errorf("ensure gitea user: %w", err)
+	}
+	if err := r.GiteaClient.AddCollaborator(orgSlug, project.Spec.Slug, user, "write"); err != nil {
+		return fmt.Errorf("add gitea collaborator: %w", err)
+	}
+	return nil
+}
+
+// orgSlug resolves a project's org id to the org's human-readable slug via the
+// cluster-scoped Organization CR (its name is the org id).
+func (r *ProjectReconciler) orgSlug(ctx context.Context, orgID string) (string, error) {
+	var org enzarbv1alpha1.Organization
+	if err := r.Get(ctx, types.NamespacedName{Name: orgID}, &org); err != nil {
+		return "", err
+	}
+	if org.Spec.Slug == "" {
+		return "", fmt.Errorf("organization %s has no slug", orgID)
+	}
+	return org.Spec.Slug, nil
 }
 
 // ensureReferenceGrant permits HTTPRoutes in enzarb-system (where the shared

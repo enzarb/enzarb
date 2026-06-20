@@ -16,12 +16,12 @@ function resolveNamespace(minRole?: 'admin') {
 export const getRepositories = query(async () => {
 	const org = resolveNamespace();
 	const all = await listRepositories();
-	return all.filter((r) => r.name.startsWith(`${org.id}/`));
+	return all.filter((r) => r.name.startsWith(`${org.slug}/`));
 });
 
 export const getRepoTags = query(z.string(), async (repo) => {
 	const org = resolveNamespace();
-	if (!repo.startsWith(`${org.id}/`)) error(403, 'Forbidden');
+	if (!repo.startsWith(`${org.slug}/`)) error(403, 'Forbidden');
 	return listTags(repo);
 });
 
@@ -29,7 +29,7 @@ export const getImageManifest = query(
 	z.object({ repo: z.string(), reference: z.string() }),
 	async ({ repo, reference }) => {
 		const org = resolveNamespace();
-		if (!repo.startsWith(`${org.id}/`)) error(403, 'Forbidden');
+		if (!repo.startsWith(`${org.slug}/`)) error(403, 'Forbidden');
 		return getManifest(repo, reference);
 	}
 );
@@ -38,7 +38,7 @@ export const removeImage = command(
 	z.object({ repo: z.string(), digest: z.string() }),
 	async ({ repo, digest }) => {
 		const org = resolveNamespace('admin');
-		if (!repo.startsWith(`${org.id}/`)) error(403, 'Forbidden');
+		if (!repo.startsWith(`${org.slug}/`)) error(403, 'Forbidden');
 		await deleteManifest(repo, digest);
 	}
 );

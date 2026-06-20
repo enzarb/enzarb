@@ -1,11 +1,25 @@
-import { config } from './config';
+// Zot registry client using OCI Distribution API v2.
+// All calls are server-side; Zot is cluster-internal only.
+//
+// Zot enforces Docker token auth, so every request needs a scoped bearer token
+// minted by authd. The app authenticates to authd as "admin" (shared secret)
+// and receives a token granting pull/delete on the requested scope.
 
-// Zot registry client using OCI Distribution API v2
-// All calls are server-side; Zot is cluster-internal only
+async function registryToken(scope: string): Promise<string> {
+	const authd = process.env.AUTHD_INTERNAL_URL ?? 'http://enzarb-authd.enzarb-system:8080';
+	const secret = process.env.REGISTRY_ADMIN_TOKEN ?? '';
+	const params = new URLSearchParams({ service: 'registry.enzarb.dev', scope });
+	const res = await fetch(`${authd}/auth/token?${params}`, {
+		headers: { Authorization: `Basic ${btoa(`admin:${secret}`)}` }
+	});
+	if (!res.ok) throw new Error(`authd token error ${res.status}: ${await res.text()}`);
+	const data = await res.json();
+	return data.token ?? data.access_token;
+}
 
-async function zotFetch(path: string, options?: RequestInit) {
+async function zotFetch(path: string, scope: string, options?: RequestInit) {
 	const registryInternal = process.env.REGISTRY_INTERNAL_URL ?? 'http://zot.enzarb-system:5000';
-	const token = process.env.REGISTRY_ADMIN_TOKEN ?? '';
+	const token = await registryToken(scope);
 	const res = await fetch(`${registryInternal}${path}`, {
 		...options,
 		headers: {
@@ -29,20 +43,20 @@ export interface TagList {
 }
 
 export async function listRepositories(): Promise<Repository[]> {
-	const res = await zotFetch('/v2/_catalog');
+	const res = await zotFetch('/v2/_catalog', 'registry:catalog:*');
 	if (res.status === 404) return [];
 	const data = await res.json();
 	return (data.repositories ?? []).map((name: string) => ({ name }));
 }
 
 export async function listTags(repo: string): Promise<TagList> {
-	const res = await zotFetch(`/v2/${repo}/tags/list`);
+	const res = await zotFetch(`/v2/${repo}/tags/list`, `repository:${repo}:pull`);
 	if (res.status === 404) return { name: repo, tags: [] };
 	return res.json();
 }
 
 export async function getManifest(repo: string, reference: string) {
-	const res = await zotFetch(`/v2/${repo}/manifests/${reference}`, {
+	const res = await zotFetch(`/v2/${repo}/manifests/${reference}`, `repository:${repo}:pull`, {
 		headers: { Accept: 'application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json' }
 	});
 	if (res.status === 404) return null;
@@ -50,5 +64,5 @@ export async function getManifest(repo: string, reference: string) {
 }
 
 export async function deleteManifest(repo: string, digest: string) {
-	await zotFetch(`/v2/${repo}/manifests/${digest}`, { method: 'DELETE' });
+	await zotFetch(`/v2/${repo}/manifests/${digest}`, `repository:${repo}:pull,delete`, { method: 'DELETE' });
 }

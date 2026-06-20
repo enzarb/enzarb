@@ -73,6 +73,28 @@ spec:
       allowedRoutes:
         namespaces:
           from: Same
+    - name: https-registry
+      port: 443
+      protocol: HTTPS
+      hostname: {{ printf "registry.%s" .Values.gateway.domain | quote }}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: enzarb-registry-tls
+      allowedRoutes:
+        namespaces:
+          from: Same
+    - name: https-gitea
+      port: 443
+      protocol: HTTPS
+      hostname: {{ printf "gitea.%s" .Values.gateway.domain | quote }}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: enzarb-gitea-tls
+      allowedRoutes:
+        namespaces:
+          from: Same
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate
@@ -171,3 +193,100 @@ spec:
           requestRedirect:
             scheme: https
             statusCode: 301
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: enzarb-registry-tls
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    cert-manager.io/issuer: letsencrypt
+spec:
+  secretName: enzarb-registry-tls
+  issuerRef:
+    name: letsencrypt
+    kind: Issuer
+  dnsNames:
+    - {{ printf "registry.%s" .Values.gateway.domain }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: enzarb-gitea-tls
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    cert-manager.io/issuer: letsencrypt
+spec:
+  secretName: enzarb-gitea-tls
+  issuerRef:
+    name: letsencrypt
+    kind: Issuer
+  dnsNames:
+    - {{ printf "gitea.%s" .Values.gateway.domain }}
+---
+# Registry token endpoint (Docker token-auth) → authd. Must precede the catch-all
+# Zot route so /auth/token is not proxied to the registry.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: enzarb-registry
+  namespace: {{ .Release.Namespace }}
+spec:
+  parentRefs:
+    - name: enzarb
+      sectionName: https-registry
+  hostnames:
+    - {{ printf "registry.%s" .Values.gateway.domain | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /auth/token
+      backendRefs:
+        - name: enzarb-authd
+          port: 8080
+    - backendRefs:
+        - name: zot
+          port: 5000
+---
+# Gitea over HTTPS, gated by the authd extAuth check (SecurityPolicy below).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: enzarb-gitea
+  namespace: {{ .Release.Namespace }}
+spec:
+  parentRefs:
+    - name: enzarb
+      sectionName: https-gitea
+  hostnames:
+    - {{ printf "gitea.%s" .Values.gateway.domain | quote }}
+  rules:
+    - backendRefs:
+        - name: gitea-http
+          port: 3000
+---
+# extAuth: Envoy calls authd /authz/git with the client's Authorization header;
+# authd validates the workspace SA token and returns X-Gitea-User, which Gitea
+# trusts via reverse-proxy authentication.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: enzarb-gitea-extauth
+  namespace: {{ .Release.Namespace }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: enzarb-gitea
+  extAuth:
+    failOpen: false
+    headersToExtAuth:
+      - authorization
+    http:
+      backendRefs:
+        - name: enzarb-authd
+          port: 8080
+      path: /authz/git
+      headersToBackend:
+        - x-gitea-user

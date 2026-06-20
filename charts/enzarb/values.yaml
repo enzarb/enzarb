@@ -9,6 +9,10 @@ app:
     tag: "v0.12.1"
   env:
     ORIGIN: https://enzarb.dev
+    # Reach Gitea's admin API internally — the external host is fronted by the
+    # authd extAuth check, which only accepts workspace SA tokens, not the app's
+    # admin token.
+    GITEA_URL: http://gitea-http.enzarb-system.svc.cluster.local:3000
   dbSecret:
     name: enzarb-db-enzarb-app-credentials
     hostKey: host
@@ -81,6 +85,31 @@ metering:
     limits:
       cpu: 250m
       memory: 128Mi
+# authd mints scoped registry tokens (Docker token-auth) and answers the Gitea
+# extAuth check. It validates workspace ServiceAccount tokens via TokenReview.
+authd:
+  image:
+    repository: ghcr.io/enzarb/authd
+    pullPolicy: IfNotPresent
+    tag: "v0.1.0"
+  # Secret holding the RSA token-signing keypair (tls.crt/tls.key). The same
+  # cert is mounted into Zot as its bearer-auth trust anchor. Create with:
+  #   openssl req -x509 -newkey rsa:2048 -nodes -keyout tls.key -out tls.crt \
+  #     -subj "/CN=registry-token" -days 3650
+  #   kubectl -n enzarb-system create secret tls registry-token-signing \
+  #     --cert=tls.crt --key=tls.key
+  signingSecret: registry-token-signing
+  # Shared secret the app presents (basic auth user "admin") for UI listing.
+  adminSecret:
+    name: enzarb-registry-admin
+    key: token
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 96Mi
 # workspace is not a Deployment in this chart; its tag is injected into the
 # operator as WORKSPACE_IMAGE and used as the image for project pods.
 workspace:
@@ -102,6 +131,18 @@ database:
       owner: gitea
     - name: dex
       owner: dex
+# Gitea trusts the X-Gitea-User header (reverse-proxy auth) that authd sets at
+# the gateway. This NetworkPolicy is the primary control preventing a workspace
+# pod from reaching gitea-http directly and spoofing that header: only the
+# platform namespace and the Envoy gateway may connect. Disable only if your CNI
+# doesn't enforce NetworkPolicy (Cilium does).
+gitea:
+  networkPolicy:
+    enabled: true
+    podSelector:
+      app.kubernetes.io/name: gitea
+    # Namespace where Envoy Gateway runs its data-plane proxy pods.
+    gatewayNamespace: envoy-gateway-system
 gateway:
   className: envoy
   domain: enzarb.dev

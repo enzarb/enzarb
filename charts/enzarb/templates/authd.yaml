@@ -1,0 +1,110 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: enzarb-authd
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: enzarb-authd
+    app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: enzarb-authd
+  template:
+    metadata:
+      labels:
+        app: enzarb-authd
+        app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+    spec:
+      serviceAccountName: enzarb-authd
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: authd
+          image: "{{ .Values.authd.image.repository }}:{{ .Values.authd.image.tag }}"
+          imagePullPolicy: {{ .Values.authd.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          env:
+            - name: LISTEN_ADDR
+              value: ":8080"
+            - name: TOKEN_SIGNING_KEY
+              value: /etc/authd/signing/tls.key
+            - name: ADMIN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.authd.adminSecret.name }}
+                  key: {{ .Values.authd.adminSecret.key }}
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          volumeMounts:
+            - name: signing
+              mountPath: /etc/authd/signing
+              readOnly: true
+          resources: {{- toYaml .Values.authd.resources | nindent 12 }}
+      volumes:
+        - name: signing
+          secret:
+            secretName: {{ .Values.authd.signingSecret }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: enzarb-authd
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: enzarb-authd
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: enzarb-authd
+  namespace: {{ .Release.Namespace }}
+---
+# authd validates workspace SA tokens via the TokenReview API.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: enzarb-authd
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+  # Resolve org id (from the SA namespace) to the org slug used in repo paths.
+  - apiGroups: ["enzarb.io"]
+    resources: ["organizations"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: enzarb-authd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: enzarb-authd
+subjects:
+  - kind: ServiceAccount
+    name: enzarb-authd
+    namespace: {{ .Release.Namespace }}

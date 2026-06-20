@@ -29,6 +29,7 @@ jobs:
       operator: ${{ steps.detect.outputs.operator }}
       metering: ${{ steps.detect.outputs.metering }}
       billing: ${{ steps.detect.outputs.billing }}
+      authd: ${{ steps.detect.outputs.authd }}
       workspace: ${{ steps.detect.outputs.workspace }}
       agent: ${{ steps.detect.outputs.agent }}
       go_any: ${{ steps.detect.outputs.go_any }}
@@ -63,7 +64,7 @@ jobs:
           echo "Changed files:"; echo "$FILES" | sed 's/^/  /'
 
           app=false; operator=false; metering=false; billing=false
-          workspace=false; agent=false
+          authd=false; workspace=false; agent=false
 
           # Paths that never trigger an image rebuild (chart-only releases).
           is_inert() {
@@ -82,6 +83,7 @@ jobs:
               operator/*)   operator=true ;;
               metering/*)   metering=true ;;
               billing/*)    billing=true ;;
+              authd/*)      authd=true ;;
               *)
                 if ! is_inert "$f"; then
                   # Unmapped path: fail safe and rebuild everything.
@@ -94,11 +96,11 @@ jobs:
           if [ "$REBUILD_ALL" = "true" ]; then
             echo "Unmapped/new path or first release — rebuilding all images."
             app=true; operator=true; metering=true; billing=true
-            workspace=true; agent=true
+            authd=true; workspace=true; agent=true
           fi
 
           go_any=false
-          if $operator || $metering || $billing; then go_any=true; fi
+          if $operator || $metering || $billing || $authd; then go_any=true; fi
 
           docker_any=false
           if echo "$FILES" | grep -qE 'Dockerfile|\.trivyignore'; then docker_any=true; fi
@@ -112,6 +114,7 @@ jobs:
           $operator  && add operator  operator operator/Dockerfile operator
           $metering  && add metering  metering metering/Dockerfile metering
           $billing   && add billing   billing  billing/Dockerfile  billing
+          $authd     && add authd     authd    authd/Dockerfile    authd
           $workspace && add workspace .    workspace/Dockerfile workspace
           true
 
@@ -120,6 +123,7 @@ jobs:
             echo "operator=$operator"
             echo "metering=$metering"
             echo "billing=$billing"
+            echo "authd=$authd"
             echo "workspace=$workspace"
             echo "agent=$agent"
             echo "go_any=$go_any"
@@ -139,7 +143,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [operator, metering, billing]
+        module: [operator, metering, billing, authd]
     steps:
       - uses: actions/checkout@v6.0.3
 
@@ -223,7 +227,7 @@ jobs:
       - name: govulncheck (per module)
         # exit 3 = vulns in required modules but not in called code (informational); fail only on exit 1/2
         run: |
-          for m in operator metering billing; do
+          for m in operator metering billing authd; do
             echo "::group::govulncheck $m"
             (cd "$m" && govulncheck -scan=package ./...) || [ $? -eq 3 ]
             echo "::endgroup::"
@@ -439,9 +443,10 @@ jobs:
           [ "$SET_OPERATOR" = "true" ]  && set_tag operator
           [ "$SET_METERING" = "true" ]  && set_tag metering
           [ "$SET_BILLING" = "true" ]   && set_tag billing
+          [ "$SET_AUTHD" = "true" ]     && set_tag authd
           [ "$SET_WORKSPACE" = "true" ] && set_tag workspace
           echo "Resulting image tags:"
-          yq '{"app":.app.image.tag,"operator":.operator.image.tag,"metering":.metering.image.tag,"billing":.billing.image.tag,"workspace":.workspace.image.tag}' charts/enzarb/values.yaml
+          yq '{"app":.app.image.tag,"operator":.operator.image.tag,"metering":.metering.image.tag,"billing":.billing.image.tag,"authd":.authd.image.tag,"workspace":.workspace.image.tag}' charts/enzarb/values.yaml
 
       - name: Write VERSION file
         env:
@@ -498,6 +503,7 @@ jobs:
       SET_OPERATOR: ${{ needs.changes.outputs.operator }}
       SET_METERING: ${{ needs.changes.outputs.metering }}
       SET_BILLING: ${{ needs.changes.outputs.billing }}
+      SET_AUTHD: ${{ needs.changes.outputs.authd }}
       SET_WORKSPACE: ${{ needs.changes.outputs.workspace }}
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -652,6 +658,7 @@ jobs:
               "operator:"  + .operator.image.tag,
               "metering:"  + .metering.image.tag,
               "billing:"   + .billing.image.tag,
+              "authd:"     + .authd.image.tag,
               "app:"       + .app.image.tag
             ] | .[]' charts/enzarb/values.yaml)
 

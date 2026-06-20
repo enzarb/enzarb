@@ -22,6 +22,17 @@ spec:
     envFrom:
       - secretRef:
           name: zot-s3-credentials
+    # Mount the shared token-signing cert. authd signs registry tokens with the
+    # matching key; Zot trusts this cert as its bearer-auth anchor (see
+    # http.auth.bearer.cert below). Same Secret as charts/enzarb authd.signingSecret.
+    extraVolumes:
+      - name: token-signing
+        secret:
+          secretName: registry-token-signing
+    extraVolumeMounts:
+      - name: token-signing
+        mountPath: /etc/zot/token
+        readOnly: true
     configFiles:
       config.json: |-
         {
@@ -45,7 +56,7 @@ spec:
               "bearer": {
                 "realm": "https://registry.enzarb.dev/auth/token",
                 "service": "registry.enzarb.dev",
-                "cert": "/etc/zot/tls/tls.crt"
+                "cert": "/etc/zot/token/tls.crt"
               }
             }
           },

@@ -5,6 +5,7 @@ dist/
 /operator/operator
 /metering/metering
 /billing/billing
+/authd/authd
 
 # Rust
 agent/target/

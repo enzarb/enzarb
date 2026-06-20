@@ -37,6 +37,8 @@ spec:
           env:
             - name: ORIGIN
               value: {{ .Values.app.env.ORIGIN | quote }}
+            - name: GITEA_URL
+              value: {{ .Values.app.env.GITEA_URL | quote }}
             - name: DB_HOST
               valueFrom:
                 secretKeyRef:
@@ -78,6 +80,15 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.app.jwt.secret.name }}
                   key: {{ .Values.app.jwt.secret.publicKeyKey }}
+            # Registry access goes through authd: the app authenticates as the
+            # "admin" client (shared secret) to mint scoped Zot tokens.
+            - name: AUTHD_INTERNAL_URL
+              value: "http://enzarb-authd.{{ .Release.Namespace }}:8080"
+            - name: REGISTRY_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.authd.adminSecret.name }}
+                  key: {{ .Values.authd.adminSecret.key }}
           livenessProbe:
             httpGet:
               path: /health

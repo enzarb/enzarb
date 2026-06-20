@@ -1,10 +1,20 @@
 package gitea
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 
 	"github.com/go-resty/resty/v2"
 )
+
+// randomPassword returns a 32-hex-char password for provisioned users. They
+// authenticate via reverse-proxy auth, so this is never used to log in.
+func randomPassword() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
 
 type Client struct {
 	http    *resty.Client
@@ -75,6 +85,51 @@ func (c *Client) CreateRepo(orgSlug string, req CreateRepoRequest) (*Repo, error
 		return nil, fmt.Errorf("gitea create repo failed: %s", resp.Body())
 	}
 	return &repo, nil
+}
+
+// EnsureUser creates a Gitea user if absent. The user never logs in with a
+// password — the workspace authenticates via reverse-proxy auth (X-Gitea-User,
+// set by authd after validating the SA token) — so we set a random unusable
+// password. Provisioning explicitly (rather than relying on auto-registration)
+// lets us grant repo access deterministically.
+func (c *Client) EnsureUser(username, email string) error {
+	resp, err := c.http.R().Get(fmt.Sprintf("/api/v1/users/%s", username))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode() == 200 {
+		return nil
+	}
+	createResp, err := c.http.R().
+		SetBody(map[string]any{
+			"username":             username,
+			"email":                email,
+			"password":             randomPassword(),
+			"must_change_password": false,
+		}).
+		Post("/api/v1/admin/users")
+	if err != nil {
+		return err
+	}
+	if createResp.StatusCode() >= 400 {
+		return fmt.Errorf("gitea create user failed: %s", createResp.Body())
+	}
+	return nil
+}
+
+// AddCollaborator grants a user a permission level on a repo ("read"/"write"/
+// "admin"). Idempotent — Gitea treats a repeat PUT as an update.
+func (c *Client) AddCollaborator(orgSlug, repoName, username, permission string) error {
+	resp, err := c.http.R().
+		SetBody(map[string]string{"permission": permission}).
+		Put(fmt.Sprintf("/api/v1/repos/%s/%s/collaborators/%s", orgSlug, repoName, username))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode() >= 400 {
+		return fmt.Errorf("gitea add collaborator failed: %s", resp.Body())
+	}
+	return nil
 }
 
 // RegisterRunnerToken generates a registration token for act_runner.
