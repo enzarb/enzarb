@@ -283,6 +283,9 @@ spec:
     failOpen: false
     headersToExtAuth:
       - authorization
+      # Forward the client address so authd can bind the token to its pod.
+      - x-forwarded-for
+      - x-envoy-external-address
     http:
       backendRefs:
         - name: enzarb-authd

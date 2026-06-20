@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -35,9 +36,10 @@ const (
 )
 
 // validator authenticates a presented bearer token (a projected K8s SA token)
-// for a given audience, returning the workspace Identity.
+// for a given audience, returning the workspace Identity. clientIP is the
+// request's trusted source address, used to bind the token to its pod.
 type validator interface {
-	validate(ctx context.Context, token, audience string) (Identity, error)
+	validate(ctx context.Context, token, audience, clientIP string) (Identity, error)
 }
 
 type server struct {
@@ -74,8 +76,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Pod-IP binding is on by default; set POD_IP_BINDING=off to disable (e.g.
+	// for a staged rollout or environments without source-IP preservation).
+	bindPodIP := !strings.EqualFold(os.Getenv("POD_IP_BINDING"), "off")
+	slog.Info("config", "pod_ip_binding", bindPodIP)
+
 	srv := &server{
-		val:       newK8sValidator(clientset, dyn),
+		val:       newK8sValidator(clientset, dyn, bindPodIP),
 		signKey:   signKey,
 		keyID:     keyID,
 		issuer:    envOr("TOKEN_ISSUER", registryAudience),
@@ -113,7 +120,28 @@ func (s *server) authenticate(ctx context.Context, r *http.Request, audience str
 		}
 		return Identity{Admin: true}, nil
 	}
-	return s.val.validate(ctx, pass, audience)
+	return s.val.validate(ctx, pass, audience, clientIP(r))
+}
+
+// clientIP returns the request's trusted source address. Behind the Envoy
+// gateway, x-envoy-external-address is Envoy's authoritative view of the
+// downstream client (not client-spoofable). Falling back to the rightmost
+// X-Forwarded-For entry — the IP Envoy itself appended — is likewise the real
+// immediate peer for our single-proxy hop. Direct (non-gateway) callers use the
+// connection address.
+func clientIP(r *http.Request) string {
+	if a := strings.TrimSpace(r.Header.Get("X-Envoy-External-Address")); a != "" {
+		return a
+	}
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		return strings.TrimSpace(parts[len(parts)-1])
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // handleRegistryToken implements the Docker Registry v2 token endpoint. Zot
@@ -260,6 +288,10 @@ const slugCacheTTL = 5 * time.Minute
 type k8sValidator struct {
 	client kubernetes.Interface
 	dyn    dynamic.Interface
+	// bindPodIP, when set, requires the request to originate from the exact pod
+	// the token was issued to — defeating reuse of an exfiltrated token from
+	// outside the cluster or from another pod.
+	bindPodIP bool
 
 	mu    sync.RWMutex
 	cache map[string]slugEntry
@@ -270,11 +302,16 @@ type slugEntry struct {
 	expires time.Time
 }
 
-func newK8sValidator(client kubernetes.Interface, dyn dynamic.Interface) *k8sValidator {
-	return &k8sValidator{client: client, dyn: dyn, cache: map[string]slugEntry{}}
+const (
+	podNameKey = "authentication.kubernetes.io/pod-name"
+	podUIDKey  = "authentication.kubernetes.io/pod-uid"
+)
+
+func newK8sValidator(client kubernetes.Interface, dyn dynamic.Interface, bindPodIP bool) *k8sValidator {
+	return &k8sValidator{client: client, dyn: dyn, bindPodIP: bindPodIP, cache: map[string]slugEntry{}}
 }
 
-func (v *k8sValidator) validate(ctx context.Context, token, audience string) (Identity, error) {
+func (v *k8sValidator) validate(ctx context.Context, token, audience, clientIP string) (Identity, error) {
 	review, err := v.client.AuthenticationV1().TokenReviews().Create(ctx, &authnv1.TokenReview{
 		Spec: authnv1.TokenReviewSpec{
 			Token:     token,
@@ -295,11 +332,41 @@ func (v *k8sValidator) validate(ctx context.Context, token, audience string) (Id
 	if err != nil {
 		return Identity{}, err
 	}
+	if v.bindPodIP {
+		if err := v.checkPodBinding(ctx, ref.OrgID, review.Status.User.Extra, clientIP); err != nil {
+			return Identity{}, err
+		}
+	}
 	slug, err := v.resolveSlug(ctx, ref.OrgID)
 	if err != nil {
 		return Identity{}, err
 	}
 	return Identity{OrgSlug: slug, ProjectSlug: ref.ProjectSlug}, nil
+}
+
+// checkPodBinding requires the request's source IP to match the current IP of
+// the pod the token is bound to (and the pod UID to match the token's claim).
+// Fails closed: if we can't establish the binding, access is denied.
+func (v *k8sValidator) checkPodBinding(ctx context.Context, orgID string, extra map[string]authnv1.ExtraValue, clientIP string) error {
+	if clientIP == "" {
+		return fmt.Errorf("no client address to bind token to")
+	}
+	names := extra[podNameKey]
+	if len(names) == 0 || names[0] == "" {
+		return fmt.Errorf("token is not pod-bound")
+	}
+	ns := "user-" + orgID
+	pod, err := v.client.CoreV1().Pods(ns).Get(ctx, names[0], metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("get bound pod %s/%s: %w", ns, names[0], err)
+	}
+	if uids := extra[podUIDKey]; len(uids) > 0 && uids[0] != string(pod.UID) {
+		return fmt.Errorf("bound pod uid mismatch")
+	}
+	if pod.Status.PodIP == "" || pod.Status.PodIP != clientIP {
+		return fmt.Errorf("request from %s does not match bound pod ip %q", clientIP, pod.Status.PodIP)
+	}
+	return nil
 }
 
 // resolveSlug maps an org id (UUID) to its slug via the Organization CR, cached

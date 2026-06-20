@@ -103,6 +103,10 @@ authd:
   adminSecret:
     name: enzarb-registry-admin
     key: token
+  # Require each workspace token to be used only from the pod it was issued to
+  # (request source IP must match the bound pod's IP). Defeats reuse of an
+  # exfiltrated token from outside the cluster or another pod.
+  podIPBinding: true
   resources:
     requests:
       cpu: 25m
