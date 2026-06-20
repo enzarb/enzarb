@@ -16,13 +16,31 @@ pub async fn bootstrap(project_id: &str) -> Result<()> {
     tokio::fs::create_dir_all(home.join(".enzarb/tasks")).await?;
 
     let mise_toml = home.join("mise.toml");
-    if !mise_toml.exists() {
-        tracing::info!(
-            project_id,
-            "first boot: generating mise.toml from ENZARB_TOOLS"
-        );
+    // Earlier agents wrote unquoted versions (`tool = latest`), which newer mise
+    // rejects as invalid TOML. Detect that specific malformation and regenerate
+    // (backing up the old file); leave any other existing config untouched.
+    let malformed = match tokio::fs::read_to_string(&mise_toml).await {
+        Ok(c) => c.lines().any(|l| l.trim().ends_with("= latest")),
+        Err(_) => false,
+    };
+    if !mise_toml.exists() || malformed {
+        if malformed {
+            tracing::warn!("mise.toml has unquoted versions; regenerating");
+            let _ = tokio::fs::rename(&mise_toml, home.join("mise.toml.bak")).await;
+        } else {
+            tracing::info!(
+                project_id,
+                "first boot: generating mise.toml from ENZARB_TOOLS"
+            );
+        }
         write_mise_toml(&mise_toml).await?;
     }
+
+    // mise refuses to use untrusted config files; trust ours before installing.
+    let _ = Command::new("mise")
+        .args(["trust", &mise_toml.to_string_lossy()])
+        .status()
+        .await;
 
     tracing::info!("running mise install");
     let status = Command::new("mise")
@@ -127,12 +145,13 @@ async fn write_mise_toml(path: &PathBuf) -> Result<()> {
 
     let mut content = String::from("[tools]\n");
     for tool in tools {
-        let version = if tool.version.is_empty() || tool.version == "latest" {
-            "latest".to_string()
+        // TOML string values must be quoted — mise rejects bare words like `latest`.
+        let version = if tool.version.is_empty() {
+            "latest"
         } else {
-            format!("\"{}\"", tool.version)
+            &tool.version
         };
-        content.push_str(&format!("{} = {}\n", tool.name, version));
+        content.push_str(&format!("{} = \"{}\"\n", tool.name, version));
     }
 
     tokio::fs::write(path, content).await?;

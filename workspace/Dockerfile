@@ -78,7 +78,13 @@ RUN mkdir -p /etc/enzarb/docker \
     && printf '{"credHelpers":{"registry.enzarb.dev":"k8s-sa"}}\n' > /etc/enzarb/docker/config.json \
     && chown -R user:user /etc/enzarb \
     && git config --system credential.https://gitea.enzarb.dev.helper enzarb
+# DOCKER_CONFIG holds the (read-only) credHelpers pointer. buildx must write its
+# builder state somewhere writable, so point BUILDX_CONFIG at the home PVC rather
+# than under the read-only DOCKER_CONFIG. MISE_TRUSTED_CONFIG_PATHS trusts the
+# generated mise.toml without an interactive `mise trust`.
 ENV DOCKER_CONFIG=/etc/enzarb/docker
+ENV BUILDX_CONFIG=/home/user/.buildx
+ENV MISE_TRUSTED_CONFIG_PATHS=/home/user
 
 # mise (tool version manager) — install the binary to /usr/local/bin (outside
 # the home PVC) so it survives an empty PVC being mounted over /home/user.
