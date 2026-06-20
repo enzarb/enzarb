@@ -1,8 +1,20 @@
 <script lang="ts">
 	import { getGitTree } from '$lib/remote/files.remote';
-	import { getAgentToken } from '$lib/remote/projects.remote';
+	import { getAgentToken, getProject } from '$lib/remote/projects.remote';
 
-	const agentBase = 'https://enzarb.dev/agent';
+	// Per-project agent route (`/agent/<slug>`), published in the Project status.
+	let agentBase = $state('');
+
+	async function loadCtx() {
+		const [agentToken, gitTree, project] = await Promise.all([
+			getAgentToken(),
+			getGitTree({ path: '', ref: 'main' }),
+			getProject()
+		]);
+		const path = project?.status?.agentPath;
+		if (path) agentBase = `https://enzarb.dev${path}`;
+		return { agentToken, gitTree };
+	}
 
 	type FileEntry = { name: string; path: string; kind: string; size?: number; modified?: string };
 
@@ -51,7 +63,7 @@
 	}
 </script>
 
-{#await Promise.all([getAgentToken(), getGitTree({ path: '', ref: 'main' })]) then [agentToken, gitTree]}
+{#await loadCtx() then { agentToken, gitTree }}
 	<div class="files-page">
 		<div class="tab-bar">
 			<button class="tab {activeTab === 'working' ? 'active' : ''}" onclick={() => { activeTab = 'working'; fetchFiles(agentToken); }}>Working Directory</button>

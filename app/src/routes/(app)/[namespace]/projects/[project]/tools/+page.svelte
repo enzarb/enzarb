@@ -1,7 +1,8 @@
 <script lang="ts">
-	import { getAgentToken } from '$lib/remote/projects.remote';
+	import { getAgentToken, getProject } from '$lib/remote/projects.remote';
 
-	const agentBase = 'https://enzarb.dev/agent';
+	// Per-project agent route (`/agent/<slug>`), published in the Project status.
+	let agentBase = $state('');
 
 	// Curated quick-add catalog (mise short names).
 	const curated = [
@@ -53,7 +54,11 @@
 		loading = true;
 		errorMsg = null;
 		try {
-			token = await getAgentToken();
+			const [agentToken, project] = await Promise.all([getAgentToken(), getProject()]);
+			token = agentToken;
+			const path = project?.status?.agentPath;
+			if (!path) throw new Error('agent not ready');
+			agentBase = `https://enzarb.dev${path}`;
 			await Promise.all([loadInstalled(), loadRegistry()]);
 		} catch {
 			errorMsg = 'Agent not available — the project may still be provisioning.';

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"reflect"
 	"time"
 
 	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
@@ -133,7 +134,7 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("ensure certificate: %w", err)
 	}
 
-	agentPath := fmt.Sprintf("/agent/%s", project.Name)
+	agentPath := agentPathFor(&project)
 	project.Status.Phase = "Running"
 	project.Status.ServiceAccountName = saName
 	project.Status.AgentPath = agentPath
@@ -582,14 +583,64 @@ func (r *ProjectReconciler) ensureGiteaRepo(ctx context.Context, ns string, proj
 	return err
 }
 
+// agentPathFor is the single source of truth for a project's agent route prefix.
+// The UID keeps it globally unique across orgs that share the same hostname.
+func agentPathFor(project *enzarbv1alpha1.Project) string {
+	return fmt.Sprintf("/agent/%s", string(project.UID))
+}
+
 func (r *ProjectReconciler) ensureHTTPRoute(ctx context.Context, ns string, project *enzarbv1alpha1.Project) error {
 	routeName := fmt.Sprintf("project-%s-agent", project.Spec.Slug)
 	hostname := gatewayv1.Hostname(r.Domain)
-	pathPrefix := fmt.Sprintf("/agent/%s", string(project.UID))
+	pathPrefix := agentPathFor(project)
 	pathType := gatewayv1.PathMatchPathPrefix
 	svcName := gatewayv1.ObjectName(fmt.Sprintf("project-%s", project.Spec.Slug))
 	port := gatewayv1.PortNumber(8080)
-	ns8080 := gatewayv1.Namespace(ns)
+	backendNS := gatewayv1.Namespace(ns)
+	gatewayNS := gatewayv1.Namespace("enzarb-system")
+	httpsSection := gatewayv1.SectionName("https")
+	gatewayKind := gatewayv1.Kind("Gateway")
+	rewriteRoot := "/"
+
+	desiredSpec := gatewayv1.HTTPRouteSpec{
+		CommonRouteSpec: gatewayv1.CommonRouteSpec{
+			ParentRefs: []gatewayv1.ParentReference{{
+				Name:        "enzarb",
+				Namespace:   &gatewayNS,
+				Kind:        &gatewayKind,
+				SectionName: &httpsSection,
+			}},
+		},
+		Hostnames: []gatewayv1.Hostname{hostname},
+		Rules: []gatewayv1.HTTPRouteRule{{
+			Matches: []gatewayv1.HTTPRouteMatch{{
+				Path: &gatewayv1.HTTPPathMatch{
+					Type:  &pathType,
+					Value: &pathPrefix,
+				},
+			}},
+			// Strip the `/agent/<uid>` prefix so the agent sees its own routes
+			// (`/processes`, `/files`, …) rather than the public path.
+			Filters: []gatewayv1.HTTPRouteFilter{{
+				Type: gatewayv1.HTTPRouteFilterURLRewrite,
+				URLRewrite: &gatewayv1.HTTPURLRewriteFilter{
+					Path: &gatewayv1.HTTPPathModifier{
+						Type:               gatewayv1.PrefixMatchHTTPPathModifier,
+						ReplacePrefixMatch: &rewriteRoot,
+					},
+				},
+			}},
+			BackendRefs: []gatewayv1.HTTPBackendRef{{
+				BackendRef: gatewayv1.BackendRef{
+					BackendObjectReference: gatewayv1.BackendObjectReference{
+						Name:      svcName,
+						Namespace: &backendNS,
+						Port:      &port,
+					},
+				},
+			}},
+		}},
+	}
 
 	route := &gatewayv1.HTTPRoute{}
 	err := r.Get(ctx, types.NamespacedName{Namespace: "enzarb-system", Name: routeName}, route)
@@ -600,35 +651,20 @@ func (r *ProjectReconciler) ensureHTTPRoute(ctx context.Context, ns string, proj
 				Namespace: "enzarb-system",
 				Labels:    projectLabels(project),
 			},
-			Spec: gatewayv1.HTTPRouteSpec{
-				CommonRouteSpec: gatewayv1.CommonRouteSpec{
-					ParentRefs: []gatewayv1.ParentReference{{
-						Name: "envoy",
-					}},
-				},
-				Hostnames: []gatewayv1.Hostname{hostname},
-				Rules: []gatewayv1.HTTPRouteRule{{
-					Matches: []gatewayv1.HTTPRouteMatch{{
-						Path: &gatewayv1.HTTPPathMatch{
-							Type:  &pathType,
-							Value: &pathPrefix,
-						},
-					}},
-					BackendRefs: []gatewayv1.HTTPBackendRef{{
-						BackendRef: gatewayv1.BackendRef{
-							BackendObjectReference: gatewayv1.BackendObjectReference{
-								Name:      svcName,
-								Namespace: &ns8080,
-								Port:      &port,
-							},
-						},
-					}},
-				}},
-			},
+			Spec: desiredSpec,
 		}
 		return r.Create(ctx, route)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Reconcile drift on existing routes (e.g. older versions wrote a bad spec).
+	if !reflect.DeepEqual(route.Spec, desiredSpec) {
+		route.Spec = desiredSpec
+		return r.Update(ctx, route)
+	}
+	return nil
 }
 
 func (r *ProjectReconciler) ensureCertificate(ctx context.Context, ns string, project *enzarbv1alpha1.Project) error {
