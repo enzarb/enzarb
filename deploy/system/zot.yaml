@@ -6,6 +6,7 @@ metadata:
 spec:
   chart: zot
   repo: https://zotregistry.dev/helm-charts/
+  version: 0.1.117  # zot app v2.1.17
   targetNamespace: enzarb-system
   createNamespace: true
   valuesContent: |-

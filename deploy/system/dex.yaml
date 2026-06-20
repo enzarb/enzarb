@@ -6,6 +6,7 @@ metadata:
 spec:
   chart: dex
   repo: https://charts.dexidp.io
+  version: 0.24.1  # dex app v2.44.0
   targetNamespace: enzarb-system
   createNamespace: true
   valuesContent: |-

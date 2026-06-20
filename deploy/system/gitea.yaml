@@ -6,6 +6,7 @@ metadata:
 spec:
   chart: gitea
   repo: https://dl.gitea.com/charts/
+  version: 12.6.0  # gitea app 1.26.1
   targetNamespace: enzarb-system
   createNamespace: true
   valuesContent: |-
