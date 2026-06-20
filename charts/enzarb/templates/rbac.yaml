@@ -62,7 +62,7 @@ rules:
     resourceNames: ["enzarb-deployer"]
     verbs: ["bind"]
   - apiGroups: ["gateway.networking.k8s.io"]
-    resources: ["httproutes"]
+    resources: ["httproutes", "referencegrants"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["cert-manager.io"]
     resources: ["certificates"]

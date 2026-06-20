@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	enzarbv1alpha1 "enzarb.dev/enzarb/operator/api/v1alpha1"
 	"enzarb.dev/enzarb/operator/internal/gitea"
@@ -124,6 +125,10 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	if err := r.ensureGiteaRepo(ctx, orgNS, &project); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensure gitea repo: %w", err)
+	}
+
+	if err := r.ensureReferenceGrant(ctx, orgNS, &project); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure referencegrant: %w", err)
 	}
 
 	if err := r.ensureHTTPRoute(ctx, orgNS, &project); err != nil {
@@ -580,6 +585,36 @@ func (r *ProjectReconciler) ensureGiteaRepo(ctx context.Context, ns string, proj
 		AutoInit:      true,
 		DefaultBranch: "main",
 	})
+	return err
+}
+
+// ensureReferenceGrant permits HTTPRoutes in enzarb-system (where the shared
+// gateway lives) to reference agent Services in the project's namespace. Without
+// it, cross-namespace backend refs are rejected (ResolvedRefs=RefNotPermitted).
+// One grant per namespace covers every project's agent Service in that org.
+func (r *ProjectReconciler) ensureReferenceGrant(ctx context.Context, ns string, project *enzarbv1alpha1.Project) error {
+	grant := &gatewayv1beta1.ReferenceGrant{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: "agent-route-grant"}, grant)
+	if errors.IsNotFound(err) {
+		grant = &gatewayv1beta1.ReferenceGrant{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "agent-route-grant",
+				Namespace: ns,
+			},
+			Spec: gatewayv1beta1.ReferenceGrantSpec{
+				From: []gatewayv1beta1.ReferenceGrantFrom{{
+					Group:     "gateway.networking.k8s.io",
+					Kind:      "HTTPRoute",
+					Namespace: "enzarb-system",
+				}},
+				To: []gatewayv1beta1.ReferenceGrantTo{{
+					Group: "",
+					Kind:  "Service",
+				}},
+			},
+		}
+		return r.Create(ctx, grant)
+	}
 	return err
 }
 
