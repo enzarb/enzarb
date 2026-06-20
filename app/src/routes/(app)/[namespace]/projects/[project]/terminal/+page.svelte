@@ -62,9 +62,12 @@
 		terminal?.clear();
 		const wsUrl = `${agentBase.replace('https://', 'wss://').replace('http://', 'ws://')}/processes/${id}/output`;
 		ws = new WebSocket(`${wsUrl}?token=${encodeURIComponent(agentToken)}`);
+		// The agent streams output as binary frames; default binaryType is "blob",
+		// which TextDecoder can't decode. Use arraybuffer so we can render it.
+		ws.binaryType = 'arraybuffer';
 		ws.onmessage = (e) => {
-			const text = typeof e.data === 'string' ? e.data : new TextDecoder().decode(e.data);
-			terminal?.write(text);
+			const data = e.data instanceof ArrayBuffer ? new Uint8Array(e.data) : e.data;
+			terminal?.write(typeof data === 'string' ? data : new TextDecoder().decode(data));
 		};
 		ws.onclose = () => { selectedPid = null; };
 	}

@@ -39,7 +39,9 @@ export async function mintProjectToken(
 	})
 		.setProtectedHeader({ alg: 'RS256', kid: 'enzarb-1' })
 		.setIssuedAt()
-		.setExpirationTime('30s')
+		// Long enough to attach/reattach a terminal WS without re-minting on
+		// every action; the agent validates the token at each (re)connect.
+		.setExpirationTime('15m')
 		.setIssuer('https://enzarb.dev')
 		.sign(privateKey);
 }
