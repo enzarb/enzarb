@@ -115,7 +115,7 @@ authd:
 workspace:
   image:
     repository: ghcr.io/enzarb/workspace
-    tag: "v0.13.0"
+    tag: "v0.14.1"
   # StorageClass for project home PVCs. Empty uses the cluster's default class.
   storageClass: ""
 database:
