@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"crypto/x509"
 	"encoding/base32"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -133,7 +134,13 @@ func (s *server) handleRegistryToken(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	// Both keys for client compatibility (older Docker reads `token`).
-	fmt.Fprintf(w, `{"token":%q,"access_token":%q,"expires_in":%d}`, tok, tok, int(tokenTTL.Seconds()))
+	if err := json.NewEncoder(w).Encode(map[string]any{
+		"token":        tok,
+		"access_token": tok,
+		"expires_in":   int(tokenTTL.Seconds()),
+	}); err != nil {
+		slog.Error("write token response", "err", err)
+	}
 }
 
 // handleGitAuthz is the Envoy Gateway extAuth check fronting Gitea. On success
