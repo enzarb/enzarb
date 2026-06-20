@@ -6,7 +6,7 @@ app:
   image:
     repository: ghcr.io/enzarb/app
     pullPolicy: IfNotPresent
-    tag: "v0.12.0"
+    tag: "v0.12.1"
   env:
     ORIGIN: https://enzarb.dev
   dbSecret:
@@ -72,7 +72,7 @@ metering:
   image:
     repository: ghcr.io/enzarb/metering
     pullPolicy: IfNotPresent
-    tag: "v0.8.3"
+    tag: "v0.12.1"
   hubbleLogPath: /var/run/cilium/hubble/events.log
   resources:
     requests:
