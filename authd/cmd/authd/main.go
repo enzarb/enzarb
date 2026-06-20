@@ -150,6 +150,7 @@ func clientIP(r *http.Request) string {
 func (s *server) handleRegistryToken(w http.ResponseWriter, r *http.Request) {
 	id, err := s.authenticate(r.Context(), r, registryAudience)
 	if err != nil {
+		slog.Warn("registry token denied", "err", err, "client", clientIP(r))
 		// No credentials at all → 401 so the client retries with auth. Bad
 		// credentials → also 401 per the token-auth flow.
 		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer realm="https://%s/auth/token",service="%s"`, registryAudience, registryAudience))
@@ -182,6 +183,7 @@ func (s *server) handleRegistryToken(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleGitAuthz(w http.ResponseWriter, r *http.Request) {
 	id, err := s.authenticate(r.Context(), r, giteaAudience)
 	if err != nil || id.Admin {
+		slog.Warn("git authz denied", "err", err, "admin", id.Admin, "client", clientIP(r))
 		w.Header().Set("WWW-Authenticate", `Basic realm="enzarb"`)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
