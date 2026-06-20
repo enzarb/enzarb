@@ -28,12 +28,17 @@ spec:
           HOST: enzarb-db.enzarb-system:5432
           NAME: gitea
           USER: gitea
-        auth:
+        # Reverse-proxy auth settings live in [service] and [security] — NOT
+        # [auth] (gitea silently ignores them there). The _API variant is what
+        # makes git-over-HTTP and the API honor X-Gitea-User, not just the web UI.
+        service:
           ENABLE_REVERSE_PROXY_AUTHENTICATION: true
-          REVERSE_PROXY_AUTHENTICATION_USER: X-Gitea-User
+          ENABLE_REVERSE_PROXY_AUTHENTICATION_API: true
           # We provision project users explicitly via the admin API (operator
           # ensureGiteaRepo); do NOT auto-register arbitrary proxied identities.
           ENABLE_REVERSE_PROXY_AUTO_REGISTRATION: false
+        security:
+          REVERSE_PROXY_AUTHENTICATION_USER: X-Gitea-User
           # SECURITY: Gitea trusts X-Gitea-User, which authd sets only after
           # validating the workspace SA token at the gateway. The primary control
           # against a pod reaching gitea-http directly and spoofing this header is
