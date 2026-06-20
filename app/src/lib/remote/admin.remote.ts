@@ -52,6 +52,7 @@ export const createOrgAdmin = form(CreateOrgSchema, async ({ slug, displayName, 
 		INSERT INTO organizations (slug, display_name, tier)
 		VALUES (${slug}, ${displayName}, ${tier})
 	`;
+	await listOrgs().refresh();
 });
 
 const SetTierSchema = z.object({ orgId: z.string(), tier: z.enum(['free', 'pro']) });
@@ -123,6 +124,9 @@ export const updateAdminSettings = form(SettingsSchema, async (v) => {
 		pricing_free_cpu_seconds: v.freeCPUSeconds,
 		pricing_free_mem_gib_seconds: v.freeMemGiBSeconds
 	});
+	// Single-flight refresh so the form re-renders with the saved values instead
+	// of the stale cached settings (which would otherwise need a manual reload).
+	await getAdminSettings().refresh();
 });
 
 const InviteSchema = z.object({
@@ -140,4 +144,5 @@ export const inviteMember = form(InviteSchema, async ({ orgId, email, role }) =>
 		VALUES (${orgId}, ${users[0].id}, ${role})
 		ON CONFLICT (org_id, user_id) DO UPDATE SET role = EXCLUDED.role
 	`;
+	await listOrgs().refresh();
 });
