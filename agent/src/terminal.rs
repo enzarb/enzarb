@@ -49,6 +49,18 @@ pub async fn handle_ws(mut socket: WebSocket, window_name: String, state: AppSta
     let (mut ws_tx, mut ws_rx) = socket.split();
     let mut fifo_reader = tokio::io::BufReader::new(fifo);
 
+    // `pipe-pane` only streams output produced after we attach, so send a
+    // snapshot of the pane's current contents first — otherwise an already-
+    // printed shell prompt (or any prior output) never appears in the UI.
+    if let Ok(out) = Command::new("tmux")
+        .args(["capture-pane", "-p", "-e", "-t", &target])
+        .output()
+        .await
+        && !out.stdout.is_empty()
+    {
+        let _ = ws_tx.send(Message::Binary(out.stdout.into())).await;
+    }
+
     let send_target = target.clone();
     // Task: read from WebSocket, send keystrokes to tmux
     let input_task = tokio::spawn(async move {
@@ -59,8 +71,11 @@ pub async fn handle_ws(mut socket: WebSocket, window_name: String, state: AppSta
                 Message::Close(_) => break,
                 _ => continue,
             };
+            // `-l` sends the bytes literally; without it tmux interprets the
+            // payload as key names and mangles raw xterm input (arrows, ctrl
+            // sequences, the carriage return that submits a command, etc.).
             let _ = Command::new("tmux")
-                .args(["send-keys", "-t", &send_target, &keys, ""])
+                .args(["send-keys", "-l", "-t", &send_target, &keys])
                 .status()
                 .await;
         }

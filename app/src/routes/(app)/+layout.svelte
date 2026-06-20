@@ -3,7 +3,7 @@
 	import { afterNavigate } from '$app/navigation';
 
 	let { data, children }: { data: LayoutData; children: any } = $props();
-	const { session } = data;
+	const session = $derived(data.session);
 
 	let open = $state(false);
 

@@ -63,8 +63,8 @@
 		</div>
 
 		<div class="field">
-			<label>Tools <span class="hint">(installed via mise on first boot)</span></label>
-			<div class="tool-grid">
+			<span class="group-label">Tools <span class="hint">(installed via mise on first boot)</span></span>
+			<div class="tool-grid" role="group" aria-label="Tools">
 				{#each availableTools as tool}
 					<button
 						type="button"
@@ -103,7 +103,7 @@
 	.back { color: var(--color-text-muted); font-size: 13px; display: block; margin-bottom: 0.5rem; }
 	.new-project-form { max-width: 560px; }
 	.field { margin-bottom: 1.25rem; }
-	label { display: block; font-weight: 500; margin-bottom: 0.375rem; }
+	label, .group-label { display: block; font-weight: 500; margin-bottom: 0.375rem; }
 	.hint { font-size: 12px; color: var(--color-text-muted); }
 	.tool-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
 	.tool-btn {

@@ -1,11 +1,15 @@
 <script lang="ts">
 	import { getAgentToken } from '$lib/remote/projects.remote';
 	import { onMount, onDestroy } from 'svelte';
+	import { Terminal } from '@xterm/xterm';
+	import { FitAddon } from '@xterm/addon-fit';
+	import '@xterm/xterm/css/xterm.css';
 
 	const agentBase = 'https://enzarb.dev/agent';
 
 	let termEl: HTMLDivElement | undefined = $state();
-	let terminal: any;
+	let terminal: Terminal | undefined;
+	let resizeObserver: ResizeObserver | undefined;
 	let ws: WebSocket | null = null;
 	let processes: any[] = $state([]);
 	let selectedPid: string | null = $state(null);
@@ -57,17 +61,17 @@
 
 	onMount(async () => {
 		try { agentToken = await getAgentToken(); } catch {}
-		const { Terminal } = await import('https://cdn.jsdelivr.net/npm/@xterm/xterm@5/+esm' as any);
-		const { FitAddon } = await import('https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0/+esm' as any);
 		terminal = new Terminal({ theme: { background: '#0f0f11', foreground: '#e8e8ed' }, fontFamily: 'JetBrains Mono, monospace' });
 		const fit = new FitAddon();
 		terminal.loadAddon(fit);
 		if (termEl) { terminal.open(termEl); fit.fit(); }
 		terminal.onData((d: string) => ws?.send(d));
+		resizeObserver = new ResizeObserver(() => fit.fit());
+		if (termEl) resizeObserver.observe(termEl);
 		await loadProcesses();
 	});
 
-	onDestroy(() => { ws?.close(); terminal?.dispose(); });
+	onDestroy(() => { resizeObserver?.disconnect(); ws?.close(); terminal?.dispose(); });
 </script>
 
 <div class="terminal-page">

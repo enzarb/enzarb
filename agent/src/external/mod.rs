@@ -51,7 +51,13 @@ async fn auth_middleware(
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    let token = extract_bearer(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
+    // Prefer the Authorization header; fall back to a `token` query param.
+    // Browsers cannot set headers on WebSocket connections, so WS clients
+    // authenticate via `?token=<jwt>`.
+    let query_token = extract_query_token(request.uri());
+    let token = extract_bearer(&headers)
+        .or(query_token.as_deref())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
 
     state
         .jwks
@@ -65,4 +71,42 @@ async fn auth_middleware(
 fn extract_bearer(headers: &HeaderMap) -> Option<&str> {
     let auth = headers.get("authorization")?.to_str().ok()?;
     auth.strip_prefix("Bearer ")
+}
+
+fn extract_query_token(uri: &axum::http::Uri) -> Option<String> {
+    let query = uri.query()?;
+    query
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(k, _)| *k == "token")
+        .map(|(_, v)| percent_decode(v))
+}
+
+/// Minimal percent-decoding for query values (handles %XX and `+`).
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                if let Ok(b) = u8::from_str_radix(&input[i + 1..i + 3], 16) {
+                    out.push(b);
+                    i += 3;
+                    continue;
+                }
+                out.push(bytes[i]);
+                i += 1;
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
