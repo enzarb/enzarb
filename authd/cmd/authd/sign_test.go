@@ -32,8 +32,8 @@ func TestMintRegistryToken(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var claims registryClaims
-	tok, err := jwt.ParseWithClaims(raw, &claims, func(tok *jwt.Token) (any, error) {
+	claims := jwt.MapClaims{}
+	tok, err := jwt.ParseWithClaims(raw, claims, func(tok *jwt.Token) (any, error) {
 		if tok.Header["kid"] != kid {
 			t.Errorf("kid header = %v, want %v", tok.Header["kid"], kid)
 		}
@@ -42,10 +42,16 @@ func TestMintRegistryToken(t *testing.T) {
 	if err != nil || !tok.Valid {
 		t.Fatalf("verify: err=%v valid=%v", err, tok.Valid)
 	}
-	if len(claims.Access) != 1 || claims.Access[0].Name != "orgA/blog/img" {
-		t.Fatalf("unexpected access claim: %+v", claims.Access)
+	// aud must be a plain string (not a JSON array) for the Docker token spec.
+	if aud, ok := claims["aud"].(string); !ok || aud != "registry.enzarb.dev" {
+		t.Errorf("aud = %v (%T), want string registry.enzarb.dev", claims["aud"], claims["aud"])
 	}
-	if claims.Subject != "orgA/blog" {
-		t.Errorf("subject = %q, want orgA/blog", claims.Subject)
+	if claims["sub"] != "orgA/blog" {
+		t.Errorf("subject = %v, want orgA/blog", claims["sub"])
+	}
+	// access decodes back to the requested repository scope.
+	raw0 := claims["access"].([]any)[0].(map[string]any)
+	if raw0["name"] != "orgA/blog/img" {
+		t.Fatalf("unexpected access claim: %+v", claims["access"])
 	}
 }

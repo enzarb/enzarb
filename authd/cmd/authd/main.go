@@ -163,11 +163,6 @@ func (s *server) handleGitAuthz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-type registryClaims struct {
-	jwt.RegisteredClaims
-	Access []Access `json:"access"`
-}
-
 func (s *server) mintRegistryToken(id Identity, service string, access []Access) (string, error) {
 	if service == "" {
 		service = registryAudience
@@ -177,17 +172,18 @@ func (s *server) mintRegistryToken(id Identity, service string, access []Access)
 	if !id.Admin {
 		subject = fmt.Sprintf("%s/%s", id.OrgSlug, id.ProjectSlug)
 	}
-	claims := registryClaims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer:    s.issuer,
-			Subject:   subject,
-			Audience:  jwt.ClaimStrings{service},
-			IssuedAt:  jwt.NewNumericDate(now),
-			NotBefore: jwt.NewNumericDate(now.Add(-30 * time.Second)),
-			ExpiresAt: jwt.NewNumericDate(now.Add(tokenTTL)),
-			ID:        fmt.Sprintf("%d", now.UnixNano()),
-		},
-		Access: access,
+	// The Docker registry token spec (and Zot's distribution-based verifier)
+	// expects `aud` as a plain string, not the JSON array that jwt's ClaimStrings
+	// would emit — so build the claims as a map to control the exact shape.
+	claims := jwt.MapClaims{
+		"iss":    s.issuer,
+		"sub":    subject,
+		"aud":    service,
+		"iat":    now.Unix(),
+		"nbf":    now.Add(-30 * time.Second).Unix(),
+		"exp":    now.Add(tokenTTL).Unix(),
+		"jti":    fmt.Sprintf("%d", now.UnixNano()),
+		"access": access,
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	// Zot matches the JWT's `kid` against the libtrust key id of its trusted cert.
