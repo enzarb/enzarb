@@ -124,8 +124,8 @@ func (w *InvoiceWorker) Work(ctx context.Context, job *river.Job[InvoiceArgs]) e
 type PricingConfig struct {
 	CPUSecondsPerUnit        float64
 	MemGiBSecondsPerUnit     float64
-	NetIngressPerByte        float64
-	NetEgressPerByte         float64
+	NetIngressPerGiB         float64
+	NetEgressPerGiB          float64
 	StorageGiBSecondsPerUnit float64
 	FreeCPUSeconds           float64
 	FreeMemGiBSeconds        float64
@@ -169,8 +169,8 @@ func pricingFromDB(ctx context.Context, db *pgxpool.Pool) (PricingConfig, error)
 	p := PricingConfig{
 		CPUSecondsPerUnit:        parse("pricing_cpu_seconds_per_unit"),
 		MemGiBSecondsPerUnit:     parse("pricing_mem_gib_seconds_per_unit"),
-		NetIngressPerByte:        parse("pricing_net_ingress_per_byte"),
-		NetEgressPerByte:         parse("pricing_net_egress_per_byte"),
+		NetIngressPerGiB:         parse("pricing_net_ingress_per_gib"),
+		NetEgressPerGiB:          parse("pricing_net_egress_per_gib"),
 		StorageGiBSecondsPerUnit: parse("pricing_storage_gib_seconds_per_unit"),
 		FreeCPUSeconds:           parse("pricing_free_cpu_seconds"),
 		FreeMemGiBSeconds:        parse("pricing_free_mem_gib_seconds"),
@@ -231,8 +231,10 @@ func (w *InvoiceWorker) generateOrgInvoice(ctx context.Context, orgID, orgSlug, 
 		totalCents += int64(memBillable * p.MemGiBSecondsPerUnit * 100)
 	}
 
-	totalCents += int64(usage["net_ingress_bytes"] * p.NetIngressPerByte * 100)
-	totalCents += int64(usage["net_egress_bytes"] * p.NetEgressPerByte * 100)
+	// Network usage is metered in bytes; pricing is per GiB (1 GiB = 1<<30 bytes).
+	const bytesPerGiB = 1 << 30
+	totalCents += int64(usage["net_ingress_bytes"] / bytesPerGiB * p.NetIngressPerGiB * 100)
+	totalCents += int64(usage["net_egress_bytes"] / bytesPerGiB * p.NetEgressPerGiB * 100)
 	totalCents += int64(usage["storage_gib_seconds"] * p.StorageGiBSecondsPerUnit * 100)
 
 	if totalCents < 0 {

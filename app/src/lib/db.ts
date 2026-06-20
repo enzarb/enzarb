@@ -98,6 +98,20 @@ export async function migrate() {
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)
 	`;
+	// Network pricing moved from $/byte to $/GiB. Migrate any operator-customized
+	// per-byte values to the new per-GiB keys (1 GiB = 1073741824 bytes) before
+	// seeding defaults, then drop the old keys. Runs before the seed loop so the
+	// converted value wins over the default (seed is ON CONFLICT DO NOTHING).
+	for (const dir of ['ingress', 'egress']) {
+		await sql`
+			INSERT INTO app_settings (key, value)
+			SELECT ${'pricing_net_' + dir + '_per_gib'}, (value::numeric * 1073741824)::text
+			FROM app_settings WHERE key = ${'pricing_net_' + dir + '_per_byte'}
+			ON CONFLICT (key) DO NOTHING
+		`;
+	}
+	await sql`DELETE FROM app_settings WHERE key IN ('pricing_net_ingress_per_byte', 'pricing_net_egress_per_byte')`;
+
 	for (const [key, value] of Object.entries(defaultSettings)) {
 		await sql`
 			INSERT INTO app_settings (key, value) VALUES (${key}, ${value})
@@ -113,8 +127,8 @@ export const defaultSettings: Record<string, string> = {
 	retention_days: '30',
 	pricing_cpu_seconds_per_unit: '0.0000139',
 	pricing_mem_gib_seconds_per_unit: '0.0000028',
-	pricing_net_ingress_per_byte: '0.0000000001',
-	pricing_net_egress_per_byte: '0.0000000009',
+	pricing_net_ingress_per_gib: '0.1073741824',
+	pricing_net_egress_per_gib: '0.9663676416',
 	pricing_storage_gib_seconds_per_unit: '0.0000000385',
 	pricing_free_cpu_seconds: '36000',
 	pricing_free_mem_gib_seconds: '107374182'

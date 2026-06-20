@@ -48,12 +48,12 @@
 						<input id="set-storage" {...updateAdminSettings.fields.storageGiBSecondsPerUnit.as('text', String(settings.pricing.storageGiBSecondsPerUnit))} step="any" min="0" required />
 					</div>
 					<div class="field">
-						<label for="set-ingress">Network ingress $ / byte</label>
-						<input id="set-ingress" {...updateAdminSettings.fields.netIngressPerByte.as('text', String(settings.pricing.netIngressPerByte))} step="any" min="0" required />
+						<label for="set-ingress">Network ingress $ / GiB</label>
+						<input id="set-ingress" {...updateAdminSettings.fields.netIngressPerGib.as('text', String(settings.pricing.netIngressPerGib))} step="any" min="0" required />
 					</div>
 					<div class="field">
-						<label for="set-egress">Network egress $ / byte</label>
-						<input id="set-egress" {...updateAdminSettings.fields.netEgressPerByte.as('text', String(settings.pricing.netEgressPerByte))} step="any" min="0" required />
+						<label for="set-egress">Network egress $ / GiB</label>
+						<input id="set-egress" {...updateAdminSettings.fields.netEgressPerGib.as('text', String(settings.pricing.netEgressPerGib))} step="any" min="0" required />
 					</div>
 				</div>
 				<div class="actions">

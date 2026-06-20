@@ -59,11 +59,12 @@ export const getEstimatedCost = query(async () => {
 	const cpuBillable = Math.max(0, (usage.cpu_seconds ?? 0) - (p.pricing_free_cpu_seconds ?? 0));
 	const memBillable = Math.max(0, (usage.mem_gib_seconds ?? 0) - (p.pricing_free_mem_gib_seconds ?? 0));
 
+	const GIB = 1073741824; // bytes per GiB; network usage is recorded in bytes
 	const lines = {
 		cpu: cpuBillable * (p.pricing_cpu_seconds_per_unit ?? 0),
 		mem: memBillable * (p.pricing_mem_gib_seconds_per_unit ?? 0),
-		net_in: (usage.net_ingress_bytes ?? 0) * (p.pricing_net_ingress_per_byte ?? 0),
-		net_out: (usage.net_egress_bytes ?? 0) * (p.pricing_net_egress_per_byte ?? 0),
+		net_in: ((usage.net_ingress_bytes ?? 0) / GIB) * (p.pricing_net_ingress_per_gib ?? 0),
+		net_out: ((usage.net_egress_bytes ?? 0) / GIB) * (p.pricing_net_egress_per_gib ?? 0),
 		storage: (usage.storage_gib_seconds ?? 0) * (p.pricing_storage_gib_seconds_per_unit ?? 0)
 	};
 	const total = Object.values(lines).reduce((a, b) => a + b, 0);

@@ -103,8 +103,8 @@ const SettingsSchema = z.object({
 	retentionDays: posNum({ int: true, min: 1 }),
 	cpuSecondsPerUnit: posNum({ min: 0 }),
 	memGiBSecondsPerUnit: posNum({ min: 0 }),
-	netIngressPerByte: posNum({ min: 0 }),
-	netEgressPerByte: posNum({ min: 0 }),
+	netIngressPerGib: posNum({ min: 0 }),
+	netEgressPerGib: posNum({ min: 0 }),
 	storageGiBSecondsPerUnit: posNum({ min: 0 }),
 	freeCPUSeconds: posNum({ min: 0 }),
 	freeMemGiBSeconds: posNum({ min: 0 })
@@ -117,8 +117,8 @@ export const updateAdminSettings = form(SettingsSchema, async (v) => {
 		retention_days: v.retentionDays,
 		pricing_cpu_seconds_per_unit: v.cpuSecondsPerUnit,
 		pricing_mem_gib_seconds_per_unit: v.memGiBSecondsPerUnit,
-		pricing_net_ingress_per_byte: v.netIngressPerByte,
-		pricing_net_egress_per_byte: v.netEgressPerByte,
+		pricing_net_ingress_per_gib: v.netIngressPerGib,
+		pricing_net_egress_per_gib: v.netEgressPerGib,
 		pricing_storage_gib_seconds_per_unit: v.storageGiBSecondsPerUnit,
 		pricing_free_cpu_seconds: v.freeCPUSeconds,
 		pricing_free_mem_gib_seconds: v.freeMemGiBSeconds

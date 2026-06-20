@@ -10,8 +10,8 @@ export interface PlatformSettings {
 	pricing: {
 		cpuSecondsPerUnit: number;
 		memGiBSecondsPerUnit: number;
-		netIngressPerByte: number;
-		netEgressPerByte: number;
+		netIngressPerGib: number;
+		netEgressPerGib: number;
 		storageGiBSecondsPerUnit: number;
 		freeCPUSeconds: number;
 		freeMemGiBSeconds: number;
@@ -35,8 +35,8 @@ export async function getSettings(): Promise<PlatformSettings> {
 		pricing: {
 			cpuSecondsPerUnit: num('pricing_cpu_seconds_per_unit'),
 			memGiBSecondsPerUnit: num('pricing_mem_gib_seconds_per_unit'),
-			netIngressPerByte: num('pricing_net_ingress_per_byte'),
-			netEgressPerByte: num('pricing_net_egress_per_byte'),
+			netIngressPerGib: num('pricing_net_ingress_per_gib'),
+			netEgressPerGib: num('pricing_net_egress_per_gib'),
 			storageGiBSecondsPerUnit: num('pricing_storage_gib_seconds_per_unit'),
 			freeCPUSeconds: num('pricing_free_cpu_seconds'),
 			freeMemGiBSeconds: num('pricing_free_mem_gib_seconds')
