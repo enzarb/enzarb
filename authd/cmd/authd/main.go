@@ -189,7 +189,9 @@ func (s *server) handleGitAuthz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Deterministic, Gitea-safe username tying the workspace to its org/project.
-	w.Header().Set("X-Gitea-User", fmt.Sprintf("%s--%s", id.OrgSlug, id.ProjectSlug))
+	// Underscore separator: Gitea rejects "--", and slugs never contain "_".
+	// Must match the user the operator provisions in ensureGiteaRepo.
+	w.Header().Set("X-Gitea-User", fmt.Sprintf("%s_%s", id.OrgSlug, id.ProjectSlug))
 	w.WriteHeader(http.StatusOK)
 }
 

@@ -11,6 +11,12 @@ spec:
   createNamespace: true
   valuesContent: |-
     gitea:
+      # Bootstrap an admin user from a pre-created secret (keys: username,
+      # password). The operator/app then mint and use an admin API token
+      # (stored separately in enzarb-gitea-admin) to provision orgs/repos/users.
+      admin:
+        existingSecret: enzarb-gitea-admin-creds
+        email: admin@enzarb.dev
       config:
         server:
           # Internal-only: accessible within the cluster via gitea-http.enzarb-system.svc:3000

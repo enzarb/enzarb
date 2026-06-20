@@ -605,7 +605,10 @@ func (r *ProjectReconciler) ensureGiteaRepo(ctx context.Context, orgSlug string,
 	// reverse-proxy auth, and grant it write to only this repo. This is what
 	// keeps git private-by-default and isolated per project, mirroring the
 	// registry's <orgSlug>/<slug> scoping.
-	user := fmt.Sprintf("%s--%s", orgSlug, project.Spec.Slug)
+	// Gitea usernames disallow consecutive special chars (so no "--"); slugs are
+	// [a-z0-9-] and never contain "_", so an underscore is a safe, unambiguous
+	// separator. Must match the X-Gitea-User authd sets.
+	user := fmt.Sprintf("%s_%s", orgSlug, project.Spec.Slug)
 	email := fmt.Sprintf("%s@workspaces.%s", user, r.Domain)
 	if err := r.GiteaClient.EnsureUser(user, email); err != nil {
 		return fmt.Errorf("ensure gitea user: %w", err)
