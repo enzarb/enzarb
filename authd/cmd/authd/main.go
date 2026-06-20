@@ -84,7 +84,12 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /auth/token", srv.handleRegistryToken)
-	mux.HandleFunc("GET /authz/git", srv.handleGitAuthz)
+	// Envoy Gateway's extAuth prepends this path with the client's original
+	// request path and method, so match the whole subtree on any method (git
+	// uses GET /info/refs then POST /git-upload-pack). Identity comes from the
+	// Authorization header, not the path.
+	mux.HandleFunc("/authz/git", srv.handleGitAuthz)
+	mux.HandleFunc("/authz/git/", srv.handleGitAuthz)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 
 	addr := envOr("LISTEN_ADDR", ":8080")
