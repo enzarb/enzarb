@@ -19,6 +19,13 @@ spec:
     #     --from-literal=S3_SECRET_KEY=<secret-key>
     service:
       type: ClusterIP
+    # NOTE: enabling bearer auth requires mountConfig:true so the chart mounts
+    # config.json. But zot does NOT expand env vars in config, so the $S3_*
+    # placeholders below break S3 storage when mounted (zot dials literal
+    # "$S3_ENDPOINT"). Enabling auth therefore needs the config rendered first
+    # (e.g. an initContainer running envsubst into a shared volume, or AWS_*
+    # env + literal non-secret S3 fields). Left disabled until that's in place.
+    mountConfig: false
     envFrom:
       - secretRef:
           name: zot-s3-credentials
@@ -39,6 +46,7 @@ spec:
           "distSpecVersion": "1.1.0",
           "storage": {
             "rootDirectory": "/var/lib/registry",
+            "dedupe": false,
             "storageDriver": {
               "name": "s3",
               "regionendpoint": "$S3_ENDPOINT",
