@@ -379,6 +379,11 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName string, pr
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			// Recreate (not RollingUpdate): the home PVC is ReadWriteOnce and the
+			// workspace is a single replica, so rollouts must tear down the old
+			// pod before starting the new one (avoids volume multi-attach and
+			// single-node CPU deadlock during image bumps).
+			Strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
