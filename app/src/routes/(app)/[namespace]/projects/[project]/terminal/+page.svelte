@@ -4,6 +4,8 @@
 	import { Terminal } from '@xterm/xterm';
 	import { FitAddon } from '@xterm/addon-fit';
 	import '@xterm/xterm/css/xterm.css';
+	import VirtualKeyboard from '$lib/terminal/VirtualKeyboard.svelte';
+	import { layouts } from '$lib/terminal/keyboard';
 
 	// Each project gets its own agent route (e.g. `/agent/<slug>`); the path is
 	// published in the Project's status by the operator.
@@ -20,6 +22,17 @@
 	let newName = $state('');
 	let newKind: 'one-shot' | 'persistent' = $state('one-shot');
 	let agentToken: string | null = $state(null);
+
+	// On touch devices we suppress the OS keyboard and drive input from our own
+	// on-screen keyboard instead (Ctrl/Alt/Fn aren't reachable otherwise).
+	let isTouch = $state(false);
+	let fit: FitAddon | undefined;
+
+	// Send raw bytes to the attached process. Both xterm input and the virtual
+	// keyboard funnel through here.
+	function send(data: string) {
+		ws?.send(data);
+	}
 
 	async function loadProcesses() {
 		if (!agentToken || !agentBase) return;
@@ -79,12 +92,19 @@
 			const path = project?.status?.agentPath;
 			if (path) agentBase = `https://enzarb.dev${path}`;
 		} catch {}
+		isTouch = window.matchMedia('(pointer: coarse)').matches;
 		terminal = new Terminal({ theme: { background: '#0f0f11', foreground: '#e8e8ed' }, fontFamily: 'JetBrains Mono, monospace' });
-		const fit = new FitAddon();
+		fit = new FitAddon();
 		terminal.loadAddon(fit);
 		if (termEl) { terminal.open(termEl); fit.fit(); }
-		terminal.onData((d: string) => ws?.send(d));
-		resizeObserver = new ResizeObserver(() => fit.fit());
+		terminal.onData((d: string) => send(d));
+		// Keep xterm focusable (paste, cursor) but stop the OS keyboard from
+		// covering the screen — our virtual keyboard takes over on touch.
+		if (isTouch) {
+			const ta = termEl?.querySelector('.xterm-helper-textarea');
+			if (ta) ta.setAttribute('inputmode', 'none');
+		}
+		resizeObserver = new ResizeObserver(() => fit?.fit());
 		if (termEl) resizeObserver.observe(termEl);
 		await loadProcesses();
 	});
@@ -92,7 +112,7 @@
 	onDestroy(() => { resizeObserver?.disconnect(); ws?.close(); terminal?.dispose(); });
 </script>
 
-<div class="terminal-page">
+<div class="terminal-page" class:touch={isTouch}>
 	<div class="tab-bar">
 		<div class="tabs">
 			{#each processes as p}
@@ -114,6 +134,9 @@
 		<button class="new-btn" title="New process" aria-label="New process" onclick={openNewDialog}>+</button>
 	</div>
 	<div class="term-container" bind:this={termEl}></div>
+	{#if isTouch}
+		<VirtualKeyboard {send} layout={layouts[0]} />
+	{/if}
 </div>
 
 <dialog bind:this={newDialog} class="new-dialog" onclose={() => {}}>
@@ -143,9 +166,23 @@
 </dialog>
 
 <style>
-	.terminal-page { display: grid; grid-template-rows: auto 1fr; gap: 0; height: calc(100vh - 200px); min-height: 400px; }
+	.terminal-page { display: grid; grid-template-rows: auto 1fr auto; gap: 0; height: calc(100vh - 200px); min-height: 400px; }
 	@media (max-width: 640px) {
 		.terminal-page { height: calc(100vh - 120px); }
+	}
+
+	/* On mobile the terminal goes full-bleed: break out of the page's
+	   padding/header and let the on-screen keyboard own the bottom strip.
+	   Pinned below the 52px mobile topbar so navigation stays reachable. */
+	@media (max-width: 768px) {
+		.terminal-page.touch {
+			position: fixed;
+			inset: 52px 0 0 0;
+			height: auto;
+			min-height: 0;
+			z-index: 20;
+			background: #0f0f11;
+		}
 	}
 
 	.tab-bar { display: flex; align-items: stretch; border-bottom: 1px solid var(--color-border); background: var(--color-surface-2); }
