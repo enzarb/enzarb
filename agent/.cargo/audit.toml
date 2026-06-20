@@ -1,0 +1,7 @@
+# RUSTSEC-2023-0071 (Marvin Attack on the `rsa` crate) has no fixed release.
+# It is a timing sidechannel in RSA *private-key* operations (decryption /
+# signing). The agent only performs RSA *signature verification* with public
+# keys from the JWKS (jsonwebtoken `decode` / `DecodingKey::from_rsa_components`)
+# and never holds or uses an RSA private key, so this advisory is not applicable.
+[advisories]
+ignore = ["RUSTSEC-2023-0071"]
