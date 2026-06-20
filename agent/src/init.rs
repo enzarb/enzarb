@@ -36,36 +36,15 @@ pub async fn bootstrap(project_id: &str) -> Result<()> {
     }
 
     setup_buildx().await;
-    setup_registry_auth().await;
     setup_git().await;
 
     Ok(())
 }
 
-/// Register the docker credential helper for the project's registry so
-/// `docker`/`buildx` push/pull authenticate automatically with the pod's SA
-/// token. Writes `~/.docker/config.json` (HOME is on the writable PVC).
-async fn setup_registry_auth() {
-    let Ok(registry) = std::env::var("ENZARB_REGISTRY") else {
-        tracing::debug!("ENZARB_REGISTRY unset; skipping docker auth setup");
-        return;
-    };
-    let dir = home_dir().join(".docker");
-    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
-        tracing::warn!("create ~/.docker: {e}");
-        return;
-    }
-    // credHelpers maps the registry host to `docker-credential-k8s-sa`.
-    let config = serde_json::json!({ "credHelpers": { &registry: "k8s-sa" } });
-    if let Err(e) = tokio::fs::write(dir.join("config.json"), config.to_string()).await {
-        tracing::warn!("write docker config.json: {e}");
-        return;
-    }
-    tracing::info!("docker credential helper configured for {registry}");
-}
-
-/// Preconfigure git: the enzarb credential helper for the Gitea host, a default
-/// identity, and a clone of the project repo on first boot. Best-effort.
+/// Set the project's git identity and clone the repo on first boot. The git
+/// credential helper and docker credential helper are registered in the
+/// workspace image (credential-free), so this only handles the per-project,
+/// runtime bits. Best-effort.
 async fn setup_git() {
     let Ok(remote) = std::env::var("ENZARB_GIT_REMOTE") else {
         tracing::debug!("ENZARB_GIT_REMOTE unset; skipping git setup");
@@ -85,9 +64,6 @@ async fn setup_git() {
         async move { Command::new("git").args(&args).status().await }
     };
 
-    // Scoped credential helper: git runs `git-credential-enzarb` only for this host.
-    let helper_key = format!("credential.https://{host}.helper");
-    let _ = git(&["config", "--global", &helper_key, "enzarb"]).await;
     let _ = git(&["config", "--global", "user.name", &slug]).await;
     let email = format!("{slug}@workspaces.{host}");
     let _ = git(&["config", "--global", "user.email", &email]).await;

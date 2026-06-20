@@ -19,7 +19,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release && \
     cp /src/target/release/project-agent /project-agent && \
-    cp /src/target/release/docker-credential-k8s-sa /docker-credential-k8s-sa
+    cp /src/target/release/docker-credential-k8s-sa /docker-credential-k8s-sa && \
+    cp /src/target/release/git-credential-enzarb /git-credential-enzarb
 
 # ── Runtime ───────────────────────────────────────────────────────────────────
 FROM ubuntu:26.04
@@ -63,8 +64,21 @@ RUN usermod -l user -d /home/user -m ubuntu && groupmod -n user ubuntu
 COPY --from=rust-test /test-ok /tmp/rust-test-ok
 COPY --from=rust-builder /project-agent                /usr/local/bin/project-agent
 COPY --from=rust-builder /docker-credential-k8s-sa    /usr/local/bin/docker-credential-k8s-sa
-RUN chmod 755 /usr/local/bin/project-agent /usr/local/bin/docker-credential-k8s-sa \
+COPY --from=rust-builder /git-credential-enzarb       /usr/local/bin/git-credential-enzarb
+RUN chmod 755 /usr/local/bin/project-agent /usr/local/bin/docker-credential-k8s-sa /usr/local/bin/git-credential-enzarb \
     && rm /tmp/rust-test-ok
+
+# Register the credential helpers at build time (credential-free; the helpers
+# fetch the live projected SA tokens on demand). Both configs live outside the
+# home PVC so they survive an empty PVC being mounted over /home/user:
+#   - docker: DOCKER_CONFIG points at a baked, user-writable dir (buildx also
+#     stores its builder state here).
+#   - git: system-level /etc/gitconfig, read regardless of $HOME.
+RUN mkdir -p /etc/enzarb/docker \
+    && printf '{"credHelpers":{"registry.enzarb.dev":"k8s-sa"}}\n' > /etc/enzarb/docker/config.json \
+    && chown -R user:user /etc/enzarb \
+    && git config --system credential.https://gitea.enzarb.dev.helper enzarb
+ENV DOCKER_CONFIG=/etc/enzarb/docker
 
 # mise (tool version manager) — install the binary to /usr/local/bin (outside
 # the home PVC) so it survives an empty PVC being mounted over /home/user.
