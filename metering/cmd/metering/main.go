@@ -174,11 +174,14 @@ func (w *Worker) getPodMetrics(ctx context.Context, ns, name string) (*podMetric
 	return &podMetricsResult{cpu: totalCPU, mem: totalMem}, nil
 }
 
+// insertUsage records a usage event. orgID is the organization's UUID, which is
+// what the `user-<orgID>` namespace encodes — match on it directly. (Matching on
+// slug here silently inserted zero rows, since the namespace carries the id.)
 func (w *Worker) insertUsage(ctx context.Context, orgID, projectSlug, resourceType string, quantity float64, unit string, at time.Time) error {
 	_, err := w.db.Exec(ctx, `
 		INSERT INTO usage_events (org_id, project_id, resource_type, quantity, unit, recorded_at)
 		SELECT id, $2, $3, $4, $5, $6
-		FROM organizations WHERE slug = $1
+		FROM organizations WHERE id = $1::uuid
 	`, orgID, projectSlug, resourceType, quantity, unit, at)
 	return err
 }
@@ -213,31 +216,32 @@ type HubbleL4 struct {
 func (w *Worker) consumeHubble(ctx context.Context, path string) {
 	slog.Info("consuming hubble flows", "path", path)
 
-	// Track per-project byte counts and flush every 60s
+	// Track per-(org, project) byte counts and flush every 60s. The org UUID is
+	// taken from the project pod's `user-<orgID>` namespace so insertUsage can
+	// attribute the flow to the right organization.
+	type flowKey struct{ orgID, project string }
 	type byteCounts struct{ ingress, egress int64 }
-	counts := map[string]*byteCounts{}
+	counts := map[flowKey]*byteCounts{}
 
 	flush := time.NewTicker(60 * time.Second)
 	defer flush.Stop()
 
 	go func() {
 		for range flush.C {
-			for projectSlug, bc := range counts {
+			for key, bc := range counts {
 				now := time.Now().UTC()
-				// Org lookup is handled inside insertUsage via SQL join
-				// For Hubble flows we tag by pod label enzarb.io/project
 				if bc.ingress > 0 {
-					if err := w.insertUsage(ctx, "_hubble", projectSlug, "net_ingress_bytes", float64(bc.ingress), "bytes", now); err != nil {
+					if err := w.insertUsage(ctx, key.orgID, key.project, "net_ingress_bytes", float64(bc.ingress), "bytes", now); err != nil {
 						slog.Warn("insert ingress usage", "err", err)
 					}
 				}
 				if bc.egress > 0 {
-					if err := w.insertUsage(ctx, "_hubble", projectSlug, "net_egress_bytes", float64(bc.egress), "bytes", now); err != nil {
+					if err := w.insertUsage(ctx, key.orgID, key.project, "net_egress_bytes", float64(bc.egress), "bytes", now); err != nil {
 						slog.Warn("insert egress usage", "err", err)
 					}
 				}
 			}
-			counts = map[string]*byteCounts{}
+			counts = map[flowKey]*byteCounts{}
 		}
 	}()
 
@@ -269,29 +273,50 @@ func (w *Worker) consumeHubble(ctx context.Context, path string) {
 				continue
 			}
 
-			// Identify project from source/dest pod labels
-			projectSlug := extractProjectSlug(flow.Source)
-			if projectSlug == "" {
-				projectSlug = extractProjectSlug(flow.Destination)
+			// Identify the project endpoint (and its org) from pod labels and the
+			// `user-<orgID>` namespace. Source being the project ⇒ egress; dest ⇒ ingress.
+			srcOrg, srcProject := endpointOrgProject(flow.Source)
+			dstOrg, dstProject := endpointOrgProject(flow.Destination)
+
+			var key flowKey
+			egress := false
+			switch {
+			case srcProject != "":
+				key, egress = flowKey{srcOrg, srcProject}, true
+			case dstProject != "":
+				key = flowKey{dstOrg, dstProject}
+			default:
+				continue
 			}
-			if projectSlug == "" {
+			if key.orgID == "" {
 				continue
 			}
 
-			if _, ok := counts[projectSlug]; !ok {
-				counts[projectSlug] = &byteCounts{}
+			if _, ok := counts[key]; !ok {
+				counts[key] = &byteCounts{}
 			}
-
-			// Heuristic: if source pod is the project, this is egress; if dest, ingress
-			if extractProjectSlug(flow.Source) == projectSlug {
-				counts[projectSlug].egress += 1500 // approximate MTU per flow record
+			if egress {
+				counts[key].egress += 1500 // approximate MTU per flow record
 			} else {
-				counts[projectSlug].ingress += 1500
+				counts[key].ingress += 1500
 			}
 		}
 		_ = f.Close()
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// endpointOrgProject returns the org UUID (from the `user-<orgID>` namespace)
+// and project slug for an endpoint, or empty strings if it isn't a project pod.
+func endpointOrgProject(ep *HubbleEndpoint) (orgID, project string) {
+	if ep == nil {
+		return "", ""
+	}
+	project = extractProjectSlug(ep)
+	if project != "" && strings.HasPrefix(ep.Namespace, "user-") {
+		orgID = strings.TrimPrefix(ep.Namespace, "user-")
+	}
+	return orgID, project
 }
 
 func extractProjectSlug(ep *HubbleEndpoint) string {

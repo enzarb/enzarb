@@ -35,6 +35,42 @@ export const getUsageByProject = query(async () => {
 	`;
 });
 
+// Live estimate of this month's spend, computed from usage_events against the
+// admin-editable pricing in app_settings. Mirrors the tiered math in the billing
+// worker (billing/cmd/billing) so users see expenses before the monthly invoice
+// is cut. Returns dollars; `cpu`/`mem` reflect free-allowance deductions.
+export const getEstimatedCost = query(async () => {
+	const org = resolveNamespace();
+
+	const usageRows = await sql`
+		SELECT resource_type, SUM(quantity)::float8 AS total
+		FROM usage_events
+		WHERE org_id = ${org.id}
+		  AND recorded_at >= date_trunc('month', now())
+		GROUP BY resource_type
+	`;
+	const usage: Record<string, number> = {};
+	for (const r of usageRows) usage[r.resource_type] = Number(r.total);
+
+	const priceRows = await sql`SELECT key, value FROM app_settings WHERE key LIKE 'pricing_%'`;
+	const p: Record<string, number> = {};
+	for (const r of priceRows) p[r.key] = Number(r.value);
+
+	const cpuBillable = Math.max(0, (usage.cpu_seconds ?? 0) - (p.pricing_free_cpu_seconds ?? 0));
+	const memBillable = Math.max(0, (usage.mem_gib_seconds ?? 0) - (p.pricing_free_mem_gib_seconds ?? 0));
+
+	const lines = {
+		cpu: cpuBillable * (p.pricing_cpu_seconds_per_unit ?? 0),
+		mem: memBillable * (p.pricing_mem_gib_seconds_per_unit ?? 0),
+		net_in: (usage.net_ingress_bytes ?? 0) * (p.pricing_net_ingress_per_byte ?? 0),
+		net_out: (usage.net_egress_bytes ?? 0) * (p.pricing_net_egress_per_byte ?? 0),
+		storage: (usage.storage_gib_seconds ?? 0) * (p.pricing_storage_gib_seconds_per_unit ?? 0)
+	};
+	const total = Object.values(lines).reduce((a, b) => a + b, 0);
+
+	return { total, lines };
+});
+
 export const getInvoices = query(async () => {
 	const org = resolveNamespace();
 	return sql`
