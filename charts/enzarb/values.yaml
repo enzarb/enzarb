@@ -91,7 +91,7 @@ authd:
   image:
     repository: ghcr.io/enzarb/authd
     pullPolicy: IfNotPresent
-    tag: "v0.13.2"
+    tag: "v0.15.0"
   # Secret holding the RSA token-signing keypair (tls.crt/tls.key). The same
   # cert is mounted into Zot as its bearer-auth trust anchor. Create with:
   #   openssl req -x509 -newkey rsa:2048 -nodes -keyout tls.key -out tls.crt \
