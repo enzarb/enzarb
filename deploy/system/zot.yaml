@@ -19,54 +19,69 @@ spec:
     #     --from-literal=S3_SECRET_KEY=<secret-key>
     service:
       type: ClusterIP
-    # NOTE: enabling bearer auth requires mountConfig:true so the chart mounts
-    # config.json. But zot does NOT expand env vars in config, so the $S3_*
-    # placeholders below break S3 storage when mounted (zot dials literal
-    # "$S3_ENDPOINT"). Enabling auth therefore needs the config rendered first
-    # (e.g. an initContainer running envsubst into a shared volume, or AWS_*
-    # env + literal non-secret S3 fields). Left disabled until that's in place.
+    # zot does NOT expand env vars in its config, and the chart's mountConfig
+    # mounts the config read-only — so we can't use placeholders there. Instead
+    # an initContainer renders config.json (with the S3 secret expanded by the
+    # shell) into a shared emptyDir that zot reads at /etc/zot/config.json. This
+    # keeps the S3 credentials out of git while still enabling bearer auth.
     mountConfig: false
-    envFrom:
-      - secretRef:
-          name: zot-s3-credentials
-    # Mount the shared token-signing cert. authd signs registry tokens with the
-    # matching key; Zot trusts this cert as its bearer-auth anchor (see
-    # http.auth.bearer.cert below). Same Secret as charts/enzarb authd.signingSecret.
     extraVolumes:
+      # Shared, in-memory rendered config (written by the initContainer below).
+      - name: rendered-config
+        emptyDir:
+          medium: Memory
+      # Token-signing cert: authd signs registry tokens with the matching key;
+      # zot trusts this cert as its bearer-auth anchor (see config below).
       - name: token-signing
         secret:
           secretName: registry-token-signing
     extraVolumeMounts:
+      - name: rendered-config
+        mountPath: /etc/zot
       - name: token-signing
         mountPath: /etc/zot/token
         readOnly: true
-    configFiles:
-      config.json: |-
-        {
-          "distSpecVersion": "1.1.0",
-          "storage": {
-            "rootDirectory": "/var/lib/registry",
-            "dedupe": false,
-            "storageDriver": {
-              "name": "s3",
-              "regionendpoint": "$S3_ENDPOINT",
-              "bucket": "$S3_BUCKET",
-              "region": "$S3_REGION",
-              "accesskey": "$S3_ACCESS_KEY",
-              "secretkey": "$S3_SECRET_KEY",
-              "forcepathstyle": true
+    initContainers:
+      - name: render-config
+        image: busybox:1.36
+        envFrom:
+          - secretRef:
+              name: zot-s3-credentials
+        command:
+          - sh
+          - -c
+          - |
+            set -eu
+            cat > /etc/zot/config.json <<JSON
+            {
+              "distSpecVersion": "1.1.0",
+              "storage": {
+                "rootDirectory": "/var/lib/registry",
+                "dedupe": false,
+                "storageDriver": {
+                  "name": "s3",
+                  "regionendpoint": "$S3_ENDPOINT",
+                  "bucket": "$S3_BUCKET",
+                  "region": "$S3_REGION",
+                  "accesskey": "$S3_ACCESS_KEY",
+                  "secretkey": "$S3_SECRET_KEY",
+                  "forcepathstyle": true
+                }
+              },
+              "http": {
+                "address": "0.0.0.0",
+                "port": "5000",
+                "auth": {
+                  "bearer": {
+                    "realm": "https://registry.enzarb.dev/auth/token",
+                    "service": "registry.enzarb.dev",
+                    "cert": "/etc/zot/token/tls.crt"
+                  }
+                }
+              },
+              "log": { "level": "info" }
             }
-          },
-          "http": {
-            "address": "0.0.0.0",
-            "port": "5000",
-            "auth": {
-              "bearer": {
-                "realm": "https://registry.enzarb.dev/auth/token",
-                "service": "registry.enzarb.dev",
-                "cert": "/etc/zot/token/tls.crt"
-              }
-            }
-          },
-          "log": { "level": "info" }
-        }
+            JSON
+        volumeMounts:
+          - name: rendered-config
+            mountPath: /etc/zot
