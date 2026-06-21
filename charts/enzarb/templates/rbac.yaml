@@ -68,7 +68,7 @@ rules:
     resources: ["httproutes", "referencegrants"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["cert-manager.io"]
-    resources: ["certificates"]
+    resources: ["certificates", "issuers"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
@@ -108,6 +108,11 @@ rules:
   - apiGroups: ["gateway.networking.k8s.io"]
     resources: ["httproutes", "grpcroutes"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Tenants may create Certificates that reference the operator-provisioned
+  # Issuer (enzarb-acme) by name — referencing an issuer needs no RBAC on the
+  # Issuer object. Deliberately NO "issuers"/"clusterissuers" verbs here, so a
+  # tenant can use the namespace issuer but cannot edit or delete it, nor point
+  # cert-manager at an issuer of their choosing.
   - apiGroups: ["cert-manager.io"]
     resources: ["certificates"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

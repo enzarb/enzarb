@@ -14,6 +14,9 @@ import (
 	"strings"
 	"time"
 
+	acmev1 "github.com/cert-manager/cert-manager/pkg/apis/acme/v1"
+	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
+	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -23,6 +26,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	enzarbv1alpha1 "enzarb.dev/enzarb/operator/api/v1alpha1"
 )
@@ -70,6 +74,12 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, fmt.Errorf("ensure deployer rolebinding: %w", err)
 	}
 
+	// Provision an ACME Issuer the tenant can reference (but not edit/delete) to
+	// obtain TLS certs for their verified custom domains.
+	if err := r.ensureEnvironmentIssuer(ctx, deployNS); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure environment issuer: %w", err)
+	}
+
 	// Deploy-namespace pods pull the project's private images from the in-cluster
 	// registry with no imagePullSecret: the kubelet image credential provider
 	// presents each pod's SA token to authd, which authorizes a pull-only scope
@@ -109,6 +119,10 @@ const (
 	challengeLabel = "_enzarb-challenge"
 	// challengePrefix prefixes the token in the TXT record value.
 	challengePrefix = "enzarb-verify="
+	// environmentIssuerName is the cert-manager Issuer provisioned in every deploy
+	// namespace. Tenants reference it by name from their Certificates; they have no
+	// RBAC to edit or delete it (see the enzarb-deployer ClusterRole).
+	environmentIssuerName = "enzarb-acme"
 )
 
 // dnsResolver is package-level so tests can stub TXT lookups.
@@ -406,6 +420,117 @@ func (r *EnvironmentReconciler) ensureDeployerRoleBinding(ctx context.Context, d
 		return r.Create(ctx, rb)
 	}
 	return err
+}
+
+// ensureEnvironmentIssuer provisions a namespaced ACME Issuer in the deploy
+// namespace so tenants can issue TLS certs for their verified custom domains
+// without any access to a ClusterIssuer. The Issuer is operator-owned: tenants
+// hold no cert-manager "issuers" RBAC, so they can reference it from a
+// Certificate (which needs no RBAC on the Issuer) but cannot edit or delete it.
+//
+// HTTP-01 is solved through the shared platform Gateway. The solver's HTTPRoute
+// is created in this namespace for the (already DNS-verified, hence AllowedDomains-
+// listed) hostname, so it passes the hostname admission policy. Each namespace
+// registers its own ACME account via a generated per-namespace key secret.
+func (r *EnvironmentReconciler) ensureEnvironmentIssuer(ctx context.Context, deployNS string) error {
+	acmeServer := os.Getenv("ACME_SERVER")
+	if acmeServer == "" {
+		acmeServer = "https://acme-v02.api.letsencrypt.org/directory"
+	}
+	acmeEmail := os.Getenv("ACME_EMAIL")
+	gatewayName := os.Getenv("GATEWAY_NAME")
+	if gatewayName == "" {
+		gatewayName = "enzarb"
+	}
+	gatewayNS := os.Getenv("GATEWAY_NAMESPACE")
+	if gatewayNS == "" {
+		gatewayNS = "enzarb-system"
+	}
+
+	gwNS := gatewayv1.Namespace(gatewayNS)
+	gwKind := gatewayv1.Kind("Gateway")
+	gwGroup := gatewayv1.Group("gateway.networking.k8s.io")
+	desired := acmev1.ACMEIssuer{
+		Server: acmeServer,
+		Email:  acmeEmail,
+		PrivateKey: cmmeta.SecretKeySelector{
+			LocalObjectReference: cmmeta.LocalObjectReference{Name: "enzarb-acme-account-key"},
+		},
+		Solvers: []acmev1.ACMEChallengeSolver{{
+			HTTP01: &acmev1.ACMEChallengeSolverHTTP01{
+				GatewayHTTPRoute: &acmev1.ACMEChallengeSolverHTTP01GatewayHTTPRoute{
+					ParentRefs: []gatewayv1.ParentReference{{
+						Name:      gatewayv1.ObjectName(gatewayName),
+						Namespace: &gwNS,
+						Kind:      &gwKind,
+						Group:     &gwGroup,
+					}},
+				},
+			},
+		}},
+	}
+
+	issuer := &certmanagerv1.Issuer{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: deployNS, Name: environmentIssuerName}, issuer)
+	if errors.IsNotFound(err) {
+		issuer = &certmanagerv1.Issuer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      environmentIssuerName,
+				Namespace: deployNS,
+				Labels: map[string]string{
+					"app.kubernetes.io/managed-by": "enzarb-operator",
+				},
+			},
+			Spec: certmanagerv1.IssuerSpec{
+				IssuerConfig: certmanagerv1.IssuerConfig{ACME: &desired},
+			},
+		}
+		return r.Create(ctx, issuer)
+	}
+	if err != nil {
+		return err
+	}
+	// Reconcile drift so platform-level ACME/gateway changes propagate and any
+	// tenant tampering (were it ever possible) is corrected.
+	if issuer.Spec.ACME == nil || !acmeIssuerEqual(*issuer.Spec.ACME, desired) {
+		issuer.Spec.IssuerConfig = certmanagerv1.IssuerConfig{ACME: &desired}
+		return r.Update(ctx, issuer)
+	}
+	return nil
+}
+
+func acmeIssuerEqual(a, b acmev1.ACMEIssuer) bool {
+	if a.Server != b.Server || a.Email != b.Email || a.PrivateKey.Name != b.PrivateKey.Name {
+		return false
+	}
+	if len(a.Solvers) != len(b.Solvers) {
+		return false
+	}
+	for i := range a.Solvers {
+		ah, bh := a.Solvers[i].HTTP01, b.Solvers[i].HTTP01
+		if (ah == nil) != (bh == nil) {
+			return false
+		}
+		if ah == nil {
+			continue
+		}
+		ag, bg := ah.GatewayHTTPRoute, bh.GatewayHTTPRoute
+		if (ag == nil) != (bg == nil) {
+			return false
+		}
+		if ag == nil {
+			continue
+		}
+		if len(ag.ParentRefs) != len(bg.ParentRefs) {
+			return false
+		}
+		for j := range ag.ParentRefs {
+			if ag.ParentRefs[j].Name != bg.ParentRefs[j].Name {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (r *EnvironmentReconciler) ensureNamespace(ctx context.Context, name, orgID, projectSlug string) error {
