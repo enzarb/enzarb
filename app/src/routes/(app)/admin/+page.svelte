@@ -48,6 +48,14 @@
 						<input id="set-storage" {...updateAdminSettings.fields.storageGiBSecondsPerUnit.as('text', String(settings.pricing.storageGiBSecondsPerUnit))} step="any" min="0" required />
 					</div>
 					<div class="field">
+						<label for="set-gitea-storage">Gitea storage $ / GiB-second</label>
+						<input id="set-gitea-storage" {...updateAdminSettings.fields.giteaStorageGiBSecondsPerUnit.as('text', String(settings.pricing.giteaStorageGiBSecondsPerUnit))} step="any" min="0" required />
+					</div>
+					<div class="field">
+						<label for="set-zot-storage">Registry storage $ / GiB-second</label>
+						<input id="set-zot-storage" {...updateAdminSettings.fields.zotStorageGiBSecondsPerUnit.as('text', String(settings.pricing.zotStorageGiBSecondsPerUnit))} step="any" min="0" required />
+					</div>
+					<div class="field">
 						<label for="set-ingress">Network ingress $ / GiB</label>
 						<input id="set-ingress" {...updateAdminSettings.fields.netIngressPerGib.as('text', String(settings.pricing.netIngressPerGib))} step="any" min="0" required />
 					</div>

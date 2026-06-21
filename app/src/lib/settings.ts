@@ -13,6 +13,8 @@ export interface PlatformSettings {
 		netIngressPerGib: number;
 		netEgressPerGib: number;
 		storageGiBSecondsPerUnit: number;
+		giteaStorageGiBSecondsPerUnit: number;
+		zotStorageGiBSecondsPerUnit: number;
 		freeCPUSeconds: number;
 		freeMemGiBSeconds: number;
 	};
@@ -38,6 +40,8 @@ export async function getSettings(): Promise<PlatformSettings> {
 			netIngressPerGib: num('pricing_net_ingress_per_gib'),
 			netEgressPerGib: num('pricing_net_egress_per_gib'),
 			storageGiBSecondsPerUnit: num('pricing_storage_gib_seconds_per_unit'),
+			giteaStorageGiBSecondsPerUnit: num('pricing_gitea_storage_gib_seconds_per_unit'),
+			zotStorageGiBSecondsPerUnit: num('pricing_zot_storage_gib_seconds_per_unit'),
 			freeCPUSeconds: num('pricing_free_cpu_seconds'),
 			freeMemGiBSeconds: num('pricing_free_mem_gib_seconds')
 		}

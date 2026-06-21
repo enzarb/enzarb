@@ -20,7 +20,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release && \
     cp /src/target/release/project-agent /project-agent && \
     cp /src/target/release/docker-credential-k8s-sa /docker-credential-k8s-sa && \
-    cp /src/target/release/git-credential-enzarb /git-credential-enzarb
+    cp /src/target/release/git-credential-enzarb /git-credential-enzarb && \
+    cp /src/target/release/kubelet-credential-enzarb /kubelet-credential-enzarb
 
 # ── Runtime ───────────────────────────────────────────────────────────────────
 FROM ubuntu:26.04
@@ -65,7 +66,8 @@ COPY --from=rust-test /test-ok /tmp/rust-test-ok
 COPY --from=rust-builder /project-agent                /usr/local/bin/project-agent
 COPY --from=rust-builder /docker-credential-k8s-sa    /usr/local/bin/docker-credential-k8s-sa
 COPY --from=rust-builder /git-credential-enzarb       /usr/local/bin/git-credential-enzarb
-RUN chmod 755 /usr/local/bin/project-agent /usr/local/bin/docker-credential-k8s-sa /usr/local/bin/git-credential-enzarb \
+COPY --from=rust-builder /kubelet-credential-enzarb   /usr/local/bin/kubelet-credential-enzarb
+RUN chmod 755 /usr/local/bin/project-agent /usr/local/bin/docker-credential-k8s-sa /usr/local/bin/git-credential-enzarb /usr/local/bin/kubelet-credential-enzarb \
     && rm /tmp/rust-test-ok
 
 # Register the credential helpers at build time (credential-free; the helpers

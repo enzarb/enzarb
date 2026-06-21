@@ -1,24 +1,79 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { getUsageSummary, getUsageByProject, getInvoices, getEstimatedCost } from '$lib/remote/billing.remote';
+	import {
+		getInvoices,
+		getEstimatedCost,
+		getProjectRollup,
+		getCostByComponent,
+		getCostTimeSeries,
+		RESOURCE_TYPES
+	} from '$lib/remote/billing.remote';
+	import StackedBarChart from '$lib/components/StackedBarChart.svelte';
 
 	const resourceLabels: Record<string, string> = {
-		cpu_seconds: 'CPU', mem_gib_seconds: 'Memory',
-		net_ingress_bytes: 'Network In', net_egress_bytes: 'Network Out',
-		storage_gib_seconds: 'Storage'
+		cpu_seconds: 'CPU',
+		mem_gib_seconds: 'Memory',
+		net_ingress_bytes: 'Network In',
+		net_egress_bytes: 'Network Out',
+		storage_gib_seconds: 'Storage',
+		gitea_storage_gib_seconds: 'Gitea',
+		zot_storage_gib_seconds: 'Registry'
+	};
+
+	const componentLabels: Record<string, string> = {
+		workspace: 'Workspaces',
+		environment: 'Deploy environments',
+		gitea: 'Gitea',
+		zot: 'Registry'
+	};
+
+	// Stable colour per resource type for the chart + legend.
+	const resourceColors: Record<string, string> = {
+		cpu_seconds: '#58a6ff',
+		mem_gib_seconds: '#3fb950',
+		net_ingress_bytes: '#d29922',
+		net_egress_bytes: '#db6d28',
+		storage_gib_seconds: '#a371f7',
+		gitea_storage_gib_seconds: '#f778ba',
+		zot_storage_gib_seconds: '#56d4dd'
 	};
 
 	const usd = (n: number) =>
-		n.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: n < 1 ? 4 : 2 });
+		n.toLocaleString('en-US', {
+			style: 'currency',
+			currency: 'USD',
+			minimumFractionDigits: 2,
+			maximumFractionDigits: n < 1 ? 4 : 2
+		});
 
-	// Metering writes usage every ~60s; refresh the live figures so the dashboard
-	// tracks spend in near real time without a manual reload.
+	// gib-seconds → GiB-hours; bytes → GiB. Keeps the rollup table readable.
+	const gibHours = (gibSeconds: number) => (gibSeconds / 3600).toLocaleString('en-US', { maximumFractionDigits: 2 });
+	const cpuHours = (cpuSeconds: number) => (cpuSeconds / 3600).toLocaleString('en-US', { maximumFractionDigits: 2 });
+	const gib = (bytes: number) => (bytes / 1073741824).toLocaleString('en-US', { maximumFractionDigits: 2 });
+
+	// Filter state for the cost-over-time chart.
+	let days = $state(30);
+	let selectedResources = $state<string[]>([]);
+	let selectedProjects = $state<string[]>([]);
+
+	const seriesArgs = $derived({
+		days,
+		projectIds: selectedProjects,
+		resourceTypes: selectedResources as (typeof RESOURCE_TYPES)[number][]
+	});
+
+	function toggle(list: string[], value: string): string[] {
+		return list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
+	}
+
+	// Metering writes usage every ~60s; refresh live figures periodically.
 	let timer: ReturnType<typeof setInterval> | undefined;
 	onMount(() => {
 		timer = setInterval(() => {
 			getEstimatedCost().refresh();
-			getUsageSummary().refresh();
-			getUsageByProject().refresh();
+			getProjectRollup().refresh();
+			getCostByComponent().refresh();
+			getCostTimeSeries(seriesArgs).refresh();
 		}, 15_000);
 	});
 	onDestroy(() => clearInterval(timer));
@@ -39,42 +94,106 @@
 			<span>Net In {usd(est.lines.net_in)}</span>
 			<span>Net Out {usd(est.lines.net_out)}</span>
 			<span>Storage {usd(est.lines.storage)}</span>
+			<span>Gitea {usd(est.lines.gitea)}</span>
+			<span>Registry {usd(est.lines.zot)}</span>
 		</div>
 		<p class="estimate-note">Running estimate to date. Invoices are issued at month end.</p>
 	</section>
 {/await}
 
 <section class="section">
-	<h3>This month's usage</h3>
+	<h3>Cost by component</h3>
 	<div class="usage-grid">
-		{#each await getUsageSummary() as row}
+		{#each await getCostByComponent() as row}
 			<div class="card usage-card">
-				<div class="usage-label">{resourceLabels[row.resource_type] ?? row.resource_type}</div>
-				<div class="usage-value">{Number(row.total).toLocaleString()} <span class="unit">{row.unit}</span></div>
+				<div class="usage-label">{componentLabels[row.component] ?? row.component}</div>
+				<div class="usage-value">{usd(row.cost)}</div>
 			</div>
-		{:else}
-			<p class="muted">No usage this month.</p>
 		{/each}
 	</div>
 </section>
 
 <section class="section">
-	<h3>Usage by project</h3>
-	<table>
-		<thead><tr><th>Project</th><th>Resource</th><th>Total</th><th>Unit</th></tr></thead>
-		<tbody>
-			{#each await getUsageByProject() as row}
-				<tr>
-					<td><code class="mono">{row.project_id}</code></td>
-					<td>{resourceLabels[row.resource_type] ?? row.resource_type}</td>
-					<td>{Number(row.total).toLocaleString()}</td>
-					<td class="muted">{row.unit}</td>
-				</tr>
-			{:else}
-				<tr><td colspan="4" class="muted">No data</td></tr>
+	<h3>Cost over time</h3>
+	<div class="filters">
+		<div class="filter-group">
+			<span class="filter-label">Range</span>
+			{#each [7, 30, 90] as d}
+				<button class="chip {days === d ? 'active' : ''}" onclick={() => (days = d)}>{d}d</button>
 			{/each}
-		</tbody>
-	</table>
+		</div>
+		<div class="filter-group">
+			<span class="filter-label">Metric</span>
+			{#each RESOURCE_TYPES as rt}
+				<button
+					class="chip {selectedResources.includes(rt) ? 'active' : ''}"
+					style={selectedResources.includes(rt) ? `border-color:${resourceColors[rt]}` : ''}
+					onclick={() => (selectedResources = toggle(selectedResources, rt))}
+				>
+					{resourceLabels[rt] ?? rt}
+				</button>
+			{/each}
+		</div>
+		<div class="filter-group">
+			<span class="filter-label">Project</span>
+			{#each await getProjectRollup() as row}
+				<button
+					class="chip {selectedProjects.includes(row.project_id) ? 'active' : ''}"
+					onclick={() => (selectedProjects = toggle(selectedProjects, row.project_id))}
+				>
+					{row.project_id}
+				</button>
+			{/each}
+		</div>
+	</div>
+	{#await getCostTimeSeries(seriesArgs) then series}
+		<StackedBarChart
+			buckets={series.map((s) => ({
+				label: s.day,
+				segments: Object.entries(s.segments).map(([key, value]) => ({ key, value }))
+			}))}
+			colors={resourceColors}
+			labels={resourceLabels}
+		/>
+	{/await}
+</section>
+
+<section class="section">
+	<h3>Usage by project</h3>
+	<div class="table-scroll">
+		<table>
+			<thead>
+				<tr>
+					<th>Project</th>
+					<th>CPU (hr)</th>
+					<th>Memory (GiB-hr)</th>
+					<th>Net In (GiB)</th>
+					<th>Net Out (GiB)</th>
+					<th>Storage (GiB-hr)</th>
+					<th>Gitea (GiB-hr)</th>
+					<th>Registry (GiB-hr)</th>
+					<th>Cost</th>
+				</tr>
+			</thead>
+			<tbody>
+				{#each await getProjectRollup() as row}
+					<tr>
+						<td><code class="mono">{row.project_id}</code></td>
+						<td>{cpuHours(row.cpu_seconds)}</td>
+						<td>{gibHours(row.mem_gib_seconds)}</td>
+						<td>{gib(row.net_ingress_bytes)}</td>
+						<td>{gib(row.net_egress_bytes)}</td>
+						<td>{gibHours(row.storage_gib_seconds)}</td>
+						<td>{gibHours(row.gitea_storage_gib_seconds)}</td>
+						<td>{gibHours(row.zot_storage_gib_seconds)}</td>
+						<td class="cost">{usd(row.cost)}</td>
+					</tr>
+				{:else}
+					<tr><td colspan="9" class="muted">No data</td></tr>
+				{/each}
+			</tbody>
+		</table>
+	</div>
 </section>
 
 <section class="section">
@@ -111,7 +230,16 @@
 	.usage-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 0.75rem; }
 	.usage-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--color-text-muted); margin-bottom: 0.375rem; }
 	.usage-value { font-size: 1.25rem; font-weight: 600; font-variant-numeric: tabular-nums; }
-	.unit { font-size: 12px; font-weight: 400; color: var(--color-text-muted); }
+
+	.filters { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1rem; }
+	.filter-group { display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem; }
+	.filter-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-text-muted); width: 56px; }
+	.chip { font-size: 12px; padding: 0.2rem 0.6rem; border-radius: 999px; border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text-muted); cursor: pointer; }
+	.chip:hover { color: var(--color-text); }
+	.chip.active { background: var(--color-surface-2); color: var(--color-text); border-color: var(--color-accent, var(--color-text-muted)); }
+
+	.table-scroll { overflow-x: auto; }
+	.cost { font-variant-numeric: tabular-nums; font-weight: 600; }
 	.mono { font-family: var(--font-mono); font-size: 12px; }
 	.muted { color: var(--color-text-muted); font-size: 13px; }
 </style>

@@ -61,6 +61,23 @@ spec:
               value: "postgres://$(DB_USER):$(DB_PASSWORD)@$(DB_HOST):$(DB_PORT)/{{ .Values.app.dbSecret.dbName }}"
             - name: HUBBLE_LOG_PATH
               value: {{ .Values.metering.hubbleLogPath | quote }}
+            # Gitea + registry access for storage metering, wired the same way as
+            # the app deployment (charts/enzarb/templates/app.yaml).
+            - name: GITEA_URL
+              value: {{ .Values.app.env.GITEA_URL | quote }}
+            - name: GITEA_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.operator.giteaSecret.name }}
+                  key: {{ .Values.operator.giteaSecret.tokenKey }}
+                  optional: true
+            - name: AUTHD_INTERNAL_URL
+              value: "http://enzarb-authd.{{ .Release.Namespace }}:8080"
+            - name: REGISTRY_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.authd.adminSecret.name }}
+                  key: {{ .Values.authd.adminSecret.key }}
           volumeMounts:
             - name: hubble-log
               mountPath: /var/run/cilium/hubble

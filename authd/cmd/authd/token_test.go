@@ -13,6 +13,8 @@ func TestParseServiceAccountUsername(t *testing.T) {
 	}{
 		{"system:serviceaccount:user-org123:blog-sa", saRef{OrgID: "org123", ProjectSlug: "blog"}, false},
 		{"system:serviceaccount:user-org123:my-app-sa", saRef{OrgID: "org123", ProjectSlug: "my-app"}, false},
+		// Deploy namespaces resolve via labels; only Deploy/Namespace are set.
+		{"system:serviceaccount:deploy-org123-blog-prod:default", saRef{Deploy: true, Namespace: "deploy-org123-blog-prod"}, false},
 		{"system:serviceaccount:kube-system:default", saRef{}, true}, // not an org namespace
 		{"system:serviceaccount:user-org123:default", saRef{}, true}, // not a project SA
 		{"system:serviceaccount:user-:blog-sa", saRef{}, true},       // empty org
@@ -32,6 +34,7 @@ func TestParseServiceAccountUsername(t *testing.T) {
 
 func TestGrantScoping(t *testing.T) {
 	proj := Identity{OrgSlug: "orgA", ProjectSlug: "blog"}
+	pull := Identity{OrgSlug: "orgA", ProjectSlug: "blog", PullOnly: true}
 	admin := Identity{Admin: true}
 
 	tests := []struct {
@@ -41,6 +44,8 @@ func TestGrantScoping(t *testing.T) {
 		want  []string
 	}{
 		{"own repo push/pull", proj, "repository:orgA/blog/img:pull,push", []string{"pull", "push"}},
+		{"pull-only drops push", pull, "repository:orgA/blog/img:pull,push", []string{"pull"}},
+		{"pull-only cross-org denied", pull, "repository:orgB/blog/img:pull", nil},
 		{"own repo nested path", proj, "repository:orgA/blog/sub/img:push", []string{"push"}},
 		{"cross-org denied", proj, "repository:orgB/blog/img:pull", nil},
 		{"sibling project denied", proj, "repository:orgA/other/img:pull,push", nil},

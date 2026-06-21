@@ -45,11 +45,14 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, fmt.Errorf("get project: %w", err)
 	}
 
-	deployNS := fmt.Sprintf("deploy-%s-%s", project.Spec.OrgID, env.Spec.Slug)
+	// Namespace encodes org/project/env. The project slug isn't unambiguously
+	// parseable back out (UUIDs and slugs both contain '-'), so authd resolves a
+	// deploy pod's pull scope from the labels set below, not the name.
+	deployNS := fmt.Sprintf("deploy-%s-%s-%s", project.Spec.OrgID, project.Spec.Slug, env.Spec.Slug)
 	orgNS := env.Namespace
 	saName := fmt.Sprintf("%s-sa", project.Spec.Slug)
 
-	if err := r.ensureNamespace(ctx, deployNS); err != nil {
+	if err := r.ensureNamespace(ctx, deployNS, project.Spec.OrgID, project.Spec.Slug); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensure deploy namespace: %w", err)
 	}
 
@@ -57,11 +60,10 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, fmt.Errorf("ensure deployer rolebinding: %w", err)
 	}
 
-	// NOTE: deploy-namespace pods still need a way to pull the project's private
-	// images from the in-cluster registry (projected registry token /
-	// imagePullSecret). The previous `system:image-puller` RoleBinding referenced
-	// a ClusterRole that doesn't exist here and failed the whole reconcile, so the
-	// environment never reached Ready. Dropped until image-pull auth is wired up.
+	// Deploy-namespace pods pull the project's private images from the in-cluster
+	// registry with no imagePullSecret: the kubelet image credential provider
+	// presents each pod's SA token to authd, which authorizes a pull-only scope
+	// for this project via the namespace labels set in ensureNamespace.
 
 	env.Status.Namespace = deployNS
 	if err := r.Status().Update(ctx, &env); err != nil {
@@ -96,19 +98,41 @@ func (r *EnvironmentReconciler) ensureDeployerRoleBinding(ctx context.Context, d
 	return err
 }
 
-func (r *EnvironmentReconciler) ensureNamespace(ctx context.Context, name string) error {
+func (r *EnvironmentReconciler) ensureNamespace(ctx context.Context, name, orgID, projectSlug string) error {
+	// authd reads enzarb.io/org-id and enzarb.io/project-slug to authorize a
+	// deploy pod's pull-only registry scope (see authd deployIdentity).
+	labels := map[string]string{
+		"app.kubernetes.io/managed-by": "enzarb-operator",
+		"enzarb.io/type":               "deploy",
+		"enzarb.io/org-id":             orgID,
+		"enzarb.io/project-slug":       projectSlug,
+	}
 	ns := &corev1.Namespace{}
 	err := r.Get(ctx, types.NamespacedName{Name: name}, ns)
 	if errors.IsNotFound(err) {
 		return r.Create(ctx, &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: name,
-				Labels: map[string]string{
-					"app.kubernetes.io/managed-by": "enzarb-operator",
-					"enzarb.io/type":               "deploy",
-				},
+				Name:   name,
+				Labels: labels,
 			},
 		})
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	// Backfill labels on a pre-existing namespace so authd can resolve scope.
+	changed := false
+	if ns.Labels == nil {
+		ns.Labels = map[string]string{}
+	}
+	for k, v := range labels {
+		if ns.Labels[k] != v {
+			ns.Labels[k] = v
+			changed = true
+		}
+	}
+	if changed {
+		return r.Update(ctx, ns)
+	}
+	return nil
 }

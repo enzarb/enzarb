@@ -21,6 +21,9 @@ type Identity struct {
 	OrgSlug     string
 	ProjectSlug string
 	Admin       bool
+	// PullOnly restricts the identity to pull (no push), used for the
+	// node-originated kubelet image-pull path (audience registry-pull.enzarb.dev).
+	PullOnly bool
 }
 
 // repoPrefix is the only repository path a project identity may access:
@@ -32,13 +35,25 @@ func (id Identity) repoPrefix() string {
 
 // saRef is the ServiceAccount coordinates parsed from a TokenReview username.
 // The org is identified by its id (UUID) here; the caller resolves it to a slug.
+//
+// Two shapes are recognized:
+//   - Workspace SAs in "user-<orgId>" namespaces — OrgID/ProjectSlug come
+//     straight from the namespace + SA name.
+//   - Deploy SAs in "deploy-<orgId>-<projectSlug>-<envSlug>" namespaces — the
+//     org id and project slug aren't unambiguously parseable from the name
+//     (UUIDs and slugs both contain '-'), so Deploy is set and the caller
+//     resolves the identity from the namespace's labels.
 type saRef struct {
 	OrgID       string
 	ProjectSlug string
+	// Deploy marks a deploy-namespace SA; Namespace holds its name for the
+	// label lookup. OrgID/ProjectSlug are unset in this case.
+	Deploy    bool
+	Namespace string
 }
 
-// parseServiceAccountUsername parses the TokenReview username
-// "system:serviceaccount:user-<orgId>:<projectSlug>-sa".
+// parseServiceAccountUsername parses a TokenReview username of the form
+// "system:serviceaccount:<namespace>:<sa>".
 func parseServiceAccountUsername(username string) (saRef, error) {
 	const saPrefix = "system:serviceaccount:"
 	rest, ok := strings.CutPrefix(username, saPrefix)
@@ -48,6 +63,10 @@ func parseServiceAccountUsername(username string) (saRef, error) {
 	ns, sa, ok := strings.Cut(rest, ":")
 	if !ok {
 		return saRef{}, fmt.Errorf("malformed service account: %q", username)
+	}
+	if strings.HasPrefix(ns, "deploy-") {
+		// Identity is resolved from the namespace labels, not the name.
+		return saRef{Deploy: true, Namespace: ns}, nil
 	}
 	orgID, ok := strings.CutPrefix(ns, "user-")
 	if !ok || orgID == "" {
@@ -93,6 +112,9 @@ func (id Identity) grant(sc Scope) []string {
 			return intersect(sc.Actions, "pull", "delete")
 		}
 		if strings.HasPrefix(sc.Name, id.repoPrefix()) {
+			if id.PullOnly {
+				return intersect(sc.Actions, "pull")
+			}
 			return intersect(sc.Actions, "pull", "push")
 		}
 		return nil

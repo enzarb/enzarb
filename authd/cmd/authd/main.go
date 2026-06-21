@@ -30,16 +30,26 @@ import (
 
 const (
 	registryAudience = "registry.enzarb.dev"
-	giteaAudience    = "gitea.enzarb.dev"
-	adminUsername    = "admin"
-	tokenTTL         = 5 * time.Minute
+	// registryPullAudience is the audience of SA tokens the kubelet image
+	// credential provider presents when pulling an image. Unlike the workspace
+	// push token, this path is pull-only and not pod-IP bound — the pull request
+	// legitimately originates from the node's kubelet, not the pod.
+	registryPullAudience = "registry-pull.enzarb.dev"
+	giteaAudience        = "gitea.enzarb.dev"
+	adminUsername        = "admin"
+	tokenTTL             = 5 * time.Minute
+
+	// Labels the operator sets on deploy-<orgId>-<projectSlug>-<envSlug>
+	// namespaces, used to resolve a deploy pod's pull scope.
+	labelOrgID       = "enzarb.io/org-id"
+	labelProjectSlug = "enzarb.io/project-slug"
 )
 
 // validator authenticates a presented bearer token (a projected K8s SA token)
 // for a given audience, returning the workspace Identity. clientIP is the
 // request's trusted source address, used to bind the token to its pod.
 type validator interface {
-	validate(ctx context.Context, token, audience, clientIP string) (Identity, error)
+	validate(ctx context.Context, token, audience, clientIP string, requirePodBinding bool) (Identity, error)
 }
 
 type server struct {
@@ -108,7 +118,8 @@ func main() {
 }
 
 // authenticate resolves the caller from HTTP basic auth. The password is either
-// the admin shared secret or a projected SA token for the given audience.
+// the admin shared secret or a projected SA token for the given audience. SA
+// tokens are pod-IP bound (defeating reuse of an exfiltrated token).
 func (s *server) authenticate(ctx context.Context, r *http.Request, audience string) (Identity, error) {
 	user, pass, ok := r.BasicAuth()
 	if !ok || pass == "" {
@@ -120,7 +131,35 @@ func (s *server) authenticate(ctx context.Context, r *http.Request, audience str
 		}
 		return Identity{Admin: true}, nil
 	}
-	return s.val.validate(ctx, pass, audience, clientIP(r))
+	return s.val.validate(ctx, pass, audience, clientIP(r), true)
+}
+
+// authenticateRegistry resolves the caller for the Docker token endpoint. It
+// accepts either a workspace push token (audience registry.enzarb.dev, pod-IP
+// bound, pull+push) or a kubelet image-pull token (audience
+// registry-pull.enzarb.dev, node-originated so not pod-bound, pull-only).
+func (s *server) authenticateRegistry(ctx context.Context, r *http.Request) (Identity, error) {
+	user, pass, ok := r.BasicAuth()
+	if !ok || pass == "" {
+		return Identity{}, errors.New("missing credentials")
+	}
+	if user == adminUsername {
+		if s.adminPass == "" || subtle.ConstantTimeCompare([]byte(pass), []byte(s.adminPass)) != 1 {
+			return Identity{}, errors.New("invalid admin credentials")
+		}
+		return Identity{Admin: true}, nil
+	}
+	// Try the push audience first (pod-IP bound). A token minted for the pull
+	// audience fails that TokenReview on audience mismatch, so fall through.
+	if id, err := s.val.validate(ctx, pass, registryAudience, clientIP(r), true); err == nil {
+		return id, nil
+	}
+	id, err := s.val.validate(ctx, pass, registryPullAudience, clientIP(r), false)
+	if err != nil {
+		return Identity{}, err
+	}
+	id.PullOnly = true
+	return id, nil
 }
 
 // clientIP returns the request's trusted source address. Behind the Envoy
@@ -148,7 +187,7 @@ func clientIP(r *http.Request) string {
 // redirects unauthenticated clients here; we mint a JWT scoped to exactly what
 // the caller is allowed to access.
 func (s *server) handleRegistryToken(w http.ResponseWriter, r *http.Request) {
-	id, err := s.authenticate(r.Context(), r, registryAudience)
+	id, err := s.authenticateRegistry(r.Context(), r)
 	if err != nil {
 		slog.Warn("registry token denied", "err", err, "client", clientIP(r))
 		// No credentials at all → 401 so the client retries with auth. Bad
@@ -315,7 +354,7 @@ func newK8sValidator(client kubernetes.Interface, dyn dynamic.Interface, bindPod
 	return &k8sValidator{client: client, dyn: dyn, bindPodIP: bindPodIP, cache: map[string]slugEntry{}}
 }
 
-func (v *k8sValidator) validate(ctx context.Context, token, audience, clientIP string) (Identity, error) {
+func (v *k8sValidator) validate(ctx context.Context, token, audience, clientIP string, requirePodBinding bool) (Identity, error) {
 	review, err := v.client.AuthenticationV1().TokenReviews().Create(ctx, &authnv1.TokenReview{
 		Spec: authnv1.TokenReviewSpec{
 			Token:     token,
@@ -336,7 +375,13 @@ func (v *k8sValidator) validate(ctx context.Context, token, audience, clientIP s
 	if err != nil {
 		return Identity{}, err
 	}
-	if v.bindPodIP {
+	// Deploy-namespace pods resolve their (org, project) from namespace labels.
+	// They only ever reach the registry via the kubelet pull path, which is not
+	// pod-bound, so there's no pod-IP check here.
+	if ref.Deploy {
+		return v.deployIdentity(ctx, ref.Namespace)
+	}
+	if requirePodBinding && v.bindPodIP {
 		if err := v.checkPodBinding(ctx, ref.OrgID, review.Status.User.Extra, clientIP); err != nil {
 			return Identity{}, err
 		}
@@ -346,6 +391,25 @@ func (v *k8sValidator) validate(ctx context.Context, token, audience, clientIP s
 		return Identity{}, err
 	}
 	return Identity{OrgSlug: slug, ProjectSlug: ref.ProjectSlug}, nil
+}
+
+// deployIdentity resolves the pull scope for a deploy-namespace pod from the
+// namespace's operator-applied labels (enzarb.io/org-id, enzarb.io/project-slug).
+func (v *k8sValidator) deployIdentity(ctx context.Context, namespace string) (Identity, error) {
+	ns, err := v.client.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{})
+	if err != nil {
+		return Identity{}, fmt.Errorf("get deploy namespace %q: %w", namespace, err)
+	}
+	orgID := ns.Labels[labelOrgID]
+	projectSlug := ns.Labels[labelProjectSlug]
+	if orgID == "" || projectSlug == "" {
+		return Identity{}, fmt.Errorf("deploy namespace %q missing %s/%s labels", namespace, labelOrgID, labelProjectSlug)
+	}
+	slug, err := v.resolveSlug(ctx, orgID)
+	if err != nil {
+		return Identity{}, err
+	}
+	return Identity{OrgSlug: slug, ProjectSlug: projectSlug}, nil
 }
 
 // checkPodBinding requires the request's source IP to match the current IP of

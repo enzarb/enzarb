@@ -107,6 +107,8 @@ const SettingsSchema = z.object({
 	netIngressPerGib: posNum({ min: 0 }),
 	netEgressPerGib: posNum({ min: 0 }),
 	storageGiBSecondsPerUnit: posNum({ min: 0 }),
+	giteaStorageGiBSecondsPerUnit: posNum({ min: 0 }),
+	zotStorageGiBSecondsPerUnit: posNum({ min: 0 }),
 	freeCPUSeconds: posNum({ min: 0 }),
 	freeMemGiBSeconds: posNum({ min: 0 })
 });
@@ -121,6 +123,8 @@ export const updateAdminSettings = form(SettingsSchema, async (v) => {
 		pricing_net_ingress_per_gib: v.netIngressPerGib,
 		pricing_net_egress_per_gib: v.netEgressPerGib,
 		pricing_storage_gib_seconds_per_unit: v.storageGiBSecondsPerUnit,
+		pricing_gitea_storage_gib_seconds_per_unit: v.giteaStorageGiBSecondsPerUnit,
+		pricing_zot_storage_gib_seconds_per_unit: v.zotStorageGiBSecondsPerUnit,
 		pricing_free_cpu_seconds: v.freeCPUSeconds,
 		pricing_free_mem_gib_seconds: v.freeMemGiBSeconds
 	});
