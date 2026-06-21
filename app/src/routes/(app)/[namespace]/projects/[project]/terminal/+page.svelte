@@ -21,6 +21,7 @@
 	let newCmd = $state('');
 	let newName = $state('');
 	let newKind: 'one-shot' | 'persistent' = $state('one-shot');
+	let createErr = $state('');
 	let agentToken: string | null = $state(null);
 
 	// On touch devices we suppress the OS keyboard and drive input from our own
@@ -49,24 +50,34 @@
 	}
 
 	function openNewDialog() {
-		newCmd = ''; newName = ''; newKind = 'one-shot';
+		newCmd = ''; newName = ''; newKind = 'one-shot'; createErr = '';
 		newDialog?.showModal();
 	}
 
 	async function createProcess() {
-		if (!agentToken || !agentBase || !newCmd.trim()) return;
-		const res = await fetch(`${agentBase}/processes`, {
-			method: 'POST',
-			headers: { Authorization: `Bearer ${agentToken}`, 'Content-Type': 'application/json' },
-			body: JSON.stringify({ name: newName || newCmd, command: newCmd, kind: newKind })
-		});
-		if (res.ok) {
-			const p = await res.json();
-			newCmd = ''; newName = '';
-			newDialog?.close();
-			await loadProcesses();
-			attachToProcess(p.id);
+		createErr = '';
+		if (!agentToken || !agentBase) { createErr = 'Not connected to the workspace agent.'; return; }
+		if (!newCmd.trim()) { createErr = 'Enter a command.'; return; }
+		let res: Response;
+		try {
+			res = await fetch(`${agentBase}/processes`, {
+				method: 'POST',
+				headers: { Authorization: `Bearer ${agentToken}`, 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name: newName || newCmd, command: newCmd, kind: newKind })
+			});
+		} catch {
+			createErr = 'Could not reach the workspace agent.';
+			return;
 		}
+		if (!res.ok) {
+			createErr = `Failed to start process (${res.status}). ${(await res.text().catch(() => '')).slice(0, 200)}`.trim();
+			return;
+		}
+		const p = await res.json();
+		newCmd = ''; newName = '';
+		newDialog?.close();
+		await loadProcesses();
+		attachToProcess(p.id);
 	}
 
 	async function killProcess(id: string) {
@@ -168,6 +179,7 @@
 				<option value="persistent">Persistent</option>
 			</select>
 		</label>
+		{#if createErr}<p class="create-err">{createErr}</p>{/if}
 		<div class="dialog-actions">
 			<button type="button" class="btn" onclick={() => newDialog?.close()}>Cancel</button>
 			<button type="submit" class="btn btn-primary">Run</button>
@@ -220,4 +232,5 @@
 	.new-form label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 12px; font-weight: 500; }
 	.new-form input, .new-form select { font-size: 13px; }
 	.dialog-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.25rem; }
+	.create-err { color: var(--color-danger); font-size: 12px; margin: 0.25rem 0 0; }
 </style>

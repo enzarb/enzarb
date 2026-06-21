@@ -143,6 +143,12 @@ impl ProcessStore {
     }
 
     async fn start_in_tmux(&self, process: &Process) -> Result<()> {
+        // tmux destroys a session when its last window closes (and with
+        // `exit-empty on`, the server too). If a previous process was the last
+        // window and exited, the session is gone, so `new-window -t` would fail.
+        // Re-ensure it here so creating a process always works, not just at boot.
+        ensure_tmux_session().await?;
+
         let log_path = home_dir().join(LOG_DIR).join(format!("{}.log", process.id));
         let log_path_str = log_path.to_string_lossy();
 
