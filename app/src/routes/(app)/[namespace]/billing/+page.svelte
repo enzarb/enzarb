@@ -5,9 +5,9 @@
 		getEstimatedCost,
 		getProjectRollup,
 		getCostByComponent,
-		getCostTimeSeries,
-		RESOURCE_TYPES
+		getCostTimeSeries
 	} from '$lib/remote/billing.remote';
+	import { RESOURCE_TYPES } from '$lib/billing';
 	import StackedBarChart from '$lib/components/StackedBarChart.svelte';
 
 	const resourceLabels: Record<string, string> = {

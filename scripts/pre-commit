@@ -131,6 +131,10 @@ if $JS_CHANGED; then
     else
         run_check "npm ci" bash -c "cd app && npm ci"
         run_check "svelte-check" bash -c "cd app && npm run check"
+        # svelte-check does not enforce SvelteKit's build-time rules (e.g.
+        # *.remote.ts files may only export remote functions). The production
+        # `vite build` does, and CI fails there — so run it here as well.
+        run_check "vite build" bash -c "cd app && npm run build"
     fi
 fi
 

@@ -3,6 +3,7 @@ import { getRequestEvent } from '$app/server';
 import { error } from '@sveltejs/kit';
 import { z } from 'zod/v4';
 import { sql } from '$lib/db';
+import { RESOURCE_TYPES, COMPONENTS } from '$lib/billing';
 
 function resolveNamespace() {
 	const { locals, params } = getRequestEvent();
@@ -49,18 +50,6 @@ function costForResource(resourceType: string, quantity: number, p: Pricing): nu
 			return 0;
 	}
 }
-
-export const RESOURCE_TYPES = [
-	'cpu_seconds',
-	'mem_gib_seconds',
-	'net_ingress_bytes',
-	'net_egress_bytes',
-	'storage_gib_seconds',
-	'gitea_storage_gib_seconds',
-	'zot_storage_gib_seconds'
-] as const;
-
-export const COMPONENTS = ['workspace', 'environment', 'gitea', 'zot'] as const;
 
 export const getUsageSummary = query(async () => {
 	const org = resolveNamespace();
