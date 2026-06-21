@@ -1,17 +1,8 @@
 import { query } from '$app/server';
-import { getRequestEvent } from '$app/server';
-import { error } from '@sveltejs/kit';
 import { z } from 'zod/v4';
 import { sql } from '$lib/db';
 import { RESOURCE_TYPES, COMPONENTS } from '$lib/billing';
-
-function resolveNamespace() {
-	const { locals, params } = getRequestEvent();
-	if (!locals.session) error(401, 'Unauthorized');
-	const org = locals.session.orgs.find((o) => o.slug === params.namespace);
-	if (!org) error(403, 'Forbidden');
-	return org;
-}
+import { resolveOrg } from './guard';
 
 const GIB = 1073741824; // bytes per GiB
 
@@ -52,7 +43,7 @@ function costForResource(resourceType: string, quantity: number, p: Pricing): nu
 }
 
 export const getUsageSummary = query(async () => {
-	const org = resolveNamespace();
+	const org = resolveOrg();
 	return sql`
 		SELECT resource_type, SUM(quantity) as total, unit
 		FROM usage_events
@@ -68,7 +59,7 @@ export const getUsageSummary = query(async () => {
 // worker so users see expenses before the monthly invoice is cut. Returns dollars;
 // `cpu`/`mem` reflect free-allowance deductions.
 export const getEstimatedCost = query(async () => {
-	const org = resolveNamespace();
+	const org = resolveOrg();
 
 	const usageRows = await sql`
 		SELECT resource_type, SUM(quantity)::float8 AS total
@@ -103,7 +94,7 @@ export const getEstimatedCost = query(async () => {
 // estimated cost for the project this month. Free allowances are org-wide so they
 // are not applied per project here (the top-line estimate handles them).
 export const getProjectRollup = query(async () => {
-	const org = resolveNamespace();
+	const org = resolveOrg();
 	const rows = await sql<
 		{
 			project_id: string;
@@ -145,7 +136,7 @@ export const getProjectRollup = query(async () => {
 // Monthly cost grouped by component, so the dashboard can split workspace vs
 // deploy-environment spend (and surface Gitea/Zot platform usage).
 export const getCostByComponent = query(async () => {
-	const org = resolveNamespace();
+	const org = resolveOrg();
 	const rows = await sql`
 		SELECT component, resource_type, SUM(quantity)::float8 AS total
 		FROM usage_events
@@ -173,7 +164,7 @@ export const getCostTimeSeries = query(
 		resourceTypes: z.array(z.enum(RESOURCE_TYPES)).default([])
 	}),
 	async ({ days, projectIds, resourceTypes }) => {
-		const org = resolveNamespace();
+		const org = resolveOrg();
 		const since = new Date(Date.now() - days * 86400000);
 
 		const rows = await sql<{ day: Date; resource_type: string; total: number }[]>`
@@ -202,7 +193,7 @@ export const getCostTimeSeries = query(
 );
 
 export const getInvoices = query(async () => {
-	const org = resolveNamespace();
+	const org = resolveOrg();
 	return sql`
 		SELECT id, period_start, period_end, total_cents, status, created_at
 		FROM invoices

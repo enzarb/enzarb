@@ -238,6 +238,10 @@ func (r *ProjectReconciler) reconcileProjectDelete(ctx context.Context, project 
 		return ctrl.Result{}, fmt.Errorf("delete certificate: %w", err)
 	}
 
+	if err := r.cleanupGiteaRepo(ctx, project); err != nil {
+		return ctrl.Result{}, fmt.Errorf("cleanup gitea repo: %w", err)
+	}
+
 	controllerutil.RemoveFinalizer(project, projectFinalizer)
 	if err := r.Update(ctx, project); err != nil {
 		return ctrl.Result{}, fmt.Errorf("remove finalizer: %w", err)
@@ -617,6 +621,30 @@ func (r *ProjectReconciler) ensureGiteaRepo(ctx context.Context, orgSlug string,
 		return fmt.Errorf("add gitea collaborator: %w", err)
 	}
 	return nil
+}
+
+// cleanupGiteaRepo deletes the project's Gitea repo and per-project user on hard
+// deletion, mirroring ensureGiteaRepo. The org and its other repos are left
+// intact. Best-effort and idempotent: the Gitea client tolerates already-gone
+// resources so finalizer removal isn't blocked by a partially-purged state.
+func (r *ProjectReconciler) cleanupGiteaRepo(ctx context.Context, project *enzarbv1alpha1.Project) error {
+	if r.GiteaClient == nil {
+		return nil
+	}
+	orgSlug, err := r.orgSlug(ctx, project.Spec.OrgID)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			// Org already gone (e.g. org-level purge); nothing scoped to clean up.
+			return nil
+		}
+		return fmt.Errorf("resolve org slug: %w", err)
+	}
+	if err := r.GiteaClient.DeleteRepo(orgSlug, project.Spec.Slug); err != nil {
+		return err
+	}
+	// Delete the user after its repo so Gitea doesn't refuse on owned-repo checks.
+	user := fmt.Sprintf("%s_%s", orgSlug, project.Spec.Slug)
+	return r.GiteaClient.DeleteUser(user)
 }
 
 // orgSlug resolves a project's org id to the org's human-readable slug via the

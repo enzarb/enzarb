@@ -132,6 +132,40 @@ func (c *Client) AddCollaborator(orgSlug, repoName, username, permission string)
 	return nil
 }
 
+// DeleteRepo removes a repository. Idempotent — a 404 (already gone) is treated
+// as success so project teardown is retry-safe.
+func (c *Client) DeleteRepo(orgSlug, repoName string) error {
+	resp, err := c.http.R().Delete(fmt.Sprintf("/api/v1/repos/%s/%s", orgSlug, repoName))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode() == 404 {
+		return nil
+	}
+	if resp.StatusCode() >= 400 {
+		return fmt.Errorf("gitea delete repo failed: %s", resp.Body())
+	}
+	return nil
+}
+
+// DeleteUser removes a provisioned per-project user. Idempotent — a 404 is
+// treated as success. Must be called after the user's repos are deleted, as
+// Gitea refuses to delete a user that still owns or collaborates on repos with
+// a 422; we tolerate that too so teardown can proceed.
+func (c *Client) DeleteUser(username string) error {
+	resp, err := c.http.R().Delete(fmt.Sprintf("/api/v1/admin/users/%s", username))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode() == 404 {
+		return nil
+	}
+	if resp.StatusCode() >= 400 {
+		return fmt.Errorf("gitea delete user failed: %s", resp.Body())
+	}
+	return nil
+}
+
 // RegisterRunnerToken generates a registration token for act_runner.
 func (c *Client) RegisterRunnerToken(orgSlug, repo string) (string, error) {
 	var result struct {

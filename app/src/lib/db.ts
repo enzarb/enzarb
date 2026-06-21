@@ -1,4 +1,5 @@
 import postgres from 'postgres';
+import { DEFAULT_ROLES } from './privileges';
 
 let _sql: ReturnType<typeof postgres> | null = null;
 
@@ -59,6 +60,24 @@ export async function migrate() {
 			expires_at TIMESTAMPTZ NOT NULL DEFAULT now() + interval '7 days'
 		)
 	`;
+	// Privilege-based roles: per-org, editable bags of privileges. org_members.role
+	// references org_roles.name. Seeded with builtin owner/manager/member below.
+	await sql`
+		CREATE TABLE IF NOT EXISTS org_roles (
+			org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			name TEXT NOT NULL,
+			privileges TEXT[] NOT NULL DEFAULT '{}',
+			builtin BOOLEAN NOT NULL DEFAULT false,
+			PRIMARY KEY (org_id, name)
+		)
+	`;
+	// Back-compat: the legacy two-role model used 'admin'; map it to the new owner role.
+	await sql`UPDATE org_members SET role = 'owner' WHERE role = 'admin'`;
+	// Seed builtin roles into every org that lacks them (new + pre-existing).
+	const allOrgs = await sql`SELECT id FROM organizations`;
+	for (const { id } of allOrgs) {
+		await seedOrgRoles(id);
+	}
 	await sql`CREATE INDEX IF NOT EXISTS sessions_user_id ON sessions(user_id)`;
 	await sql`CREATE INDEX IF NOT EXISTS sessions_expires_at ON sessions(expires_at)`;
 	await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT UNIQUE`;
@@ -123,6 +142,18 @@ export async function migrate() {
 		await sql`
 			INSERT INTO app_settings (key, value) VALUES (${key}, ${value})
 			ON CONFLICT (key) DO NOTHING
+		`;
+	}
+}
+
+// seedOrgRoles inserts the builtin roles for an org, leaving any already-present
+// (possibly customized) role untouched. Safe to call repeatedly.
+export async function seedOrgRoles(orgId: string): Promise<void> {
+	for (const role of DEFAULT_ROLES) {
+		await sql`
+			INSERT INTO org_roles (org_id, name, privileges, builtin)
+			VALUES (${orgId}, ${role.name}, ${role.privileges}, true)
+			ON CONFLICT (org_id, name) DO NOTHING
 		`;
 	}
 }

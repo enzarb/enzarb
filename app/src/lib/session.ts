@@ -6,7 +6,7 @@ export interface Session {
 	userId: string;
 	email: string;
 	isAdmin: boolean;
-	orgs: { id: string; slug: string; role: string }[];
+	orgs: { id: string; slug: string; role: string; privileges: string[] }[];
 }
 
 export async function getSession(event: RequestEvent): Promise<Session | null> {
@@ -25,9 +25,10 @@ export async function getSession(event: RequestEvent): Promise<Session | null> {
 
 	const row = rows[0];
 	const orgs = await sql`
-		SELECT o.id, o.slug, om.role
+		SELECT o.id, o.slug, om.role, COALESCE(r.privileges, '{}') AS privileges
 		FROM org_members om
 		JOIN organizations o ON o.id = om.org_id
+		LEFT JOIN org_roles r ON r.org_id = om.org_id AND r.name = om.role
 		WHERE om.user_id = ${row.user_id}
 		  AND o.deleted_at IS NULL
 	`;
@@ -37,7 +38,12 @@ export async function getSession(event: RequestEvent): Promise<Session | null> {
 		userId: row.user_id,
 		email: row.email,
 		isAdmin: row.is_admin,
-		orgs: orgs.map((r) => ({ id: r.id, slug: r.slug, role: r.role }))
+		orgs: orgs.map((r) => ({
+			id: r.id,
+			slug: r.slug,
+			role: r.role,
+			privileges: (r.privileges as string[]) ?? []
+		}))
 	};
 }
 

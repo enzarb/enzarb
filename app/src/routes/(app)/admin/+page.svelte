@@ -149,7 +149,8 @@
 								<input {...invite.fields.email.as('email')} placeholder="user@example.com" required />
 								<select {...invite.fields.role.as('select')} style="width:auto">
 									<option value="member">Member</option>
-									<option value="admin">Admin</option>
+									<option value="manager">Manager</option>
+									<option value="owner">Owner</option>
 								</select>
 								<button type="submit" class="btn btn-primary">Invite</button>
 								<button type="button" class="btn" onclick={() => (inviteOrgId = null)}>Cancel</button>

@@ -1,5 +1,6 @@
-import { sql } from './db';
+import { sql, seedOrgRoles } from './db';
 import { createOrganization, waitForOrganizationReady } from './k8s';
+import { OWNER_ROLE } from './privileges';
 
 // Create an org and add a user as admin. No auth check — call only from trusted server-side code.
 // Also creates the cluster-scoped Organization CR and blocks (bounded) until the
@@ -16,9 +17,11 @@ export async function createOrgWithAdmin(
 		RETURNING id
 	`;
 	const orgId: string = rows[0].id;
+	// Seed builtin roles before adding the creator so their owner role resolves.
+	await seedOrgRoles(orgId);
 	await sql`
 		INSERT INTO org_members (org_id, user_id, role)
-		VALUES (${orgId}, ${userId}, 'admin')
+		VALUES (${orgId}, ${userId}, ${OWNER_ROLE})
 		ON CONFLICT (org_id, user_id) DO NOTHING
 	`;
 

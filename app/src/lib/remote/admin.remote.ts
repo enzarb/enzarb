@@ -2,9 +2,10 @@ import { query, form, command } from '$app/server';
 import { getRequestEvent } from '$app/server';
 import { error } from '@sveltejs/kit';
 import { z } from 'zod/v4';
-import { sql } from '$lib/db';
+import { sql, seedOrgRoles } from '$lib/db';
 import { getSettings, updateSettings } from '$lib/settings';
 import { softDeleteOrganization, recoverOrganization } from '$lib/k8s';
+import { BUILTIN_ROLE_NAMES } from '$lib/privileges';
 
 function requireAdmin() {
 	const { locals } = getRequestEvent();
@@ -48,10 +49,12 @@ const CreateOrgSchema = z.object({
 
 export const createOrgAdmin = form(CreateOrgSchema, async ({ slug, displayName, tier }) => {
 	requireAdmin();
-	await sql`
+	const rows = await sql`
 		INSERT INTO organizations (slug, display_name, tier)
 		VALUES (${slug}, ${displayName}, ${tier})
+		RETURNING id
 	`;
+	await seedOrgRoles(rows[0].id);
 	await listOrgs().refresh();
 });
 
@@ -136,7 +139,7 @@ export const updateAdminSettings = form(SettingsSchema, async (v) => {
 const InviteSchema = z.object({
 	orgId: z.string(),
 	email: z.string().email(),
-	role: z.enum(['member', 'admin']).default('member')
+	role: z.enum(BUILTIN_ROLE_NAMES as [string, ...string[]]).default('member')
 });
 
 export const inviteMember = form(InviteSchema, async ({ orgId, email, role }) => {

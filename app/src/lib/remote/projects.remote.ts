@@ -15,20 +15,12 @@ import { sql } from '$lib/db';
 import { tiers, type TierConfig } from '$lib/config';
 import { getSettings } from '$lib/settings';
 import { mintProjectToken } from '$lib/jwt';
+import { resolveOrg, requirePrivilege } from './guard';
 
 function requireSession() {
 	const { locals } = getRequestEvent();
 	if (!locals.session) error(401, 'Unauthorized');
 	return locals.session;
-}
-
-function resolveNamespace(minRole?: 'admin') {
-	const { locals, params } = getRequestEvent();
-	if (!locals.session) error(401, 'Unauthorized');
-	const org = locals.session.orgs.find((o) => o.slug === params.namespace);
-	if (!org) error(403, 'Not a member of this organization');
-	if (minRole === 'admin' && org.role === 'member') error(403, 'Admin required');
-	return org;
 }
 
 async function getOrgTierValue(orgId: string) {
@@ -48,7 +40,7 @@ async function resolveTierLimits(tier: keyof typeof tiers): Promise<TierConfig> 
 }
 
 export const getProjects = query(async () => {
-	const org = resolveNamespace();
+	const org = resolveOrg();
 	const projects = await listProjects(org.id);
 	// Hide soft-deleted projects from the normal listing.
 	return projects.filter((p: { metadata?: { annotations?: Record<string, string> } }) => !purgeAfterOf(p));
@@ -56,7 +48,7 @@ export const getProjects = query(async () => {
 
 // Soft-deleted projects still within their recovery window.
 export const getDeletedProjects = query(async () => {
-	const org = resolveNamespace();
+	const org = resolveOrg();
 	const projects = await listProjects(org.id);
 	return projects
 		.filter((p: { metadata?: { annotations?: Record<string, string> } }) => purgeAfterOf(p))
@@ -68,14 +60,14 @@ export const getDeletedProjects = query(async () => {
 
 export const getProject = query(async () => {
 	const { params } = getRequestEvent();
-	const org = resolveNamespace();
+	const org = resolveOrg();
 	const project = (await k8sGetProject(org.id, params.project!)) as any;
 	if (!project) error(404, 'Project not found');
 	return project;
 });
 
 export const getOrgTierInfo = query(async () => {
-	const org = resolveNamespace();
+	const org = resolveOrg();
 	const tier = await getOrgTierValue(org.id);
 	return { tier, limits: await resolveTierLimits(tier) };
 });
@@ -83,7 +75,7 @@ export const getOrgTierInfo = query(async () => {
 export const getAgentToken = query(async () => {
 	const { params } = getRequestEvent();
 	const session = requireSession();
-	const org = resolveNamespace();
+	const org = resolveOrg();
 	const project = (await k8sGetProject(org.id, params.project!)) as any;
 	const projectId = project?.metadata?.uid;
 	if (!projectId) error(404, 'Project not found');
@@ -106,7 +98,7 @@ const CreateProjectSchema = z.object({
 export const createProject = command(
 	CreateProjectSchema,
 	async ({ slug, displayName, tools, storageGi }) => {
-		const org = resolveNamespace('admin');
+		const org = requirePrivilege('project.create');
 
 		const tier = await getOrgTierValue(org.id);
 		const limits = await resolveTierLimits(tier);
@@ -135,14 +127,16 @@ export const createProject = command(
 	}
 );
 
+// Recoverable soft delete, gated on the project.delete privilege (granted to the
+// member role by default). Reversible within the retention window.
 export const removeProject = command(z.object({ slug: z.string() }), async ({ slug }) => {
-	const org = resolveNamespace('admin');
+	const org = requirePrivilege('project.delete');
 	const { retentionDays } = await getSettings();
 	// Soft delete: recoverable for retentionDays before the operator purges it.
 	return softDeleteProject(org.id, slug, retentionDays);
 });
 
 export const recoverProjectCommand = command(z.object({ slug: z.string() }), async ({ slug }) => {
-	const org = resolveNamespace('admin');
+	const org = requirePrivilege('project.delete');
 	return k8sRecoverProject(org.id, slug);
 });
