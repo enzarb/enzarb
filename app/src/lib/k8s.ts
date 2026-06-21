@@ -185,6 +185,33 @@ export async function deleteProject(orgId: string, slug: string) {
 	});
 }
 
+// Force-delete a project stuck in deletion: clear the cleanup finalizer so the
+// API server can remove the CR even if the operator's cleanup never completes,
+// then issue the delete. This bypasses orderly child cleanup and may orphan
+// out-of-namespace resources — an admin escape hatch for wedged deletions only.
+export async function forceDeleteProject(orgId: string, slug: string) {
+	const ns = orgNamespace(orgId);
+	// `add` on /metadata/finalizers replaces it if present and creates it if not,
+	// so emptying the list is idempotent regardless of current finalizer state.
+	try {
+		await customApi.patchNamespacedCustomObject({
+			group: GROUP,
+			version: VERSION,
+			namespace: ns,
+			plural: 'projects',
+			name: slug,
+			body: [{ op: 'add', path: '/metadata/finalizers', value: [] }]
+		});
+	} catch {
+		// CR may already be gone once finalizers clear; the delete below is a no-op then.
+	}
+	try {
+		await deleteProject(orgId, slug);
+	} catch {
+		// Already removed by the API server after the finalizer was cleared.
+	}
+}
+
 // Soft-delete an org: stamp the Organization CR and cascade to every Project in
 // its namespace so all workspaces scale down and purge together.
 export async function softDeleteOrganization(orgId: string, retentionDays: number) {

@@ -4,7 +4,14 @@ import { error } from '@sveltejs/kit';
 import { z } from 'zod/v4';
 import { sql, seedOrgRoles } from '$lib/db';
 import { getSettings, updateSettings } from '$lib/settings';
-import { softDeleteOrganization, recoverOrganization } from '$lib/k8s';
+import {
+	softDeleteOrganization,
+	recoverOrganization,
+	listProjects,
+	deleteProject,
+	forceDeleteProject,
+	purgeAfterOf
+} from '$lib/k8s';
 import { BUILTIN_ROLE_NAMES } from '$lib/privileges';
 
 function requireAdmin() {
@@ -39,6 +46,74 @@ export const listDeletedOrgs = query(async () => {
 export const listUsers = query(async () => {
 	requireAdmin();
 	return sql`SELECT id, email, is_admin, created_at FROM users ORDER BY created_at DESC`;
+});
+
+type AdminProject = {
+	orgId: string;
+	orgSlug: string;
+	// Email of the owning user when the org is personal (a personal org's slug is
+	// the user's username); null for team orgs.
+	userEmail: string | null;
+	slug: string;
+	displayName: string;
+	phase: string;
+	purgeAfter: string | null;
+	deleting: boolean;
+	createdAt: string | null;
+};
+
+// Every project across all orgs, with its deletion state, for admin oversight.
+// Projects are namespaced under their org, so we fan out per org; an org whose
+// namespace isn't provisioned (or is mid-teardown) is simply skipped. Personal
+// orgs (slug == a user's username) are attributed to that user's email.
+export const listAllProjects = query(async (): Promise<AdminProject[]> => {
+	requireAdmin();
+	const orgs = await sql`
+		SELECT o.id, o.slug, u.email AS user_email
+		FROM organizations o
+		LEFT JOIN users u ON u.username = o.slug
+		ORDER BY o.slug
+	`;
+	const out: AdminProject[] = [];
+	for (const org of orgs) {
+		let projects: any[];
+		try {
+			projects = await listProjects(org.id);
+		} catch {
+			continue;
+		}
+		for (const p of projects) {
+			out.push({
+				orgId: org.id,
+				orgSlug: org.slug,
+				userEmail: org.user_email ?? null,
+				slug: p.metadata?.name ?? '',
+				displayName: p.spec?.displayName ?? p.metadata?.name ?? '',
+				phase: p.status?.phase ?? '',
+				purgeAfter: purgeAfterOf(p),
+				deleting: !!p.metadata?.deletionTimestamp,
+				createdAt: p.metadata?.creationTimestamp ?? null
+			});
+		}
+	}
+	return out.sort((a, b) => a.orgSlug.localeCompare(b.orgSlug) || a.slug.localeCompare(b.slug));
+});
+
+const ProjectRefSchema = z.object({ orgId: z.string(), slug: z.string() });
+
+// Hard-delete a project now (no retention window). The operator runs its cleanup
+// finalizer, so the CR sits in PendingDeletion until that completes.
+export const adminDeleteProject = command(ProjectRefSchema, async ({ orgId, slug }) => {
+	requireAdmin();
+	await deleteProject(orgId, slug);
+	await listAllProjects().refresh();
+});
+
+// Force-remove a project wedged in deletion by clearing its cleanup finalizer.
+export const adminForceDeleteProject = command(ProjectRefSchema, async ({ orgId, slug }) => {
+	requireAdmin();
+	await forceDeleteProject(orgId, slug);
+	await listAllProjects().refresh();
 });
 
 const CreateOrgSchema = z.object({

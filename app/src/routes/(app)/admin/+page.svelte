@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { listOrgs, listDeletedOrgs, listUsers, createOrgAdmin, setOrgTier, deleteOrg, recoverOrg, inviteMember, getAdminSettings, updateAdminSettings } from '$lib/remote/admin.remote';
+	import { listOrgs, listDeletedOrgs, listUsers, listAllProjects, adminDeleteProject, adminForceDeleteProject, createOrgAdmin, setOrgTier, deleteOrg, recoverOrg, inviteMember, getAdminSettings, updateAdminSettings } from '$lib/remote/admin.remote';
 	import { confirm } from '$lib/confirm';
 	let showNewOrg = $state(false);
 	let inviteOrgId: string | null = $state(null);
@@ -203,6 +203,63 @@
 {/await}
 
 <section class="section">
+	<h3>Projects</h3>
+	<table>
+		<thead><tr><th>Owner</th><th>Org</th><th>Project</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+		<tbody>
+			{#each await listAllProjects() as p}
+				<tr>
+					<td>{#if p.userEmail}{p.userEmail}{:else}<span class="muted">team</span>{/if}</td>
+					<td><code class="mono">{p.orgSlug}</code></td>
+					<td>{p.displayName}<br /><code class="mono muted">{p.slug}</code></td>
+					<td>
+						{#if p.deleting}
+							<span class="badge badge-danger">Pending full deletion</span>
+						{:else if p.purgeAfter}
+							<span class="badge">Soft-deleted · purges {new Date(p.purgeAfter).toLocaleDateString()}</span>
+						{:else}
+							{p.phase || '—'}
+						{/if}
+					</td>
+					<td class="muted">{p.createdAt ? new Date(p.createdAt).toLocaleDateString() : '—'}</td>
+					<td>
+						{#if p.deleting}
+							<button
+								class="btn btn-danger"
+								onclick={async () => {
+									const ok = await confirm({
+										title: `Force delete "${p.slug}"?`,
+										message: 'This clears the cleanup finalizer and removes the project even if teardown is wedged. Out-of-namespace resources may be orphaned. This cannot be undone.',
+										requireText: p.slug,
+										confirmText: 'Force delete',
+										danger: true
+									});
+									if (ok) await adminForceDeleteProject({ orgId: p.orgId, slug: p.slug });
+								}}>Force delete</button>
+						{:else}
+							<button
+								class="btn btn-danger"
+								onclick={async () => {
+									const ok = await confirm({
+										title: `Delete "${p.slug}"?`,
+										message: `Deletes the project in org "${p.orgSlug}" immediately (no retention window).`,
+										requireText: p.slug,
+										confirmText: 'Delete',
+										danger: true
+									});
+									if (ok) await adminDeleteProject({ orgId: p.orgId, slug: p.slug });
+								}}>Delete</button>
+						{/if}
+					</td>
+				</tr>
+			{:else}
+				<tr><td colspan="6" class="muted">No projects</td></tr>
+			{/each}
+		</tbody>
+	</table>
+</section>
+
+<section class="section">
 	<h3>Users</h3>
 	<table>
 		<thead><tr><th>Email</th><th>Admin</th><th>Joined</th></tr></thead>
@@ -235,4 +292,6 @@
 	.inline-form input[type=email] { max-width: 220px; }
 	.mono { font-family: var(--font-mono); font-size: 12px; }
 	.muted { color: var(--color-text-muted); font-size: 13px; }
+	.badge { display: inline-block; padding: 0.1rem 0.45rem; border-radius: 4px; font-size: 12px; border: 1px solid var(--color-border); color: var(--color-text-muted); }
+	.badge-danger { color: var(--color-danger); border-color: var(--color-danger); }
 </style>
