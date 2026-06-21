@@ -247,16 +247,57 @@ impl ProcessStore {
 }
 
 async fn ensure_tmux_session() -> Result<()> {
+    // Interactive shells launch with this managed rcfile so we control the prompt
+    // (sets PS1 last, after sourcing the system/user rc) without touching the
+    // image rootfs. The file lives on the home PVC.
+    let shell_cmd = match write_managed_bashrc().await {
+        Ok(rc) => Some(format!("bash --rcfile {}", rc.to_string_lossy())),
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to write managed bashrc; using default shell");
+            None
+        }
+    };
+
     let status = Command::new("tmux")
         .args(["has-session", "-t", TMUX_SESSION])
         .status()
         .await?;
 
     if !status.success() {
-        Command::new("tmux")
-            .args(["new-session", "-d", "-s", TMUX_SESSION, "-n", "agent"])
+        let mut args = vec!["new-session", "-d", "-s", TMUX_SESSION, "-n", "agent"];
+        if let Some(cmd) = &shell_cmd {
+            args.push(cmd);
+        }
+        Command::new("tmux").args(&args).status().await?;
+    }
+
+    // Make our prompt the default for any shell tmux spawns without an explicit
+    // command (idempotent; safe to set every time).
+    if let Some(cmd) = &shell_cmd {
+        let _ = Command::new("tmux")
+            .args(["set-option", "-g", "default-command", cmd])
             .status()
-            .await?;
+            .await;
     }
     Ok(())
+}
+
+// write_managed_bashrc writes (idempotently) the enzarb-managed bash rcfile that
+// sources the standard rc files and then overrides PS1 to a clean prompt: the
+// hostname is the project slug, with no generic `user` login name.
+async fn write_managed_bashrc() -> Result<PathBuf> {
+    let path = home_dir().join(".enzarb").join("bashrc");
+    if let Some(dir) = path.parent() {
+        tokio::fs::create_dir_all(dir).await?;
+    }
+    let contents = "\
+# Managed by enzarb — do not edit. Sources the standard rc files, then sets a
+# clean prompt (project-slug hostname, no generic login name) last so it wins.
+[ -r /etc/profile ] && . /etc/profile 2>/dev/null
+[ -r /etc/bash.bashrc ] && . /etc/bash.bashrc 2>/dev/null
+[ -r \"$HOME/.bashrc\" ] && . \"$HOME/.bashrc\" 2>/dev/null
+PS1='\\[\\e[1;32m\\]\\h\\[\\e[0m\\]:\\[\\e[1;34m\\]\\w\\[\\e[0m\\]\\$ '
+";
+    tokio::fs::write(&path, contents).await?;
+    Ok(path)
 }
