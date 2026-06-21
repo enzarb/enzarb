@@ -23,7 +23,7 @@
 
 	// Geometry. The SVG uses a fixed viewBox and scales responsively.
 	const W = 720;
-	const H = 240;
+	const H = 180;
 	const pad = { top: 12, right: 12, bottom: 28, left: 48 };
 	const plotW = W - pad.left - pad.right;
 	const plotH = H - pad.top - pad.bottom;
@@ -102,6 +102,9 @@
 <style>
 	.chart {
 		width: 100%;
+		/* Cap the rendered size so the 3:1 SVG can't balloon in height on wide
+		   layouts; it still scales down responsively on narrow screens. */
+		max-width: 720px;
 		height: auto;
 		display: block;
 	}

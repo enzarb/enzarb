@@ -188,7 +188,13 @@ export const getCostTimeSeries = query(
 				(seg[r.resource_type] ?? 0) + costForResource(r.resource_type, Number(r.total), p);
 			buckets.set(key, seg);
 		}
-		return [...buckets.entries()].map(([day, segments]) => ({ day, segments }));
+		// Emit exactly `days` buckets ending today, zero-filling days with no usage
+		// so the chart always shows the full selected range as distinct columns.
+		const start = new Date(Date.now() - (days - 1) * 86400000);
+		return Array.from({ length: days }, (_, i) => {
+			const day = new Date(start.getTime() + i * 86400000).toISOString().slice(0, 10);
+			return { day, segments: buckets.get(day) ?? {} };
+		});
 	}
 );
 
