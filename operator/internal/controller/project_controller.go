@@ -404,6 +404,10 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug s
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: saName,
+					// Make the in-workspace hostname the project slug (a valid
+					// DNS-1123 label) instead of the generated pod name, so shell
+					// prompts read e.g. `user@krustbe` rather than the replica hash.
+					Hostname: project.Spec.Slug,
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: boolPtr(true),
 						RunAsUser:    int64Ptr(1000),
