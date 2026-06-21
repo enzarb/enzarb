@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { LayoutData } from './$types';
 	import { afterNavigate } from '$app/navigation';
+	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 
 	let { data, children }: { data: LayoutData; children: any } = $props();
 	const session = $derived(data.session);
@@ -92,6 +93,8 @@
 		{@render children()}
 	</main>
 </div>
+
+<ConfirmDialog />
 
 <style>
 	.shell {

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { listOrgs, listDeletedOrgs, listUsers, createOrgAdmin, setOrgTier, deleteOrg, recoverOrg, inviteMember, getAdminSettings, updateAdminSettings } from '$lib/remote/admin.remote';
+	import { confirm } from '$lib/confirm';
 	let showNewOrg = $state(false);
 	let inviteOrgId: string | null = $state(null);
 </script>
@@ -131,7 +132,14 @@
 						<button
 							class="btn btn-danger"
 							onclick={async () => {
-								if (confirm(`Delete org "${org.slug}"? It can be recovered within the retention window.`)) {
+								const ok = await confirm({
+									title: `Delete org "${org.slug}"?`,
+									message: 'It can be recovered within the retention window.',
+									requireText: org.slug,
+									confirmText: 'Delete',
+									danger: true
+								});
+								if (ok) {
 									await deleteOrg({ orgId: org.id });
 									await listOrgs().refresh();
 									await listDeletedOrgs().refresh();

@@ -10,6 +10,7 @@
 		deleteRole
 	} from '$lib/remote/members.remote';
 	import { PRIVILEGE_LABELS } from '$lib/privileges';
+	import { confirm } from '$lib/confirm';
 
 	const orgMembership = $derived(
 		$page.data.session.orgs.find((o: { slug: string }) => o.slug === $page.params.namespace)
@@ -74,7 +75,12 @@
 	}
 
 	async function removeRole(name: string) {
-		if (!confirm(`Delete role "${name}"?`)) return;
+		const ok = await confirm({
+			title: `Delete role "${name}"?`,
+			confirmText: 'Delete',
+			danger: true
+		});
+		if (!ok) return;
 		await run(`role:del:${name}`, async () => {
 			await deleteRole({ name });
 			await getRoles().refresh();

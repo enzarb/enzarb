@@ -2,14 +2,21 @@
 	import { getProject, removeProject } from '$lib/remote/projects.remote';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
+	import { confirm } from '$lib/confirm';
 
 	let deleting = $state(false);
 	let deleteError = $state('');
 
 	async function handleDelete(slug: string, displayName: string) {
-		if (!confirm(`Delete project "${displayName}"?\n\nThe workspace stops immediately. It stays recoverable for the retention window, after which all data is permanently purged.`)) {
-			return;
-		}
+		const ok = await confirm({
+			title: `Delete project "${displayName}"?`,
+			message:
+				'The workspace stops immediately. It stays recoverable for the retention window, after which all data is permanently purged.',
+			requireText: slug,
+			confirmText: 'Delete',
+			danger: true
+		});
+		if (!ok) return;
 		deleting = true;
 		deleteError = '';
 		try {
