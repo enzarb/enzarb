@@ -6,7 +6,7 @@ app:
   image:
     repository: ghcr.io/enzarb/app
     pullPolicy: IfNotPresent
-    tag: "v0.27.1"
+    tag: "v0.27.2"
   env:
     ORIGIN: https://enzarb.dev
     # Reach Gitea's admin API internally — the external host is fronted by the
@@ -119,7 +119,7 @@ authd:
 workspace:
   image:
     repository: ghcr.io/enzarb/workspace
-    tag: "v0.17.1"
+    tag: "v0.27.2"
   # StorageClass for project home PVCs. Empty uses the cluster's default class.
   storageClass: ""
 database:
