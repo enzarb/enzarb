@@ -1,0 +1,87 @@
+package controller
+
+import (
+	"context"
+	"errors"
+	"net"
+	"testing"
+)
+
+type stubResolver struct {
+	records []string
+	err     error
+}
+
+func (s stubResolver) LookupTXT(_ context.Context, _ string) ([]string, error) {
+	return s.records, s.err
+}
+
+func withResolver(r interface {
+	LookupTXT(ctx context.Context, name string) ([]string, error)
+}, fn func()) {
+	prev := dnsResolver
+	dnsResolver = r
+	defer func() { dnsResolver = prev }()
+	fn()
+}
+
+func TestVerifyDomainTXT(t *testing.T) {
+	const token = "ABC123TOKEN"
+
+	tests := []struct {
+		name    string
+		stub    stubResolver
+		want    bool
+		wantErr bool
+	}{
+		{"match", stubResolver{records: []string{challengePrefix + token}}, true, false},
+		{"match among many", stubResolver{records: []string{"unrelated", challengePrefix + token}}, true, false},
+		{"wrong token", stubResolver{records: []string{challengePrefix + "nope"}}, false, false},
+		{"no records", stubResolver{records: nil}, false, false},
+		{"nxdomain is not an error", stubResolver{err: &net.DNSError{IsNotFound: true}}, false, false},
+		{"temporary is not an error", stubResolver{err: &net.DNSError{IsTemporary: true}}, false, false},
+		{"hard error", stubResolver{err: errors.New("boom")}, false, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			withResolver(tc.stub, func() {
+				got, err := verifyDomainTXT(context.Background(), "app.example.com", token)
+				if (err != nil) != tc.wantErr {
+					t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+				}
+				if got != tc.want {
+					t.Fatalf("got %v, want %v", got, tc.want)
+				}
+			})
+		})
+	}
+}
+
+func TestClaimNameDeterministicAndScoped(t *testing.T) {
+	a := claimName("app.example.com")
+	b := claimName("APP.EXAMPLE.COM") // case-insensitive
+	if a != b {
+		t.Fatalf("claimName not case-insensitive: %q vs %q", a, b)
+	}
+	if claimName("app.example.com") == claimName("other.example.com") {
+		t.Fatal("distinct FQDNs produced the same claim name")
+	}
+	if len(a) == 0 || a[:3] != "dc-" {
+		t.Fatalf("unexpected claim name format: %q", a)
+	}
+}
+
+func TestGenerateTokenUnique(t *testing.T) {
+	a, err := generateToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := generateToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a == b || a == "" {
+		t.Fatalf("tokens not unique/non-empty: %q %q", a, b)
+	}
+}

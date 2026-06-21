@@ -20,6 +20,7 @@ func init() {
 	SchemeBuilder.Register(&Environment{}, &EnvironmentList{})
 	SchemeBuilder.Register(&Organization{}, &OrganizationList{})
 	SchemeBuilder.Register(&AllowedDomains{}, &AllowedDomainsList{})
+	SchemeBuilder.Register(&DomainClaim{}, &DomainClaimList{})
 }
 
 // +kubebuilder:object:root=true
@@ -147,9 +148,15 @@ type EnvironmentStatus struct {
 }
 
 type DomainStatus struct {
-	FQDN       string `json:"fqdn"`
+	FQDN string `json:"fqdn"`
+	// CertStatus doubles as the domain's verification phase:
+	// PendingVerification | VerificationError | DomainConflict | Verified.
 	CertStatus string `json:"certStatus,omitempty"`
 	VerifiedAt string `json:"verifiedAt,omitempty"`
+	// ChallengeToken is the per-domain secret the tenant must publish as a TXT
+	// record at _enzarb-challenge.<fqdn> (value "enzarb-verify=<token>") to prove
+	// DNS control. Surfaced to the user so they can create the record.
+	ChallengeToken string `json:"challengeToken,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -183,6 +190,48 @@ type AllowedDomainsList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []AllowedDomains `json:"items"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:scope=Cluster,shortName=domainclaim
+// +kubebuilder:printcolumn:name="FQDN",type=string,JSONPath=`.spec.fqdn`
+// +kubebuilder:printcolumn:name="Project",type=string,JSONPath=`.spec.projectRef`
+// +kubebuilder:printcolumn:name="Verified",type=string,JSONPath=`.status.verifiedAt`
+
+// DomainClaim is the cluster-scoped ownership ledger for custom domains. Its
+// metadata.name is a hash of the FQDN, so etcd's name uniqueness guarantees a
+// given hostname can be bound to exactly one project: the operator Creates the
+// claim only after DNS ownership is proven, and a second project's Create of the
+// same name fails, hard-blocking domain hijacking regardless of route
+// creationTimestamp ordering.
+type DomainClaim struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   DomainClaimSpec   `json:"spec,omitempty"`
+	Status DomainClaimStatus `json:"status,omitempty"`
+}
+
+type DomainClaimSpec struct {
+	FQDN string `json:"fqdn"`
+	// OrgID, ProjectRef and Namespace identify the owning project. Re-verification
+	// and route admission are only honored for the project recorded here.
+	OrgID      string `json:"orgID"`
+	ProjectRef string `json:"projectRef"`
+	Namespace  string `json:"namespace"`
+}
+
+type DomainClaimStatus struct {
+	VerifiedAt string `json:"verifiedAt,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+
+type DomainClaimList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []DomainClaim `json:"items"`
 }
 
 // +kubebuilder:object:root=true
@@ -371,6 +420,44 @@ func (al *AllowedDomainsList) DeepCopyInto(out *AllowedDomainsList) {
 		out.Items = make([]AllowedDomains, len(al.Items))
 		for i := range al.Items {
 			al.Items[i].DeepCopyInto(&out.Items[i])
+		}
+	}
+}
+
+func (d *DomainClaim) DeepCopyObject() runtime.Object {
+	if d == nil {
+		return nil
+	}
+	out := new(DomainClaim)
+	d.DeepCopyInto(out)
+	return out
+}
+
+func (d *DomainClaim) DeepCopyInto(out *DomainClaim) {
+	*out = *d
+	out.TypeMeta = d.TypeMeta
+	d.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+	out.Spec = d.Spec
+	out.Status = d.Status
+}
+
+func (dl *DomainClaimList) DeepCopyObject() runtime.Object {
+	if dl == nil {
+		return nil
+	}
+	out := new(DomainClaimList)
+	dl.DeepCopyInto(out)
+	return out
+}
+
+func (dl *DomainClaimList) DeepCopyInto(out *DomainClaimList) {
+	*out = *dl
+	out.TypeMeta = dl.TypeMeta
+	dl.ListMeta.DeepCopyInto(&out.ListMeta)
+	if dl.Items != nil {
+		out.Items = make([]DomainClaim, len(dl.Items))
+		for i := range dl.Items {
+			dl.Items[i].DeepCopyInto(&out.Items[i])
 		}
 	}
 }

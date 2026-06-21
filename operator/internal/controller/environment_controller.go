@@ -2,8 +2,17 @@ package controller
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base32"
+	"encoding/hex"
+	goerrors "errors"
 	"fmt"
+	"net"
 	"os"
+	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -66,6 +75,14 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// presents each pod's SA token to authd, which authorizes a pull-only scope
 	// for this project via the namespace labels set in ensureNamespace.
 
+	// Verify ownership of custom domains and claim them in the cluster-scoped
+	// ledger. This mutates env.Status.Domains in memory, which reconcileAllowedDomains
+	// reads below, so it must run first.
+	requeue, err := r.reconcileDomains(ctx, &project, &env)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile domains: %w", err)
+	}
+
 	if err := r.reconcileAllowedDomains(ctx, deployNS, &project, &env); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile allowed domains: %w", err)
 	}
@@ -76,7 +93,222 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	logger.Info("environment reconciled", "name", env.Name, "deployNS", deployNS)
+	if requeue {
+		// Re-poll DNS for domains still pending verification.
+		return ctrl.Result{RequeueAfter: domainRecheckInterval}, nil
+	}
 	return ctrl.Result{}, nil
+}
+
+const (
+	// domainRecheckInterval is how often the controller re-polls DNS for domains
+	// that are not yet verified (and re-checks already-verified ones for drift).
+	domainRecheckInterval = 2 * time.Minute
+	// challengeLabel is the DNS label prefix under which tenants publish the
+	// per-domain TXT proof, e.g. _enzarb-challenge.app.example.com.
+	challengeLabel = "_enzarb-challenge"
+	// challengePrefix prefixes the token in the TXT record value.
+	challengePrefix = "enzarb-verify="
+)
+
+// dnsResolver is package-level so tests can stub TXT lookups.
+var dnsResolver interface {
+	LookupTXT(ctx context.Context, name string) ([]string, error)
+} = net.DefaultResolver
+
+// reconcileDomains drives, for each custom domain, the ownership flow:
+// generate a challenge token -> verify the TXT record -> claim the FQDN in the
+// cluster-scoped DomainClaim ledger -> mark Verified. Only verified domains are
+// projected into AllowedDomains (and thus admitted on routes), so a tenant can
+// never serve a domain they have not proven DNS control of, nor one already
+// claimed by another project. Returns requeue=true if any domain is still
+// pending and should be re-polled.
+func (r *EnvironmentReconciler) reconcileDomains(ctx context.Context, project *enzarbv1alpha1.Project, env *enzarbv1alpha1.Environment) (bool, error) {
+	logger := log.FromContext(ctx)
+	requeue := false
+
+	// Prune status entries for domains no longer in spec.
+	wanted := map[string]bool{}
+	for _, cd := range env.Spec.CustomDomains {
+		wanted[cd.FQDN] = true
+	}
+	kept := env.Status.Domains[:0]
+	for _, ds := range env.Status.Domains {
+		if wanted[ds.FQDN] {
+			kept = append(kept, ds)
+		}
+	}
+	env.Status.Domains = kept
+
+	for _, cd := range env.Spec.CustomDomains {
+		ds := getOrInitDomain(env, cd.FQDN)
+
+		if ds.ChallengeToken == "" {
+			tok, err := generateToken()
+			if err != nil {
+				return false, fmt.Errorf("generate token: %w", err)
+			}
+			ds.ChallengeToken = tok
+			ds.CertStatus = "PendingVerification"
+		}
+
+		// Already verified and still owned by us: nothing to do (claim re-check is
+		// cheap and guards against the claim being deleted out from under us).
+		if ds.VerifiedAt != "" {
+			setDomainStatus(env, cd.FQDN, *ds)
+			continue
+		}
+
+		ok, err := verifyDomainTXT(ctx, cd.FQDN, ds.ChallengeToken)
+		if err != nil {
+			logger.Info("domain TXT lookup failed", "fqdn", cd.FQDN, "err", err.Error())
+			ds.CertStatus = "VerificationError"
+			setDomainStatus(env, cd.FQDN, *ds)
+			requeue = true
+			continue
+		}
+		if !ok {
+			ds.CertStatus = "PendingVerification"
+			setDomainStatus(env, cd.FQDN, *ds)
+			requeue = true
+			continue
+		}
+
+		// DNS proof succeeded; take the cluster-wide ownership lock.
+		conflict, err := r.claimDomain(ctx, cd.FQDN, project, env)
+		if err != nil {
+			return false, fmt.Errorf("claim domain %s: %w", cd.FQDN, err)
+		}
+		if conflict {
+			logger.Info("domain claimed by another project", "fqdn", cd.FQDN)
+			ds.CertStatus = "DomainConflict"
+			setDomainStatus(env, cd.FQDN, *ds)
+			continue
+		}
+
+		ds.VerifiedAt = time.Now().UTC().Format(time.RFC3339)
+		ds.CertStatus = "Verified"
+		setDomainStatus(env, cd.FQDN, *ds)
+		logger.Info("domain verified and claimed", "fqdn", cd.FQDN)
+	}
+
+	return requeue, nil
+}
+
+// getOrInitDomain returns a copy of the DomainStatus for fqdn, initializing one
+// if absent. Callers persist changes via setDomainStatus.
+func getOrInitDomain(env *enzarbv1alpha1.Environment, fqdn string) *enzarbv1alpha1.DomainStatus {
+	for i := range env.Status.Domains {
+		if env.Status.Domains[i].FQDN == fqdn {
+			ds := env.Status.Domains[i]
+			return &ds
+		}
+	}
+	return &enzarbv1alpha1.DomainStatus{FQDN: fqdn}
+}
+
+func setDomainStatus(env *enzarbv1alpha1.Environment, fqdn string, ds enzarbv1alpha1.DomainStatus) {
+	for i := range env.Status.Domains {
+		if env.Status.Domains[i].FQDN == fqdn {
+			env.Status.Domains[i] = ds
+			return
+		}
+	}
+	env.Status.Domains = append(env.Status.Domains, ds)
+}
+
+// verifyDomainTXT resolves _enzarb-challenge.<fqdn> and reports whether any TXT
+// record carries the expected token, compared in constant time.
+func verifyDomainTXT(ctx context.Context, fqdn, token string) (bool, error) {
+	name := challengeLabel + "." + fqdn
+	records, err := dnsResolver.LookupTXT(ctx, name)
+	if err != nil {
+		// NXDOMAIN / no records is "not yet verified", not a hard error.
+		var dnsErr *net.DNSError
+		if errorsAs(err, &dnsErr) && (dnsErr.IsNotFound || dnsErr.IsTemporary) {
+			return false, nil
+		}
+		return false, err
+	}
+	want := []byte(challengePrefix + token)
+	for _, rec := range records {
+		if subtle.ConstantTimeCompare([]byte(rec), want) == 1 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// errorsAs is a thin wrapper so the import stays local to this concern.
+func errorsAs(err error, target any) bool { return goerrors.As(err, target) }
+
+func generateToken() (string, error) {
+	buf := make([]byte, 20)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(buf), nil
+}
+
+// claimName derives a DNS-1123-safe, collision-resistant DomainClaim object name
+// from an FQDN. The sha256 hash is what gives etcd-level uniqueness.
+func claimName(fqdn string) string {
+	sum := sha256.Sum256([]byte(strings.ToLower(fqdn)))
+	return "dc-" + hex.EncodeToString(sum[:])[:52]
+}
+
+// claimDomain atomically binds fqdn to this project. Returns conflict=true if the
+// FQDN is already claimed by a different project. The Create is the lock: a racing
+// second project's Create of the same hashed name fails with AlreadyExists.
+func (r *EnvironmentReconciler) claimDomain(ctx context.Context, fqdn string, project *enzarbv1alpha1.Project, env *enzarbv1alpha1.Environment) (bool, error) {
+	name := claimName(fqdn)
+	existing := &enzarbv1alpha1.DomainClaim{}
+	err := r.Get(ctx, types.NamespacedName{Name: name}, existing)
+	if err == nil {
+		owned := existing.Spec.OrgID == project.Spec.OrgID &&
+			existing.Spec.ProjectRef == env.Spec.ProjectRef.Name &&
+			existing.Spec.Namespace == env.Namespace &&
+			existing.Spec.FQDN == fqdn
+		return !owned, nil
+	}
+	if !errors.IsNotFound(err) {
+		return false, err
+	}
+
+	claim := &enzarbv1alpha1.DomainClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "enzarb-operator",
+				"enzarb.io/org-id":             project.Spec.OrgID,
+				"enzarb.io/project-slug":       project.Spec.Slug,
+			},
+		},
+		Spec: enzarbv1alpha1.DomainClaimSpec{
+			FQDN:       fqdn,
+			OrgID:      project.Spec.OrgID,
+			ProjectRef: env.Spec.ProjectRef.Name,
+			Namespace:  env.Namespace,
+		},
+	}
+	if err := r.Create(ctx, claim); err != nil {
+		if errors.IsAlreadyExists(err) {
+			// Lost the race; re-read to determine ownership.
+			if gerr := r.Get(ctx, types.NamespacedName{Name: name}, existing); gerr != nil {
+				return false, gerr
+			}
+			owned := existing.Spec.OrgID == project.Spec.OrgID &&
+				existing.Spec.ProjectRef == env.Spec.ProjectRef.Name &&
+				existing.Spec.Namespace == env.Namespace
+			return !owned, nil
+		}
+		return false, err
+	}
+	claim.Status.VerifiedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := r.Status().Update(ctx, claim); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 // reconcileAllowedDomains projects the set of hostnames this environment is

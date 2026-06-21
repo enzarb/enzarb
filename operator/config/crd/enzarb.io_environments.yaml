@@ -152,6 +152,8 @@ spec:
                   properties:
                     certStatus:
                       type: string
+                    challengeToken:
+                      type: string
                     fqdn:
                       type: string
                     verifiedAt:
