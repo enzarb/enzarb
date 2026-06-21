@@ -142,7 +142,12 @@ type GatewayRef struct {
 }
 
 type EnvironmentStatus struct {
-	Namespace  string             `json:"namespace,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+	// Subdomain is the environment's stable, randomly-generated single DNS label.
+	// The platform serving host is <subdomain>.<deploy zone> (e.g.
+	// k7m2x9qf4r.apps.enzarb.dev), so a single wildcard (*.apps.enzarb.dev)
+	// resolves every environment. Generated once and never changed.
+	Subdomain  string             `json:"subdomain,omitempty"`
 	Domains    []DomainStatus     `json:"domains,omitempty"`
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }

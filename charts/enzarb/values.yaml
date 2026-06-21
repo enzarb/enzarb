@@ -150,6 +150,9 @@ gitea:
 gateway:
   className: envoy
   domain: enzarb.dev
+  # DNS zone for environment serving hosts (<random>.<deployDomain>). A single
+  # wildcard *.<deployDomain> must point at the gateway. Defaults to apps.<domain>.
+  deployDomain: apps.enzarb.dev
   # ValidatingAdmissionPolicy that restricts tenant-authored route/ingress
   # hostnames to their project's AllowedDomains. Requires K8s 1.30+ (VAP GA).
   domainPolicy:

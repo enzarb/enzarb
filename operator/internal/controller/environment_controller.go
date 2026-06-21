@@ -85,6 +85,12 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// presents each pod's SA token to authd, which authorizes a pull-only scope
 	// for this project via the namespace labels set in ensureNamespace.
 
+	// Assign the environment its stable random serving subdomain before anything
+	// derives hostnames from it.
+	if _, err := ensureDeploySubdomain(&env); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure deploy subdomain: %w", err)
+	}
+
 	// Verify ownership of custom domains and claim them in the cluster-scoped
 	// ledger. This mutates env.Status.Domains in memory, which reconcileAllowedDomains
 	// reads below, so it must run first.
@@ -93,13 +99,13 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, fmt.Errorf("reconcile domains: %w", err)
 	}
 
-	if err := r.reconcileAllowedDomains(ctx, deployNS, &project, &env); err != nil {
+	if err := r.reconcileAllowedDomains(ctx, deployNS, &env); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile allowed domains: %w", err)
 	}
 
 	// Issue per-domain certs into this namespace and provision the project's own
 	// Gateway that references them locally (see reconcileServingTLS).
-	if err := r.reconcileServingTLS(ctx, deployNS, servingDomains(&project, &env)); err != nil {
+	if err := r.reconcileServingTLS(ctx, deployNS, servingDomains(&env)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile serving TLS: %w", err)
 	}
 
@@ -336,26 +342,71 @@ func (r *EnvironmentReconciler) claimDomain(ctx context.Context, fqdn string, pr
 // every custom domain whose ownership has been DNS-verified. It is the single
 // source of truth shared by AllowedDomains (admission), the per-domain
 // Certificates, and the per-namespace Gateway listeners.
-func servingDomains(project *enzarbv1alpha1.Project, env *enzarbv1alpha1.Environment) []string {
-	baseDomain := os.Getenv("BASE_DOMAIN")
-	if baseDomain == "" {
-		baseDomain = "enzarb.dev"
-	}
-	platformHost := fmt.Sprintf("%s.%s.%s", env.Spec.Slug, project.Spec.Slug, baseDomain)
-
+func servingDomains(env *enzarbv1alpha1.Environment) []string {
 	verified := map[string]bool{}
 	for _, d := range env.Status.Domains {
 		if d.VerifiedAt != "" {
 			verified[d.FQDN] = true
 		}
 	}
-	out := []string{platformHost}
+	// The platform host is a single random label under the deploy zone, so one
+	// wildcard DNS record (*.<deploy zone>) covers every environment. Requires
+	// the subdomain to have been generated (ensureDeploySubdomain) first.
+	out := []string{}
+	if env.Status.Subdomain != "" {
+		out = append(out, env.Status.Subdomain+"."+deployZone())
+	}
 	for _, cd := range env.Spec.CustomDomains {
 		if verified[cd.FQDN] {
 			out = append(out, cd.FQDN)
 		}
 	}
 	return out
+}
+
+// deployZone is the DNS zone under which environment serving hosts live. A single
+// wildcard (*.<deployZone>) must point at the gateway. Defaults to apps.<base>.
+func deployZone() string {
+	if z := os.Getenv("DEPLOY_DOMAIN"); z != "" {
+		return z
+	}
+	baseDomain := os.Getenv("BASE_DOMAIN")
+	if baseDomain == "" {
+		baseDomain = "enzarb.dev"
+	}
+	return "apps." + baseDomain
+}
+
+// ensureDeploySubdomain assigns the environment a stable random single DNS label
+// the first time it is reconciled. The label is persisted in status and reused.
+func ensureDeploySubdomain(env *enzarbv1alpha1.Environment) (bool, error) {
+	if env.Status.Subdomain != "" {
+		return false, nil
+	}
+	label, err := generateSubdomain()
+	if err != nil {
+		return false, err
+	}
+	env.Status.Subdomain = label
+	return true, nil
+}
+
+// generateSubdomain returns a DNS-1123 label: a leading letter followed by
+// lowercase base36 characters, with enough entropy that collisions across
+// environments are negligible.
+func generateSubdomain() (string, error) {
+	const letters = "abcdefghijklmnopqrstuvwxyz"
+	const alnum = "abcdefghijklmnopqrstuvwxyz0123456789"
+	buf := make([]byte, 12)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	out := make([]byte, len(buf))
+	out[0] = letters[int(buf[0])%len(letters)]
+	for i := 1; i < len(buf); i++ {
+		out[i] = alnum[int(buf[i])%len(alnum)]
+	}
+	return string(out), nil
 }
 
 // domainSecretName is the in-namespace TLS Secret (and Certificate) name for a
@@ -508,8 +559,8 @@ func listenersEqual(a, b []gatewayv1.Listener) bool {
 // verified (DomainStatus.VerifiedAt set). Unverified custom domains are
 // deliberately omitted so a tenant cannot route a domain they haven't proven
 // control of.
-func (r *EnvironmentReconciler) reconcileAllowedDomains(ctx context.Context, deployNS string, project *enzarbv1alpha1.Project, env *enzarbv1alpha1.Environment) error {
-	fqdns := servingDomains(project, env)
+func (r *EnvironmentReconciler) reconcileAllowedDomains(ctx context.Context, deployNS string, env *enzarbv1alpha1.Environment) error {
+	fqdns := servingDomains(env)
 
 	ad := &enzarbv1alpha1.AllowedDomains{}
 	err := r.Get(ctx, types.NamespacedName{Namespace: deployNS, Name: "default"}, ad)

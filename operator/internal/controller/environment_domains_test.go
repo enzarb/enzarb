@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"net"
+	"regexp"
 	"testing"
+
+	enzarbv1alpha1 "enzarb.dev/enzarb/operator/api/v1alpha1"
 )
 
 type stubResolver struct {
@@ -69,6 +72,34 @@ func TestClaimNameDeterministicAndScoped(t *testing.T) {
 	}
 	if len(a) == 0 || a[:3] != "dc-" {
 		t.Fatalf("unexpected claim name format: %q", a)
+	}
+}
+
+func TestGenerateSubdomainIsValidLabel(t *testing.T) {
+	re := regexp.MustCompile(`^[a-z][a-z0-9]*$`)
+	seen := map[string]bool{}
+	for i := 0; i < 50; i++ {
+		s, err := generateSubdomain()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !re.MatchString(s) || len(s) > 63 {
+			t.Fatalf("invalid DNS label: %q", s)
+		}
+		if seen[s] {
+			t.Fatalf("duplicate subdomain generated: %q", s)
+		}
+		seen[s] = true
+	}
+}
+
+func TestServingDomainsUsesDeployZone(t *testing.T) {
+	t.Setenv("DEPLOY_DOMAIN", "apps.example.com")
+	env := &enzarbv1alpha1.Environment{}
+	env.Status.Subdomain = "k7m2x9qf4r"
+	got := servingDomains(env)
+	if len(got) != 1 || got[0] != "k7m2x9qf4r.apps.example.com" {
+		t.Fatalf("unexpected serving domains: %v", got)
 	}
 }
 

@@ -45,6 +45,8 @@ spec:
               value: {{ .Values.operator.env.ENZARB_DOMAIN | quote }}
             - name: BASE_DOMAIN
               value: {{ .Values.gateway.domain | quote }}
+            - name: DEPLOY_DOMAIN
+              value: {{ .Values.gateway.deployDomain | default (printf "apps.%s" .Values.gateway.domain) | quote }}
             - name: ACME_SERVER
               value: {{ .Values.gateway.issuer.acmeServer | quote }}
             - name: ACME_EMAIL
