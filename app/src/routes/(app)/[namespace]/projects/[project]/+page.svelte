@@ -1,5 +1,10 @@
 <script lang="ts">
-	import { getProject, removeProject } from '$lib/remote/projects.remote';
+	import {
+		getProject,
+		removeProject,
+		getProjects,
+		getDeletedProjects
+	} from '$lib/remote/projects.remote';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { confirm } from '$lib/confirm';
@@ -21,6 +26,9 @@
 		deleteError = '';
 		try {
 			await removeProject({ slug });
+			// Refresh the list queries so the project moves from the active list to
+			// the "pending deletion" section without a stale cache.
+			await Promise.all([getProjects().refresh(), getDeletedProjects().refresh()]);
 			await goto(`/${$page.params.namespace}/projects`);
 		} catch (e) {
 			deleteError = e instanceof Error ? e.message : 'Failed to delete project';
