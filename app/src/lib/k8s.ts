@@ -269,7 +269,7 @@ export async function createEnvironment(orgId: string, projectSlug: string, slug
 			spec: {
 				projectRef: { name: projectSlug },
 				slug,
-				gatewayRef: { name: 'enzarb-gateway', namespace: 'enzarb-system' }
+				gatewayRef: { name: 'enzarb', namespace: 'enzarb-system' }
 			}
 		}
 	});

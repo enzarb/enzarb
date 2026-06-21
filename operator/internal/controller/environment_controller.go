@@ -57,9 +57,11 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, fmt.Errorf("ensure deployer rolebinding: %w", err)
 	}
 
-	if err := r.ensureImagePullRoleBinding(ctx, deployNS, &env); err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensure image pull rolebinding: %w", err)
-	}
+	// NOTE: deploy-namespace pods still need a way to pull the project's private
+	// images from the in-cluster registry (projected registry token /
+	// imagePullSecret). The previous `system:image-puller` RoleBinding referenced
+	// a ClusterRole that doesn't exist here and failed the whole reconcile, so the
+	// environment never reached Ready. Dropped until image-pull auth is wired up.
 
 	env.Status.Namespace = deployNS
 	if err := r.Status().Update(ctx, &env); err != nil {
@@ -87,30 +89,6 @@ func (r *EnvironmentReconciler) ensureDeployerRoleBinding(ctx context.Context, d
 			},
 			Subjects: []rbacv1.Subject{
 				{Kind: "ServiceAccount", Name: saName, Namespace: orgNS},
-			},
-		}
-		return r.Create(ctx, rb)
-	}
-	return err
-}
-
-func (r *EnvironmentReconciler) ensureImagePullRoleBinding(ctx context.Context, deployNS string, env *enzarbv1alpha1.Environment) error {
-	name := "enzarb-image-pull"
-	rb := &rbacv1.RoleBinding{}
-	err := r.Get(ctx, types.NamespacedName{Namespace: deployNS, Name: name}, rb)
-	if errors.IsNotFound(err) {
-		rb = &rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      name,
-				Namespace: deployNS,
-			},
-			RoleRef: rbacv1.RoleRef{
-				APIGroup: "rbac.authorization.k8s.io",
-				Kind:     "ClusterRole",
-				Name:     "system:image-puller",
-			},
-			Subjects: []rbacv1.Subject{
-				{Kind: "ServiceAccount", Name: "default", Namespace: deployNS},
 			},
 		}
 		return r.Create(ctx, rb)

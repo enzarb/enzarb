@@ -32,7 +32,9 @@ export const createEnv = form(
 		if (existing.length >= tiers[tier].maxEnvironments) {
 			error(422, `Tier limited to ${tiers[tier].maxEnvironments} environment(s)`);
 		}
-		return createEnvironment(org.id, params.project!, slug);
+		const result = await createEnvironment(org.id, params.project!, slug);
+		await getEnvironments().refresh();
+		return result;
 	}
 );
 
@@ -43,6 +45,8 @@ export const addDomain = form(
 	}),
 	async ({ envName, fqdn }) => {
 		const org = resolveNamespace('admin');
-		return addCustomDomain(org.id, envName, fqdn);
+		const result = await addCustomDomain(org.id, envName, fqdn);
+		await getEnvironments().refresh();
+		return result;
 	}
 );
