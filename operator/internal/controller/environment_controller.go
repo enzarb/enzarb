@@ -365,7 +365,7 @@ func servingDomains(env *enzarbv1alpha1.Environment) []string {
 }
 
 // deployZone is the DNS zone under which environment serving hosts live. A single
-// wildcard (*.<deployZone>) must point at the gateway. Defaults to apps.<base>.
+// wildcard (*.<deployZone>) must point at the gateway. Defaults to env.<base>.
 func deployZone() string {
 	if z := os.Getenv("DEPLOY_DOMAIN"); z != "" {
 		return z
@@ -374,7 +374,7 @@ func deployZone() string {
 	if baseDomain == "" {
 		baseDomain = "enzarb.dev"
 	}
-	return "apps." + baseDomain
+	return "env." + baseDomain
 }
 
 // ensureDeploySubdomain assigns the environment a stable random single DNS label
