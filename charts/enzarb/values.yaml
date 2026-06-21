@@ -6,7 +6,7 @@ app:
   image:
     repository: ghcr.io/enzarb/app
     pullPolicy: IfNotPresent
-    tag: "v0.16.9"
+    tag: "v0.17.0"
   env:
     ORIGIN: https://enzarb.dev
     # Reach Gitea's admin API internally — the external host is fronted by the
@@ -43,7 +43,7 @@ operator:
   image:
     repository: ghcr.io/enzarb/operator
     pullPolicy: IfNotPresent
-    tag: "v0.16.9"
+    tag: "v0.17.0"
   leaderElection: true
   env:
     ENZARB_DOMAIN: enzarb.dev
@@ -62,7 +62,7 @@ billing:
   image:
     repository: ghcr.io/enzarb/billing
     pullPolicy: IfNotPresent
-    tag: "v0.16.0"
+    tag: "v0.17.0"
   # Billing rates and free-tier allowances are configured at runtime via the
   # admin settings page (stored in the app_settings DB table), not here.
   resources:
@@ -76,7 +76,7 @@ metering:
   image:
     repository: ghcr.io/enzarb/metering
     pullPolicy: IfNotPresent
-    tag: "v0.13.0"
+    tag: "v0.17.0"
   hubbleLogPath: /var/run/cilium/hubble/events.log
   resources:
     requests:
@@ -91,7 +91,7 @@ authd:
   image:
     repository: ghcr.io/enzarb/authd
     pullPolicy: IfNotPresent
-    tag: "v0.16.3"
+    tag: "v0.17.0"
   # Secret holding the RSA token-signing keypair (tls.crt/tls.key). The same
   # cert is mounted into Zot as its bearer-auth trust anchor. Create with:
   #   openssl req -x509 -newkey rsa:2048 -nodes -keyout tls.key -out tls.crt \
@@ -119,7 +119,7 @@ authd:
 workspace:
   image:
     repository: ghcr.io/enzarb/workspace
-    tag: "v0.16.8"
+    tag: "v0.17.0"
   # StorageClass for project home PVCs. Empty uses the cluster's default class.
   storageClass: ""
 database:
