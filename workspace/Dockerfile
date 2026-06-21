@@ -43,6 +43,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git \
         tmux \
         ncurses-term \
+        bash-completion \
         jq \
         openssh-client \
         build-essential \

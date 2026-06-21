@@ -307,14 +307,53 @@ async fn write_managed_bashrc() -> Result<PathBuf> {
     if let Some(dir) = path.parent() {
         tokio::fs::create_dir_all(dir).await?;
     }
-    let contents = "\
-# Managed by enzarb — do not edit. Sources the standard rc files, then sets a
-# clean prompt (project-slug hostname, no generic login name) last so it wins.
+    // Raw string so the literal backslashes in PS1 and the shell `$`/quotes are
+    // written verbatim, without Rust escaping.
+    let contents = r#"# Managed by enzarb — do not edit. Sources the standard rc files, enables bash
+# completion (including mise-installed tools), then sets a clean prompt last.
 [ -r /etc/profile ] && . /etc/profile 2>/dev/null
 [ -r /etc/bash.bashrc ] && . /etc/bash.bashrc 2>/dev/null
-[ -r \"$HOME/.bashrc\" ] && . \"$HOME/.bashrc\" 2>/dev/null
-PS1='\\[\\e[1;32m\\]\\h\\[\\e[0m\\]:\\[\\e[1;34m\\]\\w\\[\\e[0m\\]\\$ '
-";
+[ -r "$HOME/.bashrc" ] && . "$HOME/.bashrc" 2>/dev/null
+
+# Base bash-completion (dynamic completion loader).
+if ! type _init_completion >/dev/null 2>&1; then
+  for f in /usr/share/bash-completion/bash_completion /etc/bash_completion; do
+    [ -r "$f" ] && . "$f" && break
+  done
+fi
+
+# Completions for mise and common mise-installed CLIs. Each tool's script is
+# generated once and cached, so shells start fast and tools installed later get
+# picked up on their next shell. Tools not present are skipped.
+__ez_comp_dir="$HOME/.enzarb/completions"
+mkdir -p "$__ez_comp_dir" 2>/dev/null
+__ez_comp() {
+  local tool="$1"; shift
+  command -v "$tool" >/dev/null 2>&1 || return
+  local f="$__ez_comp_dir/$tool.bash"
+  if [ ! -s "$f" ]; then
+    "$@" >"$f" 2>/dev/null || { rm -f "$f"; return; }
+  fi
+  [ -s "$f" ] && . "$f" 2>/dev/null
+}
+__ez_comp mise      mise completion bash
+__ez_comp kubectl   kubectl completion bash
+__ez_comp helm      helm completion bash
+__ez_comp gh        gh completion -s bash
+__ez_comp kustomize kustomize completion bash
+__ez_comp k9s       k9s completion bash
+__ez_comp pnpm      pnpm completion bash
+__ez_comp deno      deno completions bash
+__ez_comp just      just --completions bash
+__ez_comp uv        uv generate-shell-completion bash
+__ez_comp rustup    rustup completions bash
+__ez_comp npm       npm completion
+# terraform-style tools complete via the binary itself rather than a script.
+command -v terraform  >/dev/null 2>&1 && complete -C terraform terraform
+command -v terragrunt >/dev/null 2>&1 && complete -C terragrunt terragrunt
+
+PS1='\[\e[1;32m\]\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ '
+"#;
     tokio::fs::write(&path, contents).await?;
     Ok(path)
 }
