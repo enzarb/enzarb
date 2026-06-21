@@ -4,12 +4,38 @@ metadata:
   name: enzarb
   namespace: {{ .Release.Namespace }}
 spec:
+  # Merge all Gateways using the "envoy" GatewayClass into a single Envoy data
+  # plane (one Deployment, one LoadBalancer IP). This lets every project run its
+  # own per-namespace Gateway (enzarb-deploy) — whose HTTPS listeners reference
+  # TLS secrets living in that same deploy namespace — without each Gateway
+  # demanding its own IP. mergeGateways MUST be set on the EnvoyProxy referenced
+  # by the GatewayClass parametersRef (below), not per-Gateway.
+  mergeGateways: true
   provider:
     type: Kubernetes
     kubernetes:
       envoyService:
         annotations:
           io.cilium/lb-ipam-ips: {{ .Values.gateway.loadBalancerIP | quote }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: {{ .Values.gateway.className }}
+  # Adopt the GatewayClass if it already exists in-cluster (it predates this
+  # chart managing it). Without these, Helm refuses to take ownership.
+  annotations:
+    meta.helm.sh/release-name: {{ .Release.Name }}
+    meta.helm.sh/release-namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/managed-by: Helm
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: enzarb
+    namespace: {{ .Release.Namespace }}
 ---
 apiVersion: cert-manager.io/v1
 kind: Issuer
@@ -38,27 +64,16 @@ metadata:
   annotations:
     cert-manager.io/issuer: letsencrypt
 spec:
+  # EnvoyProxy is attached at the GatewayClass level (parametersRef) because
+  # mergeGateways requires it there; no per-Gateway infrastructure block.
   gatewayClassName: {{ .Values.gateway.className }}
-  infrastructure:
-    parametersRef:
-      group: gateway.envoyproxy.io
-      kind: EnvoyProxy
-      name: enzarb
   listeners:
     - name: http
       port: 80
       protocol: HTTP
-      # from: All (not Same) so two route sources can attach on :80:
-      #   1. cert-manager ACME HTTP-01 solver routes for deploy-namespace
-      #      certs (created by the per-namespace enzarb-acme Issuer), and
-      #   2. tenant HTTP->HTTPS redirect routes in deploy namespaces.
-      # :80 only carries ACME challenges and redirects; real traffic is the
-      # HTTPS listeners. Tenant route hostnames are still constrained by the
-      # enzarb-restrict-route-hostnames admission policy, and all namespaces in
-      # this cluster are operator/platform-managed.
       allowedRoutes:
         namespaces:
-          from: All
+          from: Same
     - name: https
       port: 443
       protocol: HTTPS
@@ -103,31 +118,6 @@ spec:
       allowedRoutes:
         namespaces:
           from: Same
-    # Catch-all HTTPS listener for project deploy-namespace domains. It has no
-    # hostname, so SNI for the pinned platform listeners above still wins and
-    # everything else (the deploy domains) lands here. Only HTTPRoutes in
-    # namespaces labelled enzarb.io/type=deploy may attach, and their hostnames
-    # are constrained to the project's verified domains by the
-    # enzarb-restrict-route-hostnames ValidatingAdmissionPolicy.
-    #
-    # certificateRefs lists enzarb-tls as a baseline so the listener is valid;
-    # per-domain certs (issued in each deploy namespace via the enzarb-acme
-    # Issuer) still need to be presented per SNI — tracked as follow-up, since
-    # injecting them means mutating this shared gateway and is done deliberately
-    # rather than auto-reconciled against live platform routing.
-    - name: deploy-https
-      port: 443
-      protocol: HTTPS
-      tls:
-        mode: Terminate
-        certificateRefs:
-          - name: enzarb-tls
-      allowedRoutes:
-        namespaces:
-          from: Selector
-          selector:
-            matchLabels:
-              enzarb.io/type: deploy
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate

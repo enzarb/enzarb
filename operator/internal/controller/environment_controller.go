@@ -97,6 +97,12 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, fmt.Errorf("reconcile allowed domains: %w", err)
 	}
 
+	// Issue per-domain certs into this namespace and provision the project's own
+	// Gateway that references them locally (see reconcileServingTLS).
+	if err := r.reconcileServingTLS(ctx, deployNS, servingDomains(&project, &env)); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile serving TLS: %w", err)
+	}
+
 	env.Status.Namespace = deployNS
 	if err := r.Status().Update(ctx, &env); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update status: %w", err)
@@ -325,6 +331,171 @@ func (r *EnvironmentReconciler) claimDomain(ctx context.Context, fqdn string, pr
 	return false, nil
 }
 
+// servingDomains is the ordered set of hostnames this environment serves: the
+// deterministic platform subdomain (always, built from trusted CRD fields) plus
+// every custom domain whose ownership has been DNS-verified. It is the single
+// source of truth shared by AllowedDomains (admission), the per-domain
+// Certificates, and the per-namespace Gateway listeners.
+func servingDomains(project *enzarbv1alpha1.Project, env *enzarbv1alpha1.Environment) []string {
+	baseDomain := os.Getenv("BASE_DOMAIN")
+	if baseDomain == "" {
+		baseDomain = "enzarb.dev"
+	}
+	platformHost := fmt.Sprintf("%s.%s.%s", env.Spec.Slug, project.Spec.Slug, baseDomain)
+
+	verified := map[string]bool{}
+	for _, d := range env.Status.Domains {
+		if d.VerifiedAt != "" {
+			verified[d.FQDN] = true
+		}
+	}
+	out := []string{platformHost}
+	for _, cd := range env.Spec.CustomDomains {
+		if verified[cd.FQDN] {
+			out = append(out, cd.FQDN)
+		}
+	}
+	return out
+}
+
+// domainSecretName is the in-namespace TLS Secret (and Certificate) name for a
+// serving domain. The cert lives in the deploy namespace and is referenced only
+// by that namespace's own Gateway — never copied or injected elsewhere.
+func domainSecretName(fqdn string) string {
+	sum := sha256.Sum256([]byte(strings.ToLower(fqdn)))
+	return "dtls-" + hex.EncodeToString(sum[:])[:48]
+}
+
+const deployGatewayName = "enzarb-deploy"
+
+// reconcileServingTLS issues a TLS Certificate per serving domain into the deploy
+// namespace (via the namespace-local enzarb-acme Issuer) and provisions the
+// project's own Gateway whose listeners reference those local Secrets. Because
+// the Gateway and the Secrets share the namespace, no ReferenceGrant is needed
+// and no certificate material ever leaves the namespace. mergeGateways folds this
+// Gateway into the shared Envoy/IP. Tenants hold no gateways RBAC, so they can
+// route through this Gateway but cannot edit or delete it.
+func (r *EnvironmentReconciler) reconcileServingTLS(ctx context.Context, deployNS string, domains []string) error {
+	for _, d := range domains {
+		if err := r.ensureDomainCertificate(ctx, deployNS, d); err != nil {
+			return fmt.Errorf("ensure certificate %s: %w", d, err)
+		}
+	}
+	return r.ensureDeployGateway(ctx, deployNS, domains)
+}
+
+func (r *EnvironmentReconciler) ensureDomainCertificate(ctx context.Context, deployNS, fqdn string) error {
+	name := domainSecretName(fqdn)
+	cert := &certmanagerv1.Certificate{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: deployNS, Name: name}, cert)
+	if errors.IsNotFound(err) {
+		cert = &certmanagerv1.Certificate{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: deployNS,
+				Labels:    map[string]string{"app.kubernetes.io/managed-by": "enzarb-operator"},
+			},
+			Spec: certmanagerv1.CertificateSpec{
+				SecretName: name,
+				DNSNames:   []string{fqdn},
+				IssuerRef: cmmeta.IssuerReference{
+					Name:  environmentIssuerName,
+					Kind:  "Issuer",
+					Group: "cert-manager.io",
+				},
+			},
+		}
+		return r.Create(ctx, cert)
+	}
+	return err
+}
+
+// ensureDeployGateway builds the namespace's enzarb-deploy Gateway with, per
+// serving domain, an HTTPS listener (terminating with the domain's local cert
+// Secret) and an HTTP listener (for the ACME HTTP-01 challenge and HTTP→HTTPS
+// redirect). Listeners are keyed by unique hostname so they coexist on the merged
+// Envoy across all projects.
+func (r *EnvironmentReconciler) ensureDeployGateway(ctx context.Context, deployNS string, domains []string) error {
+	className := os.Getenv("GATEWAY_CLASS_NAME")
+	if className == "" {
+		className = "envoy"
+	}
+	sameNS := gatewayv1.NamespacesFromSame
+	tlsTerminate := gatewayv1.TLSModeTerminate
+
+	var listeners []gatewayv1.Listener
+	for _, d := range domains {
+		host := gatewayv1.Hostname(d)
+		secret := gatewayv1.ObjectName(domainSecretName(d))
+		short := domainSecretName(d)[5:21] // stable, unique per-domain listener suffix
+		listeners = append(listeners,
+			gatewayv1.Listener{
+				Name:     gatewayv1.SectionName("https-" + short),
+				Port:     443,
+				Protocol: gatewayv1.HTTPSProtocolType,
+				Hostname: &host,
+				TLS: &gatewayv1.ListenerTLSConfig{
+					Mode:            &tlsTerminate,
+					CertificateRefs: []gatewayv1.SecretObjectReference{{Name: secret}},
+				},
+				AllowedRoutes: &gatewayv1.AllowedRoutes{
+					Namespaces: &gatewayv1.RouteNamespaces{From: &sameNS},
+				},
+			},
+			gatewayv1.Listener{
+				Name:     gatewayv1.SectionName("http-" + short),
+				Port:     80,
+				Protocol: gatewayv1.HTTPProtocolType,
+				Hostname: &host,
+				AllowedRoutes: &gatewayv1.AllowedRoutes{
+					Namespaces: &gatewayv1.RouteNamespaces{From: &sameNS},
+				},
+			},
+		)
+	}
+
+	gw := &gatewayv1.Gateway{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: deployNS, Name: deployGatewayName}, gw)
+	if errors.IsNotFound(err) {
+		gw = &gatewayv1.Gateway{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      deployGatewayName,
+				Namespace: deployNS,
+				Labels:    map[string]string{"app.kubernetes.io/managed-by": "enzarb-operator"},
+			},
+			Spec: gatewayv1.GatewaySpec{
+				GatewayClassName: gatewayv1.ObjectName(className),
+				Listeners:        listeners,
+			},
+		}
+		return r.Create(ctx, gw)
+	}
+	if err != nil {
+		return err
+	}
+	if !listenersEqual(gw.Spec.Listeners, listeners) {
+		gw.Spec.Listeners = listeners
+		return r.Update(ctx, gw)
+	}
+	return nil
+}
+
+func listenersEqual(a, b []gatewayv1.Listener) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Name != b[i].Name || a[i].Port != b[i].Port {
+			return false
+		}
+		ah, bh := a[i].Hostname, b[i].Hostname
+		if (ah == nil) != (bh == nil) || (ah != nil && *ah != *bh) {
+			return false
+		}
+	}
+	return true
+}
+
 // reconcileAllowedDomains projects the set of hostnames this environment is
 // permitted to serve into an AllowedDomains object in the deploy namespace. The
 // ValidatingAdmissionPolicy (charts/enzarb/templates/gateway-policy.yaml)
@@ -338,28 +509,7 @@ func (r *EnvironmentReconciler) claimDomain(ctx context.Context, fqdn string, pr
 // deliberately omitted so a tenant cannot route a domain they haven't proven
 // control of.
 func (r *EnvironmentReconciler) reconcileAllowedDomains(ctx context.Context, deployNS string, project *enzarbv1alpha1.Project, env *enzarbv1alpha1.Environment) error {
-	baseDomain := os.Getenv("BASE_DOMAIN")
-	if baseDomain == "" {
-		baseDomain = "enzarb.dev"
-	}
-
-	// Deterministic platform hostname built only from trusted CRD fields, so it
-	// is collision-free by construction and never derived from user input.
-	platformHost := fmt.Sprintf("%s.%s.%s", env.Spec.Slug, project.Spec.Slug, baseDomain)
-
-	verified := map[string]bool{}
-	for _, d := range env.Status.Domains {
-		if d.VerifiedAt != "" {
-			verified[d.FQDN] = true
-		}
-	}
-
-	fqdns := []string{platformHost}
-	for _, cd := range env.Spec.CustomDomains {
-		if verified[cd.FQDN] {
-			fqdns = append(fqdns, cd.FQDN)
-		}
-	}
+	fqdns := servingDomains(project, env)
 
 	ad := &enzarbv1alpha1.AllowedDomains{}
 	err := r.Get(ctx, types.NamespacedName{Namespace: deployNS, Name: "default"}, ad)
@@ -438,16 +588,10 @@ func (r *EnvironmentReconciler) ensureEnvironmentIssuer(ctx context.Context, dep
 		acmeServer = "https://acme-v02.api.letsencrypt.org/directory"
 	}
 	acmeEmail := os.Getenv("ACME_EMAIL")
-	gatewayName := os.Getenv("GATEWAY_NAME")
-	if gatewayName == "" {
-		gatewayName = "enzarb"
-	}
-	gatewayNS := os.Getenv("GATEWAY_NAMESPACE")
-	if gatewayNS == "" {
-		gatewayNS = "enzarb-system"
-	}
 
-	gwNS := gatewayv1.Namespace(gatewayNS)
+	// Solve HTTP-01 on the project's own per-namespace Gateway (enzarb-deploy),
+	// so the challenge route and the resulting cert Secret both stay in this
+	// namespace. No Namespace on the parentRef -> same namespace as the Issuer.
 	gwKind := gatewayv1.Kind("Gateway")
 	gwGroup := gatewayv1.Group("gateway.networking.k8s.io")
 	desired := acmev1.ACMEIssuer{
@@ -460,10 +604,9 @@ func (r *EnvironmentReconciler) ensureEnvironmentIssuer(ctx context.Context, dep
 			HTTP01: &acmev1.ACMEChallengeSolverHTTP01{
 				GatewayHTTPRoute: &acmev1.ACMEChallengeSolverHTTP01GatewayHTTPRoute{
 					ParentRefs: []gatewayv1.ParentReference{{
-						Name:      gatewayv1.ObjectName(gatewayName),
-						Namespace: &gwNS,
-						Kind:      &gwKind,
-						Group:     &gwGroup,
+						Name:  gatewayv1.ObjectName(deployGatewayName),
+						Kind:  &gwKind,
+						Group: &gwGroup,
 					}},
 				},
 			},

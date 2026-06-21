@@ -49,10 +49,8 @@ spec:
               value: {{ .Values.gateway.issuer.acmeServer | quote }}
             - name: ACME_EMAIL
               value: {{ .Values.gateway.issuer.email | quote }}
-            - name: GATEWAY_NAME
-              value: "enzarb"
-            - name: GATEWAY_NAMESPACE
-              value: {{ .Release.Namespace | quote }}
+            - name: GATEWAY_CLASS_NAME
+              value: {{ .Values.gateway.className | quote }}
             - name: GITEA_URL
               value: {{ .Values.operator.env.GITEA_URL | quote }}
             - name: GITEA_ADMIN_TOKEN
