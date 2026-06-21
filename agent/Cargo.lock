@@ -1406,7 +1406,7 @@ dependencies = [
 
 [[package]]
 name = "project-agent"
-version = "0.16.2"
+version = "0.16.8"
 dependencies = [
  "anyhow",
  "async-stream",
