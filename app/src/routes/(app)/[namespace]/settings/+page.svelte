@@ -18,6 +18,8 @@
 	const privileges = $derived((orgMembership?.privileges ?? []) as string[]);
 	const canManageMembers = $derived(privileges.includes('member.manage'));
 	const canManageRoles = $derived(privileges.includes('role.manage'));
+	// Personal orgs are single-user: no team membership or role management.
+	const isPersonal = $derived(orgMembership?.personal ?? false);
 
 	let busy = $state('');
 	let errorMsg = $state('');
@@ -106,6 +108,7 @@
 	</div>
 </section>
 
+{#if !isPersonal}
 <section class="section">
 	<h3>Members</h3>
 	{#await Promise.all([getMembers(), getRoles()]) then [members, roles]}
@@ -197,6 +200,7 @@
 		{/if}
 	{/await}
 </section>
+{/if}
 
 <style>
 	.section { margin-bottom: 2rem; }
@@ -210,13 +214,15 @@
 	th, td { text-align: left; padding: 0.5rem 0.25rem; font-size: 13px; border-bottom: 1px solid var(--color-border); }
 	th { color: var(--color-text-muted); font-weight: 600; }
 	select { font-size: 13px; padding: 0.25rem; background: var(--color-surface-2); color: var(--color-text); border: 1px solid var(--color-border); border-radius: 4px; }
-	.roles { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1rem; }
-	.role-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
+	.roles { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 1rem; }
+	.role-card { display: flex; flex-direction: column; }
+	.role-head { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; padding-bottom: 0.625rem; border-bottom: 1px solid var(--color-border); }
 	.role-name { font-weight: 600; display: flex; align-items: center; gap: 0.5rem; }
 	.builtin { font-size: 10px; text-transform: uppercase; }
-	.priv-grid { display: flex; flex-direction: column; gap: 0.375rem; }
-	.priv { display: flex; align-items: center; gap: 0.5rem; font-size: 13px; color: var(--color-text); }
-	.role-actions { margin-top: 0.75rem; }
+	.priv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.5rem 1rem; }
+	.priv { display: flex; align-items: center; gap: 0.5rem; font-size: 13px; color: var(--color-text); cursor: pointer; }
+	.priv input { margin: 0; flex-shrink: 0; }
+	.role-actions { margin-top: 1rem; display: flex; justify-content: flex-end; }
 	.btn-sm { font-size: 12px; padding: 0.25rem 0.625rem; }
 	.new-role { display: flex; gap: 0.5rem; margin-top: 1rem; }
 	.new-role input { font-size: 13px; padding: 0.375rem 0.5rem; background: var(--color-surface-2); color: var(--color-text); border: 1px solid var(--color-border); border-radius: 4px; }

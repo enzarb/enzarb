@@ -6,7 +6,7 @@ export interface Session {
 	userId: string;
 	email: string;
 	isAdmin: boolean;
-	orgs: { id: string; slug: string; role: string; privileges: string[] }[];
+	orgs: { id: string; slug: string; role: string; privileges: string[]; personal: boolean }[];
 }
 
 export async function getSession(event: RequestEvent): Promise<Session | null> {
@@ -15,7 +15,7 @@ export async function getSession(event: RequestEvent): Promise<Session | null> {
 
 	const rows = await sql`
 		SELECT s.id, s.data, s.expires_at,
-		       u.id as user_id, u.email, u.is_admin
+		       u.id as user_id, u.email, u.is_admin, u.username
 		FROM sessions s
 		JOIN users u ON u.id = s.user_id
 		WHERE s.id = ${sessionId}
@@ -42,7 +42,10 @@ export async function getSession(event: RequestEvent): Promise<Session | null> {
 			id: r.id,
 			slug: r.slug,
 			role: r.role,
-			privileges: (r.privileges as string[]) ?? []
+			privileges: (r.privileges as string[]) ?? [],
+			// A personal org's slug is the owner's username; such orgs are
+			// single-user and have no team roles/membership management.
+			personal: !!row.username && r.slug === row.username
 		}))
 	};
 }
