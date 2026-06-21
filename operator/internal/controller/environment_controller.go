@@ -419,6 +419,10 @@ func domainSecretName(fqdn string) string {
 
 const deployGatewayName = "enzarb-deploy"
 
+// servingCertLabel marks the per-domain TLS Certificates the operator manages in
+// a deploy namespace, so stale ones can be pruned without touching tenant certs.
+const servingCertLabel = "enzarb.io/serving-cert"
+
 // reconcileServingTLS issues a TLS Certificate per serving domain into the deploy
 // namespace (via the namespace-local enzarb-acme Issuer) and provisions the
 // project's own Gateway whose listeners reference those local Secrets. Because
@@ -427,12 +431,43 @@ const deployGatewayName = "enzarb-deploy"
 // Gateway into the shared Envoy/IP. Tenants hold no gateways RBAC, so they can
 // route through this Gateway but cannot edit or delete it.
 func (r *EnvironmentReconciler) reconcileServingTLS(ctx context.Context, deployNS string, domains []string) error {
+	desired := map[string]bool{}
 	for _, d := range domains {
+		desired[domainSecretName(d)] = true
 		if err := r.ensureDomainCertificate(ctx, deployNS, d); err != nil {
 			return fmt.Errorf("ensure certificate %s: %w", d, err)
 		}
 	}
-	return r.ensureDeployGateway(ctx, deployNS, domains)
+	if err := r.ensureDeployGateway(ctx, deployNS, domains); err != nil {
+		return err
+	}
+	return r.pruneServingCertificates(ctx, deployNS, desired)
+}
+
+// pruneServingCertificates deletes operator-managed serving Certificates in the
+// deploy namespace that are no longer in the desired set — e.g. left behind when
+// an environment's serving host changes or a custom domain is removed. Only certs
+// carrying servingCertLabel are considered, so tenant-created certs are untouched.
+// cert-manager garbage-collects the backing Secret once the Certificate is gone.
+func (r *EnvironmentReconciler) pruneServingCertificates(ctx context.Context, deployNS string, desired map[string]bool) error {
+	var certs certmanagerv1.CertificateList
+	if err := r.List(ctx, &certs, client.InNamespace(deployNS),
+		client.MatchingLabels{"app.kubernetes.io/managed-by": "enzarb-operator"}); err != nil {
+		return err
+	}
+	logger := log.FromContext(ctx)
+	for i := range certs.Items {
+		c := &certs.Items[i]
+		// Serving certs are exactly the operator-managed ones named dtls-<hash>.
+		if desired[c.Name] || !strings.HasPrefix(c.Name, "dtls-") {
+			continue
+		}
+		if err := r.Delete(ctx, c); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("prune certificate %s: %w", c.Name, err)
+		}
+		logger.Info("pruned stale serving certificate", "namespace", deployNS, "name", c.Name)
+	}
+	return nil
 }
 
 func (r *EnvironmentReconciler) ensureDomainCertificate(ctx context.Context, deployNS, fqdn string) error {
@@ -444,7 +479,10 @@ func (r *EnvironmentReconciler) ensureDomainCertificate(ctx context.Context, dep
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      name,
 				Namespace: deployNS,
-				Labels:    map[string]string{"app.kubernetes.io/managed-by": "enzarb-operator"},
+				Labels: map[string]string{
+					"app.kubernetes.io/managed-by": "enzarb-operator",
+					servingCertLabel:               "true",
+				},
 			},
 			Spec: certmanagerv1.CertificateSpec{
 				SecretName: name,
