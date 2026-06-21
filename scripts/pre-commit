@@ -73,6 +73,10 @@ else
     DOCKER_CHANGED=false
     if echo "$STAGED" | grep -q "Dockerfile"; then DOCKER_CHANGED=true; fi
     if has_changes ".trivyignore"; then DOCKER_CHANGED=true; fi
+    # trivy config also scans Kubernetes/Helm manifests for misconfigurations, so
+    # changes to deploy manifests or chart templates must trigger the scan too —
+    # otherwise k8s securityContext findings only surface in CI.
+    if has_changes "deploy/" || has_changes "charts/"; then DOCKER_CHANGED=true; fi
 fi
 
 if ! $GO_CHANGED && ! $RUST_CHANGED && ! $JS_CHANGED && ! $DOCKER_CHANGED; then
