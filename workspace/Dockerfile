@@ -42,6 +42,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         docker-ce-cli \
         git \
         tmux \
+        ncurses-term \
         jq \
         openssh-client \
         build-essential \

@@ -258,6 +258,23 @@ async fn ensure_tmux_session() -> Result<()> {
         }
     };
 
+    // Give shells inside tmux a 256-color terminfo (default is `screen`, which
+    // makes many tools disable colour) and pass truecolor through to the client.
+    // Set before creating the session so its shell inherits the right TERM.
+    let _ = Command::new("tmux")
+        .args(["set-option", "-g", "default-terminal", "tmux-256color"])
+        .status()
+        .await;
+    let _ = Command::new("tmux")
+        .args([
+            "set-option",
+            "-ga",
+            "terminal-overrides",
+            ",xterm-256color:RGB",
+        ])
+        .status()
+        .await;
+
     let status = Command::new("tmux")
         .args(["has-session", "-t", TMUX_SESSION])
         .status()
