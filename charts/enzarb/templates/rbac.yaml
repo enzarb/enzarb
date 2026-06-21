@@ -42,7 +42,7 @@ metadata:
   name: enzarb-operator
 rules:
   - apiGroups: ["enzarb.io"]
-    resources: ["projects", "environments", "organizations", "projects/status", "environments/status", "organizations/status", "organizations/finalizers"]
+    resources: ["projects", "environments", "organizations", "alloweddomains", "projects/status", "environments/status", "organizations/status", "organizations/finalizers"]
     verbs: ["*"]
   - apiGroups: [""]
     resources: ["namespaces", "serviceaccounts", "services", "persistentvolumeclaims", "configmaps", "pods"]

@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
 
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -65,6 +66,10 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// presents each pod's SA token to authd, which authorizes a pull-only scope
 	// for this project via the namespace labels set in ensureNamespace.
 
+	if err := r.reconcileAllowedDomains(ctx, deployNS, &project, &env); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile allowed domains: %w", err)
+	}
+
 	env.Status.Namespace = deployNS
 	if err := r.Status().Update(ctx, &env); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update status: %w", err)
@@ -72,6 +77,79 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	logger.Info("environment reconciled", "name", env.Name, "deployNS", deployNS)
 	return ctrl.Result{}, nil
+}
+
+// reconcileAllowedDomains projects the set of hostnames this environment is
+// permitted to serve into an AllowedDomains object in the deploy namespace. The
+// ValidatingAdmissionPolicy (charts/enzarb/templates/gateway-policy.yaml)
+// paramRefs this object to reject tenant-authored HTTPRoute/GRPCRoute/Ingress
+// resources whose hostnames fall outside the set, closing the domain-hijack
+// vector for projects that deploy their own Gateway API resources.
+//
+// The set is: the deterministic platform subdomain (always allowed, derived
+// from trusted CRD fields) plus any custom domain whose ownership has been DNS-
+// verified (DomainStatus.VerifiedAt set). Unverified custom domains are
+// deliberately omitted so a tenant cannot route a domain they haven't proven
+// control of.
+func (r *EnvironmentReconciler) reconcileAllowedDomains(ctx context.Context, deployNS string, project *enzarbv1alpha1.Project, env *enzarbv1alpha1.Environment) error {
+	baseDomain := os.Getenv("BASE_DOMAIN")
+	if baseDomain == "" {
+		baseDomain = "enzarb.dev"
+	}
+
+	// Deterministic platform hostname built only from trusted CRD fields, so it
+	// is collision-free by construction and never derived from user input.
+	platformHost := fmt.Sprintf("%s.%s.%s", env.Spec.Slug, project.Spec.Slug, baseDomain)
+
+	verified := map[string]bool{}
+	for _, d := range env.Status.Domains {
+		if d.VerifiedAt != "" {
+			verified[d.FQDN] = true
+		}
+	}
+
+	fqdns := []string{platformHost}
+	for _, cd := range env.Spec.CustomDomains {
+		if verified[cd.FQDN] {
+			fqdns = append(fqdns, cd.FQDN)
+		}
+	}
+
+	ad := &enzarbv1alpha1.AllowedDomains{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: deployNS, Name: "default"}, ad)
+	if errors.IsNotFound(err) {
+		ad = &enzarbv1alpha1.AllowedDomains{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "default",
+				Namespace: deployNS,
+				Labels: map[string]string{
+					"app.kubernetes.io/managed-by": "enzarb-operator",
+				},
+			},
+			Spec: enzarbv1alpha1.AllowedDomainsSpec{FQDNs: fqdns},
+		}
+		return r.Create(ctx, ad)
+	}
+	if err != nil {
+		return err
+	}
+	if !equalStrings(ad.Spec.FQDNs, fqdns) {
+		ad.Spec.FQDNs = fqdns
+		return r.Update(ctx, ad)
+	}
+	return nil
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *EnvironmentReconciler) ensureDeployerRoleBinding(ctx context.Context, deployNS, orgNS, saName string, env *enzarbv1alpha1.Environment) error {

@@ -19,6 +19,7 @@ func init() {
 	SchemeBuilder.Register(&Project{}, &ProjectList{})
 	SchemeBuilder.Register(&Environment{}, &EnvironmentList{})
 	SchemeBuilder.Register(&Organization{}, &OrganizationList{})
+	SchemeBuilder.Register(&AllowedDomains{}, &AllowedDomainsList{})
 }
 
 // +kubebuilder:object:root=true
@@ -149,6 +150,39 @@ type DomainStatus struct {
 	FQDN       string `json:"fqdn"`
 	CertStatus string `json:"certStatus,omitempty"`
 	VerifiedAt string `json:"verifiedAt,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:resource:scope=Namespaced,shortName=alloweddomain
+// +kubebuilder:printcolumn:name="FQDNs",type=string,JSONPath=`.spec.fqdns`
+
+// AllowedDomains is the operator-maintained, per-deploy-namespace source of
+// truth for which hostnames a project's tenant-authored Gateway API routes
+// (HTTPRoute/GRPCRoute) and Ingresses are permitted to claim. The operator
+// projects one object (named "default") into each deploy namespace from the
+// Environment's verified domains; a ValidatingAdmissionPolicy paramRefs it to
+// reject routes whose hostnames fall outside this set. Tenants must not have
+// write access to this resource.
+type AllowedDomains struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec AllowedDomainsSpec `json:"spec,omitempty"`
+}
+
+type AllowedDomainsSpec struct {
+	// FQDNs is the exact set of hostnames permitted in this namespace. A
+	// wildcard entry ("*.example.com") additionally permits any single-label
+	// subdomain of example.com.
+	FQDNs []string `json:"fqdns,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+
+type AllowedDomainsList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []AllowedDomains `json:"items"`
 }
 
 // +kubebuilder:object:root=true
@@ -298,6 +332,46 @@ func (s *OrganizationStatus) DeepCopyInto(out *OrganizationStatus) {
 	if s.Conditions != nil {
 		out.Conditions = make([]metav1.Condition, len(s.Conditions))
 		copy(out.Conditions, s.Conditions)
+	}
+}
+
+func (a *AllowedDomains) DeepCopyObject() runtime.Object {
+	if a == nil {
+		return nil
+	}
+	out := new(AllowedDomains)
+	a.DeepCopyInto(out)
+	return out
+}
+
+func (a *AllowedDomains) DeepCopyInto(out *AllowedDomains) {
+	*out = *a
+	out.TypeMeta = a.TypeMeta
+	a.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+	if a.Spec.FQDNs != nil {
+		out.Spec.FQDNs = make([]string, len(a.Spec.FQDNs))
+		copy(out.Spec.FQDNs, a.Spec.FQDNs)
+	}
+}
+
+func (al *AllowedDomainsList) DeepCopyObject() runtime.Object {
+	if al == nil {
+		return nil
+	}
+	out := new(AllowedDomainsList)
+	al.DeepCopyInto(out)
+	return out
+}
+
+func (al *AllowedDomainsList) DeepCopyInto(out *AllowedDomainsList) {
+	*out = *al
+	out.TypeMeta = al.TypeMeta
+	al.ListMeta.DeepCopyInto(&out.ListMeta)
+	if al.Items != nil {
+		out.Items = make([]AllowedDomains, len(al.Items))
+		for i := range al.Items {
+			al.Items[i].DeepCopyInto(&out.Items[i])
+		}
 	}
 }
 

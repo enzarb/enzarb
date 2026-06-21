@@ -1,0 +1,90 @@
+{{- if .Values.gateway.domainPolicy.enabled }}
+# Domain-hijack prevention for tenant-authored routing.
+#
+# Tenants may create their own HTTPRoute/GRPCRoute/Ingress objects in their
+# deploy namespace (see the enzarb-deployer ClusterRole). Gateway API does NOT
+# prevent two routes from claiming the same hostname — conflict resolution is
+# oldest-creationTimestamp-wins — so without a gate, project B could squat or
+# steal project A's domain. This ValidatingAdmissionPolicy makes every route's
+# hostnames a guarded write: the API server rejects any hostname not present in
+# the operator-maintained AllowedDomains object for that namespace.
+#
+# AllowedDomains is projected by the Environment reconciler from the platform
+# subdomain plus DNS-verified custom domains, and tenants have no RBAC to write
+# it. Tenant-created Gateways are blocked at the RBAC layer (the deployer role
+# grants no gateways verb), which keeps listener hostnames out of tenant control.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: enzarb-restrict-route-hostnames
+spec:
+  failurePolicy: Fail
+  paramKind:
+    apiVersion: enzarb.io/v1alpha1
+    kind: AllowedDomains
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["gateway.networking.k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["httproutes", "grpcroutes"]
+      - apiGroups: ["networking.k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["ingresses"]
+  variables:
+    # Hostnames declared on a Gateway API route (HTTPRoute/GRPCRoute).
+    - name: routeHosts
+      expression: "has(object.spec.hostnames) ? object.spec.hostnames : []"
+    # Hostnames declared on an Ingress (rule hosts).
+    - name: ingressRuleHosts
+      expression: "(has(object.spec) && has(object.spec.rules) ? object.spec.rules : []).filter(r, has(r.host)).map(r, r.host)"
+  validations:
+    # A route with no hostnames matches every host on its listener — that is a
+    # wildcard hijack. Require explicit hostnames for Gateway API routes.
+    - expression: "!(object.kind in ['HTTPRoute', 'GRPCRoute']) || (has(object.spec.hostnames) && object.spec.hostnames.size() > 0)"
+      reason: Invalid
+      messageExpression: "'HTTPRoute/GRPCRoute must declare at least one hostname'"
+    # Every Gateway API route hostname must be an allowed domain for this project.
+    - expression: >-
+        variables.routeHosts.all(h,
+          params.spec.fqdns.exists(a,
+            a == h || (a.startsWith('*.') && h.endsWith(a.substring(1)))))
+      reason: Forbidden
+      messageExpression: "'route hostname not in this project\\'s allowed domains: ' + variables.routeHosts.join(', ')"
+    # Every Ingress rule host must be an allowed domain.
+    - expression: >-
+        variables.ingressRuleHosts.all(h,
+          params.spec.fqdns.exists(a,
+            a == h || (a.startsWith('*.') && h.endsWith(a.substring(1)))))
+      reason: Forbidden
+      messageExpression: "'ingress host not in this project\\'s allowed domains: ' + variables.ingressRuleHosts.join(', ')"
+    # Every Ingress TLS host must be an allowed domain.
+    - expression: >-
+        (has(object.spec) && has(object.spec.tls) ? object.spec.tls : []).all(t,
+          (has(t.hosts) ? t.hosts : []).all(h,
+            params.spec.fqdns.exists(a,
+              a == h || (a.startsWith('*.') && h.endsWith(a.substring(1))))))
+      reason: Forbidden
+      messageExpression: "'ingress TLS host not in this project\\'s allowed domains'"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: enzarb-restrict-route-hostnames
+spec:
+  policyName: enzarb-restrict-route-hostnames
+  validationActions: ["Deny"]
+  # Bind to the AllowedDomains object named "default" in the same namespace as
+  # the route. parameterNotFoundAction: Deny fails closed — until the operator
+  # has projected AllowedDomains, no route in the namespace is admitted.
+  paramRef:
+    name: default
+    parameterNotFoundAction: Deny
+  matchResources:
+    # Only enforce in operator-managed deploy namespaces; platform/system
+    # namespaces author routes through the chart, not this policy.
+    namespaceSelector:
+      matchLabels:
+        enzarb.io/type: deploy
+{{- end }}

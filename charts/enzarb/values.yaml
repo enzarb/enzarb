@@ -150,6 +150,10 @@ gitea:
 gateway:
   className: envoy
   domain: enzarb.dev
+  # ValidatingAdmissionPolicy that restricts tenant-authored route/ingress
+  # hostnames to their project's AllowedDomains. Requires K8s 1.30+ (VAP GA).
+  domainPolicy:
+    enabled: true
   loadBalancerIP: "192.168.23.93"
   issuer:
     email: curtis.ruck@gmail.com
