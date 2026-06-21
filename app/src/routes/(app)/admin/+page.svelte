@@ -283,7 +283,6 @@
 	.section h3 { font-size: 14px; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
 	.form-card { margin-bottom: 1rem; }
 	.form-card h4 { font-size: 13px; font-weight: 600; margin: 0.5rem 0; }
-	.btn-danger { color: var(--color-danger); border-color: var(--color-danger); }
 	.fields { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1rem; }
 	.field label { display: block; font-weight: 500; margin-bottom: 0.25rem; font-size: 13px; }
 	.field-error { color: var(--color-danger); font-size: 12px; margin: 0.25rem 0 0; }
