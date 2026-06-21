@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::init::home_dir;
 
-const TMUX_SESSION: &str = "enzarb";
+pub const TMUX_SESSION: &str = "enzarb";
 const STATE_FILE: &str = ".enzarb/processes.json";
 const LOG_DIR: &str = ".enzarb/tasks";
 #[allow(dead_code)]

@@ -28,10 +28,18 @@
 	let isTouch = $state(false);
 	let fit: FitAddon | undefined;
 
-	// Send raw bytes to the attached process. Both xterm input and the virtual
-	// keyboard funnel through here.
+	// Input is sent as binary frames; the agent reserves text frames for control
+	// messages (terminal resize). Both xterm input and the virtual keyboard
+	// funnel through here.
 	function send(data: string) {
-		ws?.send(data);
+		if (ws?.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(data));
+	}
+
+	// Tell the agent the PTY dimensions so output wraps/clears correctly.
+	function sendResize() {
+		if (ws?.readyState === WebSocket.OPEN && terminal) {
+			ws.send(JSON.stringify({ rows: terminal.rows, cols: terminal.cols }));
+		}
 	}
 
 	async function loadProcesses() {
@@ -78,6 +86,8 @@
 		// The agent streams output as binary frames; default binaryType is "blob",
 		// which TextDecoder can't decode. Use arraybuffer so we can render it.
 		ws.binaryType = 'arraybuffer';
+		// On connect, refit and report the size so the PTY matches the viewport.
+		ws.onopen = () => { fit?.fit(); sendResize(); };
 		ws.onmessage = (e) => {
 			const data = e.data instanceof ArrayBuffer ? new Uint8Array(e.data) : e.data;
 			terminal?.write(typeof data === 'string' ? data : new TextDecoder().decode(data));
@@ -104,7 +114,7 @@
 			const ta = termEl?.querySelector('.xterm-helper-textarea');
 			if (ta) ta.setAttribute('inputmode', 'none');
 		}
-		resizeObserver = new ResizeObserver(() => fit?.fit());
+		resizeObserver = new ResizeObserver(() => { fit?.fit(); sendResize(); });
 		if (termEl) resizeObserver.observe(termEl);
 		await loadProcesses();
 	});

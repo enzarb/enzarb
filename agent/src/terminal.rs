@@ -1,113 +1,169 @@
 use axum::extract::ws::{Message, WebSocket};
 use futures::{SinkExt, StreamExt};
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use std::io::{Read, Write};
 use tokio::process::Command;
+use tokio::sync::mpsc;
 
 use crate::AppState;
+use crate::tmux::TMUX_SESSION;
 
-/// Bridge a WebSocket connection to a tmux window's pty.
-/// The client sends keystrokes as binary/text frames; we forward to tmux via `send-keys`.
-/// Output is streamed back by attaching to the tmux pipe.
+#[derive(serde::Deserialize)]
+struct Resize {
+    rows: u16,
+    cols: u16,
+}
+
+/// Bridge a WebSocket to a tmux window through a real PTY.
+///
+/// The client sends keystrokes as binary frames (written straight to the PTY,
+/// no per-keystroke process spawn) and terminal size as JSON text frames. We run
+/// `tmux` in the PTY attached to a per-connection grouped session, so each client
+/// can view its own window and the PTY size drives the window size.
 pub async fn handle_ws(mut socket: WebSocket, window_name: String, state: AppState) {
-    let target = state.process_store.window_target(&window_name);
-
-    // Start `tmux pipe-pane` to capture output into a FIFO
-    let fifo_path = format!("/tmp/enzarb-{}.fifo", &window_name);
-    let _ = tokio::fs::remove_file(&fifo_path).await;
-
-    let _ = nix::unistd::mkfifo(
-        fifo_path.as_str(),
-        nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+    let window_target = state.process_store.window_target(&window_name);
+    // A grouped session (shares windows with the main session) gives this client
+    // an independent current-window and size, so concurrent terminals don't fight
+    // over the active window.
+    let client_session = format!(
+        "{TMUX_SESSION}-ws-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
     );
 
-    let pipe_target = target.clone();
-    let pipe_path = fifo_path.clone();
-    let _ = Command::new("tmux")
-        .args([
-            "pipe-pane",
-            "-t",
-            &pipe_target,
-            "-o",
-            &format!("cat >> {}", pipe_path),
-        ])
-        .status()
-        .await;
-
-    // Open FIFO for reading (non-blocking via tokio)
-    let fifo = match tokio::fs::OpenOptions::new()
-        .read(true)
-        .open(&fifo_path)
-        .await
-    {
-        Ok(f) => f,
+    let pair = match native_pty_system().openpty(PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    }) {
+        Ok(p) => p,
         Err(e) => {
-            tracing::warn!(error = %e, "failed to open fifo");
+            tracing::warn!(error = %e, "openpty failed");
             let _ = socket.close().await;
             return;
         }
     };
 
-    let (mut ws_tx, mut ws_rx) = socket.split();
-    let mut fifo_reader = tokio::io::BufReader::new(fifo);
-
-    // `pipe-pane` only streams output produced after we attach, so send a
-    // snapshot of the pane's current contents first — otherwise an already-
-    // printed shell prompt (or any prior output) never appears in the UI.
-    if let Ok(out) = Command::new("tmux")
-        .args(["capture-pane", "-p", "-e", "-t", &target])
-        .output()
-        .await
-        && !out.stdout.is_empty()
-    {
-        let _ = ws_tx.send(Message::Binary(out.stdout.into())).await;
+    let mut cmd = CommandBuilder::new("tmux");
+    cmd.args([
+        "new-session",
+        "-s",
+        client_session.as_str(),
+        "-t",
+        TMUX_SESSION,
+        ";",
+        "set-option",
+        "status",
+        "off",
+        ";",
+        "select-window",
+        "-t",
+        window_target.as_str(),
+    ]);
+    for (k, v) in std::env::vars() {
+        cmd.env(k, v);
     }
+    cmd.env("TERM", "xterm-256color");
+    cmd.cwd(crate::init::home_dir().into_os_string());
 
-    let send_target = target.clone();
-    // Task: read from WebSocket, send keystrokes to tmux
-    let input_task = tokio::spawn(async move {
-        while let Some(Ok(msg)) = ws_rx.next().await {
-            let keys = match msg {
-                Message::Text(t) => t.to_string(),
-                Message::Binary(b) => String::from_utf8_lossy(&b).to_string(),
-                Message::Close(_) => break,
-                _ => continue,
-            };
-            // `-l` sends the bytes literally; without it tmux interprets the
-            // payload as key names and mangles raw xterm input (arrows, ctrl
-            // sequences, the carriage return that submits a command, etc.).
-            let _ = Command::new("tmux")
-                .args(["send-keys", "-l", "-t", &send_target, &keys])
-                .status()
-                .await;
+    let mut child = match pair.slave.spawn_command(cmd) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "tmux attach spawn failed");
+            let _ = socket.close().await;
+            return;
         }
-    });
+    };
+    drop(pair.slave);
 
-    // Task: read from FIFO, send to WebSocket
-    let output_task = tokio::spawn(async move {
-        use tokio::io::AsyncReadExt;
-        let mut buf = [0u8; 4096];
+    let mut reader = match pair.master.try_clone_reader() {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "pty reader");
+            return;
+        }
+    };
+    let mut writer = match pair.master.take_writer() {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::warn!(error = %e, "pty writer");
+            return;
+        }
+    };
+    let master = pair.master;
+
+    let (mut ws_tx, mut ws_rx) = socket.split();
+
+    // PTY output -> channel -> WebSocket. The PTY read is blocking, so it lives
+    // on a dedicated thread that hands chunks to the async side.
+    let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(64);
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 8192];
         loop {
-            match fifo_reader.read(&mut buf).await {
-                Ok(0) => break,
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    if ws_tx
-                        .send(Message::Binary(buf[..n].to_vec().into()))
-                        .await
-                        .is_err()
-                    {
+                    if out_tx.blocking_send(buf[..n].to_vec()).is_err() {
                         break;
                     }
                 }
-                Err(_) => break,
             }
         }
     });
 
-    let _ = tokio::join!(input_task, output_task);
+    // WebSocket input -> channel -> blocking PTY writer thread.
+    let (in_tx, in_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        while let Ok(bytes) = in_rx.recv() {
+            if writer.write_all(&bytes).is_err() {
+                break;
+            }
+            let _ = writer.flush();
+        }
+    });
 
-    // Cleanup: stop pipe-pane
+    let output = async move {
+        while let Some(chunk) = out_rx.recv().await {
+            if ws_tx.send(Message::Binary(chunk.into())).await.is_err() {
+                break;
+            }
+        }
+    };
+
+    let input = async move {
+        while let Some(Ok(msg)) = ws_rx.next().await {
+            match msg {
+                Message::Binary(b) => {
+                    if in_tx.send(b.to_vec()).is_err() {
+                        break;
+                    }
+                }
+                Message::Text(t) => {
+                    if let Ok(r) = serde_json::from_str::<Resize>(&t) {
+                        let _ = master.resize(PtySize {
+                            rows: r.rows,
+                            cols: r.cols,
+                            pixel_width: 0,
+                            pixel_height: 0,
+                        });
+                    }
+                }
+                Message::Close(_) => break,
+                _ => {}
+            }
+        }
+    };
+
+    // Whichever side ends first, tear the other down by dropping it.
+    tokio::select! {
+        _ = output => {},
+        _ = input => {},
+    }
+
+    let _ = child.kill();
+    // The grouped session lingers after detach; remove it.
     let _ = Command::new("tmux")
-        .args(["pipe-pane", "-t", &target])
+        .args(["kill-session", "-t", &client_session])
         .status()
         .await;
-    let _ = tokio::fs::remove_file(&fifo_path).await;
 }
