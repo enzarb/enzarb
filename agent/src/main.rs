@@ -2,8 +2,8 @@ mod auth;
 mod external;
 mod init;
 mod internal;
+mod process;
 mod terminal;
-mod tmux;
 
 use anyhow::Result;
 use std::net::SocketAddr;
@@ -34,7 +34,7 @@ async fn main() -> Result<()> {
     init::bootstrap(&project_id).await?;
 
     // Rehydrate persistent processes from state file
-    let process_store = tmux::ProcessStore::load_or_create().await?;
+    let process_store = process::ProcessStore::load_or_create().await?;
 
     let state = AppState {
         project_id: project_id.clone(),
@@ -75,5 +75,5 @@ pub struct AppState {
     pub org_id: String,
     pub project_slug: String,
     pub jwks: auth::JwksCache,
-    pub process_store: tmux::ProcessStore,
+    pub process_store: process::ProcessStore,
 }

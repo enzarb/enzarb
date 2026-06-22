@@ -7,7 +7,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::{AppState, tmux::ProcessKind};
+use crate::{AppState, process::ProcessKind};
 
 #[derive(Debug, Deserialize)]
 pub struct CreateProcessRequest {
@@ -42,8 +42,8 @@ pub struct ProcessResponse {
     pub finished_at: Option<String>,
 }
 
-impl From<crate::tmux::Process> for ProcessResponse {
-    fn from(p: crate::tmux::Process) -> Self {
+impl From<crate::process::Process> for ProcessResponse {
+    fn from(p: crate::process::Process) -> Self {
         ProcessResponse {
             id: p.id,
             name: p.name,
@@ -118,12 +118,10 @@ pub async fn output_ws(
     Path(id): Path<String>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    let process = match state.process_store.get(&id).await {
-        Some(p) => p,
-        None => return StatusCode::NOT_FOUND.into_response(),
-    };
-
-    ws.on_upgrade(move |socket| crate::terminal::handle_ws(socket, process.window_name, state))
+    if state.process_store.get(&id).await.is_none() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    ws.on_upgrade(move |socket| crate::terminal::attach_ws(socket, id, state))
 }
 
 pub async fn history(State(state): State<AppState>, Path(id): Path<String>) -> Response {

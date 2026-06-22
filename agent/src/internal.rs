@@ -2,7 +2,7 @@ use axum::{Router, extract::State, routing::get};
 use serde_json::json;
 
 use crate::AppState;
-use crate::tmux::ProcessStatus;
+use crate::process::ProcessStatus;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
