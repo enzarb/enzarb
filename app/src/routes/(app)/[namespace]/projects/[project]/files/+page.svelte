@@ -132,6 +132,8 @@
 			</table>
 		{/if}
 	</div>
+{:catch err}
+	<p class="muted">Could not load files: {err?.message ?? 'unknown error'}</p>
 {/await}
 
 <style>

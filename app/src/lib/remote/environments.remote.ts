@@ -2,8 +2,7 @@ import { query, form, command } from '$app/server';
 import { getRequestEvent } from '$app/server';
 import { error } from '@sveltejs/kit';
 import { z } from 'zod/v4';
-import { listEnvironments, createEnvironment, addCustomDomain, setDefaultEnvironment } from '$lib/k8s';
-import { getProject } from './projects.remote';
+import { listEnvironments, createEnvironment, addCustomDomain, setDefaultEnvironment, getProject as k8sGetProject } from '$lib/k8s';
 import { sql } from '$lib/db';
 import { tiers, config } from '$lib/config';
 import { resolveOrg, requirePrivilege } from './guard';
@@ -11,9 +10,13 @@ import { resolveOrg, requirePrivilege } from './guard';
 export const getEnvironments = query(async () => {
 	const { params } = getRequestEvent();
 	const org = resolveOrg();
-	const envs = await listEnvironments(org.id, params.project!);
+	const [envs, project] = await Promise.all([
+		listEnvironments(org.id, params.project!),
+		k8sGetProject(org.id, params.project!)
+	]);
 	const deployZone = `env.${config.domain}`;
-	return { envs, deployZone };
+	const defaultEnvSlug = (project as any)?.metadata?.annotations?.['enzarb.io/default-environment'] ?? null;
+	return { envs, deployZone, defaultEnvSlug };
 });
 
 export const createEnv = form(
@@ -39,7 +42,7 @@ export const setDefaultEnv = command(
 		const { params } = getRequestEvent();
 		const org = requirePrivilege('environment.manage');
 		await setDefaultEnvironment(org.id, params.project!, envSlug);
-		await Promise.all([getEnvironments().refresh(), getProject().refresh()]);
+		await getEnvironments().refresh();
 	}
 );
 

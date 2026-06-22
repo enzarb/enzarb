@@ -9,6 +9,6 @@ export const getGitTree = query(
 	async ({ path, ref }) => {
 		const { params } = getRequestEvent();
 		const org = resolveOrg();
-		return getRepoContents(org.id, params.project!, path, ref);
+		return getRepoContents(org.slug, params.project!, path, ref);
 	}
 );

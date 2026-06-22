@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { getEnvironments, createEnv, addDomain, setDefaultEnv } from '$lib/remote/environments.remote';
-	import { getProject } from '$lib/remote/projects.remote';
 	let showNewEnv = $state(false);
 	let domainEnv: string | null = $state(null);
 </script>
@@ -28,8 +27,7 @@
 		</div>
 	{/if}
 
-	{#await Promise.all([getEnvironments(), getProject()]) then [{ envs, deployZone }, project]}
-		{@const defaultEnvSlug = project.metadata?.annotations?.['enzarb.io/default-environment'] ?? null}
+	{#await getEnvironments() then { envs, deployZone, defaultEnvSlug }}
 		<div class="env-list">
 			{#each envs as env}
 				{@const isDefault = defaultEnvSlug === env.spec.slug}

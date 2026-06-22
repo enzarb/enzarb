@@ -59,7 +59,7 @@
 		</div>
 	</div>
 {:catch err}
-	<p class="muted">Could not load registry: {err?.message ?? 'unknown error'}</p>
+	<p class="muted">Could not load registry: {err?.message ?? err?.status ?? String(err) ?? 'unknown error'}</p>
 {/await}
 
 <style>
