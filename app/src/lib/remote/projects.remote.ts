@@ -59,10 +59,10 @@ export const getDeletedProjects = query(async () => {
 		}));
 });
 
-export const getProject = query(async () => {
+export const getProject = query(z.string().optional(), async (slug) => {
 	const { params } = getRequestEvent();
 	const org = resolveOrg();
-	const project = (await k8sGetProject(org.id, params.project!)) as any;
+	const project = (await k8sGetProject(org.id, slug ?? params.project!)) as any;
 	if (!project) error(404, 'Project not found');
 	return project;
 });

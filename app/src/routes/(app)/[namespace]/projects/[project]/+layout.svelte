@@ -39,11 +39,13 @@
 	}
 </script>
 
-{#await getProject() then project}
+{#await getProject($page.params.project) then project}
 	{@const base = `/${$page.params.namespace}/projects/${$page.params.project}`}
 	{@const tabs = [
 		{ href: base, label: 'Overview' },
 		{ href: `${base}/files`, label: 'Files' },
+		{ href: `${base}/git`, label: 'Git' },
+		{ href: `${base}/issues`, label: 'Issues' },
 		{ href: `${base}/registry`, label: 'Registry' },
 		{ href: `${base}/deployments`, label: 'Environments' },
 		{ href: `${base}/tools`, label: 'Tools' },

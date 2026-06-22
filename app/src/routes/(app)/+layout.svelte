@@ -10,15 +10,25 @@
 
 	let open = $state(false);
 	let orgMenuOpen = $state<string | null>(null);
+	let dropdownPos = $state<{ top: number; left: number } | null>(null);
 
 	afterNavigate(() => {
 		open = false;
 		orgMenuOpen = null;
+		dropdownPos = null;
 	});
 
 	function toggleOrgMenu(slug: string, e: MouseEvent) {
 		e.stopPropagation();
-		orgMenuOpen = orgMenuOpen === slug ? null : slug;
+		if (orgMenuOpen === slug) {
+			orgMenuOpen = null;
+			dropdownPos = null;
+		} else {
+			orgMenuOpen = slug;
+			const btn = e.currentTarget as HTMLElement;
+			const rect = btn.getBoundingClientRect();
+			dropdownPos = { top: rect.bottom + 4, left: rect.left };
+		}
 	}
 
 	function isProjectActive(orgSlug: string, projectSlug: string) {
@@ -69,18 +79,6 @@
 								>
 									<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>
 								</button>
-								{#if orgMenuOpen === org.slug}
-									<div class="org-dropdown">
-										<a href="/{org.slug}/billing" class="dropdown-item">
-											<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
-											Billing
-										</a>
-										<a href="/{org.slug}/settings" class="dropdown-item">
-											<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-											Settings
-										</a>
-									</div>
-								{/if}
 							</div>
 							<a href="/{org.slug}/projects/new" class="icon-btn" title="New project" aria-label="New project">
 								<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
@@ -127,6 +125,26 @@
 		{@render children()}
 	</main>
 </div>
+
+{#if orgMenuOpen && dropdownPos}
+	{@const openOrg = session.orgs.find((o) => o.slug === orgMenuOpen)}
+	{#if openOrg}
+		<div
+			class="org-dropdown-fixed"
+			style="top:{dropdownPos.top}px;left:{dropdownPos.left}px"
+			role="menu"
+		>
+			<a href="/{openOrg.slug}/billing" class="dropdown-item" onclick={() => { orgMenuOpen = null; }}>
+				<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+				Billing
+			</a>
+			<a href="/{openOrg.slug}/settings" class="dropdown-item" onclick={() => { orgMenuOpen = null; }}>
+				<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+				Settings
+			</a>
+		</div>
+	{/if}
+{/if}
 
 <ConfirmDialog />
 
@@ -221,12 +239,10 @@
 	}
 	.icon-btn:hover { background: var(--color-surface-2); color: var(--color-text); text-decoration: none; }
 
-	/* 3-dot dropdown */
-	.org-dropdown {
-		position: absolute;
-		top: calc(100% + 4px);
-		left: 0;
-		z-index: 50;
+	/* 3-dot dropdown — rendered fixed outside sidebar to escape overflow:auto clip */
+	.org-dropdown-fixed {
+		position: fixed;
+		z-index: 200;
 		background: var(--color-surface);
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius);

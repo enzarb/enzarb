@@ -1,5 +1,6 @@
 mod files;
 mod processes;
+mod status;
 mod tools;
 mod watch;
 
@@ -34,6 +35,8 @@ pub fn router(state: AppState) -> Router {
         .route("/tools/registry", get(tools::registry))
         .route("/tools/{name}", delete(tools::remove))
         .route("/tools/{name}/versions", get(tools::versions))
+        // Workspace status (disk usage etc.)
+        .route("/status", get(status::status))
         // Watch (inotify SSE)
         .route("/watch", get(watch::watch))
         // Auth middleware on all routes
