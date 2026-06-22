@@ -6,7 +6,7 @@ app:
   image:
     repository: ghcr.io/enzarb/app
     pullPolicy: IfNotPresent
-    tag: "v0.36.0"
+    tag: "v0.37.0"
   env:
     ORIGIN: https://enzarb.dev
     # Reach Gitea's admin API internally — the external host is fronted by the
@@ -43,7 +43,7 @@ operator:
   image:
     repository: ghcr.io/enzarb/operator
     pullPolicy: IfNotPresent
-    tag: "v0.34.0"
+    tag: "v0.37.0"
   leaderElection: true
   env:
     ENZARB_DOMAIN: enzarb.dev
@@ -119,7 +119,7 @@ authd:
 workspace:
   image:
     repository: ghcr.io/enzarb/workspace
-    tag: "v0.36.0"
+    tag: "v0.37.0"
   # StorageClass for project home PVCs. Empty uses the cluster's default class.
   storageClass: ""
   # changelog is shown in the UI when a workspace update is pending. Set by CI
@@ -171,7 +171,6 @@ serviceAccountName:
 nodeSelector: {}
 tolerations: []
 affinity: {}
-
 # NetworkPolicies applied to org (workspace) namespaces and deploy namespaces.
 # podCIDR/serviceCIDR are used to allow internet egress while blocking
 # cross-namespace cluster traffic. Defaults match K3s; adjust for your cluster.
