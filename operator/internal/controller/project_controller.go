@@ -436,7 +436,7 @@ func (r *ProjectReconciler) checkRunningProcesses(ctx context.Context, ns, slug 
 	if err != nil {
 		return false, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var result struct {
 		Running int `json:"running"`
 	}

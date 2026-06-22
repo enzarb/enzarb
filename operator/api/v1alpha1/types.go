@@ -95,14 +95,14 @@ type ProjectStorage struct {
 }
 
 type ProjectStatus struct {
-	Phase              string             `json:"phase,omitempty"`
-	WorkspacePodName   string             `json:"workspacePodName,omitempty"`
-	ServiceAccountName string             `json:"serviceAccountName,omitempty"`
-	AgentPath          string             `json:"agentPath,omitempty"`
+	Phase              string `json:"phase,omitempty"`
+	WorkspacePodName   string `json:"workspacePodName,omitempty"`
+	ServiceAccountName string `json:"serviceAccountName,omitempty"`
+	AgentPath          string `json:"agentPath,omitempty"`
 	// RunningWorkspaceImage is the workspace container image currently deployed.
 	RunningWorkspaceImage string `json:"runningWorkspaceImage,omitempty"`
 	// DesiredWorkspaceImage is the workspace container image the operator wants to run.
-	DesiredWorkspaceImage string `json:"desiredWorkspaceImage,omitempty"`
+	DesiredWorkspaceImage string             `json:"desiredWorkspaceImage,omitempty"`
 	Conditions            []metav1.Condition `json:"conditions,omitempty"`
 }
 

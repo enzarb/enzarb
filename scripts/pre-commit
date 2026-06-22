@@ -92,7 +92,8 @@ if $GO_CHANGED; then
     run_check "gofmt" bash -c \
         'files=$(gofmt -l operator metering billing authd 2>/dev/null | grep -v vendor || true); [ -z "$files" ] || (echo "$files"; exit 1)'
     if ! command -v golangci-lint &>/dev/null; then
-        printf "  ${YELLOW}golangci-lint not found — skipping lint (run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)${NC}\n"
+        printf "  ${RED}golangci-lint not found — run: mise install${NC}\n"
+        FAIL=$((FAIL + 1))
     else
         for m in $GO_MODULES; do
             run_check "golangci-lint ($m)" bash -c \
@@ -100,7 +101,8 @@ if $GO_CHANGED; then
         done
     fi
     if ! command -v govulncheck &>/dev/null; then
-        printf "  ${YELLOW}govulncheck not found — skipping (run: go install golang.org/x/vuln/cmd/govulncheck@latest)${NC}\n"
+        printf "  ${RED}govulncheck not found — run: mise install${NC}\n"
+        FAIL=$((FAIL + 1))
     else
         for m in $GO_MODULES; do
             run_check_allow_exit3 "govulncheck ($m)" bash -c \
