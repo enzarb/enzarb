@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { getRepositories, getRepoTags } from '$lib/remote/registry.remote';
+	import { page } from '$app/stores';
+
 	let selectedRepo: string | null = $state(null);
 	let tags: string[] = $state([]);
 	let loadingTags = $state(false);
@@ -16,10 +18,20 @@
 	}
 
 	const registryBase = 'registry.enzarb.dev';
+	const registryPrefix = $derived(`${registryBase}/${$page.params.namespace}`);
 </script>
 
 {#await getRepositories() then repos}
 	<div class="registry-page">
+		<div class="push-guide card">
+			<h3>Push images</h3>
+			<p class="muted">Set <code>REGISTRY</code> to your project's registry prefix, then build and push normally.</p>
+			<pre class="code">export REGISTRY={registryPrefix}
+
+docker build -t $REGISTRY/&lt;image&gt;:&lt;tag&gt; .
+docker push $REGISTRY/&lt;image&gt;:&lt;tag&gt;</pre>
+		</div>
+
 		<div class="registry-layout">
 			<div class="repo-list card">
 				<h3>Repositories</h3>
@@ -29,8 +41,6 @@
 					</button>
 				{:else}
 					<p class="muted">No images yet.</p>
-					<p class="muted hint">Push an image with:</p>
-					<pre class="code">docker push {registryBase}/&lt;org&gt;/&lt;name&gt;:tag</pre>
 				{/each}
 			</div>
 
@@ -63,13 +73,16 @@
 {/await}
 
 <style>
+	.push-guide { margin-bottom: 1rem; }
+	.push-guide h3 { margin-bottom: 0.5rem; font-size: 14px; }
+	.push-guide p { margin-bottom: 0.5rem; }
+	.push-guide code { font-family: var(--font-mono); font-size: 12px; }
 	.registry-layout { display: grid; grid-template-columns: 260px 1fr; gap: 1rem; }
 	.repo-list h3, .tag-list h3 { margin-bottom: 0.75rem; font-size: 14px; }
 	.repo-item { display: block; width: 100%; text-align: left; padding: 0.375rem 0.5rem; border-radius: 4px; border: none; background: none; color: var(--color-text-muted); font-size: 13px; cursor: pointer; font-family: var(--font-mono); }
 	.repo-item:hover { background: var(--color-surface-2); color: var(--color-text); }
 	.repo-item.active { background: var(--color-accent-dim); color: var(--color-text); }
 	.muted { color: var(--color-text-muted); font-size: 13px; }
-	.hint { margin-top: 0.5rem; }
 	.code { font-family: var(--font-mono); font-size: 12px; background: var(--color-surface-2); padding: 0.5rem; border-radius: 4px; }
 	.mono { font-family: var(--font-mono); }
 	.small { font-size: 12px; }
