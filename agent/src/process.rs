@@ -13,6 +13,17 @@ use uuid::Uuid;
 
 use crate::init::home_dir;
 
+fn resolve_cwd(cwd: Option<&str>) -> String {
+    let home = home_dir();
+    let home_str = home.to_string_lossy();
+    match cwd {
+        None => home_str.into_owned(),
+        Some("~") => home_str.into_owned(),
+        Some(p) if p.starts_with("~/") => format!("{}/{}", home_str, &p[2..]),
+        Some(p) => p.to_owned(),
+    }
+}
+
 const STATE_FILE: &str = ".enzarb/processes.json";
 pub const LOG_DIR: &str = ".enzarb/tasks";
 const BROADCAST_CAPACITY: usize = 512;
@@ -172,11 +183,7 @@ impl ProcessStore {
     }
 
     async fn spawn_pty(&self, process: &Process) -> Result<RuntimeHandle> {
-        let home = home_dir();
-        let cwd = process
-            .cwd
-            .as_deref()
-            .unwrap_or_else(|| home.to_str().unwrap_or("/"));
+        let cwd = resolve_cwd(process.cwd.as_deref());
 
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
@@ -252,11 +259,7 @@ impl ProcessStore {
     }
 
     async fn spawn_oneshot(&self, process: &Process) -> Result<RuntimeHandle> {
-        let home = home_dir();
-        let cwd = process
-            .cwd
-            .as_deref()
-            .unwrap_or_else(|| home.to_str().unwrap_or("/"));
+        let cwd = resolve_cwd(process.cwd.as_deref());
 
         let log_path = home_dir().join(LOG_DIR).join(format!("{}.log", process.id));
         if let Some(parent) = log_path.parent() {

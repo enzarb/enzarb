@@ -1,9 +1,14 @@
-use axum::Json;
+use axum::{Json, extract::State};
 use serde::Serialize;
+
+use crate::AppState;
+use crate::init::home_dir;
 
 #[derive(Serialize)]
 pub struct StatusResponse {
     pub disk: DiskUsage,
+    pub home_dir: String,
+    pub project_dir: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -12,9 +17,24 @@ pub struct DiskUsage {
     pub total_bytes: u64,
 }
 
-pub async fn status() -> Json<StatusResponse> {
+pub async fn status(State(state): State<AppState>) -> Json<StatusResponse> {
+    let home = home_dir();
+    let home_str = home.to_string_lossy().into_owned();
+
+    // The repo is cloned to $HOME/<project-slug> by init::setup_git.
+    let project_dir = {
+        let candidate = home.join(&state.project_slug);
+        if candidate.is_dir() {
+            Some(candidate.to_string_lossy().into_owned())
+        } else {
+            None
+        }
+    };
+
     Json(StatusResponse {
-        disk: disk_usage("/home/user"),
+        disk: disk_usage(&home_str),
+        home_dir: home_str,
+        project_dir,
     })
 }
 

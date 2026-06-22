@@ -29,7 +29,9 @@
 	let newCmd = $state('');
 	let newName = $state('');
 	let newKind: 'one-shot' | 'persistent' = $state('one-shot');
+	let newCwd = $state('');
 	let createErr = $state('');
+	let workspacePaths: { home_dir: string; project_dir: string | null } | null = $state(null);
 	let agentToken: string | null = $state(null);
 	// 'connecting' | 'connected' | 'reconnecting' | 'failed'
 	let connState = $state<'connecting' | 'connected' | 'reconnecting' | 'failed'>('connecting');
@@ -45,7 +47,7 @@
 	// mid-switch. Used to decide when to clear vs. preserve scrollback.
 	let displayedPid: string | null = null;
 	// Per-process serialized scrollback, mirrored to sessionStorage so a refresh
-	// can restore it (the agent's tmux attach only redraws the live screen).
+	// can restore it without waiting for the agent to replay the buffer.
 	const bufferCache: Record<string, string> = {};
 	let searchOpen = $state(false);
 	let searchTerm = $state('');
@@ -123,8 +125,14 @@
 		if (res.ok) processes = await res.json();
 	}
 
-	function openNewDialog() {
-		newCmd = ''; newName = ''; newKind = 'one-shot'; createErr = '';
+	async function openNewDialog() {
+		newCmd = ''; newName = ''; newKind = 'one-shot'; newCwd = ''; createErr = '';
+		if (!workspacePaths && agentToken && agentBase) {
+			try {
+				const res = await fetch(`${agentBase}/status`, { headers: { Authorization: `Bearer ${agentToken}` } });
+				if (res.ok) workspacePaths = await res.json();
+			} catch { /* non-fatal */ }
+		}
 		newDialog?.showModal();
 	}
 
@@ -137,7 +145,7 @@
 			res = await fetch(`${agentBase}/processes`, {
 				method: 'POST',
 				headers: { Authorization: `Bearer ${agentToken}`, 'Content-Type': 'application/json' },
-				body: JSON.stringify({ name: newName || newCmd, command: newCmd, kind: newKind })
+				body: JSON.stringify({ name: newName || newCmd, command: newCmd, kind: newKind, ...(newCwd ? { cwd: newCwd } : {}) })
 			});
 		} catch {
 			createErr = 'Could not reach the workspace agent.';
@@ -473,6 +481,22 @@
 				<option value="persistent">Persistent</option>
 			</select>
 		</label>
+		<label>
+			<span>Working directory <span class="muted">(optional)</span></span>
+			{#if workspacePaths}
+				<div class="cwd-presets">
+					<button type="button" class="preset-btn" class:active={newCwd === workspacePaths.home_dir} onclick={() => newCwd = newCwd === workspacePaths!.home_dir ? '' : workspacePaths!.home_dir}>
+						~ Home
+					</button>
+					{#if workspacePaths.project_dir}
+						<button type="button" class="preset-btn" class:active={newCwd === workspacePaths.project_dir} onclick={() => newCwd = newCwd === workspacePaths!.project_dir ? '' : workspacePaths!.project_dir!}>
+							⎇ Project
+						</button>
+					{/if}
+				</div>
+			{/if}
+			<input bind:value={newCwd} placeholder={workspacePaths?.home_dir ?? '~/project (default: home)'} />
+		</label>
 		{#if createErr}<p class="create-err">{createErr}</p>{/if}
 		<div class="dialog-actions">
 			<button type="button" class="btn" onclick={() => newDialog?.close()}>Cancel</button>
@@ -542,4 +566,8 @@
 	.new-form input, .new-form select { font-size: 13px; }
 	.dialog-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.25rem; }
 	.create-err { color: var(--color-danger); font-size: 12px; margin: 0.25rem 0 0; }
+	.cwd-presets { display: flex; gap: 0.4rem; margin-bottom: 0.35rem; }
+	.preset-btn { font-size: 11px; padding: 0.2rem 0.6rem; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); color: var(--color-text-muted); cursor: pointer; font-family: var(--font-mono); }
+	.preset-btn:hover { border-color: var(--color-accent); color: var(--color-accent); }
+	.preset-btn.active { border-color: var(--color-accent); color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 12%, transparent); }
 </style>
