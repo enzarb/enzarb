@@ -36,7 +36,7 @@ case "${1:-}" in
       --env="G=$GITEA_SVC" \
       --overrides="$(cat <<JSON
 {"spec":{"containers":[{"name":"c","image":"curlimages/curl:8.10.1","command":["sh","-c"],
-"args":["curl -s -u \"\$U:\$P\" -X POST \"\$G/api/v1/users/\$U/tokens\" -H 'Content-Type: application/json' -d '{\"name\":\"enzarb-operator-'\$RANDOM'\",\"scopes\":[\"write:admin\",\"write:organization\",\"write:repository\",\"write:user\"]}' | grep -o '\"sha1\":\"[^\"]*\"' | cut -d'\"' -f4"],
+"args":["curl -s -u \"\$U:\$P\" -X POST \"\$G/api/v1/users/\$U/tokens\" -H 'Content-Type: application/json' -d '{\"name\":\"enzarb-operator-'\$RANDOM'\",\"scopes\":[\"write:admin\",\"write:organization\",\"write:repository\",\"write:user\",\"read:issue\"]}' | grep -o '\"sha1\":\"[^\"]*\"' | cut -d'\"' -f4"],
 "env":[{"name":"G","value":"$GITEA_SVC"},
 {"name":"U","valueFrom":{"secretKeyRef":{"name":"enzarb-gitea-admin-creds","key":"username"}}},
 {"name":"P","valueFrom":{"secretKeyRef":{"name":"enzarb-gitea-admin-creds","key":"password"}}}]}]}}

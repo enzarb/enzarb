@@ -12,7 +12,11 @@ async function registryToken(scope: string): Promise<string> {
 	const res = await fetch(`${authd}/auth/token?${params}`, {
 		headers: { Authorization: `Basic ${btoa(`admin:${secret}`)}` }
 	});
-	if (!res.ok) throw new Error(`authd token error ${res.status}: ${await res.text()}`);
+	if (!res.ok) {
+		const body = await res.text();
+		console.error(`[authd] token request failed ${res.status}`, { scope, body });
+		throw new Error(`authd token error ${res.status}: ${body}`);
+	}
 	const data = await res.json();
 	return data.token ?? data.access_token;
 }
@@ -28,7 +32,10 @@ async function zotFetch(path: string, scope: string, options?: RequestInit) {
 		}
 	});
 	if (!res.ok && res.status !== 404) {
-		throw new Error(`Registry error ${res.status}: ${await res.text()}`);
+		const body = await res.text();
+		const wwwAuth = res.headers.get('WWW-Authenticate') ?? '';
+		console.error(`[zot] ${options?.method ?? 'GET'} ${path} → ${res.status}`, { wwwAuth, body });
+		throw new Error(`Registry error ${res.status}: ${body}`);
 	}
 	return res;
 }
