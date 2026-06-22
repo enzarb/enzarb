@@ -31,6 +31,8 @@
 	let newKind: 'one-shot' | 'persistent' = $state('one-shot');
 	let createErr = $state('');
 	let agentToken: string | null = $state(null);
+	// 'connecting' | 'connected' | 'reconnecting' | 'failed'
+	let connState = $state<'connecting' | 'connected' | 'reconnecting' | 'failed'>('connecting');
 	let connectError = $state('');
 
 	// On touch devices we suppress the OS keyboard and drive input from our own
@@ -208,12 +210,25 @@
 		// The agent streams output as binary frames; default binaryType is "blob",
 		// which TextDecoder can't decode. Use arraybuffer so we can render it.
 		sock.binaryType = 'arraybuffer';
-		// On connect, refit and report the size so the PTY matches the viewport.
-		sock.onopen = () => { connectError = ''; suppressedLinks.clear(); fit?.fit(); sendResize(); };
-		sock.onerror = () => { connectError = 'WebSocket error — check that the workspace is running and reachable.'; };
+		// On connect, clear any error and report the terminal size.
+		sock.onopen = () => {
+			connState = 'connected';
+			connectError = '';
+			suppressedLinks.clear();
+			fit?.fit();
+			sendResize();
+		};
+		sock.onerror = () => {
+			connectError = 'WebSocket error — check that the workspace is running and reachable.';
+		};
 		sock.onclose = (e) => {
+			// 1000/1001 = clean close (process killed or tab navigated away); anything
+			// else is unexpected. 1006 = abnormal closure (network drop, server crash).
 			if (e.code !== 1000 && e.code !== 1001) {
-				connectError = `Connection closed (code ${e.code})${e.reason ? ': ' + e.reason : ''}.`;
+				const reason = e.reason ? `: ${e.reason}` : '';
+				connectError = `Disconnected (code ${e.code}${reason}) — attempting to reconnect…`;
+				connState = 'reconnecting';
+				scheduleReconnect();
 			}
 		};
 		sock.onmessage = (e) => {
@@ -225,6 +240,28 @@
 		// Leave selectedPid set so maybeReconnect can re-establish the socket.
 	}
 
+	// Auto-reconnect with a single retry after a short delay. If it fails again
+	// the state becomes 'failed' and the user must click Retry manually.
+	let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+	function scheduleReconnect() {
+		clearTimeout(reconnectTimer);
+		reconnectTimer = setTimeout(async () => {
+			if (!mounted || !selectedPid) return;
+			const st = ws?.readyState;
+			if (st === WebSocket.OPEN || st === WebSocket.CONNECTING) return;
+			await connect();
+			// If the socket didn't open successfully after the attempt, mark as failed.
+			setTimeout(() => {
+				if (!mounted) return;
+				const s = ws?.readyState;
+				if (s !== WebSocket.OPEN && s !== WebSocket.CONNECTING) {
+					connState = 'failed';
+					connectError = 'Reconnection failed — the workspace may be unavailable.';
+				}
+			}, 4000);
+		}, 1500);
+	}
+
 	// Mobile browsers close the socket when the tab is backgrounded. Reconnect
 	// when the page becomes visible/focused again (or the network returns) if we
 	// have a selected process and the socket isn't already open/connecting.
@@ -233,6 +270,7 @@
 		if (!selectedPid) return;
 		const st = ws?.readyState;
 		if (st === WebSocket.OPEN || st === WebSocket.CONNECTING) return;
+		connState = 'reconnecting';
 		connect();
 	}
 
@@ -320,6 +358,7 @@
 
 	onDestroy(() => {
 		mounted = false;
+		clearTimeout(reconnectTimer);
 		resizeObserver?.disconnect();
 		resizeObserver = undefined;
 		document.removeEventListener('visibilitychange', onVisibility);
@@ -400,10 +439,13 @@
 			{/each}
 		</div>
 	{/if}
-	{#if connectError}
-		<div class="connect-error">
+	{#if connState === 'reconnecting' || connState === 'failed'}
+		<div class="connect-error" class:failed={connState === 'failed'}>
 			<span>{connectError}</span>
-			<button class="error-dismiss" onclick={() => connectError = ''}>×</button>
+			<button class="error-retry" onclick={() => { connState = 'reconnecting'; connectError = 'Reconnecting…'; connect(); }}>Retry</button>
+			{#if connState === 'failed'}
+				<button class="error-dismiss" onclick={() => { connState = 'connected'; connectError = ''; }}>×</button>
+			{/if}
 		</div>
 	{/if}
 	<div class="term-container" bind:this={termEl}></div>
@@ -482,9 +524,13 @@
 	.link-action { flex-shrink: 0; font-size: 11px; padding: 0.15rem 0.4rem; border: 1px solid var(--color-border); border-radius: 3px; background: var(--color-surface); color: var(--color-text-muted); cursor: pointer; text-decoration: none; }
 	.link-action:hover { color: var(--color-accent); border-color: var(--color-accent); }
 
-	.connect-error { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.35rem 0.75rem; background: #3d2000; color: #f5a623; font-size: 12px; border-bottom: 1px solid #7a4500; }
-	.error-dismiss { background: none; border: none; color: #f5a623; cursor: pointer; font-size: 16px; line-height: 1; padding: 0; flex-shrink: 0; }
-	.error-dismiss:hover { color: #fff; }
+	.connect-error { display: flex; align-items: center; gap: 0.5rem; padding: 0.35rem 0.75rem; background: #3d2000; color: #f5a623; font-size: 12px; border-bottom: 1px solid #7a4500; }
+	.connect-error span { flex: 1; }
+	.connect-error.failed { background: #3d0000; color: #f56262; border-color: #7a0000; }
+	.error-retry { background: none; border: 1px solid currentColor; border-radius: 3px; color: inherit; cursor: pointer; font-size: 11px; padding: 0.1rem 0.5rem; flex-shrink: 0; opacity: 0.85; }
+	.error-retry:hover { opacity: 1; }
+	.error-dismiss { background: none; border: none; color: inherit; cursor: pointer; font-size: 16px; line-height: 1; padding: 0; flex-shrink: 0; opacity: 0.7; }
+	.error-dismiss:hover { opacity: 1; }
 	.term-container { background: #0f0f11; overflow: hidden; flex: 1; min-height: 0; }
 	.muted { color: var(--color-text-muted); font-size: 12px; padding: 0 0.75rem; align-self: center; }
 

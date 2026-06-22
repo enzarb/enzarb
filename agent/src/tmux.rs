@@ -274,6 +274,18 @@ async fn ensure_tmux_session() -> Result<()> {
         ])
         .status()
         .await;
+    // Prevent tmux from renaming windows after creation. Without this, a window
+    // named proc-abcd1234 gets renamed to "bash" once the shell starts, and
+    // select-window -t {session}:proc-abcd1234 fails silently, causing every
+    // reconnecting client to fall back to the session's first window.
+    let _ = Command::new("tmux")
+        .args(["set-option", "-g", "automatic-rename", "off"])
+        .status()
+        .await;
+    let _ = Command::new("tmux")
+        .args(["set-option", "-g", "allow-rename", "off"])
+        .status()
+        .await;
 
     let status = Command::new("tmux")
         .args(["has-session", "-t", TMUX_SESSION])
