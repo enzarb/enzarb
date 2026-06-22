@@ -1,8 +1,8 @@
-import { query, form } from '$app/server';
+import { query, form, command } from '$app/server';
 import { getRequestEvent } from '$app/server';
 import { error } from '@sveltejs/kit';
 import { z } from 'zod/v4';
-import { listEnvironments, createEnvironment, addCustomDomain } from '$lib/k8s';
+import { listEnvironments, createEnvironment, addCustomDomain, setDefaultEnvironment } from '$lib/k8s';
 import { sql } from '$lib/db';
 import { tiers } from '$lib/config';
 import { resolveOrg, requirePrivilege } from './guard';
@@ -27,6 +27,16 @@ export const createEnv = form(
 		const result = await createEnvironment(org.id, params.project!, slug);
 		await getEnvironments().refresh();
 		return result;
+	}
+);
+
+export const setDefaultEnv = command(
+	z.object({ envSlug: z.string().nullable() }),
+	async ({ envSlug }) => {
+		const { params } = getRequestEvent();
+		const org = requirePrivilege('environment.manage');
+		await setDefaultEnvironment(org.id, params.project!, envSlug);
+		await getEnvironments().refresh();
 	}
 );
 

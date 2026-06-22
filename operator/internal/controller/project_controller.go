@@ -24,6 +24,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
@@ -46,7 +47,26 @@ func (r *ProjectReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.ServiceAccount{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&corev1.Service{}).
+		Owns(&corev1.ConfigMap{}).
+		Watches(&enzarbv1alpha1.Environment{}, handler.EnqueueRequestsFromMapFunc(r.envToProject)).
 		Complete(r)
+}
+
+// envToProject maps an Environment event to the owning Project so the project
+// reconciler re-runs whenever an Environment's status.namespace changes.
+func (r *ProjectReconciler) envToProject(ctx context.Context, obj client.Object) []ctrl.Request {
+	env, ok := obj.(*enzarbv1alpha1.Environment)
+	if !ok {
+		return nil
+	}
+	projectName := env.Spec.ProjectRef.Name
+	if projectName == "" {
+		return nil
+	}
+	return []ctrl.Request{{NamespacedName: types.NamespacedName{
+		Namespace: env.Namespace,
+		Name:      projectName,
+	}}}
 }
 
 func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -145,6 +165,10 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	if err := r.ensureCertificate(ctx, orgNS, &project); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensure certificate: %w", err)
+	}
+
+	if err := r.ensureEnvContextConfigMap(ctx, orgNS, &project); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure env context configmap: %w", err)
 	}
 
 	agentPath := agentPathFor(&project)
@@ -543,6 +567,7 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug s
 								{Name: "tmp", MountPath: "/tmp"},
 								{Name: "registry-token", MountPath: "/var/run/secrets/enzarb/registry"},
 								{Name: "gitea-token", MountPath: "/var/run/secrets/enzarb/gitea"},
+								{Name: "env-context", MountPath: "/var/run/enzarb/env", ReadOnly: true},
 							},
 							SecurityContext: &corev1.SecurityContext{
 								AllowPrivilegeEscalation: boolPtr(false),
@@ -640,6 +665,19 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug s
 								},
 							},
 						},
+						{
+							Name: "env-context",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: fmt.Sprintf("%s-env-context", project.Spec.Slug),
+									},
+									// optional=true so pod starts even before the ConfigMap is created
+									// (rare timing window on first reconcile).
+									Optional: boolPtr(true),
+								},
+							},
+						},
 					},
 				},
 			},
@@ -672,6 +710,57 @@ func (r *ProjectReconciler) ensureService(ctx context.Context, ns string, projec
 		return r.Create(ctx, svc)
 	}
 	return err
+}
+
+// ensureEnvContextConfigMap creates or updates a ConfigMap named
+// "<slug>-env-context" in the org namespace. Its context.sh key exports
+// KUBE_NAMESPACE for the project's default environment (set via the
+// enzarb.io/default-environment annotation). Mounted into the workspace pod, it
+// is updated in-place by Kubernetes (~60 s propagation) without a pod restart.
+func (r *ProjectReconciler) ensureEnvContextConfigMap(ctx context.Context, ns string, project *enzarbv1alpha1.Project) error {
+	cmName := fmt.Sprintf("%s-env-context", project.Spec.Slug)
+
+	// Determine which environment is the default (annotation value = env slug).
+	envNamespace := ""
+	if defaultEnvSlug, ok := project.Annotations["enzarb.io/default-environment"]; ok && defaultEnvSlug != "" {
+		envName := fmt.Sprintf("%s-%s", project.Spec.Slug, defaultEnvSlug)
+		var env enzarbv1alpha1.Environment
+		if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: envName}, &env); err == nil {
+			envNamespace = env.Status.Namespace
+		}
+	}
+
+	var contextSh string
+	if envNamespace != "" {
+		contextSh = fmt.Sprintf("export KUBE_NAMESPACE=%s\n", envNamespace)
+	} else {
+		contextSh = "# no default environment set\n"
+	}
+
+	cm := &corev1.ConfigMap{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: cmName}, cm)
+	if errors.IsNotFound(err) {
+		cm = &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      cmName,
+				Namespace: ns,
+				Labels:    projectLabels(project),
+			},
+			Data: map[string]string{"context.sh": contextSh},
+		}
+		if err := controllerutil.SetControllerReference(project, cm, r.Scheme); err != nil {
+			return err
+		}
+		return r.Create(ctx, cm)
+	}
+	if err != nil {
+		return err
+	}
+	if cm.Data["context.sh"] == contextSh {
+		return nil
+	}
+	cm.Data = map[string]string{"context.sh": contextSh}
+	return r.Update(ctx, cm)
 }
 
 func (r *ProjectReconciler) ensureGiteaRepo(ctx context.Context, orgSlug string, project *enzarbv1alpha1.Project) error {

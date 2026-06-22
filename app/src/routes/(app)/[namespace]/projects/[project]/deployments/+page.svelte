@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { getEnvironments, createEnv, addDomain } from '$lib/remote/environments.remote';
+	import { getEnvironments, createEnv, addDomain, setDefaultEnv } from '$lib/remote/environments.remote';
+	import { getProject } from '$lib/remote/projects.remote';
 	let showNewEnv = $state(false);
 	let domainEnv: string | null = $state(null);
 </script>
@@ -27,45 +28,67 @@
 		</div>
 	{/if}
 
-	<div class="env-list">
-		{#each await getEnvironments() as env}
-			<div class="card env-card">
-				<div class="env-header">
-					<div>
-						<span class="env-name">{env.spec.slug}</span>
-						<code class="mono small">{env.status?.namespace ?? 'Provisioning…'}</code>
-					</div>
-					<button class="btn" onclick={() => (domainEnv = env.metadata.name)}>Add domain</button>
-				</div>
-
-				{#if env.status?.domains?.length}
-					<div class="domains">
-						{#each env.status.domains as domain}
-							<div class="domain-row">
-								<span>{domain.fqdn}</span>
-								<span class="badge {domain.certStatus === 'Issued' ? 'running' : 'pending'}">{domain.certStatus ?? 'Pending'}</span>
-								{#if domain.certStatus !== 'Issued'}
-									<span class="muted">Point CNAME → gw.enzarb.dev</span>
-								{/if}
+	{#await Promise.all([getEnvironments(), getProject()]) then [envs, project]}
+		{@const defaultEnvSlug = project.metadata?.annotations?.['enzarb.io/default-environment'] ?? null}
+		<div class="env-list">
+			{#each envs as env}
+				{@const isDefault = defaultEnvSlug === env.spec.slug}
+				<div class="card env-card">
+					<div class="env-header">
+						<div>
+							<div class="env-title">
+								<span class="env-name">{env.spec.slug}</span>
+								{#if isDefault}<span class="badge running">default</span>{/if}
 							</div>
-						{/each}
+							<code class="mono small">{env.status?.namespace ?? 'Provisioning…'}</code>
+						</div>
+						<div class="env-actions">
+							{#if !isDefault}
+								<button
+									class="btn btn-sm"
+									onclick={() => setDefaultEnv({ envSlug: env.spec.slug })}
+								>Set as default</button>
+							{:else}
+								<button
+									class="btn btn-sm"
+									onclick={() => setDefaultEnv({ envSlug: null })}
+								>Unset default</button>
+							{/if}
+							<button class="btn btn-sm" onclick={() => (domainEnv = env.metadata.name)}>Add domain</button>
+						</div>
 					</div>
-				{/if}
 
-				{#if domainEnv === env.metadata.name}
-					{@const domainForm = addDomain.for(env.metadata.name)}
-					<form {...domainForm} class="domain-form">
-						<input {...domainForm.fields.envName.as('hidden', env.metadata.name)} />
-						<input {...domainForm.fields.fqdn.as('text')} placeholder="app.yourdomain.com" required />
-						<button type="submit" class="btn btn-primary">Add</button>
-						<button type="button" class="btn" onclick={() => (domainEnv = null)}>Cancel</button>
-					</form>
-				{/if}
-			</div>
-		{:else}
-			<p class="muted">No environments yet.</p>
-		{/each}
-	</div>
+					{#if env.status?.domains?.length}
+						<div class="domains">
+							{#each env.status.domains as domain}
+								<div class="domain-row">
+									<span>{domain.fqdn}</span>
+									<span class="badge {domain.certStatus === 'Issued' ? 'running' : 'pending'}">{domain.certStatus ?? 'Pending'}</span>
+									{#if domain.certStatus !== 'Issued'}
+										<span class="muted">Point CNAME → gw.enzarb.dev</span>
+									{/if}
+								</div>
+							{/each}
+						</div>
+					{/if}
+
+					{#if domainEnv === env.metadata.name}
+						{@const domainForm = addDomain.for(env.metadata.name)}
+						<form {...domainForm} class="domain-form">
+							<input {...domainForm.fields.envName.as('hidden', env.metadata.name)} />
+							<input {...domainForm.fields.fqdn.as('text')} placeholder="app.yourdomain.com" required />
+							<button type="submit" class="btn btn-primary">Add</button>
+							<button type="button" class="btn" onclick={() => (domainEnv = null)}>Cancel</button>
+						</form>
+					{/if}
+				</div>
+			{:else}
+				<p class="muted">No environments yet.</p>
+			{/each}
+		</div>
+	{:catch err}
+		<p class="muted">Could not load environments: {err?.message ?? 'unknown error'}</p>
+	{/await}
 </div>
 
 <style>
@@ -80,7 +103,9 @@
 	.env-list { display: flex; flex-direction: column; gap: 0.75rem; }
 	.env-card { display: flex; flex-direction: column; gap: 0.75rem; }
 	.env-header { display: flex; justify-content: space-between; align-items: flex-start; }
-	.env-name { font-weight: 600; display: block; margin-bottom: 0.25rem; }
+	.env-title { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem; }
+	.env-name { font-weight: 600; }
+	.env-actions { display: flex; gap: 0.5rem; align-items: center; flex-shrink: 0; }
 	.mono { font-family: var(--font-mono); }
 	.small { font-size: 12px; color: var(--color-text-muted); }
 	.domains { display: flex; flex-direction: column; gap: 0.5rem; }
@@ -88,4 +113,5 @@
 	.domain-form { display: flex; gap: 0.5rem; align-items: center; }
 	.domain-form input[type=text] { max-width: 280px; }
 	.muted { color: var(--color-text-muted); font-size: 13px; }
+	.btn-sm { padding: 0.3rem 0.7rem; font-size: 12px; }
 </style>

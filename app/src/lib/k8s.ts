@@ -325,6 +325,32 @@ export async function addCustomDomain(orgId: string, envName: string, fqdn: stri
 	});
 }
 
+export async function setDefaultEnvironment(orgId: string, projectSlug: string, envSlug: string | null) {
+	const ns = orgNamespace(orgId);
+	const proj = (await getProject(orgId, projectSlug)) as { metadata?: { annotations?: Record<string, string> } };
+	const annotations = proj.metadata?.annotations ?? {};
+	const key = 'enzarb.io/default-environment';
+	let patch: unknown[];
+	if (envSlug === null) {
+		if (!annotations[key]) return;
+		patch = [{ op: 'remove', path: '/metadata/annotations/enzarb.io~1default-environment' }];
+	} else if (annotations[key]) {
+		patch = [{ op: 'replace', path: '/metadata/annotations/enzarb.io~1default-environment', value: envSlug }];
+	} else if (proj.metadata?.annotations) {
+		patch = [{ op: 'add', path: '/metadata/annotations/enzarb.io~1default-environment', value: envSlug }];
+	} else {
+		patch = [{ op: 'add', path: '/metadata/annotations', value: { [key]: envSlug } }];
+	}
+	await customApi.patchNamespacedCustomObject({
+		group: GROUP,
+		version: VERSION,
+		namespace: ns,
+		plural: 'projects',
+		name: projectSlug,
+		body: patch
+	});
+}
+
 export async function forceRestartWorkspace(orgId: string, slug: string) {
 	const ns = orgNamespace(orgId);
 	const proj = (await getProject(orgId, slug)) as { metadata?: { annotations?: unknown } };
