@@ -474,8 +474,6 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug s
 	labels := projectLabels(project)
 	replicas := int32(1)
 
-	toolsJSON := toolsToJSON(project.Spec.Tools)
-
 	// Default resource requests if not specified
 	cpuReq := resource.MustParse("500m")
 	memReq := resource.MustParse("512Mi")
@@ -536,7 +534,6 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug s
 								{Name: "ENZARB_PROJECT_ID", Value: string(project.UID)},
 								{Name: "ENZARB_PROJECT_SLUG", Value: project.Spec.Slug},
 								{Name: "ENZARB_ORG_ID", Value: project.Spec.OrgID},
-								{Name: "ENZARB_TOOLS", Value: toolsJSON},
 								// Preconfigured registry + git coordinates (GHCR-style). The
 								// workspace's credential helpers auth to these automatically; the
 								// project may only push/pull within its own <orgSlug>/<slug> prefix.
@@ -997,17 +994,3 @@ func workspaceImage() string {
 
 func int64Ptr(i int64) *int64 { return &i }
 func boolPtr(b bool) *bool    { return &b }
-
-func toolsToJSON(tools []enzarbv1alpha1.ProjectTool) string {
-	if len(tools) == 0 {
-		return "[]"
-	}
-	b := `[`
-	for i, t := range tools {
-		if i > 0 {
-			b += ","
-		}
-		b += fmt.Sprintf(`{"name":%q,"version":%q}`, t.Name, t.Version)
-	}
-	return b + `]`
-}

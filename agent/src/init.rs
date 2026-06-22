@@ -1,15 +1,8 @@
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::process::Command;
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Tool {
-    name: String,
-    version: String,
-}
-
-pub async fn bootstrap(project_id: &str) -> Result<()> {
+pub async fn bootstrap() -> Result<()> {
     let home = home_dir();
     let enzarb_dir = home.join(".enzarb");
     tokio::fs::create_dir_all(&enzarb_dir).await?;
@@ -18,22 +11,14 @@ pub async fn bootstrap(project_id: &str) -> Result<()> {
     let mise_toml = home.join("mise.toml");
     // Earlier agents hand-wrote mise.toml with unquoted versions (`tool = latest`),
     // which newer mise rejects as invalid TOML. Detect that specific malformation
-    // and back it up so we can re-seed via `mise use`; leave any other existing
-    // config untouched.
+    // and back it up; tools can be re-added via the /tools API.
     let malformed = match tokio::fs::read_to_string(&mise_toml).await {
         Ok(c) => c.lines().any(|l| l.trim().ends_with("= latest")),
         Err(_) => false,
     };
     if malformed {
-        tracing::warn!("mise.toml has unquoted versions; re-seeding via mise use");
+        tracing::warn!("mise.toml has unquoted versions; backing up — re-add tools via /tools API");
         let _ = tokio::fs::rename(&mise_toml, home.join("mise.toml.bak")).await;
-    }
-    // On first boot (or after a malformed file is cleared), let mise write its own
-    // config from ENZARB_TOOLS via `mise use` — it owns the format and trusts what
-    // it writes, rather than us templating the TOML by hand.
-    if !mise_toml.exists() {
-        tracing::info!(project_id, "seeding tools via mise use");
-        seed_tools(&home).await;
     }
 
     tracing::info!("running mise install");
@@ -130,34 +115,6 @@ async fn setup_buildx() {
         Ok(s) if s.success() => tracing::info!("default buildx builder -> {addr}"),
         Ok(s) => tracing::warn!("buildx setup exited with status {s}"),
         Err(e) => tracing::warn!("buildx setup failed: {e}"),
-    }
-}
-
-/// Seed the workspace's tools by running `mise use <tool>@<version>` for each
-/// entry in ENZARB_TOOLS, with the home directory as the working dir so mise
-/// manages `~/mise.toml`. Best-effort per tool.
-async fn seed_tools(home: &PathBuf) {
-    let tools_json = std::env::var("ENZARB_TOOLS").unwrap_or_else(|_| "[]".to_string());
-    let tools: Vec<Tool> = serde_json::from_str(&tools_json).unwrap_or_default();
-
-    for tool in tools {
-        let version = if tool.version.is_empty() {
-            "latest"
-        } else {
-            &tool.version
-        };
-        let spec = format!("{}@{}", tool.name, version);
-        match Command::new("mise")
-            .arg("use")
-            .arg(&spec)
-            .current_dir(home)
-            .status()
-            .await
-        {
-            Ok(s) if s.success() => tracing::info!("mise use {spec}"),
-            Ok(s) => tracing::warn!("mise use {spec} exited with status {s}"),
-            Err(e) => tracing::warn!("mise use {spec} failed: {e}"),
-        }
     }
 }
 

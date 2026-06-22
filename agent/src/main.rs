@@ -31,7 +31,7 @@ async fn main() -> Result<()> {
     let jwks = auth::JwksCache::new(jwks_url).await?;
 
     // First-boot initialization: write mise.toml if absent, run mise install
-    init::bootstrap(&project_id).await?;
+    init::bootstrap().await?;
 
     // Rehydrate persistent processes from state file
     let process_store = process::ProcessStore::load_or_create().await?;
