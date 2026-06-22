@@ -46,6 +46,33 @@
 	let searchOpen = $state(false);
 	let searchTerm = $state('');
 
+	// Detected URLs from terminal output — surfaced so the user can copy/open
+	// them even when they wrap across multiple terminal lines.
+	let detectedLinks: string[] = $state([]);
+	let linksOpen = $state(false);
+	// Rolling text window used for URL detection across chunk boundaries.
+	let linkScanBuf = '';
+	const LINK_SCAN_MAX = 8192;
+	const URL_RE = /https?:\/\/[^\s\x1b\x00-\x1f"'<>]+/g;
+	// Strip ANSI/VT escape sequences before scanning.
+	const ANSI_RE = /\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))/g;
+
+	function scanForLinks(raw: string) {
+		linkScanBuf = (linkScanBuf + raw).slice(-LINK_SCAN_MAX);
+		const clean = linkScanBuf.replace(ANSI_RE, '');
+		const found = clean.match(URL_RE) ?? [];
+		let added = false;
+		for (const url of found) {
+			// Trim trailing punctuation that's likely not part of the URL.
+			const trimmed = url.replace(/[).,;:'"]+$/, '');
+			if (!detectedLinks.includes(trimmed)) {
+				detectedLinks = [...detectedLinks, trimmed];
+				added = true;
+			}
+		}
+		if (added) linksOpen = true;
+	}
+
 	const bufKey = (pid: string) => `enzarb-term:${pid}`;
 	function saveBuffer(pid: string | null) {
 		if (!pid || !serialize) return;
@@ -176,7 +203,9 @@
 		sock.onopen = () => { fit?.fit(); sendResize(); };
 		sock.onmessage = (e) => {
 			const data = e.data instanceof ArrayBuffer ? new Uint8Array(e.data) : e.data;
-			terminal?.write(typeof data === 'string' ? data : new TextDecoder().decode(data));
+			const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+			terminal?.write(text);
+			scanForLinks(text);
 		};
 		// Leave selectedPid set so maybeReconnect can re-establish the socket.
 		sock.onclose = () => {};
@@ -296,6 +325,11 @@
 			{/each}
 		</div>
 		<button class="new-btn" title="Search output" aria-label="Search output" onclick={() => { searchOpen = !searchOpen; if (!searchOpen) search?.clearDecorations(); }}>⌕</button>
+		{#if detectedLinks.length}
+			<button class="new-btn link-btn" title="Links detected in output" aria-label="Show links" onclick={() => linksOpen = !linksOpen}>
+				🔗<span class="link-badge">{detectedLinks.length}</span>
+			</button>
+		{/if}
 		<button class="new-btn" title="New process" aria-label="New process" onclick={openNewDialog}>+</button>
 	</div>
 	{#if searchOpen}
@@ -315,6 +349,23 @@
 			<button class="search-nav" title="Previous" aria-label="Previous match" onclick={() => runSearch(false)}>↑</button>
 			<button class="search-nav" title="Next" aria-label="Next match" onclick={() => runSearch(true)}>↓</button>
 			<button class="search-nav" title="Close" aria-label="Close search" onclick={() => { searchOpen = false; search?.clearDecorations(); }}>×</button>
+		</div>
+	{/if}
+	{#if linksOpen && detectedLinks.length}
+		<div class="links-panel">
+			<div class="links-header">
+				<span>Links detected in output</span>
+				<button class="links-close" onclick={() => { linksOpen = false; detectedLinks = []; linkScanBuf = ''; }}>Clear ×</button>
+			</div>
+			{#each detectedLinks as url}
+				<div class="link-row">
+					<span class="link-url">{url}</span>
+					<button class="link-action" onclick={() => navigator.clipboard.writeText(url)}>Copy</button>
+					{#if isExternalHttpUrl(url)}
+						<a class="link-action" href={url} target="_blank" rel="noopener noreferrer">Open</a>
+					{/if}
+				</div>
+			{/each}
 		</div>
 	{/if}
 	<div class="term-container" bind:this={termEl}></div>
@@ -351,7 +402,7 @@
 </dialog>
 
 <style>
-	.terminal-page { display: grid; grid-template-rows: auto 1fr auto; gap: 0; height: calc(100vh - 200px); min-height: 400px; }
+	.terminal-page { display: flex; flex-direction: column; gap: 0; height: calc(100vh - 200px); min-height: 400px; }
 	@media (max-width: 640px) {
 		.terminal-page { height: calc(100vh - 120px); }
 	}
@@ -390,7 +441,20 @@
 	.search-nav { flex-shrink: 0; width: 28px; height: 28px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); color: var(--color-text-muted); cursor: pointer; }
 	.search-nav:hover { color: var(--color-text); }
 
-	.term-container { background: #0f0f11; overflow: hidden; }
+	.link-btn { position: relative; font-size: 14px; }
+	.link-badge { position: absolute; top: 4px; right: 4px; background: var(--color-accent); color: #fff; border-radius: 8px; font-size: 9px; line-height: 1; padding: 1px 3px; pointer-events: none; }
+
+	.links-panel { border-bottom: 1px solid var(--color-border); background: var(--color-surface-2); max-height: 160px; overflow-y: auto; }
+	.links-header { display: flex; align-items: center; justify-content: space-between; padding: 0.3rem 0.5rem; font-size: 11px; color: var(--color-text-muted); border-bottom: 1px solid var(--color-border); }
+	.links-close { background: none; border: none; cursor: pointer; font-size: 11px; color: var(--color-text-muted); padding: 0; }
+	.links-close:hover { color: var(--color-danger); }
+	.link-row { display: flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--color-border); }
+	.link-row:last-child { border-bottom: none; }
+	.link-url { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 11px; color: var(--color-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.link-action { flex-shrink: 0; font-size: 11px; padding: 0.15rem 0.4rem; border: 1px solid var(--color-border); border-radius: 3px; background: var(--color-surface); color: var(--color-text-muted); cursor: pointer; text-decoration: none; }
+	.link-action:hover { color: var(--color-accent); border-color: var(--color-accent); }
+
+	.term-container { background: #0f0f11; overflow: hidden; flex: 1; min-height: 0; }
 	.muted { color: var(--color-text-muted); font-size: 12px; padding: 0 0.75rem; align-self: center; }
 
 	.new-dialog { border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-surface); color: var(--color-text); padding: 0; min-width: 320px; }
