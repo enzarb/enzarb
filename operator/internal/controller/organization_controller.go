@@ -6,6 +6,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -74,6 +75,24 @@ func (r *OrganizationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	if err := r.ensureNamespace(ctx, &org, nsName); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensure namespace: %w", err)
+	}
+
+	// Prune any operator-managed NetworkPolicies from prior versions. The org
+	// namespace currently has no expected NetworkPolicies; passing nil deletes
+	// any that exist with the managed-by label.
+	if err := pruneUnmanaged(ctx, r.Client,
+		&networkingv1.NetworkPolicyList{},
+		nsName,
+		nil,
+		func(l *networkingv1.NetworkPolicyList) []*networkingv1.NetworkPolicy {
+			out := make([]*networkingv1.NetworkPolicy, len(l.Items))
+			for i := range l.Items {
+				out[i] = &l.Items[i]
+			}
+			return out
+		},
+	); err != nil {
+		return ctrl.Result{}, fmt.Errorf("prune network policies: %w", err)
 	}
 
 	org.Status.Namespace = nsName
