@@ -87,23 +87,51 @@
 		if (selectedPid === id) { ws?.close(); ws = null; selectedPid = null; }
 	}
 
+	// Selecting a tab sets the desired process and (re)connects. selectedPid is
+	// kept across drops so we know what to reconnect to.
 	function attachToProcess(id: string) {
-		if (!agentToken || !agentBase) return;
-		ws?.close();
 		selectedPid = id;
+		connect();
+	}
+
+	// Agent tokens are short-lived; re-mint on (re)connect so a socket opened after
+	// a long mobile background isn't rejected for an expired token.
+	async function ensureToken() {
+		try { agentToken = await getAgentToken(); } catch { /* keep any existing token */ }
+		return agentToken;
+	}
+
+	async function connect() {
+		if (!agentBase || !selectedPid) return;
+		await ensureToken();
+		if (!agentToken) return;
+		ws?.close();
 		terminal?.clear();
-		const wsUrl = `${agentBase.replace('https://', 'wss://').replace('http://', 'ws://')}/processes/${id}/output`;
-		ws = new WebSocket(`${wsUrl}?token=${encodeURIComponent(agentToken)}`);
+		const wsUrl = `${agentBase.replace('https://', 'wss://').replace('http://', 'ws://')}/processes/${selectedPid}/output`;
+		const sock = new WebSocket(`${wsUrl}?token=${encodeURIComponent(agentToken)}`);
+		ws = sock;
 		// The agent streams output as binary frames; default binaryType is "blob",
 		// which TextDecoder can't decode. Use arraybuffer so we can render it.
-		ws.binaryType = 'arraybuffer';
+		sock.binaryType = 'arraybuffer';
 		// On connect, refit and report the size so the PTY matches the viewport.
-		ws.onopen = () => { fit?.fit(); sendResize(); };
-		ws.onmessage = (e) => {
+		sock.onopen = () => { fit?.fit(); sendResize(); };
+		sock.onmessage = (e) => {
 			const data = e.data instanceof ArrayBuffer ? new Uint8Array(e.data) : e.data;
 			terminal?.write(typeof data === 'string' ? data : new TextDecoder().decode(data));
 		};
-		ws.onclose = () => { selectedPid = null; };
+		// Leave selectedPid set so maybeReconnect can re-establish the socket.
+		sock.onclose = () => {};
+	}
+
+	// Mobile browsers close the socket when the tab is backgrounded. Reconnect
+	// when the page becomes visible/focused again (or the network returns) if we
+	// have a selected process and the socket isn't already open/connecting.
+	function maybeReconnect() {
+		if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+		if (!selectedPid) return;
+		const st = ws?.readyState;
+		if (st === WebSocket.OPEN || st === WebSocket.CONNECTING) return;
+		connect();
 	}
 
 	onMount(async () => {
@@ -128,9 +156,22 @@
 		resizeObserver = new ResizeObserver(() => { fit?.fit(); sendResize(); });
 		if (termEl) resizeObserver.observe(termEl);
 		await loadProcesses();
+		// Auto-attach so a fresh load / refresh connects without a manual tap.
+		if (!selectedPid && processes.length) attachToProcess(processes[0].id);
+		// Reconnect when returning to a backgrounded mobile tab or after a network drop.
+		document.addEventListener('visibilitychange', maybeReconnect);
+		window.addEventListener('focus', maybeReconnect);
+		window.addEventListener('online', maybeReconnect);
 	});
 
-	onDestroy(() => { resizeObserver?.disconnect(); ws?.close(); terminal?.dispose(); });
+	onDestroy(() => {
+		resizeObserver?.disconnect();
+		document.removeEventListener('visibilitychange', maybeReconnect);
+		window.removeEventListener('focus', maybeReconnect);
+		window.removeEventListener('online', maybeReconnect);
+		ws?.close();
+		terminal?.dispose();
+	});
 </script>
 
 <div class="terminal-page" class:touch={isTouch}>
