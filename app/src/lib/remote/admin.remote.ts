@@ -217,6 +217,37 @@ const InviteSchema = z.object({
 	role: z.enum(BUILTIN_ROLE_NAMES as [string, ...string[]]).default('member')
 });
 
+// Checks whether platform integrations (Gitea, registry) are reachable. Used by
+// the admin page to surface misconfiguration warnings before they cause silent
+// billing gaps.
+export const getPlatformStatus = query(async () => {
+	requireAdmin();
+	const giteaUrl = process.env.GITEA_URL ?? '';
+	const giteaToken = process.env.GITEA_ADMIN_TOKEN ?? '';
+
+	let giteaOk = false;
+	let giteaError = '';
+	if (!giteaUrl || !giteaToken) {
+		giteaError = 'GITEA_URL or GITEA_ADMIN_TOKEN is not set';
+	} else {
+		try {
+			const res = await fetch(`${giteaUrl}/api/v1/version`, {
+				headers: { Authorization: `token ${giteaToken}` },
+				signal: AbortSignal.timeout(5000)
+			});
+			if (res.ok) {
+				giteaOk = true;
+			} else {
+				giteaError = `Gitea responded with HTTP ${res.status}`;
+			}
+		} catch (e: unknown) {
+			giteaError = e instanceof Error ? e.message : String(e);
+		}
+	}
+
+	return { gitea: { ok: giteaOk, error: giteaError } };
+});
+
 export const inviteMember = form(InviteSchema, async ({ orgId, email, role }) => {
 	requireAdmin();
 	const users = await sql`SELECT id FROM users WHERE email = ${email}`;

@@ -323,13 +323,18 @@ func (w *Worker) consumeHubble(ctx context.Context, path string) {
 		}
 	}()
 
+	var hubbleMissing bool
 	for {
 		f, err := os.Open(path) //nolint:gosec // path is from env config, not user input
 		if err != nil {
-			slog.Warn("open hubble log", "err", err)
+			if !hubbleMissing {
+				slog.Warn("hubble flow log unavailable — network usage will not appear in billing; deploy Cilium with Hubble JSON flow export to enable", "path", path, "err", err)
+				hubbleMissing = true
+			}
 			time.Sleep(5 * time.Second)
 			continue
 		}
+		hubbleMissing = false
 
 		// Seek to end, then tail
 		if _, err := f.Seek(0, 2); err != nil {
@@ -482,7 +487,8 @@ func (w *Worker) orgIDBySlug(ctx context.Context) (map[string]string, error) {
 // repo name within each org. Mirrors app/src/lib/gitea.ts auth.
 func (w *Worker) collectGiteaUsage(ctx context.Context) error {
 	if w.cfg.giteaURL == "" || w.cfg.giteaToken == "" {
-		return nil // not configured; skip silently
+		slog.Warn("gitea metering skipped: GITEA_URL or GITEA_ADMIN_TOKEN not set — git storage will not appear in billing")
+		return nil
 	}
 	orgIDs, err := w.orgIDBySlug(ctx)
 	if err != nil {

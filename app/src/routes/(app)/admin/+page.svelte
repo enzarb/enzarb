@@ -1,11 +1,19 @@
 <script lang="ts">
-	import { listOrgs, listDeletedOrgs, listUsers, listAllProjects, adminDeleteProject, adminForceDeleteProject, createOrgAdmin, setOrgTier, deleteOrg, recoverOrg, inviteMember, getAdminSettings, updateAdminSettings } from '$lib/remote/admin.remote';
+	import { listOrgs, listDeletedOrgs, listUsers, listAllProjects, adminDeleteProject, adminForceDeleteProject, createOrgAdmin, setOrgTier, deleteOrg, recoverOrg, inviteMember, getAdminSettings, updateAdminSettings, getPlatformStatus } from '$lib/remote/admin.remote';
 	import { confirm } from '$lib/confirm';
 	let showNewOrg = $state(false);
 	let inviteOrgId: string | null = $state(null);
 </script>
 
 <h2>Admin</h2>
+
+{#await getPlatformStatus() then status}
+	{#if !status.gitea.ok}
+		<div class="alert alert-warn">
+			<strong>Gitea not configured:</strong> {status.gitea.error}. Git storage usage will not appear in billing.
+		</div>
+	{/if}
+{/await}
 
 <section class="section">
 	<h3>Platform settings</h3>
@@ -293,4 +301,6 @@
 	.muted { color: var(--color-text-muted); font-size: 13px; }
 	.badge { display: inline-block; padding: 0.1rem 0.45rem; border-radius: 4px; font-size: 12px; border: 1px solid var(--color-border); color: var(--color-text-muted); }
 	.badge-danger { color: var(--color-danger); border-color: var(--color-danger); }
+	.alert { padding: 0.75rem 1rem; border-radius: 6px; font-size: 13px; margin-bottom: 1.25rem; }
+	.alert-warn { background: color-mix(in srgb, var(--color-warning, #d29922) 12%, transparent); border: 1px solid color-mix(in srgb, var(--color-warning, #d29922) 40%, transparent); color: var(--color-text); }
 </style>
