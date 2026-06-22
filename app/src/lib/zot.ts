@@ -50,7 +50,8 @@ export interface TagList {
 }
 
 export async function listRepositories(): Promise<Repository[]> {
-	const res = await zotFetch('/v2/_catalog', 'registry:catalog:*');
+	// Zot v2 uses 'repository::pull' (not 'registry:catalog:*') to authorize _catalog.
+	const res = await zotFetch('/v2/_catalog', 'repository::pull');
 	if (res.status === 404) return [];
 	const data = await res.json();
 	return (data.repositories ?? []).map((name: string) => ({ name }));

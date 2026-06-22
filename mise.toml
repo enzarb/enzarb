@@ -8,6 +8,32 @@ kubebuilder = "latest"
 "go:github.com/golangci/golangci-lint/v2/cmd/golangci-lint" = "latest"
 "go:golang.org/x/vuln/cmd/govulncheck" = "latest"
 
+[tasks.deploy]
+description = "Idempotent full deploy: secrets → system → Gitea token → enzarb"
+run = """
+set -euo pipefail
+NS=enzarb-system
+
+echo "==> [1/4] Ensuring auto-generated secrets..."
+bash scripts/setup-secrets.sh "$NS"
+
+echo "==> [2/4] Deploying system charts (Dex, Gitea, Zot)..."
+kubectl apply -f deploy/system/
+kubectl annotate helmchart -n kube-system dex gitea zot \
+  "enzarb.dev/last-deployed=$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite
+
+echo "==> [3/4] Waiting for Gitea and minting admin token..."
+bash scripts/setup-gitea-token.sh "$NS"
+
+echo "==> [4/4] Deploying enzarb (operator, app, authd, metering)..."
+LATEST=$(gh release list --repo enzarb/enzarb --limit 1 --json tagName --jq '.[0].tagName | ltrimstr("v")')
+echo "    Deploying enzarb v${LATEST}"
+sed -i "s/^  version: .*/  version: ${LATEST}/" deploy/enzarb/enzarb.yaml
+kubectl apply -f deploy/enzarb/
+
+echo "==> Done. Check status with: mise run status"
+"""
+
 [tasks.deploy-system]
 description = "Apply system HelmChart CRs and force re-reconciliation to upgrade to latest"
 run = """
@@ -26,8 +52,8 @@ kubectl apply -f deploy/enzarb/
 """
 
 [tasks.deploy-all]
-description = "Deploy everything"
-depends = ["deploy-system", "deploy-enzarb"]
+description = "Deploy everything (alias for deploy)"
+depends = ["deploy"]
 
 [tasks.undeploy]
 description = "Remove all HelmChart CRs"
