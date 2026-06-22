@@ -45,6 +45,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ncurses-term \
         bash-completion \
         jq \
+        vim \
         openssh-client \
         build-essential \
         pkg-config \
@@ -62,6 +63,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Rename existing ubuntu user (UID 1000) to 'user' for consistency
 RUN usermod -l user -d /home/user -m ubuntu && groupmod -n user ubuntu
+
+# Bake the enzarb prompt into the system-wide bash config so it applies to
+# all interactive shells (tmux windows, plain `bash` processes, login shells)
+# without requiring runtime patching of the user's home directory.
+COPY workspace/enzarb-prompt.sh /etc/profile.d/enzarb-prompt.sh
+RUN cat /etc/profile.d/enzarb-prompt.sh >> /etc/bash.bashrc
 
 # Gate on tests passing, then copy release binaries (root-owned)
 COPY --from=rust-test /test-ok /tmp/rust-test-ok

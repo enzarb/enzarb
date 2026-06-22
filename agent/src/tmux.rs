@@ -352,6 +352,7 @@ __ez_comp npm       npm completion
 command -v terraform  >/dev/null 2>&1 && complete -C terraform terraform
 command -v terragrunt >/dev/null 2>&1 && complete -C terragrunt terragrunt
 
+shopt -s checkwinsize
 PS1='\[\e[1;32m\]\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ '
 "#;
     tokio::fs::write(&path, contents).await?;

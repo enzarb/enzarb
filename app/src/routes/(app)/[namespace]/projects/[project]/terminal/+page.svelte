@@ -22,6 +22,7 @@
 	let newDialog: HTMLDialogElement | undefined = $state();
 	let terminal: Terminal | undefined;
 	let resizeObserver: ResizeObserver | undefined;
+	let mounted = false;
 	let ws: WebSocket | null = null;
 	let processes: any[] = $state([]);
 	let selectedPid: string | null = $state(null);
@@ -243,12 +244,15 @@
 	}
 
 	onMount(async () => {
+		mounted = true;
 		try { agentToken = await getAgentToken(); } catch {}
+		if (!mounted) return;
 		try {
 			const project = await getProject();
 			const path = project?.status?.agentPath;
 			if (path) agentBase = `https://enzarb.dev${path}`;
 		} catch {}
+		if (!mounted) return;
 		isTouch = window.matchMedia('(pointer: coarse)').matches;
 		terminal = new Terminal({ theme: { background: '#0f0f11', foreground: '#e8e8ed' }, fontFamily: 'JetBrains Mono, monospace', allowProposedApi: true, screenReaderMode: false });
 		fit = new FitAddon();
@@ -293,9 +297,11 @@
 		}
 		resizeObserver = new ResizeObserver(() => { fit?.fit(); sendResize(); });
 		if (termEl) resizeObserver.observe(termEl);
+		if (!mounted) return;
 		await loadProcesses();
 		// Auto-attach: prefer the last-used process (survives full page reload on
 		// mobile) and fall back to the first available one.
+		if (!mounted) return;
 		if (!selectedPid && processes.length) {
 			let savedId: string | null = null;
 			try { savedId = sessionStorage.getItem(SELECTED_KEY); } catch { /* ignore */ }
@@ -313,14 +319,21 @@
 	function persist() { saveBuffer(displayedPid); }
 
 	onDestroy(() => {
+		mounted = false;
 		resizeObserver?.disconnect();
+		resizeObserver = undefined;
 		document.removeEventListener('visibilitychange', onVisibility);
 		window.removeEventListener('focus', maybeReconnect);
 		window.removeEventListener('online', maybeReconnect);
 		window.removeEventListener('beforeunload', persist);
 		persist();
 		ws?.close();
+		ws = null;
 		terminal?.dispose();
+		terminal = undefined;
+		fit = undefined;
+		search = undefined;
+		serialize = undefined;
 	});
 </script>
 
