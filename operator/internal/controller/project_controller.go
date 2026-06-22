@@ -134,7 +134,7 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("ensure service account: %w", err)
 	}
 
-	if err := r.ensureClusterRoleBinding(ctx, &project, orgNS, saName); err != nil {
+	if err := r.ensureRoleBinding(ctx, &project, orgNS, saName); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensure cluster role binding: %w", err)
 	}
 
@@ -184,8 +184,7 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 }
 
 // projectFinalizer guards cleanup of resources outside the project's namespace
-// (cluster-scoped ClusterRoleBinding, enzarb-system HTTPRoute/Certificate) that
-// owner-reference GC can't reach.
+// (enzarb-system HTTPRoute/Certificate) that owner-reference GC can't reach.
 const projectFinalizer = "enzarb.io/project-cleanup"
 
 // reconcileProjectRetention handles a soft-deleted project: scale its workspace
@@ -245,11 +244,11 @@ func (r *ProjectReconciler) reconcileProjectDelete(ctx context.Context, project 
 		return ctrl.Result{}, nil
 	}
 
-	crbName := fmt.Sprintf("enzarb-%s-%s-deployer", project.Spec.OrgID, project.Spec.Slug)
-	if err := r.deleteIfExists(ctx, &rbacv1.ClusterRoleBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: crbName},
+	rbName := fmt.Sprintf("enzarb-%s-%s-deployer", project.Spec.OrgID, project.Spec.Slug)
+	if err := r.deleteIfExists(ctx, &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: rbName, Namespace: ns},
 	}); err != nil {
-		return ctrl.Result{}, fmt.Errorf("delete cluster role binding: %w", err)
+		return ctrl.Result{}, fmt.Errorf("delete role binding: %w", err)
 	}
 	routeName := fmt.Sprintf("project-%s-agent", project.Spec.Slug)
 	if err := r.deleteIfExists(ctx, &gatewayv1.HTTPRoute{
@@ -302,15 +301,16 @@ func (r *ProjectReconciler) ensureServiceAccount(ctx context.Context, ns, name s
 	return err
 }
 
-func (r *ProjectReconciler) ensureClusterRoleBinding(ctx context.Context, project *enzarbv1alpha1.Project, ns, saName string) error {
+func (r *ProjectReconciler) ensureRoleBinding(ctx context.Context, project *enzarbv1alpha1.Project, ns, saName string) error {
 	bindingName := fmt.Sprintf("enzarb-%s-%s-deployer", project.Spec.OrgID, project.Spec.Slug)
-	crb := &rbacv1.ClusterRoleBinding{}
-	err := r.Get(ctx, types.NamespacedName{Name: bindingName}, crb)
+	rb := &rbacv1.RoleBinding{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: bindingName}, rb)
 	if errors.IsNotFound(err) {
-		crb = &rbacv1.ClusterRoleBinding{
+		rb = &rbacv1.RoleBinding{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:   bindingName,
-				Labels: projectLabels(project),
+				Name:      bindingName,
+				Namespace: ns,
+				Labels:    projectLabels(project),
 			},
 			RoleRef: rbacv1.RoleRef{
 				APIGroup: "rbac.authorization.k8s.io",
@@ -321,7 +321,7 @@ func (r *ProjectReconciler) ensureClusterRoleBinding(ctx context.Context, projec
 				{Kind: "ServiceAccount", Name: saName, Namespace: ns},
 			},
 		}
-		return r.Create(ctx, crb)
+		return r.Create(ctx, rb)
 	}
 	return err
 }
