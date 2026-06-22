@@ -2,6 +2,12 @@
 	import { getEnvironments, createEnv, addDomain, setDefaultEnv } from '$lib/remote/environments.remote';
 	let showNewEnv = $state(false);
 	let domainEnv: string | null = $state(null);
+	let envRefresh = $state(0);
+
+	async function handleSetDefault(slug: string | null) {
+		await setDefaultEnv({ envSlug: slug });
+		envRefresh++;
+	}
 </script>
 
 <div class="deployments-page">
@@ -27,6 +33,7 @@
 		</div>
 	{/if}
 
+	{#key envRefresh}
 	{#await getEnvironments() then { envs, deployZone, defaultEnvSlug }}
 		<div class="env-list">
 			{#each envs as env}
@@ -49,12 +56,12 @@
 							{#if !isDefault}
 								<button
 									class="btn btn-sm"
-									onclick={() => setDefaultEnv({ envSlug: env.spec.slug })}
+									onclick={() => handleSetDefault(env.spec.slug)}
 								>Set as default</button>
 							{:else}
 								<button
 									class="btn btn-sm"
-									onclick={() => setDefaultEnv({ envSlug: null })}
+									onclick={() => handleSetDefault(null)}
 								>Unset default</button>
 							{/if}
 							<button class="btn btn-sm" onclick={() => (domainEnv = env.metadata.name)}>Add domain</button>
@@ -92,6 +99,7 @@
 	{:catch err}
 		<p class="muted">Could not load environments: {err?.message ?? 'unknown error'}</p>
 	{/await}
+	{/key}
 </div>
 
 <style>

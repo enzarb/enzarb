@@ -55,6 +55,12 @@ spec:
               value: {{ .Values.gateway.issuer.email | quote }}
             - name: GATEWAY_CLASS_NAME
               value: {{ .Values.gateway.className | quote }}
+            - name: NETWORK_POLICY_ENABLED
+              value: {{ .Values.networkPolicy.enabled | quote }}
+            - name: CLUSTER_POD_CIDR
+              value: {{ .Values.networkPolicy.podCIDR | quote }}
+            - name: CLUSTER_SVC_CIDR
+              value: {{ .Values.networkPolicy.serviceCIDR | quote }}
             - name: GITEA_URL
               value: {{ .Values.operator.env.GITEA_URL | quote }}
             - name: GITEA_ADMIN_TOKEN

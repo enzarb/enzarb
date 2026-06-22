@@ -732,7 +732,7 @@ func (r *ProjectReconciler) ensureEnvContextConfigMap(ctx context.Context, ns st
 
 	var contextSh string
 	if envNamespace != "" {
-		contextSh = fmt.Sprintf("export KUBE_NAMESPACE=%s\n", envNamespace)
+		contextSh = fmt.Sprintf("export POD_NAMESPACE=%s\n", envNamespace)
 	} else {
 		contextSh = "# no default environment set\n"
 	}

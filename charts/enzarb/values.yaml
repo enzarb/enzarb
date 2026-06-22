@@ -171,3 +171,13 @@ serviceAccountName:
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# NetworkPolicies applied to org (workspace) namespaces and deploy namespaces.
+# podCIDR/serviceCIDR are used to allow internet egress while blocking
+# cross-namespace cluster traffic. Defaults match K3s; adjust for your cluster.
+networkPolicy:
+  enabled: true
+  # Pod IP range used by this cluster (kubectl cluster-info dump | grep podCIDR).
+  podCIDR: "10.42.0.0/16"
+  # Service ClusterIP range (kube-apiserver --service-cluster-ip-range).
+  serviceCIDR: "10.43.0.0/16"

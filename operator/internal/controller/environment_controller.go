@@ -18,11 +18,13 @@ import (
 	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -72,6 +74,10 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	if err := r.ensureDeployerRoleBinding(ctx, deployNS, orgNS, saName, &env); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensure deployer rolebinding: %w", err)
+	}
+
+	if err := r.ensureNetworkPolicy(ctx, deployNS); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure network policy: %w", err)
 	}
 
 	// Provision an ACME Issuer the tenant can reference (but not edit/delete) to
@@ -635,6 +641,92 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// ensureNetworkPolicy creates the ingress + egress NetworkPolicies for a deploy
+// namespace that enforce tenant isolation:
+//   - Ingress: only the Envoy gateway namespace and same-namespace pods may reach
+//     deploy pods. Other deploy namespaces (even of the same project) cannot.
+//   - Egress: DNS, internet (excluding cluster CIDRs), and same-namespace. No
+//     direct access to other cluster namespaces, including other org/deploy ns.
+func (r *EnvironmentReconciler) ensureNetworkPolicy(ctx context.Context, deployNS string) error {
+	if os.Getenv("NETWORK_POLICY_ENABLED") == "false" {
+		return nil
+	}
+
+	podCIDR := os.Getenv("CLUSTER_POD_CIDR")
+	svcCIDR := os.Getenv("CLUSTER_SVC_CIDR")
+	if podCIDR == "" {
+		podCIDR = "10.42.0.0/16"
+	}
+	if svcCIDR == "" {
+		svcCIDR = "10.43.0.0/16"
+	}
+
+	dnsPort := intstr.FromInt32(53)
+	udp := corev1.ProtocolUDP
+	tcp := corev1.ProtocolTCP
+
+	desired := &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "enzarb-deploy-isolation",
+			Namespace: deployNS,
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "enzarb-operator",
+			},
+		},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{},
+			PolicyTypes: []networkingv1.PolicyType{
+				networkingv1.PolicyTypeIngress,
+				networkingv1.PolicyTypeEgress,
+			},
+			Ingress: []networkingv1.NetworkPolicyIngressRule{
+				// Allow same-namespace only: service-to-service within this env
+				// and the co-located Envoy proxy pods (created by EnvoyGateway in
+				// the same namespace as the deploy Gateway resource).
+				{From: []networkingv1.NetworkPolicyPeer{{
+					PodSelector: &metav1.LabelSelector{},
+				}}},
+			},
+			Egress: []networkingv1.NetworkPolicyEgressRule{
+				// DNS
+				{
+					Ports: []networkingv1.NetworkPolicyPort{
+						{Protocol: &udp, Port: &dnsPort},
+						{Protocol: &tcp, Port: &dnsPort},
+					},
+					To: []networkingv1.NetworkPolicyPeer{{
+						NamespaceSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{"kubernetes.io/metadata.name": "kube-system"},
+						},
+					}},
+				},
+				// Same-namespace service-to-service
+				{To: []networkingv1.NetworkPolicyPeer{{
+					PodSelector: &metav1.LabelSelector{},
+				}}},
+				// Internet egress (excluding cluster-internal CIDRs)
+				{To: []networkingv1.NetworkPolicyPeer{{
+					IPBlock: &networkingv1.IPBlock{
+						CIDR:   "0.0.0.0/0",
+						Except: []string{podCIDR, svcCIDR},
+					},
+				}}},
+			},
+		},
+	}
+
+	existing := &networkingv1.NetworkPolicy{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: deployNS, Name: desired.Name}, existing)
+	if errors.IsNotFound(err) {
+		return r.Create(ctx, desired)
+	}
+	if err != nil {
+		return err
+	}
+	existing.Spec = desired.Spec
+	return r.Update(ctx, existing)
 }
 
 func (r *EnvironmentReconciler) ensureDeployerRoleBinding(ctx context.Context, deployNS, orgNS, saName string, env *enzarbv1alpha1.Environment) error {

@@ -367,7 +367,7 @@ command -v terragrunt >/dev/null 2>&1 && complete -C terragrunt terragrunt
 shopt -s checkwinsize
 PS1='\[\e[1;32m\]\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ '
 
-# Source dynamic environment context (KUBE_NAMESPACE etc.) set by the operator.
+# Source dynamic environment context (POD_NAMESPACE etc.) set by the operator.
 [ -r /var/run/enzarb/env/context.sh ] && . /var/run/enzarb/env/context.sh
 "#;
     tokio::fs::write(&path, contents).await?;

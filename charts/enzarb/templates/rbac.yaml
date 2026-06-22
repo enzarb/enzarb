@@ -64,6 +64,9 @@ rules:
     resources: ["clusterroles"]
     resourceNames: ["enzarb-deployer"]
     verbs: ["bind"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["gateway.networking.k8s.io"]
     resources: ["httproutes", "referencegrants", "gateways"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -90,32 +93,56 @@ subjects:
     name: {{ .Values.serviceAccountName.operator }}
     namespace: {{ .Release.Namespace }}
 ---
-# ClusterRole granting project service accounts the ability to deploy into their env namespaces
+# ClusterRole granting project service accounts the ability to deploy into their env namespaces.
+# This role is bound per-namespace (RoleBinding in each deploy namespace) so it
+# only applies within the tenant's own environment namespace — never cluster-wide.
+#
+# Excluded intentionally: daemonsets, serviceaccounts, clusterroles/bindings,
+# clusterissuers, nodes, and any resource that could enable privilege escalation
+# or lateral movement. Services are restricted to ClusterIP type by the
+# enzarb-restrict-service-type ValidatingAdmissionPolicy.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: enzarb-deployer
 rules:
-  - apiGroups: ["apps"]
-    resources: ["deployments", "statefulsets", "daemonsets"]
+  # Pods — CRUD for running workloads; logs for debugging
+  - apiGroups: [""]
+    resources: ["pods", "pods/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: [""]
-    resources: ["services", "configmaps", "secrets", "serviceaccounts", "persistentvolumeclaims"]
+    resources: ["pods/log"]
+    verbs: ["get", "list", "watch"]
+  # Services — ClusterIP only; NodePort/LoadBalancer/externalIPs blocked by VAP
+  - apiGroups: [""]
+    resources: ["services"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["networking.k8s.io"]
-    resources: ["ingresses"]
+  # Config and storage
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets", "persistentvolumeclaims"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Workload controllers — no daemonsets (runs privileged pods on every host)
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Gateway API routing
   - apiGroups: ["gateway.networking.k8s.io"]
     resources: ["httproutes", "grpcroutes"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Tenants may create Certificates that reference the operator-provisioned
-  # Issuer (enzarb-acme) by name — referencing an issuer needs no RBAC on the
-  # Issuer object. Deliberately NO "issuers"/"clusterissuers" verbs here, so a
-  # tenant can use the namespace issuer but cannot edit or delete it, nor point
-  # cert-manager at an issuer of their choosing.
+  # Gateway — read-only; the operator manages the namespace Gateway
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["gateways"]
+    verbs: ["get", "list", "watch"]
+  # Certificates — tenants may create Certificates referencing the
+  # operator-provisioned Issuer (enzarb-acme); no write on Issuer itself.
   - apiGroups: ["cert-manager.io"]
-    resources: ["certificates"]
+    resources: ["certificates", "certificaterequests"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["batch"]
-    resources: ["jobs", "cronjobs"]
+  # Issuer — read-only; tenants can reference it but not modify it
+  - apiGroups: ["cert-manager.io"]
+    resources: ["issuers"]
+    verbs: ["get", "list", "watch"]
+  # NetworkPolicies — tenants may manage their own namespace network policies
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
