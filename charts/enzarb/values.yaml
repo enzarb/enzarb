@@ -119,7 +119,7 @@ authd:
 workspace:
   image:
     repository: ghcr.io/enzarb/workspace
-    tag: "v0.37.0"
+    tag: "v0.39.0"
   # StorageClass for project home PVCs. Empty uses the cluster's default class.
   storageClass: ""
   # changelog is shown in the UI when a workspace update is pending. Set by CI
