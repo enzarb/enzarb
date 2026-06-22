@@ -6,7 +6,7 @@ app:
   image:
     repository: ghcr.io/enzarb/app
     pullPolicy: IfNotPresent
-    tag: "v0.42.0"
+    tag: "v0.44.0"
   env:
     ORIGIN: https://enzarb.dev
     # Reach Gitea's admin API internally — the external host is fronted by the
