@@ -13,6 +13,7 @@
 		]);
 		const path = project?.status?.agentPath;
 		if (path) agentBase = `https://enzarb.dev${path}`;
+		await fetchFiles(agentToken);
 		return { agentToken, gitTree };
 	}
 

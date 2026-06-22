@@ -58,6 +58,8 @@
 			{/if}
 		</div>
 	</div>
+{:catch err}
+	<p class="muted">Could not load registry: {err?.message ?? 'unknown error'}</p>
 {/await}
 
 <style>
