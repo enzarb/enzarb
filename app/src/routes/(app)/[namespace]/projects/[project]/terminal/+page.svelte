@@ -3,9 +3,16 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { Terminal } from '@xterm/xterm';
 	import { FitAddon } from '@xterm/addon-fit';
+	import { WebglAddon } from '@xterm/addon-webgl';
+	import { WebLinksAddon } from '@xterm/addon-web-links';
+	import { SearchAddon } from '@xterm/addon-search';
+	import { ClipboardAddon } from '@xterm/addon-clipboard';
+	import { Unicode11Addon } from '@xterm/addon-unicode11';
+	import { SerializeAddon } from '@xterm/addon-serialize';
 	import '@xterm/xterm/css/xterm.css';
 	import VirtualKeyboard from '$lib/terminal/VirtualKeyboard.svelte';
 	import { layouts } from '$lib/terminal/keyboard';
+	import { isExternalHttpUrl } from '$lib/terminal/links';
 
 	// Each project gets its own agent route (e.g. `/agent/<slug>`); the path is
 	// published in the Project's status by the operator.
@@ -28,6 +35,43 @@
 	// on-screen keyboard instead (Ctrl/Alt/Fn aren't reachable otherwise).
 	let isTouch = $state(false);
 	let fit: FitAddon | undefined;
+	let search: SearchAddon | undefined;
+	let serialize: SerializeAddon | undefined;
+	// The process currently rendered in the buffer; differs from selectedPid only
+	// mid-switch. Used to decide when to clear vs. preserve scrollback.
+	let displayedPid: string | null = null;
+	// Per-process serialized scrollback, mirrored to sessionStorage so a refresh
+	// can restore it (the agent's tmux attach only redraws the live screen).
+	const bufferCache: Record<string, string> = {};
+	let searchOpen = $state(false);
+	let searchTerm = $state('');
+
+	const bufKey = (pid: string) => `enzarb-term:${pid}`;
+	function saveBuffer(pid: string | null) {
+		if (!pid || !serialize) return;
+		try {
+			const data = serialize.serialize({ scrollback: 1000 });
+			bufferCache[pid] = data;
+			sessionStorage.setItem(bufKey(pid), data);
+		} catch {
+			/* serialize/sessionStorage may fail (quota); non-fatal */
+		}
+	}
+	function loadBuffer(pid: string): string | null {
+		if (bufferCache[pid]) return bufferCache[pid];
+		try {
+			return sessionStorage.getItem(bufKey(pid));
+		} catch {
+			return null;
+		}
+	}
+
+	function runSearch(forward = true) {
+		if (!searchTerm) return;
+		const opts = { decorations: { matchOverviewRuler: '#888', activeMatchColorOverviewRuler: '#fff' } };
+		if (forward) search?.findNext(searchTerm, opts);
+		else search?.findPrevious(searchTerm, opts);
+	}
 
 	// Input is sent as binary frames; the agent reserves text frames for control
 	// messages (terminal resize). Both xterm input and the virtual keyboard
@@ -84,7 +128,9 @@
 		if (!agentToken) return;
 		await fetch(`${agentBase}/processes/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${agentToken}` } });
 		await loadProcesses();
-		if (selectedPid === id) { ws?.close(); ws = null; selectedPid = null; }
+		delete bufferCache[id];
+		try { sessionStorage.removeItem(bufKey(id)); } catch { /* ignore */ }
+		if (selectedPid === id) { ws?.close(); ws = null; selectedPid = null; displayedPid = null; }
 	}
 
 	// Selecting a tab sets the desired process and (re)connects. selectedPid is
@@ -106,7 +152,20 @@
 		await ensureToken();
 		if (!agentToken) return;
 		ws?.close();
-		terminal?.clear();
+		// Only reset the buffer when switching to a different process: stash the
+		// outgoing one's scrollback and restore the incoming one's. A same-process
+		// reconnect (mobile resume) keeps the existing buffer; tmux redraws the
+		// live screen on top.
+		if (displayedPid !== selectedPid) {
+			if (displayedPid) saveBuffer(displayedPid);
+			terminal?.clear();
+			const prev = loadBuffer(selectedPid);
+			if (prev) {
+				terminal?.write(prev);
+				terminal?.write('\r\n\x1b[2m──────── reconnected ────────\x1b[0m\r\n');
+			}
+			displayedPid = selectedPid;
+		}
 		const wsUrl = `${agentBase.replace('https://', 'wss://').replace('http://', 'ws://')}/processes/${selectedPid}/output`;
 		const sock = new WebSocket(`${wsUrl}?token=${encodeURIComponent(agentToken)}`);
 		ws = sock;
@@ -134,6 +193,13 @@
 		connect();
 	}
 
+	// Snapshot scrollback when the tab is hidden (mobile may discard it), and
+	// reconnect when it becomes visible again.
+	function onVisibility() {
+		if (document.visibilityState === 'hidden') saveBuffer(displayedPid);
+		else maybeReconnect();
+	}
+
 	onMount(async () => {
 		try { agentToken = await getAgentToken(); } catch {}
 		try {
@@ -142,10 +208,40 @@
 			if (path) agentBase = `https://enzarb.dev${path}`;
 		} catch {}
 		isTouch = window.matchMedia('(pointer: coarse)').matches;
-		terminal = new Terminal({ theme: { background: '#0f0f11', foreground: '#e8e8ed' }, fontFamily: 'JetBrains Mono, monospace' });
+		terminal = new Terminal({ theme: { background: '#0f0f11', foreground: '#e8e8ed' }, fontFamily: 'JetBrains Mono, monospace', allowProposedApi: true });
 		fit = new FitAddon();
 		terminal.loadAddon(fit);
-		if (termEl) { terminal.open(termEl); fit.fit(); }
+		// Correct width for wide chars/emoji.
+		const unicode11 = new Unicode11Addon();
+		terminal.loadAddon(unicode11);
+		terminal.unicode.activeVersion = '11';
+		// OSC 52 clipboard so workspace programs can copy to the browser clipboard.
+		terminal.loadAddon(new ClipboardAddon());
+		// Clickable links, but only safe external http(s) targets — never the
+		// user's loopback/private network (see isExternalHttpUrl).
+		terminal.loadAddon(
+			new WebLinksAddon((event, uri) => {
+				if (!isExternalHttpUrl(uri)) return;
+				window.open(uri, '_blank', 'noopener,noreferrer');
+			})
+		);
+		search = new SearchAddon();
+		terminal.loadAddon(search);
+		serialize = new SerializeAddon();
+		terminal.loadAddon(serialize);
+		if (termEl) {
+			terminal.open(termEl);
+			fit.fit();
+			// GPU renderer for smooth output; fall back to the DOM renderer if the
+			// WebGL context is lost (common after mobile backgrounding).
+			try {
+				const webgl = new WebglAddon();
+				webgl.onContextLoss(() => webgl.dispose());
+				terminal.loadAddon(webgl);
+			} catch {
+				/* no WebGL available; DOM renderer remains */
+			}
+		}
 		terminal.onData((d: string) => send(d));
 		// Keep xterm focusable (paste, cursor) but stop the OS keyboard from
 		// covering the screen — our virtual keyboard takes over on touch.
@@ -159,16 +255,22 @@
 		// Auto-attach so a fresh load / refresh connects without a manual tap.
 		if (!selectedPid && processes.length) attachToProcess(processes[0].id);
 		// Reconnect when returning to a backgrounded mobile tab or after a network drop.
-		document.addEventListener('visibilitychange', maybeReconnect);
+		document.addEventListener('visibilitychange', onVisibility);
 		window.addEventListener('focus', maybeReconnect);
 		window.addEventListener('online', maybeReconnect);
+		// Persist scrollback so a full page refresh can restore it.
+		window.addEventListener('beforeunload', persist);
 	});
+
+	function persist() { saveBuffer(displayedPid); }
 
 	onDestroy(() => {
 		resizeObserver?.disconnect();
-		document.removeEventListener('visibilitychange', maybeReconnect);
+		document.removeEventListener('visibilitychange', onVisibility);
 		window.removeEventListener('focus', maybeReconnect);
 		window.removeEventListener('online', maybeReconnect);
+		window.removeEventListener('beforeunload', persist);
+		persist();
 		ws?.close();
 		terminal?.dispose();
 	});
@@ -193,8 +295,28 @@
 				<p class="muted">No processes — start one with +</p>
 			{/each}
 		</div>
+		<button class="new-btn" title="Search output" aria-label="Search output" onclick={() => { searchOpen = !searchOpen; if (!searchOpen) search?.clearDecorations(); }}>⌕</button>
 		<button class="new-btn" title="New process" aria-label="New process" onclick={openNewDialog}>+</button>
 	</div>
+	{#if searchOpen}
+		<div class="search-bar">
+			<!-- svelte-ignore a11y_autofocus -->
+			<input
+				class="search-input"
+				placeholder="Search output…"
+				autofocus
+				bind:value={searchTerm}
+				oninput={() => runSearch(true)}
+				onkeydown={(e) => {
+					if (e.key === 'Enter') { e.preventDefault(); runSearch(!e.shiftKey); }
+					else if (e.key === 'Escape') { searchOpen = false; search?.clearDecorations(); }
+				}}
+			/>
+			<button class="search-nav" title="Previous" aria-label="Previous match" onclick={() => runSearch(false)}>↑</button>
+			<button class="search-nav" title="Next" aria-label="Next match" onclick={() => runSearch(true)}>↓</button>
+			<button class="search-nav" title="Close" aria-label="Close search" onclick={() => { searchOpen = false; search?.clearDecorations(); }}>×</button>
+		</div>
+	{/if}
 	<div class="term-container" bind:this={termEl}></div>
 	{#if isTouch}
 		<VirtualKeyboard {send} layout={layouts[0]} />
@@ -262,6 +384,11 @@
 	.tab-close:hover { color: var(--color-danger); background: var(--color-surface-2); }
 	.new-btn { flex-shrink: 0; width: 38px; border: none; border-left: 1px solid var(--color-border); background: none; color: var(--color-text-muted); font-size: 20px; line-height: 1; cursor: pointer; }
 	.new-btn:hover { background: var(--color-surface); color: var(--color-accent); }
+
+	.search-bar { display: flex; align-items: center; gap: 0.25rem; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--color-border); background: var(--color-surface-2); }
+	.search-input { flex: 1; min-width: 0; font-size: 13px; padding: 0.3rem 0.5rem; background: var(--color-surface); color: var(--color-text); border: 1px solid var(--color-border); border-radius: 4px; }
+	.search-nav { flex-shrink: 0; width: 28px; height: 28px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); color: var(--color-text-muted); cursor: pointer; }
+	.search-nav:hover { color: var(--color-text); }
 
 	.term-container { background: #0f0f11; overflow: hidden; }
 	.muted { color: var(--color-text-muted); font-size: 12px; padding: 0 0.75rem; align-self: center; }
