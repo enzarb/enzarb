@@ -2,7 +2,9 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"reflect"
 	"time"
@@ -343,7 +345,10 @@ func (r *ProjectReconciler) ensurePVC(ctx context.Context, ns, name string, proj
 	return nil
 }
 
+const forceRestartAnnotation = "enzarb.io/force-workspace-restart"
+
 func (r *ProjectReconciler) ensureDeployment(ctx context.Context, ns, saName, pvcName, orgSlug string, project *enzarbv1alpha1.Project) error {
+	log := log.FromContext(ctx)
 	deployName := fmt.Sprintf("project-%s", project.Spec.Slug)
 	deploy := &appsv1.Deployment{}
 	err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: deployName}, deploy)
@@ -351,15 +356,94 @@ func (r *ProjectReconciler) ensureDeployment(ctx context.Context, ns, saName, pv
 	if err := controllerutil.SetControllerReference(project, desired, r.Scheme); err != nil {
 		return err
 	}
+
+	desiredImage := workspaceImage()
+	project.Status.DesiredWorkspaceImage = desiredImage
+
 	if errors.IsNotFound(err) {
+		project.Status.RunningWorkspaceImage = desiredImage
+		apimeta.RemoveStatusCondition(&project.Status.Conditions, "WorkspaceUpdatePending")
 		return r.Create(ctx, desired)
 	}
 	if err != nil {
 		return err
 	}
-	// Update deployment to apply spec changes
+
+	// Determine the image currently running in the existing deployment.
+	runningImage := desiredImage
+	for _, c := range deploy.Spec.Template.Spec.Containers {
+		if c.Name == "workspace" {
+			runningImage = c.Image
+			break
+		}
+	}
+	project.Status.RunningWorkspaceImage = runningImage
+
+	// If image hasn't changed, apply any other spec drift and clear the condition.
+	if runningImage == desiredImage {
+		apimeta.RemoveStatusCondition(&project.Status.Conditions, "WorkspaceUpdatePending")
+		deploy.Spec = desired.Spec
+		return r.Update(ctx, deploy)
+	}
+
+	// Image update needed. Honour an explicit user-initiated restart request.
+	forceRequested := project.Annotations[forceRestartAnnotation] == "true"
+	if forceRequested {
+		// Remove the annotation so the override is one-shot.
+		patch := []byte(`{"metadata":{"annotations":{"` + forceRestartAnnotation + `":null}}}`)
+		if pErr := r.Patch(ctx, project, client.RawPatch(types.MergePatchType, patch)); pErr != nil {
+			log.Error(pErr, "failed to remove force-restart annotation; proceeding anyway")
+		}
+	}
+
+	if !forceRequested {
+		hasProcesses, checkErr := r.checkRunningProcesses(ctx, ns, project.Spec.Slug)
+		if checkErr != nil {
+			log.Info("could not reach agent to check processes; treating as idle", "error", checkErr)
+		}
+		if hasProcesses {
+			changelog := os.Getenv("WORKSPACE_CHANGELOG")
+			apimeta.SetStatusCondition(&project.Status.Conditions, metav1.Condition{
+				Type:               "WorkspaceUpdatePending",
+				Status:             metav1.ConditionTrue,
+				Reason:             "RunningProcesses",
+				Message:            changelog,
+				ObservedGeneration: project.Generation,
+			})
+			return nil
+		}
+	}
+
+	apimeta.RemoveStatusCondition(&project.Status.Conditions, "WorkspaceUpdatePending")
+	project.Status.RunningWorkspaceImage = desiredImage
 	deploy.Spec = desired.Spec
 	return r.Update(ctx, deploy)
+}
+
+// checkRunningProcesses queries the workspace agent's internal /processes
+// endpoint. Returns true when at least one process is in Running state.
+// On network failure (agent not yet up, pod restarting) returns (false, err);
+// callers should treat an error as "no running processes" for safety.
+func (r *ProjectReconciler) checkRunningProcesses(ctx context.Context, ns, slug string) (bool, error) {
+	url := fmt.Sprintf("http://project-%s.%s.svc.cluster.local:9090/processes", slug, ns)
+	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	var result struct {
+		Running int `json:"running"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return false, err
+	}
+	return result.Running > 0, nil
 }
 
 func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug string, project *enzarbv1alpha1.Project) *appsv1.Deployment {

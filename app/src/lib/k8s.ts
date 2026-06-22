@@ -324,3 +324,19 @@ export async function addCustomDomain(orgId: string, envName: string, fqdn: stri
 		body: [{ op: 'replace', path: '/spec/customDomains', value: domains }]
 	});
 }
+
+export async function forceRestartWorkspace(orgId: string, slug: string) {
+	const ns = orgNamespace(orgId);
+	const proj = (await getProject(orgId, slug)) as { metadata?: { annotations?: unknown } };
+	const patch = proj.metadata?.annotations
+		? [{ op: 'add', path: '/metadata/annotations/enzarb.io~1force-workspace-restart', value: 'true' }]
+		: [{ op: 'add', path: '/metadata/annotations', value: { 'enzarb.io/force-workspace-restart': 'true' } }];
+	await customApi.patchNamespacedCustomObject({
+		group: GROUP,
+		version: VERSION,
+		namespace: ns,
+		plural: 'projects',
+		name: slug,
+		body: patch
+	});
+}

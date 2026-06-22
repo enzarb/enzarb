@@ -1,10 +1,15 @@
-use axum::{Router, routing::get};
+use axum::{Router, extract::State, routing::get};
 use serde_json::json;
 
-pub fn router() -> Router {
+use crate::AppState;
+use crate::tmux::ProcessStatus;
+
+pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/metrics", get(metrics))
+        .route("/processes", get(processes))
+        .with_state(state)
 }
 
 async fn health() -> axum::Json<serde_json::Value> {
@@ -17,4 +22,16 @@ async fn metrics() -> String {
      # TYPE project_agent_up gauge\n\
      project_agent_up 1\n"
         .to_string()
+}
+
+// Unauthenticated — internal port is cluster-only. Used by the operator to
+// decide whether it's safe to restart the workspace pod for a version update.
+async fn processes(State(state): State<AppState>) -> axum::Json<serde_json::Value> {
+    let all = state.process_store.list().await;
+    let running: Vec<_> = all
+        .iter()
+        .filter(|p| p.status == ProcessStatus::Running)
+        .map(|p| json!({ "id": p.id, "name": p.name }))
+        .collect();
+    axum::Json(json!({ "running": running.len(), "processes": running }))
 }

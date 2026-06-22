@@ -37,6 +37,8 @@ spec:
           env:
             - name: WORKSPACE_IMAGE
               value: "{{ .Values.workspace.image.repository }}:{{ .Values.workspace.image.tag }}"
+            - name: WORKSPACE_CHANGELOG
+              value: {{ .Values.workspace.changelog | quote }}
             {{- with .Values.workspace.storageClass }}
             - name: WORKSPACE_STORAGE_CLASS
               value: {{ . | quote }}

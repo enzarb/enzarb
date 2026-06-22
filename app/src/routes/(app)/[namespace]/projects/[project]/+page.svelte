@@ -41,18 +41,6 @@
 	<div class="overview">
 		<div class="info-grid">
 			<div class="card">
-				<div class="card-label">Agent URL</div>
-				{#if project.status?.agentPath}
-					<code class="mono">https://enzarb.dev{project.status.agentPath}</code>
-				{:else}
-					<span class="muted">Provisioning…</span>
-				{/if}
-			</div>
-			<div class="card">
-				<div class="card-label">Service Account</div>
-				<code class="mono">{project.status?.serviceAccountName ?? '–'}</code>
-			</div>
-			<div class="card">
 				<div class="card-label">Storage</div>
 				<code class="mono">{project.spec.storage?.size ?? '–'}</code>
 			</div>

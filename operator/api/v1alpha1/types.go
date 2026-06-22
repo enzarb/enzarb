@@ -99,7 +99,11 @@ type ProjectStatus struct {
 	WorkspacePodName   string             `json:"workspacePodName,omitempty"`
 	ServiceAccountName string             `json:"serviceAccountName,omitempty"`
 	AgentPath          string             `json:"agentPath,omitempty"`
-	Conditions         []metav1.Condition `json:"conditions,omitempty"`
+	// RunningWorkspaceImage is the workspace container image currently deployed.
+	RunningWorkspaceImage string `json:"runningWorkspaceImage,omitempty"`
+	// DesiredWorkspaceImage is the workspace container image the operator wants to run.
+	DesiredWorkspaceImage string `json:"desiredWorkspaceImage,omitempty"`
+	Conditions            []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -20,8 +20,7 @@ struct Resize {
 /// no per-keystroke process spawn) and terminal size as JSON text frames. We run
 /// `tmux` in the PTY attached to a per-connection grouped session, so each client
 /// can view its own window and the PTY size drives the window size.
-pub async fn handle_ws(mut socket: WebSocket, window_name: String, state: AppState) {
-    let window_target = state.process_store.window_target(&window_name);
+pub async fn handle_ws(mut socket: WebSocket, window_name: String, _state: AppState) {
     // A grouped session (shares windows with the main session) gives this client
     // an independent current-window and size, so concurrent terminals don't fight
     // over the active window.
@@ -29,6 +28,10 @@ pub async fn handle_ws(mut socket: WebSocket, window_name: String, state: AppSta
         "{TMUX_SESSION}-ws-{}",
         &uuid::Uuid::new_v4().simple().to_string()[..8]
     );
+    // Target the window in the grouped session, not the main session — otherwise
+    // every new connection calls select-window on `enzarb:...` and the last one
+    // wins, making all clients land on the same window.
+    let window_target = format!("{}:{}", client_session, window_name);
 
     let pair = match native_pty_system().openpty(PtySize {
         rows: 24,

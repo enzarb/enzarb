@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
     let internal_addr: SocketAddr = "0.0.0.0:9090".parse()?;
     let external_addr: SocketAddr = "0.0.0.0:8080".parse()?;
 
-    let internal_app = internal::router();
+    let internal_app = internal::router(state.clone());
     let external_app = external::router(state.clone());
 
     tracing::info!("internal server listening on {}", internal_addr);

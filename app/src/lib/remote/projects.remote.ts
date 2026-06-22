@@ -8,6 +8,7 @@ import {
 	createProject as k8sCreateProject,
 	softDeleteProject,
 	recoverProject as k8sRecoverProject,
+	forceRestartWorkspace,
 	purgeAfterOf,
 	isOrgReady
 } from '$lib/k8s';
@@ -139,4 +140,9 @@ export const removeProject = command(z.object({ slug: z.string() }), async ({ sl
 export const recoverProjectCommand = command(z.object({ slug: z.string() }), async ({ slug }) => {
 	const org = requirePrivilege('project.delete');
 	return k8sRecoverProject(org.id, slug);
+});
+
+export const restartWorkspace = command(z.object({ slug: z.string() }), async ({ slug }) => {
+	const org = resolveOrg();
+	await forceRestartWorkspace(org.id, slug);
 });

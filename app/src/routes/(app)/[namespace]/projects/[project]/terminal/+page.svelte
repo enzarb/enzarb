@@ -30,6 +30,7 @@
 	let newKind: 'one-shot' | 'persistent' = $state('one-shot');
 	let createErr = $state('');
 	let agentToken: string | null = $state(null);
+	let connectError = $state('');
 
 	// On touch devices we suppress the OS keyboard and drive input from our own
 	// on-screen keyboard instead (Ctrl/Alt/Fn aren't reachable otherwise).
@@ -52,6 +53,8 @@
 	let linksOpen = $state(false);
 	// Rolling text window used for URL detection across chunk boundaries.
 	let linkScanBuf = '';
+	// Links cleared by the user — suppressed until the next reconnect.
+	const suppressedLinks = new Set<string>();
 	const LINK_SCAN_MAX = 8192;
 	const URL_RE = /https?:\/\/[^\s\x1b\x00-\x1f"'<>]+/g;
 	// Strip ANSI/VT escape sequences before scanning.
@@ -61,16 +64,13 @@
 		linkScanBuf = (linkScanBuf + raw).slice(-LINK_SCAN_MAX);
 		const clean = linkScanBuf.replace(ANSI_RE, '');
 		const found = clean.match(URL_RE) ?? [];
-		let added = false;
 		for (const url of found) {
 			// Trim trailing punctuation that's likely not part of the URL.
 			const trimmed = url.replace(/[).,;:'"]+$/, '');
-			if (!detectedLinks.includes(trimmed)) {
+			if (!detectedLinks.includes(trimmed) && !suppressedLinks.has(trimmed)) {
 				detectedLinks = [...detectedLinks, trimmed];
-				added = true;
 			}
 		}
-		if (added) linksOpen = true;
 	}
 
 	const bufKey = (pid: string) => `enzarb-term:${pid}`;
@@ -208,7 +208,13 @@
 		// which TextDecoder can't decode. Use arraybuffer so we can render it.
 		sock.binaryType = 'arraybuffer';
 		// On connect, refit and report the size so the PTY matches the viewport.
-		sock.onopen = () => { fit?.fit(); sendResize(); };
+		sock.onopen = () => { connectError = ''; suppressedLinks.clear(); fit?.fit(); sendResize(); };
+		sock.onerror = () => { connectError = 'WebSocket error — check that the workspace is running and reachable.'; };
+		sock.onclose = (e) => {
+			if (e.code !== 1000 && e.code !== 1001) {
+				connectError = `Connection closed (code ${e.code})${e.reason ? ': ' + e.reason : ''}.`;
+			}
+		};
 		sock.onmessage = (e) => {
 			const data = e.data instanceof ArrayBuffer ? new Uint8Array(e.data) : e.data;
 			const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
@@ -216,7 +222,6 @@
 			scanForLinks(text);
 		};
 		// Leave selectedPid set so maybeReconnect can re-establish the socket.
-		sock.onclose = () => {};
 	}
 
 	// Mobile browsers close the socket when the tab is backgrounded. Reconnect
@@ -245,7 +250,7 @@
 			if (path) agentBase = `https://enzarb.dev${path}`;
 		} catch {}
 		isTouch = window.matchMedia('(pointer: coarse)').matches;
-		terminal = new Terminal({ theme: { background: '#0f0f11', foreground: '#e8e8ed' }, fontFamily: 'JetBrains Mono, monospace', allowProposedApi: true });
+		terminal = new Terminal({ theme: { background: '#0f0f11', foreground: '#e8e8ed' }, fontFamily: 'JetBrains Mono, monospace', allowProposedApi: true, screenReaderMode: false });
 		fit = new FitAddon();
 		terminal.loadAddon(fit);
 		// Correct width for wide chars/emoji.
@@ -369,7 +374,7 @@
 		<div class="links-panel">
 			<div class="links-header">
 				<span>Links detected in output</span>
-				<button class="links-close" onclick={() => { linksOpen = false; detectedLinks = []; linkScanBuf = ''; }}>Clear ×</button>
+				<button class="links-close" onclick={() => { for (const l of detectedLinks) suppressedLinks.add(l); detectedLinks = []; linkScanBuf = ''; linksOpen = false; }}>Clear ×</button>
 			</div>
 			{#each detectedLinks as url}
 				<div class="link-row">
@@ -380,6 +385,12 @@
 					{/if}
 				</div>
 			{/each}
+		</div>
+	{/if}
+	{#if connectError}
+		<div class="connect-error">
+			<span>{connectError}</span>
+			<button class="error-dismiss" onclick={() => connectError = ''}>×</button>
 		</div>
 	{/if}
 	<div class="term-container" bind:this={termEl}></div>
@@ -416,7 +427,7 @@
 </dialog>
 
 <style>
-	.terminal-page { display: flex; flex-direction: column; gap: 0; height: calc(100vh - 200px); min-height: 400px; }
+	.terminal-page { display: flex; flex-direction: column; gap: 0; height: calc(100vh - 200px); min-height: 400px; margin-top: -1.5rem; }
 	@media (max-width: 640px) {
 		.terminal-page { height: calc(100vh - 120px); }
 	}
@@ -458,6 +469,9 @@
 	.link-action { flex-shrink: 0; font-size: 11px; padding: 0.15rem 0.4rem; border: 1px solid var(--color-border); border-radius: 3px; background: var(--color-surface); color: var(--color-text-muted); cursor: pointer; text-decoration: none; }
 	.link-action:hover { color: var(--color-accent); border-color: var(--color-accent); }
 
+	.connect-error { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.35rem 0.75rem; background: #3d2000; color: #f5a623; font-size: 12px; border-bottom: 1px solid #7a4500; }
+	.error-dismiss { background: none; border: none; color: #f5a623; cursor: pointer; font-size: 16px; line-height: 1; padding: 0; flex-shrink: 0; }
+	.error-dismiss:hover { color: #fff; }
 	.term-container { background: #0f0f11; overflow: hidden; flex: 1; min-height: 0; }
 	.muted { color: var(--color-text-muted); font-size: 12px; padding: 0 0.75rem; align-self: center; }
 
