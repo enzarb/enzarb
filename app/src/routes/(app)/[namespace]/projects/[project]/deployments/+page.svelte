@@ -28,7 +28,7 @@
 		</div>
 	{/if}
 
-	{#await Promise.all([getEnvironments(), getProject()]) then [envs, project]}
+	{#await Promise.all([getEnvironments(), getProject()]) then [{ envs, deployZone }, project]}
 		{@const defaultEnvSlug = project.metadata?.annotations?.['enzarb.io/default-environment'] ?? null}
 		<div class="env-list">
 			{#each envs as env}
@@ -41,6 +41,11 @@
 								{#if isDefault}<span class="badge running">default</span>{/if}
 							</div>
 							<code class="mono small">{env.status?.namespace ?? 'Provisioning…'}</code>
+							{#if env.status?.subdomain}
+								<a class="platform-url" href="https://{env.status.subdomain}.{deployZone}" target="_blank" rel="noopener">
+									{env.status.subdomain}.{deployZone}
+								</a>
+							{/if}
 						</div>
 						<div class="env-actions">
 							{#if !isDefault}
@@ -114,4 +119,5 @@
 	.domain-form input[type=text] { max-width: 280px; }
 	.muted { color: var(--color-text-muted); font-size: 13px; }
 	.btn-sm { padding: 0.3rem 0.7rem; font-size: 12px; }
+	.platform-url { display: block; font-family: var(--font-mono); font-size: 12px; color: var(--color-accent); margin-top: 0.15rem; }
 </style>

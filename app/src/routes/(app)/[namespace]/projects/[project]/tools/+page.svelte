@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { getAgentToken, getProject } from '$lib/remote/projects.remote';
 
 	// Per-project agent route (`/agent/<slug>`), published in the Project status.
@@ -121,6 +122,8 @@
 		}
 	}
 
+	onMount(() => { init(); });
+
 	async function loadVersions(name: string) {
 		if (!token) return;
 		versionOptions = [];
@@ -137,115 +140,111 @@
 
 <svelte:head><title>Tools</title></svelte:head>
 
-{#await init()}
+{#if loading}
 	<p class="muted">Loading…</p>
-{:then}
-	{#if errorMsg && !token}
-		<p class="muted">{errorMsg}</p>
-	{:else}
-		<div class="tools-page">
-			{#if errorMsg}
-				<div class="error">{errorMsg}</div>
+{:else if errorMsg && !token}
+	<p class="muted">{errorMsg}</p>
+{:else}
+	<div class="tools-page">
+		{#if errorMsg}
+			<div class="error">{errorMsg}</div>
+		{/if}
+
+		<section>
+			<h3>Installed</h3>
+			{#if installed.length === 0}
+				<p class="muted">No tools configured yet. Add one below.</p>
+			{:else}
+				<table class="tool-table">
+					<thead><tr><th>Tool</th><th>Requested</th><th>Resolved</th><th>Status</th><th></th></tr></thead>
+					<tbody>
+						{#each installed as t}
+							<tr>
+								<td class="mono">{t.name}</td>
+								<td class="muted mono">{t.requested ?? '—'}</td>
+								<td class="muted mono">{t.version ?? '—'}</td>
+								<td>
+									{#if t.installed}
+										<span class="pill ok">installed</span>
+									{:else}
+										<span class="pill pending">pending</span>
+									{/if}
+								</td>
+								<td>
+									<button class="btn danger" disabled={busy === t.name} onclick={() => removeTool(t.name)}>
+										{busy === t.name ? '…' : 'Remove'}
+									</button>
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
 			{/if}
+		</section>
 
-			<section>
-				<h3>Installed</h3>
-				{#if loading}
-					<p class="muted">Loading…</p>
-				{:else if installed.length === 0}
-					<p class="muted">No tools configured yet. Add one below.</p>
-				{:else}
-					<table class="tool-table">
-						<thead><tr><th>Tool</th><th>Requested</th><th>Resolved</th><th>Status</th><th></th></tr></thead>
-						<tbody>
-							{#each installed as t}
-								<tr>
-									<td class="mono">{t.name}</td>
-									<td class="muted mono">{t.requested ?? '—'}</td>
-									<td class="muted mono">{t.version ?? '—'}</td>
-									<td>
-										{#if t.installed}
-											<span class="pill ok">installed</span>
-										{:else}
-											<span class="pill pending">pending</span>
-										{/if}
-									</td>
-									<td>
-										<button class="btn danger" disabled={busy === t.name} onclick={() => removeTool(t.name)}>
-											{busy === t.name ? '…' : 'Remove'}
-										</button>
-									</td>
-								</tr>
-							{/each}
-						</tbody>
-					</table>
-				{/if}
-			</section>
+		<section>
+			<h3>Quick add</h3>
+			<div class="chip-row">
+				{#each curated as c}
+					<button
+						class="chip"
+						disabled={installedNames.has(c.name) || busy === c.name}
+						onclick={() => addTool(c.name)}
+						title={installedNames.has(c.name) ? 'Already installed' : `Install ${c.label}`}
+					>
+						{busy === c.name ? '…' : c.label}
+					</button>
+				{/each}
+			</div>
+		</section>
 
-			<section>
-				<h3>Quick add</h3>
-				<div class="chip-row">
-					{#each curated as c}
-						<button
-							class="chip"
-							disabled={installedNames.has(c.name) || busy === c.name}
-							onclick={() => addTool(c.name)}
-							title={installedNames.has(c.name) ? 'Already installed' : `Install ${c.label}`}
-						>
-							{busy === c.name ? '…' : c.label}
+		<section>
+			<h3>Search the registry</h3>
+			<input
+				class="search"
+				type="text"
+				placeholder="Search {registry.length} tools (e.g. ripgrep, deno)…"
+				bind:value={search}
+			/>
+			{#if search.trim().length >= 2}
+				<table class="tool-table">
+					<tbody>
+						{#each matches as m}
+							<tr>
+								<td class="mono">{m.short}</td>
+								<td class="muted mono">{m.full}</td>
+								<td>
+									<button class="btn" disabled={installedNames.has(m.short) || busy === m.short} onclick={() => loadVersions(m.short)}>Versions</button>
+								</td>
+								<td>
+									<button class="btn primary" disabled={installedNames.has(m.short) || busy === m.short} onclick={() => addTool(m.short)}>
+										{busy === m.short ? '…' : installedNames.has(m.short) ? 'Installed' : 'Add latest'}
+									</button>
+								</td>
+							</tr>
+						{:else}
+							<tr><td class="muted">No matches.</td></tr>
+						{/each}
+					</tbody>
+				</table>
+
+				{#if versionOptions.length > 0}
+					<div class="version-add">
+						<input class="search" list="version-list" bind:value={versionInput} placeholder="version" />
+						<datalist id="version-list">
+							{#each versionOptions as v}<option value={v}></option>{/each}
+						</datalist>
+						<button class="btn primary" disabled={!search.trim() || busy !== null} onclick={() => addTool(search.trim().split(/\s+/)[0], versionInput)}>
+							Add pinned version
 						</button>
-					{/each}
-				</div>
-			</section>
-
-			<section>
-				<h3>Search the registry</h3>
-				<input
-					class="search"
-					type="text"
-					placeholder="Search {registry.length} tools (e.g. ripgrep, deno)…"
-					bind:value={search}
-				/>
-				{#if search.trim().length >= 2}
-					<table class="tool-table">
-						<tbody>
-							{#each matches as m}
-								<tr>
-									<td class="mono">{m.short}</td>
-									<td class="muted mono">{m.full}</td>
-									<td>
-										<button class="btn" disabled={installedNames.has(m.short) || busy === m.short} onclick={() => loadVersions(m.short)}>Versions</button>
-									</td>
-									<td>
-										<button class="btn primary" disabled={installedNames.has(m.short) || busy === m.short} onclick={() => addTool(m.short)}>
-											{busy === m.short ? '…' : installedNames.has(m.short) ? 'Installed' : 'Add latest'}
-										</button>
-									</td>
-								</tr>
-							{:else}
-								<tr><td class="muted">No matches.</td></tr>
-							{/each}
-						</tbody>
-					</table>
-
-					{#if versionOptions.length > 0}
-						<div class="version-add">
-							<input class="search" list="version-list" bind:value={versionInput} placeholder="version" />
-							<datalist id="version-list">
-								{#each versionOptions as v}<option value={v}></option>{/each}
-							</datalist>
-							<button class="btn primary" disabled={!search.trim() || busy !== null} onclick={() => addTool(search.trim().split(/\s+/)[0], versionInput)}>
-								Add pinned version
-							</button>
-						</div>
-					{/if}
+					</div>
 				{/if}
-			</section>
+			{/if}
+		</section>
 
-			<p class="hint">Changes apply live in the workspace via <span class="mono">mise</span>. The workspace's <span class="mono">mise.toml</span> is the source of truth — no restart needed.</p>
-		</div>
-	{/if}
-{/await}
+		<p class="hint">Changes apply live in the workspace via <span class="mono">mise</span>. The workspace's <span class="mono">mise.toml</span> is the source of truth — no restart needed.</p>
+	</div>
+{/if}
 
 <style>
 	.tools-page { display: flex; flex-direction: column; gap: 1.75rem; max-width: 760px; }

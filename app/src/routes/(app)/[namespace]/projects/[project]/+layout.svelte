@@ -45,7 +45,7 @@
 		{ href: base, label: 'Overview' },
 		{ href: `${base}/files`, label: 'Files' },
 		{ href: `${base}/registry`, label: 'Registry' },
-		{ href: `${base}/deployments`, label: 'Deployments' },
+		{ href: `${base}/deployments`, label: 'Environments' },
 		{ href: `${base}/tools`, label: 'Tools' },
 		{ href: `${base}/terminal`, label: 'Terminal' }
 	]}
