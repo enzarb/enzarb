@@ -3,17 +3,14 @@ package controller
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -77,10 +74,6 @@ func (r *OrganizationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	if err := r.ensureNamespace(ctx, &org, nsName); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensure namespace: %w", err)
-	}
-
-	if err := r.ensureNetworkPolicy(ctx, &org, nsName); err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensure network policy: %w", err)
 	}
 
 	org.Status.Namespace = nsName
@@ -225,110 +218,6 @@ func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *enzar
 	}
 	logger.Info("organization deleted", "org", org.Spec.Slug, "namespace", nsName)
 	return ctrl.Result{}, nil
-}
-
-// ensureNetworkPolicy creates or updates the egress NetworkPolicy for the org
-// namespace. Workspace pods may reach DNS, the k8s API server, enzarb-system
-// services (gitea, zot), their own deploy namespaces, and the internet — but
-// not other orgs' namespaces or other cluster services.
-func (r *OrganizationReconciler) ensureNetworkPolicy(ctx context.Context, org *enzarbv1alpha1.Organization, ns string) error {
-	if os.Getenv("NETWORK_POLICY_ENABLED") == "false" {
-		return nil
-	}
-
-	podCIDR := os.Getenv("CLUSTER_POD_CIDR")
-	svcCIDR := os.Getenv("CLUSTER_SVC_CIDR")
-	if podCIDR == "" {
-		podCIDR = "10.42.0.0/16"
-	}
-	if svcCIDR == "" {
-		svcCIDR = "10.43.0.0/16"
-	}
-
-	dnsPort := intstr.FromInt32(53)
-	apiserverPort := intstr.FromInt32(443)
-	udp := corev1.ProtocolUDP
-	tcp := corev1.ProtocolTCP
-
-	// egress-only policy — ingress is unrestricted (the platform controls who
-	// reaches workspace pods via HTTPRoute + agent JWT auth).
-	desired := &networkingv1.NetworkPolicy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "enzarb-workspace-egress",
-			Namespace: ns,
-			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "enzarb-operator",
-			},
-		},
-		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{},
-			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
-			Egress: []networkingv1.NetworkPolicyEgressRule{
-				// DNS — kube-dns in kube-system
-				{
-					Ports: []networkingv1.NetworkPolicyPort{
-						{Protocol: &udp, Port: &dnsPort},
-						{Protocol: &tcp, Port: &dnsPort},
-					},
-					To: []networkingv1.NetworkPolicyPeer{{
-						NamespaceSelector: &metav1.LabelSelector{
-							MatchLabels: map[string]string{"kubernetes.io/metadata.name": "kube-system"},
-						},
-					}},
-				},
-				// Kubernetes API server (for kubectl in workspace)
-				{
-					Ports: []networkingv1.NetworkPolicyPort{
-						{Protocol: &tcp, Port: &apiserverPort},
-					},
-					To: []networkingv1.NetworkPolicyPeer{{
-						NamespaceSelector: &metav1.LabelSelector{
-							MatchLabels: map[string]string{"kubernetes.io/metadata.name": "default"},
-						},
-					}},
-				},
-				// enzarb-system (gitea, zot, authd) — all ports
-				{
-					To: []networkingv1.NetworkPolicyPeer{{
-						NamespaceSelector: &metav1.LabelSelector{
-							MatchLabels: map[string]string{"kubernetes.io/metadata.name": "enzarb-system"},
-						},
-					}},
-				},
-				// Own deploy namespaces
-				{
-					To: []networkingv1.NetworkPolicyPeer{{
-						NamespaceSelector: &metav1.LabelSelector{
-							MatchLabels: map[string]string{
-								"enzarb.io/org-id": org.Spec.OrgID,
-								"enzarb.io/type":   "deploy",
-							},
-						},
-					}},
-				},
-				// Internet egress — all IPs except cluster-internal CIDRs
-				{
-					To: []networkingv1.NetworkPolicyPeer{{
-						IPBlock: &networkingv1.IPBlock{
-							CIDR:   "0.0.0.0/0",
-							Except: []string{podCIDR, svcCIDR},
-						},
-					}},
-				},
-			},
-		},
-	}
-
-	existing := &networkingv1.NetworkPolicy{}
-	err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: desired.Name}, existing)
-	if apierrors.IsNotFound(err) {
-		return r.Create(ctx, desired)
-	}
-	if err != nil {
-		return err
-	}
-	existing.Spec = desired.Spec
-	return r.Update(ctx, existing)
 }
 
 func orgNamespaceLabels(org *enzarbv1alpha1.Organization) map[string]string {
