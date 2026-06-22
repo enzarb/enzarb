@@ -18,7 +18,7 @@
 	}
 
 	const registryBase = 'registry.enzarb.dev';
-	const registryPrefix = $derived(`${registryBase}/${$page.params.namespace}`);
+	const registryPrefix = $derived(`${registryBase}/${$page.params.namespace}/${$page.params.project}`);
 </script>
 
 {#await getRepositories() then repos}

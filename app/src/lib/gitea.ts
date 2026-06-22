@@ -92,3 +92,28 @@ export async function createLabel(orgSlug: string, repo: string, name: string, c
 		body: JSON.stringify({ name, color })
 	});
 }
+
+export type GiteaCommit = {
+	sha: string;
+	commit: { message: string; author: { name: string; date: string } };
+	html_url: string;
+};
+
+export type GiteaBlameSection = {
+	commit: GiteaCommit;
+	lines: string[];
+};
+
+export async function listCommits(orgSlug: string, repo: string, sha = 'main', path?: string, page = 1, limit = 30): Promise<GiteaCommit[] | null> {
+	const q = new URLSearchParams({ sha, page: String(page), limit: String(limit) });
+	if (path) q.set('path', path);
+	return giteaFetch(`/repos/${orgSlug}/${repo}/commits?${q}`) as Promise<GiteaCommit[] | null>;
+}
+
+export async function getCommit(orgSlug: string, repo: string, sha: string): Promise<any | null> {
+	return giteaFetch(`/repos/${orgSlug}/${repo}/git/commits/${sha}`);
+}
+
+export async function getBlame(orgSlug: string, repo: string, filepath: string, ref = 'main'): Promise<GiteaBlameSection[] | null> {
+	return giteaFetch(`/repos/${orgSlug}/${repo}/git/blame/${encodeURIComponent(filepath)}?ref=${encodeURIComponent(ref)}`) as Promise<GiteaBlameSection[] | null>;
+}
