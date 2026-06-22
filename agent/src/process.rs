@@ -16,6 +16,8 @@ use crate::init::home_dir;
 const STATE_FILE: &str = ".enzarb/processes.json";
 pub const LOG_DIR: &str = ".enzarb/tasks";
 const BROADCAST_CAPACITY: usize = 512;
+// Rolling scrollback kept in memory so reconnecting clients can replay output.
+const SCROLLBACK_LIMIT: usize = 1024 * 1024; // 1 MiB
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -55,6 +57,8 @@ struct State {
 // Non-serializable runtime state kept only while the process is alive.
 pub struct RuntimeHandle {
     pub output_tx: broadcast::Sender<Vec<u8>>,
+    // Rolling tail of all output; replayed to reconnecting clients.
+    pub scrollback: Arc<std::sync::Mutex<Vec<u8>>>,
     // Only set for PTY (persistent) processes.
     pub input_writer: Option<Arc<std::sync::Mutex<Box<dyn Write + Send>>>>,
     // Mutex provides Sync (MasterPty is Send but not Sync).
@@ -200,8 +204,11 @@ impl ProcessStore {
 
         let (output_tx, _) = broadcast::channel(BROADCAST_CAPACITY);
         let tx = output_tx.clone();
+        let scrollback: Arc<std::sync::Mutex<Vec<u8>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sb = scrollback.clone();
 
-        // Blocking reader thread: PTY output → broadcast channel.
+        // Blocking reader thread: PTY output → broadcast channel + scrollback.
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
             let mut reader = reader;
@@ -209,7 +216,15 @@ impl ProcessStore {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
-                        let _ = tx.send(buf[..n].to_vec());
+                        let chunk = buf[..n].to_vec();
+                        let _ = tx.send(chunk.clone());
+                        if let Ok(mut sb) = sb.lock() {
+                            sb.extend_from_slice(&chunk);
+                            if sb.len() > SCROLLBACK_LIMIT {
+                                let drop = sb.len() - SCROLLBACK_LIMIT;
+                                sb.drain(..drop);
+                            }
+                        }
                     }
                 }
             }
@@ -229,6 +244,7 @@ impl ProcessStore {
 
         Ok(RuntimeHandle {
             output_tx,
+            scrollback,
             input_writer: Some(Arc::new(std::sync::Mutex::new(writer))),
             pty_master: Some(master),
             pid,
@@ -261,6 +277,9 @@ impl ProcessStore {
 
         let (output_tx, _) = broadcast::channel(BROADCAST_CAPACITY);
         let tx = output_tx.clone();
+        let scrollback: Arc<std::sync::Mutex<Vec<u8>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sb = scrollback.clone();
 
         let store = self.clone();
         let id = process.id.clone();
@@ -279,6 +298,13 @@ impl ProcessStore {
                 if let Ok(bytes) = chunk {
                     let _ = tx.send(bytes.to_vec());
                     let _ = tokio::io::AsyncWriteExt::write_all(&mut log, &bytes).await;
+                    if let Ok(mut sb) = sb.lock() {
+                        sb.extend_from_slice(&bytes);
+                        if sb.len() > SCROLLBACK_LIMIT {
+                            let drop = sb.len() - SCROLLBACK_LIMIT;
+                            sb.drain(..drop);
+                        }
+                    }
                 }
             }
             let _ = tokio::io::AsyncWriteExt::flush(&mut log).await;
@@ -299,6 +325,7 @@ impl ProcessStore {
 
         Ok(RuntimeHandle {
             output_tx,
+            scrollback,
             input_writer: None,
             pty_master: None,
             pid,
@@ -349,23 +376,28 @@ impl ProcessStore {
         home_dir().join(LOG_DIR).join(format!("{}.log", id))
     }
 
-    /// Returns (output_receiver, optional_input_writer, optional_pty_master) for
-    /// attaching a WebSocket terminal to a running process.
+    /// Returns (scrollback_snapshot, output_receiver, optional_input_writer,
+    /// optional_pty_master) for attaching a WebSocket terminal to a running process.
+    ///
+    /// The receiver is subscribed BEFORE the scrollback is snapshotted so there
+    /// is no gap: any output written after subscription is in the live channel,
+    /// and everything before is in the scrollback. Clients send scrollback first,
+    /// then relay the live channel, giving seamless reconnect replay.
     pub async fn attach(
         &self,
         id: &str,
     ) -> Option<(
+        Vec<u8>,
         broadcast::Receiver<Vec<u8>>,
         Option<Arc<std::sync::Mutex<Box<dyn Write + Send>>>>,
         Option<Arc<std::sync::Mutex<Box<dyn portable_pty::MasterPty + Send>>>>,
     )> {
         let handles = self.handles.read().await;
         handles.get(id).map(|h| {
-            (
-                h.output_tx.subscribe(),
-                h.input_writer.clone(),
-                h.pty_master.clone(),
-            )
+            // Subscribe before snapshotting: guarantees no output gap on reconnect.
+            let rx = h.output_tx.subscribe();
+            let scrollback = h.scrollback.lock().map(|s| s.clone()).unwrap_or_default();
+            (scrollback, rx, h.input_writer.clone(), h.pty_master.clone())
         })
     }
 

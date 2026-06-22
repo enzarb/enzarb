@@ -17,11 +17,22 @@ struct Resize {
 /// JSON text frames with `{"rows":N,"cols":N}` resize the PTY.
 /// Output from the process is sent to the client as binary frames.
 pub async fn attach_ws(mut socket: WebSocket, process_id: String, state: AppState) {
-    let Some((mut rx, input_writer, pty_master)) = state.process_store.attach(&process_id).await
+    let Some((scrollback, mut rx, input_writer, pty_master)) =
+        state.process_store.attach(&process_id).await
     else {
         let _ = socket.close().await;
         return;
     };
+
+    // Replay scrollback so reconnecting clients see all prior output.
+    if !scrollback.is_empty()
+        && socket
+            .send(Message::Binary(scrollback.into()))
+            .await
+            .is_err()
+    {
+        return;
+    }
 
     let (mut ws_tx, mut ws_rx) = socket.split();
 
