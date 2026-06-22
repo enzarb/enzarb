@@ -157,13 +157,21 @@
 		await loadProcesses();
 		delete bufferCache[id];
 		try { sessionStorage.removeItem(bufKey(id)); } catch { /* ignore */ }
-		if (selectedPid === id) { ws?.close(); ws = null; selectedPid = null; displayedPid = null; }
+		if (selectedPid === id) {
+			ws?.close(); ws = null; selectedPid = null; displayedPid = null;
+			try { sessionStorage.removeItem(SELECTED_KEY); } catch { /* ignore */ }
+		}
 	}
 
+	const SELECTED_KEY = 'enzarb-term:selected';
+
 	// Selecting a tab sets the desired process and (re)connects. selectedPid is
-	// kept across drops so we know what to reconnect to.
+	// kept across drops so we know what to reconnect to. Persisted to
+	// sessionStorage so a full page reload (mobile tab kill/restore) returns to
+	// the same process rather than blindly attaching to processes[0].
 	function attachToProcess(id: string) {
 		selectedPid = id;
+		try { sessionStorage.setItem(SELECTED_KEY, id); } catch { /* ignore */ }
 		connect();
 	}
 
@@ -281,8 +289,14 @@
 		resizeObserver = new ResizeObserver(() => { fit?.fit(); sendResize(); });
 		if (termEl) resizeObserver.observe(termEl);
 		await loadProcesses();
-		// Auto-attach so a fresh load / refresh connects without a manual tap.
-		if (!selectedPid && processes.length) attachToProcess(processes[0].id);
+		// Auto-attach: prefer the last-used process (survives full page reload on
+		// mobile) and fall back to the first available one.
+		if (!selectedPid && processes.length) {
+			let savedId: string | null = null;
+			try { savedId = sessionStorage.getItem(SELECTED_KEY); } catch { /* ignore */ }
+			const target = processes.find((p: any) => p.id === savedId) ?? processes[0];
+			attachToProcess(target.id);
+		}
 		// Reconnect when returning to a backgrounded mobile tab or after a network drop.
 		document.addEventListener('visibilitychange', onVisibility);
 		window.addEventListener('focus', maybeReconnect);
@@ -407,18 +421,8 @@
 		.terminal-page { height: calc(100vh - 120px); }
 	}
 
-	/* On mobile the terminal goes full-bleed: break out of the page's
-	   padding/header and let the on-screen keyboard own the bottom strip.
-	   Pinned below the 52px mobile topbar so navigation stays reachable. */
 	@media (max-width: 768px) {
-		.terminal-page.touch {
-			position: fixed;
-			inset: 52px 0 0 0;
-			height: auto;
-			min-height: 0;
-			z-index: 20;
-			background: #0f0f11;
-		}
+		.terminal-page { height: calc(100dvh - 180px); }
 	}
 
 	.tab-bar { display: flex; align-items: stretch; border-bottom: 1px solid var(--color-border); background: var(--color-surface-2); }
