@@ -13,6 +13,25 @@ use uuid::Uuid;
 
 use crate::init::home_dir;
 
+const ENV_CONTEXT_PATH: &str = "/var/run/enzarb/env/context.sh";
+
+/// Parse `export KEY=VALUE` lines from the mounted env context ConfigMap and
+/// return them as a map. Called at spawn time so ConfigMap updates (~60s
+/// propagation) are picked up without an agent restart.
+fn load_env_context() -> HashMap<String, String> {
+    let Ok(contents) = std::fs::read_to_string(ENV_CONTEXT_PATH) else {
+        return HashMap::new();
+    };
+    contents
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim().strip_prefix("export ")?;
+            let (k, v) = line.split_once('=')?;
+            Some((k.to_owned(), v.to_owned()))
+        })
+        .collect()
+}
+
 fn resolve_cwd(cwd: Option<&str>) -> String {
     let home = home_dir();
     let home_str = home.to_string_lossy();
@@ -200,6 +219,10 @@ impl ProcessStore {
         cmd.args(["exec", "--", &process.command]);
         cmd.args(&process.args);
         cmd.cwd(&cwd);
+        // Context env (e.g. POD_NAMESPACE) from the mounted ConfigMap; process env overrides.
+        for (k, v) in load_env_context() {
+            cmd.env(k, v);
+        }
         for (k, v) in &process.env {
             cmd.env(k, v);
         }
@@ -275,6 +298,8 @@ impl ProcessStore {
         cmd.args(["exec", "--", &process.command]);
         cmd.args(&process.args);
         cmd.current_dir(&cwd);
+        // Context env (e.g. POD_NAMESPACE) from the mounted ConfigMap; process env overrides.
+        cmd.envs(load_env_context());
         cmd.envs(&process.env);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
