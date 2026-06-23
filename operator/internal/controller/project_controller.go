@@ -135,7 +135,23 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	if err := r.ensureRoleBinding(ctx, &project, orgNS, saName); err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensure cluster role binding: %w", err)
+		return ctrl.Result{}, fmt.Errorf("ensure role binding: %w", err)
+	}
+
+	// Prune any stale ClusterRoleBindings left over from before the migration
+	// to namespace-scoped RoleBindings. ClusterRoleBindings are cluster-scoped
+	// so pass "" as namespace to pruneUnmanaged.
+	if err := pruneUnmanaged(ctx, r.Client, &rbacv1.ClusterRoleBindingList{}, "",
+		map[string]struct{}{},
+		func(l *rbacv1.ClusterRoleBindingList) []*rbacv1.ClusterRoleBinding {
+			items := make([]*rbacv1.ClusterRoleBinding, len(l.Items))
+			for i := range l.Items {
+				items[i] = &l.Items[i]
+			}
+			return items
+		},
+	); err != nil {
+		return ctrl.Result{}, fmt.Errorf("prune stale cluster role bindings: %w", err)
 	}
 
 	pvcName := fmt.Sprintf("%s-home", project.Spec.Slug)

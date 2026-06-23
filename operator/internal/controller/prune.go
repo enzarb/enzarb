@@ -13,8 +13,11 @@ const managedByLabel = "app.kubernetes.io/managed-by"
 const managedByValue = "enzarb-operator"
 
 // pruneUnmanaged deletes operator-managed objects whose names are not in
-// expected. It lists all objects of type L in namespace with the standard
-// managed-by label, then deletes any not present in expected.
+// expected. It lists all objects of type L with the standard managed-by label,
+// then deletes any not present in expected.
+//
+// Pass a non-empty namespace to scope the list to a single namespace.
+// Pass "" for cluster-scoped resource types.
 //
 // This handles forward-compatibility: when the operator stops managing a
 // resource type (or renames a resource), stale copies left from a prior
@@ -33,10 +36,11 @@ func pruneUnmanaged[T client.Object, L interface {
 ) error {
 	logger := log.FromContext(ctx)
 
-	if err := c.List(ctx, list,
-		client.InNamespace(namespace),
-		client.MatchingLabels{managedByLabel: managedByValue},
-	); err != nil {
+	listOpts := []client.ListOption{client.MatchingLabels{managedByLabel: managedByValue}}
+	if namespace != "" {
+		listOpts = append(listOpts, client.InNamespace(namespace))
+	}
+	if err := c.List(ctx, list, listOpts...); err != nil {
 		return fmt.Errorf("list: %w", err)
 	}
 
