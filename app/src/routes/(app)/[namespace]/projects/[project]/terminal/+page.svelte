@@ -139,13 +139,15 @@
 	async function createProcess() {
 		createErr = '';
 		if (!agentToken || !agentBase) { createErr = 'Not connected to the workspace agent.'; return; }
-		if (!newCmd.trim()) { createErr = 'Enter a command.'; return; }
+		const parts = newCmd.trim().split(/\s+/);
+		if (!parts.length || !parts[0]) { createErr = 'Enter a command.'; return; }
+		const [command, ...args] = parts;
 		let res: Response;
 		try {
 			res = await fetch(`${agentBase}/processes`, {
 				method: 'POST',
 				headers: { Authorization: `Bearer ${agentToken}`, 'Content-Type': 'application/json' },
-				body: JSON.stringify({ name: newName || newCmd, command: newCmd, kind: newKind, ...(newCwd ? { cwd: newCwd } : {}) })
+				body: JSON.stringify({ name: newName || newCmd.trim(), command, args, kind: newKind, ...(newCwd ? { cwd: newCwd } : {}) })
 			});
 		} catch {
 			createErr = 'Could not reach the workspace agent.';
