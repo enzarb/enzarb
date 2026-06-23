@@ -23,7 +23,9 @@
 	let terminal: Terminal | undefined;
 	let resizeObserver: ResizeObserver | undefined;
 	let mounted = false;
-	let ws: WebSocket | null = null;
+	// One persistent socket per process; switching tabs just changes which one
+	// feeds the terminal rather than closing and reopening a connection.
+	const sockets = new Map<string, WebSocket>();
 	let processes: any[] = $state([]);
 	let selectedPid: string | null = $state(null);
 	let newCmd = $state('');
@@ -109,13 +111,15 @@
 	// messages (terminal resize). Both xterm input and the virtual keyboard
 	// funnel through here.
 	function send(data: string) {
-		if (ws?.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(data));
+		const sock = selectedPid ? sockets.get(selectedPid) : undefined;
+		if (sock?.readyState === WebSocket.OPEN) sock.send(new TextEncoder().encode(data));
 	}
 
 	// Tell the agent the PTY dimensions so output wraps/clears correctly.
 	function sendResize() {
-		if (ws?.readyState === WebSocket.OPEN && terminal) {
-			ws.send(JSON.stringify({ rows: terminal.rows, cols: terminal.cols }));
+		const sock = selectedPid ? sockets.get(selectedPid) : undefined;
+		if (sock?.readyState === WebSocket.OPEN && terminal) {
+			sock.send(JSON.stringify({ rows: terminal.rows, cols: terminal.cols }));
 		}
 	}
 
@@ -167,25 +171,42 @@
 	async function killProcess(id: string) {
 		if (!agentToken) return;
 		await fetch(`${agentBase}/processes/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${agentToken}` } });
+		const sock = sockets.get(id);
+		if (sock) { sock.onclose = null; sock.close(); sockets.delete(id); }
 		await loadProcesses();
 		delete bufferCache[id];
 		try { sessionStorage.removeItem(bufKey(id)); } catch { /* ignore */ }
 		if (selectedPid === id) {
-			ws?.close(); ws = null; selectedPid = null; displayedPid = null;
+			selectedPid = null; displayedPid = null;
 			try { sessionStorage.removeItem(SELECTED_KEY); } catch { /* ignore */ }
 		}
 	}
 
 	const SELECTED_KEY = 'enzarb-term:selected';
 
-	// Selecting a tab sets the desired process and (re)connects. selectedPid is
-	// kept across drops so we know what to reconnect to. Persisted to
-	// sessionStorage so a full page reload (mobile tab kill/restore) returns to
-	// the same process rather than blindly attaching to processes[0].
+	// Selecting a tab switches which process feeds the terminal. If a socket for
+	// that process already exists and is open we just swap output; otherwise we
+	// open a new one. The previous process's socket stays alive so switching back
+	// is instant and doesn't trigger a spurious reconnect error.
 	function attachToProcess(id: string) {
+		if (displayedPid && displayedPid !== id) saveBuffer(displayedPid);
 		selectedPid = id;
 		try { sessionStorage.setItem(SELECTED_KEY, id); } catch { /* ignore */ }
-		connect();
+
+		const existing = sockets.get(id);
+		if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) {
+			// Socket already live — just switch the terminal display.
+			displayedPid = id;
+			terminal?.clear();
+			const prev = loadBuffer(id);
+			if (prev) terminal?.write(prev);
+			connState = existing.readyState === WebSocket.OPEN ? 'connected' : 'connecting';
+			connectError = '';
+			fit?.fit();
+			sendResize();
+		} else {
+			openSocket(id);
+		}
 	}
 
 	// Agent tokens are short-lived; re-mint on (re)connect so a socket opened after
@@ -195,75 +216,81 @@
 		return agentToken;
 	}
 
-	async function connect() {
-		if (!agentBase || !selectedPid) return;
+	async function openSocket(pid: string) {
+		if (!agentBase) return;
 		await ensureToken();
 		if (!agentToken) return;
-		ws?.close();
-		// Only reset the buffer when switching to a different process: stash the
-		// outgoing one's scrollback and restore the incoming one's. A same-process
-		// reconnect (mobile resume) keeps the existing buffer; tmux redraws the
-		// live screen on top.
-		if (displayedPid !== selectedPid) {
-			if (displayedPid) saveBuffer(displayedPid);
+
+		// Close any stale socket for this pid before opening a fresh one.
+		const stale = sockets.get(pid);
+		if (stale) { stale.onclose = null; stale.onerror = null; stale.onmessage = null; stale.close(); sockets.delete(pid); }
+
+		if (pid === selectedPid) {
 			terminal?.clear();
-			const prev = loadBuffer(selectedPid);
+			const prev = loadBuffer(pid);
 			if (prev) {
 				terminal?.write(prev);
 				terminal?.write('\r\n\x1b[2m──────── reconnected ────────\x1b[0m\r\n');
 			}
-			displayedPid = selectedPid;
+			displayedPid = pid;
+			connState = 'connecting';
 		}
-		const wsUrl = `${agentBase.replace('https://', 'wss://').replace('http://', 'ws://')}/processes/${selectedPid}/output`;
+
+		const wsUrl = `${agentBase.replace('https://', 'wss://').replace('http://', 'ws://')}/processes/${pid}/output`;
 		const sock = new WebSocket(`${wsUrl}?token=${encodeURIComponent(agentToken)}`);
-		ws = sock;
+		sockets.set(pid, sock);
 		// The agent streams output as binary frames; default binaryType is "blob",
 		// which TextDecoder can't decode. Use arraybuffer so we can render it.
 		sock.binaryType = 'arraybuffer';
-		// On connect, clear any error and report the terminal size.
 		sock.onopen = () => {
-			connState = 'connected';
-			connectError = '';
-			suppressedLinks.clear();
-			fit?.fit();
-			sendResize();
+			if (pid === selectedPid) {
+				connState = 'connected';
+				connectError = '';
+				suppressedLinks.clear();
+				fit?.fit();
+				sendResize();
+			}
 		};
 		sock.onerror = () => {
-			connectError = 'WebSocket error — check that the workspace is running and reachable.';
+			if (pid === selectedPid) {
+				connectError = 'WebSocket error — check that the workspace is running and reachable.';
+			}
 		};
 		sock.onclose = (e) => {
-			// 1000/1001 = clean close (process killed or tab navigated away); anything
-			// else is unexpected. 1006 = abnormal closure (network drop, server crash).
-			if (e.code !== 1000 && e.code !== 1001) {
+			sockets.delete(pid);
+			// 1000/1001 = clean close (process killed or navigated away); ignore those.
+			if (e.code === 1000 || e.code === 1001) return;
+			if (pid === selectedPid) {
 				const reason = e.reason ? `: ${e.reason}` : '';
 				connectError = `Disconnected (code ${e.code}${reason}) — attempting to reconnect…`;
 				connState = 'reconnecting';
-				scheduleReconnect();
+				scheduleReconnect(pid);
 			}
 		};
 		sock.onmessage = (e) => {
+			// Only write to terminal if this is the process currently on display.
+			if (pid !== displayedPid) return;
 			const data = e.data instanceof ArrayBuffer ? new Uint8Array(e.data) : e.data;
 			const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
 			terminal?.write(text);
 			scanForLinks(text);
 		};
-		// Leave selectedPid set so maybeReconnect can re-establish the socket.
 	}
 
 	// Auto-reconnect with a single retry after a short delay. If it fails again
 	// the state becomes 'failed' and the user must click Retry manually.
 	let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
-	function scheduleReconnect() {
+	function scheduleReconnect(pid: string) {
 		clearTimeout(reconnectTimer);
 		reconnectTimer = setTimeout(async () => {
-			if (!mounted || !selectedPid) return;
-			const st = ws?.readyState;
+			if (!mounted || pid !== selectedPid) return;
+			const st = sockets.get(pid)?.readyState;
 			if (st === WebSocket.OPEN || st === WebSocket.CONNECTING) return;
-			await connect();
+			await openSocket(pid);
 			// If the socket didn't open successfully after the attempt, mark as failed.
 			setTimeout(() => {
-				if (!mounted) return;
-				const s = ws?.readyState;
+				if (!mounted || pid !== selectedPid) return;
+				const s = sockets.get(pid)?.readyState;
 				if (s !== WebSocket.OPEN && s !== WebSocket.CONNECTING) {
 					connState = 'failed';
 					connectError = 'Reconnection failed — the workspace may be unavailable.';
@@ -272,16 +299,15 @@
 		}, 1500);
 	}
 
-	// Mobile browsers close the socket when the tab is backgrounded. Reconnect
-	// when the page becomes visible/focused again (or the network returns) if we
-	// have a selected process and the socket isn't already open/connecting.
+	// Mobile browsers close sockets when the tab is backgrounded. Reconnect all
+	// processes (or at least the selected one) when the page becomes visible again.
 	function maybeReconnect() {
 		if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
 		if (!selectedPid) return;
-		const st = ws?.readyState;
+		const st = sockets.get(selectedPid)?.readyState;
 		if (st === WebSocket.OPEN || st === WebSocket.CONNECTING) return;
 		connState = 'reconnecting';
-		connect();
+		openSocket(selectedPid);
 	}
 
 	// Snapshot scrollback when the tab is hidden (mobile may discard it), and
@@ -376,8 +402,8 @@
 		window.removeEventListener('online', maybeReconnect);
 		window.removeEventListener('beforeunload', persist);
 		persist();
-		ws?.close();
-		ws = null;
+		for (const [, sock] of sockets) { sock.onclose = null; sock.close(); }
+		sockets.clear();
 		terminal?.dispose();
 		terminal = undefined;
 		fit = undefined;
@@ -452,7 +478,7 @@
 	{#if connState === 'reconnecting' || connState === 'failed'}
 		<div class="connect-error" class:failed={connState === 'failed'}>
 			<span>{connectError}</span>
-			<button class="error-retry" onclick={() => { connState = 'reconnecting'; connectError = 'Reconnecting…'; connect(); }}>Retry</button>
+			<button class="error-retry" onclick={() => { connState = 'reconnecting'; connectError = 'Reconnecting…'; if (selectedPid) openSocket(selectedPid); }}>Retry</button>
 			{#if connState === 'failed'}
 				<button class="error-dismiss" onclick={() => { connState = 'connected'; connectError = ''; }}>×</button>
 			{/if}
