@@ -9,6 +9,8 @@ use anyhow::Result;
 use std::net::SocketAddr;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::registry()
@@ -18,6 +20,26 @@ async fn main() -> Result<()> {
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
+
+    // Exclusive non-blocking flock — released automatically on process exit.
+    // A second instance finds the lock held and exits immediately.
+    let lock_path = init::home_dir().join(".enzarb/agent.lock");
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)?;
+    let _lock =
+        match nix::fcntl::Flock::lock(lock_file, nix::fcntl::FlockArg::LockExclusiveNonblock) {
+            Ok(guard) => guard,
+            Err(_) => {
+                println!("project-agent v{VERSION} is already running");
+                std::process::exit(1);
+            }
+        };
 
     let project_id = std::env::var("ENZARB_PROJECT_ID").expect("ENZARB_PROJECT_ID must be set");
     let org_id = std::env::var("ENZARB_ORG_ID").expect("ENZARB_ORG_ID must be set");
