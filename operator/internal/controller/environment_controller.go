@@ -663,6 +663,15 @@ func (r *EnvironmentReconciler) ensureNetworkPolicy(ctx context.Context, deployN
 		svcCIDR = "10.43.0.0/16"
 	}
 
+	// Namespace where Envoy Gateway runs its data-plane proxy pods. The proxy
+	// terminating gateway traffic lives here (not in the deploy namespace), so
+	// the ingress rule must admit it or all routed traffic — including the ACME
+	// HTTP-01 self-check — is dropped.
+	gatewayNS := os.Getenv("GATEWAY_NAMESPACE")
+	if gatewayNS == "" {
+		gatewayNS = "envoy-gateway-system"
+	}
+
 	dnsPort := intstr.FromInt32(53)
 	udp := corev1.ProtocolUDP
 	tcp := corev1.ProtocolTCP
@@ -682,12 +691,16 @@ func (r *EnvironmentReconciler) ensureNetworkPolicy(ctx context.Context, deployN
 				networkingv1.PolicyTypeEgress,
 			},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{
-				// Allow same-namespace only: service-to-service within this env
-				// and the co-located Envoy proxy pods (created by EnvoyGateway in
-				// the same namespace as the deploy Gateway resource).
-				{From: []networkingv1.NetworkPolicyPeer{{
-					PodSelector: &metav1.LabelSelector{},
-				}}},
+				// Same-namespace service-to-service within this env, plus the Envoy
+				// Gateway proxy namespace (the merged data-plane proxy that routes
+				// all gateway traffic, including the ACME HTTP-01 challenge solver,
+				// runs there rather than in the deploy namespace).
+				{From: []networkingv1.NetworkPolicyPeer{
+					{PodSelector: &metav1.LabelSelector{}},
+					{NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"kubernetes.io/metadata.name": gatewayNS},
+					}},
+				}},
 			},
 			Egress: []networkingv1.NetworkPolicyEgressRule{
 				// DNS

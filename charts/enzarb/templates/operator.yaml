@@ -55,6 +55,8 @@ spec:
               value: {{ .Values.gateway.issuer.email | quote }}
             - name: GATEWAY_CLASS_NAME
               value: {{ .Values.gateway.className | quote }}
+            - name: GATEWAY_NAMESPACE
+              value: {{ .Values.gateway.namespace | quote }}
             - name: NETWORK_POLICY_ENABLED
               value: {{ .Values.networkPolicy.enabled | quote }}
             - name: CLUSTER_POD_CIDR

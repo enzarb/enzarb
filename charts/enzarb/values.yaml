@@ -152,6 +152,10 @@ gitea:
     gatewayNamespace: envoy-gateway-system
 gateway:
   className: envoy
+  # Namespace where Envoy Gateway runs its data-plane proxy pods. Deploy-namespace
+  # NetworkPolicies admit ingress from here so routed traffic (and the ACME
+  # HTTP-01 self-check) can reach workloads.
+  namespace: envoy-gateway-system
   domain: enzarb.dev
   # DNS zone for environment serving hosts (<random>.<deployDomain>). A single
   # wildcard *.<deployDomain> must point at the gateway. Defaults to env.<domain>.
