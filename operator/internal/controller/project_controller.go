@@ -10,7 +10,6 @@ import (
 	"time"
 
 	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
-	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -179,8 +178,12 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("ensure httproute: %w", err)
 	}
 
-	if err := r.ensureCertificate(ctx, orgNS, &project); err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensure certificate: %w", err)
+	// Legacy per-project apex-domain Certificate: never consumed (the agent route
+	// rides the chart-managed enzarb Gateway's https listener, already terminated
+	// by the platform enzarb-tls cert) and pointed at a nonexistent ClusterIssuer,
+	// so it churned forever. Prune any that exist so old deployments self-heal.
+	if err := r.pruneLegacyProjectCertificate(ctx, &project); err != nil {
+		return ctrl.Result{}, fmt.Errorf("prune legacy certificate: %w", err)
 	}
 
 	if err := r.ensureEnvContextConfigMap(ctx, orgNS, &project); err != nil {
@@ -964,30 +967,20 @@ func (r *ProjectReconciler) ensureHTTPRoute(ctx context.Context, ns string, proj
 	return nil
 }
 
-func (r *ProjectReconciler) ensureCertificate(ctx context.Context, ns string, project *enzarbv1alpha1.Project) error {
-	certName := fmt.Sprintf("project-%s-tls", project.Spec.Slug)
-	cert := &certmanagerv1.Certificate{}
-	err := r.Get(ctx, types.NamespacedName{Namespace: "enzarb-system", Name: certName}, cert)
-	if errors.IsNotFound(err) {
-		cert = &certmanagerv1.Certificate{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      certName,
-				Namespace: "enzarb-system",
-				Labels:    projectLabels(project),
-			},
-			Spec: certmanagerv1.CertificateSpec{
-				SecretName: fmt.Sprintf("project-%s-tls", project.Spec.Slug),
-				DNSNames:   []string{r.Domain},
-				IssuerRef: cmmeta.IssuerReference{
-					Name:  "letsencrypt-prod",
-					Kind:  "ClusterIssuer",
-					Group: "cert-manager.io",
-				},
-			},
-		}
-		return r.Create(ctx, cert)
+// pruneLegacyProjectCertificate removes the obsolete per-project apex-domain
+// Certificate (and its output Secret) from enzarb-system. Deleting the
+// Certificate cascades to its owned CertificateRequest and temporary key Secret;
+// the output Secret carries no owner ref by default, so it is removed explicitly.
+func (r *ProjectReconciler) pruneLegacyProjectCertificate(ctx context.Context, project *enzarbv1alpha1.Project) error {
+	name := fmt.Sprintf("project-%s-tls", project.Spec.Slug)
+	if err := r.deleteIfExists(ctx, &certmanagerv1.Certificate{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "enzarb-system"},
+	}); err != nil {
+		return err
 	}
-	return err
+	return r.deleteIfExists(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "enzarb-system"},
+	})
 }
 
 func projectLabels(p *enzarbv1alpha1.Project) map[string]string {
