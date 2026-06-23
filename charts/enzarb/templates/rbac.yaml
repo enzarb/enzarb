@@ -146,3 +146,7 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # pgop — tenants may manage Postgres clusters, roles, and databases in their env namespace
+  - apiGroups: ["pgop.ruck.io"]
+    resources: ["clusters", "roles", "databases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
