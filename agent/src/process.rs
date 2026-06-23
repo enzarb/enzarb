@@ -193,9 +193,13 @@ impl ProcessStore {
             pixel_height: 0,
         })?;
 
-        let mut cmd = CommandBuilder::new(&process.command);
+        // Run through `mise exec` so tool-specific PATH entries (e.g. npm-global
+        // bins inside a mise-managed node install) are available, matching what
+        // an interactive shell session sees after `mise activate`.
+        let mut cmd = CommandBuilder::new("mise");
+        cmd.args(["exec", "--", &process.command]);
         cmd.args(&process.args);
-        cmd.cwd(cwd);
+        cmd.cwd(&cwd);
         for (k, v) in &process.env {
             cmd.env(k, v);
         }
@@ -266,9 +270,11 @@ impl ProcessStore {
             tokio::fs::create_dir_all(parent).await?;
         }
 
-        let mut cmd = tokio::process::Command::new(&process.command);
+        // Run through `mise exec` for the same reason as spawn_pty.
+        let mut cmd = tokio::process::Command::new("mise");
+        cmd.args(["exec", "--", &process.command]);
         cmd.args(&process.args);
-        cmd.current_dir(cwd);
+        cmd.current_dir(&cwd);
         cmd.envs(&process.env);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
