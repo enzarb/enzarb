@@ -1,8 +1,8 @@
 export const config = {
 	domain: process.env.PUBLIC_DOMAIN ?? 'enzarb.dev',
-	dexIssuer: process.env.DEX_ISSUER ?? 'https://auth.enzarb.dev',
-	dexClientId: process.env.DEX_CLIENT_ID ?? 'enzarb-app',
-	dexClientSecret: process.env.DEX_CLIENT_SECRET ?? '',
+	dexIssuer: process.env.OIDC_ISSUER_URL ?? process.env.DEX_ISSUER ?? 'https://auth.enzarb.dev',
+	dexClientId: process.env.OIDC_CLIENT_ID ?? process.env.DEX_CLIENT_ID ?? 'enzarb-app',
+	dexClientSecret: process.env.OIDC_CLIENT_SECRET ?? process.env.DEX_CLIENT_SECRET ?? '',
 	registryUrl: process.env.REGISTRY_URL ?? 'https://registry.enzarb.dev'
 };
 
