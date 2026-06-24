@@ -20,7 +20,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release && \
     cp /src/target/release/project-agent /project-agent && \
     cp /src/target/release/docker-credential-k8s-sa /docker-credential-k8s-sa && \
-    cp /src/target/release/git-credential-enzarb /git-credential-enzarb && \
     cp /src/target/release/kubelet-credential-enzarb /kubelet-credential-enzarb
 
 # ── Runtime ───────────────────────────────────────────────────────────────────
@@ -74,21 +73,18 @@ RUN cat /etc/profile.d/enzarb-prompt.sh >> /etc/bash.bashrc
 COPY --from=rust-test /test-ok /tmp/rust-test-ok
 COPY --from=rust-builder /project-agent                /usr/local/bin/project-agent
 COPY --from=rust-builder /docker-credential-k8s-sa    /usr/local/bin/docker-credential-k8s-sa
-COPY --from=rust-builder /git-credential-enzarb       /usr/local/bin/git-credential-enzarb
 COPY --from=rust-builder /kubelet-credential-enzarb   /usr/local/bin/kubelet-credential-enzarb
-RUN chmod 755 /usr/local/bin/project-agent /usr/local/bin/docker-credential-k8s-sa /usr/local/bin/git-credential-enzarb /usr/local/bin/kubelet-credential-enzarb \
+RUN chmod 755 /usr/local/bin/project-agent /usr/local/bin/docker-credential-k8s-sa /usr/local/bin/kubelet-credential-enzarb \
     && rm /tmp/rust-test-ok
 
 # Register the credential helpers at build time (credential-free; the helpers
-# fetch the live projected SA tokens on demand). Both configs live outside the
-# home PVC so they survive an empty PVC being mounted over /home/user:
+# fetch the live projected SA tokens on demand). The docker config lives outside
+# the home PVC so it survives an empty PVC being mounted over /home/user:
 #   - docker: DOCKER_CONFIG points at a baked, user-writable dir (buildx also
 #     stores its builder state here).
-#   - git: system-level /etc/gitconfig, read regardless of $HOME.
 RUN mkdir -p /etc/enzarb/docker \
     && printf '{"credHelpers":{"registry.enzarb.dev":"k8s-sa"}}\n' > /etc/enzarb/docker/config.json \
-    && chown -R user:user /etc/enzarb \
-    && git config --system credential.https://gitea.enzarb.dev.helper enzarb
+    && chown -R user:user /etc/enzarb
 # DOCKER_CONFIG holds the (read-only) credHelpers pointer. buildx must write its
 # builder state somewhere writable, so point BUILDX_CONFIG at the home PVC rather
 # than under the read-only DOCKER_CONFIG. MISE_TRUSTED_CONFIG_PATHS trusts the
