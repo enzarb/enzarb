@@ -15,3 +15,5 @@ spec:
     operator:
       env:
         ENZARB_DOMAIN: enzarb.dev
+    gateway:
+      loadBalancerIP: "192.168.33.83"

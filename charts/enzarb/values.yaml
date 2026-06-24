@@ -141,7 +141,7 @@ gateway:
   # hostnames to their project's AllowedDomains. Requires K8s 1.30+ (VAP GA).
   domainPolicy:
     enabled: true
-  loadBalancerIP: "192.168.33.82"
+  loadBalancerIP: "192.168.33.83"
   issuer:
     email: curtis.ruck@gmail.com
     acmeServer: https://acme-v02.api.letsencrypt.org/directory
