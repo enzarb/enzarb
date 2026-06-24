@@ -6,7 +6,7 @@ app:
   image:
     repository: ghcr.io/enzarb/app
     pullPolicy: IfNotPresent
-    tag: "v0.48.1"
+    tag: "v0.48.3"
   env:
     ORIGIN: https://enzarb.dev
   dbSecret:
@@ -39,7 +39,7 @@ operator:
   image:
     repository: ghcr.io/enzarb/operator
     pullPolicy: IfNotPresent
-    tag: "v0.46.5"
+    tag: "v0.48.3"
   leaderElection: true
   env:
     ENZARB_DOMAIN: enzarb.dev
@@ -54,7 +54,7 @@ billing:
   image:
     repository: ghcr.io/enzarb/billing
     pullPolicy: IfNotPresent
-    tag: "v0.48.2"
+    tag: "v0.48.3"
   # Billing rates and free-tier allowances are configured at runtime via the
   # admin settings page (stored in the app_settings DB table), not here.
   resources:
@@ -68,7 +68,7 @@ metering:
   image:
     repository: ghcr.io/enzarb/metering
     pullPolicy: IfNotPresent
-    tag: "v0.45.0"
+    tag: "v0.48.3"
   hubbleLogPath: /var/run/cilium/hubble/events.log
   resources:
     requests:
@@ -83,7 +83,7 @@ authd:
   image:
     repository: ghcr.io/enzarb/authd
     pullPolicy: IfNotPresent
-    tag: "v0.16.3"
+    tag: "v0.48.3"
   # Secret holding the RSA token-signing keypair (tls.crt/tls.key). The same
   # cert is mounted into Zot as its bearer-auth trust anchor. Create with:
   #   openssl req -x509 -newkey rsa:2048 -nodes -keyout tls.key -out tls.crt \
@@ -111,7 +111,7 @@ authd:
 workspace:
   image:
     repository: ghcr.io/enzarb/workspace
-    tag: "v0.48.1"
+    tag: "v0.48.3"
   # StorageClass for project home PVCs. Empty uses the cluster's default class.
   storageClass: ""
   # changelog is shown in the UI when a workspace update is pending. Set by CI
