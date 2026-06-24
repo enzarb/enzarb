@@ -38,10 +38,9 @@ spec:
     namespace: {{ .Release.Namespace }}
 ---
 apiVersion: cert-manager.io/v1
-kind: Issuer
+kind: ClusterIssuer
 metadata:
   name: letsencrypt
-  namespace: {{ .Release.Namespace }}
 spec:
   acme:
     server: {{ .Values.gateway.issuer.acmeServer }}
@@ -61,6 +60,8 @@ kind: Gateway
 metadata:
   name: enzarb
   namespace: {{ .Release.Namespace }}
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
 spec:
   # EnvoyProxy is attached at the GatewayClass level (parametersRef) because
   # mergeGateways requires it there; no per-Gateway infrastructure block.
@@ -105,36 +106,6 @@ spec:
       allowedRoutes:
         namespaces:
           from: Same
----
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: enzarb-tls
-  namespace: {{ .Release.Namespace }}
-  annotations:
-    cert-manager.io/issuer: letsencrypt
-spec:
-  secretName: enzarb-tls
-  issuerRef:
-    name: letsencrypt
-    kind: Issuer
-  dnsNames:
-    - {{ .Values.gateway.domain }}
----
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: enzarb-auth-tls
-  namespace: {{ .Release.Namespace }}
-  annotations:
-    cert-manager.io/issuer: letsencrypt
-spec:
-  secretName: enzarb-auth-tls
-  issuerRef:
-    name: letsencrypt
-    kind: Issuer
-  dnsNames:
-    - {{ printf "auth.%s" .Values.gateway.domain }}
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -203,21 +174,6 @@ spec:
           requestRedirect:
             scheme: https
             statusCode: 301
----
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: enzarb-registry-tls
-  namespace: {{ .Release.Namespace }}
-  annotations:
-    cert-manager.io/issuer: letsencrypt
-spec:
-  secretName: enzarb-registry-tls
-  issuerRef:
-    name: letsencrypt
-    kind: Issuer
-  dnsNames:
-    - {{ printf "registry.%s" .Values.gateway.domain }}
 ---
 # Registry token endpoint (Docker token-auth) → authd. Must precede the catch-all
 # Zot route so /auth/token is not proxied to the registry.
