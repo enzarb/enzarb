@@ -39,7 +39,7 @@ spec:
           name: Google
           config:
             issuer: https://accounts.google.com
-            clientID: 600997651205-98h88bt402cl69l9atah0q47rlkhvot0.apps.googleusercontent.com
+            clientID: 451510768783-qr7kt1f9iqv66voe52kbgpfegfos26dk.apps.googleusercontent.com
             clientSecret: $GOOGLE_CLIENT_SECRET
             redirectURI: https://auth.enzarb.dev/callback
       staticClients:

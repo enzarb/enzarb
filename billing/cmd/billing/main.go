@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivermigrate"
 )
 
 func main() {
@@ -47,6 +48,16 @@ func main() {
 	}
 
 	ctx := context.Background()
+
+	migrator, err := rivermigrate.New(riverpgxv5.New(pool), nil)
+	if err != nil {
+		slog.Error("river migrator", "err", err)
+		os.Exit(1)
+	}
+	if _, err := migrator.Migrate(ctx, rivermigrate.DirectionUp, nil); err != nil {
+		slog.Error("river migrate", "err", err)
+		os.Exit(1)
+	}
 
 	// Schedule monthly invoice generation if not already scheduled
 	if err := scheduleMonthlyInvoice(ctx, riverClient); err != nil {
