@@ -61,8 +61,6 @@ kind: Gateway
 metadata:
   name: enzarb
   namespace: {{ .Release.Namespace }}
-  annotations:
-    cert-manager.io/issuer: letsencrypt
 spec:
   # EnvoyProxy is attached at the GatewayClass level (parametersRef) because
   # mergeGateways requires it there; no per-Gateway infrastructure block.
