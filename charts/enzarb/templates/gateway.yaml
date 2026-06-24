@@ -17,6 +17,7 @@ spec:
       envoyService:
         annotations:
           io.cilium/lb-ipam-ips: {{ .Values.gateway.loadBalancerIP | quote }}
+        externalTrafficPolicy: Cluster
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass

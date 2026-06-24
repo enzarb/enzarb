@@ -32,3 +32,23 @@ spec:
         static:
           enabled: true
           filePath: /var/run/cilium/hubble/events.log
+---
+apiVersion: cilium.io/v2alpha1
+kind: CiliumLoadBalancerIPPool
+metadata:
+  name: local-pool
+spec:
+  blocks:
+    - start: "192.168.33.81"
+      stop: "192.168.33.99"
+---
+apiVersion: cilium.io/v2alpha1
+kind: CiliumL2AnnouncementPolicy
+metadata:
+  name: default-l2
+spec:
+  externalIPs: true
+  loadBalancerIPs: true
+  interfaces:
+    - enp0s31f6   # omnilap (control-plane)
+    - enp4s0f1    # oldie (worker)
