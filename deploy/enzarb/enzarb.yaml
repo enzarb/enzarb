@@ -15,4 +15,3 @@ spec:
     operator:
       env:
         ENZARB_DOMAIN: enzarb.dev
-        GITEA_URL: http://gitea-http.enzarb-system.svc.cluster.local:3000

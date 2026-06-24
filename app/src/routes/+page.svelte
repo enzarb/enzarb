@@ -27,9 +27,9 @@
 				<p>Kubernetes-backed dev environments that stay alive between sessions. Pick up exactly where you left off, from any device.</p>
 			</div>
 			<div class="feature-card">
-				<div class="feature-icon">🗂</div>
-				<h3>Integrated git & registry</h3>
-				<p>Every project gets a private Gitea repo and OCI container registry. No external accounts needed — everything lives in-cluster.</p>
+				<div class="feature-icon">📦</div>
+				<h3>Integrated registry</h3>
+				<p>Every project gets a private OCI container registry. No external accounts needed — everything lives in-cluster.</p>
 			</div>
 			<div class="feature-card">
 				<div class="feature-icon">🚀</div>

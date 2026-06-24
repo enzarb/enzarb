@@ -672,7 +672,17 @@ func (r *EnvironmentReconciler) ensureNetworkPolicy(ctx context.Context, deployN
 		gatewayNS = "envoy-gateway-system"
 	}
 
+	// Namespace where the pgop Postgres operator runs. Its controllers must open
+	// a TCP connection to the tenant Postgres pod (:5432) to reconcile Role and
+	// Database resources. Without this exception Cilium drops the connection and
+	// all pgop reconciliation fails indefinitely.
+	pgopNS := os.Getenv("PGOP_NAMESPACE")
+	if pgopNS == "" {
+		pgopNS = "pgop-system"
+	}
+
 	dnsPort := intstr.FromInt32(53)
+	pgPort := intstr.FromInt32(5432)
 	udp := corev1.ProtocolUDP
 	tcp := corev1.ProtocolTCP
 
@@ -701,6 +711,18 @@ func (r *EnvironmentReconciler) ensureNetworkPolicy(ctx context.Context, deployN
 						MatchLabels: map[string]string{"kubernetes.io/metadata.name": gatewayNS},
 					}},
 				}},
+				// pgop operator ingress: the controller connects to the tenant Postgres
+				// pod on 5432 to reconcile Role and Database CRs.
+				{
+					Ports: []networkingv1.NetworkPolicyPort{
+						{Protocol: &tcp, Port: &pgPort},
+					},
+					From: []networkingv1.NetworkPolicyPeer{{
+						NamespaceSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{"kubernetes.io/metadata.name": pgopNS},
+						},
+					}},
+				},
 			},
 			Egress: []networkingv1.NetworkPolicyEgressRule{
 				// DNS

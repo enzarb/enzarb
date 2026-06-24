@@ -22,12 +22,10 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-// platformConfig holds the endpoints/credentials the worker uses to poll Gitea
-// and the Zot registry (via authd) for storage usage. Mirrors the env wiring the
-// app uses (app/src/lib/gitea.ts, app/src/lib/zot.ts).
+// platformConfig holds the endpoints/credentials the worker uses to poll the
+// Zot registry (via authd) for storage usage. Mirrors the env wiring the
+// app uses (app/src/lib/zot.ts).
 type platformConfig struct {
-	giteaURL       string
-	giteaToken     string
 	authdURL       string
 	registrySecret string
 	registryURL    string
@@ -43,8 +41,6 @@ func loadPlatformConfig() platformConfig {
 		registry = "http://zot.enzarb-system:5000"
 	}
 	return platformConfig{
-		giteaURL:       os.Getenv("GITEA_URL"),
-		giteaToken:     os.Getenv("GITEA_ADMIN_TOKEN"),
 		authdURL:       authd,
 		registrySecret: os.Getenv("REGISTRY_ADMIN_TOKEN"),
 		registryURL:    registry,
@@ -80,16 +76,13 @@ func main() {
 
 	w := &Worker{db: pool, k8s: k8s, cfg: loadPlatformConfig(), http: &http.Client{Timeout: 30 * time.Second}}
 
-	// Metrics polling loop: pod compute/storage plus Gitea/Zot storage.
+	// Metrics polling loop: pod compute/storage plus Zot registry storage.
 	go func() {
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
 			if err := w.collectMetrics(context.Background()); err != nil {
 				slog.Error("collect metrics", "err", err)
-			}
-			if err := w.collectGiteaUsage(context.Background()); err != nil {
-				slog.Error("collect gitea usage", "err", err)
 			}
 			if err := w.collectZotUsage(context.Background()); err != nil {
 				slog.Error("collect zot usage", "err", err)
@@ -295,7 +288,7 @@ func (w *Worker) consumeHubble(ctx context.Context, path string) {
 	// Track per-(org, project, component) byte counts and flush every 60s. The org
 	// UUID is taken from the project pod's `user-<orgID>` namespace so insertUsage
 	// can attribute the flow to the right organization. Component is "workspace"
-	// unless the flow's peer is the Gitea/Zot backend, in which case the bandwidth
+	// unless the flow's peer is the Zot registry backend, in which case the bandwidth
 	// is attributed to that platform service.
 	type flowKey struct{ orgID, project, component string }
 	type byteCounts struct{ ingress, egress int64 }
@@ -365,7 +358,7 @@ func (w *Worker) consumeHubble(ctx context.Context, path string) {
 			egress := false
 			switch {
 			case srcProject != "":
-				// Project ⇒ peer: egress. Component reflects the peer (gitea/zot).
+				// Project ⇒ peer: egress. Component reflects the peer (zot/workspace).
 				key, egress = flowKey{srcOrg, srcProject, peerComponent(flow.Destination)}, true
 			case dstProject != "":
 				// Peer ⇒ project: ingress.
@@ -405,15 +398,13 @@ func endpointOrgProject(ep *HubbleEndpoint) (orgID, project string) {
 }
 
 // peerComponent classifies the non-project side of a flow so bandwidth to the
-// platform's Gitea/Zot backends is attributed to those components. Anything else
+// platform's Zot registry backend is attributed to that component. Anything else
 // (project egress to the internet, between project pods) counts as "workspace".
 func peerComponent(ep *HubbleEndpoint) string {
 	if ep == nil || ep.Namespace != "enzarb-system" {
 		return "workspace"
 	}
 	switch {
-	case strings.HasPrefix(ep.PodName, "gitea"):
-		return "gitea"
 	case strings.HasPrefix(ep.PodName, "zot"):
 		return "zot"
 	default:
@@ -463,7 +454,7 @@ func parseQuantityBytes(s string) int64 {
 
 const gib = 1024 * 1024 * 1024
 
-// orgIDBySlug loads a slug→UUID map for all organizations, so Gitea/Zot usage
+// orgIDBySlug loads a slug→UUID map for all organizations, so Zot registry usage
 // (which is keyed by org slug) can be attributed to the right org row.
 func (w *Worker) orgIDBySlug(ctx context.Context) (map[string]string, error) {
 	rows, err := w.db.Query(ctx, `SELECT id, slug FROM organizations`)
@@ -480,75 +471,6 @@ func (w *Worker) orgIDBySlug(ctx context.Context) (map[string]string, error) {
 		m[slug] = id
 	}
 	return m, rows.Err()
-}
-
-// collectGiteaUsage polls the Gitea admin API for per-repo sizes and records them
-// as gitea_storage_gib_seconds, attributed to the project whose slug matches the
-// repo name within each org. Mirrors app/src/lib/gitea.ts auth.
-func (w *Worker) collectGiteaUsage(ctx context.Context) error {
-	if w.cfg.giteaURL == "" || w.cfg.giteaToken == "" {
-		slog.Warn("gitea metering skipped: GITEA_URL or GITEA_ADMIN_TOKEN not set — git storage will not appear in billing")
-		return nil
-	}
-	orgIDs, err := w.orgIDBySlug(ctx)
-	if err != nil {
-		return fmt.Errorf("org ids: %w", err)
-	}
-	now := time.Now().UTC()
-
-	for slug, orgID := range orgIDs {
-		page := 1
-		for {
-			var repos []struct {
-				Name string `json:"name"`
-				Size int64  `json:"size"` // KiB
-			}
-			path := fmt.Sprintf("/api/v1/orgs/%s/repos?limit=50&page=%d", url.PathEscape(slug), page)
-			status, err := w.giteaGet(ctx, path, &repos)
-			if err != nil {
-				slog.Warn("gitea repos", "org", slug, "err", err)
-				break
-			}
-			if status == http.StatusNotFound {
-				break // org has no Gitea org mirror
-			}
-			for _, r := range repos {
-				sizeGiB := float64(r.Size*1024) / gib
-				if err := w.insertUsage(ctx, orgID, r.Name, "gitea", "", "gitea_storage_gib_seconds", sizeGiB*60.0, "GiB-s", now); err != nil {
-					slog.Warn("insert gitea usage", "err", err)
-				}
-			}
-			if len(repos) < 50 {
-				break
-			}
-			page++
-		}
-	}
-	return nil
-}
-
-func (w *Worker) giteaGet(ctx context.Context, path string, out any) (int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, w.cfg.giteaURL+path, nil)
-	if err != nil {
-		return 0, err
-	}
-	req.Header.Set("Authorization", "token "+w.cfg.giteaToken)
-	resp, err := w.http.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode == http.StatusNotFound {
-		return resp.StatusCode, nil
-	}
-	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return resp.StatusCode, fmt.Errorf("gitea %d: %s", resp.StatusCode, body)
-	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return resp.StatusCode, err
-	}
-	return resp.StatusCode, nil
 }
 
 // collectZotUsage lists registry repositories and sums distinct blob sizes per

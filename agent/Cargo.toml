@@ -12,10 +12,6 @@ name = "docker-credential-k8s-sa"
 path = "src/bin/docker_credential_k8s_sa.rs"
 
 [[bin]]
-name = "git-credential-enzarb"
-path = "src/bin/git_credential_enzarb.rs"
-
-[[bin]]
 name = "kubelet-credential-enzarb"
 path = "src/bin/kubelet_credential_enzarb.rs"
 

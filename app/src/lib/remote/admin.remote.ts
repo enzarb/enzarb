@@ -185,7 +185,6 @@ const SettingsSchema = z.object({
 	netIngressPerGib: posNum({ min: 0 }),
 	netEgressPerGib: posNum({ min: 0 }),
 	storageGiBSecondsPerUnit: posNum({ min: 0 }),
-	giteaStorageGiBSecondsPerUnit: posNum({ min: 0 }),
 	zotStorageGiBSecondsPerUnit: posNum({ min: 0 }),
 	freeCPUSeconds: posNum({ min: 0 }),
 	freeMemGiBSeconds: posNum({ min: 0 })
@@ -201,7 +200,6 @@ export const updateAdminSettings = form(SettingsSchema, async (v) => {
 		pricing_net_ingress_per_gib: v.netIngressPerGib,
 		pricing_net_egress_per_gib: v.netEgressPerGib,
 		pricing_storage_gib_seconds_per_unit: v.storageGiBSecondsPerUnit,
-		pricing_gitea_storage_gib_seconds_per_unit: v.giteaStorageGiBSecondsPerUnit,
 		pricing_zot_storage_gib_seconds_per_unit: v.zotStorageGiBSecondsPerUnit,
 		pricing_free_cpu_seconds: v.freeCPUSeconds,
 		pricing_free_mem_gib_seconds: v.freeMemGiBSeconds
@@ -215,37 +213,6 @@ const InviteSchema = z.object({
 	orgId: z.string(),
 	email: z.string().email(),
 	role: z.enum(BUILTIN_ROLE_NAMES as [string, ...string[]]).default('member')
-});
-
-// Checks whether platform integrations (Gitea, registry) are reachable. Used by
-// the admin page to surface misconfiguration warnings before they cause silent
-// billing gaps.
-export const getPlatformStatus = query(async () => {
-	requireAdmin();
-	const giteaUrl = process.env.GITEA_URL ?? '';
-	const giteaToken = process.env.GITEA_ADMIN_TOKEN ?? '';
-
-	let giteaOk = false;
-	let giteaError = '';
-	if (!giteaUrl || !giteaToken) {
-		giteaError = 'GITEA_URL or GITEA_ADMIN_TOKEN is not set';
-	} else {
-		try {
-			const res = await fetch(`${giteaUrl}/api/v1/version`, {
-				headers: { Authorization: `token ${giteaToken}` },
-				signal: AbortSignal.timeout(5000)
-			});
-			if (res.ok) {
-				giteaOk = true;
-			} else {
-				giteaError = `Gitea responded with HTTP ${res.status}`;
-			}
-		} catch (e: unknown) {
-			giteaError = e instanceof Error ? e.message : String(e);
-		}
-	}
-
-	return { gitea: { ok: giteaOk, error: giteaError } };
 });
 
 export const inviteMember = form(InviteSchema, async ({ orgId, email, role }) => {

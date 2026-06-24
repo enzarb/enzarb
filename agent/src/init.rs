@@ -33,51 +33,8 @@ pub async fn bootstrap() -> Result<()> {
     }
 
     setup_buildx().await;
-    setup_git().await;
 
     Ok(())
-}
-
-/// Set the project's git identity and clone the repo on first boot. The git
-/// credential helper and docker credential helper are registered in the
-/// workspace image (credential-free), so this only handles the per-project,
-/// runtime bits. Best-effort.
-async fn setup_git() {
-    let Ok(remote) = std::env::var("ENZARB_GIT_REMOTE") else {
-        tracing::debug!("ENZARB_GIT_REMOTE unset; skipping git setup");
-        return;
-    };
-    let Some(host) = remote
-        .split_once("://")
-        .and_then(|(_, rest)| rest.split('/').next())
-    else {
-        tracing::warn!("ENZARB_GIT_REMOTE has no host: {remote}");
-        return;
-    };
-
-    let slug = std::env::var("ENZARB_PROJECT_SLUG").unwrap_or_else(|_| "project".to_string());
-    let git = |args: &[&str]| {
-        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-        async move { Command::new("git").args(&args).status().await }
-    };
-
-    let _ = git(&["config", "--global", "user.name", &slug]).await;
-    let email = format!("{slug}@workspaces.{host}");
-    let _ = git(&["config", "--global", "user.email", &email]).await;
-
-    // Clone the repo on first boot if the working copy isn't there yet.
-    let dest = home_dir().join(&slug);
-    if !dest.join(".git").exists() {
-        match Command::new("git")
-            .args(["clone", &remote, &dest.to_string_lossy()])
-            .status()
-            .await
-        {
-            Ok(s) if s.success() => tracing::info!("cloned project repo to {}", dest.display()),
-            Ok(s) => tracing::warn!("git clone exited with status {s}"),
-            Err(e) => tracing::warn!("git clone failed: {e}"),
-        }
-    }
 }
 
 /// Register the buildkitd sidecar as the default `docker buildx` builder so

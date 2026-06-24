@@ -1,19 +1,11 @@
 <script lang="ts">
-	import { listOrgs, listDeletedOrgs, listUsers, listAllProjects, adminDeleteProject, adminForceDeleteProject, createOrgAdmin, setOrgTier, deleteOrg, recoverOrg, inviteMember, getAdminSettings, updateAdminSettings, getPlatformStatus } from '$lib/remote/admin.remote';
+	import { listOrgs, listDeletedOrgs, listUsers, listAllProjects, adminDeleteProject, adminForceDeleteProject, createOrgAdmin, setOrgTier, deleteOrg, recoverOrg, inviteMember, getAdminSettings, updateAdminSettings } from '$lib/remote/admin.remote';
 	import { confirm } from '$lib/confirm';
 	let showNewOrg = $state(false);
 	let inviteOrgId: string | null = $state(null);
 </script>
 
 <h2>Admin</h2>
-
-{#await getPlatformStatus() then status}
-	{#if !status.gitea.ok}
-		<div class="alert alert-warn">
-			<strong>Gitea not configured:</strong> {status.gitea.error}. Git storage usage will not appear in billing.
-		</div>
-	{/if}
-{/await}
 
 <section class="section">
 	<h3>Platform settings</h3>
@@ -55,10 +47,6 @@
 					<div class="field">
 						<label for="set-storage">Storage $ / GiB-second</label>
 						<input id="set-storage" {...updateAdminSettings.fields.storageGiBSecondsPerUnit.as('text', String(settings.pricing.storageGiBSecondsPerUnit))} step="any" min="0" required />
-					</div>
-					<div class="field">
-						<label for="set-gitea-storage">Gitea storage $ / GiB-second</label>
-						<input id="set-gitea-storage" {...updateAdminSettings.fields.giteaStorageGiBSecondsPerUnit.as('text', String(settings.pricing.giteaStorageGiBSecondsPerUnit))} step="any" min="0" required />
 					</div>
 					<div class="field">
 						<label for="set-zot-storage">Registry storage $ / GiB-second</label>

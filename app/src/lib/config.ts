@@ -3,7 +3,6 @@ export const config = {
 	dexIssuer: process.env.DEX_ISSUER ?? 'https://auth.enzarb.dev',
 	dexClientId: process.env.DEX_CLIENT_ID ?? 'enzarb-app',
 	dexClientSecret: process.env.DEX_CLIENT_SECRET ?? '',
-	giteaUrl: process.env.GITEA_URL ?? 'https://gitea.enzarb.dev',
 	registryUrl: process.env.REGISTRY_URL ?? 'https://registry.enzarb.dev'
 };
 

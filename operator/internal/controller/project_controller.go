@@ -29,14 +29,12 @@ import (
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	enzarbv1alpha1 "enzarb.dev/enzarb/operator/api/v1alpha1"
-	"enzarb.dev/enzarb/operator/internal/gitea"
 )
 
 type ProjectReconciler struct {
 	client.Client
-	Scheme      *runtime.Scheme
-	GiteaClient *gitea.Client
-	Domain      string
+	Scheme *runtime.Scheme
+	Domain string
 }
 
 func (r *ProjectReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -122,7 +120,7 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("get namespace: %w", err)
 	}
 
-	// Registry and Gitea paths are keyed by the human-readable org slug.
+	// Registry paths are keyed by the human-readable org slug.
 	orgSlug, err := r.orgSlug(ctx, project.Spec.OrgID)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("resolve org slug: %w", err)
@@ -164,10 +162,6 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	if err := r.ensureService(ctx, orgNS, &project); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensure service: %w", err)
-	}
-
-	if err := r.ensureGiteaRepo(ctx, orgSlug, &project); err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensure gitea repo: %w", err)
 	}
 
 	if err := r.ensureReferenceGrant(ctx, orgNS, &project); err != nil {
@@ -280,10 +274,6 @@ func (r *ProjectReconciler) reconcileProjectDelete(ctx context.Context, project 
 		ObjectMeta: metav1.ObjectMeta{Name: certName, Namespace: "enzarb-system"},
 	}); err != nil {
 		return ctrl.Result{}, fmt.Errorf("delete certificate: %w", err)
-	}
-
-	if err := r.cleanupGiteaRepo(ctx, project); err != nil {
-		return ctrl.Result{}, fmt.Errorf("cleanup gitea repo: %w", err)
 	}
 
 	controllerutil.RemoveFinalizer(project, projectFinalizer)
@@ -558,7 +548,6 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug s
 								// project may only push/pull within its own <orgSlug>/<slug> prefix.
 								{Name: "ENZARB_REGISTRY", Value: fmt.Sprintf("registry.%s", r.Domain)},
 								{Name: "ENZARB_IMAGE", Value: fmt.Sprintf("registry.%s/%s/%s", r.Domain, orgSlug, project.Spec.Slug)},
-								{Name: "ENZARB_GIT_REMOTE", Value: fmt.Sprintf("https://gitea.%s/%s/%s.git", r.Domain, orgSlug, project.Spec.Slug)},
 								// buildkitd sidecar speaks the BuildKit gRPC API, not the
 								// Docker daemon API — clients reach it via BUILDKIT_HOST.
 								{Name: "BUILDKIT_HOST", Value: "tcp://localhost:1234"},
@@ -582,7 +571,6 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug s
 								{Name: "home", MountPath: "/home/user"},
 								{Name: "tmp", MountPath: "/tmp"},
 								{Name: "registry-token", MountPath: "/var/run/secrets/enzarb/registry"},
-								{Name: "gitea-token", MountPath: "/var/run/secrets/enzarb/gitea"},
 								{Name: "env-context", MountPath: "/var/run/enzarb/env", ReadOnly: true},
 							},
 							SecurityContext: &corev1.SecurityContext{
@@ -657,22 +645,6 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug s
 										{
 											ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
 												Audience:          "registry.enzarb.dev",
-												ExpirationSeconds: int64Ptr(3600),
-												Path:              "token",
-											},
-										},
-									},
-								},
-							},
-						},
-						{
-							Name: "gitea-token",
-							VolumeSource: corev1.VolumeSource{
-								Projected: &corev1.ProjectedVolumeSource{
-									Sources: []corev1.VolumeProjection{
-										{
-											ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
-												Audience:          "gitea.enzarb.dev",
 												ExpirationSeconds: int64Ptr(3600),
 												Path:              "token",
 											},
@@ -777,67 +749,6 @@ func (r *ProjectReconciler) ensureEnvContextConfigMap(ctx context.Context, ns st
 	}
 	cm.Data = map[string]string{"context.sh": contextSh}
 	return r.Update(ctx, cm)
-}
-
-func (r *ProjectReconciler) ensureGiteaRepo(ctx context.Context, orgSlug string, project *enzarbv1alpha1.Project) error {
-	if r.GiteaClient == nil {
-		return nil
-	}
-	// Keyed by the human-readable org slug, matching the registry prefix and the
-	// X-Gitea-User identity authd asserts.
-	if err := r.GiteaClient.EnsureOrg(orgSlug); err != nil {
-		return fmt.Errorf("ensure gitea org: %w", err)
-	}
-	if _, err := r.GiteaClient.CreateRepo(orgSlug, gitea.CreateRepoRequest{
-		Name:          project.Spec.Slug,
-		Description:   project.Spec.DisplayName,
-		Private:       true,
-		AutoInit:      true,
-		DefaultBranch: "main",
-	}); err != nil {
-		return err
-	}
-
-	// Provision the per-project Gitea identity that authd asserts via
-	// reverse-proxy auth, and grant it write to only this repo. This is what
-	// keeps git private-by-default and isolated per project, mirroring the
-	// registry's <orgSlug>/<slug> scoping.
-	// Gitea usernames disallow consecutive special chars (so no "--"); slugs are
-	// [a-z0-9-] and never contain "_", so an underscore is a safe, unambiguous
-	// separator. Must match the X-Gitea-User authd sets.
-	user := fmt.Sprintf("%s_%s", orgSlug, project.Spec.Slug)
-	email := fmt.Sprintf("%s@workspaces.%s", user, r.Domain)
-	if err := r.GiteaClient.EnsureUser(user, email); err != nil {
-		return fmt.Errorf("ensure gitea user: %w", err)
-	}
-	if err := r.GiteaClient.AddCollaborator(orgSlug, project.Spec.Slug, user, "write"); err != nil {
-		return fmt.Errorf("add gitea collaborator: %w", err)
-	}
-	return nil
-}
-
-// cleanupGiteaRepo deletes the project's Gitea repo and per-project user on hard
-// deletion, mirroring ensureGiteaRepo. The org and its other repos are left
-// intact. Best-effort and idempotent: the Gitea client tolerates already-gone
-// resources so finalizer removal isn't blocked by a partially-purged state.
-func (r *ProjectReconciler) cleanupGiteaRepo(ctx context.Context, project *enzarbv1alpha1.Project) error {
-	if r.GiteaClient == nil {
-		return nil
-	}
-	orgSlug, err := r.orgSlug(ctx, project.Spec.OrgID)
-	if err != nil {
-		if errors.IsNotFound(err) {
-			// Org already gone (e.g. org-level purge); nothing scoped to clean up.
-			return nil
-		}
-		return fmt.Errorf("resolve org slug: %w", err)
-	}
-	if err := r.GiteaClient.DeleteRepo(orgSlug, project.Spec.Slug); err != nil {
-		return err
-	}
-	// Delete the user after its repo so Gitea doesn't refuse on owned-repo checks.
-	user := fmt.Sprintf("%s_%s", orgSlug, project.Spec.Slug)
-	return r.GiteaClient.DeleteUser(user)
 }
 
 // orgSlug resolves a project's org id to the org's human-readable slug via the

@@ -33,8 +33,6 @@ function costForResource(resourceType: string, quantity: number, p: Pricing): nu
 			return (quantity / GIB) * (p.pricing_net_egress_per_gib ?? 0);
 		case 'storage_gib_seconds':
 			return quantity * (p.pricing_storage_gib_seconds_per_unit ?? 0);
-		case 'gitea_storage_gib_seconds':
-			return quantity * (p.pricing_gitea_storage_gib_seconds_per_unit ?? 0);
 		case 'zot_storage_gib_seconds':
 			return quantity * (p.pricing_zot_storage_gib_seconds_per_unit ?? 0);
 		default:
@@ -82,7 +80,6 @@ export const getEstimatedCost = query(async () => {
 		net_in: costForResource('net_ingress_bytes', usage.net_ingress_bytes ?? 0, p),
 		net_out: costForResource('net_egress_bytes', usage.net_egress_bytes ?? 0, p),
 		storage: costForResource('storage_gib_seconds', usage.storage_gib_seconds ?? 0, p),
-		gitea: costForResource('gitea_storage_gib_seconds', usage.gitea_storage_gib_seconds ?? 0, p),
 		zot: costForResource('zot_storage_gib_seconds', usage.zot_storage_gib_seconds ?? 0, p)
 	};
 	const total = Object.values(lines).reduce((a, b) => a + b, 0);
@@ -103,7 +100,6 @@ export const getProjectRollup = query(async () => {
 			net_ingress_bytes: number;
 			net_egress_bytes: number;
 			storage_gib_seconds: number;
-			gitea_storage_gib_seconds: number;
 			zot_storage_gib_seconds: number;
 		}[]
 	>`
@@ -114,7 +110,6 @@ export const getProjectRollup = query(async () => {
 			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'net_ingress_bytes'), 0)::float8 AS net_ingress_bytes,
 			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'net_egress_bytes'), 0)::float8 AS net_egress_bytes,
 			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'storage_gib_seconds'), 0)::float8 AS storage_gib_seconds,
-			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'gitea_storage_gib_seconds'), 0)::float8 AS gitea_storage_gib_seconds,
 			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'zot_storage_gib_seconds'), 0)::float8 AS zot_storage_gib_seconds
 		FROM usage_events
 		WHERE org_id = ${org.id}
@@ -134,7 +129,7 @@ export const getProjectRollup = query(async () => {
 });
 
 // Monthly cost grouped by component, so the dashboard can split workspace vs
-// deploy-environment spend (and surface Gitea/Zot platform usage).
+// deploy-environment spend (and surface Zot registry usage).
 export const getCostByComponent = query(async () => {
 	const org = resolveOrg();
 	const rows = await sql`

@@ -1,0 +1,78 @@
+# Injects a projected ServiceAccountToken volume (audience registry-pull.enzarb.dev)
+# into every pod created in a deploy-* namespace. This allows the kubelet image
+# credential provider (kubelet-credential-enzarb) to receive a pod-bound SA token
+# in its CredentialProviderRequest. NodeRestriction permits TokenRequests for
+# audiences declared in the pod spec, so adding this volume is sufficient without
+# requiring the KubeletServiceAccountTokenForCredentialProviders feature gate.
+#
+# The volume is never mounted into containers — the kubelet reads it internally.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: enzarb-inject-registry-pull-token
+  labels:
+    app.kubernetes.io/managed-by: enzarb
+    app.kubernetes.io/component: credential-provider
+spec:
+  failurePolicy: Fail
+  reinvocationPolicy: Never
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+        operations: ["CREATE"]
+  matchConditions:
+    # Only inject into deploy-* namespaces (tenant deploy environments).
+    - name: is-deploy-namespace
+      expression: "object.metadata.namespace.startsWith('deploy-')"
+    # Skip if already injected (idempotent). Guards against missing volumes list
+    # and against projected volumes without an audience field (e.g. kube-api-access).
+    - name: not-already-injected
+      expression: >
+        !has(object.spec.volumes) ||
+        !object.spec.volumes.exists(v,
+          has(v.projected) &&
+          has(v.projected.sources) &&
+          v.projected.sources.exists(s,
+            has(s.serviceAccountToken) &&
+            has(s.serviceAccountToken.audience) &&
+            s.serviceAccountToken.audience == 'registry-pull.enzarb.dev'
+          )
+        )
+  mutations:
+    # JSONPatch appends to /spec/volumes using typed Object constructors to satisfy
+    # CEL's strict type checking on heterogeneous map values.
+    - patchType: JSONPatch
+      jsonPatch:
+        expression: >
+          [
+            JSONPatch{
+              op: "add",
+              path: "/spec/volumes/-",
+              value: Object.spec.volumes{
+                name: "enzarb-registry-pull-token",
+                projected: Object.spec.volumes.projected{
+                  sources: [Object.spec.volumes.projected.sources{
+                    serviceAccountToken: Object.spec.volumes.projected.sources.serviceAccountToken{
+                      audience: "registry-pull.enzarb.dev",
+                      expirationSeconds: 600,
+                      path: "token"
+                    }
+                  }]
+                }
+              }
+            }
+          ]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicyBinding
+metadata:
+  name: enzarb-inject-registry-pull-token
+  labels:
+    app.kubernetes.io/managed-by: enzarb
+    app.kubernetes.io/component: credential-provider
+spec:
+  policyName: enzarb-inject-registry-pull-token
+  matchResources: {}

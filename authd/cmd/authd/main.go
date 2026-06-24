@@ -35,7 +35,6 @@ const (
 	// push token, this path is pull-only and not pod-IP bound — the pull request
 	// legitimately originates from the node's kubelet, not the pod.
 	registryPullAudience = "registry-pull.enzarb.dev"
-	giteaAudience        = "gitea.enzarb.dev"
 	adminUsername        = "admin"
 	tokenTTL             = 5 * time.Minute
 
@@ -105,8 +104,6 @@ func main() {
 	// request path and method, so match the whole subtree on any method (git
 	// uses GET /info/refs then POST /git-upload-pack). Identity comes from the
 	// Authorization header, not the path.
-	mux.HandleFunc("/authz/git", srv.handleGitAuthz)
-	mux.HandleFunc("/authz/git/", srv.handleGitAuthz)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 
 	addr := envOr("LISTEN_ADDR", ":8080")
@@ -115,23 +112,6 @@ func main() {
 		slog.Error("serve", "err", err)
 		os.Exit(1)
 	}
-}
-
-// authenticate resolves the caller from HTTP basic auth. The password is either
-// the admin shared secret or a projected SA token for the given audience. SA
-// tokens are pod-IP bound (defeating reuse of an exfiltrated token).
-func (s *server) authenticate(ctx context.Context, r *http.Request, audience string) (Identity, error) {
-	user, pass, ok := r.BasicAuth()
-	if !ok || pass == "" {
-		return Identity{}, errors.New("missing credentials")
-	}
-	if user == adminUsername {
-		if s.adminPass == "" || subtle.ConstantTimeCompare([]byte(pass), []byte(s.adminPass)) != 1 {
-			return Identity{}, errors.New("invalid admin credentials")
-		}
-		return Identity{Admin: true}, nil
-	}
-	return s.val.validate(ctx, pass, audience, clientIP(r), true)
 }
 
 // authenticateRegistry resolves the caller for the Docker token endpoint. It
@@ -214,24 +194,6 @@ func (s *server) handleRegistryToken(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		slog.Error("write token response", "err", err)
 	}
-}
-
-// handleGitAuthz is the Envoy Gateway extAuth check fronting Gitea. On success
-// it returns the resolved identity as X-Gitea-User, which Gitea trusts via
-// reverse-proxy authentication.
-func (s *server) handleGitAuthz(w http.ResponseWriter, r *http.Request) {
-	id, err := s.authenticate(r.Context(), r, giteaAudience)
-	if err != nil || id.Admin {
-		slog.Warn("git authz denied", "err", err, "admin", id.Admin, "client", clientIP(r))
-		w.Header().Set("WWW-Authenticate", `Basic realm="enzarb"`)
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	// Deterministic, Gitea-safe username tying the workspace to its org/project.
-	// Underscore separator: Gitea rejects "--", and slugs never contain "_".
-	// Must match the user the operator provisions in ensureGiteaRepo.
-	w.Header().Set("X-Gitea-User", fmt.Sprintf("%s_%s", id.OrgSlug, id.ProjectSlug))
-	w.WriteHeader(http.StatusOK)
 }
 
 func (s *server) mintRegistryToken(id Identity, service string, access []Access) (string, error) {
@@ -326,8 +288,7 @@ var organizationsGVR = schema.GroupVersionResource{
 const slugCacheTTL = 5 * time.Minute
 
 // k8sValidator authenticates SA tokens via the TokenReview API and resolves the
-// org id (from the SA namespace) to the human-readable org slug used in registry
-// and Gitea paths.
+// org id (from the SA namespace) to the human-readable org slug used in registry paths.
 type k8sValidator struct {
 	client kubernetes.Interface
 	dyn    dynamic.Interface

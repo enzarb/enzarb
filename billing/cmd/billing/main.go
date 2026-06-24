@@ -122,15 +122,14 @@ func (w *InvoiceWorker) Work(ctx context.Context, job *river.Job[InvoiceArgs]) e
 }
 
 type PricingConfig struct {
-	CPUSecondsPerUnit             float64
-	MemGiBSecondsPerUnit          float64
-	NetIngressPerGiB              float64
-	NetEgressPerGiB               float64
-	StorageGiBSecondsPerUnit      float64
-	GiteaStorageGiBSecondsPerUnit float64
-	ZotStorageGiBSecondsPerUnit   float64
-	FreeCPUSeconds                float64
-	FreeMemGiBSeconds             float64
+	CPUSecondsPerUnit           float64
+	MemGiBSecondsPerUnit        float64
+	NetIngressPerGiB            float64
+	NetEgressPerGiB             float64
+	StorageGiBSecondsPerUnit    float64
+	ZotStorageGiBSecondsPerUnit float64
+	FreeCPUSeconds              float64
+	FreeMemGiBSeconds           float64
 }
 
 // pricingFromDB loads pricing from the admin-editable app_settings table, which
@@ -169,15 +168,14 @@ func pricingFromDB(ctx context.Context, db *pgxpool.Pool) (PricingConfig, error)
 	}
 
 	p := PricingConfig{
-		CPUSecondsPerUnit:             parse("pricing_cpu_seconds_per_unit"),
-		MemGiBSecondsPerUnit:          parse("pricing_mem_gib_seconds_per_unit"),
-		NetIngressPerGiB:              parse("pricing_net_ingress_per_gib"),
-		NetEgressPerGiB:               parse("pricing_net_egress_per_gib"),
-		StorageGiBSecondsPerUnit:      parse("pricing_storage_gib_seconds_per_unit"),
-		GiteaStorageGiBSecondsPerUnit: parse("pricing_gitea_storage_gib_seconds_per_unit"),
-		ZotStorageGiBSecondsPerUnit:   parse("pricing_zot_storage_gib_seconds_per_unit"),
-		FreeCPUSeconds:                parse("pricing_free_cpu_seconds"),
-		FreeMemGiBSeconds:             parse("pricing_free_mem_gib_seconds"),
+		CPUSecondsPerUnit:           parse("pricing_cpu_seconds_per_unit"),
+		MemGiBSecondsPerUnit:        parse("pricing_mem_gib_seconds_per_unit"),
+		NetIngressPerGiB:            parse("pricing_net_ingress_per_gib"),
+		NetEgressPerGiB:             parse("pricing_net_egress_per_gib"),
+		StorageGiBSecondsPerUnit:    parse("pricing_storage_gib_seconds_per_unit"),
+		ZotStorageGiBSecondsPerUnit: parse("pricing_zot_storage_gib_seconds_per_unit"),
+		FreeCPUSeconds:              parse("pricing_free_cpu_seconds"),
+		FreeMemGiBSeconds:           parse("pricing_free_mem_gib_seconds"),
 	}
 	if len(errs) > 0 {
 		return PricingConfig{}, fmt.Errorf("%v", errs)
@@ -240,7 +238,6 @@ func (w *InvoiceWorker) generateOrgInvoice(ctx context.Context, orgID, orgSlug, 
 	totalCents += int64(usage["net_ingress_bytes"] / bytesPerGiB * p.NetIngressPerGiB * 100)
 	totalCents += int64(usage["net_egress_bytes"] / bytesPerGiB * p.NetEgressPerGiB * 100)
 	totalCents += int64(usage["storage_gib_seconds"] * p.StorageGiBSecondsPerUnit * 100)
-	totalCents += int64(usage["gitea_storage_gib_seconds"] * p.GiteaStorageGiBSecondsPerUnit * 100)
 	totalCents += int64(usage["zot_storage_gib_seconds"] * p.ZotStorageGiBSecondsPerUnit * 100)
 
 	if totalCents < 0 {

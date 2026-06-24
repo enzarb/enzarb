@@ -17,7 +17,6 @@ import (
 	enzarbv1alpha1 "enzarb.dev/enzarb/operator/api/v1alpha1"
 	"enzarb.dev/enzarb/operator/internal/admin"
 	"enzarb.dev/enzarb/operator/internal/controller"
-	"enzarb.dev/enzarb/operator/internal/gitea"
 )
 
 var (
@@ -69,18 +68,11 @@ func main() {
 	if domain == "" {
 		domain = "enzarb.dev"
 	}
-	var giteaClient *gitea.Client
-	if giteaURL := os.Getenv("GITEA_URL"); giteaURL != "" {
-		if giteaToken := os.Getenv("GITEA_ADMIN_TOKEN"); giteaToken != "" {
-			giteaClient = gitea.NewClient(giteaURL, giteaToken)
-		}
-	}
 
 	if err = (&controller.ProjectReconciler{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		GiteaClient: giteaClient,
-		Domain:      domain,
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Domain: domain,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create ProjectReconciler")
 		os.Exit(1)
@@ -99,14 +91,6 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create EnvironmentReconciler")
-		os.Exit(1)
-	}
-
-	if err = (&controller.RunnerReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create RunnerReconciler")
 		os.Exit(1)
 	}
 

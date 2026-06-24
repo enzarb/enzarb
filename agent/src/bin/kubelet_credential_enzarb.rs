@@ -18,6 +18,10 @@ const REGISTRY_HOST: &str = "registry.enzarb.dev";
 // service account (tokenAttributes.cacheType), so same-project pods on a node
 // may reuse it but it expires well within the token TTL.
 const CACHE_DURATION: &str = "2m0s";
+// Cache by registry so all pods pulling from registry.enzarb.dev on the same node
+// share one cached credential per token (the kubelet further scopes by SA token
+// value when tokenAttributes.cacheType=Token is set in the CredentialProviderConfig).
+const CACHE_KEY_TYPE: &str = "Registry";
 
 fn main() {
     let mut input = String::new();
@@ -70,7 +74,7 @@ fn respond(auth: serde_json::Value) -> ! {
     let resp = serde_json::json!({
         "apiVersion": API_VERSION,
         "kind": "CredentialProviderResponse",
-        "cacheKeyType": "Registry",
+        "cacheKeyType": CACHE_KEY_TYPE,
         "cacheDuration": CACHE_DURATION,
         "auth": auth,
     });

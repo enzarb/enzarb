@@ -63,14 +63,6 @@ spec:
               value: {{ .Values.networkPolicy.podCIDR | quote }}
             - name: CLUSTER_SVC_CIDR
               value: {{ .Values.networkPolicy.serviceCIDR | quote }}
-            - name: GITEA_URL
-              value: {{ .Values.operator.env.GITEA_URL | quote }}
-            - name: GITEA_ADMIN_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.operator.giteaSecret.name }}
-                  key: {{ .Values.operator.giteaSecret.tokenKey }}
-                  optional: true
           ports:
             - name: metrics
               containerPort: 8080

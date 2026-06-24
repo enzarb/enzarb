@@ -95,7 +95,7 @@ export async function migrate() {
 	await sql`CREATE INDEX IF NOT EXISTS usage_events_org_period ON usage_events(org_id, recorded_at)`;
 	// Component dimension: distinguishes where a usage event was incurred so the
 	// dashboard can split workspace vs deploy-environment spend and surface
-	// Gitea/Zot platform usage. Values: 'workspace' | 'environment' | 'gitea' | 'zot'.
+	// registry usage. Values: 'workspace' | 'environment' | 'zot'.
 	await sql`ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS component TEXT NOT NULL DEFAULT 'workspace'`;
 	// Deploy-environment slug for component='environment' rows; NULL otherwise.
 	await sql`ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS environment TEXT`;
@@ -168,7 +168,6 @@ export const defaultSettings: Record<string, string> = {
 	pricing_net_ingress_per_gib: '0.1073741824',
 	pricing_net_egress_per_gib: '0.9663676416',
 	pricing_storage_gib_seconds_per_unit: '0.0000000385',
-	pricing_gitea_storage_gib_seconds_per_unit: '0.0000000385',
 	pricing_zot_storage_gib_seconds_per_unit: '0.0000000385',
 	pricing_free_cpu_seconds: '36000',
 	pricing_free_mem_gib_seconds: '107374182'

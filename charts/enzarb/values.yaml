@@ -9,10 +9,6 @@ app:
     tag: "v0.46.3"
   env:
     ORIGIN: https://enzarb.dev
-    # Reach Gitea's admin API internally — the external host is fronted by the
-    # authd extAuth check, which only accepts workspace SA tokens, not the app's
-    # admin token.
-    GITEA_URL: http://gitea-http.enzarb-system.svc.cluster.local:3000
   dbSecret:
     name: enzarb-db-enzarb-app-credentials
     hostKey: host
@@ -47,10 +43,6 @@ operator:
   leaderElection: true
   env:
     ENZARB_DOMAIN: enzarb.dev
-    GITEA_URL: http://gitea-http.enzarb-system.svc.cluster.local:3000
-  giteaSecret:
-    name: enzarb-gitea-admin
-    tokenKey: token
   resources:
     requests:
       cpu: 100m
@@ -85,8 +77,8 @@ metering:
     limits:
       cpu: 250m
       memory: 128Mi
-# authd mints scoped registry tokens (Docker token-auth) and answers the Gitea
-# extAuth check. It validates workspace ServiceAccount tokens via TokenReview.
+# authd mints scoped registry tokens (Docker token-auth). It validates workspace
+# ServiceAccount tokens via TokenReview.
 authd:
   image:
     repository: ghcr.io/enzarb/authd
@@ -129,27 +121,12 @@ database:
   clusterName: enzarb-db
   roles:
     - enzarb-app
-    - gitea
     - dex
   databases:
     - name: enzarb
       owner: enzarb-app
-    - name: gitea
-      owner: gitea
     - name: dex
       owner: dex
-# Gitea trusts the X-Gitea-User header (reverse-proxy auth) that authd sets at
-# the gateway. This NetworkPolicy is the primary control preventing a workspace
-# pod from reaching gitea-http directly and spoofing that header: only the
-# platform namespace and the Envoy gateway may connect. Disable only if your CNI
-# doesn't enforce NetworkPolicy (Cilium does).
-gitea:
-  networkPolicy:
-    enabled: true
-    podSelector:
-      app.kubernetes.io/name: gitea
-    # Namespace where Envoy Gateway runs its data-plane proxy pods.
-    gatewayNamespace: envoy-gateway-system
 gateway:
   className: envoy
   # Namespace where Envoy Gateway runs its data-plane proxy pods. Deploy-namespace

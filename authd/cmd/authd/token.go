@@ -14,7 +14,7 @@ type Access struct {
 
 // Identity is the authenticated caller. A workspace is identified by its
 // org slug + project slug; the app's server-side UI authenticates as Admin.
-// Registry and Gitea paths are keyed by the human-readable org slug, so the
+// Registry paths are keyed by the human-readable org slug, so the
 // raw org id (UUID) from the namespace is resolved to a slug before we build
 // an Identity.
 type Identity struct {

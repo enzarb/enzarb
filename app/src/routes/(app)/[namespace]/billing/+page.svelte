@@ -16,14 +16,12 @@
 		net_ingress_bytes: 'Network In',
 		net_egress_bytes: 'Network Out',
 		storage_gib_seconds: 'Storage',
-		gitea_storage_gib_seconds: 'Gitea',
 		zot_storage_gib_seconds: 'Registry'
 	};
 
 	const componentLabels: Record<string, string> = {
 		workspace: 'Workspaces',
 		environment: 'Deploy environments',
-		gitea: 'Gitea',
 		zot: 'Registry'
 	};
 
@@ -34,7 +32,6 @@
 		net_ingress_bytes: '#d29922',
 		net_egress_bytes: '#db6d28',
 		storage_gib_seconds: '#a371f7',
-		gitea_storage_gib_seconds: '#f778ba',
 		zot_storage_gib_seconds: '#56d4dd'
 	};
 
@@ -94,7 +91,6 @@
 			<span>Net In {usd(est.lines.net_in)}</span>
 			<span>Net Out {usd(est.lines.net_out)}</span>
 			<span>Storage {usd(est.lines.storage)}</span>
-			<span>Gitea {usd(est.lines.gitea)}</span>
 			<span>Registry {usd(est.lines.zot)}</span>
 		</div>
 		<p class="estimate-note">Running estimate to date. Invoices are issued at month end.</p>
@@ -170,7 +166,6 @@
 					<th>Net In (GiB)</th>
 					<th>Net Out (GiB)</th>
 					<th>Storage (GiB-hr)</th>
-					<th>Gitea (GiB-hr)</th>
 					<th>Registry (GiB-hr)</th>
 					<th>Cost</th>
 				</tr>
@@ -184,12 +179,11 @@
 						<td>{gib(row.net_ingress_bytes)}</td>
 						<td>{gib(row.net_egress_bytes)}</td>
 						<td>{gibHours(row.storage_gib_seconds)}</td>
-						<td>{gibHours(row.gitea_storage_gib_seconds)}</td>
 						<td>{gibHours(row.zot_storage_gib_seconds)}</td>
 						<td class="cost">{usd(row.cost)}</td>
 					</tr>
 				{:else}
-					<tr><td colspan="9" class="muted">No data</td></tr>
+					<tr><td colspan="8" class="muted">No data</td></tr>
 				{/each}
 			</tbody>
 		</table>

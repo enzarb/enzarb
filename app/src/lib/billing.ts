@@ -8,12 +8,11 @@ export const RESOURCE_TYPES = [
 	'net_ingress_bytes',
 	'net_egress_bytes',
 	'storage_gib_seconds',
-	'gitea_storage_gib_seconds',
 	'zot_storage_gib_seconds'
 ] as const;
 
 export type ResourceType = (typeof RESOURCE_TYPES)[number];
 
-export const COMPONENTS = ['workspace', 'environment', 'gitea', 'zot'] as const;
+export const COMPONENTS = ['workspace', 'environment', 'zot'] as const;
 
 export type Component = (typeof COMPONENTS)[number];

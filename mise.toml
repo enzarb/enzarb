@@ -9,23 +9,20 @@ kubebuilder = "latest"
 "go:golang.org/x/vuln/cmd/govulncheck" = "latest"
 
 [tasks.deploy]
-description = "Idempotent full deploy: secrets → system → Gitea token → enzarb"
+description = "Idempotent full deploy: secrets → system → enzarb"
 run = """
 set -euo pipefail
 NS=enzarb-system
 
-echo "==> [1/4] Ensuring auto-generated secrets..."
+echo "==> [1/3] Ensuring auto-generated secrets..."
 bash scripts/setup-secrets.sh "$NS"
 
-echo "==> [2/4] Deploying system charts (Dex, Gitea, Zot)..."
+echo "==> [2/3] Deploying system charts (Dex, Zot)..."
 kubectl apply -f deploy/system/
-kubectl annotate helmchart -n kube-system dex gitea zot \
+kubectl annotate helmchart -n kube-system dex zot \
   "enzarb.dev/last-deployed=$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite
 
-echo "==> [3/4] Waiting for Gitea and minting admin token..."
-bash scripts/setup-gitea-token.sh "$NS"
-
-echo "==> [4/4] Deploying enzarb (operator, app, authd, metering)..."
+echo "==> [3/3] Deploying enzarb (operator, app, authd, metering)..."
 LATEST=$(gh release list --repo enzarb/enzarb --limit 1 --json tagName --jq '.[0].tagName | ltrimstr("v")')
 echo "    Deploying enzarb v${LATEST}"
 sed -i "s/^  version: .*/  version: ${LATEST}/" deploy/enzarb/enzarb.yaml
@@ -38,7 +35,7 @@ echo "==> Done. Check status with: mise run status"
 description = "Apply system HelmChart CRs and force re-reconciliation to upgrade to latest"
 run = """
 kubectl apply -f deploy/system/
-kubectl annotate helmchart -n kube-system dex gitea zot \
+kubectl annotate helmchart -n kube-system dex zot \
   "enzarb.dev/last-deployed=$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite
 """
 

@@ -37,14 +37,6 @@ spec:
           env:
             - name: ORIGIN
               value: {{ .Values.app.env.ORIGIN | quote }}
-            - name: GITEA_URL
-              value: {{ .Values.app.env.GITEA_URL | quote }}
-            - name: GITEA_ADMIN_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.operator.giteaSecret.name }}
-                  key: {{ .Values.operator.giteaSecret.tokenKey }}
-                  optional: true
             - name: DB_HOST
               valueFrom:
                 secretKeyRef:
