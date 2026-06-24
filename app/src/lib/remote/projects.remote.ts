@@ -6,6 +6,7 @@ import {
 	listProjects,
 	getProject as k8sGetProject,
 	createProject as k8sCreateProject,
+	resizeProject as k8sResizeProject,
 	softDeleteProject,
 	recoverProject as k8sRecoverProject,
 	forceRestartWorkspace,
@@ -125,6 +126,24 @@ export const createProject = command(
 			storageGi
 		});
 		return { slug };
+	}
+);
+
+export const resizeStorage = command(
+	z.object({ slug: z.string(), storageGi: z.coerce.number().int().min(1) }),
+	async ({ slug, storageGi }) => {
+		const org = requirePrivilege('project.create');
+		const tier = await getOrgTierValue(org.id);
+		const limits = await resolveTierLimits(tier);
+		if (storageGi > limits.maxPvcGi) {
+			error(422, `Storage exceeds tier limit of ${limits.maxPvcGi}Gi`);
+		}
+		const project = (await k8sGetProject(org.id, slug)) as any;
+		const currentGi = parseInt(project?.spec?.storage?.size ?? '0');
+		if (storageGi <= currentGi) {
+			error(422, 'Storage can only be enlarged, not reduced');
+		}
+		await k8sResizeProject(org.id, slug, storageGi);
 	}
 );
 

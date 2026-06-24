@@ -45,9 +45,10 @@
 		{ href: base, label: 'Overview' },
 		{ href: `${base}/files`, label: 'Files' },
 		{ href: `${base}/registry`, label: 'Registry' },
-		{ href: `${base}/deployments`, label: 'Environments' },
+		{ href: `${base}/environments`, label: 'Environments' },
 		{ href: `${base}/tools`, label: 'Tools' },
-		{ href: `${base}/terminal`, label: 'Terminal' }
+		{ href: `${base}/terminal`, label: 'Terminal' },
+		{ href: `${base}/settings`, label: 'Settings' }
 	]}
 	<div class="project-shell">
 		<div class="project-header">

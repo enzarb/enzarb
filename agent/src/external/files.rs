@@ -12,6 +12,94 @@ use tokio_util::io::ReaderStream;
 use crate::AppState;
 use crate::init::home_dir;
 
+#[derive(Debug, Serialize)]
+pub struct GitStatusEntry {
+    pub path: String,
+    pub index: String,
+    pub worktree: String,
+}
+
+pub async fn git_status(State(state): State<AppState>) -> Json<Vec<GitStatusEntry>> {
+    let home = home_dir();
+    let repo_dir = home.join(&state.project_slug);
+    let work_dir = if repo_dir.join(".git").exists() {
+        repo_dir.clone()
+    } else {
+        home.clone()
+    };
+
+    let Ok(out) = tokio::process::Command::new("git")
+        .args(["status", "--porcelain", "-z"])
+        .current_dir(&work_dir)
+        .output()
+        .await
+    else {
+        return Json(vec![]);
+    };
+    if !out.status.success() && out.stdout.is_empty() {
+        return Json(vec![]);
+    }
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let prefix = if work_dir == home {
+        String::new()
+    } else {
+        format!("{}/", state.project_slug)
+    };
+
+    let entries = stdout
+        .split('\0')
+        .filter(|s| s.len() >= 3)
+        .map(|s| {
+            let (xy, path) = s.split_at(2);
+            let path = path.trim_start_matches(' ');
+            let index = xy.chars().next().unwrap_or(' ').to_string();
+            let worktree = xy.chars().nth(1).unwrap_or(' ').to_string();
+            GitStatusEntry {
+                path: format!("{}{}", prefix, path),
+                index,
+                worktree,
+            }
+        })
+        .collect();
+
+    Json(entries)
+}
+
+pub async fn git_diff(State(state): State<AppState>, Query(q): Query<PathQuery>) -> Response {
+    let home = home_dir();
+    let project_prefix = format!("{}/", state.project_slug);
+    let (work_dir, rel_path) = if q.path.starts_with(&project_prefix) {
+        (
+            home.join(&state.project_slug),
+            q.path[project_prefix.len()..].to_string(),
+        )
+    } else {
+        (home.clone(), q.path.clone())
+    };
+
+    let Ok(out) = tokio::process::Command::new("git")
+        .args(["diff", "HEAD", "--", &rel_path])
+        .current_dir(&work_dir)
+        .output()
+        .await
+    else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+
+    let diff = String::from_utf8_lossy(&out.stdout).to_string();
+    if diff.is_empty() {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        diff,
+    )
+        .into_response()
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PathQuery {
     pub path: String,

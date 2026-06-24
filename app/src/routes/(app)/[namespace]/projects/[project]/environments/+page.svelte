@@ -3,6 +3,7 @@
 	let showNewEnv = $state(false);
 	let domainEnv: string | null = $state(null);
 	let envRefresh = $state(0);
+	const domainForm = $derived(domainEnv ? addDomain.for(domainEnv) : null);
 
 	async function handleSetDefault(slug: string | null) {
 		await setDefaultEnv({ envSlug: slug });
@@ -82,8 +83,7 @@
 						</div>
 					{/if}
 
-					{#if domainEnv === env.metadata.name}
-						{@const domainForm = addDomain.for(env.metadata.name)}
+					{#if domainEnv === env.metadata.name && domainForm}
 						<form {...domainForm} class="domain-form">
 							<input {...domainForm.fields.envName.as('hidden', env.metadata.name)} />
 							<input {...domainForm.fields.fqdn.as('text')} placeholder="app.yourdomain.com" required />

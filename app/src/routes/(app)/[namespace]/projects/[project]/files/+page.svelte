@@ -4,10 +4,12 @@
 	import { onMount } from 'svelte';
 
 	type FileEntry = { name: string; path: string; kind: string; size?: number; modified?: string };
+	type GitEntry = { path: string; index: string; worktree: string };
 
 	let agentBase = $state('');
 	let token = $state('');
 	let files = $state<FileEntry[]>([]);
+	let gitStatus = $state<Map<string, GitEntry>>(new Map());
 	let currentPath = $state('');
 	let loading = $state(false);
 	let ready = $state(false);
@@ -15,7 +17,7 @@
 	let uploadInput: HTMLInputElement | undefined = $state();
 
 	// File viewer state
-	let viewFile = $state<{ path: string; name: string } | null>(null);
+	let viewFile = $state<{ path: string; name: string; isDiff: boolean } | null>(null);
 	let viewContent = $state('');
 	let viewLoading = $state(false);
 	let viewError = $state('');
@@ -31,6 +33,33 @@
 		return 'text';
 	}
 
+	// Returns the git status color class for a path (file or dir prefix)
+	function gitColorClass(path: string, isDir: boolean): string {
+		if (isDir) {
+			// Dir is colored if any tracked file inside has git changes
+			const prefix = path.endsWith('/') ? path : path + '/';
+			for (const [p, e] of gitStatus) {
+				if (p.startsWith(prefix) || p === path) {
+					return gitEntryColorClass(e);
+				}
+			}
+			return '';
+		}
+		const e = gitStatus.get(path);
+		return e ? gitEntryColorClass(e) : '';
+	}
+
+	function gitEntryColorClass(e: GitEntry): string {
+		if (e.index === '?' && e.worktree === '?') return 'git-untracked';
+		if (e.index !== ' ' && e.index !== '?') return 'git-staged';
+		if (e.worktree !== ' ' && e.worktree !== '?') return 'git-modified';
+		return '';
+	}
+
+	function hasGitChanges(path: string): boolean {
+		return gitStatus.has(path);
+	}
+
 	async function init() {
 		const [agentToken, project] = await Promise.all([getAgentToken(), getProject()]);
 		const path = project?.status?.agentPath;
@@ -38,7 +67,19 @@
 		token = agentToken;
 		agentBase = `https://enzarb.dev${path}`;
 		ready = true;
-		await cd('');
+		await Promise.all([cd(''), refreshGitStatus()]);
+	}
+
+	async function refreshGitStatus() {
+		try {
+			const res = await fetch(`${agentBase}/files/git-status`, {
+				headers: { Authorization: `Bearer ${token}` }
+			});
+			if (res.ok) {
+				const entries: GitEntry[] = await res.json();
+				gitStatus = new Map(entries.map(e => [e.path, e]));
+			}
+		} catch { /* git not available — non-fatal */ }
 	}
 
 	async function cd(path: string) {
@@ -85,20 +126,47 @@
 			download(entry.path, entry.name);
 			return;
 		}
-		viewFile = { path: entry.path, name: entry.name };
+
+		const hasChanges = hasGitChanges(entry.path);
+		viewFile = { path: entry.path, name: entry.name, isDiff: hasChanges };
 		viewContent = '';
 		viewImageUrl = '';
 		viewError = '';
 		viewLoading = true;
+
 		try {
-			const res = await fetch(`${agentBase}/files/download?path=${encodeURIComponent(entry.path)}`, {
-				headers: { Authorization: `Bearer ${token}` }
-			});
-			if (!res.ok) throw new Error(`HTTP ${res.status}`);
-			if (kind === 'image') {
+			if (hasChanges && kind === 'text') {
+				// Show git diff for changed files
+				const res = await fetch(`${agentBase}/files/git-diff?path=${encodeURIComponent(entry.path)}`, {
+					headers: { Authorization: `Bearer ${token}` }
+				});
+				if (res.status === 204) {
+					// No diff (untracked) — fall through to raw content
+					viewFile = { ...viewFile, isDiff: false };
+					const raw = await fetch(`${agentBase}/files/download?path=${encodeURIComponent(entry.path)}`, {
+						headers: { Authorization: `Bearer ${token}` }
+					});
+					if (!raw.ok) throw new Error(`HTTP ${raw.status}`);
+					viewContent = await raw.text();
+				} else if (!res.ok) {
+					throw new Error(`HTTP ${res.status}`);
+				} else {
+					viewContent = await res.text();
+				}
+			} else if (kind === 'image') {
+				viewFile = { ...viewFile, isDiff: false };
+				const res = await fetch(`${agentBase}/files/download?path=${encodeURIComponent(entry.path)}`, {
+					headers: { Authorization: `Bearer ${token}` }
+				});
+				if (!res.ok) throw new Error(`HTTP ${res.status}`);
 				const blob = await res.blob();
 				viewImageUrl = URL.createObjectURL(blob);
 			} else {
+				viewFile = { ...viewFile, isDiff: false };
+				const res = await fetch(`${agentBase}/files/download?path=${encodeURIComponent(entry.path)}`, {
+					headers: { Authorization: `Bearer ${token}` }
+				});
+				if (!res.ok) throw new Error(`HTTP ${res.status}`);
 				viewContent = await res.text();
 			}
 		} catch (e) {
@@ -123,7 +191,7 @@
 		await fetch(`${agentBase}/files/upload?path=${encodeURIComponent(dest)}`, {
 			method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: file
 		});
-		await cd(currentPath);
+		await Promise.all([cd(currentPath), refreshGitStatus()]);
 	}
 
 	function fmtSize(b?: number) {
@@ -156,6 +224,7 @@
 					<button class="crumb back-btn" onclick={closeViewer}>← Back</button>
 					<span class="sep">/</span>
 					<span class="crumb-static">{viewFile.name}</span>
+					{#if viewFile.isDiff}<span class="diff-badge">diff</span>{/if}
 				{:else}
 					<button class="crumb" onclick={() => cd('')}>~</button>
 					{#each breadcrumbs as part, i}
@@ -170,7 +239,9 @@
 			<div class="toolbar-right">
 				{#if error}<span class="err">{error}</span>{/if}
 				{#if viewFile}
-					<button class="btn-sm" onclick={() => download(viewFile!.path, viewFile!.name)}>Download</button>
+					{#if !viewFile.isDiff}
+						<button class="btn-sm" onclick={() => download(viewFile!.path, viewFile!.name)}>Download</button>
+					{/if}
 				{:else}
 					<input type="file" bind:this={uploadInput} onchange={upload} style="display:none" />
 					<button class="btn" onclick={() => uploadInput?.click()}>Upload</button>
@@ -184,6 +255,21 @@
 			{:else if viewImageUrl}
 				<div class="image-wrap">
 					<img src={viewImageUrl} alt={viewFile.name} class="image-preview" />
+				</div>
+			{:else if viewFile.isDiff}
+				<div class="diff-view" aria-label="git diff">
+					{#if viewLoading}
+						<p class="muted">Loading diff…</p>
+					{:else}
+						{#each viewContent.split('\n') as line}
+							{@const cls = line.startsWith('+') && !line.startsWith('+++') ? 'add'
+								: line.startsWith('-') && !line.startsWith('---') ? 'del'
+								: line.startsWith('@@') ? 'hunk'
+								: line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++') ? 'meta'
+								: 'ctx'}
+							<div class="diff-line {cls}">{line || ' '}</div>
+						{/each}
+					{/if}
 				</div>
 			{:else}
 				<CodeViewer content={viewContent} filename={viewFile.name} loading={viewLoading} />
@@ -206,14 +292,15 @@
 						</tr>
 					{/if}
 					{#each files as f}
+						{@const colorCls = gitColorClass(f.path, f.kind === 'dir')}
 						<tr>
 							<td>
 								{#if f.kind === 'dir'}
-									<button class="entry-btn dir" onclick={() => cd(f.path)}>
+									<button class="entry-btn {colorCls}" onclick={() => cd(f.path)}>
 										<span class="icon">📁</span>{f.name}
 									</button>
 								{:else}
-									<button class="entry-btn" onclick={() => openFile(f)}>
+									<button class="entry-btn {colorCls}" onclick={() => openFile(f)}>
 										<span class="icon">📄</span>{f.name}
 									</button>
 								{/if}
@@ -240,17 +327,25 @@
 	.toolbar { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--color-border); }
 	.toolbar-right { display: flex; align-items: center; gap: 0.5rem; }
 	.breadcrumb { display: flex; align-items: center; gap: 0.2rem; font-family: var(--font-mono); font-size: 13px; flex-wrap: wrap; }
-	.crumb { background: none; border: none; color: var(--color-accent); cursor: pointer; padding: 0 0.1rem; font-family: var(--font-mono); font-size: 13px; }
-	.crumb:hover { text-decoration: underline; }
+	.crumb { background: none; border: none; color: var(--color-text-muted); cursor: pointer; padding: 0 0.1rem; font-family: var(--font-mono); font-size: 13px; }
+	.crumb:hover { color: var(--color-text); text-decoration: underline; }
 	.crumb-static { color: var(--color-text); font-family: var(--font-mono); font-size: 13px; padding: 0 0.1rem; }
-	.back-btn { display: flex; align-items: center; gap: 0.25rem; }
+	.back-btn { display: flex; align-items: center; gap: 0.25rem; color: var(--color-text-muted); }
 	.sep { color: var(--color-text-muted); }
+	.diff-badge { font-size: 10px; font-family: var(--font-mono); padding: 0.1rem 0.35rem; border-radius: 3px; background: rgba(210, 153, 34, 0.2); color: #d29922; border: 1px solid rgba(210, 153, 34, 0.4); margin-left: 0.25rem; }
+
 	.file-table { width: 100%; border-collapse: collapse; }
 	.file-table th { text-align: left; font-size: 11px; text-transform: uppercase; color: var(--color-text-muted); font-weight: 500; padding: 0.25rem 0.5rem; }
 	.file-table td { padding: 0.3rem 0.5rem; font-size: 13px; border-top: 1px solid var(--color-border); }
+
 	.entry-btn { background: none; border: none; cursor: pointer; padding: 0; font-size: 13px; display: flex; align-items: center; gap: 0.4rem; color: var(--color-text); }
 	.entry-btn:hover { text-decoration: underline; }
-	.entry-btn.dir { color: var(--color-accent); }
+
+	/* Git status colors */
+	.entry-btn.git-modified { color: #d29922; }
+	.entry-btn.git-staged { color: #3fb950; }
+	.entry-btn.git-untracked { color: var(--color-text-muted); }
+
 	.icon { font-size: 14px; }
 	.btn-sm { padding: 0.2rem 0.5rem; border: 1px solid var(--color-border); border-radius: 4px; background: none; color: var(--color-text); font-size: 12px; cursor: pointer; }
 	.muted { color: var(--color-text-muted); font-size: 13px; }
@@ -258,4 +353,13 @@
 	.err { color: var(--color-danger, #c0392b); font-size: 12px; }
 	.image-wrap { display: flex; justify-content: flex-start; padding: 1rem 0; }
 	.image-preview { max-width: 100%; border: 1px solid var(--color-border); border-radius: var(--radius); }
+
+	/* Diff viewer */
+	.diff-view { font-family: var(--font-mono); font-size: 12px; line-height: 1.5; overflow-x: auto; border: 1px solid var(--color-border); border-radius: var(--radius); }
+	.diff-line { padding: 0 0.75rem; white-space: pre; min-height: 1.5em; }
+	.diff-line.add { background: rgba(46, 160, 67, 0.15); color: #3fb950; }
+	.diff-line.del { background: rgba(248, 81, 73, 0.15); color: #f85149; }
+	.diff-line.hunk { background: rgba(88, 166, 255, 0.1); color: #58a6ff; }
+	.diff-line.meta { color: var(--color-text-muted); }
+	.diff-line.ctx { color: var(--color-text); }
 </style>

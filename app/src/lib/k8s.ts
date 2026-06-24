@@ -143,6 +143,18 @@ function setPurgePatch(obj: { metadata?: { annotations?: unknown } }, ts: string
 		: [{ op: 'add', path: '/metadata/annotations', value: { [PURGE_ANNOTATION]: ts } }];
 }
 
+export async function resizeProject(orgId: string, slug: string, storageGi: number) {
+	const ns = orgNamespace(orgId);
+	await customApi.patchNamespacedCustomObject({
+		group: GROUP,
+		version: VERSION,
+		namespace: ns,
+		plural: 'projects',
+		name: slug,
+		body: [{ op: 'replace', path: '/spec/storage/size', value: `${storageGi}Gi` }]
+	});
+}
+
 export async function softDeleteProject(orgId: string, slug: string, retentionDays: number) {
 	const ns = orgNamespace(orgId);
 	const proj = (await getProject(orgId, slug)) as { metadata?: { annotations?: unknown } };

@@ -1,14 +1,5 @@
 <script lang="ts">
-	import {
-		getProject,
-		getAgentToken,
-		removeProject,
-		getProjects,
-		getDeletedProjects
-	} from '$lib/remote/projects.remote';
-	import { page } from '$app/state';
-	import { goto } from '$app/navigation';
-	import { confirm } from '$lib/confirm';
+	import { getProject, getAgentToken } from '$lib/remote/projects.remote';
 
 	function formatBytes(bytes: number): string {
 		if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + ' GiB';
@@ -23,33 +14,6 @@
 		if (!res.ok) return null;
 		const data = await res.json();
 		return data.disk as { used_bytes: number; total_bytes: number };
-	}
-
-	let deleting = $state(false);
-	let deleteError = $state('');
-
-	async function handleDelete(slug: string, displayName: string) {
-		const ok = await confirm({
-			title: `Delete project "${displayName}"?`,
-			message:
-				'The workspace stops immediately. It stays recoverable for the retention window, after which all data is permanently purged.',
-			requireText: slug,
-			confirmText: 'Delete',
-			danger: true
-		});
-		if (!ok) return;
-		deleting = true;
-		deleteError = '';
-		try {
-			await removeProject({ slug });
-			// Refresh the list queries so the project moves from the active list to
-			// the "pending deletion" section without a stale cache.
-			await Promise.all([getProjects().refresh(), getDeletedProjects().refresh()]);
-			await goto(`/${page.params.namespace}/projects`);
-		} catch (e) {
-			deleteError = e instanceof Error ? e.message : 'Failed to delete project';
-			deleting = false;
-		}
 	}
 </script>
 
@@ -100,17 +64,6 @@
 				</table>
 			</div>
 		{/if}
-
-		<div class="danger card">
-			<div>
-				<h3>Delete project</h3>
-				<p class="muted">Stops the workspace and schedules it for deletion. Recoverable during the retention window, then permanently purged along with its repository and data.</p>
-				{#if deleteError}<p class="error-text">{deleteError}</p>{/if}
-			</div>
-			<button class="btn btn-danger" disabled={deleting} onclick={() => handleDelete(project.metadata.name, project.spec.displayName)}>
-				{deleting ? 'Deleting…' : 'Delete project'}
-			</button>
-		</div>
 	</div>
 {:catch}
 	<p class="muted">Could not load project.</p>
@@ -128,10 +81,4 @@
 	.disk-label { font-size: 11px; color: var(--color-text-muted); margin-top: 0.25rem; }
 	.conditions { margin-top: 1rem; }
 	.conditions h3 { margin-bottom: 0.75rem; font-size: 14px; }
-	.danger { margin-top: 1.5rem; display: flex; justify-content: space-between; align-items: center; gap: 1rem; border-color: var(--color-danger, #c0392b); }
-	.danger h3 { margin: 0 0 0.25rem; font-size: 14px; }
-	.danger p { margin: 0; max-width: 48ch; }
-	.error-text { color: var(--color-danger, #c0392b); margin-top: 0.5rem !important; font-size: 13px; }
-	.btn-danger { background: var(--color-danger, #c0392b); color: #fff; border: none; flex-shrink: 0; }
-	.btn-danger:disabled { opacity: 0.6; cursor: default; }
 </style>

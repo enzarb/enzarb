@@ -402,13 +402,21 @@
 		window.removeEventListener('online', maybeReconnect);
 		window.removeEventListener('beforeunload', persist);
 		persist();
-		for (const [, sock] of sockets) { sock.onclose = null; sock.close(); }
+		for (const [, sock] of sockets) {
+			sock.onclose = null;
+			sock.onmessage = null;
+			sock.onerror = null;
+			sock.close();
+		}
 		sockets.clear();
-		terminal?.dispose();
+		// Null addons and terminal reference before dispose so any inflight
+		// callbacks (socket messages, resize observer races) are no-ops.
+		const t = terminal;
 		terminal = undefined;
 		fit = undefined;
 		search = undefined;
 		serialize = undefined;
+		t?.dispose();
 	});
 </script>
 

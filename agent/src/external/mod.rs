@@ -30,6 +30,8 @@ pub fn router(state: AppState) -> Router {
         .route("/files", get(files::list).delete(files::delete))
         .route("/files/download", get(files::download))
         .route("/files/upload", post(files::upload))
+        .route("/files/git-status", get(files::git_status))
+        .route("/files/git-diff", get(files::git_diff))
         // Tool management (mise) — mise.toml on the PVC is the source of truth
         .route("/tools", get(tools::list).post(tools::add))
         .route("/tools/registry", get(tools::registry))
