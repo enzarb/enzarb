@@ -1,7 +1,5 @@
-# Billing rates and free-tier allowances are admin-editable platform settings
-# stored in the database (app_settings table), not Helm values.
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: batch/v1
+kind: CronJob
 metadata:
   name: enzarb-billing
   namespace: {{ .Release.Namespace }}
@@ -9,59 +7,62 @@ metadata:
     app: enzarb-billing
     app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: enzarb-billing
-  template:
-    metadata:
-      labels:
-        app: enzarb-billing
-        app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+  # Run at 00:05 on the 1st of each month (5-min offset avoids midnight contention)
+  schedule: "5 0 1 * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
     spec:
-      serviceAccountName: enzarb-billing
-      {{- with .Values.imagePullSecrets }}
-      imagePullSecrets: {{- toYaml . | nindent 8 }}
-      {{- end }}
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        runAsGroup: 65532
-        seccompProfile:
-          type: RuntimeDefault
-      containers:
-        - name: billing
-          image: "{{ .Values.billing.image.repository }}:{{ .Values.billing.image.tag }}"
-          imagePullPolicy: {{ .Values.billing.image.pullPolicy }}
+      template:
+        metadata:
+          labels:
+            app: enzarb-billing
+        spec:
+          serviceAccountName: enzarb-billing
+          restartPolicy: OnFailure
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets: {{- toYaml . | nindent 12 }}
+          {{- end }}
           securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: [ALL]
-          env:
-            - name: DB_HOST
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.app.dbSecret.name }}
-                  key: {{ .Values.app.dbSecret.hostKey }}
-            - name: DB_PORT
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.app.dbSecret.name }}
-                  key: {{ .Values.app.dbSecret.portKey }}
-            - name: DB_USER
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.app.dbSecret.name }}
-                  key: {{ .Values.app.dbSecret.userKey }}
-            - name: DB_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.app.dbSecret.name }}
-                  key: {{ .Values.app.dbSecret.passwordKey }}
-            - name: DATABASE_URL
-              value: "postgres://$(DB_USER):$(DB_PASSWORD)@$(DB_HOST):$(DB_PORT)/{{ .Values.app.dbSecret.dbName }}"
-          resources: {{- toYaml .Values.billing.resources | nindent 12 }}
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: billing
+              image: "{{ .Values.billing.image.repository }}:{{ .Values.billing.image.tag }}"
+              imagePullPolicy: {{ .Values.billing.image.pullPolicy }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              env:
+                - name: DB_HOST
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.app.dbSecret.name }}
+                      key: {{ .Values.app.dbSecret.hostKey }}
+                - name: DB_PORT
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.app.dbSecret.name }}
+                      key: {{ .Values.app.dbSecret.portKey }}
+                - name: DB_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.app.dbSecret.name }}
+                      key: {{ .Values.app.dbSecret.userKey }}
+                - name: DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.app.dbSecret.name }}
+                      key: {{ .Values.app.dbSecret.passwordKey }}
+                - name: DATABASE_URL
+                  value: "postgres://$(DB_USER):$(DB_PASSWORD)@$(DB_HOST):$(DB_PORT)/{{ .Values.app.dbSecret.dbName }}"
+              resources: {{- toYaml .Values.billing.resources | nindent 16 }}
 ---
 apiVersion: v1
 kind: ServiceAccount

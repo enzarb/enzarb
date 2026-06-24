@@ -5,20 +5,14 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/signal"
 	"strconv"
-	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
-	"github.com/riverqueue/river/rivermigrate"
 )
 
 func main() {
-	slog.Info("billing worker starting")
+	slog.Info("billing run starting")
 
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
@@ -26,86 +20,28 @@ func main() {
 		os.Exit(1)
 	}
 
-	pool, err := pgxpool.New(context.Background(), dbURL)
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
 		slog.Error("db connect", "err", err)
 		os.Exit(1)
 	}
 	defer pool.Close()
 
-	workers := river.NewWorkers()
-	river.AddWorker(workers, &InvoiceWorker{db: pool})
+	now := time.Now().UTC()
+	periodStart := time.Date(now.Year(), now.Month()-1, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 
-	riverClient, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
-		Queues: map[string]river.QueueConfig{
-			river.QueueDefault: {MaxWorkers: 2},
-		},
-		Workers: workers,
-	})
+	pricing, err := pricingFromDB(ctx, pool)
 	if err != nil {
-		slog.Error("river client", "err", err)
+		slog.Error("pricing config", "err", err)
 		os.Exit(1)
 	}
 
-	ctx := context.Background()
-
-	migrator, err := rivermigrate.New(riverpgxv5.New(pool), nil)
+	rows, err := pool.Query(ctx, `SELECT id, slug, tier FROM organizations`)
 	if err != nil {
-		slog.Error("river migrator", "err", err)
+		slog.Error("list orgs", "err", err)
 		os.Exit(1)
-	}
-	if _, err := migrator.Migrate(ctx, rivermigrate.DirectionUp, nil); err != nil {
-		slog.Error("river migrate", "err", err)
-		os.Exit(1)
-	}
-
-	// Schedule monthly invoice generation if not already scheduled
-	if err := scheduleMonthlyInvoice(ctx, riverClient); err != nil {
-		slog.Warn("schedule invoice", "err", err)
-	}
-
-	if err := riverClient.Start(ctx); err != nil {
-		slog.Error("river start", "err", err)
-		os.Exit(1)
-	}
-
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-
-	if err := riverClient.Stop(ctx); err != nil {
-		slog.Error("river stop", "err", err)
-	}
-}
-
-// InvoiceArgs holds arguments for the invoice generation job.
-type InvoiceArgs struct {
-	PeriodStart time.Time `json:"period_start"`
-	PeriodEnd   time.Time `json:"period_end"`
-}
-
-func (InvoiceArgs) Kind() string { return "generate_invoices" }
-
-// InvoiceWorker aggregates usage_events into invoices with tiered pricing.
-type InvoiceWorker struct {
-	db *pgxpool.Pool
-	river.WorkerDefaults[InvoiceArgs]
-}
-
-func (w *InvoiceWorker) Work(ctx context.Context, job *river.Job[InvoiceArgs]) error {
-	start := job.Args.PeriodStart
-	end := job.Args.PeriodEnd
-	slog.Info("generating invoices", "period_start", start, "period_end", end)
-
-	pricing, err := pricingFromDB(ctx, w.db)
-	if err != nil {
-		return fmt.Errorf("pricing config: %w", err)
-	}
-
-	// Get all orgs
-	rows, err := w.db.Query(ctx, `SELECT id, slug, tier FROM organizations`)
-	if err != nil {
-		return fmt.Errorf("list orgs: %w", err)
 	}
 	defer rows.Close()
 
@@ -118,18 +54,20 @@ func (w *InvoiceWorker) Work(ctx context.Context, job *river.Job[InvoiceArgs]) e
 	for rows.Next() {
 		var o org
 		if err := rows.Scan(&o.ID, &o.Slug, &o.Tier); err != nil {
-			return err
+			slog.Error("scan org", "err", err)
+			os.Exit(1)
 		}
 		orgs = append(orgs, o)
 	}
 	rows.Close()
 
 	for _, o := range orgs {
-		if err := w.generateOrgInvoice(ctx, o.ID, o.Slug, o.Tier, start, end, pricing); err != nil {
+		if err := generateOrgInvoice(ctx, pool, o.ID, o.Slug, o.Tier, periodStart, periodEnd, pricing); err != nil {
 			slog.Error("generate org invoice", "org", o.Slug, "err", err)
 		}
 	}
-	return nil
+
+	slog.Info("billing run complete", "period_start", periodStart, "period_end", periodEnd, "orgs", len(orgs))
 }
 
 type PricingConfig struct {
@@ -143,8 +81,6 @@ type PricingConfig struct {
 	FreeMemGiBSeconds           float64
 }
 
-// pricingFromDB loads pricing from the admin-editable app_settings table, which
-// is seeded with defaults by the app on migrate. Keys mirror app/src/lib/db.ts.
 func pricingFromDB(ctx context.Context, db *pgxpool.Pool) (PricingConfig, error) {
 	rows, err := db.Query(ctx, `SELECT key, value FROM app_settings WHERE key LIKE 'pricing_%'`)
 	if err != nil {
@@ -194,10 +130,9 @@ func pricingFromDB(ctx context.Context, db *pgxpool.Pool) (PricingConfig, error)
 	return p, nil
 }
 
-func (w *InvoiceWorker) generateOrgInvoice(ctx context.Context, orgID, orgSlug, tier string, start, end time.Time, p PricingConfig) error {
-	// Check for existing invoice for this period
+func generateOrgInvoice(ctx context.Context, db *pgxpool.Pool, orgID, orgSlug, tier string, start, end time.Time, p PricingConfig) error {
 	var existing int
-	err := w.db.QueryRow(ctx, `
+	err := db.QueryRow(ctx, `
 		SELECT COUNT(*) FROM invoices
 		WHERE org_id = $1 AND period_start = $2 AND period_end = $3
 	`, orgID, start, end).Scan(&existing)
@@ -205,12 +140,11 @@ func (w *InvoiceWorker) generateOrgInvoice(ctx context.Context, orgID, orgSlug, 
 		return err
 	}
 
-	// Aggregate usage by resource type
 	type usageRow struct {
 		ResourceType string
 		Total        float64
 	}
-	rows, err := w.db.Query(ctx, `
+	rows, err := db.Query(ctx, `
 		SELECT resource_type, SUM(quantity)
 		FROM usage_events
 		WHERE org_id = $1 AND recorded_at >= $2 AND recorded_at < $3
@@ -231,20 +165,15 @@ func (w *InvoiceWorker) generateOrgInvoice(ctx context.Context, orgID, orgSlug, 
 	}
 	rows.Close()
 
-	// Calculate total in cents
 	var totalCents int64
 
-	cpuBillable := usage["cpu_seconds"] - p.FreeCPUSeconds
-	if cpuBillable > 0 {
+	if cpuBillable := usage["cpu_seconds"] - p.FreeCPUSeconds; cpuBillable > 0 {
 		totalCents += int64(cpuBillable * p.CPUSecondsPerUnit * 100)
 	}
-
-	memBillable := usage["mem_gib_seconds"] - p.FreeMemGiBSeconds
-	if memBillable > 0 {
+	if memBillable := usage["mem_gib_seconds"] - p.FreeMemGiBSeconds; memBillable > 0 {
 		totalCents += int64(memBillable * p.MemGiBSecondsPerUnit * 100)
 	}
 
-	// Network usage is metered in bytes; pricing is per GiB (1 GiB = 1<<30 bytes).
 	const bytesPerGiB = 1 << 30
 	totalCents += int64(usage["net_ingress_bytes"] / bytesPerGiB * p.NetIngressPerGiB * 100)
 	totalCents += int64(usage["net_egress_bytes"] / bytesPerGiB * p.NetEgressPerGiB * 100)
@@ -255,7 +184,7 @@ func (w *InvoiceWorker) generateOrgInvoice(ctx context.Context, orgID, orgSlug, 
 		totalCents = 0
 	}
 
-	_, err = w.db.Exec(ctx, `
+	_, err = db.Exec(ctx, `
 		INSERT INTO invoices (org_id, period_start, period_end, total_cents, status)
 		VALUES ($1, $2, $3, $4, 'draft')
 	`, orgID, start, end, totalCents)
@@ -265,19 +194,4 @@ func (w *InvoiceWorker) generateOrgInvoice(ctx context.Context, orgID, orgSlug, 
 
 	slog.Info("invoice created", "org", orgSlug, "period_start", start, "total_cents", totalCents)
 	return nil
-}
-
-func scheduleMonthlyInvoice(ctx context.Context, client *river.Client[pgx.Tx]) error { //nolint:unparam
-	// Schedule for the 1st of next month
-	now := time.Now().UTC()
-	firstOfNextMonth := time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC)
-	periodStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-
-	_, err := client.Insert(ctx, &InvoiceArgs{
-		PeriodStart: periodStart,
-		PeriodEnd:   firstOfNextMonth,
-	}, &river.InsertOpts{
-		ScheduledAt: firstOfNextMonth,
-	})
-	return err
 }
