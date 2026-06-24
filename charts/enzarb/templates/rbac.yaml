@@ -150,3 +150,7 @@ rules:
   - apiGroups: ["pgop.ruck.io"]
     resources: ["clusters", "roles", "databases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # HelmCharts — tenants may deploy Helm releases into their env namespace via K3s HelmChart CRs
+  - apiGroups: ["helm.cattle.io"]
+    resources: ["helmcharts", "helmchartconfigs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
