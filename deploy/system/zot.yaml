@@ -10,14 +10,10 @@ spec:
   targetNamespace: enzarb-system
   createNamespace: true
   valuesContent: |-
-    # S3 credentials are injected from the zot-s3-credentials Secret.
-    # Create it before deploying:
-    #   kubectl -n enzarb-system create secret generic zot-s3-credentials \
-    #     --from-literal=S3_ENDPOINT=http://<rook-ceph-rgw-svc>:80 \
-    #     --from-literal=S3_BUCKET=zot-registry \
-    #     --from-literal=S3_REGION=us-east-1 \
-    #     --from-literal=S3_ACCESS_KEY=<access-key> \
-    #     --from-literal=S3_SECRET_KEY=<secret-key>
+    # S3 credentials come from the OBC (deploy/system/zot-bucket.yaml).
+    # Rook provisions the bucket and writes:
+    #   Secret      zot-registry → AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+    #   ConfigMap   zot-registry → BUCKET_HOST, BUCKET_PORT, BUCKET_NAME
     service:
       type: ClusterIP
     # zot does NOT expand env vars in its config, and the chart's mountConfig
@@ -47,7 +43,9 @@ spec:
         image: busybox:1.36
         envFrom:
           - secretRef:
-              name: zot-s3-credentials
+              name: zot-registry        # OBC-generated: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+          - configMapRef:
+              name: zot-registry        # OBC-generated: BUCKET_HOST, BUCKET_PORT, BUCKET_NAME
         command:
           - sh
           - -c
@@ -61,11 +59,11 @@ spec:
                 "dedupe": false,
                 "storageDriver": {
                   "name": "s3",
-                  "regionendpoint": "$S3_ENDPOINT",
-                  "bucket": "$S3_BUCKET",
-                  "region": "$S3_REGION",
-                  "accesskey": "$S3_ACCESS_KEY",
-                  "secretkey": "$S3_SECRET_KEY",
+                  "regionendpoint": "http://${BUCKET_HOST}:${BUCKET_PORT}",
+                  "bucket": "${BUCKET_NAME}",
+                  "region": "us-east-1",
+                  "accesskey": "${AWS_ACCESS_KEY_ID}",
+                  "secretkey": "${AWS_SECRET_ACCESS_KEY}",
                   "forcepathstyle": true
                 }
               },
