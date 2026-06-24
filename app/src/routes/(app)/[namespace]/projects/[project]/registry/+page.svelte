@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getRepositories, getRepoTags } from '$lib/remote/registry.remote';
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 
 	let selectedRepo: string | null = $state(null);
 	let tags: string[] = $state([]);
@@ -18,7 +18,7 @@
 	}
 
 	const registryBase = 'registry.enzarb.dev';
-	const registryPrefix = $derived(`${registryBase}/${$page.params.namespace}/${$page.params.project}`);
+	const registryPrefix = $derived(`${registryBase}/${page.params.namespace}/${page.params.project}`);
 </script>
 
 {#await getRepositories() then repos}

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { createProject, getOrgTierInfo } from '$lib/remote/projects.remote';
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 
 	const availableTools = [
@@ -33,7 +33,7 @@
 		submitError = null;
 		try {
 			const result = await createProject({ slug, displayName, tools: selectedTools, storageGi });
-			await goto(`/${$page.params.namespace}/projects/${result.slug}`);
+			await goto(`/${page.params.namespace}/projects/${result.slug}`);
 		} catch (e: any) {
 			submitError = e?.body?.message ?? e?.message ?? 'Failed to create project';
 		} finally {
@@ -43,7 +43,7 @@
 </script>
 
 <div class="page-header">
-	<a href="/{$page.params.namespace}/projects" class="back">← Projects</a>
+	<a href="/{page.params.namespace}/projects" class="back">← Projects</a>
 	<h2>New Project</h2>
 </div>
 
@@ -88,7 +88,7 @@
 		{/if}
 
 		<div class="actions">
-			<a href="/{$page.params.namespace}/projects" class="btn">Cancel</a>
+			<a href="/{page.params.namespace}/projects" class="btn">Cancel</a>
 			<button type="button" class="btn btn-primary" onclick={submit} disabled={submitting}>
 				{submitting ? 'Creating…' : 'Create project'}
 			</button>

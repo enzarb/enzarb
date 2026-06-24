@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { chooseUsername } from '$lib/remote/onboarding.remote';
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 
-	const returnTo = $derived($page.url.searchParams.get('returnTo') ?? '/dashboard');
+	const returnTo = $derived(page.url.searchParams.get('returnTo') ?? '/dashboard');
 </script>
 
 <main class="onboarding">

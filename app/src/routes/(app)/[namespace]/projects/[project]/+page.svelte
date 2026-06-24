@@ -6,7 +6,7 @@
 		getProjects,
 		getDeletedProjects
 	} from '$lib/remote/projects.remote';
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { confirm } from '$lib/confirm';
 
@@ -45,7 +45,7 @@
 			// Refresh the list queries so the project moves from the active list to
 			// the "pending deletion" section without a stale cache.
 			await Promise.all([getProjects().refresh(), getDeletedProjects().refresh()]);
-			await goto(`/${$page.params.namespace}/projects`);
+			await goto(`/${page.params.namespace}/projects`);
 		} catch (e) {
 			deleteError = e instanceof Error ? e.message : 'Failed to delete project';
 			deleting = false;

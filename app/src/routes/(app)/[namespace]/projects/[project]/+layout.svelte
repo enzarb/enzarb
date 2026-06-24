@@ -1,12 +1,12 @@
 <script lang="ts">
 	import { getProject, restartWorkspace } from '$lib/remote/projects.remote';
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 
 	let { children } = $props();
 
 	function isActive(base: string, href: string) {
-		if (href === base) return $page.url.pathname === base;
-		return $page.url.pathname.startsWith(href);
+		if (href === base) return page.url.pathname === base;
+		return page.url.pathname.startsWith(href);
 	}
 
 	// Dismissed version is stored in localStorage so the banner doesn't reappear
@@ -39,8 +39,8 @@
 	}
 </script>
 
-{#await getProject($page.params.project) then project}
-	{@const base = `/${$page.params.namespace}/projects/${$page.params.project}`}
+{#await getProject(page.params.project) then project}
+	{@const base = `/${page.params.namespace}/projects/${page.params.project}`}
 	{@const tabs = [
 		{ href: base, label: 'Overview' },
 		{ href: `${base}/files`, label: 'Files' },
@@ -52,7 +52,7 @@
 	<div class="project-shell">
 		<div class="project-header">
 			<div>
-				<a href="/{$page.params.namespace}/projects" class="back">← Projects</a>
+				<a href="/{page.params.namespace}/projects" class="back">← Projects</a>
 				<h2>{project.spec.displayName}</h2>
 			</div>
 			<span class="badge {(project.status?.phase ?? 'pending').toLowerCase()}">{project.status?.phase ?? 'Pending'}</span>

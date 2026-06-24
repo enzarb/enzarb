@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { LayoutData } from './$types';
 	import { afterNavigate } from '$app/navigation';
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 
 	let { data, children }: { data: LayoutData; children: any } = $props();
@@ -32,7 +32,7 @@
 	}
 
 	function isProjectActive(orgSlug: string, projectSlug: string) {
-		return $page.url.pathname.startsWith(`/${orgSlug}/projects/${projectSlug}`);
+		return page.url.pathname.startsWith(`/${orgSlug}/projects/${projectSlug}`);
 	}
 </script>
 

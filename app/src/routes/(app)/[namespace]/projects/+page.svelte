@@ -4,7 +4,7 @@
 		getDeletedProjects,
 		recoverProjectCommand
 	} from '$lib/remote/projects.remote';
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 
 	let recovering = $state('');
 
@@ -22,13 +22,13 @@
 
 <div class="page-header">
 	<h2>Projects</h2>
-	<a href="/{$page.params.namespace}/projects/new" class="btn btn-primary">New project</a>
+	<a href="/{page.params.namespace}/projects/new" class="btn btn-primary">New project</a>
 </div>
 
 <div class="projects">
 	{#each await getProjects() as project}
 		{@const status = project.status?.phase ?? 'Pending'}
-		<a href="/{$page.params.namespace}/projects/{project.metadata.name}" class="card project-card">
+		<a href="/{page.params.namespace}/projects/{project.metadata.name}" class="card project-card">
 			<div class="project-header">
 				<span class="project-name">{project.spec.displayName}</span>
 				<span class="badge {status.toLowerCase()}">{status}</span>
@@ -43,7 +43,7 @@
 			{/if}
 		</a>
 	{:else}
-		<p class="empty">No projects yet. <a href="/{$page.params.namespace}/projects/new">Create one</a>.</p>
+		<p class="empty">No projects yet. <a href="/{page.params.namespace}/projects/new">Create one</a>.</p>
 	{/each}
 </div>
 

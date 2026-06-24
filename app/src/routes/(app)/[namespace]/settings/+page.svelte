@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import {
 		getMembers,
 		getRoles,
@@ -13,7 +13,7 @@
 	import { confirm } from '$lib/confirm';
 
 	const orgMembership = $derived(
-		$page.data.session.orgs.find((o: { slug: string }) => o.slug === $page.params.namespace)
+		page.data.session.orgs.find((o: { slug: string }) => o.slug === page.params.namespace)
 	);
 	const privileges = $derived((orgMembership?.privileges ?? []) as string[]);
 	const canManageMembers = $derived(privileges.includes('member.manage'));
@@ -99,7 +99,7 @@
 	<div class="card info-card">
 		<div class="info-row">
 			<span class="label">Namespace</span>
-			<code class="mono">{$page.params.namespace}</code>
+			<code class="mono">{page.params.namespace}</code>
 		</div>
 		<div class="info-row">
 			<span class="label">Your role</span>
