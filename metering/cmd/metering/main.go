@@ -490,15 +490,21 @@ func (w *Worker) collectZotUsage(ctx context.Context) error {
 	var catalog struct {
 		Repositories []string `json:"repositories"`
 	}
-	if _, err := w.zotGet(ctx, "/v2/_catalog", "registry:catalog:*", &catalog); err != nil {
+	// Zot v2 uses 'repository::pull' (empty repo name) to authorize _catalog,
+	// not the Docker spec's 'registry:catalog:*'. Use the scope Zot challenges with.
+	if _, err := w.zotGet(ctx, "/v2/_catalog", "repository::pull", &catalog); err != nil {
 		return fmt.Errorf("catalog: %w", err)
 	}
 
 	for _, repo := range catalog.Repositories {
-		orgSlug, project, ok := strings.Cut(repo, "/")
-		if !ok {
+		// Repo paths are orgSlug/projectSlug/imageName; extract just the first two
+		// segments. strings.Cut would give projectSlug/imageName as the "project",
+		// which doesn't match the project slug in the DB.
+		parts := strings.SplitN(repo, "/", 3)
+		if len(parts) < 2 {
 			continue
 		}
+		orgSlug, project := parts[0], parts[1]
 		orgID, ok := orgIDs[orgSlug]
 		if !ok {
 			continue // repo not owned by a known org

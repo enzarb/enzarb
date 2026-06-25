@@ -15,7 +15,18 @@ secret_exists() { kubectl -n "$NS" get secret "$1" >/dev/null 2>&1; }
 
 # ── Registry token-signing keypair (authd signs, Zot verifies) ───────────────
 if secret_exists registry-token-signing; then
-  echo "  [skip] registry-token-signing already exists"
+  # Verify the existing secret has a valid key/cert pair before skipping.
+  KEY_MOD=$(kubectl -n "$NS" get secret registry-token-signing \
+    -o jsonpath='{.data.tls\.key}' | base64 -d | openssl rsa -noout -modulus 2>/dev/null | md5sum)
+  CRT_MOD=$(kubectl -n "$NS" get secret registry-token-signing \
+    -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -noout -modulus 2>/dev/null | md5sum)
+  if [ "$KEY_MOD" = "$CRT_MOD" ] && [ -n "$KEY_MOD" ]; then
+    echo "  [skip] registry-token-signing already exists and key/cert pair is valid"
+  else
+    echo "  [WARN] registry-token-signing exists but key/cert pair is INVALID — re-running"
+    echo "         setup-registry-secrets.sh to rotate and restart affected services."
+    "$(dirname "$0")/setup-registry-secrets.sh" "$NS"
+  fi
 else
   echo "  [create] registry-token-signing"
   TMP="$(mktemp -d)"

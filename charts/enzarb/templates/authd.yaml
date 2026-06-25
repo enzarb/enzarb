@@ -47,6 +47,9 @@ spec:
                   name: {{ .Values.authd.adminSecret.name }}
                   key: {{ .Values.authd.adminSecret.key }}
             # Bind each token to the pod it was issued to (source-IP match).
+            - name: TOKEN_ISSUER
+              value: "https://registry.{{ .Values.gateway.domain }}/auth/token"
+            # Bind each token to the pod it was issued to (source-IP match).
             - name: POD_IP_BINDING
               value: {{ if .Values.authd.podIPBinding }}"on"{{ else }}"off"{{ end }}
           ports:

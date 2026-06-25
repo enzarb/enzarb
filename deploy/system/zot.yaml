@@ -76,6 +76,17 @@ spec:
                     "service": "registry.enzarb.dev",
                     "cert": "/etc/zot/token/tls.crt"
                   }
+                },
+                "accessControl": {
+                  "repositories": {
+                    "**": {
+                      "defaultPolicy": ["read", "create", "update", "delete"]
+                    }
+                  },
+                  "adminPolicy": {
+                    "users": ["admin"],
+                    "actions": ["read", "create", "update", "delete"]
+                  }
                 }
               },
               "log": { "level": "info" }
