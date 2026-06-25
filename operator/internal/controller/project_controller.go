@@ -539,6 +539,7 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug s
 								// workspace's credential helpers auth to these automatically; the
 								// project may only push/pull within its own <orgSlug>/<slug> prefix.
 								{Name: "ENZARB_REGISTRY", Value: fmt.Sprintf("registry.%s", r.Domain)},
+								{Name: "REGISTRY", Value: fmt.Sprintf("registry.%s/%s/%s", r.Domain, orgSlug, project.Spec.Slug)},
 								{Name: "ENZARB_IMAGE", Value: fmt.Sprintf("registry.%s/%s/%s", r.Domain, orgSlug, project.Spec.Slug)},
 								// buildkitd sidecar speaks the BuildKit gRPC API, not the
 								// Docker daemon API — clients reach it via BUILDKIT_HOST.
