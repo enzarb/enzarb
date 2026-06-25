@@ -14,6 +14,14 @@ spec:
         apiVersions: ["v1"]
         operations: ["CREATE", "UPDATE"]
         resources: ["services"]
+  matchConditions:
+    # cert-manager HTTP-01 GatewayHTTPRoute solver creates a temporary NodePort
+    # service to serve the ACME challenge. Allow it — the HTTPRoute (not the
+    # NodePort) is what routes external traffic; the NodePort port is unused.
+    - name: not-acme-solver
+      expression: >-
+        !(has(object.metadata.labels) &&
+          'acme.cert-manager.io/http01-solver' in object.metadata.labels)
   validations:
     - expression: >-
         !has(object.spec.type) ||

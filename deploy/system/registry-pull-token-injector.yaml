@@ -27,8 +27,14 @@ spec:
     # Only inject into deploy-* namespaces (tenant deploy environments).
     - name: is-deploy-namespace
       expression: "object.metadata.namespace.startsWith('deploy-')"
-    # Skip if already injected (idempotent). Guards against missing volumes list
-    # and against projected volumes without an audience field (e.g. kube-api-access).
+    # Skip cert-manager HTTP-01 solver pods — they don't pull from registry.enzarb.dev
+    # and their pod spec has no volumes array, which would break the JSONPatch append.
+    - name: not-acme-solver
+      expression: >-
+        !(has(object.metadata.labels) &&
+          'acme.cert-manager.io/http01-solver' in object.metadata.labels)
+    # Skip if already injected (idempotent). Guards against projected volumes
+    # without an audience field (e.g. kube-api-access).
     - name: not-already-injected
       expression: >
         !has(object.spec.volumes) ||
