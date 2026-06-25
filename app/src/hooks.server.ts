@@ -3,12 +3,18 @@ import { getSession } from '$lib/session';
 import { initKeys } from '$lib/jwt';
 import { migrate } from '$lib/db';
 
-let initialized = false;
+let initPromise: Promise<void> | null = null;
 async function init() {
-	if (initialized) return;
-	initialized = true;
-	await migrate();
-	await initKeys();
+	if (!initPromise) {
+		initPromise = migrate()
+			.then(() => initKeys())
+			.catch((err) => {
+				// Allow retry on next request if initialization fails.
+				initPromise = null;
+				throw err;
+			});
+	}
+	await initPromise;
 }
 
 export const handle: Handle = async ({ event, resolve }) => {
