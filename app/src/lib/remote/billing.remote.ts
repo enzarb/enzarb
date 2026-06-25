@@ -185,10 +185,18 @@ export const getCostTimeSeries = query(
 		}
 		// Emit exactly `days` buckets ending today, zero-filling days with no usage
 		// so the chart always shows the full selected range as distinct columns.
+		// Segments are always emitted in RESOURCE_TYPES order so the chart stacks
+		// consistently across all buckets.
+		const activeTypes = resourceTypes.length ? resourceTypes : [...RESOURCE_TYPES];
 		const start = new Date(Date.now() - (days - 1) * 86400000);
 		return Array.from({ length: days }, (_, i) => {
 			const day = new Date(start.getTime() + i * 86400000).toISOString().slice(0, 10);
-			return { day, segments: buckets.get(day) ?? {} };
+			const raw = buckets.get(day) ?? {};
+			const segments: Record<string, number> = {};
+			for (const rt of activeTypes) {
+				if (raw[rt]) segments[rt] = raw[rt];
+			}
+			return { day, segments };
 		});
 	}
 );

@@ -103,6 +103,10 @@
 							</li>
 						{/each}
 					</ul>
+					<a href="/{org.slug}/billing" class="org-billing-link">
+						<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+						Billing
+					</a>
 				</div>
 			{/each}
 			{#if session.isAdmin}
@@ -134,10 +138,6 @@
 			style="top:{dropdownPos.top}px;left:{dropdownPos.left}px"
 			role="menu"
 		>
-			<a href="/{openOrg.slug}/billing" class="dropdown-item" onclick={() => { orgMenuOpen = null; }}>
-				<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
-				Billing
-			</a>
 			<a href="/{openOrg.slug}/settings" class="dropdown-item" onclick={() => { orgMenuOpen = null; }}>
 				<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
 				Settings
@@ -282,6 +282,18 @@
 	.project-link.muted { font-style: italic; }
 	.icon { width: 14px; height: 14px; flex-shrink: 0; }
 
+	.org-billing-link {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.3rem 0.5rem;
+		border-radius: 4px;
+		color: var(--color-text-muted);
+		font-size: 13px;
+		text-decoration: none;
+		margin-top: 0.25rem;
+	}
+	.org-billing-link:hover { background: var(--color-surface-2); color: var(--color-text); text-decoration: none; }
 	.admin-link { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--color-border); }
 	.admin-link a {
 		display: flex;
