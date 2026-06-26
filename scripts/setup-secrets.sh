@@ -61,4 +61,19 @@ else
     --from-file=publicKey="$TMP2/public.pem"
 fi
 
+# ── GitHub OAuth App (optional — skip if GITHUB_OAUTH_CLIENT_ID is unset) ────
+if [ -n "${GITHUB_OAUTH_CLIENT_ID:-}" ]; then
+  if secret_exists enzarb-github-oauth; then
+    echo "  [skip] enzarb-github-oauth already exists"
+  else
+    if [ -z "${GITHUB_OAUTH_CLIENT_SECRET:-}" ]; then
+      echo "  [warn] GITHUB_OAUTH_CLIENT_ID is set but GITHUB_OAUTH_CLIENT_SECRET is empty — skipping"
+    else
+      echo "  [create] enzarb-github-oauth"
+      kubectl -n "$NS" create secret generic enzarb-github-oauth \
+        --from-literal=clientSecret="$GITHUB_OAUTH_CLIENT_SECRET"
+    fi
+  fi
+fi
+
 echo "  Secrets setup complete."

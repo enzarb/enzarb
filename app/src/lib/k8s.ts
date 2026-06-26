@@ -363,6 +363,28 @@ export async function setDefaultEnvironment(orgId: string, projectSlug: string, 
 	});
 }
 
+// createOrPatchSecret creates or replaces a K8s Secret with the given string data.
+// Values must already be plain strings — the k8s client base64-encodes them.
+export async function createOrPatchSecret(namespace: string, name: string, data: Record<string, string>) {
+	const body = {
+		apiVersion: 'v1',
+		kind: 'Secret',
+		metadata: { name, namespace },
+		stringData: data
+	};
+	try {
+		await coreApi.replaceNamespacedSecret({ namespace, name, body });
+	} catch {
+		await coreApi.createNamespacedSecret({ namespace, body });
+	}
+}
+
+export async function deleteSecret(namespace: string, name: string) {
+	try {
+		await coreApi.deleteNamespacedSecret({ namespace, name });
+	} catch { /* already gone */ }
+}
+
 export async function forceRestartWorkspace(orgId: string, slug: string) {
 	const ns = orgNamespace(orgId);
 	const proj = (await getProject(orgId, slug)) as { metadata?: { annotations?: unknown } };

@@ -87,6 +87,15 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.authd.adminSecret.name }}
                   key: {{ .Values.authd.adminSecret.key }}
+            {{- if .Values.github.oauthClientId }}
+            - name: GITHUB_OAUTH_CLIENT_ID
+              value: {{ .Values.github.oauthClientId | quote }}
+            - name: GITHUB_OAUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-github-oauth
+                  key: clientSecret
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /health

@@ -79,6 +79,11 @@ SSR frontend using SvelteKit (adapter-node). Key libs:
 
 The app issues its own JWTs (JWKS at `/.well-known/jwks.json`) which the agent validates, tying user identity to workspace access.
 
+**SvelteKit conventions:**
+- Never use `+page.ts` or `+server.ts` load functions. Call SvelteKit remote functions (`query`/`command` from `$lib/remote/`) directly in `.svelte` files.
+- For reactive async data that depends on route params, use `const data = $derived(fetchFn(page.params.x))` returning a Promise, then render with `{#await data}` in the template.
+- Never use `$effect` for reacting to URL/param changes; use `$derived` + `{#await}` instead.
+
 ### `billing/` and `metering/` (Go)
 Standalone services (`cmd/billing/`, `cmd/metering/`). Billing integrates with the River job queue (PostgreSQL-backed). Both communicate via Postgres.
 

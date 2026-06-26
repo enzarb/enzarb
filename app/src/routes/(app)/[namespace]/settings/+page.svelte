@@ -9,8 +9,17 @@
 		createRole,
 		deleteRole
 	} from '$lib/remote/members.remote';
+	import {
+		getUserSecrets,
+		setUserSecret,
+		deleteUserSecret,
+		getGithubOAuthConfig,
+		getGithubConnection,
+		disconnectGithub
+	} from '$lib/remote/settings.remote';
 	import { PRIVILEGE_LABELS } from '$lib/privileges';
 	import { confirm } from '$lib/confirm';
+	import { config } from '$lib/config';
 
 	const orgMembership = $derived(
 		page.data.session.orgs.find((o: { slug: string }) => o.slug === page.params.namespace)
@@ -65,6 +74,62 @@
 		});
 	}
 
+	// ── User env secrets ─────────────────────────────────────────────────────
+	let newSecretKey = $state('');
+	let newSecretValue = $state('');
+	let secretBusy = $state('');
+	let secretError = $state('');
+
+	async function addSecret() {
+		const key = newSecretKey.trim();
+		const value = newSecretValue;
+		if (!key) return;
+		secretBusy = 'add';
+		secretError = '';
+		try {
+			await setUserSecret({ key, value });
+			newSecretKey = '';
+			newSecretValue = '';
+			await getUserSecrets().refresh();
+		} catch (e) {
+			secretError = e instanceof Error ? e.message : 'Failed to save';
+		} finally {
+			secretBusy = '';
+		}
+	}
+
+	async function removeSecret(key: string) {
+		const ok = await confirm({ title: `Delete secret "${key}"?`, confirmText: 'Delete', danger: true });
+		if (!ok) return;
+		secretBusy = `del:${key}`;
+		secretError = '';
+		try {
+			await deleteUserSecret({ key });
+			await getUserSecrets().refresh();
+		} catch (e) {
+			secretError = e instanceof Error ? e.message : 'Failed to delete';
+		} finally {
+			secretBusy = '';
+		}
+	}
+
+	// ── GitHub OAuth ──────────────────────────────────────────────────────────
+	let githubBusy = $state(false);
+
+	async function handleDisconnectGithub() {
+		const ok = await confirm({ title: 'Disconnect GitHub?', message: 'GH_TOKEN and related env vars will be removed from all workspaces on next restart.', confirmText: 'Disconnect', danger: true });
+		if (!ok) return;
+		githubBusy = true;
+		try {
+			await disconnectGithub();
+			await getGithubConnection().refresh();
+		} finally {
+			githubBusy = false;
+		}
+	}
+
+	const githubConnected = $derived(page.url.searchParams.get('github') === 'connected');
+
 	let newRoleName = $state('');
 	async function addRole() {
 		const name = newRoleName.trim();
@@ -107,6 +172,66 @@
 		</div>
 	</div>
 </section>
+
+<section class="section">
+	<h3>Environment Variables</h3>
+	<p class="section-desc">Secrets injected as environment variables into all your workspaces. Set <code>ANTHROPIC_API_KEY</code>, <code>NPM_TOKEN</code>, or any other credential here. Values are write-only after saving.</p>
+	{#if secretError}<p class="error-text">{secretError}</p>{/if}
+	{#await getUserSecrets() then secrets}
+		{#if secrets.length > 0}
+			<div class="card secret-table-wrap">
+				<table class="secret-table">
+					<thead><tr><th>Key</th><th>Value</th><th></th></tr></thead>
+					<tbody>
+						{#each secrets as s}
+							<tr>
+								<td><code class="mono">{s.key}</code></td>
+								<td class="muted">••••••••</td>
+								<td>
+									<button class="btn btn-sm btn-danger-outline" disabled={secretBusy === `del:${s.key}`} onclick={() => removeSecret(s.key)}>Remove</button>
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
+		{/if}
+		<div class="secret-add card">
+			<input class="secret-input" type="text" placeholder="KEY" bind:value={newSecretKey} disabled={!!secretBusy} onkeydown={(e) => e.key === 'Enter' && addSecret()} />
+			<input class="secret-input secret-val" type="password" placeholder="value" bind:value={newSecretValue} disabled={!!secretBusy} onkeydown={(e) => e.key === 'Enter' && addSecret()} />
+			<button class="btn btn-sm" disabled={!newSecretKey.trim() || !!secretBusy} onclick={addSecret}>
+				{secretBusy === 'add' ? 'Saving…' : 'Add'}
+			</button>
+		</div>
+	{/await}
+</section>
+
+{#await getGithubOAuthConfig() then ghConfig}
+	{#if ghConfig.enabled}
+		<section class="section">
+			<h3>GitHub</h3>
+			<p class="section-desc">Connect your GitHub account to automatically inject <code>GH_TOKEN</code> and <code>GITHUB_TOKEN</code> into workspaces — no <code>gh auth login</code> needed. Git identity (<code>user.name</code>, <code>user.email</code>) is also configured automatically.</p>
+			{#if githubConnected}
+				<p class="success-text">GitHub connected successfully. Restart your workspace to pick up the new credentials.</p>
+			{/if}
+			{#await getGithubConnection() then connection}
+				{#if connection}
+					<div class="card github-card">
+						<span class="github-connected">Connected as <strong>{connection.login}</strong></span>
+						<button class="btn btn-sm btn-danger-outline" disabled={githubBusy} onclick={handleDisconnectGithub}>
+							{githubBusy ? 'Disconnecting…' : 'Disconnect'}
+						</button>
+					</div>
+				{:else}
+					<a class="btn btn-github" href="/auth/github/connect">
+						<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.2 11.38.6.1.82-.26.82-.58v-2.04c-3.34.73-4.04-1.61-4.04-1.61-.54-1.38-1.33-1.75-1.33-1.75-1.09-.74.08-.73.08-.73 1.2.08 1.83 1.24 1.83 1.24 1.07 1.83 2.8 1.3 3.49 1 .1-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.12-.3-.54-1.52.12-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 3-.4c1.02 0 2.04.13 3 .4 2.28-1.55 3.29-1.23 3.29-1.23.66 1.66.24 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.48 5.93.43.37.82 1.1.82 2.22v3.29c0 .32.22.7.83.58C20.57 21.8 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg>
+						Connect GitHub
+					</a>
+				{/if}
+			{/await}
+		</section>
+	{/if}
+{/await}
 
 {#if !isPersonal}
 <section class="section">
@@ -226,4 +351,21 @@
 	.btn-sm { font-size: 12px; padding: 0.25rem 0.625rem; }
 	.new-role { display: flex; gap: 0.5rem; margin-top: 1rem; }
 	.new-role input { font-size: 13px; padding: 0.375rem 0.5rem; background: var(--color-surface-2); color: var(--color-text); border: 1px solid var(--color-border); border-radius: 4px; }
+
+	.section-desc { font-size: 13px; color: var(--color-text-muted); margin: 0 0 0.75rem; }
+	.section-desc code { font-family: var(--font-mono); font-size: 12px; background: var(--color-surface-2); padding: 0.05rem 0.3rem; border-radius: 3px; color: var(--color-text); }
+	.secret-table-wrap { margin-bottom: 0.75rem; }
+	.secret-table { width: 100%; border-collapse: collapse; }
+	.secret-table th, .secret-table td { padding: 0.4rem 0.5rem; font-size: 13px; border-bottom: 1px solid var(--color-border); text-align: left; }
+	.secret-table th { font-size: 11px; color: var(--color-text-muted); text-transform: uppercase; }
+	.secret-add { display: flex; gap: 0.5rem; align-items: center; padding: 0.5rem; }
+	.secret-input { flex: 1; font-size: 13px; font-family: var(--font-mono); padding: 0.375rem 0.5rem; background: var(--color-surface-2); color: var(--color-text); border: 1px solid var(--color-border); border-radius: 4px; min-width: 0; }
+	.secret-val { flex: 2; }
+	.btn-danger-outline { color: var(--color-danger, #c0392b); border-color: var(--color-danger, #c0392b); background: none; }
+	.btn-danger-outline:hover { background: rgba(192, 57, 43, 0.1); }
+	.success-text { color: #3fb950; font-size: 13px; margin-bottom: 0.5rem; }
+	.github-card { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.75rem; }
+	.github-connected { font-size: 13px; }
+	.btn-github { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.75rem; border: 1px solid var(--color-border); border-radius: 4px; background: none; color: var(--color-text); font-size: 13px; text-decoration: none; cursor: pointer; }
+	.btn-github:hover { background: var(--color-surface-2); }
 </style>

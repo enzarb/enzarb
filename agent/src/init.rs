@@ -33,6 +33,8 @@ pub async fn bootstrap() -> Result<()> {
     }
 
     setup_buildx().await;
+    setup_git().await;
+    setup_git_remote().await;
 
     Ok(())
 }
@@ -72,6 +74,62 @@ async fn setup_buildx() {
         Ok(s) if s.success() => tracing::info!("default buildx builder -> {addr}"),
         Ok(s) => tracing::warn!("buildx setup exited with status {s}"),
         Err(e) => tracing::warn!("buildx setup failed: {e}"),
+    }
+}
+
+async fn git_config(key: &str, value: &str) {
+    let result = Command::new("git")
+        .args(["config", "--global", key, value])
+        .status()
+        .await;
+    if let Ok(s) = result
+        && !s.success()
+    {
+        tracing::warn!("git config {key} failed");
+    }
+}
+
+async fn setup_git() {
+    if let Ok(name) = std::env::var("ENZARB_GIT_USER_NAME") {
+        git_config("user.name", &name).await;
+    }
+    if let Ok(email) = std::env::var("ENZARB_GIT_USER_EMAIL") {
+        git_config("user.email", &email).await;
+    }
+    let token = std::env::var("GH_TOKEN")
+        .or_else(|_| std::env::var("GITHUB_TOKEN"))
+        .ok();
+    if token.is_some() {
+        git_config(
+            "credential.https://github.com.helper",
+            "!f() { echo username=oauth2; echo password=${GH_TOKEN:-$GITHUB_TOKEN}; }; f",
+        )
+        .await;
+    }
+}
+
+async fn setup_git_remote() {
+    let Ok(remote) = std::env::var("ENZARB_GIT_REMOTE") else {
+        return;
+    };
+    let slug = std::env::var("ENZARB_PROJECT_SLUG").unwrap_or_default();
+    if slug.is_empty() {
+        return;
+    }
+    let home = home_dir();
+    let project_dir = home.join(&slug);
+    if project_dir.join(".git").exists() {
+        return;
+    }
+    let result = Command::new("git")
+        .args(["clone", &remote, &slug])
+        .current_dir(&home)
+        .status()
+        .await;
+    match result {
+        Ok(s) if s.success() => tracing::info!("cloned {remote} -> ~/{slug}"),
+        Ok(s) => tracing::warn!("git clone {remote} exited with status {s}"),
+        Err(e) => tracing::warn!("git clone {remote} failed: {e}"),
     }
 }
 

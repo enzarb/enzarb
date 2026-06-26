@@ -7,6 +7,7 @@
 		getProjects,
 		getDeletedProjects
 	} from '$lib/remote/projects.remote';
+	import { getProjectSecrets, setProjectSecret, deleteProjectSecret } from '$lib/remote/settings.remote';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { confirm } from '$lib/confirm';
@@ -60,6 +61,37 @@
 			deleting = false;
 		}
 	}
+
+	// Project-level env secrets
+	let newSecretKey = $state('');
+	let newSecretValue = $state('');
+	let secretError = $state('');
+	let addingSecret = $state(false);
+
+	async function addSecret() {
+		if (!newSecretKey.trim()) return;
+		addingSecret = true;
+		secretError = '';
+		try {
+			await setProjectSecret({ key: newSecretKey.trim(), value: newSecretValue });
+			await getProjectSecrets().refresh();
+			newSecretKey = '';
+			newSecretValue = '';
+		} catch (e) {
+			secretError = e instanceof Error ? e.message : 'Failed to save secret';
+		} finally {
+			addingSecret = false;
+		}
+	}
+
+	async function removeSecret(key: string) {
+		try {
+			await deleteProjectSecret({ key });
+			await getProjectSecrets().refresh();
+		} catch (e) {
+			secretError = e instanceof Error ? e.message : 'Failed to delete secret';
+		}
+	}
 </script>
 
 {#await Promise.all([getProject(), getOrgTierInfo()]) then [project, { limits }]}
@@ -67,6 +99,46 @@
 	{@const gi = resizeGi ?? currentGi + 1}
 
 	<div class="settings-page">
+		<section class="card">
+			<h3>Environment Variables</h3>
+			<p class="muted">Project-level secrets injected as environment variables. They override user-level secrets with the same key.</p>
+			{#await getProjectSecrets()}
+				<p class="muted">Loading…</p>
+			{:then secrets}
+				{#if secrets.length > 0}
+					<ul class="secret-list">
+						{#each secrets as s}
+							<li>
+								<code class="mono">{s.key}</code>
+								<span class="secret-value">••••••••</span>
+								<button class="btn-icon" onclick={() => removeSecret(s.key)} title="Delete">✕</button>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+			{/await}
+			<div class="secret-add-row">
+				<input
+					class="input-key"
+					type="text"
+					placeholder="KEY"
+					bind:value={newSecretKey}
+					onkeydown={(e) => e.key === 'Enter' && addSecret()}
+				/>
+				<input
+					class="input-value"
+					type="password"
+					placeholder="value"
+					bind:value={newSecretValue}
+					onkeydown={(e) => e.key === 'Enter' && addSecret()}
+				/>
+				<button class="btn btn-primary" disabled={addingSecret || !newSecretKey.trim()} onclick={addSecret}>
+					{addingSecret ? 'Saving…' : 'Add'}
+				</button>
+			</div>
+			{#if secretError}<p class="error-text">{secretError}</p>{/if}
+		</section>
+
 		<section class="card">
 			<h3>Storage</h3>
 			<p class="muted">Current allocation: <code class="mono">{project.spec.storage?.size ?? '–'}</code>. PVCs can only be enlarged — resizing applies on the next reconcile.</p>
@@ -126,4 +198,12 @@
 	.danger .muted { margin-bottom: 0; }
 	.btn-danger { background: var(--color-danger, #c0392b); color: #fff; border: none; flex-shrink: 0; }
 	.btn-danger:disabled { opacity: 0.6; cursor: default; }
+	.secret-list { list-style: none; margin: 0 0 0.75rem; padding: 0; display: flex; flex-direction: column; gap: 0.375rem; }
+	.secret-list li { display: flex; align-items: center; gap: 0.5rem; font-size: 13px; }
+	.secret-value { color: var(--color-text-muted); flex: 1; }
+	.btn-icon { background: none; border: none; color: var(--color-text-muted); cursor: pointer; padding: 0 0.25rem; line-height: 1; }
+	.btn-icon:hover { color: var(--color-danger, #c0392b); }
+	.secret-add-row { display: flex; gap: 0.5rem; align-items: center; }
+	.input-key { width: 140px; padding: 0.375rem 0.5rem; border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-surface-2); color: var(--color-text); font-size: 12px; font-family: var(--font-mono); }
+	.input-value { flex: 1; padding: 0.375rem 0.5rem; border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-surface-2); color: var(--color-text); font-size: 13px; }
 </style>

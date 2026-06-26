@@ -6,6 +6,68 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Deserialize)]
+pub struct CommitRequest {
+    pub message: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CommitResponse {
+    pub sha: String,
+}
+
+pub async fn git_commit(State(state): State<AppState>, Json(req): Json<CommitRequest>) -> Response {
+    if req.message.trim().is_empty() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+
+    let home = home_dir();
+    let repo_dir = home.join(&state.project_slug);
+    let work_dir = if repo_dir.join(".git").exists() {
+        repo_dir
+    } else {
+        home.clone()
+    };
+
+    // Stage all changes
+    let add = tokio::process::Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(&work_dir)
+        .output()
+        .await;
+    if add.map(|o| !o.status.success()).unwrap_or(true) {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    // Commit
+    let out = tokio::process::Command::new("git")
+        .args(["commit", "-m", req.message.trim()])
+        .current_dir(&work_dir)
+        .output()
+        .await;
+
+    let out = match out {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+            return (StatusCode::UNPROCESSABLE_ENTITY, stderr).into_response();
+        }
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    // Extract the commit SHA
+    let sha_out = tokio::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&work_dir)
+        .output()
+        .await
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    let _ = out;
+    Json(CommitResponse { sha: sha_out }).into_response()
+}
 use std::path::{Path, PathBuf};
 use tokio_util::io::ReaderStream;
 

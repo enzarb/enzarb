@@ -546,6 +546,24 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug s
 								{Name: "BUILDKIT_HOST", Value: "tcp://localhost:1234"},
 								{Name: "HOME", Value: "/home/user"},
 							},
+							EnvFrom: []corev1.EnvFromSource{
+								{
+									SecretRef: &corev1.SecretEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: fmt.Sprintf("%s-user-env-secrets", project.Spec.OrgID),
+										},
+										Optional: boolPtr(true),
+									},
+								},
+								{
+									SecretRef: &corev1.SecretEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: fmt.Sprintf("%s-project-env-secrets", project.Spec.Slug),
+										},
+										Optional: boolPtr(true),
+									},
+								},
+							},
 							Ports: []corev1.ContainerPort{
 								{Name: "agent-external", ContainerPort: 8080},
 								{Name: "agent-internal", ContainerPort: 9090},

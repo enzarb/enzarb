@@ -3,7 +3,10 @@ export const config = {
 	dexIssuer: process.env.OIDC_ISSUER_URL ?? process.env.DEX_ISSUER ?? 'https://auth.enzarb.dev',
 	dexClientId: process.env.OIDC_CLIENT_ID ?? process.env.DEX_CLIENT_ID ?? 'enzarb-app',
 	dexClientSecret: process.env.OIDC_CLIENT_SECRET ?? process.env.DEX_CLIENT_SECRET ?? '',
-	registryUrl: process.env.REGISTRY_URL ?? 'https://registry.enzarb.dev'
+	registryUrl: process.env.REGISTRY_URL ?? 'https://registry.enzarb.dev',
+	// GitHub OAuth App — empty string means the feature is disabled.
+	githubOAuthClientId: process.env.GITHUB_OAUTH_CLIENT_ID ?? '',
+	githubOAuthClientSecret: process.env.GITHUB_OAUTH_CLIENT_SECRET ?? ''
 };
 
 export type TierName = 'free' | 'pro';

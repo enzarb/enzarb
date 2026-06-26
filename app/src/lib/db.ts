@@ -144,6 +144,30 @@ export async function migrate() {
 			ON CONFLICT (key) DO NOTHING
 		`;
 	}
+
+	// User-level secret env vars (apply to all projects for a user).
+	await sql`
+		CREATE TABLE IF NOT EXISTS user_secrets (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			user_id TEXT NOT NULL,
+			key TEXT NOT NULL,
+			value TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			UNIQUE (user_id, key)
+		)
+	`;
+
+	// Project-level secret env vars (override user-level for a specific project).
+	await sql`
+		CREATE TABLE IF NOT EXISTS project_secrets (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			project_id TEXT NOT NULL,
+			key TEXT NOT NULL,
+			value TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			UNIQUE (project_id, key)
+		)
+	`;
 }
 
 // seedOrgRoles inserts the builtin roles for an org, leaving any already-present
