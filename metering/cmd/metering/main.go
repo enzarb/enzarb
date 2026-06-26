@@ -416,7 +416,49 @@ func (w *Worker) consumeHubble(ctx context.Context, path string) {
 		}
 	}
 
+	// tailFile reads all new lines from f (from current position to EOF),
+	// sleeping on EOF. Returns true when the file at path has been rotated
+	// (different inode), signalling the caller to open a fresh file.
+	tailFile := func(f *os.File) bool {
+		reader := bufio.NewReaderSize(f, 256*1024)
+		var partial []byte
+		eofSleeps := 0
+		for {
+			if ctx.Err() != nil {
+				return false
+			}
+			line, err := reader.ReadBytes('\n')
+			if len(line) > 0 {
+				eofSleeps = 0
+				partial = append(partial, line...)
+				if partial[len(partial)-1] == '\n' {
+					processLine(partial[:len(partial)-1])
+					partial = partial[:0]
+				}
+			}
+			if err == io.EOF {
+				// After a short wait, check whether the file has been rotated.
+				// Only check after eofSleeps > 0 so we don't misfire on the
+				// very first read when the file hasn't changed yet.
+				time.Sleep(50 * time.Millisecond)
+				eofSleeps++
+				if eofSleeps >= 2 {
+					if fi1, e1 := f.Stat(); e1 == nil {
+						if fi2, e2 := os.Stat(path); e2 == nil && !os.SameFile(fi1, fi2) { //nolint:gosec // path is from env config, not user input
+							return true // rotated
+						}
+					}
+				}
+				continue
+			}
+			if err != nil {
+				return false
+			}
+		}
+	}
+
 	var hubbleMissing bool
+	firstOpen := true
 	for {
 		if ctx.Err() != nil {
 			return
@@ -433,47 +475,19 @@ func (w *Worker) consumeHubble(ctx context.Context, path string) {
 		}
 		hubbleMissing = false
 
-		// Seek to end on initial open so we don't reprocess history.
-		if _, err := f.Seek(0, io.SeekEnd); err != nil {
-			slog.Warn("seek hubble log", "err", err)
-			_ = f.Close()
-			continue
-		}
-
-		// Tail the file: read lines, sleeping on EOF, re-opening on rotation.
-		// bufio.Scanner returns false at EOF without blocking, so we use a
-		// bufio.Reader and handle EOF explicitly.
-		reader := bufio.NewReaderSize(f, 256*1024)
-		var partial []byte
-		for {
-			if ctx.Err() != nil {
+		// On first open only: seek to end so we don't replay all history.
+		// On rotation-triggered reopens: read from the beginning of the new
+		// file so we capture everything written to it before we got there.
+		if firstOpen {
+			if _, err := f.Seek(0, io.SeekEnd); err != nil {
+				slog.Warn("seek hubble log", "err", err)
 				_ = f.Close()
-				return
-			}
-			line, err := reader.ReadBytes('\n')
-			if len(line) > 0 {
-				partial = append(partial, line...)
-				if partial[len(partial)-1] == '\n' {
-					processLine(partial[:len(partial)-1])
-					partial = partial[:0]
-				}
-			}
-			if err == io.EOF {
-				// Check for log rotation: if the file at the path has a different
-				// inode (or is smaller than our position), switch to the new file.
-				if fi1, e1 := f.Stat(); e1 == nil {
-					if fi2, e2 := os.Stat(path); e2 == nil && !os.SameFile(fi1, fi2) { //nolint:gosec // path is from env config, not user input
-						// rotated — break inner loop, outer loop reopens
-						break
-					}
-				}
-				time.Sleep(50 * time.Millisecond)
 				continue
 			}
-			if err != nil {
-				break
-			}
+			firstOpen = false
 		}
+
+		tailFile(f)
 		_ = f.Close()
 	}
 }
