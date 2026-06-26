@@ -147,21 +147,49 @@ func deployEnvSlug(nsName, orgID, projSlug string) string {
 	return parts[len(parts)-1]
 }
 
-// meterNamespacePods records cpu/mem/storage usage for every enzarb-managed pod
+// meterNamespacePods records cpu/mem/storage usage for every metered pod
 // in a namespace, attributed to the given component (and environment slug).
+//
+// For workspace namespaces (user-*) we filter by the operator label so we only
+// meter the workspace pod itself, not any unrelated system pods.
+// For deploy namespaces (deploy-*) we meter ALL running pods — they are
+// tenant-deployed (via Helm etc.) and don't carry the operator label.
 func (w *Worker) meterNamespacePods(ctx context.Context, nsName, orgID, component, environment string, now time.Time) {
+	labelSel := ""
+	if component == "workspace" {
+		labelSel = "app.kubernetes.io/managed-by=enzarb-operator"
+	}
 	pods, err := w.k8s.CoreV1().Pods(nsName).List(ctx, metav1.ListOptions{
-		LabelSelector: "app.kubernetes.io/managed-by=enzarb-operator",
+		LabelSelector: labelSel,
 	})
 	if err != nil {
 		slog.Warn("list pods", "ns", nsName, "err", err)
 		return
 	}
 
+	// For deploy namespaces the project slug comes from the namespace label, not
+	// the pod — tenant pods don't carry enzarb.io/project labels.
+	nsProjSlug := ""
+	if component == "environment" {
+		nsMeta, err2 := w.k8s.CoreV1().Namespaces().Get(ctx, nsName, metav1.GetOptions{})
+		if err2 == nil {
+			nsProjSlug = nsMeta.Labels["enzarb.io/project-slug"]
+		}
+	}
+
 	for _, pod := range pods.Items {
+		// Skip pods that aren't running yet — they consume no real resources.
+		if pod.Status.Phase != corev1.PodRunning {
+			continue
+		}
+
 		projectSlug := pod.Labels["enzarb.io/project"]
 		if projectSlug == "" {
 			projectSlug = pod.Labels["enzarb.io/project-slug"]
+		}
+		// For deploy-namespace pods fall back to the namespace-level project slug.
+		if projectSlug == "" {
+			projectSlug = nsProjSlug
 		}
 		if projectSlug == "" {
 			continue

@@ -52,6 +52,33 @@ export const getUsageSummary = query(async () => {
 	`;
 });
 
+// Raw usage quantities for the current month plus free-tier limits, so the
+// UI can show "X% of free plan" meters regardless of whether there's a cost.
+export const getUsageWithLimits = query(async () => {
+	const org = resolveOrg();
+	const usageRows = await sql<{ resource_type: string; total: number }[]>`
+		SELECT resource_type, SUM(quantity)::float8 AS total
+		FROM usage_events
+		WHERE org_id = ${org.id}
+		  AND recorded_at >= date_trunc('month', now())
+		GROUP BY resource_type
+	`;
+	const usage: Record<string, number> = {};
+	for (const r of usageRows) usage[r.resource_type] = Number(r.total);
+
+	const p = await loadPricing();
+	return {
+		cpu_seconds: usage.cpu_seconds ?? 0,
+		mem_gib_seconds: usage.mem_gib_seconds ?? 0,
+		storage_gib_seconds: usage.storage_gib_seconds ?? 0,
+		zot_storage_gib_seconds: usage.zot_storage_gib_seconds ?? 0,
+		net_ingress_bytes: usage.net_ingress_bytes ?? 0,
+		net_egress_bytes: usage.net_egress_bytes ?? 0,
+		free_cpu_seconds: p.pricing_free_cpu_seconds ?? 0,
+		free_mem_gib_seconds: p.pricing_free_mem_gib_seconds ?? 0,
+	};
+});
+
 // Live estimate of this month's spend, computed from usage_events against the
 // admin-editable pricing in app_settings. Mirrors the tiered math in the billing
 // worker so users see expenses before the monthly invoice is cut. Returns dollars;

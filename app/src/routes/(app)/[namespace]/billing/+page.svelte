@@ -5,7 +5,8 @@
 		getEstimatedCost,
 		getProjectRollup,
 		getCostByComponent,
-		getCostTimeSeries
+		getCostTimeSeries,
+		getUsageWithLimits
 	} from '$lib/remote/billing.remote';
 	import { RESOURCE_TYPES } from '$lib/billing';
 	import StackedBarChart from '$lib/components/StackedBarChart.svelte';
@@ -68,12 +69,18 @@
 	onMount(() => {
 		timer = setInterval(() => {
 			getEstimatedCost().refresh();
+			getUsageWithLimits().refresh();
 			getProjectRollup().refresh();
 			getCostByComponent().refresh();
 			getCostTimeSeries(seriesArgs).refresh();
 		}, 15_000);
 	});
 	onDestroy(() => clearInterval(timer));
+
+	function pct(used: number, limit: number) {
+		if (limit <= 0) return 0;
+		return Math.min(100, (used / limit) * 100);
+	}
 </script>
 
 <h2>Billing</h2>
@@ -95,6 +102,56 @@
 		</div>
 		<p class="estimate-note">Running estimate to date. Invoices are issued at month end.</p>
 	</section>
+{/await}
+
+{#await getUsageWithLimits() then u}
+<section class="section">
+	<h3>Usage this month</h3>
+	<div class="usage-meters">
+		<div class="meter-row">
+			<div class="meter-labels">
+				<span>CPU</span>
+				<span class="meter-value">{cpuHours(u.cpu_seconds)} / {cpuHours(u.free_cpu_seconds)} hr free</span>
+			</div>
+			<div class="meter-track"><div class="meter-fill" style="width:{pct(u.cpu_seconds, u.free_cpu_seconds)}%"></div></div>
+		</div>
+		<div class="meter-row">
+			<div class="meter-labels">
+				<span>Memory</span>
+				<span class="meter-value">{gibHours(u.mem_gib_seconds)} / {gibHours(u.free_mem_gib_seconds)} GiB-hr free</span>
+			</div>
+			<div class="meter-track"><div class="meter-fill" style="width:{pct(u.mem_gib_seconds, u.free_mem_gib_seconds)}%"></div></div>
+		</div>
+		<div class="meter-row">
+			<div class="meter-labels">
+				<span>Storage</span>
+				<span class="meter-value">{gibHours(u.storage_gib_seconds)} GiB-hr</span>
+			</div>
+			<div class="meter-track meter-track-unbounded"><div class="meter-fill meter-fill-storage" style="width:100%"></div></div>
+		</div>
+		<div class="meter-row">
+			<div class="meter-labels">
+				<span>Registry</span>
+				<span class="meter-value">{gibHours(u.zot_storage_gib_seconds)} GiB-hr</span>
+			</div>
+			<div class="meter-track meter-track-unbounded"><div class="meter-fill meter-fill-zot" style="width:100%"></div></div>
+		</div>
+		<div class="meter-row">
+			<div class="meter-labels">
+				<span>Network In</span>
+				<span class="meter-value">{gib(u.net_ingress_bytes)} GiB</span>
+			</div>
+			<div class="meter-track meter-track-unbounded"><div class="meter-fill meter-fill-net-in" style="width:100%"></div></div>
+		</div>
+		<div class="meter-row">
+			<div class="meter-labels">
+				<span>Network Out</span>
+				<span class="meter-value">{gib(u.net_egress_bytes)} GiB</span>
+			</div>
+			<div class="meter-track meter-track-unbounded"><div class="meter-fill meter-fill-net-out" style="width:100%"></div></div>
+		</div>
+	</div>
+</section>
 {/await}
 
 <section class="section">
@@ -231,6 +288,19 @@
 	.chip { font-size: 12px; padding: 0.2rem 0.6rem; border-radius: 999px; border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text-muted); cursor: pointer; }
 	.chip:hover { color: var(--color-text); }
 	.chip.active { background: var(--color-surface-2); color: var(--color-text); border-color: var(--color-accent, var(--color-text-muted)); }
+
+	/* Usage meters */
+	.usage-meters { display: flex; flex-direction: column; gap: 0.75rem; max-width: 560px; }
+	.meter-row { display: flex; flex-direction: column; gap: 0.25rem; }
+	.meter-labels { display: flex; justify-content: space-between; font-size: 12px; color: var(--color-text-muted); }
+	.meter-value { font-variant-numeric: tabular-nums; }
+	.meter-track { height: 6px; background: var(--color-surface-2); border-radius: 3px; overflow: hidden; }
+	.meter-fill { height: 100%; background: var(--color-accent, #58a6ff); border-radius: 3px; transition: width 0.3s ease; }
+	.meter-track-unbounded { opacity: 0.5; }
+	.meter-fill-storage { background: #a371f7; }
+	.meter-fill-zot { background: #56d4dd; }
+	.meter-fill-net-in { background: #d29922; }
+	.meter-fill-net-out { background: #db6d28; }
 
 	.table-scroll { overflow-x: auto; }
 	.cost { font-variant-numeric: tabular-nums; font-weight: 600; }
