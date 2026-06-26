@@ -562,7 +562,8 @@ func (w *Worker) collectZotUsage(ctx context.Context) error {
 }
 
 // zotRepoSize sums the size of every distinct blob (config + layers, deduped by
-// digest across all tags) referenced by a repository's manifests.
+// digest across all tags) referenced by a repository's manifests. Handles both
+// single-arch manifests and OCI image indexes (multi-platform manifest lists).
 func (w *Worker) zotRepoSize(ctx context.Context, repo string) (int64, error) {
 	scope := "repository:" + repo + ":pull"
 	var tags struct {
@@ -575,28 +576,48 @@ func (w *Worker) zotRepoSize(ctx context.Context, repo string) (int64, error) {
 	}
 
 	type descriptor struct {
-		Digest string `json:"digest"`
-		Size   int64  `json:"size"`
+		MediaType string `json:"mediaType"`
+		Digest    string `json:"digest"`
+		Size      int64  `json:"size"`
 	}
+	type manifestDoc struct {
+		MediaType string       `json:"mediaType"`
+		Config    descriptor   `json:"config"`
+		Layers    []descriptor `json:"layers"`
+		Manifests []descriptor `json:"manifests"` // OCI index / manifest list
+	}
+
 	seen := map[string]int64{}
-	for _, tag := range tags.Tags {
-		var manifest struct {
-			Config descriptor   `json:"config"`
-			Layers []descriptor `json:"layers"`
-		}
-		if status, err := w.zotGet(ctx, "/v2/"+repo+"/manifests/"+tag, scope, &manifest); err != nil {
-			slog.Warn("zot manifest", "repo", repo, "tag", tag, "err", err)
-			continue
+
+	var accumulateManifest func(ref string)
+	accumulateManifest = func(ref string) {
+		var m manifestDoc
+		if status, err := w.zotGet(ctx, "/v2/"+repo+"/manifests/"+ref, scope, &m); err != nil {
+			slog.Warn("zot manifest", "repo", repo, "ref", ref, "err", err)
+			return
 		} else if status == http.StatusNotFound {
-			continue
+			return
 		}
-		if manifest.Config.Digest != "" {
-			seen[manifest.Config.Digest] = manifest.Config.Size
+		// OCI image index or Docker manifest list — recurse into children.
+		if len(m.Manifests) > 0 {
+			for _, child := range m.Manifests {
+				accumulateManifest(child.Digest)
+			}
+			return
 		}
-		for _, l := range manifest.Layers {
+		// Single-arch image manifest — accumulate blobs.
+		if m.Config.Digest != "" {
+			seen[m.Config.Digest] = m.Config.Size
+		}
+		for _, l := range m.Layers {
 			seen[l.Digest] = l.Size
 		}
 	}
+
+	for _, tag := range tags.Tags {
+		accumulateManifest(tag)
+	}
+
 	var total int64
 	for _, sz := range seen {
 		total += sz
