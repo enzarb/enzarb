@@ -277,11 +277,14 @@ func (w *Worker) insertUsage(ctx context.Context, orgID, projectSlug, component,
 	if environment != "" {
 		env = environment
 	}
-	_, err := w.db.Exec(ctx, `
+	tag, err := w.db.Exec(ctx, `
 		INSERT INTO usage_events (org_id, project_id, component, environment, resource_type, quantity, unit, recorded_at)
 		SELECT id, $2, $3, $4, $5, $6, $7, $8
 		FROM organizations WHERE id = $1::uuid
 	`, orgID, projectSlug, component, env, resourceType, quantity, unit, at)
+	if err == nil && tag.RowsAffected() == 0 {
+		slog.Warn("insertUsage matched no org", "orgID", orgID, "resourceType", resourceType)
+	}
 	return err
 }
 
