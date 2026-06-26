@@ -9,34 +9,16 @@
 	const orgProjects = $derived(data.orgProjects);
 
 	let open = $state(false);
-	let orgMenuOpen = $state<string | null>(null);
-	let dropdownPos = $state<{ top: number; left: number } | null>(null);
 
 	afterNavigate(() => {
 		open = false;
-		orgMenuOpen = null;
-		dropdownPos = null;
 	});
-
-	function toggleOrgMenu(slug: string, e: MouseEvent) {
-		e.stopPropagation();
-		if (orgMenuOpen === slug) {
-			orgMenuOpen = null;
-			dropdownPos = null;
-		} else {
-			orgMenuOpen = slug;
-			const btn = e.currentTarget as HTMLElement;
-			const rect = btn.getBoundingClientRect();
-			dropdownPos = { top: rect.bottom + 4, left: rect.left };
-		}
-	}
 
 	function isProjectActive(orgSlug: string, projectSlug: string) {
 		return page.url.pathname.startsWith(`/${orgSlug}/projects/${projectSlug}`);
 	}
 </script>
 
-<svelte:window onclick={() => (orgMenuOpen = null)} />
 
 <div class="shell">
 	<header class="topbar">
@@ -70,16 +52,6 @@
 					<div class="org-header">
 						<span class="org-label">{org.slug}</span>
 						<div class="org-actions">
-							<div class="org-menu-wrap">
-								<button
-									class="icon-btn"
-									title="Organization menu"
-									aria-label="Organization menu"
-									onclick={(e) => toggleOrgMenu(org.slug, e)}
-								>
-									<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>
-								</button>
-							</div>
 							<a href="/{org.slug}/projects/new" class="icon-btn" title="New project" aria-label="New project">
 								<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
 							</a>
@@ -103,20 +75,26 @@
 							</li>
 						{/each}
 					</ul>
-					<a href="/{org.slug}/billing" class="org-billing-link">
+				</div>
+			{/each}
+			<div class="bottom-links">
+				{#each session.orgs as org}
+					<a href="/{org.slug}/settings" class="bottom-link">
+						<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+						Settings
+					</a>
+					<a href="/{org.slug}/billing" class="bottom-link">
 						<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
 						Billing
 					</a>
-				</div>
-			{/each}
-			{#if session.isAdmin}
-				<div class="admin-link">
-					<a href="/admin">
+				{/each}
+				{#if session.isAdmin}
+					<a href="/admin" class="bottom-link">
 						<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
 						Admin
 					</a>
-				</div>
-			{/if}
+				{/if}
+			</div>
 		</div>
 		<div class="sidebar-bottom">
 			<span class="user-email">{session.email}</span>
@@ -129,22 +107,6 @@
 		{@render children()}
 	</main>
 </div>
-
-{#if orgMenuOpen && dropdownPos}
-	{@const openOrg = session.orgs.find((o) => o.slug === orgMenuOpen)}
-	{#if openOrg}
-		<div
-			class="org-dropdown-fixed"
-			style="top:{dropdownPos.top}px;left:{dropdownPos.left}px"
-			role="menu"
-		>
-			<a href="/{openOrg.slug}/settings" class="dropdown-item" onclick={() => { orgMenuOpen = null; }}>
-				<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-				Settings
-			</a>
-		</div>
-	{/if}
-{/if}
 
 <ConfirmDialog />
 
@@ -222,7 +184,6 @@
 		color: var(--color-text-muted);
 	}
 	.org-actions { display: flex; align-items: center; gap: 0.125rem; }
-	.org-menu-wrap { position: relative; }
 	.icon-btn {
 		display: inline-flex;
 		align-items: center;
@@ -238,28 +199,6 @@
 		text-decoration: none;
 	}
 	.icon-btn:hover { background: var(--color-surface-2); color: var(--color-text); text-decoration: none; }
-
-	/* 3-dot dropdown — rendered fixed outside sidebar to escape overflow:auto clip */
-	.org-dropdown-fixed {
-		position: fixed;
-		z-index: 200;
-		background: var(--color-surface);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius);
-		box-shadow: var(--shadow);
-		min-width: 140px;
-		padding: 0.25rem 0;
-	}
-	.dropdown-item {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		padding: 0.4rem 0.75rem;
-		font-size: 13px;
-		color: var(--color-text-muted);
-		text-decoration: none;
-	}
-	.dropdown-item:hover { background: var(--color-surface-2); color: var(--color-text); text-decoration: none; }
 
 	/* Project list */
 	.project-list { list-style: none; margin: 0; padding: 0; }
@@ -282,20 +221,8 @@
 	.project-link.muted { font-style: italic; }
 	.icon { width: 14px; height: 14px; flex-shrink: 0; }
 
-	.org-billing-link {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		padding: 0.3rem 0.5rem;
-		border-radius: 4px;
-		color: var(--color-text-muted);
-		font-size: 13px;
-		text-decoration: none;
-		margin-top: 0.25rem;
-	}
-	.org-billing-link:hover { background: var(--color-surface-2); color: var(--color-text); text-decoration: none; }
-	.admin-link { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--color-border); }
-	.admin-link a {
+	.bottom-links { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--color-border); display: flex; flex-direction: column; gap: 1px; }
+	.bottom-link {
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
@@ -305,7 +232,7 @@
 		font-size: 13px;
 		text-decoration: none;
 	}
-	.admin-link a:hover { background: var(--color-surface-2); color: var(--color-text); text-decoration: none; }
+	.bottom-link:hover { background: var(--color-surface-2); color: var(--color-text); text-decoration: none; }
 
 	.content { flex: 1; overflow-y: auto; padding: 2rem; min-width: 0; }
 	.user-email { display: block; font-size: 12px; color: var(--color-text-muted); margin-bottom: 0.5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
