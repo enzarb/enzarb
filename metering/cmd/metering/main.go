@@ -366,8 +366,62 @@ func (w *Worker) consumeHubble(ctx context.Context, path string) {
 		}
 	}()
 
+	// processLine parses one JSON line and accumulates flow bytes.
+	processLine := func(line []byte) {
+		var event HubbleEvent
+		if err := json.Unmarshal(line, &event); err != nil {
+			return
+		}
+		flow := event.Flow
+		if flow == nil || flow.Verdict != "FORWARDED" {
+			return
+		}
+		flowsSeen++
+
+		srcOrg, srcProject := endpointOrgProject(flow.Source)
+		dstOrg, dstProject := endpointOrgProject(flow.Destination)
+
+		peerIP := ""
+		if flow.IP != nil {
+			if srcProject != "" {
+				peerIP = flow.IP.Destination
+			} else {
+				peerIP = flow.IP.Source
+			}
+		}
+		external := !isInternalIP(peerIP)
+
+		var key flowKey
+		egress := false
+		switch {
+		case srcProject != "":
+			key, egress = flowKey{srcOrg, srcProject, peerComponent(flow.Destination), external}, true
+		case dstProject != "":
+			key = flowKey{dstOrg, dstProject, peerComponent(flow.Source), external}
+		default:
+			return
+		}
+		if key.orgID == "" {
+			return
+		}
+		flowsMatched++
+
+		if _, ok := counts[key]; !ok {
+			counts[key] = &byteCounts{}
+		}
+		if egress {
+			counts[key].egress += 1500 // approximate MTU per flow record
+		} else {
+			counts[key].ingress += 1500
+		}
+	}
+
 	var hubbleMissing bool
 	for {
+		if ctx.Err() != nil {
+			return
+		}
+
 		f, err := os.Open(path) //nolint:gosec // path is from env config, not user input
 		if err != nil {
 			if !hubbleMissing {
@@ -379,72 +433,48 @@ func (w *Worker) consumeHubble(ctx context.Context, path string) {
 		}
 		hubbleMissing = false
 
-		// Seek to end, then tail
-		if _, err := f.Seek(0, 2); err != nil {
+		// Seek to end on initial open so we don't reprocess history.
+		if _, err := f.Seek(0, io.SeekEnd); err != nil {
 			slog.Warn("seek hubble log", "err", err)
 			_ = f.Close()
 			continue
 		}
-		scanner := bufio.NewScanner(f)
-		for scanner.Scan() {
+
+		// Tail the file: read lines, sleeping on EOF, re-opening on rotation.
+		// bufio.Scanner returns false at EOF without blocking, so we use a
+		// bufio.Reader and handle EOF explicitly.
+		reader := bufio.NewReaderSize(f, 256*1024)
+		var partial []byte
+		for {
 			if ctx.Err() != nil {
 				_ = f.Close()
 				return
 			}
-			var event HubbleEvent
-			if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-				continue
-			}
-			flow := event.Flow
-			if flow == nil || flow.Verdict != "FORWARDED" {
-				continue
-			}
-			flowsSeen++
-
-			// Identify the project endpoint (and its org) from pod labels and the
-			// `user-<orgID>` namespace. Source being the project ⇒ egress; dest ⇒ ingress.
-			srcOrg, srcProject := endpointOrgProject(flow.Source)
-			dstOrg, dstProject := endpointOrgProject(flow.Destination)
-
-			// Classify the peer IP as internal (RFC-1918 / loopback) or external.
-			peerIP := ""
-			if flow.IP != nil {
-				if srcProject != "" {
-					peerIP = flow.IP.Destination
-				} else {
-					peerIP = flow.IP.Source
+			line, err := reader.ReadBytes('\n')
+			if len(line) > 0 {
+				partial = append(partial, line...)
+				if partial[len(partial)-1] == '\n' {
+					processLine(partial[:len(partial)-1])
+					partial = partial[:0]
 				}
 			}
-			external := !isInternalIP(peerIP)
-
-			var key flowKey
-			egress := false
-			switch {
-			case srcProject != "":
-				// Project ⇒ peer: egress. Component reflects the peer (zot/workspace).
-				key, egress = flowKey{srcOrg, srcProject, peerComponent(flow.Destination), external}, true
-			case dstProject != "":
-				// Peer ⇒ project: ingress.
-				key = flowKey{dstOrg, dstProject, peerComponent(flow.Source), external}
-			default:
+			if err == io.EOF {
+				// Check for log rotation: if the file at the path has a different
+				// inode (or is smaller than our position), switch to the new file.
+				if fi1, e1 := f.Stat(); e1 == nil {
+					if fi2, e2 := os.Stat(path); e2 == nil && !os.SameFile(fi1, fi2) { //nolint:gosec // path is from env config, not user input
+						// rotated — break inner loop, outer loop reopens
+						break
+					}
+				}
+				time.Sleep(50 * time.Millisecond)
 				continue
 			}
-			if key.orgID == "" {
-				continue
-			}
-			flowsMatched++
-
-			if _, ok := counts[key]; !ok {
-				counts[key] = &byteCounts{}
-			}
-			if egress {
-				counts[key].egress += 1500 // approximate MTU per flow record
-			} else {
-				counts[key].ingress += 1500
+			if err != nil {
+				break
 			}
 		}
 		_ = f.Close()
-		time.Sleep(100 * time.Millisecond)
 	}
 }
 
