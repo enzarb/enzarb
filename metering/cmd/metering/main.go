@@ -336,12 +336,15 @@ func (w *Worker) consumeHubble(ctx context.Context, path string) {
 	}
 	type byteCounts struct{ ingress, egress int64 }
 	counts := map[flowKey]*byteCounts{}
+	var flowsSeen, flowsMatched int64
 
 	flush := time.NewTicker(60 * time.Second)
 	defer flush.Stop()
 
 	go func() {
 		for range flush.C {
+			slog.Info("hubble flush", "flows_seen", flowsSeen, "flows_matched", flowsMatched, "buckets", len(counts))
+			flowsSeen, flowsMatched = 0, 0
 			for key, bc := range counts {
 				now := time.Now().UTC()
 				ingressType, egressType := "net_ingress_internal_bytes", "net_egress_internal_bytes"
@@ -396,6 +399,7 @@ func (w *Worker) consumeHubble(ctx context.Context, path string) {
 			if flow == nil || flow.Verdict != "FORWARDED" {
 				continue
 			}
+			flowsSeen++
 
 			// Identify the project endpoint (and its org) from pod labels and the
 			// `user-<orgID>` namespace. Source being the project ⇒ egress; dest ⇒ ingress.
@@ -428,6 +432,7 @@ func (w *Worker) consumeHubble(ctx context.Context, path string) {
 			if key.orgID == "" {
 				continue
 			}
+			flowsMatched++
 
 			if _, ok := counts[key]; !ok {
 				counts[key] = &byteCounts{}
