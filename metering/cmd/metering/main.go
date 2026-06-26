@@ -284,6 +284,12 @@ func (w *Worker) insertUsage(ctx context.Context, orgID, projectSlug, component,
 	return err
 }
 
+// HubbleEvent is the outer wrapper Hubble writes to the file export log.
+// The actual flow is nested under the "flow" key.
+type HubbleEvent struct {
+	Flow *HubbleFlow `json:"flow"`
+}
+
 // HubbleFlow is a minimal subset of Hubble's JSON flow export format.
 type HubbleFlow struct {
 	Source      *HubbleEndpoint `json:"source"`
@@ -370,11 +376,12 @@ func (w *Worker) consumeHubble(ctx context.Context, path string) {
 				_ = f.Close()
 				return
 			}
-			var flow HubbleFlow
-			if err := json.Unmarshal(scanner.Bytes(), &flow); err != nil {
+			var event HubbleEvent
+			if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
 				continue
 			}
-			if flow.Verdict != "FORWARDED" {
+			flow := event.Flow
+			if flow == nil || flow.Verdict != "FORWARDED" {
 				continue
 			}
 
@@ -413,15 +420,31 @@ func (w *Worker) consumeHubble(ctx context.Context, path string) {
 	}
 }
 
-// endpointOrgProject returns the org UUID (from the `user-<orgID>` namespace)
-// and project slug for an endpoint, or empty strings if it isn't a project pod.
+// endpointOrgProject returns the org UUID and project slug for an endpoint, or
+// empty strings if it isn't a project pod. Handles two namespace patterns:
+//   - user-<orgID>: workspace pods; org derived from namespace prefix, project from pod label
+//   - deploy-*: environment pods; org/project from namespace labels propagated by Cilium
 func endpointOrgProject(ep *HubbleEndpoint) (orgID, project string) {
 	if ep == nil {
 		return "", ""
 	}
-	project = extractProjectSlug(ep)
-	if project != "" && strings.HasPrefix(ep.Namespace, "user-") {
-		orgID = strings.TrimPrefix(ep.Namespace, "user-")
+	switch {
+	case strings.HasPrefix(ep.Namespace, "user-"):
+		project = extractProjectSlug(ep)
+		if project != "" {
+			orgID = strings.TrimPrefix(ep.Namespace, "user-")
+		}
+	case strings.HasPrefix(ep.Namespace, "deploy-"):
+		// Cilium propagates namespace labels into endpoint labels with the
+		// "k8s:io.cilium.k8s.namespace.labels." prefix.
+		for _, label := range ep.Labels {
+			if v, ok := strings.CutPrefix(label, "k8s:io.cilium.k8s.namespace.labels.enzarb.io/org-id="); ok {
+				orgID = v
+			}
+			if v, ok := strings.CutPrefix(label, "k8s:io.cilium.k8s.namespace.labels.enzarb.io/project-slug="); ok {
+				project = v
+			}
+		}
 	}
 	return orgID, project
 }
