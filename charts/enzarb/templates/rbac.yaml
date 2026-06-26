@@ -25,6 +25,9 @@ rules:
     resources: ["configmaps"]
     resourceNames: ["enzarb-config"]
     verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
