@@ -48,10 +48,22 @@
 			maximumFractionDigits: n < 1 ? 4 : 2
 		});
 
-	// gib-seconds → GiB-hours; bytes → GiB. Keeps the rollup table readable.
-	const gibHours = (gibSeconds: number) => (gibSeconds / 3600).toLocaleString('en-US', { maximumFractionDigits: 2 });
-	const cpuHours = (cpuSeconds: number) => (cpuSeconds / 3600).toLocaleString('en-US', { maximumFractionDigits: 2 });
-	const gib = (bytes: number) => (bytes / 1073741824).toLocaleString('en-US', { maximumFractionDigits: 2 });
+	// Adaptive formatters — pick the largest unit that keeps the value ≥ 1.
+	const gibHours = (gibSeconds: number) => {
+		const h = gibSeconds / 3600;
+		return h.toLocaleString('en-US', { maximumFractionDigits: 2 }) + ' GiB-hr';
+	};
+	const cpuHours = (cpuSeconds: number) => {
+		const h = cpuSeconds / 3600;
+		return h.toLocaleString('en-US', { maximumFractionDigits: 2 }) + ' hr';
+	};
+	const fmtBytes = (bytes: number) => {
+		if (bytes === 0) return '0 B';
+		const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+		const i = Math.min(Math.floor(Math.log2(bytes) / 10), units.length - 1);
+		const val = bytes / Math.pow(1024, i);
+		return val.toLocaleString('en-US', { maximumFractionDigits: 2 }) + ' ' + units[i];
+	};
 
 	// Filter state for the cost-over-time chart.
 	let days = $state(30);
@@ -117,56 +129,56 @@
 		<div class="meter-row">
 			<div class="meter-labels">
 				<span>CPU</span>
-				<span class="meter-value">{cpuHours(u.cpu_seconds)} / {cpuHours(u.free_cpu_seconds)} hr free</span>
+				<span class="meter-value">{cpuHours(u.cpu_seconds)} / {cpuHours(u.free_cpu_seconds)} free</span>
 			</div>
 			<div class="meter-track"><div class="meter-fill" style="width:{pct(u.cpu_seconds, u.free_cpu_seconds)}%"></div></div>
 		</div>
 		<div class="meter-row">
 			<div class="meter-labels">
 				<span>Memory</span>
-				<span class="meter-value">{gibHours(u.mem_gib_seconds)} / {gibHours(u.free_mem_gib_seconds)} GiB-hr free</span>
+				<span class="meter-value">{gibHours(u.mem_gib_seconds)} / {gibHours(u.free_mem_gib_seconds)} free</span>
 			</div>
 			<div class="meter-track"><div class="meter-fill" style="width:{pct(u.mem_gib_seconds, u.free_mem_gib_seconds)}%"></div></div>
 		</div>
 		<div class="meter-row">
 			<div class="meter-labels">
 				<span>Storage</span>
-				<span class="meter-value">{gibHours(u.storage_gib_seconds)} GiB-hr</span>
+				<span class="meter-value">{gibHours(u.storage_gib_seconds)}</span>
 			</div>
 			<div class="meter-track meter-track-unbounded"><div class="meter-fill meter-fill-storage" style="width:100%"></div></div>
 		</div>
 		<div class="meter-row">
 			<div class="meter-labels">
 				<span>Registry</span>
-				<span class="meter-value">{gibHours(u.zot_storage_gib_seconds)} GiB-hr</span>
+				<span class="meter-value">{gibHours(u.zot_storage_gib_seconds)}</span>
 			</div>
 			<div class="meter-track meter-track-unbounded"><div class="meter-fill meter-fill-zot" style="width:100%"></div></div>
 		</div>
 		<div class="meter-row">
 			<div class="meter-labels">
 				<span>Net In (internal)</span>
-				<span class="meter-value">{gib(u.net_ingress_internal_bytes)} GiB</span>
+				<span class="meter-value">{fmtBytes(u.net_ingress_internal_bytes)}</span>
 			</div>
 			<div class="meter-track meter-track-unbounded"><div class="meter-fill meter-fill-net-in-int" style="width:100%"></div></div>
 		</div>
 		<div class="meter-row">
 			<div class="meter-labels">
 				<span>Net Out (internal)</span>
-				<span class="meter-value">{gib(u.net_egress_internal_bytes)} GiB</span>
+				<span class="meter-value">{fmtBytes(u.net_egress_internal_bytes)}</span>
 			</div>
 			<div class="meter-track meter-track-unbounded"><div class="meter-fill meter-fill-net-out-int" style="width:100%"></div></div>
 		</div>
 		<div class="meter-row">
 			<div class="meter-labels">
 				<span>Net In (external)</span>
-				<span class="meter-value">{gib(u.net_ingress_external_bytes)} GiB</span>
+				<span class="meter-value">{fmtBytes(u.net_ingress_external_bytes)}</span>
 			</div>
 			<div class="meter-track meter-track-unbounded"><div class="meter-fill meter-fill-net-in-ext" style="width:100%"></div></div>
 		</div>
 		<div class="meter-row">
 			<div class="meter-labels">
 				<span>Net Out (external)</span>
-				<span class="meter-value">{gib(u.net_egress_external_bytes)} GiB</span>
+				<span class="meter-value">{fmtBytes(u.net_egress_external_bytes)}</span>
 			</div>
 			<div class="meter-track meter-track-unbounded"><div class="meter-fill meter-fill-net-out-ext" style="width:100%"></div></div>
 		</div>
@@ -238,14 +250,14 @@
 			<thead>
 				<tr>
 					<th>Project</th>
-					<th>CPU (hr)</th>
-					<th>Memory (GiB-hr)</th>
-					<th>Net In Int (GiB)</th>
-					<th>Net Out Int (GiB)</th>
-					<th>Net In Ext (GiB)</th>
-					<th>Net Out Ext (GiB)</th>
-					<th>Storage (GiB-hr)</th>
-					<th>Registry (GiB-hr)</th>
+					<th>CPU</th>
+					<th>Memory</th>
+					<th>Net In (int)</th>
+					<th>Net Out (int)</th>
+					<th>Net In (ext)</th>
+					<th>Net Out (ext)</th>
+					<th>Storage</th>
+					<th>Registry</th>
 					<th>Cost</th>
 				</tr>
 			</thead>
@@ -255,10 +267,10 @@
 						<td><code class="mono">{row.project_id}</code></td>
 						<td>{cpuHours(row.cpu_seconds)}</td>
 						<td>{gibHours(row.mem_gib_seconds)}</td>
-						<td>{gib(row.net_ingress_internal_bytes)}</td>
-						<td>{gib(row.net_egress_internal_bytes)}</td>
-						<td>{gib(row.net_ingress_external_bytes)}</td>
-						<td>{gib(row.net_egress_external_bytes)}</td>
+						<td>{fmtBytes(row.net_ingress_internal_bytes)}</td>
+						<td>{fmtBytes(row.net_egress_internal_bytes)}</td>
+						<td>{fmtBytes(row.net_ingress_external_bytes)}</td>
+						<td>{fmtBytes(row.net_egress_external_bytes)}</td>
 						<td>{gibHours(row.storage_gib_seconds)}</td>
 						<td>{gibHours(row.zot_storage_gib_seconds)}</td>
 						<td class="cost">{usd(row.cost)}</td>
