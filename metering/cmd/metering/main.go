@@ -346,6 +346,7 @@ func (w *Worker) consumeHubble(ctx context.Context, path string) {
 			slog.Info("hubble flush", "flows_seen", flowsSeen, "flows_matched", flowsMatched, "buckets", len(counts))
 			flowsSeen, flowsMatched = 0, 0
 			for key, bc := range counts {
+				slog.Info("hubble bucket", "orgID", key.orgID, "project", key.project, "component", key.component, "external", key.external, "ingress", bc.ingress, "egress", bc.egress)
 				now := time.Now().UTC()
 				ingressType, egressType := "net_ingress_internal_bytes", "net_egress_internal_bytes"
 				if key.external {
