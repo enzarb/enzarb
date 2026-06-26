@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -297,6 +298,12 @@ type HubbleFlow struct {
 	Type        string          `json:"type"`
 	L4          *HubbleL4       `json:"l4"`
 	Verdict     string          `json:"verdict"`
+	IP          *HubbleIP       `json:"IP"`
+}
+
+type HubbleIP struct {
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
 }
 
 type HubbleEndpoint struct {
@@ -320,12 +327,13 @@ type HubbleL4 struct {
 func (w *Worker) consumeHubble(ctx context.Context, path string) {
 	slog.Info("consuming hubble flows", "path", path)
 
-	// Track per-(org, project, component) byte counts and flush every 60s. The org
-	// UUID is taken from the project pod's `user-<orgID>` namespace so insertUsage
-	// can attribute the flow to the right organization. Component is "workspace"
-	// unless the flow's peer is the Zot registry backend, in which case the bandwidth
-	// is attributed to that platform service.
-	type flowKey struct{ orgID, project, component string }
+	// Track per-(org, project, component, external) byte counts and flush every
+	// 60s. Flows are split into internal (RFC-1918 peer) and external (public
+	// internet peer) so billing can price them differently.
+	type flowKey struct {
+		orgID, project, component string
+		external                  bool
+	}
 	type byteCounts struct{ ingress, egress int64 }
 	counts := map[flowKey]*byteCounts{}
 
@@ -336,13 +344,17 @@ func (w *Worker) consumeHubble(ctx context.Context, path string) {
 		for range flush.C {
 			for key, bc := range counts {
 				now := time.Now().UTC()
+				ingressType, egressType := "net_ingress_internal_bytes", "net_egress_internal_bytes"
+				if key.external {
+					ingressType, egressType = "net_ingress_external_bytes", "net_egress_external_bytes"
+				}
 				if bc.ingress > 0 {
-					if err := w.insertUsage(ctx, key.orgID, key.project, key.component, "", "net_ingress_bytes", float64(bc.ingress), "bytes", now); err != nil {
+					if err := w.insertUsage(ctx, key.orgID, key.project, key.component, "", ingressType, float64(bc.ingress), "bytes", now); err != nil {
 						slog.Warn("insert ingress usage", "err", err)
 					}
 				}
 				if bc.egress > 0 {
-					if err := w.insertUsage(ctx, key.orgID, key.project, key.component, "", "net_egress_bytes", float64(bc.egress), "bytes", now); err != nil {
+					if err := w.insertUsage(ctx, key.orgID, key.project, key.component, "", egressType, float64(bc.egress), "bytes", now); err != nil {
 						slog.Warn("insert egress usage", "err", err)
 					}
 				}
@@ -390,15 +402,26 @@ func (w *Worker) consumeHubble(ctx context.Context, path string) {
 			srcOrg, srcProject := endpointOrgProject(flow.Source)
 			dstOrg, dstProject := endpointOrgProject(flow.Destination)
 
+			// Classify the peer IP as internal (RFC-1918 / loopback) or external.
+			peerIP := ""
+			if flow.IP != nil {
+				if srcProject != "" {
+					peerIP = flow.IP.Destination
+				} else {
+					peerIP = flow.IP.Source
+				}
+			}
+			external := !isInternalIP(peerIP)
+
 			var key flowKey
 			egress := false
 			switch {
 			case srcProject != "":
 				// Project ⇒ peer: egress. Component reflects the peer (zot/workspace).
-				key, egress = flowKey{srcOrg, srcProject, peerComponent(flow.Destination)}, true
+				key, egress = flowKey{srcOrg, srcProject, peerComponent(flow.Destination), external}, true
 			case dstProject != "":
 				// Peer ⇒ project: ingress.
-				key = flowKey{dstOrg, dstProject, peerComponent(flow.Source)}
+				key = flowKey{dstOrg, dstProject, peerComponent(flow.Source), external}
 			default:
 				continue
 			}
@@ -418,6 +441,45 @@ func (w *Worker) consumeHubble(ctx context.Context, path string) {
 		_ = f.Close()
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// internalCIDRs covers RFC-1918, loopback, link-local, and the Kubernetes
+// default pod/service ranges. Any peer IP in these blocks is "internal";
+// everything else is public internet ("external").
+var internalCIDRs = func() []*net.IPNet {
+	cidrs := []string{
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+		"127.0.0.0/8",
+		"169.254.0.0/16",
+		"::1/128",
+		"fc00::/7",
+	}
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		_, n, _ := net.ParseCIDR(c)
+		nets = append(nets, n)
+	}
+	return nets
+}()
+
+// isInternalIP reports whether ip is an RFC-1918 / loopback / link-local address.
+// An empty or unparseable string returns true (conservatively treated as internal).
+func isInternalIP(ip string) bool {
+	if ip == "" {
+		return true
+	}
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return true
+	}
+	for _, n := range internalCIDRs {
+		if n.Contains(parsed) {
+			return true
+		}
+	}
+	return false
 }
 
 // endpointOrgProject returns the org UUID and project slug for an endpoint, or

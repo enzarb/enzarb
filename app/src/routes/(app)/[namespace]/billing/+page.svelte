@@ -14,8 +14,10 @@
 	const resourceLabels: Record<string, string> = {
 		cpu_seconds: 'CPU',
 		mem_gib_seconds: 'Memory',
-		net_ingress_bytes: 'Network In',
-		net_egress_bytes: 'Network Out',
+		net_ingress_internal_bytes: 'Net In (internal)',
+		net_egress_internal_bytes: 'Net Out (internal)',
+		net_ingress_external_bytes: 'Net In (external)',
+		net_egress_external_bytes: 'Net Out (external)',
 		storage_gib_seconds: 'Storage',
 		zot_storage_gib_seconds: 'Registry'
 	};
@@ -30,8 +32,10 @@
 	const resourceColors: Record<string, string> = {
 		cpu_seconds: '#58a6ff',
 		mem_gib_seconds: '#3fb950',
-		net_ingress_bytes: '#d29922',
-		net_egress_bytes: '#db6d28',
+		net_ingress_internal_bytes: '#d29922',
+		net_egress_internal_bytes: '#e3b341',
+		net_ingress_external_bytes: '#db6d28',
+		net_egress_external_bytes: '#f0883e',
 		storage_gib_seconds: '#a371f7',
 		zot_storage_gib_seconds: '#56d4dd'
 	};
@@ -95,8 +99,10 @@
 		<div class="estimate-lines">
 			<span>CPU {usd(est.lines.cpu)}</span>
 			<span>Memory {usd(est.lines.mem)}</span>
-			<span>Net In {usd(est.lines.net_in)}</span>
-			<span>Net Out {usd(est.lines.net_out)}</span>
+			<span>Net In (int) {usd(est.lines.net_in_internal)}</span>
+			<span>Net Out (int) {usd(est.lines.net_out_internal)}</span>
+			<span>Net In (ext) {usd(est.lines.net_in_external)}</span>
+			<span>Net Out (ext) {usd(est.lines.net_out_external)}</span>
 			<span>Storage {usd(est.lines.storage)}</span>
 			<span>Registry {usd(est.lines.zot)}</span>
 		</div>
@@ -138,17 +144,31 @@
 		</div>
 		<div class="meter-row">
 			<div class="meter-labels">
-				<span>Network In</span>
-				<span class="meter-value">{gib(u.net_ingress_bytes)} GiB</span>
+				<span>Net In (internal)</span>
+				<span class="meter-value">{gib(u.net_ingress_internal_bytes)} GiB</span>
 			</div>
-			<div class="meter-track meter-track-unbounded"><div class="meter-fill meter-fill-net-in" style="width:100%"></div></div>
+			<div class="meter-track meter-track-unbounded"><div class="meter-fill meter-fill-net-in-int" style="width:100%"></div></div>
 		</div>
 		<div class="meter-row">
 			<div class="meter-labels">
-				<span>Network Out</span>
-				<span class="meter-value">{gib(u.net_egress_bytes)} GiB</span>
+				<span>Net Out (internal)</span>
+				<span class="meter-value">{gib(u.net_egress_internal_bytes)} GiB</span>
 			</div>
-			<div class="meter-track meter-track-unbounded"><div class="meter-fill meter-fill-net-out" style="width:100%"></div></div>
+			<div class="meter-track meter-track-unbounded"><div class="meter-fill meter-fill-net-out-int" style="width:100%"></div></div>
+		</div>
+		<div class="meter-row">
+			<div class="meter-labels">
+				<span>Net In (external)</span>
+				<span class="meter-value">{gib(u.net_ingress_external_bytes)} GiB</span>
+			</div>
+			<div class="meter-track meter-track-unbounded"><div class="meter-fill meter-fill-net-in-ext" style="width:100%"></div></div>
+		</div>
+		<div class="meter-row">
+			<div class="meter-labels">
+				<span>Net Out (external)</span>
+				<span class="meter-value">{gib(u.net_egress_external_bytes)} GiB</span>
+			</div>
+			<div class="meter-track meter-track-unbounded"><div class="meter-fill meter-fill-net-out-ext" style="width:100%"></div></div>
 		</div>
 	</div>
 </section>
@@ -220,8 +240,10 @@
 					<th>Project</th>
 					<th>CPU (hr)</th>
 					<th>Memory (GiB-hr)</th>
-					<th>Net In (GiB)</th>
-					<th>Net Out (GiB)</th>
+					<th>Net In Int (GiB)</th>
+					<th>Net Out Int (GiB)</th>
+					<th>Net In Ext (GiB)</th>
+					<th>Net Out Ext (GiB)</th>
 					<th>Storage (GiB-hr)</th>
 					<th>Registry (GiB-hr)</th>
 					<th>Cost</th>
@@ -233,14 +255,16 @@
 						<td><code class="mono">{row.project_id}</code></td>
 						<td>{cpuHours(row.cpu_seconds)}</td>
 						<td>{gibHours(row.mem_gib_seconds)}</td>
-						<td>{gib(row.net_ingress_bytes)}</td>
-						<td>{gib(row.net_egress_bytes)}</td>
+						<td>{gib(row.net_ingress_internal_bytes)}</td>
+						<td>{gib(row.net_egress_internal_bytes)}</td>
+						<td>{gib(row.net_ingress_external_bytes)}</td>
+						<td>{gib(row.net_egress_external_bytes)}</td>
 						<td>{gibHours(row.storage_gib_seconds)}</td>
 						<td>{gibHours(row.zot_storage_gib_seconds)}</td>
 						<td class="cost">{usd(row.cost)}</td>
 					</tr>
 				{:else}
-					<tr><td colspan="8" class="muted">No data</td></tr>
+					<tr><td colspan="10" class="muted">No data</td></tr>
 				{/each}
 			</tbody>
 		</table>
@@ -299,8 +323,10 @@
 	.meter-track-unbounded { opacity: 0.5; }
 	.meter-fill-storage { background: #a371f7; }
 	.meter-fill-zot { background: #56d4dd; }
-	.meter-fill-net-in { background: #d29922; }
-	.meter-fill-net-out { background: #db6d28; }
+	.meter-fill-net-in-int { background: #d29922; }
+	.meter-fill-net-out-int { background: #e3b341; }
+	.meter-fill-net-in-ext { background: #db6d28; }
+	.meter-fill-net-out-ext { background: #f0883e; }
 
 	.table-scroll { overflow-x: auto; }
 	.cost { font-variant-numeric: tabular-nums; font-weight: 600; }

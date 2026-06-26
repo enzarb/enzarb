@@ -27,10 +27,14 @@ function costForResource(resourceType: string, quantity: number, p: Pricing): nu
 			return quantity * (p.pricing_cpu_seconds_per_unit ?? 0);
 		case 'mem_gib_seconds':
 			return quantity * (p.pricing_mem_gib_seconds_per_unit ?? 0);
-		case 'net_ingress_bytes':
-			return (quantity / GIB) * (p.pricing_net_ingress_per_gib ?? 0);
-		case 'net_egress_bytes':
-			return (quantity / GIB) * (p.pricing_net_egress_per_gib ?? 0);
+		case 'net_ingress_internal_bytes':
+			return (quantity / GIB) * (p.pricing_net_ingress_internal_per_gib ?? 0);
+		case 'net_egress_internal_bytes':
+			return (quantity / GIB) * (p.pricing_net_egress_internal_per_gib ?? 0);
+		case 'net_ingress_external_bytes':
+			return (quantity / GIB) * (p.pricing_net_ingress_external_per_gib ?? 0);
+		case 'net_egress_external_bytes':
+			return (quantity / GIB) * (p.pricing_net_egress_external_per_gib ?? 0);
 		case 'storage_gib_seconds':
 			return quantity * (p.pricing_storage_gib_seconds_per_unit ?? 0);
 		case 'zot_storage_gib_seconds':
@@ -72,8 +76,10 @@ export const getUsageWithLimits = query(async () => {
 		mem_gib_seconds: usage.mem_gib_seconds ?? 0,
 		storage_gib_seconds: usage.storage_gib_seconds ?? 0,
 		zot_storage_gib_seconds: usage.zot_storage_gib_seconds ?? 0,
-		net_ingress_bytes: usage.net_ingress_bytes ?? 0,
-		net_egress_bytes: usage.net_egress_bytes ?? 0,
+		net_ingress_internal_bytes: usage.net_ingress_internal_bytes ?? 0,
+		net_egress_internal_bytes: usage.net_egress_internal_bytes ?? 0,
+		net_ingress_external_bytes: usage.net_ingress_external_bytes ?? 0,
+		net_egress_external_bytes: usage.net_egress_external_bytes ?? 0,
 		free_cpu_seconds: p.pricing_free_cpu_seconds ?? 0,
 		free_mem_gib_seconds: p.pricing_free_mem_gib_seconds ?? 0,
 	};
@@ -104,8 +110,10 @@ export const getEstimatedCost = query(async () => {
 	const lines = {
 		cpu: cpuBillable * (p.pricing_cpu_seconds_per_unit ?? 0),
 		mem: memBillable * (p.pricing_mem_gib_seconds_per_unit ?? 0),
-		net_in: costForResource('net_ingress_bytes', usage.net_ingress_bytes ?? 0, p),
-		net_out: costForResource('net_egress_bytes', usage.net_egress_bytes ?? 0, p),
+		net_in_internal: costForResource('net_ingress_internal_bytes', usage.net_ingress_internal_bytes ?? 0, p),
+		net_out_internal: costForResource('net_egress_internal_bytes', usage.net_egress_internal_bytes ?? 0, p),
+		net_in_external: costForResource('net_ingress_external_bytes', usage.net_ingress_external_bytes ?? 0, p),
+		net_out_external: costForResource('net_egress_external_bytes', usage.net_egress_external_bytes ?? 0, p),
 		storage: costForResource('storage_gib_seconds', usage.storage_gib_seconds ?? 0, p),
 		zot: costForResource('zot_storage_gib_seconds', usage.zot_storage_gib_seconds ?? 0, p)
 	};
@@ -124,8 +132,10 @@ export const getProjectRollup = query(async () => {
 			project_id: string;
 			cpu_seconds: number;
 			mem_gib_seconds: number;
-			net_ingress_bytes: number;
-			net_egress_bytes: number;
+			net_ingress_internal_bytes: number;
+			net_egress_internal_bytes: number;
+			net_ingress_external_bytes: number;
+			net_egress_external_bytes: number;
 			storage_gib_seconds: number;
 			zot_storage_gib_seconds: number;
 		}[]
@@ -134,8 +144,10 @@ export const getProjectRollup = query(async () => {
 			project_id,
 			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'cpu_seconds'), 0)::float8 AS cpu_seconds,
 			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'mem_gib_seconds'), 0)::float8 AS mem_gib_seconds,
-			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'net_ingress_bytes'), 0)::float8 AS net_ingress_bytes,
-			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'net_egress_bytes'), 0)::float8 AS net_egress_bytes,
+			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'net_ingress_internal_bytes'), 0)::float8 AS net_ingress_internal_bytes,
+			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'net_egress_internal_bytes'), 0)::float8 AS net_egress_internal_bytes,
+			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'net_ingress_external_bytes'), 0)::float8 AS net_ingress_external_bytes,
+			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'net_egress_external_bytes'), 0)::float8 AS net_egress_external_bytes,
 			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'storage_gib_seconds'), 0)::float8 AS storage_gib_seconds,
 			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'zot_storage_gib_seconds'), 0)::float8 AS zot_storage_gib_seconds
 		FROM usage_events

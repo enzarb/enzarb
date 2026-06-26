@@ -5,8 +5,10 @@
 export const RESOURCE_TYPES = [
 	'cpu_seconds',
 	'mem_gib_seconds',
-	'net_ingress_bytes',
-	'net_egress_bytes',
+	'net_ingress_internal_bytes',
+	'net_egress_internal_bytes',
+	'net_ingress_external_bytes',
+	'net_egress_external_bytes',
 	'storage_gib_seconds',
 	'zot_storage_gib_seconds'
 ] as const;
