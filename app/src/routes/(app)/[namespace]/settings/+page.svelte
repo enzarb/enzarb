@@ -116,6 +116,8 @@
 	// ── GitHub OAuth ──────────────────────────────────────────────────────────
 	let githubBusy = $state(false);
 
+	const githubConnection = $derived(getGithubConnection());
+
 	async function handleDisconnectGithub() {
 		const ok = await confirm({ title: 'Disconnect GitHub?', message: 'GH_TOKEN and related env vars will be removed from all workspaces on next restart.', confirmText: 'Disconnect', danger: true });
 		if (!ok) return;
@@ -214,7 +216,7 @@
 			{#if githubConnected}
 				<p class="success-text">GitHub connected successfully. Restart your workspace to pick up the new credentials.</p>
 			{/if}
-			{#await getGithubConnection() then connection}
+			{#await githubConnection then connection}
 				{#if connection}
 					<div class="card github-card">
 						<span class="github-connected">Connected as <strong>{connection.login}</strong></span>
