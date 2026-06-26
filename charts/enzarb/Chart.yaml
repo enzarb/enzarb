@@ -2,8 +2,8 @@ apiVersion: v2
 name: enzarb
 description: Enzarb AI agent development platform — app, operator, billing, and metering
 type: application
-version: 0.55.5
-appVersion: "v0.55.5"
+version: 0.56.0
+appVersion: "v0.56.0"
 home: https://enzarb.dev
 sources:
   - https://github.com/enzarb/enzarb
