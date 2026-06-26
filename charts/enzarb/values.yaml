@@ -68,7 +68,7 @@ metering:
   image:
     repository: ghcr.io/enzarb/metering
     pullPolicy: IfNotPresent
-    tag: "v0.55.0"
+    tag: "v0.55.1"
   hubbleLogPath: /var/run/cilium/hubble/events.log
   resources:
     requests:
