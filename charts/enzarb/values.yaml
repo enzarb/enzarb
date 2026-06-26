@@ -6,7 +6,7 @@ app:
   image:
     repository: ghcr.io/enzarb/app
     pullPolicy: IfNotPresent
-    tag: "v0.52.2"
+    tag: "v0.53.0"
   env:
     ORIGIN: https://enzarb.dev
   dbSecret:
@@ -39,7 +39,7 @@ operator:
   image:
     repository: ghcr.io/enzarb/operator
     pullPolicy: IfNotPresent
-    tag: "v0.51.0"
+    tag: "v0.53.0"
   leaderElection: true
   env:
     ENZARB_DOMAIN: enzarb.dev
@@ -111,7 +111,7 @@ authd:
 workspace:
   image:
     repository: ghcr.io/enzarb/workspace
-    tag: "v0.49.0"
+    tag: "v0.53.0"
   # StorageClass for project home PVCs. Empty uses the cluster's default class.
   storageClass: ""
   # changelog is shown in the UI when a workspace update is pending. Set by CI
@@ -161,7 +161,6 @@ networkPolicy:
   podCIDR: "10.42.0.0/16"
   # Service ClusterIP range (kube-apiserver --service-cluster-ip-range).
   serviceCIDR: "10.43.0.0/16"
-
 # GitHub OAuth App — leave empty to disable GitHub integration in the UI.
 github:
   oauthClientId: ""
