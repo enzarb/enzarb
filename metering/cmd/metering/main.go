@@ -81,6 +81,7 @@ func main() {
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
+			slog.Info("collect metrics tick")
 			if err := w.collectMetrics(context.Background()); err != nil {
 				slog.Error("collect metrics", "err", err)
 			}
@@ -452,9 +453,16 @@ func extractProjectSlug(ep *HubbleEndpoint) string {
 	return ""
 }
 
-// parseQuantityMillis parses a k8s CPU quantity string (e.g. "250m", "1") into millicores.
+// parseQuantityMillis parses a k8s CPU quantity string into millicores.
+// The metrics-server returns live CPU as nanocores ("42381456n"); static
+// resource specs use millicores ("250m") or whole cores ("1").
 func parseQuantityMillis(s string) int64 {
 	s = strings.TrimSpace(s)
+	if strings.HasSuffix(s, "n") {
+		// nanocores → millicores (divide by 1,000,000)
+		v, _ := strconv.ParseInt(strings.TrimSuffix(s, "n"), 10, 64)
+		return v / 1_000_000
+	}
 	if strings.HasSuffix(s, "m") {
 		v, _ := strconv.ParseInt(strings.TrimSuffix(s, "m"), 10, 64)
 		return v
@@ -524,6 +532,7 @@ func (w *Worker) collectZotUsage(ctx context.Context) error {
 		return fmt.Errorf("catalog: %w", err)
 	}
 
+	slog.Info("zot catalog", "repos", len(catalog.Repositories))
 	for _, repo := range catalog.Repositories {
 		// Repo paths are orgSlug/projectSlug/imageName; extract just the first two
 		// segments. strings.Cut would give projectSlug/imageName as the "project",
@@ -535,6 +544,7 @@ func (w *Worker) collectZotUsage(ctx context.Context) error {
 		orgSlug, project := parts[0], parts[1]
 		orgID, ok := orgIDs[orgSlug]
 		if !ok {
+			slog.Warn("zot repo org not found", "repo", repo, "orgSlug", orgSlug)
 			continue // repo not owned by a known org
 		}
 		sizeBytes, err := w.zotRepoSize(ctx, repo)
@@ -543,6 +553,7 @@ func (w *Worker) collectZotUsage(ctx context.Context) error {
 			continue
 		}
 		sizeGiB := float64(sizeBytes) / gib
+		slog.Info("zot repo usage", "repo", repo, "sizeGiB", sizeGiB)
 		if err := w.insertUsage(ctx, orgID, project, "zot", "", "zot_storage_gib_seconds", sizeGiB*60.0, "GiB-s", now); err != nil {
 			slog.Warn("insert zot usage", "err", err)
 		}
