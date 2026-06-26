@@ -168,6 +168,10 @@ export async function migrate() {
 			UNIQUE (project_id, key)
 		)
 	`;
+
+	// GitHub login support: oidc_sub is now optional (GitHub-first users have none).
+	await sql`ALTER TABLE users ALTER COLUMN oidc_sub DROP NOT NULL`;
+	await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS github_id TEXT UNIQUE`;
 }
 
 // seedOrgRoles inserts the builtin roles for an org, leaving any already-present

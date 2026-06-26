@@ -72,3 +72,35 @@ export async function upsertUser(sub: string, email: string): Promise<string> {
 	`;
 	return rows[0].id;
 }
+
+// Upsert a user authenticated via GitHub. Links by github_id first, then falls
+// back to email match (so Google-first users get their accounts linked).
+export async function upsertGithubUser(
+	githubId: string,
+	email: string,
+	displayName: string
+): Promise<string> {
+	// Try to find by github_id
+	let rows = await sql<{ id: string }[]>`
+		SELECT id FROM users WHERE github_id = ${githubId}
+	`;
+	if (rows.length) {
+		await sql`UPDATE users SET email = ${email} WHERE id = ${rows[0].id}`;
+		return rows[0].id;
+	}
+
+	// Try to link to an existing account by email
+	const byEmail = await sql<{ id: string }[]>`
+		SELECT id FROM users WHERE email = ${email}
+	`;
+	if (byEmail.length) {
+		await sql`UPDATE users SET github_id = ${githubId} WHERE id = ${byEmail[0].id}`;
+		return byEmail[0].id;
+	}
+
+	// New user — create with github_id, no oidc_sub
+	rows = await sql<{ id: string }[]>`
+		INSERT INTO users (email, github_id) VALUES (${email}, ${githubId}) RETURNING id
+	`;
+	return rows[0].id;
+}

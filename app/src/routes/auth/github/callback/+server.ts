@@ -2,25 +2,39 @@ import { redirect, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { config } from '$lib/config';
 import { sql } from '$lib/db';
-import { orgNamespace, createOrPatchSecret, listProjects } from '$lib/k8s';
+import { orgNamespace, createOrPatchSecret } from '$lib/k8s';
+import { upsertGithubUser, createSession } from '$lib/session';
 
-export const GET: RequestHandler = async ({ url, locals }) => {
+export const GET: RequestHandler = async ({ url, locals, cookies }) => {
 	if (!config.githubOAuthClientId) error(404, 'GitHub OAuth not configured');
-	if (!locals.session) redirect(302, '/login');
 
 	const code = url.searchParams.get('code');
 	const state = url.searchParams.get('state');
 	if (!code) error(400, 'Missing code');
 
-	// Validate CSRF state
-	const stored = await sql<{ value: string }[]>`
-		SELECT value FROM user_secrets
-		WHERE user_id = ${locals.session.userId} AND key = '_github_oauth_state'
-	`;
-	if (!stored[0] || stored[0].value !== state) error(400, 'Invalid OAuth state');
-	await sql`DELETE FROM user_secrets WHERE user_id = ${locals.session.userId} AND key = '_github_oauth_state'`;
+	const isConnect = !!locals.session;
+	let returnTo = '/';
 
-	// Exchange code for access token
+	if (isConnect) {
+		// Connect flow: user is logged in; validate CSRF state from DB.
+		const stored = await sql<{ value: string }[]>`
+			SELECT value FROM user_secrets
+			WHERE user_id = ${locals.session!.userId} AND key = '_github_oauth_state'
+		`;
+		if (!stored[0] || stored[0].value !== state) error(400, 'Invalid OAuth state');
+		await sql`DELETE FROM user_secrets WHERE user_id = ${locals.session!.userId} AND key = '_github_oauth_state'`;
+	} else {
+		// Login flow: validate CSRF state from cookie.
+		const raw = cookies.get('github_login_state');
+		if (!raw) error(400, 'Missing login state');
+		cookies.delete('github_login_state', { path: '/auth/github/callback' });
+		let parsed: { state: string; returnTo: string };
+		try { parsed = JSON.parse(raw); } catch { error(400, 'Invalid login state'); }
+		if (parsed.state !== state) error(400, 'Invalid OAuth state');
+		returnTo = parsed.returnTo ?? '/';
+	}
+
+	// Exchange code for access token.
 	const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
 		method: 'POST',
 		headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
@@ -35,7 +49,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	const accessToken: string = tokenData.access_token;
 	if (!accessToken) error(502, 'No access token returned from GitHub');
 
-	// Fetch GitHub user profile
+	// Fetch GitHub user profile.
 	const ghAuth = { Authorization: `Bearer ${accessToken}` };
 	const [profileRes, emailsRes] = await Promise.all([
 		fetch('https://api.github.com/user', { headers: ghAuth }),
@@ -53,9 +67,18 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		profile.email ??
 		'';
 	const displayName: string = profile.name ?? profile.login ?? '';
+	const githubId: string = String(profile.id);
 
-	// Upsert the four GitHub-related user secrets.
-	const userId = locals.session.userId;
+	// Resolve user ID.
+	let userId: string;
+	if (isConnect) {
+		userId = locals.session!.userId;
+		await sql`UPDATE users SET github_id = ${githubId} WHERE id = ${userId} AND github_id IS NULL`;
+	} else {
+		userId = await upsertGithubUser(githubId, primaryEmail, displayName);
+	}
+
+	// Upsert GitHub-related user secrets.
 	const githubSecrets: Record<string, string> = {
 		GH_TOKEN: accessToken,
 		GITHUB_TOKEN: accessToken,
@@ -71,14 +94,40 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
 	// Sync all user secrets to K8s for every org the user belongs to.
 	const allSecretRows = await sql<{ key: string; value: string }[]>`
-		SELECT key, value FROM user_secrets WHERE user_id = ${userId}
-			AND key != '_github_oauth_state'
+		SELECT key, value FROM user_secrets
+		WHERE user_id = ${userId} AND key NOT LIKE '\_%'
 	`;
 	const allSecrets = Object.fromEntries(allSecretRows.map(r => [r.key, r.value]));
-	for (const org of locals.session.orgs) {
-		const ns = orgNamespace(org.id);
-		await createOrPatchSecret(ns, `${org.id}-user-env-secrets`, allSecrets);
+	const orgs = await sql<{ id: string }[]>`
+		SELECT o.id FROM organizations o
+		JOIN org_members om ON om.org_id = o.id
+		WHERE om.user_id = ${userId} AND o.deleted_at IS NULL
+	`;
+	for (const org of orgs) {
+		await createOrPatchSecret(orgNamespace(org.id), `${org.id}-user-env-secrets`, allSecrets);
 	}
 
-	redirect(302, '/settings?github=connected');
+	if (isConnect) {
+		redirect(302, '/settings?github=connected');
+	}
+
+	// Login flow: create session and redirect.
+	const sessionId = await createSession(userId);
+	cookies.set('session', sessionId, {
+		path: '/',
+		httpOnly: true,
+		secure: true,
+		sameSite: 'lax',
+		maxAge: 60 * 60 * 24 * 7
+	});
+
+	// New users with no username go through onboarding.
+	const userRows = await sql<{ username: string | null }[]>`SELECT username FROM users WHERE id = ${userId}`;
+	if (!userRows[0]?.username) {
+		const dest = encodeURIComponent(returnTo);
+		redirect(302, `/onboarding?returnTo=${dest}`);
+	}
+
+	const safe = returnTo.startsWith('/') && !returnTo.startsWith('//') ? returnTo : '/';
+	redirect(302, safe);
 };
