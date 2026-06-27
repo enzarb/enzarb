@@ -2,6 +2,7 @@ import { SignJWT, exportJWK, generateKeyPair, importPKCS8, importSPKI } from 'jo
 import { randomUUID } from 'crypto';
 import { env } from '$env/dynamic/private';
 import { sql } from '$lib/db';
+import { config } from '$lib/config';
 
 // Key pair loaded once at startup from env or generated for dev
 let privateKey: CryptoKey;
@@ -45,7 +46,7 @@ export async function mintProjectToken(
 		.setIssuedAt()
 		.setJti(jti)
 		.setExpirationTime('5m')
-		.setIssuer('https://enzarb.dev')
+		.setIssuer(`https://${config.domain}`)
 		.sign(privateKey);
 	return token;
 }

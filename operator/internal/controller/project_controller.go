@@ -535,6 +535,10 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug s
 								{Name: "ENZARB_PROJECT_ID", Value: string(project.UID)},
 								{Name: "ENZARB_PROJECT_SLUG", Value: project.Spec.Slug},
 								{Name: "ENZARB_ORG_ID", Value: project.Spec.OrgID},
+								// Base origin for the agent: drives CORS, JWKS/revocation
+								// fetch, and the expected JWT issuer. Must match the app's
+								// configured domain (Helm-driven) so issued tokens validate.
+								{Name: "APP_ORIGIN", Value: fmt.Sprintf("https://%s", r.Domain)},
 								// Preconfigured registry + git coordinates (GHCR-style). The
 								// workspace's credential helpers auth to these automatically; the
 								// project may only push/pull within its own <orgSlug>/<slug> prefix.

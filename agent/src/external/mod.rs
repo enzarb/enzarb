@@ -68,11 +68,18 @@ async fn auth_middleware(
     mut request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    // Prefer the Authorization header; fall back to a `token` query param.
-    // Browsers cannot set headers on WebSocket connections, so WS clients
-    // authenticate via `?token=<jwt>`.
+    // Token resolution order:
+    //  1. Authorization: Bearer <jwt> — normal HTTP requests.
+    //  2. Sec-WebSocket-Protocol: bearer, <jwt> — browsers can't set arbitrary
+    //     headers on a WS handshake but can set subprotocols, so WS clients send
+    //     the token there (kept out of the URL, and therefore out of logs).
+    //  3. ?token=<jwt> query param — DEPRECATED legacy WS fallback; leaks the
+    //     token into access/proxy logs. Retained for one release for rollout
+    //     compatibility and to be removed once all clients use (2).
+    let ws_token = extract_ws_protocol_token(&headers);
     let query_token = extract_query_token(request.uri());
     let token = extract_bearer(&headers)
+        .or(ws_token.as_deref())
         .or(query_token.as_deref())
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
@@ -96,6 +103,19 @@ async fn auth_middleware(
 fn extract_bearer(headers: &HeaderMap) -> Option<&str> {
     let auth = headers.get("authorization")?.to_str().ok()?;
     auth.strip_prefix("Bearer ")
+}
+
+/// Extract a JWT carried in the `Sec-WebSocket-Protocol` request header. The
+/// browser offers two subprotocols — a `bearer` marker and the token itself —
+/// as `Sec-WebSocket-Protocol: bearer, <jwt>`. The server echoes back only the
+/// `bearer` marker (see `output_ws`), never the token.
+fn extract_ws_protocol_token(headers: &HeaderMap) -> Option<String> {
+    let proto = headers.get("sec-websocket-protocol")?.to_str().ok()?;
+    let mut parts = proto.split(',').map(str::trim);
+    if parts.next()? != "bearer" {
+        return None;
+    }
+    parts.next().filter(|t| !t.is_empty()).map(str::to_owned)
 }
 
 fn extract_query_token(uri: &axum::http::Uri) -> Option<String> {
@@ -134,4 +154,36 @@ fn percent_decode(input: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn proto_header(v: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert("sec-websocket-protocol", v.parse().unwrap());
+        h
+    }
+
+    #[test]
+    fn ws_protocol_token_extracted() {
+        let h = proto_header("bearer, eyJabc.def.ghi");
+        assert_eq!(
+            extract_ws_protocol_token(&h).as_deref(),
+            Some("eyJabc.def.ghi")
+        );
+    }
+
+    #[test]
+    fn ws_protocol_token_requires_bearer_marker() {
+        assert!(extract_ws_protocol_token(&proto_header("eyJabc.def.ghi")).is_none());
+        assert!(extract_ws_protocol_token(&proto_header("bearer")).is_none());
+        assert!(extract_ws_protocol_token(&proto_header("bearer, ")).is_none());
+    }
+
+    #[test]
+    fn ws_protocol_token_absent() {
+        assert!(extract_ws_protocol_token(&HeaderMap::new()).is_none());
+    }
 }

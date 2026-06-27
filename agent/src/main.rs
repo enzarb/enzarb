@@ -49,10 +49,15 @@ async fn main() -> Result<()> {
 
     tracing::info!(project_id, org_id, project_slug, "starting project-agent");
 
-    // Fetch and cache JWKS + revoked JTI list for JWT validation
-    let jwks_url = "https://enzarb.dev/.well-known/jwks.json".to_string();
-    let revoked_url = "https://enzarb.dev/.well-known/revoked-jtis".to_string();
-    let jwks = auth::JwksCache::new(jwks_url, revoked_url).await?;
+    // Fetch and cache JWKS + revoked JTI list for JWT validation. The base
+    // origin is configurable (Helm-driven) via APP_ORIGIN so the agent's JWKS,
+    // revocation, and expected issuer all track the deployment domain rather
+    // than a hardcoded host. It must equal the issuer (`iss`) the app signs with.
+    let base = std::env::var("APP_ORIGIN").unwrap_or_else(|_| "https://enzarb.dev".to_string());
+    let base = base.trim_end_matches('/').to_string();
+    let jwks_url = format!("{base}/.well-known/jwks.json");
+    let revoked_url = format!("{base}/.well-known/revoked-jtis");
+    let jwks = auth::JwksCache::new(jwks_url, revoked_url, base).await?;
 
     // First-boot initialization: write mise.toml if absent, run mise install
     init::bootstrap().await?;

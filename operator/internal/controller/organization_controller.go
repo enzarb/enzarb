@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -12,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -77,13 +79,20 @@ func (r *OrganizationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, fmt.Errorf("ensure namespace: %w", err)
 	}
 
-	// Prune any operator-managed NetworkPolicies from prior versions. The org
-	// namespace currently has no expected NetworkPolicies; passing nil deletes
-	// any that exist with the managed-by label.
+	// Isolate the workspace namespace: deny all ingress except the system
+	// namespace (operator process checks on :9090) and the gateway data-plane
+	// (user-facing agent API on :8080). This stops the unauthenticated agent
+	// internal port from being reachable by arbitrary cluster pods.
+	if err := r.ensureWorkspaceNetworkPolicy(ctx, nsName); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure workspace network policy: %w", err)
+	}
+
+	// Prune any other operator-managed NetworkPolicies from prior versions,
+	// retaining the workspace isolation policy created above.
 	if err := pruneUnmanaged(ctx, r.Client,
 		&networkingv1.NetworkPolicyList{},
 		nsName,
-		nil,
+		map[string]struct{}{workspaceNetworkPolicyName: {}},
 		func(l *networkingv1.NetworkPolicyList) []*networkingv1.NetworkPolicy {
 			out := make([]*networkingv1.NetworkPolicy, len(l.Items))
 			for i := range l.Items {
@@ -141,6 +150,93 @@ func (r *OrganizationReconciler) ensureNamespace(ctx context.Context, org *enzar
 		return r.Update(ctx, ns)
 	}
 	return nil
+}
+
+// workspaceNetworkPolicyName is the operator-managed ingress policy that
+// isolates workspace (org) namespaces.
+const workspaceNetworkPolicyName = "enzarb-workspace-isolation"
+
+// ensureWorkspaceNetworkPolicy applies an ingress-only NetworkPolicy to the
+// workspace (org) namespace. The agent exposes an unauthenticated internal port
+// (:9090) and a JWT-authenticated external port (:8080); without a policy both
+// are reachable by any pod in the cluster. This default-denies ingress and
+// admits only:
+//   - the system namespace (enzarb-system) — the operator polls :9090 for
+//     running-process checks, so it may reach both agent ports;
+//   - the gateway data-plane namespace — the Envoy proxy routes user traffic to
+//     the agent's external :8080.
+//
+// Sibling projects in the same org namespace are intentionally not admitted, so
+// one project cannot reach another's agent. Egress is left unrestricted because
+// dev workspaces need broad outbound access (git, mise, package registries).
+func (r *OrganizationReconciler) ensureWorkspaceNetworkPolicy(ctx context.Context, nsName string) error {
+	if os.Getenv("NETWORK_POLICY_ENABLED") == "false" {
+		return nil
+	}
+
+	systemNS := os.Getenv("SYSTEM_NAMESPACE")
+	if systemNS == "" {
+		systemNS = "enzarb-system"
+	}
+	gatewayNS := os.Getenv("GATEWAY_NAMESPACE")
+	if gatewayNS == "" {
+		gatewayNS = "envoy-gateway-system"
+	}
+
+	tcp := corev1.ProtocolTCP
+	externalPort := intstr.FromInt32(8080)
+	internalPort := intstr.FromInt32(9090)
+
+	desired := &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      workspaceNetworkPolicyName,
+			Namespace: nsName,
+			Labels:    map[string]string{managedByLabel: managedByValue},
+		},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{},
+			// Ingress-only: deny-all ingress with the explicit allows below,
+			// while leaving egress untouched for dev workloads.
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+			Ingress: []networkingv1.NetworkPolicyIngressRule{
+				// System namespace (operator) → both agent ports.
+				{
+					Ports: []networkingv1.NetworkPolicyPort{
+						{Protocol: &tcp, Port: &externalPort},
+						{Protocol: &tcp, Port: &internalPort},
+					},
+					From: []networkingv1.NetworkPolicyPeer{{
+						NamespaceSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{"kubernetes.io/metadata.name": systemNS},
+						},
+					}},
+				},
+				// Gateway data-plane → external user-facing agent API only.
+				{
+					Ports: []networkingv1.NetworkPolicyPort{
+						{Protocol: &tcp, Port: &externalPort},
+					},
+					From: []networkingv1.NetworkPolicyPeer{{
+						NamespaceSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{"kubernetes.io/metadata.name": gatewayNS},
+						},
+					}},
+				},
+			},
+		},
+	}
+
+	existing := &networkingv1.NetworkPolicy{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: nsName, Name: desired.Name}, existing)
+	if apierrors.IsNotFound(err) {
+		return r.Create(ctx, desired)
+	}
+	if err != nil {
+		return err
+	}
+	existing.Spec = desired.Spec
+	existing.Labels = desired.Labels
+	return r.Update(ctx, existing)
 }
 
 // reconcileOrgRetention holds a soft-deleted org until its purge time, then

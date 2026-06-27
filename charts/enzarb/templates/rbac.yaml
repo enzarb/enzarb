@@ -48,8 +48,14 @@ metadata:
   name: enzarb-operator
 rules:
   - apiGroups: ["enzarb.io"]
-    resources: ["projects", "environments", "organizations", "alloweddomains", "domainclaims", "domainclaims/status", "projects/status", "environments/status", "organizations/status", "organizations/finalizers"]
-    verbs: ["*"]
+    resources: ["projects", "environments", "organizations", "alloweddomains", "domainclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["enzarb.io"]
+    resources: ["projects/status", "environments/status", "organizations/status", "domainclaims/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["enzarb.io"]
+    resources: ["organizations/finalizers"]
+    verbs: ["update"]
   - apiGroups: [""]
     resources: ["namespaces", "serviceaccounts", "services", "persistentvolumeclaims", "configmaps", "pods"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

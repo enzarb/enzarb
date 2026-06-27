@@ -13,6 +13,7 @@ pub struct JwksCache {
     inner: Arc<RwLock<CacheInner>>,
     jwks_url: String,
     revoked_url: String,
+    issuer: String,
 }
 
 struct CacheInner {
@@ -64,7 +65,7 @@ struct RevokedJtis {
 }
 
 impl JwksCache {
-    pub async fn new(jwks_url: String, revoked_url: String) -> Result<Self> {
+    pub async fn new(jwks_url: String, revoked_url: String, issuer: String) -> Result<Self> {
         let cache = JwksCache {
             inner: Arc::new(RwLock::new(CacheInner {
                 keys: HashMap::new(),
@@ -73,6 +74,7 @@ impl JwksCache {
             })),
             jwks_url,
             revoked_url,
+            issuer,
         };
         cache.refresh().await?;
         Ok(cache)
@@ -135,6 +137,7 @@ impl JwksCache {
 
         let mut validation = Validation::new(Algorithm::RS256);
         validation.set_audience(&["enzarb-agent"]);
+        validation.set_issuer(&[self.issuer.as_str()]);
 
         let data: TokenData<Claims> = decode(token, key, &validation)?;
         let claims = data.claims;

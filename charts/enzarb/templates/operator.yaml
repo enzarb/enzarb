@@ -57,6 +57,10 @@ spec:
               value: {{ .Values.gateway.className | quote }}
             - name: GATEWAY_NAMESPACE
               value: {{ .Values.gateway.namespace | quote }}
+            # System namespace admitted to workspace agent ports by the
+            # workspace-isolation NetworkPolicy (operator process checks).
+            - name: SYSTEM_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
             - name: NETWORK_POLICY_ENABLED
               value: {{ .Values.networkPolicy.enabled | quote }}
             - name: CLUSTER_POD_CIDR

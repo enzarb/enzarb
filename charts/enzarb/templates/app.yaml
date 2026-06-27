@@ -37,6 +37,11 @@ spec:
           env:
             - name: ORIGIN
               value: {{ .Values.app.env.ORIGIN | quote }}
+            # Drives the JWT issuer (config.domain). Sourced from the same value
+            # as the operator's ENZARB_DOMAIN — that domain becomes the agent's
+            # expected `iss`, so the app must sign tokens with the identical host.
+            - name: PUBLIC_DOMAIN
+              value: {{ .Values.operator.env.ENZARB_DOMAIN | quote }}
             - name: DB_HOST
               valueFrom:
                 secretKeyRef:

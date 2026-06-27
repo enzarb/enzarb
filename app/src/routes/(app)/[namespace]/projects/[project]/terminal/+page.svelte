@@ -237,7 +237,10 @@
 		}
 
 		const wsUrl = `${agentBase.replace('https://', 'wss://').replace('http://', 'ws://')}/processes/${pid}/output`;
-		const sock = new WebSocket(`${wsUrl}?token=${encodeURIComponent(agentToken)}`);
+		// Carry the JWT in the Sec-WebSocket-Protocol header (via the subprotocol
+		// list) rather than the URL, so it never lands in access/proxy logs. The
+		// agent reads the `bearer, <jwt>` pair and echoes back only `bearer`.
+		const sock = new WebSocket(wsUrl, ['bearer', agentToken]);
 		sockets.set(pid, sock);
 		// The agent streams output as binary frames; default binaryType is "blob",
 		// which TextDecoder can't decode. Use arraybuffer so we can render it.

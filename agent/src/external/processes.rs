@@ -135,7 +135,11 @@ pub async fn output_ws(
     if state.process_store.get(&id).await.is_none() {
         return StatusCode::NOT_FOUND.into_response();
     }
-    ws.on_upgrade(move |socket| crate::terminal::attach_ws(socket, id, state))
+    // Echo back the `bearer` subprotocol (never the token) when the client
+    // authenticated via Sec-WebSocket-Protocol; the WS spec requires the server
+    // to confirm one of the offered subprotocols or the browser aborts.
+    ws.protocols(["bearer"])
+        .on_upgrade(move |socket| crate::terminal::attach_ws(socket, id, state))
 }
 
 pub async fn history(
