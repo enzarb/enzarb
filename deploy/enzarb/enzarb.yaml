@@ -5,7 +5,7 @@ metadata:
   namespace: kube-system
 spec:
   chart: oci://ghcr.io/enzarb/charts/enzarb
-  version: 0.56.0
+  version: 0.56.1
   targetNamespace: enzarb-system
   createNamespace: true
   valuesContent: |-
