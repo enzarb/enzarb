@@ -82,13 +82,21 @@ export const getUsageWithLimits = query(async () => {
 		net_egress_external_bytes: usage.net_egress_external_bytes ?? 0,
 		free_cpu_seconds: p.pricing_free_cpu_seconds ?? 0,
 		free_mem_gib_seconds: p.pricing_free_mem_gib_seconds ?? 0,
+		free_storage_gib_seconds: p.pricing_free_storage_gib_seconds ?? 0,
+		free_zot_storage_gib_seconds: p.pricing_free_zot_storage_gib_seconds ?? 0,
+		// Network free allowances are configured in GiB; expose as bytes so the
+		// UI meters compare against the raw byte usage above.
+		free_net_ingress_internal_bytes: (p.pricing_free_net_ingress_internal_gib ?? 0) * GIB,
+		free_net_egress_internal_bytes: (p.pricing_free_net_egress_internal_gib ?? 0) * GIB,
+		free_net_ingress_external_bytes: (p.pricing_free_net_ingress_external_gib ?? 0) * GIB,
+		free_net_egress_external_bytes: (p.pricing_free_net_egress_external_gib ?? 0) * GIB
 	};
 });
 
 // Live estimate of this month's spend, computed from usage_events against the
 // admin-editable pricing in app_settings. Mirrors the tiered math in the billing
 // worker so users see expenses before the monthly invoice is cut. Returns dollars;
-// `cpu`/`mem` reflect free-allowance deductions.
+// every line reflects its per-metric free-allowance deduction.
 export const getEstimatedCost = query(async () => {
 	const org = resolveOrg();
 
@@ -104,18 +112,38 @@ export const getEstimatedCost = query(async () => {
 
 	const p = await loadPricing();
 
-	const cpuBillable = Math.max(0, (usage.cpu_seconds ?? 0) - (p.pricing_free_cpu_seconds ?? 0));
-	const memBillable = Math.max(0, (usage.mem_gib_seconds ?? 0) - (p.pricing_free_mem_gib_seconds ?? 0));
+	// Free allowances are org-wide and applied here at the aggregate level, one
+	// per billed metric. Compute/storage allowances are in the metric's native
+	// unit; network allowances are in GiB (converted to bytes to match usage).
+	const billable = (used: number, free: number) => Math.max(0, used - free);
+	const netBillableGib = (usedBytes: number, freeGib: number) =>
+		Math.max(0, usedBytes / GIB - freeGib);
 
 	const lines = {
-		cpu: cpuBillable * (p.pricing_cpu_seconds_per_unit ?? 0),
-		mem: memBillable * (p.pricing_mem_gib_seconds_per_unit ?? 0),
-		net_in_internal: costForResource('net_ingress_internal_bytes', usage.net_ingress_internal_bytes ?? 0, p),
-		net_out_internal: costForResource('net_egress_internal_bytes', usage.net_egress_internal_bytes ?? 0, p),
-		net_in_external: costForResource('net_ingress_external_bytes', usage.net_ingress_external_bytes ?? 0, p),
-		net_out_external: costForResource('net_egress_external_bytes', usage.net_egress_external_bytes ?? 0, p),
-		storage: costForResource('storage_gib_seconds', usage.storage_gib_seconds ?? 0, p),
-		zot: costForResource('zot_storage_gib_seconds', usage.zot_storage_gib_seconds ?? 0, p)
+		cpu:
+			billable(usage.cpu_seconds ?? 0, p.pricing_free_cpu_seconds ?? 0) *
+			(p.pricing_cpu_seconds_per_unit ?? 0),
+		mem:
+			billable(usage.mem_gib_seconds ?? 0, p.pricing_free_mem_gib_seconds ?? 0) *
+			(p.pricing_mem_gib_seconds_per_unit ?? 0),
+		net_in_internal:
+			netBillableGib(usage.net_ingress_internal_bytes ?? 0, p.pricing_free_net_ingress_internal_gib ?? 0) *
+			(p.pricing_net_ingress_internal_per_gib ?? 0),
+		net_out_internal:
+			netBillableGib(usage.net_egress_internal_bytes ?? 0, p.pricing_free_net_egress_internal_gib ?? 0) *
+			(p.pricing_net_egress_internal_per_gib ?? 0),
+		net_in_external:
+			netBillableGib(usage.net_ingress_external_bytes ?? 0, p.pricing_free_net_ingress_external_gib ?? 0) *
+			(p.pricing_net_ingress_external_per_gib ?? 0),
+		net_out_external:
+			netBillableGib(usage.net_egress_external_bytes ?? 0, p.pricing_free_net_egress_external_gib ?? 0) *
+			(p.pricing_net_egress_external_per_gib ?? 0),
+		storage:
+			billable(usage.storage_gib_seconds ?? 0, p.pricing_free_storage_gib_seconds ?? 0) *
+			(p.pricing_storage_gib_seconds_per_unit ?? 0),
+		zot:
+			billable(usage.zot_storage_gib_seconds ?? 0, p.pricing_free_zot_storage_gib_seconds ?? 0) *
+			(p.pricing_zot_storage_gib_seconds_per_unit ?? 0)
 	};
 	const total = Object.values(lines).reduce((a, b) => a + b, 0);
 

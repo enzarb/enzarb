@@ -143,44 +143,44 @@
 		<div class="meter-row">
 			<div class="meter-labels">
 				<span>Storage</span>
-				<span class="meter-value">{gibHours(u.storage_gib_seconds)}</span>
+				<span class="meter-value">{gibHours(u.storage_gib_seconds)} / {gibHours(u.free_storage_gib_seconds)} free</span>
 			</div>
-			<div class="meter-track meter-track-unbounded"><div class="meter-fill meter-fill-storage" style="width:100%"></div></div>
+			<div class="meter-track"><div class="meter-fill meter-fill-storage" style="width:{pct(u.storage_gib_seconds, u.free_storage_gib_seconds)}%"></div></div>
 		</div>
 		<div class="meter-row">
 			<div class="meter-labels">
 				<span>Registry</span>
-				<span class="meter-value">{gibHours(u.zot_storage_gib_seconds)}</span>
+				<span class="meter-value">{gibHours(u.zot_storage_gib_seconds)} / {gibHours(u.free_zot_storage_gib_seconds)} free</span>
 			</div>
-			<div class="meter-track meter-track-unbounded"><div class="meter-fill meter-fill-zot" style="width:100%"></div></div>
+			<div class="meter-track"><div class="meter-fill meter-fill-zot" style="width:{pct(u.zot_storage_gib_seconds, u.free_zot_storage_gib_seconds)}%"></div></div>
 		</div>
 		<div class="meter-row">
 			<div class="meter-labels">
 				<span>Net In (internal)</span>
-				<span class="meter-value">{fmtBytes(u.net_ingress_internal_bytes)}</span>
+				<span class="meter-value">{fmtBytes(u.net_ingress_internal_bytes)} / {fmtBytes(u.free_net_ingress_internal_bytes)} free</span>
 			</div>
-			<div class="meter-track meter-track-unbounded"><div class="meter-fill meter-fill-net-in-int" style="width:100%"></div></div>
+			<div class="meter-track"><div class="meter-fill meter-fill-net-in-int" style="width:{pct(u.net_ingress_internal_bytes, u.free_net_ingress_internal_bytes)}%"></div></div>
 		</div>
 		<div class="meter-row">
 			<div class="meter-labels">
 				<span>Net Out (internal)</span>
-				<span class="meter-value">{fmtBytes(u.net_egress_internal_bytes)}</span>
+				<span class="meter-value">{fmtBytes(u.net_egress_internal_bytes)} / {fmtBytes(u.free_net_egress_internal_bytes)} free</span>
 			</div>
-			<div class="meter-track meter-track-unbounded"><div class="meter-fill meter-fill-net-out-int" style="width:100%"></div></div>
+			<div class="meter-track"><div class="meter-fill meter-fill-net-out-int" style="width:{pct(u.net_egress_internal_bytes, u.free_net_egress_internal_bytes)}%"></div></div>
 		</div>
 		<div class="meter-row">
 			<div class="meter-labels">
 				<span>Net In (external)</span>
-				<span class="meter-value">{fmtBytes(u.net_ingress_external_bytes)}</span>
+				<span class="meter-value">{fmtBytes(u.net_ingress_external_bytes)} / {fmtBytes(u.free_net_ingress_external_bytes)} free</span>
 			</div>
-			<div class="meter-track meter-track-unbounded"><div class="meter-fill meter-fill-net-in-ext" style="width:100%"></div></div>
+			<div class="meter-track"><div class="meter-fill meter-fill-net-in-ext" style="width:{pct(u.net_ingress_external_bytes, u.free_net_ingress_external_bytes)}%"></div></div>
 		</div>
 		<div class="meter-row">
 			<div class="meter-labels">
 				<span>Net Out (external)</span>
-				<span class="meter-value">{fmtBytes(u.net_egress_external_bytes)}</span>
+				<span class="meter-value">{fmtBytes(u.net_egress_external_bytes)} / {fmtBytes(u.free_net_egress_external_bytes)} free</span>
 			</div>
-			<div class="meter-track meter-track-unbounded"><div class="meter-fill meter-fill-net-out-ext" style="width:100%"></div></div>
+			<div class="meter-track"><div class="meter-fill meter-fill-net-out-ext" style="width:{pct(u.net_egress_external_bytes, u.free_net_egress_external_bytes)}%"></div></div>
 		</div>
 	</div>
 </section>
@@ -332,7 +332,6 @@
 	.meter-value { font-variant-numeric: tabular-nums; }
 	.meter-track { height: 6px; background: var(--color-surface-2); border-radius: 3px; overflow: hidden; }
 	.meter-fill { height: 100%; background: var(--color-accent, #58a6ff); border-radius: 3px; transition: width 0.3s ease; }
-	.meter-track-unbounded { opacity: 0.5; }
 	.meter-fill-storage { background: #a371f7; }
 	.meter-fill-zot { background: #56d4dd; }
 	.meter-fill-net-in-int { background: #d29922; }

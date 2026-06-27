@@ -73,12 +73,24 @@ func main() {
 type PricingConfig struct {
 	CPUSecondsPerUnit           float64
 	MemGiBSecondsPerUnit        float64
-	NetIngressPerGiB            float64
-	NetEgressPerGiB             float64
 	StorageGiBSecondsPerUnit    float64
 	ZotStorageGiBSecondsPerUnit float64
-	FreeCPUSeconds              float64
-	FreeMemGiBSeconds           float64
+	// Network is metered as four independent line items (internal vs external,
+	// ingress vs egress), each priced per GiB.
+	NetIngressInternalPerGiB float64
+	NetEgressInternalPerGiB  float64
+	NetIngressExternalPerGiB float64
+	NetEgressExternalPerGiB  float64
+	// Free-tier monthly allowances, one per billed metric. Compute/storage are
+	// in the metric's native unit; network allowances are in GiB.
+	FreeCPUSeconds            float64
+	FreeMemGiBSeconds         float64
+	FreeStorageGiBSeconds     float64
+	FreeZotStorageGiBSeconds  float64
+	FreeNetIngressInternalGiB float64
+	FreeNetEgressInternalGiB  float64
+	FreeNetIngressExternalGiB float64
+	FreeNetEgressExternalGiB  float64
 }
 
 func pricingFromDB(ctx context.Context, db *pgxpool.Pool) (PricingConfig, error) {
@@ -117,12 +129,20 @@ func pricingFromDB(ctx context.Context, db *pgxpool.Pool) (PricingConfig, error)
 	p := PricingConfig{
 		CPUSecondsPerUnit:           parse("pricing_cpu_seconds_per_unit"),
 		MemGiBSecondsPerUnit:        parse("pricing_mem_gib_seconds_per_unit"),
-		NetIngressPerGiB:            parse("pricing_net_ingress_per_gib"),
-		NetEgressPerGiB:             parse("pricing_net_egress_per_gib"),
 		StorageGiBSecondsPerUnit:    parse("pricing_storage_gib_seconds_per_unit"),
 		ZotStorageGiBSecondsPerUnit: parse("pricing_zot_storage_gib_seconds_per_unit"),
+		NetIngressInternalPerGiB:    parse("pricing_net_ingress_internal_per_gib"),
+		NetEgressInternalPerGiB:     parse("pricing_net_egress_internal_per_gib"),
+		NetIngressExternalPerGiB:    parse("pricing_net_ingress_external_per_gib"),
+		NetEgressExternalPerGiB:     parse("pricing_net_egress_external_per_gib"),
 		FreeCPUSeconds:              parse("pricing_free_cpu_seconds"),
 		FreeMemGiBSeconds:           parse("pricing_free_mem_gib_seconds"),
+		FreeStorageGiBSeconds:       parse("pricing_free_storage_gib_seconds"),
+		FreeZotStorageGiBSeconds:    parse("pricing_free_zot_storage_gib_seconds"),
+		FreeNetIngressInternalGiB:   parse("pricing_free_net_ingress_internal_gib"),
+		FreeNetEgressInternalGiB:    parse("pricing_free_net_egress_internal_gib"),
+		FreeNetIngressExternalGiB:   parse("pricing_free_net_ingress_external_gib"),
+		FreeNetEgressExternalGiB:    parse("pricing_free_net_egress_external_gib"),
 	}
 	if len(errs) > 0 {
 		return PricingConfig{}, fmt.Errorf("%v", errs)
@@ -165,20 +185,34 @@ func generateOrgInvoice(ctx context.Context, db *pgxpool.Pool, orgID, orgSlug, t
 	}
 	rows.Close()
 
-	var totalCents int64
-
-	if cpuBillable := usage["cpu_seconds"] - p.FreeCPUSeconds; cpuBillable > 0 {
-		totalCents += int64(cpuBillable * p.CPUSecondsPerUnit * 100)
-	}
-	if memBillable := usage["mem_gib_seconds"] - p.FreeMemGiBSeconds; memBillable > 0 {
-		totalCents += int64(memBillable * p.MemGiBSecondsPerUnit * 100)
-	}
-
 	const bytesPerGiB = 1 << 30
-	totalCents += int64(usage["net_ingress_bytes"] / bytesPerGiB * p.NetIngressPerGiB * 100)
-	totalCents += int64(usage["net_egress_bytes"] / bytesPerGiB * p.NetEgressPerGiB * 100)
-	totalCents += int64(usage["storage_gib_seconds"] * p.StorageGiBSecondsPerUnit * 100)
-	totalCents += int64(usage["zot_storage_gib_seconds"] * p.ZotStorageGiBSecondsPerUnit * 100)
+
+	// billableCents applies the metric's free allowance before pricing. Native
+	// returns the chargeable cents for a metric measured in its own unit.
+	native := func(used, free, perUnit float64) int64 {
+		if b := used - free; b > 0 {
+			return int64(b * perUnit * 100)
+		}
+		return 0
+	}
+	// netCents converts a byte total to GiB, deducts the GiB free allowance,
+	// then prices the remainder.
+	netCents := func(usedBytes, freeGiB, perGiB float64) int64 {
+		if b := usedBytes/bytesPerGiB - freeGiB; b > 0 {
+			return int64(b * perGiB * 100)
+		}
+		return 0
+	}
+
+	var totalCents int64
+	totalCents += native(usage["cpu_seconds"], p.FreeCPUSeconds, p.CPUSecondsPerUnit)
+	totalCents += native(usage["mem_gib_seconds"], p.FreeMemGiBSeconds, p.MemGiBSecondsPerUnit)
+	totalCents += native(usage["storage_gib_seconds"], p.FreeStorageGiBSeconds, p.StorageGiBSecondsPerUnit)
+	totalCents += native(usage["zot_storage_gib_seconds"], p.FreeZotStorageGiBSeconds, p.ZotStorageGiBSecondsPerUnit)
+	totalCents += netCents(usage["net_ingress_internal_bytes"], p.FreeNetIngressInternalGiB, p.NetIngressInternalPerGiB)
+	totalCents += netCents(usage["net_egress_internal_bytes"], p.FreeNetEgressInternalGiB, p.NetEgressInternalPerGiB)
+	totalCents += netCents(usage["net_ingress_external_bytes"], p.FreeNetIngressExternalGiB, p.NetIngressExternalPerGiB)
+	totalCents += netCents(usage["net_egress_external_bytes"], p.FreeNetEgressExternalGiB, p.NetEgressExternalPerGiB)
 
 	if totalCents < 0 {
 		totalCents = 0

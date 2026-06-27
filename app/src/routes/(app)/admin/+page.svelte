@@ -34,6 +34,30 @@
 						<label for="set-free-mem">Free memory GiB-seconds / month</label>
 						<input id="set-free-mem" {...updateAdminSettings.fields.freeMemGiBSeconds.as('text', String(settings.pricing.freeMemGiBSeconds))} min="0" required />
 					</div>
+					<div class="field">
+						<label for="set-free-storage">Free storage GiB-seconds / month</label>
+						<input id="set-free-storage" {...updateAdminSettings.fields.freeStorageGiBSeconds.as('text', String(settings.pricing.freeStorageGiBSeconds))} min="0" required />
+					</div>
+					<div class="field">
+						<label for="set-free-zot">Free registry storage GiB-seconds / month</label>
+						<input id="set-free-zot" {...updateAdminSettings.fields.freeZotStorageGiBSeconds.as('text', String(settings.pricing.freeZotStorageGiBSeconds))} min="0" required />
+					</div>
+					<div class="field">
+						<label for="set-free-net-in-int">Free internal ingress GiB / month</label>
+						<input id="set-free-net-in-int" {...updateAdminSettings.fields.freeNetIngressInternalGib.as('text', String(settings.pricing.freeNetIngressInternalGib))} min="0" required />
+					</div>
+					<div class="field">
+						<label for="set-free-net-out-int">Free internal egress GiB / month</label>
+						<input id="set-free-net-out-int" {...updateAdminSettings.fields.freeNetEgressInternalGib.as('text', String(settings.pricing.freeNetEgressInternalGib))} min="0" required />
+					</div>
+					<div class="field">
+						<label for="set-free-net-in-ext">Free external ingress GiB / month</label>
+						<input id="set-free-net-in-ext" {...updateAdminSettings.fields.freeNetIngressExternalGib.as('text', String(settings.pricing.freeNetIngressExternalGib))} min="0" required />
+					</div>
+					<div class="field">
+						<label for="set-free-net-out-ext">Free external egress GiB / month</label>
+						<input id="set-free-net-out-ext" {...updateAdminSettings.fields.freeNetEgressExternalGib.as('text', String(settings.pricing.freeNetEgressExternalGib))} min="0" required />
+					</div>
 				</div>
 
 				<h4>Billing rates</h4>
@@ -55,12 +79,20 @@
 						<input id="set-zot-storage" {...updateAdminSettings.fields.zotStorageGiBSecondsPerUnit.as('text', String(settings.pricing.zotStorageGiBSecondsPerUnit))} step="any" min="0" required />
 					</div>
 					<div class="field">
-						<label for="set-ingress">Network ingress $ / GiB</label>
-						<input id="set-ingress" {...updateAdminSettings.fields.netIngressPerGib.as('text', String(settings.pricing.netIngressPerGib))} step="any" min="0" required />
+						<label for="set-net-in-int">Internal ingress $ / GiB</label>
+						<input id="set-net-in-int" {...updateAdminSettings.fields.netIngressInternalPerGib.as('text', String(settings.pricing.netIngressInternalPerGib))} step="any" min="0" required />
 					</div>
 					<div class="field">
-						<label for="set-egress">Network egress $ / GiB</label>
-						<input id="set-egress" {...updateAdminSettings.fields.netEgressPerGib.as('text', String(settings.pricing.netEgressPerGib))} step="any" min="0" required />
+						<label for="set-net-out-int">Internal egress $ / GiB</label>
+						<input id="set-net-out-int" {...updateAdminSettings.fields.netEgressInternalPerGib.as('text', String(settings.pricing.netEgressInternalPerGib))} step="any" min="0" required />
+					</div>
+					<div class="field">
+						<label for="set-net-in-ext">External ingress $ / GiB</label>
+						<input id="set-net-in-ext" {...updateAdminSettings.fields.netIngressExternalPerGib.as('text', String(settings.pricing.netIngressExternalPerGib))} step="any" min="0" required />
+					</div>
+					<div class="field">
+						<label for="set-net-out-ext">External egress $ / GiB</label>
+						<input id="set-net-out-ext" {...updateAdminSettings.fields.netEgressExternalPerGib.as('text', String(settings.pricing.netEgressExternalPerGib))} step="any" min="0" required />
 					</div>
 				</div>
 				<div class="actions">

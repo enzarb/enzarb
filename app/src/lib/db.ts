@@ -139,6 +139,22 @@ export async function migrate() {
 	}
 	await sql`DELETE FROM app_settings WHERE key IN ('pricing_net_ingress_per_byte', 'pricing_net_egress_per_byte')`;
 
+	// Network pricing split from a single ingress/egress rate into independent
+	// internal vs external line items (each separately metered and billed).
+	// Carry any operator-customized single rate over to the external key (the
+	// rate that was effectively in force), then drop the old keys. Internal
+	// rates seed from defaults below. Runs before the seed loop so migrated
+	// values win over defaults (seed is ON CONFLICT DO NOTHING).
+	for (const dir of ['ingress', 'egress']) {
+		await sql`
+			INSERT INTO app_settings (key, value)
+			SELECT ${'pricing_net_' + dir + '_external_per_gib'}, value
+			FROM app_settings WHERE key = ${'pricing_net_' + dir + '_per_gib'}
+			ON CONFLICT (key) DO NOTHING
+		`;
+	}
+	await sql`DELETE FROM app_settings WHERE key IN ('pricing_net_ingress_per_gib', 'pricing_net_egress_per_gib')`;
+
 	for (const [key, value] of Object.entries(defaultSettings)) {
 		await sql`
 			INSERT INTO app_settings (key, value) VALUES (${key}, ${value})
@@ -231,12 +247,25 @@ export async function seedOrgRoles(orgId: string): Promise<void> {
 export const defaultSettings: Record<string, string> = {
 	free_max_pvc_gi: '5',
 	retention_days: '30',
+	// Per-unit billing rates ($), one per metered resource type.
 	pricing_cpu_seconds_per_unit: '0.0000139',
 	pricing_mem_gib_seconds_per_unit: '0.0000028',
-	pricing_net_ingress_per_gib: '0.1073741824',
-	pricing_net_egress_per_gib: '0.9663676416',
 	pricing_storage_gib_seconds_per_unit: '0.0000000385',
 	pricing_zot_storage_gib_seconds_per_unit: '0.0000000385',
+	// Network is metered as four independent line items (internal vs external,
+	// ingress vs egress). Internal rates default to 0; tune in admin settings.
+	pricing_net_ingress_internal_per_gib: '0',
+	pricing_net_egress_internal_per_gib: '0',
+	pricing_net_ingress_external_per_gib: '0.1073741824',
+	pricing_net_egress_external_per_gib: '0.9663676416',
+	// Free-tier monthly allowances, one per billed metric. Compute/storage are
+	// in the metric's native unit (GiB-seconds / cpu-seconds); network is in GiB.
 	pricing_free_cpu_seconds: '36000',
-	pricing_free_mem_gib_seconds: '107374182'
+	pricing_free_mem_gib_seconds: '107374182',
+	pricing_free_storage_gib_seconds: '12960000',
+	pricing_free_zot_storage_gib_seconds: '5184000',
+	pricing_free_net_ingress_internal_gib: '100',
+	pricing_free_net_egress_internal_gib: '100',
+	pricing_free_net_ingress_external_gib: '10',
+	pricing_free_net_egress_external_gib: '5'
 };

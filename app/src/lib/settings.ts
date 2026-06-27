@@ -10,12 +10,21 @@ export interface PlatformSettings {
 	pricing: {
 		cpuSecondsPerUnit: number;
 		memGiBSecondsPerUnit: number;
-		netIngressPerGib: number;
-		netEgressPerGib: number;
 		storageGiBSecondsPerUnit: number;
 		zotStorageGiBSecondsPerUnit: number;
+		netIngressInternalPerGib: number;
+		netEgressInternalPerGib: number;
+		netIngressExternalPerGib: number;
+		netEgressExternalPerGib: number;
+		// Free-tier monthly allowances, one per billed metric.
 		freeCPUSeconds: number;
 		freeMemGiBSeconds: number;
+		freeStorageGiBSeconds: number;
+		freeZotStorageGiBSeconds: number;
+		freeNetIngressInternalGib: number;
+		freeNetEgressInternalGib: number;
+		freeNetIngressExternalGib: number;
+		freeNetEgressExternalGib: number;
 	};
 }
 
@@ -36,12 +45,20 @@ export async function getSettings(): Promise<PlatformSettings> {
 		pricing: {
 			cpuSecondsPerUnit: num('pricing_cpu_seconds_per_unit'),
 			memGiBSecondsPerUnit: num('pricing_mem_gib_seconds_per_unit'),
-			netIngressPerGib: num('pricing_net_ingress_per_gib'),
-			netEgressPerGib: num('pricing_net_egress_per_gib'),
 			storageGiBSecondsPerUnit: num('pricing_storage_gib_seconds_per_unit'),
 			zotStorageGiBSecondsPerUnit: num('pricing_zot_storage_gib_seconds_per_unit'),
+			netIngressInternalPerGib: num('pricing_net_ingress_internal_per_gib'),
+			netEgressInternalPerGib: num('pricing_net_egress_internal_per_gib'),
+			netIngressExternalPerGib: num('pricing_net_ingress_external_per_gib'),
+			netEgressExternalPerGib: num('pricing_net_egress_external_per_gib'),
 			freeCPUSeconds: num('pricing_free_cpu_seconds'),
-			freeMemGiBSeconds: num('pricing_free_mem_gib_seconds')
+			freeMemGiBSeconds: num('pricing_free_mem_gib_seconds'),
+			freeStorageGiBSeconds: num('pricing_free_storage_gib_seconds'),
+			freeZotStorageGiBSeconds: num('pricing_free_zot_storage_gib_seconds'),
+			freeNetIngressInternalGib: num('pricing_free_net_ingress_internal_gib'),
+			freeNetEgressInternalGib: num('pricing_free_net_egress_internal_gib'),
+			freeNetIngressExternalGib: num('pricing_free_net_ingress_external_gib'),
+			freeNetEgressExternalGib: num('pricing_free_net_egress_external_gib')
 		}
 	};
 }
