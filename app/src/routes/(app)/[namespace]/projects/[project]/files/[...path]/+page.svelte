@@ -202,7 +202,7 @@
 				</nav>
 				<div class="toolbar-right">
 					{#if data.type === 'dir'}
-						<input type="file" bind:this={uploadInput} onchange={(e) => upload(e, data.agentBase, data.token, data.path)} style="display:none" />
+						<input type="file" bind:this={uploadInput} onchange={(e) => upload(e, data.agentBase, data.token, data.path)} class="hidden" />
 						<button class="btn" onclick={() => uploadInput?.click()}>Upload</button>
 					{:else if data.type === 'file' || data.type === 'image'}
 						<button class="btn-sm" onclick={() => download(data.agentBase, data.token, data.path, data.name)}>Download</button>
@@ -327,6 +327,7 @@
 {/await}
 
 <style>
+	.hidden { display: none; }
 	.layout { display: flex; gap: 1rem; align-items: flex-start; }
 	.main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.75rem; }
 

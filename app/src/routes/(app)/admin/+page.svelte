@@ -1,8 +1,10 @@
 <script lang="ts">
-	import { listOrgs, listDeletedOrgs, listUsers, listAllProjects, adminDeleteProject, adminForceDeleteProject, createOrgAdmin, setOrgTier, deleteOrg, recoverOrg, inviteMember, getAdminSettings, updateAdminSettings } from '$lib/remote/admin.remote';
+	import { listOrgs, listDeletedOrgs, listUsers, listAllProjects, adminDeleteProject, adminForceDeleteProject, createOrgAdmin, setOrgTier, deleteOrg, recoverOrg, inviteMember, getAdminSettings, updateAdminSettings, listErrorLogs } from '$lib/remote/admin.remote';
 	import { confirm } from '$lib/confirm';
 	let showNewOrg = $state(false);
 	let inviteOrgId: string | null = $state(null);
+	let errorScope = $state<string | undefined>(undefined);
+	let expandedError = $state<string | null>(null);
 </script>
 
 <h2>Admin</h2>
@@ -116,7 +118,7 @@
 						<select
 							value={org.tier}
 							onchange={async (e) => setOrgTier({ orgId: org.id, tier: (e.target as HTMLSelectElement).value as 'free' | 'pro' })}
-							style="width:auto"
+							class="w-auto"
 						>
 							<option value="free">free</option>
 							<option value="pro">pro</option>
@@ -151,7 +153,7 @@
 								<input {...invite.fields.orgId.as('hidden', org.id)} />
 
 								<input {...invite.fields.email.as('email')} placeholder="user@example.com" required />
-								<select {...invite.fields.role.as('select')} style="width:auto">
+								<select {...invite.fields.role.as('select')} class="w-auto">
 									<option value="member">Member</option>
 									<option value="manager">Manager</option>
 									<option value="owner">Owner</option>
@@ -273,6 +275,50 @@
 	</table>
 </section>
 
+<section class="section">
+	<div class="section-header">
+		<h3>Error log</h3>
+		<div class="scope-filters">
+			{#each [undefined, 'security', 'application', 'client'] as s}
+				<button
+					class="btn scope-btn"
+					class:active={errorScope === s}
+					onclick={() => { errorScope = s; }}
+				>{s ?? 'All'}</button>
+			{/each}
+		</div>
+	</div>
+	{#await listErrorLogs()}
+		<p class="muted">Loading…</p>
+	{:then allLogs}
+		{@const logs = errorScope ? allLogs.filter(l => l.scope === errorScope) : allLogs}
+		<table>
+			<thead><tr><th>Time</th><th>Scope</th><th>Message</th><th>User</th><th>IP</th></tr></thead>
+			<tbody>
+				{#each logs as log}
+					<tr class="error-row" onclick={() => expandedError = expandedError === log.id ? null : log.id}>
+						<td class="muted mono">{new Date(log.created_at).toLocaleString()}</td>
+						<td><span class="badge scope-{log.scope}">{log.scope}</span></td>
+						<td class="error-msg">{log.message}</td>
+						<td class="muted mono">{log.user_id ?? '—'}</td>
+						<td class="muted mono">{log.ip_address ?? '—'}</td>
+					</tr>
+					{#if expandedError === log.id}
+						<tr class="error-detail">
+							<td colspan="5">
+								{#if log.stack}<pre class="error-stack">{log.stack}</pre>{/if}
+								<pre class="error-context">{JSON.stringify(log.context, null, 2)}</pre>
+							</td>
+						</tr>
+					{/if}
+				{:else}
+					<tr><td colspan="5" class="muted">No errors recorded</td></tr>
+				{/each}
+			</tbody>
+		</table>
+	{/await}
+</section>
+
 <style>
 	.section { margin-bottom: 2rem; }
 	.section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
@@ -285,10 +331,22 @@
 	.actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
 	.inline-form { display: flex; gap: 0.5rem; align-items: center; padding: 0.5rem 0; }
 	.inline-form input[type=email] { max-width: 220px; }
+	.w-auto { width: auto; }
 	.mono { font-family: var(--font-mono); font-size: 12px; }
 	.muted { color: var(--color-text-muted); font-size: 13px; }
 	.badge { display: inline-block; padding: 0.1rem 0.45rem; border-radius: 4px; font-size: 12px; border: 1px solid var(--color-border); color: var(--color-text-muted); }
 	.badge-danger { color: var(--color-danger); border-color: var(--color-danger); }
 	.alert { padding: 0.75rem 1rem; border-radius: 6px; font-size: 13px; margin-bottom: 1.25rem; }
 	.alert-warn { background: color-mix(in srgb, var(--color-warning, #d29922) 12%, transparent); border: 1px solid color-mix(in srgb, var(--color-warning, #d29922) 40%, transparent); color: var(--color-text); }
+	.scope-filters { display: flex; gap: 0.25rem; }
+	.scope-btn { font-size: 12px; padding: 0.2rem 0.6rem; }
+	.scope-btn.active { background: var(--color-accent); color: #fff; border-color: var(--color-accent); }
+	.error-row { cursor: pointer; }
+	.error-row:hover td { background: color-mix(in srgb, var(--color-accent) 6%, transparent); }
+	.error-msg { max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+	.error-detail td { background: var(--color-bg-subtle, #f6f8fa); padding: 0.5rem 1rem; }
+	.error-stack { font-size: 11px; font-family: var(--font-mono); white-space: pre-wrap; margin: 0 0 0.5rem; color: var(--color-danger); }
+	.error-context { font-size: 11px; font-family: var(--font-mono); white-space: pre-wrap; margin: 0; }
+	.scope-security { color: var(--color-danger); border-color: var(--color-danger); }
+	.scope-client { color: var(--color-warning, #d29922); border-color: var(--color-warning, #d29922); }
 </style>

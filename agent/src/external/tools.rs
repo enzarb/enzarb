@@ -1,7 +1,12 @@
-use axum::{Json, extract::Path, http::StatusCode};
+use axum::{
+    Json,
+    extract::{Extension, Path},
+    http::StatusCode,
+};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
+use crate::auth::ProjectPermissions;
 use crate::init::home_dir;
 
 /// Run `mise <args...>` in the workspace home directory, capturing output.
@@ -32,7 +37,12 @@ pub struct InstalledTool {
 
 /// GET /tools — tools configured for this workspace (from mise.toml) and their
 /// install state. Backed by `mise ls --current --json`.
-pub async fn list() -> Result<Json<Vec<InstalledTool>>, (StatusCode, String)> {
+pub async fn list(
+    Extension(perms): Extension<ProjectPermissions>,
+) -> Result<Json<Vec<InstalledTool>>, (StatusCode, String)> {
+    perms
+        .require("tools:manage")
+        .map_err(|e| (e, String::new()))?;
     let (ok, stdout, stderr) = run_mise(&["ls", "--current", "--json"])
         .await
         .map_err(internal)?;
@@ -86,7 +96,13 @@ pub struct AddToolRequest {
 
 /// POST /tools — add a tool to mise.toml and install it.
 /// `mise use -y <name>@<version>` writes the config and installs in one step.
-pub async fn add(Json(req): Json<AddToolRequest>) -> Result<StatusCode, (StatusCode, String)> {
+pub async fn add(
+    Extension(perms): Extension<ProjectPermissions>,
+    Json(req): Json<AddToolRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    perms
+        .require("tools:manage")
+        .map_err(|e| (e, String::new()))?;
     let name = req.name.trim();
     if name.is_empty() || !valid_tool_name(name) {
         return Err((StatusCode::BAD_REQUEST, "invalid tool name".into()));
@@ -108,7 +124,13 @@ pub async fn add(Json(req): Json<AddToolRequest>) -> Result<StatusCode, (StatusC
 }
 
 /// DELETE /tools/{name} — remove a tool from mise.toml and uninstall it.
-pub async fn remove(Path(name): Path<String>) -> Result<StatusCode, (StatusCode, String)> {
+pub async fn remove(
+    Extension(perms): Extension<ProjectPermissions>,
+    Path(name): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    perms
+        .require("tools:manage")
+        .map_err(|e| (e, String::new()))?;
     if !valid_tool_name(&name) {
         return Err((StatusCode::BAD_REQUEST, "invalid tool name".into()));
     }
@@ -138,7 +160,12 @@ pub struct RegistryTool {
 
 /// GET /tools/registry — the catalog of tools mise can install, for UI lookup.
 /// Backed by `mise registry` (whitespace-separated columns: short, full…).
-pub async fn registry() -> Result<Json<Vec<RegistryTool>>, (StatusCode, String)> {
+pub async fn registry(
+    Extension(perms): Extension<ProjectPermissions>,
+) -> Result<Json<Vec<RegistryTool>>, (StatusCode, String)> {
+    perms
+        .require("tools:manage")
+        .map_err(|e| (e, String::new()))?;
     let (ok, stdout, stderr) = run_mise(&["registry"]).await.map_err(internal)?;
     if !ok {
         return Err((StatusCode::INTERNAL_SERVER_ERROR, stderr));
@@ -157,7 +184,13 @@ pub async fn registry() -> Result<Json<Vec<RegistryTool>>, (StatusCode, String)>
 
 /// GET /tools/{name}/versions — available versions for a tool, newest last.
 /// Backed by `mise ls-remote <name>`.
-pub async fn versions(Path(name): Path<String>) -> Result<Json<Vec<String>>, (StatusCode, String)> {
+pub async fn versions(
+    Extension(perms): Extension<ProjectPermissions>,
+    Path(name): Path<String>,
+) -> Result<Json<Vec<String>>, (StatusCode, String)> {
+    perms
+        .require("tools:manage")
+        .map_err(|e| (e, String::new()))?;
     if !valid_tool_name(&name) {
         return Err((StatusCode::BAD_REQUEST, "invalid tool name".into()));
     }

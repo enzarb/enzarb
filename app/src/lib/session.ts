@@ -73,34 +73,54 @@ export async function upsertUser(sub: string, email: string): Promise<string> {
 	return rows[0].id;
 }
 
-// Upsert a user authenticated via GitHub. Links by github_id first, then falls
-// back to email match (so Google-first users get their accounts linked).
+export type GithubUpsertResult =
+	| { type: 'linked'; userId: string }
+	| { type: 'created'; userId: string }
+	| { type: 'conflict'; existingUserId: string };
+
+// Upsert a user authenticated via GitHub. If the github_id is already known,
+// returns 'linked'. If no existing account, creates one and returns 'created'.
+// If an existing account with the same email exists (but no github_id yet),
+// returns 'conflict' so the caller can prompt for explicit confirmation before linking.
 export async function upsertGithubUser(
 	githubId: string,
 	email: string,
-	displayName: string
-): Promise<string> {
-	// Try to find by github_id
-	let rows = await sql<{ id: string }[]>`
+	_displayName: string
+): Promise<GithubUpsertResult> {
+	// Already linked by github_id
+	const byGithubId = await sql<{ id: string }[]>`
 		SELECT id FROM users WHERE github_id = ${githubId}
 	`;
-	if (rows.length) {
-		await sql`UPDATE users SET email = ${email} WHERE id = ${rows[0].id}`;
-		return rows[0].id;
+	if (byGithubId.length) {
+		await sql`UPDATE users SET email = ${email} WHERE id = ${byGithubId[0].id}`;
+		return { type: 'linked', userId: byGithubId[0].id };
 	}
 
-	// Try to link to an existing account by email
+	// Existing account with same email — require explicit confirmation before linking
 	const byEmail = await sql<{ id: string }[]>`
 		SELECT id FROM users WHERE email = ${email}
 	`;
 	if (byEmail.length) {
-		await sql`UPDATE users SET github_id = ${githubId} WHERE id = ${byEmail[0].id}`;
-		return byEmail[0].id;
+		return { type: 'conflict', existingUserId: byEmail[0].id };
 	}
 
 	// New user — create with github_id, no oidc_sub
-	rows = await sql<{ id: string }[]>`
+	const rows = await sql<{ id: string }[]>`
 		INSERT INTO users (email, github_id) VALUES (${email}, ${githubId}) RETURNING id
 	`;
-	return rows[0].id;
+	return { type: 'created', userId: rows[0].id };
+}
+
+// Complete a pending account link after the user has re-authenticated.
+export async function completePendingLink(token: string, verifiedUserId: string): Promise<boolean> {
+	const rows = await sql<{ id: string; github_id: string; existing_user_id: string }[]>`
+		SELECT id, github_id, existing_user_id FROM pending_account_links
+		WHERE token = ${token} AND expires_at > now()
+	`;
+	if (!rows.length) return false;
+	const { id, github_id, existing_user_id } = rows[0];
+	if (existing_user_id !== verifiedUserId) return false;
+	await sql`UPDATE users SET github_id = ${github_id} WHERE id = ${existing_user_id}`;
+	await sql`DELETE FROM pending_account_links WHERE id = ${id}`;
+	return true;
 }

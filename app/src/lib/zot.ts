@@ -5,9 +5,11 @@
 // minted by authd. The app authenticates to authd as "admin" (shared secret)
 // and receives a token granting pull/delete on the requested scope.
 
+import { env } from '$env/dynamic/private';
+
 async function registryToken(scope: string): Promise<string> {
-	const authd = process.env.AUTHD_INTERNAL_URL ?? 'http://enzarb-authd.enzarb-system:8080';
-	const secret = process.env.REGISTRY_ADMIN_TOKEN ?? '';
+	const authd = env.AUTHD_INTERNAL_URL ?? 'http://enzarb-authd.enzarb-system:8080';
+	const secret = env.REGISTRY_ADMIN_TOKEN ?? '';
 	const params = new URLSearchParams({ service: 'registry.enzarb.dev', scope });
 	const res = await fetch(`${authd}/auth/token?${params}`, {
 		headers: { Authorization: `Basic ${btoa(`admin:${secret}`)}` }
@@ -22,7 +24,7 @@ async function registryToken(scope: string): Promise<string> {
 }
 
 async function zotFetch(path: string, scope: string, options?: RequestInit) {
-	const registryInternal = process.env.REGISTRY_INTERNAL_URL ?? 'http://zot.enzarb-system:5000';
+	const registryInternal = env.REGISTRY_INTERNAL_URL ?? 'http://zot.enzarb-system:5000';
 	const token = await registryToken(scope);
 	const res = await fetch(`${registryInternal}${path}`, {
 		...options,

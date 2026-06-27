@@ -1,12 +1,14 @@
+import { env } from '$env/dynamic/private';
+
 export const config = {
-	domain: process.env.PUBLIC_DOMAIN ?? 'enzarb.dev',
-	dexIssuer: process.env.OIDC_ISSUER_URL ?? process.env.DEX_ISSUER ?? 'https://auth.enzarb.dev',
-	dexClientId: process.env.OIDC_CLIENT_ID ?? process.env.DEX_CLIENT_ID ?? 'enzarb-app',
-	dexClientSecret: process.env.OIDC_CLIENT_SECRET ?? process.env.DEX_CLIENT_SECRET ?? '',
-	registryUrl: process.env.REGISTRY_URL ?? 'https://registry.enzarb.dev',
+	domain: env.PUBLIC_DOMAIN ?? 'enzarb.dev',
+	dexIssuer: env.OIDC_ISSUER_URL ?? env.DEX_ISSUER ?? 'https://auth.enzarb.dev',
+	dexClientId: env.OIDC_CLIENT_ID ?? env.DEX_CLIENT_ID ?? 'enzarb-app',
+	dexClientSecret: env.OIDC_CLIENT_SECRET ?? env.DEX_CLIENT_SECRET ?? '',
+	registryUrl: env.REGISTRY_URL ?? 'https://registry.enzarb.dev',
 	// GitHub OAuth App — empty string means the feature is disabled.
-	githubOAuthClientId: process.env.GITHUB_OAUTH_CLIENT_ID ?? '',
-	githubOAuthClientSecret: process.env.GITHUB_OAUTH_CLIENT_SECRET ?? ''
+	githubOAuthClientId: env.GITHUB_OAUTH_CLIENT_ID ?? '',
+	githubOAuthClientSecret: env.GITHUB_OAUTH_CLIENT_SECRET ?? ''
 };
 
 export type TierName = 'free' | 'pro';

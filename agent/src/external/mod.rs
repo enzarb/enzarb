@@ -7,7 +7,7 @@ mod watch;
 use axum::{
     Router,
     extract::{Request, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::Response,
     routing::{delete, get, post},
@@ -15,8 +15,19 @@ use axum::{
 use tower_http::cors::CorsLayer;
 
 use crate::AppState;
+use crate::auth::ProjectPermissions;
 
 pub fn router(state: AppState) -> Router {
+    let origin = std::env::var("APP_ORIGIN").unwrap_or_else(|_| "https://enzarb.dev".to_string());
+    let cors = CorsLayer::new()
+        .allow_origin(
+            origin
+                .parse::<HeaderValue>()
+                .expect("APP_ORIGIN is not a valid header value"),
+        )
+        .allow_methods([Method::GET, Method::POST, Method::DELETE])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
+
     Router::new()
         // Process management
         .route("/processes", post(processes::create).get(processes::list))
@@ -47,14 +58,14 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             auth_middleware,
         ))
-        .layer(CorsLayer::permissive())
+        .layer(cors)
         .with_state(state)
 }
 
 async fn auth_middleware(
     State(state): State<AppState>,
     headers: HeaderMap,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
     // Prefer the Authorization header; fall back to a `token` query param.
@@ -65,11 +76,19 @@ async fn auth_middleware(
         .or(query_token.as_deref())
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
-    state
+    let claims = state
         .jwks
         .validate(token, &state.project_id)
         .await
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    // Extract permissions for this project and store in extensions so handlers can check them.
+    let perms = claims
+        .projects
+        .get(&state.project_id)
+        .cloned()
+        .unwrap_or_default();
+    request.extensions_mut().insert(ProjectPermissions(perms));
 
     Ok(next.run(request).await)
 }

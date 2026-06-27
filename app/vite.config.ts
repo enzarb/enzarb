@@ -18,6 +18,9 @@ export default defineConfig({
 				directives: {
 					'default-src': ['self'],
 					'script-src': ['self'],
+					// unsafe-inline is required for dynamic CSS custom properties (style:--var=value)
+					// used for runtime widths/colors. Static inline styles have been removed.
+					// CSS custom property values cannot trigger CSS exfiltration attacks.
 					'style-src': ['self', 'unsafe-inline'],
 					'img-src': ['self', 'data:'],
 					'frame-ancestors': ['none']

@@ -1,13 +1,13 @@
 use axum::{
     Json,
-    extract::{Path, State, WebSocketUpgrade},
+    extract::{Extension, Path, State, WebSocketUpgrade},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::{AppState, process::ProcessKind};
+use crate::{AppState, auth::ProjectPermissions, process::ProcessKind};
 
 #[derive(Debug, Deserialize)]
 pub struct CreateProcessRequest {
@@ -59,8 +59,10 @@ impl From<crate::process::Process> for ProcessResponse {
 
 pub async fn create(
     State(state): State<AppState>,
+    Extension(perms): Extension<ProjectPermissions>,
     Json(req): Json<CreateProcessRequest>,
 ) -> Result<Json<ProcessResponse>, StatusCode> {
+    perms.require("processes:manage")?;
     let kind = match req.kind {
         ProcessKindReq::Persistent => ProcessKind::Persistent,
         ProcessKindReq::OneShot => ProcessKind::OneShot,
@@ -78,15 +80,21 @@ pub async fn create(
     Ok(Json(process.into()))
 }
 
-pub async fn list(State(state): State<AppState>) -> Json<Vec<ProcessResponse>> {
+pub async fn list(
+    State(state): State<AppState>,
+    Extension(perms): Extension<ProjectPermissions>,
+) -> Result<Json<Vec<ProcessResponse>>, StatusCode> {
+    perms.require("processes:manage")?;
     let processes = state.process_store.list().await;
-    Json(processes.into_iter().map(Into::into).collect())
+    Ok(Json(processes.into_iter().map(Into::into).collect()))
 }
 
 pub async fn get_one(
     State(state): State<AppState>,
+    Extension(perms): Extension<ProjectPermissions>,
     Path(id): Path<String>,
 ) -> Result<Json<ProcessResponse>, StatusCode> {
+    perms.require("processes:manage")?;
     state
         .process_store
         .get(&id)
@@ -97,8 +105,10 @@ pub async fn get_one(
 
 pub async fn kill(
     State(state): State<AppState>,
+    Extension(perms): Extension<ProjectPermissions>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
+    perms.require("processes:manage")?;
     state
         .process_store
         .kill(&id)
@@ -115,16 +125,27 @@ pub async fn kill(
 
 pub async fn output_ws(
     State(state): State<AppState>,
+    Extension(perms): Extension<ProjectPermissions>,
     Path(id): Path<String>,
     ws: WebSocketUpgrade,
 ) -> Response {
+    if let Err(e) = perms.require("processes:manage") {
+        return e.into_response();
+    }
     if state.process_store.get(&id).await.is_none() {
         return StatusCode::NOT_FOUND.into_response();
     }
     ws.on_upgrade(move |socket| crate::terminal::attach_ws(socket, id, state))
 }
 
-pub async fn history(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+pub async fn history(
+    State(state): State<AppState>,
+    Extension(perms): Extension<ProjectPermissions>,
+    Path(id): Path<String>,
+) -> Response {
+    if let Err(e) = perms.require("processes:manage") {
+        return e.into_response();
+    }
     let log_path = state.process_store.log_path(&id);
     if !log_path.exists() {
         return StatusCode::NOT_FOUND.into_response();

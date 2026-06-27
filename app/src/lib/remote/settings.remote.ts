@@ -3,6 +3,7 @@ import { getRequestEvent } from '$app/server';
 import { error } from '@sveltejs/kit';
 import { z } from 'zod/v4';
 import { sql } from '$lib/db';
+import { encrypt, decrypt } from '$lib/crypto';
 import { orgNamespace, createOrPatchSecret, deleteSecret, listProjects } from '$lib/k8s';
 import { config } from '$lib/config';
 
@@ -32,7 +33,7 @@ async function loadUserSecretMap(userId: string): Promise<Record<string, string>
 	const rows = await sql<{ key: string; value: string }[]>`
 		SELECT key, value FROM user_secrets WHERE user_id = ${userId}
 	`;
-	return Object.fromEntries(rows.map(r => [r.key, r.value]));
+	return Object.fromEntries(rows.map(r => [r.key, decrypt(r.value)]));
 }
 
 // Load all project secrets as a plain object (for K8s sync).
@@ -58,7 +59,7 @@ export const setUserSecret = command(
 	async ({ key, value }) => {
 		const session = requireSession();
 		await sql`
-			INSERT INTO user_secrets (user_id, key, value) VALUES (${session.userId}, ${key}, ${value})
+			INSERT INTO user_secrets (user_id, key, value) VALUES (${session.userId}, ${key}, ${encrypt(value)})
 			ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value
 		`;
 		const map = await loadUserSecretMap(session.userId);
@@ -160,7 +161,7 @@ export const getGithubConnection = query(async () => {
 	const nameRow = await sql<{ value: string }[]>`
 		SELECT value FROM user_secrets WHERE user_id = ${session.userId} AND key = 'ENZARB_GIT_USER_NAME'
 	`;
-	return { login: nameRow[0]?.value ?? '' };
+	return { login: nameRow[0] ? decrypt(nameRow[0].value) : '' };
 });
 
 export const disconnectGithub = command(async () => {

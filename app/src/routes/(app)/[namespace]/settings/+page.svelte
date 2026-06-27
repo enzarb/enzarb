@@ -19,7 +19,6 @@
 	} from '$lib/remote/settings.remote';
 	import { PRIVILEGE_LABELS } from '$lib/privileges';
 	import { confirm } from '$lib/confirm';
-	import { config } from '$lib/config';
 
 	const orgMembership = $derived(
 		page.data.session.orgs.find((o: { slug: string }) => o.slug === page.params.namespace)

@@ -1,11 +1,12 @@
 import postgres from 'postgres';
+import { env } from '$env/dynamic/private';
 import { DEFAULT_ROLES } from './privileges';
 
 let _sql: ReturnType<typeof postgres> | null = null;
 
 export function getDb() {
 	if (_sql) return _sql;
-	const url = process.env.DATABASE_URL ?? 'postgres://localhost/enzarb';
+	const url = env.DATABASE_URL ?? 'postgres://localhost/enzarb';
 	_sql = postgres(url, { max: 10, idle_timeout: 30, connect_timeout: 10 });
 	return _sql;
 }
@@ -172,6 +173,45 @@ export async function migrate() {
 	// GitHub login support: oidc_sub is now optional (GitHub-first users have none).
 	await sql`ALTER TABLE users ALTER COLUMN oidc_sub DROP NOT NULL`;
 	await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS github_id TEXT UNIQUE`;
+
+	// Error log for server and client exceptions (M8).
+	await sql`
+		CREATE TABLE IF NOT EXISTS error_logs (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			scope TEXT NOT NULL DEFAULT 'application',
+			level TEXT NOT NULL DEFAULT 'error',
+			message TEXT NOT NULL,
+			stack TEXT,
+			context JSONB NOT NULL DEFAULT '{}',
+			user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+			ip_address TEXT,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)
+	`;
+	await sql`CREATE INDEX IF NOT EXISTS error_logs_scope_created_idx ON error_logs(scope, created_at DESC)`;
+
+	// JWT revocation list — allows early token invalidation (L1).
+	await sql`
+		CREATE TABLE IF NOT EXISTS jwt_revocations (
+			jti TEXT PRIMARY KEY,
+			revoked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			expires_at TIMESTAMPTZ NOT NULL
+		)
+	`;
+
+	// Pending account links — stores in-flight GitHub ↔ existing-account links (M2).
+	await sql`
+		CREATE TABLE IF NOT EXISTS pending_account_links (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			github_id TEXT NOT NULL,
+			github_email TEXT NOT NULL,
+			github_display_name TEXT NOT NULL,
+			github_access_token TEXT NOT NULL,
+			existing_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			token TEXT NOT NULL UNIQUE,
+			expires_at TIMESTAMPTZ NOT NULL DEFAULT now() + interval '10 minutes'
+		)
+	`;
 }
 
 // seedOrgRoles inserts the builtin roles for an org, leaving any already-present

@@ -1,6 +1,24 @@
 <script lang="ts">
 	import favicon from '$lib/assets/favicon.svg';
+	import { browser } from '$app/environment';
 	let { children } = $props();
+
+	if (browser) {
+		window.onerror = (msg, src, line, col, err) => {
+			fetch('/api/client-error', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ message: String(msg), stack: err?.stack, context: { src, line, col } })
+			}).catch(() => {});
+		};
+		window.onunhandledrejection = (e) => {
+			fetch('/api/client-error', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ message: String(e.reason), stack: e.reason?.stack })
+			}).catch(() => {});
+		};
+	}
 </script>
 
 <svelte:head>
@@ -8,106 +26,3 @@
 </svelte:head>
 
 {@render children()}
-
-<style>
-	:global(*) {
-		box-sizing: border-box;
-	}
-	:global(:root) {
-		--color-bg: #0f0f11;
-		--color-surface: #1a1a1f;
-		--color-surface-2: #25252c;
-		--color-border: #2e2e38;
-		--color-text: #e8e8ed;
-		--color-text-muted: #888898;
-		--color-accent: #6c6cff;
-		--color-accent-dim: #3d3d99;
-		--color-success: #3dba7a;
-		--color-warning: #f5a623;
-		--color-danger: #e05252;
-		--font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-		--font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
-		--radius: 6px;
-		--shadow: 0 1px 3px rgba(0,0,0,0.4);
-	}
-	:global(html, body) {
-		margin: 0;
-		padding: 0;
-		background: var(--color-bg);
-		color: var(--color-text);
-		font-family: var(--font-sans);
-		font-size: 14px;
-		line-height: 1.5;
-	}
-	:global(a) { color: var(--color-accent); text-decoration: none; }
-	:global(a:hover) { text-decoration: underline; }
-	:global(h1,h2,h3,h4) { margin: 0; font-weight: 600; }
-	:global(button) {
-		cursor: pointer;
-		font-family: var(--font-sans);
-		font-size: 14px;
-	}
-	:global(input, select, textarea) {
-		background: var(--color-surface-2);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius);
-		color: var(--color-text);
-		font-family: var(--font-sans);
-		font-size: 14px;
-		padding: 0.5rem 0.75rem;
-		outline: none;
-		width: 100%;
-	}
-	:global(input:focus, select:focus, textarea:focus) {
-		border-color: var(--color-accent);
-	}
-	:global(.btn) {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.375rem;
-		padding: 0.5rem 1rem;
-		border-radius: var(--radius);
-		border: 1px solid var(--color-border);
-		background: var(--color-surface-2);
-		color: var(--color-text);
-		font-size: 13px;
-		font-weight: 500;
-		cursor: pointer;
-		text-decoration: none;
-		transition: background 0.1s;
-	}
-	:global(.btn:hover) { background: var(--color-border); text-decoration: none; }
-	:global(.btn-primary) {
-		background: var(--color-accent);
-		border-color: var(--color-accent);
-		color: white;
-	}
-	:global(.btn-primary:hover) { background: var(--color-accent-dim); text-decoration: none; }
-	:global(.btn-danger) {
-		background: var(--color-danger);
-		border-color: var(--color-danger);
-		color: white;
-	}
-	:global(.card) {
-		background: var(--color-surface);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius);
-		padding: 1rem;
-	}
-	:global(.badge) {
-		display: inline-block;
-		padding: 0.125rem 0.5rem;
-		border-radius: 99px;
-		font-size: 11px;
-		font-weight: 600;
-		background: var(--color-surface-2);
-		color: var(--color-text-muted);
-	}
-	:global(.badge.running) { background: #1a3a2a; color: var(--color-success); }
-	:global(.badge.pending) { background: #2a2a1a; color: var(--color-warning); }
-	:global(.badge.error) { background: #2a1a1a; color: var(--color-danger); }
-	:global(table) { width: 100%; border-collapse: collapse; }
-	:global(th) { text-align: left; color: var(--color-text-muted); font-weight: 500; padding: 0.5rem; border-bottom: 1px solid var(--color-border); }
-	:global(td) { padding: 0.5rem; border-bottom: 1px solid var(--color-border); }
-	:global(tr:last-child td) { border-bottom: none; }
-</style>

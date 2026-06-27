@@ -1,8 +1,10 @@
 import * as k8s from '@kubernetes/client-node';
+import { env } from '$env/dynamic/private';
+import { dev } from '$app/environment';
 
 const kc = new k8s.KubeConfig();
 
-if (process.env.KUBECONFIG || process.env.NODE_ENV === 'development') {
+if (env.KUBECONFIG || dev) {
 	kc.loadFromDefault();
 } else {
 	kc.loadFromCluster();

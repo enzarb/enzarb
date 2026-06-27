@@ -149,6 +149,12 @@ export const deleteOrg = command(OrgIdSchema, async ({ orgId }) => {
 	const { retentionDays } = await getSettings();
 	await softDeleteOrganization(orgId, retentionDays);
 	await sql`UPDATE organizations SET deleted_at = now() WHERE id = ${orgId}`;
+	// Invalidate all active sessions for org members so cached session data
+	// for this org is immediately cleared rather than lingering for up to 7 days.
+	await sql`
+		DELETE FROM sessions
+		WHERE user_id IN (SELECT user_id FROM org_members WHERE org_id = ${orgId})
+	`;
 });
 
 export const recoverOrg = command(OrgIdSchema, async ({ orgId }) => {
@@ -218,11 +224,20 @@ const InviteSchema = z.object({
 export const inviteMember = form(InviteSchema, async ({ orgId, email, role }) => {
 	requireAdmin();
 	const users = await sql`SELECT id FROM users WHERE email = ${email}`;
-	if (!users.length) error(404, 'User not found — they must log in first');
+	if (!users.length) error(400, 'No account found for that email. Ask them to log in to Enzarb first.');
 	await sql`
 		INSERT INTO org_members (org_id, user_id, role)
 		VALUES (${orgId}, ${users[0].id}, ${role})
 		ON CONFLICT (org_id, user_id) DO UPDATE SET role = EXCLUDED.role
 	`;
 	await listOrgs().refresh();
+});
+
+
+export const listErrorLogs = query(async () => {
+	requireAdmin();
+	return sql<{ id: string; scope: string; level: string; message: string; stack: string | null; context: Record<string, unknown>; user_id: string | null; ip_address: string | null; created_at: string }[]>`
+		SELECT id, scope, level, message, stack, context, user_id, ip_address, created_at
+		FROM error_logs ORDER BY created_at DESC LIMIT 200
+	`;
 });

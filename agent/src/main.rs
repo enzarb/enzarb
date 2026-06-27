@@ -2,6 +2,7 @@ mod auth;
 mod external;
 mod init;
 mod internal;
+mod path_utils;
 mod process;
 mod terminal;
 
@@ -48,9 +49,10 @@ async fn main() -> Result<()> {
 
     tracing::info!(project_id, org_id, project_slug, "starting project-agent");
 
-    // Fetch and cache JWKS for JWT validation
+    // Fetch and cache JWKS + revoked JTI list for JWT validation
     let jwks_url = "https://enzarb.dev/.well-known/jwks.json".to_string();
-    let jwks = auth::JwksCache::new(jwks_url).await?;
+    let revoked_url = "https://enzarb.dev/.well-known/revoked-jtis".to_string();
+    let jwks = auth::JwksCache::new(jwks_url, revoked_url).await?;
 
     // First-boot initialization: write mise.toml if absent, run mise install
     init::bootstrap().await?;

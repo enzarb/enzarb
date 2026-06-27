@@ -78,6 +78,11 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.app.jwt.secret.name }}
                   key: {{ .Values.app.jwt.secret.publicKeyKey }}
+            - name: ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.encryptionSecret.name }}
+                  key: {{ .Values.app.encryptionSecret.key }}
             # Registry access goes through authd: the app authenticates as the
             # "admin" client (shared secret) to mint scoped Zot tokens.
             - name: AUTHD_INTERNAL_URL
@@ -87,9 +92,12 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.authd.adminSecret.name }}
                   key: {{ .Values.authd.adminSecret.key }}
-            {{- if .Values.github.oauthClientId }}
+            {{- if .Values.github.oauthEnabled }}
             - name: GITHUB_OAUTH_CLIENT_ID
-              value: {{ .Values.github.oauthClientId | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-github-oauth
+                  key: clientId
             - name: GITHUB_OAUTH_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:

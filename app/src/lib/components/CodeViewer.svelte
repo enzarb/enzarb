@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { getSingletonHighlighter } from 'shiki';
+	import type { ThemedToken } from 'shiki';
 
 	let {
 		content,
@@ -50,7 +51,9 @@
 		return EXT_MAP[ext] ?? 'plaintext';
 	}
 
-	let html = $state('');
+	let lines = $state<ThemedToken[][]>([]);
+	let bg = $state('');
+	let fg = $state('');
 
 	$effect(() => {
 		const lang = language ?? detectLang(filename);
@@ -59,15 +62,26 @@
 		(async () => {
 			try {
 				const hl = await getSingletonHighlighter({ themes: [THEME], langs: [lang] });
-				const out = hl.codeToHtml(src, { lang, theme: THEME });
-				if (!cancelled) html = out;
+				const result = hl.codeToTokens(src, { lang: lang as any, theme: THEME });
+				if (!cancelled) {
+					lines = result.tokens;
+					bg = result.bg ?? '';
+					fg = result.fg ?? '';
+				}
 			} catch {
 				try {
 					const hl = await getSingletonHighlighter({ themes: [THEME], langs: ['plaintext'] });
-					const out = hl.codeToHtml(src, { lang: 'plaintext', theme: THEME });
-					if (!cancelled) html = out;
+					const result = hl.codeToTokens(src, { lang: 'plaintext', theme: THEME });
+					if (!cancelled) {
+						lines = result.tokens;
+						bg = result.bg ?? '';
+						fg = result.fg ?? '';
+					}
 				} catch {
-					if (!cancelled) html = `<pre>${src.replace(/</g, '&lt;')}</pre>`;
+					if (!cancelled) {
+						// Plain fallback: single line of unstyled tokens
+						lines = [[{ content: src, offset: 0, color: undefined, bgColor: undefined, fontStyle: 0, htmlStyle: undefined }]];
+					}
 				}
 			}
 		})();
@@ -79,7 +93,7 @@
 	<div class="cv-loading">Loading…</div>
 {:else}
 	<div class="cv-wrap">
-		{@html html}
+		<pre style:background={bg || undefined} style:color={fg || undefined}><code>{#each lines as line, i}<span class="line">{#each line as token}<span style:color={token.color || undefined}>{token.content}</span>{/each}</span>{#if i < lines.length - 1}{'\n'}{/if}{/each}</code></pre>
 	</div>
 {/if}
 
@@ -89,7 +103,7 @@
 		font-size: 13px;
 		padding: 1rem;
 	}
-	.cv-wrap :global(pre) {
+	.cv-wrap pre {
 		margin: 0;
 		padding: 1rem;
 		border-radius: var(--radius);
@@ -100,9 +114,12 @@
 		overflow-x: auto;
 		background: var(--color-surface) !important;
 	}
-	.cv-wrap :global(code) {
+	.cv-wrap code {
 		font-family: inherit;
 		font-size: inherit;
 		background: transparent !important;
+	}
+	.line {
+		display: block;
 	}
 </style>

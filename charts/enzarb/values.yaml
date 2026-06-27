@@ -27,6 +27,9 @@ app:
       name: enzarb-jwt
       privateKeyKey: privateKey
       publicKeyKey: publicKey
+  encryptionSecret:
+    name: enzarb-encryption
+    key: encryptionKey
   resources:
     requests:
       cpu: 250m
@@ -161,7 +164,7 @@ networkPolicy:
   podCIDR: "10.42.0.0/16"
   # Service ClusterIP range (kube-apiserver --service-cluster-ip-range).
   serviceCIDR: "10.43.0.0/16"
-# GitHub OAuth App — leave empty to disable GitHub integration in the UI.
+# GitHub OAuth App — set oauthEnabled: true and create the enzarb-github-oauth
+# K8s secret with keys clientId and clientSecret to enable GitHub integration.
 github:
-  oauthClientId: ""
-  oauthClientSecret: ""
+  oauthEnabled: false

@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Query, State},
+    extract::{Extension, Query, State},
     response::{IntoResponse, Response, Sse, sse::Event},
 };
 use inotify::{Inotify, WatchMask};
@@ -9,15 +9,27 @@ use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::AppState;
-use crate::init::home_dir;
+use crate::auth::ProjectPermissions;
+use crate::path_utils::resolve_safe;
 
 #[derive(Debug, Deserialize)]
 pub struct WatchQuery {
     pub path: String,
 }
 
-pub async fn watch(State(_state): State<AppState>, Query(q): Query<WatchQuery>) -> Response {
-    let path = resolve_watch_path(&q.path);
+pub async fn watch(
+    State(_state): State<AppState>,
+    Extension(perms): Extension<ProjectPermissions>,
+    Query(q): Query<WatchQuery>,
+) -> Response {
+    if let Err(e) = perms.require("files:read") {
+        return e.into_response();
+    }
+
+    let path = match resolve_safe(&q.path) {
+        Ok(p) => p,
+        Err(e) => return e.into_response(),
+    };
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(64);
 
@@ -82,13 +94,4 @@ async fn watch_path(
             }
         }
     }
-}
-
-fn resolve_watch_path(path: &str) -> PathBuf {
-    let home = home_dir();
-    if path.is_empty() || path == "/" {
-        return home;
-    }
-    let stripped = path.trim_start_matches('/');
-    home.join(stripped)
 }

@@ -1,11 +1,16 @@
 use axum::{
     Json,
     body::Body,
-    extract::{Query, State},
+    extract::{Extension, Query, State},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
+
+use crate::AppState;
+use crate::auth::ProjectPermissions;
+use crate::init::home_dir;
+use crate::path_utils::resolve_safe;
 
 #[derive(Debug, Deserialize)]
 pub struct CommitRequest {
@@ -17,7 +22,14 @@ pub struct CommitResponse {
     pub sha: String,
 }
 
-pub async fn git_commit(State(state): State<AppState>, Json(req): Json<CommitRequest>) -> Response {
+pub async fn git_commit(
+    State(state): State<AppState>,
+    Extension(perms): Extension<ProjectPermissions>,
+    Json(req): Json<CommitRequest>,
+) -> Response {
+    if let Err(e) = perms.require("files:write") {
+        return e.into_response();
+    }
     if req.message.trim().is_empty() {
         return StatusCode::BAD_REQUEST.into_response();
     }
@@ -68,11 +80,8 @@ pub async fn git_commit(State(state): State<AppState>, Json(req): Json<CommitReq
     let _ = out;
     Json(CommitResponse { sha: sha_out }).into_response()
 }
-use std::path::{Path, PathBuf};
-use tokio_util::io::ReaderStream;
 
-use crate::AppState;
-use crate::init::home_dir;
+use tokio_util::io::ReaderStream;
 
 #[derive(Debug, Serialize)]
 pub struct GitStatusEntry {
@@ -81,7 +90,12 @@ pub struct GitStatusEntry {
     pub worktree: String,
 }
 
-pub async fn git_status(State(state): State<AppState>) -> Json<Vec<GitStatusEntry>> {
+pub async fn git_status(
+    State(state): State<AppState>,
+    Extension(perms): Extension<ProjectPermissions>,
+) -> Result<Json<Vec<GitStatusEntry>>, StatusCode> {
+    perms.require("files:read")?;
+
     let home = home_dir();
     let repo_dir = home.join(&state.project_slug);
     let work_dir = if repo_dir.join(".git").exists() {
@@ -96,10 +110,10 @@ pub async fn git_status(State(state): State<AppState>) -> Json<Vec<GitStatusEntr
         .output()
         .await
     else {
-        return Json(vec![]);
+        return Ok(Json(vec![]));
     };
     if !out.status.success() && out.stdout.is_empty() {
-        return Json(vec![]);
+        return Ok(Json(vec![]));
     }
 
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -125,19 +139,38 @@ pub async fn git_status(State(state): State<AppState>) -> Json<Vec<GitStatusEntr
         })
         .collect();
 
-    Json(entries)
+    Ok(Json(entries))
 }
 
-pub async fn git_diff(State(state): State<AppState>, Query(q): Query<PathQuery>) -> Response {
+pub async fn git_diff(
+    State(state): State<AppState>,
+    Extension(perms): Extension<ProjectPermissions>,
+    Query(q): Query<PathQuery>,
+) -> Response {
+    if let Err(e) = perms.require("files:read") {
+        return e.into_response();
+    }
+
     let home = home_dir();
     let project_prefix = format!("{}/", state.project_slug);
-    let (work_dir, rel_path) = if q.path.starts_with(&project_prefix) {
-        (
-            home.join(&state.project_slug),
-            q.path[project_prefix.len()..].to_string(),
-        )
+
+    // Determine work_dir from path prefix, then validate the full path with resolve_safe.
+    let work_dir = if q.path.starts_with(&project_prefix) {
+        home.join(&state.project_slug)
     } else {
-        (home.clone(), q.path.clone())
+        home.clone()
+    };
+
+    // Validate the full path is within home before passing to git.
+    let safe_full = match resolve_safe(&q.path) {
+        Ok(p) => p,
+        Err(e) => return e.into_response(),
+    };
+
+    // Re-derive the relative path from the validated absolute path.
+    let rel_path = match safe_full.strip_prefix(&work_dir) {
+        Ok(p) => p.to_string_lossy().to_string(),
+        Err(_) => return StatusCode::FORBIDDEN.into_response(),
     };
 
     let Ok(out) = tokio::process::Command::new("git")
@@ -178,8 +211,11 @@ pub struct FileEntry {
 
 pub async fn list(
     State(_state): State<AppState>,
+    Extension(perms): Extension<ProjectPermissions>,
     Query(q): Query<PathQuery>,
 ) -> Result<Json<Vec<FileEntry>>, StatusCode> {
+    perms.require("files:read")?;
+
     let abs = resolve_safe(&q.path)?;
 
     let mut entries = vec![];
@@ -222,7 +258,15 @@ pub async fn list(
     Ok(Json(entries))
 }
 
-pub async fn download(State(_state): State<AppState>, Query(q): Query<PathQuery>) -> Response {
+pub async fn download(
+    State(_state): State<AppState>,
+    Extension(perms): Extension<ProjectPermissions>,
+    Query(q): Query<PathQuery>,
+) -> Response {
+    if let Err(e) = perms.require("files:read") {
+        return e.into_response();
+    }
+
     let abs = match resolve_safe(&q.path) {
         Ok(p) => p,
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
@@ -256,9 +300,14 @@ pub async fn download(State(_state): State<AppState>, Query(q): Query<PathQuery>
 
 pub async fn upload(
     State(_state): State<AppState>,
+    Extension(perms): Extension<ProjectPermissions>,
     Query(q): Query<PathQuery>,
     body: Body,
 ) -> Response {
+    if let Err(e) = perms.require("files:write") {
+        return e.into_response();
+    }
+
     let abs = match resolve_safe(&q.path) {
         Ok(p) => p,
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
@@ -290,7 +339,15 @@ pub async fn upload(
     StatusCode::CREATED.into_response()
 }
 
-pub async fn delete(State(_state): State<AppState>, Query(q): Query<PathQuery>) -> StatusCode {
+pub async fn delete(
+    State(_state): State<AppState>,
+    Extension(perms): Extension<ProjectPermissions>,
+    Query(q): Query<PathQuery>,
+) -> StatusCode {
+    if perms.require("files:write").is_err() {
+        return StatusCode::FORBIDDEN;
+    }
+
     let abs = match resolve_safe(&q.path) {
         Ok(p) => p,
         Err(_) => return StatusCode::BAD_REQUEST,
@@ -311,37 +368,4 @@ pub async fn delete(State(_state): State<AppState>, Query(q): Query<PathQuery>) 
         Ok(_) => StatusCode::NO_CONTENT,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
-}
-
-/// Resolve path relative to $HOME, rejecting path traversal attacks.
-fn resolve_safe(path: &str) -> Result<PathBuf, StatusCode> {
-    let home = home_dir();
-    let joined = if path.starts_with('/') {
-        // Allow absolute paths only within home
-        let stripped = path.trim_start_matches('/');
-        home.join(stripped)
-    } else {
-        home.join(path)
-    };
-
-    // Canonicalize to catch `..` traversal — use lexical normalization since file may not exist yet
-    let normalized = normalize_path(&joined);
-    if !normalized.starts_with(&home) {
-        return Err(StatusCode::FORBIDDEN);
-    }
-    Ok(normalized)
-}
-
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut components = vec![];
-    for c in path.components() {
-        match c {
-            std::path::Component::ParentDir => {
-                components.pop();
-            }
-            std::path::Component::CurDir => {}
-            other => components.push(other),
-        }
-    }
-    components.iter().collect()
 }

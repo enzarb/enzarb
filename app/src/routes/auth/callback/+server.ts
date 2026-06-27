@@ -1,7 +1,7 @@
 import { redirect, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { config } from '$lib/config';
-import { upsertUser, createSession } from '$lib/session';
+import { upsertUser, createSession, completePendingLink } from '$lib/session';
 import { sql } from '$lib/db';
 
 export const GET: RequestHandler = async ({ url, cookies }) => {
@@ -32,6 +32,27 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	const userinfo = await userinfoRes.json();
 
 	const userId = await upsertUser(userinfo.sub, userinfo.email);
+
+	// Decode state: may be a plain returnTo path or a JSON payload with a pending link token.
+	let returnTo = '/';
+	let pendingLinkToken: string | undefined;
+	try {
+		const parsed = JSON.parse(decodeURIComponent(state));
+		if (parsed.pendingLinkToken) {
+			pendingLinkToken = parsed.pendingLinkToken;
+			returnTo = parsed.returnTo ?? '/';
+		} else {
+			returnTo = state;
+		}
+	} catch {
+		returnTo = state;
+	}
+
+	if (pendingLinkToken) {
+		const ok = await completePendingLink(pendingLinkToken, userId);
+		if (!ok) error(400, 'Link confirmation failed: token expired or account mismatch.');
+	}
+
 	const sessionId = await createSession(userId);
 
 	cookies.set('session', sessionId, {
@@ -46,11 +67,11 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	const userRows = await sql`SELECT username FROM users WHERE id = ${userId}`;
 	const hasUsername = userRows[0]?.username != null;
 	if (!hasUsername) {
-		const returnTo = encodeURIComponent(state);
-		redirect(302, `/onboarding?returnTo=${returnTo}`);
+		const dest = encodeURIComponent(returnTo);
+		redirect(302, `/onboarding?returnTo=${dest}`);
 	}
 
-	const destination = decodeURIComponent(state);
+	const destination = decodeURIComponent(returnTo);
 	const safe = destination.startsWith('/') && !destination.startsWith('//') ? destination : '/';
 	redirect(302, safe);
 };
