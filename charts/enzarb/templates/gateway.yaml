@@ -109,10 +109,12 @@ spec:
         namespaces:
           from: Same
 ---
+# Path-specific rules must live in the same HTTPRoute as the catch-all so
+# Envoy sees them as an ordered rule list rather than competing HTTPRoutes.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: enzarb-webhook
+  name: enzarb-app
   namespace: {{ .Release.Namespace }}
 spec:
   parentRefs:
@@ -128,19 +130,6 @@ spec:
       backendRefs:
         - name: enzarb-webhook
           port: 8080
----
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: enzarb-app
-  namespace: {{ .Release.Namespace }}
-spec:
-  parentRefs:
-    - name: enzarb
-      sectionName: https
-  hostnames:
-    - {{ .Values.gateway.domain | quote }}
-  rules:
     - backendRefs:
         - name: enzarb-app
           port: 3000
