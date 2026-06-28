@@ -76,4 +76,16 @@ if [ -n "${GITHUB_OAUTH_CLIENT_ID:-}" ]; then
   fi
 fi
 
+# ── GitHub webhook HMAC secret (webhook receiver validates incoming requests) ──
+if secret_exists enzarb-github-webhook; then
+  echo "  [skip] enzarb-github-webhook already exists"
+else
+  echo "  [create] enzarb-github-webhook"
+  WEBHOOK_SECRET="$(openssl rand -hex 32)"
+  kubectl -n "$NS" create secret generic enzarb-github-webhook \
+    --from-literal=secret="$WEBHOOK_SECRET"
+  echo "  !! Register this secret in GitHub: Settings → Webhooks → Secret"
+  echo "     Secret value: $WEBHOOK_SECRET"
+fi
+
 echo "  Secrets setup complete."

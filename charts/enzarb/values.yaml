@@ -109,6 +109,17 @@ authd:
     limits:
       cpu: 200m
       memory: 96Mi
+webhook:
+  image:
+    repository: ghcr.io/enzarb/webhook
+    pullPolicy: IfNotPresent
+    tag: "v0.57.1"
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 64Mi
 # workspace is not a Deployment in this chart; its tag is injected into the
 # operator as WORKSPACE_IMAGE and used as the image for project pods.
 workspace:
