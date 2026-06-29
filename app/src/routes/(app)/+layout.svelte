@@ -15,11 +15,12 @@
 	});
 
 	function isProjectActive(orgSlug: string, projectSlug: string) {
-		return page.url.pathname.startsWith(`/${orgSlug}/projects/${projectSlug}`);
+		const base = `/${orgSlug}/projects/${projectSlug}`;
+		return page.url.pathname === base || page.url.pathname.startsWith(base + '/');
 	}
 
-	function isPathActive(prefix: string) {
-		return page.url.pathname.startsWith(prefix);
+	function isPathActive(path: string) {
+		return page.url.pathname === path || page.url.pathname.startsWith(path + '/');
 	}
 </script>
 
