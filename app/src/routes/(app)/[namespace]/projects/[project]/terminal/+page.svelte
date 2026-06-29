@@ -142,7 +142,9 @@
 
 	async function createProcess() {
 		createErr = '';
-		if (!agentToken || !agentBase) { createErr = 'Not connected to the workspace agent.'; return; }
+		if (!agentBase) { createErr = 'Not connected to the workspace agent.'; return; }
+		const token = await ensureToken();
+		if (!token) { createErr = 'Not connected to the workspace agent.'; return; }
 		const parts = newCmd.trim().split(/\s+/);
 		if (!parts.length || !parts[0]) { createErr = 'Enter a command.'; return; }
 		const [command, ...args] = parts;
@@ -150,7 +152,7 @@
 		try {
 			res = await fetch(`${agentBase}/processes`, {
 				method: 'POST',
-				headers: { Authorization: `Bearer ${agentToken}`, 'Content-Type': 'application/json' },
+				headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
 				body: JSON.stringify({ name: newName || newCmd.trim(), command, args, kind: newKind, ...(newCwd ? { cwd: newCwd } : {}) })
 			});
 		} catch {
