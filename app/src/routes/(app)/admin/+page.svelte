@@ -5,6 +5,25 @@
 	let inviteOrgId: string | null = $state(null);
 	let errorScope = $state<string | undefined>(undefined);
 	let expandedError = $state<string | null>(null);
+
+	// Settings form: dirty tracking + save feedback
+	let settingsDirty = $state(false);
+	let settingsSaveStatus = $state<'idle' | 'saved' | 'error'>('idle');
+	let settingsSaveTimer: ReturnType<typeof setTimeout>;
+
+	updateAdminSettings.enhance(async (form) => {
+		try {
+			const ok = await form.submit();
+			if (ok) {
+				settingsDirty = false;
+				settingsSaveStatus = 'saved';
+				clearTimeout(settingsSaveTimer);
+				settingsSaveTimer = setTimeout(() => { settingsSaveStatus = 'idle'; }, 2500);
+			}
+		} catch {
+			settingsSaveStatus = 'error';
+		}
+	});
 </script>
 
 <h2>Admin</h2>
@@ -13,7 +32,7 @@
 	<h3>Platform settings</h3>
 	{#await getAdminSettings() then settings}
 		<div class="card form-card">
-			<form {...updateAdminSettings}>
+			<form {...updateAdminSettings} oninput={() => { settingsDirty = true; settingsSaveStatus = 'idle'; }}>
 				<h4>Free tier</h4>
 				<div class="fields">
 					<div class="field">
@@ -96,7 +115,12 @@
 					</div>
 				</div>
 				<div class="actions">
-					<button type="submit" class="btn btn-primary">Save settings</button>
+					{#if settingsSaveStatus === 'saved'}
+						<span class="save-feedback save-ok">Saved</span>
+					{:else if settingsSaveStatus === 'error'}
+						<span class="save-feedback save-err">Save failed</span>
+					{/if}
+					<button type="submit" class="btn btn-primary" disabled={!settingsDirty}>Save settings</button>
 				</div>
 			</form>
 		</div>
@@ -115,7 +139,7 @@
 				<div class="fields">
 					<div class="field">
 						<label for="admin-slug">Slug</label>
-						<input id="admin-slug" {...createOrgAdmin.fields.slug.as('text')} required pattern="[a-z0-9-]+" />
+						<input id="admin-slug" {...createOrgAdmin.fields.slug.as('text')} required pattern="[a-z0-9\-]+" />
 						{#each createOrgAdmin.fields.slug.issues() as issue}<p class="field-error">{issue.message}</p>{/each}
 					</div>
 					<div class="field">
@@ -158,7 +182,7 @@
 					</td>
 					<td>{org.member_count}</td>
 					<td>
-						<button class="btn" onclick={() => (inviteOrgId = org.id)}>Invite</button>
+						<button class="btn" onclick={() => (inviteOrgId = inviteOrgId === org.id ? null : org.id)}>Invite</button>
 						<button
 							class="btn btn-danger"
 							onclick={async () => {
@@ -177,30 +201,27 @@
 							}}>Delete</button>
 					</td>
 				</tr>
-				{#if inviteOrgId === org.id}
-					{@const invite = inviteMember.for(org.id)}
-					<tr>
-						<td colspan="5">
-							<form {...invite} class="inline-form">
-								<input {...invite.fields.orgId.as('hidden', org.id)} />
-
-								<input {...invite.fields.email.as('email')} placeholder="user@example.com" required />
-								<select {...invite.fields.role.as('select')} class="w-auto">
-									<option value="member">Member</option>
-									<option value="manager">Manager</option>
-									<option value="owner">Owner</option>
-								</select>
-								<button type="submit" class="btn btn-primary">Invite</button>
-								<button type="button" class="btn" onclick={() => (inviteOrgId = null)}>Cancel</button>
-							</form>
-						</td>
-					</tr>
-				{/if}
 			{:else}
 				<tr><td colspan="5" class="muted">No organizations</td></tr>
 			{/each}
 		</tbody>
 	</table>
+	{#if inviteOrgId !== null}
+		{@const invite = inviteMember.for(inviteOrgId)}
+		<div class="invite-row">
+			<form {...invite} class="inline-form">
+				<input {...invite.fields.orgId.as('hidden', inviteOrgId)} />
+				<input {...invite.fields.email.as('email')} placeholder="user@example.com" required />
+				<select {...invite.fields.role.as('select')} class="w-auto">
+					<option value="member">Member</option>
+					<option value="manager">Manager</option>
+					<option value="owner">Owner</option>
+				</select>
+				<button type="submit" class="btn btn-primary">Invite</button>
+				<button type="button" class="btn" onclick={() => (inviteOrgId = null)}>Cancel</button>
+			</form>
+		</div>
+	{/if}
 </section>
 
 {#await listDeletedOrgs() then deletedOrgs}
@@ -363,6 +384,10 @@
 	.actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
 	.inline-form { display: flex; gap: 0.5rem; align-items: center; padding: 0.5rem 0; }
 	.inline-form input[type=email] { max-width: 220px; }
+	.invite-row { border-top: 1px solid var(--color-border); padding: 0.5rem 0; }
+	.save-feedback { font-size: 13px; }
+	.save-ok { color: #3fb950; }
+	.save-err { color: var(--color-danger, #c0392b); }
 	.w-auto { width: auto; }
 	.mono { font-family: var(--font-mono); font-size: 12px; }
 	.muted { color: var(--color-text-muted); font-size: 13px; }

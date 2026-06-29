@@ -39,7 +39,7 @@
 
 		<div class="field">
 			<label for="slug">Slug</label>
-			<input id="slug" type="text" bind:value={slug} required pattern="[a-z0-9-]+" placeholder="my-awesome-project" />
+			<input id="slug" type="text" bind:value={slug} required pattern="[a-z0-9\-]+" placeholder="my-awesome-project" />
 			<span class="hint">Lowercase letters, numbers, and dashes only</span>
 		</div>
 

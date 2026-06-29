@@ -113,7 +113,7 @@
 						<form {...createEnv}>
 							<div class="field">
 								<label for="env-slug">Slug</label>
-								<input id="env-slug" {...createEnv.fields.slug.as('text')} required pattern="[a-z0-9-]+" placeholder="staging" />
+								<input id="env-slug" {...createEnv.fields.slug.as('text')} required pattern="[a-z0-9\-]+" placeholder="staging" />
 								{#each createEnv.fields.slug.issues() as issue}<p class="field-error">{issue.message}</p>{/each}
 							</div>
 							<div class="actions">

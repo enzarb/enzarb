@@ -7,7 +7,13 @@ import { resolveOrg, requirePrivilege } from './guard';
 
 export const getRepositories = query(async () => {
 	const org = resolveOrg();
+	const { params } = getRequestEvent();
 	const all = await listRepositories();
+	if (params.project) {
+		const prefix = `${org.slug}/${params.project}/`;
+		const exact = `${org.slug}/${params.project}`;
+		return all.filter((r) => r.name.startsWith(prefix) || r.name === exact);
+	}
 	return all.filter((r) => r.name.startsWith(`${org.slug}/`));
 });
 
