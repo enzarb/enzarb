@@ -131,6 +131,10 @@ workspace:
   # changelog is shown in the UI when a workspace update is pending. Set by CI
   # to the release notes for the current workspace image version.
   changelog: ""
+  # changelogs is a map of workspace image version tag → workspace-scoped changelog
+  # for that release. The operator uses this to show only the changes between the
+  # user's running version and the desired version. Populated by CI on workspace builds.
+  changelogs: {}
 database:
   clusterName: enzarb-db
   roles:

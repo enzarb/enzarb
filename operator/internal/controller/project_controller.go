@@ -427,7 +427,7 @@ func (r *ProjectReconciler) ensureDeployment(ctx context.Context, ns, saName, pv
 			log.Info("could not reach agent to check processes; treating as idle", "error", checkErr)
 		}
 		if hasProcesses {
-			changelog := os.Getenv("WORKSPACE_CHANGELOG")
+			changelog := workspaceChangelogRange(runningImage, desiredImage)
 			apimeta.SetStatusCondition(&project.Status.Conditions, metav1.Condition{
 				Type:               "WorkspaceUpdatePending",
 				Status:             metav1.ConditionTrue,
@@ -903,6 +903,100 @@ func projectLabels(p *enzarbv1alpha1.Project) map[string]string {
 		"enzarb.io/org":                p.Spec.OrgID,
 	}
 }
+
+// workspaceChangelogRange returns the combined workspace changelog covering all
+// versions strictly between runningImage and desiredImage. It reads
+// WORKSPACE_CHANGELOGS (a JSON object of { "vX.Y.Z": "changelog text" }) and
+// concatenates entries whose versions fall in the half-open range
+// (runningTag, desiredTag]. Falls back to the legacy WORKSPACE_CHANGELOG env
+// var if WORKSPACE_CHANGELOGS is absent or unparseable.
+func workspaceChangelogRange(runningImage, desiredImage string) string {
+	raw := os.Getenv("WORKSPACE_CHANGELOGS")
+	if raw == "" {
+		return os.Getenv("WORKSPACE_CHANGELOG")
+	}
+	var changelogs map[string]string
+	if err := json.Unmarshal([]byte(raw), &changelogs); err != nil {
+		return os.Getenv("WORKSPACE_CHANGELOG")
+	}
+
+	runningTag := imageTag(runningImage)
+	desiredTag := imageTag(desiredImage)
+	if runningTag == "" || desiredTag == "" || runningTag == desiredTag {
+		return ""
+	}
+
+	// Collect and sort versions that fall in (runningTag, desiredTag].
+	// Semver comparison: split "vMAJOR.MINOR.PATCH" and compare numerically.
+	var relevant []string
+	for ver := range changelogs {
+		if semverGT(ver, runningTag) && (semverEQ(ver, desiredTag) || semverLT(ver, desiredTag)) {
+			relevant = append(relevant, ver)
+		}
+	}
+	// Sort ascending so oldest changes come first.
+	for i := 0; i < len(relevant); i++ {
+		for j := i + 1; j < len(relevant); j++ {
+			if semverGT(relevant[i], relevant[j]) {
+				relevant[i], relevant[j] = relevant[j], relevant[i]
+			}
+		}
+	}
+
+	var parts []string
+	for _, ver := range relevant {
+		if cl := changelogs[ver]; cl != "" {
+			parts = append(parts, cl)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	result := ""
+	for i, p := range parts {
+		if i > 0 {
+			result += "\n"
+		}
+		result += p
+	}
+	return result
+}
+
+// imageTag extracts the tag portion from an image reference (the part after the last colon).
+func imageTag(image string) string {
+	for i := len(image) - 1; i >= 0; i-- {
+		if image[i] == ':' {
+			return image[i+1:]
+		}
+	}
+	return ""
+}
+
+// semverParts parses a "vMAJOR.MINOR.PATCH" tag into its numeric components.
+func semverParts(tag string) (int, int, int) {
+	s := tag
+	if len(s) > 0 && s[0] == 'v' {
+		s = s[1:]
+	}
+	var major, minor, patch int
+	_, _ = fmt.Sscanf(s, "%d.%d.%d", &major, &minor, &patch)
+	return major, minor, patch
+}
+
+func semverGT(a, b string) bool {
+	ma, na, pa := semverParts(a)
+	mb, nb, pb := semverParts(b)
+	if ma != mb {
+		return ma > mb
+	}
+	if na != nb {
+		return na > nb
+	}
+	return pa > pb
+}
+
+func semverLT(a, b string) bool { return semverGT(b, a) }
+func semverEQ(a, b string) bool { return !semverGT(a, b) && !semverLT(a, b) }
 
 // workspaceImage returns the workspace container image, pinned via the
 // WORKSPACE_IMAGE env (set from the Helm chart's workspace.image values).

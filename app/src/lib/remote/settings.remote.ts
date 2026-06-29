@@ -4,7 +4,7 @@ import { error } from '@sveltejs/kit';
 import { z } from 'zod/v4';
 import { sql } from '$lib/db';
 import { encrypt, decrypt } from '$lib/crypto';
-import { orgNamespace, createOrPatchSecret, deleteSecret, listProjects, restartWorkspacesForOrgs } from '$lib/k8s';
+import { orgNamespace, createOrPatchSecret, deleteSecret, listProjects, flagEnvUpdatePendingForOrgs } from '$lib/k8s';
 import { config } from '$lib/config';
 
 function requireSession() {
@@ -27,7 +27,7 @@ async function syncUserSecrets(userId: string, secrets: Record<string, string>) 
 			await createOrPatchSecret(ns, secretName, secrets);
 		}
 	}
-	await restartWorkspacesForOrgs(session.orgs.map(o => o.id));
+	await flagEnvUpdatePendingForOrgs(session.orgs.map(o => o.id));
 }
 
 // Load all user secrets as a plain object (for K8s sync).

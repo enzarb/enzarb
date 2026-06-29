@@ -21,6 +21,7 @@
 	}
 
 	let dismissed = $state(false);
+	let envDismissed = $state(false);
 	let restarting = $state(false);
 	let restartError = $state('');
 
@@ -30,6 +31,20 @@
 		try {
 			await restartWorkspace({ slug });
 			dismiss(slug, desiredImage);
+			await getProject().refresh();
+		} catch (e) {
+			restartError = e instanceof Error ? e.message : 'Failed to request restart';
+		} finally {
+			restarting = false;
+		}
+	}
+
+	async function handleEnvRestart(slug: string) {
+		restarting = true;
+		restartError = '';
+		try {
+			await restartWorkspace({ slug });
+			envDismissed = true;
 			await getProject().refresh();
 		} catch (e) {
 			restartError = e instanceof Error ? e.message : 'Failed to request restart';
@@ -93,6 +108,30 @@
 			</div>
 			{/if}
 		{/each}
+		{#if !envDismissed && project.metadata?.annotations?.['enzarb.io/env-update-pending'] === 'true'}
+			<div class="update-banner env-banner">
+				<div class="update-banner-body">
+					<div class="update-banner-title">Environment variables updated</div>
+					<div class="update-banner-changelog">Your workspace environment variables have changed (e.g. GitHub token or user secrets). Restart to apply the new values.</div>
+					{#if restartError}<div class="update-banner-error">{restartError}</div>{/if}
+				</div>
+				<div class="update-banner-actions">
+					<button
+						class="btn btn-primary btn-sm"
+						disabled={restarting}
+						onclick={() => handleEnvRestart(project.metadata.name)}
+					>
+						{restarting ? 'Requesting…' : 'Restart now'}
+					</button>
+					<button
+						class="btn btn-sm"
+						onclick={() => envDismissed = true}
+					>
+						Dismiss
+					</button>
+				</div>
+			</div>
+		{/if}
 		<div class="project-content">
 			{@render children()}
 		</div>
@@ -109,8 +148,10 @@
 	.tab.active { color: var(--color-text); border-bottom-color: var(--color-accent); }
 	.project-content { flex: 1; }
 	.update-banner { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; padding: 0.75rem 1rem; margin-bottom: 1rem; background: #1a1a00; border: 1px solid #5a5a00; border-radius: 6px; }
+	.update-banner.env-banner { background: #001a1a; border-color: #005a5a; }
 	.update-banner-body { flex: 1; min-width: 0; }
 	.update-banner-title { font-size: 13px; font-weight: 600; color: #e8d44d; margin-bottom: 0.25rem; }
+	.env-banner .update-banner-title { color: #4dd4e8; }
 	.update-banner-changelog { font-size: 12px; color: var(--color-text-muted); white-space: pre-wrap; margin-bottom: 0.5rem; max-height: 120px; overflow-y: auto; }
 	.update-banner-meta { font-size: 11px; color: var(--color-text-muted); }
 	.update-banner-meta code { font-family: var(--font-mono); font-size: 11px; }

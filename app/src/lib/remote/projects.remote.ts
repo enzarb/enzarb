@@ -10,6 +10,7 @@ import {
 	softDeleteProject,
 	recoverProject as k8sRecoverProject,
 	forceRestartWorkspace,
+	clearEnvUpdatePending,
 	purgeAfterOf,
 	isOrgReady
 } from '$lib/k8s';
@@ -162,5 +163,8 @@ export const recoverProjectCommand = command(z.object({ slug: z.string() }), asy
 
 export const restartWorkspace = command(z.object({ slug: z.string() }), async ({ slug }) => {
 	const org = resolveOrg();
-	await forceRestartWorkspace(org.id, slug);
+	await Promise.all([
+		forceRestartWorkspace(org.id, slug),
+		clearEnvUpdatePending(org.id, slug)
+	]);
 });

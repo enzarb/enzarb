@@ -485,6 +485,7 @@ jobs:
       - name: Re-pin changed component image tags
         env:
           VERSION: ${{ needs.version.outputs.version }}
+          PREV_TAG: ${{ needs.version.outputs.prev_tag }}
         # SET_* (job-level env) carry the change-detection booleans. Only changed
         # components advance to the new version; unchanged components keep theirs.
         run: |
@@ -501,6 +502,82 @@ jobs:
           [ "$SET_WORKSPACE" = "true" ] && set_tag workspace
           echo "Resulting image tags:"
           yq '{"app":.app.image.tag,"operator":.operator.image.tag,"metering":.metering.image.tag,"billing":.billing.image.tag,"authd":.authd.image.tag,"webhook":.webhook.image.tag,"workspace":.workspace.image.tag}' charts/enzarb/values.yaml
+
+          # When the workspace image advances, record a workspace-scoped changelog
+          # (agent/ directory only) since the previous workspace image version.
+          # This is stored in workspace.changelogs[VERSION] so the operator can
+          # show only the changes between the user's running version and the new one.
+          if [ "$SET_WORKSPACE" = "true" ]; then
+            # Find the commit where the previous workspace tag was built. If the
+            # previous release had no workspace change, walk back further until we
+            # find one. Fall back to PREV_TAG if none found.
+            PREV_WORKSPACE_TAG=$(git tag --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | \
+              while read t; do
+                [ "$t" = "$VERSION" ] && continue
+                # Did agent/ change at this tag compared to the one before it?
+                PREV_T=$(git tag --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | \
+                  grep -A1 "^${t}$" | tail -1)
+                if [ -n "$PREV_T" ] && git diff --quiet "${PREV_T}..${t}" -- agent/; then
+                  continue  # no workspace change at this tag
+                fi
+                echo "$t"
+                break
+              done)
+            PREV_WORKSPACE_TAG="${PREV_WORKSPACE_TAG:-$PREV_TAG}"
+
+            if [ "$PREV_WORKSPACE_TAG" = "v0.0.0" ]; then
+              WS_LOG=$(git log --pretty=format:"- %s (%h)" -- agent/ | head -50)
+            else
+              WS_LOG=$(git log "${PREV_WORKSPACE_TAG}..HEAD~1" --pretty=format:"- %s (%h)" -- agent/)
+            fi
+
+            if [ -n "$WS_LOG" ]; then
+              # Append this version's changelog to the changelogs map and prune
+              # versions older than the 10 most recent workspace entries.
+              VERSION="$VERSION" WS_LOG="$WS_LOG" python3 - <<'PYEOF'
+import os, json, subprocess, sys
+
+version = os.environ["VERSION"]
+ws_log   = os.environ["WS_LOG"]
+
+with open("charts/enzarb/values.yaml") as f:
+    content = f.read()
+
+import re
+m = re.search(r'^  changelogs: (.+)$', content, re.MULTILINE)
+if m:
+    try:
+        changelogs = json.loads(m.group(1))
+    except Exception:
+        changelogs = {}
+else:
+    changelogs = {}
+
+changelogs[version] = ws_log
+
+# Keep only the 10 most recent entries (semver sort)
+from functools import cmp_to_key
+def semver_cmp(a, b):
+    def parts(v):
+        v = v.lstrip("v")
+        try: return [int(x) for x in v.split(".")]
+        except: return [0,0,0]
+    pa, pb = parts(a), parts(b)
+    for x, y in zip(pa, pb):
+        if x != y: return x - y
+    return 0
+
+keys = sorted(changelogs.keys(), key=cmp_to_key(semver_cmp), reverse=True)[:10]
+changelogs = {k: changelogs[k] for k in keys}
+
+new_val = "  changelogs: " + json.dumps(changelogs)
+content = re.sub(r'^  changelogs: .+$', new_val, content, flags=re.MULTILINE)
+with open("charts/enzarb/values.yaml", "w") as f:
+    f.write(content)
+print(f"  recorded workspace changelog for {version}")
+PYEOF
+            fi
+          fi
 
       - name: Write VERSION file
         env:

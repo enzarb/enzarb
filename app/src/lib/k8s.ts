@@ -387,16 +387,45 @@ export async function deleteSecret(namespace: string, name: string) {
 	} catch { /* already gone */ }
 }
 
-// Restart all workspaces in the given orgs so they pick up updated envFrom secrets.
-export async function restartWorkspacesForOrgs(orgIds: string[]) {
+// Flag all running workspaces in the given orgs with an env-update-pending
+// annotation so the UI can prompt the user to restart at their convenience.
+export async function flagEnvUpdatePendingForOrgs(orgIds: string[]) {
 	await Promise.all(
 		orgIds.map(async (orgId) => {
 			const projects = await listProjects(orgId);
 			await Promise.all(
-				projects.map((p: any) => forceRestartWorkspace(orgId, p.metadata.name).catch(() => {}))
+				projects.map((p: any) =>
+					flagEnvUpdatePending(orgId, p.metadata.name).catch(() => {})
+				)
 			);
 		})
 	);
+}
+
+// Set enzarb.io/env-update-pending on a project so the UI shows a restart prompt.
+export async function flagEnvUpdatePending(orgId: string, slug: string) {
+	const ns = orgNamespace(orgId);
+	await customApi.patchNamespacedCustomObject({
+		group: GROUP,
+		version: VERSION,
+		namespace: ns,
+		plural: 'projects',
+		name: slug,
+		body: [{ op: 'add', path: '/metadata/annotations/enzarb.io~1env-update-pending', value: 'true' }]
+	});
+}
+
+// Clear the env-update-pending annotation after the user triggers a restart.
+export async function clearEnvUpdatePending(orgId: string, slug: string) {
+	const ns = orgNamespace(orgId);
+	await customApi.patchNamespacedCustomObject({
+		group: GROUP,
+		version: VERSION,
+		namespace: ns,
+		plural: 'projects',
+		name: slug,
+		body: [{ op: 'remove', path: '/metadata/annotations/enzarb.io~1env-update-pending' }]
+	}).catch(() => {});
 }
 
 export async function forceRestartWorkspace(orgId: string, slug: string) {

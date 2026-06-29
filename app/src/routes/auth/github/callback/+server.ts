@@ -4,7 +4,7 @@ import { randomBytes } from 'crypto';
 import { config } from '$lib/config';
 import { sql } from '$lib/db';
 import { encrypt, decrypt } from '$lib/crypto';
-import { orgNamespace, createOrPatchSecret, restartWorkspacesForOrgs } from '$lib/k8s';
+import { orgNamespace, createOrPatchSecret, flagEnvUpdatePendingForOrgs } from '$lib/k8s';
 import { upsertGithubUser, createSession } from '$lib/session';
 
 export const GET: RequestHandler = async ({ url, locals, cookies }) => {
@@ -146,5 +146,5 @@ async function syncGithubSecrets(userId: string, accessToken: string, displayNam
 	for (const org of orgs) {
 		await createOrPatchSecret(orgNamespace(org.id), `${org.id}-user-env-secrets`, allSecrets);
 	}
-	await restartWorkspacesForOrgs(orgs.map(o => o.id));
+	await flagEnvUpdatePendingForOrgs(orgs.map(o => o.id));
 }
