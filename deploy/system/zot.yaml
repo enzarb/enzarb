@@ -6,7 +6,7 @@ metadata:
 spec:
   chart: zot
   repo: https://zotregistry.dev/helm-charts/
-  version: 0.1.117  # zot app v2.1.17
+  version: 0.1.118  # zot app v2.1.18
   targetNamespace: enzarb-system
   createNamespace: true
   valuesContent: |-
@@ -22,6 +22,10 @@ spec:
     # shell) into a shared emptyDir that zot reads at /etc/zot/config.json. This
     # keeps the S3 credentials out of git while still enabling bearer auth.
     mountConfig: false
+    persistence:
+      enabled: true
+      size: 1Gi
+      storageClass: ceph-block-thin
     extraVolumes:
       # Shared, in-memory rendered config (written by the initContainer below).
       - name: rendered-config

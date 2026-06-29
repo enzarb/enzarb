@@ -18,7 +18,8 @@ mise run install-hooks  # install git pre-commit hook
 mise run build-operator   # go build ./cmd/operator/
 mise run build-agent      # cargo build --release (in agent/)
 mise run build-app        # npm run build (in app/)
-mise run build-all        # all three
+mise run build-authd      # go build ./cmd/authd/
+mise run build-all        # all components
 ```
 
 ## Test
@@ -27,6 +28,12 @@ mise run build-all        # all three
 mise run test-operator    # go test ./...  (in operator/)
 mise run test-agent       # cargo test (in agent/)
 mise run test-all
+
+# Run a single Go test
+cd operator && go test ./internal/controller/... -run TestProjectReconciler
+
+# Run a single Rust test
+cd agent && cargo test <test_name>
 ```
 
 ## Dev
@@ -39,8 +46,8 @@ mise run dev-app          # SvelteKit vite dev server
 
 The pre-commit hook (`scripts/pre-commit`) runs scoped checks based on staged files:
 
-- **Go** (`operator/`, `metering/`, `billing/`): `gofmt`, `golangci-lint`, `govulncheck`
-- **Rust** (`agent/`): `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo audit`
+- **Go** (`operator/`, `metering/`, `billing/`, `authd/`): `gofmt`, `golangci-lint`, `govulncheck`
+- **Rust** (`agent/`, `webhook/`): `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo audit`
 - **JS** (`app/`): `npm ci`, `svelte-check`
 - **Containers** (`Dockerfile`, `.trivyignore`): `trivy config` (CRITICAL/HIGH)
 
@@ -83,6 +90,12 @@ The app issues its own JWTs (JWKS at `/.well-known/jwks.json`) which the agent v
 - Never use `+page.ts` or `+server.ts` load functions. Call SvelteKit remote functions (`query`/`command` from `$lib/remote/`) directly in `.svelte` files.
 - For reactive async data that depends on route params, use `const data = $derived(fetchFn(page.params.x))` returning a Promise, then render with `{#await data}` in the template.
 - Never use `$effect` for reacting to URL/param changes; use `$derived` + `{#await}` instead.
+
+### `authd/` (Go)
+A Kubernetes-aware authentication bridge. Validates Kubernetes ServiceAccount tokens (for registry push/pull) and issues short-lived JWTs scoped to registry audiences (`registry.enzarb.dev`, `registry-pull.enzarb.dev`). Used by Zot to authenticate workspace pods and cluster nodes pulling images. Runs as a single binary (`cmd/authd/main.go`).
+
+### `webhook/` (Rust, tokio + axum)
+A GitHub webhook receiver. Listens for release events, verifies HMAC-SHA256 signatures, and patches a HelmChart CR to deploy the new version automatically. Configured via `GITHUB_WEBHOOK_SECRET`, `HELMCHART_NAME`, and `HELMCHART_NAMESPACE` env vars.
 
 ### `billing/` and `metering/` (Go)
 Standalone services (`cmd/billing/`, `cmd/metering/`). Billing integrates with the River job queue (PostgreSQL-backed). Both communicate via Postgres.

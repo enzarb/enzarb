@@ -213,15 +213,36 @@
 
 	// Agent tokens are short-lived; re-mint on (re)connect so a socket opened after
 	// a long mobile background isn't rejected for an expired token.
-	async function ensureToken() {
-		try { agentToken = await getAgentToken(); } catch { /* keep any existing token */ }
+	async function ensureToken(): Promise<string | null> {
+		try {
+			agentToken = await getAgentToken();
+		} catch {
+			// If the existing token is expired, don't try to reconnect with it.
+			if (agentToken && isTokenExpired(agentToken)) agentToken = null;
+		}
 		return agentToken;
+	}
+
+	function isTokenExpired(token: string): boolean {
+		try {
+			const payload = JSON.parse(atob(token.split('.')[1]));
+			// Treat as expired 30s early to avoid races.
+			return typeof payload.exp === 'number' && payload.exp * 1000 - 30_000 < Date.now();
+		} catch {
+			return true;
+		}
 	}
 
 	async function openSocket(pid: string) {
 		if (!agentBase) return;
 		await ensureToken();
-		if (!agentToken) return;
+		if (!agentToken) {
+			if (pid === selectedPid) {
+				connState = 'failed';
+				connectError = 'Session expired — please reload the page to sign in again.';
+			}
+			return;
+		}
 
 		// Close any stale socket for this pid before opening a fresh one.
 		const stale = sockets.get(pid);
@@ -266,6 +287,9 @@
 			// 1000/1001 = clean close (process killed or navigated away); ignore those.
 			if (e.code === 1000 || e.code === 1001) return;
 			if (pid === selectedPid) {
+				// If we're already in a reconnect cycle, don't restart it — the
+				// scheduleReconnect 4s check will transition to 'failed' if needed.
+				if (connState === 'reconnecting' || connState === 'failed') return;
 				const reason = e.reason ? `: ${e.reason}` : '';
 				connectError = `Disconnected (code ${e.code}${reason}) — attempting to reconnect…`;
 				connState = 'reconnecting';

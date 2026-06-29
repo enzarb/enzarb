@@ -32,6 +32,7 @@ jobs:
       authd: ${{ steps.detect.outputs.authd }}
       workspace: ${{ steps.detect.outputs.workspace }}
       agent: ${{ steps.detect.outputs.agent }}
+      webhook: ${{ steps.detect.outputs.webhook }}
       go_any: ${{ steps.detect.outputs.go_any }}
       docker_any: ${{ steps.detect.outputs.docker_any }}
       images_json: ${{ steps.detect.outputs.images_json }}
