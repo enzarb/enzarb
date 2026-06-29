@@ -6,20 +6,21 @@
 		getProjectRollup,
 		getCostByComponent,
 		getCostTimeSeries,
-		getUsageWithLimits
+		getUsageWithLimits,
+		getPublicPricing
 	} from '$lib/remote/billing.remote';
 	import { RESOURCE_TYPES } from '$lib/billing';
 	import StackedBarChart from '$lib/components/StackedBarChart.svelte';
 
 	const resourceLabels: Record<string, string> = {
-		cpu_seconds: 'CPU',
-		mem_gib_seconds: 'Memory',
+		vcpu_hours: 'CPU',
+		mem_gib_hours: 'Memory',
 		net_ingress_internal_bytes: 'Net In (internal)',
 		net_egress_internal_bytes: 'Net Out (internal)',
 		net_ingress_external_bytes: 'Net In (external)',
 		net_egress_external_bytes: 'Net Out (external)',
-		storage_gib_seconds: 'Storage',
-		zot_storage_gib_seconds: 'Registry'
+		block_storage_gib_months: 'Block Storage',
+		registry_gib_months: 'Registry Storage'
 	};
 
 	const componentLabels: Record<string, string> = {
@@ -30,14 +31,14 @@
 
 	// Stable colour per resource type for the chart + legend.
 	const resourceColors: Record<string, string> = {
-		cpu_seconds: '#58a6ff',
-		mem_gib_seconds: '#3fb950',
+		vcpu_hours: '#58a6ff',
+		mem_gib_hours: '#3fb950',
 		net_ingress_internal_bytes: '#d29922',
 		net_egress_internal_bytes: '#e3b341',
 		net_ingress_external_bytes: '#db6d28',
 		net_egress_external_bytes: '#f0883e',
-		storage_gib_seconds: '#a371f7',
-		zot_storage_gib_seconds: '#56d4dd'
+		block_storage_gib_months: '#a371f7',
+		registry_gib_months: '#56d4dd'
 	};
 
 	const usd = (n: number) =>
@@ -47,16 +48,14 @@
 			minimumFractionDigits: 2,
 			maximumFractionDigits: n < 1 ? 4 : 2
 		});
+	const usdRate = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 
-	// Adaptive formatters — pick the largest unit that keeps the value ≥ 1.
-	const gibHours = (gibSeconds: number) => {
-		const h = gibSeconds / 3600;
-		return h.toLocaleString('en-US', { maximumFractionDigits: 2 }) + ' GiB-hr';
-	};
-	const cpuHours = (cpuSeconds: number) => {
-		const h = cpuSeconds / 3600;
-		return h.toLocaleString('en-US', { maximumFractionDigits: 2 }) + ' hr';
-	};
+	const fmtVCPUHours = (h: number) =>
+		h.toLocaleString('en-US', { maximumFractionDigits: 2 }) + ' vCPU-hr';
+	const fmtGiBHours = (h: number) =>
+		h.toLocaleString('en-US', { maximumFractionDigits: 2 }) + ' GiB-hr';
+	const fmtGiBMonths = (m: number) =>
+		m.toLocaleString('en-US', { maximumFractionDigits: 3 }) + ' GiB-mo';
 	const fmtBytes = (bytes: number) => {
 		if (bytes === 0) return '0 B';
 		const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -122,37 +121,41 @@
 	</section>
 {/await}
 
-{#await getUsageWithLimits() then u}
+{#await Promise.all([getUsageWithLimits(), getPublicPricing()]) then [u, rates]}
 <section class="section">
 	<h3>Usage this month</h3>
 	<div class="usage-meters">
 		<div class="meter-row">
 			<div class="meter-labels">
 				<span>CPU</span>
-				<span class="meter-value">{cpuHours(u.cpu_seconds)} / {cpuHours(u.free_cpu_seconds)} free</span>
+				<span class="meter-value">{fmtVCPUHours(u.vcpu_hours)} / {fmtVCPUHours(u.free_vcpu_hours)} free</span>
 			</div>
-			<div class="meter-track"><div class="meter-fill" style="width:{pct(u.cpu_seconds, u.free_cpu_seconds)}%"></div></div>
+			<div class="meter-track"><div class="meter-fill" style="width:{pct(u.vcpu_hours, u.free_vcpu_hours)}%"></div></div>
+			<div class="meter-rate">{usdRate(rates.vcpuHoursPerUnit)} / vCPU-hr after free tier</div>
 		</div>
 		<div class="meter-row">
 			<div class="meter-labels">
 				<span>Memory</span>
-				<span class="meter-value">{gibHours(u.mem_gib_seconds)} / {gibHours(u.free_mem_gib_seconds)} free</span>
+				<span class="meter-value">{fmtGiBHours(u.mem_gib_hours)} / {fmtGiBHours(u.free_mem_gib_hours)} free</span>
 			</div>
-			<div class="meter-track"><div class="meter-fill" style="width:{pct(u.mem_gib_seconds, u.free_mem_gib_seconds)}%"></div></div>
+			<div class="meter-track"><div class="meter-fill" style="width:{pct(u.mem_gib_hours, u.free_mem_gib_hours)}%"></div></div>
+			<div class="meter-rate">{usdRate(rates.memGiBHoursPerUnit)} / GiB-hr after free tier</div>
 		</div>
 		<div class="meter-row">
 			<div class="meter-labels">
-				<span>Storage</span>
-				<span class="meter-value">{gibHours(u.storage_gib_seconds)} / {gibHours(u.free_storage_gib_seconds)} free</span>
+				<span>Block Storage</span>
+				<span class="meter-value">{fmtGiBMonths(u.block_storage_gib_months)} / {fmtGiBMonths(u.free_block_storage_gib_months)} free</span>
 			</div>
-			<div class="meter-track"><div class="meter-fill meter-fill-storage" style="width:{pct(u.storage_gib_seconds, u.free_storage_gib_seconds)}%"></div></div>
+			<div class="meter-track"><div class="meter-fill meter-fill-storage" style="width:{pct(u.block_storage_gib_months, u.free_block_storage_gib_months)}%"></div></div>
+			<div class="meter-rate">{usdRate(rates.blockStorageGiBMonthsPerUnit)} / GiB-mo after free tier</div>
 		</div>
 		<div class="meter-row">
 			<div class="meter-labels">
-				<span>Registry</span>
-				<span class="meter-value">{gibHours(u.zot_storage_gib_seconds)} / {gibHours(u.free_zot_storage_gib_seconds)} free</span>
+				<span>Registry Storage</span>
+				<span class="meter-value">{fmtGiBMonths(u.registry_gib_months)} / {fmtGiBMonths(u.free_registry_gib_months)} free</span>
 			</div>
-			<div class="meter-track"><div class="meter-fill meter-fill-zot" style="width:{pct(u.zot_storage_gib_seconds, u.free_zot_storage_gib_seconds)}%"></div></div>
+			<div class="meter-track"><div class="meter-fill meter-fill-zot" style="width:{pct(u.registry_gib_months, u.free_registry_gib_months)}%"></div></div>
+			<div class="meter-rate">{usdRate(rates.registryGiBMonthsPerUnit)} / GiB-mo after free tier</div>
 		</div>
 		<div class="meter-row">
 			<div class="meter-labels">
@@ -181,6 +184,7 @@
 				<span class="meter-value">{fmtBytes(u.net_egress_external_bytes)} / {fmtBytes(u.free_net_egress_external_bytes)} free</span>
 			</div>
 			<div class="meter-track"><div class="meter-fill meter-fill-net-out-ext" style="width:{pct(u.net_egress_external_bytes, u.free_net_egress_external_bytes)}%"></div></div>
+			<div class="meter-rate">{usdRate(rates.netEgressExternalPerGib)} / GiB after free tier</div>
 		</div>
 	</div>
 </section>
@@ -256,8 +260,8 @@
 					<th>Net Out (int)</th>
 					<th>Net In (ext)</th>
 					<th>Net Out (ext)</th>
-					<th>Storage</th>
-					<th>Registry</th>
+					<th>Block Storage</th>
+					<th>Registry Storage</th>
 					<th>Cost</th>
 				</tr>
 			</thead>
@@ -265,14 +269,14 @@
 				{#each await getProjectRollup() as row}
 					<tr>
 						<td><code class="mono">{row.project_id}</code></td>
-						<td>{cpuHours(row.cpu_seconds)}</td>
-						<td>{gibHours(row.mem_gib_seconds)}</td>
+						<td>{fmtVCPUHours(row.vcpu_hours)}</td>
+						<td>{fmtGiBHours(row.mem_gib_hours)}</td>
 						<td>{fmtBytes(row.net_ingress_internal_bytes)}</td>
 						<td>{fmtBytes(row.net_egress_internal_bytes)}</td>
 						<td>{fmtBytes(row.net_ingress_external_bytes)}</td>
 						<td>{fmtBytes(row.net_egress_external_bytes)}</td>
-						<td>{gibHours(row.storage_gib_seconds)}</td>
-						<td>{gibHours(row.zot_storage_gib_seconds)}</td>
+						<td>{fmtGiBMonths(row.block_storage_gib_months)}</td>
+						<td>{fmtGiBMonths(row.registry_gib_months)}</td>
 						<td class="cost">{usd(row.cost)}</td>
 					</tr>
 				{:else}
@@ -332,6 +336,7 @@
 	.meter-value { font-variant-numeric: tabular-nums; }
 	.meter-track { height: 6px; background: var(--color-surface-2); border-radius: 3px; overflow: hidden; }
 	.meter-fill { height: 100%; background: var(--color-accent, #58a6ff); border-radius: 3px; transition: width 0.3s ease; }
+	.meter-rate { font-size: 11px; color: var(--color-text-muted); margin-top: 0.2rem; font-variant-numeric: tabular-nums; }
 	.meter-fill-storage { background: #a371f7; }
 	.meter-fill-zot { background: #56d4dd; }
 	.meter-fill-net-in-int { background: #d29922; }

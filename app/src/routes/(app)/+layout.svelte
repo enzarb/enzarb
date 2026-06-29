@@ -14,8 +14,10 @@
 		open = false;
 	});
 
+	const currentPath = $derived(page.url.pathname);
+
 	function isProjectActive(orgSlug: string, projectSlug: string) {
-		return page.url.pathname.startsWith(`/${orgSlug}/projects/${projectSlug}`);
+		return currentPath.startsWith(`/${orgSlug}/projects/${projectSlug}`);
 	}
 </script>
 

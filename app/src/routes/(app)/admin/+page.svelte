@@ -27,20 +27,20 @@
 						{#each updateAdminSettings.fields.retentionDays.issues() as issue}<p class="field-error">{issue.message}</p>{/each}
 					</div>
 					<div class="field">
-						<label for="set-free-cpu">Free CPU seconds / month</label>
-						<input id="set-free-cpu" {...updateAdminSettings.fields.freeCPUSeconds.as('text', String(settings.pricing.freeCPUSeconds))} min="0" required />
+						<label for="set-free-cpu">Free vCPU-hours / month</label>
+						<input id="set-free-cpu" {...updateAdminSettings.fields.freeVCPUHours.as('text', String(settings.pricing.freeVCPUHours))} min="0" required />
 					</div>
 					<div class="field">
-						<label for="set-free-mem">Free memory GiB-seconds / month</label>
-						<input id="set-free-mem" {...updateAdminSettings.fields.freeMemGiBSeconds.as('text', String(settings.pricing.freeMemGiBSeconds))} min="0" required />
+						<label for="set-free-mem">Free memory GiB-hours / month</label>
+						<input id="set-free-mem" {...updateAdminSettings.fields.freeMemGiBHours.as('text', String(settings.pricing.freeMemGiBHours))} min="0" required />
 					</div>
 					<div class="field">
-						<label for="set-free-storage">Free storage GiB-seconds / month</label>
-						<input id="set-free-storage" {...updateAdminSettings.fields.freeStorageGiBSeconds.as('text', String(settings.pricing.freeStorageGiBSeconds))} min="0" required />
+						<label for="set-free-storage">Free block storage GiB-months / month</label>
+						<input id="set-free-storage" {...updateAdminSettings.fields.freeBlockStorageGiBMonths.as('text', String(settings.pricing.freeBlockStorageGiBMonths))} min="0" required />
 					</div>
 					<div class="field">
-						<label for="set-free-zot">Free registry storage GiB-seconds / month</label>
-						<input id="set-free-zot" {...updateAdminSettings.fields.freeZotStorageGiBSeconds.as('text', String(settings.pricing.freeZotStorageGiBSeconds))} min="0" required />
+						<label for="set-free-zot">Free registry storage GiB-months / month</label>
+						<input id="set-free-zot" {...updateAdminSettings.fields.freeRegistryGiBMonths.as('text', String(settings.pricing.freeRegistryGiBMonths))} min="0" required />
 					</div>
 					<div class="field">
 						<label for="set-free-net-in-int">Free internal ingress GiB / month</label>
@@ -63,20 +63,20 @@
 				<h4>Billing rates</h4>
 				<div class="fields">
 					<div class="field">
-						<label for="set-cpu">CPU $ / second</label>
-						<input id="set-cpu" {...updateAdminSettings.fields.cpuSecondsPerUnit.as('text', String(settings.pricing.cpuSecondsPerUnit))} step="any" min="0" required />
+						<label for="set-cpu">CPU $ / vCPU-hour</label>
+						<input id="set-cpu" {...updateAdminSettings.fields.vcpuHoursPerUnit.as('text', String(settings.pricing.vcpuHoursPerUnit))} step="any" min="0" required />
 					</div>
 					<div class="field">
-						<label for="set-mem">Memory $ / GiB-second</label>
-						<input id="set-mem" {...updateAdminSettings.fields.memGiBSecondsPerUnit.as('text', String(settings.pricing.memGiBSecondsPerUnit))} step="any" min="0" required />
+						<label for="set-mem">Memory $ / GiB-hour</label>
+						<input id="set-mem" {...updateAdminSettings.fields.memGiBHoursPerUnit.as('text', String(settings.pricing.memGiBHoursPerUnit))} step="any" min="0" required />
 					</div>
 					<div class="field">
-						<label for="set-storage">Storage $ / GiB-second</label>
-						<input id="set-storage" {...updateAdminSettings.fields.storageGiBSecondsPerUnit.as('text', String(settings.pricing.storageGiBSecondsPerUnit))} step="any" min="0" required />
+						<label for="set-storage">Block storage $ / GiB-month</label>
+						<input id="set-storage" {...updateAdminSettings.fields.blockStorageGiBMonthsPerUnit.as('text', String(settings.pricing.blockStorageGiBMonthsPerUnit))} step="any" min="0" required />
 					</div>
 					<div class="field">
-						<label for="set-zot-storage">Registry storage $ / GiB-second</label>
-						<input id="set-zot-storage" {...updateAdminSettings.fields.zotStorageGiBSecondsPerUnit.as('text', String(settings.pricing.zotStorageGiBSecondsPerUnit))} step="any" min="0" required />
+						<label for="set-zot-storage">Registry storage $ / GiB-month</label>
+						<input id="set-zot-storage" {...updateAdminSettings.fields.registryGiBMonthsPerUnit.as('text', String(settings.pricing.registryGiBMonthsPerUnit))} step="any" min="0" required />
 					</div>
 					<div class="field">
 						<label for="set-net-in-int">Internal ingress $ / GiB</label>

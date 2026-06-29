@@ -71,10 +71,10 @@ func main() {
 }
 
 type PricingConfig struct {
-	CPUSecondsPerUnit           float64
-	MemGiBSecondsPerUnit        float64
-	StorageGiBSecondsPerUnit    float64
-	ZotStorageGiBSecondsPerUnit float64
+	VCPUHoursPerUnit             float64
+	MemGiBHoursPerUnit           float64
+	BlockStorageGiBMonthsPerUnit float64
+	RegistryGiBMonthsPerUnit     float64
 	// Network is metered as four independent line items (internal vs external,
 	// ingress vs egress), each priced per GiB.
 	NetIngressInternalPerGiB float64
@@ -83,10 +83,10 @@ type PricingConfig struct {
 	NetEgressExternalPerGiB  float64
 	// Free-tier monthly allowances, one per billed metric. Compute/storage are
 	// in the metric's native unit; network allowances are in GiB.
-	FreeCPUSeconds            float64
-	FreeMemGiBSeconds         float64
-	FreeStorageGiBSeconds     float64
-	FreeZotStorageGiBSeconds  float64
+	FreeVCPUHours             float64
+	FreeMemGiBHours           float64
+	FreeBlockStorageGiBMonths float64
+	FreeRegistryGiBMonths     float64
 	FreeNetIngressInternalGiB float64
 	FreeNetEgressInternalGiB  float64
 	FreeNetIngressExternalGiB float64
@@ -127,22 +127,22 @@ func pricingFromDB(ctx context.Context, db *pgxpool.Pool) (PricingConfig, error)
 	}
 
 	p := PricingConfig{
-		CPUSecondsPerUnit:           parse("pricing_cpu_seconds_per_unit"),
-		MemGiBSecondsPerUnit:        parse("pricing_mem_gib_seconds_per_unit"),
-		StorageGiBSecondsPerUnit:    parse("pricing_storage_gib_seconds_per_unit"),
-		ZotStorageGiBSecondsPerUnit: parse("pricing_zot_storage_gib_seconds_per_unit"),
-		NetIngressInternalPerGiB:    parse("pricing_net_ingress_internal_per_gib"),
-		NetEgressInternalPerGiB:     parse("pricing_net_egress_internal_per_gib"),
-		NetIngressExternalPerGiB:    parse("pricing_net_ingress_external_per_gib"),
-		NetEgressExternalPerGiB:     parse("pricing_net_egress_external_per_gib"),
-		FreeCPUSeconds:              parse("pricing_free_cpu_seconds"),
-		FreeMemGiBSeconds:           parse("pricing_free_mem_gib_seconds"),
-		FreeStorageGiBSeconds:       parse("pricing_free_storage_gib_seconds"),
-		FreeZotStorageGiBSeconds:    parse("pricing_free_zot_storage_gib_seconds"),
-		FreeNetIngressInternalGiB:   parse("pricing_free_net_ingress_internal_gib"),
-		FreeNetEgressInternalGiB:    parse("pricing_free_net_egress_internal_gib"),
-		FreeNetIngressExternalGiB:   parse("pricing_free_net_ingress_external_gib"),
-		FreeNetEgressExternalGiB:    parse("pricing_free_net_egress_external_gib"),
+		VCPUHoursPerUnit:             parse("pricing_vcpu_hours_per_unit"),
+		MemGiBHoursPerUnit:           parse("pricing_mem_gib_hours_per_unit"),
+		BlockStorageGiBMonthsPerUnit: parse("pricing_block_storage_gib_months_per_unit"),
+		RegistryGiBMonthsPerUnit:     parse("pricing_registry_gib_months_per_unit"),
+		NetIngressInternalPerGiB:     parse("pricing_net_ingress_internal_per_gib"),
+		NetEgressInternalPerGiB:      parse("pricing_net_egress_internal_per_gib"),
+		NetIngressExternalPerGiB:     parse("pricing_net_ingress_external_per_gib"),
+		NetEgressExternalPerGiB:      parse("pricing_net_egress_external_per_gib"),
+		FreeVCPUHours:                parse("pricing_free_vcpu_hours"),
+		FreeMemGiBHours:              parse("pricing_free_mem_gib_hours"),
+		FreeBlockStorageGiBMonths:    parse("pricing_free_block_storage_gib_months"),
+		FreeRegistryGiBMonths:        parse("pricing_free_registry_gib_months"),
+		FreeNetIngressInternalGiB:    parse("pricing_free_net_ingress_internal_gib"),
+		FreeNetEgressInternalGiB:     parse("pricing_free_net_egress_internal_gib"),
+		FreeNetIngressExternalGiB:    parse("pricing_free_net_ingress_external_gib"),
+		FreeNetEgressExternalGiB:     parse("pricing_free_net_egress_external_gib"),
 	}
 	if len(errs) > 0 {
 		return PricingConfig{}, fmt.Errorf("%v", errs)
@@ -205,10 +205,10 @@ func generateOrgInvoice(ctx context.Context, db *pgxpool.Pool, orgID, orgSlug, t
 	}
 
 	var totalCents int64
-	totalCents += native(usage["cpu_seconds"], p.FreeCPUSeconds, p.CPUSecondsPerUnit)
-	totalCents += native(usage["mem_gib_seconds"], p.FreeMemGiBSeconds, p.MemGiBSecondsPerUnit)
-	totalCents += native(usage["storage_gib_seconds"], p.FreeStorageGiBSeconds, p.StorageGiBSecondsPerUnit)
-	totalCents += native(usage["zot_storage_gib_seconds"], p.FreeZotStorageGiBSeconds, p.ZotStorageGiBSecondsPerUnit)
+	totalCents += native(usage["vcpu_hours"], p.FreeVCPUHours, p.VCPUHoursPerUnit)
+	totalCents += native(usage["mem_gib_hours"], p.FreeMemGiBHours, p.MemGiBHoursPerUnit)
+	totalCents += native(usage["block_storage_gib_months"], p.FreeBlockStorageGiBMonths, p.BlockStorageGiBMonthsPerUnit)
+	totalCents += native(usage["registry_gib_months"], p.FreeRegistryGiBMonths, p.RegistryGiBMonthsPerUnit)
 	totalCents += netCents(usage["net_ingress_internal_bytes"], p.FreeNetIngressInternalGiB, p.NetIngressInternalPerGiB)
 	totalCents += netCents(usage["net_egress_internal_bytes"], p.FreeNetEgressInternalGiB, p.NetEgressInternalPerGiB)
 	totalCents += netCents(usage["net_ingress_external_bytes"], p.FreeNetIngressExternalGiB, p.NetIngressExternalPerGiB)

@@ -1,4 +1,5 @@
 import { query, command } from '$app/server';
+import { getRequestEvent } from '$app/server';
 import { error } from '@sveltejs/kit';
 import { z } from 'zod/v4';
 import { listRepositories, listTags, getManifest, deleteManifest } from '$lib/zot';
@@ -8,6 +9,21 @@ export const getRepositories = query(async () => {
 	const org = resolveOrg();
 	const all = await listRepositories();
 	return all.filter((r) => r.name.startsWith(`${org.slug}/`));
+});
+
+export const getProjectRepoDetails = query(async () => {
+	const org = resolveOrg();
+	const { params } = getRequestEvent();
+	const projectPrefix = `${org.slug}/${params.project}/`;
+	const exactName = `${org.slug}/${params.project}`;
+	const all = await listRepositories();
+	const projectRepos = all.filter((r) => r.name.startsWith(projectPrefix) || r.name === exactName);
+	return Promise.all(
+		projectRepos.map(async (repo) => {
+			const tagList = await listTags(repo.name);
+			return { name: repo.name, tagCount: (tagList.tags ?? []).length };
+		})
+	);
 });
 
 export const getRepoTags = query(z.string(), async (repo) => {

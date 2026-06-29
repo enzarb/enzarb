@@ -3,14 +3,14 @@
 // function — plain value exports there fail the production build.
 
 export const RESOURCE_TYPES = [
-	'cpu_seconds',
-	'mem_gib_seconds',
+	'vcpu_hours',
+	'mem_gib_hours',
 	'net_ingress_internal_bytes',
 	'net_egress_internal_bytes',
 	'net_ingress_external_bytes',
 	'net_egress_external_bytes',
-	'storage_gib_seconds',
-	'zot_storage_gib_seconds'
+	'block_storage_gib_months',
+	'registry_gib_months'
 ] as const;
 
 export type ResourceType = (typeof RESOURCE_TYPES)[number];

@@ -93,13 +93,12 @@ export const getAgentToken = query(async () => {
 const CreateProjectSchema = z.object({
 	slug: z.string().min(1).max(63).regex(/^[a-z0-9-]+$/),
 	displayName: z.string().min(1),
-	tools: z.array(z.string()).default([]),
 	storageGi: z.coerce.number().int().min(1).default(10)
 });
 
 export const createProject = command(
 	CreateProjectSchema,
-	async ({ slug, displayName, tools, storageGi }) => {
+	async ({ slug, displayName, storageGi }) => {
 		const org = requirePrivilege('project.create');
 
 		const tier = await getOrgTierValue(org.id);
@@ -122,7 +121,7 @@ export const createProject = command(
 		await k8sCreateProject(org.id, {
 			slug,
 			displayName,
-			tools: tools.map((name) => ({ name, version: 'latest' })),
+			tools: [],
 			storageGi
 		});
 		return { slug };

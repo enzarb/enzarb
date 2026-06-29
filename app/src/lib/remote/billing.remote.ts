@@ -23,10 +23,10 @@ async function loadPricing(): Promise<Pricing> {
 // source of truth shared by the per-project rollup and the time series.
 function costForResource(resourceType: string, quantity: number, p: Pricing): number {
 	switch (resourceType) {
-		case 'cpu_seconds':
-			return quantity * (p.pricing_cpu_seconds_per_unit ?? 0);
-		case 'mem_gib_seconds':
-			return quantity * (p.pricing_mem_gib_seconds_per_unit ?? 0);
+		case 'vcpu_hours':
+			return quantity * (p.pricing_vcpu_hours_per_unit ?? 0);
+		case 'mem_gib_hours':
+			return quantity * (p.pricing_mem_gib_hours_per_unit ?? 0);
 		case 'net_ingress_internal_bytes':
 			return (quantity / GIB) * (p.pricing_net_ingress_internal_per_gib ?? 0);
 		case 'net_egress_internal_bytes':
@@ -35,14 +35,32 @@ function costForResource(resourceType: string, quantity: number, p: Pricing): nu
 			return (quantity / GIB) * (p.pricing_net_ingress_external_per_gib ?? 0);
 		case 'net_egress_external_bytes':
 			return (quantity / GIB) * (p.pricing_net_egress_external_per_gib ?? 0);
-		case 'storage_gib_seconds':
-			return quantity * (p.pricing_storage_gib_seconds_per_unit ?? 0);
-		case 'zot_storage_gib_seconds':
-			return quantity * (p.pricing_zot_storage_gib_seconds_per_unit ?? 0);
+		case 'block_storage_gib_months':
+			return quantity * (p.pricing_block_storage_gib_months_per_unit ?? 0);
+		case 'registry_gib_months':
+			return quantity * (p.pricing_registry_gib_months_per_unit ?? 0);
 		default:
 			return 0;
 	}
 }
+
+// Public (no-auth) query that exposes the current per-unit rates and free-tier
+// allowances — used on the home page pricing block and the billing page rate labels.
+export const getPublicPricing = query(async () => {
+	const p = await loadPricing();
+	return {
+		vcpuHoursPerUnit: p.pricing_vcpu_hours_per_unit ?? 0,
+		memGiBHoursPerUnit: p.pricing_mem_gib_hours_per_unit ?? 0,
+		blockStorageGiBMonthsPerUnit: p.pricing_block_storage_gib_months_per_unit ?? 0,
+		registryGiBMonthsPerUnit: p.pricing_registry_gib_months_per_unit ?? 0,
+		netEgressExternalPerGib: p.pricing_net_egress_external_per_gib ?? 0,
+		freeVCPUHours: p.pricing_free_vcpu_hours ?? 0,
+		freeMemGiBHours: p.pricing_free_mem_gib_hours ?? 0,
+		freeBlockStorageGiBMonths: p.pricing_free_block_storage_gib_months ?? 0,
+		freeRegistryGiBMonths: p.pricing_free_registry_gib_months ?? 0,
+		freeNetEgressExternalGib: p.pricing_free_net_egress_external_gib ?? 0,
+	};
+});
 
 export const getUsageSummary = query(async () => {
 	const org = resolveOrg();
@@ -72,18 +90,18 @@ export const getUsageWithLimits = query(async () => {
 
 	const p = await loadPricing();
 	return {
-		cpu_seconds: usage.cpu_seconds ?? 0,
-		mem_gib_seconds: usage.mem_gib_seconds ?? 0,
-		storage_gib_seconds: usage.storage_gib_seconds ?? 0,
-		zot_storage_gib_seconds: usage.zot_storage_gib_seconds ?? 0,
+		vcpu_hours: usage.vcpu_hours ?? 0,
+		mem_gib_hours: usage.mem_gib_hours ?? 0,
+		block_storage_gib_months: usage.block_storage_gib_months ?? 0,
+		registry_gib_months: usage.registry_gib_months ?? 0,
 		net_ingress_internal_bytes: usage.net_ingress_internal_bytes ?? 0,
 		net_egress_internal_bytes: usage.net_egress_internal_bytes ?? 0,
 		net_ingress_external_bytes: usage.net_ingress_external_bytes ?? 0,
 		net_egress_external_bytes: usage.net_egress_external_bytes ?? 0,
-		free_cpu_seconds: p.pricing_free_cpu_seconds ?? 0,
-		free_mem_gib_seconds: p.pricing_free_mem_gib_seconds ?? 0,
-		free_storage_gib_seconds: p.pricing_free_storage_gib_seconds ?? 0,
-		free_zot_storage_gib_seconds: p.pricing_free_zot_storage_gib_seconds ?? 0,
+		free_vcpu_hours: p.pricing_free_vcpu_hours ?? 0,
+		free_mem_gib_hours: p.pricing_free_mem_gib_hours ?? 0,
+		free_block_storage_gib_months: p.pricing_free_block_storage_gib_months ?? 0,
+		free_registry_gib_months: p.pricing_free_registry_gib_months ?? 0,
 		// Network free allowances are configured in GiB; expose as bytes so the
 		// UI meters compare against the raw byte usage above.
 		free_net_ingress_internal_bytes: (p.pricing_free_net_ingress_internal_gib ?? 0) * GIB,
@@ -121,11 +139,11 @@ export const getEstimatedCost = query(async () => {
 
 	const lines = {
 		cpu:
-			billable(usage.cpu_seconds ?? 0, p.pricing_free_cpu_seconds ?? 0) *
-			(p.pricing_cpu_seconds_per_unit ?? 0),
+			billable(usage.vcpu_hours ?? 0, p.pricing_free_vcpu_hours ?? 0) *
+			(p.pricing_vcpu_hours_per_unit ?? 0),
 		mem:
-			billable(usage.mem_gib_seconds ?? 0, p.pricing_free_mem_gib_seconds ?? 0) *
-			(p.pricing_mem_gib_seconds_per_unit ?? 0),
+			billable(usage.mem_gib_hours ?? 0, p.pricing_free_mem_gib_hours ?? 0) *
+			(p.pricing_mem_gib_hours_per_unit ?? 0),
 		net_in_internal:
 			netBillableGib(usage.net_ingress_internal_bytes ?? 0, p.pricing_free_net_ingress_internal_gib ?? 0) *
 			(p.pricing_net_ingress_internal_per_gib ?? 0),
@@ -139,11 +157,11 @@ export const getEstimatedCost = query(async () => {
 			netBillableGib(usage.net_egress_external_bytes ?? 0, p.pricing_free_net_egress_external_gib ?? 0) *
 			(p.pricing_net_egress_external_per_gib ?? 0),
 		storage:
-			billable(usage.storage_gib_seconds ?? 0, p.pricing_free_storage_gib_seconds ?? 0) *
-			(p.pricing_storage_gib_seconds_per_unit ?? 0),
+			billable(usage.block_storage_gib_months ?? 0, p.pricing_free_block_storage_gib_months ?? 0) *
+			(p.pricing_block_storage_gib_months_per_unit ?? 0),
 		zot:
-			billable(usage.zot_storage_gib_seconds ?? 0, p.pricing_free_zot_storage_gib_seconds ?? 0) *
-			(p.pricing_zot_storage_gib_seconds_per_unit ?? 0)
+			billable(usage.registry_gib_months ?? 0, p.pricing_free_registry_gib_months ?? 0) *
+			(p.pricing_registry_gib_months_per_unit ?? 0)
 	};
 	const total = Object.values(lines).reduce((a, b) => a + b, 0);
 
@@ -158,26 +176,26 @@ export const getProjectRollup = query(async () => {
 	const rows = await sql<
 		{
 			project_id: string;
-			cpu_seconds: number;
-			mem_gib_seconds: number;
+			vcpu_hours: number;
+			mem_gib_hours: number;
 			net_ingress_internal_bytes: number;
 			net_egress_internal_bytes: number;
 			net_ingress_external_bytes: number;
 			net_egress_external_bytes: number;
-			storage_gib_seconds: number;
-			zot_storage_gib_seconds: number;
+			block_storage_gib_months: number;
+			registry_gib_months: number;
 		}[]
 	>`
 		SELECT
 			project_id,
-			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'cpu_seconds'), 0)::float8 AS cpu_seconds,
-			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'mem_gib_seconds'), 0)::float8 AS mem_gib_seconds,
+			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'vcpu_hours'), 0)::float8 AS vcpu_hours,
+			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'mem_gib_hours'), 0)::float8 AS mem_gib_hours,
 			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'net_ingress_internal_bytes'), 0)::float8 AS net_ingress_internal_bytes,
 			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'net_egress_internal_bytes'), 0)::float8 AS net_egress_internal_bytes,
 			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'net_ingress_external_bytes'), 0)::float8 AS net_ingress_external_bytes,
 			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'net_egress_external_bytes'), 0)::float8 AS net_egress_external_bytes,
-			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'storage_gib_seconds'), 0)::float8 AS storage_gib_seconds,
-			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'zot_storage_gib_seconds'), 0)::float8 AS zot_storage_gib_seconds
+			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'block_storage_gib_months'), 0)::float8 AS block_storage_gib_months,
+			COALESCE(SUM(quantity) FILTER (WHERE resource_type = 'registry_gib_months'), 0)::float8 AS registry_gib_months
 		FROM usage_events
 		WHERE org_id = ${org.id}
 		  AND recorded_at >= date_trunc('month', now())

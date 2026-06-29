@@ -162,6 +162,61 @@ export async function migrate() {
 		`;
 	}
 
+	// Billing unit migration: rename resource_type values in usage_events and
+	// pricing keys in app_settings from legacy GiB-seconds/cpu-seconds to
+	// standard vCPU-hours, GiB-hours, and GiB-months.
+	//
+	// usage_events: UPDATE rows under old resource_type names to the new ones.
+	// Conversion factors per row (each row accumulated one 60-second tick):
+	//   cpu_seconds         → vcpu_hours           ÷ 3600
+	//   mem_gib_seconds     → mem_gib_hours         ÷ 3600
+	//   storage_gib_seconds → block_storage_gib_months ÷ 2592000 (30d in seconds)
+	//   zot_storage_gib_seconds → registry_gib_months  ÷ 2592000
+	await sql`
+		UPDATE usage_events SET resource_type = 'vcpu_hours', unit = 'vCPU-hr',
+		  quantity = quantity / 3600
+		WHERE resource_type = 'cpu_seconds'
+	`;
+	await sql`
+		UPDATE usage_events SET resource_type = 'mem_gib_hours', unit = 'GiB-hr',
+		  quantity = quantity / 3600
+		WHERE resource_type = 'mem_gib_seconds'
+	`;
+	await sql`
+		UPDATE usage_events SET resource_type = 'block_storage_gib_months', unit = 'GiB-mo',
+		  quantity = quantity / 2592000
+		WHERE resource_type = 'storage_gib_seconds'
+	`;
+	await sql`
+		UPDATE usage_events SET resource_type = 'registry_gib_months', unit = 'GiB-mo',
+		  quantity = quantity / 2592000
+		WHERE resource_type = 'zot_storage_gib_seconds'
+	`;
+
+	// app_settings: migrate pricing keys, converting rates to the new units so
+	// the dollar cost of one unit stays the same.
+	//   cpu rate: old $/cpu-second × 3600 = new $/vCPU-hour
+	//   mem rate: old $/GiB-second × 3600 = new $/GiB-hour
+	//   storage rate: old $/GiB-second × 2592000 = new $/GiB-month
+	for (const [oldKey, newKey, factor] of [
+		['pricing_cpu_seconds_per_unit',          'pricing_vcpu_hours_per_unit',                3600],
+		['pricing_mem_gib_seconds_per_unit',       'pricing_mem_gib_hours_per_unit',             3600],
+		['pricing_storage_gib_seconds_per_unit',   'pricing_block_storage_gib_months_per_unit',  2592000],
+		['pricing_zot_storage_gib_seconds_per_unit','pricing_registry_gib_months_per_unit',      2592000],
+		['pricing_free_cpu_seconds',               'pricing_free_vcpu_hours',                    1 / 3600],
+		['pricing_free_mem_gib_seconds',           'pricing_free_mem_gib_hours',                 1 / 3600],
+		['pricing_free_storage_gib_seconds',       'pricing_free_block_storage_gib_months',      1 / 2592000],
+		['pricing_free_zot_storage_gib_seconds',   'pricing_free_registry_gib_months',           1 / 2592000],
+	] as [string, string, number][]) {
+		await sql`
+			INSERT INTO app_settings (key, value)
+			SELECT ${newKey}, (value::numeric * ${factor})::text
+			FROM app_settings WHERE key = ${oldKey}
+			ON CONFLICT (key) DO NOTHING
+		`;
+		await sql`DELETE FROM app_settings WHERE key = ${oldKey}`;
+	}
+
 	// User-level secret env vars (apply to all projects for a user).
 	await sql`
 		CREATE TABLE IF NOT EXISTS user_secrets (
@@ -248,10 +303,10 @@ export const defaultSettings: Record<string, string> = {
 	free_max_pvc_gi: '5',
 	retention_days: '30',
 	// Per-unit billing rates ($), one per metered resource type.
-	pricing_cpu_seconds_per_unit: '0.0000139',
-	pricing_mem_gib_seconds_per_unit: '0.0000028',
-	pricing_storage_gib_seconds_per_unit: '0.0000000385',
-	pricing_zot_storage_gib_seconds_per_unit: '0.0000000385',
+	pricing_vcpu_hours_per_unit: '0.05004',
+	pricing_mem_gib_hours_per_unit: '0.01008',
+	pricing_block_storage_gib_months_per_unit: '0.099792',
+	pricing_registry_gib_months_per_unit: '0.099792',
 	// Network is metered as four independent line items (internal vs external,
 	// ingress vs egress). Internal rates default to 0; tune in admin settings.
 	pricing_net_ingress_internal_per_gib: '0',
@@ -259,11 +314,11 @@ export const defaultSettings: Record<string, string> = {
 	pricing_net_ingress_external_per_gib: '0.1073741824',
 	pricing_net_egress_external_per_gib: '0.9663676416',
 	// Free-tier monthly allowances, one per billed metric. Compute/storage are
-	// in the metric's native unit (GiB-seconds / cpu-seconds); network is in GiB.
-	pricing_free_cpu_seconds: '36000',
-	pricing_free_mem_gib_seconds: '107374182',
-	pricing_free_storage_gib_seconds: '12960000',
-	pricing_free_zot_storage_gib_seconds: '5184000',
+	// in the metric's native unit; network is in GiB.
+	pricing_free_vcpu_hours: '10',
+	pricing_free_mem_gib_hours: '29827',
+	pricing_free_block_storage_gib_months: '5',
+	pricing_free_registry_gib_months: '2',
 	pricing_free_net_ingress_internal_gib: '100',
 	pricing_free_net_egress_internal_gib: '100',
 	pricing_free_net_ingress_external_gib: '10',

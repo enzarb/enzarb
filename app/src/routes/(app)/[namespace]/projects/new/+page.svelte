@@ -3,36 +3,17 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 
-	const availableTools = [
-		{ name: 'claude', label: 'Claude Code' },
-		{ name: 'node', label: 'Node.js' },
-		{ name: 'python', label: 'Python' },
-		{ name: 'go', label: 'Go' },
-		{ name: 'rust', label: 'Rust' },
-		{ name: 'java', label: 'Java' },
-		{ name: 'kubectl', label: 'kubectl' },
-		{ name: 'terraform', label: 'Terraform' },
-		{ name: 'helm', label: 'Helm' }
-	];
-
-	let selectedTools: string[] = $state([]);
 	let slug = $state('');
 	let displayName = $state('');
 	let storageGi = $state(10);
 	let submitting = $state(false);
 	let submitError = $state<string | null>(null);
 
-	function toggleTool(name: string) {
-		selectedTools = selectedTools.includes(name)
-			? selectedTools.filter((t) => t !== name)
-			: [...selectedTools, name];
-	}
-
 	async function submit() {
 		submitting = true;
 		submitError = null;
 		try {
-			const result = await createProject({ slug, displayName, tools: selectedTools, storageGi });
+			const result = await createProject({ slug, displayName, storageGi });
 			await goto(`/${page.params.namespace}/projects/${result.slug}`);
 		} catch (e: any) {
 			submitError = e?.body?.message ?? e?.message ?? 'Failed to create project';
@@ -63,21 +44,6 @@
 		</div>
 
 		<div class="field">
-			<span class="group-label">Tools <span class="hint">(installed via mise on first boot)</span></span>
-			<div class="tool-grid" role="group" aria-label="Tools">
-				{#each availableTools as tool}
-					<button
-						type="button"
-						class="tool-btn {selectedTools.includes(tool.name) ? 'selected' : ''}"
-						onclick={() => toggleTool(tool.name)}
-					>
-						{tool.label}
-					</button>
-				{/each}
-			</div>
-		</div>
-
-		<div class="field">
 			<label for="storageGi">Workspace storage (GiB)</label>
 			<input id="storageGi" type="number" bind:value={storageGi} min="1" max={limits.maxPvcGi} />
 			<span class="hint">Max {limits.maxPvcGi} GiB on {tier} tier</span>
@@ -103,23 +69,8 @@
 	.back { color: var(--color-text-muted); font-size: 13px; display: block; margin-bottom: 0.5rem; }
 	.new-project-form { max-width: 560px; }
 	.field { margin-bottom: 1.25rem; }
-	label, .group-label { display: block; font-weight: 500; margin-bottom: 0.375rem; }
+	label { display: block; font-weight: 500; margin-bottom: 0.375rem; }
 	.hint { font-size: 12px; color: var(--color-text-muted); }
-	.tool-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
-	.tool-btn {
-		padding: 0.375rem 0.75rem;
-		border-radius: var(--radius);
-		border: 1px solid var(--color-border);
-		background: var(--color-surface-2);
-		color: var(--color-text-muted);
-		font-size: 13px;
-		cursor: pointer;
-	}
-	.tool-btn.selected {
-		border-color: var(--color-accent);
-		background: var(--color-accent-dim);
-		color: var(--color-text);
-	}
 	.actions { display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 1.5rem; }
 	.muted { color: var(--color-text-muted); font-size: 13px; }
 	.error { color: var(--color-danger); padding: 0.75rem; background: #2a1a1a; border-radius: var(--radius); margin-bottom: 1rem; }

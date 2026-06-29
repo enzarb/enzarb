@@ -8,19 +8,19 @@ export interface PlatformSettings {
 	/** Days a soft-deleted project/org is recoverable before the operator purges it. */
 	retentionDays: number;
 	pricing: {
-		cpuSecondsPerUnit: number;
-		memGiBSecondsPerUnit: number;
-		storageGiBSecondsPerUnit: number;
-		zotStorageGiBSecondsPerUnit: number;
+		vcpuHoursPerUnit: number;
+		memGiBHoursPerUnit: number;
+		blockStorageGiBMonthsPerUnit: number;
+		registryGiBMonthsPerUnit: number;
 		netIngressInternalPerGib: number;
 		netEgressInternalPerGib: number;
 		netIngressExternalPerGib: number;
 		netEgressExternalPerGib: number;
 		// Free-tier monthly allowances, one per billed metric.
-		freeCPUSeconds: number;
-		freeMemGiBSeconds: number;
-		freeStorageGiBSeconds: number;
-		freeZotStorageGiBSeconds: number;
+		freeVCPUHours: number;
+		freeMemGiBHours: number;
+		freeBlockStorageGiBMonths: number;
+		freeRegistryGiBMonths: number;
 		freeNetIngressInternalGib: number;
 		freeNetEgressInternalGib: number;
 		freeNetIngressExternalGib: number;
@@ -43,18 +43,18 @@ export async function getSettings(): Promise<PlatformSettings> {
 		freeMaxPvcGi: num('free_max_pvc_gi'),
 		retentionDays: num('retention_days'),
 		pricing: {
-			cpuSecondsPerUnit: num('pricing_cpu_seconds_per_unit'),
-			memGiBSecondsPerUnit: num('pricing_mem_gib_seconds_per_unit'),
-			storageGiBSecondsPerUnit: num('pricing_storage_gib_seconds_per_unit'),
-			zotStorageGiBSecondsPerUnit: num('pricing_zot_storage_gib_seconds_per_unit'),
+			vcpuHoursPerUnit: num('pricing_vcpu_hours_per_unit'),
+			memGiBHoursPerUnit: num('pricing_mem_gib_hours_per_unit'),
+			blockStorageGiBMonthsPerUnit: num('pricing_block_storage_gib_months_per_unit'),
+			registryGiBMonthsPerUnit: num('pricing_registry_gib_months_per_unit'),
 			netIngressInternalPerGib: num('pricing_net_ingress_internal_per_gib'),
 			netEgressInternalPerGib: num('pricing_net_egress_internal_per_gib'),
 			netIngressExternalPerGib: num('pricing_net_ingress_external_per_gib'),
 			netEgressExternalPerGib: num('pricing_net_egress_external_per_gib'),
-			freeCPUSeconds: num('pricing_free_cpu_seconds'),
-			freeMemGiBSeconds: num('pricing_free_mem_gib_seconds'),
-			freeStorageGiBSeconds: num('pricing_free_storage_gib_seconds'),
-			freeZotStorageGiBSeconds: num('pricing_free_zot_storage_gib_seconds'),
+			freeVCPUHours: num('pricing_free_vcpu_hours'),
+			freeMemGiBHours: num('pricing_free_mem_gib_hours'),
+			freeBlockStorageGiBMonths: num('pricing_free_block_storage_gib_months'),
+			freeRegistryGiBMonths: num('pricing_free_registry_gib_months'),
 			freeNetIngressInternalGib: num('pricing_free_net_ingress_internal_gib'),
 			freeNetEgressInternalGib: num('pricing_free_net_egress_internal_gib'),
 			freeNetIngressExternalGib: num('pricing_free_net_ingress_external_gib'),

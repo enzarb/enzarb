@@ -205,11 +205,14 @@ func (w *Worker) meterNamespacePods(ctx context.Context, nsName, orgID, componen
 		}
 
 		cpuMillis, memBytes := podMetrics.cpu, podMetrics.mem
-		// Convert to CPU-seconds (60s interval) and mem GiB-seconds
-		cpuSeconds := float64(cpuMillis) / 1000.0 * 60.0
-		memGiBSeconds := float64(memBytes) / (1024 * 1024 * 1024) * 60.0
+		// Convert to standard billing units over the 60s tick interval.
+		// vCPU-hours: milliCores / 1000 * (60s / 3600s/hr)
+		vcpuHours := float64(cpuMillis) / 60000.0
+		// GiB-hours: GiB * (60s / 3600s/hr)
+		memGiBHours := float64(memBytes) / (1024 * 1024 * 1024) / 60.0
 
-		// Storage: sum PVC capacity
+		// Block storage: sum PVC capacity and convert to GiB-months.
+		// 1 GiB-month = 30d × 24h × 3600s = 2,592,000 GiB-seconds; per 60s tick: GiB / 43200.
 		pvcs, err := w.k8s.CoreV1().PersistentVolumeClaims(nsName).List(ctx, metav1.ListOptions{
 			LabelSelector: fmt.Sprintf("enzarb.io/project=%s", projectSlug),
 		})
@@ -220,16 +223,16 @@ func (w *Worker) meterNamespacePods(ctx context.Context, nsName, orgID, componen
 					storageGiB += float64(q.Value()) / (1024 * 1024 * 1024)
 				}
 			}
-			storageGiBSeconds := storageGiB * 60.0
-			if err := w.insertUsage(ctx, orgID, projectSlug, component, environment, "storage_gib_seconds", storageGiBSeconds, "GiB-s", now); err != nil {
+			storageGiBMonths := storageGiB / 43200.0
+			if err := w.insertUsage(ctx, orgID, projectSlug, component, environment, "block_storage_gib_months", storageGiBMonths, "GiB-mo", now); err != nil {
 				slog.Warn("insert storage usage", "err", err)
 			}
 		}
 
-		if err := w.insertUsage(ctx, orgID, projectSlug, component, environment, "cpu_seconds", cpuSeconds, "cpu-s", now); err != nil {
+		if err := w.insertUsage(ctx, orgID, projectSlug, component, environment, "vcpu_hours", vcpuHours, "vCPU-hr", now); err != nil {
 			slog.Warn("insert cpu usage", "err", err)
 		}
-		if err := w.insertUsage(ctx, orgID, projectSlug, component, environment, "mem_gib_seconds", memGiBSeconds, "GiB-s", now); err != nil {
+		if err := w.insertUsage(ctx, orgID, projectSlug, component, environment, "mem_gib_hours", memGiBHours, "GiB-hr", now); err != nil {
 			slog.Warn("insert mem usage", "err", err)
 		}
 	}
@@ -648,7 +651,7 @@ func (w *Worker) orgIDBySlug(ctx context.Context) (map[string]string, error) {
 }
 
 // collectZotUsage lists registry repositories and sums distinct blob sizes per
-// repo (deduped by digest), recording zot_storage_gib_seconds. Repo paths follow
+// repo (deduped by digest), recording registry_gib_months. Repo paths follow
 // the <orgSlug>/<image> convention, so the first segment maps to the org and the
 // remainder is used as the project_id. Mirrors app/src/lib/zot.ts auth.
 func (w *Worker) collectZotUsage(ctx context.Context) error {
@@ -691,8 +694,10 @@ func (w *Worker) collectZotUsage(ctx context.Context) error {
 			continue
 		}
 		sizeGiB := float64(sizeBytes) / gib
+		// 1 GiB-month = 2,592,000 GiB-seconds; per 60s tick: GiB / 43200.
+		sizeGiBMonths := sizeGiB / 43200.0
 		slog.Info("zot repo usage", "repo", repo, "sizeGiB", sizeGiB)
-		if err := w.insertUsage(ctx, orgID, project, "zot", "", "zot_storage_gib_seconds", sizeGiB*60.0, "GiB-s", now); err != nil {
+		if err := w.insertUsage(ctx, orgID, project, "zot", "", "registry_gib_months", sizeGiBMonths, "GiB-mo", now); err != nil {
 			slog.Warn("insert zot usage", "err", err)
 		}
 	}

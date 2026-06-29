@@ -45,7 +45,6 @@
 		{ href: base, label: 'Overview' },
 		{ href: `${base}/files`, label: 'Files' },
 		{ href: `${base}/registry`, label: 'Registry' },
-{ href: `${base}/tools`, label: 'Tools' },
 		{ href: `${base}/terminal`, label: 'Terminal' },
 		{ href: `${base}/settings`, label: 'Settings' }
 	]}
