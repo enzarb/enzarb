@@ -207,6 +207,13 @@ spec:
       backendRefs:
         - name: enzarb-authd
           port: 8080
-    - backendRefs:
+    - timeouts:
+        # Large blob PUTs to S3 can take 15-30s. Without an explicit timeout
+        # Envoy's 15s default kills the connection mid-upload; BuildKit then
+        # retries with the same upload UUID while the S3 write is still in
+        # progress, causing BLOB_UPLOAD_UNKNOWN when the first write completes
+        # and deletes the session before the retry can finalize it.
+        request: 5m
+      backendRefs:
         - name: zot
           port: 5000
