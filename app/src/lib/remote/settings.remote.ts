@@ -4,7 +4,7 @@ import { error } from '@sveltejs/kit';
 import { z } from 'zod/v4';
 import { sql } from '$lib/db';
 import { encrypt, decrypt } from '$lib/crypto';
-import { orgNamespace, createOrPatchSecret, deleteSecret, listProjects } from '$lib/k8s';
+import { orgNamespace, createOrPatchSecret, deleteSecret, listProjects, restartWorkspacesForOrgs } from '$lib/k8s';
 import { config } from '$lib/config';
 
 function requireSession() {
@@ -13,7 +13,8 @@ function requireSession() {
 	return locals.session;
 }
 
-// Sync the user-level env secrets K8s Secret for all orgs the user belongs to.
+// Sync the user-level env secrets K8s Secret for all orgs the user belongs to,
+// then restart running workspaces so they pick up the updated envFrom values.
 async function syncUserSecrets(userId: string, secrets: Record<string, string>) {
 	const session = (await import('$app/server').then(m => m.getRequestEvent())).locals.session;
 	if (!session) return;
@@ -26,6 +27,7 @@ async function syncUserSecrets(userId: string, secrets: Record<string, string>) 
 			await createOrPatchSecret(ns, secretName, secrets);
 		}
 	}
+	await restartWorkspacesForOrgs(session.orgs.map(o => o.id));
 }
 
 // Load all user secrets as a plain object (for K8s sync).

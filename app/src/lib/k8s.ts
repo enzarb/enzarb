@@ -387,6 +387,18 @@ export async function deleteSecret(namespace: string, name: string) {
 	} catch { /* already gone */ }
 }
 
+// Restart all workspaces in the given orgs so they pick up updated envFrom secrets.
+export async function restartWorkspacesForOrgs(orgIds: string[]) {
+	await Promise.all(
+		orgIds.map(async (orgId) => {
+			const projects = await listProjects(orgId);
+			await Promise.all(
+				projects.map((p: any) => forceRestartWorkspace(orgId, p.metadata.name).catch(() => {}))
+			);
+		})
+	);
+}
+
 export async function forceRestartWorkspace(orgId: string, slug: string) {
 	const ns = orgNamespace(orgId);
 	const proj = (await getProject(orgId, slug)) as { metadata?: { annotations?: unknown } };
