@@ -110,13 +110,31 @@ async fn handle_webhook(
         return (StatusCode::OK, "ignored").into_response();
     }
 
-    let payload: ReleasePayload = match serde_json::from_slice(&body) {
+    // GitHub webhooks can be delivered as raw JSON (application/json) or as a
+    // form field (application/x-www-form-urlencoded) where the JSON is in the
+    // `payload` key. Handle both.
+    let json_body: &[u8] = if body.starts_with(b"payload=") {
+        let encoded = body.strip_prefix(b"payload=").unwrap_or(&body);
+        let decoded = percent_decode(encoded);
+        let payload: ReleasePayload = match serde_json::from_slice(&decoded) {
+            Ok(p) => p,
+            Err(e) => return (StatusCode::BAD_REQUEST, format!("invalid payload: {e}")).into_response(),
+        };
+        return finish_webhook(state, payload).await;
+    } else {
+        &body
+    };
+    let payload: ReleasePayload = match serde_json::from_slice(json_body) {
         Ok(p) => p,
         Err(e) => {
             return (StatusCode::BAD_REQUEST, format!("invalid payload: {e}")).into_response()
         }
     };
 
+    finish_webhook(state, payload).await
+}
+
+async fn finish_webhook(state: AppState, payload: ReleasePayload) -> axum::response::Response {
     if payload.action != "published" {
         return (StatusCode::OK, "ignored").into_response();
     }
@@ -134,6 +152,30 @@ async fn handle_webhook(
 
     info!("HelmChart patched to {version}");
     (StatusCode::OK, format!("patched to {version}")).into_response()
+}
+
+fn percent_decode(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        match input[i] {
+            b'%' if i + 2 < input.len() => {
+                if let Ok(b) = u8::from_str_radix(
+                    std::str::from_utf8(&input[i + 1..i + 3]).unwrap_or(""),
+                    16,
+                ) {
+                    out.push(b);
+                    i += 3;
+                    continue;
+                }
+                out.push(b'%');
+                i += 1;
+            }
+            b'+' => { out.push(b' '); i += 1; }
+            b => { out.push(b); i += 1; }
+        }
+    }
+    out
 }
 
 fn verify_signature(secret: &[u8], body: &[u8], signature: &str) -> bool {

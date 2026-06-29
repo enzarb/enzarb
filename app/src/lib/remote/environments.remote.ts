@@ -7,7 +7,7 @@ import { sql } from '$lib/db';
 import { tiers, config } from '$lib/config';
 import { resolveOrg, requirePrivilege } from './guard';
 
-export const getEnvironments = query(async () => {
+export const getEnvironments = query(z.string().optional(), async () => {
 	const { params } = getRequestEvent();
 	const org = resolveOrg();
 	const [envs, project] = await Promise.all([

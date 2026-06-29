@@ -21,15 +21,18 @@
 
 	let showNewEnv = $state(false);
 	let domainEnv: string | null = $state(null);
-	let envRefresh = $state(0);
+
 	let openDropdown: string | null = $state(null);
 	const domainForm = $derived(domainEnv ? addDomain.for(domainEnv) : null);
 	let copiedNs: string | null = $state(null);
 	const registryPrefix = $derived(`registry.enzarb.dev/${page.params.namespace}/${page.params.project}`);
 
+	const projectRepos = $derived(getProjectRepoDetails(page.params.project));
+	const environments = $derived(getEnvironments(page.params.project));
+
 	async function handleSetDefault(slug: string | null) {
 		await setDefaultEnv({ envSlug: slug });
-		envRefresh++;
+		await getEnvironments(page.params.project).refresh();
 		openDropdown = null;
 	}
 
@@ -83,7 +86,7 @@
 		<div class="two-col">
 			<div class="card images-section">
 				<div class="card-label">Images</div>
-				{#await getProjectRepoDetails() then repos}
+				{#await projectRepos then repos}
 					{#if repos.length === 0}
 						<p class="muted empty-msg">No images yet.<br/><code class="mono small">{registryPrefix}</code></p>
 					{:else}
@@ -124,8 +127,7 @@
 					</div>
 				{/if}
 
-				{#key envRefresh}
-				{#await getEnvironments() then { envs, deployZone, defaultEnvSlug }}
+				{#await environments then { envs, deployZone, defaultEnvSlug }}
 					{#if envs.length === 0 && !showNewEnv}
 						<p class="muted empty-envs">No environments yet.</p>
 					{:else}
@@ -198,7 +200,6 @@
 				{:catch err}
 					<p class="muted">Could not load environments: {err?.message ?? 'unknown error'}</p>
 				{/await}
-				{/key}
 			</div>
 		</div>
 	</div>

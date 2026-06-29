@@ -17,7 +17,7 @@ export const getRepositories = query(async () => {
 	return all.filter((r) => r.name.startsWith(`${org.slug}/`));
 });
 
-export const getProjectRepoDetails = query(async () => {
+export const getProjectRepoDetails = query(z.string().optional(), async () => {
 	const org = resolveOrg();
 	const { params } = getRequestEvent();
 	const projectPrefix = `${org.slug}/${params.project}/`;
