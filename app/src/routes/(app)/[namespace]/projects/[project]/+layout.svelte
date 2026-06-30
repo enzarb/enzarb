@@ -20,6 +20,8 @@
 		dismissed = true;
 	}
 
+	const projectData = $derived(getProject(page.params.project));
+
 	let dismissed = $state(false);
 	let envDismissed = $state(false);
 	let restarting = $state(false);
@@ -54,7 +56,7 @@
 	}
 </script>
 
-{#await getProject(page.params.project) then project}
+{#await projectData then project}
 	{@const base = `/${page.params.namespace}/projects/${page.params.project}`}
 	{@const tabs = [
 		{ href: base, label: 'Overview' },
