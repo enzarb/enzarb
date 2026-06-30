@@ -493,6 +493,19 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug s
 		memLim = *project.Spec.Resources.Limits.Memory()
 	}
 
+	var nodeSelector map[string]string
+	var tolerations []corev1.Toleration
+	gpuResources := corev1.ResourceList{}
+	if project.Spec.GPUEnabled {
+		nodeSelector = map[string]string{"nvidia.com/gpu.present": "true"}
+		tolerations = []corev1.Toleration{{
+			Key:      "nvidia.com/gpu",
+			Operator: corev1.TolerationOpExists,
+			Effect:   corev1.TaintEffectNoSchedule,
+		}}
+		gpuResources[corev1.ResourceName("nvidia.com/gpu")] = resource.MustParse("1")
+	}
+
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -511,6 +524,8 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug s
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: saName,
+					NodeSelector:       nodeSelector,
+					Tolerations:        tolerations,
 					// Make the in-workspace hostname the project slug (a valid
 					// DNS-1123 label) instead of the generated pod name, so shell
 					// prompts read e.g. `user@krustbe` rather than the replica hash.
@@ -573,14 +588,26 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug s
 								{Name: "agent-internal", ContainerPort: 9090},
 							},
 							Resources: corev1.ResourceRequirements{
-								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    cpuReq,
-									corev1.ResourceMemory: memReq,
-								},
-								Limits: corev1.ResourceList{
-									corev1.ResourceCPU:    cpuLim,
-									corev1.ResourceMemory: memLim,
-								},
+								Requests: func() corev1.ResourceList {
+									r := corev1.ResourceList{
+										corev1.ResourceCPU:    cpuReq,
+										corev1.ResourceMemory: memReq,
+									}
+									for k, v := range gpuResources {
+										r[k] = v
+									}
+									return r
+								}(),
+								Limits: func() corev1.ResourceList {
+									l := corev1.ResourceList{
+										corev1.ResourceCPU:    cpuLim,
+										corev1.ResourceMemory: memLim,
+									}
+									for k, v := range gpuResources {
+										l[k] = v
+									}
+									return l
+								}(),
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{Name: "home", MountPath: "/home/user"},

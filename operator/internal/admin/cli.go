@@ -9,6 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
@@ -34,7 +35,7 @@ func newClient() (client.Client, error) {
 // Run dispatches admin subcommands: create-org, set-tier, list-orgs, create-project.
 func Run(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Usage: enzarb admin <create-org|set-tier|list-orgs|create-project> [flags]")
+		fmt.Fprintln(os.Stderr, "Usage: enzarb admin <create-org|set-tier|list-orgs|create-project|set-gpu> [flags]")
 		os.Exit(1)
 	}
 
@@ -47,6 +48,8 @@ func Run(args []string) {
 		runListOrgs()
 	case "create-project":
 		runCreateProject(args[1:])
+	case "set-gpu":
+		runSetGPU(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown admin command: %s\n", args[0])
 		os.Exit(1)
@@ -144,4 +147,36 @@ func runCreateProject(args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("Created project %s/%s\n", orgID, slug)
+}
+
+func runSetGPU(args []string) {
+	if len(args) < 3 {
+		fmt.Fprintln(os.Stderr, "Usage: enzarb admin set-gpu <org-id> <project-slug> <true|false>")
+		os.Exit(1)
+	}
+	orgID := args[0]
+	slug := args[1]
+	enable := args[2] == "true"
+
+	c, err := newClient()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "k8s client: %v\n", err)
+		os.Exit(1)
+	}
+
+	ctx := context.Background()
+	ns := fmt.Sprintf("user-%s", orgID)
+
+	var project enzarbv1alpha1.Project
+	if err := c.Get(ctx, types.NamespacedName{Name: slug, Namespace: ns}, &project); err != nil {
+		fmt.Fprintf(os.Stderr, "get project: %v\n", err)
+		os.Exit(1)
+	}
+
+	project.Spec.GPUEnabled = enable
+	if err := c.Update(ctx, &project); err != nil {
+		fmt.Fprintf(os.Stderr, "update project: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Set gpuEnabled=%v on project %s/%s\n", enable, orgID, slug)
 }

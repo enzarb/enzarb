@@ -83,6 +83,9 @@ type ProjectSpec struct {
 	Tools       []ProjectTool               `json:"tools,omitempty"`
 	Storage     ProjectStorage              `json:"storage,omitempty"`
 	Resources   corev1.ResourceRequirements `json:"resources,omitempty"`
+	// GPUEnabled is an admin-only flag. When true the workspace Pod requests
+	// one nvidia.com/gpu and is scheduled onto a GPU-tainted node.
+	GPUEnabled bool `json:"gpuEnabled,omitempty"`
 }
 
 type ProjectTool struct {

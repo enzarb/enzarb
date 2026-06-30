@@ -7,6 +7,7 @@ import {
 	getProject as k8sGetProject,
 	createProject as k8sCreateProject,
 	resizeProject as k8sResizeProject,
+	setProjectGPU as k8sSetProjectGPU,
 	softDeleteProject,
 	recoverProject as k8sRecoverProject,
 	forceRestartWorkspace,
@@ -160,6 +161,19 @@ export const recoverProjectCommand = command(z.object({ slug: z.string() }), asy
 	const org = requirePrivilege('project.delete');
 	return k8sRecoverProject(org.id, slug);
 });
+
+// Admin-only: enable or disable GPU for a project. Sets spec.gpuEnabled on the
+// Project CRD, causing the operator to add nvidia.com/gpu resources and schedule
+// the workspace onto a GPU node on the next reconcile.
+export const setProjectGPU = command(
+	z.object({ slug: z.string(), enabled: z.boolean() }),
+	async ({ slug, enabled }) => {
+		const { locals } = getRequestEvent();
+		if (!locals.session?.isAdmin) error(403, 'Admin required');
+		const org = resolveOrg();
+		await k8sSetProjectGPU(org.id, slug, enabled);
+	}
+);
 
 export const restartWorkspace = command(z.object({ slug: z.string() }), async ({ slug }) => {
 	const org = resolveOrg();

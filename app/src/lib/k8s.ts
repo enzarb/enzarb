@@ -157,6 +157,18 @@ export async function resizeProject(orgId: string, slug: string, storageGi: numb
 	});
 }
 
+export async function setProjectGPU(orgId: string, slug: string, enabled: boolean) {
+	const ns = orgNamespace(orgId);
+	await customApi.patchNamespacedCustomObject({
+		group: GROUP,
+		version: VERSION,
+		namespace: ns,
+		plural: 'projects',
+		name: slug,
+		body: [{ op: 'replace', path: '/spec/gpuEnabled', value: enabled }]
+	});
+}
+
 export async function softDeleteProject(orgId: string, slug: string, retentionDays: number) {
 	const ns = orgNamespace(orgId);
 	const proj = (await getProject(orgId, slug)) as { metadata?: { annotations?: unknown } };
