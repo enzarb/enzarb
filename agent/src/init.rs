@@ -35,6 +35,7 @@ pub async fn bootstrap() -> Result<()> {
     setup_buildx().await;
     setup_git().await;
     setup_git_remote().await;
+    setup_skel().await;
 
     Ok(())
 }
@@ -131,6 +132,55 @@ async fn setup_git_remote() {
         Ok(s) => tracing::warn!("git clone {remote} exited with status {s}"),
         Err(e) => tracing::warn!("git clone {remote} failed: {e}"),
     }
+}
+
+/// Copy files from /etc/enzarb/skel into $HOME, skipping any that already exist.
+/// This seeds default configs (Claude skills, etc.) on a fresh PVC without
+/// overwriting anything the user has customised.
+async fn setup_skel() {
+    let skel = PathBuf::from("/etc/enzarb/skel");
+    if !skel.exists() {
+        return;
+    }
+    let home = home_dir();
+    copy_dir_idempotent(&skel, &home).await;
+}
+
+fn copy_dir_idempotent<'a>(
+    src: &'a std::path::Path,
+    dst: &'a std::path::Path,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+    Box::pin(async move {
+        let mut entries = match tokio::fs::read_dir(src).await {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!("skel: read_dir {}: {e}", src.display());
+                return;
+            }
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let src_path = entry.path();
+            let dst_path = dst.join(entry.file_name());
+            let ft = match entry.file_type().await {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            if ft.is_dir() {
+                let _ = tokio::fs::create_dir_all(&dst_path).await;
+                copy_dir_idempotent(&src_path, &dst_path).await;
+            } else if ft.is_file() && !dst_path.exists() {
+                if let Err(e) = tokio::fs::copy(&src_path, &dst_path).await {
+                    tracing::warn!(
+                        "skel: copy {} -> {}: {e}",
+                        src_path.display(),
+                        dst_path.display()
+                    );
+                } else {
+                    tracing::debug!("skel: seeded {}", dst_path.display());
+                }
+            }
+        }
+    })
 }
 
 pub fn home_dir() -> PathBuf {

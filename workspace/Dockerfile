@@ -85,6 +85,10 @@ RUN chmod 755 /usr/local/bin/project-agent /usr/local/bin/docker-credential-k8s-
 RUN mkdir -p /etc/enzarb/docker \
     && printf '{"credHelpers":{"registry.enzarb.dev":"k8s-sa"}}\n' > /etc/enzarb/docker/config.json \
     && chown -R user:user /etc/enzarb
+
+# Skeleton home files copied to $HOME on first boot (before the PVC is populated).
+# Add new default dotfiles/configs here; init.rs merges them idempotently.
+COPY --chown=user:user workspace/skel /etc/enzarb/skel
 # DOCKER_CONFIG holds the (read-only) credHelpers pointer. buildx must write its
 # builder state somewhere writable, so point BUILDX_CONFIG at the home PVC rather
 # than under the read-only DOCKER_CONFIG. MISE_TRUSTED_CONFIG_PATHS trusts the
