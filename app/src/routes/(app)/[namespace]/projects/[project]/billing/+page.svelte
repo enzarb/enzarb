@@ -52,7 +52,23 @@
 	const projectId = $derived(page.params.project ?? '');
 	const detail = $derived(getProjectDetail({ projectId }));
 	const seriesArgs = $derived({ projectId, days });
-	const series = $derived(getProjectCostTimeSeries(seriesArgs));
+
+	type ChartBucket = { label: string; segments: { key: string; value: number }[] };
+	let chartBuckets = $state<ChartBucket[]>([]);
+	let chartLoading = $state(false);
+
+	$effect(() => {
+		// Access seriesArgs to make the effect reactive to filter changes.
+		const args = seriesArgs;
+		chartLoading = true;
+		getProjectCostTimeSeries(args).then((s) => {
+			chartBuckets = s.map((b) => ({
+				label: b.day,
+				segments: Object.entries(b.segments).map(([key, value]) => ({ key, value: value as number }))
+			}));
+			chartLoading = false;
+		});
+	});
 
 	type WorkloadRow = {
 		label: string;
@@ -106,16 +122,13 @@
 			{/each}
 		</div>
 	</div>
-	{#await series then s}
+	<div class="chart-wrap" class:chart-loading={chartLoading}>
 		<StackedBarChart
-			buckets={s.map((b) => ({
-				label: b.day,
-				segments: Object.entries(b.segments).map(([key, value]) => ({ key, value }))
-			}))}
+			buckets={chartBuckets}
 			colors={resourceColors}
 			labels={resourceLabels}
 		/>
-	{/await}
+	</div>
 </section>
 
 {#await detail then d}
@@ -236,6 +249,8 @@
 	.chip { font-size: 12px; padding: 0.2rem 0.6rem; border-radius: 999px; border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text-muted); cursor: pointer; }
 	.chip:hover { color: var(--color-text); }
 	.chip.active { background: var(--color-surface-2); color: var(--color-text); border-color: var(--color-accent, var(--color-text-muted)); }
+	.chart-wrap { transition: opacity 0.2s ease; }
+	.chart-wrap.chart-loading { opacity: 0.4; }
 	.toggle { display: flex; align-items: center; gap: 0.4rem; font-size: 12px; color: var(--color-text-muted); cursor: pointer; user-select: none; }
 	.toggle input { cursor: pointer; }
 	.table-scroll { overflow-x: auto; }

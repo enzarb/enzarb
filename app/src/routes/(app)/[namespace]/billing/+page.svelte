@@ -75,6 +75,22 @@
 		resourceTypes: selectedResources as (typeof RESOURCE_TYPES)[number][]
 	});
 
+	type ChartBucket = { label: string; segments: { key: string; value: number }[] };
+	let chartBuckets = $state<ChartBucket[]>([]);
+	let chartLoading = $state(false);
+
+	$effect(() => {
+		const args = seriesArgs;
+		chartLoading = true;
+		getCostTimeSeries(args).then((series) => {
+			chartBuckets = series.map((s) => ({
+				label: s.day,
+				segments: Object.entries(s.segments).map(([key, value]) => ({ key, value: value as number }))
+			}));
+			chartLoading = false;
+		});
+	});
+
 	function toggle(list: string[], value: string): string[] {
 		return list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
 	}
@@ -235,16 +251,13 @@
 			{/each}
 		</div>
 	</div>
-	{#await getCostTimeSeries(seriesArgs) then series}
+	<div class="chart-wrap" class:chart-loading={chartLoading}>
 		<StackedBarChart
-			buckets={series.map((s) => ({
-				label: s.day,
-				segments: Object.entries(s.segments).map(([key, value]) => ({ key, value }))
-			}))}
+			buckets={chartBuckets}
 			colors={resourceColors}
 			labels={resourceLabels}
 		/>
-	{/await}
+	</div>
 </section>
 
 <section class="section">
@@ -328,6 +341,8 @@
 	.chip { font-size: 12px; padding: 0.2rem 0.6rem; border-radius: 999px; border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text-muted); cursor: pointer; }
 	.chip:hover { color: var(--color-text); }
 	.chip.active { background: var(--color-surface-2); color: var(--color-text); border-color: var(--color-accent, var(--color-text-muted)); }
+	.chart-wrap { transition: opacity 0.2s ease; }
+	.chart-wrap.chart-loading { opacity: 0.4; }
 
 	/* Usage meters */
 	.usage-meters { display: flex; flex-direction: column; gap: 0.75rem; max-width: 560px; }
