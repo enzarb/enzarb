@@ -134,7 +134,7 @@ workspace:
   # changelogs is a map of workspace image version tag → workspace-scoped changelog
   # for that release. The operator uses this to show only the changes between the
   # user's running version and the desired version. Populated by CI on workspace builds.
-  changelogs: {}
+  changelogs: {"v0.45.3": "- fix: run processes via mise exec to resolve tool-managed PATH entries (dd94d36)", "v0.46.0": "- feat: prevent duplicate agent instances with an exclusive flock (29d6e30)", "v0.46.2": "- fix: inject POD_NAMESPACE env from mounted ConfigMap into spawned processes (931ac3c)", "v0.48.0": "- feat: remove Gitea and all git repository functionality (6962a82)", "v0.48.1": "- fix: remove git-credential-enzarb from workspace Dockerfile (6bf12e6)", "v0.49.0": "- feat: environments tab, settings page, git diff in files, terminal fix (b4e996d)", "v0.53.0": "- feat: streamline onboarding with env secrets, GitHub OAuth, and auto git setup (14ed587)", "v0.56.1": "- security: OWASP Top 10 remediation across agent, app, and deploy (1f4e826)", "v0.56.2": "- security: agent path/symlink hardening, JWT issuer, workspace netpol, WS auth (8a31ba3)", "v0.62.0": "- feat: seed ~/.claude/skills from /etc/enzarb/skel on fresh workspace PVC (f6d1322)"}
 database:
   clusterName: enzarb-db
   roles:

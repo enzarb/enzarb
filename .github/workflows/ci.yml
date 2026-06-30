@@ -505,16 +505,16 @@ jobs:
           yq '{"app":.app.image.tag,"operator":.operator.image.tag,"metering":.metering.image.tag,"billing":.billing.image.tag,"authd":.authd.image.tag,"webhook":.webhook.image.tag,"workspace":.workspace.image.tag}' charts/enzarb/values.yaml
 
           # When the workspace image advances, record a workspace-scoped changelog
-          # (agent/ directory only) since the previous workspace image version.
+          # (agent/ and workspace/ directories) since the previous workspace image version.
           # This is stored in workspace.changelogs[VERSION] so the operator can
           # show only the changes between the user's running version and the new one.
           if [ "$SET_WORKSPACE" = "true" ]; then
-            # Walk back through version tags to find the last one where agent/ changed.
+            # Walk back through version tags to find the last one where agent/ or workspace/ changed.
             PREV_WORKSPACE_TAG="$PREV_TAG"
             while IFS= read -r t; do
               [ "$t" = "$VERSION" ] && continue
               PREV_T=$(git tag --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -A1 "^${t}$" | tail -1)
-              if [ -n "$PREV_T" ] && git diff --quiet "${PREV_T}..${t}" -- agent/; then
+              if [ -n "$PREV_T" ] && git diff --quiet "${PREV_T}..${t}" -- agent/ workspace/; then
                 continue
               fi
               PREV_WORKSPACE_TAG="$t"
@@ -522,9 +522,9 @@ jobs:
             done < <(git tag --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$')
 
             if [ "$PREV_WORKSPACE_TAG" = "v0.0.0" ]; then
-              WS_LOG=$(git log --pretty=format:"- %s (%h)" -- agent/ | head -50)
+              WS_LOG=$(git log --pretty=format:"- %s (%h)" -- agent/ workspace/ | head -50)
             else
-              WS_LOG=$(git log "${PREV_WORKSPACE_TAG}..HEAD~1" --pretty=format:"- %s (%h)" -- agent/)
+              WS_LOG=$(git log "${PREV_WORKSPACE_TAG}..HEAD~1" --pretty=format:"- %s (%h)" -- agent/ workspace/)
             fi
 
             if [ -n "$WS_LOG" ]; then
