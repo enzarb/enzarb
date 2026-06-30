@@ -165,7 +165,7 @@ export async function setProjectGPU(orgId: string, slug: string, enabled: boolea
 		namespace: ns,
 		plural: 'projects',
 		name: slug,
-		body: [{ op: 'replace', path: '/spec/gpuEnabled', value: enabled }]
+		body: [{ op: 'add', path: '/spec/gpuEnabled', value: enabled }]
 	});
 }
 
