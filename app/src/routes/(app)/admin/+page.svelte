@@ -256,7 +256,7 @@
 <section class="section">
 	<h3>Projects</h3>
 	<table>
-		<thead><tr><th>Owner</th><th>Org</th><th>Project</th><th>Status</th><th>GPU</th><th>Created</th><th>Actions</th></tr></thead>
+		<thead><tr><th>Owner</th><th>Org</th><th>Project</th><th>Status</th><th style="text-align:center">GPU</th><th>Created</th><th>Actions</th></tr></thead>
 		<tbody>
 			{#each await listAllProjects() as p}
 				<tr>
@@ -272,13 +272,14 @@
 							{p.phase || '—'}
 						{/if}
 					</td>
-					<td>
-						<label class="gpu-toggle" title={p.gpuEnabled ? 'GPU enabled — click to disable' : 'GPU disabled — click to enable'}>
+					<td class="gpu-cell">
+						<label class="toggle-switch" title={p.gpuEnabled ? 'GPU enabled — click to disable' : 'GPU disabled — click to enable'}>
 							<input
 								type="checkbox"
 								checked={p.gpuEnabled}
 								onchange={(e) => adminSetProjectGPU({ orgId: p.orgId, slug: p.slug, enabled: e.currentTarget.checked })}
 							/>
+							<span class="toggle-track"><span class="toggle-thumb"></span></span>
 						</label>
 					</td>
 					<td class="muted">{p.createdAt ? new Date(p.createdAt).toLocaleDateString() : '—'}</td>
@@ -382,8 +383,25 @@
 </section>
 
 <style>
-	.gpu-toggle { cursor: pointer; display: flex; align-items: center; }
-	.gpu-toggle input { cursor: pointer; }
+	.gpu-cell { text-align: center; }
+	.toggle-switch { cursor: pointer; display: inline-flex; align-items: center; }
+	.toggle-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+	.toggle-track {
+		position: relative; display: inline-block;
+		width: 2rem; height: 1.1rem;
+		background: var(--color-border);
+		border-radius: 999px;
+		transition: background 0.2s;
+	}
+	.toggle-switch input:checked ~ .toggle-track { background: var(--color-accent, #58a6ff); }
+	.toggle-thumb {
+		position: absolute; top: 0.125rem; left: 0.125rem;
+		width: 0.85rem; height: 0.85rem;
+		background: #fff; border-radius: 50%;
+		transition: transform 0.2s;
+		box-shadow: 0 1px 2px rgba(0,0,0,0.25);
+	}
+	.toggle-switch input:checked ~ .toggle-track .toggle-thumb { transform: translateX(0.9rem); }
 	.section { margin-bottom: 2rem; }
 	.section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
 	.section h3 { font-size: 14px; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
