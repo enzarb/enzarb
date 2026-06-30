@@ -75,6 +75,8 @@ spec:
               "http": {
                 "address": "0.0.0.0",
                 "port": "5000",
+                "readTimeout": 0,
+                "writeTimeout": 0,
                 "auth": {
                   "bearer": {
                     "realm": "https://registry.enzarb.dev/auth/token",
