@@ -5,10 +5,8 @@
 		resizeStorage,
 		removeProject,
 		getProjects,
-		getDeletedProjects,
-		setProjectGPU
+		getDeletedProjects
 	} from '$lib/remote/projects.remote';
-	import { getSession } from '$lib/remote/session.remote';
 	import { getProjectSecrets, setProjectSecret, deleteProjectSecret } from '$lib/remote/settings.remote';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
@@ -66,23 +64,6 @@
 
 	const projectData = $derived(Promise.all([getProject(page.params.project), getOrgTierInfo()]));
 	const projectSecrets = $derived(getProjectSecrets());
-	const session = $derived(getSession());
-
-	let gpuToggling = $state(false);
-	let gpuError = $state('');
-
-	async function handleSetGPU(slug: string, enabled: boolean) {
-		gpuToggling = true;
-		gpuError = '';
-		try {
-			await setProjectGPU({ slug, enabled });
-			await getProject(slug).refresh();
-		} catch (e) {
-			gpuError = e instanceof Error ? e.message : 'Failed to update GPU setting';
-		} finally {
-			gpuToggling = false;
-		}
-	}
 
 	// Project-level env secrets
 	let newSecretKey = $state('');
@@ -186,27 +167,6 @@
 			{#if resizeError}<p class="error-text">{resizeError}</p>{/if}
 		</section>
 
-		{#await session then s}
-			{#if s.isAdmin}
-				<section class="card admin-section">
-					<div>
-						<h3>GPU <span class="badge admin">Admin</span></h3>
-						<p class="muted">Attach a GPU to this workspace. The project will be rescheduled onto a GPU node with <code class="mono">nvidia.com/gpu: 1</code>.</p>
-						{#if gpuError}<p class="error-text">{gpuError}</p>{/if}
-					</div>
-					<label class="toggle-switch">
-						<input
-							type="checkbox"
-							checked={project.spec.gpuEnabled ?? false}
-							disabled={gpuToggling}
-							onchange={(e) => handleSetGPU(project.metadata.name, e.currentTarget.checked)}
-						/>
-						<span class="toggle-label">{project.spec.gpuEnabled ? 'Enabled' : 'Disabled'}</span>
-					</label>
-				</section>
-			{/if}
-		{/await}
-
 		<section class="card danger">
 			<div>
 				<h3>Delete project</h3>
@@ -236,12 +196,6 @@
 	.unit { font-size: 13px; color: var(--color-text-muted); }
 	.hint { font-size: 12px; color: var(--color-text-muted); margin: 0.4rem 0 0; }
 	.error-text { color: var(--color-danger, #c0392b); font-size: 13px; margin-top: 0.5rem; }
-	.admin-section { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
-	.admin-section h3 { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.25rem; }
-	.badge.admin { font-size: 10px; padding: 0.1rem 0.4rem; background: var(--color-surface-2); color: var(--color-text-muted); border: 1px solid var(--color-border); border-radius: 999px; font-weight: 500; letter-spacing: 0.04em; }
-	.toggle-switch { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; flex-shrink: 0; }
-	.toggle-switch input[type=checkbox] { width: 2rem; height: 1.1rem; cursor: pointer; }
-	.toggle-label { font-size: 12px; color: var(--color-text-muted); white-space: nowrap; }
 	.danger { display: flex; justify-content: space-between; align-items: center; gap: 1rem; border-color: var(--color-danger, #c0392b); }
 	.danger h3 { margin-bottom: 0.25rem; }
 	.danger .muted { margin-bottom: 0; }

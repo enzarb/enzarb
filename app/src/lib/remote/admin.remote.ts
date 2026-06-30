@@ -10,7 +10,8 @@ import {
 	listProjects,
 	deleteProject,
 	forceDeleteProject,
-	purgeAfterOf
+	purgeAfterOf,
+	setProjectGPU
 } from '$lib/k8s';
 import { BUILTIN_ROLE_NAMES } from '$lib/privileges';
 
@@ -60,6 +61,7 @@ type AdminProject = {
 	purgeAfter: string | null;
 	deleting: boolean;
 	createdAt: string | null;
+	gpuEnabled: boolean;
 };
 
 // Every project across all orgs, with its deletion state, for admin oversight.
@@ -92,7 +94,8 @@ export const listAllProjects = query(async (): Promise<AdminProject[]> => {
 				phase: p.status?.phase ?? '',
 				purgeAfter: purgeAfterOf(p),
 				deleting: !!p.metadata?.deletionTimestamp,
-				createdAt: p.metadata?.creationTimestamp ?? null
+				createdAt: p.metadata?.creationTimestamp ?? null,
+				gpuEnabled: p.spec?.gpuEnabled ?? false
 			});
 		}
 	}
@@ -115,6 +118,15 @@ export const adminForceDeleteProject = command(ProjectRefSchema, async ({ orgId,
 	await forceDeleteProject(orgId, slug);
 	await listAllProjects().refresh();
 });
+
+export const adminSetProjectGPU = command(
+	ProjectRefSchema.extend({ enabled: z.boolean() }),
+	async ({ orgId, slug, enabled }) => {
+		requireAdmin();
+		await setProjectGPU(orgId, slug, enabled);
+		await listAllProjects().refresh();
+	}
+);
 
 const CreateOrgSchema = z.object({
 	slug: z.string().min(1).max(63).regex(/^[a-z0-9-]+$/),

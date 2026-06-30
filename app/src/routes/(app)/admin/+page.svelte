@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { listOrgs, listDeletedOrgs, listUsers, listAllProjects, adminDeleteProject, adminForceDeleteProject, createOrgAdmin, setOrgTier, deleteOrg, recoverOrg, inviteMember, getAdminSettings, updateAdminSettings, listErrorLogs } from '$lib/remote/admin.remote';
+	import { listOrgs, listDeletedOrgs, listUsers, listAllProjects, adminDeleteProject, adminForceDeleteProject, adminSetProjectGPU, createOrgAdmin, setOrgTier, deleteOrg, recoverOrg, inviteMember, getAdminSettings, updateAdminSettings, listErrorLogs } from '$lib/remote/admin.remote';
 	import { confirm } from '$lib/confirm';
 	let showNewOrg = $state(false);
 	let inviteOrgId: string | null = $state(null);
@@ -256,7 +256,7 @@
 <section class="section">
 	<h3>Projects</h3>
 	<table>
-		<thead><tr><th>Owner</th><th>Org</th><th>Project</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+		<thead><tr><th>Owner</th><th>Org</th><th>Project</th><th>Status</th><th>GPU</th><th>Created</th><th>Actions</th></tr></thead>
 		<tbody>
 			{#each await listAllProjects() as p}
 				<tr>
@@ -271,6 +271,15 @@
 						{:else}
 							{p.phase || '—'}
 						{/if}
+					</td>
+					<td>
+						<label class="gpu-toggle" title={p.gpuEnabled ? 'GPU enabled — click to disable' : 'GPU disabled — click to enable'}>
+							<input
+								type="checkbox"
+								checked={p.gpuEnabled}
+								onchange={(e) => adminSetProjectGPU({ orgId: p.orgId, slug: p.slug, enabled: e.currentTarget.checked })}
+							/>
+						</label>
 					</td>
 					<td class="muted">{p.createdAt ? new Date(p.createdAt).toLocaleDateString() : '—'}</td>
 					<td>
@@ -373,6 +382,8 @@
 </section>
 
 <style>
+	.gpu-toggle { cursor: pointer; display: flex; align-items: center; }
+	.gpu-toggle input { cursor: pointer; }
 	.section { margin-bottom: 2rem; }
 	.section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
 	.section h3 { font-size: 14px; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.06em; }

@@ -48,6 +48,11 @@ spec:
             properties:
               displayName:
                 type: string
+              gpuEnabled:
+                description: |-
+                  GPUEnabled is an admin-only flag. When true the workspace Pod requests
+                  one nvidia.com/gpu and is scheduled onto a GPU-tainted node.
+                type: boolean
               orgId:
                 type: string
               resources:
