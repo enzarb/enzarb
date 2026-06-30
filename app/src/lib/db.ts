@@ -101,6 +101,9 @@ export async function migrate() {
 	// Deploy-environment slug for component='environment' rows; NULL otherwise.
 	await sql`ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS environment TEXT`;
 	await sql`CREATE INDEX IF NOT EXISTS usage_events_org_comp_period ON usage_events(org_id, component, recorded_at)`;
+	// Fine-grained label for per-resource drill-down: pod name for compute, PVC
+	// name for block storage, image path for registry. NULL for network events.
+	await sql`ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS label TEXT`;
 	// Soft-delete marker for organizations; non-null = within the retention
 	// window (recoverable until the operator purges the Organization CR).
 	await sql`ALTER TABLE organizations ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`;

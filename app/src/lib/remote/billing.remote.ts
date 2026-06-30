@@ -286,6 +286,99 @@ export const getCostTimeSeries = query(
 	}
 );
 
+// Per-resource drill-down for a single project: workloads (pods), PVCs, and
+// registry images broken out by label, with per-row cost estimates.
+export const getProjectDetail = query(
+	z.object({ projectId: z.string() }),
+	async ({ projectId }) => {
+		const org = resolveOrg();
+		const p = await loadPricing();
+
+		// Per-pod: CPU, memory, and all four network directions are all labeled with
+		// pod name so we can pivot them into a single workload row.
+		const workloadRows = await sql<{ label: string; resource_type: string; total: number }[]>`
+			SELECT label, resource_type, SUM(quantity)::float8 AS total
+			FROM usage_events
+			WHERE org_id = ${org.id}
+			  AND project_id = ${projectId}
+			  AND resource_type IN (
+			    'vcpu_hours', 'mem_gib_hours',
+			    'net_ingress_internal_bytes', 'net_egress_internal_bytes',
+			    'net_ingress_external_bytes', 'net_egress_external_bytes'
+			  )
+			  AND recorded_at >= date_trunc('month', now())
+			  AND label IS NOT NULL AND label != ''
+			GROUP BY label, resource_type
+			ORDER BY label
+		`;
+
+		const storageRows = await sql<{ label: string; total: number }[]>`
+			SELECT label, SUM(quantity)::float8 AS total
+			FROM usage_events
+			WHERE org_id = ${org.id}
+			  AND project_id = ${projectId}
+			  AND resource_type = 'block_storage_gib_months'
+			  AND recorded_at >= date_trunc('month', now())
+			  AND label IS NOT NULL AND label != ''
+			GROUP BY label
+			ORDER BY label
+		`;
+
+		const imageRows = await sql<{ label: string; total: number }[]>`
+			SELECT label, SUM(quantity)::float8 AS total
+			FROM usage_events
+			WHERE org_id = ${org.id}
+			  AND project_id = ${projectId}
+			  AND resource_type = 'registry_gib_months'
+			  AND recorded_at >= date_trunc('month', now())
+			  AND label IS NOT NULL AND label != ''
+			GROUP BY label
+			ORDER BY label
+		`;
+
+		type WorkloadEntry = {
+			label: string;
+			vcpu_hours: number;
+			mem_gib_hours: number;
+			net_ingress_internal_bytes: number;
+			net_egress_internal_bytes: number;
+			net_ingress_external_bytes: number;
+			net_egress_external_bytes: number;
+			cost: number;
+		};
+		const workloads = new Map<string, WorkloadEntry>();
+		for (const r of workloadRows) {
+			const entry = workloads.get(r.label) ?? {
+				label: r.label,
+				vcpu_hours: 0,
+				mem_gib_hours: 0,
+				net_ingress_internal_bytes: 0,
+				net_egress_internal_bytes: 0,
+				net_ingress_external_bytes: 0,
+				net_egress_external_bytes: 0,
+				cost: 0
+			};
+			(entry as unknown as Record<string, number>)[r.resource_type] = Number(r.total);
+			entry.cost += costForResource(r.resource_type, Number(r.total), p);
+			workloads.set(r.label, entry);
+		}
+
+		return {
+			workloads: [...workloads.values()],
+			storage: storageRows.map((r) => ({
+				label: r.label,
+				gib_months: Number(r.total),
+				cost: costForResource('block_storage_gib_months', Number(r.total), p)
+			})),
+			images: imageRows.map((r) => ({
+				label: r.label,
+				gib_months: Number(r.total),
+				cost: costForResource('registry_gib_months', Number(r.total), p)
+			}))
+		};
+	}
+);
+
 export const getInvoices = query(async () => {
 	const org = resolveOrg();
 	return sql`

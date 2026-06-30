@@ -61,7 +61,8 @@
 		{ href: `${base}/files`, label: 'Files' },
 		{ href: `${base}/registry`, label: 'Registry' },
 		{ href: `${base}/terminal`, label: 'Terminal' },
-		{ href: `${base}/settings`, label: 'Settings' }
+		{ href: `${base}/settings`, label: 'Settings' },
+		{ href: `${base}/billing`, label: 'Billing' }
 	]}
 	<div class="project-shell">
 		<div class="project-header">
