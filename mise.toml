@@ -14,15 +14,19 @@ run = """
 set -euo pipefail
 NS=enzarb-system
 
-echo "==> [1/3] Ensuring auto-generated secrets..."
+echo "==> [1/4] Ensuring auto-generated secrets..."
 bash scripts/setup-secrets.sh "$NS"
 
-echo "==> [2/3] Deploying system charts (Dex, Zot)..."
+echo "==> [2/4] Deploying system charts (Dex, Zot)..."
 kubectl apply -f deploy/system/
 kubectl annotate helmchart -n kube-system dex zot \
   "enzarb.dev/last-deployed=$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite
 
-echo "==> [3/3] Deploying enzarb (operator, app, authd, metering)..."
+echo "==> [3/4] Applying CRDs..."
+cd operator && controller-gen crd paths='./...' output:crd:artifacts:config=config/crd && cd ..
+kubectl apply -f operator/config/crd/
+
+echo "==> [4/4] Deploying enzarb (operator, app, authd, metering)..."
 LATEST=$(gh release list --repo enzarb/enzarb --limit 1 --json tagName --jq '.[0].tagName | ltrimstr("v")')
 echo "    Deploying enzarb v${LATEST}"
 sed -i "s/^  version: .*/  version: ${LATEST}/" deploy/enzarb/enzarb.yaml
@@ -39,8 +43,18 @@ kubectl annotate helmchart -n kube-system dex zot \
   "enzarb.dev/last-deployed=$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite
 """
 
+[tasks.generate-crds]
+description = "Regenerate CRD YAML from Go types via controller-gen"
+run = "cd operator && controller-gen crd paths='./...' output:crd:artifacts:config=config/crd"
+
+[tasks.deploy-crds]
+description = "Regenerate and apply CRDs to the cluster"
+depends = ["generate-crds"]
+run = "kubectl apply -f operator/config/crd/"
+
 [tasks.deploy-enzarb]
-description = "Upgrade enzarb to latest release and apply"
+description = "Upgrade enzarb to latest release, apply CRDs, then apply"
+depends = ["deploy-crds"]
 run = """
 LATEST=$(gh release list --repo enzarb/enzarb --limit 1 --json tagName --jq '.[0].tagName | ltrimstr("v")')
 echo "Deploying enzarb v${LATEST}"

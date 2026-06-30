@@ -151,8 +151,15 @@ spec:
                 items:
                   properties:
                     certStatus:
+                      description: |-
+                        CertStatus doubles as the domain's verification phase:
+                        PendingVerification | VerificationError | DomainConflict | Verified.
                       type: string
                     challengeToken:
+                      description: |-
+                        ChallengeToken is the per-domain secret the tenant must publish as a TXT
+                        record at _enzarb-challenge.<fqdn> (value "enzarb-verify=<token>") to prove
+                        DNS control. Surfaced to the user so they can create the record.
                       type: string
                     fqdn:
                       type: string
@@ -165,6 +172,11 @@ spec:
               namespace:
                 type: string
               subdomain:
+                description: |-
+                  Subdomain is the environment's stable, randomly-generated single DNS label.
+                  The platform serving host is <subdomain>.<deploy zone> (e.g.
+                  k7m2x9qf4r.apps.enzarb.dev), so a single wildcard (*.apps.enzarb.dev)
+                  resolves every environment. Generated once and never changed.
                 type: string
             type: object
         type: object

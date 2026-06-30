@@ -198,7 +198,15 @@ spec:
                   - type
                   type: object
                 type: array
+              desiredWorkspaceImage:
+                description: DesiredWorkspaceImage is the workspace container image
+                  the operator wants to run.
+                type: string
               phase:
+                type: string
+              runningWorkspaceImage:
+                description: RunningWorkspaceImage is the workspace container image
+                  currently deployed.
                 type: string
               serviceAccountName:
                 type: string

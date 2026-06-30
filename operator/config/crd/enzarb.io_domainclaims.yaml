@@ -30,13 +30,27 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          DomainClaim is the cluster-scoped ownership ledger for custom domains;
-          its name is a hash of the FQDN, so etcd name uniqueness binds a hostname
-          to exactly one project.
+          DomainClaim is the cluster-scoped ownership ledger for custom domains. Its
+          metadata.name is a hash of the FQDN, so etcd's name uniqueness guarantees a
+          given hostname can be bound to exactly one project: the operator Creates the
+          claim only after DNS ownership is proven, and a second project's Create of the
+          same name fails, hard-blocking domain hijacking regardless of route
+          creationTimestamp ordering.
         properties:
           apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
             type: string
           kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
             type: string
           metadata:
             type: object
@@ -47,6 +61,9 @@ spec:
               namespace:
                 type: string
               orgID:
+                description: |-
+                  OrgID, ProjectRef and Namespace identify the owning project. Re-verification
+                  and route admission are only honored for the project recorded here.
                 type: string
               projectRef:
                 type: string
