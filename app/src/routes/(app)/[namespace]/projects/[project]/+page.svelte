@@ -27,6 +27,7 @@
 	let copiedNs: string | null = $state(null);
 	const registryPrefix = $derived(`registry.enzarb.dev/${page.params.namespace}/${page.params.project}`);
 
+	const projectData = $derived(Promise.all([getProject(page.params.project), getAgentToken()]));
 	const projectRepos = $derived(getProjectRepoDetails(page.params.project));
 	const environments = $derived(getEnvironments(page.params.project));
 
@@ -47,7 +48,7 @@
 	}
 </script>
 
-{#await Promise.all([getProject(), getAgentToken()]) then [project, token]}
+{#await projectData then [project, token]}
 	<div class="overview">
 		<div class="card storage-card">
 			<div class="card-label">Storage</div>

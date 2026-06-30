@@ -62,6 +62,9 @@
 		}
 	}
 
+	const projectData = $derived(Promise.all([getProject(page.params.project), getOrgTierInfo()]));
+	const projectSecrets = $derived(getProjectSecrets());
+
 	// Project-level env secrets
 	let newSecretKey = $state('');
 	let newSecretValue = $state('');
@@ -94,7 +97,7 @@
 	}
 </script>
 
-{#await Promise.all([getProject(), getOrgTierInfo()]) then [project, { limits }]}
+{#await projectData then [project, { limits }]}
 	{@const currentGi = parseInt(project.spec.storage?.size ?? '0')}
 	{@const gi = resizeGi ?? currentGi + 1}
 
@@ -102,7 +105,7 @@
 		<section class="card">
 			<h3>Environment Variables</h3>
 			<p class="muted">Project-level secrets injected as environment variables. They override user-level secrets with the same key.</p>
-			{#await getProjectSecrets()}
+			{#await projectSecrets}
 				<p class="muted">Loading…</p>
 			{:then secrets}
 				{#if secrets.length > 0}
