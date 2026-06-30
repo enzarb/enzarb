@@ -30,6 +30,9 @@ export const createEnv = form(
 		if (existing.length >= tiers[tier].maxEnvironments) {
 			error(422, `Tier limited to ${tiers[tier].maxEnvironments} environment(s)`);
 		}
+		if (existing.some((e: any) => e.spec?.slug === slug)) {
+			error(409, `Environment "${slug}" already exists`);
+		}
 		const result = await createEnvironment(org.id, params.project!, slug);
 		await getEnvironments().refresh();
 		return result;

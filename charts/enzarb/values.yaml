@@ -161,7 +161,7 @@ gateway:
     enabled: true
   loadBalancerIP: "192.168.33.83"
   issuer:
-    email: curtis.ruck@gmail.com
+    email: support@enzarb.dev
     acmeServer: https://acme-v02.api.letsencrypt.org/directory
 imagePullSecrets: []
 serviceAccountName:
