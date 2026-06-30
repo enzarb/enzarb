@@ -25,6 +25,7 @@
 	let openDropdown: string | null = $state(null);
 	const domainForm = $derived(domainEnv ? addDomain.for(domainEnv) : null);
 	let copiedNs: string | null = $state(null);
+	let copiedUrl: string | null = $state(null);
 	const registryPrefix = $derived(`registry.enzarb.dev/${page.params.namespace}/${page.params.project}`);
 
 	const projectData = $derived(Promise.all([getProject(page.params.project), getAgentToken()]));
@@ -41,6 +42,12 @@
 		await navigator.clipboard.writeText(ns);
 		copiedNs = ns;
 		setTimeout(() => { copiedNs = null; }, 1500);
+	}
+
+	async function copyUrl(url: string) {
+		await navigator.clipboard.writeText(url);
+		copiedUrl = url;
+		setTimeout(() => { copiedUrl = null; }, 1500);
 	}
 
 	function toggleDropdown(name: string) {
@@ -137,24 +144,9 @@
 								{@const isDefault = defaultEnvSlug === env.spec.slug}
 								<div class="env-card">
 									<div class="env-header">
-										<div class="env-info">
-											<div class="env-title">
-												<span class="env-name">{env.spec.slug}</span>
-												{#if isDefault}<span class="badge running">default</span>{/if}
-											</div>
-											{#if env.status?.namespace}
-												<button class="ns-copy" onclick={() => copyNs(env.status.namespace)} title="Copy namespace">
-													<code class="mono small">{env.status.namespace}</code>
-													<span class="copy-hint">{copiedNs === env.status.namespace ? '✓' : '⎘'}</span>
-												</button>
-											{:else}
-												<code class="mono small muted">Provisioning…</code>
-											{/if}
-											{#if env.status?.subdomain}
-												<a class="platform-url" href="https://{env.status.subdomain}.{deployZone}" target="_blank" rel="noopener">
-													{env.status.subdomain}.{deployZone} ↗
-												</a>
-											{/if}
+										<div class="env-title">
+											<span class="env-name">{env.spec.slug}</span>
+											{#if isDefault}<span class="badge running">default</span>{/if}
 										</div>
 										<div class="env-actions">
 											<div class="dropdown" class:open={openDropdown === env.metadata.name}>
@@ -169,6 +161,33 @@
 													</button>
 												</div>
 											</div>
+										</div>
+									</div>
+									<div class="env-info-grid">
+										<span class="env-info-label">Namespace</span>
+										<div class="env-info-value">
+											{#if env.status?.namespace}
+												<code class="mono small">{env.status.namespace}</code>
+												<button class="copy-btn" onclick={() => copyNs(env.status.namespace)} title="Copy namespace">
+													{copiedNs === env.status.namespace ? '✓' : '⎘'}
+												</button>
+											{:else}
+												<span class="muted">Provisioning…</span>
+											{/if}
+										</div>
+										<span class="env-info-label">URL</span>
+										<div class="env-info-value">
+											{#if env.status?.subdomain}
+												{@const platformUrl = `https://${env.status.subdomain}.${deployZone}`}
+												<a class="platform-url" href={platformUrl} target="_blank" rel="noopener">
+													{env.status.subdomain}.{deployZone} ↗
+												</a>
+												<button class="copy-btn" onclick={() => copyUrl(platformUrl)} title="Copy URL">
+													{copiedUrl === platformUrl ? '✓' : '⎘'}
+												</button>
+											{:else}
+												<span class="muted">–</span>
+											{/if}
 										</div>
 									</div>
 
@@ -245,16 +264,18 @@
 	.field-error { color: var(--color-danger); font-size: 12px; margin: 0.25rem 0 0; }
 	.actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
 	.env-list { display: flex; flex-direction: column; gap: 0.5rem; }
-	.env-card { border-top: 1px solid var(--color-border); padding-top: 0.5rem; display: flex; flex-direction: column; gap: 0.5rem; }
-	.env-header { display: flex; justify-content: space-between; align-items: flex-start; }
-	.env-info { display: flex; flex-direction: column; gap: 0.15rem; }
+	.env-card { border-top: 1px solid var(--color-border); padding-top: 0.5rem; display: flex; flex-direction: column; gap: 0.4rem; }
+	.env-header { display: flex; justify-content: space-between; align-items: center; }
 	.env-title { display: flex; align-items: center; gap: 0.4rem; }
 	.env-name { font-weight: 600; font-size: 13px; }
 	.env-actions { display: flex; gap: 0.4rem; align-items: center; flex-shrink: 0; }
-	.ns-copy { background: none; border: none; cursor: pointer; padding: 0; display: flex; align-items: center; gap: 0.3rem; }
-	.ns-copy:hover .mono { text-decoration: underline; }
-	.copy-hint { font-size: 11px; color: var(--color-text-muted); }
-	.platform-url { font-family: var(--font-mono); font-size: 12px; color: var(--color-accent); }
+	.env-info-grid { display: grid; grid-template-columns: max-content 1fr; gap: 0.2rem 0.75rem; align-items: center; }
+	.env-info-label { font-size: 11px; font-weight: 500; color: var(--color-text-muted); white-space: nowrap; }
+	.env-info-value { display: flex; align-items: center; gap: 0.35rem; min-width: 0; }
+	.env-info-value .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.copy-btn { background: none; border: none; cursor: pointer; padding: 0 0.1rem; font-size: 11px; color: var(--color-text-muted); line-height: 1; flex-shrink: 0; }
+	.copy-btn:hover { color: var(--color-text); }
+	.platform-url { font-family: var(--font-mono); font-size: 12px; color: var(--color-accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.platform-url:hover { text-decoration: underline; }
 	.domains { display: flex; flex-direction: column; gap: 0.4rem; padding-left: 0.5rem; }
 	.domain-row { display: flex; align-items: center; gap: 0.6rem; font-size: 13px; }
