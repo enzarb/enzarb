@@ -104,6 +104,9 @@ export async function migrate() {
 	// Fine-grained label for per-resource drill-down: pod name for compute, PVC
 	// name for block storage, image path for registry. NULL for network events.
 	await sql`ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS label TEXT`;
+	// K8s owner of the label resource ("Deployment/my-app", "StatefulSet/db").
+	// Used to group pods by workload controller in the project billing view.
+	await sql`ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS owner TEXT`;
 	// Soft-delete marker for organizations; non-null = within the retention
 	// window (recoverable until the operator purges the Organization CR).
 	await sql`ALTER TABLE organizations ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`;

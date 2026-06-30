@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -105,6 +106,31 @@ type Worker struct {
 	k8s  *kubernetes.Clientset
 	cfg  platformConfig
 	http *http.Client
+
+	// podOwners caches pod name → "Kind/name" owner string, populated each
+	// metrics tick so the Hubble flush can attribute network bytes to the
+	// same owner as the pod's compute events.
+	podOwners   map[string]string
+	podOwnersMu sync.RWMutex
+}
+
+// podOwner resolves the effective owner of a pod as "Kind/name". For pods
+// owned by a ReplicaSet it walks up one level to return the Deployment (or
+// whatever owns the RS). Returns "" if the pod has no owner references.
+func (w *Worker) podOwner(ctx context.Context, ns string, pod *corev1.Pod) string {
+	if len(pod.OwnerReferences) == 0 {
+		return ""
+	}
+	ref := pod.OwnerReferences[0]
+	if ref.Kind != "ReplicaSet" {
+		return ref.Kind + "/" + ref.Name
+	}
+	rs, err := w.k8s.AppsV1().ReplicaSets(ns).Get(ctx, ref.Name, metav1.GetOptions{})
+	if err != nil || len(rs.OwnerReferences) == 0 {
+		return "ReplicaSet/" + ref.Name
+	}
+	parent := rs.OwnerReferences[0]
+	return parent.Kind + "/" + parent.Name
 }
 
 // collectMetrics reads pod resource usage from the metrics-server and writes
@@ -197,6 +223,16 @@ func (w *Worker) meterNamespacePods(ctx context.Context, nsName, orgID, componen
 			continue
 		}
 
+		// Resolve pod owner (Deployment, StatefulSet, etc.) for billing grouping.
+		// Cache in podOwners so the Hubble consumer can attribute network bytes too.
+		owner := w.podOwner(ctx, nsName, &pod)
+		w.podOwnersMu.Lock()
+		if w.podOwners == nil {
+			w.podOwners = map[string]string{}
+		}
+		w.podOwners[pod.Name] = owner
+		w.podOwnersMu.Unlock()
+
 		// Get metrics from metrics-server via SubResource
 		podMetrics, err := w.getPodMetrics(ctx, nsName, pod.Name)
 		if err != nil {
@@ -221,17 +257,17 @@ func (w *Worker) meterNamespacePods(ctx context.Context, nsName, orgID, componen
 				if q, ok := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; ok {
 					pvcGiB := float64(q.Value()) / (1024 * 1024 * 1024)
 					pvcGiBMonths := pvcGiB / 43200.0
-					if err := w.insertUsage(ctx, orgID, projectSlug, component, environment, pvc.Name, "block_storage_gib_months", pvcGiBMonths, "GiB-mo", now); err != nil {
+					if err := w.insertUsage(ctx, orgID, projectSlug, component, environment, pvc.Name, owner, "block_storage_gib_months", pvcGiBMonths, "GiB-mo", now); err != nil {
 						slog.Warn("insert storage usage", "err", err)
 					}
 				}
 			}
 		}
 
-		if err := w.insertUsage(ctx, orgID, projectSlug, component, environment, pod.Name, "vcpu_hours", vcpuHours, "vCPU-hr", now); err != nil {
+		if err := w.insertUsage(ctx, orgID, projectSlug, component, environment, pod.Name, owner, "vcpu_hours", vcpuHours, "vCPU-hr", now); err != nil {
 			slog.Warn("insert cpu usage", "err", err)
 		}
-		if err := w.insertUsage(ctx, orgID, projectSlug, component, environment, pod.Name, "mem_gib_hours", memGiBHours, "GiB-hr", now); err != nil {
+		if err := w.insertUsage(ctx, orgID, projectSlug, component, environment, pod.Name, owner, "mem_gib_hours", memGiBHours, "GiB-hr", now); err != nil {
 			slog.Warn("insert mem usage", "err", err)
 		}
 	}
@@ -274,8 +310,9 @@ func (w *Worker) getPodMetrics(ctx context.Context, ns, name string) (*podMetric
 // insertUsage records a usage event. orgID is the organization's UUID, which is
 // what the `user-<orgID>` namespace encodes — match on it directly. (Matching on
 // slug here silently inserted zero rows, since the namespace carries the id.)
-// label is optional fine-grained attribution (pod name, PVC name, image path).
-func (w *Worker) insertUsage(ctx context.Context, orgID, projectSlug, component, environment, label, resourceType string, quantity float64, unit string, at time.Time) error {
+// label is fine-grained attribution (pod name, PVC name, image path).
+// owner is the K8s owner of the label (e.g. "Deployment/my-app", "StatefulSet/db").
+func (w *Worker) insertUsage(ctx context.Context, orgID, projectSlug, component, environment, label, owner, resourceType string, quantity float64, unit string, at time.Time) error {
 	var env any
 	if environment != "" {
 		env = environment
@@ -284,11 +321,15 @@ func (w *Worker) insertUsage(ctx context.Context, orgID, projectSlug, component,
 	if label != "" {
 		lbl = label
 	}
+	var own any
+	if owner != "" {
+		own = owner
+	}
 	tag, err := w.db.Exec(ctx, `
-		INSERT INTO usage_events (org_id, project_id, component, environment, label, resource_type, quantity, unit, recorded_at)
-		SELECT id, $2, $3, $4, $5, $6, $7, $8, $9
+		INSERT INTO usage_events (org_id, project_id, component, environment, label, owner, resource_type, quantity, unit, recorded_at)
+		SELECT id, $2, $3, $4, $5, $6, $7, $8, $9, $10
 		FROM organizations WHERE id = $1::uuid
-	`, orgID, projectSlug, component, env, lbl, resourceType, quantity, unit, at)
+	`, orgID, projectSlug, component, env, lbl, own, resourceType, quantity, unit, at)
 	if err == nil && tag.RowsAffected() == 0 {
 		slog.Warn("insertUsage matched no org", "orgID", orgID, "resourceType", resourceType)
 	}
@@ -356,19 +397,22 @@ func (w *Worker) consumeHubble(ctx context.Context, path string) {
 			slog.Info("hubble flush", "flows_seen", flowsSeen, "flows_matched", flowsMatched, "buckets", len(counts))
 			flowsSeen, flowsMatched = 0, 0
 			for key, bc := range counts {
-				slog.Info("hubble bucket", "orgID", key.orgID, "project", key.project, "pod", key.pod, "component", key.component, "external", key.external, "ingress", bc.ingress, "egress", bc.egress)
+				w.podOwnersMu.RLock()
+				owner := w.podOwners[key.pod]
+				w.podOwnersMu.RUnlock()
+				slog.Info("hubble bucket", "orgID", key.orgID, "project", key.project, "pod", key.pod, "owner", owner, "component", key.component, "external", key.external, "ingress", bc.ingress, "egress", bc.egress)
 				now := time.Now().UTC()
 				ingressType, egressType := "net_ingress_internal_bytes", "net_egress_internal_bytes"
 				if key.external {
 					ingressType, egressType = "net_ingress_external_bytes", "net_egress_external_bytes"
 				}
 				if bc.ingress > 0 {
-					if err := w.insertUsage(ctx, key.orgID, key.project, key.component, "", key.pod, ingressType, float64(bc.ingress), "bytes", now); err != nil {
+					if err := w.insertUsage(ctx, key.orgID, key.project, key.component, "", key.pod, owner, ingressType, float64(bc.ingress), "bytes", now); err != nil {
 						slog.Warn("insert ingress usage", "err", err)
 					}
 				}
 				if bc.egress > 0 {
-					if err := w.insertUsage(ctx, key.orgID, key.project, key.component, "", key.pod, egressType, float64(bc.egress), "bytes", now); err != nil {
+					if err := w.insertUsage(ctx, key.orgID, key.project, key.component, "", key.pod, owner, egressType, float64(bc.egress), "bytes", now); err != nil {
 						slog.Warn("insert egress usage", "err", err)
 					}
 				}
@@ -716,7 +760,7 @@ func (w *Worker) collectZotUsage(ctx context.Context) error {
 			imageName = parts[2]
 		}
 		slog.Info("zot repo usage", "repo", repo, "sizeGiB", sizeGiB)
-		if err := w.insertUsage(ctx, orgID, project, "zot", "", imageName, "registry_gib_months", sizeGiBMonths, "GiB-mo", now); err != nil {
+		if err := w.insertUsage(ctx, orgID, project, "zot", "", imageName, "", "registry_gib_months", sizeGiBMonths, "GiB-mo", now); err != nil {
 			slog.Warn("insert zot usage", "err", err)
 		}
 	}

@@ -294,10 +294,15 @@ export const getProjectDetail = query(
 		const org = resolveOrg();
 		const p = await loadPricing();
 
-		// Per-pod: CPU, memory, and all four network directions are all labeled with
-		// pod name so we can pivot them into a single workload row.
-		const workloadRows = await sql<{ label: string; resource_type: string; total: number }[]>`
-			SELECT label, resource_type, SUM(quantity)::float8 AS total
+		// Per-pod: CPU, memory, and all four network directions, plus the K8s
+		// owner so the UI can group by Deployment/StatefulSet/etc.
+		const workloadRows = await sql<{
+			label: string;
+			owner: string | null;
+			resource_type: string;
+			total: number;
+		}[]>`
+			SELECT label, MAX(owner) AS owner, resource_type, SUM(quantity)::float8 AS total
 			FROM usage_events
 			WHERE org_id = ${org.id}
 			  AND project_id = ${projectId}
@@ -338,6 +343,7 @@ export const getProjectDetail = query(
 
 		type WorkloadEntry = {
 			label: string;
+			owner: string;
 			vcpu_hours: number;
 			mem_gib_hours: number;
 			net_ingress_internal_bytes: number;
@@ -350,6 +356,7 @@ export const getProjectDetail = query(
 		for (const r of workloadRows) {
 			const entry = workloads.get(r.label) ?? {
 				label: r.label,
+				owner: r.owner ?? '',
 				vcpu_hours: 0,
 				mem_gib_hours: 0,
 				net_ingress_internal_bytes: 0,
@@ -376,6 +383,49 @@ export const getProjectDetail = query(
 				cost: costForResource('registry_gib_months', Number(r.total), p)
 			}))
 		};
+	}
+);
+
+// Daily cost buckets for a single project — same shape as getCostTimeSeries
+// but scoped to one project_id so the project billing page can show a chart.
+export const getProjectCostTimeSeries = query(
+	z.object({
+		projectId: z.string(),
+		days: z.number().int().min(1).max(90).default(30)
+	}),
+	async ({ projectId, days }) => {
+		const org = resolveOrg();
+		const since = new Date(Date.now() - days * 86400000);
+
+		const rows = await sql<{ day: Date; resource_type: string; total: number }[]>`
+			SELECT date_trunc('day', recorded_at) AS day, resource_type, SUM(quantity)::float8 AS total
+			FROM usage_events
+			WHERE org_id = ${org.id}
+			  AND project_id = ${projectId}
+			  AND recorded_at >= ${since}
+			GROUP BY day, resource_type
+			ORDER BY day
+		`;
+
+		const p = await loadPricing();
+		const buckets = new Map<string, Record<string, number>>();
+		for (const r of rows) {
+			const key = new Date(r.day).toISOString().slice(0, 10);
+			const seg = buckets.get(key) ?? {};
+			seg[r.resource_type] =
+				(seg[r.resource_type] ?? 0) + costForResource(r.resource_type, Number(r.total), p);
+			buckets.set(key, seg);
+		}
+		const start = new Date(Date.now() - (days - 1) * 86400000);
+		return Array.from({ length: days }, (_, i) => {
+			const day = new Date(start.getTime() + i * 86400000).toISOString().slice(0, 10);
+			const raw = buckets.get(day) ?? {};
+			const segments: Record<string, number> = {};
+			for (const rt of RESOURCE_TYPES) {
+				if (raw[rt]) segments[rt] = raw[rt];
+			}
+			return { day, segments };
+		});
 	}
 );
 
