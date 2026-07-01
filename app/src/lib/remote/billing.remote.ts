@@ -442,6 +442,65 @@ export const getInvoices = query(async () => {
 	`;
 });
 
+// Converts a raw usage_events total into a display-friendly line item — same
+// unit conventions as the billing worker's stored invoice_line_items (native
+// units for compute/storage, GiB for network) so the fallback recompute reads
+// the same as a real invoice instead of showing raw byte counts.
+function toDisplayLineItem(
+	resourceType: string,
+	total: number,
+	p: Pricing
+): { resource_type: string; quantity: number; unit: string; unit_price_cents: number; amount_cents: number } {
+	let quantity = total;
+	let unit = resourceType;
+	let perUnit = 0;
+	switch (resourceType) {
+		case 'vcpu_hours':
+			unit = 'vcpu_hours';
+			perUnit = p.pricing_vcpu_hours_per_unit ?? 0;
+			break;
+		case 'mem_gib_hours':
+			unit = 'gib_hours';
+			perUnit = p.pricing_mem_gib_hours_per_unit ?? 0;
+			break;
+		case 'block_storage_gib_months':
+			unit = 'gib_months';
+			perUnit = p.pricing_block_storage_gib_months_per_unit ?? 0;
+			break;
+		case 'registry_gib_months':
+			unit = 'gib_months';
+			perUnit = p.pricing_registry_gib_months_per_unit ?? 0;
+			break;
+		case 'net_ingress_internal_bytes':
+			quantity = total / GIB;
+			unit = 'gib';
+			perUnit = p.pricing_net_ingress_internal_per_gib ?? 0;
+			break;
+		case 'net_egress_internal_bytes':
+			quantity = total / GIB;
+			unit = 'gib';
+			perUnit = p.pricing_net_egress_internal_per_gib ?? 0;
+			break;
+		case 'net_ingress_external_bytes':
+			quantity = total / GIB;
+			unit = 'gib';
+			perUnit = p.pricing_net_ingress_external_per_gib ?? 0;
+			break;
+		case 'net_egress_external_bytes':
+			quantity = total / GIB;
+			unit = 'gib';
+			perUnit = p.pricing_net_egress_external_per_gib ?? 0;
+			break;
+	}
+	return {
+		resource_type: resourceType,
+		quantity,
+		unit,
+		unit_price_cents: perUnit * 100,
+		amount_cents: Math.round(quantity * perUnit * 100)
+	};
+}
+
 // Renders a multipage invoice PDF: a summary page (org, period, total) followed
 // by a per-resource-type line item breakdown. Line items come from
 // invoice_line_items — the amounts frozen by the billing worker at generation
@@ -478,13 +537,7 @@ export const getInvoicePdf = query(z.object({ invoiceId: z.string().uuid() }), a
 			GROUP BY resource_type
 		`;
 		const p = await loadPricing();
-		lineItems = usageRows.map((r) => ({
-			resource_type: r.resource_type,
-			quantity: r.total,
-			unit: r.resource_type,
-			unit_price_cents: costForResource(r.resource_type, 1, p) * 100,
-			amount_cents: Math.round(costForResource(r.resource_type, r.total, p) * 100)
-		}));
+		lineItems = usageRows.map((r) => toDisplayLineItem(r.resource_type, r.total, p));
 	}
 
 	const [org_row] = await sql<{ display_name: string }[]>`

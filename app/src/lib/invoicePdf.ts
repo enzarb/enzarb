@@ -29,6 +29,18 @@ const MARGIN = 56;
 const usd = (cents: number) => '$' + (cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtDate = (d: Date) => d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
+// Short, human-readable labels for the unit codes stored on invoice_line_items
+// (see billing/cmd/billing/main.go and toDisplayLineItem in billing.remote.ts).
+// Anything unrecognized (e.g. a raw resource_type slipping through) is shown
+// as-is rather than throwing, since this is a rendering concern only.
+const UNIT_LABELS: Record<string, string> = {
+	vcpu_hours: 'vCPU-hr',
+	gib_hours: 'GiB-hr',
+	gib_months: 'GiB-mo',
+	gib: 'GiB'
+};
+const unitLabel = (unit: string) => UNIT_LABELS[unit] ?? unit;
+
 export async function buildInvoicePdf(data: InvoicePdfData): Promise<Uint8Array> {
 	const doc = await PDFDocument.create();
 	const font = await doc.embedFont(StandardFonts.Helvetica);
@@ -103,7 +115,7 @@ export async function buildInvoicePdf(data: InvoicePdfData): Promise<Uint8Array>
 	}
 
 	// --- Line items table (spills onto new pages as needed) --------------
-	const colX = { resource: MARGIN, qty: MARGIN + 210, unit: MARGIN + 330, rate: MARGIN + 400, amount: PAGE_W - MARGIN - 60 };
+	const colX = { resource: MARGIN, qty: MARGIN + 140, unit: MARGIN + 250, rate: MARGIN + 340, amount: MARGIN + 420 };
 
 	function tableHeader() {
 		ensureSpace(40);
@@ -133,7 +145,7 @@ export async function buildInvoicePdf(data: InvoicePdfData): Promise<Uint8Array>
 		const label = RESOURCE_LABELS[li.resource_type] ?? li.resource_type;
 		text(label, colX.resource, 10);
 		text(li.quantity.toLocaleString('en-US', { maximumFractionDigits: 4 }), colX.qty, 10);
-		text(li.unit, colX.unit, 10);
+		text(unitLabel(li.unit), colX.unit, 10);
 		text(usd(li.unit_price_cents) + '/u', colX.rate, 10);
 		text(usd(li.amount_cents), colX.amount, 10);
 		line(18);
