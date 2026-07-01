@@ -7,20 +7,44 @@
 
 import { env } from '$env/dynamic/private';
 
+// authd-issued tokens are valid for 5 minutes; cache per-scope so a burst of
+// zot calls for the same repo (tag list, per-tag manifests, per-tag config
+// blobs) doesn't mint a fresh token on every single request.
+const TOKEN_CACHE_TTL_MS = 4 * 60 * 1000;
+const tokenCache = new Map<string, { token: string; expiresAt: number }>();
+const tokenInflight = new Map<string, Promise<string>>();
+
 async function registryToken(scope: string): Promise<string> {
-	const authd = env.AUTHD_INTERNAL_URL ?? 'http://enzarb-authd.enzarb-system:8080';
-	const secret = env.REGISTRY_ADMIN_TOKEN ?? '';
-	const params = new URLSearchParams({ service: 'registry.enzarb.dev', scope });
-	const res = await fetch(`${authd}/auth/token?${params}`, {
-		headers: { Authorization: `Basic ${btoa(`admin:${secret}`)}` }
-	});
-	if (!res.ok) {
-		const body = await res.text();
-		console.error(`[authd] token request failed ${res.status}`, { scope, body });
-		throw new Error(`authd token error ${res.status}: ${body}`);
+	const cached = tokenCache.get(scope);
+	if (cached && cached.expiresAt > Date.now()) return cached.token;
+
+	const inflight = tokenInflight.get(scope);
+	if (inflight) return inflight;
+
+	const promise = (async () => {
+		const authd = env.AUTHD_INTERNAL_URL ?? 'http://enzarb-authd.enzarb-system:8080';
+		const secret = env.REGISTRY_ADMIN_TOKEN ?? '';
+		const params = new URLSearchParams({ service: 'registry.enzarb.dev', scope });
+		const res = await fetch(`${authd}/auth/token?${params}`, {
+			headers: { Authorization: `Basic ${btoa(`admin:${secret}`)}` }
+		});
+		if (!res.ok) {
+			const body = await res.text();
+			console.error(`[authd] token request failed ${res.status}`, { scope, body });
+			throw new Error(`authd token error ${res.status}: ${body}`);
+		}
+		const data = await res.json();
+		const token = data.token ?? data.access_token;
+		tokenCache.set(scope, { token, expiresAt: Date.now() + TOKEN_CACHE_TTL_MS });
+		return token;
+	})();
+
+	tokenInflight.set(scope, promise);
+	try {
+		return await promise;
+	} finally {
+		tokenInflight.delete(scope);
 	}
-	const data = await res.json();
-	return data.token ?? data.access_token;
 }
 
 async function zotFetch(path: string, scope: string, options?: RequestInit) {
@@ -62,6 +86,12 @@ export async function listRepositories(): Promise<Repository[]> {
 export async function listTags(repo: string): Promise<TagList> {
 	const res = await zotFetch(`/v2/${repo}/tags/list`, `repository:${repo}:pull`);
 	if (res.status === 404) return { name: repo, tags: [] };
+	return res.json();
+}
+
+export async function getBlob(repo: string, digest: string) {
+	const res = await zotFetch(`/v2/${repo}/blobs/${digest}`, `repository:${repo}:pull`);
+	if (res.status === 404) return null;
 	return res.json();
 }
 

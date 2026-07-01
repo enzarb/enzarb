@@ -1,50 +1,17 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { getProjectDetail, getProjectCostTimeSeries } from '$lib/remote/billing.remote';
-	import { RESOURCE_TYPES } from '$lib/billing';
+	import {
+		RESOURCE_TYPES,
+		RESOURCE_LABELS as resourceLabels,
+		RESOURCE_COLORS as resourceColors,
+		usd,
+		fmtVCPUHours,
+		fmtGiBHours,
+		fmtGiBMonths,
+		fmtBytes
+	} from '$lib/billing';
 	import StackedBarChart from '$lib/components/StackedBarChart.svelte';
-
-	const resourceLabels: Record<string, string> = {
-		vcpu_hours: 'CPU',
-		mem_gib_hours: 'Memory',
-		net_ingress_internal_bytes: 'Net In (internal)',
-		net_egress_internal_bytes: 'Net Out (internal)',
-		net_ingress_external_bytes: 'Net In (external)',
-		net_egress_external_bytes: 'Net Out (external)',
-		block_storage_gib_months: 'Block Storage',
-		registry_gib_months: 'Registry Storage'
-	};
-
-	const resourceColors: Record<string, string> = {
-		vcpu_hours: '#58a6ff',
-		mem_gib_hours: '#3fb950',
-		net_ingress_internal_bytes: '#d29922',
-		net_egress_internal_bytes: '#e3b341',
-		net_ingress_external_bytes: '#db6d28',
-		net_egress_external_bytes: '#f0883e',
-		block_storage_gib_months: '#a371f7',
-		registry_gib_months: '#56d4dd'
-	};
-
-	const usd = (n: number) =>
-		n.toLocaleString('en-US', {
-			style: 'currency',
-			currency: 'USD',
-			minimumFractionDigits: 2,
-			maximumFractionDigits: n < 1 ? 4 : 2
-		});
-	const fmtVCPUHours = (h: number) =>
-		h.toLocaleString('en-US', { maximumFractionDigits: 2 }) + ' vCPU-hr';
-	const fmtGiBHours = (h: number) =>
-		h.toLocaleString('en-US', { maximumFractionDigits: 2 }) + ' GiB-hr';
-	const fmtGiBMonths = (m: number) =>
-		m.toLocaleString('en-US', { maximumFractionDigits: 3 }) + ' GiB-mo';
-	const fmtBytes = (bytes: number) => {
-		if (bytes === 0) return '—';
-		const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-		const i = Math.min(Math.floor(Math.log2(bytes) / 10), units.length - 1);
-		return (bytes / Math.pow(1024, i)).toLocaleString('en-US', { maximumFractionDigits: 2 }) + ' ' + units[i];
-	};
 
 	let days = $state(30);
 	let groupByOwner = $state(true);

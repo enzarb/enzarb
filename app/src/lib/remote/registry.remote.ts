@@ -2,7 +2,7 @@ import { query, command } from '$app/server';
 import { getRequestEvent } from '$app/server';
 import { error } from '@sveltejs/kit';
 import { z } from 'zod/v4';
-import { listRepositories, listTags, getManifest, deleteManifest } from '$lib/zot';
+import { listRepositories, listTags, getManifest, getBlob, deleteManifest } from '$lib/zot';
 import { resolveOrg, requirePrivilege } from './guard';
 
 export const getRepositories = query(async () => {
@@ -38,7 +38,11 @@ export const getRepoTags = query(z.string(), async (repo) => {
 	return listTags(repo);
 });
 
-type ResolvedLayers = { layers: { digest: string; size: number }[]; totalSize: number };
+type ResolvedLayers = {
+	layers: { digest: string; size: number }[];
+	totalSize: number;
+	configDigest?: string;
+};
 
 // Resolves a tag/digest reference down to its concrete layer+config blobs,
 // following one level into a manifest index (multi-arch) by picking the
@@ -59,7 +63,13 @@ async function resolveLayers(repo: string, reference: string): Promise<ResolvedL
 		layers.push({ digest: manifest.config.digest, size: manifest.config.size ?? 0 });
 	}
 	const totalSize = layers.reduce((sum: number, l: { size: number }) => sum + l.size, 0);
-	return { layers, totalSize };
+	return { layers, totalSize, configDigest: manifest.config?.digest };
+}
+
+async function getCreatedDate(repo: string, configDigest: string | undefined): Promise<string | null> {
+	if (!configDigest) return null;
+	const config = await getBlob(repo, configDigest);
+	return config?.created ?? null;
 }
 
 // Per-tag size, plus how much of that size is unique to this tag within the
@@ -86,14 +96,17 @@ export const getRepoTagSizes = query(z.string(), async (repo) => {
 		for (const l of data.layers) digestSize.set(l.digest, l.size);
 	}
 
-	const tagSizes = resolved.map(({ tag, data }) => {
-		if (!data) return { tag, totalSize: 0, uniqueSize: 0 };
-		let uniqueSize = 0;
-		for (const l of new Set(data.layers.map((x) => x.digest))) {
-			if (digestRefCount.get(l) === 1) uniqueSize += digestSize.get(l) ?? 0;
-		}
-		return { tag, totalSize: data.totalSize, uniqueSize };
-	});
+	const tagSizes = await Promise.all(
+		resolved.map(async ({ tag, data }) => {
+			if (!data) return { tag, totalSize: 0, uniqueSize: 0, createdAt: null };
+			let uniqueSize = 0;
+			for (const l of new Set(data.layers.map((x) => x.digest))) {
+				if (digestRefCount.get(l) === 1) uniqueSize += digestSize.get(l) ?? 0;
+			}
+			const createdAt = await getCreatedDate(repo, data.configDigest);
+			return { tag, totalSize: data.totalSize, uniqueSize, createdAt };
+		})
+	);
 
 	const totalUniqueBytes = [...digestSize.values()].reduce((a, b) => a + b, 0);
 	const naiveSumBytes = tagSizes.reduce((a, t) => a + t.totalSize, 0);
