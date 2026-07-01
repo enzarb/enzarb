@@ -328,6 +328,17 @@ export async function createEnvironment(orgId: string, projectSlug: string, slug
 	});
 }
 
+export async function deleteEnvironment(orgId: string, envName: string) {
+	const ns = orgNamespace(orgId);
+	return customApi.deleteNamespacedCustomObject({
+		group: GROUP,
+		version: VERSION,
+		namespace: ns,
+		plural: 'environments',
+		name: envName
+	});
+}
+
 export async function addCustomDomain(orgId: string, envName: string, fqdn: string) {
 	const ns = orgNamespace(orgId);
 	const env = await customApi.getNamespacedCustomObject({

@@ -150,14 +150,19 @@ func (w *Worker) collectMetrics(ctx context.Context) error {
 			orgID := strings.TrimPrefix(ns.Name, "user-")
 			w.meterNamespacePods(ctx, ns.Name, orgID, "workspace", "", now)
 		case strings.HasPrefix(ns.Name, "deploy-"):
-			// Deploy environment: org/project come from namespace labels (set by
-			// the operator's EnvironmentReconciler); env slug is the trailing
-			// segment of deploy-<orgID>-<projSlug>-<envSlug>.
+			// Deploy environment: org/project/env come from namespace labels (set
+			// by the operator's EnvironmentReconciler). The namespace name itself
+			// is a truncated/hashed identifier and isn't reliably parseable, so
+			// deployEnvSlug is only a legacy fallback for namespaces predating the
+			// env-slug label.
 			orgID := ns.Labels["enzarb.io/org-id"]
 			if orgID == "" {
 				continue
 			}
-			envSlug := deployEnvSlug(ns.Name, orgID, ns.Labels["enzarb.io/project-slug"])
+			envSlug := ns.Labels["enzarb.io/env-slug"]
+			if envSlug == "" {
+				envSlug = deployEnvSlug(ns.Name, orgID, ns.Labels["enzarb.io/project-slug"])
+			}
 			w.meterNamespacePods(ctx, ns.Name, orgID, "environment", envSlug, now)
 		}
 	}

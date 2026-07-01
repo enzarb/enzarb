@@ -2,7 +2,7 @@ import { query, form, command } from '$app/server';
 import { getRequestEvent } from '$app/server';
 import { error } from '@sveltejs/kit';
 import { z } from 'zod/v4';
-import { listEnvironments, createEnvironment, addCustomDomain, setDefaultEnvironment, getProject as k8sGetProject } from '$lib/k8s';
+import { listEnvironments, createEnvironment, deleteEnvironment, addCustomDomain, setDefaultEnvironment, getProject as k8sGetProject } from '$lib/k8s';
 import { sql } from '$lib/db';
 import { tiers, config } from '$lib/config';
 import { resolveOrg, requirePrivilege } from './guard';
@@ -36,6 +36,20 @@ export const createEnv = form(
 		const result = await createEnvironment(org.id, params.project!, slug);
 		await getEnvironments().refresh();
 		return result;
+	}
+);
+
+export const removeEnv = command(
+	z.object({ envName: z.string(), envSlug: z.string() }),
+	async ({ envName, envSlug }) => {
+		const { params } = getRequestEvent();
+		const org = requirePrivilege('environment.manage');
+		const project = (await k8sGetProject(org.id, params.project!)) as any;
+		if (project?.metadata?.annotations?.['enzarb.io/default-environment'] === envSlug) {
+			await setDefaultEnvironment(org.id, params.project!, null);
+		}
+		await deleteEnvironment(org.id, envName);
+		await getEnvironments().refresh();
 	}
 );
 

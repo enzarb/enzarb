@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { getProject, getAgentToken } from '$lib/remote/projects.remote';
-	import { getEnvironments, createEnv, addDomain, setDefaultEnv } from '$lib/remote/environments.remote';
+	import { getEnvironments, createEnv, addDomain, setDefaultEnv, removeEnv } from '$lib/remote/environments.remote';
 	import { getProjectRepoDetails } from '$lib/remote/registry.remote';
 	import { page } from '$app/state';
+	import { confirm } from '$lib/confirm';
 
 	function formatBytes(bytes: number): string {
 		if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + ' GiB';
@@ -38,6 +39,18 @@
 		openDropdown = null;
 	}
 
+	async function handleDeleteEnv(envName: string, envSlug: string) {
+		openDropdown = null;
+		const ok = await confirm({
+			title: `Delete environment "${envSlug}"?`,
+			message: 'This will tear down its namespace and deployed resources. This cannot be undone.',
+			confirmText: 'Delete',
+			danger: true
+		});
+		if (!ok) return;
+		await removeEnv({ envName, envSlug });
+	}
+
 	async function copyNs(ns: string) {
 		await navigator.clipboard.writeText(ns);
 		copiedNs = ns;
@@ -53,6 +66,27 @@
 	function toggleDropdown(name: string) {
 		openDropdown = openDropdown === name ? null : name;
 	}
+
+	// Poll while any environment is still provisioning (no namespace assigned
+	// yet) so the "Provisioning…" overlay clears as soon as the operator
+	// finishes creating it.
+	$effect(() => {
+		const slug = page.params.project;
+		let cancelled = false;
+		const timer = setInterval(async () => {
+			if (cancelled) return;
+			try {
+				const { envs } = await getEnvironments(slug);
+				if (envs.some((e: any) => !e.status?.namespace)) {
+					await getEnvironments(slug).refresh();
+				}
+			} catch {}
+		}, 3000);
+		return () => {
+			cancelled = true;
+			clearInterval(timer);
+		};
+	});
 </script>
 
 {#await projectData then [project, token]}
@@ -142,7 +176,14 @@
 						<div class="env-list">
 							{#each envs as env}
 								{@const isDefault = defaultEnvSlug === env.spec.slug}
-								<div class="env-card">
+								{@const provisioning = !env.status?.namespace}
+								<div class="env-card" class:provisioning>
+									{#if provisioning}
+										<div class="env-provisioning-overlay">
+											<div class="spinner small"></div>
+											<span>Provisioning…</span>
+										</div>
+									{/if}
 									<div class="env-header">
 										<div class="env-title">
 											<span class="env-name">{env.spec.slug}</span>
@@ -150,7 +191,7 @@
 										</div>
 										<div class="env-actions">
 											<div class="dropdown" class:open={openDropdown === env.metadata.name}>
-												<button class="btn btn-sm btn-subtle dropdown-trigger" onclick={() => toggleDropdown(env.metadata.name)} title="Actions">⋯</button>
+												<button class="btn btn-sm btn-subtle dropdown-trigger" disabled={provisioning} onclick={() => toggleDropdown(env.metadata.name)} title="Actions">⋯</button>
 												<div class="dropdown-menu">
 													<button class="dropdown-item" onclick={() => handleSetDefault(isDefault ? null : env.spec.slug)}>
 														<span class="check-mark">{isDefault ? '✓' : ''}</span>
@@ -158,6 +199,9 @@
 													</button>
 													<button class="dropdown-item" onclick={() => { domainEnv = domainEnv === env.metadata.name ? null : env.metadata.name; openDropdown = null; }}>
 														Set domain
+													</button>
+													<button class="dropdown-item dropdown-item-danger" onclick={() => handleDeleteEnv(env.metadata.name, env.spec.slug)}>
+														Delete
 													</button>
 												</div>
 											</div>
@@ -264,7 +308,31 @@
 	.field-error { color: var(--color-danger); font-size: 12px; margin: 0.25rem 0 0; }
 	.actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
 	.env-list { display: flex; flex-direction: column; gap: 0.5rem; }
-	.env-card { border-top: 1px solid var(--color-border); padding-top: 0.5rem; display: flex; flex-direction: column; gap: 0.4rem; }
+	.env-card { position: relative; border-top: 1px solid var(--color-border); padding-top: 0.5rem; display: flex; flex-direction: column; gap: 0.4rem; }
+	.env-card.provisioning > *:not(.env-provisioning-overlay) { opacity: 0.4; pointer-events: none; }
+	.env-provisioning-overlay {
+		position: absolute;
+		inset: 0.5rem 0 0 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.5rem;
+		font-size: 12px;
+		color: var(--color-text-muted);
+		background: var(--color-surface);
+		z-index: 2;
+	}
+	.spinner.small {
+		width: 14px;
+		height: 14px;
+		border: 2px solid var(--color-border);
+		border-top-color: var(--color-accent);
+		border-radius: 50%;
+		animation: spin 0.8s linear infinite;
+	}
+	@keyframes spin {
+		to { transform: rotate(360deg); }
+	}
 	.env-header { display: flex; justify-content: space-between; align-items: center; }
 	.env-title { display: flex; align-items: center; gap: 0.4rem; }
 	.env-name { font-weight: 600; font-size: 13px; }
@@ -313,5 +381,6 @@
 		text-align: left;
 	}
 	.dropdown-item:hover { background: var(--color-surface-2); }
+	.dropdown-item-danger { color: var(--color-danger); }
 	.check-mark { display: inline-block; width: 1em; text-align: center; font-size: 12px; }
 </style>

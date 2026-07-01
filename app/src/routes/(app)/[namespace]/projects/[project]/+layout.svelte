@@ -54,6 +54,26 @@
 			restarting = false;
 		}
 	}
+
+	// Poll while the project is still provisioning so the "Pending" badge and
+	// lock overlay clear as soon as the operator finishes reconciling.
+	$effect(() => {
+		const slug = page.params.project;
+		let cancelled = false;
+		const timer = setInterval(async () => {
+			if (cancelled) return;
+			try {
+				const project = await getProject(slug);
+				if (project.status?.phase === 'Pending') {
+					await getProject(slug).refresh();
+				}
+			} catch {}
+		}, 3000);
+		return () => {
+			cancelled = true;
+			clearInterval(timer);
+		};
+	});
 </script>
 
 {#await projectData then project}
@@ -136,8 +156,16 @@
 				</div>
 			</div>
 		{/if}
-		<div class="project-content">
-			{@render children()}
+		<div class="project-content-wrap">
+			<div class="project-content" class:locked={project.status?.phase === 'Pending'}>
+				{@render children()}
+			</div>
+			{#if project.status?.phase === 'Pending'}
+				<div class="provisioning-overlay">
+					<div class="spinner"></div>
+					<p>Provisioning workspace…</p>
+				</div>
+			{/if}
 		</div>
 	</div>
 {/await}
@@ -150,7 +178,32 @@
 	.tab { padding: 0.5rem 1rem; color: var(--color-text-muted); font-size: 13px; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
 	.tab:hover { color: var(--color-text); text-decoration: none; }
 	.tab.active { color: var(--color-text); border-bottom-color: var(--color-accent); }
+	.project-content-wrap { position: relative; flex: 1; display: flex; }
 	.project-content { flex: 1; }
+	.project-content.locked { pointer-events: none; opacity: 0.4; }
+	.provisioning-overlay {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 0.75rem;
+		background: rgba(0, 0, 0, 0.25);
+		z-index: 5;
+	}
+	.provisioning-overlay p { font-size: 13px; color: var(--color-text); }
+	.spinner {
+		width: 28px;
+		height: 28px;
+		border: 3px solid var(--color-border);
+		border-top-color: var(--color-accent);
+		border-radius: 50%;
+		animation: spin 0.8s linear infinite;
+	}
+	@keyframes spin {
+		to { transform: rotate(360deg); }
+	}
 	.update-banner { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; padding: 0.75rem 1rem; margin-bottom: 1rem; background: #1a1a00; border: 1px solid #5a5a00; border-radius: 6px; }
 	.update-banner.env-banner { background: #001a1a; border-color: #005a5a; }
 	.update-banner-body { flex: 1; min-width: 0; }

@@ -61,14 +61,22 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, fmt.Errorf("get project: %w", err)
 	}
 
-	// Namespace encodes org/project/env. The project slug isn't unambiguously
-	// parseable back out (UUIDs and slugs both contain '-'), so authd resolves a
-	// deploy pod's pull scope from the labels set below, not the name.
-	deployNS := fmt.Sprintf("deploy-%s-%s-%s", project.Spec.OrgID, project.Spec.Slug, env.Spec.Slug)
+	// Namespace name is sticky once assigned: reuse the existing one so
+	// environments created before deployNamespaceName existed keep their
+	// original (unhashed) namespace instead of getting orphaned by a rename.
+	// New environments get a truncated, human-readable prefix plus a hash
+	// suffix (see deployNamespaceName) since org UUID + two 63-char slugs can
+	// exceed the Kubernetes 63-char namespace limit. Either way the name isn't
+	// unambiguously parseable back out, so authd/metering resolve org/project/env
+	// from the labels set below.
+	deployNS := env.Status.Namespace
+	if deployNS == "" {
+		deployNS = deployNamespaceName(project.Spec.OrgID, project.Spec.Slug, env.Spec.Slug)
+	}
 	orgNS := env.Namespace
 	saName := fmt.Sprintf("%s-sa", project.Spec.Slug)
 
-	if err := r.ensureNamespace(ctx, deployNS, project.Spec.OrgID, project.Spec.Slug); err != nil {
+	if err := r.ensureNamespace(ctx, deployNS, project.Spec.OrgID, project.Spec.Slug, env.Spec.Slug); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensure deploy namespace: %w", err)
 	}
 
@@ -287,6 +295,39 @@ func generateToken() (string, error) {
 func claimName(fqdn string) string {
 	sum := sha256.Sum256([]byte(strings.ToLower(fqdn)))
 	return "dc-" + hex.EncodeToString(sum[:])[:52]
+}
+
+const maxNamespaceNameLen = 63
+
+// deployNamespaceName builds the deploy namespace name for an environment. The
+// org UUID (36 chars) plus two independently-validated 63-char slugs can exceed
+// Kubernetes' 63-char namespace limit, so this truncates the human-readable
+// project/env slugs and appends a hash of the full (untruncated) identity for
+// uniqueness. The name is not meant to be parsed back apart — org/project/env
+// identity lives in the namespace labels set by ensureNamespace.
+func deployNamespaceName(orgID, projectSlug, envSlug string) string {
+	const prefix = "deploy-"
+	sum := sha256.Sum256([]byte(orgID + "/" + projectSlug + "/" + envSlug))
+	hash := hex.EncodeToString(sum[:])[:10]
+
+	budget := maxNamespaceNameLen - len(prefix) - len(hash) - 1 // -1 for the dash before the readable part
+	readable := truncateLabel(projectSlug+"-"+envSlug, budget)
+	if readable == "" {
+		return prefix + hash
+	}
+	return prefix + hash + "-" + readable
+}
+
+// truncateLabel cuts s to at most n bytes, trimming any trailing '-' left
+// dangling by the cut so the result stays a valid DNS-1123 label segment.
+func truncateLabel(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if len(s) > n {
+		s = s[:n]
+	}
+	return strings.TrimRight(s, "-")
 }
 
 // claimDomain atomically binds fqdn to this project. Returns conflict=true if the
@@ -892,14 +933,17 @@ func acmeIssuerEqual(a, b acmev1.ACMEIssuer) bool {
 	return true
 }
 
-func (r *EnvironmentReconciler) ensureNamespace(ctx context.Context, name, orgID, projectSlug string) error {
+func (r *EnvironmentReconciler) ensureNamespace(ctx context.Context, name, orgID, projectSlug, envSlug string) error {
 	// authd reads enzarb.io/org-id and enzarb.io/project-slug to authorize a
-	// deploy pod's pull-only registry scope (see authd deployIdentity).
+	// deploy pod's pull-only registry scope (see authd deployIdentity). Metering
+	// reads enzarb.io/env-slug since the namespace name is no longer reliably
+	// parseable (see deployNamespaceName).
 	labels := map[string]string{
 		"app.kubernetes.io/managed-by": "enzarb-operator",
 		"enzarb.io/type":               "deploy",
 		"enzarb.io/org-id":             orgID,
 		"enzarb.io/project-slug":       projectSlug,
+		"enzarb.io/env-slug":           envSlug,
 	}
 	ns := &corev1.Namespace{}
 	err := r.Get(ctx, types.NamespacedName{Name: name}, ns)
