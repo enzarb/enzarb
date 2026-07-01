@@ -130,11 +130,22 @@
 		if (limit <= 0) return 0;
 		return Math.min(100, (used / limit) * 100);
 	}
+
+	// Single call site per query, tied to this component's reactive scope —
+	// reading the same remote query from multiple {#await} blocks (e.g. the
+	// project list was read separately by the filter chips and the table)
+	// created a fresh subscription in each spot and warned "derived_inert" when
+	// one of those scopes tore down while the shared cached query lived on.
+	const estimatedCost = $derived(getEstimatedCost());
+	const usageAndPricing = $derived(Promise.all([getUsageWithLimits(), getPublicPricing()]));
+	const costByComponent = $derived(getCostByComponent());
+	const projectRollup = $derived(getProjectRollup());
+	const invoices = $derived(getInvoices());
 </script>
 
 <h2>Billing</h2>
 
-{#await getEstimatedCost() then est}
+{#await estimatedCost then est}
 	<section class="estimate">
 		<div class="estimate-head">
 			<span class="estimate-label">Estimated cost this month</span>
@@ -155,7 +166,7 @@
 	</section>
 {/await}
 
-{#await Promise.all([getUsageWithLimits(), getPublicPricing()]) then [u, rates]}
+{#await usageAndPricing then [u, rates]}
 <section class="section">
 	<h3>Usage this month</h3>
 	<div class="usage-meters">
@@ -227,7 +238,7 @@
 <section class="section">
 	<h3>Cost by component</h3>
 	<div class="usage-grid">
-		{#each await getCostByComponent() as row}
+		{#each await costByComponent as row}
 			<div class="card usage-card">
 				<div class="usage-label">{componentLabels[row.component] ?? row.component}</div>
 				<div class="usage-value">{usd(row.cost)}</div>
@@ -259,7 +270,7 @@
 		</div>
 		<div class="filter-group">
 			<span class="filter-label">Project</span>
-			{#each await getProjectRollup() as row}
+			{#each await projectRollup as row}
 				<button
 					class="chip {selectedProjects.includes(row.project_id) ? 'active' : ''}"
 					onclick={() => (selectedProjects = toggle(selectedProjects, row.project_id))}
@@ -297,7 +308,7 @@
 				</tr>
 			</thead>
 			<tbody>
-				{#each await getProjectRollup() as row}
+				{#each await projectRollup as row}
 					<tr>
 						<td><code class="mono">{row.project_id}</code></td>
 						<td>{fmtVCPUHours(row.vcpu_hours)}</td>
@@ -323,7 +334,7 @@
 	<table>
 		<thead><tr><th>Period</th><th>Total</th><th>Status</th><th></th></tr></thead>
 		<tbody>
-			{#each await getInvoices() as inv}
+			{#each await invoices as inv}
 				<tr>
 					<td>{new Date(inv.period_start).toLocaleDateString()} – {new Date(inv.period_end).toLocaleDateString()}</td>
 					<td>${(inv.total_cents / 100).toFixed(2)}</td>

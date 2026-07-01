@@ -114,9 +114,37 @@ export async function buildInvoicePdf(data: InvoicePdfData): Promise<Uint8Array>
 		line(24);
 	}
 
-	// --- Line items table (spills onto new pages as needed) --------------
 	const colX = { resource: MARGIN, qty: MARGIN + 140, unit: MARGIN + 250, rate: MARGIN + 340, amount: MARGIN + 420 };
 
+	// --- Cost by resource (rollup, one row per resource type) -------------
+	ensureSpace(40);
+	text('Cost by resource', MARGIN, 13, bold);
+	line(22);
+	text('Resource', colX.resource, 10, bold);
+	text('Amount', colX.amount, 10, bold);
+	line(8);
+	hr();
+	line(16);
+
+	if (data.lineItems.length === 0) {
+		text('No usage recorded for this period.', MARGIN, 10, font, rgb(0.5, 0.5, 0.5));
+		line(16);
+	}
+	for (const li of [...data.lineItems].sort((a, b) => b.amount_cents - a.amount_cents)) {
+		ensureSpace(20);
+		const label = RESOURCE_LABELS[li.resource_type] ?? li.resource_type;
+		text(label, colX.resource, 10);
+		text(usd(li.amount_cents), colX.amount, 10);
+		line(18);
+	}
+	line(10);
+	hr();
+	line(20);
+	text('Total', colX.resource, 12, bold);
+	text(usd(data.totalCents), colX.amount, 12, bold);
+	line(34);
+
+	// --- Line items table (spills onto new pages as needed) --------------
 	function tableHeader() {
 		ensureSpace(40);
 		text('Line item detail', MARGIN, 13, bold);
