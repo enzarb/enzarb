@@ -1,20 +1,36 @@
 <script lang="ts">
-	import { getRepositories, getRepoTags } from '$lib/remote/registry.remote';
+	import { getRepositories, getRepoTagSizes } from '$lib/remote/registry.remote';
 	import { page } from '$app/state';
 
 	let selectedRepo: string | null = $state(null);
-	let tags: string[] = $state([]);
+	let tagSizes: { tag: string; totalSize: number; uniqueSize: number }[] = $state([]);
+	let summary: { totalUniqueBytes: number; naiveSumBytes: number } | null = $state(null);
 	let loadingTags = $state(false);
+	let copiedTag: string | null = $state(null);
 
 	async function loadTags(repo: string) {
 		selectedRepo = repo;
 		loadingTags = true;
 		try {
-			const result = await getRepoTags(repo);
-			tags = result.tags ?? [];
+			const result = await getRepoTagSizes(repo);
+			tagSizes = result.tags;
+			summary = { totalUniqueBytes: result.totalUniqueBytes, naiveSumBytes: result.naiveSumBytes };
 		} finally {
 			loadingTags = false;
 		}
+	}
+
+	async function copyImagePath(path: string) {
+		await navigator.clipboard.writeText(path);
+		copiedTag = path;
+		setTimeout(() => { copiedTag = null; }, 1500);
+	}
+
+	function formatBytes(bytes: number): string {
+		if (!bytes) return '—';
+		const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+		const i = Math.min(Math.floor(Math.log2(bytes) / 10), units.length - 1);
+		return (bytes / Math.pow(1024, i)).toLocaleString('en-US', { maximumFractionDigits: 2 }) + ' ' + units[i];
 	}
 
 	const registryBase = 'registry.enzarb.dev';
@@ -50,16 +66,46 @@ docker push $REGISTRY/&lt;image&gt;:&lt;tag&gt;</pre>
 					{#if loadingTags}
 						<p class="muted">Loading tags…</p>
 					{:else}
+						{#if summary && tagSizes.length > 0}
+							{@const savingsPct = summary.naiveSumBytes > 0
+								? Math.round((1 - summary.totalUniqueBytes / summary.naiveSumBytes) * 100)
+								: 0}
+							<div class="storage-summary">
+								<div class="summary-stat">
+									<span class="summary-label">Unique storage used</span>
+									<span class="summary-value">{formatBytes(summary.totalUniqueBytes)}</span>
+								</div>
+								<div class="summary-stat">
+									<span class="summary-label">If tags were independent</span>
+									<span class="summary-value muted">{formatBytes(summary.naiveSumBytes)}</span>
+								</div>
+								{#if savingsPct > 0}
+									<div class="summary-stat">
+										<span class="summary-label">Saved via shared layers</span>
+										<span class="summary-value savings">{savingsPct}%</span>
+									</div>
+								{/if}
+							</div>
+						{/if}
 						<table>
-							<thead><tr><th>Tag</th><th>Pull command</th></tr></thead>
+							<thead><tr><th>Tag</th><th>Size</th><th>Unique</th><th></th></tr></thead>
 							<tbody>
-								{#each tags as tag}
+								{#each tagSizes as t}
+									{@const imagePath = `${registryBase}/${selectedRepo}:${t.tag}`}
 									<tr>
-										<td><span class="badge">{tag}</span></td>
-										<td><code class="mono small">docker pull {registryBase}/{selectedRepo}:{tag}</code></td>
+										<td><span class="badge">{t.tag}</span></td>
+										<td class="mono small">{formatBytes(t.totalSize)}</td>
+										<td class="mono small muted" title="Storage not shared with any other tag in this repository">
+											{t.uniqueSize > 0 ? formatBytes(t.uniqueSize) : '—'}
+										</td>
+										<td>
+											<button class="copy-btn" onclick={() => copyImagePath(imagePath)} title="Copy image path">
+												{copiedTag === imagePath ? '✓ Copied' : '⎘ Copy'}
+											</button>
+										</td>
 									</tr>
 								{:else}
-									<tr><td colspan="2" class="muted">No tags</td></tr>
+									<tr><td colspan="4" class="muted">No tags</td></tr>
 								{/each}
 							</tbody>
 						</table>
@@ -86,4 +132,11 @@ docker push $REGISTRY/&lt;image&gt;:&lt;tag&gt;</pre>
 	.code { font-family: var(--font-mono); font-size: 12px; background: var(--color-surface-2); padding: 0.5rem; border-radius: 4px; }
 	.mono { font-family: var(--font-mono); }
 	.small { font-size: 12px; }
+	.storage-summary { display: flex; gap: 1.5rem; margin-bottom: 1rem; padding: 0.75rem 1rem; background: var(--color-surface-2); border-radius: 6px; }
+	.summary-stat { display: flex; flex-direction: column; gap: 0.15rem; }
+	.summary-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-muted); }
+	.summary-value { font-size: 15px; font-weight: 600; font-family: var(--font-mono); }
+	.summary-value.savings { color: #3fb950; }
+	.copy-btn { background: none; border: 1px solid var(--color-border); border-radius: 4px; cursor: pointer; padding: 0.2rem 0.5rem; font-size: 11px; color: var(--color-text-muted); }
+	.copy-btn:hover { color: var(--color-text); border-color: var(--color-text-muted); }
 </style>
