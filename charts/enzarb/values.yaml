@@ -6,7 +6,7 @@ app:
   image:
     repository: ghcr.io/enzarb/app
     pullPolicy: IfNotPresent
-    tag: "v0.70.1"
+    tag: "v0.71.0"
   env:
     ORIGIN: https://enzarb.dev
   dbSecret:
@@ -57,7 +57,7 @@ billing:
   image:
     repository: ghcr.io/enzarb/billing
     pullPolicy: IfNotPresent
-    tag: "v0.59.0"
+    tag: "v0.71.0"
   # Billing rates and free-tier allowances are configured at runtime via the
   # admin settings page (stored in the app_settings DB table), not here.
   resources:
