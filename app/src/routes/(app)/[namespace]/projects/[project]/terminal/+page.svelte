@@ -175,6 +175,7 @@
 		await fetch(`${agentBase}/processes/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${agentToken}` } });
 		const sock = sockets.get(id);
 		if (sock) { sock.onclose = null; sock.close(); sockets.delete(id); }
+		reconnectAttempts.delete(id);
 		await loadProcesses();
 		delete bufferCache[id];
 		try { sessionStorage.removeItem(bufKey(id)); } catch { /* ignore */ }
@@ -269,6 +270,7 @@
 		// which TextDecoder can't decode. Use arraybuffer so we can render it.
 		sock.binaryType = 'arraybuffer';
 		sock.onopen = () => {
+			reconnectAttempts.delete(pid);
 			if (pid === selectedPid) {
 				connState = 'connected';
 				connectError = '';
@@ -287,9 +289,16 @@
 			// 1000/1001 = clean close (process killed or navigated away); ignore those.
 			if (e.code === 1000 || e.code === 1001) return;
 			if (pid === selectedPid) {
-				// If we're already in a reconnect cycle, don't restart it — the
-				// scheduleReconnect 4s check will transition to 'failed' if needed.
-				if (connState === 'reconnecting' || connState === 'failed') return;
+				// 4004 = the agent has confirmed the process is gone for good
+				// (exited or never existed) — retrying would just loop forever
+				// against a dead process, so stop here.
+				if (e.code === 4004) {
+					reconnectAttempts.delete(pid);
+					connState = 'failed';
+					connectError = 'Process has exited.';
+					return;
+				}
+				if (connState === 'failed') return;
 				const reason = e.reason ? `: ${e.reason}` : '';
 				connectError = `Disconnected (code ${e.code}${reason}) — attempting to reconnect…`;
 				connState = 'reconnecting';
@@ -306,26 +315,31 @@
 		};
 	}
 
-	// Auto-reconnect with a single retry after a short delay. If it fails again
-	// the state becomes 'failed' and the user must click Retry manually.
+	// Auto-reconnect with exponential backoff, capped at MAX_RECONNECT_ATTEMPTS.
+	// Each attempt is counted here (not via a separate readyState poll), so a
+	// process that keeps refusing the connection can't loop forever — it
+	// eventually lands in 'failed' and waits for the user to click Retry.
+	const MAX_RECONNECT_ATTEMPTS = 6;
+	const reconnectAttempts = new Map<string, number>();
 	let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 	function scheduleReconnect(pid: string) {
 		clearTimeout(reconnectTimer);
+		const attempt = (reconnectAttempts.get(pid) ?? 0) + 1;
+		reconnectAttempts.set(pid, attempt);
+		if (attempt > MAX_RECONNECT_ATTEMPTS) {
+			if (pid === selectedPid) {
+				connState = 'failed';
+				connectError = 'Reconnection failed — the workspace may be unavailable.';
+			}
+			return;
+		}
+		const delay = Math.min(1500 * 2 ** (attempt - 1), 30_000);
 		reconnectTimer = setTimeout(async () => {
 			if (!mounted || pid !== selectedPid) return;
 			const st = sockets.get(pid)?.readyState;
 			if (st === WebSocket.OPEN || st === WebSocket.CONNECTING) return;
 			await openSocket(pid);
-			// If the socket didn't open successfully after the attempt, mark as failed.
-			setTimeout(() => {
-				if (!mounted || pid !== selectedPid) return;
-				const s = sockets.get(pid)?.readyState;
-				if (s !== WebSocket.OPEN && s !== WebSocket.CONNECTING) {
-					connState = 'failed';
-					connectError = 'Reconnection failed — the workspace may be unavailable.';
-				}
-			}, 4000);
-		}, 1500);
+		}, delay);
 	}
 
 	// Mobile browsers close sockets when the tab is backgrounded. Reconnect all
@@ -335,6 +349,7 @@
 		if (!selectedPid) return;
 		const st = sockets.get(selectedPid)?.readyState;
 		if (st === WebSocket.OPEN || st === WebSocket.CONNECTING) return;
+		reconnectAttempts.delete(selectedPid);
 		connState = 'reconnecting';
 		openSocket(selectedPid);
 	}
@@ -515,7 +530,7 @@
 	{#if connState === 'reconnecting' || connState === 'failed'}
 		<div class="connect-error" class:failed={connState === 'failed'}>
 			<span>{connectError}</span>
-			<button class="error-retry" onclick={() => { connState = 'reconnecting'; connectError = 'Reconnecting…'; if (selectedPid) openSocket(selectedPid); }}>Retry</button>
+			<button class="error-retry" onclick={() => { if (selectedPid) reconnectAttempts.delete(selectedPid); connState = 'reconnecting'; connectError = 'Reconnecting…'; if (selectedPid) openSocket(selectedPid); }}>Retry</button>
 			{#if connState === 'failed'}
 				<button class="error-dismiss" onclick={() => { connState = 'connected'; connectError = ''; }}>×</button>
 			{/if}

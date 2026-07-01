@@ -1,4 +1,4 @@
-use axum::extract::ws::{Message, WebSocket};
+use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use futures::{SinkExt, StreamExt};
 use portable_pty::PtySize;
 use std::io::Write;
@@ -17,10 +17,20 @@ struct Resize {
 /// JSON text frames with `{"rows":N,"cols":N}` resize the PTY.
 /// Output from the process is sent to the client as binary frames.
 pub async fn attach_ws(mut socket: WebSocket, process_id: String, state: AppState) {
+    // 4004 tells the frontend the process is gone for good (killed, exited, or
+    // never existed) so it stops retrying instead of looping forever against a
+    // dead process — see CloseFrame below for the exited-in-flight case too.
+    const PROCESS_GONE: u16 = 4004;
+
     let Some((scrollback, mut rx, input_writer, pty_master)) =
         state.process_store.attach(&process_id).await
     else {
-        let _ = socket.close().await;
+        let _ = socket
+            .send(Message::Close(Some(CloseFrame {
+                code: PROCESS_GONE,
+                reason: "process not found".into(),
+            })))
+            .await;
         return;
     };
 
@@ -41,11 +51,22 @@ pub async fn attach_ws(mut socket: WebSocket, process_id: String, state: AppStat
             match rx.recv().await {
                 Ok(data) => {
                     if ws_tx.send(Message::Binary(data.into())).await.is_err() {
-                        break;
+                        return;
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                // The process exited and its output channel was torn down —
+                // tell the client explicitly so it doesn't retry against a
+                // process that will never come back.
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    let _ = ws_tx
+                        .send(Message::Close(Some(CloseFrame {
+                            code: PROCESS_GONE,
+                            reason: "process exited".into(),
+                        })))
+                        .await;
+                    return;
+                }
             }
         }
     };
