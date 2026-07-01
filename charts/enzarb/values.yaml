@@ -6,7 +6,7 @@ app:
   image:
     repository: ghcr.io/enzarb/app
     pullPolicy: IfNotPresent
-    tag: "v0.69.0"
+    tag: "v0.70.0"
   env:
     ORIGIN: https://enzarb.dev
   dbSecret:
@@ -42,7 +42,7 @@ operator:
   image:
     repository: ghcr.io/enzarb/operator
     pullPolicy: IfNotPresent
-    tag: "v0.66.1"
+    tag: "v0.70.0"
   leaderElection: true
   env:
     ENZARB_DOMAIN: enzarb.dev
@@ -71,7 +71,7 @@ metering:
   image:
     repository: ghcr.io/enzarb/metering
     pullPolicy: IfNotPresent
-    tag: "v0.61.0"
+    tag: "v0.70.0"
   hubbleLogPath: /var/run/cilium/hubble/events.log
   resources:
     requests:
@@ -125,7 +125,7 @@ webhook:
 workspace:
   image:
     repository: ghcr.io/enzarb/workspace
-    tag: "v0.63.0"
+    tag: "v0.70.0"
   # StorageClass for project home PVCs. Empty uses the cluster's default class.
   storageClass: ""
   # changelog is shown in the UI when a workspace update is pending. Set by CI
