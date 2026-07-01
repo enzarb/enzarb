@@ -124,6 +124,22 @@ export async function migrate() {
 	// Admin-editable platform settings, stored as a key/value table and read by
 	// both the app and the billing worker. Seed defaults without clobbering
 	// any operator-edited values.
+	// Per-metric breakdown of an invoice, frozen at the rates in effect when the
+	// billing worker generated it — unlike the live estimate (which always uses
+	// current app_settings pricing), these amounts never change after insert,
+	// so the invoice PDF stays accurate even if pricing is edited later.
+	await sql`
+		CREATE TABLE IF NOT EXISTS invoice_line_items (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			invoice_id UUID NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+			resource_type TEXT NOT NULL,
+			quantity NUMERIC NOT NULL,
+			unit TEXT NOT NULL,
+			unit_price_cents NUMERIC NOT NULL,
+			amount_cents BIGINT NOT NULL
+		)
+	`;
+	await sql`CREATE INDEX IF NOT EXISTS invoice_line_items_invoice_id ON invoice_line_items(invoice_id)`;
 	await sql`
 		CREATE TABLE IF NOT EXISTS app_settings (
 			key TEXT PRIMARY KEY,

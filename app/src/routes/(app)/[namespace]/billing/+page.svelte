@@ -2,6 +2,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import {
 		getInvoices,
+		getInvoicePdf,
 		getEstimatedCost,
 		getProjectRollup,
 		getCostByComponent,
@@ -9,6 +10,23 @@
 		getUsageWithLimits,
 		getPublicPricing
 	} from '$lib/remote/billing.remote';
+
+	let downloadingInvoice: string | null = $state(null);
+	async function downloadInvoice(id: string, periodStart: string) {
+		downloadingInvoice = id;
+		try {
+			const bytes = await getInvoicePdf({ invoiceId: id });
+			const blob = new Blob([new Uint8Array(bytes)], { type: 'application/pdf' });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = `invoice-${new Date(periodStart).toISOString().slice(0, 7)}.pdf`;
+			a.click();
+			URL.revokeObjectURL(url);
+		} finally {
+			downloadingInvoice = null;
+		}
+	}
 	import { RESOURCE_TYPES } from '$lib/billing';
 	import StackedBarChart from '$lib/components/StackedBarChart.svelte';
 
@@ -303,16 +321,25 @@
 <section class="section">
 	<h3>Invoices</h3>
 	<table>
-		<thead><tr><th>Period</th><th>Total</th><th>Status</th></tr></thead>
+		<thead><tr><th>Period</th><th>Total</th><th>Status</th><th></th></tr></thead>
 		<tbody>
 			{#each await getInvoices() as inv}
 				<tr>
 					<td>{new Date(inv.period_start).toLocaleDateString()} – {new Date(inv.period_end).toLocaleDateString()}</td>
 					<td>${(inv.total_cents / 100).toFixed(2)}</td>
 					<td><span class="badge {inv.status === 'paid' ? 'running' : 'pending'}">{inv.status}</span></td>
+					<td>
+						<button
+							class="btn btn-sm"
+							disabled={downloadingInvoice === inv.id}
+							onclick={() => downloadInvoice(inv.id, inv.period_start as unknown as string)}
+						>
+							{downloadingInvoice === inv.id ? 'Preparing…' : 'Download PDF'}
+						</button>
+					</td>
 				</tr>
 			{:else}
-				<tr><td colspan="3" class="muted">No invoices yet</td></tr>
+				<tr><td colspan="4" class="muted">No invoices yet</td></tr>
 			{/each}
 		</tbody>
 	</table>

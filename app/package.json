@@ -34,6 +34,7 @@
     "@xterm/xterm": "^5.5.0",
     "jose": "^6.2.3",
     "openid-client": "^6.8.4",
+    "pdf-lib": "^1.17.1",
     "postgres": "^3.4.9",
     "shiki": "^3.23.0",
     "uuid": "^14.0.0",

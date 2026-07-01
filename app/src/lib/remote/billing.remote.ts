@@ -1,7 +1,9 @@
 import { query } from '$app/server';
+import { error } from '@sveltejs/kit';
 import { z } from 'zod/v4';
 import { sql } from '$lib/db';
 import { RESOURCE_TYPES, COMPONENTS } from '$lib/billing';
+import { buildInvoicePdf } from '$lib/invoicePdf';
 import { resolveOrg } from './guard';
 
 const GIB = 1073741824; // bytes per GiB
@@ -438,4 +440,66 @@ export const getInvoices = query(async () => {
 		ORDER BY created_at DESC
 		LIMIT 24
 	`;
+});
+
+// Renders a multipage invoice PDF: a summary page (org, period, total) followed
+// by a per-resource-type line item breakdown. Line items come from
+// invoice_line_items — the amounts frozen by the billing worker at generation
+// time — falling back to a live recompute (at today's rates) for invoices
+// issued before that table existed.
+export const getInvoicePdf = query(z.object({ invoiceId: z.string().uuid() }), async ({ invoiceId }) => {
+	const org = resolveOrg();
+	const [invoice] = await sql<
+		{ id: string; period_start: Date; period_end: Date; total_cents: number; status: string }[]
+	>`
+		SELECT id, period_start, period_end, total_cents, status
+		FROM invoices
+		WHERE id = ${invoiceId} AND org_id = ${org.id}
+	`;
+	if (!invoice) error(404, 'Invoice not found');
+
+	type LineItem = { resource_type: string; quantity: number; unit: string; unit_price_cents: number; amount_cents: number };
+	let lineItems: LineItem[] = await sql<LineItem[]>`
+		SELECT resource_type, quantity::float8 AS quantity, unit, unit_price_cents::float8 AS unit_price_cents, amount_cents
+		FROM invoice_line_items
+		WHERE invoice_id = ${invoiceId}
+		ORDER BY resource_type
+	`;
+
+	let estimatedLineItems = false;
+	if (lineItems.length === 0) {
+		estimatedLineItems = true;
+		const usageRows = await sql<{ resource_type: string; total: number }[]>`
+			SELECT resource_type, SUM(quantity)::float8 AS total
+			FROM usage_events
+			WHERE org_id = ${org.id}
+			  AND recorded_at >= ${invoice.period_start}
+			  AND recorded_at < ${invoice.period_end}
+			GROUP BY resource_type
+		`;
+		const p = await loadPricing();
+		lineItems = usageRows.map((r) => ({
+			resource_type: r.resource_type,
+			quantity: r.total,
+			unit: r.resource_type,
+			unit_price_cents: costForResource(r.resource_type, 1, p) * 100,
+			amount_cents: Math.round(costForResource(r.resource_type, r.total, p) * 100)
+		}));
+	}
+
+	const [org_row] = await sql<{ display_name: string }[]>`
+		SELECT display_name FROM organizations WHERE id = ${org.id}
+	`;
+
+	const bytes = await buildInvoicePdf({
+		orgName: org_row?.display_name ?? org.id,
+		invoiceId: invoice.id,
+		periodStart: new Date(invoice.period_start),
+		periodEnd: new Date(invoice.period_end),
+		status: invoice.status,
+		totalCents: Number(invoice.total_cents),
+		lineItems,
+		estimatedLineItems
+	});
+	return bytes;
 });

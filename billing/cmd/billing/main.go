@@ -187,45 +187,86 @@ func generateOrgInvoice(ctx context.Context, db *pgxpool.Pool, orgID, orgSlug, t
 
 	const bytesPerGiB = 1 << 30
 
-	// billableCents applies the metric's free allowance before pricing. Native
-	// returns the chargeable cents for a metric measured in its own unit.
-	native := func(used, free, perUnit float64) int64 {
-		if b := used - free; b > 0 {
-			return int64(b * perUnit * 100)
+	type lineItem struct {
+		ResourceType   string
+		Quantity       float64
+		Unit           string
+		UnitPriceCents float64
+		AmountCents    int64
+	}
+	var lineItems []lineItem
+
+	// billableCents applies the metric's free allowance before pricing, records
+	// a line item (even if the billable amount is zero, so the PDF can show the
+	// free-tier deduction), and returns the chargeable cents.
+	native := func(resourceType, unit string, used, free, perUnit float64) int64 {
+		billable := used - free
+		if billable < 0 {
+			billable = 0
 		}
-		return 0
+		cents := int64(billable * perUnit * 100)
+		if used > 0 {
+			lineItems = append(lineItems, lineItem{resourceType, billable, unit, perUnit * 100, cents})
+		}
+		return cents
 	}
 	// netCents converts a byte total to GiB, deducts the GiB free allowance,
-	// then prices the remainder.
-	netCents := func(usedBytes, freeGiB, perGiB float64) int64 {
-		if b := usedBytes/bytesPerGiB - freeGiB; b > 0 {
-			return int64(b * perGiB * 100)
+	// then prices the remainder, recording a line item in GiB.
+	netCents := func(resourceType string, usedBytes, freeGiB, perGiB float64) int64 {
+		usedGiB := usedBytes / bytesPerGiB
+		billable := usedGiB - freeGiB
+		if billable < 0 {
+			billable = 0
 		}
-		return 0
+		cents := int64(billable * perGiB * 100)
+		if usedBytes > 0 {
+			lineItems = append(lineItems, lineItem{resourceType, billable, "gib", perGiB * 100, cents})
+		}
+		return cents
 	}
 
 	var totalCents int64
-	totalCents += native(usage["vcpu_hours"], p.FreeVCPUHours, p.VCPUHoursPerUnit)
-	totalCents += native(usage["mem_gib_hours"], p.FreeMemGiBHours, p.MemGiBHoursPerUnit)
-	totalCents += native(usage["block_storage_gib_months"], p.FreeBlockStorageGiBMonths, p.BlockStorageGiBMonthsPerUnit)
-	totalCents += native(usage["registry_gib_months"], p.FreeRegistryGiBMonths, p.RegistryGiBMonthsPerUnit)
-	totalCents += netCents(usage["net_ingress_internal_bytes"], p.FreeNetIngressInternalGiB, p.NetIngressInternalPerGiB)
-	totalCents += netCents(usage["net_egress_internal_bytes"], p.FreeNetEgressInternalGiB, p.NetEgressInternalPerGiB)
-	totalCents += netCents(usage["net_ingress_external_bytes"], p.FreeNetIngressExternalGiB, p.NetIngressExternalPerGiB)
-	totalCents += netCents(usage["net_egress_external_bytes"], p.FreeNetEgressExternalGiB, p.NetEgressExternalPerGiB)
+	totalCents += native("vcpu_hours", "vcpu_hours", usage["vcpu_hours"], p.FreeVCPUHours, p.VCPUHoursPerUnit)
+	totalCents += native("mem_gib_hours", "gib_hours", usage["mem_gib_hours"], p.FreeMemGiBHours, p.MemGiBHoursPerUnit)
+	totalCents += native("block_storage_gib_months", "gib_months", usage["block_storage_gib_months"], p.FreeBlockStorageGiBMonths, p.BlockStorageGiBMonthsPerUnit)
+	totalCents += native("registry_gib_months", "gib_months", usage["registry_gib_months"], p.FreeRegistryGiBMonths, p.RegistryGiBMonthsPerUnit)
+	totalCents += netCents("net_ingress_internal_bytes", usage["net_ingress_internal_bytes"], p.FreeNetIngressInternalGiB, p.NetIngressInternalPerGiB)
+	totalCents += netCents("net_egress_internal_bytes", usage["net_egress_internal_bytes"], p.FreeNetEgressInternalGiB, p.NetEgressInternalPerGiB)
+	totalCents += netCents("net_ingress_external_bytes", usage["net_ingress_external_bytes"], p.FreeNetIngressExternalGiB, p.NetIngressExternalPerGiB)
+	totalCents += netCents("net_egress_external_bytes", usage["net_egress_external_bytes"], p.FreeNetEgressExternalGiB, p.NetEgressExternalPerGiB)
 
 	if totalCents < 0 {
 		totalCents = 0
 	}
 
-	_, err = db.Exec(ctx, `
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var invoiceID string
+	if err := tx.QueryRow(ctx, `
 		INSERT INTO invoices (org_id, period_start, period_end, total_cents, status)
 		VALUES ($1, $2, $3, $4, 'draft')
-	`, orgID, start, end, totalCents)
-	if err != nil {
+		RETURNING id
+	`, orgID, start, end, totalCents).Scan(&invoiceID); err != nil {
 		return fmt.Errorf("insert invoice: %w", err)
 	}
 
-	slog.Info("invoice created", "org", orgSlug, "period_start", start, "total_cents", totalCents)
+	for _, li := range lineItems {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO invoice_line_items (invoice_id, resource_type, quantity, unit, unit_price_cents, amount_cents)
+			VALUES ($1, $2, $3, $4, $5, $6)
+		`, invoiceID, li.ResourceType, li.Quantity, li.Unit, li.UnitPriceCents, li.AmountCents); err != nil {
+			return fmt.Errorf("insert line item: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit invoice: %w", err)
+	}
+
+	slog.Info("invoice created", "org", orgSlug, "period_start", start, "total_cents", totalCents, "line_items", len(lineItems))
 	return nil
 }
