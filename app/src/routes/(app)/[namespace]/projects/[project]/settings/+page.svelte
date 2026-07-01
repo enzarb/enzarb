@@ -4,6 +4,7 @@
 		getOrgTierInfo,
 		resizeStorage,
 		removeProject,
+		setProjectSuspendedCommand,
 		getProjects,
 		getDeletedProjects
 	} from '$lib/remote/projects.remote';
@@ -59,6 +60,31 @@
 		} catch (e) {
 			deleteError = e instanceof Error ? e.message : 'Failed to delete project';
 			deleting = false;
+		}
+	}
+
+	let suspending = $state(false);
+	let suspendError = $state('');
+
+	async function handleSuspendToggle(slug: string, displayName: string, currentlySuspended: boolean) {
+		if (!currentlySuspended) {
+			const ok = await confirm({
+				title: `Suspend project "${displayName}"?`,
+				message:
+					'The workspace and every environment are scaled to zero — no compute runs and no usage is billed. Nothing is deleted; resume anytime to bring it all back exactly as it was.',
+				confirmText: 'Suspend',
+				danger: true
+			});
+			if (!ok) return;
+		}
+		suspending = true;
+		suspendError = '';
+		try {
+			await setProjectSuspendedCommand({ slug, suspended: !currentlySuspended });
+		} catch (e) {
+			suspendError = e instanceof Error ? e.message : 'Failed to update suspend state';
+		} finally {
+			suspending = false;
 		}
 	}
 
@@ -167,6 +193,33 @@
 			{#if resizeError}<p class="error-text">{resizeError}</p>{/if}
 		</section>
 
+		<section class="card">
+			<div class="suspend-row">
+				<div>
+					<h3>{project.spec.suspended ? 'Suspended' : 'Suspend project'}</h3>
+					<p class="muted">
+						{#if project.spec.suspended}
+							Workspace and environments are scaled to zero. Nothing was deleted — resume to bring it all back.
+						{:else}
+							Temporarily scale the workspace and every environment to zero. No data is touched and this can be reversed at any time — unlike delete, there's no retention window or purge.
+						{/if}
+					</p>
+					{#if suspendError}<p class="error-text">{suspendError}</p>{/if}
+				</div>
+				<button
+					class="btn {project.spec.suspended ? 'btn-primary' : 'btn-danger'}"
+					disabled={suspending}
+					onclick={() => handleSuspendToggle(project.metadata.name, project.spec.displayName, !!project.spec.suspended)}
+				>
+					{#if suspending}
+						{project.spec.suspended ? 'Resuming…' : 'Suspending…'}
+					{:else}
+						{project.spec.suspended ? 'Resume project' : 'Suspend project'}
+					{/if}
+				</button>
+			</div>
+		</section>
+
 		<section class="card danger">
 			<div>
 				<h3>Delete project</h3>
@@ -196,6 +249,7 @@
 	.unit { font-size: 13px; color: var(--color-text-muted); }
 	.hint { font-size: 12px; color: var(--color-text-muted); margin: 0.4rem 0 0; }
 	.error-text { color: var(--color-danger, #c0392b); font-size: 13px; margin-top: 0.5rem; }
+	.suspend-row { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
 	.danger { display: flex; justify-content: space-between; align-items: center; gap: 1rem; border-color: var(--color-danger, #c0392b); }
 	.danger h3 { margin-bottom: 0.25rem; }
 	.danger .muted { margin-bottom: 0; }

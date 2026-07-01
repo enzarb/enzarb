@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { getAgentToken, getProject } from '$lib/remote/projects.remote';
+	import { isTokenExpired } from '$lib/agentToken';
 	import { onMount, onDestroy } from 'svelte';
 	import { Terminal } from '@xterm/xterm';
 	import { FitAddon } from '@xterm/addon-fit';
@@ -124,18 +125,23 @@
 	}
 
 	async function loadProcesses() {
-		if (!agentToken || !agentBase) return;
-		const res = await fetch(`${agentBase}/processes`, { headers: { Authorization: `Bearer ${agentToken}` } });
+		if (!agentBase) return;
+		const token = await ensureToken();
+		if (!token) return;
+		const res = await fetch(`${agentBase}/processes`, { headers: { Authorization: `Bearer ${token}` } });
 		if (res.ok) processes = await res.json();
 	}
 
 	async function openNewDialog() {
 		newCmd = ''; newName = ''; newKind = 'one-shot'; newCwd = ''; createErr = '';
-		if (!workspacePaths && agentToken && agentBase) {
-			try {
-				const res = await fetch(`${agentBase}/status`, { headers: { Authorization: `Bearer ${agentToken}` } });
-				if (res.ok) workspacePaths = await res.json();
-			} catch { /* non-fatal */ }
+		if (!workspacePaths && agentBase) {
+			const token = await ensureToken();
+			if (token) {
+				try {
+					const res = await fetch(`${agentBase}/status`, { headers: { Authorization: `Bearer ${token}` } });
+					if (res.ok) workspacePaths = await res.json();
+				} catch { /* non-fatal */ }
+			}
 		}
 		newDialog?.showModal();
 	}
@@ -171,8 +177,9 @@
 	}
 
 	async function killProcess(id: string) {
-		if (!agentToken) return;
-		await fetch(`${agentBase}/processes/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${agentToken}` } });
+		const token = await ensureToken();
+		if (!token) return;
+		await fetch(`${agentBase}/processes/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
 		const sock = sockets.get(id);
 		if (sock) { sock.onclose = null; sock.close(); sockets.delete(id); }
 		reconnectAttempts.delete(id);
@@ -222,16 +229,6 @@
 			if (agentToken && isTokenExpired(agentToken)) agentToken = null;
 		}
 		return agentToken;
-	}
-
-	function isTokenExpired(token: string): boolean {
-		try {
-			const payload = JSON.parse(atob(token.split('.')[1]));
-			// Treat as expired 30s early to avoid races.
-			return typeof payload.exp === 'number' && payload.exp * 1000 - 30_000 < Date.now();
-		} catch {
-			return true;
-		}
 	}
 
 	async function openSocket(pid: string) {

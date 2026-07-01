@@ -86,6 +86,11 @@ type ProjectSpec struct {
 	// GPUEnabled is an admin-only flag. When true the workspace Pod requests
 	// one nvidia.com/gpu and is scheduled onto a GPU-tainted node.
 	GPUEnabled bool `json:"gpuEnabled,omitempty"`
+	// Suspended is a reversible, user-initiated shutdown: distinct from soft
+	// delete, it scales the workspace and every child Environment's tenant
+	// workloads to zero but touches no data (PVC, namespaces, deployed
+	// resources all survive) and can be cleared at any time to resume.
+	Suspended bool `json:"suspended,omitempty"`
 }
 
 type ProjectTool struct {

@@ -62,6 +62,12 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Tenant-deployed StatefulSets in an Environment's deploy-* namespace, which
+  # the operator doesn't own or create — only paused/resumed for project
+  # suspend (see reconcileEnvironmentSuspension).
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get", "list", "watch", "update", "patch"]
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["clusterrolebindings", "rolebindings"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

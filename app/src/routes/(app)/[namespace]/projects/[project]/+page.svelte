@@ -1,9 +1,10 @@
 <script lang="ts">
-	import { getProject, getAgentToken } from '$lib/remote/projects.remote';
+	import { getProject } from '$lib/remote/projects.remote';
 	import { getEnvironments, createEnv, addDomain, setDefaultEnv, removeEnv } from '$lib/remote/environments.remote';
 	import { getProjectRepoDetails } from '$lib/remote/registry.remote';
 	import { page } from '$app/state';
 	import { confirm } from '$lib/confirm';
+	import { ensureFreshToken } from '$lib/agentToken';
 
 	function formatBytes(bytes: number): string {
 		if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + ' GiB';
@@ -11,7 +12,12 @@
 		return (bytes / 1024).toFixed(0) + ' KiB';
 	}
 
-	async function fetchDiskUsage(agentPath: string, token: string) {
+	// Mints its own token rather than accepting one from callers — this can run
+	// long after the page first loaded, and a token captured at load time is
+	// only good for 5 minutes (see agentToken.ts).
+	async function fetchDiskUsage(agentPath: string) {
+		const token = await ensureFreshToken(null);
+		if (!token) return null;
 		const res = await fetch(`https://enzarb.dev${agentPath}/status`, {
 			headers: { Authorization: `Bearer ${token}` }
 		});
@@ -29,7 +35,7 @@
 	let copiedUrl: string | null = $state(null);
 	const registryPrefix = $derived(`registry.enzarb.dev/${page.params.namespace}/${page.params.project}`);
 
-	const projectData = $derived(Promise.all([getProject(page.params.project), getAgentToken()]));
+	const projectData = $derived(getProject(page.params.project));
 	const projectRepos = $derived(getProjectRepoDetails(page.params.project));
 	const environments = $derived(getEnvironments(page.params.project));
 
@@ -89,13 +95,13 @@
 	});
 </script>
 
-{#await projectData then [project, token]}
+{#await projectData then project}
 	<div class="overview">
 		<div class="card storage-card">
 			<div class="card-label">Storage</div>
 			<code class="mono">{project.spec.storage?.size ?? '–'}</code>
 			{#if project.status?.agentPath}
-				{#await fetchDiskUsage(project.status.agentPath, token) then disk}
+				{#await fetchDiskUsage(project.status.agentPath) then disk}
 					{#if disk && disk.total_bytes > 0}
 						{@const pct = Math.round((disk.used_bytes / disk.total_bytes) * 100)}
 						<div class="disk-bar-wrap">

@@ -9,6 +9,7 @@ import {
 	resizeProject as k8sResizeProject,
 	softDeleteProject,
 	recoverProject as k8sRecoverProject,
+	setProjectSuspended,
 	forceRestartWorkspace,
 	clearEnvUpdatePending,
 	purgeAfterOf,
@@ -160,6 +161,18 @@ export const recoverProjectCommand = command(z.object({ slug: z.string() }), asy
 	const org = requirePrivilege('project.delete');
 	return k8sRecoverProject(org.id, slug);
 });
+
+// Reversible, temporary shutdown — distinct from removeProject's soft delete.
+// Scales the workspace and every environment's tenant workloads to zero but
+// deletes nothing; setProjectSuspended(false) brings it all back.
+export const setProjectSuspendedCommand = command(
+	z.object({ slug: z.string(), suspended: z.boolean() }),
+	async ({ slug, suspended }) => {
+		const org = requirePrivilege('project.delete');
+		await setProjectSuspended(org.id, slug, suspended);
+		await getProject(slug).refresh();
+	}
+);
 
 export const restartWorkspace = command(z.object({ slug: z.string() }), async ({ slug }) => {
 	const org = resolveOrg();

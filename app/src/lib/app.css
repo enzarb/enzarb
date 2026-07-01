@@ -94,6 +94,7 @@ input:focus, select:focus, textarea:focus {
 .badge.running { background: #1a3a2a; color: var(--color-success); }
 .badge.pending { background: #2a2a1a; color: var(--color-warning); }
 .badge.error { background: #2a1a1a; color: var(--color-danger); }
+.badge.suspended { background: #2a2a2a; color: var(--color-text-muted); }
 table { width: 100%; border-collapse: collapse; }
 th { text-align: left; color: var(--color-text-muted); font-weight: 500; padding: 0.5rem; border-bottom: 1px solid var(--color-border); }
 td { padding: 0.5rem; border-bottom: 1px solid var(--color-border); }

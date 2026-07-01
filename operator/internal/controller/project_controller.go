@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"strconv"
 	"time"
 
 	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
@@ -176,8 +177,27 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("ensure env context configmap: %w", err)
 	}
 
+	if err := r.reconcileEnvironmentSuspension(ctx, orgNS, &project); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile environment suspension: %w", err)
+	}
+
 	agentPath := agentPathFor(&project)
-	project.Status.Phase = "Running"
+	if project.Spec.Suspended {
+		project.Status.Phase = "Suspended"
+		apimeta.SetStatusCondition(&project.Status.Conditions, metav1.Condition{
+			Type:    "Ready",
+			Status:  metav1.ConditionFalse,
+			Reason:  "Suspended",
+			Message: "project suspended; workspace and environments are scaled to zero",
+		})
+	} else {
+		project.Status.Phase = "Running"
+		apimeta.SetStatusCondition(&project.Status.Conditions, metav1.Condition{
+			Type:   "Ready",
+			Status: metav1.ConditionTrue,
+			Reason: "Running",
+		})
+	}
 	project.Status.ServiceAccountName = saName
 	project.Status.AgentPath = agentPath
 	if err := r.Status().Update(ctx, &project); err != nil {
@@ -220,6 +240,118 @@ func (r *ProjectReconciler) reconcileProjectRetention(ctx context.Context, proje
 		return ctrl.Result{}, fmt.Errorf("update status: %w", err)
 	}
 	return ctrl.Result{RequeueAfter: time.Until(purgeTime)}, nil
+}
+
+// suspendReplicasAnnotation records a tenant workload's replica count before
+// it was scaled to zero for a project suspend, so resuming restores it
+// exactly rather than assuming 1 (which would be wrong for anything
+// intentionally run with multiple replicas).
+const suspendReplicasAnnotation = "enzarb.io/pre-suspend-replicas"
+
+// reconcileEnvironmentSuspension scales every child Environment's
+// tenant-deployed workloads (Deployments/StatefulSets — resources the
+// operator doesn't own; tenants create these themselves via kubectl/Helm) to
+// zero when the project is suspended, and restores their prior replica counts
+// when it's resumed. Neither the namespace nor any data is touched either way.
+func (r *ProjectReconciler) reconcileEnvironmentSuspension(ctx context.Context, orgNS string, project *enzarbv1alpha1.Project) error {
+	var envList enzarbv1alpha1.EnvironmentList
+	if err := r.List(ctx, &envList, client.InNamespace(orgNS)); err != nil {
+		return fmt.Errorf("list environments: %w", err)
+	}
+	for i := range envList.Items {
+		env := &envList.Items[i]
+		if env.Spec.ProjectRef.Name != project.Spec.Slug || env.Status.Namespace == "" {
+			continue
+		}
+		if err := r.setWorkloadsSuspended(ctx, env.Status.Namespace, project.Spec.Suspended); err != nil {
+			return fmt.Errorf("environment %s: %w", env.Name, err)
+		}
+	}
+	return nil
+}
+
+func (r *ProjectReconciler) setWorkloadsSuspended(ctx context.Context, ns string, suspend bool) error {
+	var deploys appsv1.DeploymentList
+	if err := r.List(ctx, &deploys, client.InNamespace(ns)); err != nil {
+		return fmt.Errorf("list deployments: %w", err)
+	}
+	for i := range deploys.Items {
+		if err := r.setDeploymentSuspended(ctx, &deploys.Items[i], suspend); err != nil {
+			return err
+		}
+	}
+	var statefulSets appsv1.StatefulSetList
+	if err := r.List(ctx, &statefulSets, client.InNamespace(ns)); err != nil {
+		return fmt.Errorf("list statefulsets: %w", err)
+	}
+	for i := range statefulSets.Items {
+		if err := r.setStatefulSetSuspended(ctx, &statefulSets.Items[i], suspend); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *ProjectReconciler) setDeploymentSuspended(ctx context.Context, deploy *appsv1.Deployment, suspend bool) error {
+	if suspend {
+		if deploy.Spec.Replicas != nil && *deploy.Spec.Replicas == 0 {
+			return nil
+		}
+		current := int32(1)
+		if deploy.Spec.Replicas != nil {
+			current = *deploy.Spec.Replicas
+		}
+		if deploy.Annotations == nil {
+			deploy.Annotations = map[string]string{}
+		}
+		deploy.Annotations[suspendReplicasAnnotation] = strconv.Itoa(int(current))
+		zero := int32(0)
+		deploy.Spec.Replicas = &zero
+		return r.Update(ctx, deploy)
+	}
+	saved, ok := deploy.Annotations[suspendReplicasAnnotation]
+	if !ok {
+		return nil
+	}
+	n, err := strconv.ParseInt(saved, 10, 32)
+	if err != nil {
+		n = 1
+	}
+	restored := int32(n)
+	deploy.Spec.Replicas = &restored
+	delete(deploy.Annotations, suspendReplicasAnnotation)
+	return r.Update(ctx, deploy)
+}
+
+func (r *ProjectReconciler) setStatefulSetSuspended(ctx context.Context, sts *appsv1.StatefulSet, suspend bool) error {
+	if suspend {
+		if sts.Spec.Replicas != nil && *sts.Spec.Replicas == 0 {
+			return nil
+		}
+		current := int32(1)
+		if sts.Spec.Replicas != nil {
+			current = *sts.Spec.Replicas
+		}
+		if sts.Annotations == nil {
+			sts.Annotations = map[string]string{}
+		}
+		sts.Annotations[suspendReplicasAnnotation] = strconv.Itoa(int(current))
+		zero := int32(0)
+		sts.Spec.Replicas = &zero
+		return r.Update(ctx, sts)
+	}
+	saved, ok := sts.Annotations[suspendReplicasAnnotation]
+	if !ok {
+		return nil
+	}
+	n, err := strconv.ParseInt(saved, 10, 32)
+	if err != nil {
+		n = 1
+	}
+	restored := int32(n)
+	sts.Spec.Replicas = &restored
+	delete(sts.Annotations, suspendReplicasAnnotation)
+	return r.Update(ctx, sts)
 }
 
 // scaleWorkspace sets the workspace Deployment replica count, tolerating a
@@ -474,6 +606,9 @@ func (r *ProjectReconciler) checkRunningProcesses(ctx context.Context, ns, slug 
 func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug string, project *enzarbv1alpha1.Project) *appsv1.Deployment {
 	labels := projectLabels(project)
 	replicas := int32(1)
+	if project.Spec.Suspended {
+		replicas = 0
+	}
 
 	// Default resource requests if not specified
 	cpuReq := resource.MustParse("500m")

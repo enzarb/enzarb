@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { getAgentToken, getProject } from '$lib/remote/projects.remote';
+	import { ensureFreshToken } from '$lib/agentToken';
 	import CodeViewer from '$lib/components/CodeViewer.svelte';
 
 	type FileEntry = { name: string; path: string; kind: string; size?: number; modified?: string };
@@ -111,9 +112,13 @@
 		return s !== ' ' ? s : '?';
 	}
 
+	// The `token` param is whatever was minted when the directory/file was last
+	// loaded — for a page left open past its 5-minute lifetime that's stale, so
+	// every action re-validates it here rather than trusting the cached value.
 	async function download(agentBase: string, token: string, path: string, name: string) {
+		const fresh = await ensureFreshToken(token);
 		const res = await fetch(`${agentBase}/files/download?path=${encodeURIComponent(path)}`, {
-			headers: { Authorization: `Bearer ${token}` }
+			headers: { Authorization: `Bearer ${fresh}` }
 		});
 		const blob = await res.blob();
 		const url = URL.createObjectURL(blob);
@@ -127,9 +132,10 @@
 	async function upload(e: Event, agentBase: string, token: string, dir: string) {
 		const file = (e.target as HTMLInputElement).files?.[0];
 		if (!file) return;
+		const fresh = await ensureFreshToken(token);
 		const dest = dir ? `${dir}/${file.name}` : file.name;
 		await fetch(`${agentBase}/files/upload?path=${encodeURIComponent(dest)}`, {
-			method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: file
+			method: 'POST', headers: { Authorization: `Bearer ${fresh}` }, body: file
 		});
 		refreshKey++;
 	}
@@ -151,9 +157,10 @@
 		committing = true;
 		commitError = '';
 		try {
+			const fresh = await ensureFreshToken(token);
 			const res = await fetch(`${agentBase}/files/git-commit`, {
 				method: 'POST',
-				headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+				headers: { Authorization: `Bearer ${fresh}`, 'Content-Type': 'application/json' },
 				body: JSON.stringify({ message: commitMessage.trim() })
 			});
 			if (!res.ok) {
