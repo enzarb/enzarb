@@ -1,22 +1,27 @@
 <script lang="ts">
-	import { getRepositories, getRepoTagSizes } from '$lib/remote/registry.remote';
+	import { getRepositories, getRepoTags, getRepoTagSizes } from '$lib/remote/registry.remote';
 	import { page } from '$app/state';
 
-	type TagRow = { tag: string; totalSize: number; uniqueSize: number; createdAt: string | null };
+	type TagRow = { tag: string; totalSize: number | null; uniqueSize: number | null; createdAt: string | null };
 
 	let selectedRepo: string | null = $state(null);
 	let tagSizes: TagRow[] = $state([]);
 	let summary: { totalUniqueBytes: number; naiveSumBytes: number } | null = $state(null);
 	let loadingTags = $state(false);
+	let loadingSizes = $state(false);
 	let copiedTag: string | null = $state(null);
-	let sortKey: 'tag' | 'createdAt' = $state('tag');
-	let sortDesc = $state(false);
+	let sortKey: 'tag' | 'createdAt' = $state('createdAt');
+	let sortDesc = $state(true);
 
 	const sortedTagSizes = $derived(
 		[...tagSizes].sort((a, b) => {
 			let cmp: number;
 			if (sortKey === 'createdAt') {
-				cmp = (a.createdAt ? Date.parse(a.createdAt) : 0) - (b.createdAt ? Date.parse(b.createdAt) : 0);
+				// Tags without a resolved date yet (still loading) sort last regardless of direction.
+				if (!a.createdAt && !b.createdAt) cmp = 0;
+				else if (!a.createdAt) return 1;
+				else if (!b.createdAt) return -1;
+				else cmp = Date.parse(a.createdAt) - Date.parse(b.createdAt);
 			} else {
 				cmp = a.tag.localeCompare(b.tag);
 			}
@@ -35,13 +40,29 @@
 
 	async function loadTags(repo: string) {
 		selectedRepo = repo;
+		summary = null;
 		loadingTags = true;
+		loadingSizes = false;
+		try {
+			// Phase 1: just the tag names — cheap, so the table can render right away.
+			const { tags } = await getRepoTags(repo);
+			if (selectedRepo !== repo) return;
+			tagSizes = tags.map((tag) => ({ tag, totalSize: null, uniqueSize: null, createdAt: null }));
+		} finally {
+			loadingTags = false;
+		}
+
+		// Phase 2: sizes + created dates require fetching every tag's manifest
+		// (and config blob for the date), so run it separately and let the
+		// table fill in progressively instead of blocking the initial render.
+		loadingSizes = true;
 		try {
 			const result = await getRepoTagSizes(repo);
+			if (selectedRepo !== repo) return;
 			tagSizes = result.tags;
 			summary = { totalUniqueBytes: result.totalUniqueBytes, naiveSumBytes: result.naiveSumBytes };
 		} finally {
-			loadingTags = false;
+			loadingSizes = false;
 		}
 	}
 
@@ -98,6 +119,9 @@ docker push $REGISTRY/&lt;image&gt;:&lt;tag&gt;</pre>
 					{#if loadingTags}
 						<p class="muted">Loading tags…</p>
 					{:else}
+						{#if loadingSizes}
+							<p class="muted">Calculating sizes…</p>
+						{/if}
 						{#if summary && tagSizes.length > 0}
 							{@const savingsPct = summary.naiveSumBytes > 0
 								? Math.round((1 - summary.totalUniqueBytes / summary.naiveSumBytes) * 100)
@@ -138,11 +162,11 @@ docker push $REGISTRY/&lt;image&gt;:&lt;tag&gt;</pre>
 									{@const imagePath = `${registryBase}/${selectedRepo}:${t.tag}`}
 									<tr>
 										<td><span class="badge">{t.tag}</span></td>
-										<td class="mono small">{formatBytes(t.totalSize)}</td>
+										<td class="mono small">{t.totalSize === null ? '…' : formatBytes(t.totalSize)}</td>
 										<td class="mono small muted" title="Storage not shared with any other tag in this repository">
-											{t.uniqueSize > 0 ? formatBytes(t.uniqueSize) : '—'}
+											{t.uniqueSize === null ? '…' : t.uniqueSize > 0 ? formatBytes(t.uniqueSize) : '—'}
 										</td>
-										<td class="mono small muted">{formatDate(t.createdAt)}</td>
+										<td class="mono small muted">{t.totalSize === null ? '…' : formatDate(t.createdAt)}</td>
 										<td>
 											<button class="copy-btn" onclick={() => copyImagePath(imagePath)} title="Copy image path">
 												{copiedTag === imagePath ? '✓ Copied' : '⎘ Copy'}

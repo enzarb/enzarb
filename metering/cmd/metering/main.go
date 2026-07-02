@@ -79,15 +79,23 @@ func main() {
 	w := &Worker{db: pool, k8s: k8s, cfg: loadPlatformConfig(), http: &http.Client{Timeout: 30 * time.Second}}
 
 	// Metrics polling loop: pod compute/storage plus Zot registry storage.
+	// Usage quantities are billed per the *actual* elapsed time since the
+	// previous tick (not a fixed 60s), since collection itself takes time
+	// and would otherwise shrink the real gap between samples below 60s,
+	// undercounting usage for that period.
 	go func() {
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
+		lastTick := time.Now()
 		for range ticker.C {
-			slog.Info("collect metrics tick")
-			if err := w.collectMetrics(context.Background()); err != nil {
+			now := time.Now()
+			elapsed := now.Sub(lastTick)
+			lastTick = now
+			slog.Info("collect metrics tick", "elapsed", elapsed)
+			if err := w.collectMetrics(context.Background(), elapsed); err != nil {
 				slog.Error("collect metrics", "err", err)
 			}
-			if err := w.collectZotUsage(context.Background()); err != nil {
+			if err := w.collectZotUsage(context.Background(), elapsed); err != nil {
 				slog.Error("collect zot usage", "err", err)
 			}
 		}
@@ -136,7 +144,7 @@ func (w *Worker) podOwner(ctx context.Context, ns string, pod *corev1.Pod) strin
 // collectMetrics reads pod resource usage from the metrics-server and writes
 // usage_events rows for both workspace pods (user-* namespaces) and deploy-
 // environment pods (deploy-* namespaces).
-func (w *Worker) collectMetrics(ctx context.Context) error {
+func (w *Worker) collectMetrics(ctx context.Context, elapsed time.Duration) error {
 	nsList, err := w.k8s.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("list namespaces: %w", err)
@@ -148,7 +156,7 @@ func (w *Worker) collectMetrics(ctx context.Context) error {
 		case strings.HasPrefix(ns.Name, "user-"):
 			// Workspace: org UUID is encoded in the namespace name.
 			orgID := strings.TrimPrefix(ns.Name, "user-")
-			w.meterNamespacePods(ctx, ns.Name, orgID, "workspace", "", now)
+			w.meterNamespacePods(ctx, ns.Name, orgID, "workspace", "", now, elapsed)
 		case strings.HasPrefix(ns.Name, "deploy-"):
 			// Deploy environment: org/project/env come from namespace labels (set
 			// by the operator's EnvironmentReconciler). The namespace name itself
@@ -163,7 +171,7 @@ func (w *Worker) collectMetrics(ctx context.Context) error {
 			if envSlug == "" {
 				envSlug = deployEnvSlug(ns.Name, orgID, ns.Labels["enzarb.io/project-slug"])
 			}
-			w.meterNamespacePods(ctx, ns.Name, orgID, "environment", envSlug, now)
+			w.meterNamespacePods(ctx, ns.Name, orgID, "environment", envSlug, now, elapsed)
 		}
 	}
 	return nil
@@ -187,7 +195,7 @@ func deployEnvSlug(nsName, orgID, projSlug string) string {
 // meter the workspace pod itself, not any unrelated system pods.
 // For deploy namespaces (deploy-*) we meter ALL running pods — they are
 // tenant-deployed (via Helm etc.) and don't carry the operator label.
-func (w *Worker) meterNamespacePods(ctx context.Context, nsName, orgID, component, environment string, now time.Time) {
+func (w *Worker) meterNamespacePods(ctx context.Context, nsName, orgID, component, environment string, now time.Time, elapsed time.Duration) {
 	labelSel := ""
 	if component == "workspace" {
 		labelSel = "app.kubernetes.io/managed-by=enzarb-operator"
@@ -246,14 +254,16 @@ func (w *Worker) meterNamespacePods(ctx context.Context, nsName, orgID, componen
 		}
 
 		cpuMillis, memBytes := podMetrics.cpu, podMetrics.mem
-		// Convert to standard billing units over the 60s tick interval.
-		// vCPU-hours: milliCores / 1000 * (60s / 3600s/hr)
-		vcpuHours := float64(cpuMillis) / 60000.0
-		// GiB-hours: GiB * (60s / 3600s/hr)
-		memGiBHours := float64(memBytes) / (1024 * 1024 * 1024) / 60.0
+		elapsedHours := elapsed.Hours()
+		// Convert to standard billing units over the actual elapsed tick interval
+		// (not a fixed 60s, since collection time eats into the real gap).
+		// vCPU-hours: cores * elapsed hours
+		vcpuHours := float64(cpuMillis) / 1000.0 * elapsedHours
+		// GiB-hours: GiB * elapsed hours
+		memGiBHours := float64(memBytes) / (1024 * 1024 * 1024) * elapsedHours
 
 		// Block storage: record each PVC separately so the UI can show per-volume costs.
-		// 1 GiB-month = 30d × 24h × 3600s = 2,592,000 GiB-seconds; per 60s tick: GiB / 43200.
+		// 1 GiB-month = 30d × 24h = 720 GiB-hours.
 		pvcs, err := w.k8s.CoreV1().PersistentVolumeClaims(nsName).List(ctx, metav1.ListOptions{
 			LabelSelector: fmt.Sprintf("enzarb.io/project=%s", projectSlug),
 		})
@@ -261,7 +271,7 @@ func (w *Worker) meterNamespacePods(ctx context.Context, nsName, orgID, componen
 			for _, pvc := range pvcs.Items {
 				if q, ok := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; ok {
 					pvcGiB := float64(q.Value()) / (1024 * 1024 * 1024)
-					pvcGiBMonths := pvcGiB / 43200.0
+					pvcGiBMonths := pvcGiB * elapsedHours / 720.0
 					if err := w.insertUsage(ctx, orgID, projectSlug, component, environment, pvc.Name, owner, "block_storage_gib_months", pvcGiBMonths, "GiB-mo", now); err != nil {
 						slog.Warn("insert storage usage", "err", err)
 					}
@@ -715,7 +725,7 @@ func (w *Worker) orgIDBySlug(ctx context.Context) (map[string]string, error) {
 // repo (deduped by digest), recording registry_gib_months. Repo paths follow
 // the <orgSlug>/<image> convention, so the first segment maps to the org and the
 // remainder is used as the project_id. Mirrors app/src/lib/zot.ts auth.
-func (w *Worker) collectZotUsage(ctx context.Context) error {
+func (w *Worker) collectZotUsage(ctx context.Context, elapsed time.Duration) error {
 	if w.cfg.registrySecret == "" {
 		return nil // not configured; skip silently
 	}
@@ -755,8 +765,8 @@ func (w *Worker) collectZotUsage(ctx context.Context) error {
 			continue
 		}
 		sizeGiB := float64(sizeBytes) / gib
-		// 1 GiB-month = 2,592,000 GiB-seconds; per 60s tick: GiB / 43200.
-		sizeGiBMonths := sizeGiB / 43200.0
+		// 1 GiB-month = 720 GiB-hours.
+		sizeGiBMonths := sizeGiB * elapsed.Hours() / 720.0
 		// Use the image name (everything after orgSlug/projectSlug/) as the label so
 		// the UI can show per-image registry costs. For 2-segment paths the image is
 		// the project slug itself (no sub-path), so label falls back to "".
