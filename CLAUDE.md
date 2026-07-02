@@ -19,6 +19,8 @@ mise run build-operator   # go build ./cmd/operator/
 mise run build-agent      # cargo build --release (in agent/)
 mise run build-app        # npm run build (in app/)
 mise run build-authd      # go build ./cmd/authd/
+mise run build-metering   # go build ./cmd/metering/
+mise run build-billing    # go build ./cmd/billing/
 mise run build-all        # all components
 ```
 
@@ -27,6 +29,10 @@ mise run build-all        # all components
 ```bash
 mise run test-operator    # go test ./...  (in operator/)
 mise run test-agent       # cargo test (in agent/)
+mise run test-metering    # go test ./...  (in metering/)
+mise run test-billing     # go test ./...  (in billing/)
+mise run test-authd       # go test ./...  (in authd/)
+mise run test-app         # npm test (in app/)
 mise run test-all
 
 # Run a single Go test
@@ -113,8 +119,9 @@ mise run admin           # kubectl exec into operator for admin CLI
 
 ## CRD generation
 
-CRD YAML files are in `operator/config/crd/`. Regenerate with kubebuilder:
+CRD YAML files are in `operator/config/crd/`. Regenerate with controller-gen:
 ```bash
-cd operator && go generate ./...
+mise run generate-crds   # cd operator && controller-gen crd paths='./...' output:crd:artifacts:config=config/crd
+mise run deploy-crds     # regenerate + kubectl apply
 ```
 (kubebuilder markers are on types in `operator/api/v1alpha1/types.go`)

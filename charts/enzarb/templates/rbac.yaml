@@ -112,10 +112,16 @@ subjects:
 # This role is bound per-namespace (RoleBinding in each deploy namespace) so it
 # only applies within the tenant's own environment namespace — never cluster-wide.
 #
-# Excluded intentionally: daemonsets, serviceaccounts, clusterroles/bindings,
-# clusterissuers, nodes, and any resource that could enable privilege escalation
-# or lateral movement. Services are restricted to ClusterIP type by the
-# enzarb-restrict-service-type ValidatingAdmissionPolicy.
+# Excluded intentionally: daemonsets, clusterroles/bindings, clusterissuers,
+# nodes, and any resource that could enable privilege escalation or lateral
+# movement. Services are restricted to ClusterIP type by the
+# enzarb-restrict-service-type ValidatingAdmissionPolicy. Tenants may create
+# namespace-scoped ServiceAccounts, Roles, and RoleBindings (see below) to
+# sub-delegate a subset of their own permissions to per-component identities;
+# Kubernetes' built-in escalation check (no `escalate` verb granted here)
+# prevents granting more than they already hold, and the
+# enzarb-restrict-rolebinding-kind ValidatingAdmissionPolicy blocks
+# RoleBindings from referencing a ClusterRole.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -168,4 +174,24 @@ rules:
   # HelmCharts — tenants may deploy Helm releases into their env namespace via K3s HelmChart CRs
   - apiGroups: ["helm.cattle.io"]
     resources: ["helmcharts", "helmchartconfigs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Batch workloads — tenants may schedule Jobs/CronJobs (e.g. for a
+  # job-runner component); pod logs for spawned pods are covered by the
+  # pods/log rule above.
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # ServiceAccounts — tenants may mint dedicated per-component identities to
+  # bind narrower Roles to, instead of reusing the shared project SA. A bare
+  # ServiceAccount grants no privileges until bound via a RoleBinding, which
+  # is governed by the rule below plus the RoleBinding-kind VAP.
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Namespace-scoped RBAC delegation — tenants may define narrower Roles and
+  # bind them to their own ServiceAccounts. Never clusterroles/clusterrolebindings,
+  # and no bind/escalate verb, so Kubernetes' native privilege-escalation check
+  # always applies.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

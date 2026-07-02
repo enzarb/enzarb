@@ -1,0 +1,56 @@
+# Tenant ServiceAccounts hold rights to create Roles/RoleBindings in their own
+# namespace (see enzarb-deployer in rbac.yaml) so they can sub-delegate a
+# subset of their own permissions to per-component identities. Kubernetes'
+# native privilege-escalation check already prevents granting more than a
+# tenant holds, but it would still allow a tenant to bind the entire
+# enzarb-deployer ClusterRole directly to a new ServiceAccount (since the
+# tenant's own permissions are already a superset of it). This policy blocks
+# that by requiring tenant-created RoleBindings to reference a Role, forcing
+# them through the intended subset pattern.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: enzarb-restrict-rolebinding-kind
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["rolebindings"]
+  validations:
+    - expression: "object.roleRef.kind == 'Role'"
+      reason: Forbidden
+      messageExpression: >-
+        "RoleBindings in project namespaces must reference a Role, not a "
+        + object.roleRef.kind + " (create a namespace-local Role instead of binding a ClusterRole)"
+---
+# Applies in project org namespaces (user-<orgId>), where the project
+# ServiceAccount and its initial enzarb-deployer RoleBinding live.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: enzarb-restrict-rolebinding-kind-org
+spec:
+  policyName: enzarb-restrict-rolebinding-kind
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector:
+      matchExpressions:
+        - key: enzarb.io/org-id
+          operator: Exists
+---
+# Applies in per-Environment deploy namespaces, which also bind the project
+# ServiceAccount to enzarb-deployer.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: enzarb-restrict-rolebinding-kind-deploy
+spec:
+  policyName: enzarb-restrict-rolebinding-kind
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        enzarb.io/type: deploy
