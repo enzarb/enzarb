@@ -83,6 +83,7 @@
 		{ href: `${base}/files`, label: 'Files' },
 		{ href: `${base}/registry`, label: 'Registry' },
 		{ href: `${base}/terminal`, label: 'Terminal' },
+		{ href: `${base}/agents`, label: 'Agents' },
 		{ href: `${base}/settings`, label: 'Settings' },
 		{ href: `${base}/billing`, label: 'Billing' },
 		{ href: `${base}/utilization`, label: 'Utilization' }

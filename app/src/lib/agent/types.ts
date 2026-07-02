@@ -1,0 +1,73 @@
+// TS mirror of agent/src/acp/events.rs — keep in sync with the Rust enums.
+
+export interface SessionModeInfo {
+	id: string;
+	name: string;
+	description: string | null;
+}
+
+export interface SessionMeta {
+	id: string;
+	label: string;
+	created_at: string;
+	updated_at: string;
+	status: 'live' | 'idle';
+	mode_id: string | null;
+	available_modes: SessionModeInfo[];
+}
+
+export interface DiffPayload {
+	path: string;
+	old_text: string | null;
+	new_text: string;
+}
+
+export interface PlanEntryPayload {
+	content: string;
+	priority: string;
+	status: string;
+}
+
+export interface PermissionOptionPayload {
+	option_id: string;
+	label: string;
+	kind: 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always';
+}
+
+export type AcpWsEvent =
+	| { type: 'session_list'; sessions: SessionMeta[] }
+	| { type: 'session_created'; session: SessionMeta }
+	| { type: 'message_chunk'; session_id: string; role: 'user' | 'assistant'; text: string }
+	| {
+			type: 'tool_call_created';
+			session_id: string;
+			tool_call_id: string;
+			kind: string;
+			title: string;
+			status: string;
+	  }
+	| {
+			type: 'tool_call_updated';
+			session_id: string;
+			tool_call_id: string;
+			status: string | null;
+			diff: DiffPayload | null;
+	  }
+	| { type: 'plan_update'; session_id: string; entries: PlanEntryPayload[] }
+	| {
+			type: 'permission_request';
+			session_id: string;
+			request_id: string;
+			tool_call_id: string;
+			title: string;
+			options: PermissionOptionPayload[];
+	  }
+	| { type: 'permission_resolved'; session_id: string; request_id: string }
+	| { type: 'mode_changed'; session_id: string; mode_id: string }
+	| { type: 'error'; session_id: string | null; message: string };
+
+export type AcpWsClientMsg =
+	| { type: 'send_message'; text: string }
+	| { type: 'permission_response'; request_id: string; option_id: string }
+	| { type: 'set_permission_mode'; mode_id: string }
+	| { type: 'cancel' };

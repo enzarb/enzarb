@@ -1,3 +1,4 @@
+mod agent;
 mod files;
 mod processes;
 mod status;
@@ -37,6 +38,16 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/processes/{id}/output", get(processes::output_ws))
         .route("/processes/{id}/history", get(processes::history))
+        // Agent tab (ACP sessions)
+        .route(
+            "/agent/sessions",
+            get(agent::list_sessions).post(agent::create_session),
+        )
+        .route(
+            "/agent/sessions/{id}",
+            get(agent::get_session).delete(agent::archive_session),
+        )
+        .route("/agent/sessions/{id}/ws", get(agent::session_ws))
         // File operations
         .route("/files", get(files::list).delete(files::delete))
         .route("/files/download", get(files::download))

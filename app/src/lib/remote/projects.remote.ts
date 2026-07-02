@@ -88,7 +88,8 @@ export const getAgentToken = query(async () => {
 		'files:write',
 		'processes:manage',
 		'terminal',
-		'tools:manage'
+		'tools:manage',
+		'agent:manage'
 	]);
 });
 

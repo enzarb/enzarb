@@ -103,6 +103,21 @@ ENV MISE_TRUSTED_CONFIG_PATHS=/home/user
 # Runtime data/shims still live in $HOME/.local/share/mise on the PVC.
 RUN curl https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh
 
+# Node.js + the ACP adapter for the Agent tab (Claude Code), baked in at build
+# time via a *system* mise install: MISE_DATA_DIR points outside the home PVC
+# (/home/user is empty at runtime until the PVC mounts over it and would wipe
+# anything installed under the default $HOME/.local/share/mise), so the
+# install + shims here survive pod restarts untouched.
+# Pinned explicitly: project-agent's ACP client depends on this adapter's wire
+# format, and a floating @latest could silently break it on image rebuild.
+ARG NODE_VERSION=22
+ARG CLAUDE_AGENT_ACP_VERSION=0.55.0
+ENV MISE_DATA_DIR=/usr/local/share/mise
+ENV PATH="/usr/local/share/mise/shims:${PATH}"
+RUN mise use -g node@${NODE_VERSION} \
+    && npm install -g @agentclientprotocol/claude-agent-acp@${CLAUDE_AGENT_ACP_VERSION} \
+    && chmod -R a+rX /usr/local/share/mise
+
 USER user
 WORKDIR /home/user
 

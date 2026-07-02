@@ -1,0 +1,146 @@
+use axum::extract::ws::{Message, WebSocket};
+use axum::{
+    Json,
+    extract::{Extension, Path, State, WebSocketUpgrade},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
+use futures::{SinkExt, StreamExt};
+use serde::Deserialize;
+
+use crate::AppState;
+use crate::acp::AcpWsClientMsg;
+use crate::acp::session::SessionMeta;
+use crate::auth::ProjectPermissions;
+
+const PERM: &str = "agent:manage";
+
+#[derive(Debug, Deserialize, Default)]
+pub struct CreateSessionRequest {
+    pub label: Option<String>,
+}
+
+pub async fn list_sessions(
+    State(state): State<AppState>,
+    Extension(perms): Extension<ProjectPermissions>,
+) -> Result<Json<Vec<SessionMeta>>, StatusCode> {
+    perms.require(PERM)?;
+    Ok(Json(state.acp_store.list_sessions().await))
+}
+
+pub async fn create_session(
+    State(state): State<AppState>,
+    Extension(perms): Extension<ProjectPermissions>,
+    Json(req): Json<CreateSessionRequest>,
+) -> Result<Json<SessionMeta>, StatusCode> {
+    perms.require(PERM)?;
+    state
+        .acp_store
+        .create_session(req.label)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to create ACP session");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
+pub async fn get_session(
+    State(state): State<AppState>,
+    Extension(perms): Extension<ProjectPermissions>,
+    Path(id): Path<String>,
+) -> Result<Json<SessionMeta>, StatusCode> {
+    perms.require(PERM)?;
+    state
+        .acp_store
+        .list_sessions()
+        .await
+        .into_iter()
+        .find(|s| s.id == id)
+        .map(Json)
+        .ok_or(StatusCode::NOT_FOUND)
+}
+
+pub async fn archive_session(
+    State(state): State<AppState>,
+    Extension(perms): Extension<ProjectPermissions>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    perms.require(PERM)?;
+    state
+        .acp_store
+        .archive_session(&id)
+        .await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+pub async fn session_ws(
+    State(state): State<AppState>,
+    Extension(perms): Extension<ProjectPermissions>,
+    Path(id): Path<String>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    if let Err(e) = perms.require(PERM) {
+        return e.into_response();
+    }
+    // Echo back the `bearer` subprotocol (never the token), matching the
+    // terminal WS auth pattern — the browser requires the server to confirm
+    // one of the offered subprotocols or it aborts the handshake.
+    ws.protocols(["bearer"])
+        .on_upgrade(move |socket| attach_ws(socket, id, state))
+}
+
+async fn attach_ws(mut socket: WebSocket, session_id: String, state: AppState) {
+    let mut rx = match state.acp_store.attach(&session_id).await {
+        Ok(rx) => rx,
+        Err(e) => {
+            tracing::warn!(error = %e, session_id, "failed to attach ACP session");
+            let _ = socket.send(Message::Close(None)).await;
+            return;
+        }
+    };
+
+    let (mut ws_tx, mut ws_rx) = socket.split();
+
+    let output = async move {
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    let Ok(text) = serde_json::to_string(&event) else {
+                        continue;
+                    };
+                    if ws_tx.send(Message::Text(text.into())).await.is_err() {
+                        return;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    };
+
+    let input = async move {
+        while let Some(Ok(msg)) = ws_rx.next().await {
+            match msg {
+                Message::Text(t) => {
+                    if let Ok(client_msg) = serde_json::from_str::<AcpWsClientMsg>(&t)
+                        && let Err(e) = state
+                            .acp_store
+                            .handle_client_msg(&session_id, client_msg)
+                            .await
+                    {
+                        tracing::warn!(error = %e, session_id, "failed to handle ACP client message");
+                    }
+                }
+                Message::Close(_) => break,
+                _ => {}
+            }
+        }
+    };
+
+    tokio::select! {
+        _ = output => {},
+        _ = input => {},
+    }
+}

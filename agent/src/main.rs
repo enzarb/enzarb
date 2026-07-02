@@ -1,3 +1,4 @@
+mod acp;
 mod auth;
 mod external;
 mod init;
@@ -65,12 +66,18 @@ async fn main() -> Result<()> {
     // Rehydrate persistent processes from state file
     let process_store = process::ProcessStore::load_or_create().await?;
 
+    // ACP (Agent tab) session index — the store itself lazily spawns
+    // claude-agent-acp on first use, not here.
+    let acp_session_index = acp::SessionIndex::load_or_create().await?;
+    let acp_store = acp::AcpStore::new(init::home_dir(), acp_session_index);
+
     let state = AppState {
         project_id: project_id.clone(),
         org_id,
         project_slug,
         jwks,
         process_store,
+        acp_store,
     };
 
     let internal_addr: SocketAddr = "0.0.0.0:9090".parse()?;
@@ -105,4 +112,5 @@ pub struct AppState {
     pub project_slug: String,
     pub jwks: auth::JwksCache,
     pub process_store: process::ProcessStore,
+    pub acp_store: acp::AcpStore,
 }
