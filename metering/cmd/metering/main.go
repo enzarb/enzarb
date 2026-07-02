@@ -150,7 +150,7 @@ func (w *Worker) collectMetrics(ctx context.Context, elapsed time.Duration) erro
 		return fmt.Errorf("list namespaces: %w", err)
 	}
 
-	now := time.Now().UTC()
+	now := time.Now().UTC().Truncate(time.Minute)
 	for _, ns := range nsList.Items {
 		switch {
 		case strings.HasPrefix(ns.Name, "user-"):
@@ -416,7 +416,7 @@ func (w *Worker) consumeHubble(ctx context.Context, path string) {
 				owner := w.podOwners[key.pod]
 				w.podOwnersMu.RUnlock()
 				slog.Info("hubble bucket", "orgID", key.orgID, "project", key.project, "pod", key.pod, "owner", owner, "component", key.component, "external", key.external, "ingress", bc.ingress, "egress", bc.egress)
-				now := time.Now().UTC()
+				now := time.Now().UTC().Truncate(time.Minute)
 				ingressType, egressType := "net_ingress_internal_bytes", "net_egress_internal_bytes"
 				if key.external {
 					ingressType, egressType = "net_ingress_external_bytes", "net_egress_external_bytes"
@@ -733,7 +733,7 @@ func (w *Worker) collectZotUsage(ctx context.Context, elapsed time.Duration) err
 	if err != nil {
 		return fmt.Errorf("org ids: %w", err)
 	}
-	now := time.Now().UTC()
+	now := time.Now().UTC().Truncate(time.Minute)
 
 	var catalog struct {
 		Repositories []string `json:"repositories"`

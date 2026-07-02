@@ -292,6 +292,11 @@ export async function migrate() {
 		)
 	`;
 
+	// Truncate historical recorded_at to the minute so charts don't show
+	// zero-gaps caused by sub-minute tick drift (metering now writes truncated
+	// timestamps going forward).
+	await sql`UPDATE usage_events SET recorded_at = date_trunc('minute', recorded_at) WHERE recorded_at != date_trunc('minute', recorded_at)`;
+
 	// Pending account links — stores in-flight GitHub ↔ existing-account links (M2).
 	await sql`
 		CREATE TABLE IF NOT EXISTS pending_account_links (
