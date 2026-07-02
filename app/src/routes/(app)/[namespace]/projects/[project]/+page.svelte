@@ -4,7 +4,7 @@
 	import { getProjectRepoDetails } from '$lib/remote/registry.remote';
 	import { page } from '$app/state';
 	import { confirm } from '$lib/confirm';
-	import { ensureFreshToken } from '$lib/agentToken';
+	import { getAgentAuthToken } from '$lib/agentToken';
 
 	function formatBytes(bytes: number): string {
 		if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + ' GiB';
@@ -12,11 +12,8 @@
 		return (bytes / 1024).toFixed(0) + ' KiB';
 	}
 
-	// Mints its own token rather than accepting one from callers — this can run
-	// long after the page first loaded, and a token captured at load time is
-	// only good for 5 minutes (see agentToken.ts).
 	async function fetchDiskUsage(agentPath: string) {
-		const token = await ensureFreshToken(null);
+		const token = await getAgentAuthToken();
 		if (!token) return null;
 		const res = await fetch(`https://enzarb.dev${agentPath}/status`, {
 			headers: { Authorization: `Bearer ${token}` }

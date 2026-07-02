@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { getAgentToken, getProject } from '$lib/remote/projects.remote';
-	import { ensureFreshToken } from '$lib/agentToken';
+	import { getProject } from '$lib/remote/projects.remote';
+	import { getAgentAuthToken } from '$lib/agentToken';
 	import CodeViewer from '$lib/components/CodeViewer.svelte';
 
 	type FileEntry = { name: string; path: string; kind: string; size?: number; modified?: string };
@@ -19,7 +19,7 @@
 		page.url.pathname.slice(0, page.url.pathname.indexOf('/files') + '/files'.length)
 	);
 	const breadcrumbs = $derived((page.params.path ?? '').split('/').filter(Boolean));
-	const parentUrl = $derived(() => {
+	const parentUrl = $derived.by(() => {
 		const parts = (page.params.path ?? '').split('/').filter(Boolean);
 		const parent = parts.slice(0, -1).join('/');
 		return parent ? `${filesBase}/${parent}` : filesBase;
@@ -28,9 +28,9 @@
 	const dataPromise = $derived(load(page.params.path ?? '', refreshKey));
 
 	async function load(path: string, _refresh: number) {
-		const [agentToken, project] = await Promise.all([getAgentToken(), getProject()]);
+		const [agentToken, project] = await Promise.all([getAgentAuthToken(), getProject()]);
 		const agentPath = project?.status?.agentPath;
-		if (!agentPath) return { type: 'error' as const, message: 'Agent not ready — project may still be provisioning.', gitStatus: {} as Record<string, GitEntry>, agentBase: '', token: '' };
+		if (!agentPath) return { type: 'error' as const, message: 'Agent not ready — project may still be provisioning.', gitStatus: {} as Record<string, GitEntry>, agentBase: '' };
 
 		const agentBase = `https://enzarb.dev${agentPath}`;
 		const auth = { Authorization: `Bearer ${agentToken}` };
@@ -51,25 +51,25 @@
 				...raw.filter(e => e.kind === 'dir').sort((a, b) => a.name.localeCompare(b.name)),
 				...raw.filter(e => e.kind !== 'dir').sort((a, b) => a.name.localeCompare(b.name))
 			];
-			return { type: 'dir' as const, path, entries, gitStatus, agentBase, token: agentToken };
+			return { type: 'dir' as const, path, entries, gitStatus, agentBase };
 		}
 
 		const name = path.split('/').pop() ?? '';
 		const ext = fileExt(name);
 
 		if (BINARY_EXTS.has(ext)) {
-			return { type: 'binary' as const, path, name, gitStatus, agentBase, token: agentToken };
+			return { type: 'binary' as const, path, name, gitStatus, agentBase };
 		}
 
 		if (IMAGE_EXTS.has(ext)) {
 			const res = await fetch(`${agentBase}/files/download?path=${encodeURIComponent(path)}`, { headers: auth });
-			if (!res.ok) return { type: 'error' as const, message: `HTTP ${res.status}`, gitStatus, agentBase, token: agentToken };
+			if (!res.ok) return { type: 'error' as const, message: `HTTP ${res.status}`, gitStatus, agentBase };
 			const ab = await res.arrayBuffer();
 			const bytes = new Uint8Array(ab);
 			let binary = '';
 			for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
 			const dataUrl = `data:${MIME[ext] ?? 'image/jpeg'};base64,${btoa(binary)}`;
-			return { type: 'image' as const, path, name, dataUrl, gitStatus, agentBase, token: agentToken };
+			return { type: 'image' as const, path, name, dataUrl, gitStatus, agentBase };
 		}
 
 		const hasChanges = path in gitStatus;
@@ -77,14 +77,14 @@
 			const diffRes = await fetch(`${agentBase}/files/git-diff?path=${encodeURIComponent(path)}`, { headers: auth });
 			if (diffRes.ok) {
 				const content = await diffRes.text();
-				return { type: 'diff' as const, path, name, content, gitStatus, agentBase, token: agentToken };
+				return { type: 'diff' as const, path, name, content, gitStatus, agentBase };
 			}
 		}
 
 		const fileRes = await fetch(`${agentBase}/files/download?path=${encodeURIComponent(path)}`, { headers: auth });
-		if (!fileRes.ok) return { type: 'error' as const, message: `HTTP ${fileRes.status}`, gitStatus, agentBase, token: agentToken };
+		if (!fileRes.ok) return { type: 'error' as const, message: `HTTP ${fileRes.status}`, gitStatus, agentBase };
 		const content = await fileRes.text();
-		return { type: 'file' as const, path, name, content, gitStatus, agentBase, token: agentToken };
+		return { type: 'file' as const, path, name, content, gitStatus, agentBase };
 	}
 
 	function gitColorClass(gitStatus: Record<string, GitEntry>, path: string, isDir: boolean): string {
@@ -112,11 +112,8 @@
 		return s !== ' ' ? s : '?';
 	}
 
-	// The `token` param is whatever was minted when the directory/file was last
-	// loaded — for a page left open past its 5-minute lifetime that's stale, so
-	// every action re-validates it here rather than trusting the cached value.
-	async function download(agentBase: string, token: string, path: string, name: string) {
-		const fresh = await ensureFreshToken(token);
+	async function download(agentBase: string, path: string, name: string) {
+		const fresh = await getAgentAuthToken();
 		const res = await fetch(`${agentBase}/files/download?path=${encodeURIComponent(path)}`, {
 			headers: { Authorization: `Bearer ${fresh}` }
 		});
@@ -129,10 +126,10 @@
 
 	let uploadInput: HTMLInputElement | undefined = $state();
 
-	async function upload(e: Event, agentBase: string, token: string, dir: string) {
+	async function upload(e: Event, agentBase: string, dir: string) {
 		const file = (e.target as HTMLInputElement).files?.[0];
 		if (!file) return;
-		const fresh = await ensureFreshToken(token);
+		const fresh = await getAgentAuthToken();
 		const dest = dir ? `${dir}/${file.name}` : file.name;
 		await fetch(`${agentBase}/files/upload?path=${encodeURIComponent(dest)}`, {
 			method: 'POST', headers: { Authorization: `Bearer ${fresh}` }, body: file
@@ -152,12 +149,12 @@
 		commitDialog?.showModal();
 	}
 
-	async function doCommit(agentBase: string, token: string) {
+	async function doCommit(agentBase: string) {
 		if (!commitMessage.trim()) return;
 		committing = true;
 		commitError = '';
 		try {
-			const fresh = await ensureFreshToken(token);
+			const fresh = await getAgentAuthToken();
 			const res = await fetch(`${agentBase}/files/git-commit`, {
 				method: 'POST',
 				headers: { Authorization: `Bearer ${fresh}`, 'Content-Type': 'application/json' },
@@ -201,7 +198,7 @@
 							<a class="crumb" href="{filesBase}/{breadcrumbs.slice(0, i + 1).join('/')}">{part}</a>
 						{/each}
 					{:else}
-						<a class="crumb back-btn" href={parentUrl()}>← Back</a>
+						<a class="crumb back-btn" href={parentUrl}>← Back</a>
 						<span class="sep">/</span>
 						<span class="crumb-static">{data.name ?? data.path}</span>
 						{#if data.type === 'diff'}<span class="diff-badge">diff</span>{/if}
@@ -209,10 +206,10 @@
 				</nav>
 				<div class="toolbar-right">
 					{#if data.type === 'dir'}
-						<input type="file" bind:this={uploadInput} onchange={(e) => upload(e, data.agentBase, data.token, data.path)} class="hidden" />
+						<input type="file" bind:this={uploadInput} onchange={(e) => upload(e, data.agentBase, data.path)} class="hidden" />
 						<button class="btn" onclick={() => uploadInput?.click()}>Upload</button>
 					{:else if data.type === 'file' || data.type === 'image'}
-						<button class="btn-sm" onclick={() => download(data.agentBase, data.token, data.path, data.name)}>Download</button>
+						<button class="btn-sm" onclick={() => download(data.agentBase, data.path, data.name)}>Download</button>
 					{/if}
 				</div>
 			</div>
@@ -220,7 +217,7 @@
 			{#if data.type === 'error'}
 				<p class="muted">{data.message}</p>
 			{:else if data.type === 'binary'}
-				<p class="muted">Binary file — <button class="link-btn" onclick={() => download(data.agentBase, data.token, data.path, data.name)}>download</button></p>
+				<p class="muted">Binary file — <button class="link-btn" onclick={() => download(data.agentBase, data.path, data.name)}>download</button></p>
 			{:else if data.type === 'image'}
 				<div class="image-wrap">
 					<img src={data.dataUrl} alt={data.name} class="image-preview" />
@@ -247,7 +244,7 @@
 						{#if data.path}
 							<tr>
 								<td colspan="4">
-									<a class="entry-btn" href={parentUrl()}>
+									<a class="entry-btn" href={parentUrl}>
 										<span class="icon">⬆</span> ..
 									</a>
 								</td>
@@ -265,7 +262,7 @@
 								<td class="muted">{fmtDate(f.modified)}</td>
 								<td>
 									{#if f.kind === 'file'}
-										<button class="btn-sm" onclick={() => download(data.agentBase, data.token, f.path, f.name)}>Download</button>
+										<button class="btn-sm" onclick={() => download(data.agentBase, f.path, f.name)}>Download</button>
 									{/if}
 								</td>
 							</tr>
@@ -309,7 +306,7 @@
 						autofocus
 						bind:value={commitMessage}
 						onkeydown={(e) => {
-							if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) doCommit(data.agentBase, data.token);
+							if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) doCommit(data.agentBase);
 						}}
 					></textarea>
 					{#if commitError}
@@ -319,7 +316,7 @@
 						<button class="btn" onclick={() => commitDialog?.close()} disabled={committing}>Cancel</button>
 						<button
 							class="btn btn-primary"
-							onclick={() => doCommit(data.agentBase, data.token)}
+							onclick={() => doCommit(data.agentBase)}
 							disabled={committing || !commitMessage.trim()}
 						>
 							{committing ? 'Committing…' : 'Commit'}

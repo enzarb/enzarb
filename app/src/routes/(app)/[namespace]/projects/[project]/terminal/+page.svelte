@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { getAgentToken, getProject } from '$lib/remote/projects.remote';
-	import { isTokenExpired } from '$lib/agentToken';
+	import { getProject } from '$lib/remote/projects.remote';
+	import { getAgentAuthToken } from '$lib/agentToken';
 	import { onMount, onDestroy } from 'svelte';
 	import { Terminal } from '@xterm/xterm';
 	import { FitAddon } from '@xterm/addon-fit';
@@ -219,15 +219,8 @@
 		}
 	}
 
-	// Agent tokens are short-lived; re-mint on (re)connect so a socket opened after
-	// a long mobile background isn't rejected for an expired token.
 	async function ensureToken(): Promise<string | null> {
-		try {
-			agentToken = await getAgentToken();
-		} catch {
-			// If the existing token is expired, don't try to reconnect with it.
-			if (agentToken && isTokenExpired(agentToken)) agentToken = null;
-		}
+		agentToken = await getAgentAuthToken();
 		return agentToken;
 	}
 
@@ -360,7 +353,7 @@
 
 	onMount(async () => {
 		mounted = true;
-		try { agentToken = await getAgentToken(); } catch {}
+		await ensureToken();
 		if (!mounted) return;
 		try {
 			const project = await getProject();
