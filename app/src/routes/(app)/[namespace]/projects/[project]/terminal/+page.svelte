@@ -387,10 +387,16 @@
 			terminal.open(termEl);
 			fit.fit();
 			// GPU renderer for smooth output; fall back to the DOM renderer if the
-			// WebGL context is lost (common after mobile backgrounding).
+			// WebGL context is lost (common after mobile backgrounding/tab switches).
 			try {
 				const webgl = new WebglAddon();
-				webgl.onContextLoss(() => webgl.dispose());
+				// Terminal.dispose() (see onDestroy) also disposes every loaded addon,
+				// so a context-loss dispose here can race with that and double-dispose
+				// the addon — xterm's WebglAddon throws on the second call because its
+				// internal renderer reference is already torn down. Swallow it.
+				webgl.onContextLoss(() => {
+					try { webgl.dispose(); } catch { /* already disposed */ }
+				});
 				terminal.loadAddon(webgl);
 			} catch {
 				/* no WebGL available; DOM renderer remains */
@@ -450,7 +456,10 @@
 		fit = undefined;
 		search = undefined;
 		serialize = undefined;
-		t?.dispose();
+		// A prior context-loss event may have already disposed the WebGL addon;
+		// xterm re-disposing it here would throw (see the webgl.onContextLoss
+		// handler above), so don't let that take down the rest of cleanup.
+		try { t?.dispose(); } catch { /* addon already disposed */ }
 	});
 </script>
 
