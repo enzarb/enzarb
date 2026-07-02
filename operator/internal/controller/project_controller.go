@@ -205,7 +205,13 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	logger.Info("project reconciled", "name", project.Name, "namespace", project.Namespace)
-	return ctrl.Result{}, nil
+	// Workspace image drift (desiredWorkspaceImage vs runningWorkspaceImage) and
+	// process-liveness state can only be detected here in ensureDeployment, which
+	// only runs on reconcile. Nothing about a new workspace image release changes
+	// a watched object on this Project, so without a periodic requeue a stable
+	// project would only ever get re-checked when the operator pod itself
+	// restarts — leaving version-update notifications stuck until then.
+	return ctrl.Result{RequeueAfter: workspaceDriftRecheckInterval}, nil
 }
 
 // projectFinalizer guards cleanup of resources outside the project's namespace
@@ -504,6 +510,11 @@ func (r *ProjectReconciler) ensurePVC(ctx context.Context, ns, name string, proj
 
 const forceRestartAnnotation = "enzarb.io/force-workspace-restart"
 
+// How often a steady-state project gets re-reconciled purely to notice
+// workspace image drift and re-check process liveness (see the comment on
+// the happy-path return in Reconcile).
+const workspaceDriftRecheckInterval = 5 * time.Minute
+
 func (r *ProjectReconciler) ensureDeployment(ctx context.Context, ns, saName, pvcName, orgSlug string, project *enzarbv1alpha1.Project) error {
 	log := log.FromContext(ctx)
 	deployName := fmt.Sprintf("project-%s", project.Spec.Slug)
@@ -555,15 +566,22 @@ func (r *ProjectReconciler) ensureDeployment(ctx context.Context, ns, saName, pv
 
 	if !forceRequested {
 		hasProcesses, checkErr := r.checkRunningProcesses(ctx, ns, project.Spec.Slug)
+		reason := "RunningProcesses"
 		if checkErr != nil {
-			log.Info("could not reach agent to check processes; treating as idle", "error", checkErr)
+			// Unknown process state (agent unreachable, still starting up, transient
+			// network blip, etc.) must NOT be treated as "safe to restart" — a
+			// spurious pending-update banner is far cheaper than silently killing a
+			// user's terminal session or dev server because we guessed wrong.
+			log.Info("could not reach agent to check processes; assuming processes may be running", "error", checkErr)
+			hasProcesses = true
+			reason = "ProcessCheckFailed"
 		}
 		if hasProcesses {
 			changelog := workspaceChangelogRange(runningImage, desiredImage)
 			apimeta.SetStatusCondition(&project.Status.Conditions, metav1.Condition{
 				Type:               "WorkspaceUpdatePending",
 				Status:             metav1.ConditionTrue,
-				Reason:             "RunningProcesses",
+				Reason:             reason,
 				Message:            changelog,
 				ObservedGeneration: project.Generation,
 			})
