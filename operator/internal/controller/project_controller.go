@@ -822,18 +822,23 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug s
 							SecurityContext: &corev1.SecurityContext{
 								RunAsUser:  int64Ptr(1000),
 								RunAsGroup: int64Ptr(1000),
-								// Rootless buildkit sets up a user-namespace worker. The
-								// RuntimeDefault seccomp profile permits the userns
-								// clone/unshare/mount syscalls it needs on modern kernels
-								// (5.x+), so full seccomp Unconfined is unnecessary and is
-								// avoided here to keep a syscall filter in place.
+								// Rootless buildkit sets up a user-namespace worker, which
+								// needs syscalls (clone(CLONE_NEWUSER), clone3, unshare,
+								// mount, setns, ...) that RuntimeDefault gates behind
+								// CAP_SYS_ADMIN. A custom per-node profile (installed by the
+								// enzarb-node-profiles-installer DaemonSet, see
+								// deploy/system/node-profiles.yaml) permits those while still
+								// denying the escape-adjacent syscalls (bpf, perf_event_open,
+								// open_by_handle_at, module loading, ...) that Unconfined
+								// would allow.
 								//
 								// AppArmor stays Unconfined: the container-default AppArmor
 								// profile (enforced on Ubuntu nodes) denies the mount
 								// operations RootlessKit performs, so a tailored per-node
 								// profile is required before this can be tightened.
 								SeccompProfile: &corev1.SeccompProfile{
-									Type: corev1.SeccompProfileTypeRuntimeDefault,
+									Type:             corev1.SeccompProfileTypeLocalhost,
+									LocalhostProfile: strPtr("enzarb/buildkitd.json"),
 								},
 								AppArmorProfile: &corev1.AppArmorProfile{
 									Type: corev1.AppArmorProfileTypeUnconfined,
@@ -1215,4 +1220,6 @@ func workspaceImage() string {
 }
 
 func int64Ptr(i int64) *int64 { return &i }
+
+func strPtr(s string) *string { return &s }
 func boolPtr(b bool) *bool    { return &b }

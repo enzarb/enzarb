@@ -1,0 +1,136 @@
+# Per-node security profiles for enzarb workspace pods.
+#
+# Installs the buildkitd seccomp profile into the kubelet's seccomp dir
+# (/var/lib/kubelet/seccomp) on every node so workspace pods can reference it
+# as seccompProfile type=Localhost, localhostProfile=enzarb/buildkitd.json.
+#
+# Why a custom profile: rootless buildkit (RootlessKit) needs the user-namespace
+# and mount syscalls (clone(CLONE_NEWUSER), clone3, unshare, mount, setns, ...)
+# that containerd's RuntimeDefault profile gates behind CAP_SYS_ADMIN. Upstream
+# BuildKit docs punt to seccomp=Unconfined; instead we allow by default and
+# deny the escape-adjacent syscalls Unconfined would give away (bpf,
+# perf_event_open, open_by_handle_at, module loading, kexec, keyring, ...).
+#
+# A tailored AppArmor profile for buildkitd should land here too (the operator
+# currently sets AppArmor Unconfined on the buildkitd container); when it does,
+# add it to the installer below and load it with apparmor_parser.
+#
+# NOTE: pods referencing a Localhost profile fail to start (loudly) on any node
+# where the file is missing. New nodes are covered as soon as this DaemonSet
+# schedules there; workspace pods created in that window recover on kubelet
+# retry once the file exists.
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: enzarb-node-profiles-installer
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/managed-by: enzarb
+    app.kubernetes.io/component: node-profiles
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: node-profiles
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: node-profiles
+    spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      tolerations:
+        - operator: Exists # install on every node, including control-plane/tainted
+      initContainers:
+        - name: install
+          image: busybox:1.37
+          securityContext:
+            # Writes to the root-owned kubelet seccomp hostPath dir.
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              mkdir -p /host/seccomp/enzarb
+              cat > /host/seccomp/enzarb/buildkitd.json <<'JSON'
+              {
+                "defaultAction": "SCMP_ACT_ALLOW",
+                "syscalls": [
+                  {
+                    "names": [
+                      "acct",
+                      "add_key",
+                      "bpf",
+                      "clock_adjtime",
+                      "clock_settime",
+                      "create_module",
+                      "delete_module",
+                      "finit_module",
+                      "get_kernel_syms",
+                      "get_mempolicy",
+                      "init_module",
+                      "ioperm",
+                      "iopl",
+                      "kcmp",
+                      "kexec_file_load",
+                      "kexec_load",
+                      "keyctl",
+                      "lookup_dcookie",
+                      "mbind",
+                      "move_pages",
+                      "nfsservctl",
+                      "open_by_handle_at",
+                      "perf_event_open",
+                      "pidfd_getfd",
+                      "process_vm_readv",
+                      "process_vm_writev",
+                      "query_module",
+                      "quotactl",
+                      "quotactl_fd",
+                      "reboot",
+                      "request_key",
+                      "set_mempolicy",
+                      "settimeofday",
+                      "stime",
+                      "swapoff",
+                      "swapon",
+                      "syslog",
+                      "uselib",
+                      "userfaultfd",
+                      "ustat",
+                      "vm86",
+                      "vm86old"
+                    ],
+                    "action": "SCMP_ACT_ERRNO",
+                    "errnoRet": 1
+                  }
+                ]
+              }
+              JSON
+              echo "installed /var/lib/kubelet/seccomp/enzarb/buildkitd.json"
+          volumeMounts:
+            - name: seccomp
+              mountPath: /host/seccomp
+      containers:
+        # Keep the DS pod alive so the installer re-runs when a node is replaced.
+        - name: pause
+          image: registry.k8s.io/pause:3.10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65535
+            capabilities:
+              drop: [ALL]
+      volumes:
+        - name: seccomp
+          hostPath:
+            path: /var/lib/kubelet/seccomp
+            type: DirectoryOrCreate
