@@ -12,8 +12,20 @@ use crate::AppState;
 use crate::acp::AcpWsClientMsg;
 use crate::acp::session::SessionMeta;
 use crate::auth::ProjectPermissions;
+use crate::init::home_dir;
 
 const PERM: &str = "agent:manage";
+
+fn expand_tilde(path: String) -> std::path::PathBuf {
+    let home = home_dir();
+    if path == "~" {
+        home
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        home.join(rest)
+    } else {
+        std::path::PathBuf::from(path)
+    }
+}
 
 #[derive(Debug, Deserialize, Default)]
 pub struct CreateSessionRequest {
@@ -37,7 +49,7 @@ pub async fn create_session(
     perms.require(PERM)?;
     state
         .acp_store
-        .create_session(req.label, req.cwd.map(std::path::PathBuf::from))
+        .create_session(req.label, req.cwd.map(expand_tilde))
         .await
         .map(Json)
         .map_err(|e| {
