@@ -6,7 +6,7 @@ app:
   image:
     repository: ghcr.io/enzarb/app
     pullPolicy: IfNotPresent
-    tag: "v0.81.0"
+    tag: "v0.82.0"
   env:
     ORIGIN: https://enzarb.dev
   dbSecret:
@@ -42,7 +42,7 @@ operator:
   image:
     repository: ghcr.io/enzarb/operator
     pullPolicy: IfNotPresent
-    tag: "v0.79.6"
+    tag: "v0.82.0"
   leaderElection: true
   env:
     ENZARB_DOMAIN: enzarb.dev
@@ -57,7 +57,7 @@ billing:
   image:
     repository: ghcr.io/enzarb/billing
     pullPolicy: IfNotPresent
-    tag: "v0.71.0"
+    tag: "v0.82.0"
   # Billing rates and free-tier allowances are configured at runtime via the
   # admin settings page (stored in the app_settings DB table), not here.
   resources:
@@ -71,7 +71,7 @@ metering:
   image:
     repository: ghcr.io/enzarb/metering
     pullPolicy: IfNotPresent
-    tag: "v0.76.2"
+    tag: "v0.82.0"
   hubbleLogPath: /var/run/cilium/hubble/events.log
   resources:
     requests:
@@ -86,7 +86,7 @@ authd:
   image:
     repository: ghcr.io/enzarb/authd
     pullPolicy: IfNotPresent
-    tag: "v0.48.3"
+    tag: "v0.82.0"
   # Secret holding the RSA token-signing keypair (tls.crt/tls.key). The same
   # cert is mounted into Zot as its bearer-auth trust anchor. Create with:
   #   openssl req -x509 -newkey rsa:2048 -nodes -keyout tls.key -out tls.crt \
@@ -113,7 +113,7 @@ webhook:
   image:
     repository: ghcr.io/enzarb/webhook
     pullPolicy: IfNotPresent
-    tag: "v0.59.5"
+    tag: "v0.82.0"
   resources:
     requests:
       cpu: 10m
@@ -125,7 +125,7 @@ webhook:
 workspace:
   image:
     repository: ghcr.io/enzarb/workspace
-    tag: "v0.80.4"
+    tag: "v0.82.0"
   # StorageClass for project home PVCs. Empty uses the cluster's default class.
   storageClass: ""
   # changelog is shown in the UI when a workspace update is pending. Set by CI
@@ -134,7 +134,7 @@ workspace:
   # changelogs is a map of workspace image version tag → workspace-scoped changelog
   # for that release. The operator uses this to show only the changes between the
   # user's running version and the desired version. Populated by CI on workspace builds.
-  changelogs: {"v0.79.6": "- fix: block workspace autorestart when agent sessions are present (bbb8444)", "v0.62.0": "- feat: seed ~/.claude/skills from /etc/enzarb/skel on fresh workspace PVC (f6d1322)", "v0.56.2": "- security: agent path/symlink hardening, JWT issuer, workspace netpol, WS auth (8a31ba3)", "v0.56.1": "- security: OWASP Top 10 remediation across agent, app, and deploy (1f4e826)", "v0.53.0": "- feat: streamline onboarding with env secrets, GitHub OAuth, and auto git setup (14ed587)", "v0.49.0": "- feat: environments tab, settings page, git diff in files, terminal fix (b4e996d)", "v0.48.1": "- fix: remove git-credential-enzarb from workspace Dockerfile (6bf12e6)", "v0.48.0": "- feat: remove Gitea and all git repository functionality (6962a82)", "v0.46.2": "- fix: inject POD_NAMESPACE env from mounted ConfigMap into spawned processes (931ac3c)", "v0.46.0": "- feat: prevent duplicate agent instances with an exclusive flock (29d6e30)"}
+  changelogs: {"v0.82.0": "- feat: speed up workspace image build with cargo-chef and .dockerignore (5aa25b4)", "v0.79.6": "- fix: block workspace autorestart when agent sessions are present (bbb8444)", "v0.62.0": "- feat: seed ~/.claude/skills from /etc/enzarb/skel on fresh workspace PVC (f6d1322)", "v0.56.2": "- security: agent path/symlink hardening, JWT issuer, workspace netpol, WS auth (8a31ba3)", "v0.56.1": "- security: OWASP Top 10 remediation across agent, app, and deploy (1f4e826)", "v0.53.0": "- feat: streamline onboarding with env secrets, GitHub OAuth, and auto git setup (14ed587)", "v0.49.0": "- feat: environments tab, settings page, git diff in files, terminal fix (b4e996d)", "v0.48.1": "- fix: remove git-credential-enzarb from workspace Dockerfile (6bf12e6)", "v0.48.0": "- feat: remove Gitea and all git repository functionality (6962a82)", "v0.46.2": "- fix: inject POD_NAMESPACE env from mounted ConfigMap into spawned processes (931ac3c)"}
 database:
   clusterName: enzarb-db
   roles:
