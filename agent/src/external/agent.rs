@@ -1,4 +1,4 @@
-use axum::extract::ws::{Message, WebSocket};
+use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use axum::{
     Json,
     extract::{Extension, Path, State, WebSocketUpgrade},
@@ -93,16 +93,37 @@ pub async fn session_ws(
 }
 
 async fn attach_ws(mut socket: WebSocket, session_id: String, state: AppState) {
-    let mut rx = match state.acp_store.attach(&session_id).await {
-        Ok(rx) => rx,
+    let (history, mut rx) = match state.acp_store.attach(&session_id).await {
+        Ok(result) => result,
         Err(e) => {
             tracing::warn!(error = %e, session_id, "failed to attach ACP session");
-            let _ = socket.send(Message::Close(None)).await;
+            let code = if e.to_string().contains("unknown session") {
+                4404u16
+            } else {
+                1011
+            };
+            let _ = socket
+                .send(Message::Close(Some(CloseFrame {
+                    code,
+                    reason: e.to_string().into(),
+                })))
+                .await;
             return;
         }
     };
 
     let (mut ws_tx, mut ws_rx) = socket.split();
+
+    // Replay in-memory history directly (reconnect after the session was
+    // already loaded in this process lifetime).
+    for event in history {
+        let Ok(text) = serde_json::to_string(&event) else {
+            continue;
+        };
+        if ws_tx.send(Message::Text(text.into())).await.is_err() {
+            return;
+        }
+    }
 
     let output = async move {
         loop {

@@ -114,9 +114,6 @@
 			case 'mode_changed':
 				currentMode = event.mode_id;
 				break;
-			case 'mode_changed':
-				currentMode = event.mode_id;
-				break;
 			case 'error':
 				timeline.push({ kind: 'message', role: 'assistant', text: `⚠️ ${event.message}` });
 				break;

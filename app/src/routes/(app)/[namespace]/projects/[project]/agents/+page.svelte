@@ -13,6 +13,7 @@
 	let creating = $state(false);
 	let showNewForm = $state(false);
 	let newCwd = $state('~');
+	let confirmDelete = $state<string | null>(null);
 
 	const base = `/${page.params.namespace}/projects/${page.params.project}/agents`;
 
@@ -56,6 +57,17 @@
 			creating = false;
 			showNewForm = false;
 		}
+	}
+
+	async function archiveSession(id: string) {
+		const token = await getAgentAuthToken();
+		if (!token) return;
+		await fetch(`${agentBase}/agent/sessions/${id}`, {
+			method: 'DELETE',
+			headers: { Authorization: `Bearer ${token}` }
+		});
+		sessions = sessions.filter((s) => s.id !== id);
+		confirmDelete = null;
 	}
 
 	onMount(async () => {
@@ -110,11 +122,26 @@
 	{:else}
 		<div class="session-list">
 			{#each sessions as s (s.id)}
-				<a class="session-row" href="{base}/{s.id}">
-					<span class="status-dot {s.status}"></span>
-					<span class="session-label">{s.label}</span>
-					<span class="session-time">{new Date(s.updated_at).toLocaleString()}</span>
-				</a>
+				<div class="session-row">
+					<a class="session-link" href="{base}/{s.id}">
+						<span class="status-dot {s.status}"></span>
+						<span class="session-label">{s.label}</span>
+						<span class="session-time">{new Date(s.updated_at).toLocaleString()}</span>
+					</a>
+					{#if confirmDelete === s.id}
+						<span class="confirm-row">
+							<span class="confirm-text">Delete?</span>
+							<button class="btn-danger-sm" onclick={() => archiveSession(s.id)}>Yes</button>
+							<button class="btn-ghost-sm" onclick={() => (confirmDelete = null)}>No</button>
+						</span>
+					{:else}
+						<button
+							class="delete-btn"
+							title="Delete session"
+							onclick={(e) => { e.preventDefault(); confirmDelete = s.id; }}
+						>✕</button>
+					{/if}
+				</div>
 			{/each}
 		</div>
 	{/if}
@@ -131,11 +158,20 @@
 	.muted { color: var(--color-text-muted); font-size: 13px; }
 	.error { color: var(--color-danger); font-size: 13px; }
 	.session-list { display: flex; flex-direction: column; border: 1px solid var(--color-border); border-radius: 6px; overflow: hidden; }
-	.session-row { display: flex; align-items: center; gap: 0.6rem; padding: 0.6rem 0.9rem; border-bottom: 1px solid var(--color-border); text-decoration: none; color: var(--color-text); }
+	.session-row { display: flex; align-items: center; border-bottom: 1px solid var(--color-border); }
 	.session-row:last-child { border-bottom: none; }
 	.session-row:hover { background: var(--color-surface-2); }
+	.session-link { display: flex; align-items: center; gap: 0.6rem; padding: 0.6rem 0.9rem; flex: 1; text-decoration: none; color: var(--color-text); min-width: 0; }
 	.status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-text-muted); flex-shrink: 0; }
 	.status-dot.live { background: #3fb950; }
-	.session-label { flex: 1; font-family: var(--font-mono); font-size: 13px; }
-	.session-time { font-size: 11px; color: var(--color-text-muted); }
+	.session-label { flex: 1; font-family: var(--font-mono); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.session-time { font-size: 11px; color: var(--color-text-muted); flex-shrink: 0; }
+	.delete-btn { background: none; border: none; cursor: pointer; color: var(--color-text-muted); font-size: 13px; padding: 0.6rem 0.75rem; line-height: 1; opacity: 0; transition: opacity 0.1s; }
+	.session-row:hover .delete-btn { opacity: 1; }
+	.delete-btn:hover { color: var(--color-danger); }
+	.confirm-row { display: flex; align-items: center; gap: 0.4rem; padding: 0 0.6rem; flex-shrink: 0; }
+	.confirm-text { font-size: 12px; color: var(--color-text-muted); }
+	.btn-danger-sm { font-size: 12px; padding: 0.2rem 0.5rem; border-radius: 4px; border: 1px solid var(--color-danger); background: none; color: var(--color-danger); cursor: pointer; }
+	.btn-danger-sm:hover { background: var(--color-danger); color: #fff; }
+	.btn-ghost-sm { font-size: 12px; padding: 0.2rem 0.5rem; border-radius: 4px; border: 1px solid var(--color-border); background: none; color: var(--color-text-muted); cursor: pointer; }
 </style>

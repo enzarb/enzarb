@@ -54,6 +54,10 @@ export class AgentSocket {
 			if (this.closed) return;
 			this.sock = undefined;
 			if (e.code === 1000 || e.code === 1001) return;
+			if (e.code === 4404) {
+				this.setState('failed', 'Session not found — it may have been deleted or the workspace restarted.');
+				return;
+			}
 			this.setState('reconnecting', `Disconnected (code ${e.code}) — attempting to reconnect…`);
 			this.scheduleReconnect();
 		};

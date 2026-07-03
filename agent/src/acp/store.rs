@@ -40,10 +40,13 @@ fn split_modes(modes: Option<SessionModeState>) -> (Option<String>, Vec<SessionM
     }
 }
 
-const CHANNEL_CAPACITY: usize = 256;
+const CHANNEL_CAPACITY: usize = 8192;
 const ACP_COMMAND: &str = "claude-agent-acp";
 
 type Channels = Arc<Mutex<HashMap<String, broadcast::Sender<AcpWsEvent>>>>;
+// Per-session accumulated event log; populated by the notification handler so
+// reconnecting clients can replay history without a second session/load call.
+type History = Arc<Mutex<HashMap<String, Vec<AcpWsEvent>>>>;
 
 #[derive(Clone)]
 pub struct AcpStore {
@@ -52,6 +55,7 @@ pub struct AcpStore {
     index: SessionIndex,
     permissions: PermissionRegistry,
     channels: Channels,
+    history: History,
 }
 
 impl AcpStore {
@@ -62,12 +66,19 @@ impl AcpStore {
             index,
             permissions: PermissionRegistry::default(),
             channels: Arc::new(Mutex::new(HashMap::new())),
+            history: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     async fn connection(&self) -> Result<ConnectionTo<Agent>> {
         self.connection
-            .get_or_try_init(|| spawn(self.permissions.clone(), self.channels.clone()))
+            .get_or_try_init(|| {
+                spawn(
+                    self.permissions.clone(),
+                    self.channels.clone(),
+                    self.history.clone(),
+                )
+            })
             .await
             .cloned()
     }
@@ -85,6 +96,8 @@ impl AcpStore {
     }
 
     pub async fn archive_session(&self, session_id: &str) -> Result<()> {
+        self.history.lock().await.remove(session_id);
+        self.channels.lock().await.remove(session_id);
         self.index.archive(session_id).await
     }
 
@@ -112,11 +125,20 @@ impl AcpStore {
             .await
     }
 
-    /// Attaches to a session for WS streaming: ensures the process is
-    /// running, loads history via `session/load` (replayed as the same
-    /// notification path used for live updates), and returns a receiver plus
-    /// any permission requests currently pending for this session.
-    pub async fn attach(&self, session_id: &str) -> Result<broadcast::Receiver<AcpWsEvent>> {
+    /// Attaches to a session for WS streaming.
+    ///
+    /// On first attach after process start (including after a workspace restart),
+    /// calls `session/load` so Claude Code replays the conversation history as
+    /// `SessionNotification` events. Those arrive via the broadcast channel and
+    /// are also accumulated in the in-memory history log.
+    ///
+    /// On reconnect (same process lifetime), skips `session/load` and returns
+    /// the in-memory history snapshot directly so the caller can replay it
+    /// over the new WS connection without re-reading from disk.
+    pub async fn attach(
+        &self,
+        session_id: &str,
+    ) -> Result<(Vec<AcpWsEvent>, broadcast::Receiver<AcpWsEvent>)> {
         let meta = self
             .index
             .get(session_id)
@@ -125,6 +147,25 @@ impl AcpStore {
 
         let connection = self.connection().await?;
         let tx = self.channel(session_id).await;
+
+        // Check for in-memory history, subscribing while the lock is held so
+        // we don't miss events arriving between the two operations.
+        let history_snapshot = {
+            let hist = self.history.lock().await;
+            let rx = tx.subscribe();
+            let snapshot = hist.get(session_id).cloned();
+            drop(hist);
+            snapshot.map(|s| (s, rx))
+        };
+
+        if let Some((snapshot, rx)) = history_snapshot {
+            // Reconnect: history is already in memory; no session/load needed.
+            self.index.touch(session_id, SessionStatus::Live).await?;
+            return Ok((snapshot, rx));
+        }
+
+        // First attach in this process: subscribe before session/load so the
+        // broadcast channel captures the replayed history notifications.
         let rx = tx.subscribe();
 
         let response = connection
@@ -138,7 +179,11 @@ impl AcpStore {
             .set_modes(session_id, mode_id, available_modes)
             .await?;
         self.index.touch(session_id, SessionStatus::Live).await?;
-        Ok(rx)
+
+        // History events from session/load are queued in rx (and being
+        // accumulated in self.history by the notification handler). Return
+        // an empty snapshot so attach_ws reads them from rx directly.
+        Ok((vec![], rx))
     }
 
     pub async fn handle_client_msg(&self, session_id: &str, msg: AcpWsClientMsg) -> Result<()> {
@@ -218,20 +263,34 @@ impl AcpStore {
 /// handle once `initialize` completes. `ConnectionTo` is cheaply cloneable
 /// and safe to share across tasks, so callers just hold onto the handle
 /// rather than talking to the spawned task directly.
-async fn spawn(permissions: PermissionRegistry, channels: Channels) -> Result<ConnectionTo<Agent>> {
+async fn spawn(
+    permissions: PermissionRegistry,
+    channels: Channels,
+    history: History,
+) -> Result<ConnectionTo<Agent>> {
     let agent = AcpAgent::from_str(ACP_COMMAND).map_err(|e| anyhow!("invalid ACP command: {e}"))?;
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
 
     tokio::spawn(async move {
         let notification_channels = channels.clone();
+        let notification_history = history.clone();
         let result = Client
             .builder()
             .on_receive_notification(
                 move |notification: SessionNotification, _cx| {
                     let channels = notification_channels.clone();
+                    let history = notification_history.clone();
                     async move {
                         let session_id = notification.session_id.to_string();
                         let events = from_session_update(&session_id, notification.update);
+                        if !events.is_empty() {
+                            history
+                                .lock()
+                                .await
+                                .entry(session_id.clone())
+                                .or_default()
+                                .extend(events.iter().cloned());
+                        }
                         let tx = channels.lock().await.get(&session_id).cloned();
                         if let Some(tx) = tx {
                             for event in events {
