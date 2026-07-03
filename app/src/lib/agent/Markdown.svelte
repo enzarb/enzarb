@@ -12,7 +12,7 @@
 	let tokens = $derived(marked.lexer(text) as Token[]);
 </script>
 
-{#each tokens as token (token.raw)}
+{#each tokens as token, i (i)}
 	{#if token.type === 'paragraph'}
 		<p><MarkdownInline tokens={(token as Tokens.Paragraph).tokens} /></p>
 	{:else if token.type === 'heading'}
@@ -28,13 +28,13 @@
 		{@const l = token as Tokens.List}
 		{#if l.ordered}
 			<ol>
-				{#each l.items as item (item.raw)}
+				{#each l.items as item, j (j)}
 					<li><MarkdownInline tokens={item.tokens as Token[]} /></li>
 				{/each}
 			</ol>
 		{:else}
 			<ul>
-				{#each l.items as item (item.raw)}
+				{#each l.items as item, j (j)}
 					<li><MarkdownInline tokens={item.tokens as Token[]} /></li>
 				{/each}
 			</ul>
