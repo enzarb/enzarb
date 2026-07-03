@@ -71,6 +71,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # usermod -m fails if /home/user already exists.
 RUN usermod -l user -d /home/user -m ubuntu && groupmod -n user ubuntu
 
+# mise (tool version manager) — binary installed to /usr/local/bin so it
+# survives an empty PVC being mounted over /home/user at runtime.
+RUN curl https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh
+
 # Install ACP adapter for the Agent tab (Claude Code) globally via npm.
 RUN npm install -g "@agentclientprotocol/claude-agent-acp@${CLAUDE_CODE_ACP_VERSION}"
 
@@ -105,6 +109,7 @@ COPY --chown=user:user workspace/skel /etc/enzarb/skel
 # than under the read-only DOCKER_CONFIG.
 ENV DOCKER_CONFIG=/etc/enzarb/docker \
     BUILDX_CONFIG=/home/user/.buildx \
+    MISE_TRUSTED_CONFIG_PATHS=/home/user \
     DOCKER_HOST=tcp://localhost:1234 \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \

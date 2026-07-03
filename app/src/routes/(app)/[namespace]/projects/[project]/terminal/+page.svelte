@@ -585,14 +585,7 @@
 </dialog>
 
 <style>
-	.terminal-page { display: flex; flex-direction: column; gap: 0; height: calc(100vh - 200px); min-height: 400px; margin-top: -1.5rem; }
-	@media (max-width: 640px) {
-		.terminal-page { height: calc(100vh - 120px); }
-	}
-
-	@media (max-width: 768px) {
-		.terminal-page { height: calc(100dvh - 180px); }
-	}
+	.terminal-page { display: flex; flex-direction: column; gap: 0; height: 100%; overflow: hidden; }
 
 	.tab-bar { display: flex; align-items: stretch; border-bottom: 1px solid var(--color-border); background: var(--color-surface-2); }
 	.tabs { flex: 1; display: flex; align-items: stretch; overflow-x: auto; }
