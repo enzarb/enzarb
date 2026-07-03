@@ -40,6 +40,7 @@
 	let draft = $state('');
 	let mounted = false;
 	let scrollEl: HTMLDivElement | undefined = $state();
+	let textareaEl: HTMLTextAreaElement | undefined = $state();
 	let availableModes: SessionModeInfo[] = $state([]);
 	let currentMode: string = $state('default');
 
@@ -131,6 +132,12 @@
 		timeline.push({ kind: 'message', role: 'user', text });
 		socket.send({ type: 'send_message', text });
 		draft = '';
+		if (textareaEl) { textareaEl.style.height = 'auto'; }
+	}
+
+	function growTextarea(el: HTMLTextAreaElement) {
+		el.style.height = 'auto';
+		el.style.height = el.scrollHeight + 'px';
 	}
 
 	onMount(async () => {
@@ -210,9 +217,11 @@
 
 	<form class="composer" onsubmit={(e) => { e.preventDefault(); sendMessage(); }}>
 		<textarea
+			bind:this={textareaEl}
 			bind:value={draft}
 			placeholder="Ask Claude Code about this project…"
-			rows="2"
+			rows="1"
+			oninput={(e) => growTextarea(e.currentTarget)}
 			onkeydown={(e) => {
 				if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
 			}}
@@ -222,8 +231,7 @@
 </div>
 
 <style>
-	.chat-page { display: flex; flex-direction: column; height: calc(100vh - 200px); min-height: 400px; margin-top: -1.5rem; overflow: hidden; }
-	@media (max-width: 768px) { .chat-page { height: 100%; min-height: 0; } }
+	.chat-page { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
 	.chat-header { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0; border-bottom: 1px solid var(--color-border); }
 	.back { font-size: 12px; color: var(--color-text-muted); text-decoration: none; }
 	.back:hover { color: var(--color-text); }
@@ -240,7 +248,8 @@
 	.message-body p { margin: 0; }
 	.message.user .message-body { color: var(--color-text); }
 
-	.composer { display: flex; gap: 0.5rem; padding: 0.75rem 0; border-top: 1px solid var(--color-border); min-width: 0; }
-	.composer textarea { flex: 1; resize: none; font-family: inherit; font-size: 13px; padding: 0.5rem 0.7rem; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); color: var(--color-text); }
-	.composer button { align-self: flex-end; }
+	.composer { display: flex; gap: 0.5rem; padding: 0.75rem 0; border-top: 1px solid var(--color-border); min-width: 0; align-items: flex-end; }
+	.composer textarea { flex: 1; resize: none; font-family: inherit; font-size: 13px; padding: 0.5rem 0.7rem; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); color: var(--color-text); overflow-y: auto; max-height: calc(10 * 1.5em + 1rem); line-height: 1.5; }
+	@media (max-width: 768px) { .composer textarea { max-height: calc(4 * 1.5em + 1rem); } }
+	.composer button { flex-shrink: 0; }
 </style>

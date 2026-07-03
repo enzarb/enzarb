@@ -179,8 +179,8 @@
 	.tab { padding: 0.5rem 1rem; color: var(--color-text-muted); font-size: 13px; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
 	.tab:hover { color: var(--color-text); text-decoration: none; }
 	.tab.active { color: var(--color-text); border-bottom-color: var(--color-accent); }
-	.project-content-wrap { position: relative; flex: 1; display: flex; }
-	.project-content { flex: 1; }
+	.project-content-wrap { position: relative; flex: 1; display: flex; overflow: hidden; }
+	.project-content { flex: 1; overflow-y: auto; }
 	.project-content.locked { pointer-events: none; opacity: 0.4; }
 	.provisioning-overlay {
 		position: absolute;
