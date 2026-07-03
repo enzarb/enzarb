@@ -41,7 +41,7 @@ fn split_modes(modes: Option<SessionModeState>) -> (Option<String>, Vec<SessionM
 }
 
 const CHANNEL_CAPACITY: usize = 256;
-const ACP_COMMAND: &str = "npx -y @agentclientprotocol/claude-agent-acp@latest";
+const ACP_COMMAND: &str = "claude-agent-acp";
 
 type Channels = Arc<Mutex<HashMap<String, broadcast::Sender<AcpWsEvent>>>>;
 
