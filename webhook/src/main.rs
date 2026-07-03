@@ -118,7 +118,9 @@ async fn handle_webhook(
         let decoded = percent_decode(encoded);
         let payload: ReleasePayload = match serde_json::from_slice(&decoded) {
             Ok(p) => p,
-            Err(e) => return (StatusCode::BAD_REQUEST, format!("invalid payload: {e}")).into_response(),
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, format!("invalid payload: {e}")).into_response();
+            }
         };
         return finish_webhook(state, payload).await;
     } else {
@@ -127,7 +129,7 @@ async fn handle_webhook(
     let payload: ReleasePayload = match serde_json::from_slice(json_body) {
         Ok(p) => p,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, format!("invalid payload: {e}")).into_response()
+            return (StatusCode::BAD_REQUEST, format!("invalid payload: {e}")).into_response();
         }
     };
 
@@ -142,12 +144,18 @@ async fn finish_webhook(state: AppState, payload: ReleasePayload) -> axum::respo
     let tag = &payload.release.tag_name;
     let version = tag.strip_prefix('v').unwrap_or(tag);
 
-    info!("release.published {tag} → patching HelmChart {}/{} to {version}",
-        state.helmchart_namespace, state.helmchart_name);
+    info!(
+        "release.published {tag} → patching HelmChart {}/{} to {version}",
+        state.helmchart_namespace, state.helmchart_name
+    );
 
     if let Err(e) = patch_helmchart(&state, version).await {
         error!("patch failed: {e:#}");
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("patch failed: {e}")).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("patch failed: {e}"),
+        )
+            .into_response();
     }
 
     info!("HelmChart patched to {version}");
@@ -160,10 +168,9 @@ fn percent_decode(input: &[u8]) -> Vec<u8> {
     while i < input.len() {
         match input[i] {
             b'%' if i + 2 < input.len() => {
-                if let Ok(b) = u8::from_str_radix(
-                    std::str::from_utf8(&input[i + 1..i + 3]).unwrap_or(""),
-                    16,
-                ) {
+                if let Ok(b) =
+                    u8::from_str_radix(std::str::from_utf8(&input[i + 1..i + 3]).unwrap_or(""), 16)
+                {
                     out.push(b);
                     i += 3;
                     continue;
@@ -171,8 +178,14 @@ fn percent_decode(input: &[u8]) -> Vec<u8> {
                 out.push(b'%');
                 i += 1;
             }
-            b'+' => { out.push(b' '); i += 1; }
-            b => { out.push(b); i += 1; }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
         }
     }
     out
