@@ -151,8 +151,15 @@ spec:
                 items:
                   properties:
                     certStatus:
+                      description: |-
+                        CertStatus doubles as the domain's verification phase:
+                        PendingVerification | VerificationError | DomainConflict | Verified.
                       type: string
                     challengeToken:
+                      description: |-
+                        ChallengeToken is the per-domain secret the tenant must publish as a TXT
+                        record at _enzarb-challenge.<fqdn> (value "enzarb-verify=<token>") to prove
+                        DNS control. Surfaced to the user so they can create the record.
                       type: string
                     fqdn:
                       type: string
@@ -165,6 +172,11 @@ spec:
               namespace:
                 type: string
               subdomain:
+                description: |-
+                  Subdomain is the environment's stable, randomly-generated single DNS label.
+                  The platform serving host is <subdomain>.<deploy zone> (e.g.
+                  k7m2x9qf4r.apps.enzarb.dev), so a single wildcard (*.apps.enzarb.dev)
+                  resolves every environment. Generated once and never changed.
                 type: string
             type: object
         type: object
@@ -222,6 +234,11 @@ spec:
             properties:
               displayName:
                 type: string
+              gpuEnabled:
+                description: |-
+                  GPUEnabled is an admin-only flag. When true the workspace Pod requests
+                  one nvidia.com/gpu and is scheduled onto a GPU-tainted node.
+                type: boolean
               orgId:
                 type: string
               resources:
@@ -296,6 +313,13 @@ spec:
                 required:
                 - size
                 type: object
+              suspended:
+                description: |-
+                  Suspended is a reversible, user-initiated shutdown: distinct from soft
+                  delete, it scales the workspace and every child Environment's tenant
+                  workloads to zero but touches no data (PVC, namespaces, deployed
+                  resources all survive) and can be cleared at any time to resume.
+                type: boolean
               tools:
                 items:
                   properties:
@@ -372,7 +396,15 @@ spec:
                   - type
                   type: object
                 type: array
+              desiredWorkspaceImage:
+                description: DesiredWorkspaceImage is the workspace container image
+                  the operator wants to run.
+                type: string
               phase:
+                type: string
+              runningWorkspaceImage:
+                description: RunningWorkspaceImage is the workspace container image
+                  currently deployed.
                 type: string
               serviceAccountName:
                 type: string
@@ -546,11 +578,26 @@ spec:
         description: |-
           AllowedDomains is the operator-maintained, per-deploy-namespace source of
           truth for which hostnames a project's tenant-authored Gateway API routes
-          (HTTPRoute/GRPCRoute) and Ingresses are permitted to claim.
+          (HTTPRoute/GRPCRoute) and Ingresses are permitted to claim. The operator
+          projects one object (named "default") into each deploy namespace from the
+          Environment's verified domains; a ValidatingAdmissionPolicy paramRefs it to
+          reject routes whose hostnames fall outside this set. Tenants must not have
+          write access to this resource.
         properties:
           apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
             type: string
           kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
             type: string
           metadata:
             type: object
@@ -568,6 +615,7 @@ spec:
         type: object
     served: true
     storage: true
+    subresources: {}
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
@@ -600,13 +648,27 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          DomainClaim is the cluster-scoped ownership ledger for custom domains;
-          its name is a hash of the FQDN, so etcd name uniqueness binds a hostname
-          to exactly one project.
+          DomainClaim is the cluster-scoped ownership ledger for custom domains. Its
+          metadata.name is a hash of the FQDN, so etcd's name uniqueness guarantees a
+          given hostname can be bound to exactly one project: the operator Creates the
+          claim only after DNS ownership is proven, and a second project's Create of the
+          same name fails, hard-blocking domain hijacking regardless of route
+          creationTimestamp ordering.
         properties:
           apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
             type: string
           kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
             type: string
           metadata:
             type: object
@@ -617,6 +679,9 @@ spec:
               namespace:
                 type: string
               orgID:
+                description: |-
+                  OrgID, ProjectRef and Namespace identify the owning project. Re-verification
+                  and route admission are only honored for the project recorded here.
                 type: string
               projectRef:
                 type: string
