@@ -1,26 +1,28 @@
-# ── Rust: fetch deps (cached layer) ──────────────────────────────────────────
-FROM rust:1 AS rust-deps
+# ── Rust: cargo-chef puts dependency compilation in image layers keyed only by
+# the manifests, so CI layer caching (type=gha) reuses them across builds ──────
+FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
 WORKDIR /src
-COPY agent/Cargo.toml agent/Cargo.lock ./
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    cargo fetch --locked
 
-# ── Rust: test (parallel with rust-builder) ───────────────────────────────────
-FROM rust-deps AS rust-test
-COPY agent/src ./src
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
-    cargo test && touch /test-ok
+FROM chef AS planner
+COPY agent/ .
+RUN cargo chef prepare --recipe-path recipe.json
 
 # ── Rust: release build (parallel with rust-test) ─────────────────────────────
-FROM rust-deps AS rust-builder
-COPY agent/src ./src
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
-    cargo build --release && \
-    cp /src/target/release/project-agent /project-agent && \
-    cp /src/target/release/docker-credential-k8s-sa /docker-credential-k8s-sa && \
-    cp /src/target/release/kubelet-credential-enzarb /kubelet-credential-enzarb
+FROM chef AS rust-builder
+COPY --from=planner /src/recipe.json .
+RUN cargo chef cook --release --locked --recipe-path recipe.json
+COPY agent/ .
+RUN cargo build --release --locked && \
+    cp target/release/project-agent \
+       target/release/docker-credential-k8s-sa \
+       target/release/kubelet-credential-enzarb /
+
+# ── Rust: test (parallel with rust-builder; gates the runtime image) ──────────
+FROM chef AS rust-test
+COPY --from=planner /src/recipe.json .
+RUN cargo chef cook --tests --locked --recipe-path recipe.json
+COPY agent/ .
+RUN cargo test --locked && touch /test-ok
 
 # ── Runtime ───────────────────────────────────────────────────────────────────
 FROM ubuntu:26.04
@@ -29,9 +31,9 @@ ARG BUILDX_VERSION=0.24.0
 ARG TINI_VERSION=0.19.0
 ARG CLAUDE_CODE_ACP_VERSION=latest
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV HOME=/home/user
-ENV PATH="/home/user/.local/bin:${PATH}"
+ENV DEBIAN_FRONTEND=noninteractive \
+    HOME=/home/user \
+    PATH="/home/user/.local/bin:${PATH}"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl gnupg \
@@ -70,11 +72,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN usermod -l user -d /home/user -m ubuntu && groupmod -n user ubuntu
 
 # Install ACP adapter for the Agent tab (Claude Code) globally via npm.
-RUN if [ "${CLAUDE_CODE_ACP_VERSION}" = "latest" ]; then \
-        npm install -g @agentclientprotocol/claude-agent-acp; \
-    else \
-        npm install -g @agentclientprotocol/claude-agent-acp@${CLAUDE_CODE_ACP_VERSION}; \
-    fi
+RUN npm install -g "@agentclientprotocol/claude-agent-acp@${CLAUDE_CODE_ACP_VERSION}"
 
 # Bake the enzarb prompt into the system-wide bash config so it applies to
 # all interactive shells (tmux windows, plain `bash` processes, login shells)
@@ -105,15 +103,14 @@ COPY --chown=user:user workspace/skel /etc/enzarb/skel
 # DOCKER_CONFIG holds the (read-only) credHelpers pointer. buildx must write its
 # builder state somewhere writable, so point BUILDX_CONFIG at the home PVC rather
 # than under the read-only DOCKER_CONFIG.
-ENV DOCKER_CONFIG=/etc/enzarb/docker
-ENV BUILDX_CONFIG=/home/user/.buildx
+ENV DOCKER_CONFIG=/etc/enzarb/docker \
+    BUILDX_CONFIG=/home/user/.buildx \
+    DOCKER_HOST=tcp://localhost:1234 \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+    CHROME_BIN=/usr/bin/chromium
 
 USER user
 WORKDIR /home/user
-
-ENV DOCKER_HOST=tcp://localhost:1234
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
-ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-ENV CHROME_BIN=/usr/bin/chromium
 
 ENTRYPOINT ["/usr/local/bin/tini", "--", "/usr/local/bin/project-agent"]

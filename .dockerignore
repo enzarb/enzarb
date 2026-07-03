@@ -1,0 +1,7 @@
+.git
+**/target
+**/node_modules
+app/build
+docs
+deploy
+charts
