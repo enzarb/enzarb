@@ -21,15 +21,18 @@ pub async fn bootstrap() -> Result<()> {
         let _ = tokio::fs::rename(&mise_toml, home.join("mise.toml.bak")).await;
     }
 
-    tracing::info!("running mise install");
-    let status = Command::new("mise")
+    match Command::new("mise")
         .arg("install")
         .current_dir(&home)
         .status()
-        .await?;
-
-    if !status.success() {
-        tracing::warn!("mise install exited with non-zero status");
+        .await
+    {
+        Ok(s) if s.success() => tracing::info!("mise install ok"),
+        Ok(s) => tracing::warn!("mise install exited with status {s}"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!("mise not on PATH; skipping")
+        }
+        Err(e) => tracing::warn!("mise install failed: {e}"),
     }
 
     setup_buildx().await;

@@ -729,6 +729,12 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug s
 								// Docker daemon API — clients reach it via BUILDKIT_HOST.
 								{Name: "BUILDKIT_HOST", Value: "tcp://localhost:1234"},
 								{Name: "HOME", Value: "/home/user"},
+								// XDG dirs pinned under HOME so tools write to the PVC-backed
+								// home dir instead of system paths on the read-only root filesystem.
+								{Name: "XDG_DATA_HOME", Value: "/home/user/.local/share"},
+								{Name: "XDG_CACHE_HOME", Value: "/home/user/.cache"},
+								{Name: "XDG_CONFIG_HOME", Value: "/home/user/.config"},
+								{Name: "XDG_STATE_HOME", Value: "/home/user/.local/state"},
 							},
 							EnvFrom: []corev1.EnvFromSource{
 								{

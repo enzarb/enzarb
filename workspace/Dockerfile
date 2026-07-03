@@ -27,18 +27,23 @@ FROM ubuntu:26.04
 
 ARG BUILDX_VERSION=0.24.0
 ARG TINI_VERSION=0.19.0
+ARG CLAUDE_CODE_ACP_VERSION=latest
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV HOME=/home/user
-ENV PATH="/home/user/.local/bin:/home/user/.local/share/mise/shims:${PATH}"
+ENV PATH="/home/user/.local/bin:${PATH}"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl gnupg \
     && curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu noble stable" \
         > /etc/apt/sources.list.d/docker.list \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_lts.x nodistro main" \
+        > /etc/apt/sources.list.d/nodesource.list \
     && apt-get update && apt-get install -y --no-install-recommends \
         docker-ce-cli \
+        nodejs \
         git \
         tmux \
         ncurses-term \
@@ -60,6 +65,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && curl -fsSL "https://github.com/krallin/tini/releases/download/v${TINI_VERSION}/tini-amd64" \
         -o /usr/local/bin/tini \
     && chmod +x /usr/local/bin/tini
+
+# Install ACP adapter for the Agent tab (Claude Code) globally via npm.
+RUN if [ "${CLAUDE_CODE_ACP_VERSION}" = "latest" ]; then \
+        npm install -g @agentclientprotocol/claude-code-acp; \
+    else \
+        npm install -g @agentclientprotocol/claude-code-acp@${CLAUDE_CODE_ACP_VERSION}; \
+    fi
 
 # Rename existing ubuntu user (UID 1000) to 'user' for consistency
 RUN usermod -l user -d /home/user -m ubuntu && groupmod -n user ubuntu
@@ -92,42 +104,9 @@ RUN mkdir -p /etc/enzarb/docker \
 COPY --chown=user:user workspace/skel /etc/enzarb/skel
 # DOCKER_CONFIG holds the (read-only) credHelpers pointer. buildx must write its
 # builder state somewhere writable, so point BUILDX_CONFIG at the home PVC rather
-# than under the read-only DOCKER_CONFIG. MISE_TRUSTED_CONFIG_PATHS trusts the
-# generated mise.toml without an interactive `mise trust`.
+# than under the read-only DOCKER_CONFIG.
 ENV DOCKER_CONFIG=/etc/enzarb/docker
 ENV BUILDX_CONFIG=/home/user/.buildx
-ENV MISE_TRUSTED_CONFIG_PATHS=/home/user
-
-# mise (tool version manager) — install the binary to /usr/local/bin (outside
-# the home PVC) so it survives an empty PVC being mounted over /home/user.
-# Runtime data/shims still live in $HOME/.local/share/mise on the PVC.
-RUN curl https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh
-
-# Node.js + the ACP adapter for the Agent tab (Claude Code), baked in at build
-# time via a *system* mise install: MISE_DATA_DIR points outside the home PVC
-# (/home/user is empty at runtime until the PVC mounts over it and would wipe
-# anything installed under the default $HOME/.local/share/mise), so the
-# install + shims here survive pod restarts untouched.
-# Pinned explicitly: project-agent's ACP client depends on this adapter's wire
-# format, and a floating @latest could silently break it on image rebuild.
-ARG NODE_VERSION=lts
-ARG CLAUDE_AGENT_ACP_VERSION=0.55.0
-ENV MISE_DATA_DIR=/usr/local/share/mise
-ENV PATH="/usr/local/share/mise/shims:${PATH}"
-# Install node via mise (system-level, outside home PVC) then install the ACP
-# adapter globally. A direct symlink in /usr/local/bin bypasses the mise shim
-# resolver entirely: shims need a version config to activate, which isn't
-# guaranteed in the user's environment, but /usr/local/bin is always on PATH.
-RUN mise use -g node@${NODE_VERSION} \
-    && npm install -g @agentclientprotocol/claude-agent-acp@${CLAUDE_AGENT_ACP_VERSION} \
-    && ln -sf "$(mise which claude-agent-acp)" /usr/local/bin/claude-agent-acp \
-    && ln -sf "$(mise which node)" /usr/local/bin/node \
-    && ln -sf "$(mise which npm)"  /usr/local/bin/npm \
-    && ln -sf "$(mise which npx)"  /usr/local/bin/npx \
-    && rm -f /usr/local/share/mise/shims/node \
-             /usr/local/share/mise/shims/npm \
-             /usr/local/share/mise/shims/npx \
-    && chmod -R a+rX /usr/local/share/mise
 
 USER user
 WORKDIR /home/user
