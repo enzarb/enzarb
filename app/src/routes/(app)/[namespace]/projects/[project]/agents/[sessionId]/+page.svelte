@@ -43,6 +43,13 @@
 	let textareaEl: HTMLTextAreaElement | undefined = $state();
 	let availableModes: SessionModeInfo[] = $state([]);
 	let currentMode: string = $state('default');
+	let currentModel: string = $state('claude-sonnet-4-6');
+
+	const MODELS = [
+		{ id: 'claude-opus-4-8', label: 'Opus 4.8' },
+		{ id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
+		{ id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' }
+	];
 
 	async function loadSessionMeta() {
 		if (!agentBase) return;
@@ -64,6 +71,10 @@
 		if (modeId === currentMode) return;
 		currentMode = modeId;
 		socket?.send({ type: 'set_permission_mode', mode_id: modeId });
+	}
+
+	function changeModel(modelId: string) {
+		currentModel = modelId;
 	}
 
 	function handleEvent(event: AcpWsEvent) {
@@ -171,18 +182,6 @@
 <div class="chat-page">
 	<div class="chat-header">
 		<a href={backHref} class="back">← Sessions</a>
-		{#if availableModes.length}
-			<select
-				class="mode-select"
-				value={currentMode}
-				title="Permission mode"
-				onchange={(e) => changeMode((e.target as HTMLSelectElement).value)}
-			>
-				{#each availableModes as mode (mode.id)}
-					<option value={mode.id} title={mode.description ?? ''}>{mode.name}</option>
-				{/each}
-			</select>
-		{/if}
 		{#if connState !== 'connected'}
 			<span class="conn-status {connState}">{connectError || connState}</span>
 		{/if}
@@ -220,13 +219,39 @@
 			bind:this={textareaEl}
 			bind:value={draft}
 			placeholder="Ask Claude Code about this project…"
-			rows="1"
+			rows="3"
 			oninput={(e) => growTextarea(e.currentTarget)}
 			onkeydown={(e) => {
 				if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
 			}}
 		></textarea>
-		<button type="submit" class="btn btn-primary" disabled={!draft.trim() || connState !== 'connected'}>Send</button>
+		<div class="composer-footer">
+			<div class="composer-selects">
+				<select
+					class="composer-select"
+					value={currentModel}
+					title="Model"
+					onchange={(e) => changeModel((e.target as HTMLSelectElement).value)}
+				>
+					{#each MODELS as m (m.id)}
+						<option value={m.id}>{m.label}</option>
+					{/each}
+				</select>
+				{#if availableModes.length}
+					<select
+						class="composer-select"
+						value={currentMode}
+						title="Permission mode"
+						onchange={(e) => changeMode((e.target as HTMLSelectElement).value)}
+					>
+						{#each availableModes as mode (mode.id)}
+							<option value={mode.id} title={mode.description ?? ''}>{mode.name}</option>
+						{/each}
+					</select>
+				{/if}
+			</div>
+			<button type="submit" class="btn btn-primary" disabled={!draft.trim() || connState !== 'connected'}>Send</button>
+		</div>
 	</form>
 </div>
 
@@ -235,8 +260,7 @@
 	.chat-header { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0; border-bottom: 1px solid var(--color-border); }
 	.back { font-size: 12px; color: var(--color-text-muted); text-decoration: none; }
 	.back:hover { color: var(--color-text); }
-	.mode-select { margin-left: auto; font-size: 12px; padding: 0.2rem 0.5rem; border-radius: 4px; border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text); }
-	.conn-status { font-size: 11px; color: var(--color-text-muted); }
+	.conn-status { font-size: 11px; color: var(--color-text-muted); margin-left: auto; }
 	.conn-status.failed { color: var(--color-danger); }
 
 	.timeline { flex: 1; overflow-y: auto; padding: 1rem 0; display: flex; flex-direction: column; gap: 0.75rem; }
@@ -248,8 +272,11 @@
 	.message-body p { margin: 0; }
 	.message.user .message-body { color: var(--color-text); }
 
-	.composer { display: flex; gap: 0.5rem; padding: 0.75rem 0; border-top: 1px solid var(--color-border); min-width: 0; align-items: flex-end; }
-	.composer textarea { flex: 1; resize: none; font-family: inherit; font-size: 13px; padding: 0.5rem 0.7rem; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); color: var(--color-text); overflow-y: auto; max-height: calc(10 * 1.5em + 1rem); line-height: 1.5; }
+	.composer { display: flex; flex-direction: column; gap: 0; padding: 0.75rem 0; border-top: 1px solid var(--color-border); min-width: 0; }
+	.composer textarea { width: 100%; box-sizing: border-box; resize: none; font-family: inherit; font-size: 13px; padding: 0.5rem 0.7rem; border: 1px solid var(--color-border); border-bottom: none; border-radius: 6px 6px 0 0; background: var(--color-surface); color: var(--color-text); overflow-y: auto; max-height: calc(10 * 1.5em + 1rem); line-height: 1.5; }
 	@media (max-width: 768px) { .composer textarea { max-height: calc(4 * 1.5em + 1rem); } }
-	.composer button { flex-shrink: 0; }
+	.composer-footer { display: flex; align-items: center; gap: 0.5rem; padding: 0.35rem 0.5rem; border: 1px solid var(--color-border); border-top: 1px solid var(--color-border-muted, var(--color-border)); border-radius: 0 0 6px 6px; background: var(--color-surface-muted, var(--color-surface)); }
+	.composer-selects { display: flex; gap: 0.4rem; flex: 1; }
+	.composer-select { font-size: 11px; padding: 0.15rem 0.4rem; border-radius: 4px; border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text-muted); cursor: pointer; }
+	.composer-select:focus { outline: none; border-color: var(--color-accent, #4f8ef7); color: var(--color-text); }
 </style>
