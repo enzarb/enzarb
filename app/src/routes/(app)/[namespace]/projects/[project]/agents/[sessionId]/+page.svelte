@@ -223,8 +223,7 @@
 
 <style>
 	.chat-page { display: flex; flex-direction: column; height: calc(100vh - 200px); min-height: 400px; margin-top: -1.5rem; overflow: hidden; }
-	@media (max-width: 768px) { .chat-page { height: calc(100vh - 120px); } }
-	@media (max-width: 480px) { .chat-page { height: calc(100dvh - 180px); } }
+	@media (max-width: 768px) { .chat-page { height: 100%; min-height: 0; } }
 	.chat-header { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0; border-bottom: 1px solid var(--color-border); }
 	.back { font-size: 12px; color: var(--color-text-muted); text-decoration: none; }
 	.back:hover { color: var(--color-text); }
