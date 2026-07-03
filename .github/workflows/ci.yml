@@ -556,6 +556,7 @@ jobs:
         if: env.SET_OPERATOR == 'true'
         run: |
           go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest
+          export PATH="$(go env GOPATH)/bin:$PATH"
           cd operator && controller-gen crd paths='./...' output:crd:artifacts:config=config/crd && cd ..
           cat operator/config/crd/enzarb.io_environments.yaml \
               operator/config/crd/enzarb.io_projects.yaml \
