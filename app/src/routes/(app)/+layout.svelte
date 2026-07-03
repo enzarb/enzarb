@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { LayoutData } from './$types';
 	import { afterNavigate } from '$app/navigation';
+	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 
@@ -9,10 +10,23 @@
 	const orgProjects = $derived(data.orgProjects);
 
 	let open = $state(false);
+	let theme = $state('dark');
 
 	afterNavigate(() => {
 		open = false;
 	});
+
+	function initTheme() {
+		const saved = localStorage.getItem('theme') ?? 'dark';
+		theme = saved;
+		document.documentElement.setAttribute('data-theme', saved);
+	}
+
+	function toggleTheme() {
+		theme = theme === 'dark' ? 'light' : 'dark';
+		localStorage.setItem('theme', theme);
+		document.documentElement.setAttribute('data-theme', theme);
+	}
 
 	function isProjectActive(orgSlug: string, projectSlug: string) {
 		const base = `/${orgSlug}/projects/${projectSlug}`;
@@ -22,6 +36,8 @@
 	function isPathActive(path: string) {
 		return page.url.pathname === path || page.url.pathname.startsWith(path + '/');
 	}
+
+	onMount(initTheme);
 </script>
 
 
@@ -102,10 +118,24 @@
 			</div>
 		</div>
 		<div class="sidebar-bottom">
-			<span class="user-email">{session.email}</span>
-			<form method="POST" action="/auth/logout">
-				<button type="submit" class="btn">Sign out</button>
-			</form>
+			<div class="sidebar-bottom-row">
+				<button class="icon-btn" title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} onclick={toggleTheme}>
+					{#if theme === 'dark'}
+						<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+					{:else}
+						<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+					{/if}
+				</button>
+				<div class="user-pill" title={session.email}>
+					<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+					<span class="user-email">{session.email}</span>
+				</div>
+				<form method="POST" action="/auth/logout">
+					<button type="submit" class="icon-btn" title="Sign out">
+						<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+					</button>
+				</form>
+			</div>
 		</div>
 	</nav>
 	<main class="content">
@@ -162,7 +192,10 @@
 		padding: 1rem 0;
 	}
 	.sidebar-top { flex: 1; padding: 0 0.75rem; overflow-y: auto; }
-	.sidebar-bottom { padding: 1rem; border-top: 1px solid var(--color-border); }
+	.sidebar-bottom { padding: 0.75rem; border-top: 1px solid var(--color-border); }
+	.sidebar-bottom-row { display: flex; align-items: center; gap: 0.25rem; }
+	.user-pill { display: flex; align-items: center; gap: 0.35rem; flex: 1; min-width: 0; color: var(--color-text-muted); font-size: 12px; overflow: hidden; }
+	.sidebar-bottom-row form { display: contents; }
 	.logo {
 		display: block;
 		font-size: 1.25rem;
@@ -242,7 +275,7 @@
 	.bottom-link.active { background: var(--color-surface-2); color: var(--color-text); }
 
 	.content { flex: 1; overflow-y: auto; padding: 2rem; min-width: 0; }
-	.user-email { display: block; font-size: 12px; color: var(--color-text-muted); margin-bottom: 0.5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.user-email { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 	@media (max-width: 768px) {
 		.shell { flex-direction: column; height: 100vh; height: 100svh; overflow: hidden; }
