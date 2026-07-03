@@ -66,9 +66,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install ACP adapter for the Agent tab (Claude Code) globally via npm.
 RUN if [ "${CLAUDE_CODE_ACP_VERSION}" = "latest" ]; then \
-        npm install -g @agentclientprotocol/claude-code-acp; \
+        npm install -g @agentclientprotocol/claude-agent-acp; \
     else \
-        npm install -g @agentclientprotocol/claude-code-acp@${CLAUDE_CODE_ACP_VERSION}; \
+        npm install -g @agentclientprotocol/claude-agent-acp@${CLAUDE_CODE_ACP_VERSION}; \
     fi
 
 # Rename existing ubuntu user (UID 1000) to 'user' for consistency
