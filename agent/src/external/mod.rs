@@ -84,14 +84,12 @@ async fn auth_middleware(
     //  2. Sec-WebSocket-Protocol: bearer, <jwt> — browsers can't set arbitrary
     //     headers on a WS handshake but can set subprotocols, so WS clients send
     //     the token there (kept out of the URL, and therefore out of logs).
-    //  3. ?token=<jwt> query param — DEPRECATED legacy WS fallback; leaks the
-    //     token into access/proxy logs. Retained for one release for rollout
-    //     compatibility and to be removed once all clients use (2).
+    //
+    // A token is never accepted from the query string: that would leak the JWT
+    // into access/proxy logs.
     let ws_token = extract_ws_protocol_token(&headers);
-    let query_token = extract_query_token(request.uri());
     let token = extract_bearer(&headers)
         .or(ws_token.as_deref())
-        .or(query_token.as_deref())
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
     let claims = state
@@ -127,44 +125,6 @@ fn extract_ws_protocol_token(headers: &HeaderMap) -> Option<String> {
         return None;
     }
     parts.next().filter(|t| !t.is_empty()).map(str::to_owned)
-}
-
-fn extract_query_token(uri: &axum::http::Uri) -> Option<String> {
-    let query = uri.query()?;
-    query
-        .split('&')
-        .filter_map(|pair| pair.split_once('='))
-        .find(|(k, _)| *k == "token")
-        .map(|(_, v)| percent_decode(v))
-}
-
-/// Minimal percent-decoding for query values (handles %XX and `+`).
-fn percent_decode(input: &str) -> String {
-    let bytes = input.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'%' if i + 2 < bytes.len() => {
-                if let Ok(b) = u8::from_str_radix(&input[i + 1..i + 3], 16) {
-                    out.push(b);
-                    i += 3;
-                    continue;
-                }
-                out.push(bytes[i]);
-                i += 1;
-            }
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            b => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[cfg(test)]

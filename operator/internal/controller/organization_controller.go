@@ -156,19 +156,28 @@ func (r *OrganizationReconciler) ensureNamespace(ctx context.Context, org *enzar
 // isolates workspace (org) namespaces.
 const workspaceNetworkPolicyName = "enzarb-workspace-isolation"
 
-// ensureWorkspaceNetworkPolicy applies an ingress-only NetworkPolicy to the
+// ensureWorkspaceNetworkPolicy applies an ingress + egress NetworkPolicy to the
 // workspace (org) namespace. The agent exposes an unauthenticated internal port
 // (:9090) and a JWT-authenticated external port (:8080); without a policy both
-// are reachable by any pod in the cluster. This default-denies ingress and
-// admits only:
+// are reachable by any pod in the cluster.
+//
+// Ingress default-denies and admits only:
 //   - the system namespace (enzarb-system) — the operator polls :9090 for
 //     running-process checks, so it may reach both agent ports;
 //   - the gateway data-plane namespace — the Envoy proxy routes user traffic to
 //     the agent's external :8080.
 //
 // Sibling projects in the same org namespace are intentionally not admitted, so
-// one project cannot reach another's agent. Egress is left unrestricted because
-// dev workspaces need broad outbound access (git, mise, package registries).
+// one project cannot reach another's agent.
+//
+// Egress default-denies and admits only DNS, the gateway data-plane (the
+// authenticated path to the in-cluster registry/git/app services, all reached
+// by hostname through the gateway), and the public internet with the cluster's
+// own pod/service CIDRs carved out. That carve-out is what prevents a workspace
+// from opening a direct connection to control-plane pods it should never touch
+// — Postgres, authd, the operator, the app — rather than relying on those
+// services' own credentials as the only line of defense. Broad outbound access
+// (git, mise, package registries on the public internet) still works.
 func (r *OrganizationReconciler) ensureWorkspaceNetworkPolicy(ctx context.Context, nsName string) error {
 	if os.Getenv("NETWORK_POLICY_ENABLED") == "false" {
 		return nil
@@ -182,10 +191,20 @@ func (r *OrganizationReconciler) ensureWorkspaceNetworkPolicy(ctx context.Contex
 	if gatewayNS == "" {
 		gatewayNS = "envoy-gateway-system"
 	}
+	podCIDR := os.Getenv("CLUSTER_POD_CIDR")
+	if podCIDR == "" {
+		podCIDR = "10.42.0.0/16"
+	}
+	svcCIDR := os.Getenv("CLUSTER_SVC_CIDR")
+	if svcCIDR == "" {
+		svcCIDR = "10.43.0.0/16"
+	}
 
 	tcp := corev1.ProtocolTCP
+	udp := corev1.ProtocolUDP
 	externalPort := intstr.FromInt32(8080)
 	internalPort := intstr.FromInt32(9090)
+	dnsPort := intstr.FromInt32(53)
 
 	desired := &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
@@ -195,9 +214,10 @@ func (r *OrganizationReconciler) ensureWorkspaceNetworkPolicy(ctx context.Contex
 		},
 		Spec: networkingv1.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{},
-			// Ingress-only: deny-all ingress with the explicit allows below,
-			// while leaving egress untouched for dev workloads.
-			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+			PolicyTypes: []networkingv1.PolicyType{
+				networkingv1.PolicyTypeIngress,
+				networkingv1.PolicyTypeEgress,
+			},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{
 				// System namespace (operator) → both agent ports.
 				{
@@ -222,6 +242,38 @@ func (r *OrganizationReconciler) ensureWorkspaceNetworkPolicy(ctx context.Contex
 						},
 					}},
 				},
+			},
+			Egress: []networkingv1.NetworkPolicyEgressRule{
+				// DNS resolution (kube-system CoreDNS).
+				{
+					Ports: []networkingv1.NetworkPolicyPort{
+						{Protocol: &udp, Port: &dnsPort},
+						{Protocol: &tcp, Port: &dnsPort},
+					},
+					To: []networkingv1.NetworkPolicyPeer{{
+						NamespaceSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{"kubernetes.io/metadata.name": "kube-system"},
+						},
+					}},
+				},
+				// Gateway data-plane: the workspace reaches the in-cluster
+				// registry (Zot), git (Gitea), and app by hostname, all routed
+				// through the Envoy proxy — never by connecting to those pods
+				// directly.
+				{To: []networkingv1.NetworkPolicyPeer{{
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"kubernetes.io/metadata.name": gatewayNS},
+					},
+				}}},
+				// Public internet, with the cluster's own pod/service CIDRs
+				// carved out so a workspace cannot reach control-plane pods
+				// (Postgres, authd, operator, app) at the network layer.
+				{To: []networkingv1.NetworkPolicyPeer{{
+					IPBlock: &networkingv1.IPBlock{
+						CIDR:   "0.0.0.0/0",
+						Except: []string{podCIDR, svcCIDR},
+					},
+				}}},
 			},
 		},
 	}

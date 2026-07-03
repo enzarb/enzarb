@@ -69,6 +69,16 @@ func main() {
 		domain = "enzarb.dev"
 	}
 
+	// NETWORK_POLICY_ENABLED=false is a single switch that disables all
+	// workspace and deploy-namespace network isolation at once. It exists for
+	// clusters whose CNI can't enforce NetworkPolicy, but leaving it off in
+	// production removes the primary barrier against lateral movement from
+	// workspace pods. Make that state loud instead of silent so it can't be
+	// flipped unnoticed.
+	if os.Getenv("NETWORK_POLICY_ENABLED") == "false" {
+		setupLog.Info("SECURITY WARNING: NETWORK_POLICY_ENABLED=false — workspace and deploy-namespace network isolation is DISABLED; workspace pods can reach control-plane and sibling pods at the network layer")
+	}
+
 	if err = (&controller.ProjectReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),

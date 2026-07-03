@@ -822,10 +822,18 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug s
 							SecurityContext: &corev1.SecurityContext{
 								RunAsUser:  int64Ptr(1000),
 								RunAsGroup: int64Ptr(1000),
-								// Rootless buildkit needs seccomp + AppArmor unconfined to
-								// set up its user-namespace worker without privileges.
+								// Rootless buildkit sets up a user-namespace worker. The
+								// RuntimeDefault seccomp profile permits the userns
+								// clone/unshare/mount syscalls it needs on modern kernels
+								// (5.x+), so full seccomp Unconfined is unnecessary and is
+								// avoided here to keep a syscall filter in place.
+								//
+								// AppArmor stays Unconfined: the container-default AppArmor
+								// profile (enforced on Ubuntu nodes) denies the mount
+								// operations RootlessKit performs, so a tailored per-node
+								// profile is required before this can be tightened.
 								SeccompProfile: &corev1.SeccompProfile{
-									Type: corev1.SeccompProfileTypeUnconfined,
+									Type: corev1.SeccompProfileTypeRuntimeDefault,
 								},
 								AppArmorProfile: &corev1.AppArmorProfile{
 									Type: corev1.AppArmorProfileTypeUnconfined,
