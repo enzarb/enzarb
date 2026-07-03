@@ -33,5 +33,17 @@ async fn processes(State(state): State<AppState>) -> axum::Json<serde_json::Valu
         .filter(|p| p.status == ProcessStatus::Running)
         .map(|p| json!({ "id": p.id, "name": p.name }))
         .collect();
-    axum::Json(json!({ "running": running.len(), "processes": running }))
+
+    let all_sessions = state.acp_store.list_sessions().await;
+    let active_sessions: Vec<_> = all_sessions
+        .iter()
+        .map(|s| json!({ "id": s.id, "label": s.label, "status": s.status }))
+        .collect();
+
+    axum::Json(json!({
+        "running": running.len(),
+        "processes": running,
+        "sessions": active_sessions.len(),
+        "active_sessions": active_sessions,
+    }))
 }

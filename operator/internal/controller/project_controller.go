@@ -606,9 +606,10 @@ func (r *ProjectReconciler) ensureDeployment(ctx context.Context, ns, saName, pv
 }
 
 // checkRunningProcesses queries the workspace agent's internal /processes
-// endpoint. Returns true when at least one process is in Running state.
-// On network failure (agent not yet up, pod restarting) returns (false, err);
-// callers should treat an error as "no running processes" for safety.
+// endpoint. Returns true when at least one process is in Running state or at
+// least one ACP agent session is active (Live). On network failure (agent not
+// yet up, pod restarting) returns (false, err); callers should treat an error
+// as "no running processes" for safety.
 func (r *ProjectReconciler) checkRunningProcesses(ctx context.Context, ns, slug string) (bool, error) {
 	url := fmt.Sprintf("http://project-%s.%s.svc.cluster.local:9090/processes", slug, ns)
 	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -623,12 +624,13 @@ func (r *ProjectReconciler) checkRunningProcesses(ctx context.Context, ns, slug 
 	}
 	defer func() { _ = resp.Body.Close() }()
 	var result struct {
-		Running int `json:"running"`
+		Running  int `json:"running"`
+		Sessions int `json:"sessions"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return false, err
 	}
-	return result.Running > 0, nil
+	return result.Running > 0 || result.Sessions > 0, nil
 }
 
 func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug string, project *enzarbv1alpha1.Project) *appsv1.Deployment {
