@@ -44,8 +44,16 @@ kubectl annotate helmchart -n kube-system dex zot \
 """
 
 [tasks.generate-crds]
-description = "Regenerate CRD YAML from Go types via controller-gen"
-run = "cd operator && controller-gen crd paths='./...' output:crd:artifacts:config=config/crd"
+description = "Regenerate CRD YAML from Go types and sync into Helm chart"
+run = """
+cd operator && controller-gen crd paths='./...' output:crd:artifacts:config=config/crd
+cat config/crd/enzarb.io_environments.yaml \
+    config/crd/enzarb.io_projects.yaml \
+    config/crd/enzarb.io_organizations.yaml \
+    config/crd/enzarb.io_alloweddomains.yaml \
+    config/crd/enzarb.io_domainclaims.yaml \
+    > ../charts/enzarb/templates/crds.yaml
+"""
 
 [tasks.deploy-crds]
 description = "Regenerate and apply CRDs to the cluster"
