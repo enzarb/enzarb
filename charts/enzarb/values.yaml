@@ -6,7 +6,7 @@ app:
   image:
     repository: ghcr.io/enzarb/app
     pullPolicy: IfNotPresent
-    tag: "v0.81.0"
+    tag: "v0.82.2"
   env:
     ORIGIN: https://enzarb.dev
   dbSecret:
@@ -42,7 +42,7 @@ operator:
   image:
     repository: ghcr.io/enzarb/operator
     pullPolicy: IfNotPresent
-    tag: "v0.79.6"
+    tag: "v0.82.2"
   leaderElection: true
   env:
     ENZARB_DOMAIN: enzarb.dev
@@ -113,7 +113,7 @@ webhook:
   image:
     repository: ghcr.io/enzarb/webhook
     pullPolicy: IfNotPresent
-    tag: "v0.59.5"
+    tag: "v0.82.2"
   resources:
     requests:
       cpu: 10m
@@ -125,7 +125,7 @@ webhook:
 workspace:
   image:
     repository: ghcr.io/enzarb/workspace
-    tag: "v0.80.4"
+    tag: "v0.82.2"
   # StorageClass for project home PVCs. Empty uses the cluster's default class.
   storageClass: ""
   # changelog is shown in the UI when a workspace update is pending. Set by CI

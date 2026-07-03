@@ -1848,7 +1848,7 @@ dependencies = [
 
 [[package]]
 name = "project-agent"
-version = "0.80.4"
+version = "0.82.2"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
