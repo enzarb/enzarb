@@ -82,8 +82,14 @@
 		try {
 			const project = await getProject();
 			const path = project?.status?.agentPath;
-			if (path) agentBase = `https://enzarb.dev${path}`;
-		} catch {}
+			if (path) {
+				agentBase = `https://enzarb.dev${path}`;
+			} else {
+				loadError = 'Workspace agent path is not set — the workspace may still be provisioning.';
+			}
+		} catch {
+			loadError = 'Could not load project — please reload the page.';
+		}
 		await loadSessions();
 	});
 </script>

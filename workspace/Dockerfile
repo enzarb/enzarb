@@ -110,7 +110,7 @@ RUN curl https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh
 # install + shims here survive pod restarts untouched.
 # Pinned explicitly: project-agent's ACP client depends on this adapter's wire
 # format, and a floating @latest could silently break it on image rebuild.
-ARG NODE_VERSION=22
+ARG NODE_VERSION=lts
 ARG CLAUDE_AGENT_ACP_VERSION=0.55.0
 ENV MISE_DATA_DIR=/usr/local/share/mise
 ENV PATH="/usr/local/share/mise/shims:${PATH}"
@@ -121,6 +121,12 @@ ENV PATH="/usr/local/share/mise/shims:${PATH}"
 RUN mise use -g node@${NODE_VERSION} \
     && npm install -g @agentclientprotocol/claude-agent-acp@${CLAUDE_AGENT_ACP_VERSION} \
     && ln -sf "$(mise which claude-agent-acp)" /usr/local/bin/claude-agent-acp \
+    && ln -sf "$(mise which node)" /usr/local/bin/node \
+    && ln -sf "$(mise which npm)"  /usr/local/bin/npm \
+    && ln -sf "$(mise which npx)"  /usr/local/bin/npx \
+    && rm -f /usr/local/share/mise/shims/node \
+             /usr/local/share/mise/shims/npm \
+             /usr/local/share/mise/shims/npx \
     && chmod -R a+rX /usr/local/share/mise
 
 USER user
