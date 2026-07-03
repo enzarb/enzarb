@@ -125,7 +125,7 @@ webhook:
 workspace:
   image:
     repository: ghcr.io/enzarb/workspace
-    tag: "v0.79.2"
+    tag: "v0.79.3"
   # StorageClass for project home PVCs. Empty uses the cluster's default class.
   storageClass: ""
   # changelog is shown in the UI when a workspace update is pending. Set by CI
