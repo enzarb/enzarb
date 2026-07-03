@@ -9,8 +9,8 @@ export interface SessionModeInfo {
 export interface SessionMeta {
 	id: string;
 	label: string;
-	created_at: string;
-	updated_at: string;
+	cwd: string;
+	updated_at: string | null;
 	status: 'live' | 'idle';
 	mode_id: string | null;
 	available_modes: SessionModeInfo[];

@@ -34,16 +34,11 @@ async fn processes(State(state): State<AppState>) -> axum::Json<serde_json::Valu
         .map(|p| json!({ "id": p.id, "name": p.name }))
         .collect();
 
-    let all_sessions = state.acp_store.list_sessions().await;
-    let active_sessions: Vec<_> = all_sessions
-        .iter()
-        .map(|s| json!({ "id": s.id, "label": s.label, "status": s.status }))
-        .collect();
+    let live_sessions = state.acp_store.live_session_count().await;
 
     axum::Json(json!({
         "running": running.len(),
         "processes": running,
-        "sessions": active_sessions.len(),
-        "active_sessions": active_sessions,
+        "sessions": live_sessions,
     }))
 }

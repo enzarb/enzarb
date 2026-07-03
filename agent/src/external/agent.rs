@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 use crate::AppState;
 use crate::acp::AcpWsClientMsg;
-use crate::acp::session::SessionMeta;
+use crate::acp::store::SessionMeta;
 use crate::auth::ProjectPermissions;
 use crate::init::home_dir;
 

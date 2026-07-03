@@ -8,7 +8,7 @@ use agent_client_protocol::schema::v1::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::session::SessionMeta;
+use super::store::SessionMeta;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

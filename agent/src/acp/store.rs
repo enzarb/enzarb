@@ -1,27 +1,78 @@
 //! Owns the single, lazily-spawned `claude-agent-acp` process per project and
 //! plays the ACP "client" role against it. All sessions (new or resumed)
 //! multiplex over this one JSON-RPC connection via `session/new`/`session/load`.
+//!
+//! Session metadata is sourced directly from `session/list`; only ephemeral
+//! state (live/idle status, per-session mode info, cwd cache) is kept in
+//! memory. A minimal `.enzarb/archived_sessions.json` persists the set of
+//! session IDs the user has deleted so they stay hidden across pod restarts.
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    CancelNotification, ContentBlock, InitializeRequest, LoadSessionRequest, NewSessionRequest,
-    PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionModeState, SessionNotification, SetSessionModeRequest,
-    TextContent,
+    CancelNotification, ContentBlock, InitializeRequest, ListSessionsRequest, LoadSessionRequest,
+    NewSessionRequest, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, SelectedPermissionOutcome, SessionInfo, SessionModeState,
+    SessionNotification, SetSessionModeRequest, TextContent,
 };
 use agent_client_protocol::{AcpAgent, Agent, Client, ConnectionTo};
 use anyhow::{Result, anyhow};
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::{Mutex, OnceCell, broadcast};
 
+use crate::init::home_dir;
+
 use super::events::{
     AcpWsClientMsg, AcpWsEvent, from_session_update, permission_request_event, tool_kind_str,
 };
 use super::permissions::{PermissionRegistry, auto_allow};
-use super::session::{SessionIndex, SessionModeInfo, SessionStatus};
+
+const ARCHIVED_FILE: &str = ".enzarb/archived_sessions.json";
+const CHANNEL_CAPACITY: usize = 8192;
+const ACP_COMMAND: &str = "claude-agent-acp";
+
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionStatus {
+    Live,
+    Idle,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionModeInfo {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+/// The session view returned to the frontend and used in WS events.
+/// Derived on-the-fly by merging `session/list` data with in-memory state.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionMeta {
+    pub id: String,
+    /// Populated from `SessionInfo.title`; falls back to first 8 chars of the ID.
+    pub label: String,
+    pub cwd: String,
+    pub updated_at: Option<String>,
+    pub status: SessionStatus,
+    pub mode_id: Option<String>,
+    pub available_modes: Vec<SessionModeInfo>,
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+type Channels = Arc<Mutex<HashMap<String, broadcast::Sender<AcpWsEvent>>>>;
+type History = Arc<Mutex<HashMap<String, Vec<AcpWsEvent>>>>;
+type SessionModes = Arc<Mutex<HashMap<String, (Option<String>, Vec<SessionModeInfo>)>>>;
 
 fn split_modes(modes: Option<SessionModeState>) -> (Option<String>, Vec<SessionModeInfo>) {
     match modes {
@@ -40,34 +91,77 @@ fn split_modes(modes: Option<SessionModeState>) -> (Option<String>, Vec<SessionM
     }
 }
 
-const CHANNEL_CAPACITY: usize = 8192;
-const ACP_COMMAND: &str = "claude-agent-acp";
+fn session_meta_from_info(
+    info: SessionInfo,
+    live: &HashSet<String>,
+    modes: &HashMap<String, (Option<String>, Vec<SessionModeInfo>)>,
+) -> SessionMeta {
+    let id = info.session_id.to_string();
+    let status = if live.contains(&id) {
+        SessionStatus::Live
+    } else {
+        SessionStatus::Idle
+    };
+    let (mode_id, available_modes) = modes.get(&id).cloned().unwrap_or_default();
+    let label = info
+        .title
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| id[..8.min(id.len())].to_string());
+    SessionMeta {
+        cwd: info.cwd.to_string_lossy().into_owned(),
+        updated_at: info.updated_at,
+        id,
+        label,
+        status,
+        mode_id,
+        available_modes,
+    }
+}
 
-type Channels = Arc<Mutex<HashMap<String, broadcast::Sender<AcpWsEvent>>>>;
-// Per-session accumulated event log; populated by the notification handler so
-// reconnecting clients can replay history without a second session/load call.
-type History = Arc<Mutex<HashMap<String, Vec<AcpWsEvent>>>>;
+// ---------------------------------------------------------------------------
+// AcpStore
+// ---------------------------------------------------------------------------
 
 #[derive(Clone)]
 pub struct AcpStore {
     connection: Arc<OnceCell<ConnectionTo<Agent>>>,
     cwd: PathBuf,
-    index: SessionIndex,
     permissions: PermissionRegistry,
     channels: Channels,
     history: History,
+    /// In-memory only: which sessions are currently running a prompt.
+    /// Resets on pod restart — correct, since nothing is live after a restart.
+    live_sessions: Arc<Mutex<HashSet<String>>>,
+    /// Per-session mode info populated from `session/new` and `session/load`.
+    session_modes: SessionModes,
+    /// cwd per session, populated from `session/new` and `session/list` results.
+    session_cwd: Arc<Mutex<HashMap<String, PathBuf>>>,
+    /// Persisted set of session IDs hidden from `session/list`.
+    archived: Arc<Mutex<HashSet<String>>>,
+    archived_path: PathBuf,
 }
 
 impl AcpStore {
-    pub fn new(cwd: PathBuf, index: SessionIndex) -> Self {
-        Self {
+    pub async fn new(cwd: PathBuf) -> Result<Self> {
+        let archived_path = home_dir().join(ARCHIVED_FILE);
+        let archived = if archived_path.exists() {
+            let data = tokio::fs::read(&archived_path).await?;
+            serde_json::from_slice::<HashSet<String>>(&data).unwrap_or_default()
+        } else {
+            HashSet::new()
+        };
+        Ok(Self {
             connection: Arc::new(OnceCell::new()),
             cwd,
-            index,
             permissions: PermissionRegistry::default(),
             channels: Arc::new(Mutex::new(HashMap::new())),
             history: Arc::new(Mutex::new(HashMap::new())),
-        }
+            live_sessions: Arc::new(Mutex::new(HashSet::new())),
+            session_modes: Arc::new(Mutex::new(HashMap::new())),
+            session_cwd: Arc::new(Mutex::new(HashMap::new())),
+            archived: Arc::new(Mutex::new(archived)),
+            archived_path,
+        })
     }
 
     async fn connection(&self) -> Result<ConnectionTo<Agent>> {
@@ -91,21 +185,89 @@ impl AcpStore {
             .clone()
     }
 
-    pub async fn list_sessions(&self) -> Vec<super::session::SessionMeta> {
-        self.index.list().await
+    /// Fetches all sessions from the ACP agent, following pagination cursors.
+    async fn fetch_all_from_acp(&self) -> Result<Vec<SessionInfo>> {
+        let connection = self.connection().await?;
+        let mut all = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut req = ListSessionsRequest::new();
+            if let Some(c) = cursor {
+                req = req.cursor(c);
+            }
+            let resp = connection
+                .send_request(req)
+                .block_task()
+                .await
+                .map_err(|e| anyhow!("session/list failed: {e}"))?;
+            // Populate cwd cache while we have the data.
+            let mut cwd_cache = self.session_cwd.lock().await;
+            for info in &resp.sessions {
+                cwd_cache.insert(info.session_id.to_string(), info.cwd.clone());
+            }
+            drop(cwd_cache);
+            all.extend(resp.sessions);
+            cursor = resp.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(all)
+    }
+
+    pub async fn list_sessions(&self) -> Vec<SessionMeta> {
+        let infos = match self.fetch_all_from_acp().await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to list sessions from ACP");
+                return vec![];
+            }
+        };
+        let archived = self.archived.lock().await;
+        let live = self.live_sessions.lock().await;
+        let modes = self.session_modes.lock().await;
+
+        let mut sessions: Vec<SessionMeta> = infos
+            .into_iter()
+            .filter(|s| !archived.contains(&s.session_id.to_string()))
+            .map(|s| session_meta_from_info(s, &live, &modes))
+            .collect();
+
+        sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        sessions
+    }
+
+    /// Returns the count of sessions currently running a prompt.
+    /// Cheap (no network) — used by the internal /processes endpoint.
+    pub async fn live_session_count(&self) -> usize {
+        self.live_sessions.lock().await.len()
     }
 
     pub async fn archive_session(&self, session_id: &str) -> Result<()> {
         self.history.lock().await.remove(session_id);
         self.channels.lock().await.remove(session_id);
-        self.index.archive(session_id).await
+        self.live_sessions.lock().await.remove(session_id);
+        self.session_modes.lock().await.remove(session_id);
+        self.session_cwd.lock().await.remove(session_id);
+        self.archived.lock().await.insert(session_id.to_string());
+        self.persist_archived().await
+    }
+
+    async fn persist_archived(&self) -> Result<()> {
+        let set = self.archived.lock().await.clone();
+        let data = serde_json::to_vec_pretty(&set)?;
+        if let Some(parent) = self.archived_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::write(&self.archived_path, data).await?;
+        Ok(())
     }
 
     pub async fn create_session(
         &self,
         label: Option<String>,
         cwd: Option<PathBuf>,
-    ) -> Result<super::session::SessionMeta> {
+    ) -> Result<SessionMeta> {
         let connection = self.connection().await?;
         let cwd = cwd.unwrap_or_else(|| self.cwd.clone());
         let response = connection
@@ -113,44 +275,44 @@ impl AcpStore {
             .block_task()
             .await
             .map_err(|e| anyhow!("session/new failed: {e}"))?;
-        let session_id = response.session_id.to_string();
+        let id = response.session_id.to_string();
         let (mode_id, available_modes) = split_modes(response.modes);
-        self.index
-            .insert(
-                session_id,
-                label.unwrap_or_else(|| "New session".to_string()),
-                cwd,
-                mode_id,
-                available_modes,
-            )
+        self.session_cwd
+            .lock()
             .await
+            .insert(id.clone(), cwd.clone());
+        self.session_modes
+            .lock()
+            .await
+            .insert(id.clone(), (mode_id.clone(), available_modes.clone()));
+        self.live_sessions.lock().await.insert(id.clone());
+        Ok(SessionMeta {
+            label: label.unwrap_or_else(|| "New session".to_string()),
+            cwd: cwd.to_string_lossy().into_owned(),
+            updated_at: None,
+            id,
+            status: SessionStatus::Live,
+            mode_id,
+            available_modes,
+        })
     }
 
     /// Attaches to a session for WS streaming.
     ///
-    /// On first attach after process start (including after a workspace restart),
-    /// calls `session/load` so Claude Code replays the conversation history as
-    /// `SessionNotification` events. Those arrive via the broadcast channel and
-    /// are also accumulated in the in-memory history log.
+    /// On reconnect within the same process lifetime, returns in-memory history
+    /// directly (no `session/load` needed).
     ///
-    /// On reconnect (same process lifetime), skips `session/load` and returns
-    /// the in-memory history snapshot directly so the caller can replay it
-    /// over the new WS connection without re-reading from disk.
+    /// On first attach (e.g. after a pod restart), resolves the session's cwd
+    /// via `session/list` then calls `session/load` so the ACP agent replays
+    /// the on-disk JSONL transcript.
     pub async fn attach(
         &self,
         session_id: &str,
     ) -> Result<(Vec<AcpWsEvent>, broadcast::Receiver<AcpWsEvent>)> {
-        let meta = self
-            .index
-            .get(session_id)
-            .await
-            .ok_or_else(|| anyhow!("unknown session"))?;
-
         let connection = self.connection().await?;
         let tx = self.channel(session_id).await;
 
-        // Check for in-memory history, subscribing while the lock is held so
-        // we don't miss events arriving between the two operations.
+        // Reconnect: history is already in memory; no session/load needed.
         let history_snapshot = {
             let hist = self.history.lock().await;
             let rx = tx.subscribe();
@@ -158,32 +320,51 @@ impl AcpStore {
             drop(hist);
             snapshot.map(|s| (s, rx))
         };
-
         if let Some((snapshot, rx)) = history_snapshot {
-            // Reconnect: history is already in memory; no session/load needed.
-            self.index.touch(session_id, SessionStatus::Live).await?;
+            self.live_sessions
+                .lock()
+                .await
+                .insert(session_id.to_string());
             return Ok((snapshot, rx));
         }
 
-        // First attach in this process: subscribe before session/load so the
-        // broadcast channel captures the replayed history notifications.
-        let rx = tx.subscribe();
+        // First attach: resolve cwd from cache (populated by a prior
+        // list_sessions call) or fetch fresh via session/list.
+        let cwd = {
+            let cache = self.session_cwd.lock().await;
+            cache.get(session_id).cloned()
+        };
+        let cwd = match cwd {
+            Some(c) => c,
+            None => {
+                self.fetch_all_from_acp().await?;
+                self.session_cwd
+                    .lock()
+                    .await
+                    .get(session_id)
+                    .cloned()
+                    .ok_or_else(|| anyhow!("unknown session"))?
+            }
+        };
 
+        // Subscribe before session/load so broadcast captures the replayed history.
+        let rx = tx.subscribe();
         let response = connection
-            .send_request(LoadSessionRequest::new(meta.id.clone(), meta.cwd.clone()))
+            .send_request(LoadSessionRequest::new(session_id.to_string(), cwd))
             .block_task()
             .await
             .map_err(|e| anyhow!("session/load failed: {e}"))?;
 
         let (mode_id, available_modes) = split_modes(response.modes);
-        self.index
-            .set_modes(session_id, mode_id, available_modes)
-            .await?;
-        self.index.touch(session_id, SessionStatus::Live).await?;
+        self.session_modes
+            .lock()
+            .await
+            .insert(session_id.to_string(), (mode_id, available_modes));
+        self.live_sessions
+            .lock()
+            .await
+            .insert(session_id.to_string());
 
-        // History events from session/load are queued in rx (and being
-        // accumulated in self.history by the notification handler). Return
-        // an empty snapshot so attach_ws reads them from rx directly.
         Ok((vec![], rx))
     }
 
@@ -193,10 +374,8 @@ impl AcpStore {
             AcpWsClientMsg::SendMessage { text } => {
                 let connection = connection.clone();
                 let session_id = session_id.to_string();
-                let index = self.index.clone();
+                let live_sessions = self.live_sessions.clone();
                 let channels = self.channels.clone();
-                // session/prompt blocks until the agent finishes its turn; run
-                // it in the background so the WS input loop stays responsive.
                 tokio::spawn(async move {
                     let result = connection
                         .send_request(PromptRequest::new(
@@ -214,7 +393,7 @@ impl AcpStore {
                             });
                         }
                     }
-                    let _ = index.touch(&session_id, SessionStatus::Idle).await;
+                    live_sessions.lock().await.remove(&session_id);
                 });
                 Ok(())
             }
@@ -241,7 +420,14 @@ impl AcpStore {
                     .block_task()
                     .await
                     .map_err(|e| anyhow!("session/set_mode failed: {e}"))?;
-                self.index.set_mode(session_id, mode_id.clone()).await?;
+                {
+                    let mut modes = self.session_modes.lock().await;
+                    if let Some((mid, _)) = modes.get_mut(session_id) {
+                        *mid = Some(mode_id.clone());
+                    } else {
+                        modes.insert(session_id.to_string(), (Some(mode_id.clone()), Vec::new()));
+                    }
+                }
                 let tx = self.channel(session_id).await;
                 let _ = tx.send(AcpWsEvent::ModeChanged {
                     session_id: session_id.to_string(),
@@ -259,11 +445,10 @@ impl AcpStore {
     }
 }
 
-/// Spawns the `claude-agent-acp` child process and drives the ACP client
-/// event loop indefinitely in a background task, returning the connection
-/// handle once `initialize` completes. `ConnectionTo` is cheaply cloneable
-/// and safe to share across tasks, so callers just hold onto the handle
-/// rather than talking to the spawned task directly.
+// ---------------------------------------------------------------------------
+// ACP process lifecycle
+// ---------------------------------------------------------------------------
+
 async fn spawn(
     permissions: PermissionRegistry,
     channels: Channels,
@@ -353,8 +538,6 @@ async fn spawn(
                     .block_task()
                     .await?;
                 let _ = ready_tx.send(connection);
-                // Keep this future alive for the process lifetime — it drives
-                // the JSON-RPC event loop for as long as the child runs.
                 std::future::pending::<()>().await;
                 Ok(())
             })

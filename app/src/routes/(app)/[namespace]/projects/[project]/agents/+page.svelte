@@ -140,7 +140,7 @@
 					<a class="session-link" href="{base}/{s.id}">
 						<span class="status-dot {s.status}"></span>
 						<span class="session-label">{s.label}</span>
-						<span class="session-time">{new Date(s.updated_at).toLocaleString()}</span>
+						<span class="session-time">{s.updated_at ? new Date(s.updated_at).toLocaleString() : ''}</span>
 					</a>
 					{#if confirmDelete === s.id}
 						<span class="confirm-row">
