@@ -39,6 +39,8 @@ pub struct SessionMeta {
     pub mode_id: Option<String>,
     #[serde(default)]
     pub available_modes: Vec<SessionModeInfo>,
+    #[serde(default = "home_dir")]
+    pub cwd: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -76,6 +78,7 @@ impl SessionIndex {
         &self,
         id: String,
         label: String,
+        cwd: PathBuf,
         mode_id: Option<String>,
         available_modes: Vec<SessionModeInfo>,
     ) -> Result<SessionMeta> {
@@ -88,6 +91,7 @@ impl SessionIndex {
             status: SessionStatus::Live,
             mode_id,
             available_modes,
+            cwd,
         };
         self.records.write().await.insert(id, meta.clone());
         self.persist().await?;

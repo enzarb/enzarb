@@ -109,7 +109,7 @@ impl AcpStore {
         let connection = self.connection().await?;
         let cwd = cwd.unwrap_or_else(|| self.cwd.clone());
         let response = connection
-            .send_request(NewSessionRequest::new(cwd))
+            .send_request(NewSessionRequest::new(cwd.clone()))
             .block_task()
             .await
             .map_err(|e| anyhow!("session/new failed: {e}"))?;
@@ -119,6 +119,7 @@ impl AcpStore {
             .insert(
                 session_id,
                 label.unwrap_or_else(|| "New session".to_string()),
+                cwd,
                 mode_id,
                 available_modes,
             )
@@ -169,7 +170,7 @@ impl AcpStore {
         let rx = tx.subscribe();
 
         let response = connection
-            .send_request(LoadSessionRequest::new(meta.id.clone(), self.cwd.clone()))
+            .send_request(LoadSessionRequest::new(meta.id.clone(), meta.cwd.clone()))
             .block_task()
             .await
             .map_err(|e| anyhow!("session/load failed: {e}"))?;
