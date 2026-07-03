@@ -40,9 +40,13 @@
 	async function createSession() {
 		if (!agentBase || creating) return;
 		creating = true;
+		loadError = '';
 		try {
 			const token = await getAgentAuthToken();
-			if (!token) return;
+			if (!token) {
+				loadError = 'Session expired — please reload the page to sign in again.';
+				return;
+			}
 			const cwd = newCwd.trim() || '~';
 			const res = await fetch(`${agentBase}/agent/sessions`, {
 				method: 'POST',
@@ -52,7 +56,11 @@
 			if (res.ok) {
 				const session = await res.json();
 				goto(`${base}/${session.id}`);
+			} else {
+				loadError = `Failed to start session (${res.status}).`;
 			}
+		} catch {
+			loadError = 'Could not reach the workspace agent.';
 		} finally {
 			creating = false;
 			showNewForm = false;
@@ -84,7 +92,7 @@
 	<div class="agents-header">
 		<h3>Agent sessions</h3>
 		{#if !showNewForm}
-			<button class="btn btn-primary" onclick={() => showNewForm = true} disabled={!agentBase}>
+			<button class="btn btn-primary" onclick={() => showNewForm = true} disabled={!agentBase} title={!agentBase ? 'Workspace is not ready yet' : undefined}>
 				+ New session
 			</button>
 		{/if}
@@ -103,7 +111,7 @@
 					spellcheck={false}
 					autocomplete="off"
 				/>
-				<button type="submit" class="btn btn-primary" disabled={creating || !agentBase}>
+				<button type="submit" class="btn btn-primary" disabled={creating || !agentBase} title={!agentBase ? 'Workspace is not ready yet' : undefined}>
 					{creating ? 'Starting…' : 'Start'}
 				</button>
 				<button type="button" class="btn" onclick={() => { showNewForm = false; newCwd = '~'; }}>
