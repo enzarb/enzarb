@@ -244,7 +244,7 @@
 	.user-email { display: block; font-size: 12px; color: var(--color-text-muted); margin-bottom: 0.5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 	@media (max-width: 768px) {
-		.shell { flex-direction: column; height: 100dvh; overflow: hidden; }
+		.shell { flex-direction: column; height: 100vh; height: 100svh; overflow: hidden; }
 		.topbar { display: flex; }
 		.logo-desktop { display: none; }
 		.backdrop { display: block; }
