@@ -64,15 +64,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         -o /usr/local/bin/tini \
     && chmod +x /usr/local/bin/tini
 
+# Rename existing ubuntu user (UID 1000) to 'user' for consistency.
+# Must happen before npm install: npm writes to $HOME (.npm cache), and
+# usermod -m fails if /home/user already exists.
+RUN usermod -l user -d /home/user -m ubuntu && groupmod -n user ubuntu
+
 # Install ACP adapter for the Agent tab (Claude Code) globally via npm.
 RUN if [ "${CLAUDE_CODE_ACP_VERSION}" = "latest" ]; then \
         npm install -g @agentclientprotocol/claude-agent-acp; \
     else \
         npm install -g @agentclientprotocol/claude-agent-acp@${CLAUDE_CODE_ACP_VERSION}; \
     fi
-
-# Rename existing ubuntu user (UID 1000) to 'user' for consistency
-RUN usermod -l user -d /home/user -m ubuntu && groupmod -n user ubuntu
 
 # Bake the enzarb prompt into the system-wide bash config so it applies to
 # all interactive shells (tmux windows, plain `bash` processes, login shells)
