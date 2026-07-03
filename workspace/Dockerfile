@@ -113,11 +113,12 @@ RUN curl https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh
 ARG NODE_VERSION=22
 ARG CLAUDE_AGENT_ACP_VERSION=0.55.0
 ENV MISE_DATA_DIR=/usr/local/share/mise
-# MISE_GLOBAL_CONFIG_FILE must point outside the home PVC: the default
-# (~/.config/mise/config.toml) is written as root during build but is
-# inaccessible to the runtime `user` (whose HOME is the empty PVC). Without
-# this, mise shims fail at runtime with "No version is set for shim: X".
-ENV MISE_GLOBAL_CONFIG_FILE=/usr/local/share/mise/config.toml
+# MISE_SYSTEM_CONFIG_FILE bakes the node version into the system config layer
+# so mise shims (e.g. claude-agent-acp) resolve at runtime without user
+# configuration. Using the *system* layer (not MISE_GLOBAL_CONFIG_FILE) leaves
+# the user's own global config (~/.config/mise/config.toml on the PVC) free
+# for their own `mise use -g` installs.
+ENV MISE_SYSTEM_CONFIG_FILE=/usr/local/share/mise/config.toml
 ENV PATH="/usr/local/share/mise/shims:${PATH}"
 RUN mise use -g node@${NODE_VERSION} \
     && npm install -g @agentclientprotocol/claude-agent-acp@${CLAUDE_AGENT_ACP_VERSION} \
