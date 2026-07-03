@@ -554,6 +554,16 @@ func (r *ProjectReconciler) ensureDeployment(ctx context.Context, ns, saName, pv
 		return r.Update(ctx, deploy)
 	}
 
+	// Suspended projects have 0 replicas so no pods are running — the image
+	// update is always safe and should be applied immediately so the workspace
+	// is already up-to-date when the project is resumed.
+	if project.Spec.Suspended {
+		apimeta.RemoveStatusCondition(&project.Status.Conditions, "WorkspaceUpdatePending")
+		project.Status.RunningWorkspaceImage = desiredImage
+		deploy.Spec = desired.Spec
+		return r.Update(ctx, deploy)
+	}
+
 	// Image update needed. Honour an explicit user-initiated restart request.
 	forceRequested := project.Annotations[forceRestartAnnotation] == "true"
 	if forceRequested {
