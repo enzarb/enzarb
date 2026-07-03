@@ -14,6 +14,7 @@ export interface SessionMeta {
 	status: 'live' | 'idle';
 	mode_id: string | null;
 	available_modes: SessionModeInfo[];
+	_meta?: Record<string, unknown>;
 }
 
 export interface DiffPayload {

@@ -5,6 +5,7 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import type { SessionMeta } from '$lib/agent/types';
+	import Tooltip from '$lib/components/Tooltip.svelte';
 
 	let agentBase = $state('');
 	let sessions: SessionMeta[] = $state([]);
@@ -136,11 +137,23 @@
 	{:else}
 		<div class="session-list">
 			{#each sessions as s (s.id)}
+				{@const hasMeta = s._meta && Object.keys(s._meta).length > 0}
 				<div class="session-row">
 					<a class="session-link" href="{base}/{s.id}">
 						<span class="status-dot {s.status}"></span>
-						<span class="session-label">{s.label}</span>
+						<Tooltip placement="bottom">
+							{#snippet children()}<span class="session-label">{s.label}</span>{/snippet}
+							{#snippet content()}<span class="label-tooltip">{s.label}</span>{/snippet}
+						</Tooltip>
 						<span class="session-time">{s.updated_at ? new Date(s.updated_at).toLocaleString() : ''}</span>
+						{#if hasMeta}
+							<Tooltip placement="bottom">
+								{#snippet children()}<span class="meta-badge">meta</span>{/snippet}
+								{#snippet content()}
+									<pre class="meta-pre">{JSON.stringify(s._meta, null, 2)}</pre>
+								{/snippet}
+							</Tooltip>
+						{/if}
 					</a>
 					{#if confirmDelete === s.id}
 						<span class="confirm-row">
@@ -178,7 +191,10 @@
 	.session-link { display: flex; align-items: center; gap: 0.6rem; padding: 0.6rem 0.9rem; flex: 1; text-decoration: none; color: var(--color-text); min-width: 0; }
 	.status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-text-muted); flex-shrink: 0; }
 	.status-dot.live { background: #3fb950; }
-	.session-label { flex: 1; font-family: var(--font-mono); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.session-label { flex: 1; font-family: var(--font-mono); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+	.meta-badge { font-size: 10px; font-family: var(--font-mono); padding: 1px 5px; border-radius: 3px; background: var(--color-surface-2); color: var(--color-text-muted); border: 1px solid var(--color-border); flex-shrink: 0; cursor: help; }
+	.meta-pre { margin: 0; font-family: var(--font-mono); font-size: 12px; white-space: pre; }
+	.label-tooltip { font-family: var(--font-mono); font-size: 12px; word-break: break-all; }
 	.session-time { font-size: 11px; color: var(--color-text-muted); flex-shrink: 0; }
 	.delete-btn { background: none; border: none; cursor: pointer; color: var(--color-text-muted); font-size: 13px; padding: 0.6rem 0.75rem; line-height: 1; opacity: 0; transition: opacity 0.1s; }
 	.session-row:hover .delete-btn { opacity: 1; }

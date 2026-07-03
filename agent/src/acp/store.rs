@@ -17,6 +17,7 @@ use agent_client_protocol::schema::v1::{
 use agent_client_protocol::{AcpAgent, Agent, Client, ConnectionTo};
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
+use serde_json::Map as JsonMap;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -64,6 +65,8 @@ pub struct SessionMeta {
     pub status: SessionStatus,
     pub mode_id: Option<String>,
     pub available_modes: Vec<SessionModeInfo>,
+    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<JsonMap<String, serde_json::Value>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +113,7 @@ fn session_meta_from_info(
     SessionMeta {
         cwd: info.cwd.to_string_lossy().into_owned(),
         updated_at: info.updated_at,
+        meta: info.meta,
         id,
         label,
         status,
@@ -290,6 +294,7 @@ impl AcpStore {
             label: label.unwrap_or_else(|| "New session".to_string()),
             cwd: cwd.to_string_lossy().into_owned(),
             updated_at: None,
+            meta: None,
             id,
             status: SessionStatus::Live,
             mode_id,
