@@ -225,7 +225,9 @@
 </div>
 
 <style>
-	.chat-page { display: flex; flex-direction: column; height: calc(100vh - 200px); min-height: 400px; margin-top: -1.5rem; }
+	.chat-page { display: flex; flex-direction: column; height: calc(100vh - 200px); min-height: 400px; margin-top: -1.5rem; overflow: hidden; }
+	@media (max-width: 768px) { .chat-page { height: calc(100vh - 120px); } }
+	@media (max-width: 480px) { .chat-page { height: calc(100dvh - 180px); } }
 	.chat-header { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0; border-bottom: 1px solid var(--color-border); }
 	.back { font-size: 12px; color: var(--color-text-muted); text-decoration: none; }
 	.back:hover { color: var(--color-text); }
@@ -242,7 +244,7 @@
 	.message-body p { margin: 0; }
 	.message.user .message-body { color: var(--color-text); }
 
-	.composer { display: flex; gap: 0.5rem; padding: 0.75rem 0; border-top: 1px solid var(--color-border); }
+	.composer { display: flex; gap: 0.5rem; padding: 0.75rem 0; border-top: 1px solid var(--color-border); min-width: 0; }
 	.composer textarea { flex: 1; resize: none; font-family: inherit; font-size: 13px; padding: 0.5rem 0.7rem; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); color: var(--color-text); }
 	.composer button { align-self: flex-end; }
 </style>

@@ -18,6 +18,7 @@ const PERM: &str = "agent:manage";
 #[derive(Debug, Deserialize, Default)]
 pub struct CreateSessionRequest {
     pub label: Option<String>,
+    pub cwd: Option<String>,
 }
 
 pub async fn list_sessions(
@@ -36,7 +37,7 @@ pub async fn create_session(
     perms.require(PERM)?;
     state
         .acp_store
-        .create_session(req.label)
+        .create_session(req.label, req.cwd.map(std::path::PathBuf::from))
         .await
         .map(Json)
         .map_err(|e| {

@@ -91,10 +91,12 @@ impl AcpStore {
     pub async fn create_session(
         &self,
         label: Option<String>,
+        cwd: Option<PathBuf>,
     ) -> Result<super::session::SessionMeta> {
         let connection = self.connection().await?;
+        let cwd = cwd.unwrap_or_else(|| self.cwd.clone());
         let response = connection
-            .send_request(NewSessionRequest::new(self.cwd.clone()))
+            .send_request(NewSessionRequest::new(cwd))
             .block_task()
             .await
             .map_err(|e| anyhow!("session/new failed: {e}"))?;

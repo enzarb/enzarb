@@ -11,6 +11,8 @@
 	let loading = $state(true);
 	let loadError = $state('');
 	let creating = $state(false);
+	let showNewForm = $state(false);
+	let newCwd = $state('~');
 
 	const base = `/${page.params.namespace}/projects/${page.params.project}/agents`;
 
@@ -40,10 +42,11 @@
 		try {
 			const token = await getAgentAuthToken();
 			if (!token) return;
+			const cwd = newCwd.trim() || '~';
 			const res = await fetch(`${agentBase}/agent/sessions`, {
 				method: 'POST',
 				headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-				body: JSON.stringify({})
+				body: JSON.stringify({ cwd })
 			});
 			if (res.ok) {
 				const session = await res.json();
@@ -51,6 +54,7 @@
 			}
 		} finally {
 			creating = false;
+			showNewForm = false;
 		}
 	}
 
@@ -67,10 +71,35 @@
 <div class="agents-page">
 	<div class="agents-header">
 		<h3>Agent sessions</h3>
-		<button class="btn btn-primary" onclick={createSession} disabled={creating || !agentBase}>
-			{creating ? 'Starting…' : '+ New session'}
-		</button>
+		{#if !showNewForm}
+			<button class="btn btn-primary" onclick={() => showNewForm = true} disabled={!agentBase}>
+				+ New session
+			</button>
+		{/if}
 	</div>
+
+	{#if showNewForm}
+		<form class="new-session-form" onsubmit={(e) => { e.preventDefault(); createSession(); }}>
+			<label class="cwd-label" for="new-cwd">Working directory</label>
+			<div class="new-session-row">
+				<input
+					id="new-cwd"
+					class="cwd-input"
+					type="text"
+					bind:value={newCwd}
+					placeholder="~"
+					spellcheck={false}
+					autocomplete="off"
+				/>
+				<button type="submit" class="btn btn-primary" disabled={creating || !agentBase}>
+					{creating ? 'Starting…' : 'Start'}
+				</button>
+				<button type="button" class="btn" onclick={() => { showNewForm = false; newCwd = '~'; }}>
+					Cancel
+				</button>
+			</div>
+		</form>
+	{/if}
 
 	{#if loading}
 		<p class="muted">Loading sessions…</p>
@@ -94,6 +123,10 @@
 <style>
 	.agents-page { padding: 0.5rem 0; }
 	.agents-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
+	.new-session-form { margin-bottom: 1rem; }
+	.cwd-label { display: block; font-size: 12px; color: var(--color-text-muted); margin-bottom: 0.35rem; }
+	.new-session-row { display: flex; gap: 0.5rem; align-items: center; }
+	.cwd-input { flex: 1; font-family: var(--font-mono); font-size: 13px; padding: 0.4rem 0.6rem; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); color: var(--color-text); min-width: 0; }
 	.agents-header h3 { margin: 0; }
 	.muted { color: var(--color-text-muted); font-size: 13px; }
 	.error { color: var(--color-danger); font-size: 13px; }
