@@ -105,15 +105,21 @@
 		{ href: `${base}/billing`, label: 'Billing' },
 		{ href: `${base}/utilization`, label: 'Utilization' }
 	]}
+	{@const isTiling = page.url.pathname.endsWith('/tiling')}
 	<div class="project-shell">
 		<div class="project-header">
 			<div>
 				<a href="/{page.params.namespace}/projects" class="back">← Projects</a>
 				<h2>{project.spec.displayName}</h2>
 			</div>
-			<span class="badge {(project.status?.phase ?? 'pending').toLowerCase()}">{project.status?.phase ?? 'Pending'}</span>
+			<div class="header-right">
+				<a href={isTiling ? base : `${base}/tiling`} class="tiling-toggle" title={isTiling ? 'Standard view' : 'Tiling mode'}>
+					{isTiling ? '⊞' : '⊟'}
+				</a>
+				<span class="badge {(project.status?.phase ?? 'pending').toLowerCase()}">{project.status?.phase ?? 'Pending'}</span>
+			</div>
 		</div>
-		<nav class="project-tabs">
+		<nav class="project-tabs" class:hidden={isTiling}>
 			{#each tabs as tab}
 				<a href={tab.href} class="tab {isActive(base, tab.href) ? 'active' : ''}">{tab.label}</a>
 			{/each}
@@ -175,7 +181,7 @@
 			</div>
 		{/if}
 		<div class="project-content-wrap">
-			<div class="project-content" class:locked={project.status?.phase === 'Pending' || health?.state === 'unhealthy'}>
+			<div class="project-content" class:locked={project.status?.phase === 'Pending' || health?.state === 'unhealthy'} class:tiling={isTiling}>
 				{@render children()}
 			</div>
 			{#if project.status?.phase === 'Pending'}
@@ -197,12 +203,17 @@
 	.project-shell { display: flex; flex-direction: column; height: 100%; }
 	.project-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1rem; }
 	.back { font-size: 12px; color: var(--color-text-muted); display: block; margin-bottom: 0.25rem; }
+	.header-right { display: flex; align-items: center; gap: 0.5rem; }
+	.tiling-toggle { font-size: 18px; color: var(--color-text-muted); text-decoration: none; line-height: 1; padding: 0.15rem; border-radius: 4px; }
+	.tiling-toggle:hover { color: var(--color-accent); }
 	.project-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--color-border); margin-bottom: 1.5rem; overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; }
+	.project-tabs.hidden { display: none; }
 	.tab { padding: 0.5rem 1rem; color: var(--color-text-muted); font-size: 13px; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
 	.tab:hover { color: var(--color-text); text-decoration: none; }
 	.tab.active { color: var(--color-text); border-bottom-color: var(--color-accent); }
 	.project-content-wrap { position: relative; flex: 1; display: flex; overflow: hidden; }
 	.project-content { flex: 1; overflow-y: auto; }
+	.project-content.tiling { overflow: hidden; display: flex; flex-direction: column; padding: 0; }
 	.project-content.locked { pointer-events: none; opacity: 0.4; }
 	.provisioning-overlay {
 		position: absolute;
