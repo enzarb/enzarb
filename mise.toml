@@ -114,9 +114,13 @@ run = "cd authd && go build ./cmd/authd/"
 description = "Build SvelteKit app"
 run = "cd app && npm run build"
 
+[tasks.build-mirror]
+description = "Build registry mirror binary"
+run = "cd mirror && cargo build --release"
+
 [tasks.build-all]
 description = "Build all components"
-depends = ["build-agent", "build-operator", "build-metering", "build-billing", "build-authd", "build-app"]
+depends = ["build-agent", "build-operator", "build-metering", "build-billing", "build-authd", "build-app", "build-mirror"]
 
 [tasks.test-agent]
 description = "Run agent tests"
@@ -142,9 +146,13 @@ run = "cd authd && go test ./..."
 description = "Run app tests"
 run = "cd app && npm test"
 
+[tasks.test-mirror]
+description = "Run registry mirror tests"
+run = "cd mirror && cargo test"
+
 [tasks.test-all]
 description = "Run all tests"
-depends = ["test-agent", "test-operator", "test-metering", "test-billing", "test-authd", "test-app"]
+depends = ["test-agent", "test-operator", "test-metering", "test-billing", "test-authd", "test-app", "test-mirror"]
 
 [tasks.dev-app]
 description = "Run SvelteKit dev server"

@@ -69,6 +69,10 @@ spec:
               value: {{ .Values.networkPolicy.podCIDR | quote }}
             - name: CLUSTER_SVC_CIDR
               value: {{ .Values.networkPolicy.serviceCIDR | quote }}
+            - name: MIRROR_ENABLED
+              value: {{ .Values.registryMirror.enabled | quote }}
+            - name: MIRROR_HOST
+              value: "enzarb-mirror.{{ .Release.Namespace }}.svc.cluster.local:5000"
           ports:
             - name: metrics
               containerPort: 8080

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -85,6 +87,13 @@ func (r *OrganizationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// internal port from being reachable by arbitrary cluster pods.
 	if err := r.ensureWorkspaceNetworkPolicy(ctx, nsName); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensure workspace network policy: %w", err)
+	}
+
+	// buildkitd.toml pointing every workspace buildkitd at the registry
+	// pull-through mirror (mounted into the buildkit sidecar by the Project
+	// reconciler).
+	if err := r.ensureBuildkitConfigMap(ctx, nsName); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure buildkit configmap: %w", err)
 	}
 
 	// Prune any other operator-managed NetworkPolicies from prior versions,
@@ -214,6 +223,7 @@ func (r *OrganizationReconciler) ensureWorkspaceNetworkPolicy(ctx context.Contex
 	externalPort := intstr.FromInt32(8080)
 	internalPort := intstr.FromInt32(9090)
 	dnsPort := intstr.FromInt32(53)
+	mirrorPort := intstr.FromInt32(5000)
 
 	desired := &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
@@ -285,6 +295,25 @@ func (r *OrganizationReconciler) ensureWorkspaceNetworkPolicy(ctx context.Contex
 				}}},
 			},
 		},
+	}
+
+	// Registry pull-through mirror (anonymous, public upstream content only).
+	// Pod-scoped so this stays the sole system-namespace pod a workspace can
+	// dial directly.
+	if _, enabled := mirrorEnabled(); enabled {
+		desired.Spec.Egress = append(desired.Spec.Egress, networkingv1.NetworkPolicyEgressRule{
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &tcp, Port: &mirrorPort},
+			},
+			To: []networkingv1.NetworkPolicyPeer{{
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"kubernetes.io/metadata.name": systemNS},
+				},
+				PodSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app.kubernetes.io/name": "enzarb-mirror"},
+				},
+			}},
+		})
 	}
 
 	existing := &networkingv1.NetworkPolicy{}
@@ -394,6 +423,88 @@ func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *enzar
 	}
 	logger.Info("organization deleted", "org", org.Spec.Slug, "namespace", nsName)
 	return ctrl.Result{}, nil
+}
+
+// buildkitConfigMapName is the org-namespace ConfigMap carrying the
+// buildkitd.toml that points workspace buildkitds at the pull-through mirror.
+const buildkitConfigMapName = "enzarb-buildkitd"
+
+// mirrorEnabled reports whether the registry pull-through mirror is configured
+// (MIRROR_ENABLED gate + MIRROR_HOST from the chart).
+func mirrorEnabled() (string, bool) {
+	if os.Getenv("MIRROR_ENABLED") != "true" {
+		return "", false
+	}
+	host := os.Getenv("MIRROR_HOST")
+	return host, host != ""
+}
+
+// mirrorUpstreams are the public registries buildkit is told to route through
+// the mirror. Must stay in sync with the mirror's MIRROR_UPSTREAMS allowlist
+// (registryMirror.upstreams in the chart); an out-of-sync entry just 404s and
+// buildkit falls back to the real upstream.
+var mirrorUpstreams = map[string]string{
+	"docker.io":       "registry-1.docker.io",
+	"ghcr.io":         "ghcr.io",
+	"quay.io":         "quay.io",
+	"registry.k8s.io": "registry.k8s.io",
+}
+
+// renderBuildkitToml produces the buildkitd.toml contents: one mirror entry
+// per public registry, path-prefixed by upstream host to match the mirror's
+// routing, plus an http (plaintext) marker for the in-cluster mirror endpoint.
+func renderBuildkitToml(mirrorHost string) string {
+	var b strings.Builder
+	hosts := make([]string, 0, len(mirrorUpstreams))
+	for h := range mirrorUpstreams {
+		hosts = append(hosts, h)
+	}
+	sort.Strings(hosts)
+	for _, h := range hosts {
+		fmt.Fprintf(&b, "[registry.%q]\n  mirrors = [%q]\n", h, mirrorHost+"/"+mirrorUpstreams[h])
+	}
+	fmt.Fprintf(&b, "[registry.%q]\n  http = true\n", mirrorHost)
+	return b.String()
+}
+
+// ensureBuildkitConfigMap renders the buildkitd.toml with per-host mirror
+// entries (path-prefixed by upstream host, matching the mirror's routing).
+// When the mirror is disabled the ConfigMap is removed so buildkitd falls back
+// to direct pulls.
+func (r *OrganizationReconciler) ensureBuildkitConfigMap(ctx context.Context, nsName string) error {
+	host, enabled := mirrorEnabled()
+	if !enabled {
+		cm := &corev1.ConfigMap{}
+		err := r.Get(ctx, types.NamespacedName{Namespace: nsName, Name: buildkitConfigMapName}, cm)
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return r.Delete(ctx, cm)
+	}
+
+	desired := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      buildkitConfigMapName,
+			Namespace: nsName,
+			Labels:    map[string]string{managedByLabel: managedByValue},
+		},
+		Data: map[string]string{"buildkitd.toml": renderBuildkitToml(host)},
+	}
+
+	existing := &corev1.ConfigMap{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: nsName, Name: buildkitConfigMapName}, existing)
+	if apierrors.IsNotFound(err) {
+		return r.Create(ctx, desired)
+	}
+	if err != nil {
+		return err
+	}
+	existing.Data = desired.Data
+	existing.Labels = desired.Labels
+	return r.Update(ctx, existing)
 }
 
 func orgNamespaceLabels(org *enzarbv1alpha1.Organization) map[string]string {

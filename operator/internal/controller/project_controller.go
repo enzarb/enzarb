@@ -874,14 +874,11 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug s
 							},
 						},
 						{
-							Name:  "buildkitd",
-							Image: "moby/buildkit:rootless",
-							Args: []string{
-								"--addr", "tcp://0.0.0.0:1234",
-								// Required to run rootless buildkitd in an unprivileged container.
-								"--oci-worker-no-process-sandbox",
-							},
-							Ports: []corev1.ContainerPort{{Name: "buildkitd", ContainerPort: 1234}},
+							Name:         "buildkitd",
+							Image:        "moby/buildkit:rootless",
+							Args:         buildkitArgs(),
+							Ports:        []corev1.ContainerPort{{Name: "buildkitd", ContainerPort: 1234}},
+							VolumeMounts: buildkitVolumeMounts(),
 							SecurityContext: &corev1.SecurityContext{
 								RunAsUser:  int64Ptr(1000),
 								RunAsGroup: int64Ptr(1000),
@@ -909,7 +906,7 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug s
 							},
 						},
 					},
-					Volumes: []corev1.Volume{
+					Volumes: append([]corev1.Volume{
 						{
 							Name: "home",
 							VolumeSource: corev1.VolumeSource{
@@ -955,7 +952,7 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug s
 								},
 							},
 						},
-					},
+					}, buildkitConfigVolumeSlice()...),
 				},
 			},
 		},
@@ -1170,6 +1167,48 @@ func (r *ProjectReconciler) ensureHTTPRoute(ctx context.Context, ns string, proj
 // pruneLegacyProjectCertificate removes the obsolete per-project apex-domain
 // Certificate (and its output Secret) from enzarb-system. Deleting the
 // Certificate cascades to its owned CertificateRequest and temporary key Secret;
+// buildkitArgs returns the buildkitd sidecar arguments, adding the config file
+// with registry mirror entries when the pull-through mirror is enabled. The
+// ConfigMap is created per org namespace by the Organization reconciler.
+func buildkitArgs() []string {
+	args := []string{
+		"--addr", "tcp://0.0.0.0:1234",
+		// Required to run rootless buildkitd in an unprivileged container.
+		"--oci-worker-no-process-sandbox",
+	}
+	if _, enabled := mirrorEnabled(); enabled {
+		args = append(args, "--config", "/etc/buildkit/buildkitd.toml")
+	}
+	return args
+}
+
+func buildkitVolumeMounts() []corev1.VolumeMount {
+	if _, enabled := mirrorEnabled(); !enabled {
+		return nil
+	}
+	return []corev1.VolumeMount{{Name: "buildkit-config", MountPath: "/etc/buildkit", ReadOnly: true}}
+}
+
+// buildkitConfigVolumeSlice returns the ConfigMap volume for buildkitd.toml,
+// or an empty slice when the mirror is disabled.
+func buildkitConfigVolumeSlice() []corev1.Volume {
+	if _, enabled := mirrorEnabled(); !enabled {
+		return nil
+	}
+	return []corev1.Volume{{
+		Name: "buildkit-config",
+		VolumeSource: corev1.VolumeSource{
+			ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: buildkitConfigMapName},
+				// optional=true so the pod starts even before the Organization
+				// reconciler has created the ConfigMap (buildkitd treats a
+				// missing --config file as empty config and pulls direct).
+				Optional: boolPtr(true),
+			},
+		},
+	}}
+}
+
 func projectLabels(p *enzarbv1alpha1.Project) map[string]string {
 	return map[string]string{
 		"app.kubernetes.io/managed-by": "enzarb-operator",

@@ -70,7 +70,9 @@ else
     if has_changes ".golangci.yml" || has_changes "go.work"; then GO_CHANGED=true; fi
 
     RUST_CHANGED=false
-    if has_changes "agent/"; then RUST_CHANGED=true; fi
+    for prefix in agent/ webhook/ mirror/; do
+        if has_changes "$prefix"; then RUST_CHANGED=true; break; fi
+    done
 
     JS_CHANGED=false
     if has_changes "app/"; then JS_CHANGED=true; fi
@@ -119,14 +121,18 @@ fi
 # ── Rust ─────────────────────────────────────────────────────────────────────
 if $RUST_CHANGED; then
     echo "Rust:"
-    run_check "cargo fmt --check" \
-        cargo fmt --manifest-path agent/Cargo.toml --check
-    run_check "cargo clippy" \
-        cargo clippy --manifest-path agent/Cargo.toml --all-targets -- -D warnings
+    for crate in agent webhook mirror; do
+        run_check "cargo fmt --check ($crate)" \
+            cargo fmt --manifest-path $crate/Cargo.toml --check
+        run_check "cargo clippy ($crate)" \
+            cargo clippy --manifest-path $crate/Cargo.toml --all-targets -- -D warnings
+    done
     if ! command -v cargo-audit &>/dev/null; then
         printf "  ${YELLOW}cargo-audit not found — skipping (run: cargo install cargo-audit --locked)${NC}\n"
     else
-        run_check "cargo audit" bash -c "cd agent && cargo audit"
+        for crate in agent webhook mirror; do
+            run_check "cargo audit ($crate)" bash -c "cd $crate && cargo audit"
+        done
     fi
 fi
 

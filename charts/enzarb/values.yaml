@@ -120,6 +120,36 @@ webhook:
       memory: 32Mi
     limits:
       memory: 64Mi
+# Transparent pull-through cache for public registries, used by every
+# workspace buildkitd via mirror entries in buildkitd.toml. Fails open:
+# buildkit falls back to the real upstream if the mirror is down or full.
+registryMirror:
+  enabled: true
+  image:
+    repository: ghcr.io/enzarb/mirror
+    pullPolicy: IfNotPresent
+    tag: "v0.86.0"
+  # PVC size (the hard cap on disk).
+  cacheSize: 50Gi
+  # LRU eviction threshold; keep below cacheSize so eviction finishes before
+  # the filesystem fills.
+  maxBytes: 45Gi
+  # "" uses the cluster default StorageClass.
+  storageClass: ""
+  # How long a manifest fetched by tag is served without revalidating upstream.
+  tagTtl: 60s
+  # Registries the mirror will proxy; anything else is 404.
+  upstreams:
+    - registry-1.docker.io
+    - ghcr.io
+    - quay.io
+    - registry.k8s.io
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
 # workspace is not a Deployment in this chart; its tag is injected into the
 # operator as WORKSPACE_IMAGE and used as the image for project pods.
 workspace:

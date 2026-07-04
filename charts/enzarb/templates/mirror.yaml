@@ -1,0 +1,100 @@
+{{- if .Values.registryMirror.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: enzarb-mirror
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: enzarb-mirror
+    app.kubernetes.io/name: enzarb-mirror
+    app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+spec:
+  replicas: 1
+  # The cache PVC is ReadWriteOnce; never run two pods against it.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: enzarb-mirror
+  template:
+    metadata:
+      labels:
+        app: enzarb-mirror
+        app.kubernetes.io/name: enzarb-mirror
+        app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mirror
+          image: "{{ .Values.registryMirror.image.repository }}:{{ .Values.registryMirror.image.tag }}"
+          imagePullPolicy: {{ .Values.registryMirror.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          env:
+            - name: MIRROR_LISTEN
+              value: "0.0.0.0:5000"
+            - name: MIRROR_CACHE_DIR
+              value: /var/lib/mirror
+            # Keep the eviction cap under the PVC size so the low-water sweep
+            # finishes before the filesystem fills.
+            - name: MIRROR_MAX_BYTES
+              value: {{ .Values.registryMirror.maxBytes | quote }}
+            - name: MIRROR_TAG_TTL
+              value: {{ .Values.registryMirror.tagTtl | quote }}
+            - name: MIRROR_UPSTREAMS
+              value: {{ join "," .Values.registryMirror.upstreams | quote }}
+          ports:
+            - name: http
+              containerPort: 5000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          volumeMounts:
+            - name: cache
+              mountPath: /var/lib/mirror
+          resources: {{- toYaml .Values.registryMirror.resources | nindent 12 }}
+      volumes:
+        - name: cache
+          persistentVolumeClaim:
+            claimName: enzarb-mirror-cache
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: enzarb-mirror-cache
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with .Values.registryMirror.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.registryMirror.cacheSize }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: enzarb-mirror
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: enzarb-mirror
+  ports:
+    - name: http
+      port: 5000
+      targetPort: http
+{{- end }}
