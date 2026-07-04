@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { getProject } from '$lib/remote/projects.remote';
 	import { getAgentAuthToken } from '$lib/agentToken';
+	import { workspaceHealth } from '$lib/workspaceHealth.svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
@@ -21,6 +22,7 @@
 	async function loadSessions() {
 		loadError = '';
 		if (!agentBase) return;
+		await workspaceHealth(agentBase).ensureHealthy();
 		const token = await getAgentAuthToken(page.params.namespace!, page.params.project!);
 		if (!token) {
 			loadError = 'Session expired — please reload the page to sign in again.';
@@ -43,6 +45,7 @@
 		creating = true;
 		loadError = '';
 		try {
+			await workspaceHealth(agentBase).ensureHealthy();
 			const token = await getAgentAuthToken(page.params.namespace!, page.params.project!);
 			if (!token) {
 				loadError = 'Session expired — please reload the page to sign in again.';

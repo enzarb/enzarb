@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { getProject, restartWorkspace } from '$lib/remote/projects.remote';
+	import { workspaceHealth } from '$lib/workspaceHealth.svelte';
 	import { page } from '$app/state';
 
 	let { children } = $props();
@@ -27,12 +28,24 @@
 	let restarting = $state(false);
 	let restartError = $state('');
 
+	// Flip the shared health tracker to unhealthy the moment a restart is
+	// requested: every tab pauses its connections until /healthz answers again,
+	// and the overlay below tells the user why.
+	async function markRestarting() {
+		try {
+			const project = await getProject(page.params.project);
+			const agentPath = project?.status?.agentPath;
+			if (agentPath) workspaceHealth(`https://enzarb.dev${agentPath}`).markUnhealthy();
+		} catch {}
+	}
+
 	async function handleRestart(slug: string, desiredImage: string) {
 		restarting = true;
 		restartError = '';
 		try {
 			await restartWorkspace({ slug });
 			dismiss(slug, desiredImage);
+			await markRestarting();
 			await getProject().refresh();
 		} catch (e) {
 			restartError = e instanceof Error ? e.message : 'Failed to request restart';
@@ -47,6 +60,7 @@
 		try {
 			await restartWorkspace({ slug });
 			envDismissed = true;
+			await markRestarting();
 			await getProject().refresh();
 		} catch (e) {
 			restartError = e instanceof Error ? e.message : 'Failed to request restart';
@@ -78,6 +92,9 @@
 
 {#await projectData then project}
 	{@const base = `/${page.params.namespace}/projects/${page.params.project}`}
+	{@const health = project.status?.agentPath
+		? workspaceHealth(`https://enzarb.dev${project.status.agentPath}`)
+		: null}
 	{@const tabs = [
 		{ href: base, label: 'Overview' },
 		{ href: `${base}/files`, label: 'Files' },
@@ -158,13 +175,18 @@
 			</div>
 		{/if}
 		<div class="project-content-wrap">
-			<div class="project-content" class:locked={project.status?.phase === 'Pending'}>
+			<div class="project-content" class:locked={project.status?.phase === 'Pending' || health?.state === 'unhealthy'}>
 				{@render children()}
 			</div>
 			{#if project.status?.phase === 'Pending'}
 				<div class="provisioning-overlay">
 					<div class="spinner"></div>
 					<p>Provisioning workspace…</p>
+				</div>
+			{:else if health?.state === 'unhealthy'}
+				<div class="provisioning-overlay">
+					<div class="spinner"></div>
+					<p>Workspace is restarting — reconnecting when it's back…</p>
 				</div>
 			{/if}
 		</div>

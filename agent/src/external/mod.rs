@@ -64,11 +64,16 @@ pub fn router(state: AppState) -> Router {
         .route("/status", get(status::status))
         // Watch (inotify SSE)
         .route("/watch", get(watch::watch))
-        // Auth middleware on all routes
+        // Auth middleware on all routes above
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
         ))
+        // Unauthenticated liveness probe (registered after the auth layer, so
+        // it is NOT wrapped by it). The frontend polls this to detect a
+        // restarting workspace pod: while the pod is down the gateway answers
+        // with a 5xx instead. Returns no body and reveals nothing.
+        .route("/healthz", get(|| async { StatusCode::NO_CONTENT }))
         .layer(cors)
         .with_state(state)
 }

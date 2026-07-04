@@ -12,6 +12,7 @@
 		SessionModeInfo
 	} from '$lib/agent/types';
 	import { getAgentAuthToken } from '$lib/agentToken';
+	import { workspaceHealth } from '$lib/workspaceHealth.svelte';
 	import Markdown from '$lib/agent/Markdown.svelte';
 	import ToolCallCard from '$lib/agent/ToolCallCard.svelte';
 	import PlanView from '$lib/agent/PlanView.svelte';
@@ -52,6 +53,7 @@
 
 	async function loadSessionMeta() {
 		if (!agentBase) return;
+		await workspaceHealth(agentBase).ensureHealthy();
 		const token = await getAgentAuthToken(page.params.namespace!, page.params.project!);
 		if (!token) return;
 		try {

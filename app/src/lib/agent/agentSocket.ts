@@ -1,4 +1,5 @@
 import { getAgentAuthToken } from '$lib/agentToken';
+import { workspaceHealth } from '$lib/workspaceHealth.svelte';
 import type { AcpWsClientMsg, AcpWsEvent } from './types';
 
 export type ConnState = 'connecting' | 'connected' | 'reconnecting' | 'failed';
@@ -35,6 +36,10 @@ export class AgentSocket {
 
 	async connect() {
 		if (this.closed) return;
+		// Don't attempt a connection while the workspace pod is down/restarting;
+		// this blocks until /healthz answers again instead of burning attempts.
+		await workspaceHealth(this.agentBase).ensureHealthy();
+		if (this.closed) return;
 		const token = await getAgentAuthToken(this.namespace, this.project);
 		if (!token) {
 			// Token minting can fail transiently (network blip, app redeploy);
@@ -63,6 +68,9 @@ export class AgentSocket {
 				this.setState('failed', 'Session not found — it may have been deleted or the workspace restarted.');
 				return;
 			}
+			// An abnormal drop may mean the pod is restarting — re-probe health
+			// before the next attempt instead of trusting the cached state.
+			workspaceHealth(this.agentBase).suspect();
 			this.setState('reconnecting', `Disconnected (code ${e.code}) — attempting to reconnect…`);
 			this.scheduleReconnect();
 		};

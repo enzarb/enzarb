@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import { getProject } from '$lib/remote/projects.remote';
 	import { getAgentAuthToken } from '$lib/agentToken';
+	import { workspaceHealth } from '$lib/workspaceHealth.svelte';
 	import CodeViewer from '$lib/components/CodeViewer.svelte';
 
 	type FileEntry = { name: string; path: string; kind: string; size?: number; modified?: string };
@@ -33,6 +34,8 @@
 		if (!agentPath) return { type: 'error' as const, message: 'Agent not ready — project may still be provisioning.', gitStatus: {} as Record<string, GitEntry>, agentBase: '' };
 
 		const agentBase = `https://enzarb.dev${agentPath}`;
+		// Wait out a restarting workspace pod before fetching from it.
+		await workspaceHealth(agentBase).ensureHealthy();
 		const auth = { Authorization: `Bearer ${agentToken}` };
 
 		const gitStatus: Record<string, GitEntry> = {};

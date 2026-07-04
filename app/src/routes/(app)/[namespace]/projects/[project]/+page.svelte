@@ -5,6 +5,7 @@
 	import { page } from '$app/state';
 	import { confirm } from '$lib/confirm';
 	import { getAgentAuthToken } from '$lib/agentToken';
+	import { workspaceHealth } from '$lib/workspaceHealth.svelte';
 
 	function formatBytes(bytes: number): string {
 		if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + ' GiB';
@@ -13,6 +14,7 @@
 	}
 
 	async function fetchDiskUsage(agentPath: string) {
+		await workspaceHealth(`https://enzarb.dev${agentPath}`).ensureHealthy();
 		const token = await getAgentAuthToken(page.params.namespace!, page.params.project!);
 		if (!token) return null;
 		const res = await fetch(`https://enzarb.dev${agentPath}/status`, {

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { getProject } from '$lib/remote/projects.remote';
 	import { getAgentAuthToken } from '$lib/agentToken';
+	import { workspaceHealth } from '$lib/workspaceHealth.svelte';
 	import { page } from '$app/state';
 	import { onMount, onDestroy } from 'svelte';
 	import { Terminal } from '@xterm/xterm';
@@ -227,6 +228,8 @@
 
 	async function openSocket(pid: string) {
 		if (!agentBase) return;
+		// Wait out a restarting workspace pod instead of dialing a dead gateway.
+		await workspaceHealth(agentBase).ensureHealthy();
 		await ensureToken();
 		if (!agentToken) {
 			if (pid === selectedPid) {
@@ -290,6 +293,9 @@
 					return;
 				}
 				if (connState === 'failed') return;
+				// The drop may be a restarting workspace pod — re-probe before
+				// the next attempt so reconnects pause until it's back.
+				workspaceHealth(agentBase).suspect();
 				const reason = e.reason ? `: ${e.reason}` : '';
 				connectError = `Disconnected (code ${e.code}${reason}) — attempting to reconnect…`;
 				connState = 'reconnecting';
