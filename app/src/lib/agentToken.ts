@@ -22,18 +22,26 @@ let inflight: Promise<string | null> | null = null;
 export async function getAgentAuthToken(): Promise<string | null> {
 	if (cached && !isExpired(cached)) return cached;
 	if (!inflight) {
-		inflight = getAgentToken()
-			.then((token) => {
-				cached = token;
-				return token;
-			})
-			.catch(() => {
+		inflight = (async () => {
+			try {
+				// getAgentToken is a remote query, so its result is cached on the
+				// client: calling it again returns the same (possibly expired)
+				// token. refresh() forces a server round-trip to mint a new one.
+				const query = getAgentToken();
+				let token = await query;
+				if (isExpired(token)) {
+					await query.refresh();
+					token = await query;
+				}
+				cached = isExpired(token) ? null : token;
+				return cached;
+			} catch {
 				cached = null;
 				return null;
-			})
-			.finally(() => {
+			} finally {
 				inflight = null;
-			});
+			}
+		})();
 	}
 	return inflight;
 }

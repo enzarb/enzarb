@@ -35,7 +35,10 @@ export class AgentSocket {
 		if (this.closed) return;
 		const token = await getAgentAuthToken();
 		if (!token) {
-			this.setState('failed', 'Session expired — please reload the page to sign in again.');
+			// Token minting can fail transiently (network blip, app redeploy);
+			// retry with backoff instead of demanding a page reload.
+			this.setState('reconnecting', 'Could not refresh credentials — retrying…');
+			this.scheduleReconnect();
 			return;
 		}
 
