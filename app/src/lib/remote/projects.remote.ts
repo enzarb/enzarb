@@ -76,22 +76,27 @@ export const getOrgTierInfo = query(async () => {
 	return { tier, limits: await resolveTierLimits(tier) };
 });
 
-export const getAgentToken = query(async () => {
-	const { params } = getRequestEvent();
-	const session = requireSession();
-	const org = resolveOrg();
-	const project = (await k8sGetProject(org.id, params.project!)) as any;
-	const projectId = project?.metadata?.uid;
-	if (!projectId) error(404, 'Project not found');
-	return mintProjectToken(session.userId, projectId, [
-		'files:read',
-		'files:write',
-		'processes:manage',
-		'terminal',
-		'tools:manage',
-		'agent:manage'
-	]);
-});
+// A command, not a query: token minting is side-effectful and must never be
+// served from the client-side query cache — a cached JWT outlives its 5-minute
+// expiry and every agent call then fails as "session expired".
+export const getAgentToken = command(
+	z.object({ namespace: z.string(), project: z.string() }),
+	async ({ namespace, project: projectSlug }) => {
+		const session = requireSession();
+		const org = resolveOrg(namespace);
+		const project = (await k8sGetProject(org.id, projectSlug)) as any;
+		const projectId = project?.metadata?.uid;
+		if (!projectId) error(404, 'Project not found');
+		return mintProjectToken(session.userId, projectId, [
+			'files:read',
+			'files:write',
+			'processes:manage',
+			'terminal',
+			'tools:manage',
+			'agent:manage'
+		]);
+	}
+);
 
 const CreateProjectSchema = z.object({
 	slug: z.string().min(1).max(63).regex(/^[a-z0-9-]+$/),

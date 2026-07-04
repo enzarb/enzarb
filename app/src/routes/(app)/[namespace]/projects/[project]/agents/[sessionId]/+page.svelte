@@ -52,7 +52,7 @@
 
 	async function loadSessionMeta() {
 		if (!agentBase) return;
-		const token = await getAgentAuthToken();
+		const token = await getAgentAuthToken(page.params.namespace!, page.params.project!);
 		if (!token) return;
 		try {
 			const res = await fetch(`${agentBase}/agent/sessions/${sessionId}`, {
@@ -177,6 +177,8 @@
 		if (!mounted) return;
 		socket = new AgentSocket(
 			agentBase,
+			page.params.namespace!,
+			page.params.project!,
 			sessionId,
 			handleEvent,
 			(state, error) => {

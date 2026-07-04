@@ -20,6 +20,8 @@ export class AgentSocket {
 
 	constructor(
 		private agentBase: string,
+		private namespace: string,
+		private project: string,
 		private sessionId: string,
 		private onEvent: (event: AcpWsEvent) => void,
 		private onStateChange: (state: ConnState, error: string) => void
@@ -33,7 +35,7 @@ export class AgentSocket {
 
 	async connect() {
 		if (this.closed) return;
-		const token = await getAgentAuthToken();
+		const token = await getAgentAuthToken(this.namespace, this.project);
 		if (!token) {
 			// Token minting can fail transiently (network blip, app redeploy);
 			// retry with backoff instead of demanding a page reload.

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { getProject } from '$lib/remote/projects.remote';
 	import { getAgentAuthToken } from '$lib/agentToken';
+	import { page } from '$app/state';
 	import { onMount, onDestroy } from 'svelte';
 	import { Terminal } from '@xterm/xterm';
 	import { FitAddon } from '@xterm/addon-fit';
@@ -220,7 +221,7 @@
 	}
 
 	async function ensureToken(): Promise<string | null> {
-		agentToken = await getAgentAuthToken();
+		agentToken = await getAgentAuthToken(page.params.namespace!, page.params.project!);
 		return agentToken;
 	}
 

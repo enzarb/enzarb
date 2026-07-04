@@ -21,7 +21,7 @@
 	async function loadSessions() {
 		loadError = '';
 		if (!agentBase) return;
-		const token = await getAgentAuthToken();
+		const token = await getAgentAuthToken(page.params.namespace!, page.params.project!);
 		if (!token) {
 			loadError = 'Session expired — please reload the page to sign in again.';
 			return;
@@ -43,7 +43,7 @@
 		creating = true;
 		loadError = '';
 		try {
-			const token = await getAgentAuthToken();
+			const token = await getAgentAuthToken(page.params.namespace!, page.params.project!);
 			if (!token) {
 				loadError = 'Session expired — please reload the page to sign in again.';
 				return;
@@ -69,7 +69,7 @@
 	}
 
 	async function archiveSession(id: string) {
-		const token = await getAgentAuthToken();
+		const token = await getAgentAuthToken(page.params.namespace!, page.params.project!);
 		if (!token) return;
 		await fetch(`${agentBase}/agent/sessions/${id}`, {
 			method: 'DELETE',

@@ -13,7 +13,7 @@
 	}
 
 	async function fetchDiskUsage(agentPath: string) {
-		const token = await getAgentAuthToken();
+		const token = await getAgentAuthToken(page.params.namespace!, page.params.project!);
 		if (!token) return null;
 		const res = await fetch(`https://enzarb.dev${agentPath}/status`, {
 			headers: { Authorization: `Bearer ${token}` }

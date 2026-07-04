@@ -28,7 +28,7 @@
 	const dataPromise = $derived(load(page.params.path ?? '', refreshKey));
 
 	async function load(path: string, _refresh: number) {
-		const [agentToken, project] = await Promise.all([getAgentAuthToken(), getProject()]);
+		const [agentToken, project] = await Promise.all([getAgentAuthToken(page.params.namespace!, page.params.project!), getProject()]);
 		const agentPath = project?.status?.agentPath;
 		if (!agentPath) return { type: 'error' as const, message: 'Agent not ready — project may still be provisioning.', gitStatus: {} as Record<string, GitEntry>, agentBase: '' };
 
@@ -113,7 +113,7 @@
 	}
 
 	async function download(agentBase: string, path: string, name: string) {
-		const fresh = await getAgentAuthToken();
+		const fresh = await getAgentAuthToken(page.params.namespace!, page.params.project!);
 		const res = await fetch(`${agentBase}/files/download?path=${encodeURIComponent(path)}`, {
 			headers: { Authorization: `Bearer ${fresh}` }
 		});
@@ -129,7 +129,7 @@
 	async function upload(e: Event, agentBase: string, dir: string) {
 		const file = (e.target as HTMLInputElement).files?.[0];
 		if (!file) return;
-		const fresh = await getAgentAuthToken();
+		const fresh = await getAgentAuthToken(page.params.namespace!, page.params.project!);
 		const dest = dir ? `${dir}/${file.name}` : file.name;
 		await fetch(`${agentBase}/files/upload?path=${encodeURIComponent(dest)}`, {
 			method: 'POST', headers: { Authorization: `Bearer ${fresh}` }, body: file
@@ -154,7 +154,7 @@
 		committing = true;
 		commitError = '';
 		try {
-			const fresh = await getAgentAuthToken();
+			const fresh = await getAgentAuthToken(page.params.namespace!, page.params.project!);
 			const res = await fetch(`${agentBase}/files/git-commit`, {
 				method: 'POST',
 				headers: { Authorization: `Bearer ${fresh}`, 'Content-Type': 'application/json' },
