@@ -82,6 +82,11 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Workspace API-server egress needs a CiliumNetworkPolicy (kube-apiserver
+  # entity); plain NetworkPolicy CIDR rules can't match the apiserver identity.
+  - apiGroups: ["cilium.io"]
+    resources: ["ciliumnetworkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["gateway.networking.k8s.io"]
     resources: ["httproutes", "referencegrants", "gateways"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

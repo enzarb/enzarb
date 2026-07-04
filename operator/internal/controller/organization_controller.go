@@ -13,6 +13,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -94,6 +95,12 @@ func (r *OrganizationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// reconciler).
 	if err := r.ensureBuildkitConfigMap(ctx, nsName); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensure buildkit configmap: %w", err)
+	}
+
+	// Cilium policy admitting egress to the Kubernetes API server, which plain
+	// NetworkPolicy cannot express (see ensureApiserverPolicy).
+	if err := r.ensureApiserverPolicy(ctx, nsName); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure apiserver policy: %w", err)
 	}
 
 	// Prune any other operator-managed NetworkPolicies from prior versions,
@@ -423,6 +430,51 @@ func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *enzar
 	}
 	logger.Info("organization deleted", "org", org.Spec.Slug, "namespace", nsName)
 	return ctrl.Result{}, nil
+}
+
+// ensureApiserverPolicy grants workspace pods egress to the Kubernetes API
+// server so they can deploy to their environment namespaces (kubectl, helm).
+//
+// This must be a CiliumNetworkPolicy: Cilium classifies API-server/node IPs as
+// the kube-apiserver/remote-node identities, which ipBlock CIDR rules in plain
+// NetworkPolicy deliberately do not match — so neither the internet egress
+// rule nor a namespaceSelector can admit this traffic. The `kube-apiserver`
+// entity tracks the real endpoint even if the control plane moves. Allows are
+// additive across KNP and CNP, so this only widens enzarb-workspace-isolation
+// by exactly the API server.
+func (r *OrganizationReconciler) ensureApiserverPolicy(ctx context.Context, nsName string) error {
+	if os.Getenv("NETWORK_POLICY_ENABLED") == "false" {
+		return nil
+	}
+
+	desired := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "cilium.io/v2",
+		"kind":       "CiliumNetworkPolicy",
+		"metadata": map[string]any{
+			"name":      "enzarb-workspace-apiserver",
+			"namespace": nsName,
+			"labels":    map[string]any{managedByLabel: managedByValue},
+		},
+		"spec": map[string]any{
+			"endpointSelector": map[string]any{},
+			"egress": []any{
+				map[string]any{"toEntities": []any{"kube-apiserver"}},
+			},
+		},
+	}}
+
+	existing := &unstructured.Unstructured{}
+	existing.SetGroupVersionKind(desired.GroupVersionKind())
+	err := r.Get(ctx, types.NamespacedName{Namespace: nsName, Name: desired.GetName()}, existing)
+	if apierrors.IsNotFound(err) {
+		return r.Create(ctx, desired)
+	}
+	if err != nil {
+		return err
+	}
+	existing.Object["spec"] = desired.Object["spec"]
+	existing.SetLabels(desired.GetLabels())
+	return r.Update(ctx, existing)
 }
 
 // buildkitConfigMapName is the org-namespace ConfigMap carrying the
