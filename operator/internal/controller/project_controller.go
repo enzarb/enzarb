@@ -13,6 +13,7 @@ import (
 	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -175,6 +176,10 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	if err := r.ensureEnvContextConfigMap(ctx, orgNS, &project); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensure env context configmap: %w", err)
+	}
+
+	if err := r.ensureDeployEgressPolicy(ctx, orgNS, &project); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure deploy egress network policy: %w", err)
 	}
 
 	if err := r.reconcileEnvironmentSuspension(ctx, orgNS, &project); err != nil {
@@ -419,6 +424,64 @@ func (r *ProjectReconciler) deleteIfExists(ctx context.Context, obj client.Objec
 		return err
 	}
 	return nil
+}
+
+// deployEgressPolicyName is the per-project NetworkPolicy in the org namespace
+// that lets a project's workspace pods reach that project's deploy namespaces.
+func deployEgressPolicyName(slug string) string {
+	return fmt.Sprintf("enzarb-deploy-egress-%s", slug)
+}
+
+// ensureDeployEgressPolicy adds an egress rule (additive to the org-wide
+// enzarb-workspace-isolation default-deny) allowing only this project's
+// workspace pods to reach this project's own deploy (environment) namespaces.
+// Sibling projects' workspaces and other orgs' deploy namespaces stay blocked;
+// the deploy-side enzarb-deploy-isolation ingress enforces the same pairing
+// from the other direction.
+func (r *ProjectReconciler) ensureDeployEgressPolicy(ctx context.Context, ns string, project *enzarbv1alpha1.Project) error {
+	if os.Getenv("NETWORK_POLICY_ENABLED") == "false" {
+		return nil
+	}
+
+	desired := &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      deployEgressPolicyName(project.Spec.Slug),
+			Namespace: ns,
+			Labels:    projectLabels(project),
+		},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{
+				MatchLabels: map[string]string{"enzarb.io/project": project.Spec.Slug},
+			},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+			Egress: []networkingv1.NetworkPolicyEgressRule{
+				{To: []networkingv1.NetworkPolicyPeer{{
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"enzarb.io/type":         "deploy",
+							"enzarb.io/org-id":       project.Spec.OrgID,
+							"enzarb.io/project-slug": project.Spec.Slug,
+						},
+					},
+				}}},
+			},
+		},
+	}
+
+	existing := &networkingv1.NetworkPolicy{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: desired.Name}, existing)
+	if errors.IsNotFound(err) {
+		if err := controllerutil.SetControllerReference(project, desired, r.Scheme); err != nil {
+			return err
+		}
+		return r.Create(ctx, desired)
+	}
+	if err != nil {
+		return err
+	}
+	existing.Spec = desired.Spec
+	existing.Labels = desired.Labels
+	return r.Update(ctx, existing)
 }
 
 func (r *ProjectReconciler) ensureServiceAccount(ctx context.Context, ns, name string, project *enzarbv1alpha1.Project) error {

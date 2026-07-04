@@ -84,7 +84,7 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, fmt.Errorf("ensure deployer rolebinding: %w", err)
 	}
 
-	if err := r.ensureNetworkPolicy(ctx, deployNS); err != nil {
+	if err := r.ensureNetworkPolicy(ctx, deployNS, orgNS, project.Spec.Slug); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensure network policy: %w", err)
 	}
 
@@ -686,11 +686,12 @@ func equalStrings(a, b []string) bool {
 
 // ensureNetworkPolicy creates the ingress + egress NetworkPolicies for a deploy
 // namespace that enforce tenant isolation:
-//   - Ingress: only the Envoy gateway namespace and same-namespace pods may reach
-//     deploy pods. Other deploy namespaces (even of the same project) cannot.
+//   - Ingress: only the Envoy gateway namespace, the owning project's workspace
+//     pods, and same-namespace pods may reach deploy pods. Other deploy
+//     namespaces (even of the same project) cannot.
 //   - Egress: DNS, internet (excluding cluster CIDRs), and same-namespace. No
 //     direct access to other cluster namespaces, including other org/deploy ns.
-func (r *EnvironmentReconciler) ensureNetworkPolicy(ctx context.Context, deployNS string) error {
+func (r *EnvironmentReconciler) ensureNetworkPolicy(ctx context.Context, deployNS, orgNS, projectSlug string) error {
 	if os.Getenv("NETWORK_POLICY_ENABLED") == "false" {
 		return nil
 	}
@@ -751,6 +752,17 @@ func (r *EnvironmentReconciler) ensureNetworkPolicy(ctx context.Context, deployN
 					{NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"kubernetes.io/metadata.name": gatewayNS},
 					}},
+					// The owning project's workspace pod (not the whole org
+					// namespace), so a workspace can reach the services it
+					// deploys here.
+					{
+						NamespaceSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{"kubernetes.io/metadata.name": orgNS},
+						},
+						PodSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{"enzarb.io/project": projectSlug},
+						},
+					},
 				}},
 				// pgop operator ingress: the controller connects to the tenant Postgres
 				// pod on 5432 to reconcile Role and Database CRs.

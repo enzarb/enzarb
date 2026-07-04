@@ -11,7 +11,7 @@
 	<pre class="diff-body"><code
 		>{#each lines as line, i (i)}<span class="diff-line {line.kind}"
 			>{line.kind === 'add' ? '+' : line.kind === 'remove' ? '-' : ' '}{line.text}</span
-		>{'\n'}{/each}</code
+		>{/each}</code
 	></pre>
 </div>
 

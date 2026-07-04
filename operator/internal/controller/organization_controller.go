@@ -88,11 +88,20 @@ func (r *OrganizationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	// Prune any other operator-managed NetworkPolicies from prior versions,
-	// retaining the workspace isolation policy created above.
+	// retaining the workspace isolation policy created above and each project's
+	// deploy-egress policy (owned by the Project reconciler).
+	expectedPolicies := map[string]struct{}{workspaceNetworkPolicyName: {}}
+	var projects enzarbv1alpha1.ProjectList
+	if err := r.List(ctx, &projects, client.InNamespace(nsName)); err != nil {
+		return ctrl.Result{}, fmt.Errorf("list projects: %w", err)
+	}
+	for i := range projects.Items {
+		expectedPolicies[deployEgressPolicyName(projects.Items[i].Spec.Slug)] = struct{}{}
+	}
 	if err := pruneUnmanaged(ctx, r.Client,
 		&networkingv1.NetworkPolicyList{},
 		nsName,
-		map[string]struct{}{workspaceNetworkPolicyName: {}},
+		expectedPolicies,
 		func(l *networkingv1.NetworkPolicyList) []*networkingv1.NetworkPolicy {
 			out := make([]*networkingv1.NetworkPolicy, len(l.Items))
 			for i := range l.Items {
