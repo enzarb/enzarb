@@ -25,7 +25,8 @@ export class AgentSocket {
 		private project: string,
 		private sessionId: string,
 		private onEvent: (event: AcpWsEvent) => void,
-		private onStateChange: (state: ConnState, error: string) => void
+		private onStateChange: (state: ConnState, error: string) => void,
+		private onConnecting?: () => void
 	) {}
 
 	private setState(state: ConnState, error = '') {
@@ -48,6 +49,11 @@ export class AgentSocket {
 			this.scheduleReconnect();
 			return;
 		}
+
+		// The server always replays full session history on attach, so the
+		// caller must clear any locally-accumulated state before we start
+		// receiving frames again or it'll end up duplicated.
+		this.onConnecting?.();
 
 		const wsUrl = `${this.agentBase.replace('https://', 'wss://').replace('http://', 'ws://')}/agent/sessions/${this.sessionId}/ws`;
 		const sock = new WebSocket(wsUrl, ['bearer', token]);

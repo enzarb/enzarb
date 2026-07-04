@@ -47,25 +47,39 @@ pub async fn attach_ws(mut socket: WebSocket, process_id: String, state: AppStat
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     let output = async move {
+        // An idle terminal can otherwise sit silent long enough for an
+        // intermediate proxy/ingress to consider the connection dead and
+        // reset it, which the client sees as an abnormal drop and reconnects.
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(25));
+        ticker.tick().await;
         loop {
-            match rx.recv().await {
-                Ok(data) => {
-                    if ws_tx.send(Message::Binary(data.into())).await.is_err() {
-                        return;
+            tokio::select! {
+                data = rx.recv() => {
+                    match data {
+                        Ok(data) => {
+                            if ws_tx.send(Message::Binary(data.into())).await.is_err() {
+                                return;
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        // The process exited and its output channel was torn down —
+                        // tell the client explicitly so it doesn't retry against a
+                        // process that will never come back.
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            let _ = ws_tx
+                                .send(Message::Close(Some(CloseFrame {
+                                    code: PROCESS_GONE,
+                                    reason: "process exited".into(),
+                                })))
+                                .await;
+                            return;
+                        }
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                // The process exited and its output channel was torn down —
-                // tell the client explicitly so it doesn't retry against a
-                // process that will never come back.
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    let _ = ws_tx
-                        .send(Message::Close(Some(CloseFrame {
-                            code: PROCESS_GONE,
-                            reason: "process exited".into(),
-                        })))
-                        .await;
-                    return;
+                _ = ticker.tick() => {
+                    if ws_tx.send(Message::Ping(Vec::new().into())).await.is_err() {
+                        return;
+                    }
                 }
             }
         }

@@ -191,6 +191,12 @@
 				connState = state;
 				connectError = error;
 				if (reconnected) void loadSessionMeta();
+			},
+			() => {
+				// The server resends the full event history on every attach;
+				// drop what we built up locally or it'll be duplicated.
+				timeline = [];
+				pendingPermissions = [];
 			}
 		);
 		await socket.connect();

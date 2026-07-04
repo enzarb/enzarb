@@ -138,18 +138,32 @@ async fn attach_ws(mut socket: WebSocket, session_id: String, state: AppState) {
     }
 
     let output = async move {
+        // Idle ACP sessions can otherwise sit silent long enough for an
+        // intermediate proxy/ingress to consider the connection dead and
+        // reset it, which the client sees as an abnormal drop and reconnects.
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(25));
+        ticker.tick().await;
         loop {
-            match rx.recv().await {
-                Ok(event) => {
-                    let Ok(text) = serde_json::to_string(&event) else {
-                        continue;
-                    };
-                    if ws_tx.send(Message::Text(text.into())).await.is_err() {
+            tokio::select! {
+                event = rx.recv() => {
+                    match event {
+                        Ok(event) => {
+                            let Ok(text) = serde_json::to_string(&event) else {
+                                continue;
+                            };
+                            if ws_tx.send(Message::Text(text.into())).await.is_err() {
+                                return;
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    }
+                }
+                _ = ticker.tick() => {
+                    if ws_tx.send(Message::Ping(Vec::new().into())).await.is_err() {
                         return;
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             }
         }
     };
