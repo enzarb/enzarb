@@ -137,6 +137,11 @@
 			case 'config_options_changed':
 				configOptions = event.config_options;
 				break;
+			case 'session_state':
+				currentMode = event.mode_id ?? 'default';
+				availableModes = event.available_modes;
+				configOptions = event.config_options;
+				break;
 			case 'error':
 				timeline.push({ kind: 'message', role: 'assistant', text: `⚠️ ${event.message}` });
 				break;

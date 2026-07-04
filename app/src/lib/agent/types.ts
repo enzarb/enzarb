@@ -81,6 +81,13 @@ export type AcpWsEvent =
 	| { type: 'permission_resolved'; session_id: string; request_id: string }
 	| { type: 'mode_changed'; session_id: string; mode_id: string }
 	| { type: 'config_options_changed'; session_id: string; config_options: ConfigOptionInfo[] }
+	| {
+			type: 'session_state';
+			session_id: string;
+			mode_id: string | null;
+			available_modes: SessionModeInfo[];
+			config_options: ConfigOptionInfo[];
+	  }
 	| { type: 'error'; session_id: string | null; message: string };
 
 export type AcpWsClientMsg =

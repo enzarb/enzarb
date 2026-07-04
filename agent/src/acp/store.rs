@@ -537,19 +537,23 @@ impl AcpStore {
             }
         }
 
+        // Push the complete snapshot (including available_modes, which the
+        // per-change events don't carry): the client's meta fetch on connect
+        // races session/load and may have seen an empty mode list.
+        let available_modes = self
+            .session_modes
+            .lock()
+            .await
+            .get(session_id)
+            .map(|(_, modes)| modes.clone())
+            .unwrap_or_default();
         let tx = self.channel(session_id).await;
-        if let Some(mode_id) = mode_id {
-            let _ = tx.send(AcpWsEvent::ModeChanged {
-                session_id: session_id.to_string(),
-                mode_id,
-            });
-        }
-        if !config_options.is_empty() {
-            let _ = tx.send(AcpWsEvent::ConfigOptionsChanged {
-                session_id: session_id.to_string(),
-                config_options,
-            });
-        }
+        let _ = tx.send(AcpWsEvent::SessionState {
+            session_id: session_id.to_string(),
+            mode_id,
+            available_modes,
+            config_options,
+        });
     }
 
     pub async fn handle_client_msg(&self, session_id: &str, msg: AcpWsClientMsg) -> Result<()> {

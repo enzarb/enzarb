@@ -9,7 +9,7 @@ use agent_client_protocol::schema::v1::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::store::SessionMeta;
+use super::store::{SessionMeta, SessionModeInfo};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -60,6 +60,15 @@ pub enum AcpWsEvent {
     },
     ConfigOptionsChanged {
         session_id: String,
+        config_options: Vec<ConfigOptionPayload>,
+    },
+    /// Full mode/config snapshot pushed after attach completes. The WS opens
+    /// before `session/load` finishes, so a client fetching meta on connect
+    /// races an empty mode cache — this event closes that gap.
+    SessionState {
+        session_id: String,
+        mode_id: Option<String>,
+        available_modes: Vec<SessionModeInfo>,
         config_options: Vec<ConfigOptionPayload>,
     },
     Error {
