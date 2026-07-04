@@ -7,7 +7,7 @@ FROM chef AS planner
 COPY agent/ .
 RUN cargo chef prepare --recipe-path recipe.json
 
-# ── Rust: release build (parallel with rust-test) ─────────────────────────────
+# ── Rust: release build ───────────────────────────────────────────────────────
 FROM chef AS rust-builder
 COPY --from=planner /src/recipe.json .
 RUN cargo chef cook --release --locked --recipe-path recipe.json
@@ -17,14 +17,10 @@ RUN cargo build --release --locked && \
        target/release/docker-credential-k8s-sa \
        target/release/kubelet-credential-enzarb /
 
-# ── Rust: test (parallel with rust-builder; gates the runtime image) ──────────
-FROM chef AS rust-test
-COPY --from=planner /src/recipe.json .
-RUN cargo chef cook --tests --locked --recipe-path recipe.json
-COPY agent/ .
-RUN cargo test --locked && touch /test-ok
-
 # ── Runtime ───────────────────────────────────────────────────────────────────
+# (No in-image test stage: CI's Test / Rust job gates image builds via
+# ci-passed → version → build-images, so cooking deps a second time for
+# `cargo test` here only doubled the build.)
 FROM ubuntu:26.04
 
 ARG BUILDX_VERSION=0.24.0
@@ -84,13 +80,11 @@ RUN npm install -g "@agentclientprotocol/claude-agent-acp@${CLAUDE_CODE_ACP_VERS
 COPY workspace/enzarb-prompt.sh /etc/profile.d/enzarb-prompt.sh
 RUN cat /etc/profile.d/enzarb-prompt.sh >> /etc/bash.bashrc
 
-# Gate on tests passing, then copy release binaries (root-owned)
-COPY --from=rust-test /test-ok /tmp/rust-test-ok
+# Copy release binaries (root-owned)
 COPY --from=rust-builder /project-agent                /usr/local/bin/project-agent
 COPY --from=rust-builder /docker-credential-k8s-sa    /usr/local/bin/docker-credential-k8s-sa
 COPY --from=rust-builder /kubelet-credential-enzarb   /usr/local/bin/kubelet-credential-enzarb
-RUN chmod 755 /usr/local/bin/project-agent /usr/local/bin/docker-credential-k8s-sa /usr/local/bin/kubelet-credential-enzarb \
-    && rm /tmp/rust-test-ok
+RUN chmod 755 /usr/local/bin/project-agent /usr/local/bin/docker-credential-k8s-sa /usr/local/bin/kubelet-credential-enzarb
 
 # Register the credential helpers at build time (credential-free; the helpers
 # fetch the live projected SA tokens on demand). The docker config lives outside
