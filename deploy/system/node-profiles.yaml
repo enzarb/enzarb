@@ -59,6 +59,12 @@ spec:
             - |
               set -eu
               mkdir -p /host/seccomp/enzarb
+              # Keyring syscalls (keyctl, add_key, request_key) are deliberately
+              # NOT denied: buildkit's nested runc joins a session keyring when
+              # starting every RUN-step container, and unlike Docker (where runc
+              # sets up the keyring before the container profile applies) this
+              # profile confines buildkitd itself, so denying them breaks all
+              # image builds with "unable to create session key".
               cat > /host/seccomp/enzarb/buildkitd.json <<'JSON'
               {
                 "defaultAction": "SCMP_ACT_ALLOW",
@@ -66,7 +72,6 @@ spec:
                   {
                     "names": [
                       "acct",
-                      "add_key",
                       "bpf",
                       "clock_adjtime",
                       "clock_settime",
@@ -81,7 +86,6 @@ spec:
                       "kcmp",
                       "kexec_file_load",
                       "kexec_load",
-                      "keyctl",
                       "lookup_dcookie",
                       "mbind",
                       "move_pages",
@@ -95,7 +99,6 @@ spec:
                       "quotactl",
                       "quotactl_fd",
                       "reboot",
-                      "request_key",
                       "set_mempolicy",
                       "settimeofday",
                       "stime",
