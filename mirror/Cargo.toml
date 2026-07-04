@@ -1,6 +1,6 @@
 [package]
 name = "enzarb-mirror"
-version = "0.1.0"
+version = "0.87.0"
 edition = "2024"
 
 [[bin]]

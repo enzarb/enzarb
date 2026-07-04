@@ -42,7 +42,7 @@ operator:
   image:
     repository: ghcr.io/enzarb/operator
     pullPolicy: IfNotPresent
-    tag: "v0.86.0"
+    tag: "v0.87.0"
   leaderElection: true
   env:
     ENZARB_DOMAIN: enzarb.dev
@@ -128,7 +128,7 @@ registryMirror:
   image:
     repository: ghcr.io/enzarb/mirror
     pullPolicy: IfNotPresent
-    tag: "v0.86.0"
+    tag: "v0.87.0"
   # PVC size (the hard cap on disk).
   cacheSize: 50Gi
   # LRU eviction threshold; keep below cacheSize so eviction finishes before
