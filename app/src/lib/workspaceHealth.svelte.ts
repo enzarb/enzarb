@@ -21,7 +21,10 @@ export class WorkspaceHealth {
 			const res = await fetch(`${this.agentBase}/healthz`, {
 				signal: AbortSignal.timeout(PROBE_TIMEOUT_MS)
 			});
-			return res.ok;
+			// Any response the agent produced means the pod is up — including
+			// 401/404 from older agent images that predate /healthz. Only
+			// gateway errors (pod down/restarting) count as unhealthy.
+			return res.status < 502;
 		} catch {
 			return false;
 		}
