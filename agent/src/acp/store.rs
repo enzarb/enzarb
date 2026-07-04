@@ -34,6 +34,11 @@ use super::permissions::{PermissionRegistry, auto_allow};
 const ARCHIVED_FILE: &str = ".enzarb/archived_sessions.json";
 const CHANNEL_CAPACITY: usize = 8192;
 const ACP_COMMAND: &str = "claude-agent-acp";
+/// Upper bound on metadata-style ACP requests (session/list, session/load).
+/// A wedged ACP process otherwise hangs these forever, and every /agent
+/// endpoint surfaces as a gateway 504. Prompt requests are NOT capped — they
+/// legitimately run for minutes.
+const ACP_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -143,6 +148,11 @@ pub struct AcpStore {
     /// Persisted set of session IDs hidden from `session/list`.
     archived: Arc<Mutex<HashSet<String>>>,
     archived_path: PathBuf,
+    /// Per-session locks serializing first attach. Two WS clients reconnecting
+    /// after a pod restart must not both issue `session/load` for the same
+    /// session: claude-agent-acp spawns a duplicate `claude --resume` and
+    /// wedges, hanging every subsequent request.
+    attach_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
 impl AcpStore {
@@ -165,6 +175,7 @@ impl AcpStore {
             session_cwd: Arc::new(Mutex::new(HashMap::new())),
             archived: Arc::new(Mutex::new(archived)),
             archived_path,
+            attach_locks: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -199,11 +210,13 @@ impl AcpStore {
             if let Some(c) = cursor {
                 req = req.cursor(c);
             }
-            let resp = connection
-                .send_request(req)
-                .block_task()
-                .await
-                .map_err(|e| anyhow!("session/list failed: {e}"))?;
+            let resp = tokio::time::timeout(
+                ACP_REQUEST_TIMEOUT,
+                connection.send_request(req).block_task(),
+            )
+            .await
+            .map_err(|_| anyhow!("session/list timed out"))?
+            .map_err(|e| anyhow!("session/list failed: {e}"))?;
             // Populate cwd cache while we have the data.
             let mut cwd_cache = self.session_cwd.lock().await;
             for info in &resp.sessions {
@@ -317,6 +330,15 @@ impl AcpStore {
         let connection = self.connection().await?;
         let tx = self.channel(session_id).await;
 
+        // Serialize attaches per session: the first one performs the
+        // session/load; concurrent ones wait here and then take the in-memory
+        // history path below.
+        let attach_lock = {
+            let mut locks = self.attach_locks.lock().await;
+            locks.entry(session_id.to_string()).or_default().clone()
+        };
+        let _attach_guard = attach_lock.lock().await;
+
         // Reconnect: history is already in memory; no session/load needed.
         let history_snapshot = {
             let hist = self.history.lock().await;
@@ -354,11 +376,15 @@ impl AcpStore {
 
         // Subscribe before session/load so broadcast captures the replayed history.
         let rx = tx.subscribe();
-        let response = connection
-            .send_request(LoadSessionRequest::new(session_id.to_string(), cwd))
-            .block_task()
-            .await
-            .map_err(|e| anyhow!("session/load failed: {e}"))?;
+        let response = tokio::time::timeout(
+            ACP_REQUEST_TIMEOUT,
+            connection
+                .send_request(LoadSessionRequest::new(session_id.to_string(), cwd))
+                .block_task(),
+        )
+        .await
+        .map_err(|_| anyhow!("session/load timed out"))?
+        .map_err(|e| anyhow!("session/load failed: {e}"))?;
 
         let (mode_id, available_modes) = split_modes(response.modes);
         self.session_modes
