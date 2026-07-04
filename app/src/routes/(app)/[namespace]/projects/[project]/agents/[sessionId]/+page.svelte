@@ -132,6 +132,10 @@
 				timeline.push({ kind: 'message', role: 'assistant', text: `⚠️ ${event.message}` });
 				break;
 		}
+		scrollToBottom();
+	}
+
+	function scrollToBottom() {
 		queueMicrotask(() => scrollEl?.scrollTo({ top: scrollEl.scrollHeight }));
 	}
 
@@ -146,6 +150,7 @@
 		socket.send({ type: 'send_message', text });
 		draft = '';
 		if (textareaEl) { textareaEl.style.height = 'auto'; }
+		scrollToBottom();
 	}
 
 	function growTextarea(el: HTMLTextAreaElement) {
