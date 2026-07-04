@@ -3,8 +3,9 @@
 //! sees raw ACP JSON-RPC, only these tagged events.
 
 use agent_client_protocol::schema::v1::{
-    Plan, PlanEntryPriority, PlanEntryStatus, RequestPermissionRequest, SessionUpdate,
-    ToolCallContent, ToolCallStatus, ToolKind,
+    Plan, PlanEntryPriority, PlanEntryStatus, RequestPermissionRequest, SessionConfigKind,
+    SessionConfigOption, SessionConfigSelectOptions, SessionUpdate, ToolCallContent,
+    ToolCallStatus, ToolKind,
 };
 use serde::{Deserialize, Serialize};
 
@@ -57,6 +58,10 @@ pub enum AcpWsEvent {
         session_id: String,
         mode_id: String,
     },
+    ConfigOptionsChanged {
+        session_id: String,
+        config_options: Vec<ConfigOptionPayload>,
+    },
     Error {
         session_id: Option<String>,
         message: String,
@@ -75,6 +80,61 @@ pub struct PlanEntryPayload {
     pub content: String,
     pub priority: &'static str,
     pub status: &'static str,
+}
+
+/// Simplified view of an ACP `SessionConfigOption` (select kind only).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigOptionPayload {
+    pub id: String,
+    pub name: String,
+    pub category: Option<String>,
+    pub current_value: String,
+    pub options: Vec<ConfigValuePayload>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigValuePayload {
+    pub value: String,
+    pub name: String,
+}
+
+/// Flattens ACP config options to the select-kind payloads the browser renders.
+pub fn config_payloads(options: &[SessionConfigOption]) -> Vec<ConfigOptionPayload> {
+    options
+        .iter()
+        .filter_map(|opt| match &opt.kind {
+            SessionConfigKind::Select(select) => Some(ConfigOptionPayload {
+                id: opt.id.to_string(),
+                name: opt.name.clone(),
+                category: opt
+                    .category
+                    .as_ref()
+                    .and_then(|c| serde_json::to_value(c).ok())
+                    .and_then(|v| v.as_str().map(str::to_string)),
+                current_value: select.current_value.to_string(),
+                options: match &select.options {
+                    SessionConfigSelectOptions::Ungrouped(opts) => opts
+                        .iter()
+                        .map(|o| ConfigValuePayload {
+                            value: o.value.to_string(),
+                            name: o.name.clone(),
+                        })
+                        .collect(),
+                    SessionConfigSelectOptions::Grouped(groups) => groups
+                        .iter()
+                        .flat_map(|g| g.options.iter())
+                        .map(|o| ConfigValuePayload {
+                            value: o.value.to_string(),
+                            name: o.name.clone(),
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                },
+            }),
+            #[allow(unreachable_patterns)]
+            _ => None,
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -96,6 +156,10 @@ pub enum AcpWsClientMsg {
     },
     SetPermissionMode {
         mode_id: String,
+    },
+    SetConfigOption {
+        config_id: String,
+        value: String,
     },
     Cancel,
 }
@@ -201,6 +265,10 @@ pub fn from_session_update(session_id: &str, update: SessionUpdate) -> Vec<AcpWs
         SessionUpdate::CurrentModeUpdate(update) => vec![AcpWsEvent::ModeChanged {
             session_id,
             mode_id: update.current_mode_id.to_string(),
+        }],
+        SessionUpdate::ConfigOptionUpdate(update) => vec![AcpWsEvent::ConfigOptionsChanged {
+            session_id,
+            config_options: config_payloads(&update.config_options),
         }],
         _ => vec![],
     }

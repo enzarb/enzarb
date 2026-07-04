@@ -6,6 +6,19 @@ export interface SessionModeInfo {
 	description: string | null;
 }
 
+export interface ConfigValueInfo {
+	value: string;
+	name: string;
+}
+
+export interface ConfigOptionInfo {
+	id: string;
+	name: string;
+	category: string | null;
+	current_value: string;
+	options: ConfigValueInfo[];
+}
+
 export interface SessionMeta {
 	id: string;
 	label: string;
@@ -14,6 +27,7 @@ export interface SessionMeta {
 	status: 'live' | 'idle';
 	mode_id: string | null;
 	available_modes: SessionModeInfo[];
+	config_options: ConfigOptionInfo[];
 	_meta?: Record<string, unknown>;
 }
 
@@ -66,10 +80,12 @@ export type AcpWsEvent =
 	  }
 	| { type: 'permission_resolved'; session_id: string; request_id: string }
 	| { type: 'mode_changed'; session_id: string; mode_id: string }
+	| { type: 'config_options_changed'; session_id: string; config_options: ConfigOptionInfo[] }
 	| { type: 'error'; session_id: string | null; message: string };
 
 export type AcpWsClientMsg =
 	| { type: 'send_message'; text: string }
 	| { type: 'permission_response'; request_id: string; option_id: string }
 	| { type: 'set_permission_mode'; mode_id: string }
+	| { type: 'set_config_option'; config_id: string; value: string }
 	| { type: 'cancel' };

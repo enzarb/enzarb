@@ -12,7 +12,7 @@ use agent_client_protocol::schema::v1::{
     CancelNotification, ContentBlock, InitializeRequest, ListSessionsRequest, LoadSessionRequest,
     NewSessionRequest, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
     RequestPermissionResponse, SelectedPermissionOutcome, SessionInfo, SessionModeState,
-    SessionNotification, SetSessionModeRequest, TextContent,
+    SessionNotification, SetSessionConfigOptionRequest, SetSessionModeRequest, TextContent,
 };
 use agent_client_protocol::{AcpAgent, Agent, Client, ConnectionTo};
 use anyhow::{Result, anyhow};
@@ -27,11 +27,13 @@ use tokio::sync::{Mutex, OnceCell, broadcast};
 use crate::init::home_dir;
 
 use super::events::{
-    AcpWsClientMsg, AcpWsEvent, from_session_update, permission_request_event, tool_kind_str,
+    AcpWsClientMsg, AcpWsEvent, ConfigOptionPayload, config_payloads, from_session_update,
+    permission_request_event, tool_kind_str,
 };
 use super::permissions::{PermissionRegistry, auto_allow};
 
 const ARCHIVED_FILE: &str = ".enzarb/archived_sessions.json";
+const PREFS_FILE: &str = ".enzarb/session_prefs.json";
 const CHANNEL_CAPACITY: usize = 8192;
 const ACP_COMMAND: &str = "claude-agent-acp";
 /// Upper bound on metadata-style ACP requests (session/list, session/load).
@@ -70,8 +72,19 @@ pub struct SessionMeta {
     pub status: SessionStatus,
     pub mode_id: Option<String>,
     pub available_modes: Vec<SessionModeInfo>,
+    pub config_options: Vec<ConfigOptionPayload>,
     #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
     pub meta: Option<JsonMap<String, serde_json::Value>>,
+}
+
+/// User-chosen per-session settings persisted across pod restarts so they can
+/// be reapplied after `session/load` (claude-agent-acp resets them otherwise).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct SessionPrefs {
+    mode_id: Option<String>,
+    /// config option id -> selected value id (e.g. "model" -> "claude-opus-4-8")
+    #[serde(default)]
+    config: HashMap<String, String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -81,6 +94,8 @@ pub struct SessionMeta {
 type Channels = Arc<Mutex<HashMap<String, broadcast::Sender<AcpWsEvent>>>>;
 type History = Arc<Mutex<HashMap<String, Vec<AcpWsEvent>>>>;
 type SessionModes = Arc<Mutex<HashMap<String, (Option<String>, Vec<SessionModeInfo>)>>>;
+type SessionConfigs = Arc<Mutex<HashMap<String, Vec<ConfigOptionPayload>>>>;
+type Prefs = Arc<Mutex<HashMap<String, SessionPrefs>>>;
 
 fn split_modes(modes: Option<SessionModeState>) -> (Option<String>, Vec<SessionModeInfo>) {
     match modes {
@@ -103,6 +118,7 @@ fn session_meta_from_info(
     info: SessionInfo,
     live: &HashSet<String>,
     modes: &HashMap<String, (Option<String>, Vec<SessionModeInfo>)>,
+    configs: &HashMap<String, Vec<ConfigOptionPayload>>,
 ) -> SessionMeta {
     let id = info.session_id.to_string();
     let status = if live.contains(&id) {
@@ -111,6 +127,7 @@ fn session_meta_from_info(
         SessionStatus::Idle
     };
     let (mode_id, available_modes) = modes.get(&id).cloned().unwrap_or_default();
+    let config_options = configs.get(&id).cloned().unwrap_or_default();
     let label = info
         .title
         .filter(|t| !t.is_empty())
@@ -124,6 +141,7 @@ fn session_meta_from_info(
         status,
         mode_id,
         available_modes,
+        config_options,
     }
 }
 
@@ -143,6 +161,11 @@ pub struct AcpStore {
     live_sessions: Arc<Mutex<HashSet<String>>>,
     /// Per-session mode info populated from `session/new` and `session/load`.
     session_modes: SessionModes,
+    /// Per-session config options (model, etc.) from `session/new`/`session/load`.
+    session_configs: SessionConfigs,
+    /// Persisted per-session user prefs (mode, config values) reapplied after load.
+    prefs: Prefs,
+    prefs_path: PathBuf,
     /// cwd per session, populated from `session/new` and `session/list` results.
     session_cwd: Arc<Mutex<HashMap<String, PathBuf>>>,
     /// Persisted set of session IDs hidden from `session/list`.
@@ -164,6 +187,13 @@ impl AcpStore {
         } else {
             HashSet::new()
         };
+        let prefs_path = home_dir().join(PREFS_FILE);
+        let prefs = if prefs_path.exists() {
+            let data = tokio::fs::read(&prefs_path).await?;
+            serde_json::from_slice::<HashMap<String, SessionPrefs>>(&data).unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
         Ok(Self {
             connection: Arc::new(OnceCell::new()),
             cwd,
@@ -172,6 +202,9 @@ impl AcpStore {
             history: Arc::new(Mutex::new(HashMap::new())),
             live_sessions: Arc::new(Mutex::new(HashSet::new())),
             session_modes: Arc::new(Mutex::new(HashMap::new())),
+            session_configs: Arc::new(Mutex::new(HashMap::new())),
+            prefs: Arc::new(Mutex::new(prefs)),
+            prefs_path,
             session_cwd: Arc::new(Mutex::new(HashMap::new())),
             archived: Arc::new(Mutex::new(archived)),
             archived_path,
@@ -186,6 +219,8 @@ impl AcpStore {
                     self.permissions.clone(),
                     self.channels.clone(),
                     self.history.clone(),
+                    self.session_modes.clone(),
+                    self.session_configs.clone(),
                 )
             })
             .await
@@ -243,11 +278,12 @@ impl AcpStore {
         let archived = self.archived.lock().await;
         let live = self.live_sessions.lock().await;
         let modes = self.session_modes.lock().await;
+        let configs = self.session_configs.lock().await;
 
         let mut sessions: Vec<SessionMeta> = infos
             .into_iter()
             .filter(|s| !archived.contains(&s.session_id.to_string()))
-            .map(|s| session_meta_from_info(s, &live, &modes))
+            .map(|s| session_meta_from_info(s, &live, &modes, &configs))
             .collect();
 
         sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
@@ -265,9 +301,23 @@ impl AcpStore {
         self.channels.lock().await.remove(session_id);
         self.live_sessions.lock().await.remove(session_id);
         self.session_modes.lock().await.remove(session_id);
+        self.session_configs.lock().await.remove(session_id);
         self.session_cwd.lock().await.remove(session_id);
         self.archived.lock().await.insert(session_id.to_string());
+        if self.prefs.lock().await.remove(session_id).is_some() {
+            let _ = self.persist_prefs().await;
+        }
         self.persist_archived().await
+    }
+
+    async fn persist_prefs(&self) -> Result<()> {
+        let map = self.prefs.lock().await.clone();
+        let data = serde_json::to_vec_pretty(&map)?;
+        if let Some(parent) = self.prefs_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::write(&self.prefs_path, data).await?;
+        Ok(())
     }
 
     async fn persist_archived(&self) -> Result<()> {
@@ -294,6 +344,7 @@ impl AcpStore {
             .map_err(|e| anyhow!("session/new failed: {e}"))?;
         let id = response.session_id.to_string();
         let (mode_id, available_modes) = split_modes(response.modes);
+        let config_options = config_payloads(response.config_options.as_deref().unwrap_or(&[]));
         self.session_cwd
             .lock()
             .await
@@ -302,6 +353,10 @@ impl AcpStore {
             .lock()
             .await
             .insert(id.clone(), (mode_id.clone(), available_modes.clone()));
+        self.session_configs
+            .lock()
+            .await
+            .insert(id.clone(), config_options.clone());
         self.live_sessions.lock().await.insert(id.clone());
         Ok(SessionMeta {
             label: label.unwrap_or_else(|| "New session".to_string()),
@@ -312,6 +367,7 @@ impl AcpStore {
             status: SessionStatus::Live,
             mode_id,
             available_modes,
+            config_options,
         })
     }
 
@@ -387,16 +443,113 @@ impl AcpStore {
         .map_err(|e| anyhow!("session/load failed: {e}"))?;
 
         let (mode_id, available_modes) = split_modes(response.modes);
+        let config_options = config_payloads(response.config_options.as_deref().unwrap_or(&[]));
         self.session_modes
             .lock()
             .await
-            .insert(session_id.to_string(), (mode_id, available_modes));
+            .insert(session_id.to_string(), (mode_id.clone(), available_modes));
+        self.session_configs
+            .lock()
+            .await
+            .insert(session_id.to_string(), config_options.clone());
         self.live_sessions
             .lock()
             .await
             .insert(session_id.to_string());
 
+        // Reapply persisted user prefs: claude-agent-acp loads sessions with
+        // its own defaults, dropping the mode/model the user picked earlier.
+        self.reapply_prefs(session_id, mode_id, config_options)
+            .await;
+
         Ok((vec![], rx))
+    }
+
+    /// Reapplies saved mode/config prefs after `session/load` when they differ
+    /// from the loaded state, then broadcasts the resulting state so attached
+    /// clients (which may have fetched meta before the load) sync up.
+    async fn reapply_prefs(
+        &self,
+        session_id: &str,
+        loaded_mode: Option<String>,
+        loaded_configs: Vec<ConfigOptionPayload>,
+    ) {
+        let saved = self.prefs.lock().await.get(session_id).cloned();
+        let mut mode_id = loaded_mode;
+        let mut config_options = loaded_configs;
+
+        if let Some(saved) = saved {
+            let connection = match self.connection().await {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            if let Some(want_mode) = saved.mode_id
+                && mode_id.as_deref() != Some(want_mode.as_str())
+            {
+                match connection
+                    .send_request(SetSessionModeRequest::new(
+                        session_id.to_string(),
+                        want_mode.clone(),
+                    ))
+                    .block_task()
+                    .await
+                {
+                    Ok(_) => {
+                        mode_id = Some(want_mode.clone());
+                        let mut modes = self.session_modes.lock().await;
+                        if let Some((mid, _)) = modes.get_mut(session_id) {
+                            *mid = Some(want_mode);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, session_id, "failed to reapply session mode")
+                    }
+                }
+            }
+            for (config_id, want_value) in saved.config {
+                let current = config_options
+                    .iter()
+                    .find(|o| o.id == config_id)
+                    .map(|o| o.current_value.clone());
+                if current.as_deref() == Some(want_value.as_str()) {
+                    continue;
+                }
+                match connection
+                    .send_request(SetSessionConfigOptionRequest::new(
+                        session_id.to_string(),
+                        config_id.clone(),
+                        want_value,
+                    ))
+                    .block_task()
+                    .await
+                {
+                    Ok(resp) => {
+                        config_options = config_payloads(&resp.config_options);
+                        self.session_configs
+                            .lock()
+                            .await
+                            .insert(session_id.to_string(), config_options.clone());
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, session_id, config_id, "failed to reapply session config option")
+                    }
+                }
+            }
+        }
+
+        let tx = self.channel(session_id).await;
+        if let Some(mode_id) = mode_id {
+            let _ = tx.send(AcpWsEvent::ModeChanged {
+                session_id: session_id.to_string(),
+                mode_id,
+            });
+        }
+        if !config_options.is_empty() {
+            let _ = tx.send(AcpWsEvent::ConfigOptionsChanged {
+                session_id: session_id.to_string(),
+                config_options,
+            });
+        }
     }
 
     pub async fn handle_client_msg(&self, session_id: &str, msg: AcpWsClientMsg) -> Result<()> {
@@ -459,10 +612,51 @@ impl AcpStore {
                         modes.insert(session_id.to_string(), (Some(mode_id.clone()), Vec::new()));
                     }
                 }
+                self.prefs
+                    .lock()
+                    .await
+                    .entry(session_id.to_string())
+                    .or_default()
+                    .mode_id = Some(mode_id.clone());
+                if let Err(e) = self.persist_prefs().await {
+                    tracing::warn!(error = %e, "failed to persist session prefs");
+                }
                 let tx = self.channel(session_id).await;
                 let _ = tx.send(AcpWsEvent::ModeChanged {
                     session_id: session_id.to_string(),
                     mode_id,
+                });
+                Ok(())
+            }
+            AcpWsClientMsg::SetConfigOption { config_id, value } => {
+                let response = connection
+                    .send_request(SetSessionConfigOptionRequest::new(
+                        session_id.to_string(),
+                        config_id.clone(),
+                        value.clone(),
+                    ))
+                    .block_task()
+                    .await
+                    .map_err(|e| anyhow!("session/set_config_option failed: {e}"))?;
+                let config_options = config_payloads(&response.config_options);
+                self.session_configs
+                    .lock()
+                    .await
+                    .insert(session_id.to_string(), config_options.clone());
+                self.prefs
+                    .lock()
+                    .await
+                    .entry(session_id.to_string())
+                    .or_default()
+                    .config
+                    .insert(config_id, value);
+                if let Err(e) = self.persist_prefs().await {
+                    tracing::warn!(error = %e, "failed to persist session prefs");
+                }
+                let tx = self.channel(session_id).await;
+                let _ = tx.send(AcpWsEvent::ConfigOptionsChanged {
+                    session_id: session_id.to_string(),
+                    config_options,
                 });
                 Ok(())
             }
@@ -484,6 +678,8 @@ async fn spawn(
     permissions: PermissionRegistry,
     channels: Channels,
     history: History,
+    session_modes: SessionModes,
+    session_configs: SessionConfigs,
 ) -> Result<ConnectionTo<Agent>> {
     let agent = AcpAgent::from_str(ACP_COMMAND).map_err(|e| anyhow!("invalid ACP command: {e}"))?;
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
@@ -497,9 +693,30 @@ async fn spawn(
                 move |notification: SessionNotification, _cx| {
                     let channels = notification_channels.clone();
                     let history = notification_history.clone();
+                    let session_modes = session_modes.clone();
+                    let session_configs = session_configs.clone();
                     async move {
                         let session_id = notification.session_id.to_string();
                         let events = from_session_update(&session_id, notification.update);
+                        // Keep the meta caches current so REST fetches agree
+                        // with what the agent pushed over the session channel.
+                        for event in &events {
+                            match event {
+                                AcpWsEvent::ModeChanged { mode_id, .. } => {
+                                    let mut modes = session_modes.lock().await;
+                                    if let Some((mid, _)) = modes.get_mut(&session_id) {
+                                        *mid = Some(mode_id.clone());
+                                    }
+                                }
+                                AcpWsEvent::ConfigOptionsChanged { config_options, .. } => {
+                                    session_configs
+                                        .lock()
+                                        .await
+                                        .insert(session_id.clone(), config_options.clone());
+                                }
+                                _ => {}
+                            }
+                        }
                         if !events.is_empty() {
                             history
                                 .lock()

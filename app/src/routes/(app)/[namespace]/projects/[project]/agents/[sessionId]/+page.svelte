@@ -5,6 +5,7 @@
 	import { AgentSocket, type ConnState } from '$lib/agent/agentSocket';
 	import type {
 		AcpWsEvent,
+		ConfigOptionInfo,
 		DiffPayload,
 		PermissionOptionPayload,
 		PlanEntryPayload,
@@ -43,13 +44,11 @@
 	let textareaEl: HTMLTextAreaElement | undefined = $state();
 	let availableModes: SessionModeInfo[] = $state([]);
 	let currentMode: string = $state('default');
-	let currentModel: string = $state('claude-sonnet-4-6');
+	let configOptions: ConfigOptionInfo[] = $state([]);
 
-	const MODELS = [
-		{ id: 'claude-opus-4-8', label: 'Opus 4.8' },
-		{ id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
-		{ id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' }
-	];
+	const modelOption = $derived(
+		configOptions.find((o) => o.category === 'model' || o.id === 'model') ?? null
+	);
 
 	async function loadSessionMeta() {
 		if (!agentBase) return;
@@ -63,6 +62,7 @@
 				const meta = await res.json();
 				availableModes = meta.available_modes ?? [];
 				currentMode = meta.mode_id ?? 'default';
+				configOptions = meta.config_options ?? [];
 			}
 		} catch {}
 	}
@@ -73,8 +73,12 @@
 		socket?.send({ type: 'set_permission_mode', mode_id: modeId });
 	}
 
-	function changeModel(modelId: string) {
-		currentModel = modelId;
+	function changeModel(value: string) {
+		if (!modelOption || value === modelOption.current_value) return;
+		configOptions = configOptions.map((o) =>
+			o.id === modelOption.id ? { ...o, current_value: value } : o
+		);
+		socket?.send({ type: 'set_config_option', config_id: modelOption.id, value });
 	}
 
 	function handleEvent(event: AcpWsEvent) {
@@ -128,6 +132,9 @@
 			case 'mode_changed':
 				currentMode = event.mode_id;
 				break;
+			case 'config_options_changed':
+				configOptions = event.config_options;
+				break;
 			case 'error':
 				timeline.push({ kind: 'message', role: 'assistant', text: `⚠️ ${event.message}` });
 				break;
@@ -173,8 +180,12 @@
 			sessionId,
 			handleEvent,
 			(state, error) => {
+				const reconnected = state === 'connected' && connState !== 'connected';
 				connState = state;
 				connectError = error;
+				// The pre-connect meta fetch can race the agent's session/load;
+				// re-fetch once attached so mode/model reflect the loaded session.
+				if (reconnected) void loadSessionMeta();
 			}
 		);
 		await socket.connect();
@@ -234,16 +245,18 @@
 		></textarea>
 		<div class="composer-footer">
 			<div class="composer-selects">
-				<select
-					class="composer-select"
-					value={currentModel}
-					title="Model"
-					onchange={(e) => changeModel((e.target as HTMLSelectElement).value)}
-				>
-					{#each MODELS as m (m.id)}
-						<option value={m.id}>{m.label}</option>
-					{/each}
-				</select>
+				{#if modelOption}
+					<select
+						class="composer-select"
+						value={modelOption.current_value}
+						title={modelOption.name}
+						onchange={(e) => changeModel((e.target as HTMLSelectElement).value)}
+					>
+						{#each modelOption.options as m (m.value)}
+							<option value={m.value}>{m.name}</option>
+						{/each}
+					</select>
+				{/if}
 				{#if availableModes.length}
 					<select
 						class="composer-select"
