@@ -18,7 +18,7 @@
 
 	type TimelineItem =
 		| { kind: 'message'; role: 'user' | 'assistant'; text: string }
-		| { kind: 'tool_call'; id: string; toolKind: string; title: string; status: string; diff: DiffPayload | null }
+		| { kind: 'tool_call'; id: string; toolKind: string; title: string; status: string; diff: DiffPayload | null; output: string | null }
 		| { kind: 'plan'; entries: PlanEntryPayload[] };
 
 	type PendingPermission = {
@@ -95,7 +95,8 @@
 					toolKind: event.kind,
 					title: event.title,
 					status: event.status,
-					diff: null
+					diff: null,
+					output: null
 				});
 				break;
 			case 'tool_call_updated': {
@@ -103,6 +104,7 @@
 				if (item && item.kind === 'tool_call') {
 					if (event.status) item.status = event.status;
 					if (event.diff) item.diff = event.diff;
+					if (event.output) item.output = event.output;
 				}
 				break;
 			}
@@ -201,7 +203,7 @@
 					</div>
 				</div>
 			{:else if item.kind === 'tool_call'}
-				<ToolCallCard toolKind={item.toolKind} title={item.title} status={item.status} diff={item.diff} />
+				<ToolCallCard toolKind={item.toolKind} title={item.title} status={item.status} diff={item.diff} output={item.output} />
 			{:else if item.kind === 'plan'}
 				<PlanView entries={item.entries} />
 			{/if}

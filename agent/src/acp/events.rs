@@ -36,6 +36,7 @@ pub enum AcpWsEvent {
         tool_call_id: String,
         status: Option<&'static str>,
         diff: Option<DiffPayload>,
+        output: Option<String>,
     },
     PlanUpdate {
         session_id: String,
@@ -147,6 +148,19 @@ fn first_diff(content: &[ToolCallContent]) -> Option<DiffPayload> {
     })
 }
 
+/// Concatenated text of all `Content` blocks (terminal/tool output). `None`
+/// when the update carries no text so the browser keeps what it already has.
+fn content_text(content: &[ToolCallContent]) -> Option<String> {
+    let text: String = content
+        .iter()
+        .filter_map(|c| match c {
+            ToolCallContent::Content(block) => Some(content_block_text(&block.content)),
+            _ => None,
+        })
+        .collect();
+    (!text.is_empty()).then_some(text)
+}
+
 /// Translates one ACP `SessionUpdate` notification into zero-or-more simplified
 /// WS events. Variants not yet surfaced in the UI (usage, available commands,
 /// mode changes, etc.) are intentionally dropped here rather than forwarded raw.
@@ -170,12 +184,16 @@ pub fn from_session_update(session_id: &str, update: SessionUpdate) -> Vec<AcpWs
             title: tc.title,
             status: tool_status_str(tc.status),
         }],
-        SessionUpdate::ToolCallUpdate(update) => vec![AcpWsEvent::ToolCallUpdated {
-            session_id,
-            tool_call_id: update.tool_call_id.to_string(),
-            status: update.fields.status.map(tool_status_str),
-            diff: update.fields.content.as_deref().and_then(first_diff),
-        }],
+        SessionUpdate::ToolCallUpdate(update) => {
+            let content = update.fields.content.as_deref();
+            vec![AcpWsEvent::ToolCallUpdated {
+                session_id,
+                tool_call_id: update.tool_call_id.to_string(),
+                status: update.fields.status.map(tool_status_str),
+                diff: content.and_then(first_diff),
+                output: content.and_then(content_text),
+            }]
+        }
         SessionUpdate::Plan(plan) => vec![AcpWsEvent::PlanUpdate {
             session_id,
             entries: plan_entries(&plan),

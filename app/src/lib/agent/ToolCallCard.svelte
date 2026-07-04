@@ -6,8 +6,9 @@
 		toolKind,
 		title,
 		status,
-		diff
-	}: { toolKind: string; title: string; status: string; diff: DiffPayload | null } = $props();
+		diff,
+		output = null
+	}: { toolKind: string; title: string; status: string; diff: DiffPayload | null; output?: string | null } = $props();
 
 	const ICONS: Record<string, string> = {
 		read: '👁',
@@ -17,7 +18,7 @@
 	};
 
 	let expanded = $state(false);
-	const hasBody = $derived(!!diff);
+	const hasBody = $derived(!!diff || !!output);
 </script>
 
 <div class="tool-card {status}" class:expanded>
@@ -34,9 +35,13 @@
 			<span class="tool-chevron" class:open={expanded}>▸</span>
 		{/if}
 	</button>
-	{#if expanded && diff}
+	{#if expanded}
 		<div class="tool-body">
-			<DiffView {diff} />
+			{#if diff}
+				<DiffView {diff} />
+			{:else if output}
+				<pre class="tool-output">{output}</pre>
+			{/if}
 		</div>
 	{/if}
 </div>
@@ -67,4 +72,17 @@
 	.tool-chevron.open { transform: rotate(90deg); }
 	.tool-body { padding: 0 0.7rem 0.5rem; border-top: 1px solid var(--color-border); }
 	.tool-body :global(.diff-view) { margin-top: 0.5rem; }
+	.tool-output {
+		margin: 0.5rem 0 0;
+		padding: 0.5rem 0.6rem;
+		background: var(--color-bg);
+		border-radius: 4px;
+		font-family: var(--font-mono);
+		font-size: 11px;
+		line-height: 1.45;
+		white-space: pre-wrap;
+		word-break: break-word;
+		overflow-y: auto;
+		max-height: 320px;
+	}
 </style>

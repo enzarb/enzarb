@@ -53,6 +53,7 @@ export type AcpWsEvent =
 			tool_call_id: string;
 			status: string | null;
 			diff: DiffPayload | null;
+			output: string | null;
 	  }
 	| { type: 'plan_update'; session_id: string; entries: PlanEntryPayload[] }
 	| {
