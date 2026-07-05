@@ -27,9 +27,16 @@ ARG BUILDX_VERSION=0.24.0
 ARG TINI_VERSION=0.19.0
 ARG CLAUDE_CODE_ACP_VERSION=latest
 
+# mise's shims dir goes first on PATH so every process that inherits this
+# environment — including the `project-agent` entrypoint and the
+# `claude-agent-acp` child it spawns — resolves mise-managed tool versions.
+# Shims are directory-aware (they pick the version from the nearest mise.toml
+# at exec time), so this works even though the agent multiplexes sessions
+# across different project directories. The dir is created at runtime by
+# `mise install` on the PVC; listing it before it exists is harmless.
 ENV DEBIAN_FRONTEND=noninteractive \
     HOME=/home/user \
-    PATH="/home/user/.local/bin:${PATH}"
+    PATH="/home/user/.local/share/mise/shims:/home/user/.local/bin:${PATH}"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl gnupg \
