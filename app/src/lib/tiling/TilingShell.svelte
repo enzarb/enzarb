@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import type { TilingLayout, PaneNode, Tab, LeafPane } from './layout';
 	import { loadLayout, saveLayout, collectTabs, mapPaneLeaves, removeTabs } from './layout';
 	import TilingRegion from './TilingRegion.svelte';
@@ -103,9 +104,11 @@
 		};
 	}
 
-	onMount();
+	onMount(() => {
+		initTilingShell();
+	});
 
-	async function onMount() {
+	async function initTilingShell() {
 		try {
 			const proj = await getProject(project);
 			const path = proj?.status?.agentPath;
