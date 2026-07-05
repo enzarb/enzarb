@@ -12,6 +12,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { confirm } from '$lib/confirm';
+	import { toErrorMessage } from '$lib/errors';
 
 	let resizing = $state(false);
 	let resizeError = $state('');
@@ -32,7 +33,7 @@
 			await resizeStorage({ slug, storageGi: newGi });
 			await getProject().refresh();
 		} catch (e) {
-			resizeError = e instanceof Error ? e.message : 'Failed to resize storage';
+			resizeError = toErrorMessage(e, 'Failed to resize storage');
 		} finally {
 			resizing = false;
 		}
@@ -58,7 +59,7 @@
 			await Promise.all([getProjects().refresh(), getDeletedProjects().refresh()]);
 			await goto(`/${page.params.namespace}/projects`);
 		} catch (e) {
-			deleteError = e instanceof Error ? e.message : 'Failed to delete project';
+			deleteError = toErrorMessage(e, 'Failed to delete project');
 			deleting = false;
 		}
 	}
@@ -82,7 +83,7 @@
 		try {
 			await setProjectSuspendedCommand({ slug, suspended: !currentlySuspended });
 		} catch (e) {
-			suspendError = e instanceof Error ? e.message : 'Failed to update suspend state';
+			suspendError = toErrorMessage(e, 'Failed to update suspend state');
 		} finally {
 			suspending = false;
 		}
@@ -107,7 +108,7 @@
 			newSecretKey = '';
 			newSecretValue = '';
 		} catch (e) {
-			secretError = e instanceof Error ? e.message : 'Failed to save secret';
+			secretError = toErrorMessage(e, 'Failed to save secret');
 		} finally {
 			addingSecret = false;
 		}
@@ -118,7 +119,7 @@
 			await deleteProjectSecret({ key });
 			await getProjectSecrets().refresh();
 		} catch (e) {
-			secretError = e instanceof Error ? e.message : 'Failed to delete secret';
+			secretError = toErrorMessage(e, 'Failed to delete secret');
 		}
 	}
 </script>

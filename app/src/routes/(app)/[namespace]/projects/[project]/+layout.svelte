@@ -2,6 +2,7 @@
 	import { getProject, restartWorkspace } from '$lib/remote/projects.remote';
 	import { workspaceHealth } from '$lib/workspaceHealth.svelte';
 	import { page } from '$app/state';
+	import { toErrorMessage } from '$lib/errors';
 
 	let { children } = $props();
 
@@ -48,7 +49,7 @@
 			await markRestarting();
 			await getProject().refresh();
 		} catch (e) {
-			restartError = e instanceof Error ? e.message : 'Failed to request restart';
+			restartError = toErrorMessage(e, 'Failed to request restart');
 		} finally {
 			restarting = false;
 		}
@@ -63,7 +64,7 @@
 			await markRestarting();
 			await getProject().refresh();
 		} catch (e) {
-			restartError = e instanceof Error ? e.message : 'Failed to request restart';
+			restartError = toErrorMessage(e, 'Failed to request restart');
 		} finally {
 			restarting = false;
 		}

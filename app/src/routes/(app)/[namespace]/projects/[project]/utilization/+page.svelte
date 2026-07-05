@@ -3,6 +3,7 @@
 	import { getProjectUtilization } from '$lib/remote/utilization.remote';
 	import { RESOURCE_TYPES, RESOURCE_LABELS, RESOURCE_COLORS, fmtRaw } from '$lib/billing';
 	import LineChart from '$lib/components/LineChart.svelte';
+	import { toErrorMessage } from '$lib/errors';
 
 	type Row = { minute: string | Date; resource_type: string; label: string | null; total: number };
 
@@ -22,7 +23,7 @@
 			rows = data as Row[];
 			error = '';
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load utilization data';
+			error = toErrorMessage(e, 'Failed to load utilization data');
 		} finally {
 			loading = false;
 		}

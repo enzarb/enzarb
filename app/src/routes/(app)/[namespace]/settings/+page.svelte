@@ -19,6 +19,7 @@
 	} from '$lib/remote/settings.remote';
 	import { PRIVILEGE_LABELS } from '$lib/privileges';
 	import { confirm } from '$lib/confirm';
+	import { toErrorMessage } from '$lib/errors';
 
 	const orgMembership = $derived(
 		page.data.session.orgs.find((o: { slug: string }) => o.slug === page.params.namespace)
@@ -38,7 +39,7 @@
 		try {
 			await fn();
 		} catch (e) {
-			errorMsg = e instanceof Error ? e.message : 'Action failed';
+			errorMsg = toErrorMessage(e, 'Action failed');
 		} finally {
 			busy = '';
 		}
@@ -91,7 +92,7 @@
 			newSecretValue = '';
 			await getUserSecrets().refresh();
 		} catch (e) {
-			secretError = e instanceof Error ? e.message : 'Failed to save';
+			secretError = toErrorMessage(e, 'Failed to save');
 		} finally {
 			secretBusy = '';
 		}
@@ -106,7 +107,7 @@
 			await deleteUserSecret({ key });
 			await getUserSecrets().refresh();
 		} catch (e) {
-			secretError = e instanceof Error ? e.message : 'Failed to delete';
+			secretError = toErrorMessage(e, 'Failed to delete');
 		} finally {
 			secretBusy = '';
 		}

@@ -27,19 +27,17 @@
 			downloadingInvoice = null;
 		}
 	}
-	import { RESOURCE_TYPES } from '$lib/billing';
+	import {
+		RESOURCE_TYPES,
+		RESOURCE_LABELS as resourceLabels,
+		RESOURCE_COLORS as resourceColors,
+		usd,
+		fmtVCPUHours,
+		fmtGiBHours,
+		fmtGiBMonths,
+		fmtBytes
+	} from '$lib/billing';
 	import StackedBarChart from '$lib/components/StackedBarChart.svelte';
-
-	const resourceLabels: Record<string, string> = {
-		vcpu_hours: 'CPU',
-		mem_gib_hours: 'Memory',
-		net_ingress_internal_bytes: 'Net In (internal)',
-		net_egress_internal_bytes: 'Net Out (internal)',
-		net_ingress_external_bytes: 'Net In (external)',
-		net_egress_external_bytes: 'Net Out (external)',
-		block_storage_gib_months: 'Block Storage',
-		registry_gib_months: 'Registry Storage'
-	};
 
 	const componentLabels: Record<string, string> = {
 		workspace: 'Workspaces',
@@ -47,40 +45,7 @@
 		zot: 'Registry'
 	};
 
-	// Stable colour per resource type for the chart + legend.
-	const resourceColors: Record<string, string> = {
-		vcpu_hours: '#58a6ff',
-		mem_gib_hours: '#3fb950',
-		net_ingress_internal_bytes: '#d29922',
-		net_egress_internal_bytes: '#e3b341',
-		net_ingress_external_bytes: '#db6d28',
-		net_egress_external_bytes: '#f0883e',
-		block_storage_gib_months: '#a371f7',
-		registry_gib_months: '#56d4dd'
-	};
-
-	const usd = (n: number) =>
-		n.toLocaleString('en-US', {
-			style: 'currency',
-			currency: 'USD',
-			minimumFractionDigits: 2,
-			maximumFractionDigits: n < 1 ? 4 : 2
-		});
 	const usdRate = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
-
-	const fmtVCPUHours = (h: number) =>
-		h.toLocaleString('en-US', { maximumFractionDigits: 2 }) + ' vCPU-hr';
-	const fmtGiBHours = (h: number) =>
-		h.toLocaleString('en-US', { maximumFractionDigits: 2 }) + ' GiB-hr';
-	const fmtGiBMonths = (m: number) =>
-		m.toLocaleString('en-US', { maximumFractionDigits: 3 }) + ' GiB-mo';
-	const fmtBytes = (bytes: number) => {
-		if (bytes === 0) return '0 B';
-		const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-		const i = Math.min(Math.floor(Math.log2(bytes) / 10), units.length - 1);
-		const val = bytes / Math.pow(1024, i);
-		return val.toLocaleString('en-US', { maximumFractionDigits: 2 }) + ' ' + units[i];
-	};
 
 	// Filter state for the cost-over-time chart.
 	let days = $state(30);
@@ -93,21 +58,7 @@
 		resourceTypes: selectedResources as (typeof RESOURCE_TYPES)[number][]
 	});
 
-	type ChartBucket = { label: string; segments: { key: string; value: number }[] };
-	let chartBuckets = $state<ChartBucket[]>([]);
-	let chartLoading = $state(false);
-
-	$effect(() => {
-		const args = seriesArgs;
-		chartLoading = true;
-		getCostTimeSeries(args).then((series) => {
-			chartBuckets = series.map((s) => ({
-				label: s.day,
-				segments: Object.entries(s.segments).map(([key, value]) => ({ key, value: value as number }))
-			}));
-			chartLoading = false;
-		});
-	});
+	const costTimeSeries = $derived(getCostTimeSeries(seriesArgs));
 
 	function toggle(list: string[], value: string): string[] {
 		return list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
@@ -280,12 +231,18 @@
 			{/each}
 		</div>
 	</div>
-	<div class="chart-wrap" class:chart-loading={chartLoading}>
-		<StackedBarChart
-			buckets={chartBuckets}
-			colors={resourceColors}
-			labels={resourceLabels}
-		/>
+	<div class="chart-wrap" class:chart-loading={costTimeSeries.loading}>
+		{#await costTimeSeries then series}
+			{@const chartBuckets = series.map((s) => ({
+				label: s.day,
+				segments: Object.entries(s.segments).map(([key, value]) => ({ key, value: value as number }))
+			}))}
+			<StackedBarChart
+				buckets={chartBuckets}
+				colors={resourceColors}
+				labels={resourceLabels}
+			/>
+		{/await}
 	</div>
 </section>
 

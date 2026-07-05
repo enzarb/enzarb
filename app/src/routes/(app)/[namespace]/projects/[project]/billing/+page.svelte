@@ -19,23 +19,7 @@
 	const projectId = $derived(page.params.project ?? '');
 	const detail = $derived(getProjectDetail({ projectId }));
 	const seriesArgs = $derived({ projectId, days });
-
-	type ChartBucket = { label: string; segments: { key: string; value: number }[] };
-	let chartBuckets = $state<ChartBucket[]>([]);
-	let chartLoading = $state(false);
-
-	$effect(() => {
-		// Access seriesArgs to make the effect reactive to filter changes.
-		const args = seriesArgs;
-		chartLoading = true;
-		getProjectCostTimeSeries(args).then((s) => {
-			chartBuckets = s.map((b) => ({
-				label: b.day,
-				segments: Object.entries(b.segments).map(([key, value]) => ({ key, value: value as number }))
-			}));
-			chartLoading = false;
-		});
-	});
+	const costTimeSeries = $derived(getProjectCostTimeSeries(seriesArgs));
 
 	type WorkloadRow = {
 		label: string;
@@ -89,12 +73,18 @@
 			{/each}
 		</div>
 	</div>
-	<div class="chart-wrap" class:chart-loading={chartLoading}>
-		<StackedBarChart
-			buckets={chartBuckets}
-			colors={resourceColors}
-			labels={resourceLabels}
-		/>
+	<div class="chart-wrap" class:chart-loading={costTimeSeries.loading}>
+		{#await costTimeSeries then s}
+			{@const chartBuckets = s.map((b) => ({
+				label: b.day,
+				segments: Object.entries(b.segments).map(([key, value]) => ({ key, value: value as number }))
+			}))}
+			<StackedBarChart
+				buckets={chartBuckets}
+				colors={resourceColors}
+				labels={resourceLabels}
+			/>
+		{/await}
 	</div>
 </section>
 

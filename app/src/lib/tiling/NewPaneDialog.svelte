@@ -61,10 +61,6 @@
 	}
 
 	$effect(() => {
-		if (agentBase) load();
-	});
-
-	$effect(() => {
 		selectedType;
 		if (agentBase) load();
 	});

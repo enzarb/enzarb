@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { getRepositories, getRepoTags, getRepoTagSizes } from '$lib/remote/registry.remote';
+	import { fmtBytes as formatBytes } from '$lib/billing';
 	import { page } from '$app/state';
 
 	type TagRow = { tag: string; totalSize: number | null; uniqueSize: number | null; createdAt: string | null };
@@ -70,13 +71,6 @@
 		await navigator.clipboard.writeText(path);
 		copiedTag = path;
 		setTimeout(() => { copiedTag = null; }, 1500);
-	}
-
-	function formatBytes(bytes: number): string {
-		if (!bytes) return '—';
-		const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-		const i = Math.min(Math.floor(Math.log2(bytes) / 10), units.length - 1);
-		return (bytes / Math.pow(1024, i)).toLocaleString('en-US', { maximumFractionDigits: 2 }) + ' ' + units[i];
 	}
 
 	function formatDate(iso: string | null): string {
