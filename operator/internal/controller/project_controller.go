@@ -133,10 +133,6 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("ensure service account: %w", err)
 	}
 
-	if err := r.ensureRoleBinding(ctx, &project, orgNS, saName); err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensure role binding: %w", err)
-	}
-
 	// Prune any stale ClusterRoleBindings left over from before the migration
 	// to namespace-scoped RoleBindings. ClusterRoleBindings are cluster-scoped
 	// so pass "" as namespace to pruneUnmanaged.
@@ -151,6 +147,22 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		},
 	); err != nil {
 		return ctrl.Result{}, fmt.Errorf("prune stale cluster role bindings: %w", err)
+	}
+
+	// Prune the org-namespace "deployer" RoleBinding: workspaces must deploy
+	// only via Environments (which get their own namespace-scoped binding to
+	// enzarb-deployer), not directly in their own org namespace.
+	if err := pruneUnmanaged(ctx, r.Client, &rbacv1.RoleBindingList{}, orgNS,
+		map[string]struct{}{},
+		func(l *rbacv1.RoleBindingList) []*rbacv1.RoleBinding {
+			items := make([]*rbacv1.RoleBinding, len(l.Items))
+			for i := range l.Items {
+				items[i] = &l.Items[i]
+			}
+			return items
+		},
+	); err != nil {
+		return ctrl.Result{}, fmt.Errorf("prune stale role bindings: %w", err)
 	}
 
 	pvcName := fmt.Sprintf("%s-home", project.Spec.Slug)
@@ -499,31 +511,6 @@ func (r *ProjectReconciler) ensureServiceAccount(ctx context.Context, ns, name s
 			return err
 		}
 		return r.Create(ctx, sa)
-	}
-	return err
-}
-
-func (r *ProjectReconciler) ensureRoleBinding(ctx context.Context, project *enzarbv1alpha1.Project, ns, saName string) error {
-	bindingName := fmt.Sprintf("enzarb-%s-%s-deployer", project.Spec.OrgID, project.Spec.Slug)
-	rb := &rbacv1.RoleBinding{}
-	err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: bindingName}, rb)
-	if errors.IsNotFound(err) {
-		rb = &rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      bindingName,
-				Namespace: ns,
-				Labels:    projectLabels(project),
-			},
-			RoleRef: rbacv1.RoleRef{
-				APIGroup: "rbac.authorization.k8s.io",
-				Kind:     "ClusterRole",
-				Name:     "enzarb-deployer",
-			},
-			Subjects: []rbacv1.Subject{
-				{Kind: "ServiceAccount", Name: saName, Namespace: ns},
-			},
-		}
-		return r.Create(ctx, rb)
 	}
 	return err
 }
