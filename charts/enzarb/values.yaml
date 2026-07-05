@@ -42,7 +42,7 @@ operator:
   image:
     repository: ghcr.io/enzarb/operator
     pullPolicy: IfNotPresent
-    tag: "v0.88.0"
+    tag: "v0.90.5"
   leaderElection: true
   env:
     ENZARB_DOMAIN: enzarb.dev
