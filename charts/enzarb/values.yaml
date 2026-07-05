@@ -155,7 +155,7 @@ registryMirror:
 workspace:
   image:
     repository: ghcr.io/enzarb/workspace
-    tag: "v0.90.1"
+    tag: "v0.90.2"
   # StorageClass for project home PVCs. Empty uses the cluster's default class.
   storageClass: ""
   # changelog is shown in the UI when a workspace update is pending. Set by CI
