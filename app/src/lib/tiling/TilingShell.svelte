@@ -287,11 +287,8 @@
 		return findFirstLeaf(node.children[0]) ?? findFirstLeaf(node.children[1]);
 	}
 
-	const sidebarWidth = $derived(
-		layout?.left.sidebar?.collapsed
-			? '28px'
-			: `${(layout?.left.sidebar?.widthFraction ?? 0.3) * 100}%`
-	);
+	const sidebarCollapsed = $derived(layout?.left.sidebar?.collapsed ?? false);
+	const sidebarWidth = $derived(`${(layout?.left.sidebar?.widthFraction ?? 0.3) * 100}%`);
 	const leftWidth = $derived(layout ? `${layout.divider * 100}%` : '25%');
 </script>
 
@@ -305,56 +302,60 @@
 
 	{#if layout}
 		<div class="main-area">
-			<!-- Left region -->
-			<div class="left-region" style="width: {leftWidth}; flex-shrink: 0;">
+			<!-- Left region: collapses to a thin toggle strip when the file browser is closed,
+			     so there's only one draggable split (the main divider) while it's collapsed. -->
+			<div class="left-region" style="width: {sidebarCollapsed ? '28px' : leftWidth}; flex-shrink: 0;">
 				<div class="left-inner">
 					<!-- File sidebar -->
-					<div class="sidebar-wrap" style="width: {sidebarWidth}; flex-shrink: 0;">
+					<div class="sidebar-wrap" style="width: {sidebarCollapsed ? '28px' : sidebarWidth}; flex-shrink: 0;">
 						<FileSidebar
 							{agentBase}
 							{namespace}
 							{project}
-							collapsed={layout.left.sidebar?.collapsed ?? false}
+							collapsed={sidebarCollapsed}
 							onToggleCollapse={toggleSidebar}
 							onOpenFile={openFileInLeft}
 						/>
 					</div>
-					{#if !(layout.left.sidebar?.collapsed)}
+					{#if !sidebarCollapsed}
 						<TilingSplitHandle
 							direction="h"
 							onDrag={(delta, total) => handleSidebarWidthDrag(delta, total)}
 						/>
+						<!-- Left pane area (file viewer) -->
+						<div class="pane-area" style="flex: 1; min-width: 0; overflow: hidden;">
+							<TilingRegion
+								node={layout.left.panes}
+								nodeId="left"
+								regionKind="left"
+								{agentBase}
+								{namespace}
+								{project}
+								{dragging}
+								{dragSource}
+								onUpdate={() => {}}
+								onTabClose={(id, idx) => handleTabClose('left', id, idx)}
+								onTabSelect={(id, idx) => handleTabSelect('left', id, idx)}
+								onSplit={(id, dir, side) => handleSplit('left', id, dir, side)}
+								onAddTab={(id, tab) => handleAddTab('left', id, tab)}
+								onTabDragStart={(id, idx) => handleTabDragStart('left', id, idx)}
+								onTabDrop={(id, zone) => handleTabDrop('left', id, zone)}
+								onRatioChange={(id, ratio) => {
+									if (!layout) return;
+									layout.left.panes = updateSplitRatio(layout.left.panes, id, ratio, 'left');
+									save();
+								}}
+							/>
+						</div>
 					{/if}
-					<!-- Left pane area -->
-					<div class="pane-area" style="flex: 1; min-width: 0; overflow: hidden;">
-						<TilingRegion
-							node={layout.left.panes}
-							nodeId="left"
-							regionKind="left"
-							{agentBase}
-							{namespace}
-							{project}
-							{dragging}
-							{dragSource}
-							onUpdate={() => {}}
-							onTabClose={(id, idx) => handleTabClose('left', id, idx)}
-							onTabSelect={(id, idx) => handleTabSelect('left', id, idx)}
-							onSplit={(id, dir, side) => handleSplit('left', id, dir, side)}
-							onAddTab={(id, tab) => handleAddTab('left', id, tab)}
-							onTabDragStart={(id, idx) => handleTabDragStart('left', id, idx)}
-							onTabDrop={(id, zone) => handleTabDrop('left', id, zone)}
-							onRatioChange={(id, ratio) => {
-								if (!layout) return;
-								layout.left.panes = updateSplitRatio(layout.left.panes, id, ratio, 'left');
-								save();
-							}}
-						/>
-					</div>
 				</div>
 			</div>
 
-			<!-- Main divider -->
-			<TilingSplitHandle direction="h" onDrag={(delta) => handleMainDividerDrag(delta)} />
+			<!-- Main divider: only shown while the file browser is open, so there's a single
+			     top-level split when it's closed. -->
+			{#if !sidebarCollapsed}
+				<TilingSplitHandle direction="h" onDrag={(delta) => handleMainDividerDrag(delta)} />
+			{/if}
 
 			<!-- Right region -->
 			<div class="right-region" style="flex: 1; min-width: 0; overflow: hidden;">

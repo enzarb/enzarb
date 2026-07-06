@@ -200,7 +200,7 @@
 </div>
 
 <style>
-	.tiling-pane { display: flex; flex-direction: column; height: 100%; overflow: hidden; position: relative; min-width: 0; min-height: 0; }
+	.tiling-pane { display: flex; flex-direction: column; flex: 1 1 auto; width: 100%; height: 100%; overflow: hidden; position: relative; min-width: 0; min-height: 0; }
 	.tab-bar { display: flex; align-items: stretch; border-bottom: 1px solid var(--color-border); background: var(--color-surface-2); flex-shrink: 0; }
 	.tabs { flex: 1; display: flex; align-items: stretch; overflow-x: auto; }
 	.tab { display: flex; align-items: center; gap: 0.3rem; padding: 0 0.4rem 0 0.6rem; border: none; border-right: 1px solid var(--color-border); background: none; color: var(--color-text-muted); font-size: 12px; cursor: pointer; white-space: nowrap; user-select: none; }
