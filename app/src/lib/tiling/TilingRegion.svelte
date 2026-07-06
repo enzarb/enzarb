@@ -35,7 +35,7 @@
 {#if node.type === 'leaf'}
 	<TilingPane
 		pane={node}
-		paneId={nodeId}
+		paneId={(node as any).__id ?? nodeId}
 		{regionKind}
 		{agentBase}
 		{namespace}

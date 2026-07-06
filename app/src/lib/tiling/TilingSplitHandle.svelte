@@ -7,20 +7,20 @@
 	let { direction, onDrag }: Props = $props();
 
 	let dragging = $state(false);
-	let startPos = 0;
 	let el: HTMLDivElement | undefined = $state();
 
 	function onMouseDown(e: MouseEvent) {
 		e.preventDefault();
 		dragging = true;
-		startPos = direction === 'h' ? e.clientX : e.clientY;
+		let lastPos = direction === 'h' ? e.clientX : e.clientY;
 		const parentSize = direction === 'h'
 			? (el?.parentElement?.clientWidth ?? window.innerWidth)
 			: (el?.parentElement?.clientHeight ?? window.innerHeight);
 
 		function onMouseMove(e: MouseEvent) {
 			const pos = direction === 'h' ? e.clientX : e.clientY;
-			const delta = (pos - startPos) / parentSize;
+			const delta = (pos - lastPos) / parentSize;
+			lastPos = pos;
 			onDrag(delta, parentSize);
 		}
 
