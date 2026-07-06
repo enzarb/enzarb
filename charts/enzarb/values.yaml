@@ -6,7 +6,7 @@ app:
   image:
     repository: ghcr.io/enzarb/app
     pullPolicy: IfNotPresent
-    tag: "v0.91.1"
+    tag: "v0.92.0"
   env:
     ORIGIN: https://enzarb.dev
   dbSecret:
@@ -155,7 +155,7 @@ registryMirror:
 workspace:
   image:
     repository: ghcr.io/enzarb/workspace
-    tag: "v0.91.0"
+    tag: "v0.92.0"
   # StorageClass for project home PVCs. Empty uses the cluster's default class.
   storageClass: ""
   # changelog is shown in the UI when a workspace update is pending. Set by CI
