@@ -310,13 +310,28 @@
 	.conn-status { display: block; font-size: 11px; color: var(--color-text-muted); padding: 0.25rem 0.75rem; border-bottom: 1px solid var(--color-border); background: var(--color-surface-2); }
 	.conn-status.failed { color: var(--color-danger); }
 
-	.timeline { flex: 1; overflow-y: auto; padding: 1rem 0.75rem; display: flex; flex-direction: column; gap: 0.75rem; }
+	.timeline {
+		flex: 1;
+		overflow-y: auto;
+		overflow-x: hidden;
+		min-width: 0;
+		padding: 1rem 0.75rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+		scrollbar-width: thin;
+		scrollbar-color: var(--color-border) transparent;
+	}
+	.timeline::-webkit-scrollbar { width: 8px; height: 0; }
+	.timeline::-webkit-scrollbar-track { background: transparent; }
+	.timeline::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 4px; }
+	.timeline::-webkit-scrollbar-thumb:hover { background: var(--color-text-muted); }
 	.muted { color: var(--color-text-muted); font-size: 13px; }
 
-	.message { display: flex; flex-direction: column; gap: 0.15rem; }
+	.message { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
 	.message-role { font-size: 11px; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.03em; }
-	.message-body { font-size: 13px; line-height: 1.5; }
-	.message-body p { margin: 0; }
+	.message-body { font-size: 13px; line-height: 1.5; min-width: 0; overflow-wrap: anywhere; }
+	.message-body p { margin: 0; overflow-wrap: anywhere; }
 	.message.user .message-body { color: var(--color-text); }
 
 	.composer { display: flex; flex-direction: column; gap: 0; padding: 0.5rem 0.75rem; border-top: 1px solid var(--color-border); min-width: 0; }

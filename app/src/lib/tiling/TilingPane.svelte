@@ -28,6 +28,7 @@
 
 	let hoverZone = $state<DropZone | null>(null);
 	let el: HTMLDivElement | undefined = $state();
+	let addMenuOpen = $state(false);
 
 	// File viewer state (for left region)
 	type FileContent = { type: 'loading' } | { type: 'text'; content: string; path: string } | { type: 'image'; dataUrl: string } | { type: 'binary' } | { type: 'error'; message: string };
@@ -102,6 +103,7 @@
 
 	function handleAddTab(tab: Tab) {
 		onAddTab(paneId, tab);
+		addMenuOpen = false;
 	}
 </script>
 
@@ -137,6 +139,36 @@
 			{/each}
 		</div>
 		<div class="tab-actions">
+			{#if regionKind === 'right' && pane.tabs.length > 0}
+				<div class="add-menu-wrap">
+					<button class="action-btn" title="Open another terminal or agent session" onclick={() => addMenuOpen = !addMenuOpen}>
+						<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5">
+							<line x1="7" y1="2" x2="7" y2="12" />
+							<line x1="2" y1="7" x2="12" y2="7" />
+						</svg>
+					</button>
+					{#if addMenuOpen}
+						<button
+							type="button"
+							class="add-menu-backdrop"
+							aria-label="Close menu"
+							onclick={() => addMenuOpen = false}
+						></button>
+						<div class="add-menu-popover">
+							<NewPaneDialog
+								{agentBase}
+								{namespace}
+								{project}
+								{regionKind}
+								onOpenTerminal={(id, label) => handleAddTab({ kind: 'terminal', id, label })}
+								onOpenAgent={(id, label) => handleAddTab({ kind: 'agent', id, label })}
+								onCreateTerminal={(id, label) => handleAddTab({ kind: 'terminal', id, label })}
+								onCreateAgent={(id, label) => handleAddTab({ kind: 'agent', id, label })}
+							/>
+						</div>
+					{/if}
+				</div>
+			{/if}
 			<button class="action-btn" title="Split side by side" onclick={() => onSplit(paneId, 'h', 'after')}>
 				<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3">
 					<rect x="1" y="1" width="12" height="12" rx="1.5" />
@@ -218,6 +250,9 @@
 	.tab-actions { display: flex; align-items: center; flex-shrink: 0; border-left: 1px solid var(--color-border); }
 	.action-btn { width: 28px; height: 28px; border: none; background: none; color: var(--color-text-muted); cursor: pointer; font-size: 11px; display: flex; align-items: center; justify-content: center; }
 	.action-btn:hover { background: var(--color-surface); color: var(--color-accent); }
+	.add-menu-wrap { position: relative; display: flex; }
+	.add-menu-backdrop { position: fixed; inset: 0; z-index: 29; background: transparent; border: none; padding: 0; cursor: default; }
+	.add-menu-popover { position: absolute; top: 100%; right: 0; z-index: 30; width: 300px; max-height: 420px; overflow-y: auto; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 6px; box-shadow: var(--shadow); }
 	.pane-content { flex: 1; overflow: hidden; position: relative; display: flex; flex-direction: column; min-height: 0; }
 	.file-viewer { flex: 1; overflow: auto; display: flex; flex-direction: column; min-height: 0; }
 	.empty-file-pane { flex: 1; display: flex; align-items: center; justify-content: center; }

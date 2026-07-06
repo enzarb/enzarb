@@ -22,7 +22,8 @@ export interface SplitPane {
 export type PaneNode = LeafPane | SplitPane;
 
 export interface SidebarState {
-	widthFraction: number;
+	/** Extra fraction of the main area given to the file viewer once a file is open. */
+	viewerFraction: number;
 	collapsed: boolean;
 }
 
@@ -40,7 +41,7 @@ export interface TilingLayout {
 const DEFAULT_LAYOUT: TilingLayout = {
 	divider: 0.25,
 	left: {
-		sidebar: { widthFraction: 0.3, collapsed: false },
+		sidebar: { viewerFraction: 0.3, collapsed: false },
 		panes: { type: 'leaf', tabs: [], activeTab: 0 }
 	},
 	right: {

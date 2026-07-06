@@ -47,6 +47,7 @@
 {/each}
 
 <style>
+	p, h4, h5, ul, ol, blockquote, li { overflow-wrap: anywhere; }
 	p, h4, h5, ul, ol, blockquote { margin: 0 0 0.5rem; }
 	p:last-child, ul:last-child, ol:last-child { margin-bottom: 0; }
 	.md-code {

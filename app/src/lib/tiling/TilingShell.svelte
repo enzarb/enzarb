@@ -246,23 +246,39 @@
 		};
 	}
 
+	// The main divider's meaning depends on whether a file viewer is showing:
+	// with no file open it's the file browser's own edge; with one open, the
+	// browser's width (layout.divider) stays put and this only resizes the
+	// viewer, so closing the file always restores the divider beside the browser.
 	function handleMainDividerDrag(delta: number) {
 		if (!layout) return;
-		layout.divider = Math.max(0.1, Math.min(0.9, layout.divider + delta));
+		if (hasOpenFile) {
+			const viewerFraction = layout.left.sidebar?.viewerFraction ?? 0.3;
+			if (!layout.left.sidebar) layout.left.sidebar = { viewerFraction: 0.3, collapsed: false };
+			layout.left.sidebar.viewerFraction = Math.max(0.1, Math.min(0.7, viewerFraction + delta));
+		} else {
+			layout.divider = Math.max(0.1, Math.min(0.9, layout.divider + delta));
+		}
 		save();
 	}
 
-	function handleSidebarWidthDrag(delta: number, parentWidth: number) {
+	// Drag between the file browser and the file viewer: reapportions the
+	// combined width between them without moving the outer main divider.
+	function handleSidebarWidthDrag(delta: number) {
 		if (!layout) return;
-		const fraction = (parentWidth * (layout.left.sidebar?.widthFraction ?? 0.3) + delta * parentWidth) / parentWidth;
-		if (!layout.left.sidebar) layout.left.sidebar = { widthFraction: 0.3, collapsed: false };
-		layout.left.sidebar.widthFraction = Math.max(0.1, Math.min(0.6, fraction));
+		const viewerFraction = layout.left.sidebar?.viewerFraction ?? 0.3;
+		const combined = layout.divider + viewerFraction;
+		const deltaOfMain = delta * combined;
+		const newDivider = Math.max(0.05, Math.min(combined - 0.05, layout.divider + deltaOfMain));
+		if (!layout.left.sidebar) layout.left.sidebar = { viewerFraction: combined - newDivider, collapsed: false };
+		layout.left.sidebar.viewerFraction = combined - newDivider;
+		layout.divider = newDivider;
 		save();
 	}
 
 	function toggleSidebar() {
 		if (!layout) return;
-		if (!layout.left.sidebar) layout.left.sidebar = { widthFraction: 0.3, collapsed: false };
+		if (!layout.left.sidebar) layout.left.sidebar = { viewerFraction: 0.3, collapsed: false };
 		layout.left.sidebar.collapsed = !layout.left.sidebar.collapsed;
 		save();
 	}
@@ -288,9 +304,16 @@
 	}
 
 	const sidebarCollapsed = $derived(layout?.left.sidebar?.collapsed ?? false);
-	const sidebarWidth = $derived(`${(layout?.left.sidebar?.widthFraction ?? 0.3) * 100}%`);
-	const leftWidth = $derived(layout ? `${layout.divider * 100}%` : '25%');
 	const hasOpenFile = $derived(layout ? collectTabs(layout.left.panes).length > 0 : false);
+	const viewerFraction = $derived(layout?.left.sidebar?.viewerFraction ?? 0.3);
+	// The file browser's own share of the screen never changes across open/close —
+	// only the extra viewer width is added on top while a file is open.
+	const leftWidth = $derived(
+		layout ? `${(layout.divider + (hasOpenFile ? viewerFraction : 0)) * 100}%` : '25%'
+	);
+	const sidebarWidth = $derived(
+		layout && hasOpenFile ? `${(layout.divider / (layout.divider + viewerFraction)) * 100}%` : '100%'
+	);
 </script>
 
 <div class="tiling-shell" onmouseup={() => { if (dragging) { dragging = false; dragSource = null; } }}>
@@ -308,7 +331,7 @@
 			<div class="left-region" style="width: {sidebarCollapsed ? '28px' : leftWidth}; flex-shrink: 0;">
 				<div class="left-inner">
 					<!-- File sidebar -->
-					<div class="sidebar-wrap" style="width: {sidebarCollapsed ? '28px' : (hasOpenFile ? sidebarWidth : '100%')}; flex-shrink: 0;">
+					<div class="sidebar-wrap" style="width: {sidebarCollapsed ? '28px' : sidebarWidth}; flex-shrink: 0;">
 						<FileSidebar
 							{agentBase}
 							{namespace}
@@ -321,7 +344,7 @@
 					{#if !sidebarCollapsed && hasOpenFile}
 						<TilingSplitHandle
 							direction="h"
-							onDrag={(delta, total) => handleSidebarWidthDrag(delta, total)}
+							onDrag={(delta) => handleSidebarWidthDrag(delta)}
 						/>
 						<!-- Left pane area (file viewer) -->
 						<div class="pane-area" style="flex: 1; min-width: 0; overflow: hidden;">
