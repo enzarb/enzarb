@@ -132,13 +132,17 @@ kind: ClusterRole
 metadata:
   name: enzarb-deployer
 rules:
-  # Pods — CRUD for running workloads; logs for debugging
+  # Pods — CRUD for running workloads; logs for debugging; exec for shelling
+  # into a running pod's containers (e.g. `kubectl exec`)
   - apiGroups: [""]
     resources: ["pods", "pods/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
   # Services — ClusterIP only; NodePort/LoadBalancer/externalIPs blocked by VAP
   - apiGroups: [""]
     resources: ["services"]

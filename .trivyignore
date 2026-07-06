@@ -6,3 +6,11 @@ KSV-0056
 # Secrets in their own environment namespaces (e.g., image pull secrets, env secrets for CI/CD).
 # This is intentional and scoped to deploy-<orgid>-<envslug> namespaces via RoleBindings.
 KSV-0041
+
+# The enzarb-deployer ClusterRole grants pods/exec (create) so tenants can shell into their own
+# pods in their env namespace for debugging. Audited: the operator never creates
+# Deployments/Jobs/Pods in deploy-<orgid>-<envslug> namespaces, and ACME HTTP-01 challenges are
+# solved via a Gateway HTTPRoute rather than an ephemeral solver pod, so no foreign,
+# more-privileged pod ever exists in-namespace to exec into — every pod there runs under the
+# tenant's own ServiceAccount, which the anti-escalation RoleBinding-kind VAP already bounds.
+KSV-0053
