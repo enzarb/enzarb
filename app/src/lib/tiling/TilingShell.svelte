@@ -290,6 +290,7 @@
 	const sidebarCollapsed = $derived(layout?.left.sidebar?.collapsed ?? false);
 	const sidebarWidth = $derived(`${(layout?.left.sidebar?.widthFraction ?? 0.3) * 100}%`);
 	const leftWidth = $derived(layout ? `${layout.divider * 100}%` : '25%');
+	const hasOpenFile = $derived(layout ? collectTabs(layout.left.panes).length > 0 : false);
 </script>
 
 <div class="tiling-shell" onmouseup={() => { if (dragging) { dragging = false; dragSource = null; } }}>
@@ -307,7 +308,7 @@
 			<div class="left-region" style="width: {sidebarCollapsed ? '28px' : leftWidth}; flex-shrink: 0;">
 				<div class="left-inner">
 					<!-- File sidebar -->
-					<div class="sidebar-wrap" style="width: {sidebarCollapsed ? '28px' : sidebarWidth}; flex-shrink: 0;">
+					<div class="sidebar-wrap" style="width: {sidebarCollapsed ? '28px' : (hasOpenFile ? sidebarWidth : '100%')}; flex-shrink: 0;">
 						<FileSidebar
 							{agentBase}
 							{namespace}
@@ -317,7 +318,7 @@
 							onOpenFile={openFileInLeft}
 						/>
 					</div>
-					{#if !sidebarCollapsed}
+					{#if !sidebarCollapsed && hasOpenFile}
 						<TilingSplitHandle
 							direction="h"
 							onDrag={(delta, total) => handleSidebarWidthDrag(delta, total)}
