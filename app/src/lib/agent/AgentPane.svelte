@@ -331,7 +331,7 @@
 	.message { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
 	.message-role { font-size: 11px; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.03em; }
 	.message-body { font-size: 13px; line-height: 1.5; min-width: 0; overflow-wrap: anywhere; }
-	.message-body p { margin: 0; overflow-wrap: anywhere; }
+	.message-body p { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 	.message.user .message-body { color: var(--color-text); }
 
 	.composer { display: flex; flex-direction: column; gap: 0; padding: 0.5rem 0.75rem; border-top: 1px solid var(--color-border); min-width: 0; }
