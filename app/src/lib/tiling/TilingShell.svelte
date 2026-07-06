@@ -93,17 +93,6 @@
 		return { ...node, children: [left, right] };
 	}
 
-	// Update split ratio by node ID
-	function updateRatio(node: PaneNode, nodeId: string, ratio: number): PaneNode {
-		if (node.type === 'leaf') return node;
-		const thisId = (node as any).__nodeId;
-		if (thisId === nodeId) return { ...node, ratio };
-		return {
-			...node,
-			children: [updateRatio(node.children[0], nodeId, ratio), updateRatio(node.children[1], nodeId, ratio)]
-		};
-	}
-
 	onMount(() => {
 		initTilingShell();
 	});
@@ -243,24 +232,17 @@
 		save();
 	}
 
-	function handleRatioChange(region: 'left' | 'right', nodeId: string, ratio: number) {
-		if (!layout) return;
-		// For intra-region splits we need to find and update by node traversal
-		// We tag split nodes with __nodeId when rendering — use the nodeId passed
-		layout[region].panes = updateSplitRatio(layout[region].panes, nodeId, ratio);
-		save();
-	}
-
-	function updateSplitRatio(node: PaneNode, nodeId: string, ratio: number): PaneNode {
+	// nodeId is the path string built by TilingRegion (e.g. "left-0-1"); currentId
+	// tracks the path of `node` as we recurse so we only touch the matching split.
+	function updateSplitRatio(node: PaneNode, nodeId: string, ratio: number, currentId: string): PaneNode {
 		if (node.type === 'leaf') return node;
-		// TilingRegion passes nodeId as the path string like "left-0-1"
-		// We match by checking if the node IS at that path
-		// Since we pass nodeId as prop to TilingRegion recursively, we trust the caller
-		// to match — just update ratio if it matches the direct parent or recurse
+		if (currentId === nodeId) return { ...node, ratio };
 		return {
 			...node,
-			ratio,
-			children: [node.children[0], node.children[1]]
+			children: [
+				updateSplitRatio(node.children[0], nodeId, ratio, `${currentId}-0`),
+				updateSplitRatio(node.children[1], nodeId, ratio, `${currentId}-1`)
+			]
 		};
 	}
 
@@ -363,7 +345,7 @@
 							onTabDrop={(id, zone) => handleTabDrop('left', id, zone)}
 							onRatioChange={(id, ratio) => {
 								if (!layout) return;
-								layout.left.panes = updateSplitRatio(layout.left.panes, id, ratio);
+								layout.left.panes = updateSplitRatio(layout.left.panes, id, ratio, 'left');
 								save();
 							}}
 						/>
@@ -394,7 +376,7 @@
 					onTabDrop={(id, zone) => handleTabDrop('right', id, zone)}
 					onRatioChange={(id, ratio) => {
 						if (!layout) return;
-						layout.right.panes = updateSplitRatio(layout.right.panes, id, ratio);
+						layout.right.panes = updateSplitRatio(layout.right.panes, id, ratio, 'right');
 						save();
 					}}
 				/>

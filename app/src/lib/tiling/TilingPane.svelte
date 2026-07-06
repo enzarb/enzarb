@@ -148,7 +148,11 @@
 	</div>
 
 	<div class="pane-content">
-		{#if pane.tabs.length === 0}
+		{#if pane.tabs.length === 0 && regionKind === 'left'}
+			<div class="empty-file-pane">
+				<p class="file-msg">No file open — select one from the file browser.</p>
+			</div>
+		{:else if pane.tabs.length === 0}
 			<NewPaneDialog
 				{agentBase}
 				{namespace}
@@ -211,6 +215,7 @@
 	.action-btn:hover { background: var(--color-surface); color: var(--color-accent); }
 	.pane-content { flex: 1; overflow: hidden; position: relative; display: flex; flex-direction: column; min-height: 0; }
 	.file-viewer { flex: 1; overflow: auto; display: flex; flex-direction: column; min-height: 0; }
+	.empty-file-pane { flex: 1; display: flex; align-items: center; justify-content: center; }
 	.file-msg { color: var(--color-text-muted); font-size: 13px; padding: 1rem; }
 	.file-msg.err { color: var(--color-danger); }
 	.image-container { flex: 1; display: flex; align-items: center; justify-content: center; padding: 1rem; overflow: auto; }
