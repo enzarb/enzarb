@@ -6,7 +6,7 @@ app:
   image:
     repository: ghcr.io/enzarb/app
     pullPolicy: IfNotPresent
-    tag: "v0.93.1"
+    tag: "v0.94.0"
   env:
     ORIGIN: https://enzarb.dev
   dbSecret:
@@ -42,7 +42,7 @@ operator:
   image:
     repository: ghcr.io/enzarb/operator
     pullPolicy: IfNotPresent
-    tag: "v0.90.5"
+    tag: "v0.94.0"
   leaderElection: true
   env:
     ENZARB_DOMAIN: enzarb.dev
@@ -57,7 +57,7 @@ billing:
   image:
     repository: ghcr.io/enzarb/billing
     pullPolicy: IfNotPresent
-    tag: "v0.71.0"
+    tag: "v0.94.0"
   # Billing rates and free-tier allowances are configured at runtime via the
   # admin settings page (stored in the app_settings DB table), not here.
   resources:
@@ -71,7 +71,7 @@ metering:
   image:
     repository: ghcr.io/enzarb/metering
     pullPolicy: IfNotPresent
-    tag: "v0.76.2"
+    tag: "v0.94.0"
   hubbleLogPath: /var/run/cilium/hubble/events.log
   resources:
     requests:
@@ -86,7 +86,7 @@ authd:
   image:
     repository: ghcr.io/enzarb/authd
     pullPolicy: IfNotPresent
-    tag: "v0.48.3"
+    tag: "v0.94.0"
   # Secret holding the RSA token-signing keypair (tls.crt/tls.key). The same
   # cert is mounted into Zot as its bearer-auth trust anchor. Create with:
   #   openssl req -x509 -newkey rsa:2048 -nodes -keyout tls.key -out tls.crt \
@@ -113,7 +113,7 @@ webhook:
   image:
     repository: ghcr.io/enzarb/webhook
     pullPolicy: IfNotPresent
-    tag: "v0.82.2"
+    tag: "v0.94.0"
   resources:
     requests:
       cpu: 10m
@@ -128,7 +128,7 @@ registryMirror:
   image:
     repository: ghcr.io/enzarb/mirror
     pullPolicy: IfNotPresent
-    tag: "v0.87.0"
+    tag: "v0.94.0"
   # PVC size (the hard cap on disk).
   cacheSize: 50Gi
   # LRU eviction threshold; keep below cacheSize so eviction finishes before
@@ -174,7 +174,7 @@ acmeSelfcheckResolver:
 workspace:
   image:
     repository: ghcr.io/enzarb/workspace
-    tag: "v0.92.0"
+    tag: "v0.94.0"
   # StorageClass for project home PVCs. Empty uses the cluster's default class.
   storageClass: ""
   # changelog is shown in the UI when a workspace update is pending. Set by CI
