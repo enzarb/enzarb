@@ -6,7 +6,7 @@ app:
   image:
     repository: ghcr.io/enzarb/app
     pullPolicy: IfNotPresent
-    tag: "v0.92.2"
+    tag: "v0.92.3"
   env:
     ORIGIN: https://enzarb.dev
   dbSecret:
