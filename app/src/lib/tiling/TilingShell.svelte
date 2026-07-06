@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import type { TilingLayout, PaneNode, Tab, LeafPane } from './layout';
-	import { loadLayout, saveLayout, collectTabs, mapPaneLeaves, removeTabs } from './layout';
+	import { loadLayout, saveLayout, collectTabs, mapPaneLeaves, removeTabs, countLeaves } from './layout';
 	import TilingRegion from './TilingRegion.svelte';
 	import TilingSplitHandle from './TilingSplitHandle.svelte';
 	import FileSidebar from './FileSidebar.svelte';
@@ -150,11 +150,21 @@
 
 	function handleTabClose(region: 'left' | 'right', paneId: string, tabIndex: number) {
 		if (!layout) return;
-		layout[region].panes = updateLeaf(layout[region].panes, paneId, (leaf) => {
+		const updated = updateLeaf(layout[region].panes, paneId, (leaf) => {
 			const tabs = leaf.tabs.filter((_, i) => i !== tabIndex);
 			const activeTab = Math.min(leaf.activeTab, Math.max(0, tabs.length - 1));
 			return { ...leaf, tabs, activeTab };
 		});
+		const closedLeaf = findLeaf(updated, paneId);
+		// If that was the pane's last tab and it's part of a split, close the
+		// pane itself (collapsing its sibling) rather than leaving an empty
+		// picker behind. A lone, unsplit pane has nowhere to collapse to, so
+		// it keeps showing the picker.
+		if (closedLeaf && closedLeaf.tabs.length === 0 && countLeaves(updated) > 1) {
+			layout[region].panes = removeLeaf(updated, paneId) ?? updated;
+		} else {
+			layout[region].panes = updated;
+		}
 		save();
 	}
 
