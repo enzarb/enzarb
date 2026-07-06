@@ -32,6 +32,7 @@
 	const domainForm = $derived(domainEnv ? addDomain.for(domainEnv) : null);
 	let copiedNs: string | null = $state(null);
 	let copiedUrl: string | null = $state(null);
+	let copiedTxt: string | null = $state(null);
 	const registryPrefix = $derived(`registry.enzarb.dev/${page.params.namespace}/${page.params.project}`);
 
 	const projectData = $derived(getProject(page.params.project));
@@ -66,6 +67,12 @@
 		await navigator.clipboard.writeText(url);
 		copiedUrl = url;
 		setTimeout(() => { copiedUrl = null; }, 1500);
+	}
+
+	async function copyTxt(value: string) {
+		await navigator.clipboard.writeText(value);
+		copiedTxt = value;
+		setTimeout(() => { copiedTxt = null; }, 1500);
 	}
 
 	function toggleDropdown(name: string) {
@@ -243,13 +250,33 @@
 									{#if env.status?.domains?.length}
 										<div class="domains">
 											{#each env.status.domains as domain}
+												{@const txtName = `_enzarb-challenge.${domain.fqdn}`}
+												{@const txtValue = `enzarb-verify=${domain.challengeToken}`}
 												<div class="domain-row">
 													<span>{domain.fqdn}</span>
-													<span class="badge {domain.certStatus === 'Issued' ? 'running' : 'pending'}">{domain.certStatus ?? 'Pending'}</span>
-													{#if domain.certStatus !== 'Issued'}
-														<span class="muted">Point CNAME → gw.enzarb.dev</span>
-													{/if}
+													<span class="badge {domain.certStatus === 'Verified' ? 'running' : 'pending'}">{domain.certStatus ?? 'PendingVerification'}</span>
 												</div>
+												{#if domain.certStatus === 'PendingVerification' && domain.challengeToken}
+													<div class="domain-instructions">
+														<span class="muted">Add this DNS TXT record to verify ownership:</span>
+														<div class="txt-record">
+															<span class="txt-label">Name</span>
+															<code class="mono">{txtName}</code>
+														</div>
+														<div class="txt-record">
+															<span class="txt-label">Value</span>
+															<code class="mono">{txtValue}</code>
+															<button type="button" class="copy-btn" onclick={() => copyTxt(txtValue)} title="Copy value">
+																{copiedTxt === txtValue ? '✓' : '⎘'}
+															</button>
+														</div>
+														<span class="muted">Rechecked automatically every ~2 minutes.</span>
+													</div>
+												{:else if domain.certStatus === 'VerificationError'}
+													<span class="muted">DNS lookup failed — check the TXT record and try again.</span>
+												{:else if domain.certStatus === 'DomainConflict'}
+													<span class="muted">This domain is already claimed by another project.</span>
+												{/if}
 											{/each}
 										</div>
 									{/if}
@@ -352,6 +379,10 @@
 	.platform-url:hover { text-decoration: underline; }
 	.domains { display: flex; flex-direction: column; gap: 0.4rem; padding-left: 0.5rem; }
 	.domain-row { display: flex; align-items: center; gap: 0.6rem; font-size: 13px; }
+	.domain-instructions { display: flex; flex-direction: column; gap: 0.2rem; padding: 0.4rem 0.5rem; margin: -0.1rem 0 0.2rem; background: var(--color-bg-subtle, rgba(127,127,127,0.08)); border-radius: 4px; font-size: 11px; }
+	.txt-record { display: flex; align-items: center; gap: 0.4rem; }
+	.txt-label { font-weight: 500; color: var(--color-text-muted); min-width: 3.2rem; }
+	.txt-record code { overflow-x: auto; white-space: nowrap; }
 	.domain-form { display: flex; gap: 0.5rem; align-items: center; }
 	.domain-form input[type=text] { max-width: 200px; }
 
