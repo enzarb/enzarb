@@ -15,6 +15,18 @@ spec:
       apiVersion: controller.config.cert-manager.io/v1alpha1
       kind: ControllerConfiguration
       enableGatewayAPI: true
+      # HTTP-01 self-check resolves the challenge hostname itself before
+      # asking Let's Encrypt to validate. Our cluster's router doesn't support
+      # NAT hairpinning, so pods can't reach the cluster's own public IP,
+      # making every customer custom domain fail self-check even though DNS
+      # is correct. We can't run split-horizon DNS per customer domain, so
+      # instead point solverNameservers at enzarb-acme-selfcheck-resolver
+      # (charts/enzarb/templates/acme-selfcheck-resolver.yaml), which answers
+      # every A query with the gateway's in-cluster address — the self-check
+      # then connects directly, in-cluster, for any domain.
+      acmeHTTP01Config:
+        solverNameservers:
+          - "enzarb-acme-selfcheck-resolver.enzarb-system.svc.cluster.local:53"
     tolerations:
       - key: node-role.kubernetes.io/control-plane
         operator: Exists

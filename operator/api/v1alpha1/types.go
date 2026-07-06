@@ -174,6 +174,36 @@ type DomainStatus struct {
 	// record at _enzarb-challenge.<fqdn> (value "enzarb-verify=<token>") to prove
 	// DNS control. Surfaced to the user so they can create the record.
 	ChallengeToken string `json:"challengeToken,omitempty"`
+	// LastCheckedAt is the RFC3339 timestamp of the most recent DNS verification
+	// attempt (successful or not), bumped on every reconcile that runs the TXT
+	// lookup — including one triggered by the enzarb.io/recheck-domains
+	// annotation. The UI polls this to detect when a user-requested recheck
+	// has completed.
+	LastCheckedAt string `json:"lastCheckedAt,omitempty"`
+	// LastError is the human-readable reason for the most recent
+	// VerificationError; cleared once a check no longer errors.
+	LastError string `json:"lastError,omitempty"`
+	// TLSStatus tracks cert-manager's progress issuing this domain's serving
+	// certificate once ownership is Verified: IssuingCertificate | Ready |
+	// CertError. Empty until CertStatus reaches Verified AND RoutingStatus
+	// reaches Ready (a cert is only requested once traffic can actually reach
+	// the gateway; see RoutingStatus).
+	TLSStatus string `json:"tlsStatus,omitempty"`
+	// TLSError is the cert-manager Certificate's Ready=False message, set only
+	// when TLSStatus is CertError.
+	TLSError string `json:"tlsError,omitempty"`
+	// RoutingStatus tracks whether this domain's public A/AAAA records
+	// actually resolve to the gateway's public IP(s) (GATEWAY_PUBLIC_IPS),
+	// checked only once ownership is Verified and re-checked every reconcile.
+	// A certificate is requested only once this reaches Ready — proving TXT
+	// ownership isn't proof that production traffic can reach the gateway,
+	// and requesting an ACME cert for a domain that isn't routed yet just
+	// burns Let's Encrypt's rate limit on a guaranteed-fail validation:
+	// Pending | Ready | Error.
+	RoutingStatus string `json:"routingStatus,omitempty"`
+	// RoutingError is the DNS lookup failure reason when RoutingStatus is
+	// Error (as opposed to Pending, which just means no matching record yet).
+	RoutingError string `json:"routingError,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -17,6 +17,21 @@ export const customApi = kc.makeApiClient(k8s.CustomObjectsApi);
 const GROUP = 'enzarb.io';
 const VERSION = 'v1alpha1';
 
+// Mirrors the operator's gatewayPublicIPs (environment_controller.go): reads
+// the router-facing public IP(s) straight off the envoy Service's
+// spec.externalIPs — set via the gateway.publicIP Helm value's patch
+// (charts/enzarb/templates/gateway.yaml) — rather than keeping a separate
+// copy of that value in the app's own config.
+export async function getGatewayPublicIPs(): Promise<string[]> {
+	const gatewayNS = env.GATEWAY_NAMESPACE ?? 'envoy-gateway-system';
+	const className = env.GATEWAY_CLASS_NAME ?? 'envoy';
+	const { items } = await coreApi.listNamespacedService({
+		namespace: gatewayNS,
+		labelSelector: `gateway.envoyproxy.io/owning-gatewayclass=${className}`
+	});
+	return items.flatMap((svc) => svc.spec?.externalIPs ?? []);
+}
+
 export function orgNamespace(orgId: string) {
 	return `user-${orgId}`;
 }
@@ -371,6 +386,36 @@ export async function addCustomDomain(orgId: string, envName: string, fqdn: stri
 		plural: 'environments',
 		name: envName,
 		body: [{ op: 'replace', path: '/spec/customDomains', value: domains }]
+	});
+}
+
+export async function getEnvironment(orgId: string, envName: string) {
+	const ns = orgNamespace(orgId);
+	return customApi.getNamespacedCustomObject({
+		group: GROUP,
+		version: VERSION,
+		namespace: ns,
+		plural: 'environments',
+		name: envName
+	});
+}
+
+// Sets the one-shot enzarb.io/recheck-domains annotation, which the operator
+// watch picks up immediately (rather than waiting for its ~2 minute poll) and
+// clears once it has re-run DNS verification for every custom domain.
+export async function requestDomainRecheck(orgId: string, envName: string) {
+	const ns = orgNamespace(orgId);
+	const env = (await getEnvironment(orgId, envName)) as any;
+	const patch = env.metadata?.annotations
+		? [{ op: 'add', path: '/metadata/annotations/enzarb.io~1recheck-domains', value: 'true' }]
+		: [{ op: 'add', path: '/metadata/annotations', value: { 'enzarb.io/recheck-domains': 'true' } }];
+	await customApi.patchNamespacedCustomObject({
+		group: GROUP,
+		version: VERSION,
+		namespace: ns,
+		plural: 'environments',
+		name: envName,
+		body: patch
 	});
 }
 

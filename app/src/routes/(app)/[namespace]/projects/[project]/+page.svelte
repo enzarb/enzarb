@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getProject } from '$lib/remote/projects.remote';
-	import { getEnvironments, createEnv, addDomain, setDefaultEnv, removeEnv } from '$lib/remote/environments.remote';
+	import { getEnvironments, createEnv, addDomain, setDefaultEnv, removeEnv, recheckDomain } from '$lib/remote/environments.remote';
 	import { getProjectRepoDetails } from '$lib/remote/registry.remote';
 	import { page } from '$app/state';
 	import { confirm } from '$lib/confirm';
@@ -33,6 +33,8 @@
 	let copiedNs: string | null = $state(null);
 	let copiedUrl: string | null = $state(null);
 	let copiedTxt: string | null = $state(null);
+	let recheckingDomain: string | null = $state(null);
+	let recheckResult: { fqdn: string; message: string; ok: boolean } | null = $state(null);
 	const registryPrefix = $derived(`registry.enzarb.dev/${page.params.namespace}/${page.params.project}`);
 
 	const projectData = $derived(getProject(page.params.project));
@@ -73,6 +75,29 @@
 		await navigator.clipboard.writeText(value);
 		copiedTxt = value;
 		setTimeout(() => { copiedTxt = null; }, 1500);
+	}
+
+	async function doRecheckDomain(envName: string, fqdn: string) {
+		recheckingDomain = fqdn;
+		recheckResult = null;
+		try {
+			const result = await recheckDomain({ envName, fqdn });
+			const message =
+				result.certStatus === 'Verified' && result.routingStatus === 'Ready' ? 'Verified and routed!' :
+				result.certStatus === 'Verified' && result.routingStatus === 'Error' ? `DNS lookup failed: ${result.routingError ?? 'unknown error'}` :
+				result.certStatus === 'Verified' ? 'Ownership verified — still waiting on the A record to point at us.' :
+				result.certStatus === 'DomainConflict' ? 'Domain is claimed by another project.' :
+				result.certStatus === 'VerificationError' ? `DNS check failed: ${result.lastError ?? 'unknown error'}` :
+				'Still pending — TXT record not found yet.';
+			recheckResult = { fqdn, message, ok: result.certStatus === 'Verified' && result.routingStatus === 'Ready' };
+		} catch (err) {
+			recheckResult = { fqdn, message: err instanceof Error ? err.message : 'Recheck failed', ok: false };
+		} finally {
+			recheckingDomain = null;
+			setTimeout(() => {
+				if (recheckResult?.fqdn === fqdn) recheckResult = null;
+			}, 6000);
+		}
 	}
 
 	function toggleDropdown(name: string) {
@@ -181,7 +206,7 @@
 					</div>
 				{/if}
 
-				{#await environments then { envs, deployZone, defaultEnvSlug }}
+				{#await environments then { envs, deployZone, defaultEnvSlug, gatewayPublicIPs }}
 					{#if envs.length === 0 && !showNewEnv}
 						<p class="muted empty-envs">No environments yet.</p>
 					{:else}
@@ -255,7 +280,30 @@
 												<div class="domain-row">
 													<span>{domain.fqdn}</span>
 													<span class="badge {domain.certStatus === 'Verified' ? 'running' : 'pending'}">{domain.certStatus ?? 'PendingVerification'}</span>
+													{#if domain.certStatus === 'Verified'}
+														<span class="badge {domain.routingStatus === 'Ready' ? 'running' : domain.routingStatus === 'Error' ? 'error' : 'pending'}" title={domain.routingError ?? ''}>
+															{domain.routingStatus === 'Ready' ? 'Routed' : domain.routingStatus === 'Error' ? 'Routing error' : 'Awaiting DNS routing'}
+														</span>
+													{/if}
+													{#if domain.certStatus === 'Verified' && domain.routingStatus === 'Ready' && domain.tlsStatus}
+														<span class="badge {domain.tlsStatus === 'Ready' ? 'running' : domain.tlsStatus === 'CertError' ? 'error' : 'pending'}" title={domain.tlsError ?? ''}>
+															{domain.tlsStatus === 'Ready' ? 'Gateway configured' : domain.tlsStatus === 'CertError' ? 'Cert error' : 'Issuing certificate…'}
+														</span>
+													{/if}
+													{#if domain.certStatus !== 'Verified' || domain.routingStatus !== 'Ready'}
+														<button
+															type="button"
+															class="btn btn-sm"
+															disabled={recheckingDomain === domain.fqdn}
+															onclick={() => doRecheckDomain(env.metadata.name, domain.fqdn)}
+														>
+															{recheckingDomain === domain.fqdn ? 'Checking…' : 'Recheck now'}
+														</button>
+													{/if}
 												</div>
+												{#if recheckResult && recheckResult.fqdn === domain.fqdn}
+													<span class="recheck-feedback {recheckResult.ok ? 'ok' : 'err'}">{recheckResult.message}</span>
+												{/if}
 												{#if domain.certStatus === 'PendingVerification' && domain.challengeToken}
 													<div class="domain-instructions">
 														<span class="muted">Add this DNS TXT record to verify ownership:</span>
@@ -276,6 +324,23 @@
 													<span class="muted">DNS lookup failed — check the TXT record and try again.</span>
 												{:else if domain.certStatus === 'DomainConflict'}
 													<span class="muted">This domain is already claimed by another project.</span>
+												{:else if domain.certStatus === 'Verified' && domain.routingStatus !== 'Ready' && gatewayPublicIPs?.length}
+													<div class="domain-instructions">
+														<span class="muted">
+															Ownership verified. Now point this domain's A record at our gateway so traffic (and certificate issuance) can reach it:
+														</span>
+														<div class="txt-record">
+															<span class="txt-label">A record</span>
+															<code class="mono">{gatewayPublicIPs.join(', ')}</code>
+														</div>
+														{#if domain.routingStatus === 'Error'}
+															<span class="muted">DNS lookup failed: {domain.routingError ?? 'unknown error'}</span>
+														{:else}
+															<span class="muted">Rechecked automatically every ~2 minutes.</span>
+														{/if}
+													</div>
+												{:else if domain.certStatus === 'Verified' && domain.routingStatus === 'Ready' && domain.tlsStatus === 'CertError'}
+													<span class="muted">Certificate issuance failed: {domain.tlsError ?? 'unknown error'}</span>
 												{/if}
 											{/each}
 										</div>
@@ -380,6 +445,9 @@
 	.domains { display: flex; flex-direction: column; gap: 0.4rem; padding-left: 0.5rem; }
 	.domain-row { display: flex; align-items: center; gap: 0.6rem; font-size: 13px; }
 	.domain-instructions { display: flex; flex-direction: column; gap: 0.2rem; padding: 0.4rem 0.5rem; margin: -0.1rem 0 0.2rem; background: var(--color-bg-subtle, rgba(127,127,127,0.08)); border-radius: 4px; font-size: 11px; }
+	.recheck-feedback { font-size: 11px; padding-left: 0.5rem; }
+	.recheck-feedback.ok { color: var(--color-success, #2a9d5c); }
+	.recheck-feedback.err { color: var(--color-danger, #c0392b); }
 	.txt-record { display: flex; align-items: center; gap: 0.4rem; }
 	.txt-label { font-weight: 500; color: var(--color-text-muted); min-width: 3.2rem; }
 	.txt-record code { overflow-x: auto; white-space: nowrap; }

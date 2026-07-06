@@ -150,6 +150,25 @@ registryMirror:
       memory: 64Mi
     limits:
       memory: 256Mi
+# Answers every A query with the deploy gateway's in-cluster IP, so
+# cert-manager's ACME HTTP-01 self-check (pointed here via
+# deploy/system/cert-manager.yaml's config.acmeHTTP01Config.solverNameservers)
+# can reach it directly instead of hairpinning back through the router's
+# public IP, which this network doesn't support. Works for any customer
+# custom domain with no per-domain DNS setup.
+acmeSelfcheckResolver:
+  enabled: true
+  image:
+    repository: coredns/coredns
+    pullPolicy: IfNotPresent
+    tag: "1.13.1"
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 64Mi
 # workspace is not a Deployment in this chart; its tag is injected into the
 # operator as WORKSPACE_IMAGE and used as the image for project pods.
 workspace:
@@ -190,6 +209,14 @@ gateway:
   domainPolicy:
     enabled: true
   loadBalancerIP: "192.168.33.83"
+  # This cluster sits behind a router that NATs a public IP to loadBalancerIP
+  # with no hairpinning support, so pods can't reach publicIP directly. Set as
+  # spec.externalIPs on the envoy Service (see gateway.yaml's envoyService
+  # patch) so it's discoverable from the K8s API — the operator reads it from
+  # there (gatewayPublicIPs in environment_controller.go) rather than a second
+  # copy — to confirm a custom domain's public DNS actually points at us
+  # before requesting its certificate.
+  publicIP: "104.52.87.66"
   issuer:
     email: support@enzarb.dev
     acmeServer: https://acme-v02.api.letsencrypt.org/directory

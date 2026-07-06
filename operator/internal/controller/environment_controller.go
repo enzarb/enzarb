@@ -105,6 +105,17 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, fmt.Errorf("ensure deploy subdomain: %w", err)
 	}
 
+	// Honour a user-initiated "recheck now" request: any annotation change
+	// already triggers this reconcile via the watch, so all that's needed here
+	// is to clear the one-shot flag before reconcileDomains runs its (always
+	// unconditional) verification pass below.
+	if env.Annotations[recheckDomainsAnnotation] == "true" {
+		patch := []byte(`{"metadata":{"annotations":{"` + recheckDomainsAnnotation + `":null}}}`)
+		if pErr := r.Patch(ctx, &env, client.RawPatch(types.MergePatchType, patch)); pErr != nil {
+			logger.Error(pErr, "failed to remove recheck-domains annotation; proceeding anyway")
+		}
+	}
+
 	// Verify ownership of custom domains and claim them in the cluster-scoped
 	// ledger. This mutates env.Status.Domains in memory, which reconcileAllowedDomains
 	// reads below, so it must run first.
@@ -121,6 +132,13 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// Gateway that references them locally (see reconcileServingTLS).
 	if err := r.reconcileServingTLS(ctx, deployNS, servingDomains(&env)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile serving TLS: %w", err)
+	}
+
+	// Surface cert-manager's issuance progress for each verified custom domain
+	// so the UI can show more than just "Verified" while the cert/gateway
+	// catch up.
+	if err := r.reconcileDomainTLSStatus(ctx, deployNS, &env); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile domain TLS status: %w", err)
 	}
 
 	env.Status.Namespace = deployNS
@@ -149,12 +167,97 @@ const (
 	// namespace. Tenants reference it by name from their Certificates; they have no
 	// RBAC to edit or delete it (see the enzarb-deployer ClusterRole).
 	environmentIssuerName = "enzarb-acme"
+	// recheckDomainsAnnotation lets a tenant request an immediate domain
+	// verification pass instead of waiting for domainRecheckInterval. Setting it
+	// to "true" triggers a reconcile via the watch; Reconcile clears it as a
+	// one-shot flag before reconcileDomains runs.
+	recheckDomainsAnnotation = "enzarb.io/recheck-domains"
 )
 
 // dnsResolver is package-level so tests can stub TXT lookups.
 var dnsResolver interface {
 	LookupTXT(ctx context.Context, name string) ([]string, error)
 } = net.DefaultResolver
+
+// hostResolver is package-level so tests can stub A/AAAA lookups for the
+// routing check.
+var hostResolver interface {
+	LookupHost(ctx context.Context, host string) ([]string, error)
+} = net.DefaultResolver
+
+// gatewayPublicIPs returns the deploy gateway's Service's spec.externalIPs —
+// the router-facing address(es) customer domains must resolve to. Set via
+// the EnvoyProxy envoyService patch (charts/enzarb/templates/gateway.yaml),
+// itself driven by the single gateway.publicIP Helm value, so this is the one
+// place that value is read from rather than a second, possibly-stale copy.
+func (r *EnvironmentReconciler) gatewayPublicIPs(ctx context.Context) ([]string, error) {
+	gatewayNS := os.Getenv("GATEWAY_NAMESPACE")
+	className := os.Getenv("GATEWAY_CLASS_NAME")
+	if className == "" {
+		className = "envoy"
+	}
+	var svcs corev1.ServiceList
+	if err := r.List(ctx, &svcs, client.InNamespace(gatewayNS),
+		client.MatchingLabels{"gateway.envoyproxy.io/owning-gatewayclass": className}); err != nil {
+		return nil, err
+	}
+	var ips []string
+	for _, svc := range svcs.Items {
+		ips = append(ips, svc.Spec.ExternalIPs...)
+	}
+	return ips, nil
+}
+
+// reconcileDomainRouting checks whether fqdn's public A/AAAA records actually
+// resolve to the gateway's public IP(s), and updates ds.RoutingStatus/
+// RoutingError accordingly. Returns true once routing is Ready (i.e. no
+// further requeue needed for this reason).
+func (r *EnvironmentReconciler) reconcileDomainRouting(ctx context.Context, ds *enzarbv1alpha1.DomainStatus) bool {
+	logger := log.FromContext(ctx)
+
+	publicIPs, err := r.gatewayPublicIPs(ctx)
+	if err != nil {
+		ds.RoutingStatus = "Error"
+		ds.RoutingError = err.Error()
+		return false
+	}
+	if len(publicIPs) == 0 {
+		// Not configured yet; don't block on a routing check we can't perform.
+		ds.RoutingStatus = "Pending"
+		ds.RoutingError = ""
+		return false
+	}
+
+	want := map[string]bool{}
+	for _, ip := range publicIPs {
+		want[ip] = true
+	}
+
+	resolved, err := hostResolver.LookupHost(ctx, ds.FQDN)
+	if err != nil {
+		var dnsErr *net.DNSError
+		if errorsAs(err, &dnsErr) && (dnsErr.IsNotFound || dnsErr.IsTemporary) {
+			ds.RoutingStatus = "Pending"
+			ds.RoutingError = ""
+			return false
+		}
+		logger.Info("domain routing lookup failed", "fqdn", ds.FQDN, "err", err.Error())
+		ds.RoutingStatus = "Error"
+		ds.RoutingError = err.Error()
+		return false
+	}
+
+	for _, ip := range resolved {
+		if want[ip] {
+			ds.RoutingStatus = "Ready"
+			ds.RoutingError = ""
+			return true
+		}
+	}
+	ds.RoutingStatus = "Pending"
+	ds.RoutingError = ""
+	return false
+}
 
 // reconcileDomains drives, for each custom domain, the ownership flow:
 // generate a challenge token -> verify the TXT record -> claim the FQDN in the
@@ -192,23 +295,31 @@ func (r *EnvironmentReconciler) reconcileDomains(ctx context.Context, project *e
 			ds.CertStatus = "PendingVerification"
 		}
 
-		// Already verified and still owned by us: nothing to do (claim re-check is
-		// cheap and guards against the claim being deleted out from under us).
+		// Already verified and still owned by us: skip re-proving ownership, but
+		// still re-check routing (claim re-check is cheap and guards against the
+		// claim being deleted out from under us).
 		if ds.VerifiedAt != "" {
+			if !r.reconcileDomainRouting(ctx, ds) {
+				requeue = true
+			}
+			ds.LastCheckedAt = time.Now().UTC().Format(time.RFC3339)
 			setDomainStatus(env, cd.FQDN, *ds)
 			continue
 		}
 
 		ok, err := verifyDomainTXT(ctx, cd.FQDN, ds.ChallengeToken)
+		ds.LastCheckedAt = time.Now().UTC().Format(time.RFC3339)
 		if err != nil {
 			logger.Info("domain TXT lookup failed", "fqdn", cd.FQDN, "err", err.Error())
 			ds.CertStatus = "VerificationError"
+			ds.LastError = err.Error()
 			setDomainStatus(env, cd.FQDN, *ds)
 			requeue = true
 			continue
 		}
 		if !ok {
 			ds.CertStatus = "PendingVerification"
+			ds.LastError = ""
 			setDomainStatus(env, cd.FQDN, *ds)
 			requeue = true
 			continue
@@ -228,6 +339,10 @@ func (r *EnvironmentReconciler) reconcileDomains(ctx context.Context, project *e
 
 		ds.VerifiedAt = time.Now().UTC().Format(time.RFC3339)
 		ds.CertStatus = "Verified"
+		ds.LastError = ""
+		if !r.reconcileDomainRouting(ctx, ds) {
+			requeue = true
+		}
 		setDomainStatus(env, cd.FQDN, *ds)
 		logger.Info("domain verified and claimed", "fqdn", cd.FQDN)
 	}
@@ -390,10 +505,15 @@ func (r *EnvironmentReconciler) claimDomain(ctx context.Context, fqdn string, pr
 // source of truth shared by AllowedDomains (admission), the per-domain
 // Certificates, and the per-namespace Gateway listeners.
 func servingDomains(env *enzarbv1alpha1.Environment) []string {
-	verified := map[string]bool{}
+	// A cert is requested only once ownership is proven AND the domain
+	// actually routes to us — TXT ownership alone doesn't mean production
+	// traffic can reach the gateway, and requesting an ACME cert for a domain
+	// that isn't routed yet just burns Let's Encrypt's rate limit on a
+	// guaranteed-fail HTTP-01 validation.
+	ready := map[string]bool{}
 	for _, d := range env.Status.Domains {
-		if d.VerifiedAt != "" {
-			verified[d.FQDN] = true
+		if d.VerifiedAt != "" && d.RoutingStatus == "Ready" {
+			ready[d.FQDN] = true
 		}
 	}
 	// The platform host is a single random label under the deploy zone, so one
@@ -404,7 +524,7 @@ func servingDomains(env *enzarbv1alpha1.Environment) []string {
 		out = append(out, env.Status.Subdomain+"."+deployZone())
 	}
 	for _, cd := range env.Spec.CustomDomains {
-		if verified[cd.FQDN] {
+		if ready[cd.FQDN] {
 			out = append(out, cd.FQDN)
 		}
 	}
@@ -544,6 +664,56 @@ func (r *EnvironmentReconciler) ensureDomainCertificate(ctx context.Context, dep
 		return r.Create(ctx, cert)
 	}
 	return err
+}
+
+// reconcileDomainTLSStatus reads back the cert-manager Certificate created by
+// ensureDomainCertificate for each verified custom domain and projects its
+// Ready condition into DomainStatus.TLSStatus/TLSError, so the UI has
+// visibility past "Verified" into whether the gateway is actually serving the
+// domain yet.
+func (r *EnvironmentReconciler) reconcileDomainTLSStatus(ctx context.Context, deployNS string, env *enzarbv1alpha1.Environment) error {
+	for i := range env.Status.Domains {
+		ds := &env.Status.Domains[i]
+		if ds.CertStatus != "Verified" || ds.RoutingStatus != "Ready" {
+			ds.TLSStatus = ""
+			ds.TLSError = ""
+			continue
+		}
+
+		cert := &certmanagerv1.Certificate{}
+		name := domainSecretName(ds.FQDN)
+		if err := r.Get(ctx, types.NamespacedName{Namespace: deployNS, Name: name}, cert); err != nil {
+			if errors.IsNotFound(err) {
+				ds.TLSStatus = "IssuingCertificate"
+				ds.TLSError = ""
+				continue
+			}
+			return fmt.Errorf("get certificate %s: %w", name, err)
+		}
+
+		ready := certReadyCondition(cert)
+		switch {
+		case ready != nil && ready.Status == cmmeta.ConditionTrue:
+			ds.TLSStatus = "Ready"
+			ds.TLSError = ""
+		case ready != nil && ready.Status == cmmeta.ConditionFalse:
+			ds.TLSStatus = "CertError"
+			ds.TLSError = ready.Message
+		default:
+			ds.TLSStatus = "IssuingCertificate"
+			ds.TLSError = ""
+		}
+	}
+	return nil
+}
+
+func certReadyCondition(cert *certmanagerv1.Certificate) *certmanagerv1.CertificateCondition {
+	for i := range cert.Status.Conditions {
+		if cert.Status.Conditions[i].Type == certmanagerv1.CertificateConditionReady {
+			return &cert.Status.Conditions[i]
+		}
+	}
+	return nil
 }
 
 // ensureDeployGateway builds the namespace's enzarb-deploy Gateway with, per

@@ -18,6 +18,16 @@ spec:
         annotations:
           io.cilium/lb-ipam-ips: {{ .Values.gateway.loadBalancerIP | quote }}
         externalTrafficPolicy: Cluster
+        # Records the router-facing public IP as spec.externalIPs so it's
+        # discoverable via the K8s API (labelled
+        # gateway.envoyproxy.io/owning-gatewayclass=<className>) instead of a
+        # second hardcoded copy elsewhere — see gateway.publicIP in values.yaml.
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              externalIPs:
+                - {{ .Values.gateway.publicIP | quote }}
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass

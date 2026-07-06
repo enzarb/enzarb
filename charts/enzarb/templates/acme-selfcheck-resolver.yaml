@@ -1,0 +1,103 @@
+{{- if .Values.acmeSelfcheckResolver.enabled }}
+# cert-manager's HTTP-01 self-check resolves the challenge domain itself
+# before asking the ACME server to validate (pkg/issuer/acme/http). On this
+# cluster's network, the gateway's public IP isn't reachable from inside the
+# cluster (no NAT hairpin), so the self-check would time out for every
+# customer custom domain, regardless of whose DNS it is. Since we can't run
+# split-horizon DNS per customer domain, this resolver instead answers EVERY
+# A query with the gateway's in-cluster address; cert-manager is pointed at
+# it via config.acmeHTTP01Config.solverNameservers (deploy/system/cert-manager.yaml).
+# The HTTP Host header (and thus the gateway's HTTPRoute match) is unaffected,
+# so the self-check still reaches the correct per-domain challenge solver.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: enzarb-acme-selfcheck-resolver
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: enzarb-acme-selfcheck-resolver
+    app.kubernetes.io/name: enzarb-acme-selfcheck-resolver
+data:
+  Corefile: |
+    . {
+        template IN A . {
+          answer "{{ "{{" }} .Name {{ "}}" }} 60 IN A {{ .Values.gateway.loadBalancerIP }}"
+        }
+        log
+        errors
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: enzarb-acme-selfcheck-resolver
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: enzarb-acme-selfcheck-resolver
+    app.kubernetes.io/name: enzarb-acme-selfcheck-resolver
+    app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+spec:
+  replicas: {{ .Values.acmeSelfcheckResolver.replicaCount }}
+  selector:
+    matchLabels:
+      app: enzarb-acme-selfcheck-resolver
+  template:
+    metadata:
+      labels:
+        app: enzarb-acme-selfcheck-resolver
+        app.kubernetes.io/name: enzarb-acme-selfcheck-resolver
+        app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: coredns
+          image: "{{ .Values.acmeSelfcheckResolver.image.repository }}:{{ .Values.acmeSelfcheckResolver.image.tag }}"
+          imagePullPolicy: {{ .Values.acmeSelfcheckResolver.image.pullPolicy }}
+          args: ["-conf", "/etc/coredns/Corefile"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          ports:
+            - name: dns
+              containerPort: 53
+              protocol: UDP
+            - name: dns-tcp
+              containerPort: 53
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              mountPath: /etc/coredns
+          resources: {{- toYaml .Values.acmeSelfcheckResolver.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: enzarb-acme-selfcheck-resolver
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: enzarb-acme-selfcheck-resolver
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: enzarb-acme-selfcheck-resolver
+  ports:
+    - name: dns
+      port: 53
+      targetPort: dns
+      protocol: UDP
+    - name: dns-tcp
+      port: 53
+      targetPort: dns-tcp
+      protocol: TCP
+{{- end }}
