@@ -50,6 +50,7 @@
 	let availableModes: SessionModeInfo[] = $state([]);
 	let currentMode: string = $state('default');
 	let configOptions: ConfigOptionInfo[] = $state([]);
+	let running = $state(false);
 
 	const modelOption = $derived(
 		configOptions.find((o) => o.category === 'model' || o.id === 'model') ?? null
@@ -152,6 +153,9 @@
 			case 'error':
 				timeline.push({ kind: 'message', role: 'assistant', text: `⚠️ ${event.message}` });
 				break;
+			case 'turn_status':
+				running = event.running;
+				break;
 		}
 		scrollToBottom();
 	}
@@ -166,12 +170,16 @@
 
 	function sendMessage() {
 		const text = draft.trim();
-		if (!text || !socket) return;
+		if (!text || !socket || running) return;
 		timeline.push({ kind: 'message', role: 'user', text });
 		socket.send({ type: 'send_message', text });
 		draft = '';
 		if (textareaEl) { textareaEl.style.height = 'auto'; }
 		scrollToBottom();
+	}
+
+	function stopTurn() {
+		socket?.send({ type: 'cancel' });
 	}
 
 	function growTextarea(el: HTMLTextAreaElement) {
@@ -199,8 +207,11 @@
 			() => {
 				// The server resends the full event history on every attach;
 				// drop what we built up locally or it'll be duplicated.
+				// turn_status isn't part of that history, so reset it too —
+				// worst case the user has to press send again.
 				timeline = [];
 				pendingPermissions = [];
+				running = false;
 			}
 		);
 		await socket.connect();
@@ -284,7 +295,11 @@
 					</select>
 				{/if}
 			</div>
-			<button type="submit" class="btn btn-primary" disabled={!draft.trim() || connState !== 'connected'}>Send</button>
+			{#if running}
+				<button type="button" class="btn btn-danger" onclick={stopTurn} disabled={connState !== 'connected'}>Stop</button>
+			{:else}
+				<button type="submit" class="btn btn-primary" disabled={!draft.trim() || connState !== 'connected'}>Send</button>
+			{/if}
 		</div>
 	</form>
 </div>

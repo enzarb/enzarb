@@ -564,6 +564,11 @@ impl AcpStore {
                 let session_id = session_id.to_string();
                 let live_sessions = self.live_sessions.clone();
                 let channels = self.channels.clone();
+                let tx = self.channel(&session_id).await;
+                let _ = tx.send(AcpWsEvent::TurnStatus {
+                    session_id: session_id.clone(),
+                    running: true,
+                });
                 tokio::spawn(async move {
                     let result = connection
                         .send_request(PromptRequest::new(
@@ -582,6 +587,13 @@ impl AcpStore {
                         }
                     }
                     live_sessions.lock().await.remove(&session_id);
+                    let tx = channels.lock().await.get(&session_id).cloned();
+                    if let Some(tx) = tx {
+                        let _ = tx.send(AcpWsEvent::TurnStatus {
+                            session_id: session_id.clone(),
+                            running: false,
+                        });
+                    }
                 });
                 Ok(())
             }

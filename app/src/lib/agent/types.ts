@@ -91,7 +91,8 @@ export type AcpWsEvent =
 			available_modes: SessionModeInfo[];
 			config_options: ConfigOptionInfo[];
 	  }
-	| { type: 'error'; session_id: string | null; message: string };
+	| { type: 'error'; session_id: string | null; message: string }
+	| { type: 'turn_status'; session_id: string; running: boolean };
 
 export type AcpWsClientMsg =
 	| { type: 'send_message'; text: string }

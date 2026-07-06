@@ -78,6 +78,12 @@ pub enum AcpWsEvent {
         session_id: Option<String>,
         message: String,
     },
+    /// Whether a prompt turn is currently in flight, so the browser can swap
+    /// its send button for a stop button.
+    TurnStatus {
+        session_id: String,
+        running: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
