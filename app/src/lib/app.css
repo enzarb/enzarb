@@ -83,6 +83,7 @@ input:focus, select:focus, textarea:focus {
 	transition: background 0.1s;
 }
 .btn:hover { background: var(--color-border); text-decoration: none; }
+.btn:disabled { opacity: 0.45; cursor: default; pointer-events: none; }
 .btn-primary {
 	background: var(--color-accent);
 	border-color: var(--color-accent);

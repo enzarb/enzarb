@@ -159,9 +159,15 @@
 			case 'error':
 				timeline.push({ kind: 'message', role: 'assistant', text: `⚠️ ${event.message}` });
 				break;
-			case 'turn_status':
+			case 'turn_status': {
+				const wasRunning = running;
 				running = event.running;
+				if (wasRunning && !running && queuedMessages.length && socket) {
+					const next = queuedMessages.shift();
+					if (next) socket.send({ type: 'send_message', text: next });
+				}
 				break;
+			}
 		}
 		scheduleScroll();
 	}
@@ -186,14 +192,23 @@
 		socket?.send({ type: 'permission_response', request_id: requestId, option_id: optionId });
 	}
 
+	// Messages sent while a turn is running can't go to the agent immediately —
+	// only one prompt runs at a time — so they're echoed right away and queued
+	// to dispatch as soon as the current turn finishes.
+	let queuedMessages: string[] = [];
+
 	function sendMessage() {
 		const text = draft.trim();
-		if (!text || !socket || running) return;
+		if (!text || !socket) return;
 		timeline.push({ kind: 'message', role: 'user', text });
-		socket.send({ type: 'send_message', text });
 		draft = '';
 		if (textareaEl) { textareaEl.style.height = 'auto'; }
 		scrollToBottom();
+		if (running) {
+			queuedMessages.push(text);
+		} else {
+			socket.send({ type: 'send_message', text });
+		}
 	}
 
 	function stopTurn() {
@@ -230,6 +245,7 @@
 				timeline = [];
 				pendingPermissions = [];
 				running = false;
+				queuedMessages = [];
 				historySettled = false;
 				clearTimeout(historyTimer);
 			}
@@ -315,11 +331,10 @@
 					</select>
 				{/if}
 			</div>
-			{#if running}
-				<button type="button" class="btn btn-danger" onclick={stopTurn} disabled={connState !== 'connected'}>Stop</button>
-			{:else}
+			<div class="composer-buttons">
+				<button type="button" class="btn btn-danger" onclick={stopTurn} disabled={!running || connState !== 'connected'}>Stop</button>
 				<button type="submit" class="btn btn-primary" disabled={!draft.trim() || connState !== 'connected'}>Send</button>
-			{/if}
+			</div>
 		</div>
 	</form>
 </div>
@@ -358,6 +373,7 @@
 	.composer textarea { width: 100%; box-sizing: border-box; resize: none; font-family: inherit; font-size: 13px; padding: 0.5rem 0.7rem; border: 1px solid var(--color-border); border-bottom: none; border-radius: 6px 6px 0 0; background: var(--color-surface); color: var(--color-text); overflow-y: auto; max-height: calc(8 * 1.5em + 1rem); line-height: 1.5; }
 	.composer-footer { display: flex; align-items: center; gap: 0.5rem; padding: 0.35rem 0.5rem; border: 1px solid var(--color-border); border-top: 1px solid var(--color-border-muted, var(--color-border)); border-radius: 0 0 6px 6px; background: var(--color-surface-muted, var(--color-surface)); }
 	.composer-selects { display: flex; gap: 0.4rem; flex: 1; }
+	.composer-buttons { display: flex; gap: 0.4rem; flex-shrink: 0; }
 	.composer-select { font-size: 11px; padding: 0.15rem 0.4rem; border-radius: 4px; border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text-muted); cursor: pointer; }
 	.composer-select:focus { outline: none; border-color: var(--color-accent, #4f8ef7); color: var(--color-text); }
 </style>
