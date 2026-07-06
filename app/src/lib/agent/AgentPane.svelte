@@ -46,6 +46,12 @@
 	let draft = $state('');
 	let mounted = false;
 	let scrollEl: HTMLDivElement | undefined = $state();
+	// The server resends full event history on every (re)connect as a burst of
+	// individual events; scrolling on each one makes the whole conversation
+	// visibly replay/scroll past. Suppress scrolling until the burst quiets
+	// down, then scroll once — after that, live events scroll immediately.
+	let historySettled = false;
+	let historyTimer: ReturnType<typeof setTimeout> | undefined;
 	let textareaEl: HTMLTextAreaElement | undefined = $state();
 	let availableModes: SessionModeInfo[] = $state([]);
 	let currentMode: string = $state('default');
@@ -157,11 +163,23 @@
 				running = event.running;
 				break;
 		}
-		scrollToBottom();
+		scheduleScroll();
 	}
 
 	function scrollToBottom() {
 		queueMicrotask(() => scrollEl?.scrollTo({ top: scrollEl.scrollHeight }));
+	}
+
+	function scheduleScroll() {
+		if (historySettled) {
+			scrollToBottom();
+			return;
+		}
+		clearTimeout(historyTimer);
+		historyTimer = setTimeout(() => {
+			historySettled = true;
+			scrollToBottom();
+		}, 80);
 	}
 
 	function respondPermission(requestId: string, optionId: string) {
@@ -212,6 +230,8 @@
 				timeline = [];
 				pendingPermissions = [];
 				running = false;
+				historySettled = false;
+				clearTimeout(historyTimer);
 			}
 		);
 		await socket.connect();
