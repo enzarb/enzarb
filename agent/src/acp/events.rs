@@ -31,6 +31,7 @@ pub enum AcpWsEvent {
         kind: &'static str,
         title: String,
         status: &'static str,
+        plan: Option<String>,
     },
     ToolCallUpdated {
         session_id: String,
@@ -38,6 +39,7 @@ pub enum AcpWsEvent {
         status: Option<&'static str>,
         diff: Option<DiffPayload>,
         output: Option<String>,
+        plan: Option<String>,
     },
     PlanUpdate {
         session_id: String,
@@ -49,6 +51,7 @@ pub enum AcpWsEvent {
         tool_call_id: String,
         title: String,
         options: Vec<PermissionOptionPayload>,
+        plan: Option<String>,
     },
     PermissionResolved {
         session_id: String,
@@ -234,6 +237,13 @@ fn content_text(content: &[ToolCallContent]) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+/// Extracts plan-mode plan markdown from a tool call's raw input. Claude Code
+/// delivers the ExitPlanMode plan as `{"plan": "..."}` in `raw_input` rather
+/// than as a content block, so it would otherwise never reach the browser.
+fn plan_text(raw_input: Option<&serde_json::Value>) -> Option<String> {
+    raw_input?.get("plan")?.as_str().map(str::to_string)
+}
+
 /// Translates one ACP `SessionUpdate` notification into zero-or-more simplified
 /// WS events. Variants not yet surfaced in the UI (usage, available commands,
 /// mode changes, etc.) are intentionally dropped here rather than forwarded raw.
@@ -256,6 +266,7 @@ pub fn from_session_update(session_id: &str, update: SessionUpdate) -> Vec<AcpWs
             kind: tool_kind_str(tc.kind),
             title: tc.title,
             status: tool_status_str(tc.status),
+            plan: plan_text(tc.raw_input.as_ref()),
         }],
         SessionUpdate::ToolCallUpdate(update) => {
             let content = update.fields.content.as_deref();
@@ -265,6 +276,7 @@ pub fn from_session_update(session_id: &str, update: SessionUpdate) -> Vec<AcpWs
                 status: update.fields.status.map(tool_status_str),
                 diff: content.and_then(first_diff),
                 output: content.and_then(content_text),
+                plan: plan_text(update.fields.raw_input.as_ref()),
             }]
         }
         SessionUpdate::Plan(plan) => vec![AcpWsEvent::PlanUpdate {
@@ -312,6 +324,7 @@ pub fn permission_request_event(
         request_id: request_id.to_string(),
         tool_call_id: request.tool_call.tool_call_id.to_string(),
         title: request.tool_call.fields.title.clone().unwrap_or_default(),
+        plan: plan_text(request.tool_call.fields.raw_input.as_ref()),
         options: request
             .options
             .iter()

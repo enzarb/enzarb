@@ -18,7 +18,7 @@
 
 	type TimelineItem =
 		| { kind: 'message'; role: 'user' | 'assistant'; text: string }
-		| { kind: 'tool_call'; id: string; toolKind: string; title: string; status: string; diff: DiffPayload | null; output: string | null }
+		| { kind: 'tool_call'; id: string; toolKind: string; title: string; status: string; diff: DiffPayload | null; output: string | null; plan: string | null }
 		| { kind: 'plan'; entries: PlanEntryPayload[] };
 
 	type PendingPermission = {
@@ -26,6 +26,7 @@
 		toolCallId: string;
 		title: string;
 		options: PermissionOptionPayload[];
+		plan: string | null;
 	};
 
 	interface Props {
@@ -105,7 +106,8 @@
 					title: event.title,
 					status: event.status,
 					diff: null,
-					output: null
+					output: null,
+					plan: event.plan
 				});
 				break;
 			case 'tool_call_updated': {
@@ -114,6 +116,7 @@
 					if (event.status) item.status = event.status;
 					if (event.diff) item.diff = event.diff;
 					if (event.output) item.output = event.output;
+					if (event.plan) item.plan = event.plan;
 				}
 				break;
 			}
@@ -128,7 +131,8 @@
 					requestId: event.request_id,
 					toolCallId: event.tool_call_id,
 					title: event.title,
-					options: event.options
+					options: event.options,
+					plan: event.plan
 				});
 				break;
 			case 'permission_resolved':
@@ -229,7 +233,7 @@
 					</div>
 				</div>
 			{:else if item.kind === 'tool_call'}
-				<ToolCallCard toolKind={item.toolKind} title={item.title} status={item.status} diff={item.diff} output={item.output} />
+				<ToolCallCard toolKind={item.toolKind} title={item.title} status={item.status} diff={item.diff} output={item.output} plan={item.plan} />
 			{:else if item.kind === 'plan'}
 				<PlanView entries={item.entries} />
 			{/if}
@@ -238,7 +242,7 @@
 		{/each}
 
 		{#each pendingPermissions as p (p.requestId)}
-			<PermissionPrompt title={p.title} options={p.options} onRespond={(id) => respondPermission(p.requestId, id)} />
+			<PermissionPrompt title={p.title} options={p.options} plan={p.plan} onRespond={(id) => respondPermission(p.requestId, id)} />
 		{/each}
 	</div>
 

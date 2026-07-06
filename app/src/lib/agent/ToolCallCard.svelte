@@ -1,14 +1,16 @@
 <script lang="ts">
 	import type { DiffPayload } from './types';
 	import DiffView from './DiffView.svelte';
+	import Markdown from './Markdown.svelte';
 
 	let {
 		toolKind,
 		title,
 		status,
 		diff,
-		output = null
-	}: { toolKind: string; title: string; status: string; diff: DiffPayload | null; output?: string | null } = $props();
+		output = null,
+		plan = null
+	}: { toolKind: string; title: string; status: string; diff: DiffPayload | null; output?: string | null; plan?: string | null } = $props();
 
 	const ICONS: Record<string, string> = {
 		read: '👁',
@@ -17,8 +19,9 @@
 		other: '🔧'
 	};
 
-	let expanded = $state(false);
-	const hasBody = $derived(!!diff || !!output);
+	// A plan is the thing the user is being asked to review — open by default.
+	let expanded = $state(!!plan);
+	const hasBody = $derived(!!diff || !!output || !!plan);
 </script>
 
 <div class="tool-card {status}" class:expanded>
@@ -37,7 +40,9 @@
 	</button>
 	{#if expanded}
 		<div class="tool-body">
-			{#if diff}
+			{#if plan}
+				<div class="tool-plan"><Markdown text={plan} /></div>
+			{:else if diff}
 				<DiffView {diff} />
 			{:else if output}
 				<pre class="tool-output">{output}</pre>
@@ -72,6 +77,7 @@
 	.tool-chevron.open { transform: rotate(90deg); }
 	.tool-body { padding: 0 0.7rem 0.5rem; border-top: 1px solid var(--color-border); }
 	.tool-body :global(.diff-view) { margin-top: 0.5rem; }
+	.tool-plan { margin-top: 0.5rem; font-size: 12px; line-height: 1.5; overflow-y: auto; max-height: 480px; }
 	.tool-output {
 		margin: 0.5rem 0 0;
 		padding: 0.5rem 0.6rem;

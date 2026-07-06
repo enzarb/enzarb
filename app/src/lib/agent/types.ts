@@ -60,6 +60,7 @@ export type AcpWsEvent =
 			kind: string;
 			title: string;
 			status: string;
+			plan: string | null;
 	  }
 	| {
 			type: 'tool_call_updated';
@@ -68,6 +69,7 @@ export type AcpWsEvent =
 			status: string | null;
 			diff: DiffPayload | null;
 			output: string | null;
+			plan: string | null;
 	  }
 	| { type: 'plan_update'; session_id: string; entries: PlanEntryPayload[] }
 	| {
@@ -77,6 +79,7 @@ export type AcpWsEvent =
 			tool_call_id: string;
 			title: string;
 			options: PermissionOptionPayload[];
+			plan: string | null;
 	  }
 	| { type: 'permission_resolved'; session_id: string; request_id: string }
 	| { type: 'mode_changed'; session_id: string; mode_id: string }
