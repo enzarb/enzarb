@@ -80,25 +80,28 @@ func main() {
 	}
 
 	if err = (&controller.ProjectReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Domain: domain,
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		Domain:    domain,
+		APIReader: mgr.GetAPIReader(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create ProjectReconciler")
 		os.Exit(1)
 	}
 
 	if err = (&controller.OrganizationReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		APIReader: mgr.GetAPIReader(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create OrganizationReconciler")
 		os.Exit(1)
 	}
 
 	if err = (&controller.EnvironmentReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		APIReader: mgr.GetAPIReader(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create EnvironmentReconciler")
 		os.Exit(1)

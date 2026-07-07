@@ -40,6 +40,9 @@ import (
 type EnvironmentReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// APIReader bypasses the manager's informer cache — see capsule.go /
+	// OrganizationReconciler.APIReader for why capsule Tenant lookups need it.
+	APIReader client.Reader
 }
 
 func (r *EnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error {

@@ -86,7 +86,10 @@ func (r *ProjectReconciler) ensureCapsuleTenant(ctx context.Context, orgNS, saNa
 
 	tenant := &unstructured.Unstructured{}
 	tenant.SetGroupVersionKind(capsuleTenantGVK)
-	err := r.Get(ctx, types.NamespacedName{Name: name}, tenant)
+	// APIReader, not the cached client: this Get can race the manager's
+	// informer cache/RESTMapper catching up to a CRD that was installed after
+	// the operator started (see EnvironmentReconciler.APIReader).
+	err := r.APIReader.Get(ctx, types.NamespacedName{Name: name}, tenant)
 	if apimeta.IsNoMatchError(err) {
 		log.FromContext(ctx).V(1).Info("capsule not installed; skipping tenant", "tenant", name)
 		return nil
@@ -134,7 +137,7 @@ func (r *ProjectReconciler) deleteCapsuleTenant(ctx context.Context, project *en
 func (r *OrganizationReconciler) reconcileCapsuleUserGroup(ctx context.Context, orgID string, remove bool) error {
 	cfg := &unstructured.Unstructured{}
 	cfg.SetGroupVersionKind(capsuleConfigGVK)
-	err := r.Get(ctx, types.NamespacedName{Name: "default"}, cfg)
+	err := r.APIReader.Get(ctx, types.NamespacedName{Name: "default"}, cfg)
 	if capsuleAbsent(err) {
 		log.FromContext(ctx).V(1).Info("capsule not installed; skipping user group", "org", orgID)
 		return nil
@@ -178,8 +181,11 @@ func (r *OrganizationReconciler) reconcileCapsuleUserGroup(ctx context.Context, 
 func (r *EnvironmentReconciler) tenantOwnerReference(ctx context.Context, orgID, projectSlug string) (*metav1.OwnerReference, error) {
 	tenant := &unstructured.Unstructured{}
 	tenant.SetGroupVersionKind(capsuleTenantGVK)
-	err := r.Get(ctx, types.NamespacedName{Name: capsuleTenantName(orgID, projectSlug)}, tenant)
+	name := capsuleTenantName(orgID, projectSlug)
+	// APIReader, not the cached client — see EnvironmentReconciler.APIReader.
+	err := r.APIReader.Get(ctx, types.NamespacedName{Name: name}, tenant)
 	if capsuleAbsent(err) {
+		log.FromContext(ctx).V(1).Info("capsule tenant not found for ownerReference", "tenant", name, "err", err)
 		return nil, nil
 	}
 	if err != nil {
@@ -208,7 +214,9 @@ func (r *ProjectReconciler) ensureWorkspaceKubeconfig(ctx context.Context, ns st
 	caPEM := ""
 
 	secret := &corev1.Secret{}
-	err := r.Get(ctx, types.NamespacedName{Namespace: capsuleSystemNamespace, Name: capsuleProxyCASecretName}, secret)
+	// APIReader — see EnvironmentReconciler.APIReader; the proxy CA Secret is
+	// created by a Helm chart that may postdate the operator's cache startup.
+	err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: capsuleSystemNamespace, Name: capsuleProxyCASecretName}, secret)
 	switch {
 	case err == nil:
 		if ca := secret.Data["ca.crt"]; len(ca) > 0 {

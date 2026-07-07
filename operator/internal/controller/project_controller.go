@@ -39,6 +39,9 @@ type ProjectReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	Domain string
+	// APIReader bypasses the manager's informer cache — see capsule.go /
+	// OrganizationReconciler.APIReader for why capsule lookups need it.
+	APIReader client.Reader
 }
 
 func (r *ProjectReconciler) SetupWithManager(mgr ctrl.Manager) error {

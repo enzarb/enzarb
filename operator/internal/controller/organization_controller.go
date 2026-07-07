@@ -36,6 +36,11 @@ const defaultRequeue = 30 * time.Second
 type OrganizationReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// APIReader bypasses the manager's informer cache — used for capsule.go
+	// lookups of CRDs that may have just been installed (Capsule is deployed
+	// separately from the operator), where a freshly-started cache's
+	// RESTMapper/informer can lag reality and misreport NotFound.
+	APIReader client.Reader
 }
 
 func (r *OrganizationReconciler) SetupWithManager(mgr ctrl.Manager) error {
