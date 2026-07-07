@@ -1,0 +1,58 @@
+# Capsule + capsule-proxy: multi-tenant filtering of cluster-scoped resources.
+#
+# Workspace pods can't be granted `list namespaces` without seeing every
+# tenant's namespaces (RBAC list is all-or-nothing), so their kubectl is
+# pointed at capsule-proxy instead of the API server (see the operator's
+# workspace kubeconfig ConfigMap). The proxy filters `kubectl get ns` down to
+# the namespaces of Tenants the requesting ServiceAccount owns; everything
+# else passes through to the API server unchanged.
+#
+# The enzarb operator maintains one Capsule Tenant per Project (owner = the
+# project's workspace SA, clusterRoles = enzarb-deployer) and labels each
+# environment's deploy namespace with capsule.clastix.io/tenant so Capsule
+# attributes it to the Tenant. The operator's own ServiceAccount is NOT in
+# Capsule's user scope, so Capsule's admission webhooks ignore it entirely
+# and it keeps creating namespaces itself as before. CapsuleConfiguration
+# user groups (system:serviceaccounts:user-<orgID>) are appended by the
+# operator's Organization reconciler.
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: capsule
+  namespace: kube-system
+spec:
+  chart: capsule
+  repo: https://projectcapsule.github.io/charts
+  version: 0.13.9
+  targetNamespace: capsule-system
+  createNamespace: true
+  valuesContent: |-
+    manager:
+      options:
+        # Namespaces are created by the enzarb operator and adopted via the
+        # tenant label — never name-prefixed by tenant.
+        forceTenantPrefix: false
+        # Start with no user groups; the enzarb operator appends
+        # system:serviceaccounts:user-<orgID> per organization.
+        capsuleUserGroups: []
+---
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: capsule-proxy
+  namespace: kube-system
+spec:
+  chart: capsule-proxy
+  repo: https://projectcapsule.github.io/charts
+  version: 0.13.7
+  targetNamespace: capsule-system
+  valuesContent: |-
+    # Serving cert issued by cert-manager from a chart-managed self-signed CA.
+    # The CA cert lands in Secret capsule-proxy-root-secret (capsule-system);
+    # the enzarb operator copies it into each workspace's kubeconfig ConfigMap
+    # so pods can trust the proxy. The default serving cert already covers
+    # capsule-proxy.capsule-system.svc, which is what workspace kubeconfigs use.
+    certManager:
+      generateCertificates: true
+    options:
+      generateCertificates: false

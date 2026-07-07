@@ -72,6 +72,21 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["list", "delete"]
+  # The one secret the operator may read: capsule-proxy's CA certificate,
+  # copied into each workspace's kubeconfig ConfigMap so pods trust the proxy.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["capsule-proxy-root-secret"]
+    verbs: ["get"]
+  # Capsule multi-tenancy: one Tenant per Project (drives capsule-proxy's
+  # namespace filtering); org SA groups are appended to the
+  # CapsuleConfiguration user scope.
+  - apiGroups: ["capsule.clastix.io"]
+    resources: ["tenants"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["capsule.clastix.io"]
+    resources: ["capsuleconfigurations"]
+    verbs: ["get", "list", "watch", "update", "patch"]
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

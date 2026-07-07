@@ -1500,6 +1500,9 @@ func (r *EnvironmentReconciler) ensureNamespace(ctx context.Context, name, orgID
 		"enzarb.io/org-id":             orgID,
 		"enzarb.io/project-slug":       projectSlug,
 		"enzarb.io/env-slug":           envSlug,
+		// Attributes this namespace to the project's Capsule Tenant so
+		// capsule-proxy includes it in the workspace's filtered namespace list.
+		capsuleTenantLabel: capsuleTenantName(orgID, projectSlug),
 	}
 	ns := &corev1.Namespace{}
 	err := r.Get(ctx, types.NamespacedName{Name: name}, ns)

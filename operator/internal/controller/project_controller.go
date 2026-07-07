@@ -144,6 +144,14 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("ensure env namespace rbac: %w", err)
 	}
 
+	if err := r.ensureCapsuleTenant(ctx, orgNS, saName, &project); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure capsule tenant: %w", err)
+	}
+
+	if err := r.ensureWorkspaceKubeconfig(ctx, orgNS, &project); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure workspace kubeconfig: %w", err)
+	}
+
 	// Prune any stale ClusterRoleBindings left over from before the migration
 	// to namespace-scoped RoleBindings. ClusterRoleBindings are cluster-scoped
 	// so pass "" as namespace to pruneUnmanaged. The listing is cluster-wide
@@ -427,6 +435,9 @@ func (r *ProjectReconciler) reconcileProjectDelete(ctx context.Context, project 
 		ObjectMeta: metav1.ObjectMeta{Name: rbName, Namespace: ns},
 	}); err != nil {
 		return ctrl.Result{}, fmt.Errorf("delete role binding: %w", err)
+	}
+	if err := r.deleteCapsuleTenant(ctx, project); err != nil {
+		return ctrl.Result{}, fmt.Errorf("delete capsule tenant: %w", err)
 	}
 	envNSName := envNamespaceRBACName(project)
 	if err := r.deleteIfExists(ctx, &rbacv1.ClusterRoleBinding{
@@ -902,6 +913,10 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug s
 								{Name: "XDG_CACHE_HOME", Value: "/home/user/.cache"},
 								{Name: "XDG_CONFIG_HOME", Value: "/home/user/.config"},
 								{Name: "XDG_STATE_HOME", Value: "/home/user/.local/state"},
+								// kubectl/helm route through capsule-proxy (tenant-filtered
+								// cluster-scoped lists); the kubeconfig ConfigMap falls back
+								// to the direct API server when the proxy isn't deployed.
+								{Name: "KUBECONFIG", Value: workspaceKubeconfigMountPath + "/config"},
 							},
 							EnvFrom: []corev1.EnvFromSource{
 								{
@@ -952,6 +967,7 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug s
 								{Name: "tmp", MountPath: "/tmp"},
 								{Name: "registry-token", MountPath: "/var/run/secrets/enzarb/registry"},
 								{Name: "env-context", MountPath: "/var/run/enzarb/env", ReadOnly: true},
+								{Name: "kubeconfig", MountPath: workspaceKubeconfigMountPath, ReadOnly: true},
 							},
 							SecurityContext: &corev1.SecurityContext{
 								AllowPrivilegeEscalation: boolPtr(false),
@@ -1052,6 +1068,17 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug s
 									},
 									// optional=true so pod starts even before the ConfigMap is created
 									// (rare timing window on first reconcile).
+									Optional: boolPtr(true),
+								},
+							},
+						},
+						{
+							Name: "kubeconfig",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: workspaceKubeconfigName(project.Spec.Slug),
+									},
 									Optional: boolPtr(true),
 								},
 							},

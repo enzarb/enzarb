@@ -82,6 +82,12 @@ func (r *OrganizationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, fmt.Errorf("ensure namespace: %w", err)
 	}
 
+	// Capsule treats only identities in its user scope as tenant subjects; add
+	// this org's SA group so capsule-proxy filters for its workspace SAs.
+	if err := r.reconcileCapsuleUserGroup(ctx, org.Spec.OrgID, false); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile capsule user group: %w", err)
+	}
+
 	// Isolate the workspace namespace: deny all ingress except the system
 	// namespace (operator process checks on :9090) and the gateway data-plane
 	// (user-facing agent API on :8080). This stops the unauthenticated agent
@@ -231,6 +237,7 @@ func (r *OrganizationReconciler) ensureWorkspaceNetworkPolicy(ctx context.Contex
 	internalPort := intstr.FromInt32(9090)
 	dnsPort := intstr.FromInt32(53)
 	mirrorPort := intstr.FromInt32(5000)
+	capsuleProxyPort := intstr.FromInt32(9001)
 
 	desired := &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
@@ -300,6 +307,21 @@ func (r *OrganizationReconciler) ensureWorkspaceNetworkPolicy(ctx context.Contex
 						Except: []string{podCIDR, svcCIDR},
 					},
 				}}},
+				// capsule-proxy: workspace kubectl traffic is routed through it
+				// (tenant-filtered lists of cluster-scoped resources).
+				{
+					Ports: []networkingv1.NetworkPolicyPort{
+						{Protocol: &tcp, Port: &capsuleProxyPort},
+					},
+					To: []networkingv1.NetworkPolicyPeer{{
+						NamespaceSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{"kubernetes.io/metadata.name": capsuleSystemNamespace},
+						},
+						PodSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{"app.kubernetes.io/name": "capsule-proxy"},
+						},
+					}},
+				},
 			},
 		},
 	}
@@ -422,6 +444,10 @@ func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *enzar
 		// already gone
 	default:
 		return ctrl.Result{}, fmt.Errorf("get namespace: %w", err)
+	}
+
+	if err := r.reconcileCapsuleUserGroup(ctx, org.Spec.OrgID, true); err != nil {
+		return ctrl.Result{}, fmt.Errorf("remove capsule user group: %w", err)
 	}
 
 	controllerutil.RemoveFinalizer(org, organizationFinalizer)
