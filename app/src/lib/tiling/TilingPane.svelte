@@ -126,13 +126,13 @@
 					title={tab.label ?? tab.id}
 					onclick={() => onTabSelect(paneId, i)}
 					onkeydown={(e) => e.key === 'Enter' && onTabSelect(paneId, i)}
-					draggable="true"
-					ondragstart={() => onTabDragStart(paneId, i)}
+					onmousedown={() => onTabDragStart(paneId, i)}
 				>
 					<span class="tab-icon">{tab.kind === 'terminal' ? '⌨' : tab.kind === 'agent' ? '◆' : '📄'}</span>
 					<span class="tab-name">{tab.label ?? tab.id}</span>
 					<button
 						class="tab-close"
+						onmousedown={(e) => e.stopPropagation()}
 						onclick={(e) => { e.stopPropagation(); onTabClose(paneId, i); }}
 					>×</button>
 				</div>
@@ -201,11 +201,24 @@
 				onCreateAgent={(id, label) => handleAddTab({ kind: 'agent', id, label })}
 			/>
 		{:else if activeTab}
-			{#if activeTab.kind === 'terminal'}
-				<TerminalPane {agentBase} {namespace} {project} processId={activeTab.id} />
-			{:else if activeTab.kind === 'agent'}
-				<AgentPane {agentBase} {namespace} {project} sessionId={activeTab.id} />
-			{:else if activeTab.kind === 'file'}
+			<!--
+				Terminal/agent tabs stay mounted even when not active so their
+				socket + session state survive tab switches; we just hide the
+				inactive ones. File tabs are cheap to re-render, so only the
+				active one is shown.
+			-->
+			{#each pane.tabs as tab (tab.kind + ':' + tab.id)}
+				{#if tab.kind === 'terminal' || tab.kind === 'agent'}
+					<div class="tab-content" class:hidden={tab !== activeTab}>
+						{#if tab.kind === 'terminal'}
+							<TerminalPane {agentBase} {namespace} {project} processId={tab.id} />
+						{:else}
+							<AgentPane {agentBase} {namespace} {project} sessionId={tab.id} />
+						{/if}
+					</div>
+				{/if}
+			{/each}
+			{#if activeTab.kind === 'file'}
 				<div class="file-viewer">
 					{#if fileContent.type === 'loading'}
 						<p class="file-msg">Loading…</p>
@@ -254,6 +267,8 @@
 	.add-menu-backdrop { position: fixed; inset: 0; z-index: 29; background: transparent; border: none; padding: 0; cursor: default; }
 	.add-menu-popover { position: absolute; top: 100%; right: 0; z-index: 30; width: 300px; max-height: 420px; overflow-y: auto; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 6px; box-shadow: var(--shadow); }
 	.pane-content { flex: 1; overflow: hidden; position: relative; display: flex; flex-direction: column; min-height: 0; }
+	.tab-content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+	.tab-content.hidden { display: none; }
 	.file-viewer { flex: 1; overflow: auto; display: flex; flex-direction: column; min-height: 0; }
 	.empty-file-pane { flex: 1; display: flex; align-items: center; justify-content: center; }
 	.file-msg { color: var(--color-text-muted); font-size: 13px; padding: 1rem; }
