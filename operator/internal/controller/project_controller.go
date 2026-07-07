@@ -1085,6 +1085,7 @@ func (r *ProjectReconciler) ensureHTTPRoute(ctx context.Context, ns string, proj
 	httpsSection := gatewayv1.SectionName("https")
 	gatewayKind := gatewayv1.Kind("Gateway")
 	rewriteRoot := "/"
+	requestTimeout := gatewayv1.Duration("60s")
 
 	desiredSpec := gatewayv1.HTTPRouteSpec{
 		CommonRouteSpec: gatewayv1.CommonRouteSpec{
@@ -1103,6 +1104,14 @@ func (r *ProjectReconciler) ensureHTTPRoute(ctx context.Context, ns string, proj
 					Value: &pathPrefix,
 				},
 			}},
+			// Envoy Gateway's default request timeout (15s) is shorter than the
+			// agent's own ACP_REQUEST_TIMEOUT (30s, see agent/src/acp/store.rs).
+			// A slow-but-healthy session/list call (e.g. while the ACP relay is
+			// busy resuming other sessions) would otherwise be killed by the
+			// gateway as a 504 before the agent gets a chance to respond.
+			Timeouts: &gatewayv1.HTTPRouteTimeouts{
+				Request: &requestTimeout,
+			},
 			// Strip the `/agent/<uid>` prefix so the agent sees its own routes
 			// (`/processes`, `/files`, …) rather than the public path.
 			Filters: []gatewayv1.HTTPRouteFilter{{
