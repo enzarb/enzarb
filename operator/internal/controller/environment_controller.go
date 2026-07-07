@@ -709,7 +709,11 @@ func (r *EnvironmentReconciler) reconcileDomainTLSStatus(ctx context.Context, de
 		case ready != nil && ready.Status == cmmeta.ConditionTrue:
 			ds.TLSStatus = "Ready"
 			ds.TLSError = ""
-		case ready != nil && ready.Status == cmmeta.ConditionFalse:
+		// Ready=False is cert-manager's normal in-progress state (reasons like
+		// DoesNotExist/Issuing/Renewing) while a Certificate is first issued or
+		// renewed; it only means a real, non-retrying failure when the
+		// CertificateRequest's terminal "Failed" reason has bubbled up onto it.
+		case ready != nil && ready.Status == cmmeta.ConditionFalse && ready.Reason == certmanagerv1.CertificateRequestReasonFailed:
 			ds.TLSStatus = "CertError"
 			ds.TLSError = ready.Message
 		default:
