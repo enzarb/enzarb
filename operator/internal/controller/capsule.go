@@ -170,6 +170,53 @@ func (r *OrganizationReconciler) reconcileCapsuleUserGroup(ctx context.Context, 
 	return nil
 }
 
+// capsuleOperatorAdministratorName is the subject entry the operator's own
+// ServiceAccount needs in CapsuleConfiguration.spec.administrators. Without
+// it, Capsule's namespace validating webhook unconditionally rejects any
+// update to a namespace already carrying the tenant label (even a correct,
+// ownerReference-setting one) once that namespace has ever been observed
+// label-without-ownerRef — the operator's own SA must be a recognized Capsule
+// admin so its mutating webhook auto-resolves the ownerReference from the
+// label alone (see resolveTenantForNamespaceUpdate in Capsule's source),
+// keeping every namespace's tenant attribution self-healing.
+const operatorNamespace = "enzarb-system"
+
+func capsuleOperatorAdministratorName() string {
+	return fmt.Sprintf("system:serviceaccount:%s:enzarb-operator", operatorNamespace)
+}
+
+// ensureCapsuleAdministrator maintains the operator's ServiceAccount as a
+// Capsule administrator (a single cluster-wide list, not per-org — this is
+// idempotent and cheap to re-check on every Organization reconcile so the
+// grant self-heals if CapsuleConfiguration is ever recreated, e.g. on a
+// Capsule chart upgrade).
+func (r *OrganizationReconciler) ensureCapsuleAdministrator(ctx context.Context) error {
+	cfg := &unstructured.Unstructured{}
+	cfg.SetGroupVersionKind(capsuleConfigGVK)
+	err := r.APIReader.Get(ctx, types.NamespacedName{Name: "default"}, cfg)
+	if capsuleAbsent(err) {
+		log.FromContext(ctx).V(1).Info("capsule not installed; skipping administrator grant")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	name := capsuleOperatorAdministratorName()
+	admins, _, _ := unstructured.NestedSlice(cfg.Object, "spec", "administrators")
+	for _, a := range admins {
+		entry, ok := a.(map[string]any)
+		if ok && entry["kind"] == "ServiceAccount" && entry["name"] == name {
+			return nil
+		}
+	}
+	admins = append(admins, map[string]any{"kind": "ServiceAccount", "name": name})
+	if err := unstructured.SetNestedSlice(cfg.Object, admins, "spec", "administrators"); err != nil {
+		return err
+	}
+	return r.Update(ctx, cfg)
+}
+
 // tenantOwnerReference resolves the project's Tenant into an ownerReference
 // for its deploy namespaces. Capsule attributes a namespace to a Tenant via
 // this ownerReference (its own mutating webhook sets it only for namespaces

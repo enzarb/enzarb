@@ -10,11 +10,24 @@
 # The enzarb operator maintains one Capsule Tenant per Project (owner = the
 # project's workspace SA, clusterRoles = enzarb-deployer) and labels each
 # environment's deploy namespace with capsule.clastix.io/tenant so Capsule
-# attributes it to the Tenant. The operator's own ServiceAccount is NOT in
-# Capsule's user scope, so Capsule's admission webhooks ignore it entirely
-# and it keeps creating namespaces itself as before. CapsuleConfiguration
-# user groups (system:serviceaccounts:user-<orgID>) are appended by the
-# operator's Organization reconciler.
+# attributes it to the Tenant. CapsuleConfiguration user groups
+# (system:serviceaccounts:user-<orgID>) are appended by the operator's
+# Organization reconciler — but that alone only makes the operator's SA a
+# recognized *tenant subject*, not an admin.
+#
+# The operator's own ServiceAccount is seeded here as a Capsule administrator
+# (also self-healingly re-ensured by the Organization reconciler in case
+# CapsuleConfiguration is ever recreated, e.g. on a chart upgrade). This is
+# required, not cosmetic: Capsule's namespace *validating* webhook checks the
+# already-persisted namespace object unconditionally on every update, before
+# even looking at admin status — so once a namespace ever carries the tenant
+# label without a matching Tenant ownerReference, NO update from anyone can
+# ever fix it through the normal API, admin or not (confirmed against
+# Capsule's source, internal/webhook/namespace/validation/handler.go). Being
+# a recognized admin instead lets Capsule's *mutating* webhook auto-resolve
+# and inject the correct ownerReference from the label alone on the very
+# first namespace-create the operator performs, so the broken state is never
+# reached in the first place.
 apiVersion: helm.cattle.io/v1
 kind: HelmChart
 metadata:
@@ -35,6 +48,11 @@ spec:
         # Start with no user groups; the enzarb operator appends
         # system:serviceaccounts:user-<orgID> per organization.
         capsuleUserGroups: []
+        # Required for the operator's namespace ownerReference assignment to
+        # be self-healing — see the block comment above.
+        administrators:
+          - kind: ServiceAccount
+            name: system:serviceaccount:enzarb-system:enzarb-operator
 ---
 apiVersion: helm.cattle.io/v1
 kind: HelmChart

@@ -93,6 +93,14 @@ func (r *OrganizationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, fmt.Errorf("reconcile capsule user group: %w", err)
 	}
 
+	// Grant the operator's own SA Capsule admin status so its namespace
+	// updates self-heal tenant ownerReferences (see ensureCapsuleAdministrator).
+	// Cluster-wide and idempotent, so checking it on every org reconcile is
+	// cheap and keeps it self-healing if CapsuleConfiguration is recreated.
+	if err := r.ensureCapsuleAdministrator(ctx); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure capsule administrator: %w", err)
+	}
+
 	// Isolate the workspace namespace: deny all ingress except the system
 	// namespace (operator process checks on :9090) and the gateway data-plane
 	// (user-facing agent API on :8080). This stops the unauthenticated agent
