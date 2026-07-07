@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import type { DiffPayload } from './types';
 	import DiffView from './DiffView.svelte';
 	import Markdown from './Markdown.svelte';
@@ -19,8 +20,19 @@
 		other: '🔧'
 	};
 
-	// A plan is the thing the user is being asked to review — open by default.
-	let expanded = $state(!!plan);
+	// A plan is the thing the user is being asked to review — open by default,
+	// including when it arrives later via a tool_call_updated event rather
+	// than being present on the initial render. untrack() marks these as
+	// deliberately one-time reads of the initial prop value, not a missed
+	// reactive dependency.
+	let expanded = $state(untrack(() => !!plan));
+	let autoOpened = untrack(() => !!plan);
+	$effect(() => {
+		if (plan && !autoOpened) {
+			autoOpened = true;
+			expanded = true;
+		}
+	});
 	const hasBody = $derived(!!diff || !!output || !!plan);
 </script>
 

@@ -1,10 +1,24 @@
 <script lang="ts">
 	import type { LeafPane, Tab } from './layout';
-	import TerminalPane from '$lib/terminal/TerminalPane.svelte';
+	import type { Component } from 'svelte';
 	import AgentPane from '$lib/agent/AgentPane.svelte';
 	import NewPaneDialog from './NewPaneDialog.svelte';
-	import CodeViewer from '$lib/components/CodeViewer.svelte';
 	import { getAgentAuthToken } from '$lib/agentToken';
+
+	// xterm.js and shiki (syntax highlighting) are, respectively, the two
+	// largest dependencies in the app bundle; load their host components on
+	// demand instead of shipping both to every user regardless of whether
+	// they ever open a terminal or a text file.
+	type TerminalPaneComponent = Component<{
+		agentBase: string;
+		namespace: string;
+		project: string;
+		processId: string;
+	}>;
+	let TerminalPane: TerminalPaneComponent | null = $state(null);
+
+	type CodeViewerComponent = Component<{ content: string; filename: string }>;
+	let CodeViewer: CodeViewerComponent | null = $state(null);
 
 	interface Props {
 		pane: LeafPane;
@@ -35,6 +49,23 @@
 	let fileContent = $state<FileContent>({ type: 'loading' });
 
 	const activeTab = $derived(pane.tabs[pane.activeTab] ?? null);
+	const hasTerminalTab = $derived(pane.tabs.some((t) => t.kind === 'terminal'));
+
+	$effect(() => {
+		if (hasTerminalTab && !TerminalPane) {
+			import('$lib/terminal/TerminalPane.svelte').then((m) => {
+				TerminalPane = m.default as TerminalPaneComponent;
+			});
+		}
+	});
+
+	$effect(() => {
+		if (activeTab?.kind === 'file' && !CodeViewer) {
+			import('$lib/components/CodeViewer.svelte').then((m) => {
+				CodeViewer = m.default as CodeViewerComponent;
+			});
+		}
+	});
 
 	$effect(() => {
 		if (activeTab?.kind === 'file') {
@@ -107,6 +138,15 @@
 	}
 </script>
 
+<!--
+	role="region" is a genuine landmark (each pane is independently navigable),
+	not a workaround — removing it would regress AT navigation. The mouse
+	handlers only track cursor position for tab drag-and-drop reordering, a
+	supplementary mouse-only interaction with no meaningful keyboard
+	equivalent; the actual interactive controls (tabs, below) are all
+	keyboard-accessible on their own.
+-->
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div
 	bind:this={el}
 	class="tiling-pane"
@@ -211,7 +251,9 @@
 				{#if tab.kind === 'terminal' || tab.kind === 'agent'}
 					<div class="tab-content" class:hidden={tab !== activeTab}>
 						{#if tab.kind === 'terminal'}
-							<TerminalPane {agentBase} {namespace} {project} processId={tab.id} />
+							{#if TerminalPane}
+								<TerminalPane {agentBase} {namespace} {project} processId={tab.id} />
+							{/if}
 						{:else}
 							<AgentPane {agentBase} {namespace} {project} sessionId={tab.id} />
 						{/if}
@@ -231,7 +273,9 @@
 							<img src={fileContent.dataUrl} alt={activeTab.label ?? activeTab.id} />
 						</div>
 					{:else if fileContent.type === 'text'}
-						<CodeViewer content={fileContent.content} filename={fileContent.path} />
+						{#if CodeViewer}
+							<CodeViewer content={fileContent.content} filename={fileContent.path} />
+						{/if}
 					{/if}
 				</div>
 			{/if}

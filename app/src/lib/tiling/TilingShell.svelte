@@ -326,7 +326,11 @@
 	);
 </script>
 
-<div class="tiling-shell" onmouseup={() => { if (dragging) { dragging = false; dragSource = null; } }}>
+<div
+	class="tiling-shell"
+	role="presentation"
+	onmouseup={() => { if (dragging) { dragging = false; dragSource = null; } }}
+>
 	{#if restorationBanner && !bannerDismissed}
 		<div class="restoration-banner">
 			<span>{restorationBanner}</span>

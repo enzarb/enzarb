@@ -48,7 +48,7 @@
 	let reconnectAttempts = 0;
 	let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
-	const bufKey = `enzarb-term:${processId}`;
+	const bufKey = $derived(`enzarb-term:${processId}`);
 	let bufferCache: string | null = null;
 
 	function scanForLinks(raw: string) {
