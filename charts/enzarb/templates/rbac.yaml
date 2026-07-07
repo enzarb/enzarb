@@ -21,6 +21,12 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces", "pods"]
     verbs: ["get", "list", "watch"]
+  # Read-only: getGatewayPublicIPs (src/lib/k8s.ts) lists the envoy Service by
+  # label to read its spec.externalIPs, so the UI can show custom-domain A
+  # record instructions without a second hardcoded copy of the public IP.
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["configmaps"]
     resourceNames: ["enzarb-config"]
