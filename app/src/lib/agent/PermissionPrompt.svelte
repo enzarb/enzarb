@@ -6,11 +6,13 @@
 		title,
 		options,
 		plan = null,
+		disabled = false,
 		onRespond
 	}: {
 		title: string;
 		options: PermissionOptionPayload[];
 		plan?: string | null;
+		disabled?: boolean;
 		onRespond: (optionId: string) => void;
 	} = $props();
 
@@ -26,11 +28,14 @@
 	{/if}
 	<div class="perm-actions">
 		{#each options as opt (opt.option_id)}
-			<button class="perm-btn {kindClass(opt.kind)}" onclick={() => onRespond(opt.option_id)}>
+			<button class="perm-btn {kindClass(opt.kind)}" {disabled} onclick={() => onRespond(opt.option_id)}>
 				{opt.label}
 			</button>
 		{/each}
 	</div>
+	{#if disabled}
+		<div class="perm-hint">Reconnecting — your response will be available once the connection is back.</div>
+	{/if}
 </div>
 
 <style>
@@ -43,4 +48,6 @@
 	.perm-btn.allow:hover { background: color-mix(in srgb, #3fb950 15%, transparent); }
 	.perm-btn.reject { border-color: var(--color-danger); color: var(--color-danger); }
 	.perm-btn.reject:hover { background: color-mix(in srgb, var(--color-danger) 15%, transparent); }
+	.perm-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+	.perm-hint { margin-top: 0.4rem; font-size: 11px; color: var(--color-text-muted); }
 </style>

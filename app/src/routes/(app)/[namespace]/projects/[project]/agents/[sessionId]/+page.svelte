@@ -154,7 +154,8 @@
 	}
 
 	function respondPermission(requestId: string, optionId: string) {
-		socket?.send({ type: 'permission_response', request_id: requestId, option_id: optionId });
+		const sent = socket?.send({ type: 'permission_response', request_id: requestId, option_id: optionId });
+		if (!sent) connectError = "Couldn't send response — reconnecting, please try again once connected.";
 	}
 
 	function sendMessage() {
@@ -237,7 +238,7 @@
 		{/each}
 
 		{#each pendingPermissions as p (p.requestId)}
-			<PermissionPrompt title={p.title} options={p.options} onRespond={(id) => respondPermission(p.requestId, id)} />
+			<PermissionPrompt title={p.title} options={p.options} disabled={connState !== 'connected'} onRespond={(id) => respondPermission(p.requestId, id)} />
 		{/each}
 	</div>
 

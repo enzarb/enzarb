@@ -230,7 +230,11 @@
 	}
 
 	function respondPermission(requestId: string, optionId: string) {
-		socket?.send({ type: 'permission_response', request_id: requestId, option_id: optionId });
+		// The socket can report 'connected' and still momentarily reject a send
+		// (e.g. mid-reconnect); surface that instead of silently dropping the
+		// response and leaving the prompt looking stuck.
+		const sent = socket?.send({ type: 'permission_response', request_id: requestId, option_id: optionId });
+		if (!sent) connectError = "Couldn't send response — reconnecting, please try again once connected.";
 	}
 
 	// Messages sent while a turn is running can't go to the agent immediately —
@@ -348,7 +352,7 @@
 		{/each}
 
 		{#each pendingPermissions as p (p.requestId)}
-			<PermissionPrompt title={p.title} options={p.options} plan={p.plan} onRespond={(id) => respondPermission(p.requestId, id)} />
+			<PermissionPrompt title={p.title} options={p.options} plan={p.plan} disabled={connState !== 'connected'} onRespond={(id) => respondPermission(p.requestId, id)} />
 		{/each}
 	</div>
 

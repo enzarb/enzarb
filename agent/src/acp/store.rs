@@ -784,39 +784,53 @@ async fn spawn(
                     let permissions = permissions.clone();
                     let channels = channels.clone();
                     async move {
-                        let session_id = request.session_id.to_string();
-                        let kind = request
-                            .tool_call
-                            .fields
-                            .kind
-                            .map(tool_kind_str)
-                            .unwrap_or("other");
+                        // The ACP connection's incoming-message loop awaits each
+                        // request handler inline before reading the next message
+                        // (including responses to our own outgoing requests like
+                        // session/list) — so a permission prompt that never gets
+                        // answered (client disconnect, dropped WS send, user just
+                        // never clicks) would otherwise wedge the whole connection
+                        // for every session in this project. Spawn the wait off
+                        // the dispatch loop so it can only ever block itself.
+                        tokio::spawn(async move {
+                            let session_id = request.session_id.to_string();
+                            let kind = request
+                                .tool_call
+                                .fields
+                                .kind
+                                .map(tool_kind_str)
+                                .unwrap_or("other");
 
-                        let chosen_option = if auto_allow(kind) {
-                            request.options.first().map(|o| o.option_id.to_string())
-                        } else {
-                            let (request_id, rx) = permissions.register().await;
-                            let tx = channels.lock().await.get(&session_id).cloned();
-                            if let Some(tx) = tx {
-                                let _ = tx.send(permission_request_event(
-                                    &session_id,
-                                    &request_id,
-                                    &request,
-                                ));
-                            }
-                            rx.await.ok()
-                        };
+                            let chosen_option = if auto_allow(kind) {
+                                request.options.first().map(|o| o.option_id.to_string())
+                            } else {
+                                let (request_id, rx) = permissions.register().await;
+                                let tx = channels.lock().await.get(&session_id).cloned();
+                                if let Some(tx) = tx {
+                                    let _ = tx.send(permission_request_event(
+                                        &session_id,
+                                        &request_id,
+                                        &request,
+                                    ));
+                                }
+                                rx.await.ok()
+                            };
 
-                        match chosen_option {
-                            Some(id) => responder.respond(RequestPermissionResponse::new(
-                                RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
-                                    id,
+                            let result = match chosen_option {
+                                Some(id) => responder.respond(RequestPermissionResponse::new(
+                                    RequestPermissionOutcome::Selected(
+                                        SelectedPermissionOutcome::new(id),
+                                    ),
                                 )),
-                            )),
-                            None => responder.respond(RequestPermissionResponse::new(
-                                RequestPermissionOutcome::Cancelled,
-                            )),
-                        }
+                                None => responder.respond(RequestPermissionResponse::new(
+                                    RequestPermissionOutcome::Cancelled,
+                                )),
+                            };
+                            if let Err(e) = result {
+                                tracing::warn!(error = %e, "failed to send permission response");
+                            }
+                        });
+                        Ok(())
                     }
                 },
                 agent_client_protocol::on_receive_request!(),

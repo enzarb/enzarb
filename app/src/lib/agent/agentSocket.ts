@@ -103,10 +103,13 @@ export class AgentSocket {
 		}, delay);
 	}
 
-	send(msg: AcpWsClientMsg) {
+	/** Returns false if the message could not be sent (socket not open) — callers should not assume delivery. */
+	send(msg: AcpWsClientMsg): boolean {
 		if (this.sock?.readyState === WebSocket.OPEN) {
 			this.sock.send(JSON.stringify(msg));
+			return true;
 		}
+		return false;
 	}
 
 	close() {
