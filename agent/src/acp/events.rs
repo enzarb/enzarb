@@ -25,6 +25,14 @@ pub enum AcpWsEvent {
         role: &'static str,
         text: String,
     },
+    /// The model's extended-thinking output, streamed the same way as
+    /// MessageChunk. Kept as a separate event (rather than a role) so the UI
+    /// can render it distinctly (e.g. collapsed/muted) instead of mixing it
+    /// into the assistant's reply.
+    ThoughtChunk {
+        session_id: String,
+        text: String,
+    },
     ToolCallCreated {
         session_id: String,
         tool_call_id: String,
@@ -264,6 +272,10 @@ pub fn from_session_update(session_id: &str, update: SessionUpdate) -> Vec<AcpWs
         SessionUpdate::AgentMessageChunk(chunk) => vec![AcpWsEvent::MessageChunk {
             session_id,
             role: "assistant",
+            text: content_block_text(&chunk.content),
+        }],
+        SessionUpdate::AgentThoughtChunk(chunk) => vec![AcpWsEvent::ThoughtChunk {
+            session_id,
             text: content_block_text(&chunk.content),
         }],
         SessionUpdate::ToolCall(tc) => vec![AcpWsEvent::ToolCallCreated {

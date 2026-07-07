@@ -18,6 +18,7 @@
 
 	type TimelineItem =
 		| { kind: 'message'; role: 'user' | 'assistant'; text: string }
+		| { kind: 'thought'; text: string }
 		| { kind: 'tool_call'; id: string; toolKind: string; title: string; status: string; diff: DiffPayload | null; output: string | null; plan: string | null }
 		| { kind: 'plan'; entries: PlanEntryPayload[] };
 
@@ -103,6 +104,12 @@
 				} else {
 					timeline.push({ kind: 'message', role: event.role, text: event.text });
 				}
+				break;
+			}
+			case 'thought_chunk': {
+				const last = timeline[timeline.length - 1];
+				if (last?.kind === 'thought') last.text += event.text;
+				else timeline.push({ kind: 'thought', text: event.text });
 				break;
 			}
 			case 'tool_call_created':
@@ -279,6 +286,11 @@
 						{/if}
 					</div>
 				</div>
+			{:else if item.kind === 'thought'}
+				<details class="thought">
+					<summary>Thinking…</summary>
+					<Markdown text={item.text} />
+				</details>
 			{:else if item.kind === 'tool_call'}
 				<ToolCallCard toolKind={item.toolKind} title={item.title} status={item.status} diff={item.diff} output={item.output} plan={item.plan} />
 			{:else if item.kind === 'plan'}
@@ -368,6 +380,11 @@
 	.message-body { font-size: 13px; line-height: 1.5; min-width: 0; overflow-wrap: anywhere; }
 	.message-body p { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 	.message.user .message-body { color: var(--color-text); }
+
+	.thought { font-size: 12px; color: var(--color-text-muted); font-style: italic; }
+	.thought summary { cursor: pointer; user-select: none; }
+	.thought summary:hover { color: var(--color-text); }
+	.thought :global(p) { margin: 0.3rem 0 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 
 	.composer { display: flex; flex-direction: column; gap: 0; padding: 0.5rem 0.75rem; border-top: 1px solid var(--color-border); min-width: 0; }
 	.composer textarea { width: 100%; box-sizing: border-box; resize: none; font-family: inherit; font-size: 13px; padding: 0.5rem 0.7rem; border: 1px solid var(--color-border); border-bottom: none; border-radius: 6px 6px 0 0; background: var(--color-surface); color: var(--color-text); overflow-y: auto; max-height: calc(8 * 1.5em + 1rem); line-height: 1.5; }

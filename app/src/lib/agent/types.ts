@@ -53,6 +53,7 @@ export type AcpWsEvent =
 	| { type: 'session_list'; sessions: SessionMeta[] }
 	| { type: 'session_created'; session: SessionMeta }
 	| { type: 'message_chunk'; session_id: string; role: 'user' | 'assistant'; text: string }
+	| { type: 'thought_chunk'; session_id: string; text: string }
 	| {
 			type: 'tool_call_created';
 			session_id: string;
