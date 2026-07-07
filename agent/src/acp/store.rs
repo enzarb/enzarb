@@ -22,7 +22,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-use tokio::sync::{Mutex, OnceCell, broadcast};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::{Mutex, broadcast};
 
 use crate::init::home_dir;
 
@@ -149,9 +150,18 @@ fn session_meta_from_info(
 // AcpStore
 // ---------------------------------------------------------------------------
 
+/// A spawned ACP connection plus a liveness flag flipped to `false` once the
+/// background task driving it exits (process died, pipe closed, etc.) — lets
+/// `connection()` detect a dead connection and transparently respawn.
+#[derive(Clone)]
+struct ConnState {
+    conn: ConnectionTo<Agent>,
+    alive: Arc<AtomicBool>,
+}
+
 #[derive(Clone)]
 pub struct AcpStore {
-    connection: Arc<OnceCell<ConnectionTo<Agent>>>,
+    connection: Arc<Mutex<Option<ConnState>>>,
     cwd: PathBuf,
     permissions: PermissionRegistry,
     channels: Channels,
@@ -195,7 +205,7 @@ impl AcpStore {
             HashMap::new()
         };
         Ok(Self {
-            connection: Arc::new(OnceCell::new()),
+            connection: Arc::new(Mutex::new(None)),
             cwd,
             permissions: PermissionRegistry::default(),
             channels: Arc::new(Mutex::new(HashMap::new())),
@@ -212,19 +222,32 @@ impl AcpStore {
         })
     }
 
+    /// Returns the current ACP connection, respawning `claude-agent-acp` if
+    /// none exists yet or the previous one has died (process killed/crashed).
+    /// Held behind a single mutex so concurrent callers racing a respawn
+    /// single-flight onto the same new process rather than each spawning
+    /// their own.
     async fn connection(&self) -> Result<ConnectionTo<Agent>> {
-        self.connection
-            .get_or_try_init(|| {
-                spawn(
-                    self.permissions.clone(),
-                    self.channels.clone(),
-                    self.history.clone(),
-                    self.session_modes.clone(),
-                    self.session_configs.clone(),
-                )
-            })
-            .await
-            .cloned()
+        let mut guard = self.connection.lock().await;
+        if let Some(state) = guard.as_ref() {
+            if state.alive.load(Ordering::Relaxed) {
+                return Ok(state.conn.clone());
+            }
+            tracing::warn!("ACP connection is dead, respawning claude-agent-acp");
+        }
+        let (conn, alive) = spawn(
+            self.permissions.clone(),
+            self.channels.clone(),
+            self.history.clone(),
+            self.session_modes.clone(),
+            self.session_configs.clone(),
+        )
+        .await?;
+        *guard = Some(ConnState {
+            conn: conn.clone(),
+            alive,
+        });
+        Ok(conn)
     }
 
     async fn channel(&self, session_id: &str) -> broadcast::Sender<AcpWsEvent> {
@@ -696,9 +719,11 @@ async fn spawn(
     history: History,
     session_modes: SessionModes,
     session_configs: SessionConfigs,
-) -> Result<ConnectionTo<Agent>> {
+) -> Result<(ConnectionTo<Agent>, Arc<AtomicBool>)> {
     let agent = AcpAgent::from_str(ACP_COMMAND).map_err(|e| anyhow!("invalid ACP command: {e}"))?;
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let alive = Arc::new(AtomicBool::new(true));
+    let alive_task = alive.clone();
 
     tokio::spawn(async move {
         let notification_channels = channels.clone();
@@ -807,12 +832,14 @@ async fn spawn(
             })
             .await;
 
+        alive_task.store(false, Ordering::Relaxed);
         if let Err(e) = result {
             tracing::warn!(error = %e, "ACP connection ended");
         }
     });
 
-    ready_rx
+    let conn = ready_rx
         .await
-        .map_err(|_| anyhow!("ACP agent process failed to initialize"))
+        .map_err(|_| anyhow!("ACP agent process failed to initialize"))?;
+    Ok((conn, alive))
 }
