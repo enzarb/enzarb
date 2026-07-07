@@ -1,6 +1,6 @@
 [package]
 name = "project-agent"
-version = "0.95.0"
+version = "0.98.1"
 edition = "2024"
 
 [[bin]]
