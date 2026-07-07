@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -27,8 +29,10 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	enzarbv1alpha1 "enzarb.dev/enzarb/operator/api/v1alpha1"
 )
@@ -50,6 +54,18 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	var env enzarbv1alpha1.Environment
 	if err := r.Get(ctx, req.NamespacedName, &env); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// Serving-TLS resources live in enzarb-system, out of reach of both owner
+	// references and deploy-namespace GC, so deletion needs a finalizer.
+	if !env.DeletionTimestamp.IsZero() {
+		return r.reconcileEnvironmentDelete(ctx, &env)
+	}
+	if !controllerutil.ContainsFinalizer(&env, environmentFinalizer) {
+		controllerutil.AddFinalizer(&env, environmentFinalizer)
+		if err := r.Update(ctx, &env); err != nil {
+			return ctrl.Result{}, fmt.Errorf("add finalizer: %w", err)
+		}
 	}
 
 	// Resolve parent project to get org ID
@@ -154,6 +170,42 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	return ctrl.Result{}, nil
 }
 
+// environmentFinalizer guards cleanup of the environment's serving-TLS
+// resources in enzarb-system (Issuer, ReferenceGrant, dtls-* Certificates and
+// Secrets), which no owner reference or namespace GC can reach.
+const environmentFinalizer = "enzarb.io/environment-cleanup"
+
+// reconcileEnvironmentDelete removes the environment's enzarb-system
+// serving-TLS resources, then drops the finalizer.
+func (r *EnvironmentReconciler) reconcileEnvironmentDelete(ctx context.Context, env *enzarbv1alpha1.Environment) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(env, environmentFinalizer) {
+		return ctrl.Result{}, nil
+	}
+	deployNS := env.Status.Namespace
+	if deployNS != "" {
+		// Pruning with an empty desired set deletes every serving Certificate
+		// (and backing Secret) labelled for this deploy namespace.
+		if err := r.pruneServingCertificates(ctx, deployNS, map[string]bool{}); err != nil {
+			return ctrl.Result{}, fmt.Errorf("prune serving certificates: %w", err)
+		}
+		if err := r.ensureServingReferenceGrant(ctx, deployNS, map[string]bool{}); err != nil {
+			return ctrl.Result{}, fmt.Errorf("delete serving reference grant: %w", err)
+		}
+		err := r.Delete(ctx, &certmanagerv1.Issuer{
+			ObjectMeta: metav1.ObjectMeta{Namespace: servingTLSNamespace, Name: servingIssuerName(deployNS)},
+		})
+		if err != nil && !errors.IsNotFound(err) {
+			return ctrl.Result{}, fmt.Errorf("delete serving issuer: %w", err)
+		}
+	}
+	controllerutil.RemoveFinalizer(env, environmentFinalizer)
+	if err := r.Update(ctx, env); err != nil {
+		return ctrl.Result{}, fmt.Errorf("remove finalizer: %w", err)
+	}
+	log.FromContext(ctx).Info("environment deleted", "name", env.Name, "deployNS", deployNS)
+	return ctrl.Result{}, nil
+}
+
 const (
 	// domainRecheckInterval is how often the controller re-polls DNS for domains
 	// that are not yet verified (and re-checks already-verified ones for drift).
@@ -167,6 +219,17 @@ const (
 	// namespace. Tenants reference it by name from their Certificates; they have no
 	// RBAC to edit or delete it (see the enzarb-deployer ClusterRole).
 	environmentIssuerName = "enzarb-acme"
+	// servingTLSNamespace is where the operator-managed per-domain serving
+	// Certificates/Secrets (dtls-*) live. They are deliberately NOT in the
+	// deploy namespace: tenants hold secrets get/list there (needed for their
+	// own app secrets), and Kubernetes RBAC cannot hide payloads from list nor
+	// exclude names from get — so keeping the private keys in the tenant
+	// namespace would expose them. The deploy Gateway references them
+	// cross-namespace via a ReferenceGrant.
+	servingTLSNamespace = "enzarb-system"
+	// deployNSLabel attributes an enzarb-system serving Certificate to the
+	// deploy namespace whose Gateway consumes it, for pruning.
+	deployNSLabel = "enzarb.io/deploy-ns"
 	// recheckDomainsAnnotation lets a tenant request an immediate domain
 	// verification pass instead of waiting for domainRecheckInterval. Setting it
 	// to "true" triggers a reconcile via the watch; Reconcile clears it as a
@@ -589,9 +652,9 @@ func generateSubdomain() (string, error) {
 	return string(out), nil
 }
 
-// domainSecretName is the in-namespace TLS Secret (and Certificate) name for a
-// serving domain. The cert lives in the deploy namespace and is referenced only
-// by that namespace's own Gateway — never copied or injected elsewhere.
+// domainSecretName is the TLS Secret (and Certificate) name for a serving
+// domain. The cert lives in enzarb-system (see servingTLSNamespace) and is
+// referenced only by the owning environment's Gateway via a ReferenceGrant.
 func domainSecretName(fqdn string) string {
 	sum := sha256.Sum256([]byte(strings.ToLower(fqdn)))
 	return "dtls-" + hex.EncodeToString(sum[:])[:48]
@@ -603,36 +666,58 @@ const deployGatewayName = "enzarb-deploy"
 // a deploy namespace, so stale ones can be pruned without touching tenant certs.
 const servingCertLabel = "enzarb.io/serving-cert"
 
-// reconcileServingTLS issues a TLS Certificate per serving domain into the deploy
-// namespace (via the namespace-local enzarb-acme Issuer) and provisions the
-// project's own Gateway whose listeners reference those local Secrets. Because
-// the Gateway and the Secrets share the namespace, no ReferenceGrant is needed
-// and no certificate material ever leaves the namespace. mergeGateways folds this
-// Gateway into the shared Envoy/IP. Tenants hold no gateways RBAC, so they can
-// route through this Gateway but cannot edit or delete it.
+// reconcileServingTLS issues a TLS Certificate per serving domain into
+// enzarb-system (see servingTLSNamespace for why not the deploy namespace) and
+// provisions the project's own Gateway whose HTTPS listeners reference those
+// Secrets cross-namespace via a ReferenceGrant. HTTP-01 challenges still solve
+// through the deploy namespace's own Gateway: the per-environment Issuer in
+// enzarb-system points its solver at that Gateway, whose HTTP listeners admit
+// routes from enzarb-system. mergeGateways folds every Gateway into the shared
+// Envoy/IP. Tenants hold no gateways RBAC, so they can route through this
+// Gateway but cannot edit or delete it.
+//
+// Migration from the previous in-namespace layout is downtime-free: each HTTPS
+// listener keeps referencing the legacy deploy-namespace Secret until the
+// enzarb-system Certificate is Ready, then flips; legacy dtls-* Certificates
+// and Secrets in the deploy namespace are deleted once unreferenced.
 func (r *EnvironmentReconciler) reconcileServingTLS(ctx context.Context, deployNS string, domains []string) error {
+	if err := r.ensureServingIssuer(ctx, deployNS); err != nil {
+		return fmt.Errorf("ensure serving issuer: %w", err)
+	}
 	desired := map[string]bool{}
+	ready := map[string]bool{}
 	for _, d := range domains {
-		desired[domainSecretName(d)] = true
-		if err := r.ensureDomainCertificate(ctx, deployNS, d); err != nil {
+		name := domainSecretName(d)
+		desired[name] = true
+		isReady, err := r.ensureDomainCertificate(ctx, deployNS, d)
+		if err != nil {
 			return fmt.Errorf("ensure certificate %s: %w", d, err)
 		}
+		ready[name] = isReady
 	}
-	if err := r.ensureDeployGateway(ctx, deployNS, domains); err != nil {
+	if err := r.ensureServingReferenceGrant(ctx, deployNS, desired); err != nil {
+		return fmt.Errorf("ensure serving reference grant: %w", err)
+	}
+	if err := r.ensureDeployGateway(ctx, deployNS, domains, ready); err != nil {
 		return err
 	}
-	return r.pruneServingCertificates(ctx, deployNS, desired)
+	if err := r.pruneServingCertificates(ctx, deployNS, desired); err != nil {
+		return err
+	}
+	return r.cleanupLegacyServingTLS(ctx, deployNS, ready)
 }
 
-// pruneServingCertificates deletes operator-managed serving Certificates in the
-// deploy namespace that are no longer in the desired set — e.g. left behind when
-// an environment's serving host changes or a custom domain is removed. Only certs
-// carrying servingCertLabel are considered, so tenant-created certs are untouched.
-// cert-manager garbage-collects the backing Secret once the Certificate is gone.
+// pruneServingCertificates deletes this environment's operator-managed serving
+// Certificates (and their backing Secrets, which cert-manager does not GC) in
+// enzarb-system that are no longer in the desired set — e.g. left behind when
+// an environment's serving host changes or a custom domain is removed.
 func (r *EnvironmentReconciler) pruneServingCertificates(ctx context.Context, deployNS string, desired map[string]bool) error {
 	var certs certmanagerv1.CertificateList
-	if err := r.List(ctx, &certs, client.InNamespace(deployNS),
-		client.MatchingLabels{"app.kubernetes.io/managed-by": "enzarb-operator"}); err != nil {
+	if err := r.List(ctx, &certs, client.InNamespace(servingTLSNamespace),
+		client.MatchingLabels{
+			"app.kubernetes.io/managed-by": "enzarb-operator",
+			deployNSLabel:                  deployNS,
+		}); err != nil {
 		return err
 	}
 	logger := log.FromContext(ctx)
@@ -645,38 +730,217 @@ func (r *EnvironmentReconciler) pruneServingCertificates(ctx context.Context, de
 		if err := r.Delete(ctx, c); err != nil && !errors.IsNotFound(err) {
 			return fmt.Errorf("prune certificate %s: %w", c.Name, err)
 		}
-		logger.Info("pruned stale serving certificate", "namespace", deployNS, "name", c.Name)
+		if err := r.deleteSecretIfExists(ctx, servingTLSNamespace, c.Name); err != nil {
+			return fmt.Errorf("prune certificate secret %s: %w", c.Name, err)
+		}
+		logger.Info("pruned stale serving certificate", "namespace", servingTLSNamespace, "name", c.Name)
 	}
 	return nil
 }
 
-func (r *EnvironmentReconciler) ensureDomainCertificate(ctx context.Context, deployNS, fqdn string) error {
+// cleanupLegacyServingTLS removes dtls-* Certificates and Secrets that earlier
+// operator versions issued directly into the deploy namespace. A legacy pair is
+// kept while it is still referenced by a Gateway listener — i.e. until the
+// replacement enzarb-system Certificate is Ready — so migration never drops a
+// serving domain.
+func (r *EnvironmentReconciler) cleanupLegacyServingTLS(ctx context.Context, deployNS string, ready map[string]bool) error {
+	logger := log.FromContext(ctx)
+	var certs certmanagerv1.CertificateList
+	if err := r.List(ctx, &certs, client.InNamespace(deployNS),
+		client.MatchingLabels{"app.kubernetes.io/managed-by": "enzarb-operator"}); err != nil {
+		return err
+	}
+	for i := range certs.Items {
+		c := &certs.Items[i]
+		if !strings.HasPrefix(c.Name, "dtls-") {
+			continue
+		}
+		// Still serving from the legacy secret until the replacement is Ready.
+		if inUse, replaced := ready[c.Name]; inUse && !replaced {
+			continue
+		}
+		if err := r.Delete(ctx, c); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("delete legacy certificate %s: %w", c.Name, err)
+		}
+		if err := r.deleteSecretIfExists(ctx, deployNS, c.Name); err != nil {
+			return fmt.Errorf("delete legacy certificate secret %s: %w", c.Name, err)
+		}
+		logger.Info("removed legacy in-namespace serving certificate", "namespace", deployNS, "name", c.Name)
+	}
+	return nil
+}
+
+func (r *EnvironmentReconciler) deleteSecretIfExists(ctx context.Context, ns, name string) error {
+	err := r.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name}})
+	if err != nil && !errors.IsNotFound(err) {
+		return err
+	}
+	return nil
+}
+
+// servingIssuerName is the per-environment ACME Issuer in enzarb-system whose
+// HTTP-01 solver attaches to that environment's deploy Gateway.
+func servingIssuerName(deployNS string) string {
+	return "acme-" + deployNS
+}
+
+// ensureServingIssuer provisions the enzarb-system Issuer that signs this
+// environment's serving Certificates. It reuses the chart's shared
+// letsencrypt-account-key so per-environment Issuers don't each register a new
+// ACME account (Let's Encrypt rate-limits registrations).
+func (r *EnvironmentReconciler) ensureServingIssuer(ctx context.Context, deployNS string) error {
+	acmeServer := os.Getenv("ACME_SERVER")
+	if acmeServer == "" {
+		acmeServer = "https://acme-v02.api.letsencrypt.org/directory"
+	}
+	gwKind := gatewayv1.Kind("Gateway")
+	gwGroup := gatewayv1.Group("gateway.networking.k8s.io")
+	gwNS := gatewayv1.Namespace(deployNS)
+	desired := acmev1.ACMEIssuer{
+		Server: acmeServer,
+		Email:  os.Getenv("ACME_EMAIL"),
+		PrivateKey: cmmeta.SecretKeySelector{
+			LocalObjectReference: cmmeta.LocalObjectReference{Name: "letsencrypt-account-key"},
+		},
+		Solvers: []acmev1.ACMEChallengeSolver{{
+			HTTP01: &acmev1.ACMEChallengeSolverHTTP01{
+				GatewayHTTPRoute: &acmev1.ACMEChallengeSolverHTTP01GatewayHTTPRoute{
+					ParentRefs: []gatewayv1.ParentReference{{
+						Name:      gatewayv1.ObjectName(deployGatewayName),
+						Namespace: &gwNS,
+						Kind:      &gwKind,
+						Group:     &gwGroup,
+					}},
+				},
+			},
+		}},
+	}
+
+	issuer := &certmanagerv1.Issuer{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: servingTLSNamespace, Name: servingIssuerName(deployNS)}, issuer)
+	if errors.IsNotFound(err) {
+		issuer = &certmanagerv1.Issuer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      servingIssuerName(deployNS),
+				Namespace: servingTLSNamespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/managed-by": "enzarb-operator",
+					deployNSLabel:                  deployNS,
+				},
+			},
+			Spec: certmanagerv1.IssuerSpec{
+				IssuerConfig: certmanagerv1.IssuerConfig{ACME: &desired},
+			},
+		}
+		return r.Create(ctx, issuer)
+	}
+	if err != nil {
+		return err
+	}
+	if issuer.Spec.ACME == nil || !acmeIssuerEqual(*issuer.Spec.ACME, desired) {
+		issuer.Spec.IssuerConfig = certmanagerv1.IssuerConfig{ACME: &desired}
+		return r.Update(ctx, issuer)
+	}
+	return nil
+}
+
+// ensureServingReferenceGrant permits this environment's deploy Gateway to
+// reference its dtls-* Secrets in enzarb-system. The grant enumerates the
+// specific Secret names rather than granting all Secrets in enzarb-system.
+func (r *EnvironmentReconciler) ensureServingReferenceGrant(ctx context.Context, deployNS string, secretNames map[string]bool) error {
+	names := make([]string, 0, len(secretNames))
+	for n := range secretNames {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	grantName := "dtls-" + deployNS
+
+	if len(names) == 0 {
+		err := r.Delete(ctx, &gatewayv1beta1.ReferenceGrant{
+			ObjectMeta: metav1.ObjectMeta{Namespace: servingTLSNamespace, Name: grantName},
+		})
+		if err != nil && !errors.IsNotFound(err) {
+			return err
+		}
+		return nil
+	}
+
+	secretKind := gatewayv1beta1.Kind("Secret")
+	to := make([]gatewayv1beta1.ReferenceGrantTo, 0, len(names))
+	for _, n := range names {
+		name := gatewayv1beta1.ObjectName(n)
+		to = append(to, gatewayv1beta1.ReferenceGrantTo{Kind: secretKind, Name: &name})
+	}
+	desired := gatewayv1beta1.ReferenceGrantSpec{
+		From: []gatewayv1beta1.ReferenceGrantFrom{{
+			Group:     gatewayv1beta1.Group("gateway.networking.k8s.io"),
+			Kind:      gatewayv1beta1.Kind("Gateway"),
+			Namespace: gatewayv1beta1.Namespace(deployNS),
+		}},
+		To: to,
+	}
+
+	grant := &gatewayv1beta1.ReferenceGrant{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: servingTLSNamespace, Name: grantName}, grant)
+	if errors.IsNotFound(err) {
+		grant = &gatewayv1beta1.ReferenceGrant{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      grantName,
+				Namespace: servingTLSNamespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/managed-by": "enzarb-operator",
+					deployNSLabel:                  deployNS,
+				},
+			},
+			Spec: desired,
+		}
+		return r.Create(ctx, grant)
+	}
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(grant.Spec, desired) {
+		grant.Spec = desired
+		return r.Update(ctx, grant)
+	}
+	return nil
+}
+
+// ensureDomainCertificate issues the serving Certificate for fqdn into
+// enzarb-system and reports whether it is Ready (i.e. its Secret exists and can
+// be referenced by the Gateway).
+func (r *EnvironmentReconciler) ensureDomainCertificate(ctx context.Context, deployNS, fqdn string) (bool, error) {
 	name := domainSecretName(fqdn)
 	cert := &certmanagerv1.Certificate{}
-	err := r.Get(ctx, types.NamespacedName{Namespace: deployNS, Name: name}, cert)
+	err := r.Get(ctx, types.NamespacedName{Namespace: servingTLSNamespace, Name: name}, cert)
 	if errors.IsNotFound(err) {
 		cert = &certmanagerv1.Certificate{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      name,
-				Namespace: deployNS,
+				Namespace: servingTLSNamespace,
 				Labels: map[string]string{
 					"app.kubernetes.io/managed-by": "enzarb-operator",
 					servingCertLabel:               "true",
+					deployNSLabel:                  deployNS,
 				},
 			},
 			Spec: certmanagerv1.CertificateSpec{
 				SecretName: name,
 				DNSNames:   []string{fqdn},
 				IssuerRef: cmmeta.IssuerReference{
-					Name:  environmentIssuerName,
+					Name:  servingIssuerName(deployNS),
 					Kind:  "Issuer",
 					Group: "cert-manager.io",
 				},
 			},
 		}
-		return r.Create(ctx, cert)
+		return false, r.Create(ctx, cert)
 	}
-	return err
+	if err != nil {
+		return false, err
+	}
+	ready := certReadyCondition(cert)
+	return ready != nil && ready.Status == cmmeta.ConditionTrue, nil
 }
 
 // reconcileDomainTLSStatus reads back the cert-manager Certificate created by
@@ -695,7 +959,7 @@ func (r *EnvironmentReconciler) reconcileDomainTLSStatus(ctx context.Context, de
 
 		cert := &certmanagerv1.Certificate{}
 		name := domainSecretName(ds.FQDN)
-		if err := r.Get(ctx, types.NamespacedName{Namespace: deployNS, Name: name}, cert); err != nil {
+		if err := r.Get(ctx, types.NamespacedName{Namespace: servingTLSNamespace, Name: name}, cert); err != nil {
 			if errors.IsNotFound(err) {
 				ds.TLSStatus = "IssuingCertificate"
 				ds.TLSError = ""
@@ -734,23 +998,44 @@ func certReadyCondition(cert *certmanagerv1.Certificate) *certmanagerv1.Certific
 }
 
 // ensureDeployGateway builds the namespace's enzarb-deploy Gateway with, per
-// serving domain, an HTTPS listener (terminating with the domain's local cert
-// Secret) and an HTTP listener (for the ACME HTTP-01 challenge and HTTP→HTTPS
-// redirect). Listeners are keyed by unique hostname so they coexist on the merged
-// Envoy across all projects.
-func (r *EnvironmentReconciler) ensureDeployGateway(ctx context.Context, deployNS string, domains []string) error {
+// serving domain, an HTTPS listener (terminating with the domain's cert Secret
+// in enzarb-system, or the legacy in-namespace Secret until the enzarb-system
+// Certificate is Ready) and an HTTP listener (for the ACME HTTP-01 challenge
+// and HTTP→HTTPS redirect; it admits routes from enzarb-system since that is
+// where cert-manager creates the solver HTTPRoute). Listeners are keyed by
+// unique hostname so they coexist on the merged Envoy across all projects.
+func (r *EnvironmentReconciler) ensureDeployGateway(ctx context.Context, deployNS string, domains []string, ready map[string]bool) error {
 	className := os.Getenv("GATEWAY_CLASS_NAME")
 	if className == "" {
 		className = "envoy"
 	}
 	sameNS := gatewayv1.NamespacesFromSame
+	fromSelector := gatewayv1.NamespacesFromSelector
 	tlsTerminate := gatewayv1.TLSModeTerminate
+	systemNS := gatewayv1.Namespace(servingTLSNamespace)
+	// HTTP listeners admit routes from the deploy namespace (tenant redirects)
+	// and enzarb-system (ACME HTTP-01 solver routes).
+	httpRouteNamespaces := &gatewayv1.RouteNamespaces{
+		From: &fromSelector,
+		Selector: &metav1.LabelSelector{
+			MatchExpressions: []metav1.LabelSelectorRequirement{{
+				Key:      "kubernetes.io/metadata.name",
+				Operator: metav1.LabelSelectorOpIn,
+				Values:   []string{deployNS, servingTLSNamespace},
+			}},
+		},
+	}
 
 	var listeners []gatewayv1.Listener
 	for _, d := range domains {
 		host := gatewayv1.Hostname(d)
-		secret := gatewayv1.ObjectName(domainSecretName(d))
-		short := domainSecretName(d)[5:21] // stable, unique per-domain listener suffix
+		secretName := domainSecretName(d)
+		secret := gatewayv1.ObjectName(secretName)
+		certRef := gatewayv1.SecretObjectReference{Name: secret}
+		if ready[secretName] {
+			certRef.Namespace = &systemNS
+		}
+		short := secretName[5:21] // stable, unique per-domain listener suffix
 		listeners = append(listeners,
 			gatewayv1.Listener{
 				Name:     gatewayv1.SectionName("https-" + short),
@@ -759,7 +1044,7 @@ func (r *EnvironmentReconciler) ensureDeployGateway(ctx context.Context, deployN
 				Hostname: &host,
 				TLS: &gatewayv1.ListenerTLSConfig{
 					Mode:            &tlsTerminate,
-					CertificateRefs: []gatewayv1.SecretObjectReference{{Name: secret}},
+					CertificateRefs: []gatewayv1.SecretObjectReference{certRef},
 				},
 				AllowedRoutes: &gatewayv1.AllowedRoutes{
 					Namespaces: &gatewayv1.RouteNamespaces{From: &sameNS},
@@ -771,7 +1056,7 @@ func (r *EnvironmentReconciler) ensureDeployGateway(ctx context.Context, deployN
 				Protocol: gatewayv1.HTTPProtocolType,
 				Hostname: &host,
 				AllowedRoutes: &gatewayv1.AllowedRoutes{
-					Namespaces: &gatewayv1.RouteNamespaces{From: &sameNS},
+					Namespaces: httpRouteNamespaces,
 				},
 			},
 		)
@@ -815,8 +1100,61 @@ func listenersEqual(a, b []gatewayv1.Listener) bool {
 		if (ah == nil) != (bh == nil) || (ah != nil && *ah != *bh) {
 			return false
 		}
+		if !certRefsEqual(a[i].TLS, b[i].TLS) {
+			return false
+		}
+		if !allowedRouteNamespacesEqual(a[i].AllowedRoutes, b[i].AllowedRoutes) {
+			return false
+		}
 	}
 	return true
+}
+
+// certRefsEqual compares listener TLS certificateRefs by name and namespace so
+// the migration of serving Secrets into enzarb-system propagates to existing
+// Gateways (a name/port/hostname comparison alone would never see the change).
+func certRefsEqual(a, b *gatewayv1.ListenerTLSConfig) bool {
+	ar, br := []gatewayv1.SecretObjectReference{}, []gatewayv1.SecretObjectReference{}
+	if a != nil {
+		ar = a.CertificateRefs
+	}
+	if b != nil {
+		br = b.CertificateRefs
+	}
+	if len(ar) != len(br) {
+		return false
+	}
+	for i := range ar {
+		if ar[i].Name != br[i].Name {
+			return false
+		}
+		an, bn := ar[i].Namespace, br[i].Namespace
+		if (an == nil) != (bn == nil) || (an != nil && *an != *bn) {
+			return false
+		}
+	}
+	return true
+}
+
+func allowedRouteNamespacesEqual(a, b *gatewayv1.AllowedRoutes) bool {
+	var an, bn *gatewayv1.RouteNamespaces
+	if a != nil {
+		an = a.Namespaces
+	}
+	if b != nil {
+		bn = b.Namespaces
+	}
+	if (an == nil) != (bn == nil) {
+		return false
+	}
+	if an == nil {
+		return true
+	}
+	af, bf := an.From, bn.From
+	if (af == nil) != (bf == nil) || (af != nil && *af != *bf) {
+		return false
+	}
+	return reflect.DeepEqual(an.Selector, bn.Selector)
 }
 
 // reconcileAllowedDomains projects the set of hostnames this environment is
@@ -1125,6 +1463,10 @@ func acmeIssuerEqual(a, b acmev1.ACMEIssuer) bool {
 		}
 		for j := range ag.ParentRefs {
 			if ag.ParentRefs[j].Name != bg.ParentRefs[j].Name {
+				return false
+			}
+			an, bn := ag.ParentRefs[j].Namespace, bg.ParentRefs[j].Namespace
+			if (an == nil) != (bn == nil) || (an != nil && *an != *bn) {
 				return false
 			}
 		}

@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
@@ -133,15 +135,31 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("ensure service account: %w", err)
 	}
 
+	// Grant the workspace SA `get` on its environments' deploy namespaces.
+	envNamespaces, err := r.projectEnvNamespaces(ctx, orgNS, &project)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("list environment namespaces: %w", err)
+	}
+	if err := r.ensureEnvNamespaceRBAC(ctx, orgNS, saName, &project, envNamespaces); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure env namespace rbac: %w", err)
+	}
+
 	// Prune any stale ClusterRoleBindings left over from before the migration
 	// to namespace-scoped RoleBindings. ClusterRoleBindings are cluster-scoped
-	// so pass "" as namespace to pruneUnmanaged.
+	// so pass "" as namespace to pruneUnmanaged. The listing is cluster-wide
+	// across all projects, so only consider bindings attributed to this
+	// project (or legacy ones with no project label) — otherwise each
+	// project's reconcile would delete every other project's env-ns binding.
 	if err := pruneUnmanaged(ctx, r.Client, &rbacv1.ClusterRoleBindingList{}, "",
-		map[string]struct{}{},
+		map[string]struct{}{envNamespaceRBACName(&project): {}},
 		func(l *rbacv1.ClusterRoleBindingList) []*rbacv1.ClusterRoleBinding {
-			items := make([]*rbacv1.ClusterRoleBinding, len(l.Items))
+			var items []*rbacv1.ClusterRoleBinding
 			for i := range l.Items {
-				items[i] = &l.Items[i]
+				slug, hasSlug := l.Items[i].Labels["enzarb.io/project"]
+				org := l.Items[i].Labels["enzarb.io/org"]
+				if !hasSlug || (slug == project.Spec.Slug && org == project.Spec.OrgID) {
+					items = append(items, &l.Items[i])
+				}
 			}
 			return items
 		},
@@ -186,7 +204,7 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("ensure httproute: %w", err)
 	}
 
-	if err := r.ensureEnvContextConfigMap(ctx, orgNS, &project); err != nil {
+	if err := r.ensureEnvContextConfigMap(ctx, orgNS, &project, envNamespaces); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensure env context configmap: %w", err)
 	}
 
@@ -410,6 +428,17 @@ func (r *ProjectReconciler) reconcileProjectDelete(ctx context.Context, project 
 	}); err != nil {
 		return ctrl.Result{}, fmt.Errorf("delete role binding: %w", err)
 	}
+	envNSName := envNamespaceRBACName(project)
+	if err := r.deleteIfExists(ctx, &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: envNSName},
+	}); err != nil {
+		return ctrl.Result{}, fmt.Errorf("delete env-ns cluster role binding: %w", err)
+	}
+	if err := r.deleteIfExists(ctx, &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{Name: envNSName},
+	}); err != nil {
+		return ctrl.Result{}, fmt.Errorf("delete env-ns cluster role: %w", err)
+	}
 	routeName := fmt.Sprintf("project-%s-agent", project.Spec.Slug)
 	if err := r.deleteIfExists(ctx, &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{Name: routeName, Namespace: "enzarb-system"},
@@ -511,6 +540,94 @@ func (r *ProjectReconciler) ensureServiceAccount(ctx context.Context, ns, name s
 			return err
 		}
 		return r.Create(ctx, sa)
+	}
+	return err
+}
+
+// envNamespaceRBACName names the per-project ClusterRole and ClusterRoleBinding
+// that let the workspace SA `kubectl get` its environments' deploy namespaces.
+func envNamespaceRBACName(project *enzarbv1alpha1.Project) string {
+	return fmt.Sprintf("enzarb-%s-%s-env-ns", project.Spec.OrgID, project.Spec.Slug)
+}
+
+// projectEnvNamespaces returns the sorted deploy namespaces of every provisioned
+// Environment belonging to the project.
+func (r *ProjectReconciler) projectEnvNamespaces(ctx context.Context, orgNS string, project *enzarbv1alpha1.Project) ([]string, error) {
+	var envList enzarbv1alpha1.EnvironmentList
+	if err := r.List(ctx, &envList, client.InNamespace(orgNS)); err != nil {
+		return nil, fmt.Errorf("list environments: %w", err)
+	}
+	var namespaces []string
+	for i := range envList.Items {
+		env := &envList.Items[i]
+		if env.Spec.ProjectRef.Name == project.Spec.Slug && env.Status.Namespace != "" {
+			namespaces = append(namespaces, env.Status.Namespace)
+		}
+	}
+	sort.Strings(namespaces)
+	return namespaces, nil
+}
+
+// ensureEnvNamespaceRBAC maintains a ClusterRole granting `get` on the
+// project's environment deploy namespaces (by name — namespaces are
+// cluster-scoped, so a namespaced Role can't express this) and a
+// ClusterRoleBinding attaching it to the workspace ServiceAccount. RBAC can't
+// name-scope `list`, so `kubectl get ns` without arguments stays forbidden;
+// `kubectl get ns <deploy-ns>` works. Both objects are deleted when the
+// project has no provisioned environments (and on project deletion).
+func (r *ProjectReconciler) ensureEnvNamespaceRBAC(ctx context.Context, orgNS, saName string, project *enzarbv1alpha1.Project, envNamespaces []string) error {
+	name := envNamespaceRBACName(project)
+
+	if len(envNamespaces) == 0 {
+		if err := r.deleteIfExists(ctx, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: name}}); err != nil {
+			return err
+		}
+		return r.deleteIfExists(ctx, &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: name}})
+	}
+
+	desiredRole := &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Labels: projectLabels(project)},
+		Rules: []rbacv1.PolicyRule{{
+			APIGroups:     []string{""},
+			Resources:     []string{"namespaces"},
+			Verbs:         []string{"get"},
+			ResourceNames: envNamespaces,
+		}},
+	}
+	existingRole := &rbacv1.ClusterRole{}
+	err := r.Get(ctx, types.NamespacedName{Name: name}, existingRole)
+	switch {
+	case errors.IsNotFound(err):
+		if err := r.Create(ctx, desiredRole); err != nil {
+			return fmt.Errorf("create env-ns clusterrole: %w", err)
+		}
+	case err != nil:
+		return err
+	case !reflect.DeepEqual(existingRole.Rules, desiredRole.Rules):
+		existingRole.Rules = desiredRole.Rules
+		existingRole.Labels = desiredRole.Labels
+		if err := r.Update(ctx, existingRole); err != nil {
+			return fmt.Errorf("update env-ns clusterrole: %w", err)
+		}
+	}
+
+	binding := &rbacv1.ClusterRoleBinding{}
+	err = r.Get(ctx, types.NamespacedName{Name: name}, binding)
+	if errors.IsNotFound(err) {
+		binding = &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Labels: projectLabels(project)},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "ClusterRole",
+				Name:     name,
+			},
+			Subjects: []rbacv1.Subject{{
+				Kind:      "ServiceAccount",
+				Name:      saName,
+				Namespace: orgNS,
+			}},
+		}
+		return r.Create(ctx, binding)
 	}
 	return err
 }
@@ -978,7 +1095,7 @@ func (r *ProjectReconciler) ensureService(ctx context.Context, ns string, projec
 // KUBE_NAMESPACE for the project's default environment (set via the
 // enzarb.io/default-environment annotation). Mounted into the workspace pod, it
 // is updated in-place by Kubernetes (~60 s propagation) without a pod restart.
-func (r *ProjectReconciler) ensureEnvContextConfigMap(ctx context.Context, ns string, project *enzarbv1alpha1.Project) error {
+func (r *ProjectReconciler) ensureEnvContextConfigMap(ctx context.Context, ns string, project *enzarbv1alpha1.Project, envNamespaces []string) error {
 	cmName := fmt.Sprintf("%s-env-context", project.Spec.Slug)
 
 	// Determine which environment is the default (annotation value = env slug).
@@ -996,6 +1113,12 @@ func (r *ProjectReconciler) ensureEnvContextConfigMap(ctx context.Context, ns st
 		contextSh = fmt.Sprintf("export POD_NAMESPACE=%s\n", envNamespace)
 	} else {
 		contextSh = "# no default environment set\n"
+	}
+	// All of the project's environment deploy namespaces, so workspace tooling
+	// can enumerate them (RBAC only grants `get` on these by name; an
+	// unfiltered `kubectl get ns` list is not permitted).
+	if len(envNamespaces) > 0 {
+		contextSh += fmt.Sprintf("export ENZARB_ENV_NAMESPACES=%q\n", strings.Join(envNamespaces, " "))
 	}
 
 	cm := &corev1.ConfigMap{}

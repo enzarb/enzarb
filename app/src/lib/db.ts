@@ -58,9 +58,12 @@ export async function migrate() {
 			user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 			data JSONB NOT NULL DEFAULT '{}',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			expires_at TIMESTAMPTZ NOT NULL DEFAULT now() + interval '7 days'
+			expires_at TIMESTAMPTZ NOT NULL DEFAULT now() + interval '24 hours'
 		)
 	`;
+	// Sessions live 24h past the user's last interaction (slid forward in
+	// getSession); realign the default on tables created before the change.
+	await sql`ALTER TABLE sessions ALTER COLUMN expires_at SET DEFAULT now() + interval '24 hours'`;
 	// Privilege-based roles: per-org, editable bags of privileges. org_members.role
 	// references org_roles.name. Seeded with builtin owner/manager/member below.
 	await sql`

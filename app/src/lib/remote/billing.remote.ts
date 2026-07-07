@@ -249,8 +249,11 @@ export const getCostTimeSeries = query(
 		const org = resolveOrg();
 		const since = new Date(Date.now() - days * 86400000);
 
-		const rows = await sql<{ day: Date; resource_type: string; total: number }[]>`
-			SELECT date_trunc('day', recorded_at) AS day, resource_type, SUM(quantity)::float8 AS total
+		// Bucket days in UTC explicitly — date_trunc uses the DB session
+		// timezone, and the zero-filled day keys below are UTC; a mismatch
+		// splits one day's usage across two chart bars (sawtooth).
+		const rows = await sql<{ day: string; resource_type: string; total: number }[]>`
+			SELECT to_char(recorded_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day, resource_type, SUM(quantity)::float8 AS total
 			FROM usage_events
 			WHERE org_id = ${org.id}
 			  AND recorded_at >= ${since}
@@ -264,7 +267,7 @@ export const getCostTimeSeries = query(
 		// Collapse into one bucket per day with per-resource-type cost segments.
 		const buckets = new Map<string, Record<string, number>>();
 		for (const r of rows) {
-			const key = new Date(r.day).toISOString().slice(0, 10);
+			const key = r.day;
 			const seg = buckets.get(key) ?? {};
 			seg[r.resource_type] =
 				(seg[r.resource_type] ?? 0) + costForResource(r.resource_type, Number(r.total), p);
@@ -399,8 +402,9 @@ export const getProjectCostTimeSeries = query(
 		const org = resolveOrg();
 		const since = new Date(Date.now() - days * 86400000);
 
-		const rows = await sql<{ day: Date; resource_type: string; total: number }[]>`
-			SELECT date_trunc('day', recorded_at) AS day, resource_type, SUM(quantity)::float8 AS total
+		// UTC day bucketing — see getCostTimeSeries.
+		const rows = await sql<{ day: string; resource_type: string; total: number }[]>`
+			SELECT to_char(recorded_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day, resource_type, SUM(quantity)::float8 AS total
 			FROM usage_events
 			WHERE org_id = ${org.id}
 			  AND project_id = ${projectId}
@@ -412,7 +416,7 @@ export const getProjectCostTimeSeries = query(
 		const p = await loadPricing();
 		const buckets = new Map<string, Record<string, number>>();
 		for (const r of rows) {
-			const key = new Date(r.day).toISOString().slice(0, 10);
+			const key = r.day;
 			const seg = buckets.get(key) ?? {};
 			seg[r.resource_type] =
 				(seg[r.resource_type] ?? 0) + costForResource(r.resource_type, Number(r.total), p);

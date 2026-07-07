@@ -83,11 +83,16 @@ func main() {
 	// previous tick (not a fixed 60s), since collection itself takes time
 	// and would otherwise shrink the real gap between samples below 60s,
 	// undercounting usage for that period.
+	//
+	// Ticks are phase-locked to wall-clock minute boundaries rather than
+	// free-running: recorded_at is truncated to the minute, and a
+	// free-running ~60s ticker drifts across those boundaries, landing 0 or
+	// 2 samples in a given minute bucket — which renders as a sawtooth in
+	// the per-minute utilization charts.
 	go func() {
-		ticker := time.NewTicker(60 * time.Second)
-		defer ticker.Stop()
 		lastTick := time.Now()
-		for range ticker.C {
+		for {
+			time.Sleep(time.Until(time.Now().Truncate(time.Minute).Add(time.Minute)))
 			now := time.Now()
 			elapsed := now.Sub(lastTick)
 			lastTick = now
@@ -404,11 +409,12 @@ func (w *Worker) consumeHubble(ctx context.Context, path string) {
 	counts := map[flowKey]*byteCounts{}
 	var flowsSeen, flowsMatched int64
 
-	flush := time.NewTicker(60 * time.Second)
-	defer flush.Stop()
-
+	// Phase-locked to minute boundaries for the same reason as the metrics
+	// loop: recorded_at is minute-truncated, and a free-running ticker lands
+	// 0 or 2 flushes in some minutes, sawtoothing the network charts.
 	go func() {
-		for range flush.C {
+		for {
+			time.Sleep(time.Until(time.Now().Truncate(time.Minute).Add(time.Minute)))
 			slog.Info("hubble flush", "flows_seen", flowsSeen, "flows_matched", flowsMatched, "buckets", len(counts))
 			flowsSeen, flowsMatched = 0, 0
 			for key, bc := range counts {

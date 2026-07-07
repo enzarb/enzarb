@@ -5,7 +5,7 @@ import { config } from '$lib/config';
 import { sql } from '$lib/db';
 import { encrypt, decrypt } from '$lib/crypto';
 import { orgNamespace, createOrPatchSecret, flagEnvUpdatePendingForOrgs } from '$lib/k8s';
-import { upsertGithubUser, createSession } from '$lib/session';
+import { upsertGithubUser, createSession, setSessionCookie } from '$lib/session';
 
 export const GET: RequestHandler = async ({ url, locals, cookies }) => {
 	if (!config.githubOAuthClientId) error(404, 'GitHub OAuth not configured');
@@ -99,13 +99,7 @@ export const GET: RequestHandler = async ({ url, locals, cookies }) => {
 
 	// Login flow: create session and redirect.
 	const sessionId = await createSession(userId);
-	cookies.set('session', sessionId, {
-		path: '/',
-		httpOnly: true,
-		secure: true,
-		sameSite: 'lax',
-		maxAge: 60 * 60 * 24 * 7
-	});
+	setSessionCookie(cookies, sessionId);
 
 	// New users with no username go through onboarding.
 	const userRows = await sql<{ username: string | null }[]>`SELECT username FROM users WHERE id = ${userId}`;

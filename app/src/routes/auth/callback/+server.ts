@@ -1,7 +1,7 @@
 import { redirect, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { config } from '$lib/config';
-import { upsertUser, createSession, completePendingLink } from '$lib/session';
+import { upsertUser, createSession, completePendingLink, setSessionCookie } from '$lib/session';
 import { sql } from '$lib/db';
 
 export const GET: RequestHandler = async ({ url, cookies }) => {
@@ -55,13 +55,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 
 	const sessionId = await createSession(userId);
 
-	cookies.set('session', sessionId, {
-		path: '/',
-		httpOnly: true,
-		secure: true,
-		sameSite: 'lax',
-		maxAge: 60 * 60 * 24 * 7
-	});
+	setSessionCookie(cookies, sessionId);
 
 	// New users (no username set) go through onboarding
 	const userRows = await sql`SELECT username FROM users WHERE id = ${userId}`;

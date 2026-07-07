@@ -1,5 +1,5 @@
 import { sql } from './db';
-import type { RequestEvent } from '@sveltejs/kit';
+import type { Cookies, RequestEvent } from '@sveltejs/kit';
 
 export interface Session {
 	id: string;
@@ -8,6 +8,12 @@ export interface Session {
 	isAdmin: boolean;
 	orgs: { id: string; slug: string; role: string; privileges: string[]; personal: boolean }[];
 }
+
+// Sessions expire 24h after the user's last interaction. Each authenticated
+// request slides expires_at forward, throttled so we only write once the
+// session has aged past SESSION_SLIDE_THROTTLE since its last refresh.
+export const SESSION_TTL_SECONDS = 60 * 60 * 24;
+const SESSION_SLIDE_THROTTLE_MS = 5 * 60 * 1000;
 
 export async function getSession(event: RequestEvent): Promise<Session | null> {
 	const sessionId = event.cookies.get('session');
@@ -24,6 +30,10 @@ export async function getSession(event: RequestEvent): Promise<Session | null> {
 	if (!rows.length) return null;
 
 	const row = rows[0];
+	if (new Date(row.expires_at).getTime() < Date.now() + SESSION_TTL_SECONDS * 1000 - SESSION_SLIDE_THROTTLE_MS) {
+		await sql`UPDATE sessions SET expires_at = now() + interval '24 hours' WHERE id = ${sessionId}`;
+		setSessionCookie(event.cookies, sessionId);
+	}
 	const orgs = await sql`
 		SELECT o.id, o.slug, om.role, COALESCE(r.privileges, '{}') AS privileges
 		FROM org_members om
@@ -48,6 +58,16 @@ export async function getSession(event: RequestEvent): Promise<Session | null> {
 			personal: !!row.username && r.slug === row.username
 		}))
 	};
+}
+
+export function setSessionCookie(cookies: Cookies, sessionId: string): void {
+	cookies.set('session', sessionId, {
+		path: '/',
+		httpOnly: true,
+		secure: true,
+		sameSite: 'lax',
+		maxAge: SESSION_TTL_SECONDS
+	});
 }
 
 export async function createSession(userId: string): Promise<string> {

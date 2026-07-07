@@ -15,6 +15,13 @@
 	import ToolCallCard from '$lib/agent/ToolCallCard.svelte';
 	import PlanView from '$lib/agent/PlanView.svelte';
 	import PermissionPrompt from '$lib/agent/PermissionPrompt.svelte';
+	import {
+		notificationsEnabled,
+		notificationsSupported,
+		setNotificationsEnabled,
+		notify,
+		looksLikeQuestion
+	} from '$lib/agent/notifications';
 
 	type TimelineItem =
 		| { kind: 'message'; role: 'user' | 'assistant'; text: string }
@@ -58,6 +65,26 @@
 	let currentMode: string = $state('default');
 	let configOptions: ConfigOptionInfo[] = $state([]);
 	let running = $state(false);
+	let notifyEnabled = $state(false);
+	// Set in onMount so SSR and hydration render the same markup.
+	let notifySupported = $state(false);
+
+	async function toggleNotifications() {
+		notifyEnabled = await setNotificationsEnabled(!notifyEnabled);
+	}
+
+	// Fire a browser notification when the agent is waiting on the user:
+	// explicitly for permission requests, heuristically when the turn ends on
+	// question-like assistant text. historySettled gates out the event-history
+	// replay bursts on (re)connect.
+	function notifyIfQuestion() {
+		const lastAssistant = [...timeline]
+			.reverse()
+			.find((t) => t.kind === 'message' && t.role === 'assistant');
+		if (lastAssistant?.kind === 'message' && looksLikeQuestion(lastAssistant.text)) {
+			notify(`Claude asked a question — ${project}`, lastAssistant.text.trim(), `agent-q-${sessionId}`);
+		}
+	}
 
 	const modelOption = $derived(
 		configOptions.find((o) => o.category === 'model' || o.id === 'model') ?? null
@@ -141,6 +168,9 @@
 				break;
 			}
 			case 'permission_request':
+				if (historySettled) {
+					notify(`Claude needs permission — ${project}`, event.title, `agent-perm-${sessionId}`);
+				}
 				pendingPermissions.push({
 					requestId: event.request_id,
 					toolCallId: event.tool_call_id,
@@ -169,9 +199,13 @@
 			case 'turn_status': {
 				const wasRunning = running;
 				running = event.running;
-				if (wasRunning && !running && queuedMessages.length && socket) {
-					const next = queuedMessages.shift();
-					if (next) socket.send({ type: 'send_message', text: next });
+				if (wasRunning && !running) {
+					if (queuedMessages.length && socket) {
+						const next = queuedMessages.shift();
+						if (next) socket.send({ type: 'send_message', text: next });
+					} else if (historySettled) {
+						notifyIfQuestion();
+					}
 				}
 				break;
 			}
@@ -229,6 +263,8 @@
 
 	onMount(async () => {
 		mounted = true;
+		notifySupported = notificationsSupported();
+		notifyEnabled = notificationsEnabled();
 		if (!agentBase) return;
 		await loadSessionMeta();
 		if (!mounted) return;
@@ -270,6 +306,17 @@
 	<div class="pane-header">
 		{#if connState !== 'connected'}
 			<span class="conn-status {connState}">{connectError || connState}</span>
+		{/if}
+		{#if notifySupported}
+			<button
+				type="button"
+				class="notify-toggle"
+				class:on={notifyEnabled}
+				title={notifyEnabled
+					? 'Notifications on — click to disable'
+					: 'Notify me when Claude asks a question'}
+				onclick={toggleNotifications}
+			>{notifyEnabled ? '🔔' : '🔕'}</button>
 		{/if}
 	</div>
 
@@ -353,7 +400,9 @@
 
 <style>
 	.agent-pane { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
-	.pane-header { min-height: 0; }
+	.pane-header { min-height: 0; position: relative; }
+	.notify-toggle { position: absolute; top: 0.25rem; right: 0.5rem; z-index: 1; background: none; border: none; cursor: pointer; font-size: 13px; padding: 0.1rem 0.2rem; opacity: 0.45; line-height: 1; }
+	.notify-toggle:hover, .notify-toggle.on { opacity: 1; }
 	.conn-status { display: block; font-size: 11px; color: var(--color-text-muted); padding: 0.25rem 0.75rem; border-bottom: 1px solid var(--color-border); background: var(--color-surface-2); }
 	.conn-status.failed { color: var(--color-danger); }
 
