@@ -144,9 +144,10 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, fmt.Errorf("reconcile allowed domains: %w", err)
 	}
 
-	// Issue per-domain certs into this namespace and provision the project's own
-	// Gateway that references them locally (see reconcileServingTLS).
-	if err := r.reconcileServingTLS(ctx, deployNS, servingDomains(&env)); err != nil {
+	// Issue per-domain certs into enzarb-system and provision the project's own
+	// Gateway that references them (see reconcileServingTLS).
+	tlsPending, err := r.reconcileServingTLS(ctx, deployNS, servingDomains(&env))
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile serving TLS: %w", err)
 	}
 
@@ -163,6 +164,11 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	logger.Info("environment reconciled", "name", env.Name, "deployNS", deployNS)
+	if tlsPending {
+		// A serving Certificate is still issuing; poll until it's Ready so the
+		// Gateway flips to it (Certificate status changes don't trigger a watch).
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
 	if requeue {
 		// Re-poll DNS for domains still pending verification.
 		return ctrl.Result{RequeueAfter: domainRecheckInterval}, nil
@@ -680,9 +686,13 @@ const servingCertLabel = "enzarb.io/serving-cert"
 // listener keeps referencing the legacy deploy-namespace Secret until the
 // enzarb-system Certificate is Ready, then flips; legacy dtls-* Certificates
 // and Secrets in the deploy namespace are deleted once unreferenced.
-func (r *EnvironmentReconciler) reconcileServingTLS(ctx context.Context, deployNS string, domains []string) error {
+// It returns pending=true while any desired Certificate is not yet Ready:
+// Certificate status changes trigger no Environment watch event, so without a
+// requeue the Gateway would keep referencing a legacy (or missing) Secret
+// forever after issuance completes.
+func (r *EnvironmentReconciler) reconcileServingTLS(ctx context.Context, deployNS string, domains []string) (pending bool, err error) {
 	if err := r.ensureServingIssuer(ctx, deployNS); err != nil {
-		return fmt.Errorf("ensure serving issuer: %w", err)
+		return false, fmt.Errorf("ensure serving issuer: %w", err)
 	}
 	desired := map[string]bool{}
 	ready := map[string]bool{}
@@ -691,20 +701,23 @@ func (r *EnvironmentReconciler) reconcileServingTLS(ctx context.Context, deployN
 		desired[name] = true
 		isReady, err := r.ensureDomainCertificate(ctx, deployNS, d)
 		if err != nil {
-			return fmt.Errorf("ensure certificate %s: %w", d, err)
+			return false, fmt.Errorf("ensure certificate %s: %w", d, err)
 		}
 		ready[name] = isReady
+		if !isReady {
+			pending = true
+		}
 	}
 	if err := r.ensureServingReferenceGrant(ctx, deployNS, desired); err != nil {
-		return fmt.Errorf("ensure serving reference grant: %w", err)
+		return pending, fmt.Errorf("ensure serving reference grant: %w", err)
 	}
 	if err := r.ensureDeployGateway(ctx, deployNS, domains, ready); err != nil {
-		return err
+		return pending, err
 	}
 	if err := r.pruneServingCertificates(ctx, deployNS, desired); err != nil {
-		return err
+		return pending, err
 	}
-	return r.cleanupLegacyServingTLS(ctx, deployNS, ready)
+	return pending, r.cleanupLegacyServingTLS(ctx, deployNS, ready)
 }
 
 // pruneServingCertificates deletes this environment's operator-managed serving
@@ -755,8 +768,10 @@ func (r *EnvironmentReconciler) cleanupLegacyServingTLS(ctx context.Context, dep
 		if !strings.HasPrefix(c.Name, "dtls-") {
 			continue
 		}
-		// Still serving from the legacy secret until the replacement is Ready.
-		if inUse, replaced := ready[c.Name]; inUse && !replaced {
+		// Still serving from the legacy secret until the replacement is Ready
+		// (map access is (value, ok): value = replacement cert Ready, ok = the
+		// domain is still desired).
+		if replacementReady, stillDesired := ready[c.Name]; stillDesired && !replacementReady {
 			continue
 		}
 		if err := r.Delete(ctx, c); err != nil && !errors.IsNotFound(err) {
