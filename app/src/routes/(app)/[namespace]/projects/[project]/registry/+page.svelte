@@ -1,9 +1,15 @@
 <script lang="ts">
-	import { getRepositories, getRepoTags, getRepoTagSizes } from '$lib/remote/registry.remote';
+	import { getRepositories, getRepoTags, getRepoTagSizes, removeImage } from '$lib/remote/registry.remote';
 	import { fmtBytes as formatBytes } from '$lib/billing';
 	import { page } from '$app/state';
 
-	type TagRow = { tag: string; totalSize: number | null; uniqueSize: number | null; createdAt: string | null };
+	type TagRow = {
+		tag: string;
+		totalSize: number | null;
+		uniqueSize: number | null;
+		createdAt: string | null;
+		digest: string | null;
+	};
 
 	let selectedRepo: string | null = $state(null);
 	let tagSizes: TagRow[] = $state([]);
@@ -13,6 +19,27 @@
 	let copiedTag: string | null = $state(null);
 	let sortKey: 'tag' | 'createdAt' = $state('createdAt');
 	let sortDesc = $state(true);
+	let deletingTag: string | null = $state(null);
+	let deletingSuperseded = $state(false);
+
+	// A tag is "superseded" when another tag in the same repo shares its
+	// digest (same physical image, re-tagged) but has a newer created date —
+	// i.e. this tag name is stale and the image has moved on.
+	const supersededTags = $derived.by(() => {
+		const newestByDigest = new Map<string, string>();
+		for (const t of tagSizes) {
+			if (!t.digest || !t.createdAt) continue;
+			const current = newestByDigest.get(t.digest);
+			if (!current || Date.parse(t.createdAt) > Date.parse(current)) newestByDigest.set(t.digest, t.createdAt);
+		}
+		const stale = new Set<string>();
+		for (const t of tagSizes) {
+			if (!t.digest || !t.createdAt) continue;
+			const newest = newestByDigest.get(t.digest);
+			if (newest && Date.parse(t.createdAt) < Date.parse(newest)) stale.add(t.tag);
+		}
+		return stale;
+	});
 
 	const sortedTagSizes = $derived(
 		[...tagSizes].sort((a, b) => {
@@ -29,6 +56,34 @@
 			return sortDesc ? -cmp : cmp;
 		})
 	);
+
+	async function deleteTag(t: TagRow) {
+		if (!t.digest) return;
+		if (!confirm(`Delete tag "${t.tag}"? This removes it from the registry and cannot be undone.`)) return;
+		deletingTag = t.tag;
+		try {
+			await removeImage({ repo: selectedRepo!, digest: t.digest });
+			tagSizes = tagSizes.filter((x) => x.tag !== t.tag);
+		} finally {
+			deletingTag = null;
+		}
+	}
+
+	async function deleteSuperseded() {
+		const targets = tagSizes.filter((t) => supersededTags.has(t.tag) && t.digest);
+		if (targets.length === 0) return;
+		if (!confirm(`Delete ${targets.length} superseded tag${targets.length === 1 ? '' : 's'}? This cannot be undone.`)) return;
+		deletingSuperseded = true;
+		try {
+			for (const t of targets) {
+				await removeImage({ repo: selectedRepo!, digest: t.digest! });
+			}
+			const deleted = new Set(targets.map((t) => t.tag));
+			tagSizes = tagSizes.filter((t) => !deleted.has(t.tag));
+		} finally {
+			deletingSuperseded = false;
+		}
+	}
 
 	function setSort(key: 'tag' | 'createdAt') {
 		if (sortKey === key) {
@@ -48,7 +103,7 @@
 			// Phase 1: just the tag names — cheap, so the table can render right away.
 			const { tags } = await getRepoTags(repo);
 			if (selectedRepo !== repo) return;
-			tagSizes = tags.map((tag) => ({ tag, totalSize: null, uniqueSize: null, createdAt: null }));
+			tagSizes = tags.map((tag) => ({ tag, totalSize: null, uniqueSize: null, createdAt: null, digest: null }));
 		} finally {
 			loadingTags = false;
 		}
@@ -135,6 +190,14 @@ docker push $REGISTRY/&lt;image&gt;:&lt;tag&gt;</pre>
 										<span class="summary-value savings">{savingsPct}%</span>
 									</div>
 								{/if}
+								{#if supersededTags.size > 0}
+									<div class="summary-stat">
+										<span class="summary-label">Superseded tags</span>
+										<button class="clear-btn" onclick={deleteSuperseded} disabled={deletingSuperseded}>
+											{deletingSuperseded ? 'Deleting…' : `Clear ${supersededTags.size} superseded`}
+										</button>
+									</div>
+								{/if}
 							</div>
 						{/if}
 						<table>
@@ -155,15 +218,28 @@ docker push $REGISTRY/&lt;image&gt;:&lt;tag&gt;</pre>
 								{#each sortedTagSizes as t}
 									{@const imagePath = `${registryBase}/${selectedRepo}:${t.tag}`}
 									<tr>
-										<td><span class="badge">{t.tag}</span></td>
+										<td>
+											<span class="badge">{t.tag}</span>
+											{#if supersededTags.has(t.tag)}
+												<span class="badge-superseded" title="Another tag points at a newer image with this same tag history">superseded</span>
+											{/if}
+										</td>
 										<td class="mono small">{t.totalSize === null ? '…' : formatBytes(t.totalSize)}</td>
 										<td class="mono small muted" title="Storage not shared with any other tag in this repository">
 											{t.uniqueSize === null ? '…' : t.uniqueSize > 0 ? formatBytes(t.uniqueSize) : '—'}
 										</td>
 										<td class="mono small muted">{t.totalSize === null ? '…' : formatDate(t.createdAt)}</td>
-										<td>
+										<td class="actions">
 											<button class="copy-btn" onclick={() => copyImagePath(imagePath)} title="Copy image path">
 												{copiedTag === imagePath ? '✓ Copied' : '⎘ Copy'}
+											</button>
+											<button
+												class="delete-btn"
+												onclick={() => deleteTag(t)}
+												disabled={!t.digest || deletingTag === t.tag}
+												title="Delete this tag from the registry"
+											>
+												{deletingTag === t.tag ? 'Deleting…' : '🗑 Delete'}
 											</button>
 										</td>
 									</tr>
@@ -202,6 +278,14 @@ docker push $REGISTRY/&lt;image&gt;:&lt;tag&gt;</pre>
 	.summary-value.savings { color: #3fb950; }
 	.copy-btn { background: none; border: 1px solid var(--color-border); border-radius: 4px; cursor: pointer; padding: 0.2rem 0.5rem; font-size: 11px; color: var(--color-text-muted); }
 	.copy-btn:hover { color: var(--color-text); border-color: var(--color-text-muted); }
+	.actions { display: flex; gap: 0.4rem; }
+	.delete-btn { background: none; border: 1px solid var(--color-border); border-radius: 4px; cursor: pointer; padding: 0.2rem 0.5rem; font-size: 11px; color: #f85149; }
+	.delete-btn:hover:not(:disabled) { border-color: #f85149; background: rgba(248, 81, 73, 0.08); }
+	.delete-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+	.badge-superseded { margin-left: 0.4rem; font-size: 10px; text-transform: uppercase; letter-spacing: 0.03em; color: #d29922; border: 1px solid #d29922; border-radius: 3px; padding: 0.05rem 0.3rem; }
+	.clear-btn { background: none; border: 1px solid #d29922; border-radius: 4px; cursor: pointer; padding: 0.2rem 0.6rem; font-size: 12px; font-weight: 600; color: #d29922; }
+	.clear-btn:hover:not(:disabled) { background: rgba(210, 153, 34, 0.1); }
+	.clear-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 	th.sortable { cursor: pointer; user-select: none; }
 	th.sortable:hover { color: var(--color-text); }
 </style>

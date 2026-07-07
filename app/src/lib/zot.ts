@@ -103,6 +103,15 @@ export async function getManifest(repo: string, reference: string) {
 	return res.json();
 }
 
+export async function getManifestDigest(repo: string, reference: string): Promise<string | null> {
+	const res = await zotFetch(`/v2/${repo}/manifests/${reference}`, `repository:${repo}:pull`, {
+		method: 'HEAD',
+		headers: { Accept: 'application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json' }
+	});
+	if (res.status === 404) return null;
+	return res.headers.get('Docker-Content-Digest');
+}
+
 export async function deleteManifest(repo: string, digest: string) {
 	await zotFetch(`/v2/${repo}/manifests/${digest}`, `repository:${repo}:pull,delete`, { method: 'DELETE' });
 }

@@ -2,7 +2,7 @@ import { query, command } from '$app/server';
 import { getRequestEvent } from '$app/server';
 import { error } from '@sveltejs/kit';
 import { z } from 'zod/v4';
-import { listRepositories, listTags, getManifest, getBlob, deleteManifest } from '$lib/zot';
+import { listRepositories, listTags, getManifest, getBlob, deleteManifest, getManifestDigest } from '$lib/zot';
 import { resolveOrg, requirePrivilege } from './guard';
 
 export const getRepositories = query(async () => {
@@ -82,7 +82,10 @@ export const getRepoTagSizes = query(z.string(), async (repo) => {
 	const { tags } = await listTags(repo);
 
 	const resolved = await Promise.all(
-		tags.map(async (tag) => ({ tag, data: await resolveLayers(repo, tag) }))
+		tags.map(async (tag) => {
+			const [data, digest] = await Promise.all([resolveLayers(repo, tag), getManifestDigest(repo, tag)]);
+			return { tag, data, digest };
+		})
 	);
 
 	const digestRefCount = new Map<string, number>();
@@ -97,14 +100,14 @@ export const getRepoTagSizes = query(z.string(), async (repo) => {
 	}
 
 	const tagSizes = await Promise.all(
-		resolved.map(async ({ tag, data }) => {
-			if (!data) return { tag, totalSize: 0, uniqueSize: 0, createdAt: null };
+		resolved.map(async ({ tag, data, digest }) => {
+			if (!data) return { tag, totalSize: 0, uniqueSize: 0, createdAt: null, digest };
 			let uniqueSize = 0;
 			for (const l of new Set(data.layers.map((x) => x.digest))) {
 				if (digestRefCount.get(l) === 1) uniqueSize += digestSize.get(l) ?? 0;
 			}
 			const createdAt = await getCreatedDate(repo, data.configDigest);
-			return { tag, totalSize: data.totalSize, uniqueSize, createdAt };
+			return { tag, totalSize: data.totalSize, uniqueSize, createdAt, digest };
 		})
 	);
 
