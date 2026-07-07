@@ -180,10 +180,23 @@ var dnsResolver interface {
 } = net.DefaultResolver
 
 // hostResolver is package-level so tests can stub A/AAAA lookups for the
-// routing check.
+// routing check. It must NOT be net.DefaultResolver: this cluster's own DNS
+// zone (enzarb.dev, including gw.enzarb.dev) is intentionally split-horizon,
+// resolving to internal addresses for in-cluster/LAN queries. A customer
+// domain CNAMEd to gw.enzarb.dev (as our own UI instructs) would therefore
+// resolve to our internal LB IP via the pod's default resolver even though
+// the public internet correctly sees the router's public IP — the exact
+// opposite of what this check needs. Query a real public resolver directly
+// instead, bypassing cluster DNS, so this sees what real users/ACME see.
 var hostResolver interface {
 	LookupHost(ctx context.Context, host string) ([]string, error)
-} = net.DefaultResolver
+} = &net.Resolver{
+	PreferGo: true,
+	Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		d := net.Dialer{Timeout: 5 * time.Second}
+		return d.DialContext(ctx, network, "1.1.1.1:53")
+	},
+}
 
 // gatewayPublicIPs returns the deploy gateway's Service's spec.externalIPs —
 // the router-facing address(es) customer domains must resolve to. Set via
