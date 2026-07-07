@@ -92,7 +92,8 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	orgNS := env.Namespace
 	saName := fmt.Sprintf("%s-sa", project.Spec.Slug)
 
-	if err := r.ensureNamespace(ctx, deployNS, project.Spec.OrgID, project.Spec.Slug, env.Spec.Slug); err != nil {
+	tenantPending, err := r.ensureNamespace(ctx, deployNS, project.Spec.OrgID, project.Spec.Slug, env.Spec.Slug)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensure deploy namespace: %w", err)
 	}
 
@@ -164,6 +165,11 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	logger.Info("environment reconciled", "name", env.Name, "deployNS", deployNS)
+	if tenantPending {
+		// Waiting for the Project reconciler to create the Capsule Tenant so
+		// the namespace ownerReference can be set.
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
 	if tlsPending {
 		// A serving Certificate is still issuing; poll until it's Ready so the
 		// Gateway flips to it (Certificate status changes don't trigger a watch).
@@ -1489,7 +1495,12 @@ func acmeIssuerEqual(a, b acmev1.ACMEIssuer) bool {
 	return true
 }
 
-func (r *EnvironmentReconciler) ensureNamespace(ctx context.Context, name, orgID, projectSlug, envSlug string) error {
+// ensureNamespace provisions/adopts the deploy namespace. It returns
+// pending=true while the Capsule Tenant ownerReference can't be set yet (the
+// Project reconciler may not have created the Tenant when a brand-new project
+// reconciles), so the caller requeues instead of leaving the namespace
+// unattributed until some unrelated event re-triggers reconciliation.
+func (r *EnvironmentReconciler) ensureNamespace(ctx context.Context, name, orgID, projectSlug, envSlug string) (pending bool, err error) {
 	// authd reads enzarb.io/org-id and enzarb.io/project-slug to authorize a
 	// deploy pod's pull-only registry scope (see authd deployIdentity). Metering
 	// reads enzarb.io/env-slug since the namespace name is no longer reliably
@@ -1504,18 +1515,30 @@ func (r *EnvironmentReconciler) ensureNamespace(ctx context.Context, name, orgID
 		// capsule-proxy includes it in the workspace's filtered namespace list.
 		capsuleTenantLabel: capsuleTenantName(orgID, projectSlug),
 	}
+	// Capsule attributes namespaces to Tenants via this ownerReference (its
+	// own webhook only sets it for namespaces created BY tenant users, which
+	// enzarb's are not). nil while Capsule or the Tenant is absent.
+	ownerRef, err := r.tenantOwnerReference(ctx, orgID, projectSlug)
+	if err != nil {
+		return false, fmt.Errorf("resolve tenant owner reference: %w", err)
+	}
+
 	ns := &corev1.Namespace{}
-	err := r.Get(ctx, types.NamespacedName{Name: name}, ns)
+	err = r.Get(ctx, types.NamespacedName{Name: name}, ns)
 	if errors.IsNotFound(err) {
-		return r.Create(ctx, &corev1.Namespace{
+		ns = &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:   name,
 				Labels: labels,
 			},
-		})
+		}
+		if ownerRef != nil {
+			ns.OwnerReferences = []metav1.OwnerReference{*ownerRef}
+		}
+		return ownerRef == nil, r.Create(ctx, ns)
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	// Backfill labels on a pre-existing namespace so authd can resolve scope.
 	changed := false
@@ -1528,8 +1551,21 @@ func (r *EnvironmentReconciler) ensureNamespace(ctx context.Context, name, orgID
 			changed = true
 		}
 	}
-	if changed {
-		return r.Update(ctx, ns)
+	if ownerRef != nil {
+		hasRef := false
+		for _, ref := range ns.OwnerReferences {
+			if ref.UID == ownerRef.UID {
+				hasRef = true
+				break
+			}
+		}
+		if !hasRef {
+			ns.OwnerReferences = append(ns.OwnerReferences, *ownerRef)
+			changed = true
+		}
 	}
-	return nil
+	if changed {
+		return ownerRef == nil, r.Update(ctx, ns)
+	}
+	return ownerRef == nil, nil
 }

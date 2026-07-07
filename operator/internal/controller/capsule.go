@@ -167,6 +167,36 @@ func (r *OrganizationReconciler) reconcileCapsuleUserGroup(ctx context.Context, 
 	return nil
 }
 
+// tenantOwnerReference resolves the project's Tenant into an ownerReference
+// for its deploy namespaces. Capsule attributes a namespace to a Tenant via
+// this ownerReference (its own mutating webhook sets it only for namespaces
+// created by tenant users, which enzarb's are not — the operator creates
+// them). Returns nil when Capsule (or the Tenant) doesn't exist yet.
+//
+// controller=true also means Kubernetes garbage-collects the deploy
+// namespaces when the Tenant is deleted, i.e. on project hard-deletion.
+func (r *EnvironmentReconciler) tenantOwnerReference(ctx context.Context, orgID, projectSlug string) (*metav1.OwnerReference, error) {
+	tenant := &unstructured.Unstructured{}
+	tenant.SetGroupVersionKind(capsuleTenantGVK)
+	err := r.Get(ctx, types.NamespacedName{Name: capsuleTenantName(orgID, projectSlug)}, tenant)
+	if capsuleAbsent(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	isController := true
+	block := false
+	return &metav1.OwnerReference{
+		APIVersion:         capsuleTenantGVK.GroupVersion().String(),
+		Kind:               capsuleTenantGVK.Kind,
+		Name:               tenant.GetName(),
+		UID:                tenant.GetUID(),
+		Controller:         &isController,
+		BlockOwnerDeletion: &block,
+	}, nil
+}
+
 // ensureWorkspaceKubeconfig maintains the "<slug>-kubeconfig" ConfigMap
 // mounted into the workspace pod (KUBECONFIG points at its "config" key).
 // When the capsule-proxy CA is available the kubeconfig routes kubectl
