@@ -86,9 +86,13 @@
 		}
 	}
 
-	const modelOption = $derived(
-		configOptions.find((o) => o.category === 'model' || o.id === 'model') ?? null
-	);
+	function changeConfigOption(option: ConfigOptionInfo, value: string) {
+		if (value === option.current_value) return;
+		configOptions = configOptions.map((o) =>
+			o.id === option.id ? { ...o, current_value: value } : o
+		);
+		socket?.send({ type: 'set_config_option', config_id: option.id, value });
+	}
 
 	async function loadSessionMeta() {
 		if (!agentBase) return;
@@ -112,14 +116,6 @@
 		if (modeId === currentMode) return;
 		currentMode = modeId;
 		socket?.send({ type: 'set_permission_mode', mode_id: modeId });
-	}
-
-	function changeModel(value: string) {
-		if (!modelOption || value === modelOption.current_value) return;
-		configOptions = configOptions.map((o) =>
-			o.id === modelOption.id ? { ...o, current_value: value } : o
-		);
-		socket?.send({ type: 'set_config_option', config_id: modelOption.id, value });
 	}
 
 	function handleEvent(event: AcpWsEvent) {
@@ -311,17 +307,6 @@
 		{#if connState !== 'connected'}
 			<span class="conn-status {connState}">{connectError || connState}</span>
 		{/if}
-		{#if notifySupported}
-			<button
-				type="button"
-				class="notify-toggle"
-				class:on={notifyEnabled}
-				title={notifyEnabled
-					? 'Notifications on — click to disable'
-					: 'Notify me when Claude asks a question'}
-				onclick={toggleNotifications}
-			>{notifyEnabled ? '🔔' : '🔕'}</button>
-		{/if}
 	</div>
 
 	<div class="timeline" bind:this={scrollEl}>
@@ -369,18 +354,18 @@
 		></textarea>
 		<div class="composer-footer">
 			<div class="composer-selects">
-				{#if modelOption}
+				{#each configOptions as option (option.id)}
 					<select
 						class="composer-select"
-						value={modelOption.current_value}
-						title={modelOption.name}
-						onchange={(e) => changeModel((e.target as HTMLSelectElement).value)}
+						value={option.current_value}
+						title={option.name}
+						onchange={(e) => changeConfigOption(option, (e.target as HTMLSelectElement).value)}
 					>
-						{#each modelOption.options as m (m.value)}
-							<option value={m.value}>{m.name}</option>
+						{#each option.options as v (v.value)}
+							<option value={v.value}>{v.name}</option>
 						{/each}
 					</select>
-				{/if}
+				{/each}
 				{#if availableModes.length}
 					<select
 						class="composer-select"
@@ -395,6 +380,17 @@
 				{/if}
 			</div>
 			<div class="composer-buttons">
+				{#if notifySupported}
+					<button
+						type="button"
+						class="notify-toggle"
+						class:on={notifyEnabled}
+						title={notifyEnabled
+							? 'Notifications on — click to disable'
+							: 'Notify me when Claude asks a question'}
+						onclick={toggleNotifications}
+					>{notifyEnabled ? '🔔' : '🔕'}</button>
+				{/if}
 				<button type="button" class="btn btn-danger" onclick={stopTurn} disabled={!running || connState !== 'connected'}>Stop</button>
 				<button type="submit" class="btn btn-primary" disabled={!draft.trim() || connState !== 'connected'}>Send</button>
 			</div>
@@ -404,8 +400,8 @@
 
 <style>
 	.agent-pane { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
-	.pane-header { min-height: 0; position: relative; }
-	.notify-toggle { position: absolute; top: 0.25rem; right: 0.5rem; z-index: 1; background: none; border: none; cursor: pointer; font-size: 13px; padding: 0.1rem 0.2rem; opacity: 0.45; line-height: 1; }
+	.pane-header { min-height: 0; }
+	.notify-toggle { background: none; border: none; cursor: pointer; font-size: 13px; padding: 0.15rem 0.3rem; opacity: 0.45; line-height: 1; }
 	.notify-toggle:hover, .notify-toggle.on { opacity: 1; }
 	.conn-status { display: block; font-size: 11px; color: var(--color-text-muted); padding: 0.25rem 0.75rem; border-bottom: 1px solid var(--color-border); background: var(--color-surface-2); }
 	.conn-status.failed { color: var(--color-danger); }
