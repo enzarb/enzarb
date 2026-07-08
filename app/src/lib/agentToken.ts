@@ -1,3 +1,4 @@
+import { untrack } from 'svelte';
 import { getAgentToken } from './remote/projects.remote';
 
 // Agent JWTs expire after 5 minutes (see mintProjectToken in jwt.ts). Treat as
@@ -39,7 +40,12 @@ export async function getAgentAuthToken(
 	}
 	if (entry.token && !isExpired(entry.token)) return entry.token;
 	if (!entry.inflight) {
-		entry.inflight = getAgentToken({ namespace, project })
+		// getAgentToken is a SvelteKit remote command: invoking it synchronously
+		// bumps its own $state pending-count. getAgentAuthToken is routinely
+		// called from inside a $derived (e.g. the files page's data loader), so
+		// that synchronous write trips Svelte's state_unsafe_mutation guard
+		// unless it's untracked here, once, for every caller.
+		entry.inflight = untrack(() => getAgentToken({ namespace, project }))
 			.then((token) => {
 				entry.token = token;
 				return token;
