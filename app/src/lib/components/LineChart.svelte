@@ -28,7 +28,7 @@
 	const pointCount = $derived(Math.max(0, ...series.map((s) => s.points.length)));
 	const allValues = $derived(series.flatMap((s) => s.points));
 	const max = $derived(Math.max(1e-9, ...allValues));
-	const min = $derived(Math.min(0, ...allValues));
+	const min = $derived(Math.min(...allValues));
 	const range = $derived(Math.max(1e-9, max - min));
 
 	function xAt(i: number) {
