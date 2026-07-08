@@ -53,12 +53,32 @@ function layoutKey(namespace: string, project: string): string {
 	return `enzarb:tiling:layout:${namespace}/${project}`;
 }
 
+/** Drops duplicate (kind, id) tabs within each leaf, keeping the first and
+ * clamping activeTab — guards against layouts persisted before tab-add
+ * gained its own dedup, which would otherwise crash the keyed tab {#each}. */
+function dedupeTabs(node: PaneNode): PaneNode {
+	return mapPaneLeaves(node, (leaf) => {
+		const seen = new Set<string>();
+		const tabs = leaf.tabs.filter((t) => {
+			const key = `${t.kind}:${t.id}`;
+			if (seen.has(key)) return false;
+			seen.add(key);
+			return true;
+		});
+		if (tabs.length === leaf.tabs.length) return leaf;
+		return { ...leaf, tabs, activeTab: Math.min(leaf.activeTab, Math.max(0, tabs.length - 1)) };
+	});
+}
+
 export function loadLayout(namespace: string, project: string): TilingLayout {
 	try {
 		const raw = localStorage.getItem(layoutKey(namespace, project));
 		if (!raw) return structuredClone(DEFAULT_LAYOUT);
 		const parsed = JSON.parse(raw);
-		return { ...structuredClone(DEFAULT_LAYOUT), ...parsed };
+		const layout: TilingLayout = { ...structuredClone(DEFAULT_LAYOUT), ...parsed };
+		layout.left.panes = dedupeTabs(layout.left.panes);
+		layout.right.panes = dedupeTabs(layout.right.panes);
+		return layout;
 	} catch {
 		return structuredClone(DEFAULT_LAYOUT);
 	}
