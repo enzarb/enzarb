@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getProject } from '$lib/remote/projects.remote';
-	import { getEnvironments, createEnv, addDomain, setDefaultEnv, removeEnv, recheckDomain } from '$lib/remote/environments.remote';
+	import { getEnvironments, createEnv, addDomain, removeDomain, moveDomain, setDefaultEnv, removeEnv, recheckDomain } from '$lib/remote/environments.remote';
 	import { getProjectRepoDetails } from '$lib/remote/registry.remote';
 	import { page } from '$app/state';
 	import { confirm } from '$lib/confirm';
@@ -35,6 +35,7 @@
 	let copiedTxt: string | null = $state(null);
 	let recheckingDomain: string | null = $state(null);
 	let recheckResult: { fqdn: string; message: string; ok: boolean } | null = $state(null);
+	let movingDomain: string | null = $state(null);
 	const registryPrefix = $derived(`registry.enzarb.dev/${page.params.namespace}/${page.params.project}`);
 
 	const projectData = $derived(getProject(page.params.project));
@@ -97,6 +98,27 @@
 			setTimeout(() => {
 				if (recheckResult?.fqdn === fqdn) recheckResult = null;
 			}, 6000);
+		}
+	}
+
+	async function doRemoveDomain(envName: string, fqdn: string) {
+		const ok = await confirm({
+			title: `Remove domain "${fqdn}"?`,
+			message: 'This will unroute the domain and drop its TLS certificate. This cannot be undone.',
+			confirmText: 'Remove',
+			danger: true
+		});
+		if (!ok) return;
+		await removeDomain({ envName, fqdn });
+	}
+
+	async function doMoveDomain(fromEnvName: string, toEnvName: string, fqdn: string) {
+		if (!toEnvName) return;
+		movingDomain = fqdn;
+		try {
+			await moveDomain({ fromEnvName, toEnvName, fqdn });
+		} finally {
+			movingDomain = null;
 		}
 	}
 
@@ -300,6 +322,32 @@
 															{recheckingDomain === domain.fqdn ? 'Checking…' : 'Recheck now'}
 														</button>
 													{/if}
+													{#if envs.length > 1}
+														<select
+															class="domain-move-select"
+															disabled={movingDomain === domain.fqdn}
+															value=""
+															onchange={(e) => {
+																const target = e.currentTarget;
+																const toEnvName = target.value;
+																target.value = '';
+																doMoveDomain(env.metadata.name, toEnvName, domain.fqdn);
+															}}
+														>
+															<option value="" disabled>{movingDomain === domain.fqdn ? 'Moving…' : 'Move to…'}</option>
+															{#each envs.filter((e: any) => e.metadata.name !== env.metadata.name) as other}
+																<option value={other.metadata.name}>{other.spec.slug}</option>
+															{/each}
+														</select>
+													{/if}
+													<button
+														type="button"
+														class="btn btn-sm btn-danger-subtle"
+														title="Remove domain"
+														onclick={() => doRemoveDomain(env.metadata.name, domain.fqdn)}
+													>
+														Remove
+													</button>
 												</div>
 												{#if recheckResult && recheckResult.fqdn === domain.fqdn}
 													<span class="recheck-feedback {recheckResult.ok ? 'ok' : 'err'}">{recheckResult.message}</span>
@@ -453,6 +501,9 @@
 	.txt-record code { overflow-x: auto; white-space: nowrap; }
 	.domain-form { display: flex; gap: 0.5rem; align-items: center; }
 	.domain-form input[type=text] { max-width: 200px; }
+	.domain-move-select { font-size: 12px; padding: 0.2rem 0.35rem; border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text); }
+	.btn-danger-subtle { color: var(--color-danger); }
+	.btn-danger-subtle:hover { background: var(--color-surface-2); }
 
 	/* Dropdown */
 	.dropdown { position: relative; }

@@ -7,6 +7,8 @@ import {
 	createEnvironment,
 	deleteEnvironment,
 	addCustomDomain,
+	removeCustomDomain,
+	moveCustomDomain,
 	setDefaultEnvironment,
 	getEnvironment,
 	requestDomainRecheck,
@@ -46,7 +48,7 @@ export const createEnv = form(
 			error(409, `Environment "${slug}" already exists`);
 		}
 		const result = await createEnvironment(org.id, params.project!, slug);
-		await getEnvironments().refresh();
+		await getEnvironments(params.project!).refresh();
 		return result;
 	}
 );
@@ -61,7 +63,7 @@ export const removeEnv = command(
 			await setDefaultEnvironment(org.id, params.project!, null);
 		}
 		await deleteEnvironment(org.id, envName);
-		await getEnvironments().refresh();
+		await getEnvironments(params.project!).refresh();
 	}
 );
 
@@ -71,7 +73,7 @@ export const setDefaultEnv = command(
 		const { params } = getRequestEvent();
 		const org = requirePrivilege('environment.manage');
 		await setDefaultEnvironment(org.id, params.project!, envSlug);
-		await getEnvironments().refresh();
+		await getEnvironments(params.project!).refresh();
 	}
 );
 
@@ -81,10 +83,31 @@ export const addDomain = form(
 		fqdn: z.string().max(253).regex(/^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/)
 	}),
 	async ({ envName, fqdn }) => {
+		const { params } = getRequestEvent();
 		const org = requirePrivilege('environment.manage');
 		const result = await addCustomDomain(org.id, envName, fqdn);
-		await getEnvironments().refresh();
+		await getEnvironments(params.project!).refresh();
 		return result;
+	}
+);
+
+export const removeDomain = command(
+	z.object({ envName: z.string(), fqdn: z.string() }),
+	async ({ envName, fqdn }) => {
+		const { params } = getRequestEvent();
+		const org = requirePrivilege('environment.manage');
+		await removeCustomDomain(org.id, envName, fqdn);
+		await getEnvironments(params.project!).refresh();
+	}
+);
+
+export const moveDomain = command(
+	z.object({ fromEnvName: z.string(), toEnvName: z.string(), fqdn: z.string() }),
+	async ({ fromEnvName, toEnvName, fqdn }) => {
+		const { params } = getRequestEvent();
+		const org = requirePrivilege('environment.manage');
+		await moveCustomDomain(org.id, fromEnvName, toEnvName, fqdn);
+		await getEnvironments(params.project!).refresh();
 	}
 );
 
@@ -108,6 +131,7 @@ function findDomain(env: any, fqdn: string) {
 export const recheckDomain = command(
 	z.object({ envName: z.string(), fqdn: z.string() }),
 	async ({ envName, fqdn }) => {
+		const { params } = getRequestEvent();
 		const org = requirePrivilege('environment.manage');
 
 		const before = findDomain(await getEnvironment(org.id, envName), fqdn);
@@ -139,7 +163,7 @@ export const recheckDomain = command(
 			if (latest?.lastCheckedAt && latest.lastCheckedAt !== before?.lastCheckedAt) break;
 		}
 
-		await getEnvironments().refresh();
+		await getEnvironments(params.project!).refresh();
 
 		if (!latest?.lastCheckedAt || latest.lastCheckedAt === before?.lastCheckedAt) {
 			error(504, 'Recheck timed out waiting for the operator — try again shortly');

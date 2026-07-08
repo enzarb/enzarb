@@ -389,6 +389,36 @@ export async function addCustomDomain(orgId: string, envName: string, fqdn: stri
 	});
 }
 
+export async function removeCustomDomain(orgId: string, envName: string, fqdn: string) {
+	const ns = orgNamespace(orgId);
+	const env = await customApi.getNamespacedCustomObject({
+		group: GROUP,
+		version: VERSION,
+		namespace: ns,
+		plural: 'environments',
+		name: envName
+	}) as any;
+
+	const domains = (env.spec?.customDomains ?? []).filter((d: any) => d.fqdn !== fqdn);
+
+	return customApi.patchNamespacedCustomObject({
+		group: GROUP,
+		version: VERSION,
+		namespace: ns,
+		plural: 'environments',
+		name: envName,
+		body: [{ op: 'replace', path: '/spec/customDomains', value: domains }]
+	});
+}
+
+// Moves a custom domain from one environment to another within the same
+// project by removing it from the source and re-adding it (with a fresh
+// challenge/verification cycle) on the destination.
+export async function moveCustomDomain(orgId: string, fromEnvName: string, toEnvName: string, fqdn: string) {
+	await removeCustomDomain(orgId, fromEnvName, fqdn);
+	await addCustomDomain(orgId, toEnvName, fqdn);
+}
+
 export async function getEnvironment(orgId: string, envName: string) {
 	const ns = orgNamespace(orgId);
 	return customApi.getNamespacedCustomObject({
