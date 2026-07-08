@@ -174,18 +174,25 @@
 				else timeline.push({ kind: 'plan', entries: event.entries });
 				break;
 			}
-			case 'permission_request':
+			case 'permission_request': {
 				if (historySettled) {
 					notify(`Claude needs permission — ${project}`, event.title, `agent-perm-${sessionId}`);
 				}
-				pendingPermissions.push({
+				const request = {
 					requestId: event.request_id,
 					toolCallId: event.tool_call_id,
 					title: event.title,
 					options: event.options,
 					plan: event.plan
-				});
+				};
+				const existingIndex = pendingPermissions.findIndex((p) => p.requestId === event.request_id);
+				if (existingIndex !== -1) {
+					pendingPermissions[existingIndex] = request;
+				} else {
+					pendingPermissions.push(request);
+				}
 				break;
+			}
 			case 'permission_resolved':
 				pendingPermissions = pendingPermissions.filter((p) => p.requestId !== event.request_id);
 				break;
