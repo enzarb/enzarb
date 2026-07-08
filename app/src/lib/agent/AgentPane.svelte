@@ -64,6 +64,15 @@
 	let availableModes: SessionModeInfo[] = $state([]);
 	let currentMode: string = $state('default');
 	let configOptions: ConfigOptionInfo[] = $state([]);
+	// The backend can report more than one config option for the same
+	// conceptual setting (e.g. two entries both categorized "model"); keep
+	// only the first per category so the composer doesn't show duplicate
+	// pickers for the same thing.
+	const visibleConfigOptions = $derived(
+		Array.from(
+			new Map(configOptions.map((o) => [o.category ?? o.id, o])).values()
+		)
+	);
 	let running = $state(false);
 	let notifyEnabled = $state(false);
 	// Set in onMount so SSR and hydration render the same markup.
@@ -354,7 +363,7 @@
 		></textarea>
 		<div class="composer-footer">
 			<div class="composer-selects">
-				{#each configOptions as option (option.id)}
+				{#each visibleConfigOptions as option (option.id)}
 					<select
 						class="composer-select"
 						value={option.current_value}
