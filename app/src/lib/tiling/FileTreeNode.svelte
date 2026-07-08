@@ -70,7 +70,7 @@
 		{/if}
 		<span class="node-name">{name}</span>
 		{#if loading}
-			<span class="loading-dot">…</span>
+			<span class="loading-spinner" aria-label="Loading…"></span>
 		{/if}
 	</button>
 	{#if expanded && loaded}
@@ -96,7 +96,18 @@
 	.arrow { flex-shrink: 0; width: 12px; font-size: 10px; color: var(--color-text-muted); }
 	.file-indent { flex-shrink: 0; width: 12px; }
 	.node-name { overflow: hidden; text-overflow: ellipsis; flex: 1; }
-	.loading-dot { color: var(--color-text-muted); font-size: 10px; flex-shrink: 0; }
+	.loading-spinner {
+		flex-shrink: 0;
+		width: 9px;
+		height: 9px;
+		border: 1.5px solid var(--color-border);
+		border-top-color: var(--color-accent);
+		border-radius: 50%;
+		animation: tree-spin 0.6s linear infinite;
+	}
+	@keyframes tree-spin {
+		to { transform: rotate(360deg); }
+	}
 	.git-untracked { color: #73c991; }
 	.git-staged { color: #4fc1ff; }
 	.git-modified { color: #ce9178; }

@@ -4,6 +4,8 @@
 // attempts against a gateway 5xx, and the project layout can show a single
 // "workspace restarting" overlay driven by the same state.
 
+import { untrack } from 'svelte';
+
 export type WorkspaceHealthState = 'unknown' | 'healthy' | 'unhealthy';
 
 const PROBE_TIMEOUT_MS = 3_000;
@@ -36,7 +38,7 @@ export class WorkspaceHealth {
 	async ensureHealthy(): Promise<void> {
 		if (this.state === 'healthy') return;
 		if (await this.probe()) {
-			this.state = 'healthy';
+			untrack(() => (this.state = 'healthy'));
 			return;
 		}
 		this.markUnhealthy();
@@ -47,20 +49,20 @@ export class WorkspaceHealth {
 	 *  (WS drop, fetch network error). Downgrades to 'unknown' so the next
 	 *  ensureHealthy() re-probes instead of trusting the cached 'healthy'. */
 	suspect(): void {
-		if (this.state === 'healthy') this.state = 'unknown';
+		if (this.state === 'healthy') untrack(() => (this.state = 'unknown'));
 	}
 
 	/** Call when the workspace is known to be going down (e.g. the user just
 	 *  requested a restart). Starts polling /healthz until it recovers, then
 	 *  releases everyone waiting in ensureHealthy(). */
 	markUnhealthy(): void {
-		this.state = 'unhealthy';
+		untrack(() => (this.state = 'unhealthy'));
 		if (this.polling) return;
 		this.polling = true;
 		const tick = async () => {
 			if (await this.probe()) {
 				this.polling = false;
-				this.state = 'healthy';
+				untrack(() => (this.state = 'healthy'));
 				const waiters = this.waiters;
 				this.waiters = [];
 				for (const resolve of waiters) resolve();

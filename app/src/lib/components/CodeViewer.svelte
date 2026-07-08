@@ -1,6 +1,11 @@
 <script lang="ts">
 	import { getSingletonHighlighter } from 'shiki';
 	import type { ThemedToken } from 'shiki';
+	// The default oniguruma engine loads a WASM binary; that fetch is brittle
+	// under adapter-node depending on how the built asset gets served, and
+	// failing silently there meant every language fell back to unstyled
+	// plain text. The pure-JS regex engine avoids WASM entirely.
+	import { createJavaScriptRegexEngine } from 'shiki/engine/javascript';
 
 	let {
 		content,
@@ -61,7 +66,11 @@
 		let cancelled = false;
 		(async () => {
 			try {
-				const hl = await getSingletonHighlighter({ themes: [THEME], langs: [lang] });
+				const hl = await getSingletonHighlighter({
+					themes: [THEME],
+					langs: [lang],
+					engine: createJavaScriptRegexEngine()
+				});
 				const result = hl.codeToTokens(src, { lang: lang as any, theme: THEME });
 				if (!cancelled) {
 					lines = result.tokens;
@@ -70,7 +79,11 @@
 				}
 			} catch {
 				try {
-					const hl = await getSingletonHighlighter({ themes: [THEME], langs: ['plaintext'] });
+					const hl = await getSingletonHighlighter({
+						themes: [THEME],
+						langs: ['plaintext'],
+						engine: createJavaScriptRegexEngine()
+					});
 					const result = hl.codeToTokens(src, { lang: 'plaintext', theme: THEME });
 					if (!cancelled) {
 						lines = result.tokens;
