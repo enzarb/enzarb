@@ -1366,7 +1366,42 @@ func (r *EnvironmentReconciler) ensureNetworkPolicy(ctx context.Context, deployN
 	return r.Update(ctx, existing)
 }
 
+// ensureDeployerRole mirrors the cluster-scoped enzarb-deployer ClusterRole's
+// rules into a namespace-local Role in the deploy namespace. RoleBindings in
+// project namespaces are only permitted to reference a Role, never a
+// ClusterRole (enforced by the enzarb-restrict-rolebinding-kind
+// ValidatingAdmissionPolicy), so ensureDeployerRoleBinding binds to this Role
+// instead of to enzarb-deployer directly.
+func (r *EnvironmentReconciler) ensureDeployerRole(ctx context.Context, deployNS string) error {
+	var clusterRole rbacv1.ClusterRole
+	if err := r.Get(ctx, types.NamespacedName{Name: "enzarb-deployer"}, &clusterRole); err != nil {
+		return fmt.Errorf("get enzarb-deployer clusterrole: %w", err)
+	}
+
+	var existing rbacv1.Role
+	err := r.Get(ctx, types.NamespacedName{Namespace: deployNS, Name: "enzarb-deployer"}, &existing)
+	if errors.IsNotFound(err) {
+		role := &rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{Name: "enzarb-deployer", Namespace: deployNS},
+			Rules:      clusterRole.Rules,
+		}
+		return r.Create(ctx, role)
+	}
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(existing.Rules, clusterRole.Rules) {
+		existing.Rules = clusterRole.Rules
+		return r.Update(ctx, &existing)
+	}
+	return nil
+}
+
 func (r *EnvironmentReconciler) ensureDeployerRoleBinding(ctx context.Context, deployNS, orgNS, saName string, env *enzarbv1alpha1.Environment) error {
+	if err := r.ensureDeployerRole(ctx, deployNS); err != nil {
+		return fmt.Errorf("ensure deployer role: %w", err)
+	}
+
 	name := fmt.Sprintf("enzarb-deployer-%s", env.Spec.ProjectRef.Name)
 	rb := &rbacv1.RoleBinding{}
 	err := r.Get(ctx, types.NamespacedName{Namespace: deployNS, Name: name}, rb)
@@ -1378,7 +1413,7 @@ func (r *EnvironmentReconciler) ensureDeployerRoleBinding(ctx context.Context, d
 			},
 			RoleRef: rbacv1.RoleRef{
 				APIGroup: "rbac.authorization.k8s.io",
-				Kind:     "ClusterRole",
+				Kind:     "Role",
 				Name:     "enzarb-deployer",
 			},
 			Subjects: []rbacv1.Subject{

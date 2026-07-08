@@ -106,12 +106,19 @@ rules:
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["clusterroles"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Allow the operator to bind the deployer ClusterRole to project
-  # ServiceAccounts. Without this, RBAC privilege-escalation prevention blocks
-  # the binding because the operator does not itself hold every permission the
-  # deployer role grants (secrets, statefulsets, jobs, ingresses, etc.).
+  # The enzarb-restrict-rolebinding-kind ValidatingAdmissionPolicy forbids
+  # RoleBindings from referencing a ClusterRole, so the operator mirrors
+  # enzarb-deployer's rules into a namespace-local Role (also named
+  # enzarb-deployer) in each deploy namespace and binds to that instead.
   - apiGroups: ["rbac.authorization.k8s.io"]
-    resources: ["clusterroles"]
+    resources: ["roles"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Allow the operator to bind the deployer Role to project ServiceAccounts.
+  # Without this, RBAC privilege-escalation prevention blocks the binding
+  # because the operator does not itself hold every permission the deployer
+  # role grants (secrets, statefulsets, jobs, ingresses, etc.).
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles"]
     resourceNames: ["enzarb-deployer"]
     verbs: ["bind"]
   - apiGroups: ["networking.k8s.io"]

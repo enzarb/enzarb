@@ -14,3 +14,13 @@ KSV-0041
 # more-privileged pod ever exists in-namespace to exec into — every pod there runs under the
 # tenant's own ServiceAccount, which the anti-escalation RoleBinding-kind VAP already bounds.
 KSV-0053
+
+# The enzarb-operator ClusterRole grants "bind" on "roles" scoped to
+# resourceNames: ["enzarb-deployer"] only, so the operator can bind the
+# namespace-local Role it mirrors from the enzarb-deployer ClusterRole into
+# each deploy namespace (see ensureDeployerRole/ensureDeployerRoleBinding).
+# Kubernetes' native privilege-escalation check still applies on top of this —
+# bind alone doesn't let the operator grant more than it already holds — and
+# the enzarb-restrict-rolebinding-kind VAP prevents tenants from ever binding
+# a ClusterRole directly.
+KSV-0050

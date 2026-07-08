@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -74,8 +75,17 @@ func orgServiceAccountsGroup(orgID string) string {
 
 // ensureCapsuleTenant maintains the project's Tenant with the workspace SA as
 // owner. The owner is bound to enzarb-deployer rather than Capsule's default
-// (admin + capsule-namespace-deleter), so Capsule grants nothing beyond what
-// the Environment reconciler's RoleBinding already grants.
+// (admin + capsule-namespace-deleter) for in-namespace RBAC, but Capsule
+// Tenant ownership itself unconditionally grants self-service Namespace
+// create/list/watch/delete via capsule-proxy — that's the entire point of
+// Capsule's multi-tenancy model, and it can't be scoped down by the owner's
+// clusterRoles list. Since the operator (not the workspace SA) is the only
+// thing that should ever create a deploy namespace, namespaceOptions.quota is
+// pinned to the number of namespaces the tenant already owns on every
+// reconcile, so the owner's self-service create is always rejected for
+// exceeding quota. The operator's own creates are unaffected: it's a Capsule
+// administrator (ensureCapsuleAdministrator), which bypasses tenant quota
+// enforcement entirely.
 func (r *ProjectReconciler) ensureCapsuleTenant(ctx context.Context, orgNS, saName string, project *enzarbv1alpha1.Project) error {
 	name := capsuleTenantName(project.Spec.OrgID, project.Spec.Slug)
 	desiredOwners := []any{map[string]any{
@@ -83,6 +93,12 @@ func (r *ProjectReconciler) ensureCapsuleTenant(ctx context.Context, orgNS, saNa
 		"name":         fmt.Sprintf("system:serviceaccount:%s:%s", orgNS, saName),
 		"clusterRoles": []any{"enzarb-deployer"},
 	}}
+
+	var nsList corev1.NamespaceList
+	if err := r.List(ctx, &nsList, client.MatchingLabels{capsuleTenantLabel: name}); err != nil {
+		return fmt.Errorf("list tenant namespaces: %w", err)
+	}
+	quota := int64(len(nsList.Items))
 
 	tenant := &unstructured.Unstructured{}
 	tenant.SetGroupVersionKind(capsuleTenantGVK)
@@ -102,14 +118,21 @@ func (r *ProjectReconciler) ensureCapsuleTenant(ctx context.Context, orgNS, saNa
 		if err := unstructured.SetNestedSlice(tenant.Object, desiredOwners, "spec", "owners"); err != nil {
 			return err
 		}
+		if err := unstructured.SetNestedField(tenant.Object, quota, "spec", "namespaceOptions", "quota"); err != nil {
+			return err
+		}
 		return r.Create(ctx, tenant)
 	}
 	if err != nil {
 		return err
 	}
 	currentOwners, _, _ := unstructured.NestedSlice(tenant.Object, "spec", "owners")
-	if !reflect.DeepEqual(currentOwners, desiredOwners) {
+	currentQuota, _, _ := unstructured.NestedInt64(tenant.Object, "spec", "namespaceOptions", "quota")
+	if !reflect.DeepEqual(currentOwners, desiredOwners) || currentQuota != quota {
 		if err := unstructured.SetNestedSlice(tenant.Object, desiredOwners, "spec", "owners"); err != nil {
+			return err
+		}
+		if err := unstructured.SetNestedField(tenant.Object, quota, "spec", "namespaceOptions", "quota"); err != nil {
 			return err
 		}
 		return r.Update(ctx, tenant)
