@@ -182,11 +182,13 @@
 
 	function handleAddTab(region: 'left' | 'right', paneId: string, tab: Tab) {
 		if (!layout) return;
-		layout[region].panes = updateLeaf(layout[region].panes, paneId, (leaf) => ({
-			...leaf,
-			tabs: [...leaf.tabs, tab],
-			activeTab: leaf.tabs.length
-		}));
+		layout[region].panes = updateLeaf(layout[region].panes, paneId, (leaf) => {
+			const existingIndex = leaf.tabs.findIndex((t) => t.kind === tab.kind && t.id === tab.id);
+			if (existingIndex !== -1) {
+				return { ...leaf, activeTab: existingIndex };
+			}
+			return { ...leaf, tabs: [...leaf.tabs, tab], activeTab: leaf.tabs.length };
+		});
 		save();
 	}
 
@@ -218,11 +220,13 @@
 
 		if (zone === 'center') {
 			// Move to target pane
-			layout[region].panes = updateLeaf(layout[region].panes, targetPaneId, (leaf) => ({
-				...leaf,
-				tabs: [...leaf.tabs, tab],
-				activeTab: leaf.tabs.length
-			}));
+			layout[region].panes = updateLeaf(layout[region].panes, targetPaneId, (leaf) => {
+				const existingIndex = leaf.tabs.findIndex((t) => t.kind === tab.kind && t.id === tab.id);
+				if (existingIndex !== -1) {
+					return { ...leaf, activeTab: existingIndex };
+				}
+				return { ...leaf, tabs: [...leaf.tabs, tab], activeTab: leaf.tabs.length };
+			});
 		} else {
 			// Split target pane and add tab to new pane
 			const direction = zone === 'left' || zone === 'right' ? 'h' : 'v';
