@@ -36,6 +36,11 @@
 	let recheckingDomain: string | null = $state(null);
 	let recheckResult: { fqdn: string; message: string; ok: boolean } | null = $state(null);
 	let movingDomain: string | null = $state(null);
+	let openDomainDropdown: string | null = $state(null);
+
+	function domainKey(envName: string, fqdn: string) {
+		return `${envName}:${fqdn}`;
+	}
 	const registryPrefix = $derived(`registry.enzarb.dev/${page.params.namespace}/${page.params.project}`);
 
 	const projectData = $derived(getProject(page.params.project));
@@ -120,6 +125,10 @@
 		} finally {
 			movingDomain = null;
 		}
+	}
+
+	function toggleDomainDropdown(key: string) {
+		openDomainDropdown = openDomainDropdown === key ? null : key;
 	}
 
 	function toggleDropdown(name: string) {
@@ -299,6 +308,7 @@
 											{#each env.status.domains as domain}
 												{@const txtName = `_enzarb-challenge.${domain.fqdn}`}
 												{@const txtValue = `enzarb-verify=${domain.challengeToken}`}
+												{@const domainDropdownKey = domainKey(env.metadata.name, domain.fqdn)}
 												<div class="domain-row">
 													<span>{domain.fqdn}</span>
 													<span class="badge {domain.certStatus === 'Verified' ? 'running' : 'pending'}">{domain.certStatus ?? 'PendingVerification'}</span>
@@ -322,32 +332,40 @@
 															{recheckingDomain === domain.fqdn ? 'Checking…' : 'Recheck now'}
 														</button>
 													{/if}
-													{#if envs.length > 1}
-														<select
-															class="domain-move-select"
+													<div class="dropdown" class:open={openDomainDropdown === domainDropdownKey}>
+														<button
+															class="btn btn-sm btn-subtle dropdown-trigger"
 															disabled={movingDomain === domain.fqdn}
-															value=""
-															onchange={(e) => {
-																const target = e.currentTarget;
-																const toEnvName = target.value;
-																target.value = '';
-																doMoveDomain(env.metadata.name, toEnvName, domain.fqdn);
-															}}
+															onclick={() => toggleDomainDropdown(domainDropdownKey)}
+															title="Domain actions"
 														>
-															<option value="" disabled>{movingDomain === domain.fqdn ? 'Moving…' : 'Move to…'}</option>
-															{#each envs.filter((e: any) => e.metadata.name !== env.metadata.name) as other}
-																<option value={other.metadata.name}>{other.spec.slug}</option>
-															{/each}
-														</select>
-													{/if}
-													<button
-														type="button"
-														class="btn btn-sm btn-danger-subtle"
-														title="Remove domain"
-														onclick={() => doRemoveDomain(env.metadata.name, domain.fqdn)}
-													>
-														Remove
-													</button>
+															{movingDomain === domain.fqdn ? 'Moving…' : '⋯'}
+														</button>
+														<div class="dropdown-menu">
+															{#if envs.length > 1}
+																{#each envs.filter((e: any) => e.metadata.name !== env.metadata.name) as other}
+																	<button
+																		class="dropdown-item"
+																		onclick={() => {
+																			openDomainDropdown = null;
+																			doMoveDomain(env.metadata.name, other.metadata.name, domain.fqdn);
+																		}}
+																	>
+																		Move to {other.spec.slug}
+																	</button>
+																{/each}
+															{/if}
+															<button
+																class="dropdown-item dropdown-item-danger"
+																onclick={() => {
+																	openDomainDropdown = null;
+																	doRemoveDomain(env.metadata.name, domain.fqdn);
+																}}
+															>
+																Remove
+															</button>
+														</div>
+													</div>
 												</div>
 												{#if recheckResult && recheckResult.fqdn === domain.fqdn}
 													<span class="recheck-feedback {recheckResult.ok ? 'ok' : 'err'}">{recheckResult.message}</span>
@@ -501,9 +519,6 @@
 	.txt-record code { overflow-x: auto; white-space: nowrap; }
 	.domain-form { display: flex; gap: 0.5rem; align-items: center; }
 	.domain-form input[type=text] { max-width: 200px; }
-	.domain-move-select { font-size: 12px; padding: 0.2rem 0.35rem; border-radius: var(--radius); border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text); }
-	.btn-danger-subtle { color: var(--color-danger); }
-	.btn-danger-subtle:hover { background: var(--color-surface-2); }
 
 	/* Dropdown */
 	.dropdown { position: relative; }

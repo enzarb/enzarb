@@ -357,6 +357,12 @@ func (r *EnvironmentReconciler) reconcileDomainRouting(ctx context.Context, ds *
 // never serve a domain they have not proven DNS control of, nor one already
 // claimed by another project. Returns requeue=true if any domain is still
 // pending and should be re-polled.
+//
+// A domain new to this Environment's own status (e.g. just moved here from
+// another Environment in the same project via the UI's remove+add) skips
+// straight to Verified if the cluster-scoped DomainClaim ledger already shows
+// this project owns it — the DNS TXT proof was already done once for this
+// project/fqdn pair, so there's no ownership left to re-establish.
 func (r *EnvironmentReconciler) reconcileDomains(ctx context.Context, project *enzarbv1alpha1.Project, env *enzarbv1alpha1.Environment) (bool, error) {
 	logger := log.FromContext(ctx)
 	requeue := false
@@ -376,6 +382,25 @@ func (r *EnvironmentReconciler) reconcileDomains(ctx context.Context, project *e
 
 	for _, cd := range env.Spec.CustomDomains {
 		ds := getOrInitDomain(env, cd.FQDN)
+
+		if ds.VerifiedAt == "" {
+			claim, owned, err := r.ownedDomainClaim(ctx, cd.FQDN, project)
+			if err != nil {
+				return false, fmt.Errorf("check domain claim %s: %w", cd.FQDN, err)
+			}
+			if owned {
+				ds.VerifiedAt = claim.Status.VerifiedAt
+				ds.CertStatus = "Verified"
+				ds.LastError = ""
+				if !r.reconcileDomainRouting(ctx, ds) {
+					requeue = true
+				}
+				ds.LastCheckedAt = time.Now().UTC().Format(time.RFC3339)
+				setDomainStatus(env, cd.FQDN, *ds)
+				logger.Info("domain already owned by project; skipping re-verification", "fqdn", cd.FQDN)
+				continue
+			}
+		}
 
 		if ds.ChallengeToken == "" {
 			tok, err := generateToken()
@@ -534,6 +559,29 @@ func truncateLabel(s string, n int) string {
 		s = s[:n]
 	}
 	return strings.TrimRight(s, "-")
+}
+
+// ownedDomainClaim looks up the cluster-scoped DomainClaim for fqdn and
+// reports whether it's already owned by this project. Used to recognize a
+// domain that's been moved between Environments of the same project (or
+// simply removed and re-added) without requiring the tenant to re-prove DNS
+// ownership.
+func (r *EnvironmentReconciler) ownedDomainClaim(ctx context.Context, fqdn string, project *enzarbv1alpha1.Project) (*enzarbv1alpha1.DomainClaim, bool, error) {
+	existing := &enzarbv1alpha1.DomainClaim{}
+	err := r.Get(ctx, types.NamespacedName{Name: claimName(fqdn)}, existing)
+	if errors.IsNotFound(err) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	owned := existing.Spec.OrgID == project.Spec.OrgID &&
+		existing.Spec.ProjectRef == project.Spec.Slug &&
+		existing.Spec.FQDN == fqdn
+	if !owned {
+		return nil, false, nil
+	}
+	return existing, true, nil
 }
 
 // claimDomain atomically binds fqdn to this project. Returns conflict=true if the
