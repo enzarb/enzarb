@@ -65,10 +65,19 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces", "serviceaccounts", "services", "persistentvolumeclaims", "configmaps", "pods"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Serving-TLS secret lifecycle only: prune stale dtls-* Secrets in
-  # enzarb-system and clean up legacy in-namespace ones (cert-manager does not
-  # GC a Certificate's Secret). Deliberately no get/watch — the operator never
-  # reads secret payloads.
+  # get/watch/create/update/patch here (beyond the delete/list below) exist
+  # only so the operator's own permissions cover the enzarb-deployer Role it
+  # mirrors into each deploy namespace (see ensureDeployerRole) — Kubernetes'
+  # privilege-escalation check requires the creator to directly hold every
+  # verb it grants. The operator's own reconcile code never calls get/watch
+  # on an arbitrary secret's payload; the one it does read is
+  # capsule-proxy-root-secret below, via the resourceNames-scoped rule.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "watch", "create", "update", "patch"]
+  # Serving-TLS secret lifecycle: prune stale dtls-* Secrets in enzarb-system
+  # and clean up legacy in-namespace ones (cert-manager does not GC a
+  # Certificate's Secret).
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["list", "delete"]
@@ -92,10 +101,39 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Tenant-deployed StatefulSets in an Environment's deploy-* namespace, which
   # the operator doesn't own or create — only paused/resumed for project
-  # suspend (see reconcileEnvironmentSuspension).
+  # suspend (see reconcileEnvironmentSuspension). create/delete are granted
+  # only so the operator's own permissions cover the enzarb-deployer Role
+  # (see the secrets rule above for why); reconcile code never calls them.
   - apiGroups: ["apps"]
     resources: ["statefulsets"]
-    verbs: ["get", "list", "watch", "update", "patch"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["pods/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificaterequests"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["grpcroutes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["helm.cattle.io"]
+    resources: ["helmcharts", "helmchartconfigs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["pgop.ruck.io"]
+    resources: ["clusters", "roles", "databases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["clusterrolebindings", "rolebindings"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -115,8 +153,14 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Allow the operator to bind the deployer Role to project ServiceAccounts.
   # Without this, RBAC privilege-escalation prevention blocks the binding
-  # because the operator does not itself hold every permission the deployer
-  # role grants (secrets, statefulsets, jobs, ingresses, etc.).
+  # because the operator would not itself hold every permission the deployer
+  # role grants — which is why the rules above (secrets, statefulsets,
+  # replicasets, pods/exec+log+status, jobs/cronjobs, certificaterequests,
+  # grpcroutes, helmcharts/helmchartconfigs, pgop) exist: they make the
+  # operator's own permission set a superset of enzarb-deployer's, so both
+  # this bind and creating/updating the mirrored Role (ensureDeployerRole)
+  # pass Kubernetes' privilege-escalation covers-check without needing the
+  # broader, unscoped "escalate" verb.
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["roles"]
     resourceNames: ["enzarb-deployer"]
