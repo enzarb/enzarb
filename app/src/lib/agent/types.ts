@@ -61,6 +61,7 @@ export type AcpWsEvent =
 			kind: string;
 			title: string;
 			status: string;
+			path: string | null;
 			plan: string | null;
 	  }
 	| {
@@ -70,6 +71,7 @@ export type AcpWsEvent =
 			status: string | null;
 			diff: DiffPayload | null;
 			output: string | null;
+			path: string | null;
 			plan: string | null;
 	  }
 	| { type: 'plan_update'; session_id: string; entries: PlanEntryPayload[] }

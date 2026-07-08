@@ -8,10 +8,11 @@
 		toolKind,
 		title,
 		status,
+		path = null,
 		diff,
 		output = null,
 		plan = null
-	}: { toolKind: string; title: string; status: string; diff: DiffPayload | null; output?: string | null; plan?: string | null } = $props();
+	}: { toolKind: string; title: string; status: string; path?: string | null; diff: DiffPayload | null; output?: string | null; plan?: string | null } = $props();
 
 	const ICONS: Record<string, string> = {
 		read: '👁',
@@ -45,6 +46,9 @@
 	>
 		<span class="tool-icon">{ICONS[toolKind] ?? ICONS.other}</span>
 		<span class="tool-title">{title}</span>
+		{#if path}
+			<span class="tool-path">{path}</span>
+		{/if}
 		<span class="tool-status">{status}</span>
 		{#if hasBody}
 			<span class="tool-chevron" class:open={expanded}>▸</span>
@@ -57,7 +61,7 @@
 			{:else if diff}
 				<DiffView {diff} />
 			{:else if output}
-				<pre class="tool-output">{output}</pre>
+				<div class="tool-output"><Markdown text={output} /></div>
 			{/if}
 		</div>
 	{/if}
@@ -83,7 +87,17 @@
 	.tool-header:not(:disabled):hover { background: var(--color-surface-2); border-radius: 6px; }
 	.expanded .tool-header:not(:disabled):hover { border-radius: 6px 6px 0 0; }
 	.tool-icon { flex-shrink: 0; }
-	.tool-title { flex: 1; font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.tool-title { flex: 0 1 auto; min-width: 0; font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.tool-path {
+		flex: 1 1 auto;
+		min-width: 0;
+		color: var(--color-text-muted);
+		font-family: var(--font-mono);
+		font-size: 11px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
 	.tool-status { color: var(--color-text-muted); text-transform: capitalize; font-size: 11px; flex-shrink: 0; }
 	.tool-chevron { color: var(--color-text-muted); flex-shrink: 0; transition: transform 0.15s; display: inline-block; }
 	.tool-chevron.open { transform: rotate(90deg); }
@@ -95,12 +109,10 @@
 		padding: 0.5rem 0.6rem;
 		background: var(--color-bg);
 		border-radius: 4px;
-		font-family: var(--font-mono);
 		font-size: 11px;
 		line-height: 1.45;
-		white-space: pre-wrap;
-		word-break: break-word;
 		overflow-y: auto;
 		max-height: 320px;
 	}
+	.tool-output :global(.md-code) { font-size: 11px; }
 </style>

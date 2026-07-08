@@ -39,6 +39,7 @@ pub enum AcpWsEvent {
         kind: &'static str,
         title: String,
         status: &'static str,
+        path: Option<String>,
         plan: Option<String>,
     },
     ToolCallUpdated {
@@ -47,6 +48,7 @@ pub enum AcpWsEvent {
         status: Option<&'static str>,
         diff: Option<DiffPayload>,
         output: Option<String>,
+        path: Option<String>,
         plan: Option<String>,
     },
     PlanUpdate {
@@ -258,6 +260,14 @@ fn plan_text(raw_input: Option<&serde_json::Value>) -> Option<String> {
     raw_input?.get("plan")?.as_str().map(str::to_string)
 }
 
+/// The file path a read/edit tool call is acting on, so the UI can show
+/// which file was touched instead of just a generic "Read"/"Edit" title.
+fn first_location_path(
+    locations: &[agent_client_protocol::schema::v1::ToolCallLocation],
+) -> Option<String> {
+    locations.first().map(|l| l.path.display().to_string())
+}
+
 /// Translates one ACP `SessionUpdate` notification into zero-or-more simplified
 /// WS events. Variants not yet surfaced in the UI (usage, available commands,
 /// mode changes, etc.) are intentionally dropped here rather than forwarded raw.
@@ -284,6 +294,7 @@ pub fn from_session_update(session_id: &str, update: SessionUpdate) -> Vec<AcpWs
             kind: tool_kind_str(tc.kind),
             title: tc.title,
             status: tool_status_str(tc.status),
+            path: first_location_path(&tc.locations),
             plan: plan_text(tc.raw_input.as_ref()),
         }],
         SessionUpdate::ToolCallUpdate(update) => {
@@ -294,6 +305,11 @@ pub fn from_session_update(session_id: &str, update: SessionUpdate) -> Vec<AcpWs
                 status: update.fields.status.map(tool_status_str),
                 diff: content.and_then(first_diff),
                 output: content.and_then(content_text),
+                path: update
+                    .fields
+                    .locations
+                    .as_deref()
+                    .and_then(first_location_path),
                 plan: plan_text(update.fields.raw_input.as_ref()),
             }]
         }

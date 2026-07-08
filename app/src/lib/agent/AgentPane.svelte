@@ -26,7 +26,7 @@
 	type TimelineItem =
 		| { kind: 'message'; role: 'user' | 'assistant'; text: string }
 		| { kind: 'thought'; text: string }
-		| { kind: 'tool_call'; id: string; toolKind: string; title: string; status: string; diff: DiffPayload | null; output: string | null; plan: string | null }
+		| { kind: 'tool_call'; id: string; toolKind: string; title: string; status: string; path: string | null; diff: DiffPayload | null; output: string | null; plan: string | null }
 		| { kind: 'plan'; entries: PlanEntryPayload[] };
 
 	type PendingPermission = {
@@ -151,6 +151,7 @@
 					toolKind: event.kind,
 					title: event.title,
 					status: event.status,
+					path: event.path,
 					diff: null,
 					output: null,
 					plan: event.plan
@@ -162,6 +163,7 @@
 					if (event.status) item.status = event.status;
 					if (event.diff) item.diff = event.diff;
 					if (event.output) item.output = event.output;
+					if (event.path) item.path = event.path;
 					if (event.plan) item.plan = event.plan;
 				}
 				break;
@@ -337,7 +339,7 @@
 					<Markdown text={item.text} />
 				</details>
 			{:else if item.kind === 'tool_call'}
-				<ToolCallCard toolKind={item.toolKind} title={item.title} status={item.status} diff={item.diff} output={item.output} plan={item.plan} />
+				<ToolCallCard toolKind={item.toolKind} title={item.title} status={item.status} path={item.path} diff={item.diff} output={item.output} plan={item.plan} />
 			{:else if item.kind === 'plan'}
 				<PlanView entries={item.entries} />
 			{/if}
