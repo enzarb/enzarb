@@ -29,7 +29,24 @@
 
 	const dataPromise = $derived(load(page.params.path ?? '', refreshKey));
 
-	async function load(path: string, _refresh: number) {
+	async function load(path: string, refresh: number) {
+		try {
+			return await loadInner(path, refresh);
+		} catch (e) {
+			// Log the full error (with stack) so it's visible in devtools —
+			// the UI below only ever shows a message, which for framework
+			// errors like state_unsafe_mutation isn't enough to debug from.
+			console.error('files load() failed', e);
+			return {
+				type: 'error' as const,
+				message: e instanceof Error ? e.message : 'Failed to load',
+				gitStatus: {} as Record<string, GitEntry>,
+				agentBase: ''
+			};
+		}
+	}
+
+	async function loadInner(path: string, _refresh: number) {
 		// getProject() is a SvelteKit remote query: calling it touches its own
 		// shared reactive cache synchronously. Since this whole function runs
 		// as the body of a $derived (`dataPromise` below), that synchronous
