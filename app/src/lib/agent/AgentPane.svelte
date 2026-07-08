@@ -451,6 +451,6 @@
 	.composer-footer { display: flex; align-items: center; gap: 0.5rem; padding: 0.35rem 0.5rem; border: 1px solid var(--color-border); border-top: 1px solid var(--color-border-muted, var(--color-border)); border-radius: 0 0 6px 6px; background: var(--color-surface-muted, var(--color-surface)); }
 	.composer-selects { display: flex; gap: 0.4rem; flex: 1; }
 	.composer-buttons { display: flex; gap: 0.4rem; flex-shrink: 0; }
-	.composer-select { font-size: 11px; padding: 0.15rem 0.4rem; border-radius: 4px; border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text-muted); cursor: pointer; }
+	.composer-select { width: auto; flex: 0 0 auto; font-size: 11px; padding: 0.15rem 0.4rem; border-radius: 4px; border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text-muted); cursor: pointer; }
 	.composer-select:focus { outline: none; border-color: var(--color-accent, #4f8ef7); color: var(--color-text); }
 </style>
