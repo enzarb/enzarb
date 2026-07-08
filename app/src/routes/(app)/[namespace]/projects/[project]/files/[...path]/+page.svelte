@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { getProject } from '$lib/remote/projects.remote';
 	import { getAgentAuthToken } from '$lib/agentToken';
@@ -29,7 +30,16 @@
 	const dataPromise = $derived(load(page.params.path ?? '', refreshKey));
 
 	async function load(path: string, _refresh: number) {
-		const [agentToken, project] = await Promise.all([getAgentAuthToken(page.params.namespace!, page.params.project!), getProject()]);
+		// getProject() is a SvelteKit remote query: calling it touches its own
+		// shared reactive cache synchronously. Since this whole function runs
+		// as the body of a $derived (`dataPromise` below), that synchronous
+		// touch happens while the derived's reaction is still active, which
+		// trips Svelte's state_unsafe_mutation guard. untrack() the call so
+		// only the query's own internals see the write, not this derived.
+		const [agentToken, project] = await Promise.all([
+			getAgentAuthToken(page.params.namespace!, page.params.project!),
+			untrack(() => getProject())
+		]);
 		const agentPath = project?.status?.agentPath;
 		if (!agentPath) return { type: 'error' as const, message: 'Agent not ready — project may still be provisioning.', gitStatus: {} as Record<string, GitEntry>, agentBase: '' };
 
