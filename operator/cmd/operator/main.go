@@ -11,12 +11,15 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	enzarbv1alpha1 "enzarb.dev/enzarb/operator/api/v1alpha1"
 	"enzarb.dev/enzarb/operator/internal/admin"
 	"enzarb.dev/enzarb/operator/internal/controller"
+	enzarbwebhook "enzarb.dev/enzarb/operator/internal/webhook"
 )
 
 var (
@@ -42,10 +45,14 @@ func main() {
 	var metricsAddr string
 	var probeAddr string
 	var enableLeaderElection bool
+	var webhookPort int
+	var webhookCertDir string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "Address for metrics endpoint")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Address for health probe endpoint")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election")
+	flag.IntVar(&webhookPort, "webhook-port", 9443, "Port for the admission webhook server")
+	flag.StringVar(&webhookCertDir, "webhook-cert-dir", "/tmp/k8s-webhook-server/serving-certs", "Directory with the webhook server TLS cert (tls.crt/tls.key)")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -58,6 +65,10 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "enzarb-operator-lock",
+		WebhookServer: webhook.NewServer(webhook.Options{
+			Port:    webhookPort,
+			CertDir: webhookCertDir,
+		}),
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to create manager")
@@ -106,6 +117,12 @@ func main() {
 		setupLog.Error(err, "unable to create EnvironmentReconciler")
 		os.Exit(1)
 	}
+
+	// Mutating webhook: route deploy-namespace pods' Kubernetes API traffic
+	// through capsule-proxy instead of the API server (see internal/webhook).
+	mgr.GetWebhookServer().Register("/mutate-v1-pod-proxy", &webhook.Admission{
+		Handler: enzarbwebhook.NewPodProxyInjector(admission.NewDecoder(mgr.GetScheme())),
+	})
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")

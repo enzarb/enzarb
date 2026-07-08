@@ -35,6 +35,7 @@ import (
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	enzarbv1alpha1 "enzarb.dev/enzarb/operator/api/v1alpha1"
+	enzarbwebhook "enzarb.dev/enzarb/operator/internal/webhook"
 )
 
 type EnvironmentReconciler struct {
@@ -106,6 +107,13 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	if err := r.ensureNetworkPolicy(ctx, deployNS, orgNS, project.Spec.Slug); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensure network policy: %w", err)
+	}
+
+	// The capsule-proxy CA that deploy-namespace pods must trust for the
+	// pod-proxy webhook's API rewrite (see internal/webhook). Projected volumes
+	// can't cross namespaces, so the CA has to live in each deploy namespace.
+	if err := r.ensureProxyCAConfigMap(ctx, deployNS); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure capsule-proxy CA configmap: %w", err)
 	}
 
 	// Provision an ACME Issuer the tenant can reference (but not edit/delete) to
@@ -1281,6 +1289,54 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
+// ensureProxyCAConfigMap mirrors the capsule-proxy serving CA into a ConfigMap
+// (key ca.crt) in the deploy namespace. The pod-proxy webhook repoints each
+// pod's ServiceAccount-token ca.crt at this ConfigMap so client-go trusts
+// capsule-proxy instead of the API server. The source is the same
+// cert-manager-managed Secret the workspace kubeconfig uses (capsule.go).
+//
+// Returns an error (to requeue) when the proxy CA Secret is absent: this
+// design routes all deploy-namespace API traffic through capsule-proxy, so a
+// missing CA is a genuine not-ready condition, not a tolerated no-op.
+func (r *EnvironmentReconciler) ensureProxyCAConfigMap(ctx context.Context, deployNS string) error {
+	secret := &corev1.Secret{}
+	// APIReader — the proxy CA Secret is created by a Helm chart that may
+	// postdate the operator's cache startup (see ensureWorkspaceKubeconfig).
+	err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: capsuleSystemNamespace, Name: capsuleProxyCASecretName}, secret)
+	if err != nil {
+		return fmt.Errorf("get capsule-proxy CA secret %s/%s: %w", capsuleSystemNamespace, capsuleProxyCASecretName, err)
+	}
+	caPEM := secret.Data["ca.crt"]
+	if len(caPEM) == 0 {
+		caPEM = secret.Data["tls.crt"]
+	}
+	if len(caPEM) == 0 {
+		return fmt.Errorf("capsule-proxy CA secret %s/%s has no ca.crt or tls.crt", capsuleSystemNamespace, capsuleProxyCASecretName)
+	}
+
+	desired := map[string]string{"ca.crt": string(caPEM)}
+	cm := &corev1.ConfigMap{}
+	err = r.Get(ctx, types.NamespacedName{Namespace: deployNS, Name: enzarbwebhook.ProxyCAConfigMapName}, cm)
+	if errors.IsNotFound(err) {
+		return r.Create(ctx, &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      enzarbwebhook.ProxyCAConfigMapName,
+				Namespace: deployNS,
+				Labels:    map[string]string{"app.kubernetes.io/managed-by": "enzarb-operator"},
+			},
+			Data: desired,
+		})
+	}
+	if err != nil {
+		return err
+	}
+	if reflect.DeepEqual(cm.Data, desired) {
+		return nil
+	}
+	cm.Data = desired
+	return r.Update(ctx, cm)
+}
+
 // ensureNetworkPolicy creates the ingress + egress NetworkPolicies for a deploy
 // namespace that enforce tenant isolation:
 //   - Ingress: only the Envoy gateway namespace, the owning project's workspace
@@ -1320,8 +1376,19 @@ func (r *EnvironmentReconciler) ensureNetworkPolicy(ctx context.Context, deployN
 		pgopNS = "pgop-system"
 	}
 
+	// Namespace + port of capsule-proxy. Deploy-namespace pods have their
+	// in-cluster Kubernetes API traffic rewritten to capsule-proxy by the
+	// pod-proxy mutating webhook, so egress to the proxy must be allowed even
+	// though the service CIDR is otherwise blocked below. Direct access to the
+	// API server (kubernetes.default, also in the service CIDR) stays blocked.
+	capsuleProxyNS := os.Getenv("CAPSULE_PROXY_NAMESPACE")
+	if capsuleProxyNS == "" {
+		capsuleProxyNS = "capsule-system"
+	}
+
 	dnsPort := intstr.FromInt32(53)
 	pgPort := intstr.FromInt32(5432)
+	proxyPort := intstr.FromInt32(9001)
 	udp := corev1.ProtocolUDP
 	tcp := corev1.ProtocolTCP
 
@@ -1391,6 +1458,19 @@ func (r *EnvironmentReconciler) ensureNetworkPolicy(ctx context.Context, deployN
 				{To: []networkingv1.NetworkPolicyPeer{{
 					PodSelector: &metav1.LabelSelector{},
 				}}},
+				// capsule-proxy: the only Kubernetes API path deploy pods get.
+				// Matched by namespace/pod selector (not IP) so the service-CIDR
+				// exclusion below doesn't defeat it, while 10.43.0.1 stays blocked.
+				{
+					Ports: []networkingv1.NetworkPolicyPort{
+						{Protocol: &tcp, Port: &proxyPort},
+					},
+					To: []networkingv1.NetworkPolicyPeer{{
+						NamespaceSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{"kubernetes.io/metadata.name": capsuleProxyNS},
+						},
+					}},
+				},
 				// Internet egress (excluding cluster-internal CIDRs)
 				{To: []networkingv1.NetworkPolicyPeer{{
 					IPBlock: &networkingv1.IPBlock{
