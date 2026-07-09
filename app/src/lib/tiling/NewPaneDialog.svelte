@@ -36,8 +36,10 @@
 	let newCmd = $state('bash');
 	let newName = $state('');
 	let newKind: 'one-shot' | 'persistent' = $state('persistent');
+	let newCwd = $state('');
 	let creating = $state(false);
 	let createErr = $state('');
+	let workspacePaths: { home_dir: string; project_dir: string | null } | null = $state(null);
 
 	async function load() {
 		loading = true;
@@ -49,6 +51,10 @@
 			if (selectedType === 'terminal') {
 				const res = await fetch(`${agentBase}/processes`, { headers: auth });
 				if (res.ok) processes = await res.json();
+				if (!workspacePaths) {
+					const statusRes = await fetch(`${agentBase}/status`, { headers: auth });
+					if (statusRes.ok) workspacePaths = await statusRes.json();
+				}
 			} else {
 				const res = await fetch(`${agentBase}/agent/sessions`, { headers: auth });
 				if (res.ok) sessions = await res.json();
@@ -77,7 +83,7 @@
 			const res = await fetch(`${agentBase}/processes`, {
 				method: 'POST',
 				headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-				body: JSON.stringify({ name: newName || newCmd.trim(), command, args, kind: newKind })
+				body: JSON.stringify({ name: newName || newCmd.trim(), command, args, kind: newKind, ...(newCwd ? { cwd: newCwd } : {}) })
 			});
 			if (!res.ok) { createErr = `Failed (${res.status})`; return; }
 			const p = await res.json();
@@ -159,6 +165,22 @@
 					<option value="one-shot">One-shot</option>
 				</select>
 			</label>
+			<label class="field">
+				<span>Working directory <span class="muted-label">(optional)</span></span>
+				{#if workspacePaths}
+					<div class="cwd-presets">
+						<button type="button" class="preset-btn" class:active={newCwd === workspacePaths.home_dir} onclick={() => newCwd = newCwd === workspacePaths!.home_dir ? '' : workspacePaths!.home_dir}>
+							~ Home
+						</button>
+						{#if workspacePaths.project_dir}
+							<button type="button" class="preset-btn" class:active={newCwd === workspacePaths.project_dir} onclick={() => newCwd = newCwd === workspacePaths!.project_dir ? '' : workspacePaths!.project_dir!}>
+								⎇ Project
+							</button>
+						{/if}
+					</div>
+				{/if}
+				<input bind:value={newCwd} placeholder={workspacePaths?.home_dir ?? '~/project (default: home)'} />
+			</label>
 			{#if createErr}<p class="err">{createErr}</p>{/if}
 			<button class="btn btn-primary" disabled={creating} onclick={createTerminal}>
 				{creating ? 'Starting…' : 'Start terminal'}
@@ -212,6 +234,10 @@
 	.status-dot.failed { background: var(--color-danger); }
 	.field { display: flex; flex-direction: column; gap: 0.2rem; font-size: 12px; font-weight: 500; margin-bottom: 0.4rem; }
 	.field input, .field select { font-size: 13px; padding: 0.3rem 0.5rem; background: var(--color-surface); color: var(--color-text); border: 1px solid var(--color-border); border-radius: 4px; }
+	.cwd-presets { display: flex; gap: 0.3rem; margin-bottom: 0.2rem; }
+	.preset-btn { font-size: 11px; padding: 0.2rem 0.5rem; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); color: var(--color-text-muted); cursor: pointer; }
+	.preset-btn:hover { color: var(--color-text); }
+	.preset-btn.active { color: #fff; background: var(--color-accent); border-color: var(--color-accent); }
 	.muted { color: var(--color-text-muted); font-size: 12px; }
 	.muted-label { font-weight: 400; color: var(--color-text-muted); }
 	.err { color: var(--color-danger); font-size: 12px; margin: 0.25rem 0; }
