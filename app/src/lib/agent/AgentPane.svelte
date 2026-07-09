@@ -67,11 +67,13 @@
 	// The backend can report more than one config option for the same
 	// conceptual setting (e.g. two entries both categorized "model"); keep
 	// only the first per category so the composer doesn't show duplicate
-	// pickers for the same thing.
+	// pickers for the same thing. The "mode" category is the ACP session
+	// mode selector, which we already render separately via availableModes/
+	// changeMode below — drop it here so it isn't shown twice.
 	const visibleConfigOptions = $derived(
 		Array.from(
 			new Map(configOptions.map((o) => [o.category ?? o.id, o])).values()
-		)
+		).filter((o) => o.category !== 'mode')
 	);
 	let running = $state(false);
 	let notifyEnabled = $state(false);
