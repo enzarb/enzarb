@@ -90,6 +90,26 @@ export function saveLayout(namespace: string, project: string, layout: TilingLay
 	} catch {}
 }
 
+function cwdKey(namespace: string, project: string): string {
+	return `enzarb:tiling:cwd:${namespace}/${project}`;
+}
+
+/** Last working directory the user chose when creating a pane in this project. */
+export function loadLastCwd(namespace: string, project: string): string {
+	try {
+		return localStorage.getItem(cwdKey(namespace, project)) ?? '';
+	} catch {
+		return '';
+	}
+}
+
+export function saveLastCwd(namespace: string, project: string, cwd: string): void {
+	try {
+		if (cwd) localStorage.setItem(cwdKey(namespace, project), cwd);
+		else localStorage.removeItem(cwdKey(namespace, project));
+	} catch {}
+}
+
 export function collectTabs(node: PaneNode): Tab[] {
 	if (node.type === 'leaf') return node.tabs;
 	return [...collectTabs(node.children[0]), ...collectTabs(node.children[1])];

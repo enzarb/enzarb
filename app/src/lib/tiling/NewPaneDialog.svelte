@@ -1,5 +1,7 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { getAgentAuthToken } from '$lib/agentToken';
+	import { loadLastCwd, saveLastCwd } from '$lib/tiling/layout';
 
 	interface Props {
 		agentBase: string;
@@ -36,7 +38,7 @@
 	let newCmd = $state('bash');
 	let newName = $state('');
 	let newKind: 'one-shot' | 'persistent' = $state('persistent');
-	let newCwd = $state('');
+	let newCwd = $state(untrack(() => loadLastCwd(namespace, project)));
 	let creating = $state(false);
 	let createErr = $state('');
 	let workspacePaths: { home_dir: string; project_dir: string | null } | null = $state(null);
@@ -48,13 +50,13 @@
 			const token = await getAgentAuthToken(namespace, project);
 			if (!token) { err = 'Not authenticated.'; return; }
 			const auth = { Authorization: `Bearer ${token}` };
+			if (!workspacePaths) {
+				const statusRes = await fetch(`${agentBase}/status`, { headers: auth });
+				if (statusRes.ok) workspacePaths = await statusRes.json();
+			}
 			if (selectedType === 'terminal') {
 				const res = await fetch(`${agentBase}/processes`, { headers: auth });
 				if (res.ok) processes = await res.json();
-				if (!workspacePaths) {
-					const statusRes = await fetch(`${agentBase}/status`, { headers: auth });
-					if (statusRes.ok) workspacePaths = await statusRes.json();
-				}
 			} else {
 				const res = await fetch(`${agentBase}/agent/sessions`, { headers: auth });
 				if (res.ok) sessions = await res.json();
@@ -87,6 +89,7 @@
 			});
 			if (!res.ok) { createErr = `Failed (${res.status})`; return; }
 			const p = await res.json();
+			saveLastCwd(namespace, project, newCwd);
 			onCreateTerminal?.(p.id, p.name || newCmd.trim());
 		} catch {
 			createErr = 'Could not reach the workspace agent.';
@@ -104,10 +107,11 @@
 			const res = await fetch(`${agentBase}/agent/sessions`, {
 				method: 'POST',
 				headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-				body: JSON.stringify({ label: 'New session' })
+				body: JSON.stringify({ label: 'New session', ...(newCwd ? { cwd: newCwd } : {}) })
 			});
 			if (!res.ok) { createErr = `Failed (${res.status})`; return; }
 			const s = await res.json();
+			saveLastCwd(namespace, project, newCwd);
 			onCreateAgent?.(s.id, s.label || 'Agent session');
 		} catch {
 			createErr = 'Could not reach the workspace agent.';
@@ -116,6 +120,25 @@
 		}
 	}
 </script>
+
+{#snippet cwdField()}
+	<label class="field">
+		<span>Working directory <span class="muted-label">(optional)</span></span>
+		{#if workspacePaths}
+			<div class="cwd-presets">
+				<button type="button" class="preset-btn" class:active={newCwd === workspacePaths.home_dir} onclick={() => newCwd = newCwd === workspacePaths!.home_dir ? '' : workspacePaths!.home_dir}>
+					~ Home
+				</button>
+				{#if workspacePaths.project_dir}
+					<button type="button" class="preset-btn" class:active={newCwd === workspacePaths.project_dir} onclick={() => newCwd = newCwd === workspacePaths!.project_dir ? '' : workspacePaths!.project_dir!}>
+						⎇ Project
+					</button>
+				{/if}
+			</div>
+		{/if}
+		<input bind:value={newCwd} placeholder={workspacePaths?.home_dir ?? '~/project (default: home)'} />
+	</label>
+{/snippet}
 
 <div class="new-pane-dialog">
 	{#if regionKind === 'right'}
@@ -165,22 +188,7 @@
 					<option value="one-shot">One-shot</option>
 				</select>
 			</label>
-			<label class="field">
-				<span>Working directory <span class="muted-label">(optional)</span></span>
-				{#if workspacePaths}
-					<div class="cwd-presets">
-						<button type="button" class="preset-btn" class:active={newCwd === workspacePaths.home_dir} onclick={() => newCwd = newCwd === workspacePaths!.home_dir ? '' : workspacePaths!.home_dir}>
-							~ Home
-						</button>
-						{#if workspacePaths.project_dir}
-							<button type="button" class="preset-btn" class:active={newCwd === workspacePaths.project_dir} onclick={() => newCwd = newCwd === workspacePaths!.project_dir ? '' : workspacePaths!.project_dir!}>
-								⎇ Project
-							</button>
-						{/if}
-					</div>
-				{/if}
-				<input bind:value={newCwd} placeholder={workspacePaths?.home_dir ?? '~/project (default: home)'} />
-			</label>
+			{@render cwdField()}
 			{#if createErr}<p class="err">{createErr}</p>{/if}
 			<button class="btn btn-primary" disabled={creating} onclick={createTerminal}>
 				{creating ? 'Starting…' : 'Start terminal'}
@@ -206,6 +214,7 @@
 		</div>
 		<div class="section">
 			<div class="section-label">New session</div>
+			{@render cwdField()}
 			{#if createErr}<p class="err">{createErr}</p>{/if}
 			<button class="btn btn-primary" disabled={creating} onclick={createAgent}>
 				{creating ? 'Creating…' : 'New agent session'}
