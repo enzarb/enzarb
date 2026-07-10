@@ -41,6 +41,7 @@ pub enum AcpWsEvent {
         status: &'static str,
         path: Option<String>,
         plan: Option<String>,
+        command: Option<String>,
     },
     ToolCallUpdated {
         session_id: String,
@@ -50,6 +51,7 @@ pub enum AcpWsEvent {
         output: Option<String>,
         path: Option<String>,
         plan: Option<String>,
+        command: Option<String>,
     },
     PlanUpdate {
         session_id: String,
@@ -260,6 +262,12 @@ fn plan_text(raw_input: Option<&serde_json::Value>) -> Option<String> {
     raw_input?.get("plan")?.as_str().map(str::to_string)
 }
 
+/// The shell command an "execute" tool call is running, so the UI can show
+/// it live instead of waiting for output once the command finishes.
+fn command_text(raw_input: Option<&serde_json::Value>) -> Option<String> {
+    raw_input?.get("command")?.as_str().map(str::to_string)
+}
+
 /// The file path a read/edit tool call is acting on, so the UI can show
 /// which file was touched instead of just a generic "Read"/"Edit" title.
 fn first_location_path(
@@ -296,6 +304,7 @@ pub fn from_session_update(session_id: &str, update: SessionUpdate) -> Vec<AcpWs
             status: tool_status_str(tc.status),
             path: first_location_path(&tc.locations),
             plan: plan_text(tc.raw_input.as_ref()),
+            command: command_text(tc.raw_input.as_ref()),
         }],
         SessionUpdate::ToolCallUpdate(update) => {
             let content = update.fields.content.as_deref();
@@ -311,6 +320,7 @@ pub fn from_session_update(session_id: &str, update: SessionUpdate) -> Vec<AcpWs
                     .as_deref()
                     .and_then(first_location_path),
                 plan: plan_text(update.fields.raw_input.as_ref()),
+                command: command_text(update.fields.raw_input.as_ref()),
             }]
         }
         SessionUpdate::Plan(plan) => vec![AcpWsEvent::PlanUpdate {

@@ -11,8 +11,9 @@
 		path = null,
 		diff,
 		output = null,
-		plan = null
-	}: { toolKind: string; title: string; status: string; path?: string | null; diff: DiffPayload | null; output?: string | null; plan?: string | null } = $props();
+		plan = null,
+		command = null
+	}: { toolKind: string; title: string; status: string; path?: string | null; diff: DiffPayload | null; output?: string | null; plan?: string | null; command?: string | null } = $props();
 
 	const ICONS: Record<string, string> = {
 		read: '👁',
@@ -54,6 +55,9 @@
 			<span class="tool-chevron" class:open={expanded}>▸</span>
 		{/if}
 	</button>
+	{#if command && (status === 'pending' || status === 'running')}
+		<div class="tool-command"><code>{command}</code></div>
+	{/if}
 	{#if expanded}
 		<div class="tool-body">
 			{#if plan}
@@ -101,6 +105,16 @@
 	.tool-status { color: var(--color-text-muted); text-transform: capitalize; font-size: 11px; flex-shrink: 0; }
 	.tool-chevron { color: var(--color-text-muted); flex-shrink: 0; transition: transform 0.15s; display: inline-block; }
 	.tool-chevron.open { transform: rotate(90deg); }
+	.tool-command {
+		margin: 0 0.7rem 0.5rem;
+		padding: 0.35rem 0.5rem;
+		background: var(--color-bg);
+		border-radius: 4px;
+		font-family: var(--font-mono);
+		font-size: 11px;
+		overflow-x: auto;
+		white-space: pre;
+	}
 	.tool-body { padding: 0 0.7rem 0.5rem; border-top: 1px solid var(--color-border); }
 	.tool-body :global(.diff-view) { margin-top: 0.5rem; }
 	.tool-plan { margin-top: 0.5rem; font-size: 12px; line-height: 1.5; overflow-y: auto; max-height: 480px; }
