@@ -19,3 +19,9 @@ spec:
       loadBalancerIP: "192.168.33.83"
     github:
       oauthEnabled: true
+    workspace:
+      # oldie lacks AVX2, and the workspace image's bundled Bun-compiled
+      # claude CLI segfaults there. omnilap is labeled enzarb.io/avx2=true;
+      # pin workspace pods there until oldie is replaced or upgraded.
+      nodeSelector:
+        enzarb.io/avx2: "true"
