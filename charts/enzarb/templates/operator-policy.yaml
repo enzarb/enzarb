@@ -62,12 +62,29 @@ spec:
     - name: isOperator
       expression: >-
         request.userInfo.username == 'system:serviceaccount:{{ .Release.Namespace }}:{{ .Values.serviceAccountName.operator }}'
-    - name: isAdminRestartingDeployment
+    - name: isAdmin
+      # system:admin is the cluster operator's own break-glass identity, not
+      # a tenant's — exempt it from this policy entirely rather than
+      # resource-by-resource (previously scoped to just deployments, to let
+      # system:admin force-restart a workspace Deployment).
       expression: >-
-        request.userInfo.username == 'system:admin' &&
-        request.resource.resource == 'deployments'
+        request.userInfo.username == 'system:admin'
+    - name: isReplicaSetController
+      # The built-in Deployment/ReplicaSet controllers must UPDATE (scale old
+      # RS to 0 during a Recreate rollout) and DELETE (revisionHistoryLimit
+      # garbage collection) the ReplicaSets a Deployment owns — as their own
+      # in-cluster identity, not the operator's or system:admin's. Without
+      # this, protecting replicasets here silently blocks every rollout of
+      # an operator-managed Deployment: spec changes never take effect and
+      # old ReplicaSets pile up ungarbage-collected.
+      expression: >-
+        request.resource.resource == 'replicasets' &&
+        request.userInfo.username in [
+          'system:serviceaccount:kube-system:replicaset-controller',
+          'system:serviceaccount:kube-system:deployment-controller'
+        ]
   validations:
-    - expression: "!variables.isOperatorManaged || variables.isOperator || variables.isAdminRestartingDeployment"
+    - expression: "!variables.isOperatorManaged || variables.isOperator || variables.isAdmin || variables.isReplicaSetController"
       reason: Forbidden
       message: "This resource is managed by the enzarb operator and cannot be modified or deleted directly."
 ---
