@@ -839,11 +839,14 @@ func (r *ProjectReconciler) buildDeployment(ns, name, saName, pvcName, orgSlug s
 		memLim = *project.Spec.Resources.Limits.Memory()
 	}
 
-	var nodeSelector map[string]string
+	nodeSelector := workspaceNodeSelector()
 	var tolerations []corev1.Toleration
 	gpuResources := corev1.ResourceList{}
 	if project.Spec.GPUEnabled {
-		nodeSelector = map[string]string{"nvidia.com/gpu.present": "true"}
+		if nodeSelector == nil {
+			nodeSelector = map[string]string{}
+		}
+		nodeSelector["nvidia.com/gpu.present"] = "true"
 		tolerations = []corev1.Toleration{{
 			Key:      "nvidia.com/gpu",
 			Operator: corev1.TolerationOpExists,
@@ -1468,6 +1471,36 @@ func workspaceImage() string {
 		return img
 	}
 	return "ghcr.io/enzarb/workspace:latest"
+}
+
+// workspaceNodeSelector returns the base nodeSelector applied to every
+// workspace pod, sourced from WORKSPACE_NODE_SELECTOR (set from the Helm
+// chart's workspace.nodeSelector value) as comma-separated key=value pairs,
+// e.g. "enzarb.io/avx2=true". Empty/unset means no constraint. This exists
+// because the workspace image bundles a Bun-compiled binary that segfaults
+// on CPUs without AVX2 — clusters with older nodes label the capable ones
+// and set this so workspace pods only land there.
+func workspaceNodeSelector() map[string]string {
+	raw := os.Getenv("WORKSPACE_NODE_SELECTOR")
+	if raw == "" {
+		return nil
+	}
+	selector := map[string]string{}
+	for _, pair := range strings.Split(raw, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(pair, "=")
+		if !ok {
+			continue
+		}
+		selector[strings.TrimSpace(k)] = strings.TrimSpace(v)
+	}
+	if len(selector) == 0 {
+		return nil
+	}
+	return selector
 }
 
 func int64Ptr(i int64) *int64 { return &i }

@@ -177,6 +177,14 @@ workspace:
     tag: "v0.98.6"
   # StorageClass for project home PVCs. Empty uses the cluster's default class.
   storageClass: ""
+  # nodeSelector applied to every workspace pod (merged with the GPU selector
+  # when a project has GPUEnabled). Empty means no constraint. The workspace
+  # image bundles a Bun-compiled binary (claude CLI) that segfaults on CPUs
+  # without AVX2, so clusters with older nodes should label the capable ones
+  # (e.g. `kubectl label node <name> enzarb.io/avx2=true`) and set:
+  #   nodeSelector:
+  #     enzarb.io/avx2: "true"
+  nodeSelector: {}
   # changelog is shown in the UI when a workspace update is pending. Set by CI
   # to the release notes for the current workspace image version.
   changelog: ""

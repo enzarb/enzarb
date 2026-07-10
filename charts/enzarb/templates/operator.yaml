@@ -45,6 +45,10 @@ spec:
             - name: WORKSPACE_STORAGE_CLASS
               value: {{ . | quote }}
             {{- end }}
+            {{- if .Values.workspace.nodeSelector }}
+            - name: WORKSPACE_NODE_SELECTOR
+              value: {{ $pairs := list }}{{ range $k, $v := .Values.workspace.nodeSelector }}{{ $pairs = append $pairs (printf "%s=%s" $k ($v | toString)) }}{{ end }}{{ join "," $pairs | quote }}
+            {{- end }}
             - name: ENZARB_DOMAIN
               value: {{ .Values.operator.env.ENZARB_DOMAIN | quote }}
             - name: BASE_DOMAIN
