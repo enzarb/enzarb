@@ -68,10 +68,13 @@
 
 	// Pretty key/value rows for the expanded Input section. Skip huge/blob
 	// values (they're rarely the point and blow up the card) and cap length.
+	// "command" is skipped here since it already has its own persistent
+	// tool-command block above (for execute-kind tools).
 	const MAX_VAL = 300;
 	const inputRows = $derived.by(() => {
 		if (!inputObj) return [];
 		return Object.entries(inputObj)
+			.filter(([k]) => k !== 'command')
 			.map(([k, v]) => {
 				if (v == null) return null;
 				let s = typeof v === 'string' ? v : JSON.stringify(v);
@@ -112,7 +115,7 @@
 			<span class="tool-chevron" class:open={expanded}>▸</span>
 		{/if}
 	</button>
-	{#if command && (status === 'pending' || status === 'running')}
+	{#if command}
 		<div class="tool-command"><code>{command}</code></div>
 	{/if}
 	{#if expanded}
