@@ -173,7 +173,7 @@
 			</div>
 		{/if}
 		<div class="project-content-wrap">
-			<div class="project-content" class:locked={project.status?.phase === 'Pending' || health?.state === 'unhealthy'} class:tiling={isTiling}>
+			<div class="project-content" class:locked={project.status?.phase === 'Pending' || (project.status?.phase !== 'Suspended' && health?.state === 'unhealthy')} class:tiling={isTiling}>
 				{@render children()}
 			</div>
 			{#if project.status?.phase === 'Pending'}
@@ -181,7 +181,7 @@
 					<div class="spinner"></div>
 					<p>Provisioning workspace…</p>
 				</div>
-			{:else if health?.state === 'unhealthy'}
+			{:else if project.status?.phase !== 'Suspended' && health?.state === 'unhealthy'}
 				<div class="provisioning-overlay">
 					<div class="spinner"></div>
 					<p>Workspace is restarting — reconnecting when it's back…</p>

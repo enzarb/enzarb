@@ -585,6 +585,8 @@ jobs:
             fi
 
             if [ -n "$WS_LOG" ]; then
+              RELEASED_AT=$(date -u +%Y-%m-%d)
+              WS_LOG=$(printf '%s (%s):\n%s' "$VERSION" "$RELEASED_AT" "$WS_LOG")
               # Read the existing changelogs map, add this version, keep 10 newest.
               EXISTING=$(yq '.workspace.changelogs // {}' charts/enzarb/values.yaml -o json)
               UPDATED=$(echo "$EXISTING" | jq --arg v "$VERSION" --arg log "$WS_LOG" \

@@ -735,10 +735,14 @@ func (r *ProjectReconciler) ensureDeployment(ctx context.Context, ns, saName, pv
 		return r.Update(ctx, deploy)
 	}
 
-	// Suspended projects have 0 replicas so no pods are running — the image
-	// update is always safe and should be applied immediately so the workspace
-	// is already up-to-date when the project is resumed.
-	if project.Spec.Suspended {
+	// A deployment currently scaled to 0 replicas has no pods running, so the
+	// image update is always safe — apply it immediately. This covers both the
+	// steady-state suspended case and the reconcile where Suspended just
+	// flipped true->false: the existing deployment (read above, before this
+	// reconcile's spec update) is still at 0 replicas, so checking processes
+	// via the (not-yet-running) agent would wrongly defer the update behind
+	// WorkspaceUpdatePending and leave a stale image after resume.
+	if deploy.Spec.Replicas != nil && *deploy.Spec.Replicas == 0 {
 		apimeta.RemoveStatusCondition(&project.Status.Conditions, "WorkspaceUpdatePending")
 		project.Status.RunningWorkspaceImage = desiredImage
 		deploy.Spec = desired.Spec
