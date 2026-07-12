@@ -78,6 +78,14 @@ func main() {
 
 	w := &Worker{db: pool, k8s: k8s, cfg: loadPlatformConfig(), http: &http.Client{Timeout: 30 * time.Second}}
 
+	if len(os.Args) > 1 && os.Args[1] == "backfill-owners" {
+		if err := w.backfillOwners(context.Background()); err != nil {
+			slog.Error("backfill owners", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Metrics polling loop: pod compute/storage plus Zot registry storage.
 	// Usage quantities are billed per the *actual* elapsed time since the
 	// previous tick (not a fixed 60s), since collection itself takes time
@@ -136,14 +144,99 @@ func (w *Worker) podOwner(ctx context.Context, ns string, pod *corev1.Pod) strin
 	}
 	ref := pod.OwnerReferences[0]
 	if ref.Kind != "ReplicaSet" {
-		return ref.Kind + "/" + ref.Name
+		return ref.Kind + "/" + stripHash(ref.Name, pod.Labels)
 	}
 	rs, err := w.k8s.AppsV1().ReplicaSets(ns).Get(ctx, ref.Name, metav1.GetOptions{})
-	if err != nil || len(rs.OwnerReferences) == 0 {
-		return "ReplicaSet/" + ref.Name
+	if err == nil && len(rs.OwnerReferences) > 0 {
+		parent := rs.OwnerReferences[0]
+		return parent.Kind + "/" + parent.Name
 	}
-	parent := rs.OwnerReferences[0]
-	return parent.Kind + "/" + parent.Name
+	// The RS lookup failed (already garbage-collected) or it has no owner
+	// ref of its own. Only the Deployment controller stamps a
+	// pod-template-hash label onto a ReplicaSet's pods, so its presence
+	// means this RS was Deployment-managed even though we can no longer
+	// read the Deployment's name off it directly; strip the hash suffix to
+	// recover the Deployment's name. A truly standalone ReplicaSet (no
+	// Deployment ever involved) carries no such label and its name is
+	// reported as-is.
+	if hash := pod.Labels["pod-template-hash"]; hash != "" {
+		return "Deployment/" + stripHash(ref.Name, pod.Labels)
+	}
+	return "ReplicaSet/" + ref.Name
+}
+
+// backfillOwners is a one-time data correction for usage_events rows written
+// before podOwner learned to resolve a ReplicaSet's true parent. It re-derives
+// each distinct "ReplicaSet/<name>" owner by looking the ReplicaSet up live in
+// the cluster (cluster-wide, since usage_events doesn't retain namespace) and
+// only rewrites it when that lookup gives a *confirmed* owner — never by
+// guessing from the name, since not every ReplicaSet is Deployment-owned.
+// Rows whose ReplicaSet has since been garbage-collected are left untouched:
+// there's no live source of truth left to confirm them against.
+func (w *Worker) backfillOwners(ctx context.Context) error {
+	rows, err := w.db.Query(ctx, `SELECT DISTINCT owner FROM usage_events WHERE owner LIKE 'ReplicaSet/%'`)
+	if err != nil {
+		return fmt.Errorf("query distinct owners: %w", err)
+	}
+	var owners []string
+	for rows.Next() {
+		var o string
+		if err := rows.Scan(&o); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan owner: %w", err)
+		}
+		owners = append(owners, o)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate owners: %w", err)
+	}
+
+	var updated, unresolved int
+	for _, owner := range owners {
+		name := strings.TrimPrefix(owner, "ReplicaSet/")
+		rsList, err := w.k8s.AppsV1().ReplicaSets(metav1.NamespaceAll).List(ctx, metav1.ListOptions{
+			FieldSelector: "metadata.name=" + name,
+		})
+		if err != nil {
+			slog.Warn("backfill: list replicasets", "name", name, "err", err)
+			unresolved++
+			continue
+		}
+		if len(rsList.Items) == 0 || len(rsList.Items[0].OwnerReferences) == 0 {
+			// Either already garbage-collected, or genuinely a standalone
+			// ReplicaSet — in both cases "ReplicaSet/<name>" is already the
+			// most accurate answer we can confirm.
+			unresolved++
+			continue
+		}
+		parent := rsList.Items[0].OwnerReferences[0]
+		newOwner := parent.Kind + "/" + parent.Name
+		if newOwner == owner {
+			continue
+		}
+		tag, err := w.db.Exec(ctx, `UPDATE usage_events SET owner = $1 WHERE owner = $2`, newOwner, owner)
+		if err != nil {
+			return fmt.Errorf("update owner %q -> %q: %w", owner, newOwner, err)
+		}
+		slog.Info("backfill: rewrote owner", "from", owner, "to", newOwner, "rows", tag.RowsAffected())
+		updated++
+	}
+	slog.Info("backfill owners done", "distinct_owners", len(owners), "updated", updated, "unresolved", unresolved)
+	return nil
+}
+
+// stripHash removes the trailing "-<hash>" segment that Kubernetes appends to
+// generated resource names, using the authoritative hash from the pod's labels
+// (pod-template-hash for ReplicaSets, controller-revision-hash for
+// StatefulSets). Names without a matching hash suffix are returned unchanged.
+func stripHash(name string, labels map[string]string) string {
+	for _, key := range []string{"pod-template-hash", "controller-revision-hash"} {
+		if h := labels[key]; h != "" && strings.HasSuffix(name, "-"+h) {
+			return strings.TrimSuffix(name, "-"+h)
+		}
+	}
+	return name
 }
 
 // collectMetrics reads pod resource usage from the metrics-server and writes
