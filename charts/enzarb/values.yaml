@@ -6,7 +6,7 @@ app:
   image:
     repository: ghcr.io/enzarb/app
     pullPolicy: IfNotPresent
-    tag: "v0.105.1"
+    tag: "v0.105.2"
   env:
     ORIGIN: https://enzarb.dev
   dbSecret:
@@ -42,7 +42,7 @@ operator:
   image:
     repository: ghcr.io/enzarb/operator
     pullPolicy: IfNotPresent
-    tag: "v0.102.0"
+    tag: "v0.105.2"
   leaderElection: true
   env:
     ENZARB_DOMAIN: enzarb.dev
