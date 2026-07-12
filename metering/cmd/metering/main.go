@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -193,6 +194,7 @@ func (w *Worker) backfillOwners(ctx context.Context) error {
 	}
 
 	var updated, unresolved int
+	var stillUnresolved []string
 	for _, owner := range owners {
 		name := strings.TrimPrefix(owner, "ReplicaSet/")
 		rsList, err := w.k8s.AppsV1().ReplicaSets(metav1.NamespaceAll).List(ctx, metav1.ListOptions{
@@ -201,13 +203,14 @@ func (w *Worker) backfillOwners(ctx context.Context) error {
 		if err != nil {
 			slog.Warn("backfill: list replicasets", "name", name, "err", err)
 			unresolved++
+			stillUnresolved = append(stillUnresolved, owner)
 			continue
 		}
 		if len(rsList.Items) == 0 || len(rsList.Items[0].OwnerReferences) == 0 {
 			// Either already garbage-collected, or genuinely a standalone
-			// ReplicaSet — in both cases "ReplicaSet/<name>" is already the
-			// most accurate answer we can confirm.
+			// ReplicaSet. The corroborated pass below may still resolve it.
 			unresolved++
+			stillUnresolved = append(stillUnresolved, owner)
 			continue
 		}
 		parent := rsList.Items[0].OwnerReferences[0]
@@ -222,8 +225,81 @@ func (w *Worker) backfillOwners(ctx context.Context) error {
 		slog.Info("backfill: rewrote owner", "from", owner, "to", newOwner, "rows", tag.RowsAffected())
 		updated++
 	}
-	slog.Info("backfill owners done", "distinct_owners", len(owners), "updated", updated, "unresolved", unresolved)
+
+	corroborated, err := w.backfillUnresolvedByCorroboration(ctx, stillUnresolved)
+	if err != nil {
+		return err
+	}
+	slog.Info("backfill owners done", "distinct_owners", len(owners), "updated", updated,
+		"corroborated", corroborated, "unresolved", unresolved-corroborated)
 	return nil
+}
+
+// backfillUnresolvedByCorroboration handles ReplicaSets that no longer exist
+// in the cluster (so podOwner/backfillOwners has no live source of truth to
+// confirm them against) by cross-referencing already-confirmed owners in the
+// same table. It strips the trailing pod-template-hash-shaped suffix from the
+// ReplicaSet name and, only when that exact base name matches an owner this
+// run (or a prior run) already confirmed live — e.g. "Deployment/krust-web"
+// — rewrites to it. This is corroboration against real evidence recorded
+// elsewhere in usage_events, not a guess: a row is only rewritten when
+// another row for the very same workload was independently verified against
+// the live cluster.
+func (w *Worker) backfillUnresolvedByCorroboration(ctx context.Context, unresolvedOwners []string) (int, error) {
+	if len(unresolvedOwners) == 0 {
+		return 0, nil
+	}
+
+	rows, err := w.db.Query(ctx, `SELECT DISTINCT owner FROM usage_events WHERE owner NOT LIKE 'ReplicaSet/%'`)
+	if err != nil {
+		return 0, fmt.Errorf("query confirmed owners: %w", err)
+	}
+	confirmedByName := map[string]string{}
+	for rows.Next() {
+		var o string
+		if err := rows.Scan(&o); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan confirmed owner: %w", err)
+		}
+		if i := strings.IndexByte(o, '/'); i > 0 {
+			confirmedByName[o[i+1:]] = o
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate confirmed owners: %w", err)
+	}
+
+	var corroborated int
+	for _, owner := range unresolvedOwners {
+		name := strings.TrimPrefix(owner, "ReplicaSet/")
+		base := stripHashSuffix(name)
+		if base == name {
+			continue
+		}
+		newOwner, ok := confirmedByName[base]
+		if !ok || newOwner == owner {
+			continue
+		}
+		tag, err := w.db.Exec(ctx, `UPDATE usage_events SET owner = $1 WHERE owner = $2`, newOwner, owner)
+		if err != nil {
+			return corroborated, fmt.Errorf("update owner %q -> %q: %w", owner, newOwner, err)
+		}
+		slog.Info("backfill: rewrote owner (corroborated)", "from", owner, "to", newOwner, "rows", tag.RowsAffected())
+		corroborated++
+	}
+	return corroborated, nil
+}
+
+// hashSuffixRE matches a trailing "-<hash>" segment shaped like the
+// lowercase-alphanumeric pod-template-hash Kubernetes appends to generated
+// ReplicaSet names (typically 8-10 chars, occasionally shorter).
+var hashSuffixRE = regexp.MustCompile(`-[a-z0-9]{6,10}$`)
+
+// stripHashSuffix removes a trailing pod-template-hash-shaped suffix from
+// name, if present. Returns name unchanged if it doesn't look like one.
+func stripHashSuffix(name string) string {
+	return hashSuffixRE.ReplaceAllString(name, "")
 }
 
 // stripHash removes the trailing "-<hash>" segment that Kubernetes appends to
