@@ -161,8 +161,8 @@
 					{#if confirmDelete === s.id}
 						<span class="confirm-row">
 							<span class="confirm-text">Delete?</span>
-							<button class="btn-danger-sm" onclick={() => archiveSession(s.id)}>Yes</button>
-							<button class="btn-ghost-sm" onclick={() => (confirmDelete = null)}>No</button>
+							<button class="btn btn-sm btn-danger-outline" onclick={() => archiveSession(s.id)}>Yes</button>
+							<button class="btn btn-sm btn-ghost" onclick={() => (confirmDelete = null)}>No</button>
 						</span>
 					{:else}
 						<button
@@ -193,7 +193,7 @@
 	.session-row:hover { background: var(--color-surface-2); }
 	.session-link { display: flex; align-items: center; gap: 0.6rem; padding: 0.6rem 0.9rem; flex: 1; text-decoration: none; color: var(--color-text); min-width: 0; }
 	.status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-text-muted); flex-shrink: 0; }
-	.status-dot.live { background: #3fb950; }
+	.status-dot.live { background: var(--color-success); }
 	.session-label { flex: 1; font-family: var(--font-mono); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 	.meta-badge { font-size: 10px; font-family: var(--font-mono); padding: 1px 5px; border-radius: 3px; background: var(--color-surface-2); color: var(--color-text-muted); border: 1px solid var(--color-border); flex-shrink: 0; cursor: help; }
 	.meta-pre { margin: 0; font-family: var(--font-mono); font-size: 12px; white-space: pre; }
@@ -204,7 +204,4 @@
 	.delete-btn:hover { color: var(--color-danger); }
 	.confirm-row { display: flex; align-items: center; gap: 0.4rem; padding: 0 0.6rem; flex-shrink: 0; }
 	.confirm-text { font-size: 12px; color: var(--color-text-muted); }
-	.btn-danger-sm { font-size: 12px; padding: 0.2rem 0.5rem; border-radius: 4px; border: 1px solid var(--color-danger); background: none; color: var(--color-danger); cursor: pointer; }
-	.btn-danger-sm:hover { background: var(--color-danger); color: #fff; }
-	.btn-ghost-sm { font-size: 12px; padding: 0.2rem 0.5rem; border-radius: 4px; border: 1px solid var(--color-border); background: none; color: var(--color-text-muted); cursor: pointer; }
 </style>

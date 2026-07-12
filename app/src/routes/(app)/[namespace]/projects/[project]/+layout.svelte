@@ -238,5 +238,4 @@
 	.update-banner-meta { font-size: 11px; color: var(--color-text-muted); font-family: var(--font-mono); }
 	.update-banner-error { font-size: 12px; color: var(--color-danger); margin-bottom: 0.25rem; }
 	.update-banner-actions { display: flex; flex-direction: column; gap: 0.4rem; flex-shrink: 0; }
-	.btn-sm { padding: 0.3rem 0.7rem; font-size: 12px; }
 </style>

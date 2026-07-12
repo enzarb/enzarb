@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { LeafPane, Tab } from './layout';
+	import { getProjectColor } from './layout';
 	import type { Component } from 'svelte';
 	import AgentPane from '$lib/agent/AgentPane.svelte';
 	import NewPaneDialog from './NewPaneDialog.svelte';
@@ -20,13 +21,17 @@
 	type CodeViewerComponent = Component<{ content: string; filename: string }>;
 	let CodeViewer: CodeViewerComponent | null = $state(null);
 
+	type ProjectRef = { namespace: string; project: string };
+
 	interface Props {
 		pane: LeafPane;
 		paneId: string;
 		regionKind: 'left' | 'right';
-		agentBase: string;
-		namespace: string;
-		project: string;
+		getAgentBase: (ns: string, proj: string) => string;
+		ensureAgentBase: (ns: string, proj: string) => Promise<string>;
+		global: boolean;
+		orgProjects?: Record<string, { slug: string; displayName: string }[]>;
+		defaultRef: ProjectRef | null;
 		onTabClose: (paneId: string, tabIndex: number) => void;
 		onTabSelect: (paneId: string, tabIndex: number) => void;
 		onSplit: (paneId: string, direction: 'h' | 'v', side: 'before' | 'after') => void;
@@ -38,7 +43,7 @@
 
 	type DropZone = 'top' | 'bottom' | 'left' | 'right' | 'center';
 
-	let { pane, paneId, regionKind, agentBase, namespace, project, onTabClose, onTabSelect, onSplit, onAddTab, onTabDragStart, onTabDrop, dragging }: Props = $props();
+	let { pane, paneId, regionKind, getAgentBase, ensureAgentBase, global, orgProjects, defaultRef, onTabClose, onTabSelect, onSplit, onAddTab, onTabDragStart, onTabDrop, dragging }: Props = $props();
 
 	let hoverZone = $state<DropZone | null>(null);
 	let el: HTMLDivElement | undefined = $state();
@@ -69,14 +74,16 @@
 
 	$effect(() => {
 		if (activeTab?.kind === 'file') {
-			loadFile(activeTab.id);
+			loadFile(activeTab);
 		}
 	});
 
-	async function loadFile(path: string) {
+	async function loadFile(tab: Tab) {
+		const path = tab.id;
+		const agentBase = getAgentBase(tab.namespace, tab.project);
 		fileContent = { type: 'loading' };
 		try {
-			const token = await getAgentAuthToken(namespace, project);
+			const token = await getAgentAuthToken(tab.namespace, tab.project);
 			if (!token) { fileContent = { type: 'error', message: 'Not authenticated.' }; return; }
 			const auth = { Authorization: `Bearer ${token}` };
 			const ext = path.split('.').pop()?.toLowerCase() ?? '';
@@ -163,11 +170,13 @@
 					class:active={i === pane.activeTab}
 					role="button"
 					tabindex="0"
-					title={tab.label ?? tab.id}
+					title={`${tab.label ?? tab.id} — ${tab.namespace}/${tab.project}`}
+					style="--project-color: {getProjectColor(tab.namespace, tab.project)}"
 					onclick={() => onTabSelect(paneId, i)}
 					onkeydown={(e) => e.key === 'Enter' && onTabSelect(paneId, i)}
 					onmousedown={() => onTabDragStart(paneId, i)}
 				>
+					<span class="tab-swatch" title={`${tab.namespace}/${tab.project}`}></span>
 					<span class="tab-icon">{tab.kind === 'terminal' ? '⌨' : tab.kind === 'agent' ? '◆' : '📄'}</span>
 					<span class="tab-name">{tab.label ?? tab.id}</span>
 					<button
@@ -196,14 +205,16 @@
 						></button>
 						<div class="add-menu-popover">
 							<NewPaneDialog
-								{agentBase}
-								{namespace}
-								{project}
+								{getAgentBase}
+								{ensureAgentBase}
+								{global}
+								{orgProjects}
+								{defaultRef}
 								{regionKind}
-								onOpenTerminal={(id, label) => handleAddTab({ kind: 'terminal', id, label })}
-								onOpenAgent={(id, label) => handleAddTab({ kind: 'agent', id, label })}
-								onCreateTerminal={(id, label) => handleAddTab({ kind: 'terminal', id, label })}
-								onCreateAgent={(id, label) => handleAddTab({ kind: 'agent', id, label })}
+								onOpenTerminal={(id, label, ns, proj) => handleAddTab({ kind: 'terminal', id, label, namespace: ns, project: proj })}
+								onOpenAgent={(id, label, ns, proj) => handleAddTab({ kind: 'agent', id, label, namespace: ns, project: proj })}
+								onCreateTerminal={(id, label, ns, proj) => handleAddTab({ kind: 'terminal', id, label, namespace: ns, project: proj })}
+								onCreateAgent={(id, label, ns, proj) => handleAddTab({ kind: 'agent', id, label, namespace: ns, project: proj })}
 							/>
 						</div>
 					{/if}
@@ -231,14 +242,16 @@
 			</div>
 		{:else if pane.tabs.length === 0}
 			<NewPaneDialog
-				{agentBase}
-				{namespace}
-				{project}
+				{getAgentBase}
+				{ensureAgentBase}
+				{global}
+				{orgProjects}
+				{defaultRef}
 				{regionKind}
-				onOpenTerminal={(id, label) => handleAddTab({ kind: 'terminal', id, label })}
-				onOpenAgent={(id, label) => handleAddTab({ kind: 'agent', id, label })}
-				onCreateTerminal={(id, label) => handleAddTab({ kind: 'terminal', id, label })}
-				onCreateAgent={(id, label) => handleAddTab({ kind: 'agent', id, label })}
+				onOpenTerminal={(id, label, ns, proj) => handleAddTab({ kind: 'terminal', id, label, namespace: ns, project: proj })}
+				onOpenAgent={(id, label, ns, proj) => handleAddTab({ kind: 'agent', id, label, namespace: ns, project: proj })}
+				onCreateTerminal={(id, label, ns, proj) => handleAddTab({ kind: 'terminal', id, label, namespace: ns, project: proj })}
+				onCreateAgent={(id, label, ns, proj) => handleAddTab({ kind: 'agent', id, label, namespace: ns, project: proj })}
 			/>
 		{:else if activeTab}
 			<!--
@@ -252,10 +265,10 @@
 					<div class="tab-content" class:hidden={tab !== activeTab}>
 						{#if tab.kind === 'terminal'}
 							{#if TerminalPane}
-								<TerminalPane {agentBase} {namespace} {project} processId={tab.id} />
+								<TerminalPane agentBase={getAgentBase(tab.namespace, tab.project)} namespace={tab.namespace} project={tab.project} processId={tab.id} />
 							{/if}
 						{:else}
-							<AgentPane {agentBase} {namespace} {project} sessionId={tab.id} />
+							<AgentPane agentBase={getAgentBase(tab.namespace, tab.project)} namespace={tab.namespace} project={tab.project} sessionId={tab.id} />
 						{/if}
 					</div>
 				{/if}
@@ -267,7 +280,7 @@
 					{:else if fileContent.type === 'error'}
 						<p class="file-msg err">{fileContent.message}</p>
 					{:else if fileContent.type === 'binary'}
-						<p class="file-msg">Binary file — <a href="{agentBase}/files/download?path={encodeURIComponent(activeTab.id)}" target="_blank">download</a></p>
+						<p class="file-msg">Binary file — <a href="{getAgentBase(activeTab.namespace, activeTab.project)}/files/download?path={encodeURIComponent(activeTab.id)}" target="_blank">download</a></p>
 					{:else if fileContent.type === 'image'}
 						<div class="image-container">
 							<img src={fileContent.dataUrl} alt={activeTab.label ?? activeTab.id} />
@@ -297,9 +310,10 @@
 	.tiling-pane { display: flex; flex-direction: column; flex: 1 1 auto; width: 100%; height: 100%; overflow: hidden; position: relative; min-width: 0; min-height: 0; }
 	.tab-bar { display: flex; align-items: stretch; border-bottom: 1px solid var(--color-border); background: var(--color-surface-2); flex-shrink: 0; }
 	.tabs { flex: 1; display: flex; align-items: stretch; overflow-x: auto; }
-	.tab { display: flex; align-items: center; gap: 0.3rem; padding: 0 0.4rem 0 0.6rem; border: none; border-right: 1px solid var(--color-border); background: none; color: var(--color-text-muted); font-size: 12px; cursor: pointer; white-space: nowrap; user-select: none; }
+	.tab { display: flex; align-items: center; gap: 0.3rem; padding: 0 0.4rem 0 0.5rem; border: none; border-right: 1px solid var(--color-border); border-left: 3px solid var(--project-color, transparent); background: none; color: var(--color-text-muted); font-size: 12px; cursor: pointer; white-space: nowrap; user-select: none; }
 	.tab:hover { background: var(--color-surface); color: var(--color-text); }
-	.tab.active { background: var(--color-surface); color: var(--color-text); box-shadow: inset 0 2px 0 var(--color-accent); }
+	.tab.active { background: var(--color-surface); color: var(--color-text); box-shadow: inset 0 2px 0 var(--project-color, var(--color-accent)); }
+	.tab-swatch { width: 7px; height: 7px; border-radius: 50%; background: var(--project-color, var(--color-text-muted)); flex-shrink: 0; }
 	.tab-icon { font-size: 10px; flex-shrink: 0; }
 	.tab-name { overflow: hidden; text-overflow: ellipsis; max-width: 140px; font-family: var(--font-mono); }
 	.tab-close { background: none; border: none; color: var(--color-text-muted); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 0.1rem; border-radius: 3px; }

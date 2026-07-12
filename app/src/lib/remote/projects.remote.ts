@@ -70,6 +70,40 @@ export const getProject = query(z.string().optional(), async (slug) => {
 	return project;
 });
 
+// Like getProject, but resolves the org from an explicit namespace rather than
+// the route param. The global (cross-project) tiling route has no [namespace]
+// param, so it must name the org for every project it resolves.
+export const getProjectByRef = query(
+	z.object({ namespace: z.string(), project: z.string() }),
+	async ({ namespace, project: slug }) => {
+		const org = resolveOrg(namespace);
+		const project = (await k8sGetProject(org.id, slug)) as any;
+		if (!project) error(404, 'Project not found');
+		return project;
+	}
+);
+
+// Every org the caller belongs to mapped to its (non-deleted) projects. Powers
+// the global tiling view's project picker, which spans all orgs at once. The
+// key is the org slug (== the project's namespace for agent-token minting).
+export const getAllOrgProjects = query(async () => {
+	const session = requireSession();
+	return Object.fromEntries(
+		await Promise.all(
+			session.orgs.map(async (org) => {
+				const all = await listProjects(org.id);
+				const projects = all
+					.filter((p: any) => !purgeAfterOf(p))
+					.map((p: any) => ({
+						slug: p.metadata?.name as string,
+						displayName: (p.spec?.displayName ?? p.metadata?.name) as string
+					}));
+				return [org.slug, projects] as const;
+			})
+		)
+	);
+});
+
 export const getOrgTierInfo = query(async () => {
 	const org = resolveOrg();
 	const tier = await getOrgTierValue(org.id);

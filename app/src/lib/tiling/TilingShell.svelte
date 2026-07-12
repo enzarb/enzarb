@@ -1,21 +1,80 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import type { TilingLayout, PaneNode, Tab, LeafPane } from './layout';
-	import { loadLayout, saveLayout, collectTabs, mapPaneLeaves, removeTabs, countLeaves } from './layout';
+	import {
+		loadLayout,
+		saveLayout,
+		loadGlobalLayout,
+		saveGlobalLayout,
+		stampTabs,
+		collectTabs,
+		mapPaneLeaves,
+		filterTabs,
+		countLeaves
+	} from './layout';
 	import TilingRegion from './TilingRegion.svelte';
 	import TilingSplitHandle from './TilingSplitHandle.svelte';
 	import FileSidebar from './FileSidebar.svelte';
 	import { getAgentAuthToken } from '$lib/agentToken';
-	import { getProject } from '$lib/remote/projects.remote';
+	import { getProjectByRef } from '$lib/remote/projects.remote';
+
+	type ProjectRef = { namespace: string; project: string };
 
 	interface Props {
-		namespace: string;
-		project: string;
+		/** Seed project for single-project mode; omitted in global mode. */
+		namespace?: string;
+		project?: string;
+		/** Cross-project mode: tabs from any project, persisted per-user. */
+		global?: boolean;
+		/** org slug -> projects, for the new-pane project picker (global mode). */
+		orgProjects?: Record<string, { slug: string; displayName: string }[]>;
 	}
 
-	let { namespace, project }: Props = $props();
+	let { namespace, project, global = false, orgProjects }: Props = $props();
 
-	let agentBase = $state('');
+	// Resolved agentBase per project, keyed "ns/proj". Each tab resolves its own
+	// agentBase from this map via getAgentBase(); ensureAgentBase() populates it.
+	let projectAgentBases = $state<Record<string, string>>({});
+	// In-flight/settled project fetches, deduped so distinct projects are fetched
+	// once regardless of how many tabs reference them. Not reactive.
+	const projectFetches = new Map<string, Promise<string>>();
+
+	// The project whose files the left-region browser shows. Single-project mode
+	// pins it to the seed project; global mode defaults to the first project it
+	// finds and can be switched by the user.
+	let fileBrowserRef = $state<ProjectRef | null>(
+		untrack(() => (!global && namespace && project ? { namespace, project } : null))
+	);
+
+	function refKey(ns: string, proj: string) {
+		return `${ns}/${proj}`;
+	}
+
+	function getAgentBase(ns: string, proj: string): string {
+		return projectAgentBases[refKey(ns, proj)] ?? '';
+	}
+
+	// Fetch (once) the project object and derive its agentBase from status.agentPath.
+	async function ensureAgentBase(ns: string, proj: string): Promise<string> {
+		const key = refKey(ns, proj);
+		const existing = projectFetches.get(key);
+		if (existing) return existing;
+		const p = getProjectByRef({ namespace: ns, project: proj })
+			.then((proj2: any) => {
+				const path = proj2?.status?.agentPath;
+				const base = path ? `https://enzarb.dev${path}` : '';
+				if (base) projectAgentBases = { ...projectAgentBases, [key]: base };
+				return base;
+			})
+			.catch(() => '');
+		projectFetches.set(key, p);
+		return p;
+	}
+
+	const fileBrowserAgentBase = $derived(
+		fileBrowserRef ? getAgentBase(fileBrowserRef.namespace, fileBrowserRef.project) : ''
+	);
+
 	let layout = $state<TilingLayout | null>(null);
 	let restorationBanner = $state('');
 	let bannerDismissed = $state(false);
@@ -98,40 +157,75 @@
 	});
 
 	async function initTilingShell() {
-		try {
-			const proj = await getProject(project);
-			const path = proj?.status?.agentPath;
-			if (path) agentBase = `https://enzarb.dev${path}`;
-		} catch {}
+		// Load the layout for this mode. Legacy project layouts predate the
+		// per-tab namespace/project fields, so stamp them with the seed project.
+		let raw: TilingLayout;
+		if (global) {
+			raw = loadGlobalLayout();
+		} else {
+			raw = loadLayout(namespace!, project!);
+			raw.left.panes = stampTabs(raw.left.panes, namespace!, project!);
+			raw.right.panes = stampTabs(raw.right.panes, namespace!, project!);
+		}
 
-		// Load and validate layout
-		const raw = loadLayout(namespace, project);
+		// Distinct projects referenced by the layout (plus the seed project so its
+		// file browser works even with no tabs open yet).
+		const allTabs = [...collectTabs(raw.left.panes), ...collectTabs(raw.right.panes)];
+		const projectSet = new Map<string, ProjectRef>();
+		for (const t of allTabs) {
+			if (t.namespace && t.project) projectSet.set(refKey(t.namespace, t.project), { namespace: t.namespace, project: t.project });
+		}
+		if (!global && namespace && project) projectSet.set(refKey(namespace, project), { namespace, project });
 
-		// Validate tabs against live resources
-		let dropped = 0;
-		if (agentBase) {
-			const token = await getAgentAuthToken(namespace, project);
-			if (token) {
+		// In global mode, default the file browser to the first project we know of.
+		if (!fileBrowserRef) {
+			const first = projectSet.values().next().value as ProjectRef | undefined;
+			if (first) fileBrowserRef = first;
+			else if (orgProjects) {
+				for (const [ns, projects] of Object.entries(orgProjects)) {
+					if (projects.length > 0) { fileBrowserRef = { namespace: ns, project: projects[0].slug }; break; }
+				}
+			}
+		}
+
+		// Resolve agentBase for every distinct project up front.
+		await Promise.all([...projectSet.values()].map((r) => ensureAgentBase(r.namespace, r.project)));
+
+		// Validate terminal/agent tabs against each project's live resources. Ids
+		// are only unique within a project, so validity is judged per project. A
+		// project we couldn't reach keeps its tabs (no live set to compare against).
+		const validByProject = new Map<string, Set<string>>();
+		await Promise.all(
+			[...projectSet.values()].map(async (r) => {
+				const base = getAgentBase(r.namespace, r.project);
+				if (!base) return;
+				const token = await getAgentAuthToken(r.namespace, r.project);
+				if (!token) return;
 				const auth = { Authorization: `Bearer ${token}` };
 				try {
 					const [procs, sessions] = await Promise.all([
-						fetch(`${agentBase}/processes`, { headers: auth }).then(r => r.ok ? r.json() : []),
-						fetch(`${agentBase}/agent/sessions`, { headers: auth }).then(r => r.ok ? r.json() : [])
+						fetch(`${base}/processes`, { headers: auth }).then((res) => (res.ok ? res.json() : [])),
+						fetch(`${base}/agent/sessions`, { headers: auth }).then((res) => (res.ok ? res.json() : []))
 					]);
-					const validIds = new Set([
-						...procs.map((p: any) => p.id),
-						...sessions.map((s: any) => s.id)
-					]);
-					const allTabs = [...collectTabs(raw.left.panes), ...collectTabs(raw.right.panes)];
-					const deadIds = new Set(allTabs.filter(t => (t.kind === 'terminal' || t.kind === 'agent') && !validIds.has(t.id)).map(t => t.id));
-					dropped = deadIds.size;
-					if (dropped > 0) {
-						raw.left.panes = removeTabs(raw.left.panes, deadIds);
-						raw.right.panes = removeTabs(raw.right.panes, deadIds);
-					}
+					validByProject.set(
+						refKey(r.namespace, r.project),
+						new Set([...procs.map((p: any) => p.id), ...sessions.map((s: any) => s.id)])
+					);
 				} catch {}
-			}
-		}
+			})
+		);
+
+		let dropped = 0;
+		const keep = (t: Tab) => {
+			if (t.kind !== 'terminal' && t.kind !== 'agent') return true;
+			const valid = validByProject.get(refKey(t.namespace, t.project));
+			if (!valid) return true; // project unreachable — keep, don't discard
+			const ok = valid.has(t.id);
+			if (!ok) dropped++;
+			return ok;
+		};
+		raw.left.panes = filterTabs(raw.left.panes, keep);
+		raw.right.panes = filterTabs(raw.right.panes, keep);
 
 		// Assign IDs to all pane leaves
 		raw.left.panes = assignIds(raw.left.panes);
@@ -145,7 +239,8 @@
 
 	function save() {
 		if (!layout) return;
-		saveLayout(namespace, project, layout);
+		if (global) saveGlobalLayout(layout);
+		else saveLayout(namespace!, project!, layout);
 	}
 
 	function handleTabClose(region: 'left' | 'right', paneId: string, tabIndex: number) {
@@ -183,7 +278,7 @@
 	function handleAddTab(region: 'left' | 'right', paneId: string, tab: Tab) {
 		if (!layout) return;
 		layout[region].panes = updateLeaf(layout[region].panes, paneId, (leaf) => {
-			const existingIndex = leaf.tabs.findIndex((t) => t.kind === tab.kind && t.id === tab.id);
+			const existingIndex = leaf.tabs.findIndex((t) => t.kind === tab.kind && t.id === tab.id && t.namespace === tab.namespace && t.project === tab.project);
 			if (existingIndex !== -1) {
 				return { ...leaf, activeTab: existingIndex };
 			}
@@ -221,7 +316,7 @@
 		if (zone === 'center') {
 			// Move to target pane
 			layout[region].panes = updateLeaf(layout[region].panes, targetPaneId, (leaf) => {
-				const existingIndex = leaf.tabs.findIndex((t) => t.kind === tab.kind && t.id === tab.id);
+				const existingIndex = leaf.tabs.findIndex((t) => t.kind === tab.kind && t.id === tab.id && t.namespace === tab.namespace && t.project === tab.project);
 				if (existingIndex !== -1) {
 					return { ...leaf, activeTab: existingIndex };
 				}
@@ -298,18 +393,22 @@
 	}
 
 	function openFileInLeft(path: string, label: string) {
-		if (!layout) return;
+		if (!layout || !fileBrowserRef) return;
+		const ns = fileBrowserRef.namespace;
+		const proj = fileBrowserRef.project;
 		// Find first leaf in left region
 		const firstLeaf = findFirstLeaf(layout.left.panes);
 		if (!firstLeaf) return;
 		const leafId = getLeafId(firstLeaf);
-		// Check if already open
-		const existing = firstLeaf.tabs.findIndex(t => t.kind === 'file' && t.id === path);
+		// Check if already open (same file, same project)
+		const existing = firstLeaf.tabs.findIndex(
+			(t) => t.kind === 'file' && t.id === path && t.namespace === ns && t.project === proj
+		);
 		if (existing >= 0) {
 			handleTabSelect('left', leafId, existing);
 			return;
 		}
-		handleAddTab('left', leafId, { kind: 'file', id: path, label });
+		handleAddTab('left', leafId, { kind: 'file', id: path, label, namespace: ns, project: proj });
 	}
 
 	function findFirstLeaf(node: PaneNode): LeafPane | null {
@@ -351,9 +450,15 @@
 					<!-- File sidebar -->
 					<div class="sidebar-wrap" style="width: {sidebarCollapsed ? '28px' : sidebarWidth}; flex-shrink: 0;">
 						<FileSidebar
-							{agentBase}
-							{namespace}
-							{project}
+							agentBase={fileBrowserAgentBase}
+							namespace={fileBrowserRef?.namespace ?? ''}
+							project={fileBrowserRef?.project ?? ''}
+							{global}
+							{orgProjects}
+							onSelectProject={(ns, proj) => {
+								fileBrowserRef = { namespace: ns, project: proj };
+								ensureAgentBase(ns, proj);
+							}}
 							collapsed={sidebarCollapsed}
 							onToggleCollapse={toggleSidebar}
 							onOpenFile={openFileInLeft}
@@ -370,9 +475,11 @@
 								node={layout.left.panes}
 								nodeId="left"
 								regionKind="left"
-								{agentBase}
-								{namespace}
-								{project}
+								{getAgentBase}
+								{ensureAgentBase}
+								{global}
+								{orgProjects}
+								defaultRef={fileBrowserRef}
 								{dragging}
 								{dragSource}
 								onUpdate={() => {}}
@@ -405,9 +512,11 @@
 					node={layout.right.panes}
 					nodeId="right"
 					regionKind="right"
-					{agentBase}
-					{namespace}
-					{project}
+					{getAgentBase}
+					{ensureAgentBase}
+					{global}
+					{orgProjects}
+					defaultRef={!global && namespace && project ? { namespace, project } : fileBrowserRef}
 					{dragging}
 					{dragSource}
 					onUpdate={() => {}}

@@ -462,7 +462,6 @@
 	/* Environments section */
 	.env-section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
 	.env-section-header .card-label { margin-bottom: 0; }
-	.btn-subtle { background: none; border-color: transparent; color: var(--color-text-muted); }
 	.btn-subtle:hover { border-color: var(--color-border); color: var(--color-text); }
 	.empty-envs { margin: 0; }
 	.new-env-form { border-top: 1px solid var(--color-border); padding-top: 0.75rem; margin-bottom: 0.75rem; }
@@ -513,7 +512,7 @@
 	.domain-instructions { display: flex; flex-direction: column; gap: 0.2rem; padding: 0.4rem 0.5rem; margin: -0.1rem 0 0.2rem; background: var(--color-bg-subtle, rgba(127,127,127,0.08)); border-radius: 4px; font-size: 11px; }
 	.recheck-feedback { font-size: 11px; padding-left: 0.5rem; }
 	.recheck-feedback.ok { color: var(--color-success, #2a9d5c); }
-	.recheck-feedback.err { color: var(--color-danger, #c0392b); }
+	.recheck-feedback.err { color: var(--color-danger); }
 	.txt-record { display: flex; align-items: center; gap: 0.4rem; }
 	.txt-label { font-weight: 500; color: var(--color-text-muted); min-width: 3.2rem; }
 	.txt-record code { overflow-x: auto; white-space: nowrap; }

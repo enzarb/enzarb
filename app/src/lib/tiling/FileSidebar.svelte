@@ -1,17 +1,33 @@
 <script lang="ts">
 	import { getAgentAuthToken } from '$lib/agentToken';
+	import { getProjectColor } from './layout';
 	import FileTreeNode from './FileTreeNode.svelte';
 
 	interface Props {
 		agentBase: string;
 		namespace: string;
 		project: string;
+		/** Global (cross-project) mode shows a project selector for the browser. */
+		global?: boolean;
+		orgProjects?: Record<string, { slug: string; displayName: string }[]>;
+		onSelectProject?: (namespace: string, project: string) => void;
 		collapsed: boolean;
 		onToggleCollapse: () => void;
 		onOpenFile: (path: string, label: string) => void;
 	}
 
-	let { agentBase, namespace, project, collapsed, onToggleCollapse, onOpenFile }: Props = $props();
+	let { agentBase, namespace, project, global = false, orgProjects, onSelectProject, collapsed, onToggleCollapse, onOpenFile }: Props = $props();
+
+	const projectOptions = $derived(
+		Object.entries(orgProjects ?? {}).flatMap(([ns, projects]) =>
+			projects.map((p) => ({ namespace: ns, project: p.slug, displayName: p.displayName }))
+		)
+	);
+
+	function pickProject(value: string) {
+		const [ns, ...rest] = value.split('/');
+		onSelectProject?.(ns, rest.join('/'));
+	}
 
 	type GitEntry = { path: string; index: string; worktree: string };
 	type FileEntry = { name: string; path: string; kind: string };
@@ -79,9 +95,25 @@
 		</button>
 	</div>
 
+	{#if !collapsed && global && projectOptions.length > 0}
+		<label class="project-select-row">
+			{#if project}
+				<span class="project-swatch" style="background: {getProjectColor(namespace, project)}"></span>
+			{/if}
+			<select value={project ? `${namespace}/${project}` : ''} onchange={(e) => pickProject(e.currentTarget.value)}>
+				{#if !project}<option value="" disabled>Choose a project…</option>{/if}
+				{#each projectOptions as opt}
+					<option value="{opt.namespace}/{opt.project}">{opt.namespace} / {opt.displayName}</option>
+				{/each}
+			</select>
+		</label>
+	{/if}
+
 	{#if !collapsed}
 		<div class="tree-scroll">
-			{#if loading}
+			{#if !agentBase}
+				<p class="muted">Select a project to browse files.</p>
+			{:else if loading}
 				<p class="muted">Loading…</p>
 			{:else if err}
 				<p class="err">{err}</p>
@@ -114,6 +146,9 @@
 	.sidebar-action:hover { color: var(--color-text); background: var(--color-surface); }
 	.collapse-btn { background: none; border: none; color: var(--color-text-muted); cursor: pointer; font-size: 14px; padding: 0.1rem 0.25rem; border-radius: 3px; flex-shrink: 0; line-height: 1; }
 	.collapse-btn:hover { color: var(--color-text); background: var(--color-surface); }
+	.project-select-row { display: flex; align-items: center; gap: 0.35rem; padding: 0.35rem 0.4rem; border-bottom: 1px solid var(--color-border); flex-shrink: 0; }
+	.project-select-row select { flex: 1; font-size: 12px; padding: 0.2rem 0.3rem; }
+	.project-swatch { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
 	.tree-scroll { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 0.25rem 0; }
 	.muted { color: var(--color-text-muted); font-size: 12px; padding: 0.5rem 0.75rem; }
 	.err { color: var(--color-danger); font-size: 12px; padding: 0.5rem 0.75rem; }

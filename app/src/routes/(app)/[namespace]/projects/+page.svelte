@@ -109,7 +109,6 @@
 	/* Overflow dropdown (project list options) */
 	.dropdown { position: relative; }
 	.dropdown-trigger { padding: 0.4rem 0.65rem; font-size: 15px; line-height: 1; }
-	.btn-subtle { background: none; border-color: var(--color-border); color: var(--color-text-muted); }
 	.btn-subtle:hover { color: var(--color-text); }
 	.dropdown-menu {
 		display: none;

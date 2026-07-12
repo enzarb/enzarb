@@ -239,7 +239,7 @@
 						<input type="file" bind:this={uploadInput} onchange={(e) => upload(e, data.agentBase, data.path)} class="hidden" />
 						<button class="btn" onclick={() => uploadInput?.click()}>Upload</button>
 					{:else if data.type === 'file' || data.type === 'image'}
-						<button class="btn-sm" onclick={() => download(data.agentBase, data.path, data.name)}>Download</button>
+						<button class="btn btn-sm" onclick={() => download(data.agentBase, data.path, data.name)}>Download</button>
 					{/if}
 				</div>
 			</div>
@@ -292,7 +292,7 @@
 								<td class="muted">{fmtDate(f.modified)}</td>
 								<td>
 									{#if f.kind === 'file'}
-										<button class="btn-sm" onclick={() => download(data.agentBase, f.path, f.name)}>Download</button>
+										<button class="btn btn-sm" onclick={() => download(data.agentBase, f.path, f.name)}>Download</button>
 									{/if}
 								</td>
 							</tr>
@@ -386,7 +386,6 @@
 	.entry-btn.git-untracked { color: var(--color-text-muted); }
 
 	.icon { font-size: 14px; }
-	.btn-sm { padding: 0.2rem 0.5rem; border: 1px solid var(--color-border); border-radius: 4px; background: none; color: var(--color-text); font-size: 12px; cursor: pointer; }
 	.link-btn { background: none; border: none; color: var(--color-text); cursor: pointer; padding: 0; font-size: 13px; text-decoration: underline; }
 	.muted { color: var(--color-text-muted); font-size: 13px; }
 	.empty { text-align: center; padding: 2rem 0; }
@@ -491,6 +490,6 @@
 		resize: vertical;
 		margin-bottom: 0.75rem;
 	}
-	.commit-error { margin: 0 0 0.75rem; font-size: 12px; color: var(--color-danger, #c0392b); white-space: pre-wrap; }
+	.commit-error { margin: 0 0 0.75rem; font-size: 12px; color: var(--color-danger); white-space: pre-wrap; }
 	.dialog-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
 </style>

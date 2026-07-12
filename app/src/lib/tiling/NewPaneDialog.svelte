@@ -1,25 +1,31 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { getAgentAuthToken } from '$lib/agentToken';
-	import { loadLastCwd, saveLastCwd } from '$lib/tiling/layout';
+	import { loadLastCwd, saveLastCwd, getProjectColor } from '$lib/tiling/layout';
+
+	type ProjectRef = { namespace: string; project: string };
 
 	interface Props {
-		agentBase: string;
-		namespace: string;
-		project: string;
 		regionKind: 'left' | 'right';
-		onOpenFile?: (path: string, label: string) => void;
-		onOpenTerminal?: (processId: string, label: string) => void;
-		onOpenAgent?: (sessionId: string, label: string) => void;
-		onCreateTerminal?: (processId: string, label: string) => void;
-		onCreateAgent?: (sessionId: string, label: string) => void;
+		getAgentBase: (ns: string, proj: string) => string;
+		ensureAgentBase: (ns: string, proj: string) => Promise<string>;
+		global: boolean;
+		orgProjects?: Record<string, { slug: string; displayName: string }[]>;
+		defaultRef: ProjectRef | null;
+		onOpenFile?: (path: string, label: string, namespace: string, project: string) => void;
+		onOpenTerminal?: (processId: string, label: string, namespace: string, project: string) => void;
+		onOpenAgent?: (sessionId: string, label: string, namespace: string, project: string) => void;
+		onCreateTerminal?: (processId: string, label: string, namespace: string, project: string) => void;
+		onCreateAgent?: (sessionId: string, label: string, namespace: string, project: string) => void;
 	}
 
 	let {
-		agentBase,
-		namespace,
-		project,
 		regionKind,
+		getAgentBase,
+		ensureAgentBase,
+		global,
+		orgProjects,
+		defaultRef,
 		onOpenTerminal,
 		onOpenAgent,
 		onCreateTerminal,
@@ -27,6 +33,20 @@
 	}: Props = $props();
 
 	type PaneType = 'terminal' | 'agent';
+
+	// The project this new pane targets. Global mode lets the user pick any
+	// project; single-project mode pins it to the seed project (defaultRef).
+	let selectedRef = $state<ProjectRef | null>(untrack(() => defaultRef));
+	// A flat list of every org/project for the picker.
+	const projectOptions = $derived(
+		Object.entries(orgProjects ?? {}).flatMap(([ns, projects]) =>
+			projects.map((p) => ({ namespace: ns, project: p.slug, displayName: p.displayName }))
+		)
+	);
+	// Show the picker whenever we have a list to choose from (global mode).
+	const showPicker = $derived(projectOptions.length > 0);
+
+	const agentBase = $derived(selectedRef ? getAgentBase(selectedRef.namespace, selectedRef.project) : '');
 
 	let selectedType = $state<PaneType>('terminal');
 	let processes: any[] = $state([]);
@@ -38,16 +58,34 @@
 	let newCmd = $state('bash');
 	let newName = $state('');
 	let newKind: 'one-shot' | 'persistent' = $state('persistent');
-	let newCwd = $state(untrack(() => loadLastCwd(namespace, project)));
+	let newCwd = $state(untrack(() => (defaultRef ? loadLastCwd(defaultRef.namespace, defaultRef.project) : '')));
 	let creating = $state(false);
 	let createErr = $state('');
 	let workspacePaths: { home_dir: string; project_dir: string | null } | null = $state(null);
 
+	// Resolve the selected project's agentBase (may not be cached yet in global mode).
+	$effect(() => {
+		if (selectedRef) ensureAgentBase(selectedRef.namespace, selectedRef.project);
+	});
+
+	function pickProject(value: string) {
+		const [ns, ...rest] = value.split('/');
+		const proj = rest.join('/');
+		selectedRef = { namespace: ns, project: proj };
+		// Reset per-project state so nothing leaks across projects.
+		workspacePaths = null;
+		processes = [];
+		sessions = [];
+		newCwd = loadLastCwd(ns, proj);
+	}
+
 	async function load() {
+		if (!selectedRef || !agentBase) return;
+		const ref = selectedRef;
 		loading = true;
 		err = '';
 		try {
-			const token = await getAgentAuthToken(namespace, project);
+			const token = await getAgentAuthToken(ref.namespace, ref.project);
 			if (!token) { err = 'Not authenticated.'; return; }
 			const auth = { Authorization: `Bearer ${token}` };
 			if (!workspacePaths) {
@@ -74,10 +112,12 @@
 	});
 
 	async function createTerminal() {
+		if (!selectedRef) return;
+		const ref = selectedRef;
 		createErr = '';
 		creating = true;
 		try {
-			const token = await getAgentAuthToken(namespace, project);
+			const token = await getAgentAuthToken(ref.namespace, ref.project);
 			if (!token) { createErr = 'Not authenticated.'; return; }
 			const parts = newCmd.trim().split(/\s+/);
 			if (!parts[0]) { createErr = 'Enter a command.'; return; }
@@ -89,8 +129,8 @@
 			});
 			if (!res.ok) { createErr = `Failed (${res.status})`; return; }
 			const p = await res.json();
-			saveLastCwd(namespace, project, newCwd);
-			onCreateTerminal?.(p.id, p.name || newCmd.trim());
+			saveLastCwd(ref.namespace, ref.project, newCwd);
+			onCreateTerminal?.(p.id, p.name || newCmd.trim(), ref.namespace, ref.project);
 		} catch {
 			createErr = 'Could not reach the workspace agent.';
 		} finally {
@@ -99,10 +139,12 @@
 	}
 
 	async function createAgent() {
+		if (!selectedRef) return;
+		const ref = selectedRef;
 		createErr = '';
 		creating = true;
 		try {
-			const token = await getAgentAuthToken(namespace, project);
+			const token = await getAgentAuthToken(ref.namespace, ref.project);
 			if (!token) { createErr = 'Not authenticated.'; return; }
 			const res = await fetch(`${agentBase}/agent/sessions`, {
 				method: 'POST',
@@ -111,8 +153,8 @@
 			});
 			if (!res.ok) { createErr = `Failed (${res.status})`; return; }
 			const s = await res.json();
-			saveLastCwd(namespace, project, newCwd);
-			onCreateAgent?.(s.id, s.label || 'Agent session');
+			saveLastCwd(ref.namespace, ref.project, newCwd);
+			onCreateAgent?.(s.id, s.label || 'Agent session', ref.namespace, ref.project);
 		} catch {
 			createErr = 'Could not reach the workspace agent.';
 		} finally {
@@ -141,6 +183,29 @@
 {/snippet}
 
 <div class="new-pane-dialog">
+	{#if showPicker}
+		<label class="field project-picker">
+			<span>Project</span>
+			<div class="picker-row">
+				{#if selectedRef}
+					<span class="project-swatch" style="background: {getProjectColor(selectedRef.namespace, selectedRef.project)}"></span>
+				{/if}
+				<select
+					value={selectedRef ? `${selectedRef.namespace}/${selectedRef.project}` : ''}
+					onchange={(e) => pickProject(e.currentTarget.value)}
+				>
+					{#if !selectedRef}<option value="" disabled>Choose a project…</option>{/if}
+					{#each projectOptions as opt}
+						<option value="{opt.namespace}/{opt.project}">{opt.namespace} / {opt.displayName}</option>
+					{/each}
+				</select>
+			</div>
+		</label>
+	{/if}
+
+	{#if !selectedRef}
+		<p class="muted">Select a project to add a pane.</p>
+	{:else}
 	{#if regionKind === 'right'}
 		<div class="type-tabs">
 			<button class="type-tab" class:active={selectedType === 'terminal'} onclick={() => selectedType = 'terminal'}>Terminal</button>
@@ -162,7 +227,7 @@
 			{:else}
 				<div class="item-list">
 					{#each processes as p}
-						<button class="item" onclick={() => onOpenTerminal?.(p.id, p.name || p.id)}>
+						<button class="item" onclick={() => onOpenTerminal?.(p.id, p.name || p.id, selectedRef!.namespace, selectedRef!.project)}>
 							<span class="status-dot {p.status}"></span>
 							<span class="item-name">{p.name || p.id}</span>
 							<span class="item-meta">{p.status}</span>
@@ -204,7 +269,7 @@
 			{:else}
 				<div class="item-list">
 					{#each sessions as s}
-						<button class="item" onclick={() => onOpenAgent?.(s.id, s.label || s.id)}>
+						<button class="item" onclick={() => onOpenAgent?.(s.id, s.label || s.id, selectedRef!.namespace, selectedRef!.project)}>
 							<span class="status-dot {s.status}"></span>
 							<span class="item-name">{s.label || s.id}</span>
 						</button>
@@ -221,10 +286,15 @@
 			</button>
 		</div>
 	{/if}
+	{/if}
 </div>
 
 <style>
 	.new-pane-dialog { display: flex; flex-direction: column; height: 100%; overflow-y: auto; padding: 0.75rem; gap: 0; }
+	.project-picker { margin-bottom: 0.75rem; }
+	.picker-row { display: flex; align-items: center; gap: 0.4rem; }
+	.picker-row select { flex: 1; }
+	.project-swatch { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 	.type-tabs { display: flex; border-bottom: 1px solid var(--color-border); margin-bottom: 0.75rem; }
 	.type-tab { flex: 1; padding: 0.4rem; font-size: 12px; border: none; background: none; color: var(--color-text-muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
 	.type-tab:hover { color: var(--color-text); }

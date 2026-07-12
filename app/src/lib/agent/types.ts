@@ -64,6 +64,7 @@ export type AcpWsEvent =
 			path: string | null;
 			plan: string | null;
 			command: string | null;
+			input?: unknown;
 	  }
 	| {
 			type: 'tool_call_updated';
@@ -75,6 +76,7 @@ export type AcpWsEvent =
 			path: string | null;
 			plan: string | null;
 			command: string | null;
+			input?: unknown;
 	  }
 	| { type: 'plan_update'; session_id: string; entries: PlanEntryPayload[] }
 	| {

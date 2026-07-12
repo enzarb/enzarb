@@ -4,13 +4,18 @@
 	import TilingSplitHandle from './TilingSplitHandle.svelte';
 	import TilingRegion from './TilingRegion.svelte';
 
+	type ProjectRef = { namespace: string; project: string };
+
 	interface Props {
 		node: PaneNode;
 		nodeId: string;
 		regionKind: 'left' | 'right';
-		agentBase: string;
-		namespace: string;
-		project: string;
+		getAgentBase: (ns: string, proj: string) => string;
+		ensureAgentBase: (ns: string, proj: string) => Promise<string>;
+		global: boolean;
+		orgProjects?: Record<string, { slug: string; displayName: string }[]>;
+		/** Fallback project for new panes / the empty-pane picker. */
+		defaultRef: ProjectRef | null;
 		dragging: boolean;
 		dragSource: { paneId: string; tabIndex: number } | null;
 		onUpdate: (nodeId: string, updated: PaneNode) => void;
@@ -23,7 +28,7 @@
 		onRatioChange: (nodeId: string, ratio: number) => void;
 	}
 
-	let { node, nodeId, regionKind, agentBase, namespace, project, dragging, dragSource, onUpdate, onTabClose, onTabSelect, onSplit, onAddTab, onTabDragStart, onTabDrop, onRatioChange }: Props = $props();
+	let { node, nodeId, regionKind, getAgentBase, ensureAgentBase, global, orgProjects, defaultRef, dragging, dragSource, onUpdate, onTabClose, onTabSelect, onSplit, onAddTab, onTabDragStart, onTabDrop, onRatioChange }: Props = $props();
 
 	function handleRatioDrag(delta: number) {
 		if (node.type !== 'split') return;
@@ -37,9 +42,11 @@
 		pane={node}
 		paneId={(node as any).__id ?? nodeId}
 		{regionKind}
-		{agentBase}
-		{namespace}
-		{project}
+		{getAgentBase}
+		{ensureAgentBase}
+		{global}
+		{orgProjects}
+		{defaultRef}
 		{dragging}
 		{onTabClose}
 		{onTabSelect}
@@ -59,9 +66,11 @@
 				node={node.children[0]}
 				nodeId="{nodeId}-0"
 				{regionKind}
-				{agentBase}
-				{namespace}
-				{project}
+				{getAgentBase}
+				{ensureAgentBase}
+				{global}
+				{orgProjects}
+				{defaultRef}
 				{dragging}
 				{dragSource}
 				{onUpdate}
@@ -83,9 +92,11 @@
 				node={node.children[1]}
 				nodeId="{nodeId}-1"
 				{regionKind}
-				{agentBase}
-				{namespace}
-				{project}
+				{getAgentBase}
+				{ensureAgentBase}
+				{global}
+				{orgProjects}
+				{defaultRef}
 				{dragging}
 				{dragSource}
 				{onUpdate}

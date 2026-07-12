@@ -42,6 +42,11 @@ pub enum AcpWsEvent {
         path: Option<String>,
         plan: Option<String>,
         command: Option<String>,
+        /// Raw tool-call input (e.g. a search query, grep pattern, url) so the
+        /// UI can show generically what any tool is doing, not just the
+        /// cherry-picked plan/command/path fields above.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        input: Option<serde_json::Value>,
     },
     ToolCallUpdated {
         session_id: String,
@@ -52,6 +57,10 @@ pub enum AcpWsEvent {
         path: Option<String>,
         plan: Option<String>,
         command: Option<String>,
+        /// Raw tool-call input, if the update carries a refreshed one. See
+        /// `ToolCallCreated::input`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        input: Option<serde_json::Value>,
     },
     PlanUpdate {
         session_id: String,
@@ -305,6 +314,7 @@ pub fn from_session_update(session_id: &str, update: SessionUpdate) -> Vec<AcpWs
             path: first_location_path(&tc.locations),
             plan: plan_text(tc.raw_input.as_ref()),
             command: command_text(tc.raw_input.as_ref()),
+            input: tc.raw_input.clone(),
         }],
         SessionUpdate::ToolCallUpdate(update) => {
             let content = update.fields.content.as_deref();
@@ -321,6 +331,7 @@ pub fn from_session_update(session_id: &str, update: SessionUpdate) -> Vec<AcpWs
                     .and_then(first_location_path),
                 plan: plan_text(update.fields.raw_input.as_ref()),
                 command: command_text(update.fields.raw_input.as_ref()),
+                input: update.fields.raw_input.clone(),
             }]
         }
         SessionUpdate::Plan(plan) => vec![AcpWsEvent::PlanUpdate {

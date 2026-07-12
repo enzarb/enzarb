@@ -11,8 +11,21 @@
 	import { getProjectSecrets, setProjectSecret, deleteProjectSecret } from '$lib/remote/settings.remote';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
+	import { onMount } from 'svelte';
 	import { confirm } from '$lib/confirm';
 	import { toErrorMessage } from '$lib/errors';
+	import { getProjectColor, saveProjectColor, PROJECT_COLOR_PALETTE } from '$lib/tiling/layout';
+
+	// Per-project tab color used across the tiling workspace. Stored client-side
+	// (localStorage), so it's only read once mounted in the browser.
+	let projectColor = $state('#6c6cff');
+	onMount(() => {
+		projectColor = getProjectColor(page.params.namespace!, page.params.project!);
+	});
+	function setProjectColor(color: string) {
+		projectColor = color;
+		saveProjectColor(page.params.namespace!, page.params.project!, color);
+	}
 
 	let resizing = $state(false);
 	let resizeError = $state('');
@@ -170,6 +183,35 @@
 		</section>
 
 		<section class="card">
+			<h3>Tab color</h3>
+			<p class="muted">Colors this project's tabs and swatches in the tiling workspace so panes from different projects stay easy to tell apart.</p>
+			<div class="color-row">
+				<span class="color-preview" style="background: {projectColor}"></span>
+				<div class="swatches">
+					{#each PROJECT_COLOR_PALETTE as c}
+						<button
+							type="button"
+							class="swatch"
+							class:selected={projectColor.toLowerCase() === c.toLowerCase()}
+							style="background: {c}"
+							title={c}
+							aria-label={c}
+							onclick={() => setProjectColor(c)}
+						></button>
+					{/each}
+				</div>
+				<input
+					class="color-hex"
+					type="text"
+					spellcheck="false"
+					value={projectColor}
+					onchange={(e) => setProjectColor(e.currentTarget.value)}
+					placeholder="#6c6cff"
+				/>
+			</div>
+		</section>
+
+		<section class="card">
 			<h3>Storage</h3>
 			<p class="muted">Current allocation: <code class="mono">{project.spec.storage?.size ?? '–'}</code>. PVCs can only be enlarged — resizing applies on the next reconcile.</p>
 			<div class="resize-row">
@@ -264,4 +306,10 @@
 	.secret-add-row { display: flex; gap: 0.5rem; align-items: center; }
 	.input-key { width: 140px; padding: 0.375rem 0.5rem; border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-surface-2); color: var(--color-text); font-size: 12px; font-family: var(--font-mono); }
 	.input-value { flex: 1; padding: 0.375rem 0.5rem; border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-surface-2); color: var(--color-text); font-size: 13px; }
+	.color-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+	.color-preview { width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--color-border); flex-shrink: 0; }
+	.swatches { display: flex; gap: 0.375rem; flex-wrap: wrap; }
+	.swatch { width: 22px; height: 22px; border-radius: 50%; border: 2px solid transparent; padding: 0; cursor: pointer; }
+	.swatch.selected { border-color: var(--color-text); }
+	.color-hex { width: 100px; padding: 0.375rem 0.5rem; border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-surface-2); color: var(--color-text); font-size: 12px; font-family: var(--font-mono); }
 </style>

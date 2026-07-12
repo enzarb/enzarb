@@ -336,7 +336,7 @@
 	.info-row { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; }
 	.label { font-size: 13px; color: var(--color-text-muted); }
 	.mono { font-family: var(--font-mono); font-size: 13px; }
-	.error-text { color: var(--color-danger, #c0392b); font-size: 13px; }
+	.error-text { color: var(--color-danger); font-size: 13px; }
 	table { width: 100%; border-collapse: collapse; }
 	th, td { text-align: left; padding: 0.5rem 0.25rem; font-size: 13px; border-bottom: 1px solid var(--color-border); }
 	th { color: var(--color-text-muted); font-weight: 600; }
@@ -350,7 +350,6 @@
 	.priv { display: flex; align-items: center; gap: 0.5rem; font-size: 13px; color: var(--color-text); cursor: pointer; }
 	.priv input { margin: 0; flex-shrink: 0; }
 	.role-actions { margin-top: 1rem; display: flex; justify-content: flex-end; }
-	.btn-sm { font-size: 12px; padding: 0.25rem 0.625rem; }
 	.new-role { display: flex; gap: 0.5rem; margin-top: 1rem; }
 	.new-role input { font-size: 13px; padding: 0.375rem 0.5rem; background: var(--color-surface-2); color: var(--color-text); border: 1px solid var(--color-border); border-radius: 4px; }
 
@@ -363,9 +362,7 @@
 	.secret-add { display: flex; gap: 0.5rem; align-items: center; padding: 0.5rem; }
 	.secret-input { flex: 1; font-size: 13px; font-family: var(--font-mono); padding: 0.375rem 0.5rem; background: var(--color-surface-2); color: var(--color-text); border: 1px solid var(--color-border); border-radius: 4px; min-width: 0; }
 	.secret-val { flex: 2; }
-	.btn-danger-outline { color: var(--color-danger, #c0392b); border-color: var(--color-danger, #c0392b); background: none; }
-	.btn-danger-outline:hover { background: rgba(192, 57, 43, 0.1); }
-	.success-text { color: #3fb950; font-size: 13px; margin-bottom: 0.5rem; }
+	.success-text { color: var(--color-success); font-size: 13px; margin-bottom: 0.5rem; }
 	.github-card { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.75rem; }
 	.github-connected { font-size: 13px; }
 	.btn-github { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.75rem; border: 1px solid var(--color-border); border-radius: 4px; background: none; color: var(--color-text); font-size: 13px; text-decoration: none; cursor: pointer; }
