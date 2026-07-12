@@ -6,7 +6,7 @@ app:
   image:
     repository: ghcr.io/enzarb/app
     pullPolicy: IfNotPresent
-    tag: "v0.104.0"
+    tag: "v0.105.0"
   env:
     ORIGIN: https://enzarb.dev
   dbSecret:
@@ -174,7 +174,7 @@ acmeSelfcheckResolver:
 workspace:
   image:
     repository: ghcr.io/enzarb/workspace
-    tag: "v0.103.0"
+    tag: "v0.105.0"
   # StorageClass for project home PVCs. Empty uses the cluster's default class.
   storageClass: ""
   # nodeSelector applied to every workspace pod (merged with the GPU selector
