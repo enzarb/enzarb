@@ -15,14 +15,28 @@ export const getProjectUtilization = query(
 		const org = resolveOrg();
 		const since = new Date(Date.now() - minutes * 60000);
 
-		return sql<{ minute: Date; resource_type: string; label: string | null; total: number }[]>`
-			SELECT date_trunc('minute', recorded_at) AS minute, resource_type, label, SUM(quantity)::float8 AS total
+		// component/environment let the UI label each pod's environment as
+		// "workspace" or the deploy environment's slug (test/prod/etc.)
+		// instead of the raw, hash-bearing k8s namespace name.
+		const rows = await sql<{
+			minute: Date;
+			resource_type: string;
+			label: string | null;
+			component: string;
+			environment: string | null;
+			total: number;
+		}[]>`
+			SELECT date_trunc('minute', recorded_at) AS minute, resource_type, label, component, environment, SUM(quantity)::float8 AS total
 			FROM usage_events
 			WHERE org_id = ${org.id}
 			  AND project_id = ${projectId}
 			  AND recorded_at >= ${since}
-			GROUP BY minute, resource_type, label
+			GROUP BY minute, resource_type, label, component, environment
 			ORDER BY minute
 		`;
+		return rows.map((r) => ({
+			...r,
+			environment: r.component === 'workspace' ? 'workspace' : (r.environment ?? '')
+		}));
 	}
 );

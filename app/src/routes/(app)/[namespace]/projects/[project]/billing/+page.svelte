@@ -24,6 +24,7 @@
 	type WorkloadRow = {
 		label: string;
 		owner: string;
+		environment: string;
 		vcpu_hours: number;
 		mem_gib_hours: number;
 		net_ingress_internal_bytes: number;
@@ -36,10 +37,14 @@
 	function groupWorkloads(workloads: WorkloadRow[]): WorkloadRow[] {
 		const grouped = new Map<string, WorkloadRow>();
 		for (const w of workloads) {
-			const key = w.owner || w.label;
+			// Include environment in the key so the same owner name in
+			// different deploy environments (e.g. test vs prod) isn't merged
+			// into a single row.
+			const key = `${w.owner || w.label}|${w.environment}`;
 			const entry = grouped.get(key) ?? {
-				label: key,
+				label: w.owner || w.label,
 				owner: w.owner,
+				environment: w.environment,
 				vcpu_hours: 0,
 				mem_gib_hours: 0,
 				net_ingress_internal_bytes: 0,
@@ -107,6 +112,7 @@
 				<thead>
 					<tr>
 						<th>{groupByOwner ? 'Owner' : 'Pod'}</th>
+						<th>Environment</th>
 						<th>CPU</th>
 						<th>Memory</th>
 						<th>Net In (int)</th>
@@ -120,6 +126,7 @@
 					{#each rows as w}
 						<tr>
 							<td><code class="mono">{w.label}</code></td>
+							<td>{w.environment}</td>
 							<td>{fmtVCPUHours(w.vcpu_hours)}</td>
 							<td>{fmtGiBHours(w.mem_gib_hours)}</td>
 							<td>{fmtBytes(w.net_ingress_internal_bytes)}</td>

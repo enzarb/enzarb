@@ -300,14 +300,18 @@ export const getProjectDetail = query(
 		const p = await loadPricing();
 
 		// Per-pod: CPU, memory, and all four network directions, plus the K8s
-		// owner so the UI can group by Deployment/StatefulSet/etc.
+		// owner (so the UI can group by Deployment/StatefulSet/etc.) and the
+		// environment (so the same owner name in different deploy environments,
+		// e.g. test vs prod, isn't collapsed into one row).
 		const workloadRows = await sql<{
 			label: string;
 			owner: string | null;
+			component: string;
+			environment: string | null;
 			resource_type: string;
 			total: number;
 		}[]>`
-			SELECT label, MAX(owner) AS owner, resource_type, SUM(quantity)::float8 AS total
+			SELECT label, MAX(owner) AS owner, component, environment, resource_type, SUM(quantity)::float8 AS total
 			FROM usage_events
 			WHERE org_id = ${org.id}
 			  AND project_id = ${projectId}
@@ -318,7 +322,7 @@ export const getProjectDetail = query(
 			  )
 			  AND recorded_at >= date_trunc('month', now())
 			  AND label IS NOT NULL AND label != ''
-			GROUP BY label, resource_type
+			GROUP BY label, component, environment, resource_type
 			ORDER BY label
 		`;
 
@@ -349,6 +353,7 @@ export const getProjectDetail = query(
 		type WorkloadEntry = {
 			label: string;
 			owner: string;
+			environment: string;
 			vcpu_hours: number;
 			mem_gib_hours: number;
 			net_ingress_internal_bytes: number;
@@ -362,6 +367,10 @@ export const getProjectDetail = query(
 			const entry = workloads.get(r.label) ?? {
 				label: r.label,
 				owner: r.owner ?? '',
+				// component === 'workspace' rows have no envSlug — label them
+				// distinctly from a deploy environment's slug (test/prod/etc.)
+				// rather than showing the raw, hash-bearing k8s namespace name.
+				environment: r.component === 'workspace' ? 'workspace' : (r.environment ?? ''),
 				vcpu_hours: 0,
 				mem_gib_hours: 0,
 				net_ingress_internal_bytes: 0,

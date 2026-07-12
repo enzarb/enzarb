@@ -5,11 +5,18 @@
 	import LineChart from '$lib/components/LineChart.svelte';
 	import { toErrorMessage } from '$lib/errors';
 
-	type Row = { minute: string | Date; resource_type: string; label: string | null; total: number };
+	type Row = {
+		minute: string | Date;
+		resource_type: string;
+		label: string | null;
+		environment: string;
+		total: number;
+	};
 
 	let minutes = $state(60);
 	let mode = $state<'aggregate' | 'pod'>('aggregate');
 	let metric = $state<string>('vcpu_hours');
+	let envFilter = $state<string>('all');
 
 	let rows = $state<Row[]>([]);
 	let loading = $state(true);
@@ -58,10 +65,21 @@
 	const buckets = $derived(minuteBuckets());
 	const xLabels = $derived(buckets.map((b) => b.slice(11)));
 
+	// Distinct environments present in the data (e.g. "workspace", "test",
+	// "prod"), so the filter only ever shows real options for this project.
+	const environments = $derived.by(() => {
+		const set = new Set(rows.map((r) => r.environment));
+		return [...set].sort();
+	});
+
+	const filteredRows = $derived(
+		envFilter === 'all' ? rows : rows.filter((r) => r.environment === envFilter)
+	);
+
 	// One summed line per resource type, aggregated across all pods.
 	const aggregateSeries = $derived.by(() => {
 		const byType = new Map<string, Map<string, number>>();
-		for (const r of rows) {
+		for (const r of filteredRows) {
 			const m = byType.get(r.resource_type) ?? new Map<string, number>();
 			m.set(keyOf(r), (m.get(keyOf(r)) ?? 0) + Number(r.total));
 			byType.set(r.resource_type, m);
@@ -79,7 +97,7 @@
 	// Per-pod lines for the currently selected metric.
 	const podSeries = $derived.by(() => {
 		const byLabel = new Map<string, Map<string, number>>();
-		for (const r of rows) {
+		for (const r of filteredRows) {
 			if (r.resource_type !== metric) continue;
 			const lbl = r.label ?? '(unlabeled)';
 			const m = byLabel.get(lbl) ?? new Map<string, number>();
@@ -113,6 +131,14 @@
 		<select class="metric-select" bind:value={metric}>
 			{#each RESOURCE_TYPES as rt}
 				<option value={rt}>{RESOURCE_LABELS[rt]}</option>
+			{/each}
+		</select>
+	{/if}
+	{#if environments.length > 1}
+		<select class="metric-select" bind:value={envFilter}>
+			<option value="all">All environments</option>
+			{#each environments as env}
+				<option value={env}>{env}</option>
 			{/each}
 		</select>
 	{/if}
