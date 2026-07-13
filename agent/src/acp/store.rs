@@ -227,7 +227,11 @@ impl AcpStore {
             let data = tokio::fs::read(&active_providers_path).await?;
             serde_json::from_slice::<HashSet<String>>(&data).unwrap_or_default()
         } else {
-            HashSet::new()
+            // Legacy workspaces (pre-multi-provider) have no active_providers
+            // file but may hold historical Claude sessions on disk. Seed the
+            // set with the default provider so those sessions are listed
+            // without requiring the user to create a new session first.
+            HashSet::from([DEFAULT_PROVIDER.to_string()])
         };
         Ok(Self {
             connections: Arc::new(Mutex::new(HashMap::new())),
