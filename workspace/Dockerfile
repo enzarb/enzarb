@@ -97,8 +97,14 @@ RUN npm install -g \
 # Bake the enzarb prompt into the system-wide bash config so it applies to
 # all interactive shells (tmux windows, plain `bash` processes, login shells)
 # without requiring runtime patching of the user's home directory.
+#
+# Ubuntu ships the bash-completion sourcing block in /etc/bash.bashrc commented
+# out by default, so the installed package never loads for interactive shells.
+# Uncomment it (the `shopt`/`if`/`.`/`elif`/`fi` lines of that block) so tab
+# completion works out of the box in every workspace shell.
 COPY workspace/enzarb-prompt.sh /etc/profile.d/enzarb-prompt.sh
-RUN cat /etc/profile.d/enzarb-prompt.sh >> /etc/bash.bashrc
+RUN sed -i '/^#if ! shopt -oq posix; then$/,/^#fi$/ s/^#//' /etc/bash.bashrc \
+    && cat /etc/profile.d/enzarb-prompt.sh >> /etc/bash.bashrc
 
 # Copy release binaries (root-owned)
 COPY --from=rust-builder /project-agent                /usr/local/bin/project-agent
