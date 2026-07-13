@@ -115,3 +115,20 @@ export async function getManifestDigest(repo: string, reference: string): Promis
 export async function deleteManifest(repo: string, digest: string) {
 	await zotFetch(`/v2/${repo}/manifests/${digest}`, `repository:${repo}:pull,delete`, { method: 'DELETE' });
 }
+
+// Delete every tag/manifest in a repository. The registry stores tags as
+// references to manifests, and multiple tags can share one manifest digest, so
+// we resolve each tag to its digest, dedupe, and delete each unique manifest
+// once. Returns the number of manifests deleted.
+export async function deleteRepository(repo: string): Promise<number> {
+	const { tags } = await listTags(repo);
+	const digests = new Set<string>();
+	for (const tag of tags) {
+		const digest = await getManifestDigest(repo, tag);
+		if (digest) digests.add(digest);
+	}
+	for (const digest of digests) {
+		await deleteManifest(repo, digest);
+	}
+	return digests.size;
+}

@@ -2,7 +2,7 @@ import { query, command } from '$app/server';
 import { getRequestEvent } from '$app/server';
 import { error } from '@sveltejs/kit';
 import { z } from 'zod/v4';
-import { listRepositories, listTags, getManifest, getBlob, deleteManifest, getManifestDigest } from '$lib/zot';
+import { listRepositories, listTags, getManifest, getBlob, deleteManifest, deleteRepository, getManifestDigest } from '$lib/zot';
 import { resolveOrg, requirePrivilege } from './guard';
 
 export const getRepositories = query(async () => {
@@ -134,3 +134,18 @@ export const removeImage = command(
 		await deleteManifest(repo, digest);
 	}
 );
+
+// Delete an entire image repository (all tags/manifests). Returns how many
+// unique manifests were removed. Scoped to the current project: the repo must
+// belong to `${org.slug}/${project}` (the project image itself or a repo nested
+// under it), not just anywhere in the org.
+export const removeRepository = command(z.string(), async (repo) => {
+	const org = requirePrivilege('registry.delete');
+	const { params } = getRequestEvent();
+	if (!params.project) error(400, 'No project in scope');
+	const prefix = `${org.slug}/${params.project}/`;
+	const exact = `${org.slug}/${params.project}`;
+	if (repo !== exact && !repo.startsWith(prefix)) error(403, 'Forbidden');
+	const deleted = await deleteRepository(repo);
+	return { deleted };
+});

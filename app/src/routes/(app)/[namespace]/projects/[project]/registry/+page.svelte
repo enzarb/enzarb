@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { getRepositories, getRepoTags, getRepoTagSizes, removeImage } from '$lib/remote/registry.remote';
+	import { getRepositories, getRepoTags, getRepoTagSizes, removeImage, removeRepository } from '$lib/remote/registry.remote';
 	import { fmtBytes as formatBytes } from '$lib/billing';
 	import { page } from '$app/state';
 
@@ -21,6 +21,7 @@
 	let sortDesc = $state(true);
 	let deletingTag: string | null = $state(null);
 	let deletingSuperseded = $state(false);
+	let deletingRepo = $state(false);
 
 	// A tag is "superseded" when another tag in the same repo shares its
 	// digest (same physical image, re-tagged) but has a newer created date —
@@ -82,6 +83,26 @@
 			tagSizes = tagSizes.filter((t) => !deleted.has(t.tag));
 		} finally {
 			deletingSuperseded = false;
+		}
+	}
+
+	async function deleteRepo() {
+		if (!selectedRepo) return;
+		const repo = selectedRepo;
+		const tagCount = tagSizes.length;
+		if (!confirm(`Delete the entire repository "${repo}" and all ${tagCount} tag${tagCount === 1 ? '' : 's'}? This removes every image in it and cannot be undone.`)) return;
+		deletingRepo = true;
+		try {
+			await removeRepository(repo);
+			// The repo is gone; clear the tag view and refresh the repository list.
+			if (selectedRepo === repo) {
+				selectedRepo = null;
+				tagSizes = [];
+				summary = null;
+			}
+			await getRepositories().refresh();
+		} finally {
+			deletingRepo = false;
 		}
 	}
 
@@ -164,7 +185,17 @@ docker push $REGISTRY/&lt;image&gt;:&lt;tag&gt;</pre>
 
 			{#if selectedRepo}
 				<div class="tag-list card">
-					<h3>{selectedRepo}</h3>
+					<div class="tag-list-header">
+						<h3>{selectedRepo}</h3>
+						<button
+							class="delete-repo-btn"
+							onclick={deleteRepo}
+							disabled={deletingRepo || loadingTags}
+							title="Delete this entire repository and all its tags"
+						>
+							{deletingRepo ? 'Deleting…' : '🗑 Delete repository'}
+						</button>
+					</div>
 					{#if loadingTags}
 						<p class="muted">Loading tags…</p>
 					{:else}
@@ -264,6 +295,11 @@ docker push $REGISTRY/&lt;image&gt;:&lt;tag&gt;</pre>
 	.push-guide code { font-family: var(--font-mono); font-size: 12px; }
 	.registry-layout { display: grid; grid-template-columns: 260px 1fr; gap: 1rem; }
 	.repo-list h3, .tag-list h3 { margin-bottom: 0.75rem; font-size: 14px; }
+	.tag-list-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+	.tag-list-header h3 { margin-bottom: 0.75rem; }
+	.delete-repo-btn { background: none; border: 1px solid #f85149; border-radius: 4px; cursor: pointer; padding: 0.25rem 0.6rem; font-size: 12px; font-weight: 600; color: #f85149; }
+	.delete-repo-btn:hover:not(:disabled) { background: rgba(248, 81, 73, 0.1); }
+	.delete-repo-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 	.repo-item { display: block; width: 100%; text-align: left; padding: 0.375rem 0.5rem; border-radius: 4px; border: none; background: none; color: var(--color-text-muted); font-size: 13px; cursor: pointer; font-family: var(--font-mono); }
 	.repo-item:hover { background: var(--color-surface-2); color: var(--color-text); }
 	.repo-item.active { background: var(--color-accent-dim); color: var(--color-text); }
