@@ -1,6 +1,7 @@
-//! Owns the single, lazily-spawned `claude-agent-acp` process per project and
-//! plays the ACP "client" role against it. All sessions (new or resumed)
-//! multiplex over this one JSON-RPC connection via `session/new`/`session/load`.
+//! Owns one lazily-spawned ACP agent process per provider (see
+//! `super::providers`) for this project, and plays the ACP "client" role
+//! against each. Sessions (new or resumed) multiplex over their owning
+//! provider's JSON-RPC connection via `session/new`/`session/load`.
 //!
 //! Session metadata is sourced directly from `session/list`; only ephemeral
 //! state (live/idle status, per-session mode info, cwd cache) is kept in
@@ -32,11 +33,12 @@ use super::events::{
     permission_request_event, stop_reason_str, tool_kind_str,
 };
 use super::permissions::{PermissionRegistry, auto_allow};
+use super::providers::{self, DEFAULT_PROVIDER};
 
 const ARCHIVED_FILE: &str = ".enzarb/archived_sessions.json";
 const PREFS_FILE: &str = ".enzarb/session_prefs.json";
+const ACTIVE_PROVIDERS_FILE: &str = ".enzarb/active_providers.json";
 const CHANNEL_CAPACITY: usize = 8192;
-const ACP_COMMAND: &str = "claude-agent-acp";
 /// Upper bound on metadata-style ACP requests (session/list, session/load).
 /// A wedged ACP process otherwise hangs these forever, and every /agent
 /// endpoint surfaces as a gateway 504. Prompt requests are NOT capped — they
@@ -68,6 +70,7 @@ pub struct SessionMeta {
     pub id: String,
     /// Populated from `SessionInfo.title`; falls back to first 8 chars of the ID.
     pub label: String,
+    pub provider: String,
     pub cwd: String,
     pub updated_at: Option<String>,
     pub status: SessionStatus,
@@ -117,6 +120,7 @@ fn split_modes(modes: Option<SessionModeState>) -> (Option<String>, Vec<SessionM
 
 fn session_meta_from_info(
     info: SessionInfo,
+    provider: &str,
     live: &HashSet<String>,
     modes: &HashMap<String, (Option<String>, Vec<SessionModeInfo>)>,
     configs: &HashMap<String, Vec<ConfigOptionPayload>>,
@@ -139,6 +143,7 @@ fn session_meta_from_info(
         meta: info.meta,
         id,
         label,
+        provider: provider.to_string(),
         status,
         mode_id,
         available_modes,
@@ -161,7 +166,15 @@ struct ConnState {
 
 #[derive(Clone)]
 pub struct AcpStore {
-    connection: Arc<Mutex<Option<ConnState>>>,
+    /// One lazily-spawned ACP connection per provider id.
+    connections: Arc<Mutex<HashMap<String, ConnState>>>,
+    /// Which provider each known session belongs to.
+    session_provider: Arc<Mutex<HashMap<String, String>>>,
+    /// Providers that have had at least one session created, persisted so
+    /// `list_sessions` knows which providers to query for sessions after a
+    /// pod restart without spawning every registered provider's CLI.
+    active_providers: Arc<Mutex<HashSet<String>>>,
+    active_providers_path: PathBuf,
     cwd: PathBuf,
     permissions: PermissionRegistry,
     channels: Channels,
@@ -204,8 +217,18 @@ impl AcpStore {
         } else {
             HashMap::new()
         };
+        let active_providers_path = home_dir().join(ACTIVE_PROVIDERS_FILE);
+        let active_providers = if active_providers_path.exists() {
+            let data = tokio::fs::read(&active_providers_path).await?;
+            serde_json::from_slice::<HashSet<String>>(&data).unwrap_or_default()
+        } else {
+            HashSet::new()
+        };
         Ok(Self {
-            connection: Arc::new(Mutex::new(None)),
+            connections: Arc::new(Mutex::new(HashMap::new())),
+            session_provider: Arc::new(Mutex::new(HashMap::new())),
+            active_providers: Arc::new(Mutex::new(active_providers)),
+            active_providers_path,
             cwd,
             permissions: PermissionRegistry::default(),
             channels: Arc::new(Mutex::new(HashMap::new())),
@@ -222,20 +245,23 @@ impl AcpStore {
         })
     }
 
-    /// Returns the current ACP connection, respawning `claude-agent-acp` if
-    /// none exists yet or the previous one has died (process killed/crashed).
-    /// Held behind a single mutex so concurrent callers racing a respawn
-    /// single-flight onto the same new process rather than each spawning
-    /// their own.
-    async fn connection(&self) -> Result<ConnectionTo<Agent>> {
-        let mut guard = self.connection.lock().await;
-        if let Some(state) = guard.as_ref() {
+    /// Returns the ACP connection for `provider_id`, respawning that
+    /// provider's CLI if none exists yet or the previous one has died
+    /// (process killed/crashed). Held behind a single mutex so concurrent
+    /// callers racing a respawn single-flight onto the same new process
+    /// rather than each spawning their own.
+    async fn connection_for(&self, provider_id: &str) -> Result<ConnectionTo<Agent>> {
+        let spec = providers::lookup(provider_id)
+            .ok_or_else(|| anyhow!("unknown ACP provider: {provider_id}"))?;
+        let mut guard = self.connections.lock().await;
+        if let Some(state) = guard.get(provider_id) {
             if state.alive.load(Ordering::Relaxed) {
                 return Ok(state.conn.clone());
             }
-            tracing::warn!("ACP connection is dead, respawning claude-agent-acp");
+            tracing::warn!(provider = provider_id, "ACP connection is dead, respawning");
         }
         let (conn, alive) = spawn(
+            spec.spawn_command,
             self.permissions.clone(),
             self.channels.clone(),
             self.history.clone(),
@@ -243,11 +269,36 @@ impl AcpStore {
             self.session_configs.clone(),
         )
         .await?;
-        *guard = Some(ConnState {
-            conn: conn.clone(),
-            alive,
-        });
+        guard.insert(
+            provider_id.to_string(),
+            ConnState {
+                conn: conn.clone(),
+                alive,
+            },
+        );
         Ok(conn)
+    }
+
+    /// Resolves the provider that owns `session_id`, defaulting to
+    /// `DEFAULT_PROVIDER` for sessions created before multi-provider support
+    /// was added (no entry in `session_provider` yet).
+    async fn provider_for_session(&self, session_id: &str) -> String {
+        self.session_provider
+            .lock()
+            .await
+            .get(session_id)
+            .cloned()
+            .unwrap_or_else(|| DEFAULT_PROVIDER.to_string())
+    }
+
+    async fn persist_active_providers(&self) -> Result<()> {
+        let set = self.active_providers.lock().await.clone();
+        let data = serde_json::to_vec_pretty(&set)?;
+        if let Some(parent) = self.active_providers_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::write(&self.active_providers_path, data).await?;
+        Ok(())
     }
 
     async fn channel(&self, session_id: &str) -> broadcast::Sender<AcpWsEvent> {
@@ -258,9 +309,10 @@ impl AcpStore {
             .clone()
     }
 
-    /// Fetches all sessions from the ACP agent, following pagination cursors.
-    async fn fetch_all_from_acp(&self) -> Result<Vec<SessionInfo>> {
-        let connection = self.connection().await?;
+    /// Fetches all sessions for `provider_id` from that provider's ACP agent,
+    /// following pagination cursors.
+    async fn fetch_all_from_acp(&self, provider_id: &str) -> Result<Vec<SessionInfo>> {
+        let connection = self.connection_for(provider_id).await?;
         let mut all = Vec::new();
         let mut cursor: Option<String> = None;
         loop {
@@ -275,12 +327,16 @@ impl AcpStore {
             .await
             .map_err(|_| anyhow!("session/list timed out"))?
             .map_err(|e| anyhow!("session/list failed: {e}"))?;
-            // Populate cwd cache while we have the data.
+            // Populate cwd + provider caches while we have the data.
             let mut cwd_cache = self.session_cwd.lock().await;
+            let mut provider_cache = self.session_provider.lock().await;
             for info in &resp.sessions {
-                cwd_cache.insert(info.session_id.to_string(), info.cwd.clone());
+                let id = info.session_id.to_string();
+                cwd_cache.insert(id.clone(), info.cwd.clone());
+                provider_cache.insert(id, provider_id.to_string());
             }
             drop(cwd_cache);
+            drop(provider_cache);
             all.extend(resp.sessions);
             cursor = resp.next_cursor;
             if cursor.is_none() {
@@ -291,13 +347,16 @@ impl AcpStore {
     }
 
     pub async fn list_sessions(&self) -> Vec<SessionMeta> {
-        let infos = match self.fetch_all_from_acp().await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to list sessions from ACP");
-                return vec![];
+        let active: Vec<String> = self.active_providers.lock().await.iter().cloned().collect();
+        let mut infos: Vec<(String, SessionInfo)> = Vec::new();
+        for provider_id in active {
+            match self.fetch_all_from_acp(&provider_id).await {
+                Ok(v) => infos.extend(v.into_iter().map(|i| (provider_id.clone(), i))),
+                Err(e) => {
+                    tracing::warn!(error = %e, provider = provider_id, "failed to list sessions from ACP provider")
+                }
             }
-        };
+        }
         let archived = self.archived.lock().await;
         let live = self.live_sessions.lock().await;
         let modes = self.session_modes.lock().await;
@@ -305,8 +364,10 @@ impl AcpStore {
 
         let mut sessions: Vec<SessionMeta> = infos
             .into_iter()
-            .filter(|s| !archived.contains(&s.session_id.to_string()))
-            .map(|s| session_meta_from_info(s, &live, &modes, &configs))
+            .filter(|(_, s)| !archived.contains(&s.session_id.to_string()))
+            .map(|(provider_id, s)| {
+                session_meta_from_info(s, &provider_id, &live, &modes, &configs)
+            })
             .collect();
 
         sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
@@ -326,6 +387,7 @@ impl AcpStore {
         self.session_modes.lock().await.remove(session_id);
         self.session_configs.lock().await.remove(session_id);
         self.session_cwd.lock().await.remove(session_id);
+        self.session_provider.lock().await.remove(session_id);
         self.archived.lock().await.insert(session_id.to_string());
         if self.prefs.lock().await.remove(session_id).is_some() {
             let _ = self.persist_prefs().await;
@@ -355,10 +417,15 @@ impl AcpStore {
 
     pub async fn create_session(
         &self,
+        provider_id: Option<&str>,
         label: Option<String>,
         cwd: Option<PathBuf>,
     ) -> Result<SessionMeta> {
-        let connection = self.connection().await?;
+        let provider_id = provider_id.unwrap_or(DEFAULT_PROVIDER);
+        if providers::lookup(provider_id).is_none() {
+            return Err(anyhow!("unknown ACP provider: {provider_id}"));
+        }
+        let connection = self.connection_for(provider_id).await?;
         let cwd = cwd.unwrap_or_else(|| self.cwd.clone());
         let response = connection
             .send_request(NewSessionRequest::new(cwd.clone()))
@@ -372,6 +439,10 @@ impl AcpStore {
             .lock()
             .await
             .insert(id.clone(), cwd.clone());
+        self.session_provider
+            .lock()
+            .await
+            .insert(id.clone(), provider_id.to_string());
         self.session_modes
             .lock()
             .await
@@ -381,8 +452,18 @@ impl AcpStore {
             .await
             .insert(id.clone(), config_options.clone());
         self.live_sessions.lock().await.insert(id.clone());
+        if self
+            .active_providers
+            .lock()
+            .await
+            .insert(provider_id.to_string())
+            && let Err(e) = self.persist_active_providers().await
+        {
+            tracing::warn!(error = %e, "failed to persist active providers");
+        }
         Ok(SessionMeta {
             label: label.unwrap_or_else(|| "New session".to_string()),
+            provider: provider_id.to_string(),
             cwd: cwd.to_string_lossy().into_owned(),
             updated_at: None,
             meta: None,
@@ -406,7 +487,8 @@ impl AcpStore {
         &self,
         session_id: &str,
     ) -> Result<(Vec<AcpWsEvent>, broadcast::Receiver<AcpWsEvent>)> {
-        let connection = self.connection().await?;
+        let provider_id = self.provider_for_session(session_id).await;
+        let connection = self.connection_for(&provider_id).await?;
         let tx = self.channel(session_id).await;
 
         // Serialize attaches per session: the first one performs the
@@ -443,7 +525,7 @@ impl AcpStore {
         let cwd = match cwd {
             Some(c) => c,
             None => {
-                self.fetch_all_from_acp().await?;
+                self.fetch_all_from_acp(&provider_id).await?;
                 self.session_cwd
                     .lock()
                     .await
@@ -502,7 +584,8 @@ impl AcpStore {
         let mut config_options = loaded_configs;
 
         if let Some(saved) = saved {
-            let connection = match self.connection().await {
+            let provider_id = self.provider_for_session(session_id).await;
+            let connection = match self.connection_for(&provider_id).await {
                 Ok(c) => c,
                 Err(_) => return,
             };
@@ -580,7 +663,8 @@ impl AcpStore {
     }
 
     pub async fn handle_client_msg(&self, session_id: &str, msg: AcpWsClientMsg) -> Result<()> {
-        let connection = self.connection().await?;
+        let provider_id = self.provider_for_session(session_id).await;
+        let connection = self.connection_for(&provider_id).await?;
         match msg {
             AcpWsClientMsg::SendMessage { text } => {
                 let connection = connection.clone();
@@ -725,13 +809,15 @@ impl AcpStore {
 // ---------------------------------------------------------------------------
 
 async fn spawn(
+    spawn_command: &str,
     permissions: PermissionRegistry,
     channels: Channels,
     history: History,
     session_modes: SessionModes,
     session_configs: SessionConfigs,
 ) -> Result<(ConnectionTo<Agent>, Arc<AtomicBool>)> {
-    let agent = AcpAgent::from_str(ACP_COMMAND).map_err(|e| anyhow!("invalid ACP command: {e}"))?;
+    let agent =
+        AcpAgent::from_str(spawn_command).map_err(|e| anyhow!("invalid ACP command: {e}"))?;
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let alive = Arc::new(AtomicBool::new(true));
     let alive_task = alive.clone();

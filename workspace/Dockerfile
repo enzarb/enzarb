@@ -26,6 +26,10 @@ FROM ubuntu:26.04
 ARG BUILDX_VERSION=0.24.0
 ARG TINI_VERSION=0.19.0
 ARG CLAUDE_CODE_ACP_VERSION=latest
+ARG GEMINI_ACP_VERSION=latest
+ARG COPILOT_ACP_VERSION=latest
+ARG CODEX_ACP_VERSION=latest
+ARG OPENCODE_ACP_VERSION=latest
 
 # mise's shims dir goes first on PATH so every process that inherits this
 # environment — including the `project-agent` entrypoint and the
@@ -78,8 +82,17 @@ RUN usermod -l user -d /home/user -m ubuntu && groupmod -n user ubuntu
 # survives an empty PVC being mounted over /home/user at runtime.
 RUN curl https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh
 
-# Install ACP adapter for the Agent tab (Claude Code) globally via npm.
-RUN npm install -g "@agentclientprotocol/claude-agent-acp@${CLAUDE_CODE_ACP_VERSION}"
+# Install ACP-speaking agent CLIs for the Agent tab globally via npm — one
+# `npm install -g` call so all packages resolve/fetch concurrently instead of
+# across separate sequential RUN layers. Package names/flags for providers
+# other than Claude are best-effort as of authoring; verify against each
+# vendor's current npm distribution (see agent/src/acp/providers.rs).
+RUN npm install -g \
+        "@agentclientprotocol/claude-agent-acp@${CLAUDE_CODE_ACP_VERSION}" \
+        "@google/gemini-cli@${GEMINI_ACP_VERSION}" \
+        "@github/copilot@${COPILOT_ACP_VERSION}" \
+        "@openai/codex@${CODEX_ACP_VERSION}" \
+        "opencode-ai@${OPENCODE_ACP_VERSION}"
 
 # Bake the enzarb prompt into the system-wide bash config so it applies to
 # all interactive shells (tmux windows, plain `bash` processes, login shells)

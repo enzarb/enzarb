@@ -22,6 +22,7 @@ export interface ConfigOptionInfo {
 export interface SessionMeta {
 	id: string;
 	label: string;
+	provider: string;
 	cwd: string;
 	updated_at: string | null;
 	status: 'live' | 'idle';
@@ -29,6 +30,13 @@ export interface SessionMeta {
 	available_modes: SessionModeInfo[];
 	config_options: ConfigOptionInfo[];
 	_meta?: Record<string, unknown>;
+}
+
+/** Mirrors agent/src/acp/providers.rs::ProviderSpec, served from GET /agent/providers. */
+export interface ProviderInfo {
+	id: string;
+	display_name: string;
+	spawn_command: string;
 }
 
 export interface DiffPayload {

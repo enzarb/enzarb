@@ -39,6 +39,7 @@ pub fn router(state: AppState) -> Router {
         .route("/processes/{id}/output", get(processes::output_ws))
         .route("/processes/{id}/history", get(processes::history))
         // Agent tab (ACP sessions)
+        .route("/agent/providers", get(agent::list_providers))
         .route(
             "/agent/sessions",
             get(agent::list_sessions).post(agent::create_session),

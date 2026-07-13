@@ -5,16 +5,18 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import type { SessionMeta } from '$lib/agent/types';
+	import type { ProviderInfo, SessionMeta } from '$lib/agent/types';
 	import Tooltip from '$lib/components/Tooltip.svelte';
 
 	let agentBase = $state('');
 	let sessions: SessionMeta[] = $state([]);
+	let providers: ProviderInfo[] = $state([]);
 	let loading = $state(true);
 	let loadError = $state('');
 	let creating = $state(false);
 	let showNewForm = $state(false);
 	let newCwd = $state('~');
+	let newProvider = $state('claude');
 	let confirmDelete = $state<string | null>(null);
 
 	const base = `/${page.params.namespace}/projects/${page.params.project}/agents`;
@@ -40,6 +42,25 @@
 		loading = false;
 	}
 
+	async function loadProviders() {
+		if (!agentBase) return;
+		const token = await getAgentAuthToken(page.params.namespace!, page.params.project!);
+		if (!token) return;
+		try {
+			const res = await fetch(`${agentBase}/agent/providers`, {
+				headers: { Authorization: `Bearer ${token}` }
+			});
+			if (res.ok) {
+				providers = await res.json();
+				if (providers.length && !providers.some((p) => p.id === newProvider)) {
+					newProvider = providers[0].id;
+				}
+			}
+		} catch {
+			// Non-fatal — the provider selector just falls back to "claude".
+		}
+	}
+
 	async function createSession() {
 		if (!agentBase || creating) return;
 		creating = true;
@@ -55,7 +76,7 @@
 			const res = await fetch(`${agentBase}/agent/sessions`, {
 				method: 'POST',
 				headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-				body: JSON.stringify({ cwd })
+				body: JSON.stringify({ cwd, provider: newProvider })
 			});
 			if (res.ok) {
 				const session = await res.json();
@@ -95,6 +116,7 @@
 			loadError = 'Could not load project — please reload the page.';
 		}
 		await loadSessions();
+		await loadProviders();
 	});
 </script>
 
@@ -121,6 +143,13 @@
 					spellcheck={false}
 					autocomplete="off"
 				/>
+				{#if providers.length}
+					<select class="composer-select" bind:value={newProvider}>
+						{#each providers as p (p.id)}
+							<option value={p.id}>{p.display_name}</option>
+						{/each}
+					</select>
+				{/if}
 				<button type="submit" class="btn btn-primary" disabled={creating || !agentBase} title={!agentBase ? 'Workspace is not ready yet' : undefined}>
 					{creating ? 'Starting…' : 'Start'}
 				</button>
@@ -148,6 +177,9 @@
 							{#snippet children()}<span class="session-label">{s.label}</span>{/snippet}
 							{#snippet content()}<span class="label-tooltip">{s.label}</span>{/snippet}
 						</Tooltip>
+						{#if s.provider}
+							<span class="provider-badge">{s.provider}</span>
+						{/if}
 						<span class="session-time">{s.updated_at ? new Date(s.updated_at).toLocaleString() : ''}</span>
 						{#if hasMeta}
 							<Tooltip placement="bottom">
@@ -184,6 +216,8 @@
 	.cwd-label { display: block; font-size: 12px; color: var(--color-text-muted); margin-bottom: 0.35rem; }
 	.new-session-row { display: flex; gap: 0.5rem; align-items: center; }
 	.cwd-input { flex: 1; font-family: var(--font-mono); font-size: 13px; padding: 0.4rem 0.6rem; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); color: var(--color-text); min-width: 0; }
+	.composer-select { font-family: var(--font-mono); font-size: 13px; padding: 0.4rem 0.6rem; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); color: var(--color-text); }
+	.provider-badge { font-size: 10px; font-family: var(--font-mono); padding: 1px 5px; border-radius: 3px; background: var(--color-surface-2); color: var(--color-text-muted); border: 1px solid var(--color-border); flex-shrink: 0; text-transform: capitalize; }
 	.agents-header h3 { margin: 0; }
 	.muted { color: var(--color-text-muted); font-size: 13px; }
 	.error { color: var(--color-danger); font-size: 13px; }

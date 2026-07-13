@@ -11,6 +11,7 @@ use serde::Deserialize;
 use crate::AppState;
 use crate::acp::AcpWsClientMsg;
 use crate::acp::events::AcpWsEvent;
+use crate::acp::providers::PROVIDERS;
 use crate::acp::store::SessionMeta;
 use crate::auth::ProjectPermissions;
 use crate::init::home_dir;
@@ -51,6 +52,7 @@ fn expand_tilde(path: String) -> std::path::PathBuf {
 pub struct CreateSessionRequest {
     pub label: Option<String>,
     pub cwd: Option<String>,
+    pub provider: Option<String>,
 }
 
 pub async fn list_sessions(
@@ -61,15 +63,28 @@ pub async fn list_sessions(
     Ok(Json(state.acp_store.list_sessions().await))
 }
 
+pub async fn list_providers() -> Json<&'static [crate::acp::providers::ProviderSpec]> {
+    Json(PROVIDERS)
+}
+
 pub async fn create_session(
     State(state): State<AppState>,
     Extension(perms): Extension<ProjectPermissions>,
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<Json<SessionMeta>, StatusCode> {
     perms.require(PERM)?;
+    if let Some(provider) = &req.provider
+        && crate::acp::providers::lookup(provider).is_none()
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     state
         .acp_store
-        .create_session(req.label, req.cwd.map(expand_tilde))
+        .create_session(
+            req.provider.as_deref(),
+            req.label,
+            req.cwd.map(expand_tilde),
+        )
         .await
         .map(Json)
         .map_err(|e| {
