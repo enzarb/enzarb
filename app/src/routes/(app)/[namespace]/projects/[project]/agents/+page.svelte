@@ -10,6 +10,7 @@
 
 	let agentBase = $state('');
 	let sessions: SessionMeta[] = $state([]);
+	let archivedSessions: SessionMeta[] = $state([]);
 	let providers: ProviderInfo[] = $state([]);
 	let loading = $state(true);
 	let loadError = $state('');
@@ -17,7 +18,8 @@
 	let showNewForm = $state(false);
 	let newCwd = $state('~');
 	let newProvider = $state('claude');
-	let confirmDelete = $state<string | null>(null);
+	let confirmArchive = $state<string | null>(null);
+	let showArchived = $state(false);
 
 	const base = `/${page.params.namespace}/projects/${page.params.project}/agents`;
 
@@ -31,11 +33,15 @@
 			return;
 		}
 		try {
-			const res = await fetch(`${agentBase}/agent/sessions`, {
-				headers: { Authorization: `Bearer ${token}` }
-			});
+			const [res, archivedRes] = await Promise.all([
+				fetch(`${agentBase}/agent/sessions`, { headers: { Authorization: `Bearer ${token}` } }),
+				fetch(`${agentBase}/agent/sessions?archived=true`, {
+					headers: { Authorization: `Bearer ${token}` }
+				})
+			]);
 			if (res.ok) sessions = await res.json();
 			else loadError = `Failed to load sessions (${res.status}).`;
+			if (archivedRes.ok) archivedSessions = await archivedRes.json();
 		} catch {
 			loadError = 'Could not reach the workspace agent.';
 		}
@@ -99,8 +105,22 @@
 			method: 'DELETE',
 			headers: { Authorization: `Bearer ${token}` }
 		});
+		const moved = sessions.find((s) => s.id === id);
 		sessions = sessions.filter((s) => s.id !== id);
-		confirmDelete = null;
+		if (moved) archivedSessions = [{ ...moved, archived: true }, ...archivedSessions];
+		confirmArchive = null;
+	}
+
+	async function unarchiveSession(id: string) {
+		const token = await getAgentAuthToken(page.params.namespace!, page.params.project!);
+		if (!token) return;
+		await fetch(`${agentBase}/agent/sessions/${id}/unarchive`, {
+			method: 'POST',
+			headers: { Authorization: `Bearer ${token}` }
+		});
+		const moved = archivedSessions.find((s) => s.id === id);
+		archivedSessions = archivedSessions.filter((s) => s.id !== id);
+		if (moved) sessions = [{ ...moved, archived: false }, ...sessions];
 	}
 
 	onMount(async () => {
@@ -190,21 +210,63 @@
 							</Tooltip>
 						{/if}
 					</a>
-					{#if confirmDelete === s.id}
+					{#if confirmArchive === s.id}
 						<span class="confirm-row">
-							<span class="confirm-text">Delete?</span>
+							<span class="confirm-text">Archive?</span>
 							<button class="btn btn-sm btn-danger-outline" onclick={() => archiveSession(s.id)}>Yes</button>
-							<button class="btn btn-sm btn-ghost" onclick={() => (confirmDelete = null)}>No</button>
+							<button class="btn btn-sm btn-ghost" onclick={() => (confirmArchive = null)}>No</button>
 						</span>
 					{:else}
 						<button
 							class="delete-btn"
-							title="Delete session"
-							onclick={(e) => { e.preventDefault(); confirmDelete = s.id; }}
-						>✕</button>
+							title="Archive session"
+							onclick={(e) => { e.preventDefault(); confirmArchive = s.id; }}
+						>🗄</button>
 					{/if}
 				</div>
 			{/each}
+		</div>
+	{/if}
+
+	{#if archivedSessions.length}
+		<div class="archived-section">
+			<button class="archived-toggle" onclick={() => (showArchived = !showArchived)}>
+				<span class="chevron" class:open={showArchived}>▸</span>
+				Archived sessions ({archivedSessions.length})
+			</button>
+			{#if showArchived}
+				<div class="session-list archived-list">
+					{#each archivedSessions as s (s.id)}
+						{@const hasMeta = s._meta && Object.keys(s._meta).length > 0}
+						<div class="session-row">
+							<a class="session-link" href="{base}/{s.id}">
+								<span class="status-dot {s.status}"></span>
+								<Tooltip placement="bottom">
+									{#snippet children()}<span class="session-label">{s.label}</span>{/snippet}
+									{#snippet content()}<span class="label-tooltip">{s.label}</span>{/snippet}
+								</Tooltip>
+								{#if s.provider}
+									<span class="provider-badge">{s.provider}</span>
+								{/if}
+								<span class="session-time">{s.updated_at ? new Date(s.updated_at).toLocaleString() : ''}</span>
+								{#if hasMeta}
+									<Tooltip placement="bottom">
+										{#snippet children()}<span class="meta-badge">meta</span>{/snippet}
+										{#snippet content()}
+											<pre class="meta-pre">{JSON.stringify(s._meta, null, 2)}</pre>
+										{/snippet}
+									</Tooltip>
+								{/if}
+							</a>
+							<button
+								class="btn btn-sm btn-ghost restore-btn"
+								title="Restore session"
+								onclick={(e) => { e.preventDefault(); unarchiveSession(s.id); }}
+							>Restore</button>
+						</div>
+					{/each}
+				</div>
+			{/if}
 		</div>
 	{/if}
 </div>
@@ -238,4 +300,11 @@
 	.delete-btn:hover { color: var(--color-danger); }
 	.confirm-row { display: flex; align-items: center; gap: 0.4rem; padding: 0 0.6rem; flex-shrink: 0; }
 	.confirm-text { font-size: 12px; color: var(--color-text-muted); }
+	.archived-section { margin-top: 1rem; }
+	.archived-toggle { display: flex; align-items: center; gap: 0.4rem; background: none; border: none; cursor: pointer; color: var(--color-text-muted); font-size: 12px; padding: 0.3rem 0; }
+	.archived-toggle:hover { color: var(--color-text); }
+	.chevron { display: inline-block; transition: transform 0.1s; font-size: 10px; }
+	.chevron.open { transform: rotate(90deg); }
+	.archived-list { margin-top: 0.4rem; opacity: 0.85; }
+	.restore-btn { margin-right: 0.6rem; flex-shrink: 0; }
 </style>

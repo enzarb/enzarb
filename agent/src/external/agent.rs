@@ -1,7 +1,7 @@
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use axum::{
     Json,
-    extract::{Extension, Path, State, WebSocketUpgrade},
+    extract::{Extension, Path, Query, State, WebSocketUpgrade},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
@@ -55,12 +55,24 @@ pub struct CreateSessionRequest {
     pub provider: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct ListSessionsQuery {
+    #[serde(default)]
+    pub archived: bool,
+}
+
 pub async fn list_sessions(
     State(state): State<AppState>,
     Extension(perms): Extension<ProjectPermissions>,
+    Query(query): Query<ListSessionsQuery>,
 ) -> Result<Json<Vec<SessionMeta>>, StatusCode> {
     perms.require(PERM)?;
-    Ok(Json(state.acp_store.list_sessions().await))
+    let sessions = if query.archived {
+        state.acp_store.list_archived_sessions().await
+    } else {
+        state.acp_store.list_sessions().await
+    };
+    Ok(Json(sessions))
 }
 
 pub async fn list_providers() -> Json<&'static [crate::acp::providers::ProviderSpec]> {
@@ -99,11 +111,9 @@ pub async fn get_session(
     Path(id): Path<String>,
 ) -> Result<Json<SessionMeta>, StatusCode> {
     perms.require(PERM)?;
-    state
-        .acp_store
-        .list_sessions()
-        .await
-        .into_iter()
+    let mut all = state.acp_store.list_sessions().await;
+    all.extend(state.acp_store.list_archived_sessions().await);
+    all.into_iter()
         .find(|s| s.id == id)
         .map(Json)
         .ok_or(StatusCode::NOT_FOUND)
@@ -118,6 +128,20 @@ pub async fn archive_session(
     state
         .acp_store
         .archive_session(&id)
+        .await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+pub async fn unarchive_session(
+    State(state): State<AppState>,
+    Extension(perms): Extension<ProjectPermissions>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    perms.require(PERM)?;
+    state
+        .acp_store
+        .unarchive_session(&id)
         .await
         .map(|_| StatusCode::NO_CONTENT)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)

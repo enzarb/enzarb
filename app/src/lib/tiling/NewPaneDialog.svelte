@@ -51,6 +51,8 @@
 	let selectedType = $state<PaneType>('terminal');
 	let processes: any[] = $state([]);
 	let sessions: any[] = $state([]);
+	let archivedSessions: any[] = $state([]);
+	let showArchived = $state(false);
 	let loading = $state(false);
 	let err = $state('');
 
@@ -76,6 +78,7 @@
 		workspacePaths = null;
 		processes = [];
 		sessions = [];
+		archivedSessions = [];
 		newCwd = loadLastCwd(ns, proj);
 	}
 
@@ -96,8 +99,12 @@
 				const res = await fetch(`${agentBase}/processes`, { headers: auth });
 				if (res.ok) processes = await res.json();
 			} else {
-				const res = await fetch(`${agentBase}/agent/sessions`, { headers: auth });
+				const [res, archivedRes] = await Promise.all([
+					fetch(`${agentBase}/agent/sessions`, { headers: auth }),
+					fetch(`${agentBase}/agent/sessions?archived=true`, { headers: auth })
+				]);
 				if (res.ok) sessions = await res.json();
+				if (archivedRes.ok) archivedSessions = await archivedRes.json();
 			}
 		} catch {
 			err = 'Failed to load.';
@@ -160,6 +167,34 @@
 		} finally {
 			creating = false;
 		}
+	}
+
+	async function archiveSession(id: string) {
+		if (!selectedRef) return;
+		const ref = selectedRef;
+		const token = await getAgentAuthToken(ref.namespace, ref.project);
+		if (!token) return;
+		await fetch(`${agentBase}/agent/sessions/${id}`, {
+			method: 'DELETE',
+			headers: { Authorization: `Bearer ${token}` }
+		});
+		const moved = sessions.find((s) => s.id === id);
+		sessions = sessions.filter((s) => s.id !== id);
+		if (moved) archivedSessions = [{ ...moved, archived: true }, ...archivedSessions];
+	}
+
+	async function unarchiveSession(id: string) {
+		if (!selectedRef) return;
+		const ref = selectedRef;
+		const token = await getAgentAuthToken(ref.namespace, ref.project);
+		if (!token) return;
+		await fetch(`${agentBase}/agent/sessions/${id}/unarchive`, {
+			method: 'POST',
+			headers: { Authorization: `Bearer ${token}` }
+		});
+		const moved = archivedSessions.find((s) => s.id === id);
+		archivedSessions = archivedSessions.filter((s) => s.id !== id);
+		if (moved) sessions = [{ ...moved, archived: false }, ...sessions];
 	}
 </script>
 
@@ -269,12 +304,34 @@
 			{:else}
 				<div class="item-list">
 					{#each sessions as s}
-						<button class="item" onclick={() => onOpenAgent?.(s.id, s.label || s.id, selectedRef!.namespace, selectedRef!.project)}>
-							<span class="status-dot {s.status}"></span>
-							<span class="item-name">{s.label || s.id}</span>
-						</button>
+						<div class="item-with-action">
+							<button class="item" onclick={() => onOpenAgent?.(s.id, s.label || s.id, selectedRef!.namespace, selectedRef!.project)}>
+								<span class="status-dot {s.status}"></span>
+								<span class="item-name">{s.label || s.id}</span>
+							</button>
+							<button class="action-btn" title="Archive session" onclick={() => archiveSession(s.id)}>🗄</button>
+						</div>
 					{/each}
 				</div>
+			{/if}
+			{#if archivedSessions.length}
+				<button class="archived-toggle" onclick={() => (showArchived = !showArchived)}>
+					<span class="chevron" class:open={showArchived}>▸</span>
+					Archived ({archivedSessions.length})
+				</button>
+				{#if showArchived}
+					<div class="item-list archived-list">
+						{#each archivedSessions as s}
+							<div class="item-with-action">
+								<button class="item" onclick={() => onOpenAgent?.(s.id, s.label || s.id, selectedRef!.namespace, selectedRef!.project)}>
+									<span class="status-dot {s.status}"></span>
+									<span class="item-name">{s.label || s.id}</span>
+								</button>
+								<button class="action-btn" title="Restore session" onclick={() => unarchiveSession(s.id)}>↩</button>
+							</div>
+						{/each}
+					</div>
+				{/if}
 			{/if}
 		</div>
 		<div class="section">
@@ -305,6 +362,15 @@
 	.item { display: flex; align-items: center; gap: 0.4rem; padding: 0.35rem 0.5rem; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); color: var(--color-text); font-size: 12px; cursor: pointer; text-align: left; }
 	.item:hover { border-color: var(--color-accent); background: var(--color-surface-2); }
 	.item-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); }
+	.item-with-action { display: flex; align-items: center; gap: 0.25rem; }
+	.item-with-action .item { flex: 1; }
+	.action-btn { flex-shrink: 0; padding: 0.35rem 0.4rem; font-size: 12px; line-height: 1; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); color: var(--color-text-muted); cursor: pointer; }
+	.action-btn:hover { color: var(--color-text); border-color: var(--color-accent); }
+	.archived-toggle { display: flex; align-items: center; gap: 0.35rem; background: none; border: none; cursor: pointer; color: var(--color-text-muted); font-size: 11px; padding: 0.3rem 0; }
+	.archived-toggle:hover { color: var(--color-text); }
+	.chevron { display: inline-block; transition: transform 0.1s; font-size: 9px; }
+	.chevron.open { transform: rotate(90deg); }
+	.archived-list { opacity: 0.85; margin-top: 0.3rem; }
 	.item-meta { font-size: 11px; color: var(--color-text-muted); flex-shrink: 0; }
 	.status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-text-muted); flex-shrink: 0; }
 	.status-dot.running { background: #3fb950; }

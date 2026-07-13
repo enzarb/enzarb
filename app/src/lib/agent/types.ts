@@ -29,6 +29,7 @@ export interface SessionMeta {
 	mode_id: string | null;
 	available_modes: SessionModeInfo[];
 	config_options: ConfigOptionInfo[];
+	archived: boolean;
 	_meta?: Record<string, unknown>;
 }
 

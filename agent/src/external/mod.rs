@@ -48,6 +48,10 @@ pub fn router(state: AppState) -> Router {
             "/agent/sessions/{id}",
             get(agent::get_session).delete(agent::archive_session),
         )
+        .route(
+            "/agent/sessions/{id}/unarchive",
+            post(agent::unarchive_session),
+        )
         .route("/agent/sessions/{id}/ws", get(agent::session_ws))
         // File operations
         .route("/files", get(files::list).delete(files::delete))

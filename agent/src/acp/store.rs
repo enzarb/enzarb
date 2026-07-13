@@ -77,6 +77,9 @@ pub struct SessionMeta {
     pub mode_id: Option<String>,
     pub available_modes: Vec<SessionModeInfo>,
     pub config_options: Vec<ConfigOptionPayload>,
+    /// True when the user has archived this session: hidden from the primary
+    /// list but still loadable and restorable.
+    pub archived: bool,
     #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
     pub meta: Option<JsonMap<String, serde_json::Value>>,
 }
@@ -124,6 +127,7 @@ fn session_meta_from_info(
     live: &HashSet<String>,
     modes: &HashMap<String, (Option<String>, Vec<SessionModeInfo>)>,
     configs: &HashMap<String, Vec<ConfigOptionPayload>>,
+    archived: bool,
 ) -> SessionMeta {
     let id = info.session_id.to_string();
     let status = if live.contains(&id) {
@@ -148,6 +152,7 @@ fn session_meta_from_info(
         mode_id,
         available_modes,
         config_options,
+        archived,
     }
 }
 
@@ -346,7 +351,17 @@ impl AcpStore {
         Ok(all)
     }
 
+    /// Lists the active (non-archived) sessions shown in the primary list.
     pub async fn list_sessions(&self) -> Vec<SessionMeta> {
+        self.list_sessions_filtered(false).await
+    }
+
+    /// Lists only the archived sessions (hidden from the primary list).
+    pub async fn list_archived_sessions(&self) -> Vec<SessionMeta> {
+        self.list_sessions_filtered(true).await
+    }
+
+    async fn list_sessions_filtered(&self, want_archived: bool) -> Vec<SessionMeta> {
         let active: Vec<String> = self.active_providers.lock().await.iter().cloned().collect();
         let mut infos: Vec<(String, SessionInfo)> = Vec::new();
         for provider_id in active {
@@ -364,9 +379,9 @@ impl AcpStore {
 
         let mut sessions: Vec<SessionMeta> = infos
             .into_iter()
-            .filter(|(_, s)| !archived.contains(&s.session_id.to_string()))
+            .filter(|(_, s)| archived.contains(&s.session_id.to_string()) == want_archived)
             .map(|(provider_id, s)| {
-                session_meta_from_info(s, &provider_id, &live, &modes, &configs)
+                session_meta_from_info(s, &provider_id, &live, &modes, &configs, want_archived)
             })
             .collect();
 
@@ -380,18 +395,23 @@ impl AcpStore {
         self.live_sessions.lock().await.len()
     }
 
+    /// Archives a session: drops its ephemeral in-memory state and hides it
+    /// from the primary list, but leaves the on-disk transcript and persisted
+    /// prefs intact so it can be restored later via `unarchive_session`. The
+    /// cwd/provider caches repopulate from `session/list` on the next listing.
     pub async fn archive_session(&self, session_id: &str) -> Result<()> {
         self.history.lock().await.remove(session_id);
         self.channels.lock().await.remove(session_id);
         self.live_sessions.lock().await.remove(session_id);
         self.session_modes.lock().await.remove(session_id);
         self.session_configs.lock().await.remove(session_id);
-        self.session_cwd.lock().await.remove(session_id);
-        self.session_provider.lock().await.remove(session_id);
         self.archived.lock().await.insert(session_id.to_string());
-        if self.prefs.lock().await.remove(session_id).is_some() {
-            let _ = self.persist_prefs().await;
-        }
+        self.persist_archived().await
+    }
+
+    /// Restores a previously archived session to the primary list.
+    pub async fn unarchive_session(&self, session_id: &str) -> Result<()> {
+        self.archived.lock().await.remove(session_id);
         self.persist_archived().await
     }
 
@@ -472,6 +492,7 @@ impl AcpStore {
             mode_id,
             available_modes,
             config_options,
+            archived: false,
         })
     }
 
