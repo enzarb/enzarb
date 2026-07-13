@@ -581,7 +581,10 @@ jobs:
             if [ "$PREV_WORKSPACE_TAG" = "v0.0.0" ]; then
               WS_LOG=$(git log --pretty=format:"- %s (%h)" -- agent/ workspace/ | head -50)
             else
-              WS_LOG=$(git log "${PREV_WORKSPACE_TAG}..HEAD~1" --pretty=format:"- %s (%h)" -- agent/ workspace/)
+              # HEAD, not HEAD~1: this step runs before "Commit version bump"
+              # creates the release commit, so HEAD is still the triggering
+              # commit itself — HEAD~1 would exclude it.
+              WS_LOG=$(git log "${PREV_WORKSPACE_TAG}..HEAD" --pretty=format:"- %s (%h)" -- agent/ workspace/)
             fi
 
             if [ -n "$WS_LOG" ]; then
