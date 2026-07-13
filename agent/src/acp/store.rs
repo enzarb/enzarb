@@ -538,6 +538,34 @@ impl AcpStore {
                 .lock()
                 .await
                 .insert(session_id.to_string());
+            // The reconnecting client fetched session meta over REST before this
+            // WS opened and may have raced an empty mode/config cache (the caches
+            // only fill on create/first-load, and get_session merely reads them).
+            // The first-attach path below closes that gap by broadcasting
+            // SessionState after session/load — but a reconnect skips that path,
+            // so without this the composer's mode/model selectors stay empty.
+            // rx (subscribed above) captures this send; it arrives after the
+            // replayed history, matching the first-attach ordering.
+            let (mode_id, available_modes) = self
+                .session_modes
+                .lock()
+                .await
+                .get(session_id)
+                .cloned()
+                .unwrap_or_default();
+            let config_options = self
+                .session_configs
+                .lock()
+                .await
+                .get(session_id)
+                .cloned()
+                .unwrap_or_default();
+            let _ = tx.send(AcpWsEvent::SessionState {
+                session_id: session_id.to_string(),
+                mode_id,
+                available_modes,
+                config_options,
+            });
             return Ok((snapshot, rx));
         }
 
