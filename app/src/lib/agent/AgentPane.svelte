@@ -95,7 +95,7 @@
 			.reverse()
 			.find((t) => t.kind === 'message' && t.role === 'assistant');
 		if (lastAssistant?.kind === 'message' && looksLikeQuestion(lastAssistant.text)) {
-			notify(`Claude asked a question — ${project}`, lastAssistant.text.trim(), `agent-q-${sessionId}`);
+			notify(`Agent asked a question — ${project}`, lastAssistant.text.trim(), `agent-q-${sessionId}`);
 		}
 	}
 
@@ -184,7 +184,7 @@
 			}
 			case 'permission_request': {
 				if (historySettled) {
-					notify(`Claude needs permission — ${project}`, event.title, `agent-perm-${sessionId}`);
+					notify(`Agent needs permission — ${project}`, event.title, `agent-perm-${sessionId}`);
 				}
 				const request = {
 					requestId: event.request_id,
@@ -362,7 +362,7 @@
 		{#each timeline as item, i (i)}
 			{#if item.kind === 'message'}
 				<div class="message {item.role}">
-					<div class="message-role">{item.role === 'user' ? 'You' : 'Claude'}</div>
+					<div class="message-role">{item.role === 'user' ? 'You' : 'Agent'}</div>
 					<div class="message-body">
 						{#if item.role === 'assistant'}
 							<Markdown text={item.text} />
@@ -394,7 +394,7 @@
 		<textarea
 			bind:this={textareaEl}
 			bind:value={draft}
-			placeholder="Ask Claude Code about this project…"
+			placeholder="Ask the agent about this project…"
 			rows="3"
 			oninput={(e) => growTextarea(e.currentTarget)}
 			onkeydown={(e) => {
@@ -449,7 +449,7 @@
 						class:on={notifyEnabled}
 						title={notifyEnabled
 							? 'Notifications on — click to disable'
-							: 'Notify me when Claude asks a question'}
+							: 'Notify me when the agent asks a question'}
 						onclick={toggleNotifications}
 					>{notifyEnabled ? '🔔' : '🔕'}</button>
 				{/if}

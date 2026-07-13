@@ -304,8 +304,8 @@
 	.btn-icon { background: none; border: none; color: var(--color-text-muted); cursor: pointer; padding: 0 0.25rem; line-height: 1; }
 	.btn-icon:hover { color: var(--color-danger, #c0392b); }
 	.secret-add-row { display: flex; gap: 0.5rem; align-items: center; }
-	.input-key { width: 140px; padding: 0.375rem 0.5rem; border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-surface-2); color: var(--color-text); font-size: 12px; font-family: var(--font-mono); }
-	.input-value { flex: 1; padding: 0.375rem 0.5rem; border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-surface-2); color: var(--color-text); font-size: 13px; }
+	.input-key { flex: 0 0 160px; box-sizing: border-box; padding: 0.375rem 0.5rem; border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-surface-2); color: var(--color-text); font-size: 13px; line-height: 1.4; font-family: var(--font-mono); }
+	.input-value { flex: 1 1 0; min-width: 0; box-sizing: border-box; padding: 0.375rem 0.5rem; border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-surface-2); color: var(--color-text); font-size: 13px; line-height: 1.4; }
 	.color-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
 	.color-preview { width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--color-border); flex-shrink: 0; }
 	.swatches { display: flex; gap: 0.375rem; flex-wrap: wrap; }

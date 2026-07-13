@@ -185,7 +185,7 @@
 	{:else if loadError}
 		<p class="error">{loadError}</p>
 	{:else if !sessions.length}
-		<p class="muted">No sessions yet — start one to chat with Claude Code about this project.</p>
+		<p class="muted">No sessions yet — start one to chat with a coding agent about this project.</p>
 	{:else}
 		<div class="session-list">
 			{#each sessions as s (s.id)}
@@ -277,8 +277,8 @@
 	.new-session-form { margin-bottom: 1rem; }
 	.cwd-label { display: block; font-size: 12px; color: var(--color-text-muted); margin-bottom: 0.35rem; }
 	.new-session-row { display: flex; gap: 0.5rem; align-items: center; }
-	.cwd-input { flex: 1; font-family: var(--font-mono); font-size: 13px; padding: 0.4rem 0.6rem; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); color: var(--color-text); min-width: 0; }
-	.composer-select { font-family: var(--font-mono); font-size: 13px; padding: 0.4rem 0.6rem; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); color: var(--color-text); }
+	.cwd-input { flex: 1 1 auto; min-width: 12rem; font-family: var(--font-mono); font-size: 13px; padding: 0.4rem 0.6rem; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); color: var(--color-text); }
+	.composer-select { flex: 0 0 auto; max-width: 12rem; font-family: var(--font-mono); font-size: 13px; padding: 0.4rem 0.6rem; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); color: var(--color-text); }
 	.provider-badge { font-size: 10px; font-family: var(--font-mono); padding: 1px 5px; border-radius: 3px; background: var(--color-surface-2); color: var(--color-text-muted); border: 1px solid var(--color-border); flex-shrink: 0; text-transform: capitalize; }
 	.agents-header h3 { margin: 0; }
 	.muted { color: var(--color-text-muted); font-size: 13px; }
