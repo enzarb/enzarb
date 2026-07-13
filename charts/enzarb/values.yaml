@@ -174,7 +174,7 @@ acmeSelfcheckResolver:
 workspace:
   image:
     repository: ghcr.io/enzarb/workspace
-    tag: "v0.108.3"
+    tag: "v0.108.4"
   # StorageClass for project home PVCs. Empty uses the cluster's default class.
   storageClass: ""
   # nodeSelector applied to every workspace pod (merged with the GPU selector
@@ -191,7 +191,7 @@ workspace:
   # changelogs is a map of workspace image version tag → workspace-scoped changelog
   # for that release. The operator uses this to show only the changes between the
   # user's running version and the desired version. Populated by CI on workspace builds.
-  changelogs: {"v0.108.3": "v0.108.3 (2026-07-13):\n- fix(agent): re-push session mode/config state on WS reconnect (7cbbfc5)", "v0.108.2": "v0.108.2 (2026-07-13):\n- chore: release v0.108.0 [skip ci] (fd38ade)", "v0.108.0": "v0.108.0 (2026-07-13):\n- fix(agent): list historical Claude sessions on legacy workspaces (87b6fc4)\n- feat(agent): archive/restore agent sessions instead of only deleting (9fe6f73)", "v0.107.0": "v0.107.0 (2026-07-13):\n- feat(agent): support multiple ACP agent providers (Claude, Gemini, Copilot, Codex, OpenCode) (5cf3149)", "v0.106.0": "v0.106.0 (2026-07-13):\n- feat(agent): surface usage/cost, stop reason, timestamps, and slash commands in agent sessions (0c04058)", "v0.105.0": "v0.105.0 (2026-07-12):\n- feat(app): cross-project tiling, richer agent step detail, design-system cleanup (4a70ab5)", "v0.103.0": "v0.103.0 (2026-07-10):\n- feat(agent): show running shell command on pending/running tool calls (88d3608)", "v0.98.6": "v0.98.6 (2026-07-08):\n- fix(agent,app): show file path on read/write tool calls, render output as markdown (12dfc38)", "v0.98.2": "v0.98.2 (2026-07-07):\n- fix(agent): stop stuck permission prompts from wedging the ACP connection (cfa1eb6)", "v0.98.1": "v0.98.1 (2026-07-07):\n- fix(agent): auto-respawn dead ACP connection (28f78c0)"}
+  changelogs: {"v0.108.4": "v0.108.4 (2026-07-13):\n- fix(workspace): enable bash-completion in interactive shells (e33c019)", "v0.108.3": "v0.108.3 (2026-07-13):\n- fix(agent): re-push session mode/config state on WS reconnect (7cbbfc5)", "v0.108.2": "v0.108.2 (2026-07-13):\n- chore: release v0.108.0 [skip ci] (fd38ade)", "v0.108.0": "v0.108.0 (2026-07-13):\n- fix(agent): list historical Claude sessions on legacy workspaces (87b6fc4)\n- feat(agent): archive/restore agent sessions instead of only deleting (9fe6f73)", "v0.107.0": "v0.107.0 (2026-07-13):\n- feat(agent): support multiple ACP agent providers (Claude, Gemini, Copilot, Codex, OpenCode) (5cf3149)", "v0.106.0": "v0.106.0 (2026-07-13):\n- feat(agent): surface usage/cost, stop reason, timestamps, and slash commands in agent sessions (0c04058)", "v0.105.0": "v0.105.0 (2026-07-12):\n- feat(app): cross-project tiling, richer agent step detail, design-system cleanup (4a70ab5)", "v0.103.0": "v0.103.0 (2026-07-10):\n- feat(agent): show running shell command on pending/running tool calls (88d3608)", "v0.98.6": "v0.98.6 (2026-07-08):\n- fix(agent,app): show file path on read/write tool calls, render output as markdown (12dfc38)", "v0.98.2": "v0.98.2 (2026-07-07):\n- fix(agent): stop stuck permission prompts from wedging the ACP connection (cfa1eb6)"}
 database:
   clusterName: enzarb-db
   roles:
