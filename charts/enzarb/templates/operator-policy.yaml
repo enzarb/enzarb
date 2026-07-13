@@ -114,3 +114,82 @@ spec:
     namespaceSelector:
       matchLabels:
         enzarb.io/type: deploy
+---
+# enzarb-deployer grants tenants CRUD on NetworkPolicies in their own deploy
+# namespace (rbac.yaml), so they can further restrict traffic to their own
+# workloads. But NetworkPolicy rules are purely additive (allow-list) — a
+# tenant-authored rule with a peer that matches "everything" would widen
+# ingress/egress beyond what enzarb-deploy-isolation (the operator's own
+# policy) permits, defeating the isolation it enforces. This policy denies
+# any tenant-created NetworkPolicy containing an unscoped peer: a `from`/`to`
+# peer selector needs at least one of podSelector, namespaceSelector (with
+# actual match criteria — an empty {} matches every namespace), or a
+# non-0.0.0.0/0-style ipBlock. It does not evaluate whether the peer is
+# *narrower* than enzarb-deploy-isolation, only that it isn't unbounded.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: enzarb-restrict-networkpolicy-peers
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["networking.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["networkpolicies"]
+  variables:
+    - name: isOperator
+      expression: >-
+        request.userInfo.username == 'system:serviceaccount:{{ .Release.Namespace }}:{{ .Values.serviceAccountName.operator }}'
+    - name: isAdmin
+      expression: >-
+        request.userInfo.username == 'system:admin'
+    - name: hasOpenIngress
+      # A peer is "open" if it has none of podSelector/namespaceSelector/ipBlock
+      # (matches everything), an empty namespaceSelector (matches every
+      # namespace), or a /0 ipBlock (matches every IP). VAP variables can't take
+      # parameters, so the peer predicate is inlined identically for from/to.
+      expression: >-
+        has(object.spec.ingress) && object.spec.ingress.exists(r,
+          !has(r.from) || size(r.from) == 0 ||
+          r.from.exists(p,
+            (!has(p.podSelector) && !has(p.namespaceSelector) && !has(p.ipBlock)) ||
+            (has(p.namespaceSelector) &&
+              (!has(p.namespaceSelector.matchLabels) || size(p.namespaceSelector.matchLabels) == 0) &&
+              (!has(p.namespaceSelector.matchExpressions) || size(p.namespaceSelector.matchExpressions) == 0)) ||
+            (has(p.ipBlock) && (p.ipBlock.cidr == '0.0.0.0/0' || p.ipBlock.cidr == '::/0'))
+          )
+        )
+    - name: hasOpenEgress
+      expression: >-
+        has(object.spec.egress) && object.spec.egress.exists(r,
+          !has(r.to) || size(r.to) == 0 ||
+          r.to.exists(p,
+            (!has(p.podSelector) && !has(p.namespaceSelector) && !has(p.ipBlock)) ||
+            (has(p.namespaceSelector) &&
+              (!has(p.namespaceSelector.matchLabels) || size(p.namespaceSelector.matchLabels) == 0) &&
+              (!has(p.namespaceSelector.matchExpressions) || size(p.namespaceSelector.matchExpressions) == 0)) ||
+            (has(p.ipBlock) && (p.ipBlock.cidr == '0.0.0.0/0' || p.ipBlock.cidr == '::/0'))
+          )
+        )
+  validations:
+    - expression: "variables.isOperator || variables.isAdmin || (!variables.hasOpenIngress && !variables.hasOpenEgress)"
+      reason: Forbidden
+      message: >-
+        NetworkPolicy rules must scope every ingress/egress peer with a
+        podSelector, a namespaceSelector carrying match criteria, or a
+        non-0.0.0.0/0 ipBlock. Unscoped or open rules are rejected to
+        prevent widening beyond the operator-managed isolation policy.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: enzarb-restrict-networkpolicy-peers-deploy
+spec:
+  policyName: enzarb-restrict-networkpolicy-peers
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        enzarb.io/type: deploy

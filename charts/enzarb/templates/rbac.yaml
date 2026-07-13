@@ -204,9 +204,10 @@ subjects:
 # only applies within the tenant's own environment namespace — never cluster-wide.
 #
 # Excluded intentionally: daemonsets, clusterroles/bindings, clusterissuers,
-# nodes, networkpolicies (operator-owned isolation policy — see
-# enzarb-deploy-isolation), and any resource that could enable privilege
-# escalation or lateral movement. Services are restricted to ClusterIP type by the
+# nodes, and any resource that could enable privilege escalation or lateral
+# movement. NetworkPolicies are granted, but the enzarb-protect-operator-managed
+# VAP prevents tenants from touching the operator's own enzarb-deploy-isolation
+# policy (see below). Services are restricted to ClusterIP type by the
 # enzarb-restrict-service-type ValidatingAdmissionPolicy. Tenants may create
 # namespace-scoped ServiceAccounts, Roles, and RoleBindings (see below) to
 # sub-delegate a subset of their own permissions to per-component identities;
@@ -259,13 +260,16 @@ rules:
   - apiGroups: ["cert-manager.io"]
     resources: ["issuers"]
     verbs: ["get", "list", "watch"]
-  # NetworkPolicies are intentionally excluded: the operator manages the
-  # ingress/egress isolation policy (enzarb-deploy-isolation) for every deploy
-  # namespace itself, and tenant write access to it would let a workspace pod
-  # disable its own network isolation. See enzarb-protect-operator-managed
-  # (operator-policy.yaml) for defense-in-depth against tampering with any
-  # other operator-owned object a tenant does hold RBAC on (e.g. the
-  # enzarb-deployer Role/RoleBinding mirrored into this namespace).
+  # NetworkPolicies — tenants may manage their own namespace network policies.
+  # The operator's own ingress/egress isolation policy (enzarb-deploy-isolation)
+  # carries app.kubernetes.io/managed-by=enzarb-operator, so the
+  # enzarb-protect-operator-managed ValidatingAdmissionPolicy (operator-policy.yaml)
+  # denies UPDATE/DELETE on it from any identity but the operator SA — this RBAC
+  # grant alone would otherwise let a workspace pod tamper with its own isolation
+  # policy, which is exactly what the VAP exists to backstop.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # pgop — tenants may manage Postgres clusters, roles, and databases in their env namespace
   - apiGroups: ["pgop.ruck.io"]
     resources: ["clusters", "roles", "databases"]
