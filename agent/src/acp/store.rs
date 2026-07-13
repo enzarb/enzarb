@@ -29,7 +29,7 @@ use crate::init::home_dir;
 
 use super::events::{
     AcpWsClientMsg, AcpWsEvent, ConfigOptionPayload, config_payloads, from_session_update,
-    permission_request_event, tool_kind_str,
+    permission_request_event, stop_reason_str, tool_kind_str,
 };
 use super::permissions::{PermissionRegistry, auto_allow};
 
@@ -600,13 +600,24 @@ impl AcpStore {
                         ))
                         .block_task()
                         .await;
-                    if let Err(e) = result {
-                        let tx = channels.lock().await.get(&session_id).cloned();
-                        if let Some(tx) = tx {
-                            let _ = tx.send(AcpWsEvent::Error {
-                                session_id: Some(session_id.clone()),
-                                message: e.to_string(),
-                            });
+                    match &result {
+                        Ok(response) => {
+                            let tx = channels.lock().await.get(&session_id).cloned();
+                            if let Some(tx) = tx {
+                                let _ = tx.send(AcpWsEvent::TurnEnded {
+                                    session_id: session_id.clone(),
+                                    stop_reason: stop_reason_str(response.stop_reason),
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            let tx = channels.lock().await.get(&session_id).cloned();
+                            if let Some(tx) = tx {
+                                let _ = tx.send(AcpWsEvent::Error {
+                                    session_id: Some(session_id.clone()),
+                                    message: e.to_string(),
+                                });
+                            }
                         }
                     }
                     live_sessions.lock().await.remove(&session_id);

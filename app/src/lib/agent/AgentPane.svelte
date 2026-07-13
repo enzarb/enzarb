@@ -76,6 +76,8 @@
 		).filter((o) => o.category !== 'mode')
 	);
 	let running = $state(false);
+	let usage: { used: number; size: number; costAmount: number | null; costCurrency: string | null } | null =
+		$state(null);
 	let notifyEnabled = $state(false);
 	// Set in onMount so SSR and hydration render the same markup.
 	let notifySupported = $state(false);
@@ -229,6 +231,29 @@
 				}
 				break;
 			}
+			case 'turn_ended':
+				// Only surface non-routine stops; end_turn is the expected case and
+				// would just add noise after every single message.
+				if (event.stop_reason !== 'end_turn') {
+					timeline.push({
+						kind: 'message',
+						role: 'assistant',
+						text: `⚠️ Turn stopped: ${event.stop_reason.replace(/_/g, ' ')}`
+					});
+				}
+				break;
+			case 'usage_update':
+				usage = {
+					used: event.used,
+					size: event.size,
+					costAmount: event.cost_amount,
+					costCurrency: event.cost_currency
+				};
+				break;
+			case 'available_commands_update':
+			case 'session_info_update':
+				// Not surfaced in the UI yet.
+				break;
 		}
 		scheduleScroll();
 	}
@@ -402,6 +427,19 @@
 						{/each}
 					</select>
 				{/if}
+				{#if usage}
+					<span
+						class="usage-indicator"
+						title={usage.costAmount != null
+							? `Session cost: ${usage.costAmount.toFixed(2)} ${usage.costCurrency ?? ''}`
+							: 'Context window usage'}
+					>
+						{Math.round((usage.used / usage.size) * 100)}% context
+						{#if usage.costAmount != null}
+							· {usage.costAmount.toFixed(2)} {usage.costCurrency ?? ''}
+						{/if}
+					</span>
+				{/if}
 			</div>
 			<div class="composer-buttons">
 				{#if notifySupported}
@@ -466,4 +504,5 @@
 	.composer-buttons { display: flex; gap: 0.4rem; flex-shrink: 0; }
 	.composer-select { width: auto; flex: 0 0 auto; font-size: 11px; padding: 0.15rem 0.4rem; border-radius: 4px; border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text-muted); cursor: pointer; }
 	.composer-select:focus { outline: none; border-color: var(--color-accent, #4f8ef7); color: var(--color-text); }
+	.usage-indicator { font-size: 11px; color: var(--color-text-muted); white-space: nowrap; }
 </style>

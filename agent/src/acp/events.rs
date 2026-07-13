@@ -4,7 +4,7 @@
 
 use agent_client_protocol::schema::v1::{
     Plan, PlanEntryPriority, PlanEntryStatus, RequestPermissionRequest, SessionConfigKind,
-    SessionConfigOption, SessionConfigSelectOptions, SessionUpdate, ToolCallContent,
+    SessionConfigOption, SessionConfigSelectOptions, SessionUpdate, StopReason, ToolCallContent,
     ToolCallStatus, ToolKind,
 };
 use serde::{Deserialize, Serialize};
@@ -105,6 +105,43 @@ pub enum AcpWsEvent {
         session_id: String,
         running: bool,
     },
+    /// Why the just-finished turn stopped (end_turn, max_tokens, refusal,
+    /// cancelled, ...), sent alongside the `TurnStatus{running:false}` that
+    /// already announces completion.
+    TurnEnded {
+        session_id: String,
+        stop_reason: &'static str,
+    },
+    /// Context-window usage pushed periodically during a turn, plus the
+    /// running session cost when the agent reports one. This is
+    /// context-window fullness (`used`/`size`), not per-turn input/output
+    /// token counts — ACP only exposes those behind an unstable feature this
+    /// crate doesn't enable.
+    UsageUpdate {
+        session_id: String,
+        used: u64,
+        size: u64,
+        cost_amount: Option<f64>,
+        cost_currency: Option<String>,
+    },
+    /// Slash commands the agent currently supports (e.g. `/compact`), so the
+    /// UI can offer them instead of the user having to know them by heart.
+    AvailableCommandsUpdate {
+        session_id: String,
+        commands: Vec<AvailableCommandPayload>,
+    },
+    /// The agent renamed/retitled the session (e.g. after summarizing the
+    /// first user message into a short title).
+    SessionInfoUpdate {
+        session_id: String,
+        title: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AvailableCommandPayload {
+    pub name: String,
+    pub description: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -346,7 +383,42 @@ pub fn from_session_update(session_id: &str, update: SessionUpdate) -> Vec<AcpWs
             session_id,
             config_options: config_payloads(&update.config_options),
         }],
+        SessionUpdate::UsageUpdate(usage) => vec![AcpWsEvent::UsageUpdate {
+            session_id,
+            used: usage.used,
+            size: usage.size,
+            cost_amount: usage.cost.as_ref().map(|c| c.amount),
+            cost_currency: usage.cost.map(|c| c.currency),
+        }],
+        SessionUpdate::AvailableCommandsUpdate(update) => {
+            vec![AcpWsEvent::AvailableCommandsUpdate {
+                session_id,
+                commands: update
+                    .available_commands
+                    .into_iter()
+                    .map(|c| AvailableCommandPayload {
+                        name: c.name,
+                        description: c.description,
+                    })
+                    .collect(),
+            }]
+        }
+        SessionUpdate::SessionInfoUpdate(update) => vec![AcpWsEvent::SessionInfoUpdate {
+            session_id,
+            title: update.title.take(),
+        }],
         _ => vec![],
+    }
+}
+
+pub fn stop_reason_str(reason: StopReason) -> &'static str {
+    match reason {
+        StopReason::EndTurn => "end_turn",
+        StopReason::MaxTokens => "max_tokens",
+        StopReason::MaxTurnRequests => "max_turn_requests",
+        StopReason::Refusal => "refusal",
+        StopReason::Cancelled => "cancelled",
+        _ => "end_turn",
     }
 }
 
@@ -361,10 +433,24 @@ fn plan_entries(plan: &Plan) -> Vec<PlanEntryPayload> {
         .collect()
 }
 
+/// Renders a content block to displayable text. Non-text blocks (images,
+/// audio, embedded/linked resources) have no inline representation in the
+/// chat transcript yet, so they render as a bracketed placeholder rather than
+/// silently vanishing.
 fn content_block_text(content: &agent_client_protocol::schema::v1::ContentBlock) -> String {
-    use agent_client_protocol::schema::v1::ContentBlock;
+    use agent_client_protocol::schema::v1::{ContentBlock, EmbeddedResourceResource};
     match content {
         ContentBlock::Text(t) => t.text.clone(),
+        ContentBlock::Image(img) => format!("[image: {}]", img.mime_type),
+        ContentBlock::Audio(audio) => format!("[audio: {}]", audio.mime_type),
+        ContentBlock::ResourceLink(link) => format!("[resource: {}]", link.name),
+        ContentBlock::Resource(res) => match &res.resource {
+            EmbeddedResourceResource::TextResourceContents(t) => t.text.clone(),
+            EmbeddedResourceResource::BlobResourceContents(b) => {
+                format!("[resource: {}]", b.uri)
+            }
+            _ => "[resource]".to_string(),
+        },
         _ => String::new(),
     }
 }

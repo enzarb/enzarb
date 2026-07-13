@@ -49,8 +49,19 @@ export interface PermissionOptionPayload {
 	kind: 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always';
 }
 
-export type AcpWsEvent =
-	| { type: 'session_list'; sessions: SessionMeta[] }
+export interface AvailableCommandInfo {
+	name: string;
+	description: string;
+}
+
+/** Every event carries this from the WS envelope (agent/src/external/agent.rs::encode). */
+export interface WithTimestamp {
+	ts_ms: number;
+}
+
+export type AcpWsEvent = WithTimestamp &
+	(
+		| { type: 'session_list'; sessions: SessionMeta[] }
 	| { type: 'session_created'; session: SessionMeta }
 	| { type: 'message_chunk'; session_id: string; role: 'user' | 'assistant'; text: string }
 	| { type: 'thought_chunk'; session_id: string; text: string }
@@ -99,7 +110,19 @@ export type AcpWsEvent =
 			config_options: ConfigOptionInfo[];
 	  }
 	| { type: 'error'; session_id: string | null; message: string }
-	| { type: 'turn_status'; session_id: string; running: boolean };
+	| { type: 'turn_status'; session_id: string; running: boolean }
+	| { type: 'turn_ended'; session_id: string; stop_reason: string }
+	| {
+			type: 'usage_update';
+			session_id: string;
+			used: number;
+			size: number;
+			cost_amount: number | null;
+			cost_currency: string | null;
+	  }
+	| { type: 'available_commands_update'; session_id: string; commands: AvailableCommandInfo[] }
+	| { type: 'session_info_update'; session_id: string; title: string | null }
+	);
 
 export type AcpWsClientMsg =
 	| { type: 'send_message'; text: string }

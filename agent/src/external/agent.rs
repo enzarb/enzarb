@@ -10,9 +10,29 @@ use serde::Deserialize;
 
 use crate::AppState;
 use crate::acp::AcpWsClientMsg;
+use crate::acp::events::AcpWsEvent;
 use crate::acp::store::SessionMeta;
 use crate::auth::ProjectPermissions;
 use crate::init::home_dir;
+
+/// Wire envelope adding a receive-time timestamp to every event. ACP itself
+/// carries no per-notification timestamp, so this is stamped as each event
+/// crosses into the WS — an approximation (broadcast/serialize time, not
+/// generation time) but close enough for "when did this happen" in the UI.
+#[derive(serde::Serialize)]
+struct TimestampedEvent<'a> {
+    #[serde(flatten)]
+    event: &'a AcpWsEvent,
+    ts_ms: i64,
+}
+
+fn encode(event: &AcpWsEvent) -> Option<String> {
+    serde_json::to_string(&TimestampedEvent {
+        event,
+        ts_ms: chrono::Utc::now().timestamp_millis(),
+    })
+    .ok()
+}
 
 const PERM: &str = "agent:manage";
 
@@ -128,8 +148,8 @@ async fn attach_ws(mut socket: WebSocket, session_id: String, state: AppState) {
 
     // Replay in-memory history directly (reconnect after the session was
     // already loaded in this process lifetime).
-    for event in history {
-        let Ok(text) = serde_json::to_string(&event) else {
+    for event in &history {
+        let Some(text) = encode(event) else {
             continue;
         };
         if ws_tx.send(Message::Text(text.into())).await.is_err() {
@@ -148,7 +168,7 @@ async fn attach_ws(mut socket: WebSocket, session_id: String, state: AppState) {
                 event = rx.recv() => {
                     match event {
                         Ok(event) => {
-                            let Ok(text) = serde_json::to_string(&event) else {
+                            let Some(text) = encode(&event) else {
                                 continue;
                             };
                             if ws_tx.send(Message::Text(text.into())).await.is_err() {
