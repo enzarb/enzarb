@@ -86,6 +86,14 @@ func orgServiceAccountsGroup(orgID string) string {
 // exceeding quota. The operator's own creates are unaffected: it's a Capsule
 // administrator (ensureCapsuleAdministrator), which bypasses tenant quota
 // enforcement entirely.
+//
+// Capsule's CRD rejects namespaceOptions.quota < 1, so it cannot express a
+// hard "zero namespaces" cap. The quota is therefore floored at 1: a tenant
+// that owns no deploy namespaces yet may self-service-create at most one
+// (which the operator then adopts and which remains subject to the deploy-
+// namespace VAP guardrails), but never more. Once the operator has created
+// the tenant's first deploy namespace the count catches up and the quota is
+// again pinned at capacity.
 func (r *ProjectReconciler) ensureCapsuleTenant(ctx context.Context, orgNS, saName string, project *enzarbv1alpha1.Project) error {
 	name := capsuleTenantName(project.Spec.OrgID, project.Spec.Slug)
 	desiredOwners := []any{map[string]any{
@@ -98,7 +106,12 @@ func (r *ProjectReconciler) ensureCapsuleTenant(ctx context.Context, orgNS, saNa
 	if err := r.List(ctx, &nsList, client.MatchingLabels{capsuleTenantLabel: name}); err != nil {
 		return fmt.Errorf("list tenant namespaces: %w", err)
 	}
+	// Capsule requires namespaceOptions.quota >= 1, so floor the owned-namespace
+	// count at 1 (see the doc comment above for the security implication).
 	quota := int64(len(nsList.Items))
+	if quota < 1 {
+		quota = 1
+	}
 
 	tenant := &unstructured.Unstructured{}
 	tenant.SetGroupVersionKind(capsuleTenantGVK)

@@ -1,0 +1,54 @@
+# Capsule Tenant ownership unconditionally grants the workspace ServiceAccount
+# self-service Namespace create/list/watch/delete via capsule-proxy — that's
+# the core of Capsule's multi-tenancy model and can't be scoped down by the
+# owner's clusterRoles (see ensureCapsuleTenant in capsule.go). The operator
+# pins namespaceOptions.quota to the tenant's current namespace count so the
+# owner's self-service create is normally rejected for exceeding quota, but
+# Capsule's CRD forbids quota < 1: a tenant owning zero deploy namespaces has
+# a floor of 1 and could therefore create exactly one namespace before the
+# quota catches up. This policy closes that residual hole in defense-in-depth:
+# the operator is the ONLY thing that should ever create a project's
+# namespaces, so any org/workspace ServiceAccount is denied namespace CREATE
+# outright, independent of quota.
+#
+# Namespaces are cluster-scoped, so this binds cluster-wide (no
+# namespaceSelector) and blacklists tenant identities by username rather than
+# whitelisting — a whitelist over every cluster component that legitimately
+# creates namespaces (kube-controller-manager, the operator, various system
+# controllers) would be brittle. Tenant owners always reach the API server as
+# `system:serviceaccount:user-<orgId>:<sa>` (capsule-proxy impersonates the
+# workspace SA), which is exactly the org-namespace prefix matched here. The
+# operator's own SA and system:admin do not match the prefix and are unaffected.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: enzarb-restrict-namespace-create
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["namespaces"]
+  variables:
+    - name: isTenantServiceAccount
+      # Org and workspace ServiceAccounts live in the user-<orgId> namespace;
+      # capsule-proxy impersonates them, so this is the identity the API server
+      # sees for a tenant-initiated namespace create.
+      expression: >-
+        request.userInfo.username.startsWith('system:serviceaccount:user-')
+  validations:
+    - expression: "!variables.isTenantServiceAccount"
+      reason: Forbidden
+      message: >-
+        Org and workspace ServiceAccounts may not create namespaces; deploy
+        namespaces are provisioned by the enzarb operator.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: enzarb-restrict-namespace-create
+spec:
+  policyName: enzarb-restrict-namespace-create
+  validationActions: ["Deny"]
