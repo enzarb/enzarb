@@ -106,7 +106,7 @@
 	<div class="cv-loading">Loading…</div>
 {:else}
 	<div class="cv-wrap">
-		<pre style:background={bg || undefined} style:color={fg || undefined}><code>{#each lines as line}<span class="line">{#each line as token}<span style:color={token.color || undefined}>{token.content}</span>{/each}</span>{/each}</code></pre>
+		<pre style:background={bg || undefined} style:color={fg || undefined}><code>{#each lines as line, i}<span class="line">{#each line as token}<span style:color={token.color || undefined}>{token.content}</span>{/each}</span>{#if i < lines.length - 1}{'\n'}{/if}{/each}</code></pre>
 	</div>
 {/if}
 
