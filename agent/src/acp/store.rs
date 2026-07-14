@@ -10,16 +10,19 @@
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    CancelNotification, ContentBlock, InitializeRequest, ListSessionsRequest, LoadSessionRequest,
-    NewSessionRequest, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, SelectedPermissionOutcome, SessionInfo, SessionModeState,
-    SessionNotification, SetSessionConfigOptionRequest, SetSessionModeRequest, TextContent,
+    CancelNotification, ClientCapabilities, ContentBlock, CreateElicitationRequest,
+    CreateElicitationResponse, ElicitationAcceptAction, ElicitationAction, ElicitationCapabilities,
+    ElicitationContentValue, ElicitationFormCapabilities, InitializeRequest, ListSessionsRequest,
+    LoadSessionRequest, NewSessionRequest, PromptRequest, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionInfo,
+    SessionModeState, SessionNotification, SetSessionConfigOptionRequest, SetSessionModeRequest,
+    TextContent,
 };
 use agent_client_protocol::{AcpAgent, Agent, Client, ConnectionTo};
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use serde_json::Map as JsonMap;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -29,10 +32,11 @@ use tokio::sync::{Mutex, broadcast};
 use crate::init::home_dir;
 
 use super::events::{
-    AcpWsClientMsg, AcpWsEvent, ConfigOptionPayload, config_payloads, from_session_update,
-    permission_request_event, stop_reason_str, tool_kind_str,
+    AcpWsClientMsg, AcpWsEvent, ConfigOptionPayload, config_payloads, elicitation_request_event,
+    elicitation_session_id, from_session_update, permission_request_event, stop_reason_str,
+    tool_kind_str,
 };
-use super::permissions::{PermissionRegistry, auto_allow};
+use super::permissions::{ElicitationRegistry, PermissionRegistry, auto_allow};
 use super::providers::{self, DEFAULT_PROVIDER};
 
 const ARCHIVED_FILE: &str = ".enzarb/archived_sessions.json";
@@ -182,6 +186,7 @@ pub struct AcpStore {
     active_providers_path: PathBuf,
     cwd: PathBuf,
     permissions: PermissionRegistry,
+    elicitations: ElicitationRegistry,
     channels: Channels,
     history: History,
     /// In-memory only: which sessions are currently running a prompt.
@@ -240,6 +245,7 @@ impl AcpStore {
             active_providers_path,
             cwd,
             permissions: PermissionRegistry::default(),
+            elicitations: ElicitationRegistry::default(),
             channels: Arc::new(Mutex::new(HashMap::new())),
             history: Arc::new(Mutex::new(HashMap::new())),
             live_sessions: Arc::new(Mutex::new(HashSet::new())),
@@ -272,6 +278,7 @@ impl AcpStore {
         let (conn, alive) = spawn(
             spec.spawn_command,
             self.permissions.clone(),
+            self.elicitations.clone(),
             self.channels.clone(),
             self.history.clone(),
             self.session_modes.clone(),
@@ -782,6 +789,20 @@ impl AcpStore {
                 }
                 Ok(())
             }
+            AcpWsClientMsg::ElicitationResponse {
+                request_id,
+                answers,
+            } => {
+                let resolved = self.elicitations.resolve(&request_id, answers).await;
+                if resolved {
+                    let tx = self.channel(session_id).await;
+                    let _ = tx.send(AcpWsEvent::ElicitationResolved {
+                        session_id: session_id.to_string(),
+                        request_id,
+                    });
+                }
+                Ok(())
+            }
             AcpWsClientMsg::SetPermissionMode { mode_id } => {
                 connection
                     .send_request(SetSessionModeRequest::new(
@@ -864,6 +885,7 @@ impl AcpStore {
 async fn spawn(
     spawn_command: &str,
     permissions: PermissionRegistry,
+    elicitations: ElicitationRegistry,
     channels: Channels,
     history: History,
     session_modes: SessionModes,
@@ -878,6 +900,7 @@ async fn spawn(
     tokio::spawn(async move {
         let notification_channels = channels.clone();
         let notification_history = history.clone();
+        let elicitation_channels = channels.clone();
         let result = Client
             .builder()
             .on_receive_notification(
@@ -985,9 +1008,82 @@ async fn spawn(
                 },
                 agent_client_protocol::on_receive_request!(),
             )
+            .on_receive_request(
+                move |request: CreateElicitationRequest,
+                      responder: agent_client_protocol::Responder<CreateElicitationResponse>,
+                      _connection| {
+                    let elicitations = elicitations.clone();
+                    let channels = elicitation_channels.clone();
+                    async move {
+                        // Same rationale as the permission-request handler above:
+                        // spawn off the dispatch loop so an unanswered elicitation
+                        // can only wedge itself, not the whole ACP connection.
+                        tokio::spawn(async move {
+                            let placeholder_session_id =
+                                elicitation_session_id(&request).unwrap_or_default();
+                            let event =
+                                elicitation_request_event(&placeholder_session_id, "", &request);
+
+                            // URL-mode or session-less elicitations aren't
+                            // rendered by the browser yet — cancel outright
+                            // rather than hanging the agent turn.
+                            let answers = match event {
+                                Some(AcpWsEvent::ElicitationRequest {
+                                    session_id,
+                                    message,
+                                    questions,
+                                    ..
+                                }) if !session_id.is_empty() => {
+                                    let (request_id, rx) = elicitations.register().await;
+                                    let tx = channels.lock().await.get(&session_id).cloned();
+                                    if let Some(tx) = tx {
+                                        let _ = tx.send(AcpWsEvent::ElicitationRequest {
+                                            session_id,
+                                            request_id,
+                                            message,
+                                            questions,
+                                        });
+                                    }
+                                    rx.await.ok().flatten()
+                                }
+                                _ => None,
+                            };
+
+                            let response = match answers {
+                                Some(answers) => {
+                                    CreateElicitationResponse::new(ElicitationAction::Accept(
+                                        ElicitationAcceptAction::new().content(Some(
+                                            answers
+                                                .into_iter()
+                                                .filter_map(|(k, v)| {
+                                                    elicitation_content_value(v).map(|v| (k, v))
+                                                })
+                                                .collect::<BTreeMap<_, _>>(),
+                                        )),
+                                    ))
+                                }
+                                None => CreateElicitationResponse::new(ElicitationAction::Decline),
+                            };
+
+                            if let Err(e) = responder.respond(response) {
+                                tracing::warn!(error = %e, "failed to send elicitation response");
+                            }
+                        });
+                        Ok(())
+                    }
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
             .connect_with(agent, move |connection: ConnectionTo<Agent>| async move {
                 connection
-                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                    .send_request(
+                        InitializeRequest::new(ProtocolVersion::V1).client_capabilities(
+                            ClientCapabilities::new().elicitation(
+                                ElicitationCapabilities::new()
+                                    .form(ElicitationFormCapabilities::new()),
+                            ),
+                        ),
+                    )
                     .block_task()
                     .await?;
                 let _ = ready_tx.send(connection);
@@ -1006,4 +1102,22 @@ async fn spawn(
         .await
         .map_err(|_| anyhow!("ACP agent process failed to initialize"))?;
     Ok((conn, alive))
+}
+
+/// Converts one client-submitted answer into the wire value elicitation
+/// content expects. Empty strings and empty/all-non-string arrays are
+/// dropped rather than sent as empty answers, matching AskUserQuestion's own
+/// "unset means unanswered" convention.
+fn elicitation_content_value(value: serde_json::Value) -> Option<ElicitationContentValue> {
+    match value {
+        serde_json::Value::String(s) if !s.is_empty() => Some(ElicitationContentValue::String(s)),
+        serde_json::Value::Array(items) => {
+            let strings: Vec<String> = items
+                .into_iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect();
+            (!strings.is_empty()).then_some(ElicitationContentValue::StringArray(strings))
+        }
+        _ => None,
+    }
 }

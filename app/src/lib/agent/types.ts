@@ -63,6 +63,20 @@ export interface AvailableCommandInfo {
 	description: string;
 }
 
+export interface QuestionOptionPayload {
+	value: string;
+	label: string;
+}
+
+export interface QuestionPayload {
+	field_key: string;
+	custom_field_key: string | null;
+	header: string | null;
+	question: string | null;
+	multi_select: boolean;
+	options: QuestionOptionPayload[];
+}
+
 /** Every event carries this from the WS envelope (agent/src/external/agent.rs::encode). */
 export interface WithTimestamp {
 	ts_ms: number;
@@ -109,6 +123,14 @@ export type AcpWsEvent = WithTimestamp &
 			plan: string | null;
 	  }
 	| { type: 'permission_resolved'; session_id: string; request_id: string }
+	| {
+			type: 'elicitation_request';
+			session_id: string;
+			request_id: string;
+			message: string;
+			questions: QuestionPayload[];
+	  }
+	| { type: 'elicitation_resolved'; session_id: string; request_id: string }
 	| { type: 'mode_changed'; session_id: string; mode_id: string }
 	| { type: 'config_options_changed'; session_id: string; config_options: ConfigOptionInfo[] }
 	| {
@@ -136,6 +158,12 @@ export type AcpWsEvent = WithTimestamp &
 export type AcpWsClientMsg =
 	| { type: 'send_message'; text: string }
 	| { type: 'permission_response'; request_id: string; option_id: string }
+	| {
+			type: 'elicitation_response';
+			request_id: string;
+			/** `null` means the user declined/skipped the whole elicitation. */
+			answers: Record<string, string | string[]> | null;
+	  }
 	| { type: 'set_permission_mode'; mode_id: string }
 	| { type: 'set_config_option'; config_id: string; value: string }
 	| { type: 'cancel' };

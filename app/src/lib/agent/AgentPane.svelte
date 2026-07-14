@@ -7,6 +7,7 @@
 		DiffPayload,
 		PermissionOptionPayload,
 		PlanEntryPayload,
+		QuestionPayload,
 		SessionModeInfo
 	} from '$lib/agent/types';
 	import { getAgentAuthToken } from '$lib/agentToken';
@@ -15,6 +16,7 @@
 	import ToolCallCard from '$lib/agent/ToolCallCard.svelte';
 	import PlanView from '$lib/agent/PlanView.svelte';
 	import PermissionPrompt from '$lib/agent/PermissionPrompt.svelte';
+	import AskUserQuestion from '$lib/agent/AskUserQuestion.svelte';
 	import {
 		notificationsEnabled,
 		notificationsSupported,
@@ -37,6 +39,12 @@
 		plan: string | null;
 	};
 
+	type PendingElicitation = {
+		requestId: string;
+		message: string;
+		questions: QuestionPayload[];
+	};
+
 	interface Props {
 		agentBase: string;
 		namespace: string;
@@ -49,6 +57,7 @@
 	let socket: AgentSocket | undefined;
 	let timeline: TimelineItem[] = $state([]);
 	let pendingPermissions: PendingPermission[] = $state([]);
+	let pendingElicitations: PendingElicitation[] = $state([]);
 	let connState: ConnState = $state('connecting');
 	let connectError = $state('');
 	let draft = $state('');
@@ -204,6 +213,26 @@
 			case 'permission_resolved':
 				pendingPermissions = pendingPermissions.filter((p) => p.requestId !== event.request_id);
 				break;
+			case 'elicitation_request': {
+				if (historySettled) {
+					notify(`Agent has a question — ${project}`, event.message, `agent-ask-${sessionId}`);
+				}
+				const request = {
+					requestId: event.request_id,
+					message: event.message,
+					questions: event.questions
+				};
+				const existingIndex = pendingElicitations.findIndex((p) => p.requestId === event.request_id);
+				if (existingIndex !== -1) {
+					pendingElicitations[existingIndex] = request;
+				} else {
+					pendingElicitations.push(request);
+				}
+				break;
+			}
+			case 'elicitation_resolved':
+				pendingElicitations = pendingElicitations.filter((p) => p.requestId !== event.request_id);
+				break;
 			case 'mode_changed':
 				currentMode = event.mode_id;
 				break;
@@ -282,6 +311,11 @@
 		if (!sent) connectError = "Couldn't send response — reconnecting, please try again once connected.";
 	}
 
+	function respondElicitation(requestId: string, answers: Record<string, string | string[]> | null) {
+		const sent = socket?.send({ type: 'elicitation_response', request_id: requestId, answers });
+		if (!sent) connectError = "Couldn't send response — reconnecting, please try again once connected.";
+	}
+
 	// Messages sent while a turn is running can't go to the agent immediately —
 	// only one prompt runs at a time — so they're echoed right away and queued
 	// to dispatch as soon as the current turn finishes.
@@ -336,6 +370,7 @@
 				// worst case the user has to press send again.
 				timeline = [];
 				pendingPermissions = [];
+				pendingElicitations = [];
 				running = false;
 				queuedMessages = [];
 				historySettled = false;
@@ -387,6 +422,10 @@
 
 		{#each pendingPermissions as p (p.requestId)}
 			<PermissionPrompt title={p.title} options={p.options} plan={p.plan} disabled={connState !== 'connected'} onRespond={(id) => respondPermission(p.requestId, id)} />
+		{/each}
+
+		{#each pendingElicitations as p (p.requestId)}
+			<AskUserQuestion message={p.message} questions={p.questions} disabled={connState !== 'connected'} onRespond={(answers) => respondElicitation(p.requestId, answers)} />
 		{/each}
 	</div>
 

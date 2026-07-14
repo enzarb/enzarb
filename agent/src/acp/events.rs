@@ -3,11 +3,14 @@
 //! sees raw ACP JSON-RPC, only these tagged events.
 
 use agent_client_protocol::schema::v1::{
-    Plan, PlanEntryPriority, PlanEntryStatus, RequestPermissionRequest, SessionConfigKind,
-    SessionConfigOption, SessionConfigSelectOptions, SessionUpdate, StopReason, ToolCallContent,
-    ToolCallStatus, ToolKind,
+    CreateElicitationRequest, ElicitationMode, ElicitationPropertySchema, ElicitationSchema,
+    ElicitationScope, EnumOption, MultiSelectItems, MultiSelectPropertySchema, Plan,
+    PlanEntryPriority, PlanEntryStatus, RequestPermissionRequest, SessionConfigKind,
+    SessionConfigOption, SessionConfigSelectOptions, SessionUpdate, StopReason,
+    StringPropertySchema, ToolCallContent, ToolCallStatus, ToolKind,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use super::store::{SessionMeta, SessionModeInfo};
 
@@ -75,6 +78,19 @@ pub enum AcpWsEvent {
         plan: Option<String>,
     },
     PermissionResolved {
+        session_id: String,
+        request_id: String,
+    },
+    /// A form elicitation the agent wants answered before it can continue —
+    /// currently only reached via the built-in AskUserQuestion tool (Claude's
+    /// ACP adapter maps it to `elicitation/create` rather than a tool call).
+    ElicitationRequest {
+        session_id: String,
+        request_id: String,
+        message: String,
+        questions: Vec<QuestionPayload>,
+    },
+    ElicitationResolved {
         session_id: String,
         request_id: String,
     },
@@ -220,6 +236,26 @@ pub struct PermissionOptionPayload {
     pub kind: &'static str,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct QuestionOptionPayload {
+    /// Both the option's displayed label and the value submitted back — the
+    /// AskUserQuestion tool records the label itself as the chosen answer.
+    pub value: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct QuestionPayload {
+    /// Form field key to echo back in `ElicitationResponse::answers`.
+    pub field_key: String,
+    /// Sibling free-text field key, if the schema offers an "Other" box.
+    pub custom_field_key: Option<String>,
+    pub header: Option<String>,
+    pub question: Option<String>,
+    pub multi_select: bool,
+    pub options: Vec<QuestionOptionPayload>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AcpWsClientMsg {
@@ -236,6 +272,14 @@ pub enum AcpWsClientMsg {
     SetConfigOption {
         config_id: String,
         value: String,
+    },
+    /// `None` answers means the user declined/skipped the elicitation
+    /// entirely; otherwise a map of `field_key` -> selected value(s)
+    /// (a JSON string for single-select/custom fields, a JSON array of
+    /// strings for multi-select fields). Omitted keys are treated as unset.
+    ElicitationResponse {
+        request_id: String,
+        answers: Option<HashMap<String, serde_json::Value>>,
     },
     Cancel,
 }
@@ -489,5 +533,121 @@ pub fn permission_request_event(
                 },
             })
             .collect(),
+    }
+}
+
+/// Translates an ACP form elicitation into a `ElicitationRequest` WS event.
+/// Returns `None` for URL-mode elicitations, which the browser doesn't render
+/// yet — callers should respond `Cancel` in that case instead of registering
+/// a pending request that can never be answered.
+pub fn elicitation_request_event(
+    session_id: &str,
+    request_id: &str,
+    request: &CreateElicitationRequest,
+) -> Option<AcpWsEvent> {
+    let ElicitationMode::Form(form) = &request.mode else {
+        return None;
+    };
+    Some(AcpWsEvent::ElicitationRequest {
+        session_id: session_id.to_string(),
+        request_id: request_id.to_string(),
+        message: request.message.clone(),
+        questions: schema_to_questions(&form.requested_schema),
+    })
+}
+
+/// Resolves the session id an elicitation is scoped to, if any (a
+/// `Request`-scoped elicitation, used for pre-session auth flows, has none).
+pub fn elicitation_session_id(request: &CreateElicitationRequest) -> Option<String> {
+    match request.mode.scope() {
+        ElicitationScope::Session(s) => Some(s.session_id.to_string()),
+        ElicitationScope::Request(_) => None,
+        _ => None,
+    }
+}
+
+/// Claude's ACP adapter renders the AskUserQuestion tool as one form field
+/// per question (`question_<n>`, in ascending order), each optionally paired
+/// with a free-text `question_<n>_custom` sibling field. Reconstructs that
+/// per-question structure from the flat schema; non-numbered or unsupported
+/// (number/integer/boolean) properties are dropped rather than guessed at.
+fn schema_to_questions(schema: &ElicitationSchema) -> Vec<QuestionPayload> {
+    let mut indices: Vec<(usize, &str)> = schema
+        .properties
+        .keys()
+        .filter_map(|k| {
+            k.strip_prefix("question_")
+                .filter(|rest| !rest.ends_with("_custom"))
+                .and_then(|n| n.parse::<usize>().ok())
+                .map(|n| (n, k.as_str()))
+        })
+        .collect();
+    indices.sort_by_key(|(n, _)| *n);
+
+    indices
+        .into_iter()
+        .filter_map(|(idx, key)| {
+            let prop = schema.properties.get(key)?;
+            let custom_key = format!("question_{idx}_custom");
+            let custom_field_key = schema
+                .properties
+                .contains_key(&custom_key)
+                .then_some(custom_key);
+            let (header, question, multi_select, options) = match prop {
+                ElicitationPropertySchema::String(s) => (
+                    s.title.clone(),
+                    s.description.clone(),
+                    false,
+                    string_options(s),
+                ),
+                ElicitationPropertySchema::Array(m) => (
+                    m.title.clone(),
+                    m.description.clone(),
+                    true,
+                    array_options(m),
+                ),
+                _ => return None,
+            };
+            Some(QuestionPayload {
+                field_key: key.to_string(),
+                custom_field_key,
+                header,
+                question,
+                multi_select,
+                options,
+            })
+        })
+        .collect()
+}
+
+fn string_options(schema: &StringPropertySchema) -> Vec<QuestionOptionPayload> {
+    if let Some(one_of) = &schema.one_of {
+        one_of.iter().map(enum_option_payload).collect()
+    } else if let Some(values) = &schema.enum_values {
+        values.iter().map(|v| bare_option_payload(v)).collect()
+    } else {
+        Vec::new()
+    }
+}
+
+fn array_options(schema: &MultiSelectPropertySchema) -> Vec<QuestionOptionPayload> {
+    match &schema.items {
+        MultiSelectItems::Titled(t) => t.options.iter().map(enum_option_payload).collect(),
+        MultiSelectItems::Untitled(u) => u.values.iter().map(|v| bare_option_payload(v)).collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn enum_option_payload(option: &EnumOption) -> QuestionOptionPayload {
+    QuestionOptionPayload {
+        value: option.value.clone(),
+        label: option.title.clone(),
+    }
+}
+
+fn bare_option_payload(value: &str) -> QuestionOptionPayload {
+    QuestionOptionPayload {
+        value: value.to_string(),
+        label: value.to_string(),
     }
 }
