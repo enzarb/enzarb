@@ -9,6 +9,7 @@
 //! - `status.conditions[type=Ready]` is True when the pod is Ready and, if a Service is
 //!   requested, the Service exists.
 
+use crate::docker::{self, DockerConfig};
 use enzarb_crds::upstream::capsule::Tenant;
 use enzarb_crds::upstream::sandbox::Sandbox;
 use enzarb_crds::{Project, SandboxStatus, SecretKeyRef};
@@ -41,6 +42,7 @@ pub struct Defaults {
     pub sandbox_image: String,
     pub storage: String,
     pub netpol: NetpolConfig,
+    pub docker: DockerConfig,
 }
 
 /// Who may reach the sandbox port (7070) in a project namespace.
@@ -229,6 +231,24 @@ pub fn pvc(p: &Project, d: &Defaults) -> PersistentVolumeClaim {
     .expect("pvc JSON matches the PVC type")
 }
 
+/// PVC `docker` for `/var/lib/docker`, sized from `--docker-storage`.
+pub fn docker_pvc(p: &Project, d: &Defaults) -> PersistentVolumeClaim {
+    serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {
+            "name": docker::PVC_NAME,
+            "namespace": p.namespace_name(),
+            "labels": base_labels(p),
+        },
+        "spec": {
+            "accessModes": ["ReadWriteOnce"],
+            "resources": {"requests": {"storage": d.docker.storage}},
+        },
+    }))
+    .expect("pvc JSON matches the PVC type")
+}
+
 /// NetworkPolicy `sandbox-isolation` for every pod in the project namespace.
 /// Ingress: TCP 7070 only from the configured client pods/namespaces.
 /// Egress: DNS (UDP/TCP 53) and TCP 443, to any destination. A narrower allow-list
@@ -305,8 +325,32 @@ pub fn sandbox(p: &Project, d: &Defaults) -> Sandbox {
             }},
         ],
     });
-    if !sb.runtime_class_name.is_empty() {
-        pod_spec["runtimeClassName"] = json!(sb.runtime_class_name);
+    // Every sandbox runs in the cluster-admin chosen isolating runtime, and always gets dockerd.
+    // `DockerConfig::validate` guarantees the class is allowed and has a profile.
+    pod_spec["runtimeClassName"] = json!(d.docker.sandbox_runtime_class);
+    let profile = d
+        .docker
+        .profile()
+        .expect("DockerConfig::validate ran at startup");
+    let sc = docker::sidecar(profile, &d.docker.image, &d.docker.resources, SANDBOX_UID);
+    {
+        let main = &mut pod_spec["containers"][0];
+        main["env"]
+            .as_array_mut()
+            .expect("env is an array")
+            .push(json!({"name": "DOCKER_HOST", "value": docker::DOCKER_HOST}));
+        main["volumeMounts"]
+            .as_array_mut()
+            .expect("volumeMounts is an array")
+            .push(json!({"name": docker::SOCK_VOLUME, "mountPath": docker::SOCK_DIR}));
+        pod_spec["containers"]
+            .as_array_mut()
+            .expect("containers is an array")
+            .push(sc.container);
+        pod_spec["volumes"]
+            .as_array_mut()
+            .expect("volumes is an array")
+            .extend(sc.volumes);
     }
     serde_json::from_value(json!({
         "apiVersion": "agents.x-k8s.io/v1beta1",
@@ -369,7 +413,88 @@ mod tests {
             sandbox_image: "ghcr.io/enzarb/sandbox:dev".into(),
             storage: "10Gi".into(),
             netpol: NetpolConfig::for_release_namespace("enzarb"),
+            docker: DockerConfig::new(
+                docker::DEFAULT_IMAGE.into(),
+                vec!["gvisor".into(), "kata".into()],
+                "gvisor".into(),
+                "50Gi".into(),
+            ),
         }
+    }
+
+    fn containers(s: &serde_json::Value) -> &Vec<serde_json::Value> {
+        s["spec"]["podTemplate"]["spec"]["containers"]
+            .as_array()
+            .unwrap()
+    }
+
+    #[test]
+    fn docker_sidecar_always_present_per_runtime_class() {
+        for (rc, privileged) in [("gvisor", false), ("kata", true)] {
+            let mut d = defaults();
+            d.docker.sandbox_runtime_class = rc.into();
+            let s = v(&sandbox(&project("enzarb", "ruckc"), &d));
+            let pod = &s["spec"]["podTemplate"]["spec"];
+            assert_eq!(pod["runtimeClassName"], rc);
+            let cs = containers(&s);
+            assert_eq!(cs.len(), 2);
+            let main = &cs[0];
+            assert!(main["env"].as_array().unwrap().contains(
+                &json!({"name": "DOCKER_HOST", "value": "unix:///var/run/docker/docker.sock"})
+            ));
+            assert!(
+                main["volumeMounts"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!({"name": "docker-sock", "mountPath": "/var/run/docker"}))
+            );
+            let side = &cs[1];
+            assert_eq!(side["name"], "dockerd");
+            assert_eq!(side["image"], "docker:29.8.2-dind");
+            assert_eq!(side["securityContext"]["privileged"], privileged, "{rc}");
+            assert_eq!(side["securityContext"]["runAsUser"], 0);
+            let vols = pod["volumes"].as_array().unwrap();
+            assert!(vols.contains(&json!({"name": "docker-sock", "emptyDir": {}})));
+            assert!(vols.contains(&json!({
+                "name": "docker-data",
+                "persistentVolumeClaim": {"claimName": "docker"}
+            })));
+            // The sandbox container keeps its non-root context.
+            assert_eq!(pod["securityContext"]["runAsNonRoot"], true);
+        }
+    }
+
+    #[test]
+    fn gvisor_sidecar_is_not_privileged_and_uses_documented_settings() {
+        let s = v(&sandbox(&project("enzarb", "ruckc"), &defaults()));
+        let side = &containers(&s)[1];
+        let caps = side["securityContext"]["capabilities"]["add"]
+            .as_array()
+            .unwrap();
+        for c in ["SYS_ADMIN", "NET_ADMIN", "NET_RAW", "SYS_CHROOT", "MKNOD"] {
+            assert!(caps.contains(&json!(c)), "{c}");
+        }
+        let args = side["args"].as_array().unwrap();
+        assert!(args.contains(&json!("--iptables=false")));
+        assert!(args.contains(&json!("--storage-driver=vfs")));
+    }
+
+    #[test]
+    fn docker_pvc_and_resources_come_from_operator_config() {
+        let mut d = defaults();
+        d.docker.storage = "80Gi".into();
+        d.docker.image = "my/dind:1".into();
+        d.docker.resources = json!({"limits": {"memory": "4Gi"}});
+        let p = project("enzarb", "ruckc");
+        let s = v(&sandbox(&p, &d));
+        assert_eq!(containers(&s)[1]["image"], "my/dind:1");
+        assert_eq!(containers(&s)[1]["resources"]["limits"]["memory"], "4Gi");
+        assert_eq!(containers(&s)[0]["resources"], json!({}));
+        let c = v(&docker_pvc(&p, &d));
+        assert_eq!(c["metadata"]["name"], "docker");
+        assert_eq!(c["metadata"]["namespace"], "enzarb-p-enzarb");
+        assert_eq!(c["spec"]["resources"]["requests"]["storage"], "80Gi");
+        assert_eq!(c["spec"]["accessModes"][0], "ReadWriteOnce");
     }
 
     fn v<T: serde::Serialize>(t: &T) -> serde_json::Value {
@@ -440,7 +565,7 @@ mod tests {
         assert_eq!(s["spec"]["service"], true);
         let pod = &s["spec"]["podTemplate"]["spec"];
         assert_eq!(pod["automountServiceAccountToken"], false);
-        assert!(pod.get("runtimeClassName").is_none());
+        assert_eq!(pod["runtimeClassName"], "gvisor");
         let c = &pod["containers"][0];
         assert_eq!(c["image"], "ghcr.io/enzarb/sandbox:dev");
         assert_eq!(c["ports"][0]["containerPort"], 7070);
@@ -462,7 +587,8 @@ mod tests {
             mounts,
             [
                 ("workspace", "/workspace"),
-                ("auth", "/var/run/enzarb/auth")
+                ("auth", "/var/run/enzarb/auth"),
+                ("docker-sock", "/var/run/docker"),
             ]
         );
         assert_eq!(
@@ -483,14 +609,12 @@ mod tests {
     fn sandbox_honours_overrides() {
         let mut p = project("enzarb", "ruckc");
         p.spec.sandbox.image = "my/image:1".into();
-        p.spec.sandbox.runtime_class_name = "gvisor".into();
         p.spec.sandbox.resources = ResourceRequirements {
             limits: Some(BTreeMap::from([("memory".into(), Quantity("2Gi".into()))])),
             ..Default::default()
         };
         let s = v(&sandbox(&p, &defaults()));
         let pod = &s["spec"]["podTemplate"]["spec"];
-        assert_eq!(pod["runtimeClassName"], "gvisor");
         assert_eq!(pod["containers"][0]["image"], "my/image:1");
         assert_eq!(pod["containers"][0]["resources"]["limits"]["memory"], "2Gi");
     }

@@ -15,7 +15,6 @@ spec:
   triggers: { issues: true, changeRequests: true, mentions: true }
   sandbox:
     image: ""
-    runtimeClassName: ""
     storage: 20Gi
     resources: {}
 status:
@@ -62,6 +61,18 @@ fn defaults_apply() {
     assert_eq!(p.spec.run_mode, RunMode::Worktree);
     assert!(p.spec.triggers.issues && p.spec.triggers.mentions);
     assert_eq!(p.spec.sandbox.storage, "20Gi");
+}
+
+#[test]
+fn runtime_class_and_docker_are_not_user_fields() {
+    let yaml = "apiVersion: enzarb.dev/v1alpha1\nkind: Project\nmetadata: {name: x}\n\
+                spec: {owner: o, sandbox: {runtimeClassName: runc}}";
+    let p: Project = serde_yaml::from_str(yaml).unwrap();
+    let back = serde_json::to_value(&p).unwrap();
+    assert!(back["spec"]["sandbox"].get("runtimeClassName").is_none());
+    assert!(back["spec"]["sandbox"].get("docker").is_none());
+    assert!(!project_crd_yaml().contains("runtimeClassName"));
+    assert!(!project_crd_yaml().contains("docker"));
 }
 
 #[test]

@@ -97,9 +97,6 @@ pub struct SandboxSpec {
     /// Empty = operator default (`--sandbox-image`).
     #[serde(default)]
     pub image: String,
-    /// Empty = none.
-    #[serde(default)]
-    pub runtime_class_name: String,
     /// PVC size, e.g. `20Gi`.
     #[serde(default = "default_storage")]
     pub storage: String,
@@ -115,7 +112,6 @@ impl Default for SandboxSpec {
     fn default() -> Self {
         Self {
             image: String::new(),
-            runtime_class_name: String::new(),
             storage: default_storage(),
             resources: ResourceRequirements::default(),
         }

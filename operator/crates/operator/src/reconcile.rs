@@ -195,6 +195,13 @@ async fn drive(
     )
     .await
     .map_err(|e| sandbox_err(obs, e))?;
+    pvcs.patch(
+        crate::docker::PVC_NAME,
+        &ssa(),
+        &Patch::Apply(&desired::docker_pvc(p, &ctx.defaults)),
+    )
+    .await
+    .map_err(|e| sandbox_err(obs, e))?;
 
     let sandboxes: Api<Sandbox> = Api::namespaced(ctx.client.clone(), &ns_name);
     let sb = sandboxes

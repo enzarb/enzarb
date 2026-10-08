@@ -18,10 +18,9 @@ kube = { workspace = true, features = ["client", "runtime", "rustls-tls", "ring"
 rand = "0.9"
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml.workspace = true
 thiserror.workspace = true
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 
-[dev-dependencies]
-serde_yaml.workspace = true
