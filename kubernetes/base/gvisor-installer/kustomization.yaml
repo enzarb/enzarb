@@ -13,4 +13,4 @@ images:
   - name: ghcr.io/enzarb/enzarb-gvisor-installer
     # Replaced by `digest: sha256:...` via hack/pin-installer-digest.sh after the
     # first push to main (and on each gVisor bump). Do not hand-edit.
-    newTag: main
+    digest: sha256:c4dd61f3bbbe959ea1a061585ff0e35370dce5cd27221262a64157a507f616cb
