@@ -196,3 +196,22 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 - **Events:** issues, issue_comment, pull_request, pull_request_review, pull_request_review_comment, installation, installation_repositories.
 - **Webhook URL:** `https://<host>/hooks/github`.
 - **Registration manifest:** `enzarb/docs/github-app.yml`, written by the dev-tasks issue.
+
+## 11. CI access to private enzarb dependencies
+
+Library repos have read-only deploy keys. Their private halves are org secrets visible to private repos: `ENZARB_PROTO_DEPLOY_KEY`, `ENZARB_CRDS_DEPLOY_KEY`, `ENZARB_CONNECTORS_DEPLOY_KEY`. Each key's comment is its repo's ssh URL, so `webfactory/ssh-agent` maps keys to repos. A repo with enzarb git dependencies adds this before building:
+
+```yaml
+env:
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+steps:
+  - uses: actions/checkout@v4
+  - uses: webfactory/ssh-agent@v0.9.1
+    with:
+      ssh-private-key: |
+        ${{ secrets.ENZARB_PROTO_DEPLOY_KEY }}
+        ${{ secrets.ENZARB_CRDS_DEPLOY_KEY }}
+        ${{ secrets.ENZARB_CONNECTORS_DEPLOY_KEY }}
+```
+- Include only the keys the repo needs.
+- npm `github:enzarb/enzarb-proto#main` dependencies fetch over ssh with the same agent. Set `git config --global url."ssh://git@github.com/".insteadOf "https://github.com/"` before `npm ci`.
