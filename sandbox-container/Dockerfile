@@ -3,16 +3,36 @@
 # Private enzarb git dependencies are fetched with a deploy key passed as a build secret:
 #   docker build --secret id=proto_key,src=KEYFILE -t enzarb-sandbox .
 # The key is bound to enzarb-proto via an ssh host alias and never reaches an image layer.
-FROM rust:1 AS build
+FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
 ENV CARGO_NET_GIT_FETCH_WITH_CLI=true
 RUN mkdir -p -m 0700 /root/.ssh && ssh-keyscan github.com >> /root/.ssh/known_hosts 2>/dev/null
 WORKDIR /src
+
+# Dependency recipe: only changes when Cargo.toml/Cargo.lock change.
+FROM chef AS planner
 COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
+COPY src ./src
+RUN cargo chef prepare --recipe-path recipe.json
+
+# Dependency layer (cargo-chef cook): cached by the GHA layer cache while recipe.json is unchanged.
+FROM chef AS build
+COPY --from=planner /src/recipe.json recipe.json
+COPY rust-toolchain.toml ./
+RUN --mount=type=secret,id=proto_key \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    set -e; \
+    (cat /run/secrets/proto_key; echo) > /root/.ssh/proto_key; chmod 600 /root/.ssh/proto_key; \
+    printf 'Host gh-proto\n  HostName github.com\n  IdentityFile /root/.ssh/proto_key\n  IdentitiesOnly yes\n  StrictHostKeyChecking accept-new\n' > /root/.ssh/config; \
+    git config --global url."ssh://git@gh-proto/enzarb/enzarb-proto".insteadOf "ssh://git@github.com/enzarb/enzarb-proto"; \
+    cargo chef cook --release --locked --recipe-path recipe.json; \
+    rm -f /root/.ssh/proto_key /root/.gitconfig
+# Workspace crates only.
+COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 RUN --mount=type=secret,id=proto_key \
     --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/src/target \
     set -e; \
     (cat /run/secrets/proto_key; echo) > /root/.ssh/proto_key; chmod 600 /root/.ssh/proto_key; \
     printf 'Host gh-proto\n  HostName github.com\n  IdentityFile /root/.ssh/proto_key\n  IdentitiesOnly yes\n  StrictHostKeyChecking accept-new\n' > /root/.ssh/config; \
