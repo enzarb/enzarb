@@ -111,7 +111,7 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
   "clone_token": "<short-lived installation token>",
   "prompt": "…", "timeout_secs": 3600,
   "callback_url": "http://enzarb-workflows-executor.enzarb.svc:8081/v1/runs/job-123/finished",
-  "callback_token": "<random per job>",
+  "callback_token": "<hex HMAC-SHA256(executor secret, run_id)>",
   "log_channel": null }
 ```
 - **Wire details** (`enzarb-proto/docs/protocol.md` and the `enzarb_proto::Ctrl` enum are the source of truth):
@@ -218,6 +218,7 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 | `ENZARB_PUBLIC_URL` | ui (OAuth callback is `$ENZARB_PUBLIC_URL/login/github/callback`), workflows (links in comments) |
 | `PROTOCOL_HEADER=x-forwarded-proto` | ui (adapter-node derives the origin for its CSRF check from it; the Gateway must forward `X-Forwarded-Proto`) |
 | `ENZARB_EXECUTOR_URL` (default `http://enzarb-workflows-executor.enzarb.svc:8081`) | workflows executor (callback base) |
+| `ENZARB_EXECUTOR_CALLBACK_SECRET` | workflows executor (callback token = `hex(HMAC-SHA256(secret, run_id))`; shared by all replicas) |
 | `RUST_LOG` | all Rust services |
 | `RECEIVER_LISTEN` (default `0.0.0.0:8080`) | connectors receiver |
 
