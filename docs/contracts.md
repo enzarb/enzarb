@@ -63,7 +63,7 @@ status:
     - type: Ready
 ```
 
-Conditions: a failed step is `status: False` with a `reason` ending in `Failed`, `Failure` or `Error`. Any other `False` reason is shown as in progress.
+Conditions: a failed step is `status: False` with a `reason` ending in `Failed`, `Failure` or `Error`, or one of the named terminal reasons `InvalidSpec` and `DockerRequiresIsolation`. Any other `False` reason is shown as in progress.
 
 Defaults: `runMode: worktree`, all `triggers` true, `sandbox.storage: 20Gi`. Helpers in `enzarb-crds`: `namespace_name()`, `tenant_name()`, `matches_repo()`, `RepoKey::from_url` (github.com only for now; lowercases).
 
