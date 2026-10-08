@@ -15,11 +15,13 @@ base/agent-sandbox         kubernetes-sigs/agent-sandbox controller + Sandbox CR
 base/capsule               Capsule (vendored from the Helm chart; crds/ applied first)
 base/capsule-proxy         capsule-proxy (vendored; optional, needs base/capsule)
 base/pgop                  pgop operator (vendored from the Helm chart; crds/ applied first)
-base/runtimeclasses        gvisor + kata RuntimeClasses (prod only)
-overlays/dev               everything for kind (Envoy Service pinned to NodePorts)
-overlays/prod              skeleton: dev set + runtimeclasses, TODOs inline
+base/runtimeclasses        RuntimeClass `gvisor` (handler runsc, nodeSelector enzarb.dev/runtime-gvisor=true)
+base/gvisor-installer      privileged DaemonSet that installs gVisor on real nodes (prod; opt-in label)
+overlays/dev               everything for kind (Envoy Service pinned to NodePorts) + gvisor RuntimeClass
+overlays/prod              skeleton: dev set + gvisor RuntimeClass + gvisor-installer, TODOs inline
 hack/versions.env          pinned versions (single list)
 hack/refresh-vendored.sh   regenerates base/{capsule,capsule-proxy,pgop} from the Helm charts
+hack/kind-install-gvisor.sh  installs gVisor into the kind nodes (dev)
 hack/validate.sh           what CI runs (kubectl kustomize + kubeconform)
 ```
 
@@ -32,6 +34,7 @@ hack/validate.sh           what CI runs (kubectl kustomize + kubeconform)
 | agent-sandbox | v0.5.6 | release `sandbox.yaml` (core; extensions not installed) | edit URL in `base/agent-sandbox/kustomization.yaml` + `versions.env`; regenerate kopium types in `enzarb-sandbox-operator` |
 | Capsule | chart/app 0.14.6 | Helm chart, vendored | edit `versions.env`, run `hack/refresh-vendored.sh` |
 | capsule-proxy | chart/app 0.15.0 | Helm chart, vendored | same |
+| gVisor | 20261005.0 | github.com/google/gvisor release tarball, sha512 pinned | edit `versions.env` and the literals in `base/gvisor-installer/kustomization.yaml` (CI checks they match) |
 | pgop | chart/app 0.9.1 | `oci://ghcr.io/ruckc/charts/pgop`, vendored | same |
 
 agent-sandbox: v0.5.x exists (v0.5.6 is the last; v1.0.x is out) and ADR-0002 pins v0.5.x, so v0.5.6 is used.
@@ -102,12 +105,38 @@ kubectl get crd clusters.pgop.ruck.io roles.pgop.ruck.io databases.pgop.ruck.io
   `clusters|roles|databases.pgop.ruck.io` (v1alpha1). Capsule's `CapsuleConfiguration` is `default`.
 - capsule-proxy is Service `capsule-proxy` in `capsule-system`.
 
+## gVisor in the dev cluster
+
+Sandboxes with Docker (ADR-0012) must run under RuntimeClass `gvisor`. kind nodes need gVisor installed
+into their containerd; do this after `kind create cluster`:
+
+```sh
+hack/kind-install-gvisor.sh enzarb      # cluster name; default `enzarb`
+k -k overlays/dev                        # includes RuntimeClass gvisor
+```
+
+For each kind node container the script downloads the pinned release once on the host (cached in
+`~/.cache/enzarb/gvisor/<version>`, sha512-checked against `hack/versions.env`), `docker cp`s `runsc`,
+`containerd-shim-runsc-v1` and `gvisor-bin/` into `/usr/local/bin`, writes `/etc/containerd/runsc.toml`
+(`net-raw = "true"` for Docker-in-gVisor networking) and appends the `runsc` handler to containerd's
+`config.toml` (kind ships `version = 2`; the script refuses other versions), restarts containerd only if
+something changed, and labels the node `enzarb.dev/runtime-gvisor=true`. Re-running is a no-op.
+Smoke test: a pod with `runtimeClassName: gvisor` running `dmesg` shows gVisor's synthetic kernel log.
+
 ## Production overlay
 
-`overlays/prod` is a skeleton: it adds `base/runtimeclasses` (`gvisor` -> handler `runsc`,
-`kata` -> handler `kata`). To finish it: install the runtime on the nodes, replace the
-self-signed issuer with a real one (see the TODO in the kustomization), set the Envoy Service type
-or annotations for your load balancer, and add HA/resource patches for Capsule and pgop.
+`overlays/prod` is a skeleton. Sandbox isolation is gVisor only (a Kata option may be added later).
+`base/gvisor-installer` is a privileged DaemonSet (namespace `gvisor-installer`) for real nodes: label the
+nodes that should run sandboxes `enzarb.dev/gvisor-install=true` and it installs the pinned `runsc` and
+shim into the host's `/usr/local/bin`, registers the `runsc` handler in `/etc/containerd/config.toml`
+(version 2 or 3 layout), restarts containerd if needed and sets `enzarb.dev/runtime-gvisor=true`, which the
+RuntimeClass selects on. gVisor publishes no generic Kubernetes installer (only GKE Sandbox, minikube addon and
+the containerd quick start), hence this DaemonSet. Needs nodes with a writable `/usr/local/bin`, systemd-managed
+containerd and outbound access to github.com; nodes with a read-only root (COS, Flatcar) or managed
+sandboxing (GKE Sandbox) should provision gVisor in their own image instead and just set the label.
+gVisor needs no KVM (default `systrap` platform), so ordinary cloud VMs work.
+To finish the overlay, replace the self-signed issuer (see the TODO in the kustomization), set the Envoy
+Service type or annotations for your load balancer, and add HA/resource patches for Capsule and pgop.
 
 ## CI
 

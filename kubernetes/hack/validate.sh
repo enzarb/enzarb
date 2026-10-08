@@ -19,3 +19,14 @@ done
 for d in base/*/ base/envoy-gateway/install base/envoy-gateway/config base/capsule/crds base/pgop/crds; do
   kubectl kustomize "$d" > /dev/null && echo "rendered $d"
 done
+# Shell scripts must pass shellcheck (pinned in mise.toml).
+shellcheck -x -P .:hack hack/*.sh base/gvisor-installer/install.sh && echo "shellcheck ok"
+# The installer base duplicates the gVisor pin; it must match versions.env.
+# shellcheck source=versions.env
+source hack/versions.env
+for pin in "GVISOR_VERSION=$GVISOR_VERSION" "GVISOR_SHA512_X86_64=$GVISOR_SHA512_X86_64" \
+           "GVISOR_SHA512_AARCH64=$GVISOR_SHA512_AARCH64"; do
+  grep -q "$pin" base/gvisor-installer/kustomization.yaml \
+    || { echo "base/gvisor-installer pin != hack/versions.env ($pin)"; exit 1; }
+done
+echo "gvisor pins in sync"

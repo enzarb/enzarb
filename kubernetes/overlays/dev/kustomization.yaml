@@ -8,6 +8,7 @@ resources:
   - ../../base/capsule
   - ../../base/capsule-proxy
   - ../../base/pgop
+  - ../../base/runtimeclasses
 patches:
   # kind has no LoadBalancer: pin the Envoy Service to the NodePorts that
   # kind/cluster.yaml maps to host 80/443. Merge key for ports is `port`.
