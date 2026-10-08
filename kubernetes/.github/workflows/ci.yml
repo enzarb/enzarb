@@ -73,7 +73,8 @@ jobs:
             --cache-from type=gha,scope=gvisor-installer \
             --load -t installer:test .
           # Bundle present and runnable; curl/nsenter/cmp available without apk at runtime.
-          got=$(docker run --rm --entrypoint /opt/gvisor/runsc installer:test --version | head -1)
+          out=$(docker run --rm --entrypoint /opt/gvisor/runsc installer:test --version)
+          got=${out%%$'\n'*}
           [ "$got" = "runsc version release-$GVISOR_VERSION" ] || { echo "unexpected: $got" >&2; exit 1; }
           docker run --rm --entrypoint sh installer:test -c 'for t in curl nsenter cmp grep; do command -v $t >/dev/null || { echo missing $t; exit 1; }; done; test -s /opt/enzarb/runsc.toml'
       - uses: docker/login-action@v3
