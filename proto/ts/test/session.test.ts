@@ -310,6 +310,26 @@ describe("runs", () => {
     expect(pushed.map((m) => m.type)).toEqual(["run_state", "credential_captured"]);
   });
 
+  it("attributes unimplemented errors to the oldest pending run request", async () => {
+    const { s, srv } = await connected();
+    const p = s.runStatus("job-1");
+    await srv.nextCtrl("run_status");
+    srv.ctrl({ type: "error", code: "unimplemented", message: "no run manager" });
+    await expect(p).rejects.toMatchObject({ code: "remote", details: { remote: { code: "unimplemented" } } });
+  });
+
+  it("prefers error.run_id over the oldest pending request", async () => {
+    const { s, srv } = await connected();
+    const a = s.runStatus("a");
+    const b = s.runStatus("b");
+    await srv.nextCtrl("run_status");
+    await srv.nextCtrl("run_status");
+    srv.ctrl({ type: "error", code: "weird_code", message: "no", run_id: "b" });
+    srv.ctrl({ type: "run_state", run_id: "a", state: "running" });
+    await expect(b).rejects.toMatchObject({ code: "remote", details: { remote: { code: "weird_code", run_id: "b" } } });
+    expect(await a).toMatchObject({ state: "running" });
+  });
+
   it("a rejected run_start frees its channel id", async () => {
     const { s, srv } = await connected();
     const p = s.runStart({ ...run, log: 50 });

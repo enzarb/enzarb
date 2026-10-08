@@ -226,6 +226,8 @@ impl Inner {
         let _ = self.send_ctrl(&Ctrl::Error {
             code: code.into(),
             message: message.into(),
+            run_id: None,
+            channel: None,
         });
     }
 
@@ -548,21 +550,43 @@ impl Inner {
 
     /// Route an `error` reply to the oldest pending request. Returns true when consumed.
     fn attribute_error(&self, m: &Ctrl) -> bool {
-        let Ctrl::Error { code, message } = m else {
+        let Ctrl::Error {
+            code,
+            message,
+            run_id,
+            ..
+        } = m
+        else {
             return false;
         };
-        if !matches!(
-            code.as_str(),
-            error_code::UNKNOWN_RUN
-                | error_code::INTERNAL
-                | error_code::UNAUTHORIZED
-                | error_code::UNKNOWN_MESSAGE
-        ) {
+        // An explicit run_id wins (any code); otherwise only run-related codes
+        // fall back to the oldest pending request.
+        if run_id.is_none()
+            && !matches!(
+                code.as_str(),
+                error_code::UNKNOWN_RUN
+                    | error_code::INTERNAL
+                    | error_code::UNAUTHORIZED
+                    | error_code::UNKNOWN_MESSAGE
+                    | error_code::UNIMPLEMENTED
+            )
+        {
             return false;
         }
         let p = {
             let mut st = lock(&self.state);
-            let p = st.pending.pop_front();
+            let p = match run_id {
+                Some(id) => {
+                    st.pending
+                        .iter()
+                        .position(|p| match p {
+                            Pending::RunStart { run_id, .. }
+                            | Pending::RunStatus { run_id, .. } => run_id == id,
+                        })
+                        .and_then(|i| st.pending.remove(i))
+                }
+                None => st.pending.pop_front(),
+            };
             if let Some(Pending::RunStart { log: Some(c), .. }) = &p {
                 st.reserved.remove(&c.id);
             }
@@ -795,6 +819,24 @@ impl Session {
         self.inner.send_ctrl(&Ctrl::Error {
             code: code.into(),
             message: message.into(),
+            run_id: None,
+            channel: None,
+        })
+    }
+
+    /// Send an `error` CTRL message attributed to `run_id` (so a client awaiting
+    /// that run's `run_start`/`run_status` fails it directly).
+    pub fn send_run_error(
+        &self,
+        run_id: &str,
+        code: &str,
+        message: &str,
+    ) -> Result<(), SessionError> {
+        self.inner.send_ctrl(&Ctrl::Error {
+            code: code.into(),
+            message: message.into(),
+            run_id: Some(run_id.into()),
+            channel: None,
         })
     }
 

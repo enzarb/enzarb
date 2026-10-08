@@ -107,8 +107,8 @@
 //! * Dropping a [`ChannelSender`] sends `CLOSE`; dropping a [`ChannelReceiver`]
 //!   discards (and credits back) further data.
 //! * CTRL `error` replies are matched to the oldest pending `run_start` /
-//!   `run_status` when the code is `unknown_run`, `internal`, `unauthorized` or
-//!   `unknown_message`; other errors are delivered as events.
+//!   `run_status` when the code is `unknown_run`, `internal`, `unauthorized`,
+//!   `unknown_message` or `unimplemented`; an `error` carrying `run_id` is instead attributed to the pending request for that run (any code); other errors are delivered as events.
 
 mod channel;
 mod client;

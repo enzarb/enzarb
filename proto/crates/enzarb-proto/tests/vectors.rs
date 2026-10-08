@@ -184,6 +184,17 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
             Ctrl::Error {
                 code: "unsupported_version".into(),
                 message: "no common version".into(),
+                run_id: None,
+                channel: None,
+            },
+        ),
+        (
+            "error_run",
+            Ctrl::Error {
+                code: "unimplemented".into(),
+                message: "no run manager".into(),
+                run_id: Some("job-1".into()),
+                channel: Some(7),
             },
         ),
     ]

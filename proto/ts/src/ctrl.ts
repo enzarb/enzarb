@@ -18,6 +18,8 @@ export const ErrorCode = {
   UnknownChannel: "unknown_channel",
   UnknownRun: "unknown_run",
   Internal: "internal",
+  /** The peer does not implement the request (e.g. `run_*` without a run manager). */
+  Unimplemented: "unimplemented",
 } as const;
 
 export interface RunStartFields {
@@ -59,7 +61,7 @@ export type Ctrl =
   | { type: "run_state"; run_id: string; state: RunPhase; exit_code?: number | null; summary?: string | null }
   | { type: "run_cancel"; run_id: string }
   | { type: "credential_captured"; kind: CredentialKind }
-  | { type: "error"; code: string; message: string };
+  | { type: "error"; code: string; message: string; run_id?: string; channel?: number };
 
 export type CtrlType = Ctrl["type"];
 

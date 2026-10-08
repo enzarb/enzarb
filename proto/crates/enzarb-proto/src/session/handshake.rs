@@ -67,6 +67,8 @@ where
         &Ctrl::Error {
             code: code.into(),
             message: message.clone(),
+            run_id: None,
+            channel: None,
         },
     )
     .await;
@@ -140,7 +142,7 @@ where
         (FrameType::Ctrl, Ok(Ctrl::Welcome { version })) => Err(HandshakeError::Protocol(format!(
             "server chose unsupported version {version}"
         ))),
-        (FrameType::Ctrl, Ok(Ctrl::Error { code, message })) => {
+        (FrameType::Ctrl, Ok(Ctrl::Error { code, message, .. })) => {
             let _ = ws.close().await;
             Err(HandshakeError::Rejected { code, message })
         }

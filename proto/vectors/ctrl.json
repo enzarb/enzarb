@@ -212,5 +212,16 @@
       "type": "error"
     },
     "name": "error"
+  },
+  {
+    "hex": "0100000000000000005f7b2274797065223a226572726f72222c22636f6465223a22756e696d706c656d656e746564222c226d657373616765223a226e6f2072756e206d616e61676572222c2272756e5f6964223a226a6f622d31222c226368616e6e656c223a377d",
+    "message": {
+      "channel": 7,
+      "code": "unimplemented",
+      "message": "no run manager",
+      "run_id": "job-1",
+      "type": "error"
+    },
+    "name": "error_run"
   }
 ]

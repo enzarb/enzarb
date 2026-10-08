@@ -69,7 +69,11 @@ fn spawn_echo_server(session: Session, mut events: enzarb_proto::session::Events
                     }
                 }
                 Event::Ctrl(Ctrl::RunStatus { run_id }) => {
-                    if run_id == "nope" {
+                    if run_id == "unimpl" {
+                        session
+                            .send_error("unimplemented", "no run manager")
+                            .unwrap();
+                    } else if run_id == "nope" {
                         session.send_error("unknown_run", "no such run").unwrap();
                     } else {
                         session
@@ -287,6 +291,53 @@ async fn error_replies_are_attributed_to_requests() {
         SessionError::ChannelInUse(77)
     ));
     drop(held);
+}
+
+#[tokio::test]
+async fn unimplemented_error_fails_pending_run_request() {
+    let ((client, _ce), (server, se)) = memory::session_pair(ClientKind::Executor).await;
+    spawn_echo_server(server, se);
+    let e = timeout(T, client.run_status("unimpl"))
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(e, SessionError::Remote { ref code, .. } if code == "unimplemented"));
+}
+
+#[tokio::test]
+async fn error_run_id_beats_oldest_pending() {
+    let ((client, _ce), (server, mut se)) = memory::session_pair(ClientKind::Executor).await;
+    tokio::spawn(async move {
+        let mut seen = 0;
+        while let Some(ev) = se.next().await {
+            if let Event::Ctrl(Ctrl::RunStatus { run_id }) = ev {
+                seen += 1;
+                if seen == 2 {
+                    // Fail the *newer* request by run_id, then answer the older.
+                    server
+                        .send_run_error(&run_id, "weird_code", "nope")
+                        .unwrap();
+                    server
+                        .send_run_state(&enzarb_proto::session::RunInfo {
+                            run_id: "a".into(),
+                            state: RunPhase::Running,
+                            exit_code: None,
+                            summary: None,
+                        })
+                        .unwrap();
+                }
+            }
+        }
+    });
+    let (a, b) = timeout(T, async {
+        tokio::join!(client.run_status("a"), client.run_status("b"))
+    })
+    .await
+    .unwrap();
+    assert_eq!(a.unwrap().state, RunPhase::Running);
+    assert!(
+        matches!(b.unwrap_err(), SessionError::Remote { ref code, .. } if code == "weird_code")
+    );
 }
 
 #[tokio::test]

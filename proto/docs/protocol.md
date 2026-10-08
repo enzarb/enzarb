@@ -54,7 +54,7 @@ The codec does not parse `DATA_*` payloads; the channel's owner does.
 
 - `CLOSE` is a **half-close**: the sender will send no more data on the channel. The peer may keep sending until it also sends `CLOSE`.
 - A sender must not send data after its own `CLOSE`; a receiver treats data after the peer's `CLOSE` as a violation.
-- Closing a pty channel from the client side also terminates the process; when the process exits, the server sends `CLOSE` (reason may carry the exit status text).
+- Closing a pty channel from the client side also terminates the process; when the process exits, the server sends `CLOSE` (reason is `exit:<code>` for a normal exit or `signal:<n>` when killed by signal `n`, e.g. `exit:0`, `signal:9`; clients must tolerate other text).
 - Data in flight when `CLOSE` arrives is still delivered in order (frames are ordered per connection).
 
 ## 5. CTRL messages
@@ -75,7 +75,7 @@ JSON objects with a `"type"` field, channel 0. Unknown fields are ignored; an un
 | `run_state` | server -> client (reply to `run_status`, and pushed on change) | `run_id`, `state`, `exit_code?`, `summary?` |
 | `run_cancel` | client -> server | `run_id` |
 | `credential_captured` | server -> client | `kind: "claude_oauth"` |
-| `error` | both | `code`, `message` |
+| `error` | both | `code`, `message`, optional `run_id`, optional `channel` (omitted when absent) |
 
 `state` is `queued | running | succeeded | failed | cancelled`. `run_start` is idempotent on `run_id`.
 
@@ -86,7 +86,7 @@ Not a CTRL message; it is the JSON body sandbox-init POSTs to `callback_url`:
 
 ### Error codes
 
-`unsupported_version`, `unknown_message`, `protocol_violation`, `flow_control`, `unauthorized`, `unknown_channel`, `unknown_run`, `internal`. Unknown codes must be tolerated.
+`unsupported_version`, `unknown_message`, `protocol_violation`, `flow_control`, `unauthorized`, `unknown_channel`, `unknown_run`, `internal`, `unimplemented` (peer lacks the feature, e.g. `run_*` without a run manager). Unknown codes must be tolerated.
 
 ## 6. Handshake and version negotiation
 
@@ -128,7 +128,7 @@ Regenerate with `ENZARB_UPDATE_VECTORS=1 cargo test -p enzarb-proto --test vecto
 - **Non-fatal replies:** data for an unknown channel -> `error` (`unknown_channel`); `resize` for an unknown channel -> `error` (`unknown_channel`); unknown CTRL `type` -> `error` (`unknown_message`); a second `hello`, or a message sent in the wrong direction -> `error` (`protocol_violation`).
 - **`open`:** channel 0 or an id in use (including one with a pending `open`) is answered with `open_error`. The server's handler may accept (`opened`) or refuse (`open_error`).
 - **`run_start` with `log_channel`:** `run_accepted` is sent only after the channel is registered; if the id is in use the server answers with `error` instead and no channel is created.
-- **Reply correlation:** replies carry no request id except by `channel` (`opened`/`open_error`) and `run_id` (`run_accepted`, `run_state`). An `error` with code `unknown_run`, `internal`, `unauthorized` or `unknown_message` is attributed to the client's oldest pending `run_start`/`run_status`; other error codes are delivered as unsolicited events.
+- **Reply correlation:** replies carry no request id except by `channel` (`opened`/`open_error`) and `run_id` (`run_accepted`, `run_state`). An `error` with `run_id` is attributed to the client's pending `run_start`/`run_status` for that run (any code; if none matches it is delivered as an event). Without `run_id`, an `error` with code `unknown_run`, `internal`, `unauthorized`, `unknown_message` or `unimplemented` is attributed to the oldest pending `run_start`/`run_status`; other error codes are delivered as unsolicited events.
 - **Credit:** a receiver returns credit when the application *reads* data, batched at half the initial window. If the application drops a channel's receiver, further data is discarded and credited immediately so the peer does not stall.
 - **DATA_JSON** frames cannot be split, so the runtime refuses to send one larger than the initial window (256 KiB).
 - Dropping the last session handle (or the sender of a channel) closes gracefully: `CLOSE` going-away on every open channel, then the websocket.

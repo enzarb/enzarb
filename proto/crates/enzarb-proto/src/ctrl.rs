@@ -65,6 +65,8 @@ pub mod error_code {
     pub const UNKNOWN_CHANNEL: &str = "unknown_channel";
     pub const UNKNOWN_RUN: &str = "unknown_run";
     pub const INTERNAL: &str = "internal";
+    /// The peer does not implement the request (e.g. `run_*` without a run manager).
+    pub const UNIMPLEMENTED: &str = "unimplemented";
 }
 
 /// Body of `run_start`.
@@ -156,5 +158,12 @@ pub enum Ctrl {
     Error {
         code: String,
         message: String,
+        /// Run this error answers; preferred for attributing it to a pending
+        /// `run_start`/`run_status`. Omitted when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_id: Option<String>,
+        /// Channel this error concerns, when known. Omitted when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        channel: Option<u32>,
     },
 }

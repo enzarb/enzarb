@@ -80,6 +80,7 @@ const ATTRIBUTABLE = new Set<string>([
   ErrorCode.Internal,
   ErrorCode.Unauthorized,
   ErrorCode.UnknownMessage,
+  ErrorCode.Unimplemented,
 ]);
 
 /**
@@ -497,8 +498,12 @@ export class Session implements ChannelHost {
         return;
       }
       case "error": {
-        if (ATTRIBUTABLE.has(m.code) && this.pending.length > 0) {
-          const p = this.pending.shift()!;
+        // An explicit run_id wins (any code); else run-related codes hit the oldest pending.
+        let idx = -1;
+        if (typeof m.run_id === "string") idx = this.pending.findIndex((q) => q.run_id === m.run_id);
+        else if (ATTRIBUTABLE.has(m.code)) idx = this.pending.length > 0 ? 0 : -1;
+        if (idx >= 0) {
+          const p = this.pending.splice(idx, 1)[0]!;
           if (p.kind === "run_start" && p.log) this.reserved.delete(p.log.id);
           p.reject(new SessionError("remote", `peer error ${m.code}: ${m.message}`, { remote: m }));
           return;
