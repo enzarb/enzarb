@@ -1,0 +1,28 @@
+[tools]
+helm = "4.3.0"
+kubeconform = "0.8.0"
+shellcheck = "latest"
+
+[tasks.lint]
+description = "helm lint (default + dev values)"
+run = "helm lint enzarb && helm lint enzarb -f enzarb/values-dev.yaml"
+
+[tasks.golden]
+description = "Diff rendered templates against tests/golden (pass --update to rewrite)"
+run = "scripts/golden.sh"
+
+[tasks.kubeconform]
+description = "Validate rendered manifests with kubeconform"
+run = "scripts/kubeconform.sh"
+
+[tasks.pgop]
+description = "Validate pgop resources against the vendored pgop CRDs"
+run = "scripts/check-pgop.py"
+
+[tasks.sync-crds]
+description = "Vendor the Project CRD from ../enzarb-sandbox-operator"
+run = "scripts/sync-crds.sh"
+
+[tasks.test]
+description = "All checks"
+depends = ["lint", "golden", "kubeconform", "pgop"]

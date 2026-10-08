@@ -1,0 +1,65 @@
+{{- /*
+Migration Jobs, ordered workflows -> connectors -> ui. These are ordinary resources (not
+Helm hooks, so `helm install --wait` cannot deadlock on pods that need migrated schemas).
+Ordering is enforced with init containers (`kubectl wait`):
+  workflows  waits for the pgop Cluster, Database and all six Roles to be ready
+             (`migrate --require-roles` needs the runtime roles to exist);
+  connectors waits for the workflows Job;
+  ui         waits for the connectors Job;
+  runtime Deployments wait for the ui Job (the end of the chain).
+Job names carry a hash of the image, so a new image gets a fresh Job.
+*/}}
+{{- if .Values.postgres.enabled }}
+{{- $steps := list
+  (dict "comp" "workflows" "c" .Values.workflows "uid" 65532 "role" "workflows-owner" "tmp" false)
+  (dict "comp" "connectors" "c" .Values.connectors "uid" 10001 "role" "connectors-owner" "wait" (include "enzarb.migrateJob" (dict "c" .Values.workflows "comp" "workflows")))
+  (dict "comp" "ui" "c" .Values.ui "uid" 1000 "role" "ui-owner" "wait" (include "enzarb.migrateJob" (dict "c" .Values.connectors "comp" "connectors"))) }}
+{{- range $i, $s := $steps }}
+{{- if $i }}
+---
+{{- end }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "enzarb.migrateJob" $s }}
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" $ "name" (printf "enzarb-migrate-%s" $s.comp)) | nindent 4 }}
+    app.kubernetes.io/component: migrate
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        {{- include "enzarb.selector" (dict "ctx" $ "name" (printf "enzarb-migrate-%s" $s.comp)) | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      serviceAccountName: enzarb-migrate
+      restartPolicy: OnFailure
+      {{- include "enzarb.pullSecrets" $ | nindent 6 }}
+      initContainers:
+        {{- if $s.wait }}
+        {{- include "enzarb.waitJob" (dict "ctx" $ "job" $s.wait) | nindent 8 }}
+        {{- else }}
+        {{- include "enzarb.waitPg" $ | nindent 8 }}
+        {{- end }}
+      containers:
+        - name: migrate
+          image: {{ include "enzarb.image" $s.c }}
+          imagePullPolicy: {{ include "enzarb.pullPolicy" (dict "ctx" $ "c" $s.c) }}
+          {{- if eq $s.comp "workflows" }}
+          args: [migrate, --require-roles]
+          {{- else if eq $s.comp "connectors" }}
+          args: [migrate]
+          {{- else }}
+          command: [node, scripts/migrate.ts]
+          {{- end }}
+          env:
+            {{- include "enzarb.dbEnv" (dict "ctx" $ "role" $s.role) | nindent 12 }}
+            - { name: RUST_LOG, value: {{ $.Values.rustLog | quote }} }
+          securityContext: {{ include "enzarb.securityContext" (dict "ctx" $ "uid" $s.uid) | fromYaml | toJson }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+{{- end }}
+{{- end }}

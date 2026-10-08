@@ -1,0 +1,16 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: pip install jsonschema pyyaml
+      - run: mise run lint
+      - run: mise run golden
+      - run: mise run kubeconform
+      - run: mise run pgop

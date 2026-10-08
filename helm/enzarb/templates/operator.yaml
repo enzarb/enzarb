@@ -1,0 +1,48 @@
+{{- $c := .Values.operator }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: enzarb-sandbox-operator
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-sandbox-operator") | nindent 4 }}
+spec:
+  replicas: {{ $c.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "enzarb.selector" (dict "ctx" . "name" "enzarb-sandbox-operator") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-sandbox-operator") | nindent 8 }}
+    spec:
+      serviceAccountName: enzarb-sandbox-operator
+      {{- include "enzarb.pullSecrets" . | nindent 6 }}
+      containers:
+        - name: operator
+          image: {{ include "enzarb.image" $c }}
+          imagePullPolicy: {{ include "enzarb.pullPolicy" (dict "ctx" . "c" $c) }}
+          ports:
+            - { name: health, containerPort: 8080 }
+          env:
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: ENZARB_RELEASE_NAMESPACE
+              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+            - { name: ENZARB_SANDBOX_IMAGE, value: {{ $c.sandboxImage | quote }} }
+            - { name: ENZARB_DEFAULT_STORAGE, value: {{ $c.defaultStorage | quote }} }
+            {{- with $c.netpolIngressPodNames }}
+            - { name: ENZARB_NETPOL_INGRESS_POD_NAMES, value: {{ . | quote }} }
+            {{- end }}
+            - { name: RUST_LOG, value: {{ .Values.rustLog | quote }} }
+            {{- with $c.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          readinessProbe:
+            httpGet: { path: /readyz, port: health }
+          livenessProbe:
+            httpGet: { path: /healthz, port: health }
+          {{- with $c.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext: {{ include "enzarb.securityContext" (dict "ctx" . "uid" 65532) | fromYaml | toJson }}

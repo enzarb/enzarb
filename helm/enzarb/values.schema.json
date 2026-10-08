@@ -1,0 +1,497 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "host"
+  ],
+  "properties": {
+    "host": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"
+    },
+    "publicUrl": {
+      "type": "string",
+      "pattern": "^(https?://.+)?$"
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "imagePullPolicy": {
+      "enum": [
+        "Always",
+        "IfNotPresent",
+        "Never"
+      ]
+    },
+    "rustLog": {
+      "type": "string"
+    },
+    "gateway": {
+      "type": "object",
+      "required": [
+        "name",
+        "namespace"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "namespace": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "route": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "sandboxRequestTimeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(ms|s|m|h)$"
+        },
+        "backendTrafficPolicy": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "connectionIdleTimeout": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "postgres": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "clusterName",
+        "databaseName"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "clusterName": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        },
+        "databaseName": {
+          "type": "string",
+          "pattern": "^[a-z_][a-z0-9_]*$",
+          "maxLength": 63,
+          "not": {
+            "enum": [
+              "postgres",
+              "template0",
+              "template1"
+            ]
+          }
+        },
+        "image": {
+          "type": "string"
+        },
+        "storage": {
+          "type": "object",
+          "properties": {
+            "size": {
+              "type": "string"
+            },
+            "storageClassName": {
+              "type": "string"
+            },
+            "retainPolicy": {
+              "enum": [
+                "Retain",
+                "Delete"
+              ]
+            }
+          }
+        },
+        "resources": {
+          "type": "object"
+        }
+      }
+    },
+    "waitImage": {
+      "type": "object",
+      "required": [
+        "repository",
+        "tag"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string"
+        },
+        "tag": {
+          "type": "string"
+        }
+      }
+    },
+    "waitTimeout": {
+      "type": "string",
+      "pattern": "^[0-9]+(s|m|h)$"
+    },
+    "secrets": {
+      "type": "object",
+      "properties": {
+        "sessionJwt": {
+          "type": "object",
+          "properties": {
+            "existingSecret": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "executorCallback": {
+          "type": "object",
+          "properties": {
+            "existingSecret": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "github": {
+          "type": "object",
+          "properties": {
+            "existingSecret": {
+              "type": "string"
+            },
+            "keys": {
+              "type": "object",
+              "required": [
+                "appId",
+                "privateKey",
+                "webhookSecret",
+                "oauthClientId",
+                "oauthClientSecret"
+              ],
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "appId": {
+              "type": [
+                "string",
+                "integer"
+              ]
+            },
+            "privateKey": {
+              "type": "string"
+            },
+            "webhookSecret": {
+              "type": "string"
+            },
+            "oauthClientId": {
+              "type": "string"
+            },
+            "oauthClientSecret": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "ui": {
+      "type": "object",
+      "required": [
+        "image"
+      ],
+      "properties": {
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "image": {
+          "type": "object",
+          "required": [
+            "repository",
+            "tag"
+          ],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pullPolicy": {
+              "enum": [
+                "",
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
+          }
+        },
+        "resources": {
+          "type": "object"
+        },
+        "extraEnv": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "workflows": {
+      "type": "object",
+      "required": [
+        "image"
+      ],
+      "properties": {
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "image": {
+          "type": "object",
+          "required": [
+            "repository",
+            "tag"
+          ],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pullPolicy": {
+              "enum": [
+                "",
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
+          }
+        },
+        "resources": {
+          "type": "object"
+        },
+        "extraEnv": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "roles": {
+          "type": "string",
+          "pattern": "^(reducer|executor|ticker)(,(reducer|executor|ticker))*$"
+        },
+        "botHandle": {
+          "type": "string"
+        },
+        "botLogin": {
+          "type": "string"
+        },
+        "dbMaxConnections": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "terminationGracePeriodSeconds": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "connectors": {
+      "type": "object",
+      "required": [
+        "image"
+      ],
+      "properties": {
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "image": {
+          "type": "object",
+          "required": [
+            "repository",
+            "tag"
+          ],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pullPolicy": {
+              "enum": [
+                "",
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
+          }
+        },
+        "resources": {
+          "type": "object"
+        },
+        "extraEnv": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "botHandle": {
+          "type": "string"
+        },
+        "botLogin": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "sandboxProxy": {
+      "type": "object",
+      "required": [
+        "image"
+      ],
+      "properties": {
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "image": {
+          "type": "object",
+          "required": [
+            "repository",
+            "tag"
+          ],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pullPolicy": {
+              "enum": [
+                "",
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
+          }
+        },
+        "resources": {
+          "type": "object"
+        },
+        "extraEnv": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "idleTimeoutSecs": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "operator": {
+      "type": "object",
+      "required": [
+        "image"
+      ],
+      "properties": {
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "image": {
+          "type": "object",
+          "required": [
+            "repository",
+            "tag"
+          ],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pullPolicy": {
+              "enum": [
+                "",
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
+          }
+        },
+        "resources": {
+          "type": "object"
+        },
+        "extraEnv": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "sandboxImage": {
+          "type": "string",
+          "minLength": 1
+        },
+        "defaultStorage": {
+          "type": "string"
+        },
+        "netpolIngressPodNames": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "securityContext": {
+      "type": "object"
+    }
+  }
+}

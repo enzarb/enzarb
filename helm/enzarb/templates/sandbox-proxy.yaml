@@ -1,0 +1,55 @@
+{{- $c := .Values.sandboxProxy }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: enzarb-sandbox-proxy
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-sandbox-proxy") | nindent 4 }}
+spec:
+  replicas: {{ $c.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "enzarb.selector" (dict "ctx" . "name" "enzarb-sandbox-proxy") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-sandbox-proxy") | nindent 8 }}
+    spec:
+      serviceAccountName: enzarb-sandbox-proxy
+      {{- include "enzarb.pullSecrets" . | nindent 6 }}
+      containers:
+        - name: proxy
+          image: {{ include "enzarb.image" $c }}
+          imagePullPolicy: {{ include "enzarb.pullPolicy" (dict "ctx" . "c" $c) }}
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            {{- include "enzarb.secretEnv" (dict "name" "ENZARB_SESSION_JWT_SECRET" "secret" (include "enzarb.jwtSecret" .) "key" (include "enzarb.jwtKey" .)) | nindent 12 }}
+            - { name: PROXY_LISTEN, value: 0.0.0.0:8080 }
+            - { name: PROXY_IDLE_TIMEOUT_SECS, value: {{ $c.idleTimeoutSecs | quote }} }
+            - { name: RUST_LOG, value: {{ .Values.rustLog | quote }} }
+            {{- with $c.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          # No documented probe endpoint in the proxy README; TCP probes.
+          readinessProbe:
+            tcpSocket: { port: http }
+          livenessProbe:
+            tcpSocket: { port: http }
+          {{- with $c.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext: {{ include "enzarb.securityContext" (dict "ctx" . "uid" 65532) | fromYaml | toJson }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: enzarb-sandbox-proxy
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-sandbox-proxy") | nindent 4 }}
+spec:
+  selector:
+    {{- include "enzarb.selector" (dict "ctx" . "name" "enzarb-sandbox-proxy") | nindent 4 }}
+  ports:
+    - { name: http, port: 8080, targetPort: http }

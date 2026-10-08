@@ -1,0 +1,28 @@
+# kind development: images are `kind load`ed, never pulled.
+host: enzarb.local
+imagePullPolicy: Never
+
+postgres:
+  storage:
+    size: 2Gi
+
+secrets:
+  github:
+    appId: "0"
+    privateKey: dev-placeholder
+    webhookSecret: dev-webhook-secret
+    oauthClientId: dev-client-id
+    oauthClientSecret: dev-client-secret
+
+ui:
+  image: { tag: dev }
+workflows:
+  image: { tag: dev }
+connectors:
+  image: { tag: dev }
+sandboxProxy:
+  image: { tag: dev }
+operator:
+  replicaCount: 1
+  image: { tag: dev }
+  sandboxImage: ghcr.io/enzarb/enzarb-sandbox:dev
