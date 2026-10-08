@@ -31,6 +31,7 @@ Read `docs/architecture.md` first, then `docs/contracts.md` (the interfaces ever
 - **Shared contracts:** the `enzarb-proto` frames and the `workflows_api` / `app_api` Postgres schemas. Make additive changes, or add a new versioned object; never break a consumer silently.
 - **Cross-repo Rust deps** are git dependencies on `main`, pinned by each repo's `Cargo.lock`. Merge library changes first, then run `cargo update -p <crate>` in the dependent repo. Never commit a `[patch]` to a local path.
 - **Dockerfiles** live in the repo of the component they build.
+- **CI** follows `docs/ci.md`: parallel jobs, rust-cache/npm/Playwright caches, cargo-chef + GHA layer cache, one docker job that pushes on main.
 - **Tooling comes from mise.** Workspace tools are pinned in the root `mise.toml`. A repo that needs another tool for its checks adds it to its own `mise.toml` (`mise use <tool>@<version>`); no `curl | bash` or global installs.
 
 ## Conventions

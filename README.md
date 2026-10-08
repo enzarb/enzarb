@@ -10,6 +10,7 @@ The top-level `enzarb` repository: AI coding agents running in Kubernetes sandbo
 - [docs/contracts.md](docs/contracts.md): cross-repo interfaces (CRD, protocol messages, events, DB API, config)
 - [docs/dev.md](docs/dev.md): local development on kind (`mise run dev:helm-deploy`), GitHub App setup, first dogfood
 - [docs/github-app.yml](docs/github-app.yml): GitHub App manifest
+- [docs/ci.md](docs/ci.md): CI conventions (caching, parallel jobs, build-once images)
 - [docs/gaps.md](docs/gaps.md): open questions
 - [docs/adr/](docs/adr/): decision records
 
