@@ -2,7 +2,7 @@
 
 This directory is the top-level **`enzarb`** repository. It holds docs, ADRs, the repo manifest and cross-repo tasks. Each `enzarb-*/` subdirectory is a **separate git repository** listed in `repos.toml`. The root repo ignores them (`.gitignore`), and they are not submodules.
 
-Read `docs/architecture.md` first. Decisions live in `docs/adr/`, open questions in `docs/gaps.md`.
+Read `docs/architecture.md` first, then `docs/contracts.md` (the interfaces every repo must match) and `docs/mvp.md` (current scope). Decisions live in `docs/adr/`, open questions in `docs/gaps.md`.
 
 ## Repos
 
@@ -27,7 +27,7 @@ Read `docs/architecture.md` first. Decisions live in `docs/adr/`, open questions
 - **Upstream first.** Change dependencies in order: `enzarb-proto` → operator CRD types → `enzarb-connectors` → services (`workflows`, `sandbox-proxy`, `sandbox-container`, `ui`) → `enzarb-helm`.
 - **Run each repo's own checks** from inside that repo before calling a change done.
 - **Shared contracts:** the `enzarb-proto` frames and the `workflows_api` / `app_api` Postgres schemas. Make additive changes, or add a new versioned object; never break a consumer silently.
-- **Local Rust builds** use the root `.cargo/config.toml`. It sets a shared `target/` and, once the library repos exist, `[patch]` entries so services build against sibling checkouts instead of git dependencies.
+- **Local Rust builds** use the root `.cargo/config.toml`. It enables ssh git fetches and, once the library crates exist, `[patch]` entries so services build against sibling checkouts instead of git dependencies.
 - **Dockerfiles** live in the repo of the component they build.
 
 ## Conventions
