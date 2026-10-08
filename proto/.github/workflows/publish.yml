@@ -12,6 +12,7 @@ concurrency:
 jobs:
   npm:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: write
