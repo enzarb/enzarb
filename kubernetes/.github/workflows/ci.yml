@@ -20,6 +20,8 @@ jobs:
       - name: Vendored bases are up to date
         run: |
           set -euo pipefail
-          curl -sSfL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          source hack/versions.env
+          curl -sSfL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-4 | DESIRED_VERSION="$HELM_VERSION" bash
+          helm version --short
           ./hack/refresh-vendored.sh
           git diff --exit-code -- base || { echo "::error::vendored bases drifted; run hack/refresh-vendored.sh"; exit 1; }
