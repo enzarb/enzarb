@@ -28,6 +28,7 @@
         },
         "comment": {
           "id": 990,
+          "kind": "conversation",
           "body": "@enzarb thanks, merging after checks.\n/approve",
           "url": "https://github.com/enzarb/enzarb-ui/pull/57#issuecomment-990"
         }
@@ -60,6 +61,7 @@
         },
         "comment": {
           "id": 990,
+          "kind": "conversation",
           "body": "@enzarb thanks, merging after checks.\n/approve",
           "url": "https://github.com/enzarb/enzarb-ui/pull/57#issuecomment-990"
         }
@@ -92,6 +94,7 @@
         },
         "comment": {
           "id": 990,
+          "kind": "conversation",
           "body": "@enzarb thanks, merging after checks.\n/approve",
           "url": "https://github.com/enzarb/enzarb-ui/pull/57#issuecomment-990"
         }

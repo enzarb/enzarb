@@ -27,6 +27,7 @@ async fn progress_status_and_change_request() {
     let t = ProgressTarget {
         item: item(),
         comment_id: Some(5),
+        comment_kind: Default::default(),
     };
     f.set_progress(&t, Progress::Received, "p1").await.unwrap();
     f.set_progress(&t, Progress::Working, "p2").await.unwrap();

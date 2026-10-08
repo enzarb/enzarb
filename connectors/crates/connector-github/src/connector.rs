@@ -4,9 +4,9 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use enzarb_connector::{
-    Actor, ChangeRequestSpec, CommentRef, CommitRef, Connector, CredScope, Error, ItemRef,
-    Permission, Progress, ProgressTarget, RepoKey, Result, ShortLivedCred, Status, StatusState,
-    Thread, ThreadComment, WorkItemKey,
+    Actor, ChangeRequestSpec, CommentKind, CommentRef, CommitRef, Connector, CredScope, Error,
+    ItemRef, Permission, Progress, ProgressTarget, RepoKey, Result, ShortLivedCred, Status,
+    StatusState, Thread, ThreadComment, WorkItemKey,
 };
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use reqwest::Method;
@@ -216,7 +216,18 @@ impl GitHubConnector {
     ) -> Result<Resp> {
         github_repo(repo)?;
         let token = self.token(repo).await?;
-        let resp = self.http.send(method, path, &token, body.as_ref()).await?;
+        let resp = self
+            .http
+            .send(method.clone(), path, &token, body.as_ref())
+            .await?;
+        if resp.status == reqwest::StatusCode::UNAUTHORIZED {
+            // The cached token was revoked or expired early: drop it, retry once.
+            let id = self.installation_id(repo).await?;
+            self.tokens.lock().unwrap().remove(&id);
+            let token = self.token(repo).await?;
+            let resp = self.http.send(method, path, &token, body.as_ref()).await?;
+            return expect(what, resp);
+        }
         expect(what, resp)
     }
 
@@ -469,6 +480,9 @@ impl Connector for GitHubConnector {
         let r = &target.item.repo;
         let name = r.full_name();
         let base = match target.comment_id {
+            Some(c) if target.comment_kind == CommentKind::Review => {
+                format!("/repos/{name}/pulls/comments/{c}/reactions")
+            }
             Some(c) => format!("/repos/{name}/issues/comments/{c}/reactions"),
             None => format!("/repos/{name}/issues/{}/reactions", target.item.number),
         };

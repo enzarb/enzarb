@@ -42,9 +42,23 @@ pub struct ItemRef {
     pub head_sha: Option<String>,
 }
 
+/// Which kind of comment an id refers to. GitHub uses different endpoints
+/// for PR conversation comments and inline review comments.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommentKind {
+    /// Issue / PR conversation comment.
+    #[default]
+    Conversation,
+    /// Inline PR review comment.
+    Review,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommentRef {
     pub id: u64,
+    #[serde(default)]
+    pub kind: CommentKind,
     #[serde(default)]
     pub body: String,
     #[serde(default)]
@@ -79,6 +93,9 @@ pub struct ProgressTarget {
     pub item: WorkItemKey,
     #[serde(default)]
     pub comment_id: Option<u64>,
+    /// Only meaningful with `comment_id`.
+    #[serde(default)]
+    pub comment_kind: CommentKind,
 }
 
 /// Acknowledgement state shown to people (a reaction on GitHub).

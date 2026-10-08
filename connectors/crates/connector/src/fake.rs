@@ -202,6 +202,7 @@ impl Connector for FakeConnector {
         st.next_id += 1;
         let c = CommentRef {
             id: st.next_id,
+            kind: Default::default(),
             body: body.to_string(),
             url: format!("https://fake.invalid/{item}#comment-{}", st.next_id),
         };

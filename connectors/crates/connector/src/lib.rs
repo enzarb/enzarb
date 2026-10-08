@@ -18,6 +18,7 @@ pub use error::{Error, Result};
 pub use event::{Event, EventData, EventType, Review};
 pub use keys::{KeyError, RepoKey, WorkItemKey};
 pub use types::{
-    Actor, ChangeRequestSpec, CommentRef, CommitRef, CredScope, ItemKind, ItemRef, Permission,
-    Progress, ProgressTarget, ShortLivedCred, Status, StatusState, Thread, ThreadComment,
+    Actor, ChangeRequestSpec, CommentKind, CommentRef, CommitRef, CredScope, ItemKind, ItemRef,
+    Permission, Progress, ProgressTarget, ShortLivedCred, Status, StatusState, Thread,
+    ThreadComment,
 };

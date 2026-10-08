@@ -28,6 +28,7 @@
         },
         "comment": {
           "id": 987,
+          "kind": "conversation",
           "body": "Can you also check the header?",
           "url": "https://github.com/enzarb/enzarb-ui/issues/42#issuecomment-987"
         }

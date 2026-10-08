@@ -28,6 +28,7 @@
         },
         "comment": {
           "id": 991,
+          "kind": "conversation",
           "body": "> /approve\n\nNot yet, @enzarb-ui owns this part.",
           "url": "https://github.com/enzarb/enzarb-ui/issues/42#issuecomment-991"
         }

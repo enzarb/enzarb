@@ -28,6 +28,7 @@
         },
         "comment": {
           "id": 989,
+          "kind": "conversation",
           "body": "Plan looks right.\n\n/approve\n",
           "url": "https://github.com/enzarb/enzarb-ui/issues/42#issuecomment-989"
         }
@@ -60,6 +61,7 @@
         },
         "comment": {
           "id": 989,
+          "kind": "conversation",
           "body": "Plan looks right.\n\n/approve\n",
           "url": "https://github.com/enzarb/enzarb-ui/issues/42#issuecomment-989"
         }

@@ -4,5 +4,6 @@
     "repo": "github:enzarb/enzarb-ui",
     "actor": { "login": "ruckc", "id": 42, "is_bot": false },
     "item": { "kind": "issue", "number": 42, "url": "https://github.com/enzarb/enzarb-ui/issues/42", "title": "Add dark mode", "body": "Please.", "author": "ruckc", "head_ref": null, "base_ref": null, "head_sha": null },
-    "comment": { "id": 987, "body": "Looks good", "url": "https://github.com/enzarb/enzarb-ui/issues/42#issuecomment-987" }
+    "comment": { "id": 987,
+      "kind": "conversation", "body": "Looks good", "url": "https://github.com/enzarb/enzarb-ui/issues/42#issuecomment-987" }
   } }

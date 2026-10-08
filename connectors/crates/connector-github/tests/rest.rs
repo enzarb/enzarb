@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use chrono::{SecondsFormat, Utc};
 use enzarb_connector::{
-    Actor, ChangeRequestSpec, CommitRef, Connector, CredScope, Error, ItemKind, Permission,
-    Progress, ProgressTarget, RepoKey, Status, StatusState, WorkItemKey,
+    Actor, ChangeRequestSpec, CommentKind, CommitRef, Connector, CredScope, Error, ItemKind,
+    Permission, Progress, ProgressTarget, RepoKey, Status, StatusState, WorkItemKey,
 };
 use enzarb_connector_github::{GitHubConfig, GitHubConnector, RetryPolicy};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
@@ -528,9 +528,117 @@ async fn set_progress_replaces_only_our_previous_reaction() {
     let target = ProgressTarget {
         item: item(42),
         comment_id: Some(987),
+        comment_kind: Default::default(),
     };
     connector(&server)
         .set_progress(&target, Progress::Done, "k")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn set_progress_on_review_comment_uses_pulls_comments_endpoint() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    let base = "/repos/enzarb/enzarb-ui/pulls/comments/321/reactions";
+    Mock::given(method("POST"))
+        .and(path(base))
+        .and(body_json(json!({"content": "+1"})))
+        .respond_with(ResponseTemplate::new(201).set_body_json(reaction(10, "+1", "enzarb[bot]")))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(base))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            reaction(5, "rocket", "enzarb[bot]"),
+            reaction(7, "rocket", "alice"),
+            reaction(10, "+1", "enzarb[bot]"),
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!("{base}/5")))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!("{base}/7")))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let target = ProgressTarget {
+        item: item(42),
+        comment_id: Some(321),
+        comment_kind: CommentKind::Review,
+    };
+    connector(&server)
+        .set_progress(&target, Progress::Done, "k")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn unauthorized_invalidates_cached_token_and_retries_once() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/enzarb/enzarb-ui/installation"))
+        .and(ValidAppJwt)
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": INSTALLATION})))
+        .mount(&server)
+        .await;
+    let tok_path = format!("/app/installations/{INSTALLATION}/access_tokens");
+    Mock::given(method("POST"))
+        .and(path(&tok_path))
+        .respond_with(
+            ResponseTemplate::new(201)
+                .set_body_json(json!({"token": "tok_old", "expires_at": ts(3600)})),
+        )
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(&tok_path))
+        .respond_with(
+            ResponseTemplate::new(201)
+                .set_body_json(json!({"token": "tok_new", "expires_at": ts(3600)})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let base = "/repos/enzarb/enzarb-ui/issues/42/reactions";
+    Mock::given(method("POST"))
+        .and(path(base))
+        .and(header("authorization", "Bearer tok_old"))
+        .respond_with(
+            ResponseTemplate::new(401).set_body_json(json!({"message": "Bad credentials"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(base))
+        .and(header("authorization", "Bearer tok_new"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(reaction(1, "eyes", "enzarb[bot]")))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(base))
+        .and(header("authorization", "Bearer tok_new"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    let target = ProgressTarget {
+        item: item(42),
+        comment_id: None,
+        comment_kind: CommentKind::Conversation,
+    };
+    connector(&server)
+        .set_progress(&target, Progress::Received, "k")
         .await
         .unwrap();
 }
@@ -559,6 +667,7 @@ async fn set_progress_on_issue_uses_issue_reactions() {
     let target = ProgressTarget {
         item: item(42),
         comment_id: None,
+        comment_kind: Default::default(),
     };
     connector(&server)
         .set_progress(&target, Progress::Received, "k")
@@ -596,6 +705,7 @@ async fn progress_reaction_names() {
         let target = ProgressTarget {
             item: item(42),
             comment_id: None,
+            comment_kind: Default::default(),
         };
         connector(&server)
             .set_progress(&target, p, "k")

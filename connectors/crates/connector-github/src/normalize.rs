@@ -5,7 +5,7 @@
 use chrono::{DateTime, Utc};
 use enzarb_connector::command::{has_approve_command, mentions_handle};
 use enzarb_connector::{
-    Actor, CommentRef, Event, EventData, EventType, ItemKind, ItemRef, RepoKey, Review,
+    Actor, CommentKind, CommentRef, Event, EventData, EventType, ItemKind, ItemRef, RepoKey, Review,
 };
 use serde::{Deserialize, Serialize};
 
@@ -215,8 +215,13 @@ pub(crate) struct Comment {
 
 impl Comment {
     pub(crate) fn comment_ref(&self) -> CommentRef {
+        self.comment_ref_kind(CommentKind::Conversation)
+    }
+
+    pub(crate) fn comment_ref_kind(&self, kind: CommentKind) -> CommentRef {
         CommentRef {
             id: self.id,
+            kind,
             body: self.body.clone(),
             url: self.html_url.clone(),
         }
@@ -404,7 +409,7 @@ pub fn normalize(
                 .comment
                 .as_ref()
                 .ok_or_else(|| missing(event_name, "comment"))?;
-            b.comment(c, i.item(), bot_handle);
+            b.comment(c, i.item(), bot_handle, CommentKind::Conversation);
         }
         ("pull_request_review_comment", "created") => {
             let pr = p
@@ -415,7 +420,7 @@ pub fn normalize(
                 .comment
                 .as_ref()
                 .ok_or_else(|| missing(event_name, "comment"))?;
-            b.comment(c, pr.item(), bot_handle);
+            b.comment(c, pr.item(), bot_handle, CommentKind::Review);
         }
         ("pull_request", "opened" | "reopened") => {
             let pr = p
@@ -581,8 +586,8 @@ impl Builder<'_> {
     }
 
     /// `CommentAdded`, plus `Mentioned` and `ApprovalGranted` as the body warrants.
-    fn comment(&mut self, c: &Comment, item: ItemRef, bot_handle: &str) {
-        let cref = c.comment_ref();
+    fn comment(&mut self, c: &Comment, item: ItemRef, bot_handle: &str, kind: CommentKind) {
+        let cref = c.comment_ref_kind(kind);
         self.push(
             EventType::CommentAdded,
             c.created_at,

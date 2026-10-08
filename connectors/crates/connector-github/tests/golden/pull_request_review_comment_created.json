@@ -28,6 +28,7 @@
         },
         "comment": {
           "id": 5550,
+          "kind": "review",
           "body": "@enzarb can this use a media query instead?",
           "url": "https://github.com/enzarb/enzarb-ui/pull/57#discussion_r5550"
         }
@@ -60,6 +61,7 @@
         },
         "comment": {
           "id": 5550,
+          "kind": "review",
           "body": "@enzarb can this use a media query instead?",
           "url": "https://github.com/enzarb/enzarb-ui/pull/57#discussion_r5550"
         }
