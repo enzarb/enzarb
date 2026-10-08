@@ -1,5 +1,14 @@
-//! Placeholder binary. Reducer, executor and ticker roles arrive in later issues.
+use clap::Parser;
+use enzarb_workflows::cli::Cli;
 
-fn main() {
-    println!("enzarb-workflows {}", env!("CARGO_PKG_VERSION"));
+#[tokio::main]
+async fn main() -> std::process::ExitCode {
+    enzarb_workflows::init_tracing();
+    match enzarb_workflows::run_cli(Cli::parse()).await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            tracing::error!(error = %e, "fatal");
+            std::process::ExitCode::FAILURE
+        }
+    }
 }

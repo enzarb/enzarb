@@ -3,3 +3,70 @@
 The enzarb workflow engine on Postgres: migrations, state machines, reducer, executors, ticker.
 
 See [docs/architecture.md](https://github.com/enzarb/enzarb/blob/main/docs/architecture.md) in the top-level `enzarb` repo.
+
+## Binary
+
+```
+enzarb-workflows migrate [--require-roles]
+enzarb-workflows run --roles reducer,executor,ticker      # or ENZARB_ROLES
+```
+
+- `migrate` applies the embedded migrations (run it as the schema owner role) and exits.
+  `--require-roles` fails, applying nothing, unless `enzarb_connectors`, `enzarb_ui` and
+  `enzarb_workflows` exist. Without it, grants to missing roles are skipped with a NOTICE.
+  Use `--require-roles` in production.
+- `run` starts the listed roles in one process. All share one shutdown (SIGTERM/SIGINT); if
+  any role exits or fails, the process shuts the others down and exits non-zero on error.
+  Replicas of any role can run concurrently (work is claimed in Postgres).
+
+### Environment
+
+| Var | Roles | Default |
+|---|---|---|
+| `DATABASE_URL` | all, `migrate` | required |
+| `ENZARB_ROLES` | `run` (alternative to `--roles`) | |
+| `ENZARB_DB_MAX_CONNECTIONS` | all | 10 |
+| `ENZARB_BOT_LOGIN`, `ENZARB_BOT_HANDLE` | reducer, executor | `enzarb[bot]`, `enzarb` |
+| `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | reducer, executor | required for those roles |
+| `ENZARB_EXECUTOR_URL` | executor (callback base) | `http://enzarb-workflows-executor.enzarb.svc:8081` |
+| `ENZARB_EXECUTOR_CALLBACK_SECRET` | executor | required; shared by all replicas |
+| `ENZARB_EXECUTOR_LISTEN` | executor | `0.0.0.0:8081` |
+| `ENZARB_HEALTH_LISTEN` | processes without `executor` | `0.0.0.0:8082` |
+| `RUST_LOG` | all | `info` (logs are JSON on stdout) |
+
+Reducer and executor roles need a Kubernetes client (in-cluster or `KUBECONFIG`).
+
+### Ports
+
+- `:8081` (executor role): `POST /v1/runs/{run_id}/finished` (sandbox-init callback) and `GET /healthz`.
+- `:8082` (no executor role): `GET /healthz`.
+
+### RBAC
+
+`deploy/rbac.yaml`: `get/list/watch` on `projects.enzarb.dev` cluster-wide (reducer index,
+executor sandbox lookup) and `get` on `secrets` (sandbox-auth Secrets in `enzarb-p-*`
+namespaces; granted cluster-wide because the namespaces are created at runtime, see the file
+for narrowing options). Only the executor role needs the Secret access.
+
+## Image
+
+The workspace has private git dependencies (enzarb-proto, enzarb-sandbox-operator,
+enzarb-connectors). Each needs its own read-only deploy key, passed as a build secret
+(`--ssh default` breaks with several keys; see "Docker builds with private dependencies" in
+the enzarb `docs/contracts.md`):
+
+```
+K=$HOME/.ssh/id_ed25519   # any key with access to all three repos
+docker build --secret id=proto_key,src=$K --secret id=crds_key,src=$K \
+  --secret id=connectors_key,src=$K -t enzarb-workflows .
+```
+
+The image runs as uid 65532 and defaults to `run --roles reducer,executor,ticker`.
+
+## Development
+
+```
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace     # integration tests start Postgres via testcontainers (Docker)
+```

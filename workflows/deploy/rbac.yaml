@@ -1,0 +1,59 @@
+# Reference RBAC for the enzarb-workflows ServiceAccount (the Helm chart should template this).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: enzarb-workflows
+  namespace: enzarb
+---
+# Project is cluster-scoped: the reducer's project index lists/watches it, the
+# executor reads status.sandbox.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: enzarb-workflows-projects
+rules:
+  - apiGroups: ["enzarb.dev"]
+    resources: ["projects"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: enzarb-workflows-projects
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: enzarb-workflows-projects
+subjects:
+  - kind: ServiceAccount
+    name: enzarb-workflows
+    namespace: enzarb
+---
+# The executor reads each sandbox's auth Secret (named in Project.status.sandbox) to call
+# sandbox-init. Project namespaces are `enzarb-p-<name>` and created at runtime, so a
+# per-namespace RoleBinding cannot be pre-provisioned; this ClusterRole grants `get` only
+# (no list/watch) and is bound cluster-wide. To narrow it, have the operator create a
+# RoleBinding to this ClusterRole in each project namespace instead of the
+# ClusterRoleBinding below, or set `resourceNames` to the sandbox-auth Secret name.
+# Only roles that include `executor` need it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: enzarb-workflows-sandbox-secrets
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: enzarb-workflows-sandbox-secrets
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: enzarb-workflows-sandbox-secrets
+subjects:
+  - kind: ServiceAccount
+    name: enzarb-workflows
+    namespace: enzarb

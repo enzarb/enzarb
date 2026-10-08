@@ -27,3 +27,17 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       # Docker is available on ubuntu-latest, so testcontainers integration tests run here.
       - run: cargo test --workspace
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          docker build \
+            --secret id=proto_key,env=PROTO_KEY \
+            --secret id=crds_key,env=CRDS_KEY \
+            --secret id=connectors_key,env=CONNECTORS_KEY .
+        env:
+          PROTO_KEY: ${{ secrets.ENZARB_PROTO_DEPLOY_KEY }}
+          CRDS_KEY: ${{ secrets.ENZARB_CRDS_DEPLOY_KEY }}
+          CONNECTORS_KEY: ${{ secrets.ENZARB_CONNECTORS_DEPLOY_KEY }}
