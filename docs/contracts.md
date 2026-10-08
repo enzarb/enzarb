@@ -96,7 +96,7 @@ Repo key: a repository's **repo key** is `<connector>:<owner>/<repo>`, e.g. `git
 - build-essential, pkg-config, libssl-dev;
 - git, ca-certificates, openssh-client.
 
-No Rust, npm, curl or extra CLI tools.
+Plus curl (mise's Rust backend needs it for rustup). No Rust, npm or extra CLI tools.
 
 **Toolchains (mise, per project, persisted on the PVC):**
 - `MISE_DATA_DIR=/workspace/.toolchains/mise`, `MISE_CACHE_DIR=/workspace/.toolchains/cache`, `CARGO_HOME=/workspace/.toolchains/cargo`, `RUSTUP_HOME=/workspace/.toolchains/rustup`.
