@@ -389,3 +389,12 @@ button.danger {
 .badge.cancelled {
 	color: var(--muted);
 }
+
+// Sandbox terminal (xterm mounts inside).
+.terminal {
+	height: 28rem;
+	padding: var(--space-2);
+	background: #000;
+	border-radius: var(--radius);
+	overflow: hidden;
+}

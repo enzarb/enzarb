@@ -49,7 +49,10 @@ describe('sessions in postgres', () => {
 	it('migrations are idempotent and tracked in app._migrations', async () => {
 		expect(await migrate(sql)).toEqual([]);
 		const rows = await sql`SELECT name FROM app._migrations`;
-		expect(rows.map((r) => r.name)).toEqual(['0001_users_sessions.sql']);
+		expect(rows.map((r) => r.name)).toEqual([
+			'0001_users_sessions.sql',
+			'0002_project_settings.sql'
+		]);
 	});
 
 	it('upsertUser updates the profile of an existing GitHub id', async () => {

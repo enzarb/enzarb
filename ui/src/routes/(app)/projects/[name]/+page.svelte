@@ -4,10 +4,12 @@
 	import ConditionChecklist from '#lib/components/ConditionChecklist.svelte';
 	import PageHeading from '#lib/components/PageHeading.svelte';
 	import { deleteProject, getProject } from '#lib/projects.remote.ts';
+	import { getProjectSettings } from '#lib/terminal.remote.ts';
 
 	const POLL_MS = 2000;
 
 	const project = $derived(getProject(page.params.name!));
+	const settings = $derived(getProjectSettings(page.params.name!));
 
 	// Poll while the project is not Ready (no timers once it is).
 	$effect(() => {
@@ -44,6 +46,25 @@
 		<section class="card stack">
 			<h2>Boot progress</h2>
 			<ConditionChecklist conditions={p.conditions} />
+		</section>
+
+		<section class="card stack">
+			<h2>Sandbox</h2>
+			<p>
+				Claude token:
+				{#if settings.current?.claudeTokenConfigured}
+					<span class="badge done">Configured</span>
+					<span class="muted">by {settings.current.claudeConfiguredBy}</span>
+				{:else}
+					<span class="badge">Not configured</span>
+				{/if}
+			</p>
+			<p>
+				<a href="/projects/{p.name}/terminal">Open terminal</a> ·
+				<a href="/projects/{p.name}/claude"
+					>{settings.current?.claudeTokenConfigured ? 'Redo' : 'Start'} Claude setup</a
+				>
+			</p>
 		</section>
 
 		<section class="card stack">

@@ -1,7 +1,9 @@
 FROM node:24-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json .npmrc ./
-RUN npm ci
+# The GitHub Packages token is a build secret (never an ARG/ENV, so it is not in any layer):
+#   NODE_AUTH_TOKEN=$(gh auth token) docker build --secret id=node_auth_token,env=NODE_AUTH_TOKEN .
+RUN --mount=type=secret,id=node_auth_token,env=NODE_AUTH_TOKEN npm ci
 COPY . .
 RUN npm run build
 RUN npm prune --omit=dev
