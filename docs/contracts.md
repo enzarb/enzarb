@@ -310,3 +310,17 @@ steps:
   5. delete the keys.
 - **CI:** run `docker build --secret id=<name>_key,env=<VAR>` with the repo-level deploy-key secrets in env. `docker/build-push-action`'s `secrets:` input mangles multi-line keys ("error in libcrypto").
 - **Locally:** pass any key that has access (e.g. `--secret id=proto_key,src=$HOME/.ssh/id_ed25519`).
+
+## 13. Container images (GHCR)
+
+| Image | Repo | Port(s) |
+|---|---|---|
+| `ghcr.io/enzarb/enzarb-ui` | enzarb-ui | 3000 |
+| `ghcr.io/enzarb/enzarb-sandbox-proxy` | enzarb-sandbox-proxy | 8080 |
+| `ghcr.io/enzarb/enzarb-sandbox` | enzarb-sandbox-container | 7070 |
+| `ghcr.io/enzarb/enzarb-sandbox-operator` | enzarb-sandbox-operator | 8080 (health) |
+| `ghcr.io/enzarb/enzarb-connectors-receiver` | enzarb-connectors | 8080 |
+| `ghcr.io/enzarb/enzarb-workflows` | enzarb-workflows | 8081 (executor), 8082 (health) |
+
+- **Tags:** `main`, `sha-<short>`, and `<version>`/`latest` on `v*` tags.
+- **Visibility:** private. Pulling requires an image pull secret (or `kind load` in dev).
