@@ -29,6 +29,8 @@ pub const AUTH_SECRET_KEY: &str = "token";
 pub const PVC_NAME: &str = "workspace";
 pub const SANDBOX_PORT: i32 = 7070;
 pub const AUTH_MOUNT_DIR: &str = "/var/run/enzarb/auth";
+/// uid/gid of user `enzarb` in the sandbox image (enzarb-sandbox-container).
+pub const SANDBOX_UID: i64 = 1000;
 pub const WORKSPACE_MOUNT: &str = "/workspace";
 
 /// Operator-wide defaults supplied by flags.
@@ -207,6 +209,13 @@ pub fn sandbox(p: &Project, d: &Defaults) -> Sandbox {
     let mut pod_spec = json!({
         // The sandbox gets cluster access through capsule-proxy, not a pod token.
         "automountServiceAccountToken": false,
+        // Matches user `enzarb` in the sandbox image; fsGroup lets that user read the token.
+        "securityContext": {
+            "runAsUser": SANDBOX_UID,
+            "runAsGroup": SANDBOX_UID,
+            "fsGroup": SANDBOX_UID,
+            "runAsNonRoot": true,
+        },
         "containers": [{
             "name": "sandbox",
             "image": image(p, d),
@@ -223,7 +232,7 @@ pub fn sandbox(p: &Project, d: &Defaults) -> Sandbox {
             {"name": "workspace", "persistentVolumeClaim": {"claimName": PVC_NAME}},
             {"name": "auth", "secret": {
                 "secretName": AUTH_SECRET_NAME,
-                "defaultMode": 0o444,
+                "defaultMode": 0o400,
                 "items": [{"key": AUTH_SECRET_KEY, "path": AUTH_SECRET_KEY}],
             }},
         ],
@@ -393,6 +402,12 @@ mod tests {
         );
         assert_eq!(pod["volumes"][1]["secret"]["secretName"], "sandbox-auth");
         assert_eq!(pod["volumes"][1]["secret"]["items"][0]["path"], "token");
+        assert_eq!(pod["volumes"][1]["secret"]["defaultMode"], 0o400);
+        let sc = &pod["securityContext"];
+        assert_eq!(sc["runAsUser"], 1000);
+        assert_eq!(sc["runAsGroup"], 1000);
+        assert_eq!(sc["fsGroup"], 1000);
+        assert_eq!(sc["runAsNonRoot"], true);
     }
 
     #[test]
