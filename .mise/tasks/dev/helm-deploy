@@ -12,6 +12,10 @@ mise run dev:secrets
 
 chart="$ROOT/enzarb-helm/enzarb"
 [ -d "$chart" ] || die "$chart missing; run: mise run repos:init"
+# TODO(enzarb-helm#7): the chart's values-dev.yaml should set operator.sandboxRuntimeClass: gvisor
+# (the schema currently rejects unknown operator.* keys, so it cannot be passed yet). Once that
+# lands, no change is needed here if values-dev.yaml carries it; otherwise add:
+#   --set operator.sandboxRuntimeClass=gvisor
 log "helm upgrade --install $RELEASE"
 helm --kube-context "$KCTX" upgrade --install "$RELEASE" "$chart" -n "$NS" --create-namespace \
   -f "$chart/values-dev.yaml" \
