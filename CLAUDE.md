@@ -27,7 +27,7 @@ Read `docs/architecture.md` first, then `docs/contracts.md` (the interfaces ever
 - **Upstream first.** Change dependencies in order: `enzarb-proto` → operator CRD types → `enzarb-connectors` → services (`workflows`, `sandbox-proxy`, `sandbox-container`, `ui`) → `enzarb-helm`.
 - **Run each repo's own checks** from inside that repo before calling a change done.
 - **Shared contracts:** the `enzarb-proto` frames and the `workflows_api` / `app_api` Postgres schemas. Make additive changes, or add a new versioned object; never break a consumer silently.
-- **Local Rust builds** use the root `.cargo/config.toml`. It enables ssh git fetches and, once the library crates exist, `[patch]` entries so services build against sibling checkouts instead of git dependencies.
+- **Cross-repo Rust deps** are git dependencies on `main`, pinned by each repo's `Cargo.lock`. Merge library changes first, then run `cargo update -p <crate>` in the dependent repo. Never commit a `[patch]` to a local path.
 - **Dockerfiles** live in the repo of the component they build.
 
 ## Conventions

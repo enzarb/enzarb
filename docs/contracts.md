@@ -10,7 +10,7 @@ enzarb-crds        = { git = "ssh://git@github.com/enzarb/enzarb-sandbox-operato
 enzarb-connector   = { git = "ssh://git@github.com/enzarb/enzarb-connectors.git", branch = "main" }
 enzarb-connector-github = { git = "ssh://git@github.com/enzarb/enzarb-connectors.git", branch = "main" }
 ```
-- Locally, the root `.cargo/config.toml` `[patch]`es these to the sibling checkouts.
+- Libraries are merged to `main` before dependents use them; `Cargo.lock` pins the commit. Pick up changes with `cargo update -p <crate>`. Never commit a `[patch]` to a local path.
 - Crate paths:
   - `enzarb-proto/crates/enzarb-proto`
   - `enzarb-sandbox-operator/crates/enzarb-crds`

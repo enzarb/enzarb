@@ -8,10 +8,9 @@
 # Private enzarb repos are git dependencies over ssh; use the git CLI (ssh agent).
 git-fetch-with-cli = true
 
-# Services depend on libraries as
-#   enzarb-proto = { git = "ssh://git@github.com/enzarb/enzarb-proto.git", branch = "main" }
-# Locally, build against the sibling checkout instead. Add an entry only once the
-# crate exists: a patch pointing at a missing crate breaks every build.
-
-[patch."ssh://git@github.com/enzarb/enzarb-connectors.git"]
-enzarb-connector = { path = "enzarb-connectors/crates/connector" }
+# There are deliberately no [patch] entries here. Cargo records patches in each
+# repo's Cargo.lock (including unused ones), which would leak local paths into
+# committed lockfiles. Library changes are merged to main before dependents use
+# them; run `cargo update -p <crate>` to pick them up. For a quick experiment
+# against an unmerged sibling, add a temporary [patch] in that repo and don't
+# commit it.
