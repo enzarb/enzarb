@@ -1,6 +1,18 @@
-FROM rust:1-bookworm AS build
+FROM lukemathwalker/cargo-chef:latest-rust-1-bookworm AS chef
 WORKDIR /src
+
+FROM chef AS planner
 COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
+COPY crates crates
+COPY bin bin
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS build
+COPY --from=planner /src/recipe.json recipe.json
+COPY rust-toolchain.toml ./
+# Dependency layer: cached until the dependency graph changes.
+RUN cargo chef cook --release --locked --recipe-path recipe.json -p enzarb-receiver --bin receiver
+COPY Cargo.toml Cargo.lock ./
 COPY crates crates
 COPY bin bin
 RUN cargo build --release --locked -p enzarb-receiver --bin receiver
