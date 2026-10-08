@@ -1,0 +1,28 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: |
+            ${{ secrets.ENZARB_PROTO_DEPLOY_KEY }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - name: Cargo.lock has no [patch] sections
+        run: "! grep -q '^\\[\\[patch' Cargo.lock"

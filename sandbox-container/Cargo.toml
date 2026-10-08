@@ -1,6 +1,33 @@
 [package]
-name = "enzarb-sandbox-container"
+name = "sandbox-init"
 version = "0.1.0"
 edition = "2024"
+description = "enzarb sandbox pid-1: supervisor plus the enzarb-proto mux server"
+
+[lib]
+name = "sandbox_init"
+
+[[bin]]
+name = "sandbox-init"
+path = "src/main.rs"
 
 [dependencies]
+anyhow = "1"
+async-trait = "0.1"
+axum = { version = "0.8", features = ["ws"] }
+bytes = "1"
+enzarb-proto = { git = "ssh://git@github.com/enzarb/enzarb-proto.git", branch = "main", features = ["tokio"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+nix = { version = "0.30", features = ["signal", "process"] }
+portable-pty = "0.9"
+subtle = "2"
+thiserror = "2"
+tokio-tungstenite = { version = "0.30.0", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time", "io-util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "handshake"] }
