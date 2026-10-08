@@ -12,3 +12,6 @@ git-fetch-with-cli = true
 #   enzarb-proto = { git = "ssh://git@github.com/enzarb/enzarb-proto.git", branch = "main" }
 # Locally, build against the sibling checkout instead. Add an entry only once the
 # crate exists: a patch pointing at a missing crate breaks every build.
+
+[patch."ssh://git@github.com/enzarb/enzarb-connectors.git"]
+enzarb-connector = { path = "enzarb-connectors/crates/connector" }

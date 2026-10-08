@@ -49,16 +49,22 @@ The common envelope uses CloudEvents attributes:
 
 ```rust
 #[async_trait]
-pub trait Connector {
-    async fn fetch_thread(&self, item: &ItemRef) -> Result<Thread>;
-    async fn post_comment(&self, item: &ItemRef, body: &str) -> Result<CommentRef>;
-    async fn open_change_request(&self, req: ChangeRequestSpec) -> Result<ItemRef>;
-    async fn set_status(&self, target: &CommitRef, status: Status) -> Result<()>;
-    async fn set_progress(&self, target: &ProgressTarget, p: Progress) -> Result<()>;
-    async fn check_permission(&self, repo: &RepoRef, actor: &Actor) -> Result<Permission>;
-    async fn mint_clone_credential(&self, repo: &RepoRef, scope: CredScope) -> Result<ShortLivedCred>;
+pub trait Connector: Send + Sync {
+    async fn fetch_thread(&self, item: &WorkItemKey) -> Result<Thread>;
+    async fn post_comment(&self, item: &WorkItemKey, body: &str, idempotency_key: &str) -> Result<CommentRef>;
+    async fn open_change_request(&self, req: ChangeRequestSpec, idempotency_key: &str) -> Result<ItemRef>;
+    async fn set_status(&self, target: &CommitRef, status: Status, idempotency_key: &str) -> Result<()>;
+    async fn set_progress(&self, target: &ProgressTarget, progress: Progress, idempotency_key: &str) -> Result<()>;
+    async fn check_permission(&self, repo: &RepoKey, actor: &Actor) -> Result<Permission>;
+    async fn mint_clone_credential(&self, repo: &RepoKey, scope: CredScope, idempotency_key: &str) -> Result<ShortLivedCred>;
 }
 ```
+
+Items are addressed by `WorkItemKey` (`github:org/repo#42`) and repos by `RepoKey`. `ItemRef` is the event-envelope shape that `open_change_request` returns. The other shapes are defined in `enzarb-connector`, the source of truth:
+- `ProgressTarget { item, comment_id? }`;
+- `Status { state, context, description, target_url? }`;
+- `ShortLivedCred`, whose token is redacted in `Debug`;
+- `Thread`.
 
 - `mint_clone_credential` returns a **short-lived, single-repo** token: a GitHub App installation token restricted to that one repository with minimal permissions. It is handed to sandbox-init for each run, and it is never the App's private key.
 - Every call accepts an idempotency key, so repeated job executions don't double-post (for example, a hidden marker in the comment body checked before posting).
