@@ -223,6 +223,14 @@
         "image"
       ],
       "properties": {
+        "probes": {
+          "type": "object",
+          "properties": {
+            "http": {
+              "type": "boolean"
+            }
+          }
+        },
         "replicaCount": {
           "type": "integer",
           "minimum": 0

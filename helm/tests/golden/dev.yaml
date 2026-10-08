@@ -565,10 +565,10 @@ spec:
       serviceAccountName: enzarb-connectors
 
       initContainers:
-        - name: wait-enzarb-migrate-ui-de1349a3
+        - name: wait-enzarb-migrate-ui-d8a8aae773
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-de1349a3]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-d8a8aae773]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: receiver
@@ -579,33 +579,35 @@ spec:
             - { name: http, containerPort: 8080 }
           env:
 
-            - name: ENZARB_DB_HOST
+            - name: PGHOST
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-connectors-credentials
                   key: host
-            - name: ENZARB_DB_PASSWORD
+            - name: PGPASSWORD
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-connectors-credentials
                   key: password
-            - name: ENZARB_DB_PORT
+            - name: PGPORT
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-connectors-credentials
                   key: port
-            - name: ENZARB_DB_SSLMODE
+            - name: PGSSLMODE
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-connectors-credentials
                   key: sslmode
-            - name: ENZARB_DB_USER
+            - name: PGUSER
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-connectors-credentials
                   key: username
+            - name: PGDATABASE
+              value: "enzarb"
             - name: DATABASE_URL
-              value: "postgres://$(ENZARB_DB_USER):$(ENZARB_DB_PASSWORD)@$(ENZARB_DB_HOST):$(ENZARB_DB_PORT)/enzarb?sslmode=$(ENZARB_DB_SSLMODE)"
+              value: "postgres:///enzarb"
             - name: GITHUB_WEBHOOK_SECRET
               valueFrom:
                 secretKeyRef:
@@ -718,11 +720,10 @@ spec:
             - { name: PROXY_LISTEN, value: 0.0.0.0:8080 }
             - { name: PROXY_IDLE_TIMEOUT_SECS, value: "900" }
             - { name: RUST_LOG, value: "info" }
-          # No documented probe endpoint in the proxy README; TCP probes.
           readinessProbe:
-            tcpSocket: { port: http }
+            httpGet: { path: /healthz, port: http }
           livenessProbe:
-            tcpSocket: { port: http }
+            httpGet: { path: /healthz, port: http }
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
 
 ---
@@ -755,10 +756,10 @@ spec:
       serviceAccountName: enzarb-ui
 
       initContainers:
-        - name: wait-enzarb-migrate-ui-de1349a3
+        - name: wait-enzarb-migrate-ui-d8a8aae773
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-de1349a3]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-d8a8aae773]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: ui
@@ -768,33 +769,35 @@ spec:
             - { name: http, containerPort: 3000 }
           env:
 
-            - name: ENZARB_DB_HOST
+            - name: PGHOST
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-ui-credentials
                   key: host
-            - name: ENZARB_DB_PASSWORD
+            - name: PGPASSWORD
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-ui-credentials
                   key: password
-            - name: ENZARB_DB_PORT
+            - name: PGPORT
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-ui-credentials
                   key: port
-            - name: ENZARB_DB_SSLMODE
+            - name: PGSSLMODE
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-ui-credentials
                   key: sslmode
-            - name: ENZARB_DB_USER
+            - name: PGUSER
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-ui-credentials
                   key: username
+            - name: PGDATABASE
+              value: "enzarb"
             - name: DATABASE_URL
-              value: "postgres://$(ENZARB_DB_USER):$(ENZARB_DB_PASSWORD)@$(ENZARB_DB_HOST):$(ENZARB_DB_PORT)/enzarb?sslmode=$(ENZARB_DB_SSLMODE)"
+              value: "postgres:///enzarb?sslmode=$(PGSSLMODE)"
             - name: ENZARB_SESSION_JWT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -813,11 +816,11 @@ spec:
             - { name: ENZARB_PUBLIC_URL, value: "https://enzarb.local" }
             # adapter-node derives the origin for its CSRF check from this header; the Gateway forwards it.
             - { name: PROTOCOL_HEADER, value: x-forwarded-proto }
-          # The UI has no dedicated health endpoint; TCP probes only.
+          # /healthz and /readyz come from enzarb-ui#13; set ui.probes.http=false for TCP probes.
           readinessProbe:
-            tcpSocket: { port: http }
+            httpGet: { path: /readyz, port: http }
           livenessProbe:
-            tcpSocket: { port: http }
+            httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 10
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":1000,"seccompProfile":{"type":"RuntimeDefault"}}
           volumeMounts:
@@ -856,10 +859,10 @@ spec:
       terminationGracePeriodSeconds: 60
 
       initContainers:
-        - name: wait-enzarb-migrate-ui-de1349a3
+        - name: wait-enzarb-migrate-ui-d8a8aae773
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-de1349a3]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-d8a8aae773]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: workflows
@@ -870,33 +873,35 @@ spec:
             - { name: executor, containerPort: 8081 }
           env:
 
-            - name: ENZARB_DB_HOST
+            - name: PGHOST
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-workflows-credentials
                   key: host
-            - name: ENZARB_DB_PASSWORD
+            - name: PGPASSWORD
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-workflows-credentials
                   key: password
-            - name: ENZARB_DB_PORT
+            - name: PGPORT
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-workflows-credentials
                   key: port
-            - name: ENZARB_DB_SSLMODE
+            - name: PGSSLMODE
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-workflows-credentials
                   key: sslmode
-            - name: ENZARB_DB_USER
+            - name: PGUSER
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-workflows-credentials
                   key: username
+            - name: PGDATABASE
+              value: "enzarb"
             - name: DATABASE_URL
-              value: "postgres://$(ENZARB_DB_USER):$(ENZARB_DB_PASSWORD)@$(ENZARB_DB_HOST):$(ENZARB_DB_PORT)/enzarb?sslmode=$(ENZARB_DB_SSLMODE)"
+              value: "postgres:///enzarb"
             - name: GITHUB_APP_ID
               valueFrom:
                 secretKeyRef:
@@ -935,7 +940,7 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: enzarb-migrate-workflows-8f83bf84
+  name: enzarb-migrate-workflows-8aa24d7ed7
   labels:
     app.kubernetes.io/name: enzarb-migrate-workflows
     app.kubernetes.io/instance: enzarb
@@ -979,33 +984,35 @@ spec:
           args: [migrate, --require-roles]
           env:
 
-            - name: ENZARB_DB_HOST
+            - name: PGHOST
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-workflows-owner-credentials
                   key: host
-            - name: ENZARB_DB_PASSWORD
+            - name: PGPASSWORD
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-workflows-owner-credentials
                   key: password
-            - name: ENZARB_DB_PORT
+            - name: PGPORT
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-workflows-owner-credentials
                   key: port
-            - name: ENZARB_DB_SSLMODE
+            - name: PGSSLMODE
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-workflows-owner-credentials
                   key: sslmode
-            - name: ENZARB_DB_USER
+            - name: PGUSER
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-workflows-owner-credentials
                   key: username
+            - name: PGDATABASE
+              value: "enzarb"
             - name: DATABASE_URL
-              value: "postgres://$(ENZARB_DB_USER):$(ENZARB_DB_PASSWORD)@$(ENZARB_DB_HOST):$(ENZARB_DB_PORT)/enzarb?sslmode=$(ENZARB_DB_SSLMODE)"
+              value: "postgres:///enzarb"
             - { name: RUST_LOG, value: "info" }
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
           volumeMounts:
@@ -1018,7 +1025,7 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: enzarb-migrate-connectors-05290b97
+  name: enzarb-migrate-connectors-3afe10c5c3
   labels:
     app.kubernetes.io/name: enzarb-migrate-connectors
     app.kubernetes.io/instance: enzarb
@@ -1039,10 +1046,10 @@ spec:
       restartPolicy: OnFailure
 
       initContainers:
-        - name: wait-enzarb-migrate-workflows-8f83bf84
+        - name: wait-enzarb-migrate-workflows-8aa24d7ed7
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-workflows-8f83bf84]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-workflows-8aa24d7ed7]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: migrate
@@ -1051,33 +1058,35 @@ spec:
           args: [migrate]
           env:
 
-            - name: ENZARB_DB_HOST
+            - name: PGHOST
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-connectors-owner-credentials
                   key: host
-            - name: ENZARB_DB_PASSWORD
+            - name: PGPASSWORD
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-connectors-owner-credentials
                   key: password
-            - name: ENZARB_DB_PORT
+            - name: PGPORT
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-connectors-owner-credentials
                   key: port
-            - name: ENZARB_DB_SSLMODE
+            - name: PGSSLMODE
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-connectors-owner-credentials
                   key: sslmode
-            - name: ENZARB_DB_USER
+            - name: PGUSER
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-connectors-owner-credentials
                   key: username
+            - name: PGDATABASE
+              value: "enzarb"
             - name: DATABASE_URL
-              value: "postgres://$(ENZARB_DB_USER):$(ENZARB_DB_PASSWORD)@$(ENZARB_DB_HOST):$(ENZARB_DB_PORT)/enzarb?sslmode=$(ENZARB_DB_SSLMODE)"
+              value: "postgres:///enzarb"
             - { name: RUST_LOG, value: "info" }
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":10001,"seccompProfile":{"type":"RuntimeDefault"}}
           volumeMounts:
@@ -1090,7 +1099,7 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: enzarb-migrate-ui-de1349a3
+  name: enzarb-migrate-ui-d8a8aae773
   labels:
     app.kubernetes.io/name: enzarb-migrate-ui
     app.kubernetes.io/instance: enzarb
@@ -1111,10 +1120,10 @@ spec:
       restartPolicy: OnFailure
 
       initContainers:
-        - name: wait-enzarb-migrate-connectors-05290b97
+        - name: wait-enzarb-migrate-connectors-3afe10c5c3
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-connectors-05290b97]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-connectors-3afe10c5c3]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: migrate
@@ -1123,33 +1132,35 @@ spec:
           command: [node, scripts/migrate.ts]
           env:
 
-            - name: ENZARB_DB_HOST
+            - name: PGHOST
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-ui-owner-credentials
                   key: host
-            - name: ENZARB_DB_PASSWORD
+            - name: PGPASSWORD
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-ui-owner-credentials
                   key: password
-            - name: ENZARB_DB_PORT
+            - name: PGPORT
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-ui-owner-credentials
                   key: port
-            - name: ENZARB_DB_SSLMODE
+            - name: PGSSLMODE
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-ui-owner-credentials
                   key: sslmode
-            - name: ENZARB_DB_USER
+            - name: PGUSER
               valueFrom:
                 secretKeyRef:
                   name: enzarb-pg-ui-owner-credentials
                   key: username
+            - name: PGDATABASE
+              value: "enzarb"
             - name: DATABASE_URL
-              value: "postgres://$(ENZARB_DB_USER):$(ENZARB_DB_PASSWORD)@$(ENZARB_DB_HOST):$(ENZARB_DB_PORT)/enzarb?sslmode=$(ENZARB_DB_SSLMODE)"
+              value: "postgres:///enzarb?sslmode=$(PGSSLMODE)"
             - { name: RUST_LOG, value: "info" }
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":1000,"seccompProfile":{"type":"RuntimeDefault"}}
           volumeMounts:

@@ -7,13 +7,13 @@ Ordering is enforced with init containers (`kubectl wait`):
   connectors waits for the workflows Job;
   ui         waits for the connectors Job;
   runtime Deployments wait for the ui Job (the end of the chain).
-Job names carry a hash of the image, so a new image gets a fresh Job.
+Job names carry a hash of the rendered Job inputs (see enzarb.migrateJob), so any change gets a fresh Job.
 */}}
 {{- if .Values.postgres.enabled }}
 {{- $steps := list
   (dict "comp" "workflows" "c" .Values.workflows "uid" 65532 "role" "workflows-owner" "tmp" false)
-  (dict "comp" "connectors" "c" .Values.connectors "uid" 10001 "role" "connectors-owner" "wait" (include "enzarb.migrateJob" (dict "c" .Values.workflows "comp" "workflows")))
-  (dict "comp" "ui" "c" .Values.ui "uid" 1000 "role" "ui-owner" "wait" (include "enzarb.migrateJob" (dict "c" .Values.connectors "comp" "connectors"))) }}
+  (dict "comp" "connectors" "c" .Values.connectors "uid" 10001 "role" "connectors-owner" "wait" (include "enzarb.migrateJob" (dict "ctx" $ "comp" "workflows")))
+  (dict "comp" "ui" "c" .Values.ui "uid" 1000 "role" "ui-owner" "wait" (include "enzarb.migrateJob" (dict "ctx" $ "comp" "connectors"))) }}
 {{- range $i, $s := $steps }}
 {{- if $i }}
 ---
@@ -21,7 +21,7 @@ Job names carry a hash of the image, so a new image gets a fresh Job.
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ include "enzarb.migrateJob" $s }}
+  name: {{ include "enzarb.migrateJob" (dict "ctx" $ "comp" $s.comp) }}
   labels:
     {{- include "enzarb.labels" (dict "ctx" $ "name" (printf "enzarb-migrate-%s" $s.comp)) | nindent 4 }}
     app.kubernetes.io/component: migrate
@@ -54,7 +54,7 @@ spec:
           command: [node, scripts/migrate.ts]
           {{- end }}
           env:
-            {{- include "enzarb.dbEnv" (dict "ctx" $ "role" $s.role) | nindent 12 }}
+            {{- include "enzarb.dbEnv" (dict "ctx" $ "role" $s.role "urlSslmode" (eq $s.comp "ui")) | nindent 12 }}
             - { name: RUST_LOG, value: {{ $.Values.rustLog | quote }} }
           securityContext: {{ include "enzarb.securityContext" (dict "ctx" $ "uid" $s.uid) | fromYaml | toJson }}
           volumeMounts:

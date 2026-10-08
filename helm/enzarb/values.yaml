@@ -81,6 +81,9 @@ ui:
     repository: ghcr.io/enzarb/enzarb-ui
     tag: main
     pullPolicy: ""
+  # HTTP probes (/healthz liveness, /readyz readiness). false falls back to TCP probes.
+  probes:
+    http: true
   resources: {}
   extraEnv: []
 

@@ -31,11 +31,10 @@ spec:
             {{- with $c.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          # No documented probe endpoint in the proxy README; TCP probes.
           readinessProbe:
-            tcpSocket: { port: http }
+            httpGet: { path: /healthz, port: http }
           livenessProbe:
-            tcpSocket: { port: http }
+            httpGet: { path: /healthz, port: http }
           {{- with $c.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
