@@ -13,18 +13,12 @@ export interface Repository {
 	defaultBranch: string;
 }
 
-export interface SandboxSpec {
-	runtimeClassName?: string;
-	docker?: { enabled: boolean };
-}
-
 export interface ProjectSpec {
 	owner: string;
 	displayName?: string;
 	repositories?: Repository[];
 	runMode?: 'worktree' | 'fresh';
 	triggers?: { issues?: boolean; changeRequests?: boolean; mentions?: boolean };
-	sandbox?: SandboxSpec;
 }
 
 export interface ProjectStatus {
