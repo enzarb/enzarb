@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Delete the kind cluster 'enzarb'"
+set -euo pipefail
+# shellcheck source=/dev/null
+. "${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}/.mise/lib/dev.sh"
+need kind
+if cluster_exists; then kind delete cluster --name "$CLUSTER_NAME"; else echo "no cluster '$CLUSTER_NAME'"; fi

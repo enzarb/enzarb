@@ -258,7 +258,7 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 - **Permissions:** Issues RW, Pull requests RW, Contents RW, Checks RW, Metadata R.
 - **Events:** issues, issue_comment, pull_request, pull_request_review, pull_request_review_comment, installation, installation_repositories.
 - **Webhook URL:** `https://<host>/hooks/github`.
-- **Registration manifest:** `enzarb/docs/github-app.yml`, written by the dev-tasks issue.
+- **Registration manifest:** `docs/github-app.yml` (setup in `docs/dev.md`). The UI's OAuth app is separate; its callback is `<public>/login/github/callback`.
 
 ## 11. CI access to private enzarb dependencies
 

@@ -1,0 +1,34 @@
+# GitHub App manifest for enzarb (contracts.md section 10).
+# Used with the GitHub App manifest flow; see docs/dev.md "Create the GitHub App".
+# GitHub expects JSON: convert with `npx --yes js-yaml docs/github-app.yml`.
+#
+# Replace the two placeholders before use:
+#   hook_attributes.url  your smee.io channel URL (dev) or https://<host>/hooks/github (prod)
+#   url                  the app's homepage (any URL)
+#
+# This is NOT the OAuth app used for UI login. The OAuth callback
+# <public>/login/github/callback belongs to a separate OAuth app (docs/dev.md), so no
+# callback_urls and no request_oauth_on_install are set here.
+name: enzarb-dev
+url: https://github.com/enzarb/enzarb
+hook_attributes:
+  url: https://smee.io/REPLACE-WITH-YOUR-CHANNEL
+  active: true
+# The manifest flow redirects here with ?code=... after creation. Nothing needs to listen:
+# copy the code out of the address bar and exchange it with `gh api` (docs/dev.md).
+redirect_url: http://localhost:3000/github-app-created
+public: false
+default_permissions:
+  issues: write
+  pull_requests: write
+  contents: write
+  checks: write
+  metadata: read
+default_events:
+  - issues
+  - issue_comment
+  - pull_request
+  - pull_request_review
+  - pull_request_review_comment
+  - installation
+  - installation_repositories

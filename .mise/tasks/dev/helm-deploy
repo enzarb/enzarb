@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+#MISE description="Capstone: cluster, images, secrets, then helm upgrade --install enzarb (kind)"
+set -euo pipefail
+# shellcheck source=/dev/null
+. "${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}/.mise/lib/dev.sh"
+need helm kubectl kind mise
+
+cd "$ROOT"
+mise run dev:cluster
+mise run dev:images
+mise run dev:secrets
+
+chart="$ROOT/enzarb-helm/enzarb"
+[ -d "$chart" ] || die "$chart missing; run: mise run repos:init"
+log "helm upgrade --install $RELEASE"
+helm --kube-context "$KCTX" upgrade --install "$RELEASE" "$chart" -n "$NS" --create-namespace \
+  -f "$chart/values-dev.yaml" \
+  --set secrets.github.existingSecret=enzarb-github \
+  --wait --timeout 15m
+
+# Pods are not rolled when only the :dev image content changed; restart them.
+log "restarting deployments to pick up freshly loaded :dev images"
+k -n "$NS" rollout restart deploy >/dev/null
+k -n "$NS" rollout status deploy --timeout=5m >/dev/null || true
+
+log "what is up"
+echo "-- pods";            k -n "$NS" get pods
+echo "-- migration jobs";  k -n "$NS" get jobs
+echo "-- pgop cluster";    k -n "$NS" get clusters.pgop.ruck.io 2>/dev/null || true
+echo "-- routes";          k -n "$NS" get httproute
+echo "-- gateway";         k -n enzarb-system get gateway enzarb
+echo "-- CRD";             k get crd projects.enzarb.dev
+cat <<MSG
+
+Checklist
+  [ ] all pods above Running/Completed
+  [ ] /etc/hosts has: 127.0.0.1 enzarb.local
+  [ ] https://enzarb.local/ loads (accept the self-signed cert)
+  [ ] mise run dev:webhook-relay running (for GitHub events)
+Next: docs/dev.md ("Create the first Project").
+MSG

@@ -2,6 +2,8 @@
 
 This directory is the top-level **`enzarb`** repository. It holds docs, ADRs, the repo manifest and cross-repo tasks. Each `enzarb-*/` subdirectory is a **separate git repository** listed in `repos.toml`. The root repo ignores them (`.gitignore`), and they are not submodules.
 
+Local kind setup: `docs/dev.md` (`mise run dev:cluster|images|secrets|helm-deploy|webhook-relay|down`; tasks in `.mise/tasks/dev/`, shared helpers in `.mise/lib/dev.sh`).
+
 Read `docs/architecture.md` first, then `docs/contracts.md` (the interfaces every repo must match) and `docs/mvp.md` (current scope). Decisions live in `docs/adr/`, open questions in `docs/gaps.md`.
 
 ## Repos
