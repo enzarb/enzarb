@@ -38,3 +38,12 @@ export const markClaudeConfigured = command(NameArg, async (name) => {
 	await projectSettings(getSql()).markClaudeConfigured(name, user.login);
 	await getProjectSettings(name).refresh();
 });
+
+const CredentialStateSchema = v.object({ name: NameArg, configured: v.boolean() });
+
+/** Stores the sandbox's real `credential_state` answer as the cached `app.project_settings` flag. */
+export const syncClaudeCredential = command(CredentialStateSchema, async ({ name, configured }) => {
+	const { user } = await ownedProject(name);
+	await projectSettings(getSql()).recordClaudeState(name, configured, user.login);
+	await getProjectSettings(name).refresh();
+});

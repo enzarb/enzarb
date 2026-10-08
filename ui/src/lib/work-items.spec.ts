@@ -7,9 +7,10 @@ describe('availableActions', () => {
 		for (const s of ['Triaging', 'Planning', 'Implementing', 'Failed', 'Done'])
 			expect(availableActions(s)).not.toContain('approve');
 	});
-	it('retry only in Failed', () => {
+	it('retry only in Failed and Stale', () => {
 		expect(availableActions('Failed')).toEqual(['retry', 'cancel']);
-		for (const s of ['Triaging', 'Stale', 'AwaitingApproval', 'Cancelled'])
+		expect(availableActions('Stale')).toEqual(['retry', 'cancel']);
+		for (const s of ['Triaging', 'AwaitingApproval', 'Cancelled'])
 			expect(availableActions(s)).not.toContain('retry');
 	});
 	it('cancel for every non-terminal state, none for terminal ones', () => {

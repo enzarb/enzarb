@@ -2,6 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import ConditionChecklist from '#lib/components/ConditionChecklist.svelte';
+	import CredentialStatus from '#lib/components/CredentialStatus.svelte';
 	import PageHeading from '#lib/components/PageHeading.svelte';
 	import { deleteProject, getProject } from '#lib/projects.remote.ts';
 	import { getProjectSettings } from '#lib/terminal.remote.ts';
@@ -17,6 +18,9 @@
 		const id = setInterval(() => void project.refresh(), POLL_MS);
 		return () => clearInterval(id);
 	});
+
+	// The sandbox's own answer, once it arrives (overrides the cached flag).
+	let configured = $state<boolean | undefined>();
 
 	let confirming = $state(false);
 	let deleteError = $state('');
@@ -50,19 +54,18 @@
 
 		<section class="card stack">
 			<h2>Sandbox</h2>
-			<p>
-				Claude token:
-				{#if settings.current?.claudeTokenConfigured}
-					<span class="badge done">Configured</span>
-					<span class="muted">by {settings.current.claudeConfiguredBy}</span>
-				{:else}
-					<span class="badge">Not configured</span>
-				{/if}
-			</p>
+			<CredentialStatus
+				project={p.name}
+				cached={settings.current?.claudeTokenConfigured ?? false}
+				onchecked={(c) => (configured = c)}
+			/>
+			{#if settings.current?.claudeTokenConfigured && settings.current.claudeConfiguredBy}
+				<p class="muted">Configured by {settings.current.claudeConfiguredBy}</p>
+			{/if}
 			<p>
 				<a href="/projects/{p.name}/terminal">Open terminal</a> ·
 				<a href="/projects/{p.name}/claude"
-					>{settings.current?.claudeTokenConfigured ? 'Redo' : 'Start'} Claude setup</a
+					>{(configured ?? settings.current?.claudeTokenConfigured) ? 'Redo' : 'Start'} Claude setup</a
 				>
 			</p>
 		</section>

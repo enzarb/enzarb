@@ -1,6 +1,7 @@
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { projectSettings } from './project-settings.ts';
 import { migrate } from '../../../scripts/migrate.ts';
 
 import {
@@ -100,5 +101,41 @@ describe('sessions in postgres', () => {
 		const { token, session } = await createSession(sql, userId);
 		await invalidateSession(sql, session.id);
 		expect(await validateSessionToken(sql, token)).toBeNull();
+	});
+});
+
+describe('project settings in postgres', () => {
+	let container: StartedPostgreSqlContainer;
+	let sql: postgres.Sql;
+
+	beforeAll(async () => {
+		container = await new PostgreSqlContainer('postgres:18').start();
+		sql = postgres(container.getConnectionUri(), { onnotice: () => {} });
+		await migrate(sql);
+	}, 120_000);
+
+	afterAll(async () => {
+		await sql?.end();
+		await container?.stop();
+	});
+
+	it('recordClaudeState follows the sandbox answer and keeps the first who/when', async () => {
+		const s = projectSettings(sql);
+		await s.recordClaudeState('web', false, 'alice');
+		expect((await s.get('web')).claudeTokenConfigured).toBe(false);
+
+		await s.recordClaudeState('web', true, 'alice');
+		const first = await s.get('web');
+		expect(first).toMatchObject({ claudeTokenConfigured: true, claudeConfiguredBy: 'alice' });
+
+		await s.recordClaudeState('web', true, 'bob');
+		expect(await s.get('web')).toEqual(first);
+
+		await s.recordClaudeState('web', false, 'bob');
+		expect(await s.get('web')).toMatchObject({
+			claudeTokenConfigured: false,
+			claudeConfiguredAt: null,
+			claudeConfiguredBy: null
+		});
 	});
 });

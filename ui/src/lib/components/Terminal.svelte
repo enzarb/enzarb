@@ -1,6 +1,6 @@
 <script lang="ts">
 	import '@xterm/xterm/css/xterm.css';
-	import type { Session, WebSocketLike } from '@enzarb/proto';
+	import type { Session } from '@enzarb/proto';
 	import TerminalChecklist from '#lib/components/TerminalChecklist.svelte';
 	import { terminalConnection } from '#lib/terminal.remote.ts';
 	import {
@@ -76,7 +76,7 @@
 				// Own the socket so "connecting" (open) and "handshake" (welcome) are separate steps.
 				const ws = new WebSocket(url);
 				ws.addEventListener('open', () => advance('connecting'));
-				session = await proto.Session.connect(ws as unknown as WebSocketLike, { client: 'ui' });
+				session = await proto.Session.connect(ws, { client: 'ui' });
 				if (disposed) return void session.close();
 				advance('handshake'); // connecting is already done if `open` fired
 				const s = session;

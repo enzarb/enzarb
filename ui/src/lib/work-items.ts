@@ -52,13 +52,13 @@ const TERMINAL = new Set(['Done', 'Duplicate', 'Cancelled', 'Merged', 'Closed'])
 export const isTerminal = (state: string): boolean => TERMINAL.has(state);
 
 /**
- * Actions valid in a state: approve only while AwaitingApproval, retry only when Failed, cancel
+ * Actions valid in a state: approve only while AwaitingApproval, retry when Failed or Stale, cancel
  * for every non-terminal state.
  */
 export function availableActions(state: string): WorkAction[] {
 	const out: WorkAction[] = [];
 	if (state === 'AwaitingApproval') out.push('approve');
-	if (state === 'Failed') out.push('retry');
+	if (state === 'Failed' || state === 'Stale') out.push('retry');
 	if (!isTerminal(state)) out.push('cancel');
 	return out;
 }

@@ -29,6 +29,7 @@ describe('workService against workflows_api', () => {
 	let mine: number;
 	let approval: number;
 	let failed: number;
+	let stale: number;
 	let done: number;
 	let theirs: number;
 
@@ -56,6 +57,7 @@ describe('workService against workflows_api', () => {
 			state: 'AwaitingApproval'
 		});
 		failed = await seedItem(sql, { key: 'github:acme/api#3', project: 'api', state: 'Failed' });
+		stale = await seedItem(sql, { key: 'github:acme/api#5', project: 'api', state: 'Stale' });
 		done = await seedItem(sql, { key: 'github:acme/api#4', project: 'api', state: 'Done' });
 		theirs = await seedItem(sql, {
 			key: 'github:other/x#5',
@@ -74,8 +76,8 @@ describe('workService against workflows_api', () => {
 		const svc = workService(sql, ['web', 'api']);
 		const all = await svc.list();
 		expect(all.map((i) => i.key)).not.toContain('github:other/x#5');
-		expect(all).toHaveLength(4);
-		expect((await svc.list('api')).map((i) => i.project)).toEqual(['api', 'api']);
+		expect(all).toHaveLength(5);
+		expect((await svc.list('api')).map((i) => i.project)).toEqual(['api', 'api', 'api']);
 		expect(await svc.list('secret')).toEqual([]);
 		expect(await workService(sql, []).list()).toEqual([]);
 	});
@@ -113,6 +115,7 @@ describe('workService against workflows_api', () => {
 		const svc = workService(sql, ['web', 'api']);
 		expect((await svc.get(approval))!.actions).toEqual(['approve', 'cancel']);
 		expect((await svc.get(failed))!.actions).toEqual(['retry', 'cancel']);
+		expect((await svc.get(stale))!.actions).toEqual(['retry', 'cancel']);
 		expect((await svc.get(done))!.actions).toEqual([]);
 	});
 
@@ -145,5 +148,11 @@ describe('workService against workflows_api', () => {
 		await svc.submitAction(approval, { login: 'alice', id: 7 }, 'cancel');
 		const types = await sql`SELECT type FROM workflows.events ORDER BY id`;
 		expect(types.map((r) => r.type)).toEqual(['ApprovalGranted', 'CancelRequested']);
+	});
+
+	it('accepts retry from Stale', async () => {
+		const id = await seedItem(sql, { key: 'github:acme/api#9', project: 'api', state: 'Stale' });
+		const svc = workService(sql, ['api']);
+		expect(await svc.submitAction(id, { login: 'alice', id: 7 }, 'retry')).toBeGreaterThan(0);
 	});
 });

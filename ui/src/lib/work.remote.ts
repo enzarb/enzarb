@@ -3,14 +3,14 @@ import { command, getRequestEvent, query } from '$app/server';
 import * as v from 'valibot';
 import { getSql } from '#lib/server/db.ts';
 import { getProjectStore } from '#lib/server/kube.ts';
-import { projectService } from '#lib/server/project-service.ts';
+import { projectCache } from '#lib/server/project-cache.ts';
 import { WorkError, workService } from '#lib/server/work-service.ts';
 import { SubmitActionSchema } from '#lib/work-items.ts';
 
 async function service() {
 	const { user } = getRequestEvent().locals;
 	if (!user) error(401, 'Not signed in');
-	const projects = await projectService(getProjectStore(), user.login).list();
+	const projects = await projectCache.list(getProjectStore(), user.login);
 	return {
 		user,
 		work: workService(
