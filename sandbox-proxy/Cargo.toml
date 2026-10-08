@@ -3,4 +3,33 @@ name = "enzarb-sandbox-proxy"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "enzarb_sandbox_proxy"
+path = "src/lib.rs"
+
+[[bin]]
+name = "enzarb-sandbox-proxy"
+path = "src/main.rs"
+
 [dependencies]
+anyhow = "1"
+async-trait = "0.1"
+axum = { version = "0.8", features = ["ws"] }
+base64 = "0.22"
+bytes = "1"
+enzarb-crds = { git = "ssh://git@github.com/enzarb/enzarb-sandbox-operator.git", branch = "main" }
+enzarb-proto = { git = "ssh://git@github.com/enzarb/enzarb-proto.git", branch = "main", features = ["tokio"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
+k8s-openapi = { version = "0.28", default-features = false, features = ["latest"] }
+kube = { version = "4.2", default-features = false, features = ["client", "runtime", "rustls-tls", "ring"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "sync", "time"] }
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "handshake"] }
+tokio-util = "0.7"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "sync", "time", "test-util"] }
