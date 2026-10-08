@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use enzarb_proto::session::{Client, ConnectError, Event, Events, Session};
-use enzarb_proto::{ClientKind, Ctrl, RunStart};
+use enzarb_proto::{ClientKind, CredentialKind, Ctrl, RunStart};
 use nix::errno::Errno;
 use nix::sys::signal::kill;
 use nix::unistd::Pid;
@@ -38,12 +38,16 @@ impl Server {
 }
 
 async fn start() -> Server {
+    start_with(|_| {}).await
+}
+
+async fn start_with(tweak: impl FnOnce(&mut Config)) -> Server {
     let dir = tempfile::tempdir().unwrap();
     let token_file = dir.path().join("token");
     std::fs::write(&token_file, format!("{TOKEN}\n")).unwrap();
     let workspace = dir.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
-    let config = Config {
+    let mut config = Config {
         listen: ([127, 0, 0, 1], 0).into(),
         auth_token_file: token_file,
         workspace,
@@ -51,6 +55,7 @@ async fn start() -> Server {
         grace: Duration::from_secs(2),
         ..Config::default()
     };
+    tweak(&mut config);
     let reaper = Reaper::new(false);
     tokio::spawn(reaper.clone().run());
     let listener = tokio::net::TcpListener::bind(config.listen).await.unwrap();
@@ -283,4 +288,38 @@ async fn disconnect_kills_that_sessions_ptys_only() {
     })
     .await
     .expect("session 2's pty process still alive");
+}
+
+#[tokio::test]
+async fn credential_status_reflects_token_file() {
+    let tok = tempfile::tempdir().unwrap();
+    let file = tok.path().join("claude-token");
+    let f = file.clone();
+    let srv = start_with(move |c| c.claude_token_file = f).await;
+    let (session, mut events) = srv.connect().await;
+
+    async fn ask(session: &Session, events: &mut Events) -> bool {
+        session.send_ctrl(&Ctrl::CredentialStatus).unwrap();
+        loop {
+            match timeout(T, events.next())
+                .await
+                .expect("no credential_state")
+            {
+                Some(Event::Ctrl(Ctrl::CredentialState { kind, configured })) => {
+                    assert_eq!(kind, CredentialKind::ClaudeOauth);
+                    return configured;
+                }
+                Some(_) => continue,
+                None => panic!("session closed"),
+            }
+        }
+    }
+
+    assert!(!ask(&session, &mut events).await, "missing file");
+    std::fs::write(&file, "").unwrap();
+    assert!(!ask(&session, &mut events).await, "empty file");
+    std::fs::write(&file, "not-a-token\n").unwrap();
+    assert!(!ask(&session, &mut events).await, "wrong prefix");
+    std::fs::write(&file, "sk-ant-oat01-abc\n").unwrap();
+    assert!(ask(&session, &mut events).await, "valid token");
 }

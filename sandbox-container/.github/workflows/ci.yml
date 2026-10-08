@@ -29,3 +29,24 @@ jobs:
       - run: cargo test
       - name: Cargo.lock has no [patch] sections
         run: "! grep -q '^\\[\\[patch' Cargo.lock"
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Write build secret
+        run: printf '%s\n' "$KEY" > "$RUNNER_TEMP/proto_key"
+        env:
+          KEY: ${{ secrets.ENZARB_PROTO_DEPLOY_KEY }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: enzarb-sandbox:ci
+          secret-files: |
+            proto_key=${{ runner.temp }}/proto_key
+      - run: scripts/smoke.sh enzarb-sandbox:ci
+      - if: always()
+        run: rm -f "$RUNNER_TEMP/proto_key"

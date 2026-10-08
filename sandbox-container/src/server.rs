@@ -16,7 +16,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use enzarb_proto::session::{Event, OpenRequest, ServerOptions, Session};
-use enzarb_proto::{ChannelKind, Ctrl, HEADER_LEN, MAX_PAYLOAD_LEN, error_code};
+use enzarb_proto::{ChannelKind, CredentialKind, Ctrl, HEADER_LEN, MAX_PAYLOAD_LEN, error_code};
 use futures_util::{Sink, Stream};
 use tokio::task::JoinSet;
 use tokio_tungstenite::tungstenite::Message as WsMsg;
@@ -210,6 +210,15 @@ async fn session_loop(state: Arc<AppState>, socket: WebSocket) {
             Event::Ctrl(Ctrl::RunStart(run)) => state.runs.start(&ctx, run).await,
             Event::Ctrl(Ctrl::RunStatus { run_id }) => state.runs.status(&ctx, &run_id).await,
             Event::Ctrl(Ctrl::RunCancel { run_id }) => state.runs.cancel(&ctx, &run_id).await,
+            Event::Ctrl(Ctrl::CredentialStatus) => {
+                let configured = claude_token_configured(&state.config.claude_token_file);
+                if let Err(e) = session.send_ctrl(&Ctrl::CredentialState {
+                    kind: CredentialKind::ClaudeOauth,
+                    configured,
+                }) {
+                    tracing::warn!(session = id, error = %e, "credential_state send failed");
+                }
+            }
             Event::Ctrl(other) => tracing::debug!(session = id, ?other, "ignored ctrl"),
         }
     }
@@ -271,4 +280,13 @@ fn open(
         pty::bridge(handle, pty).await;
         controls.lock().unwrap().remove(&channel_id);
     });
+}
+
+/// True when the Claude OAuth token file exists, is non-empty and looks like an
+/// OAuth token (`sk-ant-oat01-` prefix). The token itself is never logged.
+fn claude_token_configured(path: &std::path::Path) -> bool {
+    match std::fs::read_to_string(path) {
+        Ok(t) => t.trim().starts_with("sk-ant-oat01-"),
+        Err(_) => false,
+    }
 }
