@@ -33,6 +33,11 @@ if [ "$CNI" = calico ] && ! k -n kube-system get ds calico-node >/dev/null 2>&1;
 fi
 k wait --for=condition=Ready nodes --all --timeout=5m
 
+# gVisor: every sandbox runs under RuntimeClass `gvisor` (ADR-0012). Idempotent.
+log "installing gVisor into the kind nodes"
+[ -x "$KDIR/hack/kind-install-gvisor.sh" ] || die "$KDIR/hack/kind-install-gvisor.sh missing; update enzarb-kubernetes (mise run repos:init)"
+"$KDIR/hack/kind-install-gvisor.sh" "$CLUSTER_NAME"
+
 cd "$KDIR"
 log "cert-manager"
 kapply -k base/cert-manager
@@ -56,6 +61,35 @@ kapply -k overlays/dev
 k -n capsule-system wait --for=condition=Available deploy --all --timeout=5m
 k -n pgop-system wait --for=condition=Available deploy --all --timeout=5m
 k -n agent-sandbox-system wait --for=condition=Available deploy --all --timeout=5m
+
+log "verifying gVisor with a throwaway pod (runtimeClassName: gvisor)"
+gv="enzarb-gvisor-probe"
+k -n default delete pod "$gv" --ignore-not-found --wait >/dev/null
+k -n default apply -f - >/dev/null <<POD
+apiVersion: v1
+kind: Pod
+metadata: { name: $gv }
+spec:
+  runtimeClassName: gvisor
+  restartPolicy: Never
+  containers:
+    - name: dmesg
+      image: registry.k8s.io/e2e-test-images/busybox:1.36.1-1
+      command: ["dmesg"]
+POD
+if ! k -n default wait --for=jsonpath='{.status.phase}'=Succeeded pod/"$gv" --timeout=3m >/dev/null 2>&1; then
+  k -n default describe pod "$gv" | tail -n 15 >&2 || true
+  k -n default delete pod "$gv" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+  die "the gVisor probe pod did not complete. Check RuntimeClass gvisor, node label enzarb.dev/runtime-gvisor=true and containerd (docs/dev.md, Troubleshooting: gVisor)"
+fi
+gv_out="$(k -n default logs "$gv" 2>&1 || true)"
+k -n default delete pod "$gv" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+if printf '%s' "$gv_out" | grep -qi gvisor; then
+  echo "gVisor active (dmesg shows gVisor)"
+else
+  printf '%s\n' "$gv_out" >&2
+  die "pod on runtimeClassName gvisor is NOT running under gVisor (dmesg has no gVisor banner); it would run on the node kernel. See docs/dev.md, Troubleshooting: gVisor"
+fi
 
 log "Capsule: treat system:serviceaccounts:$NS as Capsule users"
 group="system:serviceaccounts:$NS"
