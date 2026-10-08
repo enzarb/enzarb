@@ -22,16 +22,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
-          registry-url: https://npm.pkg.github.com
-          scope: '@enzarb'
-      - run: npm ci
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: ./.github/actions/install
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
       - run: npm run check
       - run: npm run lint
 
-  test:
+  # Component tests on a plain runner: browser cached, system libs via install-deps.
+  test-client:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -39,26 +37,33 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
-          registry-url: https://npm.pkg.github.com
-          scope: '@enzarb'
-      - run: npm ci
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: ./.github/actions/install
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
       - id: pw
-        run: echo "version=$(npx playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
       - id: pw-cache
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
-      - name: Install Playwright browsers
-        if: steps.pw-cache.outputs.cache-hit != 'true'
-        run: npx playwright install --with-deps chromium
-      - name: Install Playwright system deps
-        if: steps.pw-cache.outputs.cache-hit == 'true'
-        run: npx playwright install-deps chromium
-      - run: npm test
+      - if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: npx playwright install chromium
+      - run: npx playwright install-deps chromium
+      - run: npm run test:unit -- --run --project client
+
+  test-server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: ./.github/actions/install
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - run: npm run test:unit -- --run --project server
 
   docker:
     runs-on: ubuntu-latest
