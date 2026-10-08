@@ -1,6 +1,6 @@
 name: ci
 on:
-  push: { branches: [main] }
+  push: { branches: [main], tags: ['v*'] }
   pull_request:
 
 concurrency:
@@ -40,3 +40,57 @@ jobs:
           helm version --short
           ./hack/refresh-vendored.sh
           git diff --exit-code -- base || { echo "::error::vendored bases drifted; run hack/refresh-vendored.sh"; exit 1; }
+
+  installer-image:
+    name: gvisor installer image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/enzarb/enzarb-gvisor-installer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: crazy-max/ghaction-github-runtime@v3
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+      - name: Build (amd64) and smoke-test
+        run: |
+          set -euo pipefail
+          set -a; source hack/versions.env; set +a
+          docker buildx build -f installer/Dockerfile \
+            --build-arg GVISOR_VERSION --build-arg GVISOR_SHA512_X86_64 --build-arg GVISOR_SHA512_AARCH64 \
+            --cache-from type=gha,scope=gvisor-installer \
+            --load -t installer:test .
+          # Bundle present and runnable; curl/nsenter/cmp available without apk at runtime.
+          got=$(docker run --rm --entrypoint /opt/gvisor/runsc installer:test --version | head -1)
+          [ "$got" = "runsc version release-$GVISOR_VERSION" ] || { echo "unexpected: $got" >&2; exit 1; }
+          docker run --rm --entrypoint sh installer:test -c 'for t in curl nsenter cmp grep; do command -v $t >/dev/null || { echo missing $t; exit 1; }; done; test -s /opt/enzarb/runsc.toml'
+      - uses: docker/login-action@v3
+        if: github.event_name == 'push'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push (amd64 + arm64)
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          set -a; source hack/versions.env; set +a
+          args=()
+          while read -r t; do [ -n "$t" ] && args+=(-t "$t"); done <<< "$DOCKER_METADATA_OUTPUT_TAGS"
+          docker buildx build -f installer/Dockerfile --platform linux/amd64,linux/arm64 \
+            --build-arg GVISOR_VERSION --build-arg GVISOR_SHA512_X86_64 --build-arg GVISOR_SHA512_AARCH64 \
+            --cache-from type=gha,scope=gvisor-installer \
+            --cache-to type=gha,mode=max,scope=gvisor-installer \
+            "${args[@]}" --push .

@@ -22,6 +22,9 @@ overlays/prod              skeleton: dev set + gvisor RuntimeClass + gvisor-inst
 hack/versions.env          pinned versions (single list)
 hack/refresh-vendored.sh   regenerates base/{capsule,capsule-proxy,pgop} from the Helm charts
 hack/kind-install-gvisor.sh  installs gVisor into the kind nodes (dev)
+hack/runsc.toml             runsc flags, shared by the kind script and the installer image
+installer/                  Dockerfile + install.sh of ghcr.io/enzarb/enzarb-gvisor-installer
+hack/pin-installer-digest.sh  pins the installer image in base/gvisor-installer by digest
 hack/validate.sh           what CI runs (kubectl kustomize + kubeconform)
 ```
 
@@ -34,7 +37,7 @@ hack/validate.sh           what CI runs (kubectl kustomize + kubeconform)
 | agent-sandbox | v0.5.6 | release `sandbox.yaml` (core; extensions not installed) | edit URL in `base/agent-sandbox/kustomization.yaml` + `versions.env`; regenerate kopium types in `enzarb-sandbox-operator` |
 | Capsule | chart/app 0.14.6 | Helm chart, vendored | edit `versions.env`, run `hack/refresh-vendored.sh` |
 | capsule-proxy | chart/app 0.15.0 | Helm chart, vendored | same |
-| gVisor | 20261005.0 | github.com/google/gvisor release tarball, sha512 pinned | edit `versions.env` and the literals in `base/gvisor-installer/kustomization.yaml` (CI checks they match) |
+| gVisor | 20261005.0 | github.com/google/gvisor release tarball, sha512 pinned | edit `versions.env`; CI rebuilds the installer image from it (then run `hack/pin-installer-digest.sh` after merge) |
 | pgop | chart/app 0.9.1 | `oci://ghcr.io/ruckc/charts/pgop`, vendored | same |
 
 agent-sandbox: v0.5.x exists (v0.5.6 is the last; v1.0.x is out) and ADR-0002 pins v0.5.x, so v0.5.6 is used.
@@ -131,9 +134,16 @@ nodes that should run sandboxes `enzarb.dev/gvisor-install=true` and it installs
 shim into the host's `/usr/local/bin`, registers the `runsc` handler in `/etc/containerd/config.toml`
 (version 2 or 3 layout), restarts containerd if needed and sets `enzarb.dev/runtime-gvisor=true`, which the
 RuntimeClass selects on. gVisor publishes no generic Kubernetes installer (only GKE Sandbox, minikube addon and
-the containerd quick start), hence this DaemonSet. Needs nodes with a writable `/usr/local/bin`, systemd-managed
-containerd and outbound access to github.com; nodes with a read-only root (COS, Flatcar) or managed
-sandboxing (GKE Sandbox) should provision gVisor in their own image instead and just set the label.
+the containerd quick start), hence this DaemonSet. It runs the image `ghcr.io/enzarb/enzarb-gvisor-installer`
+(`installer/Dockerfile`), which bakes in the sha512-verified gVisor bundle, `hack/runsc.toml` and `install.sh`,
+so nodes need no outbound access to github.com. The image is built by CI on every PR and pushed on main/`v*`.
+The kustomization references it by tag until pinned: after the first push to main run
+`hack/pin-installer-digest.sh` (resolves `:main` to a digest and rewrites the `images:` entry) and commit; repeat
+after every gVisor bump. Needs nodes with a writable `/usr/local/bin` and systemd-managed containerd.
+**Read-only-root node OSes (COS, Flatcar, Bottlerocket) are not supported by the installer**: `/usr` cannot be
+written, so bake gVisor (`runsc`, `containerd-shim-runsc-v1`, `gvisor-bin/`, `runsc.toml`, the containerd
+`runsc` handler) into the node image instead and just set the label `enzarb.dev/runtime-gvisor=true`.
+Managed sandboxing (GKE Sandbox) likewise provisions gVisor itself.
 gVisor needs no KVM (default `systrap` platform), so ordinary cloud VMs work.
 To finish the overlay, replace the self-signed issuer (see the TODO in the kustomization), set the Envoy
 Service type or annotations for your load balancer, and add HA/resource patches for Capsule and pgop.

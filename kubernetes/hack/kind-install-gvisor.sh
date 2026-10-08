@@ -17,17 +17,8 @@ RUNSC_CONF=/etc/containerd/runsc.toml
 CONTAINERD_CONF=/etc/containerd/config.toml
 LABEL=enzarb.dev/runtime-gvisor=true
 
-# runsc flags for Docker-in-gVisor (ADR-0012). Keys under [runsc_config] become
-# --<key>=<value> on runsc. net-raw keeps CAP_NET_RAW in the sandbox (inner
-# bridge networking and ping). Everything else stays at gVisor's defaults:
-# rootfs overlay in sandbox memory-backed "self" file, systrap platform (works
-# without KVM, so also inside kind), netstack networking.
-runsc_toml() {
-  cat <<'TOML'
-[runsc_config]
-  net-raw = "true"
-TOML
-}
+# runsc.toml is shared with the installer image (installer/Dockerfile).
+runsc_toml() { cat hack/runsc.toml; }
 
 # Appended to containerd's config. kind's node image ships a `version = 2`
 # config (containerd 2.x still reads it, plugin id io.containerd.grpc.v1.cri).

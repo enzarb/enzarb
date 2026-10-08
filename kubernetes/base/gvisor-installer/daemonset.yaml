@@ -22,11 +22,8 @@ spec:
       priorityClassName: system-node-critical
       containers:
         - name: install
-          # Needs apk (curl) at start; pin a digest for production.
-          image: docker.io/library/alpine:3.22
-          command: ["/bin/sh", "/scripts/install.sh"]
-          envFrom:
-            - configMapRef: { name: gvisor-installer }
+          # Tag/digest set by `images:` in kustomization.yaml (hack/pin-installer-digest.sh).
+          image: ghcr.io/enzarb/enzarb-gvisor-installer
           env:
             - name: NODE_NAME
               valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
@@ -36,10 +33,7 @@ spec:
             requests: { cpu: 10m, memory: 32Mi }
             limits: { memory: 256Mi }
           volumeMounts:
-            - { name: scripts, mountPath: /scripts, readOnly: true }
             - { name: host, mountPath: /host }
       volumes:
-        - name: scripts
-          configMap: { name: gvisor-installer }
         - name: host
           hostPath: { path: / }

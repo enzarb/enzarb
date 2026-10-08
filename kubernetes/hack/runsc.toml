@@ -1,0 +1,8 @@
+# runsc flags for Docker-in-gVisor (ADR-0012). Keys under [runsc_config] become
+# --<key>=<value> on runsc. net-raw keeps CAP_NET_RAW in the sandbox (inner
+# bridge networking and ping). Everything else stays at gVisor's defaults:
+# rootfs overlay in sandbox memory-backed "self" file, systrap platform (works
+# without KVM, so also inside kind), netstack networking.
+# Single source: used by hack/kind-install-gvisor.sh and baked into installer/Dockerfile.
+[runsc_config]
+  net-raw = "true"
