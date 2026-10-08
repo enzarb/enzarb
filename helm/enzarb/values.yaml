@@ -133,6 +133,24 @@ operator:
   # Default sandbox image for Projects (ENZARB_SANDBOX_IMAGE).
   sandboxImage: ghcr.io/enzarb/enzarb-sandbox:main
   defaultStorage: 20Gi
+  # RuntimeClass of every sandbox pod (ENZARB_SANDBOX_RUNTIME_CLASS). Cluster-admin
+  # setting; Projects cannot choose. Must be in docker.runtimeClasses.
+  sandboxRuntimeClass: gvisor
+  # Docker is always on (ADR-0012): each sandbox pod gets a dockerd sidecar and a
+  # second PVC (`docker`) next to `workspace`.
+  docker:
+    # RuntimeClasses allowed to host dockerd (ENZARB_DOCKER_RUNTIME_CLASSES).
+    runtimeClasses: [gvisor]
+    image: docker:29.8.2-dind
+    # Size of each Project's `docker` PVC.
+    storage: 50Gi
+    # dockerd sidecar resources; unset keys are not passed to the operator.
+    resources: {}
+    #  requests: { cpu: 100m, memory: 256Mi }
+    #  limits: { cpu: "2", memory: 2Gi }
+    # Extra runtime profiles, {<runtimeClass>: {securityContext, dockerdArgs}}. Rendered
+    # to a ConfigMap and passed as ENZARB_DOCKER_PROFILES_FILE. Empty = built-in profiles.
+    profiles: {}
   # Comma-separated app.kubernetes.io/name of pods allowed to reach sandboxes on 7070.
   # Empty = operator default (enzarb-sandbox-proxy,enzarb-workflows, matching this chart).
   netpolIngressPodNames: ""

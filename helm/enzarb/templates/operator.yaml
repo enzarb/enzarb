@@ -30,6 +30,29 @@ spec:
               valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
             - { name: ENZARB_SANDBOX_IMAGE, value: {{ $c.sandboxImage | quote }} }
             - { name: ENZARB_DEFAULT_STORAGE, value: {{ $c.defaultStorage | quote }} }
+            - { name: ENZARB_SANDBOX_RUNTIME_CLASS, value: {{ $c.sandboxRuntimeClass | quote }} }
+            - { name: ENZARB_DOCKER_RUNTIME_CLASSES, value: {{ join "," $c.docker.runtimeClasses | quote }} }
+            - { name: ENZARB_DOCKER_IMAGE, value: {{ $c.docker.image | quote }} }
+            - { name: ENZARB_DOCKER_STORAGE, value: {{ $c.docker.storage | quote }} }
+            {{- with $c.docker.resources.requests }}
+            {{- with .cpu }}
+            - { name: ENZARB_DOCKER_CPU_REQUEST, value: {{ . | quote }} }
+            {{- end }}
+            {{- with .memory }}
+            - { name: ENZARB_DOCKER_MEMORY_REQUEST, value: {{ . | quote }} }
+            {{- end }}
+            {{- end }}
+            {{- with $c.docker.resources.limits }}
+            {{- with .cpu }}
+            - { name: ENZARB_DOCKER_CPU_LIMIT, value: {{ . | quote }} }
+            {{- end }}
+            {{- with .memory }}
+            - { name: ENZARB_DOCKER_MEMORY_LIMIT, value: {{ . | quote }} }
+            {{- end }}
+            {{- end }}
+            {{- if $c.docker.profiles }}
+            - { name: ENZARB_DOCKER_PROFILES_FILE, value: /etc/enzarb/docker/profiles.yaml }
+            {{- end }}
             {{- with $c.netpolIngressPodNames }}
             - { name: ENZARB_NETPOL_INGRESS_POD_NAMES, value: {{ . | quote }} }
             {{- end }}
@@ -45,4 +68,25 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- if $c.docker.profiles }}
+          volumeMounts:
+            - { name: docker-profiles, mountPath: /etc/enzarb/docker, readOnly: true }
+          {{- end }}
           securityContext: {{ include "enzarb.securityContext" (dict "ctx" . "uid" 65532) | fromYaml | toJson }}
+      {{- if $c.docker.profiles }}
+      volumes:
+        - name: docker-profiles
+          configMap: { name: enzarb-sandbox-operator-docker-profiles }
+      {{- end }}
+{{- if $c.docker.profiles }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: enzarb-sandbox-operator-docker-profiles
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-sandbox-operator") | nindent 4 }}
+data:
+  profiles.yaml: |
+    {{- toYaml $c.docker.profiles | nindent 4 }}
+{{- end }}

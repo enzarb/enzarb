@@ -494,6 +494,80 @@
         },
         "netpolIngressPodNames": {
           "type": "string"
+        },
+        "sandboxRuntimeClass": {
+          "enum": [
+            "gvisor"
+          ]
+        },
+        "docker": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "runtimeClasses": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "gvisor"
+                ]
+              }
+            },
+            "image": {
+              "type": "string",
+              "minLength": 1
+            },
+            "storage": {
+              "type": "string",
+              "minLength": 1
+            },
+            "resources": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "requests": {
+                  "type": "object",
+                  "properties": {
+                    "cpu": {
+                      "type": [
+                        "string",
+                        "number"
+                      ]
+                    },
+                    "memory": {
+                      "type": [
+                        "string",
+                        "number"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "limits": {
+                  "type": "object",
+                  "properties": {
+                    "cpu": {
+                      "type": [
+                        "string",
+                        "number"
+                      ]
+                    },
+                    "memory": {
+                      "type": [
+                        "string",
+                        "number"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            },
+            "profiles": {
+              "type": "object"
+            }
+          }
         }
       },
       "additionalProperties": false

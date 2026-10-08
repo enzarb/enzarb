@@ -669,6 +669,10 @@ spec:
               valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
             - { name: ENZARB_SANDBOX_IMAGE, value: "ghcr.io/enzarb/enzarb-sandbox:main" }
             - { name: ENZARB_DEFAULT_STORAGE, value: "20Gi" }
+            - { name: ENZARB_SANDBOX_RUNTIME_CLASS, value: "gvisor" }
+            - { name: ENZARB_DOCKER_RUNTIME_CLASSES, value: "gvisor" }
+            - { name: ENZARB_DOCKER_IMAGE, value: "docker:29.8.2-dind" }
+            - { name: ENZARB_DOCKER_STORAGE, value: "50Gi" }
             - { name: RUST_LOG, value: "info" }
           readinessProbe:
             httpGet: { path: /readyz, port: health }
