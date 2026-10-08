@@ -1,6 +1,6 @@
 # Database: shared Postgres via pgop
 
-Postgres is provisioned with [pgop](https://pgop.ruck.io) (`pgop.ruck.io/v1alpha1`: `Cluster`, `Role`, `Database`). See [ADR-0009](adr/0009-database-sharing.md).
+Postgres is provisioned with [pgop](https://pgop.ruck.io) (`pgop.ruck.io/v1alpha1`: `Cluster`, `Role`, `Database`, plus `Backup`, `BackupRun` and `Restore` as of v0.9.1). See [ADR-0009](adr/0009-database-sharing.md).
 
 ## Layout
 
@@ -74,7 +74,7 @@ The `Database`'s field shapes (schema grants in particular) must be checked agai
 - **Separate history:** each repo uses its own migrations table inside its schema (`workflows._sqlx_migrations`, `app._migrations`, …).
 
 ### Credentials
-pgop writes the Secret `<cluster>-<role>-credentials`, for example `enzarb-pg-workflows-credentials`. Its keys are `username`, `password`, `host`, `port`, `sslmode`, `uri` and `ca.crt` (with TLS). The name is deterministic, so Helm wires `DATABASE_URL` from key `uri` at template time, before pgop's status is filled in.
+Each `Role` gets a `<cluster>-<role>-credentials` Secret, which the operator uses internally. Applications use the **Database** secret `<database>-<role>-credentials`, e.g. `enzarb-workflows-credentials`. Its keys are `username`, `password`, `host`, `port`, `sslmode`, `uri` and `ca.crt` (with TLS). The name is deterministic, so Helm wires `DATABASE_URL` from key `uri` at template time, before pgop's status is filled in.
 
 ### Migrations
 Each service's chart includes a pre-install/pre-upgrade Job that runs its migrations with the **owner** role's Secret. The runtime Deployments use the runtime role only.

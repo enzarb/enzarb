@@ -179,6 +179,9 @@ workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated
 
 ## 8. HTTP routes (one host, Envoy Gateway)
 
+- **Gateway:** `enzarb` in namespace `enzarb-system` (from enzarb-kubernetes), listeners http:80 and https:443 with TLS secret `enzarb-tls`.
+- **Listeners** have no hostname, so HTTPRoutes set `hostnames: [<host>]` (dev: `enzarb.local`) and `parentRefs: [{name: enzarb, namespace: enzarb-system}]`.
+
 | Path | Service | Port |
 |---|---|---|
 | `/` | enzarb-ui | 3000 |
@@ -191,7 +194,7 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 
 | Var | Used by |
 |---|---|
-| `DATABASE_URL` | ui, receiver, workflows (from pgop secret `enzarb-pg-<role>-credentials`, key `uri`) |
+| `DATABASE_URL` | ui, receiver, workflows (from pgop's Database secret `<database>-<role>-credentials`, i.e. `enzarb-<role>-credentials`; check the key names against pgop v0.9.1) |
 | `ENZARB_SESSION_JWT_SECRET` | ui, sandbox-proxy |
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` (PEM), `GITHUB_WEBHOOK_SECRET` | receiver (secret only), workflows executor |
 | `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` | ui |
