@@ -51,6 +51,25 @@ describe('CreateProjectSchema', () => {
 	});
 });
 
+describe('docker options', () => {
+	it('defaults to no docker and no sandbox block', () => {
+		expect(ok({ name: 'x' })).toMatchObject({ docker: false, runtimeClassName: '' });
+		expect(buildProject(ok({ name: 'x' }), 'u').spec.sandbox).toBeUndefined();
+	});
+	it('requires a runtime class when docker is on', () => {
+		const r = parse({ name: 'x', docker: true });
+		expect(r.success).toBe(false);
+		expect(r.issues?.[0].message).toMatch(/runtime class/i);
+		expect(r.issues?.[0].path?.[0].key).toBe('runtimeClassName');
+		expect(parse({ name: 'x', docker: true, runtimeClassName: ' ' }).success).toBe(false);
+	});
+	it('writes sandbox.docker and runtimeClassName into the CR', () => {
+		const p = buildProject(ok({ name: 'x', docker: true, runtimeClassName: 'gvisor' }), 'u');
+		expect(p.spec.sandbox).toEqual({ runtimeClassName: 'gvisor', docker: { enabled: true } });
+		expect(toView(p)).toMatchObject({ dockerEnabled: true, runtimeClassName: 'gvisor' });
+	});
+});
+
 describe('buildProject / toView', () => {
 	it('writes a contracts §2 Project owned by the login', () => {
 		const input = ok({

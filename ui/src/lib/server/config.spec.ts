@@ -17,8 +17,19 @@ describe('parseConfig', () => {
 			sessionJwtSecret: 's3cret',
 			githubOauthClientId: 'id',
 			githubOauthClientSecret: 'secret',
-			publicUrl: 'https://enzarb.example.com'
+			publicUrl: 'https://enzarb.example.com',
+			sandboxRuntimeClasses: ['gvisor', 'kata']
 		});
+	});
+
+	it('parses ENZARB_SANDBOX_RUNTIME_CLASSES, trimming and de-duplicating', () => {
+		expect(
+			parseConfig({ ...valid, ENZARB_SANDBOX_RUNTIME_CLASSES: ' kata, ,gvisor,kata ' })
+				.sandboxRuntimeClasses
+		).toEqual(['kata', 'gvisor']);
+		expect(
+			parseConfig({ ...valid, ENZARB_SANDBOX_RUNTIME_CLASSES: ' ' }).sandboxRuntimeClasses
+		).toEqual(['gvisor', 'kata']);
 	});
 
 	it('lists every missing variable at once', () => {

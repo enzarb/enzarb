@@ -1,5 +1,6 @@
 <script lang="ts">
 	import PageHeading from '#lib/components/PageHeading.svelte';
+	import DockerOptions from '#lib/components/DockerOptions.svelte';
 	import RepoListInput from '#lib/components/RepoListInput.svelte';
 	import { createProject } from '#lib/projects.remote.ts';
 
@@ -36,6 +37,8 @@
 		<label><input {...fields.changeRequests.as('checkbox')} checked /> Change requests</label>
 		<label><input {...fields.mentions.as('checkbox')} checked /> Mentions</label>
 	</fieldset>
+
+	<DockerOptions {fields} />
 
 	<button class="primary" type="submit" disabled={createProject.pending > 0}>Create project</button>
 </form>
