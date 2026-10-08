@@ -7,7 +7,7 @@ enzarb-ui, enzarb-connectors and enzarb-workflows all need shared state. Postgre
 - **One pgop `Cluster` (`enzarb-pg`) and one `Database` (`enzarb`).**
 - **One schema per owning repo:** `workflows`, `connectors`, `app`. Only the owner migrates its schema.
 - **Cross-repo access goes only through API schemas:** views and `SECURITY DEFINER` functions in `workflows_api` and `app_api`.
-- **Two roles per service:** an owner role for migrations and a runtime role that can only read and write data. Credentials come from pgop's deterministic Secrets (`enzarb-pg-<role>-credentials`, key `uri`).
+- **Two roles per service:** an owner role for migrations and a runtime role that can only read and write data. Credentials come from pgop's deterministic Secrets (the Database secret `enzarb-<role>-credentials`).
 - **Live UI updates** come from `NOTIFY work_item_changed`.
 - **Projects stay as k8s CRs.**
 
