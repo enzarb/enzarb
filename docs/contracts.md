@@ -70,7 +70,7 @@ Repo key: a repository's **repo key** is `<connector>:<owner>/<repo>`, e.g. `git
 - Allowed clients: `sandbox-proxy` and the workflows executor.
 - Health: `GET :7070/healthz`.
 
-**Docker (ADR-0012):** always on. The operator sets the pod `runtimeClassName` (gvisor|kata) cluster-wide via `--sandbox-runtime-class`, and adds the dockerd sidecar. `DOCKER_HOST=unix:///var/run/docker/docker.sock` (shared emptyDir with the `dockerd` sidecar). The image ships the `docker` CLI plus the buildx and compose plugins.
+**Docker (ADR-0012):** always on. The operator sets the pod `runtimeClassName` (`gvisor`) cluster-wide via `--sandbox-runtime-class`, and adds the dockerd sidecar. `DOCKER_HOST=unix:///var/run/docker/docker.sock` (shared emptyDir with the `dockerd` sidecar). The image ships the `docker` CLI plus the buildx and compose plugins.
 
 **PTY channels:** CLOSE reason is `exit:<code>` or `signal:<n>`. A client half-close leaves the process running.
 
