@@ -8,9 +8,19 @@ import {
 } from '#lib/server/auth.ts';
 import { getSql } from '#lib/server/db.ts';
 
-const isPublic = (path: string) => path === '/login' || path.startsWith('/login/');
+const PROBE_PATHS = new Set(['/healthz', '/readyz']);
+
+const isPublic = (path: string) =>
+	path === '/login' || path.startsWith('/login/') || PROBE_PATHS.has(path);
 
 export const handle: Handle = async ({ event, resolve }) => {
+	// Probes must never depend on the database (session lookup) or the auth redirect.
+	if (PROBE_PATHS.has(event.url.pathname)) {
+		event.locals.user = null;
+		event.locals.session = null;
+		return resolve(event);
+	}
+
 	event.locals.user = null;
 	event.locals.session = null;
 
