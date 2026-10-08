@@ -21,7 +21,7 @@ Agents and users need `docker build`, `docker run` and `docker compose` inside a
 - **Dev (kind):** `dev:cluster` installs gVisor (`runsc` plus the containerd shim) into the kind nodes and creates RuntimeClass `gvisor`. Kata is production-only (documented in `enzarb-kubernetes/overlays/prod`).
 
 ## Consequences
-- **Node requirements:** Docker-enabled Projects only schedule onto nodes with the chosen runtime. In production, label or taint those nodes and give RuntimeClass `scheduling.nodeSelector`.
-- **Resources:** the sidecar adds CPU and memory and a second PVC per Docker-enabled Project. Pod resources get a separate `docker.resources` block.
+- **Node requirements:** every sandbox only schedules onto nodes with the configured runtime. In production, label or taint those nodes and give RuntimeClass `scheduling.nodeSelector`.
+- **Resources:** the sidecar adds CPU and memory and a second PVC to every sandbox, sized by operator flags.
 - **NetworkPolicy:** the existing per-namespace egress (DNS and 443) covers registry pulls over HTTPS. Plain-HTTP registries aren't reachable by design.
 - **gVisor limits:** compatibility gaps for some workloads (certain syscalls and filesystems) apply under gVisor. Kata avoids them, at the cost of nested virtualization.
