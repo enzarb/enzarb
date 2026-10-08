@@ -2,15 +2,36 @@ name: ci
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
 jobs:
-  check:
+  fmt:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - run: cargo fmt --all --check
+      - name: No [patch] in Cargo.lock
+        run: "! grep -n '^\\[\\[patch' Cargo.lock"
+
+  clippy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: webfactory/ssh-agent@v0.9.1
@@ -19,25 +40,85 @@ jobs:
             ${{ secrets.ENZARB_PROTO_DEPLOY_KEY }}
             ${{ secrets.ENZARB_CONNECTORS_DEPLOY_KEY }}
             ${{ secrets.ENZARB_CRDS_DEPLOY_KEY }}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          components: rustfmt, clippy
+          cache: false
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all --check
+        with:
+          key: clippy
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: |
+            ${{ secrets.ENZARB_PROTO_DEPLOY_KEY }}
+            ${{ secrets.ENZARB_CONNECTORS_DEPLOY_KEY }}
+            ${{ secrets.ENZARB_CRDS_DEPLOY_KEY }}
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@nextest
       # Docker is available on ubuntu-latest, so testcontainers integration tests run here.
-      - run: cargo test --workspace
+      - run: cargo nextest run --workspace
+      - run: cargo test --workspace --doc
 
   docker:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      IMAGE: ghcr.io/enzarb/enzarb-workflows
+      PUSH: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
+      CACHE_TO: ${{ github.ref == 'refs/heads/main' }}
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
-      - run: |
-          docker build \
-            --secret id=proto_key,env=PROTO_KEY \
-            --secret id=crds_key,env=CRDS_KEY \
-            --secret id=connectors_key,env=CONNECTORS_KEY .
+      - uses: docker/setup-buildx-action@v3
+      # Exposes the cache-service token to the raw buildx CLI (type=gha).
+      - uses: crazy-max/ghaction-github-runtime@v3
+      - uses: docker/login-action@v3
+        if: env.PUSH == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/enzarb/enzarb-workflows
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/enzarb/enzarb-workflows
+      # Build secrets via the CLI (contracts §11): build-push-action `secrets:` mangles multi-line keys.
+      - name: Build (and push on main / v* tags)
         env:
           PROTO_KEY: ${{ secrets.ENZARB_PROTO_DEPLOY_KEY }}
           CRDS_KEY: ${{ secrets.ENZARB_CRDS_DEPLOY_KEY }}
           CONNECTORS_KEY: ${{ secrets.ENZARB_CONNECTORS_DEPLOY_KEY }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          LABELS: ${{ steps.meta.outputs.labels }}
+        run: |
+          args=(--cache-from "type=gha,scope=enzarb-workflows")
+          [ "$CACHE_TO" = true ] && args+=(--cache-to "type=gha,mode=max,scope=enzarb-workflows")
+          [ "$PUSH" = true ] && args+=(--push)
+          while IFS= read -r t; do [ -n "$t" ] && args+=(--tag "$t"); done <<< "$TAGS"
+          while IFS= read -r l; do [ -n "$l" ] && args+=(--label "$l"); done <<< "$LABELS"
+          docker buildx build "${args[@]}" \
+            --secret id=proto_key,env=PROTO_KEY \
+            --secret id=crds_key,env=CRDS_KEY \
+            --secret id=connectors_key,env=CONNECTORS_KEY .
