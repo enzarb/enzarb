@@ -4,6 +4,28 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Webhook receiver (placeholder)"
+description = "GitHub webhook receiver: verifies, normalizes and hands events to workflows_api.ingest_event"
+
+[lib]
+name = "enzarb_receiver"
+path = "src/lib.rs"
+
+[[bin]]
+name = "receiver"
+path = "src/main.rs"
 
 [dependencies]
+axum = "0.8"
+enzarb-connector = { version = "0.1.0", path = "../../crates/connector" }
+enzarb-connector-github = { version = "0.1.0", path = "../../crates/connector-github" }
+serde_json = "1.0.151"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "migrate", "macros", "json"] }
+thiserror = "2.0.21"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
+testcontainers-modules = { version = "0.15", features = ["postgres"] }
+tower = { version = "0.5", features = ["util"] }
