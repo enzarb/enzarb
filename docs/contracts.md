@@ -71,6 +71,12 @@ Repo key: a repository's **repo key** is `<connector>:<owner>/<repo>`, e.g. `git
 - Allowed clients: `sandbox-proxy` and the workflows executor.
 - Health: `GET :7070/healthz`.
 
+**PTY channels:** CLOSE reason is `exit:<code>` or `signal:<n>`. A client half-close leaves the process running.
+
+**Config (env):** `ENZARB_LISTEN` (default `0.0.0.0:7070`), `ENZARB_AUTH_TOKEN_FILE`, `ENZARB_WORKSPACE` (`/workspace`), `ENZARB_SHELL`, `ENZARB_GRACE_SECS` (25; the pod's `terminationGracePeriodSeconds` must be larger).
+
+**Image build:** `docker build --ssh default .` (private enzarb-proto dependency).
+
 **Filesystem (on the PVC):**
 - `/workspace`: repos and worktrees.
 - `/workspace/.enzarb/runs/<run_id>/`: `state.json`, `transcript.jsonl`.
