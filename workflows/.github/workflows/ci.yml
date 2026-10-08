@@ -17,6 +17,7 @@ jobs:
         with:
           ssh-private-key: |
             ${{ secrets.ENZARB_CONNECTORS_DEPLOY_KEY }}
+            ${{ secrets.ENZARB_CRDS_DEPLOY_KEY }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

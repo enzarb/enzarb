@@ -65,13 +65,14 @@ pub struct WorkItem {
 #[derive(Debug, Clone, FromRow)]
 pub struct Transition {
     pub id: i64,
-    pub work_item_id: i64,
+    pub work_item_id: Option<i64>,
     pub from_state: Option<String>,
     pub to_state: String,
     pub event_id: Option<i64>,
     pub event_type: String,
     pub effects: Value,
     pub at: DateTime<Utc>,
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -112,7 +113,7 @@ pub struct WorkItemView {
 #[derive(Debug, Clone, FromRow)]
 pub struct TransitionView {
     pub id: i64,
-    pub work_item_id: i64,
+    pub work_item_id: Option<i64>,
     pub from_state: Option<String>,
     pub to_state: String,
     pub event_type: String,
