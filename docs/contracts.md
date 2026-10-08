@@ -239,7 +239,7 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 
 | Var | Used by |
 |---|---|
-| `DATABASE_URL` | ui, receiver, workflows (from pgop's Database secret `<database>-<role>-credentials`, i.e. `enzarb-<role>-credentials`; check the key names against pgop v0.9.1) |
+| `DATABASE_URL` | ui, receiver, workflows (assembled by the chart from pgop Role secret `enzarb-pg-<role>-credentials` keys, database `enzarb`; see database.md) |
 | `ENZARB_SESSION_JWT_SECRET` | ui, sandbox-proxy |
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` (PEM), `GITHUB_WEBHOOK_SECRET` | receiver (secret only), workflows executor |
 | `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` | ui |
