@@ -15,4 +15,4 @@ Format: Context / Decision / Consequences. Status is `Accepted` unless noted. AD
 | [0009](0009-database-sharing.md) | Shared database via pgop, one schema per owning repo | 2026-10-08 |
 | [0010](0010-approval-and-progress.md) | Plan approval and progress signals | 2026-10-08 |
 | [0011](0011-acp-agent-runs.md) | Agent runs through the Agent Client Protocol | 2026-10-08 |
-| [0012](0012-docker-in-sandbox.md) | Docker inside sandboxes, isolated by gVisor or Kata | 2026-10-08 |
+| [0012](0012-docker-in-sandbox.md) | Docker inside every sandbox, isolated by gVisor or Kata | 2026-10-08 |
