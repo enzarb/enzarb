@@ -15,9 +15,9 @@ Only system components:
 - node 24, `@agentclientprotocol/claude-agent-acp` (pinned) and the glibc `claude` binary, installed directly (not through mise). `claude-agent-acp` and `claude` are symlinks in `/usr/local/bin`.
 - `mise`
 - `build-essential`, `pkg-config`, `libssl-dev`
-- `git`, `ca-certificates`, `openssh-client`
+- `git`, `curl`, `ca-certificates`, `openssh-client`
 
-There is no rustup/Rust, npm, curl, ripgrep, jq or other CLI tool, and no `HEALTHCHECK` (Kubernetes probes `/healthz`). `scripts/smoke.sh` asserts both what is present and what is absent.
+There is no rustup/Rust, npm, ripgrep, jq or other CLI tool, and no `HEALTHCHECK` (Kubernetes probes `/healthz`). `scripts/smoke.sh` asserts both what is present and what is absent.
 
 ## Toolchains come from mise
 
@@ -40,18 +40,11 @@ All user and project toolchains are installed by mise onto the `/workspace` PVC,
 - A `mise.toml` with its tools, e.g. `[tools]` `rust = "1.99.0"`. A `rust-toolchain.toml` (channel, components, targets) alone is also picked up. Run `mise install` in the repo.
 - node tools via mise get their own node; the system `node` only runs the agent adapter.
 
-### Rust bootstrap (first install per sandbox)
+### Rust
 
-mise installs Rust through rustup and fetches `sh.rustup.rs` with `curl`/`wget`, neither of which is in the image. Until `RUSTUP_HOME/settings.toml` exists, `mise install` fails with `need 'curl or wget'`. Initialise rustup once with a rustup binary that mise itself downloads:
+mise installs Rust through rustup, whose installer needs `curl` (in the image), so `mise install` in a repo with a `mise.toml` or `rust-toolchain.toml` works directly.
 
-```sh
-mise use -g aqua:rust-lang/rustup   # or add it to the repo's mise.toml [tools]
-cp "$(mise which rustup)" /tmp/rustup-init
-/tmp/rustup-init -y --no-modify-path --default-toolchain none
-mise install                        # now installs the pinned Rust, with components
-```
-
-After that, `cargo`, `rustc`, `clippy` and `rustfmt` resolve through the shims.
+Afterwards `cargo`, `rustc`, `clippy` and `rustfmt` resolve through the shims.
 
 ## Permission policy
 

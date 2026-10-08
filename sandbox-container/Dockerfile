@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Sandbox image: sandbox-init (pid 1), node + the ACP adapter, mise and a C toolchain. Language toolchains come from mise at runtime.
+# Sandbox image: sandbox-init (pid 1), node + the ACP adapter, mise, the Docker CLI (+buildx, compose) and a C toolchain. Language toolchains come from mise at runtime.
 # Private enzarb git dependencies are fetched with a deploy key passed as a build secret:
 #   docker build --secret id=proto_key,src=KEYFILE -t enzarb-sandbox .
 # The key is bound to enzarb-proto via an ssh host alias and never reaches an image layer.
@@ -76,16 +76,52 @@ RUN set -e; \
     tar -xzf "$f" -C /usr/local --strip-components=1 mise/bin/mise; rm -f "$f"; \
     mise --version
 
+# Docker CLI stage: static client + buildx + compose plugins only (no daemon; dockerd is the operator's sidecar).
+# DOCKER_VERSION matches the sidecar's docker:29.x-dind. Every download is checked against a pinned sha256.
+FROM ubuntu:26.04 AS dockercli
+ARG DOCKER_VERSION=29.8.2
+ARG BUILDX_VERSION=v0.38.0
+ARG COMPOSE_VERSION=v5.6.0
+ARG TARGETARCH
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN set -e; \
+    case "$TARGETARCH" in \
+      amd64) da=x86_64; ba=amd64; ca=x86_64; \
+        dsha=995d1ef289677f74fd58d8d2c35727b6a4ee389c69db8638a3e42d0487aa5b0f; \
+        bsha=4fe4cc38adf48169132749b6ca22a990928db0118e3407584ee553723115d287; \
+        csha=40343e21ca777173e69cff5dbafeb37c6f81f3b0d57d9e597f036e95eb63e76a;; \
+      arm64) da=aarch64; ba=arm64; ca=aarch64; \
+        dsha=76a624e4a8e5da654d1150e808175125efb5a6f1b6aa1cbd9caee18f51047a50; \
+        bsha=38e890e1a162bfdbf32fbe91404991dc4fc28e55b0de901b34374a061bab4d2c; \
+        csha=733ec76717ceb59052a9609b9dadfb523b2df8eab57a54212872d10a58078ea2;; \
+      *) echo "unsupported arch $TARGETARCH"; exit 1;; \
+    esac; \
+    mkdir -p /out/bin /out/plugins; \
+    curl --retry 5 --retry-all-errors -fsSL -o docker.tgz "https://download.docker.com/linux/static/stable/${da}/docker-${DOCKER_VERSION}.tgz"; \
+    echo "${dsha}  docker.tgz" | sha256sum -c -; \
+    tar -xzf docker.tgz -C /out/bin --strip-components=1 --no-same-owner docker/docker; \
+    curl --retry 5 --retry-all-errors -fsSL -o /out/plugins/docker-buildx "https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-${ba}"; \
+    echo "${bsha}  /out/plugins/docker-buildx" | sha256sum -c -; \
+    curl --retry 5 --retry-all-errors -fsSL -o /out/plugins/docker-compose "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-${ca}"; \
+    echo "${csha}  /out/plugins/docker-compose" | sha256sum -c -; \
+    chmod 0755 /out/bin/docker /out/plugins/*; \
+    /out/bin/docker --version
+
 FROM ubuntu:26.04
 ARG TARGETARCH
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git ca-certificates openssh-client build-essential pkg-config libssl-dev \
+        git curl ca-certificates openssh-client build-essential pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 
 # node binary only (no npm), the adapter tree and the glibc claude binary, all on PATH.
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/bin/mise /usr/local/bin/mise
+# Docker client only (ADR-0012); DOCKER_HOST is set by the operator.
+COPY --from=dockercli /out/bin/docker /usr/local/bin/docker
+COPY --from=dockercli /out/plugins/ /usr/local/lib/docker/cli-plugins/
 COPY --from=node /usr/local/lib/node_modules/@agentclientprotocol /usr/local/lib/node_modules/@agentclientprotocol
 # The adapter's bin script has `#!/usr/bin/env node`; node is on PATH, so a symlink is the launcher.
 RUN set -e; \

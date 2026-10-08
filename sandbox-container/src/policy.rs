@@ -78,6 +78,10 @@ impl CommandRule {
         self.deny_args = args.iter().map(|s| s.to_string()).collect();
         self
     }
+    fn allow_sub(mut self, subs: &[&str]) -> Self {
+        self.allow_subcommands = Some(subs.iter().map(|s| s.to_string()).collect());
+        self
+    }
     fn global(mut self, flags: &[&str]) -> Self {
         self.global_flags = flags.iter().map(|s| s.to_string()).collect();
         self
@@ -146,6 +150,51 @@ impl Default for Policy {
             CommandRule::new("npx").global(&["--version", "-v", "--help", "-h"]),
             CommandRule::new("node").global(&["--version", "-v", "--help", "-h"]),
             CommandRule::new("rustc").global(&["--version", "-V", "--help", "-h"]),
+            // Docker talks to the sandbox's own dockerd sidecar (ADR-0012). Extra checks in `check_docker`.
+            CommandRule::new("docker")
+                .allow_sub(&[
+                    "run",
+                    "create",
+                    "exec",
+                    "start",
+                    "stop",
+                    "restart",
+                    "kill",
+                    "rm",
+                    "ps",
+                    "logs",
+                    "inspect",
+                    "top",
+                    "stats",
+                    "port",
+                    "wait",
+                    "cp",
+                    "diff",
+                    "commit",
+                    "attach",
+                    "pause",
+                    "unpause",
+                    "rename",
+                    "update",
+                    "build",
+                    "buildx",
+                    "builder",
+                    "compose",
+                    "images",
+                    "image",
+                    "container",
+                    "network",
+                    "volume",
+                    "pull",
+                    "rmi",
+                    "tag",
+                    "history",
+                    "version",
+                    "info",
+                    "events",
+                    "system",
+                ])
+                .global(&["--version", "-v", "--help", "-h"]),
             CommandRule::new("make"),
             CommandRule::new("mise").global(&["--version", "-v", "--help", "-h"]),
             // Path-restricted file tools.
@@ -445,6 +494,9 @@ impl Policy {
                 None => {}
             }
         }
+        if rule.name == "docker" {
+            check_docker(rest, cwd, read)?;
+        }
         let mut after_dd = false;
         for a in rest {
             if !after_dd && a == "--" {
@@ -496,6 +548,137 @@ impl Policy {
         }
         Ok(())
     }
+}
+
+/// Flags that hand the container host privileges. Refused with any value.
+const DOCKER_DENY_FLAGS: &[&str] = &[
+    "--privileged",
+    "--cap-add",
+    "--device",
+    "--device-cgroup-rule",
+    "--security-opt",
+    "--allow",
+    "--push",
+    "--secret",
+    "--ssh",
+];
+/// Namespace flags; only the `host` value escapes.
+const DOCKER_HOST_NS_FLAGS: &[&str] = &["--pid", "--ipc", "--uts", "--userns", "--cgroupns"];
+
+/// Extra rules for `docker`, on top of the allowlist/subcommand checks. The
+/// daemon is the sandbox's own dockerd (inside gVisor), so `--network=host`
+/// is fine; what must not happen is a container reaching the sandbox pod or
+/// the node: privileged mode, host namespaces, extra capabilities, devices,
+/// security options, and bind mounts from outside the worktree (which includes
+/// the docker socket). Registry login/push are refused (no credentials leave).
+fn check_docker(args: &[String], cwd: &Path, roots: &[PathBuf]) -> Result<(), String> {
+    // The subcommand path: leading non-flag words (`image push`, `compose push`).
+    let mut words = args.iter().filter(|a| !a.starts_with('-'));
+    let first = words.next().map(String::as_str);
+    let second = words.next().map(String::as_str);
+    for w in [first, second].into_iter().flatten() {
+        if matches!(w, "login" | "logout" | "push") {
+            return Err(format!("{w} is not allowed"));
+        }
+    }
+    if matches!(
+        first,
+        Some("context" | "plugin" | "manifest" | "trust" | "swarm")
+    ) {
+        return Err(format!("{} is not allowed", first.unwrap_or_default()));
+    }
+    let is_build = matches!(first, Some("build"))
+        || (matches!(first, Some("buildx" | "builder")) && second == Some("build"));
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--" {
+            break;
+        }
+        // `--flag=value` or `--flag value`.
+        let (flag, inline) = match a.split_once('=') {
+            Some((f, v)) if a.starts_with("--") => (f, Some(v)),
+            _ => (a, None),
+        };
+        let mut value = || -> Option<&str> {
+            inline.or_else(|| {
+                i += 1;
+                args.get(i).map(String::as_str)
+            })
+        };
+        if DOCKER_DENY_FLAGS.contains(&flag) {
+            return Err(format!("{flag} is not allowed"));
+        }
+        // Never retarget another daemon or client config.
+        if matches!(flag, "-H" | "--host" | "--context" | "--config") {
+            return Err(format!("{flag} is not allowed"));
+        }
+        if DOCKER_HOST_NS_FLAGS.contains(&flag) {
+            if value().is_some_and(|v| v == "host") {
+                return Err(format!("{flag}=host is not allowed"));
+            }
+        } else if flag.starts_with("-v") && !flag.starts_with("--") && flag.len() > 2 {
+            // `-v/host:/path` glued form.
+            return Err("write -v and its value as separate words".into());
+        } else if matches!(flag, "-v" | "--volume") {
+            if let Some(v) = value() {
+                let src = v.split(':').next().unwrap_or_default();
+                // `-v /path` alone is an anonymous volume.
+                let bound = v.contains(':');
+                if bound && (path_like(src) || src.starts_with('.')) && !inside(roots, cwd, src) {
+                    return Err(format!("bind mount of {src} is outside the worktree"));
+                }
+            }
+        } else if flag == "--mount" {
+            if let Some(v) = value() {
+                let mut bind = false;
+                let mut src = None;
+                for kv in v.split(',') {
+                    match kv.split_once('=') {
+                        Some(("type", t)) => bind = t == "bind",
+                        Some(("source" | "src", s)) => src = Some(s),
+                        _ => {}
+                    }
+                }
+                // A bind mount with no source or an outside source is refused.
+                if bind && !src.is_some_and(|s| inside(roots, cwd, s)) {
+                    return Err("bind mount outside the worktree".into());
+                }
+            }
+        } else if matches!(flag, "-f" | "--file") && (is_build || first == Some("compose")) {
+            if let Some(v) = value()
+                && v != "-"
+                && !inside(roots, cwd, v)
+            {
+                return Err(format!("file {v} is outside the worktree"));
+            }
+        } else if matches!(flag, "-o" | "--output") && is_build {
+            if let Some(v) = value() {
+                let dest = v
+                    .split(',')
+                    .find_map(|kv| kv.strip_prefix("dest="))
+                    .unwrap_or(v);
+                if !v.contains("type=registry") && !inside(roots, cwd, dest) {
+                    return Err(format!("output {dest} is outside the worktree"));
+                }
+                if v.contains("type=registry") {
+                    return Err("pushing to a registry is not allowed".into());
+                }
+            }
+        } else if is_build
+            && !a.starts_with('-')
+            && (a.starts_with(['/', '~'])
+                || a == "."
+                || a == ".."
+                || a.starts_with("./")
+                || a.starts_with("../"))
+            && !inside(roots, cwd, a)
+        {
+            return Err(format!("build path {a} is outside the worktree"));
+        }
+        i += 1;
+    }
+    Ok(())
 }
 
 fn input_paths(input: &Value) -> Vec<String> {
@@ -927,6 +1110,90 @@ mod tests {
             "grep -n foo src/lib.rs",
         ] {
             allowed(c);
+        }
+    }
+
+    #[test]
+    fn docker_is_allowed_inside_the_worktree() {
+        for c in [
+            "docker --version",
+            "docker ps -a",
+            "docker build -t app:dev .",
+            "docker build -f Dockerfile.dev -t ghcr.io/x/y .",
+            "docker build -o type=local,dest=out .",
+            "docker buildx build --platform linux/amd64 -t app .",
+            "docker compose up -d",
+            "docker compose -f compose.yaml up --build",
+            "docker compose logs -f web",
+            "docker logs -f web",
+            "docker run --rm -it ubuntu:24.04 bash",
+            "docker run --rm --network=host app:dev",
+            "docker run --rm --network host app:dev",
+            "docker run -v ./data:/data app",
+            "docker run -v data:/data app",
+            "docker run -v /var/lib/x app",
+            "docker run -v src:/src:ro app",
+            "docker run --mount type=bind,source=./src,target=/src app",
+            "docker run --mount type=volume,source=data,target=/d app",
+            "docker run --pid=container:abc app",
+            "docker exec web ls /etc",
+            "docker image ls && docker network ls",
+            "docker pull ubuntu:24.04",
+            "docker system prune -f",
+        ] {
+            allowed(c);
+        }
+    }
+
+    #[test]
+    fn docker_host_escapes_are_denied() {
+        for c in [
+            "docker run --privileged app",
+            "docker run --privileged=true app",
+            "docker exec --privileged web sh",
+            "docker run --pid=host app",
+            "docker run --pid host app",
+            "docker run --ipc=host app",
+            "docker run --uts=host app",
+            "docker run --userns=host app",
+            "docker run --cgroupns=host app",
+            "docker run --cap-add=SYS_ADMIN app",
+            "docker run --cap-add SYS_ADMIN app",
+            "docker run --device=/dev/fuse app",
+            "docker run --device /dev/kvm app",
+            "docker run --security-opt seccomp=unconfined app",
+            "docker run -v /var/run/docker.sock:/var/run/docker.sock app",
+            "docker run --volume=/:/host app",
+            "docker run -v /etc:/etc:ro app",
+            "docker run -v ../other:/x app",
+            "docker run -v~/x:/x app",
+            "docker run --mount type=bind,source=/,target=/host app",
+            "docker run --mount type=bind,src=/var/run/docker.sock,dst=/s app",
+            "docker run --mount type=bind,target=/host app",
+            "docker run -H tcp://evil:2375 ps",
+            "docker --host=unix:///x ps",
+            "docker --context other ps",
+            "docker login",
+            "docker logout",
+            "docker push app:dev",
+            "docker image push app:dev",
+            "docker compose push",
+            "docker build --push -t app .",
+            "docker buildx build --push -t app .",
+            "docker buildx build -o type=registry,ref=x .",
+            "docker build /etc",
+            "docker build -f /etc/passwd .",
+            "docker build -o /etc .",
+            "docker build --secret id=a,src=/etc/shadow .",
+            "docker buildx build --allow security.insecure .",
+            "docker compose -f /etc/c.yaml up",
+            "docker context use x",
+            "docker plugin install x",
+            "docker swarm init",
+            "docker unknown",
+            "docker run app $(id)",
+        ] {
+            denied(c);
         }
     }
 
