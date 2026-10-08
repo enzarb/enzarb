@@ -27,6 +27,9 @@ pub const CLUSTER_CALLS: &[(&str, &str, &str)] = &[
     // desired::pvc SSA.
     ("", "persistentvolumeclaims", "create"),
     ("", "persistentvolumeclaims", "patch"),
+    // desired::network_policy SSA.
+    ("networking.k8s.io", "networkpolicies", "create"),
+    ("networking.k8s.io", "networkpolicies", "patch"),
     // desired::sandbox SSA; Controller::owns watches Sandboxes.
     ("agents.x-k8s.io", "sandboxes", "list"),
     ("agents.x-k8s.io", "sandboxes", "watch"),

@@ -15,8 +15,9 @@ For each `Project` the operator:
 2. Server-side applies the Capsule `Tenant` `enzarb-<owner>` (owner = Capsule `User` `<owner>`). One Tenant per owner, shared by all of that owner's Projects.
 3. Server-side applies the `Namespace` `enzarb-p-<name>`, labelled `capsule.clastix.io/tenant=enzarb-<owner>`, owned by the Project.
 4. Creates Secret `sandbox-auth` (key `token`, 32 random bytes hex-encoded) once and never rewrites it, so the token does not rotate.
-5. Applies PVC `workspace` (`spec.sandbox.storage`, else `--default-storage`) and the agent-sandbox `Sandbox` `sandbox`. The Sandbox pod runs as uid/gid 1000 (user `enzarb` in the sandbox image) with `fsGroup` 1000. The token is mounted read-only at `/var/run/enzarb/auth/token`, mode 0400. The pod has no ServiceAccount token.
-6. Writes `status` (`namespace`, `sandbox.endpoint`, `sandbox.authSecretRef`) and the conditions `TenantReady`, `NamespaceReady`, `SandboxReady`, `Ready`. A failed step is `status: False` with a reason ending in `Failed`, `Failure` or `Error`.
+5. Server-side applies NetworkPolicy `sandbox-isolation` (owned by the Project) before any pod exists. It selects every pod in the namespace. Ingress: TCP 7070 only from pods whose `app.kubernetes.io/name` is in `--netpol-ingress-pod-names` (default `enzarb-sandbox-proxy`, `enzarb-workflows`) in namespaces matching the ingress namespace label (default `kubernetes.io/metadata.name=<release namespace>`); both selectors must match. Egress: DNS (UDP/TCP 53) and TCP 443, to any destination. A narrower egress allow-list is a later option. A failure here is reported as `NamespaceReady=False` (`ReconcileError`) and the sandbox is not created. This needs a CNI that enforces NetworkPolicy.
+6. Applies PVC `workspace` (`spec.sandbox.storage`, else `--default-storage`) and the agent-sandbox `Sandbox` `sandbox`. The Sandbox pod runs as uid/gid 1000 (user `enzarb` in the sandbox image) with `fsGroup` 1000. The token is mounted read-only at `/var/run/enzarb/auth/token`, mode 0400. The pod has no ServiceAccount token.
+7. Writes `status` (`namespace`, `sandbox.endpoint`, `sandbox.authSecretRef`) and the conditions `TenantReady`, `NamespaceReady`, `SandboxReady`, `Ready`. A failed step is `status: False` with a reason ending in `Failed`, `Failure` or `Error`.
 
 On deletion the operator deletes the project namespace (only if it carries this Project's labels), which removes the Secret, PVC and Sandbox. The Tenant is never deleted: doing so would cascade to the owner's other namespaces.
 
@@ -30,6 +31,9 @@ Each flag has an environment variable; the flag wins.
 |---|---|---|---|
 | `--sandbox-image` | `ENZARB_SANDBOX_IMAGE` | empty | Image when `spec.sandbox.image` is empty. If both are empty the Project is invalid. |
 | `--default-storage` | `ENZARB_DEFAULT_STORAGE` | `20Gi` | PVC size when `spec.sandbox.storage` is empty. |
+| `--release-namespace` | `ENZARB_RELEASE_NAMESPACE` | pod namespace | Namespace enzarb is released into; used for the default ingress namespace label. |
+| `--netpol-ingress-namespace-label` | `ENZARB_NETPOL_INGRESS_NAMESPACE_LABEL` | `kubernetes.io/metadata.name=<release namespace>` | `key=value` label of the namespace(s) allowed to reach sandbox port 7070. |
+| `--netpol-ingress-pod-names` | `ENZARB_NETPOL_INGRESS_POD_NAMES` | `enzarb-sandbox-proxy,enzarb-workflows` | Comma-separated `app.kubernetes.io/name` values of allowed client pods. |
 | `--health-addr` | `ENZARB_HEALTH_ADDR` | `0.0.0.0:8080` | Serves `/healthz` and `/readyz`. |
 | `--leader-election` | `ENZARB_LEADER_ELECTION` | `true` | Take a Lease before running the controller. Pass `false` for local runs. |
 | `--leader-election-name` | `ENZARB_LEADER_ELECTION_NAME` | `enzarb-sandbox-operator` | Lease name. |

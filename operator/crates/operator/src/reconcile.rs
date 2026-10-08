@@ -6,6 +6,7 @@ use enzarb_crds::upstream::capsule::Tenant;
 use enzarb_crds::upstream::sandbox::Sandbox;
 use enzarb_crds::{Project, ProjectStatus};
 use k8s_openapi::api::core::v1::{Namespace, PersistentVolumeClaim, Secret};
+use k8s_openapi::api::networking::v1::NetworkPolicy;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams};
 use kube::runtime::controller::Action;
@@ -152,6 +153,18 @@ async fn drive(
     if obs.namespace != Check::Ok {
         return Ok(());
     }
+
+    // Isolation is part of the namespace being usable, and it is applied before any pod
+    // exists, so a failure is reported on NamespaceReady and nothing is started unprotected.
+    let policies: Api<NetworkPolicy> = Api::namespaced(ctx.client.clone(), &ns_name);
+    policies
+        .patch(
+            desired::NETPOL_NAME,
+            &ssa(),
+            &Patch::Apply(&desired::network_policy(p, &ctx.defaults.netpol)),
+        )
+        .await
+        .inspect_err(|e| obs.namespace = Check::Error(format!("NetworkPolicy: {e}")))?;
 
     let sandbox_err = |obs: &mut Observed, e: kube::Error| {
         obs.sandbox = Check::Error(e.to_string());

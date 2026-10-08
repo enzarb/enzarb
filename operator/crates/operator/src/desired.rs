@@ -14,6 +14,7 @@ use enzarb_crds::upstream::sandbox::Sandbox;
 use enzarb_crds::{Project, SandboxStatus, SecretKeyRef};
 use k8s_openapi::ByteString;
 use k8s_openapi::api::core::v1::{Namespace, PersistentVolumeClaim, Secret};
+use k8s_openapi::api::networking::v1::NetworkPolicy;
 use kube::Resource;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -26,6 +27,7 @@ pub const LABEL_CAPSULE_TENANT: &str = "capsule.clastix.io/tenant";
 pub const SANDBOX_NAME: &str = "sandbox";
 pub const AUTH_SECRET_NAME: &str = "sandbox-auth";
 pub const AUTH_SECRET_KEY: &str = "token";
+pub const NETPOL_NAME: &str = "sandbox-isolation";
 pub const PVC_NAME: &str = "workspace";
 pub const SANDBOX_PORT: i32 = 7070;
 pub const AUTH_MOUNT_DIR: &str = "/var/run/enzarb/auth";
@@ -38,6 +40,30 @@ pub const WORKSPACE_MOUNT: &str = "/workspace";
 pub struct Defaults {
     pub sandbox_image: String,
     pub storage: String,
+    pub netpol: NetpolConfig,
+}
+
+/// Who may reach the sandbox port (7070) in a project namespace.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NetpolConfig {
+    /// `(key, value)` label that selects the namespace(s) the clients live in.
+    pub ingress_namespace_label: (String, String),
+    /// Allowed client pods: `app.kubernetes.io/name in (...)`.
+    pub ingress_pod_names: Vec<String>,
+}
+
+impl NetpolConfig {
+    pub fn default_pod_names() -> Vec<String> {
+        vec!["enzarb-sandbox-proxy".into(), "enzarb-workflows".into()]
+    }
+
+    /// Default: clients live in the release namespace.
+    pub fn for_release_namespace(ns: &str) -> Self {
+        Self {
+            ingress_namespace_label: ("kubernetes.io/metadata.name".into(), ns.into()),
+            ingress_pod_names: Self::default_pod_names(),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -203,6 +229,48 @@ pub fn pvc(p: &Project, d: &Defaults) -> PersistentVolumeClaim {
     .expect("pvc JSON matches the PVC type")
 }
 
+/// NetworkPolicy `sandbox-isolation` for every pod in the project namespace.
+/// Ingress: TCP 7070 only from the configured client pods/namespaces.
+/// Egress: DNS (UDP/TCP 53) and TCP 443, to any destination. A narrower allow-list
+/// (GitHub, Anthropic, registries) can replace the 443 rule later.
+pub fn network_policy(p: &Project, c: &NetpolConfig) -> NetworkPolicy {
+    let (ns_key, ns_val) = &c.ingress_namespace_label;
+    serde_json::from_value(json!({
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {
+            "name": NETPOL_NAME,
+            "namespace": p.namespace_name(),
+            "labels": base_labels(p),
+            "ownerReferences": owner_refs(p),
+        },
+        "spec": {
+            "podSelector": {},
+            "policyTypes": ["Ingress", "Egress"],
+            "ingress": [{
+                // One peer with both selectors: namespace AND pod must match.
+                "from": [{
+                    "namespaceSelector": {"matchLabels": {ns_key: ns_val}},
+                    "podSelector": {"matchExpressions": [{
+                        "key": "app.kubernetes.io/name",
+                        "operator": "In",
+                        "values": c.ingress_pod_names,
+                    }]},
+                }],
+                "ports": [{"protocol": "TCP", "port": SANDBOX_PORT}],
+            }],
+            "egress": [
+                {"ports": [
+                    {"protocol": "UDP", "port": 53},
+                    {"protocol": "TCP", "port": 53},
+                ]},
+                {"ports": [{"protocol": "TCP", "port": 443}]},
+            ],
+        },
+    }))
+    .expect("networkpolicy JSON matches the NetworkPolicy type")
+}
+
 /// agent-sandbox `Sandbox` `sandbox`: one container running sandbox-init on 7070.
 pub fn sandbox(p: &Project, d: &Defaults) -> Sandbox {
     let sb = &p.spec.sandbox;
@@ -300,6 +368,7 @@ mod tests {
         Defaults {
             sandbox_image: "ghcr.io/enzarb/sandbox:dev".into(),
             storage: "10Gi".into(),
+            netpol: NetpolConfig::for_release_namespace("enzarb"),
         }
     }
 
@@ -424,6 +493,65 @@ mod tests {
         assert_eq!(pod["runtimeClassName"], "gvisor");
         assert_eq!(pod["containers"][0]["image"], "my/image:1");
         assert_eq!(pod["containers"][0]["resources"]["limits"]["memory"], "2Gi");
+    }
+
+    #[test]
+    fn network_policy_shape() {
+        let n = v(&network_policy(
+            &project("enzarb", "ruckc"),
+            &defaults().netpol,
+        ));
+        assert_eq!(n["metadata"]["name"], "sandbox-isolation");
+        assert_eq!(n["metadata"]["namespace"], "enzarb-p-enzarb");
+        assert_eq!(n["metadata"]["ownerReferences"][0]["kind"], "Project");
+        let spec = &n["spec"];
+        assert_eq!(spec["podSelector"], json!({}));
+        assert_eq!(spec["policyTypes"], json!(["Ingress", "Egress"]));
+        assert_eq!(spec["ingress"].as_array().unwrap().len(), 1);
+        let from = &spec["ingress"][0]["from"];
+        assert_eq!(from.as_array().unwrap().len(), 1);
+        assert_eq!(
+            from[0]["namespaceSelector"]["matchLabels"],
+            json!({"kubernetes.io/metadata.name": "enzarb"})
+        );
+        let expr = &from[0]["podSelector"]["matchExpressions"][0];
+        assert_eq!(expr["key"], "app.kubernetes.io/name");
+        assert_eq!(expr["operator"], "In");
+        assert_eq!(
+            expr["values"],
+            json!(["enzarb-sandbox-proxy", "enzarb-workflows"])
+        );
+        assert_eq!(
+            spec["ingress"][0]["ports"],
+            json!([{"protocol": "TCP", "port": 7070}])
+        );
+        assert_eq!(
+            spec["egress"],
+            json!([
+                {"ports": [{"protocol": "UDP", "port": 53}, {"protocol": "TCP", "port": 53}]},
+                {"ports": [{"protocol": "TCP", "port": 443}]},
+            ])
+        );
+        // Egress rules have no `to`, i.e. any destination.
+        assert!(spec["egress"][1].get("to").is_none());
+    }
+
+    #[test]
+    fn network_policy_honours_config() {
+        let c = NetpolConfig {
+            ingress_namespace_label: ("team".into(), "platform".into()),
+            ingress_pod_names: vec!["a".into()],
+        };
+        let n = v(&network_policy(&project("enzarb", "ruckc"), &c));
+        let from = &n["spec"]["ingress"][0]["from"][0];
+        assert_eq!(
+            from["namespaceSelector"]["matchLabels"],
+            json!({"team": "platform"})
+        );
+        assert_eq!(
+            from["podSelector"]["matchExpressions"][0]["values"],
+            json!(["a"])
+        );
     }
 
     #[test]

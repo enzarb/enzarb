@@ -43,6 +43,10 @@ rules:
   - apiGroups: [""]
     resources: [persistentvolumeclaims]
     verbs: [create, patch]
+  # sandbox-isolation NetworkPolicy per project namespace, server-side applied.
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [create, patch]
   # Sandboxes are applied per namespace and watched cluster-wide (owned by Project).
   - apiGroups: [agents.x-k8s.io]
     resources: [sandboxes]

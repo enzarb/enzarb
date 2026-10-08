@@ -28,6 +28,22 @@ struct Args {
     /// Workspace PVC size used when a Project sets an empty `spec.sandbox.storage`.
     #[arg(long, env = "ENZARB_DEFAULT_STORAGE", default_value = "20Gi")]
     default_storage: String,
+    /// Namespace enzarb is released into (where the sandbox clients run). Defaults to the
+    /// pod's own namespace.
+    #[arg(long, env = "ENZARB_RELEASE_NAMESPACE")]
+    release_namespace: Option<String>,
+    /// Namespace label `key=value` allowed to reach sandboxes (NetworkPolicy ingress).
+    /// Defaults to `kubernetes.io/metadata.name=<release namespace>`.
+    #[arg(long, env = "ENZARB_NETPOL_INGRESS_NAMESPACE_LABEL")]
+    netpol_ingress_namespace_label: Option<String>,
+    /// Comma-separated `app.kubernetes.io/name` values of pods allowed to reach sandboxes.
+    #[arg(
+        long,
+        env = "ENZARB_NETPOL_INGRESS_POD_NAMES",
+        value_delimiter = ',',
+        default_value = "enzarb-sandbox-proxy,enzarb-workflows"
+    )]
+    netpol_ingress_pod_names: Vec<String>,
     /// Address for /healthz and /readyz.
     #[arg(long, env = "ENZARB_HEALTH_ADDR", default_value = "0.0.0.0:8080")]
     health_addr: SocketAddr,
@@ -62,16 +78,50 @@ struct Args {
     lease_renew_secs: u64,
 }
 
+fn pod_namespace() -> std::io::Result<String> {
+    std::fs::read_to_string("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+        .map(|s| s.trim().to_string())
+}
+
+fn netpol_config(args: &Args) -> anyhow::Result<desired::NetpolConfig> {
+    let release = match &args.release_namespace {
+        Some(ns) => ns.clone(),
+        None => pod_namespace().map_err(|e| {
+            anyhow::anyhow!("cannot determine release namespace (set --release-namespace): {e}")
+        })?,
+    };
+    let mut cfg = desired::NetpolConfig::for_release_namespace(&release);
+    if let Some(l) = &args.netpol_ingress_namespace_label {
+        let (k, v) = l
+            .split_once('=')
+            .filter(|(k, _)| !k.is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!("--netpol-ingress-namespace-label must be key=value, got {l:?}")
+            })?;
+        cfg.ingress_namespace_label = (k.into(), v.into());
+    }
+    let names: Vec<String> = args
+        .netpol_ingress_pod_names
+        .iter()
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .collect();
+    anyhow::ensure!(
+        !names.is_empty(),
+        "--netpol-ingress-pod-names must not be empty"
+    );
+    cfg.ingress_pod_names = names;
+    Ok(cfg)
+}
+
 fn leader_config(args: &Args) -> anyhow::Result<leader::Config> {
     let namespace = match &args.leader_election_namespace {
         Some(ns) => ns.clone(),
-        None => std::fs::read_to_string("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
-            .map(|s| s.trim().to_string())
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "cannot determine lease namespace (set --leader-election-namespace): {e}"
-                )
-            })?,
+        None => pod_namespace().map_err(|e| {
+            anyhow::anyhow!(
+                "cannot determine lease namespace (set --leader-election-namespace): {e}"
+            )
+        })?,
     };
     let base = args
         .identity
@@ -150,6 +200,7 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    let netpol = netpol_config(&args)?;
     let client = Client::try_default().await?;
     let elector = if args.leader_election {
         Some(leader::Elector::new(client.clone(), leader_config(&args)?))
@@ -161,7 +212,7 @@ async fn main() -> anyhow::Result<()> {
     ready.store(true, Ordering::Relaxed);
 
     let Some(elector) = elector else {
-        run_controller(client, &args).await;
+        run_controller(client, &args, netpol.clone()).await;
         return Ok(());
     };
     tokio::select! {
@@ -169,7 +220,7 @@ async fn main() -> anyhow::Result<()> {
         _ = shutdown_signal() => return Ok(()),
     }
     let lost = tokio::select! {
-        _ = run_controller(client, &args) => false,
+        _ = run_controller(client, &args, netpol.clone()) => false,
         _ = elector.hold() => true,
     };
     elector.release().await;
@@ -179,7 +230,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run_controller(client: Client, args: &Args) {
+async fn run_controller(client: Client, args: &Args, netpol: desired::NetpolConfig) {
     let projects: Api<Project> = Api::all(client.clone());
     let sandboxes: Api<Sandbox> = Api::all(client.clone());
     let ctx = Arc::new(reconcile::Ctx::new(
@@ -187,6 +238,7 @@ async fn run_controller(client: Client, args: &Args) {
         Defaults {
             sandbox_image: args.sandbox_image.clone(),
             storage: args.default_storage.clone(),
+            netpol,
         },
     ));
     info!("starting controller");
