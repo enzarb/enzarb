@@ -21,9 +21,17 @@ tracing.workspace = true
 kube.workspace = true
 enzarb-crds = { git = "ssh://git@github.com/enzarb/enzarb-sandbox-operator.git", branch = "main" }
 enzarb-connector = { git = "ssh://git@github.com/enzarb/enzarb-connectors.git", branch = "main" }
+enzarb-proto = { git = "ssh://git@github.com/enzarb/enzarb-proto.git", branch = "main", features = ["tokio"] }
+enzarb-connector-github = { git = "ssh://git@github.com/enzarb/enzarb-connectors.git", branch = "main" }
+k8s-openapi.workspace = true
+axum.workspace = true
+hmac.workspace = true
+sha2.workspace = true
 testcontainers-modules = { version = "0.15", features = ["postgres"], optional = true }
 
 [dev-dependencies]
 engine = { path = ".", features = ["testing"] }
 enzarb-connector = { git = "ssh://git@github.com/enzarb/enzarb-connectors.git", branch = "main", features = ["fake"] }
 k8s-openapi.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }

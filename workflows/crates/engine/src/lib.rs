@@ -1,8 +1,9 @@
-//! enzarb workflow engine library: schema access, state machines, reducer, ticker and
-//! job-result ingestion.
+//! enzarb workflow engine library: schema access, state machines, reducer, ticker,
+//! job-result ingestion and executors.
 
 pub mod db;
 pub mod error;
+pub mod executor;
 pub mod index;
 pub mod machine;
 pub mod permission;
@@ -13,6 +14,7 @@ pub mod testing;
 pub mod ticker;
 
 pub use error::Error;
+pub use executor::{ConnectorRegistry, Executor, ExecutorConfig, SandboxResolver, SandboxTarget};
 pub use index::{KubeProjectIndex, ProjectIndex, ProjectInfo, StaticProjectIndex};
 pub use permission::{
     CachedPermissions, ConnectorPermissions, PermissionResolver, StaticPermissions,
