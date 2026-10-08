@@ -51,17 +51,8 @@ export const CreateProjectSchema = v.pipe(
 		),
 		issues: bool,
 		changeRequests: bool,
-		mentions: bool,
-		docker: bool,
-		runtimeClassName: v.optional(v.pipe(v.string(), v.trim()), '')
+		mentions: bool
 	}),
-	v.forward(
-		v.check(
-			(p) => !p.docker || p.runtimeClassName !== '',
-			'Docker requires a runtime class (gvisor or kata)'
-		),
-		['runtimeClassName']
-	),
 	v.forward(
 		v.check((p) => {
 			const keys = p.repositories.map((r) => repoKey(r.url));
@@ -92,11 +83,7 @@ export function buildProject(input: CreateProjectInput, owner: string): Project 
 				issues: input.issues,
 				changeRequests: input.changeRequests,
 				mentions: input.mentions
-			},
-			// Docker needs an isolating runtime class (ADR-0012); otherwise leave sandbox defaults alone.
-			...(input.docker
-				? { sandbox: { runtimeClassName: input.runtimeClassName, docker: { enabled: true } } }
-				: {})
+			}
 		}
 	};
 }
@@ -113,8 +100,6 @@ export function toView(p: Project): ProjectView {
 			changeRequests: p.spec.triggers?.changeRequests ?? true,
 			mentions: p.spec.triggers?.mentions ?? true
 		},
-		dockerEnabled: p.spec.sandbox?.docker?.enabled ?? false,
-		runtimeClassName: p.spec.sandbox?.runtimeClassName ?? '',
 		conditions,
 		ready: conditions.some((c) => c.type === 'Ready' && c.status === 'True')
 	};

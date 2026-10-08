@@ -44,8 +44,8 @@ export function buildChecklist(conditions: Condition[] | undefined | null): Chec
 	});
 }
 
-/** Contracts §2 suffixes, plus the operator's ADR-0012 refusal, which needs the user to act. */
-const FAILURE_REASON_RE = /(Failed|Failure|Error|DockerRequiresIsolation)$/;
+/** Contracts §2 failure-reason suffixes. */
+const FAILURE_REASON_RE = /(Failed|Failure|Error)$/;
 
 function isFailure(c: Condition | undefined): boolean {
 	return !!c && c.status === 'False' && FAILURE_REASON_RE.test(c.reason ?? '');

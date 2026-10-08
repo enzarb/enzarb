@@ -48,8 +48,6 @@ export interface ProjectView {
 	namespace: string | null;
 	repositories: Repository[];
 	triggers: { issues: boolean; changeRequests: boolean; mentions: boolean };
-	dockerEnabled: boolean;
-	runtimeClassName: string;
 	conditions: Condition[];
 	ready: boolean;
 }

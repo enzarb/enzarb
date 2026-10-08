@@ -36,16 +36,6 @@ describe('buildChecklist', () => {
 		expect(steps.map((s) => s.state)).toEqual(['done', 'in-progress', 'pending', 'pending']);
 		expect(steps[1].message).toBe('waiting for namespace');
 	});
-	it('shows DockerRequiresIsolation on Sandbox as failed with its message', () => {
-		const steps = buildChecklist([
-			c('TenantReady', 'True'),
-			c('NamespaceReady', 'True'),
-			c('SandboxReady', 'False', 'DockerRequiresIsolation', 'runtime class "" is not allowed')
-		]);
-		expect(steps.map((s) => s.state)).toEqual(['done', 'done', 'failed', 'pending']);
-		expect(steps[2].message).toBe('runtime class "" is not allowed');
-	});
-
 	it('marks failure reasons as failed and later steps pending', () => {
 		const steps = buildChecklist([
 			c('TenantReady', 'True'),
