@@ -20,7 +20,11 @@ Agents and users need `docker build`, `docker run` and `docker compose` inside a
   - **Why not Kata:** Kata's VM boundary is stronger, but it needs KVM on every node (bare metal or nested virtualization). Many cloud instance types don't offer that, and kind can't run it. gVisor works on kind and on ordinary VMs, so dev and prod match.
   - The operator keeps a runtime-class → settings table, so a Kata option could be added later without redesign.
 - **The sandbox image ships the Docker CLI only:** a static `docker` binary plus the `buildx` and `compose` plugins, copied from a build stage. No daemon in the main container, so the minimal-image rule still holds.
-- **Agent permission policy:** allows `docker` and `docker compose` subcommands. It denies `--privileged`, `--pid=host`, `--network=host`, `--cap-add`, device flags, and bind mounts outside the worktree. Inner containers still sit inside the pod's isolation boundary; the policy just narrows what the agent asks for.
+- **Agent permission policy:** allows a fixed set of `docker` and `docker compose` subcommands.
+  - **Denies:** `--privileged`, `--cap-add`, `--device`, `--security-opt`, host PID/IPC/UTS/userns/cgroupns, bind mounts or build paths outside the worktree (including the docker socket), `login`/`push`, and `-H`/`--context`.
+  - **Allows `--network=host`:** under gVisor dockerd runs with `--iptables=false`, so `-p` can't publish ports. The "host" network is the dockerd sidecar's namespace inside gVisor, not the node's.
+  - **Limit:** the policy sees only command lines (not compose file contents); gVisor is the real boundary.
+- **Docker under gVisor:** dockerd uses `--iptables=false` and the `vfs` storage driver, and the runsc config enables `net-raw` and `allow-packet-socket-write` (Docker 28+).
 - **Install:** enzarb-kubernetes installs gVisor (`runsc` plus the containerd shim) and RuntimeClass `gvisor`.
   - kind: a script run by `dev:cluster`.
   - Real clusters: a node-installer DaemonSet that labels capable nodes `enzarb.dev/runtime-gvisor=true`.
