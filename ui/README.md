@@ -1,54 +1,20 @@
-# sv
+# enzarb-ui
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
+SvelteKit (adapter-node) app for enzarb. Remote functions (`*.remote.ts`) are the logic layer.
 
-## Creating a project
-
-If you're seeing this, you've probably already done this step. Congrats!
+## Develop
 
 ```sh
-# create a new project
-npx sv create my-app
+cp .env.example .env     # see docs/contracts.md section 9 in the enzarb repo
+npm run migrate          # applies migrations/*.sql, tracked in app._migrations
+npm run dev              # loads .env if present
+npm run check && npm run lint && npm test   # tests need Docker (testcontainers)
 ```
 
-To recreate this project with the same configuration:
+GitHub login needs an OAuth app whose callback URL is `$ENZARB_PUBLIC_URL/login/github/callback`.
+The container image also carries `scripts/migrate.ts`; run it with `node scripts/migrate.ts` using the schema owner's `DATABASE_URL`.
 
-```sh
-# recreate this project
-npx sv@1.1.1 create --template minimal --types ts --add prettier eslint vitest="usages:unit,component" sveltekit-adapter="adapter:node" ai-tools="ide:claude-code+delivery:plugin" experimental="features:async,remoteFunctions,forkPreloads" --install npm ./
-```
+## Deployment notes
 
-## Adding features
-
-Add features to your project with `sv add`:
-
-```sh
-npx sv add
-```
-
-For example, to add Tailwind CSS:
-
-```sh
-npx sv add tailwindcss
-```
-
-## Developing
-
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
-
-```sh
-npm run dev
-
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
-```
-
-## Building
-
-To create a production version of your app:
-
-```sh
-npm run build
-```
-
-You can preview the production build with `npm run preview`.
+- Behind the gateway the pod sees plain HTTP, and adapter-node derives the request origin (used by SvelteKit's CSRF check) from `X-Forwarded-Proto`; the image sets `PROTOCOL_HEADER=x-forwarded-proto`. The gateway must send that header.
+- Sessions are an httpOnly `enzarb_session` cookie; only the sha-256 of the token is stored in `app.sessions`.
