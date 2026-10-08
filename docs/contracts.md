@@ -134,6 +134,7 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
     "comment": { "id": 987, "body": "…", "url": "…" }
   } }
 ```
+- **Rust types:** `enzarb_connector::{Event, EventData, EventType}` are the source of truth for field shapes. `review.state` is a free string.
 - **`type`:** one of `WorkItemOpened, CommentAdded, Mentioned, ApprovalGranted, ChangeRequestOpened, ChangeRequestUpdated, ReviewSubmitted, WorkItemClosed`.
   - `WorkItemClosed` carries `data.merged: bool`.
   - `ReviewSubmitted` carries `data.review: {id, state, body}`.
@@ -156,6 +157,8 @@ workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated
 ```
 - Both functions are `SECURITY DEFINER`.
 - Connectors use dedupe key `github:<X-GitHub-Delivery>`; the UI uses `ui:<uuid>`.
+- `submit_action` events: source `ui`, payload `{actor, action, data}`, type `ApprovalGranted` (approve), `CancelRequested` (cancel) or `RetryRequested` (retry). The last two are engine-internal and not part of the connector `EventType` set.
+- Columns beyond the docs: `transitions.event_type`, `jobs.deadline`, `jobs.created_at`. `work_items.project_id` is text (the Project name), exposed as `project` in the view.
 - NOTIFY channels:
   - `workflow_events` (payload: event id), sent by ingest;
   - `work_item_changed` (payload: work item id), sent by the reducer.

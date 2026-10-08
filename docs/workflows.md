@@ -36,7 +36,7 @@ Concurrency caps (agent jobs per project, worktree slots per sandbox) are enforc
 All of them are roles of one `enzarb-workflows` binary and can be scaled separately.
 
 ### Ingest (called by connectors and UI)
-`workflows_api.ingest_event(...)`: `INSERT … ON CONFLICT (dedupe_key) DO NOTHING`, then `NOTIFY events`. Receivers never run workflow logic inline.
+`workflows_api.ingest_event(...)`: `INSERT … ON CONFLICT (dedupe_key) DO NOTHING`, then `NOTIFY workflow_events`. Receivers never run workflow logic inline.
 
 ### Reducer: one transaction per event
 ```sql
