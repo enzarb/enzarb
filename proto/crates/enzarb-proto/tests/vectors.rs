@@ -179,6 +179,14 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
                 kind: CredentialKind::ClaudeOauth,
             },
         ),
+        ("credential_status", Ctrl::CredentialStatus),
+        (
+            "credential_state",
+            Ctrl::CredentialState {
+                kind: CredentialKind::ClaudeOauth,
+                configured: true,
+            },
+        ),
         (
             "error",
             Ctrl::Error {

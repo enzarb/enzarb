@@ -7,6 +7,7 @@ export {
   Session,
   type ConnectOptions,
   type RunAccepted,
+  type CredentialInfo,
   type RunInfo,
   type RunStartRequest,
   type RunStarted,

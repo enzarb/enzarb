@@ -86,10 +86,49 @@ fn spawn_echo_server(session: Session, mut events: enzarb_proto::session::Events
                             .unwrap();
                     }
                 }
+                Event::Ctrl(Ctrl::CredentialStatus) => {
+                    session
+                        .send_ctrl(&Ctrl::CredentialState {
+                            kind: enzarb_proto::CredentialKind::ClaudeOauth,
+                            configured: true,
+                        })
+                        .unwrap();
+                }
                 _ => {}
             }
         }
     });
+}
+
+#[tokio::test]
+async fn credential_status_is_answered_by_credential_state() {
+    let ((client, _ce), (server, se)) = memory::session_pair(ClientKind::Ui).await;
+    spawn_echo_server(server, se);
+    let info = timeout(T, client.credential_status())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(info.kind, enzarb_proto::CredentialKind::ClaudeOauth);
+    assert!(info.configured);
+}
+
+#[tokio::test]
+async fn credential_status_unimplemented_error_fails_request() {
+    let ((client, _ce), (server, mut se)) = memory::session_pair(ClientKind::Ui).await;
+    tokio::spawn(async move {
+        while let Some(ev) = se.next().await {
+            if let Event::Ctrl(Ctrl::CredentialStatus) = ev {
+                server
+                    .send_error("unimplemented", "no credentials")
+                    .unwrap();
+            }
+        }
+    });
+    let e = timeout(T, client.credential_status())
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(e, SessionError::Remote { ref code, .. } if code == "unimplemented"));
 }
 
 #[tokio::test]

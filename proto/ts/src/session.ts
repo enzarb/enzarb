@@ -1,6 +1,7 @@
 import { Channel, type ChannelHost } from "./channel.js";
 import {
   type ClientKind,
+  type CredentialKind,
   type Ctrl,
   ErrorCode,
   type RunPhase,
@@ -26,7 +27,7 @@ import {
 export interface WebSocketLike {
   binaryType: string;
   readyState: number;
-  send(data: Uint8Array): void;
+  send(data: BufferSource): void;
   close(code?: number, reason?: string): void;
   addEventListener(type: string, listener: (ev: any) => void): void;
 }
@@ -57,6 +58,12 @@ export interface RunInfo {
   summary?: string | null;
 }
 
+/** `credential_state` as seen by the client. */
+export interface CredentialInfo {
+  kind: CredentialKind;
+  configured: boolean;
+}
+
 export type RunStartRequest = Omit<RunStartFields, "log_channel"> & {
   /** `true` (allocate a transcript channel), a specific channel id, or omit/`false` for none. */
   log?: boolean | number;
@@ -72,7 +79,8 @@ type CtrlListener = (msg: Ctrl) => void;
 
 type Pending =
   | { kind: "run_start"; run_id: string; log?: Channel; resolve: (r: RunStarted) => void; reject: (e: unknown) => void }
-  | { kind: "run_status"; run_id: string; resolve: (r: RunInfo) => void; reject: (e: unknown) => void };
+  | { kind: "run_status"; run_id: string; resolve: (r: RunInfo) => void; reject: (e: unknown) => void }
+  | { kind: "credential_status"; run_id?: undefined; resolve: (r: CredentialInfo) => void; reject: (e: unknown) => void };
 
 const OPEN = 1;
 const ATTRIBUTABLE = new Set<string>([
@@ -154,7 +162,7 @@ export class Session implements ChannelHost {
     return this.end !== null;
   }
 
-  /** Subscribe to unsolicited CTRL messages (pushed `run_state`, `credential_captured`, unattributed `error`). */
+  /** Subscribe to unsolicited CTRL messages (pushed `run_state`, `credential_captured`, unsolicited `credential_state`, unattributed `error`). */
   onCtrl(listener: CtrlListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -319,6 +327,16 @@ export class Session implements ChannelHost {
       this.pending.push({ kind: "run_status", run_id: runId, resolve, reject }),
     );
     this.sendCtrl({ type: "run_status", run_id: runId });
+    return p;
+  }
+
+  /** `credential_status`, resolved by the matching `credential_state` reply (an `error` reply rejects with code "remote"). */
+  async credentialStatus(): Promise<CredentialInfo> {
+    this.alive();
+    const p = new Promise<CredentialInfo>((resolve, reject) =>
+      this.pending.push({ kind: "credential_status", resolve, reject }),
+    );
+    this.sendCtrl({ type: "credential_status" });
     return p;
   }
 
@@ -509,6 +527,13 @@ export class Session implements ChannelHost {
           return;
         }
         this.emit(m);
+        return;
+      }
+      case "credential_state": {
+        const i = this.pending.findIndex((p) => p.kind === "credential_status");
+        const p = i >= 0 ? this.pending.splice(i, 1)[0] : undefined;
+        if (p && p.kind === "credential_status") p.resolve({ kind: m.kind, configured: m.configured });
+        else this.emit(m);
         return;
       }
       case "credential_captured":

@@ -16,8 +16,8 @@ use super::channel::{Chan, ChannelHandle, lock};
 use super::handshake::{client_handshake, server_handshake};
 use super::{HandshakeError, SessionEnd, SessionError};
 use crate::{
-    ChannelKind, ClientKind, Ctrl, Frame, FrameType, RunPhase, RunStart, SUPPORTED_VERSIONS,
-    close_code, error_code,
+    ChannelKind, ClientKind, CredentialKind, Ctrl, Frame, FrameType, RunPhase, RunStart,
+    SUPPORTED_VERSIONS, close_code, error_code,
 };
 
 /// Which side of the protocol a session plays.
@@ -62,6 +62,13 @@ pub struct RunInfo {
     pub summary: Option<String>,
 }
 
+/// `credential_state` as seen by the client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CredentialInfo {
+    pub kind: CredentialKind,
+    pub configured: bool,
+}
+
 /// Result of [`Session::run_start`].
 pub struct RunStarted {
     pub accepted: RunAccepted,
@@ -74,8 +81,8 @@ pub enum Event {
     /// (server) The client wants a channel: [`OpenRequest::accept`] or [`OpenRequest::reject`].
     Open(OpenRequest),
     /// Any other CTRL message not consumed internally:
-    /// * server: `run_start`, `run_status`, `run_cancel`, `resize` (for an open channel), `error`;
-    /// * client: `run_state` pushes, `credential_captured`, unattributed `error`.
+    /// * server: `run_start`, `run_status`, `run_cancel`, `credential_status` (answer with `send_ctrl(Ctrl::CredentialState{..})`), `resize` (for an open channel), `error`;
+    /// * client: `run_state` pushes, `credential_captured`, unsolicited `credential_state`, unattributed `error`.
     Ctrl(Ctrl),
 }
 
@@ -157,6 +164,9 @@ enum Pending {
     RunStatus {
         run_id: String,
         tx: oneshot::Sender<Result<RunInfo, SessionError>>,
+    },
+    CredentialStatus {
+        tx: oneshot::Sender<Result<CredentialInfo, SessionError>>,
     },
 }
 
@@ -425,7 +435,10 @@ impl Inner {
             }
             (
                 Role::Server,
-                m @ (Ctrl::RunStart(_) | Ctrl::RunStatus { .. } | Ctrl::RunCancel { .. }),
+                m @ (Ctrl::RunStart(_)
+                | Ctrl::RunStatus { .. }
+                | Ctrl::RunCancel { .. }
+                | Ctrl::CredentialStatus),
             ) => {
                 emit(Event::Ctrl(m));
             }
@@ -535,6 +548,22 @@ impl Inner {
                 }
             }
             (Role::Client, m @ Ctrl::CredentialCaptured { .. }) => emit(Event::Ctrl(m)),
+            (Role::Client, Ctrl::CredentialState { kind, configured }) => {
+                let waiter = {
+                    let mut st = lock(&self.state);
+                    let pos = st
+                        .pending
+                        .iter()
+                        .position(|p| matches!(p, Pending::CredentialStatus { .. }));
+                    pos.and_then(|i| st.pending.remove(i))
+                };
+                match waiter {
+                    Some(Pending::CredentialStatus { tx }) => {
+                        let _ = tx.send(Ok(CredentialInfo { kind, configured }));
+                    }
+                    _ => emit(Event::Ctrl(Ctrl::CredentialState { kind, configured })),
+                }
+            }
             (_, m) => {
                 self.send_error(
                     error_code::PROTOCOL_VIOLATION,
@@ -582,6 +611,7 @@ impl Inner {
                         .position(|p| match p {
                             Pending::RunStart { run_id, .. }
                             | Pending::RunStatus { run_id, .. } => run_id == id,
+                            Pending::CredentialStatus { .. } => false,
                         })
                         .and_then(|i| st.pending.remove(i))
                 }
@@ -619,6 +649,8 @@ fn ctrl_name(m: &Ctrl) -> &'static str {
         Ctrl::RunState { .. } => "run_state",
         Ctrl::RunCancel { .. } => "run_cancel",
         Ctrl::CredentialCaptured { .. } => "credential_captured",
+        Ctrl::CredentialStatus => "credential_status",
+        Ctrl::CredentialState { .. } => "credential_state",
         Ctrl::Error { .. } => "error",
     }
 }
@@ -630,6 +662,9 @@ impl Pending {
                 let _ = tx.send(Err(e));
             }
             Pending::RunStatus { tx, .. } => {
+                let _ = tx.send(Err(e));
+            }
+            Pending::CredentialStatus { tx } => {
                 let _ = tx.send(Err(e));
             }
         }
@@ -967,6 +1002,23 @@ impl Session {
         self.inner.send_ctrl(&Ctrl::RunStatus {
             run_id: run_id.into(),
         })?;
+        match rx.await {
+            Ok(r) => r,
+            Err(_) => Err(self.inner.ended()),
+        }
+    }
+
+    /// (client) `credential_status`, resolved by the matching `credential_state`
+    /// reply. An error reply (e.g. `unimplemented`) becomes [`SessionError::Remote`].
+    pub async fn credential_status(&self) -> Result<CredentialInfo, SessionError> {
+        self.require(Role::Client)?;
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut st = lock(&self.inner.state);
+            self.inner.check_alive()?;
+            st.pending.push_back(Pending::CredentialStatus { tx });
+        }
+        self.inner.send_ctrl(&Ctrl::CredentialStatus)?;
         match rx.await {
             Ok(r) => r,
             Err(_) => Err(self.inner.ended()),

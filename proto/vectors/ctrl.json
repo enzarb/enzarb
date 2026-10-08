@@ -205,6 +205,22 @@
     "name": "credential_captured"
   },
   {
+    "hex": "0100000000000000001c7b2274797065223a2263726564656e7469616c5f737461747573227d",
+    "message": {
+      "type": "credential_status"
+    },
+    "name": "credential_status"
+  },
+  {
+    "hex": "010000000000000000437b2274797065223a2263726564656e7469616c5f7374617465222c226b696e64223a22636c617564655f6f61757468222c22636f6e66696775726564223a747275657d",
+    "message": {
+      "configured": true,
+      "kind": "claude_oauth",
+      "type": "credential_state"
+    },
+    "name": "credential_state"
+  },
+  {
     "hex": "0100000000000000004b7b2274797065223a226572726f72222c22636f6465223a22756e737570706f727465645f76657273696f6e222c226d657373616765223a226e6f20636f6d6d6f6e2076657273696f6e227d",
     "message": {
       "code": "unsupported_version",

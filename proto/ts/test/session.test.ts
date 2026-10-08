@@ -40,8 +40,10 @@ class MockSocket implements WebSocketLike {
   private emit(type: string, ev: any) {
     for (const l of this.listeners.get(type) ?? []) l(ev);
   }
-  send(data: Uint8Array) {
-    const copy = data.slice();
+  send(data: BufferSource) {
+    const copy = ArrayBuffer.isView(data)
+      ? new Uint8Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength))
+      : new Uint8Array(data.slice(0));
     queueMicrotask(() => this.peer.deliver(copy.buffer));
   }
   deliver(data: unknown) {
@@ -308,6 +310,34 @@ describe("runs", () => {
     srv.ctrl({ type: "credential_captured", kind: "claude_oauth" });
     await tick();
     expect(pushed.map((m) => m.type)).toEqual(["run_state", "credential_captured"]);
+  });
+
+  it("credentialStatus resolves from credential_state; error rejects", async () => {
+    const { s, srv } = await connected();
+    const p = s.credentialStatus();
+    await srv.nextCtrl("credential_status");
+    srv.ctrl({ type: "credential_state", kind: "claude_oauth", configured: true });
+    expect(await p).toEqual({ kind: "claude_oauth", configured: true });
+
+    const q = s.credentialStatus();
+    await srv.nextCtrl("credential_status");
+    srv.ctrl({ type: "error", code: "unimplemented", message: "no" });
+    await expect(q).rejects.toMatchObject({ code: "remote" });
+
+    const pushed: Ctrl[] = [];
+    s.onCtrl((m) => pushed.push(m));
+    srv.ctrl({ type: "credential_state", kind: "claude_oauth", configured: false });
+    await tick();
+    expect(pushed.map((m) => m.type)).toEqual(["credential_state"]);
+  });
+
+  it("a DOM WebSocket is assignable to WebSocketLike without a cast", () => {
+    // Type-level: fails `npm run check` if the DOM lib's WebSocket stops fitting.
+    const accepts = (_: WebSocketLike) => {};
+    const dom = null as unknown as WebSocket;
+    accepts(dom);
+    const ctor: new (url: string) => WebSocketLike = WebSocket;
+    expect(ctor).toBeDefined();
   });
 
   it("attributes unimplemented errors to the oldest pending run request", async () => {

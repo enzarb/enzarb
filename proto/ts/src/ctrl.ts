@@ -61,6 +61,8 @@ export type Ctrl =
   | { type: "run_state"; run_id: string; state: RunPhase; exit_code?: number | null; summary?: string | null }
   | { type: "run_cancel"; run_id: string }
   | { type: "credential_captured"; kind: CredentialKind }
+  | { type: "credential_status" }
+  | { type: "credential_state"; kind: CredentialKind; configured: boolean }
   | { type: "error"; code: string; message: string; run_id?: string; channel?: number };
 
 export type CtrlType = Ctrl["type"];
@@ -78,6 +80,8 @@ const TYPES: ReadonlySet<string> = new Set<CtrlType>([
   "run_state",
   "run_cancel",
   "credential_captured",
+  "credential_status",
+  "credential_state",
   "error",
 ]);
 

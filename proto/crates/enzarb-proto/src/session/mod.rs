@@ -120,6 +120,7 @@ pub mod memory;
 pub use channel::{ChannelHandle, ChannelReceiver, ChannelSender, Data, SEND_CHUNK};
 pub use client::Client;
 pub use core::{
-    Event, Events, OpenRequest, Role, RunAccepted, RunInfo, RunStarted, ServerOptions, Session,
+    CredentialInfo, Event, Events, OpenRequest, Role, RunAccepted, RunInfo, RunStarted,
+    ServerOptions, Session,
 };
 pub use error::{ConnectError, HandshakeError, SessionEnd, SessionError};

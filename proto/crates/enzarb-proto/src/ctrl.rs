@@ -22,7 +22,7 @@ pub enum ChannelKind {
     Pty,
 }
 
-/// Credential kinds reported by `credential_captured`.
+/// Credential kinds reported by `credential_captured` and `credential_state`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialKind {
@@ -154,6 +154,14 @@ pub enum Ctrl {
     },
     CredentialCaptured {
         kind: CredentialKind,
+    },
+    /// Client asks whether the sandbox holds a credential; answered by
+    /// `credential_state`. No fields.
+    CredentialStatus,
+    /// Reply to `credential_status` (the sandbox's current view).
+    CredentialState {
+        kind: CredentialKind,
+        configured: bool,
     },
     Error {
         code: String,

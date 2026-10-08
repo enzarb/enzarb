@@ -119,7 +119,7 @@ export function validateFrame(f: Frame): void {
   }
 }
 
-export function encodeFrame(f: Frame): Uint8Array {
+export function encodeFrame(f: Frame): Uint8Array<ArrayBuffer> {
   validateFrame(f);
   const out = new Uint8Array(HEADER_LEN + f.payload.length);
   const dv = new DataView(out.buffer);

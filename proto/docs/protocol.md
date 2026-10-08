@@ -75,6 +75,8 @@ JSON objects with a `"type"` field, channel 0. Unknown fields are ignored; an un
 | `run_state` | server -> client (reply to `run_status`, and pushed on change) | `run_id`, `state`, `exit_code?`, `summary?` |
 | `run_cancel` | client -> server | `run_id` |
 | `credential_captured` | server -> client | `kind: "claude_oauth"` |
+| `credential_status` | client -> server | none; asks whether the sandbox holds a credential |
+| `credential_state` | server -> client (reply to `credential_status`) | `kind: "claude_oauth"`, `configured: bool` |
 | `error` | both | `code`, `message`, optional `run_id`, optional `channel` (omitted when absent) |
 
 `state` is `queued | running | succeeded | failed | cancelled`. `run_start` is idempotent on `run_id`.
