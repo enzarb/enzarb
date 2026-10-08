@@ -1,0 +1,44 @@
+{
+  "action": "added",
+  "installation": {
+    "id": 55001122,
+    "account": {
+      "login": "enzarb",
+      "id": 77,
+      "node_id": "MDQ6VXNlcjE77",
+      "avatar_url": "https://avatars.githubusercontent.com/u/77?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/enzarb",
+      "html_url": "https://github.com/enzarb",
+      "type": "Organization",
+      "site_admin": false
+    },
+    "repository_selection": "selected",
+    "app_id": 123456,
+    "app_slug": "enzarb",
+    "target_type": "Organization"
+  },
+  "repository_selection": "selected",
+  "repositories_added": [
+    {
+      "id": 600100300,
+      "node_id": "R_kgDOJ1a2bC",
+      "name": "enzarb-helm",
+      "full_name": "enzarb/enzarb-helm",
+      "private": true
+    }
+  ],
+  "repositories_removed": [],
+  "requester": null,
+  "sender": {
+    "login": "ruckc",
+    "id": 42,
+    "node_id": "MDQ6VXNlcjE42",
+    "avatar_url": "https://avatars.githubusercontent.com/u/42?v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/ruckc",
+    "html_url": "https://github.com/ruckc",
+    "type": "User",
+    "site_admin": false
+  }
+}

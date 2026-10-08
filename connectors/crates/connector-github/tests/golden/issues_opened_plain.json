@@ -1,0 +1,32 @@
+{
+  "kind": "events",
+  "events": [
+    {
+      "specversion": "1.0",
+      "source": "github",
+      "id": "d-issues_opened_plain",
+      "type": "WorkItemOpened",
+      "subject": "github:enzarb/enzarb-ui#43",
+      "time": "2026-10-08T12:00:00Z",
+      "data": {
+        "repo": "github:enzarb/enzarb-ui",
+        "actor": {
+          "login": "alice",
+          "id": 1001,
+          "is_bot": false
+        },
+        "item": {
+          "kind": "issue",
+          "number": 43,
+          "url": "https://github.com/enzarb/enzarb-ui/issues/43",
+          "title": "Typo in footer",
+          "body": "Footer says 'enzrb'.",
+          "author": "alice",
+          "head_ref": null,
+          "base_ref": null,
+          "head_sha": null
+        }
+      }
+    }
+  ]
+}
