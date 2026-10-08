@@ -15,6 +15,7 @@ use engine::{
     ConnectorRegistry, Executor, ExecutorConfig, Reducer, ReducerConfig, StaticPermissions,
     StaticProjectIndex,
 };
+use enzarb_connector::CommentKind;
 use enzarb_connector::fake::{Call, FakeConnector};
 use enzarb_connector::{
     Actor, ChangeRequestSpec, CommentRef, CredScope, Event, EventData, EventType, ItemKind,
@@ -358,7 +359,7 @@ fn comment_input(n: u64, body: &str) -> Value {
 }
 
 fn progress_input(n: u64, p: Progress) -> Value {
-    json!({ "target": ProgressTarget { item: key(n), comment_id: None }, "progress": p })
+    json!({ "target": ProgressTarget { item: key(n), comment_id: None, comment_kind: Default::default() }, "progress": p })
 }
 
 fn agent_input(n: u64, branch: &str, push: bool) -> Value {
@@ -431,6 +432,7 @@ fn thread_with(text: &str) -> Thread {
             },
             comment: CommentRef {
                 id: 11,
+                kind: Default::default(),
                 body: text.into(),
                 url: String::new(),
             },
@@ -504,7 +506,8 @@ async fn connector_jobs_run_with_idempotency_keys_and_report() {
     assert!(calls.contains(&Call::SetProgress {
         target: ProgressTarget {
             item: key(1),
-            comment_id: None
+            comment_id: None,
+            comment_kind: Default::default()
         },
         progress: Progress::Received,
         idempotency_key: "k:p".into(),
@@ -1468,4 +1471,55 @@ async fn run_loop_processes_jobs_and_stops_on_shutdown() {
         .expect("run returns after shutdown")
         .unwrap()
         .unwrap();
+}
+
+#[tokio::test]
+async fn set_progress_passes_comment_kind_to_the_connector() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let wi = new_item(pool, 1, "enzarb").await;
+    let review_target = ProgressTarget {
+        item: key(1),
+        comment_id: Some(7),
+        comment_kind: CommentKind::Review,
+    };
+    let new = new_job(
+        pool,
+        wi,
+        "enzarb",
+        "set_progress",
+        100,
+        "k:review",
+        json!({ "target": review_target, "progress": Progress::Received }),
+    )
+    .await;
+    // Rows written before `comment_kind` existed still run, as conversation comments.
+    let old = new_job(
+        pool,
+        wi,
+        "enzarb",
+        "set_progress",
+        90,
+        "k:old",
+        json!({ "target": { "item": key(1), "comment_id": 8 }, "progress": "Received" }),
+    )
+    .await;
+    assert_eq!(h.exec.drain().await, 2);
+    assert_eq!(job(pool, new).await.status, "succeeded");
+    assert_eq!(job(pool, old).await.status, "succeeded");
+    let calls = h.fake.applied_calls();
+    assert!(calls.contains(&Call::SetProgress {
+        target: review_target,
+        progress: Progress::Received,
+        idempotency_key: "k:review".into(),
+    }));
+    assert!(calls.contains(&Call::SetProgress {
+        target: ProgressTarget {
+            item: key(1),
+            comment_id: Some(8),
+            comment_kind: CommentKind::Conversation,
+        },
+        progress: Progress::Received,
+        idempotency_key: "k:old".into(),
+    }));
 }

@@ -37,7 +37,8 @@ mod tests;
 
 use chrono::{DateTime, Utc};
 use enzarb_connector::{
-    Actor, CommentRef, Event, EventType, ItemKind, Permission, ProgressTarget, WorkItemKey,
+    Actor, CommentKind, CommentRef, Event, EventType, ItemKind, Permission, ProgressTarget,
+    WorkItemKey,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -341,10 +342,15 @@ pub struct Ctx {
 }
 
 impl Ctx {
-    fn progress_target(&self, comment_id: Option<u64>) -> ProgressTarget {
+    fn progress_target(
+        &self,
+        comment_id: Option<u64>,
+        comment_kind: CommentKind,
+    ) -> ProgressTarget {
         ProgressTarget {
             item: self.work_item.clone(),
             comment_id,
+            comment_kind,
         }
     }
 

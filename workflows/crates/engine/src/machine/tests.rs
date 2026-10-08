@@ -87,6 +87,7 @@ fn conn(
         item,
         comment: comment.map(|(id, body)| CommentRef {
             id,
+            kind: Default::default(),
             body: body.into(),
             url: String::new(),
         }),
@@ -1342,6 +1343,14 @@ fn pr_comment(id: &str, who: &str, cid: u64, text: &str) -> EngineEvent {
     )
 }
 
+fn pr_review_comment(id: &str, who: &str, cid: u64, text: &str) -> EngineEvent {
+    let mut e = pr_comment(id, who, cid, text);
+    if let EventPayload::Connector(c) = &mut e.payload {
+        c.data.comment.as_mut().unwrap().kind = enzarb_connector::CommentKind::Review;
+    }
+    e
+}
+
 fn review(id: &str, who: &str, state: &str, body: &str) -> EngineEvent {
     let mut e = conn(
         id,
@@ -1446,6 +1455,25 @@ fn cr_feedback_is_addressed_then_awaits_again() {
     let input: AgentJobInput =
         serde_json::from_value(job_of(&t, JobKind::AgentAddressComments).2).unwrap();
     assert!(input.prompt.contains("rename this"));
+
+    // An inline review comment carries its kind into the progress target.
+    let t = run_cr(
+        Permission::Write,
+        &s,
+        &pr_review_comment("rc", "carol", 12, "rename this"),
+    );
+    assert_cr(&t, CrPhase::AddressingComments);
+    assert_eq!(first_progress(&t).2["target"]["comment_id"], 12);
+    assert_eq!(first_progress(&t).2["target"]["comment_kind"], "review");
+    let t = run_cr(
+        Permission::Write,
+        &s,
+        &pr_comment("c2", "carol", 13, "rename this"),
+    );
+    assert_eq!(
+        first_progress(&t).2["target"]["comment_kind"],
+        "conversation"
+    );
 
     // Empty changes-requested review mentions the inline comments.
     let t = run_cr(

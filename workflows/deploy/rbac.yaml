@@ -32,10 +32,8 @@ subjects:
 # The executor reads each sandbox's auth Secret (named in Project.status.sandbox) to call
 # sandbox-init. Project namespaces are `enzarb-p-<name>` and created at runtime, so a
 # per-namespace RoleBinding cannot be pre-provisioned; this ClusterRole grants `get` only
-# (no list/watch) and is bound cluster-wide. To narrow it, have the operator create a
-# RoleBinding to this ClusterRole in each project namespace instead of the
-# ClusterRoleBinding below, or set `resourceNames` to the sandbox-auth Secret name.
-# Only roles that include `executor` need it.
+# (no list/watch), limited by `resourceNames` to the `sandbox-auth` Secret, and is bound
+# cluster-wide. Only roles that include `executor` need it.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -43,6 +41,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["secrets"]
+    resourceNames: ["sandbox-auth"]
     verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

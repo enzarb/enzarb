@@ -112,6 +112,7 @@ async fn ingest(
         item: item(ItemKind::Issue, number),
         comment: comment.map(|b| CommentRef {
             id: 9,
+            kind: Default::default(),
             body: b.into(),
             url: String::new(),
         }),

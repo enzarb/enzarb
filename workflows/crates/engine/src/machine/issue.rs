@@ -10,7 +10,8 @@
 //!   or a retry resumes triage from `Stale`.
 
 use enzarb_connector::{
-    ChangeRequestSpec, Event, EventData, EventType, ItemKind, ItemRef, ProgressTarget, WorkItemKey,
+    ChangeRequestSpec, CommentKind, Event, EventData, EventType, ItemKind, ItemRef, ProgressTarget,
+    WorkItemKey,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -47,6 +48,8 @@ pub struct IssueData {
     pub author: String,
     /// Comment that started the current step, for progress markers.
     pub trigger_comment_id: Option<u64>,
+    /// Kind of that comment (PR review comments need a different API).
+    pub trigger_comment_kind: CommentKind,
     /// Text of that comment (answers, plan feedback).
     pub trigger_text: String,
     pub triage_summary: String,
@@ -78,7 +81,7 @@ fn scratch_branch(step: &str, n: u64) -> String {
 }
 
 fn target(ctx: &Ctx, d: &IssueData) -> ProgressTarget {
-    ctx.progress_target(d.trigger_comment_id)
+    ctx.progress_target(d.trigger_comment_id, d.trigger_comment_kind)
 }
 
 fn prompt_ctx(ctx: &Ctx, d: &IssueData) -> PromptContext {
@@ -284,10 +287,9 @@ fn approval(ctx: &Ctx, ev: &EngineEvent, s: &IssueState, state: &WorkflowState) 
         return Transition::reject(state, "no plan is awaiting approval");
     }
     let mut d = s.data.clone();
-    d.trigger_comment_id = ev
-        .connector()
-        .and_then(|e| e.data.comment.as_ref())
-        .map(|c| c.id);
+    let tc = ev.connector().and_then(|e| e.data.comment.as_ref());
+    d.trigger_comment_id = tc.map(|c| c.id);
+    d.trigger_comment_kind = tc.map(|c| c.kind).unwrap_or_default();
     d.trigger_text.clear();
     d.implemented = false;
     begin(ctx, ev, IssuePhase::Implementing, d, "plan approved")
@@ -307,6 +309,7 @@ fn comment(
     let is_author = c.actor.login.eq_ignore_ascii_case(&s.data.author);
     let mut d = s.data.clone();
     d.trigger_comment_id = c.comment.map(|x| x.id);
+    d.trigger_comment_kind = c.comment.map(|x| x.kind).unwrap_or_default();
     d.trigger_text = c.text.to_string();
     match s.phase {
         // Only the author answers questions.
@@ -334,6 +337,7 @@ fn retry(ctx: &Ctx, ev: &EngineEvent, s: &IssueState, state: &WorkflowState) -> 
     }
     let mut d = s.data.clone();
     d.trigger_comment_id = None;
+    d.trigger_comment_kind = CommentKind::default();
     d.error.clear();
     match s.phase {
         IssuePhase::Failed => {

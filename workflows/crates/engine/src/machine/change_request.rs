@@ -9,7 +9,7 @@
 //!   other new commits (`ChangeRequestUpdated`) are.
 //! * A `ChangeRequestOpened` for a `Closed` or `Cancelled` item (reopen) restarts the review.
 
-use enzarb_connector::{EventType, ItemKind, ItemRef, ProgressTarget};
+use enzarb_connector::{CommentKind, EventType, ItemKind, ItemRef, ProgressTarget};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -32,6 +32,8 @@ pub enum CrPhase {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pending {
     pub comment_id: Option<u64>,
+    #[serde(default)]
+    pub comment_kind: CommentKind,
     pub text: String,
 }
 
@@ -49,6 +51,7 @@ pub struct CrData {
     /// Commit the last review covered; a `ChangeRequestUpdated` for it is a duplicate.
     pub reviewed_sha: String,
     pub trigger_comment_id: Option<u64>,
+    pub trigger_comment_kind: CommentKind,
     pub trigger_text: String,
     pub pending: Option<Pending>,
     /// Verdict of the last review: `approve`, `request_changes` or `comment`.
@@ -68,7 +71,7 @@ fn st(phase: CrPhase, data: CrData) -> WorkflowState {
 }
 
 fn target(ctx: &Ctx, d: &CrData) -> ProgressTarget {
-    ctx.progress_target(d.trigger_comment_id)
+    ctx.progress_target(d.trigger_comment_id, d.trigger_comment_kind)
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -266,7 +269,15 @@ pub(super) fn step(ctx: &Ctx, s: &CrState, ev: &EngineEvent) -> Transition {
             EventType::ReviewSubmitted => review_submitted(ctx, ev, s, &state),
             EventType::CommentAdded | EventType::Mentioned => {
                 let c = ev.comment_like().expect("comment-like");
-                feedback(ctx, ev, s, &state, c.actor, c.comment.map(|x| x.id), c.text)
+                feedback(
+                    ctx,
+                    ev,
+                    s,
+                    &state,
+                    c.actor,
+                    c.comment.map(|x| (x.id, x.kind)),
+                    c.text,
+                )
             }
             EventType::ApprovalGranted => Transition::reject(&state, "nothing to approve"),
             _ => Transition::reject(&state, "event not applicable to a change request"),
@@ -355,7 +366,7 @@ fn feedback(
     s: &CrState,
     state: &WorkflowState,
     actor: &enzarb_connector::Actor,
-    comment_id: Option<u64>,
+    comment: Option<(u64, CommentKind)>,
     text: &str,
 ) -> Transition {
     use CrPhase::*;
@@ -368,18 +379,23 @@ fn feedback(
     match s.phase {
         AwaitingChanges => {
             let mut d = s.data.clone();
-            d.trigger_comment_id = comment_id;
+            d.trigger_comment_id = comment.map(|c| c.0);
+            d.trigger_comment_kind = comment.map(|c| c.1).unwrap_or_default();
             d.trigger_text = text.to_string();
             begin(ctx, ev, AddressingComments, d, "feedback received")
         }
         AddressingComments => {
             let mut d = s.data.clone();
             d.pending = Some(Pending {
-                comment_id,
+                comment_id: comment.map(|c| c.0),
+                comment_kind: comment.map(|c| c.1).unwrap_or_default(),
                 text: text.to_string(),
             });
             let mut fx = Fx::new(ctx, ev);
-            fx.received(&ctx.progress_target(comment_id));
+            fx.received(&ctx.progress_target(
+                comment.map(|c| c.0),
+                comment.map(|c| c.1).unwrap_or_default(),
+            ));
             Transition::to(
                 st(AddressingComments, d),
                 fx.finish(),
@@ -404,10 +420,12 @@ fn retry(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowState) -> Tra
     match phase {
         CrPhase::AddressingComments => {
             d.trigger_comment_id = None;
+            d.trigger_comment_kind = CommentKind::default();
             begin(ctx, ev, CrPhase::AddressingComments, d, "retry")
         }
         _ => {
             d.trigger_comment_id = None;
+            d.trigger_comment_kind = CommentKind::default();
             begin(ctx, ev, CrPhase::Reviewing, d, "retry")
         }
     }
@@ -454,6 +472,7 @@ fn job_succeeded(
             d.last_review = decision.as_str().to_string();
             d.reviewed_sha = d.head_sha.clone();
             d.trigger_comment_id = None;
+            d.trigger_comment_kind = CommentKind::default();
             d.trigger_text.clear();
             Transition::to(st(AwaitingChanges, d), fx.finish(), "review posted")
         }
@@ -468,12 +487,14 @@ fn job_succeeded(
             match d.pending.take() {
                 Some(p) => {
                     d.trigger_comment_id = p.comment_id;
+                    d.trigger_comment_kind = p.comment_kind;
                     d.trigger_text = p.text;
                     start_address(ctx, &mut fx, &d);
                     Transition::to(st(AddressingComments, d), fx.finish(), "next round")
                 }
                 None => {
                     d.trigger_comment_id = None;
+                    d.trigger_comment_kind = CommentKind::default();
                     d.trigger_text.clear();
                     Transition::to(st(AwaitingChanges, d), fx.finish(), "comments addressed")
                 }

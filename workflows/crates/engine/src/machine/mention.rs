@@ -6,7 +6,7 @@
 //! Running an agent on request needs write access, so mentions from users without
 //! it are not accepted.
 
-use enzarb_connector::{EventType, ItemKind, ProgressTarget};
+use enzarb_connector::{CommentKind, EventType, ItemKind, ProgressTarget};
 use serde::{Deserialize, Serialize};
 
 use super::fx::{AgentSpec, Fx};
@@ -32,6 +32,7 @@ pub struct MentionData {
     pub author: String,
     pub head_ref: String,
     pub trigger_comment_id: Option<u64>,
+    pub trigger_comment_kind: CommentKind,
     pub trigger_text: String,
     pub error: String,
 }
@@ -47,7 +48,7 @@ fn st(phase: MentionPhase, data: MentionData) -> WorkflowState {
 }
 
 fn target(ctx: &Ctx, d: &MentionData) -> ProgressTarget {
-    ctx.progress_target(d.trigger_comment_id)
+    ctx.progress_target(d.trigger_comment_id, d.trigger_comment_kind)
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -118,6 +119,7 @@ fn mention_data(ev: &EngineEvent) -> Option<MentionData> {
         author: item.author.clone(),
         head_ref: item.head_ref.clone().unwrap_or_default(),
         trigger_comment_id: c.comment.map(|x| x.id),
+        trigger_comment_kind: c.comment.map(|x| x.kind).unwrap_or_default(),
         trigger_text: c.text.to_string(),
         error: String::new(),
     })
