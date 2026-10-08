@@ -6,3 +6,7 @@
 # Single source: used by hack/kind-install-gvisor.sh and baked into installer/Dockerfile.
 [runsc_config]
   net-raw = "true"
+  # Docker 28+ (dockerd sidecar, ADR-0012) needs AF_PACKET writes. gVisor warns this lets
+  # workloads craft arbitrary packets; the per-namespace NetworkPolicy (DNS + 443 egress
+  # only, ingress only from proxy/executor) bounds where they can go.
+  allow-packet-socket-write = "true"
