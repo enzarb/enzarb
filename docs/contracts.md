@@ -16,7 +16,7 @@ enzarb-connector-github = { git = "ssh://git@github.com/enzarb/enzarb-connectors
   - `enzarb-sandbox-operator/crates/enzarb-crds`
   - `enzarb-connectors/crates/connector`
   - `enzarb-connectors/crates/connector-github`
-- TS: `enzarb-ui` depends on `"@enzarb/proto": "github:enzarb/enzarb-proto#main"`. The proto repo has a root `package.json` whose `prepare` script builds `ts/` → `ts/dist`.
+- TS: `@enzarb/proto` is published to GitHub Packages npm (`npm.pkg.github.com`) on merge to main (enzarb-proto issue for publishing). `enzarb-ui` installs it via `.npmrc` `@enzarb:registry=https://npm.pkg.github.com`; CI authenticates with `GITHUB_TOKEN` after the package grants the repo read access.
 
 Shared choices across the Rust repos:
 - tokio, axum 0.8, tracing + tracing-subscriber (JSON logs), serde, thiserror/anyhow;
@@ -170,7 +170,10 @@ workflows_api.transition_v(id, work_item_id, from_state, to_state, event_type, a
 workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated_at, output)
 ```
 - Both functions are `SECURITY DEFINER`.
-- Connectors use dedupe key `github:<X-GitHub-Delivery>`; the UI uses `ui:<uuid>`.
+- Connectors use dedupe key `github:<event id>`; the UI uses `ui:<uuid>`. Events the engine itself generates use source `engine` (`handoff:<id>`, `timer:…`, `job:<id>:<attempt>`).
+- `transitions.work_item_id` is nullable: events that are ignored (no Project, no workflow) get a `to_state='ignored'` row with no work item. `transitions.note` records rejections.
+- `work_items.state_data` carries `title` and `url` for display.
+- Work item keys and repo keys are stored lowercase.
 - `submit_action` events: source `ui`, payload `{actor, action, data}`, type `ApprovalGranted` (approve), `CancelRequested` (cancel) or `RetryRequested` (retry). The last two are engine-internal and not part of the connector `EventType` set.
 - Columns beyond the docs: `transitions.event_type`, `jobs.deadline`, `jobs.created_at`. `work_items.project_id` is text (the Project name), exposed as `project` in the view.
 - NOTIFY channels:
@@ -210,6 +213,7 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 | `PROTOCOL_HEADER=x-forwarded-proto` | ui (adapter-node derives the origin for its CSRF check from it; the Gateway must forward `X-Forwarded-Proto`) |
 | `ENZARB_EXECUTOR_URL` (default `http://enzarb-workflows-executor.enzarb.svc:8081`) | workflows executor (callback base) |
 | `RUST_LOG` | all Rust services |
+| `RECEIVER_LISTEN` (default `0.0.0.0:8080`) | connectors receiver |
 
 ## 10. GitHub App
 
@@ -220,7 +224,7 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 
 ## 11. CI access to private enzarb dependencies
 
-Library repos have read-only deploy keys. Their private halves are org secrets visible to private repos: `ENZARB_PROTO_DEPLOY_KEY`, `ENZARB_CRDS_DEPLOY_KEY`, `ENZARB_CONNECTORS_DEPLOY_KEY`. Each key's comment is its repo's ssh URL, so `webfactory/ssh-agent` maps keys to repos. A repo with enzarb git dependencies adds this before building:
+Library repos have read-only deploy keys. The org is on GitHub Free, so org secrets aren't visible to private repos; the private halves are **repo-level** secrets on each consuming repo: `ENZARB_PROTO_DEPLOY_KEY`, `ENZARB_CRDS_DEPLOY_KEY`, `ENZARB_CONNECTORS_DEPLOY_KEY`. Each key's comment is its repo's ssh URL, so `webfactory/ssh-agent` maps keys to repos. A repo with enzarb git dependencies adds this before building:
 
 ```yaml
 env:
