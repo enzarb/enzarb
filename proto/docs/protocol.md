@@ -1,0 +1,124 @@
+# enzarb mux protocol, version 1
+
+One websocket carries many multiplexed channels between a client (browser `ui`, `proxy`, workflows `executor`) and `sandbox-init`. Reference implementation: `crates/enzarb-proto`. Shared test vectors: `vectors/`.
+
+## 1. Transport
+
+- Each frame is sent as exactly **one websocket binary message**. Text messages are a protocol violation.
+- A byte-stream decoder (`Frame::decode`) exists for tests and non-websocket transports; the frame layout is identical.
+- Any frame error (section 8) is fatal for the connection.
+
+## 2. Frame layout
+
+All integers are big-endian. The header is 10 bytes.
+
+```
+offset size field
+0      1    type      1 CTRL, 2 DATA_BIN, 3 DATA_JSON, 4 WINDOW, 5 CLOSE
+1      1    flags     must be 0 (reserved; non-zero is an error)
+2      4    channel   u32
+6      4    length    u32, payload bytes, <= 1 MiB (1,048,576)
+10     n    payload
+```
+
+| Type | Channel | Payload |
+|---|---|---|
+| `CTRL` (1) | must be 0 | UTF-8 JSON object tagged by `"type"` (section 5) |
+| `DATA_BIN` (2) | != 0 | opaque bytes, length >= 1 (pty I/O) |
+| `DATA_JSON` (3) | != 0 | UTF-8 JSON value, length >= 1 (e.g. transcript lines) |
+| `WINDOW` (4) | != 0 | `u32` credit in bytes, 1..=2^31-1 |
+| `CLOSE` (5) | != 0 | empty (code 0), or `u16` code + optional UTF-8 reason |
+
+The codec does not parse `DATA_*` payloads; the channel's owner does.
+
+`CLOSE` codes: 0 normal, 1 protocol error, 2 going away, 3 cancelled. Other values are opaque.
+
+## 3. Channels
+
+- Channel **0** is control. Only `CTRL` frames use it.
+- Channels 1..=u32::MAX are data channels. The **client** picks the id in `open` (must be unused). The server may refuse with `open_error`.
+- A channel exists from `open` until both directions have sent `CLOSE`. After that the id may be reused.
+- `run_start.log_channel`, when non-null, is a client-chosen id on which the server streams the run transcript as `DATA_JSON` frames. It is implicitly opened by `run_accepted` and uses the same flow control and close rules.
+
+## 4. Flow control (credit based)
+
+- Each data channel has an independent **window per direction**. Both start at `INITIAL_WINDOW` = 262,144 bytes (256 KiB) as soon as the channel is open (when the server's `opened` is sent/received, or for a log channel when `run_accepted` is).
+- Only `DATA_BIN` and `DATA_JSON` **payload bytes** consume credit. `CTRL`, `WINDOW`, `CLOSE` are free.
+- A sender must not send a data frame larger than its remaining credit. Frames up to 1 MiB are legal framing, but a sender must split data to fit its credit (and should prefer frames <= 16 KiB).
+- A receiver that gets more bytes than it granted must treat it as a violation: send `error` (`flow_control`), `CLOSE` the channel with code 1, and may drop the connection.
+- `WINDOW` adds credit for the *sender of the data* (i.e. it travels opposite to the data). A receiver grants credit back **after the application consumed the bytes** (not when they arrive), so a slow consumer applies backpressure. The reference state machine batches grants once at least half the initial window has been consumed.
+- Total credit held by a sender may never exceed 2^31-1; a grant that would exceed it is a violation.
+- A `WINDOW` for a channel that is locally closed or unknown is ignored.
+
+### Close semantics
+
+- `CLOSE` is a **half-close**: the sender will send no more data on the channel. The peer may keep sending until it also sends `CLOSE`.
+- A sender must not send data after its own `CLOSE`; a receiver treats data after the peer's `CLOSE` as a violation.
+- Closing a pty channel from the client side also terminates the process; when the process exits, the server sends `CLOSE` (reason may carry the exit status text).
+- Data in flight when `CLOSE` arrives is still delivered in order (frames are ordered per connection).
+
+## 5. CTRL messages
+
+JSON objects with a `"type"` field, channel 0. Unknown fields are ignored; an unknown `type` is answered with `error` (`unknown_message`). Optional fields may be absent or `null`; encoders omit `None` except `run_start.log_channel` which is always written (`null`). Definitions mirror contracts section 4 and `crates/enzarb-proto/src/ctrl.rs`.
+
+| Message | Direction | Fields |
+|---|---|---|
+| `hello` | client -> server | `versions: [u16]`, `client: "ui" \| "proxy" \| "executor"` |
+| `welcome` | server -> client | `version: u16` |
+| `open` | client -> server | `channel`, `kind: "pty"`, `cols`, `rows`, `command?: [string]` |
+| `opened` | server -> client | `channel` |
+| `open_error` | server -> client | `channel`, `message` |
+| `resize` | client -> server | `channel`, `cols`, `rows` |
+| `run_start` | client -> server | `run_id, repo_url, base_ref, branch, push, clone_token, prompt, timeout_secs, callback_url, callback_token, log_channel` |
+| `run_accepted` | server -> client | `run_id`, `state`, `existing: bool` |
+| `run_status` | client -> server | `run_id` |
+| `run_state` | server -> client (reply to `run_status`, and pushed on change) | `run_id`, `state`, `exit_code?`, `summary?` |
+| `run_cancel` | client -> server | `run_id` |
+| `credential_captured` | server -> client | `kind: "claude_oauth"` |
+| `error` | both | `code`, `message` |
+
+`state` is `queued | running | succeeded | failed | cancelled`. `run_start` is idempotent on `run_id`.
+
+### Run finished callback body (`RunFinished`)
+
+Not a CTRL message; it is the JSON body sandbox-init POSTs to `callback_url`:
+`{run_id, outcome: succeeded|failed|cancelled, exit_code?, summary, branch, head_sha, pushed}`.
+
+### Error codes
+
+`unsupported_version`, `unknown_message`, `protocol_violation`, `flow_control`, `unauthorized`, `unknown_channel`, `unknown_run`, `internal`. Unknown codes must be tolerated.
+
+## 6. Handshake and version negotiation
+
+1. The client's first frame must be `CTRL hello`. Anything else: `error` (`protocol_violation`) and disconnect.
+2. The server picks the **highest version present in both** `versions` and its supported list and replies `welcome {version}`.
+3. If there is no common version the server sends `error` (`unsupported_version`) and closes the websocket.
+4. No other frames (except `error`) are valid before `welcome`. A second `hello` is a violation.
+5. Version 1 is described here. Later versions are additive where possible; behavior differing by version is keyed on the negotiated value.
+
+`sandbox-init` authenticates the websocket upgrade (bearer token) before the handshake; the protocol itself carries no credentials.
+
+## 7. Limits
+
+- Max payload: 1,048,576 bytes. Larger length fields are rejected on seeing the header, before buffering the payload.
+- Initial window: 262,144 bytes per channel per direction.
+- Max single `WINDOW` grant and max accumulated credit: 2^31-1.
+
+## 8. Errors
+
+Decoding errors (stable `code` strings, used by `vectors/errors.json`): `truncated`, `trailing_bytes`, `unknown_type`, `unknown_flags`, `payload_too_large`, `ctrl_channel`, `zero_channel`, `empty_data`, `bad_window_payload`, `bad_credit`, `bad_close_payload`. They are connection-fatal: best effort `error` (`protocol_violation`) then drop the websocket. Application-level problems (bad channel, unknown run) use `error` or `open_error` and leave the connection up.
+
+## 9. Test vectors
+
+`vectors/*.json`, shared by the Rust and TypeScript tests:
+
+- `frames.json`: `{name, hex, frame: {type, flags, channel, payload_hex}}`.
+- `ctrl.json`: `{name, hex, message}`. `hex` is the whole frame as the Rust encoder emits it (compact JSON, struct field order). A decoder must parse `hex` to `message`; an encoder in another language should compare the *parsed JSON* of the payload, not the raw bytes, unless it matches the field order.
+- `json_types.json`: `{name, type, json}` for non-CTRL bodies (`RunFinished`).
+- `errors.json`: `{name, hex, error}`: decoding must fail with that error code.
+
+Regenerate with `ENZARB_UPDATE_VECTORS=1 cargo test -p enzarb-proto --test vectors`.
+
+## 10. Open points
+
+Reconnect/resume of channels is out of scope for version 1 (see ADR-0003 and gaps.md).

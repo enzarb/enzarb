@@ -1,0 +1,97 @@
+[
+  {
+    "error": "truncated",
+    "hex": "0100",
+    "name": "truncated_header"
+  },
+  {
+    "error": "truncated",
+    "hex": "010000000000000000057b7d",
+    "name": "truncated_payload"
+  },
+  {
+    "error": "trailing_bytes",
+    "hex": "0400000000010000000400000001ff",
+    "name": "trailing_bytes"
+  },
+  {
+    "error": "unknown_type",
+    "hex": "00000000000100000000",
+    "name": "unknown_type_0"
+  },
+  {
+    "error": "unknown_type",
+    "hex": "06000000000100000000",
+    "name": "unknown_type_6"
+  },
+  {
+    "error": "unknown_flags",
+    "hex": "0201000000010000000161",
+    "name": "unknown_flags"
+  },
+  {
+    "error": "payload_too_large",
+    "hex": "02000000000100100001",
+    "name": "payload_too_large"
+  },
+  {
+    "error": "ctrl_channel",
+    "hex": "010000000001000000027b7d",
+    "name": "ctrl_nonzero_channel"
+  },
+  {
+    "error": "zero_channel",
+    "hex": "0200000000000000000161",
+    "name": "data_bin_channel_zero"
+  },
+  {
+    "error": "zero_channel",
+    "hex": "030000000000000000027b7d",
+    "name": "data_json_channel_zero"
+  },
+  {
+    "error": "zero_channel",
+    "hex": "0400000000000000000400000001",
+    "name": "window_channel_zero"
+  },
+  {
+    "error": "zero_channel",
+    "hex": "05000000000000000000",
+    "name": "close_channel_zero"
+  },
+  {
+    "error": "empty_data",
+    "hex": "02000000000100000000",
+    "name": "empty_data_bin"
+  },
+  {
+    "error": "empty_data",
+    "hex": "03000000000100000000",
+    "name": "empty_data_json"
+  },
+  {
+    "error": "bad_window_payload",
+    "hex": "0400000000010000000200ff",
+    "name": "window_short"
+  },
+  {
+    "error": "bad_credit",
+    "hex": "0400000000010000000400000000",
+    "name": "window_zero"
+  },
+  {
+    "error": "bad_credit",
+    "hex": "0400000000010000000480000000",
+    "name": "window_too_big"
+  },
+  {
+    "error": "bad_close_payload",
+    "hex": "0500000000010000000100",
+    "name": "close_one_byte"
+  },
+  {
+    "error": "bad_close_payload",
+    "hex": "050000000001000000030001ff",
+    "name": "close_bad_utf8"
+  }
+]

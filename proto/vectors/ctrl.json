@@ -1,0 +1,216 @@
+[
+  {
+    "hex": "0100000000000000002d7b2274797065223a2268656c6c6f222c2276657273696f6e73223a5b315d2c22636c69656e74223a227569227d",
+    "message": {
+      "client": "ui",
+      "type": "hello",
+      "versions": [
+        1
+      ]
+    },
+    "name": "hello"
+  },
+  {
+    "hex": "010000000000000000327b2274797065223a2268656c6c6f222c2276657273696f6e73223a5b312c325d2c22636c69656e74223a2270726f7879227d",
+    "message": {
+      "client": "proxy",
+      "type": "hello",
+      "versions": [
+        1,
+        2
+      ]
+    },
+    "name": "hello_proxy_multi"
+  },
+  {
+    "hex": "010000000000000000337b2274797065223a2268656c6c6f222c2276657273696f6e73223a5b315d2c22636c69656e74223a226578656375746f72227d",
+    "message": {
+      "client": "executor",
+      "type": "hello",
+      "versions": [
+        1
+      ]
+    },
+    "name": "hello_executor"
+  },
+  {
+    "hex": "0100000000000000001e7b2274797065223a2277656c636f6d65222c2276657273696f6e223a317d",
+    "message": {
+      "type": "welcome",
+      "version": 1
+    },
+    "name": "welcome"
+  },
+  {
+    "hex": "0100000000000000003c7b2274797065223a226f70656e222c226368616e6e656c223a312c226b696e64223a22707479222c22636f6c73223a38302c22726f7773223a32347d",
+    "message": {
+      "channel": 1,
+      "cols": 80,
+      "kind": "pty",
+      "rows": 24,
+      "type": "open"
+    },
+    "name": "open"
+  },
+  {
+    "hex": "010000000000000000557b2274797065223a226f70656e222c226368616e6e656c223a322c226b696e64223a22707479222c22636f6c73223a3132302c22726f7773223a34302c22636f6d6d616e64223a5b2262617368222c222d6c225d7d",
+    "message": {
+      "channel": 2,
+      "cols": 120,
+      "command": [
+        "bash",
+        "-l"
+      ],
+      "kind": "pty",
+      "rows": 40,
+      "type": "open"
+    },
+    "name": "open_command"
+  },
+  {
+    "hex": "0100000000000000001d7b2274797065223a226f70656e6564222c226368616e6e656c223a317d",
+    "message": {
+      "channel": 1,
+      "type": "opened"
+    },
+    "name": "opened"
+  },
+  {
+    "hex": "0100000000000000003f7b2274797065223a226f70656e5f6572726f72222c226368616e6e656c223a312c226d657373616765223a22746f6f206d616e79206368616e6e656c73227d",
+    "message": {
+      "channel": 1,
+      "message": "too many channels",
+      "type": "open_error"
+    },
+    "name": "open_error"
+  },
+  {
+    "hex": "010000000000000000327b2274797065223a22726573697a65222c226368616e6e656c223a312c22636f6c73223a3130302c22726f7773223a33307d",
+    "message": {
+      "channel": 1,
+      "cols": 100,
+      "rows": 30,
+      "type": "resize"
+    },
+    "name": "resize"
+  },
+  {
+    "hex": "010000000000000001667b2274797065223a2272756e5f7374617274222c2272756e5f6964223a226a6f622d313233222c227265706f5f75726c223a2268747470733a2f2f6769746875622e636f6d2f656e7a6172622f656e7a6172622d7569222c22626173655f726566223a226d61696e222c226272616e6368223a22656e7a6172622f69737375652d3432222c2270757368223a747275652c22636c6f6e655f746f6b656e223a226768735f636c6f6e65222c2270726f6d7074223a22466978207468652062756720f09f909b222c2274696d656f75745f73656373223a333630302c2263616c6c6261636b5f75726c223a22687474703a2f2f656e7a6172622d776f726b666c6f77732d6578656375746f722e656e7a6172622e7376633a383038312f76312f72756e732f6a6f622d3132332f66696e6973686564222c2263616c6c6261636b5f746f6b656e223a2263622d736563726574222c226c6f675f6368616e6e656c223a6e756c6c7d",
+    "message": {
+      "base_ref": "main",
+      "branch": "enzarb/issue-42",
+      "callback_token": "cb-secret",
+      "callback_url": "http://enzarb-workflows-executor.enzarb.svc:8081/v1/runs/job-123/finished",
+      "clone_token": "ghs_clone",
+      "log_channel": null,
+      "prompt": "Fix the bug 🐛",
+      "push": true,
+      "repo_url": "https://github.com/enzarb/enzarb-ui",
+      "run_id": "job-123",
+      "timeout_secs": 3600,
+      "type": "run_start"
+    },
+    "name": "run_start"
+  },
+  {
+    "hex": "010000000000000001637b2274797065223a2272756e5f7374617274222c2272756e5f6964223a226a6f622d313233222c227265706f5f75726c223a2268747470733a2f2f6769746875622e636f6d2f656e7a6172622f656e7a6172622d7569222c22626173655f726566223a226d61696e222c226272616e6368223a22656e7a6172622f69737375652d3432222c2270757368223a747275652c22636c6f6e655f746f6b656e223a226768735f636c6f6e65222c2270726f6d7074223a22466978207468652062756720f09f909b222c2274696d656f75745f73656373223a333630302c2263616c6c6261636b5f75726c223a22687474703a2f2f656e7a6172622d776f726b666c6f77732d6578656375746f722e656e7a6172622e7376633a383038312f76312f72756e732f6a6f622d3132332f66696e6973686564222c2263616c6c6261636b5f746f6b656e223a2263622d736563726574222c226c6f675f6368616e6e656c223a377d",
+    "message": {
+      "base_ref": "main",
+      "branch": "enzarb/issue-42",
+      "callback_token": "cb-secret",
+      "callback_url": "http://enzarb-workflows-executor.enzarb.svc:8081/v1/runs/job-123/finished",
+      "clone_token": "ghs_clone",
+      "log_channel": 7,
+      "prompt": "Fix the bug 🐛",
+      "push": true,
+      "repo_url": "https://github.com/enzarb/enzarb-ui",
+      "run_id": "job-123",
+      "timeout_secs": 3600,
+      "type": "run_start"
+    },
+    "name": "run_start_log_channel"
+  },
+  {
+    "hex": "0100000000000000004c7b2274797065223a2272756e5f6163636570746564222c2272756e5f6964223a226a6f622d313233222c227374617465223a22717565756564222c226578697374696e67223a66616c73657d",
+    "message": {
+      "existing": false,
+      "run_id": "job-123",
+      "state": "queued",
+      "type": "run_accepted"
+    },
+    "name": "run_accepted"
+  },
+  {
+    "hex": "0100000000000000004c7b2274797065223a2272756e5f6163636570746564222c2272756e5f6964223a226a6f622d313233222c227374617465223a2272756e6e696e67222c226578697374696e67223a747275657d",
+    "message": {
+      "existing": true,
+      "run_id": "job-123",
+      "state": "running",
+      "type": "run_accepted"
+    },
+    "name": "run_accepted_existing"
+  },
+  {
+    "hex": "010000000000000000287b2274797065223a2272756e5f737461747573222c2272756e5f6964223a226a6f622d313233227d",
+    "message": {
+      "run_id": "job-123",
+      "type": "run_status"
+    },
+    "name": "run_status"
+  },
+  {
+    "hex": "010000000000000000397b2274797065223a2272756e5f7374617465222c2272756e5f6964223a226a6f622d313233222c227374617465223a2272756e6e696e67227d",
+    "message": {
+      "run_id": "job-123",
+      "state": "running",
+      "type": "run_state"
+    },
+    "name": "run_state_running"
+  },
+  {
+    "hex": "0100000000000000005a7b2274797065223a2272756e5f7374617465222c2272756e5f6964223a226a6f622d313233222c227374617465223a22737563636565646564222c22657869745f636f6465223a302c2273756d6d617279223a22646f6e65227d",
+    "message": {
+      "exit_code": 0,
+      "run_id": "job-123",
+      "state": "succeeded",
+      "summary": "done",
+      "type": "run_state"
+    },
+    "name": "run_state_done"
+  },
+  {
+    "hex": "010000000000000000467b2274797065223a2272756e5f7374617465222c2272756e5f6964223a226a6f622d313233222c227374617465223a226661696c6564222c22657869745f636f6465223a317d",
+    "message": {
+      "exit_code": 1,
+      "run_id": "job-123",
+      "state": "failed",
+      "type": "run_state"
+    },
+    "name": "run_state_failed"
+  },
+  {
+    "hex": "010000000000000000287b2274797065223a2272756e5f63616e63656c222c2272756e5f6964223a226a6f622d313233227d",
+    "message": {
+      "run_id": "job-123",
+      "type": "run_cancel"
+    },
+    "name": "run_cancel"
+  },
+  {
+    "hex": "010000000000000000347b2274797065223a2263726564656e7469616c5f6361707475726564222c226b696e64223a22636c617564655f6f61757468227d",
+    "message": {
+      "kind": "claude_oauth",
+      "type": "credential_captured"
+    },
+    "name": "credential_captured"
+  },
+  {
+    "hex": "0100000000000000004b7b2274797065223a226572726f72222c22636f6465223a22756e737570706f727465645f76657273696f6e222c226d657373616765223a226e6f20636f6d6d6f6e2076657273696f6e227d",
+    "message": {
+      "code": "unsupported_version",
+      "message": "no common version",
+      "type": "error"
+    },
+    "name": "error"
+  }
+]
