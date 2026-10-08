@@ -1,0 +1,38 @@
+# Component repositories of enzarb. Read by the `repos:*` mise tasks.
+# `repos:init` clones each missing repo from its `remote`.
+
+[repos.enzarb-ui]
+remote = "git@github.com:enzarb/enzarb-ui.git"
+kind = "typescript"
+
+[repos.enzarb-sandbox-proxy]
+remote = "git@github.com:enzarb/enzarb-sandbox-proxy.git"
+kind = "rust"
+
+[repos.enzarb-sandbox-container]
+remote = "git@github.com:enzarb/enzarb-sandbox-container.git"
+kind = "rust"
+
+[repos.enzarb-sandbox-operator]
+remote = "git@github.com:enzarb/enzarb-sandbox-operator.git"
+kind = "rust"
+
+[repos.enzarb-proto]
+remote = "git@github.com:enzarb/enzarb-proto.git"
+kind = "rust+typescript"
+
+[repos.enzarb-connectors]
+remote = "git@github.com:enzarb/enzarb-connectors.git"
+kind = "rust"
+
+[repos.enzarb-workflows]
+remote = "git@github.com:enzarb/enzarb-workflows.git"
+kind = "rust"
+
+[repos.enzarb-kubernetes]
+remote = "git@github.com:enzarb/enzarb-kubernetes.git"
+kind = "yaml"
+
+[repos.enzarb-helm]
+remote = "git@github.com:enzarb/enzarb-helm.git"
+kind = "helm"

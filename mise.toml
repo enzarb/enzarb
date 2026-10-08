@@ -1,0 +1,48 @@
+[tools]
+claude = "latest"
+helm = "latest"
+node = "lts"
+npm = "latest"
+rust = "latest"
+
+[tasks."repos:list"]
+description = "List component repos and their local state"
+run = '''
+for r in $(grep -oP '^\[repos\.\K[^\]]+' repos.toml); do
+  if [ -d "$r/.git" ]; then s="git"; elif [ -d "$r" ]; then s="dir (no git)"; else s="missing"; fi
+  printf '%-28s %s\n' "$r" "$s"
+done
+'''
+
+[tasks."repos:init"]
+description = "Clone missing component repos (or git init them when no remote is set)"
+run = '''
+for r in $(grep -oP '^\[repos\.\K[^\]]+' repos.toml); do
+  remote=$(awk -v s="[repos.$r]" '$0==s{f=1;next} /^\[/{f=0} f && $1=="remote"{gsub(/"/,"",$3); print $3}' repos.toml)
+  if [ -d "$r/.git" ]; then continue; fi
+  if [ ! -d "$r" ] && [ -n "$remote" ]; then git clone "$remote" "$r"; continue; fi
+  mkdir -p "$r" && git -C "$r" init -q -b main && echo "initialized $r"
+  [ -f "$r/README.md" ] || printf '# %s\n\nSee ../docs/architecture.md.\n' "$r" > "$r/README.md"
+done
+'''
+
+[tasks."repos:status"]
+description = "Show branch and short git status for every component repo"
+run = '''
+for r in $(grep -oP '^\[repos\.\K[^\]]+' repos.toml); do
+  [ -d "$r/.git" ] || { echo "== $r (missing)"; continue; }
+  echo "== $r [$(git -C "$r" branch --show-current)]"
+  git -C "$r" status --short
+done
+'''
+
+
+[tasks."repos:pull"]
+description = "Fast-forward every component repo that has an upstream"
+run = '''
+for r in $(grep -oP '^\[repos\.\K[^\]]+' repos.toml); do
+  [ -d "$r/.git" ] || continue
+  git -C "$r" rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1 || { echo "== $r (no upstream)"; continue; }
+  echo "== $r"; git -C "$r" pull --ff-only
+done
+'''

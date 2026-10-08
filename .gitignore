@@ -1,0 +1,4 @@
+# Component repos are separate git repositories (see repos.toml)
+/enzarb-*/
+# Shared Cargo target dir (.cargo/config.toml)
+/target/

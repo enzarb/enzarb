@@ -1,0 +1,20 @@
+# Workspace-local Cargo config. It applies to every enzarb-*/ Rust repo built
+# from inside this directory; CI clones a repo alone and doesn't see it.
+
+[build]
+# One shared target dir for all component repos (relative to this file's parent).
+target-dir = "target"
+
+# Once the library repos have remotes, build services against the sibling checkouts
+# instead of the git dependency. Uncomment one entry per library that exists locally.
+# The key must match the git URL used in the services' Cargo.toml.
+#
+# [patch."https://github.com/<org>/enzarb-proto"]
+# enzarb-proto = { path = "enzarb-proto" }
+#
+# [patch."https://github.com/<org>/enzarb-sandbox-operator"]
+# enzarb-crds = { path = "enzarb-sandbox-operator/crates/enzarb-crds" }
+#
+# [patch."https://github.com/<org>/enzarb-connectors"]
+# enzarb-connector = { path = "enzarb-connectors/crates/connector" }
+# enzarb-connector-github = { path = "enzarb-connectors/crates/connector-github" }
