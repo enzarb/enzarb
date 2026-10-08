@@ -13,6 +13,7 @@ sqlx.workspace = true
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+enzarb-connector = { git = "ssh://git@github.com/enzarb/enzarb-connectors.git", branch = "main" }
 testcontainers-modules = { version = "0.15", features = ["postgres"], optional = true }
 
 [dev-dependencies]

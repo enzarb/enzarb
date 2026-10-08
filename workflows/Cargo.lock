@@ -555,11 +555,24 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "engine",
+ "enzarb-connector",
  "serde",
  "serde_json",
  "sqlx",
  "testcontainers-modules",
  "tokio",
+]
+
+[[package]]
+name = "enzarb-connector"
+version = "0.1.0"
+source = "git+ssh://git@github.com/enzarb/enzarb-connectors.git?branch=main#ef2c87f574c8d3ce678776aeed4dde2c6d723397"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

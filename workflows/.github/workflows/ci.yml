@@ -6,12 +6,17 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: |
+            ${{ secrets.ENZARB_CONNECTORS_DEPLOY_KEY }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
