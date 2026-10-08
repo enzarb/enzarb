@@ -104,6 +104,13 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
   "callback_token": "<random per job>",
   "log_channel": null }
 ```
+- **Wire details** (`enzarb-proto/docs/protocol.md` and the `enzarb_proto::Ctrl` enum are the source of truth):
+  - 10-byte big-endian header: type, flags (0), channel u32, length u32. Max payload 1 MiB, one frame per websocket binary message.
+  - 256 KiB initial window per channel and direction. `CLOSE` is a half-close.
+  - Optional fields are omitted when absent; `null` is accepted on decode.
+- **`run_state`** is sent in reply to `run_status` and also pushed whenever a run changes state.
+- **`log_channel`:** a non-null value is a channel the client chooses. `run_accepted` implicitly opens it, and the server streams transcript lines on it as `DATA_JSON`.
+- **`RunFinished`** (`enzarb_proto::RunFinished`) is the callback's HTTP body, not a CTRL message. `exit_code` is optional because cancelled runs may have none.
 - **Idempotent:** a repeated `run_id` returns the existing run.
 - **States:** `queued | running | succeeded | failed | cancelled`.
 - **What the run does:**
