@@ -3,7 +3,7 @@
 
 	const items = [
 		{ href: '/projects', label: 'Projects' },
-		{ href: '/work-items', label: 'Work items' }
+		{ href: '/work', label: 'Work items' }
 	];
 </script>
 
