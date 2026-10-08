@@ -73,13 +73,40 @@ Repo key: a repository's **repo key** is `<connector>:<owner>/<repo>`, e.g. `git
 
 **PTY channels:** CLOSE reason is `exit:<code>` or `signal:<n>`. A client half-close leaves the process running.
 
-**Config (env):** `ENZARB_LISTEN` (default `0.0.0.0:7070`), `ENZARB_AUTH_TOKEN_FILE`, `ENZARB_WORKSPACE` (`/workspace`), `ENZARB_SHELL`, `ENZARB_GRACE_SECS` (25; the pod's `terminationGracePeriodSeconds` must be larger).
+**Config (env):**
+- Core: `ENZARB_LISTEN` (default `0.0.0.0:7070`), `ENZARB_AUTH_TOKEN_FILE`, `ENZARB_WORKSPACE` (`/workspace`), `ENZARB_SHELL`, `ENZARB_GRACE_SECS` (25; the pod's `terminationGracePeriodSeconds` must be larger).
+- Runs: `ENZARB_MAX_RUNS` (2), `ENZARB_RUN_TIMEOUT_SECS` (3600), `ENZARB_CALLBACK_BACKOFF_MS`, `ENZARB_GIT_NAME`, `ENZARB_GIT_EMAIL`, `ENZARB_CLAUDE_TOKEN_FILE`.
+- Agent: `ENZARB_ACP_AGENT_BIN` (default `claude-agent-acp`), `ENZARB_CANCEL_GRACE_SECS` (10), `ENZARB_PERMISSION_POLICY` (YAML/JSON file; built-in default when unset).
+
+**Agent runs (ACP, ADR-0011):**
+- sandbox-init is an ACP client of `@agentclientprotocol/claude-agent-acp` (pinned 0.88.0), one agent process per run, with cwd set to the worktree and `CLAUDE_CODE_OAUTH_TOKEN` in its environment.
+- **Protocol steps:** `initialize`, then `session/new` (mode `default`), then `session/prompt`.
+- **Permissions:** every `session/request_permission` is answered by the policy with `allow_once` or `reject_once`, never persistent options.
+  - Edits are limited to the worktree.
+  - Commands must match the allowlist; shell metacharacters and expansions are denied.
+  - Network fetch is denied unless the host is allowlisted.
+- **Summary:** the verbatim agent text of the turn. `exit_code` is 0 on `end_turn`, the agent's code on a crash, and null when cancelled or timed out.
+- **Cancel:** `session/cancel`, then a grace period, then the process group is killed.
 
 **Image build:** `docker build --ssh default .` (private enzarb-proto dependency).
 
+**Transcript records** (`transcript.jsonl`, also streamed on `log_channel`). Each has `ts` and `kind`:
+- `state {state, branch?}`
+- `worktree {path, branch, start, base}`
+- `log {source: git|acp, line}`
+- `acp {event: initialized|session|cancel, …}`
+- `update {session_id, update}` (the raw ACP `session/update`)
+- `permission {tool_call_id, tool_kind, title, input, decision, rule, reason, option_id}`
+- `agent_result {stop_reason, text}`
+- `finished {outcome, exit_code, head_sha, pushed}`
+
+Secrets are redacted from all records.
+
 **Filesystem (on the PVC):**
 - `/workspace`: repos and worktrees.
-- `/workspace/.enzarb/runs/<run_id>/`: `state.json`, `transcript.jsonl`.
+- `/workspace/repos/<slug>-<hash>/`: one clone per repo URL.
+- `/workspace/worktrees/run-<run_id>/`: the run's worktree. It starts from `origin/<branch>` if that exists, otherwise from `base_ref`.
+- `/workspace/.enzarb/runs/<run_id>/`: `state.json`, `request.json` (0600, clone token blanked), `transcript.jsonl`, and `callback.json` while a callback is pending.
 - `/workspace/.enzarb/claude-token`: mode 0600.
 
 ## 4. enzarb-proto messages
@@ -127,7 +154,7 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
 - **States:** `queued | running | succeeded | failed | cancelled`.
 - **What the run does:**
   1. ensures the repo clone and creates worktree `run-<run_id>` on `branch` from `base_ref`;
-  2. runs `claude -p --output-format json` with the prompt, using `CLAUDE_CODE_OAUTH_TOKEN` read from the token file;
+  2. runs the ACP agent with the prompt (see Agent runs above);
   3. if `push`, pushes `branch` with `clone_token`.
 
 **Run finished callback:**
