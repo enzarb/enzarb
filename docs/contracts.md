@@ -100,7 +100,7 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
 | `run_status` → `run_state` | both | `run_id` → `run_id, state, exit_code?, summary?` |
 | `run_cancel` | client → server | `run_id` |
 | `credential_captured` | server → client | `kind: "claude_oauth"` |
-| `error` | both | `code`, `message` |
+| `error` | both | `code`, `message`, `run_id?`, `channel?` (a `run_id` routes the error to that run's pending request) |
 
 `run_start` fields:
 
