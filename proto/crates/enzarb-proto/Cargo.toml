@@ -11,10 +11,21 @@ name = "enzarb_proto"
 
 [dependencies]
 bytes.workspace = true
+futures-util = { version = "0.3", optional = true, default-features = false, features = ["sink", "std"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio = { version = "1", features = ["rt", "sync", "io-util", "macros", "time"], optional = true }
+tokio-tungstenite = { version = "0.30.0", optional = true, default-features = false, features = ["connect", "handshake"] }
 
 [dev-dependencies]
 proptest.workspace = true
 hex.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "test-util", "io-util", "net"] }
+
+[features]
+default = []
+# Async session runtime over a websocket (tokio-tungstenite message types).
+tokio = ["dep:tokio", "dep:futures-util", "dep:tokio-tungstenite"]
+# `Client::connect` to wss:// URLs (rustls, webpki roots).
+tls = ["tokio", "tokio-tungstenite/rustls-tls-webpki-roots"]

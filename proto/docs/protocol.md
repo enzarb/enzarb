@@ -119,6 +119,20 @@ Decoding errors (stable `code` strings, used by `vectors/errors.json`): `truncat
 
 Regenerate with `ENZARB_UPDATE_VECTORS=1 cargo test -p enzarb-proto --test vectors`.
 
-## 10. Open points
+## 10. Reference session runtime
+
+`enzarb_proto::session` (Rust, feature `tokio`) and `Session` in `@enzarb/proto` (TS, client role) implement the rules above on top of a websocket. Behavior worth knowing when writing another implementation:
+
+- **Fatal for the connection:** frame decode errors, a text websocket message, a bad handshake. The runtime sends `error` (`protocol_violation`) best effort and drops the websocket.
+- **Per-channel violations** (credit overrun, `WINDOW` overflow, data after the peer's `CLOSE`): `error` (`flow_control`), `CLOSE` code 1 on that channel, and that channel is failed. The connection stays up.
+- **Non-fatal replies:** data for an unknown channel -> `error` (`unknown_channel`); `resize` for an unknown channel -> `error` (`unknown_channel`); unknown CTRL `type` -> `error` (`unknown_message`); a second `hello`, or a message sent in the wrong direction -> `error` (`protocol_violation`).
+- **`open`:** channel 0 or an id in use (including one with a pending `open`) is answered with `open_error`. The server's handler may accept (`opened`) or refuse (`open_error`).
+- **`run_start` with `log_channel`:** `run_accepted` is sent only after the channel is registered; if the id is in use the server answers with `error` instead and no channel is created.
+- **Reply correlation:** replies carry no request id except by `channel` (`opened`/`open_error`) and `run_id` (`run_accepted`, `run_state`). An `error` with code `unknown_run`, `internal`, `unauthorized` or `unknown_message` is attributed to the client's oldest pending `run_start`/`run_status`; other error codes are delivered as unsolicited events.
+- **Credit:** a receiver returns credit when the application *reads* data, batched at half the initial window. If the application drops a channel's receiver, further data is discarded and credited immediately so the peer does not stall.
+- **DATA_JSON** frames cannot be split, so the runtime refuses to send one larger than the initial window (256 KiB).
+- Dropping the last session handle (or the sender of a channel) closes gracefully: `CLOSE` going-away on every open channel, then the websocket.
+
+## 11. Open points
 
 Reconnect/resume of channels is out of scope for version 1 (see ADR-0003 and gaps.md).

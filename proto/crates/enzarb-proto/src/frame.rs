@@ -128,14 +128,32 @@ pub struct Frame {
     pub payload: Bytes,
 }
 
-struct Header {
-    frame_type: FrameType,
-    flags: u8,
-    channel: u32,
-    len: usize,
+/// A parsed and validated 10-byte frame header.
+///
+/// Lets forwarders (e.g. sandbox-proxy) route a websocket message by type and
+/// channel without decoding or copying the payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameHeader {
+    pub frame_type: FrameType,
+    pub flags: u8,
+    pub channel: u32,
+    /// Payload length in bytes (already checked against [`MAX_PAYLOAD_LEN`]).
+    pub len: usize,
 }
 
-fn parse_header(b: &[u8]) -> Result<Header, FrameError> {
+impl FrameHeader {
+    /// Parse the header at the start of `b` (which may contain more bytes).
+    /// Applies the same checks as the full decoder: type, flags, length cap
+    /// and the channel rules.
+    pub fn parse(b: &[u8]) -> Result<Self, FrameError> {
+        if b.len() < HEADER_LEN {
+            return Err(FrameError::Truncated);
+        }
+        parse_header(b)
+    }
+}
+
+fn parse_header(b: &[u8]) -> Result<FrameHeader, FrameError> {
     debug_assert!(b.len() >= HEADER_LEN);
     let frame_type = FrameType::from_u8(b[0]).ok_or(FrameError::UnknownType(b[0]))?;
     let flags = b[1];
@@ -148,7 +166,7 @@ fn parse_header(b: &[u8]) -> Result<Header, FrameError> {
         return Err(FrameError::PayloadTooLarge(len));
     }
     check_channel(frame_type, channel)?;
-    Ok(Header {
+    Ok(FrameHeader {
         frame_type,
         flags,
         channel,

@@ -1,0 +1,34 @@
+{
+  "name": "@enzarb/proto",
+  "version": "0.1.0",
+  "description": "enzarb mux protocol: frame codec, CTRL messages, flow control and a browser session",
+  "license": "UNLICENSED",
+  "repository": "github:enzarb/enzarb-proto",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./ts/dist/index.js",
+  "types": "./ts/dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./ts/dist/index.d.ts",
+      "default": "./ts/dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "ts/dist",
+    "docs/protocol.md",
+    "vectors"
+  ],
+  "scripts": {
+    "build": "tsc -p ts/tsconfig.json",
+    "prepare": "npm run build",
+    "check": "tsc -p ts/tsconfig.test.json",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}

@@ -18,4 +18,34 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace
+      - run: cargo test --workspace --all-features
+      - name: Cargo.lock has no [patch] sections
+        run: "! grep -q '^\\[\\[patch' Cargo.lock"
+
+  ts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      # `npm ci` runs `prepare`, which builds ts/ -> ts/dist with tsc.
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - name: npm pack produces a working package
+        run: |
+          set -euo pipefail
+          out="$(mktemp -d)"
+          npm pack --silent --pack-destination "$out"
+          tarball="$(ls "$out"/*.tgz)"
+          tar -tzf "$tarball" > "$out/list.txt"
+          grep -q '^package/ts/dist/index.js$' "$out/list.txt"
+          dir="$(mktemp -d)"
+          cd "$dir"
+          npm init -y >/dev/null
+          npm install --silent "$tarball"
+          node --input-type=module -e "import('@enzarb/proto').then(m => { if (m.PROTOCOL_VERSION !== 1 || typeof m.Session !== 'function') process.exit(1); console.log('ok'); })"
