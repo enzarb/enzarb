@@ -31,10 +31,20 @@ check() {
 check claude-agent-acp --version
 check claude --version
 check git --version
-check cargo --version
 check node --version
 check mise --version
-check rg --version
+check cc --version
+check pkg-config --exists openssl
+# mise shims must be on PATH for agents and shells.
+docker exec "$name" sh -c 'echo "$PATH" | grep -q "/workspace/.toolchains/mise/shims"'
+echo "ok: mise shims on PATH"
+# Nothing else is baked in: toolchains come from mise.
+for bin in cargo rustc rustup npm npx curl rg jq; do
+  if docker exec "$name" sh -c "command -v $bin" >/dev/null 2>&1; then
+    echo "FAIL: $bin must not be in the image"; exit 1
+  fi
+  echo "ok: no $bin"
+done
 uid=$(docker exec "$name" id -u)
 [ "$uid" = 1000 ] || { echo "FAIL: uid is $uid, want 1000"; exit 1; }
 echo "ok: uid 1000"

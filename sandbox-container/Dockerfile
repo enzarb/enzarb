@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Sandbox image: sandbox-init (pid 1) plus the tools agents and humans use.
+# Sandbox image: sandbox-init (pid 1), node + the ACP adapter, mise and a C toolchain. Language toolchains come from mise at runtime.
 # Private enzarb git dependencies are fetched with a deploy key passed as a build secret:
 #   docker build --secret id=proto_key,src=KEYFILE -t enzarb-sandbox .
 # The key is bound to enzarb-proto via an ssh host alias and never reaches an image layer.
@@ -41,62 +41,81 @@ RUN --mount=type=secret,id=proto_key \
     cp target/release/sandbox-init /sandbox-init; \
     rm -f /root/.ssh/proto_key /root/.gitconfig
 
-FROM ubuntu:26.04
+# Node stage: download node, install the adapter, drop what the runtime does not need.
+FROM ubuntu:26.04 AS node
 ARG NODE_VERSION=24.21.0
 ARG CLAUDE_AGENT_ACP_VERSION=0.88.0
 ARG MISE_VERSION=v2026.10.4
 ARG TARGETARCH
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        git ca-certificates curl openssh-client build-essential pkg-config libssl-dev \
-        ripgrep jq tree coreutils xz-utils less procps \
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates xz-utils \
     && rm -rf /var/lib/apt/lists/*
-
-# Node (pinned official tarball, checksum verified).
 RUN set -e; \
     case "$TARGETARCH" in amd64) a=x64;; arm64) a=arm64;; *) echo "unsupported arch $TARGETARCH"; exit 1;; esac; \
     f="node-v${NODE_VERSION}-linux-${a}.tar.xz"; \
-    curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/${f}"; \
-    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" | grep " ${f}\$" | sha256sum -c -; \
+    curl --retry 20 --retry-all-errors -C - -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/${f}"; \
+    curl --retry 5 --retry-all-errors -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" | grep " ${f}\$" | sha256sum -c -; \
     tar -xJf "$f" -C /usr/local --strip-components=1 --no-same-owner; \
-    rm -f "$f" /usr/local/CHANGELOG.md /usr/local/LICENSE /usr/local/README.md; \
     node --version
-
-# ACP adapter (pulls the bundled claude CLI through its optional dependencies).
-RUN npm install -g "@agentclientprotocol/claude-agent-acp@${CLAUDE_AGENT_ACP_VERSION}" \
-    && npm cache clean --force
-# The adapter's bundled native claude CLI, on PATH for the interactive `claude setup-token` flow.
+RUN npm install -g --fetch-retries=8 --fetch-retry-mintimeout=2000 "@agentclientprotocol/claude-agent-acp@${CLAUDE_AGENT_ACP_VERSION}"
+# Keep only the glibc claude binary for this arch: drop musl and other platforms.
 RUN set -e; \
+    case "$TARGETARCH" in amd64) a=x64;; arm64) a=arm64;; esac; \
     root=/usr/local/lib/node_modules/@agentclientprotocol/claude-agent-acp/node_modules/@anthropic-ai; \
-    bin=$(ls "$root"/claude-agent-sdk-linux-*/claude | grep -v musl | head -1); \
-    test -x "$bin"; ln -s "$bin" /usr/local/bin/claude; claude --version
-
+    ls "$root"; \
+    for d in "$root"/claude-agent-sdk-*; do \
+        case "$d" in "$root/claude-agent-sdk-linux-$a") ;; "$root/claude-agent-sdk") ;; *) rm -rf "$d";; esac; \
+    done; \
+    test -x "$root/claude-agent-sdk-linux-$a/claude"; \
+    ls "$root"; du -sh "$root"/*
 # mise (pinned release binary).
 RUN set -e; \
     case "$TARGETARCH" in amd64) a=x64;; arm64) a=arm64;; esac; \
-    curl -fsSL "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-${a}.tar.gz" \
-      | tar -xz -C /usr/local --strip-components=1 mise/bin/mise; \
+    f="mise-${MISE_VERSION}-linux-${a}.tar.gz"; \
+    curl --retry 20 --retry-all-errors -C - -fsSLO "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/${f}"; \
+    tar -xzf "$f" -C /usr/local --strip-components=1 mise/bin/mise; rm -f "$f"; \
     mise --version
+
+FROM ubuntu:26.04
+ARG TARGETARCH
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git ca-certificates openssh-client build-essential pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
+
+# node binary only (no npm), the adapter tree and the glibc claude binary, all on PATH.
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/bin/mise /usr/local/bin/mise
+COPY --from=node /usr/local/lib/node_modules/@agentclientprotocol /usr/local/lib/node_modules/@agentclientprotocol
+# The adapter's bin script has `#!/usr/bin/env node`; node is on PATH, so a symlink is the launcher.
+RUN set -e; \
+    case "$TARGETARCH" in amd64) a=x64;; arm64) a=arm64;; esac; \
+    m=/usr/local/lib/node_modules/@agentclientprotocol/claude-agent-acp; \
+    bin=$(node -p "require('$m/package.json').bin['claude-agent-acp']"); \
+    chmod +x "$m/$bin"; ln -s "$m/$bin" /usr/local/bin/claude-agent-acp; \
+    ln -s "$m/node_modules/@anthropic-ai/claude-agent-sdk-linux-$a/claude" /usr/local/bin/claude; \
+    claude-agent-acp --version; claude --version
 
 # uid/gid 1000 matches the operator's securityContext; ubuntu images ship an `ubuntu` user at 1000.
 RUN userdel -r ubuntu 2>/dev/null || true; \
     groupadd -g 1000 enzarb && useradd -m -u 1000 -g 1000 -s /bin/bash enzarb \
-    && mkdir -p /workspace/repos /workspace/worktrees /workspace/.enzarb \
+    && mkdir -p /workspace/repos /workspace/worktrees /workspace/.enzarb /workspace/.toolchains \
     && chown -R 1000:1000 /workspace
 
 USER enzarb
+# User and project toolchains (node, rust, python, ...) come from mise and persist on the PVC.
+# MISE_YES: never prompt (no tty). MISE_TRUSTED_CONFIG_PATHS: repos cloned under /workspace are trusted.
 ENV HOME=/home/enzarb \
-    CARGO_HOME=/home/enzarb/.cargo \
-    RUSTUP_HOME=/home/enzarb/.rustup \
-    PATH=/home/enzarb/.cargo/bin:/home/enzarb/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
-RUN curl -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh \
-    && sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain stable -c clippy -c rustfmt \
-    && rm /tmp/rustup-init.sh \
-    && cargo --version
+    MISE_DATA_DIR=/workspace/.toolchains/mise \
+    MISE_CACHE_DIR=/workspace/.toolchains/cache \
+    CARGO_HOME=/workspace/.toolchains/cargo \
+    RUSTUP_HOME=/workspace/.toolchains/rustup \
+    MISE_YES=1 \
+    MISE_TRUSTED_CONFIG_PATHS=/workspace \
+    MISE_IDIOMATIC_VERSION_FILE_ENABLE_TOOLS=rust \
+    PATH=/usr/local/bin:/workspace/.toolchains/mise/shims:/usr/bin:/bin:/usr/sbin:/sbin
 
 COPY --from=build /sandbox-init /usr/local/bin/sandbox-init
 WORKDIR /workspace
 EXPOSE 7070
-HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:7070/healthz || exit 1
 ENTRYPOINT ["/usr/local/bin/sandbox-init"]
