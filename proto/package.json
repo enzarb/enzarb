@@ -2,6 +2,10 @@
   "name": "@enzarb/proto",
   "version": "0.1.0",
   "description": "enzarb mux protocol: frame codec, CTRL messages, flow control and a browser session",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "restricted"
+  },
   "license": "UNLICENSED",
   "repository": "github:enzarb/enzarb-proto",
   "type": "module",

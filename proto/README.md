@@ -29,8 +29,19 @@ The runtime enforces the session rules for you: hello first, a channel table (id
 
 ## TypeScript
 
+Published to GitHub Packages (private, scope `@enzarb`). Versions: every push to `main` publishes `<version>-main.<run number>` under dist-tag `main`; a `v*` tag publishes exactly that version under `latest`. Install the newest main build with `@enzarb/proto@main`, or pin an exact version.
+
+Consumer `.npmrc` (committed; contains no secret):
+
+```ini
+@enzarb:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
+```
+
+Locally export `NODE_AUTH_TOKEN` as a PAT with `read:packages`. In GitHub Actions use `actions/setup-node` with `registry-url: https://npm.pkg.github.com` and `scope: "@enzarb"`, and set `NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}` on the install step; the workflow needs `packages: read`, and the package must grant the consuming repo read access (package settings, "Manage Actions access").
+
 ```sh
-npm install github:enzarb/enzarb-proto#main   # `prepare` builds ts/ -> ts/dist
+npm install @enzarb/proto@main
 ```
 
 ```ts
