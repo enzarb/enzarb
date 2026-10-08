@@ -77,7 +77,7 @@ The `Database`'s field shapes (schema grants in particular) must be checked agai
 Verified against pgop v0.9.1 (enzarb-helm#2):
 - **Role secrets:** each `Role` gets `<cluster>-<role>-credentials` (e.g. `enzarb-pg-ui-credentials`) with keys `username, password, host, port, sslmode, uri` (+`ca.crt` with TLS). Its `uri` targets the `postgres` database.
 - **Database secret:** a Database secret `<database>-<owner>-credentials` exists only for the Database owner.
-- **What the chart does:** builds `DATABASE_URL` for each service from its Role secret's keys, pointing at database `enzarb`.
+- **What the chart does:** passes `PGHOST, PGPORT, PGUSER, PGPASSWORD, PGSSLMODE` from each service's Role secret plus `PGDATABASE=enzarb`, and sets `DATABASE_URL=postgres:///enzarb`, so passwords never go into a URL. sqlx (workflows, connectors) and postgres.js (ui) fill the missing parts from `PG*`. postgres.js ignores `PGSSLMODE`, so the ui gets `postgres:///enzarb?sslmode=$(PGSSLMODE)` (enzarb-helm#4).
 - **Role names:** `schemas[].owner` and `schemas[].grants[].role` take raw PostgreSQL role names (e.g. `enzarb_ui_owner`). `Database.owner` takes a Role resource name.
 - **Grants:** there is no `Database.grants`; use `schemas[].grants`. Its keys are `username`, `password`, `host`, `port`, `sslmode`, `uri` and `ca.crt` (with TLS). The name is deterministic, so Helm wires `DATABASE_URL` from key `uri` at template time, before pgop's status is filled in.
 

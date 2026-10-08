@@ -239,7 +239,7 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 
 | Var | Used by |
 |---|---|
-| `DATABASE_URL` | ui, receiver, workflows (assembled by the chart from pgop Role secret `enzarb-pg-<role>-credentials` keys, database `enzarb`; see database.md) |
+| `DATABASE_URL` | ui, receiver, workflows (`postgres:///enzarb` plus `PG*` env vars from pgop Role secret `enzarb-pg-<role>-credentials`; see database.md) |
 | `ENZARB_SESSION_JWT_SECRET` | ui, sandbox-proxy |
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` (PEM), `GITHUB_WEBHOOK_SECRET` | receiver (secret only), workflows executor |
 | `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` | ui |
@@ -258,7 +258,7 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 - **Permissions:** Issues RW, Pull requests RW, Contents RW, Checks RW, Metadata R.
 - **Events:** issues, issue_comment, pull_request, pull_request_review, pull_request_review_comment, installation, installation_repositories.
 - **Webhook URL:** `https://<host>/hooks/github`.
-- **Registration manifest:** `enzarb/docs/github-app.yml`, written by the dev-tasks issue.
+- **Registration manifest:** `docs/github-app.yml` (setup in `docs/dev.md`). The UI's OAuth app is separate; its callback is `<public>/login/github/callback`.
 
 ## 11. CI access to private enzarb dependencies
 

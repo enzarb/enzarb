@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+#MISE description="Build the enzarb images as :dev and kind-load them: mise run dev:images [component...]"
+#MISE usage='arg "[component]..." help="ui|sandbox-proxy|sandbox|operator|receiver|workflows (default: all)"'
+set -euo pipefail
+# shellcheck source=/dev/null
+. "${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}/.mise/lib/dev.sh"
+need docker kind gh
+
+key="${ENZARB_DEV_SSH_KEY:-$HOME/.ssh/id_ed25519}"
+[ -r "$key" ] || die "ssh key $key not readable (set ENZARB_DEV_SSH_KEY to a key with read access to the enzarb repos)"
+cluster_exists || die "kind cluster '$CLUSTER_NAME' not found; run: mise run dev:cluster"
+
+if [ "$#" -gt 0 ]; then comps="$*"; elif [ -n "${usage_component:-}" ]; then comps="$usage_component"; else comps="$ALL_COMPONENTS"; fi
+
+NODE_AUTH_TOKEN="$(gh auth token)"
+export NODE_AUTH_TOKEN
+export DOCKER_BUILDKIT=1
+
+for c in $comps; do
+  spec="$(image_spec "$c")" || die "unknown component '$c' (one of: $ALL_COMPONENTS)"
+  dir="${spec% *}"; image="${spec#* }:dev"
+  [ -f "$ROOT/$dir/Dockerfile" ] || die "$dir/Dockerfile missing; run: mise run repos:init"
+  secrets=()
+  case "$c" in
+    ui) secrets=(--secret "id=node_auth_token,env=NODE_AUTH_TOKEN") ;;
+    sandbox) secrets=(--secret "id=proto_key,src=$key") ;;
+    sandbox-proxy) secrets=(--secret "id=proto_key,src=$key" --secret "id=crds_key,src=$key") ;;
+    workflows) secrets=(--secret "id=proto_key,src=$key" --secret "id=crds_key,src=$key" --secret "id=connectors_key,src=$key") ;;
+    operator | receiver) ;; # no private build dependencies
+  esac
+  log "building $image from $dir"
+  docker build "${secrets[@]}" -t "$image" "$ROOT/$dir"
+  log "loading $image into kind/$CLUSTER_NAME"
+  kind load docker-image "$image" --name "$CLUSTER_NAME"
+done

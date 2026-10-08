@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+#MISE description="Relay GitHub webhooks from smee.io (SMEE_URL in .env.dev) to https://enzarb.local/hooks/github"
+set -euo pipefail
+# shellcheck source=/dev/null
+. "${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}/.mise/lib/dev.sh"
+need npx
+load_env
+[ -n "${SMEE_URL:-}" ] || die "SMEE_URL is empty in .env.dev (create a channel at https://smee.io/new)"
+
+# The Gateway cert is self-signed, so the relay must not verify it (dev only).
+export NODE_TLS_REJECT_UNAUTHORIZED=0
+exec npx --yes smee-client --url "$SMEE_URL" --target "${ENZARB_DEV_HOOK_TARGET:-https://enzarb.local/hooks/github}"
