@@ -1,6 +1,17 @@
-FROM rust:1-alpine AS build
+FROM lukemathwalker/cargo-chef:latest-rust-1-alpine AS chef
 RUN apk add --no-cache musl-dev
 WORKDIR /src
+
+FROM chef AS planner
+COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
+COPY crates ./crates
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS build
+COPY rust-toolchain.toml ./
+COPY --from=planner /src/recipe.json recipe.json
+# Dependency layer: cached until the dependency set changes.
+RUN cargo chef cook --release --locked -p enzarb-sandbox-operator --recipe-path recipe.json
 COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
 COPY crates ./crates
 RUN cargo build --release --locked -p enzarb-sandbox-operator
