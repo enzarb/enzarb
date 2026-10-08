@@ -89,7 +89,19 @@ Repo key: a repository's **repo key** is `<connector>:<owner>/<repo>`, e.g. `git
 - **Summary:** the verbatim agent text of the turn. `exit_code` is 0 on `end_turn`, the agent's code on a crash, and null when cancelled or timed out.
 - **Cancel:** `session/cancel`, then a grace period, then the process group is killed.
 
-**Image build:** `docker build --ssh default .` (private enzarb-proto dependency).
+**Image build:** `docker buildx build --secret id=proto_key,src=<key> --load .` (private enzarb-proto dependency). The minimal runtime image (ADR-0012, enzarb-sandbox-container#16) contains:
+- sandbox-init;
+- node 24 + claude-agent-acp + the glibc `claude` binary;
+- mise;
+- build-essential, pkg-config, libssl-dev;
+- git, ca-certificates, openssh-client.
+
+No Rust, npm, curl or extra CLI tools.
+
+**Toolchains (mise, per project, persisted on the PVC):**
+- `MISE_DATA_DIR=/workspace/.toolchains/mise`, `MISE_CACHE_DIR=/workspace/.toolchains/cache`, `CARGO_HOME=/workspace/.toolchains/cargo`, `RUSTUP_HOME=/workspace/.toolchains/rustup`.
+- `MISE_TRUSTED_CONFIG_PATHS=/workspace`, `MISE_YES=1`, `MISE_IDIOMATIC_VERSION_FILE_ENABLE_TOOLS=rust`.
+- `PATH` includes the mise shims, so a repo's `mise.toml` or `rust-toolchain.toml` determines its tools.
 
 **Transcript records** (`transcript.jsonl`, also streamed on `log_channel`). Each has `ts` and `kind`:
 - `state {state, branch?}`
@@ -105,6 +117,7 @@ Secrets are redacted from all records.
 
 **Filesystem (on the PVC):**
 - `/workspace`: repos and worktrees.
+- `/workspace/.toolchains/`: mise data and cache, cargo, rustup.
 - `/workspace/repos/<slug>-<hash>/`: one clone per repo URL.
 - `/workspace/worktrees/run-<run_id>/`: the run's worktree. It starts from `origin/<branch>` if that exists, otherwise from `base_ref`.
 - `/workspace/.enzarb/runs/<run_id>/`: `state.json`, `request.json` (0600, clone token blanked), `transcript.jsonl`, and `callback.json` while a callback is pending.
