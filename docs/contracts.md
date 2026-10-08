@@ -249,6 +249,7 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 | `ENZARB_EXECUTOR_URL` (default `http://enzarb-workflows-executor.enzarb.svc:8081`) | workflows executor (callback base) |
 | `ENZARB_EXECUTOR_CALLBACK_SECRET` | workflows executor (callback token = `hex(HMAC-SHA256(secret, run_id))`; shared by all replicas) |
 | `RUST_LOG` | all Rust services |
+| `ENZARB_ROLES`, `ENZARB_DB_MAX_CONNECTIONS` (10), `ENZARB_EXECUTOR_LISTEN` (`0.0.0.0:8081`), `ENZARB_HEALTH_LISTEN` (`0.0.0.0:8082`) | workflows |
 | `PROXY_LISTEN` (`0.0.0.0:8080`), `PROXY_IDLE_TIMEOUT_SECS` (900), `PROXY_MAX_MESSAGE_BYTES`, `PROXY_SECRET_TTL_SECS` (30) | sandbox-proxy |
 | `RECEIVER_LISTEN` (default `0.0.0.0:8080`) | connectors receiver |
 
@@ -307,5 +308,5 @@ steps:
   3. `git config url."ssh://git@gh-<name>/enzarb/<repo>".insteadOf "ssh://git@github.com/enzarb/<repo>"`;
   4. `cargo build --locked`;
   5. delete the keys.
-- **CI:** pass the repo-level deploy-key secrets as build secrets (`docker/build-push-action` `secrets:`).
+- **CI:** run `docker build --secret id=<name>_key,env=<VAR>` with the repo-level deploy-key secrets in env. `docker/build-push-action`'s `secrets:` input mangles multi-line keys ("error in libcrypto").
 - **Locally:** pass any key that has access (e.g. `--secret id=proto_key,src=$HOME/.ssh/id_ed25519`).
