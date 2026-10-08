@@ -28,7 +28,9 @@ pub struct Allowed {
 /// CTRL messages a browser (`client: "ui"`) may send after the handshake.
 fn ctrl_allowed(m: &Ctrl) -> Result<(), &'static str> {
     match m {
-        Ctrl::Open { .. } | Ctrl::Resize { .. } | Ctrl::Error { .. } => Ok(()),
+        Ctrl::Open { .. } | Ctrl::Resize { .. } | Ctrl::Error { .. } | Ctrl::CredentialStatus => {
+            Ok(())
+        }
         Ctrl::Hello { .. } => Err("hello"),
         Ctrl::Welcome { .. } => Err("welcome"),
         Ctrl::Opened { .. } => Err("opened"),
@@ -39,6 +41,7 @@ fn ctrl_allowed(m: &Ctrl) -> Result<(), &'static str> {
         Ctrl::RunState { .. } => Err("run_state"),
         Ctrl::RunCancel { .. } => Err("run_cancel"),
         Ctrl::CredentialCaptured { .. } => Err("credential_captured"),
+        Ctrl::CredentialState { .. } => Err("credential_state"),
     }
 }
 
@@ -100,6 +103,7 @@ mod tests {
             rows: 1,
         };
         assert!(check_browser_message(&ctrl(&resize)).is_ok());
+        assert!(check_browser_message(&ctrl(&Ctrl::CredentialStatus)).is_ok());
         for f in [
             Frame::data_bin(1, &b"ls\n"[..]),
             Frame::window(1, 100),
@@ -131,6 +135,18 @@ mod tests {
                 Err(Reject::ForbiddenCtrl(_))
             ));
         }
+    }
+
+    #[test]
+    fn rejects_credential_state_from_browser() {
+        let m = Ctrl::CredentialState {
+            kind: enzarb_proto::CredentialKind::ClaudeOauth,
+            configured: true,
+        };
+        assert!(matches!(
+            check_browser_message(&ctrl(&m)),
+            Err(Reject::ForbiddenCtrl("credential_state"))
+        ));
     }
 
     #[test]

@@ -3,7 +3,7 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use enzarb_proto::{
-    ChannelKind, ClientKind, Ctrl, Frame, FrameType, RunStart,
+    ChannelKind, ClientKind, CredentialKind, Ctrl, Frame, FrameType, RunStart,
     session::handshake::{client_handshake, server_handshake},
 };
 use enzarb_sandbox_proxy::{
@@ -348,4 +348,51 @@ async fn healthz() {
     let mut s = String::new();
     body.read_to_string(&mut s).await.unwrap();
     assert!(s.starts_with("HTTP/1.1 200"));
+}
+
+#[tokio::test]
+async fn credential_status_reaches_sandbox_but_credential_state_is_rejected() {
+    let mut h = harness().await;
+    let (mut ws, _) = connect_async(url(&h, "demo", &jwt("ruckc", "demo")))
+        .await
+        .unwrap();
+    client_handshake(&mut ws, ClientKind::Ui).await.unwrap();
+    let status = Frame::ctrl(&Ctrl::CredentialStatus)
+        .unwrap()
+        .to_bytes()
+        .unwrap();
+    ws.send(Message::Binary(status.clone())).await.unwrap();
+    let got = tokio::time::timeout(Duration::from_secs(5), h.sandbox_rx.recv())
+        .await
+        .expect("timeout")
+        .unwrap();
+    assert_eq!(got, status.to_vec());
+
+    // A browser-sent credential_state is rejected and never forwarded.
+    let state = Frame::ctrl(&Ctrl::CredentialState {
+        kind: CredentialKind::ClaudeOauth,
+        configured: true,
+    })
+    .unwrap()
+    .to_bytes()
+    .unwrap();
+    ws.send(Message::Binary(state)).await.unwrap();
+    let mut saw_error = false;
+    while let Ok(Some(Ok(m))) = tokio::time::timeout(Duration::from_secs(5), ws.next()).await {
+        match m {
+            Message::Binary(b) => {
+                let f = Frame::from_bytes(b).unwrap();
+                if f.frame_type == FrameType::Ctrl
+                    && matches!(f.ctrl_message(), Ok(Ctrl::Error { .. }))
+                {
+                    saw_error = true;
+                }
+            }
+            Message::Close(_) => break,
+            _ => {}
+        }
+    }
+    assert!(saw_error);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(h.sandbox_rx.try_recv().is_err());
 }

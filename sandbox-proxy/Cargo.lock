@@ -658,7 +658,7 @@ dependencies = [
 [[package]]
 name = "enzarb-proto"
 version = "0.1.0"
-source = "git+ssh://git@github.com/enzarb/enzarb-proto.git?branch=main#b106d9c29c056b32ab539763284498f36e4da64f"
+source = "git+ssh://git@github.com/enzarb/enzarb-proto.git?branch=main#01ed0f0b4bbf686f1c607af83a922b6d512138ec"
 dependencies = [
  "bytes",
  "futures-util",
@@ -706,7 +706,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2030,7 +2030,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2852,7 +2852,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
