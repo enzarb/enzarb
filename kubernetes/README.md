@@ -1,3 +1,116 @@
 # enzarb-kubernetes
 
-Cluster prerequisites for enzarb: kind config, Envoy Gateway, Capsule + capsule-proxy, agent-sandbox (v0.5.x), RuntimeClasses, pgop.
+Cluster prerequisites for enzarb, as kustomize bases plus a kind dev cluster. Everything
+the `enzarb-helm` chart assumes already exists is installed from here. Nothing in this repo
+deploys enzarb itself.
+
+## Layout
+
+```
+kind/cluster.yaml          kind: 1 control-plane + 1 worker, host 80/443 -> NodePorts 30080/30443
+base/cert-manager          cert-manager (remote, pinned release asset)
+base/envoy-gateway         Envoy Gateway install (remote) + GatewayClass/Gateway `enzarb`
+  install/ config/           the two halves, applied separately (CRDs first)
+base/agent-sandbox         kubernetes-sigs/agent-sandbox controller + Sandbox CRD (remote)
+base/capsule               Capsule (vendored from the Helm chart; crds/ applied first)
+base/capsule-proxy         capsule-proxy (vendored; optional, needs base/capsule)
+base/pgop                  pgop operator (vendored from the Helm chart; crds/ applied first)
+base/runtimeclasses        gvisor + kata RuntimeClasses (prod only)
+overlays/dev               everything for kind (Envoy Service pinned to NodePorts)
+overlays/prod              skeleton: dev set + runtimeclasses, TODOs inline
+hack/versions.env          pinned versions (single list)
+hack/refresh-vendored.sh   regenerates base/{capsule,capsule-proxy,pgop} from the Helm charts
+hack/validate.sh           what CI runs (kubectl kustomize + kubeconform)
+```
+
+## Pinned versions
+
+| Component | Version | Source | Bump |
+|---|---|---|---|
+| cert-manager | v1.21.2 | release `cert-manager.yaml` | edit URL in `base/cert-manager/kustomization.yaml` + `hack/versions.env` |
+| Envoy Gateway | v1.9.2 | release `install.yaml` (includes Gateway API CRDs) | edit URL in `base/envoy-gateway/install/kustomization.yaml` + `versions.env` |
+| agent-sandbox | v0.5.6 | release `sandbox.yaml` (core; extensions not installed) | edit URL in `base/agent-sandbox/kustomization.yaml` + `versions.env`; regenerate kopium types in `enzarb-sandbox-operator` |
+| Capsule | chart/app 0.14.6 | Helm chart, vendored | edit `versions.env`, run `hack/refresh-vendored.sh` |
+| capsule-proxy | chart/app 0.15.0 | Helm chart, vendored | same |
+| pgop | chart/app 0.9.1 | `oci://ghcr.io/ruckc/charts/pgop`, vendored | same |
+
+agent-sandbox: v0.5.x exists (v0.5.6 is the last; v1.0.x is out) and ADR-0002 pins v0.5.x, so v0.5.6 is used.
+Vendored bases are generated with Helm hooks disabled (the CRD-lifecycle, post-install and
+pre-delete Jobs); CRDs are static in `crds/`. CI fails if `base/` drifts from the chart output.
+
+## Dev cluster
+
+```sh
+kind create cluster --config kind/cluster.yaml
+echo '127.0.0.1 enzarb.local' | sudo tee -a /etc/hosts   # how enzarb.local resolves
+```
+
+`https://enzarb.local` (and `http://`) then reaches the Envoy Gateway through the kind port
+mappings. The certificate is self-signed (cert-manager `Issuer` `enzarb-selfsigned`), so browsers
+and curl need `-k` or the CA from secret `enzarb-system/enzarb-tls` (`ca.crt`).
+
+## Apply order
+
+CRDs must be Established before objects that use them, and cert-manager's webhook must be up
+before any `Certificate`/`Issuer`. Apply in stages (use `--server-side`: some CRDs are large):
+
+```sh
+k() { kubectl apply --server-side --force-conflicts "$@"; }
+
+k -k base/cert-manager
+kubectl -n cert-manager wait --for=condition=Available deploy --all --timeout=5m
+
+k -k base/envoy-gateway/install
+kubectl wait --for=condition=Established crd/gateways.gateway.networking.k8s.io \
+  crd/envoyproxies.gateway.envoyproxy.io --timeout=2m
+kubectl -n envoy-gateway-system wait --for=condition=Available deploy/envoy-gateway --timeout=5m
+
+k -k base/agent-sandbox
+k -k base/capsule/crds && kubectl wait --for=condition=Established crd/tenants.capsule.clastix.io --timeout=2m
+k -k base/pgop/crds     && kubectl wait --for=condition=Established crd/clusters.pgop.ruck.io --timeout=2m
+
+k -k overlays/dev          # everything else: Gateway config + dev NodePort patch, Capsule, capsule-proxy, pgop
+kubectl -n capsule-system wait --for=condition=Available deploy --all --timeout=5m
+```
+
+Once the CRDs exist the last command is idempotent. On a fresh cluster a single `-k overlays/dev` fails on its
+first pass only because of the missing CRDs and cert-manager webhook; the staged commands avoid that.
+
+## Verify
+
+```sh
+kubectl -n cert-manager get deploy                                  # 3 Available
+kubectl get gatewayclass enzarb                                     # ACCEPTED=True
+kubectl -n enzarb-system get gateway enzarb                         # PROGRAMMED=True
+kubectl -n enzarb-system get certificate enzarb-tls                 # READY=True
+curl -k --resolve enzarb.local:443:127.0.0.1 https://enzarb.local/  # 404 from Envoy until routes exist
+kubectl -n agent-sandbox-system get deploy agent-sandbox-controller
+kubectl get crd sandboxes.agents.x-k8s.io
+kubectl -n capsule-system get deploy capsule capsule-proxy
+kubectl get crd tenants.capsule.clastix.io
+kubectl get capsuleconfiguration default
+kubectl -n pgop-system get deploy pgop
+kubectl get crd clusters.pgop.ruck.io roles.pgop.ruck.io databases.pgop.ruck.io
+```
+
+## What the Helm chart can assume
+
+- Gateway `enzarb` in `enzarb-system` (class `enzarb`), listeners `http` :80 and `https` :443
+  (TLS secret `enzarb-tls`), routes allowed from all namespaces. HTTPRoutes attach with
+  `parentRefs: [{name: enzarb, namespace: enzarb-system}]` (contracts.md section 8).
+- CRDs: `sandboxes.agents.x-k8s.io` (v1beta1), `tenants.capsule.clastix.io`, and
+  `clusters|roles|databases.pgop.ruck.io` (v1alpha1). Capsule's `CapsuleConfiguration` is `default`.
+- capsule-proxy is Service `capsule-proxy` in `capsule-system`.
+
+## Production overlay
+
+`overlays/prod` is a skeleton: it adds `base/runtimeclasses` (`gvisor` -> handler `runsc`,
+`kata` -> handler `kata`). To finish it: install the runtime on the nodes, replace the
+self-signed issuer with a real one (see the TODO in the kustomization), set the Envoy Service type
+or annotations for your load balancer, and add HA/resource patches for Capsule and pgop.
+
+## CI
+
+`.github/workflows/ci.yml` runs `hack/validate.sh` (`kubectl kustomize` on every overlay and
+staged base, then `kubeconform -strict` with the datree CRDs-catalog, skipping kinds without a
+schema) and checks the vendored bases are reproducible. Nothing is applied to a cluster.

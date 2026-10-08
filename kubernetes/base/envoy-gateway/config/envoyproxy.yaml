@@ -1,0 +1,13 @@
+# Data-plane settings for the enzarb Gateway. Base keeps the default Service type
+# (LoadBalancer); overlays/dev patches it to a fixed-NodePort Service for kind.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: enzarb
+  namespace: enzarb-system
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        type: LoadBalancer

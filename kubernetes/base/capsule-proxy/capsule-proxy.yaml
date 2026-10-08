@@ -1,0 +1,391 @@
+---
+# Source: capsule-proxy/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: capsule-proxy
+  namespace: capsule-system
+  labels:
+    app.kubernetes.io/component: "proxy"
+    helm.sh/chart: capsule-proxy-0.15.0
+    app.kubernetes.io/name: capsule-proxy
+    app.kubernetes.io/instance: capsule-proxy
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+
+---
+# Source: capsule-proxy/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: capsule-proxy:capsule-proxy
+  labels:
+    app.kubernetes.io/component: "proxy"
+    helm.sh/chart: capsule-proxy-0.15.0
+    app.kubernetes.io/name: capsule-proxy
+    app.kubernetes.io/instance: capsule-proxy
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+rules:
+  # Read (get/list/watch) everything (namespaced + cluster-scoped)
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+
+  # Some clusters still have a few non-resource URLs you might want to read
+  # (optional; remove if not needed)
+  - nonResourceURLs: ["*"]
+    verbs: ["get"]
+
+  # Allow the controller to impersonate anyone
+  # Core impersonation targets
+  - apiGroups: [""]
+    resources:
+      - users
+      - groups
+      - serviceaccounts
+      - userextras/*
+    verbs: ["impersonate"]
+
+  # Allow SelfSubjectAccessReviews
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["selfsubjectaccessreviews"]
+    verbs: ["create", "get", "list", "watch"]
+
+  # Allow TokenReviews
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+
+  # Allow SubjectAccessReviews
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["subjectaccessreviews"]
+    verbs: ["create"]
+
+  # Allow updating status subresources for observedGeneration tracking
+  - apiGroups: ["capsule.clastix.io"]
+    resources:
+      - proxysettings/status
+      - globalproxysettings/status
+    verbs: ["update", "patch"]
+
+---
+# Source: capsule-proxy/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: capsule-proxy:capsule-proxy
+  labels:
+    app.kubernetes.io/component: "proxy"
+    helm.sh/chart: capsule-proxy-0.15.0
+    app.kubernetes.io/name: capsule-proxy
+    app.kubernetes.io/instance: capsule-proxy
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+subjects:
+- kind: ServiceAccount
+  name: capsule-proxy
+  namespace: capsule-system
+roleRef:
+  kind: ClusterRole
+  name: capsule-proxy:capsule-proxy
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Source: capsule-proxy/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: capsule-proxy:capsule-proxy
+  namespace: capsule-system
+  labels:
+    app.kubernetes.io/component: "proxy"
+    helm.sh/chart: capsule-proxy-0.15.0
+    app.kubernetes.io/name: capsule-proxy
+    app.kubernetes.io/instance: capsule-proxy
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  - apiGroups: [""]
+    resources: ["configmaps", "endpoints"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+# Source: capsule-proxy/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: capsule-proxy:capsule-proxy
+  namespace: capsule-system
+  labels:
+    app.kubernetes.io/component: "proxy"
+    helm.sh/chart: capsule-proxy-0.15.0
+    app.kubernetes.io/name: capsule-proxy
+    app.kubernetes.io/instance: capsule-proxy
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: capsule-proxy:capsule-proxy
+subjects:
+  - kind: ServiceAccount
+    name: capsule-proxy
+    namespace: capsule-system
+
+---
+# Source: capsule-proxy/templates/metrics-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: capsule-proxy-metrics-service
+  namespace: capsule-system
+  labels:
+    app.kubernetes.io/component: "proxy"
+    helm.sh/chart: capsule-proxy-0.15.0
+    app.kubernetes.io/name: capsule-proxy
+    app.kubernetes.io/instance: capsule-proxy
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  ports:
+  - port: 8080
+    name: metrics
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    app.kubernetes.io/component: "proxy"
+    app.kubernetes.io/name: capsule-proxy
+    app.kubernetes.io/instance: capsule-proxy
+  sessionAffinity: None
+  type: ClusterIP
+
+---
+# Source: capsule-proxy/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: capsule-proxy
+  namespace: capsule-system
+  labels:
+    app.kubernetes.io/component: "proxy"
+    helm.sh/chart: capsule-proxy-0.15.0
+    app.kubernetes.io/name: capsule-proxy
+    app.kubernetes.io/instance: capsule-proxy
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+  - name: proxy
+    port: 9001
+    protocol: TCP
+    targetPort: 9001
+    
+  selector:
+    app.kubernetes.io/component: "proxy"
+    app.kubernetes.io/name: capsule-proxy
+    app.kubernetes.io/instance: capsule-proxy
+
+---
+# Source: capsule-proxy/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: capsule-proxy
+  namespace: capsule-system
+  labels:
+    app.kubernetes.io/component: "proxy"
+    helm.sh/chart: capsule-proxy-0.15.0
+    app.kubernetes.io/name: capsule-proxy
+    app.kubernetes.io/instance: capsule-proxy
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  strategy:
+    type: RollingUpdate
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: "proxy"
+      app.kubernetes.io/name: capsule-proxy
+      app.kubernetes.io/instance: capsule-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: "proxy"
+        app.kubernetes.io/name: capsule-proxy
+        app.kubernetes.io/instance: capsule-proxy
+    spec:
+      serviceAccountName: capsule-proxy
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      priorityClassName: 
+      volumes:
+      - name: certs
+        secret:
+          secretName: capsule-proxy
+          defaultMode: 420
+      containers:
+      - name: capsule-proxy
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsGroup: 1002
+          runAsNonRoot: true
+          runAsUser: 1002
+        image: ghcr.io/projectcapsule/capsule-proxy:v0.15.0
+        imagePullPolicy: IfNotPresent
+        args:
+        - --listening-port=9001
+        - --capsule-configuration-name=default
+        - --zap-log-level=4
+        - --enable-ssl=true
+        - --oidc-username-claim=preferred_username
+        - --enable-reflector=false
+        - --rolebindings-resync-period=10h
+        - --disable-caching=false
+        - --auth-preferred-types=BearerToken,TLSCertificate
+        - --ssl-cert-path=/opt/capsule-proxy/tls.crt
+        - --ssl-key-path=/opt/capsule-proxy/tls.key
+        - --client-connection-qps=20
+        - --client-connection-burst=30
+        - --enable-pprof=false
+        - --enable-leader-election=false
+        env:
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        ports:
+        - name: proxy
+          protocol: TCP
+          containerPort: 9001
+        - name: metrics
+          containerPort: 8080
+          protocol: TCP
+        - name: probe
+          containerPort: 8081
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /healthz/
+            port: probe
+            scheme: HTTP
+          initialDelaySeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz/
+            port: probe
+            scheme: HTTP
+          initialDelaySeconds: 5
+        resources:
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+                requests:
+                  cpu: 200m
+                  memory: 128Mi
+        volumeMounts:
+        - mountPath: /opt/capsule-proxy
+          name: certs
+      restartPolicy: Always
+
+---
+# Source: capsule-proxy/templates/certmanager.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: capsule-proxy-selfsigned-ca
+  namespace: capsule-system
+  labels:
+    app.kubernetes.io/component: "proxy"
+    helm.sh/chart: capsule-proxy-0.15.0
+    app.kubernetes.io/name: capsule-proxy
+    app.kubernetes.io/instance: capsule-proxy
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+    
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  isCA: true
+  commonName: capsule-proxy-selfsigned-ca
+  secretName: capsule-proxy-root-secret
+  issuerRef:
+    name: capsule-proxy-selfsigned-issuer
+    kind: Issuer
+    group: cert-manager.io
+
+---
+# Source: capsule-proxy/templates/certmanager.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: capsule-proxy-serving-cert
+  namespace: capsule-system
+  labels:
+    app.kubernetes.io/component: "proxy"
+    helm.sh/chart: capsule-proxy-0.15.0
+    app.kubernetes.io/name: capsule-proxy
+    app.kubernetes.io/instance: capsule-proxy
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+    
+  privateKey:
+    rotationPolicy: Always
+  dnsNames:
+  - capsule-proxy
+  - capsule-proxy.capsule-system.svc
+  issuerRef:
+    kind: Issuer
+    name: capsule-proxy-ca-issuer
+  secretName: capsule-proxy
+  subject:
+    organizations:
+      - projectcapsule.dev
+
+---
+# Source: capsule-proxy/templates/certmanager.yaml
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: capsule-proxy-selfsigned-issuer
+  namespace: capsule-system
+  labels:
+    app.kubernetes.io/component: "proxy"
+    helm.sh/chart: capsule-proxy-0.15.0
+    app.kubernetes.io/name: capsule-proxy
+    app.kubernetes.io/instance: capsule-proxy
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selfSigned: {}
+
+---
+# Source: capsule-proxy/templates/certmanager.yaml
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: capsule-proxy-ca-issuer
+  namespace: capsule-system
+  labels:
+    app.kubernetes.io/component: "proxy"
+    helm.sh/chart: capsule-proxy-0.15.0
+    app.kubernetes.io/name: capsule-proxy
+    app.kubernetes.io/instance: capsule-proxy
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  ca:
+    secretName: capsule-proxy-root-secret

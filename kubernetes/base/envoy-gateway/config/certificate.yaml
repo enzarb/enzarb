@@ -1,0 +1,27 @@
+# Self-signed serving certificate for enzarb.local (dev). Prod overlays replace
+# the issuer with a real (ACME/CA) Issuer or ClusterIssuer.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: enzarb-selfsigned
+  namespace: enzarb-system
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: enzarb-tls
+  namespace: enzarb-system
+spec:
+  secretName: enzarb-tls
+  commonName: enzarb.local
+  dnsNames:
+    - enzarb.local
+    - "*.enzarb.local"
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    kind: Issuer
+    name: enzarb-selfsigned

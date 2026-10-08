@@ -1,0 +1,8 @@
+# Envoy Gateway v1.9.2 install.yaml (Gateway API + Envoy Gateway CRDs, controller,
+# certgen Job) into envoy-gateway-system. Pinned release asset.
+# Bump: change the version in the URL (and hack/versions.env). Read the release
+# notes; Gateway API CRD channel/version changes can need a manual CRD upgrade.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - https://github.com/envoyproxy/gateway/releases/download/v1.9.2/install.yaml

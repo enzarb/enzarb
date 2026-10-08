@@ -1,0 +1,30 @@
+# Everything enzarb needs on a kind cluster (see kind/cluster.yaml).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base/cert-manager
+  - ../../base/envoy-gateway
+  - ../../base/agent-sandbox
+  - ../../base/capsule
+  - ../../base/capsule-proxy
+  - ../../base/pgop
+patches:
+  # kind has no LoadBalancer: pin the Envoy Service to the NodePorts that
+  # kind/cluster.yaml maps to host 80/443. Merge key for ports is `port`.
+  - target: { group: gateway.envoyproxy.io, kind: EnvoyProxy, name: enzarb }
+    patch: |-
+      apiVersion: gateway.envoyproxy.io/v1alpha1
+      kind: EnvoyProxy
+      metadata: { name: enzarb, namespace: enzarb-system }
+      spec:
+        provider:
+          kubernetes:
+            envoyService:
+              type: NodePort
+              patch:
+                type: StrategicMerge
+                value:
+                  spec:
+                    ports:
+                      - { port: 80, nodePort: 30080 }
+                      - { port: 443, nodePort: 30443 }

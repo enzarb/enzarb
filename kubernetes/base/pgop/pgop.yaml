@@ -1,0 +1,185 @@
+---
+# Source: pgop/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pgop
+  namespace: pgop-system
+  labels:
+    helm.sh/chart: pgop-0.9.1
+    app.kubernetes.io/name: pgop
+    app.kubernetes.io/instance: pgop
+    app.kubernetes.io/version: "v0.9.1"
+    app.kubernetes.io/managed-by: Helm
+
+---
+# Source: pgop/templates/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pgop-manager
+  labels:
+    helm.sh/chart: pgop-0.9.1
+    app.kubernetes.io/name: pgop
+    app.kubernetes.io/instance: pgop
+    app.kubernetes.io/version: "v0.9.1"
+    app.kubernetes.io/managed-by: Helm
+rules:
+- apiGroups: [""]
+  resources: [configmaps, persistentvolumeclaims, secrets, services]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [apps]
+  resources: [statefulsets]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [cert-manager.io]
+  resources: [certificates]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [events.k8s.io]
+  resources: [events]
+  verbs: [create, patch]
+- apiGroups: [batch]
+  resources: [cronjobs, jobs]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [pgop.ruck.io]
+  resources: [backupruns, backups, clusters, databases, restores, roles]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [pgop.ruck.io]
+  resources: [backupruns/finalizers, backups/finalizers, clusters/finalizers, databases/finalizers, restores/finalizers, roles/finalizers]
+  verbs: [update]
+- apiGroups: [pgop.ruck.io]
+  resources: [backupruns/status, backups/status, clusters/status, databases/status, restores/status, roles/status]
+  verbs: [get, patch, update]
+
+---
+# Source: pgop/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pgop-manager
+  labels:
+    helm.sh/chart: pgop-0.9.1
+    app.kubernetes.io/name: pgop
+    app.kubernetes.io/instance: pgop
+    app.kubernetes.io/version: "v0.9.1"
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: pgop-manager
+subjects:
+- kind: ServiceAccount
+  name: pgop
+  namespace: pgop-system
+
+---
+# Source: pgop/templates/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pgop-leader-election
+  namespace: pgop-system
+  labels:
+    helm.sh/chart: pgop-0.9.1
+    app.kubernetes.io/name: pgop
+    app.kubernetes.io/instance: pgop
+    app.kubernetes.io/version: "v0.9.1"
+    app.kubernetes.io/managed-by: Helm
+rules:
+- apiGroups: [""]
+  resources: [configmaps]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [coordination.k8s.io]
+  resources: [leases]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [""]
+  resources: [events]
+  verbs: [create, patch]
+
+---
+# Source: pgop/templates/rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pgop-leader-election
+  namespace: pgop-system
+  labels:
+    helm.sh/chart: pgop-0.9.1
+    app.kubernetes.io/name: pgop
+    app.kubernetes.io/instance: pgop
+    app.kubernetes.io/version: "v0.9.1"
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pgop-leader-election
+subjects:
+- kind: ServiceAccount
+  name: pgop
+  namespace: pgop-system
+
+---
+# Source: pgop/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgop
+  namespace: pgop-system
+  labels:
+    helm.sh/chart: pgop-0.9.1
+    app.kubernetes.io/name: pgop
+    app.kubernetes.io/instance: pgop
+    app.kubernetes.io/version: "v0.9.1"
+    app.kubernetes.io/managed-by: Helm
+    control-plane: controller-manager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pgop
+      app.kubernetes.io/instance: pgop
+      control-plane: controller-manager
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pgop
+        app.kubernetes.io/instance: pgop
+        control-plane: controller-manager
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: pgop
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: manager
+          image: "ghcr.io/ruckc/pgop:v0.9.1"
+          imagePullPolicy: IfNotPresent
+          args:
+            - --leader-elect
+            - --health-probe-bind-address=:8081
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            limits:
+              cpu: 500m
+              memory: 128Mi
+            requests:
+              cpu: 10m
+              memory: 64Mi

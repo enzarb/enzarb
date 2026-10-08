@@ -1,0 +1,10 @@
+# kubernetes-sigs/agent-sandbox v0.5.6: core controller + Sandbox CRD
+# (agents.x-k8s.io, served v1beta1 per ADR-0002), namespace agent-sandbox-system.
+# The optional extensions (SandboxClaim/Template/WarmPool; extensions.yaml) are not
+# installed: enzarb only creates Sandbox CRs.
+# Bump: change the version in the URL and hack/versions.env; regenerate the kopium
+# types in enzarb-sandbox-operator (ADR-0002).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v0.5.6/sandbox.yaml

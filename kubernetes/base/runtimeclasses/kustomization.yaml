@@ -1,0 +1,6 @@
+# Sandbox isolation RuntimeClasses (production). The node runtime handlers
+# (runsc / kata) must be installed and configured in containerd separately.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - runtimeclasses.yaml
