@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use sandbox_init::{AppState, Config, reaper::Reaper, serve};
+use sandbox_init::{
+    AppState, Config, agent::AgentRunManager, capture::ClaudeTokenCapture, reaper::Reaper, serve,
+};
 use tokio::signal::unix::{SignalKind, signal};
 
 #[tokio::main]
@@ -26,7 +28,14 @@ async fn main() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("bind {}", config.listen))?;
     tracing::info!(addr = %config.listen, reap_all = reaper.reaps_all(), "sandbox-init listening");
-    let state = Arc::new(AppState::new(config, reaper.clone()));
+    let runs = AgentRunManager::new(config.clone(), reaper.clone());
+    runs.recover();
+    let capture = ClaudeTokenCapture::new(config.claude_token_file.clone());
+    let state = Arc::new(
+        AppState::new(config, reaper.clone())
+            .with_run_manager(Arc::new(runs))
+            .with_observer(Arc::new(capture)),
+    );
 
     tokio::select! {
         r = serve(listener, state) => r.context("server failed")?,

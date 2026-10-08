@@ -49,6 +49,7 @@ async fn start() -> Server {
         workspace,
         shell: "/bin/sh".into(),
         grace: Duration::from_secs(2),
+        ..Config::default()
     };
     let reaper = Reaper::new(false);
     tokio::spawn(reaper.clone().run());
