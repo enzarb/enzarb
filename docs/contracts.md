@@ -151,6 +151,9 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
 - **`ApprovalGranted`:** a `/approve` comment on its own line, or the label `enzarb:approved`.
 - **`Mentioned`:** `@<bot handle>` in a comment or issue body (handle configurable, default `enzarb`).
 - **Bot actor:** events whose actor is the bot itself are dropped by the receiver.
+- **Derived events:** one delivery can produce several events. The primary event keeps the delivery id; derived ones get `<delivery>#mentioned` and `<delivery>#approved`, so the dedupe key is `github:<event id>`.
+- **Mentions and approval on PRs:** `Mentioned` also fires from a PR body when the PR is opened, and the approval label works on PRs as well as issues.
+- **API:** `enzarb_connector_github::normalize(...)` returns `Normalized::Events{events}` or `Normalized::Installation{change}`.
 
 ## 6. `workflows_api` (Postgres, owned by enzarb-workflows)
 
