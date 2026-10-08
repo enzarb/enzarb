@@ -8,17 +8,21 @@
 //! * [`pty`]: PTY channels (`portable-pty` bridged to an enzarb-proto channel);
 //! * [`observer`]: hook for watching PTY output;
 //! * [`capture`]: Claude OAuth token capture from `claude setup-token` PTYs;
-//! * [`exec`]: running `git`/`claude` under the reaper;
-//! * [`agent`]: the agent [`RunManager`](runs::RunManager) (worktrees, claude, callbacks);
+//! * [`exec`]: running `git` under the reaper;
+//! * [`acp`]: one agent run over the Agent Client Protocol (`claude-agent-acp`);
+//! * [`policy`]: the permission policy that answers the agent's `session/request_permission`;
+//! * [`agent`]: the agent [`RunManager`](runs::RunManager) (worktrees, ACP agent, callbacks);
 //! * [`runs`]: the [`RunManager`](runs::RunManager) extension point for `run_*` messages;
 //! * [`server`]: axum app, websocket adapter and the per-session event loop.
 
+pub mod acp;
 pub mod agent;
 pub mod auth;
 pub mod capture;
 pub mod config;
 pub mod exec;
 pub mod observer;
+pub mod policy;
 pub mod pty;
 pub mod reaper;
 pub mod runs;

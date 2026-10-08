@@ -4,7 +4,7 @@
 //! Lifecycle of a run (`run_start`):
 //! 1. `queued`: persisted under `<workspace>/.enzarb/runs/<run_id>/`, waiting for a slot;
 //! 2. `running`: ensure the clone, create worktree `run-<run_id>` on `branch`,
-//!    run `claude -p` in it, optionally commit leftovers and push `branch`;
+//!    run the agent in it over ACP (`acp`), optionally commit leftovers and push `branch`;
 //! 3. terminal (`succeeded | failed | cancelled`): `state.json` is final and
 //!    the [`RunFinished`] callback is delivered with retries
 //!    (`callback.json` exists until a 2xx).
@@ -16,7 +16,7 @@
 //! * `.../request.json` (0600): the request without `clone_token` (needed to
 //!   finish a run after a restart);
 //! * `.../transcript.jsonl`: one JSON object per line (state changes, git and
-//!   claude stderr lines, the claude result);
+//!   agent stderr lines, ACP updates, permission decisions and the agent result);
 //! * `.../callback.json` (0600): the pending callback, removed once delivered.
 
 use std::collections::HashMap;
@@ -34,6 +34,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{Semaphore, mpsc, watch};
 use tokio::time::Instant;
 
+use crate::acp::{self, AcpError, AcpSpec};
 use crate::capture::write_atomic;
 use crate::config::Config;
 use crate::exec::{self, CmdSpec, Ctl, LineSink, Output, Stop};
@@ -490,6 +491,20 @@ fn redact(s: &str, secrets: &[String]) -> String {
     out
 }
 
+/// Redact `secrets` in every string of a JSON value.
+fn redact_value(v: Value, secrets: &[String]) -> Value {
+    match v {
+        Value::String(s) => Value::String(redact(&s, secrets)),
+        Value::Array(a) => Value::Array(a.into_iter().map(|x| redact_value(x, secrets)).collect()),
+        Value::Object(m) => Value::Object(
+            m.into_iter()
+                .map(|(k, x)| (k, redact_value(x, secrets)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
 fn repo_dir_name(url: &str) -> String {
     let tail: String = url
         .trim_end_matches('/')
@@ -513,41 +528,6 @@ fn repo_dir_name(url: &str) -> String {
     let hash = Sha256::digest(url.as_bytes());
     let hex: String = hash.iter().take(4).map(|b| format!("{b:02x}")).collect();
     format!("{tail}-{hex}")
-}
-
-struct ClaudeResult {
-    text: String,
-    is_error: bool,
-}
-
-/// Extract the final result from `claude -p --output-format json` (a single
-/// object), a JSON array of messages, or `stream-json` lines.
-fn parse_claude_output(stdout: &[u8]) -> Option<ClaudeResult> {
-    fn from_obj(v: &Value) -> Option<ClaudeResult> {
-        let text = v.get("result")?.as_str()?.to_string();
-        Some(ClaudeResult {
-            text,
-            is_error: v.get("is_error").and_then(Value::as_bool).unwrap_or(false),
-        })
-    }
-    let text = String::from_utf8_lossy(stdout);
-    if let Ok(v) = serde_json::from_str::<Value>(text.trim()) {
-        match &v {
-            Value::Array(items) => {
-                return items
-                    .iter()
-                    .rev()
-                    .find(|i| i.get("type").and_then(Value::as_str) == Some("result"))
-                    .and_then(from_obj);
-            }
-            _ => return from_obj(&v),
-        }
-    }
-    text.lines()
-        .rev()
-        .filter_map(|l| serde_json::from_str::<Value>(l.trim()).ok())
-        .find(|v| v.get("type").and_then(Value::as_str) == Some("result"))
-        .and_then(|v| from_obj(&v))
 }
 
 impl Inner {
@@ -915,7 +895,7 @@ impl Inner {
             json!({"path": worktree, "branch": req.branch, "start": start_sha, "base": base_sha}),
         );
 
-        // 2. claude
+        // 2. the agent, over ACP
         let token = std::fs::read_to_string(&self.cfg.claude_token_file)
             .map(|t| t.trim().to_string())
             .unwrap_or_default();
@@ -926,34 +906,38 @@ impl Inner {
             )));
         }
         secrets.push(token.clone());
-        let mut args: Vec<&str> = vec!["-p"];
-        args.extend(self.cfg.claude_args.iter().map(String::as_str));
-        let mut spec = CmdSpec::new(&self.cfg.claude_bin, &args);
-        spec.cwd = Some(worktree.clone());
-        spec.env = self.git_env();
-        spec.env.extend([
+        let mut env = self.git_env();
+        env.extend([
             ("CLAUDE_CODE_OAUTH_TOKEN".to_string(), token),
             ("ENZARB_RUN_ID".to_string(), req.run_id.clone()),
             ("ENZARB_BRANCH".to_string(), req.branch.clone()),
         ]);
-        spec.stdin = Some(req.prompt.clone().into_bytes());
-        let sink = line_sink(run, "claude", &secrets);
-        let out = exec::run(&self.reaper, spec, ctl, Some(sink))
-            .await
-            .map_err(|e| Abort::Fail(format!("cannot run claude: {e}")))?;
-        if let Some(s) = out.stop {
-            return Err(s.into());
-        }
-        let parsed = parse_claude_output(&out.stdout);
+        let spec = AcpSpec {
+            bin: self.cfg.acp_bin.clone(),
+            cwd: worktree.clone(),
+            env,
+            prompt: req.prompt.clone(),
+            cancel_grace: self.cfg.cancel_grace,
+        };
+        let emit: acp::Emit = {
+            let transcript = run.transcript.clone();
+            let secrets = secrets.clone();
+            Arc::new(move |kind: &str, fields: Value| {
+                transcript.append(kind, redact_value(fields, &secrets));
+            })
+        };
+        let policy = self.cfg.policy.clone();
+        let sink = line_sink(run, "acp", &secrets);
+        let out = match acp::run(&self.reaper, spec, policy, ctl, emit, Some(sink)).await {
+            Ok(o) => o,
+            Err(AcpError::Stopped(s)) => return Err(s.into()),
+            Err(AcpError::Failed(m)) => return Err(Abort::Fail(redact(&m, &secrets))),
+        };
         run.transcript.append(
-            "claude_result",
-            json!({
-                "exit_code": out.code(),
-                "is_error": parsed.as_ref().map(|p| p.is_error),
-                "result": parsed.as_ref().map(|p| redact(&p.text, &secrets)),
-            }),
+            "agent_result",
+            json!({"stop_reason": out.stop_reason, "text": redact(&out.text, &secrets)}),
         );
-        let exit_code = out.code();
+        let exit_code = Some(0);
         let head_sha = self
             .rev_parse(run, ctl, &worktree, "HEAD")
             .await?
@@ -965,15 +949,12 @@ impl Inner {
             head_sha,
             pushed: false,
         };
-        let result = match parsed {
-            Some(p) if out.success() && !p.is_error => p.text,
-            Some(p) => return Ok(fail(p.text, head_sha)),
-            None if out.success() => {
-                return Ok(fail("claude produced no parseable result".into(), head_sha));
-            }
-            None => {
+        let result = match out.stop_reason.as_str() {
+            "end_turn" if !out.text.trim().is_empty() => out.text,
+            "end_turn" => return Ok(fail("the agent produced no message".into(), head_sha)),
+            other => {
                 return Ok(fail(
-                    format!("claude exited with {:?}: {}", exit_code, out.stderr.trim()),
+                    format!("the agent stopped with {other}: {}", out.text.trim()),
                     head_sha,
                 ));
             }

@@ -1,7 +1,7 @@
 //! Extension point for agent runs (CTRL `run_*`, contracts §4).
 //!
 //! This issue ships only [`UnimplementedRunManager`]; the next issue
-//! implements the real manager (worktrees, claude, callbacks) behind the same
+//! implements the real manager (worktrees, ACP agent, callbacks) behind the same
 //! trait. Implementations must return quickly from the trait methods (spawn
 //! long work) because they are called from the session's event loop.
 //!

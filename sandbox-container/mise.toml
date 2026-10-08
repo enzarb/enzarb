@@ -1,0 +1,3 @@
+# Tools for this repo's checks only: the fake ACP agent in tests/fixtures is a node script.
+[tools]
+node = "24"

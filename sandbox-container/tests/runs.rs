@@ -1,5 +1,5 @@
 //! Integration tests for agent runs: a real server, local bare repos, a fake
-//! `claude` script and a test HTTP callback server.
+//! ACP agent (a node script) and a test HTTP callback server.
 
 use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
@@ -25,19 +25,7 @@ const TOKEN: &str = "test-token-123";
 const CLAUDE_TOKEN: &str = "tok-123";
 const T: Duration = Duration::from_secs(30);
 
-const FAKE_CLAUDE: &str = r#"#!/bin/sh
-prompt=$(cat)
-[ "$CLAUDE_CODE_OAUTH_TOKEN" = "tok-123" ] || { echo "bad token" >&2; exit 3; }
-[ -z "$GIT_CONFIG_COUNT" ] || { echo "git credentials leaked" >&2; exit 4; }
-case "$prompt" in
-  SLEEP*) sleep 60 ;;
-  FAIL*) echo "boom" >&2; exit 1 ;;
-  EDIT*) echo "$ENZARB_RUN_ID" > agent.txt; git add agent.txt; git commit -qm "agent change" ;;
-  DIRTY*) echo dirty > dirty.txt ;;
-  NOOP*) : ;;
-esac
-printf '{"type":"result","subtype":"success","is_error":false,"result":"done: %s\\n```json\\n{\\"decision\\":\\"done\\",\\"body\\":\\"pr\\"}\\n```","num_turns":1}\n' "$ENZARB_BRANCH"
-"#;
+const FAKE_AGENT: &str = include_str!("fixtures/fake-acp-agent.mjs");
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
@@ -124,9 +112,9 @@ async fn start(fail_callbacks: u32) -> Env {
     git(&seed, &["commit", "-qm", "feature"]);
     git(&seed, &["push", "-q", origin.to_str().unwrap(), "feature"]);
 
-    let claude = root.join("claude");
-    std::fs::write(&claude, FAKE_CLAUDE).unwrap();
-    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let agent = root.join("fake-acp-agent");
+    std::fs::write(&agent, FAKE_AGENT).unwrap();
+    std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
     let token_file = root.join("auth-token");
     std::fs::write(&token_file, format!("{TOKEN}\n")).unwrap();
     let workspace = root.join("workspace");
@@ -153,7 +141,8 @@ async fn start(fail_callbacks: u32) -> Env {
         workspace: workspace.clone(),
         shell: "/bin/sh".into(),
         grace: Duration::from_secs(2),
-        claude_bin: claude.to_string_lossy().into_owned(),
+        acp_bin: agent.to_string_lossy().into_owned(),
+        cancel_grace: Duration::from_secs(1),
         claude_token_file: workspace.join(".enzarb/claude-token"),
         callback_backoff: Duration::from_millis(100),
         ..Config::default()
@@ -240,7 +229,8 @@ impl Env {
     }
 }
 
-const SUMMARY: &str = "done: enzarb/issue-1\n```json\n{\"decision\":\"done\",\"body\":\"pr\"}\n```";
+const SUMMARY: &str =
+    "Looking around.\ndone: enzarb/issue-1\n```json\n{\"decision\":\"done\",\"body\":\"pr\"}\n```";
 
 #[tokio::test]
 async fn implement_run_commits_pushes_and_calls_back() {
@@ -280,7 +270,14 @@ async fn implement_run_commits_pushes_and_calls_back() {
     while let Ok(Ok(Some(v))) = timeout(T, log.recv.recv_json::<serde_json::Value>()).await {
         kinds.push(v["kind"].as_str().unwrap().to_string());
     }
-    for k in ["state", "worktree", "claude_result", "finished"] {
+    for k in [
+        "state",
+        "worktree",
+        "acp",
+        "update",
+        "agent_result",
+        "finished",
+    ] {
         assert!(kinds.iter().any(|x| x == k), "{kinds:?}");
     }
 
@@ -383,8 +380,32 @@ async fn read_only_run_does_not_push() {
     assert_ne!(fin.head_sha, before); // the local commit exists in the worktree
 }
 
+/// All transcript records of a run (the file, once the run is over).
+fn transcript(env: &Env, id: &str) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(env.run_dir(id).join("transcript.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+fn of_kind<'a>(t: &'a [serde_json::Value], kind: &str) -> Vec<&'a serde_json::Value> {
+    t.iter().filter(|r| r["kind"] == kind).collect()
+}
+
+fn pid_alive(env: &Env, id: &str) -> bool {
+    let pid: i32 = std::fs::read_to_string(env.workspace.join(format!("worktrees/run-{id}.pid")))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // sandbox-init's reaper collects the child: signal 0 fails once it is gone
+    std::thread::sleep(Duration::from_millis(300));
+    nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
+}
+
 #[tokio::test]
-async fn failing_claude_fails_the_run() {
+async fn crashing_agent_fails_the_run() {
     let env = start(0).await;
     let (session, _e) = env.connect().await;
     session
@@ -393,9 +414,214 @@ async fn failing_claude_fails_the_run() {
         .unwrap();
     let (_, fin) = env.finished("bad").await;
     assert_eq!(fin.outcome, RunOutcome::Failed);
-    assert_eq!(fin.exit_code, Some(1));
-    assert!(fin.summary.contains("boom"), "{}", fin.summary);
+    assert!(
+        fin.summary.contains("exited unexpectedly with code 1"),
+        "{}",
+        fin.summary
+    );
     assert!(!fin.pushed);
+    let t = transcript(&env, "bad");
+    assert!(
+        of_kind(&t, "log")
+            .iter()
+            .any(|r| r["source"] == "acp" && r["line"] == "boom"),
+        "agent stderr is in the transcript"
+    );
+}
+
+#[tokio::test]
+async fn refusal_and_empty_turns_fail_the_run() {
+    let env = start(0).await;
+    let (session, _e) = env.connect().await;
+    session
+        .run_start(env.run("refuse", "REFUSE", "main", "enzarb/issue-10", true))
+        .await
+        .unwrap();
+    let (_, fin) = env.finished("refuse").await;
+    assert_eq!(fin.outcome, RunOutcome::Failed);
+    assert!(fin.summary.contains("refusal"), "{}", fin.summary);
+    assert!(fin.summary.contains("I cannot do that."), "{}", fin.summary);
+
+    session
+        .run_start(env.run("empty", "EMPTY", "main", "enzarb/issue-11", true))
+        .await
+        .unwrap();
+    let (_, fin) = env.finished("empty").await;
+    assert_eq!(fin.outcome, RunOutcome::Failed);
+    assert!(fin.summary.contains("no message"), "{}", fin.summary);
+}
+
+#[tokio::test]
+async fn missing_token_fails_and_a_rejected_token_surfaces_the_agent_error() {
+    let env = start(0).await;
+    let (session, _e) = env.connect().await;
+    std::fs::write(env.workspace.join(".enzarb/claude-token"), "wrong\n").unwrap();
+    session
+        .run_start(env.run("badtok", "NOOP", "main", "enzarb/issue-12", false))
+        .await
+        .unwrap();
+    let (_, fin) = env.finished("badtok").await;
+    assert_eq!(fin.outcome, RunOutcome::Failed);
+    assert!(
+        fin.summary.contains("Authentication required"),
+        "{}",
+        fin.summary
+    );
+
+    std::fs::remove_file(env.workspace.join(".enzarb/claude-token")).unwrap();
+    session
+        .run_start(env.run("notok", "NOOP", "main", "enzarb/issue-13", false))
+        .await
+        .unwrap();
+    let (_, fin) = env.finished("notok").await;
+    assert_eq!(fin.outcome, RunOutcome::Failed);
+    assert!(fin.summary.contains("not logged in"), "{}", fin.summary);
+}
+
+#[tokio::test]
+async fn permission_decisions_follow_the_policy_and_are_recorded() {
+    let env = start(0).await;
+    let (session, _e) = env.connect().await;
+    let mut req = env.run("perm", "PERM", "main", "enzarb/issue-14", false);
+    req.log_channel = Some(7);
+    let started = session.run_start(req).await.unwrap();
+    let mut log = started.log.unwrap();
+    let (_, fin) = env.finished("perm").await;
+    assert_eq!(fin.outcome, RunOutcome::Succeeded, "{}", fin.summary);
+    // what the agent received: allow_once ("allow-once") or reject_once ("reject"), never "always"
+    assert!(
+        fin.summary.starts_with(
+            "perm: git-status=allow-once,git-push=reject,curl=reject,read-in=allow-once,\
+             read-out=reject,edit-in=allow-once,edit-out=reject,fetch=reject\n"
+        ),
+        "{}",
+        fin.summary
+    );
+    let t = transcript(&env, "perm");
+    let perms = of_kind(&t, "permission");
+    assert_eq!(perms.len(), 8);
+    let by_id = |id: &str| {
+        perms
+            .iter()
+            .find(|p| p["tool_call_id"] == id)
+            .unwrap_or_else(|| panic!("no permission record for {id}"))
+    };
+    for (id, decision, rule) in [
+        ("git-status", "allow", "shell"),
+        ("git-push", "deny", "shell"),
+        ("curl", "deny", "shell"),
+        ("read-in", "allow", "read"),
+        ("read-out", "deny", "read"),
+        ("edit-in", "allow", "edit"),
+        ("edit-out", "deny", "edit"),
+        ("fetch", "deny", "fetch"),
+    ] {
+        let p = by_id(id);
+        assert_eq!(p["decision"], decision, "{id}: {p}");
+        assert_eq!(p["rule"], rule, "{id}: {p}");
+        assert!(!p["reason"].as_str().unwrap().is_empty());
+        let option = if decision == "allow" {
+            "allow-once"
+        } else {
+            "reject"
+        };
+        assert_eq!(p["option_id"], option);
+    }
+    assert_eq!(
+        by_id("git-push")["input"]["command"],
+        "git push origin HEAD"
+    );
+    assert_eq!(by_id("curl")["tool_kind"], "execute");
+    // the decisions were also streamed live
+    let mut streamed = 0;
+    while let Ok(Ok(Some(v))) = timeout(T, log.recv.recv_json::<serde_json::Value>()).await {
+        if v["kind"] == "permission" {
+            streamed += 1;
+        }
+    }
+    assert_eq!(streamed, 8);
+}
+
+#[tokio::test]
+async fn updates_are_recorded_as_acp_session_updates() {
+    let env = start(0).await;
+    let (session, _e) = env.connect().await;
+    session
+        .run_start(env.run("upd", "NOOP", "main", "enzarb/issue-15", false))
+        .await
+        .unwrap();
+    let (_, fin) = env.finished("upd").await;
+    assert_eq!(fin.outcome, RunOutcome::Succeeded);
+    let t = transcript(&env, "upd");
+    let kinds: Vec<&str> = t.iter().map(|r| r["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds.first(), Some(&"state"));
+    assert_eq!(kinds.last(), Some(&"finished"));
+    let updates: Vec<&str> = of_kind(&t, "update")
+        .iter()
+        .map(|r| r["update"]["sessionUpdate"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        updates,
+        [
+            "agent_message_chunk",
+            "tool_call",
+            "tool_call_update",
+            "agent_message_chunk",
+            "agent_message_chunk",
+            "agent_message_chunk"
+        ]
+    );
+    assert_eq!(of_kind(&t, "update")[0]["session_id"], "sess-1");
+    let acp = of_kind(&t, "acp");
+    assert_eq!(acp[0]["event"], "initialized");
+    assert_eq!(acp[0]["agent_info"]["name"], "fake-acp-agent");
+    assert_eq!(acp[1]["event"], "session");
+    assert_eq!(acp[1]["session_id"], "sess-1");
+    let result = of_kind(&t, "agent_result")[0];
+    assert_eq!(result["stop_reason"], "end_turn");
+    assert!(result["text"].as_str().unwrap().ends_with("```"));
+}
+
+#[tokio::test]
+async fn deaf_agent_is_killed_after_the_cancel_grace() {
+    let env = start(0).await;
+    let (session, _e) = env.connect().await;
+    session
+        .run_start(env.run("deaf", "SLEEPDEAF", "main", "enzarb/issue-16", false))
+        .await
+        .unwrap();
+    loop {
+        if session.run_status("deaf").await.unwrap().state == RunPhase::Running {
+            sleep(Duration::from_millis(800)).await;
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    let started = std::time::Instant::now();
+    session.run_cancel("deaf").unwrap();
+    let (_, fin) = env.finished("deaf").await;
+    assert_eq!(fin.outcome, RunOutcome::Cancelled);
+    assert!(started.elapsed() < Duration::from_secs(20));
+    assert!(!pid_alive(&env, "deaf"), "agent survived the cancel");
+}
+
+#[tokio::test]
+async fn timeout_cancels_the_agent_and_fails_the_run() {
+    let env = start(0).await;
+    let (session, _e) = env.connect().await;
+    let mut req = env.run("late2", "SLEEP", "main", "enzarb/issue-17", false);
+    req.timeout_secs = 2;
+    session.run_start(req).await.unwrap();
+    let (_, fin) = env.finished("late2").await;
+    assert_eq!(fin.outcome, RunOutcome::Failed);
+    assert!(fin.summary.contains("timed out"), "{}", fin.summary);
+    let t = transcript(&env, "late2");
+    assert!(
+        of_kind(&t, "acp")
+            .iter()
+            .any(|r| r["event"] == "cancel" && r["reason"] == "TimedOut")
+    );
+    assert!(!pid_alive(&env, "late2"));
 }
 
 #[tokio::test]
@@ -421,7 +647,7 @@ async fn cancel_kills_the_process_group() {
         .unwrap();
     loop {
         if session.run_status("slow").await.unwrap().state == RunPhase::Running {
-            // give claude a moment to start sleeping
+            // give the agent a moment to start its turn
             sleep(Duration::from_millis(500)).await;
             break;
         }
@@ -435,6 +661,16 @@ async fn cancel_kills_the_process_group() {
         session.run_status("slow").await.unwrap().state,
         RunPhase::Cancelled
     );
+    // session/cancel reached the agent, which ended its turn gracefully
+    let t = transcript(&env, "slow");
+    assert!(of_kind(&t, "acp").iter().any(|r| r["event"] == "cancel"));
+    assert!(
+        of_kind(&t, "update")
+            .iter()
+            .any(|r| r["update"]["content"]["text"] == "got-cancel"),
+        "{t:?}"
+    );
+    assert!(!pid_alive(&env, "slow"));
 }
 
 #[tokio::test]

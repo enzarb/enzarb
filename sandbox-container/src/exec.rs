@@ -1,4 +1,4 @@
-//! Running helper processes (`git`, `claude`) under the reaper.
+//! Running helper processes (`git`) under the reaper.
 //!
 //! Children are spawned with std `Command` plus `setsid` (so they lead their
 //! own process group) through [`Reaper::spawn_with`]; their exit status comes
@@ -64,7 +64,7 @@ pub struct Ctl {
 }
 
 impl Ctl {
-    async fn cancelled(&mut self) {
+    pub async fn cancelled(&mut self) {
         loop {
             if *self.cancel.borrow() {
                 return;
@@ -72,6 +72,17 @@ impl Ctl {
             if self.cancel.changed().await.is_err() {
                 std::future::pending::<()>().await;
             }
+        }
+    }
+}
+
+impl Ctl {
+    /// Resolves when the run is cancelled or past its deadline.
+    pub async fn stopped(&mut self) -> Stop {
+        let deadline = self.deadline;
+        tokio::select! {
+            () = self.cancelled() => Stop::Cancelled,
+            () = tokio::time::sleep_until(deadline) => Stop::TimedOut,
         }
     }
 }
@@ -198,7 +209,10 @@ pub async fn run(
 }
 
 /// SIGTERM the process group, SIGKILL after [`TERM_GRACE`]; returns the exit status.
-async fn terminate(pid: u32, exit: &mut oneshot::Receiver<ExitStatus>) -> Option<ExitStatus> {
+pub(crate) async fn terminate(
+    pid: u32,
+    exit: &mut oneshot::Receiver<ExitStatus>,
+) -> Option<ExitStatus> {
     let pg = Pid::from_raw(pid as i32);
     let _ = killpg(pg, Signal::SIGTERM);
     match tokio::time::timeout(TERM_GRACE, &mut *exit).await {
