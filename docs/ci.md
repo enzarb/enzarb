@@ -15,7 +15,7 @@ Every enzarb repo's GitHub Actions setup follows these rules. The goals are fast
 - **Tools:** come from `jdx/mise-action` with `cache: true`, reading the repo's `mise.toml`. No `curl | bash` installers.
 
 ## Rust repos
-- **Toolchain:** from `rust-toolchain.toml` via `actions-rust-lang/setup-rust-toolchain`. Turn off its built-in cache (`cache: false`); we use rust-cache.
+- **Toolchain:** pin an exact version in `rust-toolchain.toml` (e.g. `channel = "1.99.0"`), never `stable`. Runners resolve `stable` to different versions, which changes rust-cache's environment hash so every run misses. Install it via `actions-rust-lang/setup-rust-toolchain` with its built-in cache off (`cache: false`); we use rust-cache.
 - **Separate, parallel jobs:**
   - `fmt`: `cargo fmt --check` plus the "no `[patch]` in Cargo.lock" guard. No cache, no deps fetch.
   - `clippy`: `cargo clippy --all-targets [--all-features] -- -D warnings`.
@@ -35,7 +35,7 @@ Every enzarb repo's GitHub Actions setup follows these rules. The goals are fast
   --cache-from type=gha,scope=<image>
   --cache-to   type=gha,mode=max,scope=<image>   # only on main pushes
   ```
-  - Use `docker buildx build` with `docker/setup-buildx-action`.
+  - Use `docker buildx build` with `docker/setup-buildx-action`, **plus `crazy-max/ghaction-github-runtime@v3`**. The CLI needs `ACTIONS_RUNTIME_TOKEN`/`ACTIONS_CACHE_URL` for `type=gha`; without them, cache import and export silently do nothing.
   - Pass secrets with `--secret id=<name>_key,env=VAR` (contracts §11), never build-push-action's `secrets:` input.
 - **Rust Dockerfiles use [cargo-chef](https://github.com/LukeMathWalker/cargo-chef).**
   - The planner and `cargo chef cook --release` stages build the dependency layer, which the GHA layer cache keeps between runs.
