@@ -59,7 +59,9 @@ status:
     - type: Ready
 ```
 
-Repo key: a repository's **repo key** is `<connector>:<owner>/<repo>`, e.g. `github:enzarb/enzarb-ui`. Workflows and connectors route events by matching an event's repo key against the Projects' `spec.repositories`.
+Defaults: `runMode: worktree`, all `triggers` true, `sandbox.storage: 20Gi`. Helpers in `enzarb-crds`: `namespace_name()`, `tenant_name()`, `matches_repo()`, `RepoKey::from_url` (github.com only for now; lowercases).
+
+Repo key: a repository's **repo key** is `<connector>:<owner>/<repo>`, e.g. `github:enzarb/enzarb-ui`, always lowercase. Workflows and connectors route events by matching an event's repo key against the Projects' `spec.repositories`.
 
 ## 3. sandbox-init
 
