@@ -7,7 +7,7 @@ The original design included an `Environment` CRD and user-driven deploys from t
 The current focus is **sandboxes, receiving events, and running workflows in sandboxes against code repositories**.
 - The `Environment` CRD is removed. `Project` is the only enzarb CRD.
 - The user deploy path, the `env.enzarb.local` routes and wildcard certificates are out of scope.
-- Rootless dockerd in the sandbox is dropped by default; reconsider if agents need containers to run test suites.
+- Rootless dockerd in the sandbox is dropped by default. (Superseded by ADR-0012: Docker runs as an isolated sidecar.)
 
 ## Consequences
 - Simpler operator, Gateway configuration and sandbox image.

@@ -42,7 +42,11 @@ spec:
   triggers: { issues: true, changeRequests: true, mentions: true }
   sandbox:
     image: ""                          # empty = operator default (--sandbox-image)
-    runtimeClassName: ""               # empty = none
+    runtimeClassName: ""               # empty = none; must be gvisor|kata when docker.enabled (ADR-0012)
+    docker:
+      enabled: false                   # adds the dockerd sidecar
+      storage: 50Gi                    # PVC "docker" for /var/lib/docker
+      resources: {}                    # sidecar ResourceRequirements
     storage: 20Gi
     resources: {}                      # core/v1 ResourceRequirements
 status:
@@ -70,6 +74,8 @@ Repo key: a repository's **repo key** is `<connector>:<owner>/<repo>`, e.g. `git
 **Mux endpoint:** `ws://<pod>:7070/v1/mux`. Clients must send `Authorization: Bearer <token>`. The token is the `token` key of Secret `sandbox-auth` in the project namespace; the operator generates it, and it is mounted in the sandbox at `/var/run/enzarb/auth/token`.
 - Allowed clients: `sandbox-proxy` and the workflows executor.
 - Health: `GET :7070/healthz`.
+
+**Docker (ADR-0012):** when enabled, `DOCKER_HOST=unix:///var/run/docker/docker.sock` (shared emptyDir with the `dockerd` sidecar). The image ships the `docker` CLI plus the buildx and compose plugins.
 
 **PTY channels:** CLOSE reason is `exit:<code>` or `signal:<n>`. A client half-close leaves the process running.
 
