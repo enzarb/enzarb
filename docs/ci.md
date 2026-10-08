@@ -45,13 +45,11 @@ Every enzarb repo's GitHub Actions setup follows these rules. The goals are fast
 - **Node Dockerfiles:** copy `package.json`/`package-lock.json` and run `npm ci` before copying sources, so the deps layer caches.
 
 ## Node repos
-- `actions/setup-node` with `cache: npm`.
+- **node_modules:** cache `node_modules` itself with `actions/cache`, keyed on node version + `hashFiles('package-lock.json')`, and skip `npm ci` on a hit (the setup-node `cache: npm` only caches `~/.npm`, so `npm ci` still takes 30-90s). The repo's `.npmrc` reads `NODE_AUTH_TOKEN` for GitHub Packages. Share this as a local composite action.
 - **Separate parallel jobs:**
   - `check`: `npm run check` and `npm run lint`.
-  - `test`: unit and component tests.
-- **Playwright:** cache `~/.cache/ms-playwright`, keyed on the installed Playwright version.
-  - On a cache hit, run only `npx playwright install-deps chromium`.
-  - On a miss, run `npx playwright install --with-deps chromium`.
+  - `test-client`: browser component tests on a plain runner. Cache `~/.cache/ms-playwright` keyed on the installed Playwright version, run `npx playwright install chromium` only on a miss, and always run `npx playwright install-deps chromium` (about 15s). A `mcr.microsoft.com/playwright` job container was slower: the image pull costs about 55s per run.
+  - `test-server`: node tests (including testcontainers/Docker) on a plain runner. Avoid mounting the Docker socket into a job container.
 
 ## Reporting
 A PR that changes CI states before/after wall-clock times for the PR run and the main run, taken from the Actions UI or `gh run view --json jobs`.
