@@ -105,7 +105,7 @@ dmesg | head -3     # gVisor's synthetic kernel log
 
 The first run pulls the image through the sandbox's NetworkPolicy (443 and DNS only).
 
-> The chart value that sets the operator's runtime class (`operator.sandboxRuntimeClass`, `gvisor` in `values-dev.yaml`) is tracked in enzarb-helm#7. Until it lands, an operator deployed from the chart may not get `--sandbox-runtime-class gvisor`.
+> The chart sets the operator's runtime class (`operator.sandboxRuntimeClass: gvisor`) and, in `values-dev.yaml`, a 5Gi `docker` PVC per Project. Every Project has two PVCs (`workspace` and `docker`).
 
 ## First dogfood
 
