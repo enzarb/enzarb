@@ -220,6 +220,7 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 | `ENZARB_EXECUTOR_URL` (default `http://enzarb-workflows-executor.enzarb.svc:8081`) | workflows executor (callback base) |
 | `ENZARB_EXECUTOR_CALLBACK_SECRET` | workflows executor (callback token = `hex(HMAC-SHA256(secret, run_id))`; shared by all replicas) |
 | `RUST_LOG` | all Rust services |
+| `PROXY_LISTEN` (`0.0.0.0:8080`), `PROXY_IDLE_TIMEOUT_SECS` (900), `PROXY_MAX_MESSAGE_BYTES`, `PROXY_SECRET_TTL_SECS` (30) | sandbox-proxy |
 | `RECEIVER_LISTEN` (default `0.0.0.0:8080`) | connectors receiver |
 
 ## 10. GitHub App
@@ -268,3 +269,14 @@ steps:
   - implement: `enzarb/issue-<n>`
   - review and address_comments: the PR's `head_ref`, used as both `base_ref` and `branch`.
 - **Prompt templates:** `enzarb-workflows/crates/engine/prompts/*.md`. Untrusted text is wrapped in `<untrusted>` tags.
+
+### Docker builds with private dependencies
+- **Why not `--ssh default`:** it breaks once a repo needs more than one deploy key, because ssh offers the wrong key first.
+- **Pattern** (see `enzarb-sandbox-proxy/Dockerfile`): pass each key as a build secret, e.g. `--secret id=proto_key`, `--secret id=crds_key`, `--secret id=connectors_key`. In the same `RUN`:
+  1. write each key to `/root/.ssh/<name>_key`;
+  2. add an ssh `Host gh-<name>` alias with `IdentityFile` and `IdentitiesOnly yes`;
+  3. `git config url."ssh://git@gh-<name>/enzarb/<repo>".insteadOf "ssh://git@github.com/enzarb/<repo>"`;
+  4. `cargo build --locked`;
+  5. delete the keys.
+- **CI:** pass the repo-level deploy-key secrets as build secrets (`docker/build-push-action` `secrets:`).
+- **Locally:** pass any key that has access (e.g. `--secret id=proto_key,src=$HOME/.ssh/id_ed25519`).
