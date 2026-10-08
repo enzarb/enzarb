@@ -3,25 +3,40 @@ on:
   push: { branches: [main] }
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
 jobs:
   validate:
+    name: render + kubeconform
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: azure/setup-kubectl@v4
-      - name: Install kubeconform
-        run: |
-          mkdir -p "$RUNNER_TEMP/bin"
-          curl -sSfL https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz \
-            | tar xz -C "$RUNNER_TEMP/bin" kubeconform
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - uses: jdx/mise-action@v2
+        with:
+          cache: true
       - name: Render and validate overlays
         run: ./hack/validate.sh
+
+  vendored-drift:
+    name: vendored bases drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+        with:
+          cache: true
       - name: Vendored bases are up to date
         run: |
           set -euo pipefail
           source hack/versions.env
-          curl -sSfL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-4 | DESIRED_VERSION="$HELM_VERSION" bash
+          [ "v$(mise current helm)" = "$HELM_VERSION" ] || { echo "::error::mise.toml helm != HELM_VERSION"; exit 1; }
           helm version --short
           ./hack/refresh-vendored.sh
           git diff --exit-code -- base || { echo "::error::vendored bases drifted; run hack/refresh-vendored.sh"; exit 1; }
