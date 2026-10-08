@@ -1,0 +1,11 @@
+[package]
+name = "enzarb-sandbox-operator"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "enzarb-sandbox-operator"
+path = "src/main.rs"
+
+[dependencies]
+enzarb-crds = { path = "../enzarb-crds" }
