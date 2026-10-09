@@ -6,5 +6,8 @@ import type { RequestHandler } from './$types';
 export const GET: RequestHandler = ({ cookies }) => {
 	const state = generateState();
 	setOauthStateCookie(cookies, state);
-	redirect(302, githubClient().createAuthorizationURL(state, ['read:user']).toString());
+	// SvelteKit 3 only allows redirects to another origin when the call opts in; allow GitHub only.
+	redirect(302, githubClient().createAuthorizationURL(state, ['read:user']).toString(), {
+		external: ['https://github.com']
+	});
 };
