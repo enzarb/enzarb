@@ -64,6 +64,52 @@ async fn setup() -> Env {
     Env { pool, app, _c: c }
 }
 
+/// Regression test for enzarb-connectors#15: on a pgop-provisioned database the schema exists, the
+/// migration role owns it, and another role owns the database. `CREATE SCHEMA IF NOT EXISTS` then
+/// fails with "permission denied for database"; migrations must succeed anyway, and twice in a row.
+#[tokio::test]
+async fn migrates_as_schema_owner_without_database_create() {
+    let c = Postgres::default()
+        .with_tag("18")
+        .start()
+        .await
+        .expect("start postgres (Docker required)");
+    let host = c.get_host().await.unwrap();
+    let port = c.get_host_port_ipv4(5432).await.unwrap();
+    let admin = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+    let admin_pool = sqlx::PgPool::connect(&admin).await.unwrap();
+    for stmt in [
+        "CREATE ROLE wf_owner LOGIN PASSWORD 'x'",
+        "CREATE ROLE c_owner LOGIN PASSWORD 'x'",
+        "CREATE ROLE enzarb_connectors",
+        "CREATE DATABASE enzarb OWNER wf_owner",
+    ] {
+        sqlx::query(stmt).execute(&admin_pool).await.unwrap();
+    }
+    let in_db = sqlx::PgPool::connect(&format!(
+        "postgres://postgres:postgres@{host}:{port}/enzarb"
+    ))
+    .await
+    .unwrap();
+    sqlx::query("CREATE SCHEMA connectors AUTHORIZATION c_owner")
+        .execute(&in_db)
+        .await
+        .unwrap();
+
+    let pool = db::connect(&format!("postgres://c_owner:x@{host}:{port}/enzarb"), 2)
+        .await
+        .unwrap();
+    db::migrate(&pool)
+        .await
+        .expect("first migrate as schema owner");
+    db::migrate(&pool).await.expect("second migrate is a no-op");
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM connectors.installations")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+}
+
 fn fixture(name: &str) -> Vec<u8> {
     let p = format!(
         "{}/../../crates/connector-github/tests/fixtures/{name}.json",

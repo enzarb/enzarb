@@ -1,5 +1,11 @@
 -- Schema `connectors` (owner: enzarb_connectors_owner). History lives in connectors._sqlx_migrations.
-CREATE SCHEMA IF NOT EXISTS connectors;
+-- pgop creates this schema. Plain `CREATE SCHEMA IF NOT EXISTS` needs database-level CREATE even when
+-- the schema exists, which this role does not have, so only create it when it is missing.
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'connectors') THEN
+        CREATE SCHEMA connectors;
+    END IF;
+END $$;
 
 -- One row per GitHub App installation, maintained from installation and
 -- installation_repositories webhooks. `repos` is a sorted JSON array of

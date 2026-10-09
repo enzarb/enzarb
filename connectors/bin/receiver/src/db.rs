@@ -22,9 +22,18 @@ pub async fn connect(database_url: &str, max_connections: u32) -> Result<PgPool,
 /// Applies pending migrations. Run as the schema owner role.
 pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
     let mut conn = pool.acquire().await?;
-    sqlx::query(&format!("CREATE SCHEMA IF NOT EXISTS {SCHEMA}"))
-        .execute(&mut *conn)
-        .await?;
+    // `CREATE SCHEMA IF NOT EXISTS` checks the database-level CREATE privilege before it looks
+    // for the schema, so it fails for the schema owner role when pgop already created the schema
+    // but the role does not own the database. Only create the schema when it is missing.
+    sqlx::query(&format!(
+        "DO $$ BEGIN \
+           IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = '{SCHEMA}') THEN \
+             CREATE SCHEMA {SCHEMA}; \
+           END IF; \
+         END $$"
+    ))
+    .execute(&mut *conn)
+    .await?;
     // Session-local; unqualified `_sqlx_migrations` then resolves into `connectors`.
     sqlx::query(&format!("SET search_path TO {SCHEMA}"))
         .execute(&mut *conn)
