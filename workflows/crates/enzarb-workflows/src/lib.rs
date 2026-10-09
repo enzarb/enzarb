@@ -28,6 +28,16 @@ pub fn init_tracing() {
         .init();
 }
 
+/// Selects `ring` as the process-wide rustls crypto provider. Two providers are linked in:
+/// `aws-lc-rs` through reqwest 0.13 (in `enzarb-connector-github`) and `ring` through kube.
+/// With both enabled and none installed, kube-client's `ClientConfig::builder()` panics instead of
+/// picking one. Call once at startup, before any TLS client is built; calling it again (or after
+/// another install) is a no-op.
+pub fn init_tls() {
+    // Err means a provider is already installed, which is fine.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 pub async fn run_cli(cli: Cli) -> Result<(), Error> {
     match cli.command {
         Command::Migrate { require_roles } => {

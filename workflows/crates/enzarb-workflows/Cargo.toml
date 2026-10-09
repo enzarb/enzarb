@@ -18,6 +18,7 @@ clap = { version = "4", features = ["derive", "env"] }
 tokio = { workspace = true, features = ["signal", "net"] }
 axum.workspace = true
 kube.workspace = true
+rustls.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

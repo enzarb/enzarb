@@ -1133,6 +1133,7 @@ dependencies = [
  "clap",
  "engine",
  "kube",
+ "rustls",
  "sqlx",
  "testcontainers-modules",
  "thiserror",
