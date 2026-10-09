@@ -1,6 +1,7 @@
 // Plain-SQL migration runner: `npm run migrate` (node strips the types).
 // Applies migrations/*.sql in filename order inside one transaction each,
-// tracked in app._migrations. Run with the schema owner's DATABASE_URL.
+// tracked in app._migrations. Run with the schema owner's DATABASE_URL (the role need not own the
+// database, only the `app` schema).
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +11,14 @@ const defaultDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 
 export async function migrate(sql: postgres.Sql, dir = defaultDir): Promise<string[]> {
 	const files = (await readdir(dir)).filter((f) => f.endsWith('.sql')).sort();
-	await sql`CREATE SCHEMA IF NOT EXISTS app`;
+	// CREATE SCHEMA IF NOT EXISTS checks the database-level CREATE privilege before it looks for the
+	// schema, so it fails for the schema owner when pgop already created `app` and another role owns
+	// the database. Only create the schema when it is missing.
+	await sql`DO $$ BEGIN
+		IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'app') THEN
+			CREATE SCHEMA app;
+		END IF;
+	END $$`;
 	await sql`CREATE TABLE IF NOT EXISTS app._migrations (
 		name text PRIMARY KEY,
 		applied_at timestamptz NOT NULL DEFAULT now()
