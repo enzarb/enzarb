@@ -17,6 +17,8 @@ pub const COND_READY: &str = "Ready";
 pub const CONDITION_TYPES: [&str; 3] = [COND_RESOURCES_READY, COND_SANDBOX_READY, COND_READY];
 /// Terminal `False` reason on `ResourcesReady` for a spec the operator will not act on.
 pub const REASON_INVALID_SPEC: &str = "InvalidSpec";
+/// Non-terminal `Unknown` reason for a retryable reconcile error (e.g. a transient API failure).
+pub const REASON_RETRYING: &str = "Retrying";
 /// Longest Project name: `sb-<name>-workspace` must fit a 63-character label (ADR-0013).
 pub const MAX_PROJECT_NAME_LEN: usize = 50;
 

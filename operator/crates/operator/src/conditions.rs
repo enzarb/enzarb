@@ -1,7 +1,9 @@
 //! Status condition logic: observations in, ordered `Project` conditions out. Pure.
 
 use enzarb_crds::upstream::sandbox::Sandbox;
-use enzarb_crds::{COND_READY, COND_RESOURCES_READY, COND_SANDBOX_READY, REASON_INVALID_SPEC};
+use enzarb_crds::{
+    COND_READY, COND_RESOURCES_READY, COND_SANDBOX_READY, REASON_INVALID_SPEC, REASON_RETRYING,
+};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
 
 /// What the reconciler learned about one step.
@@ -10,9 +12,11 @@ pub enum Check {
     Ok,
     /// Applied, but not ready yet (reason, message).
     Pending(String, String),
-    /// Applying or reading failed.
+    /// Applying or reading failed in a way that is retried with backoff (e.g. a transient API
+    /// error). Rendered `Unknown`/`Retrying`, which is deliberately not terminal-looking.
     Error(String),
-    /// Failed with a specific reason (should end in `Error`/`Failed`/`Failure` to show as a failure).
+    /// Failed with a specific reason that needs a person. `*Error`/`*Failed`/`*Failure` is
+    /// reserved for such states, as the UI treats those suffixes as a failed step.
     Failure(String, String),
     /// The spec cannot be acted on until it is edited (reason `InvalidSpec`).
     Invalid(String),
@@ -85,7 +89,7 @@ fn condition(
     let (status, reason, message) = match check {
         Check::Ok => ("True", "Ready".to_string(), String::new()),
         Check::Pending(r, m) => ("False", r.clone(), m.clone()),
-        Check::Error(m) => ("False", "ReconcileError".to_string(), m.clone()),
+        Check::Error(m) => ("Unknown", REASON_RETRYING.to_string(), m.clone()),
         Check::Failure(r, m) => ("False", r.clone(), m.clone()),
         Check::Invalid(m) => ("False", REASON_INVALID_SPEC.to_string(), m.clone()),
         Check::Skipped => (
@@ -260,7 +264,7 @@ mod tests {
                     resources: Check::Error("denied".into()),
                     sandbox: Check::Skipped,
                 },
-                ["False", "Unknown", "False"],
+                ["Unknown", "Unknown", "False"],
             ),
             (
                 "nothing attempted",
@@ -303,6 +307,25 @@ mod tests {
             .message,
             "boom"
         );
+    }
+
+    #[test]
+    fn retryable_error_is_unknown_and_not_terminal_looking() {
+        let obs = Observed {
+            resources: Check::Ok,
+            sandbox: Check::Error("boom".into()),
+        };
+        let c = compute(1, &obs, &[], &t(0));
+        assert_eq!(c[1].status, "Unknown");
+        assert_eq!(c[1].reason, "Retrying");
+        assert_eq!(c[1].message, "boom");
+        assert_eq!(c[2].status, "False");
+        assert_eq!(c[2].reason, "NotReady");
+        for cond in &c {
+            for suffix in ["Error", "Failed", "Failure"] {
+                assert!(!cond.reason.ends_with(suffix), "{}", cond.reason);
+            }
+        }
     }
 
     #[test]
