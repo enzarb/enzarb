@@ -32,7 +32,7 @@ spec:
                 default: ''
                 type: string
               owner:
-                description: Owner id; the Capsule Tenant is named `enzarb-<owner>`.
+                description: Owner id (GitHub login of the creator).
                 type: string
               repositories:
                 default: []
@@ -62,7 +62,6 @@ spec:
                 default:
                   image: ''
                   resources: {}
-                  runtimeClassName: ''
                   storage: 20Gi
                 properties:
                   image:
@@ -106,10 +105,6 @@ spec:
                         description: 'Requests describes the minimum amount of compute resources required. If Requests is omitted for a container, it defaults to Limits if that is explicitly specified, otherwise to an implementation-defined value. Requests cannot exceed Limits. More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/'
                         type: object
                     type: object
-                  runtimeClassName:
-                    default: ''
-                    description: Empty = none.
-                    type: string
                   storage:
                     default: 20Gi
                     description: PVC size, e.g. `20Gi`.
@@ -172,7 +167,7 @@ spec:
                   type: object
                 type: array
               namespace:
-                description: '`enzarb-p-<project name>`.'
+                description: The shared sandbox namespace (ADR-0013), e.g. `enzarb-sandboxes`.
                 nullable: true
                 type: string
               observedGeneration:
@@ -193,10 +188,10 @@ spec:
                     - name
                     type: object
                   endpoint:
-                    description: e.g. `ws://sandbox.enzarb-p-enzarb.svc:7070/v1/mux`.
+                    description: e.g. `ws://sb-enzarb.enzarb-sandboxes.svc:7070/v1/mux`.
                     type: string
                   name:
-                    description: Sandbox CR name in `status.namespace`.
+                    description: 'Sandbox CR name in `status.namespace`: `sb-<project>`.'
                     type: string
                 required:
                 - authSecretRef
@@ -208,6 +203,13 @@ spec:
         - spec
         title: Project
         type: object
+        x-kubernetes-validations:
+        - message: Project name must be at most 50 characters
+          optionalOldSelf: true
+          rule: oldSelf.hasValue() || self.metadata.name.size() <= 50
+        - message: Project name must be a DNS label (lowercase letters, digits and '-')
+          optionalOldSelf: true
+          rule: oldSelf.hasValue() || self.metadata.name.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
     served: true
     storage: true
     subresources:

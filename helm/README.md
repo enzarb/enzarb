@@ -3,7 +3,7 @@
 Umbrella chart for enzarb (`enzarb/`). Contracts: `docs/contracts.md` and `docs/database.md` in the top-level `enzarb` repo.
 
 ## Prerequisites (enzarb-kubernetes)
-Gateway `enzarb` in `enzarb-system` (TLS secret `enzarb-tls`), Capsule (its `userGroups` must include `system:serviceaccounts:<release namespace>`), agent-sandbox, and pgop v0.9.1 CRDs/operator.
+Gateway `enzarb` in `enzarb-system` (TLS secret `enzarb-tls`), agent-sandbox, and pgop v0.9.1 CRDs/operator.
 
 ## Install
 ```sh
@@ -17,13 +17,17 @@ helm install enzarb enzarb -n enzarb --create-namespace -f enzarb/values-dev.yam
 | Component | Resources |
 |---|---|
 | ui | Deployment, Service :3000, ClusterRole `projects` get/list/create/delete |
-| workflows | Deployment (`run --roles ...`), Service `enzarb-workflows-executor` :8081, ClusterRole projects + `secrets/sandbox-auth` get |
+| workflows | Deployment (`run --roles ...`), Service `enzarb-workflows-executor` :8081, ClusterRole projects + Role `secrets` get in the sandbox namespace |
 | connectors | Deployment `receiver serve`, Service :8080 |
-| sandbox-proxy | Deployment, Service :8080, ClusterRole projects + `secrets/sandbox-auth` get |
-| operator | Deployment (2 replicas, leader election), ClusterRole/Role from its `deploy/rbac.yaml`; optional ConfigMap `enzarb-sandbox-operator-docker-profiles` when `operator.docker.profiles` is set |
+| sandbox-proxy | Deployment, Service :8080, ClusterRole projects + Role `secrets` get in the sandbox namespace |
+| operator | Deployment (2 replicas, leader election), ClusterRole (Projects, Project finalizers) + Role in the sandbox namespace (secrets, PVCs, NetworkPolicies, Sandboxes, events), leader-election Role; optional ConfigMap `enzarb-sandbox-operator-docker-profiles` when `operator.docker.profiles` is set |
+| sandbox namespace | Namespace `sandbox.namespace` (`enzarb-sandboxes`, kept on uninstall), ServiceAccount `enzarb-sandbox` (no token, no RBAC), LimitRange, default-deny NetworkPolicy (ADR-0013) |
 | pgop | Cluster `enzarb-pg`, 6 Roles (`<svc>-owner`, `<svc>`), Database `enzarb` with 5 schemas |
 | migrations | 3 Jobs: workflows, connectors, ui |
 | routes | HTTPRoutes `/` `/sandbox/` `/hooks/` on `host` |
+
+## Shared sandbox namespace (ADR-0013)
+All Projects land in one namespace, `sandbox.namespace` (`ENZARB_SANDBOX_NAMESPACE`, default `enzarb-sandboxes`). The chart creates it with `helm.sh/resource-policy: keep` (it holds Project volumes), Pod Security `enforce: privileged` (the dockerd sidecar needs SYS_ADMIN/NET_ADMIN under gVisor, ADR-0012), a default-deny NetworkPolicy (the operator adds per-Project allow policies) and a LimitRange (`sandbox.limitRange`). Sandbox pods run as `sandbox.serviceAccount` (`ENZARB_SANDBOX_SERVICE_ACCOUNT`, default `enzarb-sandbox`) with no token and no RBAC: sandboxes have no Kubernetes API access. **`sandbox.egress.clusterCIDRs` is required** (pod, service and node networks; rendering fails without it) -> `ENZARB_SANDBOX_EGRESS_EXCLUDE_CIDRS`; optional `sandbox.dnsCIDRs` -> `ENZARB_SANDBOX_DNS_CIDRS`. `sandbox.executorCallbackPort` -> `ENZARB_EXECUTOR_CALLBACK_PORT`. The operator, workflows executor and sandbox-proxy get namespaced Roles there; Capsule is no longer used.
 
 ## Sandbox runtime and Docker (ADR-0012)
 Docker is always on and the runtime class is cluster-admin config, not per Project.

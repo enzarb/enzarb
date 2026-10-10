@@ -1,5 +1,5 @@
 # enzarb umbrella chart. See ../README.md for the install flow and prerequisites
-# (enzarb-kubernetes: Gateway, Capsule, agent-sandbox, pgop).
+# (enzarb-kubernetes: Gateway, agent-sandbox, pgop).
 
 # Public hostname served by the Gateway (HTTPRoute hostnames).
 host: enzarb.local
@@ -89,7 +89,7 @@ ui:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-ui
-    tag: 0.4.2
+    tag: 0.5.0
     pullPolicy: ""
   # HTTP probes (/healthz liveness, /readyz readiness). false falls back to TCP probes.
   probes:
@@ -101,7 +101,7 @@ workflows:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-workflows
-    tag: 0.1.1
+    tag: 0.2.0
     pullPolicy: ""
   # Roles for `run`: reducer, executor, ticker.
   roles: reducer,executor,ticker
@@ -128,17 +128,46 @@ sandboxProxy:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-sandbox-proxy
-    tag: 0.1.0
+    tag: 0.2.0
     pullPolicy: ""
   idleTimeoutSecs: 900
   resources: {}
   extraEnv: []
 
+# The one namespace that holds every Project's sandbox objects (ADR-0013). Created by this
+# chart, separate from the release namespace.
+sandbox:
+  # Must be dedicated: not the release namespace, kube-system, kube-public, kube-node-lease or default.
+  namespace: enzarb-sandboxes
+  # ServiceAccount of sandbox pods (ENZARB_SANDBOX_SERVICE_ACCOUNT). Token not mounted, no RBAC:
+  # sandboxes have no Kubernetes API access.
+  serviceAccount: enzarb-sandbox
+  # Port of the workflows executor that sandboxes may call back (ENZARB_EXECUTOR_CALLBACK_PORT).
+  executorCallbackPort: 8081
+  # Egress policy (ADR-0013). clusterCIDRs is REQUIRED (no default; rendering fails if empty):
+  # the cluster's pod, service and node networks, which contain the API server endpoint. Sandbox
+  # egress on 443 goes to the internet except these (ENZARB_SANDBOX_EGRESS_EXCLUDE_CIDRS).
+  egress:
+    # Dual-stack clusters must also list their IPv6 pod/service/node CIDRs, otherwise ::/0 is not
+    # excepted.
+    clusterCIDRs: []
+  # Optional CIDRs of DNS servers (e.g. NodeLocal DNSCache) allowed besides the cluster DNS pods
+  # (ENZARB_SANDBOX_DNS_CIDRS).
+  dnsCIDRs: []
+  # LimitRange defaults for containers without their own resources. Permissive on purpose
+  # (the dockerd sidecar builds images); Projects set real pod resources. Set to {} to omit.
+  # Note: a container that sets requests above the default limit must also set its own limits,
+  # otherwise the LimitRange rejects the pod. No `max` is set on purpose (it could block
+  # legitimate pods). The dockerd sidecar should get explicit operator.docker.resources.
+  limitRange:
+    default: { cpu: "4", memory: 8Gi }
+    defaultRequest: { cpu: 100m, memory: 256Mi }
+
 operator:
   replicaCount: 2
   image:
     repository: ghcr.io/enzarb/enzarb-sandbox-operator
-    tag: 0.1.0
+    tag: 0.2.0
     pullPolicy: ""
   # Default sandbox image for Projects (ENZARB_SANDBOX_IMAGE).
   sandboxImage: ghcr.io/enzarb/enzarb-sandbox:0.1.0

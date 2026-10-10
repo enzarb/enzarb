@@ -30,7 +30,7 @@ roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: enzarb-
 subjects:
   - { kind: ServiceAccount, name: enzarb-ui, namespace: {{ .Release.Namespace }} }
 ---
-{{- /* workflows: project index + sandbox-auth tokens (secrets narrowed to sandbox-auth). */}}
+{{- /* workflows: project index (cluster-wide) + sandbox auth Secrets (sandbox namespace Role below). */}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -41,10 +41,6 @@ rules:
   - apiGroups: [enzarb.dev]
     resources: [projects]
     verbs: [get, list, watch]
-  - apiGroups: [""]
-    resources: [secrets]
-    resourceNames: [sandbox-auth]
-    verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -67,10 +63,6 @@ rules:
   - apiGroups: [enzarb.dev]
     resources: [projects]
     verbs: [get, list, watch]
-  - apiGroups: [""]
-    resources: [secrets]
-    resourceNames: [sandbox-auth]
-    verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -82,8 +74,10 @@ roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: enzarb-
 subjects:
   - { kind: ServiceAccount, name: enzarb-sandbox-proxy, namespace: {{ .Release.Namespace }} }
 ---
-{{- /* operator: from enzarb-sandbox-operator deploy/rbac.yaml. The secrets `get` is narrowed
-       to sandbox-auth (the only Secret it reads); `create` cannot be name-restricted. */}}
+{{- /* operator: mirrors enzarb-sandbox-operator deploy/rbac.yaml (ADR-0013). Cluster scope is
+       limited to the Project CRs; everything it
+       creates lives in the sandbox namespace and is granted by the Role below. No
+       namespaces permission and no cluster-wide secrets. */}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -93,32 +87,13 @@ metadata:
 rules:
   - apiGroups: [enzarb.dev]
     resources: [projects]
-    verbs: [get, list, watch, patch]
+    verbs: [list, watch]
   - apiGroups: [enzarb.dev]
     resources: [projects/status]
     verbs: [patch]
-  - apiGroups: [capsule.clastix.io]
-    resources: [tenants]
-    verbs: [create, patch]
-  - apiGroups: [""]
-    resources: [namespaces]
-    verbs: [get, create, patch, delete]
-  - apiGroups: [""]
-    resources: [secrets]
-    verbs: [create]
-  - apiGroups: [""]
-    resources: [secrets]
-    resourceNames: [sandbox-auth]
-    verbs: [get]
-  - apiGroups: [""]
-    resources: [persistentvolumeclaims]
-    verbs: [create, patch]
-  - apiGroups: [networking.k8s.io]
-    resources: [networkpolicies]
-    verbs: [create, patch]
-  - apiGroups: [agents.x-k8s.io]
-    resources: [sandboxes]
-    verbs: [list, watch, create, patch]
+  - apiGroups: [enzarb.dev]
+    resources: [projects/finalizers]
+    verbs: [update]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -129,6 +104,65 @@ metadata:
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: enzarb-sandbox-operator }
 subjects:
   - { kind: ServiceAccount, name: enzarb-sandbox-operator, namespace: {{ .Release.Namespace }} }
+---
+{{- /* Namespaced grants in the sandbox namespace (ADR-0013). Secret names are per Project
+       (sb-<project>-auth), so resourceNames cannot pin them. */}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: enzarb-sandbox-operator
+  namespace: {{ .Values.sandbox.namespace }}
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-sandbox-operator") | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, create, patch]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, create, patch]
+  - apiGroups: [agents.x-k8s.io]
+    resources: [sandboxes]
+    verbs: [get, list, watch, create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: enzarb-sandbox-operator
+  namespace: {{ .Values.sandbox.namespace }}
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-sandbox-operator") | nindent 4 }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: enzarb-sandbox-operator }
+subjects:
+  - { kind: ServiceAccount, name: enzarb-sandbox-operator, namespace: {{ .Release.Namespace }} }
+---
+{{- /* workflows executor and sandbox-proxy read the per-Project auth Secret. */}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: enzarb-sandbox-auth-reader
+  namespace: {{ .Values.sandbox.namespace }}
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb") | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: enzarb-sandbox-auth-reader
+  namespace: {{ .Values.sandbox.namespace }}
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb") | nindent 4 }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: enzarb-sandbox-auth-reader }
+subjects:
+  - { kind: ServiceAccount, name: enzarb-workflows, namespace: {{ .Release.Namespace }} }
+  - { kind: ServiceAccount, name: enzarb-sandbox-proxy, namespace: {{ .Release.Namespace }} }
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

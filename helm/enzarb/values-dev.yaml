@@ -29,3 +29,10 @@ operator:
   image: { tag: dev }
   sandboxImage: ghcr.io/enzarb/enzarb-sandbox:dev
   sandboxRuntimeClass: gvisor
+
+sandbox:
+  egress:
+    # kind: pod, service and node networks (contain the API server). 172.18.0.0/16 assumes
+    # docker's default `kind` network subnet: check with `docker network inspect kind`.
+    # Dual-stack clusters must also list their IPv6 CIDRs.
+    clusterCIDRs: [10.244.0.0/16, 10.96.0.0/12, 172.18.0.0/16]

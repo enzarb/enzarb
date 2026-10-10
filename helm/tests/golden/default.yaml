@@ -1,4 +1,67 @@
 ---
+# Source: enzarb/templates/sandbox-namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: enzarb-sandboxes
+  labels:
+    app.kubernetes.io/name: enzarb-sandboxes
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+    # Pod Security: privileged. The dockerd sidecar needs SYS_ADMIN/NET_ADMIN under gVisor and
+    # the kata profile is privileged (ADR-0012); gVisor is the isolation boundary. Explicit
+    # label so a stricter cluster default cannot reject sandbox pods.
+    pod-security.kubernetes.io/enforce: privileged
+  annotations:
+    # Keep on `helm uninstall`: the namespace holds every Project's workspace and docker
+    # volumes, so removing the chart must not delete user data. Delete it by hand.
+    helm.sh/resource-policy: keep
+
+---
+# Source: enzarb/templates/sandbox-namespace.yaml
+# Namespace-wide default deny. The operator adds an allow policy per Project (sb-<project>).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: enzarb-sandboxes
+  labels:
+    app.kubernetes.io/name: enzarb-sandboxes
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+
+---
+# Source: enzarb/templates/sandbox-namespace.yaml
+# Defaults for containers that set no resources; per-Project limits come from the pod itself.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: enzarb-sandbox-defaults
+  namespace: enzarb-sandboxes
+  labels:
+    app.kubernetes.io/name: enzarb-sandboxes
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "4"
+        memory: 8Gi
+      defaultRequest:
+        cpu: 100m
+        memory: 256Mi
+
+---
 # Source: enzarb/templates/rbac.yaml
 apiVersion: v1
 kind: ServiceAccount
@@ -77,6 +140,24 @@ metadata:
     helm.sh/chart: enzarb-0.0.0
 
 ---
+# Source: enzarb/templates/sandbox-namespace.yaml
+# Created with the release, so it exists before any Sandbox (the operator never creates it).
+# Sandbox pods run as this ServiceAccount: no token mounted and no Role/RoleBinding, so
+# sandboxes have no Kubernetes API access. Future access is limited to other namespaces.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: enzarb-sandbox
+  namespace: enzarb-sandboxes
+  labels:
+    app.kubernetes.io/name: enzarb-sandbox
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+automountServiceAccountToken: false
+
+---
 # Source: enzarb/templates/secrets.yaml
 apiVersion: v1
 kind: Secret
@@ -146,10 +227,6 @@ rules:
   - apiGroups: [enzarb.dev]
     resources: [projects]
     verbs: [get, list, watch]
-  - apiGroups: [""]
-    resources: [secrets]
-    resourceNames: [sandbox-auth]
-    verbs: [get]
 
 ---
 # Source: enzarb/templates/rbac.yaml
@@ -167,10 +244,6 @@ rules:
   - apiGroups: [enzarb.dev]
     resources: [projects]
     verbs: [get, list, watch]
-  - apiGroups: [""]
-    resources: [secrets]
-    resourceNames: [sandbox-auth]
-    verbs: [get]
 
 ---
 # Source: enzarb/templates/rbac.yaml
@@ -187,32 +260,13 @@ metadata:
 rules:
   - apiGroups: [enzarb.dev]
     resources: [projects]
-    verbs: [get, list, watch, patch]
+    verbs: [list, watch]
   - apiGroups: [enzarb.dev]
     resources: [projects/status]
     verbs: [patch]
-  - apiGroups: [capsule.clastix.io]
-    resources: [tenants]
-    verbs: [create, patch]
-  - apiGroups: [""]
-    resources: [namespaces]
-    verbs: [get, create, patch, delete]
-  - apiGroups: [""]
-    resources: [secrets]
-    verbs: [create]
-  - apiGroups: [""]
-    resources: [secrets]
-    resourceNames: [sandbox-auth]
-    verbs: [get]
-  - apiGroups: [""]
-    resources: [persistentvolumeclaims]
-    verbs: [create, patch]
-  - apiGroups: [networking.k8s.io]
-    resources: [networkpolicies]
-    verbs: [create, patch]
-  - apiGroups: [agents.x-k8s.io]
-    resources: [sandboxes]
-    verbs: [list, watch, create, patch]
+  - apiGroups: [enzarb.dev]
+    resources: [projects/finalizers]
+    verbs: [update]
 
 ---
 # Source: enzarb/templates/rbac.yaml
@@ -391,6 +445,51 @@ spec:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
+  name: enzarb-sandbox-operator
+  namespace: enzarb-sandboxes
+  labels:
+    app.kubernetes.io/name: enzarb-sandbox-operator
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, create, patch]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, create, patch]
+  - apiGroups: [agents.x-k8s.io]
+    resources: [sandboxes]
+    verbs: [get, list, watch, create, patch]
+
+---
+# Source: enzarb/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: enzarb-sandbox-auth-reader
+  namespace: enzarb-sandboxes
+  labels:
+    app.kubernetes.io/name: enzarb
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get]
+
+---
+# Source: enzarb/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
   name: enzarb-sandbox-operator-leader
   labels:
     app.kubernetes.io/name: enzarb-sandbox-operator
@@ -422,6 +521,41 @@ rules:
   - apiGroups: [pgop.ruck.io]
     resources: [clusters, databases, roles]
     verbs: [get, list, watch]
+
+---
+# Source: enzarb/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: enzarb-sandbox-operator
+  namespace: enzarb-sandboxes
+  labels:
+    app.kubernetes.io/name: enzarb-sandbox-operator
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: enzarb-sandbox-operator }
+subjects:
+  - { kind: ServiceAccount, name: enzarb-sandbox-operator, namespace: enzarb }
+
+---
+# Source: enzarb/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: enzarb-sandbox-auth-reader
+  namespace: enzarb-sandboxes
+  labels:
+    app.kubernetes.io/name: enzarb
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: enzarb-sandbox-auth-reader }
+subjects:
+  - { kind: ServiceAccount, name: enzarb-workflows, namespace: enzarb }
+  - { kind: ServiceAccount, name: enzarb-sandbox-proxy, namespace: enzarb }
 
 ---
 # Source: enzarb/templates/rbac.yaml
@@ -565,10 +699,10 @@ spec:
       serviceAccountName: enzarb-connectors
 
       initContainers:
-        - name: wait-enzarb-migrate-ui-6b834a7eef
+        - name: wait-enzarb-migrate-ui-14c071cf3e
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-6b834a7eef]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-14c071cf3e]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: receiver
@@ -658,7 +792,7 @@ spec:
 
       containers:
         - name: operator
-          image: ghcr.io/enzarb/enzarb-sandbox-operator:0.1.0
+          image: ghcr.io/enzarb/enzarb-sandbox-operator:0.2.0
           imagePullPolicy: IfNotPresent
           ports:
             - { name: health, containerPort: 8080 }
@@ -667,6 +801,10 @@ spec:
               valueFrom: { fieldRef: { fieldPath: metadata.name } }
             - name: ENZARB_RELEASE_NAMESPACE
               valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+            - { name: ENZARB_SANDBOX_NAMESPACE, value: "enzarb-sandboxes" }
+            - { name: ENZARB_SANDBOX_SERVICE_ACCOUNT, value: "enzarb-sandbox" }
+            - { name: ENZARB_EXECUTOR_CALLBACK_PORT, value: "8081" }
+            - { name: ENZARB_SANDBOX_EGRESS_EXCLUDE_CIDRS, value: "10.42.0.0/16,10.43.0.0/16" }
             - { name: ENZARB_SANDBOX_IMAGE, value: "ghcr.io/enzarb/enzarb-sandbox:0.1.0" }
             - { name: ENZARB_DEFAULT_STORAGE, value: "20Gi" }
             - { name: ENZARB_SANDBOX_RUNTIME_CLASS, value: "gvisor" }
@@ -711,7 +849,7 @@ spec:
 
       containers:
         - name: proxy
-          image: ghcr.io/enzarb/enzarb-sandbox-proxy:0.1.0
+          image: ghcr.io/enzarb/enzarb-sandbox-proxy:0.2.0
           imagePullPolicy: IfNotPresent
           ports:
             - { name: http, containerPort: 8080 }
@@ -760,14 +898,14 @@ spec:
       serviceAccountName: enzarb-ui
 
       initContainers:
-        - name: wait-enzarb-migrate-ui-6b834a7eef
+        - name: wait-enzarb-migrate-ui-14c071cf3e
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-6b834a7eef]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-14c071cf3e]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: ui
-          image: ghcr.io/enzarb/enzarb-ui:0.4.2
+          image: ghcr.io/enzarb/enzarb-ui:0.5.0
           imagePullPolicy: IfNotPresent
           ports:
             - { name: http, containerPort: 3000 }
@@ -864,14 +1002,14 @@ spec:
       terminationGracePeriodSeconds: 60
 
       initContainers:
-        - name: wait-enzarb-migrate-ui-6b834a7eef
+        - name: wait-enzarb-migrate-ui-14c071cf3e
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-6b834a7eef]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-14c071cf3e]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: workflows
-          image: ghcr.io/enzarb/enzarb-workflows:0.1.1
+          image: ghcr.io/enzarb/enzarb-workflows:0.2.0
           imagePullPolicy: IfNotPresent
           args: [run, --roles, "reducer,executor,ticker"]
           ports:
@@ -923,12 +1061,13 @@ spec:
                   name: enzarb-generated
                   key: callback-secret
             - { name: ENZARB_EXECUTOR_URL, value: "http://enzarb-workflows-executor.enzarb.svc:8081" }
+            - { name: ENZARB_EXECUTOR_LISTEN, value: "0.0.0.0:8081" }
             - { name: ENZARB_PUBLIC_URL, value: "https://enzarb.local" }
             - { name: ENZARB_DB_MAX_CONNECTIONS, value: "10" }
             - { name: ENZARB_BOT_HANDLE, value: "enzarb" }
             - { name: ENZARB_BOT_LOGIN, value: "enzarb[bot]" }
             - { name: RUST_LOG, value: "info" }
-          # /healthz is on 8081 with the executor role, otherwise on 8082.
+          # /healthz is on sandbox.executorCallbackPort with the executor role, otherwise on 8082.
           readinessProbe:
             httpGet: { path: /healthz, port: executor }
           livenessProbe:
@@ -945,7 +1084,7 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: enzarb-migrate-workflows-dc78b5b012
+  name: enzarb-migrate-workflows-955eb43267
   labels:
     app.kubernetes.io/name: enzarb-migrate-workflows
     app.kubernetes.io/instance: enzarb
@@ -984,7 +1123,7 @@ spec:
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: migrate
-          image: ghcr.io/enzarb/enzarb-workflows:0.1.1
+          image: ghcr.io/enzarb/enzarb-workflows:0.2.0
           imagePullPolicy: IfNotPresent
           args: [migrate, --require-roles]
           env:
@@ -1030,7 +1169,7 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: enzarb-migrate-connectors-faf471bb2f
+  name: enzarb-migrate-connectors-403ba5de4a
   labels:
     app.kubernetes.io/name: enzarb-migrate-connectors
     app.kubernetes.io/instance: enzarb
@@ -1051,10 +1190,10 @@ spec:
       restartPolicy: OnFailure
 
       initContainers:
-        - name: wait-enzarb-migrate-workflows-dc78b5b012
+        - name: wait-enzarb-migrate-workflows-955eb43267
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-workflows-dc78b5b012]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-workflows-955eb43267]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: migrate
@@ -1104,7 +1243,7 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: enzarb-migrate-ui-6b834a7eef
+  name: enzarb-migrate-ui-14c071cf3e
   labels:
     app.kubernetes.io/name: enzarb-migrate-ui
     app.kubernetes.io/instance: enzarb
@@ -1125,14 +1264,14 @@ spec:
       restartPolicy: OnFailure
 
       initContainers:
-        - name: wait-enzarb-migrate-connectors-faf471bb2f
+        - name: wait-enzarb-migrate-connectors-403ba5de4a
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-connectors-faf471bb2f]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-connectors-403ba5de4a]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: migrate
-          image: ghcr.io/enzarb/enzarb-ui:0.4.2
+          image: ghcr.io/enzarb/enzarb-ui:0.5.0
           imagePullPolicy: IfNotPresent
           command: [node, scripts/migrate.ts]
           env:

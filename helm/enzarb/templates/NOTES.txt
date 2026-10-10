@@ -12,5 +12,5 @@ workflows and the receiver cannot work without the GitHub App credentials.
 {{- end }}
 {{- end }}
 
-Prerequisites (enzarb-kubernetes): Gateway {{ .Values.gateway.namespace }}/{{ .Values.gateway.name }}, Capsule with
-userGroups including system:serviceaccounts:{{ .Release.Namespace }}, agent-sandbox, pgop.
+Prerequisites (enzarb-kubernetes): Gateway {{ .Values.gateway.namespace }}/{{ .Values.gateway.name }}, agent-sandbox, pgop.
+Sandboxes run in namespace {{ .Values.sandbox.namespace }} (kept on uninstall; it holds Project volumes).

@@ -26,13 +26,16 @@ spec:
           imagePullPolicy: {{ include "enzarb.pullPolicy" (dict "ctx" . "c" $c) }}
           args: [run, --roles, {{ $c.roles | quote }}]
           ports:
-            - { name: executor, containerPort: {{ if $executor }}8081{{ else }}8082{{ end }} }
+            - { name: executor, containerPort: {{ if $executor }}{{ .Values.sandbox.executorCallbackPort }}{{ else }}8082{{ end }} }
           env:
             {{- include "enzarb.dbEnv" (dict "ctx" . "role" "workflows") | nindent 12 }}
             {{- include "enzarb.secretEnv" (dict "name" "GITHUB_APP_ID" "secret" (include "enzarb.githubSecret" .) "key" (include "enzarb.githubKey" (dict "ctx" . "key" "appId"))) | nindent 12 }}
             {{- include "enzarb.secretEnv" (dict "name" "GITHUB_APP_PRIVATE_KEY" "secret" (include "enzarb.githubSecret" .) "key" (include "enzarb.githubKey" (dict "ctx" . "key" "privateKey"))) | nindent 12 }}
             {{- include "enzarb.secretEnv" (dict "name" "ENZARB_EXECUTOR_CALLBACK_SECRET" "secret" (include "enzarb.callbackSecret" .) "key" (include "enzarb.callbackKey" .)) | nindent 12 }}
-            - { name: ENZARB_EXECUTOR_URL, value: {{ printf "http://enzarb-workflows-executor.%s.svc:8081" .Release.Namespace | quote }} }
+            - { name: ENZARB_EXECUTOR_URL, value: {{ printf "http://enzarb-workflows-executor.%s.svc:%v" .Release.Namespace .Values.sandbox.executorCallbackPort | quote }} }
+            {{- if $executor }}
+            - { name: ENZARB_EXECUTOR_LISTEN, value: {{ printf "0.0.0.0:%v" .Values.sandbox.executorCallbackPort | quote }} }
+            {{- end }}
             - { name: ENZARB_PUBLIC_URL, value: {{ include "enzarb.publicUrl" . | quote }} }
             - { name: ENZARB_DB_MAX_CONNECTIONS, value: {{ $c.dbMaxConnections | quote }} }
             - { name: ENZARB_BOT_HANDLE, value: {{ $c.botHandle | quote }} }
@@ -41,7 +44,7 @@ spec:
             {{- with $c.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          # /healthz is on 8081 with the executor role, otherwise on 8082.
+          # /healthz is on sandbox.executorCallbackPort with the executor role, otherwise on 8082.
           readinessProbe:
             httpGet: { path: /healthz, port: executor }
           livenessProbe:
@@ -69,5 +72,5 @@ spec:
   selector:
     {{- include "enzarb.selector" (dict "ctx" . "name" "enzarb-workflows") | nindent 4 }}
   ports:
-    - { name: executor, port: 8081, targetPort: executor }
+    - { name: executor, port: {{ .Values.sandbox.executorCallbackPort }}, targetPort: executor }
 {{- end }}

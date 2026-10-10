@@ -6,7 +6,16 @@ yq = "4.54.1"
 
 [tasks.lint]
 description = "helm lint (default, dev and oldie values)"
-run = "helm lint enzarb && helm lint enzarb -f enzarb/values-dev.yaml && helm lint enzarb -f enzarb/values-oldie.yaml"
+run = "helm lint enzarb --set 'sandbox.egress.clusterCIDRs={10.0.0.0/8}' && helm lint enzarb -f enzarb/values-dev.yaml && helm lint enzarb -f enzarb/values-oldie.yaml"
+
+[tasks.guard]
+description = "sandbox.namespace guard: dangerous namespaces must fail rendering"
+run = """
+for ns in enzarb kube-system kube-public kube-node-lease default; do
+  if helm template enzarb enzarb --namespace enzarb --set "sandbox.egress.clusterCIDRs={10.0.0.0/8}" --set sandbox.namespace=$ns >/dev/null 2>&1; then echo "guard: sandbox.namespace=$ns rendered" >&2; exit 1; fi
+done
+echo guard ok
+"""
 
 [tasks.golden]
 description = "Diff rendered templates against tests/golden (pass --update to rewrite)"
@@ -26,4 +35,4 @@ run = "scripts/sync-crds.sh"
 
 [tasks.test]
 description = "All checks"
-depends = ["lint", "golden", "kubeconform", "pgop"]
+depends = ["lint", "guard", "golden", "kubeconform", "pgop"]

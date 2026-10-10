@@ -19,3 +19,12 @@ operator:
   defaultStorage: 20Gi
   docker:
     storage: 50Gi
+    # Explicit dockerd sidecar resources so it is not a tiny-request container evicted first.
+    resources:
+      requests: { cpu: 500m, memory: 1Gi }
+      limits: { cpu: "4", memory: 8Gi }
+
+sandbox:
+  egress:
+    # RKE2 on oldie: pod, service and node networks (contain the API server).
+    clusterCIDRs: [10.42.0.0/16, 10.43.0.0/16, 192.168.33.0/24]
