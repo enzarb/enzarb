@@ -5,6 +5,10 @@
 remote = "git@github.com:enzarb/enzarb-ui.git"
 kind = "typescript"
 
+[repos.enzarb-updater]
+remote = "git@github.com:enzarb/enzarb-updater.git"
+kind = "rust"
+
 [repos.enzarb-sandbox-proxy]
 remote = "git@github.com:enzarb/enzarb-sandbox-proxy.git"
 kind = "rust"

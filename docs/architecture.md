@@ -17,6 +17,7 @@ Each component is its own repository. The top-level `enzarb` repo holds docs, AD
 | `enzarb-proto` *(new)* | Mux protocol: frame codec, credit-based flow control, `docs/protocol.md`, shared test vectors | Rust crate + npm package |
 | `enzarb-connectors` *(new)* | The `Connector` trait and one connector per source (GitHub first) as a library, plus the `receiver` binary that accepts webhooks | Rust library + container image |
 | `enzarb-workflows` *(new)* | The in-house Postgres workflow engine: migrations, state machines, reducer, executors, ticker | Rust, container image |
+| `enzarb-updater` *(new)* | Tiny stateless service: on a published `enzarb-helm` GitHub release it patches `spec.version` of the RKE2 `HelmChart` (never downgrades) | Rust, container image |
 | `enzarb-kubernetes` | Cluster prerequisites: kind config, Envoy Gateway, agent-sandbox (v0.5.x), RuntimeClasses, pgop (Capsule is installed but unused since ADR-0013) | YAML / kustomize |
 | `enzarb-helm` | Umbrella chart: all services, CRDs, HTTPRoutes, RBAC, pgop `Cluster`/`Role`/`Database`, migration Jobs | Helm |
 
@@ -39,6 +40,12 @@ flowchart LR
 ```
 
 `enzarb-proto` lives in its own repo because four programs speak it: the browser, the proxy, sandbox-init, and the workflow executor. The executor is a non-browser client that starts agent runs. See [ADR-0003](adr/0003-mux-protocol.md).
+
+### Self-update chain
+
+component release → `enzarb-helm` sync bumps the image tags → chart published to `oci://ghcr.io/enzarb/charts/enzarb`, **then** the GitHub release is published → release webhook → `enzarb-updater` verifies the chart exists in the registry and patches `HelmChart.spec.version` → the RKE2 helm-controller upgrades the release.
+
+`enzarb-updater` lives in the umbrella chart, so it patches the CR before the upgrade restarts it. Monitoring a failed upgrade (rollback, alerting) is deferred. See the [enzarb-updater README](https://github.com/enzarb/enzarb-updater) for env vars, RBAC and the ordering requirement.
 
 ## Runtime view
 

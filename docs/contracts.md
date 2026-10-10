@@ -338,6 +338,7 @@ steps:
 | `ghcr.io/enzarb/enzarb-sandbox-operator` | enzarb-sandbox-operator | 8080 (health) |
 | `ghcr.io/enzarb/enzarb-connectors-receiver` | enzarb-connectors | 8080 |
 | `ghcr.io/enzarb/enzarb-workflows` | enzarb-workflows | 8081 (executor), 8082 (health) |
+| `ghcr.io/enzarb/enzarb-updater` | enzarb-updater | 8080 |
 
 - **Tags:** `main`, `sha-<short>`, and `<version>`/`latest` on `v*` tags.
 - **Visibility:** private. Pulling requires an image pull secret (or `kind load` in dev).
