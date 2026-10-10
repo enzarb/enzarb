@@ -1,0 +1,47 @@
+# Single-node production install on `oldie` (RKE2, see ../../rke2). Compared to overlays/prod:
+# - gVisor is installed on the host by the Ansible role (no gvisor-installer DaemonSet);
+# - storage is an LVM volume group on a dedicated disk (OpenEBS LVM LocalPV, storageclass.yaml);
+# - certificates come from Let's Encrypt (DNS-01/Cloudflare) for enzarb.dev;
+# - the Envoy Gateway Service is a LoadBalancer served by RKE2's ServiceLB, which binds host ports 80/443
+#   for LAN access; public traffic arrives through a Cloudflare Tunnel (base/cloudflared,
+#   tunnel-config.json) that needs no inbound ports.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base/cert-manager
+  - ../../base/cluster-issuers
+  - ../../base/envoy-gateway
+  - ../../base/agent-sandbox
+  - ../../base/capsule
+  - ../../base/capsule-proxy
+  - ../../base/pgop
+  - ../../base/runtimeclasses
+  - ../../base/openebs-lvm
+  - ../../base/cloudflared
+  - storageclass.yaml
+patches:
+  - target: { group: gateway.envoyproxy.io, kind: EnvoyProxy, name: enzarb }
+    patch: |-
+      apiVersion: gateway.envoyproxy.io/v1alpha1
+      kind: EnvoyProxy
+      metadata: { name: enzarb, namespace: enzarb-system }
+      spec:
+        provider:
+          kubernetes:
+            envoyService:
+              # A stable name (the generated one carries a hash): cloudflared's origin address and
+              # tunnel-config.json refer to it.
+              name: enzarb-gateway
+  # The Gateway certificate: replace the self-signed issuer with Let's Encrypt for enzarb.dev.
+  - target: { group: cert-manager.io, kind: Certificate, name: enzarb-tls }
+    patch: |-
+      - { op: replace, path: /spec/commonName, value: enzarb.dev }
+      - { op: replace, path: /spec/dnsNames, value: [enzarb.dev] }
+      - { op: replace, path: /spec/issuerRef, value: { kind: ClusterIssuer, name: letsencrypt, group: cert-manager.io } }
+  # The operator and UI run as service accounts in namespace `enzarb`; Capsule only acts for
+  # configured `users` (docs/dev.md, Troubleshooting). Declared here instead of patched by hand.
+  - target: { group: capsule.clastix.io, kind: CapsuleConfiguration, name: default }
+    patch: |-
+      - op: add
+        path: /spec/users/-
+        value: { kind: Group, name: "system:serviceaccounts:enzarb" }

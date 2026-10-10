@@ -1,0 +1,36 @@
+# Volume group on the dedicated disk. OpenEBS LVM LocalPV carves one logical volume per PVC from it
+# (thick: exact size, no pool to manage).
+# community.general.lvg creates the PV with `pvcreate -f`, which silently wipes any filesystem or
+# partition table, so the guard below is what protects a wrong disk: while the volume group does not
+# exist yet, the disk must carry no signature at all (or only an LVM2 PV label).
+- name: List existing volume groups
+  ansible.builtin.command: vgs --noheadings -o vg_name
+  register: rke2_vgs
+  changed_when: false
+  check_mode: false
+
+- name: Read the signatures on the disk
+  ansible.builtin.command: "blkid -p -o export {{ rke2_lvm_pv }}"
+  register: rke2_pv_signature
+  changed_when: false
+  failed_when: rke2_pv_signature.rc not in [0, 2]  # 2 = no signature found
+  check_mode: false
+  when: rke2_lvm_vg not in rke2_vgs.stdout.split()
+
+- name: Refuse to create the volume group on a disk that already holds data
+  ansible.builtin.assert:
+    that: >-
+      rke2_pv_signature.stdout_lines
+      | select('match', '^(PTTYPE=|TYPE=(?!LVM2_member$))') | list | length == 0
+    fail_msg: >-
+      {{ rke2_lvm_pv }} already carries data ({{ rke2_pv_signature.stdout_lines | join(' ') }});
+      creating volume group {{ rke2_lvm_vg }} would wipe it. Clear it yourself if that is intended
+      (wipefs -a {{ rke2_lvm_pv }}) and re-run.
+    quiet: true
+  when: rke2_pv_signature is not skipped
+
+- name: Create the volume group on the dedicated disk
+  community.general.lvg:
+    vg: "{{ rke2_lvm_vg }}"
+    pvs: ["{{ rke2_lvm_pv }}"]
+    state: present

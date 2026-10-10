@@ -23,6 +23,24 @@ jobs:
       - name: Render and validate overlays
         run: ./hack/validate.sh
 
+  ansible:
+    name: ansible-lint + syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+        with:
+          cache: true
+      - name: Lint and syntax-check the host roles
+        working-directory: rke2
+        run: |
+          set -euo pipefail
+          ansible-galaxy collection install -r requirements.yml -p collections
+          ansible-lint -q .
+          ansible-playbook site.yml --syntax-check
+          ansible-playbook reset.yml --syntax-check
+
   vendored-drift:
     name: vendored bases drift
     runs-on: ubuntu-latest

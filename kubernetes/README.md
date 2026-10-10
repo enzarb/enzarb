@@ -15,9 +15,14 @@ base/agent-sandbox         kubernetes-sigs/agent-sandbox controller + Sandbox CR
 base/capsule               Capsule (vendored from the Helm chart; crds/ applied first)
 base/capsule-proxy         capsule-proxy (vendored; optional, needs base/capsule)
 base/pgop                  pgop operator (vendored from the Helm chart; crds/ applied first)
+base/openebs-lvm           OpenEBS LVM LocalPV (one logical volume per PVC from a node volume group), driver image pinned
+base/cluster-issuers       Let's Encrypt ClusterIssuers (staging + prod), DNS-01 through Cloudflare
+base/cloudflared           cloudflared connector for a Cloudflare Tunnel (outbound-only public access)
 base/runtimeclasses        RuntimeClass `gvisor` (handler runsc, nodeSelector enzarb.dev/runtime-gvisor=true)
 base/gvisor-installer      privileged DaemonSet that installs gVisor on real nodes (prod; opt-in label)
 overlays/dev               everything for kind (Envoy Service pinned to NodePorts) + gvisor RuntimeClass
+overlays/oldie             single-node production install on oldie (RKE2): LVM storage, Let's Encrypt via Cloudflare DNS-01,
+                             Cloudflare Tunnel; see ../docs/oldie.md in the workspace repo
 overlays/prod              skeleton: dev set + gvisor RuntimeClass + gvisor-installer, TODOs inline
 hack/versions.env          pinned versions (single list)
 hack/refresh-vendored.sh   regenerates base/{capsule,capsule-proxy,pgop} from the Helm charts
@@ -39,6 +44,9 @@ hack/validate.sh           what CI runs (kubectl kustomize + kubeconform)
 | capsule-proxy | chart/app 0.15.0 | Helm chart, vendored | same |
 | gVisor | 20261005.0 | github.com/google/gvisor release tarball, sha512 pinned | edit `versions.env`; CI rebuilds the installer image from it (then run `hack/pin-installer-digest.sh` after merge) |
 | pgop | chart/app 0.9.1 | `oci://ghcr.io/ruckc/charts/pgop`, vendored | same |
+| RKE2 | v1.35.9+rke2r1 | rancher/rke2 release tarball, sha256-verified by the Ansible role | edit `RKE2_VERSION` in `versions.env`, run `mise run oldie:host` |
+| OpenEBS LVM LocalPV | v1.10.1 | release `lvm-operator.yaml`; the floating `openebs/lvm-driver:ci` image is pinned to `1.10.1` in `base/openebs-lvm` | edit URL and `images:` in `base/openebs-lvm/kustomization.yaml` + `OPENEBS_LVM_VERSION` |
+| cloudflared | 2026.10.0 | `docker.io/cloudflare/cloudflared` image in `base/cloudflared` | edit the image tag + `CLOUDFLARED_VERSION` |
 
 agent-sandbox: v0.5.x exists (v0.5.6 is the last; v1.0.x is out) and ADR-0002 pins v0.5.x, so v0.5.6 is used.
 Vendored bases are generated with Helm hooks disabled (the CRD-lifecycle, post-install and

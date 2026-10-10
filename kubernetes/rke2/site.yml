@@ -1,0 +1,33 @@
+# Converge the host layer: kernel prerequisites, pinned RKE2 server, pinned gVisor, containerd
+# runsc handler, GHCR registry auth, and a local kubeconfig. Safe to re-run; a second run
+# reports changed=0. Versions come from ../hack/versions.env (single source).
+#
+#   ansible-playbook site.yml                 # from this directory (mise run oldie:host)
+#   ansible-playbook site.yml --check --diff  # drift report
+- name: Converge RKE2 hosts
+  hosts: rke2_servers
+  gather_facts: true
+  pre_tasks:
+    - name: Read pinned versions from hack/versions.env
+      ansible.builtin.set_fact:
+        _versions_env: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../hack/versions.env') }}"
+      delegate_to: localhost
+      become: false
+      run_once: true  # noqa: run-once[task]
+      tags: always
+    - name: Resolve pins
+      ansible.builtin.set_fact:
+        rke2_version: "{{ _versions_env | regex_search('(?m)^RKE2_VERSION=(\\S+)', '\\1') | first }}"
+        rke2_gvisor_version: "{{ _versions_env | regex_search('(?m)^GVISOR_VERSION=(\\S+)', '\\1') | first }}"
+        rke2_gvisor_sha512: "{{ _versions_env | regex_search('(?m)^GVISOR_SHA512_X86_64=(\\S+)', '\\1') | first }}"
+      tags: always
+  roles:
+    - rke2
+
+# Public access without inbound ports: a Cloudflare Tunnel (opt-in, cloudflare_tunnel_enabled in the
+# inventory). Runs after RKE2 is up because it stores the connector token in the cluster.
+- name: Converge the Cloudflare Tunnel
+  hosts: rke2_servers
+  gather_facts: false
+  roles:
+    - cloudflare_tunnel

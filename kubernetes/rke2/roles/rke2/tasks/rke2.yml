@@ -1,0 +1,98 @@
+- name: Check installed RKE2
+  ansible.builtin.command: /usr/local/bin/rke2 --version
+  register: rke2_installed
+  changed_when: false
+  failed_when: false
+
+- name: Install RKE2 {{ rke2_version }}
+  when: rke2_version not in (rke2_installed.stdout | default(''))
+  vars:
+    _release: "https://github.com/rancher/rke2/releases/download/{{ rke2_version | replace('+', '%2B') }}"
+    _dir: "/var/cache/rke2-{{ rke2_version }}"
+  block:
+    - name: Download directory
+      ansible.builtin.file:
+        path: "{{ _dir }}"
+        state: directory
+        mode: "0755"
+    - name: Download the tarball (sha256 verified against the release sums)
+      ansible.builtin.get_url:
+        url: "{{ _release }}/rke2.linux-{{ rke2_arch }}.tar.gz"
+        dest: "{{ _dir }}/rke2.linux-{{ rke2_arch }}.tar.gz"
+        checksum: "sha256:{{ _release }}/sha256sum-{{ rke2_arch }}.txt"
+        mode: "0644"
+    - name: Unpack into /usr/local (bin, lib/systemd, share)
+      ansible.builtin.unarchive:
+        src: "{{ _dir }}/rke2.linux-{{ rke2_arch }}.tar.gz"
+        dest: /usr/local
+        remote_src: true
+      notify: Restart rke2
+
+- name: RKE2 config directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /etc/rancher/rke2
+    - /var/lib/rancher/rke2/agent/etc/containerd
+
+- name: RKE2 config.yaml
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: /etc/rancher/rke2/config.yaml
+    mode: "0600"
+  notify: Restart rke2
+
+# RKE2 with containerd 2.x reads config-v3.toml.tmpl ({{ template "base" . }} + our runsc handler).
+- name: Containerd template (adds the gVisor runtime handler `runsc`)
+  ansible.builtin.template:
+    src: containerd-config.toml.tmpl.j2
+    dest: /var/lib/rancher/rke2/agent/etc/containerd/config-v3.toml.tmpl
+    mode: "0644"
+  notify: Restart rke2
+
+- name: GHCR credentials need both a user and a token
+  ansible.builtin.assert:
+    that: (rke2_ghcr_user | length > 0) == (rke2_ghcr_token | length > 0)
+    fail_msg: "Set both GHCR_USER and GHCR_TOKEN, or neither."
+    quiet: true
+
+- name: GHCR pull credentials (registries.yaml)
+  ansible.builtin.template:
+    src: registries.yaml.j2
+    dest: /etc/rancher/rke2/registries.yaml
+    mode: "0600"
+  no_log: true
+  when: rke2_ghcr_token | length > 0
+  notify: Restart rke2
+
+- name: Apply pending restarts before the first start/wait
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start rke2-{{ rke2_role }}
+  ansible.builtin.systemd:
+    name: "rke2-{{ rke2_role }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Wait for the API server
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: 6443
+    timeout: 300
+
+- name: Wait for the node to be Ready
+  ansible.builtin.command: >
+    /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+    wait --for=condition=Ready node/{{ inventory_hostname }} --timeout=30s
+  register: rke2_ready
+  until: rke2_ready.rc == 0
+  retries: 20
+  delay: 5
+  changed_when: false
+
+- name: Verify the gVisor handler is in the generated containerd config
+  ansible.builtin.command: grep -q 'runtimes.runsc\]' /var/lib/rancher/rke2/agent/etc/containerd/config.toml
+  changed_when: false

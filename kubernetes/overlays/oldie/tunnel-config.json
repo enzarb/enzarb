@@ -1,0 +1,12 @@
+{
+  "config": {
+    "ingress": [
+      {
+        "hostname": "enzarb.dev",
+        "service": "https://enzarb-gateway.envoy-gateway-system.svc:443",
+        "originRequest": { "originServerName": "enzarb.dev" }
+      },
+      { "service": "http_status:404" }
+    ]
+  }
+}

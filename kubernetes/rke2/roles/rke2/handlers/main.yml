@@ -1,0 +1,9 @@
+- name: Apply sysctl
+  ansible.builtin.command: sysctl --system
+  changed_when: true
+
+# try-restart: restarts only a running unit, so a first converge (unit not started yet)
+# is a no-op here and the explicit start task does the work.
+- name: Restart rke2
+  ansible.builtin.shell: "systemctl daemon-reload && systemctl try-restart rke2-{{ rke2_role }}"  # noqa: command-instead-of-module
+  changed_when: true

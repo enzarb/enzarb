@@ -1,0 +1,39 @@
+# DESTRUCTIVE: removes RKE2, all cluster state and (by default) the LVM volume group holding every
+# persistent volume (Postgres, workspaces, docker caches). Requires an explicit confirmation:
+#   ansible-playbook reset.yml -e rke2_confirm_reset=oldie     (mise run oldie:reset)
+# Idempotent: on an already-reset host every task is a no-op.
+- name: Reset RKE2 hosts
+  hosts: rke2_servers
+  gather_facts: false
+  vars:
+    rke2_reset_data: true
+  tasks:
+    - name: Require confirmation (-e rke2_confirm_reset=<inventory hostname>)
+      ansible.builtin.assert:
+        that: rke2_confirm_reset | default('') == inventory_hostname
+        fail_msg: "Refusing to reset {{ inventory_hostname }}; pass -e rke2_confirm_reset={{ inventory_hostname }}"
+        quiet: true
+    - name: Stop and remove RKE2 (killall + uninstall scripts)
+      ansible.builtin.shell: |
+        set -e
+        /usr/local/bin/rke2-killall.sh
+        /usr/local/bin/rke2-uninstall.sh
+      args:
+        executable: /bin/bash
+        removes: /usr/local/bin/rke2-uninstall.sh
+    - name: Remove leftover RKE2 and enzarb host files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/rancher
+        - /var/lib/rancher
+        - /etc/containerd/runsc.toml
+        - /etc/sysctl.d/90-enzarb-rke2.conf
+        - /etc/modules-load.d/enzarb-rke2.conf
+    - name: Remove the persistent-volume group (every PVC's data)
+      community.general.lvg:
+        vg: "{{ rke2_lvm_vg }}"
+        state: absent
+        force: true
+      when: rke2_reset_data and (rke2_lvm_pv | default('') | length > 0)
