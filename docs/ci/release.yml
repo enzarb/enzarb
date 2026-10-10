@@ -1,5 +1,5 @@
 # CANONICAL COPY: docs/ci/release.yml in the enzarb workspace repo. Identical in every releasing repo
-# (enzarb-ui, -workflows, -connectors, -sandbox-proxy, -sandbox-operator, -sandbox-container, -helm);
+# (enzarb-ui, -workflows, -connectors, -sandbox-proxy, -sandbox-operator, -sandbox-container, -updater, -helm);
 # change it there and run `mise run ci:sync-release`.
 #
 # Automatic releases. After `ci` succeeds on main, the next version is computed from the
