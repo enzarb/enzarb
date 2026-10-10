@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+#MISE description="Apply enzarb-kubernetes overlays/oldie to the oldie cluster in dependency order, then verify gVisor, NetworkPolicy and LVM volumes (idempotent)"
+set -euo pipefail
+# shellcheck source=/dev/null
+. "${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}/.mise/lib/oldie.sh"
+need kubectl jq
+cluster_reachable || die "cannot reach $KCTX with $KUBECONFIG; run: mise run oldie:host"
+cd "$KDIR"
+
+log "cert-manager"
+kapply -k base/cert-manager
+k -n cert-manager wait --for=condition=Available deploy --all --timeout=5m
+
+log "Envoy Gateway"
+kapply -k base/envoy-gateway/install
+k wait --for=condition=Established crd/gateways.gateway.networking.k8s.io \
+  crd/envoyproxies.gateway.envoyproxy.io --timeout=2m
+k -n envoy-gateway-system wait --for=condition=Available deploy/envoy-gateway --timeout=5m
+
+log "agent-sandbox, Capsule and pgop CRDs"
+kapply -k base/agent-sandbox
+kapply -k base/capsule/crds
+k wait --for=condition=Established crd/tenants.capsule.clastix.io --timeout=2m
+kapply -k base/pgop/crds
+k wait --for=condition=Established crd/clusters.pgop.ruck.io --timeout=2m
+
+log "StorageClass (parameters are immutable: recreate when they changed; bound PVs keep their own copy)"
+if ! sc_out=$(kapply -f overlays/oldie/storageclass.yaml 2>&1); then
+  if grep -qiE 'immutable|updates to parameters|forbidden' <<<"$sc_out"; then
+    echo "StorageClass changed in an immutable field, recreating"
+    k replace --force -f overlays/oldie/storageclass.yaml
+  else
+    printf '%s\n' "$sc_out" >&2; die "applying the StorageClass failed"
+  fi
+fi
+
+log "overlays/oldie"
+kapply -k overlays/oldie
+k -n capsule-system wait --for=condition=Available deploy --all --timeout=5m
+k -n pgop-system wait --for=condition=Available deploy --all --timeout=5m
+k -n agent-sandbox-system wait --for=condition=Available deploy --all --timeout=5m
+k -n kube-system rollout status deploy/openebs-lvm-controller --timeout=5m
+k -n kube-system rollout status ds/openebs-lvm-node --timeout=5m
+
+probe_pod() { # <name> <runtimeClass-or-empty>: run dmesg, print its log
+  local name=$1 rc=${2:-} ns=default
+  k -n "$ns" delete pod "$name" --ignore-not-found --wait >/dev/null
+  k -n "$ns" apply -f - >/dev/null <<POD
+apiVersion: v1
+kind: Pod
+metadata: { name: $name }
+spec:
+  ${rc:+runtimeClassName: $rc}
+  restartPolicy: Never
+  containers:
+    - name: dmesg
+      image: registry.k8s.io/e2e-test-images/busybox:1.36.1-1
+      command: ["dmesg"]
+POD
+  if ! k -n "$ns" wait --for=jsonpath='{.status.phase}'=Succeeded pod/"$name" --timeout=3m >/dev/null 2>&1; then
+    k -n "$ns" describe pod "$name" | tail -n 15 >&2 || true
+    k -n "$ns" delete pod "$name" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    return 1
+  fi
+  k -n "$ns" logs "$name" 2>&1
+  k -n "$ns" delete pod "$name" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+}
+
+log "verifying gVisor (RuntimeClass gvisor on the node label enzarb.dev/runtime-gvisor=true)"
+out="$(probe_pod enzarb-gvisor-probe gvisor)" || die "gVisor probe pod did not complete (docs/dev.md, Troubleshooting: gVisor; containerd template is in rke2/)"
+printf '%s' "$out" | grep -qi gvisor || { printf '%s\n' "$out" >&2; die "pod on RuntimeClass gvisor is NOT running under gVisor"; }
+echo "gVisor active"
+
+log "verifying that the CNI enforces NetworkPolicy"
+probe="enzarb-netpol-probe"
+k delete ns "$probe" --ignore-not-found --wait >/dev/null
+k create ns "$probe" >/dev/null
+trap 'k delete ns "$probe" --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT
+img="registry.k8s.io/e2e-test-images/agnhost:2.53"
+k -n "$probe" run web --image="$img" --port=8080 --labels=app=web -- netexec --http-port=8080 >/dev/null
+k -n "$probe" expose pod web --port=8080 >/dev/null
+k -n "$probe" wait --for=condition=Ready pod/web --timeout=3m
+reach() { k -n "$probe" run "c-$RANDOM" --rm -i --restart=Never --image="$img" --command -- \
+  /agnhost connect web:8080 --timeout=5s >/dev/null 2>&1; }
+reach || die "probe pod cannot reach web even before the NetworkPolicy exists"
+k -n "$probe" apply -f - >/dev/null <<'POL'
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: deny-all }
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+POL
+# The policy can take a few seconds to be programmed: it is enforced if the pod becomes unreachable.
+enforced=0
+for _ in 1 2 3 4 5 6; do
+  sleep 5
+  if ! reach; then enforced=1; break; fi
+done
+[ "$enforced" = 1 ] || die "NetworkPolicy is NOT enforced by this cluster's CNI (rke2 cni: canal in rke2/roles/rke2/defaults)"
+echo "NetworkPolicy enforced"
+
+log "verifying LVM-backed volumes (a PVC mounted into a gVisor pod)"
+k delete ns "$probe" --ignore-not-found --wait >/dev/null
+k create ns "$probe" >/dev/null
+k -n "$probe" apply -f - >/dev/null <<'PVC'
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: data }
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: { requests: { storage: 1Gi } }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: writer }
+spec:
+  runtimeClassName: gvisor
+  restartPolicy: Never
+  containers:
+    - name: w
+      image: registry.k8s.io/e2e-test-images/busybox:1.36.1-1
+      command: ["sh", "-c", "echo ok > /data/probe && cat /data/probe && df -h /data | tail -1"]
+      volumeMounts: [{ name: data, mountPath: /data }]
+  volumes: [{ name: data, persistentVolumeClaim: { claimName: data } }]
+PVC
+k -n "$probe" wait --for=jsonpath='{.status.phase}'=Succeeded pod/writer --timeout=3m >/dev/null \
+  || { k -n "$probe" describe pvc data pod writer | tail -n 30 >&2; die "volume probe failed (docs/oldie.md, Troubleshooting: storage)"; }
+k -n "$probe" logs writer
+echo "LVM volumes work"
+
+if [ "${ENZARB_OLDIE_SKIP_CERT:-0}" = 1 ]; then
+  echo "skipping the Gateway/Certificate wait (ENZARB_OLDIE_SKIP_CERT=1); re-run without it once oldie:secrets has run" >&2
+else
+  log "Certificate and Gateway (needs the cloudflare-api-token Secret: mise run oldie:secrets)"
+  # Accepted, and every listener programmed (and at least one listener reported).
+  k -n enzarb-system wait --for=condition=Accepted gateway/enzarb --timeout=5m
+  for _ in $(seq 1 30); do
+    bad=$(k -n enzarb-system get gateway enzarb -o json \
+      | jq '(.status.listeners // []) as $l | if ($l | length) == 0 then 1 else [$l[] | select(([.conditions[] | select(.type=="Programmed" and .status=="True")] | length) == 0)] | length end')
+    [ "$bad" = 0 ] && break
+    sleep 5
+  done
+  [ "$bad" = 0 ] || die "Gateway listeners are not programmed (kubectl -n enzarb-system describe gateway enzarb)"
+  k -n enzarb-system wait --for=condition=Ready certificate/enzarb-tls --timeout=10m \
+    || { k -n enzarb-system describe certificate enzarb-tls | tail -n 20 >&2; die "certificate not issued (docs/oldie.md, Troubleshooting: certificates)"; }
+fi
+if [ -z "$(getent hosts "$PUBLIC_HOST")" ]; then
+  echo "note: $PUBLIC_HOST does not resolve yet; the tunnel role creates its CNAME (mise run oldie:host)" >&2
+else
+  echo "$PUBLIC_HOST resolves to: $(getent hosts "$PUBLIC_HOST" | awk '{print $1}' | tr '\n' ' ')(Cloudflare's addresses are expected: a proxied CNAME to the tunnel; LAN clients can use $OLDIE_HOST via split DNS/hosts)"
+fi
+log "cluster ready: context $KCTX"

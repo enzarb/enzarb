@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+#MISE description="DESTRUCTIVE: remove RKE2, all cluster state and the LVM volume group on oldie. Needs ENZARB_OLDIE_CONFIRM=oldie"
+set -euo pipefail
+# shellcheck source=/dev/null
+. "${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}/.mise/lib/oldie.sh"
+need ansible-playbook ansible-galaxy
+[ "${ENZARB_OLDIE_CONFIRM:-}" = oldie ] || die "refusing: this deletes the cluster and every volume on oldie. Re-run with ENZARB_OLDIE_CONFIRM=oldie"
+cd "$RKE2_DIR"
+ansible-galaxy collection install -r requirements.yml -p collections >/dev/null
+ansible-playbook reset.yml -e rke2_confirm_reset=oldie "$@"
+rm -f "$KUBECONFIG"
+log "oldie reset; rebuild with: mise run oldie:up"

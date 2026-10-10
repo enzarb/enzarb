@@ -32,7 +32,7 @@ The tasks are in `.mise/tasks/dev/`:
 
 ## Create the GitHub App
 
-enzarb needs two separate GitHub registrations: a **GitHub App** (webhooks, API access as the bot, clone tokens) and an **OAuth App** (UI login). They have different callback URLs, so keep them distinct.
+enzarb needs one **GitHub App**: webhooks, API access as the bot, clone tokens, and UI login (user authorization).
 
 1. Create a smee channel at <https://smee.io/new> and put its URL in `.env.dev` as `SMEE_URL` (copy `.env.dev.example` first).
 2. Edit a copy of the manifest so `hook_attributes.url` is your smee URL. The permissions and events are in [github-app.yml](github-app.yml) (contracts.md section 10). Convert it to JSON:
@@ -56,14 +56,9 @@ enzarb needs two separate GitHub registrations: a **GitHub App** (webhooks, API 
 6. Fill `.env.dev`: `GITHUB_APP_ID` (the `id`), `GITHUB_APP_PRIVATE_KEY` (the path to the pem file), `GITHUB_WEBHOOK_SECRET` (the `webhook_secret`). Delete `/tmp/app.json` and `/tmp/app-conversion.json`.
 7. Note the App's slug. Its bot login is `<slug>[bot]`; the chart defaults to `enzarb[bot]` and handle `enzarb`. If your App has another name, set `connectors.botLogin`, `workflows.botLogin` and the handles via `--set` in `dev:helm-deploy` (or rename the App to `enzarb`). Otherwise the bot's own comments are not recognised and can trigger loops.
 
-## Create the OAuth App (UI login)
+## Sign in with GitHub (UI login)
 
-GitHub, Settings, Developer settings, OAuth Apps, New OAuth App:
-
-- Homepage URL: `https://enzarb.local`
-- Authorization callback URL: `https://enzarb.local/login/github/callback`
-
-Generate a client secret and set `GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET` in `.env.dev`.
+The same GitHub App provides UI login; there is no separate OAuth App. The manifest above already lists the callback URLs (`https://enzarb.local/login/github/callback` for kind). In the App's settings, open "Client secrets", generate one, and set `GITHUB_OAUTH_CLIENT_ID` (the App's Client ID, not its App ID) and `GITHUB_OAUTH_CLIENT_SECRET` in `.env.dev`. If you registered the App without `callback_urls`, add the URL under "Callback URL" in its settings. A private (`public: false`) App may only allow its owner to sign in; if other users get an authorization error, make the App public.
 
 ## First deploy
 

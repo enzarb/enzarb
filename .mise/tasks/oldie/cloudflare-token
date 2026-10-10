@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+#MISE description="Mint a zone-scoped Cloudflare DNS-01 token from a bootstrap token and store it in the cluster (idempotent; --rotate forces a new one)"
+set -euo pipefail
+# shellcheck source=/dev/null
+. "${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}/.mise/lib/oldie.sh"
+need kubectl curl jq
+load_oldie_env
+rotate=0; [ "${1:-}" = "--rotate" ] && rotate=1
+
+API="${CLOUDFLARE_API_BASE:-https://api.cloudflare.com/client/v4}"
+ZONE_NAME="${ENZARB_OLDIE_ZONE:-enzarb.dev}"
+TOKEN_NAME="enzarb-oldie-dns-01"
+SECRET_NS=cert-manager SECRET=cloudflare-api-token
+
+cluster_reachable || die "cannot reach $KCTX with $KUBECONFIG; run: mise run oldie:host"
+
+# Every Cloudflare call goes through ccurl so a token never appears on a command line (visible in
+# `ps` and /proc/*/cmdline): the Authorization header is read from a file descriptor.
+ccurl() { # <token> <curl args...>
+  local tok=$1; shift
+  curl -sS -m 30 -H @<(printf 'Authorization: Bearer %s\n' "$tok") "$@"
+}
+
+# cf <token> <METHOD> <path> [json-body]: prints the JSON body, fails with Cloudflare's message.
+cf() {
+  local tok=$1 method=$2 path=$3 body=${4:-} out
+  out=$(ccurl "$tok" -X "$method" "$API$path" -H 'Content-Type: application/json' \
+    ${body:+--data "$body"}) || die "cannot reach $API"
+  [ "$(jq -r '.success' <<<"$out")" = true ] || die "Cloudflare $method $path: $(jq -r '[.errors[]?.message] | join("; ")' <<<"$out")"
+  printf '%s' "$out"
+}
+
+# verify_any <token>: 0 if the token is active. Sets TOKENS_BASE to where this kind of token manages
+# tokens: /user/tokens (user-owned) or /accounts/<id>/tokens (account-owned, found via the zone).
+TOKENS_BASE=/user/tokens
+verify_any() {
+  local tok=$1 r aid
+  r=$(ccurl "$tok" "$API/user/tokens/verify" || true)
+  if [ "$(jq -r '.result.status // empty' <<<"$r" 2>/dev/null || true)" = active ]; then TOKENS_BASE=/user/tokens; return 0; fi
+  aid=$(ccurl "$tok" "$API/zones?name=$ZONE_NAME" | jq -r '.result[0].account.id // empty' 2>/dev/null || true)
+  [ -n "$aid" ] || return 1
+  r=$(ccurl "$tok" "$API/accounts/$aid/tokens/verify" || true)
+  if [ "$(jq -r '.result.status // empty' <<<"$r" 2>/dev/null || true)" = active ]; then TOKENS_BASE=/accounts/$aid/tokens; return 0; fi
+  return 1
+}
+
+# Zone ID needs a credential that can read zones: the bootstrap token, or the stored token to check it.
+stored=""
+if k -n "$SECRET_NS" get secret "$SECRET" >/dev/null 2>&1; then
+  stored=$(k -n "$SECRET_NS" get secret "$SECRET" -o jsonpath='{.data.api-token}' | base64 -d)
+fi
+
+if [ -z "${CLOUDFLARE_BOOTSTRAP_TOKEN:-}" ] && [ -t 0 ] && { [ -z "$stored" ] || [ "$rotate" = 1 ]; }; then
+  read -rsp "Cloudflare bootstrap token (permission: User > API Tokens > Edit; not stored): " CLOUDFLARE_BOOTSTRAP_TOKEN; echo
+fi
+
+zone_ok() { # <token> <zone-id>: can the token list DNS records of the zone?
+  [ "$(ccurl "$1" "$API/zones/$2/dns_records?per_page=1" | jq -r '.success')" = true ]
+}
+
+# Tolerate common paste mistakes: whitespace/newlines, quotes, a leading "Bearer ".
+boot=""
+if [ -n "${CLOUDFLARE_BOOTSTRAP_TOKEN:-}" ]; then
+  boot=$(printf '%s' "$CLOUDFLARE_BOOTSTRAP_TOKEN" | tr -d '[:space:]"'"'" | sed 's/^[Bb]earer//')
+  if [[ $boot =~ ^[0-9a-f]{37}$ ]]; then
+    die "that looks like a Global API Key (37 hex characters), not an API token. Create a token instead: dash.cloudflare.com > My Profile > API Tokens > Create Token"
+  fi
+  if ! verify_any "$boot"; then
+    cat >&2 <<HINT
+Cloudflare did not accept the bootstrap token (${#boot} characters), as a user token or as an account
+token. It needs: for a user token, "User > API Tokens > Edit"; for an account token, "Account API
+Tokens > Edit"; and in both cases "Zone > Zone > Read" on the $ZONE_NAME zone (the zone lookup is how
+an account-owned token is recognised). Other causes: the value is the token ID or truncated, the token
+has Client IP Address Filtering that excludes this machine, or it expired.
+Check by hand (a user token answers the first, an account token the second):
+  curl -s $API/user/tokens/verify -H "Authorization: Bearer <token>"
+  curl -s "$API/zones?name=$ZONE_NAME" -H "Authorization: Bearer <token>" | jq '.errors, .result[0].account.id'
+HINT
+    exit 1
+  fi
+  echo "bootstrap token accepted ($([ "$TOKENS_BASE" = /user/tokens ] && echo user-owned || echo "account-owned, $TOKENS_BASE"))"
+fi
+
+if [ -n "$stored" ] && [ "$rotate" = 0 ]; then
+  # Valid without the bootstrap token? Then there is nothing to do.
+  if (verify_any "$stored"); then  # subshell: must not clobber the bootstrap token's TOKENS_BASE
+    if [ -z "$boot" ]; then
+      echo "cloudflare-api-token is active (no bootstrap token given, not checking zone scope)"; exit 0
+    fi
+    zid=$(cf "$boot" GET "/zones?name=$ZONE_NAME" | jq -r '.result[0].id // empty')
+    [ -n "$zid" ] || die "zone $ZONE_NAME not found for the bootstrap token"
+    if zone_ok "$stored" "$zid"; then echo "cloudflare-api-token is active and can edit $ZONE_NAME DNS"; exit 0; fi
+    echo "stored token is active but cannot edit $ZONE_NAME DNS; minting a new one"
+  else
+    echo "stored token is not active; minting a new one"
+  fi
+fi
+
+[ -n "$boot" ] || die "need CLOUDFLARE_BOOTSTRAP_TOKEN (a token with User > API Tokens > Edit; used once, never stored; see docs/oldie.md)"
+
+log "looking up zone $ZONE_NAME and permission groups"
+zid=$(cf "$boot" GET "/zones?name=$ZONE_NAME" | jq -r '.result[0].id // empty')
+[ -n "$zid" ] || die "zone $ZONE_NAME not found (bootstrap token needs Zone:Read on it)"
+groups=$(cf "$boot" GET "$TOKENS_BASE/permission_groups")
+gid() { jq -r --arg n "$1" '[.result[] | select(.name == $n)][0].id // empty' <<<"$groups"; }
+dns_write=$(gid "DNS Write"); zone_read=$(gid "Zone Read")
+[ -n "$dns_write" ] && [ -n "$zone_read" ] || die "permission groups 'DNS Write'/'Zone Read' not found"
+
+# Order matters: create the new token, VERIFY it, only then replace the cluster Secret, and only then
+# delete older tokens. A failed rotation therefore leaves the working token and the Secret untouched.
+new_name="$TOKEN_NAME-$(date -u +%Y%m%d%H%M%S)"
+log "creating $new_name (DNS Write + Zone Read on $ZONE_NAME only)"
+body=$(jq -n --arg name "$new_name" --arg zone "com.cloudflare.api.account.zone.$zid" --arg dw "$dns_write" --arg zr "$zone_read" \
+  '{name: $name, policies: [{effect: "allow", resources: {($zone): "*"}, permission_groups: [{id: $dw}, {id: $zr}]}]}')
+created=$(cf "$boot" POST "$TOKENS_BASE" "$body")
+value=$(jq -r '.result.value' <<<"$created"); new_id=$(jq -r '.result.id' <<<"$created")
+[ -n "$value" ] && [ "$value" != null ] || die "Cloudflare returned no token value"
+
+# A brand-new token can take a few seconds to become usable.
+verified=0
+for _ in $(seq 1 "${ENZARB_CF_VERIFY_TRIES:-10}"); do
+  if zone_ok "$value" "$zid"; then verified=1; break; fi
+  sleep "${ENZARB_CF_VERIFY_DELAY:-3}"
+done
+if [ "$verified" != 1 ]; then
+  cf "$boot" DELETE "$TOKENS_BASE/$new_id" >/dev/null || true
+  die "the new token cannot edit $ZONE_NAME DNS; deleted it and left the previous token and Secret in place"
+fi
+
+k create namespace "$SECRET_NS" --dry-run=client -o yaml | k apply -f - >/dev/null
+# The token is passed on stdin, not as an argument, so it never shows up in a process listing.
+printf '%s' "$value" | k -n "$SECRET_NS" create secret generic "$SECRET" --from-file=api-token=/dev/stdin \
+  --dry-run=client -o yaml | k apply -f - >/dev/null
+
+# Prune older tokens of this purpose (the list is paginated).
+for page in 1 2 3 4 5; do
+  listing=$(cf "$boot" GET "$TOKENS_BASE?per_page=50&page=$page")
+  [ "$(jq '.result | length' <<<"$listing")" -gt 0 ] || break
+  while read -r id; do
+    [ -n "$id" ] || continue
+    cf "$boot" DELETE "$TOKENS_BASE/$id" >/dev/null && echo "deleted previous token $id"
+  done < <(jq -r --arg p "$TOKEN_NAME" --arg keep "$new_id" '.result[] | select((.name | startswith($p)) and .id != $keep) | .id' <<<"$listing")
+done
+echo "stored $SECRET_NS/$SECRET (scoped to $ZONE_NAME). The bootstrap token was used once and not saved; revoke it in the Cloudflare dashboard."

@@ -3,3 +3,5 @@
 
 # Local dev secrets
 /.env.dev
+/.env.oldie
+/.cloudflare/
