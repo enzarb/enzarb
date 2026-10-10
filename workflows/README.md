@@ -43,10 +43,12 @@ Reducer and executor roles need a Kubernetes client (in-cluster or `KUBECONFIG`)
 
 ### RBAC
 
-`deploy/rbac.yaml`: `get/list/watch` on `projects.enzarb.dev` cluster-wide (reducer index,
-executor sandbox lookup) and `get` on `secrets` restricted by `resourceNames` to `sandbox-auth` (the sandbox auth
-Secret in `enzarb-p-*` namespaces; bound cluster-wide because the namespaces are created at
-runtime, but no other Secret is readable). Only the executor role needs the Secret access.
+`deploy/rbac.yaml`: `get/list/watch` on `projects.enzarb.dev` cluster-wide (ClusterRole: reducer index,
+executor sandbox lookup) and, in the shared sandbox namespace (`enzarb-sandboxes`, ADR-0013), a namespaced
+Role with `get` on `secrets` (the per-Project auth Secrets `sb-<project>-auth`; names vary per Project, so
+`resourceNames` cannot pin them, and the namespace holds no other Secrets). Only the executor role needs the
+Secret access. The executor finds a sandbox only through `Project.status.namespace` and `status.sandbox`;
+a Project without them is not ready and the lookup is retried (`SandboxError::NotReady`).
 
 ## Image
 

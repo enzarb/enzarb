@@ -42,8 +42,9 @@ pub trait SandboxResolver: Send + Sync {
 
 /// Reads `Project.status.sandbox` and the auth Secret from the cluster.
 ///
-/// Needs `get` on `projects.enzarb.dev` (cluster-wide) and `get` on `secrets` in the
-/// project namespaces.
+/// Needs `get` on `projects.enzarb.dev` (cluster-wide) and `get` on `secrets` in the shared
+/// sandbox namespace (`Project.status.namespace`, ADR-0013). Sandboxes are found only through
+/// the Project status; a Project without `status.namespace`/`status.sandbox` is not ready.
 #[derive(Clone)]
 pub struct KubeSandboxResolver {
     client: Client,
@@ -66,10 +67,12 @@ pub fn secret_location(p: &Project) -> Result<(String, String, String, String), 
         .sandbox
         .as_ref()
         .ok_or_else(|| SandboxError::NotReady(format!("project {name} has no sandbox yet")))?;
+    // ADR-0013: no derived fallback. The operator sets `namespace` and `sandbox` only after it
+    // verified ownership of the objects, so a Project without them is not ready.
     let ns = status
         .namespace
         .clone()
-        .unwrap_or_else(|| p.namespace_name());
+        .ok_or_else(|| SandboxError::NotReady(format!("project {name} has no namespace yet")))?;
     Ok((
         sb.endpoint.clone(),
         ns,
@@ -158,22 +161,22 @@ mod tests {
     #[test]
     fn locates_secret_from_status() {
         let p = project(Some(ProjectStatus {
-            namespace: Some("enzarb-p-enzarb".into()),
+            namespace: Some("enzarb-sandboxes".into()),
             sandbox: Some(SandboxStatus {
-                name: "sandbox".into(),
-                endpoint: "ws://sandbox.enzarb-p-enzarb.svc:7070/v1/mux".into(),
+                name: "sb-enzarb".into(),
+                endpoint: "ws://sb-enzarb.enzarb-sandboxes.svc:7070/v1/mux".into(),
                 auth_secret_ref: SecretKeyRef {
-                    name: "sandbox-auth".into(),
+                    name: "sb-enzarb-auth".into(),
                     key: "token".into(),
                 },
             }),
             ..Default::default()
         }));
         let (ep, ns, name, key) = secret_location(&p).unwrap();
-        assert_eq!(ep, "ws://sandbox.enzarb-p-enzarb.svc:7070/v1/mux");
+        assert_eq!(ep, "ws://sb-enzarb.enzarb-sandboxes.svc:7070/v1/mux");
         assert_eq!(
             (ns.as_str(), name.as_str(), key.as_str()),
-            ("enzarb-p-enzarb", "sandbox-auth", "token")
+            ("enzarb-sandboxes", "sb-enzarb-auth", "token")
         );
     }
 
@@ -184,6 +187,28 @@ mod tests {
             Err(SandboxError::NotReady(_))
         ));
         let p = project(Some(ProjectStatus::default()));
+        assert!(matches!(
+            secret_location(&p),
+            Err(SandboxError::NotReady(_))
+        ));
+    }
+
+    #[test]
+    fn missing_namespace_is_not_ready() {
+        let mut p = project(Some(ProjectStatus {
+            namespace: Some("enzarb-sandboxes".into()),
+            sandbox: Some(SandboxStatus {
+                name: "sb-enzarb".into(),
+                endpoint: "ws://sb-enzarb.enzarb-sandboxes.svc:7070/v1/mux".into(),
+                auth_secret_ref: SecretKeyRef {
+                    name: "sb-enzarb-auth".into(),
+                    key: "token".into(),
+                },
+            }),
+            ..Default::default()
+        }));
+        p.status.as_mut().unwrap().namespace = None;
+        // No derived `enzarb-p-*` / `enzarb-sandboxes` fallback.
         assert!(matches!(
             secret_location(&p),
             Err(SandboxError::NotReady(_))
