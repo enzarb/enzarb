@@ -19,7 +19,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tracing::{error, info};
 
-/// Reconciles enzarb `Project`s into a Capsule Tenant, Namespace, PVC and agent-sandbox Sandbox.
+/// Reconciles enzarb `Project`s into a Secret, PVCs, NetworkPolicy and agent-sandbox Sandbox in
+/// one shared sandbox namespace (ADR-0013).
 #[derive(Parser, Debug)]
 #[command(version)]
 struct Args {
@@ -33,6 +34,35 @@ struct Args {
     /// pod's own namespace.
     #[arg(long, env = "ENZARB_RELEASE_NAMESPACE")]
     release_namespace: Option<String>,
+    /// Namespace that holds every Project's sandbox objects (created by the Helm chart).
+    #[arg(
+        long,
+        env = "ENZARB_SANDBOX_NAMESPACE",
+        default_value = "enzarb-sandboxes"
+    )]
+    sandbox_namespace: String,
+    /// ServiceAccount of every sandbox pod. It has no token and no RBAC (no Kubernetes API access).
+    #[arg(
+        long,
+        env = "ENZARB_SANDBOX_SERVICE_ACCOUNT",
+        default_value = "enzarb-sandbox"
+    )]
+    sandbox_service_account: String,
+    /// TCP port of the workflows executor callback listener; sandboxes may reach it (egress).
+    #[arg(long, env = "ENZARB_EXECUTOR_CALLBACK_PORT", default_value_t = 8081)]
+    executor_callback_port: u16,
+    /// Comma-separated CIDRs sandboxes must not reach on TCP 443: the cluster's pod, service
+    /// and node networks (they contain the API server). Required.
+    #[arg(
+        long,
+        env = "ENZARB_SANDBOX_EGRESS_EXCLUDE_CIDRS",
+        value_delimiter = ','
+    )]
+    egress_exclude_cidrs: Vec<String>,
+    /// Comma-separated extra DNS server CIDRs sandboxes may reach on port 53, e.g.
+    /// `169.254.20.10/32` for NodeLocal DNSCache. kube-dns pods are always allowed.
+    #[arg(long, env = "ENZARB_SANDBOX_DNS_CIDRS", value_delimiter = ',')]
+    dns_cidrs: Vec<String>,
     /// Namespace label `key=value` allowed to reach sandboxes (NetworkPolicy ingress).
     /// Defaults to `kubernetes.io/metadata.name=<release namespace>`.
     #[arg(long, env = "ENZARB_NETPOL_INGRESS_NAMESPACE_LABEL")]
@@ -146,6 +176,14 @@ fn netpol_config(args: &Args) -> anyhow::Result<desired::NetpolConfig> {
         "--netpol-ingress-pod-names must not be empty"
     );
     cfg.ingress_pod_names = names;
+    cfg.executor_callback_port = args.executor_callback_port;
+    cfg.egress_exclude_cidrs =
+        desired::parse_cidrs("--egress-exclude-cidrs", &args.egress_exclude_cidrs)?;
+    anyhow::ensure!(
+        !cfg.egress_exclude_cidrs.is_empty(),
+        "--egress-exclude-cidrs (ENZARB_SANDBOX_EGRESS_EXCLUDE_CIDRS) is required: list the cluster's pod, service and node CIDRs"
+    );
+    cfg.dns_cidrs = desired::parse_cidrs("--dns-cidrs", &args.dns_cidrs)?;
     Ok(cfg)
 }
 
@@ -320,13 +358,16 @@ async fn run_controller(
     netpol: desired::NetpolConfig,
     docker: docker::DockerConfig,
 ) {
+    // Projects are cluster-scoped; everything else is watched in the sandbox namespace only.
     let projects: Api<Project> = Api::all(client.clone());
-    let sandboxes: Api<Sandbox> = Api::all(client.clone());
+    let sandboxes: Api<Sandbox> = Api::namespaced(client.clone(), &args.sandbox_namespace);
     let ctx = Arc::new(reconcile::Ctx::new(
         client,
         Defaults {
             sandbox_image: args.sandbox_image.clone(),
             storage: args.default_storage.clone(),
+            sandbox_namespace: args.sandbox_namespace.clone(),
+            sandbox_service_account: args.sandbox_service_account.clone(),
             netpol,
             docker,
         },

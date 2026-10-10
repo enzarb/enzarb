@@ -3,23 +3,24 @@
 use crate::repo::RepoKey;
 use k8s_openapi::api::core::v1::ResourceRequirements;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
-use kube::CustomResource;
+use kube::{CustomResource, KubeSchema};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Condition types, in the order the UI boot checklist shows them.
-pub const COND_TENANT_READY: &str = "TenantReady";
-pub const COND_NAMESPACE_READY: &str = "NamespaceReady";
+///
+/// `ResourcesReady` covers the auth Secret, both PVCs and the NetworkPolicy. An invalid spec is
+/// reported there with reason [`REASON_INVALID_SPEC`].
+pub const COND_RESOURCES_READY: &str = "ResourcesReady";
 pub const COND_SANDBOX_READY: &str = "SandboxReady";
 pub const COND_READY: &str = "Ready";
-pub const CONDITION_TYPES: [&str; 4] = [
-    COND_TENANT_READY,
-    COND_NAMESPACE_READY,
-    COND_SANDBOX_READY,
-    COND_READY,
-];
+pub const CONDITION_TYPES: [&str; 3] = [COND_RESOURCES_READY, COND_SANDBOX_READY, COND_READY];
+/// Terminal `False` reason on `ResourcesReady` for a spec the operator will not act on.
+pub const REASON_INVALID_SPEC: &str = "InvalidSpec";
+/// Longest Project name: `sb-<name>-workspace` must fit a 63-character label (ADR-0013).
+pub const MAX_PROJECT_NAME_LEN: usize = 50;
 
-#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, PartialEq, KubeSchema)]
 #[kube(
     group = "enzarb.dev",
     version = "v1alpha1",
@@ -27,13 +28,19 @@ pub const CONDITION_TYPES: [&str; 4] = [
     plural = "projects",
     status = "ProjectStatus",
     derive = "PartialEq",
+    // ADR-0013: `sb-<name>-workspace` must fit a 63-character label, so names are DNS labels of
+    // at most 50 characters. Create-only (`optionalOldSelf`): names are immutable, and root-level
+    // rules also run on status writes and spec edits, which must keep working for any existing
+    // Project. The operator re-checks this (`InvalidSpec`).
+    validation = Rule::new("oldSelf.hasValue() || self.metadata.name.size() <= 50").optional_old_self(true).message("Project name must be at most 50 characters"),
+    validation = Rule::new("oldSelf.hasValue() || self.metadata.name.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')").optional_old_self(true).message("Project name must be a DNS label (lowercase letters, digits and '-')"),
     printcolumn = r#"{"name":"Owner","type":"string","jsonPath":".spec.owner"}"#,
     printcolumn = r#"{"name":"Namespace","type":"string","jsonPath":".status.namespace"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type==\"Ready\")].status"}"#
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectSpec {
-    /// Owner id; the Capsule Tenant is named `enzarb-<owner>`.
+    /// Owner id (GitHub login of the creator).
     pub owner: String,
     #[serde(default)]
     pub display_name: String,
@@ -123,7 +130,7 @@ impl Default for SandboxSpec {
 pub struct ProjectStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_generation: Option<i64>,
-    /// `enzarb-p-<project name>`.
+    /// The shared sandbox namespace (ADR-0013), e.g. `enzarb-sandboxes`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -136,9 +143,9 @@ pub struct ProjectStatus {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SandboxStatus {
-    /// Sandbox CR name in `status.namespace`.
+    /// Sandbox CR name in `status.namespace`: `sb-<project>`.
     pub name: String,
-    /// e.g. `ws://sandbox.enzarb-p-enzarb.svc:7070/v1/mux`.
+    /// e.g. `ws://sb-enzarb.enzarb-sandboxes.svc:7070/v1/mux`.
     pub endpoint: String,
     pub auth_secret_ref: SecretKeyRef,
 }
@@ -150,14 +157,33 @@ pub struct SecretKeyRef {
 }
 
 impl Project {
-    /// Project namespace: `enzarb-p-<project name>`.
-    pub fn namespace_name(&self) -> String {
-        namespace_for(self.metadata.name.as_deref().unwrap_or_default())
+    fn project_name(&self) -> &str {
+        self.metadata.name.as_deref().unwrap_or_default()
     }
 
-    /// Capsule Tenant name: `enzarb-<owner>`.
-    pub fn tenant_name(&self) -> String {
-        format!("enzarb-{}", self.spec.owner)
+    /// Sandbox CR and its headless Service: `sb-<name>`.
+    pub fn sandbox_name(&self) -> String {
+        sandbox_name_for(self.project_name())
+    }
+
+    /// Auth Secret (key `token`): `sb-<name>-auth`.
+    pub fn auth_secret_name(&self) -> String {
+        format!("{}-auth", self.sandbox_name())
+    }
+
+    /// Workspace PVC: `sb-<name>-workspace`.
+    pub fn workspace_pvc_name(&self) -> String {
+        format!("{}-workspace", self.sandbox_name())
+    }
+
+    /// Docker data PVC: `sb-<name>-docker`.
+    pub fn docker_pvc_name(&self) -> String {
+        format!("{}-docker", self.sandbox_name())
+    }
+
+    /// Per-Project NetworkPolicy: `sb-<name>`.
+    pub fn network_policy_name(&self) -> String {
+        self.sandbox_name()
     }
 
     /// Whether any linked repository has this repo key (case-insensitive).
@@ -174,8 +200,9 @@ impl Project {
     }
 }
 
-pub fn namespace_for(project_name: &str) -> String {
-    format!("enzarb-p-{project_name}")
+/// `sb-<project name>`; the prefix keeps per-Project names from colliding in the shared namespace.
+pub fn sandbox_name_for(project_name: &str) -> String {
+    format!("sb-{project_name}")
 }
 
 /// The Project CRD rendered as YAML (what `crdgen` prints and `deploy/crds/project.yaml` holds).

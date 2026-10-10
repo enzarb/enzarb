@@ -2,7 +2,7 @@
 name = "enzarb-crds"
 version.workspace = true
 edition.workspace = true
-description = "enzarb Project CRD and generated upstream (agent-sandbox, Capsule) types"
+description = "enzarb Project CRD and generated upstream (agent-sandbox) types"
 
 [dependencies]
 k8s-openapi.workspace = true

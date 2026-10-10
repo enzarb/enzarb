@@ -10,10 +10,6 @@ cd "$(dirname "$0")/.."
 AGENT_SANDBOX_VERSION=v0.5.6
 AGENT_SANDBOX_URL="https://raw.githubusercontent.com/kubernetes-sigs/agent-sandbox/${AGENT_SANDBOX_VERSION}/k8s/crds/agents.x-k8s.io_sandboxes.yaml"
 
-# Capsule: latest stable release (v0.14.6); Tenant serves capsule.clastix.io/v1beta2.
-CAPSULE_VERSION=v0.14.6
-CAPSULE_URL="https://raw.githubusercontent.com/projectcapsule/capsule/${CAPSULE_VERSION}/charts/capsule/crds/capsule.clastix.io_tenants.yaml"
-
 out=crates/enzarb-crds/src/upstream
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -30,4 +26,3 @@ gen() { # name url version api-version
 }
 
 gen sandbox "$AGENT_SANDBOX_URL" "$AGENT_SANDBOX_VERSION" v1beta1
-gen capsule "$CAPSULE_URL" "$CAPSULE_VERSION" v1beta2

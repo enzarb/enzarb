@@ -1,4 +1,7 @@
-use enzarb_crds::{Project, RepoKey, RunMode, project_crd_yaml};
+use enzarb_crds::{
+    CONDITION_TYPES, MAX_PROJECT_NAME_LEN, Project, REASON_INVALID_SPEC, RepoKey, RunMode,
+    project_crd_yaml,
+};
 
 const EXAMPLE: &str = r#"
 apiVersion: enzarb.dev/v1alpha1
@@ -19,13 +22,13 @@ spec:
     resources: {}
 status:
   observedGeneration: 3
-  namespace: enzarb-p-enzarb
+  namespace: enzarb-sandboxes
   sandbox:
-    name: sandbox
-    endpoint: ws://sandbox.enzarb-p-enzarb.svc:7070/v1/mux
-    authSecretRef: { name: sandbox-auth, key: token }
+    name: sb-enzarb
+    endpoint: ws://sb-enzarb.enzarb-sandboxes.svc:7070/v1/mux
+    authSecretRef: { name: sb-enzarb-auth, key: token }
   conditions:
-    - type: TenantReady
+    - type: ResourcesReady
       status: "True"
       reason: Created
       message: ""
@@ -45,7 +48,7 @@ fn round_trip() {
     let st = p.status.as_ref().unwrap();
     assert_eq!(st.observed_generation, Some(3));
     assert_eq!(st.sandbox.as_ref().unwrap().auth_secret_ref.key, "token");
-    assert_eq!(st.conditions[0].type_, "TenantReady");
+    assert_eq!(st.conditions[0].type_, "ResourcesReady");
     let back: Project = serde_yaml::from_str(&serde_yaml::to_string(&p).unwrap()).unwrap();
     assert_eq!(back, p);
     let j: Project = serde_json::from_value(serde_json::to_value(&p).unwrap()).unwrap();
@@ -78,8 +81,21 @@ fn runtime_class_and_docker_are_not_user_fields() {
 #[test]
 fn derived_names() {
     let p = example();
-    assert_eq!(p.namespace_name(), "enzarb-p-enzarb");
-    assert_eq!(p.tenant_name(), "enzarb-ruckc");
+    assert_eq!(p.sandbox_name(), "sb-enzarb");
+    assert_eq!(p.auth_secret_name(), "sb-enzarb-auth");
+    assert_eq!(p.workspace_pvc_name(), "sb-enzarb-workspace");
+    assert_eq!(p.docker_pvc_name(), "sb-enzarb-docker");
+    assert_eq!(p.network_policy_name(), "sb-enzarb");
+    // The longest name fits a 63-character label at the maximum Project name length.
+    let long = "a".repeat(MAX_PROJECT_NAME_LEN);
+    let p = Project::new(&long, example().spec);
+    assert_eq!(p.workspace_pvc_name().len(), 63);
+}
+
+#[test]
+fn condition_types_in_checklist_order() {
+    assert_eq!(CONDITION_TYPES, ["ResourcesReady", "SandboxReady", "Ready"]);
+    assert_eq!(REASON_INVALID_SPEC, "InvalidSpec");
 }
 
 #[test]
@@ -137,4 +153,32 @@ fn crdgen_binary_output_matches() {
         .unwrap();
     assert!(out.status.success());
     assert_eq!(String::from_utf8(out.stdout).unwrap(), project_crd_yaml());
+}
+
+#[test]
+fn crd_enforces_name_limit_with_create_only_cel() {
+    let crd: serde_json::Value = serde_yaml::from_str(&project_crd_yaml()).unwrap();
+    let rules =
+        &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["x-kubernetes-validations"];
+    let rules = rules.as_array().unwrap();
+    assert_eq!(rules.len(), 2);
+    // Create-only: with optionalOldSelf, oldSelf has no value on create, so the name is checked
+    // only then; updates (status writes, spec edits) of older Projects always pass.
+    assert_eq!(
+        rules[0]["rule"],
+        "oldSelf.hasValue() || self.metadata.name.size() <= 50"
+    );
+    assert_eq!(
+        rules[1]["rule"],
+        "oldSelf.hasValue() || self.metadata.name.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')"
+    );
+    for r in rules {
+        assert_eq!(r["optionalOldSelf"], true);
+        assert!(
+            r["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("Project name must be")
+        );
+    }
 }

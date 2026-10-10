@@ -1,5 +1,10 @@
-# RBAC for the enzarb-sandbox-operator. Keep in sync with crates/operator/src/rbac.rs
+# RBAC for the enzarb-sandbox-operator (ADR-0013). Keep in sync with crates/operator/src/rbac.rs
 # (a unit test fails if this file and the list of API calls the code makes drift apart).
+#
+# The operator works in ONE shared sandbox namespace (--sandbox-namespace, default
+# enzarb-sandboxes, created by enzarb-helm). It has cluster-wide rights only on Projects;
+# it does not create namespaces and has no cluster-wide access to Secrets, PVCs,
+# NetworkPolicies or Sandboxes.
 #
 # Bind it to the operator's ServiceAccount (owned by enzarb-helm), for example:
 #
@@ -8,49 +13,55 @@
 #   roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: enzarb-sandbox-operator }
 #   subjects: [{ kind: ServiceAccount, name: enzarb-sandbox-operator, namespace: <release ns> }]
 #
+#   kind: RoleBinding   # in the sandbox namespace
+#   metadata: { name: enzarb-sandbox-operator, namespace: <sandbox ns> }
+#   roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: enzarb-sandbox-operator }
+#   subjects: [{ kind: ServiceAccount, name: enzarb-sandbox-operator, namespace: <release ns> }]
+#
 #   kind: RoleBinding   # in the release namespace
 #   metadata: { name: enzarb-sandbox-operator-leader }
 #   roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: enzarb-sandbox-operator-leader }
 #   subjects: [{ kind: ServiceAccount, name: enzarb-sandbox-operator, namespace: <release ns> }]
-#
-# Capsule: the operator creates tenant-labelled Namespaces directly, so Capsule must treat the
-# operator identity as a tenant owner/admin: add its user (system:serviceaccount:<ns>:<name>) or
-# group (system:serviceaccounts:<ns>) to the Capsule `userGroups`.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: enzarb-sandbox-operator
 rules:
-  # Watched cluster-wide; the finalizer is added/removed with patch.
+  # Watched cluster-wide.
   - apiGroups: [enzarb.dev]
     resources: [projects]
-    verbs: [get, list, watch, patch]
+    verbs: [list, watch]
   - apiGroups: [enzarb.dev]
     resources: [projects/status]
     verbs: [patch]
-  # One Tenant per owner, server-side applied (create + patch). Never deleted.
-  - apiGroups: [capsule.clastix.io]
-    resources: [tenants]
-    verbs: [create, patch]
-  # One Namespace per Project: server-side applied, read for ownership, deleted on cleanup.
-  - apiGroups: [""]
-    resources: [namespaces]
-    verbs: [get, create, patch, delete]
-  # sandbox-auth token: created once, never updated.
+  # Needed to set ownerReferences with blockOwnerDeletion on every object.
+  - apiGroups: [enzarb.dev]
+    resources: [projects/finalizers]
+    verbs: [update]
+---
+# Everything a Project needs, in the shared sandbox namespace only. Set the namespace to
+# --sandbox-namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: enzarb-sandbox-operator
+  namespace: enzarb-sandboxes
+rules:
+  # Auth token: created once, never rewritten. get backs the ownership check.
   - apiGroups: [""]
     resources: [secrets]
     verbs: [get, create]
   - apiGroups: [""]
     resources: [persistentvolumeclaims]
-    verbs: [create, patch]
-  # sandbox-isolation NetworkPolicy per project namespace, server-side applied.
+    verbs: [get, create, patch]
+  # Per-Project NetworkPolicy, server-side applied.
   - apiGroups: [networking.k8s.io]
     resources: [networkpolicies]
-    verbs: [create, patch]
-  # Sandboxes are applied per namespace and watched cluster-wide (owned by Project).
+    verbs: [get, create, patch]
+  # Sandboxes are server-side applied and watched (owned by Project).
   - apiGroups: [agents.x-k8s.io]
     resources: [sandboxes]
-    verbs: [list, watch, create, patch]
+    verbs: [get, list, watch, create, patch]
 ---
 # Leader election Lease. Bind in the namespace the operator runs in (or wherever
 # --leader-election-namespace points).

@@ -3,41 +3,40 @@
 //! `reconcile.rs`, `leader.rs` or `main.rs`, update this list and `deploy/rbac.yaml`.
 //!
 //! Server-side apply (`Patch::Apply`) needs `patch` and, because the object may not exist yet,
-//! `create`. The finalizer helper uses JSON patch on the Project (`patch`).
+//! `create`. The Project status is written with a merge patch (`projects/status` `patch`).
 
-/// `(group, resource, verb)`. Cluster-scoped grants (ClusterRole).
+/// `(group, resource, verb)`. Cluster-scoped grants (ClusterRole): Projects only.
 pub const CLUSTER_CALLS: &[(&str, &str, &str)] = &[
-    // Controller watch, finalizer.
-    ("enzarb.dev", "projects", "get"),
+    // Controller watch. No get/patch: no finalizer, and only the status subresource is written.
     ("enzarb.dev", "projects", "list"),
     ("enzarb.dev", "projects", "watch"),
-    ("enzarb.dev", "projects", "patch"),
     ("enzarb.dev", "projects/status", "patch"),
-    // desired::tenant, SSA.
-    ("capsule.clastix.io", "tenants", "create"),
-    ("capsule.clastix.io", "tenants", "patch"),
-    // desired::namespace SSA; cleanup get_opt + delete.
-    ("", "namespaces", "get"),
-    ("", "namespaces", "create"),
-    ("", "namespaces", "patch"),
-    ("", "namespaces", "delete"),
-    // sandbox-auth: get_opt then create.
+    // Not an API call by the code: needed to set ownerReferences with blockOwnerDeletion=true
+    // when the OwnerReferencesPermissionEnforcement admission plugin is enabled.
+    ("enzarb.dev", "projects/finalizers", "update"),
+];
+
+/// Namespaced grants (Role in the sandbox namespace, ADR-0013). No namespaces, and no
+/// cluster-wide secrets. `get` backs the ownership check before an object is reused; `patch`
+/// is server-side apply (which also needs `create`).
+pub const SANDBOX_NS_CALLS: &[(&str, &str, &str)] = &[
     ("", "secrets", "get"),
     ("", "secrets", "create"),
-    // desired::pvc SSA.
+    ("", "persistentvolumeclaims", "get"),
     ("", "persistentvolumeclaims", "create"),
     ("", "persistentvolumeclaims", "patch"),
-    // desired::network_policy SSA.
+    ("networking.k8s.io", "networkpolicies", "get"),
     ("networking.k8s.io", "networkpolicies", "create"),
     ("networking.k8s.io", "networkpolicies", "patch"),
-    // desired::sandbox SSA; Controller::owns watches Sandboxes.
+    // Sandboxes: Controller::owns watches them (namespaced Api).
+    ("agents.x-k8s.io", "sandboxes", "get"),
     ("agents.x-k8s.io", "sandboxes", "list"),
     ("agents.x-k8s.io", "sandboxes", "watch"),
     ("agents.x-k8s.io", "sandboxes", "create"),
     ("agents.x-k8s.io", "sandboxes", "patch"),
 ];
 
-/// Namespaced grants (Role in the operator namespace): leader election.
+/// Namespaced grants (Role in the operator's namespace): leader election.
 pub const LEADER_CALLS: &[(&str, &str, &str)] = &[
     ("coordination.k8s.io", "leases", "get"),
     ("coordination.k8s.io", "leases", "create"),
@@ -51,12 +50,12 @@ mod tests {
 
     type Triple = (String, String, String);
 
-    fn granted(kind: &str) -> BTreeSet<Triple> {
+    fn granted(kind: &str, name: &str) -> BTreeSet<Triple> {
         let raw = include_str!("../../../deploy/rbac.yaml");
         let mut out = BTreeSet::new();
         for doc in serde_yaml::Deserializer::from_str(raw) {
             let v = <serde_yaml::Value as serde::Deserialize>::deserialize(doc).unwrap();
-            if v["kind"].as_str() != Some(kind) {
+            if v["kind"].as_str() != Some(kind) || v["metadata"]["name"].as_str() != Some(name) {
                 continue;
             }
             for rule in v["rules"].as_sequence().unwrap() {
@@ -89,7 +88,10 @@ mod tests {
 
     #[test]
     fn cluster_role_matches_code() {
-        let (have, want) = (granted("ClusterRole"), used(CLUSTER_CALLS));
+        let (have, want) = (
+            granted("ClusterRole", "enzarb-sandbox-operator"),
+            used(CLUSTER_CALLS),
+        );
         assert_eq!(
             want.difference(&have).collect::<Vec<_>>(),
             Vec::<&Triple>::new(),
@@ -103,7 +105,38 @@ mod tests {
     }
 
     #[test]
+    fn sandbox_namespace_role_matches_code() {
+        let (have, want) = (
+            granted("Role", "enzarb-sandbox-operator"),
+            used(SANDBOX_NS_CALLS),
+        );
+        assert_eq!(
+            want.difference(&have).collect::<Vec<_>>(),
+            Vec::<&Triple>::new(),
+            "used by code but missing from deploy/rbac.yaml"
+        );
+        assert_eq!(
+            have.difference(&want).collect::<Vec<_>>(),
+            Vec::<&Triple>::new(),
+            "granted in deploy/rbac.yaml but not used by code"
+        );
+    }
+
+    #[test]
     fn leader_role_matches_code() {
-        assert_eq!(granted("Role"), used(LEADER_CALLS));
+        assert_eq!(
+            granted("Role", "enzarb-sandbox-operator-leader"),
+            used(LEADER_CALLS)
+        );
+    }
+
+    #[test]
+    fn no_namespace_or_cluster_wide_secret_access() {
+        let cluster = granted("ClusterRole", "enzarb-sandbox-operator");
+        assert!(
+            !cluster
+                .iter()
+                .any(|(g, r, _)| g.is_empty() && (r == "namespaces" || r == "secrets"))
+        );
     }
 }

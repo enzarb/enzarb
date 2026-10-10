@@ -1,60 +1,72 @@
 //! Pure builders for every object a Project needs. Nothing here talks to the cluster.
 //!
+//! All objects live in one shared sandbox namespace (ADR-0013), carry per-Project names
+//! (`sb-<project>`, ...), the labels `app.kubernetes.io/managed-by` and `enzarb.dev/project`,
+//! and a controller ownerReference to the cluster-scoped Project, so deleting a Project
+//! garbage-collects them.
+//!
 //! agent-sandbox v0.5.6 notes (checked against the upstream controller):
 //! - With `spec.service: true` it creates a *headless* Service named after the Sandbox
-//!   (`sandbox`), selecting the sandbox pod, with ports taken from the container ports.
+//!   (`sb-<project>`), selecting the sandbox pod, with ports taken from the container ports.
 //!   With the field unset it never creates one, so we set it explicitly instead of
-//!   creating our own Service. The DNS name `sandbox.<ns>.svc` then resolves to the pod IP.
+//!   creating our own Service. The DNS name `sb-<project>.<ns>.svc` then resolves to the pod IP.
 //! - The pod is described inline by `spec.podTemplate` (core/v1 PodSpec shape).
 //! - `status.conditions[type=Ready]` is True when the pod is Ready and, if a Service is
 //!   requested, the Service exists.
 
 use crate::docker::{self, DockerConfig};
-use enzarb_crds::upstream::capsule::Tenant;
 use enzarb_crds::upstream::sandbox::Sandbox;
-use enzarb_crds::{Project, SandboxStatus, SecretKeyRef};
+use enzarb_crds::{MAX_PROJECT_NAME_LEN, Project, SandboxStatus, SecretKeyRef};
 use k8s_openapi::ByteString;
-use k8s_openapi::api::core::v1::{Namespace, PersistentVolumeClaim, Secret};
+use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Secret};
 use k8s_openapi::api::networking::v1::NetworkPolicy;
 use kube::Resource;
 use serde_json::json;
 use std::collections::BTreeMap;
 
 pub const FIELD_MANAGER: &str = "enzarb-operator";
-pub const FINALIZER: &str = "enzarb.dev/cleanup";
 pub const LABEL_MANAGED_BY: &str = "app.kubernetes.io/managed-by";
 pub const LABEL_PROJECT: &str = "enzarb.dev/project";
-pub const LABEL_CAPSULE_TENANT: &str = "capsule.clastix.io/tenant";
-pub const SANDBOX_NAME: &str = "sandbox";
-pub const AUTH_SECRET_NAME: &str = "sandbox-auth";
 pub const AUTH_SECRET_KEY: &str = "token";
-pub const NETPOL_NAME: &str = "sandbox-isolation";
-pub const PVC_NAME: &str = "workspace";
 pub const SANDBOX_PORT: i32 = 7070;
 pub const AUTH_MOUNT_DIR: &str = "/var/run/enzarb/auth";
 /// uid/gid of user `enzarb` in the sandbox image (enzarb-sandbox-container).
 pub const SANDBOX_UID: i64 = 1000;
 pub const WORKSPACE_MOUNT: &str = "/workspace";
+/// `app.kubernetes.io/name` of the workflows executor pods (egress callback target).
+pub const EXECUTOR_POD_NAME: &str = "enzarb-workflows";
 
 /// Operator-wide defaults supplied by flags.
 #[derive(Clone, Debug)]
 pub struct Defaults {
     pub sandbox_image: String,
     pub storage: String,
+    /// The shared namespace every Project's objects live in.
+    pub sandbox_namespace: String,
+    /// ServiceAccount of every sandbox pod (no token, no RBAC).
+    pub sandbox_service_account: String,
     pub netpol: NetpolConfig,
     pub docker: DockerConfig,
 }
 
-/// Who may reach the sandbox port (7070) in a project namespace.
+/// Who may reach the sandbox port (7070), and what a sandbox may reach besides DNS and 443.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NetpolConfig {
     /// `(key, value)` label that selects the namespace(s) the clients live in.
     pub ingress_namespace_label: (String, String),
     /// Allowed client pods: `app.kubernetes.io/name in (...)`.
     pub ingress_pod_names: Vec<String>,
+    /// TCP port of the workflows executor callback listener (egress rule).
+    pub executor_callback_port: u16,
+    /// CIDRs excluded from the TCP 443 egress rule (cluster pod, service, node networks).
+    pub egress_exclude_cidrs: Vec<String>,
+    /// Extra DNS server CIDRs allowed on port 53 besides kube-dns (e.g. NodeLocal DNSCache).
+    pub dns_cidrs: Vec<String>,
 }
 
 impl NetpolConfig {
+    pub const DEFAULT_CALLBACK_PORT: u16 = 8081;
+
     pub fn default_pod_names() -> Vec<String> {
         vec!["enzarb-sandbox-proxy".into(), "enzarb-workflows".into()]
     }
@@ -64,15 +76,111 @@ impl NetpolConfig {
         Self {
             ingress_namespace_label: ("kubernetes.io/metadata.name".into(), ns.into()),
             ingress_pod_names: Self::default_pod_names(),
+            executor_callback_port: Self::DEFAULT_CALLBACK_PORT,
+            egress_exclude_cidrs: vec![],
+            dns_cidrs: vec![],
         }
     }
+}
+
+/// `ipBlock` peers for an address family, from `cidrs` (families are told apart by `:`).
+fn ip_block(all: &str, except: &[&String]) -> serde_json::Value {
+    if except.is_empty() {
+        json!({"ipBlock": {"cidr": all}})
+    } else {
+        json!({"ipBlock": {"cidr": all, "except": except}})
+    }
+}
+
+/// How an existing object relates to this Project instance.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Ownership {
+    /// Controller-owned by this Project (same uid) and not being deleted.
+    Mine,
+    /// Being deleted, or controlled by another Project uid (a predecessor of the same name):
+    /// garbage collection will remove it.
+    Terminating,
+    /// No controller ownerReference at all: something else created it. Needs an admin.
+    NotOwned,
+}
+
+pub fn ownership(
+    meta: &k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta,
+    p: &Project,
+) -> Ownership {
+    if meta.deletion_timestamp.is_some() {
+        return Ownership::Terminating;
+    }
+    match meta
+        .owner_references
+        .iter()
+        .flatten()
+        .find(|r| r.controller == Some(true))
+    {
+        None => Ownership::NotOwned,
+        // Controlled by something other than a Project: nobody will ever clean it up.
+        Some(r) if r.kind != "Project" || r.api_version != "enzarb.dev/v1alpha1" => {
+            Ownership::NotOwned
+        }
+        Some(r) if p.metadata.uid.as_ref() == Some(&r.uid) => Ownership::Mine,
+        // Another Project uid: a predecessor of the same name, which GC will remove.
+        Some(_) => Ownership::Terminating,
+    }
+}
+
+/// Parses and validates a comma-separated CIDR list: canonical (no host bits set) and not `/0`.
+pub fn parse_cidrs(flag: &str, raw: &[String]) -> anyhow::Result<Vec<String>> {
+    let mut out = vec![];
+    for c in raw.iter().map(|c| c.trim()).filter(|c| !c.is_empty()) {
+        let bad = |why: &str| anyhow::anyhow!("{flag}: {c:?} {why}");
+        let (ip, len) = c
+            .split_once('/')
+            .ok_or_else(|| bad("is not a CIDR such as 10.0.0.0/8"))?;
+        // Digits only, no sign and no leading zero ("+8", "08" are rejected).
+        let canonical = !len.is_empty()
+            && len.bytes().all(|b| b.is_ascii_digit())
+            && (len == "0" || !len.starts_with('0'));
+        if !canonical {
+            return Err(bad(
+                "has a non-canonical prefix length (digits only, no leading zero)",
+            ));
+        }
+        let len: u32 = len
+            .parse()
+            .map_err(|_| bad("has an invalid prefix length"))?;
+        let ip: std::net::IpAddr = ip.parse().map_err(|_| bad("has an invalid address"))?;
+        let (bits, width) = match ip {
+            std::net::IpAddr::V4(a) => (u128::from(u32::from(a)), 32),
+            std::net::IpAddr::V6(a) => (u128::from(a), 128),
+        };
+        if len > width {
+            return Err(bad("has a prefix length that is too large"));
+        }
+        if len == 0 {
+            return Err(bad(
+                "is a /0 range; it would match everything (the API server rejects an ipBlock that excludes its whole range)",
+            ));
+        }
+        let host_bits = if len == width {
+            0
+        } else {
+            bits & ((1u128 << (width - len)) - 1)
+        };
+        if host_bits != 0 {
+            return Err(bad(
+                "has host bits set; use the network address (e.g. 10.0.0.0/8)",
+            ));
+        }
+        out.push(c.to_string());
+    }
+    Ok(out)
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum InvalidProject {
     #[error("project has no name")]
     NoName,
-    #[error("{0} is not a valid DNS label: {1}")]
+    #[error("project name {0:?} is not a valid DNS label: {1}")]
     BadName(String, &'static str),
     #[error("spec.owner is empty")]
     NoOwner,
@@ -81,8 +189,8 @@ pub enum InvalidProject {
 }
 
 fn dns_label(s: &str) -> Result<(), &'static str> {
-    if s.is_empty() || s.len() > 63 {
-        return Err("must be 1-63 characters");
+    if s.is_empty() || s.len() > MAX_PROJECT_NAME_LEN {
+        return Err("must be 1-50 characters");
     }
     if !s
         .bytes()
@@ -96,17 +204,17 @@ fn dns_label(s: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Checks that derived names are valid and an image is available.
+/// Checks the Project name (a DNS label of at most 50 characters, so `sb-<name>-workspace`
+/// fits 63), the owner, and that an image is available.
 pub fn validate(p: &Project, d: &Defaults) -> Result<(), InvalidProject> {
-    if p.metadata.name.as_deref().unwrap_or_default().is_empty() {
+    let name = project_name(p);
+    if name.is_empty() {
         return Err(InvalidProject::NoName);
     }
     if p.spec.owner.is_empty() {
         return Err(InvalidProject::NoOwner);
     }
-    for n in [p.namespace_name(), p.tenant_name()] {
-        dns_label(&n).map_err(|e| InvalidProject::BadName(n.clone(), e))?;
-    }
+    dns_label(name).map_err(|e| InvalidProject::BadName(name.to_string(), e))?;
     if image(p, d).is_empty() {
         return Err(InvalidProject::NoImage);
     }
@@ -133,8 +241,12 @@ pub fn storage(p: &Project, d: &Defaults) -> String {
     }
 }
 
-pub fn endpoint(namespace: &str) -> String {
-    format!("ws://{SANDBOX_NAME}.{namespace}.svc:{SANDBOX_PORT}/v1/mux")
+/// `ws://sb-<project>.<namespace>.svc:7070/v1/mux`.
+pub fn endpoint(p: &Project, namespace: &str) -> String {
+    format!(
+        "ws://{}.{namespace}.svc:{SANDBOX_PORT}/v1/mux",
+        p.sandbox_name()
+    )
 }
 
 fn base_labels(p: &Project) -> BTreeMap<String, String> {
@@ -144,64 +256,29 @@ fn base_labels(p: &Project) -> BTreeMap<String, String> {
     ])
 }
 
-fn owner_refs(p: &Project) -> serde_json::Value {
-    json!(p.controller_owner_ref(&()).into_iter().collect::<Vec<_>>())
+fn owner_refs(p: &Project) -> Vec<k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference> {
+    p.controller_owner_ref(&())
+        .map(|mut r| {
+            // Needs `update` on projects/finalizers (see deploy/rbac.yaml).
+            r.block_owner_deletion = Some(true);
+            r
+        })
+        .into_iter()
+        .collect()
 }
 
-/// Capsule Tenant `enzarb-<owner>`. The owner is a Capsule `User` named `<owner>`
-/// (the GitHub login the UI authenticates). Shared by all of the owner's Projects, so
-/// it carries no ownerReference and is never deleted by the operator.
-pub fn tenant(p: &Project) -> Tenant {
-    serde_json::from_value(json!({
-        "apiVersion": "capsule.clastix.io/v1beta2",
-        "kind": "Tenant",
-        "metadata": {
-            "name": p.tenant_name(),
-            "labels": {LABEL_MANAGED_BY: FIELD_MANAGER},
-        },
-        "spec": { "owners": [{"kind": "User", "name": p.spec.owner}] },
-    }))
-    .expect("tenant JSON matches the Tenant type")
+fn owner_refs_json(p: &Project) -> serde_json::Value {
+    json!(owner_refs(p))
 }
 
-/// Namespace `enzarb-p-<name>`, assigned to the tenant through the Capsule label.
-pub fn namespace(p: &Project) -> Namespace {
-    let mut labels = base_labels(p);
-    labels.insert(LABEL_CAPSULE_TENANT.to_string(), p.tenant_name());
-    serde_json::from_value(json!({
-        "apiVersion": "v1",
-        "kind": "Namespace",
-        "metadata": {
-            "name": p.namespace_name(),
-            "labels": labels,
-            "ownerReferences": owner_refs(p),
-        },
-    }))
-    .expect("namespace JSON matches the Namespace type")
-}
-
-/// Whether a namespace was created for this Project (guards finalizer cleanup).
-pub fn namespace_belongs_to(ns: &Namespace, project: &str) -> bool {
-    ns.metadata
-        .labels
-        .as_ref()
-        .and_then(|l| l.get(LABEL_PROJECT))
-        .is_some_and(|v| v == project)
-        && ns
-            .metadata
-            .labels
-            .as_ref()
-            .and_then(|l| l.get(LABEL_MANAGED_BY))
-            .is_some_and(|v| v == FIELD_MANAGER)
-}
-
-/// Secret `sandbox-auth` holding `token`. Created once by the reconciler; never re-applied.
-pub fn auth_secret(p: &Project, token: &str) -> Secret {
+/// Secret `sb-<name>-auth` holding `token`. Created once by the reconciler; never re-applied.
+pub fn auth_secret(p: &Project, d: &Defaults, token: &str) -> Secret {
     Secret {
         metadata: kube::api::ObjectMeta {
-            name: Some(AUTH_SECRET_NAME.into()),
-            namespace: Some(p.namespace_name()),
+            name: Some(p.auth_secret_name()),
+            namespace: Some(d.sandbox_namespace.clone()),
             labels: Some(base_labels(p)),
+            owner_references: Some(owner_refs(p)),
             ..Default::default()
         },
         type_: Some("Opaque".into()),
@@ -213,59 +290,70 @@ pub fn auth_secret(p: &Project, token: &str) -> Secret {
     }
 }
 
-/// PVC `workspace` sized from `spec.sandbox.storage`.
+fn pvc_named(p: &Project, d: &Defaults, name: String, size: String) -> PersistentVolumeClaim {
+    serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {
+            "name": name,
+            "namespace": d.sandbox_namespace,
+            "labels": base_labels(p),
+            "ownerReferences": owner_refs_json(p),
+        },
+        "spec": {
+            "accessModes": ["ReadWriteOnce"],
+            "resources": {"requests": {"storage": size}},
+        },
+    }))
+    .expect("pvc JSON matches the PVC type")
+}
+
+/// PVC `sb-<name>-workspace` sized from `spec.sandbox.storage`.
 pub fn pvc(p: &Project, d: &Defaults) -> PersistentVolumeClaim {
-    serde_json::from_value(json!({
-        "apiVersion": "v1",
-        "kind": "PersistentVolumeClaim",
-        "metadata": {
-            "name": PVC_NAME,
-            "namespace": p.namespace_name(),
-            "labels": base_labels(p),
-        },
-        "spec": {
-            "accessModes": ["ReadWriteOnce"],
-            "resources": {"requests": {"storage": storage(p, d)}},
-        },
-    }))
-    .expect("pvc JSON matches the PVC type")
+    pvc_named(p, d, p.workspace_pvc_name(), storage(p, d))
 }
 
-/// PVC `docker` for `/var/lib/docker`, sized from `--docker-storage`.
+/// PVC `sb-<name>-docker` for `/var/lib/docker`, sized from `--docker-storage`.
 pub fn docker_pvc(p: &Project, d: &Defaults) -> PersistentVolumeClaim {
-    serde_json::from_value(json!({
-        "apiVersion": "v1",
-        "kind": "PersistentVolumeClaim",
-        "metadata": {
-            "name": docker::PVC_NAME,
-            "namespace": p.namespace_name(),
-            "labels": base_labels(p),
-        },
-        "spec": {
-            "accessModes": ["ReadWriteOnce"],
-            "resources": {"requests": {"storage": d.docker.storage}},
-        },
-    }))
-    .expect("pvc JSON matches the PVC type")
+    pvc_named(p, d, p.docker_pvc_name(), d.docker.storage.clone())
 }
 
-/// NetworkPolicy `sandbox-isolation` for every pod in the project namespace.
+/// NetworkPolicy `sb-<name>`, selecting only this Project's sandbox pod.
+///
 /// Ingress: TCP 7070 only from the configured client pods/namespaces.
-/// Egress: DNS (UDP/TCP 53) and TCP 443, to any destination. A narrower allow-list
-/// (GitHub, Anthropic, registries) can replace the 443 rule later.
-pub fn network_policy(p: &Project, c: &NetpolConfig) -> NetworkPolicy {
+/// Egress: DNS to kube-dns (plus optional extra DNS CIDRs); TCP 443 to any address except the
+/// cluster's pod, service and node CIDRs (`--egress-exclude-cidrs`, required, so the API
+/// server endpoint is excluded); the workflows executor callback port.
+///
+/// The Kubernetes API server is deliberately not reachable (ADR-0013). Policies are evaluated
+/// after DNAT, so the `kubernetes` Service address (443) is covered by the service CIDR
+/// exclusion and the endpoint (6443) is not allowed by any rule. A chart-owned default-deny
+/// policy for the namespace (enzarb-helm) covers pods without a policy of their own.
+pub fn network_policy(p: &Project, d: &Defaults) -> NetworkPolicy {
+    let c = &d.netpol;
     let (ns_key, ns_val) = &c.ingress_namespace_label;
+    let (v6, v4): (Vec<&String>, Vec<&String>) =
+        c.egress_exclude_cidrs.iter().partition(|c| c.contains(':'));
+    let mut dns_to = vec![json!({
+        "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}},
+        "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}},
+    })];
+    dns_to.extend(
+        c.dns_cidrs
+            .iter()
+            .map(|cidr| json!({"ipBlock": {"cidr": cidr}})),
+    );
     serde_json::from_value(json!({
         "apiVersion": "networking.k8s.io/v1",
         "kind": "NetworkPolicy",
         "metadata": {
-            "name": NETPOL_NAME,
-            "namespace": p.namespace_name(),
+            "name": p.network_policy_name(),
+            "namespace": d.sandbox_namespace,
             "labels": base_labels(p),
-            "ownerReferences": owner_refs(p),
+            "ownerReferences": owner_refs_json(p),
         },
         "spec": {
-            "podSelector": {},
+            "podSelector": {"matchLabels": {LABEL_PROJECT: project_name(p)}},
             "policyTypes": ["Ingress", "Egress"],
             "ingress": [{
                 // One peer with both selectors: namespace AND pod must match.
@@ -280,29 +368,51 @@ pub fn network_policy(p: &Project, c: &NetpolConfig) -> NetworkPolicy {
                 "ports": [{"protocol": "TCP", "port": SANDBOX_PORT}],
             }],
             "egress": [
-                {"ports": [
-                    {"protocol": "UDP", "port": 53},
-                    {"protocol": "TCP", "port": 53},
-                ]},
-                {"ports": [{"protocol": "TCP", "port": 443}]},
+                // DNS: kube-dns pods (and any configured extra DNS CIDRs) only.
+                {
+                    "to": dns_to,
+                    "ports": [
+                        {"protocol": "UDP", "port": 53},
+                        {"protocol": "TCP", "port": 53},
+                    ],
+                },
+                // HTTPS to the internet (GitHub, Anthropic, registries), not the cluster networks.
+                {
+                    "to": [ip_block("0.0.0.0/0", &v4), ip_block("::/0", &v6)],
+                    "ports": [{"protocol": "TCP", "port": 443}],
+                },
+                // Run callbacks to the workflows executor.
+                {
+                    "to": [{
+                        "namespaceSelector": {"matchLabels": {ns_key: ns_val}},
+                        "podSelector": {"matchLabels": {"app.kubernetes.io/name": EXECUTOR_POD_NAME}},
+                    }],
+                    "ports": [{"protocol": "TCP", "port": c.executor_callback_port}],
+                },
             ],
         },
     }))
     .expect("networkpolicy JSON matches the NetworkPolicy type")
 }
 
-/// agent-sandbox `Sandbox` `sandbox`: one container running sandbox-init on 7070.
+/// agent-sandbox `Sandbox` `sb-<name>`: one container running sandbox-init on 7070.
 pub fn sandbox(p: &Project, d: &Defaults) -> Sandbox {
     let sb = &p.spec.sandbox;
     let mut pod_spec = json!({
-        // The sandbox gets cluster access through capsule-proxy, not a pod token.
+        // ADR-0013: no Kubernetes API access. Dedicated SA with no bindings, no token (this
+        // pod-level setting also covers the dockerd sidecar; no projected token volumes), and
+        // no Service env vars from the shared namespace.
+        "serviceAccountName": d.sandbox_service_account,
         "automountServiceAccountToken": false,
+        "enableServiceLinks": false,
         // Matches user `enzarb` in the sandbox image; fsGroup lets that user read the token.
         "securityContext": {
             "runAsUser": SANDBOX_UID,
             "runAsGroup": SANDBOX_UID,
             "fsGroup": SANDBOX_UID,
             "runAsNonRoot": true,
+            // Do not recursively chown the (large) docker PVC on every start.
+            "fsGroupChangePolicy": "OnRootMismatch",
         },
         "containers": [{
             "name": "sandbox",
@@ -317,9 +427,9 @@ pub fn sandbox(p: &Project, d: &Defaults) -> Sandbox {
             ],
         }],
         "volumes": [
-            {"name": "workspace", "persistentVolumeClaim": {"claimName": PVC_NAME}},
+            {"name": "workspace", "persistentVolumeClaim": {"claimName": p.workspace_pvc_name()}},
             {"name": "auth", "secret": {
-                "secretName": AUTH_SECRET_NAME,
+                "secretName": p.auth_secret_name(),
                 "defaultMode": 0o400,
                 "items": [{"key": AUTH_SECRET_KEY, "path": AUTH_SECRET_KEY}],
             }},
@@ -332,7 +442,13 @@ pub fn sandbox(p: &Project, d: &Defaults) -> Sandbox {
         .docker
         .profile()
         .expect("DockerConfig::validate ran at startup");
-    let sc = docker::sidecar(profile, &d.docker.image, &d.docker.resources, SANDBOX_UID);
+    let sc = docker::sidecar(
+        profile,
+        &d.docker.image,
+        &d.docker.resources,
+        SANDBOX_UID,
+        &p.docker_pvc_name(),
+    );
     {
         let main = &mut pod_spec["containers"][0];
         main["env"]
@@ -356,14 +472,15 @@ pub fn sandbox(p: &Project, d: &Defaults) -> Sandbox {
         "apiVersion": "agents.x-k8s.io/v1beta1",
         "kind": "Sandbox",
         "metadata": {
-            "name": SANDBOX_NAME,
-            "namespace": p.namespace_name(),
+            "name": p.sandbox_name(),
+            "namespace": d.sandbox_namespace,
             "labels": base_labels(p),
-            "ownerReferences": owner_refs(p),
+            "ownerReferences": owner_refs_json(p),
         },
         "spec": {
-            // Makes agent-sandbox create the headless Service `sandbox`.
+            // Makes agent-sandbox create the headless Service `sb-<name>`.
             "service": true,
+            // The pod labels are what the per-Project NetworkPolicy selects.
             "podTemplate": {
                 "metadata": {"labels": base_labels(p)},
                 "spec": pod_spec,
@@ -374,19 +491,19 @@ pub fn sandbox(p: &Project, d: &Defaults) -> Sandbox {
 }
 
 /// The `status.sandbox` block.
-pub fn sandbox_status(p: &Project) -> SandboxStatus {
+pub fn sandbox_status(p: &Project, d: &Defaults) -> SandboxStatus {
     SandboxStatus {
-        name: SANDBOX_NAME.into(),
-        endpoint: endpoint(&p.namespace_name()),
+        name: p.sandbox_name(),
+        endpoint: endpoint(p, &d.sandbox_namespace),
         auth_secret_ref: SecretKeyRef {
-            name: AUTH_SECRET_NAME.into(),
+            name: p.auth_secret_name(),
             key: AUTH_SECRET_KEY.into(),
         },
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use enzarb_crds::{ProjectSpec, SandboxSpec};
     use k8s_openapi::api::core::v1::ResourceRequirements;
@@ -408,11 +525,20 @@ mod tests {
         p
     }
 
-    fn defaults() -> Defaults {
+    pub(crate) fn defaults() -> Defaults {
         Defaults {
             sandbox_image: "ghcr.io/enzarb/sandbox:dev".into(),
             storage: "10Gi".into(),
-            netpol: NetpolConfig::for_release_namespace("enzarb"),
+            sandbox_namespace: "enzarb-sandboxes".into(),
+            sandbox_service_account: "enzarb-sandbox".into(),
+            netpol: NetpolConfig {
+                egress_exclude_cidrs: vec![
+                    "10.0.0.0/8".into(),
+                    "192.168.0.0/16".into(),
+                    "fd00::/8".into(),
+                ],
+                ..NetpolConfig::for_release_namespace("enzarb")
+            },
             docker: DockerConfig::new(
                 docker::DEFAULT_IMAGE.into(),
                 vec!["gvisor".into(), "kata".into()],
@@ -457,7 +583,7 @@ mod tests {
             assert!(vols.contains(&json!({"name": "docker-sock", "emptyDir": {}})));
             assert!(vols.contains(&json!({
                 "name": "docker-data",
-                "persistentVolumeClaim": {"claimName": "docker"}
+                "persistentVolumeClaim": {"claimName": "sb-enzarb-docker"}
             })));
             // The sandbox container keeps its non-root context.
             assert_eq!(pod["securityContext"]["runAsNonRoot"], true);
@@ -491,8 +617,9 @@ mod tests {
         assert_eq!(containers(&s)[1]["resources"]["limits"]["memory"], "4Gi");
         assert_eq!(containers(&s)[0]["resources"], json!({}));
         let c = v(&docker_pvc(&p, &d));
-        assert_eq!(c["metadata"]["name"], "docker");
-        assert_eq!(c["metadata"]["namespace"], "enzarb-p-enzarb");
+        assert_eq!(c["metadata"]["name"], "sb-enzarb-docker");
+        assert_eq!(c["metadata"]["namespace"], "enzarb-sandboxes");
+        assert_owned_and_labelled(&c);
         assert_eq!(c["spec"]["resources"]["requests"]["storage"], "80Gi");
         assert_eq!(c["spec"]["accessModes"][0], "ReadWriteOnce");
     }
@@ -501,42 +628,27 @@ mod tests {
         serde_json::to_value(t).unwrap()
     }
 
-    #[test]
-    fn tenant_named_after_owner() {
-        let t = v(&tenant(&project("enzarb", "ruckc")));
-        assert_eq!(t["apiVersion"], "capsule.clastix.io/v1beta2");
-        assert_eq!(t["kind"], "Tenant");
-        assert_eq!(t["metadata"]["name"], "enzarb-ruckc");
-        assert_eq!(t["spec"]["owners"][0]["kind"], "User");
-        assert_eq!(t["spec"]["owners"][0]["name"], "ruckc");
-        assert!(t["metadata"].get("ownerReferences").is_none());
-    }
-
-    #[test]
-    fn namespace_labelled_for_tenant_and_owned() {
-        let n = v(&namespace(&project("enzarb", "ruckc")));
-        assert_eq!(n["metadata"]["name"], "enzarb-p-enzarb");
-        let l = &n["metadata"]["labels"];
-        assert_eq!(l["capsule.clastix.io/tenant"], "enzarb-ruckc");
+    /// Every object carries the managed-by and project labels and a controller ownerReference.
+    fn assert_owned_and_labelled(o: &serde_json::Value) {
+        let l = &o["metadata"]["labels"];
+        assert_eq!(l["app.kubernetes.io/managed-by"], "enzarb-operator");
         assert_eq!(l["enzarb.dev/project"], "enzarb");
-        assert_eq!(n["metadata"]["ownerReferences"][0]["kind"], "Project");
-        assert_eq!(n["metadata"]["ownerReferences"][0]["uid"], "uid-1");
-    }
-
-    #[test]
-    fn namespace_ownership_check() {
-        let p = project("enzarb", "ruckc");
-        let ns = namespace(&p);
-        assert!(namespace_belongs_to(&ns, "enzarb"));
-        assert!(!namespace_belongs_to(&ns, "other"));
-        assert!(!namespace_belongs_to(&Namespace::default(), "enzarb"));
+        let r = &o["metadata"]["ownerReferences"];
+        assert_eq!(r.as_array().unwrap().len(), 1, "{o}");
+        assert_eq!(r[0]["apiVersion"], "enzarb.dev/v1alpha1");
+        assert_eq!(r[0]["kind"], "Project");
+        assert_eq!(r[0]["name"], "enzarb");
+        assert_eq!(r[0]["uid"], "uid-1");
+        assert_eq!(r[0]["controller"], true);
+        assert_eq!(r[0]["blockOwnerDeletion"], true);
+        assert_eq!(o["metadata"]["namespace"], "enzarb-sandboxes");
     }
 
     #[test]
     fn secret_has_token_key() {
-        let s = auth_secret(&project("enzarb", "ruckc"), "abc");
-        assert_eq!(s.metadata.name.as_deref(), Some("sandbox-auth"));
-        assert_eq!(s.metadata.namespace.as_deref(), Some("enzarb-p-enzarb"));
+        let s = auth_secret(&project("enzarb", "ruckc"), &defaults(), "abc");
+        assert_eq!(s.metadata.name.as_deref(), Some("sb-enzarb-auth"));
+        assert_owned_and_labelled(&v(&s));
         assert_eq!(s.data.unwrap()["token"].0, b"abc");
     }
 
@@ -545,8 +657,8 @@ mod tests {
         let mut p = project("enzarb", "ruckc");
         p.spec.sandbox.storage = "50Gi".into();
         let c = v(&pvc(&p, &defaults()));
-        assert_eq!(c["metadata"]["name"], "workspace");
-        assert_eq!(c["metadata"]["namespace"], "enzarb-p-enzarb");
+        assert_eq!(c["metadata"]["name"], "sb-enzarb-workspace");
+        assert_owned_and_labelled(&c);
         assert_eq!(c["spec"]["resources"]["requests"]["storage"], "50Gi");
         assert_eq!(c["spec"]["accessModes"][0], "ReadWriteOnce");
         p.spec.sandbox.storage = String::new();
@@ -559,12 +671,15 @@ mod tests {
         let s = v(&sandbox(&project("enzarb", "ruckc"), &defaults()));
         assert_eq!(s["apiVersion"], "agents.x-k8s.io/v1beta1");
         assert_eq!(s["kind"], "Sandbox");
-        assert_eq!(s["metadata"]["name"], "sandbox");
-        assert_eq!(s["metadata"]["namespace"], "enzarb-p-enzarb");
-        assert_eq!(s["metadata"]["ownerReferences"][0]["name"], "enzarb");
+        assert_eq!(s["metadata"]["name"], "sb-enzarb");
+        assert_owned_and_labelled(&s);
         assert_eq!(s["spec"]["service"], true);
-        let pod = &s["spec"]["podTemplate"]["spec"];
+        let tpl = &s["spec"]["podTemplate"];
+        assert_eq!(tpl["metadata"]["labels"]["enzarb.dev/project"], "enzarb");
+        let pod = &tpl["spec"];
+        assert_eq!(pod["serviceAccountName"], "enzarb-sandbox");
         assert_eq!(pod["automountServiceAccountToken"], false);
+        assert_eq!(pod["enableServiceLinks"], false);
         assert_eq!(pod["runtimeClassName"], "gvisor");
         let c = &pod["containers"][0];
         assert_eq!(c["image"], "ghcr.io/enzarb/sandbox:dev");
@@ -593,9 +708,9 @@ mod tests {
         );
         assert_eq!(
             pod["volumes"][0]["persistentVolumeClaim"]["claimName"],
-            "workspace"
+            "sb-enzarb-workspace"
         );
-        assert_eq!(pod["volumes"][1]["secret"]["secretName"], "sandbox-auth");
+        assert_eq!(pod["volumes"][1]["secret"]["secretName"], "sb-enzarb-auth");
         assert_eq!(pod["volumes"][1]["secret"]["items"][0]["path"], "token");
         assert_eq!(pod["volumes"][1]["secret"]["defaultMode"], 0o400);
         let sc = &pod["securityContext"];
@@ -621,15 +736,15 @@ mod tests {
 
     #[test]
     fn network_policy_shape() {
-        let n = v(&network_policy(
-            &project("enzarb", "ruckc"),
-            &defaults().netpol,
-        ));
-        assert_eq!(n["metadata"]["name"], "sandbox-isolation");
-        assert_eq!(n["metadata"]["namespace"], "enzarb-p-enzarb");
-        assert_eq!(n["metadata"]["ownerReferences"][0]["kind"], "Project");
+        let n = v(&network_policy(&project("enzarb", "ruckc"), &defaults()));
+        assert_eq!(n["metadata"]["name"], "sb-enzarb");
+        assert_owned_and_labelled(&n);
         let spec = &n["spec"];
-        assert_eq!(spec["podSelector"], json!({}));
+        // Only this Project's pod, never the whole namespace.
+        assert_eq!(
+            spec["podSelector"],
+            json!({"matchLabels": {"enzarb.dev/project": "enzarb"}})
+        );
         assert_eq!(spec["policyTypes"], json!(["Ingress", "Egress"]));
         assert_eq!(spec["ingress"].as_array().unwrap().len(), 1);
         let from = &spec["ingress"][0]["from"];
@@ -649,24 +764,53 @@ mod tests {
             spec["ingress"][0]["ports"],
             json!([{"protocol": "TCP", "port": 7070}])
         );
+        let eg = spec["egress"].as_array().unwrap();
+        assert_eq!(eg.len(), 3);
         assert_eq!(
-            spec["egress"],
-            json!([
-                {"ports": [{"protocol": "UDP", "port": 53}, {"protocol": "TCP", "port": 53}]},
-                {"ports": [{"protocol": "TCP", "port": 443}]},
-            ])
+            eg[0],
+            json!({
+                "to": [{
+                    "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}},
+                    "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}},
+                }],
+                "ports": [{"protocol": "UDP", "port": 53}, {"protocol": "TCP", "port": 53}],
+            })
         );
-        // Egress rules have no `to`, i.e. any destination.
-        assert!(spec["egress"][1].get("to").is_none());
+        assert_eq!(
+            eg[1],
+            json!({
+                "to": [
+                    {"ipBlock": {"cidr": "0.0.0.0/0", "except": ["10.0.0.0/8", "192.168.0.0/16"]}},
+                    {"ipBlock": {"cidr": "::/0", "except": ["fd00::/8"]}},
+                ],
+                "ports": [{"protocol": "TCP", "port": 443}],
+            })
+        );
+        assert_eq!(
+            eg[2],
+            json!({
+                "to": [{
+                    "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "enzarb"}},
+                    "podSelector": {"matchLabels": {"app.kubernetes.io/name": "enzarb-workflows"}},
+                }],
+                "ports": [{"protocol": "TCP", "port": 8081}],
+            })
+        );
+        // No rule opens 6443 or any other port to the API server.
+        assert!(!v(&spec["egress"]).to_string().contains("6443"));
     }
 
     #[test]
     fn network_policy_honours_config() {
-        let c = NetpolConfig {
+        let mut d = defaults();
+        d.netpol = NetpolConfig {
             ingress_namespace_label: ("team".into(), "platform".into()),
             ingress_pod_names: vec!["a".into()],
+            executor_callback_port: 9000,
+            egress_exclude_cidrs: vec!["10.0.0.0/8".into()],
+            dns_cidrs: vec!["169.254.20.10/32".into()],
         };
-        let n = v(&network_policy(&project("enzarb", "ruckc"), &c));
+        let n = v(&network_policy(&project("enzarb", "ruckc"), &d));
         let from = &n["spec"]["ingress"][0]["from"][0];
         assert_eq!(
             from["namespaceSelector"]["matchLabels"],
@@ -676,14 +820,142 @@ mod tests {
             from["podSelector"]["matchExpressions"][0]["values"],
             json!(["a"])
         );
+        let eg = &n["spec"]["egress"];
+        // Extra DNS CIDR next to kube-dns; no IPv6 exceptions means no `except` key.
+        assert_eq!(
+            eg[0]["to"][1],
+            json!({"ipBlock": {"cidr": "169.254.20.10/32"}})
+        );
+        assert_eq!(
+            eg[1]["to"],
+            json!([
+                {"ipBlock": {"cidr": "0.0.0.0/0", "except": ["10.0.0.0/8"]}},
+                {"ipBlock": {"cidr": "::/0"}},
+            ])
+        );
+        let cb = &eg[2];
+        assert_eq!(cb["ports"], json!([{"protocol": "TCP", "port": 9000}]));
+        assert_eq!(
+            cb["to"][0]["namespaceSelector"]["matchLabels"],
+            json!({"team": "platform"})
+        );
+    }
+
+    #[test]
+    fn ownership_cases() {
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference, Time};
+        let p = project("enzarb", "ruckc");
+        let s: Secret = serde_json::from_value(v(&auth_secret(&p, &defaults(), "t"))).unwrap();
+        assert_eq!(ownership(&s.metadata, &p), Ownership::Mine);
+        // A predecessor with the same name but another uid.
+        let mut old = project("enzarb", "ruckc");
+        old.metadata.uid = Some("uid-0".into());
+        let theirs = auth_secret(&old, &defaults(), "t");
+        assert_eq!(ownership(&theirs.metadata, &p), Ownership::Terminating);
+        // Being deleted wins.
+        let mut dying = s.metadata.clone();
+        dying.deletion_timestamp =
+            Some(Time(k8s_openapi::jiff::Timestamp::from_second(1).unwrap()));
+        assert_eq!(ownership(&dying, &p), Ownership::Terminating);
+        // Controlled by another kind or API group: not a predecessor Project, needs an admin.
+        for (kind, api) in [("Deployment", "apps/v1"), ("Project", "other.dev/v1")] {
+            let other = ObjectMeta {
+                owner_references: Some(vec![OwnerReference {
+                    uid: "uid-0".into(),
+                    kind: kind.into(),
+                    api_version: api.into(),
+                    controller: Some(true),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            };
+            assert_eq!(ownership(&other, &p), Ownership::NotOwned, "{kind}");
+        }
+        // No controller ownerReference: nobody will garbage-collect it.
+        assert_eq!(ownership(&ObjectMeta::default(), &p), Ownership::NotOwned);
+        let non_controller = ObjectMeta {
+            owner_references: Some(vec![OwnerReference {
+                uid: "uid-1".into(),
+                controller: Some(false),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        assert_eq!(ownership(&non_controller, &p), Ownership::NotOwned);
+    }
+
+    #[test]
+    fn pod_uses_on_root_mismatch() {
+        let s = v(&sandbox(&project("enzarb", "ruckc"), &defaults()));
+        assert_eq!(
+            s["spec"]["podTemplate"]["spec"]["securityContext"]["fsGroupChangePolicy"],
+            "OnRootMismatch"
+        );
+    }
+
+    #[test]
+    fn cidr_parsing() {
+        let s = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            parse_cidrs("f", &s(&[" 10.0.0.0/8 ", "", "fd00::/8"])).unwrap(),
+            s(&["10.0.0.0/8", "fd00::/8"])
+        );
+        for bad in [
+            "10.0.0.0",
+            "10.0.0.0/33",
+            "x/8",
+            "fd00::/129",
+            "10.0.0.0/",
+            // /0 would make the API server reject the policy.
+            "0.0.0.0/0",
+            "::/0",
+            // Host bits set.
+            "10.0.0.1/8",
+            "192.168.1.0/16",
+            "fd00::1/8",
+            // Non-canonical prefix lengths.
+            "10.0.0.0/+8",
+            "10.0.0.0/08",
+            "10.0.0.0/-8",
+            "10.0.0.0/ 8",
+        ] {
+            assert!(parse_cidrs("f", &s(&[bad])).is_err(), "{bad}");
+        }
+        assert_eq!(
+            parse_cidrs("f", &s(&["169.254.20.10/32", "10.96.0.0/12", "::1/128"]))
+                .unwrap()
+                .len(),
+            3
+        );
+        let e = parse_cidrs("--egress-exclude-cidrs", &s(&["0.0.0.0/0"])).unwrap_err();
+        assert!(e.to_string().contains("--egress-exclude-cidrs") && e.to_string().contains("/0"));
+        assert!(parse_cidrs("f", &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn two_projects_never_share_names_or_selectors() {
+        let d = defaults();
+        let (a, b) = (project("a", "o"), project("b", "o"));
+        let (na, nb) = (v(&network_policy(&a, &d)), v(&network_policy(&b, &d)));
+        assert_ne!(na["metadata"]["name"], nb["metadata"]["name"]);
+        assert_ne!(na["spec"]["podSelector"], nb["spec"]["podSelector"]);
+        assert_ne!(sandbox(&a, &d).metadata.name, sandbox(&b, &d).metadata.name);
+        assert_ne!(pvc(&a, &d).metadata.name, pvc(&b, &d).metadata.name);
+        assert_ne!(
+            docker_pvc(&a, &d).metadata.name,
+            docker_pvc(&b, &d).metadata.name
+        );
     }
 
     #[test]
     fn status_block_matches_contract() {
-        let s = sandbox_status(&project("enzarb", "ruckc"));
-        assert_eq!(s.name, "sandbox");
-        assert_eq!(s.endpoint, "ws://sandbox.enzarb-p-enzarb.svc:7070/v1/mux");
-        assert_eq!(s.auth_secret_ref.name, "sandbox-auth");
+        let s = sandbox_status(&project("enzarb", "ruckc"), &defaults());
+        assert_eq!(s.name, "sb-enzarb");
+        assert_eq!(
+            s.endpoint,
+            "ws://sb-enzarb.enzarb-sandboxes.svc:7070/v1/mux"
+        );
+        assert_eq!(s.auth_secret_ref.name, "sb-enzarb-auth");
         assert_eq!(s.auth_secret_ref.key, "token");
     }
 
@@ -699,14 +971,23 @@ mod tests {
             validate(&project("Bad_Name", "ruckc"), &d),
             Err(InvalidProject::BadName(..))
         ));
+        // 50 is the longest allowed name, 51 is rejected.
+        assert_eq!(validate(&project(&"a".repeat(50), "ruckc"), &d), Ok(()));
         assert!(matches!(
-            validate(&project(&"a".repeat(60), "ruckc"), &d),
+            validate(&project(&"a".repeat(51), "ruckc"), &d),
             Err(InvalidProject::BadName(..))
         ));
-        assert!(matches!(
-            validate(&project("enzarb", "Ruck_C"), &d),
-            Err(InvalidProject::BadName(..))
-        ));
+        for bad in ["-a", "a-", "A", "a.b", "a_b"] {
+            assert!(
+                matches!(
+                    validate(&project(bad, "ruckc"), &d),
+                    Err(InvalidProject::BadName(..))
+                ),
+                "{bad}"
+            );
+        }
+        // The owner is no longer part of any object name, so it need not be a DNS label.
+        assert_eq!(validate(&project("enzarb", "Ruck_C"), &d), Ok(()));
         let no_image = Defaults {
             sandbox_image: String::new(),
             ..d

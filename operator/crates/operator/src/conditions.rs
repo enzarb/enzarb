@@ -1,9 +1,7 @@
 //! Status condition logic: observations in, ordered `Project` conditions out. Pure.
 
-use enzarb_crds::upstream::capsule::{Tenant, TenantStatusState};
 use enzarb_crds::upstream::sandbox::Sandbox;
-use enzarb_crds::{COND_NAMESPACE_READY, COND_READY, COND_SANDBOX_READY, COND_TENANT_READY};
-use k8s_openapi::api::core::v1::Namespace;
+use enzarb_crds::{COND_READY, COND_RESOURCES_READY, COND_SANDBOX_READY, REASON_INVALID_SPEC};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
 
 /// What the reconciler learned about one step.
@@ -14,6 +12,10 @@ pub enum Check {
     Pending(String, String),
     /// Applying or reading failed.
     Error(String),
+    /// Failed with a specific reason (should end in `Error`/`Failed`/`Failure` to show as a failure).
+    Failure(String, String),
+    /// The spec cannot be acted on until it is edited (reason `InvalidSpec`).
+    Invalid(String),
     /// An earlier step prevented this one from being attempted.
     Skipped,
 }
@@ -26,42 +28,17 @@ impl Check {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Observed {
-    pub tenant: Check,
-    pub namespace: Check,
+    /// Auth Secret, workspace and docker PVCs, NetworkPolicy.
+    pub resources: Check,
     pub sandbox: Check,
 }
 
 impl Observed {
     pub fn all_skipped() -> Self {
         Self {
-            tenant: Check::Skipped,
-            namespace: Check::Skipped,
+            resources: Check::Skipped,
             sandbox: Check::Skipped,
         }
-    }
-}
-
-/// The Tenant is ready once Capsule reports it `Active`.
-pub fn tenant_check(t: &Tenant) -> Check {
-    match t.status.as_ref().map(|s| &s.state) {
-        Some(TenantStatusState::Active) => Check::Ok,
-        Some(TenantStatusState::Cordoned) => Check::pending("TenantCordoned", "tenant is cordoned"),
-        Some(TenantStatusState::Terminating) => {
-            Check::pending("TenantTerminating", "tenant is terminating")
-        }
-        None => Check::pending(
-            "TenantPending",
-            "Capsule has not reported tenant status yet",
-        ),
-    }
-}
-
-pub fn namespace_check(ns: &Namespace) -> Check {
-    match ns.status.as_ref().and_then(|s| s.phase.as_deref()) {
-        Some("Active") => Check::Ok,
-        Some(phase) => Check::pending("NamespaceNotActive", format!("namespace phase is {phase}")),
-        // The API server defaults the phase to Active; a missing one means we just created it.
-        None => Check::Ok,
     }
 }
 
@@ -109,6 +86,8 @@ fn condition(
         Check::Ok => ("True", "Ready".to_string(), String::new()),
         Check::Pending(r, m) => ("False", r.clone(), m.clone()),
         Check::Error(m) => ("False", "ReconcileError".to_string(), m.clone()),
+        Check::Failure(r, m) => ("False", r.clone(), m.clone()),
+        Check::Invalid(m) => ("False", REASON_INVALID_SPEC.to_string(), m.clone()),
         Check::Skipped => (
             "Unknown",
             "Blocked".to_string(),
@@ -129,7 +108,7 @@ fn condition(
     }
 }
 
-/// Builds `TenantReady`, `NamespaceReady`, `SandboxReady`, `Ready` in UI checklist order.
+/// Builds `ResourcesReady`, `SandboxReady`, `Ready` in UI checklist order.
 /// `lastTransitionTime` is kept while a condition's status is unchanged, so an unchanged
 /// result compares equal and the status write can be skipped.
 pub fn compute(
@@ -139,10 +118,9 @@ pub fn compute(
     now: &Time,
 ) -> Vec<Condition> {
     let mut out = vec![
-        condition(COND_TENANT_READY, &obs.tenant, generation, existing, now),
         condition(
-            COND_NAMESPACE_READY,
-            &obs.namespace,
+            COND_RESOURCES_READY,
+            &obs.resources,
             generation,
             existing,
             now,
@@ -174,7 +152,7 @@ mod tests {
     }
 
     fn sandbox_with(cond: Option<(&str, &str, &str)>, generation: i64, seen: i64) -> Sandbox {
-        let mut sb = Sandbox::new("sandbox", Default::default());
+        let mut sb = Sandbox::new("sb-x", Default::default());
         sb.metadata.generation = Some(generation);
         sb.status = Some(SandboxStatus {
             conditions: cond.map(|(status, reason, message)| {
@@ -202,7 +180,7 @@ mod tests {
             ),
             (
                 "no status",
-                Some(Sandbox::new("sandbox", Default::default())),
+                Some(Sandbox::new("sb-x", Default::default())),
                 Check::pending("SandboxPending", "Sandbox has not reported status yet"),
             ),
             (
@@ -242,35 +220,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn tenant_and_namespace_checks() {
-        use enzarb_crds::upstream::capsule::TenantStatus;
-        let mut tn = Tenant::new("enzarb-ruckc", Default::default());
-        assert!(matches!(tenant_check(&tn), Check::Pending(r, _) if r == "TenantPending"));
-        tn.status = Some(TenantStatus {
-            conditions: vec![],
-            size: 0,
-            state: TenantStatusState::Active,
-            classes: None,
-            namespaces: None,
-            observed_generation: None,
-            owners: None,
-            promotions: None,
-            spaces: None,
-        });
-        assert_eq!(tenant_check(&tn), Check::Ok);
-        tn.status.as_mut().unwrap().state = TenantStatusState::Cordoned;
-        assert!(matches!(tenant_check(&tn), Check::Pending(r, _) if r == "TenantCordoned"));
-
-        let mut ns = Namespace::default();
-        assert_eq!(namespace_check(&ns), Check::Ok);
-        ns.status = Some(k8s_openapi::api::core::v1::NamespaceStatus {
-            phase: Some("Terminating".into()),
-            ..Default::default()
-        });
-        assert!(matches!(namespace_check(&ns), Check::Pending(r, _) if r == "NamespaceNotActive"));
-    }
-
     fn statuses(c: &[Condition]) -> Vec<(&str, &str)> {
         c.iter()
             .map(|c| (c.type_.as_str(), c.status.as_str()))
@@ -280,57 +229,49 @@ mod tests {
     #[test]
     fn compute_table() {
         let pend = || Check::pending("SandboxMissing", "no sandbox");
-        let cases: Vec<(&str, Observed, [&str; 4])> = vec![
+        let cases: Vec<(&str, Observed, [&str; 3])> = vec![
             (
                 "all ready",
                 Observed {
-                    tenant: Check::Ok,
-                    namespace: Check::Ok,
+                    resources: Check::Ok,
                     sandbox: Check::Ok,
                 },
-                ["True", "True", "True", "True"],
+                ["True", "True", "True"],
             ),
             (
                 "missing sandbox",
                 Observed {
-                    tenant: Check::Ok,
-                    namespace: Check::Ok,
+                    resources: Check::Ok,
                     sandbox: pend(),
                 },
-                ["True", "True", "False", "False"],
+                ["True", "False", "False"],
             ),
             (
-                "tenant pending",
+                "resources pending",
                 Observed {
-                    tenant: Check::pending("TenantPending", "x"),
-                    namespace: Check::Ok,
+                    resources: Check::pending("X", "x"),
                     sandbox: Check::Ok,
                 },
-                ["False", "True", "True", "False"],
+                ["False", "True", "False"],
             ),
             (
-                "namespace error blocks sandbox",
+                "resources error blocks sandbox",
                 Observed {
-                    tenant: Check::Ok,
-                    namespace: Check::Error("denied".into()),
+                    resources: Check::Error("denied".into()),
                     sandbox: Check::Skipped,
                 },
-                ["True", "False", "Unknown", "False"],
+                ["False", "Unknown", "False"],
             ),
             (
                 "nothing attempted",
                 Observed::all_skipped(),
-                ["Unknown", "Unknown", "Unknown", "False"],
+                ["Unknown", "Unknown", "False"],
             ),
         ];
         for (name, obs, want) in cases {
             let got = compute(3, &obs, &[], &t(10));
             let types: Vec<_> = got.iter().map(|c| c.type_.as_str()).collect();
-            assert_eq!(
-                types,
-                ["TenantReady", "NamespaceReady", "SandboxReady", "Ready"],
-                "{name}"
-            );
+            assert_eq!(types, ["ResourcesReady", "SandboxReady", "Ready"], "{name}");
             let got_status: Vec<_> = statuses(&got).into_iter().map(|(_, s)| s).collect();
             assert_eq!(got_status, want, "{name}");
             assert!(
@@ -343,13 +284,12 @@ mod tests {
     #[test]
     fn ready_message_lists_blockers() {
         let obs = Observed {
-            tenant: Check::Ok,
-            namespace: Check::Ok,
+            resources: Check::Ok,
             sandbox: Check::pending("X", "y"),
         };
         let c = compute(1, &obs, &[], &t(0));
-        assert_eq!(c[3].reason, "NotReady");
-        assert_eq!(c[3].message, "waiting for SandboxReady");
+        assert_eq!(c[2].reason, "NotReady");
+        assert_eq!(c[2].message, "waiting for SandboxReady");
         assert_eq!(
             compute(
                 1,
@@ -359,7 +299,7 @@ mod tests {
                 },
                 &[],
                 &t(0)
-            )[2]
+            )[1]
             .message,
             "boom"
         );
@@ -368,8 +308,7 @@ mod tests {
     #[test]
     fn transition_time_kept_while_status_unchanged() {
         let ok = Observed {
-            tenant: Check::Ok,
-            namespace: Check::Ok,
+            resources: Check::Ok,
             sandbox: Check::Ok,
         };
         let first = compute(1, &ok, &[], &t(10));
@@ -381,7 +320,22 @@ mod tests {
         };
         let flipped = compute(1, &down, &first, &t(99));
         assert_eq!(flipped[0].last_transition_time, t(10));
+        assert_eq!(flipped[1].last_transition_time, t(99));
         assert_eq!(flipped[2].last_transition_time, t(99));
-        assert_eq!(flipped[3].last_transition_time, t(99));
+    }
+
+    #[test]
+    fn invalid_spec_is_reported_on_resources_ready() {
+        let obs = Observed {
+            resources: Check::Invalid("project name too long".into()),
+            ..Observed::all_skipped()
+        };
+        let c = compute(2, &obs, &[], &t(5));
+        assert_eq!(c[0].type_, "ResourcesReady");
+        assert_eq!(c[0].status, "False");
+        assert_eq!(c[0].reason, "InvalidSpec");
+        assert_eq!(c[0].message, "project name too long");
+        assert_eq!(c[1].status, "Unknown");
+        assert_eq!(c[2].status, "False");
     }
 }

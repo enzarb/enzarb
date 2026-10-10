@@ -2,26 +2,26 @@
 
 Kubernetes operator for enzarb `Project`s. The workspace holds two crates:
 
-- `crates/enzarb-crds`: the `Project` CRD types (`enzarb.dev/v1alpha1`, cluster-scoped), generated upstream types for Capsule `Tenant` and agent-sandbox `Sandbox`, and `crdgen` (`cargo run -p enzarb-crds --bin crdgen` writes `deploy/crds/project.yaml`).
+- `crates/enzarb-crds`: the `Project` CRD types (`enzarb.dev/v1alpha1`, cluster-scoped), generated upstream types for the agent-sandbox `Sandbox`, per-Project name helpers (`sandbox_name()`, `auth_secret_name()`, `workspace_pvc_name()`, `docker_pvc_name()`, `network_policy_name()`), and `crdgen` (`cargo run -p enzarb-crds --bin crdgen` writes `deploy/crds/project.yaml`).
 - `crates/operator`: the controller binary `enzarb-sandbox-operator`.
 
 Interfaces are defined in the enzarb repo, `docs/contracts.md` sections 2 and 3.
 
-## Project lifecycle
+## Project lifecycle (ADR-0013)
 
-For each `Project` the operator:
+All Projects land in one shared namespace (`--sandbox-namespace`, default `enzarb-sandboxes`, created by the Helm chart). The operator does not create namespaces or Capsule Tenants. For each `Project` `<name>` (a DNS label of at most 50 characters, so `sb-<name>-workspace` fits 63) it applies, in order, each labelled `app.kubernetes.io/managed-by=enzarb-operator` and `enzarb.dev/project=<name>` and owned by the Project (controller ownerReference with `blockOwnerDeletion` on every object). **Ownership check:** before reusing an existing Secret, PVC, NetworkPolicy or Sandbox the operator requires its controller ownerReference uid to equal the Project's uid and no `deletionTimestamp`; otherwise it reports `ResourcesReady=False` (or `SandboxReady=False`) with reason `Terminating` (being deleted, or controlled by another Project uid) and requeues after 5s. An object with no controller ownerReference at all is reported with reason `NotOwnedError` (the message names it; an administrator must delete it) and requeued every 60s. So a Project re-created under the same name never reuses its predecessor's Secret or volumes:
 
-1. Adds the finalizer `enzarb.dev/cleanup`.
-2. Server-side applies the Capsule `Tenant` `enzarb-<owner>` (owner = Capsule `User` `<owner>`). One Tenant per owner, shared by all of that owner's Projects.
-3. Server-side applies the `Namespace` `enzarb-p-<name>`, labelled `capsule.clastix.io/tenant=enzarb-<owner>`, owned by the Project.
-4. Creates Secret `sandbox-auth` (key `token`, 32 random bytes hex-encoded) once and never rewrites it, so the token does not rotate.
-5. Server-side applies NetworkPolicy `sandbox-isolation` (owned by the Project) before any pod exists. It selects every pod in the namespace. Ingress: TCP 7070 only from pods whose `app.kubernetes.io/name` is in `--netpol-ingress-pod-names` (default `enzarb-sandbox-proxy`, `enzarb-workflows`) in namespaces matching the ingress namespace label (default `kubernetes.io/metadata.name=<release namespace>`); both selectors must match. Egress: DNS (UDP/TCP 53) and TCP 443, to any destination. A narrower egress allow-list is a later option. A failure here is reported as `NamespaceReady=False` (`ReconcileError`) and the sandbox is not created. This needs a CNI that enforces NetworkPolicy.
-6. Applies PVCs `workspace` (`spec.sandbox.storage`, else `--default-storage`) and `docker` (`--docker-storage`), and the agent-sandbox `Sandbox` `sandbox`. The Sandbox pod runs as uid/gid 1000 (user `enzarb` in the sandbox image) with `fsGroup` 1000. The token is mounted read-only at `/var/run/enzarb/auth/token`, mode 0400. The pod has no ServiceAccount token.
-7. Writes `status` (`namespace`, `sandbox.endpoint`, `sandbox.authSecretRef`) and the conditions `TenantReady`, `NamespaceReady`, `SandboxReady`, `Ready`. A failed step is `status: False` with a reason ending in `Failed`, `Failure` or `Error`.
+1. NetworkPolicy `sb-<name>`, before any pod exists. `podSelector` is `enzarb.dev/project=<name>` (only this Project's pod). Ingress: TCP 7070 only from pods whose `app.kubernetes.io/name` is in `--netpol-ingress-pod-names` (default `enzarb-sandbox-proxy`, `enzarb-workflows`) in namespaces matching the ingress namespace label (default `kubernetes.io/metadata.name=<release namespace>`); both selectors must match. Egress: DNS (UDP/TCP 53) to `k8s-app=kube-dns` pods in `kube-system`, plus any `--dns-cidrs`; TCP 443 to `0.0.0.0/0` and `::/0` except `--egress-exclude-cidrs` (required, and, like `--dns-cidrs`, rejected at startup if a CIDR is `/0` or has host bits set: the cluster's pod, service and node networks, split into the matching IPv4/IPv6 `except` lists; the operator refuses to start without it); TCP `--executor-callback-port` (default 8081) to the `enzarb-workflows` pods in the clients' namespace. The Kubernetes API server is therefore not reachable (policies are evaluated after DNAT; its Service and endpoint addresses are in the excluded networks). A namespace-wide default-deny policy is owned by enzarb-helm. This needs a CNI that enforces NetworkPolicy.
+2. Secret `sb-<name>-auth` (key `token`, 32 random bytes hex-encoded), created once and never rewritten, so the token does not rotate.
+3. PVCs `sb-<name>-workspace` (`spec.sandbox.storage`, else `--default-storage`) and `sb-<name>-docker` (`--docker-storage`).
+4. The agent-sandbox `Sandbox` `sb-<name>` (and its headless Service of the same name). The pod runs as ServiceAccount `--sandbox-service-account` (default `enzarb-sandbox`, no RBAC) with `automountServiceAccountToken: false` and `enableServiceLinks: false`, so **sandboxes have no Kubernetes API access**; any future access is limited to other namespaces. It runs as uid/gid 1000 (user `enzarb`) with `fsGroup` 1000 (`fsGroupChangePolicy: OnRootMismatch`, so the large docker PVC is not re-chowned on every start). The token is mounted read-only at `/var/run/enzarb/auth/token`, mode 0400.
+5. Status: `status.namespace` is the shared namespace; `status.sandbox` has `name: sb-<name>`, `endpoint: ws://sb-<name>.<namespace>.svc:7070/v1/mux` and `authSecretRef: {name: sb-<name>-auth, key: token}`.
 
-On deletion the operator deletes the project namespace (only if it carries this Project's labels), which removes the Secret, PVC and Sandbox. The Tenant is never deleted: doing so would cascade to the owner's other namespaces.
+Conditions, in order: `ResourcesReady` (NetworkPolicy, Secret and both PVCs applied), `SandboxReady` (the Sandbox's own `Ready`), `Ready` (all of them). A failed step is `status: False` with a reason ending in `Error`. The CRD itself rejects, on create only (`optionalOldSelf`, so existing Projects stay updatable), names over 50 characters or that are not DNS labels (CEL rules on `metadata.name`). The operator also reports an invalid spec (name not a DNS label of at most 50 characters, empty owner, no image available) is `ResourcesReady=False` with reason `InvalidSpec` and is not retried until the spec changes. API errors retry with exponential backoff (5s up to 5m). Only Sandboxes are watched (namespaced); the Secret, PVCs and NetworkPolicy are re-checked on each reconcile (Sandbox or Project change, the 5 minute resync, or the requeues above).
 
-An invalid spec (bad derived DNS name, empty owner, no image available) is reported in the `TenantReady` condition with reason `InvalidSpec...` and is not retried until the spec changes. API errors retry with exponential backoff (5s up to 5m).
+**Deletion** needs no finalizer, and the operator adds none: every object is owned by the Project, so garbage collection removes them (the volumes and their data included) when the Project is deleted.
+
+**Migration from the Capsule layout** is not done by the operator. The workspace repo's one-off task `mise run oldie:migrate-0013` removes the old `enzarb.dev/cleanup` finalizer from existing Projects and deletes the Capsule Tenants the old operator created (ADR-0013).
 
 ## Flags and environment
 
@@ -31,13 +31,18 @@ Each flag has an environment variable; the flag wins.
 |---|---|---|---|
 | `--sandbox-image` | `ENZARB_SANDBOX_IMAGE` | empty | Image when `spec.sandbox.image` is empty. If both are empty the Project is invalid. |
 | `--default-storage` | `ENZARB_DEFAULT_STORAGE` | `20Gi` | PVC size when `spec.sandbox.storage` is empty. |
-| `--release-namespace` | `ENZARB_RELEASE_NAMESPACE` | pod namespace | Namespace enzarb is released into; used for the default ingress namespace label. |
+| `--release-namespace` | `ENZARB_RELEASE_NAMESPACE` | pod namespace | Namespace enzarb is released into (where the sandbox clients and the executor run); used for the default ingress namespace label. |
+| `--sandbox-namespace` | `ENZARB_SANDBOX_NAMESPACE` | `enzarb-sandboxes` | Shared namespace for all Projects' objects. Must exist (Helm chart). |
+| `--sandbox-service-account` | `ENZARB_SANDBOX_SERVICE_ACCOUNT` | `enzarb-sandbox` | ServiceAccount of sandbox pods (no token, no RBAC). |
+| `--executor-callback-port` | `ENZARB_EXECUTOR_CALLBACK_PORT` | `8081` | TCP port of the workflows executor callback listener that sandboxes may reach. |
+| `--egress-exclude-cidrs` | `ENZARB_SANDBOX_EGRESS_EXCLUDE_CIDRS` | none, required | Comma-separated CIDRs excluded from the TCP 443 egress rule: cluster pod, service and node networks. The operator refuses to start if empty. |
+| `--dns-cidrs` | `ENZARB_SANDBOX_DNS_CIDRS` | empty | Extra DNS server CIDRs allowed on port 53 (e.g. `169.254.20.10/32` for NodeLocal DNSCache). |
 | `--netpol-ingress-namespace-label` | `ENZARB_NETPOL_INGRESS_NAMESPACE_LABEL` | `kubernetes.io/metadata.name=<release namespace>` | `key=value` label of the namespace(s) allowed to reach sandbox port 7070. |
 | `--netpol-ingress-pod-names` | `ENZARB_NETPOL_INGRESS_POD_NAMES` | `enzarb-sandbox-proxy,enzarb-workflows` | Comma-separated `app.kubernetes.io/name` values of allowed client pods. |
 | `--sandbox-runtime-class` | `ENZARB_SANDBOX_RUNTIME_CLASS` | none, required | RuntimeClass of every sandbox pod (recommended `gvisor`). Must be in `--docker-runtime-classes`; the operator refuses to start otherwise. |
 | `--docker-image` | `ENZARB_DOCKER_IMAGE` | `docker:29.8.2-dind` | Image of the `dockerd` sidecar. |
 | `--docker-runtime-classes` | `ENZARB_DOCKER_RUNTIME_CLASSES` | `gvisor` | RuntimeClass names allowed to host dockerd. Each needs a profile. |
-| `--docker-storage` | `ENZARB_DOCKER_STORAGE` | `50Gi` | Size of each Project's PVC `docker`. |
+| `--docker-storage` | `ENZARB_DOCKER_STORAGE` | `50Gi` | Size of each Project's PVC `sb-<name>-docker`. |
 | `--docker-cpu-request` / `--docker-cpu-limit` | `ENZARB_DOCKER_CPU_REQUEST` / `_LIMIT` | unset | dockerd sidecar CPU. |
 | `--docker-memory-request` / `--docker-memory-limit` | `ENZARB_DOCKER_MEMORY_REQUEST` / `_LIMIT` | unset | dockerd sidecar memory. |
 | `--docker-profiles-file` | `ENZARB_DOCKER_PROFILES_FILE` | none | YAML map `{<runtimeClass>: {securityContext, dockerdArgs}}` added over the built-in profiles. |
@@ -57,7 +62,7 @@ Docker is always on, and Projects cannot choose the runtime class: both are clus
 
 - a `dockerd` sidecar (`--docker-image`), started with `command: [dockerd]` so docker:dind's entrypoint never adds a TCP listener. It listens only on `unix:///var/run/docker/docker.sock` (`--group` = the sandbox gid 1000, `--exec-root=/var/run/dockerd` so containerd state is not shared);
 - emptyDir `docker-sock` mounted at `/var/run/docker` in both containers, and `DOCKER_HOST` set in the sandbox container;
-- PVC `docker` (`--docker-storage`, separate from `workspace`) mounted at `/var/lib/docker` in the sidecar.
+- PVC `sb-<name>-docker` (`--docker-storage`, separate from the workspace PVC) mounted at `/var/lib/docker` in the sidecar.
 
 **Isolation gate (startup).** The operator refuses to start, with a clear error, if `--sandbox-runtime-class` is empty, is not in `--docker-runtime-classes`, or an allowed class has no profile. dockerd is therefore never scheduled on the node kernel. There is no per-Project refusal condition.
 
@@ -81,7 +86,7 @@ Sources: [Docker in gVisor](https://gvisor.dev/docs/tutorials/docker-in-gvisor/)
 - gVisor: iptables is disabled, so `docker run -p/--expose` publishes nothing; use `--network=host` inside the sandbox, or reach containers by IP. User-defined networks and compose port publishing are limited accordingly. Some syscalls and filesystems are unsupported by gVisor.
 - gVisor storage uses `vfs` (no copy-on-write; each layer is a full copy, so images take more disk and builds are slower). The gVisor guide does not verify overlay2 on a PVC; override via the profiles file if you have validated it.
 - Kata (experimental): `overlay2` needs the `docker` PVC to be mounted in the guest as a real block filesystem (ext4/xfs), not virtio-fs; with a virtio-fs-backed volume, override the profile to `--storage-driver=vfs`.
-- The sidecar runs as root with `runAsNonRoot: false` (dockerd requires it); the sandbox container stays uid 1000. Plain-HTTP registries are blocked by the namespace NetworkPolicy (443 and DNS only).
+- The sidecar runs as root with `runAsNonRoot: false` (dockerd requires it); the sandbox container stays uid 1000. Plain-HTTP registries are blocked by the Project's NetworkPolicy (443, DNS and the executor callback only).
 
 ## Leader election
 
@@ -89,24 +94,20 @@ The operator can run 2 replicas. All replicas serve health (`/readyz` is ready o
 
 ## RBAC
 
-`deploy/rbac.yaml` has a ClusterRole `enzarb-sandbox-operator` and a Role `enzarb-sandbox-operator-leader` (leases; bind in the operator's namespace). The ServiceAccount and bindings belong to enzarb-helm; the file header shows the binding subjects. `crates/operator/src/rbac.rs` lists every API call the code makes, and a unit test asserts the YAML grants exactly that, so when you add a call, update both.
+`deploy/rbac.yaml` has a ClusterRole `enzarb-sandbox-operator` (Projects, migration), a Role `enzarb-sandbox-operator` for the sandbox namespace, and a Role `enzarb-sandbox-operator-leader` (leases; bind in the operator's namespace). The ServiceAccount and bindings belong to enzarb-helm; the file header shows the binding subjects. `crates/operator/src/rbac.rs` lists every API call the code makes, and a unit test asserts the YAML grants exactly that, so when you add a call, update both. The operator has no `namespaces` permission and no cluster-wide access to Secrets, PVCs, NetworkPolicies or Sandboxes.
 
-| Resource | Verbs | Why |
-|---|---|---|
-| `enzarb.dev` projects | get, list, watch, patch | controller, finalizer |
-| `enzarb.dev` projects/status | patch | status and conditions |
-| `capsule.clastix.io` tenants | create, patch | server-side apply |
-| namespaces | get, create, patch, delete | apply, ownership check, cleanup |
-| secrets | get, create | one-time token |
-| persistentvolumeclaims | create, patch | server-side apply (`workspace`, and `docker` when enabled) |
-| `agents.x-k8s.io` sandboxes | list, watch, create, patch | owned-resource watch, apply |
-| `coordination.k8s.io` leases (Role) | get, create, update | leader election |
+| Scope | Resource | Verbs | Why |
+|---|---|---|---|
+| ClusterRole | `enzarb.dev` projects | list, watch | controller |
+| ClusterRole | `enzarb.dev` projects/status | patch | status and conditions |
+| ClusterRole | `enzarb.dev` projects/finalizers | update | ownerReferences with `blockOwnerDeletion` |
+| Role, sandbox namespace | secrets | get, create | one-time token; `get` for the ownership check |
+| Role, sandbox namespace | persistentvolumeclaims | get, create, patch | server-side apply (workspace, docker) |
+| Role, sandbox namespace | `networking.k8s.io` networkpolicies | get, create, patch | server-side apply |
+| Role, sandbox namespace | `agents.x-k8s.io` sandboxes | get, list, watch, create, patch | owned-resource watch (namespaced), apply |
+| Role, operator namespace | `coordination.k8s.io` leases | get, create, update | leader election |
 
 The operator emits no Kubernetes Events today, so none are granted.
-
-## Capsule requirement
-
-The operator creates Namespaces carrying the tenant label itself rather than going through a tenant owner. Capsule only admits that for identities in its configured `userGroups`, so the operator's ServiceAccount must be covered: add `system:serviceaccounts:<operator namespace>` (or its user, `system:serviceaccount:<ns>:<name>`) to the CapsuleConfiguration `userGroups`. Without it, `NamespaceReady` stays failed with a Capsule webhook error.
 
 ## Image
 

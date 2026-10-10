@@ -22,7 +22,6 @@ pub const DEFAULT_IMAGE: &str = "docker:29.8.2-dind";
 pub const DEFAULT_RUNTIME_CLASSES: &str = "gvisor";
 pub const DEFAULT_STORAGE: &str = "50Gi";
 pub const SIDECAR_NAME: &str = "dockerd";
-pub const PVC_NAME: &str = "docker";
 pub const SOCK_VOLUME: &str = "docker-sock";
 pub const DATA_VOLUME: &str = "docker-data";
 /// Shared with the sandbox container; holds only `docker.sock`.
@@ -175,8 +174,15 @@ pub struct Sidecar {
     pub volumes: Vec<Value>,
 }
 
-/// The `dockerd` sidecar container and volumes. `resources` is the Project's `docker.resources`.
-pub fn sidecar(profile: &RuntimeProfile, image: &str, resources: &Value, gid: i64) -> Sidecar {
+/// The `dockerd` sidecar container and volumes. `claim_name` is the Project's docker PVC
+/// (`sb-<name>-docker`).
+pub fn sidecar(
+    profile: &RuntimeProfile,
+    image: &str,
+    resources: &Value,
+    gid: i64,
+    claim_name: &str,
+) -> Sidecar {
     let mut args = vec![
         format!("--host={DOCKER_HOST}"),
         // Socket group = the sandbox user's gid, so the unprivileged sandbox can connect.
@@ -205,7 +211,7 @@ pub fn sidecar(profile: &RuntimeProfile, image: &str, resources: &Value, gid: i6
     });
     let volumes = vec![
         json!({"name": SOCK_VOLUME, "emptyDir": {}}),
-        json!({"name": DATA_VOLUME, "persistentVolumeClaim": {"claimName": PVC_NAME}}),
+        json!({"name": DATA_VOLUME, "persistentVolumeClaim": {"claimName": claim_name}}),
     ];
     Sidecar { container, volumes }
 }
@@ -277,7 +283,13 @@ mod tests {
     #[test]
     fn sidecar_shape() {
         let c = cfg("gvisor");
-        let sc = sidecar(c.profile().unwrap(), &c.image, &json!({}), 1000);
+        let sc = sidecar(
+            c.profile().unwrap(),
+            &c.image,
+            &json!({}),
+            1000,
+            "sb-x-docker",
+        );
         let k = &sc.container;
         assert_eq!(k["name"], "dockerd");
         assert_eq!(k["image"], DEFAULT_IMAGE);
@@ -295,7 +307,7 @@ mod tests {
         assert_eq!(sc.volumes[0]["emptyDir"], json!({}));
         assert_eq!(
             sc.volumes[1]["persistentVolumeClaim"]["claimName"],
-            "docker"
+            "sb-x-docker"
         );
     }
 }
