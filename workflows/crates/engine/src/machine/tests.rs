@@ -2349,3 +2349,74 @@ fn ctx_defaults() {
     let t = Triggers::default();
     assert!(t.issues && t.change_requests && t.mentions);
 }
+
+#[test]
+fn mention_retries_failed_issue_like_ui_retry() {
+    let mention = |who: &str| {
+        conn(
+            "m",
+            EventType::Mentioned,
+            issue_item(),
+            actor(who),
+            Some((9, "@enzarb try again")),
+        )
+    };
+    for phase in [IssuePhase::Failed, IssuePhase::Stale] {
+        let s = issue_in(phase);
+        let t = run(Permission::Write, &s, &mention("carol"));
+        assert_issue(&t, IssuePhase::Triaging);
+        assert!(kinds(&t).contains(&JobKind::AgentTriage));
+        // No write access: still rejected. A plain comment on Failed: still rejected.
+        rejected(&run(Permission::Read, &s, &mention("mallory")), &s);
+    }
+    let failed = issue_in(IssuePhase::Failed);
+    rejected(
+        &run(
+            Permission::Write,
+            &failed,
+            &comment_by("c", "carol", 1, "hi"),
+        ),
+        &failed,
+    );
+    for phase in [
+        IssuePhase::Done,
+        IssuePhase::Duplicate,
+        IssuePhase::Cancelled,
+    ] {
+        let s = issue_in(phase);
+        rejected(&run(Permission::Write, &s, &mention("carol")), &s);
+    }
+}
+
+#[test]
+fn mention_retries_failed_change_request() {
+    let s = cr_in(CrPhase::Failed);
+    let m = conn(
+        "m",
+        EventType::Mentioned,
+        pr_item("sha1"),
+        actor("carol"),
+        Some((9, "@enzarb try again")),
+    );
+    assert_cr(&run_cr(Permission::Write, &s, &m), CrPhase::Reviewing);
+    rejected(&run_cr(Permission::Read, &s, &m), &s);
+}
+
+#[test]
+fn author_mention_on_stale_keeps_the_answer() {
+    let s = issue_in(IssuePhase::Stale);
+    let author = match &s {
+        WorkflowState::Issue(i) => i.data.author.clone(),
+        _ => unreachable!(),
+    };
+    let m = conn(
+        "m",
+        EventType::Mentioned,
+        issue_item(),
+        actor(&author),
+        Some((9, "@enzarb here is my answer")),
+    );
+    let d = assert_issue(&run(Permission::Write, &s, &m), IssuePhase::Triaging);
+    assert_eq!(d.trigger_text, "@enzarb here is my answer");
+    assert_eq!(d.trigger_comment_id, Some(9));
+}

@@ -306,7 +306,13 @@ fn comment(
     if ctx.is_bot(c.actor) {
         return Transition::reject(state, "bot actor ignored");
     }
+    // An explicit @mention by someone with write access resumes a Failed or Stale item,
+    // exactly like the UI retry (same permission check).
     let is_author = c.actor.login.eq_ignore_ascii_case(&s.data.author);
+    // (The author answering a Stale item keeps the answer-carrying path below.)
+    if c.mention && ctx.can_write() && (s.phase == Failed || (s.phase == Stale && !is_author)) {
+        return retry(ctx, ev, s, state);
+    }
     let mut d = s.data.clone();
     d.trigger_comment_id = c.comment.map(|x| x.id);
     d.trigger_comment_kind = c.comment.map(|x| x.kind).unwrap_or_default();

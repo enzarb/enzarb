@@ -269,6 +269,10 @@ pub(super) fn step(ctx: &Ctx, s: &CrState, ev: &EngineEvent) -> Transition {
             EventType::ReviewSubmitted => review_submitted(ctx, ev, s, &state),
             EventType::CommentAdded | EventType::Mentioned => {
                 let c = ev.comment_like().expect("comment-like");
+                // An explicit @mention by a writer resumes a Failed item like the UI retry.
+                if c.mention && s.phase == CrPhase::Failed && ctx.can_write() {
+                    return retry(ctx, ev, s, &state);
+                }
                 feedback(
                     ctx,
                     ev,
