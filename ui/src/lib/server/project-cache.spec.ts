@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Project } from '#lib/project-types.ts';
 import { buildProject } from '#lib/projects.ts';
-import * as v from 'valibot';
-import { CreateProjectSchema } from '#lib/projects.ts';
 import type { ProjectStore } from './kube.ts';
 import { createProjectCache } from './project-cache.ts';
 
@@ -25,7 +23,15 @@ function countingStore(items: Project[]) {
 }
 
 const proj = (name: string, owner: string) =>
-	buildProject(v.parse(CreateProjectSchema, { name }), owner);
+	buildProject(
+		{
+			name,
+			displayName: '',
+			repositories: [],
+			triggers: { issues: false, changeRequests: false, mentions: false }
+		},
+		owner
+	);
 
 describe('project cache', () => {
 	it('serves repeat lookups from cache within the TTL, per user', async () => {

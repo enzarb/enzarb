@@ -58,3 +58,11 @@ export function overallState(conditions: Condition[] | undefined | null): StepSt
 	if (steps.every((s) => s.state === 'done')) return 'done';
 	return conditions?.length ? 'in-progress' : 'pending';
 }
+
+/** True once the operator will not make further progress without a change: failed or invalid. */
+export function isTerminalFailure(conditions: Condition[] | undefined | null): boolean {
+	return (
+		overallState(conditions) === 'failed' ||
+		!!conditions?.some((c) => c.status === 'False' && c.reason === 'InvalidSpec')
+	);
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildChecklist, overallState } from './conditions.ts';
+import { buildChecklist, isTerminalFailure, overallState } from './conditions.ts';
 import type { Condition } from './project-types.ts';
 
 const c = (type: string, status: string, reason = 'X', message = ''): Condition => ({
@@ -60,5 +60,19 @@ describe('overallState', () => {
 		expect(overallState([])).toBe('pending');
 		expect(overallState([c('TenantReady', 'True')])).toBe('in-progress');
 		expect(overallState([c('TenantReady', 'False', 'TenantFailed')])).toBe('failed');
+	});
+});
+
+describe('isTerminalFailure', () => {
+	it('is true for failed steps and InvalidSpec, false while progressing or ready', () => {
+		expect(
+			isTerminalFailure([{ type: 'TenantReady', status: 'False', reason: 'TenantFailed' }])
+		).toBe(true);
+		expect(isTerminalFailure([{ type: 'Ready', status: 'False', reason: 'InvalidSpec' }])).toBe(
+			true
+		);
+		expect(isTerminalFailure([{ type: 'TenantReady', status: 'True' }])).toBe(false);
+		expect(isTerminalFailure([])).toBe(false);
+		expect(isTerminalFailure(undefined)).toBe(false);
 	});
 });

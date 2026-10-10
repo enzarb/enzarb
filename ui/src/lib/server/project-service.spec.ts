@@ -2,8 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { KubeError, type ProjectStore } from './kube.ts';
 import { projectService } from './project-service.ts';
 import type { Project } from '#lib/project-types.ts';
-import { CreateProjectSchema } from '#lib/projects.ts';
-import * as v from 'valibot';
+import { buildProject } from '#lib/projects.ts';
 
 function fakeStore(): ProjectStore & { items: Map<string, Project> } {
 	const items = new Map<string, Project>();
@@ -26,15 +25,26 @@ function fakeStore(): ProjectStore & { items: Map<string, Project> } {
 	};
 }
 
-const input = (name: string) => v.parse(CreateProjectSchema, { name });
+const seed = (store: ProjectStore, name: string, owner: string) =>
+	store.create(
+		buildProject(
+			{
+				name,
+				displayName: '',
+				repositories: [],
+				triggers: { issues: false, changeRequests: false, mentions: false }
+			},
+			owner
+		)
+	);
 
 describe('projectService', () => {
 	let store: ReturnType<typeof fakeStore>;
 	beforeEach(async () => {
 		store = fakeStore();
-		await projectService(store, 'alice').create(input('b-proj'));
-		await projectService(store, 'alice').create(input('a-proj'));
-		await projectService(store, 'bob').create(input('bobs'));
+		await seed(store, 'b-proj', 'alice');
+		await seed(store, 'a-proj', 'alice');
+		await seed(store, 'bobs', 'bob');
 	});
 
 	it('lists only the caller’s projects, sorted', async () => {
@@ -42,14 +52,6 @@ describe('projectService', () => {
 			'a-proj',
 			'b-proj'
 		]);
-	});
-	it('creates with owner = login', async () => {
-		expect(store.items.get('bobs')?.spec.owner).toBe('bob');
-	});
-	it('rejects a duplicate name with a conflict', async () => {
-		await expect(projectService(store, 'alice').create(input('a-proj'))).rejects.toMatchObject({
-			kind: 'conflict'
-		});
 	});
 	it('hides other owners’ projects on get and delete', async () => {
 		const alice = projectService(store, 'alice');

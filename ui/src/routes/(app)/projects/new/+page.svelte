@@ -1,43 +1,50 @@
 <script lang="ts">
+	import { page } from '$app/state';
+	import CreatedProjects from '#lib/components/CreatedProjects.svelte';
+	import NewProjectForm from '#lib/components/NewProjectForm.svelte';
 	import PageHeading from '#lib/components/PageHeading.svelte';
-	import Button from '#lib/components/form/Button.svelte';
-	import Checkbox from '#lib/components/form/Checkbox.svelte';
-	import TextField from '#lib/components/form/TextField.svelte';
-	import RepoListInput from '#lib/components/RepoListInput.svelte';
-	import { createProject } from '#lib/projects.remote.ts';
+	import type { PlanResult } from '#lib/onboarding.ts';
+	import { createProjects, listProjects, repositoryChoices } from '#lib/projects.remote.ts';
 
-	const fields = createProject.fields;
+	const choices = repositoryChoices();
+	const projects = listProjects();
+	let results = $state<PlanResult[] | null>(null);
+
+	// The refresh flow re-reads the user's installations and comes back here.
+	const refreshHref = $derived(
+		`/login/github?refresh=1&return=${encodeURIComponent(page.url.pathname)}`
+	);
 </script>
 
 <svelte:head><title>New project · enzarb</title></svelte:head>
 
-<PageHeading title="New project" />
+<PageHeading title={results ? 'New projects' : 'New project'} />
 
-<form {...createProject} class="stack card">
-	<TextField
-		label="Name"
-		placeholder="my-project"
-		{...fields.name.as('text')}
-		issues={fields.name.issues()}
+{#if results}
+	<CreatedProjects
+		{results}
+		load={async () => {
+			await projects.refresh();
+			return projects.current ?? [];
+		}}
 	/>
-	<TextField label="Display name" {...fields.displayName.as('text')} />
-
-	<RepoListInput
-		field={(i, f) => fields.repositories[i][f].as(f === 'url' ? 'url' : 'text')}
-		issues={(i, f) => (fields.repositories[i]?.[f]?.issues() ?? []).map((x) => x.message)}
-	/>
-	{#each fields.repositories.issues() ?? [] as issue (issue.message)}
-		<p class="field-error">{issue.message}</p>
-	{/each}
-
-	<fieldset class="checks">
-		<legend>Triggers</legend>
-		<Checkbox label="Issues" name={fields.issues.as('checkbox').name} checked />
-		<Checkbox label="Change requests" name={fields.changeRequests.as('checkbox').name} checked />
-		<Checkbox label="Mentions" name={fields.mentions.as('checkbox').name} checked />
-	</fieldset>
-
-	<Button variant="primary" type="submit" disabled={createProject.pending > 0}
-		>Create project</Button
-	>
-</form>
+{:else if choices.current}
+	{#if choices.current.repositories.length === 0}
+		<!-- The layout shows the install notice (InstallBanner) when the snapshot is empty. -->
+		<p class="muted">No repositories are available yet.</p>
+	{:else}
+		<NewProjectForm
+			choices={choices.current}
+			{refreshHref}
+			create={async (plans, triggers) => {
+				const outcome = await createProjects({ plans, triggers });
+				// All-failed stays on the form, which shows the reasons next to the user's selections.
+				if (outcome.ok && outcome.results.some((r) => r.status === 'created'))
+					results = outcome.results;
+				return outcome;
+			}}
+		/>
+	{/if}
+{:else}
+	<p class="muted">Loading your repositories…</p>
+{/if}

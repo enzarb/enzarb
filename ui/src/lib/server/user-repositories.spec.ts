@@ -5,6 +5,7 @@ import { migrate } from '../../../scripts/migrate.ts';
 import { upsertUser } from './auth.ts';
 import {
 	fetchUserRepositories,
+	getUserRepositorySnapshot,
 	hasUserRepositories,
 	installUrl,
 	listUserRepositories,
@@ -283,6 +284,23 @@ describe('user repository snapshot in postgres', () => {
 		}).fn;
 		await syncUserRepositories(sql, otherId, 't', none);
 		expect(await hasUserRepositories(sql, otherId)).toBe(false);
+	});
+
+	it('reports when the snapshot was fetched (oldest row), null when empty', async () => {
+		const before = Date.now();
+		await syncUserRepositories(sql, userId, 't', ok(['acme/a', 'acme/b']));
+		const snap = await getUserRepositorySnapshot(sql, userId);
+		expect(snap.repositories).toHaveLength(2);
+		expect(snap.fetchedAt!.getTime()).toBeGreaterThan(before - 5000);
+		expect(snap.fetchedAt!.getTime()).toBeLessThanOrEqual(Date.now());
+		await sql`UPDATE app.user_repositories SET fetched_at = now() - interval '2 days'
+			WHERE user_id = ${userId} AND repo = 'github:acme/a'`;
+		const aged = await getUserRepositorySnapshot(sql, userId);
+		expect(Date.now() - aged.fetchedAt!.getTime()).toBeGreaterThan(47 * 3600_000);
+		expect(await getUserRepositorySnapshot(sql, otherId)).toEqual({
+			repositories: [],
+			fetchedAt: null
+		});
 	});
 
 	it('has no column that could hold a token', async () => {

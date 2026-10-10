@@ -1,5 +1,5 @@
 import type { Project, ProjectView } from '#lib/project-types.ts';
-import { buildProject, toView, type CreateProjectInput } from '#lib/projects.ts';
+import { toView } from '#lib/projects.ts';
 import { KubeError, type ProjectStore } from './kube.ts';
 
 /** Owner-scoped project operations; everything a remote function does goes through here. */
@@ -16,10 +16,6 @@ export function projectService(store: ProjectStore, owner: string) {
 		async get(name: string): Promise<ProjectView | null> {
 			const p = await store.get(name);
 			return mine(p) ? toView(p) : null;
-		},
-		/** Throws KubeError('conflict') when the name is taken. */
-		async create(input: CreateProjectInput): Promise<ProjectView> {
-			return toView(await store.create(buildProject(input, owner)));
 		},
 		async delete(name: string): Promise<void> {
 			const p = await store.get(name);

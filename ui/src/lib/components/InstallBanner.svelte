@@ -1,6 +1,7 @@
 <script lang="ts">
 	/** Shown when the user can reach no repository through an installation of the GitHub App. */
-	// The repositories snapshot behind this banner is a UI hint, never an authorization source.
+	// The snapshot behind this banner also bounds which repositories may be put in a new Project
+	// (24 hours, see project-onboarding.ts); it is not used for any other decision.
 	let { installUrl, refreshHref }: { installUrl: string; refreshHref: string } = $props();
 </script>
 

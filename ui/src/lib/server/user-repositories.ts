@@ -172,11 +172,22 @@ export async function syncUserRepositories(
 	}
 }
 
+export interface UserRepositorySnapshot {
+	repositories: UserRepository[];
+	/** When the snapshot was fetched (the oldest row, to be conservative); null when empty. */
+	fetchedAt: Date | null;
+}
+
 /**
- * The current user's repositories, ordered by key. This snapshot is a UI hint only (what to
- * offer, whether to show the install notice); it is never an authorization source.
+ * The current user's repository snapshot, ordered by key. It authorizes exactly one thing:
+ * which repositories the user may select when creating a Project (see
+ * `project-onboarding.ts`), and only while it is younger than `SNAPSHOT_MAX_AGE_MS`. Nothing
+ * else (access to a sandbox, to events, to existing Projects) is decided from it.
  */
-export async function listUserRepositories(sql: Sql, userId: number): Promise<UserRepository[]> {
+export async function getUserRepositorySnapshot(
+	sql: Sql,
+	userId: number
+): Promise<UserRepositorySnapshot> {
 	const rows = await sql<
 		{
 			repo: string;
@@ -184,16 +195,26 @@ export async function listUserRepositories(sql: Sql, userId: number): Promise<Us
 			account_login: string;
 			private: boolean;
 			default_branch: string;
+			fetched_at: Date;
 		}[]
-	>`SELECT repo, installation_id, account_login, private, default_branch
+	>`SELECT repo, installation_id, account_login, private, default_branch, fetched_at
 		FROM app.user_repositories WHERE user_id = ${userId} ORDER BY repo`;
-	return rows.map((r) => ({
-		repo: r.repo,
-		installationId: Number(r.installation_id),
-		accountLogin: r.account_login,
-		private: r.private,
-		defaultBranch: r.default_branch
-	}));
+	const times = rows.map((r) => r.fetched_at.getTime());
+	return {
+		repositories: rows.map((r) => ({
+			repo: r.repo,
+			installationId: Number(r.installation_id),
+			accountLogin: r.account_login,
+			private: r.private,
+			defaultBranch: r.default_branch
+		})),
+		fetchedAt: times.length ? new Date(Math.min(...times)) : null
+	};
+}
+
+/** The repositories of `getUserRepositorySnapshot`, without the fetch time. */
+export async function listUserRepositories(sql: Sql, userId: number): Promise<UserRepository[]> {
+	return (await getUserRepositorySnapshot(sql, userId)).repositories;
 }
 
 export function installUrl(slug: string): string {
