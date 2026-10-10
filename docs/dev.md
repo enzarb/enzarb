@@ -54,7 +54,7 @@ enzarb needs one **GitHub App**: webhooks, API access as the bot, clone tokens, 
    jq '{id, slug, webhook_secret}' /tmp/app-conversion.json
    ```
 6. Fill `.env.dev`: `GITHUB_APP_ID` (the `id`), `GITHUB_APP_PRIVATE_KEY` (the path to the pem file), `GITHUB_WEBHOOK_SECRET` (the `webhook_secret`). Delete `/tmp/app.json` and `/tmp/app-conversion.json`.
-7. Note the App's slug. Its bot login is `<slug>[bot]`; the chart defaults to `enzarb[bot]` and handle `enzarb`. If your App has another name, set `connectors.botLogin`, `workflows.botLogin` and the handles via `--set` in `dev:helm-deploy` (or rename the App to `enzarb`). Otherwise the bot's own comments are not recognised and can trigger loops.
+7. Note the App's slug. Its bot login is `<slug>[bot]`; the chart defaults to `enzarb[bot]` and handle `enzarb`. If your App has another name, set `connectors.botLogin`, `workflows.botLogin` and the handles via `--set` in `dev:helm-deploy` (or rename the App to `enzarb`). The dev manifest names the App `enzarb-dev`, so also set `githubApp.slug` (`ENZARB_GITHUB_APP_SLUG`) to the App's slug, or the UI's install link points at the wrong App. Otherwise the bot's own comments are not recognised and can trigger loops.
 
 ## Sign in with GitHub (UI login)
 

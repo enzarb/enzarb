@@ -25,6 +25,7 @@ callback_urls:
   - https://enzarb.local/login/github/callback
 request_oauth_on_install: false
 # After installing or updating the App, send the user back to enzarb to refresh their repositories.
+# Set per environment to https://<your host>/login/github?refresh=1 (dev: https://enzarb.local/...).
 setup_url: https://enzarb.dev/login/github?refresh=1
 setup_on_update: true
 public: false
