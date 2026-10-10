@@ -35,7 +35,7 @@ function stubGitHub(opts: { reposStatus?: number }) {
 	);
 }
 
-async function callback(returnCookie?: string, oldSessionId?: string) {
+async function callback(returnCookie?: string, oldSessionId?: string, query = 'code=c&state=s1') {
 	const { GET } = await import('./+server.ts');
 	const jar = new Map<string, string>([[OAUTH_STATE_COOKIE, 's1']]);
 	if (returnCookie) jar.set(OAUTH_RETURN_COOKIE, returnCookie);
@@ -44,7 +44,7 @@ async function callback(returnCookie?: string, oldSessionId?: string) {
 		set: (n: string, v: string) => void jar.set(n, v),
 		delete: (n: string) => void jar.delete(n)
 	};
-	const url = new URL('https://enzarb.example/login/github/callback?code=c&state=s1');
+	const url = new URL('https://enzarb.example/login/github/callback?' + query);
 	let thrown: unknown;
 	try {
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -122,5 +122,38 @@ describe('GET /login/github/callback', () => {
 		const ids = (await sql`SELECT id FROM app.sessions`).map((r) => r.id);
 		expect(ids).not.toContain(old.id);
 		expect(ids).toHaveLength(before);
+	});
+
+	describe('install-time callback', () => {
+		it('without state redirects to the refresh flow; no token exchange, no session', async () => {
+			stubGitHub({});
+			const fetchMock = vi.mocked(fetch);
+			fetchMock.mockClear();
+			const before = (await sql`SELECT count(*)::int AS n FROM app.sessions`)[0].n;
+			const { thrown, jar } = await callback(
+				undefined,
+				undefined,
+				'code=c&installation_id=5&setup_action=install'
+			);
+			expect(isRedirect(thrown)).toBe(true);
+			expect(thrown).toMatchObject({ status: 303, location: '/login/github?refresh=1' });
+			expect(fetchMock).not.toHaveBeenCalled();
+			expect((await sql`SELECT count(*)::int AS n FROM app.sessions`)[0].n).toBe(before);
+			expect(jar.has('enzarb_session')).toBe(false);
+		});
+
+		it('still 400s a missing state without install params', async () => {
+			const { thrown } = await callback(undefined, undefined, 'code=c');
+			expect(thrown).toMatchObject({ status: 400 });
+		});
+
+		it('still 400s a wrong state even with install params', async () => {
+			const { thrown } = await callback(
+				undefined,
+				undefined,
+				'code=c&state=wrong&installation_id=5&setup_action=install'
+			);
+			expect(thrown).toMatchObject({ status: 400 });
+		});
 	});
 });

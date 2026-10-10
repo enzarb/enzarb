@@ -20,6 +20,11 @@ export const GET: RequestHandler = async ({ url, cookies, locals }) => {
 	cookies.delete(OAUTH_STATE_COOKIE, { path: '/' });
 	const returnTo = safeReturnPath(cookies.get(OAUTH_RETURN_COOKIE));
 	cookies.delete(OAUTH_RETURN_COOKIE, { path: '/' });
+	// GitHub sends the user here without `state` after an App install when "Request user
+	// authorization during installation" is on. That code has no CSRF protection, so it is never
+	// exchanged: start a normal state-protected sign-in instead (it also refreshes the snapshot).
+	if (!state && (url.searchParams.has('setup_action') || url.searchParams.has('installation_id')))
+		redirect(303, '/login/github?refresh=1');
 	if (!code || !state || !expected || state !== expected) error(400, 'Invalid OAuth state');
 
 	let accessToken: string;
