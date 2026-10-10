@@ -19,7 +19,7 @@ Read `docs/architecture.md` first, then `docs/contracts.md` (the interfaces ever
 | `enzarb-sandbox-proxy` | Browser websocket → sandbox router | `cargo clippy --all-targets && cargo test` |
 | `enzarb-sandbox-container` | Sandbox image + pid-1 `sandbox-init` | `cargo test`; `docker build .` |
 | `enzarb-ui` | SvelteKit app (remote functions = logic layer) | `npm run check && npm run lint && npm test` |
-| `enzarb-kubernetes` | Cluster prerequisites (kind, Gateway, Capsule, agent-sandbox, pgop) | `kubectl kustomize` |
+| `enzarb-kubernetes` | Cluster prerequisites (kind, Gateway, agent-sandbox, pgop; Capsule installed but unused, ADR-0013) | `kubectl kustomize` |
 | `enzarb-helm` | Umbrella chart | `helm lint enzarb` |
 
 `mise run repos:list` shows which repos are present. `mise run repos:init` clones or initializes missing ones. `mise run repos:status` shows git status across all of them.

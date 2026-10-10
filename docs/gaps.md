@@ -5,14 +5,13 @@ The owning repo is in brackets. Resolve 2–5 first: they shape the CRDs, the pr
 1. **Repo hosting and process** [enzarb]: no git history or remotes yet. Decide hosting/naming, CI, release/versioning, and image registry. Pin toolchains: `mise.toml` uses `latest`, the sandbox uses `ubuntu:26.04`, and the Rust crates need lockfiles.
 2. **AuthN/AuthZ** [enzarb-ui, enzarb-sandbox-proxy]:
    - the login provider;
-   - mapping an enzarb user to a Capsule tenant owner;
    - the token format the UI issues and the proxy checks (JWT, signing keys);
    - mapping connector identities to enzarb users (`app_api.identity_v`).
-3. **Proxy/executor → sandbox-init trust** [enzarb-sandbox-container, enzarb-sandbox-proxy, enzarb-workflows]: mTLS or projected ServiceAccount tokens; NetworkPolicy blocking cross-tenant traffic; per-tenant egress policy.
+3. **Proxy/executor → sandbox-init trust** [enzarb-sandbox-container, enzarb-sandbox-proxy, enzarb-workflows]: mTLS or projected ServiceAccount tokens; NetworkPolicy blocking sandbox-to-sandbox traffic in the shared namespace (ADR-0013); per-Project egress policy.
 4. **Secrets** [enzarb-sandbox-operator, enzarb-connectors]:
    - where the Claude OAuth token and the GitHub App private key live;
    - **whose Claude token pays for webhook-triggered runs** (the project owner?);
-   - keeping tokens unreadable through the user's kubectl access via capsule-proxy.
+   - keeping tokens unreadable if sandboxes ever get Kubernetes API access (ADR-0013 limits it to other namespaces).
 5. **Prompt injection** [enzarb-workflows, enzarb-connectors]: issue authors steer an agent that holds write credentials. Mitigations:
    - short-lived, single-repo clone tokens for each run;
    - only users with write access can approve;

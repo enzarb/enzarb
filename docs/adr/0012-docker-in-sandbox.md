@@ -32,5 +32,5 @@ Agents and users need `docker build`, `docker run` and `docker compose` inside a
 ## Consequences
 - **Node requirements:** every sandbox only schedules onto nodes with the configured runtime. In production, label or taint those nodes and give RuntimeClass `scheduling.nodeSelector`.
 - **Resources:** the sidecar adds CPU and memory and a second PVC to every sandbox, sized by operator flags.
-- **NetworkPolicy:** the existing per-namespace egress (DNS and 443) covers registry pulls over HTTPS. Plain-HTTP registries aren't reachable by design.
+- **NetworkPolicy:** the per-Project egress policy (DNS and 443; ADR-0013) covers registry pulls over HTTPS. Plain-HTTP registries aren't reachable by design.
 - **gVisor limits:** compatibility gaps for some workloads (certain syscalls and filesystems) apply. These are documented in the operator README. Revisit Kata if they block real workloads.

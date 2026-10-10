@@ -13,11 +13,11 @@ Each component is its own repository. The top-level `enzarb` repo holds docs, AD
 | `enzarb-ui` | SvelteKit web app; remote functions are the logic layer. Login, Project management, workflow/run views, terminal client | TypeScript, container image |
 | `enzarb-sandbox-proxy` | Takes the browser's single websocket, checks authorization, routes mux frames to the right sandbox's pid-1 | Rust, container image |
 | `enzarb-sandbox-container` | Sandbox image plus pid-1 `sandbox-init`: supervises terminals, git worktrees and headless `claude -p` runs; captures the Claude token | Rust + Dockerfile |
-| `enzarb-sandbox-operator` | Reconciles `Project` (`enzarb.dev/v1alpha1`) into a Capsule Tenant and agent-sandbox `Sandbox` CRs; publishes the CRD types as a library crate | Rust (kube-rs), container image |
+| `enzarb-sandbox-operator` | Reconciles `Project` (`enzarb.dev/v1alpha1`) into an agent-sandbox `Sandbox`, its auth Secret, volumes and NetworkPolicy in the shared sandbox namespace (ADR-0013); publishes the CRD types as a library crate | Rust (kube-rs), container image |
 | `enzarb-proto` *(new)* | Mux protocol: frame codec, credit-based flow control, `docs/protocol.md`, shared test vectors | Rust crate + npm package |
 | `enzarb-connectors` *(new)* | The `Connector` trait and one connector per source (GitHub first) as a library, plus the `receiver` binary that accepts webhooks | Rust library + container image |
 | `enzarb-workflows` *(new)* | The in-house Postgres workflow engine: migrations, state machines, reducer, executors, ticker | Rust, container image |
-| `enzarb-kubernetes` | Cluster prerequisites: kind config, Envoy Gateway, Capsule + capsule-proxy, agent-sandbox (v0.5.x), RuntimeClasses, pgop | YAML / kustomize |
+| `enzarb-kubernetes` | Cluster prerequisites: kind config, Envoy Gateway, agent-sandbox (v0.5.x), RuntimeClasses, pgop (Capsule is installed but unused since ADR-0013) | YAML / kustomize |
 | `enzarb-helm` | Umbrella chart: all services, CRDs, HTTPRoutes, RBAC, pgop `Cluster`/`Role`/`Database`, migration Jobs | Helm |
 
 ### Library dependencies between repos
@@ -73,14 +73,12 @@ flowchart LR
 
   UI -- Project CRs --> API[kube-apiserver]
   OP[sandbox-operator] -- watch / reconcile --> API
-  API --> CAP[Capsule] 
   API --> AS[agent-sandbox controller] --> SB
   PX --> SB
 
-  subgraph T[Tenant namespaces, one Capsule Tenant per owner]
+  subgraph T[Shared namespace enzarb-sandboxes, one sandbox per Project, no Kubernetes API access]
     SB[Sandbox pod<br/>sandbox-init pid-1<br/>git worktrees, claude -p<br/>gVisor/Kata in prod]
   end
-  SB -- kubeconfig --> CPX[capsule-proxy] --> API
   SB -- git --> SRC
   SB -- Claude API --> AN[Anthropic]
 ```
@@ -90,7 +88,7 @@ flowchart LR
 ### 1. Create a Project
 1. In the UI, the user creates a Project: linked repo remotes, sandbox template, and run mode (`worktree` or `fresh`).
 2. A remote function writes the `Project` CR.
-3. The operator makes sure the owner's Capsule Tenant exists, then creates the project's `Sandbox` CR.
+3. The operator creates the project's auth Secret, volumes, NetworkPolicy and `Sandbox` CR in the shared sandbox namespace ([ADR-0013](adr/0013-shared-sandbox-namespace.md)).
 4. The UI shows a **step-by-step boot checklist** built from the Project/Sandbox status conditions. Every step is a named condition; there are no open-ended spinners.
 
 ### 2. Interactive terminal
