@@ -17,8 +17,19 @@ describe('parseConfig', () => {
 			sessionJwtSecret: 's3cret',
 			githubOauthClientId: 'id',
 			githubOauthClientSecret: 'secret',
-			publicUrl: 'https://enzarb.example.com'
+			publicUrl: 'https://enzarb.example.com',
+			githubAppSlug: 'enzarb'
 		});
+	});
+
+	it('reads the optional GitHub App slug', () => {
+		expect(parseConfig({ ...valid, ENZARB_GITHUB_APP_SLUG: ' my-app ' }).githubAppSlug).toBe(
+			'my-app'
+		);
+		expect(parseConfig({ ...valid, ENZARB_GITHUB_APP_SLUG: '  ' }).githubAppSlug).toBe('enzarb');
+		expect(() => parseConfig({ ...valid, ENZARB_GITHUB_APP_SLUG: 'a/b' })).toThrow(
+			/ENZARB_GITHUB_APP_SLUG/
+		);
 	});
 
 	it('lists every missing variable at once', () => {

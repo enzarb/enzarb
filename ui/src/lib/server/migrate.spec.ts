@@ -36,11 +36,18 @@ describe('migrations as a schema owner that does not own the database', () => {
 	});
 
 	it('applies every migration, then is a no-op', async () => {
-		expect(await migrate(owner)).toEqual(['0001_users_sessions.sql', '0002_project_settings.sql']);
+		expect(await migrate(owner)).toEqual([
+			'0001_users_sessions.sql',
+			'0002_project_settings.sql',
+			'0003_user_repositories.sql'
+		]);
 		expect(await migrate(owner)).toEqual([]);
 		// The runtime role's grants (also made by the schema owner) took effect.
 		const [row] =
 			await owner`SELECT has_table_privilege('enzarb_ui', 'app.sessions', 'INSERT') AS ok`;
 		expect(row.ok).toBe(true);
+		const [repos] =
+			await owner`SELECT has_table_privilege('enzarb_ui', 'app.user_repositories', 'INSERT') AS ok`;
+		expect(repos.ok).toBe(true);
 	});
 });

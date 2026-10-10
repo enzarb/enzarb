@@ -1,6 +1,7 @@
 import { isRedirect } from '@sveltejs/kit';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { OAUTH_STATE_COOKIE } from '#lib/server/auth.ts';
+import { OAUTH_RETURN_COOKIE } from '#lib/server/return-path.ts';
 
 // Regression test for enzarb-ui#28: SvelteKit 3 rejects redirect() to another origin unless the
 // call opts in, so "Sign in with GitHub" returned 500 instead of redirecting to GitHub.
@@ -24,7 +25,10 @@ describe('GET /login/github', () => {
 		let thrown: unknown;
 		try {
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			await (GET as any)({ cookies });
+			await (GET as any)({
+				cookies,
+				url: new URL('https://enzarb.example/login/github?refresh=1&return=%2Fprojects')
+			});
 		} catch (e) {
 			thrown = e;
 		}
@@ -38,5 +42,20 @@ describe('GET /login/github', () => {
 		);
 		expect(location.searchParams.get('state')).toBeTruthy();
 		expect(set.get(OAUTH_STATE_COOKIE)).toBe(location.searchParams.get('state'));
+		expect(set.get(OAUTH_RETURN_COOKIE)).toBe('/projects');
+	});
+
+	it('ignores a return target that is not a same-origin path', async () => {
+		const { GET } = await import('./+server.ts');
+		const set = new Map<string, string>();
+		const cookies = { set: (name: string, value: string) => set.set(name, value) };
+		const url = new URL('https://enzarb.example/login/github?return=https%3A%2F%2Fevil.example');
+		try {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			(GET as any)({ cookies, url });
+		} catch {
+			// the handler always ends in a redirect
+		}
+		expect(set.get(OAUTH_RETURN_COOKIE)).toBe('/');
 	});
 });

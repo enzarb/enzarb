@@ -4,20 +4,24 @@ export interface Config {
 	githubOauthClientId: string;
 	githubOauthClientSecret: string;
 	publicUrl: string;
+	/** Slug of the enzarb GitHub App, used for the install link (ENZARB_GITHUB_APP_SLUG, optional). */
+	githubAppSlug: string;
 }
 
-const REQUIRED = {
+const REQUIRED: Record<Exclude<keyof Config, 'githubAppSlug'>, string> = {
 	databaseUrl: 'DATABASE_URL',
 	sessionJwtSecret: 'ENZARB_SESSION_JWT_SECRET',
 	githubOauthClientId: 'GITHUB_OAUTH_CLIENT_ID',
 	githubOauthClientSecret: 'GITHUB_OAUTH_CLIENT_SECRET',
 	publicUrl: 'ENZARB_PUBLIC_URL'
-} as const satisfies Record<keyof Config, string>;
+};
+
+export const DEFAULT_GITHUB_APP_SLUG = 'enzarb';
 
 /** Parse configuration from an environment map (contracts §9). Reports all problems at once. */
 export function parseConfig(source: Record<string, string | undefined>): Config {
 	const missing: string[] = [];
-	const out = {} as Record<keyof Config, string>;
+	const out = {} as Record<Exclude<keyof Config, 'githubAppSlug'>, string>;
 	for (const [key, name] of Object.entries(REQUIRED) as [keyof typeof out, string][]) {
 		const value = source[name]?.trim();
 		if (value) out[key] = value;
@@ -36,7 +40,12 @@ export function parseConfig(source: Record<string, string | undefined>): Config 
 		throw new Error('ENZARB_PUBLIC_URL must be an http(s) URL');
 	}
 	out.publicUrl = url.origin;
-	return out;
+
+	const githubAppSlug = source.ENZARB_GITHUB_APP_SLUG?.trim() || DEFAULT_GITHUB_APP_SLUG;
+	if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(githubAppSlug)) {
+		throw new Error('ENZARB_GITHUB_APP_SLUG must contain only letters, digits and hyphens');
+	}
+	return { ...out, githubAppSlug };
 }
 
 let cached: Config | undefined;

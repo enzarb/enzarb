@@ -3,6 +3,7 @@ import type { Cookies } from '@sveltejs/kit';
 import { GitHub } from 'arctic';
 import { getConfig } from './config.ts';
 import type { Sql } from './db.ts';
+import { OAUTH_RETURN_COOKIE } from './return-path.ts';
 
 export const SESSION_COOKIE = 'enzarb_session';
 export const OAUTH_STATE_COOKIE = 'enzarb_oauth_state';
@@ -129,6 +130,10 @@ export function setOauthStateCookie(cookies: Cookies, state: string): void {
 
 function isSecure(): boolean {
 	return getConfig().publicUrl.startsWith('https:');
+}
+
+export function setOauthReturnCookie(cookies: Cookies, path: string): void {
+	cookies.set(OAUTH_RETURN_COOKIE, path, { ...cookieOptions(isSecure()), maxAge: 10 * 60 });
 }
 
 export function githubClient(): GitHub {

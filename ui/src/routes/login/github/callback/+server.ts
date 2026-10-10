@@ -3,18 +3,23 @@ import {
 	createSession,
 	fetchGitHubProfile,
 	githubClient,
+	invalidateSession,
 	OAUTH_STATE_COOKIE,
 	setSessionCookie,
 	upsertUser
 } from '#lib/server/auth.ts';
 import { getSql } from '#lib/server/db.ts';
+import { OAUTH_RETURN_COOKIE, safeReturnPath } from '#lib/server/return-path.ts';
+import { syncUserRepositories } from '#lib/server/user-repositories.ts';
 import type { RequestHandler } from './$types';
 
-export const GET: RequestHandler = async ({ url, cookies }) => {
+export const GET: RequestHandler = async ({ url, cookies, locals }) => {
 	const code = url.searchParams.get('code');
 	const state = url.searchParams.get('state');
 	const expected = cookies.get(OAUTH_STATE_COOKIE);
 	cookies.delete(OAUTH_STATE_COOKIE, { path: '/' });
+	const returnTo = safeReturnPath(cookies.get(OAUTH_RETURN_COOKIE));
+	cookies.delete(OAUTH_RETURN_COOKIE, { path: '/' });
 	if (!code || !state || !expected || state !== expected) error(400, 'Invalid OAuth state');
 
 	let accessToken: string;
@@ -26,7 +31,12 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 
 	const sql = getSql();
 	const userId = await upsertUser(sql, await fetchGitHubProfile(accessToken));
+	// The token is used for the snapshot only and then dropped; failures never block sign-in.
+	await syncUserRepositories(sql, userId, accessToken);
 	const { token, session } = await createSession(sql, userId);
 	setSessionCookie(cookies, token, session.expiresAt);
-	redirect(303, '/');
+	// Re-authenticating (e.g. repository refresh): drop the session this replaces.
+	if (locals.session && locals.session.id !== session.id)
+		await invalidateSession(sql, locals.session.id);
+	redirect(303, returnTo);
 };
