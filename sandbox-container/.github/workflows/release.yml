@@ -1,0 +1,106 @@
+# CANONICAL COPY: docs/ci/release.yml in the enzarb workspace repo. Identical in every releasing repo
+# (enzarb-ui, -workflows, -connectors, -sandbox-proxy, -sandbox-operator, -sandbox-container, -helm);
+# change it there and run `mise run ci:sync-release`.
+#
+# Automatic releases. After `ci` succeeds on main, the next version is computed from the
+# Conventional Commits since the last tag (feat -> minor, fix/perf/revert -> patch, `!` or a
+# BREAKING CHANGE footer -> major; while 0.x, breaking and feat both bump minor). chore/docs/ci/
+# test/refactor-only history releases nothing. The tag + GitHub Release are created with a token so
+# the tag push triggers `ci` again (image build and push to GHCR). When that tag build succeeds, the
+# helm chart repo is told to sync (see enzarb-helm .github/workflows/sync-components.yml).
+#
+# Dormant until the repo variable RELEASE_ENABLED is set to "true" (Settings > Secrets and variables >
+# Actions > Variables), so merging this file changes nothing before the token exists.
+# Needs the repo secret ENZARB_RELEASE_TOKEN (fine-grained PAT: contents rw on all enzarb repos,
+# packages read). The default GITHUB_TOKEN cannot be used: tags it pushes do not trigger workflows.
+name: release
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+permissions:
+  contents: read
+jobs:
+  tag:
+    # One tagging run at a time per repo. Scoped to this job: a workflow-level group would also be
+    # shared with every other workflow_run (PR ci completions) and could cancel a pending run.
+    concurrency:
+      group: release-tag-${{ github.repository }}
+      cancel-in-progress: false
+    if: >-
+      vars.RELEASE_ENABLED == 'true' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          token: ${{ secrets.ENZARB_RELEASE_TOKEN }}
+      - name: Compute, tag and release
+        env:
+          GH_TOKEN: ${{ secrets.ENZARB_RELEASE_TOKEN }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          # Prints the next release version (no "v") for the commits since the last tag, or nothing when
+          # there is nothing releasable. Usage: next_version <sha>   (run inside a full clone)
+          next_version() {
+            local sha=$1 last range major=0 minor=0 patch=0 subj body ver
+            last=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$sha" 2>/dev/null || true)
+            if [ -z "$last" ]; then echo "0.1.0"; return; fi          # first release
+            range="$last..$sha"
+            while IFS= read -r -d '' msg; do
+              subj=${msg%%$'\n'*}
+              if [[ $subj =~ ^[a-z]+(\([^\)]*\))?!: ]] || [[ $msg == *$'\n'BREAKING[\ -]CHANGE:* ]]; then major=1
+              elif [[ $subj =~ ^feat(\([^\)]*\))?: ]]; then minor=1
+              elif [[ $subj =~ ^(fix|perf|revert)(\([^\)]*\))?: ]]; then patch=1
+              fi
+            done < <(git log -z --format=%B "$range")   # -z: one NUL-terminated record per commit, no stray newlines
+            [ $((major + minor + patch)) -eq 0 ] && return              # chore/docs/ci/test only
+            IFS=. read -r M m p <<<"${last#v}"
+            if [ "$major" = 1 ]; then
+              if [ "$M" = 0 ]; then ver="0.$((m + 1)).0"; else ver="$((M + 1)).0.0"; fi   # 0.x: breaking bumps minor
+            elif [ "$minor" = 1 ]; then
+              if [ "$M" = 0 ]; then ver="0.$((m + 1)).0"; else ver="$M.$((m + 1)).0"; fi
+            else ver="$M.$m.$((p + 1))"; fi
+            echo "$ver"
+          }
+
+          v=$(next_version "$SHA")
+          if [ -z "$v" ]; then echo "nothing releasable since the last tag"; exit 0; fi
+          ensure_release() { # the sync reads GitHub Releases, so a tag without one must still get it
+            gh release view "v$v" >/dev/null 2>&1 || gh release create "v$v" --verify-tag --title "v$v" --generate-notes
+          }
+          if git rev-parse -q --verify "refs/tags/v$v" >/dev/null; then
+            echo "v$v already exists"; ensure_release; exit 0
+          fi
+          git config user.name "enzarb-release[bot]"
+          git config user.email "release@enzarb.dev"
+          git tag -a "v$v" -m "release v$v" "$SHA"
+          git push origin "v$v"
+          ensure_release
+          echo "released v$v" >> "$GITHUB_STEP_SUMMARY"
+
+  notify-helm:
+    # The tag's ci run (build + push to GHCR) succeeded: the image exists, tell the chart repo.
+    if: >-
+      vars.RELEASE_ENABLED == 'true' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      startsWith(github.event.workflow_run.head_branch, 'v') &&
+      github.event.repository.name != 'enzarb-helm'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch component-released to enzarb-helm
+        env:
+          GH_TOKEN: ${{ secrets.ENZARB_RELEASE_TOKEN }}
+          TAG: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          gh api -X POST repos/enzarb/enzarb-helm/dispatches \
+            -f event_type=component-released \
+            -f "client_payload[component]=${{ github.event.repository.name }}" \
+            -f "client_payload[version]=${TAG#v}"
