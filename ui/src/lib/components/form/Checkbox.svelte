@@ -2,6 +2,7 @@
 	import { Checkbox } from 'bits-ui';
 	import { untrack } from 'svelte';
 	import { formSync } from './sync.svelte.ts';
+	import Icon from '../ui/Icon.svelte';
 	import FieldMessages from './FieldMessages.svelte';
 	import { describedBy, type Issues, messages } from './util.ts';
 
@@ -37,19 +38,19 @@
 	});
 </script>
 
-<div class="field choice" {@attach sync}>
+<div class="ez-field ez-choice" {@attach sync}>
 	<Checkbox.Root
 		{id}
 		bind:checked
 		{disabled}
-		class="box"
+		class="ez-checkbox"
 		aria-labelledby="{id}-label"
 		aria-invalid={messages(issues).length > 0 ? 'true' : undefined}
 		aria-describedby={describedBy(id, help, issues)}
 	>
-		{#snippet children({ checked })}<span aria-hidden="true">{checked ? '✓' : ''}</span>{/snippet}
+		{#snippet children({ checked })}{#if checked}<Icon name="check" />{/if}{/snippet}
 	</Checkbox.Root>
-	<label class="choice-label" id="{id}-label" for={id}>{label}</label>
+	<label class="ez-choice__label" id="{id}-label" for={id}>{label}</label>
 	{#if name && checked}<input type="hidden" {name} {value} />{/if}
-	<div class="choice-messages"><FieldMessages {id} {help} {issues} /></div>
+	<div class="ez-choice__messages"><FieldMessages {id} {help} {issues} /></div>
 </div>

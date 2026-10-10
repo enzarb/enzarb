@@ -33,33 +33,33 @@
 	const sync = formSync({ name: () => name, value: () => value, reset: () => (value = initial) });
 </script>
 
-<div class="field" {@attach sync}>
-	<span class="field-label" id="{id}-label">{label}</span>
+<div class="ez-field" {@attach sync}>
+	<span class="ez-field__label" id="{id}-label">{label}</span>
 	<RadioGroup.Root
 		{id}
 		bind:value
 		{disabled}
 		{orientation}
-		class="radio-group"
+		class="ez-choice-group"
 		aria-labelledby="{id}-label"
 		aria-invalid={messages(issues).length > 0 ? 'true' : undefined}
 		aria-describedby={describedBy(id, help, issues)}
 	>
 		{#each options as o, n (o.value)}
-			<div class="choice">
+			<div class="ez-choice">
 				<RadioGroup.Item
 					id="{id}-{n}"
 					value={o.value}
 					disabled={o.disabled}
-					class="radio"
+					class="ez-radio"
 					aria-labelledby="{id}-{n}-label"
 				>
-					{#snippet children({ checked })}<span aria-hidden="true">{checked ? '●' : ''}</span
-						>{/snippet}
+					{#snippet children({ checked })}{#if checked}<span class="ez-radio__dot"
+							></span>{/if}{/snippet}
 				</RadioGroup.Item>
-				<label class="choice-label" id="{id}-{n}-label" for="{id}-{n}">
+				<label class="ez-choice__label" id="{id}-{n}-label" for="{id}-{n}">
 					{o.label}
-					{#if o.description}<small class="muted">{o.description}</small>{/if}
+					{#if o.description}<span class="ez-choice__description">{o.description}</span>{/if}
 				</label>
 			</div>
 		{/each}

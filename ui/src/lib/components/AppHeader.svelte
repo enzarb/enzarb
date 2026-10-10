@@ -4,7 +4,7 @@
 	import UserMenu from './UserMenu.svelte';
 </script>
 
-<header class="header">
+<header class="ez-header">
 	<Logo />
 	<svelte:boundary>
 		<UserMenu {...await currentUser()} />

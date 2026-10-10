@@ -57,7 +57,17 @@
 				import('@enzarb/proto')
 			]);
 			if (disposed) return;
-			const term = new Terminal({ cursorBlink: true, fontFamily: 'monospace', fontSize: 14 });
+			// The canvas cannot read CSS variables, so take the terminal colours from the tokens once.
+			const css = getComputedStyle(host);
+			const term = new Terminal({
+				cursorBlink: true,
+				fontFamily: css.getPropertyValue('--ez-mono').trim() || 'monospace',
+				fontSize: 14,
+				theme: {
+					background: css.getPropertyValue('--ez-terminal-bg').trim() || '#000000',
+					foreground: css.getPropertyValue('--ez-terminal-fg').trim() || '#e6e6ec'
+				}
+			});
 			const fit = new FitAddon();
 			term.loadAddon(fit);
 			term.open(host);
@@ -120,15 +130,17 @@
 	});
 </script>
 
-<div class="stack">
+<div class="ez-stack">
 	{#if progress.current < 4 || progress.failure}
 		<TerminalChecklist {progress} />
 	{/if}
 	{#if progress.failure}
-		<p><Button onclick={reconnect}>Try again</Button></p>
+		<div><Button onclick={reconnect}>Try again</Button></div>
 	{/if}
 	{#if ended}
-		<p class="muted" role="status">{ended}. <Button onclick={reconnect}>Reconnect</Button></p>
+		<p class="ez-muted ez-cluster" role="status">
+			{ended}. <Button size="sm" onclick={reconnect}>Reconnect</Button>
+		</p>
 	{/if}
-	<div class="terminal" bind:this={host}></div>
+	<div class="ez-terminal" bind:this={host}></div>
 </div>

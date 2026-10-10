@@ -7,9 +7,10 @@
 	];
 </script>
 
-<nav class="nav" aria-label="Main">
+<nav class="ez-nav" aria-label="Main">
 	{#each items as item (item.href)}
 		<a
+			class="ez-nav__link"
 			href={item.href}
 			aria-current={page.url.pathname === item.href || page.url.pathname.startsWith(item.href + '/')
 				? 'page'

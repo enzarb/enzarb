@@ -2,10 +2,13 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import Select from '#lib/components/form/Select.svelte';
-	import PageHeading from '#lib/components/PageHeading.svelte';
+	import DataTable, { type Column } from '#lib/components/ui/DataTable.svelte';
+	import Notice from '#lib/components/ui/Notice.svelte';
+	import PageHeader from '#lib/components/ui/PageHeader.svelte';
 	import WorkStateChip from '#lib/components/WorkStateChip.svelte';
 	import { watchWorkItems } from '#lib/live.ts';
 	import { listProjects } from '#lib/projects.remote.ts';
+	import type { WorkItemSummary } from '#lib/work-items.ts';
 	import { listWorkItems } from '#lib/work.remote.ts';
 
 	const project = $derived(page.url.searchParams.get('project') ?? undefined);
@@ -25,41 +28,52 @@
 	function pick(value: string) {
 		void goto(value ? `/work?project=${encodeURIComponent(value)}` : '/work');
 	}
+
+	const columns: Column<WorkItemSummary>[] = [
+		{ id: 'item', header: 'Item', cell: item },
+		{ id: 'project', header: 'Project', cell: projectCell },
+		{ id: 'workflow', header: 'Workflow', cell: workflow },
+		{ id: 'state', header: 'State', cell: state },
+		{ id: 'updated', header: 'Updated', cell: updated }
+	];
 </script>
 
+{#snippet item(w: WorkItemSummary)}
+	<a href="/work/{w.id}">{w.title}</a> <code class="ez-muted">{w.key}</code>
+{/snippet}
+{#snippet projectCell(w: WorkItemSummary)}{w.project}{/snippet}
+{#snippet workflow(w: WorkItemSummary)}{w.workflow}{/snippet}
+{#snippet state(w: WorkItemSummary)}<WorkStateChip state={w.state} />{/snippet}
+{#snippet updated(w: WorkItemSummary)}
+	<time datetime={w.updatedAt}>{w.updatedAt.slice(0, 16).replace('T', ' ')}</time>
+{/snippet}
+
 <svelte:head><title>Work · enzarb</title></svelte:head>
+<PageHeader
+	title="Work"
+	description="Issues, change requests and mentions your projects are handling."
+/>
 
-<PageHeading title="Work" />
-
-<div class="filter">
-	<Select label="Project" value={project ?? ''} onchange={pick} {options} />
+<div class="ez-toolbar">
+	<div class="ez-toolbar__item">
+		<Select label="Project" value={project ?? ''} onchange={pick} {options} />
+	</div>
 </div>
 
 <svelte:boundary>
 	{#if items.error}
-		<p class="field-error">Could not load work items.</p>
-	{:else if items.loading && !items.current}
-		<p class="muted">Loading work items…</p>
-	{:else if items.current?.length}
-		<table class="table">
-			<thead>
-				<tr><th>Item</th><th>Project</th><th>Workflow</th><th>State</th><th>Updated</th></tr>
-			</thead>
-			<tbody>
-				{#each items.current as w (w.id)}
-					<tr>
-						<td><a href="/work/{w.id}">{w.title}</a> <code class="muted">{w.key}</code></td>
-						<td>{w.project}</td>
-						<td>{w.workflow}</td>
-						<td><WorkStateChip state={w.state} /></td>
-						<td><time datetime={w.updatedAt}>{w.updatedAt.slice(0, 16).replace('T', ' ')}</time></td
-						>
-					</tr>
-				{/each}
-			</tbody>
-		</table>
+		<Notice tone="error">Could not load work items.</Notice>
 	{:else}
-		<p class="muted">No work items yet.</p>
+		<DataTable
+			label="Work items"
+			items={items.current ?? []}
+			{columns}
+			rowKey={(w) => w.id}
+			loading={items.loading && !items.current}
+			loadingLabel="Loading work items"
+			emptyTitle="No work items yet"
+			emptyDescription="Work appears here when an issue, change request or mention reaches a project."
+		/>
 	{/if}
-	{#snippet failed()}<p class="field-error">Could not load work items.</p>{/snippet}
+	{#snippet failed()}<Notice tone="error">Could not load work items.</Notice>{/snippet}
 </svelte:boundary>

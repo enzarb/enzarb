@@ -4,12 +4,17 @@
 	import Button from '#lib/components/form/Button.svelte';
 	import ConditionChecklist from '#lib/components/ConditionChecklist.svelte';
 	import CredentialStatus from '#lib/components/CredentialStatus.svelte';
-	import PageHeading from '#lib/components/PageHeading.svelte';
+	import ConfirmDialog from '#lib/components/ui/ConfirmDialog.svelte';
+	import KeyValueList from '#lib/components/ui/KeyValueList.svelte';
+	import LinkButton from '#lib/components/ui/LinkButton.svelte';
+	import Notice from '#lib/components/ui/Notice.svelte';
+	import PageHeader from '#lib/components/ui/PageHeader.svelte';
+	import Section from '#lib/components/ui/Section.svelte';
+	import Skeleton from '#lib/components/ui/Skeleton.svelte';
 	import { deleteProject, getProject } from '#lib/projects.remote.ts';
 	import { getProjectSettings } from '#lib/terminal.remote.ts';
 
 	const POLL_MS = 2000;
-
 	const project = $derived(getProject(page.params.name!));
 	const settings = $derived(getProjectSettings(page.params.name!));
 
@@ -47,64 +52,80 @@
 <svelte:boundary>
 	{#if project.current}
 		{@const p = project.current}
-		<PageHeading title={p.displayName} />
-		<p class="muted">
-			<code>{p.name}</code>{#if p.namespace}
-				· namespace <code>{p.namespace}</code>{/if}
-		</p>
+		<PageHeader title={p.displayName}>
+			{#snippet meta()}
+				<code>{p.name}</code>
+				{#if p.namespace}<span class="ez-muted">namespace <code>{p.namespace}</code></span>{/if}
+			{/snippet}
+			{#snippet actions()}
+				<Button variant="danger" onclick={() => (confirming = true)}>Delete project</Button>
+			{/snippet}
+		</PageHeader>
+		{#if deleteError}<Notice tone="error">{deleteError}</Notice>{/if}
 
-		<section class="card stack">
-			<h2>Boot progress</h2>
+		<Section title="Boot progress">
 			<ConditionChecklist conditions={p.conditions} />
-		</section>
+		</Section>
 
-		<section class="card stack">
-			<h2>Sandbox</h2>
+		<Section title="Sandbox">
 			<CredentialStatus
 				project={p.name}
 				cached={settings.current?.claudeTokenConfigured ?? false}
 				onchecked={(c) => (configured = c)}
 			/>
 			{#if settings.current?.claudeTokenConfigured && settings.current.claudeConfiguredBy}
-				<p class="muted">Configured by {settings.current.claudeConfiguredBy}</p>
+				<p class="ez-muted">Configured by {settings.current.claudeConfiguredBy}</p>
 			{/if}
-			<p>
-				<a href="/projects/{p.name}/terminal">Open terminal</a> ·
-				<a href="/projects/{p.name}/claude"
-					>{(configured ?? settings.current?.claudeTokenConfigured) ? 'Redo' : 'Start'} Claude setup</a
-				>
-			</p>
-		</section>
+			<div class="ez-cluster">
+				<LinkButton href="/projects/{p.name}/terminal">Open terminal</LinkButton>
+				<LinkButton href="/projects/{p.name}/claude">
+					{(configured ?? settings.current?.claudeTokenConfigured) ? 'Redo' : 'Start'} Claude setup
+				</LinkButton>
+			</div>
+		</Section>
 
-		<section class="card stack">
-			<h2>Repositories</h2>
+		<Section title="Repositories">
 			{#each p.repositories as r (r.url)}
-				<p><a href={r.url}>{r.url}</a> <span class="muted">({r.defaultBranch})</span></p>
+				<p><a href={r.url}>{r.url}</a> <span class="ez-muted">({r.defaultBranch})</span></p>
 			{:else}
-				<p class="muted">No repositories.</p>
+				<p class="ez-muted">No repositories.</p>
 			{/each}
-			<h2>Triggers</h2>
-			<p class="muted">
-				Issues: {p.triggers.issues ? 'on' : 'off'} · Change requests: {p.triggers.changeRequests
-					? 'on'
-					: 'off'} · Mentions: {p.triggers.mentions ? 'on' : 'off'}
-			</p>
-		</section>
+		</Section>
 
-		<p>
-			{#if confirming}
-				<Button variant="danger" onclick={remove}>Confirm delete</Button>
-				<Button onclick={() => (confirming = false)}>Cancel</Button>
-			{:else}
-				<Button variant="danger" onclick={() => (confirming = true)}>Delete project</Button>
-			{/if}
-		</p>
-		{#if deleteError}<p class="field-error">{deleteError}</p>{/if}
+		<Section title="Triggers">
+			<KeyValueList
+				items={[
+					{
+						term: 'Issues',
+						value: p.triggers.issues ? 'On' : 'Off',
+						tone: p.triggers.issues ? 'success' : 'neutral'
+					},
+					{
+						term: 'Change requests',
+						value: p.triggers.changeRequests ? 'On' : 'Off',
+						tone: p.triggers.changeRequests ? 'success' : 'neutral'
+					},
+					{
+						term: 'Mentions',
+						value: p.triggers.mentions ? 'On' : 'Off',
+						tone: p.triggers.mentions ? 'success' : 'neutral'
+					}
+				]}
+			/>
+		</Section>
+
+		<ConfirmDialog
+			bind:open={confirming}
+			title="Delete {p.displayName}?"
+			description="The sandbox and everything in it are removed. This cannot be undone."
+			confirmLabel="Confirm delete"
+			onconfirm={remove}
+		/>
 	{:else}
-		<p class="muted">Loading project…</p>
+		<Skeleton label="Loading project" rows={4} />
 	{/if}
 	{#snippet failed()}
-		<PageHeading title="Project not found" />
-		<p><a href="/projects">Back to projects</a></p>
+		<PageHeader title="Project not found" />
+		<div><LinkButton href="/projects">Back to projects</LinkButton></div>
 	{/snippet}
 </svelte:boundary>

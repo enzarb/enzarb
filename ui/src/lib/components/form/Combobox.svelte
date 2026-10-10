@@ -4,6 +4,7 @@
 	import { SvelteMap } from 'svelte/reactivity';
 	import { formSync } from './sync.svelte.ts';
 	import Field from './Field.svelte';
+	import Icon from '../ui/Icon.svelte';
 	import { describedBy, type Issues, messages, type Option } from './util.ts';
 
 	/**
@@ -74,8 +75,8 @@
 		announcement = `${removed} removed`;
 		if (!fromChip) return;
 		await tick();
-		const next = box?.querySelectorAll<HTMLElement>('.tag-remove')[index];
-		(next ?? box?.querySelector<HTMLElement>('.combobox-input'))?.focus();
+		const next = box?.querySelectorAll<HTMLElement>('.ez-chip__remove')[index];
+		(next ?? box?.querySelector<HTMLElement>('.ez-combobox__input'))?.focus();
 	}
 	/**
 	 * bits-ui writes the picked label into the input right after reporting the new value, so
@@ -86,7 +87,7 @@
 		void tick().then(() => {
 			if (!box?.isConnected) return;
 			query = '';
-			const input = box?.querySelector<HTMLInputElement>('.combobox-input');
+			const input = box?.querySelector<HTMLInputElement>('.ez-combobox__input');
 			if (input) input.value = '';
 		});
 	}
@@ -96,7 +97,7 @@
 	}
 </script>
 
-<div class="combobox-field" {@attach sync}>
+<div {@attach sync}>
 	<Field {id} {label} {help} {issues}>
 		<Combobox.Root
 			type="multiple"
@@ -109,51 +110,55 @@
 				if (!o) query = '';
 			}}
 		>
-			<div class="control combobox" class:disabled bind:this={box}>
+			<div class="ez-control ez-combobox" class:ez-control--disabled={disabled} bind:this={box}>
 				{#each chosen as c (c.value)}
-					<span class="tag">
+					<span class="ez-chip">
 						{c.label}
 						<button
 							type="button"
-							class="tag-remove"
+							class="ez-chip__remove"
 							aria-label="Remove {c.label}"
 							{disabled}
-							onclick={() => remove(c.value, true)}>×</button
+							onclick={() => remove(c.value, true)}><Icon name="x" /></button
 						>
 					</span>
 				{/each}
 				<Combobox.Input
 					{id}
 					{placeholder}
-					class="combobox-input"
+					class="ez-combobox__input"
 					aria-labelledby="{id}-label"
 					aria-invalid={messages(issues).length > 0 ? 'true' : undefined}
 					aria-describedby={describedBy(id, help, issues)}
 					oninput={(e) => (query = e.currentTarget.value)}
 					{onkeydown}
 				/>
-				<Combobox.Trigger class="combobox-trigger" aria-label="Show options">
-					<span aria-hidden="true">▾</span>
+				<Combobox.Trigger class="ez-combobox__trigger" aria-label="Show options">
+					<Icon name="chevron-down" />
 				</Combobox.Trigger>
 			</div>
 			<Combobox.Portal>
-				<Combobox.Content class="popup" sideOffset={4}>
+				<Combobox.Content class="ez-popup" sideOffset={4}>
 					<Combobox.Viewport>
 						{#each groups as [group, items] (group)}
 							{#snippet rows()}
 								{#each items as o (o.value)}
 									<Combobox.Item
-										class="option"
+										class="ez-option"
 										value={o.value}
 										label={o.label}
 										disabled={o.disabled}
 										aria-disabled={o.disabled ? 'true' : undefined}
 									>
 										{#snippet children({ selected })}
-											<span class="option-mark" aria-hidden="true">{selected ? '✓' : ''}</span>
-											<span class="option-text">
+											<span class="ez-option__mark" aria-hidden="true"
+												>{#if selected}<Icon name="check" />{/if}</span
+											>
+											<span>
 												{o.label}
-												{#if o.description}<small class="muted">{o.description}</small>{/if}
+												{#if o.description}<span class="ez-option__description"
+														>{o.description}</span
+													>{/if}
 											</span>
 										{/snippet}
 									</Combobox.Item>
@@ -161,14 +166,16 @@
 							{/snippet}
 							{#if group}
 								<Combobox.Group>
-									<Combobox.GroupHeading class="group-heading">{group}</Combobox.GroupHeading>
+									<Combobox.GroupHeading class="ez-popup__group-heading"
+										>{group}</Combobox.GroupHeading
+									>
 									{@render rows()}
 								</Combobox.Group>
 							{:else}
 								{@render rows()}
 							{/if}
 						{:else}
-							<p class="option-empty muted">{emptyText}</p>
+							<p class="ez-popup__empty">{emptyText}</p>
 						{/each}
 					</Combobox.Viewport>
 				</Combobox.Content>
@@ -176,5 +183,5 @@
 		</Combobox.Root>
 		{#if name}{#each value as v (v)}<input type="hidden" {name} value={v} />{/each}{/if}
 	</Field>
-	<span class="sr-only" aria-live="polite">{announcement}</span>
+	<span class="ez-sr-only" aria-live="polite">{announcement}</span>
 </div>

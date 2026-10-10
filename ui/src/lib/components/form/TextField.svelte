@@ -25,7 +25,7 @@
 
 <Field {id} {label} {help} {issues}>
 	<input
-		class="control"
+		class="ez-control"
 		{...rest}
 		{id}
 		{type}

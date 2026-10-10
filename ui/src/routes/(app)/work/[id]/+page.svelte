@@ -1,7 +1,11 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import JobTable from '#lib/components/JobTable.svelte';
-	import PageHeading from '#lib/components/PageHeading.svelte';
+	import LinkButton from '#lib/components/ui/LinkButton.svelte';
+	import Notice from '#lib/components/ui/Notice.svelte';
+	import PageHeader from '#lib/components/ui/PageHeader.svelte';
+	import Section from '#lib/components/ui/Section.svelte';
+	import Skeleton from '#lib/components/ui/Skeleton.svelte';
 	import WorkActions from '#lib/components/WorkActions.svelte';
 	import WorkStateChip from '#lib/components/WorkStateChip.svelte';
 	import WorkTimeline from '#lib/components/WorkTimeline.svelte';
@@ -39,31 +43,31 @@
 <svelte:boundary>
 	{#if item.current}
 		{@const w = item.current}
-		<PageHeading title={w.title} />
-		<p class="muted">
-			<WorkStateChip state={w.state} />
-			· <code>{w.key}</code> · project <a href="/projects/{w.project}">{w.project}</a>
-			· {w.workflow}
-			{#if w.url}· <a href={w.url} rel="noopener noreferrer">View on GitHub</a>{/if}
-		</p>
+		<PageHeader title={w.title}>
+			{#snippet meta()}
+				<WorkStateChip state={w.state} />
+				<code>{w.key}</code>
+				<span class="ez-muted">project <a href="/projects/{w.project}">{w.project}</a></span>
+				<span class="ez-muted">{w.workflow}</span>
+				{#if w.url}<a href={w.url} rel="noopener noreferrer">View on GitHub</a>{/if}
+			{/snippet}
+			{#snippet actions()}
+				<WorkActions actions={w.actions} {pending} onaction={act} />
+			{/snippet}
+		</PageHeader>
+		{#if actionError}<Notice tone="error">{actionError}</Notice>{/if}
 
-		<WorkActions actions={w.actions} {pending} onaction={act} />
-		{#if actionError}<p class="field-error" role="alert">{actionError}</p>{/if}
-
-		<section class="card stack">
-			<h2>Timeline</h2>
+		<Section title="Timeline">
 			<WorkTimeline transitions={w.transitions} state={w.state} />
-		</section>
-
-		<section class="card stack">
-			<h2>Jobs</h2>
+		</Section>
+		<Section title="Jobs" flush>
 			<JobTable jobs={w.jobs} />
-		</section>
+		</Section>
 	{:else}
-		<p class="muted">Loading work item…</p>
+		<Skeleton label="Loading work item" rows={4} />
 	{/if}
 	{#snippet failed()}
-		<PageHeading title="Work item not found" />
-		<p><a href="/work">Back to work</a></p>
+		<PageHeader title="Work item not found" />
+		<div><LinkButton href="/work">Back to work</LinkButton></div>
 	{/snippet}
 </svelte:boundary>

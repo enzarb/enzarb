@@ -1,4 +1,5 @@
 import { redirect } from '@sveltejs/kit';
+import { dev } from '$app/env';
 import type { Handle } from '@sveltejs/kit/hooks';
 import {
 	deleteSessionCookie,
@@ -7,11 +8,7 @@ import {
 	validateSessionToken
 } from '#lib/server/auth.ts';
 import { getSql } from '#lib/server/db.ts';
-
-const PROBE_PATHS = new Set(['/healthz', '/readyz']);
-
-const isPublic = (path: string) =>
-	path === '/login' || path.startsWith('/login/') || PROBE_PATHS.has(path);
+import { PROBE_PATHS, isPublicPath } from '#lib/server/public-paths.ts';
 
 export const handle: Handle = async ({ event, resolve }) => {
 	// Probes must never depend on the database (session lookup) or the auth redirect.
@@ -36,7 +33,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 		}
 	}
 
-	if (!event.locals.user && !isPublic(event.url.pathname)) {
+	if (!event.locals.user && !isPublicPath(event.url.pathname, dev)) {
 		// Remote function calls (and other non-navigations) get a 401, pages get the login redirect.
 		if (event.url.pathname.startsWith('/_app/remote')) {
 			return new Response('Unauthorized', { status: 401 });

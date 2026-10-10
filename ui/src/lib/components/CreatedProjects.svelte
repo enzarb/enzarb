@@ -1,5 +1,8 @@
 <script lang="ts">
 	import ProjectBootCard from './ProjectBootCard.svelte';
+	import LinkButton from './ui/LinkButton.svelte';
+	import Notice from './ui/Notice.svelte';
+	import Section from './ui/Section.svelte';
 	import { isTerminalFailure } from '#lib/conditions.ts';
 	import type { PlanResult } from '#lib/onboarding.ts';
 	import type { ProjectView } from '#lib/project-types.ts';
@@ -46,26 +49,27 @@
 	});
 </script>
 
-<p role="status">
-	{created.length} created{failed.length ? `, ${failed.length} failed` : ''}.
-</p>
+<div class="ez-stack">
+	<Notice tone={failed.length ? 'warning' : 'success'}>
+		{created.length} created{failed.length ? `, ${failed.length} failed` : ''}.
+	</Notice>
 
-{#if failed.length}
-	<section class="card stack" aria-label="Failed projects">
-		<h2>Not created</h2>
-		<ul>
-			{#each failed as r, i (i)}
-				<li><code>{r.name}</code>: {r.status === 'failed' ? r.reason : ''}</li>
-			{/each}
-		</ul>
-	</section>
-{/if}
+	{#if failed.length}
+		<Section title="Not created">
+			<ul>
+				{#each failed as r, i (i)}
+					<li><code>{r.name}</code>: {r.status === 'failed' ? r.reason : ''}</li>
+				{/each}
+			</ul>
+		</Section>
+	{/if}
 
-{#each created as r (r.name)}
-	<ProjectBootCard name={r.name} project={views[r.name]} />
-{/each}
+	{#each created as r (r.name)}
+		<ProjectBootCard name={r.name} project={views[r.name]} />
+	{/each}
 
-<p>
-	<a href="/projects">All projects</a> ·
-	<a href="/projects/new" data-sveltekit-reload>Create more</a>
-</p>
+	<div class="ez-cluster">
+		<LinkButton href="/projects">All projects</LinkButton>
+		<LinkButton href="/projects/new" data-sveltekit-reload>Create more</LinkButton>
+	</div>
+</div>

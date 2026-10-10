@@ -2,8 +2,11 @@
 	import Button from './form/Button.svelte';
 	import Checkbox from './form/Checkbox.svelte';
 	import Combobox from './form/Combobox.svelte';
+	import FieldSet from './form/FieldSet.svelte';
 	import RadioGroup from './form/RadioGroup.svelte';
 	import TextField from './form/TextField.svelte';
+	import Card from './ui/Card.svelte';
+	import Notice from './ui/Notice.svelte';
 	import {
 		MAX_PROJECTS_PER_REQUEST,
 		expandNameTemplate,
@@ -97,100 +100,100 @@
 	}
 </script>
 
-<form class="stack card" onsubmit={submit}>
-	{#if choices.problem}
-		<p class="field-error" role="alert">
-			{choices.problem.message}
-			<a href={refreshHref} data-sveltekit-reload>Refresh repositories</a>
-		</p>
-	{/if}
+<Card>
+	<form class="ez-stack" onsubmit={submit}>
+		{#if choices.problem}
+			<Notice tone="error">
+				{choices.problem.message}
+				<a href={refreshHref} data-sveltekit-reload>Refresh repositories</a>
+			</Notice>
+		{/if}
 
-	<Combobox
-		label="Repositories"
-		{options}
-		bind:value={selected}
-		placeholder="Search your repositories…"
-		emptyText="No matching repositories"
-		disabled={blocked}
-		help="Repositories already in a project cannot be selected."
-	/>
-
-	<RadioGroup
-		label="Projects"
-		bind:value={mode}
-		options={[
-			{
-				value: 'single',
-				label: 'One project with all selected repositories',
-				description: 'They share one sandbox.'
-			},
-			{
-				value: 'each',
-				label: 'One project per repository',
-				description: 'Each repository gets its own sandbox.'
-			}
-		]}
-	/>
-
-	{#if mode === 'single'}
-		<TextField
-			label="Project name"
-			placeholder="my-project"
-			bind:value={singleName}
-			issues={singleName || selected.length ? (problems[0] ?? []) : []}
+		<Combobox
+			label="Repositories"
+			{options}
+			bind:value={selected}
+			placeholder="Search your repositories…"
+			emptyText="No matching repositories"
+			disabled={blocked}
+			help="Repositories already in a project cannot be selected."
 		/>
-		<TextField label="Display name" bind:value={displayName} />
-	{:else}
-		<TextField
-			label="Name template"
-			bind:value={() => template, (t) => ((template = t), (overrides = {}))}
-			help="{'{repo}'} and {'{owner}'} are replaced; the result is lowercased into a valid name."
+
+		<RadioGroup
+			label="Projects"
+			bind:value={mode}
+			options={[
+				{
+					value: 'single',
+					label: 'One project with all selected repositories',
+					description: 'They share one sandbox.'
+				},
+				{
+					value: 'each',
+					label: 'One project per repository',
+					description: 'Each repository gets its own sandbox.'
+				}
+			]}
 		/>
-		{#each selected as key, i (key)}
+
+		{#if mode === 'single'}
 			<TextField
-				label="Name for {shortName(key)}"
-				bind:value={() => nameOf(key), (n) => (overrides[key] = n)}
-				issues={problems[i] ?? []}
+				label="Project name"
+				placeholder="my-project"
+				bind:value={singleName}
+				issues={singleName || selected.length ? (problems[0] ?? []) : []}
 			/>
-		{/each}
-	{/if}
+			<TextField label="Display name" bind:value={displayName} />
+		{:else}
+			<TextField
+				label="Name template"
+				bind:value={() => template, (t) => ((template = t), (overrides = {}))}
+				help="{'{repo}'} and {'{owner}'} are replaced; the result is lowercased into a valid name."
+			/>
+			{#each selected as key, i (key)}
+				<TextField
+					label="Name for {shortName(key)}"
+					bind:value={() => nameOf(key), (n) => (overrides[key] = n)}
+					issues={problems[i] ?? []}
+				/>
+			{/each}
+		{/if}
 
-	<fieldset class="checks">
-		<legend>Triggers</legend>
-		<Checkbox label="Issues" bind:checked={triggers.issues} />
-		<Checkbox label="Change requests" bind:checked={triggers.changeRequests} />
-		<Checkbox label="Mentions" bind:checked={triggers.mentions} />
-	</fieldset>
+		<FieldSet legend="Triggers">
+			<Checkbox label="Issues" bind:checked={triggers.issues} />
+			<Checkbox label="Change requests" bind:checked={triggers.changeRequests} />
+			<Checkbox label="Mentions" bind:checked={triggers.mentions} />
+		</FieldSet>
 
-	{#if failure}
-		<p class="field-error" role="alert">
-			{failure.message}
-			{#if failure.stale}<a href={refreshHref} data-sveltekit-reload>Refresh repositories</a>{/if}
-		</p>
-	{/if}
+		{#if failure}
+			<Notice tone="error">
+				{failure.message}
+				{#if failure.stale}<a href={refreshHref} data-sveltekit-reload>Refresh repositories</a>{/if}
+			</Notice>
+		{/if}
 
-	{#if plans.length > MAX_PROJECTS_PER_REQUEST}
-		<p class="field-error" role="alert">
-			At most {MAX_PROJECTS_PER_REQUEST} projects per request
-		</p>
-	{/if}
+		{#if plans.length > MAX_PROJECTS_PER_REQUEST}
+			<Notice tone="error">At most {MAX_PROJECTS_PER_REQUEST} projects per request</Notice>
+		{/if}
 
-	{#if rejected.length}
-		<div class="field-error" role="alert">
-			<p>No project was created:</p>
-			<ul>
-				{#each rejected as r, i (i)}
-					<li><code>{r.name}</code>: {r.reason}</li>
-				{/each}
-			</ul>
+		{#if rejected.length}
+			<Notice tone="error" title="No project was created">
+				<ul>
+					{#each rejected as r, i (i)}
+						<li><code>{r.name}</code>: {r.reason}</li>
+					{/each}
+				</ul>
+			</Notice>
+		{/if}
+
+		<div>
+			<Button variant="primary" type="submit" disabled={!valid || pending || blocked}>
+				{pending
+					? 'Creating…'
+					: plans.length > 1
+						? `Create ${plans.length} projects`
+						: 'Create project'}
+			</Button>
 		</div>
-	{/if}
-
-	<Button variant="primary" type="submit" disabled={!valid || pending || blocked}>
-		{pending
-			? 'Creating…'
-			: plans.length > 1
-				? `Create ${plans.length} projects`
-				: 'Create project'}
-	</Button>
-</form>
+	</form>
+</Card>

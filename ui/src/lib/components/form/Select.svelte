@@ -3,6 +3,7 @@
 	import { untrack } from 'svelte';
 	import { formSync } from './sync.svelte.ts';
 	import Field from './Field.svelte';
+	import Icon from '../ui/Icon.svelte';
 	import { describedBy, type Issues, messages, type Option } from './util.ts';
 
 	/** Single-value listbox. The value is posted as a hidden input named `name`. */
@@ -37,7 +38,7 @@
 	const selected = $derived(options.find((o) => o.value === value));
 </script>
 
-<div class="select" {@attach sync}>
+<div {@attach sync}>
 	<Field {id} {label} {help} {issues}>
 		<Select.Root
 			type="single"
@@ -48,30 +49,33 @@
 		>
 			<Select.Trigger
 				{id}
-				class="control select-trigger"
+				class="ez-control ez-select__trigger"
 				aria-labelledby="{id}-label {id}-value"
 				aria-invalid={messages(issues).length > 0 ? 'true' : undefined}
 				aria-describedby={describedBy(id, help, issues)}
 			>
-				<span id="{id}-value" class:muted={!selected}>{selected?.label ?? placeholder}</span>
-				<span aria-hidden="true" class="caret">▾</span>
+				<span id="{id}-value" class:ez-subtle={!selected}>{selected?.label ?? placeholder}</span>
+				<span class="ez-select__caret"><Icon name="chevron-down" /></span>
 			</Select.Trigger>
 			<Select.Portal>
-				<Select.Content class="popup" sideOffset={4}>
+				<Select.Content class="ez-popup" sideOffset={4}>
 					<Select.Viewport>
 						{#each options as o (o.value)}
 							<Select.Item
-								class="option"
+								class="ez-option"
 								value={o.value}
 								label={o.label}
 								disabled={o.disabled}
 								aria-disabled={o.disabled ? 'true' : undefined}
 							>
 								{#snippet children({ selected })}
-									<span class="option-mark" aria-hidden="true">{selected ? '✓' : ''}</span>
-									<span class="option-text">
+									<span class="ez-option__mark" aria-hidden="true"
+										>{#if selected}<Icon name="check" />{/if}</span
+									>
+									<span>
 										{o.label}
-										{#if o.description}<small class="muted">{o.description}</small>{/if}
+										{#if o.description}<span class="ez-option__description">{o.description}</span
+											>{/if}
 									</span>
 								{/snippet}
 							</Select.Item>

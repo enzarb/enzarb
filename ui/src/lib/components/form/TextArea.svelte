@@ -23,7 +23,7 @@
 
 <Field {id} {label} {help} {issues}>
 	<textarea
-		class="control"
+		class="ez-control"
 		{...rest}
 		{id}
 		bind:value

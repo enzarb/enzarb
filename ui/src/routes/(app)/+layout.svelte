@@ -13,13 +13,15 @@
 	);
 </script>
 
-<div class="shell">
+<div class="ez-shell">
 	<AppHeader />
 	<Nav />
-	<main class="content">
-		{#if data.installBanner}
-			<InstallBanner installUrl={data.installBanner.installUrl} {refreshHref} />
-		{/if}
-		{@render children()}
+	<main class="ez-content">
+		<div class="ez-page">
+			{#if data.installBanner}
+				<InstallBanner installUrl={data.installBanner.installUrl} {refreshHref} />
+			{/if}
+			{@render children()}
+		</div>
 	</main>
 </div>

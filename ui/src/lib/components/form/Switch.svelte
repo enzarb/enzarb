@@ -37,19 +37,19 @@
 	});
 </script>
 
-<div class="field choice" {@attach sync}>
+<div class="ez-field ez-choice" {@attach sync}>
 	<Switch.Root
 		{id}
 		bind:checked
 		{disabled}
-		class="switch"
+		class="ez-switch"
 		aria-labelledby="{id}-label"
 		aria-invalid={messages(issues).length > 0 ? 'true' : undefined}
 		aria-describedby={describedBy(id, help, issues)}
 	>
-		<Switch.Thumb class="thumb" />
+		<Switch.Thumb class="ez-switch__thumb" />
 	</Switch.Root>
-	<label class="choice-label" id="{id}-label" for={id}>{label}</label>
+	<label class="ez-choice__label" id="{id}-label" for={id}>{label}</label>
 	{#if name && checked}<input type="hidden" {name} {value} />{/if}
-	<div class="choice-messages"><FieldMessages {id} {help} {issues} /></div>
+	<div class="ez-choice__messages"><FieldMessages {id} {help} {issues} /></div>
 </div>

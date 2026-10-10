@@ -20,15 +20,15 @@
 </script>
 
 {#if actions.length}
-	<p class="actions">
+	<div class="ez-cluster">
 		{#each actions as a (a)}
 			<Button
-				variant={a === 'approve' ? 'primary' : a === 'cancel' ? 'danger' : 'default'}
+				variant={a === 'approve' ? 'primary' : a === 'cancel' ? 'danger' : 'secondary'}
 				disabled={pending !== null}
 				onclick={() => onaction(a)}
 			>
 				{labels[a]}
 			</Button>
 		{/each}
-	</p>
+	</div>
 {/if}

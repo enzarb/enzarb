@@ -1,15 +1,16 @@
 <script lang="ts">
 	import { buildChecklist, type StepState } from '#lib/conditions.ts';
 	import type { Condition } from '#lib/project-types.ts';
+	import StepList, { type StepItem, type StepStatus } from './ui/StepList.svelte';
 
+	/** Boot progress of a Project, one step per Project condition. */
 	let { conditions }: { conditions: Condition[] } = $props();
 
-	const steps = $derived(buildChecklist(conditions));
-	const marks: Record<StepState, string> = {
-		pending: '○',
-		'in-progress': '◐',
-		done: '✓',
-		failed: '✗'
+	const status: Record<StepState, StepStatus> = {
+		pending: 'pending',
+		'in-progress': 'active',
+		done: 'done',
+		failed: 'failed'
 	};
 	const words: Record<StepState, string> = {
 		pending: 'Pending',
@@ -17,15 +18,17 @@
 		done: 'Done',
 		failed: 'Failed'
 	};
+
+	const items = $derived<StepItem[]>(
+		buildChecklist(conditions).map((step) => ({
+			id: step.type,
+			status: status[step.state],
+			label: step.label,
+			stateText: words[step.state],
+			message: step.message || undefined,
+			attrs: { 'data-state': step.state }
+		}))
+	);
 </script>
 
-<ol class="checklist" aria-label="Boot progress">
-	{#each steps as step (step.type)}
-		<li class="step {step.state}" data-state={step.state}>
-			<span class="mark" aria-hidden="true">{marks[step.state]}</span>
-			<span class="label">{step.label}</span>
-			<span class="state">{words[step.state]}</span>
-			{#if step.message}<span class="message muted">{step.message}</span>{/if}
-		</li>
-	{/each}
-</ol>
+<StepList {items} label="Boot progress" />

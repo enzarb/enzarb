@@ -13,8 +13,8 @@
 	}: { id: string; label: string; help?: string; issues?: Issues; children: Snippet } = $props();
 </script>
 
-<div class="field">
-	<label class="field-label" id="{id}-label" for={id}>{label}</label>
+<div class="ez-field">
+	<label class="ez-field__label" id="{id}-label" for={id}>{label}</label>
 	{@render children()}
 	<FieldMessages {id} {help} {issues} />
 </div>

@@ -9,6 +9,8 @@
 		type CredentialStepState
 	} from '#lib/credential-check.ts';
 	import { syncClaudeCredential, terminalConnection } from '#lib/terminal.remote.ts';
+	import Badge from './ui/Badge.svelte';
+	import StepList, { type StepItem, type StepStatus } from './ui/StepList.svelte';
 
 	let {
 		project,
@@ -24,11 +26,11 @@
 
 	let check = $state<CredentialCheck>(startCheck);
 	const steps = $derived(buildCredentialSteps(check));
-	const marks: Record<CredentialStepState, string> = {
-		pending: '○',
-		'in-progress': '◐',
-		done: '✓',
-		failed: '✗'
+	const status: Record<CredentialStepState, StepStatus> = {
+		pending: 'pending',
+		'in-progress': 'active',
+		done: 'done',
+		failed: 'failed'
 	};
 	const words: Record<CredentialStepState, string> = {
 		pending: 'Pending',
@@ -36,6 +38,15 @@
 		done: 'Done',
 		failed: 'Failed'
 	};
+	const items = $derived<StepItem[]>(
+		steps.map((step) => ({
+			id: step.id,
+			status: status[step.state],
+			label: step.label,
+			stateText: words[step.state],
+			attrs: { 'data-state': step.state }
+		}))
+	);
 
 	// Browser only: a fresh terminal JWT, connect, one credential_status round trip, close.
 	$effect(() => {
@@ -77,33 +88,27 @@
 	});
 </script>
 
-<div class="stack">
+<div class="ez-stack">
 	{#if check.phase === 'checking'}
-		<ol class="checklist" aria-label="Credential check">
-			{#each steps as step (step.id)}
-				<li class="step {step.state}" data-state={step.state}>
-					<span class="mark" aria-hidden="true">{marks[step.state]}</span>
-					<span class="label">{step.label}</span>
-					<span class="state">{words[step.state]}</span>
-				</li>
-			{/each}
-		</ol>
+		<StepList {items} label="Credential check" />
 	{/if}
-	<p>
+	<p class="ez-cluster">
 		Claude token:
 		{#if check.phase === 'answered'}
-			{#if check.configured}<span class="badge done">Configured</span>{:else}<span class="badge"
-					>Not configured</span
-				>{/if}
+			{@render configuredBadge(check.configured)}
 		{:else}
-			{#if cached}<span class="badge done">Configured</span>{:else}<span class="badge"
-					>Not configured</span
-				>{/if}
+			{@render configuredBadge(cached)}
 			{#if check.phase === 'checking'}
-				<span class="muted">(last known; checking the sandbox)</span>
+				<span class="ez-muted">(last known; checking the sandbox)</span>
 			{:else}
-				<span class="muted">(last known; {check.reason})</span>
+				<span class="ez-muted">(last known; {check.reason})</span>
 			{/if}
 		{/if}
 	</p>
 </div>
+
+{#snippet configuredBadge(configured: boolean)}
+	{#if configured}<Badge tone="success">Configured</Badge>{:else}<Badge tone="neutral" hollow
+			>Not configured</Badge
+		>{/if}
+{/snippet}

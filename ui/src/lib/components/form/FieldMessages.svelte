@@ -5,9 +5,9 @@
 	const errors = $derived(messages(issues));
 </script>
 
-{#if help}<p class="field-help muted" id="{id}-help">{help}</p>{/if}
+{#if help}<p class="ez-field__help" id="{id}-help">{help}</p>{/if}
 {#if errors.length}
 	<div id="{id}-error">
-		{#each errors as msg, n (n)}<p class="field-error">{msg}</p>{/each}
+		{#each errors as msg, n (n)}<p class="ez-field__error">{msg}</p>{/each}
 	</div>
 {/if}
