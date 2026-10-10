@@ -22,6 +22,11 @@
 
 	// The sandbox's own answer, once it arrives (overrides the cached flag).
 	let configured = $state<boolean | undefined>();
+	// A different project has its own answer.
+	$effect(() => {
+		void page.params.name;
+		configured = undefined;
+	});
 
 	let confirming = $state(false);
 	let deleteError = $state('');

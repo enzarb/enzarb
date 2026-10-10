@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import {
 		advanceCheck,
 		buildCredentialSteps,
@@ -46,7 +47,8 @@
 		(async () => {
 			try {
 				const [{ url }, proto] = await Promise.all([
-					terminalConnection(name),
+					// untracked: a client `command()` bumps a $state synchronously, which would re-run this effect
+					untrack(() => terminalConnection(name)),
 					import('@enzarb/proto')
 				]);
 				if (disposed) return;
@@ -59,6 +61,7 @@
 				if (disposed) return;
 				check = { phase: 'answered', configured: info.configured };
 				await syncClaudeCredential({ name, configured: info.configured });
+				if (disposed) return;
 				onchecked?.(info.configured);
 			} catch (e) {
 				if (!disposed) check = failCheck(check, e);
