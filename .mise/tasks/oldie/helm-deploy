@@ -12,8 +12,10 @@ if [ -n "${ENZARB_CHART_VERSION:-}" ]; then
   [ -n "${GHCR_TOKEN:-}" ] && echo "$GHCR_TOKEN" | helm registry login ghcr.io -u "${GHCR_USER:?GHCR_USER}" --password-stdin >/dev/null
   chart="oci://ghcr.io/enzarb/charts/enzarb"
   vals=(--version "$ENZARB_CHART_VERSION")
-  # The OCI chart does not ship values-oldie.yaml; use the checkout's copy.
+  # values-oldie.yaml is not part of the published chart (.helmignore); it comes from the checkout, so
+  # check out the enzarb-helm commit that matches ENZARB_CHART_VERSION.
   values_file="$ROOT/enzarb-helm/enzarb/values-oldie.yaml"
+  [ -f "$values_file" ] || die "$values_file missing; run: mise run repos:init"
 else
   chart="$ROOT/enzarb-helm/enzarb"
   [ -d "$chart" ] || die "$chart missing; run: mise run repos:init"
@@ -36,7 +38,7 @@ cat <<MSG
 
 Checklist
   [ ] all pods above Running/Completed
-  [ ] $PUBLIC_HOST -> $OLDIE_PUBLIC_IP (router forwards 80/443 to $OLDIE_HOST)
+  [ ] $PUBLIC_HOST is a proxied CNAME to the Cloudflare Tunnel and both pods in namespace cloudflared are Ready
   [ ] https://$PUBLIC_HOST/ loads with a Let's Encrypt certificate
   [ ] GitHub App webhook URL is https://$PUBLIC_HOST/hooks/github (Recent deliveries show 2xx)
 Next: docs/dev.md ("Create the first Project").

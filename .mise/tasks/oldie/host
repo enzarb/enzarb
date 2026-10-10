@@ -4,6 +4,8 @@ set -euo pipefail
 # shellcheck source=/dev/null
 . "${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}/.mise/lib/oldie.sh"
 need ansible-playbook ansible-galaxy ssh
+# The cloudflare_tunnel role drives the cf CLI (logged in: cf auth login).
+grep -qE '^[[:space:]]*cloudflare_tunnel_enabled:[[:space:]]*true' "$RKE2_DIR/inventory/oldie.yml" && need cf
 load_oldie_env
 [ -n "${GHCR_TOKEN:-}" ] || echo "warning: GHCR_TOKEN is empty, so no registry credentials are written; private ghcr.io images will not pull (.env.oldie)" >&2
 cd "$RKE2_DIR"

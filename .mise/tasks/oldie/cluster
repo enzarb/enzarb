@@ -25,8 +25,14 @@ kapply -k base/pgop/crds
 k wait --for=condition=Established crd/clusters.pgop.ruck.io --timeout=2m
 
 log "StorageClass (parameters are immutable: recreate when they changed; bound PVs keep their own copy)"
-kapply -f overlays/oldie/storageclass.yaml >/dev/null 2>&1 \
-  || { echo "StorageClass changed in an immutable field, recreating"; k replace --force -f overlays/oldie/storageclass.yaml; }
+if ! sc_out=$(kapply -f overlays/oldie/storageclass.yaml 2>&1); then
+  if grep -qiE 'immutable|updates to parameters|forbidden' <<<"$sc_out"; then
+    echo "StorageClass changed in an immutable field, recreating"
+    k replace --force -f overlays/oldie/storageclass.yaml
+  else
+    printf '%s\n' "$sc_out" >&2; die "applying the StorageClass failed"
+  fi
+fi
 
 log "overlays/oldie"
 kapply -k overlays/oldie
@@ -85,8 +91,13 @@ spec:
   podSelector: {}
   policyTypes: [Ingress]
 POL
-sleep 5
-if reach; then die "NetworkPolicy is NOT enforced by this cluster's CNI (rke2 cni: canal in rke2/roles/rke2/defaults)"; fi
+# The policy can take a few seconds to be programmed: it is enforced if the pod becomes unreachable.
+enforced=0
+for _ in 1 2 3 4 5 6; do
+  sleep 5
+  if ! reach; then enforced=1; break; fi
+done
+[ "$enforced" = 1 ] || die "NetworkPolicy is NOT enforced by this cluster's CNI (rke2 cni: canal in rke2/roles/rke2/defaults)"
 echo "NetworkPolicy enforced"
 
 log "verifying LVM-backed volumes (a PVC mounted into a gVisor pod)"
@@ -122,12 +133,11 @@ if [ "${ENZARB_OLDIE_SKIP_CERT:-0}" = 1 ]; then
   echo "skipping the Gateway/Certificate wait (ENZARB_OLDIE_SKIP_CERT=1); re-run without it once oldie:secrets has run" >&2
 else
   log "Certificate and Gateway (needs the cloudflare-api-token Secret: mise run oldie:secrets)"
-  # The Gateway's own Programmed condition stays False on a NodePort Service (AddressNotAssigned: no
-  # LoadBalancer address to report), so check what matters: accepted, and every listener programmed.
+  # Accepted, and every listener programmed (and at least one listener reported).
   k -n enzarb-system wait --for=condition=Accepted gateway/enzarb --timeout=5m
   for _ in $(seq 1 30); do
     bad=$(k -n enzarb-system get gateway enzarb -o json \
-      | jq '[.status.listeners[]? | select(([.conditions[] | select(.type=="Programmed" and .status=="True")] | length) == 0)] | length')
+      | jq '(.status.listeners // []) as $l | if ($l | length) == 0 then 1 else [$l[] | select(([.conditions[] | select(.type=="Programmed" and .status=="True")] | length) == 0)] | length end')
     [ "$bad" = 0 ] && break
     sleep 5
   done
@@ -136,8 +146,8 @@ else
     || { k -n enzarb-system describe certificate enzarb-tls | tail -n 20 >&2; die "certificate not issued (docs/oldie.md, Troubleshooting: certificates)"; }
 fi
 if [ -z "$(getent hosts "$PUBLIC_HOST")" ]; then
-  echo "note: $PUBLIC_HOST does not resolve yet; create the Cloudflare record -> $OLDIE_PUBLIC_IP (NAT to $OLDIE_HOST)" >&2
+  echo "note: $PUBLIC_HOST does not resolve yet; the tunnel role creates its CNAME (mise run oldie:host)" >&2
 else
-  echo "$PUBLIC_HOST resolves to: $(getent hosts "$PUBLIC_HOST" | awk '{print $1}' | tr '\n' ' ')(expected $OLDIE_PUBLIC_IP, or Cloudflare's addresses when proxied; LAN clients need $OLDIE_HOST via split DNS/hosts)"
+  echo "$PUBLIC_HOST resolves to: $(getent hosts "$PUBLIC_HOST" | awk '{print $1}' | tr '\n' ' ')(Cloudflare's addresses are expected: a proxied CNAME to the tunnel; LAN clients can use $OLDIE_HOST via split DNS/hosts)"
 fi
 log "cluster ready: context $KCTX"
