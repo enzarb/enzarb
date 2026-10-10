@@ -1,6 +1,7 @@
 <script lang="ts">
 	import '@xterm/xterm/css/xterm.css';
 	import type { Session } from '@enzarb/proto';
+	import Button from '#lib/components/form/Button.svelte';
 	import TerminalChecklist from '#lib/components/TerminalChecklist.svelte';
 	import { terminalConnection } from '#lib/terminal.remote.ts';
 	import {
@@ -124,10 +125,10 @@
 		<TerminalChecklist {progress} />
 	{/if}
 	{#if progress.failure}
-		<p><button onclick={reconnect}>Try again</button></p>
+		<p><Button onclick={reconnect}>Try again</Button></p>
 	{/if}
 	{#if ended}
-		<p class="muted" role="status">{ended}. <button onclick={reconnect}>Reconnect</button></p>
+		<p class="muted" role="status">{ended}. <Button onclick={reconnect}>Reconnect</Button></p>
 	{/if}
 	<div class="terminal" bind:this={host}></div>
 </div>

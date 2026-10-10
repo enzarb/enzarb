@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
+	import Select from '#lib/components/form/Select.svelte';
 	import PageHeading from '#lib/components/PageHeading.svelte';
 	import WorkStateChip from '#lib/components/WorkStateChip.svelte';
 	import { watchWorkItems } from '#lib/live.ts';
@@ -13,8 +14,15 @@
 
 	$effect(() => watchWorkItems(() => void items.refresh()));
 
-	function pick(e: Event) {
-		const value = (e.currentTarget as HTMLSelectElement).value;
+	const options = $derived.by(() => {
+		const list = (projects.current ?? []).map((p) => ({ value: p.name, label: p.displayName }));
+		// keep the selection visible while the project list is still loading
+		if (project && !list.some((o) => o.value === project))
+			list.push({ value: project, label: project });
+		return [{ value: '', label: 'All projects' }, ...list];
+	});
+
+	function pick(value: string) {
 		void goto(value ? `/work?project=${encodeURIComponent(value)}` : '/work');
 	}
 </script>
@@ -23,17 +31,9 @@
 
 <PageHeading title="Work" />
 
-<p>
-	<label>
-		Project
-		<select value={project ?? ''} onchange={pick}>
-			<option value="">All projects</option>
-			{#each projects.current ?? [] as p (p.name)}
-				<option value={p.name}>{p.displayName}</option>
-			{/each}
-		</select>
-	</label>
-</p>
+<div class="filter">
+	<Select label="Project" value={project ?? ''} onchange={pick} {options} />
+</div>
 
 <svelte:boundary>
 	{#if items.error}

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
+	import Button from '#lib/components/form/Button.svelte';
 	import ConditionChecklist from '#lib/components/ConditionChecklist.svelte';
 	import CredentialStatus from '#lib/components/CredentialStatus.svelte';
 	import PageHeading from '#lib/components/PageHeading.svelte';
@@ -87,10 +88,10 @@
 
 		<p>
 			{#if confirming}
-				<button class="danger" onclick={remove}>Confirm delete</button>
-				<button onclick={() => (confirming = false)}>Cancel</button>
+				<Button variant="danger" onclick={remove}>Confirm delete</Button>
+				<Button onclick={() => (confirming = false)}>Cancel</Button>
 			{:else}
-				<button class="danger" onclick={() => (confirming = true)}>Delete project</button>
+				<Button variant="danger" onclick={() => (confirming = true)}>Delete project</Button>
 			{/if}
 		</p>
 		{#if deleteError}<p class="field-error">{deleteError}</p>{/if}

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Button from './form/Button.svelte';
 	let { login, name, avatarUrl }: { login: string; name: string | null; avatarUrl: string | null } =
 		$props();
 </script>
@@ -14,7 +15,7 @@
 			<span class="muted">@{login}</span>
 		</div>
 		<form method="POST" action="/logout">
-			<button type="submit">Sign out</button>
+			<Button type="submit">Sign out</Button>
 		</form>
 	</div>
 </details>

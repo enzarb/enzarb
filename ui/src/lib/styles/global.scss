@@ -203,14 +203,17 @@ button,
 	}
 }
 
-// Forms
+// Forms: custom controls (src/lib/components/form). Every control shares .control.
 label {
 	display: block;
 }
 
-input[type='text'],
-input[type='url'],
-input:not([type]) {
+.field-label {
+	display: block;
+	margin-bottom: var(--space-1);
+}
+
+.control {
 	display: block;
 	width: 100%;
 	font: inherit;
@@ -219,10 +222,27 @@ input:not([type]) {
 	border-radius: var(--radius);
 	background: var(--surface);
 	color: var(--text);
+
+	&[aria-invalid='true'],
+	&:has([aria-invalid='true']) {
+		border-color: var(--danger);
+	}
+
+	&:disabled,
+	&[data-disabled] {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
 }
 
-input[aria-invalid='true'] {
-	border-color: var(--danger);
+textarea.control {
+	min-height: 6rem;
+	resize: vertical;
+}
+
+.field-help {
+	margin: var(--space-1) 0 0;
+	font-size: 0.9rem;
 }
 
 .field-error {
@@ -240,21 +260,255 @@ fieldset {
 	display: grid;
 	grid-template-columns: 1fr 10rem auto;
 	gap: var(--space-2);
-	align-items: end;
+	align-items: start;
 	margin-bottom: var(--space-3);
 
-	.field-error {
-		grid-column: 1 / -1;
+	> button {
+		margin-top: calc(1.5rem + var(--space-1));
 	}
 
 	@media (max-width: 40rem) {
 		grid-template-columns: 1fr;
+
+		> button {
+			margin-top: 0;
+		}
 	}
 }
 
-.checks label {
+.checks {
+	display: grid;
+	gap: var(--space-2);
+}
+
+// Checkbox / switch / radio: control on the left, label on the right.
+.choice {
+	display: grid;
+	grid-template-columns: auto 1fr;
+	gap: 0 var(--space-2);
+	align-items: center;
+
+	.choice-messages {
+		grid-column: 2;
+	}
+
+	.choice-label {
+		cursor: pointer;
+
+		small {
+			display: block;
+		}
+	}
+}
+
+.box,
+.radio {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 1.25rem;
+	height: 1.25rem;
+	padding: 0;
+	line-height: 1;
+	font-size: 0.85rem;
+	border: 1px solid var(--muted);
+	background: var(--surface);
+	color: var(--accent-text);
+
+	&[data-state='checked'] {
+		background: var(--accent);
+		border-color: var(--accent);
+	}
+
+	&[aria-invalid='true'] {
+		border-color: var(--danger);
+	}
+
+	&[data-disabled] {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+}
+
+.box {
+	border-radius: 4px;
+}
+
+.radio {
+	border-radius: 50%;
+	font-size: 0.6rem;
+}
+
+.switch {
+	display: inline-flex;
+	align-items: center;
+	width: 2.5rem;
+	height: 1.4rem;
+	padding: 2px;
+	border: 1px solid var(--muted);
+	border-radius: 999px;
+	background: var(--surface);
+
+	&[data-state='checked'] {
+		background: var(--accent);
+		border-color: var(--accent);
+	}
+
+	&[data-disabled] {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	.thumb {
+		display: block;
+		width: 1rem;
+		height: 1rem;
+		border-radius: 50%;
+		background: var(--muted);
+		transition: transform 0.12s;
+
+		&[data-state='checked'] {
+			transform: translateX(1.1rem);
+			background: var(--accent-text);
+		}
+	}
+}
+
+.radio-group {
+	display: grid;
+	gap: var(--space-2);
+
+	&[data-orientation='horizontal'] {
+		grid-auto-flow: column;
+		justify-content: start;
+		gap: var(--space-4);
+	}
+}
+
+// Select trigger and multi-select combobox.
+.select-trigger {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: var(--space-2);
+	text-align: left;
+	cursor: pointer;
+}
+
+.combobox {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--space-1);
+	padding: var(--space-1) var(--space-2);
+
+	&:focus-within {
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
+	}
+
+	.combobox-input {
+		flex: 1 1 8rem;
+		min-width: 6rem;
+		font: inherit;
+		padding: var(--space-1) 0;
+		border: 0;
+		background: transparent;
+		color: inherit;
+		outline: none;
+	}
+
+	.combobox-trigger {
+		padding: 0 var(--space-1);
+		border: 0;
+		background: transparent;
+	}
+}
+
+.tag {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--space-1);
+	padding: 0 var(--space-1) 0 var(--space-2);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	background: var(--bg);
+	font-size: 0.9rem;
+
+	.tag-remove {
+		padding: 0 var(--space-1);
+		border: 0;
+		background: transparent;
+		line-height: 1.2;
+	}
+}
+
+.popup {
+	z-index: 20;
+	min-width: var(--bits-floating-anchor-width, 12rem);
+	max-height: min(20rem, var(--bits-floating-available-height, 20rem));
+	overflow-y: auto;
+	padding: var(--space-1);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	background: var(--surface);
+	box-shadow: 0 4px 16px rgb(0 0 0 / 0.2);
+}
+
+.group-heading {
+	padding: var(--space-1) var(--space-2);
+	font-size: 0.8rem;
+	font-weight: 600;
+	color: var(--muted);
+}
+
+.option {
 	display: flex;
 	gap: var(--space-2);
+	padding: var(--space-1) var(--space-2);
+	border-radius: var(--radius);
+	cursor: pointer;
+
+	&[data-highlighted] {
+		background: var(--accent);
+		color: var(--accent-text);
+
+		.muted {
+			color: inherit;
+		}
+	}
+
+	&[data-disabled] {
+		opacity: 0.55;
+		cursor: not-allowed;
+	}
+
+	.option-mark {
+		width: 1rem;
+	}
+
+	small {
+		display: block;
+	}
+}
+
+.filter {
+	max-width: 20rem;
+	margin-bottom: var(--space-3);
+}
+
+.sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+
+.option-empty {
+	padding: var(--space-1) var(--space-2);
+	margin: 0;
 }
 
 button.danger {

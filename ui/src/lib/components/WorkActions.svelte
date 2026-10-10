@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Button from './form/Button.svelte';
 	import type { WorkAction } from '#lib/work-items.ts';
 
 	let {
@@ -21,14 +22,13 @@
 {#if actions.length}
 	<p class="actions">
 		{#each actions as a (a)}
-			<button
-				class:primary={a === 'approve'}
-				class:danger={a === 'cancel'}
+			<Button
+				variant={a === 'approve' ? 'primary' : a === 'cancel' ? 'danger' : 'default'}
 				disabled={pending !== null}
 				onclick={() => onaction(a)}
 			>
 				{labels[a]}
-			</button>
+			</Button>
 		{/each}
 	</p>
 {/if}
