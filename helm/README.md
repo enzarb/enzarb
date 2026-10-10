@@ -41,3 +41,8 @@ pgop creates `<cluster>-<role>-credentials` per Role (keys `username password ho
 
 ## Tests
 `mise install`, then `mise run test`: `helm lint`, golden snapshots (`scripts/golden.sh`, `--update` to rewrite `tests/golden/`), kubeconform (CRD schemas from the datree catalog), and `scripts/check-pgop.py` (pgop resources against the vendored CRDs).
+
+## Component versions and releases
+Every component image tag in `enzarb/values.yaml` (and `operator.sandboxImage`) is a pinned release version, never `main`. They are written by `scripts/sync-components.sh`, which reconciles each entry of `scripts/components.yaml` to its repo's latest GitHub release, but only when that release tag's `ci` run succeeded (its docker job pushes `ghcr.io/enzarb/<image>:<version>`) and the version is newer than the current pin; any other GitHub API failure fails the run. The `sync-components` workflow runs it when a component dispatches `component-released` (and every 6 hours as a safety net), refreshes the goldens, runs the checks and commits `feat(deps)`/`fix(deps)` to `main`; the release workflow then tags the next chart version and `publish.yml` pushes `oci://ghcr.io/enzarb/charts/enzarb`. `Chart.yaml` keeps `0.0.0` placeholders. See `docs/ci.md` in the workspace repo.
+
+`enzarb/values-oldie.yaml` is the single-node production install (`enzarb.dev`, StorageClass `enzarb-lvm`, `IfNotPresent`); render it with `scripts/render.sh oldie`.

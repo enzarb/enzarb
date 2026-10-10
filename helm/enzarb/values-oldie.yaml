@@ -1,0 +1,21 @@
+# oldie: single-node production install (RKE2, enzarb-kubernetes overlays/oldie).
+# Images are pulled from ghcr.io at the pinned release tags in values.yaml; pull credentials are
+# configured on the node (rke2 registries.yaml), so no imagePullSecrets are needed here.
+host: enzarb.dev
+publicUrl: https://enzarb.dev
+
+secrets:
+  github:
+    existingSecret: enzarb-github
+
+postgres:
+  storage:
+    size: 50Gi
+    storageClassName: enzarb-lvm
+    retainPolicy: Retain
+
+operator:
+  replicaCount: 1        # one node; leader election buys nothing
+  defaultStorage: 20Gi
+  docker:
+    storage: 50Gi

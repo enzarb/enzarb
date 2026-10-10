@@ -4,7 +4,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 rc=0
-for s in default dev; do
+for s in default dev oldie; do
   out="$here/tests/golden/$s.yaml"
   if [ "${1:-}" = "--update" ]; then
     "$here/scripts/render.sh" "$s" > "$out"; echo "updated $out"

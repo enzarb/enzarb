@@ -2,6 +2,8 @@ apiVersion: v2
 name: enzarb
 description: Umbrella chart for enzarb (ui, workflows, connectors receiver, sandbox operator and proxy, pgop database)
 type: application
-version: 0.1.0
-appVersion: "main"
+# Placeholders: the release workflow packages the chart with `--version`/`--app-version` set to
+# the tag it created (see .github/workflows/publish.yml). Component versions live in values.yaml.
+version: 0.0.0
+appVersion: "0.0.0"
 kubeVersion: ">=1.30.0-0"

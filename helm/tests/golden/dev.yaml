@@ -9,7 +9,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 
 ---
 # Source: enzarb/templates/rbac.yaml
@@ -22,7 +22,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 
 ---
 # Source: enzarb/templates/rbac.yaml
@@ -35,7 +35,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 
 ---
 # Source: enzarb/templates/rbac.yaml
@@ -48,7 +48,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 
 ---
 # Source: enzarb/templates/rbac.yaml
@@ -61,7 +61,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 
 ---
 # Source: enzarb/templates/rbac.yaml
@@ -74,7 +74,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 
 ---
 # Source: enzarb/templates/secrets.yaml
@@ -87,7 +87,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 type: Opaque
 data:
   session-jwt-secret: <generated>
@@ -104,7 +104,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 type: Opaque
 stringData:
   app-id: "0"
@@ -124,7 +124,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 rules:
   - apiGroups: [enzarb.dev]
     resources: [projects]
@@ -141,7 +141,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 rules:
   - apiGroups: [enzarb.dev]
     resources: [projects]
@@ -162,7 +162,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 rules:
   - apiGroups: [enzarb.dev]
     resources: [projects]
@@ -183,7 +183,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 rules:
   - apiGroups: [enzarb.dev]
     resources: [projects]
@@ -225,7 +225,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: enzarb-ui }
 subjects:
   - { kind: ServiceAccount, name: enzarb-ui, namespace: enzarb }
@@ -241,7 +241,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: enzarb-workflows }
 subjects:
   - { kind: ServiceAccount, name: enzarb-workflows, namespace: enzarb }
@@ -257,7 +257,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: enzarb-sandbox-proxy }
 subjects:
   - { kind: ServiceAccount, name: enzarb-sandbox-proxy, namespace: enzarb }
@@ -273,7 +273,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: enzarb-sandbox-operator }
 subjects:
   - { kind: ServiceAccount, name: enzarb-sandbox-operator, namespace: enzarb }
@@ -289,7 +289,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 spec:
   clusterRef:
     name: enzarb-pg
@@ -307,7 +307,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 spec:
   clusterRef:
     name: enzarb-pg
@@ -325,7 +325,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 spec:
   clusterRef:
     name: enzarb-pg
@@ -343,7 +343,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 spec:
   clusterRef:
     name: enzarb-pg
@@ -361,7 +361,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 spec:
   clusterRef:
     name: enzarb-pg
@@ -379,7 +379,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 spec:
   clusterRef:
     name: enzarb-pg
@@ -397,7 +397,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 rules:
   - apiGroups: [coordination.k8s.io]
     resources: [leases]
@@ -414,7 +414,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 rules:
   - apiGroups: [batch]
     resources: [jobs]
@@ -434,7 +434,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: enzarb-sandbox-operator-leader }
 subjects:
   - { kind: ServiceAccount, name: enzarb-sandbox-operator, namespace: enzarb }
@@ -450,7 +450,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: enzarb-wait }
 subjects:
   - { kind: ServiceAccount, name: enzarb-ui, namespace: enzarb }
@@ -469,7 +469,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 spec:
   selector:
     app.kubernetes.io/name: enzarb-connectors
@@ -488,7 +488,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 spec:
   selector:
     app.kubernetes.io/name: enzarb-sandbox-proxy
@@ -507,7 +507,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 spec:
   selector:
     app.kubernetes.io/name: enzarb-ui
@@ -527,7 +527,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 spec:
   selector:
     app.kubernetes.io/name: enzarb-workflows
@@ -546,7 +546,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 spec:
   replicas: 1
   selector:
@@ -560,7 +560,7 @@ spec:
         app.kubernetes.io/instance: enzarb
         app.kubernetes.io/part-of: enzarb
         app.kubernetes.io/managed-by: Helm
-        helm.sh/chart: enzarb-0.1.0
+        helm.sh/chart: enzarb-0.0.0
     spec:
       serviceAccountName: enzarb-connectors
 
@@ -638,7 +638,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 spec:
   replicas: 1
   selector:
@@ -652,7 +652,7 @@ spec:
         app.kubernetes.io/instance: enzarb
         app.kubernetes.io/part-of: enzarb
         app.kubernetes.io/managed-by: Helm
-        helm.sh/chart: enzarb-0.1.0
+        helm.sh/chart: enzarb-0.0.0
     spec:
       serviceAccountName: enzarb-sandbox-operator
 
@@ -691,7 +691,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 spec:
   replicas: 1
   selector:
@@ -705,7 +705,7 @@ spec:
         app.kubernetes.io/instance: enzarb
         app.kubernetes.io/part-of: enzarb
         app.kubernetes.io/managed-by: Helm
-        helm.sh/chart: enzarb-0.1.0
+        helm.sh/chart: enzarb-0.0.0
     spec:
       serviceAccountName: enzarb-sandbox-proxy
 
@@ -741,7 +741,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 spec:
   replicas: 1
   selector:
@@ -755,7 +755,7 @@ spec:
         app.kubernetes.io/instance: enzarb
         app.kubernetes.io/part-of: enzarb
         app.kubernetes.io/managed-by: Helm
-        helm.sh/chart: enzarb-0.1.0
+        helm.sh/chart: enzarb-0.0.0
     spec:
       serviceAccountName: enzarb-ui
 
@@ -843,7 +843,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 spec:
   replicas: 1
   selector:
@@ -857,7 +857,7 @@ spec:
         app.kubernetes.io/instance: enzarb
         app.kubernetes.io/part-of: enzarb
         app.kubernetes.io/managed-by: Helm
-        helm.sh/chart: enzarb-0.1.0
+        helm.sh/chart: enzarb-0.0.0
     spec:
       serviceAccountName: enzarb-workflows
       terminationGracePeriodSeconds: 60
@@ -950,7 +950,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
     app.kubernetes.io/component: migrate
 spec:
   backoffLimit: 6
@@ -1035,7 +1035,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
     app.kubernetes.io/component: migrate
 spec:
   backoffLimit: 6
@@ -1109,7 +1109,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
     app.kubernetes.io/component: migrate
 spec:
   backoffLimit: 6
@@ -1183,7 +1183,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 spec:
   image: postgres:18
   storage:
@@ -1201,7 +1201,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 spec:
   clusterRef:
     name: enzarb-pg
@@ -1247,7 +1247,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 spec:
   parentRefs:
     - name: enzarb
@@ -1270,7 +1270,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 spec:
   parentRefs:
     - name: enzarb
@@ -1296,7 +1296,7 @@ metadata:
     app.kubernetes.io/instance: enzarb
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.1.0
+    helm.sh/chart: enzarb-0.0.0
 spec:
   parentRefs:
     - name: enzarb

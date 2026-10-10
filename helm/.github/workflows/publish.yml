@@ -1,0 +1,29 @@
+name: publish
+# Packages the chart at the version of the tag the release workflow created and pushes it to GHCR.
+on:
+  push:
+    tags: ["v*"]
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+  packages: write
+jobs:
+  chart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+        with:
+          cache: true
+      - name: Package and push oci://ghcr.io/enzarb/charts/enzarb
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_ACTOR: ${{ github.actor }}
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          echo "$GH_TOKEN" | helm registry login ghcr.io -u "$GH_ACTOR" --password-stdin
+          helm package enzarb --version "$v" --app-version "$v" --destination "$RUNNER_TEMP"
+          helm push "$RUNNER_TEMP/enzarb-$v.tgz" oci://ghcr.io/enzarb/charts

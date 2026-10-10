@@ -9,8 +9,13 @@ publicUrl: ""
 # Image pull secrets for the private ghcr.io/enzarb/* images (list of {name: ...}).
 imagePullSecrets: []
 
-# Default image pull policy; `main` is a moving tag, so pull every time.
-imagePullPolicy: Always
+# Default image pull policy. Component image tags below are immutable release versions, so a
+# present image is never re-pulled. Use `Always` only when overriding a tag with a moving one.
+imagePullPolicy: IfNotPresent
+
+# COMPONENT VERSIONS: every `image.tag` below (and operator.sandboxImage) is written by
+# scripts/sync-components.sh from the latest GitHub release of the component's repo. Do not
+# edit by hand; to pin a different version, override it in an environment values file.
 
 # Common env for the Rust services.
 rustLog: info
@@ -79,7 +84,7 @@ ui:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-ui
-    tag: main
+    tag: 0.1.3
     pullPolicy: ""
   # HTTP probes (/healthz liveness, /readyz readiness). false falls back to TCP probes.
   probes:
@@ -91,7 +96,7 @@ workflows:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-workflows
-    tag: main
+    tag: 0.1.1
     pullPolicy: ""
   # Roles for `run`: reducer, executor, ticker.
   roles: reducer,executor,ticker
@@ -107,7 +112,7 @@ connectors:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-connectors-receiver
-    tag: main
+    tag: 0.1.1
     pullPolicy: ""
   botHandle: enzarb
   botLogin: enzarb[bot]
@@ -118,7 +123,7 @@ sandboxProxy:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-sandbox-proxy
-    tag: main
+    tag: 0.1.0
     pullPolicy: ""
   idleTimeoutSecs: 900
   resources: {}
@@ -128,10 +133,10 @@ operator:
   replicaCount: 2
   image:
     repository: ghcr.io/enzarb/enzarb-sandbox-operator
-    tag: main
+    tag: 0.1.0
     pullPolicy: ""
   # Default sandbox image for Projects (ENZARB_SANDBOX_IMAGE).
-  sandboxImage: ghcr.io/enzarb/enzarb-sandbox:main
+  sandboxImage: ghcr.io/enzarb/enzarb-sandbox:0.1.0
   defaultStorage: 20Gi
   # RuntimeClass of every sandbox pod (ENZARB_SANDBOX_RUNTIME_CLASS). Cluster-admin
   # setting; Projects cannot choose. Must be in docker.runtimeClasses.
