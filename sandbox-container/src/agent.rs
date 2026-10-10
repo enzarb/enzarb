@@ -753,6 +753,40 @@ impl Inner {
         }
     }
 
+    /// `mise install` in the worktree (tools persist on the workspace volume).
+    /// Best effort: a failure is recorded in the transcript and the run goes
+    /// on, since the repo may pin nothing and the agent can retry by hand.
+    async fn install_toolchain(
+        &self,
+        run: &Run,
+        ctl: &mut Ctl,
+        secrets: &[String],
+        worktree: &Path,
+    ) -> Result<(), Abort> {
+        if self.cfg.mise_bin.is_empty() {
+            return Ok(());
+        }
+        let mut spec = CmdSpec::new(&self.cfg.mise_bin, &["install"]);
+        spec.cwd = Some(worktree.to_path_buf());
+        let sink = line_sink(run, "mise", secrets);
+        match exec::run(&self.reaper, spec, ctl, Some(sink)).await {
+            Ok(out) => {
+                if let Some(s) = out.stop {
+                    return Err(s.into());
+                }
+                run.transcript.append(
+                    "toolchain",
+                    json!({"ok": out.success(), "code": out.code(),
+                           "stderr": redact(out.stderr.trim(), secrets)}),
+                );
+            }
+            Err(e) => run
+                .transcript
+                .append("toolchain", json!({"ok": false, "error": e.to_string()})),
+        }
+        Ok(())
+    }
+
     /// Remove other worktrees that have `branch` checked out. Fails if the
     /// holder belongs to a run that is still running in this process.
     async fn free_branch(
@@ -987,6 +1021,10 @@ impl Inner {
             )));
         }
         secrets.push(token.clone());
+        // The repo's pinned toolchain, so the agent can run its checks. After
+        // the token joins `secrets` so any output is redacted.
+        self.install_toolchain(run, ctl, &secrets, &worktree)
+            .await?;
         let mut env = self.git_env();
         env.extend([
             ("CLAUDE_CODE_OAUTH_TOKEN".to_string(), token),

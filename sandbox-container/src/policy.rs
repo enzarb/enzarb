@@ -195,6 +195,47 @@ impl Default for Policy {
                     "system",
                 ])
                 .global(&["--version", "-v", "--help", "-h"]),
+            // Offline chart/manifest checks only: nothing that talks to a cluster (ADR-0013).
+            CommandRule::new("helm")
+                .paths(Write)
+                .allow_sub(&[
+                    "lint",
+                    "template",
+                    "dependency",
+                    "show",
+                    "package",
+                    "version",
+                ])
+                .deny_args(&[
+                    "--kubeconfig",
+                    "--kube-context",
+                    "--kube-apiserver",
+                    "--kube-token",
+                    "--kube-as-user",
+                    "--kube-as-group",
+                    "--post-renderer",
+                    "--set-file",
+                    "--repo",
+                    "--keyring",
+                    "--key",
+                    "--validate",
+                    "--dry-run",
+                ])
+                .global(&["--version", "-h", "--help"]),
+            CommandRule::new("kubectl")
+                .paths(Write)
+                .allow_sub(&["kustomize"])
+                .deny_args(&[
+                    "--kubeconfig",
+                    "--enable-helm",
+                    "--enable-alpha-plugins",
+                    "--helm-command",
+                    "--load-restrictor",
+                    "--mount",
+                    "--network",
+                    "--network-name",
+                    "--as-current-user",
+                ]),
             CommandRule::new("make"),
             CommandRule::new("mise").global(&["--version", "-v", "--help", "-h"]),
             // Path-restricted file tools.
@@ -242,6 +283,11 @@ impl Default for Policy {
                 "CARGO_*",
                 "RUSTC_*",
                 "RUSTFLAGS",
+                "HELM_*",
+                "KUBE*",
+                "KUSTOMIZE_*",
+                "XDG_*",
+                "MISE_*",
                 "CLAUDE_*",
                 "ENZARB_*",
             ]
@@ -493,6 +539,11 @@ impl Policy {
                 Some(sub) => self.check_sub(rule, sub)?,
                 None => {}
             }
+        }
+        if (rule.name == "helm" || rule.name == "kubectl")
+            && let Some(a) = rest.iter().find(|a| a.contains("://"))
+        {
+            return Err(format!("remote reference {a} is not allowed"));
         }
         if rule.name == "docker" {
             check_docker(rest, cwd, read)?;
@@ -1089,6 +1140,12 @@ mod tests {
             "rustc --version",
             "make -j4 check",
             "mise run test",
+            "mise install",
+            "cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test",
+            "npm run check && npm run lint && npm test",
+            "helm lint enzarb",
+            "helm template enzarb/ --set a=b",
+            "kubectl kustomize overlays/kind",
             "ls -la src",
             "cat src/lib.rs | head -n 20 | wc -l",
             "grep -rn 'TODO' src > /dev/null 2>&1",
@@ -1110,6 +1167,35 @@ mod tests {
             "grep -n foo src/lib.rs",
         ] {
             allowed(c);
+        }
+    }
+
+    #[test]
+    fn cluster_access_via_helm_and_kubectl_is_denied() {
+        for c in [
+            "helm install x enzarb",
+            "helm upgrade x enzarb",
+            "helm uninstall x",
+            "helm lint enzarb --kubeconfig /etc/k",
+            "helm template x enzarb --validate",
+            "helm template x enzarb --post-renderer ./evil",
+            "helm lint --kube-context prod enzarb",
+            "kubectl get pods",
+            "kubectl apply -f x.yaml",
+            "kubectl exec p -- sh",
+            "kubectl kustomize --enable-helm .",
+            "kubectl kustomize . --kubeconfig /x",
+            "kubectl kustomize --enable-alpha-plugins .",
+            "kubectl kustomize /etc",
+            "kubectl kustomize https://github.com/x/y",
+            "helm template x . --set-file k=/workspace/.enzarb/claude-token",
+            "helm template x . -f /etc/passwd",
+            "helm template x . --output-dir /tmp/o",
+            "helm template oci://example.com/c",
+            "KUBECONFIG=/x helm lint .",
+            "HELM_KUBEAPISERVER=x helm lint .",
+        ] {
+            denied(c);
         }
     }
 

@@ -85,6 +85,11 @@ struct Env {
 }
 
 async fn start(fail_callbacks: u32) -> Env {
+    start_with(fail_callbacks, None).await
+}
+
+/// `mise_script`: body of a fake `mise` that sandbox-init runs in each worktree.
+async fn start_with(fail_callbacks: u32, mise_script: Option<&str>) -> Env {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     // origin with main (+ a feature branch)
@@ -135,7 +140,14 @@ async fn start(fail_callbacks: u32) -> Env {
     let app = Router::new().route("/cb", post(cb)).with_state(cbs);
     tokio::spawn(async move { axum::serve(l, app).await });
 
+    let mise_bin = mise_script.map_or(String::new(), |body| {
+        let m = root.join("fake-mise");
+        std::fs::write(&m, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&m, std::fs::Permissions::from_mode(0o755)).unwrap();
+        m.to_string_lossy().into_owned()
+    });
     let config = Config {
+        mise_bin,
         listen: ([127, 0, 0, 1], 0).into(),
         auth_token_file: token_file,
         workspace: workspace.clone(),
@@ -378,6 +390,43 @@ async fn read_only_run_does_not_push() {
     assert!(!fin.pushed);
     assert_eq!(env.remote_sha("feature").unwrap(), before);
     assert_ne!(fin.head_sha, before); // the local commit exists in the worktree
+}
+
+#[tokio::test]
+async fn toolchain_is_installed_in_the_worktree_before_the_agent_runs() {
+    let env = start_with(
+        0,
+        Some(r#"test "$1" = install && pwd > "$PWD/../mise-ran""#),
+    )
+    .await;
+    let (session, _e) = env.connect().await;
+    session
+        .run_start(env.run("tc", "EDIT", "feature", "feature", false))
+        .await
+        .unwrap();
+    let (_, fin) = env.finished("tc").await;
+    assert_eq!(fin.outcome, RunOutcome::Succeeded);
+    let ran = std::fs::read_to_string(env.workspace.join("worktrees/mise-ran")).unwrap();
+    assert!(ran.trim().ends_with("worktrees/run-tc"), "{ran}");
+    let t = transcript(&env, "tc");
+    assert_eq!(of_kind(&t, "toolchain")[0]["ok"], true);
+}
+
+#[tokio::test]
+async fn a_failing_toolchain_install_does_not_fail_the_run() {
+    let env = start_with(0, Some("echo boom >&2; exit 3")).await;
+    let (session, _e) = env.connect().await;
+    session
+        .run_start(env.run("tcf", "EDIT", "feature", "feature", false))
+        .await
+        .unwrap();
+    let (_, fin) = env.finished("tcf").await;
+    assert_eq!(fin.outcome, RunOutcome::Succeeded);
+    let t = transcript(&env, "tcf");
+    let rec = of_kind(&t, "toolchain")[0];
+    assert_eq!(rec["ok"], false);
+    assert_eq!(rec["code"], 3);
+    assert!(rec["stderr"].as_str().unwrap().contains("boom"));
 }
 
 /// All transcript records of a run (the file, once the run is over).

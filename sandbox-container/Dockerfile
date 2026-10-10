@@ -147,6 +147,7 @@ ENV HOME=/home/enzarb \
     CARGO_HOME=/workspace/.toolchains/cargo \
     RUSTUP_HOME=/workspace/.toolchains/rustup \
     MISE_YES=1 \
+    ENZARB_MISE_BIN=mise \
     MISE_TRUSTED_CONFIG_PATHS=/workspace \
     MISE_IDIOMATIC_VERSION_FILE_ENABLE_TOOLS=rust \
     PATH=/usr/local/bin:/workspace/.toolchains/mise/shims:/usr/bin:/bin:/usr/sbin:/sbin

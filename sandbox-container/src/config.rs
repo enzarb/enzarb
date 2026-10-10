@@ -32,6 +32,11 @@ pub struct Config {
     pub claude_token_file: PathBuf,
     /// `ENZARB_GIT_BIN`, default `git`.
     pub git_bin: String,
+    /// `ENZARB_MISE_BIN` (the image sets `mise`); empty disables. Run as
+    /// `mise install` in each run's worktree before the agent starts, so the
+    /// repo's pinned toolchain (`mise.toml`, `rust-toolchain.toml`) is on PATH
+    /// for its check commands. The tools live on the workspace volume.
+    pub mise_bin: String,
     /// `ENZARB_GIT_NAME` / `ENZARB_GIT_EMAIL`: identity for commits made in runs.
     pub git_name: String,
     pub git_email: String,
@@ -57,6 +62,7 @@ impl Default for Config {
             policy: Policy::default(),
             claude_token_file: "/workspace/.enzarb/claude-token".into(),
             git_bin: "git".into(),
+            mise_bin: String::new(),
             git_name: "enzarb-agent".into(),
             git_email: "agent@enzarb.dev".into(),
             max_runs: 2,
@@ -104,6 +110,9 @@ impl Config {
         }
         if let Some(v) = get("ENZARB_GIT_BIN").filter(|s| !s.is_empty()) {
             c.git_bin = v;
+        }
+        if let Some(v) = get("ENZARB_MISE_BIN") {
+            c.mise_bin = v;
         }
         if let Some(v) = get("ENZARB_GIT_NAME").filter(|s| !s.is_empty()) {
             c.git_name = v;
