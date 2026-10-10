@@ -4,8 +4,8 @@
 //!   never hit the API server.
 //! * Auth tokens: read on demand from the Secret named in
 //!   `status.sandbox.authSecretRef` and cached for a short TTL. This needs only
-//!   `get` on secrets (restrictable with `resourceNames: [sandbox-auth]`), not the
-//!   cluster-wide `list`/`watch` a Secret watcher would require.
+//!   `get` on secrets, granted by a Role in the shared sandbox namespace
+//!   (ADR-0013), not the cluster-wide `list`/`watch` a Secret watcher would need.
 
 use std::{
     collections::HashMap,
@@ -73,17 +73,21 @@ fn key(s: &SandboxRef) -> CacheKey {
 }
 
 /// Pure mapping from a Project object to what the proxy needs.
+///
+/// The sandbox is found only through `status.namespace` and `status.sandbox`
+/// (ADR-0013), which the operator sets once it has verified ownership. If either
+/// is missing the Project is not ready and `sandbox` is `None`; no name is derived.
 pub fn project_info(p: &Project) -> ProjectInfo {
-    let sandbox = p
-        .status
-        .as_ref()
-        .and_then(|st| st.sandbox.as_ref().map(|sb| (st, sb)))
-        .map(|(st, sb)| SandboxRef {
+    let sandbox = p.status.as_ref().and_then(|st| {
+        let namespace = st.namespace.as_ref().filter(|n| !n.is_empty())?;
+        let sb = st.sandbox.as_ref()?;
+        Some(SandboxRef {
             endpoint: sb.endpoint.clone(),
-            secret_namespace: st.namespace.clone().unwrap_or_else(|| p.namespace_name()),
+            secret_namespace: namespace.clone(),
             secret_name: sb.auth_secret_ref.name.clone(),
             secret_key: sb.auth_secret_ref.key.clone(),
-        });
+        })
+    });
     ProjectInfo {
         owner: p.spec.owner.clone(),
         sandbox,
@@ -153,12 +157,12 @@ mod tests {
     #[test]
     fn maps_status() {
         let p = project(Some(ProjectStatus {
-            namespace: Some("enzarb-p-enzarb".into()),
+            namespace: Some("enzarb-sandboxes".into()),
             sandbox: Some(SandboxStatus {
-                name: "sandbox".into(),
-                endpoint: "ws://sandbox.enzarb-p-enzarb.svc:7070/v1/mux".into(),
+                name: "sb-enzarb".into(),
+                endpoint: "ws://sb-enzarb.enzarb-sandboxes.svc:7070/v1/mux".into(),
                 auth_secret_ref: SecretKeyRef {
-                    name: "sandbox-auth".into(),
+                    name: "sb-enzarb-auth".into(),
                     key: "token".into(),
                 },
             }),
@@ -167,8 +171,35 @@ mod tests {
         let i = project_info(&p);
         assert_eq!(i.owner, "ruckc");
         let s = i.sandbox.unwrap();
-        assert_eq!(s.secret_namespace, "enzarb-p-enzarb");
-        assert_eq!(s.secret_name, "sandbox-auth");
+        assert_eq!(s.secret_namespace, "enzarb-sandboxes");
+        assert_eq!(s.secret_name, "sb-enzarb-auth");
+    }
+
+    #[test]
+    fn not_ready_without_namespace() {
+        // status.sandbox alone is not enough: no derived namespace fallback.
+        let p = project(Some(ProjectStatus {
+            namespace: None,
+            sandbox: Some(SandboxStatus {
+                name: "sb-enzarb".into(),
+                endpoint: "ws://sb-enzarb.enzarb-sandboxes.svc:7070/v1/mux".into(),
+                auth_secret_ref: SecretKeyRef {
+                    name: "sb-enzarb-auth".into(),
+                    key: "token".into(),
+                },
+            }),
+            ..Default::default()
+        }));
+        assert!(project_info(&p).sandbox.is_none());
+    }
+
+    #[test]
+    fn not_ready_without_sandbox() {
+        let p = project(Some(ProjectStatus {
+            namespace: Some("enzarb-sandboxes".into()),
+            ..Default::default()
+        }));
+        assert!(project_info(&p).sandbox.is_none());
     }
 
     #[test]

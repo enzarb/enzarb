@@ -8,7 +8,7 @@ Routes a browser websocket to its Project's sandbox-init (contracts §7).
 
 1. Validate the JWT (HS256, `ENZARB_SESSION_JWT_SECRET`, `aud: enzarb-sandbox-proxy`, `exp`, `project` claim equals the path; `exp` more than 5 minutes ahead is refused). 401 invalid, 403 project mismatch.
 2. Look up the `Project` (reflector cache): 404 unknown; `sub` must equal `spec.owner` (403); 503 if `status.sandbox` is not published yet.
-3. Read the bearer token from `status.sandbox.authSecretRef` (`get`, cached 30 s) and dial `status.sandbox.endpoint` (`ws://` only) with `Authorization: Bearer`, handshaking as `client: "proxy"`. 502 on failure.
+3. Find the sandbox only through `status.namespace` and `status.sandbox` (ADR-0013; no derived names: a Project missing either is not ready, 503). Read the bearer token from `status.sandbox.authSecretRef` in `status.namespace` (`get`, cached 30 s) and dial `status.sandbox.endpoint` (`ws://` only) with `Authorization: Bearer`, handshaking as `client: "proxy"`. 502 on failure.
 4. Upgrade the browser socket, answer its `hello` locally (must be `client: "ui"` offering the version the sandbox negotiated), then relay binary messages unchanged in both directions.
 
 **Handshake choice: terminate, not relay.** The sandbox must see `client: "proxy"` and failures should be HTTP errors, so the proxy handshakes upstream first and answers the browser's hello itself. Frames after the handshake are untouched, so flow control stays end to end.
@@ -28,10 +28,13 @@ Routes a browser websocket to its Project's sandbox-init (contracts §7).
 
 ## RBAC
 
-ClusterRole on the proxy's ServiceAccount:
+ClusterRole on the proxy's ServiceAccount (Projects are cluster-scoped):
 
 - `enzarb.dev` `projects`: `get, list, watch`
-- core `secrets`: `get` with `resourceNames: [sandbox-auth]` (cluster-wide; no list/watch)
+
+Role plus RoleBinding **in the shared sandbox namespace** (`enzarb-sandboxes` by default, ADR-0013), bound to the proxy's ServiceAccount in the release namespace:
+
+- core `secrets`: `get` (no list/watch). `resourceNames` cannot pin it because Secret names are per Project (`sb-<project>-auth`); the namespace holds no other Secrets. No cluster-wide Secret access.
 
 ## Build
 

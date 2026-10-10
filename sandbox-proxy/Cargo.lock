@@ -644,7 +644,7 @@ dependencies = [
 [[package]]
 name = "enzarb-crds"
 version = "0.1.0"
-source = "git+ssh://git@github.com/enzarb/enzarb-sandbox-operator.git?branch=main#d8706b8806fa1db3db8acd1aaa030ef283c79dd2"
+source = "git+ssh://git@github.com/enzarb/enzarb-sandbox-operator.git?branch=main#1d268b816b687625fba79502c039a3b3d6b2169b"
 dependencies = [
  "k8s-openapi",
  "kube",

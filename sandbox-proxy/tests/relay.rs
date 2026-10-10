@@ -112,8 +112,8 @@ async fn harness() -> Harness {
     let r = FakeResolver::default();
     let sref = |ep: String| SandboxRef {
         endpoint: ep,
-        secret_namespace: "enzarb-p-demo".into(),
-        secret_name: "sandbox-auth".into(),
+        secret_namespace: "enzarb-sandboxes".into(),
+        secret_name: "sb-demo-auth".into(),
         secret_key: "token".into(),
     };
     r.insert(
