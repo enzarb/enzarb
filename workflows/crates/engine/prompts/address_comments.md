@@ -35,7 +35,7 @@ All discussion so far (oldest first). Other unresolved comments may be here; add
 1. Read the repository's own guidance (`CLAUDE.md`, `README.md`, contributing notes) and follow its conventions.
 2. List every actionable point from the triggering review and from the unresolved comments in the discussion. Ignore points that were already addressed or are plainly resolved.
 3. For each point, make the change, or, if you disagree or it is out of scope, decide to push back and say why in your final body. Do not make changes you believe are wrong just because they were requested; do not ignore a point silently.
-4. Add or update tests where behaviour changes. Run the repository's formatter, linter and test suite and fix failures you caused.
+4. Add or update tests where behaviour changes. Before finishing, run the repository's own checks. Find the repository's own checks in its `CLAUDE.md`, `README.md`, `mise.toml` and CI workflow (`.github/workflows`). Typical examples: `cargo fmt`, `cargo clippy --all-targets`, `cargo test`; `npm run check`, `npm run lint`, `npm test`; `helm lint`; `kubectl kustomize`. If a tool is missing, try `mise install` first. Run each command on its own as a simple single command: no `&&` or `;` chains, no `$` expansion, no heredocs, no `sed`, because the sandbox policy rejects a whole compound command. Use the file edit tools for edits. Fix failures. Say in the body which checks ran and their results, and which could not be run and why.
 5. Commit to `{head_ref}` in small, logical commits that say which feedback they address. Leave the working tree clean. Do not rewrite history that is already on the remote.
 
 # Rules

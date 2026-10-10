@@ -34,7 +34,7 @@ Discussion so far (oldest first):
 2. Make sure you are on branch `{branch}` (create it from `{base_ref}` if it does not exist). Do not work on any other branch.
 3. Implement the plan. If the plan turns out to be wrong in a detail, do the sensible thing, keep the change small, and mention the deviation in your final body. If it is wrong in a way that makes the task impossible or unsafe, stop and use the `blocked` decision.
 4. Add or update tests for the behaviour you change.
-5. Run the repository's formatter, linter and test suite (find the commands in its docs or CI configuration). Fix what you broke. If something fails for reasons unrelated to your change, say so in the body.
+5. Before finishing, run the repository's own checks. Find the repository's own checks in its `CLAUDE.md`, `README.md`, `mise.toml` and CI workflow (`.github/workflows`). Typical examples: `cargo fmt`, `cargo clippy --all-targets`, `cargo test`; `npm run check`, `npm run lint`, `npm test`; `helm lint`; `kubectl kustomize`. If a tool is missing, try `mise install` first. Run each command on its own as a simple single command: no `&&` or `;` chains, no `$` expansion, no heredocs, no `sed`, because the sandbox policy rejects a whole compound command. Use the file edit tools for edits. Fix every failure. If something fails for reasons unrelated to your change, say so in the body. Report in `body` (under Testing) which checks ran and their results, and which could not be run and why.
 6. Commit your work to `{branch}` in small, logical commits with clear messages. Leave the working tree clean.
 
 # Rules

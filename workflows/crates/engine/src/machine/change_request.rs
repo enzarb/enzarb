@@ -461,10 +461,17 @@ fn job_succeeded(
     if awaited(s.phase) != Some(kind) {
         return Transition::reject(state, "stale job result");
     }
-    let (decision, out) = match AgentOutput::from_job_output(kind, output) {
+    let (mut decision, mut out) = match AgentOutput::from_job_output(kind, output) {
         Ok(x) => x,
         Err(e) => return fail(ctx, ev, s, &format!("unusable agent output: {e}"), false),
     };
+    // An approval needs verified checks; otherwise it is only a comment.
+    if kind == JobKind::AgentReview && decision == Decision::Approve && !out.checks_verified() {
+        decision = Decision::Comment;
+        out.body.push_str(
+            "\n\n> Downgraded from `approve` to `comment`: the review did not report all checks as passed, so the change is unverified.",
+        );
+    }
     let mut d = s.data.clone();
     let mut fx = Fx::new(ctx, ev);
     let tgt = target(ctx, &d);

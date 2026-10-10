@@ -158,6 +158,23 @@ pub fn render_prompt(kind: JobKind, ctx: &PromptContext) -> String {
 pub struct AgentOutput {
     pub decision: String,
     pub body: String,
+    /// Checks the agent ran (review only). Absent means unverified.
+    #[serde(default)]
+    pub checks: Vec<CheckResult>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckResult {
+    pub name: String,
+    /// `passed`, `failed` or `not_run`; anything but `passed` is unverified.
+    pub status: String,
+}
+
+impl AgentOutput {
+    /// True when at least one check was reported and every one passed.
+    pub fn checks_verified(&self) -> bool {
+        !self.checks.is_empty() && self.checks.iter().all(|c| c.status == "passed")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -395,6 +412,29 @@ mod tests {
         };
         let out = render("t={title} b={body} {x} {", &ctx);
         assert_eq!(out, "t={body} b=(none) {x} {");
+    }
+
+    #[test]
+    fn prompts_instruct_running_the_repo_checks() {
+        let ctx = full_ctx();
+        for kind in [
+            JobKind::AgentImplement,
+            JobKind::AgentAddressComments,
+            JobKind::AgentReview,
+        ] {
+            let out = render_prompt(kind, &ctx);
+            assert!(out.contains("mise.toml") && out.contains("cargo clippy --all-targets"));
+            assert!(out.contains("no `&&` or `;` chains"));
+        }
+        let review = render_prompt(JobKind::AgentReview, &ctx);
+        assert!(review.contains("must NOT be `approve`") && review.contains("\"checks\""));
+    }
+
+    #[test]
+    fn checks_default_to_unverified() {
+        let out =
+            AgentOutput::parse("```json\n{\"decision\":\"approve\",\"body\":\"x\"}\n```").unwrap();
+        assert!(out.checks.is_empty() && !out.checks_verified());
     }
 
     #[test]

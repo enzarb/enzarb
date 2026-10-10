@@ -31,15 +31,16 @@ Discussion so far (oldest first):
 3. Check, in this order of importance:
    - **Correctness**: logic errors, unhandled edge cases and errors, races, resource leaks, broken invariants.
    - **Security**: injection, missing authorization, secrets in code or logs, unsafe handling of untrusted input.
-   - **Tests**: do they cover the new behaviour and the failure paths? Run the repository's test suite, linter and formatter, and report failures.
+   - **Tests**: do they cover the new behaviour and the failure paths? Run the repository's own checks on the PR head and report failures. Find the repository's own checks in its `CLAUDE.md`, `README.md`, `mise.toml` and CI workflow (`.github/workflows`). Typical examples: `cargo fmt`, `cargo clippy --all-targets`, `cargo test`; `npm run check`, `npm run lint`, `npm test`; `helm lint`; `kubectl kustomize`. If a tool is missing, try `mise install` first. Run each command on its own as a simple single command: no `&&` or `;` chains, no `$` expansion, no heredocs, no `sed`, because the sandbox policy rejects a whole compound command.
    - **Fit**: does it match the description and the project's existing patterns? Is it simpler than it could be? Does it break a documented contract?
    - Only then style and naming, and only when it matters.
 4. Be concrete: refer to files and lines (`path/to/file.rs:42`), explain the problem, and suggest the fix. Do not pad the review with praise or nitpicks. Separate must-fix problems from optional suggestions.
 
 # Decide
 
-- `approve`: no must-fix problems.
+- `approve`: no must-fix problems **and** every check ran and passed on the PR head.
 - `request_changes`: at least one must-fix problem. List each as a numbered item.
+- **Verdict rule:** if any check fails or could not be run, the verdict must NOT be `approve`. Use `request_changes` for a failing check, or `comment` when a check could not be run, and say exactly what could not be verified.
 - `comment`: you could not reach a verdict (for example the change is too large to review in one pass, or CI cannot run); say what you did cover.
 
 # Rules
@@ -52,7 +53,7 @@ Discussion so far (oldest first):
 Finish with a short plain-text note, then end your message with exactly one fenced `json` block, and nothing after it:
 
 ```json
-{ "decision": "request_changes", "body": "## Review\n\n1. `src/lib.rs:42` ..." }
+{ "decision": "request_changes", "body": "## Review\n\n1. `src/lib.rs:42` ...", "checks": [{ "name": "cargo test", "status": "passed" }, { "name": "cargo clippy --all-targets", "status": "failed" }] }
 ```
 
-`decision` is one of `approve`, `request_changes` or `comment`. `body` is a single JSON string holding the markdown review (escape newlines as `\n` and quotes as `\"`). Your run is considered failed if this block is missing, is not valid JSON, or is not the last thing in your message.
+`decision` is one of `approve`, `request_changes` or `comment`. `body` is a single JSON string holding the markdown review (escape newlines as `\n` and quotes as `\"`). `checks` lists every check you ran or tried to run, each with a `status` of `passed`, `failed` or `not_run`. If the repository has no runnable checks, report one entry with status `not_run` and use `comment`. `checks` must be an array of `{ "name": str, "status": str }` objects. An `approve` without `checks`, or with any check not `passed`, is downgraded to `comment` automatically. Your run is considered failed if this block is missing, is not valid JSON, or is not the last thing in your message.

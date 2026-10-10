@@ -169,6 +169,15 @@ fn agent_output(decision: &str, body: &str) -> Value {
     })
 }
 
+fn agent_ok_checks(id: &str, kind: JobKind, decision: &str, checks: Value) -> EngineEvent {
+    let block = json!({ "decision": decision, "body": "LGTM", "checks": checks });
+    ok(
+        id,
+        kind,
+        json!({ "summary": format!("Done.\n\n```json\n{block}\n```\n") }),
+    )
+}
+
 fn ok(id: &str, kind: JobKind, output: Value) -> EngineEvent {
     EngineEvent {
         id: id.into(),
@@ -1410,7 +1419,12 @@ fn cr_review_decisions_all_await_changes() {
         let t = run_cr(
             Permission::None,
             &cr_in(CrPhase::Reviewing),
-            &agent_ok("r", JobKind::AgentReview, decision, "LGTM"),
+            &agent_ok_checks(
+                "r",
+                JobKind::AgentReview,
+                decision,
+                json!([{ "name": "cargo test", "status": "passed" }]),
+            ),
         );
         let d = assert_cr(&t, CrPhase::AwaitingChanges);
         assert_eq!(d.last_review, decision);
@@ -1418,6 +1432,48 @@ fn cr_review_decisions_all_await_changes() {
         assert!(comment_bodies(&t)[0].contains(decision) && comment_bodies(&t)[0].contains("LGTM"));
         assert_eq!(progress_values(&t), vec!["Done"]);
     }
+}
+
+#[test]
+fn cr_unverified_approve_is_downgraded_to_comment() {
+    let cases = [
+        json!([]),
+        json!([{ "name": "cargo test", "status": "failed" }]),
+        json!([
+            { "name": "cargo fmt", "status": "passed" },
+            { "name": "cargo test", "status": "not_run" }
+        ]),
+    ];
+    for checks in cases {
+        let t = run_cr(
+            Permission::None,
+            &cr_in(CrPhase::Reviewing),
+            &agent_ok_checks("r", JobKind::AgentReview, "approve", checks),
+        );
+        let d = assert_cr(&t, CrPhase::AwaitingChanges);
+        assert_eq!(d.last_review, "comment");
+        assert!(comment_bodies(&t)[0].contains("Downgraded"));
+    }
+    // Field absent entirely (older output shape) is unverified too.
+    let t = run_cr(
+        Permission::None,
+        &cr_in(CrPhase::Reviewing),
+        &agent_ok("r", JobKind::AgentReview, "approve", "LGTM"),
+    );
+    assert_eq!(
+        assert_cr(&t, CrPhase::AwaitingChanges).last_review,
+        "comment"
+    );
+    // request_changes is never altered.
+    let t = run_cr(
+        Permission::None,
+        &cr_in(CrPhase::Reviewing),
+        &agent_ok("r", JobKind::AgentReview, "request_changes", "no"),
+    );
+    assert_eq!(
+        assert_cr(&t, CrPhase::AwaitingChanges).last_review,
+        "request_changes"
+    );
 }
 
 #[test]
