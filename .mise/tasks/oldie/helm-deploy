@@ -22,6 +22,14 @@ else
   vals=()
   values_file="$chart/values-oldie.yaml"
 fi
+# Helm installs crds/ only on first install and never upgrades them, so apply the chart's CRDs
+# explicitly (server-side, idempotent) before upgrading.
+log "CRDs from the chart"
+if [ -n "${ENZARB_CHART_VERSION:-}" ]; then
+  helm show crds "$chart" "${vals[@]}" | kapply -f -
+else
+  kapply -f "$chart/crds/"
+fi
 log "helm upgrade --install $RELEASE ($chart)"
 helm --kube-context "$KCTX" upgrade --install "$RELEASE" "$chart" "${vals[@]}" -n "$NS" --create-namespace \
   -f "$values_file" --wait --timeout 20m

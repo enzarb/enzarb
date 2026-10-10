@@ -12,6 +12,9 @@ mise run dev:secrets
 
 chart="$ROOT/enzarb-helm/enzarb"
 [ -d "$chart" ] || die "$chart missing; run: mise run repos:init"
+# Helm never upgrades crds/; apply them explicitly (server-side, idempotent) before upgrading.
+log "CRDs from the chart"
+kapply -f "$chart/crds/"
 log "helm upgrade --install $RELEASE"
 helm --kube-context "$KCTX" upgrade --install "$RELEASE" "$chart" -n "$NS" --create-namespace \
   -f "$chart/values-dev.yaml" \

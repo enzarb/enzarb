@@ -1,5 +1,7 @@
 # 0002. Upstream agent-sandbox, Capsule tenancy, Project CRD
 
+Status: Accepted; the tenancy decision (one Capsule Tenant per owner, a namespace per Project, capsule-proxy kubeconfig in sandboxes) is **superseded by [ADR-0013](0013-shared-sandbox-namespace.md)**.
+
 ## Context
 Agents need isolated, long-lived workspaces on Kubernetes. Users need scoped kubectl access to their own namespaces.
 
