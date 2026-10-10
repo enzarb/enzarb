@@ -30,6 +30,7 @@ spec:
             {{- include "enzarb.secretEnv" (dict "name" "GITHUB_OAUTH_CLIENT_ID" "secret" (include "enzarb.githubSecret" .) "key" (include "enzarb.githubKey" (dict "ctx" . "key" "oauthClientId"))) | nindent 12 }}
             {{- include "enzarb.secretEnv" (dict "name" "GITHUB_OAUTH_CLIENT_SECRET" "secret" (include "enzarb.githubSecret" .) "key" (include "enzarb.githubKey" (dict "ctx" . "key" "oauthClientSecret"))) | nindent 12 }}
             - { name: ENZARB_PUBLIC_URL, value: {{ include "enzarb.publicUrl" . | quote }} }
+            - { name: ENZARB_GITHUB_APP_SLUG, value: {{ .Values.githubApp.slug | default "enzarb" | quote }} }
             # adapter-node derives the origin for its CSRF check from this header; the Gateway forwards it.
             - { name: PROTOCOL_HEADER, value: x-forwarded-proto }
             {{- with $c.extraEnv }}

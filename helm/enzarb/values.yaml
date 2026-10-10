@@ -6,6 +6,11 @@ host: enzarb.local
 # External base URL. Empty = https://<host>. Used for ENZARB_PUBLIC_URL (OAuth callback, links).
 publicUrl: ""
 
+# The enzarb GitHub App. `slug` builds the "install the App" link in the UI
+# (https://github.com/apps/<slug>/installations/new); ENZARB_GITHUB_APP_SLUG.
+githubApp:
+  slug: enzarb
+
 # Image pull secrets for the private ghcr.io/enzarb/* images (list of {name: ...}).
 imagePullSecrets: []
 

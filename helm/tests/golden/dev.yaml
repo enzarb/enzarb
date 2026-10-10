@@ -818,6 +818,7 @@ spec:
                   name: enzarb-github
                   key: oauth-client-secret
             - { name: ENZARB_PUBLIC_URL, value: "https://enzarb.local" }
+            - { name: ENZARB_GITHUB_APP_SLUG, value: "enzarb" }
             # adapter-node derives the origin for its CSRF check from this header; the Gateway forwards it.
             - { name: PROTOCOL_HEADER, value: x-forwarded-proto }
           # /healthz and /readyz come from enzarb-ui#13; set ui.probes.http=false for TCP probes.

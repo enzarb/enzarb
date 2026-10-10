@@ -14,6 +14,16 @@
       "type": "string",
       "pattern": "^(https?://.+)?$"
     },
+    "githubApp": {
+      "type": "object",
+      "properties": {
+        "slug": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*$"
+        }
+      },
+      "additionalProperties": false
+    },
     "imagePullSecrets": {
       "type": "array",
       "items": {
