@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+#MISE description="One-off ADR-0013 migration on oldie: drop the old Project finalizer and delete operator-created Capsule Tenants. Needs ENZARB_OLDIE_CONFIRM=oldie (deleting a Tenant deletes its namespaces)"
+set -euo pipefail
+# shellcheck source=/dev/null
+. "${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}/.mise/lib/oldie.sh"
+need kubectl jq
+cluster_reachable || die "cannot reach $KCTX with $KUBECONFIG; run: mise run oldie:host"
+OLD_FINALIZER="enzarb.dev/cleanup"
+
+log "Projects still carrying $OLD_FINALIZER"
+projects=$(k get projects.enzarb.dev -o json | jq -r --arg f "$OLD_FINALIZER" '.items[] | select((.metadata.finalizers // []) | index($f)) | .metadata.name')
+tenants=""
+if k get crd tenants.capsule.clastix.io >/dev/null 2>&1; then
+  tenants=$(k get tenants.capsule.clastix.io -l app.kubernetes.io/managed-by=enzarb-operator -o json \
+    | jq -r '.items[] | "\(.metadata.name) namespaces=\(.status.namespaces // [] | join(","))"')
+fi
+echo "${projects:-none}"
+log "Tenants created by the old operator (deleting one deletes the namespaces listed)"
+echo "${tenants:-none}"
+if [ -z "$projects" ] && [ -z "$tenants" ]; then echo "nothing to migrate"; exit 0; fi
+[ "${ENZARB_OLDIE_CONFIRM:-}" = oldie ] || die "refusing without ENZARB_OLDIE_CONFIRM=oldie (see the lists above)"
+
+for p in $projects; do
+  # Remove only the old finalizer, keeping any others (JSON patch on the index found now).
+  idx=$(k get projects.enzarb.dev "$p" -o json | jq --arg f "$OLD_FINALIZER" '(.metadata.finalizers // []) | index($f)')
+  [ "$idx" = null ] && continue
+  k patch projects.enzarb.dev "$p" --type=json \
+    -p "[{\"op\":\"test\",\"path\":\"/metadata/finalizers/$idx\",\"value\":\"$OLD_FINALIZER\"},{\"op\":\"remove\",\"path\":\"/metadata/finalizers/$idx\"}]" >/dev/null
+  echo "removed $OLD_FINALIZER from Project $p"
+done
+if [ -n "$tenants" ]; then
+  k delete tenants.capsule.clastix.io -l app.kubernetes.io/managed-by=enzarb-operator --wait=true
+fi
+log "migration done"
