@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+#MISE description="Converge oldie's host layer with Ansible: LVM storage, gVisor, RKE2 server, kubeconfig (idempotent). Extra args go to ansible-playbook"
+set -euo pipefail
+# shellcheck source=/dev/null
+. "${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}/.mise/lib/oldie.sh"
+need ansible-playbook ansible-galaxy ssh
+load_oldie_env
+[ -n "${GHCR_TOKEN:-}" ] || echo "warning: GHCR_TOKEN is empty, so no registry credentials are written; private ghcr.io images will not pull (.env.oldie)" >&2
+cd "$RKE2_DIR"
+log "installing Ansible collections"
+ansible-galaxy collection install -r requirements.yml -p collections >/dev/null
+log "converging $OLDIE_HOST"
+ansible-playbook site.yml "$@"
+log "host ready; kubeconfig: $KUBECONFIG (context $KCTX)"

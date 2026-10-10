@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+#MISE description="Copy docs/ci/release.yml into every releasing repo (--check: report drift only)"
+set -euo pipefail
+ROOT="${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}"
+src="$ROOT/docs/ci/release.yml"
+check=0; [ "${1:-}" = "--check" ] && check=1
+rc=0
+for r in enzarb-ui enzarb-workflows enzarb-connectors enzarb-sandbox-proxy enzarb-sandbox-operator enzarb-sandbox-container enzarb-helm; do
+  dst="$ROOT/$r/.github/workflows/release.yml"
+  [ -d "$ROOT/$r/.git" ] || { echo "$r: missing (mise run repos:init)"; rc=1; continue; }
+  if cmp -s "$src" "$dst"; then echo "$r: up to date"; continue; fi
+  if [ "$check" = 1 ]; then echo "$r: DRIFT"; rc=1; continue; fi
+  mkdir -p "$(dirname "$dst")"; cp "$src" "$dst"; echo "$r: updated"
+done
+exit $rc

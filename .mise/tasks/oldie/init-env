@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+#MISE description="Create .env.oldie from the example and generate GITHUB_WEBHOOK_SECRET if it is empty (idempotent; prints the secret only when it generates one)"
+set -euo pipefail
+# shellcheck source=/dev/null
+. "${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}/.mise/lib/oldie.sh"
+f="$ROOT/.env.oldie"
+if [ ! -f "$f" ]; then
+  (umask 077; cp "$ROOT/.env.oldie.example" "$f")
+  echo "created $f (mode 600)"
+fi
+chmod 600 "$f"
+current=$(sed -n 's/^GITHUB_WEBHOOK_SECRET=//p' "$f" | head -1)
+if [ -n "$current" ]; then
+  echo "GITHUB_WEBHOOK_SECRET is already set in $f (not changed)"
+  exit 0
+fi
+secret=$(openssl rand -hex 32)
+# Replace the empty assignment in place; the value is hex, so no escaping is needed.
+sed -i "s|^GITHUB_WEBHOOK_SECRET=.*|GITHUB_WEBHOOK_SECRET=$secret|" "$f"
+echo "generated GITHUB_WEBHOOK_SECRET and saved it in $f"
+echo "paste this into the GitHub App's \"Webhook secret\" field:"
+echo "$secret"

@@ -2,13 +2,16 @@
 # Used with the GitHub App manifest flow; see docs/dev.md "Create the GitHub App".
 # GitHub expects JSON: convert with `npx --yes js-yaml docs/github-app.yml`.
 #
-# Replace the two placeholders before use:
+# Replace the placeholders before use:
 #   hook_attributes.url  your smee.io channel URL (dev) or https://<host>/hooks/github (prod)
 #   url                  the app's homepage (any URL)
+#   name                 must be unique on GitHub; its slug decides the bot login `<slug>[bot]`
 #
-# This is NOT the OAuth app used for UI login. The OAuth callback
-# <public>/login/github/callback belongs to a separate OAuth app (docs/dev.md), so no
-# callback_urls and no request_oauth_on_install are set here.
+# One App serves both jobs: webhooks/API access as the bot, and "Sign in with GitHub" for the UI.
+# The UI only calls GET /user with the user-authorization token, so no separate OAuth App is
+# needed. The App's Client ID and secret are the UI's GITHUB_OAUTH_CLIENT_ID/SECRET.
+# callback_urls must contain <public>/login/github/callback for every host you sign in on.
+# request_oauth_on_install stays off: the UI starts the login itself.
 name: enzarb-dev
 url: https://github.com/enzarb/enzarb
 hook_attributes:
@@ -17,6 +20,10 @@ hook_attributes:
 # The manifest flow redirects here with ?code=... after creation. Nothing needs to listen:
 # copy the code out of the address bar and exchange it with `gh api` (docs/dev.md).
 redirect_url: http://localhost:3000/github-app-created
+callback_urls:
+  - https://enzarb.dev/login/github/callback
+  - https://enzarb.local/login/github/callback
+request_oauth_on_install: false
 public: false
 default_permissions:
   issues: write
