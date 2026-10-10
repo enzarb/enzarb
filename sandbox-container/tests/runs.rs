@@ -756,3 +756,17 @@ async fn setup_token_pty_captures_the_token() {
         0o600
     );
 }
+
+#[tokio::test]
+async fn successive_runs_reuse_a_branch_name() {
+    let env = start(0).await;
+    let (session, _events) = env.connect().await;
+    for id in ["job-a", "job-b"] {
+        session
+            .run_start(env.run(id, "EDIT", "main", "enzarb/plan-22", false))
+            .await
+            .unwrap();
+        let (_, fin) = env.finished(id).await;
+        assert_eq!(fin.outcome, RunOutcome::Succeeded, "{id}: {}", fin.summary);
+    }
+}

@@ -753,6 +753,83 @@ impl Inner {
         }
     }
 
+    /// Remove other worktrees that have `branch` checked out. Fails if the
+    /// holder belongs to a run that is still running in this process.
+    async fn free_branch(
+        &self,
+        run: &Run,
+        ctl: &mut Ctl,
+        secrets: &[String],
+        repo: &Path,
+        branch: &str,
+    ) -> Result<(), Abort> {
+        let list = self
+            .git(
+                run,
+                ctl,
+                secrets,
+                &[],
+                Some(repo),
+                &["worktree", "list", "--porcelain"],
+            )
+            .await?;
+        let want = format!("refs/heads/{branch}");
+        let mut holders = Vec::new();
+        let mut path: Option<PathBuf> = None;
+        for line in String::from_utf8_lossy(&list.stdout).lines() {
+            if let Some(p) = line.strip_prefix("worktree ") {
+                path = Some(PathBuf::from(p));
+            } else if line.strip_prefix("branch ") == Some(want.as_str())
+                && let Some(p) = path.clone()
+            {
+                holders.push(p);
+            }
+        }
+        for p in holders {
+            let owner = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_prefix("run-"))
+                .map(str::to_string);
+            let Some(owner) = owner else {
+                return Err(Abort::Fail(format!(
+                    "branch {branch:?} is checked out at {}, not a run worktree",
+                    p.display()
+                )));
+            };
+            if let Some(o) = Some(owner).filter(|o| *o != run.id) {
+                let active = self
+                    .runs
+                    .lock()
+                    .unwrap()
+                    .get(&o)
+                    .is_some_and(|r| !r.state().is_terminal());
+                if active {
+                    return Err(Abort::Fail(format!(
+                        "branch {branch:?} is in use by active run {o:?}"
+                    )));
+                }
+            }
+            let ps = p.to_string_lossy().into_owned();
+            let out = self
+                .git_raw(
+                    run,
+                    ctl,
+                    secrets,
+                    &[],
+                    Some(repo),
+                    &["worktree", "remove", "--force", &ps],
+                )
+                .await?;
+            if !out.success() {
+                let _ = std::fs::remove_dir_all(&p);
+                self.git(run, ctl, secrets, &[], Some(repo), &["worktree", "prune"])
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Run git and require success.
     async fn git(
         &self,
@@ -877,6 +954,10 @@ impl Inner {
                 let _ = std::fs::remove_dir_all(&worktree);
             }
             self.git(run, ctl, &secrets, &[], Some(&repo), &["worktree", "prune"])
+                .await?;
+            // A finished job's worktree may still hold `branch` (retries reuse
+            // branch names), and git refuses `-B` on a checked-out branch.
+            self.free_branch(run, ctl, &secrets, &repo, &req.branch)
                 .await?;
             let w = worktree.to_string_lossy().into_owned();
             self.git(
