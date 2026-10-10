@@ -57,7 +57,7 @@ status:
     - type: Ready
 ```
 
-Conditions: a failed step is `status: False` with a `reason` ending in `Failed`, `Failure` or `Error`, or the named terminal reason `InvalidSpec` (reported on `ResourcesReady`). Any other `False` reason is shown as in progress.
+Conditions: a failed step is `status: False` with a `reason` ending in `Failed`, `Failure` or `Error` (e.g. `NotOwnedError`: an object with the Project's name exists but has no owner), or the named terminal reason `InvalidSpec` (reported on `ResourcesReady`). Any other `False` reason is shown as in progress (e.g. `Terminating`: a deleted Project's objects with the same name are still being removed).
 
 Objects per Project (ADR-0013), all in the shared namespace and labelled `enzarb.dev/project=<name>`: Sandbox `sb-<name>` (its pod and headless Service share the name; the Service is owned by the Sandbox), Secret `sb-<name>-auth`, PVCs `sb-<name>-workspace` and `sb-<name>-docker`, NetworkPolicy `sb-<name>`, each with a controller ownerReference to the Project. Names are at most 50 characters, enforced by a CEL rule in the CRD, the operator and the UI. Sandbox pods run as ServiceAccount `enzarb-sandbox` with no token and no RBAC: **no Kubernetes API access**; any future access is limited to other namespaces. Consumers find the sandbox only through `status.namespace` and `status.sandbox` (no derived fallback).
 
