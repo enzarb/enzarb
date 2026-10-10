@@ -2420,3 +2420,44 @@ fn author_mention_on_stale_keeps_the_answer() {
     assert_eq!(d.trigger_text, "@enzarb here is my answer");
     assert_eq!(d.trigger_comment_id, Some(9));
 }
+
+#[test]
+fn approve_comment_pair_implements_instead_of_replanning() {
+    let new = WorkflowState::New(WorkflowKind::Issue);
+    let mut state = run(Permission::None, &new, &opened("1")).next;
+    state = run(
+        Permission::None,
+        &state,
+        &agent_ok("2", JobKind::AgentTriage, "ready", "SUMMARY"),
+    )
+    .next;
+    let t = run(
+        Permission::None,
+        &state,
+        &agent_ok("3", JobKind::AgentPlan, "plan", "## Plan\nDo it"),
+    );
+    assert_issue(&t, IssuePhase::AwaitingApproval);
+    let state = t.next;
+
+    // The connector emits CommentAdded then ApprovalGranted for one `/approve`.
+    let c = conn(
+        "4a",
+        EventType::CommentAdded,
+        issue_item(),
+        actor("carol"),
+        Some((900, "/approve")),
+    );
+    let t = run(Permission::Write, &state, &c);
+    rejected(&t, &state);
+    let m = conn(
+        "4m",
+        EventType::Mentioned,
+        issue_item(),
+        actor("carol"),
+        Some((900, "@enzarb\n/approve")),
+    );
+    rejected(&run(Permission::Write, &state, &m), &state);
+    let t = run(Permission::Write, &state, &approval_comment("4b", "carol"));
+    assert_issue(&t, IssuePhase::Implementing);
+    job_of(&t, JobKind::AgentImplement);
+}

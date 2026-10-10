@@ -295,6 +295,8 @@ fn approval(ctx: &Ctx, ev: &EngineEvent, s: &IssueState, state: &WorkflowState) 
     begin(ctx, ev, IssuePhase::Implementing, d, "plan approved")
 }
 
+use enzarb_connector::command::has_approve_command;
+
 fn comment(
     ctx: &Ctx,
     ev: &EngineEvent,
@@ -327,6 +329,11 @@ fn comment(
             begin(ctx, ev, Triaging, d, "author answered")
         }
         AwaitingApproval => {
+            // The connector pairs an `/approve` comment with an `ApprovalGranted`
+            // event; the latter owns it, so it is not plan feedback.
+            if has_approve_command(c.text) {
+                return Transition::reject(state, "approve command is handled as an approval");
+            }
             if !is_author && !ctx.can_write() {
                 return Transition::reject(state, "feedback needs the author or write access");
             }
