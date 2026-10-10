@@ -1,8 +1,8 @@
 import * as v from 'valibot';
 import type { Project, ProjectView, Repository } from './project-types.ts';
 
-/** Namespaces are `enzarb-p-<name>` (contracts §2) and must stay within 63 characters. */
-export const MAX_NAME_LENGTH = 54;
+/** `sb-<name>-workspace` must fit in 63 characters (contracts §2, ADR-0013). */
+export const MAX_NAME_LENGTH = 50;
 
 const NAME_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
 const KEY_CHARS_RE = /^[A-Za-z0-9._-]+$/;
@@ -64,6 +64,7 @@ export function toView(p: Project): ProjectView {
 		name: p.metadata.name,
 		displayName: p.spec.displayName || p.metadata.name,
 		namespace: p.status?.namespace ?? null,
+		sandboxName: p.status?.sandbox?.name ?? null,
 		repositories: p.spec.repositories ?? [],
 		triggers: {
 			issues: p.spec.triggers?.issues ?? true,

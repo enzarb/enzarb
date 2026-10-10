@@ -1,9 +1,11 @@
 import type { Condition } from './project-types.ts';
 
-/** Boot order of Project conditions (contracts §2). */
+/**
+ * Boot order of Project conditions (contracts §2, ADR-0013). Condition types not listed here
+ * (e.g. the old TenantReady/NamespaceReady) are ignored.
+ */
 export const BOOT_STEPS = [
-	{ type: 'TenantReady', label: 'Tenant' },
-	{ type: 'NamespaceReady', label: 'Namespace' },
+	{ type: 'ResourcesReady', label: 'Resources' },
 	{ type: 'SandboxReady', label: 'Sandbox' },
 	{ type: 'Ready', label: 'Project ready' }
 ] as const;
@@ -44,11 +46,18 @@ export function buildChecklist(conditions: Condition[] | undefined | null): Chec
 	});
 }
 
-/** Contracts §2 failure-reason suffixes. */
+/**
+ * Contracts §2 failed reasons: the suffixes below (covers `NotOwnedError`) and the named
+ * terminal reason `InvalidSpec`. Other False reasons, e.g. `Terminating`, are in progress.
+ */
 const FAILURE_REASON_RE = /(Failed|Failure|Error)$/;
 
 function isFailure(c: Condition | undefined): boolean {
-	return !!c && c.status === 'False' && FAILURE_REASON_RE.test(c.reason ?? '');
+	return (
+		!!c &&
+		c.status === 'False' &&
+		(c.reason === 'InvalidSpec' || FAILURE_REASON_RE.test(c.reason ?? ''))
+	);
 }
 
 /** Overall badge for list pages. */
@@ -61,8 +70,5 @@ export function overallState(conditions: Condition[] | undefined | null): StepSt
 
 /** True once the operator will not make further progress without a change: failed or invalid. */
 export function isTerminalFailure(conditions: Condition[] | undefined | null): boolean {
-	return (
-		overallState(conditions) === 'failed' ||
-		!!conditions?.some((c) => c.status === 'False' && c.reason === 'InvalidSpec')
-	);
+	return overallState(conditions) === 'failed';
 }

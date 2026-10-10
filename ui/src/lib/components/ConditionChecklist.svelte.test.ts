@@ -14,23 +14,23 @@ describe('ConditionChecklist', () => {
 	it('renders each step with its state and message, in order', async () => {
 		render(ConditionChecklist, {
 			conditions: [
-				cond('TenantReady', 'True'),
-				cond('NamespaceReady', 'False', 'Creating', 'creating namespace')
+				cond('ResourcesReady', 'True'),
+				cond('SandboxReady', 'False', 'Creating', 'creating sandbox')
 			]
 		});
 		const items = page.getByRole('listitem');
 		await expect.element(items.nth(0)).toHaveAttribute('data-state', 'done');
 		await expect.element(items.nth(1)).toHaveAttribute('data-state', 'in-progress');
-		await expect.element(items.nth(1)).toHaveTextContent('creating namespace');
+		await expect.element(items.nth(1)).toHaveTextContent('creating sandbox');
 		await expect.element(items.nth(2)).toHaveAttribute('data-state', 'pending');
-		await expect.element(items.nth(3)).toHaveTextContent('Project ready');
+		await expect.element(items.nth(2)).toHaveTextContent('Project ready');
 	});
 
 	it('shows failures with the condition message', async () => {
 		render(ConditionChecklist, {
 			conditions: [
-				cond('TenantReady', 'True'),
-				cond('NamespaceReady', 'False', 'NamespaceFailed', 'quota exceeded')
+				cond('ResourcesReady', 'True'),
+				cond('SandboxReady', 'False', 'SandboxFailed', 'quota exceeded')
 			]
 		});
 		const failed = page.getByRole('listitem').nth(1);

@@ -69,8 +69,21 @@ describe('buildProject / toView', () => {
 	it('falls back to the name and reports readiness', () => {
 		const p = buildProject(mk(), 'u');
 		p.spec.displayName = '';
-		expect(toView(p)).toMatchObject({ displayName: 'x', ready: false, namespace: null });
-		p.status = { conditions: [{ type: 'Ready', status: 'True' }], namespace: 'enzarb-p-x' };
-		expect(toView(p)).toMatchObject({ ready: true, namespace: 'enzarb-p-x' });
+		expect(toView(p)).toMatchObject({
+			displayName: 'x',
+			ready: false,
+			namespace: null,
+			sandboxName: null
+		});
+		p.status = {
+			conditions: [{ type: 'Ready', status: 'True' }],
+			namespace: 'enzarb-sandboxes',
+			sandbox: { name: 'sb-x' }
+		};
+		expect(toView(p)).toMatchObject({
+			ready: true,
+			namespace: 'enzarb-sandboxes',
+			sandboxName: 'sb-x'
+		});
 	});
 });

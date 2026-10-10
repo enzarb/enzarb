@@ -29,7 +29,7 @@ export type CreateProjectsOutcome =
 
 /**
  * A DNS label from free text: lowercase `[a-z0-9-]`, no leading or trailing hyphen, at most
- * 54 characters. Empty when nothing usable remains.
+ * 50 characters. Empty when nothing usable remains.
  */
 export function slugifyName(input: string): string {
 	return input

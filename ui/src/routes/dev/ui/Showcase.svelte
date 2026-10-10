@@ -99,12 +99,12 @@
 		message
 	});
 	const bootConditions = [
-		cond('TenantReady', 'True'),
-		cond('NamespaceReady', 'False', 'creating namespace')
+		cond('ResourcesReady', 'True'),
+		cond('SandboxReady', 'False', 'creating sandbox')
 	];
 	const failedConditions = [
-		cond('TenantReady', 'True'),
-		cond('NamespaceReady', 'False', 'quota exceeded')
+		cond('ResourcesReady', 'True'),
+		cond('SandboxReady', 'False', 'quota exceeded')
 	];
 	const at = '2026-10-08T12:00:00.000Z';
 	const transitions = [

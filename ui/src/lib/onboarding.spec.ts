@@ -20,10 +20,10 @@ describe('slugifyName', () => {
 		['9lives', '9lives']
 	])('%j -> %j', (input, out) => expect(slugifyName(input)).toBe(out));
 
-	it('truncates to 54 characters without leaving a trailing hyphen', () => {
-		const long = slugifyName(`${'a'.repeat(53)}-bbbbbb`);
-		expect(long).toBe('a'.repeat(53));
-		expect(slugifyName('x'.repeat(80))).toHaveLength(54);
+	it('truncates to 50 characters without leaving a trailing hyphen', () => {
+		const long = slugifyName(`${'a'.repeat(49)}-bbbbbb`);
+		expect(long).toBe('a'.repeat(49));
+		expect(slugifyName('x'.repeat(80))).toHaveLength(50);
 	});
 
 	it('always yields a valid name or the empty string', () => {
@@ -47,12 +47,12 @@ describe('expandNameTemplate / splitRepoKey', () => {
 });
 
 describe('validateProjectName', () => {
-	it('accepts DNS labels up to 54 characters', () => {
+	it('accepts DNS labels up to 50 characters', () => {
 		expect(validateProjectName('a')).toBeUndefined();
-		expect(validateProjectName('a'.repeat(54))).toBeUndefined();
+		expect(validateProjectName('a'.repeat(50))).toBeUndefined();
 		expect(validateProjectName('a-1')).toBeUndefined();
 	});
-	it.each(['', ' ', 'a'.repeat(55), '-a', 'a-', 'A', 'a_b', 'a.b'])('rejects %j', (n) =>
+	it.each(['', ' ', 'a'.repeat(51), '-a', 'a-', 'A', 'a_b', 'a.b'])('rejects %j', (n) =>
 		expect(validateProjectName(n)).toBeTruthy()
 	);
 });

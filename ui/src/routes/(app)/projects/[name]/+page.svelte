@@ -55,7 +55,7 @@
 		<PageHeader title={p.displayName}>
 			{#snippet meta()}
 				<code>{p.name}</code>
-				{#if p.namespace}<span class="ez-muted">namespace <code>{p.namespace}</code></span>{/if}
+				{#if p.sandboxName}<span class="ez-muted">sandbox <code>{p.sandboxName}</code></span>{/if}
 			{/snippet}
 			{#snippet actions()}
 				<Button variant="danger" onclick={() => (confirming = true)}>Delete project</Button>

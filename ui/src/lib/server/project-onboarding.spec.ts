@@ -224,6 +224,13 @@ describe('createProjects: duplicates and validation', () => {
 		expect(long && long.status === 'failed' && long.reason.length).toBeLessThan(140);
 	});
 
+	it('creates the project under the trimmed name', async () => {
+		const store = fakeStore();
+		const out = await run(store, [{ name: '  padded  ', repositories: ['github:acme/web'] }]);
+		expect(out.ok && out.results[0]).toMatchObject({ name: 'padded', status: 'created' });
+		expect(store.items.get('padded')?.metadata.name).toBe('padded');
+	});
+
 	it('refuses a plan without repositories', async () => {
 		const out = await run(fakeStore(), [{ name: 'empty', repositories: [] }]);
 		expect(out.ok && out.results[0]).toMatchObject({ status: 'failed' });

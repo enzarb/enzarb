@@ -23,6 +23,7 @@ export interface ProjectSpec {
 
 export interface ProjectStatus {
 	namespace?: string | null;
+	sandbox?: { name?: string | null } | null;
 	observedGeneration?: number | null;
 	conditions?: Condition[];
 }
@@ -40,6 +41,7 @@ export interface ProjectView {
 	name: string;
 	displayName: string;
 	namespace: string | null;
+	sandboxName: string | null;
 	repositories: Repository[];
 	triggers: { issues: boolean; changeRequests: boolean; mentions: boolean };
 	conditions: Condition[];
