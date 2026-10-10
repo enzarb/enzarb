@@ -36,7 +36,11 @@
 4. **GitHub App** (one App for webhooks, bot access and UI login). Run `mise run oldie:init-env` to create `.env.oldie` and generate the webhook secret, then register the App (Settings, Developer settings, GitHub Apps, New GitHub App, or the manifest flow in [dev.md](dev.md)) with:
    - Webhook: active, URL `https://enzarb.dev/hooks/github`, secret = `GITHUB_WEBHOOK_SECRET` from `.env.oldie`. (The manifest flow lets GitHub generate the secret instead; copy `webhook_secret` from its response into `.env.oldie`.)
    - Callback URL: `https://enzarb.dev/login/github/callback`. Leave "Request user authorization (OAuth) during installation" off.
-   - Permissions and events as in [github-app.yml](github-app.yml). Name it `enzarb` if available (the chart's bot login defaults to `enzarb[bot]`; otherwise set `connectors.botLogin`/`workflows.botLogin`).
+   - Setup URL: `https://enzarb.dev/login/github?refresh=1`, and enable "Redirect on update". After installing (or changing) the App, GitHub sends the user there, which signs them in again and refreshes the list of repositories enzarb can use. Without it, users click "Refresh repositories" in enzarb after installing.
+   - Repository permissions: Contents: read and write, Checks: read and write, Issues: read and write, Pull requests: read and write, Metadata: read. No account or organization permissions.
+   - Events as in [github-app.yml](github-app.yml): issues, issue_comment, pull_request, pull_request_review, pull_request_review_comment, installation, installation_repositories.
+   - Users (and organizations) install the App at `https://github.com/apps/enzarb/installations/new` (replace `enzarb` with the App's slug and set `githubApp.slug` to match if it differs; enzarb shows this link when a user has no accessible installation).
+   - Name it `enzarb` if available (the chart's bot login defaults to `enzarb[bot]`; otherwise set `connectors.botLogin`/`workflows.botLogin`).
    - Afterwards: note the App ID, generate and download a private key, and generate a client secret. Fill `.env.oldie`: `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` (path to the .pem), `GITHUB_OAUTH_CLIENT_ID` (the App's *Client ID*), `GITHUB_OAUTH_CLIENT_SECRET`.
 5. **GHCR**: a GitHub user and a token with `read:packages` (`GHCR_USER`, `GHCR_TOKEN`).
 6. **Releases**: the component images must be released (see [ci.md](ci.md#releases)); `values.yaml` pins them.

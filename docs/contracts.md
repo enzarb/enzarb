@@ -258,6 +258,7 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` (PEM), `GITHUB_WEBHOOK_SECRET` | receiver (secret only), workflows executor |
 | `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` | ui |
 | `ENZARB_BOT_HANDLE` (default `enzarb`), `ENZARB_BOT_LOGIN` (default `enzarb[bot]`) | receiver, workflows |
+| `ENZARB_GITHUB_APP_SLUG` (optional, default `enzarb`; chart value `githubApp.slug`) | ui (the "install the App" link `https://github.com/apps/<slug>/installations/new`) |
 | `ENZARB_PUBLIC_URL` | ui (OAuth callback is `$ENZARB_PUBLIC_URL/login/github/callback`), workflows (links in comments) |
 | `PROTOCOL_HEADER=x-forwarded-proto` | ui (adapter-node derives the origin for its CSRF check from it; the Gateway must forward `X-Forwarded-Proto`) |
 | `ENZARB_EXECUTOR_URL` (default `http://enzarb-workflows-executor.enzarb.svc:8081`) | workflows executor (callback base) |
@@ -272,6 +273,7 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 - **Permissions:** Issues RW, Pull requests RW, Contents RW, Checks RW, Metadata R.
 - **Events:** issues, issue_comment, pull_request, pull_request_review, pull_request_review_comment, installation, installation_repositories.
 - **Webhook URL:** `https://<host>/hooks/github`.
+- **Install link and refresh:** `https://github.com/apps/<slug>/installations/new`. At sign-in the UI uses the user-to-server token once (never stored) to snapshot the repositories reachable through installations of this App (`GET /user/installations`, `GET /user/installations/{id}/repositories`) into `app.user_repositories`. `GET /login/github?refresh=1&return=<same-origin path>` re-runs that flow. Set the App's **Setup URL** to `<public>/login/github?refresh=1` with "Redirect on update" enabled so users land back in enzarb after installing.
 - **Registration manifest:** `docs/github-app.yml` (setup in `docs/dev.md`). The same App also provides UI login (user authorization): its callback is `<public>/login/github/callback` (`callback_urls` in the manifest) and its Client ID/secret are the UI's `GITHUB_OAUTH_CLIENT_ID`/`GITHUB_OAUTH_CLIENT_SECRET`.
 
 ## 11. CI access to private enzarb dependencies

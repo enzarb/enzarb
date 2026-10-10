@@ -8,8 +8,8 @@
 #   name                 must be unique on GitHub; its slug decides the bot login `<slug>[bot]`
 #
 # One App serves both jobs: webhooks/API access as the bot, and "Sign in with GitHub" for the UI.
-# The UI only calls GET /user with the user-authorization token, so no separate OAuth App is
-# needed. The App's Client ID and secret are the UI's GITHUB_OAUTH_CLIENT_ID/SECRET.
+# The UI uses the user-authorization token only at sign-in (GET /user, /user/installations and
+# the installations' repositories; never stored), so no separate OAuth App is needed. The App's Client ID and secret are the UI's GITHUB_OAUTH_CLIENT_ID/SECRET.
 # callback_urls must contain <public>/login/github/callback for every host you sign in on.
 # request_oauth_on_install stays off: the UI starts the login itself.
 name: enzarb-dev
@@ -24,6 +24,10 @@ callback_urls:
   - https://enzarb.dev/login/github/callback
   - https://enzarb.local/login/github/callback
 request_oauth_on_install: false
+# After installing or updating the App, send the user back to enzarb to refresh their repositories.
+# Set per environment to https://<your host>/login/github?refresh=1 (dev: https://enzarb.local/...).
+setup_url: https://enzarb.dev/login/github?refresh=1
+setup_on_update: true
 public: false
 default_permissions:
   issues: write
