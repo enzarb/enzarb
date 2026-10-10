@@ -167,7 +167,7 @@ operator:
   replicaCount: 2
   image:
     repository: ghcr.io/enzarb/enzarb-sandbox-operator
-    tag: 0.2.0
+    tag: 0.2.1
     pullPolicy: ""
   # Default sandbox image for Projects (ENZARB_SANDBOX_IMAGE).
   sandboxImage: ghcr.io/enzarb/enzarb-sandbox:0.1.1
