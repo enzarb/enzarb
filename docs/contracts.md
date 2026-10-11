@@ -123,7 +123,7 @@ Secrets are redacted from all records.
 - `/workspace`: repos and worktrees.
 - `/workspace/.toolchains/`: mise data and cache, cargo, rustup.
 - `/workspace/repos/<slug>-<hash>/`: one clone per repo URL.
-- `/workspace/worktrees/run-<run_id>/`: the run's worktree. It starts from `origin/<branch>` if that exists, otherwise from `base_ref`.
+- `/workspace/worktrees/run-<run_id>/`: the run's worktree. It starts from `origin/<branch>` if that exists, otherwise from `base_ref`. It is deleted when the run ends (the branch stays in the clone); at sandbox-init startup and before each run, `run-*` dirs of no active run are pruned.
 - `/workspace/.enzarb/runs/<run_id>/`: `state.json`, `request.json` (0600, clone token blanked), `transcript.jsonl`, and `callback.json` while a callback is pending.
 - `/workspace/.enzarb/claude-token`: mode 0600.
 
