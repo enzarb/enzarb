@@ -307,7 +307,8 @@ fn updated(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowState) -> T
     let sha = item.head_sha.clone().unwrap_or_default();
     match s.phase {
         AwaitingChanges | Reviewing => {
-            if sha == s.data.reviewed_sha && !sha.is_empty() {
+            let under_review = s.phase == Reviewing && sha == s.data.head_sha;
+            if (sha == s.data.reviewed_sha || under_review) && !sha.is_empty() {
                 return Transition::reject(state, "duplicate: this commit was already reviewed");
             }
             let mut d = data_from_item(item);
@@ -324,7 +325,7 @@ fn updated(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowState) -> T
             t
         }
         AddressingComments => {
-            // Most likely the agent's own push; it is not re-reviewed.
+            // Most likely the agent's own push; it is reviewed when the job finishes.
             let mut d = s.data.clone();
             d.head_sha = sha;
             Transition::to(
@@ -493,11 +494,15 @@ fn job_succeeded(
         (AddressingComments, Decision::Done) => {
             fx.comment(out.body);
             fx.done(&tgt);
-            // The agent's own push is not re-reviewed.
-            if let Some(sha) = output.get("head_sha").and_then(Value::as_str) {
+            // Record the pushed head; `reviewed_sha` only moves when a review is posted.
+            if let Some(sha) = output
+                .get("head_sha")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
                 d.head_sha = sha.to_string();
-                d.reviewed_sha = sha.to_string();
             }
+            let pushed = d.head_sha != d.reviewed_sha;
             match d.pending.take() {
                 Some(p) => {
                     d.trigger_comment_id = p.comment_id;
@@ -510,7 +515,13 @@ fn job_succeeded(
                     d.trigger_comment_id = None;
                     d.trigger_comment_kind = CommentKind::default();
                     d.trigger_text.clear();
-                    Transition::to(st(AwaitingChanges, d), fx.finish(), "comments addressed")
+                    if pushed {
+                        // The agent's fixes are reviewed like any other new head.
+                        start_review(ctx, &mut fx, &d);
+                        Transition::to(st(Reviewing, d), fx.finish(), "fixes pushed")
+                    } else {
+                        Transition::to(st(AwaitingChanges, d), fx.finish(), "comments addressed")
+                    }
                 }
             }
         }

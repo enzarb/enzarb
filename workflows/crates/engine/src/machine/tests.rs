@@ -1575,7 +1575,7 @@ fn cr_feedback_is_addressed_then_awaits_again() {
             .contains("inline")
     );
 
-    // Done: commits pushed, the agent's own head is not re-reviewed.
+    // Done: commits pushed, the agent's head is reviewed.
     let busy = t.next;
     let mut out = agent_output("done", "Fixed it");
     out["head_sha"] = json!("sha9");
@@ -1584,18 +1584,62 @@ fn cr_feedback_is_addressed_then_awaits_again() {
         &busy,
         &ok("d", JobKind::AgentAddressComments, out),
     );
-    let d = assert_cr(&t, CrPhase::AwaitingChanges);
+    let d = assert_cr(&t, CrPhase::Reviewing);
     assert_eq!(
         (d.head_sha.as_str(), d.reviewed_sha.as_str()),
-        ("sha9", "sha9")
+        ("sha9", "sha1")
     );
+    assert!(kinds(&t).contains(&JobKind::AgentReview));
     assert_eq!(comment_bodies(&t), vec!["Fixed it".to_string()]);
-    assert_eq!(progress_values(&t), vec!["Done"]);
-    // The webhook for that same push is then a duplicate.
+    // The round is done and the review of the pushed head has started.
+    assert_eq!(progress_values(&t), vec!["Done", "Working"]);
+    // The webhook for that same push while it is under review is a duplicate.
     rejected(
         &run_cr(Permission::None, &t.next, &pr_updated("u", "sha9")),
         &t.next,
     );
+    // A different push restarts the review.
+    let t2 = run_cr(Permission::None, &t.next, &pr_updated("u2", "sha10"));
+    assert_cr(&t2, CrPhase::Reviewing);
+    assert_eq!(t2.effects[0], Effect::CancelJobs);
+
+    // Once that review is posted, the same push is a duplicate too.
+    let t3 = run_cr(
+        Permission::None,
+        &t.next,
+        &agent_ok("r", JobKind::AgentReview, "request_changes", "nits"),
+    );
+    let d = assert_cr(&t3, CrPhase::AwaitingChanges);
+    assert_eq!(d.reviewed_sha, "sha9");
+    assert!(!kinds(&t3).contains(&JobKind::AgentAddressComments));
+    rejected(
+        &run_cr(Permission::None, &t3.next, &pr_updated("u3", "sha9")),
+        &t3.next,
+    );
+}
+
+#[test]
+fn cr_address_without_a_push_awaits_changes() {
+    let busy = cr_in(CrPhase::AddressingComments);
+    // `agent_ok` reports a new head (`sha2`), so build the output without one.
+    let mut out = agent_output("done", "nothing to do");
+    out.as_object_mut().unwrap().remove("head_sha");
+    let t = run_cr(
+        Permission::None,
+        &busy,
+        &ok("d", JobKind::AgentAddressComments, out),
+    );
+    assert_cr(&t, CrPhase::AwaitingChanges);
+    assert!(!kinds(&t).contains(&JobKind::AgentReview));
+    let mut out = agent_output("done", "no change");
+    out["head_sha"] = json!("sha1");
+    let t = run_cr(
+        Permission::None,
+        &busy,
+        &ok("d2", JobKind::AgentAddressComments, out),
+    );
+    assert_cr(&t, CrPhase::AwaitingChanges);
+    assert!(!kinds(&t).contains(&JobKind::AgentReview));
 }
 
 #[test]
@@ -1679,12 +1723,19 @@ fn cr_feedback_during_a_round_is_queued_and_run_next() {
     assert_eq!(d.trigger_comment_id, Some(21));
     assert_eq!(progress_values(&t), vec!["Done", "Working"]);
     assert!(kinds(&t).contains(&JobKind::AgentAddressComments));
+    let mut out = agent_output("done", "round 2");
+    out["head_sha"] = json!("sha5");
     let t = run_cr(
         Permission::None,
         &t.next,
-        &agent_ok("d2", JobKind::AgentAddressComments, "done", "round 2"),
+        &ok("d2", JobKind::AgentAddressComments, out),
     );
-    assert_cr(&t, CrPhase::AwaitingChanges);
+    let d = assert_cr(&t, CrPhase::Reviewing);
+    assert_eq!(
+        (d.head_sha.as_str(), d.reviewed_sha.as_str()),
+        ("sha5", "sha1")
+    );
+    assert!(kinds(&t).contains(&JobKind::AgentReview));
 }
 
 #[test]
