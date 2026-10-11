@@ -58,7 +58,7 @@ The kubeconfig is `~/.kube/enzarb-oldie.yaml` (context `enzarb-oldie`); it never
 ## Upgrading
 
 - **enzarb: automatic, nobody runs a deploy task.** Merge, then release (Conventional Commits, [ci.md](ci.md#releases)), then chart publish (`oci://ghcr.io/enzarb/charts/enzarb`), then `enzarb-updater` polls the registry (every 5 minutes), takes the highest plain `X.Y.Z` tag and patches `spec.version` of the RKE2 `HelmChart` `kube-system/enzarb` (never down), then the helm-controller upgrades the release. There is no GitHub webhook and no webhook secret. Verify read-only: `kubectl -n kube-system get helmchart enzarb`, `kubectl -n enzarb logs deploy/enzarb-updater`, `kubectl -n kube-system get jobs | grep helm-install-enzarb`. If the pipeline is stuck, fix the pipeline; do not hand-deploy.
-- **The HelmChart is created once** by `oldie:bootstrap-helmchart` (also the last step of `oldie:up`), which calls `enzarb-kubernetes/hack/oldie-helmchart.sh`: it creates or adopts the object, embeds `values-oldie.yaml` as `valuesContent`, and never lowers `spec.version`. It is not an upgrade path. Re-run it (by a human) only when `values-oldie.yaml` changes, since that file is not in the published chart, or to repair a deleted HelmChart. If the HelmChart is missing the updater logs it and does nothing; it never creates one.
+- **The HelmChart is created once** by `oldie:bootstrap-helmchart` (also the last step of `oldie:up`), which calls `enzarb-kubernetes/hack/oldie-helmchart.sh`: it creates or adopts the object, embeds `values-oldie.yaml` as `valuesContent`, and never lowers `spec.version`. It is not an upgrade path. Pull `enzarb-helm` first (its CRDs come from the checkout and must not be older than the deployed chart). Re-run it (by a human) only when `values-oldie.yaml` changes, since that file is not in the published chart, or to repair a deleted HelmChart. If the HelmChart is missing the updater logs it and does nothing; it never creates one.
 - **Known gap: CRDs.** Neither Helm nor the helm-controller upgrades `crds/` after the first install. A chart release that changes a CRD (the `Project` CRD, pgop) needs `oldie:bootstrap-helmchart` re-run by a human, which server-side applies the chart checkout's CRDs first, until CRDs are shipped some other way.
 - **A failed upgrade** is not rolled back or alerted on yet (deferred, [architecture.md](architecture.md#self-update-chain)). The helm-controller's job log shows why: `kubectl -n kube-system logs job/helm-install-enzarb`.
 - **RKE2, gVisor, add-ons**: change the pin in `enzarb-kubernetes/hack/versions.env` (and the URL for remote bases), then re-run `oldie:host` / `oldie:cluster`.
@@ -67,11 +67,10 @@ The kubeconfig is `~/.kube/enzarb-oldie.yaml` (context `enzarb-oldie`); it never
 ### One-time human actions (cutover and bootstrap)
 
 - [ ] `.env.oldie` has `GHCR_USER` and `GHCR_TOKEN` (`read:packages`; the same credential as the image pulls).
-- [ ] `mise run oldie:secrets` (creates `kube-system/enzarb-chart-registry` and `enzarb/enzarb-updater-registry`).
-- [ ] A chart release that contains updater polling (`enzarb-updater` >= 0.2.0 pinned in `values.yaml`) is published.
+- [ ] After `oldie:host`: `mise run oldie:secrets` (creates `kube-system/enzarb-chart-registry` and `enzarb/enzarb-updater-registry`).
+- [ ] A chart release that pins `enzarb-updater` >= 0.2.0 (polling) is published (`oci://ghcr.io/enzarb/charts/enzarb`).
 - [ ] `mise run oldie:bootstrap-helmchart` once. For an existing install this adopts the Helm release `enzarb` in namespace `enzarb`; the helm-controller then upgrades it to the newest chart and the updater takes over.
 - [ ] Remove the old webhook leftovers, if any: the `/updater/hook` GitHub release webhook on `enzarb/enzarb-helm` (not needed any more) and the generated `enzarb/enzarb-updater` webhook Secret.
-- [ ] Never again: `oldie:helm-deploy` no longer exists.
 
 ## Webhooks
 

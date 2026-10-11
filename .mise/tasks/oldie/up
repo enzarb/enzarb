@@ -5,6 +5,7 @@ set -euo pipefail
 . "${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}/.mise/lib/oldie.sh"
 cd "$ROOT"
 load_oldie_env
+[ -n "${GHCR_USER:-}" ] && [ -n "${GHCR_TOKEN:-}" ] || die "GHCR_USER and GHCR_TOKEN (read:packages) are required in .env.oldie: images, the chart and the updater are pulled with them"
 mise run oldie:host
 if [ -n "${CLOUDFLARE_BOOTSTRAP_TOKEN:-}" ]; then mise run oldie:cloudflare-token; fi
 mise run oldie:secrets

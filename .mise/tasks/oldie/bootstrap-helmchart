@@ -18,7 +18,8 @@ script="$KDIR/hack/oldie-helmchart.sh"
 [ -x "$script" ] || die "$script missing; run: mise run repos:init"
 
 # Helm installs crds/ only on first install and never upgrades them, and the helm-controller does the
-# same. The chart's CRDs are applied here once, from the checkout; later CRD changes need this task again.
+# same. The chart's CRDs are applied here from the checkout, so the enzarb-helm checkout must be at the
+# commit of the deployed chart (git pull; never older); later CRD changes need this task again.
 if [ -d "$ROOT/enzarb-helm/enzarb/crds" ]; then
   log "CRDs from the chart checkout"
   kapply -f "$ROOT/enzarb-helm/enzarb/crds/"
@@ -34,4 +35,11 @@ registry -> patches HelmChart spec.version -> helm-controller upgrades. Watch (r
   kubectl -n kube-system get helmchart enzarb
   kubectl -n $NS logs deploy/enzarb-updater
   kubectl -n kube-system get jobs | grep helm-install-enzarb
+
+Checklist once the upgrade finished
+  [ ] pods Running/Completed: kubectl -n $NS get pods
+  [ ] $PUBLIC_HOST is a proxied CNAME to the Cloudflare Tunnel and both pods in namespace cloudflared are Ready
+  [ ] https://$PUBLIC_HOST/ loads with a Let's Encrypt certificate
+  [ ] GitHub App webhook URL is https://$PUBLIC_HOST/hooks/github (Recent deliveries show 2xx)
+Next (first install): docs/dev.md ("Create the first Project").
 MSG
