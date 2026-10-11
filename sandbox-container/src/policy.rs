@@ -244,6 +244,17 @@ impl Default for Policy {
                     "--as-current-user",
                 ]),
             CommandRule::new("make"),
+            // Repo check scripts run through an interpreter: the script must
+            // sit in the edit roots (see `check_script_interpreter`).
+            CommandRule::new("bash"),
+            CommandRule::new("sh"),
+            CommandRule::new("shellcheck").paths(Read).deny_args(&[
+                "-x",
+                "--external-sources",
+                "-P",
+                "--source-path",
+                "--rcfile",
+            ]),
             CommandRule::new("mise").global(&["--version", "-v", "--help", "-h"]),
             // Path-restricted file tools.
             CommandRule::new("find").paths(Read).deny_args(&[
@@ -296,6 +307,11 @@ impl Default for Policy {
                 "IFS",
                 "ENV",
                 "BASH_ENV",
+                "PS4",
+                "PROMPT_COMMAND",
+                "SHELLOPTS",
+                "BASHOPTS",
+                "BASH_XTRACEFD",
                 "LD_*",
                 "DYLD_*",
                 "GIT_*",
@@ -515,10 +531,21 @@ impl Policy {
                 continue;
             }
             if prog.contains('/') {
-                return Decision::deny(
-                    "shell",
-                    format!("{prog}: programs must be named without a path"),
-                );
+                // A script inside the run's own worktree, like `make` or
+                // `mise run` (which already execute repo code).
+                if !inside(edit, &cwd, prog) {
+                    return Decision::deny(
+                        "shell",
+                        format!("{prog}: scripts must be inside the worktree"),
+                    );
+                }
+                if let Err(why) = self.check_script_file(prog, &cwd, edit) {
+                    return Decision::deny("shell", why);
+                }
+                if let Err(why) = self.script_args(args, &cwd, read) {
+                    return Decision::deny("shell", format!("{prog}: {why}"));
+                }
+                continue;
             }
             let Some(rule) = self.commands.iter().find(|c| &c.name == prog) else {
                 return Decision::deny("shell", format!("{prog} is not an allowed command"));
@@ -528,6 +555,40 @@ impl Policy {
             }
         }
         Decision::allow("shell", "every command matches the allowlist")
+    }
+
+    /// A script run from the worktree: a regular file (not a symlink, so it
+    /// cannot be re-pointed within a compound command) inside the edit roots.
+    fn check_script_file(&self, script: &str, cwd: &Path, edit: &[PathBuf]) -> Result<(), String> {
+        let p = resolve(cwd, script).ok_or_else(|| format!("{script}: unresolvable path"))?;
+        if !edit.iter().any(|r| p.starts_with(r)) {
+            return Err(format!("{script}: scripts must be inside the worktree"));
+        }
+        let raw = if Path::new(script).is_absolute() {
+            PathBuf::from(script)
+        } else {
+            cwd.join(script)
+        };
+        let is_link = std::fs::symlink_metadata(&raw).is_ok_and(|m| m.file_type().is_symlink());
+        if is_link || !p.is_file() {
+            return Err(format!("{script}: not a regular script file"));
+        }
+        Ok(())
+    }
+
+    /// Script arguments that look like paths must be readable by the policy.
+    fn script_args(&self, args: &[String], cwd: &Path, read: &[PathBuf]) -> Result<(), String> {
+        for a in args {
+            let v = if a.starts_with('-') {
+                a.split_once('=').map_or("", |(_, v)| v)
+            } else {
+                a.as_str()
+            };
+            if path_like(v) && !self.read_ok(read, cwd, v) {
+                return Err(format!("path {v} is outside the allowed roots"));
+            }
+        }
+        Ok(())
     }
 
     fn env_denied(&self, name: &str) -> bool {
@@ -549,6 +610,11 @@ impl Policy {
         // rustup toolchain selector: `cargo +nightly ...`
         if rule.name == "cargo" && rest.first().is_some_and(|a| a.starts_with('+')) {
             rest = &rest[1..];
+        }
+        if rule.name == "bash" || rule.name == "sh" {
+            let n = check_script_interpreter(rest, &rule.name, cwd, edit)?;
+            self.check_script_file(&rest[n], cwd, edit)?;
+            self.script_args(&rest[n + 1..], cwd, read)?;
         }
         if rule.name == "git" {
             rest = self.git_dash_c(rest, cwd, read)?;
@@ -840,6 +906,42 @@ const DOCKER_HOST_NS_FLAGS: &[&str] = &["--pid", "--ipc", "--uts", "--userns", "
 /// the node: privileged mode, host namespaces, extra capabilities, devices,
 /// security options, and bind mounts from outside the worktree (which includes
 /// the docker socket). Registry login/push are refused (no credentials leave).
+/// `bash|sh [-e -x -u ...] <script> [args]`: only a script file inside the
+/// edit roots may run; `-c`, stdin and rc-file options are refused.
+fn check_script_interpreter(
+    args: &[String],
+    name: &str,
+    cwd: &Path,
+    edit: &[PathBuf],
+) -> Result<usize, String> {
+    let mut i = 0;
+    while let Some(a) = args.get(i) {
+        if a == "--" {
+            i += 1;
+            break;
+        }
+        if !a.starts_with('-') || a == "-" {
+            break;
+        }
+        let ok = if a.starts_with("--") {
+            matches!(a.as_str(), "--posix" | "--noprofile" | "--norc")
+        } else {
+            a[1..].chars().all(|c| "eux".contains(c))
+        };
+        if !ok {
+            return Err(format!("option {a} is not allowed for {name}"));
+        }
+        i += 1;
+    }
+    let Some(script) = args.get(i) else {
+        return Err(format!("{name} needs a script file inside the worktree"));
+    };
+    if !inside(edit, cwd, script) {
+        return Err(format!("script {script} is outside the worktree"));
+    }
+    Ok(i)
+}
+
 fn check_docker(args: &[String], cwd: &Path, roots: &[PathBuf]) -> Result<(), String> {
     // The subcommand path: leading non-flag words (`image push`, `compose push`).
     let mut words = args.iter().filter(|a| !a.starts_with('-'));
@@ -1596,6 +1698,65 @@ mod tests {
         // ... but the program position is still checked after unquoting.
         denied("'curl' x");
         denied("cu\\rl x");
+    }
+
+    #[test]
+    fn worktree_scripts_are_allowed_and_others_denied() {
+        let (d, wt) = setup();
+        std::fs::create_dir_all(wt.join("scripts")).unwrap();
+        std::fs::create_dir_all(wt.join("hack")).unwrap();
+        std::fs::write(wt.join("scripts/golden.sh"), "").unwrap();
+        std::fs::write(wt.join("hack/y.sh"), "").unwrap();
+        std::fs::create_dir_all(d.path().join("other")).unwrap();
+        std::fs::write(d.path().join("other/x.sh"), "").unwrap();
+        std::os::unix::fs::symlink(d.path().join("other/x.sh"), wt.join("scripts/link.sh"))
+            .unwrap();
+        let p = Policy::default();
+        for c in [
+            "scripts/golden.sh",
+            "./hack/y.sh --flag arg",
+            "bash scripts/golden.sh",
+            "bash -e -x hack/y.sh",
+            "sh ./hack/y.sh && make test",
+            "cd hack && ./y.sh",
+            "shellcheck scripts/golden.sh",
+        ] {
+            let r = sh(&p, &wt, c);
+            assert!(r.allow, "{c:?} should be allowed: {r:?}");
+        }
+        let other = d.path().join("other/x.sh");
+        let other = other.display();
+        for c in [
+            "scripts/missing.sh".to_string(),
+            "../../other/x.sh".to_string(),
+            other.to_string(),
+            format!("bash {other}"),
+            "scripts/link.sh".to_string(),
+            "bash scripts/link.sh".to_string(),
+            "bash -c 'git push'".to_string(),
+            "bash".to_string(),
+            "bash -s".to_string(),
+            "sh --rcfile x scripts/golden.sh".to_string(),
+            "/bin/sh scripts/golden.sh".to_string(),
+            "~/x.sh".to_string(),
+            "bash ~/x.sh".to_string(),
+            "bash < scripts/golden.sh".to_string(),
+            "git push".to_string(),
+            "scripts/golden.sh /etc/shadow".to_string(),
+            "bash scripts/golden.sh ~/.enzarb/token".to_string(),
+            "PS4=x bash -x scripts/golden.sh".to_string(),
+            "BASH_ENV=x bash scripts/golden.sh".to_string(),
+            "bash -eo pipefail scripts/golden.sh".to_string(),
+            "shellcheck /etc/passwd".to_string(),
+            "shellcheck -x scripts/golden.sh".to_string(),
+            "shellcheck -P /etc scripts/golden.sh".to_string(),
+            "shellcheck --source-path=/etc scripts/golden.sh".to_string(),
+            "shellcheck --rcfile /etc/x scripts/golden.sh".to_string(),
+            "./hack".to_string(),
+        ] {
+            let r = sh(&p, &wt, &c);
+            assert!(!r.allow, "{c:?} should be denied: {r:?}");
+        }
     }
 
     #[test]
