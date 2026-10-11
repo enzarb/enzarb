@@ -27,3 +27,19 @@ if grep -nE '^ARG GVISOR_[A-Z0-9_]+=' installer/Dockerfile; then
   echo "installer/Dockerfile must not default GVISOR_* build args" >&2; exit 1
 fi
 echo "installer pins come from versions.env only"
+# Websocket JWTs travel in the `token` query parameter, so Envoy access logs must never
+# log the query string: only REQ_WITHOUT_QUERY, no extra sinks, no json format.
+for overlay in overlays/*/; do
+  # Only the EnvoyProxy instance (the render also contains the CRD schemas).
+  rendered=$(kubectl kustomize "$overlay" | awk -v RS='\n---\n' '/(^|\n)kind: EnvoyProxy\n/ {print}')
+  if ! grep -q 'REQ_WITHOUT_QUERY(X-ENVOY-ORIGINAL-PATH' <<< "$rendered"; then
+    echo "${overlay}: EnvoyProxy access log must use REQ_WITHOUT_QUERY" >&2; exit 1
+  fi
+  if grep -nE '%REQ\((:PATH|X-ENVOY-ORIGINAL-PATH)' <<< "$rendered"; then
+    echo "${overlay}: access log format must not log the query string" >&2; exit 1
+  fi
+  if grep -nE 'openTelemetry:|^ *als:|type: (JSON|OpenTelemetry|ALS)|^ *json:' <<< "$rendered"; then
+    echo "${overlay}: extra access log sinks/json formats need the same redaction" >&2; exit 1
+  fi
+done
+echo "access logs redact the query string"

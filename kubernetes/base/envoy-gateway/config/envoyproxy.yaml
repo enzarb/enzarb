@@ -6,6 +6,22 @@ metadata:
   name: enzarb
   namespace: enzarb-system
 spec:
+  # The websocket endpoints (/live/ and /sandbox/.../mux) carry a JWT in the `token`
+  # query parameter. Access logs therefore drop the whole query string on purpose:
+  # REQ_WITHOUT_QUERY replaces Envoy Gateway's default REQ(X-ENVOY-ORIGINAL-PATH?:PATH).
+  # Setting accessLog.settings replaces the default config, so the stdout sink is explicit.
+  # Keep every sink free of the query string (hack/validate.sh enforces this).
+  telemetry:
+    accessLog:
+      settings:
+        - format:
+            type: Text
+            text: |
+              [%START_TIME%] "%REQ(:METHOD)% %REQ_WITHOUT_QUERY(X-ENVOY-ORIGINAL-PATH?:PATH)% %PROTOCOL%" %RESPONSE_CODE% %RESPONSE_FLAGS% %BYTES_RECEIVED% %BYTES_SENT% %DURATION% "%REQ(X-FORWARDED-FOR)%" "%REQ(USER-AGENT)%" "%REQ(X-REQUEST-ID)%" "%REQ(:AUTHORITY)%" "%UPSTREAM_HOST%"
+          sinks:
+            - type: File
+              file:
+                path: /dev/stdout
   provider:
     type: Kubernetes
     kubernetes:
