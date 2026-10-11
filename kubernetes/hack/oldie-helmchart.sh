@@ -14,6 +14,10 @@
 #   FORCE_VERSION      apply this chart version on an existing HelmChart only if it is strictly
 #                      greater than the live spec.version; on first create it overrides the
 #                      deployed version
+#   REGISTRY_SECRET    name of a kubernetes.io/dockerconfigjson Secret in kube-system with a ghcr.io
+#                      read:packages credential (spec.dockerRegistrySecret): the chart is private and
+#                      the helm-controller pulls it itself. Never a credential value (oldie:secrets
+#                      creates the Secret from .env.oldie).
 #   DRY_RUN=1          print the manifest instead of applying it
 #   WAIT_TIMEOUT       wait for the helm-install Job (default 10m)
 #   KUBECTL, HELM      binaries (default kubectl, helm); KUBECONFIG is honoured as usual
@@ -35,7 +39,7 @@ WAIT_TIMEOUT=${WAIT_TIMEOUT:-10m}
 # Secrets live in Kubernetes Secrets; the chart must reference them by name. Fail on any
 # secret-looking key with a literal value (references such as existingSecret/secretName/*Ref are fine).
 secret_key='(password|passwd|token|secret|key)'
-ref_key='(existingSecret|secretName|secretRef|secretKeyRef|[A-Za-z]*Ref|[A-Za-z]*SecretName)'
+ref_key='(existingSecret|secretName|secretRef|secretKeyRef|[A-Za-z]*Ref|[A-Za-z]*SecretName|registryTokenSecret)'
 bad=$(grep -inE "^[[:space:]-]*[A-Za-z0-9_.-]*${secret_key}[A-Za-z0-9_.-]*:[[:space:]]*[^[:space:]#{|>]" "$VALUES_FILE" |
   grep -viE "^[0-9]+:[[:space:]-]*${ref_key}:" | grep -viE ':[[:space:]]*(true|false|null|""|'"''"')[[:space:]]*(#.*)?$' || true)
 if [ -n "$bad" ]; then
@@ -96,6 +100,12 @@ render() {
   [ -z "$version" ] || echo "  version: \"$version\""
   echo "  releaseName: $RELEASE_NAME"
   echo "  targetNamespace: $RELEASE_NAMESPACE"
+  echo "  createNamespace: true"
+  echo "  timeout: 20m"
+  if [ -n "${REGISTRY_SECRET:-}" ]; then
+    echo "  dockerRegistrySecret:"
+    echo "    name: $REGISTRY_SECRET"
+  fi
   echo "  valuesContent: |-"
   while IFS= read -r line || [ -n "$line" ]; do
     if [ -n "$line" ]; then printf '    %s\n' "$line"; else echo; fi

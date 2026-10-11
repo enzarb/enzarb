@@ -48,6 +48,21 @@ grep -q 'version: "2.1.0"' <<< "$out" || fail "should upgrade"
 if GET_ERROR='Unable to connect to the server' run "$tmp/ok.yaml" > /dev/null 2>&1; then fail "API error must not mean missing"; fi
 if GET_ERROR='Error from server (Forbidden): forbidden' run "$tmp/ok.yaml" > /dev/null 2>&1; then fail "RBAC error must not mean missing"; fi
 
+# Private chart: the pull Secret is referenced by name only.
+out=$(REGISTRY_SECRET=enzarb-chart-registry run "$tmp/ok.yaml")
+grep -q 'dockerRegistrySecret:' <<< "$out" || fail "dockerRegistrySecret"
+grep -q '    name: enzarb-chart-registry' <<< "$out" || fail "dockerRegistrySecret name"
+out=$(run "$tmp/ok.yaml")
+! grep -q 'dockerRegistrySecret' <<< "$out" || fail "no registry secret unless asked"
+
+# A reference to a Secret by name (registryTokenSecret) is not a literal secret.
+printf 'secrets:\n  updater:\n    registryTokenSecret: enzarb-updater-registry\n' > "$tmp/ref.yaml"
+run "$tmp/ref.yaml" > /dev/null || fail "secret references must pass the guard"
+
+# Only the exact key registryTokenSecret is a reference: other *TokenSecret keys with literals are refused.
+printf 'secrets:\n  githubTokenSecret: ghp_abcdef123456\n' > "$tmp/bad2.yaml"
+if run "$tmp/bad2.yaml" > /dev/null 2>&1; then fail "literal under githubTokenSecret must be rejected"; fi
+
 # Secret guard.
 if run "$tmp/bad.yaml" > /dev/null 2>&1; then fail "literal secret must be rejected"; fi
 
