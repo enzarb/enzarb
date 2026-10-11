@@ -289,7 +289,7 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 
 ## 10. GitHub App
 
-- **Permissions:** Issues RW, Pull requests RW, Contents RW, Checks RW, Metadata R.
+- **Permissions:** Issues RW, Pull requests RW, Contents RW, Workflows RW, Checks RW, Metadata R. Read-write run tokens minted by `mint_clone_credential` (single repo) carry `contents`, `pull_requests` and `workflows` write so agents can edit `.github/workflows`; read tokens omit `workflows` (GitHub has no read level).
 - **Events:** issues, issue_comment, pull_request, pull_request_review, pull_request_review_comment, installation, installation_repositories.
 - **Webhook URL:** `https://<host>/hooks/github`.
 - **Install link and refresh:** `https://github.com/apps/<slug>/installations/new`. At sign-in the UI uses the user-to-server token once (never stored) to snapshot the repositories reachable through installations of this App (`GET /user/installations`, `GET /user/installations/{id}/repositories`) into `app.user_repositories`. `GET /login/github?refresh=1&return=<same-origin path>` re-runs that flow. Set the App's **Setup URL** to `<public>/login/github?refresh=1` with "Redirect on update" enabled so users land back in enzarb after installing.
