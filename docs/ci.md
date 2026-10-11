@@ -55,7 +55,7 @@ Every enzarb repo's GitHub Actions setup follows these rules. The goals are fast
 A PR that changes CI states before/after wall-clock times for the PR run and the main run, taken from the Actions UI or `gh run view --json jobs`.
 
 ## Releases
-Every image repo (`enzarb-ui`, `-workflows`, `-connectors`, `-sandbox-proxy`, `-sandbox-operator`, `-sandbox-container`) and `enzarb-helm` runs the same `.github/workflows/release.yml`. The canonical copy is `docs/ci/release.yml` here; edit it and run `mise run ci:sync-release` (`--check` reports drift).
+Every image repo (`enzarb-ui`, `-workflows`, `-connectors`, `-sandbox-proxy`, `-sandbox-operator`, `-sandbox-container`, `-realtime`) and `enzarb-helm` runs the same `.github/workflows/release.yml`. The canonical copy is `docs/ci/release.yml` here; edit it and run `mise run ci:sync-release` (`--check` reports drift).
 
 - **Versions come from commits.** After `ci` succeeds on `main`, the workflow reads the Conventional Commits since the last `v*` tag: `feat` bumps minor, `fix`/`perf`/`revert` bump patch, `type!:` or a `BREAKING CHANGE:` footer bumps major (while 0.x, breaking and `feat` both bump minor). History with only `chore`/`docs`/`ci`/`test`/`refactor` releases nothing. The first release of a repo is `v0.1.0`. Use Conventional Commit subjects (squash-merge titles included) and the rest follows.
 - **Tag and release.** The workflow creates the annotated tag and a GitHub Release with generated notes, using `ENZARB_RELEASE_TOKEN` (not `GITHUB_TOKEN`: tags pushed with that token do not trigger workflows). The tag push runs `ci` again, whose `docker` job pushes `ghcr.io/enzarb/<image>:<version>` (and `latest`).
