@@ -10,14 +10,19 @@ use axum::{
 
 use crate::{
     charts::Charts,
-    filter::{self, Filtered, ReleaseEvent, Upgrade},
+    filter::{self, Filtered, ReleaseEvent},
+    poll::PollHealth,
     registry::Registry,
     signature,
+    update::{self, Outcome},
 };
 
 #[derive(Clone)]
 pub struct AppState {
-    pub secret: Arc<Vec<u8>>,
+    /// Webhook secret. `None` disables the webhook: `/hook` is not routed (404).
+    pub secret: Option<Arc<Vec<u8>>>,
+    /// Set when polling is on; `/readyz` then reflects the last poll.
+    pub poll: Option<Arc<PollHealth>>,
     pub registry: Arc<dyn Registry>,
     pub charts: Arc<dyn Charts>,
     /// Serializes read-compare-apply so concurrent deliveries cannot apply out of order.
@@ -25,10 +30,13 @@ pub struct AppState {
 }
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
-        .route("/hook", post(hook))
+    let mut r = Router::new()
         .route("/healthz", get(|| async { "ok" }))
-        .with_state(state)
+        .route("/readyz", get(readyz));
+    if state.secret.is_some() {
+        r = r.route("/hook", post(hook));
+    }
+    r.with_state(state)
 }
 
 fn hdr<'a>(h: &'a HeaderMap, k: &str) -> Option<&'a str> {
@@ -40,7 +48,10 @@ async fn hook(
     headers: HeaderMap,
     body: Bytes,
 ) -> (StatusCode, &'static str) {
-    if !signature::verify(&st.secret, &body, hdr(&headers, "x-hub-signature-256")) {
+    let Some(secret) = &st.secret else {
+        return (StatusCode::NOT_FOUND, "webhook disabled");
+    };
+    if !signature::verify(secret, &body, hdr(&headers, "x-hub-signature-256")) {
         tracing::warn!(decision = "reject", reason = "bad signature");
         return (StatusCode::UNAUTHORIZED, "bad signature");
     }
@@ -80,40 +91,23 @@ async fn hook(
         }
     }
 
-    let _guard = st.lock.lock().await;
-    let current = match st.charts.current_version().await {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!(decision = "error", version = %v, error = %format!("{e:#}"), reason = "read HelmChart");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "cannot read HelmChart");
-        }
-    };
-    match filter::compare(&version, current.as_deref()) {
-        Err(e) => {
-            tracing::error!(decision = "error", version = %v, error = %e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "current version unparsable",
-            )
-        }
-        Ok(Upgrade::Equal) => {
-            tracing::info!(decision = "noop", version = %v, current = current.as_deref(), reason = "already at version");
-            (StatusCode::OK, "no-op")
-        }
-        Ok(Upgrade::Older) => {
-            tracing::info!(decision = "noop", version = %v, current = current.as_deref(), reason = "older than current, never downgrade");
-            (StatusCode::OK, "no-op")
-        }
-        Ok(Upgrade::Patch) => match st.charts.set_version(&v).await {
-            Ok(()) => {
-                tracing::info!(decision = "patched", version = %v, from = current.as_deref());
-                (StatusCode::OK, "patched")
-            }
-            Err(e) => {
-                tracing::error!(decision = "error", version = %v, error = %format!("{e:#}"), reason = "patch HelmChart");
-                (StatusCode::INTERNAL_SERVER_ERROR, "patch failed")
-            }
-        },
+    match update::apply(&*st.charts, &st.lock, &version, "webhook").await {
+        Outcome::Patched => (StatusCode::OK, "patched"),
+        Outcome::Noop => (StatusCode::OK, "no-op"),
+        Outcome::Missing => (StatusCode::OK, "no HelmChart, nothing to do"),
+        Outcome::Unparsable(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "current version unparsable",
+        ),
+        Outcome::ReadFailed => (StatusCode::INTERNAL_SERVER_ERROR, "cannot read HelmChart"),
+        Outcome::PatchFailed => (StatusCode::INTERNAL_SERVER_ERROR, "patch failed"),
+    }
+}
+
+async fn readyz(State(st): State<AppState>) -> (StatusCode, &'static str) {
+    match &st.poll {
+        Some(h) if !h.ok() => (StatusCode::SERVICE_UNAVAILABLE, "last poll failed"),
+        _ => (StatusCode::OK, "ok"),
     }
 }
 
@@ -127,7 +121,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-    use crate::signature::sign;
+    use crate::{charts::Current, signature::sign};
 
     const SECRET: &[u8] = b"whsec";
 
@@ -137,15 +131,18 @@ mod tests {
         async fn chart_exists(&self, _: &str) -> Result<bool> {
             self.0.clone().map_err(|e| anyhow!(e))
         }
+        async fn list_tags(&self) -> Result<Vec<String>> {
+            Ok(vec![])
+        }
     }
 
     struct FakeCharts {
-        current: Option<String>,
+        current: Current,
         set: Mutex<Vec<String>>,
     }
     #[async_trait]
     impl Charts for FakeCharts {
-        async fn current_version(&self) -> Result<Option<String>> {
+        async fn current(&self) -> Result<Current> {
             Ok(self.current.clone())
         }
         async fn set_version(&self, v: &str) -> Result<()> {
@@ -166,17 +163,18 @@ mod tests {
 
     async fn call(
         reg: Result<bool, String>,
-        current: Option<&str>,
+        current: Current,
         event: &str,
         body: Vec<u8>,
         sig: Option<String>,
     ) -> (StatusCode, Vec<String>) {
         let charts = Arc::new(FakeCharts {
-            current: current.map(Into::into),
+            current,
             set: Mutex::new(vec![]),
         });
         let app = router(AppState {
-            secret: Arc::new(SECRET.to_vec()),
+            secret: Some(Arc::new(SECRET.to_vec())),
+            poll: None,
             registry: Arc::new(FakeRegistry(reg)),
             charts: charts.clone(),
             lock: Default::default(),
@@ -192,6 +190,10 @@ mod tests {
         (st, set)
     }
 
+    fn cur(v: &str) -> Current {
+        Current::Present(Some(v.into()))
+    }
+
     fn rel(tag: &str) -> Vec<u8> {
         payload("published", filter::REPO, tag)
     }
@@ -200,7 +202,7 @@ mod tests {
     async fn bad_signature_is_401() {
         let (st, set) = call(
             Ok(true),
-            Some("1.0.0"),
+            cur("1.0.0"),
             "release",
             rel("v1.1.0"),
             Some("sha256=00".into()),
@@ -213,11 +215,27 @@ mod tests {
     #[tokio::test]
     async fn ping_ok_and_other_events_ignored() {
         assert_eq!(
-            call(Ok(true), None, "ping", b"{}".to_vec(), None).await.0,
+            call(
+                Ok(true),
+                Current::Present(None),
+                "ping",
+                b"{}".to_vec(),
+                None
+            )
+            .await
+            .0,
             StatusCode::OK
         );
         assert_eq!(
-            call(Ok(true), None, "push", b"{}".to_vec(), None).await.0,
+            call(
+                Ok(true),
+                Current::Present(None),
+                "push",
+                b"{}".to_vec(),
+                None
+            )
+            .await
+            .0,
             StatusCode::ACCEPTED
         );
     }
@@ -226,7 +244,7 @@ mod tests {
     async fn filtered_releases_are_202() {
         let (st, set) = call(
             Ok(true),
-            Some("1.0.0"),
+            cur("1.0.0"),
             "release",
             payload("created", filter::REPO, "v1.1.0"),
             None,
@@ -235,37 +253,98 @@ mod tests {
         assert_eq!((st, set.len()), (StatusCode::ACCEPTED, 0));
         let (st, _) = call(
             Ok(true),
-            Some("1.0.0"),
+            cur("1.0.0"),
             "release",
             payload("published", "x/y", "v1.1.0"),
             None,
         )
         .await;
         assert_eq!(st, StatusCode::ACCEPTED);
-        let (st, _) = call(Ok(true), Some("1.0.0"), "release", rel("v1.1.0-rc.1"), None).await;
+        let (st, _) = call(Ok(true), cur("1.0.0"), "release", rel("v1.1.0-rc.1"), None).await;
         assert_eq!(st, StatusCode::ACCEPTED);
     }
 
     #[tokio::test]
     async fn upgrade_patches() {
-        let (st, set) = call(Ok(true), Some("1.0.0"), "release", rel("v1.1.0"), None).await;
+        let (st, set) = call(Ok(true), cur("1.0.0"), "release", rel("v1.1.0"), None).await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(set, vec!["1.1.0"]);
     }
 
     #[tokio::test]
     async fn equal_and_older_are_noops() {
-        for cur in ["1.1.0", "1.2.0"] {
-            let (st, set) = call(Ok(true), Some(cur), "release", rel("v1.1.0"), None).await;
+        for c in ["1.1.0", "1.2.0"] {
+            let (st, set) = call(Ok(true), cur(c), "release", rel("v1.1.0"), None).await;
             assert_eq!(st, StatusCode::OK);
             assert!(set.is_empty());
         }
     }
 
     #[tokio::test]
+    async fn missing_helmchart_is_a_noop_and_not_created() {
+        let (st, set) = call(Ok(true), Current::Missing, "release", rel("v1.1.0"), None).await;
+        assert_eq!(st, StatusCode::OK);
+        assert!(set.is_empty());
+    }
+
+    async fn status(app: Router, method: &str, path: &str) -> StatusCode {
+        let req = Request::builder()
+            .method(method)
+            .uri(path)
+            .body(Body::empty())
+            .unwrap();
+        app.oneshot(req).await.unwrap().status()
+    }
+
+    fn state(secret: Option<&[u8]>, poll: Option<Arc<PollHealth>>) -> AppState {
+        AppState {
+            secret: secret.map(|s| Arc::new(s.to_vec())),
+            poll,
+            registry: Arc::new(FakeRegistry(Ok(true))),
+            charts: Arc::new(FakeCharts {
+                current: Current::Missing,
+                set: Mutex::new(vec![]),
+            }),
+            lock: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn without_a_secret_hook_is_404() {
+        let app = router(state(None, None));
+        assert_eq!(
+            status(app.clone(), "POST", "/hook").await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(status(app, "GET", "/healthz").await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn readyz_reflects_last_poll() {
+        let h = Arc::new(PollHealth::default());
+        let app = router(state(None, Some(h.clone())));
+        assert_eq!(
+            status(app.clone(), "GET", "/readyz").await,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        h.set(true);
+        assert_eq!(status(app.clone(), "GET", "/readyz").await, StatusCode::OK);
+        h.set(false);
+        assert_eq!(
+            status(app, "GET", "/readyz").await,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        // polling off: always ready
+        assert_eq!(
+            status(router(state(Some(b"s"), None)), "GET", "/readyz").await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
     async fn missing_chart_or_registry_error_is_503() {
         for reg in [Ok(false), Err("boom".to_string())] {
-            let (st, set) = call(reg, Some("1.0.0"), "release", rel("v1.1.0"), None).await;
+            let (st, set) = call(reg, cur("1.0.0"), "release", rel("v1.1.0"), None).await;
             assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE);
             assert!(set.is_empty());
         }

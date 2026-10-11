@@ -1,10 +1,17 @@
 # enzarb-updater
 
-Keeps the cluster on the latest enzarb chart. When `enzarb/enzarb-helm` publishes a GitHub release, this service patches `spec.version` of the RKE2 `HelmChart` and the helm-controller upgrades. No database, no state, one binary.
+Keeps the cluster on the latest enzarb chart. It patches `spec.version` of the RKE2 `HelmChart` and the helm-controller upgrades. No database, no state, one binary.
 
-`POST /hook` (GitHub `release` webhook) and `GET /healthz` on `:8080`.
+Two triggers, both applying through the same never-downgrade, serialized logic:
 
-## Request flow
+- **Polling (default, needs nothing inbound).** Every `ENZARB_UPDATER_POLL_SECS` it lists the chart's tags in the OCI registry (`/v2/<repo>/tags/list`, all pages, same bearer-token flow), takes the highest plain `X.Y.Z` tag (prerelease, build metadata, `v` prefixes and non-semver tags are skipped) and applies it.
+- **Webhook (optional).** `POST /hook` (GitHub `release` webhook), only routed when `ENZARB_UPDATER_WEBHOOK_SECRET` is set; otherwise `/hook` is 404.
+
+`GET /healthz` (liveness, always ok) and `GET /readyz` (503 while the last poll failed or has not run yet; always ok when polling is off) on `:8080`.
+
+The `HelmChart` is never created by the updater (the RBAC grants no `create`): if it does not exist it logs `HelmChart does not exist` and does nothing. The cluster bootstrap creates it once.
+
+## Webhook request flow
 
 1. Verify `X-Hub-Signature-256` (HMAC-SHA256, constant-time) with `ENZARB_UPDATER_WEBHOOK_SECRET`. 401 otherwise.
 2. `X-GitHub-Event: ping` -> 200. Any other event except `release` -> 202 ignored.
@@ -18,9 +25,10 @@ Every decision is logged as one JSON line (`decision` = `ping|ignore|reject|retr
 
 | Var | Default | |
 |---|---|---|
-| `ENZARB_UPDATER_WEBHOOK_SECRET` | required | GitHub webhook secret |
+| `ENZARB_UPDATER_WEBHOOK_SECRET` | unset | GitHub webhook secret; unset disables `/hook` (404) |
+| `ENZARB_UPDATER_POLL_SECS` | `300` | registry poll interval; `0` disables polling, otherwise at least 30. At least one of secret and polling is required |
 | `ENZARB_UPDATER_CHART` | `oci://ghcr.io/enzarb/charts/enzarb` | chart ref `enzarb-helm`'s `publish.yml` pushes |
-| `ENZARB_UPDATER_REGISTRY_TOKEN` | unset | token with `read:packages` (the GHCR chart is private) |
+| `ENZARB_UPDATER_REGISTRY_TOKEN` | unset | token with `read:packages` (the GHCR chart is private); sent only to the registry host over https |
 | `ENZARB_UPDATER_HELMCHART` | `enzarb` | `HelmChart` name |
 | `ENZARB_UPDATER_NAMESPACE` | `kube-system` | `HelmChart` namespace |
 | `ENZARB_UPDATER_LISTEN` | `0.0.0.0:8080` | |
@@ -47,7 +55,7 @@ rules:
 - Run a single replica (updates are serialized in-process only).
 - The updater takes ownership of `spec.version` (forced server-side apply). If the chart template also renders the `HelmChart`, leave `spec.version` out of it or helm upgrades will fight the updater.
 - `spec.version` must be plain semver (a leading `v` is tolerated); a range or `*` makes every delivery fail with 500 and is never overwritten.
-- The `HelmChart` must already exist; a missing one is a 500.
+- The `HelmChart` must already exist; a missing one is logged and left alone (webhook answers 200, a poll counts as successful).
 
 ## Build
 

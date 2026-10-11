@@ -10,11 +10,20 @@ use kube::{
 
 pub const FIELD_MANAGER: &str = "enzarb-updater";
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum Current {
+    Missing,
+    /// The HelmChart exists; its `spec.version` if set.
+    Present(Option<String>),
+}
+
 #[async_trait]
 pub trait Charts: Send + Sync {
-    /// Current `spec.version`; `None` if the field is unset. Errors if the HelmChart is missing.
-    async fn current_version(&self) -> Result<Option<String>>;
-    /// Server-side apply of `spec.version` only.
+    /// The HelmChart's state. A missing HelmChart is `Current::Missing`, never an error: the
+    /// cluster bootstrap owns its creation.
+    async fn current(&self) -> Result<Current>;
+    /// Server-side apply of `spec.version` only. The RBAC grants no `create`, so this cannot
+    /// create a HelmChart that was deleted since `current`.
     async fn set_version(&self, version: &str) -> Result<()>;
 }
 
@@ -35,9 +44,13 @@ impl KubeCharts {
 
 #[async_trait]
 impl Charts for KubeCharts {
-    async fn current_version(&self) -> Result<Option<String>> {
-        let o = self.api.get(&self.name).await?;
-        Ok(o.data["spec"]["version"].as_str().map(String::from))
+    async fn current(&self) -> Result<Current> {
+        match self.api.get_opt(&self.name).await? {
+            None => Ok(Current::Missing),
+            Some(o) => Ok(Current::Present(
+                o.data["spec"]["version"].as_str().map(String::from),
+            )),
+        }
     }
 
     async fn set_version(&self, version: &str) -> Result<()> {
