@@ -4,10 +4,11 @@ use std::time::Duration;
 
 use chrono::{SecondsFormat, Utc};
 use enzarb_connector::{
-    Actor, ChangeRequestSpec, CommentKind, CommitRef, Connector, CredScope, Error, ItemKind,
-    Permission, Progress, ProgressTarget, RepoKey, Status, StatusState, WorkItemKey,
+    Actor, ChangeRequestSpec, CiState, CommentKind, CommitRef, Connector, CredScope, Error,
+    ItemKind, MergeOutcome, MergeReadiness, Permission, Progress, ProgressTarget, RepoKey, Status,
+    StatusState, WorkItemKey,
 };
-use enzarb_connector_github::{GitHubConfig, GitHubConnector, RetryPolicy};
+use enzarb_connector_github::{CommitStatusChange, GitHubConfig, GitHubConnector, RetryPolicy};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde_json::{Value, json};
 use wiremock::matchers::{body_json, header, method, path, query_param};
@@ -1008,4 +1009,396 @@ async fn fetch_thread_pr_merges_review_comments_in_time_order() {
     assert_eq!(t.item.head_ref.as_deref(), Some("enzarb/issue-42"));
     let bodies: Vec<_> = t.comments.iter().map(|c| c.comment.body.as_str()).collect();
     assert_eq!(bodies, ["first", "second (inline)", "third"]);
+}
+
+// ---- merge ----
+
+const HEAD: &str = "4f9c2a1b";
+
+fn pull_state(merged: bool, mergeable: Value, state: &str) -> Value {
+    let mut v = pr_json(7);
+    v["merged"] = json!(merged);
+    v["merge_commit_sha"] = if merged {
+        json!("mergedsha")
+    } else {
+        Value::Null
+    };
+    v["mergeable"] = mergeable;
+    v["mergeable_state"] = json!(state);
+    v
+}
+
+/// One-shot `GET pulls/7` responses are consumed in mount order.
+async fn mount_pull(server: &MockServer, body: Value, times: Option<u64>) {
+    let mock = Mock::given(method("GET"))
+        .and(path("/repos/enzarb/enzarb-ui/pulls/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body));
+    match times {
+        Some(n) => mock.up_to_n_times(n).mount(server).await,
+        None => mock.mount(server).await,
+    }
+}
+
+async fn mount_put_merge(server: &MockServer, resp: ResponseTemplate, calls: u64) {
+    Mock::given(method("PUT"))
+        .and(path("/repos/enzarb/enzarb-ui/pulls/7/merge"))
+        .and(body_json(json!({
+            "merge_method": "squash",
+            "sha": HEAD,
+            "commit_title": "feat: thing",
+            "commit_message": "details",
+        })))
+        .respond_with(resp)
+        .expect(calls)
+        .mount(server)
+        .await;
+}
+
+async fn merge(c: &GitHubConnector) -> MergeOutcome {
+    c.merge_change_request(&item(7), 7, HEAD, "feat: thing", Some("details"), "k")
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn merge_squashes_with_expected_head() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    mount_pull(&server, pull_state(false, json!(true), "clean"), None).await;
+    mount_put_merge(
+        &server,
+        ResponseTemplate::new(200)
+            .set_body_json(json!({"sha": "newsha", "merged": true, "message": "ok"})),
+        1,
+    )
+    .await;
+    assert_eq!(
+        merge(&connector(&server)).await,
+        MergeOutcome::Merged {
+            sha: "newsha".into()
+        }
+    );
+}
+
+#[tokio::test]
+async fn merge_without_body_omits_commit_message() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    mount_pull(&server, pull_state(false, json!(true), "clean"), None).await;
+    Mock::given(method("PUT"))
+        .and(path("/repos/enzarb/enzarb-ui/pulls/7/merge"))
+        .and(body_json(json!({
+            "merge_method": "squash", "sha": HEAD, "commit_title": "feat: thing",
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"sha": "s", "merged": true})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let out = connector(&server)
+        .merge_change_request(&item(7), 7, HEAD, "feat: thing", None, "k")
+        .await
+        .unwrap();
+    assert_eq!(out, MergeOutcome::Merged { sha: "s".into() });
+}
+
+#[tokio::test]
+async fn merge_405_is_not_mergeable_with_reason() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    // Checked before the PUT and again after the refusal.
+    Mock::given(method("GET"))
+        .and(path("/repos/enzarb/enzarb-ui/pulls/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(pull_state(
+            false,
+            json!(false),
+            "dirty",
+        )))
+        .expect(2)
+        .mount(&server)
+        .await;
+    mount_put_merge(
+        &server,
+        ResponseTemplate::new(405)
+            .set_body_json(json!({"message": "Pull Request is not mergeable"})),
+        1,
+    )
+    .await;
+    assert_eq!(
+        merge(&connector(&server)).await,
+        MergeOutcome::NotMergeable {
+            reason: "Pull Request is not mergeable".into()
+        }
+    );
+}
+
+#[tokio::test]
+async fn merge_409_is_head_moved() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    mount_pull(&server, pull_state(false, json!(true), "clean"), None).await;
+    mount_put_merge(
+        &server,
+        ResponseTemplate::new(409).set_body_json(
+            json!({"message": "Head branch was modified. Review and try the merge again."}),
+        ),
+        1,
+    )
+    .await;
+    assert_eq!(merge(&connector(&server)).await, MergeOutcome::HeadMoved);
+}
+
+#[tokio::test]
+async fn merge_of_merged_pr_is_idempotent_without_put() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    mount_pull(&server, pull_state(true, json!(null), "unknown"), None).await;
+    mount_put_merge(&server, ResponseTemplate::new(200), 0).await;
+    let c = connector(&server);
+    let want = MergeOutcome::AlreadyMerged {
+        sha: Some("mergedsha".into()),
+    };
+    assert_eq!(merge(&c).await, want);
+    assert_eq!(merge(&c).await, want);
+}
+
+#[tokio::test]
+async fn merge_refusal_after_concurrent_merge_resolves_to_already_merged() {
+    for status in [405u16, 409] {
+        let server = MockServer::start().await;
+        mount_auth(&server, 3600, 1, 1).await;
+        mount_pull(&server, pull_state(false, json!(true), "clean"), Some(1)).await;
+        mount_pull(&server, pull_state(true, json!(null), "unknown"), None).await;
+        mount_put_merge(
+            &server,
+            ResponseTemplate::new(status).set_body_json(json!({"message": "nope"})),
+            1,
+        )
+        .await;
+        assert_eq!(
+            merge(&connector(&server)).await,
+            MergeOutcome::AlreadyMerged {
+                sha: Some("mergedsha".into())
+            },
+            "status {status}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn merge_other_errors_are_errors() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    mount_pull(&server, pull_state(false, json!(true), "clean"), None).await;
+    mount_put_merge(
+        &server,
+        ResponseTemplate::new(403).set_body_json(json!({"message": "Resource not accessible"})),
+        1,
+    )
+    .await;
+    let err = connector(&server)
+        .merge_change_request(&item(7), 7, HEAD, "feat: thing", Some("details"), "k")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::PermissionDenied(_)), "{err:?}");
+}
+
+// ---- readiness ----
+
+fn run_json(status: &str, conclusion: Option<&str>) -> Value {
+    json!({"status": status, "conclusion": conclusion, "name": "x"})
+}
+
+async fn mount_checks(server: &MockServer, total: u64, page: Option<u64>, runs: Vec<Value>) {
+    let mock = Mock::given(method("GET")).and(path(format!(
+        "/repos/enzarb/enzarb-ui/commits/{HEAD}/check-runs"
+    )));
+    let mock = match page {
+        Some(p) => mock.and(query_param("page", p.to_string())),
+        None => mock,
+    };
+    mock.respond_with(
+        ResponseTemplate::new(200).set_body_json(json!({"total_count": total, "check_runs": runs})),
+    )
+    .mount(server)
+    .await;
+}
+
+async fn mount_combined(server: &MockServer, total: u64, state: &str) {
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/repos/enzarb/enzarb-ui/commits/{HEAD}/status"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"state": state, "total_count": total, "statuses": [], "sha": HEAD}),
+        ))
+        .mount(server)
+        .await;
+}
+
+async fn readiness(
+    mergeable: Value,
+    state: &str,
+    statuses: (u64, &str),
+    runs: Vec<Value>,
+) -> MergeReadiness {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    mount_pull(&server, pull_state(false, mergeable, state), None).await;
+    mount_combined(&server, statuses.0, statuses.1).await;
+    mount_checks(&server, runs.len() as u64, None, runs).await;
+    connector(&server)
+        .get_merge_readiness(&item(7), 7)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn readiness_mergeable_null_is_unknown_not_false() {
+    let r = readiness(json!(null), "unknown", (0, "pending"), vec![]).await;
+    assert_eq!(r.mergeable, None);
+    assert_eq!(r.mergeable_state, "unknown");
+    assert_eq!(r.head_sha, HEAD);
+    // No checks and no statuses: a repo without CI passes.
+    assert_eq!(r.ci, CiState::Success);
+}
+
+#[tokio::test]
+async fn readiness_mergeable_true_and_false() {
+    let ok = vec![
+        run_json("completed", Some("success")),
+        run_json("completed", Some("neutral")),
+        run_json("completed", Some("skipped")),
+    ];
+    let r = readiness(json!(true), "clean", (1, "success"), ok.clone()).await;
+    assert_eq!(r.mergeable, Some(true));
+    assert_eq!(r.mergeable_state, "clean");
+    assert_eq!(r.ci, CiState::Success);
+
+    let r = readiness(json!(false), "dirty", (1, "success"), ok).await;
+    assert_eq!(r.mergeable, Some(false));
+    assert_eq!(r.mergeable_state, "dirty");
+}
+
+#[tokio::test]
+async fn readiness_mixed_check_results() {
+    let pending = vec![
+        run_json("completed", Some("success")),
+        run_json("completed", Some("neutral")),
+        run_json("in_progress", None),
+    ];
+    let r = readiness(json!(true), "blocked", (0, "pending"), pending.clone()).await;
+    assert_eq!(r.ci, CiState::Pending);
+
+    let mut failing = pending;
+    failing.push(run_json("completed", Some("failure")));
+    let r = readiness(json!(true), "blocked", (0, "pending"), failing).await;
+    assert_eq!(r.ci, CiState::Failure);
+
+    // Statuses count too.
+    let r = readiness(
+        json!(true),
+        "blocked",
+        (2, "failure"),
+        vec![run_json("completed", Some("success"))],
+    )
+    .await;
+    assert_eq!(r.ci, CiState::Failure);
+    let r = readiness(json!(true), "blocked", (1, "pending"), vec![]).await;
+    assert_eq!(r.ci, CiState::Pending);
+}
+
+#[tokio::test]
+async fn readiness_reads_every_check_run_page() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    mount_pull(&server, pull_state(false, json!(true), "clean"), None).await;
+    mount_combined(&server, 0, "pending").await;
+    let first: Vec<Value> = (0..100)
+        .map(|_| run_json("completed", Some("success")))
+        .collect();
+    mount_checks(&server, 101, Some(1), first).await;
+    mount_checks(
+        &server,
+        101,
+        Some(2),
+        vec![run_json("completed", Some("failure"))],
+    )
+    .await;
+    let r = connector(&server)
+        .get_merge_readiness(&item(7), 7)
+        .await
+        .unwrap();
+    assert_eq!(r.ci, CiState::Failure);
+}
+
+// ---- status -> pull requests ----
+
+fn status_change() -> CommitStatusChange {
+    CommitStatusChange {
+        delivery: "delivery-1".into(),
+        repo: repo(),
+        sha: HEAD.into(),
+        state: CiState::Success,
+        context: Some("ci/jenkins".into()),
+        url: Some("https://ci.example.com/1".into()),
+        actor: Actor {
+            login: "ci-user".into(),
+            id: 43,
+            is_bot: false,
+        },
+        time: None,
+    }
+}
+
+#[tokio::test]
+async fn resolve_commit_status_maps_open_prs_with_that_head() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    let mut closed = pr_json(8);
+    closed["state"] = json!("closed");
+    let mut moved = pr_json(9);
+    moved["head"]["sha"] = json!("othersha");
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/repos/enzarb/enzarb-ui/commits/{HEAD}/pulls"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            pr_json(7),
+            closed,
+            moved,
+            pr_json(10)
+        ])))
+        .mount(&server)
+        .await;
+    let evs = connector(&server)
+        .resolve_commit_status(&status_change())
+        .await
+        .unwrap();
+    let numbers: Vec<_> = evs.iter().map(|e| e.subject.number).collect();
+    assert_eq!(numbers, [7, 10]);
+    assert_eq!(evs[0].id, "delivery-1");
+    assert_eq!(evs[1].id, "delivery-1#pr10");
+    let ci = evs[0].data.ci.as_ref().unwrap();
+    assert_eq!(ci.state, CiState::Success);
+    assert_eq!(ci.context.as_deref(), Some("ci/jenkins"));
+    assert_eq!(ci.head_sha, HEAD);
+    assert_eq!(evs[0].data.item.title, "Fix sidebar overflow");
+}
+
+#[tokio::test]
+async fn resolve_commit_status_without_prs_is_empty() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/repos/enzarb/enzarb-ui/commits/{HEAD}/pulls"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    let evs = connector(&server)
+        .resolve_commit_status(&status_change())
+        .await
+        .unwrap();
+    assert!(evs.is_empty());
 }

@@ -4,9 +4,10 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use enzarb_connector::{
-    Actor, ChangeRequestSpec, CommentKind, CommentRef, CommitRef, Connector, CredScope, Error,
-    ItemRef, Permission, Progress, ProgressTarget, RepoKey, Result, ShortLivedCred, Status,
-    StatusState, Thread, ThreadComment, WorkItemKey,
+    Actor, ChangeRequestSpec, CheckSummary, CiInfo, CommentKind, CommentRef, CommitRef, Connector,
+    CredScope, Error, Event, ItemRef, MergeOutcome, MergeReadiness, Permission, Progress,
+    ProgressTarget, RepoKey, Result, ShortLivedCred, Status, StatusState, StatusSummary, Thread,
+    ThreadComment, WorkItemKey, aggregate_ci,
 };
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use reqwest::Method;
@@ -15,7 +16,10 @@ use serde_json::{Value, json};
 
 use crate::config::{BotIdentity, ConfigError, GitHubConfig};
 use crate::http::{Http, Resp, expect};
-use crate::normalize::{Comment, Issue, NormalizeError, Normalized, PullRequest, SOURCE, User};
+use crate::normalize::{
+    Branch, Comment, CommitStatusChange, Issue, NormalizeError, Normalized, PullRequest, SOURCE,
+    User, ci_events,
+};
 
 /// Installation tokens are refreshed once they are within this long of expiry.
 const TOKEN_REFRESH_MARGIN: Duration = Duration::minutes(5);
@@ -214,6 +218,19 @@ impl GitHubConnector {
         path: &str,
         body: Option<Value>,
     ) -> Result<Resp> {
+        let resp = self.call_raw(repo, method, path, body).await?;
+        expect(what, resp)
+    }
+
+    /// Like [`call`](Self::call) but returns non-2xx responses as-is, for
+    /// callers that give specific statuses their own meaning.
+    async fn call_raw(
+        &self,
+        repo: &RepoKey,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Resp> {
         github_repo(repo)?;
         let token = self.token(repo).await?;
         let resp = self
@@ -225,10 +242,103 @@ impl GitHubConnector {
             let id = self.installation_id(repo).await?;
             self.tokens.lock().unwrap().remove(&id);
             let token = self.token(repo).await?;
-            let resp = self.http.send(method, path, &token, body.as_ref()).await?;
-            return expect(what, resp);
+            return self.http.send(method, path, &token, body.as_ref()).await;
         }
-        expect(what, resp)
+        Ok(resp)
+    }
+
+    /// GETs every page of an endpoint that wraps its list in an object
+    /// (`{"total_count": n, "<key>": [...]}`). Returns the first page's whole
+    /// body (for sibling fields such as the combined `state`) and all items.
+    async fn get_all_wrapped<T: serde::de::DeserializeOwned>(
+        &self,
+        repo: &RepoKey,
+        what: &str,
+        path: &str,
+        key: &str,
+    ) -> Result<(Value, Vec<T>)> {
+        let sep = if path.contains('?') { '&' } else { '?' };
+        let mut first = Value::Null;
+        let mut total = 0u64;
+        let mut out: Vec<T> = Vec::new();
+        for page in 1..=MAX_PAGES {
+            let p = format!("{path}{sep}per_page={PER_PAGE}&page={page}");
+            let root: Value = self.call(repo, what, Method::GET, &p, None).await?.json()?;
+            let items: Vec<T> =
+                serde_json::from_value(root.get(key).cloned().unwrap_or(Value::Array(vec![])))
+                    .map_err(|e| Error::Other(format!("unexpected GitHub response: {e}")))?;
+            if page == 1 {
+                total = root["total_count"].as_u64().unwrap_or(0);
+                first = root;
+            }
+            let n = items.len();
+            out.extend(items);
+            if n < PER_PAGE || out.len() as u64 >= total {
+                break;
+            }
+        }
+        Ok((first, out))
+    }
+
+    /// `AlreadyMerged` if the pull request is merged, else `None`.
+    async fn merged_outcome(&self, repo: &RepoKey, number: u64) -> Result<Option<MergeOutcome>> {
+        let pr = self.pull_state(repo, number).await?;
+        Ok(pr.merged.then_some(MergeOutcome::AlreadyMerged {
+            sha: pr.merge_commit_sha,
+        }))
+    }
+
+    async fn pull_state(&self, repo: &RepoKey, number: u64) -> Result<PullState> {
+        self.call(
+            repo,
+            "get pull request",
+            Method::GET,
+            &format!("/repos/{}/pulls/{number}", repo.full_name()),
+            None,
+        )
+        .await?
+        .json()
+    }
+
+    /// Turns a `status` delivery into `CiStatusChanged` events for the open
+    /// pull requests whose head is the status's commit. Empty when there are
+    /// none (a branch without a PR, or a commit GitHub cannot find).
+    pub async fn resolve_commit_status(&self, change: &CommitStatusChange) -> Result<Vec<Event>> {
+        let r = &change.repo;
+        let prs: Vec<PullRequest> = match self
+            .get_all(
+                r,
+                "list pull requests for commit",
+                &format!("/repos/{}/commits/{}/pulls", r.full_name(), change.sha),
+            )
+            .await
+        {
+            Ok(prs) => prs,
+            Err(Error::NotFound(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        let items: Vec<ItemRef> = prs
+            .iter()
+            .filter(|pr| {
+                pr.state.as_deref() == Some("open")
+                    && pr.head.sha.as_deref() == Some(change.sha.as_str())
+            })
+            .map(PullRequest::item)
+            .collect();
+        let ci = CiInfo {
+            head_sha: change.sha.clone(),
+            state: change.state,
+            context: change.context.clone(),
+            url: change.url.clone(),
+        };
+        Ok(ci_events(
+            &change.delivery,
+            r,
+            &change.actor,
+            change.time,
+            &ci,
+            items,
+        ))
     }
 
     /// GETs every page of a list endpoint.
@@ -300,6 +410,29 @@ struct IssueComment {
     #[serde(flatten)]
     c: Comment,
     user: User,
+}
+
+/// The parts of `GET /pulls/{n}` that merging and readiness read.
+#[derive(Deserialize)]
+struct PullState {
+    #[serde(default)]
+    merged: bool,
+    #[serde(default)]
+    merge_commit_sha: Option<String>,
+    head: Branch,
+    /// `null` while GitHub computes it.
+    #[serde(default)]
+    mergeable: Option<bool>,
+    #[serde(default)]
+    mergeable_state: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CheckRun {
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    conclusion: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -515,6 +648,108 @@ impl Connector for GitHubConnector {
             }
         }
         Ok(())
+    }
+
+    async fn merge_change_request(
+        &self,
+        item: &WorkItemKey,
+        number: u64,
+        expected_head_sha: &str,
+        commit_title: &str,
+        commit_body: Option<&str>,
+        _idempotency_key: &str,
+    ) -> Result<MergeOutcome> {
+        let r = &item.repo;
+        github_repo(r)?;
+        // GitHub has no marker for an idempotency key; a merged PR is the record.
+        if let Some(done) = self.merged_outcome(r, number).await? {
+            return Ok(done);
+        }
+        let mut body = json!({
+            "merge_method": "squash",
+            "sha": expected_head_sha,
+            "commit_title": commit_title,
+        });
+        if let Some(b) = commit_body {
+            body["commit_message"] = b.into();
+        }
+        let resp = self
+            .call_raw(
+                r,
+                Method::PUT,
+                &format!("/repos/{}/pulls/{number}/merge", r.full_name()),
+                Some(body),
+            )
+            .await?;
+        match resp.status {
+            reqwest::StatusCode::METHOD_NOT_ALLOWED | reqwest::StatusCode::CONFLICT => {
+                // A concurrent or earlier attempt may have won.
+                if let Some(done) = self.merged_outcome(r, number).await? {
+                    return Ok(done);
+                }
+                if resp.status == reqwest::StatusCode::CONFLICT {
+                    return Ok(MergeOutcome::HeadMoved);
+                }
+                let reason = serde_json::from_slice::<Value>(&resp.body)
+                    .ok()
+                    .and_then(|v| v["message"].as_str().map(str::to_string))
+                    .unwrap_or_else(|| "not mergeable".to_string());
+                Ok(MergeOutcome::NotMergeable { reason })
+            }
+            _ => {
+                #[derive(Deserialize)]
+                struct Merged {
+                    sha: String,
+                }
+                let resp = expect("merge pull request", resp)?;
+                Ok(MergeOutcome::Merged {
+                    sha: resp.json::<Merged>()?.sha,
+                })
+            }
+        }
+    }
+
+    async fn get_merge_readiness(&self, item: &WorkItemKey, number: u64) -> Result<MergeReadiness> {
+        let r = &item.repo;
+        let pr = self.pull_state(r, number).await?;
+        let head_sha = pr
+            .head
+            .sha
+            .ok_or_else(|| Error::Other(format!("pull request {number} has no head sha")))?;
+        let name = r.full_name();
+        let (combined, _): (Value, Vec<Value>) = self
+            .get_all_wrapped(
+                r,
+                "get combined status",
+                &format!("/repos/{name}/commits/{head_sha}/status"),
+                "statuses",
+            )
+            .await?;
+        let (_, runs): (Value, Vec<CheckRun>) = self
+            .get_all_wrapped(
+                r,
+                "list check runs",
+                &format!("/repos/{name}/commits/{head_sha}/check-runs"),
+                "check_runs",
+            )
+            .await?;
+        let checks: Vec<CheckSummary> = runs
+            .into_iter()
+            .map(|c| CheckSummary {
+                status: c.status,
+                conclusion: c.conclusion,
+            })
+            .collect();
+        let statuses = StatusSummary {
+            total_count: combined["total_count"].as_u64().unwrap_or(0),
+            state: combined["state"].as_str().unwrap_or_default().to_string(),
+        };
+        Ok(MergeReadiness {
+            head_sha,
+            mergeable: pr.mergeable,
+            mergeable_state: pr.mergeable_state.unwrap_or_default(),
+            ci: aggregate_ci(&checks, &statuses),
+        })
     }
 
     async fn check_permission(&self, repo: &RepoKey, actor: &Actor) -> Result<Permission> {

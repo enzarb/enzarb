@@ -1,0 +1,20 @@
+{
+  "action": "completed",
+  "check_suite": {
+    "id": 9003,
+    "head_branch": "scratch",
+    "head_sha": "1111111111111111111111111111111111111111",
+    "status": "completed",
+    "conclusion": "success",
+    "updated_at": "2026-10-09T10:10:00Z",
+    "app": { "id": 15368, "slug": "github-actions", "name": "GitHub Actions" },
+    "pull_requests": []
+  },
+  "repository": {
+    "id": 600100200,
+    "name": "enzarb-ui",
+    "full_name": "enzarb/enzarb-ui",
+    "owner": { "login": "enzarb", "id": 7, "type": "Organization" }
+  },
+  "sender": { "login": "ruckc", "id": 42, "type": "User" }
+}

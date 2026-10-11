@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 
 use crate::{
-    Actor, ChangeRequestSpec, CommentRef, CommitRef, CredScope, ItemRef, Permission, Progress,
-    ProgressTarget, RepoKey, Result, ShortLivedCred, Status, Thread, WorkItemKey,
+    Actor, ChangeRequestSpec, CommentRef, CommitRef, CredScope, ItemRef, MergeOutcome,
+    MergeReadiness, Permission, Progress, ProgressTarget, RepoKey, Result, ShortLivedCred, Status,
+    Thread, WorkItemKey,
 };
 
 /// Outbound operations against a provider.
@@ -46,6 +47,31 @@ pub trait Connector: Send + Sync {
         progress: Progress,
         idempotency_key: &str,
     ) -> Result<()>;
+
+    /// Squash-merges change request `number`, but only if its head is still
+    /// `expected_head_sha`. Called only on a user's explicit action.
+    ///
+    /// A refused merge is a [`MergeOutcome`], not an `Err`. Idempotency comes
+    /// from the change request's state rather than from `idempotency_key`
+    /// (providers have no marker for it): a change request that is already
+    /// merged yields `AlreadyMerged`, so repeating the call is safe.
+    async fn merge_change_request(
+        &self,
+        item: &WorkItemKey,
+        number: u64,
+        expected_head_sha: &str,
+        commit_title: &str,
+        commit_body: Option<&str>,
+        idempotency_key: &str,
+    ) -> Result<MergeOutcome>;
+
+    /// Current mergeability and aggregate CI of a change request's head.
+    ///
+    /// `ci` covers all checks and statuses on the head (see
+    /// [`aggregate_ci`](crate::aggregate_ci)); consumers should call this to
+    /// re-evaluate rather than fold `CiStatusChanged` events. `mergeable` is
+    /// `None` while the provider is still computing it.
+    async fn get_merge_readiness(&self, item: &WorkItemKey, number: u64) -> Result<MergeReadiness>;
 
     async fn check_permission(&self, repo: &RepoKey, actor: &Actor) -> Result<Permission>;
 

@@ -17,6 +17,7 @@ mod webhook;
 pub use config::{BotIdentity, ConfigError, GitHubConfig, RetryPolicy};
 pub use connector::GitHubConnector;
 pub use normalize::{
-    APPROVED_LABEL, InstallationChange, NormalizeError, Normalized, SOURCE, normalize,
+    APPROVED_LABEL, CommitStatusChange, InstallationChange, NormalizeError, Normalized, SOURCE,
+    normalize,
 };
 pub use webhook::{sign, verify_signature};

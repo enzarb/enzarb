@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{Actor, CommentRef, ItemRef, RepoKey, WorkItemKey};
+use crate::{Actor, CiState, CommentRef, ItemRef, RepoKey, WorkItemKey};
 
 pub const SPECVERSION: &str = "1.0";
 
@@ -15,10 +15,12 @@ pub enum EventType {
     ChangeRequestUpdated,
     ReviewSubmitted,
     WorkItemClosed,
+    /// A check run, check suite or commit status finished on a change request's head.
+    CiStatusChanged,
 }
 
 impl EventType {
-    pub const ALL: [EventType; 8] = [
+    pub const ALL: [EventType; 9] = [
         EventType::WorkItemOpened,
         EventType::CommentAdded,
         EventType::Mentioned,
@@ -27,6 +29,7 @@ impl EventType {
         EventType::ChangeRequestUpdated,
         EventType::ReviewSubmitted,
         EventType::WorkItemClosed,
+        EventType::CiStatusChanged,
     ];
 
     /// The wire name, as in the envelope's `type` attribute.
@@ -40,6 +43,7 @@ impl EventType {
             EventType::ChangeRequestUpdated => "ChangeRequestUpdated",
             EventType::ReviewSubmitted => "ReviewSubmitted",
             EventType::WorkItemClosed => "WorkItemClosed",
+            EventType::CiStatusChanged => "CiStatusChanged",
         }
     }
 }
@@ -51,6 +55,20 @@ pub struct Review {
     pub state: String,
     #[serde(default)]
     pub body: String,
+}
+
+/// `data.ci` of a `CiStatusChanged` event: the result of one check run, check
+/// suite or commit status. This is not the aggregate for the head; call
+/// `Connector::get_merge_readiness` for that.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CiInfo {
+    pub head_sha: String,
+    pub state: CiState,
+    /// Check or status name, when the provider gives one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +84,9 @@ pub struct EventData {
     /// `ReviewSubmitted` only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review: Option<Review>,
+    /// `CiStatusChanged` only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ci: Option<CiInfo>,
 }
 
 /// CloudEvents-style envelope; this is `workflows.events.payload`.

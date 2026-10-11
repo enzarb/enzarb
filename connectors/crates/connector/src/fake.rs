@@ -1,6 +1,6 @@
 //! In-memory [`Connector`] that records calls, for tests (feature `fake`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, MutexGuard};
 
 use async_trait::async_trait;
@@ -8,8 +8,8 @@ use chrono::{Duration, Utc};
 
 use crate::{
     Actor, ChangeRequestSpec, CommentRef, CommitRef, Connector, CredScope, Error, ItemKind,
-    ItemRef, Permission, Progress, ProgressTarget, RepoKey, Result, ShortLivedCred, Status, Thread,
-    ThreadComment, WorkItemKey,
+    ItemRef, MergeOutcome, MergeReadiness, Permission, Progress, ProgressTarget, RepoKey, Result,
+    ShortLivedCred, Status, Thread, ThreadComment, WorkItemKey,
 };
 
 /// One call made against the fake, with its arguments.
@@ -46,6 +46,18 @@ pub enum Call {
         scope: CredScope,
         idempotency_key: String,
     },
+    MergeChangeRequest {
+        item: WorkItemKey,
+        number: u64,
+        expected_head_sha: String,
+        commit_title: String,
+        commit_body: Option<String>,
+        idempotency_key: String,
+    },
+    GetMergeReadiness {
+        item: WorkItemKey,
+        number: u64,
+    },
 }
 
 /// A recorded call. `replayed` is true when the idempotency key had been seen
@@ -72,6 +84,9 @@ struct State {
     seen_creds: HashMap<String, ShortLivedCred>,
     next_id: u64,
     fail_next: Option<Error>,
+    merge_outcomes: VecDeque<MergeOutcome>,
+    seen_merges: HashMap<String, MergeOutcome>,
+    readiness: HashMap<WorkItemKey, MergeReadiness>,
 }
 
 /// Records every call and keeps simple in-memory state. Cheap to share by
@@ -105,6 +120,17 @@ impl FakeConnector {
     /// Permission returned for actors without a specific entry (default: none).
     pub fn set_default_permission(&self, permission: Permission) {
         self.st().default_permission = Some(permission);
+    }
+
+    /// Queue the outcome of the next `merge_change_request` that has an unseen
+    /// idempotency key. With the queue empty, merges succeed with a fake sha.
+    pub fn queue_merge_outcome(&self, outcome: MergeOutcome) {
+        self.st().merge_outcomes.push_back(outcome);
+    }
+
+    /// Seed the readiness returned for `item` (repeatable; last one wins).
+    pub fn set_merge_readiness(&self, item: WorkItemKey, readiness: MergeReadiness) {
+        self.st().readiness.insert(item, readiness);
     }
 
     /// Make the next call (any method) fail with `error`, once.
@@ -295,6 +321,57 @@ impl Connector for FakeConnector {
         }
         Self::record(&mut st, call, replayed);
         Ok(())
+    }
+
+    async fn merge_change_request(
+        &self,
+        item: &WorkItemKey,
+        number: u64,
+        expected_head_sha: &str,
+        commit_title: &str,
+        commit_body: Option<&str>,
+        idempotency_key: &str,
+    ) -> Result<MergeOutcome> {
+        let mut st = self.st();
+        let call = Call::MergeChangeRequest {
+            item: item.clone(),
+            number,
+            expected_head_sha: expected_head_sha.to_string(),
+            commit_title: commit_title.to_string(),
+            commit_body: commit_body.map(str::to_string),
+            idempotency_key: idempotency_key.to_string(),
+        };
+        Self::take_failure(&mut st, call.clone())?;
+        if let Some(prev) = st.seen_merges.get(idempotency_key).cloned() {
+            Self::record(&mut st, call, true);
+            return Ok(prev);
+        }
+        st.next_id += 1;
+        let id = st.next_id;
+        let outcome = st
+            .merge_outcomes
+            .pop_front()
+            .unwrap_or_else(|| MergeOutcome::Merged {
+                sha: format!("fake-merge-{id}"),
+            });
+        st.seen_merges
+            .insert(idempotency_key.to_string(), outcome.clone());
+        Self::record(&mut st, call, false);
+        Ok(outcome)
+    }
+
+    async fn get_merge_readiness(&self, item: &WorkItemKey, number: u64) -> Result<MergeReadiness> {
+        let mut st = self.st();
+        let call = Call::GetMergeReadiness {
+            item: item.clone(),
+            number,
+        };
+        Self::take_failure(&mut st, call.clone())?;
+        Self::record(&mut st, call, false);
+        st.readiness
+            .get(item)
+            .cloned()
+            .ok_or_else(|| Error::NotFound(format!("{item} readiness")))
     }
 
     async fn check_permission(&self, repo: &RepoKey, actor: &Actor) -> Result<Permission> {

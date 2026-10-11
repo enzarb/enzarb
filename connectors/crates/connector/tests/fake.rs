@@ -139,3 +139,58 @@ async fn usable_as_trait_object() {
     let f: Box<dyn Connector> = Box::new(FakeConnector::new());
     f.post_comment(&item(), "hi", "k").await.unwrap();
 }
+
+#[tokio::test]
+async fn merge_is_scripted_idempotent_and_recorded() {
+    let f = FakeConnector::new();
+    f.queue_merge_outcome(MergeOutcome::HeadMoved);
+    let a = f
+        .merge_change_request(&item(), 1, "abc", "feat: x", Some("body"), "m1")
+        .await
+        .unwrap();
+    assert_eq!(a, MergeOutcome::HeadMoved);
+    // Same key replays the first outcome, without consuming the queue.
+    f.queue_merge_outcome(MergeOutcome::NotMergeable {
+        reason: "conflicts".into(),
+    });
+    let b = f
+        .merge_change_request(&item(), 1, "abc", "feat: x", Some("body"), "m1")
+        .await
+        .unwrap();
+    assert_eq!(a, b);
+    let c = f
+        .merge_change_request(&item(), 1, "abc", "feat: x", None, "m2")
+        .await
+        .unwrap();
+    assert!(matches!(c, MergeOutcome::NotMergeable { .. }));
+    let d = f
+        .merge_change_request(&item(), 1, "abc", "feat: x", None, "m3")
+        .await
+        .unwrap();
+    assert!(matches!(d, MergeOutcome::Merged { .. }));
+    assert_eq!(f.calls().len(), 4);
+    assert!(f.calls()[1].replayed);
+    assert!(matches!(
+        &f.calls()[0].call,
+        Call::MergeChangeRequest { expected_head_sha, commit_body: Some(_), .. }
+            if expected_head_sha == "abc"
+    ));
+}
+
+#[tokio::test]
+async fn readiness_is_seeded() {
+    let f = FakeConnector::new();
+    assert!(matches!(
+        f.get_merge_readiness(&item(), 1).await,
+        Err(Error::NotFound(_))
+    ));
+    let r = MergeReadiness {
+        head_sha: "abc".into(),
+        mergeable: None,
+        mergeable_state: "unknown".into(),
+        ci: CiState::Pending,
+    };
+    f.set_merge_readiness(item(), r.clone());
+    assert_eq!(f.get_merge_readiness(&item(), 1).await.unwrap(), r);
+    assert_eq!(f.calls().len(), 2);
+}

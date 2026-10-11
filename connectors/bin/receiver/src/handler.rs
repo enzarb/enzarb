@@ -2,7 +2,7 @@
 //!
 //! * `POST /hooks/github`: 401 bad/missing signature, 400 missing headers or
 //!   malformed payload, 204 nothing to ingest (ping, unmapped action, bot
-//!   events), 202 accepted (events ingested, duplicates are no-ops, or an
+//!   events, a `status` with no open PR or without App credentials), 202 accepted (events ingested, duplicates are no-ops, or an
 //!   installation change applied), 500 database failure (GitHub may redeliver).
 //! * `GET /healthz`: process is up. `GET /readyz`: database reachable.
 
@@ -14,7 +14,7 @@ use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use enzarb_connector::Event;
-use enzarb_connector_github::{BotIdentity, Normalized, verify_signature};
+use enzarb_connector_github::{BotIdentity, GitHubConnector, Normalized, verify_signature};
 use sqlx::PgPool;
 
 /// GitHub caps webhook payloads at 25 MiB.
@@ -27,11 +27,28 @@ struct Inner {
     pool: PgPool,
     secret: Vec<u8>,
     bot: BotIdentity,
+    /// Only needed to resolve `status` deliveries to pull requests.
+    connector: Option<GitHubConnector>,
 }
 
 impl AppState {
     pub fn new(pool: PgPool, secret: Vec<u8>, bot: BotIdentity) -> Self {
-        Self(Arc::new(Inner { pool, secret, bot }))
+        Self(Arc::new(Inner {
+            pool,
+            secret,
+            bot,
+            connector: None,
+        }))
+    }
+
+    /// Adds App credentials so `status` webhooks can be mapped to pull
+    /// requests. Call before the state is cloned.
+    pub fn with_connector(self, connector: GitHubConnector) -> Self {
+        let inner = Arc::into_inner(self.0).expect("with_connector before sharing the state");
+        Self(Arc::new(Inner {
+            connector: Some(connector),
+            ..inner
+        }))
     }
 }
 
@@ -84,16 +101,24 @@ async fn github(State(st): State<AppState>, headers: HeaderMap, body: Bytes) -> 
 
     match normalized {
         Normalized::Events { events } if events.is_empty() => StatusCode::NO_CONTENT,
-        Normalized::Events { events } => match ingest(&st.0.pool, events).await {
-            Ok((new, dup)) => {
-                tracing::info!(delivery, event_name, new, dup, "ingested");
-                StatusCode::ACCEPTED
+        Normalized::Events { events } => ingest_response(&st, delivery, event_name, events).await,
+        Normalized::CommitStatus { status } => {
+            // A status names no pull request; look them up. Without App
+            // credentials the receiver cannot, so such deliveries are ignored
+            // (check_run / check_suite events still flow).
+            let Some(connector) = &st.0.connector else {
+                tracing::debug!(delivery, "status ignored: no GitHub App credentials");
+                return StatusCode::NO_CONTENT;
+            };
+            match connector.resolve_commit_status(&status).await {
+                Ok(events) if events.is_empty() => StatusCode::NO_CONTENT,
+                Ok(events) => ingest_response(&st, delivery, event_name, events).await,
+                Err(e) => {
+                    tracing::error!(delivery, event_name, "resolve status: {e}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }
             }
-            Err(e) => {
-                tracing::error!(delivery, event_name, "ingest: {e}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
-        },
+        }
         Normalized::Installation { change } => {
             let res = async {
                 let mut tx = st.0.pool.begin().await?;
@@ -108,6 +133,24 @@ async fn github(State(st): State<AppState>, headers: HeaderMap, body: Bytes) -> 
                     StatusCode::INTERNAL_SERVER_ERROR
                 }
             }
+        }
+    }
+}
+
+async fn ingest_response(
+    st: &AppState,
+    delivery: &str,
+    event_name: &str,
+    events: Vec<Event>,
+) -> StatusCode {
+    match ingest(&st.0.pool, events).await {
+        Ok((new, dup)) => {
+            tracing::info!(delivery, event_name, new, dup, "ingested");
+            StatusCode::ACCEPTED
+        }
+        Err(e) => {
+            tracing::error!(delivery, event_name, "ingest: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
         }
     }
 }

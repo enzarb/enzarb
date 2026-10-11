@@ -4,6 +4,7 @@
 
 use std::path::PathBuf;
 
+use enzarb_connector::CiState;
 use enzarb_connector::EventType::{self, *};
 use enzarb_connector_github::{Normalized, normalize};
 
@@ -25,7 +26,113 @@ fn types(n: &Normalized) -> Vec<EventType> {
     match n {
         Normalized::Events { events } => events.iter().map(|e| e.event_type).collect(),
         Normalized::Installation { .. } => panic!("installation change"),
+        Normalized::CommitStatus { .. } => panic!("commit status"),
     }
+}
+
+/// CI fixtures are asserted individually below instead of via goldens.
+const CI_FIXTURES: &[&str] = &[
+    "check_suite_completed_success",
+    "check_suite_completed_failure",
+    "check_suite_completed_no_pr",
+    "check_run_completed",
+    "check_run_by_bot_app",
+    "check_run_by_bot_sender",
+    "status_success",
+    "status_pending",
+    "status_by_bot",
+];
+
+fn ci_events_of(event: &str, fixture: &str) -> Vec<enzarb_connector::Event> {
+    match run(event, fixture) {
+        Normalized::Events { events } => events,
+        other => panic!("{fixture}: unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn check_suite_completed_maps_to_pr() {
+    let evs = ci_events_of("check_suite", "check_suite_completed_success");
+    assert_eq!(evs.len(), 1);
+    let e = &evs[0];
+    assert_eq!(e.event_type, CiStatusChanged);
+    assert_eq!(e.id, "d-check_suite_completed_success");
+    assert_eq!(e.subject.to_string(), "github:enzarb/enzarb-ui#57");
+    let ci = e.data.ci.as_ref().unwrap();
+    assert_eq!(ci.state, CiState::Success);
+    assert_eq!(ci.head_sha, "9fceb02d0ae598e95dc970b74767f19372d61af8");
+    assert_eq!(e.data.item.head_ref.as_deref(), Some("enzarb/issue-12"));
+    assert_eq!(e.data.item.base_ref.as_deref(), Some("main"));
+    assert_eq!(
+        e.data.item.url,
+        "https://github.com/enzarb/enzarb-ui/pull/57"
+    );
+
+    let evs = ci_events_of("check_suite", "check_suite_completed_failure");
+    assert_eq!(evs[0].data.ci.as_ref().unwrap().state, CiState::Failure);
+}
+
+#[test]
+fn check_run_completed_emits_one_event_per_pr() {
+    let evs = ci_events_of("check_run", "check_run_completed");
+    assert_eq!(evs.len(), 2);
+    assert_eq!(evs[0].id, "d-check_run_completed");
+    assert_eq!(evs[1].id, "d-check_run_completed#pr58");
+    assert_ne!(evs[0].dedupe_key(), evs[1].dedupe_key());
+    let ci = evs[0].data.ci.as_ref().unwrap();
+    assert_eq!(ci.state, CiState::Failure); // timed_out
+    assert_eq!(ci.context.as_deref(), Some("build"));
+    assert_eq!(
+        ci.url.as_deref(),
+        Some("https://github.com/enzarb/enzarb-ui/runs/8001")
+    );
+    assert_eq!(evs[1].subject.number, 58);
+}
+
+#[test]
+fn ci_without_a_pr_or_from_the_bot_is_dropped() {
+    assert!(ci_events_of("check_suite", "check_suite_completed_no_pr").is_empty());
+    // Owned by the bot's App although a human is the sender.
+    assert!(ci_events_of("check_run", "check_run_by_bot_app").is_empty());
+    // Sent by the bot although the run belongs to another App.
+    assert!(ci_events_of("check_run", "check_run_by_bot_sender").is_empty());
+    assert!(run("status", "status_by_bot").into_events().is_empty());
+    assert!(matches!(
+        run("status", "status_by_bot"),
+        Normalized::Events { .. }
+    ));
+}
+
+#[test]
+fn only_completed_check_actions_are_mapped() {
+    let body = std::fs::read(dir("fixtures").join("check_run_completed.json")).unwrap();
+    let text = String::from_utf8(body).unwrap().replacen(
+        "\"action\": \"completed\"",
+        "\"action\": \"created\"",
+        1,
+    );
+    let n = normalize("check_run", "d", text.as_bytes(), HANDLE, LOGIN).unwrap();
+    assert_eq!(types(&n), []);
+}
+
+#[test]
+fn status_becomes_commit_status() {
+    let Normalized::CommitStatus { status } = run("status", "status_success") else {
+        panic!("expected commit status");
+    };
+    assert_eq!(status.delivery, "d-status_success");
+    assert_eq!(status.repo.to_string(), "github:enzarb/enzarb-ui");
+    assert_eq!(status.sha, "9fceb02d0ae598e95dc970b74767f19372d61af8");
+    assert_eq!(status.state, CiState::Success);
+    assert_eq!(status.context.as_deref(), Some("ci/jenkins"));
+    assert_eq!(status.url.as_deref(), Some("https://ci.example.com/job/1"));
+    assert_eq!(status.actor.login, "ci-user");
+
+    let Normalized::CommitStatus { status } = run("status", "status_pending") else {
+        panic!("expected commit status");
+    };
+    assert_eq!(status.state, CiState::Pending);
+    assert_eq!(status.url, None);
 }
 
 /// (X-GitHub-Event, fixture name, expected event types in order)
@@ -159,6 +266,7 @@ fn every_fixture_is_covered() {
         .iter()
         .map(|c| c.1)
         .chain(INSTALLATION_CASES.iter().map(|c| c.1))
+        .chain(CI_FIXTURES.iter().copied())
         .collect();
     for f in std::fs::read_dir(dir("fixtures")).unwrap() {
         let name = f.unwrap().file_name().into_string().unwrap();

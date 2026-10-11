@@ -5,7 +5,8 @@
 use chrono::{DateTime, Utc};
 use enzarb_connector::command::{has_approve_command, mentions_handle};
 use enzarb_connector::{
-    Actor, CommentKind, CommentRef, Event, EventData, EventType, ItemKind, ItemRef, RepoKey, Review,
+    Actor, CheckSummary, CiInfo, CiState, CommentKind, CommentRef, Event, EventData, EventType,
+    ItemKind, ItemRef, RepoKey, Review, check_state,
 };
 use serde::{Deserialize, Serialize};
 
@@ -37,16 +38,85 @@ pub enum Normalized {
     /// App installed / removed / repositories changed. Not a workflow event;
     /// the receiver updates `connectors` state instead.
     Installation { change: Box<InstallationChange> },
+    /// A commit `status` delivery. It names no pull request, so turning it
+    /// into events needs an API lookup (`GitHubConnector::resolve_commit_status`).
+    CommitStatus { status: Box<CommitStatusChange> },
 }
 
 impl Normalized {
-    /// The work events, or an empty vec for an installation change.
+    /// The work events, or an empty vec for an installation change or a
+    /// commit status that is not yet resolved to pull requests.
     pub fn into_events(self) -> Vec<Event> {
         match self {
             Normalized::Events { events } => events,
-            Normalized::Installation { .. } => Vec::new(),
+            Normalized::Installation { .. } | Normalized::CommitStatus { .. } => Vec::new(),
         }
     }
+}
+
+/// A `status` delivery that did not come from the bot itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommitStatusChange {
+    /// Delivery id.
+    pub delivery: String,
+    pub repo: RepoKey,
+    pub sha: String,
+    pub state: CiState,
+    pub context: Option<String>,
+    pub url: Option<String>,
+    pub actor: Actor,
+    pub time: Option<DateTime<Utc>>,
+}
+
+/// One `CiStatusChanged` event per pull request. The first keeps the delivery
+/// id; the rest get `<delivery>#pr<number>` so each dedupe key is distinct.
+pub(crate) fn ci_events(
+    delivery: &str,
+    repo: &RepoKey,
+    actor: &Actor,
+    time: Option<DateTime<Utc>>,
+    ci: &CiInfo,
+    items: Vec<ItemRef>,
+) -> Vec<Event> {
+    items
+        .into_iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let id = if i == 0 {
+                delivery.to_string()
+            } else {
+                format!("{delivery}#pr{}", item.number)
+            };
+            Event::new(
+                SOURCE,
+                id,
+                EventType::CiStatusChanged,
+                time.unwrap_or_else(Utc::now),
+                EventData {
+                    repo: repo.clone(),
+                    actor: actor.clone(),
+                    item,
+                    comment: None,
+                    merged: None,
+                    review: None,
+                    ci: Some(ci.clone()),
+                },
+            )
+        })
+        .collect()
+}
+
+pub(crate) fn state_of_status(state: &str) -> CiState {
+    match state {
+        "success" => CiState::Success,
+        "failure" | "error" => CiState::Failure,
+        _ => CiState::Pending,
+    }
+}
+
+/// The App slug for a bot login: `enzarb[bot]` -> `enzarb`.
+fn bot_slug(bot_login: &str) -> &str {
+    bot_login.strip_suffix("[bot]").unwrap_or(bot_login)
 }
 
 /// An `installation` or `installation_repositories` delivery.
@@ -177,6 +247,8 @@ pub(crate) struct PullRequest {
     pub(crate) head: Branch,
     pub(crate) base: Branch,
     #[serde(default)]
+    pub(crate) state: Option<String>,
+    #[serde(default)]
     pub(crate) merged: Option<bool>,
     #[serde(default)]
     pub(crate) created_at: Option<DateTime<Utc>>,
@@ -239,6 +311,71 @@ struct ReviewPayload {
     submitted_at: Option<DateTime<Utc>>,
 }
 
+/// The pull request stub inside `check_suite` / `check_run` payloads.
+#[derive(Deserialize)]
+struct PrStub {
+    number: u64,
+    head: Branch,
+    base: Branch,
+}
+
+impl PrStub {
+    /// Title, body and author are not in the stub and stay empty.
+    fn item(&self, repo: &RepoKey) -> ItemRef {
+        ItemRef {
+            kind: ItemKind::ChangeRequest,
+            number: self.number,
+            url: format!(
+                "https://github.com/{}/pull/{}",
+                repo.full_name(),
+                self.number
+            ),
+            title: String::new(),
+            body: String::new(),
+            author: String::new(),
+            head_ref: Some(self.head.name.clone()),
+            base_ref: Some(self.base.name.clone()),
+            head_sha: self.head.sha.clone(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct AppStub {
+    #[serde(default)]
+    slug: String,
+}
+
+#[derive(Deserialize)]
+struct CheckSuitePayload {
+    head_sha: String,
+    #[serde(default)]
+    conclusion: Option<String>,
+    #[serde(default)]
+    app: Option<AppStub>,
+    #[serde(default)]
+    pull_requests: Vec<PrStub>,
+    #[serde(default)]
+    updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Deserialize)]
+struct CheckRunPayload {
+    head_sha: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    conclusion: Option<String>,
+    #[serde(default)]
+    html_url: Option<String>,
+    #[serde(default)]
+    app: Option<AppStub>,
+    #[serde(default)]
+    pull_requests: Vec<PrStub>,
+    #[serde(default)]
+    completed_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Deserialize)]
 struct Label {
     name: String,
@@ -280,6 +417,21 @@ struct Payload {
     review: Option<ReviewPayload>,
     #[serde(default)]
     label: Option<Label>,
+    #[serde(default)]
+    check_suite: Option<CheckSuitePayload>,
+    #[serde(default)]
+    check_run: Option<CheckRunPayload>,
+    // `status` events carry these at the top level.
+    #[serde(default)]
+    sha: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    context: Option<String>,
+    #[serde(default)]
+    target_url: Option<String>,
+    #[serde(default)]
+    updated_at: Option<DateTime<Utc>>,
     #[serde(default)]
     installation: Option<InstallationPayload>,
     #[serde(default)]
@@ -332,6 +484,9 @@ pub fn normalize(
             | "pull_request"
             | "pull_request_review"
             | "pull_request_review_comment"
+            | "check_suite"
+            | "check_run"
+            | "status"
     ) {
         return Ok(ignored);
     }
@@ -349,6 +504,32 @@ pub fn normalize(
         .ok_or_else(|| missing(event_name, "repository"))?
         .key();
 
+    if event_name == "status" {
+        let sha = p.sha.clone().ok_or_else(|| missing(event_name, "sha"))?;
+        let state = p
+            .state
+            .as_deref()
+            .ok_or_else(|| missing(event_name, "state"))?;
+        return Ok(Normalized::CommitStatus {
+            status: Box::new(CommitStatusChange {
+                delivery: delivery_id.to_string(),
+                repo,
+                sha,
+                state: state_of_status(state),
+                context: p.context.clone(),
+                url: p.target_url.clone().filter(|u| !u.is_empty()),
+                actor,
+                time: p.updated_at,
+            }),
+        });
+    }
+
+    let slug = bot_slug(bot_login);
+    let from_bot = |app: &Option<AppStub>| {
+        app.as_ref()
+            .is_some_and(|a| a.slug.eq_ignore_ascii_case(slug))
+    };
+
     let mut b = Builder {
         delivery: delivery_id,
         repo,
@@ -357,6 +538,44 @@ pub fn normalize(
     };
 
     match (event_name, p.action.as_str()) {
+        ("check_suite", "completed") => {
+            let cs = p
+                .check_suite
+                .as_ref()
+                .ok_or_else(|| missing(event_name, "check_suite"))?;
+            if !from_bot(&cs.app) {
+                let ci = CiInfo {
+                    head_sha: cs.head_sha.clone(),
+                    state: check_state(&CheckSummary {
+                        status: "completed".into(),
+                        conclusion: cs.conclusion.clone(),
+                    }),
+                    context: None,
+                    url: None,
+                };
+                let items = cs.pull_requests.iter().map(|pr| pr.item(&b.repo)).collect();
+                b.out = ci_events(delivery_id, &b.repo, &b.actor, cs.updated_at, &ci, items);
+            }
+        }
+        ("check_run", "completed") => {
+            let cr = p
+                .check_run
+                .as_ref()
+                .ok_or_else(|| missing(event_name, "check_run"))?;
+            if !from_bot(&cr.app) {
+                let ci = CiInfo {
+                    head_sha: cr.head_sha.clone(),
+                    state: check_state(&CheckSummary {
+                        status: "completed".into(),
+                        conclusion: cr.conclusion.clone(),
+                    }),
+                    context: cr.name.clone(),
+                    url: cr.html_url.clone(),
+                };
+                let items = cr.pull_requests.iter().map(|pr| pr.item(&b.repo)).collect();
+                b.out = ci_events(delivery_id, &b.repo, &b.actor, cr.completed_at, &ci, items);
+            }
+        }
         ("issues", "opened") => {
             let i = p
                 .issue
@@ -542,6 +761,7 @@ impl Builder<'_> {
             comment,
             merged: None,
             review: None,
+            ci: None,
         }
     }
 

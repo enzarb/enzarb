@@ -103,3 +103,64 @@ fn permission_ordering() {
     assert!(!Permission::Triage.can_write());
     assert!(Permission::None < Permission::Read);
 }
+
+fn ci_event_json(ci: Option<&str>) -> String {
+    let ci = ci.map(|c| format!(r#","ci":{c}"#)).unwrap_or_default();
+    format!(
+        r#"{{"specversion":"1.0","source":"github","id":"d1","type":"CiStatusChanged",
+"subject":"github:enzarb/enzarb-ui#7","time":"2026-10-08T12:00:00Z",
+"data":{{"repo":"github:enzarb/enzarb-ui","actor":{{"login":"ci","id":1}},
+"item":{{"kind":"change_request","number":7,"url":"u"}}{ci}}}}}"#
+    )
+}
+
+#[test]
+fn ci_status_changed_round_trips() {
+    let raw = ci_event_json(Some(
+        r#"{"head_sha":"abc","state":"failure","context":"build","url":"https://x/1"}"#,
+    ));
+    let ev: Event = serde_json::from_str(&raw).unwrap();
+    assert_eq!(ev.event_type, EventType::CiStatusChanged);
+    let ci = ev.data.ci.clone().unwrap();
+    assert_eq!(ci.state, CiState::Failure);
+    assert_eq!(ci.context.as_deref(), Some("build"));
+    let v = serde_json::to_value(&ev).unwrap();
+    assert_eq!(v["data"]["ci"]["state"], "failure");
+    assert_eq!(serde_json::from_value::<Event>(v).unwrap(), ev);
+}
+
+#[test]
+fn ci_optional_fields_and_old_payloads() {
+    let ev: Event = serde_json::from_str(&ci_event_json(Some(
+        r#"{"head_sha":"abc","state":"pending"}"#,
+    )))
+    .unwrap();
+    let v = serde_json::to_value(&ev).unwrap();
+    assert!(v["data"]["ci"].get("context").is_none());
+    assert!(v["data"]["ci"].get("url").is_none());
+
+    // Payloads from before `ci` existed still deserialize and omit it again.
+    let (raw, old) = load("comment_added");
+    assert!(old.data.ci.is_none());
+    let want: Value = serde_json::from_str(&raw).unwrap();
+    assert!(want["data"].get("ci").is_none());
+    assert!(
+        serde_json::to_value(&old).unwrap()["data"]
+            .get("ci")
+            .is_none()
+    );
+}
+
+#[test]
+fn ci_event_type_registered() {
+    assert_eq!(EventType::ALL.len(), 9);
+    assert!(EventType::ALL.contains(&EventType::CiStatusChanged));
+    assert_eq!(EventType::CiStatusChanged.as_str(), "CiStatusChanged");
+    assert_eq!(
+        serde_json::from_str::<EventType>("\"CiStatusChanged\"").unwrap(),
+        EventType::CiStatusChanged
+    );
+    for s in ["success", "failure", "pending"] {
+        assert!(serde_json::from_str::<CiState>(&format!("\"{s}\"")).is_ok());
+    }
+}

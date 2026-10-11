@@ -47,11 +47,14 @@ async fn migrate() -> Result<(), BoxErr> {
 async fn serve() -> Result<(), BoxErr> {
     let cfg = Config::from_env()?;
     let pool = db::connect(&cfg.database_url, 10).await?;
-    let app = enzarb_receiver::router(enzarb_receiver::AppState::new(
-        pool,
-        cfg.webhook_secret,
-        cfg.bot,
-    ));
+    let mut state = enzarb_receiver::AppState::new(pool, cfg.webhook_secret, cfg.bot);
+    // Optional: with App credentials, `status` webhooks are mapped to PRs.
+    if std::env::var_os("GITHUB_APP_ID").is_some() {
+        state = state.with_connector(enzarb_connector_github::GitHubConnector::from_env()?);
+    } else {
+        tracing::info!("GITHUB_APP_ID not set: `status` webhooks will be ignored");
+    }
+    let app = enzarb_receiver::router(state);
     let listener = tokio::net::TcpListener::bind(&cfg.listen).await?;
     tracing::info!(addr = %cfg.listen, "receiver listening");
     axum::serve(listener, app)
