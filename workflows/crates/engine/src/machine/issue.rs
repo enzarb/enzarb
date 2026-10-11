@@ -579,6 +579,7 @@ fn handoff(ctx: &Ctx, ev: &EngineEvent, mut d: IssueData, pr: ItemRef) -> Transi
             comment: None,
             merged: None,
             review: None,
+            ci: None,
         },
     );
     fx.effects.push(Effect::StartWorkflow {

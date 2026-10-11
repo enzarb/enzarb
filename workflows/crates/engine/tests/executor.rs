@@ -1343,6 +1343,7 @@ async fn open_issue(pool: &PgPool, n: u64) {
         },
         comment: None,
         merged: None,
+        ci: None,
         review: None,
     };
     let ev = Event::new("github", "d1", EventType::WorkItemOpened, Utc::now(), data);

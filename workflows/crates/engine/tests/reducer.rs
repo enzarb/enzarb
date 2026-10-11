@@ -118,6 +118,7 @@ async fn ingest(
         }),
         merged: None,
         review: None,
+        ci: None,
     };
     let ev = Event::new("github", delivery, ty, Utc::now(), data);
     sqlx::query_scalar("SELECT workflows_api.ingest_event($1, $2, $3, $4, $5)")

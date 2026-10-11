@@ -93,6 +93,7 @@ fn conn(
         }),
         merged: None,
         review: None,
+        ci: None,
     };
     EngineEvent {
         id: id.into(),
@@ -2320,6 +2321,7 @@ fn from_row_parses_every_event_type() {
                 comment: None,
                 merged: None,
                 review: None,
+                ci: None,
             },
         );
         let payload = serde_json::to_value(&e).unwrap();
