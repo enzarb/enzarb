@@ -85,6 +85,9 @@ Repo key: a repository's **repo key** is `<connector>:<owner>/<repo>`, e.g. `git
 - **Protocol steps:** `initialize`, then `session/new` (mode `default`), then `session/prompt`.
 - **Permissions:** every `session/request_permission` is answered by the policy with `allow_once` or `reject_once`, never persistent options.
   - Edits are limited to the worktree.
+  - Reads (Read/Grep/Glob and read-only shell utilities) may also reach the Project's other repo checkouts and worktrees (`/workspace/repos`, `/workspace/worktrees`). Writes, `cd` and docker bind mounts stay inside the run's own worktree (enzarb-sandbox-container#27).
+  - `git -C <dir>` is allowed only for a `<dir>` in the read roots and a read-only subcommand (`status`, `log`, `show`, `diff`, `rev-parse`, `ls-files`, `ls-tree`, `grep`, `blame`, `branch --list`, `cat-file`).
+  - Secrets are unreadable under any root: `.enzarb` (including `claude-token`), `.git-credentials`, `.gitconfig`, `.netrc`, git credential helper config.
   - Commands must match the allowlist; shell metacharacters and expansions are denied.
   - Network fetch is denied unless the host is allowlisted.
 - **Summary:** the verbatim agent text of the turn. `exit_code` is 0 on `end_turn`, the agent's code on a crash, and null when cancelled or timed out.
@@ -237,6 +240,18 @@ workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated
 - **JWT:** HS256, signed with `ENZARB_SESSION_JWT_SECRET`, which ui and proxy share. Claims: `sub` (GitHub login), `project`, `aud: "enzarb-sandbox-proxy"`, `exp` (≤ 5 min after issue; it is checked only at connect).
 - **Proxy authorization:** the proxy checks that `sub` is the Project's `spec.owner`, resolves `status.sandbox.endpoint` and the auth Secret, and dials sandbox-init with `client: "proxy"`.
 
+### 7a. Browser realtime stream (enzarb-realtime)
+
+- **URL:** `wss://<host>/live/v1/stream?token=<jwt>`.
+- **JWT:** HS256, signed with `ENZARB_REALTIME_JWT_SECRET`, which ui and enzarb-realtime share. Claims: `sub` (GitHub login), `projects` (array of Project names the user can see), `aud: "enzarb-realtime"`, `exp` (≤ 5 min after issue; checked at connect). The ui mints it from a remote function. Invalid or missing token: HTTP 401 before the upgrade.
+- **Expiry:** the server closes the socket at `exp` (never later than 5 min after connect) with close code **4001**; the client fetches a fresh token, reconnects and refetches.
+- **Frames** (server to client, JSON text; client messages are ignored):
+  - `{"topic":"work_item","id":123,"project":"enzarb"}`, sent only to clients whose `projects` contain `project`;
+  - `{"topic":"resync"}`, sent to all clients: refetch everything. Sent after the service's LISTEN connection was re-established, when a work item's project could not be resolved, and when a client's bounded buffer overflowed.
+- **Keepalive:** ping every 15 s; clients that do not pong are dropped. `GET /healthz` (liveness) and `GET /readyz` (200 only while LISTEN is connected).
+- **Database:** the service `LISTEN`s on `work_item_changed` (section 6) and resolves id to project with `SELECT project FROM workflows_api.work_item_v WHERE id = $1`. Runtime role `enzarb_realtime` needs `USAGE` on `workflows_api` and `SELECT` on `workflows_api.work_item_v` only (follow-up: grant in `enzarb-workflows` migrations, pgop Role in `enzarb-helm`).
+- **Routing:** `/live/` to enzarb-realtime:8080 (follow-up in `enzarb-helm`).
+
 ## 8. HTTP routes (one host, Envoy Gateway)
 
 - **Gateway:** `enzarb` in namespace `enzarb-system` (from enzarb-kubernetes), listeners http:80 and https:443 with TLS secret `enzarb-tls`.
@@ -246,6 +261,7 @@ workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated
 |---|---|---|
 | `/` | enzarb-ui | 3000 |
 | `/sandbox/` | enzarb-sandbox-proxy | 8080 |
+| `/live/` | enzarb-realtime (planned) | 8080 |
 | `/hooks/` | enzarb-connectors receiver (`/hooks/github`) | 8080 |
 
 Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/healthz`).
@@ -256,6 +272,8 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 |---|---|
 | `DATABASE_URL` | ui, receiver, workflows (`postgres:///enzarb` plus `PG*` env vars from pgop Role secret `enzarb-pg-<role>-credentials`; see database.md) |
 | `ENZARB_SESSION_JWT_SECRET` | ui, sandbox-proxy |
+| `ENZARB_REALTIME_JWT_SECRET` | ui, enzarb-realtime |
+| `ENZARB_REALTIME_LISTEN` (`0.0.0.0:8080`), `ENZARB_REALTIME_PING_SECS` (15), `ENZARB_REALTIME_BUFFER` (256), `ENZARB_REALTIME_MAX_TOKEN_TTL_SECS` (300) | enzarb-realtime |
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` (PEM), `GITHUB_WEBHOOK_SECRET` | receiver (secret only), workflows executor |
 | `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` | ui |
 | `ENZARB_BOT_HANDLE` (default `enzarb`), `ENZARB_BOT_LOGIN` (default `enzarb[bot]`) | receiver, workflows |
@@ -271,7 +289,7 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 
 ## 10. GitHub App
 
-- **Permissions:** Issues RW, Pull requests RW, Contents RW, Checks RW, Metadata R.
+- **Permissions:** Issues RW, Pull requests RW, Contents RW, Workflows RW, Checks RW, Metadata R. Read-write run tokens minted by `mint_clone_credential` (single repo) carry `contents`, `pull_requests` and `workflows` write so agents can edit `.github/workflows`; read tokens omit `workflows` (GitHub has no read level).
 - **Events:** issues, issue_comment, pull_request, pull_request_review, pull_request_review_comment, installation, installation_repositories.
 - **Webhook URL:** `https://<host>/hooks/github`.
 - **Install link and refresh:** `https://github.com/apps/<slug>/installations/new`. At sign-in the UI uses the user-to-server token once (never stored) to snapshot the repositories reachable through installations of this App (`GET /user/installations`, `GET /user/installations/{id}/repositories`) into `app.user_repositories`. `GET /login/github?refresh=1&return=<same-origin path>` re-runs that flow. Set the App's **Setup URL** to `<public>/login/github?refresh=1` with "Redirect on update" enabled so users land back in enzarb after installing.
@@ -339,6 +357,7 @@ steps:
 | `ghcr.io/enzarb/enzarb-connectors-receiver` | enzarb-connectors | 8080 |
 | `ghcr.io/enzarb/enzarb-workflows` | enzarb-workflows | 8081 (executor), 8082 (health) |
 | `ghcr.io/enzarb/enzarb-updater` | enzarb-updater | 8080 |
+| `ghcr.io/enzarb/enzarb-realtime` | enzarb-realtime | 8080 |
 
 - **Tags:** `main`, `sha-<short>`, and `<version>`/`latest` on `v*` tags.
 - **Visibility:** private. Pulling requires an image pull secret (or `kind load` in dev).

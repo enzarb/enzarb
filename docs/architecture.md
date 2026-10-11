@@ -18,6 +18,7 @@ Each component is its own repository. The top-level `enzarb` repo holds docs, AD
 | `enzarb-connectors` *(new)* | The `Connector` trait and one connector per source (GitHub first) as a library, plus the `receiver` binary that accepts webhooks | Rust library + container image |
 | `enzarb-workflows` *(new)* | The in-house Postgres workflow engine: migrations, state machines, reducer, executors, ticker | Rust, container image |
 | `enzarb-updater` *(new)* | Tiny stateless service: on a published `enzarb-helm` GitHub release it patches `spec.version` of the RKE2 `HelmChart` (never downgrades) | Rust, container image |
+| `enzarb-realtime` *(new)* | Stateless change stream: `LISTEN work_item_changed`, pushes per-project `work_item` / `resync` frames to browsers over an authenticated websocket (`/live/v1/stream`); the UI refetches via remote functions | Rust, container image |
 | `enzarb-kubernetes` | Cluster prerequisites: kind config, Envoy Gateway, agent-sandbox (v0.5.x), RuntimeClasses, pgop (Capsule is installed but unused since ADR-0013) | YAML / kustomize |
 | `enzarb-helm` | Umbrella chart: all services, CRDs, HTTPRoutes, RBAC, pgop `Cluster`/`Role`/`Database`, migration Jobs | Helm |
 
