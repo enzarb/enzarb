@@ -96,6 +96,7 @@ pub struct Job {
     pub updated_at: DateTime<Utc>,
     pub limit_wait_started_at: Option<DateTime<Utc>>,
     pub limit_wait_count: i32,
+    pub restart_retries: i32,
     pub waiting_for: Option<String>,
     pub resumes_at: Option<DateTime<Utc>>,
 }

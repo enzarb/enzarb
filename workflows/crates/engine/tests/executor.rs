@@ -118,6 +118,11 @@ impl FakeSandbox {
         self.sb.cancels.lock().unwrap().clone()
     }
 
+    /// Make the sandbox forget a run, as after a restart.
+    fn forget(&self, run_id: &str) {
+        self.sb.runs.lock().unwrap().remove(run_id);
+    }
+
     fn finish_with_state(&self, run_id: &str, phase: RunPhase, summary: &str) {
         let mut runs = self.sb.runs.lock().unwrap();
         let r = runs.get_mut(run_id).unwrap();
@@ -2185,5 +2190,195 @@ async fn deadline_poll_waits_out_a_session_limit() {
     assert_eq!(j.waiting_for.as_deref(), Some("session_limit"));
     assert!(j.run_after > Utc::now() + chrono::Duration::minutes(60));
     assert_eq!(hold_until(pool, "enzarb").await, Some(j.run_after));
+    assert!(events_of(pool, "JobFailed").await.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Sandbox restarts
+// ---------------------------------------------------------------------------
+
+/// POST a `Cancelled` callback for the run `rid`.
+async fn cancel_run(h: &H, rid: &str) -> u16 {
+    let url = format!("{}/v1/runs/{rid}/finished", h.base);
+    let body = finished(rid, RunOutcome::Cancelled);
+    post_callback(&url, &callback_token(b"test-secret", rid), &body).await
+}
+
+/// A claimed (running) agent job on a fresh item.
+async fn running_agent_job(h: &H) -> i64 {
+    let pool = h.pool();
+    h.fake.add_thread(key(1), thread_with("a"));
+    let wi = new_item(pool, 1, "enzarb").await;
+    let id = new_job(
+        pool,
+        wi,
+        "enzarb",
+        "agent_triage",
+        0,
+        "k:a",
+        agent_input(1, "enzarb/triage-1", false),
+    )
+    .await;
+    h.exec.drain().await;
+    assert_eq!(job(pool, id).await.status, "running");
+    id
+}
+
+async fn make_due(pool: &PgPool, id: i64) {
+    sqlx::query("UPDATE workflows.jobs SET run_after = now() - interval '1 second' WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_restart_cancel_requeues_the_job_with_a_new_run() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let id = running_agent_job(&h).await;
+    let before = Utc::now();
+    assert_eq!(cancel_run(&h, &format!("job-{id}")).await, 200);
+    let j = job(pool, id).await;
+    assert_eq!(
+        (
+            j.status.as_str(),
+            j.attempt,
+            j.max_attempts,
+            j.restart_retries
+        ),
+        ("queued", 1, 6, 1)
+    );
+    assert!(j.run_after > before);
+    assert!(j.lease_owner.is_none() && j.deadline.is_none());
+    assert_eq!(j.limit_wait_count, 0);
+    assert!(events_of(pool, "JobFailed").await.is_empty());
+
+    // A late duplicate of the same callback is ignored.
+    assert_eq!(cancel_run(&h, &format!("job-{id}")).await, 200);
+    assert_eq!(job(pool, id).await.restart_retries, 1);
+
+    // The retry is a second attempt under a new run id.
+    make_due(pool, id).await;
+    assert!(h.exec.drain().await >= 1);
+    let j = job(pool, id).await;
+    assert_eq!((j.status.as_str(), j.attempt), ("running", 2));
+    assert!(h.sandbox.run(&format!("job-{id}-1")).is_some());
+}
+
+async fn cancel_accepted(h: &H, rid: &str) -> bool {
+    let url = format!("{}/v1/runs/{rid}/finished", h.base);
+    let resp = reqwest::Client::new()
+        .post(url)
+        .bearer_auth(callback_token(b"test-secret", rid))
+        .json(&finished(rid, RunOutcome::Cancelled))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let body: Value = resp.json().await.unwrap();
+    body["accepted"].as_bool().unwrap()
+}
+
+#[tokio::test]
+async fn a_requeue_is_accepted_and_a_stale_callback_is_not() {
+    let h = H::new(db!()).await;
+    let id = running_agent_job(&h).await;
+    let rid = format!("job-{id}");
+    assert!(cancel_accepted(&h, &rid).await);
+    // The same run id again: the job is queued now, so the call is stale.
+    assert!(!cancel_accepted(&h, &rid).await);
+    assert_eq!(job(h.pool(), id).await.restart_retries, 1);
+}
+
+#[tokio::test]
+async fn restart_retries_are_capped() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let id = running_agent_job(&h).await;
+    for n in 0..3 {
+        let rid = if n == 0 {
+            format!("job-{id}")
+        } else {
+            format!("job-{id}-{n}")
+        };
+        assert_eq!(cancel_run(&h, &rid).await, 200);
+        let j = job(pool, id).await;
+        assert_eq!((j.status.as_str(), j.restart_retries), ("queued", n + 1));
+        make_due(pool, id).await;
+        assert!(h.exec.drain().await >= 1);
+    }
+    assert_eq!(cancel_run(&h, &format!("job-{id}-3")).await, 200);
+    let j = job(pool, id).await;
+    assert_eq!((j.status.as_str(), j.restart_retries), ("failed", 3));
+    let evs = events_of(pool, "JobFailed").await;
+    assert_eq!(evs.len(), 1);
+    let err = evs[0].1["error"].as_str().unwrap();
+    assert!(err.contains("gave up after 3 retries"), "{err}");
+}
+
+#[tokio::test]
+async fn a_user_cancelled_job_is_not_requeued() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let id = running_agent_job(&h).await;
+    sqlx::query("UPDATE workflows.jobs SET status='cancelled', lease_owner=NULL, lease_until=NULL WHERE id=$1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(cancel_run(&h, &format!("job-{id}")).await, 200);
+    let j = job(pool, id).await;
+    assert_eq!((j.status.as_str(), j.restart_retries), ("cancelled", 0));
+}
+
+#[tokio::test]
+async fn a_genuine_agent_failure_uses_no_restart_retry() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let id = running_agent_job(&h).await;
+    assert_eq!(
+        fail_run(&h, &format!("job-{id}"), "compile error").await,
+        200
+    );
+    let j = job(pool, id).await;
+    assert_eq!((j.status.as_str(), j.restart_retries), ("failed", 0));
+}
+
+#[tokio::test]
+async fn deadline_poll_requeues_a_cancelled_run() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let id = running_agent_job(&h).await;
+    h.sandbox
+        .finish_with_state(&format!("job-{id}"), RunPhase::Cancelled, "restarted");
+    sqlx::query("UPDATE workflows.jobs SET deadline = now() - interval '1 second' WHERE id=$1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(h.exec.poll_deadlines().await.unwrap(), 1);
+    let j = job(pool, id).await;
+    assert_eq!(
+        (j.status.as_str(), j.max_attempts, j.restart_retries),
+        ("queued", 6, 1)
+    );
+    assert!(events_of(pool, "JobFailed").await.is_empty());
+}
+
+#[tokio::test]
+async fn deadline_poll_requeues_a_run_the_sandbox_forgot() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let id = running_agent_job(&h).await;
+    h.sandbox.forget(&format!("job-{id}"));
+    sqlx::query("UPDATE workflows.jobs SET deadline = now() - interval '1 second' WHERE id=$1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(h.exec.poll_deadlines().await.unwrap(), 1);
+    let j = job(pool, id).await;
+    assert_eq!((j.status.as_str(), j.restart_retries), ("queued", 1));
     assert!(events_of(pool, "JobFailed").await.is_empty());
 }

@@ -148,7 +148,7 @@ impl Executor {
             None
         };
 
-        let rid = run_id(job.id, job.limit_wait_count);
+        let rid = run_id(job.id, job.limit_wait_count + job.restart_retries);
         let run = RunStart {
             run_id: rid.clone(),
             repo_url,

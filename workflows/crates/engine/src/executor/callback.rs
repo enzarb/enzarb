@@ -2,7 +2,7 @@
 //!
 //! `POST /v1/runs/{run_id}/finished` with `Authorization: Bearer <callback_token>` and a
 //! `RunFinished` body. `run_id` is `job-<job id>` (`job-<job id>-<n>` after `n` session-limit
-//! waits). The token is
+//! waits and sandbox-restart retries). The token is
 //! `hex(HMAC-SHA256(callback_secret, run_id))`, so any replica can verify it and nothing
 //! per-job is stored.
 //!
@@ -23,14 +23,15 @@ use serde_json::{Value, json};
 use sha2::Sha256;
 
 use super::Executor;
+use super::restart::RestartOutcome;
 use super::session_limit::LimitOutcome;
 use crate::results::{JobResult, ingest_job_result};
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// `run_id` for a job. After `waits` session-limit waits the run is a new one
-/// (`job-<id>-<waits>`), because the sandbox dedupes `run_start` by `run_id` and would hand
-/// back the run that hit the limit.
+/// `run_id` for a job. After `waits` session-limit waits and sandbox-restart retries (the run
+/// generation) the run is a new one (`job-<id>-<waits>`), because the sandbox dedupes
+/// `run_start` by `run_id` and would hand back the earlier run.
 pub fn run_id(job_id: i64, waits: i32) -> String {
     if waits <= 0 {
         format!("job-{job_id}")
@@ -110,13 +111,13 @@ async fn finished(
         return reply(StatusCode::BAD_REQUEST, "unrecognized run_id");
     };
 
-    let row: Result<Option<(String, i32, i32)>, _> = sqlx::query_as(
-        "SELECT status, attempt, limit_wait_count FROM jobs WHERE id = $1 AND kind LIKE 'agent\\_%'",
+    let row: Result<Option<(String, i32, i32, i32)>, _> = sqlx::query_as(
+        "SELECT status, attempt, limit_wait_count, restart_retries FROM jobs WHERE id = $1 AND kind LIKE 'agent\\_%'",
     )
     .bind(job_id)
     .fetch_optional(&exec.pool)
     .await;
-    let (status, attempt, waits) = match row {
+    let (status, attempt, waits, restarts) = match row {
         Ok(Some(r)) => r,
         Ok(None) => return reply(StatusCode::NOT_FOUND, "unknown job"),
         Err(e) => {
@@ -128,7 +129,7 @@ async fn finished(
         tracing::info!(job_id, %status, "callback for a job that is not running; ignored");
         return (StatusCode::OK, Json(json!({ "accepted": false })));
     }
-    if path_run_id != run_id(job_id, waits) {
+    if path_run_id != run_id(job_id, waits + restarts) {
         tracing::info!(job_id, %path_run_id, "callback for an earlier run of this job; ignored");
         return (StatusCode::OK, Json(json!({ "accepted": false })));
     }
@@ -161,9 +162,23 @@ async fn finished(
                 }
             }
         }
-        RunOutcome::Cancelled => JobResult::Failed {
-            error: "the agent run was cancelled".into(),
-        },
+        RunOutcome::Cancelled => {
+            // The job is still `running`, so no transition cancelled it: the sandbox restarted.
+            let reason = "the agent stopped with cancelled";
+            match exec.restart_outcome(job_id, attempt, reason).await {
+                Ok(RestartOutcome::Requeued) => {
+                    return (StatusCode::OK, Json(json!({ "accepted": true })));
+                }
+                Ok(RestartOutcome::Stale) => {
+                    return (StatusCode::OK, Json(json!({ "accepted": false })));
+                }
+                Ok(RestartOutcome::GaveUp(error)) => JobResult::Failed { error },
+                Err(e) => {
+                    tracing::warn!(job_id, error = %e, "callback: restart handling failed");
+                    return reply(StatusCode::INTERNAL_SERVER_ERROR, "database error");
+                }
+            }
+        }
     };
     match ingest_job_result(&exec.pool, job_id, attempt, result).await {
         Ok(id) => (StatusCode::OK, Json(json!({ "accepted": id.is_some() }))),
@@ -188,6 +203,13 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_id_generations() {
+        assert_eq!(run_id(7, 0), "job-7");
+        assert_eq!(run_id(7, 1), "job-7-1");
+        assert_eq!(run_id(7, 4), "job-7-4");
+    }
 
     #[test]
     fn tokens_bind_secret_and_run() {

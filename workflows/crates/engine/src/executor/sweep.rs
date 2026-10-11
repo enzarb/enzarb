@@ -5,11 +5,20 @@ use enzarb_proto::session::SessionError;
 use serde_json::{Value, json};
 
 use super::callback::run_id;
+use super::restart::RestartOutcome;
 use super::session_limit::LimitOutcome;
 use super::{Executor, JobError};
 use crate::error::Error;
 use crate::machine::AgentJobInput;
 use crate::results::{JobResult, ingest_job_result};
+
+/// What the sandbox said about a run past its deadline.
+enum Asked {
+    /// A result to report.
+    Result(JobResult),
+    /// The run was cancelled or vanished while its job was still running: a sandbox restart.
+    Restarted(String),
+}
 
 impl Executor {
     /// One sweep. Errors are logged; the next sweep tries again.
@@ -64,7 +73,7 @@ impl Executor {
     /// * sandbox unreachable: try again next sweep, and give up after `poll_give_up`.
     pub async fn poll_deadlines(&self) -> Result<usize, Error> {
         let due: Vec<(i64, i32, i32, Option<String>, Value, bool)> = sqlx::query_as(
-            r"SELECT id, attempt, limit_wait_count, project_id, input,
+            r"SELECT id, attempt, limit_wait_count + restart_retries, project_id, input,
                      deadline + make_interval(secs => $1) < now() AS give_up
               FROM jobs
               WHERE status = 'running' AND kind LIKE 'agent\_%' AND deadline IS NOT NULL
@@ -80,7 +89,17 @@ impl Executor {
                 .ask_sandbox(id, waits, project.as_deref(), &input)
                 .await
             {
-                Ok(r) => r,
+                Ok(Asked::Result(r)) => r,
+                Ok(Asked::Restarted(reason)) => {
+                    match self.restart_outcome(id, attempt, &reason).await? {
+                        RestartOutcome::Requeued => {
+                            reported += 1;
+                            continue;
+                        }
+                        RestartOutcome::Stale => continue,
+                        RestartOutcome::GaveUp(error) => JobResult::Failed { error },
+                    }
+                }
                 Err(e) if give_up => JobResult::Failed {
                     error: format!(
                         "the agent run passed its deadline and the sandbox is unreachable: {}",
@@ -125,20 +144,24 @@ impl Executor {
         waits: i32,
         project: Option<&str>,
         input: &Value,
-    ) -> Result<JobResult, JobError> {
+    ) -> Result<Asked, JobError> {
         let project = project.ok_or_else(|| JobError::permanent("job has no project"))?;
         let session = self.dial(project).await?;
         let rid = run_id(job_id, waits);
         let status = tokio::time::timeout(self.cfg.sandbox_timeout, session.run_status(&rid)).await;
         let result = match status {
             Err(_) => Err(JobError::transient("run_status timed out")),
-            Ok(Err(SessionError::Remote { code, .. })) if code == "unknown_run" => {
-                Ok(JobResult::Failed {
-                    error: "the sandbox does not know this run".into(),
-                })
-            }
+            Ok(Err(SessionError::Remote { code, .. })) if code == "unknown_run" => Ok(
+                Asked::Restarted("the sandbox does not know this run".into()),
+            ),
             Ok(Err(e)) => Err(JobError::transient(format!("run_status: {e}"))),
-            Ok(Ok(info)) => Ok(match info.state {
+            Ok(Ok(info)) if matches!(info.state, RunPhase::Cancelled) => {
+                Ok(Asked::Restarted(format!(
+                    "the agent run ended as Cancelled: {}",
+                    info.summary.unwrap_or_default()
+                )))
+            }
+            Ok(Ok(info)) => Ok(Asked::Result(match info.state {
                 RunPhase::Succeeded => {
                     let branch = serde_json::from_value::<AgentJobInput>(input.clone())
                         .map(|i| i.branch)
@@ -164,7 +187,7 @@ impl Executor {
                         error: "the agent run exceeded its deadline".into(),
                     }
                 }
-            }),
+            })),
         };
         session.close().await;
         result
@@ -174,7 +197,7 @@ impl Executor {
     /// (`deadline` is the marker; it is cleared once the cancel was sent).
     pub async fn cancel_runs(&self) -> Result<usize, Error> {
         let rows: Vec<(i64, i32, Option<String>)> = sqlx::query_as(
-            r"SELECT id, limit_wait_count, project_id FROM jobs
+            r"SELECT id, limit_wait_count + restart_retries, project_id FROM jobs
               WHERE status = 'cancelled' AND kind LIKE 'agent\_%' AND deadline IS NOT NULL
                 AND updated_at > now() - interval '1 day'
               ORDER BY id LIMIT 50",

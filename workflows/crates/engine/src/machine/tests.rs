@@ -2551,6 +2551,49 @@ fn mention_retries_failed_change_request() {
 }
 
 #[test]
+fn mention_reruns_the_failed_job_of_a_change_request() {
+    let m = conn(
+        "m",
+        EventType::Mentioned,
+        pr_item("sha1"),
+        actor("carol"),
+        Some((9, "@enzarb please retry this issue.")),
+    );
+    for (failed_phase, phase, kind) in [
+        (CrPhase::Reviewing, CrPhase::Reviewing, JobKind::AgentReview),
+        (
+            CrPhase::AddressingComments,
+            CrPhase::AddressingComments,
+            JobKind::AgentAddressComments,
+        ),
+    ] {
+        let mut s = CrState {
+            phase: CrPhase::Failed,
+            data: cr_data(),
+        };
+        s.data.failed_phase = Some(failed_phase);
+        let s = WorkflowState::ChangeRequest(s);
+        let t = run_cr(Permission::Write, &s, &m);
+        let d = assert_cr(&t, phase);
+        assert_eq!(d.failed_phase, None);
+        assert!(kinds(&t).contains(&kind), "{:?}", kinds(&t));
+        rejected(&run_cr(Permission::Read, &s, &m), &s);
+        // Also as a plain comment event carrying the mention.
+        let c = conn(
+            "c",
+            EventType::CommentAdded,
+            pr_item("sha1"),
+            actor("carol"),
+            Some((10, "@enzarb retry")),
+        );
+        let t = run_cr(Permission::Write, &s, &c);
+        if t.accepted {
+            assert_cr(&t, phase);
+        }
+    }
+}
+
+#[test]
 fn author_mention_on_stale_keeps_the_answer() {
     let s = issue_in(IssuePhase::Stale);
     let author = match &s {

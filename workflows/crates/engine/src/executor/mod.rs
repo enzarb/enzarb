@@ -32,6 +32,12 @@
 //! wait starts a new sandbox run (`job-<id>-<waits>`). After 7 days of waiting the job fails.
 //! See [`session_limit`].
 //!
+//! # Sandbox restarts
+//! An agent run that ends as cancelled (or unknown to sandbox-init) while its job is still
+//! `running` was lost to a sandbox restart. The job is re-queued with backoff and its attempt
+//! refunded, up to [`ExecutorConfig::restart_retry_cap`] times, as a new sandbox run
+//! (`job-<id>-<waits + restart retries>`). See [`restart`].
+//!
 //! # Leases, retries, deadlines
 //! * A claim holds a lease for [`ExecutorConfig::lease`]. The sweeper requeues `running`
 //!   jobs whose lease expired (executor crashed); when `attempt >= max_attempts` it reports a
@@ -55,6 +61,7 @@ mod agent;
 mod callback;
 mod connectors;
 mod jobs;
+mod restart;
 mod sandbox;
 mod session_limit;
 mod sweep;
@@ -104,6 +111,8 @@ pub struct ExecutorConfig {
     /// Key for the per-run callback tokens (`HMAC-SHA256(secret, run_id)`). All replicas must
     /// share it.
     pub callback_secret: Vec<u8>,
+    /// Sandbox-restart retries per agent job before it fails.
+    pub restart_retry_cap: i32,
 }
 
 impl ExecutorConfig {
@@ -123,6 +132,7 @@ impl ExecutorConfig {
             sandbox_timeout: Duration::from_secs(30),
             callback_base_url: callback_base_url.into().trim_end_matches('/').to_string(),
             callback_secret: callback_secret.into(),
+            restart_retry_cap: 3,
         }
     }
 
@@ -147,6 +157,7 @@ pub(crate) struct Claimed {
     pub attempt: i32,
     pub max_attempts: i32,
     pub limit_wait_count: i32,
+    pub restart_retries: i32,
     pub idempotency_key: String,
     pub input: Value,
     pub work_item_key: String,
@@ -359,7 +370,8 @@ impl Executor {
                      waiting_for = NULL, resumes_at = NULL
               FROM picked WHERE jobs.id = picked.id
               RETURNING jobs.id, jobs.work_item_id, jobs.project_id, jobs.kind, jobs.attempt,
-                        jobs.max_attempts, jobs.limit_wait_count, jobs.idempotency_key, jobs.input,
+                        jobs.max_attempts, jobs.limit_wait_count, jobs.restart_retries,
+                        jobs.idempotency_key, jobs.input,
                         (SELECT key FROM work_items w WHERE w.id = jobs.work_item_id) AS work_item_key",
         )
         .bind(&self.cfg.owner)
