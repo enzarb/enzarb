@@ -3,19 +3,33 @@
 set -euo pipefail
 # shellcheck source=/dev/null
 . "${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}/.mise/lib/oldie.sh"
-need kubectl jq
-load_oldie_env
+need kubectl jq curl
+require_oldie_env GHCR_USER GHCR_TOKEN
 cluster_reachable || die "cannot reach $KCTX with $KUBECONFIG; run: mise run oldie:host"
 k -n "$NS" get secret enzarb-github >/dev/null 2>&1 || die "Secret $NS/enzarb-github missing; run: mise run oldie:secrets"
 k -n "$NS" get secret enzarb-updater-registry >/dev/null 2>&1 \
   || die "Secret $NS/enzarb-updater-registry missing (set GHCR_USER and GHCR_TOKEN in .env.oldie, then: mise run oldie:secrets)"
 # values-oldie.yaml is not part of the published chart (.helmignore); it is embedded in the
-# HelmChart's valuesContent from the checkout. ENZARB_CHART_VERSION is optional: unset leaves a new
-# HelmChart on the newest published chart, and an existing one is never lowered.
+# HelmChart's valuesContent from the checkout. Version: an existing HelmChart keeps its live version
+# (ENZARB_CHART_VERSION only raises it); a new one adopts the deployed Helm release's version, and on a
+# fresh cluster (no release) starts at ENZARB_CHART_VERSION or, failing that, the newest published tag.
 values_file="$ROOT/enzarb-helm/enzarb/values-oldie.yaml"
 [ -f "$values_file" ] || die "$values_file missing; run: mise run repos:init"
 script="$KDIR/hack/oldie-helmchart.sh"
-[ -x "$script" ] || die "$script missing; run: mise run repos:init"
+[ -f "$script" ] || die "$script missing; run: mise run repos:init"
+need helm
+version="${ENZARB_CHART_VERSION:-}"
+if [ -z "$version" ] && ! k -n kube-system get helmchart enzarb >/dev/null 2>&1 \
+   && ! helm --kube-context "$KCTX" status "$RELEASE" -n "$NS" >/dev/null 2>&1; then
+  log "fresh cluster: newest published chart tag"
+  # Credentials go to curl through stdin (--config -), never argv.
+  tok=$(printf 'user = "%s:%s"\n' "$GHCR_USER" "$GHCR_TOKEN" \
+    | curl -fsS --config - "https://ghcr.io/token?service=ghcr.io&scope=repository:enzarb/charts/enzarb:pull" | jq -r .token)
+  version=$(printf 'header = "Authorization: Bearer %s"\n' "$tok" \
+    | curl -fsS --config - "https://ghcr.io/v2/enzarb/charts/enzarb/tags/list?n=1000" \
+    | jq -r '.tags[]' | grep -E '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' | sort -V | tail -n1)
+  [ -n "$version" ] || die "no published enzarb chart tag found; set ENZARB_CHART_VERSION"
+fi
 
 # Helm installs crds/ only on first install and never upgrades them, and the helm-controller does the
 # same. The chart's CRDs are applied here from the checkout, so the enzarb-helm checkout must be at the
@@ -26,7 +40,8 @@ if [ -d "$ROOT/enzarb-helm/enzarb/crds" ]; then
 fi
 
 log "HelmChart kube-system/enzarb (create or adopt; the version only moves up)"
-KUBE_CONTEXT="$KCTX" VALUES_FILE="$values_file" CHART_VERSION="${ENZARB_CHART_VERSION:-}" "$script"
+KUBECONFIG="$KUBECONFIG" VALUES_FILE="$values_file" RELEASE_NAMESPACE="$NS" RELEASE_NAME="$RELEASE" \
+  REGISTRY_SECRET=enzarb-chart-registry FORCE_VERSION="$version" bash "$script"
 
 cat <<MSG
 
