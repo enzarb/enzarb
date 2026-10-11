@@ -85,6 +85,9 @@ Repo key: a repository's **repo key** is `<connector>:<owner>/<repo>`, e.g. `git
 - **Protocol steps:** `initialize`, then `session/new` (mode `default`), then `session/prompt`.
 - **Permissions:** every `session/request_permission` is answered by the policy with `allow_once` or `reject_once`, never persistent options.
   - Edits are limited to the worktree.
+  - Reads (Read/Grep/Glob and read-only shell utilities) may also reach the Project's other repo checkouts and worktrees (`/workspace/repos`, `/workspace/worktrees`). Writes, `cd` and docker bind mounts stay inside the run's own worktree (enzarb-sandbox-container#27).
+  - `git -C <dir>` is allowed only for a `<dir>` in the read roots and a read-only subcommand (`status`, `log`, `show`, `diff`, `rev-parse`, `ls-files`, `ls-tree`, `grep`, `blame`, `branch --list`, `cat-file`).
+  - Secrets are unreadable under any root: `.enzarb` (including `claude-token`), `.git-credentials`, `.gitconfig`, `.netrc`, git credential helper config.
   - Commands must match the allowlist; shell metacharacters and expansions are denied.
   - Network fetch is denied unless the host is allowlisted.
 - **Summary:** the verbatim agent text of the turn. `exit_code` is 0 on `end_turn`, the agent's code on a crash, and null when cancelled or timed out.
