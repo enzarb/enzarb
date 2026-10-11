@@ -20,6 +20,8 @@ workflows:
   image: { tag: dev }
 connectors:
   image: { tag: dev }
+realtime:
+  image: { tag: dev }
 sandboxProxy:
   image: { tag: dev }
 operator:

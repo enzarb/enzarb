@@ -39,6 +39,8 @@ imagePullSecrets:
 {{- define "enzarb.githubSecret" -}}{{ .Values.secrets.github.existingSecret | default "enzarb-github" }}{{- end }}
 {{- define "enzarb.jwtSecret" -}}{{ .Values.secrets.sessionJwt.existingSecret | default (include "enzarb.generatedSecret" .) }}{{- end }}
 {{- define "enzarb.callbackSecret" -}}{{ .Values.secrets.executorCallback.existingSecret | default (include "enzarb.generatedSecret" .) }}{{- end }}
+{{- define "enzarb.realtimeJwtSecret" -}}{{ .Values.secrets.realtimeJwt.existingSecret | default (include "enzarb.generatedSecret" .) }}{{- end }}
+{{- define "enzarb.realtimeJwtKey" -}}{{ if .Values.secrets.realtimeJwt.existingSecret }}{{ .Values.secrets.realtimeJwt.key }}{{ else }}realtime-jwt-secret{{ end }}{{- end }}
 {{- define "enzarb.jwtKey" -}}{{ if .Values.secrets.sessionJwt.existingSecret }}{{ .Values.secrets.sessionJwt.key }}{{ else }}session-jwt-secret{{ end }}{{- end }}
 {{- define "enzarb.callbackKey" -}}{{ if .Values.secrets.executorCallback.existingSecret }}{{ .Values.secrets.executorCallback.key }}{{ else }}callback-secret{{ end }}{{- end }}
 {{/* Key names inside the github Secret (the chart-created one uses the configured key names too). */}}
@@ -139,6 +141,9 @@ enzarb-migrate-{{ .comp }}-{{ toJson $spec | sha256sum | trunc 10 }}
     - database.pgop.ruck.io/{{ .Values.postgres.databaseName }}
     {{- range tuple "workflows-owner" "workflows" "connectors-owner" "connectors" "ui-owner" "ui" }}
     - role.pgop.ruck.io/{{ . }}
+    {{- end }}
+    {{- if .Values.realtime.enabled }}
+    - role.pgop.ruck.io/realtime
     {{- end }}
   securityContext: {{ include "enzarb.securityContext" (dict "ctx" . "uid" 65532) | fromYaml | toJson }}
 {{- end }}

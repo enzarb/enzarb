@@ -1,6 +1,6 @@
 {{- if .Values.route.enabled }}
 {{- $parent := dict "name" .Values.gateway.name "namespace" .Values.gateway.namespace }}
-{{- /* The three prefixes share one host. The Gateway (Envoy) sets X-Forwarded-Proto, which the ui's
+{{- /* The prefixes share one host. The Gateway (Envoy) sets X-Forwarded-Proto, which the ui's
        PROTOCOL_HEADER relies on for its CSRF origin check. */}}
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -52,6 +52,27 @@ spec:
         - path: { type: PathPrefix, value: /hooks/ }
       backendRefs:
         - { name: enzarb-connectors, port: 8080 }
+{{- if .Values.realtime.enabled }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: enzarb-realtime
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-realtime") | nindent 4 }}
+spec:
+  parentRefs:
+    - {{ toYaml $parent | nindent 6 | trim }}
+  hostnames: [{{ .Values.host | quote }}]
+  rules:
+    - matches:
+        - path: { type: PathPrefix, value: /live/ }
+      # Websocket upgrades pass through; sockets live up to 5 min, so no request timeout.
+      timeouts:
+        request: {{ .Values.route.realtimeRequestTimeout | quote }}
+      backendRefs:
+        - { name: enzarb-realtime, port: 8080 }
+{{- end }}
 {{- if and .Values.updater.enabled .Values.updater.webhook.enabled }}
 ---
 apiVersion: gateway.networking.k8s.io/v1

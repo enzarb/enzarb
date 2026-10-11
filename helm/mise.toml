@@ -21,6 +21,10 @@ echo guard ok
 description = "Diff rendered templates against tests/golden (pass --update to rewrite)"
 run = "scripts/golden.sh"
 
+[tasks.realtime]
+description = "Assert the enzarb-realtime wiring (enabled, disabled, replicas override)"
+run = "bash scripts/assert-realtime.sh"
+
 [tasks.kubeconform]
 description = "Validate rendered manifests with kubeconform"
 run = "scripts/kubeconform.sh"
@@ -35,4 +39,4 @@ run = "scripts/sync-crds.sh"
 
 [tasks.test]
 description = "All checks"
-depends = ["lint", "guard", "golden", "kubeconform", "pgop"]
+depends = ["lint", "guard", "golden", "realtime", "kubeconform", "pgop"]

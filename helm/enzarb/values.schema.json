@@ -75,6 +75,10 @@
           "type": "string",
           "pattern": "^[0-9]+(ms|s|m|h)$"
         },
+        "realtimeRequestTimeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(ms|s|m|h)$"
+        },
         "backendTrafficPolicy": {
           "type": "object",
           "properties": {
@@ -163,6 +167,18 @@
       "type": "object",
       "properties": {
         "sessionJwt": {
+          "type": "object",
+          "properties": {
+            "existingSecret": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "realtimeJwt": {
           "type": "object",
           "properties": {
             "existingSecret": {
@@ -413,6 +429,56 @@
         },
         "botLogin": {
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "realtime": {
+      "type": "object",
+      "required": [
+        "image"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "image": {
+          "type": "object",
+          "required": [
+            "repository",
+            "tag"
+          ],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pullPolicy": {
+              "enum": [
+                "",
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
+          }
+        },
+        "resources": {
+          "type": "object"
+        },
+        "extraEnv": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
         }
       },
       "additionalProperties": false

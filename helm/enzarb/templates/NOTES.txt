@@ -1,6 +1,6 @@
 enzarb {{ .Chart.Version }} installed in namespace {{ .Release.Namespace }}.
 
-URL: {{ include "enzarb.publicUrl" . }}  (routes: / -> ui, /sandbox/ -> sandbox-proxy, /hooks/ -> connectors)
+URL: {{ include "enzarb.publicUrl" . }}  (routes: / -> ui, /sandbox/ -> sandbox-proxy, /hooks/ -> connectors{{ if .Values.realtime.enabled }}, /live/ -> realtime{{ end }})
 
 Migrations run as Jobs ordered workflows -> connectors -> ui; runtime pods wait for them:
   kubectl -n {{ .Release.Namespace }} get jobs -l app.kubernetes.io/component=migrate

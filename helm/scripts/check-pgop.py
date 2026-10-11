@@ -33,7 +33,7 @@ def unknown(schema, value, path=""):
 
 
 bad = 0
-for scenario in sys.argv[1:] or ["default", "dev", "oldie"]:
+for scenario in sys.argv[1:] or ["default", "dev", "oldie", "realtime"]:
     out = subprocess.run([str(root / "scripts/render.sh"), scenario], check=True,
                          capture_output=True, text=True).stdout
     n = 0

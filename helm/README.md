@@ -19,10 +19,11 @@ helm install enzarb enzarb -n enzarb --create-namespace -f enzarb/values-dev.yam
 | ui | Deployment, Service :3000, ClusterRole `projects` get/list/create/delete |
 | workflows | Deployment (`run --roles ...`), Service `enzarb-workflows-executor` :8081, ClusterRole projects + Role `secrets` get in the sandbox namespace |
 | connectors | Deployment `receiver serve`, Service :8080 |
+| realtime (`realtime.enabled`, default off) | Deployment (2 replicas, stateless), Service :8080, ServiceAccount (no RBAC), pgop Role `realtime` (`enzarb_realtime`), HTTPRoute `/live/` (request timeout `route.realtimeRequestTimeout`, default `0s`, for websockets). `ENZARB_REALTIME_JWT_SECRET` is one generated key (`realtime-jwt-secret` in `enzarb-generated`, or `secrets.realtimeJwt.existingSecret`) mounted into realtime and the ui. Table grants come from enzarb-workflows migrations, not the chart. Probes: `/readyz` (200 only while LISTEN is up), `/healthz`. Envoy access logs, if configured, must redact the `token` query parameter (log `%REQ_WITHOUT_QUERY(:PATH)%`). |
 | sandbox-proxy | Deployment, Service :8080, ClusterRole projects + Role `secrets` get in the sandbox namespace |
 | operator | Deployment (2 replicas, leader election), ClusterRole (Projects, Project finalizers) + Role in the sandbox namespace (secrets, PVCs, NetworkPolicies, Sandboxes, events), leader-election Role; optional ConfigMap `enzarb-sandbox-operator-docker-profiles` when `operator.docker.profiles` is set |
 | sandbox namespace | Namespace `sandbox.namespace` (`enzarb-sandboxes`, kept on uninstall), ServiceAccount `enzarb-sandbox` (no token, no RBAC), LimitRange, default-deny NetworkPolicy (ADR-0013) |
-| pgop | Cluster `enzarb-pg`, 6 Roles (`<svc>-owner`, `<svc>`), Database `enzarb` with 5 schemas |
+| pgop | Cluster `enzarb-pg`, 6 Roles (`<svc>-owner`, `<svc>`; plus `realtime` when enabled), Database `enzarb` with 5 schemas |
 | migrations | 3 Jobs: workflows, connectors, ui |
 | routes | HTTPRoutes `/` `/sandbox/` `/hooks/` on `host` |
 

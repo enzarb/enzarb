@@ -35,6 +35,8 @@ route:
   # Gateway API route timeout for /sandbox/ (websockets). "0s" disables the route
   # request timeout, so the proxy's own PROXY_IDLE_TIMEOUT_SECS decides.
   sandboxRequestTimeout: "0s"
+  # Same for /live/ (enzarb-realtime websockets, up to 5 min).
+  realtimeRequestTimeout: "0s"
   # Optional Envoy Gateway BackendTrafficPolicy on the /sandbox/ route that raises
   # the idle timeout above the proxy's idle timeout (default 900s).
   backendTrafficPolicy:
@@ -65,6 +67,11 @@ secrets:
   sessionJwt:
     existingSecret: ""
     key: session-jwt-secret
+  # HS256 secret shared by ui (mints stream tokens) and enzarb-realtime (verifies them).
+  # Generated (and kept across upgrades via lookup) unless existingSecret is set.
+  realtimeJwt:
+    existingSecret: ""
+    key: realtime-jwt-secret
   # HMAC secret for executor callbacks (all workflows replicas share it).
   executorCallback:
     existingSecret: ""
@@ -137,6 +144,20 @@ connectors:
     pullPolicy: ""
   botHandle: enzarb
   botLogin: enzarb[bot]
+  resources: {}
+  extraEnv: []
+
+# enzarb-realtime streams work item changes over websockets at /live/ (stateless; each replica
+# holds its own LISTEN). Off by default until a released image is pinned below; grants on the
+# database come from enzarb-workflows migrations. Needs route.enabled for /live/.
+realtime:
+  enabled: false
+  replicaCount: 2
+  image:
+    repository: ghcr.io/enzarb/enzarb-realtime
+    # Placeholder: scripts/sync-components.sh pins the latest enzarb-realtime release here.
+    tag: 0.1.0
+    pullPolicy: ""
   resources: {}
   extraEnv: []
 

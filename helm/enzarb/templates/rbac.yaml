@@ -8,6 +8,16 @@ metadata:
     {{- include "enzarb.labels" (dict "ctx" $ "name" .) | nindent 4 }}
 ---
 {{- end }}
+{{- if .Values.realtime.enabled }}
+{{- /* realtime: no Kubernetes API access, so no Role or ClusterRole. */}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: enzarb-realtime
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-realtime") | nindent 4 }}
+---
+{{- end }}
 {{- /* ui: create/list/delete Project CRs. */}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -214,5 +224,8 @@ roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: enzarb-wait }
 subjects:
   {{- range tuple "enzarb-ui" "enzarb-workflows" "enzarb-connectors" "enzarb-migrate" }}
   - { kind: ServiceAccount, name: {{ . }}, namespace: {{ $.Release.Namespace }} }
+  {{- end }}
+  {{- if .Values.realtime.enabled }}
+  - { kind: ServiceAccount, name: enzarb-realtime, namespace: {{ .Release.Namespace }} }
   {{- end }}
 {{- end }}
