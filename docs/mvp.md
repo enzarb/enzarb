@@ -16,7 +16,7 @@ An enzarb deployment that works on its own repositories:
 - `enzarb-connectors`: trait, GitHub connector, webhook receiver.
 - `enzarb-workflows`: engine (reducer, executors, ticker) and the `issue`, `change_request` and `mention` workflows.
 - `sandbox-proxy`: authenticated websocket routing.
-- `enzarb-ui`: GitHub login, Projects, work items, terminal.
+- `enzarb-ui`: GitHub login, Projects, work items, terminal, and the Merge action on `ReadyToMerge` change requests (the only way enzarb PRs get merged).
 - `enzarb-kubernetes` prerequisites, the `enzarb-helm` chart, and the top-level `mise` dev tasks.
 - CI for each repo.
 

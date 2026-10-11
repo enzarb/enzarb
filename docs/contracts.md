@@ -199,9 +199,10 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
   } }
 ```
 - **Rust types:** `enzarb_connector::{Event, EventData, EventType}` are the source of truth for field shapes. `review.state` is a free string.
-- **`type`:** one of `WorkItemOpened, CommentAdded, Mentioned, ApprovalGranted, ChangeRequestOpened, ChangeRequestUpdated, ReviewSubmitted, WorkItemClosed`.
+- **`type`:** one of `WorkItemOpened, CommentAdded, Mentioned, ApprovalGranted, ChangeRequestOpened, ChangeRequestUpdated, ReviewSubmitted, WorkItemClosed, CiStatusChanged`.
   - `WorkItemClosed` carries `data.merged: bool`.
   - `ReviewSubmitted` carries `data.review: {id, state, body}`.
+  - `CiStatusChanged` carries the optional `data.ci`, **one per check run, check suite or commit status** (not an aggregate): `{head_sha, state: "success" | "failure" | "pending", context?, url?}` (`state` is lowercase). Additive: consumers that ignore `CiStatusChanged` or `data.ci` are unaffected. Aggregation into one CI verdict happens in `get_merge_readiness` (below); the rule is in enzarb-connectors `docs/connectors.md`.
 - **`subject`:** the work item key, `<repo key>#<number>`. Issues and PRs share GitHub's number space, so `#` is used for both.
 - **`ApprovalGranted`:** a `/approve` comment on its own line, or the label `enzarb:approved`.
 - **`Mentioned`:** `@<bot handle>` in a comment or issue body (handle configurable, default `enzarb`).
@@ -209,6 +210,9 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
 - **Derived events:** one delivery can produce several events. The primary event keeps the delivery id; derived ones get `<delivery>#mentioned` and `<delivery>#approved`, so the dedupe key is `github:<event id>`.
 - **Mentions and approval on PRs:** `Mentioned` also fires from a PR body when the PR is opened, and the approval label works on PRs as well as issues.
 - **API:** `enzarb_connector_github::normalize(...)` returns `Normalized::Events{events}` or `Normalized::Installation{change}`.
+- **Merge methods** (additions to the `Connector` trait, see [connectors.md](connectors.md#outbound-the-connector-trait)). Squash is the only merge method.
+  - `merge_change_request(item, number, expected_head_sha, commit_title, commit_body?, idempotency_key) -> MergeOutcome`. The merge is pinned to `expected_head_sha`. `MergeOutcome` is `merged{sha} | already_merged{sha?} | head_moved | not_mergeable{reason}`.
+  - `get_merge_readiness(item, number) -> MergeReadiness{head_sha, mergeable: Option<bool>, mergeable_state, ci, ...}`. It aggregates CI (all checks and statuses on the head; no CI counts as passing). The remaining fields and the `mergeable_state` values are defined by `enzarb_connector::MergeReadiness`.
 
 ## 6. `workflows_api` (Postgres, owned by enzarb-workflows)
 
@@ -216,7 +220,7 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
 workflows_api.ingest_event(p_source text, p_dedupe_key text, p_work_item_key text,
                            p_type text, p_payload jsonb) RETURNS bigint   -- NULL if duplicate
 workflows_api.submit_action(p_work_item_id bigint, p_actor jsonb, p_action text,
-                            p_payload jsonb) RETURNS bigint               -- actions: approve | cancel | retry
+                            p_payload jsonb) RETURNS bigint               -- actions: approve | cancel | retry | merge
 -- views
 workflows_api.work_item_v(id, key, project, workflow, state, state_data, created_at, updated_at)
 workflows_api.transition_v(id, work_item_id, from_state, to_state, event_type, at)
@@ -225,9 +229,11 @@ workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated
 - Both functions are `SECURITY DEFINER`.
 - Connectors use dedupe key `github:<event id>`; the UI uses `ui:<uuid>`. Events the engine itself generates use source `engine` (`handoff:<id>`, `timer:…`, `job:<id>:<attempt>`).
 - `transitions.work_item_id` is nullable: events that are ignored (no Project, no workflow) get a `to_state='ignored'` row with no work item. `transitions.note` records rejections.
-- `work_items.state_data` carries `title` and `url` for display.
+- `work_items.state_data` carries `title` and `url` for display. For `change_request` items it may also carry (additive):
+  - `checklist.{ci,review,mergeable}`, each `{status: "ok" | "pending" | "failed" | "unknown", detail}` (`status` is lowercase): the merge readiness shown by the UI and checked by the reducer;
+  - `merge_error` (string): set when a merge ended in `not_mergeable`.
 - Work item keys and repo keys are stored lowercase.
-- `submit_action` events: source `ui`, payload `{actor, action, data}`, type `ApprovalGranted` (approve), `CancelRequested` (cancel) or `RetryRequested` (retry). The last two are engine-internal and not part of the connector `EventType` set.
+- `submit_action` events: source `ui`, payload `{actor, action, data}`, type `ApprovalGranted` (approve), `CancelRequested` (cancel) or `RetryRequested` (retry) or `MergeRequested` (merge). The last three are engine-internal and not part of the connector `EventType` set. A rejected `merge` (the actor lacks write access, or the readiness checklist is not all `ok`) is a reducer rejection, recorded in `transitions.note`, not a SQL error from `submit_action`.
 - Columns beyond the docs: `transitions.event_type`, `jobs.deadline`, `jobs.created_at`. `work_items.project_id` is text (the Project name), exposed as `project` in the view.
 - NOTIFY channels:
   - `workflow_events` (payload: event id), sent by ingest;
@@ -289,8 +295,8 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 
 ## 10. GitHub App
 
-- **Permissions:** Issues RW, Pull requests RW, Contents RW, Workflows RW, Checks RW, Metadata R. Read-write run tokens minted by `mint_clone_credential` (single repo) carry `contents`, `pull_requests` and `workflows` write so agents can edit `.github/workflows`; read tokens omit `workflows` (GitHub has no read level).
-- **Events:** issues, issue_comment, pull_request, pull_request_review, pull_request_review_comment, installation, installation_repositories.
+- **Permissions:** Issues RW, Pull requests RW, Contents RW, Workflows RW, Checks RW, Commit statuses R, Metadata R. Read-write run tokens minted by `mint_clone_credential` (single repo) carry `contents`, `pull_requests` and `workflows` write so agents can edit `.github/workflows`; read tokens omit `workflows` (GitHub has no read level).
+- **Events:** issues, issue_comment, pull_request, pull_request_review, pull_request_review_comment, check_suite, check_run, status, installation, installation_repositories. Existing Apps must be updated for the new permission and events (see [oldie.md](oldie.md)).
 - **Webhook URL:** `https://<host>/hooks/github`.
 - **Install link and refresh:** `https://github.com/apps/<slug>/installations/new`. At sign-in the UI uses the user-to-server token once (never stored) to snapshot the repositories reachable through installations of this App (`GET /user/installations`, `GET /user/installations/{id}/repositories`) into `app.user_repositories`. `GET /login/github?refresh=1&return=<same-origin path>` re-runs that flow. Set the App's **Setup URL** to `<public>/login/github?refresh=1` with "Redirect on update" enabled so users land back in enzarb after installing.
 - **Registration manifest:** `docs/github-app.yml` (setup in `docs/dev.md`). The same App also provides UI login (user authorization): its callback is `<public>/login/github/callback` (`callback_urls` in the manifest) and its Client ID/secret are the UI's `GITHUB_OAUTH_CLIENT_ID`/`GITHUB_OAUTH_CLIENT_SECRET`.
