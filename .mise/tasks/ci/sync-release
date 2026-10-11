@@ -5,7 +5,7 @@ ROOT="${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}"
 src="$ROOT/docs/ci/release.yml"
 check=0; [ "${1:-}" = "--check" ] && check=1
 rc=0
-for r in enzarb-ui enzarb-workflows enzarb-connectors enzarb-sandbox-proxy enzarb-sandbox-operator enzarb-sandbox-container enzarb-realtime enzarb-helm; do
+for r in enzarb-ui enzarb-workflows enzarb-connectors enzarb-sandbox-proxy enzarb-sandbox-operator enzarb-sandbox-container enzarb-realtime enzarb-updater enzarb-helm; do
   dst="$ROOT/$r/.github/workflows/release.yml"
   [ -d "$ROOT/$r/.git" ] || { echo "$r: missing (mise run repos:init)"; rc=1; continue; }
   if cmp -s "$src" "$dst"; then echo "$r: up to date"; continue; fi
