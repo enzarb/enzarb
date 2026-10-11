@@ -7,8 +7,12 @@
 //! denied.
 //!
 //! * file reads, edits and searches must stay inside `read_roots` /
-//!   `edit_roots` (`{worktree}` stands for the run's worktree); paths are
-//!   normalised lexically and through symlinks of their existing prefix;
+//!   `edit_roots` (`{worktree}` stands for the run's worktree, `{workspace}`
+//!   for the workspace root, derived as `<workspace>/worktrees/<run>`'s
+//!   grandparent); paths are normalised lexically and through symlinks of
+//!   their existing prefix. Reads may also reach the Project's other repo
+//!   checkouts and worktrees; writes never leave the run's worktree. Paths
+//!   containing a `deny_read` component sequence (secrets) are never readable;
 //! * shell commands are parsed (quotes, `;`, `&&`, `||`, `|`, `&`, newlines,
 //!   redirections) and every simple command must match a [`CommandRule`];
 //!   command substitution, variable expansion, subshells and heredocs are
@@ -94,6 +98,9 @@ impl CommandRule {
 pub struct Policy {
     /// Directories the agent may read (`{worktree}` = the run's worktree).
     pub read_roots: Vec<String>,
+    /// Component sequences (e.g. `.enzarb`, `.config/git`) that make a path
+    /// unreadable even inside a read root.
+    pub deny_read: Vec<String>,
     /// Directories the agent may modify, by edit tools and shell commands.
     pub edit_roots: Vec<String>,
     /// Tool kinds allowed without further checks (`think`: subagents, todos).
@@ -263,7 +270,21 @@ impl Default for Policy {
             commands.push(CommandRule::new(n));
         }
         Self {
-            read_roots: vec!["{worktree}".into()],
+            read_roots: vec![
+                "{worktree}".into(),
+                "{workspace}/repos".into(),
+                "{workspace}/worktrees".into(),
+            ],
+            deny_read: [
+                ".enzarb",
+                ".git-credentials",
+                ".gitconfig",
+                ".netrc",
+                ".config/git/credentials",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
             edit_roots: vec!["{worktree}".into()],
             allow_kinds: vec!["think".into()],
             fetch_allow_hosts: Vec::new(),
@@ -345,7 +366,10 @@ impl Policy {
     fn roots(list: &[String], worktree: &Path) -> Vec<PathBuf> {
         list.iter()
             .map(|r| {
-                let r = r.replace("{worktree}", &worktree.to_string_lossy());
+                let ws = worktree.parent().and_then(Path::parent).unwrap_or(worktree);
+                let r = r
+                    .replace("{worktree}", &worktree.to_string_lossy())
+                    .replace("{workspace}", &ws.to_string_lossy());
                 canonical(Path::new(&r))
             })
             .collect()
@@ -397,8 +421,11 @@ impl Policy {
                     return Decision::deny("read", "no path in the tool input");
                 }
                 for p in &paths {
-                    if !inside(&read, &cwd, p) {
-                        return Decision::deny("read", format!("{p} is outside the read roots"));
+                    if !self.read_ok(&read, &cwd, p) {
+                        return Decision::deny(
+                            "read",
+                            format!("{p} is outside the read roots or is a secret"),
+                        );
                     }
                 }
                 Decision::allow(kind, "path inside the read roots")
@@ -457,7 +484,12 @@ impl Policy {
                 if r.target == "/dev/null" {
                     continue;
                 }
-                if !inside(roots, &cwd, &r.target) {
+                let ok = if r.input {
+                    self.read_ok(roots, &cwd, &r.target)
+                } else {
+                    inside(roots, &cwd, &r.target)
+                };
+                if !ok {
                     return Decision::deny(
                         "shell",
                         format!("redirection to {} is outside the allowed roots", r.target),
@@ -476,7 +508,7 @@ impl Policy {
                 let [dir] = args else {
                     return Decision::deny("shell", "cd needs exactly one directory");
                 };
-                if piped || !(inside(read, &cwd, dir) || inside(edit, &cwd, dir)) {
+                if piped || !inside(edit, &cwd, dir) {
                     return Decision::deny("shell", format!("cd {dir} leaves the worktree"));
                 }
                 cwd = resolve(&cwd, dir).unwrap_or(cwd);
@@ -518,6 +550,10 @@ impl Policy {
         if rule.name == "cargo" && rest.first().is_some_and(|a| a.starts_with('+')) {
             rest = &rest[1..];
         }
+        if rule.name == "git" {
+            rest = self.git_dash_c(rest, cwd, read)?;
+            self.git_args(rest, cwd, edit)?;
+        }
         if rule.allow_subcommands.is_some() || !rule.deny_subcommands.is_empty() {
             match rest.first() {
                 Some(first) if first.starts_with('-') => {
@@ -546,7 +582,8 @@ impl Policy {
             return Err(format!("remote reference {a} is not allowed"));
         }
         if rule.name == "docker" {
-            check_docker(rest, cwd, read)?;
+            // Bind mounts are writable: only the edit roots qualify.
+            check_docker(rest, cwd, edit)?;
         }
         let mut after_dd = false;
         for a in rest {
@@ -581,11 +618,156 @@ impl Policy {
             } else {
                 a.as_str()
             };
-            if path_like(candidate) && !inside(roots, cwd, candidate) {
+            let ok = if rule.paths == PathMode::Read {
+                self.read_ok(roots, cwd, candidate)
+            } else {
+                inside(roots, cwd, candidate)
+            };
+            if path_like(candidate) && !ok {
                 return Err(format!("path {candidate} is outside the allowed roots"));
             }
         }
         Ok(())
+    }
+
+    /// Strip leading `-C <dir>` pairs from git's arguments. They are accepted
+    /// only for read-only subcommands and directories in the read roots.
+    fn git_dash_c<'a>(
+        &self,
+        args: &'a [String],
+        cwd: &Path,
+        read: &[PathBuf],
+    ) -> Result<&'a [String], String> {
+        let mut i = 0;
+        let mut dirs = Vec::new();
+        while let Some(a) = args.get(i) {
+            if a == "-C" {
+                let Some(dir) = args.get(i + 1) else {
+                    return Err("-C needs a directory".into());
+                };
+                dirs.push(dir);
+                i += 2;
+            } else if matches!(a.as_str(), "--no-pager" | "-P" | "--no-optional-locks") {
+                i += 1;
+            } else {
+                break;
+            }
+        }
+        if dirs.is_empty() {
+            return Ok(args);
+        }
+        let rest = &args[i..];
+        for d in dirs {
+            if !self.read_ok(read, cwd, d) {
+                return Err(format!("-C {d} is outside the read roots or is a secret"));
+            }
+        }
+        let Some(sub) = rest.first() else {
+            return Err("-C needs a read-only subcommand".into());
+        };
+        if !GIT_READ_ONLY.contains(&sub.as_str()) {
+            return Err(format!(
+                "git -C only allows read-only subcommands, not {sub}"
+            ));
+        }
+        if sub == "branch" {
+            let lists = rest[1..]
+                .iter()
+                .any(|a| matches!(a.as_str(), "--list" | "-l" | "--show-current"));
+            let mutates = rest[1..].iter().any(|a| {
+                a.starts_with("--set-upstream")
+                    || a.starts_with("--unset-upstream")
+                    || a.starts_with("--edit-description")
+                    || matches!(
+                        a.as_str(),
+                        "-d" | "-D"
+                            | "-m"
+                            | "-M"
+                            | "-c"
+                            | "-C"
+                            | "-f"
+                            | "-u"
+                            | "--delete"
+                            | "--move"
+                            | "--copy"
+                            | "--force"
+                            | "--track"
+                            | "-t"
+                    )
+            });
+            if !lists || mutates {
+                return Err("git -C branch only allows --list".into());
+            }
+        }
+        Ok(rest)
+    }
+
+    /// Argument checks for every git invocation: options that run programs,
+    /// write files or read arbitrary files, and subcommands that create
+    /// files at a path given in their arguments.
+    fn git_args(&self, rest: &[String], cwd: &Path, edit: &[PathBuf]) -> Result<(), String> {
+        let sub = rest
+            .iter()
+            .find(|a| !a.starts_with('-'))
+            .map(String::as_str);
+        if let Some(sub) = sub
+            && matches!(
+                sub,
+                "archive" | "bundle" | "checkout-index" | "format-patch"
+            )
+        {
+            return Err(format!("git {sub} writes files and is not allowed"));
+        }
+        let writes_path = matches!(sub, Some("worktree" | "init" | "clone"));
+        for a in rest {
+            if a == "--" {
+                break;
+            }
+            if let Some(long) = a.strip_prefix("--") {
+                let name = long.split_once('=').map_or(long, |(n, _)| n);
+                // git accepts unambiguous abbreviations of long options.
+                if name.len() >= 2
+                    && GIT_DENY_LONG
+                        .iter()
+                        .any(|d| d.strip_prefix("--").is_some_and(|d| d.starts_with(name)))
+                {
+                    return Err(format!("argument {a} is not allowed"));
+                }
+            } else if let Some(short) = a.strip_prefix('-') {
+                let bad = match sub {
+                    Some("grep") => "fO",
+                    Some("ls-files") => "XO",
+                    _ => "O",
+                };
+                if short.chars().any(|c| bad.contains(c)) && !short.starts_with('-') {
+                    return Err(format!("argument {a} is not allowed"));
+                }
+            }
+            let tail = a.rsplit(':').next().unwrap_or(a);
+            if self.secret_path(Path::new(a)) || self.secret_path(Path::new(tail)) {
+                return Err(format!("argument {a} names a secret"));
+            }
+            if writes_path && path_like(a) && !a.starts_with('-') && !inside(edit, cwd, a) {
+                return Err(format!("path {a} is outside the edit roots"));
+            }
+        }
+        Ok(())
+    }
+
+    /// `arg` is inside the read roots and does not name a secret.
+    fn read_ok(&self, roots: &[PathBuf], cwd: &Path, arg: &str) -> bool {
+        let Some(p) = resolve(cwd, arg) else {
+            return false;
+        };
+        roots.iter().any(|r| p.starts_with(r)) && !self.secret_path(&p)
+    }
+
+    fn secret_path(&self, p: &Path) -> bool {
+        let comps: Vec<_> = p.components().map(|c| c.as_os_str()).collect();
+        self.deny_read.iter().any(|d| {
+            let seq: Vec<_> = Path::new(d).components().map(|c| c.as_os_str()).collect();
+            !seq.is_empty() && comps.windows(seq.len()).any(|w| w == seq.as_slice())
+        })
     }
 
     fn check_sub(&self, rule: &CommandRule, sub: &str) -> Result<(), String> {
@@ -600,6 +782,42 @@ impl Policy {
         Ok(())
     }
 }
+
+/// Git subcommands usable with `-C` (read-only).
+const GIT_READ_ONLY: &[&str] = &[
+    "status",
+    "log",
+    "show",
+    "diff",
+    "rev-parse",
+    "ls-files",
+    "ls-tree",
+    "grep",
+    "blame",
+    "branch",
+    "cat-file",
+];
+/// Long options refused for git: they write files, run programs or read
+/// files outside the repository.
+const GIT_DENY_LONG: &[&str] = &[
+    "--output",
+    "--output-indicator-new",
+    "--no-index",
+    "--ext-diff",
+    "--textconv",
+    "--open-files-in-pager",
+    "--git-dir",
+    "--work-tree",
+    "--exec-path",
+    "--contents",
+    "--exclude-from",
+    "--orderfile",
+    "--file",
+    "--prefix",
+    "--upload-pack",
+    "--receive-pack",
+    "--exec",
+];
 
 /// Flags that hand the container host privileges. Refused with any value.
 const DOCKER_DENY_FLAGS: &[&str] = &[
@@ -1520,6 +1738,235 @@ mod tests {
         assert_eq!(literal_prefix("/*"), "/");
         assert_eq!(literal_prefix("/a/b"), "/a/b");
         assert_eq!(literal_prefix("/a/b*"), "/a");
+    }
+
+    fn ws_path(wt: &Path, rel: &str) -> String {
+        wt.parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join(rel)
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn cross_setup() -> (tempfile::TempDir, PathBuf) {
+        let (d, wt) = setup();
+        std::fs::create_dir_all(d.path().join("repos/other-abc")).unwrap();
+        std::fs::write(d.path().join("repos/other-abc/README.md"), "x").unwrap();
+        std::fs::create_dir_all(d.path().join("worktrees/run-2")).unwrap();
+        std::fs::write(d.path().join(".git-credentials"), "x").unwrap();
+        (d, wt)
+    }
+
+    #[test]
+    fn cross_repo_reads_are_allowed() {
+        let (_d, wt) = cross_setup();
+        let p = Policy::default();
+        let readme = ws_path(&wt, "repos/other-abc/README.md");
+        for c in [
+            format!("cat {readme}"),
+            format!("ls {}", ws_path(&wt, "repos")),
+            format!("grep -rn x {}", ws_path(&wt, "worktrees/run-2")),
+            format!("head -n 3 {readme}"),
+        ] {
+            let d = sh(&p, &wt, &c);
+            assert!(d.allow, "{c}: {d:?}");
+        }
+        for kind in ["read", "search"] {
+            let d = p.decide(
+                &json!({"kind": kind, "rawInput": {"file_path": readme, "path": readme, "pattern": "x"}}),
+                &wt,
+            );
+            assert!(d.allow, "{kind}: {d:?}");
+        }
+        let glob = p.decide(
+            &json!({"kind": "search", "rawInput": {"pattern": format!("{}/**/*.md", ws_path(&wt, "repos"))}}),
+            &wt,
+        );
+        assert!(glob.allow, "{glob:?}");
+    }
+
+    #[test]
+    fn cross_repo_writes_are_denied() {
+        let (_d, wt) = cross_setup();
+        let p = Policy::default();
+        let readme = ws_path(&wt, "repos/other-abc/README.md");
+        for c in [
+            format!("rm {readme}"),
+            format!("touch {}", ws_path(&wt, "repos/other-abc/new")),
+            format!("cp src/lib.rs {readme}"),
+            format!("echo x > {readme}"),
+            format!("tee {readme}"),
+            format!("cd {} && touch x", ws_path(&wt, "repos/other-abc")),
+            format!("cd {} && git commit -m x", ws_path(&wt, "repos/other-abc")),
+            format!(
+                "docker run -v {}:/r alpine ls",
+                ws_path(&wt, "repos/other-abc")
+            ),
+        ] {
+            let d = sh(&p, &wt, &c);
+            assert!(!d.allow, "{c}: {d:?}");
+        }
+        for kind in ["edit", "delete"] {
+            let d = p.decide(
+                &json!({"kind": kind, "rawInput": {"file_path": readme}}),
+                &wt,
+            );
+            assert!(!d.allow, "{kind}: {d:?}");
+        }
+        let d = p.decide(
+            &json!({"kind": "move", "rawInput": {"old_path": "src/lib.rs", "new_path": readme}}),
+            &wt,
+        );
+        assert!(!d.allow);
+    }
+
+    #[test]
+    fn git_dash_c_is_read_only() {
+        let (_d, wt) = cross_setup();
+        let p = Policy::default();
+        let repo = ws_path(&wt, "repos/other-abc");
+        for sub in [
+            "status",
+            "log --oneline -5",
+            "show HEAD",
+            "diff HEAD~1",
+            "rev-parse HEAD",
+            "ls-files",
+            "ls-tree HEAD",
+            "grep -n foo",
+            "blame README.md",
+            "branch --list",
+            "cat-file -p HEAD",
+        ] {
+            let c = format!("git -C {repo} {sub}");
+            let d = sh(&p, &wt, &c);
+            assert!(d.allow, "{c}: {d:?}");
+        }
+        let c = format!("git --no-pager -C {} log", wt.display());
+        assert!(sh(&p, &wt, &c).allow);
+        for sub in [
+            "commit -m x",
+            "checkout main",
+            "reset --hard",
+            "fetch",
+            "pull",
+            "clean -fd",
+            "branch -D main",
+            "branch newbranch",
+            "branch --list -m a b",
+            "push",
+            "config user.name x",
+            "diff --output=/tmp/x",
+            "diff --no-index /etc/passwd x",
+            "grep -O foo",
+            "worktree remove x",
+            "update-ref -d HEAD",
+            "",
+        ] {
+            let c = format!("git -C {repo} {sub}");
+            let d = sh(&p, &wt, &c);
+            assert!(!d.allow, "{c}: {d:?}");
+        }
+        for c in [
+            "git -C /etc status",
+            "git -C / log",
+            "git -C ../.. status",
+            "git -C",
+        ] {
+            assert!(!sh(&p, &wt, c).allow, "{c}");
+        }
+    }
+
+    #[test]
+    fn git_argument_escapes_are_denied() {
+        let (_d, wt) = cross_setup();
+        let p = Policy::default();
+        let repo = ws_path(&wt, "repos/other-abc");
+        let tok = ws_path(&wt, ".enzarb/claude-token");
+        for c in [
+            "git grep -O'touch x;' hello".to_string(),
+            "git grep -Otouch hello".to_string(),
+            "git grep --open-files-in-pager=sh hello".to_string(),
+            "git grep -nf /etc/passwd".to_string(),
+            "git blame --contents /etc/passwd README.md".to_string(),
+            format!("git blame --contents {tok} README.md"),
+            format!("git diff --no-index {tok} /dev/null"),
+            format!("git log -1 --output={repo}/README.md"),
+            format!("git log -1 --out={repo}/README.md"),
+            format!("git diff --output {repo}/README.md"),
+            "git ls-files -X /etc/passwd".to_string(),
+            "git ls-files --exclude-from=/etc/passwd".to_string(),
+            format!("git archive -o {repo}/a.tar HEAD"),
+            format!("git format-patch -o {repo} HEAD~1"),
+            format!("git worktree add {repo}/wt"),
+            format!("git init {repo}/sub"),
+            format!("git clone . {repo}/c"),
+            format!("git -C {repo} show HEAD:.git-credentials"),
+            "git show HEAD:.enzarb/claude-token".to_string(),
+        ] {
+            let d = sh(&p, &wt, &c);
+            assert!(!d.allow, "{c}: {d:?}");
+        }
+        for c in [
+            "git log --oneline origin/main",
+            "git diff --stat HEAD~1",
+            "git grep -n foo",
+            "git show HEAD:src/lib.rs",
+            "git worktree list",
+            "git ls-files -o",
+        ] {
+            let d = sh(&p, &wt, c);
+            assert!(d.allow, "{c}: {d:?}");
+        }
+    }
+
+    #[test]
+    fn secrets_are_unreadable_under_the_new_roots() {
+        let (d, wt) = cross_setup();
+        let p = Policy::default();
+        let token = ws_path(&wt, ".enzarb/claude-token");
+        let creds = ws_path(&wt, ".git-credentials");
+        // secrets planted inside a readable checkout
+        let repo = d.path().join("repos/other-abc");
+        std::fs::create_dir_all(repo.join(".config/git")).unwrap();
+        std::fs::write(repo.join(".git-credentials"), "x").unwrap();
+        std::fs::write(repo.join(".config/git/credentials"), "x").unwrap();
+        let nested = format!("{}/.git-credentials", repo.display());
+        let helper = format!("{}/.config/git/credentials", repo.display());
+        let enz = ws_path(&wt, "repos/other-abc/.enzarb/x");
+        for path in [&token, &creds, &nested, &helper, &enz] {
+            for c in [
+                format!("cat {path}"),
+                format!("grep x {path}"),
+                format!("wc -l < {path}"),
+            ] {
+                assert!(!sh(&p, &wt, &c).allow, "{c}");
+            }
+            for kind in ["read", "search"] {
+                let r = p.decide(
+                    &json!({"kind": kind, "rawInput": {"file_path": path, "path": path, "pattern": "x"}}),
+                    &wt,
+                );
+                assert!(!r.allow, "{kind} {path}");
+            }
+        }
+        // a repo's own .claude/ and .config/ are project docs, not secrets
+        let repo = d.path().join("repos/other-abc");
+        std::fs::create_dir_all(repo.join(".claude")).unwrap();
+        std::fs::write(repo.join(".claude/settings.json"), "{}").unwrap();
+        let settings = format!("{}/.claude/settings.json", repo.display());
+        assert!(sh(&p, &wt, &format!("cat {settings}")).allow);
+        let r = p.decide(
+            &json!({"kind": "read", "rawInput": {"file_path": settings}}),
+            &wt,
+        );
+        assert!(r.allow, "{r:?}");
+        let c = format!("git -C {} show HEAD", ws_path(&wt, ".enzarb"));
+        assert!(!sh(&p, &wt, &c).allow);
+        assert!(!sh(&p, &wt, &format!("ls {}", ws_path(&wt, ""))).allow);
+        assert!(!sh(&p, &wt, &format!("cat {}/.gitconfig", wt.display())).allow);
     }
 
     #[test]
