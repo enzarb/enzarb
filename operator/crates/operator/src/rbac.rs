@@ -34,6 +34,10 @@ pub const SANDBOX_NS_CALLS: &[(&str, &str, &str)] = &[
     ("agents.x-k8s.io", "sandboxes", "watch"),
     ("agents.x-k8s.io", "sandboxes", "create"),
     ("agents.x-k8s.io", "sandboxes", "patch"),
+    // Rolling a sandbox pod whose image is outdated (`roll.rs`): read it, then delete it so the
+    // Sandbox controller recreates it. The Pod is the only object the operator ever deletes.
+    ("", "pods", "get"),
+    ("", "pods", "delete"),
 ];
 
 /// Namespaced grants (Role in the operator's namespace): leader election.
@@ -128,6 +132,26 @@ mod tests {
             granted("Role", "enzarb-sandbox-operator-leader"),
             used(LEADER_CALLS)
         );
+    }
+
+    /// The image roll deletes the Pod only: the Sandbox and the PVCs (the Project's data) must
+    /// stay undeletable by the operator.
+    #[test]
+    fn only_pods_can_be_deleted() {
+        let deletable: Vec<_> = SANDBOX_NS_CALLS
+            .iter()
+            .chain(CLUSTER_CALLS)
+            .chain(LEADER_CALLS)
+            .filter(|(_, _, v)| *v == "delete" || *v == "deletecollection")
+            .map(|(_, r, _)| *r)
+            .collect();
+        assert_eq!(deletable, ["pods"]);
+        let granted_delete: Vec<_> = granted("Role", "enzarb-sandbox-operator")
+            .into_iter()
+            .filter(|(_, _, v)| v == "delete" || v == "deletecollection")
+            .map(|(_, r, _)| r)
+            .collect();
+        assert_eq!(granted_delete, ["pods"]);
     }
 
     #[test]

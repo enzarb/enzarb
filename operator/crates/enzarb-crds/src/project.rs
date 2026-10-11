@@ -19,6 +19,12 @@ pub const CONDITION_TYPES: [&str; 3] = [COND_RESOURCES_READY, COND_SANDBOX_READY
 pub const REASON_INVALID_SPEC: &str = "InvalidSpec";
 /// Non-terminal `Unknown` reason for a retryable reconcile error (e.g. a transient API failure).
 pub const REASON_RETRYING: &str = "Retrying";
+/// Informational condition (not part of `CONDITION_TYPES`, so the UI checklist is unchanged) that
+/// is present, status `True`, only while the sandbox pod runs an outdated image and its
+/// recreation is deferred. It does not affect `Ready`.
+pub const COND_SANDBOX_IMAGE_ROLL: &str = "SandboxImageRoll";
+/// Reason of [`COND_SANDBOX_IMAGE_ROLL`].
+pub const REASON_SANDBOX_IMAGE_ROLL_PENDING: &str = "SandboxImageRollPending";
 /// Longest Project name: `sb-<name>-workspace` must fit a 63-character label (ADR-0013).
 pub const MAX_PROJECT_NAME_LEN: usize = 50;
 

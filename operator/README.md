@@ -30,6 +30,7 @@ Each flag has an environment variable; the flag wins.
 | Flag | Env | Default | Meaning |
 |---|---|---|---|
 | `--sandbox-image` | `ENZARB_SANDBOX_IMAGE` | empty | Image when `spec.sandbox.image` is empty. If both are empty the Project is invalid. |
+| `--sandbox-roll-drain-timeout` | `ENZARB_SANDBOX_ROLL_DRAIN_TIMEOUT` | `10m` | How long a pending sandbox pod roll waits for the sandbox to become idle before the pod is deleted anyway. Accepts `30s`, `10m`, `2h` or plain seconds. |
 | `--default-storage` | `ENZARB_DEFAULT_STORAGE` | `20Gi` | PVC size when `spec.sandbox.storage` is empty. |
 | `--release-namespace` | `ENZARB_RELEASE_NAMESPACE` | pod namespace | Namespace enzarb is released into (where the sandbox clients and the executor run); used for the default ingress namespace label. |
 | `--sandbox-namespace` | `ENZARB_SANDBOX_NAMESPACE` | `enzarb-sandboxes` | Shared namespace for all Projects' objects. Must exist (Helm chart). |
@@ -55,6 +56,14 @@ Each flag has an environment variable; the flag wins.
 | `--lease-renew-secs` | `ENZARB_LEASE_RENEW_SECS` | `5` | Renew (and standby retry) interval. Must be below the duration. |
 
 `RUST_LOG` sets the log filter (default `info`); logs are JSON.
+
+## Rolling the sandbox pod on an image change
+
+Updating the Sandbox template does not recreate a running pod. When the image of the pod's `sandbox` container differs from the desired image (`spec.sandbox.image`, else `--sandbox-image`), and the Sandbox already carries the desired image, the operator deletes the pod (with a UID precondition) so it is recreated from the template. The Sandbox and the PVCs are never deleted, so the workspace and docker data persist. The Docker sidecar and init containers are ignored.
+
+The pod is deleted when the sandbox is **idle**, or when `--sandbox-roll-drain-timeout` has passed since the mismatch was first seen. Idle means the pod carries the annotation `enzarb.dev/active-sessions` with the value `0`. A missing or unparsable annotation means "unknown", never idle, so only the drain timeout releases the roll. Nothing in this repo sets the annotation yet; that is for the sandbox runtime or API.
+
+While the roll waits, `status.conditions` has an extra condition `SandboxImageRoll` (`True`, reason `SandboxImageRollPending`, naming the old and new image and the deadline). It is not part of the UI checklist and does not change `Ready`; it disappears once the pod matches. Its `lastTransitionTime` is the start of the drain period and survives operator restarts.
 
 ## Docker in the sandbox (ADR-0012)
 

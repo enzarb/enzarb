@@ -5,6 +5,7 @@ mod leader;
 #[cfg(test)]
 mod rbac;
 mod reconcile;
+mod roll;
 
 use clap::Parser;
 use desired::Defaults;
@@ -27,6 +28,15 @@ struct Args {
     /// Sandbox image used when a Project does not set `spec.sandbox.image`.
     #[arg(long, env = "ENZARB_SANDBOX_IMAGE", default_value = "")]
     sandbox_image: String,
+    /// How long a pending sandbox pod roll (pod image differs from the desired image) waits for
+    /// the sandbox to become idle before the pod is deleted anyway. Humantime-style: `30s`, `10m`.
+    #[arg(
+        long,
+        env = "ENZARB_SANDBOX_ROLL_DRAIN_TIMEOUT",
+        default_value = "10m",
+        value_parser = parse_duration
+    )]
+    sandbox_roll_drain_timeout: Duration,
     /// Workspace PVC size used when a Project sets an empty `spec.sandbox.storage`.
     #[arg(long, env = "ENZARB_DEFAULT_STORAGE", default_value = "20Gi")]
     default_storage: String,
@@ -141,6 +151,23 @@ struct Args {
     /// Seconds between renewals (and between acquire attempts for standbys).
     #[arg(long, env = "ENZARB_LEASE_RENEW_SECS", default_value_t = 5)]
     lease_renew_secs: u64,
+}
+
+/// Parses `90`, `90s`, `10m`, `2h` (a bare number is seconds).
+fn parse_duration(s: &str) -> Result<Duration, String> {
+    let s = s.trim();
+    let (num, mult) = match s.chars().last() {
+        Some('s') => (&s[..s.len() - 1], 1),
+        Some('m') => (&s[..s.len() - 1], 60),
+        Some('h') => (&s[..s.len() - 1], 3600),
+        _ => (s, 1),
+    };
+    num.trim()
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(mult))
+        .map(Duration::from_secs)
+        .ok_or_else(|| format!("invalid duration {s:?}; use e.g. 30s, 10m, 2h"))
 }
 
 fn pod_namespace() -> std::io::Result<String> {
@@ -363,6 +390,7 @@ async fn run_controller(
     let sandboxes: Api<Sandbox> = Api::namespaced(client.clone(), &args.sandbox_namespace);
     let ctx = Arc::new(reconcile::Ctx::new(
         client,
+        args.sandbox_roll_drain_timeout,
         Defaults {
             sandbox_image: args.sandbox_image.clone(),
             storage: args.default_storage.clone(),

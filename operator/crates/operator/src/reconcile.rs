@@ -1,9 +1,10 @@
 //! Applies the desired objects (see `desired`) and records status (see `conditions`).
 
-use crate::conditions::{self, Check, Observed};
+use crate::conditions::{self, Check, Observed, RollPending};
 use crate::desired::{self, Defaults, FIELD_MANAGER, Ownership};
+use crate::roll::{self, DEFER_POLL};
 use enzarb_crds::upstream::sandbox::Sandbox;
-use enzarb_crds::{Project, ProjectStatus};
+use enzarb_crds::{COND_SANDBOX_IMAGE_ROLL, Project, ProjectStatus};
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Secret};
 use k8s_openapi::api::networking::v1::NetworkPolicy;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
@@ -26,14 +27,17 @@ pub enum Error {
 pub struct Ctx {
     pub client: Client,
     pub defaults: Defaults,
+    /// How long a deferred sandbox pod roll waits for idleness (see `roll`).
+    pub roll_drain_timeout: Duration,
     failures: Mutex<HashMap<String, u32>>,
 }
 
 impl Ctx {
-    pub fn new(client: Client, defaults: Defaults) -> Self {
+    pub fn new(client: Client, roll_drain_timeout: Duration, defaults: Defaults) -> Self {
         Self {
             client,
             defaults,
+            roll_drain_timeout,
             failures: Mutex::default(),
         }
     }
@@ -97,18 +101,24 @@ async fn apply(p: &Project, ctx: &Ctx) -> Result<Action, Error> {
     if let Err(e) = desired::validate(p, &ctx.defaults) {
         warn!(project = %name, error = %e, "invalid project");
         obs.resources = Check::Invalid(e.to_string());
-        write_status(p, ctx, status, &obs).await?;
+        write_status(p, ctx, status, &obs, &RollState::Clear).await?;
         // Nothing to retry until the user edits the spec.
         return Ok(Action::await_change());
     }
 
-    let result = drive(p, ctx, &mut obs, &mut status).await;
-    write_status(p, ctx, status, &obs).await?;
+    let mut roll = RollState::Clear;
+    let result = drive(p, ctx, &mut obs, &mut status, &mut roll).await;
+    write_status(p, ctx, status, &obs, &roll).await?;
     result?;
 
     if obs.resources == Check::Ok && obs.sandbox == Check::Ok {
         info!(project = %name, "ready");
-        Ok(Action::requeue(RESYNC))
+        // A deferred roll is re-checked soon, so the drain timeout fires without an event.
+        let wait = match &roll {
+            RollState::Pending(r) => r.remaining.clamp(Duration::from_secs(1), DEFER_POLL),
+            _ => RESYNC,
+        };
+        Ok(Action::requeue(wait))
     } else if is_not_owned(&obs.resources) || is_not_owned(&obs.sandbox) {
         Ok(Action::requeue(NOT_OWNED_RETRY))
     } else {
@@ -178,6 +188,7 @@ async fn drive(
     ctx: &Ctx,
     obs: &mut Observed,
     status: &mut ProjectStatus,
+    roll: &mut RollState,
 ) -> Result<(), Error> {
     let d = &ctx.defaults;
     let ns = d.sandbox_namespace.as_str();
@@ -265,7 +276,40 @@ async fn drive(
     status.namespace = Some(ns.to_string());
     status.sandbox = Some(desired::sandbox_status(p, d));
     obs.sandbox = conditions::sandbox_check(Some(&sb));
+
+    // Recreate a pod that still runs an outdated image (the Sandbox template was just updated).
+    // Only the Pod is deleted; the Sandbox and PVCs stay, so the data survives.
+    let now = Time(k8s_openapi::jiff::Timestamp::now());
+    match roll::roll_step(
+        &ctx.client,
+        p,
+        d,
+        &sb,
+        &status.conditions,
+        ctx.roll_drain_timeout,
+        &now,
+    )
+    .await
+    {
+        Ok(Some(pending)) => *roll = RollState::Pending(pending),
+        Ok(None) => {}
+        Err(e) => {
+            // Keep the pending condition (and its timer) across a transient error.
+            *roll = RollState::Keep;
+            return Err(e.into());
+        }
+    }
     Ok(())
+}
+
+/// What the pod roll step concluded, for the informational `SandboxImageRoll` condition.
+#[derive(Debug)]
+enum RollState {
+    /// No roll is pending (or it was just performed).
+    Clear,
+    Pending(RollPending),
+    /// The step failed: leave the previous condition untouched.
+    Keep,
 }
 
 async fn write_status(
@@ -273,14 +317,25 @@ async fn write_status(
     ctx: &Ctx,
     mut status: ProjectStatus,
     obs: &Observed,
+    roll: &RollState,
 ) -> Result<(), Error> {
     let now = Time(k8s_openapi::jiff::Timestamp::now());
-    status.conditions = conditions::compute(
-        p.metadata.generation.unwrap_or_default(),
-        obs,
-        &status.conditions,
-        &now,
-    );
+    let generation = p.metadata.generation.unwrap_or_default();
+    let previous = std::mem::take(&mut status.conditions);
+    status.conditions = conditions::compute(generation, obs, &previous, &now);
+    match roll {
+        RollState::Clear => {}
+        RollState::Pending(r) => {
+            status
+                .conditions
+                .push(conditions::roll_condition(r, generation, &previous, &now));
+        }
+        RollState::Keep => {
+            if let Some(c) = previous.iter().find(|c| c.type_ == COND_SANDBOX_IMAGE_ROLL) {
+                status.conditions.push(c.clone());
+            }
+        }
+    }
     let old = p.status.clone().unwrap_or_default();
     let clear = merge_status(&old, &mut status, obs);
     if old == status {
