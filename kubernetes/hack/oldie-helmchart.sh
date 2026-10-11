@@ -8,8 +8,9 @@
 #   VALUES_FILE        non-secret chart values (becomes spec.valuesContent)
 #   RELEASE_NAMESPACE  namespace of the existing Helm release (spec.targetNamespace)
 # Optional env:
-#   RELEASE_NAME       Helm release name (default enzarb); set so the controller adopts the
-#                      existing release instead of installing a second one
+#   RELEASE_NAME       Helm release name of the existing release (default enzarb). RKE2's
+#                      helm-controller has no spec.releaseName: the release name is the HelmChart
+#                      metadata.name (enzarb), so any other value is refused.
 #   CHART              default oci://ghcr.io/enzarb/charts/enzarb
 #   FORCE_VERSION      apply this chart version on an existing HelmChart only if it is strictly
 #                      greater than the live spec.version; on first create it overrides the
@@ -32,6 +33,7 @@ HELM=${HELM:-helm}
 CHART=${CHART:-oci://ghcr.io/enzarb/charts/enzarb}
 RELEASE_NAME=${RELEASE_NAME:-enzarb}
 WAIT_TIMEOUT=${WAIT_TIMEOUT:-10m}
+[ "$RELEASE_NAME" = enzarb ] || { echo "RELEASE_NAME must be enzarb (the HelmChart name is the release name)" >&2; exit 1; }
 : "${VALUES_FILE:?VALUES_FILE is required}"
 : "${RELEASE_NAMESPACE:?RELEASE_NAMESPACE is required}"
 [ -r "$VALUES_FILE" ] || { echo "cannot read $VALUES_FILE" >&2; exit 1; }
@@ -98,7 +100,6 @@ render() {
   echo "spec:"
   echo "  chart: $CHART"
   [ -z "$version" ] || echo "  version: \"$version\""
-  echo "  releaseName: $RELEASE_NAME"
   echo "  targetNamespace: $RELEASE_NAMESPACE"
   echo "  createNamespace: true"
   echo "  timeout: 20m"

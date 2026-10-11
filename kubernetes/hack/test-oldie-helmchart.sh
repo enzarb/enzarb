@@ -32,7 +32,10 @@ out=$(run "$tmp/ok.yaml")
 grep -q 'version: "1.4.2"' <<< "$out" || fail "first create should pin the deployed version"
 grep -q 'chart: oci://ghcr.io/enzarb/charts/enzarb' <<< "$out" || fail "chart"
 grep -q 'targetNamespace: enzarb' <<< "$out" || fail "targetNamespace"
+! grep -q 'releaseName' <<< "$out" || fail "releaseName is not a field of this HelmChart CRD"
 grep -q '    existingSecret: enzarb-db' <<< "$out" || fail "valuesContent"
+
+if RELEASE_NAME=other run "$tmp/ok.yaml" > /dev/null 2>&1; then fail "release name must be enzarb"; fi
 
 # Re-run after the updater bumped the live version: the live value is kept.
 out=$(LIVE_VERSION=2.0.0 run "$tmp/ok.yaml")

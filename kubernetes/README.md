@@ -37,8 +37,8 @@ hack/oldie-helmchart.sh    applies the enzarb HelmChart CR on oldie (see below);
 ### enzarb on oldie: HelmChart CR
 
 `hack/oldie-helmchart.sh` applies a `helm.cattle.io/v1` `HelmChart` `enzarb` in `kube-system`
-(`oci://ghcr.io/enzarb/charts/enzarb`, `targetNamespace` = the release namespace, `releaseName` explicit so
-RKE2's helm-controller adopts the existing Helm release). It is applied with `kubectl apply`, never
+(`oci://ghcr.io/enzarb/charts/enzarb`, `targetNamespace` = the release namespace, the HelmChart name `enzarb` is the
+release name, so RKE2's helm-controller adopts the existing Helm release). It is applied with `kubectl apply`, never
 dropped into `/var/lib/rancher/rke2/server/manifests`: the controller re-applies that directory on
 restart and would revert `spec.version` patches made in-cluster by `enzarb-updater`.
 
