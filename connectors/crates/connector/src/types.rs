@@ -174,6 +174,25 @@ pub struct ShortLivedCred {
     pub expires_at: DateTime<Utc>,
 }
 
+/// A short-lived, read-only credential covering several repos (for fetching
+/// private dependencies). Never used for push. `Debug` redacts the token.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadCred {
+    pub token: String,
+    pub repos: Vec<RepoKey>,
+    pub expires_at: DateTime<Utc>,
+}
+
+impl fmt::Debug for ReadCred {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReadCred")
+            .field("token", &"<redacted>")
+            .field("repos", &self.repos)
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
 impl fmt::Debug for ShortLivedCred {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ShortLivedCred")

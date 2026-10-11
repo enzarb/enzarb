@@ -23,6 +23,6 @@ pub use event::{CiInfo, Event, EventData, EventType, Review};
 pub use keys::{KeyError, RepoKey, WorkItemKey};
 pub use types::{
     Actor, ChangeRequestSpec, CommentKind, CommentRef, CommitRef, CredScope, ItemKind, ItemRef,
-    Permission, Progress, ProgressTarget, ShortLivedCred, Status, StatusState, Thread,
+    Permission, Progress, ProgressTarget, ReadCred, ShortLivedCred, Status, StatusState, Thread,
     ThreadComment,
 };

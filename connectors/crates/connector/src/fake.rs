@@ -8,8 +8,8 @@ use chrono::{Duration, Utc};
 
 use crate::{
     Actor, ChangeRequestSpec, CommentRef, CommitRef, Connector, CredScope, Error, ItemKind,
-    ItemRef, MergeOutcome, MergeReadiness, Permission, Progress, ProgressTarget, RepoKey, Result,
-    ShortLivedCred, Status, Thread, ThreadComment, WorkItemKey,
+    ItemRef, MergeOutcome, MergeReadiness, Permission, Progress, ProgressTarget, ReadCred, RepoKey,
+    Result, ShortLivedCred, Status, Thread, ThreadComment, WorkItemKey,
 };
 
 /// One call made against the fake, with its arguments.
@@ -45,6 +45,10 @@ pub enum Call {
         repo: RepoKey,
         scope: CredScope,
         idempotency_key: String,
+    },
+    MintReadCredential {
+        repos: Vec<RepoKey>,
+        purpose: String,
     },
     MergeChangeRequest {
         item: WorkItemKey,
@@ -418,5 +422,30 @@ impl Connector for FakeConnector {
             .insert(idempotency_key.to_string(), cred.clone());
         Self::record(&mut st, call, false);
         Ok(cred)
+    }
+
+    async fn mint_read_credential(
+        &self,
+        repos: &[RepoKey],
+        purpose: &str,
+    ) -> Result<Option<ReadCred>> {
+        let mut st = self.st();
+        let call = Call::MintReadCredential {
+            repos: repos.to_vec(),
+            purpose: purpose.to_string(),
+        };
+        Self::take_failure(&mut st, call.clone())?;
+        if repos.is_empty() {
+            Self::record(&mut st, call, false);
+            return Err(Error::Invalid("no repos for read credential".into()));
+        }
+        st.next_id += 1;
+        let cred = ReadCred {
+            token: format!("fake-read-token-{}", st.next_id),
+            repos: repos.to_vec(),
+            expires_at: Utc::now() + Duration::hours(1),
+        };
+        Self::record(&mut st, call, false);
+        Ok(Some(cred))
     }
 }

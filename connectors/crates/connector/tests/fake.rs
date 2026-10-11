@@ -194,3 +194,28 @@ async fn readiness_is_seeded() {
     assert_eq!(f.get_merge_readiness(&item(), 1).await.unwrap(), r);
     assert_eq!(f.calls().len(), 2);
 }
+
+#[tokio::test]
+async fn read_credential_records_call_and_validates() {
+    let f = FakeConnector::new();
+    let repos = vec![RepoKey::new("github", "enzarb", "enzarb-proto")];
+    let cred = f
+        .mint_read_credential(&repos, "deps")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(cred.repos, repos);
+    assert!(!format!("{cred:?}").contains(&cred.token));
+    assert!(matches!(
+        f.mint_read_credential(&[], "deps").await,
+        Err(Error::Invalid(_))
+    ));
+    let calls = f.calls();
+    assert_eq!(
+        calls[0].call,
+        Call::MintReadCredential {
+            repos,
+            purpose: "deps".into()
+        }
+    );
+}

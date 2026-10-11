@@ -2,8 +2,8 @@ use async_trait::async_trait;
 
 use crate::{
     Actor, ChangeRequestSpec, CommentRef, CommitRef, CredScope, ItemRef, MergeOutcome,
-    MergeReadiness, Permission, Progress, ProgressTarget, RepoKey, Result, ShortLivedCred, Status,
-    Thread, WorkItemKey,
+    MergeReadiness, Permission, Progress, ProgressTarget, ReadCred, RepoKey, Result,
+    ShortLivedCred, Status, Thread, WorkItemKey,
 };
 
 /// Outbound operations against a provider.
@@ -82,4 +82,17 @@ pub trait Connector: Send + Sync {
         scope: CredScope,
         idempotency_key: &str,
     ) -> Result<ShortLivedCred>;
+
+    /// A short-lived, read-only token (`contents: read`) restricted to exactly
+    /// `repos`, for fetching private git dependencies. `purpose` is a short
+    /// label for audit/logging. Connectors without this capability return
+    /// `Ok(None)` (the default). Implementations must reject an empty list and
+    /// repos that are not reachable through a single installation.
+    async fn mint_read_credential(
+        &self,
+        _repos: &[RepoKey],
+        _purpose: &str,
+    ) -> Result<Option<ReadCred>> {
+        Ok(None)
+    }
 }

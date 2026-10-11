@@ -11,7 +11,7 @@ use enzarb_connector::{
 use enzarb_connector_github::{CommitStatusChange, GitHubConfig, GitHubConnector, RetryPolicy};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde_json::{Value, json};
-use wiremock::matchers::{body_json, header, method, path, query_param};
+use wiremock::matchers::{body_json, header, method, path, path_regex, query_param};
 use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
 
 const APP_ID: &str = "123456";
@@ -1401,4 +1401,102 @@ async fn resolve_commit_status_without_prs_is_empty() {
         .await
         .unwrap();
     assert!(evs.is_empty());
+}
+
+// ---- read credential ----
+
+fn repo_named(name: &str) -> RepoKey {
+    RepoKey::new("github", "enzarb", name)
+}
+
+#[tokio::test]
+async fn mint_read_credential_is_read_only_and_scoped() {
+    let server = MockServer::start().await;
+    for name in ["enzarb-ui", "enzarb-proto"] {
+        Mock::given(method("GET"))
+            .and(path(format!("/repos/enzarb/{name}/installation")))
+            .and(ValidAppJwt)
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": INSTALLATION})))
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("POST"))
+        .and(path(format!(
+            "/app/installations/{INSTALLATION}/access_tokens"
+        )))
+        .and(ValidAppJwt)
+        .and(body_json(json!({
+            "repositories": ["enzarb-ui", "enzarb-proto"],
+            "permissions": {"contents": "read"},
+        })))
+        .respond_with(
+            ResponseTemplate::new(201)
+                .set_body_json(json!({"token": "ghs_deps", "expires_at": ts(3600)})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = connector(&server);
+    // A duplicate must not widen or repeat the repositories list.
+    let repos = [
+        repo_named("enzarb-ui"),
+        repo_named("enzarb-proto"),
+        repo_named("enzarb-ui"),
+    ];
+    let cred = c
+        .mint_read_credential(&repos, "deps")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(cred.token, "ghs_deps");
+    assert_eq!(cred.repos.len(), 3);
+    assert!(!format!("{cred:?}").contains("ghs_deps"));
+}
+
+#[tokio::test]
+async fn mint_read_credential_rejects_empty_and_foreign_repos() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/enzarb/enzarb-ui/installation"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": INSTALLATION})))
+        .mount(&server)
+        .await;
+    // Same owner, different installation.
+    Mock::given(method("GET"))
+        .and(path("/repos/enzarb/other/installation"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 999})))
+        .mount(&server)
+        .await;
+    // Different owner: must be rejected without any token being minted.
+    Mock::given(method("POST"))
+        .and(path_regex("/app/installations/.*/access_tokens"))
+        .respond_with(
+            ResponseTemplate::new(201).set_body_json(json!({"token": "x", "expires_at": ts(3600)})),
+        )
+        .expect(0)
+        .mount(&server)
+        .await;
+    let c = connector(&server);
+    assert!(matches!(
+        c.mint_read_credential(&[], "deps").await,
+        Err(Error::Invalid(_))
+    ));
+    assert!(matches!(
+        c.mint_read_credential(&[repo_named("enzarb-ui"), repo_named("other")], "deps")
+            .await,
+        Err(Error::Invalid(_))
+    ));
+    assert!(matches!(
+        c.mint_read_credential(
+            &[repo_named("enzarb-ui"), RepoKey::new("github", "evil", "x")],
+            "deps"
+        )
+        .await,
+        Err(Error::Invalid(_))
+    ));
+    assert!(matches!(
+        c.mint_read_credential(&[RepoKey::new("gitlab", "a", "b")], "deps")
+            .await,
+        Err(Error::Invalid(_))
+    ));
 }

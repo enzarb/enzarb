@@ -6,8 +6,8 @@ use chrono::{DateTime, Duration, Utc};
 use enzarb_connector::{
     Actor, ChangeRequestSpec, CheckSummary, CiInfo, CommentKind, CommentRef, CommitRef, Connector,
     CredScope, Error, Event, ItemRef, MergeOutcome, MergeReadiness, Permission, Progress,
-    ProgressTarget, RepoKey, Result, ShortLivedCred, Status, StatusState, StatusSummary, Thread,
-    ThreadComment, WorkItemKey, aggregate_ci,
+    ProgressTarget, ReadCred, RepoKey, Result, ShortLivedCred, Status, StatusState, StatusSummary,
+    Thread, ThreadComment, WorkItemKey, aggregate_ci,
 };
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use reqwest::Method;
@@ -828,5 +828,46 @@ impl Connector for GitHubConnector {
             scope,
             expires_at: t.expires_at,
         })
+    }
+
+    async fn mint_read_credential(
+        &self,
+        repos: &[RepoKey],
+        _purpose: &str,
+    ) -> Result<Option<ReadCred>> {
+        let Some(first) = repos.first() else {
+            return Err(Error::Invalid("no repos for read credential".into()));
+        };
+        for r in repos {
+            github_repo(r)?;
+        }
+        // One token has one installation (one owner): every repo must resolve
+        // to the first repo's installation, otherwise it is outside it.
+        let id = self.installation_id(first).await?;
+        let mut names: Vec<String> = Vec::with_capacity(repos.len());
+        for r in repos {
+            if r.owner != first.owner || self.installation_id(r).await? != id {
+                return Err(Error::Invalid(format!(
+                    "{r} is outside the installation of {first}"
+                )));
+            }
+            if !names.contains(&r.repo) {
+                names.push(r.repo.clone());
+            }
+        }
+        let t = self
+            .create_token(
+                id,
+                Some(json!({
+                    "repositories": names,
+                    "permissions": { "contents": "read" },
+                })),
+            )
+            .await?;
+        Ok(Some(ReadCred {
+            token: t.token,
+            repos: repos.to_vec(),
+            expires_at: t.expires_at,
+        }))
     }
 }
