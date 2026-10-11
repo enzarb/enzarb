@@ -12,14 +12,17 @@
 //! frames are relayed byte for byte, so end-to-end flow control stays intact.
 
 use std::{
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
 use axum::extract::ws::{CloseFrame as AxClose, Message as AxMsg, WebSocket};
 use enzarb_proto::{ClientKind, Ctrl, Frame, FrameHeader, error_code, session::handshake};
 use futures_util::{SinkExt, StreamExt};
-use tokio::net::TcpStream;
+use tokio::{net::TcpStream, sync::broadcast};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async_with_config,
     tungstenite::{
@@ -31,7 +34,10 @@ use tokio_tungstenite::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::guard::{self, Reject};
+use crate::{
+    guard::{self, Reject},
+    resolver::{ResolveError, Resolver, revoked},
+};
 
 pub type Upstream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -109,6 +115,7 @@ enum End {
     Transport(String),
     Idle,
     Shutdown,
+    Revoked,
 }
 
 /// Browser-side handshake: answer `hello` locally (see module docs).
@@ -172,13 +179,56 @@ pub struct RelayOpts {
     pub handshake_timeout: Duration,
 }
 
+/// Watches a Project for changes that revoke an open relay's authorisation.
+pub struct ProjectWatch {
+    pub rx: broadcast::Receiver<String>,
+    pub resolver: Arc<dyn Resolver>,
+    pub project: String,
+    /// The `spec.owner` that was authorised at connect time.
+    pub owner: String,
+}
+
+impl ProjectWatch {
+    async fn is_revoked(&self) -> bool {
+        match self.resolver.project(&self.project).await {
+            Ok(info) => revoked(&info, &self.owner),
+            Err(ResolveError::NotFound) => true,
+            Err(ResolveError::Unavailable(why)) => {
+                tracing::warn!(project = %self.project, why, "project re-check failed");
+                false
+            }
+        }
+    }
+
+    /// Returns once access has been revoked. Checks once immediately (covering
+    /// changes since the subscription was taken), then on each relevant event.
+    pub async fn changed(&mut self) {
+        if self.is_revoked().await {
+            return;
+        }
+        loop {
+            match self.rx.recv().await {
+                Ok(name) if name != self.project => continue,
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {
+                    if self.is_revoked().await {
+                        return;
+                    }
+                }
+                Err(broadcast::error::RecvError::Closed) => std::future::pending().await,
+            }
+        }
+    }
+}
+
 /// Run the browser<->sandbox relay until either side closes, a browser frame
-/// is rejected, the connection idles out or the process shuts down.
+/// is rejected, the connection idles out, access to the Project is revoked or
+/// the process shuts down.
 pub async fn run(
     mut browser: WebSocket,
     upstream: Dialed,
     opts: RelayOpts,
     shutdown: CancellationToken,
+    mut watch: ProjectWatch,
     project: &str,
     sub: &str,
 ) {
@@ -264,7 +314,13 @@ pub async fn run(
         }
     };
 
+    let revoked = async {
+        watch.changed().await;
+        End::Revoked
+    };
+
     let end = tokio::select! {
+        e = revoked => e,
         e = up => e,
         e = down => e,
         e = idle => e,
@@ -290,6 +346,7 @@ pub async fn run(
         End::Transport(_) => (1011, "relay error"),
         End::Idle => (1001, "idle timeout"),
         End::Shutdown => (1001, "going away"),
+        End::Revoked => (1008, "project access changed"),
     };
     let finish = async {
         if let End::Rejected(_) | End::BrowserProtocol(_) = &end {
@@ -314,4 +371,39 @@ pub async fn run(
         let _ = u_tx.close().await;
     };
     let _ = tokio::time::timeout(Duration::from_secs(2), finish).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::resolver::{FakeResolver, ProjectInfo, SandboxRef};
+
+    fn info(owner: &str) -> ProjectInfo {
+        ProjectInfo {
+            owner: owner.into(),
+            sandbox: Some(SandboxRef {
+                endpoint: "ws://x/v1/mux".into(),
+                secret_namespace: "ns".into(),
+                secret_name: "n".into(),
+                secret_key: "k".into(),
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn change_before_watch_start_is_caught_by_initial_check() {
+        let r = Arc::new(FakeResolver::default());
+        r.insert("p", info("alice"), "t");
+        // Subscribed after the update, so no event is ever delivered.
+        r.update("p", info("bob"), "t");
+        let mut w = ProjectWatch {
+            rx: r.subscribe(),
+            resolver: r.clone(),
+            project: "p".into(),
+            owner: "alice".into(),
+        };
+        tokio::time::timeout(Duration::from_secs(1), w.changed())
+            .await
+            .expect("should report revoked");
+    }
 }

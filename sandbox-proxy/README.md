@@ -10,6 +10,7 @@ Routes a browser websocket to its Project's sandbox-init (contracts §7).
 2. Look up the `Project` (reflector cache): 404 unknown; `sub` must equal `spec.owner` (403); 503 if `status.sandbox` is not published yet.
 3. Find the sandbox only through `status.namespace` and `status.sandbox` (ADR-0013; no derived names: a Project missing either is not ready, 503). Read the bearer token from `status.sandbox.authSecretRef` in `status.namespace` (`get`, cached 30 s) and dial `status.sandbox.endpoint` (`ws://` only) with `Authorization: Bearer`, handshaking as `client: "proxy"`. 502 on failure.
 4. Upgrade the browser socket, answer its `hello` locally (must be `client: "ui"` offering the version the sandbox negotiated), then relay binary messages unchanged in both directions.
+5. Access is re-validated live: if the Project's `spec.owner` changes, its `status.sandbox` is cleared or the Project is deleted, the open relay is closed with code 1008 "project access changed".
 
 **Handshake choice: terminate, not relay.** The sandbox must see `client: "proxy"` and failures should be HTTP errors, so the proxy handshakes upstream first and answers the browser's hello itself. Frames after the handshake are untouched, so flow control stays end to end.
 

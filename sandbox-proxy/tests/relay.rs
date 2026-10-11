@@ -105,6 +105,22 @@ async fn fake_sandbox() -> (SocketAddr, mpsc::UnboundedReceiver<Vec<u8>>) {
 struct Harness {
     proxy: SocketAddr,
     sandbox_rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    resolver: Arc<FakeResolver>,
+    sandbox: SocketAddr,
+}
+
+impl Harness {
+    fn demo(&self, owner: &str, ready: bool) -> ProjectInfo {
+        ProjectInfo {
+            owner: owner.into(),
+            sandbox: ready.then(|| SandboxRef {
+                endpoint: format!("ws://{}/v1/mux", self.sandbox),
+                secret_namespace: "enzarb-sandboxes".into(),
+                secret_name: "sb-demo-auth".into(),
+                secret_key: "token".into(),
+            }),
+        }
+    }
 }
 
 async fn harness() -> Harness {
@@ -143,15 +159,21 @@ async fn harness() -> Harness {
         },
         "",
     );
+    let r = Arc::new(r);
     let state = AppState::new(
         Config::for_tests(SECRET),
-        Arc::new(r),
+        r.clone(),
         CancellationToken::new(),
     );
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy = l.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(l, router(state)).await.unwrap() });
-    Harness { proxy, sandbox_rx }
+    Harness {
+        proxy,
+        sandbox_rx,
+        resolver: r,
+        sandbox: sb,
+    }
 }
 
 fn url(h: &Harness, project: &str, token: &str) -> String {
@@ -395,4 +417,91 @@ async fn credential_status_reaches_sandbox_but_credential_state_is_rejected() {
     assert!(saw_error);
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(h.sandbox_rx.try_recv().is_err());
+}
+
+type Browser =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Connect, handshake and prove the relay is live by echoing a frame.
+async fn open_relay(h: &Harness) -> Browser {
+    let (mut ws, _) = connect_async(url(h, "demo", &jwt("ruckc", "demo")))
+        .await
+        .unwrap();
+    client_handshake(&mut ws, ClientKind::Ui).await.unwrap();
+    let f = next_bin(&mut ws).await;
+    assert_eq!(f.channel, 9);
+    send_echo(&mut ws).await;
+    ws
+}
+
+async fn send_echo(ws: &mut Browser) {
+    let data = Frame::data_bin(1, &b"ls\n"[..]);
+    ws.send(Message::Binary(data.to_bytes().unwrap()))
+        .await
+        .unwrap();
+    let echo = next_bin(ws).await;
+    assert_eq!((echo.channel, &echo.payload[..]), (1, &b"ls\n"[..]));
+}
+
+/// The close frame the browser receives next, skipping any data.
+async fn close_of(ws: &mut Browser) -> (u16, String) {
+    loop {
+        match tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("timeout")
+        {
+            Some(Ok(Message::Close(Some(c)))) => return (c.code.into(), c.reason.to_string()),
+            Some(Ok(Message::Close(None))) | None => panic!("closed without a reason"),
+            Some(Ok(_)) => {}
+            Some(Err(e)) => panic!("{e}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn owner_change_closes_relay() {
+    let h = harness().await;
+    let mut ws = open_relay(&h).await;
+    h.resolver
+        .update("demo", h.demo("mallory", true), SANDBOX_TOKEN);
+    assert_eq!(
+        close_of(&mut ws).await,
+        (1008, "project access changed".into())
+    );
+}
+
+#[tokio::test]
+async fn cleared_sandbox_status_closes_relay() {
+    let h = harness().await;
+    let mut ws = open_relay(&h).await;
+    h.resolver.update("demo", h.demo("ruckc", false), "");
+    assert_eq!(
+        close_of(&mut ws).await,
+        (1008, "project access changed".into())
+    );
+}
+
+#[tokio::test]
+async fn deleted_project_closes_relay() {
+    let h = harness().await;
+    let mut ws = open_relay(&h).await;
+    h.resolver.remove("demo");
+    assert_eq!(
+        close_of(&mut ws).await,
+        (1008, "project access changed".into())
+    );
+}
+
+#[tokio::test]
+async fn unrelated_updates_keep_relay_open() {
+    let h = harness().await;
+    let mut ws = open_relay(&h).await;
+    // Another Project changes owner.
+    h.resolver.update("booting", h.demo("mallory", false), "");
+    // Same owner, different secret ref and endpoint query.
+    let mut same = h.demo("ruckc", true);
+    same.sandbox.as_mut().unwrap().secret_name = "sb-demo-auth-2".into();
+    h.resolver.update("demo", same, SANDBOX_TOKEN);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    send_echo(&mut ws).await;
 }

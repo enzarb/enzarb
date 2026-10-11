@@ -8,7 +8,7 @@
 //!   (ADR-0013), not the cluster-wide `list`/`watch` a Secret watcher would need.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::Mutex,
     time::{Duration, Instant},
 };
@@ -18,7 +18,7 @@ use enzarb_crds::Project;
 use futures_util::StreamExt;
 use k8s_openapi::api::core::v1::Secret;
 use kube::{
-    Api, Client,
+    Api, Client, ResourceExt,
     runtime::{
         WatchStreamExt,
         reflector::{self, ObjectRef, Store, reflector},
@@ -26,13 +26,16 @@ use kube::{
     },
 };
 
-use crate::resolver::{ProjectInfo, ResolveError, Resolver, SandboxRef};
+use tokio::sync::broadcast;
+
+use crate::resolver::{CHANGE_CAPACITY, ProjectInfo, ResolveError, Resolver, SandboxRef};
 
 type CacheKey = (String, String, String);
 
 pub struct KubeResolver {
     client: Client,
     projects: Store<Project>,
+    changes: broadcast::Sender<String>,
     ttl: Duration,
     cache: Mutex<HashMap<CacheKey, (Instant, String)>>,
 }
@@ -43,14 +46,21 @@ impl KubeResolver {
     pub async fn start(client: Client, secret_ttl: Duration) -> anyhow::Result<Self> {
         let api: Api<Project> = Api::all(client.clone());
         let (store, writer) = reflector::store::<Project>();
-        let stream = reflector(writer, watcher(api, watcher::Config::default()))
-            .default_backoff()
-            .applied_objects();
+        let stream = reflector(writer, watcher(api, watcher::Config::default())).default_backoff();
+        let (changes, _) = broadcast::channel(CHANGE_CAPACITY);
+        let tx = changes.clone();
         tokio::spawn(async move {
             let mut stream = std::pin::pin!(stream);
+            let mut names = NameTracker::default();
             while let Some(ev) = stream.next().await {
-                if let Err(e) = ev {
-                    tracing::warn!(error = %e, "project watch error");
+                // The reflector has already applied the event to the store.
+                match ev {
+                    Ok(ev) => {
+                        for n in names.changed(&ev) {
+                            let _ = tx.send(n);
+                        }
+                    }
+                    Err(e) => tracing::warn!(error = %e, "project watch error"),
                 }
             }
         });
@@ -58,9 +68,49 @@ impl KubeResolver {
         Ok(Self {
             client,
             projects: store,
+            changes,
             ttl: secret_ttl,
             cache: Mutex::new(HashMap::new()),
         })
+    }
+}
+
+/// Maps raw watcher events to the names of Projects that changed, including
+/// deletes and, after a relist, Projects that vanished while the watch was down.
+#[derive(Default)]
+struct NameTracker {
+    known: HashSet<String>,
+    relist: HashSet<String>,
+}
+
+impl NameTracker {
+    fn changed(&mut self, ev: &watcher::Event<Project>) -> Vec<String> {
+        use watcher::Event::*;
+        match ev {
+            Apply(p) => {
+                self.known.insert(p.name_any());
+                vec![p.name_any()]
+            }
+            Delete(p) => {
+                self.known.remove(&p.name_any());
+                vec![p.name_any()]
+            }
+            Init => {
+                self.relist.clear();
+                vec![]
+            }
+            InitApply(p) => {
+                self.relist.insert(p.name_any());
+                vec![]
+            }
+            InitDone => {
+                // The store now holds the new listing: any old or new name may differ.
+                let fresh = std::mem::take(&mut self.relist);
+                let all = self.known.union(&fresh).cloned().collect();
+                self.known = fresh;
+                all
+            }
+        }
     }
 }
 
@@ -131,6 +181,10 @@ impl Resolver for KubeResolver {
     fn invalidate_token(&self, s: &SandboxRef) {
         self.cache.lock().unwrap().remove(&key(s));
     }
+
+    fn subscribe(&self) -> broadcast::Receiver<String> {
+        self.changes.subscribe()
+    }
 }
 
 #[cfg(test)]
@@ -152,6 +206,26 @@ mod tests {
         );
         p.status = status;
         p
+    }
+
+    #[test]
+    fn tracker_reports_applies_deletes_and_relist() {
+        use watcher::Event;
+        let p = project(None);
+        let mut t = NameTracker::default();
+        assert_eq!(t.changed(&Event::Apply(p.clone())), vec!["enzarb"]);
+        assert_eq!(t.changed(&Event::Delete(p.clone())), vec!["enzarb"]);
+
+        // A Project known before a relist but absent from it is reported.
+        t.changed(&Event::Apply(p.clone()));
+        assert!(t.changed(&Event::Init).is_empty());
+        assert_eq!(t.changed(&Event::InitDone), vec!["enzarb"]);
+        assert!(t.known.is_empty());
+
+        // Listed Projects are reported at InitDone.
+        t.changed(&Event::Init);
+        assert!(t.changed(&Event::InitApply(p)).is_empty());
+        assert_eq!(t.changed(&Event::InitDone), vec!["enzarb"]);
     }
 
     #[test]

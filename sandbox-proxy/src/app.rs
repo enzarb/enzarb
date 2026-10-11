@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     auth::{self, AuthError, JwtValidator},
     config::Config,
-    relay::{self, DialError, RelayOpts},
+    relay::{self, DialError, ProjectWatch, RelayOpts},
     resolver::{ResolveError, Resolver},
 };
 
@@ -78,6 +78,8 @@ async fn mux(
             return fail(StatusCode::FORBIDDEN, "forbidden");
         }
     };
+    // Subscribe before the lookup so a change right after it cannot be missed.
+    let rx = st.resolver.subscribe();
     let info = match st.resolver.project(&project).await {
         Ok(i) => i,
         Err(ResolveError::NotFound) => return fail(StatusCode::NOT_FOUND, "no such project"),
@@ -89,6 +91,7 @@ async fn mux(
         tracing::info!(project, sub = %claims.sub, "not the project owner");
         return fail(StatusCode::FORBIDDEN, "forbidden");
     }
+    let owner = info.owner;
     let Some(sandbox) = info.sandbox else {
         return fail(StatusCode::SERVICE_UNAVAILABLE, "sandbox not ready");
     };
@@ -123,10 +126,16 @@ async fn mux(
         handshake_timeout: Duration::from_secs(10),
     };
     let shutdown = st.shutdown.clone();
+    let watch = ProjectWatch {
+        rx,
+        resolver: st.resolver.clone(),
+        project: project.clone(),
+        owner,
+    };
     let sub = claims.sub;
     ws.max_message_size(st.cfg.max_message_bytes)
         .max_frame_size(st.cfg.max_message_bytes)
         .on_upgrade(move |sock| async move {
-            relay::run(sock, dialed, opts, shutdown, &project, &sub).await;
+            relay::run(sock, dialed, opts, shutdown, watch, &project, &sub).await;
         })
 }
