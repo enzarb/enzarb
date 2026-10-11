@@ -18,17 +18,39 @@ values_file="$ROOT/enzarb-helm/enzarb/values-oldie.yaml"
 script="$KDIR/hack/oldie-helmchart.sh"
 [ -f "$script" ] || die "$script missing; run: mise run repos:init"
 need helm
+# Secret the HelmChart references by name; without it the helm-controller cannot pull the private chart.
+k -n kube-system get secret enzarb-chart-registry >/dev/null 2>&1 \
+  || die "Secret kube-system/enzarb-chart-registry missing (set GHCR_USER and GHCR_TOKEN in .env.oldie, then: mise run oldie:secrets)"
 version="${ENZARB_CHART_VERSION:-}"
-if [ -z "$version" ] && ! k -n kube-system get helmchart enzarb >/dev/null 2>&1 \
-   && ! helm --kube-context "$KCTX" status "$RELEASE" -n "$NS" >/dev/null 2>&1; then
-  log "fresh cluster: newest published chart tag"
-  # Credentials go to curl through stdin (--config -), never argv.
-  tok=$(printf 'user = "%s:%s"\n' "$GHCR_USER" "$GHCR_TOKEN" \
-    | curl -fsS --config - "https://ghcr.io/token?service=ghcr.io&scope=repository:enzarb/charts/enzarb:pull" | jq -r .token)
-  version=$(printf 'header = "Authorization: Bearer %s"\n' "$tok" \
-    | curl -fsS --config - "https://ghcr.io/v2/enzarb/charts/enzarb/tags/list?n=1000" \
-    | jq -r '.tags[]' | grep -E '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' | sort -V | tail -n1)
-  [ -n "$version" ] || die "no published enzarb chart tag found; set ENZARB_CHART_VERSION"
+if [ -z "$version" ]; then
+  # Only "not found" counts as absent; any other kubectl/helm failure aborts rather than looking like a fresh cluster.
+  err=$(mktemp); trap 'rm -f "$err"' EXIT
+  have_chart=1
+  if ! k -n kube-system get helmchart enzarb >/dev/null 2>"$err"; then
+    grep -q 'NotFound' "$err" || die "cannot query HelmChart enzarb: $(cat "$err")"
+    have_chart=0
+  fi
+  if [ "$have_chart" = 0 ]; then
+    if ! helm --kube-context "$KCTX" status "$RELEASE" -n "$NS" >/dev/null 2>"$err"; then
+      grep -qi 'release: not found' "$err" || die "cannot query Helm release $RELEASE: $(cat "$err")"
+      log "fresh cluster: newest published chart tag"
+      # Credentials go to curl through stdin (--config -), never argv. Tags are paged with ?last=.
+      tok=$(printf 'user = "%s:%s"\n' "$GHCR_USER" "$GHCR_TOKEN" \
+        | curl -fsS --config - "https://ghcr.io/token?service=ghcr.io&scope=repository:enzarb/charts/enzarb:pull" | jq -r .token)
+      [ -n "$tok" ] && [ "$tok" != null ] || die "could not get a GHCR pull token (check GHCR_USER/GHCR_TOKEN)"
+      tags="" last=""
+      while :; do
+        page=$(printf 'header = "Authorization: Bearer %s"\n' "$tok" \
+          | curl -fsS --config - "https://ghcr.io/v2/enzarb/charts/enzarb/tags/list?n=1000${last:+&last=$last}" | jq -r '.tags // [] | .[]')
+        [ -n "$page" ] || break
+        tags+="$page"$'\n'
+        [ "$(printf '%s\n' "$page" | wc -l)" -ge 1000 ] || break
+        last=$(printf '%s\n' "$page" | tail -n1)
+      done
+      version=$(printf '%s' "$tags" | { grep -E '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || true; } | sort -V | tail -n1)
+      [ -n "$version" ] || die "no published enzarb chart tag found; set ENZARB_CHART_VERSION"
+    fi
+  fi
 fi
 
 # Helm installs crds/ only on first install and never upgrades them, and the helm-controller does the
@@ -40,7 +62,12 @@ if [ -d "$ROOT/enzarb-helm/enzarb/crds" ]; then
 fi
 
 log "HelmChart kube-system/enzarb (create or adopt; the version only moves up)"
-KUBECONFIG="$KUBECONFIG" VALUES_FILE="$values_file" RELEASE_NAMESPACE="$NS" RELEASE_NAME="$RELEASE" \
+# kubectl/helm wrappers pin the context so nothing depends on current-context.
+wrap=$(mktemp -d); trap 'rm -rf "$wrap"; rm -f "${err:-}"' EXIT
+printf '#!/bin/sh\nexec kubectl --context "%s" "$@"\n' "$KCTX" > "$wrap/kubectl"
+printf '#!/bin/sh\nexec helm --kube-context "%s" "$@"\n' "$KCTX" > "$wrap/helm"
+chmod +x "$wrap/kubectl" "$wrap/helm"
+KUBECTL="$wrap/kubectl" HELM="$wrap/helm" KUBECONFIG="$KUBECONFIG" VALUES_FILE="$values_file" RELEASE_NAMESPACE="$NS" RELEASE_NAME="$RELEASE" \
   REGISTRY_SECRET=enzarb-chart-registry FORCE_VERSION="$version" bash "$script"
 
 cat <<MSG
