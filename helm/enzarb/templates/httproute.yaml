@@ -52,7 +52,7 @@ spec:
         - path: { type: PathPrefix, value: /hooks/ }
       backendRefs:
         - { name: enzarb-connectors, port: 8080 }
-{{- if .Values.updater.enabled }}
+{{- if and .Values.updater.enabled .Values.updater.webhook.enabled }}
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute

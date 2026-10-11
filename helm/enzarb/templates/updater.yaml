@@ -1,10 +1,19 @@
 {{- if .Values.updater.enabled }}
 {{- $c := .Values.updater }}
 {{- $s := .Values.secrets.updater }}
+{{- $webhook := $c.webhook.enabled }}
+{{- $pollSecs := int $c.poll.intervalSecs }}
+{{- if and (not $webhook) (eq $pollSecs 0) }}
+{{- fail "updater: enable updater.webhook.enabled or set updater.poll.intervalSecs (>= 30); otherwise it has nothing to do" }}
+{{- end }}
+{{- if and (gt $pollSecs 0) (lt $pollSecs 30) }}
+{{- fail "updater.poll.intervalSecs must be 0 or at least 30" }}
+{{- end }}
+{{- $ownsSecret := and (not $s.existingSecret) (or $webhook $s.registryToken) }}
 {{- /* The HelmChart CR (and its spec.version) is owned by the cluster and patched by the
        updater; this chart never renders it. */}}
-{{- if not $s.existingSecret }}
-{{- /* Webhook secret: inline value, else generated once and kept: lookup reads the live Secret on upgrade. */}}
+{{- if $ownsSecret }}
+{{- /* Webhook secret (webhook only): inline value, else generated once and kept: lookup reads the live Secret on upgrade. */}}
 {{- $existing := (lookup "v1" "Secret" .Release.Namespace (include "enzarb.updaterSecret" .)) | default dict }}
 {{- $old := get $existing "data" | default dict }}
 apiVersion: v1
@@ -15,7 +24,9 @@ metadata:
     {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-updater") | nindent 4 }}
 type: Opaque
 data:
+  {{- if $webhook }}
   updater-webhook-secret: {{ if $s.webhookSecret }}{{ $s.webhookSecret | b64enc }}{{ else }}{{ get $old "updater-webhook-secret" | default (randAlphaNum 48 | b64enc) }}{{ end }}
+  {{- end }}
   {{- if $s.registryToken }}
   updater-registry-token: {{ $s.registryToken | b64enc }}
   {{- end }}
@@ -79,17 +90,20 @@ spec:
           ports:
             - { name: http, containerPort: {{ $c.port }} }
           env:
+            {{- if $webhook }}
             {{- include "enzarb.secretEnv" (dict "name" "ENZARB_UPDATER_WEBHOOK_SECRET" "secret" (include "enzarb.updaterSecret" .) "key" (include "enzarb.updaterKey" (dict "ctx" . "key" "webhookSecret"))) | nindent 12 }}
-            {{- if include "enzarb.updaterHasRegistryToken" . }}
-            {{- include "enzarb.secretEnv" (dict "name" "ENZARB_UPDATER_REGISTRY_TOKEN" "secret" (include "enzarb.updaterSecret" .) "key" (include "enzarb.updaterKey" (dict "ctx" . "key" "registryToken"))) | nindent 12 }}
             {{- end }}
+            {{- if include "enzarb.updaterHasRegistryToken" . }}
+            {{- include "enzarb.secretEnv" (dict "name" "ENZARB_UPDATER_REGISTRY_TOKEN" "secret" (include "enzarb.updaterTokenSecret" .) "key" (include "enzarb.updaterTokenKey" .)) | nindent 12 }}
+            {{- end }}
+            - { name: ENZARB_UPDATER_POLL_SECS, value: {{ $pollSecs | quote }} }
             - { name: ENZARB_UPDATER_LISTEN, value: {{ printf "0.0.0.0:%v" $c.port | quote }} }
             - { name: RUST_LOG, value: {{ .Values.rustLog | quote }} }
             {{- with $c.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
           readinessProbe:
-            httpGet: { path: /healthz, port: http }
+            httpGet: { path: {{ if gt $pollSecs 0 }}/readyz{{ else }}/healthz{{ end }}, port: http }
           livenessProbe:
             httpGet: { path: /healthz, port: http }
           {{- with $c.resources }}

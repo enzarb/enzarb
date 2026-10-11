@@ -7,7 +7,12 @@ publicUrl: https://enzarb.dev
 secrets:
   github:
     existingSecret: enzarb-github
+  updater:
+    # read:packages token for the private chart in GHCR; created by `mise run oldie:secrets`.
+    registryTokenSecret: enzarb-updater-registry
 
+# Upgrades: enzarb-updater polls the chart registry and patches the cluster-owned HelmChart
+# (docs/oldie.md). No GitHub webhook, no webhook secret.
 updater:
   enabled: true
 

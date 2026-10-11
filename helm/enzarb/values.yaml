@@ -84,13 +84,17 @@ secrets:
     webhookSecret: ""
     oauthClientId: ""
     oauthClientSecret: ""
-  # enzarb-updater (only used when updater.enabled). Either point at an existing Secret
-  # (key names below; set hasRegistryToken when it also holds the registry token) or let the
-  # chart create `enzarb-updater`: the webhook secret is generated (and kept across upgrades
-  # via lookup) unless webhookSecret is given; the registry token is wired only when given.
+  # enzarb-updater (only used when updater.enabled). The registry token (read:packages, the chart
+  # in GHCR is private) is wired as ENZARB_UPDATER_REGISTRY_TOKEN from, in order: registryTokenSecret
+  # (an existing Secret + registryTokenKey: preferred, nothing secret in values), the inline
+  # registryToken, or existingSecret when hasRegistryToken. The webhook secret is only used when
+  # updater.webhook.enabled: from existingSecret, else generated (and kept across upgrades via
+  # lookup) unless webhookSecret is given.
   updater:
     existingSecret: ""
     hasRegistryToken: false
+    registryTokenSecret: ""
+    registryTokenKey: registry-token
     keys:
       webhookSecret: webhook-secret
       registryToken: registry-token
@@ -136,13 +140,19 @@ connectors:
   resources: {}
   extraEnv: []
 
-# enzarb-updater patches the cluster-owned RKE2 HelmChart `enzarb` when enzarb-helm publishes a
-# release. Opt-in; the chart never renders the HelmChart CR. Served at /updater/hook on the
-# Gateway (needs route.enabled), so the webhook HMAC is its only protection.
+# enzarb-updater patches the cluster-owned RKE2 HelmChart `enzarb` when a newer chart version is
+# published. Opt-in; the chart never renders the HelmChart CR. By default it polls the chart
+# registry (nothing inbound). The GitHub release webhook is optional: when enabled it is served at
+# /updater/hook on the Gateway (needs route.enabled), so its HMAC is the only protection.
 updater:
   enabled: false
   replicaCount: 1
   port: 8080
+  poll:
+    # Seconds between registry polls (>= 30); 0 turns polling off (then enable the webhook).
+    intervalSecs: 300
+  webhook:
+    enabled: false
   image:
     repository: ghcr.io/enzarb/enzarb-updater
     tag: 0.2.0

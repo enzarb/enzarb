@@ -48,9 +48,15 @@ imagePullSecrets:
 {{- define "enzarb.updaterKey" -}}
 {{- if .ctx.Values.secrets.updater.existingSecret }}{{ index .ctx.Values.secrets.updater.keys .key }}{{ else if eq .key "webhookSecret" }}updater-webhook-secret{{ else }}updater-registry-token{{ end }}
 {{- end }}
-{{/* Non-empty when ENZARB_UPDATER_REGISTRY_TOKEN is wired. */}}
+{{/* Non-empty when ENZARB_UPDATER_REGISTRY_TOKEN is wired (from any source). */}}
 {{- define "enzarb.updaterHasRegistryToken" -}}
-{{- if or .Values.secrets.updater.registryToken (and .Values.secrets.updater.existingSecret .Values.secrets.updater.hasRegistryToken) }}true{{ end }}
+{{- $s := .Values.secrets.updater }}
+{{- if or $s.registryTokenSecret $s.registryToken (and $s.existingSecret $s.hasRegistryToken) }}true{{ end }}
+{{- end }}
+{{/* Secret name and key of the registry token. */}}
+{{- define "enzarb.updaterTokenSecret" -}}{{ .Values.secrets.updater.registryTokenSecret | default (include "enzarb.updaterSecret" .) }}{{- end }}
+{{- define "enzarb.updaterTokenKey" -}}
+{{- if .Values.secrets.updater.registryTokenSecret }}{{ .Values.secrets.updater.registryTokenKey }}{{ else }}{{ include "enzarb.updaterKey" (dict "ctx" . "key" "registryToken") }}{{ end }}
 {{- end }}
 
 {{/* secretKeyRef env var. Usage: include "enzarb.secretEnv" (dict "name" "X" "secret" "s" "key" "k") */}}
