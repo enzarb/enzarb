@@ -16,6 +16,7 @@ Read `docs/architecture.md` first, then `docs/contracts.md` (the interfaces ever
 | `enzarb-sandbox-operator` | `Project` CRD types crate + operator | `cargo clippy --all-targets && cargo test` |
 | `enzarb-connectors` | `Connector` trait, GitHub connector, webhook receiver | `cargo clippy --all-targets && cargo test` |
 | `enzarb-workflows` | Postgres workflow engine (reducer, executors, ticker) | `cargo clippy --all-targets && cargo test` |
+| `enzarb-realtime` | Postgres `NOTIFY` to browser websocket change stream | `cargo clippy --all-targets && cargo test` |
 | `enzarb-sandbox-proxy` | Browser websocket → sandbox router | `cargo clippy --all-targets && cargo test` |
 | `enzarb-sandbox-container` | Sandbox image + pid-1 `sandbox-init` | `cargo test`; `docker build .` |
 | `enzarb-ui` | SvelteKit app (remote functions = logic layer) | `npm run check && npm run lint && npm test` |
