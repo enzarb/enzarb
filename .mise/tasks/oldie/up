@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Everything on oldie: host (RKE2, gVisor, LVM), secrets, cluster prerequisites, enzarb chart. Safe to re-run"
+#MISE description="Bootstrap oldie: host (RKE2, gVisor, LVM), secrets, cluster prerequisites, the enzarb HelmChart. Safe to re-run; upgrades are enzarb-updater, not this"
 set -euo pipefail
 # shellcheck source=/dev/null
 . "${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}/.mise/lib/oldie.sh"
@@ -9,4 +9,4 @@ mise run oldie:host
 if [ -n "${CLOUDFLARE_BOOTSTRAP_TOKEN:-}" ]; then mise run oldie:cloudflare-token; fi
 mise run oldie:secrets
 mise run oldie:cluster
-mise run oldie:helm-deploy
+mise run oldie:bootstrap-helmchart
