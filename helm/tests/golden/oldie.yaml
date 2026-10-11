@@ -1073,7 +1073,7 @@ spec:
 
       containers:
         - name: updater
-          image: ghcr.io/enzarb/enzarb-updater:0.1.0
+          image: ghcr.io/enzarb/enzarb-updater:0.2.0
           imagePullPolicy: IfNotPresent
           ports:
             - { name: http, containerPort: 8080 }

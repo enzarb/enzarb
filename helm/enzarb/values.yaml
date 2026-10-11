@@ -145,7 +145,7 @@ updater:
   port: 8080
   image:
     repository: ghcr.io/enzarb/enzarb-updater
-    tag: 0.1.0
+    tag: 0.2.0
     pullPolicy: ""
   resources: {}
   extraEnv: []
