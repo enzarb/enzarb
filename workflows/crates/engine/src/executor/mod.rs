@@ -20,7 +20,17 @@
 //! * at most one running connector job per work item (so progress markers and comments of an
 //!   item are applied one at a time, in priority order);
 //! * a `set_progress` `Working` marker waits until the agent job queued by the same event has
-//!   been accepted by the sandbox (`deadline` set), and is dropped if that job already ended.
+//!   been accepted by the sandbox (`deadline` set), and is dropped if that job already ended;
+//! * agent jobs of a Project with an active `project_holds` row (a session limit was hit, see
+//!   below) wait for `blocked_until`. Other jobs of that Project are not held.
+//!
+//! # Session limits
+//! An agent run that fails because Claude hit its session limit is not a failure: the job goes
+//! back to `queued` with `run_after` just after the reset (exponential back-off from 5 to 60
+//! minutes when the reset time is unknown), its attempt is refunded (`max_attempts + 1`), the
+//! Project is held until then, and `jobs.waiting_for` / `jobs.resumes_at` tell the UI. Each
+//! wait starts a new sandbox run (`job-<id>-<waits>`). After 7 days of waiting the job fails.
+//! See [`session_limit`].
 //!
 //! # Leases, retries, deadlines
 //! * A claim holds a lease for [`ExecutorConfig::lease`]. The sweeper requeues `running`
@@ -46,6 +56,7 @@ mod callback;
 mod connectors;
 mod jobs;
 mod sandbox;
+mod session_limit;
 mod sweep;
 
 use std::sync::Arc;
@@ -135,6 +146,7 @@ pub(crate) struct Claimed {
     pub kind: String,
     pub attempt: i32,
     pub max_attempts: i32,
+    pub limit_wait_count: i32,
     pub idempotency_key: String,
     pub input: Value,
     pub work_item_key: String,
@@ -324,6 +336,10 @@ impl Executor {
                        OR (SELECT count(*) FROM jobs r
                            WHERE r.status = 'running' AND r.project_id = j.project_id
                              AND r.kind LIKE 'agent\_%') < $2)
+                  AND (j.kind NOT LIKE 'agent\_%' OR j.project_id IS NULL
+                       OR NOT EXISTS (SELECT 1 FROM project_holds h
+                                      WHERE h.project_id = j.project_id
+                                        AND h.blocked_until > now()))
                   AND (j.kind LIKE 'agent\_%'
                        OR NOT EXISTS (SELECT 1 FROM jobs r
                                       WHERE r.status = 'running' AND r.work_item_id = j.work_item_id
@@ -339,10 +355,11 @@ impl Executor {
                 ORDER BY j.priority DESC, j.run_after, j.id
                 LIMIT 1 FOR UPDATE OF j SKIP LOCKED)
               UPDATE jobs SET status = 'running', attempt = attempt + 1, lease_owner = $1,
-                     lease_until = now() + make_interval(secs => $3), updated_at = now()
+                     lease_until = now() + make_interval(secs => $3), updated_at = now(),
+                     waiting_for = NULL, resumes_at = NULL
               FROM picked WHERE jobs.id = picked.id
               RETURNING jobs.id, jobs.work_item_id, jobs.project_id, jobs.kind, jobs.attempt,
-                        jobs.max_attempts, jobs.idempotency_key, jobs.input,
+                        jobs.max_attempts, jobs.limit_wait_count, jobs.idempotency_key, jobs.input,
                         (SELECT key FROM work_items w WHERE w.id = jobs.work_item_id) AS work_item_key",
         )
         .bind(&self.cfg.owner)

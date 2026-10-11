@@ -1524,3 +1524,297 @@ async fn set_progress_passes_comment_kind_to_the_connector() {
         idempotency_key: "k:old".into(),
     }));
 }
+
+// ---------------------------------------------------------------------------
+// Session limits
+// ---------------------------------------------------------------------------
+
+/// The failure text of enzarb-ui#48, with the reset time `reset`.
+fn limit_summary(reset: &str) -> String {
+    format!(
+        "session/prompt: Internal error: You've hit your session limit · resets {reset} (UTC): {{\n  \"errorKind\": \"rate_limit\"\n}}"
+    )
+}
+
+/// A UTC clock time `hours` from now, as `HH:MM`.
+fn reset_in(hours: i64) -> String {
+    (Utc::now() + chrono::Duration::hours(hours))
+        .format("%H:%M")
+        .to_string()
+}
+
+/// POST a `Failed` callback for the run `rid` of `id`.
+async fn fail_run(h: &H, rid: &str, summary: &str) -> u16 {
+    let url = format!("{}/v1/runs/{rid}/finished", h.base);
+    let mut body = finished(rid, RunOutcome::Failed);
+    body.summary = summary.into();
+    body.exit_code = None;
+    post_callback(&url, &callback_token(b"test-secret", rid), &body).await
+}
+
+async fn hold_until(pool: &PgPool, project: &str) -> Option<chrono::DateTime<Utc>> {
+    sqlx::query_scalar("SELECT blocked_until FROM workflows.project_holds WHERE project_id = $1")
+        .bind(project)
+        .fetch_optional(pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn session_limit_requeues_without_spending_the_budget_and_holds_the_project() {
+    let h = H::with(db!(), |c| c.max_agent_per_project = 2).await;
+    let pool = h.pool();
+    h.resolver.insert(
+        "other",
+        SandboxTarget {
+            endpoint: h.sandbox.url.clone(),
+            token: SANDBOX_TOKEN.into(),
+        },
+    );
+    for n in 1..=4 {
+        h.fake.add_thread(key(n), thread_with("a"));
+    }
+    let w1 = new_item(pool, 1, "enzarb").await;
+    let w2 = new_item(pool, 2, "enzarb").await;
+    let a1 = new_job(
+        pool,
+        w1,
+        "enzarb",
+        "agent_triage",
+        0,
+        "k:a1",
+        agent_input(1, "enzarb/triage-1", false),
+    )
+    .await;
+    let a2 = new_job(
+        pool,
+        w2,
+        "enzarb",
+        "agent_triage",
+        0,
+        "k:a2",
+        agent_input(2, "enzarb/triage-2", false),
+    )
+    .await;
+    assert_eq!(h.exec.drain().await, 2);
+
+    // a1 hits the limit, which resets in about two hours.
+    let before = Utc::now();
+    assert_eq!(
+        fail_run(&h, &format!("job-{a1}"), &limit_summary(&reset_in(2))).await,
+        200
+    );
+    let j = job(pool, a1).await;
+    assert_eq!(
+        (j.status.as_str(), j.attempt, j.max_attempts),
+        ("queued", 1, 6)
+    );
+    assert_eq!(j.waiting_for.as_deref(), Some("session_limit"));
+    assert_eq!(j.resumes_at, Some(j.run_after));
+    assert_eq!(j.limit_wait_count, 1);
+    assert!(j.limit_wait_started_at.is_some());
+    assert!(j.lease_owner.is_none() && j.deadline.is_none());
+    assert!(j.run_after > before + chrono::Duration::minutes(60));
+    assert!(j.run_after < before + chrono::Duration::minutes(130));
+    assert_eq!(hold_until(pool, "enzarb").await, Some(j.run_after));
+    // The work item is waiting, not failed.
+    assert!(events_of(pool, "JobFailed").await.is_empty());
+    let (state, waiting): (String, Option<String>) =
+        sqlx::query_as("SELECT state, waiting_for FROM workflows_api.work_item_v WHERE id = $1")
+            .bind(w1)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (state.as_str(), waiting.as_deref()),
+        ("Triaging", Some("session_limit"))
+    );
+
+    // a2's run hits the same limit but reports no reset time: it backs off 5 minutes, and the
+    // hold does not move backwards.
+    assert_eq!(
+        fail_run(&h, &format!("job-{a2}"), "You've hit your session limit").await,
+        200
+    );
+    let j2 = job(pool, a2).await;
+    assert_eq!(j2.status, "queued");
+    assert!(j2.run_after > before + chrono::Duration::minutes(4));
+    assert!(j2.run_after < before + chrono::Duration::minutes(7));
+    assert_eq!(hold_until(pool, "enzarb").await, Some(j.run_after));
+
+    // While held, agent jobs of the Project wait; other Projects and non-agent jobs do not.
+    sqlx::query("UPDATE workflows.jobs SET run_after = now() WHERE id = $1")
+        .bind(a2)
+        .execute(pool)
+        .await
+        .unwrap();
+    let w3 = new_item(pool, 3, "other").await;
+    let b1 = new_job(
+        pool,
+        w3,
+        "other",
+        "agent_triage",
+        0,
+        "k:b1",
+        agent_input(3, "enzarb/triage-3", false),
+    )
+    .await;
+    let w4 = new_item(pool, 4, "enzarb").await;
+    let p = new_job(
+        pool,
+        w4,
+        "enzarb",
+        "set_progress",
+        0,
+        "k:p",
+        progress_input(4, Progress::Received),
+    )
+    .await;
+    assert_eq!(h.exec.drain().await, 2);
+    assert_eq!(job(pool, b1).await.status, "running");
+    assert_eq!(job(pool, p).await.status, "succeeded");
+    assert_eq!(job(pool, a1).await.status, "queued");
+    assert_eq!(job(pool, a2).await.status, "queued");
+
+    // After the reset the job runs again as a new attempt and a new sandbox run.
+    sqlx::query("UPDATE workflows.jobs SET run_after = now() - interval '1 second' WHERE id = $1")
+        .bind(a1)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE workflows.project_holds SET blocked_until = now() - interval '1 second'")
+        .execute(pool)
+        .await
+        .unwrap();
+    let starts = h.sandbox.starts();
+    assert!(h.exec.drain().await >= 1);
+    let j = job(pool, a1).await;
+    assert_eq!(
+        (j.status.as_str(), j.attempt, j.max_attempts),
+        ("running", 2, 6)
+    );
+    assert!(j.waiting_for.is_none() && j.resumes_at.is_none());
+    assert!(h.sandbox.starts() > starts);
+    let rid = format!("job-{a1}-1");
+    assert!(h.sandbox.run(&rid).is_some());
+
+    // The first run's callback arriving late is ignored; the new run's finishes the job.
+    assert_eq!(fail_run(&h, &format!("job-{a1}"), "boom").await, 200);
+    assert_eq!(job(pool, a1).await.status, "running");
+    let url = format!("{}/v1/runs/{rid}/finished", h.base);
+    let ok = finished(&rid, RunOutcome::Succeeded);
+    assert_eq!(
+        post_callback(&url, &callback_token(b"test-secret", &rid), &ok).await,
+        200
+    );
+    assert_eq!(job(pool, a1).await.status, "succeeded");
+}
+
+#[tokio::test]
+async fn session_limit_gives_up_after_seven_days() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    h.fake.add_thread(key(1), thread_with("a"));
+    let wi = new_item(pool, 1, "enzarb").await;
+    let id = new_job(
+        pool,
+        wi,
+        "enzarb",
+        "agent_triage",
+        0,
+        "k:a",
+        agent_input(1, "enzarb/triage-1", false),
+    )
+    .await;
+    h.exec.drain().await;
+    sqlx::query(
+        "UPDATE workflows.jobs SET limit_wait_started_at = now() - interval '8 days' WHERE id = $1",
+    )
+    .bind(id)
+    .execute(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        fail_run(&h, &format!("job-{id}"), &limit_summary(&reset_in(1))).await,
+        200
+    );
+    let j = job(pool, id).await;
+    assert_eq!(j.status, "failed");
+    assert!(j.waiting_for.is_none());
+    let evs = events_of(pool, "JobFailed").await;
+    assert_eq!(evs.len(), 1);
+    let err = evs[0].1["error"].as_str().unwrap();
+    assert!(
+        err.contains("session limit never reset after 7 days of waiting"),
+        "{err}"
+    );
+    assert!(err.contains("hit your session limit"), "{err}");
+    assert!(hold_until(pool, "enzarb").await.is_none());
+}
+
+#[tokio::test]
+async fn a_plain_agent_failure_still_fails_the_job() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    h.fake.add_thread(key(1), thread_with("a"));
+    let wi = new_item(pool, 1, "enzarb").await;
+    let id = new_job(
+        pool,
+        wi,
+        "enzarb",
+        "agent_triage",
+        0,
+        "k:a",
+        agent_input(1, "enzarb/triage-1", false),
+    )
+    .await;
+    h.exec.drain().await;
+    assert_eq!(
+        fail_run(&h, &format!("job-{id}"), "compile error").await,
+        200
+    );
+    let j = job(pool, id).await;
+    assert_eq!(
+        (j.status.as_str(), j.attempt, j.max_attempts),
+        ("failed", 1, 5)
+    );
+    assert!(j.waiting_for.is_none() && j.limit_wait_count == 0);
+    assert_eq!(events_of(pool, "JobFailed").await.len(), 1);
+    assert!(hold_until(pool, "enzarb").await.is_none());
+}
+
+#[tokio::test]
+async fn deadline_poll_waits_out_a_session_limit() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    h.fake.add_thread(key(1), thread_with("a"));
+    let wi = new_item(pool, 1, "enzarb").await;
+    let id = new_job(
+        pool,
+        wi,
+        "enzarb",
+        "agent_triage",
+        0,
+        "k:a",
+        agent_input(1, "enzarb/triage-1", false),
+    )
+    .await;
+    h.exec.drain().await;
+    h.sandbox.finish_with_state(
+        &format!("job-{id}"),
+        RunPhase::Failed,
+        &limit_summary(&reset_in(2)),
+    );
+    sqlx::query("UPDATE workflows.jobs SET deadline = now() - interval '1 second' WHERE id=$1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(h.exec.poll_deadlines().await.unwrap(), 1);
+    let j = job(pool, id).await;
+    assert_eq!((j.status.as_str(), j.max_attempts), ("queued", 6));
+    assert_eq!(j.waiting_for.as_deref(), Some("session_limit"));
+    assert!(j.run_after > Utc::now() + chrono::Duration::minutes(60));
+    assert_eq!(hold_until(pool, "enzarb").await, Some(j.run_after));
+    assert!(events_of(pool, "JobFailed").await.is_empty());
+}

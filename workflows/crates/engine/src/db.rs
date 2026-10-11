@@ -94,6 +94,10 @@ pub struct Job {
     pub output: Option<Value>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub limit_wait_started_at: Option<DateTime<Utc>>,
+    pub limit_wait_count: i32,
+    pub waiting_for: Option<String>,
+    pub resumes_at: Option<DateTime<Utc>>,
 }
 
 /// Row of `workflows_api.work_item_v`.
@@ -107,6 +111,9 @@ pub struct WorkItemView {
     pub state_data: Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// `session_limit` while a queued agent job waits for Claude's session limit to reset.
+    pub waiting_for: Option<String>,
+    pub resumes_at: Option<DateTime<Utc>>,
 }
 
 /// Row of `workflows_api.transition_v`.
@@ -131,4 +138,6 @@ pub struct JobView {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub output: Option<Value>,
+    pub waiting_for: Option<String>,
+    pub resumes_at: Option<DateTime<Utc>>,
 }

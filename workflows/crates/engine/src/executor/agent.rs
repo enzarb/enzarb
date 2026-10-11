@@ -102,7 +102,7 @@ impl Executor {
             )
             .await?;
 
-        let rid = run_id(job.id);
+        let rid = run_id(job.id, job.limit_wait_count);
         let run = RunStart {
             run_id: rid.clone(),
             repo_url,

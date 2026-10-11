@@ -170,7 +170,7 @@ async fn views_return_expected_columns() {
     .unwrap();
 
     let ui = db.pool_as("enzarb_ui").await;
-    let w: WorkItemView = sqlx::query_as("SELECT id, key, project, workflow, state, state_data, created_at, updated_at FROM workflows_api.work_item_v")
+    let w: WorkItemView = sqlx::query_as("SELECT id, key, project, workflow, state, state_data, created_at, updated_at, waiting_for, resumes_at FROM workflows_api.work_item_v")
         .fetch_one(&ui).await.unwrap();
     assert_eq!(
         (w.id, w.project.as_deref(), w.state.as_str()),
@@ -183,16 +183,40 @@ async fn views_return_expected_columns() {
         (t.from_state, t.event_type.as_str()),
         (None, "WorkItemOpened")
     );
-    let j: JobView = sqlx::query_as("SELECT id, work_item_id, kind, status, attempt, created_at, updated_at, output FROM workflows_api.job_v")
+    let j: JobView = sqlx::query_as("SELECT id, work_item_id, kind, status, attempt, created_at, updated_at, output, waiting_for, resumes_at FROM workflows_api.job_v")
         .fetch_one(&ui).await.unwrap();
     assert_eq!((j.status.as_str(), j.attempt), ("queued", 0));
     assert_eq!(j.output.unwrap()["url"], "x");
+    assert_eq!((j.waiting_for, j.resumes_at), (None, None));
+    assert_eq!((w.waiting_for, w.resumes_at), (None, None));
+
+    // A queued job waiting for a session limit shows on the job and its work item.
+    sqlx::query(
+        "UPDATE workflows.jobs SET waiting_for = 'session_limit', resumes_at = '2026-10-12T00:51:00Z'
+         WHERE idempotency_key = 'k1'",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let w: WorkItemView = sqlx::query_as("SELECT id, key, project, workflow, state, state_data, created_at, updated_at, waiting_for, resumes_at FROM workflows_api.work_item_v")
+        .fetch_one(&ui).await.unwrap();
+    let j: JobView = sqlx::query_as("SELECT id, work_item_id, kind, status, attempt, created_at, updated_at, output, waiting_for, resumes_at FROM workflows_api.job_v")
+        .fetch_one(&ui).await.unwrap();
+    for (waiting_for, resumes_at) in [(w.waiting_for, w.resumes_at), (j.waiting_for, j.resumes_at)]
+    {
+        assert_eq!(waiting_for.as_deref(), Some("session_limit"));
+        assert_eq!(
+            resumes_at.unwrap().to_rfc3339(),
+            "2026-10-12T00:51:00+00:00"
+        );
+    }
+    assert_eq!(w.state, "Triaging");
 
     // Exact column lists (contract section 6).
     for (view, cols) in [
         (
             "work_item_v",
-            "id,key,project,workflow,state,state_data,created_at,updated_at",
+            "id,key,project,workflow,state,state_data,created_at,updated_at,waiting_for,resumes_at",
         ),
         (
             "transition_v",
@@ -200,7 +224,7 @@ async fn views_return_expected_columns() {
         ),
         (
             "job_v",
-            "id,work_item_id,kind,status,attempt,created_at,updated_at,output",
+            "id,work_item_id,kind,status,attempt,created_at,updated_at,output,waiting_for,resumes_at",
         ),
     ] {
         let got: String = sqlx::query_scalar(

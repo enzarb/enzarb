@@ -1,7 +1,8 @@
 //! sandbox-init's run-finished callback (`contracts.md` section 4).
 //!
 //! `POST /v1/runs/{run_id}/finished` with `Authorization: Bearer <callback_token>` and a
-//! `RunFinished` body. `run_id` is `job-<job id>`. The token is
+//! `RunFinished` body. `run_id` is `job-<job id>` (`job-<job id>-<n>` after `n` session-limit
+//! waits). The token is
 //! `hex(HMAC-SHA256(callback_secret, run_id))`, so any replica can verify it and nothing
 //! per-job is stored.
 //!
@@ -22,13 +23,20 @@ use serde_json::{Value, json};
 use sha2::Sha256;
 
 use super::Executor;
+use super::session_limit::LimitOutcome;
 use crate::results::{JobResult, ingest_job_result};
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// `run_id` for a job.
-pub fn run_id(job_id: i64) -> String {
-    format!("job-{job_id}")
+/// `run_id` for a job. After `waits` session-limit waits the run is a new one
+/// (`job-<id>-<waits>`), because the sandbox dedupes `run_start` by `run_id` and would hand
+/// back the run that hit the limit.
+pub fn run_id(job_id: i64, waits: i32) -> String {
+    if waits <= 0 {
+        format!("job-{job_id}")
+    } else {
+        format!("job-{job_id}-{waits}")
+    }
 }
 
 fn mac(secret: &[u8], run_id: &str) -> HmacSha256 {
@@ -96,17 +104,19 @@ async fn finished(
     }
     let Some(job_id) = path_run_id
         .strip_prefix("job-")
+        .map(|n| n.split_once('-').map_or(n, |(id, _)| id))
         .and_then(|n| n.parse::<i64>().ok())
     else {
         return reply(StatusCode::BAD_REQUEST, "unrecognized run_id");
     };
 
-    let row: Result<Option<(String, i32)>, _> =
-        sqlx::query_as("SELECT status, attempt FROM jobs WHERE id = $1 AND kind LIKE 'agent\\_%'")
-            .bind(job_id)
-            .fetch_optional(&exec.pool)
-            .await;
-    let (status, attempt) = match row {
+    let row: Result<Option<(String, i32, i32)>, _> = sqlx::query_as(
+        "SELECT status, attempt, limit_wait_count FROM jobs WHERE id = $1 AND kind LIKE 'agent\\_%'",
+    )
+    .bind(job_id)
+    .fetch_optional(&exec.pool)
+    .await;
+    let (status, attempt, waits) = match row {
         Ok(Some(r)) => r,
         Ok(None) => return reply(StatusCode::NOT_FOUND, "unknown job"),
         Err(e) => {
@@ -118,18 +128,39 @@ async fn finished(
         tracing::info!(job_id, %status, "callback for a job that is not running; ignored");
         return (StatusCode::OK, Json(json!({ "accepted": false })));
     }
+    if path_run_id != run_id(job_id, waits) {
+        tracing::info!(job_id, %path_run_id, "callback for an earlier run of this job; ignored");
+        return (StatusCode::OK, Json(json!({ "accepted": false })));
+    }
 
     let result = match body.outcome {
         RunOutcome::Succeeded => JobResult::Succeeded {
             output: serde_json::to_value(&body).unwrap_or(Value::Null),
         },
-        RunOutcome::Failed => JobResult::Failed {
-            error: format!(
+        RunOutcome::Failed => {
+            let error = format!(
                 "the agent run failed (exit code {}): {}",
                 body.exit_code.map_or("none".into(), |c| c.to_string()),
                 truncate(&body.summary, 2000)
-            ),
-        },
+            );
+            match exec
+                .session_limit_outcome(job_id, attempt, &body.summary, &error)
+                .await
+            {
+                Ok(LimitOutcome::Waiting) => {
+                    return (StatusCode::OK, Json(json!({ "accepted": true })));
+                }
+                Ok(LimitOutcome::Stale) => {
+                    return (StatusCode::OK, Json(json!({ "accepted": false })));
+                }
+                Ok(LimitOutcome::NotALimit) => JobResult::Failed { error },
+                Ok(LimitOutcome::GaveUp(error)) => JobResult::Failed { error },
+                Err(e) => {
+                    tracing::warn!(job_id, error = %e, "callback: session limit handling failed");
+                    return reply(StatusCode::INTERNAL_SERVER_ERROR, "database error");
+                }
+            }
+        }
         RunOutcome::Cancelled => JobResult::Failed {
             error: "the agent run was cancelled".into(),
         },

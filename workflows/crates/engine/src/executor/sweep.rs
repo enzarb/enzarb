@@ -5,6 +5,7 @@ use enzarb_proto::session::SessionError;
 use serde_json::{Value, json};
 
 use super::callback::run_id;
+use super::session_limit::LimitOutcome;
 use super::{Executor, JobError};
 use crate::error::Error;
 use crate::machine::AgentJobInput;
@@ -62,8 +63,8 @@ impl Executor {
     /// * unknown run: report a failure;
     /// * sandbox unreachable: try again next sweep, and give up after `poll_give_up`.
     pub async fn poll_deadlines(&self) -> Result<usize, Error> {
-        let due: Vec<(i64, i32, Option<String>, Value, bool)> = sqlx::query_as(
-            r"SELECT id, attempt, project_id, input,
+        let due: Vec<(i64, i32, i32, Option<String>, Value, bool)> = sqlx::query_as(
+            r"SELECT id, attempt, limit_wait_count, project_id, input,
                      deadline + make_interval(secs => $1) < now() AS give_up
               FROM jobs
               WHERE status = 'running' AND kind LIKE 'agent\_%' AND deadline IS NOT NULL
@@ -74,8 +75,11 @@ impl Executor {
         .fetch_all(&self.pool)
         .await?;
         let mut reported = 0;
-        for (id, attempt, project, input, give_up) in due {
-            let result = match self.ask_sandbox(id, project.as_deref(), &input).await {
+        for (id, attempt, waits, project, input, give_up) in due {
+            let result = match self
+                .ask_sandbox(id, waits, project.as_deref(), &input)
+                .await
+            {
                 Ok(r) => r,
                 Err(e) if give_up => JobResult::Failed {
                     error: format!(
@@ -87,6 +91,23 @@ impl Executor {
                     tracing::warn!(job_id = id, error = %e.message, "deadline poll failed; will retry");
                     continue;
                 }
+            };
+            let result = match result {
+                JobResult::Failed { error } => {
+                    match self
+                        .session_limit_outcome(id, attempt, &error, &error)
+                        .await?
+                    {
+                        LimitOutcome::Waiting => {
+                            reported += 1;
+                            continue;
+                        }
+                        LimitOutcome::Stale => continue,
+                        LimitOutcome::NotALimit => JobResult::Failed { error },
+                        LimitOutcome::GaveUp(error) => JobResult::Failed { error },
+                    }
+                }
+                ok => ok,
             };
             if ingest_job_result(&self.pool, id, attempt, result)
                 .await?
@@ -101,12 +122,13 @@ impl Executor {
     async fn ask_sandbox(
         &self,
         job_id: i64,
+        waits: i32,
         project: Option<&str>,
         input: &Value,
     ) -> Result<JobResult, JobError> {
         let project = project.ok_or_else(|| JobError::permanent("job has no project"))?;
         let session = self.dial(project).await?;
-        let rid = run_id(job_id);
+        let rid = run_id(job_id, waits);
         let status = tokio::time::timeout(self.cfg.sandbox_timeout, session.run_status(&rid)).await;
         let result = match status {
             Err(_) => Err(JobError::transient("run_status timed out")),
@@ -151,8 +173,8 @@ impl Executor {
     /// Cancel sandbox runs of jobs that a transition cancelled after the run was accepted
     /// (`deadline` is the marker; it is cleared once the cancel was sent).
     pub async fn cancel_runs(&self) -> Result<usize, Error> {
-        let rows: Vec<(i64, Option<String>)> = sqlx::query_as(
-            r"SELECT id, project_id FROM jobs
+        let rows: Vec<(i64, i32, Option<String>)> = sqlx::query_as(
+            r"SELECT id, limit_wait_count, project_id FROM jobs
               WHERE status = 'cancelled' AND kind LIKE 'agent\_%' AND deadline IS NOT NULL
                 AND updated_at > now() - interval '1 day'
               ORDER BY id LIMIT 50",
@@ -160,11 +182,11 @@ impl Executor {
         .fetch_all(&self.pool)
         .await?;
         let mut sent = 0;
-        for (id, project) in rows {
+        for (id, waits, project) in rows {
             let Some(project) = project else { continue };
             match self.dial(&project).await {
                 Ok(session) => {
-                    let ok = session.run_cancel(&run_id(id)).is_ok();
+                    let ok = session.run_cancel(&run_id(id, waits)).is_ok();
                     session.close().await;
                     if ok {
                         sqlx::query("UPDATE jobs SET deadline = NULL WHERE id = $1")
