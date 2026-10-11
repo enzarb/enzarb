@@ -524,6 +524,147 @@ async fn connector_jobs_run_with_idempotency_keys_and_report() {
     assert!(evs.iter().any(|(k, _)| *k == format!("job:{p}:1")));
 }
 
+fn readiness(
+    sha: &str,
+    ci: enzarb_connector::CiState,
+    mergeable: Option<bool>,
+) -> enzarb_connector::MergeReadiness {
+    enzarb_connector::MergeReadiness {
+        head_sha: sha.into(),
+        mergeable,
+        mergeable_state: "clean".into(),
+        ci,
+    }
+}
+
+fn merge_calls(h: &H) -> Vec<Call> {
+    h.fake
+        .applied_calls()
+        .into_iter()
+        .filter(|c| matches!(c, Call::MergeChangeRequest { .. }))
+        .collect()
+}
+
+#[tokio::test]
+async fn check_merge_readiness_job_reports_the_aggregate() {
+    use enzarb_connector::CiState;
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let wi = new_item(pool, 1, "enzarb").await;
+    h.fake
+        .set_merge_readiness(key(1), readiness("sha1", CiState::Pending, None));
+    let id = new_job(
+        pool,
+        wi,
+        "enzarb",
+        "check_merge_readiness",
+        10,
+        "k:r",
+        json!({ "item": key(1), "number": 1, "head_sha": "sha1" }),
+    )
+    .await;
+    assert_eq!(h.exec.drain().await, 1);
+    let out = job(pool, id).await.output.unwrap();
+    assert_eq!(out["head_sha"], "sha1");
+    assert_eq!(out["ci"], "pending");
+    assert_eq!(out["mergeable"], Value::Null);
+}
+
+#[tokio::test]
+async fn merge_job_rechecks_readiness_and_passes_the_idempotency_key() {
+    use enzarb_connector::{CiState, MergeOutcome};
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let wi = new_item(pool, 1, "enzarb").await;
+    let input = |sha: &str| {
+        json!({ "item": key(1), "number": 1, "title": "feat: dark mode",
+                "expected_head_sha": sha, "actor": "carol" })
+    };
+
+    // Not ready: the merge is refused without calling the connector's merge.
+    for (n, (r, want, reason)) in [
+        (
+            readiness("sha2", CiState::Success, Some(true)),
+            "head_moved",
+            "",
+        ),
+        (
+            readiness("sha1", CiState::Failure, Some(true)),
+            "not_mergeable",
+            "CI",
+        ),
+        (
+            readiness("sha1", CiState::Pending, Some(true)),
+            "not_mergeable",
+            "CI",
+        ),
+        (
+            readiness("sha1", CiState::Success, Some(false)),
+            "not_mergeable",
+            "not mergeable",
+        ),
+        (
+            readiness("sha1", CiState::Success, None),
+            "not_mergeable",
+            "computed",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        h.fake.set_merge_readiness(key(1), r);
+        let id = new_job(
+            pool,
+            wi,
+            "enzarb",
+            "merge_change_request",
+            10,
+            &format!("k:refused{n}"),
+            input("sha1"),
+        )
+        .await;
+        assert_eq!(h.exec.drain().await, 1);
+        let j = job(pool, id).await;
+        assert_eq!(j.status, "succeeded", "refusals are outputs, not failures");
+        let out = j.output.unwrap();
+        assert_eq!(out["outcome"], want, "case {n}");
+        assert_eq!(out["actor"], "carol");
+        assert!(out["reason"].as_str().unwrap_or("").contains(reason));
+    }
+    assert!(merge_calls(&h).is_empty(), "{:?}", merge_calls(&h));
+
+    // Ready: merged with the job's idempotency key and the squash title.
+    h.fake
+        .set_merge_readiness(key(1), readiness("sha1", CiState::Success, Some(true)));
+    h.fake
+        .queue_merge_outcome(MergeOutcome::Merged { sha: "m1".into() });
+    let id = new_job(
+        pool,
+        wi,
+        "enzarb",
+        "merge_change_request",
+        10,
+        "k:merge",
+        input("sha1"),
+    )
+    .await;
+    assert_eq!(h.exec.drain().await, 1);
+    let out = job(pool, id).await.output.unwrap();
+    assert_eq!(out["outcome"], "merged");
+    assert_eq!(out["sha"], "m1");
+    assert_eq!(
+        merge_calls(&h),
+        [Call::MergeChangeRequest {
+            item: key(1),
+            number: 1,
+            expected_head_sha: "sha1".into(),
+            commit_title: "feat: dark mode".into(),
+            commit_body: None,
+            idempotency_key: "k:merge".into(),
+        }]
+    );
+}
+
 #[tokio::test]
 async fn claims_by_priority_and_serializes_one_work_item() {
     let h = H::new(db!()).await;

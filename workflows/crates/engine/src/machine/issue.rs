@@ -262,6 +262,7 @@ pub(super) fn step(ctx: &Ctx, s: &IssueState, ev: &EngineEvent) -> Transition {
             }
             UiActionKind::Retry => retry(ctx, ev, s, &state),
             UiActionKind::Approve => approval(ctx, ev, s, &state),
+            UiActionKind::Merge => Transition::reject(&state, "nothing to merge"),
         },
         EventPayload::JobSucceeded { kind, output, .. } => {
             job_succeeded(ctx, ev, s, &state, *kind, output)

@@ -115,6 +115,35 @@ impl<'a> Fx<'a> {
         );
     }
 
+    /// Ask the connector for the head's aggregate CI and mergeability; the result is
+    /// applied only if the head is still `head_sha`.
+    pub fn check_merge_readiness(&mut self, number: u64, head_sha: &str) {
+        let input = json!({
+            "item": self.ctx.work_item,
+            "number": number,
+            "head_sha": head_sha,
+        });
+        self.job(JobKind::CheckMergeReadiness, PRIORITY_COMMENT, input);
+    }
+
+    /// The human-triggered squash merge. Only the UI `merge` handler may call this.
+    pub fn merge_change_request(
+        &mut self,
+        number: u64,
+        title: &str,
+        expected_head_sha: &str,
+        actor: &str,
+    ) {
+        let input = json!({
+            "item": self.ctx.work_item,
+            "number": number,
+            "title": title,
+            "expected_head_sha": expected_head_sha,
+            "actor": actor,
+        });
+        self.job(JobKind::MergeChangeRequest, PRIORITY_COMMENT, input);
+    }
+
     pub fn cancel_jobs(&mut self) {
         self.effects.push(Effect::CancelJobs);
     }

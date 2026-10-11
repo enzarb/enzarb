@@ -114,6 +114,60 @@ pub fn pr_title(agent: Option<&str>, issue_title: &str, repo_name: &str) -> Stri
     }
 }
 
+/// Types accepted as-is for a squash title (`^(feat|fix|docs|chore|refactor|test|ci|build|perf|style)`).
+const SQUASH_TYPES: &[&str] = &[
+    "feat", "fix", "docs", "chore", "refactor", "test", "ci", "build", "perf", "style",
+];
+
+/// `^(feat|fix|...)(\(.+\))?!?: .+`
+fn is_squash_title(title: &str) -> bool {
+    if title.contains(['\n', '\r']) {
+        return false;
+    }
+    let ty_end = title
+        .find(|c: char| !c.is_ascii_lowercase())
+        .unwrap_or(title.len());
+    if !SQUASH_TYPES.contains(&&title[..ty_end]) {
+        return false;
+    }
+    let mut rest = &title[ty_end..];
+    if let Some(r) = rest.strip_prefix('(') {
+        let Some(close) = r.find(')') else {
+            return false;
+        };
+        if close == 0 {
+            return false;
+        }
+        rest = &r[close + 1..];
+    }
+    let rest = rest.strip_prefix('!').unwrap_or(rest);
+    matches!(rest.strip_prefix(": "), Some(d) if !d.is_empty())
+}
+
+/// The commit title for squash-merging a PR: its own title if that is already a
+/// Conventional Commit, otherwise `type: <title>` with the type taken from the head branch
+/// prefix (`feat/...`, `fix/...`) and `chore` when the branch says nothing.
+pub fn squash_title(pr_title: &str, head_ref: &str) -> String {
+    let trimmed = pr_title.trim();
+    if is_squash_title(trimmed) {
+        return trimmed.to_string();
+    }
+    let prefix = head_ref.split('/').next().unwrap_or("");
+    let ty = match prefix {
+        p if head_ref.contains('/') && SQUASH_TYPES.contains(&p) => p,
+        "bug" | "bugfix" | "hotfix" if head_ref.contains('/') => "fix",
+        _ => "chore",
+    };
+    let desc = strip_prefix_word(trimmed).trim();
+    let desc = desc.split_whitespace().collect::<Vec<_>>().join(" ");
+    let desc = if desc.is_empty() {
+        "update".to_string()
+    } else {
+        desc
+    };
+    format!("{ty}: {desc}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,5 +276,33 @@ mod tests {
             "feat(x): issue"
         );
         assert_eq!(pr_title(None, "Issue", "o/enzarb-x"), "feat(x): issue");
+    }
+
+    #[test]
+    fn squash_title_table() {
+        for (title, head, want) in [
+            // already conventional: kept, with or without a scope or `!`
+            ("feat(ui): dark mode", "x/y", "feat(ui): dark mode"),
+            ("fix: crash", "feat/x", "fix: crash"),
+            ("refactor(a)!: drop it", "", "refactor(a)!: drop it"),
+            ("  docs: readme  ", "", "docs: readme"),
+            // derived from the branch prefix
+            ("Dark mode", "feat/dark", "feat: Dark mode"),
+            ("Crash on start", "fix/crash", "fix: Crash on start"),
+            ("Crash on start", "bugfix/crash", "fix: Crash on start"),
+            // chore fallback
+            ("Dark mode", "enzarb/issue-30", "chore: Dark mode"),
+            ("Dark mode", "feat", "chore: Dark mode"),
+            ("Dark mode", "", "chore: Dark mode"),
+            // invalid prefixes do not count
+            ("feat(): x", "", "chore: x"),
+            ("feature: x", "", "chore: feature: x"),
+            ("feat:x", "", "chore: x"),
+            ("feat: ", "", "chore: update"),
+            ("revert: x", "", "chore: x"),
+            ("", "", "chore: update"),
+        ] {
+            assert_eq!(squash_title(title, head), want, "{title:?} {head:?}");
+        }
     }
 }

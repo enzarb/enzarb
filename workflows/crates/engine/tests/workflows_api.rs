@@ -118,7 +118,11 @@ async fn submit_action_creates_ui_event() {
     assert_eq!(ev.payload["actor"]["login"], "ruckc");
     assert_eq!(ev.payload["action"], "approve");
 
-    for (action, ty) in [("cancel", "CancelRequested"), ("retry", "RetryRequested")] {
+    for (action, ty) in [
+        ("cancel", "CancelRequested"),
+        ("retry", "RetryRequested"),
+        ("merge", "MergeRequested"),
+    ] {
         let id: i64 = sqlx::query_scalar("SELECT workflows_api.submit_action($1, '{}', $2, '{}')")
             .bind(wi)
             .bind(action)

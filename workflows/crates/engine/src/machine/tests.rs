@@ -1,5 +1,7 @@
 //! Table-driven tests for the three state machines.
 
+mod merge;
+
 use chrono::{DateTime, TimeZone, Utc};
 use enzarb_connector::{
     Actor, CommentRef, Event, EventData, EventType, ItemKind, ItemRef, Permission, RepoKey, Review,
@@ -422,10 +424,12 @@ const ALL_ISSUE_PHASES: [IssuePhase; 10] = [
     IssuePhase::Cancelled,
 ];
 
-const ALL_CR_PHASES: [CrPhase; 7] = [
+const ALL_CR_PHASES: [CrPhase; 9] = [
     CrPhase::Reviewing,
     CrPhase::AwaitingChanges,
+    CrPhase::ReadyToMerge,
     CrPhase::AddressingComments,
+    CrPhase::Merging,
     CrPhase::Merged,
     CrPhase::Closed,
     CrPhase::Failed,
@@ -2377,6 +2381,8 @@ fn job_kind_names_match_the_documented_kinds() {
         (JobKind::AgentReview, "agent_review"),
         (JobKind::AgentAddressComments, "agent_address_comments"),
         (JobKind::AgentTask, "agent_task"),
+        (JobKind::CheckMergeReadiness, "check_merge_readiness"),
+        (JobKind::MergeChangeRequest, "merge_change_request"),
     ];
     for (k, name) in all {
         assert_eq!(k.as_str(), name);
@@ -2450,12 +2456,14 @@ fn from_row_parses_every_event_type() {
         ("ApprovalGranted", UiActionKind::Approve),
         ("CancelRequested", UiActionKind::Cancel),
         ("RetryRequested", UiActionKind::Retry),
+        ("MergeRequested", UiActionKind::Merge),
     ] {
         let mut p = ui_payload.clone();
         p["action"] = json!(match action {
             UiActionKind::Approve => "approve",
             UiActionKind::Cancel => "cancel",
             UiActionKind::Retry => "retry",
+            UiActionKind::Merge => "merge",
         });
         match EngineEvent::from_row("1", ty, &p).unwrap().payload {
             EventPayload::Ui(u) => assert_eq!(u.action, action),

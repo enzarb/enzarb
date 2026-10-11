@@ -21,10 +21,17 @@
 //! * `post_comment`: `{"item": WorkItemKey, "body": str}`
 //! * `open_change_request`: `{"spec": ChangeRequestSpec}`
 //! * `agent_*`: [`AgentJobInput`]; see [`prompt`] for the output contract.
+//! * `check_merge_readiness`: `{"item": WorkItemKey, "number": u64, "head_sha": str}`
+//! * `merge_change_request`: `{"item": WorkItemKey, "number": u64, "title": str,
+//!   "expected_head_sha": str, "actor": str}`
 //!
 //! Job outputs that the machines read: agent jobs store the `RunFinished` body
 //! (`summary` is Claude's result text, plus `branch`, `head_sha`, `pushed`),
-//! `post_comment` stores a `CommentRef`, `open_change_request` an `ItemRef`.
+//! `post_comment` stores a `CommentRef`, `open_change_request` an `ItemRef`,
+//! `check_merge_readiness` `{head_sha, ci, mergeable, mergeable_state}` (`ci` is
+//! `success|failure|pending`, `mergeable` a bool or null while computing) and
+//! `merge_change_request` `{outcome, actor, sha?, reason?}` with `outcome` one of `merged`,
+//! `already_merged`, `head_moved`, `not_mergeable`.
 
 mod change_request;
 mod fx;
@@ -44,7 +51,7 @@ use enzarb_connector::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use change_request::{CrData, CrPhase, CrState};
+pub use change_request::{CiState, CrData, CrPhase, CrState};
 pub use fx::{
     AgentJobInput, PRIORITY_AGENT, PRIORITY_COMMENT, PRIORITY_PROGRESS, PRIORITY_WORKING,
 };
@@ -72,6 +79,8 @@ pub enum JobKind {
     AgentReview,
     AgentAddressComments,
     AgentTask,
+    CheckMergeReadiness,
+    MergeChangeRequest,
 }
 
 impl JobKind {
@@ -86,13 +95,19 @@ impl JobKind {
             JobKind::AgentReview => "agent_review",
             JobKind::AgentAddressComments => "agent_address_comments",
             JobKind::AgentTask => "agent_task",
+            JobKind::CheckMergeReadiness => "check_merge_readiness",
+            JobKind::MergeChangeRequest => "merge_change_request",
         }
     }
 
     pub fn is_agent(self) -> bool {
         !matches!(
             self,
-            JobKind::SetProgress | JobKind::PostComment | JobKind::OpenChangeRequest
+            JobKind::SetProgress
+                | JobKind::PostComment
+                | JobKind::OpenChangeRequest
+                | JobKind::CheckMergeReadiness
+                | JobKind::MergeChangeRequest
         )
     }
 }
@@ -103,6 +118,8 @@ pub enum UiActionKind {
     Approve,
     Cancel,
     Retry,
+    /// Squash-merge a `ReadyToMerge` change request. Only this action can start a merge.
+    Merge,
 }
 
 /// A `workflows_api.submit_action` event (source `ui`).
@@ -118,7 +135,7 @@ pub struct UiAction {
 pub enum EventPayload {
     /// A normalized connector event (`workflows.events.payload`).
     Connector(Box<Event>),
-    /// `ApprovalGranted` / `CancelRequested` / `RetryRequested` from the UI.
+    /// `ApprovalGranted` / `CancelRequested` / `RetryRequested` / `MergeRequested` from the UI.
     Ui(UiAction),
     /// Event type `JobSucceeded`, payload `{job_id, kind, output}`.
     JobSucceeded {
@@ -205,7 +222,7 @@ impl EngineEvent {
                 let p: P = serde_json::from_value(payload.clone()).map_err(bad)?;
                 EventPayload::TimerFired { job_id: p.job_id }
             }
-            "CancelRequested" | "RetryRequested" => {
+            "CancelRequested" | "RetryRequested" | "MergeRequested" => {
                 EventPayload::Ui(serde_json::from_value(payload.clone()).map_err(bad)?)
             }
             "ApprovalGranted" if payload.get("action").is_some() => {
@@ -515,7 +532,7 @@ impl WorkflowState {
         let v = match self {
             WorkflowState::New(_) => serde_json::json!({}),
             WorkflowState::Issue(s) => serde_json::to_value(&s.data).unwrap_or_default(),
-            WorkflowState::ChangeRequest(s) => serde_json::to_value(&s.data).unwrap_or_default(),
+            WorkflowState::ChangeRequest(s) => change_request::state_data(&s.data),
             WorkflowState::Mention(s) => serde_json::to_value(&s.data).unwrap_or_default(),
         };
         if v.is_null() {
