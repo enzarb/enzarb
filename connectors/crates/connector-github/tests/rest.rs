@@ -189,7 +189,7 @@ async fn clone_credential_is_single_repo_and_minimal() {
         .and(ValidAppJwt)
         .and(body_json(json!({
             "repositories": ["enzarb-ui"],
-            "permissions": {"contents": "write", "pull_requests": "write"},
+            "permissions": {"contents": "write", "pull_requests": "write", "workflows": "write"},
         })))
         .respond_with(ResponseTemplate::new(201).set_body_json(
             json!({"token": "ghs_scoped", "expires_at": expires, "repository_selection": "selected"}),

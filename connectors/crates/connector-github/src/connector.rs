@@ -807,12 +807,18 @@ impl Connector for GitHubConnector {
             CredScope::ReadWrite => "write",
         };
         let id = self.installation_id(repo).await?;
+        let mut permissions = json!({ "contents": level, "pull_requests": level });
+        // GitHub only offers `workflows: write` (no read level), so only
+        // read-write tokens carry it; agents may edit `.github/workflows`.
+        if scope == CredScope::ReadWrite {
+            permissions["workflows"] = json!("write");
+        }
         let t = self
             .create_token(
                 id,
                 Some(json!({
                     "repositories": [repo.repo],
-                    "permissions": { "contents": level, "pull_requests": level },
+                    "permissions": permissions,
                 })),
             )
             .await?;
