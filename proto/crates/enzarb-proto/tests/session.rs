@@ -31,6 +31,7 @@ fn run_start(id: &str, log: Option<u32>) -> RunStart {
         callback_url: "http://cb".into(),
         callback_token: "cb".into(),
         log_channel: log,
+        deps_token: None,
     }
 }
 

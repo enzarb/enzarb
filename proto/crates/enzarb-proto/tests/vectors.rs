@@ -51,6 +51,7 @@ fn run_start() -> RunStart {
             .into(),
         callback_token: "cb-secret".into(),
         log_channel: None,
+        deps_token: None,
     }
 }
 
@@ -350,4 +351,37 @@ fn error_vectors() {
         out.push(json!({"name": name, "hex": h, "error": code}));
     }
     check_or_write("errors.json", &Value::Array(out));
+}
+
+#[test]
+fn run_start_deps_token_compat() {
+    // Old payload without the field decodes to None and re-encodes without it.
+    let old = serde_json::to_value(run_start()).unwrap();
+    assert!(old.get("deps_token").is_none());
+    let back: RunStart = serde_json::from_value(old).unwrap();
+    assert_eq!(back.deps_token, None);
+    // Round trip with the field set.
+    let mut rs = run_start();
+    rs.deps_token = Some("ghs_deps".into());
+    let v = serde_json::to_value(&rs).unwrap();
+    assert_eq!(v["deps_token"], "ghs_deps");
+    assert_eq!(serde_json::from_value::<RunStart>(v).unwrap(), rs);
+    // Explicit null decodes as None.
+    let mut v = serde_json::to_value(run_start()).unwrap();
+    v["deps_token"] = serde_json::Value::Null;
+    assert_eq!(
+        serde_json::from_value::<RunStart>(v).unwrap().deps_token,
+        None
+    );
+}
+
+#[test]
+fn run_start_debug_redacts_tokens() {
+    let mut rs = run_start();
+    rs.deps_token = Some("ghs_deps".into());
+    let d = format!("{rs:?} {:?}", Ctrl::RunStart(rs.clone()));
+    for secret in ["ghs_deps", "ghs_clone", "cb-secret"] {
+        assert!(!d.contains(secret), "{secret} leaked: {d}");
+    }
+    assert!(d.contains("job-123"));
 }

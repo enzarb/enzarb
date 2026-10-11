@@ -35,6 +35,8 @@ export interface RunStartFields {
   callback_token: string;
   /** Client-chosen channel for the transcript (DATA_JSON), or null. */
   log_channel: number | null;
+  /** Optional read-only token for same-Project git deps; never for push. */
+  deps_token?: string;
 }
 
 /** Body POSTed to `callback_url` (not a CTRL message). */

@@ -372,6 +372,20 @@ describe("runs", () => {
     srv.ctrl({ type: "run_accepted", run_id: "job-1", state: "queued", existing: false });
     expect((await p2).log!.id).toBe(50);
   });
+
+  it("is omitted when absent and passed through when set", async () => {
+    const { s, srv } = await connected();
+    const p1 = s.runStart(run);
+    const m1 = await srv.nextCtrl("run_start");
+    expect("deps_token" in m1).toBe(false);
+    srv.ctrl({ type: "run_accepted", run_id: "job-1", state: "queued", existing: false });
+    await p1;
+    const p2 = s.runStart({ ...run, deps_token: "ghs_deps" });
+    const m2 = await srv.nextCtrl("run_start");
+    expect(m2.deps_token).toBe("ghs_deps");
+    srv.ctrl({ type: "run_accepted", run_id: "job-1", state: "queued", existing: true });
+    await p2;
+  });
 });
 
 describe("shutdown", () => {

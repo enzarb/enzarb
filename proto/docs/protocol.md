@@ -59,7 +59,7 @@ The codec does not parse `DATA_*` payloads; the channel's owner does.
 
 ## 5. CTRL messages
 
-JSON objects with a `"type"` field, channel 0. Unknown fields are ignored; an unknown `type` is answered with `error` (`unknown_message`). Optional fields may be absent or `null`; encoders omit `None` except `run_start.log_channel` which is always written (`null`). Definitions mirror contracts section 4 and `crates/enzarb-proto/src/ctrl.rs`.
+JSON objects with a `"type"` field, channel 0. Unknown fields are ignored; an unknown `type` is answered with `error` (`unknown_message`). Optional fields may be absent or `null`; encoders omit `None` except `run_start.log_channel` which is always written (`null`). `run_start.deps_token` is an optional read-only (`contents: read`) token for fetching same-Project git dependencies; it is never used for push, and implementations must not log it. Definitions mirror contracts section 4 and `crates/enzarb-proto/src/ctrl.rs`.
 
 | Message | Direction | Fields |
 |---|---|---|
@@ -69,7 +69,7 @@ JSON objects with a `"type"` field, channel 0. Unknown fields are ignored; an un
 | `opened` | server -> client | `channel` |
 | `open_error` | server -> client | `channel`, `message` |
 | `resize` | client -> server | `channel`, `cols`, `rows` |
-| `run_start` | client -> server | `run_id, repo_url, base_ref, branch, push, clone_token, prompt, timeout_secs, callback_url, callback_token, log_channel` |
+| `run_start` | client -> server | `run_id, repo_url, base_ref, branch, push, clone_token, prompt, timeout_secs, callback_url, callback_token, log_channel, deps_token?` |
 | `run_accepted` | server -> client | `run_id`, `state`, `existing: bool` |
 | `run_status` | client -> server | `run_id` |
 | `run_state` | server -> client (reply to `run_status`, and pushed on change) | `run_id`, `state`, `exit_code?`, `summary?` |

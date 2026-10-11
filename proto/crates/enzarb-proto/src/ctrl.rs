@@ -70,7 +70,9 @@ pub mod error_code {
 }
 
 /// Body of `run_start`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Debug` is hand-written and redacts every token field.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunStart {
     pub run_id: String,
     pub repo_url: String,
@@ -86,6 +88,31 @@ pub struct RunStart {
     /// `DATA_JSON`, or `null` for none. Serialized as `null` when absent.
     #[serde(default)]
     pub log_channel: Option<u32>,
+    /// Optional read-only token (`contents: read`) for fetching private git
+    /// dependencies from the same Project. Never used for push. Omitted when
+    /// absent; old peers ignore it and old payloads decode without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deps_token: Option<String>,
+}
+
+impl std::fmt::Debug for RunStart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const R: &str = "<redacted>";
+        f.debug_struct("RunStart")
+            .field("run_id", &self.run_id)
+            .field("repo_url", &self.repo_url)
+            .field("base_ref", &self.base_ref)
+            .field("branch", &self.branch)
+            .field("push", &self.push)
+            .field("clone_token", &R)
+            .field("prompt", &self.prompt)
+            .field("timeout_secs", &self.timeout_secs)
+            .field("callback_url", &self.callback_url)
+            .field("callback_token", &R)
+            .field("log_channel", &self.log_channel)
+            .field("deps_token", &self.deps_token.as_ref().map(|_| R))
+            .finish()
+    }
 }
 
 /// Body POSTed to `callback_url` when a run ends. Not a CTRL message.
