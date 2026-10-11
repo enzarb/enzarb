@@ -217,7 +217,14 @@ impl Env {
             }
         })
         .await
-        .expect("callback not received")
+        .unwrap_or_else(|_| {
+            let d = self.run_dir(id);
+            panic!(
+                "callback not received: {} {}",
+                std::fs::read_to_string(d.join("state.json")).unwrap_or_default(),
+                std::fs::read_to_string(d.join("transcript.jsonl")).unwrap_or_default()
+            )
+        })
     }
 
     fn remote_sha(&self, branch: &str) -> Option<String> {
@@ -299,7 +306,8 @@ async fn implement_run_commits_pushes_and_calls_back() {
         serde_json::from_slice(&std::fs::read(rd.join("state.json")).unwrap()).unwrap();
     assert_eq!(state["state"], "succeeded");
     assert!(rd.join("transcript.jsonl").exists());
-    assert!(env.workspace.join("worktrees/run-job-1/agent.txt").exists());
+    // the worktree is removed when the run ends; the branch survives in the clone
+    assert!(!env.workspace.join("worktrees/run-job-1").exists());
     let out = Command::new("grep")
         .args(["-r", "secret-clone-token"])
         .arg(env.dir.path())
@@ -818,4 +826,95 @@ async fn successive_runs_reuse_a_branch_name() {
         let (_, fin) = env.finished(id).await;
         assert_eq!(fin.outcome, RunOutcome::Succeeded, "{id}: {}", fin.summary);
     }
+}
+
+fn make_stale(env: &Env, name: &str, age_secs: u64) -> PathBuf {
+    let d = env.workspace.join("worktrees").join(name);
+    std::fs::create_dir_all(d.join("target/debug")).unwrap();
+    std::fs::write(d.join("target/debug/big"), "x").unwrap();
+    let t = std::time::SystemTime::now() - Duration::from_secs(age_secs);
+    std::fs::File::open(&d).unwrap().set_modified(t).unwrap();
+    d
+}
+
+#[tokio::test]
+async fn finished_runs_drop_their_worktree_but_keep_logs() {
+    let env = start(0).await;
+    let (session, _e) = env.connect().await;
+    session
+        .run_start(env.run("clean", "EDIT", "main", "enzarb/clean", true))
+        .await
+        .unwrap();
+    let (_, fin) = env.finished("clean").await;
+    assert_eq!(fin.outcome, RunOutcome::Succeeded, "{}", fin.summary);
+    assert!(!env.workspace.join("worktrees/run-clean").exists());
+    assert!(env.run_dir("clean").join("transcript.jsonl").exists());
+    assert!(env.run_dir("clean").join("state.json").exists());
+    // git forgot the worktree too
+    let repos = env.workspace.join("repos");
+    let repo = std::fs::read_dir(&repos)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let list = git(&repo, &["worktree", "list", "--porcelain"]);
+    assert!(!list.contains("run-clean"), "{list}");
+}
+
+#[tokio::test]
+async fn failed_runs_drop_their_worktree_too() {
+    let env = start(0).await;
+    let (session, _e) = env.connect().await;
+    session
+        .run_start(env.run("bad", "FAIL", "main", "enzarb/bad", false))
+        .await
+        .unwrap();
+    let (_, fin) = env.finished("bad").await;
+    assert_eq!(fin.outcome, RunOutcome::Failed);
+    assert!(!env.workspace.join("worktrees/run-bad").exists());
+}
+
+#[tokio::test]
+async fn a_new_run_prunes_stale_worktrees_but_not_fresh_or_foreign_dirs() {
+    let env = start(0).await;
+    // let the startup sweep (spawned by recover) finish first
+    sleep(Duration::from_millis(300)).await;
+    let stale = make_stale(&env, "run-old-job", 3600);
+    let fresh = make_stale(&env, "run-just-now", 1);
+    let other = make_stale(&env, "keepme", 3600);
+    let (session, _e) = env.connect().await;
+    session
+        .run_start(env.run("next", "EDIT", "main", "enzarb/next", false))
+        .await
+        .unwrap();
+    let (_, fin) = env.finished("next").await;
+    assert_eq!(fin.outcome, RunOutcome::Succeeded, "{}", fin.summary);
+    assert!(!stale.exists());
+    assert!(fresh.exists(), "recent dirs are left alone");
+    assert!(other.exists(), "only worktrees/run-* is ever pruned");
+}
+
+#[tokio::test]
+async fn startup_prunes_every_run_worktree() {
+    let env = start(0).await;
+    let a = make_stale(&env, "run-a", 1);
+    let b = make_stale(&env, "run-b", 5000);
+    let other = make_stale(&env, "toolchains", 5000);
+    let file = env.workspace.join("worktrees/run-x.pid");
+    std::fs::write(&file, "1").unwrap();
+    let cfg = Config {
+        workspace: env.workspace.clone(),
+        ..Config::default()
+    };
+    AgentRunManager::new(cfg, Reaper::new(false)).recover();
+    timeout(T, async {
+        while a.exists() || b.exists() {
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(other.exists());
+    assert!(file.exists());
 }

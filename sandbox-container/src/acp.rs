@@ -255,26 +255,33 @@ pub async fn run(
         );
     let mut conn = Box::pin(conn);
 
+    // The exit status once `exit` has resolved (a oneshot must not be polled again).
+    let mut exited: Option<Option<ExitStatus>> = None;
     let result = tokio::select! {
         biased;
         r = &mut conn => flatten(r),
         st = &mut exit => {
+            let st = st.ok();
+            exited = Some(st);
             // The agent ended; it may have answered first.
             match tokio::time::timeout(Duration::from_secs(2), &mut conn).await {
                 Ok(r) => flatten(r),
-                Err(_) => Err(AcpError::Failed(describe_exit(st.ok()))),
+                Err(_) => Err(AcpError::Failed(describe_exit(st))),
             }
         }
     };
     // Closing the connection closes the agent's stdin: give it a moment to
     // exit, then stop whatever is left of its process group.
     drop(conn);
-    let own_exit = match tokio::time::timeout(Duration::from_secs(2), &mut exit).await {
-        Ok(st) => st.ok(),
-        Err(_) => {
-            terminate(pid, &mut exit).await;
-            None
-        }
+    let own_exit = match exited {
+        Some(st) => st,
+        None => match tokio::time::timeout(Duration::from_secs(2), &mut exit).await {
+            Ok(st) => st.ok(),
+            Err(_) => {
+                terminate(pid, &mut exit).await;
+                None
+            }
+        },
     };
     // The connection broke because the agent died: say how.
     let result = match (result, own_exit) {

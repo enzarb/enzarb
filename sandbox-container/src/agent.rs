@@ -11,7 +11,9 @@
 //!
 //! On-disk layout:
 //! * `<ws>/repos/<name>-<hash>/`: clones (one per repo URL);
-//! * `<ws>/worktrees/run-<run_id>/`: the run's worktree;
+//! * `<ws>/worktrees/run-<run_id>/`: the run's worktree. It is removed when the
+//!   run ends (`target/` dirs are GBs); at startup and before each run any
+//!   `run-*` dir that belongs to no active run is pruned too;
 //! * `<ws>/.enzarb/runs/<run_id>/state.json`: current record;
 //! * `.../request.json` (0600): the request without `clone_token` (needed to
 //!   finish a run after a restart);
@@ -19,7 +21,7 @@
 //!   agent stderr lines, ACP updates, permission decisions and the agent result);
 //! * `.../callback.json` (0600): the pending callback, removed once delivered.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -46,6 +48,51 @@ const MAX_STATE_SUMMARY: usize = 256 * 1024;
 const MAX_CALLBACK_BACKOFF: Duration = Duration::from_secs(60);
 /// Stop retrying a callback after this long (the executor polls as a fallback).
 const CALLBACK_GIVE_UP: Duration = Duration::from_secs(24 * 3600);
+/// Before a run, only prune stale worktrees untouched for this long.
+const PRUNE_MIN_AGE: Duration = Duration::from_secs(60);
+const ENOSPC_HINT: &str =
+    " (the workspace volume is full: free space or grow the Project's sandbox storage)";
+
+/// Delete `run-*` directories under `root` that do not belong to an active
+/// run and were last modified at least `min_age` ago. Only real directories
+/// directly inside `root` are touched (never symlinks or other files).
+/// `active` is read after the directory listing, so a run that creates its
+/// worktree concurrently is always seen as active. Returns the count removed.
+fn prune_worktrees(root: &Path, min_age: Duration, active: impl Fn() -> HashSet<String>) -> usize {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    let candidates: Vec<(String, PathBuf)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_str()?.to_string();
+            if !name.starts_with("run-") {
+                return None;
+            }
+            let md = std::fs::symlink_metadata(e.path()).ok()?;
+            if !md.is_dir() {
+                return None;
+            }
+            let age = md.modified().ok().and_then(|m| m.elapsed().ok());
+            (age.unwrap_or_default() >= min_age).then(|| (name, e.path()))
+        })
+        .collect();
+    if candidates.is_empty() {
+        return 0;
+    }
+    let active = active();
+    let mut n = 0;
+    for (name, path) in candidates {
+        if active.contains(&name) {
+            continue;
+        }
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => n += 1,
+            Err(e) => tracing::warn!(dir = %path.display(), error = %e, "cannot prune worktree"),
+        }
+    }
+    n
+}
 
 /// `state.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -238,6 +285,13 @@ impl AgentRunManager {
     /// `failed`, and pending callbacks are delivered. Call once at startup.
     pub fn recover(&self) {
         let inner = &self.inner;
+        // Runs before this start that were interrupted are failed below, and
+        // the rest are over: reclaim their worktrees (concurrent new runs are
+        // protected by the active-run check).
+        {
+            let inner = inner.clone();
+            tokio::spawn(async move { inner.sweep_worktrees(Duration::ZERO).await });
+        }
         let Ok(entries) = std::fs::read_dir(&inner.runs_dir) else {
             return;
         };
@@ -628,6 +682,8 @@ impl Inner {
             cancel: run.cancel.subscribe(),
             deadline: Instant::now() + secs,
         };
+        // Make room first: stale worktrees of finished or crashed runs.
+        self.sweep_worktrees(PRUNE_MIN_AGE).await;
         let finish = match self.execute(&run, &req, &mut ctl).await {
             Ok(f) => f,
             Err(Abort::Stop(Stop::Cancelled)) => Finish {
@@ -640,9 +696,69 @@ impl Inner {
             Err(Abort::Stop(Stop::TimedOut)) => {
                 Finish::failed(format!("timed out after {} s", secs.as_secs()))
             }
-            Err(Abort::Fail(m)) => Finish::failed(m),
+            Err(Abort::Fail(m)) => Finish::failed(with_enospc_hint(m)),
         };
+        // The run is over: its worktree (and target/) is no longer needed.
+        // Logs and transcripts live under .enzarb/runs and are kept.
+        self.remove_worktree(&req).await;
         self.finalize(&run, finish);
+    }
+
+    fn worktrees_dir(&self) -> PathBuf {
+        self.cfg.workspace.join("worktrees")
+    }
+
+    /// Names (`run-<id>`) of the worktrees of runs that are not finished.
+    fn active_worktrees(&self) -> HashSet<String> {
+        self.runs
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|r| !r.state().is_terminal())
+            .map(|r| format!("run-{}", r.id))
+            .collect()
+    }
+
+    /// Prune worktrees of no active run (see [`prune_worktrees`]).
+    async fn sweep_worktrees(self: &Arc<Self>, min_age: Duration) {
+        let this = self.clone();
+        let res = tokio::task::spawn_blocking(move || {
+            prune_worktrees(&this.worktrees_dir(), min_age, || this.active_worktrees())
+        })
+        .await;
+        if let Ok(n) = res
+            && n > 0
+        {
+            tracing::info!(removed = n, "pruned stale run worktrees");
+        }
+    }
+
+    /// Remove the run's worktree and the git metadata that points at it.
+    async fn remove_worktree(&self, req: &RunStart) {
+        let ws = &self.cfg.workspace;
+        let repo = ws.join("repos").join(repo_dir_name(&req.repo_url));
+        let worktree = ws.join("worktrees").join(format!("run-{}", req.run_id));
+        let lock = self.repo_lock(&repo);
+        let _g = lock.lock().await;
+        let _ = tokio::task::spawn_blocking(move || {
+            if std::fs::symlink_metadata(&worktree).is_ok_and(|m| m.is_dir()) {
+                let _ = std::fs::remove_dir_all(&worktree);
+            }
+        })
+        .await;
+        if repo.join(".git").exists() {
+            // drop git's metadata for the removed worktree (through the
+            // reaper, like every other child)
+            let mut spec = CmdSpec::new(&self.cfg.git_bin, &["worktree", "prune"]);
+            spec.cwd = Some(repo);
+            spec.env = self.git_env();
+            let (_keep, cancel) = watch::channel(false);
+            let mut ctl = Ctl {
+                cancel,
+                deadline: Instant::now() + Duration::from_secs(30),
+            };
+            let _ = exec::run(&self.reaper, spec, &mut ctl, None).await;
+        }
     }
 
     /// Persist the terminal state and the pending callback, then deliver it.
@@ -1200,6 +1316,14 @@ impl Inner {
     }
 }
 
+fn with_enospc_hint(m: String) -> String {
+    if m.contains("No space left on device") && !m.contains(ENOSPC_HINT) {
+        format!("{m}{ENOSPC_HINT}")
+    } else {
+        m
+    }
+}
+
 fn line_sink(run: &Run, source: &'static str, secrets: &[String]) -> LineSink {
     let transcript = run.transcript.clone();
     let secrets = secrets.to_vec();
@@ -1232,5 +1356,51 @@ mod deps_tests {
         let out = redact("a ghs_secret123 b", &secrets);
         assert_eq!(out, "a *** b");
         assert!(!redact(&basic_b64("ghs_secret123"), &secrets).contains("ghs_"));
+    }
+}
+
+#[cfg(test)]
+mod prune_tests {
+    use super::*;
+
+    #[test]
+    fn prune_skips_active_young_symlinks_files_and_foreign_dirs() {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path();
+        let old = SystemTime::now() - Duration::from_secs(3600);
+        let mk = |n: &str| {
+            std::fs::create_dir_all(r.join(n).join("target")).unwrap();
+            std::fs::File::open(r.join(n))
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        };
+        for n in ["run-dead", "run-live", "other"] {
+            mk(n);
+        }
+        std::fs::create_dir_all(r.join("run-young")).unwrap();
+        std::fs::write(r.join("run-f.pid"), "1").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), r.join("run-link")).unwrap();
+        let active = || HashSet::from(["run-live".to_string()]);
+        let n = prune_worktrees(r, Duration::from_secs(60), active);
+        assert_eq!(n, 1);
+        assert!(!r.join("run-dead").exists());
+        for keep in ["run-live", "run-young", "other", "run-f.pid", "run-link"] {
+            assert!(r.join(keep).exists(), "{keep}");
+        }
+        assert!(outside.path().exists());
+        assert_eq!(
+            prune_worktrees(&r.join("missing"), Duration::ZERO, active),
+            0
+        );
+    }
+
+    #[test]
+    fn enospc_gets_a_hint_once() {
+        let m = with_enospc_hint("git failed: No space left on device".into());
+        assert!(m.contains("workspace volume is full"));
+        assert_eq!(with_enospc_hint(m.clone()), m);
+        assert_eq!(with_enospc_hint("other".into()), "other");
     }
 }
