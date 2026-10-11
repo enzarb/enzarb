@@ -318,6 +318,7 @@ impl RunManager for AgentRunManager {
         };
         let mut stored = req.clone();
         stored.clone_token = String::new();
+        stored.deps_token = None;
         let setup = std::fs::create_dir_all(&dir)
             .and_then(|()| {
                 write_atomic(
@@ -481,6 +482,34 @@ impl From<Stop> for Abort {
     fn from(s: Stop) -> Self {
         Self::Stop(s)
     }
+}
+
+fn basic_b64(token: &str) -> String {
+    base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}"))
+}
+
+/// Environment for the agent process only so cargo can fetch private git
+/// dependencies from the Project's other repos. The token lives in the process
+/// env and is read by an in-memory credential helper scoped to github.com;
+/// nothing is written to disk. Push keeps using the run's own clone token,
+/// which sandbox-init applies to its own git calls, not the agent's.
+fn deps_env(token: &str) -> Vec<(String, String)> {
+    let kv = |k: &str, v: &str| (k.to_string(), v.to_string());
+    vec![
+        kv("CARGO_NET_GIT_FETCH_WITH_CLI", "true"),
+        kv("ENZARB_DEPS_TOKEN", token),
+        kv("GIT_CONFIG_COUNT", "3"),
+        kv("GIT_CONFIG_KEY_0", "url.https://github.com/.insteadOf"),
+        kv("GIT_CONFIG_VALUE_0", "ssh://git@github.com/"),
+        // An empty helper resets any inherited list; then ours.
+        kv("GIT_CONFIG_KEY_1", "credential.https://github.com.helper"),
+        kv("GIT_CONFIG_VALUE_1", ""),
+        kv("GIT_CONFIG_KEY_2", "credential.https://github.com.helper"),
+        kv(
+            "GIT_CONFIG_VALUE_2",
+            "!f() { echo username=x-access-token; echo \"password=$ENZARB_DEPS_TOKEN\"; }; f",
+        ),
+    ]
 }
 
 fn redact(s: &str, secrets: &[String]) -> String {
@@ -917,6 +946,11 @@ impl Inner {
     async fn execute(&self, run: &Run, req: &RunStart, ctl: &mut Ctl) -> Result<Finish, Abort> {
         let ws = &self.cfg.workspace;
         let mut secrets = vec![req.clone_token.clone(), req.callback_token.clone()];
+        let deps_token = req.deps_token.clone().filter(|t| !t.is_empty());
+        if let Some(t) = &deps_token {
+            secrets.push(t.clone());
+            secrets.push(basic_b64(t));
+        }
         let mut auth_env = Vec::new();
         if !req.clone_token.is_empty() && !req.repo_url.starts_with("file://") {
             let b64 = base64::engine::general_purpose::STANDARD
@@ -1031,6 +1065,9 @@ impl Inner {
             ("ENZARB_RUN_ID".to_string(), req.run_id.clone()),
             ("ENZARB_BRANCH".to_string(), req.branch.clone()),
         ]);
+        if let Some(t) = &deps_token {
+            env.extend(deps_env(t));
+        }
         let spec = AcpSpec {
             bin: self.cfg.acp_bin.clone(),
             cwd: worktree.clone(),
@@ -1172,4 +1209,28 @@ fn line_sink(run: &Run, source: &'static str, secrets: &[String]) -> LineSink {
             json!({"source": source, "line": redact(line, &secrets)}),
         );
     })
+}
+
+#[cfg(test)]
+mod deps_tests {
+    use super::*;
+
+    #[test]
+    fn deps_env_is_scoped_and_redactable() {
+        let env = deps_env("ghs_secret123");
+        let get = |k: &str| env.iter().find(|(a, _)| a == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("CARGO_NET_GIT_FETCH_WITH_CLI"), Some("true"));
+        assert_eq!(get("GIT_CONFIG_COUNT"), Some("3"));
+        assert_eq!(get("GIT_CONFIG_VALUE_0"), Some("ssh://git@github.com/"));
+        // The token is only in its own env var, never in git config values.
+        for (k, v) in &env {
+            if k.starts_with("GIT_CONFIG_") {
+                assert!(!v.contains("ghs_secret123"), "{k}");
+            }
+        }
+        let secrets = vec!["ghs_secret123".to_string(), basic_b64("ghs_secret123")];
+        let out = redact("a ghs_secret123 b", &secrets);
+        assert_eq!(out, "a *** b");
+        assert!(!redact(&basic_b64("ghs_secret123"), &secrets).contains("ghs_"));
+    }
 }
