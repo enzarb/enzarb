@@ -17,7 +17,7 @@ Each component is its own repository. The top-level `enzarb` repo holds docs, AD
 | `enzarb-proto` *(new)* | Mux protocol: frame codec, credit-based flow control, `docs/protocol.md`, shared test vectors | Rust crate + npm package |
 | `enzarb-connectors` *(new)* | The `Connector` trait and one connector per source (GitHub first) as a library, plus the `receiver` binary that accepts webhooks | Rust library + container image |
 | `enzarb-workflows` *(new)* | The in-house Postgres workflow engine: migrations, state machines, reducer, executors, ticker | Rust, container image |
-| `enzarb-updater` *(new)* | Tiny stateless service: on a published `enzarb-helm` GitHub release it patches `spec.version` of the RKE2 `HelmChart` (never downgrades) | Rust, container image |
+| `enzarb-updater` *(new)* | Tiny stateless service: polls the chart registry and patches `spec.version` of the RKE2 `HelmChart` to the highest published version (never downgrades; optional release webhook) | Rust, container image |
 | `enzarb-realtime` *(new)* | Stateless change stream: `LISTEN work_item_changed`, pushes per-project `work_item` / `resync` frames to browsers over an authenticated websocket (`/live/v1/stream`); the UI refetches via remote functions | Rust, container image |
 | `enzarb-kubernetes` | Cluster prerequisites: kind config, Envoy Gateway, agent-sandbox (v0.5.x), RuntimeClasses, pgop (Capsule is installed but unused since ADR-0013) | YAML / kustomize |
 | `enzarb-helm` | Umbrella chart: all services, CRDs, HTTPRoutes, RBAC, pgop `Cluster`/`Role`/`Database`, migration Jobs | Helm |
@@ -44,9 +44,9 @@ flowchart LR
 
 ### Self-update chain
 
-component release → `enzarb-helm` sync bumps the image tags → chart published to `oci://ghcr.io/enzarb/charts/enzarb`, **then** the GitHub release is published → release webhook → `enzarb-updater` verifies the chart exists in the registry and patches `HelmChart.spec.version` → the RKE2 helm-controller upgrades the release.
+component release → `enzarb-helm` sync bumps the image tags → chart published to `oci://ghcr.io/enzarb/charts/enzarb` → `enzarb-updater` polls the registry's tag list (every `ENZARB_UPDATER_POLL_SECS`, default 300), picks the highest plain semver and patches `HelmChart.spec.version` (never downgrades) → the RKE2 helm-controller upgrades the release. Nobody runs a deploy task. The updater needs no inbound traffic and no webhook secret; a GitHub release webhook (`/updater/hook`) remains available but is off by default.
 
-`enzarb-updater` lives in the umbrella chart, so it patches the CR before the upgrade restarts it. Monitoring a failed upgrade (rollback, alerting) is deferred. See the [enzarb-updater README](https://github.com/enzarb/enzarb-updater) for env vars, RBAC and the ordering requirement.
+The `HelmChart` CR is cluster-owned: it is created once by the cluster bootstrap (`mise run oldie:bootstrap-helmchart`, [oldie.md](oldie.md#upgrading)), never by the chart or the updater, and the updater has no `create` permission. The private chart is pulled with `spec.dockerRegistrySecret`; the updater reads tags with a `read:packages` token from a Secret. `enzarb-updater` lives in the umbrella chart, so it patches the CR before the upgrade restarts it. Monitoring a failed upgrade (rollback, alerting) and upgrading CRDs are deferred. See the [enzarb-updater README](https://github.com/enzarb/enzarb-updater) for env vars and RBAC.
 
 ## Runtime view
 

@@ -9,7 +9,7 @@ cluster_reachable || die "cannot reach $KCTX with $KUBECONFIG; run: mise run old
 # operator (it has ENZARB_SANDBOX_NAMESPACE) is fully rolled out and no old pod is left.
 k -n "$NS" get deploy enzarb-sandbox-operator -o json \
   | jq -e '[.spec.template.spec.containers[].env[]?.name] | index("ENZARB_SANDBOX_NAMESPACE")' >/dev/null \
-  || die "the deployed operator predates ADR-0013; deploy the new chart first (mise run oldie:helm-deploy)"
+  || die "the deployed operator predates ADR-0013; wait for enzarb-updater to roll out the new chart (kubectl -n kube-system get helmchart enzarb)"
 k -n "$NS" rollout status deploy/enzarb-sandbox-operator --timeout=5m >/dev/null \
   || die "the operator rollout has not finished; old pods may still be running"
 OLD_FINALIZER="enzarb.dev/cleanup"

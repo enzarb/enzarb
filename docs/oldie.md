@@ -7,7 +7,7 @@
 | Host: kernel settings, LVM volume group, gVisor, RKE2 and its config, registry auth, local kubeconfig, Cloudflare Tunnel (tunnel, ingress, token Secret, DNS) | `enzarb-kubernetes/rke2/` (Ansible role, inventory, pins in `hack/versions.env`) | `mise run oldie:host` | Ansible (`changed=0` on re-run; `-- --check --diff` shows drift) |
 | Cluster prerequisites: cert-manager, Envoy Gateway, Capsule, pgop, agent-sandbox, OpenEBS LVM, issuers, StorageClass | `enzarb-kubernetes/overlays/oldie` | `mise run oldie:cluster` | `kubectl apply --server-side` |
 | Secrets | `.env.oldie` (not committed) | `mise run oldie:secrets` | `kubectl apply` of a generated manifest |
-| enzarb | `enzarb-helm/enzarb` (`values.yaml` pins the release version of every component, `values-oldie.yaml`) | `mise run oldie:helm-deploy` | `helm upgrade --install` |
+| enzarb | `enzarb-helm/enzarb` (`values.yaml` pins every component, `values-oldie.yaml` is embedded in the HelmChart) | **bootstrap once**: `mise run oldie:bootstrap-helmchart`; **upgrades**: `enzarb-updater` | RKE2 helm-controller, driven by the `HelmChart` CR |
 
 ## What oldie looks like
 
@@ -42,7 +42,7 @@
    - Users (and organizations) install the App at `https://github.com/apps/enzarb/installations/new` (replace `enzarb` with the App's slug and set `githubApp.slug` to match if it differs; enzarb shows this link when a user has no accessible installation).
    - Name it `enzarb` if available (the chart's bot login defaults to `enzarb[bot]`; otherwise set `connectors.botLogin`/`workflows.botLogin`).
    - Afterwards: note the App ID, generate and download a private key, and generate a client secret. Fill `.env.oldie`: `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` (path to the .pem), `GITHUB_OAUTH_CLIENT_ID` (the App's *Client ID*), `GITHUB_OAUTH_CLIENT_SECRET`.
-5. **GHCR**: a GitHub user and a token with `read:packages` (`GHCR_USER`, `GHCR_TOKEN`).
+5. **GHCR**: a GitHub user and a token with `read:packages` (`GHCR_USER`, `GHCR_TOKEN`). One credential, three uses, all written by automation from `.env.oldie` (never inlined in values or manifests): the node's `registries.yaml` (image pulls, `oldie:host`), the Secret `kube-system/enzarb-chart-registry` (type `kubernetes.io/dockerconfigjson`, the HelmChart's `spec.dockerRegistrySecret`, so the helm-controller can pull the private OCI chart) and the Secret `enzarb/enzarb-updater-registry` (key `registry-token`, `ENZARB_UPDATER_REGISTRY_TOKEN` for the updater's tag polling). The last two come from `oldie:secrets`.
 6. **Releases**: the component images must be released (see [ci.md](ci.md#releases)); `values.yaml` pins them.
 
 ```sh
@@ -51,15 +51,26 @@ mise install                        # ansible-core, helm, kubectl, ...
 mise run oldie:up
 ```
 
-Or step by step: `oldie:host` (also converges the tunnel), `oldie:cloudflare-token` (once, or to rotate), `oldie:secrets`, `oldie:cluster`, `oldie:helm-deploy`. `oldie:cluster` also runs probes: a pod on RuntimeClass `gvisor` must show gVisor's `dmesg`, a deny-all NetworkPolicy must actually block traffic, and a PVC must mount into a gVisor pod. Set `ENZARB_OLDIE_SKIP_CERT=1` to skip the Gateway/Certificate wait until the Cloudflare token exists.
+Or step by step: `oldie:host` (also converges the tunnel), `oldie:cloudflare-token` (once, or to rotate), `oldie:secrets`, `oldie:cluster`, `oldie:bootstrap-helmchart` (once). `oldie:cluster` also runs probes: a pod on RuntimeClass `gvisor` must show gVisor's `dmesg`, a deny-all NetworkPolicy must actually block traffic, and a PVC must mount into a gVisor pod. Set `ENZARB_OLDIE_SKIP_CERT=1` to skip the Gateway/Certificate wait until the Cloudflare token exists.
 
 The kubeconfig is `~/.kube/enzarb-oldie.yaml` (context `enzarb-oldie`); it never touches your default kubeconfig.
 
 ## Upgrading
 
-- **enzarb**: a component release updates the chart's pinned version automatically ([ci.md](ci.md#releases)). Pull the chart repo and run `mise run oldie:helm-deploy`. To deploy from the published chart instead of the checkout, set `ENZARB_CHART_VERSION` in `.env.oldie`.
+- **enzarb: automatic, nobody runs a deploy task.** Merge, then release (Conventional Commits, [ci.md](ci.md#releases)), then chart publish (`oci://ghcr.io/enzarb/charts/enzarb`), then `enzarb-updater` polls the registry (every 5 minutes), takes the highest plain `X.Y.Z` tag and patches `spec.version` of the RKE2 `HelmChart` `kube-system/enzarb` (never down), then the helm-controller upgrades the release. There is no GitHub webhook and no webhook secret. Verify read-only: `kubectl -n kube-system get helmchart enzarb`, `kubectl -n enzarb logs deploy/enzarb-updater`, `kubectl -n kube-system get jobs | grep helm-install-enzarb`. If the pipeline is stuck, fix the pipeline; do not hand-deploy.
+- **The HelmChart is created once** by `oldie:bootstrap-helmchart` (also the last step of `oldie:up`), which calls `enzarb-kubernetes/hack/oldie-helmchart.sh`: it creates or adopts the object, embeds `values-oldie.yaml` as `valuesContent`, and never lowers `spec.version`. It is not an upgrade path. Pull `enzarb-helm` first (its CRDs come from the checkout and must not be older than the deployed chart). Re-run it (by a human) only when `values-oldie.yaml` changes, since that file is not in the published chart, or to repair a deleted HelmChart. If the HelmChart is missing the updater logs it and does nothing; it never creates one.
+- **Known gap: CRDs.** Neither Helm nor the helm-controller upgrades `crds/` after the first install. A chart release that changes a CRD (the `Project` CRD, pgop) needs `oldie:bootstrap-helmchart` re-run by a human, which server-side applies the chart checkout's CRDs first, until CRDs are shipped some other way.
+- **A failed upgrade** is not rolled back or alerted on yet (deferred, [architecture.md](architecture.md#self-update-chain)). The helm-controller's job log shows why: `kubectl -n kube-system logs job/helm-install-enzarb`.
 - **RKE2, gVisor, add-ons**: change the pin in `enzarb-kubernetes/hack/versions.env` (and the URL for remote bases), then re-run `oldie:host` / `oldie:cluster`.
 - **Drift check**: `mise run oldie:host -- --check --diff`.
+
+### One-time human actions (cutover and bootstrap)
+
+- [ ] `.env.oldie` has `GHCR_USER` and `GHCR_TOKEN` (`read:packages`; the same credential as the image pulls).
+- [ ] After `oldie:host`: `mise run oldie:secrets` (creates `kube-system/enzarb-chart-registry` and `enzarb/enzarb-updater-registry`).
+- [ ] A chart release that pins `enzarb-updater` >= 0.2.0 (polling) is published (`oci://ghcr.io/enzarb/charts/enzarb`).
+- [ ] `mise run oldie:bootstrap-helmchart` once. For an existing install this adopts the Helm release `enzarb` in namespace `enzarb`; the helm-controller then upgrades it to the newest chart and the updater takes over.
+- [ ] Remove the old webhook leftovers, if any: the `/updater/hook` GitHub release webhook on `enzarb/enzarb-helm` (not needed any more) and the generated `enzarb/enzarb-updater` webhook Secret.
 
 ## Webhooks
 
@@ -76,5 +87,6 @@ GitHub delivers directly to `https://enzarb.dev/hooks/github` through the tunnel
 - **Unreachable from outside** (only if you opted out of the tunnel and use port forwarding): from a host outside your network, `curl -vk https://enzarb.dev/`. Check the router forwards 80/443 to 192.168.33.11, and that `kubectl -n envoy-gateway-system get svc enzarb-gateway` has the node address as its external IP (ServiceLB). A Cloudflare 52x error usually means SSL mode is not Full (strict) or the origin is down.
 - **Certificates**: `kubectl -n enzarb-system describe certificate enzarb-tls`, then `kubectl get challenges -A`. Re-run `mise run oldie:cloudflare-token` (it reports whether the stored token is active and can edit the zone) or rotate it with `-- --rotate`. Use the `letsencrypt-staging` ClusterIssuer first if you are iterating (production rate limits apply).
 - **ImagePullBackOff**: `GHCR_TOKEN` was empty when `oldie:host` ran (no `registries.yaml`), the token lacks `read:packages`, or the pinned tag was never released. Re-run `oldie:host` after fixing `.env.oldie`.
+- **Chart not pulled / updater not ready**: `kubectl -n kube-system get helmchart enzarb -o yaml` and the `helm-install-enzarb` job log (a 401/403 means `enzarb-chart-registry` holds a bad token: fix `.env.oldie`, `oldie:secrets`); `kubectl -n enzarb logs deploy/enzarb-updater` (the pod is not Ready while the last poll failed).
 - **Host converge fails on the disk**: while the volume group does not exist, the role refuses a disk that carries any filesystem or partition table (it never wipes one; `lvg` alone would, so the role checks first). Clear the disk deliberately (`wipefs -a`), then re-run.
 - **gVisor probe fails**: `grep runsc /var/lib/rancher/rke2/agent/etc/containerd/config.toml` on oldie; the template is `config-v3.toml.tmpl` in the role.

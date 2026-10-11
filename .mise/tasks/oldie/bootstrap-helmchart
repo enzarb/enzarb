@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+#MISE description="ONE-TIME, by a human: create/adopt the RKE2 HelmChart 'enzarb' on oldie. Not the upgrade path (enzarb-updater is); never lowers spec.version"
+set -euo pipefail
+# shellcheck source=/dev/null
+. "${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}/.mise/lib/oldie.sh"
+need kubectl jq
+load_oldie_env
+cluster_reachable || die "cannot reach $KCTX with $KUBECONFIG; run: mise run oldie:host"
+k -n "$NS" get secret enzarb-github >/dev/null 2>&1 || die "Secret $NS/enzarb-github missing; run: mise run oldie:secrets"
+k -n "$NS" get secret enzarb-updater-registry >/dev/null 2>&1 \
+  || die "Secret $NS/enzarb-updater-registry missing (set GHCR_USER and GHCR_TOKEN in .env.oldie, then: mise run oldie:secrets)"
+# values-oldie.yaml is not part of the published chart (.helmignore); it is embedded in the
+# HelmChart's valuesContent from the checkout. ENZARB_CHART_VERSION is optional: unset leaves a new
+# HelmChart on the newest published chart, and an existing one is never lowered.
+values_file="$ROOT/enzarb-helm/enzarb/values-oldie.yaml"
+[ -f "$values_file" ] || die "$values_file missing; run: mise run repos:init"
+script="$KDIR/hack/oldie-helmchart.sh"
+[ -x "$script" ] || die "$script missing; run: mise run repos:init"
+
+# Helm installs crds/ only on first install and never upgrades them, and the helm-controller does the
+# same. The chart's CRDs are applied here from the checkout, so the enzarb-helm checkout must be at the
+# commit of the deployed chart (git pull; never older); later CRD changes need this task again.
+if [ -d "$ROOT/enzarb-helm/enzarb/crds" ]; then
+  log "CRDs from the chart checkout"
+  kapply -f "$ROOT/enzarb-helm/enzarb/crds/"
+fi
+
+log "HelmChart kube-system/enzarb (create or adopt; the version only moves up)"
+KUBE_CONTEXT="$KCTX" VALUES_FILE="$values_file" CHART_VERSION="${ENZARB_CHART_VERSION:-}" "$script"
+
+cat <<MSG
+
+From here enzarb-updater owns upgrades: merge -> release -> chart publish -> updater polls the
+registry -> patches HelmChart spec.version -> helm-controller upgrades. Watch (read-only):
+  kubectl -n kube-system get helmchart enzarb
+  kubectl -n $NS logs deploy/enzarb-updater
+  kubectl -n kube-system get jobs | grep helm-install-enzarb
+
+Checklist once the upgrade finished
+  [ ] pods Running/Completed: kubectl -n $NS get pods
+  [ ] $PUBLIC_HOST is a proxied CNAME to the Cloudflare Tunnel and both pods in namespace cloudflared are Ready
+  [ ] https://$PUBLIC_HOST/ loads with a Let's Encrypt certificate
+  [ ] GitHub App webhook URL is https://$PUBLIC_HOST/hooks/github (Recent deliveries show 2xx)
+Next (first install): docs/dev.md ("Create the first Project").
+MSG
