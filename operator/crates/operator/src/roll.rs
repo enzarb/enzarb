@@ -9,7 +9,7 @@ use crate::conditions::RollPending;
 use crate::desired::{self, Defaults};
 use enzarb_crds::upstream::sandbox::Sandbox;
 use enzarb_crds::{COND_SANDBOX_IMAGE_ROLL, Project};
-use k8s_openapi::api::core::v1::Pod;
+use k8s_openapi::api::core::v1::{Container, EnvVar, Pod};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
 use k8s_openapi::jiff::Timestamp;
 use kube::api::{Api, DeleteParams, Preconditions};
@@ -93,32 +93,65 @@ pub fn deadline(since: Timestamp, timeout: Duration) -> Timestamp {
     Timestamp::from_second(secs.min(Timestamp::MAX.as_second())).unwrap_or(Timestamp::MAX)
 }
 
-/// Image of the main container of a pod.
-pub fn pod_image(pod: &Pod) -> Option<&str> {
-    pod.spec
-        .as_ref()?
-        .containers
-        .iter()
-        .find(|c| c.name == MAIN_CONTAINER)?
-        .image
-        .as_deref()
+/// What a running pod must match to be current: the main container image plus the env the
+/// operator sets conditionally (`ENZARB_MAX_RUNS`). Other env entries are not compared, since
+/// the live pod may carry entries injected by others. Rendered as `image` when the env var is
+/// absent and `image [ENZARB_MAX_RUNS=n]` otherwise.
+pub fn revision(image: &str, env: &[EnvVar]) -> String {
+    match env.iter().find(|e| e.name == desired::ENV_MAX_RUNS) {
+        Some(e) => format!(
+            "{image} [{}={}]",
+            desired::ENV_MAX_RUNS,
+            e.value.as_deref().unwrap_or_default()
+        ),
+        None => image.to_string(),
+    }
 }
 
-/// Image of the main container in the Sandbox pod template.
-pub fn template_image(sb: &Sandbox) -> Option<String> {
-    sb.spec
+fn container_revision(c: &Container) -> Option<String> {
+    Some(revision(
+        c.image.as_deref()?,
+        c.env.as_deref().unwrap_or_default(),
+    ))
+}
+
+/// Revision of the main container of a pod.
+pub fn pod_revision(pod: &Pod) -> Option<String> {
+    container_revision(
+        pod.spec
+            .as_ref()?
+            .containers
+            .iter()
+            .find(|c| c.name == MAIN_CONTAINER)?,
+    )
+}
+
+/// Revision of the main container in the Sandbox pod template.
+pub fn template_revision(sb: &Sandbox) -> Option<String> {
+    let c = sb
+        .spec
         .pod_template
         .spec
         .containers
         .iter()
-        .find(|c| c.name == MAIN_CONTAINER)
-        .and_then(|c| c.image.clone())
+        .find(|c| c.name == MAIN_CONTAINER)?;
+    let env: Vec<EnvVar> = c
+        .env
+        .iter()
+        .flatten()
+        .map(|e| EnvVar {
+            name: e.name.clone(),
+            value: e.value.clone(),
+            ..Default::default()
+        })
+        .collect();
+    Some(revision(c.image.as_deref()?, &env))
 }
 
-/// The message of the roll condition. It starts with the image transition, which identifies
-/// the mismatch: a changed pod image starts a new drain period.
+/// The message of the roll condition. It starts with the revision transition, which identifies
+/// the mismatch: a changed pod image or env starts a new drain period.
 pub fn message_prefix(old: &str, new: &str) -> String {
-    format!("image {old} -> {new}; ")
+    format!("revision {old} -> {new}; ")
 }
 
 pub fn message(old: &str, new: &str, deadline: Timestamp) -> String {
@@ -160,11 +193,14 @@ pub async fn roll_step(
     if pod.metadata.deletion_timestamp.is_some() {
         return Ok(None);
     }
-    let want = desired::image(p, d);
-    let template = template_image(sb);
-    let Some(old) = pod_image(&pod) else {
+    let Some(want) = template_revision(&desired::sandbox(p, d)) else {
         return Ok(None);
     };
+    let template = template_revision(sb);
+    let Some(old) = pod_revision(&pod) else {
+        return Ok(None);
+    };
+    let old = old.as_str();
     let since = pending_since(existing, old, &want);
     let input = Input {
         desired: &want,
@@ -304,6 +340,97 @@ mod tests {
         assert_eq!(decide(&i), Decision::Roll { forced: true });
         // A different pod image is a new mismatch.
         assert_eq!(pending_since(&[cond], "img:0", "img:2"), None);
+    }
+
+    fn env(name: &str, value: &str) -> EnvVar {
+        EnvVar {
+            name: name.into(),
+            value: Some(value.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn revision_covers_max_runs_only() {
+        let base = vec![env("ENZARB_PROJECT", "a"), env("DOCKER_HOST", "unix:///x")];
+        let with = |n: &str| [base.clone(), vec![env("ENZARB_MAX_RUNS", n)]].concat();
+        assert_eq!(revision("img:1", &base), "img:1");
+        assert_eq!(revision("img:1", &with("3")), "img:1 [ENZARB_MAX_RUNS=3]");
+        assert_ne!(revision("img:1", &with("3")), revision("img:1", &with("4")));
+        assert_ne!(revision("img:1", &base), revision("img:1", &with("3")));
+        // Unrelated entries injected by others do not matter.
+        let mut other = base.clone();
+        other.push(env("INJECTED", "1"));
+        assert_eq!(revision("img:1", &other), revision("img:1", &base));
+    }
+
+    #[test]
+    fn env_only_change_rolls() {
+        let env_of = |n: Option<&str>| {
+            n.map(|n| vec![env("ENZARB_MAX_RUNS", n)])
+                .unwrap_or_default()
+        };
+        let cases = [(None, Some("3")), (Some("3"), None), (Some("3"), Some("4"))];
+        for (old, new) in cases {
+            let (old, new) = (
+                revision("img:2", &env_of(old)),
+                revision("img:2", &env_of(new)),
+            );
+            let mk = |activity, since, now| Input {
+                desired: &new,
+                template: Some(&new),
+                pod: Some(&old),
+                activity,
+                since,
+                now: ts(now),
+                timeout: T,
+            };
+            assert_eq!(
+                decide(&mk(Activity::Active(0), None, 1000)),
+                Decision::Roll { forced: false }
+            );
+            assert_eq!(
+                decide(&mk(Activity::Active(1), None, 1000)),
+                Decision::Defer { since: ts(1000) }
+            );
+            assert_eq!(
+                decide(&mk(Activity::Unknown, Some(ts(1000)), 1600)),
+                Decision::Roll { forced: true }
+            );
+        }
+        let same = revision("img:2", &env_of(Some("3")));
+        let i = Input {
+            desired: &same,
+            template: Some(&same),
+            pod: Some(&same),
+            activity: Activity::Active(0),
+            since: None,
+            now: ts(1000),
+            timeout: T,
+        };
+        assert_eq!(decide(&i), Decision::Noop);
+    }
+
+    #[test]
+    fn pod_and_template_revisions_match_for_the_same_env() {
+        let mut p = crate::desired::tests::project("a", "o");
+        p.spec.max_runs = Some(5);
+        let sb = desired::sandbox(&p, &crate::desired::tests::defaults());
+        let pod = Pod {
+            spec: Some(k8s_openapi::api::core::v1::PodSpec {
+                containers: serde_json::from_value(
+                    serde_json::to_value(&sb.spec.pod_template.spec.containers).unwrap(),
+                )
+                .unwrap(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(pod_revision(&pod), template_revision(&sb));
+        assert!(pod_revision(&pod).unwrap().ends_with("[ENZARB_MAX_RUNS=5]"));
+        p.spec.max_runs = None;
+        let sb2 = desired::sandbox(&p, &crate::desired::tests::defaults());
+        assert_ne!(pod_revision(&pod), template_revision(&sb2));
     }
 
     #[test]

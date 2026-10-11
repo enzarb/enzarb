@@ -60,6 +60,11 @@ pub struct ProjectSpec {
     pub triggers: Triggers,
     #[serde(default)]
     pub sandbox: SandboxSpec,
+    /// Concurrent agent runs in the sandbox (1-16). Unset = the sandbox image default; the
+    /// operator then injects nothing. Changing it recreates the sandbox pod.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = 16))]
+    pub max_runs: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]

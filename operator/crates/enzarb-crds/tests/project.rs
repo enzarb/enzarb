@@ -156,6 +156,29 @@ fn crdgen_binary_output_matches() {
 }
 
 #[test]
+fn max_runs_is_an_optional_bounded_integer() {
+    let crd: serde_json::Value = serde_yaml::from_str(&project_crd_yaml()).unwrap();
+    let spec = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"];
+    let m = &spec["properties"]["maxRuns"];
+    assert_eq!(m["type"], "integer");
+    assert_eq!(m["minimum"].as_f64(), Some(1.0));
+    assert_eq!(m["maximum"].as_f64(), Some(16.0));
+    let required = spec["required"].as_array().unwrap();
+    assert!(!required.iter().any(|r| r == "maxRuns"));
+}
+
+#[test]
+fn max_runs_absent_deserializes_to_none_and_is_not_serialized() {
+    let p = example();
+    assert_eq!(p.spec.max_runs, None);
+    let mut j = serde_json::to_value(&p.spec).unwrap();
+    assert!(j.get("maxRuns").is_none());
+    j["maxRuns"] = 4.into();
+    let s: enzarb_crds::ProjectSpec = serde_json::from_value(j).unwrap();
+    assert_eq!(s.max_runs, Some(4));
+}
+
+#[test]
 fn crd_enforces_name_limit_with_create_only_cel() {
     let crd: serde_json::Value = serde_yaml::from_str(&project_crd_yaml()).unwrap();
     let rules =

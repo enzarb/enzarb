@@ -30,6 +30,15 @@ spec:
               displayName:
                 default: ''
                 type: string
+              maxRuns:
+                description: |-
+                  Concurrent agent runs in the sandbox (1-16). Unset = the sandbox image default; the
+                  operator then injects nothing. Changing it recreates the sandbox pod.
+                format: uint32
+                maximum: 16.0
+                minimum: 1.0
+                nullable: true
+                type: integer
               owner:
                 description: Owner id (GitHub login of the creator).
                 type: string

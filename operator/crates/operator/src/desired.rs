@@ -395,6 +395,9 @@ pub fn network_policy(p: &Project, d: &Defaults) -> NetworkPolicy {
     .expect("networkpolicy JSON matches the NetworkPolicy type")
 }
 
+/// Env var read by sandbox-init for the concurrent agent run limit; set only with `spec.maxRuns`.
+pub const ENV_MAX_RUNS: &str = "ENZARB_MAX_RUNS";
+
 /// agent-sandbox `Sandbox` `sb-<name>`: one container running sandbox-init on 7070.
 pub fn sandbox(p: &Project, d: &Defaults) -> Sandbox {
     let sb = &p.spec.sandbox;
@@ -455,6 +458,12 @@ pub fn sandbox(p: &Project, d: &Defaults) -> Sandbox {
             .as_array_mut()
             .expect("env is an array")
             .push(json!({"name": "DOCKER_HOST", "value": docker::DOCKER_HOST}));
+        if let Some(n) = p.spec.max_runs {
+            main["env"]
+                .as_array_mut()
+                .expect("env is an array")
+                .push(json!({"name": ENV_MAX_RUNS, "value": n.to_string()}));
+        }
         main["volumeMounts"]
             .as_array_mut()
             .expect("volumeMounts is an array")
@@ -519,6 +528,7 @@ pub(crate) mod tests {
                 run_mode: Default::default(),
                 triggers: Default::default(),
                 sandbox: SandboxSpec::default(),
+                max_runs: None,
             },
         );
         p.metadata.uid = Some("uid-1".into());
@@ -664,6 +674,31 @@ pub(crate) mod tests {
         p.spec.sandbox.storage = String::new();
         let c = v(&pvc(&p, &defaults()));
         assert_eq!(c["spec"]["resources"]["requests"]["storage"], "10Gi");
+    }
+
+    fn main_env(p: &Project) -> Vec<serde_json::Value> {
+        let s = v(&sandbox(p, &defaults()));
+        containers(&s)[0]["env"].as_array().unwrap().clone()
+    }
+
+    #[test]
+    fn max_runs_unset_injects_nothing() {
+        let env = main_env(&project("enzarb", "ruckc"));
+        assert!(env.iter().all(|e| e["name"] != "ENZARB_MAX_RUNS"));
+        assert_eq!(env[0], json!({"name": "ENZARB_PROJECT", "value": "enzarb"}));
+        assert!(env.iter().any(|e| e["name"] == "DOCKER_HOST"));
+    }
+
+    #[test]
+    fn max_runs_set_is_a_string_env_var() {
+        for n in [1u32, 3, 16] {
+            let mut p = project("enzarb", "ruckc");
+            p.spec.max_runs = Some(n);
+            let env = main_env(&p);
+            assert!(env.contains(&json!({"name": "ENZARB_MAX_RUNS", "value": n.to_string()})));
+            assert_eq!(env[0]["name"], "ENZARB_PROJECT");
+            assert!(env.iter().any(|e| e["name"] == "DOCKER_HOST"));
+        }
     }
 
     #[test]
