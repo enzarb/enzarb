@@ -1,5 +1,8 @@
 use std::{
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -11,9 +14,10 @@ use enzarb_realtime::{
 use futures_util::StreamExt;
 use jsonwebtoken::{EncodingKey, Header, encode};
 use serde_json::json;
+use tokio::sync::{Semaphore, watch};
 use tokio_tungstenite::tungstenite::{Message, protocol::frame::coding::CloseCode};
 
-const SECRET: &[u8] = b"s3cret";
+const SECRET: &[u8] = b"test-secret-0123456789-abcdefghijklmnop";
 
 fn now() -> u64 {
     SystemTime::now()
@@ -27,18 +31,133 @@ fn token(projects: &[&str], ttl: u64) -> String {
     encode(&Header::default(), &c, &EncodingKey::from_secret(SECRET)).unwrap()
 }
 
-async fn serve(buffer: usize, ping: Duration) -> (String, Arc<Hub>) {
+struct Server {
+    addr: String,
+    hub: Arc<Hub>,
+    limit: Arc<Semaphore>,
+    rejected: Arc<AtomicU64>,
+    shutdown: watch::Sender<bool>,
+}
+
+async fn serve_with(buffer: usize, ping: Duration, cap: usize) -> Server {
     let hub = Arc::new(Hub::new(buffer));
+    let limit = Arc::new(Semaphore::new(cap));
+    let rejected = Arc::new(AtomicU64::new(0));
+    let (shutdown, rx) = watch::channel(false);
     let app = ws::router(AppState {
         hub: hub.clone(),
         secret: Arc::new(SECRET.to_vec()),
         ping_interval: ping,
         max_token_ttl: Duration::from_secs(300),
+        limit: limit.clone(),
+        rejected: rejected.clone(),
+        shutdown: rx,
     });
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = l.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
-    (format!("127.0.0.1:{}", addr.port()), hub)
+    Server {
+        addr: format!("127.0.0.1:{}", addr.port()),
+        hub,
+        limit,
+        rejected,
+        shutdown,
+    }
+}
+
+async fn serve(buffer: usize, ping: Duration) -> (String, Arc<Hub>) {
+    let s = serve_with(buffer, ping, 100).await;
+    // Leak the sender so the shutdown channel stays open for the test's lifetime.
+    std::mem::forget(s.shutdown);
+    (s.addr, s.hub)
+}
+
+fn url(addr: &str) -> String {
+    format!(
+        "ws://{addr}/live/v1/stream?token={}",
+        token(&["enzarb"], 60)
+    )
+}
+
+async fn expect_close(
+    ws: &mut (impl StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin),
+    code: u16,
+) {
+    loop {
+        let m = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("timeout")
+            .expect("stream ended without close")
+            .expect("err");
+        match m {
+            Message::Close(Some(cf)) => {
+                assert_eq!(cf.code, CloseCode::from(code));
+                return;
+            }
+            Message::Close(None) => panic!("close without code"),
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test]
+async fn connection_cap_rejects_then_frees_slot() {
+    let s = serve_with(16, Duration::from_secs(15), 2).await;
+    let (mut a, _) = tokio_tungstenite::connect_async(url(&s.addr))
+        .await
+        .unwrap();
+    let (_b, _) = tokio_tungstenite::connect_async(url(&s.addr))
+        .await
+        .unwrap();
+    match tokio_tungstenite::connect_async(url(&s.addr)).await {
+        Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => {
+            assert_eq!(resp.status(), 503);
+            assert_eq!(resp.headers().get("retry-after").unwrap(), "1");
+        }
+        other => panic!("expected 503, got {other:?}"),
+    }
+    assert_eq!(s.rejected.load(Ordering::Relaxed), 1);
+    a.close(None).await.unwrap();
+    drop(a);
+    for _ in 0..100 {
+        if s.limit.available_permits() > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tokio_tungstenite::connect_async(url(&s.addr))
+        .await
+        .expect("slot should be free");
+}
+
+#[tokio::test]
+async fn shutdown_sends_going_away() {
+    let s = serve_with(16, Duration::from_secs(15), 10).await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(url(&s.addr))
+        .await
+        .unwrap();
+    s.shutdown.send(true).unwrap();
+    expect_close(&mut ws, ws::CLOSE_GOING_AWAY).await;
+}
+
+#[tokio::test]
+async fn silent_client_dropped_at_one_and_a_half_intervals() {
+    let ping = Duration::from_millis(400);
+    let s = serve_with(16, ping, 1).await;
+    // Never read, so tungstenite never answers the server's pings.
+    let (_ws, _) = tokio_tungstenite::connect_async(url(&s.addr))
+        .await
+        .unwrap();
+    assert_eq!(s.limit.available_permits(), 0);
+    let start = std::time::Instant::now();
+    while s.limit.available_permits() == 0 {
+        assert!(start.elapsed() < Duration::from_secs(5), "never dropped");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let took = start.elapsed();
+    // Deadline is 1.5 intervals (600 ms); allow up to one tick of slack, and not before.
+    assert!(took >= ping * 3 / 2 - Duration::from_millis(50), "{took:?}");
+    assert!(took <= ping * 3 / 2 + ping, "{took:?}");
 }
 
 async fn text(

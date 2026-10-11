@@ -1,7 +1,7 @@
 //! Postgres implementations of the listener traits.
 //!
 //! Required grants for the runtime role (`enzarb_realtime`): `CONNECT` on the database,
-//! `USAGE` on schema `workflows_api` and `SELECT` on `workflows_api.work_item_v` only.
+//! `USAGE` on schema `workflows_api` and `SELECT` on `workflows_api.work_item_project_v (id, project)` only.
 //! `LISTEN` needs no grant.
 
 use anyhow::Result;
@@ -76,11 +76,11 @@ impl PgLookup {
 #[async_trait]
 impl ProjectLookup for PgLookup {
     async fn project(&self, id: i64) -> Result<Option<String>> {
-        Ok(
-            sqlx::query_scalar("SELECT project FROM workflows_api.work_item_v WHERE id = $1")
-                .bind(id)
-                .fetch_optional(&self.pool)
-                .await?,
+        Ok(sqlx::query_scalar(
+            "SELECT project FROM workflows_api.work_item_project_v WHERE id = $1",
         )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?)
     }
 }
