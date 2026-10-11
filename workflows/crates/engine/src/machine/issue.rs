@@ -18,6 +18,7 @@ use serde_json::Value;
 
 use super::fx::{AgentSpec, Fx};
 use super::prompt::{AgentOutput, Decision, PromptContext};
+use super::title::pr_title;
 use super::{
     Ctx, Effect, EngineEvent, EventPayload, JobKind, Transition, UiActionKind, WorkflowKind,
     WorkflowState,
@@ -528,7 +529,11 @@ fn job_succeeded(
                 .unwrap_or_else(|| branch(d.number));
             fx.open_change_request(&ChangeRequestSpec {
                 repo: ctx.work_item.repo.clone(),
-                title: d.title.clone(),
+                title: pr_title(
+                    out.title.as_deref(),
+                    &d.title,
+                    &ctx.work_item.repo.full_name(),
+                ),
                 body: format!("{}\n\nCloses #{}", out.body.trim_end(), d.number),
                 head_ref,
                 base_ref: ctx.default_branch.clone(),

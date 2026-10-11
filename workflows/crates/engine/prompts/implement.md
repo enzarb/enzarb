@@ -35,7 +35,7 @@ Discussion so far (oldest first):
 3. Implement the plan. If the plan turns out to be wrong in a detail, do the sensible thing, keep the change small, and mention the deviation in your final body. If it is wrong in a way that makes the task impossible or unsafe, stop and use the `blocked` decision.
 4. Add or update tests for the behaviour you change.
 5. Before finishing, run the repository's own checks. Find the repository's own checks in its `CLAUDE.md`, `README.md`, `mise.toml` and CI workflow (`.github/workflows`). Typical examples: `cargo fmt`, `cargo clippy --all-targets`, `cargo test`; `npm run check`, `npm run lint`, `npm test`; `helm lint`; `kubectl kustomize`. If a tool is missing, try `mise install` first. Run each command on its own as a simple single command: no `&&` or `;` chains, no `$` expansion, no heredocs, no `sed`, because the sandbox policy rejects a whole compound command. Use the file edit tools for edits. Fix every failure. If something fails for reasons unrelated to your change, say so in the body. Report in `body` (under Testing) which checks ran and their results, and which could not be run and why.
-6. Commit your work to `{branch}` in small, logical commits with clear messages. Leave the working tree clean.
+6. Commit your work to `{branch}` in small, logical commits with clear messages. Commit subjects must be Conventional Commits with a scope, `type(scope): description`, e.g. `fix(operator): ...` or `feat(ui): ...`. The scope names the area changed; mark a breaking change with `!`. Leave the working tree clean.
 
 # Rules
 
@@ -49,7 +49,7 @@ Discussion so far (oldest first):
 Finish with a short plain-text note of what you did, then end your message with exactly one fenced `json` block, and nothing after it:
 
 ```json
-{ "decision": "done", "body": "## Summary\n...\n\n## Testing\n..." }
+{ "decision": "done", "title": "fix(operator): short description", "body": "## Summary\n...\n\n## Testing\n..." }
 ```
 
-`decision` is `done` (the work is committed on `{branch}`) or `blocked` (you could not complete it; `body` explains what stopped you and what you tried). For `done`, `body` is the **pull request description** in markdown: a summary of the change, notable decisions and deviations from the plan, and how it was tested. For `blocked` nothing is pushed or opened. `body` is a single JSON string (escape newlines as `\n` and quotes as `\"`). Your run is considered failed if this block is missing, is not valid JSON, or is not the last thing in your message.
+`decision` is `done` (the work is committed on `{branch}`) or `blocked` (you could not complete it; `body` explains what stopped you and what you tried). For `done`, `title` is the pull request title, a Conventional Commit with a scope in the same form as the commit subjects (`type(scope): description`, at most 100 characters, one line). The pull request is squash-merged with this title, so it decides the release version: `feat` is a minor release, `fix`/`perf`/`revert` a patch, and `!` a breaking change. An invalid or missing title is replaced by one derived from the issue. For `done`, `body` is the **pull request description** in markdown: a summary of the change, notable decisions and deviations from the plan, and how it was tested. For `blocked` nothing is pushed or opened. `body` is a single JSON string (escape newlines as `\n` and quotes as `\"`). Your run is considered failed if this block is missing, is not valid JSON, or is not the last thing in your message.

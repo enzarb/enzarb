@@ -684,7 +684,7 @@ fn issue_happy_path_to_change_request_handoff() {
     let spec = &job_of(&t, JobKind::OpenChangeRequest).2["spec"];
     assert_eq!(spec["head_ref"], "enzarb/issue-42");
     assert_eq!(spec["base_ref"], "main");
-    assert_eq!(spec["title"], "Add dark mode");
+    assert_eq!(spec["title"], "feat(ui): add dark mode");
     assert!(
         spec["body"]
             .as_str()
@@ -1216,6 +1216,37 @@ fn issue_implement_uses_the_runs_branch_when_reported() {
         job_of(&t, JobKind::OpenChangeRequest).2["spec"]["head_ref"],
         "enzarb/issue-42"
     );
+}
+
+#[test]
+fn issue_implement_pr_title_is_conventional() {
+    let title_for = |agent: Option<&str>| {
+        let block = match agent {
+            Some(t) => json!({ "decision": "done", "body": "x", "title": t }),
+            None => json!({ "decision": "done", "body": "x" }),
+        };
+        let out = json!({
+            "summary": format!("Done.\n\n```json\n{block}\n```\n"),
+            "branch": "enzarb/issue-42",
+            "head_sha": "sha2",
+            "pushed": true,
+        });
+        let t = run(
+            Permission::None,
+            &issue_in(IssuePhase::Implementing),
+            &ok("x", JobKind::AgentImplement, out),
+        );
+        job_of(&t, JobKind::OpenChangeRequest).2["spec"]["title"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(
+        title_for(Some("fix(ui): handle empty")),
+        "fix(ui): handle empty"
+    );
+    assert_eq!(title_for(Some("Add dark mode")), "feat(ui): add dark mode");
+    assert_eq!(title_for(None), "feat(ui): add dark mode");
 }
 
 #[test]

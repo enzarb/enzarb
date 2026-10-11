@@ -158,6 +158,9 @@ pub fn render_prompt(kind: JobKind, ctx: &PromptContext) -> String {
 pub struct AgentOutput {
     pub decision: String,
     pub body: String,
+    /// Conventional Commit PR title; only read for `done` on implement jobs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// Checks the agent ran (review only). Absent means unverified.
     #[serde(default)]
     pub checks: Vec<CheckResult>,
@@ -451,6 +454,17 @@ mod tests {
         let out = AgentOutput::parse(text).unwrap();
         assert_eq!(out.decision, "ready");
         assert_eq!(out.body, "ok");
+    }
+
+    #[test]
+    fn title_is_optional() {
+        let with = "```json\n{\"decision\":\"done\",\"body\":\"b\",\"title\":\"fix(a): b\"}\n```";
+        assert_eq!(
+            AgentOutput::parse(with).unwrap().title.as_deref(),
+            Some("fix(a): b")
+        );
+        let without = "```json\n{\"decision\":\"done\",\"body\":\"b\"}\n```";
+        assert_eq!(AgentOutput::parse(without).unwrap().title, None);
     }
 
     #[test]

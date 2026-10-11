@@ -31,6 +31,7 @@ mod fx;
 mod issue;
 mod mention;
 pub mod prompt;
+mod title;
 
 #[cfg(test)]
 mod tests;
