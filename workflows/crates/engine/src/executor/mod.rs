@@ -74,7 +74,7 @@ pub use callback::{callback_token, router as callback_router};
 pub use connectors::ConnectorRegistry;
 pub use sandbox::{
     KubeSandboxResolver, SandboxError, SandboxResolver, SandboxTarget, StaticSandboxResolver,
-    secret_location,
+    project_repos, secret_location,
 };
 
 #[derive(Debug, Clone)]

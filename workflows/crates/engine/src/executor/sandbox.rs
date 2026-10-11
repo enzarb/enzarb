@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 use async_trait::async_trait;
+use enzarb_connector::RepoKey;
 use enzarb_crds::Project;
 use k8s_openapi::api::core::v1::Secret;
 use kube::{Api, Client};
@@ -38,6 +39,34 @@ pub enum SandboxError {
 pub trait SandboxResolver: Send + Sync {
     /// `project` is `Project.metadata.name` (`jobs.project_id`).
     async fn resolve(&self, project: &str) -> Result<SandboxTarget, SandboxError>;
+
+    /// The repositories of the Project (`Project.spec.repositories`, never job input), for the
+    /// read-only dependency credential. The default is empty: no extra repos.
+    async fn project_repos(&self, _project: &str) -> Result<Vec<RepoKey>, SandboxError> {
+        Ok(Vec::new())
+    }
+}
+
+/// `RepoKey`s of a Project's GitHub repositories, from `spec.repositories`. Pure, for tests.
+/// Entries that are not a canonical `https://github.com/<owner>/<repo>` URL, or whose connector
+/// is not `github`, are skipped. Sorted and deduplicated.
+pub fn project_repos(p: &Project) -> Vec<RepoKey> {
+    let mut out: Vec<RepoKey> = p
+        .spec
+        .repositories
+        .iter()
+        .filter(|r| r.connector == "github")
+        .filter_map(|r| {
+            let rest = r.url.strip_prefix("https://github.com/")?;
+            let rest = rest.trim_end_matches('/');
+            let rest = rest.strip_suffix(".git").unwrap_or(rest);
+            let (owner, repo) = rest.split_once('/')?;
+            format!("github:{owner}/{repo}").parse().ok()
+        })
+        .collect();
+    out.sort_by_key(|k| k.full_name());
+    out.dedup();
+    out
 }
 
 /// Reads `Project.status.sandbox` and the auth Secret from the cluster.
@@ -108,12 +137,23 @@ impl SandboxResolver for KubeSandboxResolver {
             token: token.trim().to_string(),
         })
     }
+
+    async fn project_repos(&self, project: &str) -> Result<Vec<RepoKey>, SandboxError> {
+        let projects: Api<Project> = Api::all(self.client.clone());
+        let p = projects
+            .get_opt(project)
+            .await
+            .map_err(|e| SandboxError::Kube(e.to_string()))?
+            .ok_or_else(|| SandboxError::NotReady(format!("project {project} not found")))?;
+        Ok(project_repos(&p))
+    }
 }
 
 /// Fixed map for tests and local runs.
 #[derive(Default)]
 pub struct StaticSandboxResolver {
     map: RwLock<HashMap<String, SandboxTarget>>,
+    repos: RwLock<HashMap<String, Vec<RepoKey>>>,
 }
 
 impl StaticSandboxResolver {
@@ -126,6 +166,13 @@ impl StaticSandboxResolver {
             .write()
             .expect("resolver lock")
             .insert(project.into(), target);
+    }
+
+    pub fn set_repos(&self, project: &str, repos: Vec<RepoKey>) {
+        self.repos
+            .write()
+            .expect("resolver lock")
+            .insert(project.into(), repos);
     }
 
     pub fn remove(&self, project: &str) {
@@ -143,6 +190,16 @@ impl SandboxResolver for StaticSandboxResolver {
             .cloned()
             .ok_or_else(|| SandboxError::NotReady(format!("no sandbox for {project}")))
     }
+
+    async fn project_repos(&self, project: &str) -> Result<Vec<RepoKey>, SandboxError> {
+        Ok(self
+            .repos
+            .read()
+            .expect("resolver lock")
+            .get(project)
+            .cloned()
+            .unwrap_or_default())
+    }
 }
 
 #[cfg(test)]
@@ -156,6 +213,27 @@ mod tests {
         let mut p = Project::new("enzarb", spec);
         p.status = status;
         p
+    }
+
+    #[test]
+    fn project_repos_from_spec() {
+        let spec: ProjectSpec = serde_json::from_value(serde_json::json!({
+            "owner": "ruckc",
+            "repositories": [
+                {"url": "https://github.com/enzarb/enzarb-ui", "connector": "github", "defaultBranch": "main"},
+                {"url": "https://github.com/enzarb/enzarb-proto.git", "connector": "github", "defaultBranch": "main"},
+                {"url": "https://github.com/enzarb/enzarb-ui/", "connector": "github", "defaultBranch": "main"},
+                {"url": "https://gitlab.com/a/b", "connector": "github", "defaultBranch": "main"},
+                {"url": "https://github.com/a/b", "connector": "gitlab", "defaultBranch": "main"},
+                {"url": "https://github.com/a/b/c", "connector": "github", "defaultBranch": "main"}
+            ]
+        }))
+        .unwrap();
+        let got: Vec<String> = project_repos(&Project::new("p", spec))
+            .iter()
+            .map(|k| k.full_name())
+            .collect();
+        assert_eq!(got, ["enzarb/enzarb-proto", "enzarb/enzarb-ui"]);
     }
 
     #[test]

@@ -4,6 +4,8 @@
 //! 1. `Connector::fetch_thread`, set `context.thread`, re-render the prompt (the machine
 //!    cannot fetch the thread);
 //! 2. `Connector::mint_clone_credential` (`read_write` when `push`, else `read`);
+//!    For implement/address/review jobs also `Connector::mint_read_credential` over the
+//!    Project's repositories (`RunStart.deps_token`, for private git dependencies);
 //! 3. resolve the sandbox, connect as `executor`, `run_start` with `run_id = job-<id>`
 //!    (idempotent: a retry after a crash gets the existing run);
 //! 4. once `run_accepted`: release the lease and set `jobs.deadline`
@@ -11,7 +13,7 @@
 
 use std::time::Duration;
 
-use enzarb_connector::{CredScope, RepoKey, Thread};
+use enzarb_connector::{Connector, CredScope, RepoKey, Thread};
 use enzarb_proto::session::{Client, Session};
 use enzarb_proto::{ClientKind, RunStart};
 
@@ -69,6 +71,40 @@ impl Executor {
         Ok(session)
     }
 
+    /// Read-only token over the Project's repositories (always including the run's own), so
+    /// cargo can fetch private git dependencies. Never stored; only sent in `RunStart`.
+    /// `Ok(None)` when the connector has none or the connector refuses the list
+    /// (`Error::Invalid`: logged, the run proceeds without it); other errors are transient.
+    async fn mint_deps_token(
+        &self,
+        job: &Claimed,
+        project: &str,
+        own: &RepoKey,
+        connector: &std::sync::Arc<dyn Connector>,
+    ) -> Result<Option<String>, JobError> {
+        let mut repos = self
+            .sandboxes
+            .project_repos(project)
+            .await
+            .map_err(|e| JobError::transient(e.to_string()))?;
+        repos.retain(|r| r.connector == own.connector);
+        if !repos.contains(own) {
+            repos.push(own.clone());
+        }
+        repos.sort_by_key(|k| k.full_name());
+        repos.dedup();
+        let purpose = format!("job:{}:{}:deps", job.id, job.attempt);
+        match connector.mint_read_credential(&repos, &purpose).await {
+            Ok(cred) => Ok(cred.map(|c| c.token)),
+            Err(enzarb_connector::Error::Invalid(m)) => {
+                tracing::warn!(job_id = job.id, error = %m,
+                    "read credential refused; running without deps token");
+                Ok(None)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
     pub(crate) async fn start_agent(&self, job: &Claimed, kind: JobKind) -> Result<Done, JobError> {
         let mut input: AgentJobInput = serde_json::from_value(job.input.clone())
             .map_err(|e| JobError::permanent(format!("unreadable agent input: {e}")))?;
@@ -102,6 +138,16 @@ impl Executor {
             )
             .await?;
 
+        let deps_token = if matches!(
+            kind,
+            JobKind::AgentImplement | JobKind::AgentAddressComments | JobKind::AgentReview
+        ) {
+            self.mint_deps_token(job, &project, &input.repo, connector)
+                .await?
+        } else {
+            None
+        };
+
         let rid = run_id(job.id, job.limit_wait_count);
         let run = RunStart {
             run_id: rid.clone(),
@@ -110,6 +156,7 @@ impl Executor {
             branch: input.branch.clone(),
             push: input.push,
             clone_token: cred.token,
+            deps_token,
             prompt: input.prompt.clone(),
             timeout_secs: input.timeout_secs,
             callback_url: format!("{}/v1/runs/{rid}/finished", self.cfg.callback_base_url),

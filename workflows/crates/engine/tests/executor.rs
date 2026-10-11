@@ -863,6 +863,234 @@ async fn agent_job_starts_a_run_and_releases_its_lease() {
     assert!(run.clone_token.len() > 3);
 }
 
+fn proj_repos() -> Vec<RepoKey> {
+    vec![
+        "github:enzarb/enzarb-proto".parse().unwrap(),
+        "github:enzarb/enzarb-connectors".parse().unwrap(),
+    ]
+}
+
+async fn kind_job(h: &H, kind: &str, n: u64, push: bool) -> i64 {
+    let pool = h.pool();
+    h.fake.add_thread(key(n), thread_with("hi"));
+    let wi = new_item(pool, n, "enzarb").await;
+    new_job(
+        pool,
+        wi,
+        "enzarb",
+        kind,
+        0,
+        &format!("k:{kind}{n}"),
+        agent_input(n, &format!("enzarb/b-{n}"), push),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn deps_token_for_implement_address_review_only() {
+    let h = H::new(db!()).await;
+    h.resolver.set_repos("enzarb", proj_repos());
+    let kinds = [
+        ("agent_implement", true, true),
+        ("agent_address_comments", true, true),
+        ("agent_review", false, true),
+        ("agent_triage", false, false),
+        ("agent_plan", false, false),
+    ];
+    let mut ids = vec![];
+    for (i, (k, push, _)) in kinds.iter().enumerate() {
+        ids.push(kind_job(&h, k, i as u64 + 1, *push).await);
+    }
+    // session cap is per project; drain until all are started
+    for _ in 0..kinds.len() {
+        h.exec.drain().await;
+        sqlx::query("UPDATE workflows.jobs SET status='succeeded' WHERE status='running'")
+            .execute(h.pool())
+            .await
+            .unwrap();
+    }
+    for (id, (k, _, want)) in ids.iter().zip(kinds) {
+        let run = h.sandbox.run(&format!("job-{id}")).expect(k);
+        assert_eq!(run.deps_token.is_some(), want, "{k}");
+        // never in the stored job input
+        let j = job(h.pool(), *id).await;
+        let input = j.input.to_string();
+        if let Some(t) = &run.deps_token {
+            assert!(!input.contains(t));
+            assert!(!format!("{run:?}").contains(t));
+        }
+        assert!(!format!("{run:?}").contains(&run.clone_token));
+    }
+    let reads: Vec<_> = h
+        .fake
+        .applied_calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            Call::MintReadCredential { repos, .. } => Some(repos),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reads.len(), 3);
+    for r in reads {
+        let names: Vec<_> = r.iter().map(|k| k.full_name()).collect();
+        // the Project's repos plus the run's own, sorted
+        assert_eq!(
+            names,
+            [
+                "enzarb/enzarb-connectors",
+                "enzarb/enzarb-proto",
+                "enzarb/enzarb-ui"
+            ]
+        );
+    }
+    // the clone path is unchanged: still a ReadWrite credential for the pushing runs
+    let rw = h
+        .fake
+        .applied_calls()
+        .iter()
+        .filter(|c| {
+            matches!(
+                c,
+                Call::MintCloneCredential {
+                    scope: CredScope::ReadWrite,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(rw, 2);
+}
+
+/// Delegates to a `FakeConnector` but fails `mint_read_credential`.
+struct ReadFails {
+    inner: Arc<FakeConnector>,
+    err: enzarb_connector::Error,
+}
+
+#[async_trait::async_trait]
+impl enzarb_connector::Connector for ReadFails {
+    async fn fetch_thread(&self, i: &WorkItemKey) -> enzarb_connector::Result<Thread> {
+        self.inner.fetch_thread(i).await
+    }
+    async fn post_comment(
+        &self,
+        i: &WorkItemKey,
+        b: &str,
+        k: &str,
+    ) -> enzarb_connector::Result<enzarb_connector::CommentRef> {
+        self.inner.post_comment(i, b, k).await
+    }
+    async fn open_change_request(
+        &self,
+        r: ChangeRequestSpec,
+        k: &str,
+    ) -> enzarb_connector::Result<ItemRef> {
+        self.inner.open_change_request(r, k).await
+    }
+    async fn set_status(
+        &self,
+        t: &enzarb_connector::CommitRef,
+        s: enzarb_connector::Status,
+        k: &str,
+    ) -> enzarb_connector::Result<()> {
+        self.inner.set_status(t, s, k).await
+    }
+    async fn set_progress(
+        &self,
+        t: &ProgressTarget,
+        p: Progress,
+        k: &str,
+    ) -> enzarb_connector::Result<()> {
+        self.inner.set_progress(t, p, k).await
+    }
+    async fn merge_change_request(
+        &self,
+        i: &WorkItemKey,
+        n: u64,
+        s: &str,
+        t: &str,
+        b: Option<&str>,
+        k: &str,
+    ) -> enzarb_connector::Result<enzarb_connector::MergeOutcome> {
+        self.inner.merge_change_request(i, n, s, t, b, k).await
+    }
+    async fn get_merge_readiness(
+        &self,
+        i: &WorkItemKey,
+        n: u64,
+    ) -> enzarb_connector::Result<enzarb_connector::MergeReadiness> {
+        self.inner.get_merge_readiness(i, n).await
+    }
+    async fn check_permission(
+        &self,
+        r: &RepoKey,
+        a: &Actor,
+    ) -> enzarb_connector::Result<Permission> {
+        self.inner.check_permission(r, a).await
+    }
+    async fn mint_clone_credential(
+        &self,
+        r: &RepoKey,
+        s: CredScope,
+        k: &str,
+    ) -> enzarb_connector::Result<enzarb_connector::ShortLivedCred> {
+        self.inner.mint_clone_credential(r, s, k).await
+    }
+    async fn mint_read_credential(
+        &self,
+        _: &[RepoKey],
+        _: &str,
+    ) -> enzarb_connector::Result<Option<enzarb_connector::ReadCred>> {
+        Err(match &self.err {
+            enzarb_connector::Error::Invalid(m) => enzarb_connector::Error::Invalid(m.clone()),
+            _ => enzarb_connector::Error::Transient("502".into()),
+        })
+    }
+}
+
+async fn read_fails_harness(db: TestDb, err: enzarb_connector::Error) -> (H, Arc<Executor>) {
+    let h = H::new(db).await;
+    let conn = Arc::new(ReadFails {
+        inner: h.fake.clone(),
+        err,
+    });
+    let exec = Arc::new(Executor::new(
+        h.db.pool.clone(),
+        ConnectorRegistry::new().with("github", conn),
+        h.resolver.clone(),
+        h.exec.config().clone(),
+    ));
+    (h, exec)
+}
+
+#[tokio::test]
+async fn read_credential_transient_error_retries_the_job() {
+    let (h, exec) =
+        read_fails_harness(db!(), enzarb_connector::Error::Transient("502".into())).await;
+    let id = kind_job(&h, "agent_implement", 1, true).await;
+    exec.drain().await;
+    let j = job(h.pool(), id).await;
+    // retried (queued with a backoff, or failed after exhausting attempts), never started
+    assert!(j.attempt >= 1);
+    assert_ne!(j.status, "running");
+    assert_eq!(h.sandbox.starts(), 0);
+}
+
+#[tokio::test]
+async fn read_credential_invalid_runs_without_deps_token() {
+    let (h, exec) = read_fails_harness(
+        db!(),
+        enzarb_connector::Error::Invalid("foreign repo".into()),
+    )
+    .await;
+    let id = kind_job(&h, "agent_implement", 1, true).await;
+    assert_eq!(exec.drain().await, 1);
+    assert_eq!(job(h.pool(), id).await.status, "running");
+    let run = h.sandbox.run(&format!("job-{id}")).expect("started");
+    assert!(run.deps_token.is_none());
+    assert!(run.clone_token.len() > 3);
+}
+
 #[tokio::test]
 async fn agent_runs_are_capped_per_project() {
     let db = db!();
