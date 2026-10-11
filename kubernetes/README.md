@@ -31,7 +31,28 @@ hack/runsc.toml             runsc flags, shared by the kind script and the insta
 installer/                  Dockerfile + install.sh of ghcr.io/enzarb/enzarb-gvisor-installer
 hack/pin-installer-digest.sh  pins the installer image in base/gvisor-installer by digest
 hack/validate.sh           what CI runs (kubectl kustomize + kubeconform)
+hack/oldie-helmchart.sh    applies the enzarb HelmChart CR on oldie (see below); tested by hack/test-oldie-helmchart.sh
 ```
+
+### enzarb on oldie: HelmChart CR
+
+`hack/oldie-helmchart.sh` applies a `helm.cattle.io/v1` `HelmChart` `enzarb` in `kube-system`
+(`oci://ghcr.io/enzarb/charts/enzarb`, `targetNamespace` = the release namespace, `releaseName` explicit so
+RKE2's helm-controller adopts the existing Helm release). It is applied with `kubectl apply`, never
+dropped into `/var/lib/rancher/rke2/server/manifests`: the controller re-applies that directory on
+restart and would revert `spec.version` patches made in-cluster by `enzarb-updater`.
+
+- `spec.version` belongs to the updater after the first create. First create pins the currently
+  deployed chart version (from `helm get metadata`, never "latest"). Later runs write the live value
+  back unchanged, so re-running never lowers it (and the field stays in the last-applied
+  annotation, so client-side apply does not delete it). `FORCE_VERSION` bumps it only if strictly greater.
+- `valuesContent` is the non-secret values file only; the script refuses literal values for keys
+  matching `password|token|secret|key` (reference Secrets by name, e.g. `existingSecret`).
+- Rollback/recovery: if a first adoption run leaves the release in `pending-upgrade`, run
+  `helm rollback enzarb <last-good-revision> -n <ns>` and re-run; `kubectl -n kube-system logs job/helm-install-enzarb` shows the failure.
+- The updater needs `patch` on `helmcharts.helm.cattle.io` in `kube-system` (granted by the enzarb-helm chart).
+- The RKE2 pin (v1.35.9) supports OCI charts and `valuesSecrets`, and `rke2-helm-controller` is not disabled.
+- The mise task that calls the script and `docs/oldie.md` live in the root repo and need a separate change there.
 
 ## Pinned versions
 
