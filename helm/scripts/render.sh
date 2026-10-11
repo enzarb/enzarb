@@ -10,5 +10,5 @@ case "${1:?scenario}" in
 esac
 # generated secret values are random; mask them so snapshots are stable
 helm template enzarb "$here/enzarb" --namespace enzarb "${extra[@]}" \
-  | sed -E 's/[ \t]+$//; s/^(  (session-jwt-secret|callback-secret)): .*/\1: <generated>/' \
+  | sed -E 's/[ \t]+$//; s/^(  (session-jwt-secret|callback-secret|updater-webhook-secret)): .*/\1: <generated>/' \
   | cat -s

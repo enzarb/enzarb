@@ -8,6 +8,9 @@ secrets:
   github:
     existingSecret: enzarb-github
 
+updater:
+  enabled: true
+
 postgres:
   storage:
     size: 50Gi

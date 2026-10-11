@@ -43,6 +43,15 @@ imagePullSecrets:
 {{- define "enzarb.callbackKey" -}}{{ if .Values.secrets.executorCallback.existingSecret }}{{ .Values.secrets.executorCallback.key }}{{ else }}callback-secret{{ end }}{{- end }}
 {{/* Key names inside the github Secret (the chart-created one uses the configured key names too). */}}
 {{- define "enzarb.githubKey" -}}{{ index .ctx.Values.secrets.github.keys .key }}{{- end }}
+{{/* enzarb-updater Secret: an existing one (keys from secrets.updater.keys) or the chart-created one. */}}
+{{- define "enzarb.updaterSecret" -}}{{ .Values.secrets.updater.existingSecret | default "enzarb-updater" }}{{- end }}
+{{- define "enzarb.updaterKey" -}}
+{{- if .ctx.Values.secrets.updater.existingSecret }}{{ index .ctx.Values.secrets.updater.keys .key }}{{ else if eq .key "webhookSecret" }}updater-webhook-secret{{ else }}updater-registry-token{{ end }}
+{{- end }}
+{{/* Non-empty when ENZARB_UPDATER_REGISTRY_TOKEN is wired. */}}
+{{- define "enzarb.updaterHasRegistryToken" -}}
+{{- if or .Values.secrets.updater.registryToken (and .Values.secrets.updater.existingSecret .Values.secrets.updater.hasRegistryToken) }}true{{ end }}
+{{- end }}
 
 {{/* secretKeyRef env var. Usage: include "enzarb.secretEnv" (dict "name" "X" "secret" "s" "key" "k") */}}
 {{- define "enzarb.secretEnv" -}}

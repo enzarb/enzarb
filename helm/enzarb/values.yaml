@@ -84,6 +84,18 @@ secrets:
     webhookSecret: ""
     oauthClientId: ""
     oauthClientSecret: ""
+  # enzarb-updater (only used when updater.enabled). Either point at an existing Secret
+  # (key names below; set hasRegistryToken when it also holds the registry token) or let the
+  # chart create `enzarb-updater`: the webhook secret is generated (and kept across upgrades
+  # via lookup) unless webhookSecret is given; the registry token is wired only when given.
+  updater:
+    existingSecret: ""
+    hasRegistryToken: false
+    keys:
+      webhookSecret: webhook-secret
+      registryToken: registry-token
+    webhookSecret: ""
+    registryToken: ""
 
 ui:
   replicaCount: 1
@@ -121,6 +133,20 @@ connectors:
     pullPolicy: ""
   botHandle: enzarb
   botLogin: enzarb[bot]
+  resources: {}
+  extraEnv: []
+
+# enzarb-updater patches the cluster-owned RKE2 HelmChart `enzarb` when enzarb-helm publishes a
+# release. Opt-in; the chart never renders the HelmChart CR. Served at /updater/hook on the
+# Gateway (needs route.enabled), so the webhook HMAC is its only protection.
+updater:
+  enabled: false
+  replicaCount: 1
+  port: 8080
+  image:
+    repository: ghcr.io/enzarb/enzarb-updater
+    tag: 0.1.0
+    pullPolicy: ""
   resources: {}
   extraEnv: []
 

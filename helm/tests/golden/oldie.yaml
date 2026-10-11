@@ -158,6 +158,19 @@ metadata:
 automountServiceAccountToken: false
 
 ---
+# Source: enzarb/templates/updater.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: enzarb-updater
+  labels:
+    app.kubernetes.io/name: enzarb-updater
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+
+---
 # Source: enzarb/templates/secrets.yaml
 apiVersion: v1
 kind: Secret
@@ -173,6 +186,22 @@ type: Opaque
 data:
   session-jwt-secret: <generated>
   callback-secret: <generated>
+
+---
+# Source: enzarb/templates/updater.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: enzarb-updater
+  labels:
+    app.kubernetes.io/name: enzarb-updater
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+type: Opaque
+data:
+  updater-webhook-secret: <generated>
 
 ---
 # Source: enzarb/templates/rbac.yaml
@@ -503,6 +532,25 @@ rules:
     verbs: [get, list, watch]
 
 ---
+# Source: enzarb/templates/updater.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: enzarb-updater
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: enzarb-updater
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+rules:
+  - apiGroups: [helm.cattle.io]
+    resources: [helmcharts]
+    resourceNames: [enzarb]
+    verbs: [get, patch]
+
+---
 # Source: enzarb/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -573,6 +621,23 @@ subjects:
   - { kind: ServiceAccount, name: enzarb-migrate, namespace: enzarb }
 
 ---
+# Source: enzarb/templates/updater.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: enzarb-updater
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: enzarb-updater
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: enzarb-updater }
+subjects:
+  - { kind: ServiceAccount, name: enzarb-updater, namespace: enzarb }
+
+---
 # Source: enzarb/templates/connectors.yaml
 apiVersion: v1
 kind: Service
@@ -628,6 +693,25 @@ spec:
     app.kubernetes.io/instance: enzarb
   ports:
     - { name: http, port: 3000, targetPort: http }
+
+---
+# Source: enzarb/templates/updater.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: enzarb-updater
+  labels:
+    app.kubernetes.io/name: enzarb-updater
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+spec:
+  selector:
+    app.kubernetes.io/name: enzarb-updater
+    app.kubernetes.io/instance: enzarb
+  ports:
+    - { name: http, port: 8080, targetPort: http }
 
 ---
 # Source: enzarb/templates/workflows.yaml
@@ -950,6 +1034,59 @@ spec:
             httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 10
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":1000,"seccompProfile":{"type":"RuntimeDefault"}}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+
+---
+# Source: enzarb/templates/updater.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: enzarb-updater
+  labels:
+    app.kubernetes.io/name: enzarb-updater
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: enzarb-updater
+      app.kubernetes.io/instance: enzarb
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: enzarb-updater
+        app.kubernetes.io/instance: enzarb
+        app.kubernetes.io/part-of: enzarb
+        app.kubernetes.io/managed-by: Helm
+        helm.sh/chart: enzarb-0.0.0
+    spec:
+      serviceAccountName: enzarb-updater
+
+      containers:
+        - name: updater
+          image: ghcr.io/enzarb/enzarb-updater:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - name: ENZARB_UPDATER_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-updater
+                  key: updater-webhook-secret
+            - { name: ENZARB_UPDATER_LISTEN, value: "0.0.0.0:8080" }
+            - { name: RUST_LOG, value: "info" }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+          securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":10001,"seccompProfile":{"type":"RuntimeDefault"}}
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
       volumes:
@@ -1432,3 +1569,30 @@ spec:
         - path: { type: PathPrefix, value: /hooks/ }
       backendRefs:
         - { name: enzarb-connectors, port: 8080 }
+
+---
+# Source: enzarb/templates/httproute.yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: enzarb-updater
+  labels:
+    app.kubernetes.io/name: enzarb-updater
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+spec:
+  parentRefs:
+    - name: enzarb
+      namespace: enzarb-system
+  hostnames: ["enzarb.dev"]
+  rules:
+    - matches:
+        - path: { type: PathPrefix, value: /updater/hook }
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path: { type: ReplacePrefixMatch, replacePrefixMatch: /hook }
+      backendRefs:
+        - { name: enzarb-updater, port: 8080 }

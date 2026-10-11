@@ -8,6 +8,7 @@ components:
   - { repo: enzarb-ui,                image: enzarb-ui,                  path: .ui.image.tag }
   - { repo: enzarb-workflows,         image: enzarb-workflows,           path: .workflows.image.tag }
   - { repo: enzarb-connectors,        image: enzarb-connectors-receiver, path: .connectors.image.tag }
+  - { repo: enzarb-updater,           image: enzarb-updater,             path: .updater.image.tag }
   - { repo: enzarb-sandbox-proxy,     image: enzarb-sandbox-proxy,       path: .sandboxProxy.image.tag }
   - { repo: enzarb-sandbox-operator,  image: enzarb-sandbox-operator,    path: .operator.image.tag, crd: true }
   - { repo: enzarb-sandbox-container, image: enzarb-sandbox,             path: .operator.sandboxImage, prefix: "ghcr.io/enzarb/enzarb-sandbox:" }
