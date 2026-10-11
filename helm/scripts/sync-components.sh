@@ -13,6 +13,8 @@
 # Needs: gh (GH_TOKEN with read access to the component repos and their Actions runs), yq (mikefarah
 # v4). SKIP_IMAGE_CHECK=1 skips the tag-build check.
 set -euo pipefail
+# NOTE: when the operator pin bumps, also diff enzarb-sandbox-operator deploy/rbac.yaml against the
+# operator Role/ClusterRole in enzarb/templates/rbac.yaml (v0.3.0 added pods get,delete; see #24).
 here="$(cd "$(dirname "$0")/.." && pwd)"
 values="$here/enzarb/values.yaml"
 msg_file="" dry=0

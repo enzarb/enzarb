@@ -475,6 +475,9 @@ rules:
   - apiGroups: [agents.x-k8s.io]
     resources: [sandboxes]
     verbs: [get, list, watch, create, patch]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, delete]
 
 ---
 # Source: enzarb/templates/rbac.yaml
