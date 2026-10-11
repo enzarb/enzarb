@@ -5,6 +5,7 @@
   register: rke2_runsc
   changed_when: false
   failed_when: false
+  check_mode: false
 
 - name: Check the containerd shim
   ansible.builtin.stat:
