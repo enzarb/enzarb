@@ -1,11 +1,12 @@
 # CANONICAL COPY: docs/ci/release.yml in the enzarb workspace repo. Identical in every releasing repo
-# (enzarb-ui, -workflows, -connectors, -sandbox-proxy, -sandbox-operator, -sandbox-container, -realtime, -updater, -helm);
+# (enzarb-ui, -workflows, -connectors, -sandbox-proxy, -sandbox-operator, -sandbox-container, -helm);
 # change it there and run `mise run ci:sync-release`.
 #
 # Automatic releases. After `ci` succeeds on main, the next version is computed from the
 # Conventional Commits since the last tag (feat -> minor, fix/perf/revert -> patch, `!` or a
 # BREAKING CHANGE footer -> major; while 0.x, breaking and feat both bump minor). chore/docs/ci/
-# test/refactor-only history releases nothing. The tag + GitHub Release are created with a token so
+# test/refactor-only history releases nothing (enzarb-helm releases are created as drafts and published
+# by its publish workflow after the OCI chart push). The tag + GitHub Release are created with a token so
 # the tag push triggers `ci` again (image build and push to GHCR). When that tag build succeeds, the
 # helm chart repo is told to sync (see enzarb-helm .github/workflows/sync-components.yml).
 #
@@ -72,7 +73,15 @@ jobs:
           v=$(next_version "$SHA")
           if [ -z "$v" ]; then echo "nothing releasable since the last tag"; exit 0; fi
           ensure_release() { # the sync reads GitHub Releases, so a tag without one must still get it
-            gh release view "v$v" >/dev/null 2>&1 || gh release create "v$v" --verify-tag --title "v$v" --generate-notes
+            # enzarb-helm releases start as drafts: its publish workflow publishes them once the OCI chart is pushed
+            local draft=()
+            if [ "${{ github.event.repository.name }}" = "enzarb-helm" ]; then draft=(--draft); fi
+            # `gh release view` does not see drafts, so match tag_name in the full list (drafts included)
+            release_exists() {
+              [ -n "$(gh api --paginate "repos/${{ github.repository }}/releases" --jq ".[] | select(.tag_name == \"v$v\") | .id")" ]
+            }
+            release_exists || gh release create "v$v" --verify-tag --title "v$v" --generate-notes "${draft[@]}" \
+              || release_exists   # publish.yml created it between the check and the create
           }
           if git rev-parse -q --verify "refs/tags/v$v" >/dev/null; then
             echo "v$v already exists"; ensure_release; exit 0
