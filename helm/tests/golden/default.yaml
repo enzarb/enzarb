@@ -795,7 +795,7 @@ spec:
 
       containers:
         - name: operator
-          image: ghcr.io/enzarb/enzarb-sandbox-operator:0.3.0
+          image: ghcr.io/enzarb/enzarb-sandbox-operator:0.4.0
           imagePullPolicy: IfNotPresent
           ports:
             - { name: health, containerPort: 8080 }
@@ -852,7 +852,7 @@ spec:
 
       containers:
         - name: proxy
-          image: ghcr.io/enzarb/enzarb-sandbox-proxy:0.2.0
+          image: ghcr.io/enzarb/enzarb-sandbox-proxy:0.3.0
           imagePullPolicy: IfNotPresent
           ports:
             - { name: http, containerPort: 8080 }

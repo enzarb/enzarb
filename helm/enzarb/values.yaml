@@ -185,7 +185,7 @@ sandboxProxy:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-sandbox-proxy
-    tag: 0.2.0
+    tag: 0.3.0
     pullPolicy: ""
   idleTimeoutSecs: 900
   resources: {}
@@ -224,7 +224,7 @@ operator:
   replicaCount: 2
   image:
     repository: ghcr.io/enzarb/enzarb-sandbox-operator
-    tag: 0.3.0
+    tag: 0.4.0
     pullPolicy: ""
   # Default sandbox image for Projects (ENZARB_SANDBOX_IMAGE).
   sandboxImage: ghcr.io/enzarb/enzarb-sandbox:0.3.0
