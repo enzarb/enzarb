@@ -918,7 +918,7 @@ spec:
 
       containers:
         - name: proxy
-          image: ghcr.io/enzarb/enzarb-sandbox-proxy:0.3.0
+          image: ghcr.io/enzarb/enzarb-sandbox-proxy:0.4.0
           imagePullPolicy: IfNotPresent
           ports:
             - { name: http, containerPort: 8080 }
