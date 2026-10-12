@@ -35,6 +35,9 @@ grep -q 'targetNamespace: enzarb' <<< "$out" || fail "targetNamespace"
 ! grep -q 'releaseName' <<< "$out" || fail "releaseName is not a field of this HelmChart CRD"
 grep -q '    existingSecret: enzarb-db' <<< "$out" || fail "valuesContent"
 
+grep -q '  failurePolicy: abort' <<< "$out" || fail "failurePolicy must be abort (never uninstall on failure)"
+grep -q '  forceConflicts: true' <<< "$out" || fail "forceConflicts must be true (CRD field ownership)"
+
 if RELEASE_NAME=other run "$tmp/ok.yaml" > /dev/null 2>&1; then fail "release name must be enzarb"; fi
 
 # Re-run after the updater bumped the live version: the live value is kept.

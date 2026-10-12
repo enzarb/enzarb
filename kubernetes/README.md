@@ -50,6 +50,9 @@ restart and would revert `spec.version` patches made in-cluster by `enzarb-updat
   matching `password|token|secret|key` (reference Secrets by name, e.g. `existingSecret`).
 - Rollback/recovery: if a first adoption run leaves the release in `pending-upgrade`, run
   `helm rollback enzarb <last-good-revision> -n <ns>` and re-run; `kubectl -n kube-system logs job/helm-install-enzarb` shows the failure.
+- `failurePolicy: abort`: a failed upgrade leaves the release failed for a human instead of the
+  controller default `reinstall`, which uninstalls the release (pgop Cluster/Database/Role CRs and generated
+  Secrets with it). `forceConflicts: true` lets helm take CRD fields that `oldie:bootstrap-helmchart` applied.
 - The updater needs `patch` on `helmcharts.helm.cattle.io` in `kube-system` (granted by the enzarb-helm chart).
 - The RKE2 pin (v1.35.9) supports OCI charts and `valuesSecrets`, and `rke2-helm-controller` is not disabled.
 - The mise task that calls the script and `docs/oldie.md` live in the root repo and need a separate change there.

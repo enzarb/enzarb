@@ -103,6 +103,12 @@ render() {
   echo "  targetNamespace: $RELEASE_NAMESPACE"
   echo "  createNamespace: true"
   echo "  timeout: 20m"
+  # Never uninstall on a failed upgrade: the controller default (reinstall) runs `helm uninstall`,
+  # which deletes the pgop Cluster/Database/Role CRs and the generated Secrets.
+  echo "  failurePolicy: abort"
+  # The Project CRD is also server-side applied by oldie:bootstrap-helmchart (field manager kubectl);
+  # helm must be able to take .spec.versions over on a (re)install instead of failing on the conflict.
+  echo "  forceConflicts: true"
   if [ -n "${REGISTRY_SECRET:-}" ]; then
     echo "  dockerRegistrySecret:"
     echo "    name: $REGISTRY_SECRET"
