@@ -176,6 +176,8 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: enzarb-generated
+  annotations:
+    helm.sh/resource-policy: keep
   labels:
     app.kubernetes.io/name: enzarb
     app.kubernetes.io/instance: enzarb
@@ -331,6 +333,8 @@ apiVersion: pgop.ruck.io/v1alpha1
 kind: Role
 metadata:
   name: workflows-owner
+  annotations:
+    helm.sh/resource-policy: keep
   labels:
     app.kubernetes.io/name: enzarb-postgres
     app.kubernetes.io/instance: enzarb
@@ -349,6 +353,8 @@ apiVersion: pgop.ruck.io/v1alpha1
 kind: Role
 metadata:
   name: workflows
+  annotations:
+    helm.sh/resource-policy: keep
   labels:
     app.kubernetes.io/name: enzarb-postgres
     app.kubernetes.io/instance: enzarb
@@ -367,6 +373,8 @@ apiVersion: pgop.ruck.io/v1alpha1
 kind: Role
 metadata:
   name: connectors-owner
+  annotations:
+    helm.sh/resource-policy: keep
   labels:
     app.kubernetes.io/name: enzarb-postgres
     app.kubernetes.io/instance: enzarb
@@ -385,6 +393,8 @@ apiVersion: pgop.ruck.io/v1alpha1
 kind: Role
 metadata:
   name: connectors
+  annotations:
+    helm.sh/resource-policy: keep
   labels:
     app.kubernetes.io/name: enzarb-postgres
     app.kubernetes.io/instance: enzarb
@@ -403,6 +413,8 @@ apiVersion: pgop.ruck.io/v1alpha1
 kind: Role
 metadata:
   name: ui-owner
+  annotations:
+    helm.sh/resource-policy: keep
   labels:
     app.kubernetes.io/name: enzarb-postgres
     app.kubernetes.io/instance: enzarb
@@ -421,6 +433,8 @@ apiVersion: pgop.ruck.io/v1alpha1
 kind: Role
 metadata:
   name: ui
+  annotations:
+    helm.sh/resource-policy: keep
   labels:
     app.kubernetes.io/name: enzarb-postgres
     app.kubernetes.io/instance: enzarb
@@ -1427,6 +1441,8 @@ apiVersion: pgop.ruck.io/v1alpha1
 kind: Cluster
 metadata:
   name: enzarb-pg
+  annotations:
+    helm.sh/resource-policy: keep
   labels:
     app.kubernetes.io/name: enzarb-postgres
     app.kubernetes.io/instance: enzarb
@@ -1446,6 +1462,8 @@ apiVersion: pgop.ruck.io/v1alpha1
 kind: Database
 metadata:
   name: enzarb
+  annotations:
+    helm.sh/resource-policy: keep
   labels:
     app.kubernetes.io/name: enzarb-postgres
     app.kubernetes.io/instance: enzarb

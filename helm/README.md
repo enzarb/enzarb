@@ -44,6 +44,18 @@ Jobs are plain resources, not Helm hooks (hooks would deadlock `helm install --w
 ## Database credentials
 pgop creates `<cluster>-<role>-credentials` per Role (keys `username password host port sslmode`, `uri` pointing at `postgres`) and a per-database Secret only for the Database owner. The chart passes `PGHOST PGPORT PGUSER PGPASSWORD PGSSLMODE` from the Role Secret plus `PGDATABASE` from values, and sets `DATABASE_URL=postgres:///enzarb` (no credentials, so passwords with URL-special characters are safe). sqlx (workflows, connectors) falls back to the `PG*` variables. postgres.js (ui) honors all of them except `PGSSLMODE`, so the ui gets `DATABASE_URL=postgres:///enzarb?sslmode=$(PGSSLMODE)`. ui probes are HTTP (`/healthz`, `/readyz`); set `ui.probes.http=false` for TCP.
 
+## Uninstall keeps data definitions
+The pgop `Cluster`, `Database` and `Role` CRs and the generated Secret (`enzarb.generatedSecret`: session JWT, executor callback secret, realtime JWT) carry `helm.sh/resource-policy: keep`, so `helm uninstall` (including the helm-controller's reinstall failure policy) cannot delete the database definition or the secrets. The PVC is created by pgop, not Helm, and is untouched. Nothing else is kept, so normal upgrades are unaffected.
+
+Consequence: a later `helm install` finds these objects already present and fails with "exists and cannot be imported". Either adopt them first or let Helm take ownership:
+```sh
+helm install enzarb <chart> -n enzarb --take-ownership   # Helm 3.17+/4
+# or, per kept object (Cluster, Database, Roles, Secret):
+kubectl -n enzarb annotate <kind>/<name> meta.helm.sh/release-name=enzarb meta.helm.sh/release-namespace=enzarb --overwrite
+kubectl -n enzarb label <kind>/<name> app.kubernetes.io/managed-by=Helm --overwrite
+```
+The generated Secret is read back with `lookup`, so adopted values are preserved. Under the RKE2 helm-controller use the annotation route (unverified: whether the controller exposes `--take-ownership`). To really delete the data, remove the kept objects by hand.
+
 ## Tests
 `mise install`, then `mise run test`: `helm lint`, golden snapshots (`scripts/golden.sh`, `--update` to rewrite `tests/golden/`), kubeconform (CRD schemas from the datree catalog), and `scripts/check-pgop.py` (pgop resources against the vendored CRDs).
 
