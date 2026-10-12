@@ -4,6 +4,7 @@
 pub mod db;
 pub mod error;
 pub mod executor;
+pub mod grants;
 pub mod index;
 pub mod machine;
 pub mod permission;

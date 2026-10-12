@@ -14,8 +14,12 @@ enzarb-workflows run --roles reducer,executor,ticker      # or ENZARB_ROLES
 - `migrate` applies the embedded migrations (run it as the schema owner role) and exits.
   `--require-roles` fails, applying nothing, unless `enzarb_connectors`, `enzarb_ui` and
   `enzarb_workflows` exist. Without it, grants to missing roles are skipped with a NOTICE.
-  Use `--require-roles` in production. `enzarb_realtime` is optional: its grants (`SELECT` on
-  `workflows_api.work_item_project_v` only) are applied when the role exists, and it is not in `--require-roles`.
+  Use `--require-roles` in production. `enzarb_realtime` is optional: it is not in `--require-roles`.
+  Its grants are `CONNECT` on the database, `USAGE` on `workflows_api` and `SELECT` on
+  `workflows_api.work_item_project_v`, nothing else. `migrate` applies them when the role exists,
+  and the ticker role reconciles them idempotently at startup and every pass (via the
+  `SECURITY DEFINER` function `workflows.reconcile_realtime_grants()`), so a role created later
+  by pgop gets them too. Run `migrate` before upgrading `run`; until then the ticker logs one warning.
 - `run` starts the listed roles in one process. All share one shutdown (SIGTERM/SIGINT); if
   any role exits or fails, the process shuts the others down and exits non-zero on error.
   Replicas of any role can run concurrently (work is claimed in Postgres).

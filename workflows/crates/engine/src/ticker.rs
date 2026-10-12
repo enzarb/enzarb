@@ -15,6 +15,7 @@ use sqlx::PgPool;
 use tokio::sync::watch;
 
 use crate::error::Error;
+use crate::grants;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TickStats {
@@ -109,7 +110,19 @@ impl Ticker {
 
     /// Tick every `interval` until `shutdown` flips to true.
     pub async fn run(self, mut shutdown: watch::Receiver<bool>) {
+        let mut warned_missing = false;
         loop {
+            match grants::reconcile_realtime(&self.pool).await {
+                Ok(true) => tracing::info!("granted enzarb_realtime its read access"),
+                Ok(false) => {}
+                Err(e) if grants::is_missing_function(&e) => {
+                    if !warned_missing {
+                        warned_missing = true;
+                        tracing::warn!("realtime grants reconciler missing; run `migrate` first");
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "realtime grants reconcile failed"),
+            }
             if let Err(e) = self.tick().await {
                 tracing::warn!(error = %e, "ticker sweep failed");
             }
