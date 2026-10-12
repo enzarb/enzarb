@@ -442,6 +442,10 @@
         "enabled": {
           "type": "boolean"
         },
+        "terminationGracePeriodSeconds": {
+          "type": "integer",
+          "minimum": 10
+        },
         "replicaCount": {
           "type": "integer",
           "minimum": 0

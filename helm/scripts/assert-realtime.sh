@@ -30,7 +30,24 @@ check "route backend" "$(q 'select(.kind=="HTTPRoute" and .metadata.name=="enzar
 check "route timeout" "$(q 'select(.kind=="HTTPRoute" and .metadata.name=="enzarb-realtime") | .spec.rules[0].timeouts.request' <<<"$on")" 0s
 check "pgop role" "$(q 'select(.kind=="Role" and .metadata.name=="realtime") | .spec.roleName' <<<"$on")" enzarb_realtime
 
-off="$("$here/scripts/render.sh" default)"
+dep='select(.kind=="Deployment" and .metadata.name=="enzarb-realtime")'
+grace="$(q "$dep | .spec.template.spec.terminationGracePeriodSeconds" <<<"$on")"
+check "grace period" "$grace" 30
+if [ "$grace" -lt 10 ]; then echo "assert-realtime: grace period $grace < 10" >&2; fail=1; fi
+
+# Enabled by default; no realtime BackendTrafficPolicy unless the opt-in flag is set.
+def="$("$here/scripts/render.sh" default)"
+check "default: deployment" "$(q "$dep | .metadata.name" <<<"$def")" enzarb-realtime
+check "default: no realtime BTP" "$(q 'select(.kind=="BackendTrafficPolicy") | .metadata.name' <<<"$def")" ""
+
+btp="$("$here/scripts/render.sh" realtime-btp)"
+bsel='select(.kind=="BackendTrafficPolicy" and .metadata.name=="enzarb-realtime")'
+check "btp target kind" "$(q "$bsel | .spec.targetRefs[0].kind" <<<"$btp")" HTTPRoute
+check "btp target name" "$(q "$bsel | .spec.targetRefs[0].name" <<<"$btp")" enzarb-realtime
+check "btp idle timeout" "$(q "$bsel | .spec.timeout.http.connectionIdleTimeout" <<<"$btp")" 1800s
+check "btp sandbox-proxy kept" "$(q 'select(.kind=="BackendTrafficPolicy" and .metadata.name=="enzarb-sandbox-proxy") | .metadata.name' <<<"$btp")" enzarb-sandbox-proxy
+
+off="$("$here/scripts/render.sh" realtime-off)"
 for k in 'Deployment enzarb-realtime' 'Service enzarb-realtime' 'HTTPRoute enzarb-realtime' 'Role realtime' 'ServiceAccount enzarb-realtime'; do
   set -- $k
   check "disabled: no $k" "$(q 'select(.kind=="'"$1"'" and .metadata.name=="'"$2"'") | .metadata.name' <<<"$off")" ""

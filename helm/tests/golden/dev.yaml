@@ -140,6 +140,19 @@ metadata:
     helm.sh/chart: enzarb-0.0.0
 
 ---
+# Source: enzarb/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: enzarb-realtime
+  labels:
+    app.kubernetes.io/name: enzarb-realtime
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+
+---
 # Source: enzarb/templates/sandbox-namespace.yaml
 # Created with the release, so it exists before any Sandbox (the operator never creates it).
 # Sandbox pods run as this ServiceAccount: no token mounted and no Role/RoleBinding, so
@@ -173,6 +186,7 @@ type: Opaque
 data:
   session-jwt-secret: <generated>
   callback-secret: <generated>
+  realtime-jwt-secret: <generated>
 
 ---
 # Source: enzarb/templates/secrets.yaml
@@ -441,6 +455,24 @@ spec:
   login: true
 
 ---
+# Source: enzarb/templates/pgop.yaml
+apiVersion: pgop.ruck.io/v1alpha1
+kind: Role
+metadata:
+  name: realtime
+  labels:
+    app.kubernetes.io/name: enzarb-postgres
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+spec:
+  clusterRef:
+    name: enzarb-pg
+  roleName: enzarb_realtime
+  login: true
+
+---
 # Source: enzarb/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -594,6 +626,7 @@ subjects:
   - { kind: ServiceAccount, name: enzarb-workflows, namespace: enzarb }
   - { kind: ServiceAccount, name: enzarb-connectors, namespace: enzarb }
   - { kind: ServiceAccount, name: enzarb-migrate, namespace: enzarb }
+  - { kind: ServiceAccount, name: enzarb-realtime, namespace: enzarb }
 
 ---
 # Source: enzarb/templates/connectors.yaml
@@ -610,6 +643,25 @@ metadata:
 spec:
   selector:
     app.kubernetes.io/name: enzarb-connectors
+    app.kubernetes.io/instance: enzarb
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+
+---
+# Source: enzarb/templates/realtime.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: enzarb-realtime
+  labels:
+    app.kubernetes.io/name: enzarb-realtime
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+spec:
+  selector:
+    app.kubernetes.io/name: enzarb-realtime
     app.kubernetes.io/instance: enzarb
   ports:
     - { name: http, port: 8080, targetPort: http }
@@ -822,6 +874,98 @@ spec:
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
 
 ---
+# Source: enzarb/templates/realtime.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: enzarb-realtime
+  labels:
+    app.kubernetes.io/name: enzarb-realtime
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+spec:
+  # Stateless: every replica holds its own LISTEN.
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: enzarb-realtime
+      app.kubernetes.io/instance: enzarb
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: enzarb-realtime
+        app.kubernetes.io/instance: enzarb
+        app.kubernetes.io/part-of: enzarb
+        app.kubernetes.io/managed-by: Helm
+        helm.sh/chart: enzarb-0.0.0
+    spec:
+      serviceAccountName: enzarb-realtime
+      terminationGracePeriodSeconds: 30
+
+      initContainers:
+        - name: wait-enzarb-migrate-ui-d8a8aae773
+          image: registry.k8s.io/kubectl:v1.34.0
+          imagePullPolicy: IfNotPresent
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-d8a8aae773]
+          securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
+      containers:
+        - name: realtime
+          image: ghcr.io/enzarb/enzarb-realtime:dev
+          imagePullPolicy: Never
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+
+            - name: PGHOST
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-pg-realtime-credentials
+                  key: host
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-pg-realtime-credentials
+                  key: password
+            - name: PGPORT
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-pg-realtime-credentials
+                  key: port
+            - name: PGSSLMODE
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-pg-realtime-credentials
+                  key: sslmode
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-pg-realtime-credentials
+                  key: username
+            - name: PGDATABASE
+              value: "enzarb"
+            - name: DATABASE_URL
+              value: "postgres:///enzarb"
+            - name: ENZARB_REALTIME_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-generated
+                  key: realtime-jwt-secret
+            - { name: RUST_LOG, value: "info" }
+          # /readyz is 200 only while LISTEN is up.
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+          securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":10001,"seccompProfile":{"type":"RuntimeDefault"}}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+
+---
 # Source: enzarb/templates/sandbox-proxy.yaml
 apiVersion: apps/v1
 kind: Deployment
@@ -958,6 +1102,11 @@ spec:
                 secretKeyRef:
                   name: enzarb-github
                   key: oauth-client-secret
+            - name: ENZARB_REALTIME_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-generated
+                  key: realtime-jwt-secret
             - { name: ENZARB_PUBLIC_URL, value: "https://enzarb.local" }
             - { name: ENZARB_GITHUB_APP_SLUG, value: "enzarb" }
             # adapter-node derives the origin for its CSRF check from this header; the Gateway forwards it.
@@ -1123,6 +1272,7 @@ spec:
             - role.pgop.ruck.io/connectors
             - role.pgop.ruck.io/ui-owner
             - role.pgop.ruck.io/ui
+            - role.pgop.ruck.io/realtime
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: migrate
@@ -1450,3 +1600,29 @@ spec:
         - path: { type: PathPrefix, value: /hooks/ }
       backendRefs:
         - { name: enzarb-connectors, port: 8080 }
+
+---
+# Source: enzarb/templates/httproute.yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: enzarb-realtime
+  labels:
+    app.kubernetes.io/name: enzarb-realtime
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+spec:
+  parentRefs:
+    - name: enzarb
+      namespace: enzarb-system
+  hostnames: ["enzarb.local"]
+  rules:
+    - matches:
+        - path: { type: PathPrefix, value: /live/ }
+      # Websocket upgrades pass through; sockets live up to 5 min, so no request timeout.
+      timeouts:
+        request: "0s"
+      backendRefs:
+        - { name: enzarb-realtime, port: 8080 }

@@ -8,7 +8,7 @@
   (dict "name" "connectors" "role" "enzarb_connectors")
   (dict "name" "ui-owner" "role" "enzarb_ui_owner")
   (dict "name" "ui" "role" "enzarb_ui") }}
-{{- /* realtime owns no objects; its grants come from enzarb-workflows migrations. */}}
+{{- /* realtime owns no objects; its grants are applied by enzarb-workflows (startup and ticker reconciliation). */}}
 {{- if .Values.realtime.enabled }}
 {{- $roles = append $roles (dict "name" "realtime" "role" "enzarb_realtime") }}
 {{- end }}

@@ -109,5 +109,20 @@ spec:
   timeout:
     http:
       connectionIdleTimeout: {{ .Values.route.backendTrafficPolicy.connectionIdleTimeout | quote }}
+{{- if .Values.realtime.enabled }}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: enzarb-realtime
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-realtime") | nindent 4 }}
+spec:
+  targetRefs:
+    - { group: gateway.networking.k8s.io, kind: HTTPRoute, name: enzarb-realtime }
+  timeout:
+    http:
+      connectionIdleTimeout: {{ .Values.route.backendTrafficPolicy.connectionIdleTimeout | quote }}
+{{- end }}
 {{- end }}
 {{- end }}

@@ -37,8 +37,8 @@ route:
   sandboxRequestTimeout: "0s"
   # Same for /live/ (enzarb-realtime websockets, up to 5 min).
   realtimeRequestTimeout: "0s"
-  # Optional Envoy Gateway BackendTrafficPolicy on the /sandbox/ route that raises
-  # the idle timeout above the proxy's idle timeout (default 900s).
+  # Optional Envoy Gateway BackendTrafficPolicy on the /sandbox/ and /live/ (when realtime is
+  # enabled) routes that raises the idle timeout above the proxy's idle timeout (default 900s).
   backendTrafficPolicy:
     enabled: false
     connectionIdleTimeout: 1800s
@@ -148,14 +148,16 @@ connectors:
   extraEnv: []
 
 # enzarb-realtime streams work item changes over websockets at /live/ (stateless; each replica
-# holds its own LISTEN). Off by default until a released image is pinned below; grants on the
-# database come from enzarb-workflows migrations. Needs route.enabled for /live/.
+# holds its own LISTEN). Grants on the database are applied by enzarb-workflows (at startup and
+# from its ticker), not by the chart. Needs route.enabled for /live/.
 realtime:
-  enabled: false
+  enabled: true
   replicaCount: 2
+  # Must be >= 10 (schema minimum) so in-flight websockets can drain.
+  terminationGracePeriodSeconds: 30
   image:
     repository: ghcr.io/enzarb/enzarb-realtime
-    # Placeholder: scripts/sync-components.sh pins the latest enzarb-realtime release here.
+    # scripts/sync-components.sh pins the released enzarb-realtime tag here.
     tag: 0.3.0
     pullPolicy: ""
   resources: {}

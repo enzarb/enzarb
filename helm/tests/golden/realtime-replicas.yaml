@@ -954,6 +954,7 @@ spec:
         helm.sh/chart: enzarb-0.0.0
     spec:
       serviceAccountName: enzarb-realtime
+      terminationGracePeriodSeconds: 30
 
       initContainers:
         - name: wait-enzarb-migrate-ui-17c2077b4e

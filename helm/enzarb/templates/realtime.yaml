@@ -18,6 +18,7 @@ spec:
         {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-realtime") | nindent 8 }}
     spec:
       serviceAccountName: enzarb-realtime
+      terminationGracePeriodSeconds: {{ $c.terminationGracePeriodSeconds }}
       {{- include "enzarb.pullSecrets" . | nindent 6 }}
       {{- include "enzarb.waitMigrations" . | nindent 6 }}
       containers:
