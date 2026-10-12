@@ -110,6 +110,7 @@ pub async fn run(cfg: Config) -> Result<(), Error> {
             cfg.executor_url.clone(),
             cfg.executor_callback_secret.clone(),
         );
+        ecfg.npm_token = cfg.npm_token.clone();
         ecfg.apply_env(&|k| std::env::var(k).ok());
         let executor = Arc::new(Executor::new(
             pool.clone(),

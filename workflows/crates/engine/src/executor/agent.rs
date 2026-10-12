@@ -8,6 +8,8 @@
 //! 3. `Connector::mint_clone_credential` (`read_write` when `push`, else `read`);
 //!    For implement/address/review jobs also `Connector::mint_read_credential` over the
 //!    Project's repositories (`RunStart.deps_token`, for private git dependencies);
+//!    and, when configured, `RunStart.npm_token` (the service's `ENZARB_NPM_TOKEN`, for private
+//!    npm packages; the same job kinds, never stored);
 //!    then `run_start` with `run_id = job-<id>` (idempotent: a retry after a crash gets the
 //!    existing run). The session is closed on every error after step 1;
 //! 4. once `run_accepted`: release the lease and set `jobs.deadline`
@@ -139,18 +141,22 @@ impl Executor {
             )
             .await?;
 
-        let deps_token = if matches!(
+        let needs_deps = matches!(
             kind,
             JobKind::AgentImplement
                 | JobKind::AgentAddressComments
                 | JobKind::AgentResolveConflicts
                 | JobKind::AgentReview
-        ) {
+        );
+        let deps_token = if needs_deps {
             self.mint_deps_token(job, project, &input.repo, connector)
                 .await?
         } else {
             None
         };
+        let npm_token = needs_deps
+            .then(|| self.cfg.npm_token.as_ref().map(|t| t.expose().to_string()))
+            .flatten();
 
         Ok(RunStart {
             run_id: rid.to_string(),
@@ -160,6 +166,7 @@ impl Executor {
             push: input.push,
             clone_token: cred.token,
             deps_token,
+            npm_token,
             prompt: input.prompt.clone(),
             timeout_secs: input.timeout_secs,
             callback_url: format!("{}/v1/runs/{rid}/finished", self.cfg.callback_base_url),
@@ -239,6 +246,7 @@ impl Executor {
             push: false,
             clone_token: cred.token,
             deps_token: None,
+            npm_token: None,
             prompt: recovery_prompt(input.kind),
             timeout_secs: input.timeout_secs,
             log_channel: None,

@@ -35,6 +35,7 @@ enzarb-workflows run --roles reducer,executor,ticker      # or ENZARB_ROLES
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | reducer, executor | required for those roles |
 | `ENZARB_EXECUTOR_URL` | executor (callback base) | `http://enzarb-workflows-executor.enzarb.svc:8081` |
 | `ENZARB_EXECUTOR_CALLBACK_SECRET` | executor | required; shared by all replicas |
+| `ENZARB_NPM_TOKEN` or `ENZARB_NPM_TOKEN_FILE` | executor | optional. Long-lived PAT with `read:packages`, sent as `RunStart.npm_token` to implement/address-comments/resolve-conflicts/review runs so `npm ci` can read private `@enzarb/*` packages (GitHub App tokens cannot). The file wins. Never logged or stored in `jobs.input`; an unreadable file is a startup error |
 | `ENZARB_EXECUTOR_LISTEN` | executor | `0.0.0.0:8081` |
 | `ENZARB_EXECUTOR_WORKERS` | executor | 24 (agent jobs hold a worker only while being accepted, not while the run is active) |
 | `ENZARB_EXECUTOR_MAX_AGENT_PER_PROJECT` | executor | 16 (ceiling for `Project.spec.maxRuns`) |

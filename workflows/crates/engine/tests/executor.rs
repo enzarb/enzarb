@@ -1044,6 +1044,72 @@ async fn kind_job(h: &H, kind: &str, n: u64, push: bool) -> i64 {
     .await
 }
 
+async fn npm_token_run(
+    db: TestDb,
+    configured: bool,
+) -> (Vec<(&'static str, Option<String>, String)>, String) {
+    let h = H::with(db, |c| {
+        if configured {
+            c.npm_token = Some(engine::Secret::new("ghp_npm_secret"));
+        }
+    })
+    .await;
+    h.resolver.set_repos("enzarb", proj_repos());
+    let kinds = [
+        ("agent_implement", true),
+        ("agent_address_comments", true),
+        ("agent_review", false),
+        ("agent_triage", false),
+        ("agent_plan", false),
+    ];
+    let mut ids = vec![];
+    for (i, (k, push)) in kinds.iter().enumerate() {
+        ids.push(kind_job(&h, k, i as u64 + 1, *push).await);
+    }
+    for _ in 0..kinds.len() {
+        h.exec.drain().await;
+        sqlx::query("UPDATE workflows.jobs SET status='succeeded' WHERE status='running'")
+            .execute(h.pool())
+            .await
+            .unwrap();
+    }
+    let mut out = vec![];
+    for (id, (k, _)) in ids.iter().zip(kinds) {
+        let run = h.sandbox.run(&format!("job-{id}")).expect(k);
+        let j = job(h.pool(), *id).await;
+        out.push((k, run.npm_token.clone(), j.input.to_string()));
+        assert!(!format!("{run:?}").contains("ghp_npm_secret"));
+    }
+    let all_jobs: String =
+        sqlx::query_scalar("SELECT coalesce(string_agg(input::text, ' '), '') FROM workflows.jobs")
+            .fetch_one(h.pool())
+            .await
+            .unwrap();
+    (out, all_jobs)
+}
+
+#[tokio::test]
+async fn npm_token_for_implement_address_review_only_and_never_stored() {
+    let (runs, all_jobs) = npm_token_run(db!(), true).await;
+    for (k, tok, input) in runs {
+        let want = matches!(
+            k,
+            "agent_implement" | "agent_address_comments" | "agent_review"
+        );
+        assert_eq!(tok.as_deref(), want.then_some("ghp_npm_secret"), "{k}");
+        assert!(!input.contains("ghp_npm_secret"), "{k}");
+    }
+    assert!(!all_jobs.contains("ghp_npm_secret"));
+}
+
+#[tokio::test]
+async fn no_npm_token_when_not_configured() {
+    let (runs, _) = npm_token_run(db!(), false).await;
+    for (k, tok, _) in runs {
+        assert!(tok.is_none(), "{k}");
+    }
+}
+
 #[tokio::test]
 async fn deps_token_for_implement_address_review_only() {
     let h = H::new(db!()).await;

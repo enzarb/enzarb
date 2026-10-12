@@ -3,6 +3,8 @@
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
 
+use engine::Secret;
+
 use crate::cli::Role;
 
 pub const DEFAULT_EXECUTOR_URL: &str = "http://enzarb-workflows-executor.enzarb.svc:8081";
@@ -25,6 +27,10 @@ pub struct Config {
     pub executor_url: String,
     /// Empty unless the executor role is enabled.
     pub executor_callback_secret: Vec<u8>,
+    /// Optional `read:packages` token for private npm packages, handed to agent runs
+    /// (executor role only). From `ENZARB_NPM_TOKEN`, or the file named by
+    /// `ENZARB_NPM_TOKEN_FILE` (takes precedence). Never logged.
+    pub npm_token: Option<Secret>,
     /// Executor callback + health server.
     pub executor_listen: SocketAddr,
     /// Health server for processes without the executor role.
@@ -38,6 +44,7 @@ impl std::fmt::Debug for Config {
             .field("database_url", &"<redacted>")
             .field("executor_url", &self.executor_url)
             .field("executor_callback_secret", &"<redacted>")
+            .field("npm_token", &self.npm_token.as_ref().map(|_| "<redacted>"))
             .field("executor_listen", &self.executor_listen)
             .field("health_listen", &self.health_listen)
             .finish_non_exhaustive()
@@ -60,6 +67,35 @@ fn addr(
         var,
         msg: format!("`{v}`: {e}"),
     })
+}
+
+/// `ENZARB_NPM_TOKEN_FILE` (preferred) or `ENZARB_NPM_TOKEN`; unset or blank is `None`.
+/// Errors never include the value.
+fn npm_token(get: &dyn Fn(&str) -> Option<String>) -> Result<Option<Secret>, ConfigError> {
+    let (var, raw) = match nonempty(get, "ENZARB_NPM_TOKEN_FILE") {
+        Some(path) => (
+            "ENZARB_NPM_TOKEN_FILE",
+            std::fs::read_to_string(&path).map_err(|e| ConfigError::Invalid {
+                var: "ENZARB_NPM_TOKEN_FILE",
+                msg: format!("cannot read `{path}`: {}", e.kind()),
+            })?,
+        ),
+        None => (
+            "ENZARB_NPM_TOKEN",
+            get("ENZARB_NPM_TOKEN").unwrap_or_default(),
+        ),
+    };
+    let t = raw.trim();
+    if t.is_empty() {
+        return Ok(None);
+    }
+    if t.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(ConfigError::Invalid {
+            var,
+            msg: "token contains whitespace or control characters".into(),
+        });
+    }
+    Ok(Some(Secret::new(t)))
 }
 
 impl Config {
@@ -107,6 +143,11 @@ impl Config {
         } else {
             Vec::new()
         };
+        let npm_token = if roles.contains(&Role::Executor) {
+            npm_token(get)?
+        } else {
+            None
+        };
         let executor_listen = addr(get, "ENZARB_EXECUTOR_LISTEN", "0.0.0.0:8081")?;
         let health_listen = addr(get, "ENZARB_HEALTH_LISTEN", "0.0.0.0:8082")?;
         Ok(Config {
@@ -117,6 +158,7 @@ impl Config {
             bot_handle: nonempty(get, "ENZARB_BOT_HANDLE").unwrap_or_else(|| "enzarb".into()),
             executor_url,
             executor_callback_secret,
+            npm_token,
             executor_listen,
             health_listen,
         })
@@ -216,6 +258,71 @@ mod tests {
         ));
     }
 
+    fn exec_env<'a>(extra: &[(&'a str, &'a str)]) -> Result<Config, ConfigError> {
+        let mut pairs = vec![
+            ("DATABASE_URL", "postgres://h/db"),
+            ("ENZARB_EXECUTOR_CALLBACK_SECRET", "s"),
+        ];
+        pairs.extend_from_slice(extra);
+        Config::from_lookup(roles(&[Role::Executor]), &env(&pairs))
+    }
+
+    #[test]
+    fn npm_token_is_optional_trimmed_and_executor_only() {
+        assert!(exec_env(&[]).unwrap().npm_token.is_none());
+        assert!(
+            exec_env(&[("ENZARB_NPM_TOKEN", "  \n")])
+                .unwrap()
+                .npm_token
+                .is_none()
+        );
+        let c = exec_env(&[("ENZARB_NPM_TOKEN", " ghp_x\n")]).unwrap();
+        assert_eq!(c.npm_token.unwrap().expose(), "ghp_x");
+        // not read for other roles
+        let c = Config::from_lookup(
+            roles(&[Role::Reducer]),
+            &env(&[("DATABASE_URL", "p"), ("ENZARB_NPM_TOKEN", "ghp_x")]),
+        )
+        .unwrap();
+        assert!(c.npm_token.is_none());
+    }
+
+    #[test]
+    fn npm_token_file_wins_and_errors_do_not_leak() {
+        let dir = std::env::temp_dir().join(format!("enzarb-npm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("tok");
+        std::fs::write(&f, "ghp_file\n").unwrap();
+        let p = f.to_str().unwrap();
+        let c = exec_env(&[
+            ("ENZARB_NPM_TOKEN", "ghp_env"),
+            ("ENZARB_NPM_TOKEN_FILE", p),
+        ])
+        .unwrap();
+        assert_eq!(c.npm_token.unwrap().expose(), "ghp_file");
+        // unreadable file is an error, not a silent fallback
+        let e = exec_env(&[
+            ("ENZARB_NPM_TOKEN", "ghp_env"),
+            (
+                "ENZARB_NPM_TOKEN_FILE",
+                dir.join("missing").to_str().unwrap(),
+            ),
+        ])
+        .unwrap_err();
+        assert!(matches!(
+            e,
+            ConfigError::Invalid {
+                var: "ENZARB_NPM_TOKEN_FILE",
+                ..
+            }
+        ));
+        assert!(!e.to_string().contains("ghp_env"));
+        // embedded whitespace is rejected without echoing the value
+        let e = exec_env(&[("ENZARB_NPM_TOKEN", "ghp_a ghp_secretb")]).unwrap_err();
+        assert!(!e.to_string().contains("secretb"), "{e}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn debug_redacts_secrets() {
         let c = Config::from_lookup(
@@ -223,10 +330,20 @@ mod tests {
             &env(&[
                 ("DATABASE_URL", "postgres://user:pw@h/db"),
                 ("ENZARB_EXECUTOR_CALLBACK_SECRET", "topsecret"),
+                ("ENZARB_NPM_TOKEN", "ghp_npmsecret"),
             ]),
         )
         .unwrap();
         let d = format!("{c:?}");
         assert!(!d.contains("pw@") && !d.contains("topsecret"), "{d}");
+        assert!(!d.contains("ghp_npmsecret"), "{d}");
+        let e = format!(
+            "{:?}",
+            engine::ExecutorConfig::new("http://x", b"s".to_vec())
+        );
+        assert!(!e.contains("ghp_"));
+        let mut ec = engine::ExecutorConfig::new("http://x", b"s".to_vec());
+        ec.npm_token = c.npm_token.clone();
+        assert!(!format!("{ec:?}").contains("ghp_npmsecret"));
     }
 }

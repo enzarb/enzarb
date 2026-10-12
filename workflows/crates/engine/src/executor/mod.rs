@@ -100,6 +100,26 @@ pub use sandbox::{
 };
 pub use sandbox_change::{ProjectChangeState, change_state};
 
+/// A credential whose `Debug` never prints the value.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(v: impl Into<String>) -> Self {
+        Self(v.into())
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(<redacted>)")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ExecutorConfig {
     /// Value of `jobs.lease_owner`.
@@ -145,6 +165,10 @@ pub struct ExecutorConfig {
     pub callback_secret: Vec<u8>,
     /// Sandbox-restart retries per agent job before it fails.
     pub restart_retry_cap: i32,
+    /// Optional long-lived token with `read:packages` (`ENZARB_NPM_TOKEN[_FILE]`), sent in
+    /// `RunStart.npm_token` so the agent's `npm ci` can read private npm packages (GitHub App
+    /// installation tokens cannot). Never stored in `jobs.input`, never logged.
+    pub npm_token: Option<Secret>,
 }
 
 impl ExecutorConfig {
@@ -170,6 +194,7 @@ impl ExecutorConfig {
             callback_base_url: callback_base_url.into().trim_end_matches('/').to_string(),
             callback_secret: callback_secret.into(),
             restart_retry_cap: 3,
+            npm_token: None,
         }
     }
 
