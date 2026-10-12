@@ -1,19 +1,23 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import PageHeader from '#lib/components/ui/PageHeader.svelte';
+	import Notice from '#lib/components/ui/Notice.svelte';
 	import Terminal from '#lib/components/Terminal.svelte';
+	import { getProjectContext } from '#lib/project-context.svelte.ts';
+
+	const ctx = getProjectContext();
 </script>
 
 <svelte:head><title>Terminal · {page.params.name} · enzarb</title></svelte:head>
-<PageHeader title="Terminal">
-	{#snippet meta()}
-		<span class="ez-muted">
-			Shell in the sandbox for <a href="/projects/{page.params.name}"
-				><code>{page.params.name}</code></a
-			>.
-		</span>
-	{/snippet}
-</PageHeader>
-{#key page.params.name}
-	<Terminal project={page.params.name!} />
-{/key}
+
+{#if ctx.project.ready}
+	<div class="ez-project-terminal">
+		<Notice tone="info">
+			The terminal is for emergencies. Prefer the automated workflows where you can.
+		</Notice>
+		{#key ctx.project.name}
+			<Terminal project={ctx.project.name} fill />
+		{/key}
+	</div>
+{:else}
+	<Notice tone="info">Sandbox is still booting. The terminal is available once it is ready.</Notice>
+{/if}
