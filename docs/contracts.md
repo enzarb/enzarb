@@ -316,7 +316,7 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 | `ENZARB_EXECUTOR_CALLBACK_SECRET` | workflows executor (callback token = `hex(HMAC-SHA256(secret, run_id))`; shared by all replicas) |
 | `RUST_LOG` | all Rust services |
 | `ENZARB_ROLES`, `ENZARB_DB_MAX_CONNECTIONS` (10), `ENZARB_EXECUTOR_LISTEN` (`0.0.0.0:8081`), `ENZARB_HEALTH_LISTEN` (`0.0.0.0:8082`) | workflows |
-| `PROXY_LISTEN` (`0.0.0.0:8080`), `PROXY_IDLE_TIMEOUT_SECS` (900; 2100 once chat ships), `PROXY_MAX_MESSAGE_BYTES`, `PROXY_SECRET_TTL_SECS` (30) | sandbox-proxy |
+| `PROXY_LISTEN` (`0.0.0.0:8080`), `PROXY_IDLE_TIMEOUT_SECS` (2100; the proxy clamps lower values up to `ENZARB_CHAT_IDLE_SECS` with a warn log), `PROXY_PING_INTERVAL_SECS` (30, browser websocket ping), `PROXY_MAX_MESSAGE_BYTES`, `PROXY_SECRET_TTL_SECS` (30) | sandbox-proxy |
 | `RECEIVER_LISTEN` (default `0.0.0.0:8080`) | connectors receiver |
 
 ## 10. GitHub App
