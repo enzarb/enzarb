@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use enzarb_crds::project::cmp_precedence;
 use enzarb_crds::{Project, RepoKey};
 use futures::StreamExt;
 use kube::runtime::WatchStreamExt;
@@ -32,31 +33,34 @@ pub trait ProjectIndex: Send + Sync {
     fn lookup(&self, repo_key: &str) -> Option<ProjectInfo>;
 }
 
-/// Pure lookup over a set of Projects. Ties (a repository linked from several
-/// Projects) go to the lexicographically smallest Project name, so the answer is stable.
+/// Pure lookup over a set of Projects. When a repository is linked from several
+/// Projects, the oldest wins by `(creationTimestamp, name)` using the operator's
+/// shared [`cmp_precedence`], so routing agrees with the operator and is stable.
 pub fn lookup_in<'a>(
     projects: impl IntoIterator<Item = &'a Project>,
     repo_key: &str,
 ) -> Option<ProjectInfo> {
     let want = RepoKey::parse(repo_key).ok()?;
-    projects
+    let (p, repo) = projects
         .into_iter()
         .filter(|p| p.metadata.deletion_timestamp.is_none())
         .filter_map(|p| {
             let repo = p.spec.repositories.iter().find(|r| {
                 RepoKey::from_connector_url(&r.connector, &r.url).is_ok_and(|k| k == want)
             })?;
-            Some(ProjectInfo {
-                name: p.metadata.name.clone()?,
-                triggers: Triggers {
-                    issues: p.spec.triggers.issues,
-                    change_requests: p.spec.triggers.change_requests,
-                    mentions: p.spec.triggers.mentions,
-                },
-                default_branch: repo.default_branch.clone(),
-            })
+            p.metadata.name.as_ref()?;
+            Some((p, repo))
         })
-        .min_by(|a, b| a.name.cmp(&b.name))
+        .min_by(|(a, _), (b, _)| cmp_precedence(a, b))?;
+    Some(ProjectInfo {
+        name: p.metadata.name.clone()?,
+        triggers: Triggers {
+            issues: p.spec.triggers.issues,
+            change_requests: p.spec.triggers.change_requests,
+            mentions: p.spec.triggers.mentions,
+        },
+        default_branch: repo.default_branch.clone(),
+    })
 }
 
 /// `ProjectIndex` backed by a kube reflector over all `Project`s.
@@ -189,22 +193,61 @@ mod tests {
         assert!(lookup_in(&ps, "garbage").is_none());
     }
 
+    const SHARED: &str = "https://github.com/x/y";
+
+    fn aged(name: &str, urls: &[&str], secs: i64) -> Project {
+        let mut p = project(name, urls, true);
+        p.metadata.creation_timestamp = Some(k8s_time(secs));
+        p
+    }
+
     #[test]
-    fn ties_pick_smallest_name_and_deleting_projects_are_skipped() {
-        let mut dying = project("a", &["https://github.com/x/y"], true);
-        dying.metadata.deletion_timestamp = Some(k8s_time());
-        let ps = [project("c", &["https://github.com/x/y"], true), dying];
+    fn equal_timestamps_pick_smallest_name_and_deleting_projects_are_skipped() {
+        let mut dying = aged("a", &[SHARED], 0);
+        dying.metadata.deletion_timestamp = Some(k8s_time(0));
+        let ps = [aged("c", &[SHARED], 0), dying];
         assert_eq!(lookup_in(&ps, "github:x/y").unwrap().name, "c");
-        let ps = [
-            project("z", &["https://github.com/x/y"], true),
-            project("m", &["https://github.com/x/y"], true),
-        ];
+        let ps = [aged("z", &[SHARED], 5), aged("m", &[SHARED], 5)];
         assert_eq!(lookup_in(&ps, "github:x/y").unwrap().name, "m");
     }
 
-    fn k8s_time() -> k8s_openapi::apimachinery::pkg::apis::meta::v1::Time {
+    #[test]
+    fn oldest_project_wins_even_when_its_name_sorts_later() {
+        let ps = [aged("a", &[SHARED], 200), aged("z", &[SHARED], 100)];
+        assert_eq!(lookup_in(&ps, "github:x/y").unwrap().name, "z");
+        let ps = [aged("z", &[SHARED], 100), aged("a", &[SHARED], 200)];
+        assert_eq!(lookup_in(&ps, "github:x/y").unwrap().name, "z");
+    }
+
+    #[test]
+    fn routing_moves_to_next_oldest_when_older_is_deleting_or_removed() {
+        let mut ps = vec![
+            aged("old", &[SHARED], 100),
+            aged("mid", &[SHARED], 200),
+            aged("new", &[SHARED], 300),
+        ];
+        assert_eq!(lookup_in(&ps, "github:x/y").unwrap().name, "old");
+        ps[0].metadata.deletion_timestamp = Some(k8s_time(400));
+        assert_eq!(lookup_in(&ps, "github:x/y").unwrap().name, "mid");
+        ps.remove(0);
+        assert_eq!(lookup_in(&ps, "github:x/y").unwrap().name, "mid");
+        ps.remove(0);
+        assert_eq!(lookup_in(&ps, "github:x/y").unwrap().name, "new");
+    }
+
+    #[test]
+    fn projects_not_sharing_the_repo_do_not_affect_routing() {
+        let ps = [
+            aged("oldest", &["https://github.com/x/other"], 1),
+            aged("only", &[SHARED], 500),
+        ];
+        assert_eq!(lookup_in(&ps, "github:x/y").unwrap().name, "only");
+        assert_eq!(lookup_in(&ps, "github:x/other").unwrap().name, "oldest");
+    }
+
+    fn k8s_time(secs: i64) -> k8s_openapi::apimachinery::pkg::apis::meta::v1::Time {
         k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
-            k8s_openapi::jiff::Timestamp::UNIX_EPOCH,
+            k8s_openapi::jiff::Timestamp::from_second(secs).unwrap(),
         )
     }
 }

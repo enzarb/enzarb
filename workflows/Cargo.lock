@@ -1111,7 +1111,7 @@ dependencies = [
 [[package]]
 name = "enzarb-crds"
 version = "0.1.0"
-source = "git+ssh://git@github.com/enzarb/enzarb-sandbox-operator.git?branch=main#eca1b5955a21d24b70d288fb8ca0d1e91eeafd5f"
+source = "git+ssh://git@github.com/enzarb/enzarb-sandbox-operator.git?branch=main#4c3f8fca28174a081b846135e0e376af3fbbf224"
 dependencies = [
  "k8s-openapi",
  "kube",
@@ -4688,7 +4688,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
