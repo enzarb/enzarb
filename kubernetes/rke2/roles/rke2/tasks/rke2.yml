@@ -3,6 +3,7 @@
   register: rke2_installed
   changed_when: false
   failed_when: false
+  check_mode: false
 
 - name: Install RKE2 {{ rke2_version }}
   when: rke2_version not in (rke2_installed.stdout | default(''))
