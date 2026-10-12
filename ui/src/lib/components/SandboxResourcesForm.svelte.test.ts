@@ -2,6 +2,7 @@ import { page } from 'vitest/browser';
 import { describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import SandboxResourcesForm from './SandboxResourcesForm.svelte';
+import { POD_SHAPE_QUEUED_COPY } from '#lib/pending-change.ts';
 import type { ProjectView } from '#lib/project-types.ts';
 
 const view = (over: Partial<ProjectView> = {}): ProjectView => ({
@@ -92,7 +93,10 @@ describe('SandboxResourcesForm', () => {
 			.element(page.getByRole('list', { name: 'Sandbox change progress' }))
 			.toBeInTheDocument();
 		await expect.element(page.getByText(/Queued \(waiting for running jobs/)).toBeInTheDocument();
-		await expect.element(page.getByText(/queued until running jobs finish/)).toBeInTheDocument();
+		// The dialog (which carries the confirm copy) closes once the save settles; the queued
+		// notice must come from the form itself, not from a dialog that is still unmounting.
+		await expect.element(page.getByRole('dialog')).not.toBeInTheDocument();
+		await expect.element(page.getByText(POD_SHAPE_QUEUED_COPY)).toBeInTheDocument();
 	});
 
 	it('sends null for a cleared limit', async () => {
