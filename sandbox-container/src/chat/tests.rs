@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use super::filter::{self, Filter, Out, code};
 use super::*;
+use crate::config::ChatMode;
 use crate::policy::Policy;
 
 const TOKEN: &str = "sk-ant-oat01-SECRETsecretSECRET_0123456789";
@@ -11,8 +12,14 @@ fn wt() -> PathBuf {
 }
 
 fn filter_with(resume: Option<&str>) -> Filter {
+    filter_mode(resume, ChatMode::Default, false)
+}
+
+fn filter_mode(resume: Option<&str>, mode: ChatMode, allow_bypass: bool) -> Filter {
     Filter::new(
         Policy::default(),
+        mode,
+        allow_bypass,
         wt(),
         filter::token_forms(TOKEN),
         resume.map(String::from),
@@ -58,7 +65,7 @@ fn ready(f: &mut Filter, load: bool) {
         json!({"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/","mcpServers":[]}}),
     ));
     let outs = f.from_agent(&line(
-        json!({"jsonrpc":"2.0","id":1,"result":{"sessionId":"s-1"}}),
+        json!({"jsonrpc":"2.0","id":1,"result":{"sessionId":"s-1","modes":{"currentModeId":"default"}}}),
     ));
     assert!(outs.contains(&Out::Session("s-1".into())));
     assert_eq!(f.session(), Some("s-1"));
@@ -318,8 +325,19 @@ fn load_needs_capability_and_registry() {
         agent_msgs(&outs)[0]["params"],
         json!({"sessionId":"s-old","cwd":wt(),"mcpServers":[],"_meta":{"claudeCode":{"options":{"allowDangerouslySkipPermissions":false,"permissionMode":"default","settingSources":["user"]}}}})
     );
+    // no mode reported: sandbox-init sets it before the browser sees the session
     let outs = f.from_agent(&line(json!({"jsonrpc":"2.0","id":2,"result":{}})));
+    assert!(!outs.contains(&Out::Session("s-old".into())));
+    assert!(browser_msgs(&outs).is_empty());
+    let set = agent_msgs(&outs)[0].clone();
+    assert_eq!(set["method"], "session/set_mode");
+    assert_eq!(
+        set["params"],
+        json!({"sessionId":"s-old","modeId":"default"})
+    );
+    let outs = f.from_agent(&line(json!({"jsonrpc":"2.0","id":set["id"],"result":{}})));
     assert!(outs.contains(&Out::Session("s-old".into())));
+    assert_eq!(browser_msgs(&outs)[0]["id"], 2);
 
     // without a resume, load is refused
     let mut f = filter_with(None);
@@ -833,5 +851,186 @@ fn tampered_meta_is_ignored() {
         m[k] = v;
         write(m);
         assert!(read_meta(&d).is_none(), "{k}");
+    }
+}
+
+// ---- permission mode ----
+
+fn init(f: &mut Filter) {
+    f.from_browser(&line(
+        json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}),
+    ));
+    f.from_agent(&line(
+        json!({"jsonrpc":"2.0","id":0,"result":{"agentCapabilities":{"loadSession":true}}}),
+    ));
+}
+
+fn meta(allow: bool, mode: &str) -> Value {
+    json!({"claudeCode": {"options": {"allowDangerouslySkipPermissions": allow, "permissionMode": mode, "settingSources": ["user"]}}})
+}
+
+#[test]
+fn session_meta_follows_the_configured_mode_not_the_browser() {
+    let cases = [
+        (ChatMode::Bypass, true, meta(true, "bypassPermissions")),
+        // bypass mode implies bypass allowed
+        (ChatMode::Bypass, false, meta(true, "bypassPermissions")),
+        (ChatMode::Default, true, meta(true, "default")),
+        (ChatMode::Default, false, meta(false, "default")),
+        (ChatMode::Plan, false, meta(false, "plan")),
+    ];
+    for (mode, allow, want) in cases {
+        for browser_meta in [
+            json!({"claudeCode": {"options": {"permissionMode": "acceptEdits", "allowDangerouslySkipPermissions": !allow, "settingSources": ["project"]}}}),
+            json!({"claudeCode": {"options": {"permissionMode": "default", "allowDangerouslySkipPermissions": false}}}),
+        ] {
+            let mut f = filter_mode(Some("s-old"), mode, allow);
+            init(&mut f);
+            let outs = f.from_browser(&line(json!({"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/","_meta":browser_meta}})));
+            assert_eq!(agent_msgs(&outs)[0]["params"]["_meta"], want, "{mode:?}");
+            let mut f = filter_mode(Some("s-old"), mode, allow);
+            init(&mut f);
+            let outs = f.from_browser(&line(json!({"jsonrpc":"2.0","id":1,"method":"session/load","params":{"sessionId":"s-old","_meta":browser_meta}})));
+            assert_eq!(agent_msgs(&outs)[0]["params"]["_meta"], want, "{mode:?}");
+        }
+    }
+}
+
+#[test]
+fn bypass_mode_is_enforced_before_the_browser_gets_the_session() {
+    let mut f = filter_mode(None, ChatMode::Bypass, true);
+    init(&mut f);
+    f.from_browser(&line(
+        json!({"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/"}}),
+    ));
+    let modes = json!({"currentModeId":"acceptEdits","availableModes":[{"id":"default"},{"id":"acceptEdits"},{"id":"bypassPermissions"}]});
+    let outs = f.from_agent(&line(
+        json!({"jsonrpc":"2.0","id":1,"result":{"sessionId":"s-1","modes":modes}}),
+    ));
+    assert!(browser_msgs(&outs).is_empty());
+    assert_eq!(f.session(), None);
+    let set = agent_msgs(&outs)[0].clone();
+    assert_eq!(
+        set["params"],
+        json!({"sessionId":"s-1","modeId":"bypassPermissions"})
+    );
+    // the browser cannot use (or prompt on) the session meanwhile, nor reuse the id
+    let outs = f.from_browser(&line(json!({"jsonrpc":"2.0","id":set["id"],"method":"session/prompt","params":{"sessionId":"s-1","prompt":[{"type":"text","text":"x"}]}})));
+    assert!(agent_msgs(&outs).is_empty());
+    let outs = f.from_agent(&line(json!({"jsonrpc":"2.0","id":set["id"],"result":{}})));
+    assert!(outs.contains(&Out::Session("s-1".into())));
+    let b = browser_msgs(&outs);
+    assert_eq!(b[0]["id"], 1);
+    assert_eq!(
+        b[0]["result"]["modes"]["currentModeId"],
+        "bypassPermissions"
+    );
+    // availableModes passes unchanged
+    assert_eq!(
+        b[0]["result"]["modes"]["availableModes"],
+        modes["availableModes"]
+    );
+    assert_eq!(b[1]["method"], filter::MODE);
+    assert_eq!(
+        b[1]["params"],
+        json!({"sessionId":"s-1","modeId":"bypassPermissions","bypassAllowed":true})
+    );
+}
+
+#[test]
+fn matching_mode_is_not_switched() {
+    let mut f = filter_mode(None, ChatMode::Bypass, true);
+    init(&mut f);
+    f.from_browser(&line(
+        json!({"jsonrpc":"2.0","id":1,"method":"session/new","params":{}}),
+    ));
+    let outs = f.from_agent(&line(json!({"jsonrpc":"2.0","id":1,"result":{"sessionId":"s-1","modes":{"currentModeId":"bypassPermissions"}}})));
+    assert!(agent_msgs(&outs).is_empty());
+    assert!(outs.contains(&Out::Session("s-1".into())));
+    let b = browser_msgs(&outs);
+    assert_eq!(b[0]["id"], 1);
+    assert_eq!(b[1]["method"], filter::MODE);
+}
+
+#[test]
+fn refused_mode_means_no_session() {
+    let mut f = filter_mode(None, ChatMode::Bypass, true);
+    init(&mut f);
+    f.from_browser(&line(
+        json!({"jsonrpc":"2.0","id":"n","method":"session/new","params":{}}),
+    ));
+    let outs = f.from_agent(&line(json!({"jsonrpc":"2.0","id":"n","result":{"sessionId":"s-1","modes":{"currentModeId":"default"}}})));
+    let set = agent_msgs(&outs)[0].clone();
+    let outs = f.from_agent(&line(
+        json!({"jsonrpc":"2.0","id":set["id"],"error":{"code":-32602,"message":"Invalid Mode"}}),
+    ));
+    assert_eq!(f.session(), None);
+    let b = browser_msgs(&outs);
+    assert_eq!(b.len(), 1);
+    assert_eq!(b[0]["id"], "n");
+    assert_eq!(b[0]["error"]["code"], code::INTERNAL_ERROR);
+    // a retried session/new is forwarded
+    let outs = f.from_browser(&line(
+        json!({"jsonrpc":"2.0","id":"n2","method":"session/new","params":{}}),
+    ));
+    assert_eq!(agent_msgs(&outs).len(), 1);
+}
+
+#[test]
+fn set_mode_matrix() {
+    for (mode, allow) in [
+        (ChatMode::Bypass, true),
+        (ChatMode::Default, true),
+        (ChatMode::Default, false),
+        (ChatMode::Plan, false),
+    ] {
+        let mut f = filter_mode(None, mode, allow);
+        init(&mut f);
+        f.from_browser(&line(
+            json!({"jsonrpc":"2.0","id":1,"method":"session/new","params":{}}),
+        ));
+        f.from_agent(&line(json!({"jsonrpc":"2.0","id":1,"result":{"sessionId":"s-1","modes":{"currentModeId":mode.as_str()}}})));
+        let bypass_ok = allow || mode == ChatMode::Bypass;
+        for (i, (m, ok)) in [
+            ("bypassPermissions", bypass_ok),
+            ("default", true),
+            ("plan", true),
+            ("acceptEdits", false),
+            ("auto", false),
+            ("dontAsk", false),
+            ("", false),
+            ("Default", false),
+            ("bypass", false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = 10 + i as i64;
+            let outs = f.from_browser(&line(json!({"jsonrpc":"2.0","id":id,"method":"session/set_mode","params":{"sessionId":"s-1","modeId":m}})));
+            if !ok {
+                assert_eq!(
+                    error_code_of(&outs),
+                    Some(code::INVALID_PARAMS),
+                    "{mode:?} {m}"
+                );
+                assert!(agent_msgs(&outs).is_empty());
+                continue;
+            }
+            assert_eq!(
+                agent_msgs(&outs)[0]["params"],
+                json!({"sessionId":"s-1","modeId":m})
+            );
+            let outs = f.from_agent(&line(json!({"jsonrpc":"2.0","id":id,"result":{}})));
+            let b = browser_msgs(&outs);
+            assert_eq!(b[0]["id"], id);
+            assert_eq!(b[1]["method"], filter::MODE);
+            assert_eq!(b[1]["params"]["modeId"], m);
+        }
+        // a failed switch sends no mode notification
+        f.from_browser(&line(json!({"jsonrpc":"2.0","id":99,"method":"session/set_mode","params":{"sessionId":"s-1","modeId":"plan"}})));
+        let outs = f.from_agent(&line(
+            json!({"jsonrpc":"2.0","id":99,"error":{"code":1,"message":"no"}}),
+        ));
+        assert_eq!(browser_msgs(&outs).len(), 1);
     }
 }

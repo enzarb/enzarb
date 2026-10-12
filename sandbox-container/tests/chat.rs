@@ -17,7 +17,7 @@ use nix::unistd::Pid;
 use sandbox_init::agent::repo_dir_name;
 use sandbox_init::chat::{ChatManager, PASS_ENV};
 use sandbox_init::reaper::Reaper;
-use sandbox_init::{AppState, Config, serve};
+use sandbox_init::{AppState, ChatMode, Config, serve};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::timeout;
@@ -141,6 +141,9 @@ async fn start_with(tweak: impl FnOnce(&mut Config)) -> Server {
         grace: Duration::from_secs(2),
         acp_bin: agent.to_string_lossy().into_owned(),
         cancel_grace: Duration::from_secs(2),
+        // The permission tests below are for `default`; bypass has its own.
+        chat_permission_mode: ChatMode::Default,
+        chat_allow_bypass: false,
         ..Config::default()
     };
     tweak(&mut config);
@@ -859,4 +862,185 @@ async fn chat_teardown_survives_a_browser_that_never_reads() {
     assert_eq!(s.chats.live(), 0, "cap slot still held");
     assert!(s.chat_worktrees().is_empty());
     drop(acp);
+}
+
+async fn start_bypass(allow: bool, mode: ChatMode) -> Server {
+    start_with(|c| {
+        c.chat_permission_mode = mode;
+        c.chat_allow_bypass = allow;
+    })
+    .await
+}
+
+#[tokio::test]
+async fn chat_bypass_is_the_default_mode() {
+    assert_eq!(Config::default().chat_permission_mode, ChatMode::Bypass);
+    let s = start_bypass(true, ChatMode::Bypass).await;
+    // the adapter would start in the settings' mode; sandbox-init overrides it
+    let home = s.ws.join(".enzarb/chat-home/.claude");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("settings.json"),
+        r#"{"permissions":{"defaultMode":"acceptEdits"}}"#,
+    )
+    .unwrap();
+    let (session, _ev) = s.connect().await;
+    let mut acp = open(&s, &session).await;
+    let id = acp
+        .request("initialize", json!({"protocolVersion": 1}))
+        .await;
+    acp.response(id).await;
+    let id = acp
+        .request(
+            "session/new",
+            json!({"cwd": "/", "_meta": {"claudeCode": {"options": {"permissionMode": "default", "allowDangerouslySkipPermissions": false}}}}),
+        )
+        .await;
+    let (new, seen) = acp.response(id).await;
+    assert!(seen.is_empty(), "{seen:?}");
+    let sid = new["result"]["sessionId"].as_str().unwrap().to_string();
+    assert_eq!(new["result"]["modes"]["currentModeId"], "bypassPermissions");
+    let ids: Vec<&str> = new["result"]["modes"]["availableModes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["id"].as_str())
+        .collect();
+    assert_eq!(ids, ["default", "acceptEdits", "plan", "bypassPermissions"]);
+    let (note, _) = acp.until(|m| m["method"] == "_enzarb/mode").await;
+    assert_eq!(
+        note["params"],
+        json!({"sessionId": sid, "modeId": "bypassPermissions", "bypassAllowed": true})
+    );
+
+    // the fixed _meta, whatever the browser sent
+    let i = info(&mut acp, &sid).await;
+    assert_eq!(
+        i["newParams"]["_meta"],
+        json!({"claudeCode": {"options": {"allowDangerouslySkipPermissions": true, "permissionMode": "bypassPermissions", "settingSources": ["user"]}}})
+    );
+    assert_eq!(i["modes"], json!(["bypassPermissions"]));
+    assert_eq!(i["currentMode"], "bypassPermissions");
+
+    // no permission requests reach the browser (nor the hard-deny policy)
+    let (r, text) = acp.prompt(&sid, "PERM").await;
+    assert_eq!(r["result"]["stopReason"], "end_turn");
+    assert_eq!(text, "perm: a=bypassed,b=bypassed,c=bypassed");
+    assert!(!acp.all.contains("session/request_permission"));
+
+    // the token is still redacted
+    let (_, text) = acp.prompt(&sid, "LEAK").await;
+    assert!(text.contains("token=[redacted]"), "{text}");
+    assert!(!acp.all.contains("FAKEclaudeTOKEN"));
+
+    // switching down and back up is allowed; others are not
+    for (m, ok) in [
+        ("plan", true),
+        ("acceptEdits", false),
+        ("bypassPermissions", true),
+        ("default", true),
+    ] {
+        let id = acp
+            .request("session/set_mode", json!({"sessionId": sid, "modeId": m}))
+            .await;
+        let (r, _) = acp.response(id).await;
+        assert_eq!(r.get("result").is_some(), ok, "{m}: {r}");
+        if ok {
+            let (note, _) = acp.until(|v| v["method"] == "_enzarb/mode").await;
+            assert_eq!(note["params"]["modeId"], m);
+        }
+    }
+    // back in default: the permission flow is the strict one again
+    let id = acp
+        .request(
+            "session/prompt",
+            json!({"sessionId": sid, "prompt": [{"type": "text", "text": "PERM"}]}),
+        )
+        .await;
+    let (a, _) = acp
+        .until(|m| m["method"] == "session/request_permission")
+        .await;
+    acp.send(json!({"jsonrpc": "2.0", "id": a["id"], "result": {"outcome": {"outcome": "selected", "optionId": "yes"}}}))
+        .await;
+    acp.until(|m| m["method"] == "_enzarb/permission_denied")
+        .await;
+    let (c, _) = acp
+        .until(|m| m["method"] == "session/request_permission")
+        .await;
+    acp.send(json!({"jsonrpc": "2.0", "id": c["id"], "result": {"outcome": {"outcome": "selected", "optionId": "no"}}}))
+        .await;
+    let (_, seen) = acp.response(id).await;
+    assert_eq!(chunks(&seen), "perm: a=yes,b=no,c=no");
+}
+
+#[tokio::test]
+async fn chat_mode_from_config_without_bypass() {
+    for mode in [ChatMode::Default, ChatMode::Plan] {
+        let s = start_bypass(false, mode).await;
+        let (session, _ev) = s.connect().await;
+        let mut acp = open(&s, &session).await;
+        let sid = acp.start_session().await;
+        let i = info(&mut acp, &sid).await;
+        assert_eq!(
+            i["newParams"]["_meta"]["claudeCode"]["options"]["allowDangerouslySkipPermissions"],
+            false
+        );
+        assert_eq!(i["currentMode"], mode.as_str());
+        assert!(
+            acp.all
+                .contains(&format!("\"modeId\":\"{}\"", mode.as_str()))
+        );
+        let id = acp
+            .request(
+                "session/set_mode",
+                json!({"sessionId": sid, "modeId": "bypassPermissions"}),
+            )
+            .await;
+        assert_eq!(acp.response(id).await.0["error"]["code"], -32602);
+        let i = info(&mut acp, &sid).await;
+        assert_eq!(i["currentMode"], mode.as_str());
+    }
+}
+
+#[tokio::test]
+async fn chat_bypass_mode_survives_resume() {
+    let s = start_bypass(true, ChatMode::Bypass).await;
+    let (session, _ev) = s.connect().await;
+    let mut acp = open(&s, &session).await;
+    let id = acp
+        .request("initialize", json!({"protocolVersion": 1}))
+        .await;
+    acp.response(id).await;
+    let id = acp.request("session/new", json!({})).await;
+    let sid = acp.response(id).await.0["result"]["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    drop(acp);
+    drop(session);
+    for _ in 0..100 {
+        if s.chats.live() == 0 && s.chat_worktrees().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let (session, _ev) = s.connect().await;
+    let ch = session
+        .open_acp(Some(s.repo_url.clone()), Some(sid.clone()))
+        .await
+        .unwrap();
+    let mut acp = Acp::new(ch);
+    let id = acp
+        .request("initialize", json!({"protocolVersion": 1}))
+        .await;
+    acp.response(id).await;
+    let id = acp.request("session/load", json!({"sessionId": sid})).await;
+    let (r, _) = acp.response(id).await;
+    assert!(r.get("result").is_some(), "{r}");
+    let i = info(&mut acp, &sid).await;
+    assert_eq!(i["currentMode"], "bypassPermissions");
+    assert_eq!(
+        i["loadParams"]["_meta"]["claudeCode"]["options"]["permissionMode"],
+        "bypassPermissions"
+    );
 }

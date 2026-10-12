@@ -17,6 +17,12 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Config::from_env()?;
+    // Agents (chat in bypass mode in particular) run as this uid: without this
+    // they could read sandbox-init's memory and environment through /proc
+    // (ptrace-style access is refused for a non-dumpable process).
+    if let Err(e) = nix::sys::prctl::set_dumpable(false) {
+        tracing::warn!(error = %e, "cannot mark sandbox-init non-dumpable");
+    }
     let grace = config.grace;
     let reaper = Reaper::for_current_process();
     tokio::spawn(reaper.clone().run());

@@ -11,17 +11,30 @@
 //!
 //! Browser → agent (anything else gets JSON-RPC `-32601`):
 //! * `initialize` (once): `clientCapabilities` forced to none (no fs, no terminal);
-//! * `session/new`: `cwd` = the chat worktree, `mcpServers: []`;
+//! * `session/new`: `cwd` = the chat worktree, `mcpServers: []`, a fixed
+//!   `_meta` (see [`session_meta`]);
 //! * `session/load`: only when the agent advertised `loadSession`, only for
 //!   the session id this chat was resumed with (sandbox-init's registry);
 //! * `session/prompt`: `text` and `resource_link` blocks, at most
 //!   [`MAX_PROMPT_BYTES`] of text;
 //! * `session/cancel` (notification);
-//! * `session/set_mode`: `default` and `plan` only;
+//! * `session/set_mode`: `bypassPermissions` (only when bypass is allowed),
+//!   `default` and `plan`;
 //! * responses: only to an outstanding forwarded `session/request_permission`,
 //!   and only `allow_once` / `reject_once` / `cancelled`. Anything else (an
 //!   `*_always` option, an unknown option id, an error, junk) becomes
 //!   `reject_once` (or `cancelled` when the request had no such option).
+//!
+//! Mode: the adapter picks a session's initial mode itself (settings
+//! `permissions.defaultMode`, including the repo's `.claude/settings*.json`,
+//! or the mode of a resumed transcript; `_meta...permissionMode` is ignored).
+//! So when a `session/new`/`session/load` response does not report the
+//! configured mode as `modes.currentModeId`, sandbox-init sends its own
+//! `session/set_mode` first and hands the response to the browser only once
+//! that succeeded (a failure becomes an error response and no session). The
+//! browser learns the active mode from `modes.currentModeId` and from the
+//! [`MODE`] notification, sent after the session is established and after
+//! every successful `session/set_mode`.
 //!
 //! Agent → browser:
 //! * responses to forwarded requests and `session/update`, with the Claude
@@ -39,6 +52,7 @@ use std::path::PathBuf;
 
 use serde_json::{Map, Value, json};
 
+use crate::config::ChatMode;
 use crate::policy::{Classification, Policy};
 
 /// Largest total text of one `session/prompt`.
@@ -47,9 +61,13 @@ pub const MAX_PROMPT_BYTES: usize = 256 * 1024;
 pub const MAX_PENDING_PERMISSIONS: usize = 64;
 /// Browser requests forwarded to the agent and not yet answered.
 pub const MAX_PENDING_REQUESTS: usize = 64;
-/// Modes the browser may switch to. `acceptEdits` and `bypassPermissions`
-/// would skip per-call approval, so they are refused.
-pub const ALLOWED_MODES: &[&str] = &["default", "plan"];
+/// Modes the browser may switch to (`bypassPermissions` only while bypass is
+/// allowed). `acceptEdits`, `auto` and `dontAsk` are refused.
+pub const ALLOWED_MODES: &[&str] = &["bypassPermissions", "default", "plan"];
+/// The browser notification carrying the active permission mode.
+pub const MODE: &str = "_enzarb/mode";
+/// Id prefix of the `session/set_mode` requests sandbox-init sends itself.
+const OWN_ID_PREFIX: &str = "enzarb-mode-";
 /// The browser notification for a hard deny.
 pub const PERMISSION_DENIED: &str = "_enzarb/permission_denied";
 /// Longest JSON-RPC string id accepted from the browser.
@@ -63,6 +81,7 @@ pub mod code {
     pub const INVALID_REQUEST: i64 = -32600;
     pub const METHOD_NOT_FOUND: i64 = -32601;
     pub const INVALID_PARAMS: i64 = -32602;
+    pub const INTERNAL_ERROR: i64 = -32603;
 }
 
 /// What to do with a parsed line.
@@ -84,7 +103,11 @@ enum Pending {
     New,
     Load(String),
     Prompt,
-    Other,
+    /// A browser `session/set_mode` to this mode.
+    SetMode(String),
+    /// sandbox-init's own `session/set_mode` after `session/new`/`load`:
+    /// the held response for the browser and the session id.
+    Enforce(Box<Map<String, Value>>, String),
 }
 
 #[derive(Debug, Clone)]
@@ -109,6 +132,9 @@ pub fn valid_session_id(s: &str) -> bool {
 /// Per-channel filter state.
 pub struct Filter {
     policy: Policy,
+    mode: ChatMode,
+    allow_bypass: bool,
+    own_ids: u64,
     worktree: PathBuf,
     secrets: Vec<String>,
     /// The only session id `session/load` may name (from the registry).
@@ -144,16 +170,21 @@ fn str_field<'a>(p: Option<&'a Map<String, Value>>, k: &str) -> Option<&'a str> 
     p.and_then(|p| p.get(k)).and_then(Value::as_str)
 }
 
-/// The fixed `_meta` sandbox-init sends on `session/new`/`load`: bypass mode
-/// is never available to the agent's SDK, whatever its settings say.
-fn session_meta() -> Value {
+/// The fixed `_meta` sandbox-init sends on `session/new`/`load`.
+///
+/// `allowDangerouslySkipPermissions` is what makes `bypassPermissions`
+/// available to the adapter at all (its mode list and the SDK flag are decided
+/// at session start), so it follows `ENZARB_CHAT_ALLOW_BYPASS`, not the
+/// starting mode. `permissionMode` is the configured mode; claude-agent-acp
+/// 0.88 ignores it (the mode is enforced with `session/set_mode` instead), it
+/// is sent for adapters that honour it.
+fn session_meta(mode: ChatMode, allow_bypass: bool) -> Value {
     // `settingSources: ["user"]`: the repo's committed `.claude/settings*.json`
-    // (permission allow rules, hooks, modes) is not loaded, so nothing in the
-    // repo can approve a tool call; the user settings dir is the chat's own
-    // CLAUDE_CONFIG_DIR under `.enzarb/` (hard-denied to the agent).
+    // (permission allow rules, hooks) is not loaded by the SDK; the user
+    // settings dir is the chat's own CLAUDE_CONFIG_DIR under `.enzarb/`.
     json!({"claudeCode": {"options": {
-        "allowDangerouslySkipPermissions": false,
-        "permissionMode": "default",
+        "allowDangerouslySkipPermissions": allow_bypass,
+        "permissionMode": mode.as_str(),
         "settingSources": ["user"],
     }}})
 }
@@ -161,14 +192,22 @@ fn session_meta() -> Value {
 impl Filter {
     /// `secrets` are redacted from everything sent to the browser and the
     /// transcript; `resume` is the ACP session id the chat may load.
+    /// `mode` is the mode every session is put in; `allow_bypass` lets the
+    /// browser switch to `bypassPermissions` (and must be true for a
+    /// `bypassPermissions` mode).
     pub fn new(
         policy: Policy,
+        mode: ChatMode,
+        allow_bypass: bool,
         worktree: PathBuf,
         secrets: Vec<String>,
         resume: Option<String>,
     ) -> Self {
         Self {
             policy,
+            mode,
+            allow_bypass: allow_bypass || mode == ChatMode::Bypass,
+            own_ids: 0,
             worktree,
             secrets: secrets.into_iter().filter(|s| s.len() >= 8).collect(),
             resume,
@@ -361,7 +400,7 @@ impl Filter {
                 let params = json!({
                     "cwd": self.worktree,
                     "mcpServers": [],
-                    "_meta": session_meta(),
+                    "_meta": session_meta(self.mode, self.allow_bypass),
                 });
                 self.forward(id, method, params, Pending::New)
             }
@@ -392,7 +431,7 @@ impl Filter {
                     "sessionId": sid,
                     "cwd": self.worktree,
                     "mcpServers": [],
-                    "_meta": session_meta(),
+                    "_meta": session_meta(self.mode, self.allow_bypass),
                 });
                 self.forward(id, method, params, Pending::Load(sid))
             }
@@ -432,11 +471,19 @@ impl Filter {
                         id,
                         method,
                         code::INVALID_PARAMS,
-                        "mode not allowed (default or plan only)",
+                        "mode not allowed (bypassPermissions, default or plan only)",
+                    );
+                }
+                if mode == ChatMode::Bypass.as_str() && !self.allow_bypass {
+                    return self.refuse(
+                        id,
+                        method,
+                        code::INVALID_PARAMS,
+                        "bypassPermissions is disabled in this sandbox",
                     );
                 }
                 let params = json!({"sessionId": sid, "modeId": mode});
-                self.forward(id, method, params, Pending::Other)
+                self.forward(id, method, params, Pending::SetMode(mode.to_string()))
             }
             "session/cancel" => self.refuse(
                 id,
@@ -564,8 +611,8 @@ impl Filter {
                     .and_then(Value::as_str)
                 {
                     Some(s) if valid_session_id(s) => {
-                        self.session = Some(s.to_string());
-                        out.push(Out::Session(s.to_string()));
+                        let s = s.to_string();
+                        return self.establish(m, s);
                     }
                     Some(_) => {
                         out.push(self.dropped("agent", "invalid session id from session/new"))
@@ -576,12 +623,52 @@ impl Filter {
             Pending::Load(sid) => {
                 self.establishing = false;
                 if result.is_some() {
-                    self.session = Some(sid.clone());
-                    out.push(Out::Session(sid));
+                    return self.establish(m, sid);
+                }
+            }
+            Pending::Enforce(held, sid) => {
+                self.establishing = false;
+                if result.is_some() {
+                    let mut held = *held;
+                    if let Some(modes) = held
+                        .get_mut("result")
+                        .and_then(|r| r.get_mut("modes"))
+                        .and_then(Value::as_object_mut)
+                    {
+                        modes.insert("currentModeId".into(), self.mode.as_str().into());
+                    }
+                    return self.established(held, sid);
+                }
+                // The agent refused the mode: no session for the browser.
+                let browser_id = held.get("id").cloned().unwrap_or(Value::Null);
+                return vec![
+                    Out::Record(
+                        "refused",
+                        json!({"method": "session/set_mode", "reason": "the agent refused the chat permission mode", "mode": self.mode.as_str()}),
+                    ),
+                    Out::Browser(rpc_error(
+                        browser_id,
+                        code::INTERNAL_ERROR,
+                        &format!(
+                            "the chat agent cannot run in permission mode {}",
+                            self.mode.as_str()
+                        ),
+                    )),
+                ];
+            }
+            Pending::SetMode(mode) => {
+                if result.is_some() {
+                    let msg = self.redact(Value::Object(m));
+                    let sid = self.session.clone().unwrap_or_default();
+                    return vec![
+                        Out::Record("agent", json!({"response": "result"})),
+                        Out::Browser(msg),
+                        Out::Record("mode", json!({"mode": mode})),
+                        Out::Browser(self.mode_note(&sid, &mode)),
+                    ];
                 }
             }
             Pending::Prompt => self.prompting = self.prompting.saturating_sub(1),
-            Pending::Other => {}
         }
         let msg = self.redact(Value::Object(m));
         out.push(Out::Record(
@@ -590,6 +677,63 @@ impl Filter {
         ));
         out.push(Out::Browser(msg));
         out
+    }
+
+    fn mode_note(&self, sid: &str, mode: &str) -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "method": MODE,
+            "params": {"sessionId": sid, "modeId": mode, "bypassAllowed": self.allow_bypass},
+        })
+    }
+
+    /// A successful `session/new`/`load` response `m` for session `sid`: hand
+    /// it to the browser when the agent is in the configured mode, otherwise
+    /// switch the mode first.
+    fn establish(&mut self, m: Map<String, Value>, sid: String) -> Vec<Out> {
+        let current = m
+            .get("result")
+            .and_then(|r| r.get("modes"))
+            .and_then(|r| r.get("currentModeId"))
+            .and_then(Value::as_str)
+            .map(truncate);
+        if current.as_deref() == Some(self.mode.as_str()) {
+            return self.established(m, sid);
+        }
+        let own = loop {
+            self.own_ids += 1;
+            let own = Value::String(format!("{OWN_ID_PREFIX}{}", self.own_ids));
+            if !self.browser_pending.contains_key(&id_key(&own)) {
+                break own;
+            }
+        };
+        let params = json!({"sessionId": sid, "modeId": self.mode.as_str()});
+        self.establishing = true;
+        self.browser_pending
+            .insert(id_key(&own), Pending::Enforce(Box::new(m), sid));
+        vec![
+            Out::Record(
+                "mode",
+                self.redact(
+                    json!({"mode": self.mode.as_str(), "enforced": true, "agent_mode": current}),
+                ),
+            ),
+            Out::Agent(
+                json!({"jsonrpc": "2.0", "id": own, "method": "session/set_mode", "params": params}),
+            ),
+        ]
+    }
+
+    fn established(&mut self, m: Map<String, Value>, sid: String) -> Vec<Out> {
+        self.session = Some(sid.clone());
+        let msg = self.redact(Value::Object(m));
+        vec![
+            Out::Session(sid.clone()),
+            Out::Record("agent", json!({"response": "result"})),
+            Out::Browser(msg),
+            Out::Record("mode", json!({"mode": self.mode.as_str()})),
+            Out::Browser(self.mode_note(&sid, self.mode.as_str())),
+        ]
     }
 
     fn agent_request(&mut self, method: &str, id: Value, m: &Map<String, Value>) -> Vec<Out> {

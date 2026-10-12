@@ -6,8 +6,17 @@
 //! sandbox-init relays ACP's NDJSON between the channel and the child's stdio
 //! through [`filter::Filter`], which is the security boundary: the browser
 //! cannot change the agent's capabilities, cwd, MCP servers, mode beyond
-//! `default`/`plan`, or answer a permission request with anything but
+//! `bypassPermissions` (when `ENZARB_CHAT_ALLOW_BYPASS`)/`default`/`plan`, or
+//! answer a permission request with anything but
 //! `allow_once`/`reject_once`/`cancelled`.
+//!
+//! Permission mode: every session starts in `ENZARB_CHAT_PERMISSION_MODE`
+//! (default `bypassPermissions`: the sandbox is the boundary). In bypass the
+//! agent asks for no permission, so the hard-deny policy only sees the calls
+//! Claude Code still asks about; what bounds the agent then is its scrubbed
+//! environment (no clone, deps or npm token), its worktree, the pod's egress
+//! policy and gVisor. It runs as the same uid as sandbox-init, so file modes
+//! do not hide sandbox-init's files from it (see the README).
 //!
 //! The child's environment is built from scratch ([`PASS_ENV`] plus the Claude
 //! token and `CLAUDE_CONFIG_DIR`): no clone, deps or npm token exists in it.
@@ -316,6 +325,13 @@ impl ChatManager {
         let available = find_executable(&cfg.acp_bin);
         if cfg.max_chats > 0 && !available {
             tracing::warn!(bin = %cfg.acp_bin, "chat disabled: the ACP agent is not installed");
+        }
+        // Not readable by other uids (the chat agent shares sandbox-init's uid,
+        // so this does not hide it from the agent).
+        let enzarb_dir = cfg.workspace.join(".enzarb");
+        if enzarb_dir.is_dir() {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&enzarb_dir, std::fs::Permissions::from_mode(0o700));
         }
         Arc::new(Self {
             cfg,
@@ -827,7 +843,14 @@ impl ChatManager {
             "lifecycle",
             json!({"event": "opened", "resume": resume_sid.is_some()}),
         );
-        let filter = Filter::new(self.cfg.policy.clone(), wt.clone(), secrets, resume_sid);
+        let filter = Filter::new(
+            self.cfg.policy.clone(),
+            self.cfg.chat_permission_mode,
+            self.cfg.chat_allow_bypass,
+            wt.clone(),
+            secrets,
+            resume_sid,
+        );
         let registry = {
             let this = self.clone();
             let base = meta.clone();

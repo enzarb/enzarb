@@ -60,6 +60,45 @@ pub struct Config {
     /// `ENZARB_CHAT_RETENTION_DAYS`, default 7: chat records (transcripts)
     /// untouched for this long are deleted at startup.
     pub chat_retention: Duration,
+    /// `ENZARB_CHAT_PERMISSION_MODE`: the permission mode every chat session
+    /// starts in (`bypassPermissions`, `default` or `plan`). Default
+    /// `bypassPermissions`, or `default` when bypass is not allowed.
+    pub chat_permission_mode: ChatMode,
+    /// `ENZARB_CHAT_ALLOW_BYPASS`, default true: chats may run in (or switch
+    /// to) `bypassPermissions`. False keeps them in `default`/`plan`.
+    pub chat_allow_bypass: bool,
+}
+
+/// A chat permission mode sandbox-init lets a chat be in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatMode {
+    /// No permission prompts: tool calls run without asking the browser.
+    Bypass,
+    /// Every tool call that needs approval asks the browser.
+    Default,
+    /// Read-only planning.
+    Plan,
+}
+
+impl ChatMode {
+    /// The ACP mode id.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ChatMode::Bypass => "bypassPermissions",
+            ChatMode::Default => "default",
+            ChatMode::Plan => "plan",
+        }
+    }
+
+    /// Parse an ACP mode id (exact spelling).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "bypassPermissions" => Some(ChatMode::Bypass),
+            "default" => Some(ChatMode::Default),
+            "plan" => Some(ChatMode::Plan),
+            _ => None,
+        }
+    }
 }
 
 impl Default for Config {
@@ -85,6 +124,8 @@ impl Default for Config {
             chat_idle: Duration::from_secs(1800),
             chat_max: Duration::from_secs(8 * 3600),
             chat_retention: Duration::from_secs(7 * 86400),
+            chat_permission_mode: ChatMode::Bypass,
+            chat_allow_bypass: true,
         }
     }
 }
@@ -179,6 +220,29 @@ impl Config {
         if let Some(n) = secs("ENZARB_CHAT_RETENTION_DAYS")? {
             c.chat_retention = Duration::from_secs(n.saturating_mul(86400));
         }
+        // The values are not echoed in errors: a misplaced secret must not end
+        // up in the logs.
+        if let Some(v) = get("ENZARB_CHAT_ALLOW_BYPASS") {
+            c.chat_allow_bypass = match v.trim().to_ascii_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" => true,
+                "0" | "false" | "no" | "off" => false,
+                _ => anyhow::bail!("ENZARB_CHAT_ALLOW_BYPASS: must be true or false"),
+            };
+        }
+        c.chat_permission_mode = match get("ENZARB_CHAT_PERMISSION_MODE") {
+            Some(v) => ChatMode::parse(v.trim()).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "ENZARB_CHAT_PERMISSION_MODE: must be bypassPermissions, default or plan"
+                )
+            })?,
+            None if c.chat_allow_bypass => ChatMode::Bypass,
+            None => ChatMode::Default,
+        };
+        if c.chat_permission_mode == ChatMode::Bypass && !c.chat_allow_bypass {
+            anyhow::bail!(
+                "ENZARB_CHAT_PERMISSION_MODE=bypassPermissions needs ENZARB_CHAT_ALLOW_BYPASS=true"
+            );
+        }
         if let Some(v) = get("ENZARB_SHELL")
             .or_else(|| get("SHELL"))
             .filter(|s| !s.is_empty())
@@ -247,6 +311,47 @@ mod tests {
         assert!(
             Config::from_lookup(|q| (q == "ENZARB_CHAT_IDLE_SECS").then(|| "0".into())).is_err()
         );
+    }
+
+    #[test]
+    fn chat_permission_mode() {
+        let mode = |vars: &[(&str, &str)]| {
+            let vars: Vec<(String, String)> = vars
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            Config::from_lookup(move |k| vars.iter().find(|(a, _)| a == k).map(|(_, v)| v.clone()))
+                .map(|c| (c.chat_permission_mode, c.chat_allow_bypass))
+        };
+        assert_eq!(mode(&[]).unwrap(), (ChatMode::Bypass, true));
+        let m = "ENZARB_CHAT_PERMISSION_MODE";
+        let a = "ENZARB_CHAT_ALLOW_BYPASS";
+        assert_eq!(mode(&[(m, "default")]).unwrap(), (ChatMode::Default, true));
+        assert_eq!(mode(&[(m, "plan")]).unwrap(), (ChatMode::Plan, true));
+        assert_eq!(
+            mode(&[(m, "bypassPermissions")]).unwrap(),
+            (ChatMode::Bypass, true)
+        );
+        assert_eq!(mode(&[(a, "false")]).unwrap(), (ChatMode::Default, false));
+        assert_eq!(
+            mode(&[(a, "false"), (m, "plan")]).unwrap(),
+            (ChatMode::Plan, false)
+        );
+        assert!(mode(&[(a, "false"), (m, "bypassPermissions")]).is_err());
+        assert!(mode(&[(a, "maybe")]).is_err());
+        for bad in [
+            "acceptEdits",
+            "auto",
+            "dontAsk",
+            "bypass",
+            "BYPASSPERMISSIONS",
+            "",
+        ] {
+            assert!(mode(&[(m, bad)]).is_err(), "{bad}");
+        }
+        // the error does not echo the value
+        let e = mode(&[(m, "sk-ant-oat01-secret")]).unwrap_err().to_string();
+        assert!(!e.contains("secret"), "{e}");
     }
 
     #[test]

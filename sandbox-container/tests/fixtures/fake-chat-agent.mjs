@@ -2,6 +2,7 @@
 // A fake ACP agent for tests/chat.rs (sandbox-init's chat relay). It advertises
 // loadSession, records what it received and reports it back in
 // agent_message_chunk text. The first word of a prompt selects the behaviour.
+import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 let nextId = 1000;
@@ -10,6 +11,17 @@ let initParams = null;
 let newParams = null;
 let loadParams = null;
 let modes = [];
+// Like claude-agent-acp: bypassPermissions exists only when the session was
+// created without `allowDangerouslySkipPermissions: false`; the session starts
+// in the settings' permissions.defaultMode, not in `_meta...permissionMode`.
+let currentMode = "default";
+try {
+  const settings = JSON.parse(readFileSync(`${process.env.CLAUDE_CONFIG_DIR}/settings.json`, "utf8"));
+  currentMode = settings.permissions?.defaultMode ?? currentMode;
+} catch {}
+let allowBypass = false;
+const catalog = () =>
+  ["default", "acceptEdits", "plan", ...(allowBypass ? ["bypassPermissions"] : [])].map((id) => ({ id, name: id }));
 const send = (m) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...m }) + "\n");
 const reply = (id, result) => send({ id, result });
 const fail = (id, code, message) => send({ id, error: { code, message } });
@@ -25,6 +37,8 @@ const ask = (method, params) =>
     send({ id, method, params });
   });
 const permission = async (sessionId, toolCallId, kind, title, rawInput) => {
+  // Claude Code applies bypass before it would ask.
+  if (currentMode === "bypassPermissions") return "bypassed";
   const res = await ask("session/request_permission", {
     sessionId,
     toolCall: { toolCallId, title, kind, status: "pending", rawInput },
@@ -50,6 +64,7 @@ async function prompt(id, params) {
       newParams,
       loadParams,
       modes,
+      currentMode,
       prompt: params,
       cwd: process.cwd(),
       env: Object.keys(process.env).sort(),
@@ -127,16 +142,21 @@ rl.on("line", (line) => {
       newParams = m.params;
       if (process.env.CLAUDE_CODE_OAUTH_TOKEN === undefined) return fail(m.id, -32000, "Authentication required");
       if (m.params.cwd !== process.cwd()) return fail(m.id, -32602, "cwd mismatch");
+      allowBypass = m.params._meta?.claudeCode?.options?.allowDangerouslySkipPermissions !== false;
+      if (currentMode === "bypassPermissions" && !allowBypass) currentMode = "default";
       return reply(m.id, {
         sessionId: `sess-${process.pid}-${Date.now()}`,
-        modes: { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }, { id: "plan", name: "Plan" }] },
+        modes: { currentModeId: currentMode, availableModes: catalog() },
       });
     case "session/load":
       loadParams = m.params;
+      allowBypass = m.params._meta?.claudeCode?.options?.allowDangerouslySkipPermissions !== false;
       chunk(m.params.sessionId, `replayed ${m.params.sessionId}`);
       return reply(m.id, {});
     case "session/set_mode":
       modes.push(m.params.modeId);
+      if (!catalog().some((x) => x.id === m.params.modeId)) return fail(m.id, -32602, "Invalid Mode");
+      currentMode = m.params.modeId;
       return reply(m.id, {});
     case "session/prompt":
       return void prompt(m.id, m.params);

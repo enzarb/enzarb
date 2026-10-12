@@ -30,5 +30,5 @@ pub mod reaper;
 pub mod runs;
 pub mod server;
 
-pub use config::Config;
+pub use config::{ChatMode, Config};
 pub use server::{AppState, router, serve};
