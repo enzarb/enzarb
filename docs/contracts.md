@@ -83,6 +83,7 @@ One Project per repository: a repo key (`RepoKey::from_connector_url`, compared 
 - Core: `ENZARB_LISTEN` (default `0.0.0.0:7070`), `ENZARB_AUTH_TOKEN_FILE`, `ENZARB_WORKSPACE` (`/workspace`), `ENZARB_SHELL`, `ENZARB_GRACE_SECS` (25; the pod's `terminationGracePeriodSeconds` must be larger).
 - Runs: `ENZARB_MAX_RUNS` (2), `ENZARB_RUN_TIMEOUT_SECS` (3600), `ENZARB_CALLBACK_BACKOFF_MS`, `ENZARB_GIT_NAME`, `ENZARB_GIT_EMAIL`, `ENZARB_CLAUDE_TOKEN_FILE`.
 - Agent: `ENZARB_ACP_AGENT_BIN` (default `claude-agent-acp`), `ENZARB_CANCEL_GRACE_SECS` (10), `ENZARB_PERMISSION_POLICY` (YAML/JSON file; built-in default when unset).
+- Chat (ADR-0014; sandbox-init config only, no Project spec field): `ENZARB_MAX_CHATS` (1; `0` disables chat and removes `acp` from `welcome.features`; chats never use `ENZARB_MAX_RUNS` slots), `ENZARB_CHAT_IDLE_SECS` (1800), `ENZARB_CHAT_MAX_SECS` (28800), `ENZARB_CHAT_RETENTION_DAYS` (7).
 
 **Agent runs (ACP, ADR-0011):**
 - sandbox-init is an ACP client of `@agentclientprotocol/claude-agent-acp` (pinned 0.88.0), one agent process per run, with cwd set to the worktree and `CLAUDE_CODE_OAUTH_TOKEN` in its environment.
@@ -96,6 +97,13 @@ One Project per repository: a repo key (`RepoKey::from_connector_url`, compared 
   - Network fetch is denied unless the host is allowlisted.
 - **Summary:** the verbatim agent text of the turn. `exit_code` is 0 on `end_turn`, the agent's code on a crash, and null when cancelled or timed out.
 - **Cancel:** `session/cancel`, then a grace period, then the process group is killed.
+
+**Interactive chat (ACP, ADR-0014; [design](design/chat-tab.md)):**
+- One `acp` mux channel is one `claude-agent-acp` child, in its own process group. DATA_BIN carries newline-delimited JSON-RPC (max line 4 MiB). sandbox-init is a filtering relay: it forces `clientCapabilities` to none, `cwd` to the chat worktree and `mcpServers` to `[]`, allows only `initialize`, `session/new`, `session/load` (registered sessions only), `session/prompt`, `session/cancel` and `session/set_mode` (`default` or `plan`), and redacts the Claude token.
+- **Permissions:** `Policy::hard_deny` rejects (`reject_once`) secrets, `.enzarb`, the mux auth token, edits outside the chat worktree, `git push` and non-allowlisted fetches, and notifies the browser with `_enzarb/permission_denied`. Every other request goes to the user; only `allow_once`, `reject_once` or `cancelled` answers are accepted, and anything else becomes `reject_once`. No path auto-approves.
+- **Environment:** the Claude token only. A chat never receives `clone_token`, `deps_token` or `npm_token`, so it cannot push or install private packages.
+- **Limits:** at `ENZARB_MAX_CHATS` a new open closes the existing chat with `superseded`; 1 `acp` channel per socket; prompts up to 256 KiB. Chat does not block drain.
+- **CLOSE reasons on an `acp` channel:** `idle`, `superseded`, `shutdown` (sandbox-init got SIGTERM), `limit` (hard lifetime or line cap), `exit:<n>`, `signal:<n>`.
 
 **Image build:** `docker buildx build --secret id=proto_key,src=<key> --load .` (private enzarb-proto dependency). The minimal runtime image (ADR-0012, enzarb-sandbox-container#16) contains:
 - sandbox-init;
@@ -129,6 +137,9 @@ Secrets are redacted from all records.
 - `/workspace/repos/<slug>-<hash>/`: one clone per repo URL.
 - `/workspace/worktrees/run-<run_id>/`: the run's worktree. It starts from `origin/<branch>` if that exists, otherwise from `base_ref`. It is deleted when the run ends (the branch stays in the clone); at sandbox-init startup and before each run, `run-*` dirs of no active run are pruned.
 - `/workspace/.enzarb/runs/<run_id>/`: `state.json`, `request.json` (0600, clone token blanked), `transcript.jsonl`, and `callback.json` while a callback is pending.
+- `/workspace/worktrees/chat-<chat_id>/`: a chat's worktree (`chat_id` is 16 random hex chars), detached at `origin/<default branch>` of the chosen clone; commits go on the local branch `enzarb/chat-<chat_id>`. `run-*` pruning never touches it; a sweep removes chat worktrees with no live channel and no activity for `ENZARB_CHAT_RETENTION_DAYS`.
+- `/workspace/.enzarb/chats/<chat_id>/`: `meta.json` (`acp_session_id`, `repo`, `worktree`, `created`, `last_active`) and `transcript.jsonl` (0600; same record kinds as runs, plus `prompt`).
+- `/workspace/.enzarb/chat-home/.claude`: `CLAUDE_CONFIG_DIR` for chat agents, so `session/load` survives pod restarts.
 - `/workspace/.enzarb/claude-token`: mode 0600.
 
 ## 4. enzarb-proto messages
@@ -140,9 +151,9 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
 | Message | Direction | Fields |
 |---|---|---|
 | `hello` | client → server | `versions: [1]`, `client: "ui" \| "proxy" \| "executor"` |
-| `welcome` | server → client | `version` |
-| `open` | client → server | `channel`, `kind: "pty"`, `cols`, `rows`, `command?: [..]` |
-| `opened` / `open_error` | server → client | `channel` / `channel, message` |
+| `welcome` | server → client | `version`, `features?: [string]` (optional; `"acp"` when chat is enabled; absent means none) |
+| `open` | client → server | `channel`, `kind: "pty" \| "acp"`, `cols`, `rows`, `command?: [..]`, `repo?`, `resume?` (see below) |
+| `opened` / `open_error` | server → client | `channel` / `channel, message, code?` |
 | `resize` | client → server | `channel`, `cols`, `rows` |
 | `run_start` | client → server | see below |
 | `run_accepted` | server → client | `run_id`, `state`, `existing: bool` |
@@ -152,6 +163,13 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
 | `credential_status` | client → server | (none); browsers may send it |
 | `credential_state` | server → client | `kind: "claude_oauth"`, `configured: bool` |
 | `error` | both | `code`, `message`, `run_id?`, `channel?` (a `run_id` routes the error to that run's pending request) |
+
+**`acp` channels (ADR-0014; additive, protocol version stays 1):**
+- `kind: "acp"` opens a byte stream of newline-delimited JSON-RPC (ACP) in DATA_BIN; messages may span frames. `cols`/`rows` are ignored (clients send `0`). `repo` (optional) names a Project repo URL that must already be cloned; `resume` (optional) is the ACP session id, informational only.
+- **`welcome.features`:** the sandbox sends `["acp"]` when `ENZARB_MAX_CHATS > 0`. The proxy answers the browser's `hello` itself and forwards the sandbox's features intersected with those it can guard. Decoders ignore unknown fields.
+- **Compatibility rule:** a sender must not send `open{kind:"acp"}` before seeing `"acp"` in `welcome.features`. A proxy that cannot decode a frame closes the socket with 1008, so an `acp` open to an old proxy would kill the connection.
+- **`open_error.code`** (optional): `chat_disabled`, `chat_limit`, `no_credential`, `repo_not_cloned`, `unsupported_kind`. Clients must tolerate other values. An unknown `kind` decodes (Rust `ChannelKind::Unknown`) and yields `unsupported_kind`.
+- **CLOSE reasons** on an `acp` channel: `idle`, `superseded`, `shutdown`, `limit`, `exit:<n>`, `signal:<n>`. Clients must tolerate other text.
 
 `run_start` fields:
 
@@ -251,6 +269,7 @@ workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated
 
 - **URL:** `wss://<host>/sandbox/v1/projects/<project>/mux?token=<jwt>`. Browsers can't set headers on websockets.
 - **JWT:** HS256, signed with `ENZARB_SESSION_JWT_SECRET`, which ui and proxy share. Claims: `sub` (GitHub login), `project`, `aud: "enzarb-sandbox-proxy"`, `exp` (≤ 5 min after issue; it is checked only at connect).
+- **Chat:** uses the same URL, token and authorization. The proxy's CTRL allowlist additionally admits `open{kind:"acp"}` (still not `run_*`), relays `acp` DATA byte for byte, and forwards `welcome.features` as described in section 4. `PROXY_IDLE_TIMEOUT_SECS` must be at least `ENZARB_CHAT_IDLE_SECS` (default 2100 s, 35 min).
 - **Proxy authorization:** the proxy checks that `sub` is the Project's `spec.owner`, resolves `status.sandbox.endpoint` and the auth Secret, and dials sandbox-init with `client: "proxy"`.
 
 ### 7a. Browser realtime stream (enzarb-realtime)
@@ -297,7 +316,7 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 | `ENZARB_EXECUTOR_CALLBACK_SECRET` | workflows executor (callback token = `hex(HMAC-SHA256(secret, run_id))`; shared by all replicas) |
 | `RUST_LOG` | all Rust services |
 | `ENZARB_ROLES`, `ENZARB_DB_MAX_CONNECTIONS` (10), `ENZARB_EXECUTOR_LISTEN` (`0.0.0.0:8081`), `ENZARB_HEALTH_LISTEN` (`0.0.0.0:8082`) | workflows |
-| `PROXY_LISTEN` (`0.0.0.0:8080`), `PROXY_IDLE_TIMEOUT_SECS` (900), `PROXY_MAX_MESSAGE_BYTES`, `PROXY_SECRET_TTL_SECS` (30) | sandbox-proxy |
+| `PROXY_LISTEN` (`0.0.0.0:8080`), `PROXY_IDLE_TIMEOUT_SECS` (900; 2100 once chat ships), `PROXY_MAX_MESSAGE_BYTES`, `PROXY_SECRET_TTL_SECS` (30) | sandbox-proxy |
 | `RECEIVER_LISTEN` (default `0.0.0.0:8080`) | connectors receiver |
 
 ## 10. GitHub App

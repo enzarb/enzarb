@@ -17,3 +17,4 @@ Format: Context / Decision / Consequences. Status is `Accepted` unless noted. AD
 | [0011](0011-acp-agent-runs.md) | Agent runs through the Agent Client Protocol | 2026-10-08 |
 | [0012](0012-docker-in-sandbox.md) | Docker inside every sandbox, isolated by gVisor | 2026-10-08 |
 | [0013](0013-shared-sandbox-namespace.md) | One shared sandbox namespace; no Kubernetes API access from sandboxes | 2026-10-10 |
+| [0014](0014-chat-tab-acp-over-mux.md) | Interactive chat over ACP, carried on a new mux channel kind | 2026-10-12 |
