@@ -46,7 +46,8 @@
 		"#lib/*": "./src/lib/*"
 	},
 	"dependencies": {
-		"@enzarb/proto": "0.1.0-main.3",
+		"@agentclientprotocol/sdk": "^1.8.0",
+		"@enzarb/proto": "0.1.0-main.9",
 		"@kubernetes/client-node": "^2.0.0",
 		"@xterm/addon-fit": "^0.11.0",
 		"@xterm/xterm": "^6.0.0",
