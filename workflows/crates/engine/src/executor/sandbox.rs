@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+use super::sandbox_change::{ProjectChangeState, change_state};
 use async_trait::async_trait;
 use enzarb_connector::RepoKey;
 use enzarb_crds::Project;
@@ -49,6 +50,20 @@ pub trait SandboxResolver: Send + Sync {
     /// `Project.spec.maxRuns`, `None` when unset or unknown (the caller applies the default).
     async fn project_max_runs(&self, _project: &str) -> Result<Option<i64>, SandboxError> {
         Ok(None)
+    }
+
+    /// Pending-change state of every Project. The default lists none (no holds).
+    async fn change_states(&self) -> Result<Vec<ProjectChangeState>, SandboxError> {
+        Ok(Vec::new())
+    }
+
+    /// Set (`Some`) or remove (`None`) the `enzarb.dev/drained-generation` annotation.
+    async fn set_drained(
+        &self,
+        _project: &str,
+        _generation: Option<i64>,
+    ) -> Result<(), SandboxError> {
+        Ok(())
     }
 }
 
@@ -166,6 +181,35 @@ impl SandboxResolver for KubeSandboxResolver {
             .map_err(|e| SandboxError::Kube(e.to_string()))?;
         Ok(p.as_ref().and_then(max_runs))
     }
+
+    async fn change_states(&self) -> Result<Vec<ProjectChangeState>, SandboxError> {
+        let projects: Api<Project> = Api::all(self.client.clone());
+        let list = projects
+            .list(&Default::default())
+            .await
+            .map_err(|e| SandboxError::Kube(e.to_string()))?;
+        Ok(list.items.iter().map(change_state).collect())
+    }
+
+    async fn set_drained(
+        &self,
+        project: &str,
+        generation: Option<i64>,
+    ) -> Result<(), SandboxError> {
+        let api: Api<Project> = Api::all(self.client.clone());
+        let value = generation.map(|g| g.to_string());
+        let patch = serde_json::json!({"metadata": {"annotations": {
+            enzarb_crds::ANNOTATION_DRAINED_GENERATION: value
+        }}});
+        api.patch(
+            project,
+            &kube::api::PatchParams::default(),
+            &kube::api::Patch::Merge(&patch),
+        )
+        .await
+        .map_err(|e| SandboxError::Kube(e.to_string()))?;
+        Ok(())
+    }
 }
 
 /// Fixed map for tests and local runs.
@@ -174,6 +218,8 @@ pub struct StaticSandboxResolver {
     map: RwLock<HashMap<String, SandboxTarget>>,
     repos: RwLock<HashMap<String, Vec<RepoKey>>>,
     max_runs: RwLock<HashMap<String, i64>>,
+    changes: RwLock<Vec<ProjectChangeState>>,
+    drained_calls: RwLock<Vec<(String, Option<i64>)>>,
 }
 
 impl StaticSandboxResolver {
@@ -202,6 +248,16 @@ impl StaticSandboxResolver {
             .insert(project.into(), n);
     }
 
+    /// Replace the Projects `change_states` reports.
+    pub fn set_change_states(&self, states: Vec<ProjectChangeState>) {
+        *self.changes.write().expect("resolver lock") = states;
+    }
+
+    /// `set_drained` calls so far, in order.
+    pub fn drained_calls(&self) -> Vec<(String, Option<i64>)> {
+        self.drained_calls.read().expect("resolver lock").clone()
+    }
+
     pub fn remove(&self, project: &str) {
         self.map.write().expect("resolver lock").remove(project);
     }
@@ -226,6 +282,26 @@ impl SandboxResolver for StaticSandboxResolver {
             .get(project)
             .cloned()
             .unwrap_or_default())
+    }
+
+    async fn change_states(&self) -> Result<Vec<ProjectChangeState>, SandboxError> {
+        Ok(self.changes.read().expect("resolver lock").clone())
+    }
+
+    async fn set_drained(
+        &self,
+        project: &str,
+        generation: Option<i64>,
+    ) -> Result<(), SandboxError> {
+        self.drained_calls
+            .write()
+            .expect("resolver lock")
+            .push((project.into(), generation));
+        let mut changes = self.changes.write().expect("resolver lock");
+        if let Some(c) = changes.iter_mut().find(|c| c.name == project) {
+            c.drained = generation.map(|g| g.to_string());
+        }
+        Ok(())
     }
 
     async fn project_max_runs(&self, project: &str) -> Result<Option<i64>, SandboxError> {

@@ -2622,3 +2622,164 @@ async fn hold_still_blocks_agents_and_connector_jobs_flow_when_saturated() {
     assert_eq!(h.exec.drain().await, 1);
     assert_eq!(job(h.pool(), p).await.status, "succeeded");
 }
+
+fn pstate(
+    pending: Option<i64>,
+    ready: bool,
+    drained: Option<&str>,
+) -> engine::executor::ProjectChangeState {
+    engine::executor::ProjectChangeState {
+        name: "enzarb".into(),
+        pending_generation: pending,
+        sandbox_ready: ready,
+        drained: drained.map(String::from),
+    }
+}
+
+async fn change_hold_rows(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM workflows.project_sandbox_changes")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn pending_change_holds_new_agents_drains_acks_and_lifts() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    h.resolver.set_max_runs("enzarb", 4);
+    let ids = queue_agents(&h, "enzarb", 1, 1).await;
+    assert_eq!(h.exec.drain().await, 1); // running before the change appears
+
+    h.resolver
+        .set_change_states(vec![pstate(Some(1), true, None)]);
+    h.exec.reconcile_sandbox_changes().await.unwrap();
+    // running job: no ack yet
+    assert!(h.resolver.drained_calls().is_empty());
+    assert_eq!(job(pool, ids[0]).await.status, "running");
+
+    // new agent job stays queued, connector jobs flow
+    let more = queue_agents(&h, "enzarb", 10, 1).await;
+    h.fake.add_thread(key(50), thread_with("p"));
+    let w = new_item(pool, 50, "enzarb").await;
+    let prog = new_job(
+        pool,
+        w,
+        "enzarb",
+        "set_progress",
+        0,
+        "k:prog50",
+        progress_input(50, Progress::Received),
+    )
+    .await;
+    assert_eq!(h.exec.drain().await, 1);
+    assert_eq!(job(pool, prog).await.status, "succeeded");
+    assert_eq!(job(pool, more[0]).await.status, "queued");
+
+    // the running job finishes; one ack, and a second pass writes nothing
+    sqlx::query("UPDATE workflows.jobs SET status='succeeded' WHERE id=$1")
+        .bind(ids[0])
+        .execute(pool)
+        .await
+        .unwrap();
+    h.exec.reconcile_sandbox_changes().await.unwrap();
+    h.exec.reconcile_sandbox_changes().await.unwrap();
+    assert_eq!(
+        h.resolver.drained_calls(),
+        vec![("enzarb".to_string(), Some(1))]
+    );
+
+    // a newer generation is re-acknowledged
+    h.resolver
+        .set_change_states(vec![pstate(Some(2), true, Some("1"))]);
+    h.exec.reconcile_sandbox_changes().await.unwrap();
+    assert_eq!(
+        h.resolver.drained_calls().last().unwrap(),
+        &("enzarb".to_string(), Some(2))
+    );
+
+    // pending cleared but sandbox not Ready: still held
+    h.resolver
+        .set_change_states(vec![pstate(None, false, Some("2"))]);
+    h.exec.reconcile_sandbox_changes().await.unwrap();
+    assert_eq!(change_hold_rows(pool).await, 1);
+    assert_eq!(h.exec.drain().await, 0);
+
+    // Ready again: hold lifted, stale annotation cleared, queued job starts
+    h.resolver
+        .set_change_states(vec![pstate(None, true, Some("2"))]);
+    h.exec.reconcile_sandbox_changes().await.unwrap();
+    assert_eq!(change_hold_rows(pool).await, 0);
+    assert_eq!(
+        h.resolver.drained_calls().last().unwrap(),
+        &("enzarb".to_string(), None)
+    );
+    assert_eq!(h.exec.drain().await, 1);
+    assert_eq!(job(pool, more[0]).await.status, "running");
+}
+
+#[tokio::test]
+async fn pending_change_hold_expires_at_the_ceiling_and_drops_with_the_project() {
+    let h = H::with(db!(), |c| {
+        c.sandbox_change_hold_ceiling = Duration::from_secs(3600)
+    })
+    .await;
+    let pool = h.pool();
+    let ids = queue_agents(&h, "enzarb", 1, 1).await;
+    h.resolver
+        .set_change_states(vec![pstate(Some(1), true, None)]);
+    h.exec.reconcile_sandbox_changes().await.unwrap();
+    assert_eq!(h.exec.drain().await, 0);
+    sqlx::query(
+        "UPDATE workflows.project_sandbox_changes SET first_seen_at = now() - interval '2 hours'",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    assert_eq!(h.exec.drain().await, 1);
+    assert_eq!(job(pool, ids[0]).await.status, "running");
+
+    // a deleted Project drops its hold
+    h.resolver.set_change_states(vec![]);
+    h.exec.reconcile_sandbox_changes().await.unwrap();
+    assert_eq!(change_hold_rows(pool).await, 0);
+}
+
+#[tokio::test]
+async fn pending_change_and_session_limit_hold_clear_independently_and_lost_runs_wait() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let id = running_agent_job(&h).await;
+    h.resolver
+        .set_change_states(vec![pstate(Some(1), true, None)]);
+    h.exec.reconcile_sandbox_changes().await.unwrap();
+    // the roll kills the run: requeued by restart handling, held by the pending change
+    assert_eq!(cancel_run(&h, &format!("job-{id}")).await, 200);
+    make_due(pool, id).await;
+    assert_eq!(h.exec.drain().await, 0);
+    assert_eq!(job(pool, id).await.status, "queued");
+    h.exec.reconcile_sandbox_changes().await.unwrap();
+    assert_eq!(
+        h.resolver.drained_calls(),
+        vec![("enzarb".to_string(), Some(1))]
+    );
+
+    // a session-limit hold on top keeps it queued after the change clears
+    sqlx::query(
+        "INSERT INTO workflows.project_holds (project_id, blocked_until, reason)
+         VALUES ('enzarb', now() + interval '1 hour', 'session_limit')",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    h.resolver
+        .set_change_states(vec![pstate(None, true, Some("1"))]);
+    h.exec.reconcile_sandbox_changes().await.unwrap();
+    assert_eq!(h.exec.drain().await, 0);
+    sqlx::query("DELETE FROM workflows.project_holds")
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(h.exec.drain().await, 1);
+    assert_eq!(job(pool, id).await.restart_retries, 1);
+}

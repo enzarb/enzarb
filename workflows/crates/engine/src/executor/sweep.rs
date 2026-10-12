@@ -23,6 +23,9 @@ enum Asked {
 impl Executor {
     /// One sweep. Errors are logged; the next sweep tries again.
     pub async fn sweep(&self) {
+        if let Err(e) = self.reconcile_sandbox_changes().await {
+            tracing::warn!(error = %e, "sweep: sandbox change reconcile failed");
+        }
         if let Err(e) = self.reap_leases().await {
             tracing::warn!(error = %e, "sweep: lease recovery failed");
         }

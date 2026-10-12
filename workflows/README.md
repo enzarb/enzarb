@@ -39,6 +39,7 @@ enzarb-workflows run --roles reducer,executor,ticker      # or ENZARB_ROLES
 | `ENZARB_EXECUTOR_WORKERS` | executor | 24 (agent jobs hold a worker only while being accepted, not while the run is active) |
 | `ENZARB_EXECUTOR_MAX_AGENT_PER_PROJECT` | executor | 16 (ceiling for `Project.spec.maxRuns`) |
 | `ENZARB_EXECUTOR_DEFAULT_AGENT_PER_PROJECT` | executor | 2 (Projects without `spec.maxRuns`) |
+| `ENZARB_EXECUTOR_SANDBOX_CHANGE_HOLD_CEILING_SECS` | executor | 10800 (a `status.pendingChange` hold older than this stops holding agent jobs, with a warning) |
 | `ENZARB_HEALTH_LISTEN` | processes without `executor` | `0.0.0.0:8082` |
 | `RUST_LOG` | all | `info` (logs are JSON on stdout) |
 
@@ -51,7 +52,7 @@ Reducer and executor roles need a Kubernetes client (in-cluster or `KUBECONFIG`)
 
 ### RBAC
 
-`deploy/rbac.yaml`: `get/list/watch` on `projects.enzarb.dev` cluster-wide (ClusterRole: reducer index,
+`deploy/rbac.yaml`: `get/list/watch` and `patch` (the `enzarb.dev/drained-generation` annotation, set once a Project's sandbox has drained for a pending change) on `projects.enzarb.dev` cluster-wide (ClusterRole: reducer index,
 executor sandbox lookup) and, in the shared sandbox namespace (`enzarb-sandboxes`, ADR-0013), a namespaced
 Role with `get` on `secrets` (the per-Project auth Secrets `sb-<project>-auth`; names vary per Project, so
 `resourceNames` cannot pin them, and the namespace holds no other Secrets). Only the executor role needs the

@@ -25,6 +25,8 @@
 //!   item are applied one at a time, in priority order);
 //! * a `set_progress` `Working` marker waits until the agent job queued by the same event has
 //!   been accepted by the sandbox (`deadline` set), and is dropped if that job already ended;
+//! * agent jobs of a Project with a pending sandbox change (`status.pendingChange`) are not
+//!   started until it clears, see [`sandbox_change`];
 //! * agent jobs of a Project with an active `project_holds` row (a session limit was hit, see
 //!   below) wait for `blocked_until`. Other jobs of that Project are not held.
 //!
@@ -74,6 +76,7 @@ mod connectors;
 mod jobs;
 mod restart;
 mod sandbox;
+mod sandbox_change;
 mod sandbox_wait;
 mod session_limit;
 mod sweep;
@@ -95,6 +98,7 @@ pub use sandbox::{
     KubeSandboxResolver, SandboxError, SandboxResolver, SandboxTarget, StaticSandboxResolver,
     max_runs, project_repos, secret_location,
 };
+pub use sandbox_change::{ProjectChangeState, change_state};
 
 #[derive(Debug, Clone)]
 pub struct ExecutorConfig {
@@ -111,6 +115,10 @@ pub struct ExecutorConfig {
     pub default_agent_per_project: i64,
     /// How long a resolved `maxRuns` is reused before the Project is read again.
     pub agent_limit_ttl: Duration,
+    /// A `Project.status.pendingChange` hold older than this stops holding agent jobs (the
+    /// operator never cleared it); a warning is logged. Env
+    /// `ENZARB_EXECUTOR_SANDBOX_CHANGE_HOLD_CEILING_SECS`.
+    pub sandbox_change_hold_ceiling: Duration,
     pub lease: Duration,
     /// Fallback poll when no `work_item_changed` notification arrives.
     pub poll_interval: Duration,
@@ -148,6 +156,7 @@ impl ExecutorConfig {
             max_agent_per_project: MAX_AGENT_LIMIT,
             default_agent_per_project: DEFAULT_AGENT_LIMIT,
             agent_limit_ttl: Duration::from_secs(15),
+            sandbox_change_hold_ceiling: Duration::from_secs(3 * 3600),
             lease: Duration::from_secs(120),
             poll_interval: Duration::from_secs(2),
             sweep_interval: Duration::from_secs(30),
@@ -172,6 +181,9 @@ impl ExecutorConfig {
                 .and_then(|v| v.trim().parse::<i64>().ok())
                 .filter(|n| *n > 0)
         };
+        if let Some(n) = num("ENZARB_EXECUTOR_SANDBOX_CHANGE_HOLD_CEILING_SECS") {
+            self.sandbox_change_hold_ceiling = Duration::from_secs(n as u64);
+        }
         if let Some(n) = num("ENZARB_EXECUTOR_WORKERS") {
             self.workers = n as usize;
         }
@@ -289,6 +301,7 @@ pub struct Executor {
     pub(crate) sandboxes: Arc<dyn SandboxResolver>,
     pub(crate) cfg: ExecutorConfig,
     /// project id -> (resolved `maxRuns`, fetched at).
+    change_warned: std::sync::Mutex<std::collections::HashSet<String>>,
     limits: std::sync::Mutex<std::collections::HashMap<String, (Option<i64>, std::time::Instant)>>,
 }
 
@@ -305,6 +318,7 @@ impl Executor {
             sandboxes,
             cfg,
             limits: Default::default(),
+            change_warned: Default::default(),
         }
     }
 
@@ -476,6 +490,10 @@ impl Executor {
                        OR NOT EXISTS (SELECT 1 FROM project_holds h
                                       WHERE h.project_id = j.project_id
                                         AND h.blocked_until > now()))
+                  AND (j.kind NOT LIKE 'agent\_%' OR j.project_id IS NULL
+                       OR NOT EXISTS (SELECT 1 FROM project_sandbox_changes c
+                                      WHERE c.project_id = j.project_id
+                                        AND c.first_seen_at > now() - make_interval(secs => $6)))
                   AND (j.kind LIKE 'agent\_%'
                        OR NOT EXISTS (SELECT 1 FROM jobs r
                                       WHERE r.status = 'running' AND r.work_item_id = j.work_item_id
@@ -504,6 +522,7 @@ impl Executor {
         .bind(self.cfg.lease.as_secs_f64())
         .bind(&limits)
         .bind(default_limit as i32)
+        .bind(self.cfg.sandbox_change_hold_ceiling.as_secs_f64())
         .fetch_optional(&mut *tx)
         .await?;
         tx.commit().await?;
