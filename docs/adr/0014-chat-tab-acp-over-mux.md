@@ -14,7 +14,7 @@ The UI needs a Chat page where the Project owner talks to Claude inside the Proj
 - **No browser fs or terminal capabilities.** The agent uses its own built-in tools inside the sandbox; `fs/*` and `terminal/*` requests from the agent get `-32601`.
 - **No push, deps or npm tokens for chat.** The chat agent gets only the Claude token, so it cannot push (structurally, as well as by policy) and no new credential reaches the browser. Auth is the terminal's path unchanged (5-minute JWT, owner check in the proxy).
 - **Storage:** a worktree per chat at `/workspace/worktrees/chat-<chat_id>` (local branch `enzarb/chat-<chat_id>`), registry and transcripts under `/workspace/.enzarb/chats/<chat_id>/`, and `CLAUDE_CONFIG_DIR` on the PVC so `session/load` survives pod restarts.
-- **Rollout:** proto, then sandbox-container, sandbox-proxy, ui, helm. The UI is behind `ENZARB_UI_CHAT` (chart `ui.chat.enabled`, default false).
+- **Rollout:** proto, then sandbox-container, sandbox-proxy, ui, helm. The UI was initially behind `ENZARB_UI_CHAT` (chart `ui.chat.enabled`, default false); see the amendment below.
 
 ### Decisions on the open questions
 - **Q1 (shared Claude quota): accepted.** Chat and jobs share the owner's Claude subscription and rate limits, so chat can contend with jobs. Revisit if it bites.
@@ -35,3 +35,7 @@ The UI needs a Chat page where the Project owner talks to Claude inside the Proj
 - **Parsing a command out of a PTY channel:** a PTY echoes and applies line discipline, with no framing guarantee, and would expose a shell to the chat path.
 - **Exposing the agent directly (transparent pipe, browser as the ACP client with its own capabilities):** the browser would control `cwd`, MCP servers, modes and capabilities, and could answer permissions with `allow_always`. The sandbox must enforce these, so it filters.
 - **Auto-approving what `Policy::decide` allows:** acceptable for unattended runs, but in chat the user is present and prompt injection from repo content is the risk, so only hard denies are automatic.
+
+## Amendment 2026-10-12
+
+The UI flag was removed after validation (ui v0.16.0, enzarb-helm v0.56.0; the chart keeps `ui.chat.enabled` only as a deprecated no-op schema key for one release). Chat is always on: the Chat tab is always listed and degrades to "Chat not available" when the sandbox or proxy does not advertise `acp`. The kill switch is `ENZARB_MAX_CHATS=0` on the sandbox (no `acp` feature, `chat_disabled` open errors). Rollback is a drain-first sandbox image rollback or that setting, not a UI flag.
