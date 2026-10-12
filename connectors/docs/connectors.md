@@ -84,7 +84,9 @@ ignores it. Other failures (403, 404, 5xx) are `Err`.
 
 ## `Connector::get_merge_readiness`
 
-Returns `MergeReadiness { head_sha, mergeable, mergeable_state, ci }`.
+Returns `MergeReadiness { head_sha, base_sha, mergeable, mergeable_state, ci }`.
+`base_sha` is the PR's `base.sha` (no extra API call); it is `None` when absent
+and defaults to `None` when deserializing older payloads.
 
 * `mergeable` is `None` while GitHub is still computing it (`null`); it is never
   mapped to `false`. Retry later.

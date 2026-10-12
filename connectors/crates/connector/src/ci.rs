@@ -32,6 +32,10 @@ pub enum MergeOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MergeReadiness {
     pub head_sha: String,
+    /// The change request's base commit. `None` when the provider does not
+    /// report it (or the payload predates this field).
+    #[serde(default)]
+    pub base_sha: Option<String>,
     /// `None` while the provider is still computing it. Never read as `false`.
     pub mergeable: Option<bool>,
     /// Provider's free-form state (GitHub: `clean`, `dirty`, `blocked`, ...).

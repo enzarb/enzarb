@@ -186,6 +186,7 @@ async fn readiness_is_seeded() {
     ));
     let r = MergeReadiness {
         head_sha: "abc".into(),
+        base_sha: Some("def".into()),
         mergeable: None,
         mergeable_state: "unknown".into(),
         ci: CiState::Pending,
@@ -193,6 +194,37 @@ async fn readiness_is_seeded() {
     f.set_merge_readiness(item(), r.clone());
     assert_eq!(f.get_merge_readiness(&item(), 1).await.unwrap(), r);
     assert_eq!(f.calls().len(), 2);
+}
+
+#[test]
+fn readiness_without_base_sha_deserializes_to_none() {
+    let r: MergeReadiness = serde_json::from_value(serde_json::json!({
+        "head_sha": "abc",
+        "mergeable": true,
+        "mergeable_state": "clean",
+        "ci": "success",
+    }))
+    .unwrap();
+    assert_eq!(r.base_sha, None);
+}
+
+#[tokio::test]
+async fn branch_head_is_seeded_and_recorded() {
+    let f = FakeConnector::new();
+    let repo = RepoKey::new("github", "enzarb", "enzarb-proto");
+    assert_eq!(f.branch_head(&repo, "main").await.unwrap(), None);
+    f.set_branch_head(repo.clone(), "main", "abc123");
+    assert_eq!(
+        f.branch_head(&repo, "main").await.unwrap().as_deref(),
+        Some("abc123")
+    );
+    assert_eq!(f.branch_head(&repo, "other").await.unwrap(), None);
+    let calls = f.calls();
+    assert_eq!(calls.len(), 3);
+    assert!(matches!(
+        &calls[1].call,
+        Call::BranchHead { branch, .. } if branch == "main"
+    ));
 }
 
 #[tokio::test]

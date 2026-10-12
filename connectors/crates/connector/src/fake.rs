@@ -62,6 +62,10 @@ pub enum Call {
         item: WorkItemKey,
         number: u64,
     },
+    BranchHead {
+        repo: RepoKey,
+        branch: String,
+    },
 }
 
 /// A recorded call. `replayed` is true when the idempotency key had been seen
@@ -91,6 +95,7 @@ struct State {
     merge_outcomes: VecDeque<MergeOutcome>,
     seen_merges: HashMap<String, MergeOutcome>,
     readiness: HashMap<WorkItemKey, MergeReadiness>,
+    branch_heads: HashMap<(RepoKey, String), String>,
 }
 
 /// Records every call and keeps simple in-memory state. Cheap to share by
@@ -135,6 +140,13 @@ impl FakeConnector {
     /// Seed the readiness returned for `item` (repeatable; last one wins).
     pub fn set_merge_readiness(&self, item: WorkItemKey, readiness: MergeReadiness) {
         self.st().readiness.insert(item, readiness);
+    }
+
+    /// Seed the head sha returned by `branch_head` (unseeded branches are `None`).
+    pub fn set_branch_head(&self, repo: RepoKey, branch: &str, sha: &str) {
+        self.st()
+            .branch_heads
+            .insert((repo, branch.to_string()), sha.to_string());
     }
 
     /// Make the next call (any method) fail with `error`, once.
@@ -376,6 +388,20 @@ impl Connector for FakeConnector {
             .get(item)
             .cloned()
             .ok_or_else(|| Error::NotFound(format!("{item} readiness")))
+    }
+
+    async fn branch_head(&self, repo: &RepoKey, branch: &str) -> Result<Option<String>> {
+        let mut st = self.st();
+        let call = Call::BranchHead {
+            repo: repo.clone(),
+            branch: branch.to_string(),
+        };
+        Self::take_failure(&mut st, call.clone())?;
+        Self::record(&mut st, call, false);
+        Ok(st
+            .branch_heads
+            .get(&(repo.clone(), branch.to_string()))
+            .cloned())
     }
 
     async fn check_permission(&self, repo: &RepoKey, actor: &Actor) -> Result<Permission> {

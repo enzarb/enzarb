@@ -1569,3 +1569,111 @@ async fn mint_read_credential_does_not_retry_unrelated_errors() {
         .unwrap_err();
     assert!(matches!(err, Error::Invalid(_)));
 }
+
+// ---- base_sha / branch_head ----
+
+#[tokio::test]
+async fn readiness_reports_base_sha() {
+    let r = readiness(json!(true), "clean", (0, "pending"), vec![]).await;
+    assert_eq!(r.base_sha.as_deref(), Some("01234567"));
+}
+
+#[tokio::test]
+async fn readiness_base_sha_none_when_absent() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    let mut pr = pull_state(false, json!(true), "clean");
+    pr["base"].as_object_mut().unwrap().remove("sha");
+    mount_pull(&server, pr, None).await;
+    mount_combined(&server, 0, "pending").await;
+    mount_checks(&server, 0, None, vec![]).await;
+    let r = connector(&server)
+        .get_merge_readiness(&item(7), 7)
+        .await
+        .unwrap();
+    assert_eq!(r.base_sha, None);
+    assert_eq!(r.head_sha, HEAD);
+}
+
+async fn branch_head_with(
+    branch: &str,
+    resp: ResponseTemplate,
+) -> (Result<Option<String>, Error>, Vec<String>) {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/repos/enzarb/enzarb-ui/branches/"))
+        .respond_with(resp)
+        .mount(&server)
+        .await;
+    let got = connector(&server).branch_head(&repo(), branch).await;
+    let paths = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.url.path().to_string())
+        .filter(|p| p.contains("/branches/"))
+        .collect();
+    (got, paths)
+}
+
+#[tokio::test]
+async fn branch_head_returns_commit_sha() {
+    let (got, paths) = branch_head_with(
+        "main",
+        ResponseTemplate::new(200)
+            .set_body_json(json!({"name": "main", "commit": {"sha": "deadbeef"}})),
+    )
+    .await;
+    assert_eq!(got.unwrap().as_deref(), Some("deadbeef"));
+    assert_eq!(paths, vec!["/repos/enzarb/enzarb-ui/branches/main"]);
+}
+
+#[tokio::test]
+async fn branch_head_missing_branch_is_none() {
+    let (got, _) = branch_head_with(
+        "gone",
+        ResponseTemplate::new(404).set_body_json(json!({"message": "Branch not found"})),
+    )
+    .await;
+    assert_eq!(got.unwrap(), None);
+}
+
+#[tokio::test]
+async fn branch_head_server_errors_propagate() {
+    let (got, _) = branch_head_with("main", ResponseTemplate::new(500)).await;
+    assert!(got.is_err());
+    let (got, _) = branch_head_with(
+        "main",
+        ResponseTemplate::new(403).set_body_json(json!({"message": "Resource not accessible"})),
+    )
+    .await;
+    assert!(got.is_err());
+}
+
+#[tokio::test]
+async fn branch_head_encodes_branch_name() {
+    let (got, paths) = branch_head_with(
+        "feat/a b#c?d%e",
+        ResponseTemplate::new(200).set_body_json(json!({"commit": {"sha": "abc"}})),
+    )
+    .await;
+    assert_eq!(got.unwrap().as_deref(), Some("abc"));
+    assert_eq!(
+        paths,
+        vec!["/repos/enzarb/enzarb-ui/branches/feat/a%20b%23c%3Fd%25e"]
+    );
+}
+
+#[tokio::test]
+async fn branch_head_missing_installation_is_not_none() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/enzarb/enzarb-ui/installation"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "Not Found"})))
+        .mount(&server)
+        .await;
+    let got = connector(&server).branch_head(&repo(), "main").await;
+    assert!(got.is_err());
+}

@@ -420,6 +420,7 @@ struct PullState {
     #[serde(default)]
     merge_commit_sha: Option<String>,
     head: Branch,
+    base: Branch,
     /// `null` while GitHub computes it.
     #[serde(default)]
     mergeable: Option<bool>,
@@ -746,10 +747,39 @@ impl Connector for GitHubConnector {
         };
         Ok(MergeReadiness {
             head_sha,
+            base_sha: pr.base.sha,
             mergeable: pr.mergeable,
             mergeable_state: pr.mergeable_state.unwrap_or_default(),
             ci: aggregate_ci(&checks, &statuses),
         })
+    }
+
+    async fn branch_head(&self, repo: &RepoKey, branch: &str) -> Result<Option<String>> {
+        #[derive(Deserialize)]
+        struct Commit {
+            sha: String,
+        }
+        #[derive(Deserialize)]
+        struct BranchInfo {
+            commit: Commit,
+        }
+        let path = format!(
+            "/repos/{}/branches/{}",
+            repo.full_name(),
+            encode_path(branch)
+        );
+        // Resolve auth first so a missing installation is not mistaken for a
+        // missing branch below.
+        github_repo(repo)?;
+        self.token(repo).await?;
+        match self
+            .call(repo, "get branch", Method::GET, &path, None)
+            .await
+        {
+            Ok(r) => Ok(Some(r.json::<BranchInfo>()?.commit.sha)),
+            Err(Error::NotFound(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     async fn check_permission(&self, repo: &RepoKey, actor: &Actor) -> Result<Permission> {
@@ -888,6 +918,20 @@ impl Connector for GitHubConnector {
             expires_at: t.expires_at,
         }))
     }
+}
+
+/// Percent-encode everything except unreserved characters and `/`.
+fn encode_path(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 /// Whether an error from the token endpoint is GitHub refusing the requested

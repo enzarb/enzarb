@@ -73,6 +73,12 @@ pub trait Connector: Send + Sync {
     /// `None` while the provider is still computing it.
     async fn get_merge_readiness(&self, item: &WorkItemKey, number: u64) -> Result<MergeReadiness>;
 
+    /// Current head commit sha of `branch`, or `None` if the branch does not
+    /// exist. The default implementation returns `Ok(None)`.
+    async fn branch_head(&self, _repo: &RepoKey, _branch: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+
     async fn check_permission(&self, repo: &RepoKey, actor: &Actor) -> Result<Permission>;
 
     /// A short-lived token restricted to the single `repo`.
