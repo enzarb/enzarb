@@ -1,5 +1,6 @@
 import { page, userEvent } from 'vitest/browser';
 import { describe, expect, it, vi } from 'vitest';
+import type { ComponentProps } from 'svelte';
 import { render } from 'vitest-browser-svelte';
 import NewProjectForm, { type RepositoryChoices } from './NewProjectForm.svelte';
 import type { CreateProjectsOutcome } from '#lib/onboarding.ts';
@@ -228,5 +229,141 @@ describe('NewProjectForm', () => {
 			.element(page.getByText('At most 50 projects per request').first())
 			.toBeInTheDocument();
 		await expect.element(page.getByRole('button', { name: 'Create 51 projects' })).toBeDisabled();
+	});
+});
+
+describe('NewProjectForm: create a new GitHub repository', () => {
+	type Starter = NonNullable<ComponentProps<typeof NewProjectForm>['startCreateRepo']>;
+	function setupRepo(
+		props: Partial<ComponentProps<typeof NewProjectForm>> = {},
+		create = vi.fn(async (): Promise<CreateProjectsOutcome> => ok)
+	) {
+		const startCreateRepo = vi.fn<Starter>(async () => ({
+			ok: true,
+			href: '/login/github?purpose=create-repo&return=%2Fprojects%2Fnew'
+		}));
+		const navigate = vi.fn();
+		render(NewProjectForm, {
+			choices: choices(),
+			refreshHref: '/login/github?refresh=1',
+			create,
+			startCreateRepo,
+			navigate,
+			...props
+		});
+		return { create, startCreateRepo, navigate };
+	}
+	const steps = () => page.getByRole('list', { name: 'New repository progress' });
+
+	it('starts the re-authorization with owner, name (default: project name), visibility and description', async () => {
+		const { startCreateRepo, navigate } = setupRepo();
+		const button = page.getByRole('button', { name: 'Create repository on GitHub' });
+		await expect.element(button).toBeDisabled(); // no name yet
+		await page.getByRole('textbox', { name: 'Project name' }).fill('tools');
+		await page.getByRole('radio', { name: 'Public' }).click();
+		await page.getByRole('textbox', { name: 'Description' }).fill('my tools');
+		await button.click();
+		expect(startCreateRepo).toHaveBeenCalledWith({
+			owner: 'acme',
+			name: 'tools',
+			visibility: 'public',
+			description: 'my tools'
+		});
+		expect(navigate).toHaveBeenCalledWith(
+			'/login/github?purpose=create-repo&return=%2Fprojects%2Fnew'
+		);
+	});
+
+	it('defaults to private and blocks invalid names', async () => {
+		const { startCreateRepo } = setupRepo();
+		const button = page.getByRole('button', { name: 'Create repository on GitHub' });
+		await page.getByRole('textbox', { name: 'Repository name' }).fill('a/b');
+		await expect.element(button).toBeDisabled();
+		await page.getByRole('textbox', { name: 'Repository name' }).fill('ok-name');
+		await button.click();
+		expect(startCreateRepo).toHaveBeenCalledWith(
+			expect.objectContaining({ name: 'ok-name', visibility: 'private' })
+		);
+	});
+
+	it('shows a refusal from the server and does not navigate', async () => {
+		const startCreateRepo = vi.fn<Starter>(async () => ({ ok: false, message: 'Choose an owner' }));
+		const { navigate } = setupRepo({ startCreateRepo });
+		await page.getByRole('textbox', { name: 'Repository name' }).fill('x');
+		await page.getByRole('button', { name: 'Create repository on GitHub' }).click();
+		await expect.element(page.getByText('Choose an owner')).toBeInTheDocument();
+		expect(navigate).not.toHaveBeenCalled();
+	});
+
+	it('preselects the new repository, shows the checklist, and mixes in existing ones', async () => {
+		const { create } = setupRepo({ newRepo: 'github:acme/web', repoResult: { code: 'created' } });
+		await expect.element(page.getByRole('button', { name: 'Remove acme/web' })).toBeInTheDocument();
+		await expect.element(steps().getByText('Create repository')).toBeInTheDocument();
+		await expect.element(steps().getByText('Install on repository')).toBeInTheDocument();
+		await expect.element(steps().getByText('Create project')).toBeInTheDocument();
+		await pick(/me\/dotfiles/);
+		await page.getByRole('textbox', { name: 'Project name' }).fill('tools');
+		await page.getByRole('button', { name: 'Create project' }).click();
+		expect(create).toHaveBeenCalledWith(
+			[expect.objectContaining({ repositories: ['github:acme/web', 'github:me/dotfiles'] })],
+			expect.anything()
+		);
+	});
+
+	it('reports a GitHub refusal in the checklist with its status', async () => {
+		setupRepo({ repoResult: { code: 'forbidden', status: 403 } });
+		const first = steps().getByRole('listitem').first();
+		await expect.element(first).toHaveAttribute('data-state', 'failed');
+		await expect.element(first).toHaveTextContent('GitHub status 403');
+	});
+
+	it('fails the install step when the repository was created but not installed', async () => {
+		setupRepo({
+			newRepo: 'github:acme/web',
+			repoResult: { code: 'created-not-installed', status: 403 }
+		});
+		const items = steps().getByRole('listitem');
+		await expect.element(items.nth(0)).toHaveAttribute('data-state', 'done');
+		await expect.element(items.nth(1)).toHaveAttribute('data-state', 'failed');
+	});
+
+	it('shows the identity-mismatch message and no checklist', async () => {
+		setupRepo({ repoResult: { code: 'identity-mismatch' } });
+		await expect.element(page.getByText(/different GitHub account/)).toBeInTheDocument();
+		await expect.element(steps()).not.toBeInTheDocument();
+	});
+
+	it('keeps the new repository selected and shows its URL when the project fails', async () => {
+		const create = vi.fn(async (): Promise<CreateProjectsOutcome> => ({
+			ok: true,
+			results: [
+				{
+					name: 'tools',
+					status: 'failed',
+					repositories: ['github:acme/web'],
+					reason: 'cluster said no'
+				}
+			]
+		}));
+		setupRepo({ newRepo: 'github:acme/web', repoResult: { code: 'created' } }, create);
+		await page.getByRole('textbox', { name: 'Project name' }).fill('tools');
+		await page.getByRole('button', { name: 'Create project' }).click();
+		await expect
+			.element(page.getByText('The repository was created, the project was not'))
+			.toBeInTheDocument();
+		await expect
+			.element(page.getByRole('link', { name: 'acme/web' }))
+			.toHaveAttribute('href', 'https://github.com/acme/web');
+		await expect.element(page.getByRole('button', { name: 'Remove acme/web' })).toBeInTheDocument();
+		await expect
+			.element(steps().getByRole('listitem').nth(2))
+			.toHaveAttribute('data-state', 'failed');
+	});
+
+	it('hides the section when no starter is given', async () => {
+		setup();
+		await expect
+			.element(page.getByRole('button', { name: 'Create repository on GitHub' }))
+			.not.toBeInTheDocument();
 	});
 });

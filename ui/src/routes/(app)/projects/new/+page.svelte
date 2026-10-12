@@ -7,7 +7,13 @@
 	import PageHeader from '#lib/components/ui/PageHeader.svelte';
 	import Skeleton from '#lib/components/ui/Skeleton.svelte';
 	import type { PlanResult } from '#lib/onboarding.ts';
-	import { createProjects, listProjects, repositoryChoices } from '#lib/projects.remote.ts';
+	import { parseRepoResult } from '#lib/repo-names.ts';
+	import {
+		createProjects,
+		listProjects,
+		repositoryChoices,
+		startCreateRepo
+	} from '#lib/projects.remote.ts';
 
 	const choices = repositoryChoices();
 	const projects = listProjects();
@@ -15,6 +21,9 @@
 	let results = $state<PlanResult[] | null>(null);
 
 	// The refresh flow re-reads the user's installations and comes back here.
+	// The create-repository round trip comes back with `?newRepo=<key>&repoResult=<code>`.
+	const repoCode = $derived(parseRepoResult(page.url.searchParams.get('repoResult')));
+	const repoStatus = $derived(Number(page.url.searchParams.get('repoStatus')) || undefined);
 	const refreshHref = $derived(
 		`/login/github?refresh=1&return=${encodeURIComponent(page.url.pathname)}`
 	);
@@ -47,6 +56,9 @@
 		<NewProjectForm
 			choices={choices.current}
 			{refreshHref}
+			startCreateRepo={(input) => startCreateRepo(input)}
+			newRepo={page.url.searchParams.get('newRepo')}
+			repoResult={repoCode ? { code: repoCode, status: repoStatus } : null}
 			create={async (plans, triggers) => {
 				const outcome = await createProjects({ plans, triggers });
 				// All-failed stays on the form, which shows the reasons next to the user's selections.

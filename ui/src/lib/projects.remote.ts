@@ -2,6 +2,9 @@ import { error } from '@sveltejs/kit';
 import { command, getRequestEvent, query } from '$app/server';
 import * as v from 'valibot';
 import { MAX_PROJECTS_PER_REQUEST } from '#lib/onboarding.ts';
+import { CREATE_REPO_PURPOSE, setCreateRepoIntentCookie } from '#lib/server/auth.ts';
+import { getConfig } from '#lib/server/config.ts';
+import { buildIntent, signIntent } from '#lib/server/create-repo-intent.ts';
 import { MaxRunsSchema } from '#lib/projects.ts';
 import { SandboxResourcesSchema } from '#lib/sandbox-resources.ts';
 import { getSql } from '#lib/server/db.ts';
@@ -71,6 +74,41 @@ export const createProjects = command(CreateProjectsSchema, async (input) => {
 	);
 	projectCache.invalidate(user.login);
 	return outcome;
+});
+
+const StartCreateRepoSchema = v.object({
+	owner: v.pipe(v.string(), v.maxLength(100)),
+	name: v.pipe(v.string(), v.maxLength(200)),
+	visibility: v.picklist(['private', 'public']),
+	description: v.pipe(v.string(), v.maxLength(1000))
+});
+
+/** The form's page; the only place the re-authorization returns to. */
+const CREATE_REPO_RETURN = '/projects/new';
+
+/**
+ * First half of "create a new GitHub repository". A remote function never holds a user token
+ * (it only exists inside the OAuth callback), so this validates the request, stores it as a
+ * signed single-use intent cookie and sends the browser through `/login/github`, whose callback
+ * does the one creation call. The owner must be one of the caller's own installations.
+ */
+export const startCreateRepo = command(StartCreateRepoSchema, async (input) => {
+	const { locals, cookies } = getRequestEvent();
+	const { user } = locals;
+	if (!user) error(401, 'Not signed in');
+	const built = buildIntent(
+		{
+			user,
+			snapshot: await getUserRepositorySnapshot(getSql(), user.id),
+			projects: await getProjectStore().list(),
+			returnPath: CREATE_REPO_RETURN
+		},
+		input
+	);
+	if (!built.ok) return { ok: false as const, message: built.message };
+	setCreateRepoIntentCookie(cookies, await signIntent(getConfig().sessionJwtSecret, built.intent));
+	const href = `/login/github?purpose=${CREATE_REPO_PURPOSE}&return=${encodeURIComponent(CREATE_REPO_RETURN)}`;
+	return { ok: true as const, href };
 });
 
 export const setMaxRuns = command(

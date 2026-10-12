@@ -172,6 +172,30 @@ export async function syncUserRepositories(
 	}
 }
 
+/**
+ * After creating a repository: re-sync the snapshot with the same token until `key` is in it
+ * (GitHub can lag). Bounded: `tries` syncs, `delayMs` apart. Returns whether it appeared.
+ */
+export async function waitForRepository(
+	sql: Sql,
+	userId: number,
+	token: string,
+	key: string,
+	opts: { tries?: number; delayMs?: number; fetchFn?: FetchFn } = {}
+): Promise<boolean> {
+	const { tries = 5, delayMs = 2000, fetchFn = fetch } = opts;
+	for (let attempt = 0; attempt < tries; attempt++) {
+		if (attempt > 0) await new Promise((r) => setTimeout(r, delayMs));
+		if (await syncUserRepositories(sql, userId, token, fetchFn)) {
+			const [row] = await sql<
+				{ found: boolean }[]
+			>`SELECT EXISTS (SELECT 1 FROM app.user_repositories WHERE user_id = ${userId} AND repo = ${key}) AS found`;
+			if (row.found) return true;
+		}
+	}
+	return false;
+}
+
 export interface UserRepositorySnapshot {
 	repositories: UserRepository[];
 	/** When the snapshot was fetched (the oldest row, to be conservative); null when empty. */

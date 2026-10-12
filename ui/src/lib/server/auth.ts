@@ -128,6 +128,23 @@ export function setOauthStateCookie(cookies: Cookies, state: string): void {
 	});
 }
 
+/** Marks a sign-in round trip as a create-repository one (set only by `startCreateRepo`'s flow). */
+export const OAUTH_PURPOSE_COOKIE = 'enzarb_oauth_purpose';
+export const CREATE_REPO_INTENT_COOKIE = 'enzarb_create_repo';
+export const CREATE_REPO_PURPOSE = 'create-repo';
+
+export function setOauthPurposeCookie(cookies: Cookies, purpose: string): void {
+	cookies.set(OAUTH_PURPOSE_COOKIE, purpose, { ...cookieOptions(isSecure()), maxAge: 10 * 60 });
+}
+
+export function setCreateRepoIntentCookie(cookies: Cookies, signed: string): void {
+	cookies.set(CREATE_REPO_INTENT_COOKIE, signed, { ...cookieOptions(isSecure()), maxAge: 10 * 60 });
+}
+
+export function deleteCreateRepoIntentCookie(cookies: Cookies): void {
+	cookies.delete(CREATE_REPO_INTENT_COOKIE, { path: '/' });
+}
+
 function isSecure(): boolean {
 	return getConfig().publicUrl.startsWith('https:');
 }
