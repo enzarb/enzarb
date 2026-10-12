@@ -1,5 +1,5 @@
 import { page } from 'vitest/browser';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import type { AcpChannel, AcpSession } from '#lib/acp/connection.ts';
 import { fakeAgentChannel, type FakeChannel, type Msg } from '#lib/test/acp-fake.ts';
@@ -19,6 +19,82 @@ function session(features: string[], ch?: FakeChannel) {
 	});
 	return { openAcp, connect };
 }
+
+function multi(...chs: FakeChannel[]) {
+	let n = 0;
+	const openAcp = vi.fn(async () => chs[Math.min(n++, chs.length - 1)] as unknown as AcpChannel);
+	const s: AcpSession = { features: new Set(['acp']), openAcp };
+	const connect = vi.fn(async () => s);
+	return { openAcp, connect };
+}
+
+describe('Chat resume', () => {
+	beforeEach(() => sessionStorage.clear());
+
+	it('offers the saved id as open.resume after a reload', async () => {
+		sessionStorage.setItem('enzarb.chat.alpha', 'saved-1');
+		const ch = fakeAgentChannel({ sessionId: 'saved-1', loadSession: true });
+		const { openAcp, connect } = multi(ch);
+		render(Chat, { project: 'alpha', connect });
+		await expect.element(page.getByRole('textbox', { name: 'Message' })).toBeEnabled();
+		expect(openAcp).toHaveBeenCalledWith({ resume: 'saved-1' });
+		expect(ch.received.some((m) => m.method === 'session/load')).toBe(true);
+		expect(sessionStorage.getItem('enzarb.chat.alpha')).toBe('saved-1');
+	});
+
+	it('stores the id of a fresh chat', async () => {
+		const ch = fakeAgentChannel({ sessionId: 'fresh-1' });
+		const { connect } = multi(ch);
+		render(Chat, { project: 'alpha', connect });
+		await expect.element(page.getByRole('textbox', { name: 'Message' })).toBeEnabled();
+		expect(sessionStorage.getItem('enzarb.chat.alpha')).toBe('fresh-1');
+	});
+
+	it('an unknown id gives a fresh chat, the notice, and replaces the stored id', async () => {
+		sessionStorage.setItem('enzarb.chat.alpha', 'gone');
+		const ch = fakeAgentChannel({
+			sessionId: 'new-1',
+			loadSession: true,
+			load: () => new Error('unknown session')
+		});
+		const { connect } = multi(ch);
+		render(Chat, { project: 'alpha', connect });
+		await expect.element(page.getByText(/could not be restored/)).toBeVisible();
+		expect(sessionStorage.getItem('enzarb.chat.alpha')).toBe('new-1');
+	});
+
+	it('New chat clears the stored id and opens without resume', async () => {
+		sessionStorage.setItem('enzarb.chat.alpha', 'saved-1');
+		const first = fakeAgentChannel({ sessionId: 'saved-1', loadSession: true });
+		const second = fakeAgentChannel({ sessionId: 'second-1', loadSession: true });
+		const { openAcp, connect } = multi(first, second);
+		render(Chat, { project: 'alpha', connect });
+		await expect.element(page.getByRole('textbox', { name: 'Message' })).toBeEnabled();
+		await page.getByRole('button', { name: 'New chat' }).click();
+		await vi.waitFor(() => expect(openAcp).toHaveBeenCalledTimes(2));
+		expect(openAcp).toHaveBeenLastCalledWith({});
+		expect(second.received.some((m) => m.method === 'session/new')).toBe(true);
+		await vi.waitFor(() => expect(sessionStorage.getItem('enzarb.chat.alpha')).toBe('second-1'));
+	});
+
+	it('still works when sessionStorage throws', async () => {
+		const boom = () => {
+			throw new Error('denied');
+		};
+		vi.spyOn(Storage.prototype, 'getItem').mockImplementation(boom);
+		vi.spyOn(Storage.prototype, 'setItem').mockImplementation(boom);
+		vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(boom);
+		try {
+			const ch = fakeAgentChannel({ sessionId: 's' });
+			const { openAcp, connect } = multi(ch);
+			render(Chat, { project: 'alpha', connect });
+			await expect.element(page.getByRole('textbox', { name: 'Message' })).toBeEnabled();
+			expect(openAcp).toHaveBeenCalledWith({});
+		} finally {
+			vi.restoreAllMocks();
+		}
+	});
+});
 
 describe('Chat', () => {
 	it('shows "not available" and never opens acp on an older sandbox/proxy', async () => {

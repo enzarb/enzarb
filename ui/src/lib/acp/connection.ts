@@ -62,6 +62,10 @@ export interface ConnectionDeps {
 	};
 	createClient?: (streams: AcpStreams, handlers: AcpHandlers) => AcpClient;
 	openTimeoutMs?: number;
+	/** ACP session id saved by an earlier page load; offered as `open.resume` on the first open. */
+	initialSessionId?: string;
+	/** Called with the id once `session/load` or `session/new` succeeded, and with null on New chat. */
+	onSessionId?: (id: string | null) => void;
 }
 
 export type Phase =
@@ -182,6 +186,8 @@ export interface ChatConnection {
 	reconnect(): void;
 	/** Send a prompt; after an idle close this reconnects first. */
 	send(text: string): void;
+	/** Drop the conversation and its saved id, then open a fresh session. */
+	newChat(): void;
 	/** Cancel the running turn and every pending permission. */
 	stop(): void;
 	answer(id: string, choice: PermissionChoice, epoch: number): void;
@@ -201,7 +207,7 @@ export function createChatConnection(
 		action: null,
 		epoch: 0,
 		attempt: 0,
-		sessionId: null,
+		sessionId: deps.initialSessionId || null,
 		busy: false,
 		chat: initialChat,
 		error: ''
@@ -472,6 +478,7 @@ export function createChatConnection(
 			set({ chat: initialChat, sessionId: resume });
 			try {
 				await c.loadSession(resume);
+				if (!stale(epoch)) deps.onSessionId?.(resume);
 				return;
 			} catch {
 				if (stale(epoch)) return;
@@ -481,6 +488,7 @@ export function createChatConnection(
 		const id = await c.newSession();
 		if (stale(epoch)) return;
 		set({ sessionId: id });
+		deps.onSessionId?.(id);
 		if (resume) setChat(addNotice(s.chat, 'not_restored', NOT_RESTORED_TEXT));
 	}
 
@@ -518,6 +526,14 @@ export function createChatConnection(
 				set({ attempt: 0 });
 				void run();
 			}
+		},
+		newChat() {
+			if (disposed) return;
+			queued = null;
+			cancelAllPermissions();
+			set({ sessionId: null, chat: initialChat, attempt: 0 });
+			deps.onSessionId?.(null);
+			void run();
 		},
 		stop() {
 			if (s.busy && client && s.sessionId) void client.cancel(s.sessionId).catch(() => {});

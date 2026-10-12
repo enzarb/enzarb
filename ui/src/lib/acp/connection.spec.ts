@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { OpenError } from '@enzarb/proto';
+import { load as loadStoredId } from './session-store.ts';
+import { CloseReason, OpenError } from '@enzarb/proto';
 import {
 	BACKOFF_MAX_MS,
 	OPEN_TIMEOUT_MS,
@@ -67,6 +68,8 @@ function harness(
 		agent?: AgentOpts | ((n: number) => AgentOpts);
 		open?: (n: number, opts: unknown) => Promise<FakeChannel>;
 		repo?: string;
+		initialSessionId?: string;
+		onSessionId?: (id: string | null) => void;
 	} = {}
 ): Harness {
 	const clock = new Clock();
@@ -102,6 +105,8 @@ function harness(
 			return session;
 		},
 		repo: o.repo,
+		initialSessionId: o.initialSessionId,
+		onSessionId: o.onSessionId,
 		setTimeout: clock.setTimeout,
 		clearTimeout: clock.clearTimeout,
 		random: () => 0,
@@ -449,6 +454,92 @@ describe('resume', () => {
 		expect(st.phase).toBe('ready');
 		expect(st.chat.items.map((i) => i.kind)).toEqual(['user', 'notice']);
 		expect(st.sessionId).toBe('sess-2');
+	});
+});
+
+describe('resume across reloads and New chat', () => {
+	it.each(['a'.repeat(129), '', 'a b', 'a/b', 'a\u0001b', 'sess-é'])(
+		'an invalid stored id (%j) gives a fresh open with {} and no resume',
+		async (bad) => {
+			const m = new Map([['enzarb.chat.p', bad]]);
+			vi.stubGlobal('sessionStorage', {
+				getItem: (k: string) => m.get(k) ?? null,
+				removeItem: (k: string) => void m.delete(k)
+			});
+			try {
+				const h = harness({ agent: { loadSession: true }, initialSessionId: loadStoredId('p') });
+				await ready(h);
+				expect(h.openAcp).toHaveBeenCalledWith({});
+				expect(h.channels[0].received.some((x) => x.method === 'session/load')).toBe(false);
+			} finally {
+				vi.unstubAllGlobals();
+			}
+		}
+	);
+
+	it('offers the saved id as open.resume and loads it', async () => {
+		const onSessionId = vi.fn();
+		const h = harness({
+			agent: { loadSession: true, sessionId: 'saved' },
+			initialSessionId: 'saved',
+			onSessionId
+		});
+		await ready(h);
+		expect(h.openAcp).toHaveBeenCalledWith({ resume: 'saved' });
+		expect(h.channels[0].received.some((m) => m.method === 'session/load')).toBe(true);
+		expect(onSessionId).toHaveBeenCalledExactlyOnceWith('saved');
+		expect(h.conn.state().chat.items.some((i) => i.kind === 'notice')).toBe(false);
+	});
+
+	it('an unknown id gives a fresh chat, the notice, and replaces the stored id', async () => {
+		const onSessionId = vi.fn();
+		const h = harness({
+			agent: { loadSession: true, load: () => new Error('unknown session') },
+			initialSessionId: 'stale',
+			onSessionId
+		});
+		await ready(h);
+		expect(h.conn.state().sessionId).toBe('sess-1');
+		expect(h.conn.state().chat.items.map((i) => i.kind)).toEqual(['notice']);
+		expect(onSessionId).toHaveBeenCalledExactlyOnceWith('sess-1');
+	});
+
+	it('reports a new session id on a first connect', async () => {
+		const onSessionId = vi.fn();
+		const h = harness({ onSessionId });
+		await ready(h);
+		expect(onSessionId).toHaveBeenCalledExactlyOnceWith('sess-1');
+	});
+
+	it('newChat clears the id first, then reopens without resume on a new channel', async () => {
+		const calls: (string | null)[] = [];
+		const h = harness({
+			agent: { loadSession: true },
+			onSessionId: (id) => calls.push(id)
+		});
+		await ready(h);
+		h.conn.newChat();
+		expect(calls).toEqual(['sess-1', null]);
+		await flush();
+		expect(h.openAcp).toHaveBeenLastCalledWith({});
+		expect(h.channels[0].clientClosed()).toBe(true);
+		const st = h.conn.state();
+		expect(st.phase).toBe('ready');
+		expect(st.sessionId).toBe('sess-2');
+		expect(calls).toEqual(['sess-1', null, 'sess-2']);
+		expect(st.chat.items).toEqual([]);
+	});
+
+	it('newChat drops a queued message', async () => {
+		const h = harness();
+		await ready(h);
+		h.channels[0].end(CloseReason.Idle);
+		await flush();
+		expect(h.conn.state().phase).toBe('disconnected');
+		h.conn.send('hello');
+		h.conn.newChat();
+		await flush();
+		expect(h.conn.state().chat.items.some((i) => i.kind === 'user')).toBe(false);
 	});
 });
 

@@ -7,6 +7,7 @@
 	} from '#lib/acp/chat-session.svelte.ts';
 	import type { ConnectionDeps } from '#lib/acp/connection.ts';
 	import { sandboxConnector, type MuxSession } from '#lib/acp/sandbox-connect.ts';
+	import * as sessionStore from '#lib/acp/session-store.ts';
 	import Notice from '#lib/components/ui/Notice.svelte';
 	import { terminalConnection } from '#lib/terminal.remote.ts';
 	import ChatStatus from './ChatStatus.svelte';
@@ -37,6 +38,12 @@
 
 	const chat = createChatSession({
 		connect: untrack(() => connect) ?? connector.connect,
+		initialSessionId: sessionStore.load(untrack(() => project)),
+		onSessionId: (id) => {
+			const name = untrack(() => project);
+			if (id) sessionStore.save(name, id);
+			else sessionStore.clear(name);
+		},
 		...browserTimers,
 		visibility: browserVisibility
 	});
@@ -63,6 +70,13 @@
 			the sandbox has restarted.
 		</Notice>
 	{:else}
+		<div class="ez-chat-header">
+			<button
+				type="button"
+				class="ez-btn ez-btn--secondary ez-btn--sm"
+				onclick={() => chat.newChat()}>New chat</button
+			>
+		</div>
 		{#if st.phase !== 'ready'}
 			<ChatStatus progress={st.progress} message={st.message} action={st.action} {onAction} />
 		{/if}

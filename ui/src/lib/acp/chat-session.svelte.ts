@@ -34,6 +34,7 @@ export function createChatSession(deps: ConnectionDeps) {
 		start: () => conn.start(),
 		reconnect: () => conn.reconnect(),
 		send: (text: string) => conn.send(text),
+		newChat: () => conn.newChat(),
 		stop: () => conn.stop(),
 		answer: (id: string, choice: PermissionChoice, epoch: number) => conn.answer(id, choice, epoch),
 		dispose: () => conn.dispose()
