@@ -96,6 +96,8 @@ Every message in both directions is appended, redacted, to the chat's `transcrip
 
 ## 3. Permissions and policy
 
+> **Amended 2026-10-12 (ADR-0014 amendment 2): chat defaults to `bypassPermissions`.** The text below describes the `default`/`plan` modes, which stay available (`ENZARB_CHAT_PERMISSION_MODE=default|plan`, `ENZARB_CHAT_ALLOW_BYPASS=false`). In bypass the agent raises no `session/request_permission` for ordinary tool calls, so tier 1 (`Policy::hard_deny`) and tier 2 (user prompts) apply only in `default` and `plan`; the sandbox is the boundary. `session/set_mode` accepts `bypassPermissions` (only while allowed), `default` and `plan`; sandbox-init enforces the configured start mode itself (the adapter ignores `_meta` `permissionMode`) and notifies the browser with `_enzarb/mode {sessionId, modeId, bypassAllowed}`. Agent jobs are unchanged. The UI mode indicator/switch is not shipped (enzarb-ui#87).
+
 **Decision: two tiers. Policy hard-denies first; everything else goes to the user; nothing is ever auto-approved.**
 
 1. **Hard deny, in the sandbox.** A new `Policy::hard_deny(tool_call, worktree) -> Option<Decision>` (`policy.rs`) applies the non-negotiable subset of the existing rules, evaluated with `{worktree}` = the chat worktree:
@@ -238,9 +240,11 @@ Tests (Vitest, `*.svelte.test.ts`):
 - [ ] No new credential or token type reaches the browser; the JWT path is unchanged.
 - [ ] Proxy CTRL allowlist still rejects `run_*`. Only `open{kind:"acp"}` is newly allowed, and only the browser's `hello` is answered locally.
 - [ ] sandbox-init forces `clientCapabilities` to none, `cwd` to the chat worktree and `mcpServers: []` on every `session/new`/`load`. A browser cannot point the agent at another cwd, MCP server or session id outside the registry.
-- [ ] `session/set_mode` limited to `default`/`plan`; `authenticate` and unknown methods refused.
+- [ ] `session/set_mode` limited to `bypassPermissions` (only while `ENZARB_CHAT_ALLOW_BYPASS`), `default` and `plan` (amendment 2026-10-12; was `default`/`plan`); `acceptEdits`/`auto`/`dontAsk`, `authenticate` and unknown methods refused.
+- [ ] Bypass default (amendment 2026-10-12): hard deny and permission prompts apply only in `default`/`plan`; the bounds are the scrubbed env, forced cwd/worktree, no MCP, gVisor, egress NetworkPolicy, redaction, non-dumpable sandbox-init and `.enzarb` 0700. Kill switches `ENZARB_CHAT_PERMISSION_MODE=default|plan`, `ENZARB_CHAT_ALLOW_BYPASS=false`, `ENZARB_MAX_CHATS=0`.
+- [ ] Open residual risk: a bypass chat agent shares the sandbox-init uid and can write the shared clone's `.git/config`/`.git/hooks` used by authenticated `fetch`/`push`, and read the mux token, run callback files and job `/proc/<pid>/environ`; git-call hardening is a follow-up.
 - [ ] Permission responses validated against the outstanding request: `*_always` and unknown ids become reject; there is no auto-approve path in UI or sandbox, and no timeout leads to allow.
-- [ ] Hard deny covers the Claude token file, `/var/run/enzarb/auth/token`, `.enzarb/`, secret paths, writes outside the chat worktree, `git push`, and fetch hosts outside the allowlist.
+- [ ] In `default`/`plan` mode, hard deny covers the Claude token file, `/var/run/enzarb/auth/token`, `.enzarb/`, secret paths, writes outside the chat worktree, `git push`, and fetch hosts outside the allowlist.
 - [ ] No push/clone/deps/npm tokens in the chat agent env.
 - [ ] Claude token (and its encodings) redacted from everything sent to the browser and from the transcripts.
 - [ ] Line, prompt and idle limits, the chat cap and the hard lifetime are enforced in the sandbox, not the UI.
