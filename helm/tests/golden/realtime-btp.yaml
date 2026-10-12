@@ -1075,7 +1075,7 @@ spec:
                   name: enzarb-generated
                   key: session-jwt-secret
             - { name: PROXY_LISTEN, value: 0.0.0.0:8080 }
-            - { name: PROXY_IDLE_TIMEOUT_SECS, value: "900" }
+            - { name: PROXY_IDLE_TIMEOUT_SECS, value: "2100" }
             - { name: RUST_LOG, value: "info" }
           readinessProbe:
             httpGet: { path: /healthz, port: http }
@@ -1610,7 +1610,7 @@ spec:
     - { group: gateway.networking.k8s.io, kind: HTTPRoute, name: enzarb-sandbox-proxy }
   timeout:
     http:
-      connectionIdleTimeout: "1800s"
+      connectionIdleTimeout: "2400s"
 
 ---
 # Source: enzarb/templates/httproute.yaml
@@ -1629,7 +1629,7 @@ spec:
     - { group: gateway.networking.k8s.io, kind: HTTPRoute, name: enzarb-realtime }
   timeout:
     http:
-      connectionIdleTimeout: "1800s"
+      connectionIdleTimeout: "2400s"
 
 ---
 # Source: enzarb/templates/pgop.yaml

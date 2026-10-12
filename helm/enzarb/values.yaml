@@ -38,10 +38,10 @@ route:
   # Same for /live/ (enzarb-realtime websockets, up to 5 min).
   realtimeRequestTimeout: "0s"
   # Optional Envoy Gateway BackendTrafficPolicy on the /sandbox/ and /live/ (when realtime is
-  # enabled) routes that raises the idle timeout above the proxy's idle timeout (default 900s).
+  # enabled) routes that raises the idle timeout above the proxy's idle timeout (default 2100s).
   backendTrafficPolicy:
     enabled: false
-    connectionIdleTimeout: 1800s
+    connectionIdleTimeout: 2400s
 
 # pgop resources: one Cluster, owner + runtime Roles per service, one Database.
 postgres:
@@ -200,7 +200,9 @@ sandboxProxy:
     repository: ghcr.io/enzarb/enzarb-sandbox-proxy
     tag: 0.4.0
     pullPolicy: ""
-  idleTimeoutSecs: 900
+  # Must stay >= the chat idle (ENZARB_CHAT_IDLE_SECS, 1800); the proxy clamps lower values and
+  # logs a warning. Envoy idle timeouts (route.backendTrafficPolicy) must exceed this.
+  idleTimeoutSecs: 2100
   resources: {}
   extraEnv: []
 

@@ -44,7 +44,7 @@ btp="$("$here/scripts/render.sh" realtime-btp)"
 bsel='select(.kind=="BackendTrafficPolicy" and .metadata.name=="enzarb-realtime")'
 check "btp target kind" "$(q "$bsel | .spec.targetRefs[0].kind" <<<"$btp")" HTTPRoute
 check "btp target name" "$(q "$bsel | .spec.targetRefs[0].name" <<<"$btp")" enzarb-realtime
-check "btp idle timeout" "$(q "$bsel | .spec.timeout.http.connectionIdleTimeout" <<<"$btp")" 1800s
+check "btp idle timeout" "$(q "$bsel | .spec.timeout.http.connectionIdleTimeout" <<<"$btp")" 2400s
 check "btp sandbox-proxy kept" "$(q 'select(.kind=="BackendTrafficPolicy" and .metadata.name=="enzarb-sandbox-proxy") | .metadata.name' <<<"$btp")" enzarb-sandbox-proxy
 
 off="$("$here/scripts/render.sh" realtime-off)"
