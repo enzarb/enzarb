@@ -72,9 +72,27 @@ spec:
                   resources: {}
                   storage: 20Gi
                 properties:
+                  cpu:
+                    description: |-
+                      Sandbox CPU limit in cores (1-64). Unset = nothing injected (today's behaviour). The
+                      operator derives conservative requests (25% of the limit); explicit `resources` win per
+                      key. Changing it recreates the pod once the sandbox is drained.
+                    format: uint32
+                    maximum: 64.0
+                    minimum: 1.0
+                    nullable: true
+                    type: integer
                   image:
                     default: ''
                     description: Empty = operator default (`--sandbox-image`).
+                    type: string
+                  memory:
+                    description: |-
+                      Sandbox memory limit as `<int>Mi` or `<int>Gi` (512Mi-256Gi). Unset = nothing injected.
+                      Same derivation and roll semantics as `cpu`.
+                    maxLength: 12
+                    nullable: true
+                    pattern: ^[1-9][0-9]*(Mi|Gi)$
                     type: string
                   resources:
                     default: {}
@@ -182,6 +200,25 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              pendingChange:
+                description: A pod-shape change waiting for the sandbox to drain. Absent when nothing is pending.
+                nullable: true
+                properties:
+                  generation:
+                    format: int64
+                    type: integer
+                  reason:
+                    description: Human-readable summary of what differs.
+                    type: string
+                  since:
+                    description: When the first change of this pending episode was detected (drain timeout runs from here).
+                    format: date-time
+                    type: string
+                required:
+                - generation
+                - reason
+                - since
+                type: object
               sandbox:
                 nullable: true
                 properties:

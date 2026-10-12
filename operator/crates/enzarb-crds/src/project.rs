@@ -2,7 +2,7 @@
 
 use crate::repo::RepoKey;
 use k8s_openapi::api::core::v1::ResourceRequirements;
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
 use kube::{CustomResource, KubeSchema};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -32,6 +32,12 @@ pub const REASON_WORKSPACE_RESIZING: &str = "WorkspaceResizing";
 pub const COND_SANDBOX_IMAGE_ROLL: &str = "SandboxImageRoll";
 /// Reason of [`COND_SANDBOX_IMAGE_ROLL`].
 pub const REASON_SANDBOX_IMAGE_ROLL_PENDING: &str = "SandboxImageRollPending";
+/// Informational condition, `True` only while a pod-shape change (image, env, resources, ...) waits
+/// for the sandbox to drain. Replaces [`COND_SANDBOX_IMAGE_ROLL`]. Does not affect `Ready`.
+pub const COND_SANDBOX_CHANGE_PENDING: &str = "SandboxChangePending";
+/// Project annotation set (by workflows) to the `status.pendingChange.generation` it has drained
+/// for. The operator applies the change only when it equals the pending generation.
+pub const ANNOTATION_DRAINED_GENERATION: &str = "enzarb.dev/drained-generation";
 /// Longest Project name: `sb-<name>-workspace` must fit a 63-character label (ADR-0013).
 pub const MAX_PROJECT_NAME_LEN: usize = 50;
 
@@ -129,6 +135,17 @@ pub struct SandboxSpec {
     pub storage: String,
     #[serde(default)]
     pub resources: ResourceRequirements,
+    /// Sandbox CPU limit in cores (1-64). Unset = nothing injected (today's behaviour). The
+    /// operator derives conservative requests (25% of the limit); explicit `resources` win per
+    /// key. Changing it recreates the pod once the sandbox is drained.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = 64))]
+    pub cpu: Option<u32>,
+    /// Sandbox memory limit as `<int>Mi` or `<int>Gi` (512Mi-256Gi). Unset = nothing injected.
+    /// Same derivation and roll semantics as `cpu`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(regex(pattern = r"^[1-9][0-9]*(Mi|Gi)$"), length(max = 12))]
+    pub memory: Option<String>,
 }
 
 fn default_storage() -> String {
@@ -141,6 +158,8 @@ impl Default for SandboxSpec {
             image: String::new(),
             storage: default_storage(),
             resources: ResourceRequirements::default(),
+            cpu: None,
+            memory: None,
         }
     }
 }
@@ -158,6 +177,21 @@ pub struct ProjectStatus {
     /// Ordered for the UI checklist.
     #[serde(default)]
     pub conditions: Vec<Condition>,
+    /// A pod-shape change waiting for the sandbox to drain. Absent when nothing is pending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_change: Option<PendingChange>,
+}
+
+/// See `ANNOTATION_DRAINED_GENERATION`. `generation` is a counter local to the pending change
+/// (not `metadata.generation`); a newer spec change bumps it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingChange {
+    pub generation: i64,
+    /// When the first change of this pending episode was detected (drain timeout runs from here).
+    pub since: Time,
+    /// Human-readable summary of what differs.
+    pub reason: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]

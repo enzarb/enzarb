@@ -205,3 +205,20 @@ fn crd_enforces_name_limit_with_create_only_cel() {
         );
     }
 }
+
+#[test]
+fn cpu_memory_and_pending_change_are_optional_and_bounded() {
+    let yaml = enzarb_crds::project_crd_yaml();
+    assert!(yaml.contains("maximum: 64.0") && yaml.contains("pattern: ^[1-9][0-9]*(Mi|Gi)$"));
+    assert!(yaml.contains("pendingChange:"));
+    let s = enzarb_crds::SandboxSpec::default();
+    let v = serde_json::to_value(&s).unwrap();
+    assert!(v.get("cpu").is_none() && v.get("memory").is_none());
+    let st = enzarb_crds::ProjectStatus::default();
+    assert!(
+        serde_json::to_value(&st)
+            .unwrap()
+            .get("pendingChange")
+            .is_none()
+    );
+}
