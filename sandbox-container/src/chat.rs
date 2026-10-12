@@ -1,8 +1,11 @@
 //! Interactive chat over ACP (ADR-0014, docs/design/chat-tab.md §2–§4).
 //!
 //! Each `open{kind:"acp"}` gets its own `claude-agent-acp` child, started in
-//! its own process group under the reaper, in the chat's own git worktree
-//! (`<ws>/worktrees/chat-<chat_id>`, branch `enzarb/chat-<chat_id>`).
+//! its own process group under the reaper, in the chat's own git repository
+//! (`<ws>/worktrees/chat-<chat_id>`, branch `enzarb/chat-<chat_id>`). That is
+//! a separate `git init` borrowing the job clone's objects (alternates), not a
+//! worktree of the clone, so the chat's `.git/config` and hooks are not the
+//! ones of the clone jobs fetch and push from (issue #52).
 //! sandbox-init relays ACP's NDJSON between the channel and the child's stdio
 //! through [`filter::Filter`], which is the security boundary: the browser
 //! cannot change the agent's capabilities, cwd, MCP servers, mode beyond
@@ -35,9 +38,10 @@
 //! * `<ws>/.enzarb/chat-home/.claude`: `CLAUDE_CONFIG_DIR` of chat agents, so
 //!   Claude's session files survive pod restarts (`session/load`).
 //!
-//! The worktree is removed when the chat ends (its branch, and so any commit,
-//! stays in the clone) and recreated from that branch on resume. Chat
-//! worktrees left by a crash are pruned at startup.
+//! The chat repo is removed when the chat ends, after its branch (and so any
+//! commit) is fetched back into the clone; it is recreated from that branch
+//! on resume. Chat repos left by a crash are harvested the same way and
+//! removed at startup.
 
 pub mod filter;
 
@@ -486,11 +490,18 @@ impl ChatManager {
                     let Ok(md) = std::fs::symlink_metadata(e.path()) else {
                         continue;
                     };
-                    let r = if md.is_dir() {
-                        std::fs::remove_dir_all(e.path())
-                    } else {
-                        std::fs::remove_file(e.path())
+                    // A chat repo left by a crash: keep its branch first.
+                    let kept = match read_meta(&this.chats_dir().join(id)) {
+                        Some(m) if md.is_dir() => {
+                            let clone = this.repos_dir().join(&m.clone);
+                            let lock = this.locks.get(&clone);
+                            let _g = lock.lock().await;
+                            this.harvest(&clone, &e.path()).await
+                        }
+                        _ => !md.is_dir() || !e.path().join(".git").is_dir(),
                     };
+                    this.drop_chat_repo(&e.path(), kept);
+                    let r: std::io::Result<()> = Ok(());
                     if r.is_ok() {
                         removed += 1;
                     }
@@ -625,7 +636,7 @@ impl ChatManager {
     }
 
     async fn git(&self, cwd: &Path, args: &[&str]) -> std::io::Result<exec::Output> {
-        let mut spec = CmdSpec::new(&self.cfg.git_bin, args);
+        let mut spec = CmdSpec::new(&self.cfg.git_bin, &crate::netgit::local_args(args));
         spec.cwd = Some(cwd.to_path_buf());
         spec.env = self.git_env();
         let (_keep, cancel) = watch::channel(false);
@@ -660,23 +671,24 @@ impl ChatManager {
             .filter(|s| !s.is_empty())
     }
 
-    /// Create `worktrees/chat-<id>` on branch `enzarb/chat-<id>`: from that
-    /// branch when it exists (resume), else from the default branch.
+    /// Create `worktrees/chat-<id>`, the chat's own repository (issue #52):
+    /// a fresh `git init` that borrows the job clone's objects through
+    /// `objects/info/alternates`, with the clone's `origin/*` refs and tags,
+    /// on branch `enzarb/chat-<id>`: from that branch when the clone has it
+    /// (resume), else from the default branch. The chat never gets a `.git`
+    /// that points into the clone jobs fetch and push from, so its config,
+    /// hooks and refs are its own.
     async fn create_worktree(&self, clone: &Path, chat_id: &str) -> Result<PathBuf, String> {
         let wt = self.worktrees_dir().join(format!("chat-{chat_id}"));
         let branch = format!("enzarb/chat-{chat_id}");
         let lock = self.locks.get(clone);
         let _g = lock.lock().await;
         let _ = std::fs::create_dir_all(self.worktrees_dir());
-        if let Ok(md) = std::fs::symlink_metadata(&wt) {
-            let _ = if md.is_dir() {
-                std::fs::remove_dir_all(&wt)
-            } else {
-                std::fs::remove_file(&wt)
-            };
-        }
+        let kept = self.harvest(clone, &wt).await;
+        self.drop_chat_repo(&wt, kept);
         let _ = self.git(clone, &["worktree", "prune"]).await;
-        let mut start = self.rev(clone, &format!("refs/heads/{branch}")).await;
+        let resumed = self.rev(clone, &format!("refs/heads/{branch}")).await;
+        let mut start = resumed.clone();
         for r in [
             "refs/remotes/origin/HEAD",
             "refs/remotes/origin/main",
@@ -689,25 +701,143 @@ impl ChatManager {
             start = self.rev(clone, r).await;
         }
         let start = start.ok_or("the clone has no commit to start from")?;
-        let w = wt.to_string_lossy().into_owned();
-        let out = self
-            .git(clone, &["worktree", "add", "-f", "-B", &branch, &w, &start])
-            .await
-            .map_err(|e| format!("cannot run git: {e}"))?;
-        if !out.success() {
-            return Err(format!("git worktree add failed: {}", out.stderr.trim()));
+        let res = self
+            .init_chat_repo(clone, &wt, &branch, resumed.is_some(), &start)
+            .await;
+        if res.is_err() {
+            let _ = std::fs::remove_dir_all(&wt);
         }
-        Ok(wt)
+        res.map(|_| wt)
     }
 
-    /// Remove the worktree (the branch stays) and git's metadata for it.
+    async fn init_chat_repo(
+        &self,
+        clone: &Path,
+        wt: &Path,
+        branch: &str,
+        resumed: bool,
+        start: &str,
+    ) -> Result<(), String> {
+        let w = wt.to_string_lossy().into_owned();
+        let c = clone.to_string_lossy().into_owned();
+        self.git_ok(&self.worktrees_dir(), &["init", "-q", "--template=", &w])
+            .await?;
+        let info = wt.join(".git/objects/info");
+        std::fs::create_dir_all(&info)
+            .and_then(|_| {
+                std::fs::write(
+                    info.join("alternates"),
+                    format!("{}\n", clone.join(".git/objects").display()),
+                )
+            })
+            .map_err(|e| format!("cannot link the clone's objects: {e}"))?;
+        let own = format!("+refs/heads/{branch}:refs/heads/{branch}");
+        let mut args = vec![
+            "fetch",
+            "-q",
+            "--no-tags",
+            "--",
+            &c,
+            "+refs/remotes/origin/*:refs/remotes/origin/*",
+            "+refs/tags/*:refs/tags/*",
+        ];
+        if resumed {
+            args.push(&own);
+        }
+        self.git_ok(wt, &args).await?;
+        // `origin` is the real remote (the chat holds no token to use it).
+        if let Ok(out) = self
+            .git(clone, &["config", "--get", "remote.origin.url"])
+            .await
+            && out.success()
+        {
+            let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !url.is_empty() {
+                self.git_ok(wt, &["remote", "add", "origin", &url]).await?;
+            }
+        }
+        self.git_ok(wt, &["checkout", "-q", "-B", branch, start])
+            .await
+    }
+
+    async fn git_ok(&self, cwd: &Path, args: &[&str]) -> Result<(), String> {
+        let out = self
+            .git(cwd, args)
+            .await
+            .map_err(|e| format!("cannot run git: {e}"))?;
+        if out.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "git {} failed: {}",
+                args.first().unwrap_or(&""),
+                out.stderr.trim()
+            ))
+        }
+    }
+
+    /// Remove the chat repo after copying its branch `enzarb/chat-<id>`
+    /// (and so any commit) back into the clone, where resume finds it.
     async fn remove_worktree(&self, clone: &Path, wt: &Path) {
         let lock = self.locks.get(clone);
         let _g = lock.lock().await;
-        if std::fs::symlink_metadata(wt).is_ok_and(|m| m.is_dir()) {
-            let _ = std::fs::remove_dir_all(wt);
-        }
+        let kept = self.harvest(clone, wt).await;
+        self.drop_chat_repo(wt, kept);
         let _ = self.git(clone, &["worktree", "prune"]).await;
+    }
+
+    /// Fetch the chat branch of the chat repo `wt` into `clone`. Token-free:
+    /// the chat repo's config is the chat's, so nothing secret may be in
+    /// this process's environment (none is).
+    /// True when the branch is safe in the clone (or there is no chat repo).
+    async fn harvest(&self, clone: &Path, wt: &Path) -> bool {
+        let Some(id) = wt
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_prefix("chat-"))
+            .filter(|id| valid_chat_id(id))
+        else {
+            return false;
+        };
+        if !wt.join(".git").is_dir() {
+            return true;
+        }
+        if !clone.join(".git").is_dir() {
+            return false;
+        }
+        let branch = format!("refs/heads/enzarb/chat-{id}");
+        let w = wt.to_string_lossy().into_owned();
+        let spec = format!("+{branch}:{branch}");
+        if let Err(e) = self
+            .git_ok(clone, &["fetch", "-q", "--no-tags", "--", &w, &spec])
+            .await
+        {
+            tracing::warn!(chat = %id, error = %e, "cannot keep the chat branch");
+            return false;
+        }
+        true
+    }
+
+    /// Remove a chat repo, or, when its branch could not be kept, move it
+    /// aside to `worktrees/.lost-chat-<id>-<ms>` so no commit is lost.
+    fn drop_chat_repo(&self, wt: &Path, kept: bool) {
+        let Ok(md) = std::fs::symlink_metadata(wt) else {
+            return;
+        };
+        if !md.is_dir() {
+            let _ = std::fs::remove_file(wt);
+        } else if kept {
+            let _ = std::fs::remove_dir_all(wt);
+        } else {
+            let name = wt.file_name().and_then(|n| n.to_str()).unwrap_or("chat");
+            let lost = self
+                .worktrees_dir()
+                .join(format!(".lost-{name}-{}", now_ms()));
+            tracing::warn!(from = %wt.display(), to = %lost.display(), "keeping a chat repo whose branch could not be saved");
+            if std::fs::rename(wt, &lost).is_err() {
+                let _ = std::fs::remove_dir_all(wt);
+            }
+        }
     }
 
     /// The agent's whole environment.

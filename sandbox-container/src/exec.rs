@@ -35,6 +35,8 @@ pub struct CmdSpec {
     pub args: Vec<String>,
     pub cwd: Option<PathBuf>,
     pub env: Vec<(String, String)>,
+    /// Start from an empty environment (only `env`), not sandbox-init's.
+    pub env_clear: bool,
     /// Written to stdin, which is then closed (stdin is `/dev/null` when `None`).
     pub stdin: Option<Vec<u8>>,
 }
@@ -117,6 +119,9 @@ pub async fn run(
     on_stderr: Option<LineSink>,
 ) -> io::Result<Output> {
     let mut cmd = Command::new(&spec.program);
+    if spec.env_clear {
+        cmd.env_clear();
+    }
     cmd.args(&spec.args)
         .envs(spec.env.iter().map(|(k, v)| (k, v)))
         .stdin(if spec.stdin.is_some() {

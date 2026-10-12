@@ -1044,3 +1044,36 @@ async fn chat_bypass_mode_survives_resume() {
         "bypassPermissions"
     );
 }
+
+/// Issue #52: a chat gets its own repository, not a worktree of the clone
+/// jobs push from, so config and hooks it writes stay in its own `.git`.
+#[tokio::test]
+async fn chat_repo_does_not_share_git_dir_with_the_job_clone() {
+    let s = start().await;
+    let (session, _ev) = s.connect().await;
+    let mut acp = open(&s, &session).await;
+    acp.start_session().await;
+    let wt = s.chat_worktrees()[0].clone();
+    assert!(wt.join(".git").is_dir(), "a real .git, not a gitfile");
+    let (ok, gd) = git_out(&wt, &["rev-parse", "--git-common-dir"]);
+    assert!(ok);
+    assert_eq!(Path::new(&gd), Path::new(".git"), "own common dir");
+    let (_, origin) = git_out(&wt, &["config", "--get", "remote.origin.url"]);
+    assert_eq!(origin, s.repo_url);
+    // what the agent plants stays in the chat repo
+    std::fs::create_dir_all(wt.join(".git/hooks")).unwrap();
+    std::fs::write(wt.join(".git/hooks/pre-push"), "#!/bin/sh\n").unwrap();
+    git(&wt, &["config", "core.fsmonitor", "touch /tmp/x"]);
+    let clone = s.clone_dir();
+    assert!(!clone.join(".git/hooks/pre-push").exists());
+    let (set, _) = git_out(&clone, &["config", "--get", "core.fsmonitor"]);
+    assert!(!set, "planted config reached the job clone");
+    assert!(
+        !clone.join(".git/worktrees").exists() || {
+            std::fs::read_dir(clone.join(".git/worktrees"))
+                .unwrap()
+                .next()
+                .is_none()
+        }
+    );
+}

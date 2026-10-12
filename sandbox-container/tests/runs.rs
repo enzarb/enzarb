@@ -1131,3 +1131,121 @@ async fn startup_prunes_every_run_worktree() {
     assert!(other.exists());
     assert!(file.exists());
 }
+
+/// Issue #52: an agent with the sandbox's uid plants config and hooks in the
+/// shared clone. sandbox-init's authenticated fetch and push must run none of
+/// it, never expose the token to it, and still reach the real origin.
+#[tokio::test]
+async fn planted_git_config_and_hooks_neither_run_nor_redirect_nor_see_the_token() {
+    use base64::Engine as _;
+    let env = start(0).await;
+    let (session, _e) = env.connect().await;
+    session
+        .run_start(env.run("first", "DIRTY", "main", "enzarb/first", true))
+        .await
+        .unwrap();
+    assert!(env.finished("first").await.1.pushed);
+
+    let root = env.dir.path();
+    let marks = root.join("marks");
+    std::fs::create_dir(&marks).unwrap();
+    let evil = root.join("evil.git");
+    git(root, &["init", "-q", "--bare", evil.to_str().unwrap()]);
+    let hook = |dir: &Path, name: &str| {
+        std::fs::create_dir_all(dir).unwrap();
+        let p = dir.join(name);
+        std::fs::write(&p, format!("#!/bin/sh\nenv > {}/{name}\n", marks.display())).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    let clone = env
+        .workspace
+        .join("repos")
+        .join(sandbox_init::agent::repo_dir_name(&format!(
+            "file://{}",
+            env.origin.display()
+        )));
+    let names = [
+        "pre-push",
+        "post-checkout",
+        "reference-transaction",
+        "pre-commit",
+        "post-commit",
+        "fsmonitor-watchman",
+    ];
+    for n in names {
+        hook(&clone.join(".git/hooks"), n);
+        hook(&root.join("evilhooks"), n);
+    }
+    let script = |name: &str| {
+        let p = root.join(format!("{name}.sh"));
+        std::fs::write(&p, format!("#!/bin/sh\nenv > {}/{name}\n", marks.display())).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p.display().to_string()
+    };
+    let origin_url = format!("file://{}", env.origin.display());
+    let evil_url = format!("file://{}", evil.display());
+    let inc = root.join("inc.cfg");
+    std::fs::write(
+        &inc,
+        format!(
+            "[core]\n\thooksPath = {}\n[url \"{evil_url}\"]\n\tinsteadOf = {origin_url}\n\tpushInsteadOf = {origin_url}\n",
+            root.join("evilhooks").display()
+        ),
+    )
+    .unwrap();
+    let cfg = clone.join(".git/config");
+    let mut c = std::fs::read_to_string(&cfg).unwrap();
+    c.push_str(&format!(
+        "[core]\n\tfsmonitor = {}\n\tsshCommand = {}\n\thooksPath = {}\n\
+         [credential]\n\thelper = !{}\n\
+         [url \"{evil_url}\"]\n\tinsteadOf = {origin_url}\n\tpushInsteadOf = {origin_url}\n\
+         [remote \"origin\"]\n\turl = {evil_url}\n\tpushurl = {evil_url}\n\
+         [include]\n\tpath = {inc}\n[includeIf \"gitdir:/\"]\n\tpath = {inc}\n",
+        script("fsmonitor"),
+        script("ssh"),
+        root.join("evilhooks").display(),
+        script("credential"),
+        inc = inc.display(),
+    ));
+    std::fs::write(&cfg, c).unwrap();
+
+    // fetch (clone exists), worktree, leftovers commit, push
+    session
+        .run_start(env.run("second", "DIRTY", "main", "enzarb/second", true))
+        .await
+        .unwrap();
+    let (_, fin) = env.finished("second").await;
+    assert_eq!(fin.outcome, RunOutcome::Succeeded, "{fin:?}");
+    assert!(fin.pushed);
+    assert_eq!(env.remote_sha("enzarb/second"), Some(fin.head_sha.clone()));
+    let leaked: Vec<_> = std::fs::read_dir(&marks)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name())
+        .collect();
+    assert!(leaked.is_empty(), "planted code ran: {leaked:?}");
+    let refs = Command::new("git")
+        .current_dir(&evil)
+        .args(["for-each-ref"])
+        .output()
+        .unwrap();
+    assert!(refs.stdout.is_empty(), "pushed to the planted remote");
+    // the token (raw or in the basic header) is in no file anywhere
+    let b64 = base64::engine::general_purpose::STANDARD.encode("x-access-token:secret-clone-token");
+    for needle in ["secret-clone-token", b64.as_str()] {
+        let out = Command::new("grep")
+            .args(["-r", "-F", needle])
+            .arg(root)
+            .output()
+            .unwrap();
+        assert!(
+            out.stdout.is_empty(),
+            "token persisted: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+    let left = std::fs::read_dir(env.workspace.join(".enzarb/net"))
+        .map(|d| d.count())
+        .unwrap_or(0);
+    assert_eq!(left, 0, "scratch repos removed");
+}

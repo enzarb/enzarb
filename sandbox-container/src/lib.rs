@@ -23,6 +23,7 @@ pub mod capture;
 pub mod chat;
 pub mod config;
 pub mod exec;
+pub mod netgit;
 pub mod observer;
 pub mod policy;
 pub mod pty;

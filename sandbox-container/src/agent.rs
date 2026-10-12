@@ -957,7 +957,7 @@ impl Inner {
         cwd: Option<&Path>,
         args: &[&str],
     ) -> Result<Output, Abort> {
-        let mut spec = CmdSpec::new(&self.cfg.git_bin, args);
+        let mut spec = CmdSpec::new(&self.cfg.git_bin, &crate::netgit::local_args(args));
         spec.cwd = cwd.map(Path::to_path_buf);
         spec.env = self.git_env();
         spec.env.extend(extra_env.iter().cloned());
@@ -1082,6 +1082,179 @@ impl Inner {
         Ok(())
     }
 
+    /// An authenticated git call: `net_env` only (see [`crate::netgit`]).
+    async fn net_git(
+        &self,
+        run: &Run,
+        ctl: &mut Ctl,
+        secrets: &[String],
+        net_env: &[(String, String)],
+        cwd: &Path,
+        args: &[&str],
+    ) -> Result<Output, Abort> {
+        let mut spec = CmdSpec::new(&self.cfg.git_bin, args);
+        spec.cwd = Some(cwd.to_path_buf());
+        spec.env = net_env.to_vec();
+        spec.env_clear = true;
+        let sink = line_sink(run, "git", secrets);
+        let out = exec::run(&self.reaper, spec, ctl, Some(sink))
+            .await
+            .map_err(|e| Abort::Fail(format!("cannot run git: {e}")))?;
+        match out.stop {
+            Some(s) => Err(s.into()),
+            None => Ok(out),
+        }
+    }
+
+    /// A fresh, empty bare repo for one network call, borrowing `repo`'s
+    /// objects. Removed when the guard drops.
+    async fn net_repo(
+        &self,
+        run: &Run,
+        ctl: &mut Ctl,
+        secrets: &[String],
+        net_env: &[(String, String)],
+        tag: &str,
+        repo: &Path,
+    ) -> Result<crate::netgit::NetDir, Abort> {
+        use std::os::unix::fs::DirBuilderExt;
+        let dir = crate::netgit::net_dir(&self.cfg.workspace, tag)
+            .map_err(|e| Abort::Fail(format!("cannot name the fetch repo: {e}")))?;
+        let parent = dir.parent().unwrap_or(&self.cfg.workspace).to_path_buf();
+        let _ = std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&parent);
+        let _ = std::fs::remove_dir_all(&dir);
+        let guard = crate::netgit::NetDir(dir.clone());
+        let d = dir.to_string_lossy().into_owned();
+        let out = self
+            .net_git(
+                run,
+                ctl,
+                secrets,
+                net_env,
+                &parent,
+                &["init", "-q", "--bare", "--template=", &d],
+            )
+            .await?;
+        require(out, "init", secrets)?;
+        let objects = repo.join(".git").join("objects");
+        std::fs::create_dir_all(dir.join("objects/info"))
+            .and_then(|_| {
+                std::fs::write(
+                    dir.join("objects/info/alternates"),
+                    format!("{}\n", objects.display()),
+                )
+            })
+            .map_err(|e| Abort::Fail(format!("cannot prepare the fetch repo: {e}")))?;
+        Ok(guard)
+    }
+
+    /// Fail if the scratch repo's config is no longer what `git init` wrote
+    /// (another process raced into it). Checked before and after the call.
+    fn net_untouched(net: &crate::netgit::NetDir, snap: &[u8]) -> Result<(), Abort> {
+        match std::fs::read(net.0.join("config")) {
+            Ok(c) if c == snap => Ok(()),
+            _ => Err(Abort::Fail(
+                "the scratch git repo was modified during the operation".into(),
+            )),
+        }
+    }
+
+    /// Fetch `url` into `repo` without running anything of `repo`'s config
+    /// with the token: network into a scratch repo, then a local fetch.
+    #[allow(clippy::too_many_arguments)]
+    async fn net_fetch(
+        &self,
+        run: &Run,
+        ctl: &mut Ctl,
+        secrets: &[String],
+        net_env: &[(String, String)],
+        run_id: &str,
+        repo: &Path,
+        url: &str,
+    ) -> Result<(), Abort> {
+        let net = self
+            .net_repo(run, ctl, secrets, net_env, &format!("fetch-{run_id}"), repo)
+            .await?;
+        let snap = std::fs::read(net.0.join("config")).unwrap_or_default();
+        Self::net_untouched(&net, &snap)?;
+        let out = self
+            .net_git(
+                run,
+                ctl,
+                secrets,
+                net_env,
+                &net.0,
+                &[
+                    "fetch",
+                    "--no-tags",
+                    "--no-write-fetch-head",
+                    "--",
+                    url,
+                    "+refs/heads/*:refs/remotes/origin/*",
+                    "+refs/tags/*:refs/tags/*",
+                ],
+            )
+            .await?;
+        Self::net_untouched(&net, &snap)?;
+        require(out, "fetch", secrets)?;
+        // Local and token-free: the clone's own config may apply here.
+        let n = net.0.to_string_lossy().into_owned();
+        self.git(
+            run,
+            ctl,
+            secrets,
+            &[],
+            Some(repo),
+            &[
+                "fetch",
+                "--prune",
+                "--no-tags",
+                "--",
+                &n,
+                "+refs/remotes/origin/*:refs/remotes/origin/*",
+                "+refs/tags/*:refs/tags/*",
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Push `refspec` (`<sha>:refs/heads/<branch>`) to `url` from a scratch
+    /// repo that borrows `repo`'s objects. A non-zero exit is returned.
+    #[allow(clippy::too_many_arguments)]
+    async fn net_push(
+        &self,
+        run: &Run,
+        ctl: &mut Ctl,
+        secrets: &[String],
+        net_env: &[(String, String)],
+        run_id: &str,
+        repo: &Path,
+        url: &str,
+        refspec: &str,
+    ) -> Result<Output, Abort> {
+        let net = self
+            .net_repo(run, ctl, secrets, net_env, &format!("push-{run_id}"), repo)
+            .await?;
+        let snap = std::fs::read(net.0.join("config")).unwrap_or_default();
+        Self::net_untouched(&net, &snap)?;
+        let out = self
+            .net_git(
+                run,
+                ctl,
+                secrets,
+                net_env,
+                &net.0,
+                &["push", "--no-verify", "--", url, refspec],
+            )
+            .await?;
+        Self::net_untouched(&net, &snap)?;
+        Ok(out)
+    }
+
     /// Run git and require success.
     async fn git(
         &self,
@@ -1149,23 +1322,16 @@ impl Inner {
                 base64::engine::general_purpose::STANDARD.encode(format!("{t}:x-oauth-basic")),
             );
         }
-        let mut auth_env = Vec::new();
-        if !req.clone_token.is_empty() && !req.repo_url.starts_with("file://") {
+        // The auth header lives only in the hardened env of the network calls
+        // (crate::netgit), never in a config file or a clone's own config.
+        let header = (!req.clone_token.is_empty()).then(|| {
             let b64 = base64::engine::general_purpose::STANDARD
                 .encode(format!("x-access-token:{}", req.clone_token));
             secrets.push(b64.clone());
-            auth_env = vec![
-                ("GIT_CONFIG_COUNT".to_string(), "1".to_string()),
-                (
-                    "GIT_CONFIG_KEY_0".to_string(),
-                    "http.extraheader".to_string(),
-                ),
-                (
-                    "GIT_CONFIG_VALUE_0".to_string(),
-                    format!("Authorization: basic {b64}"),
-                ),
-            ];
-        }
+            format!("Authorization: basic {b64}")
+        });
+        let net_env = crate::netgit::env(&req.repo_url, header.as_deref(), &self.git_env())
+            .map_err(Abort::Fail)?;
 
         // 1. clone / fetch, then the worktree.
         let repo = ws.join("repos").join(repo_dir_name(&req.repo_url));
@@ -1176,28 +1342,48 @@ impl Inner {
             let _ = std::fs::create_dir_all(ws.join("repos"));
             let _ = std::fs::create_dir_all(ws.join("worktrees"));
             if repo.join(".git").exists() {
-                self.git(
+                self.net_fetch(
                     run,
                     ctl,
                     &secrets,
-                    &auth_env,
-                    Some(&repo),
-                    &["fetch", "--prune", "origin"],
+                    &net_env,
+                    &req.run_id,
+                    &repo,
+                    &req.repo_url,
                 )
                 .await?;
             } else {
                 let _ = std::fs::remove_dir_all(&repo);
-                let r = repo.to_string_lossy().into_owned();
+                // Into a fresh, unpredictably named directory (nothing planted
+                // to read), then moved into place.
+                let tmp = crate::netgit::net_dir(ws, &format!("clone-{}", req.run_id))
+                    .map_err(|e| Abort::Fail(format!("cannot name the clone dir: {e}")))?;
+                let _ = std::fs::create_dir_all(tmp.parent().unwrap_or(ws));
+                let tmp = crate::netgit::NetDir(tmp);
+                let t = tmp.0.to_string_lossy().into_owned();
                 let res = self
-                    .git(
+                    .net_git(
                         run,
                         ctl,
                         &secrets,
-                        &auth_env,
-                        None,
-                        &["clone", "--no-checkout", "--", &req.repo_url, &r],
+                        &net_env,
+                        &ws.join("repos"),
+                        &[
+                            "clone",
+                            "--no-checkout",
+                            "--template=",
+                            "--",
+                            &req.repo_url,
+                            &t,
+                        ],
                     )
-                    .await;
+                    .await
+                    .and_then(|o| require(o, "clone", &secrets))
+                    .and_then(|o| {
+                        std::fs::rename(&tmp.0, &repo)
+                            .map(|_| o)
+                            .map_err(|e| Abort::Fail(format!("cannot move the clone: {e}")))
+                    });
                 if let Err(e) = res {
                     let _ = std::fs::remove_dir_all(&repo);
                     return Err(e);
@@ -1352,15 +1538,17 @@ impl Inner {
             // Nothing new on a fresh branch: do not create it.
             let nothing = req.branch != req.base_ref && head_sha == base_sha;
             if !nothing {
-                let refspec = format!("HEAD:refs/heads/{}", req.branch);
+                let refspec = format!("{head_sha}:refs/heads/{}", req.branch);
                 let out = self
-                    .git_raw(
+                    .net_push(
                         run,
                         ctl,
                         &secrets,
-                        &auth_env,
-                        Some(&worktree),
-                        &["push", "origin", &refspec],
+                        &net_env,
+                        &req.run_id,
+                        &repo,
+                        &req.repo_url,
+                        &refspec,
                     )
                     .await?;
                 if !out.success() {
@@ -1398,6 +1586,22 @@ impl Inner {
             }
         }
         Err(Abort::Fail(format!("base_ref {base_ref:?} not found")))
+    }
+}
+
+/// A failed git call as a run failure.
+fn require(out: Output, what: &str, secrets: &[String]) -> Result<Output, Abort> {
+    if out.success() {
+        Ok(out)
+    } else {
+        Err(Abort::Fail(redact(
+            &format!(
+                "git {what} failed ({:?}): {}",
+                out.code(),
+                out.stderr.trim()
+            ),
+            secrets,
+        )))
     }
 }
 
