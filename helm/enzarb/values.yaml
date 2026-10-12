@@ -169,7 +169,7 @@ realtime:
   image:
     repository: ghcr.io/enzarb/enzarb-realtime
     # scripts/sync-components.sh pins the released enzarb-realtime tag here.
-    tag: 0.3.0
+    tag: 0.4.0
     pullPolicy: ""
   resources: {}
   extraEnv: []
