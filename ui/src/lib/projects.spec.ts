@@ -4,6 +4,7 @@ import {
 	MaxRunsSchema,
 	buildProject,
 	normalizeRepoKey,
+	pendingChangeSteps,
 	toView,
 	type NewProject
 } from './projects.ts';
@@ -112,5 +113,69 @@ describe('buildProject / toView', () => {
 			namespace: 'enzarb-sandboxes',
 			sandboxName: 'sb-x'
 		});
+	});
+});
+
+describe('pendingChange', () => {
+	const base = () => buildProject(mk(), 'u');
+	const change = { generation: 2, since: '2026-10-12T03:00:00Z', reason: 'maxRuns 2 -> 4' };
+
+	it('maps status.pendingChange', () => {
+		const p = base();
+		p.status = { pendingChange: change };
+		expect(toView(p).pendingChange).toEqual(change);
+	});
+	it.each([undefined, null, {}, { since: '', reason: 'x' }, { since: 5, reason: 'x' }, 'x'])(
+		'maps %j to no banner',
+		(raw) => {
+			const p = base();
+			p.status = { pendingChange: raw as never };
+			expect(toView(p).pendingChange).toBeNull();
+		}
+	);
+	it('is null without a status', () => {
+		expect(toView(base()).pendingChange).toBeNull();
+	});
+	it('falls back to the SandboxChangePending condition', () => {
+		const p = base();
+		p.status = {
+			conditions: [
+				{ type: 'SandboxChangePending', status: 'True', message: 'cpu', lastTransitionTime: 't' }
+			]
+		};
+		expect(toView(p).pendingChange).toEqual({ generation: 0, since: 't', reason: 'cpu' });
+		p.status = { conditions: [{ type: 'SandboxChangePending', status: 'False' }] };
+		expect(toView(p).pendingChange).toBeNull();
+	});
+});
+
+describe('pendingChangeSteps', () => {
+	const change = { generation: 1, since: 't', reason: 'r' };
+	const states = (steps: ReturnType<typeof pendingChangeSteps>) => steps.map((s) => s.state);
+
+	it('waits for running jobs without presenting the count as exact', () => {
+		const s = pendingChangeSteps(change, 3);
+		expect(states(s)).toEqual(['done', 'active', 'pending', 'pending']);
+		expect(s[1].label).toBe('Waiting for running jobs to finish');
+		expect(pendingChangeSteps(change, 1)[1].label).toBe(s[1].label);
+	});
+	it('applies once no jobs run', () => {
+		expect(states(pendingChangeSteps(change, 0))).toEqual(['done', 'done', 'active', 'pending']);
+	});
+	it('keeps waiting active while the job count is unknown', () => {
+		const s = pendingChangeSteps(change, null);
+		expect(states(s)).toEqual(['done', 'active', 'pending', 'pending']);
+		expect(s[1].label).toBe('Checking running jobs');
+	});
+	it('is all done once applied', () => {
+		expect(states(pendingChangeSteps(null, 0, true))).toEqual(['done', 'done', 'done', 'done']);
+	});
+	it('is all pending when never queued', () => {
+		expect(states(pendingChangeSteps(null, 0))).toEqual([
+			'pending',
+			'pending',
+			'pending',
+			'pending'
+		]);
 	});
 });

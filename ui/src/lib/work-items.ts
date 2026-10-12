@@ -141,6 +141,15 @@ export function stateTone(state: string): StateTone {
 	return 'active';
 }
 
+/**
+ * Upper bound on the work items that may hold a running pod: every item in the `active` tone. The
+ * workflows contract records "running" on jobs (`workflows.jobs.status`), not on work-item states, and
+ * the machine states live in enzarb-workflows, so queued/planning items cannot be told apart here.
+ * Callers must treat the result as approximate (zero / non-zero only), never as an exact count.
+ */
+export const countPossiblyRunning = (items: readonly { state: string }[]): number =>
+	items.filter((w) => stateTone(w.state) === 'active').length;
+
 /** `github:org/repo#12` -> issue URL; `github:org/repo!12` is not produced for GitHub. */
 export function keyToUrl(key: string): string | null {
 	const m = /^github:([\w.-]+\/[\w.-]+)#(\d+)$/.exec(key);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	availableActions,
+	countPossiblyRunning,
 	groupWorkItems,
 	isTerminal,
 	itemUrl,
@@ -115,5 +116,20 @@ describe('helpers', () => {
 		expect(itemUrl('github:a/b#3', { url: 'javascript:alert(1)' })).toBe(
 			'https://github.com/a/b/issues/3'
 		);
+	});
+});
+
+describe('countPossiblyRunning', () => {
+	it('counts active states and skips waiting, ready and terminal ones', () => {
+		const states = [
+			'Planning',
+			'Implementing',
+			'AwaitingApproval',
+			'Stale',
+			'ReadyToMerge',
+			'Done'
+		];
+		expect(countPossiblyRunning(states.map((state) => ({ state })))).toBe(2);
+		expect(countPossiblyRunning([])).toBe(0);
 	});
 });

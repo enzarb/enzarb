@@ -25,6 +25,9 @@ vi.mock('#lib/projects.remote.ts', () => ({
 	deleteProject: vi.fn(async () => {}),
 	setMaxRuns: vi.fn(async () => {})
 }));
+vi.mock('#lib/work.remote.ts', () => ({
+	listWorkItems: () => ({ current: [], refresh: async () => {} })
+}));
 vi.mock('#lib/terminal.remote.ts', () => ({
 	getProjectSettings: () => ({
 		current: { claudeTokenConfigured: true, claudeConfiguredBy: 'ruckc' }

@@ -21,6 +21,10 @@
 	import { deleteProject, getProject, setMaxRuns } from '#lib/projects.remote.ts';
 	import { DEFAULT_MAX_RUNS, MaxRunsSchema } from '#lib/projects.ts';
 	import { getProjectSettings } from '#lib/terminal.remote.ts';
+	import PendingChangeBanner from '#lib/components/PendingChangeBanner.svelte';
+	import { watchWorkItems } from '#lib/live.ts';
+	import { countPossiblyRunning } from '#lib/work-items.ts';
+	import { listWorkItems } from '#lib/work.remote.ts';
 
 	const TABS = [
 		{ value: 'overview', label: 'Overview' },
@@ -46,15 +50,31 @@
 	const project = $derived(getProject(page.params.name!));
 	const settings = $derived(getProjectSettings(page.params.name!));
 
-	// Poll while the project is not Ready (no timers once it is).
+	const workItems = $derived(listWorkItems(page.params.name!));
+	// Approximation of the jobs the operator waits for: work items in an active state. The workflows
+	// contract does not list which states hold a running pod, so only zero/non-zero is used and the
+	// count is never shown. null until the list has loaded, so the banner does not claim the jobs are finished.
+	const runningJobs = $derived(workItems.current ? countPossiblyRunning(workItems.current) : null);
+
+	// Poll while the project is not Ready or has a change pending (no timers when idle).
 	// A failed poll is ignored until the next tick; it must not replace the page.
 	$effect(() => {
-		if ((project.error && !project.current) || project.current?.ready) return;
+		if (
+			(project.error && !project.current) ||
+			(project.current?.ready && !project.current.pendingChange)
+		)
+			return;
 		const id = setInterval(() => {
 			if (project.loading) return;
 			project.refresh().catch(() => {});
 		}, POLL_MS);
 		return () => clearInterval(id);
+	});
+
+	// Refresh the job count promptly while a change is pending.
+	$effect(() => {
+		if (!project.current?.pendingChange) return;
+		return watchWorkItems(() => void workItems.refresh());
 	});
 
 	const notFound = $derived(isHttpError(project.error, 404));
@@ -132,6 +152,8 @@
 			{/snippet}
 		</PageHeader>
 		{#if deleteError}<Notice tone="error">{deleteError}</Notice>{/if}
+
+		<PendingChangeBanner change={p.pendingChange} {runningJobs} />
 
 		<Tabs tabs={TABS} label="Project sections" bind:value={() => tab, selectTab}>
 			{#snippet panel(current: string)}

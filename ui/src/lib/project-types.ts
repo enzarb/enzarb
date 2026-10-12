@@ -23,7 +23,17 @@ export interface ProjectSpec {
 	maxRuns?: number;
 }
 
+/** `status.pendingChange` (operator v0.8.0): a queued pod-shape change, absent when nothing is pending. */
+export interface PendingChange {
+	/** Counter local to the pending episode; a newer change bumps it. */
+	generation: number;
+	/** RFC 3339 timestamp. */
+	since: string;
+	reason: string;
+}
+
 export interface ProjectStatus {
+	pendingChange?: Partial<PendingChange> | null;
 	namespace?: string | null;
 	sandbox?: { name?: string | null } | null;
 	observedGeneration?: number | null;
@@ -50,4 +60,5 @@ export interface ProjectView {
 	maxRuns?: number;
 	conditions: Condition[];
 	ready: boolean;
+	pendingChange?: PendingChange | null;
 }

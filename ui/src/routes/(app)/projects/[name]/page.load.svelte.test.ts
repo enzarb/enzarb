@@ -8,6 +8,9 @@ vi.mock(
 	'#lib/projects.remote.ts',
 	() => import('#lib/components/__fixtures__/fake-project-remote.svelte.ts')
 );
+vi.mock('#lib/work.remote.ts', () => ({
+	listWorkItems: () => ({ current: [], refresh: async () => {} })
+}));
 vi.mock('#lib/terminal.remote.ts', async () => {
 	const fake = await import('#lib/components/__fixtures__/fake-project-remote.svelte.ts');
 	return {

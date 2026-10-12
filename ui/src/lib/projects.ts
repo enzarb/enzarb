@@ -1,5 +1,5 @@
 import * as v from 'valibot';
-import type { Project, ProjectView, Repository } from './project-types.ts';
+import type { PendingChange, Project, ProjectView, Repository } from './project-types.ts';
 
 /** `sb-<name>-workspace` must fit in 63 characters (contracts §2, ADR-0013). */
 export const MAX_NAME_LENGTH = 50;
@@ -74,6 +74,73 @@ export function buildProject(input: NewProject, owner: string): Project {
 	};
 }
 
+/**
+ * `status.pendingChange`, or null when absent or malformed. Falls back to the
+ * `SandboxChangePending` condition (True only while a change is pending) when the field is missing.
+ */
+export function toPendingChange(p: Project): PendingChange | null {
+	const raw = p.status?.pendingChange;
+	if (raw && typeof raw === 'object') {
+		const { generation, since, reason } = raw;
+		if (typeof since === 'string' && since && typeof reason === 'string') {
+			return {
+				generation: typeof generation === 'number' && Number.isFinite(generation) ? generation : 0,
+				since,
+				reason
+			};
+		}
+	}
+	const cond = p.status?.conditions?.find((c) => c.type === 'SandboxChangePending');
+	if (cond?.status === 'True') {
+		return {
+			generation: 0,
+			since: cond.lastTransitionTime ?? '',
+			reason: cond.message || cond.reason || ''
+		};
+	}
+	return null;
+}
+
+export type PendingStepId = 'queued' | 'waiting' | 'applying' | 'ready';
+
+export interface PendingStep {
+	id: PendingStepId;
+	label: string;
+	state: 'pending' | 'active' | 'done';
+}
+
+/**
+ * Checklist for a queued sandbox change. `change` is the pending change (null once cleared);
+ * `runningJobs` the jobs still running (null while not yet known); `applied` is true when a change
+ * just cleared (all done).
+ */
+export function pendingChangeSteps(
+	change: PendingChange | null | undefined,
+	runningJobs: number | null,
+	applied = false
+): PendingStep[] {
+	const unknown = !!change && runningJobs === null;
+	const draining = !!change && runningJobs !== null && runningJobs > 0;
+	const applying = !!change && runningJobs !== null && runningJobs <= 0;
+	const done = applied && !change;
+	const state = (isDone: boolean, isActive: boolean): PendingStep['state'] =>
+		isDone || done ? 'done' : isActive ? 'active' : 'pending';
+	return [
+		{ id: 'queued', label: 'Change queued', state: state(!!change, false) },
+		{
+			id: 'waiting',
+			label: unknown
+				? 'Checking running jobs'
+				: draining
+					? 'Waiting for running jobs to finish'
+					: 'Running jobs finished',
+			state: state(applying, draining || unknown)
+		},
+		{ id: 'applying', label: 'Applying', state: state(false, applying) },
+		{ id: 'ready', label: 'Sandbox change applied', state: state(false, false) }
+	];
+}
+
 export function toView(p: Project): ProjectView {
 	const conditions = p.status?.conditions ?? [];
 	return {
@@ -89,6 +156,7 @@ export function toView(p: Project): ProjectView {
 		},
 		maxRuns: p.spec.maxRuns,
 		conditions,
-		ready: conditions.some((c) => c.type === 'Ready' && c.status === 'True')
+		ready: conditions.some((c) => c.type === 'Ready' && c.status === 'True'),
+		pendingChange: toPendingChange(p)
 	};
 }
