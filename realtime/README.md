@@ -24,13 +24,19 @@ Realtime change stream for the enzarb UI. One Postgres connection `LISTEN`s on `
 - `CONNECT` on the database, `USAGE` on schema `workflows_api`, and `SELECT` on **`workflows_api.work_item_project_v (id, project)`** (a view exposing only those two columns; the service reads only `project`). Nothing else. The view ships with enzarb-workflows#40; deploy that migration before this service.
 - `LISTEN` needs no grant.
 
+TLS (rustls, ring backend, bundled webpki roots) is controlled by `sslmode` / `PGSSLMODE` and `sslrootcert` / `PGSSLROOTCERT`:
+
+- the default `sslmode=prefer` uses TLS when the server offers it, without verifying the certificate (previously it fell back to plaintext);
+- `verify-ca` / `verify-full` validate against the bundled public roots, so certificates from a public CA need no `sslrootcert`;
+- a private CA (e.g. cert-manager) needs `sslrootcert` (or `PGSSLROOTCERT`) pointing at a CA file mounted into the container.
+
 The NOTIFY payload is only the work item id, so each notification costs one `SELECT project FROM workflows_api.work_item_project_v WHERE id = $1` on a 2-connection pool.
 
 ## Configuration
 
 | Var | Default | |
 |---|---|---|
-| `DATABASE_URL` | required | Postgres connection (`PG*` env fills the rest) |
+| `DATABASE_URL` | required | Postgres connection (`PG*` env fills the rest); TLS via `sslmode` / `sslrootcert`, see Database |
 | `ENZARB_REALTIME_JWT_SECRET` | required | HS256 secret shared with the UI; at least 32 bytes or startup fails |
 | `ENZARB_REALTIME_LISTEN` | `0.0.0.0:8080` | |
 | `ENZARB_REALTIME_PING_SECS` | `15` | ping interval |
