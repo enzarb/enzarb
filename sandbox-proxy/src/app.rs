@@ -124,6 +124,7 @@ async fn mux(
     let opts = RelayOpts {
         idle_timeout: st.cfg.idle_timeout,
         handshake_timeout: Duration::from_secs(10),
+        ping_interval: st.cfg.ping_interval,
     };
     let shutdown = st.shutdown.clone();
     let watch = ProjectWatch {

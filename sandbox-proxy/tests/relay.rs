@@ -1,10 +1,16 @@
 //! End-to-end: real axum server, fake resolver, fake sandbox-init websocket server.
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use enzarb_proto::{
     ChannelKind, ClientKind, CredentialKind, Ctrl, Frame, FrameType, RunStart,
-    session::handshake::{client_handshake, server_handshake},
+    session::handshake::{
+        client_handshake, client_handshake_with_features, server_handshake_with_features,
+    },
 };
 use enzarb_sandbox_proxy::{
     app::{AppState, router},
@@ -53,7 +59,7 @@ fn jwt(sub: &str, project: &str) -> String {
 /// Fake sandbox-init: checks the bearer and `client: "proxy"`, echoes DATA_BIN,
 /// records every binary message it receives, and pushes one CTRL frame at start.
 #[allow(clippy::result_large_err)]
-async fn fake_sandbox() -> (SocketAddr, mpsc::UnboundedReceiver<Vec<u8>>) {
+async fn fake_sandbox(features: Vec<String>) -> (SocketAddr, mpsc::UnboundedReceiver<Vec<u8>>) {
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = l.local_addr().unwrap();
     let (tx, rx) = mpsc::unbounded_channel();
@@ -61,6 +67,7 @@ async fn fake_sandbox() -> (SocketAddr, mpsc::UnboundedReceiver<Vec<u8>>) {
         loop {
             let (s, _) = l.accept().await.unwrap();
             let tx = tx.clone();
+            let features = features.clone();
             tokio::spawn(async move {
                 let cb = |req: &Request, resp: Response| {
                     let ok = req
@@ -80,7 +87,9 @@ async fn fake_sandbox() -> (SocketAddr, mpsc::UnboundedReceiver<Vec<u8>>) {
                 let Ok(mut ws) = tokio_tungstenite::accept_hdr_async(s, cb).await else {
                     return;
                 };
-                let hello = server_handshake(&mut ws, &[1]).await.unwrap();
+                let hello = server_handshake_with_features(&mut ws, &[1], &features)
+                    .await
+                    .unwrap();
                 assert_eq!(hello.client, ClientKind::Proxy);
                 let pushed = Frame::data_bin(9, &b"from-sandbox"[..]).to_bytes().unwrap();
                 ws.send(Message::Binary(pushed)).await.unwrap();
@@ -88,7 +97,26 @@ async fn fake_sandbox() -> (SocketAddr, mpsc::UnboundedReceiver<Vec<u8>>) {
                     if let Message::Binary(b) = m {
                         let _ = tx.send(b.to_vec());
                         let f = Frame::from_bytes(b).unwrap();
-                        if f.frame_type == FrameType::DataBin {
+                        // Scripted sandbox behaviour for the chat tests.
+                        if let Ok(Ctrl::Open { channel, repo, .. }) = f.ctrl_message()
+                            && repo.as_deref() == Some("refuse")
+                        {
+                            let e = Frame::ctrl(&Ctrl::OpenError {
+                                channel,
+                                message: "disabled".into(),
+                                code: Some("chat_disabled".into()),
+                            })
+                            .unwrap();
+                            ws.send(Message::Binary(e.to_bytes().unwrap()))
+                                .await
+                                .unwrap();
+                        }
+                        if f.frame_type == FrameType::DataBin && &f.payload[..] == b"bye" {
+                            let c = Frame::close(f.channel, 0, "superseded");
+                            ws.send(Message::Binary(c.to_bytes().unwrap()))
+                                .await
+                                .unwrap();
+                        } else if f.frame_type == FrameType::DataBin {
                             let echo = Frame::data_bin(f.channel, f.payload.clone());
                             ws.send(Message::Binary(echo.to_bytes().unwrap()))
                                 .await
@@ -124,7 +152,11 @@ impl Harness {
 }
 
 async fn harness() -> Harness {
-    let (sb, sandbox_rx) = fake_sandbox().await;
+    harness_with(vec![], |_| {}).await
+}
+
+async fn harness_with(features: Vec<String>, tweak: impl FnOnce(&mut Config)) -> Harness {
+    let (sb, sandbox_rx) = fake_sandbox(features).await;
     let r = FakeResolver::default();
     let sref = |ep: String| SandboxRef {
         endpoint: ep,
@@ -160,11 +192,9 @@ async fn harness() -> Harness {
         "",
     );
     let r = Arc::new(r);
-    let state = AppState::new(
-        Config::for_tests(SECRET),
-        r.clone(),
-        CancellationToken::new(),
-    );
+    let mut cfg = Config::for_tests(SECRET);
+    tweak(&mut cfg);
+    let state = AppState::new(cfg, r.clone(), CancellationToken::new());
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy = l.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(l, router(state)).await.unwrap() });
@@ -227,6 +257,8 @@ async fn forwards_frames_both_ways() {
         cols: 80,
         rows: 24,
         command: None,
+        repo: None,
+        resume: None,
     })
     .unwrap();
     ws.send(Message::Binary(open.to_bytes().unwrap()))
@@ -264,6 +296,8 @@ fn run_start() -> RunStart {
         callback_url: "http://attacker".into(),
         callback_token: "t".into(),
         log_channel: None,
+        deps_token: None,
+        npm_token: None,
     }
 }
 
@@ -504,4 +538,272 @@ async fn unrelated_updates_keep_relay_open() {
     h.resolver.update("demo", same, SANDBOX_TOKEN);
     tokio::time::sleep(Duration::from_millis(200)).await;
     send_echo(&mut ws).await;
+}
+
+// ---- chat tab (acp) ----
+
+fn acp_features() -> Vec<String> {
+    vec!["acp".into()]
+}
+
+fn open_frame(channel: u32, kind: ChannelKind, repo: Option<&str>) -> Vec<u8> {
+    Frame::ctrl(&Ctrl::Open {
+        channel,
+        kind,
+        cols: 0,
+        rows: 0,
+        command: None,
+        repo: repo.map(Into::into),
+        resume: None,
+    })
+    .unwrap()
+    .to_bytes()
+    .unwrap()
+    .to_vec()
+}
+
+async fn connect_ui(h: &Harness) -> (Browser, Vec<String>) {
+    let (mut ws, _) = connect_async(url(h, "demo", &jwt("ruckc", "demo")))
+        .await
+        .unwrap();
+    let w = client_handshake_with_features(&mut ws, ClientKind::Ui)
+        .await
+        .unwrap();
+    let f = next_bin(&mut ws).await;
+    assert_eq!(f.channel, 9);
+    (ws, w.features)
+}
+
+async fn next_ctrl(ws: &mut Browser) -> Ctrl {
+    loop {
+        let f = next_bin(ws).await;
+        if f.frame_type == FrameType::Ctrl {
+            return f.ctrl_message().unwrap();
+        }
+    }
+}
+
+async fn expect_sandbox(h: &mut Harness) -> Vec<u8> {
+    tokio::time::timeout(Duration::from_secs(5), h.sandbox_rx.recv())
+        .await
+        .expect("timeout")
+        .unwrap()
+}
+
+#[tokio::test]
+async fn welcome_features_are_the_intersection() {
+    for (sandbox, expected) in [
+        (vec![], vec![]),
+        (acp_features(), acp_features()),
+        (
+            vec!["acp".to_string(), "future".to_string()],
+            acp_features(),
+        ),
+        (vec!["future".to_string()], vec![]),
+    ] {
+        let h = harness_with(sandbox, |_| {}).await;
+        let (_ws, features) = connect_ui(&h).await;
+        assert_eq!(features, expected);
+    }
+}
+
+#[tokio::test]
+async fn acp_open_is_forwarded_raw_and_data_relays_both_ways() {
+    let mut h = harness_with(acp_features(), |_| {}).await;
+    let (mut ws, features) = connect_ui(&h).await;
+    assert_eq!(features, acp_features());
+    let open = open_frame(3, ChannelKind::Acp, Some("https://github.com/a/b"));
+    ws.send(Message::Binary(open.clone().into())).await.unwrap();
+    assert_eq!(expect_sandbox(&mut h).await, open);
+    // A stream larger than one frame, split by the sender, echoes back intact.
+    let chunk = vec![b'x'; 200 * 1024];
+    for _ in 0..4 {
+        let d = Frame::data_bin(3, chunk.clone()).to_bytes().unwrap();
+        ws.send(Message::Binary(d.clone())).await.unwrap();
+        assert_eq!(expect_sandbox(&mut h).await, d.to_vec());
+        let echo = next_bin(&mut ws).await;
+        assert_eq!((echo.channel, echo.payload.len()), (3, chunk.len()));
+    }
+}
+
+#[tokio::test]
+async fn acp_open_without_advertised_feature_never_reaches_sandbox() {
+    let mut h = harness().await;
+    let (mut ws, features) = connect_ui(&h).await;
+    assert!(features.is_empty());
+    ws.send(Message::Binary(
+        open_frame(3, ChannelKind::Acp, None).into(),
+    ))
+    .await
+    .unwrap();
+    match next_ctrl(&mut ws).await {
+        Ctrl::OpenError { channel, code, .. } => {
+            assert_eq!((channel, code.as_deref()), (3, Some("unsupported_kind")));
+        }
+        m => panic!("{m:?}"),
+    }
+    // The socket survives: the pty still works.
+    ws.send(Message::Binary(
+        open_frame(1, ChannelKind::Pty, None).into(),
+    ))
+    .await
+    .unwrap();
+    send_echo(&mut ws).await;
+    let first = expect_sandbox(&mut h).await;
+    assert_eq!(first, open_frame(1, ChannelKind::Pty, None));
+}
+
+#[tokio::test]
+async fn unknown_kind_gets_coded_open_error_and_socket_survives() {
+    let mut h = harness_with(acp_features(), |_| {}).await;
+    let (mut ws, _) = connect_ui(&h).await;
+    let raw = br#"{"type":"open","channel":4,"kind":"vnc","cols":0,"rows":0}"#;
+    let f = Frame::new(FrameType::Ctrl, 0, &raw[..]).to_bytes().unwrap();
+    ws.send(Message::Binary(f)).await.unwrap();
+    match next_ctrl(&mut ws).await {
+        Ctrl::OpenError { channel, code, .. } => {
+            assert_eq!((channel, code.as_deref()), (4, Some("unsupported_kind")));
+        }
+        m => panic!("{m:?}"),
+    }
+    send_echo(&mut ws).await;
+    // Only the echo data reached the sandbox, not the open.
+    let got = Frame::from_bytes(expect_sandbox(&mut h).await.into()).unwrap();
+    assert_eq!(got.frame_type, FrameType::DataBin);
+}
+
+#[tokio::test]
+async fn second_acp_open_on_a_socket_is_chat_limit() {
+    let mut h = harness_with(acp_features(), |_| {}).await;
+    let (mut ws, _) = connect_ui(&h).await;
+    ws.send(Message::Binary(
+        open_frame(3, ChannelKind::Acp, None).into(),
+    ))
+    .await
+    .unwrap();
+    expect_sandbox(&mut h).await;
+    ws.send(Message::Binary(
+        open_frame(5, ChannelKind::Acp, None).into(),
+    ))
+    .await
+    .unwrap();
+    match next_ctrl(&mut ws).await {
+        Ctrl::OpenError { channel, code, .. } => {
+            assert_eq!((channel, code.as_deref()), (5, Some("chat_limit")));
+        }
+        m => panic!("{m:?}"),
+    }
+    assert!(h.sandbox_rx.try_recv().is_err(), "second open leaked");
+
+    // The sandbox closes the first (superseded): the close reason passes
+    // through and a new open is accepted again.
+    let bye = Frame::data_bin(3, &b"bye"[..]).to_bytes().unwrap();
+    ws.send(Message::Binary(bye)).await.unwrap();
+    let c = next_bin(&mut ws).await;
+    assert_eq!(c.frame_type, FrameType::Close);
+    assert_eq!(c.channel, 3);
+    assert!(c.payload.ends_with(b"superseded"));
+    expect_sandbox(&mut h).await; // the "bye" data
+    ws.send(Message::Binary(
+        open_frame(5, ChannelKind::Acp, None).into(),
+    ))
+    .await
+    .unwrap();
+    assert_eq!(
+        expect_sandbox(&mut h).await,
+        open_frame(5, ChannelKind::Acp, None)
+    );
+}
+
+#[tokio::test]
+async fn sandbox_open_error_codes_pass_through_and_free_the_slot() {
+    let mut h = harness_with(acp_features(), |_| {}).await;
+    let (mut ws, _) = connect_ui(&h).await;
+    ws.send(Message::Binary(
+        open_frame(3, ChannelKind::Acp, Some("refuse")).into(),
+    ))
+    .await
+    .unwrap();
+    expect_sandbox(&mut h).await;
+    match next_ctrl(&mut ws).await {
+        Ctrl::OpenError { channel, code, .. } => {
+            assert_eq!((channel, code.as_deref()), (3, Some("chat_disabled")));
+        }
+        m => panic!("{m:?}"),
+    }
+    let retry = open_frame(4, ChannelKind::Acp, None);
+    ws.send(Message::Binary(retry.clone().into()))
+        .await
+        .unwrap();
+    assert_eq!(expect_sandbox(&mut h).await, retry);
+}
+
+#[tokio::test]
+async fn oversize_repo_and_resume_are_refused_locally() {
+    let mut h = harness_with(acp_features(), |_| {}).await;
+    let (mut ws, _) = connect_ui(&h).await;
+    let long = "r".repeat(enzarb_proto::MAX_REPO_LEN + 1);
+    ws.send(Message::Binary(
+        open_frame(3, ChannelKind::Acp, Some(&long)).into(),
+    ))
+    .await
+    .unwrap();
+    match next_ctrl(&mut ws).await {
+        Ctrl::OpenError { code, .. } => assert_eq!(code.as_deref(), Some("invalid_request")),
+        m => panic!("{m:?}"),
+    }
+    assert!(h.sandbox_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn run_control_still_rejected_with_acp_enabled() {
+    let mut h = harness_with(acp_features(), |_| {}).await;
+    let (mut ws, _) = connect_ui(&h).await;
+    let bytes = Frame::ctrl(&Ctrl::RunStart(run_start()))
+        .unwrap()
+        .to_bytes()
+        .unwrap();
+    ws.send(Message::Binary(bytes)).await.unwrap();
+    assert_eq!(close_of(&mut ws).await.0, 1008);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(h.sandbox_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn pings_flow_and_do_not_defeat_the_idle_timeout() {
+    let h = harness_with(acp_features(), |c| {
+        c.idle_timeout = Duration::from_millis(800);
+        c.ping_interval = Duration::from_millis(100);
+    })
+    .await;
+    let (mut ws, _) = connect_ui(&h).await;
+    let mut pings = 0;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let closed = loop {
+        assert!(Instant::now() < deadline, "never idled out");
+        match ws.next().await {
+            Some(Ok(Message::Ping(_))) => pings += 1,
+            Some(Ok(Message::Close(Some(c)))) => break (u16::from(c.code), c.reason.to_string()),
+            Some(Ok(_)) => {}
+            other => panic!("{other:?}"),
+        }
+    };
+    // The client answers pings automatically while reading; those pongs must
+    // not count as activity.
+    assert!(pings >= 3, "pings: {pings}");
+    assert_eq!(closed, (1001, "idle timeout".into()));
+}
+
+#[tokio::test]
+async fn data_traffic_keeps_the_relay_alive_past_idle() {
+    let h = harness_with(acp_features(), |c| {
+        c.idle_timeout = Duration::from_millis(800);
+        c.ping_interval = Duration::from_millis(100);
+    })
+    .await;
+    let (mut ws, _) = connect_ui(&h).await;
+    for _ in 0..8 {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        send_echo(&mut ws).await;
+    }
 }

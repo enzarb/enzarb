@@ -13,16 +13,20 @@
 
 use std::{
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
 
 use axum::extract::ws::{CloseFrame as AxClose, Message as AxMsg, WebSocket};
+use bytes::Bytes;
 use enzarb_proto::{ClientKind, Ctrl, Frame, FrameHeader, error_code, session::handshake};
 use futures_util::{SinkExt, StreamExt};
-use tokio::{net::TcpStream, sync::broadcast};
+use tokio::{
+    net::TcpStream,
+    sync::{broadcast, mpsc},
+};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async_with_config,
     tungstenite::{
@@ -35,7 +39,7 @@ use tokio_tungstenite::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    guard::{self, Reject},
+    guard::{Guard, Reject, Verdict, negotiated_features},
     resolver::{ResolveError, Resolver, revoked},
 };
 
@@ -55,6 +59,8 @@ pub enum DialError {
 pub struct Dialed {
     pub ws: Upstream,
     pub version: u16,
+    /// The sandbox's advertised features (sanitized). Empty for an old sandbox.
+    pub features: Vec<String>,
 }
 
 pub fn ws_config(max_message_bytes: usize) -> WebSocketConfig {
@@ -94,10 +100,14 @@ pub async fn dial(
                 }
                 e => DialError::Unreachable(e.to_string()),
             })?;
-        let version = handshake::client_handshake(&mut ws, ClientKind::Proxy)
+        let w = handshake::client_handshake_with_features(&mut ws, ClientKind::Proxy)
             .await
             .map_err(|e| DialError::Unreachable(e.to_string()))?;
-        Ok(Dialed { ws, version })
+        Ok(Dialed {
+            ws,
+            version: w.version,
+            features: w.features,
+        })
     };
     tokio::time::timeout(timeout, connect)
         .await
@@ -122,6 +132,7 @@ enum End {
 async fn browser_handshake(
     ws: &mut WebSocket,
     version: u16,
+    features: &[String],
     timeout: Duration,
 ) -> Result<(), &'static str> {
     let first = tokio::time::timeout(timeout, async {
@@ -143,7 +154,10 @@ async fn browser_handshake(
         Some(Ctrl::Hello { versions, client })
             if client == ClientKind::Ui && versions.contains(&version) =>
         {
-            Ctrl::Welcome { version }
+            Ctrl::Welcome {
+                version,
+                features: (!features.is_empty()).then(|| features.to_vec()),
+            }
         }
         Some(Ctrl::Hello { .. }) => Ctrl::Error {
             code: error_code::UNSUPPORTED_VERSION.into(),
@@ -177,6 +191,8 @@ struct Counters {
 pub struct RelayOpts {
     pub idle_timeout: Duration,
     pub handshake_timeout: Duration,
+    /// Websocket ping interval towards the browser (keeps intermediaries open).
+    pub ping_interval: Duration,
 }
 
 /// Watches a Project for changes that revoke an open relay's authorisation.
@@ -232,8 +248,15 @@ pub async fn run(
     project: &str,
     sub: &str,
 ) {
-    if let Err(why) =
-        browser_handshake(&mut browser, upstream.version, opts.handshake_timeout).await
+    // The browser sees only what the sandbox offers AND this proxy can guard.
+    let features = negotiated_features(&upstream.features);
+    if let Err(why) = browser_handshake(
+        &mut browser,
+        upstream.version,
+        &features,
+        opts.handshake_timeout,
+    )
+    .await
     {
         tracing::info!(project, sub, why, "browser handshake failed");
         let _ = browser.close().await;
@@ -247,19 +270,30 @@ pub async fn run(
     let counters = Counters::default();
     let start = Instant::now();
     let last = AtomicU64::new(0);
+    let guard = Mutex::new(Guard::new(&features));
+    // Proxy-originated frames for the browser (open_error replies from the guard).
+    let (reply_tx, mut reply_rx) = mpsc::channel::<Bytes>(32);
     let touch = || last.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
 
     let up = async {
         while let Some(m) = b_rx.next().await {
-            touch();
             let m = match m {
                 Ok(m) => m,
                 Err(e) => return End::Transport(e.to_string()),
             };
             match m {
                 AxMsg::Binary(b) => {
-                    if let Err(r) = guard::check_browser_message(&b) {
-                        return End::Rejected(r);
+                    touch();
+                    let verdict = guard.lock().unwrap().check_browser_message(&b);
+                    match verdict {
+                        Err(r) => return End::Rejected(r),
+                        Ok(Verdict::Reply(reply)) => {
+                            if reply_tx.send(reply).await.is_err() {
+                                return End::UpstreamClosed;
+                            }
+                            continue;
+                        }
+                        Ok(Verdict::Forward(_)) => {}
                     }
                     counters.up_msgs.fetch_add(1, Ordering::Relaxed);
                     counters
@@ -270,6 +304,8 @@ pub async fn run(
                     }
                 }
                 AxMsg::Text(_) => return End::BrowserProtocol("text message"),
+                // Keepalive traffic must not count as activity, or the pongs to
+                // our own pings would defeat the idle timeout.
                 AxMsg::Ping(_) | AxMsg::Pong(_) => {}
                 AxMsg::Close(_) => return End::BrowserClosed,
             }
@@ -277,14 +313,36 @@ pub async fn run(
         End::BrowserClosed
     };
     let down = async {
-        while let Some(m) = u_rx.next().await {
-            touch();
+        let mut ping = tokio::time::interval(opts.ping_interval);
+        ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        ping.tick().await;
+        loop {
+            let m = tokio::select! {
+                m = u_rx.next() => match m {
+                    Some(m) => m,
+                    None => return End::UpstreamClosed,
+                },
+                Some(reply) = reply_rx.recv() => {
+                    if let Err(e) = b_tx.send(AxMsg::Binary(reply)).await {
+                        return End::Transport(e.to_string());
+                    }
+                    continue;
+                }
+                _ = ping.tick() => {
+                    if let Err(e) = b_tx.send(AxMsg::Ping(Bytes::new())).await {
+                        return End::Transport(e.to_string());
+                    }
+                    continue;
+                }
+            };
             let m = match m {
                 Ok(m) => m,
                 Err(e) => return End::Transport(e.to_string()),
             };
             match m {
                 TgMsg::Binary(b) => {
+                    touch();
+                    guard.lock().unwrap().observe_sandbox_message(&b);
                     if let Err(e) = FrameHeader::parse(&b) {
                         tracing::warn!(error = %e, "malformed frame from sandbox");
                     }
@@ -301,7 +359,6 @@ pub async fn run(
                 _ => {}
             }
         }
-        End::UpstreamClosed
     };
     let idle = async {
         let tick = (opts.idle_timeout / 4).max(Duration::from_millis(50));
