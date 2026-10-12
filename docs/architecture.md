@@ -104,6 +104,8 @@ flowchart LR
 2. The proxy checks the token, resolves the Project's sandbox, and dials sandbox-init.
 3. Frames are multiplexed: terminals, the `claude` session, status events, file transfer. Each is a channel with credit-based flow control.
 
+**Chat.** The Chat page uses the same socket with an `acp` channel ([ADR-0014](adr/0014-chat-tab-acp-over-mux.md), [design](design/chat-tab.md)): sandbox-init runs one `claude-agent-acp` per chat in its own worktree and relays ACP JSON-RPC through a filter; permission requests are hard-denied by policy or decided by the user, never auto-approved.
+
 ### 3. Claude credentials
 The user runs a guided `claude setup-token` in the sandbox terminal, and pid-1 captures the `sk-ant-oat01-` token. Third-party OAuth against Claude subscriptions is not allowed by Anthropic's terms ([ADR-0004](adr/0004-claude-credentials.md)).
 
