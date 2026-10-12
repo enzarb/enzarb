@@ -20,5 +20,6 @@ jobs:
       - run: pip install jsonschema pyyaml
       - run: mise run lint
       - run: mise run golden
+      - run: mise run npmtoken
       - run: mise run kubeconform
       - run: mise run pgop

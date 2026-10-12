@@ -38,6 +38,10 @@ Docker is always on and the runtime class is cluster-admin config, not per Proje
 
 Every Project now has two PVCs: `workspace` and `docker`. Sandbox nodes must carry the label `enzarb.dev/runtime-gvisor=true` (installed by enzarb-kubernetes together with the `gvisor` RuntimeClass); without a matching node, sandbox pods stay Pending.
 
+## Private npm packages for agent runs
+
+`workflows.npmToken` (default enabled) wires `ENZARB_NPM_TOKEN` on the workflows Deployment (executor role) from Secret `enzarb-updater-registry`, key `registry-token` (`existingSecret` / `key` override; the Secret must be in the release namespace). The reference is `optional: true`: if the Secret or key is missing the variable stays unset and the pod still starts, but agent `npm ci` of private `@enzarb/*` packages then fails with E403. The value is the long-lived GHCR read PAT (`read:packages` covers every package its owner can read); enzarb-workflows passes it to sandbox-init as `RunStart.npm_token`, which exposes it to the agent process only as `NODE_AUTH_TOKEN`, redacted and never persisted. Set `workflows.npmToken.enabled=false` to omit it. Needs an enzarb-workflows release with `ENZARB_NPM_TOKEN` support and an enzarb-sandbox-container release with `npm_token` support.
+
 ## Migration ordering
 Jobs are plain resources, not Helm hooks (hooks would deadlock `helm install --wait`: pods would need schemas that only post-install hooks create). Init containers (`kubectl wait`, image `waitImage`) enforce the order: workflows waits for the pgop Cluster, Database and all Roles (`migrate --require-roles` needs the runtime roles), connectors waits for the workflows Job, ui for the connectors Job, and every runtime Deployment (ui, workflows, connectors) for the ui Job. Job names embed a hash of the Job's inputs (image, pull policy, DB names, wait image, security context, upstream Job name, a template revision), so any change creates a new Job and unchanged inputs keep the completed one.
 

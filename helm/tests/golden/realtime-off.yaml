@@ -1183,6 +1183,12 @@ spec:
                 secretKeyRef:
                   name: enzarb-generated
                   key: callback-secret
+            - name: ENZARB_NPM_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: "enzarb-updater-registry"
+                  key: "registry-token"
+                  optional: true
             - { name: ENZARB_EXECUTOR_URL, value: "http://enzarb-workflows-executor.enzarb.svc:8081" }
             - { name: ENZARB_EXECUTOR_LISTEN, value: "0.0.0.0:8081" }
             - { name: ENZARB_PUBLIC_URL, value: "https://enzarb.dev" }

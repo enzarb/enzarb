@@ -131,6 +131,17 @@ workflows:
   botHandle: enzarb
   botLogin: enzarb[bot]
   dbMaxConnections: 10
+  # ENZARB_NPM_TOKEN (executor role): a long-lived read:packages PAT handed to agent runs as
+  # RunStart.npm_token so `npm ci` can read private @enzarb/* packages (GitHub App tokens
+  # cannot). By default it reuses the GHCR read token oldie already stores in
+  # enzarb-updater-registry (key registry-token; same namespace as the release). The env var is
+  # optional: a missing Secret or key leaves it unset and the pod still starts. Needs
+  # enzarb-workflows with ENZARB_NPM_TOKEN support. Note read:packages covers every package
+  # the owning user can read.
+  npmToken:
+    enabled: true
+    existingSecret: enzarb-updater-registry
+    key: registry-token
   # Must exceed the executor drain time.
   terminationGracePeriodSeconds: 60
   resources: {}

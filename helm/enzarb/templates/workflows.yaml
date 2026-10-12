@@ -32,6 +32,14 @@ spec:
             {{- include "enzarb.secretEnv" (dict "name" "GITHUB_APP_ID" "secret" (include "enzarb.githubSecret" .) "key" (include "enzarb.githubKey" (dict "ctx" . "key" "appId"))) | nindent 12 }}
             {{- include "enzarb.secretEnv" (dict "name" "GITHUB_APP_PRIVATE_KEY" "secret" (include "enzarb.githubSecret" .) "key" (include "enzarb.githubKey" (dict "ctx" . "key" "privateKey"))) | nindent 12 }}
             {{- include "enzarb.secretEnv" (dict "name" "ENZARB_EXECUTOR_CALLBACK_SECRET" "secret" (include "enzarb.callbackSecret" .) "key" (include "enzarb.callbackKey" .)) | nindent 12 }}
+            {{- if and $executor $c.npmToken.enabled }}
+            - name: ENZARB_NPM_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $c.npmToken.existingSecret | quote }}
+                  key: {{ $c.npmToken.key | quote }}
+                  optional: true
+            {{- end }}
             - { name: ENZARB_EXECUTOR_URL, value: {{ printf "http://enzarb-workflows-executor.%s.svc:%v" .Release.Namespace .Values.sandbox.executorCallbackPort | quote }} }
             {{- if $executor }}
             - { name: ENZARB_EXECUTOR_LISTEN, value: {{ printf "0.0.0.0:%v" .Values.sandbox.executorCallbackPort | quote }} }
