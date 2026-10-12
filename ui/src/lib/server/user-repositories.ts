@@ -221,6 +221,29 @@ export function installUrl(slug: string): string {
 	return `https://github.com/apps/${slug}/installations/new`;
 }
 
+export interface AccountInstallation {
+	accountLogin: string;
+	installationId: number;
+	repositoryCount: number;
+}
+
+/** Groups snapshot rows by installation account, ordered by login. */
+export function groupByAccount(repos: UserRepository[]): AccountInstallation[] {
+	const groups = new Map<string, AccountInstallation>();
+	for (const r of repos) {
+		const key = `${r.accountLogin}\0${r.installationId}`;
+		const g = groups.get(key);
+		if (g) g.repositoryCount++;
+		else
+			groups.set(key, {
+				accountLogin: r.accountLogin,
+				installationId: r.installationId,
+				repositoryCount: 1
+			});
+	}
+	return [...groups.values()].sort((a, b) => a.accountLogin.localeCompare(b.accountLogin));
+}
+
 /** Whether the snapshot holds at least one repository (drives the install-the-App banner). */
 export async function hasUserRepositories(sql: Sql, userId: number): Promise<boolean> {
 	const [row] = await sql<
