@@ -1,7 +1,15 @@
 <script lang="ts">
-	import { PROJECT_TABS } from '#lib/project-context.svelte.ts';
+	import { projectTabs } from '#lib/project-context.svelte.ts';
 
-	let { name, pathname }: { name: string; pathname: string } = $props();
+	let {
+		name,
+		pathname,
+		chat = false
+	}: {
+		name: string;
+		pathname: string;
+		/** Show the Chat tab (ENZARB_UI_CHAT). */ chat?: boolean;
+	} = $props();
 
 	const base = $derived(`/projects/${encodeURIComponent(name)}`);
 	const current = (slug: string) => {
@@ -11,7 +19,7 @@
 </script>
 
 <nav class="ez-tabnav" aria-label="Project sections">
-	{#each PROJECT_TABS as t (t.slug)}
+	{#each projectTabs({ chat }) as t (t.slug)}
 		<a
 			class="ez-tabnav__link"
 			href={t.slug ? `${base}/${t.slug}` : base}

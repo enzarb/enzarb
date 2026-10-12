@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
 	import { page } from '$app/state';
 	import { isHttpError } from '@sveltejs/kit';
 	import Button from '#lib/components/form/Button.svelte';
@@ -14,7 +15,9 @@
 	import { countPossiblyRunning } from '#lib/work-items.ts';
 	import { listWorkItems } from '#lib/work.remote.ts';
 
-	let { children } = $props();
+	let { children, data }: { children: Snippet; data?: { chatEnabled?: boolean } } = $props();
+	// Off unless the server said the flag is on.
+	const chatEnabled = $derived(data?.chatEnabled === true);
 
 	const POLL_MS = 2000;
 	const project = $derived(getProject(page.params.name!));
@@ -96,7 +99,7 @@
 
 		<PendingChangeBanner change={p.pendingChange} {runningJobs} />
 
-		<ProjectNav name={p.name} pathname={page.url.pathname} />
+		<ProjectNav name={p.name} pathname={page.url.pathname} chat={chatEnabled} />
 		<div class="ez-tabnav-panel">
 			{@render children()}
 		</div>
