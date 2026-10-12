@@ -16,16 +16,21 @@ export interface LiveSocket {
 
 export interface LiveDeps {
 	WebSocket: new (url: string) => LiveSocket;
-	getUrl: () => Promise<string>;
+	/** Renews the HttpOnly realtime cookie server-side; returns the stream URL (never a token). */
+	refresh: () => Promise<{ url: string; expiresInSeconds: number }>;
 	setTimeout: (fn: () => void, ms: number) => unknown;
 	clearTimeout: (handle: unknown) => void;
 	random: () => number;
 }
 
+/** The cookie is renewed at this fraction of its lifetime. */
+export const REFRESH_FRACTION = 0.8;
+
 /**
  * Keeps a websocket to enzarb-realtime open. `onChange(id)` fires per changed work item;
  * `onChange(null)` means "refresh everything": a `resync` frame, any reconnect (changes may have
- * been missed) and, while disconnected, a poll every minute. Each (re)connect mints a new token.
+ * been missed) and, while disconnected, a poll every minute. Each (re)connect renews the auth
+ * cookie first, and it is renewed again before it expires.
  * Returns the unsubscribe function.
  */
 export function createLiveWatcher(
@@ -36,6 +41,7 @@ export function createLiveWatcher(
 	let socket: LiveSocket | null = null;
 	let retryTimer: unknown = null;
 	let pollTimer: unknown = null;
+	let refreshTimer: unknown = null;
 	let attempt = 0;
 	let needsFull = false;
 	let immediateUsed = false;
@@ -53,6 +59,23 @@ export function createLiveWatcher(
 			pollTimer = deps.setTimeout(tick, POLL_MS);
 		};
 		pollTimer = deps.setTimeout(tick, POLL_MS);
+	}
+
+	/** Renews the cookie and schedules the next renewal; there is only ever one pending timer. */
+	async function refresh() {
+		const res = await deps.refresh();
+		if (stopped) return res;
+		if (refreshTimer !== null) deps.clearTimeout(refreshTimer);
+		refreshTimer = deps.setTimeout(
+			() => {
+				refreshTimer = null;
+				if (stopped) return;
+				// a failed timer refresh is not fatal: the next connect refreshes again
+				refresh().catch(() => {});
+			},
+			Math.round(res.expiresInSeconds * 1000 * REFRESH_FRACTION)
+		);
+		return res;
 	}
 
 	function drop(code: number | undefined) {
@@ -76,7 +99,7 @@ export function createLiveWatcher(
 	async function connect() {
 		let url: string;
 		try {
-			url = await deps.getUrl();
+			url = (await refresh()).url;
 		} catch {
 			drop(undefined);
 			return;
@@ -125,6 +148,8 @@ export function createLiveWatcher(
 		stopPoll();
 		if (retryTimer !== null) deps.clearTimeout(retryTimer);
 		retryTimer = null;
+		if (refreshTimer !== null) deps.clearTimeout(refreshTimer);
+		refreshTimer = null;
 		socket?.close();
 		socket = null;
 	};
@@ -137,7 +162,7 @@ export function watchWorkItems(onChange: (id: number | null) => void): () => voi
 		{
 			WebSocket: WebSocket as unknown as LiveDeps['WebSocket'],
 			// imported lazily so the watcher stays testable without the SvelteKit runtime
-			getUrl: async () => (await (await import('#lib/work.remote.ts')).realtimeConnection()).url,
+			refresh: async () => await (await import('#lib/work.remote.ts')).realtimeConnection(),
 			setTimeout: (fn, ms) => setTimeout(fn, ms),
 			clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
 			random: Math.random

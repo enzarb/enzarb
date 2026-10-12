@@ -5,6 +5,7 @@ import {
 	OAUTH_PURPOSE_COOKIE,
 	createSession,
 	deleteCreateRepoIntentCookie,
+	deleteRealtimeCookie,
 	fetchGitHubProfile,
 	githubClient,
 	invalidateSession,
@@ -86,6 +87,8 @@ export const GET: RequestHandler = async ({ url, cookies, locals }) => {
 	}
 	const { token, session } = await createSession(sql, userId);
 	setSessionCookie(cookies, token, session.expiresAt);
+	// A previous user's stream cookie must not survive an account switch.
+	deleteRealtimeCookie(cookies);
 	// Re-authenticating (e.g. repository refresh): drop the session this replaces.
 	if (locals.session && locals.session.id !== session.id)
 		await invalidateSession(sql, locals.session.id);

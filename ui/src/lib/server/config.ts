@@ -8,9 +8,17 @@ export interface Config {
 	publicUrl: string;
 	/** Slug of the enzarb GitHub App, used for the install link (ENZARB_GITHUB_APP_SLUG, optional). */
 	githubAppSlug: string;
+	/**
+	 * Also put the realtime token in the websocket URL (ENZARB_REALTIME_LEGACY_TOKEN_URL, optional,
+	 * default off). Only for an enzarb-realtime older than enzarb-realtime#8.
+	 * TODO: remove once enzarb-realtime#8 is released everywhere.
+	 */
+	realtimeLegacyTokenUrl: boolean;
 }
 
-const REQUIRED: Record<Exclude<keyof Config, 'githubAppSlug'>, string> = {
+type RequiredKey = Exclude<keyof Config, 'githubAppSlug' | 'realtimeLegacyTokenUrl'>;
+
+const REQUIRED: Record<RequiredKey, string> = {
 	databaseUrl: 'DATABASE_URL',
 	sessionJwtSecret: 'ENZARB_SESSION_JWT_SECRET',
 	realtimeJwtSecret: 'ENZARB_REALTIME_JWT_SECRET',
@@ -24,7 +32,7 @@ export const DEFAULT_GITHUB_APP_SLUG = 'enzarb';
 /** Parse configuration from an environment map (contracts §9). Reports all problems at once. */
 export function parseConfig(source: Record<string, string | undefined>): Config {
 	const missing: string[] = [];
-	const out = {} as Record<Exclude<keyof Config, 'githubAppSlug'>, string>;
+	const out = {} as Record<RequiredKey, string>;
 	for (const [key, name] of Object.entries(REQUIRED) as [keyof typeof out, string][]) {
 		const value = source[name]?.trim();
 		if (value) out[key] = value;
@@ -48,12 +56,23 @@ export function parseConfig(source: Record<string, string | undefined>): Config 
 	if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(githubAppSlug)) {
 		throw new Error('ENZARB_GITHUB_APP_SLUG must contain only letters, digits and hyphens');
 	}
-	return { ...out, githubAppSlug };
+	const legacy = source.ENZARB_REALTIME_LEGACY_TOKEN_URL?.trim().toLowerCase();
+	if (legacy && legacy !== 'true' && legacy !== 'false') {
+		throw new Error('ENZARB_REALTIME_LEGACY_TOKEN_URL must be true or false');
+	}
+	return { ...out, githubAppSlug, realtimeLegacyTokenUrl: legacy === 'true' };
 }
 
 let cached: Config | undefined;
 
 /** Lazily parsed so `vite build` and `svelte-check` do not need the environment. */
 export function getConfig(): Config {
-	return (cached ??= parseConfig(process.env));
+	if (cached) return cached;
+	cached = parseConfig(process.env);
+	if (cached.realtimeLegacyTokenUrl) {
+		console.warn(
+			'ENZARB_REALTIME_LEGACY_TOKEN_URL is on: the realtime token is also put in the websocket URL'
+		);
+	}
+	return cached;
 }

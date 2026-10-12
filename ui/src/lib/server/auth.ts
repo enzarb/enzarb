@@ -3,6 +3,7 @@ import type { Cookies } from '@sveltejs/kit';
 import { GitHub } from 'arctic';
 import { getConfig } from './config.ts';
 import type { Sql } from './db.ts';
+import { REALTIME_COOKIE } from './realtime-jwt.ts';
 import { OAUTH_RETURN_COOKIE } from './return-path.ts';
 
 export const SESSION_COOKIE = 'enzarb_session';
@@ -117,8 +118,14 @@ export function setSessionCookie(cookies: Cookies, token: string, expiresAt: Dat
 	cookies.set(SESSION_COOKIE, token, cookieOptions(isSecure(), expiresAt));
 }
 
+/** The Path must match the one it was set with or the delete does nothing. */
+export function deleteRealtimeCookie(cookies: Cookies): void {
+	cookies.delete(REALTIME_COOKIE, { path: '/live/' });
+}
+
 export function deleteSessionCookie(cookies: Cookies): void {
 	cookies.delete(SESSION_COOKIE, { path: '/' });
+	deleteRealtimeCookie(cookies);
 }
 
 export function setOauthStateCookie(cookies: Cookies, state: string): void {

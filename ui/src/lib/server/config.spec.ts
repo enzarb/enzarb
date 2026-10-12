@@ -20,8 +20,18 @@ describe('parseConfig', () => {
 			githubOauthClientId: 'id',
 			githubOauthClientSecret: 'secret',
 			publicUrl: 'https://enzarb.example.com',
-			githubAppSlug: 'enzarb'
+			githubAppSlug: 'enzarb',
+			realtimeLegacyTokenUrl: false
 		});
+	});
+
+	it('parses the legacy realtime token URL flag', () => {
+		const flag = (v?: string) =>
+			parseConfig({ ...valid, ENZARB_REALTIME_LEGACY_TOKEN_URL: v }).realtimeLegacyTokenUrl;
+		expect(flag()).toBe(false);
+		expect(flag('true')).toBe(true);
+		expect(flag('false')).toBe(false);
+		expect(() => flag('yes')).toThrow(/ENZARB_REALTIME_LEGACY_TOKEN_URL/);
 	});
 
 	it('reads the optional GitHub App slug', () => {

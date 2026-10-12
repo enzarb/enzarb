@@ -46,7 +46,10 @@ async function callback(returnCookie?: string, oldSessionId?: string, query = 'c
 	const cookies = {
 		get: (n: string) => jar.get(n),
 		set: (n: string, v: string) => void jar.set(n, v),
-		delete: (n: string) => void jar.delete(n)
+		delete: (n: string, o?: { path?: string }) => {
+			jar.delete(n);
+			jar.set('deleted:' + n, o?.path ?? '');
+		}
 	};
 	const url = new URL('https://enzarb.example/login/github/callback?' + query);
 	let thrown: unknown;
@@ -92,6 +95,8 @@ describe('GET /login/github/callback', () => {
 		expect(isRedirect(thrown)).toBe(true);
 		expect(thrown).toMatchObject({ status: 303, location: '/projects' });
 		expect(jar.has(OAUTH_RETURN_COOKIE)).toBe(false);
+		// a previous user's realtime stream cookie is cleared at login (same Path it was set with)
+		expect(jar.get('deleted:enzarb_live')).toBe('/live/');
 		const rows = await sql`SELECT repo, account_login, private FROM app.user_repositories`;
 		expect(rows).toEqual([{ repo: 'github:octo/repo', account_login: 'Octo', private: true }]);
 		// The token appears nowhere in the database.

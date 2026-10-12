@@ -25,15 +25,15 @@ class FakeSocket implements LiveSocket {
 	}
 }
 
-let tokens = 0;
-const getUrl = vi.fn(async () => `wss://x/live/v1/stream?token=t${++tokens}`);
+const STREAM = 'wss://x/live/v1/stream';
+const refresh = vi.fn(async () => ({ url: STREAM, expiresInSeconds: 300 }));
 
 function start(random = () => 1) {
 	const onChange = vi.fn();
 	const stop = createLiveWatcher(
 		{
 			WebSocket: FakeSocket,
-			getUrl,
+			refresh,
 			setTimeout: (fn, ms) => setTimeout(fn, ms),
 			clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
 			random
@@ -48,9 +48,8 @@ const last = () => FakeSocket.all[FakeSocket.all.length - 1];
 beforeEach(() => {
 	vi.useFakeTimers();
 	FakeSocket.all = [];
-	tokens = 0;
-	getUrl.mockClear();
-	getUrl.mockImplementation(async () => `wss://x/live/v1/stream?token=t${++tokens}`);
+	refresh.mockClear();
+	refresh.mockImplementation(async () => ({ url: STREAM, expiresInSeconds: 300 }));
 });
 afterEach(() => vi.useRealTimers());
 
@@ -75,7 +74,54 @@ describe('createLiveWatcher', () => {
 		expect(onChange).not.toHaveBeenCalled();
 	});
 
-	it('reconnects with backoff and a fresh token, then refreshes fully', async () => {
+	it('opens a query-less URL after refreshing the cookie', async () => {
+		start();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(refresh).toHaveBeenCalledTimes(1);
+		expect(last().url).toBe(STREAM);
+		expect(last().url).not.toContain('token');
+		expect(last().url).not.toContain('?');
+	});
+
+	it('uses the legacy URL only when refresh returns it', async () => {
+		refresh.mockResolvedValueOnce({ url: `${STREAM}?token=t`, expiresInSeconds: 300 });
+		start();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(last().url).toBe(`${STREAM}?token=t`);
+	});
+
+	it('renews the cookie before it expires and stops on unsubscribe', async () => {
+		const { stop } = start();
+		await vi.advanceTimersByTimeAsync(0);
+		last().open();
+		await vi.advanceTimersByTimeAsync(239_999);
+		expect(refresh).toHaveBeenCalledTimes(1);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(refresh).toHaveBeenCalledTimes(2);
+		// a timer refresh does not touch the socket
+		expect(FakeSocket.all).toHaveLength(1);
+		expect(last().closed).toBe(false);
+		stop();
+		expect(vi.getTimerCount()).toBe(0);
+		await vi.advanceTimersByTimeAsync(600_000);
+		expect(refresh).toHaveBeenCalledTimes(2);
+	});
+
+	it('keeps exactly one refresh timer across reconnects', async () => {
+		start();
+		await vi.advanceTimersByTimeAsync(0);
+		last().open();
+		expect(vi.getTimerCount()).toBe(1);
+		for (let i = 0; i < 3; i++) {
+			last().drop();
+			await vi.advanceTimersByTimeAsync(POLL_MS - 1);
+			expect(FakeSocket.all.length).toBeGreaterThan(i + 1);
+			last().open();
+			expect(vi.getTimerCount()).toBe(1);
+		}
+	});
+
+	it('reconnects with backoff and refreshes first, then refreshes fully', async () => {
 		const { onChange } = start();
 		await vi.advanceTimersByTimeAsync(0);
 		last().open();
@@ -83,8 +129,7 @@ describe('createLiveWatcher', () => {
 		expect(FakeSocket.all).toHaveLength(1);
 		await vi.advanceTimersByTimeAsync(1_000);
 		expect(FakeSocket.all).toHaveLength(2);
-		expect(getUrl).toHaveBeenCalledTimes(2);
-		expect(last().url).toContain('token=t2');
+		expect(refresh).toHaveBeenCalledTimes(2);
 		last().open();
 		expect(onChange.mock.calls).toEqual([[null]]);
 	});
@@ -112,7 +157,7 @@ describe('createLiveWatcher', () => {
 		last().drop(4001);
 		await vi.advanceTimersByTimeAsync(0);
 		expect(FakeSocket.all).toHaveLength(2);
-		expect(last().url).toContain('token=t2');
+		expect(refresh).toHaveBeenCalledTimes(2);
 		last().drop(4001);
 		await vi.advanceTimersByTimeAsync(0);
 		expect(FakeSocket.all).toHaveLength(2);
@@ -121,7 +166,7 @@ describe('createLiveWatcher', () => {
 	});
 
 	it('retries with backoff when the token fetch fails and refreshes on open', async () => {
-		getUrl.mockRejectedValueOnce(new Error('401'));
+		refresh.mockRejectedValueOnce(new Error('401'));
 		const { onChange } = start();
 		await vi.advanceTimersByTimeAsync(0);
 		expect(FakeSocket.all).toHaveLength(0);
@@ -138,7 +183,7 @@ describe('createLiveWatcher', () => {
 		await vi.advanceTimersByTimeAsync(POLL_MS * 2);
 		expect(onChange).not.toHaveBeenCalled();
 		last().drop();
-		getUrl.mockImplementation(() => new Promise(() => {}));
+		refresh.mockImplementation(() => new Promise(() => {}));
 		await vi.advanceTimersByTimeAsync(POLL_MS);
 		expect(onChange).toHaveBeenCalledTimes(1);
 		await vi.advanceTimersByTimeAsync(POLL_MS);
