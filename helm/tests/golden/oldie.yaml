@@ -1020,6 +1020,7 @@ spec:
                 secretKeyRef:
                   name: enzarb-generated
                   key: realtime-jwt-secret
+            - { name: ENZARB_REALTIME_ALLOWED_ORIGINS, value: "https://enzarb.dev" }
             - { name: RUST_LOG, value: "info" }
           # /readyz is 200 only while LISTEN is up.
           readinessProbe:

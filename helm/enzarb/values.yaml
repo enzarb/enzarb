@@ -171,6 +171,10 @@ realtime:
     # scripts/sync-components.sh pins the released enzarb-realtime tag here.
     tag: 0.4.0
     pullPolicy: ""
+  # Origins allowed to open the cookie-authenticated websocket (ENZARB_REALTIME_ALLOWED_ORIGINS).
+  # Empty means https://<host> (or publicUrl reduced to its origin). Entries must be bare origins,
+  # scheme://host[:port]; realtime refuses to start on a malformed entry.
+  allowedOrigins: []
   resources: {}
   extraEnv: []
 

@@ -34,6 +34,23 @@ imagePullSecrets:
 {{ .Values.publicUrl | default (printf "https://%s" .Values.host) }}
 {{- end }}
 
+{{/* Comma-separated bare origins (scheme://host[:port]) for ENZARB_REALTIME_ALLOWED_ORIGINS. Empty list -> public URL reduced to its origin. */}}
+{{- define "enzarb.realtimeAllowedOrigins" -}}
+{{- $o := list -}}
+{{- range .Values.realtime.allowedOrigins -}}
+{{- $o = append $o . -}}
+{{- end -}}
+{{- if not $o -}}
+{{- $o = list (regexReplaceAll "^(https?://[^/?#]+).*$" (include "enzarb.publicUrl" .) "${1}") -}}
+{{- end -}}
+{{- range $o -}}
+{{- if not (regexMatch "^https?://([A-Za-z0-9._-]+|\\[[0-9A-Fa-f:.]+\\])(:[0-9]+)?$" .) -}}
+{{- fail (printf "realtime allowed origin %q is not a bare origin (scheme://host[:port]); check realtime.allowedOrigins or publicUrl/host" .) -}}
+{{- end -}}
+{{- end -}}
+{{- join "," $o -}}
+{{- end }}
+
 {{/* Secret names */}}
 {{- define "enzarb.generatedSecret" -}}enzarb-generated{{- end }}
 {{- define "enzarb.githubSecret" -}}{{ .Values.secrets.github.existingSecret | default "enzarb-github" }}{{- end }}

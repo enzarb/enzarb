@@ -19,6 +19,7 @@ check "DATABASE_URL" "$(env_of enzarb-realtime DATABASE_URL | q .value)" postgre
 for v in PGHOST PGPORT PGUSER PGPASSWORD PGSSLMODE; do
   check "$v secret" "$(env_of enzarb-realtime "$v" | q .valueFrom.secretKeyRef.name)" enzarb-pg-realtime-credentials
 done
+check "allowed origins" "$(env_of enzarb-realtime ENZARB_REALTIME_ALLOWED_ORIGINS | q .value)" https://enzarb.dev
 rt_ref="$(env_of enzarb-realtime ENZARB_REALTIME_JWT_SECRET | q .valueFrom.secretKeyRef)"
 ui_ref="$(env_of enzarb-ui ENZARB_REALTIME_JWT_SECRET | q .valueFrom.secretKeyRef)"
 check "jwt ref (ui == realtime)" "$ui_ref" "$rt_ref"
@@ -39,6 +40,23 @@ if [ "$grace" -lt 10 ]; then echo "assert-realtime: grace period $grace < 10" >&
 def="$("$here/scripts/render.sh" default)"
 check "default: deployment" "$(q "$dep | .metadata.name" <<<"$def")" enzarb-realtime
 check "default: no realtime BTP" "$(q 'select(.kind=="BackendTrafficPolicy") | .metadata.name' <<<"$def")" ""
+
+origins_env='.spec.template.spec.containers[0].env[] | select(.name=="ENZARB_REALTIME_ALLOWED_ORIGINS") | .value'
+check "default: allowed origins" "$(q "$dep | $origins_env" <<<"$def")" https://enzarb.local
+ori="$("$here/scripts/render.sh" realtime-origins)"
+check "explicit allowed origins" "$(q "$dep | $origins_env" <<<"$ori")" https://a.example,https://b.example
+norm="$(helm template enzarb "$here/enzarb" --namespace enzarb -f "$here/enzarb/values-oldie.yaml" --set publicUrl=https://enzarb.dev/app/)"
+check "publicUrl path stripped" "$(q "$dep | $origins_env" <<<"$norm")" https://enzarb.dev
+
+# Origins enzarb-realtime would refuse must fail at render time.
+for bad in 'https://u@h' 'https://h?x' 'https://h#f' 'https://h:' 'https://h/' 'https://h/p' ' https://h'; do
+  if helm template enzarb "$here/enzarb" --namespace enzarb -f "$here/enzarb/values-oldie.yaml" --set-string "realtime.allowedOrigins[0]=$bad" >/dev/null 2>&1; then
+    echo "assert-realtime: allowedOrigins '$bad' rendered, want failure" >&2; fail=1
+  fi
+done
+if helm template enzarb "$here/enzarb" --namespace enzarb -f "$here/enzarb/values-oldie.yaml" --set publicUrl=https://u@enzarb.dev/ >/dev/null 2>&1; then
+  echo "assert-realtime: publicUrl with userinfo rendered, want failure" >&2; fail=1
+fi
 
 btp="$("$here/scripts/render.sh" realtime-btp)"
 bsel='select(.kind=="BackendTrafficPolicy" and .metadata.name=="enzarb-realtime")'

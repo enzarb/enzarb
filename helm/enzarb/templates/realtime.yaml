@@ -30,6 +30,7 @@ spec:
           env:
             {{- include "enzarb.dbEnv" (dict "ctx" . "role" "realtime") | nindent 12 }}
             {{- include "enzarb.secretEnv" (dict "name" "ENZARB_REALTIME_JWT_SECRET" "secret" (include "enzarb.realtimeJwtSecret" .) "key" (include "enzarb.realtimeJwtKey" .)) | nindent 12 }}
+            - { name: ENZARB_REALTIME_ALLOWED_ORIGINS, value: {{ include "enzarb.realtimeAllowedOrigins" . | quote }} }
             - { name: RUST_LOG, value: {{ .Values.rustLog | quote }} }
             {{- with $c.extraEnv }}
             {{- toYaml . | nindent 12 }}
