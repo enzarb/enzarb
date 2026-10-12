@@ -4,12 +4,14 @@
 use std::sync::Arc;
 
 use enzarb_connector::{
-    ChangeRequestSpec, CiState, Connector, MergeOutcome, Progress, ProgressTarget, WorkItemKey,
+    ChangeRequestSpec, CiState, Connector, MergeOutcome, MergeReadiness, Progress, ProgressTarget,
+    WorkItemKey,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{Claimed, Done, Executor, JobError};
+use crate::conflict::emit_merge_conflict;
 use crate::machine::JobKind;
 
 #[derive(Deserialize)]
@@ -95,11 +97,13 @@ impl Executor {
                 let i: CheckReadiness = input(job)?;
                 let c = self.connector_for(&i.item.repo.connector)?;
                 let r = c.get_merge_readiness(&i.item, i.number).await?;
+                self.emit_if_conflicting(&i.item, &r).await;
                 json!({
                     "head_sha": r.head_sha,
                     "ci": ci_wire(r.ci),
                     "mergeable": r.mergeable,
                     "mergeable_state": r.mergeable_state,
+                    "base_sha": r.base_sha,
                 })
             }
             JobKind::MergeChangeRequest => {
@@ -128,6 +132,7 @@ impl Executor {
             v
         };
         let r = c.get_merge_readiness(&i.item, i.number).await?;
+        self.emit_if_conflicting(&i.item, &r).await;
         if r.head_sha != i.expected_head_sha {
             return Ok(outcome("head_moved", json!({})));
         }
@@ -160,6 +165,22 @@ impl Executor {
                 }
             },
         )
+    }
+
+    /// Emit `MergeConflictDetected` when the provider explicitly says the change request is
+    /// unmergeable (`mergeable == Some(false)`) and reported the base head. A failed emit is
+    /// logged, never a job error: the next readiness poll retries and the dedupe key makes
+    /// that safe.
+    async fn emit_if_conflicting(&self, item: &WorkItemKey, r: &MergeReadiness) {
+        if r.mergeable != Some(false) {
+            return;
+        }
+        let Some(base_sha) = r.base_sha.as_deref() else {
+            return;
+        };
+        if let Err(e) = emit_merge_conflict(&self.pool, &item.to_string(), base_sha).await {
+            tracing::warn!(error = %e, item = %item, "emitting MergeConflictDetected failed");
+        }
     }
 
     /// True when the agent job queued by the same event already succeeded or failed, so a

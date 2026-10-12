@@ -539,6 +539,18 @@ fn readiness(
         mergeable,
         mergeable_state: "clean".into(),
         ci,
+        base_sha: None,
+    }
+}
+
+fn readiness_on(
+    sha: &str,
+    mergeable: Option<bool>,
+    base_sha: &str,
+) -> enzarb_connector::MergeReadiness {
+    enzarb_connector::MergeReadiness {
+        base_sha: Some(base_sha.to_string()).filter(|b| !b.is_empty()),
+        ..readiness(sha, enzarb_connector::CiState::Success, mergeable)
     }
 }
 
@@ -2936,4 +2948,172 @@ async fn pending_change_and_session_limit_hold_clear_independently_and_lost_runs
         .unwrap();
     assert_eq!(h.exec.drain().await, 1);
     assert_eq!(job(pool, id).await.restart_retries, 1);
+}
+
+async fn check_readiness_once(h: &H, wi: i64, n: u64, tag: &str) -> i64 {
+    let id = new_job(
+        h.pool(),
+        wi,
+        "enzarb",
+        "check_merge_readiness",
+        10,
+        tag,
+        json!({ "item": key(n), "number": n, "head_sha": "sha1" }),
+    )
+    .await;
+    assert_eq!(h.exec.drain().await, 1);
+    id
+}
+
+#[tokio::test]
+async fn unmergeable_readiness_emits_one_conflict_event_per_base_sha() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let wi = new_item(pool, 1, "enzarb").await;
+
+    h.fake
+        .set_merge_readiness(key(1), readiness_on("sha1", Some(false), "base1"));
+    let id = check_readiness_once(&h, wi, 1, "k:a").await;
+    assert_eq!(job(pool, id).await.output.unwrap()["base_sha"], "base1");
+    check_readiness_once(&h, wi, 1, "k:b").await;
+    let evs = events_of(pool, "MergeConflictDetected").await;
+    assert_eq!(evs.len(), 1);
+    assert_eq!(evs[0].1["base_sha"], "base1");
+
+    // A moved base is a new conflict.
+    h.fake
+        .set_merge_readiness(key(1), readiness_on("sha1", Some(false), "base2"));
+    check_readiness_once(&h, wi, 1, "k:c").await;
+    assert_eq!(events_of(pool, "MergeConflictDetected").await.len(), 2);
+}
+
+#[tokio::test]
+async fn readiness_without_a_definite_conflict_emits_nothing() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let wi = new_item(pool, 1, "enzarb").await;
+    for (i, r) in [
+        readiness_on("sha1", None, "base1"),
+        readiness_on("sha1", Some(true), "base1"),
+        readiness_on("sha1", Some(false), ""),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        h.fake.set_merge_readiness(key(1), r);
+        check_readiness_once(&h, wi, 1, &format!("k:{i}")).await;
+    }
+    assert!(events_of(pool, "MergeConflictDetected").await.is_empty());
+}
+
+#[tokio::test]
+async fn merge_recheck_emits_conflict_when_unmergeable() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let wi = new_item(pool, 1, "enzarb").await;
+    h.fake
+        .set_merge_readiness(key(1), readiness_on("sha1", Some(false), "base9"));
+    let id = new_job(
+        pool,
+        wi,
+        "enzarb",
+        "merge_change_request",
+        10,
+        "k:m",
+        json!({ "item": key(1), "number": 1, "title": "feat: x",
+                "expected_head_sha": "sha1", "actor": "carol" }),
+    )
+    .await;
+    assert_eq!(h.exec.drain().await, 1);
+    assert_eq!(
+        job(pool, id).await.output.unwrap()["outcome"],
+        "not_mergeable"
+    );
+    let evs = events_of(pool, "MergeConflictDetected").await;
+    assert_eq!(evs.len(), 1);
+    assert_eq!(evs[0].1["base_sha"], "base9");
+}
+
+async fn cr_item(pool: &PgPool, n: u64, phase: &str, author: &str, base_ref: &str) {
+    sqlx::query(
+        "INSERT INTO workflows.work_items (key, project_id, workflow, state, state_data)
+         VALUES ($1, 'enzarb', 'change_request', $2, $3)",
+    )
+    .bind(key(n).to_string())
+    .bind(phase)
+    .bind(json!({ "number": n, "author": author, "base_ref": base_ref }))
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn base_head_fan_out_emits_only_for_confirmed_conflicts() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let repo: RepoKey = REPO.parse().unwrap();
+    // 1: conflicting bot PR on main. 2: mergeable. 3: readiness unknown. 4: closed.
+    // 5: human author. 6: other base.
+    cr_item(pool, 1, "AwaitingChanges", "enzarb[bot]", "main").await;
+    cr_item(pool, 2, "ReadyToMerge", "enzarb[bot]", "main").await;
+    cr_item(pool, 3, "AwaitingChanges", "enzarb[bot]", "main").await;
+    cr_item(pool, 4, "Merged", "enzarb[bot]", "main").await;
+    cr_item(pool, 5, "AwaitingChanges", "alice", "main").await;
+    cr_item(pool, 6, "AwaitingChanges", "enzarb[bot]", "release").await;
+    for (n, m) in [
+        (1, Some(false)),
+        (2, Some(true)),
+        (3, None),
+        (4, Some(false)),
+        (5, Some(false)),
+        (6, Some(false)),
+    ] {
+        h.fake
+            .set_merge_readiness(key(n), readiness_on("sha1", m, "ignored"));
+    }
+    h.fake.set_branch_head(repo, "main", "base1");
+    // "release" has no head: that lookup yields None and must not stop "main".
+
+    let ticker = engine::Ticker::new(pool.clone()).with_base_poll(
+        ConnectorRegistry::new().with("github", h.fake.clone()),
+        "enzarb[bot]",
+    );
+    assert_eq!(ticker.poll_base_heads().await.unwrap(), Some(1));
+    let evs = events_of(pool, "MergeConflictDetected").await;
+    assert_eq!(evs.len(), 1);
+    assert_eq!(evs[0].0, format!("conflict:{}:base1", key(1)));
+    assert_eq!(evs[0].1["base_sha"], "base1");
+
+    // Within the interval nothing runs.
+    assert_eq!(ticker.poll_base_heads().await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn failing_emit_does_not_fail_the_readiness_job() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let wi = new_item(pool, 1, "enzarb").await;
+    h.fake
+        .set_merge_readiness(key(1), readiness_on("sha1", Some(false), "base1"));
+    // Fail only the conflict emit: the job's own result also goes through `ingest_event`,
+    // so dropping the function would fail job completion rather than the emit.
+    sqlx::query(
+        "CREATE FUNCTION workflows.reject_conflict() RETURNS trigger LANGUAGE plpgsql AS
+         $$ BEGIN RAISE EXCEPTION 'conflict emit rejected'; END $$",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER reject_conflict BEFORE INSERT ON workflows.events
+         FOR EACH ROW WHEN (NEW.type = 'MergeConflictDetected')
+         EXECUTE FUNCTION workflows.reject_conflict()",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    let id = check_readiness_once(&h, wi, 1, "k:f").await;
+    let j = job(pool, id).await;
+    assert_eq!(j.output.unwrap()["mergeable"], false);
+    assert!(events_of(pool, "MergeConflictDetected").await.is_empty());
 }

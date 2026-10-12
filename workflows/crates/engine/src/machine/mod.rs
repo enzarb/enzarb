@@ -158,7 +158,9 @@ pub enum EventPayload {
     TimerFired { job_id: Option<i64> },
     /// Event type `MergeConflictDetected`, payload `{base_sha}`: a merge-readiness
     /// check (`get_merge_readiness` or a `CiStatusChanged` re-check) found the
-    /// change request unmergeable against the base head `base_sha`.
+    /// change request unmergeable against the base head `base_sha`. Produced outside
+    /// the machine by `conflict::emit_merge_conflict`, from the readiness jobs and the
+    /// ticker's base-head fan-out.
     Unmergeable { base_sha: String },
 }
 

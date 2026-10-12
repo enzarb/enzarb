@@ -5,17 +5,49 @@
 //! * A `running` job past `jobs.deadline` becomes `TimerFired {job_id}`, dedupe key
 //!   `timer:<work_item_id>:job:<job_id>:<attempt>`.
 //!
+//! * Open enzarb-authored change requests whose base branch head moved and are confirmed
+//!   unmergeable by a readiness check become `MergeConflictDetected {base_sha}` (see
+//!   [`Ticker::poll_base_heads`]), dedupe key `conflict:<work_item_key>:<base_sha>`.
+//!
 //! Events go in through `workflows_api.ingest_event`, so a timer is emitted once per
 //! (item, wake_at) however many tickers run or how often they tick.
 
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
+use enzarb_connector::WorkItemKey;
 use serde_json::json;
 use sqlx::PgPool;
 use tokio::sync::watch;
 
+use crate::conflict::emit_merge_conflict;
 use crate::error::Error;
+use crate::executor::ConnectorRegistry;
 use crate::grants;
+
+/// Minimum time between base-head polls; each pass costs one branch-head lookup per
+/// distinct active (repo, base) plus a readiness call per open PR on a moved base.
+pub const BASE_POLL_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Phases in which the machine acts on `MergeConflictDetected`.
+const CONFLICT_PHASES: &[&str] = &["AwaitingChanges", "ReadyToMerge", "ConflictParked"];
+
+/// (repo, base ref) of a base branch being polled.
+type BaseKey = (String, String);
+
+/// The open change requests (key, PR number) targeting one base branch.
+type BaseGroup = (BaseKey, Vec<(WorkItemKey, u64)>);
+
+/// What the base-head poll needs: connectors to ask, and which author counts as enzarb.
+#[derive(Clone)]
+struct BasePoll {
+    connectors: ConnectorRegistry,
+    bot_login: String,
+    /// (repo, base ref) -> last base head whose open PRs all had a definite readiness.
+    seen: Arc<Mutex<HashMap<BaseKey, String>>>,
+    last_run: Arc<Mutex<Option<Instant>>>,
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TickStats {
@@ -29,6 +61,7 @@ pub struct TickStats {
 pub struct Ticker {
     pool: PgPool,
     interval: Duration,
+    base_poll: Option<BasePoll>,
 }
 
 const BATCH: i64 = 500;
@@ -38,7 +71,19 @@ impl Ticker {
         Self {
             pool,
             interval: Duration::from_secs(5),
+            base_poll: None,
         }
+    }
+
+    /// Enable the base-head conflict fan-out for change requests authored by `bot_login`.
+    pub fn with_base_poll(mut self, connectors: ConnectorRegistry, bot_login: &str) -> Self {
+        self.base_poll = Some(BasePoll {
+            connectors,
+            bot_login: bot_login.to_string(),
+            seen: Arc::default(),
+            last_run: Arc::default(),
+        });
+        self
     }
 
     pub fn with_interval(mut self, interval: Duration) -> Self {
@@ -108,6 +153,110 @@ impl Ticker {
         Ok(id.is_some())
     }
 
+    /// Base-head fan-out, at most once per [`BASE_POLL_INTERVAL`]. Returns `None` when
+    /// disabled or not yet due, else the number of `MergeConflictDetected` events created.
+    ///
+    /// For each distinct (repo, base ref) of open enzarb-authored change requests it looks
+    /// up the base head. When the head moved since the last pass, each such PR gets a
+    /// readiness check and only an explicit `mergeable == Some(false)` emits, with the
+    /// looked-up head as `base_sha`. Failures are logged and skipped; a head counts as seen
+    /// only once every PR on it had a definite answer, so the rest are retried next pass.
+    pub async fn poll_base_heads(&self) -> Result<Option<usize>, Error> {
+        let Some(bp) = &self.base_poll else {
+            return Ok(None);
+        };
+        {
+            let mut last = bp.last_run.lock().unwrap_or_else(|e| e.into_inner());
+            if last.is_some_and(|t| t.elapsed() < BASE_POLL_INTERVAL) {
+                return Ok(None);
+            }
+            *last = Some(Instant::now());
+        }
+
+        let rows: Vec<(String, String, i64)> = sqlx::query_as(
+            "SELECT key, state_data->>'base_ref', (state_data->>'number')::bigint
+             FROM work_items
+             WHERE workflow = 'change_request' AND state = ANY($1)
+               AND lower(state_data->>'author') = lower($2)
+               AND coalesce(state_data->>'base_ref', '') <> ''
+               AND state_data->>'number' ~ '^[0-9]+$'
+             ORDER BY id",
+        )
+        .bind(CONFLICT_PHASES)
+        .bind(&bp.bot_login)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut groups: Vec<BaseGroup> = Vec::new();
+        for (key, base_ref, number) in rows {
+            let Ok(item) = key.parse::<WorkItemKey>() else {
+                continue;
+            };
+            let gk = (item.repo.to_string(), base_ref);
+            let entry = (item, number as u64);
+            match groups.iter_mut().find(|(k, _)| *k == gk) {
+                Some((_, items)) => items.push(entry),
+                None => groups.push((gk, vec![entry])),
+            }
+        }
+
+        let mut emitted = 0;
+        for (seen_key, items) in groups {
+            let (repo_s, base_ref) = &seen_key;
+            let repo = items[0].0.repo.clone();
+            let Some(conn) = bp.connectors.get(&repo.connector) else {
+                continue;
+            };
+            let head = match conn.branch_head(&repo, base_ref).await {
+                Ok(Some(h)) if !h.is_empty() => h,
+                Ok(_) => continue,
+                Err(e) => {
+                    tracing::warn!(error = %e, repo = %repo_s, base = %base_ref, "base head lookup failed");
+                    continue;
+                }
+            };
+            let unchanged = bp
+                .seen
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&seen_key)
+                .is_some_and(|s| *s == head);
+            if unchanged {
+                continue;
+            }
+            let mut resolved = true;
+            for (item, number) in &items {
+                match conn.get_merge_readiness(item, *number).await {
+                    Ok(r) => match r.mergeable {
+                        Some(false) => {
+                            match emit_merge_conflict(&self.pool, &item.to_string(), &head).await {
+                                Ok(true) => emitted += 1,
+                                Ok(false) => {}
+                                Err(e) => {
+                                    resolved = false;
+                                    tracing::warn!(error = %e, item = %item, "emitting MergeConflictDetected failed");
+                                }
+                            }
+                        }
+                        Some(true) => {}
+                        None => resolved = false,
+                    },
+                    Err(e) => {
+                        resolved = false;
+                        tracing::warn!(error = %e, item = %item, "merge readiness check failed");
+                    }
+                }
+            }
+            if resolved {
+                bp.seen
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(seen_key, head);
+            }
+        }
+        Ok(Some(emitted))
+    }
+
     /// Tick every `interval` until `shutdown` flips to true.
     pub async fn run(self, mut shutdown: watch::Receiver<bool>) {
         let mut warned_missing = false;
@@ -125,6 +274,9 @@ impl Ticker {
             }
             if let Err(e) = self.tick().await {
                 tracing::warn!(error = %e, "ticker sweep failed");
+            }
+            if let Err(e) = self.poll_base_heads().await {
+                tracing::warn!(error = %e, "base head poll failed");
             }
             tokio::select! {
                 _ = tokio::time::sleep(self.interval) => {}

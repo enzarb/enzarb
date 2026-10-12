@@ -38,7 +38,7 @@ pub async fn run(cfg: Config) -> Result<(), Error> {
         .map_err(|e| Error::Run(format!("connecting to database: {e}")))?;
 
     let needs_kube = cfg.roles.contains(&Role::Reducer) || cfg.roles.contains(&Role::Executor);
-    let needs_connector = needs_kube;
+    let needs_connector = needs_kube || cfg.roles.contains(&Role::Ticker);
     let kube_client = if needs_kube {
         Some(
             kube::Client::try_default()
@@ -96,7 +96,8 @@ pub async fn run(cfg: Config) -> Result<(), Error> {
     }
 
     if cfg.roles.contains(&Role::Ticker) {
-        let ticker = Ticker::new(pool.clone());
+        let ticker = Ticker::new(pool.clone())
+            .with_base_poll(connectors.clone().expect("connectors"), &cfg.bot_login);
         let rx = rx.clone();
         tasks.spawn(async move {
             ticker.run(rx).await;

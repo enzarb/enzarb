@@ -1,6 +1,7 @@
 //! enzarb workflow engine library: schema access, state machines, reducer, ticker,
 //! job-result ingestion and executors.
 
+pub mod conflict;
 pub mod db;
 pub mod error;
 pub mod executor;

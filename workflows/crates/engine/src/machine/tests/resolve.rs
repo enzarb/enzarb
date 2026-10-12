@@ -24,6 +24,15 @@ fn cr_bot_in(phase: CrPhase) -> WorkflowState {
 }
 
 #[test]
+fn producer_event_moves_ready_to_merge_into_resolving() {
+    let s = cr_bot_in(CrPhase::ReadyToMerge);
+    let t = run_cr(Permission::None, &s, &unmergeable_ev("m0", "base7"));
+    let d = assert_cr(&t, CrPhase::ResolvingConflicts);
+    assert_eq!(d.base_sha, "base7");
+    assert!(kinds(&t).contains(&JobKind::AgentResolveConflicts));
+}
+
+#[test]
 fn unmergeable_starts_the_resolve_job() {
     let s = cr_bot_in(CrPhase::AwaitingChanges);
     let t = run_cr(Permission::None, &s, &unmergeable_ev("m1", "base1"));
