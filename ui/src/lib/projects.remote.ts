@@ -3,6 +3,7 @@ import { command, getRequestEvent, query } from '$app/server';
 import * as v from 'valibot';
 import { MAX_PROJECTS_PER_REQUEST } from '#lib/onboarding.ts';
 import { MaxRunsSchema } from '#lib/projects.ts';
+import { SandboxResourcesSchema } from '#lib/sandbox-resources.ts';
 import { getSql } from '#lib/server/db.ts';
 import { KubeError, getProjectStore } from '#lib/server/kube.ts';
 import { projectCache } from '#lib/server/project-cache.ts';
@@ -80,6 +81,23 @@ export const setMaxRuns = command(
 			projectCache.invalidate(getRequestEvent().locals.user!.login);
 		} catch (e) {
 			if (e instanceof KubeError && e.kind === 'not-found') error(404, 'Project not found');
+			throw e;
+		}
+		await getProject(name).refresh();
+		await listProjects().refresh();
+	}
+);
+
+/** Owner-only; the change is queued by the operator until running jobs finish (drain-first). */
+export const setSandboxResources = command(
+	v.object({ name: NameArg, ...SandboxResourcesSchema.entries }),
+	async ({ name, ...input }) => {
+		try {
+			await service().setSandboxResources(name, input);
+			projectCache.invalidate(getRequestEvent().locals.user!.login);
+		} catch (e) {
+			if (e instanceof KubeError && e.kind === 'not-found') error(404, 'Project not found');
+			if (e instanceof KubeError && e.kind === 'invalid') error(400, e.message);
 			throw e;
 		}
 		await getProject(name).refresh();

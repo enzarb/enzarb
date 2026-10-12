@@ -11,8 +11,12 @@ const view = (name: string, conditions: ProjectView['conditions'], ready = false
 	sandboxName: null,
 	repositories: [],
 	triggers: { issues: true, changeRequests: true, mentions: true },
+	sandboxSettings: { cpu: null, memory: null, storage: null },
 	conditions,
-	ready
+	ready,
+	generation: null,
+	observedGeneration: null,
+	pendingChange: null
 });
 const created = (name: string) => ({
 	name,

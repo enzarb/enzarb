@@ -4,6 +4,17 @@ import { projectService } from './project-service.ts';
 import type { Project } from '#lib/project-types.ts';
 import { buildProject } from '#lib/projects.ts';
 
+/** RFC 7386 JSON merge patch: objects merge recursively, `null` removes the key. */
+function mergePatch(target: unknown, patch: unknown): unknown {
+	if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) return patch;
+	const out: Record<string, unknown> = { ...((target as Record<string, unknown>) ?? {}) };
+	for (const [k, val] of Object.entries(patch)) {
+		if (val === null) delete out[k];
+		else out[k] = mergePatch(out[k], val);
+	}
+	return out;
+}
+
 function fakeStore(): ProjectStore & { items: Map<string, Project> } {
 	const items = new Map<string, Project>();
 	return {
@@ -22,12 +33,7 @@ function fakeStore(): ProjectStore & { items: Map<string, Project> } {
 		async update(name, spec) {
 			const p = items.get(name);
 			if (!p) throw new KubeError('not-found', 'nope');
-			const { maxRuns, ...rest } = p.spec;
-			void maxRuns;
-			const next = {
-				...p,
-				spec: spec.maxRuns === null ? rest : { ...rest, maxRuns: spec.maxRuns }
-			};
+			const next = { ...p, spec: mergePatch(p.spec, spec) as Project['spec'] };
 			items.set(name, next);
 			return next;
 		},
@@ -84,6 +90,57 @@ describe('projectService', () => {
 		await expect(alice.setMaxRuns('bobs', 4)).rejects.toMatchObject({ kind: 'not-found' });
 		await expect(alice.setMaxRuns('ghost', 4)).rejects.toMatchObject({ kind: 'not-found' });
 		expect(spy).not.toHaveBeenCalled();
+	});
+	describe('setSandboxResources', () => {
+		it('patches only spec.sandbox.{cpu,memory,storage}, never resources', async () => {
+			const spy = vi.spyOn(store, 'update');
+			const alice = projectService(store, 'alice');
+			await alice.setSandboxResources('a-proj', { cpu: 8, memory: '16Gi', storage: '40Gi' });
+			expect(spy).toHaveBeenCalledWith('a-proj', {
+				sandbox: { cpu: 8, memory: '16Gi', storage: '40Gi' }
+			});
+			expect(JSON.stringify(spy.mock.calls)).not.toContain('resources');
+			expect((await alice.get('a-proj'))?.sandboxSettings).toEqual({
+				cpu: 8,
+				memory: '16Gi',
+				storage: '40Gi'
+			});
+		});
+		it('removes cleared cpu and memory and leaves storage alone when omitted', async () => {
+			const alice = projectService(store, 'alice');
+			await alice.setSandboxResources('a-proj', { cpu: 8, memory: '16Gi', storage: '40Gi' });
+			await alice.setSandboxResources('a-proj', { cpu: null, memory: null });
+			expect((await alice.get('a-proj'))?.sandboxSettings).toEqual({
+				cpu: null,
+				memory: null,
+				storage: '40Gi'
+			});
+		});
+		it('rejects non-owners and missing projects without patching', async () => {
+			const spy = vi.spyOn(store, 'update');
+			const alice = projectService(store, 'alice');
+			const input = { cpu: 4, memory: null };
+			await expect(alice.setSandboxResources('bobs', input)).rejects.toMatchObject({
+				kind: 'not-found'
+			});
+			await expect(alice.setSandboxResources('ghost', input)).rejects.toMatchObject({
+				kind: 'not-found'
+			});
+			expect(spy).not.toHaveBeenCalled();
+		});
+		it('rejects a storage shrink against the stored spec, defaulting to 20Gi', async () => {
+			const spy = vi.spyOn(store, 'update');
+			const alice = projectService(store, 'alice');
+			await expect(
+				alice.setSandboxResources('a-proj', { cpu: null, memory: null, storage: '10Gi' })
+			).rejects.toMatchObject({ kind: 'invalid' });
+			await alice.setSandboxResources('a-proj', { cpu: null, memory: null, storage: '40Gi' });
+			spy.mockClear();
+			await expect(
+				alice.setSandboxResources('a-proj', { cpu: null, memory: null, storage: '30Gi' })
+			).rejects.toMatchObject({ kind: 'invalid' });
+			expect(spy).not.toHaveBeenCalled();
+		});
 	});
 	it('deletes own projects', async () => {
 		await projectService(store, 'alice').delete('a-proj');

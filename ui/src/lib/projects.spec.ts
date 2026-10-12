@@ -69,6 +69,19 @@ describe('maxRuns in buildProject / toView', () => {
 	});
 });
 
+describe('sandbox settings in toView', () => {
+	it('maps unset fields to null and reads spec and pendingChange', () => {
+		const p = buildProject(mk(), 'u');
+		expect(toView(p).sandboxSettings).toEqual({ cpu: null, memory: null, storage: null });
+		expect(toView(p).pendingChange).toBeNull();
+		p.spec.sandbox = { cpu: 8, memory: '16Gi', storage: '40Gi' };
+		p.status = { pendingChange: { generation: 1, since: '2026-01-01T00:00:00Z', reason: 'cpu' } };
+		const view = toView(p);
+		expect(view.sandboxSettings).toEqual({ cpu: 8, memory: '16Gi', storage: '40Gi' });
+		expect(view.pendingChange).toMatchObject({ reason: 'cpu' });
+	});
+});
+
 describe('buildProject / toView', () => {
 	it('writes a contracts §2 Project owned by the login', () => {
 		const input = mk({

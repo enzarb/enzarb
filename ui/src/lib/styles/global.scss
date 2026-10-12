@@ -361,6 +361,16 @@ img {
 	width: 8rem;
 }
 
+.ez-sandbox-resources {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-3, var(--ez-space-2));
+}
+
+.ez-quantity {
+	width: 8rem;
+}
+
 // Merge readiness block on a change request: optional notice, then the step list.
 .ez-merge-readiness {
 	display: flex;

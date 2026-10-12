@@ -13,7 +13,7 @@ const PLURAL = 'projects';
 
 export class KubeError extends Error {
 	constructor(
-		readonly kind: 'not-found' | 'conflict' | 'other',
+		readonly kind: 'not-found' | 'conflict' | 'invalid' | 'other',
 		message: string
 	) {
 		super(message);
@@ -26,8 +26,13 @@ export interface ProjectStore {
 	get(name: string): Promise<Project | null>;
 	create(project: Project): Promise<Project>;
 	delete(name: string): Promise<void>;
-	/** JSON merge patch on `spec`; a `null` value removes the field. */
-	update(name: string, spec: { maxRuns: number | null }): Promise<Project>;
+	/** JSON merge patch on `spec` (recursive); a `null` value removes the field. */
+	update(name: string, spec: SpecPatch): Promise<Project>;
+}
+
+export interface SpecPatch {
+	maxRuns?: number | null;
+	sandbox?: { cpu?: number | null; memory?: string | null; storage?: string };
 }
 
 function wrap(e: unknown): never {

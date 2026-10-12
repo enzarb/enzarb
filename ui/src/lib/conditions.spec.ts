@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { buildChecklist, isTerminalFailure, overallState } from './conditions.ts';
+import {
+	buildChecklist,
+	buildSandboxChangeSteps,
+	buildStorageResizeStep,
+	isTerminalFailure,
+	overallState
+} from './conditions.ts';
 import type { Condition } from './project-types.ts';
 
 const c = (type: string, status: string, reason = 'X', message = ''): Condition => ({
@@ -101,5 +107,87 @@ describe('isTerminalFailure', () => {
 		expect(isTerminalFailure([c('ResourcesReady', 'True')])).toBe(false);
 		expect(isTerminalFailure([])).toBe(false);
 		expect(isTerminalFailure(undefined)).toBe(false);
+	});
+});
+
+describe('buildSandboxChangeSteps', () => {
+	const src = (
+		conditions: Condition[],
+		over: Partial<Parameters<typeof buildSandboxChangeSteps>[0]> = {}
+	) => ({ conditions, pendingChange: null, generation: 2, observedGeneration: 2, ...over });
+	const st = (s: ReturnType<typeof buildSandboxChangeSteps>) => s.map((x) => x.state);
+	const pending = { generation: 1, since: '2026-01-01T00:00:00Z', reason: 'cpu' };
+
+	it('saving: only the first step is in progress', () => {
+		expect(st(buildSandboxChangeSteps(src([]), true))).toEqual([
+			'in-progress',
+			'pending',
+			'pending',
+			'pending'
+		]);
+	});
+	it('queued: pendingChange set', () => {
+		const steps = buildSandboxChangeSteps(
+			src([c('SandboxChangePending', 'True'), c('Ready', 'True')], { pendingChange: pending }),
+			false
+		);
+		expect(st(steps)).toEqual(['done', 'in-progress', 'pending', 'pending']);
+		expect(steps[1].label).toMatch(/waiting for running jobs/);
+	});
+	it('queued: condition alone is enough', () => {
+		expect(st(buildSandboxChangeSteps(src([c('SandboxChangePending', 'True')]), false))[1]).toBe(
+			'in-progress'
+		);
+	});
+	it('applying: nothing pending but the operator has not caught up', () => {
+		const steps = buildSandboxChangeSteps(
+			src([c('SandboxChangePending', 'False'), c('Ready', 'True')], { observedGeneration: 1 }),
+			false
+		);
+		expect(st(steps)).toEqual(['done', 'done', 'in-progress', 'pending']);
+	});
+	it('applying: SandboxReady not yet True', () => {
+		const steps = buildSandboxChangeSteps(
+			src([c('SandboxReady', 'False', 'Progressing'), c('Ready', 'False', 'Progressing')]),
+			false
+		);
+		expect(st(steps)).toEqual(['done', 'done', 'in-progress', 'pending']);
+	});
+	it('ready: Ready True and generation observed', () => {
+		const steps = buildSandboxChangeSteps(
+			src([c('SandboxReady', 'True'), c('Ready', 'True')]),
+			false
+		);
+		expect(st(steps)).toEqual(['done', 'done', 'done', 'done']);
+	});
+	it('failed: SandboxReady failure carries its message', () => {
+		const steps = buildSandboxChangeSteps(
+			src([c('SandboxReady', 'False', 'SandboxFailed', 'pod unschedulable')]),
+			false
+		);
+		expect(st(steps)).toEqual(['done', 'done', 'failed', 'pending']);
+		expect(steps[2].message).toBe('pod unschedulable');
+	});
+	it('failed: queue failure', () => {
+		const steps = buildSandboxChangeSteps(
+			src([c('SandboxChangePending', 'False', 'DrainFailed', 'stuck')]),
+			false
+		);
+		expect(st(steps)).toEqual(['done', 'failed', 'pending', 'pending']);
+		expect(steps[1].message).toBe('stuck');
+	});
+});
+
+describe('buildStorageResizeStep', () => {
+	it('tracks WorkspaceResizing and WorkspaceResizeFailed on ResourcesReady', () => {
+		expect(buildStorageResizeStep([c('ResourcesReady', 'False', 'WorkspaceResizing')])?.state).toBe(
+			'in-progress'
+		);
+		const failed = buildStorageResizeStep([
+			c('ResourcesReady', 'False', 'WorkspaceResizeFailed', 'quota')
+		]);
+		expect(failed).toMatchObject({ state: 'failed', message: 'quota' });
+		expect(buildStorageResizeStep([c('ResourcesReady', 'True')])).toBeNull();
+		expect(buildStorageResizeStep(undefined)).toBeNull();
 	});
 });

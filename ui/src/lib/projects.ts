@@ -155,8 +155,15 @@ export function toView(p: Project): ProjectView {
 			mentions: p.spec.triggers?.mentions ?? true
 		},
 		maxRuns: p.spec.maxRuns,
+		sandboxSettings: {
+			cpu: p.spec.sandbox?.cpu ?? null,
+			memory: p.spec.sandbox?.memory ?? null,
+			storage: p.spec.sandbox?.storage ?? null
+		},
 		conditions,
 		ready: conditions.some((c) => c.type === 'Ready' && c.status === 'True'),
+		generation: p.metadata.generation ?? null,
+		observedGeneration: p.status?.observedGeneration ?? null,
 		pendingChange: toPendingChange(p)
 	};
 }

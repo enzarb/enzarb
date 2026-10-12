@@ -13,12 +13,18 @@
 	import Section from '#lib/components/ui/Section.svelte';
 	import Skeleton from '#lib/components/ui/Skeleton.svelte';
 	import Tabs from '#lib/components/ui/Tabs.svelte';
+	import SandboxResourcesForm from '#lib/components/SandboxResourcesForm.svelte';
 	import Terminal from '#lib/components/Terminal.svelte';
 	import * as v from 'valibot';
 	import MaxRunsInput from '#lib/components/MaxRunsInput.svelte';
 	import MaxRunsNotice from '#lib/components/MaxRunsNotice.svelte';
 	import { isTerminalFailure } from '#lib/conditions.ts';
-	import { deleteProject, getProject, setMaxRuns } from '#lib/projects.remote.ts';
+	import {
+		deleteProject,
+		getProject,
+		setMaxRuns,
+		setSandboxResources
+	} from '#lib/projects.remote.ts';
 	import { DEFAULT_MAX_RUNS, MaxRunsSchema } from '#lib/projects.ts';
 	import { getProjectSettings } from '#lib/terminal.remote.ts';
 	import PendingChangeBanner from '#lib/components/PendingChangeBanner.svelte';
@@ -50,18 +56,22 @@
 	const project = $derived(getProject(page.params.name!));
 	const settings = $derived(getProjectSettings(page.params.name!));
 
+	// True while a saved sandbox-resources change is still being applied.
+	let trackingResources = $state(false);
+
 	const workItems = $derived(listWorkItems(page.params.name!));
 	// Approximation of the jobs the operator waits for: work items in an active state. The workflows
 	// contract does not list which states hold a running pod, so only zero/non-zero is used and the
 	// count is never shown. null until the list has loaded, so the banner does not claim the jobs are finished.
 	const runningJobs = $derived(workItems.current ? countPossiblyRunning(workItems.current) : null);
 
-	// Poll while the project is not Ready or has a change pending (no timers when idle).
-	// A failed poll is ignored until the next tick; it must not replace the page.
+	// Poll while the project is not Ready, has a change pending or a sandbox-resources change is in
+	// flight (no timers when idle). A failed poll is ignored until the next tick; it must not replace
+	// the page.
 	$effect(() => {
 		if (
 			(project.error && !project.current) ||
-			(project.current?.ready && !project.current.pendingChange)
+			(project.current?.ready && !project.current.pendingChange && !trackingResources)
 		)
 			return;
 		const id = setInterval(() => {
@@ -226,6 +236,16 @@
 							</div>
 							<MaxRunsNotice />
 							{#if saveError}<Notice tone="error">{saveError}</Notice>{/if}
+						</Section>
+
+						<Section title="Sandbox resources">
+							<SandboxResourcesForm
+								project={p}
+								bind:tracking={trackingResources}
+								save={async (input) => {
+									await setSandboxResources({ name: p.name, ...input });
+								}}
+							/>
 						</Section>
 
 						<Section title="Sandbox">

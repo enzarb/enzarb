@@ -23,7 +23,8 @@ vi.mock('$app/navigation', () => ({
 vi.mock('#lib/projects.remote.ts', () => ({
 	getProject: () => ({ current: h.project, refresh: async () => {} }),
 	deleteProject: vi.fn(async () => {}),
-	setMaxRuns: vi.fn(async () => {})
+	setMaxRuns: vi.fn(async () => {}),
+	setSandboxResources: vi.fn(async () => {})
 }));
 vi.mock('#lib/work.remote.ts', () => ({
 	listWorkItems: () => ({ current: [], refresh: async () => {} })
@@ -51,8 +52,12 @@ const view = (over: Partial<ProjectView> = {}): ProjectView => ({
 	sandboxName: 'sb',
 	repositories: [],
 	triggers: { issues: true, changeRequests: false, mentions: false },
+	sandboxSettings: { cpu: null, memory: null, storage: null },
 	conditions: [{ type: 'Ready', status: 'True' }],
 	ready: true,
+	generation: 1,
+	observedGeneration: 1,
+	pendingChange: null,
 	...over
 });
 

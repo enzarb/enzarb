@@ -40,6 +40,7 @@ export const getProject = () =>
 	fakeQuery(() => ({ value: behavior.project, error: behavior.projectError }));
 export const deleteProject = async () => {};
 export const setMaxRuns = async () => {};
+export const setSandboxResources = async () => {};
 export const getProjectSettings = () =>
 	fakeQuery(() => ({
 		value: behavior.settingsError ? undefined : { claudeTokenConfigured: false },

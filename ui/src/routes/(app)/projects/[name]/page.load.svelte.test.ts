@@ -29,6 +29,8 @@ const project = {
 	displayName: 'Alpha Project',
 	sandboxName: 'sb',
 	conditions: [],
+	sandboxSettings: { cpu: null, memory: null, storage: null },
+	pendingChange: null,
 	repositories: [],
 	triggers: { issues: true, changeRequests: false, mentions: false }
 };
