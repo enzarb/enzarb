@@ -16,7 +16,8 @@
 		project,
 		command,
 		oncredential,
-		onclose
+		onclose,
+		fill = false
 	}: {
 		project: string;
 		/** Run this instead of the default shell. */
@@ -25,6 +26,8 @@
 		oncredential?: () => void;
 		/** The PTY ended; `message` is a human description of the CLOSE reason. */
 		onclose?: (message: string) => void;
+		/** Grow to fill the parent (a flex column with a bounded height) instead of a fixed height. */
+		fill?: boolean;
 	} = $props();
 
 	let host: HTMLDivElement;
@@ -130,7 +133,7 @@
 	});
 </script>
 
-<div class="ez-stack">
+<div class={fill ? 'ez-stack ez-stack--fill' : 'ez-stack'}>
 	{#if progress.current < 4 || progress.failure}
 		<TerminalChecklist {progress} />
 	{/if}
@@ -142,5 +145,5 @@
 			{ended}. <Button size="sm" onclick={reconnect}>Reconnect</Button>
 		</p>
 	{/if}
-	<div class="ez-terminal" bind:this={host}></div>
+	<div class={fill ? 'ez-terminal ez-terminal--fill' : 'ez-terminal'} bind:this={host}></div>
 </div>

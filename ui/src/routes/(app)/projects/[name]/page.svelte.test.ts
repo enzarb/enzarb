@@ -1,86 +1,135 @@
-import { error } from '@sveltejs/kit';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { page as browser } from 'vitest/browser';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
-import { behavior, counts } from '#lib/components/__fixtures__/fake-project-remote.svelte.ts';
+import type { ProjectView } from '#lib/project-types.ts';
+
+const h = vi.hoisted(() => ({
+	url: new URL('http://localhost/projects/alpha'),
+	project: undefined as unknown,
+	goto: undefined as unknown
+}));
+
+vi.mock('$app/state', () => ({
+	page: {
+		get url() {
+			return h.url;
+		},
+		params: { name: 'alpha' }
+	}
+}));
+vi.mock('$app/navigation', () => ({
+	goto: (...a: unknown[]) => (h.goto as (...a: unknown[]) => unknown)(...a)
+}));
+vi.mock('#lib/projects.remote.ts', () => ({
+	getProject: () => ({ current: h.project, refresh: async () => {} }),
+	deleteProject: vi.fn(async () => {})
+}));
+vi.mock('#lib/terminal.remote.ts', () => ({
+	getProjectSettings: () => ({
+		current: { claudeTokenConfigured: true, claudeConfiguredBy: 'ruckc' }
+	})
+}));
+vi.mock(
+	'#lib/components/CredentialStatus.svelte',
+	() => import('#lib/components/__fixtures__/CredentialStatusStub.svelte')
+);
+vi.mock(
+	'#lib/components/Terminal.svelte',
+	() => import('#lib/components/__fixtures__/TerminalStub.svelte')
+);
+
 import Page from './+page.svelte';
 
-vi.mock(
-	'#lib/projects.remote.ts',
-	() => import('#lib/components/__fixtures__/fake-project-remote.svelte.ts')
-);
-vi.mock('#lib/terminal.remote.ts', async () => {
-	const fake = await import('#lib/components/__fixtures__/fake-project-remote.svelte.ts');
-	return {
-		getProjectSettings: fake.getProjectSettings,
-		terminalConnection: () => new Promise(() => {}),
-		syncClaudeCredential: () => new Promise(() => {})
-	};
-});
-vi.mock('$app/state', () => ({ page: { params: { name: 'alpha' } } }));
-vi.mock('$app/navigation', () => ({ goto: async () => {} }));
-
-const project = {
+const view = (over: Partial<ProjectView> = {}): ProjectView => ({
 	name: 'alpha',
-	displayName: 'Alpha Project',
+	displayName: 'Alpha',
+	namespace: 'ns',
 	sandboxName: 'sb',
-	conditions: [],
 	repositories: [],
-	triggers: { issues: true, changeRequests: false, mentions: false }
-};
-const notFound = () => {
-	try {
-		error(404, 'Project not found');
-	} catch (e) {
-		return e;
-	}
-};
+	triggers: { issues: true, changeRequests: false, mentions: false },
+	conditions: [{ type: 'Ready', status: 'True' }],
+	ready: true,
+	...over
+});
 
 describe('project page', () => {
-	afterEach(() => {
-		behavior.project = undefined;
-		behavior.projectError = undefined;
-		behavior.settingsError = undefined;
-		behavior.refreshError = undefined;
-		counts.refresh = 0;
+	beforeEach(() => {
+		h.url = new URL('http://localhost/projects/alpha');
+		h.project = view();
+		h.goto = vi.fn();
 	});
 
-	it('renders the project, not "Project not found"', async () => {
-		behavior.project = project;
-		const screen = await render(Page);
-		await expect.element(screen.getByText('Alpha Project')).toBeInTheDocument();
-		expect(screen.container.textContent).not.toContain('Project not found');
+	it('hides the boot checklist when the project is ready', async () => {
+		render(Page);
+		await expect.element(browser.getByRole('tab', { name: 'Overview' })).toBeVisible();
+		await expect.element(browser.getByText('Boot progress')).not.toBeInTheDocument();
 	});
 
-	it('shows "Project not found" for a real 404', async () => {
-		behavior.projectError = notFound();
-		const screen = await render(Page);
-		await expect.element(screen.getByText('Project not found').first()).toBeInTheDocument();
+	it('shows the boot checklist while booting', async () => {
+		h.project = view({ ready: false, conditions: [] });
+		render(Page);
+		await expect.element(browser.getByText('Boot progress')).toBeVisible();
 	});
 
-	it('shows a retryable error for a non-404 failure', async () => {
-		behavior.projectError = new Error('boom');
-		const screen = await render(Page);
-		await expect.element(screen.getByText('Could not load the project')).toBeInTheDocument();
-		expect(screen.container.textContent).not.toContain('Project not found');
-		behavior.projectError = undefined;
-		behavior.project = project;
-		await screen.getByRole('button', { name: 'Retry' }).click();
-		await expect.element(screen.getByText('Alpha Project')).toBeInTheDocument();
+	it('keeps the checklist for a failed boot', async () => {
+		h.project = view({
+			ready: false,
+			conditions: [{ type: 'SandboxReady', status: 'False', reason: 'SandboxFailed' }]
+		});
+		render(Page);
+		await expect.element(browser.getByText('Boot progress')).toBeVisible();
 	});
 
-	it('keeps the page when the settings query fails', async () => {
-		behavior.project = project;
-		behavior.settingsError = new Error('settings down');
-		const screen = await render(Page);
-		await expect.element(screen.getByText('Alpha Project')).toBeInTheDocument();
+	it('renders three tabs with Overview selected by default', async () => {
+		render(Page);
+		for (const name of ['Overview', 'Terminal', 'Settings'])
+			await expect.element(browser.getByRole('tab', { name })).toBeVisible();
+		await expect
+			.element(browser.getByRole('tab', { name: 'Overview' }))
+			.toHaveAttribute('aria-selected', 'true');
+		await expect.element(browser.getByRole('heading', { name: 'Repositories' })).toBeVisible();
 	});
 
-	it('keeps the page when a poll refresh rejects', async () => {
-		behavior.project = project;
-		behavior.refreshError = new Error('poll failed');
-		const screen = await render(Page);
-		await new Promise((r) => setTimeout(r, 2300));
-		expect(counts.refresh).toBeGreaterThan(0);
-		await expect.element(screen.getByText('Alpha Project')).toBeInTheDocument();
+	it('falls back to Overview for an unknown tab', async () => {
+		h.url = new URL('http://localhost/projects/alpha?tab=nope');
+		render(Page);
+		await expect
+			.element(browser.getByRole('tab', { name: 'Overview' }))
+			.toHaveAttribute('aria-selected', 'true');
+	});
+
+	it('puts Delete project in Settings and keeps the delete flow', async () => {
+		h.url = new URL('http://localhost/projects/alpha?tab=settings');
+		render(Page);
+		await expect
+			.element(browser.getByRole('tab', { name: 'Settings' }))
+			.toHaveAttribute('aria-selected', 'true');
+		await browser.getByRole('button', { name: 'Delete project' }).click();
+		await expect.element(browser.getByRole('button', { name: 'Confirm delete' })).toBeVisible();
+		await browser.getByRole('button', { name: 'Confirm delete' }).click();
+		await vi.waitFor(() => expect(h.goto).toHaveBeenCalledWith('/projects'));
+	});
+
+	it('writes the selected tab to the URL', async () => {
+		render(Page);
+		await browser.getByRole('tab', { name: 'Settings' }).click();
+		await vi.waitFor(() => expect(h.goto).toHaveBeenCalled());
+		const [url, opts] = (h.goto as ReturnType<typeof vi.fn>).mock.calls[0];
+		expect(String(url)).toContain('tab=settings');
+		expect(opts).toMatchObject({ replace: true, reset: false });
+	});
+
+	it('mounts the terminal, filling the region, only when ready', async () => {
+		h.url = new URL('http://localhost/projects/alpha?tab=terminal');
+		render(Page);
+		await expect.element(browser.getByTestId('terminal')).toHaveAttribute('data-fill', 'true');
+	});
+
+	it('does not mount the terminal while booting', async () => {
+		h.url = new URL('http://localhost/projects/alpha?tab=terminal');
+		h.project = view({ ready: false, conditions: [] });
+		render(Page);
+		await expect.element(browser.getByText(/still booting/)).toBeVisible();
+		await expect.element(browser.getByTestId('terminal')).not.toBeInTheDocument();
 	});
 });

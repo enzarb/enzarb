@@ -12,8 +12,31 @@
 	import PageHeader from '#lib/components/ui/PageHeader.svelte';
 	import Section from '#lib/components/ui/Section.svelte';
 	import Skeleton from '#lib/components/ui/Skeleton.svelte';
+	import Tabs from '#lib/components/ui/Tabs.svelte';
+	import Terminal from '#lib/components/Terminal.svelte';
+	import { isTerminalFailure } from '#lib/conditions.ts';
 	import { deleteProject, getProject } from '#lib/projects.remote.ts';
 	import { getProjectSettings } from '#lib/terminal.remote.ts';
+
+	const TABS = [
+		{ value: 'overview', label: 'Overview' },
+		{ value: 'terminal', label: 'Terminal' },
+		{ value: 'settings', label: 'Settings' }
+	];
+
+	// The selected tab lives in `?tab=`; anything unknown is Overview.
+	const tab = $derived.by(() => {
+		const t = page.url.searchParams.get('tab');
+		return TABS.some((x) => x.value === t) ? t! : 'overview';
+	});
+
+	function selectTab(value: string) {
+		if (value === tab) return;
+		const url = new URL(page.url.href);
+		if (value === 'overview') url.searchParams.delete('tab');
+		else url.searchParams.set('tab', value);
+		void goto(url, { replace: true, reset: false });
+	}
 
 	const POLL_MS = 2000;
 	const project = $derived(getProject(page.params.name!));
@@ -76,62 +99,91 @@
 				<code>{p.name}</code>
 				{#if p.sandboxName}<span class="ez-muted">sandbox <code>{p.sandboxName}</code></span>{/if}
 			{/snippet}
-			{#snippet actions()}
-				<Button variant="danger" onclick={() => (confirming = true)}>Delete project</Button>
-			{/snippet}
 		</PageHeader>
 		{#if deleteError}<Notice tone="error">{deleteError}</Notice>{/if}
 
-		<Section title="Boot progress">
-			<ConditionChecklist conditions={p.conditions} />
-		</Section>
+		<Tabs tabs={TABS} label="Project sections" bind:value={() => tab, selectTab}>
+			{#snippet panel(current: string)}
+				{#if current === 'overview'}
+					<div class="ez-stack">
+						{#if !p.ready || isTerminalFailure(p.conditions)}
+							<Section title="Boot progress">
+								<ConditionChecklist conditions={p.conditions} />
+							</Section>
+						{/if}
 
-		<Section title="Sandbox">
-			<CredentialStatus
-				project={p.name}
-				cached={settings.current?.claudeTokenConfigured ?? false}
-				onchecked={(c) => (configured = c)}
-			/>
-			{#if settings.current?.claudeTokenConfigured && settings.current.claudeConfiguredBy}
-				<p class="ez-muted">Configured by {settings.current.claudeConfiguredBy}</p>
-			{/if}
-			<div class="ez-cluster">
-				<LinkButton href="/projects/{p.name}/terminal">Open terminal</LinkButton>
-				<LinkButton href="/projects/{p.name}/claude">
-					{(configured ?? settings.current?.claudeTokenConfigured) ? 'Redo' : 'Start'} Claude setup
-				</LinkButton>
-			</div>
-		</Section>
+						<Section title="Repositories">
+							{#each p.repositories as r (r.url)}
+								<p><a href={r.url}>{r.url}</a> <span class="ez-muted">({r.defaultBranch})</span></p>
+							{:else}
+								<p class="ez-muted">No repositories.</p>
+							{/each}
+						</Section>
 
-		<Section title="Repositories">
-			{#each p.repositories as r (r.url)}
-				<p><a href={r.url}>{r.url}</a> <span class="ez-muted">({r.defaultBranch})</span></p>
-			{:else}
-				<p class="ez-muted">No repositories.</p>
-			{/each}
-		</Section>
+						<Section title="Triggers">
+							<KeyValueList
+								items={[
+									{
+										term: 'Issues',
+										value: p.triggers.issues ? 'On' : 'Off',
+										tone: p.triggers.issues ? 'success' : 'neutral'
+									},
+									{
+										term: 'Change requests',
+										value: p.triggers.changeRequests ? 'On' : 'Off',
+										tone: p.triggers.changeRequests ? 'success' : 'neutral'
+									},
+									{
+										term: 'Mentions',
+										value: p.triggers.mentions ? 'On' : 'Off',
+										tone: p.triggers.mentions ? 'success' : 'neutral'
+									}
+								]}
+							/>
+						</Section>
+					</div>
+				{:else if current === 'terminal'}
+					{#if p.ready}
+						<div class="ez-project-terminal">
+							<Notice tone="info">
+								The terminal is for emergencies. Prefer the automated workflows where you can.
+							</Notice>
+							<Terminal project={p.name} fill />
+						</div>
+					{:else}
+						<Notice tone="info"
+							>Sandbox is still booting. The terminal is available once it is ready.</Notice
+						>
+					{/if}
+				{:else if current === 'settings'}
+					<div class="ez-stack">
+						<Section title="Sandbox">
+							<CredentialStatus
+								project={p.name}
+								cached={settings.current?.claudeTokenConfigured ?? false}
+								onchecked={(c) => (configured = c)}
+							/>
+							{#if settings.current?.claudeTokenConfigured && settings.current.claudeConfiguredBy}
+								<p class="ez-muted">Configured by {settings.current.claudeConfiguredBy}</p>
+							{/if}
+							<div class="ez-cluster">
+								<LinkButton href="/projects/{p.name}/claude">
+									{(configured ?? settings.current?.claudeTokenConfigured) ? 'Redo' : 'Start'} Claude
+									setup
+								</LinkButton>
+							</div>
+						</Section>
 
-		<Section title="Triggers">
-			<KeyValueList
-				items={[
-					{
-						term: 'Issues',
-						value: p.triggers.issues ? 'On' : 'Off',
-						tone: p.triggers.issues ? 'success' : 'neutral'
-					},
-					{
-						term: 'Change requests',
-						value: p.triggers.changeRequests ? 'On' : 'Off',
-						tone: p.triggers.changeRequests ? 'success' : 'neutral'
-					},
-					{
-						term: 'Mentions',
-						value: p.triggers.mentions ? 'On' : 'Off',
-						tone: p.triggers.mentions ? 'success' : 'neutral'
-					}
-				]}
-			/>
-		</Section>
+						<Section title="Danger zone">
+							<p class="ez-muted">Deleting the project removes the sandbox and everything in it.</p>
+							<div>
+								<Button variant="danger" onclick={() => (confirming = true)}>Delete project</Button>
+							</div>
+						</Section>
+					</div>
+				{/if}
+			{/snippet}
+		</Tabs>
 
 		<ConfirmDialog
 			bind:open={confirming}

@@ -1784,6 +1784,28 @@ textarea.ez-control {
 	border: var(--ez-border-width) solid var(--ez-border);
 	border-radius: var(--ez-radius-lg);
 	background: var(--ez-terminal-bg);
+
+	// Fills a flex-column parent in both directions; the fit addon follows via ResizeObserver.
+	&--fill {
+		flex: 1;
+		height: auto;
+		max-height: none;
+		min-height: 20rem;
+	}
+}
+
+.ez-stack--fill {
+	flex: 1;
+	min-height: 0;
+}
+
+// The Terminal tab: a viewport-tall flex column so the terminal fills the rest of the region.
+.ez-project-terminal {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-3);
+	height: max(28rem, calc(100dvh - 18rem));
+	min-height: 0;
 }
 
 // Toast ------------------------------------------------------------------------------------------------------
