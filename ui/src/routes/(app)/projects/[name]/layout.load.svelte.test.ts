@@ -62,11 +62,11 @@ describe('project layout', () => {
 		expect(screen.container.textContent).not.toContain('Project not found');
 	});
 
-	it('has no Chat tab without the server flag', async () => {
+	it('shows the Chat tab', async () => {
 		behavior.project = project;
 		const screen = await render(LayoutHost, Page);
 		await expect.element(screen.getByRole('link', { name: 'Terminal' })).toBeInTheDocument();
-		expect(screen.getByRole('link', { name: 'Chat' }).elements()).toHaveLength(0);
+		await expect.element(screen.getByRole('link', { name: 'Chat' })).toBeInTheDocument();
 	});
 
 	it('shows "Project not found" for a real 404', async () => {

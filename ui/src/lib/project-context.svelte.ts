@@ -18,7 +18,6 @@ export const getProjectContext = () => getContext<ProjectContext>(KEY);
 
 /**
  * Tabs of the project page. Each is a child route of `/projects/[name]`; Overview is the index.
- * Chat exists only behind the `ENZARB_UI_CHAT` flag: use `projectTabs` to get the visible ones.
  */
 export const PROJECT_TABS = [
 	{ slug: '', label: 'Overview' },
@@ -26,7 +25,3 @@ export const PROJECT_TABS = [
 	{ slug: 'chat', label: 'Chat' },
 	{ slug: 'settings', label: 'Settings' }
 ] as const;
-
-/** The tabs to show; Chat only when the flag is on. */
-export const projectTabs = (opts: { chat: boolean }) =>
-	PROJECT_TABS.filter((t) => t.slug !== 'chat' || opts.chat);

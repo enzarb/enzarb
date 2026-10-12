@@ -15,9 +15,7 @@
 	import { countPossiblyRunning } from '#lib/work-items.ts';
 	import { listWorkItems } from '#lib/work.remote.ts';
 
-	let { children, data }: { children: Snippet; data?: { chatEnabled?: boolean } } = $props();
-	// Off unless the server said the flag is on.
-	const chatEnabled = $derived(data?.chatEnabled === true);
+	let { children }: { children: Snippet } = $props();
 
 	const POLL_MS = 2000;
 	const project = $derived(getProject(page.params.name!));
@@ -99,7 +97,7 @@
 
 		<PendingChangeBanner change={p.pendingChange} {runningJobs} />
 
-		<ProjectNav name={p.name} pathname={page.url.pathname} chat={chatEnabled} />
+		<ProjectNav name={p.name} pathname={page.url.pathname} />
 		<div class="ez-tabnav-panel">
 			{@render children()}
 		</div>

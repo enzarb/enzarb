@@ -4,14 +4,16 @@ import { render } from 'vitest-browser-svelte';
 import ProjectNav from './ProjectNav.svelte';
 
 describe('ProjectNav', () => {
-	it('has no Chat tab when the flag is off (the default)', async () => {
+	it('always shows the Chat tab', async () => {
 		render(ProjectNav, { name: 'alpha', pathname: '/projects/alpha' });
 		await expect.element(page.getByRole('link', { name: 'Terminal' })).toBeVisible();
-		await expect.element(page.getByRole('link', { name: 'Chat' })).not.toBeInTheDocument();
+		await expect
+			.element(page.getByRole('link', { name: 'Chat' }))
+			.toHaveAttribute('href', '/projects/alpha/chat');
 	});
 
-	it('shows the Chat tab when the flag is on', async () => {
-		render(ProjectNav, { name: 'alpha', pathname: '/projects/alpha/chat', chat: true });
+	it('marks the Chat tab current on the chat route', async () => {
+		render(ProjectNav, { name: 'alpha', pathname: '/projects/alpha/chat' });
 		const link = page.getByRole('link', { name: 'Chat' });
 		await expect.element(link).toHaveAttribute('href', '/projects/alpha/chat');
 		await expect.element(link).toHaveAttribute('aria-current', 'page');
