@@ -2157,6 +2157,136 @@ async fn a_plain_agent_failure_still_fails_the_job() {
     assert!(hold_until(pool, "enzarb").await.is_none());
 }
 
+// ---------------------------------------------------------------------------
+// Sandbox boot waits
+// ---------------------------------------------------------------------------
+
+async fn triage_job(h: &H) -> i64 {
+    let pool = h.pool();
+    h.fake.add_thread(key(1), thread_with("a"));
+    let wi = new_item(pool, 1, "enzarb").await;
+    new_job(
+        pool,
+        wi,
+        "enzarb",
+        "agent_triage",
+        0,
+        "k:a",
+        agent_input(1, "enzarb/triage-1", false),
+    )
+    .await
+}
+
+async fn due_now(pool: &PgPool) {
+    sqlx::query("UPDATE workflows.jobs SET run_after = now()")
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn sandbox_not_ready_waits_without_minting_or_spending_attempts() {
+    // a long poll so one `drain()` cannot claim the requeued job again
+    let h = H::with(db!(), |c| c.sandbox_boot_poll = Duration::from_secs(1800)).await;
+    let pool = h.pool();
+    let id = triage_job(&h).await;
+    h.resolver.remove("enzarb");
+
+    // more misses than max_attempts (5)
+    for n in 1..=7 {
+        due_now(pool).await;
+        assert_eq!(h.exec.drain().await, 1);
+        let j = job(pool, id).await;
+        assert_eq!((j.status.as_str(), j.attempt), ("queued", n));
+        // the attempt is refunded: the budget left never shrinks
+        assert_eq!(j.max_attempts - j.attempt, 5);
+        assert_eq!(j.waiting_for.as_deref(), Some("sandbox"));
+        assert!(j.resumes_at.is_some() && j.sandbox_wait_started_at.is_some());
+        assert_eq!(j.limit_wait_count, 0);
+    }
+    // dialing first: no GitHub calls at all while the sandbox is missing
+    let calls = h.fake.applied_calls();
+    assert!(!calls.iter().any(|c| matches!(
+        c,
+        Call::MintCloneCredential { .. } | Call::FetchThread { .. }
+    )));
+
+    // the sandbox shows up: the job starts and the wait is forgotten
+    h.resolver.insert(
+        "enzarb",
+        SandboxTarget {
+            endpoint: h.sandbox.url.clone(),
+            token: SANDBOX_TOKEN.into(),
+        },
+    );
+    due_now(pool).await;
+    assert_eq!(h.exec.drain().await, 1);
+    let j = job(pool, id).await;
+    assert_eq!(j.status, "running");
+    assert!(j.deadline.is_some());
+    assert!(j.sandbox_wait_started_at.is_none() && j.waiting_for.is_none());
+    assert_eq!(h.sandbox.starts(), 1);
+    let rid = format!("job-{id}");
+    assert!(h.sandbox.run(&rid).is_some());
+}
+
+#[tokio::test]
+async fn sandbox_not_ready_fails_once_the_boot_budget_is_spent() {
+    let h = H::with(db!(), |c| {
+        c.sandbox_boot_poll = Duration::from_secs(1800);
+        c.sandbox_boot_timeout = Duration::from_secs(3600);
+    })
+    .await;
+    let pool = h.pool();
+    let id = triage_job(&h).await;
+    h.resolver.remove("enzarb");
+
+    due_now(pool).await;
+    h.exec.drain().await;
+    assert_eq!(job(pool, id).await.status, "queued");
+
+    // the first miss was long ago
+    sqlx::query(
+        "UPDATE workflows.jobs SET sandbox_wait_started_at = now() - interval '2 hours',
+                run_after = now()",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    h.exec.drain().await;
+    let j = job(pool, id).await;
+    assert_eq!(j.status, "failed");
+    let failed = events_of(pool, "JobFailed").await;
+    assert_eq!(failed.len(), 1);
+    let text = failed[0].1.to_string();
+    assert!(
+        text.contains("sandbox not ready") && text.contains("after 60m"),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn unreachable_sandbox_still_fails_after_max_attempts() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let id = triage_job(&h).await;
+    h.resolver.insert(
+        "enzarb",
+        SandboxTarget {
+            endpoint: h.sandbox.url.clone(),
+            token: "wrong".into(),
+        },
+    );
+    for _ in 0..5 {
+        due_now(pool).await;
+        h.exec.drain().await;
+    }
+    let j = job(pool, id).await;
+    assert_eq!((j.status.as_str(), j.attempt), ("failed", 5));
+    assert!(j.waiting_for.is_none() && j.sandbox_wait_started_at.is_none());
+    assert_eq!(h.sandbox.starts(), 0);
+}
+
 #[tokio::test]
 async fn deadline_poll_waits_out_a_session_limit() {
     let h = H::new(db!()).await;

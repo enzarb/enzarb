@@ -99,6 +99,7 @@ pub struct Job {
     pub restart_retries: i32,
     pub waiting_for: Option<String>,
     pub resumes_at: Option<DateTime<Utc>>,
+    pub sandbox_wait_started_at: Option<DateTime<Utc>>,
 }
 
 /// Row of `workflows_api.work_item_v`.

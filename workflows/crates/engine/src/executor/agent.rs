@@ -1,13 +1,15 @@
 //! Agent jobs: prepare a run and hand it to the Project's sandbox-init.
 //!
 //! Per attempt:
-//! 1. `Connector::fetch_thread`, set `context.thread`, re-render the prompt (the machine
+//! 1. resolve the sandbox and connect as `executor`, first, so a sandbox that is not ready
+//!    (see `sandbox_wait`) fetches and mints nothing;
+//! 2. `Connector::fetch_thread`, set `context.thread`, re-render the prompt (the machine
 //!    cannot fetch the thread);
-//! 2. `Connector::mint_clone_credential` (`read_write` when `push`, else `read`);
+//! 3. `Connector::mint_clone_credential` (`read_write` when `push`, else `read`);
 //!    For implement/address/review jobs also `Connector::mint_read_credential` over the
 //!    Project's repositories (`RunStart.deps_token`, for private git dependencies);
-//! 3. resolve the sandbox, connect as `executor`, `run_start` with `run_id = job-<id>`
-//!    (idempotent: a retry after a crash gets the existing run);
+//!    then `run_start` with `run_id = job-<id>` (idempotent: a retry after a crash gets the
+//!    existing run). The session is closed on every error after step 1;
 //! 4. once `run_accepted`: release the lease and set `jobs.deadline`
 //!    (`timeout_secs + deadline_grace`). The job stays `running`; the callback finishes it.
 
@@ -18,7 +20,7 @@ use enzarb_proto::session::{Client, Session};
 use enzarb_proto::{ClientKind, RunStart};
 
 use super::callback::{callback_token, run_id};
-use super::{Claimed, Done, Executor, JobError};
+use super::{Claimed, Done, Executor, JobError, SandboxError};
 use crate::machine::{AgentJobInput, JobKind, render_prompt};
 
 /// Canonical clone URL of a repository (`contracts.md` section 4: `repo_url`).
@@ -57,11 +59,10 @@ fn sandbox_err<E: std::fmt::Display>(what: &str, e: E) -> JobError {
 impl Executor {
     /// Connect to a Project's sandbox-init as `executor`.
     pub(crate) async fn dial(&self, project: &str) -> Result<Session, JobError> {
-        let target = self
-            .sandboxes
-            .resolve(project)
-            .await
-            .map_err(|e| JobError::transient(e.to_string()))?;
+        let target = self.sandboxes.resolve(project).await.map_err(|e| match e {
+            SandboxError::NotReady(_) => JobError::sandbox_not_ready(e.to_string()),
+            SandboxError::Kube(_) => JobError::transient(e.to_string()),
+        })?;
         let t = self.cfg.sandbox_timeout;
         let connect = Client::connect(&target.endpoint, &target.token, ClientKind::Executor);
         let (session, _events) = tokio::time::timeout(t, connect)
@@ -105,22 +106,22 @@ impl Executor {
         }
     }
 
-    pub(crate) async fn start_agent(&self, job: &Claimed, kind: JobKind) -> Result<Done, JobError> {
-        let mut input: AgentJobInput = serde_json::from_value(job.input.clone())
-            .map_err(|e| JobError::permanent(format!("unreadable agent input: {e}")))?;
-        let project = job
-            .project_id
-            .clone()
-            .ok_or_else(|| JobError::permanent("job has no project"))?;
+    /// Fetch the thread, re-render the prompt and mint the credentials for one attempt.
+    #[allow(clippy::too_many_arguments)]
+    async fn prepare_run(
+        &self,
+        job: &Claimed,
+        kind: JobKind,
+        input: &mut AgentJobInput,
+        project: &str,
+        repo_url: String,
+        rid: &str,
+        connector: &std::sync::Arc<dyn Connector>,
+    ) -> Result<RunStart, JobError> {
         let item = job
             .work_item_key
             .parse()
             .map_err(|e| JobError::permanent(format!("bad work item key: {e}")))?;
-        let repo_url = repo_url(&input.repo).ok_or_else(|| {
-            JobError::permanent(format!("unsupported connector {:?}", input.repo.connector))
-        })?;
-        let connector = self.connector_for(&input.repo.connector)?;
-
         let thread = connector.fetch_thread(&item).await?;
         input.context.thread = format_thread(&thread);
         input.prompt = render_prompt(kind, &input.context);
@@ -142,15 +143,14 @@ impl Executor {
             kind,
             JobKind::AgentImplement | JobKind::AgentAddressComments | JobKind::AgentReview
         ) {
-            self.mint_deps_token(job, &project, &input.repo, connector)
+            self.mint_deps_token(job, project, &input.repo, connector)
                 .await?
         } else {
             None
         };
 
-        let rid = run_id(job.id, job.limit_wait_count + job.restart_retries);
-        let run = RunStart {
-            run_id: rid.clone(),
+        Ok(RunStart {
+            run_id: rid.to_string(),
             repo_url,
             base_ref: input.base_ref.clone(),
             branch: input.branch.clone(),
@@ -160,11 +160,37 @@ impl Executor {
             prompt: input.prompt.clone(),
             timeout_secs: input.timeout_secs,
             callback_url: format!("{}/v1/runs/{rid}/finished", self.cfg.callback_base_url),
-            callback_token: callback_token(&self.cfg.callback_secret, &rid),
+            callback_token: callback_token(&self.cfg.callback_secret, rid),
             log_channel: None,
+        })
+    }
+
+    pub(crate) async fn start_agent(&self, job: &Claimed, kind: JobKind) -> Result<Done, JobError> {
+        let mut input: AgentJobInput = serde_json::from_value(job.input.clone())
+            .map_err(|e| JobError::permanent(format!("unreadable agent input: {e}")))?;
+        let project = job
+            .project_id
+            .clone()
+            .ok_or_else(|| JobError::permanent("job has no project"))?;
+        let repo_url = repo_url(&input.repo).ok_or_else(|| {
+            JobError::permanent(format!("unsupported connector {:?}", input.repo.connector))
+        })?;
+        let connector = self.connector_for(&input.repo.connector)?;
+
+        // Dial first: a sandbox that is not ready yet costs no GitHub calls and mints no token.
+        let session = self.dial(&project).await?;
+        let rid = run_id(job.id, job.limit_wait_count + job.restart_retries);
+        let run = match self
+            .prepare_run(job, kind, &mut input, &project, repo_url, &rid, connector)
+            .await
+        {
+            Ok(run) => run,
+            Err(e) => {
+                session.close().await;
+                return Err(e);
+            }
         };
 
-        let session = self.dial(&project).await?;
         let started = tokio::time::timeout(self.cfg.sandbox_timeout, session.run_start(run))
             .await
             .map_err(|_| sandbox_err("run_start", "timed out"))?
@@ -182,7 +208,8 @@ impl Executor {
         let secs = (input.timeout_secs as f64) + self.cfg.deadline_grace.as_secs_f64();
         let updated = sqlx::query(
             "UPDATE jobs SET lease_owner = NULL, lease_until = NULL,
-                    deadline = now() + make_interval(secs => $3), updated_at = now()
+                    deadline = now() + make_interval(secs => $3),
+                    sandbox_wait_started_at = NULL, updated_at = now()
              WHERE id = $1 AND status = 'running' AND attempt = $2",
         )
         .bind(job.id)

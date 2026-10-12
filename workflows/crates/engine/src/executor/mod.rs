@@ -32,6 +32,13 @@
 //! wait starts a new sandbox run (`job-<id>-<waits>`). After 7 days of waiting the job fails.
 //! See [`session_limit`].
 //!
+//! # Sandbox boot waits
+//! A job whose Project has no sandbox yet ([`SandboxError::NotReady`]) is not retried with the
+//! back-off below: it goes back to `queued` every [`ExecutorConfig::sandbox_boot_poll`] with its
+//! attempt refunded (`max_attempts + 1`) and `waiting_for = 'sandbox'`, and fails once
+//! [`ExecutorConfig::sandbox_boot_timeout`] has passed since the first miss. See
+//! [`sandbox_wait`].
+//!
 //! # Sandbox restarts
 //! An agent run that ends as cancelled (or unknown to sandbox-init) while its job is still
 //! `running` was lost to a sandbox restart. The job is re-queued with backoff and its attempt
@@ -44,7 +51,7 @@
 //!   failure instead. Connector calls are idempotent by key and `run_start` is idempotent by
 //!   `run_id = job-<id>`, so redoing a half-done attempt is safe.
 //! * A failed attempt that may succeed later (transient connector error, rate limit,
-//!   sandbox unreachable or not ready) goes back to `queued` with
+//!   sandbox unreachable) goes back to `queued` with
 //!   `run_after = now() + backoff` (exponential, honoring `retry_after`). Permanent errors
 //!   and exhausted attempts are reported as `JobResult::Failed`, which becomes `JobFailed`.
 //! * An accepted agent run releases its lease and sets
@@ -63,6 +70,7 @@ mod connectors;
 mod jobs;
 mod restart;
 mod sandbox;
+mod sandbox_wait;
 mod session_limit;
 mod sweep;
 
@@ -105,6 +113,11 @@ pub struct ExecutorConfig {
     pub poll_give_up: Duration,
     /// Timeout for connecting to and talking to a sandbox.
     pub sandbox_timeout: Duration,
+    /// How long a job waits for a Project's sandbox to exist (first boot, image pull) before
+    /// failing. Does not count against `max_attempts`.
+    pub sandbox_boot_timeout: Duration,
+    /// Delay between tries while waiting for the sandbox.
+    pub sandbox_boot_poll: Duration,
     /// `ENZARB_EXECUTOR_URL`: base of the callback URL, e.g.
     /// `http://enzarb-workflows-executor.enzarb.svc:8081`.
     pub callback_base_url: String,
@@ -130,6 +143,8 @@ impl ExecutorConfig {
             deadline_grace: Duration::from_secs(120),
             poll_give_up: Duration::from_secs(600),
             sandbox_timeout: Duration::from_secs(30),
+            sandbox_boot_timeout: Duration::from_secs(300),
+            sandbox_boot_poll: Duration::from_secs(10),
             callback_base_url: callback_base_url.into().trim_end_matches('/').to_string(),
             callback_secret: callback_secret.into(),
             restart_retry_cap: 3,
@@ -169,6 +184,8 @@ pub(crate) struct JobError {
     pub retryable: bool,
     pub retry_after: Option<Duration>,
     pub message: String,
+    /// The Project's sandbox does not exist yet: waits on its own budget, see [`sandbox_wait`].
+    pub not_ready: bool,
 }
 
 impl JobError {
@@ -177,6 +194,7 @@ impl JobError {
             retryable: false,
             retry_after: None,
             message: m.into(),
+            not_ready: false,
         }
     }
 
@@ -185,6 +203,14 @@ impl JobError {
             retryable: true,
             retry_after: None,
             message: m.into(),
+            not_ready: false,
+        }
+    }
+
+    pub fn sandbox_not_ready(m: impl Into<String>) -> Self {
+        Self {
+            not_ready: true,
+            ..Self::transient(m)
         }
     }
 }
@@ -199,6 +225,7 @@ impl From<enzarb_connector::Error> for JobError {
             retryable: e.is_retryable(),
             retry_after,
             message: e.to_string(),
+            not_ready: false,
         }
     }
 }
@@ -410,6 +437,7 @@ impl Executor {
             )
             .await
             .map(|_| ()),
+            Err(e) if e.not_ready => self.sandbox_not_ready_outcome(job, e).await,
             Err(e) if e.retryable && job.attempt < job.max_attempts => {
                 let delay = self
                     .cfg
