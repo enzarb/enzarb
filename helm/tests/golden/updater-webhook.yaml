@@ -251,7 +251,7 @@ metadata:
 rules:
   - apiGroups: [enzarb.dev]
     resources: [projects]
-    verbs: [get, list, watch]
+    verbs: [get, list, watch, patch]
 
 ---
 # Source: enzarb/templates/rbac.yaml
