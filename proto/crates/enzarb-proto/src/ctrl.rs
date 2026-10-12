@@ -20,6 +20,68 @@ pub enum ClientKind {
 #[serde(rename_all = "snake_case")]
 pub enum ChannelKind {
     Pty,
+    /// ACP's newline-delimited JSON-RPC as a byte stream on `DATA_BIN`.
+    /// Senders must only use it after `welcome.features` contained
+    /// [`feature::ACP`] (an old proxy closes the socket on an unknown kind).
+    Acp,
+    /// Any kind this implementation does not know. Decode-only: it is never
+    /// sent. A server answers it with `open_error` (`unsupported_kind`).
+    #[serde(other)]
+    Unknown,
+}
+
+/// Feature names advertised in `welcome.features`.
+pub mod feature {
+    /// The `acp` channel kind is available.
+    pub const ACP: &str = "acp";
+    /// Decoders keep at most this many features...
+    pub const MAX_FEATURES: usize = 64;
+    /// ...and drop any longer than this many bytes.
+    pub const MAX_FEATURE_LEN: usize = 64;
+}
+
+/// Standard `open_error.code` values. Unknown codes must be tolerated.
+pub mod open_error_code {
+    pub const CHAT_DISABLED: &str = "chat_disabled";
+    pub const CHAT_LIMIT: &str = "chat_limit";
+    pub const NO_CREDENTIAL: &str = "no_credential";
+    pub const REPO_NOT_CLONED: &str = "repo_not_cloned";
+    /// The `open.kind` is not one this peer implements.
+    pub const UNSUPPORTED_KIND: &str = "unsupported_kind";
+    /// `open.repo`/`open.resume` exceeds [`MAX_REPO_LEN`]/[`MAX_RESUME_LEN`].
+    pub const INVALID_REQUEST: &str = "invalid_request";
+}
+
+/// Longest `open.repo` (bytes) senders may send and receivers must accept.
+pub const MAX_REPO_LEN: usize = 2048;
+/// Longest `open.resume` (bytes) senders may send and receivers must accept.
+pub const MAX_RESUME_LEN: usize = 256;
+
+/// Typical `CLOSE` reasons on an `acp` channel (besides `exit:<n>`/`signal:<n>`).
+/// Receivers must tolerate any other text.
+pub mod close_reason {
+    /// No traffic for the idle limit.
+    pub const IDLE: &str = "idle";
+    /// Replaced by a newer channel ("last tab wins").
+    pub const SUPERSEDED: &str = "superseded";
+    /// The sandbox is shutting down.
+    pub const SHUTDOWN: &str = "shutdown";
+    /// A size or lifetime limit was hit.
+    pub const LIMIT: &str = "limit";
+}
+
+fn features_is_empty(f: &Option<Vec<String>>) -> bool {
+    f.as_ref().is_none_or(|v| v.is_empty())
+}
+
+/// Drop oversized/excess entries from a peer-supplied feature list.
+pub fn sanitize_features(features: Option<Vec<String>>) -> Vec<String> {
+    features
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|f| !f.is_empty() && f.len() <= feature::MAX_FEATURE_LEN)
+        .take(feature::MAX_FEATURES)
+        .collect()
 }
 
 /// Credential kinds reported by `credential_captured` and `credential_state`.
@@ -144,6 +206,10 @@ pub enum Ctrl {
     },
     Welcome {
         version: u16,
+        /// Optional feature names (see [`feature`]). Omitted when empty or
+        /// absent; old peers ignore it and old payloads decode without it.
+        #[serde(default, skip_serializing_if = "features_is_empty")]
+        features: Option<Vec<String>>,
     },
     Open {
         channel: u32,
@@ -152,6 +218,14 @@ pub enum Ctrl {
         rows: u16,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         command: Option<Vec<String>>,
+        /// `acp` only: repo URL of the Project to work in (at most
+        /// [`MAX_REPO_LEN`] bytes). Omitted when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repo: Option<String>,
+        /// `acp` only: ACP session id, a routing hint (at most
+        /// [`MAX_RESUME_LEN`] bytes). Omitted when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resume: Option<String>,
     },
     Opened {
         channel: u32,
@@ -159,6 +233,10 @@ pub enum Ctrl {
     OpenError {
         channel: u32,
         message: String,
+        /// Machine-readable reason (see [`open_error_code`]); unknown values
+        /// must be tolerated. Omitted when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
     },
     Resize {
         channel: u32,

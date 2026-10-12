@@ -58,6 +58,15 @@ for await (const d of run.log!) console.log(JSON.parse(new TextDecoder().decode(
 s.onCtrl((m) => { /* pushed run_state, credential_captured, unattributed errors */ });
 ```
 
+ACP over a byte channel (only when `s.features.has("acp")`; an old proxy closes the socket on an unknown kind):
+
+```ts
+import { ndJsonStream } from "@agentclientprotocol/sdk";
+const bc = await s.openAcp({ repo, resume });   // OpenError.openCode on refusal
+const stream = ndJsonStream(bc.writable, bc.readable);
+bc.closed.then(({ reason }) => { /* idle | superseded | shutdown | limit | exit:<n> | ... */ });
+```
+
 The TS `Session` is the client role only (ui, and Node clients). The codec (`decodeFrame`, `encodeFrame`, `parseCtrl`, `FrameDecoder`) and `FlowControl` are exported for other uses.
 
 ## Checks

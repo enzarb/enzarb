@@ -35,3 +35,15 @@ export class SessionError extends Error {
     return new SessionError("ended", `session ended: ${end.kind}${end.reason ? ` (${end.reason})` : ""}`, { end });
   }
 }
+
+/** An `open` the server refused; `openCode` is the `open_error.code` when the server sent one. */
+export class OpenError extends SessionError {
+  constructor(
+    message: string,
+    readonly openCode: string | undefined,
+    readonly serverMessage: string,
+  ) {
+    super("open_rejected", message, { remote: { code: "open_error", message: serverMessage } });
+    this.name = "OpenError";
+  }
+}

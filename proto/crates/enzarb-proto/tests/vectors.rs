@@ -81,7 +81,20 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
                 client: ClientKind::Executor,
             },
         ),
-        ("welcome", Ctrl::Welcome { version: 1 }),
+        (
+            "welcome",
+            Ctrl::Welcome {
+                version: 1,
+                features: None,
+            },
+        ),
+        (
+            "welcome_features",
+            Ctrl::Welcome {
+                version: 1,
+                features: Some(vec!["acp".into()]),
+            },
+        ),
         (
             "open",
             Ctrl::Open {
@@ -90,6 +103,32 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
                 cols: 80,
                 rows: 24,
                 command: None,
+                repo: None,
+                resume: None,
+            },
+        ),
+        (
+            "open_acp",
+            Ctrl::Open {
+                channel: 3,
+                kind: ChannelKind::Acp,
+                cols: 0,
+                rows: 0,
+                command: None,
+                repo: None,
+                resume: None,
+            },
+        ),
+        (
+            "open_acp_repo_resume",
+            Ctrl::Open {
+                channel: 3,
+                kind: ChannelKind::Acp,
+                cols: 0,
+                rows: 0,
+                command: None,
+                repo: Some("https://github.com/enzarb/enzarb-ui".into()),
+                resume: Some("sess_abc123".into()),
             },
         ),
         (
@@ -100,6 +139,8 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
                 cols: 120,
                 rows: 40,
                 command: Some(vec!["bash".into(), "-l".into()]),
+                repo: None,
+                resume: None,
             },
         ),
         ("opened", Ctrl::Opened { channel: 1 }),
@@ -108,6 +149,15 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
             Ctrl::OpenError {
                 channel: 1,
                 message: "too many channels".into(),
+                code: None,
+            },
+        ),
+        (
+            "open_error_code",
+            Ctrl::OpenError {
+                channel: 3,
+                message: "chat is disabled for this sandbox".into(),
+                code: Some("chat_disabled".into()),
             },
         ),
         (
@@ -411,4 +461,39 @@ fn run_start_npm_token_compat() {
         serde_json::from_value::<RunStart>(v).unwrap().npm_token,
         None
     );
+}
+
+/// Payloads a decoder must accept: old shapes (no new fields) and shapes from
+/// newer peers (unknown kind, unknown error code, unknown fields). `expect` is
+/// a subset of the decoded message that both languages must agree on.
+#[test]
+fn ctrl_compat_vectors() {
+    let cases = vec![
+        json!({"name":"old_welcome","payload":r#"{"type":"welcome","version":1}"#,
+               "expect":{"type":"welcome","version":1}}),
+        json!({"name":"welcome_features_null","payload":r#"{"type":"welcome","version":1,"features":null}"#,
+               "expect":{"type":"welcome","version":1}}),
+        json!({"name":"welcome_unknown_feature","payload":r#"{"type":"welcome","version":1,"features":["acp","future_thing"],"x":1}"#,
+               "expect":{"type":"welcome","version":1,"features":["acp","future_thing"]}}),
+        json!({"name":"old_open_pty","payload":r#"{"type":"open","channel":1,"kind":"pty","cols":80,"rows":24}"#,
+               "expect":{"type":"open","channel":1,"kind":"pty"}}),
+        json!({"name":"open_unknown_kind","payload":r#"{"type":"open","channel":5,"kind":"quic","cols":0,"rows":0}"#,
+               "expect":{"type":"open","channel":5}}),
+        json!({"name":"old_open_error","payload":r#"{"type":"open_error","channel":1,"message":"nope"}"#,
+               "expect":{"type":"open_error","channel":1,"message":"nope"}}),
+        json!({"name":"open_error_unknown_code","payload":r#"{"type":"open_error","channel":1,"message":"nope","code":"brand_new"}"#,
+               "expect":{"type":"open_error","channel":1,"code":"brand_new"}}),
+    ];
+    for c in &cases {
+        let f = Frame::new(
+            FrameType::Ctrl,
+            0,
+            Bytes::from(c["payload"].as_str().unwrap().to_owned()),
+        );
+        let got = serde_json::to_value(f.ctrl_message().unwrap()).unwrap();
+        for (k, v) in c["expect"].as_object().unwrap() {
+            assert_eq!(&got[k], v, "{} field {k}", c["name"]);
+        }
+    }
+    check_or_write("ctrl_compat.json", &Value::Array(cases));
 }

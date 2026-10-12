@@ -75,11 +75,16 @@ impl Sink<Message> for MemoryWs {
 
 /// A connected, handshaken `(client, server)` pair of sessions.
 pub async fn session_pair(kind: ClientKind) -> ((Session, Events), (Session, Events)) {
+    session_pair_with(kind, ServerOptions::default()).await
+}
+
+/// Like [`session_pair`] with explicit server options (e.g. `features`).
+pub async fn session_pair_with(
+    kind: ClientKind,
+    opts: ServerOptions,
+) -> ((Session, Events), (Session, Events)) {
     let (c, s) = pair();
-    let (client, server) = tokio::join!(
-        Session::connect(c, kind),
-        Session::accept(s, ServerOptions::default())
-    );
+    let (client, server) = tokio::join!(Session::connect(c, kind), Session::accept(s, opts));
     (
         client.expect("client handshake"),
         server.expect("server handshake"),

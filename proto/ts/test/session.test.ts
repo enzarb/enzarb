@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  ByteChannel,
   Channel,
   CloseCode,
+  OpenError,
   type Ctrl,
   type Frame,
   FrameType,
@@ -91,7 +93,7 @@ class Server {
   }
 }
 
-async function connected(): Promise<{ s: Session; srv: Server; ws: MockSocket }> {
+async function connected(features?: unknown): Promise<{ s: Session; srv: Server; ws: MockSocket }> {
   const a = new MockSocket();
   const b = new MockSocket();
   a.peer = b;
@@ -100,7 +102,7 @@ async function connected(): Promise<{ s: Session; srv: Server; ws: MockSocket }>
   const p = Session.connect(a, { client: "executor" });
   const hello = await srv.nextCtrl("hello");
   expect(hello).toEqual({ type: "hello", versions: [1], client: "executor" });
-  srv.ctrl({ type: "welcome", version: 1 });
+  srv.ctrl(features === undefined ? { type: "welcome", version: 1 } : ({ type: "welcome", version: 1, features } as Ctrl));
   return { s: await p, srv, ws: a };
 }
 
@@ -444,5 +446,225 @@ describe("shutdown", () => {
     srv.ws.close();
     expect((await s.closed).kind).toBe("peer_closed");
     await expect(ch.write("x")).rejects.toMatchObject({ code: "ended" });
+  });
+});
+
+describe("features", () => {
+  it("is empty when welcome has none", async () => {
+    const { s } = await connected();
+    expect(s.features.size).toBe(0);
+  });
+
+  it("exposes advertised features, tolerating unknown ones", async () => {
+    const { s } = await connected(["acp", "future_thing"]);
+    expect(s.features.has("acp")).toBe(true);
+    expect(s.features.has("future_thing")).toBe(true);
+  });
+
+  it("bounds hostile feature lists", async () => {
+    const many = Array.from({ length: 500 }, (_, i) => `f${i}`);
+    const { s } = await connected(["", "x".repeat(10_000), 7, null, ...many]);
+    expect(s.features.size).toBe(64);
+    expect(s.features.has("")).toBe(false);
+    const { s: s2 } = await connected("not-an-array");
+    expect(s2.features.size).toBe(0);
+  });
+
+  it("encodes no features key on hello/old paths", async () => {
+    const { s } = await connected(null);
+    expect(s.features.size).toBe(0);
+  });
+});
+
+describe("openAcp", () => {
+  async function openAcp(s: Session, srv: Server, opts?: { repo?: string; resume?: string }) {
+    const p = s.openAcp(opts);
+    const open = await srv.nextCtrl("open");
+    srv.ctrl({ type: "opened", channel: open.channel });
+    return { bc: await p, open };
+  }
+
+  it("sends kind acp with zero size and omits unset repo/resume", async () => {
+    const { s, srv } = await connected(["acp"]);
+    const { open } = await openAcp(s, srv);
+    expect(open).toMatchObject({ kind: "acp", cols: 0, rows: 0 });
+    expect("repo" in open).toBe(false);
+    expect("resume" in open).toBe(false);
+    expect("command" in open).toBe(false);
+    const { open: o2 } = await openAcp(s, srv, { repo: "https://github.com/enzarb/x", resume: "sess_1" });
+    expect(o2).toMatchObject({ repo: "https://github.com/enzarb/x", resume: "sess_1" });
+  });
+
+  it("surfaces open_error code as OpenError.openCode, and tolerates a missing code", async () => {
+    const { s, srv } = await connected(["acp"]);
+    let p = s.openAcp();
+    let open = await srv.nextCtrl("open");
+    srv.ctrl({ type: "open_error", channel: open.channel, message: "full", code: "chat_limit" });
+    let e = await p.catch((x) => x);
+    expect(e).toBeInstanceOf(OpenError);
+    expect(e).toMatchObject({ code: "open_rejected", openCode: "chat_limit" });
+    p = s.openAcp();
+    open = await srv.nextCtrl("open");
+    srv.ctrl({ type: "open_error", channel: open.channel, message: "old server" });
+    e = await p.catch((x) => x);
+    expect(e).toBeInstanceOf(OpenError);
+    expect(e.openCode).toBeUndefined();
+    // pty rejections are OpenErrors too (subclass of SessionError, same code)
+    const q = s.openPty({ cols: 1, rows: 1 });
+    open = await srv.nextCtrl("open");
+    srv.ctrl({ type: "open_error", channel: open.channel, message: "x", code: "weird" });
+    await expect(q).rejects.toMatchObject({ code: "open_rejected", openCode: "weird" });
+  });
+
+  it("refuses oversized repo/resume locally without sending anything", async () => {
+    const { s, srv } = await connected(["acp"]);
+    await expect(s.openAcp({ repo: "r".repeat(2049) })).rejects.toMatchObject({ openCode: "invalid_request" });
+    await expect(s.openAcp({ resume: "é".repeat(200) })).rejects.toMatchObject({ openCode: "invalid_request" });
+    await tick();
+    expect(srv.frames.filter((f) => f.type === FrameType.Ctrl && parseCtrl(f).type === "open")).toHaveLength(0);
+  });
+
+  it("writable: chunks arrive in order and stall at the window until credit arrives", async () => {
+    const { s, srv } = await connected(["acp"]);
+    const { bc } = await openAcp(s, srv);
+    const w = bc.writable.getWriter();
+    const total = INITIAL_WINDOW * 2;
+    const a = new Uint8Array(total / 2).fill(1);
+    const b = new Uint8Array(total / 2).fill(2);
+    let done = false;
+    const p = (async () => {
+      await w.write(a);
+      await w.write(b);
+      done = true;
+    })();
+    await tick();
+    const take = async () => {
+      const got: number[] = [];
+      while (srv.frames.some((f) => f.type === FrameType.DataBin)) {
+        got.push(...(await srv.next((f) => f.type === FrameType.DataBin)).payload);
+      }
+      return got;
+    };
+    const first = await take();
+    expect(first.length).toBe(INITIAL_WINDOW);
+    expect(done).toBe(false);
+    srv.send(windowFrame(bc.id, INITIAL_WINDOW));
+    await p;
+    await tick();
+    const rest = await take();
+    const all = [...first, ...rest];
+    expect(all.length).toBe(total);
+    expect(all.slice(0, total / 2).every((x) => x === 1)).toBe(true);
+    expect(all.slice(total / 2).every((x) => x === 2)).toBe(true);
+    // closing the writable half-closes with a normal CLOSE
+    await w.close();
+    const c = await srv.next((f) => f.type === FrameType.Close);
+    expect(closeInfo(c)).toEqual({ code: CloseCode.Normal, reason: "" });
+  });
+
+  it("writable rejects non-Uint8Array chunks", async () => {
+    const { s, srv } = await connected(["acp"]);
+    const { bc } = await openAcp(s, srv);
+    const w = bc.writable.getWriter();
+    await expect(w.write("text" as unknown as Uint8Array)).rejects.toBeInstanceOf(TypeError);
+  });
+
+  it("readable: delivers bytes in order and only returns credit as the consumer pulls", async () => {
+    const { s, srv } = await connected(["acp"]);
+    const { bc } = await openAcp(s, srv);
+    const windows = () => srv.frames.filter((f) => f.type === FrameType.Window).length;
+    // The peer fills the whole window; nothing is read yet.
+    const chunk = new Uint8Array(16 * 1024);
+    const n = INITIAL_WINDOW / chunk.length;
+    for (let i = 0; i < n; i++) srv.send(dataBin(bc.id, chunk.fill(i + 1).slice()));
+    await tick();
+    expect(windows()).toBe(0); // no consumer, no credit: backpressure reaches the peer
+    const r = bc.readable.getReader();
+    const seen: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const { value, done } = await r.read();
+      expect(done).toBe(false);
+      seen.push(value![0]!);
+    }
+    expect(seen).toEqual(Array.from({ length: n }, (_, i) => i + 1));
+    await tick();
+    expect(windows()).toBeGreaterThan(0);
+    // peer CLOSE ends the stream and resolves `closed` with the reason
+    srv.send(closeFrame(bc.id, CloseCode.Normal, "superseded"));
+    expect((await r.read()).done).toBe(true);
+    await expect(bc.closed).resolves.toEqual({ code: 0, reason: "superseded" });
+  });
+
+  it("round-trips 2 MiB each way under flow control with an echo peer", async () => {
+    const { s, srv } = await connected(["acp"]);
+    const { bc } = await openAcp(s, srv);
+    const size = 2 * 1024 * 1024;
+    const payload = new Uint8Array(size);
+    for (let i = 0; i < size; i++) payload[i] = (i * 31) & 0xff;
+    // Server: echo every data frame, granting credit like a real receiver.
+    let rx = 0;
+    let granted = 0;
+    let credit = INITIAL_WINDOW; // what the client currently lets the server send
+    const pump = (async () => {
+      while (rx < size) {
+        const f = await srv.next((f) => f.type === FrameType.DataBin);
+        while (credit < f.payload.length) {
+          credit += windowCredit(await srv.next((f) => f.type === FrameType.Window));
+        }
+        credit -= f.payload.length;
+        srv.send(dataBin(bc.id, f.payload));
+        rx += f.payload.length;
+        granted += f.payload.length;
+        if (granted >= INITIAL_WINDOW / 2) {
+          srv.send(windowFrame(bc.id, granted));
+          granted = 0;
+        }
+      }
+      srv.send(closeFrame(bc.id));
+    })();
+    const w = bc.writable.getWriter();
+    const writing = (async () => {
+      await w.write(payload);
+      await w.close();
+    })();
+    const out = new Uint8Array(size);
+    let off = 0;
+    for await (const part of bc.readable as unknown as AsyncIterable<Uint8Array>) {
+      out.set(part, off);
+      off += part.length;
+    }
+    await Promise.all([pump, writing]);
+    expect(off).toBe(size);
+    expect(Buffer.compare(out, payload)).toBe(0); // toEqual on 2 MiB is very slow
+  });
+
+  it("closed resolves on session end, and streams error", async () => {
+    const { s, srv } = await connected(["acp"]);
+    const { bc } = await openAcp(s, srv);
+    const r = bc.readable.getReader();
+    const pending = r.read().catch((e) => e);
+    await s.close();
+    expect((await bc.closed).code).toBeNull();
+    expect(await pending).toBeInstanceOf(SessionError);
+  });
+
+  it("cancelling the readable closes the channel and keeps returning credit", async () => {
+    const { s, srv } = await connected(["acp"]);
+    const { bc } = await openAcp(s, srv);
+    await bc.readable.cancel();
+    const c = await srv.next((f) => f.type === FrameType.Close);
+    expect(closeInfo(c).code).toBe(CloseCode.Cancelled);
+    const n = INITIAL_WINDOW / 16384;
+    for (let i = 0; i < n; i++) srv.send(dataBin(bc.id, new Uint8Array(16384)));
+    await tick();
+    expect(srv.frames.some((f) => f.type === FrameType.Window)).toBe(true);
+    expect(bc).toBeInstanceOf(ByteChannel);
+  });
+
+  it("decodes unknown kind / code / old shapes in CTRL", () => {
+    const f = ctrlFrame({ type: "open", channel: 1, kind: "quic", cols: 0, rows: 0 });
+    expect(parseCtrl(f)).toMatchObject({ kind: "quic" });
+    const g = ctrlFrame({ type: "open_error", channel: 1, message: "m", code: "brand_new" });
+    expect(parseCtrl(g)).toMatchObject({ code: "brand_new" });
   });
 });

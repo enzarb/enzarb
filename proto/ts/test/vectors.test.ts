@@ -62,6 +62,17 @@ describe("ctrl.json", () => {
   }
 });
 
+describe("ctrl_compat.json", () => {
+  const vectors = load("ctrl_compat.json");
+  it("has vectors", () => expect(vectors.length).toBeGreaterThan(0));
+  for (const v of vectors) {
+    it(`${v.name}: decodes and the shared fields agree`, () => {
+      const m = asCtrl(JSON.parse(v.payload));
+      expect(m).toMatchObject(v.expect);
+    });
+  }
+});
+
 describe("json_types.json", () => {
   for (const v of load("json_types.json")) {
     it(`${v.name}: round trips`, () => {

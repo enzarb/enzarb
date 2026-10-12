@@ -1,0 +1,65 @@
+[
+  {
+    "expect": {
+      "type": "welcome",
+      "version": 1
+    },
+    "name": "old_welcome",
+    "payload": "{\"type\":\"welcome\",\"version\":1}"
+  },
+  {
+    "expect": {
+      "type": "welcome",
+      "version": 1
+    },
+    "name": "welcome_features_null",
+    "payload": "{\"type\":\"welcome\",\"version\":1,\"features\":null}"
+  },
+  {
+    "expect": {
+      "features": [
+        "acp",
+        "future_thing"
+      ],
+      "type": "welcome",
+      "version": 1
+    },
+    "name": "welcome_unknown_feature",
+    "payload": "{\"type\":\"welcome\",\"version\":1,\"features\":[\"acp\",\"future_thing\"],\"x\":1}"
+  },
+  {
+    "expect": {
+      "channel": 1,
+      "kind": "pty",
+      "type": "open"
+    },
+    "name": "old_open_pty",
+    "payload": "{\"type\":\"open\",\"channel\":1,\"kind\":\"pty\",\"cols\":80,\"rows\":24}"
+  },
+  {
+    "expect": {
+      "channel": 5,
+      "type": "open"
+    },
+    "name": "open_unknown_kind",
+    "payload": "{\"type\":\"open\",\"channel\":5,\"kind\":\"quic\",\"cols\":0,\"rows\":0}"
+  },
+  {
+    "expect": {
+      "channel": 1,
+      "message": "nope",
+      "type": "open_error"
+    },
+    "name": "old_open_error",
+    "payload": "{\"type\":\"open_error\",\"channel\":1,\"message\":\"nope\"}"
+  },
+  {
+    "expect": {
+      "channel": 1,
+      "code": "brand_new",
+      "type": "open_error"
+    },
+    "name": "open_error_unknown_code",
+    "payload": "{\"type\":\"open_error\",\"channel\":1,\"message\":\"nope\",\"code\":\"brand_new\"}"
+  }
+]

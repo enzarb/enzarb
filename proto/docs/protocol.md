@@ -24,7 +24,7 @@ offset size field
 | Type | Channel | Payload |
 |---|---|---|
 | `CTRL` (1) | must be 0 | UTF-8 JSON object tagged by `"type"` (section 5) |
-| `DATA_BIN` (2) | != 0 | opaque bytes, length >= 1 (pty I/O) |
+| `DATA_BIN` (2) | != 0 | opaque bytes, length >= 1 (pty I/O; the `acp` NDJSON byte stream) |
 | `DATA_JSON` (3) | != 0 | UTF-8 JSON value, length >= 1 (e.g. transcript lines) |
 | `WINDOW` (4) | != 0 | `u32` credit in bytes, 1..=2^31-1 |
 | `CLOSE` (5) | != 0 | empty (code 0), or `u16` code + optional UTF-8 reason |
@@ -55,6 +55,7 @@ The codec does not parse `DATA_*` payloads; the channel's owner does.
 - `CLOSE` is a **half-close**: the sender will send no more data on the channel. The peer may keep sending until it also sends `CLOSE`.
 - A sender must not send data after its own `CLOSE`; a receiver treats data after the peer's `CLOSE` as a violation.
 - Closing a pty channel from the client side also terminates the process; when the process exits, the server sends `CLOSE` (reason is `exit:<code>` for a normal exit or `signal:<n>` when killed by signal `n`, e.g. `exit:0`, `signal:9`; clients must tolerate other text).
+- `acp` channels (section 12): the server closes with a reason such as `idle`, `superseded`, `shutdown` or `limit` (or `exit:<n>` / `signal:<n>` when the agent process ends). Receivers must tolerate any other reason text.
 - Data in flight when `CLOSE` arrives is still delivered in order (frames are ordered per connection).
 
 ## 5. CTRL messages
@@ -64,10 +65,10 @@ JSON objects with a `"type"` field, channel 0. Unknown fields are ignored; an un
 | Message | Direction | Fields |
 |---|---|---|
 | `hello` | client -> server | `versions: [u16]`, `client: "ui" \| "proxy" \| "executor"` |
-| `welcome` | server -> client | `version: u16` |
-| `open` | client -> server | `channel`, `kind: "pty"`, `cols`, `rows`, `command?: [string]` |
+| `welcome` | server -> client | `version: u16`, `features?: [string]` |
+| `open` | client -> server | `channel`, `kind: "pty" \| "acp"`, `cols`, `rows`, `command?: [string]`, `repo?: string`, `resume?: string` |
 | `opened` | server -> client | `channel` |
-| `open_error` | server -> client | `channel`, `message` |
+| `open_error` | server -> client | `channel`, `message`, `code?: string` |
 | `resize` | client -> server | `channel`, `cols`, `rows` |
 | `run_start` | client -> server | `run_id, repo_url, base_ref, branch, push, clone_token, prompt, timeout_secs, callback_url, callback_token, log_channel, deps_token?, npm_token?` |
 | `run_accepted` | server -> client | `run_id`, `state`, `existing: bool` |
@@ -90,10 +91,21 @@ Not a CTRL message; it is the JSON body sandbox-init POSTs to `callback_url`:
 
 `unsupported_version`, `unknown_message`, `protocol_violation`, `flow_control`, `unauthorized`, `unknown_channel`, `unknown_run`, `internal`, `unimplemented` (peer lacks the feature, e.g. `run_*` without a run manager). Unknown codes must be tolerated.
 
+### `welcome.features`, `open.repo`/`resume`, `open_error.code`
+
+Additive fields (protocol version stays 1). Encoders omit them when absent; `welcome.features` is also omitted when empty. Old peers ignore them and old payloads decode without them.
+
+- `welcome.features`: feature names the server supports. Defined: `acp` (the `acp` channel kind). Decoders drop non-string, empty and longer-than-64-byte entries and keep at most 64. Unknown features are ignored. A client sends something that depends on a feature **only after** `features` contains it.
+- `open.kind`: `pty` or `acp`. A decoder maps any other kind to an "unknown" value instead of failing; a server answers it with `open_error` (`unsupported_kind`) and keeps the connection. For `acp`, `cols`/`rows` are ignored but clients send `0`, and `command` is not used.
+- `open.repo` (at most 2048 bytes) and `open.resume` (at most 256 bytes) are `acp` routing hints. Longer values are refused with `open_error` (`invalid_request`) before the application sees them.
+- `open_error.code`: machine-readable reason. Known: `chat_disabled`, `chat_limit`, `no_credential`, `repo_not_cloned`, `unsupported_kind`, `invalid_request`. Unknown codes must be tolerated; `message` stays the human text.
+
+**Hazard: old proxies.** A proxy built before the `acp` kind decodes every browser frame and closes the whole websocket (1008) on a frame that fails to decode, which includes `open` with an unknown `kind`. That would also kill the terminal on the same socket. A sender must therefore not send `open{kind:"acp"}` unless the `welcome` it received listed `"acp"` in `features`; an old proxy never sends `features`. A proxy that forwards `welcome` should advertise the intersection of the sandbox's features and the ones it knows how to relay.
+
 ## 6. Handshake and version negotiation
 
 1. The client's first frame must be `CTRL hello`. Anything else: `error` (`protocol_violation`) and disconnect.
-2. The server picks the **highest version present in both** `versions` and its supported list and replies `welcome {version}`.
+2. The server picks the **highest version present in both** `versions` and its supported list and replies `welcome {version, features?}`.
 3. If there is no common version the server sends `error` (`unsupported_version`) and closes the websocket.
 4. No other frames (except `error`) are valid before `welcome`. A second `hello` is a violation.
 5. Version 1 is described here. Later versions are additive where possible; behavior differing by version is keyed on the negotiated value.
@@ -138,3 +150,13 @@ Regenerate with `ENZARB_UPDATE_VECTORS=1 cargo test -p enzarb-proto --test vecto
 ## 11. Open points
 
 Reconnect/resume of channels is out of scope for version 1 (see ADR-0003 and gaps.md).
+
+## 12. The `acp` channel kind
+
+An `acp` channel carries the [Agent Client Protocol](https://agentclientprotocol.com)'s native stdio framing: newline-delimited JSON-RPC (one JSON object per line, UTF-8, `\n` terminated) as an ordinary **byte stream on `DATA_BIN`**, using the normal per-channel credit window in both directions.
+
+- **Not one message per frame.** A single JSON-RPC message (tool output, a diff, replayed history) can be larger than the 256 KiB window or the 1 MiB frame cap, and `DATA_JSON` frames cannot be split. The stream may be split at any byte, including inside a line or a UTF-8 sequence; receivers buffer until `\n`. Senders should still prefer frames <= 16 KiB.
+- **Attacker-controlled input.** The protocol layer does not parse the stream. The endpoint that does (sandbox-init for chat) must cap the length of a single line (the chat design uses 4 MiB) and close with reason `limit` when it is exceeded, and must treat malformed JSON as that channel's problem only. The mux guarantees the frame cap (1 MiB), the credit window and the `repo`/`resume` limits above.
+- **Flow control.** The `@enzarb/proto` `openAcp()` readable pulls from the channel only when its consumer reads (high-water mark 0) and returns credit as it does, so a slow reader stalls the peer's writes end to end. Writes are sequential, so chunk order is preserved.
+- **Close.** `CLOSE` is a half-close as for any channel. Closing from the client side ends the agent. Server reasons: `idle`, `superseded`, `shutdown`, `limit`, `exit:<n>`, `signal:<n>`; tolerate others.
+- **Availability.** Use only after `welcome.features` contains `acp` (see the hazard above).

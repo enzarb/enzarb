@@ -149,6 +149,7 @@ async fn no_common_version_is_refused() {
         s,
         ServerOptions {
             supported_versions: vec![7],
+            ..Default::default()
         },
     );
     let client = Session::connect(c, ClientKind::Ui);
@@ -451,6 +452,8 @@ fn open_msg(channel: u32) -> Frame {
         cols: 80,
         rows: 24,
         command: None,
+        repo: None,
+        resume: None,
     })
     .unwrap()
 }

@@ -26,6 +26,9 @@ pub enum SessionError {
     NoFreeChannel,
     #[error("open rejected: {0}")]
     OpenRejected(String),
+    /// `open_error` that carried a `code` (see [`crate::open_error_code`]).
+    #[error("open rejected ({code}): {message}")]
+    OpenRejectedCode { code: String, message: String },
     #[error("peer error {code}: {message}")]
     Remote { code: String, message: String },
     #[error("operation requires the {0:?} role")]
@@ -40,6 +43,16 @@ pub enum SessionError {
     Frame(#[from] FrameError),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
+}
+
+impl SessionError {
+    /// The `open_error.code`, when this is a coded open rejection.
+    pub fn open_error_code(&self) -> Option<&str> {
+        match self {
+            Self::OpenRejectedCode { code, .. } => Some(code),
+            _ => None,
+        }
+    }
 }
 
 /// Errors during the hello/welcome handshake.

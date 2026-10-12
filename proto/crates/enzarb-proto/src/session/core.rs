@@ -13,11 +13,11 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio_tungstenite::tungstenite::Message;
 
 use super::channel::{Chan, ChannelHandle, lock};
-use super::handshake::{client_handshake, server_handshake};
+use super::handshake::{client_handshake_with_features, server_handshake_with_features};
 use super::{HandshakeError, SessionEnd, SessionError};
 use crate::{
-    ChannelKind, ClientKind, CredentialKind, Ctrl, Frame, FrameType, RunPhase, RunStart,
-    SUPPORTED_VERSIONS, close_code, error_code,
+    ChannelKind, ClientKind, CredentialKind, Ctrl, Frame, FrameType, MAX_REPO_LEN, MAX_RESUME_LEN,
+    RunPhase, RunStart, SUPPORTED_VERSIONS, close_code, error_code, open_error_code,
 };
 
 /// Which side of the protocol a session plays.
@@ -34,12 +34,16 @@ pub enum Role {
 pub struct ServerOptions {
     /// Versions this server speaks.
     pub supported_versions: Vec<u16>,
+    /// Features advertised in `welcome` (e.g. [`crate::feature::ACP`]).
+    /// Empty (the default) omits the field.
+    pub features: Vec<String>,
 }
 
 impl Default for ServerOptions {
     fn default() -> Self {
         Self {
             supported_versions: SUPPORTED_VERSIONS.to_vec(),
+            features: Vec::new(),
         }
     }
 }
@@ -116,6 +120,10 @@ pub struct OpenRequest {
     pub cols: u16,
     pub rows: u16,
     pub command: Option<Vec<String>>,
+    /// `acp`: repo URL hint (at most `MAX_REPO_LEN` bytes).
+    pub repo: Option<String>,
+    /// `acp`: ACP session id hint (at most `MAX_RESUME_LEN` bytes).
+    pub resume: Option<String>,
     decided: bool,
 }
 
@@ -140,7 +148,16 @@ impl OpenRequest {
     /// Refuse the open with `open_error`.
     pub fn reject(mut self, message: &str) {
         self.decided = true;
-        self.session.inner.reject_open(self.channel, message);
+        self.session.inner.reject_open(self.channel, message, None);
+    }
+
+    /// Refuse the open with `open_error` carrying a machine-readable `code`
+    /// (see [`crate::open_error_code`]).
+    pub fn reject_with_code(mut self, code: &str, message: &str) {
+        self.decided = true;
+        self.session
+            .inner
+            .reject_open(self.channel, message, Some(code));
     }
 }
 
@@ -149,7 +166,7 @@ impl Drop for OpenRequest {
         if !self.decided {
             self.session
                 .inner
-                .reject_open(self.channel, "open request was not handled");
+                .reject_open(self.channel, "open request was not handled", None);
         }
     }
 }
@@ -206,6 +223,7 @@ pub(crate) enum Out {
 pub(crate) struct Inner {
     role: Role,
     version: u16,
+    features: Vec<String>,
     peer: Option<ClientKind>,
     pub(crate) out: mpsc::UnboundedSender<Out>,
     pub(crate) state: Mutex<State>,
@@ -254,11 +272,12 @@ impl Inner {
         }
     }
 
-    fn reject_open(&self, channel: u32, message: &str) {
+    fn reject_open(&self, channel: u32, message: &str, code: Option<&str>) {
         lock(&self.state).reserved.remove(&channel);
         let _ = self.send_ctrl(&Ctrl::OpenError {
             channel,
             message: message.into(),
+            code: code.map(Into::into),
         });
     }
 
@@ -390,8 +409,28 @@ impl Inner {
                     cols,
                     rows,
                     command,
+                    repo,
+                    resume,
                 },
             ) => {
+                if kind == ChannelKind::Unknown {
+                    let _ = self.send_ctrl(&Ctrl::OpenError {
+                        channel,
+                        message: "unsupported channel kind".into(),
+                        code: Some(open_error_code::UNSUPPORTED_KIND.into()),
+                    });
+                    return;
+                }
+                if repo.as_ref().is_some_and(|r| r.len() > MAX_REPO_LEN)
+                    || resume.as_ref().is_some_and(|r| r.len() > MAX_RESUME_LEN)
+                {
+                    let _ = self.send_ctrl(&Ctrl::OpenError {
+                        channel,
+                        message: "repo or resume too long".into(),
+                        code: Some(open_error_code::INVALID_REQUEST.into()),
+                    });
+                    return;
+                }
                 let busy = {
                     let mut st = lock(&self.state);
                     if channel == 0 || st.in_use(channel) {
@@ -409,6 +448,7 @@ impl Inner {
                         } else {
                             "channel already in use".into()
                         },
+                        code: None,
                     });
                     return;
                 }
@@ -419,6 +459,8 @@ impl Inner {
                     cols,
                     rows,
                     command,
+                    repo,
+                    resume,
                     decided: false,
                 }));
             }
@@ -468,14 +510,25 @@ impl Inner {
                     ),
                 }
             }
-            (Role::Client, Ctrl::OpenError { channel, message }) => {
+            (
+                Role::Client,
+                Ctrl::OpenError {
+                    channel,
+                    message,
+                    code,
+                },
+            ) => {
                 let entry = {
                     let mut st = lock(&self.state);
                     st.reserved.remove(&channel);
                     st.pending_open.remove(&channel)
                 };
                 if let Some((_, tx)) = entry {
-                    let _ = tx.send(Err(SessionError::OpenRejected(message)));
+                    let err = match code {
+                        Some(code) => SessionError::OpenRejectedCode { code, message },
+                        None => SessionError::OpenRejected(message),
+                    };
+                    let _ = tx.send(Err(err));
                 }
             }
             (
@@ -759,7 +812,13 @@ impl Session {
         Self { inner }
     }
 
-    fn start<S, E>(ws: S, role: Role, version: u16, peer: Option<ClientKind>) -> (Self, Events)
+    fn start<S, E>(
+        ws: S,
+        role: Role,
+        version: u16,
+        features: Vec<String>,
+        peer: Option<ClientKind>,
+    ) -> (Self, Events)
     where
         S: Stream<Item = Result<Message, E>> + Sink<Message, Error = E> + Unpin + Send + 'static,
         E: Display + Send + 'static,
@@ -769,6 +828,7 @@ impl Session {
         let inner = Arc::new(Inner {
             role,
             version,
+            features,
             peer,
             out,
             state: Mutex::new(State::default()),
@@ -790,8 +850,8 @@ impl Session {
         S: Stream<Item = Result<Message, E>> + Sink<Message, Error = E> + Unpin + Send + 'static,
         E: Display + Send + 'static,
     {
-        let version = client_handshake(&mut ws, kind).await?;
-        Ok(Self::start(ws, Role::Client, version, None))
+        let w = client_handshake_with_features(&mut ws, kind).await?;
+        Ok(Self::start(ws, Role::Client, w.version, w.features, None))
     }
 
     /// Server side: wait for `hello`, negotiate, reply `welcome`, start the session.
@@ -803,11 +863,14 @@ impl Session {
         S: Stream<Item = Result<Message, E>> + Sink<Message, Error = E> + Unpin + Send + 'static,
         E: Display + Send + 'static,
     {
-        let hello = server_handshake(&mut ws, &opts.supported_versions).await?;
+        let hello =
+            server_handshake_with_features(&mut ws, &opts.supported_versions, &opts.features)
+                .await?;
         Ok(Self::start(
             ws,
             Role::Server,
             hello.version,
+            opts.features,
             Some(hello.client),
         ))
     }
@@ -819,6 +882,17 @@ impl Session {
     /// Negotiated protocol version.
     pub fn version(&self) -> u16 {
         self.inner.version
+    }
+
+    /// Features exchanged in `welcome`: what the server advertised (client
+    /// role, sanitized) or what this server advertised (server role).
+    pub fn features(&self) -> &[String] {
+        &self.inner.features
+    }
+
+    /// Whether `welcome` carried `feature` (e.g. [`crate::feature::ACP`]).
+    pub fn has_feature(&self, feature: &str) -> bool {
+        self.inner.features.iter().any(|f| f == feature)
     }
 
     /// (server) The `client` kind from `hello`.
@@ -894,6 +968,44 @@ impl Session {
         rows: u16,
         command: Option<Vec<String>>,
     ) -> Result<ChannelHandle, SessionError> {
+        self.open_kind(ChannelKind::Pty, cols, rows, command, None, None)
+            .await
+    }
+
+    /// (client) Open an `acp` channel (ACP's newline-delimited JSON-RPC as a
+    /// byte stream) and wait for `opened`. `cols`/`rows` are sent as 0.
+    ///
+    /// Only call this when [`has_feature`](Self::has_feature)`(feature::ACP)`
+    /// is true: an old proxy closes the whole socket on an unknown kind.
+    /// `repo` (at most `MAX_REPO_LEN` bytes) and `resume` (at most
+    /// `MAX_RESUME_LEN`) are rejected locally when longer. A refusal with a
+    /// code surfaces as [`SessionError::OpenRejectedCode`].
+    pub async fn open_acp(
+        &self,
+        repo: Option<String>,
+        resume: Option<String>,
+    ) -> Result<ChannelHandle, SessionError> {
+        if repo.as_ref().is_some_and(|r| r.len() > MAX_REPO_LEN)
+            || resume.as_ref().is_some_and(|r| r.len() > MAX_RESUME_LEN)
+        {
+            return Err(SessionError::OpenRejectedCode {
+                code: open_error_code::INVALID_REQUEST.into(),
+                message: "repo or resume too long".into(),
+            });
+        }
+        self.open_kind(ChannelKind::Acp, 0, 0, None, repo, resume)
+            .await
+    }
+
+    async fn open_kind(
+        &self,
+        kind: ChannelKind,
+        cols: u16,
+        rows: u16,
+        command: Option<Vec<String>>,
+        repo: Option<String>,
+        resume: Option<String>,
+    ) -> Result<ChannelHandle, SessionError> {
         self.require(Role::Client)?;
         let (tx, rx) = oneshot::channel();
         let (id, chan) = {
@@ -907,10 +1019,12 @@ impl Session {
         };
         self.inner.send_ctrl(&Ctrl::Open {
             channel: id,
-            kind: ChannelKind::Pty,
+            kind,
             cols,
             rows,
             command,
+            repo,
+            resume,
         })?;
         match rx.await {
             Ok(Ok(())) => Ok(ChannelHandle::new(chan)),

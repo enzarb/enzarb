@@ -13,6 +13,7 @@ use tokio_tungstenite::tungstenite::Message;
 use super::HandshakeError;
 use crate::{
     ClientKind, Ctrl, Frame, SUPPORTED_VERSIONS, error_code, frame::FrameType, negotiate_version,
+    sanitize_features,
 };
 
 /// Result of a successful server-side handshake.
@@ -88,6 +89,20 @@ where
     S: Stream<Item = Result<Message, E>> + Sink<Message, Error = E> + Unpin,
     E: Display,
 {
+    server_handshake_with_features(ws, supported, &[]).await
+}
+
+/// Like [`server_handshake`], advertising `features` in `welcome` (omitted
+/// from the wire when empty).
+pub async fn server_handshake_with_features<S, E>(
+    ws: &mut S,
+    supported: &[u16],
+    features: &[String],
+) -> Result<ServerHello, HandshakeError>
+where
+    S: Stream<Item = Result<Message, E>> + Sink<Message, Error = E> + Unpin,
+    E: Display,
+{
     let frame = match next_frame(ws).await {
         Ok(Some(f)) => f,
         Ok(None) => return Err(HandshakeError::Closed),
@@ -105,7 +120,8 @@ where
         let _ = reject(ws, error_code::UNSUPPORTED_VERSION, msg).await;
         return Err(HandshakeError::UnsupportedVersion { offered: versions });
     };
-    send_ctrl(ws, &Ctrl::Welcome { version }).await?;
+    let features = (!features.is_empty()).then(|| features.to_vec());
+    send_ctrl(ws, &Ctrl::Welcome { version, features }).await?;
     Ok(ServerHello {
         version,
         client,
@@ -116,6 +132,27 @@ where
 /// Client side: send `hello` offering [`SUPPORTED_VERSIONS`] and wait for
 /// `welcome`. Returns the negotiated version.
 pub async fn client_handshake<S, E>(ws: &mut S, kind: ClientKind) -> Result<u16, HandshakeError>
+where
+    S: Stream<Item = Result<Message, E>> + Sink<Message, Error = E> + Unpin,
+    E: Display,
+{
+    Ok(client_handshake_with_features(ws, kind).await?.version)
+}
+
+/// What a client learns from `welcome`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientWelcome {
+    pub version: u16,
+    /// The server's advertised features, sanitized with
+    /// [`sanitize_features`](crate::sanitize_features). Empty when absent.
+    pub features: Vec<String>,
+}
+
+/// Like [`client_handshake`] but also returns `welcome.features`.
+pub async fn client_handshake_with_features<S, E>(
+    ws: &mut S,
+    kind: ClientKind,
+) -> Result<ClientWelcome, HandshakeError>
 where
     S: Stream<Item = Result<Message, E>> + Sink<Message, Error = E> + Unpin,
     E: Display,
@@ -134,14 +171,17 @@ where
         Err(e) => return Err(HandshakeError::Protocol(e)),
     };
     match (frame.frame_type, frame.ctrl_message()) {
-        (FrameType::Ctrl, Ok(Ctrl::Welcome { version }))
+        (FrameType::Ctrl, Ok(Ctrl::Welcome { version, features }))
             if SUPPORTED_VERSIONS.contains(&version) =>
         {
-            Ok(version)
+            Ok(ClientWelcome {
+                version,
+                features: sanitize_features(features),
+            })
         }
-        (FrameType::Ctrl, Ok(Ctrl::Welcome { version })) => Err(HandshakeError::Protocol(format!(
-            "server chose unsupported version {version}"
-        ))),
+        (FrameType::Ctrl, Ok(Ctrl::Welcome { version, .. })) => Err(HandshakeError::Protocol(
+            format!("server chose unsupported version {version}"),
+        )),
         (FrameType::Ctrl, Ok(Ctrl::Error { code, message, .. })) => {
             let _ = ws.close().await;
             Err(HandshakeError::Rejected { code, message })

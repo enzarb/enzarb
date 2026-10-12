@@ -4,7 +4,51 @@
 import { type Frame, FrameError, ctrlJson } from "./frame.js";
 
 export type ClientKind = "ui" | "proxy" | "executor";
-export type ChannelKind = "pty";
+/**
+ * Channel kinds. `acp` carries ACP's newline-delimited JSON-RPC as a byte stream. Only send it after
+ * `welcome.features` contained `"acp"` (an old proxy closes the socket on an unknown kind). Received
+ * kinds may be any string, so the type stays open.
+ */
+export type ChannelKind = "pty" | "acp" | (string & {});
+
+/** Feature names advertised in `welcome.features`. */
+export const Feature = { Acp: "acp" } as const;
+/** Decoders keep at most this many features and drop any longer than `MAX_FEATURE_LEN` bytes. */
+export const MAX_FEATURES = 64;
+export const MAX_FEATURE_LEN = 64;
+/** Limits for `open.repo` / `open.resume` (bytes); longer values are refused with `invalid_request`. */
+export const MAX_REPO_LEN = 2048;
+export const MAX_RESUME_LEN = 256;
+
+/** Standard `open_error.code` values. Unknown codes must be tolerated. */
+export const OpenErrorCode = {
+  ChatDisabled: "chat_disabled",
+  ChatLimit: "chat_limit",
+  NoCredential: "no_credential",
+  RepoNotCloned: "repo_not_cloned",
+  UnsupportedKind: "unsupported_kind",
+  InvalidRequest: "invalid_request",
+} as const;
+
+/** Typical CLOSE reasons on an `acp` channel (besides `exit:<n>` / `signal:<n>`); tolerate any text. */
+export const CloseReason = {
+  Idle: "idle",
+  Superseded: "superseded",
+  Shutdown: "shutdown",
+  Limit: "limit",
+} as const;
+
+/** Drop non-strings, empty and oversized entries, and cap the count of a peer-supplied feature list. */
+export function sanitizeFeatures(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  const out: string[] = [];
+  for (const f of v) {
+    if (typeof f !== "string" || f.length === 0 || new TextEncoder().encode(f).length > MAX_FEATURE_LEN) continue;
+    out.push(f);
+    if (out.length >= MAX_FEATURES) break;
+  }
+  return out;
+}
 export type CredentialKind = "claude_oauth";
 export type RunPhase = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 export type RunOutcome = "succeeded" | "failed" | "cancelled";
@@ -54,10 +98,10 @@ export interface RunFinished {
 
 export type Ctrl =
   | { type: "hello"; versions: number[]; client: ClientKind }
-  | { type: "welcome"; version: number }
-  | { type: "open"; channel: number; kind: ChannelKind; cols: number; rows: number; command?: string[] | null }
+  | { type: "welcome"; version: number; features?: string[] | null }
+  | { type: "open"; channel: number; kind: ChannelKind; cols: number; rows: number; command?: string[] | null; repo?: string | null; resume?: string | null }
   | { type: "opened"; channel: number }
-  | { type: "open_error"; channel: number; message: string }
+  | { type: "open_error"; channel: number; message: string; code?: string | null }
   | { type: "resize"; channel: number; cols: number; rows: number }
   | ({ type: "run_start" } & RunStartFields)
   | { type: "run_accepted"; run_id: string; state: RunPhase; existing: boolean }

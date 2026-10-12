@@ -6,10 +6,15 @@ import {
   ErrorCode,
   type RunPhase,
   type RunStartFields,
+  MAX_REPO_LEN,
+  MAX_RESUME_LEN,
+  OpenErrorCode,
   UnknownCtrlType,
   parseCtrl,
+  sanitizeFeatures,
 } from "./ctrl.js";
-import { SessionError, type SessionEnd } from "./errors.js";
+import { ByteChannel } from "./bytes.js";
+import { OpenError, SessionError, type SessionEnd } from "./errors.js";
 import {
   CloseCode,
   type Frame,
@@ -104,6 +109,8 @@ const ATTRIBUTABLE = new Set<string>([
 export class Session implements ChannelHost {
   /** Negotiated protocol version (valid once `connect` resolved). */
   version = 0;
+  /** Features from `welcome` (sanitized; empty when the server sent none). Valid once `connect` resolved. */
+  features: ReadonlySet<string> = new Set();
 
   private channels = new Map<number, Channel>();
   private reserved = new Set<number>();
@@ -294,6 +301,34 @@ export class Session implements ChannelHost {
     return p;
   }
 
+  /**
+   * Open an `acp` channel and wait for `opened`. Rejects with an `OpenError` (see `openCode`).
+   *
+   * Only call this when `session.features.has("acp")`: an old proxy closes the whole socket (1008) on an
+   * unknown `open.kind`. `repo` / `resume` longer than `MAX_REPO_LEN` / `MAX_RESUME_LEN` bytes are refused locally.
+   * The result's streams carry ACP's newline-delimited JSON-RPC as raw bytes; pass them to
+   * `ndJsonStream(byteChannel.writable, byteChannel.readable)` from `@agentclientprotocol/sdk`.
+   */
+  async openAcp(opts: { repo?: string; resume?: string } = {}): Promise<ByteChannel> {
+    this.alive();
+    const enc = new TextEncoder();
+    if (
+      (opts.repo !== undefined && enc.encode(opts.repo).length > MAX_REPO_LEN) ||
+      (opts.resume !== undefined && enc.encode(opts.resume).length > MAX_RESUME_LEN)
+    ) {
+      throw new OpenError("open rejected: repo or resume too long", OpenErrorCode.InvalidRequest, "repo or resume too long");
+    }
+    const id = this.alloc();
+    const ch = new Channel(id, this);
+    this.reserved.add(id);
+    const p = new Promise<Channel>((resolve, reject) => this.pendingOpen.set(id, { ch, resolve, reject }));
+    const m: Ctrl = { type: "open", channel: id, kind: "acp", cols: 0, rows: 0 };
+    if (opts.repo !== undefined) m.repo = opts.repo;
+    if (opts.resume !== undefined) m.resume = opts.resume;
+    this.sendCtrl(m);
+    return new ByteChannel(await p);
+  }
+
   /** Ask the server to resize a pty channel (no reply). */
   resize(channel: Channel | number, cols: number, rows: number): void {
     this.send({ type: "resize", channel: typeof channel === "number" ? channel : channel.id, cols, rows });
@@ -374,6 +409,7 @@ export class Session implements ChannelHost {
     clearTimeout(hs.timer);
     if (m?.type === "welcome" && (this.opts.versions ?? [1]).includes(m.version)) {
       this.version = m.version;
+      this.features = new Set(sanitizeFeatures(m.features));
       this.handshake = null;
       hs.resolve();
     } else if (m?.type === "error") {
@@ -483,7 +519,7 @@ export class Session implements ChannelHost {
         this.reserved.delete(m.channel);
         if (p) {
           this.pendingOpen.delete(m.channel);
-          p.reject(new SessionError("open_rejected", `open rejected: ${m.message}`, { remote: { code: "open_error", message: m.message } }));
+          p.reject(new OpenError(`open rejected: ${m.message}`, typeof m.code === "string" ? m.code : undefined, m.message));
         }
         return;
       }

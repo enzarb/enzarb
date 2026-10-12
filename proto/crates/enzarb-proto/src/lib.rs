@@ -16,8 +16,9 @@ pub mod frame;
 pub mod session;
 
 pub use ctrl::{
-    ChannelKind, ClientKind, CredentialKind, Ctrl, RunFinished, RunOutcome, RunPhase, RunStart,
-    error_code,
+    ChannelKind, ClientKind, CredentialKind, Ctrl, MAX_REPO_LEN, MAX_RESUME_LEN, RunFinished,
+    RunOutcome, RunPhase, RunStart, close_reason, error_code, feature, open_error_code,
+    sanitize_features,
 };
 pub use flow::{FlowControl, FlowError};
 pub use frame::{

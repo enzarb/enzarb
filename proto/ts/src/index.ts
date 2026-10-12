@@ -2,7 +2,8 @@ export * from "./frame.js";
 export * from "./ctrl.js";
 export * from "./flow.js";
 export * from "./errors.js";
-export { Channel, SEND_CHUNK, type ChannelData, type ChannelHost } from "./channel.js";
+export { Channel, SEND_CHUNK, type ChannelClosed, type ChannelData, type ChannelHost } from "./channel.js";
+export { ByteChannel } from "./bytes.js";
 export {
   Session,
   type ConnectOptions,

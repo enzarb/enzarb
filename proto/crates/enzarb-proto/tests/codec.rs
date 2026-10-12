@@ -98,7 +98,13 @@ fn unknown_ctrl_type_and_extra_fields() {
         0,
         &br#"{"type":"welcome","version":1,"future":true}"#[..],
     );
-    assert_eq!(f.ctrl_message().unwrap(), Ctrl::Welcome { version: 1 });
+    assert_eq!(
+        f.ctrl_message().unwrap(),
+        Ctrl::Welcome {
+            version: 1,
+            features: None
+        }
+    );
     // optional fields accept explicit null
     let f = Frame::new(
         FrameType::Ctrl,
@@ -129,7 +135,13 @@ fn arb_frame() -> impl Strategy<Value = Frame> {
         (1u32.., data).prop_map(|(c, d)| Frame::new(FrameType::DataJson, c, d)),
         (1u32.., 1..=MAX_CREDIT).prop_map(|(c, n)| Frame::window(c, n)),
         (1u32.., any::<u16>(), "[a-z ]{0,20}").prop_map(|(c, code, r)| Frame::close(c, code, &r)),
-        Just(Frame::ctrl(&Ctrl::Welcome { version: 1 }).unwrap()),
+        Just(
+            Frame::ctrl(&Ctrl::Welcome {
+                version: 1,
+                features: None
+            })
+            .unwrap()
+        ),
     ]
 }
 
@@ -177,7 +189,7 @@ proptest! {
         for m in [
             Ctrl::RunState { run_id: run_id.clone(), state: RunPhase::Failed, exit_code: exit, summary },
             Ctrl::Resize { channel: ch, cols, rows },
-            Ctrl::Open { channel: ch, kind: ChannelKind::Pty, cols, rows, command: Some(vec![run_id.clone()]) },
+            Ctrl::Open { channel: ch, kind: ChannelKind::Pty, cols, rows, command: Some(vec![run_id.clone()]), repo: None, resume: None },
         ] {
             let f = Frame::ctrl(&m).unwrap();
             let back = Frame::from_bytes(f.to_bytes().unwrap()).unwrap();

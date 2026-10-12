@@ -29,6 +29,14 @@ export interface ChannelHost {
   forget(ch: Channel): void;
 }
 
+/** How a channel ended, as seen by `Channel.closed`. */
+export interface ChannelClosed {
+  /** The peer's CLOSE code, or null when the channel ended without one (abort, session end). */
+  code: number | null;
+  /** The peer's CLOSE reason (e.g. `idle`, `superseded`, `exit:0`), or a local description. */
+  reason: string;
+}
+
 type Fail = { type: "session"; end: SessionEnd } | { type: "aborted"; reason: string };
 
 /**
@@ -44,6 +52,13 @@ export class Channel implements AsyncIterable<ChannelData> {
   private sendQueue: Promise<void> = Promise.resolve();
   private failed: Fail | null = null;
   private remoteClose: CloseInfo | null = null;
+  private resolveClosed!: (c: ChannelClosed) => void;
+
+  /**
+   * Resolves (never rejects) when the peer's CLOSE arrives, the channel is aborted, or the session ends.
+   * Data received before the CLOSE may still be unread.
+   */
+  readonly closed: Promise<ChannelClosed> = new Promise((r) => (this.resolveClosed = r));
 
   /** @internal */
   constructor(
@@ -209,6 +224,7 @@ export class Channel implements AsyncIterable<ChannelData> {
   _onClose(info: CloseInfo): void {
     this.flow.onCloseRemote();
     this.remoteClose = info;
+    this.resolveClosed({ code: info.code, reason: info.reason });
     this.wakeReaders();
     this.wakeCredit();
     if (this.flow.isClosed) this.host.forget(this);
@@ -221,6 +237,7 @@ export class Channel implements AsyncIterable<ChannelData> {
       this.host.sendFrame(closeFrame(this.id, CloseCode.ProtocolError, reason));
     }
     this.failed = { type: "aborted", reason };
+    this.resolveClosed({ code: null, reason: `aborted: ${reason}` });
     this.inbox = [];
     this.wakeReaders();
     this.wakeCredit();
@@ -230,6 +247,7 @@ export class Channel implements AsyncIterable<ChannelData> {
   /** @internal The session ended. */
   _fail(end: SessionEnd): void {
     this.failed ??= { type: "session", end };
+    this.resolveClosed({ code: null, reason: `session ended: ${end.kind}${end.reason ? ` (${end.reason})` : ""}` });
     this.wakeReaders();
     this.wakeCredit();
   }
