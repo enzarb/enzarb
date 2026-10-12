@@ -141,7 +141,10 @@ impl Executor {
 
         let deps_token = if matches!(
             kind,
-            JobKind::AgentImplement | JobKind::AgentAddressComments | JobKind::AgentReview
+            JobKind::AgentImplement
+                | JobKind::AgentAddressComments
+                | JobKind::AgentResolveConflicts
+                | JobKind::AgentReview
         ) {
             self.mint_deps_token(job, project, &input.repo, connector)
                 .await?

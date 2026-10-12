@@ -32,6 +32,10 @@ pub enum CrPhase {
     /// Approved, CI green and mergeable on the current head: waiting for a human to merge.
     ReadyToMerge,
     AddressingComments,
+    /// The base branch is being merged into the source branch.
+    ResolvingConflicts,
+    /// The conflict needs a human decision; not an engine error, so not `Failed`.
+    ConflictParked,
     /// The user's merge was requested; waiting for the `merge_change_request` job.
     Merging,
     Merged,
@@ -84,6 +88,10 @@ pub struct CrData {
     pub head_sha: String,
     /// Commit the last review covered; a `ChangeRequestUpdated` for it is a duplicate.
     pub reviewed_sha: String,
+    /// Latest base-branch head reported by a merge-readiness check.
+    pub base_sha: String,
+    /// Base head of the last automatic conflict resolution; at most one attempt per SHA.
+    pub resolve_attempted_base_sha: String,
     pub trigger_comment_id: Option<u64>,
     pub trigger_comment_kind: CommentKind,
     pub trigger_text: String,
@@ -307,6 +315,19 @@ fn start_address(ctx: &Ctx, fx: &mut Fx, d: &CrData) {
     );
 }
 
+fn start_resolve(ctx: &Ctx, fx: &mut Fx, d: &CrData) {
+    fx.agent(
+        JobKind::AgentResolveConflicts,
+        &target(ctx, d),
+        AgentSpec {
+            base_ref: d.head_ref.clone(),
+            branch: d.head_ref.clone(),
+            push: true,
+        },
+        prompt_ctx(ctx, d),
+    );
+}
+
 fn begin(ctx: &Ctx, ev: &EngineEvent, phase: CrPhase, d: CrData, note: &str) -> Transition {
     let mut fx = Fx::new(ctx, ev);
     fx.received(&target(ctx, &d));
@@ -314,6 +335,7 @@ fn begin(ctx: &Ctx, ev: &EngineEvent, phase: CrPhase, d: CrData, note: &str) -> 
     match phase {
         CrPhase::Reviewing => start_review(ctx, &mut fx, &d),
         CrPhase::AddressingComments => start_address(ctx, &mut fx, &d),
+        CrPhase::ResolvingConflicts => start_resolve(ctx, &mut fx, &d),
         _ => unreachable!("begin is only used for agent phases"),
     }
     Transition::to(st(phase, d), fx.finish(), note)
@@ -439,11 +461,12 @@ pub(super) fn step(ctx: &Ctx, s: &CrState, ev: &EngineEvent) -> Transition {
             }
         }
         EventPayload::TimerFired { job_id: Some(_) }
-            if matches!(s.phase, Reviewing | AddressingComments) =>
+            if matches!(s.phase, Reviewing | AddressingComments | ResolvingConflicts) =>
         {
             fail(ctx, ev, s, "the agent run exceeded its deadline", true)
         }
         EventPayload::TimerFired { .. } => Transition::reject(&state, "no timer expected"),
+        EventPayload::Unmergeable { base_sha } => unmergeable(ctx, ev, s, &state, base_sha),
         EventPayload::Connector(e) => match e.event_type {
             EventType::ChangeRequestOpened => reopened(ctx, ev, s, &state),
             EventType::ChangeRequestUpdated => updated(ctx, ev, s, &state),
@@ -452,7 +475,10 @@ pub(super) fn step(ctx: &Ctx, s: &CrState, ev: &EngineEvent) -> Transition {
             EventType::CommentAdded | EventType::Mentioned => {
                 let c = ev.comment_like().expect("comment-like");
                 // An explicit @mention by a writer resumes a Failed item like the UI retry.
-                if c.mention && s.phase == CrPhase::Failed && ctx.can_write() {
+                if c.mention
+                    && matches!(s.phase, CrPhase::Failed | CrPhase::ConflictParked)
+                    && ctx.can_write()
+                {
                     return retry(ctx, ev, s, &state);
                 }
                 feedback(
@@ -483,12 +509,59 @@ fn reopened(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowState) -> 
     begin(ctx, ev, CrPhase::Reviewing, d, "reopened")
 }
 
+/// A merge-readiness check found the change request unmergeable against `base_sha`.
+fn unmergeable(
+    ctx: &Ctx,
+    ev: &EngineEvent,
+    s: &CrState,
+    state: &WorkflowState,
+    base_sha: &str,
+) -> Transition {
+    use CrPhase::*;
+    if !s.data.author.eq_ignore_ascii_case(&ctx.bot_login) {
+        return Transition::reject(state, "not a change request opened by enzarb");
+    }
+    if base_sha.is_empty() {
+        return Transition::reject(state, "base commit unknown");
+    }
+    match s.phase {
+        AwaitingChanges | ReadyToMerge | ConflictParked => {
+            // The cap lives in state: job idempotency keys derive from the event id.
+            if s.data.resolve_attempted_base_sha == base_sha {
+                return Transition::reject(state, "already attempted for this base commit");
+            }
+            let mut d = s.data.clone();
+            d.base_sha = base_sha.to_string();
+            d.resolve_attempted_base_sha = base_sha.to_string();
+            d.trigger_comment_id = None;
+            d.trigger_comment_kind = CommentKind::default();
+            d.trigger_text.clear();
+            begin(ctx, ev, ResolvingConflicts, d, "unmergeable")
+        }
+        ResolvingConflicts | AddressingComments | Reviewing => {
+            // Remember the newer base; a later readiness check decides on a new attempt.
+            if s.data.base_sha == base_sha {
+                return Transition::reject(state, "base commit already recorded");
+            }
+            let mut d = s.data.clone();
+            d.base_sha = base_sha.to_string();
+            Transition::to(
+                st(s.phase, d),
+                Vec::new(),
+                "base commit recorded during a run",
+            )
+        }
+        Merging => Transition::reject(state, "busy: a merge is running"),
+        Merged | Closed | Failed | Cancelled => Transition::reject(state, "no longer active"),
+    }
+}
+
 fn updated(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowState) -> Transition {
     use CrPhase::*;
     let item = &ev.connector().expect("connector").data.item;
     let sha = item.head_sha.clone().unwrap_or_default();
     match s.phase {
-        AwaitingChanges | ReadyToMerge | Reviewing => {
+        AwaitingChanges | ReadyToMerge | Reviewing | ConflictParked => {
             let under_review = s.phase == Reviewing && sha == s.data.head_sha;
             if (sha == s.data.reviewed_sha || under_review) && !sha.is_empty() {
                 return Transition::reject(state, "duplicate: this commit was already reviewed");
@@ -499,6 +572,8 @@ fn updated(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowState) -> T
             } else {
                 d.base_ref
             };
+            d.base_sha = s.data.base_sha.clone();
+            d.resolve_attempted_base_sha = s.data.resolve_attempted_base_sha.clone();
             // A review already running is for an older commit: restart it.
             let mut t = begin(ctx, ev, Reviewing, d, "new commits");
             if s.phase == Reviewing {
@@ -506,15 +581,11 @@ fn updated(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowState) -> T
             }
             t
         }
-        AddressingComments => {
+        AddressingComments | ResolvingConflicts => {
             // Most likely the agent's own push; it is reviewed when the job finishes.
             let mut d = s.data.clone();
             set_head(&mut d, sha);
-            Transition::to(
-                st(AddressingComments, d),
-                Vec::new(),
-                "new commits during a run",
-            )
+            Transition::to(st(s.phase, d), Vec::new(), "new commits during a run")
         }
         Merging => {
             // The merge is pinned to the head it was requested for; if this is a different
@@ -584,7 +655,7 @@ fn feedback(
             d.trigger_text = text.to_string();
             begin(ctx, ev, AddressingComments, d, "feedback received")
         }
-        AddressingComments => {
+        AddressingComments | ResolvingConflicts => {
             let mut d = s.data.clone();
             d.pending = Some(Pending {
                 comment_id: comment.map(|c| c.0),
@@ -596,12 +667,12 @@ fn feedback(
                 comment.map(|c| c.0),
                 comment.map(|c| c.1).unwrap_or_default(),
             ));
-            Transition::to(
-                st(AddressingComments, d),
-                fx.finish(),
-                "queued for the next round",
-            )
+            Transition::to(st(s.phase, d), fx.finish(), "queued for the next round")
         }
+        ConflictParked => Transition::reject(
+            state,
+            "parked on a merge conflict: mention enzarb to retry or resolve it by hand",
+        ),
         Reviewing => Transition::reject(state, "busy: a review is running"),
         Merging => Transition::reject(state, "busy: a merge is running"),
         Merged | Closed | Failed | Cancelled => Transition::reject(state, "no longer active"),
@@ -612,13 +683,22 @@ fn retry(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowState) -> Tra
     if !ctx.can_write() {
         return Transition::reject(state, "retry requires write access");
     }
-    if s.phase != CrPhase::Failed {
+    if !matches!(s.phase, CrPhase::Failed | CrPhase::ConflictParked) {
         return Transition::reject(state, "nothing to retry");
     }
     let mut d = s.data.clone();
     d.error.clear();
-    let phase = d.failed_phase.take().unwrap_or(CrPhase::Reviewing);
+    let phase = if s.phase == CrPhase::ConflictParked {
+        CrPhase::ResolvingConflicts
+    } else {
+        d.failed_phase.take().unwrap_or(CrPhase::Reviewing)
+    };
     match phase {
+        CrPhase::ResolvingConflicts => {
+            d.trigger_comment_id = None;
+            d.trigger_comment_kind = CommentKind::default();
+            begin(ctx, ev, CrPhase::ResolvingConflicts, d, "retry")
+        }
         CrPhase::AddressingComments => {
             d.trigger_comment_id = None;
             d.trigger_comment_kind = CommentKind::default();
@@ -642,6 +722,7 @@ fn awaited(phase: CrPhase) -> Option<JobKind> {
     match phase {
         CrPhase::Reviewing => Some(JobKind::AgentReview),
         CrPhase::AddressingComments => Some(JobKind::AgentAddressComments),
+        CrPhase::ResolvingConflicts => Some(JobKind::AgentResolveConflicts),
         CrPhase::Merging => Some(JobKind::MergeChangeRequest),
         _ => None,
     }
@@ -660,7 +741,8 @@ fn ci_changed(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowState) -
             return Transition::reject(state, "no longer active");
         }
         Merging => return Transition::reject(state, "busy: a merge is running"),
-        Reviewing | AwaitingChanges | ReadyToMerge | AddressingComments => {}
+        Reviewing | AwaitingChanges | ReadyToMerge | AddressingComments | ResolvingConflicts
+        | ConflictParked => {}
     }
     if ci.head_sha.is_empty() || ci.head_sha != s.data.head_sha {
         return Transition::reject(state, "ci result is for another commit");
@@ -869,6 +951,45 @@ fn job_succeeded(
             &format!("could not address the comments: {}", out.body),
             false,
         ),
+        (ResolvingConflicts, Decision::Done) => {
+            fx.comment(out.body);
+            fx.done(&tgt);
+            if let Some(sha) = output
+                .get("head_sha")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                d.head_sha = sha.to_string();
+            }
+            d.trigger_comment_id = None;
+            d.trigger_comment_kind = CommentKind::default();
+            d.trigger_text.clear();
+            match d.pending.take() {
+                Some(p) => {
+                    // Feedback queued during the merge; the merged head is reviewed afterwards.
+                    d.trigger_comment_id = p.comment_id;
+                    d.trigger_comment_kind = p.comment_kind;
+                    d.trigger_text = p.text;
+                    start_address(ctx, &mut fx, &d);
+                    Transition::to(st(AddressingComments, d), fx.finish(), "next round")
+                }
+                // `reviewed_sha` is left alone: the merge commit is reviewed like any new head.
+                None if d.head_sha != d.reviewed_sha => {
+                    start_review(ctx, &mut fx, &d);
+                    Transition::to(st(Reviewing, d), fx.finish(), "conflicts resolved")
+                }
+                None => Transition::to(st(AwaitingChanges, d), fx.finish(), "nothing to merge"),
+            }
+        }
+        (ResolvingConflicts, Decision::Blocked) => {
+            fx.comment(format!(
+                "enzarb could not resolve the merge conflict with `{}` on its own and left this change request for a person.\n\n{}\n\nMention enzarb to try again after the conflict is resolved or the base moves on.",
+                d.base_ref, out.body
+            ));
+            fx.done(&tgt);
+            d.pending = None;
+            Transition::to(st(ConflictParked, d), fx.finish(), "conflict parked")
+        }
         _ => unreachable!("decision validated against the job kind"),
     }
 }

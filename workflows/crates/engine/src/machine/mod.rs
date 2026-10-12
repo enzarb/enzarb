@@ -78,6 +78,7 @@ pub enum JobKind {
     AgentImplement,
     AgentReview,
     AgentAddressComments,
+    AgentResolveConflicts,
     AgentTask,
     CheckMergeReadiness,
     MergeChangeRequest,
@@ -94,6 +95,7 @@ impl JobKind {
             JobKind::AgentImplement => "agent_implement",
             JobKind::AgentReview => "agent_review",
             JobKind::AgentAddressComments => "agent_address_comments",
+            JobKind::AgentResolveConflicts => "agent_resolve_conflicts",
             JobKind::AgentTask => "agent_task",
             JobKind::CheckMergeReadiness => "check_merge_readiness",
             JobKind::MergeChangeRequest => "merge_change_request",
@@ -152,6 +154,10 @@ pub enum EventPayload {
     /// Event type `TimerFired`, payload `{job_id?}`. Without `job_id` the work
     /// item's `wake_at` is due; with it, that running job passed its deadline.
     TimerFired { job_id: Option<i64> },
+    /// Event type `MergeConflictDetected`, payload `{base_sha}`: a merge-readiness
+    /// check (`get_merge_readiness` or a `CiStatusChanged` re-check) found the
+    /// change request unmergeable against the base head `base_sha`.
+    Unmergeable { base_sha: String },
 }
 
 /// One input to the engine. `id` is unique per event (the `events.id` as text) and
@@ -221,6 +227,17 @@ impl EngineEvent {
                 }
                 let p: P = serde_json::from_value(payload.clone()).map_err(bad)?;
                 EventPayload::TimerFired { job_id: p.job_id }
+            }
+            "MergeConflictDetected" => {
+                #[derive(Deserialize)]
+                struct P {
+                    #[serde(default)]
+                    base_sha: String,
+                }
+                let p: P = serde_json::from_value(payload.clone()).map_err(bad)?;
+                EventPayload::Unmergeable {
+                    base_sha: p.base_sha,
+                }
             }
             "CancelRequested" | "RetryRequested" | "MergeRequested" => {
                 EventPayload::Ui(serde_json::from_value(payload.clone()).map_err(bad)?)

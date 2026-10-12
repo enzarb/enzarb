@@ -21,6 +21,7 @@
 //! | `agent_implement` | `done` (body: pull request description), `blocked` (body: why) |
 //! | `agent_review` | `approve`, `request_changes`, `comment` (body: the review) |
 //! | `agent_address_comments` | `done` (body: what changed), `blocked` (body: why) |
+//! | `agent_resolve_conflicts` | `done` (body: how it was resolved), `blocked` (body: the conflict) |
 //! | `agent_task` | `reply`, `blocked` (body: the reply to post) |
 //!
 //! A missing block, invalid JSON, an unknown decision or an empty `body` fails the
@@ -36,6 +37,7 @@ pub const PLAN: &str = include_str!("../../prompts/plan.md");
 pub const IMPLEMENT: &str = include_str!("../../prompts/implement.md");
 pub const REVIEW: &str = include_str!("../../prompts/review.md");
 pub const ADDRESS_COMMENTS: &str = include_str!("../../prompts/address_comments.md");
+pub const RESOLVE_CONFLICTS: &str = include_str!("../../prompts/resolve_conflicts.md");
 pub const TASK: &str = include_str!("../../prompts/task.md");
 
 /// Values for the `{placeholders}` in the templates. Empty values render as
@@ -113,6 +115,7 @@ pub fn template(kind: JobKind) -> Option<&'static str> {
         JobKind::AgentImplement => IMPLEMENT,
         JobKind::AgentReview => REVIEW,
         JobKind::AgentAddressComments => ADDRESS_COMMENTS,
+        JobKind::AgentResolveConflicts => RESOLVE_CONFLICTS,
         JobKind::AgentTask => TASK,
         _ => return None,
     })
@@ -253,7 +256,9 @@ impl Decision {
         match kind {
             JobKind::AgentTriage => &[Questions, Ready, Duplicate],
             JobKind::AgentPlan => &[Plan],
-            JobKind::AgentImplement | JobKind::AgentAddressComments => &[Done, Blocked],
+            JobKind::AgentImplement
+            | JobKind::AgentAddressComments
+            | JobKind::AgentResolveConflicts => &[Done, Blocked],
             JobKind::AgentReview => &[Approve, RequestChanges, Comment],
             JobKind::AgentTask => &[Reply, Blocked],
             _ => &[],
@@ -320,12 +325,13 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const AGENT_KINDS: [JobKind; 6] = [
+    const AGENT_KINDS: [JobKind; 7] = [
         JobKind::AgentTriage,
         JobKind::AgentPlan,
         JobKind::AgentImplement,
         JobKind::AgentReview,
         JobKind::AgentAddressComments,
+        JobKind::AgentResolveConflicts,
         JobKind::AgentTask,
     ];
 
@@ -423,6 +429,7 @@ mod tests {
         for kind in [
             JobKind::AgentImplement,
             JobKind::AgentAddressComments,
+            JobKind::AgentResolveConflicts,
             JobKind::AgentReview,
         ] {
             let out = render_prompt(kind, &ctx);

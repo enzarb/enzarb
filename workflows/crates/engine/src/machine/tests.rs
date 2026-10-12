@@ -11,6 +11,8 @@ use serde_json::{Value, json};
 
 use super::*;
 
+mod resolve;
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
@@ -424,11 +426,13 @@ const ALL_ISSUE_PHASES: [IssuePhase; 10] = [
     IssuePhase::Cancelled,
 ];
 
-const ALL_CR_PHASES: [CrPhase; 9] = [
+const ALL_CR_PHASES: [CrPhase; 11] = [
     CrPhase::Reviewing,
     CrPhase::AwaitingChanges,
     CrPhase::ReadyToMerge,
     CrPhase::AddressingComments,
+    CrPhase::ResolvingConflicts,
+    CrPhase::ConflictParked,
     CrPhase::Merging,
     CrPhase::Merged,
     CrPhase::Closed,
@@ -1837,6 +1841,7 @@ fn cr_failures_timers_and_retry() {
     for (phase, kind) in [
         (CrPhase::Reviewing, JobKind::AgentReview),
         (CrPhase::AddressingComments, JobKind::AgentAddressComments),
+        (CrPhase::ResolvingConflicts, JobKind::AgentResolveConflicts),
     ] {
         let s = cr_in(phase);
         let t = run_cr(Permission::None, &s, &failed("f", kind));
@@ -2380,6 +2385,7 @@ fn job_kind_names_match_the_documented_kinds() {
         (JobKind::AgentImplement, "agent_implement"),
         (JobKind::AgentReview, "agent_review"),
         (JobKind::AgentAddressComments, "agent_address_comments"),
+        (JobKind::AgentResolveConflicts, "agent_resolve_conflicts"),
         (JobKind::AgentTask, "agent_task"),
         (JobKind::CheckMergeReadiness, "check_merge_readiness"),
         (JobKind::MergeChangeRequest, "merge_change_request"),
