@@ -386,6 +386,20 @@ describe("runs", () => {
     srv.ctrl({ type: "run_accepted", run_id: "job-1", state: "queued", existing: true });
     await p2;
   });
+
+  it("passes npm_token through only when set", async () => {
+    const { s, srv } = await connected();
+    const p1 = s.runStart(run);
+    const m1 = await srv.nextCtrl("run_start");
+    expect("npm_token" in m1).toBe(false);
+    srv.ctrl({ type: "run_accepted", run_id: "job-1", state: "queued", existing: false });
+    await p1;
+    const p2 = s.runStart({ ...run, npm_token: "ghp_npm" });
+    const m2 = await srv.nextCtrl("run_start");
+    expect(m2.npm_token).toBe("ghp_npm");
+    srv.ctrl({ type: "run_accepted", run_id: "job-1", state: "queued", existing: true });
+    await p2;
+  });
 });
 
 describe("shutdown", () => {

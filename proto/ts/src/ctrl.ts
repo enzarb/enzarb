@@ -37,6 +37,8 @@ export interface RunStartFields {
   log_channel: number | null;
   /** Optional read-only token for same-Project git deps; never for push. */
   deps_token?: string;
+  /** Optional read:packages token for private npm packages (NODE_AUTH_TOKEN); never persisted. */
+  npm_token?: string;
 }
 
 /** Body POSTed to `callback_url` (not a CTRL message). */

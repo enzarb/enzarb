@@ -77,6 +77,8 @@ pub struct RunStarted {
 }
 
 /// Unsolicited inbound CTRL traffic, in arrival order.
+// `Ctrl` carries `RunStart` inline; boxing it would break the public `Event::Ctrl` shape.
+#[allow(clippy::large_enum_variant)]
 pub enum Event {
     /// (server) The client wants a channel: [`OpenRequest::accept`] or [`OpenRequest::reject`].
     Open(OpenRequest),

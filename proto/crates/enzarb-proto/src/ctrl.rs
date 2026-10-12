@@ -93,6 +93,11 @@ pub struct RunStart {
     /// absent; old peers ignore it and old payloads decode without it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deps_token: Option<String>,
+    /// Optional long-lived token with `read:packages` for installing private
+    /// npm packages (exposed to the run process as `NODE_AUTH_TOKEN`). Never
+    /// persisted by implementations. Omitted when absent; old peers ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub npm_token: Option<String>,
 }
 
 impl std::fmt::Debug for RunStart {
@@ -111,6 +116,7 @@ impl std::fmt::Debug for RunStart {
             .field("callback_token", &R)
             .field("log_channel", &self.log_channel)
             .field("deps_token", &self.deps_token.as_ref().map(|_| R))
+            .field("npm_token", &self.npm_token.as_ref().map(|_| R))
             .finish()
     }
 }

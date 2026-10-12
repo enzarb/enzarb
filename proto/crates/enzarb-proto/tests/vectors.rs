@@ -52,6 +52,7 @@ fn run_start() -> RunStart {
         callback_token: "cb-secret".into(),
         log_channel: None,
         deps_token: None,
+        npm_token: None,
     }
 }
 
@@ -379,9 +380,35 @@ fn run_start_deps_token_compat() {
 fn run_start_debug_redacts_tokens() {
     let mut rs = run_start();
     rs.deps_token = Some("ghs_deps".into());
+    rs.npm_token = Some("ghp_npm".into());
     let d = format!("{rs:?} {:?}", Ctrl::RunStart(rs.clone()));
-    for secret in ["ghs_deps", "ghs_clone", "cb-secret"] {
+    for secret in ["ghs_deps", "ghp_npm", "ghs_clone", "cb-secret"] {
         assert!(!d.contains(secret), "{secret} leaked: {d}");
     }
     assert!(d.contains("job-123"));
+}
+
+#[test]
+fn run_start_npm_token_compat() {
+    // Old payload without the field decodes to None and re-encodes without it.
+    let old = serde_json::to_value(run_start()).unwrap();
+    assert!(old.get("npm_token").is_none());
+    assert_eq!(
+        serde_json::from_value::<RunStart>(old).unwrap().npm_token,
+        None
+    );
+    // Round trip with the field set; independent of deps_token.
+    let mut rs = run_start();
+    rs.npm_token = Some("ghp_npm".into());
+    let v = serde_json::to_value(&rs).unwrap();
+    assert_eq!(v["npm_token"], "ghp_npm");
+    assert!(v.get("deps_token").is_none());
+    assert_eq!(serde_json::from_value::<RunStart>(v).unwrap(), rs);
+    // Explicit null decodes as None.
+    let mut v = serde_json::to_value(run_start()).unwrap();
+    v["npm_token"] = serde_json::Value::Null;
+    assert_eq!(
+        serde_json::from_value::<RunStart>(v).unwrap().npm_token,
+        None
+    );
 }
