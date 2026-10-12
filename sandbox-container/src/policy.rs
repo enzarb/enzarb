@@ -733,7 +733,8 @@ impl Policy {
         };
         if !GIT_READ_ONLY.contains(&sub.as_str()) {
             return Err(format!(
-                "git -C only allows read-only subcommands, not {sub}"
+                "git -C only allows read-only subcommands, not {sub}; run git from your \
+                 worktree directory without -C, for example `git add -A && git commit -m ...`"
             ));
         }
         if sub == "branch" {
@@ -2040,6 +2041,21 @@ mod tests {
             "git -C",
         ] {
             assert!(!sh(&p, &wt, c).allow, "{c}");
+        }
+    }
+
+    #[test]
+    fn git_dash_c_write_denial_hints_at_plain_git() {
+        let (_d, wt) = cross_setup();
+        let p = Policy::default();
+        let repo = ws_path(&wt, "repos/other-abc");
+        for dir in [wt.display().to_string(), repo] {
+            let c = format!("git -C {dir} commit -m x");
+            let d = sh(&p, &wt, &c);
+            assert!(!d.allow, "{c}: {d:?}");
+            assert_eq!(d.rule, "shell");
+            assert!(d.reason.contains("without -C"), "{d:?}");
+            assert!(d.reason.contains("git add -A && git commit"), "{d:?}");
         }
     }
 
