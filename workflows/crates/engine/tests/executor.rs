@@ -1241,6 +1241,7 @@ async fn read_credential_invalid_runs_without_deps_token() {
 async fn agent_runs_are_capped_per_project() {
     let db = db!();
     let h = H::new(db).await;
+    h.resolver.set_max_runs("enzarb", 1);
     let pool = h.pool();
     h.resolver.insert(
         "other",
@@ -2511,4 +2512,113 @@ async fn deadline_poll_requeues_a_run_the_sandbox_forgot() {
     let j = job(pool, id).await;
     assert_eq!((j.status.as_str(), j.restart_retries), ("queued", 1));
     assert!(events_of(pool, "JobFailed").await.is_empty());
+}
+
+/// Queue `n` agent jobs on `project` (work items numbered from `first`).
+async fn queue_agents(h: &H, project: &str, first: u64, n: u64) -> Vec<i64> {
+    let mut ids = Vec::new();
+    for i in first..first + n {
+        h.fake.add_thread(key(i), thread_with("a"));
+        let w = new_item(h.pool(), i, project).await;
+        ids.push(
+            new_job(
+                h.pool(),
+                w,
+                project,
+                "agent_triage",
+                0,
+                &format!("k:agent{i}"),
+                agent_input(i, &format!("enzarb/triage-{i}"), false),
+            )
+            .await,
+        );
+    }
+    ids
+}
+
+async fn running_agents(h: &H, ids: &[i64]) -> usize {
+    let mut n = 0;
+    for id in ids {
+        if job(h.pool(), *id).await.status == "running" {
+            n += 1;
+        }
+    }
+    n
+}
+
+#[tokio::test]
+async fn max_runs_n_runs_n_agents_and_not_n_plus_one() {
+    let h = H::new(db!()).await;
+    h.resolver.set_max_runs("enzarb", 4);
+    let ids = queue_agents(&h, "enzarb", 1, 5).await;
+    assert_eq!(h.exec.drain().await, 4);
+    assert_eq!(running_agents(&h, &ids).await, 4);
+    assert_eq!(job(h.pool(), ids[4]).await.status, "queued");
+}
+
+#[tokio::test]
+async fn unset_max_runs_defaults_to_two() {
+    let h = H::new(db!()).await;
+    let ids = queue_agents(&h, "enzarb", 1, 3).await;
+    assert_eq!(h.exec.drain().await, 2);
+    assert_eq!(running_agents(&h, &ids).await, 2);
+}
+
+#[tokio::test]
+async fn projects_have_independent_limits() {
+    let h = H::new(db!()).await;
+    h.resolver.insert(
+        "other",
+        SandboxTarget {
+            endpoint: h.sandbox.url.clone(),
+            token: SANDBOX_TOKEN.into(),
+        },
+    );
+    h.resolver.set_max_runs("enzarb", 1);
+    h.resolver.set_max_runs("other", 3);
+    let a = queue_agents(&h, "enzarb", 1, 3).await;
+    let b = queue_agents(&h, "other", 10, 4).await;
+    assert_eq!(h.exec.drain().await, 4);
+    assert_eq!(running_agents(&h, &a).await, 1);
+    assert_eq!(running_agents(&h, &b).await, 3);
+}
+
+#[tokio::test]
+async fn service_ceiling_caps_max_runs() {
+    let h = H::with(db!(), |c| c.max_agent_per_project = 3).await;
+    h.resolver.set_max_runs("enzarb", 10);
+    let ids = queue_agents(&h, "enzarb", 1, 5).await;
+    assert_eq!(h.exec.drain().await, 3);
+    assert_eq!(running_agents(&h, &ids).await, 3);
+}
+
+#[tokio::test]
+async fn hold_still_blocks_agents_and_connector_jobs_flow_when_saturated() {
+    let h = H::new(db!()).await;
+    h.resolver.set_max_runs("enzarb", 3);
+    let ids = queue_agents(&h, "enzarb", 1, 2).await;
+    sqlx::query(
+        "INSERT INTO workflows.project_holds (project_id, blocked_until, reason)
+         VALUES ('enzarb', now() + interval '1 hour', 'session_limit')",
+    )
+    .execute(h.pool())
+    .await
+    .unwrap();
+    assert_eq!(h.exec.drain().await, 0);
+    assert_eq!(running_agents(&h, &ids).await, 0);
+    // a connector job of the held Project still runs
+    h.fake.add_thread(key(50), thread_with("p"));
+    let w = new_item(h.pool(), 50, "enzarb").await;
+    let p = new_job(
+        h.pool(),
+        w,
+        "enzarb",
+        "set_progress",
+        0,
+        "k:prog50",
+        progress_input(50, Progress::Received),
+    )
+    .await;
+    assert_eq!(h.exec.drain().await, 1);
+    assert_eq!(job(h.pool(), p).await.status, "succeeded");
 }

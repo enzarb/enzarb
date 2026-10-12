@@ -36,6 +36,9 @@ enzarb-workflows run --roles reducer,executor,ticker      # or ENZARB_ROLES
 | `ENZARB_EXECUTOR_URL` | executor (callback base) | `http://enzarb-workflows-executor.enzarb.svc:8081` |
 | `ENZARB_EXECUTOR_CALLBACK_SECRET` | executor | required; shared by all replicas |
 | `ENZARB_EXECUTOR_LISTEN` | executor | `0.0.0.0:8081` |
+| `ENZARB_EXECUTOR_WORKERS` | executor | 24 (agent jobs hold a worker only while being accepted, not while the run is active) |
+| `ENZARB_EXECUTOR_MAX_AGENT_PER_PROJECT` | executor | 16 (ceiling for `Project.spec.maxRuns`) |
+| `ENZARB_EXECUTOR_DEFAULT_AGENT_PER_PROJECT` | executor | 2 (Projects without `spec.maxRuns`) |
 | `ENZARB_HEALTH_LISTEN` | processes without `executor` | `0.0.0.0:8082` |
 | `RUST_LOG` | all | `info` (logs are JSON on stdout) |
 

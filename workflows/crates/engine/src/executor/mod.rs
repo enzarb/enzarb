@@ -15,8 +15,12 @@
 //! `UPDATE jobs SET status='running', attempt=attempt+1, lease_owner, lease_until` on the
 //! first `queued` job with `run_after <= now()` in `priority DESC, run_after, id` order,
 //! skipping jobs that are not eligible:
-//! * at most [`ExecutorConfig::max_agent_per_project`] agent jobs *running* per Project
-//!   (a run waiting for its callback still counts);
+//! * at most [`effective_agent_limit`] agent jobs *running* per Project (`Project.spec.maxRuns`,
+//!   default [`ExecutorConfig::default_agent_per_project`], clamped 1..=16 and capped by the
+//!   service ceiling [`ExecutorConfig::max_agent_per_project`]); a run waiting for its callback
+//!   still counts. An agent job holds a worker only while it is being accepted (dial,
+//!   `prepare_run`, `run_start`); the run itself continues via the callback. `workers` must
+//!   cover accepting agents plus the connector jobs, not the sum of the limits;
 //! * at most one running connector job per work item (so progress markers and comments of an
 //!   item are applied one at a time, in priority order);
 //! * a `set_progress` `Working` marker waits until the agent job queued by the same event has
@@ -89,17 +93,24 @@ pub use callback::{callback_token, router as callback_router};
 pub use connectors::ConnectorRegistry;
 pub use sandbox::{
     KubeSandboxResolver, SandboxError, SandboxResolver, SandboxTarget, StaticSandboxResolver,
-    project_repos, secret_location,
+    max_runs, project_repos, secret_location,
 };
 
 #[derive(Debug, Clone)]
 pub struct ExecutorConfig {
     /// Value of `jobs.lease_owner`.
     pub owner: String,
-    /// Concurrent job workers.
+    /// Concurrent job workers. An agent job holds one only while it is accepted by the
+    /// sandbox, not while the run is active.
     pub workers: usize,
-    /// Agent jobs that may be `running` at once per Project (one sandbox, one PVC).
+    /// Service ceiling for agent jobs `running` at once per Project (one sandbox, one PVC);
+    /// `Project.spec.maxRuns` is capped by it. Env `ENZARB_EXECUTOR_MAX_AGENT_PER_PROJECT`.
     pub max_agent_per_project: i64,
+    /// Limit for Projects without `spec.maxRuns` (the sandbox default). Env
+    /// `ENZARB_EXECUTOR_DEFAULT_AGENT_PER_PROJECT`.
+    pub default_agent_per_project: i64,
+    /// How long a resolved `maxRuns` is reused before the Project is read again.
+    pub agent_limit_ttl: Duration,
     pub lease: Duration,
     /// Fallback poll when no `work_item_changed` notification arrives.
     pub poll_interval: Duration,
@@ -133,8 +144,10 @@ impl ExecutorConfig {
         let host = std::env::var("HOSTNAME").unwrap_or_else(|_| "executor".into());
         Self {
             owner: format!("{host}-{}", std::process::id()),
-            workers: 4,
-            max_agent_per_project: 1,
+            workers: 24,
+            max_agent_per_project: MAX_AGENT_LIMIT,
+            default_agent_per_project: DEFAULT_AGENT_LIMIT,
+            agent_limit_ttl: Duration::from_secs(15),
             lease: Duration::from_secs(120),
             poll_interval: Duration::from_secs(2),
             sweep_interval: Duration::from_secs(30),
@@ -151,6 +164,25 @@ impl ExecutorConfig {
         }
     }
 
+    /// Apply `ENZARB_EXECUTOR_WORKERS`, `ENZARB_EXECUTOR_MAX_AGENT_PER_PROJECT` and
+    /// `ENZARB_EXECUTOR_DEFAULT_AGENT_PER_PROJECT`. Unset or invalid values keep the default.
+    pub fn apply_env(&mut self, get: &dyn Fn(&str) -> Option<String>) {
+        let num = |k: &str| {
+            get(k)
+                .and_then(|v| v.trim().parse::<i64>().ok())
+                .filter(|n| *n > 0)
+        };
+        if let Some(n) = num("ENZARB_EXECUTOR_WORKERS") {
+            self.workers = n as usize;
+        }
+        if let Some(n) = num("ENZARB_EXECUTOR_MAX_AGENT_PER_PROJECT") {
+            self.max_agent_per_project = n;
+        }
+        if let Some(n) = num("ENZARB_EXECUTOR_DEFAULT_AGENT_PER_PROJECT") {
+            self.default_agent_per_project = n;
+        }
+    }
+
     /// Delay before attempt `attempt + 1` after `attempt` failed.
     pub fn backoff(&self, attempt: i32) -> Duration {
         let exp = u32::try_from(attempt.saturating_sub(1))
@@ -160,6 +192,19 @@ impl ExecutorConfig {
             .saturating_mul(2u32.saturating_pow(exp))
             .min(self.backoff_max)
     }
+}
+
+/// Hard upper bound and default service ceiling of agent jobs per Project.
+pub const MAX_AGENT_LIMIT: i64 = 16;
+/// Limit of a Project without `spec.maxRuns` (the sandbox default).
+pub const DEFAULT_AGENT_LIMIT: i64 = 2;
+
+/// `min(clamp(max_runs or default, 1, 16), clamp(ceiling, 1, 16))`.
+pub fn effective_agent_limit(max_runs: Option<i64>, default: i64, ceiling: i64) -> i64 {
+    max_runs
+        .unwrap_or(default)
+        .clamp(1, MAX_AGENT_LIMIT)
+        .min(ceiling.clamp(1, MAX_AGENT_LIMIT))
 }
 
 /// A job this executor has claimed.
@@ -243,6 +288,8 @@ pub struct Executor {
     pub(crate) connectors: ConnectorRegistry,
     pub(crate) sandboxes: Arc<dyn SandboxResolver>,
     pub(crate) cfg: ExecutorConfig,
+    /// project id -> (resolved `maxRuns`, fetched at).
+    limits: std::sync::Mutex<std::collections::HashMap<String, (Option<i64>, std::time::Instant)>>,
 }
 
 impl Executor {
@@ -257,7 +304,50 @@ impl Executor {
             connectors,
             sandboxes,
             cfg,
+            limits: Default::default(),
         }
+    }
+
+    /// Effective agent limits for Projects with queued agent jobs. A lookup failure keeps the
+    /// last known value; claiming never fails because of Kubernetes.
+    async fn agent_limits(&self) -> (Vec<String>, Vec<i32>) {
+        let projects: Vec<String> = sqlx::query_scalar(
+            r"SELECT DISTINCT project_id FROM jobs
+              WHERE status = 'queued' AND kind LIKE 'agent\_%' AND project_id IS NOT NULL",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .unwrap_or_default();
+        let (def, ceil) = (
+            self.cfg.default_agent_per_project,
+            self.cfg.max_agent_per_project,
+        );
+        let mut ids = Vec::new();
+        let mut lims = Vec::new();
+        for p in projects {
+            let cached = self.limits.lock().expect("limits lock").get(&p).copied();
+            let fresh = cached.is_some_and(|(_, at)| at.elapsed() < self.cfg.agent_limit_ttl);
+            let max_runs = if fresh {
+                cached.and_then(|c| c.0)
+            } else {
+                match self.sandboxes.project_max_runs(&p).await {
+                    Ok(v) => {
+                        self.limits
+                            .lock()
+                            .expect("limits lock")
+                            .insert(p.clone(), (v, std::time::Instant::now()));
+                        v
+                    }
+                    Err(e) => {
+                        tracing::debug!(project = %p, error = %e, "maxRuns lookup failed; using last known");
+                        cached.and_then(|c| c.0)
+                    }
+                }
+            };
+            ids.push(p);
+            lims.push(effective_agent_limit(max_runs, def, ceil) as i32);
+        }
+        (ids, lims)
     }
 
     pub fn config(&self) -> &ExecutorConfig {
@@ -362,6 +452,12 @@ impl Executor {
 
     /// Claim the next eligible job (see the module docs).
     pub(crate) async fn claim(&self) -> Result<Option<Claimed>, Error> {
+        let (limit_ids, limits) = self.agent_limits().await;
+        let default_limit = effective_agent_limit(
+            None,
+            self.cfg.default_agent_per_project,
+            self.cfg.max_agent_per_project,
+        );
         let mut tx = self.pool.begin().await?;
         sqlx::query("SELECT pg_advisory_xact_lock(7426001)")
             .execute(&mut *tx)
@@ -373,7 +469,9 @@ impl Executor {
                   AND (j.kind NOT LIKE 'agent\_%' OR j.project_id IS NULL
                        OR (SELECT count(*) FROM jobs r
                            WHERE r.status = 'running' AND r.project_id = j.project_id
-                             AND r.kind LIKE 'agent\_%') < $2)
+                             AND r.kind LIKE 'agent\_%')
+                           < COALESCE((SELECT l.lim FROM unnest($2::text[], $4::int[]) AS l(pid, lim)
+                                       WHERE l.pid = j.project_id), $5))
                   AND (j.kind NOT LIKE 'agent\_%' OR j.project_id IS NULL
                        OR NOT EXISTS (SELECT 1 FROM project_holds h
                                       WHERE h.project_id = j.project_id
@@ -402,8 +500,10 @@ impl Executor {
                         (SELECT key FROM work_items w WHERE w.id = jobs.work_item_id) AS work_item_key",
         )
         .bind(&self.cfg.owner)
-        .bind(self.cfg.max_agent_per_project)
+        .bind(&limit_ids)
         .bind(self.cfg.lease.as_secs_f64())
+        .bind(&limits)
+        .bind(default_limit as i32)
         .fetch_optional(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -473,5 +573,20 @@ impl Executor {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod limit_tests {
+    use super::effective_agent_limit as eff;
+
+    #[test]
+    fn effective_agent_limit_clamps_defaults_and_caps() {
+        assert_eq!(eff(Some(0), 2, 16), 1);
+        assert_eq!(eff(Some(100), 2, 16), 16);
+        assert_eq!(eff(None, 2, 16), 2);
+        assert_eq!(eff(Some(8), 2, 4), 4);
+        assert_eq!(eff(None, 2, 1), 1);
+        assert_eq!(eff(Some(5), 2, 100), 5);
     }
 }

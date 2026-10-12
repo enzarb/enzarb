@@ -45,6 +45,16 @@ pub trait SandboxResolver: Send + Sync {
     async fn project_repos(&self, _project: &str) -> Result<Vec<RepoKey>, SandboxError> {
         Ok(Vec::new())
     }
+
+    /// `Project.spec.maxRuns`, `None` when unset or unknown (the caller applies the default).
+    async fn project_max_runs(&self, _project: &str) -> Result<Option<i64>, SandboxError> {
+        Ok(None)
+    }
+}
+
+/// `spec.maxRuns` of a Project. Pure, for tests.
+pub fn max_runs(p: &Project) -> Option<i64> {
+    p.spec.max_runs.map(i64::from)
 }
 
 /// `RepoKey`s of a Project's GitHub repositories, from `spec.repositories`. Pure, for tests.
@@ -147,6 +157,15 @@ impl SandboxResolver for KubeSandboxResolver {
             .ok_or_else(|| SandboxError::NotReady(format!("project {project} not found")))?;
         Ok(project_repos(&p))
     }
+
+    async fn project_max_runs(&self, project: &str) -> Result<Option<i64>, SandboxError> {
+        let projects: Api<Project> = Api::all(self.client.clone());
+        let p = projects
+            .get_opt(project)
+            .await
+            .map_err(|e| SandboxError::Kube(e.to_string()))?;
+        Ok(p.as_ref().and_then(max_runs))
+    }
 }
 
 /// Fixed map for tests and local runs.
@@ -154,6 +173,7 @@ impl SandboxResolver for KubeSandboxResolver {
 pub struct StaticSandboxResolver {
     map: RwLock<HashMap<String, SandboxTarget>>,
     repos: RwLock<HashMap<String, Vec<RepoKey>>>,
+    max_runs: RwLock<HashMap<String, i64>>,
 }
 
 impl StaticSandboxResolver {
@@ -173,6 +193,13 @@ impl StaticSandboxResolver {
             .write()
             .expect("resolver lock")
             .insert(project.into(), repos);
+    }
+
+    pub fn set_max_runs(&self, project: &str, n: i64) {
+        self.max_runs
+            .write()
+            .expect("resolver lock")
+            .insert(project.into(), n);
     }
 
     pub fn remove(&self, project: &str) {
@@ -200,12 +227,29 @@ impl SandboxResolver for StaticSandboxResolver {
             .cloned()
             .unwrap_or_default())
     }
+
+    async fn project_max_runs(&self, project: &str) -> Result<Option<i64>, SandboxError> {
+        Ok(self
+            .max_runs
+            .read()
+            .expect("resolver lock")
+            .get(project)
+            .copied())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use enzarb_crds::{ProjectSpec, ProjectStatus, SandboxStatus, SecretKeyRef};
+
+    #[test]
+    fn max_runs_is_read_from_the_spec() {
+        let spec: ProjectSpec =
+            serde_json::from_value(serde_json::json!({"owner": "ruckc", "maxRuns": 5})).unwrap();
+        assert_eq!(max_runs(&Project::new("p", spec)), Some(5));
+        assert_eq!(max_runs(&project(None)), None);
+    }
 
     fn project(status: Option<ProjectStatus>) -> Project {
         let spec: ProjectSpec =

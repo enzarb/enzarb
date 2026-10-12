@@ -105,10 +105,11 @@ pub async fn run(cfg: Config) -> Result<(), Error> {
     }
 
     if cfg.roles.contains(&Role::Executor) {
-        let ecfg = ExecutorConfig::new(
+        let mut ecfg = ExecutorConfig::new(
             cfg.executor_url.clone(),
             cfg.executor_callback_secret.clone(),
         );
+        ecfg.apply_env(&|k| std::env::var(k).ok());
         let executor = Arc::new(Executor::new(
             pool.clone(),
             connectors.clone().expect("connectors"),
