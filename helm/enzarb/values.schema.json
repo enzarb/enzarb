@@ -266,6 +266,14 @@
         "image"
       ],
       "properties": {
+        "chat": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          }
+        },
         "probes": {
           "type": "object",
           "properties": {

@@ -81,5 +81,8 @@ diff_lines="$(diff <(printf '%s\n' "$on") <("$here/scripts/render.sh" realtime-r
 check "replicas override diff lines" "$diff_lines" 2
 check "replicas override" "$("$here/scripts/render.sh" realtime-replicas | q 'select(.kind=="Deployment" and .metadata.name=="enzarb-realtime") | .spec.replicas')" 3
 
+# Chat tab flag: rendered on the ui and off by default.
+check "ui chat default" "$(q 'select(.kind=="Deployment" and .metadata.name=="enzarb-ui") | .spec.template.spec.containers[0].env[] | select(.name=="ENZARB_UI_CHAT") | .value' <<<"$def")" false
+
 [ "$fail" = 0 ] && echo "assert-realtime ok"
 exit $fail

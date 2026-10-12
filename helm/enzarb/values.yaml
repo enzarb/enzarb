@@ -117,6 +117,9 @@ ui:
   # HTTP probes (/healthz liveness, /readyz readiness). false falls back to TCP probes.
   probes:
     http: true
+  # Chat tab (ENZARB_UI_CHAT). Off by default; see README before enabling.
+  chat:
+    enabled: false
   resources: {}
   extraEnv: []
 
