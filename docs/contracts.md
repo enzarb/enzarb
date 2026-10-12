@@ -57,13 +57,15 @@ status:
     - type: Ready
 ```
 
-Conditions: a failed step is `status: False` with a `reason` ending in `Failed`, `Failure` or `Error` (e.g. `NotOwnedError`: an object with the Project's name exists but has no owner), or the named terminal reason `InvalidSpec` (reported on `ResourcesReady`). Any other `False` reason is shown as in progress (e.g. `Terminating`: a deleted Project's objects with the same name are still being removed).
+Conditions: a failed step is `status: False` with a `reason` ending in `Failed`, `Failure` or `Error` (e.g. `NotOwnedError`: an object with the Project's name exists but has no owner), or the named terminal reason `InvalidSpec` (reported on `ResourcesReady`, for an invalid Project name and for a repository that another Project already owns, see "One Project per repository" below). Any other `False` reason is shown as in progress (e.g. `Terminating`: a deleted Project's objects with the same name are still being removed).
 
 Objects per Project (ADR-0013), all in the shared namespace and labelled `enzarb.dev/project=<name>`: Sandbox `sb-<name>` (its pod and headless Service share the name; the Service is owned by the Sandbox), Secret `sb-<name>-auth`, PVCs `sb-<name>-workspace` and `sb-<name>-docker`, NetworkPolicy `sb-<name>`, each with a controller ownerReference to the Project. Names are at most 50 characters, enforced by a CEL rule in the CRD, the operator and the UI. Sandbox pods run as ServiceAccount `enzarb-sandbox` with no token and no RBAC: **no Kubernetes API access**; any future access is limited to other namespaces. Consumers find the sandbox only through `status.namespace` and `status.sandbox` (no derived fallback).
 
-Defaults: `runMode: worktree`, all `triggers` true, `sandbox.storage: 20Gi`. Helpers in `enzarb-crds`: per-Project object names (`sandbox_name()`, `auth_secret_name()`, `workspace_pvc_name()`, `docker_pvc_name()`), `matches_repo()`, `RepoKey::from_url` (github.com only for now; lowercases).
+Defaults: `runMode: worktree`, all `triggers` true, `sandbox.storage: 20Gi`. Helpers in `enzarb-crds`: per-Project object names (`sandbox_name()`, `auth_secret_name()`, `workspace_pvc_name()`, `docker_pvc_name()`), `matches_repo()`, `RepoKey::from_url` / `RepoKey::from_connector_url` (github.com only for now; lowercases).
 
 Repo key: a repository's **repo key** is `<connector>:<owner>/<repo>`, e.g. `github:enzarb/enzarb-ui`, always lowercase. Workflows and connectors route events by matching an event's repo key against the Projects' `spec.repositories`.
+
+One Project per repository: a repo key (`RepoKey::from_connector_url`, compared case-insensitively) belongs to at most one Project. When several Projects list it, the oldest by `(metadata.creationTimestamp, name)` wins; `name` breaks timestamp ties and is unique because the CRD is cluster-scoped. Every other Project has `ResourcesReady=False` with the terminal reason `InvalidSpec`, like an invalid name; its message names the repository only, never the winning Project. Losing Projects must receive no events: workflows and connectors must route a repository's events only to the winner. That is the contract those repos have to meet, not behaviour that exists today. The operator side is tracked in enzarb-sandbox-operator#19 (pending); the routing work is tracked in the follow-up issues linked from there.
 
 ## 3. sandbox-init
 
