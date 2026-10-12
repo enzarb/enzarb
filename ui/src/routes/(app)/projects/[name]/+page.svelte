@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
+	import { isHttpError } from '@sveltejs/kit';
 	import Button from '#lib/components/form/Button.svelte';
 	import ConditionChecklist from '#lib/components/ConditionChecklist.svelte';
 	import CredentialStatus from '#lib/components/CredentialStatus.svelte';
@@ -19,11 +20,17 @@
 	const settings = $derived(getProjectSettings(page.params.name!));
 
 	// Poll while the project is not Ready (no timers once it is).
+	// A failed poll is ignored until the next tick; it must not replace the page.
 	$effect(() => {
-		if (project.current?.ready) return;
-		const id = setInterval(() => void project.refresh(), POLL_MS);
+		if ((project.error && !project.current) || project.current?.ready) return;
+		const id = setInterval(() => {
+			if (project.loading) return;
+			project.refresh().catch(() => {});
+		}, POLL_MS);
 		return () => clearInterval(id);
 	});
+
+	const notFound = $derived(isHttpError(project.error, 404));
 
 	// The sandbox's own answer, once it arrives (overrides the cached flag).
 	let configured = $state<boolean | undefined>();
@@ -50,7 +57,19 @@
 <svelte:head><title>{page.params.name} · enzarb</title></svelte:head>
 
 <svelte:boundary>
-	{#if project.current}
+	{#if project.error && !project.current}
+		{#if notFound}
+			<PageHeader title="Project not found" />
+			<div><LinkButton href="/projects">Back to projects</LinkButton></div>
+		{:else}
+			<Notice tone="error" title="Could not load the project">
+				Something went wrong while loading this project.
+				{#snippet actions()}
+					<Button onclick={() => project.refresh().catch(() => {})}>Retry</Button>
+				{/snippet}
+			</Notice>
+		{/if}
+	{:else if project.current}
 		{@const p = project.current}
 		<PageHeader title={p.displayName}>
 			{#snippet meta()}
@@ -124,8 +143,17 @@
 	{:else}
 		<Skeleton label="Loading project" rows={4} />
 	{/if}
-	{#snippet failed()}
-		<PageHeader title="Project not found" />
-		<div><LinkButton href="/projects">Back to projects</LinkButton></div>
+	{#snippet failed(e, reset)}
+		{#if isHttpError(e, 404)}
+			<PageHeader title="Project not found" />
+			<div><LinkButton href="/projects">Back to projects</LinkButton></div>
+		{:else}
+			<Notice tone="error" title="Could not load the project">
+				Something went wrong while loading this project.
+				{#snippet actions()}
+					<Button onclick={reset}>Retry</Button>
+				{/snippet}
+			</Notice>
+		{/if}
 	{/snippet}
 </svelte:boundary>
