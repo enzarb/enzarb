@@ -156,7 +156,7 @@ realtime:
   image:
     repository: ghcr.io/enzarb/enzarb-realtime
     # Placeholder: scripts/sync-components.sh pins the latest enzarb-realtime release here.
-    tag: 0.2.0
+    tag: 0.3.0
     pullPolicy: ""
   resources: {}
   extraEnv: []
