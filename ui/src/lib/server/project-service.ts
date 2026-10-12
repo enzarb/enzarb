@@ -21,6 +21,12 @@ export function projectService(store: ProjectStore, owner: string) {
 			const p = await store.get(name);
 			if (!mine(p)) throw new KubeError('not-found', 'Project not found');
 			await store.delete(name);
+		},
+		/** Sets `spec.maxRuns`; null removes it (sandbox default). Not-found for non-owners. */
+		async setMaxRuns(name: string, maxRuns: number | null): Promise<void> {
+			const p = await store.get(name);
+			if (!mine(p)) throw new KubeError('not-found', 'Project not found');
+			await store.update(name, { maxRuns });
 		}
 	};
 }

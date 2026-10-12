@@ -1,4 +1,6 @@
 <script lang="ts">
+	import * as v from 'valibot';
+	import MaxRunsInput from './MaxRunsInput.svelte';
 	import Button from './form/Button.svelte';
 	import Checkbox from './form/Checkbox.svelte';
 	import Combobox from './form/Combobox.svelte';
@@ -17,6 +19,7 @@
 		type ProjectPlan,
 		type Triggers
 	} from '#lib/onboarding.ts';
+	import { DEFAULT_MAX_RUNS, MaxRunsSchema } from '#lib/projects.ts';
 	import type { Option } from './form/util.ts';
 
 	export interface RepositoryChoices {
@@ -58,6 +61,7 @@
 	let template = $state('{repo}');
 	let overrides = $state<Record<string, string>>({});
 	let triggers = $state<Triggers>({ issues: true, changeRequests: true, mentions: true });
+	let maxRuns = $state<number | null | ''>(DEFAULT_MAX_RUNS);
 	let pending = $state(false);
 	let failure = $state<{ message: string; stale: boolean } | null>(null);
 	let rejected = $state<{ name: string; reason: string }[]>([]);
@@ -68,15 +72,31 @@
 	}
 	const nameOf = (key: string) => overrides[key] ?? defaultName(key);
 
+	// Empty means "use the default"; the default itself is never written to the Project.
+	const maxRunsEmpty = $derived(maxRuns === null || maxRuns === '');
+	const maxRunsValid = $derived(maxRunsEmpty || v.safeParse(MaxRunsSchema, maxRuns).success);
+	const maxRunsExtra = $derived<{ maxRuns?: number }>(
+		maxRunsValid && !maxRunsEmpty && maxRuns !== DEFAULT_MAX_RUNS
+			? { maxRuns: maxRuns as number }
+			: {}
+	);
+
 	const plans = $derived<ProjectPlan[]>(
 		selected.length === 0
 			? []
 			: mode === 'single'
-				? [{ name: singleName.trim(), displayName: displayName.trim(), repositories: selected }]
-				: selected.map((key) => ({ name: nameOf(key), repositories: [key] }))
+				? [
+						{
+							name: singleName.trim(),
+							displayName: displayName.trim(),
+							repositories: selected,
+							...maxRunsExtra
+						}
+					]
+				: selected.map((key) => ({ name: nameOf(key), repositories: [key], ...maxRunsExtra }))
 	);
 	const problems = $derived(planProblems(plans, new Set(choices.projectNames)));
-	const valid = $derived(plans.length > 0 && problems.every((p) => p.length === 0));
+	const valid = $derived(plans.length > 0 && maxRunsValid && problems.every((p) => p.length === 0));
 	const blocked = $derived(choices.problem !== null);
 
 	async function submit(e: SubmitEvent) {
@@ -158,6 +178,8 @@
 				/>
 			{/each}
 		{/if}
+
+		<MaxRunsInput bind:value={maxRuns} allowEmpty />
 
 		<FieldSet legend="Triggers">
 			<Checkbox label="Issues" bind:checked={triggers.issues} />

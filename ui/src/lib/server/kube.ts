@@ -1,4 +1,10 @@
-import { ApiException, CustomObjectsApi, KubeConfig } from '@kubernetes/client-node';
+import {
+	ApiException,
+	CustomObjectsApi,
+	KubeConfig,
+	PatchStrategy,
+	setHeaderOptions
+} from '@kubernetes/client-node';
 import type { Project } from '#lib/project-types.ts';
 
 const GROUP = 'enzarb.dev';
@@ -20,6 +26,8 @@ export interface ProjectStore {
 	get(name: string): Promise<Project | null>;
 	create(project: Project): Promise<Project>;
 	delete(name: string): Promise<void>;
+	/** JSON merge patch on `spec`; a `null` value removes the field. */
+	update(name: string, spec: { maxRuns: number | null }): Promise<Project>;
 }
 
 function wrap(e: unknown): never {
@@ -56,6 +64,16 @@ export function createProjectStore(kc = new KubeConfig()): ProjectStore {
 		async create(project) {
 			try {
 				return (await api.createClusterCustomObject({ ...ref, body: project })) as Project;
+			} catch (e) {
+				wrap(e);
+			}
+		},
+		async update(name, spec) {
+			try {
+				return (await api.patchClusterCustomObject(
+					{ ...ref, name, body: { spec } },
+					setHeaderOptions('Content-Type', PatchStrategy.MergePatch)
+				)) as Project;
 			} catch (e) {
 				wrap(e);
 			}

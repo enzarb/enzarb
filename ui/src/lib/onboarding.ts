@@ -11,6 +11,8 @@ export interface ProjectPlan {
 	name: string;
 	displayName?: string;
 	repositories: string[];
+	/** Concurrent agent runs; omitted for the sandbox default. */
+	maxRuns?: number;
 }
 
 export interface Triggers {

@@ -35,12 +35,27 @@ export const NameSchema = v.pipe(
 	v.regex(NAME_RE, 'Use lowercase letters, digits and "-"; start and end with a letter or digit')
 );
 
+/** What sandbox-init runs at once when `spec.maxRuns` is unset (UI mirror, not read from the cluster). */
+export const DEFAULT_MAX_RUNS = 2;
+export const MIN_MAX_RUNS = 1;
+export const MAX_MAX_RUNS = 16;
+
+/** Concurrent agent runs per sandbox: a whole number from 1 to 16. */
+export const MaxRunsSchema = v.pipe(
+	v.number('Enter a whole number'),
+	v.integer('Enter a whole number'),
+	v.minValue(MIN_MAX_RUNS, `Must be at least ${MIN_MAX_RUNS}`),
+	v.maxValue(MAX_MAX_RUNS, `Must be at most ${MAX_MAX_RUNS}`)
+);
+
 /** Build the `Project` object for a validated form (contracts §2; owner = GitHub login). */
 export interface NewProject {
 	name: string;
 	displayName: string;
 	repositories: Repository[];
 	triggers: { issues: boolean; changeRequests: boolean; mentions: boolean };
+	/** Omitted from the spec when undefined, so the sandbox default applies. */
+	maxRuns?: number;
 }
 
 export function buildProject(input: NewProject, owner: string): Project {
@@ -53,7 +68,8 @@ export function buildProject(input: NewProject, owner: string): Project {
 			displayName: input.displayName || input.name,
 			repositories: input.repositories,
 			runMode: 'worktree',
-			triggers: input.triggers
+			triggers: input.triggers,
+			...(input.maxRuns !== undefined ? { maxRuns: input.maxRuns } : {})
 		}
 	};
 }
@@ -71,6 +87,7 @@ export function toView(p: Project): ProjectView {
 			changeRequests: p.spec.triggers?.changeRequests ?? true,
 			mentions: p.spec.triggers?.mentions ?? true
 		},
+		maxRuns: p.spec.maxRuns,
 		conditions,
 		ready: conditions.some((c) => c.type === 'Ready' && c.status === 'True')
 	};

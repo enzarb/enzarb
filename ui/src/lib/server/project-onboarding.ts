@@ -168,7 +168,13 @@ async function claimAndCreate(
 			}
 		}
 		const project = buildProject(
-			{ name: plan.name, displayName: plan.displayName?.trim() ?? '', repositories, triggers },
+			{
+				name: plan.name,
+				displayName: plan.displayName?.trim() ?? '',
+				repositories,
+				triggers,
+				maxRuns: plan.maxRuns
+			},
 			owner
 		);
 		await store.create(project);

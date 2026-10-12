@@ -350,6 +350,17 @@ img {
 	gap: var(--ez-gap, var(--ez-space-2));
 }
 
+.ez-settings {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-start;
+	gap: var(--ez-space-3, var(--ez-space-2));
+}
+
+.ez-max-runs {
+	width: 8rem;
+}
+
 // Merge readiness block on a change request: optional notice, then the step list.
 .ez-merge-readiness {
 	display: flex;

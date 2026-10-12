@@ -22,7 +22,8 @@ vi.mock('$app/navigation', () => ({
 }));
 vi.mock('#lib/projects.remote.ts', () => ({
 	getProject: () => ({ current: h.project, refresh: async () => {} }),
-	deleteProject: vi.fn(async () => {})
+	deleteProject: vi.fn(async () => {}),
+	setMaxRuns: vi.fn(async () => {})
 }));
 vi.mock('#lib/terminal.remote.ts', () => ({
 	getProjectSettings: () => ({

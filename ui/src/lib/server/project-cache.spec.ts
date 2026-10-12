@@ -17,6 +17,9 @@ function countingStore(items: Project[]) {
 		async create(p) {
 			return p;
 		},
+		async update() {
+			throw new Error('unused');
+		},
 		async delete() {}
 	};
 	return { store, lists: () => lists };
@@ -79,6 +82,9 @@ describe('project cache', () => {
 			},
 			async create(p) {
 				return p;
+			},
+			async update() {
+				throw new Error('unused');
 			},
 			async delete() {}
 		};

@@ -14,8 +14,12 @@
 	import Skeleton from '#lib/components/ui/Skeleton.svelte';
 	import Tabs from '#lib/components/ui/Tabs.svelte';
 	import Terminal from '#lib/components/Terminal.svelte';
+	import * as v from 'valibot';
+	import MaxRunsInput from '#lib/components/MaxRunsInput.svelte';
+	import MaxRunsNotice from '#lib/components/MaxRunsNotice.svelte';
 	import { isTerminalFailure } from '#lib/conditions.ts';
-	import { deleteProject, getProject } from '#lib/projects.remote.ts';
+	import { deleteProject, getProject, setMaxRuns } from '#lib/projects.remote.ts';
+	import { DEFAULT_MAX_RUNS, MaxRunsSchema } from '#lib/projects.ts';
 	import { getProjectSettings } from '#lib/terminal.remote.ts';
 
 	const TABS = [
@@ -65,6 +69,33 @@
 
 	let confirming = $state(false);
 	let deleteError = $state('');
+
+	// Unsaved edit of the concurrency setting; undefined while the user has not touched it.
+	let draft = $state<number | null | '' | undefined>();
+	let saving = $state(false);
+	let saveError = $state('');
+	$effect(() => {
+		void page.params.name;
+		draft = undefined;
+		saveError = '';
+	});
+
+	async function saveMaxRuns(value: number) {
+		saving = true;
+		saveError = '';
+		try {
+			// The default is stored as "unset" so it follows the sandbox default.
+			await setMaxRuns({
+				name: page.params.name!,
+				maxRuns: value === DEFAULT_MAX_RUNS ? null : value
+			});
+			draft = undefined;
+		} catch {
+			saveError = 'Could not save the setting.';
+		} finally {
+			saving = false;
+		}
+	}
 
 	async function remove() {
 		deleteError = '';
@@ -156,7 +187,25 @@
 						>
 					{/if}
 				{:else if current === 'settings'}
+					{@const saved = p.maxRuns ?? DEFAULT_MAX_RUNS}
+					{@const value = draft === undefined ? saved : draft}
+					{@const valid = v.safeParse(MaxRunsSchema, value).success}
 					<div class="ez-stack">
+						<Section title="Concurrency">
+							<div class="ez-settings">
+								<MaxRunsInput bind:value={() => value, (x) => (draft = x)} />
+								<Button
+									variant="primary"
+									disabled={!valid || value === saved || saving}
+									onclick={() => saveMaxRuns(value as number)}
+								>
+									{saving ? 'Saving…' : 'Save'}
+								</Button>
+							</div>
+							<MaxRunsNotice />
+							{#if saveError}<Notice tone="error">{saveError}</Notice>{/if}
+						</Section>
+
 						<Section title="Sandbox">
 							<CredentialStatus
 								project={p.name}

@@ -51,6 +51,7 @@ function fakeStore(initial: Project[] = []) {
 		list: vi.fn(async () => [...items.values()]),
 		get: vi.fn(async (n) => items.get(n) ?? null),
 		create: vi.fn(realCreate),
+		update: vi.fn(async (n) => items.get(n)!),
 		delete: vi.fn(async () => {})
 	};
 	return store;
@@ -58,7 +59,7 @@ function fakeStore(initial: Project[] = []) {
 
 const run = (
 	store: ProjectStore,
-	plans: { name: string; repositories: string[] }[],
+	plans: { name: string; repositories: string[]; maxRuns?: number }[],
 	snapshot = snap()
 ) => createProjects({ store, owner: 'alice', snapshot, now: NOW }, plans, triggers);
 
@@ -119,6 +120,15 @@ describe('createProjects: authorization', () => {
 			{ url: 'https://github.com/acme/api', connector: 'github', defaultBranch: 'trunk' }
 		]);
 		expect(p.spec.triggers).toEqual(triggers);
+	});
+
+	it('writes spec.maxRuns only when the plan sets it', async () => {
+		await run(store, [
+			{ name: 'plain', repositories: ['github:acme/web'] },
+			{ name: 'busy', repositories: ['github:acme/api'], maxRuns: 8 }
+		]);
+		expect('maxRuns' in store.items.get('plain')!.spec).toBe(false);
+		expect(store.items.get('busy')!.spec.maxRuns).toBe(8);
 	});
 
 	it('rejects URL-shaped or case-mismatched keys (only exact snapshot keys match)', async () => {

@@ -54,6 +54,28 @@ describe('NewProjectForm', () => {
 			.not.toBeInTheDocument();
 	});
 
+	it('shows the default of 2 and sends maxRuns only when changed', async () => {
+		const create = setup();
+		await pick(/acme\/web/);
+		await page.getByRole('textbox', { name: 'Project name' }).fill('x');
+		const input = page.getByRole('spinbutton', { name: 'Concurrent runs' });
+		await expect.element(input).toHaveValue(2);
+		await input.fill('5');
+		await page.getByRole('button', { name: 'Create project' }).click();
+		expect(create).toHaveBeenCalledWith(
+			[expect.objectContaining({ name: 'x', maxRuns: 5 })],
+			expect.anything()
+		);
+	});
+
+	it('blocks submit for an out-of-range maxRuns', async () => {
+		setup();
+		await pick(/acme\/web/);
+		await page.getByRole('textbox', { name: 'Project name' }).fill('x');
+		await page.getByRole('spinbutton', { name: 'Concurrent runs' }).fill('17');
+		await expect.element(page.getByRole('button', { name: 'Create project' })).toBeDisabled();
+	});
+
 	it('selects repositories with the keyboard and skips the disabled one', async () => {
 		setup();
 		await page.getByRole('combobox', { name: 'Repositories' }).click();

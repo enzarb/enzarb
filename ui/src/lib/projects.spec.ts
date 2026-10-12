@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { buildProject, normalizeRepoKey, toView, type NewProject } from './projects.ts';
+import * as v from 'valibot';
+import {
+	MaxRunsSchema,
+	buildProject,
+	normalizeRepoKey,
+	toView,
+	type NewProject
+} from './projects.ts';
 
 const mk = (over: Partial<NewProject> = {}): NewProject => ({
 	name: 'x',
@@ -38,6 +45,26 @@ describe('normalizeRepoKey (mirrors the operator RepoKey::from_connector_url)', 
 	it('rejects an empty or odd connector', () => {
 		expect(normalizeRepoKey('', 'https://github.com/a/b')).toBeUndefined();
 		expect(normalizeRepoKey('gi thub', 'https://github.com/a/b')).toBeUndefined();
+	});
+});
+
+describe('MaxRunsSchema', () => {
+	it('accepts whole numbers from 1 to 16', () => {
+		for (const n of [1, 2, 16]) expect(v.safeParse(MaxRunsSchema, n).success).toBe(true);
+	});
+	it('rejects out-of-range, fractional and non-number input', () => {
+		for (const x of [0, 17, 2.5, '2', null, NaN])
+			expect(v.safeParse(MaxRunsSchema, x).success).toBe(false);
+	});
+});
+
+describe('maxRuns in buildProject / toView', () => {
+	it('is written only when given and exposed raw by the view', () => {
+		expect('maxRuns' in buildProject(mk(), 'u').spec).toBe(false);
+		const p = buildProject(mk({ maxRuns: 4 }), 'u');
+		expect(p.spec.maxRuns).toBe(4);
+		expect(toView(p).maxRuns).toBe(4);
+		expect(toView(buildProject(mk(), 'u')).maxRuns).toBeUndefined();
 	});
 });
 

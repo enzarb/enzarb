@@ -19,6 +19,8 @@ export interface ProjectSpec {
 	repositories?: Repository[];
 	runMode?: 'worktree' | 'fresh';
 	triggers?: { issues?: boolean; changeRequests?: boolean; mentions?: boolean };
+	/** Concurrent agent runs, 1-16; the sandbox default applies when unset. */
+	maxRuns?: number;
 }
 
 export interface ProjectStatus {
@@ -44,6 +46,8 @@ export interface ProjectView {
 	sandboxName: string | null;
 	repositories: Repository[];
 	triggers: { issues: boolean; changeRequests: boolean; mentions: boolean };
+	/** Raw `spec.maxRuns`; undefined when unset (the sandbox default applies). */
+	maxRuns?: number;
 	conditions: Condition[];
 	ready: boolean;
 }

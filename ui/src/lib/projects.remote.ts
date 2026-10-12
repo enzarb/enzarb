@@ -2,6 +2,7 @@ import { error } from '@sveltejs/kit';
 import { command, getRequestEvent, query } from '$app/server';
 import * as v from 'valibot';
 import { MAX_PROJECTS_PER_REQUEST } from '#lib/onboarding.ts';
+import { MaxRunsSchema } from '#lib/projects.ts';
 import { getSql } from '#lib/server/db.ts';
 import { KubeError, getProjectStore } from '#lib/server/kube.ts';
 import { projectCache } from '#lib/server/project-cache.ts';
@@ -45,7 +46,8 @@ export const repositoryChoices = query(async () => {
 const PlanSchema = v.object({
 	name: v.pipe(v.string(), v.maxLength(200)),
 	displayName: v.optional(v.pipe(v.string(), v.maxLength(100))),
-	repositories: v.pipe(v.array(v.pipe(v.string(), v.maxLength(300))), v.maxLength(500))
+	repositories: v.pipe(v.array(v.pipe(v.string(), v.maxLength(300))), v.maxLength(500)),
+	maxRuns: v.optional(MaxRunsSchema)
 });
 
 const CreateProjectsSchema = v.object({
@@ -69,6 +71,21 @@ export const createProjects = command(CreateProjectsSchema, async (input) => {
 	projectCache.invalidate(user.login);
 	return outcome;
 });
+
+export const setMaxRuns = command(
+	v.object({ name: NameArg, maxRuns: v.nullable(MaxRunsSchema) }),
+	async ({ name, maxRuns }) => {
+		try {
+			await service().setMaxRuns(name, maxRuns);
+			projectCache.invalidate(getRequestEvent().locals.user!.login);
+		} catch (e) {
+			if (e instanceof KubeError && e.kind === 'not-found') error(404, 'Project not found');
+			throw e;
+		}
+		await getProject(name).refresh();
+		await listProjects().refresh();
+	}
+);
 
 export const deleteProject = command(NameArg, async (name) => {
 	try {
