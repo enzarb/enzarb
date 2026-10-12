@@ -18,7 +18,7 @@ Postgres is provisioned with [pgop](https://pgop.ruck.io) (`pgop.ruck.io/v1alpha
 
 Functions:
 - `workflows_api.ingest_event(source, dedupe_key, work_item_key, type, payload)` inserts into `workflows.events` with `ON CONFLICT DO NOTHING`, then runs `NOTIFY workflow_events`.
-- `workflows_api.submit_action(work_item_id, actor, action, payload)` lets the UI start, approve, cancel or retry. It is ingested as a `ui:` event.
+- `workflows_api.submit_action(work_item_id, actor, action, payload)` lets the UI start, approve, cancel, retry or merge. It is ingested as a `ui:` event.
 
 Projects are **not** in Postgres. They stay as Kubernetes `Project` CRs (low churn, owned by the operator). Workflows and connectors build an in-memory index of repo remote → Project by watching the CRs.
 

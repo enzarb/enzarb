@@ -35,6 +35,7 @@ default_permissions:
   contents: write
   checks: write
   packages: read
+  statuses: read
   metadata: read
 default_events:
   - issues
@@ -42,5 +43,8 @@ default_events:
   - pull_request
   - pull_request_review
   - pull_request_review_comment
+  - check_suite
+  - check_run
+  - status
   - installation
   - installation_repositories

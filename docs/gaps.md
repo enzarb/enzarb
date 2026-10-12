@@ -31,3 +31,4 @@ The owning repo is in brackets. Resolve 2–5 first: they shape the CRDs, the pr
     - operator envtest;
     - end-to-end on kind with recorded webhook fixtures, plus a smee-style relay for live GitHub.
 14. **SvelteKit remote functions** [enzarb-ui]: they are still behind an experimental flag (`experimental.remoteFunctions`). Pin versions. Browsers connect to `sandbox-proxy` directly for websockets.
+15. **Human review before merge** [enzarb-workflows]: should `ReadyToMerge` also require a human GitHub review? Current decision: no. Only enzarb's own review approval is required, and the user's Merge click is the human gate.

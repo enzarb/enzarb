@@ -27,6 +27,7 @@ The receiver checks the provider's signature and **normalizes** the payload. It 
 | `ChangeRequestUpdated` | New commits pushed | `pull_request.synchronize` |
 | `ReviewSubmitted` | Review on a change request | `pull_request_review.submitted` |
 | `WorkItemClosed` | Closed or merged | `issues.closed`, `pull_request.closed` (`merged` flag) |
+| `CiStatusChanged` | A check run, check suite or commit status on a change request's head changed (`data.ci`, one per check, not an aggregate) | `check_suite`, `check_run`, `status` |
 
 The common envelope uses CloudEvents attributes:
 
@@ -57,8 +58,14 @@ pub trait Connector: Send + Sync {
     async fn set_progress(&self, target: &ProgressTarget, progress: Progress, idempotency_key: &str) -> Result<()>;
     async fn check_permission(&self, repo: &RepoKey, actor: &Actor) -> Result<Permission>;
     async fn mint_clone_credential(&self, repo: &RepoKey, scope: CredScope, idempotency_key: &str) -> Result<ShortLivedCred>;
+    async fn merge_change_request(&self, item: &WorkItemKey, number: u64, expected_head_sha: &str,
+                                  commit_title: &str, commit_body: Option<&str>, idempotency_key: &str) -> Result<MergeOutcome>;
+    async fn get_merge_readiness(&self, item: &WorkItemKey, number: u64) -> Result<MergeReadiness>;
 }
 ```
+
+- `merge_change_request` squash-merges, pinned to `expected_head_sha`. `MergeOutcome` is `merged{sha} | already_merged{sha?} | head_moved | not_mergeable{reason}`.
+- `get_merge_readiness` returns `MergeReadiness{head_sha, mergeable: Option<bool>, mergeable_state, ci, ...}`, with CI aggregated from all checks and statuses on the head. Exact types are in the `enzarb-connector` crate; see [contracts.md](contracts.md#5-normalized-events-enzarb-connector-crate--workflowseventspayload).
 
 Items are addressed by `WorkItemKey` (`github:org/repo#42`) and repos by `RepoKey`. `ItemRef` is the event-envelope shape that `open_change_request` returns. The other shapes are defined in `enzarb-connector`, the source of truth:
 - `ProgressTarget { item, comment_id? }`;
