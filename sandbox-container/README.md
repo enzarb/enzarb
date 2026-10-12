@@ -49,3 +49,5 @@ Afterwards `cargo`, `rustc`, `clippy` and `rustfmt` resolve through the shims.
 ## Permission policy
 
 The default command allowlist in `src/policy.rs` names programs, not paths. Entries for tools that are not baked in (`cargo`, `npm`, `rg`, `jq`, `tree`) are harmless: they match only once mise has installed the tool (or never). `rg`, `jq` and `tree` can be added per project with mise.
+
+`python3` is allowed like `bash`/`sh`: only `python3 [-u -B -E -s -S -I -O -q] <script in the worktree> [args]`; `-c`, `-m`, stdin and other options are refused. Python is not baked in: pin it in the repo's `mise.toml` (`python = "3.13"`), otherwise the shim reports "command not found".

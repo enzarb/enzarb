@@ -248,6 +248,8 @@ impl Default for Policy {
             // sit in the edit roots (see `check_script_interpreter`).
             CommandRule::new("bash"),
             CommandRule::new("sh"),
+            // Python comes from the repo's mise.toml; same script-only rule.
+            CommandRule::new("python3"),
             CommandRule::new("shellcheck").paths(Read).deny_args(&[
                 "-x",
                 "--external-sources",
@@ -317,6 +319,7 @@ impl Default for Policy {
                 "GIT_*",
                 "NODE_*",
                 "NPM_*",
+                "PYTHON*",
                 "CARGO_*",
                 "RUSTC_*",
                 "RUSTFLAGS",
@@ -611,7 +614,7 @@ impl Policy {
         if rule.name == "cargo" && rest.first().is_some_and(|a| a.starts_with('+')) {
             rest = &rest[1..];
         }
-        if rule.name == "bash" || rule.name == "sh" {
+        if matches!(rule.name.as_str(), "bash" | "sh" | "python3") {
             let n = check_script_interpreter(rest, &rule.name, cwd, edit)?;
             self.check_script_file(&rest[n], cwd, edit)?;
             self.script_args(&rest[n + 1..], cwd, read)?;
@@ -909,6 +912,8 @@ const DOCKER_HOST_NS_FLAGS: &[&str] = &["--pid", "--ipc", "--uts", "--userns", "
 /// the docker socket). Registry login/push are refused (no credentials leave).
 /// `bash|sh [-e -x -u ...] <script> [args]`: only a script file inside the
 /// edit roots may run; `-c`, stdin and rc-file options are refused.
+/// `python3 [-u -B ...] <script> [args]` follows the same rule; `-c`, `-m`,
+/// `-`, `-i`, `-W`, `-X` and long options are refused.
 fn check_script_interpreter(
     args: &[String],
     name: &str,
@@ -924,10 +929,12 @@ fn check_script_interpreter(
         if !a.starts_with('-') || a == "-" {
             break;
         }
+        let python = name == "python3";
         let ok = if a.starts_with("--") {
-            matches!(a.as_str(), "--posix" | "--noprofile" | "--norc")
+            !python && matches!(a.as_str(), "--posix" | "--noprofile" | "--norc")
         } else {
-            a[1..].chars().all(|c| "eux".contains(c))
+            let short = if python { "uBEsSIOq" } else { "eux" };
+            a[1..].chars().all(|c| short.contains(c))
         };
         if !ok {
             return Err(format!("option {a} is not allowed for {name}"));
@@ -1629,7 +1636,6 @@ mod tests {
             "wget http://x",
             "ssh host",
             "nc -l 1",
-            "python3 -c 'print(1)'",
             "bash -c 'ls'",
             "sh script.sh",
             "sudo ls",
@@ -1761,6 +1767,79 @@ mod tests {
             let r = sh(&p, &wt, &c);
             assert!(!r.allow, "{c:?} should be denied: {r:?}");
         }
+    }
+
+    #[test]
+    fn python_runs_worktree_scripts_only() {
+        let (d, wt) = setup();
+        std::fs::create_dir_all(wt.join("scripts")).unwrap();
+        std::fs::write(wt.join("scripts/x.py"), "").unwrap();
+        std::fs::write(wt.join("x.py"), "").unwrap();
+        std::fs::create_dir_all(d.path().join("other")).unwrap();
+        std::fs::write(d.path().join("other/x.py"), "").unwrap();
+        std::os::unix::fs::symlink(d.path().join("other/x.py"), wt.join("scripts/link.py"))
+            .unwrap();
+        let p = Policy::default();
+        for c in [
+            "python3 scripts/x.py",
+            "python3 -u scripts/x.py arg",
+            "python3 -uB x.py",
+            "python3 -- x.py",
+            "cd scripts && python3 x.py",
+        ] {
+            let r = sh(&p, &wt, c);
+            assert!(r.allow, "{c:?} should be allowed: {r:?}");
+        }
+        let other = d.path().join("other/x.py");
+        let other = other.display();
+        for c in [
+            "python3 -c 'print(1)'".to_string(),
+            "python3 -".to_string(),
+            "python3 < x.py".to_string(),
+            "python3 -m http.server".to_string(),
+            "python3 -i x.py".to_string(),
+            "python3 -X importtime x.py".to_string(),
+            "python3 -W error x.py".to_string(),
+            "python3 -V".to_string(),
+            "python3 --help".to_string(),
+            "python3".to_string(),
+            format!("python3 {other}"),
+            "python3 ../../other/x.py".to_string(),
+            "python3 scripts/link.py".to_string(),
+            "python3 scripts/missing.py".to_string(),
+            "/usr/bin/python3 x.py".to_string(),
+            "PYTHONSTARTUP=x python3 x.py".to_string(),
+            "PYTHONPATH=. python3 x.py".to_string(),
+            "python3 x.py /etc/shadow".to_string(),
+        ] {
+            let r = sh(&p, &wt, &c);
+            assert!(!r.allow, "{c:?} should be denied: {r:?}");
+        }
+    }
+
+    #[test]
+    fn allowed_python_script_actually_runs() {
+        let ok = std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if !ok {
+            eprintln!("skipping: python3 is not on PATH");
+            return;
+        }
+        let (_d, wt) = setup();
+        std::fs::create_dir_all(wt.join("scripts")).unwrap();
+        std::fs::write(wt.join("scripts/check.py"), "print('py-ok', 6 * 7)\n").unwrap();
+        let p = Policy::default();
+        let r = sh(&p, &wt, "python3 scripts/check.py");
+        assert!(r.allow, "{r:?}");
+        let out = std::process::Command::new("python3")
+            .arg("scripts/check.py")
+            .current_dir(&wt)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "py-ok 42");
     }
 
     #[test]
