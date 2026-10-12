@@ -14,7 +14,7 @@ The UI needs a Chat page where the Project owner talks to Claude inside the Proj
 - **No browser fs or terminal capabilities.** The agent uses its own built-in tools inside the sandbox; `fs/*` and `terminal/*` requests from the agent get `-32601`.
 - **No push, deps or npm tokens for chat.** The chat agent gets only the Claude token, so it cannot push (structurally, as well as by policy) and no new credential reaches the browser. Auth is the terminal's path unchanged (5-minute JWT, owner check in the proxy).
 - **Storage:** a worktree per chat at `/workspace/worktrees/chat-<chat_id>` (local branch `enzarb/chat-<chat_id>`), registry and transcripts under `/workspace/.enzarb/chats/<chat_id>/`, and `CLAUDE_CONFIG_DIR` on the PVC so `session/load` survives pod restarts.
-- **Rollout:** proto, then sandbox-container, sandbox-proxy, ui, helm. The UI is behind `ENZARB_UI_CHAT` (chart `ui.chat.enabled`, default false).
+- **Rollout:** proto, then sandbox-container, sandbox-proxy, ui, helm. The UI was initially behind `ENZARB_UI_CHAT` (chart `ui.chat.enabled`, default false); see the amendment below.
 
 ### Decisions on the open questions
 - **Q1 (shared Claude quota): accepted.** Chat and jobs share the owner's Claude subscription and rate limits, so chat can contend with jobs. Revisit if it bites.
@@ -36,6 +36,10 @@ The UI needs a Chat page where the Project owner talks to Claude inside the Proj
 - **Exposing the agent directly (transparent pipe, browser as the ACP client with its own capabilities):** the browser would control `cwd`, MCP servers, modes and capabilities, and could answer permissions with `allow_always`. The sandbox must enforce these, so it filters.
 - **Auto-approving what `Policy::decide` allows:** acceptable for unattended runs, but in chat the user is present and prompt injection from repo content is the risk, so only hard denies are automatic.
 
+## Amendment 2026-10-12
+
+The UI flag was removed after validation (ui v0.16.0, enzarb-helm v0.56.0; the chart keeps `ui.chat.enabled` only as a deprecated no-op schema key for one release). Chat is always on: the Chat tab is always listed and degrades to "Chat not available" when the sandbox or proxy does not advertise `acp`. The kill switch is `ENZARB_MAX_CHATS=0` on the sandbox (no `acp` feature, `chat_disabled` open errors). Rollback is a drain-first sandbox image rollback or that setting, not a UI flag.
+
 ## Amendment 2026-10-12 (2): chat default permission mode is bypass
 
 Maintainer decision, shipped in enzarb-sandbox-container#51 (v0.9.0, issue #50). This amends the "Two-tier permissions" and `session/set_mode` decisions above; those texts stay as written.
@@ -55,3 +59,5 @@ Maintainer decision, shipped in enzarb-sandbox-container#51 (v0.9.0, issue #50).
 **Residual risks (as reported in the PR).** The agent runs as the same uid as sandbox-init and the jobs, so file modes separate nothing from it. A bypass chat agent can read the mux auth token file, `.enzarb/runs/*/callback.json` (callback bearer tokens), other chats' transcripts and `chat-home`, every clone, and `/proc/<pid>/environ` of a concurrently running job (its deps/npm token). Highest risk: it can write the shared clone's `.git/config` and `.git/hooks`, which sandbox-init's authenticated `fetch`/`push` for later jobs also uses (the clone/push token is in `http.extraheader`); a planted hook or config could capture that token and leak it, for example through the Claude API conversation. Follow-up needed: harden those git calls (hooksPath, fsmonitor, explicit URL, a separate bare repo or a separate uid). It can also plant hooks or allow rules in `chat-home/.claude/settings.json` that affect later chats (the mode itself is re-enforced). Not verified: whether gVisor enforces non-dumpable `/proc` access. An independent Opus review of the PR found no must-fix issues.
 
 **Kill switches.** `ENZARB_CHAT_PERMISSION_MODE=default` (or `plan`) restores per-call prompts with S1 hard deny; `ENZARB_CHAT_ALLOW_BYPASS=false` makes bypass unavailable (not offered to the adapter, `set_mode` to it refused); `ENZARB_MAX_CHATS=0` disables chat. Agent jobs are unaffected by all three.
+
+**Follow-up.** The git hook/config token-theft risk above is tracked as enzarb/enzarb-sandbox-container#52.
