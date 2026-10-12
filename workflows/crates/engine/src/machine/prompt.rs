@@ -441,6 +441,17 @@ mod tests {
     }
 
     #[test]
+    fn prompts_instruct_plain_git_and_formatter_fallback() {
+        let ctx = full_ctx();
+        for kind in [JobKind::AgentImplement, JobKind::AgentAddressComments] {
+            let out = render_prompt(kind, &ctx);
+            assert!(out.contains("without `-C`"));
+            assert!(out.contains("Not run"));
+            assert!(out.contains("cargo fmt"));
+        }
+    }
+
+    #[test]
     fn checks_default_to_unverified() {
         let out =
             AgentOutput::parse("```json\n{\"decision\":\"approve\",\"body\":\"x\"}\n```").unwrap();
