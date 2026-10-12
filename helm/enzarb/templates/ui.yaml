@@ -34,7 +34,6 @@ spec:
             {{- end }}
             - { name: ENZARB_PUBLIC_URL, value: {{ include "enzarb.publicUrl" . | quote }} }
             - { name: ENZARB_GITHUB_APP_SLUG, value: {{ .Values.githubApp.slug | default "enzarb" | quote }} }
-            - { name: ENZARB_UI_CHAT, value: {{ ternary "true" "false" (default false $c.chat.enabled) | quote }} }
             # adapter-node derives the origin for its CSRF check from this header; the Gateway forwards it.
             - { name: PROTOCOL_HEADER, value: x-forwarded-proto }
             {{- with $c.extraEnv }}

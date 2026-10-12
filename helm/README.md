@@ -48,9 +48,7 @@ Jobs are plain resources, not Helm hooks (hooks would deadlock `helm install --w
 ## Database credentials
 pgop creates `<cluster>-<role>-credentials` per Role (keys `username password host port sslmode`, `uri` pointing at `postgres`) and a per-database Secret only for the Database owner. The chart passes `PGHOST PGPORT PGUSER PGPASSWORD PGSSLMODE` from the Role Secret plus `PGDATABASE` from values, and sets `DATABASE_URL=postgres:///enzarb` (no credentials, so passwords with URL-special characters are safe). sqlx (workflows, connectors) falls back to the `PG*` variables. postgres.js (ui) honors all of them except `PGSSLMODE`, so the ui gets `DATABASE_URL=postgres:///enzarb?sslmode=$(PGSSLMODE)`. ui probes are HTTP (`/healthz`, `/readyz`); set `ui.probes.http=false` for TCP.
 
-| Value | Default | Meaning |
-|---|---|---|
-| `ui.chat.enabled` | `false` | Rendered as `ENZARB_UI_CHAT` ("true"/"false") on the ui. Shows the Chat tab and enables the chat route. Requires sandbox image >= 0.8.0 (chat manager), sandbox-proxy >= 0.4.0, and the `acp` feature advertised by the sandbox. Chats are limited per sandbox by `ENZARB_MAX_CHATS` (default 1), not configurable from the chart. Rollback: set `false`. |
+Chat is always on; it needs sandbox >= 0.8.0 and sandbox-proxy >= 0.4.0 (both pinned). `ENZARB_MAX_CHATS` (sandbox, default 1; 0 disables chat there so the Chat tab shows "not available") is the kill switch. The former `ui.chat.enabled` value is a deprecated no-op (the schema tolerates it for one release so a stale values file cannot break `helm upgrade`); remove it from your values.
 
 ## Uninstall keeps data definitions
 The pgop `Cluster`, `Database` and `Role` CRs and the generated Secret (`enzarb.generatedSecret`: session JWT, executor callback secret, realtime JWT) carry `helm.sh/resource-policy: keep`, so `helm uninstall` (including the helm-controller's reinstall failure policy) cannot delete the database definition or the secrets. The PVC is created by pgop, not Helm, and is untouched. Nothing else is kept, so normal upgrades are unaffected.
