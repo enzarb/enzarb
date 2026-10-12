@@ -373,6 +373,7 @@ impl RunManager for AgentRunManager {
         let mut stored = req.clone();
         stored.clone_token = String::new();
         stored.deps_token = None;
+        stored.npm_token = None;
         let setup = std::fs::create_dir_all(&dir)
             .and_then(|()| {
                 write_atomic(
@@ -552,9 +553,9 @@ fn deps_env(token: &str) -> Vec<(String, String)> {
     vec![
         kv("CARGO_NET_GIT_FETCH_WITH_CLI", "true"),
         kv("ENZARB_DEPS_TOKEN", token),
-        // Read by enzarb-ui/.npmrc for npm.pkg.github.com (needs packages:read
-        // on the token). Env only: no .npmrc is written. Same value as the
-        // deps token, so it is already in the redaction set.
+        // Fallback for npm.pkg.github.com when no `npm_token` was supplied;
+        // `npm_env` replaces it. Same value as the deps token, so it is
+        // already in the redaction set.
         kv("NODE_AUTH_TOKEN", token),
         kv("GIT_CONFIG_COUNT", "3"),
         kv("GIT_CONFIG_KEY_0", "url.https://github.com/.insteadOf"),
@@ -568,6 +569,19 @@ fn deps_env(token: &str) -> Vec<(String, String)> {
             "!f() { echo username=x-access-token; echo \"password=$ENZARB_DEPS_TOKEN\"; }; f",
         ),
     ]
+}
+
+/// `NODE_AUTH_TOKEN` for the agent process only (read by enzarb-ui/.npmrc for
+/// npm.pkg.github.com). The token is a long-lived PAT with `read:packages`:
+/// env only, no .npmrc is written, never stored in request.json/state.
+fn npm_env(token: &str) -> Vec<(String, String)> {
+    vec![("NODE_AUTH_TOKEN".to_string(), token.to_string())]
+}
+
+/// Apply `npm_token` over whatever `deps_env` put in `NODE_AUTH_TOKEN`.
+fn apply_npm_env(env: &mut Vec<(String, String)>, token: &str) {
+    env.retain(|(k, _)| k != "NODE_AUTH_TOKEN");
+    env.extend(npm_env(token));
 }
 
 fn redact(s: &str, secrets: &[String]) -> String {
@@ -1071,6 +1085,15 @@ impl Inner {
             secrets.push(t.clone());
             secrets.push(basic_b64(t));
         }
+        let npm_token = req.npm_token.clone().filter(|t| !t.is_empty());
+        if let Some(t) = &npm_token {
+            secrets.push(t.clone());
+            secrets.push(basic_b64(t));
+            // npm basic auth uses the bare `_auth` form, `user:token` base64.
+            secrets.push(
+                base64::engine::general_purpose::STANDARD.encode(format!("{t}:x-oauth-basic")),
+            );
+        }
         let mut auth_env = Vec::new();
         if !req.clone_token.is_empty() && !req.repo_url.starts_with("file://") {
             let b64 = base64::engine::general_purpose::STANDARD
@@ -1188,6 +1211,9 @@ impl Inner {
         if let Some(t) = &deps_token {
             env.extend(deps_env(t));
         }
+        if let Some(t) = &npm_token {
+            apply_npm_env(&mut env, t);
+        }
         let spec = AcpSpec {
             bin: self.cfg.acp_bin.clone(),
             cwd: worktree.clone(),
@@ -1294,7 +1320,7 @@ impl Inner {
         Ok(Finish {
             outcome: RunOutcome::Succeeded,
             exit_code,
-            summary: result,
+            summary: redact(&result, &secrets),
             head_sha,
             pushed,
         })
@@ -1362,6 +1388,67 @@ mod deps_tests {
         let out = redact("a ghs_secret123 b", &secrets);
         assert_eq!(out, "a *** b");
         assert!(!redact(&basic_b64("ghs_secret123"), &secrets).contains("ghs_"));
+    }
+}
+
+#[cfg(test)]
+mod npm_tests {
+    use super::*;
+
+    #[test]
+    fn npm_token_wins_node_auth_token_and_is_redactable() {
+        let mut env = deps_env("ghs_deps");
+        apply_npm_env(&mut env, "ghp_npm123");
+        let all = |k: &str| {
+            env.iter()
+                .filter(|(a, _)| a == k)
+                .map(|(_, v)| v.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(all("NODE_AUTH_TOKEN"), vec!["ghp_npm123"]);
+        // cargo/git keep the deps token.
+        assert_eq!(all("ENZARB_DEPS_TOKEN"), vec!["ghs_deps"]);
+        // The npm token is in no other value (git config etc).
+        for (k, v) in &env {
+            if k != "NODE_AUTH_TOKEN" {
+                assert!(!v.contains("ghp_npm123"), "{k}");
+            }
+        }
+        let secrets = vec!["ghp_npm123".to_string(), basic_b64("ghp_npm123")];
+        assert_eq!(redact("a ghp_npm123 b", &secrets), "a *** b");
+        assert!(!redact(&basic_b64("ghp_npm123"), &secrets).contains("=="));
+    }
+
+    #[test]
+    fn deps_token_alone_still_feeds_node_auth_token() {
+        let env = deps_env("ghs_deps");
+        let v: Vec<_> = env.iter().filter(|(k, _)| k == "NODE_AUTH_TOKEN").collect();
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].1, "ghs_deps");
+    }
+
+    #[test]
+    fn stored_request_never_holds_the_npm_token() {
+        let mut req = RunStart {
+            run_id: "r".into(),
+            repo_url: "u".into(),
+            base_ref: "main".into(),
+            branch: "b".into(),
+            push: false,
+            clone_token: "c".into(),
+            prompt: "p".into(),
+            timeout_secs: 1,
+            callback_url: "cb".into(),
+            callback_token: "t".into(),
+            log_channel: None,
+            deps_token: Some("d".into()),
+            npm_token: Some("ghp_npm123".into()),
+        };
+        req.clone_token = String::new();
+        req.deps_token = None;
+        req.npm_token = None;
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(!json.contains("ghp_npm123") && !json.contains("npm_token"));
     }
 }
 

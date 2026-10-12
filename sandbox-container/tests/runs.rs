@@ -401,6 +401,49 @@ async fn read_only_run_does_not_push() {
 }
 
 #[tokio::test]
+async fn npm_token_reaches_the_agent_env_but_is_redacted_and_never_persisted() {
+    let env = start(0).await;
+    let (session, _e) = env.connect().await;
+    let mut req = env.run("npm", "NPMENV", "feature", "feature", false);
+    req.npm_token = Some("ghp_npmsecret987".into());
+    session.run_start(req).await.unwrap();
+    let (_, fin) = env.finished("npm").await;
+    assert_eq!(fin.outcome, RunOutcome::Succeeded);
+    let rd = env.run_dir("npm");
+    let transcript = std::fs::read_to_string(rd.join("transcript.jsonl")).unwrap();
+    // The agent saw a value (not "unset"), and it was redacted on the way out.
+    assert!(transcript.contains("NODE=***"), "{transcript}");
+    assert!(!fin.summary.contains("ghp_npmsecret987"));
+    let out = Command::new("grep")
+        .args(["-r", "ghp_npmsecret987"])
+        .arg(env.dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.stdout.is_empty(),
+        "npm token persisted: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let req: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(rd.join("request.json")).unwrap()).unwrap();
+    assert!(req.get("npm_token").is_none());
+}
+
+#[tokio::test]
+async fn without_an_npm_token_node_auth_token_is_unset() {
+    let env = start(0).await;
+    let (session, _e) = env.connect().await;
+    session
+        .run_start(env.run("nonpm", "NPMENV", "feature", "feature", false))
+        .await
+        .unwrap();
+    let (_, fin) = env.finished("nonpm").await;
+    assert_eq!(fin.outcome, RunOutcome::Succeeded);
+    let t = std::fs::read_to_string(env.run_dir("nonpm").join("transcript.jsonl")).unwrap();
+    assert!(t.contains("NODE=unset"), "{t}");
+}
+
+#[tokio::test]
 async fn toolchain_is_installed_in_the_worktree_before_the_agent_runs() {
     let env = start_with(
         0,

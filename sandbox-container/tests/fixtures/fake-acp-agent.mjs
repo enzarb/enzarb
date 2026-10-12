@@ -92,6 +92,7 @@ async function prompt(id, params) {
     run("git", "add", "agent.txt");
     run("git", "commit", "-qm", "agent change");
   }
+  if (word === "NPMENV") perms = `NODE=${process.env.NODE_AUTH_TOKEN ?? "unset"}\n`;
   if (word === "DIRTY") writeFileSync("dirty.txt", "dirty\n");
   if (process.env.CLAUDE_CODE_OAUTH_TOKEN !== "tok-123") process.stderr.write("bad token\n");
   if (process.env.GIT_CONFIG_COUNT) process.stderr.write("git credentials leaked\n");
