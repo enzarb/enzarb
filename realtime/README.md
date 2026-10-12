@@ -2,11 +2,16 @@
 
 Realtime change stream for the enzarb UI. One Postgres connection `LISTEN`s on `work_item_changed`; each notification is mapped to its project and pushed to the browsers that may see that project over a websocket. The UI then refetches via its remote functions. No state, one binary, one replica is enough (each replica holds its own LISTEN connection, so more replicas also work).
 
-`GET /live/v1/stream?token=<jwt>` (websocket), `GET /healthz`, `GET /readyz` on `:8080`.
+`GET /live/v1/stream` (websocket), `GET /healthz`, `GET /readyz` on `:8080`.
 
 ## Stream
 
-- **Auth:** browsers cannot set websocket headers, so the JWT goes in the query string. HS256, secret `ENZARB_REALTIME_JWT_SECRET`, claims `sub`, `projects` (array of project names the user can see), `aud: "enzarb-realtime"`, `exp`. Signature, audience and `exp` are checked at connect (no leeway) -> 401 otherwise. If `iat` is present, `exp - iat` must be at most `ENZARB_REALTIME_MAX_TOKEN_TTL_SECS` (300). The socket never outlives `min(exp, now + max ttl)`.
+- **Token sources:** the JWT is read from the first source that is *present*, in this order, with no fall-through (a present but invalid or malformed source is a 401, even if a later source would be valid):
+  1. `Authorization: Bearer <jwt>` (non-browser clients; scheme case-insensitive). Any other `Authorization` value, or an empty token, is a 401. No `Origin` needed.
+  2. the `enzarb_live` cookie (browsers: the page's origin sends it on the upgrade automatically). The first `enzarb_live` pair is used, verbatim. Needs an allowed `Origin` (below), checked before the token, else **403**. The cookie's `HttpOnly` / `Secure` / `SameSite` / `Path=/live/` attributes are set by whatever issues it, not by this service.
+  3. `?token=<jwt>` in the query string: **deprecated**, it ends up in logs and history. Each successful use logs a warning with `deprecated_total` (a counter, no token) and the `sub`. Remove it once enzarb-ui#71 is released and the counter has stayed at 0 for 7 days in the oldie logs; only then open the removal issue.
+- **Origin check (cookie auth only, CSWSH protection):** a missing or disallowed `Origin` gets 403 before the upgrade. The `Origin` must be exactly `scheme://host[:port]` (`http`/`https`); `null`, a path (even `/`), query, fragment or userinfo is rejected. Scheme and host compare case-insensitively, the port exactly (`https://h` and `https://h:443` differ; browsers omit default ports, so list `https://host`). With `ENZARB_REALTIME_ALLOWED_ORIGINS` set, the `Origin` must equal an entry. When unset it must match the request `Host` header (only that header; `X-Forwarded-Host` is ignored). The Host default is for dev: behind Cloudflare Tunnel / Envoy `Host` may be rewritten, so **production must set the allowlist**.
+- **Auth:** HS256, secret `ENZARB_REALTIME_JWT_SECRET`, claims `sub`, `projects` (array of project names the user can see), `aud: "enzarb-realtime"`, `exp`. Signature, audience and `exp` are checked at connect (no leeway) -> 401 otherwise. If `iat` is present, `exp - iat` must be at most `ENZARB_REALTIME_MAX_TOKEN_TTL_SECS` (300). The socket never outlives `min(exp, now + max ttl)`.
 - **Expiry:** at that point the server closes with code **4001** (`token expired; reconnect with a fresh token`). The client fetches a new token and reconnects, then refetches (treat a reconnect like `resync`).
 - **Frames** (server -> client, JSON text):
   - `{"topic":"work_item","id":123,"project":"enzarb"}`, only for projects in the token's `projects`;
@@ -43,6 +48,7 @@ The NOTIFY payload is only the work item id, so each notification costs one `SEL
 | `ENZARB_REALTIME_BUFFER` | `256` | per-client buffered frames before a `resync` replaces them |
 | `ENZARB_REALTIME_MAX_TOKEN_TTL_SECS` | `300` | max token lifetime / socket lifetime |
 | `ENZARB_REALTIME_MAX_CONNECTIONS` | `1000` | max concurrent websockets, must be > 0; over the cap gets 503 |
+| `ENZARB_REALTIME_ALLOWED_ORIGINS` | unset | comma-separated `scheme://host[:port]` allowed to use cookie auth, e.g. `https://enzarb.example`; unset means the `Origin` must match `Host` (dev only) |
 | `RUST_LOG` | `info` | JSON logs |
 
 The listener reconnects with exponential backoff (500 ms to 30 s).

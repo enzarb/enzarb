@@ -36,15 +36,23 @@ struct Server {
     hub: Arc<Hub>,
     limit: Arc<Semaphore>,
     rejected: Arc<AtomicU64>,
+    deprecated: Arc<AtomicU64>,
     shutdown: watch::Sender<bool>,
 }
 
 async fn serve_with(buffer: usize, ping: Duration, cap: usize) -> Server {
+    serve_cfg(buffer, ping, cap, vec![]).await
+}
+
+async fn serve_cfg(buffer: usize, ping: Duration, cap: usize, allowed: Vec<String>) -> Server {
     let hub = Arc::new(Hub::new(buffer));
     let limit = Arc::new(Semaphore::new(cap));
     let rejected = Arc::new(AtomicU64::new(0));
+    let deprecated = Arc::new(AtomicU64::new(0));
     let (shutdown, rx) = watch::channel(false);
     let app = ws::router(AppState {
+        allowed_origins: Arc::new(allowed),
+        deprecated_query: deprecated.clone(),
         hub: hub.clone(),
         secret: Arc::new(SECRET.to_vec()),
         ping_interval: ping,
@@ -61,6 +69,7 @@ async fn serve_with(buffer: usize, ping: Duration, cap: usize) -> Server {
         hub,
         limit,
         rejected,
+        deprecated,
         shutdown,
     }
 }
@@ -275,4 +284,329 @@ async fn readyz_follows_hub_and_healthz_ok() {
     assert!(get("/readyz").await.contains("503"));
     hub.set_ready(true);
     assert!(get("/readyz").await.contains("200"));
+}
+
+// ---- auth sources ----
+
+type Ws =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Connects with the given query and headers; `Err(status)` when the server refuses the upgrade.
+async fn connect(addr: &str, query: &str, headers: &[(&str, &str)]) -> Result<Ws, u16> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut req = format!("ws://{addr}/live/v1/stream{query}")
+        .into_client_request()
+        .unwrap();
+    for (k, v) in headers {
+        req.headers_mut().append(
+            tokio_tungstenite::tungstenite::http::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+            v.parse().unwrap(),
+        );
+    }
+    match tokio_tungstenite::connect_async(req).await {
+        Ok((ws, _)) => Ok(ws),
+        Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => Err(resp.status().as_u16()),
+        Err(e) => panic!("unexpected error {e:?}"),
+    }
+}
+
+fn good() -> String {
+    token(&["enzarb"], 60)
+}
+
+fn bearer(t: &str) -> String {
+    format!("Bearer {t}")
+}
+
+fn cookie(t: &str) -> String {
+    format!("enzarb_live={t}")
+}
+
+fn origin_of(addr: &str) -> String {
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn each_source_works_on_its_own() {
+    let s = serve_with(16, Duration::from_secs(15), 100).await;
+    let t = good();
+    assert!(
+        connect(&s.addr, "", &[("authorization", &bearer(&t))])
+            .await
+            .is_ok()
+    );
+    let o = origin_of(&s.addr);
+    assert!(
+        connect(&s.addr, "", &[("cookie", &cookie(&t)), ("origin", &o)])
+            .await
+            .is_ok()
+    );
+    assert!(connect(&s.addr, &format!("?token={t}"), &[]).await.is_ok());
+}
+
+#[tokio::test]
+async fn precedence_bearer_then_cookie_then_query() {
+    let s = serve_with(16, Duration::from_secs(15), 100).await;
+    let (t, bad) = (good(), "garbage".to_string());
+    let o = origin_of(&s.addr);
+    // bad bearer, valid cookie + query
+    let r = connect(
+        &s.addr,
+        &format!("?token={t}"),
+        &[
+            ("authorization", &bearer(&bad)),
+            ("cookie", &cookie(&t)),
+            ("origin", &o),
+        ],
+    )
+    .await;
+    assert_eq!(r.err(), Some(401));
+    // valid bearer wins over bad cookie and bad query
+    let r = connect(
+        &s.addr,
+        "?token=garbage",
+        &[("authorization", &bearer(&t)), ("cookie", &cookie(&bad))],
+    )
+    .await;
+    assert!(r.is_ok());
+    // bad cookie, valid query
+    let r = connect(
+        &s.addr,
+        &format!("?token={t}"),
+        &[("cookie", &cookie(&bad)), ("origin", &o)],
+    )
+    .await;
+    assert_eq!(r.err(), Some(401));
+    assert_eq!(s.deprecated.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn malformed_authorization_does_not_fall_through() {
+    let s = serve_with(16, Duration::from_secs(15), 100).await;
+    let t = good();
+    let o = origin_of(&s.addr);
+    for auth in ["Basic x", "Bearer ", "Bearer"] {
+        let r = connect(
+            &s.addr,
+            &format!("?token={t}"),
+            &[
+                ("authorization", auth),
+                ("cookie", &cookie(&t)),
+                ("origin", &o),
+            ],
+        )
+        .await;
+        assert_eq!(r.err(), Some(401), "{auth}");
+    }
+}
+
+#[tokio::test]
+async fn cookie_requires_allowed_origin() {
+    let s = serve_with(16, Duration::from_secs(15), 100).await;
+    let c = cookie(&good());
+    let evil = "http://evil.example";
+    let r = connect(&s.addr, "", &[("cookie", &c), ("origin", evil)]).await;
+    assert_eq!(r.err(), Some(403));
+    let r = connect(&s.addr, "", &[("cookie", &c)]).await;
+    assert_eq!(r.err(), Some(403));
+    let r = connect(&s.addr, "", &[("cookie", &c), ("origin", "null")]).await;
+    assert_eq!(r.err(), Some(403));
+    // bad origin wins over a bad token
+    let r = connect(
+        &s.addr,
+        "",
+        &[("cookie", &cookie("garbage")), ("origin", evil)],
+    )
+    .await;
+    assert_eq!(r.err(), Some(403));
+    // right origin, bad token: 401
+    let o = origin_of(&s.addr);
+    let r = connect(
+        &s.addr,
+        "",
+        &[("cookie", &cookie("garbage")), ("origin", &o)],
+    )
+    .await;
+    assert_eq!(r.err(), Some(401));
+}
+
+#[tokio::test]
+async fn bearer_and_query_ignore_origin() {
+    let s = serve_with(16, Duration::from_secs(15), 100).await;
+    let t = good();
+    let evil = ("origin", "http://evil.example");
+    let r = connect(&s.addr, "", &[("authorization", &bearer(&t)), evil]).await;
+    assert!(r.is_ok());
+    let r = connect(&s.addr, &format!("?token={t}"), &[evil]).await;
+    assert!(r.is_ok());
+}
+
+#[tokio::test]
+async fn explicit_allowlist_replaces_host_default() {
+    let s = serve_cfg(
+        16,
+        Duration::from_secs(15),
+        100,
+        vec!["https://app.example".into()],
+    )
+    .await;
+    let c = cookie(&good());
+    let host_origin = origin_of(&s.addr);
+    let r = connect(&s.addr, "", &[("cookie", &c), ("origin", &host_origin)]).await;
+    assert_eq!(r.err(), Some(403));
+    let r = connect(
+        &s.addr,
+        "",
+        &[("cookie", &c), ("origin", "https://app.example")],
+    )
+    .await;
+    assert!(r.is_ok());
+}
+
+#[tokio::test]
+async fn host_default_ignores_forwarded_host() {
+    let s = serve_with(16, Duration::from_secs(15), 100).await;
+    let c = cookie(&good());
+    let r = connect(
+        &s.addr,
+        "",
+        &[
+            ("cookie", &c),
+            ("origin", "http://evil.example"),
+            ("x-forwarded-host", "evil.example"),
+        ],
+    )
+    .await;
+    assert_eq!(r.err(), Some(403));
+}
+
+#[tokio::test]
+async fn deprecated_counter_only_on_successful_query() {
+    let s = serve_with(16, Duration::from_secs(15), 100).await;
+    let t = good();
+    let o = origin_of(&s.addr);
+    connect(&s.addr, "", &[("authorization", &bearer(&t))])
+        .await
+        .unwrap();
+    connect(&s.addr, "", &[("cookie", &cookie(&t)), ("origin", &o)])
+        .await
+        .unwrap();
+    assert!(connect(&s.addr, "?token=garbage", &[]).await.is_err());
+    assert_eq!(s.deprecated.load(Ordering::Relaxed), 0);
+    connect(&s.addr, &format!("?token={t}"), &[]).await.unwrap();
+    assert_eq!(s.deprecated.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn unauthenticated_request_at_cap_gets_401_not_503() {
+    let s = serve_with(16, Duration::from_secs(15), 1).await;
+    let _held = connect(&s.addr, &format!("?token={}", good()), &[])
+        .await
+        .unwrap();
+    assert_eq!(connect(&s.addr, "", &[]).await.err(), Some(401));
+    assert_eq!(
+        connect(&s.addr, "?token=garbage", &[]).await.err(),
+        Some(401)
+    );
+    assert_eq!(s.rejected.load(Ordering::Relaxed), 0);
+    let r = connect(&s.addr, "", &[("authorization", &bearer(&good()))]).await;
+    assert_eq!(r.err(), Some(503));
+}
+
+#[tokio::test]
+async fn expired_token_via_bearer_and_cookie_gets_4001() {
+    let s = serve_with(16, Duration::from_secs(15), 100).await;
+    let t = token(&["enzarb"], 1);
+    let mut a = connect(&s.addr, "", &[("authorization", &bearer(&t))])
+        .await
+        .unwrap();
+    expect_close(&mut a, CLOSE_TOKEN_EXPIRED).await;
+    let o = origin_of(&s.addr);
+    let mut b = connect(&s.addr, "", &[("cookie", &cookie(&t)), ("origin", &o)])
+        .await
+        .unwrap();
+    expect_close(&mut b, CLOSE_TOKEN_EXPIRED).await;
+}
+
+#[derive(Clone, Default)]
+struct Buf(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Buf {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Buf {
+    type Writer = Buf;
+    fn make_writer(&'a self) -> Buf {
+        self.clone()
+    }
+}
+
+// current_thread (the default): the server task runs on this thread, so `set_default` sees it.
+#[tokio::test]
+async fn logs_carry_source_but_never_credentials() {
+    // A process-global subscriber: a scoped one races with tracing's callsite-interest cache
+    // when other tests run in parallel. Other tests' lines land here too, which is harmless.
+    static BUF: std::sync::OnceLock<Buf> = std::sync::OnceLock::new();
+    let buf = BUF.get_or_init(Buf::default).clone();
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::fmt()
+            .with_writer(buf.clone())
+            .with_ansi(false)
+            .finish(),
+    )
+    .expect("only this test installs a global subscriber");
+    let s = serve_with(16, Duration::from_secs(15), 100).await;
+    let t = good();
+    let o = origin_of(&s.addr);
+    let bad = "secretbadtoken.abc.def";
+    let evil = "http://evil.example";
+    // successes
+    connect(&s.addr, "", &[("authorization", &bearer(&t))])
+        .await
+        .unwrap();
+    connect(&s.addr, "", &[("cookie", &cookie(&t)), ("origin", &o)])
+        .await
+        .unwrap();
+    connect(&s.addr, &format!("?token={t}"), &[]).await.unwrap();
+    // rejections
+    let h = [("authorization", bearer(bad))];
+    assert!(connect(&s.addr, "", &[(h[0].0, &h[0].1)]).await.is_err());
+    assert!(
+        connect(&s.addr, "", &[("authorization", "Basic c2VjcmV0")])
+            .await
+            .is_err()
+    );
+    assert!(
+        connect(&s.addr, "", &[("cookie", &cookie(bad)), ("origin", &o)])
+            .await
+            .is_err()
+    );
+    assert!(
+        connect(&s.addr, "", &[("cookie", &cookie(&t)), ("origin", evil)])
+            .await
+            .is_err()
+    );
+    assert!(
+        connect(&s.addr, &format!("?token={bad}"), &[])
+            .await
+            .is_err()
+    );
+    let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+    for secret in [t.as_str(), bad, "c2VjcmV0", "evil.example", "enzarb_live"] {
+        assert!(!out.contains(secret), "log leaked {secret}: {out}");
+    }
+    for label in ["bearer", "cookie", "query"] {
+        assert!(
+            out.contains(&format!("source=\"{label}\"")),
+            "{label}: {out}"
+        );
+    }
+    assert!(out.contains("deprecated"), "{out}");
 }

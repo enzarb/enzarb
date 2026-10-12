@@ -41,6 +41,8 @@ async fn main() -> Result<()> {
         max_token_ttl: cfg.max_token_ttl,
         limit: Arc::new(Semaphore::new(cfg.max_connections)),
         rejected: Arc::new(AtomicU64::new(0)),
+        allowed_origins: Arc::new(cfg.allowed_origins.clone()),
+        deprecated_query: Arc::new(AtomicU64::new(0)),
         shutdown: shutdown_rx.clone(),
     });
     let listener = tokio::net::TcpListener::bind(cfg.listen).await?;

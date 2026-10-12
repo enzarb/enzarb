@@ -15,6 +15,8 @@ pub struct Config {
     pub buffer: usize,
     pub max_token_ttl: Duration,
     pub max_connections: usize,
+    /// Allowed `Origin`s for cookie auth; empty means "same as the Host header".
+    pub allowed_origins: Vec<String>,
 }
 
 fn parsed<T: std::str::FromStr>(
@@ -57,6 +59,15 @@ impl Config {
             "ENZARB_REALTIME_JWT_SECRET must be at least {MIN_SECRET_BYTES} bytes (got {})",
             secret.len()
         );
+        let allowed_origins: Vec<String> = get("ENZARB_REALTIME_ALLOWED_ORIGINS")
+            .map(|v| v.split(',').map(|o| o.trim().to_string()).collect())
+            .unwrap_or_default();
+        for o in &allowed_origins {
+            anyhow::ensure!(
+                crate::ws::parse_origin(o).is_some(),
+                "invalid ENZARB_REALTIME_ALLOWED_ORIGINS entry {o:?}: expected scheme://host[:port] (http or https, no path)"
+            );
+        }
         Ok(Self {
             database_url: get("DATABASE_URL").context("DATABASE_URL is required")?,
             jwt_secret: secret,
@@ -65,6 +76,7 @@ impl Config {
             buffer,
             max_token_ttl: Duration::from_secs(ttl),
             max_connections,
+            allowed_origins,
         })
     }
 }
@@ -105,6 +117,44 @@ mod tests {
     fn zero_cap_rejected() {
         let r = cfg(&"a".repeat(32), &[("ENZARB_REALTIME_MAX_CONNECTIONS", "0")]);
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn allowed_origins_default_empty() {
+        assert!(
+            cfg(&"a".repeat(32), &[])
+                .unwrap()
+                .allowed_origins
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn allowed_origins_parsed_and_trimmed() {
+        let c = cfg(
+            &"a".repeat(32),
+            &[(
+                "ENZARB_REALTIME_ALLOWED_ORIGINS",
+                " https://a.dev , http://b.dev:8080 ",
+            )],
+        )
+        .unwrap();
+        assert_eq!(c.allowed_origins, ["https://a.dev", "http://b.dev:8080"]);
+    }
+
+    #[test]
+    fn allowed_origins_invalid_rejected() {
+        for bad in [
+            "https://a.dev/",
+            "https://a.dev/x",
+            "null",
+            "ftp://a.dev",
+            "a.dev",
+            "https://a.dev,",
+        ] {
+            let r = cfg(&"a".repeat(32), &[("ENZARB_REALTIME_ALLOWED_ORIGINS", bad)]);
+            assert!(r.is_err(), "{bad}");
+        }
     }
 
     #[test]
