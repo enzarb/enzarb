@@ -274,9 +274,15 @@ workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated
 
 ### 7a. Browser realtime stream (enzarb-realtime)
 
-- **URL:** `wss://<host>/live/v1/stream?token=<jwt>`.
-- **JWT:** HS256, signed with `ENZARB_REALTIME_JWT_SECRET`, which ui and enzarb-realtime share. Claims: `sub` (GitHub login), `projects` (array of Project names the user can see), `aud: "enzarb-realtime"`, `exp` (≤ 5 min after issue; checked at connect). The ui mints it from a remote function. Invalid or missing token: HTTP 401 before the upgrade.
-- **Expiry:** the server closes the socket at `exp` (never later than 5 min after connect) with close code **4001**; the client fetches a fresh token, reconnects and refetches.
+- **URL:** `wss://<host>/live/v1/stream`, no query string.
+- **Auth sources**, in precedence order; the first source present wins:
+  1. `Authorization: Bearer <jwt>`, for non-browser clients. A present `Authorization` header is authoritative: if it is not `Bearer <non-empty>` (scheme case-insensitive), the result is HTTP 401 with no fall-through to the cookie or the query string.
+  2. Cookie `enzarb_live`, for browsers: `Set-Cookie: enzarb_live=<jwt>; HttpOnly; Secure; SameSite=Strict; Path=/live/; Max-Age=300`, with no `Domain`. `Max-Age` equals the token's 5 min `exp` TTL (both from one clock read), so the cookie never outlives the token. The ui sets it from the signed-in session and clears it on sign-out and at login.
+  3. `?token=<jwt>`, **deprecated** (see Deprecation).
+- **Origin check:** applies to cookie auth only. The `Origin` header must exactly match an entry of `ENZARB_REALTIME_ALLOWED_ORIGINS`, a comma-separated list of `scheme://host[:port]` (http or https, no path; an invalid entry fails startup). When the variable is unset or empty, `Origin` must equal the `Host` header. A missing, `null`, unparsable or mismatching `Origin`: HTTP 403 before the upgrade. Bearer and query auth are not Origin-checked.
+- **JWT:** HS256, signed with `ENZARB_REALTIME_JWT_SECRET`, which ui and enzarb-realtime share. Claims: `sub` (GitHub login), `projects` (array of Project names the user can see), `aud: "enzarb-realtime"`, `exp` (≤ 5 min after issue; checked at connect). The ui mints it from a remote function. An invalid or missing token from the selected source: HTTP 401 before the upgrade (Authorization and Origin cases: see Auth sources and Origin check).
+- **Expiry:** the server closes the socket at `exp` (never later than 5 min after connect) with close code **4001**; the client fetches a fresh token, reconnects and refetches. The ui refreshes the `enzarb_live` cookie when it fetches the new token.
+- **Deprecation:** a `?token=` connection logs a warn "token in query string is deprecated" with an in-process `deprecated_total` field (a log field, not a metric). `?token=` and the ui flag `ENZARB_REALTIME_LEGACY_TOKEN_URL` are removed once that log shows zero uses for 7 days.
 - **Frames** (server to client, JSON text; client messages are ignored):
   - `{"topic":"work_item","id":123,"project":"enzarb"}`, sent only to clients whose `projects` contain `project`;
   - `{"topic":"resync"}`, sent to all clients: refetch everything. Sent after the service's LISTEN connection was re-established, when a work item's project could not be resolved, and when a client's bounded buffer overflowed.
@@ -305,7 +311,8 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 | `DATABASE_URL` | ui, receiver, workflows (`postgres:///enzarb` plus `PG*` env vars from pgop Role secret `enzarb-pg-<role>-credentials`; see database.md) |
 | `ENZARB_SESSION_JWT_SECRET` | ui, sandbox-proxy |
 | `ENZARB_REALTIME_JWT_SECRET` | ui, enzarb-realtime |
-| `ENZARB_REALTIME_LISTEN` (`0.0.0.0:8080`), `ENZARB_REALTIME_PING_SECS` (15), `ENZARB_REALTIME_BUFFER` (256), `ENZARB_REALTIME_MAX_TOKEN_TTL_SECS` (300) | enzarb-realtime |
+| `ENZARB_REALTIME_LISTEN` (`0.0.0.0:8080`), `ENZARB_REALTIME_PING_SECS` (15), `ENZARB_REALTIME_BUFFER` (256), `ENZARB_REALTIME_MAX_TOKEN_TTL_SECS` (300), `ENZARB_REALTIME_ALLOWED_ORIGINS` (comma-separated `scheme://host[:port]`; unset means `Origin` must equal `Host`; cookie auth only) | enzarb-realtime |
+| `ENZARB_REALTIME_LEGACY_TOKEN_URL` (`true`/`false`, default `false`; when on, the ui also puts the token in the URL as `?token=`) | ui |
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` (PEM), `GITHUB_WEBHOOK_SECRET` | receiver (secret only), workflows executor |
 | `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` | ui |
 | `ENZARB_BOT_HANDLE` (default `enzarb`), `ENZARB_BOT_LOGIN` (default `enzarb[bot]`) | receiver, workflows |
