@@ -24,6 +24,9 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod hard;
+pub use hard::{Classification, HardRule, Hint, Opinion};
+
 /// How the non-flag arguments of a command are treated.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1197,7 +1200,12 @@ fn is_assignment(w: &str) -> Option<(&str, &str)> {
     ok.then_some((n, v))
 }
 
-fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
+/// Split a command line into tokens. Strict mode (`lenient == false`, used
+/// by [`Policy::decide`]) refuses every construct it cannot judge. Lenient
+/// mode (used by the hard-deny scan) never fails: substitutions, groups,
+/// heredocs and process substitution become separators, so their inner
+/// commands are scanned as ordinary segments, and `$` stays in the word.
+fn tokenize(s: &str, lenient: bool) -> Result<Vec<Tok>, String> {
     let chars: Vec<char> = s.chars().collect();
     let mut toks = Vec::new();
     let mut cur = String::new();
@@ -1236,6 +1244,7 @@ fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
                         cur.push(n);
                         has_word = true;
                     }
+                    None if lenient => {}
                     None => return Err("trailing backslash".into()),
                 }
             }
@@ -1246,6 +1255,7 @@ fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
                     match chars.get(i) {
                         Some('\'') => break,
                         Some(&n) => cur.push(n),
+                        None if lenient => break,
                         None => return Err("unterminated quote".into()),
                     }
                     i += 1;
@@ -1265,14 +1275,28 @@ fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
                             Some('\n') => i += 1,
                             _ => cur.push('\\'),
                         },
+                        Some(&n @ ('$' | '`')) if lenient => cur.push(n),
                         Some('$' | '`') => {
                             return Err("shell expansion ($ or backtick) is not allowed".into());
                         }
                         Some(&n) => cur.push(n),
+                        None if lenient => break,
                         None => return Err("unterminated quote".into()),
                     }
                     i += 1;
                 }
+            }
+            '$' if lenient && chars.get(i + 1) != Some(&'(') => {
+                cur.push('$');
+                has_word = true;
+            }
+            '$' | '`' | '(' | ')' if lenient => {
+                flush!();
+                toks.push(Tok::Sep);
+            }
+            '{' | '}' if lenient && !has_word => {
+                flush!();
+                toks.push(Tok::Sep);
             }
             '$' | '`' => return Err("shell expansion ($ or backtick) is not allowed".into()),
             '(' | ')' => return Err("subshells and groups are not allowed".into()),
@@ -1316,7 +1340,10 @@ fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
                 if chars.get(i + 1) == Some(&'>') {
                     i += 1;
                 }
-                if chars.get(i + 1) == Some(&'&') {
+                if lenient && chars.get(i + 1) == Some(&'(') {
+                    // `>(cmd)`: the inner command is its own segment.
+                    toks.push(Tok::Sep);
+                } else if chars.get(i + 1) == Some(&'&') {
                     // `>&2`, `>&-`
                     i += 1;
                     let mut j = i + 1;
@@ -1325,6 +1352,12 @@ fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
                         .is_some_and(|c| c.is_ascii_digit() || *c == '-')
                     {
                         j += 1;
+                    }
+                    if j == i + 1 && lenient {
+                        // `>&file`: like `&>file`.
+                        toks.push(Tok::Out);
+                        i += 1;
+                        continue;
                     }
                     if j == i + 1 {
                         return Err("unsupported redirection".into());
@@ -1339,6 +1372,17 @@ fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
                 }
             }
             '<' => {
+                if lenient && matches!(chars.get(i + 1), Some('<' | '(' | '&')) {
+                    // Heredoc, here-string, `<(cmd)` or `<&fd`: what follows
+                    // is scanned as its own segment.
+                    flush!();
+                    while matches!(chars.get(i + 1), Some('<' | '&' | '-')) {
+                        i += 1;
+                    }
+                    toks.push(Tok::Sep);
+                    i += 1;
+                    continue;
+                }
                 if matches!(chars.get(i + 1), Some('<' | '(' | '&')) {
                     return Err("heredocs and process substitution are not allowed".into());
                 }
@@ -1364,7 +1408,16 @@ fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
 }
 
 fn parse_shell(s: &str) -> Result<Vec<Segment>, String> {
-    let toks = tokenize(s)?;
+    parse_shell_mode(s, false)
+}
+
+/// [`parse_shell`] in lenient mode: never fails (see [`tokenize`]).
+fn parse_shell_lenient(s: &str) -> Vec<Segment> {
+    parse_shell_mode(s, true).unwrap_or_default()
+}
+
+fn parse_shell_mode(s: &str, lenient: bool) -> Result<Vec<Segment>, String> {
+    let toks = tokenize(s, lenient)?;
     let mut segs: Vec<Segment> = Vec::new();
     let mut cur = Segment::default();
     let mut pending: Option<bool> = None; // Some(input?) while awaiting a redirect target
@@ -1393,7 +1446,10 @@ fn parse_shell(s: &str) -> Result<Vec<Segment>, String> {
             Tok::Dup => {}
             Tok::Sep | Tok::Pipe => {
                 if pending.is_some() {
-                    return Err("redirection without a target".into());
+                    if !lenient {
+                        return Err("redirection without a target".into());
+                    }
+                    pending = None;
                 }
                 let is_pipe = t == Tok::Pipe;
                 cur.piped_before = piped_before;
@@ -1403,7 +1459,7 @@ fn parse_shell(s: &str) -> Result<Vec<Segment>, String> {
             }
         }
     }
-    if pending.is_some() {
+    if pending.is_some() && !lenient {
         return Err("redirection without a target".into());
     }
     cur.piped_before = piped_before;
