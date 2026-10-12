@@ -108,11 +108,35 @@ stateDiagram-v2
   AwaitingChanges --> AddressingComments: ReviewSubmitted / CommentAdded
   AddressingComments --> AwaitingChanges: job done, commits pushed
   AwaitingChanges --> Reviewing: new commits (synchronize)
+  AwaitingChanges --> ReadyToMerge: CI ok, review ok, mergeable ok
+  ReadyToMerge --> Merging: UI merge action (write access, readiness all ok)
+  ReadyToMerge --> Reviewing: new commits
+  ReadyToMerge --> AwaitingChanges: CI red or review changes
+  Merging --> Merged: merge job result merged / already_merged
+  Merging --> Reviewing: head_moved
+  Merging --> AwaitingChanges: not_mergeable (merge_error set)
   AwaitingChanges --> Merged: WorkItemClosed (merged)
   AwaitingChanges --> Closed: WorkItemClosed
   Merged --> [*]
   Closed --> [*]
 ```
+
+#### Merging
+enzarb never merges its own PRs on its own. A person triggers the merge from the UI.
+
+- **Entering `ReadyToMerge`:** from `AwaitingChanges` once all three readiness checks in `state_data.checklist` (`ci`, `review`, `mergeable`) are `ok`:
+  - `ci`: every check run and commit status on the head commit passes, not only branch-protection required checks. A repo with no CI counts as passing. The aggregation rule is in enzarb-connectors `docs/connectors.md`; `CiStatusChanged` events (from `check_suite`, `check_run` and `status` webhooks) trigger a re-evaluation.
+  - `review`: enzarb's own review of the current head approves. No human GitHub review is required (see [gaps.md](gaps.md)); the Merge click is the human gate.
+  - `mergeable`: the provider reports the PR as mergeable (`get_merge_readiness`).
+- **Leaving `ReadyToMerge`:** new commits send it back to `Reviewing`; CI going red or review changes send it back to `AwaitingChanges`; `WorkItemClosed` closes it as usual.
+- **Merge action:** `submit_action(..., 'merge')` produces `MergeRequested`, accepted only in `ReadyToMerge`. The reducer rejects it (a `transitions.note`, not a SQL error) if the clicking user lacks write access (`Connector::check_permission` on the actor login) or if readiness is no longer all `ok`. On acceptance the state is `Merging` and a merge job runs `merge_change_request`, pinned to the head SHA it was approved at.
+- **Merge job results:**
+  - `merged` or `already_merged` → `Merged`;
+  - `head_moved` → `Reviewing`;
+  - `not_mergeable` → `AwaitingChanges` with `state_data.merge_error` set.
+- **New commits during `Merging`** do not cancel the merge. It is pinned to the head, so GitHub refuses it and the job returns `head_moved`.
+- **Squash only.** The commit title comes from `squash_title(title, head_ref)` (workflows `machine/title.rs`): the PR title when it is already a Conventional Commit, otherwise a type prefix derived for the PR. See the engine code for the exact derivation.
+- **Invariant:** nothing but a UI Merge action merges. No event from a connector, comment or mention, and no timer, can cause `MergeRequested`.
 
 ### `mention`
 `Mentioned` (`@enzarb …` anywhere) → one `agent_task` job → reply posted → Done. If the mention is on an item that already has a workflow, it goes to that workflow as a comment instead. Exception: an explicit `@enzarb` mention by a user with write access on a `Failed` (or, for issues, `Stale`) `issue` or `change_request` item retries it, exactly like the UI retry. Mentions on finished items (`Done`, `Duplicate`, `Cancelled`) or from users without write access are still ignored, silently.
