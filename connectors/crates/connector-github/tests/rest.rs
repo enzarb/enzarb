@@ -1427,7 +1427,7 @@ async fn mint_read_credential_is_read_only_and_scoped() {
         .and(ValidAppJwt)
         .and(body_json(json!({
             "repositories": ["enzarb-ui", "enzarb-proto"],
-            "permissions": {"contents": "read"},
+            "permissions": {"contents": "read", "packages": "read"},
         })))
         .respond_with(
             ResponseTemplate::new(201)
@@ -1499,4 +1499,73 @@ async fn mint_read_credential_rejects_empty_and_foreign_repos() {
             .await,
         Err(Error::Invalid(_))
     ));
+}
+
+async fn mount_installation(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path("/repos/enzarb/enzarb-ui/installation"))
+        .and(ValidAppJwt)
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": INSTALLATION})))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn mint_read_credential_falls_back_without_packages_permission() {
+    for status in [422u16, 403] {
+        let server = MockServer::start().await;
+        mount_installation(&server).await;
+        let tokens = format!("/app/installations/{INSTALLATION}/access_tokens");
+        Mock::given(method("POST"))
+            .and(path(tokens.clone()))
+            .and(body_json(json!({
+                "repositories": ["enzarb-ui"],
+                "permissions": {"contents": "read", "packages": "read"},
+            })))
+            .respond_with(ResponseTemplate::new(status).set_body_json(json!({
+                "message": "The permissions requested are not granted to this installation."
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(tokens))
+            .and(body_json(json!({
+                "repositories": ["enzarb-ui"],
+                "permissions": {"contents": "read"},
+            })))
+            .respond_with(
+                ResponseTemplate::new(201)
+                    .set_body_json(json!({"token": "ghs_narrow", "expires_at": ts(3600)})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let cred = connector(&server)
+            .mint_read_credential(&[repo_named("enzarb-ui")], "deps")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(cred.token, "ghs_narrow");
+        assert!(!format!("{cred:?}").contains("ghs_narrow"));
+    }
+}
+
+#[tokio::test]
+async fn mint_read_credential_does_not_retry_unrelated_errors() {
+    let server = MockServer::start().await;
+    mount_installation(&server).await;
+    Mock::given(method("POST"))
+        .and(path(format!(
+            "/app/installations/{INSTALLATION}/access_tokens"
+        )))
+        .respond_with(ResponseTemplate::new(422).set_body_json(json!({"message": "bad repo"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let err = connector(&server)
+        .mint_read_credential(&[repo_named("enzarb-ui")], "deps")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Invalid(_)));
 }

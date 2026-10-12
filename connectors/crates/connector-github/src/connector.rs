@@ -855,19 +855,45 @@ impl Connector for GitHubConnector {
                 names.push(r.repo.clone());
             }
         }
-        let t = self
-            .create_token(
-                id,
-                Some(json!({
-                    "repositories": names,
-                    "permissions": { "contents": "read" },
-                })),
-            )
-            .await?;
+        // `packages: read` lets the sandbox `npm ci` private packages from
+        // npm.pkg.github.com. The App may not have been granted it yet (or the
+        // installation not accepted it): GitHub then rejects the whole request,
+        // so fall back to contents-only rather than break the deps token.
+        let wide = json!({
+            "repositories": names,
+            "permissions": { "contents": "read", "packages": "read" },
+        });
+        let t = match self.create_token(id, Some(wide)).await {
+            Ok(t) => t,
+            Err(Error::Invalid(m) | Error::PermissionDenied(m)) if is_permission_rejection(&m) => {
+                // Only the status/body from GitHub is logged, never a token.
+                tracing::warn!(
+                    "GitHub rejected packages:read for the deps credential; \
+                     falling back to contents:read (grant the App Packages: read): {m}"
+                );
+                self.create_token(
+                    id,
+                    Some(json!({
+                        "repositories": names,
+                        "permissions": { "contents": "read" },
+                    })),
+                )
+                .await?
+            }
+            Err(e) => return Err(e),
+        };
         Ok(Some(ReadCred {
             token: t.token,
             repos: repos.to_vec(),
             expires_at: t.expires_at,
         }))
     }
+}
+
+/// Whether an error from the token endpoint is GitHub refusing the requested
+/// permissions (422 or 403 whose body names permissions), as opposed to a bad
+/// JWT or an unknown installation.
+fn is_permission_rejection(detail: &str) -> bool {
+    (detail.contains(": 422 ") || detail.contains(": 403 "))
+        && detail.to_ascii_lowercase().contains("permission")
 }
