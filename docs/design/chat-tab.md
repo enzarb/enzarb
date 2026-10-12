@@ -179,7 +179,7 @@ Modules:
   - `shutdown` and `idle` reconnect only when the page is visible (`visibilitychange`). For `idle`, the reconnect waits for the user's next action.
   - Each reconnect mints a fresh token.
 - Gating: the Chat page requires `project.ready` and the Claude credential, using the existing `CredentialStatus` and the `/claude` link.
-- Feature flag: `ENZARB_UI_CHAT` (server config, exposed through the layout load). When off, the nav item is hidden and `/chat` returns 404.
+- No feature flag (removed in ui v0.16.0): the Chat nav item is always listed. When the sandbox or proxy does not advertise `acp` (older image, or `ENZARB_MAX_CHATS=0`), the page shows a "Chat not available" state.
 
 Tests (Vitest, `*.svelte.test.ts`):
 - reducer: merging, tool-call lifecycle, and load-replay idempotence;
@@ -229,8 +229,8 @@ Tests (Vitest, `*.svelte.test.ts`):
 1. Release order: **proto → sandbox-container → sandbox-proxy → ui → helm**. Each consumer bumps `enzarb-proto` via `cargo update -p enzarb-proto` / the npm version.
 2. The sandbox image ships with chat enabled (`ENZARB_MAX_CHATS=1`) but inert: no client opens `acp` until the proxy and UI support it. A new image reaches each Project through the existing drain-first roll (the image is a pod-shape change, so `pendingChange` → drain → recreate). Until then that Project's chat page says "updates on the next sandbox restart". No forced rolls.
 3. The proxy can deploy before or after the image; skew is handled by `features` (section 1).
-4. UI behind `ENZARB_UI_CHAT` (helm `ui.chat.enabled`, default `false`). Turn it on for oldie after the system checklist passes, then make it the chart default in a later release. Deploys go through the updater as usual.
-5. Rollback: turn the UI flag off, or set `ENZARB_MAX_CHATS=0` in the sandbox env. That is a pod-shape change, so it drains first. The flag is the fast path.
+4. The UI has no flag (removed in ui v0.16.0 and enzarb-helm v0.56.0 after validation; the chart keeps `ui.chat.enabled` only as a deprecated no-op schema key for one release). Rollout was gated by version skew only: the Chat tab is always listed and degrades to "Chat not available" until the sandbox and proxy advertise `acp`. Deploys go through the updater as usual.
+5. Rollback: roll the sandbox image back (drain-first), or set `ENZARB_MAX_CHATS=0` in the sandbox env (kill switch: no `acp` feature and `chat_disabled` open errors). Both are pod-shape changes, so they drain first. There is no UI flag.
 6. Docs: update `docs/contracts.md` §3 (filesystem: `worktrees/chat-*`, `.enzarb/chats/`), §4 (mux additions), §7 (proxy forwards features, idle timeout); `enzarb-proto/docs/protocol.md`; new **ADR-0014 "Interactive chat over ACP"** recording the decisions above (it extends ADR-0011).
 
 ## 9. Security review checklist
@@ -293,17 +293,17 @@ Tests (Vitest, `*.svelte.test.ts`):
 - Acceptance: section 6 tests.
 - Risk: medium. Size: L. Deps: P1.
 
-**U3. enzarb-ui: Chat page wiring and flag**
-- Scope: `Chat.svelte`, `chat/+page.svelte`, the connection remote function, `ENZARB_UI_CHAT`, nav item, backoff, sessionStorage resume, Playwright smoke test against the stub.
+**U3. enzarb-ui: Chat page wiring**
+- Scope: `Chat.svelte`, `chat/+page.svelte`, the connection remote function, nav item, backoff, sessionStorage resume, Playwright smoke test against the stub.
 - Risk: medium. Size: M. Deps: U1, U2.
 
 **H1. enzarb-helm: values and image bumps**
-- Scope: `ui.chat.enabled` (default false), proxy idle timeout value, sandbox `ENZARB_MAX_CHATS` passthrough (if the operator's env injection needs it; otherwise image default), chart version bump.
+- Scope: proxy idle timeout value, sandbox `ENZARB_MAX_CHATS` passthrough (if the operator's env injection needs it; otherwise image default), chart version bump.
 - Acceptance: `helm lint enzarb`.
 - Risk: low. Size: S. Deps: S2, X1, U3 releases.
 
 **O1. Enable on oldie and validate**
-- Scope: run the system checklist (section 7); then flip the chart default.
+- Scope: run the system checklist (section 7). The flag was later removed (ui v0.16.0, enzarb-helm v0.56.0).
 - Size: S. Deps: H1.
 
 **F1 (follow-up). enzarb-sandbox-proxy: cookie + Origin auth on `/sandbox/`**
