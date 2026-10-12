@@ -55,14 +55,19 @@ type Callbacks = Arc<Mutex<Vec<(String, RunFinished)>>>;
 struct CbState {
     got: Callbacks,
     fail_first: Arc<Mutex<u32>>,
+    /// Status answered to the failing attempts.
+    fail_status: Arc<Mutex<StatusCode>>,
+    /// Every callback request seen, failed or not.
+    attempts: Arc<Mutex<u32>>,
 }
 
 async fn cb(State(s): State<CbState>, h: HeaderMap, Json(b): Json<RunFinished>) -> StatusCode {
+    *s.attempts.lock().unwrap() += 1;
     {
         let mut n = s.fail_first.lock().unwrap();
         if *n > 0 {
             *n -= 1;
-            return StatusCode::INTERNAL_SERVER_ERROR;
+            return *s.fail_status.lock().unwrap();
         }
     }
     let auth = h
@@ -79,6 +84,7 @@ struct Env {
     addr: SocketAddr,
     cb_url: String,
     got: Callbacks,
+    cbs: CbState,
     dir: tempfile::TempDir,
     origin: PathBuf,
     workspace: PathBuf,
@@ -134,10 +140,12 @@ async fn start_with(fail_callbacks: u32, mise_script: Option<&str>) -> Env {
     let cbs = CbState {
         got: got.clone(),
         fail_first: Arc::new(Mutex::new(fail_callbacks)),
+        fail_status: Arc::new(Mutex::new(StatusCode::INTERNAL_SERVER_ERROR)),
+        attempts: Arc::default(),
     };
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let cb_url = format!("http://{}/cb", l.local_addr().unwrap());
-    let app = Router::new().route("/cb", post(cb)).with_state(cbs);
+    let app = Router::new().route("/cb", post(cb)).with_state(cbs.clone());
     tokio::spawn(async move { axum::serve(l, app).await });
 
     let mise_bin = mise_script.map_or(String::new(), |body| {
@@ -175,6 +183,7 @@ async fn start_with(fail_callbacks: u32, mise_script: Option<&str>) -> Env {
         addr,
         cb_url,
         got,
+        cbs,
         dir,
         origin,
         workspace,
@@ -245,6 +254,46 @@ impl Env {
 
     fn run_dir(&self, id: &str) -> PathBuf {
         self.workspace.join(".enzarb/runs").join(id)
+    }
+
+    /// Make the next `n` callbacks answer `status`.
+    fn fail_callbacks(&self, n: u32, status: StatusCode) {
+        *self.cbs.fail_first.lock().unwrap() = n;
+        *self.cbs.fail_status.lock().unwrap() = status;
+    }
+
+    fn attempts(&self) -> u32 {
+        *self.cbs.attempts.lock().unwrap()
+    }
+
+    /// Wait until the run's `state.json` carries the `abandoned` callback marker.
+    async fn abandoned(&self, id: &str) {
+        let path = self.run_dir(id).join("state.json");
+        timeout(T, async {
+            loop {
+                let v: Option<serde_json::Value> = std::fs::read(&path)
+                    .ok()
+                    .and_then(|b| serde_json::from_slice(&b).ok());
+                if v.is_some_and(|v| v["callback"] == "abandoned") {
+                    return;
+                }
+                sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("callback abandoned");
+    }
+
+    /// A second manager over the same workspace, as after a pod roll.
+    fn restart(&self) -> AgentRunManager {
+        let cfg = Config {
+            workspace: self.workspace.clone(),
+            callback_backoff: Duration::from_millis(100),
+            ..Config::default()
+        };
+        let m = AgentRunManager::new(cfg, Reaper::new(false));
+        m.recover();
+        m
     }
 }
 
@@ -824,6 +873,127 @@ async fn interrupted_runs_fail_on_restart_and_pending_callbacks_resume() {
     let (_, fin) = env.finished("stale").await;
     assert_eq!(fin.outcome, RunOutcome::Failed);
     assert!(fin.summary.contains("restarted"), "{}", fin.summary);
+}
+
+#[tokio::test]
+async fn rejected_callback_with_401_is_abandoned_after_one_attempt() {
+    let env = start(0).await;
+    env.fail_callbacks(u32::MAX, StatusCode::UNAUTHORIZED);
+    let (session, _e) = env.connect().await;
+    session
+        .run_start(env.run("job-401", "EDIT", "main", "enzarb/issue-401", false))
+        .await
+        .unwrap();
+    env.abandoned("job-401").await;
+    sleep(Duration::from_millis(500)).await; // several backoff periods
+    assert_eq!(env.attempts(), 1);
+    let rd = env.run_dir("job-401");
+    assert!(!rd.join("callback.json").exists());
+    let state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(rd.join("state.json")).unwrap()).unwrap();
+    assert_eq!(state["state"], "succeeded");
+    assert_eq!(state["callback"], "abandoned");
+    assert!(
+        state["summary"]
+            .as_str()
+            .unwrap()
+            .contains("done: enzarb/issue-401")
+    );
+    assert!(rd.join("transcript.jsonl").exists());
+    // an abandoned run is terminal: it still answers status and holds nothing
+    let info = session.run_status("job-401").await.unwrap();
+    assert_eq!(info.state, RunPhase::Succeeded);
+    session
+        .run_start(env.run("job-next", "EDIT", "main", "enzarb/issue-401", false))
+        .await
+        .unwrap();
+    // the new run is rejected with the same 401: let it settle (one attempt, then
+    // abandoned) so the count below is not racing its in-flight callback
+    env.abandoned("job-next").await;
+    sleep(Duration::from_millis(500)).await;
+    assert_eq!(env.attempts(), 2, "one attempt per run");
+
+    // a restart does not resurrect the retries of either run
+    let _m = env.restart();
+    sleep(Duration::from_millis(500)).await;
+    assert_eq!(env.attempts(), 2, "no further attempts after a restart");
+    assert!(!rd.join("callback.json").exists());
+    assert!(!env.run_dir("job-next").join("callback.json").exists());
+}
+
+#[tokio::test]
+async fn transient_callback_statuses_keep_retrying() {
+    for status in [
+        StatusCode::SERVICE_UNAVAILABLE,
+        StatusCode::TOO_MANY_REQUESTS,
+        StatusCode::REQUEST_TIMEOUT,
+    ] {
+        let env = start(0).await;
+        env.fail_callbacks(2, status);
+        let (session, _e) = env.connect().await;
+        session
+            .run_start(env.run("job-r", "NOOP", "main", "enzarb/issue-r", false))
+            .await
+            .unwrap();
+        let (_, fin) = env.finished("job-r").await;
+        assert_eq!(fin.run_id, "job-r", "{status}");
+        assert_eq!(env.attempts(), 3, "{status}");
+        sleep(Duration::from_millis(200)).await;
+        let state: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(env.run_dir("job-r").join("state.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(state.get("callback").is_none(), "{state}");
+        assert!(!env.run_dir("job-r").join("callback.json").exists());
+    }
+}
+
+#[tokio::test]
+async fn stale_callback_without_marker_gets_one_attempt_then_is_abandoned() {
+    // the job-1812 situation: finished before the upgrade, callback.json left behind
+    let env = start(0).await;
+    env.fail_callbacks(u32::MAX, StatusCode::UNAUTHORIZED);
+    let rd = env.run_dir("job-1812");
+    std::fs::create_dir_all(&rd).unwrap();
+    let req = env.run("job-1812", "NOOP", "main", "enzarb/issue-1812", false);
+    std::fs::write(rd.join("request.json"), serde_json::to_vec(&req).unwrap()).unwrap();
+    std::fs::write(
+        rd.join("state.json"),
+        serde_json::to_vec(&json!({
+            "run_id": "job-1812", "state": "succeeded", "repo_url": req.repo_url,
+            "base_ref": "main", "branch": "enzarb/issue-1812", "push": false,
+            "summary": "done", "created_ms": 1, "finished_ms": 2
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(rd.join("transcript.jsonl"), "{\"kind\":\"finished\"}\n").unwrap();
+    std::fs::write(
+        rd.join("callback.json"),
+        serde_json::to_vec(&json!({
+            "url": env.cb_url, "token": "cbtok", "first_attempt_ms": 1,
+            "body": {
+                "run_id": "job-1812", "outcome": "succeeded", "exit_code": 0,
+                "summary": "done", "branch": "enzarb/issue-1812", "head_sha": "", "pushed": false
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let _m = env.restart();
+    env.abandoned("job-1812").await;
+    sleep(Duration::from_millis(500)).await;
+    assert_eq!(env.attempts(), 1);
+    assert!(!rd.join("callback.json").exists());
+    assert!(rd.join("transcript.jsonl").exists());
+    let state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(rd.join("state.json")).unwrap()).unwrap();
+    assert_eq!(state["summary"], "done");
+
+    // and a further restart makes no attempt at all
+    let _m2 = env.restart();
+    sleep(Duration::from_millis(500)).await;
+    assert_eq!(env.attempts(), 1);
 }
 
 #[tokio::test]

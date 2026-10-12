@@ -7,7 +7,8 @@
 //!    run the agent in it over ACP (`acp`), optionally commit leftovers and push `branch`;
 //! 3. terminal (`succeeded | failed | cancelled`): `state.json` is final and
 //!    the [`RunFinished`] callback is delivered with retries
-//!    (`callback.json` exists until a 2xx).
+//!    (`callback.json` exists until a 2xx or until the callback is abandoned:
+//!    a permanent 4xx, or 24 h of failures; `state.json` then says `abandoned`).
 //!
 //! On-disk layout:
 //! * `<ws>/repos/<name>-<hash>/`: clones (one per repo URL);
@@ -19,7 +20,7 @@
 //!   finish a run after a restart);
 //! * `.../transcript.jsonl`: one JSON object per line (state changes, git and
 //!   agent stderr lines, ACP updates, permission decisions and the agent result);
-//! * `.../callback.json` (0600): the pending callback, removed once delivered.
+//! * `.../callback.json` (0600): the pending callback, removed once delivered or abandoned.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -116,6 +117,21 @@ struct RunRecord {
     started_ms: Option<u64>,
     #[serde(default)]
     finished_ms: Option<u64>,
+    /// Set when delivery of the callback was given up on (never retried again).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    callback: Option<CallbackState>,
+}
+
+/// Terminal outcome of callback delivery, when it is not a success.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CallbackState {
+    Abandoned,
+}
+
+/// A rejected callback that can never succeed on retry: 4xx except 408/429.
+fn callback_status_is_permanent(s: reqwest::StatusCode) -> bool {
+    s.is_client_error() && s != reqwest::StatusCode::REQUEST_TIMEOUT && s.as_u16() != 429
 }
 
 impl RunRecord {
@@ -345,7 +361,9 @@ impl AgentRunManager {
                     &run,
                     Finish::failed("sandbox-init restarted while the run was in progress"),
                 );
-            } else if dir.join("callback.json").exists() {
+            } else if run.rec.lock().unwrap().callback != Some(CallbackState::Abandoned)
+                && dir.join("callback.json").exists()
+            {
                 inner.spawn_callback(run.dir.clone(), run.id.clone());
             }
         }
@@ -391,6 +409,7 @@ impl RunManager for AgentRunManager {
             created_ms: now_ms(),
             started_ms: None,
             finished_ms: None,
+            callback: None,
         };
         let mut stored = req.clone();
         stored.clone_token = String::new();
@@ -883,16 +902,34 @@ impl Inner {
                     tracing::info!(run = %run_id, "run-finished callback delivered");
                     return;
                 }
+                Ok(r) if callback_status_is_permanent(r.status()) => {
+                    self.abandon_callback(&dir, &run_id, &format!("rejected with {}", r.status()));
+                    return;
+                }
                 Ok(r) => tracing::warn!(run = %run_id, status = %r.status(), "callback rejected"),
                 Err(e) => tracing::warn!(run = %run_id, error = %e, "callback failed"),
             }
             if now_ms().saturating_sub(p.first_attempt_ms) > CALLBACK_GIVE_UP.as_millis() as u64 {
-                tracing::error!(run = %run_id, "giving up on callback");
+                self.abandon_callback(&dir, &run_id, "giving up after 24h of failures");
                 return;
             }
             tokio::time::sleep(delay).await;
             delay = (delay * 2).min(MAX_CALLBACK_BACKOFF);
         }
+    }
+
+    /// Stop delivering a run's callback for good: mark it in `state.json`
+    /// (the result and transcript stay), drop `callback.json` (it holds the
+    /// bearer token) so a restart does not resurrect the retries, and log once.
+    fn abandon_callback(&self, dir: &Path, run_id: &str, reason: &str) {
+        tracing::warn!(run = %run_id, reason, "abandoning run-finished callback");
+        let run = self.runs.lock().unwrap().get(run_id).cloned();
+        if let Some(run) = run {
+            let mut rec = run.rec.lock().unwrap();
+            rec.callback = Some(CallbackState::Abandoned);
+            run.persist(&rec);
+        }
+        let _ = std::fs::remove_file(dir.join("callback.json"));
     }
 
     fn repo_lock(&self, dir: &Path) -> Arc<tokio::sync::Mutex<()>> {
@@ -1406,6 +1443,38 @@ mod deps_tests {
         let out = redact("a ghs_secret123 b", &secrets);
         assert_eq!(out, "a *** b");
         assert!(!redact(&basic_b64("ghs_secret123"), &secrets).contains("ghs_"));
+    }
+}
+
+#[cfg(test)]
+mod callback_tests {
+    use super::*;
+    use reqwest::StatusCode;
+
+    #[test]
+    fn permanent_statuses() {
+        for c in [400, 401, 403, 404, 410, 422] {
+            let s = StatusCode::from_u16(c).unwrap();
+            assert!(callback_status_is_permanent(s), "{c}");
+        }
+        for c in [300, 302, 408, 429, 500, 502, 503, 504] {
+            let s = StatusCode::from_u16(c).unwrap();
+            assert!(!callback_status_is_permanent(s), "{c}");
+        }
+    }
+
+    #[test]
+    fn old_state_json_has_no_callback_marker() {
+        let mut rec: RunRecord = serde_json::from_value(json!({
+            "run_id": "r", "state": "succeeded", "repo_url": "u", "base_ref": "main",
+            "branch": "b", "push": false, "created_ms": 1
+        }))
+        .unwrap();
+        assert_eq!(rec.callback, None);
+        assert!(!serde_json::to_string(&rec).unwrap().contains("callback"));
+        rec.callback = Some(CallbackState::Abandoned);
+        let text = serde_json::to_string(&rec).unwrap();
+        assert!(text.contains(r#""callback":"abandoned""#), "{text}");
     }
 }
 
