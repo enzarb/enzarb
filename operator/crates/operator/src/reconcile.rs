@@ -4,7 +4,10 @@ use crate::conditions::{self, Check, Observed, RollPending};
 use crate::desired::{self, Defaults, FIELD_MANAGER, Ownership};
 use crate::roll::{self, DEFER_POLL};
 use enzarb_crds::upstream::sandbox::Sandbox;
-use enzarb_crds::{COND_SANDBOX_IMAGE_ROLL, Project, ProjectStatus};
+use enzarb_crds::{
+    COND_SANDBOX_IMAGE_ROLL, Project, ProjectStatus, REASON_WORKSPACE_RESIZE_FAILED,
+    REASON_WORKSPACE_RESIZING,
+};
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Secret};
 use k8s_openapi::api::networking::v1::NetworkPolicy;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
@@ -235,6 +238,7 @@ async fn drive(
     }
 
     let pvcs: Api<PersistentVolumeClaim> = Api::namespaced(ctx.client.clone(), ns);
+    let mut resizing = None;
     for (what, pvc) in [
         ("workspace PVC", desired::pvc(p, d)),
         ("docker PVC", desired::docker_pvc(p, d)),
@@ -247,11 +251,25 @@ async fn drive(
             obs.resources = blocked(what, &name, &why);
             return Ok(());
         }
-        pvcs.patch(&name, &ssa(), &Patch::Apply(&pvc))
-            .await
-            .map_err(|e| res_err(obs, what, e))?;
+        match pvcs.patch(&name, &ssa(), &Patch::Apply(&pvc)).await {
+            Ok(applied) => {
+                if resizing.is_none() && pvc_resizing(&applied) {
+                    resizing = Some(Check::Pending(
+                        REASON_WORKSPACE_RESIZING.into(),
+                        format!("{what} {name} is being expanded"),
+                    ));
+                }
+            }
+            Err(e) => {
+                if let Some(check) = classify_pvc_error(what, &name, &e) {
+                    obs.resources = check;
+                    return Ok(());
+                }
+                return Err(res_err(obs, what, e).into());
+            }
+        }
     }
-    obs.resources = Check::Ok;
+    obs.resources = resizing.unwrap_or(Check::Ok);
 
     let sandboxes: Api<Sandbox> = Api::namespaced(ctx.client.clone(), ns);
     let bn = p.sandbox_name();
@@ -389,9 +407,112 @@ fn new_token() -> String {
     })
 }
 
+/// True while the PVC reports an expansion in flight.
+fn pvc_resizing(pvc: &PersistentVolumeClaim) -> bool {
+    pvc.status
+        .as_ref()
+        .and_then(|s| s.conditions.as_ref())
+        .is_some_and(|cs| {
+            cs.iter().any(|c| {
+                matches!(c.type_.as_str(), "Resizing" | "FileSystemResizePending")
+                    && c.status == "True"
+            })
+        })
+}
+
+/// Turns an API server refusal of a PVC patch (a shrink, or a StorageClass that cannot expand)
+/// into a failure that needs a person. Anything else returns `None` and is retried.
+fn classify_pvc_error(what: &str, name: &str, e: &kube::Error) -> Option<Check> {
+    let kube::Error::Api(status) = e else {
+        return None;
+    };
+    if status.code != 422 && status.code != 403 {
+        return None;
+    }
+    let msg = status.message.to_lowercase();
+    if !["storage", "shrink", "less than previous", "expansion"]
+        .iter()
+        .any(|k| msg.contains(k))
+    {
+        return None;
+    }
+    Some(Check::Failure(
+        REASON_WORKSPACE_RESIZE_FAILED.into(),
+        format!(
+            "{what} {name}: {}; storage can only grow and the StorageClass must set allowVolumeExpansion",
+            status.message
+        ),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn api_err(code: u16, message: &str) -> kube::Error {
+        kube::Error::Api(Box::new(
+            kube::core::Status::failure(message, "Invalid").with_code(code),
+        ))
+    }
+
+    #[test]
+    fn rejected_resize_is_a_failure_the_ui_shows_as_failed() {
+        for (code, msg) in [
+            (
+                422,
+                "spec.resources.requests.storage: Forbidden: field can not be less than previous value",
+            ),
+            (
+                422,
+                "only dynamically provisioned pvc can be resized and the storageclass that provisions the pvc must support resize",
+            ),
+            (
+                403,
+                "persistentvolumeclaims \"x\" is forbidden: expansion not allowed",
+            ),
+        ] {
+            match classify_pvc_error("workspace PVC", "sb-x-workspace", &api_err(code, msg)) {
+                Some(Check::Failure(reason, m)) => {
+                    assert_eq!(reason, "WorkspaceResizeFailed");
+                    assert!(reason.ends_with("Failed"));
+                    assert!(m.contains("sb-x-workspace") && m.contains(msg));
+                }
+                other => panic!("{code} {msg}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn other_pvc_errors_keep_retrying() {
+        assert!(classify_pvc_error("w", "n", &api_err(500, "storage backend down")).is_none());
+        assert!(classify_pvc_error("w", "n", &api_err(422, "name is invalid")).is_none());
+        let e = kube::Error::Service("connection refused".into());
+        assert!(classify_pvc_error("w", "n", &e).is_none());
+    }
+
+    #[test]
+    fn resize_in_flight_is_detected_from_pvc_conditions() {
+        use k8s_openapi::api::core::v1::{
+            PersistentVolumeClaimCondition, PersistentVolumeClaimStatus,
+        };
+        let mut pvc = PersistentVolumeClaim::default();
+        assert!(!pvc_resizing(&pvc));
+        let cond = |t: &str, s: &str| PersistentVolumeClaimCondition {
+            type_: t.into(),
+            status: s.into(),
+            ..Default::default()
+        };
+        pvc.status = Some(PersistentVolumeClaimStatus {
+            conditions: Some(vec![cond("FileSystemResizePending", "True")]),
+            ..Default::default()
+        });
+        assert!(pvc_resizing(&pvc));
+        pvc.status = Some(PersistentVolumeClaimStatus {
+            conditions: Some(vec![cond("Resizing", "False")]),
+            ..Default::default()
+        });
+        assert!(!pvc_resizing(&pvc));
+    }
 
     #[test]
     fn backoff_grows_and_caps() {

@@ -19,6 +19,13 @@ pub const CONDITION_TYPES: [&str; 3] = [COND_RESOURCES_READY, COND_SANDBOX_READY
 pub const REASON_INVALID_SPEC: &str = "InvalidSpec";
 /// Non-terminal `Unknown` reason for a retryable reconcile error (e.g. a transient API failure).
 pub const REASON_RETRYING: &str = "Retrying";
+/// Terminal `False` reason on `ResourcesReady` when the API server refuses a PVC resize (a shrink,
+/// or a StorageClass without `allowVolumeExpansion`). The `Failed` suffix makes the UI show it as
+/// failed.
+pub const REASON_WORKSPACE_RESIZE_FAILED: &str = "WorkspaceResizeFailed";
+/// In-progress `False` reason on `ResourcesReady` while a PVC expansion is running. Deliberately
+/// has no failure suffix.
+pub const REASON_WORKSPACE_RESIZING: &str = "WorkspaceResizing";
 /// Informational condition (not part of `CONDITION_TYPES`, so the UI checklist is unchanged) that
 /// is present, status `True`, only while the sandbox pod runs an outdated image and its
 /// recreation is deferred. It does not affect `Ready`.

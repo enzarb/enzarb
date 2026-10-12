@@ -97,6 +97,16 @@ Sources: [Docker in gVisor](https://gvisor.dev/docs/tutorials/docker-in-gvisor/)
 - Kata (experimental): `overlay2` needs the `docker` PVC to be mounted in the guest as a real block filesystem (ext4/xfs), not virtio-fs; with a virtio-fs-backed volume, override the profile to `--storage-driver=vfs`.
 - The sidecar runs as root with `runAsNonRoot: false` (dockerd requires it); the sandbox container stays uid 1000. Plain-HTTP registries are blocked by the Project's NetworkPolicy (443, DNS and the executor callback only).
 
+## Workspace sizing
+
+The workspace PVC `sb-<name>-workspace` holds the repo checkout, per-run worktrees and toolchains. Budget several GB of build output (e.g. cargo `target/`) per concurrent run plus about 3G of toolchains; for Rust monorepos use at least `40Gi`.
+
+- **Setting the size:** `spec.sandbox.storage`. If empty, the Project gets the default (`20Gi`).
+- **Growing:** raise `spec.sandbox.storage`; the operator re-applies the PVC on every reconcile. The StorageClass must set `allowVolumeExpansion: true`. PVCs cannot shrink.
+- **Status:** while the volume is being expanded, `ResourcesReady` is `False` with reason `WorkspaceResizing`. If the API server refuses the change (a shrink, or a StorageClass without expansion), `ResourcesReady` is `False` with reason `WorkspaceResizeFailed` and the server's message. Restore the old size or enable expansion to fix it.
+- **Changing the default:** if the default is ever changed, the PVC of every Project that does not set `storage` is grown (or reported as `WorkspaceResizeFailed` if the StorageClass cannot expand). Set `storage` explicitly to pin a size.
+- The operator cannot see disk usage, so there is no usage-high condition.
+
 ## Leader election
 
 The operator can run 2 replicas. All replicas serve health (`/readyz` is ready on standbys) and compete for a `coordination.k8s.io/v1` Lease. Only the holder runs the controller. The holder renews every 5s; if a renewal does not succeed for `duration - renew` (10s) or another holder appears, the process exits so it restarts as a standby. A standby takes over when the Lease is released (clean shutdown does this) or has not been renewed for the lease duration. Takeover races are resolved by the Lease `resourceVersion`.

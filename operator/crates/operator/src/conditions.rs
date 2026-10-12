@@ -437,4 +437,33 @@ mod tests {
         assert_eq!(c[1].status, "Unknown");
         assert_eq!(c[2].status, "False");
     }
+
+    #[test]
+    fn rejected_resize_fails_resources_and_ready_follows() {
+        let obs = Observed {
+            resources: Check::Failure("WorkspaceResizeFailed".into(), "cannot shrink".into()),
+            ..Observed::all_skipped()
+        };
+        let c = compute(1, &obs, &[], &t(0));
+        assert_eq!(c[0].type_, "ResourcesReady");
+        assert_eq!(c[0].status, "False");
+        assert_eq!(c[0].reason, "WorkspaceResizeFailed");
+        assert_eq!(c[0].message, "cannot shrink");
+        assert_eq!(c[2].type_, "Ready");
+        assert_eq!(c[2].status, "False");
+    }
+
+    #[test]
+    fn resizing_is_in_progress_not_failed() {
+        let obs = Observed {
+            resources: Check::Pending("WorkspaceResizing".into(), "expanding".into()),
+            sandbox: Check::Ok,
+        };
+        let c = compute(1, &obs, &[], &t(0));
+        assert_eq!(c[0].status, "False");
+        assert_eq!(c[0].reason, "WorkspaceResizing");
+        for suffix in ["Error", "Failed", "Failure"] {
+            assert!(!c[0].reason.ends_with(suffix));
+        }
+    }
 }

@@ -676,6 +676,16 @@ pub(crate) mod tests {
         assert_eq!(c["spec"]["resources"]["requests"]["storage"], "10Gi");
     }
 
+    #[test]
+    fn raised_storage_is_requested_and_docker_pvc_is_unaffected() {
+        let mut p = project("enzarb", "ruckc");
+        p.spec.sandbox.storage = "40Gi".into();
+        let c = v(&pvc(&p, &defaults()));
+        assert_eq!(c["spec"]["resources"]["requests"]["storage"], "40Gi");
+        let before = v(&docker_pvc(&project("enzarb", "ruckc"), &defaults()));
+        assert_eq!(v(&docker_pvc(&p, &defaults())), before);
+    }
+
     fn main_env(p: &Project) -> Vec<serde_json::Value> {
         let s = v(&sandbox(p, &defaults()));
         containers(&s)[0]["env"].as_array().unwrap().clone()
