@@ -389,6 +389,11 @@ async fn run_controller(
     // Projects are cluster-scoped; everything else is watched in the sandbox namespace only.
     let projects: Api<Project> = Api::all(client.clone());
     let sandboxes: Api<Sandbox> = Api::namespaced(client.clone(), &args.sandbox_namespace);
+    // The controller's own Projects reflector store backs the one-Project-per-repository check
+    // (`reconcile` waits for its first list, so no reconcile sees an empty cache).
+    let controller = Controller::new(projects.clone(), watcher::Config::default());
+    let reader = controller.store();
+    let related_store = reader.clone();
     let ctx = Arc::new(reconcile::Ctx::new(
         client,
         args.sandbox_roll_drain_timeout,
@@ -400,10 +405,15 @@ async fn run_controller(
             netpol,
             docker,
         },
+        reader,
     ));
     info!("starting controller");
-    Controller::new(projects, watcher::Config::default())
+    controller
         .owns(sandboxes, watcher::Config::default())
+        // A Project that is created, changed or deleted may change who wins a shared repository.
+        .watches(projects, watcher::Config::default(), move |changed| {
+            reconcile::related_projects(&changed, &related_store.state())
+        })
         .shutdown_on_signal()
         .run(reconcile::reconcile, reconcile::error_policy, ctx)
         .for_each(|res| async move {

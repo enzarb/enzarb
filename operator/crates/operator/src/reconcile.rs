@@ -13,6 +13,7 @@ use k8s_openapi::api::networking::v1::NetworkPolicy;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::api::{Api, Patch, PatchParams, PostParams};
 use kube::runtime::controller::Action;
+use kube::runtime::reflector::{ObjectRef, Store};
 use kube::{Client, ResourceExt};
 use rand::Rng;
 use serde_json::json;
@@ -25,6 +26,8 @@ use tracing::{info, warn};
 pub enum Error {
     #[error("kubernetes API: {0}")]
     Kube(#[from] kube::Error),
+    #[error("projects store not ready: {0}")]
+    StoreNotReady(String),
 }
 
 pub struct Ctx {
@@ -32,15 +35,23 @@ pub struct Ctx {
     pub defaults: Defaults,
     /// How long a deferred sandbox pod roll waits for idleness (see `roll`).
     pub roll_drain_timeout: Duration,
+    /// Cache of every Project, for the one-Project-per-repository check.
+    pub projects: Store<Project>,
     failures: Mutex<HashMap<String, u32>>,
 }
 
 impl Ctx {
-    pub fn new(client: Client, roll_drain_timeout: Duration, defaults: Defaults) -> Self {
+    pub fn new(
+        client: Client,
+        roll_drain_timeout: Duration,
+        defaults: Defaults,
+        projects: Store<Project>,
+    ) -> Self {
         Self {
             client,
             defaults,
             roll_drain_timeout,
+            projects,
             failures: Mutex::default(),
         }
     }
@@ -72,6 +83,11 @@ pub async fn reconcile(project: Arc<Project>, ctx: Arc<Ctx>) -> Result<Action, E
         // No finalizer: garbage collection removes everything the Project owns.
         return Ok(Action::await_change());
     }
+    // Until the first full list the cache is empty and every Project would look like a winner.
+    ctx.projects
+        .wait_until_ready()
+        .await
+        .map_err(|e| Error::StoreNotReady(e.to_string()))?;
     let action = apply(&project, &ctx).await?;
     ctx.reset(&name);
     Ok(action)
@@ -109,6 +125,16 @@ async fn apply(p: &Project, ctx: &Ctx) -> Result<Action, Error> {
         return Ok(Action::await_change());
     }
 
+    let cached = ctx.projects.state();
+    if let Some(msg) = repo_conflict(p, &cached) {
+        warn!(project = %name, "{msg}");
+        obs.resources = Check::Invalid(msg);
+        write_status(p, ctx, status, &obs, &Outcome::Keep).await?;
+        // The Projects watch may miss a winner that dropped the repository or read a stale
+        // store, so re-evaluate on the resync as well.
+        return Ok(Action::requeue(RESYNC));
+    }
+
     // Keep until the roll step has run, so an early exit never drops a pending change.
     let mut roll = Outcome::Keep;
     let result = drive(p, ctx, &mut obs, &mut status, &mut roll).await;
@@ -128,6 +154,35 @@ async fn apply(p: &Project, ctx: &Ctx) -> Result<Action, Error> {
     } else {
         Ok(Action::requeue(POLL_NOT_READY))
     }
+}
+
+/// The terminal message when an older Project already uses one of `p`'s repositories. Names the
+/// repository only, never the other Project. Only one Project may use a repository; the oldest
+/// by `(creationTimestamp, name)` wins.
+fn repo_conflict(p: &Project, all: &[Arc<Project>]) -> Option<String> {
+    let (key, _) = enzarb_crds::conflict_winner(p, all.iter().map(|o| o.as_ref()))?;
+    Some(format!(
+        "repository {key} is already used by an older Project"
+    ))
+}
+
+/// The other Projects that share a repository with `changed`: the ones whose conflict outcome may
+/// differ now that `changed` was created, changed or deleted. Also covers the repositories the
+/// cached version of `changed` listed, so a Project that dropped a repository still wakes the
+/// Projects it was blocking (when the store has not yet applied the change).
+pub fn related_projects(changed: &Project, all: &[Arc<Project>]) -> Vec<ObjectRef<Project>> {
+    let mut keys = changed.repo_keys();
+    for old in all.iter().filter(|o| o.name_any() == changed.name_any()) {
+        keys.extend(old.repo_keys());
+    }
+    if keys.is_empty() {
+        return Vec::new();
+    }
+    all.iter()
+        .filter(|o| o.name_any() != changed.name_any())
+        .filter(|o| o.repo_keys().iter().any(|k| keys.contains(k)))
+        .map(|o| ObjectRef::from_obj(o.as_ref()))
+        .collect()
 }
 
 /// What exists under an object name relative to this Project instance.
@@ -641,5 +696,74 @@ mod tests {
         assert_eq!(a.len(), 64);
         assert!(a.bytes().all(|b| b.is_ascii_hexdigit()));
         assert_ne!(a, new_token());
+    }
+
+    fn proj(name: &str, secs: i64, urls: &[&str]) -> Arc<Project> {
+        let mut p = desired::tests::project(name, "o");
+        p.spec.repositories = urls
+            .iter()
+            .map(|u| enzarb_crds::Repository {
+                url: (*u).into(),
+                connector: "github".into(),
+                default_branch: "main".into(),
+            })
+            .collect();
+        p.metadata.creation_timestamp = Some(Time(
+            k8s_openapi::jiff::Timestamp::from_second(secs).unwrap(),
+        ));
+        Arc::new(p)
+    }
+
+    const REPO: &str = "https://github.com/enzarb/x";
+
+    fn names(refs: Vec<ObjectRef<Project>>) -> Vec<String> {
+        let mut v: Vec<_> = refs.into_iter().map(|r| r.name).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn loser_message_names_the_repo_only() {
+        let all = vec![proj("winner", 1, &[REPO]), proj("loser", 2, &[REPO])];
+        assert_eq!(repo_conflict(&all[0], &all), None);
+        let msg = repo_conflict(&all[1], &all).unwrap();
+        assert!(msg.contains("github:enzarb/x"), "{msg}");
+        assert!(!msg.contains("winner"), "{msg}");
+    }
+
+    #[test]
+    fn winner_dropping_the_repo_still_wakes_the_loser() {
+        let old = proj("a", 1, &[REPO]);
+        let b = proj("b", 2, &[REPO]);
+        let all = vec![old, b];
+        // The new version of `a` no longer lists the repository.
+        let edited = proj("a", 1, &["https://github.com/enzarb/other"]);
+        assert_eq!(names(related_projects(&edited, &all)), ["b"]);
+        // With the store updated, the loser is released.
+        let after = vec![Arc::new((*edited).clone()), all[1].clone()];
+        assert!(repo_conflict(&after[1], &after).is_none());
+    }
+
+    #[test]
+    fn deleting_the_winner_releases_the_loser() {
+        let mut all = vec![proj("winner", 1, &[REPO]), proj("loser", 2, &[REPO])];
+        assert!(repo_conflict(&all[1], &all).is_some());
+        all.remove(0);
+        assert!(repo_conflict(&all[0], &all).is_none());
+    }
+
+    #[test]
+    fn mapper_returns_other_projects_sharing_a_repo() {
+        let a = proj("a", 1, &[REPO]);
+        let b = proj("b", 2, &["https://github.com/Enzarb/X.git"]);
+        let c = proj("c", 3, &["https://github.com/enzarb/other"]);
+        let all = vec![a.clone(), b.clone(), c.clone()];
+        // Updated or deleted winner, and a newly created older Project, all wake the others.
+        assert_eq!(names(related_projects(&a, &all)), ["b"]);
+        assert_eq!(names(related_projects(&b, &all)), ["a"]);
+        assert!(related_projects(&c, &all).is_empty());
+        // A deleted Project is no longer cached but still wakes the others.
+        let rest = vec![b.clone(), c];
+        assert_eq!(names(related_projects(&a, &rest)), ["b"]);
     }
 }

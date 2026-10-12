@@ -206,6 +206,107 @@ fn crd_enforces_name_limit_with_create_only_cel() {
     }
 }
 
+mod precedence {
+    use enzarb_crds::{Project, ProjectSpec, Repository, cmp_precedence, conflict_winner};
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
+    use std::cmp::Ordering;
+
+    fn proj(name: &str, secs: Option<i64>, repos: &[(&str, &str)]) -> Project {
+        let spec: ProjectSpec = serde_json::from_value(serde_json::json!({"owner": "o"})).unwrap();
+        let mut p = Project::new(name, spec);
+        p.spec.repositories = repos
+            .iter()
+            .map(|(c, u)| Repository {
+                url: (*u).into(),
+                connector: (*c).into(),
+                default_branch: "main".into(),
+            })
+            .collect();
+        p.metadata.creation_timestamp =
+            secs.map(|s| Time(k8s_openapi::jiff::Timestamp::from_second(s).unwrap()));
+        p
+    }
+
+    const GH: &str = "https://github.com/enzarb/x";
+
+    #[test]
+    fn ordering() {
+        let old = proj("zzz", Some(1), &[]);
+        let new = proj("aaa", Some(2), &[]);
+        assert_eq!(cmp_precedence(&old, &new), Ordering::Less);
+        let a = proj("a", Some(5), &[]);
+        let b = proj("b", Some(5), &[]);
+        assert_eq!(cmp_precedence(&a, &b), Ordering::Less);
+        assert_eq!(cmp_precedence(&b, &a), Ordering::Greater);
+        assert_eq!(cmp_precedence(&a, &a.clone()), Ordering::Equal);
+        let none = proj("a", None, &[]);
+        assert_eq!(cmp_precedence(&new, &none), Ordering::Less);
+        assert_eq!(cmp_precedence(&none, &new), Ordering::Greater);
+    }
+
+    #[test]
+    fn oldest_wins_and_newer_loses() {
+        let w = proj("w", Some(1), &[("github", GH)]);
+        let l = proj("l", Some(2), &[("github", GH)]);
+        let all = [w.clone(), l.clone()];
+        assert!(conflict_winner(&w, all.iter()).is_none());
+        let (key, by) = conflict_winner(&l, all.iter()).unwrap();
+        assert_eq!(key.to_string(), "github:enzarb/x");
+        assert_eq!(by.metadata.name.as_deref(), Some("w"));
+    }
+
+    #[test]
+    fn keys_are_normalized() {
+        let w = proj("w", Some(1), &[("github", GH)]);
+        for url in [
+            "https://github.com/Enzarb/X",
+            "https://github.com/enzarb/x.git",
+            "https://github.com/enzarb/x/",
+        ] {
+            let l = proj("l", Some(2), &[("github", url)]);
+            assert!(conflict_winner(&l, [&w].into_iter()).is_some(), "{url}");
+        }
+        let other = proj("l", Some(2), &[("gitlab", GH)]);
+        assert!(conflict_winner(&other, [&w].into_iter()).is_none());
+    }
+
+    #[test]
+    fn same_repo_twice_does_not_conflict_with_itself() {
+        let dup = format!("{GH}.git");
+        let p = proj("p", Some(1), &[("github", GH), ("github", &dup)]);
+        assert!(conflict_winner(&p, [&p].into_iter()).is_none());
+    }
+
+    #[test]
+    fn multi_repo_loses_on_any_shared_repo() {
+        let w = proj("w", Some(1), &[("github", "https://github.com/enzarb/b")]);
+        let l = proj(
+            "l",
+            Some(2),
+            &[
+                ("github", "https://github.com/enzarb/a"),
+                ("github", "https://github.com/enzarb/b"),
+            ],
+        );
+        let (key, _) = conflict_winner(&l, [&w].into_iter()).unwrap();
+        assert_eq!(key.to_string(), "github:enzarb/b");
+        // The older Project is not affected by the newer one.
+        assert!(conflict_winner(&w, [&l].into_iter()).is_none());
+    }
+
+    #[test]
+    fn terminating_project_releases_repo_and_malformed_urls_are_skipped() {
+        let mut w = proj("w", Some(1), &[("github", GH)]);
+        let l = proj("l", Some(2), &[("github", GH)]);
+        w.metadata.deletion_timestamp =
+            Some(Time(k8s_openapi::jiff::Timestamp::from_second(9).unwrap()));
+        assert!(conflict_winner(&l, [&w].into_iter()).is_none());
+        let bad = proj("a", Some(1), &[("github", "not a url")]);
+        let bad2 = proj("b", Some(2), &[("github", "not a url")]);
+        assert!(conflict_winner(&bad2, [&bad].into_iter()).is_none());
+    }
+}
+
 #[test]
 fn cpu_memory_and_pending_change_are_optional_and_bounded() {
     let yaml = enzarb_crds::project_crd_yaml();

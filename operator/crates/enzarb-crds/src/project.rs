@@ -6,6 +6,8 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
 use kube::{CustomResource, KubeSchema};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
+use std::collections::HashSet;
 
 /// Condition types, in the order the UI boot checklist shows them.
 ///
@@ -246,6 +248,58 @@ impl Project {
             .filter_map(|r| RepoKey::from_connector_url(&r.connector, &r.url).ok())
             .any(|k| k == want)
     }
+
+    /// The normalized keys of the linked repositories, in spec order. Repositories whose url does
+    /// not parse are skipped (the operator reports them as an invalid spec).
+    fn ordered_repo_keys(&self) -> Vec<RepoKey> {
+        self.spec
+            .repositories
+            .iter()
+            .filter_map(|r| RepoKey::from_connector_url(&r.connector, &r.url).ok())
+            .collect()
+    }
+
+    /// The set of normalized keys of the linked repositories (see [`RepoKey`]).
+    pub fn repo_keys(&self) -> HashSet<RepoKey> {
+        self.ordered_repo_keys().into_iter().collect()
+    }
+}
+
+/// Precedence between Projects that share a repository: `Less` means `a` is older and wins.
+/// Compares `creationTimestamp`, then name. A missing timestamp sorts last.
+pub fn cmp_precedence(a: &Project, b: &Project) -> Ordering {
+    let ts = match (
+        &a.metadata.creation_timestamp,
+        &b.metadata.creation_timestamp,
+    ) {
+        (Some(x), Some(y)) => x.cmp(y),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    };
+    ts.then_with(|| a.project_name().cmp(b.project_name()))
+}
+
+/// Whether `p` must yield a repository: the oldest Project in `all` that precedes `p` and shares
+/// a repository with it, with the first shared key (in `p`'s spec order). `p` itself (by name)
+/// and Projects being deleted are ignored, so a terminating Project releases its repositories.
+/// `None` means `p` wins on every repository.
+pub fn conflict_winner<'a>(
+    p: &Project,
+    all: impl Iterator<Item = &'a Project>,
+) -> Option<(RepoKey, &'a Project)> {
+    let mine = p.ordered_repo_keys();
+    all.filter(|o| {
+        o.project_name() != p.project_name()
+            && o.metadata.deletion_timestamp.is_none()
+            && cmp_precedence(o, p) == Ordering::Less
+    })
+    .filter_map(|o| {
+        let theirs = o.repo_keys();
+        let key = mine.iter().find(|k| theirs.contains(*k))?;
+        Some((key.clone(), o))
+    })
+    .min_by(|a, b| cmp_precedence(a.1, b.1))
 }
 
 /// `sb-<project name>`; the prefix keeps per-Project names from colliding in the shared namespace.
