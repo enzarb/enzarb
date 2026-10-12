@@ -163,8 +163,11 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
   "prompt": "…", "timeout_secs": 3600,
   "callback_url": "http://enzarb-workflows-executor.enzarb.svc:8081/v1/runs/job-123/finished",
   "callback_token": "<hex HMAC-SHA256(executor secret, run_id)>",
-  "log_channel": null }
+  "log_channel": null,
+  "deps_token": "<optional, omitted when absent>",
+  "npm_token": "<optional, omitted when absent>" }
 ```
+- **`npm_token`** (optional, additive): a **long-lived** token with `read:packages`, for `npm ci` of private `@enzarb/*` packages on npm.pkg.github.com. GitHub App installation tokens cannot read org packages even with `packages: read` (E403 "Permission installation not allowed to Read organization package"), so `deps_token` cannot serve that role. The workflows executor reads it from `ENZARB_NPM_TOKEN` / `ENZARB_NPM_TOKEN_FILE` (in the chart: Secret `enzarb-updater-registry`, key `registry-token`) and sets it on implement, address-comments, resolve-conflicts and review runs only; it is never stored in `jobs.input`. sandbox-init exposes it to the agent process only, as `NODE_AUTH_TOKEN` (it takes precedence over the `deps_token` fallback; `ENZARB_DEPS_TOKEN` keeps feeding cargo/git), redacts it (and its basic-auth base64 forms) from transcripts, summaries and callbacks, and never writes it to `request.json`, state, callback files or an `.npmrc`. Debug output of `RunStart` redacts it. Absent means `NODE_AUTH_TOKEN` falls back to `deps_token`.
 - **Wire details** (`enzarb-proto/docs/protocol.md` and the `enzarb_proto::Ctrl` enum are the source of truth):
   - 10-byte big-endian header: type, flags (0), channel u32, length u32. Max payload 1 MiB, one frame per websocket binary message.
   - 256 KiB initial window per channel and direction. `CLOSE` is a half-close.
