@@ -26,14 +26,8 @@ pub const REASON_WORKSPACE_RESIZE_FAILED: &str = "WorkspaceResizeFailed";
 /// In-progress `False` reason on `ResourcesReady` while a PVC expansion is running. Deliberately
 /// has no failure suffix.
 pub const REASON_WORKSPACE_RESIZING: &str = "WorkspaceResizing";
-/// Informational condition (not part of `CONDITION_TYPES`, so the UI checklist is unchanged) that
-/// is present, status `True`, only while the sandbox pod runs an outdated image and its
-/// recreation is deferred. It does not affect `Ready`.
-pub const COND_SANDBOX_IMAGE_ROLL: &str = "SandboxImageRoll";
-/// Reason of [`COND_SANDBOX_IMAGE_ROLL`].
-pub const REASON_SANDBOX_IMAGE_ROLL_PENDING: &str = "SandboxImageRollPending";
 /// Informational condition, `True` only while a pod-shape change (image, env, resources, ...) waits
-/// for the sandbox to drain. Replaces [`COND_SANDBOX_IMAGE_ROLL`]. Does not affect `Ready`.
+/// for the sandbox to drain. Replaces the former `SandboxImageRoll`. Does not affect `Ready`.
 pub const COND_SANDBOX_CHANGE_PENDING: &str = "SandboxChangePending";
 /// Project annotation set (by workflows) to the `status.pendingChange.generation` it has drained
 /// for. The operator applies the change only when it equals the pending generation.

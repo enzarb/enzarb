@@ -2,6 +2,7 @@ mod conditions;
 mod desired;
 mod docker;
 mod leader;
+mod quantity;
 #[cfg(test)]
 mod rbac;
 mod reconcile;
@@ -28,12 +29,12 @@ struct Args {
     /// Sandbox image used when a Project does not set `spec.sandbox.image`.
     #[arg(long, env = "ENZARB_SANDBOX_IMAGE", default_value = "")]
     sandbox_image: String,
-    /// How long a pending sandbox pod roll (pod image differs from the desired image) waits for
-    /// the sandbox to become idle before the pod is deleted anyway. Humantime-style: `30s`, `10m`.
+    /// How long a pending pod-shape change (image, env, resources, ...) waits for the drain ack
+    /// (`enzarb.dev/drained-generation`) or idleness before the pod is deleted anyway. Humantime-style: `30s`, `10m`.
     #[arg(
         long,
         env = "ENZARB_SANDBOX_ROLL_DRAIN_TIMEOUT",
-        default_value = "10m",
+        default_value = "2h",
         value_parser = parse_duration
     )]
     sandbox_roll_drain_timeout: Duration,

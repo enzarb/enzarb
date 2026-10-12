@@ -186,6 +186,10 @@ pub enum InvalidProject {
     NoOwner,
     #[error("no sandbox image: set spec.sandbox.image or run the operator with --sandbox-image")]
     NoImage,
+    #[error("spec.sandbox.cpu must be 1-64, got {0}")]
+    BadCpu(u32),
+    #[error("spec.sandbox.memory {0:?} must be <int>Mi or <int>Gi between 512Mi and 256Gi")]
+    BadMemory(String),
 }
 
 fn dns_label(s: &str) -> Result<(), &'static str> {
@@ -218,7 +222,108 @@ pub fn validate(p: &Project, d: &Defaults) -> Result<(), InvalidProject> {
     if image(p, d).is_empty() {
         return Err(InvalidProject::NoImage);
     }
+    if let Some(n) = p.spec.sandbox.cpu
+        && !(MIN_CPU..=MAX_CPU).contains(&n)
+    {
+        return Err(InvalidProject::BadCpu(n));
+    }
+    if let Some(m) = &p.spec.sandbox.memory
+        && parse_memory_mi(m).is_none()
+    {
+        return Err(InvalidProject::BadMemory(m.clone()));
+    }
     Ok(())
+}
+
+pub const MIN_CPU: u32 = 1;
+pub const MAX_CPU: u32 = 64;
+const MIN_MEMORY_MI: u64 = 512;
+const MAX_MEMORY_MI: u64 = 256 * 1024;
+/// Floors of the derived requests.
+const MIN_CPU_REQUEST_MILLI: u64 = 100;
+const MIN_MEMORY_REQUEST_MI: u64 = 256;
+
+/// `<int>Mi|Gi` (no leading zero, no sign, no other suffix) in Mi, within 512Mi..=256Gi.
+/// Checked arithmetic: a huge digit string is `None`, never a panic.
+pub fn parse_memory_mi(s: &str) -> Option<u64> {
+    let (digits, mult) = if let Some(d) = s.strip_suffix("Gi") {
+        (d, 1024u64)
+    } else {
+        (s.strip_suffix("Mi")?, 1)
+    };
+    if digits.is_empty()
+        || digits.starts_with('0')
+        || digits.len() > 12
+        || !digits.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let mi = digits.parse::<u64>().ok()?.checked_mul(mult)?;
+    (MIN_MEMORY_MI..=MAX_MEMORY_MI).contains(&mi).then_some(mi)
+}
+
+/// Canonical rendering, so the API server's quantity canonicalisation cannot cause a mismatch.
+fn render_mi(mi: u64) -> String {
+    if mi.is_multiple_of(1024) {
+        format!("{}Gi", mi / 1024)
+    } else {
+        format!("{mi}Mi")
+    }
+}
+
+fn render_cpu_milli(m: u64) -> String {
+    if m.is_multiple_of(1000) {
+        (m / 1000).to_string()
+    } else {
+        format!("{m}m")
+    }
+}
+
+/// Container `resources` of the sandbox: the derived values from `cpu` / `memory` (limit = the
+/// value, request = 25% with floors), overlaid key by key with the explicit
+/// `spec.sandbox.resources`. A derived request above an explicit limit is clamped to it. With
+/// neither scalar set this is exactly the explicit resources, as before. Out-of-range scalars
+/// are ignored here (`validate` rejects them first).
+pub fn sandbox_resources(sb: &enzarb_crds::SandboxSpec) -> serde_json::Value {
+    let explicit = serde_json::to_value(&sb.resources).expect("resources serialize");
+    let cpu = sb.cpu.filter(|n| (MIN_CPU..=MAX_CPU).contains(n));
+    let mem = sb.memory.as_deref().and_then(parse_memory_mi);
+    if cpu.is_none() && mem.is_none() {
+        return explicit;
+    }
+    let mut limits = serde_json::Map::new();
+    let mut requests = serde_json::Map::new();
+    if let Some(n) = cpu {
+        limits.insert("cpu".into(), json!(n.to_string()));
+        let req = (u64::from(n) * 250).max(MIN_CPU_REQUEST_MILLI);
+        requests.insert("cpu".into(), json!(render_cpu_milli(req)));
+    }
+    if let Some(mi) = mem {
+        limits.insert("memory".into(), json!(render_mi(mi)));
+        let req = (mi / 4).max(MIN_MEMORY_REQUEST_MI);
+        requests.insert("memory".into(), json!(render_mi(req)));
+    }
+    for (field, into) in [("limits", &mut limits), ("requests", &mut requests)] {
+        if let Some(o) = explicit.get(field).and_then(|v| v.as_object()) {
+            into.extend(o.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
+    }
+    for key in ["cpu", "memory"] {
+        let (Some(l), Some(r)) = (limits.get(key), requests.get(key)) else {
+            continue;
+        };
+        let milli = |v: &serde_json::Value| v.as_str().and_then(crate::quantity::milli);
+        if let (Some(lm), Some(rm)) = (milli(l), milli(r))
+            && rm > lm
+        {
+            let l = l.clone();
+            requests.insert(key.into(), l);
+        }
+    }
+    let mut out = explicit;
+    out["limits"] = limits.into();
+    out["requests"] = requests.into();
+    out
 }
 
 pub fn project_name(p: &Project) -> &str {
@@ -422,7 +527,7 @@ pub fn sandbox(p: &Project, d: &Defaults) -> Sandbox {
             "image": image(p, d),
             "ports": [{"name": "mux", "containerPort": SANDBOX_PORT, "protocol": "TCP"}],
             "env": [{"name": "ENZARB_PROJECT", "value": project_name(p)}],
-            "resources": sb.resources,
+            "resources": sandbox_resources(sb),
             "readinessProbe": {"httpGet": {"path": "/healthz", "port": SANDBOX_PORT}},
             "volumeMounts": [
                 {"name": "workspace", "mountPath": WORKSPACE_MOUNT},
@@ -1041,5 +1146,112 @@ pub(crate) mod tests {
             validate(&project("enzarb", "ruckc"), &no_image),
             Err(InvalidProject::NoImage)
         );
+    }
+
+    fn res_of(p: &Project) -> serde_json::Value {
+        sandbox_resources(&p.spec.sandbox)
+    }
+
+    #[test]
+    fn cpu_memory_unset_changes_nothing() {
+        let p = project("a", "o");
+        assert_eq!(res_of(&p), json!({}));
+        let s = sandbox(&p, &defaults());
+        assert_eq!(containers(&v(&s))[0]["resources"], json!({}));
+    }
+
+    #[test]
+    fn cpu_memory_derive_limits_and_quarter_requests() {
+        let mut p = project("a", "o");
+        p.spec.sandbox.cpu = Some(8);
+        p.spec.sandbox.memory = Some("16Gi".into());
+        assert_eq!(
+            res_of(&p),
+            json!({"limits": {"cpu": "8", "memory": "16Gi"}, "requests": {"cpu": "2", "memory": "4Gi"}})
+        );
+        // Floors.
+        p.spec.sandbox.cpu = Some(1);
+        p.spec.sandbox.memory = Some("512Mi".into());
+        assert_eq!(
+            res_of(&p),
+            json!({"limits": {"cpu": "1", "memory": "512Mi"}, "requests": {"cpu": "250m", "memory": "256Mi"}})
+        );
+        // Mi stays Mi when not divisible by 1024; 2048Mi is canonicalised to 2Gi.
+        p.spec.sandbox.memory = Some("2048Mi".into());
+        assert_eq!(res_of(&p)["limits"]["memory"], "2Gi");
+        p.spec.sandbox.memory = Some("1500Mi".into());
+        assert_eq!(res_of(&p)["limits"]["memory"], "1500Mi");
+        assert_eq!(res_of(&p)["requests"]["memory"], "375Mi");
+    }
+
+    #[test]
+    fn only_set_scalars_are_derived() {
+        let mut p = project("a", "o");
+        p.spec.sandbox.cpu = Some(4);
+        assert_eq!(
+            res_of(&p),
+            json!({"limits": {"cpu": "4"}, "requests": {"cpu": "1"}})
+        );
+        p.spec.sandbox.cpu = None;
+        p.spec.sandbox.memory = Some("8Gi".into());
+        assert_eq!(
+            res_of(&p),
+            json!({"limits": {"memory": "8Gi"}, "requests": {"memory": "2Gi"}})
+        );
+    }
+
+    #[test]
+    fn explicit_resources_win_per_key_and_requests_clamp() {
+        let mut p = project("a", "o");
+        p.spec.sandbox.cpu = Some(8);
+        p.spec.sandbox.memory = Some("16Gi".into());
+        p.spec.sandbox.resources = ResourceRequirements {
+            limits: Some([("memory".to_string(), Quantity("1Gi".into()))].into()),
+            requests: Some([("cpu".to_string(), Quantity("3".into()))].into()),
+            ..Default::default()
+        };
+        let r = res_of(&p);
+        assert_eq!(r["limits"], json!({"cpu": "8", "memory": "1Gi"}));
+        // cpu request is the explicit one; memory request 4Gi is clamped to the explicit 1Gi limit.
+        assert_eq!(r["requests"], json!({"cpu": "3", "memory": "1Gi"}));
+    }
+
+    #[test]
+    fn bad_cpu_and_memory_are_invalid_without_panicking() {
+        let d = defaults();
+        for cpu in [0u32, 65, u32::MAX] {
+            let mut p = project("a", "o");
+            p.spec.sandbox.cpu = Some(cpu);
+            assert_eq!(validate(&p, &d), Err(InvalidProject::BadCpu(cpu)));
+        }
+        for m in [
+            "511Mi",
+            "257Gi",
+            "262145Mi",
+            "1G",
+            "8gi",
+            "0Gi",
+            "",
+            "garbage",
+            "08Gi",
+            "-8Gi",
+            "8 Gi",
+            "99999999999999999999999Gi",
+            "18446744073709551615Gi",
+            "8Gi\n",
+        ] {
+            let mut p = project("a", "o");
+            p.spec.sandbox.memory = Some(m.into());
+            assert!(
+                matches!(validate(&p, &d), Err(InvalidProject::BadMemory(_))),
+                "{m:?}"
+            );
+        }
+        for m in ["512Mi", "1024Mi", "8Gi", "256Gi", "262144Mi"] {
+            let mut p = project("a", "o");
+            p.spec.sandbox.memory = Some(m.into());
+            p.spec.sandbox.cpu = Some(64);
+            assert_eq!(validate(&p, &d), Ok(()), "{m}");
+        }
     }
 }

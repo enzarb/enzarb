@@ -2,8 +2,8 @@
 
 use enzarb_crds::upstream::sandbox::Sandbox;
 use enzarb_crds::{
-    COND_READY, COND_RESOURCES_READY, COND_SANDBOX_IMAGE_ROLL, COND_SANDBOX_READY,
-    REASON_INVALID_SPEC, REASON_RETRYING, REASON_SANDBOX_IMAGE_ROLL_PENDING,
+    COND_READY, COND_RESOURCES_READY, COND_SANDBOX_CHANGE_PENDING, COND_SANDBOX_READY,
+    PendingChange, REASON_INVALID_SPEC, REASON_RETRYING,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
 
@@ -113,41 +113,27 @@ fn condition(
     }
 }
 
-/// A deferred sandbox pod roll (see `roll`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A pod-shape change waiting for the sandbox to drain (see `roll`).
+#[derive(Clone, Debug, PartialEq)]
 pub struct RollPending {
-    /// Starts with `image <old> -> <new>; `, which identifies the mismatch.
+    pub change: PendingChange,
+    /// Condition message.
     pub message: String,
-    /// Time left until the drain timeout forces the roll.
+    /// Time left until the drain timeout applies the change.
     pub remaining: std::time::Duration,
 }
 
-/// The informational `SandboxImageRoll` condition, appended after the checklist conditions
-/// from `compute`; it never affects `Ready`. `lastTransitionTime` is kept while the same image
-/// transition stays pending, which is also where the drain timeout is measured from.
-pub fn roll_condition(
-    pending: &RollPending,
-    generation: i64,
-    existing: &[Condition],
-    now: &Time,
-) -> Condition {
-    let transition = |m: &str| m.split_once("; ").map(|(t, _)| t.to_string());
-    let last_transition_time = existing
-        .iter()
-        .find(|c| {
-            c.type_ == COND_SANDBOX_IMAGE_ROLL
-                && c.status == "True"
-                && transition(&c.message).is_some()
-                && transition(&c.message) == transition(&pending.message)
-        })
-        .map_or_else(|| now.clone(), |c| c.last_transition_time.clone());
+/// The informational `SandboxChangePending` condition, appended after the checklist conditions
+/// from `compute`; it never affects `Ready`. `lastTransitionTime` is when the first change of
+/// the pending episode was seen (`pendingChange.since`).
+pub fn roll_condition(pending: &RollPending, generation: i64) -> Condition {
     Condition {
-        type_: COND_SANDBOX_IMAGE_ROLL.to_string(),
+        type_: COND_SANDBOX_CHANGE_PENDING.to_string(),
         status: "True".to_string(),
-        reason: REASON_SANDBOX_IMAGE_ROLL_PENDING.to_string(),
+        reason: COND_SANDBOX_CHANGE_PENDING.to_string(),
         message: pending.message.clone(),
         observed_generation: Some(generation),
-        last_transition_time,
+        last_transition_time: pending.change.since.clone(),
     }
 }
 
@@ -386,41 +372,34 @@ mod tests {
         assert_eq!(flipped[2].last_transition_time, t(99));
     }
 
-    fn pending(transition: &str) -> RollPending {
+    fn pending(reason: &str) -> RollPending {
         RollPending {
-            message: format!("{transition}; the pod is recreated when idle"),
+            change: PendingChange {
+                generation: 2,
+                since: t(10),
+                reason: reason.into(),
+            },
+            message: format!("generation 2: {reason}"),
             remaining: std::time::Duration::from_secs(60),
         }
     }
 
     #[test]
-    fn roll_condition_is_informational_and_keeps_its_time() {
+    fn roll_condition_is_informational_and_uses_since() {
         let ok = Observed {
             resources: Check::Ok,
             sandbox: Check::Ok,
         };
         let base = compute(1, &ok, &[], &t(1));
         assert_eq!(base[2].status, "True");
-        let first = roll_condition(&pending("image a -> b"), 1, &base, &t(10));
-        assert_eq!(first.type_, "SandboxImageRoll");
-        assert_eq!(first.status, "True");
-        assert_eq!(first.reason, "SandboxImageRollPending");
-        // Ready is computed without it and stays True.
-        let mut all = base.clone();
-        all.push(first.clone());
-        assert_eq!(all[2].type_, "Ready");
-        assert_eq!(all[2].status, "True");
-        // Same transition: time is stable. A new transition restarts it.
-        let again = roll_condition(&pending("image a -> b"), 1, &all, &t(99));
-        assert_eq!(again, first);
-        let other = roll_condition(&pending("image c -> b"), 1, &all, &t(99));
-        assert_eq!(other.last_transition_time, t(99));
-        // Once the pod matches, no roll condition is produced by compute (it clears).
-        assert!(
-            compute(1, &ok, &all, &t(100))
-                .iter()
-                .all(|c| c.type_ != "SandboxImageRoll")
-        );
+        let c = roll_condition(&pending("image/sandbox: a -> b"), 1);
+        assert_eq!(c.type_, "SandboxChangePending");
+        assert_eq!(c.status, "True");
+        assert_eq!(c.reason, "SandboxChangePending");
+        assert_eq!(c.last_transition_time, t(10));
+        // Ready is computed without it and stays True; compute never emits it.
+        assert!(base.iter().all(|c| c.type_ != "SandboxChangePending"));
+        assert_eq!(base[2].type_, "Ready");
     }
 
     #[test]

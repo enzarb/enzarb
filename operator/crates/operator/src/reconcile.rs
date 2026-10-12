@@ -1,11 +1,11 @@
 //! Applies the desired objects (see `desired`) and records status (see `conditions`).
 
-use crate::conditions::{self, Check, Observed, RollPending};
+use crate::conditions::{self, Check, Observed};
 use crate::desired::{self, Defaults, FIELD_MANAGER, Ownership};
-use crate::roll::{self, DEFER_POLL};
+use crate::roll::{self, DEFER_POLL, Outcome};
 use enzarb_crds::upstream::sandbox::Sandbox;
 use enzarb_crds::{
-    COND_SANDBOX_IMAGE_ROLL, Project, ProjectStatus, REASON_WORKSPACE_RESIZE_FAILED,
+    COND_SANDBOX_CHANGE_PENDING, Project, ProjectStatus, REASON_WORKSPACE_RESIZE_FAILED,
     REASON_WORKSPACE_RESIZING,
 };
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Secret};
@@ -104,12 +104,13 @@ async fn apply(p: &Project, ctx: &Ctx) -> Result<Action, Error> {
     if let Err(e) = desired::validate(p, &ctx.defaults) {
         warn!(project = %name, error = %e, "invalid project");
         obs.resources = Check::Invalid(e.to_string());
-        write_status(p, ctx, status, &obs, &RollState::Clear).await?;
+        write_status(p, ctx, status, &obs, &Outcome::Keep).await?;
         // Nothing to retry until the user edits the spec.
         return Ok(Action::await_change());
     }
 
-    let mut roll = RollState::Clear;
+    // Keep until the roll step has run, so an early exit never drops a pending change.
+    let mut roll = Outcome::Keep;
     let result = drive(p, ctx, &mut obs, &mut status, &mut roll).await;
     write_status(p, ctx, status, &obs, &roll).await?;
     result?;
@@ -118,7 +119,7 @@ async fn apply(p: &Project, ctx: &Ctx) -> Result<Action, Error> {
         info!(project = %name, "ready");
         // A deferred roll is re-checked soon, so the drain timeout fires without an event.
         let wait = match &roll {
-            RollState::Pending(r) => r.remaining.clamp(Duration::from_secs(1), DEFER_POLL),
+            Outcome::Pending(r) => r.remaining.clamp(Duration::from_secs(1), DEFER_POLL),
             _ => RESYNC,
         };
         Ok(Action::requeue(wait))
@@ -191,7 +192,7 @@ async fn drive(
     ctx: &Ctx,
     obs: &mut Observed,
     status: &mut ProjectStatus,
-    roll: &mut RollState,
+    roll: &mut Outcome,
 ) -> Result<(), Error> {
     let d = &ctx.defaults;
     let ns = d.sandbox_namespace.as_str();
@@ -303,31 +304,20 @@ async fn drive(
         p,
         d,
         &sb,
-        &status.conditions,
+        p.status.as_ref().and_then(|s| s.pending_change.as_ref()),
         ctx.roll_drain_timeout,
         &now,
     )
     .await
     {
-        Ok(Some(pending)) => *roll = RollState::Pending(pending),
-        Ok(None) => {}
+        Ok(outcome) => *roll = outcome,
         Err(e) => {
-            // Keep the pending condition (and its timer) across a transient error.
-            *roll = RollState::Keep;
+            // Keep the pending change across a transient error.
+            *roll = Outcome::Keep;
             return Err(e.into());
         }
     }
     Ok(())
-}
-
-/// What the pod roll step concluded, for the informational `SandboxImageRoll` condition.
-#[derive(Debug)]
-enum RollState {
-    /// No roll is pending (or it was just performed).
-    Clear,
-    Pending(RollPending),
-    /// The step failed: leave the previous condition untouched.
-    Keep,
 }
 
 async fn write_status(
@@ -335,21 +325,26 @@ async fn write_status(
     ctx: &Ctx,
     mut status: ProjectStatus,
     obs: &Observed,
-    roll: &RollState,
+    roll: &Outcome,
 ) -> Result<(), Error> {
     let now = Time(k8s_openapi::jiff::Timestamp::now());
     let generation = p.metadata.generation.unwrap_or_default();
     let previous = std::mem::take(&mut status.conditions);
     status.conditions = conditions::compute(generation, obs, &previous, &now);
     match roll {
-        RollState::Clear => {}
-        RollState::Pending(r) => {
+        Outcome::Clear => status.pending_change = None,
+        Outcome::Pending(r) => {
+            status.pending_change = Some(r.change.clone());
             status
                 .conditions
-                .push(conditions::roll_condition(r, generation, &previous, &now));
+                .push(conditions::roll_condition(r, generation));
         }
-        RollState::Keep => {
-            if let Some(c) = previous.iter().find(|c| c.type_ == COND_SANDBOX_IMAGE_ROLL) {
+        Outcome::Keep => {
+            status.pending_change = p.status.as_ref().and_then(|s| s.pending_change.clone());
+            if let Some(c) = previous
+                .iter()
+                .find(|c| c.type_ == COND_SANDBOX_CHANGE_PENDING)
+            {
                 status.conditions.push(c.clone());
             }
         }
@@ -364,6 +359,9 @@ async fn write_status(
         // A merge patch needs explicit nulls to remove fields.
         body["namespace"] = serde_json::Value::Null;
         body["sandbox"] = serde_json::Value::Null;
+    }
+    if status.pending_change.is_none() && old.pending_change.is_some() {
+        body["pendingChange"] = serde_json::Value::Null;
     }
     let api: Api<Project> = Api::all(ctx.client.clone());
     api.patch_status(
