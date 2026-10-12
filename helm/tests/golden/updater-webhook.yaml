@@ -927,7 +927,7 @@ spec:
 
       containers:
         - name: operator
-          image: ghcr.io/enzarb/enzarb-sandbox-operator:0.7.0
+          image: ghcr.io/enzarb/enzarb-sandbox-operator:0.8.0
           imagePullPolicy: IfNotPresent
           ports:
             - { name: health, containerPort: 8080 }
