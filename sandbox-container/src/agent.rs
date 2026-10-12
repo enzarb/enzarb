@@ -552,6 +552,10 @@ fn deps_env(token: &str) -> Vec<(String, String)> {
     vec![
         kv("CARGO_NET_GIT_FETCH_WITH_CLI", "true"),
         kv("ENZARB_DEPS_TOKEN", token),
+        // Read by enzarb-ui/.npmrc for npm.pkg.github.com (needs packages:read
+        // on the token). Env only: no .npmrc is written. Same value as the
+        // deps token, so it is already in the redaction set.
+        kv("NODE_AUTH_TOKEN", token),
         kv("GIT_CONFIG_COUNT", "3"),
         kv("GIT_CONFIG_KEY_0", "url.https://github.com/.insteadOf"),
         kv("GIT_CONFIG_VALUE_0", "ssh://git@github.com/"),
@@ -1345,6 +1349,8 @@ mod deps_tests {
         let get = |k: &str| env.iter().find(|(a, _)| a == k).map(|(_, v)| v.as_str());
         assert_eq!(get("CARGO_NET_GIT_FETCH_WITH_CLI"), Some("true"));
         assert_eq!(get("GIT_CONFIG_COUNT"), Some("3"));
+        assert_eq!(get("NODE_AUTH_TOKEN"), Some("ghs_secret123"));
+        assert_eq!(get("NODE_AUTH_TOKEN"), get("ENZARB_DEPS_TOKEN"));
         assert_eq!(get("GIT_CONFIG_VALUE_0"), Some("ssh://git@github.com/"));
         // The token is only in its own env var, never in git config values.
         for (k, v) in &env {
