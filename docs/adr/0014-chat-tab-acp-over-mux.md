@@ -39,3 +39,25 @@ The UI needs a Chat page where the Project owner talks to Claude inside the Proj
 ## Amendment 2026-10-12
 
 The UI flag was removed after validation (ui v0.16.0, enzarb-helm v0.56.0; the chart keeps `ui.chat.enabled` only as a deprecated no-op schema key for one release). Chat is always on: the Chat tab is always listed and degrades to "Chat not available" when the sandbox or proxy does not advertise `acp`. The kill switch is `ENZARB_MAX_CHATS=0` on the sandbox (no `acp` feature, `chat_disabled` open errors). Rollback is a drain-first sandbox image rollback or that setting, not a UI flag.
+
+## Amendment 2026-10-12 (2): chat default permission mode is bypass
+
+Maintainer decision, shipped in enzarb-sandbox-container#51 (v0.9.0, issue #50). This amends the "Two-tier permissions" and `session/set_mode` decisions above; those texts stay as written.
+
+**Decision.** A chat session starts in Claude Code's `bypassPermissions` mode. Chat runs inside the sandbox, and the sandbox, not a per-call prompt, is the security boundary. Agent jobs are unchanged: they keep their strict `Policy::decide` policy.
+
+**What changes.**
+- No permission prompts in bypass: Claude Code asks for nothing except its own bypass-immune checks. `Policy::hard_deny` (S1) is consulted only in `default` and `plan` mode, because the agent does not send `session/request_permission` for ordinary tool calls under bypass. There is no hard deny for ordinary tool calls in bypass, so the hard-deny rules (secret paths, `.enzarb/**`, `git push`, fetch hosts) do not apply there.
+- `ENZARB_CHAT_PERMISSION_MODE` (`bypassPermissions` default, `default`, `plan`; any other value fails startup) and `ENZARB_CHAT_ALLOW_BYPASS` (default true). With `ENZARB_CHAT_ALLOW_BYPASS=false` the default mode becomes `default`, and `false` combined with an explicit bypass mode fails startup.
+- The `session/set_mode` allowlist is {`bypassPermissions` (only while `ENZARB_CHAT_ALLOW_BYPASS` is true), `default`, `plan`}. `acceptEdits`, `auto` and `dontAsk` stay refused.
+- sandbox-init enforces the mode itself: the adapter (claude-agent-acp 0.88) ignores `_meta.claudeCode.options.permissionMode` and takes the mode from the settings' `defaultMode` or a resumed transcript. When `modes.currentModeId` in the `session/new`/`load` response differs from the configured mode, sandbox-init sends its own `session/set_mode` and holds the browser's response until it succeeds (failure: error and no session).
+- New browser notification `_enzarb/mode {sessionId, modeId, bypassAllowed}`, sent after the session is established and after each successful browser `set_mode`. Mode changes made by the agent (leaving plan mode, which can only go to `default`) arrive as `session/update` `current_mode_update`.
+- The UI mode indicator and switch are not shipped yet; tracked as enzarb/enzarb-ui#87. Until then the UI neither shows that a chat is in bypass nor can switch the mode.
+
+**What still bounds a prompt-injected chat agent.** No clone, push, deps or npm token in its scrubbed environment; cwd forced to the chat worktree; no MCP servers and no client fs/terminal capabilities; gVisor and the egress NetworkPolicy; line, idle and lifetime limits; redaction of the Claude token (and its encodings) on all browser-bound traffic and transcripts; sandbox-init marks itself non-dumpable (`PR_SET_DUMPABLE(0)`) and `/workspace/.enzarb` is 0700 (token and callback files 0600), which keeps other uids out. The browser cannot reach `acceptEdits`/`auto`/`dontAsk`; the elevated ExitPlanMode options are `allow_always` and are rejected.
+
+**Residual risks (as reported in the PR).** The agent runs as the same uid as sandbox-init and the jobs, so file modes separate nothing from it. A bypass chat agent can read the mux auth token file, `.enzarb/runs/*/callback.json` (callback bearer tokens), other chats' transcripts and `chat-home`, every clone, and `/proc/<pid>/environ` of a concurrently running job (its deps/npm token). Highest risk: it can write the shared clone's `.git/config` and `.git/hooks`, which sandbox-init's authenticated `fetch`/`push` for later jobs also uses (the clone/push token is in `http.extraheader`); a planted hook or config could capture that token and leak it, for example through the Claude API conversation. Follow-up needed: harden those git calls (hooksPath, fsmonitor, explicit URL, a separate bare repo or a separate uid). It can also plant hooks or allow rules in `chat-home/.claude/settings.json` that affect later chats (the mode itself is re-enforced). Not verified: whether gVisor enforces non-dumpable `/proc` access. An independent Opus review of the PR found no must-fix issues.
+
+**Kill switches.** `ENZARB_CHAT_PERMISSION_MODE=default` (or `plan`) restores per-call prompts with S1 hard deny; `ENZARB_CHAT_ALLOW_BYPASS=false` makes bypass unavailable (not offered to the adapter, `set_mode` to it refused); `ENZARB_MAX_CHATS=0` disables chat. Agent jobs are unaffected by all three.
+
+**Follow-up.** The git hook/config token-theft risk above is tracked as enzarb/enzarb-sandbox-container#52.
