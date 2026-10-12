@@ -2,7 +2,8 @@
 //!
 //! `POST /v1/runs/{run_id}/finished` with `Authorization: Bearer <callback_token>` and a
 //! `RunFinished` body. `run_id` is `job-<job id>` (`job-<job id>-<n>` after `n` session-limit
-//! waits and sandbox-restart retries). The token is
+//! waits and sandbox-restart retries; a `-r1` suffix marks the one recovery run started when a
+//! finished run's output had no usable `json` block). The token is
 //! `hex(HMAC-SHA256(callback_secret, run_id))`, so any replica can verify it and nothing
 //! per-job is stored.
 //!
@@ -25,6 +26,7 @@ use sha2::Sha256;
 use super::Executor;
 use super::restart::RestartOutcome;
 use super::session_limit::LimitOutcome;
+use crate::machine::{AgentJobInput, AgentOutput, JobKind, OutputError};
 use crate::results::{JobResult, ingest_job_result};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -37,6 +39,38 @@ pub fn run_id(job_id: i64, waits: i32) -> String {
         format!("job-{job_id}")
     } else {
         format!("job-{job_id}-{waits}")
+    }
+}
+
+/// `run_id` of the job's one recovery run (see [`run_id`] for the first part).
+pub fn recovery_run_id(job_id: i64, waits: i32) -> String {
+    format!("{}-r1", run_id(job_id, waits))
+}
+
+/// Has the job's recovery run been started (`input.recovery_used`)?
+pub(super) fn recovery_used(input: &Value) -> bool {
+    input
+        .get("recovery_used")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// The columns the finished callback reads (`generation` = session-limit waits + restarts).
+#[derive(sqlx::FromRow)]
+struct CallbackJob {
+    status: String,
+    attempt: i32,
+    generation: i32,
+    project_id: Option<String>,
+    input: Value,
+}
+
+/// The run whose callback finishes the job: the recovery run once it was started.
+pub(super) fn current_run_id(job_id: i64, waits: i32, recovery_used: bool) -> String {
+    if recovery_used {
+        recovery_run_id(job_id, waits)
+    } else {
+        run_id(job_id, waits)
     }
 }
 
@@ -111,13 +145,20 @@ async fn finished(
         return reply(StatusCode::BAD_REQUEST, "unrecognized run_id");
     };
 
-    let row: Result<Option<(String, i32, i32, i32)>, _> = sqlx::query_as(
-        "SELECT status, attempt, limit_wait_count, restart_retries FROM jobs WHERE id = $1 AND kind LIKE 'agent\\_%'",
+    let row: Result<Option<CallbackJob>, _> = sqlx::query_as(
+        "SELECT status, attempt, limit_wait_count + restart_retries AS generation, project_id, input
+         FROM jobs WHERE id = $1 AND kind LIKE 'agent\\_%'",
     )
     .bind(job_id)
     .fetch_optional(&exec.pool)
     .await;
-    let (status, attempt, waits, restarts) = match row {
+    let CallbackJob {
+        status,
+        attempt,
+        generation,
+        project_id: project,
+        input,
+    } = match row {
         Ok(Some(r)) => r,
         Ok(None) => return reply(StatusCode::NOT_FOUND, "unknown job"),
         Err(e) => {
@@ -129,15 +170,51 @@ async fn finished(
         tracing::info!(job_id, %status, "callback for a job that is not running; ignored");
         return (StatusCode::OK, Json(json!({ "accepted": false })));
     }
-    if path_run_id != run_id(job_id, waits + restarts) {
+    let recovery_used = recovery_used(&input);
+    if path_run_id != current_run_id(job_id, generation, recovery_used) {
         tracing::info!(job_id, %path_run_id, "callback for an earlier run of this job; ignored");
         return (StatusCode::OK, Json(json!({ "accepted": false })));
     }
 
     let result = match body.outcome {
-        RunOutcome::Succeeded => JobResult::Succeeded {
-            output: serde_json::to_value(&body).unwrap_or(Value::Null),
-        },
+        RunOutcome::Succeeded => {
+            let output = serde_json::to_value(&body).unwrap_or(Value::Null);
+            match unparseable_output(&input, &output) {
+                None => JobResult::Succeeded { output },
+                Some(e) => {
+                    let error = format!(
+                        "unusable agent output: {e}; tail of output: {}",
+                        tail(&body.summary, TAIL_BYTES)
+                    );
+                    if recovery_used {
+                        JobResult::Failed { error }
+                    } else {
+                        match recover(
+                            &exec,
+                            job_id,
+                            attempt,
+                            generation,
+                            project.as_deref(),
+                            &input,
+                        )
+                        .await
+                        {
+                            Ok(Recovery::Started) => {
+                                return (StatusCode::OK, Json(json!({ "accepted": true })));
+                            }
+                            Ok(Recovery::Stale) => {
+                                return (StatusCode::OK, Json(json!({ "accepted": false })));
+                            }
+                            Ok(Recovery::CouldNotStart) => JobResult::Failed { error },
+                            Err(e) => {
+                                tracing::warn!(job_id, error = %e, "callback: claiming the recovery failed");
+                                return reply(StatusCode::INTERNAL_SERVER_ERROR, "database error");
+                            }
+                        }
+                    }
+                }
+            }
+        }
         RunOutcome::Failed => {
             let error = format!(
                 "the agent run failed (exit code {}): {}",
@@ -189,6 +266,80 @@ async fn finished(
     }
 }
 
+/// How much of the end of an unusable output goes into the error.
+const TAIL_BYTES: usize = 2048;
+
+enum Recovery {
+    /// The recovery run was started; the job stays `running`.
+    Started,
+    /// The attempt is no longer running, or another callback already claimed the recovery.
+    Stale,
+    /// The run could not be started; fail the job.
+    CouldNotStart,
+}
+
+/// The parse error if `output` of the agent job `input` has no usable `json` block (missing, or
+/// not valid JSON). Other problems (unknown decision, empty body) are not recoverable by
+/// asking again for the block.
+fn unparseable_output(input: &Value, output: &Value) -> Option<OutputError> {
+    let kind = serde_json::from_value::<JobKind>(input.get("kind")?.clone()).ok()?;
+    match AgentOutput::from_job_output(kind, output) {
+        Err(e @ (OutputError::NoJsonBlock | OutputError::BadJson(_))) => Some(e),
+        _ => None,
+    }
+}
+
+/// Claim the job's single recovery and start the recovery run.
+async fn recover(
+    exec: &Executor,
+    job_id: i64,
+    attempt: i32,
+    generation: i32,
+    project: Option<&str>,
+    input: &Value,
+) -> Result<Recovery, sqlx::Error> {
+    let claimed = sqlx::query(
+        "UPDATE jobs SET input = jsonb_set(input, '{recovery_used}', 'true'), updated_at = now()
+         WHERE id = $1 AND status = 'running' AND attempt = $2
+           AND NOT COALESCE((input->>'recovery_used')::bool, false)",
+    )
+    .bind(job_id)
+    .bind(attempt)
+    .execute(&exec.pool)
+    .await?;
+    if claimed.rows_affected() == 0 {
+        return Ok(Recovery::Stale);
+    }
+    let (Some(project), Ok(input)) = (
+        project,
+        serde_json::from_value::<AgentJobInput>(input.clone()),
+    ) else {
+        return Ok(Recovery::CouldNotStart);
+    };
+    match exec
+        .start_recovery(job_id, attempt, generation, project, &input)
+        .await
+    {
+        Ok(()) => Ok(Recovery::Started),
+        Err(e) => {
+            tracing::warn!(job_id, error = %e.message, "could not start the recovery run");
+            Ok(Recovery::CouldNotStart)
+        }
+    }
+}
+
+/// The last `max` bytes of `s`, cut on a char boundary and prefixed with `…` when cut.
+fn tail(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut start = s.len() - max;
+    while !s.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("…{}", &s[start..])
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
@@ -203,6 +354,44 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_run_ids_are_distinct_and_bound_by_the_token() {
+        assert_eq!(current_run_id(7, 0, false), "job-7");
+        assert_eq!(current_run_id(7, 0, true), "job-7-r1");
+        assert_eq!(current_run_id(7, 2, true), "job-7-2-r1");
+        let t = callback_token(b"s3", "job-7");
+        assert!(!verify(b"s3", "job-7-r1", &t));
+        assert!(verify(
+            b"s3",
+            "job-7-r1",
+            &callback_token(b"s3", "job-7-r1")
+        ));
+    }
+
+    #[test]
+    fn tail_keeps_the_end_on_char_boundaries() {
+        assert_eq!(tail("short", 10), "short");
+        assert_eq!(tail("abcdef", 3), "…def");
+        // "é" is two bytes: cutting inside it moves forward to the next boundary.
+        assert_eq!(tail("aéb", 2), "…b");
+        assert_eq!(tail("aéb", 3), "…éb");
+        assert_eq!(tail("", 3), "");
+    }
+
+    #[test]
+    fn only_missing_or_bad_blocks_are_unparseable() {
+        let input = json!({ "kind": "agent_triage" });
+        let out = |s: &str| json!({ "summary": s });
+        assert!(unparseable_output(&input, &out("no block")).is_some());
+        assert!(unparseable_output(&input, &out("```json\n{\"decision\": 1}\n```")).is_some());
+        let ok = "```json\n{\"decision\":\"ready\",\"body\":\"b\"}\n```";
+        assert!(unparseable_output(&input, &out(ok)).is_none());
+        let unknown = "```json\n{\"decision\":\"nope\",\"body\":\"b\"}\n```";
+        assert!(unparseable_output(&input, &out(unknown)).is_none());
+        assert!(unparseable_output(&input, &json!({})).is_none());
+        assert!(unparseable_output(&json!({}), &out("no block")).is_none());
+    }
 
     #[test]
     fn run_id_generations() {

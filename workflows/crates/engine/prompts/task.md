@@ -51,4 +51,4 @@ Finish with a short plain-text note, then end your message with exactly one fenc
 { "decision": "reply", "body": "The retry logic lives in `src/retry.rs:12` ..." }
 ```
 
-`decision` is `reply` (body is your answer) or `blocked` (you could not answer; body explains what stopped you). `body` is a single JSON string holding markdown (escape newlines as `\n` and quotes as `\"`). Your run is considered failed if this block is missing, is not valid JSON, or is not the last thing in your message.
+`decision` is `reply` (body is your answer) or `blocked` (you could not answer; body explains what stopped you). `body` is a single JSON string holding markdown (escape newlines as `\n` and quotes as `\"`). **The json block must be the very last thing in your message: write nothing after the closing fence, not even a sign-off.** Your run is considered failed if this block is missing, is not valid JSON, or is not the last thing in your message.

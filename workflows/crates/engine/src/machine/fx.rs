@@ -37,6 +37,10 @@ pub struct AgentJobInput {
     pub timeout_secs: u64,
     pub context: PromptContext,
     pub prompt: String,
+    /// Set by the executor once the one recovery run (a re-run asking only for the final
+    /// `json` block) has been started for an unparseable result.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recovery_used: bool,
 }
 
 pub(crate) struct AgentSpec {
@@ -171,6 +175,7 @@ impl<'a> Fx<'a> {
             timeout_secs: self.ctx.config.agent_timeout_secs,
             prompt: render_prompt(kind, &context),
             context,
+            recovery_used: false,
         };
         self.job(
             kind,

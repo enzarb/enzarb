@@ -47,7 +47,7 @@ impl Executor {
             "UPDATE jobs SET status = 'queued', lease_owner = NULL, lease_until = NULL,
                     deadline = NULL, run_after = now() + make_interval(secs => $3),
                     max_attempts = max_attempts + 1, restart_retries = restart_retries + 1,
-                    updated_at = now()
+                    input = input - 'recovery_used', updated_at = now()
              WHERE id = $1 AND status = 'running' AND attempt = $2 AND restart_retries = $4",
         )
         .bind(job_id)

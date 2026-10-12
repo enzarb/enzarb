@@ -201,7 +201,8 @@ impl Executor {
                     deadline = NULL, run_after = $3, max_attempts = max_attempts + 1,
                     limit_wait_started_at = COALESCE(limit_wait_started_at, $4),
                     limit_wait_count = limit_wait_count + 1,
-                    waiting_for = $5, resumes_at = $3, updated_at = now()
+                    waiting_for = $5, resumes_at = $3, input = input - 'recovery_used',
+                    updated_at = now()
              WHERE id = $1 AND status = 'running' AND attempt = $2",
         )
         .bind(job_id)

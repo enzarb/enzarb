@@ -9,7 +9,8 @@
 //! ```
 //! ````
 //!
-//! Nothing may follow the closing fence. `body` is a JSON string holding markdown;
+//! The block is the **last thing** in the message: nothing may follow the closing fence (no
+//! sign-off, no second block). `body` is a JSON string holding markdown;
 //! it is what gets posted (a comment, or the pull request description for
 //! `implement`). The machine reads it from the job output's `summary` (Claude's
 //! result text, as delivered by `RunFinished`). Allowed `decision` values:
@@ -24,8 +25,9 @@
 //! | `agent_resolve_conflicts` | `done` (body: how it was resolved), `blocked` (body: the conflict) |
 //! | `agent_task` | `reply`, `blocked` (body: the reply to post) |
 //!
-//! A missing block, invalid JSON, an unknown decision or an empty `body` fails the
-//! job (the work item moves to `Failed` and can be retried from the UI).
+//! A missing block or invalid JSON first gets one recovery run (see [`recovery_prompt`]); if
+//! that also fails, as do an unknown decision or an empty `body`, the job fails (the work item
+//! moves to `Failed` and can be retried from the UI).
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -119,6 +121,44 @@ pub fn template(kind: JobKind) -> Option<&'static str> {
         JobKind::AgentTask => TASK,
         _ => return None,
     })
+}
+
+/// The short prompt for the one recovery run of a job whose final message had no usable
+/// `json` block. It is a re-run (the sandbox protocol has no way to resume the session), so it
+/// tells the agent to change nothing and only report. Non-agent kinds get an empty string.
+pub fn recovery_prompt(kind: JobKind) -> String {
+    let decisions = Decision::allowed(kind);
+    if decisions.is_empty() {
+        return String::new();
+    }
+    let names = decisions
+        .iter()
+        .map(|d| format!("`{}`", d.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let example = match kind {
+        JobKind::AgentImplement => {
+            r###"{ "decision": "done", "title": "fix(scope): short description", "body": "## Summary\n..." }"###
+        }
+        JobKind::AgentReview => {
+            r###"{ "decision": "comment", "body": "## Review\n...", "checks": [{ "name": "cargo test", "status": "not_run" }] }"###
+        }
+        _ => r#"{ "decision": "<decision>", "body": "<markdown>" }"#,
+    };
+    format!(
+        "The work for this item was already done in an earlier run, but its final message did \
+not end with a valid fenced `json` block, so the result could not be read.\n\n\
+Do NOT redo the work. Make no changes, commits or pushes. If you need to remember what was \
+done, look at the current branch and its commits; if there is nothing to go on, say what you \
+can and use a cautious decision.\n\n\
+# Required final message\n\n\
+Reply with a short plain-text note, then end your message with exactly one fenced `json` \
+block, and nothing after it:\n\n\
+```json\n{example}\n```\n\n\
+`decision` is one of {names}. `body` is a single JSON string holding markdown (escape newlines \
+as `\\n` and quotes as `\\\"`). The block must be the very last thing in your message: write \
+nothing after the closing fence.\n"
+    )
 }
 
 /// Substitute `{name}` placeholders in one pass (substituted values are never
@@ -441,6 +481,20 @@ mod tests {
     }
 
     #[test]
+    fn templates_end_with_the_final_block_instruction() {
+        for kind in AGENT_KINDS {
+            let out = render_prompt(kind, &full_ctx());
+            let tail = out.rsplit("# Required final message").next().unwrap();
+            assert!(out.contains("# Required final message"), "{kind:?}");
+            assert!(tail.contains("last thing"), "{kind:?}");
+            assert!(tail.contains("nothing after"), "{kind:?}");
+            for d in Decision::allowed(kind) {
+                assert!(tail.contains(d.as_str()), "{kind:?} omits {d:?}");
+            }
+        }
+    }
+
+    #[test]
     fn prompts_instruct_plain_git_and_formatter_fallback() {
         let ctx = full_ctx();
         for kind in [JobKind::AgentImplement, JobKind::AgentAddressComments] {
@@ -449,6 +503,27 @@ mod tests {
             assert!(out.contains("Not run"));
             assert!(out.contains("cargo fmt"));
         }
+    }
+
+    #[test]
+    fn recovery_prompt_names_every_decision_and_forbids_changes() {
+        for kind in AGENT_KINDS {
+            let p = recovery_prompt(kind);
+            assert!(
+                p.contains("```json") && p.contains("nothing after"),
+                "{kind:?}"
+            );
+            assert!(p.contains("Make no changes, commits or pushes"), "{kind:?}");
+            for d in Decision::allowed(kind) {
+                assert!(
+                    p.contains(&format!("`{}`", d.as_str())),
+                    "{kind:?} omits {d:?}"
+                );
+            }
+        }
+        assert!(recovery_prompt(JobKind::AgentImplement).contains("\"title\""));
+        assert!(recovery_prompt(JobKind::AgentReview).contains("\"checks\""));
+        assert_eq!(recovery_prompt(JobKind::PostComment), "");
     }
 
     #[test]

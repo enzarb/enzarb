@@ -57,7 +57,9 @@ pub use fx::{
 };
 pub use issue::{IssueData, IssuePhase, IssueState};
 pub use mention::{MentionData, MentionPhase, MentionState};
-pub use prompt::{AgentOutput, Decision, OutputError, PromptContext, render_prompt};
+pub use prompt::{
+    AgentOutput, Decision, OutputError, PromptContext, recovery_prompt, render_prompt,
+};
 
 /// Version of the `state_data` shapes written by this module. Readers of older
 /// versions must be added to [`WorkflowState::from_row`] when this is bumped.

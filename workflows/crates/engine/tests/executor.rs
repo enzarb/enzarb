@@ -2077,7 +2077,8 @@ async fn session_limit_requeues_without_spending_the_budget_and_holds_the_projec
     assert_eq!(fail_run(&h, &format!("job-{a1}"), "boom").await, 200);
     assert_eq!(job(pool, a1).await.status, "running");
     let url = format!("{}/v1/runs/{rid}/finished", h.base);
-    let ok = finished(&rid, RunOutcome::Succeeded);
+    let mut ok = finished(&rid, RunOutcome::Succeeded);
+    ok.summary = "Done.\n\n```json\n{\"decision\":\"ready\",\"body\":\"b\"}\n```\n".into();
     assert_eq!(
         post_callback(&url, &callback_token(b"test-secret", &rid), &ok).await,
         200
@@ -2156,6 +2157,159 @@ async fn a_plain_agent_failure_still_fails_the_job() {
     assert!(j.waiting_for.is_none() && j.limit_wait_count == 0);
     assert_eq!(events_of(pool, "JobFailed").await.len(), 1);
     assert!(hold_until(pool, "enzarb").await.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Recovery from output without the final json block
+// ---------------------------------------------------------------------------
+
+const GOOD_BLOCK: &str =
+    "Done.\n\n```json\n{ \"decision\": \"ready\", \"body\": \"Clear enough.\" }\n```";
+
+async fn succeed_run(h: &H, rid: &str, summary: &str) -> u16 {
+    let url = format!("{}/v1/runs/{rid}/finished", h.base);
+    let mut body = finished(rid, RunOutcome::Succeeded);
+    body.summary = summary.into();
+    body.exit_code = Some(0);
+    post_callback(&url, &callback_token(b"test-secret", rid), &body).await
+}
+
+async fn start_triage(h: &H) -> i64 {
+    let pool = h.pool();
+    h.fake.add_thread(key(1), thread_with("a"));
+    let wi = new_item(pool, 1, "enzarb").await;
+    let id = new_job(
+        pool,
+        wi,
+        "enzarb",
+        "agent_triage",
+        0,
+        "k:a",
+        agent_input(1, "enzarb/triage-1", false),
+    )
+    .await;
+    h.exec.drain().await;
+    id
+}
+
+#[tokio::test]
+async fn missing_json_block_is_recovered_by_one_follow_up_run() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let id = start_triage(&h).await;
+    let rid = format!("job-{id}");
+    let rec = format!("job-{id}-r1");
+    assert_eq!(h.sandbox.starts(), 1);
+
+    assert_eq!(
+        succeed_run(&h, &rid, "I looked at it, all fine.").await,
+        200
+    );
+    let j = job(pool, id).await;
+    assert_eq!(j.status, "running");
+    assert_eq!(j.input["recovery_used"], json!(true));
+    assert_eq!(h.sandbox.starts(), 2);
+    let run = h.sandbox.run(&rec).expect("recovery run started");
+    assert_eq!(run.run_id, rec);
+    assert!(!run.push);
+    assert!(run.prompt.contains("Make no changes, commits or pushes"));
+    assert!(run.prompt.contains("`questions`") && run.prompt.contains("`ready`"));
+    assert!(run.prompt.len() < h.sandbox.run(&rid).unwrap().prompt.len());
+    assert!(
+        run.callback_url
+            .ends_with(&format!("/v1/runs/{rec}/finished"))
+    );
+    assert!(events_of(pool, "JobFailed").await.is_empty());
+
+    // The original run's callback again (sandbox-init retry) changes nothing.
+    assert_eq!(
+        succeed_run(&h, &rid, "I looked at it, all fine.").await,
+        200
+    );
+    assert_eq!(h.sandbox.starts(), 2);
+    assert_eq!(job(pool, id).await.status, "running");
+
+    // The recovery run delivers the block.
+    assert_eq!(succeed_run(&h, &rec, GOOD_BLOCK).await, 200);
+    assert_eq!(job(pool, id).await.status, "succeeded");
+    assert_eq!(events_of(pool, "JobSucceeded").await.len(), 1);
+    assert!(events_of(pool, "JobFailed").await.is_empty());
+    assert_eq!(h.sandbox.starts(), 2);
+}
+
+#[tokio::test]
+async fn malformed_json_block_is_recovered() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let id = start_triage(&h).await;
+    let rec = format!("job-{id}-r1");
+
+    let bad = "Done.\n```json\n{ \"decision\": 1 }\n```";
+    assert_eq!(succeed_run(&h, &format!("job-{id}"), bad).await, 200);
+    assert_eq!(job(pool, id).await.status, "running");
+    assert_eq!(h.sandbox.starts(), 2);
+
+    assert_eq!(succeed_run(&h, &rec, GOOD_BLOCK).await, 200);
+    assert_eq!(job(pool, id).await.status, "succeeded");
+}
+
+#[tokio::test]
+async fn missing_block_twice_fails_with_the_output_tail() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let id = start_triage(&h).await;
+    let rec = format!("job-{id}-r1");
+
+    assert_eq!(
+        succeed_run(&h, &format!("job-{id}"), "first try").await,
+        200
+    );
+    assert_eq!(h.sandbox.starts(), 2);
+
+    let long = format!("{}THE-END-MARKER", "x".repeat(5000));
+    assert_eq!(succeed_run(&h, &rec, &long).await, 200);
+    let j = job(pool, id).await;
+    assert_eq!(j.status, "failed");
+    assert_eq!(h.sandbox.starts(), 2, "no third run");
+    let evs = events_of(pool, "JobFailed").await;
+    assert_eq!(evs.len(), 1);
+    let err = evs[0].1["error"].as_str().unwrap();
+    assert!(err.contains("unusable agent output"), "{err}");
+    assert!(err.contains("THE-END-MARKER"), "{err}");
+    assert!(err.len() < 3000, "tail is bounded");
+
+    // A late callback of the original run is ignored.
+    assert_eq!(succeed_run(&h, &format!("job-{id}"), "late").await, 200);
+    assert_eq!(h.sandbox.starts(), 2);
+}
+
+#[tokio::test]
+async fn an_unusable_decision_is_not_recovered() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let id = start_triage(&h).await;
+    let unknown = "```json\n{ \"decision\": \"nope\", \"body\": \"b\" }\n```";
+    assert_eq!(succeed_run(&h, &format!("job-{id}"), unknown).await, 200);
+    assert_eq!(h.sandbox.starts(), 1);
+    assert_eq!(job(pool, id).await.status, "succeeded");
+}
+
+#[tokio::test]
+async fn deadline_poll_targets_the_recovery_run() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let id = start_triage(&h).await;
+    let rec = format!("job-{id}-r1");
+    assert_eq!(succeed_run(&h, &format!("job-{id}"), "no block").await, 200);
+    h.sandbox
+        .finish_with_state(&rec, RunPhase::Succeeded, GOOD_BLOCK);
+    sqlx::query("UPDATE workflows.jobs SET deadline = now() - interval '1 second' WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(h.exec.poll_deadlines().await.unwrap(), 1);
+    assert_eq!(job(pool, id).await.status, "succeeded");
 }
 
 // ---------------------------------------------------------------------------

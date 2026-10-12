@@ -19,9 +19,9 @@ use enzarb_connector::{Connector, CredScope, RepoKey, Thread};
 use enzarb_proto::session::{Client, Session};
 use enzarb_proto::{ClientKind, RunStart};
 
-use super::callback::{callback_token, run_id};
+use super::callback::{callback_token, recovery_run_id, run_id};
 use super::{Claimed, Done, Executor, JobError, SandboxError};
-use crate::machine::{AgentJobInput, JobKind, render_prompt};
+use crate::machine::{AgentJobInput, JobKind, recovery_prompt, render_prompt};
 
 /// Canonical clone URL of a repository (`contracts.md` section 4: `repo_url`).
 pub fn repo_url(repo: &RepoKey) -> Option<String> {
@@ -194,6 +194,71 @@ impl Executor {
             }
         };
 
+        self.launch_run(session, job.id, job.attempt, &rid, run, input.timeout_secs)
+            .await
+    }
+
+    /// Start the one recovery run of a job whose result had no usable `json` block: a re-run
+    /// (`job-<id>[-<n>]-r1`) with a short prompt that asks only for the block. It never pushes
+    /// and gets a read-scope credential. The job stays `running`; its deadline is reset.
+    pub(crate) async fn start_recovery(
+        &self,
+        job_id: i64,
+        attempt: i32,
+        generation: i32,
+        project: &str,
+        input: &AgentJobInput,
+    ) -> Result<(), JobError> {
+        let repo_url = repo_url(&input.repo).ok_or_else(|| {
+            JobError::permanent(format!("unsupported connector {:?}", input.repo.connector))
+        })?;
+        let connector = self.connector_for(&input.repo.connector)?;
+        let session = self.dial(project).await?;
+        let cred = match connector
+            .mint_clone_credential(
+                &input.repo,
+                CredScope::Read,
+                &format!("job:{job_id}:{attempt}:recovery"),
+            )
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                session.close().await;
+                return Err(e.into());
+            }
+        };
+        let rid = recovery_run_id(job_id, generation);
+        let run = RunStart {
+            callback_url: format!("{}/v1/runs/{rid}/finished", self.cfg.callback_base_url),
+            callback_token: callback_token(&self.cfg.callback_secret, &rid),
+            run_id: rid.clone(),
+            repo_url,
+            base_ref: input.base_ref.clone(),
+            branch: input.branch.clone(),
+            push: false,
+            clone_token: cred.token,
+            deps_token: None,
+            prompt: recovery_prompt(input.kind),
+            timeout_secs: input.timeout_secs,
+            log_channel: None,
+        };
+        self.launch_run(session, job_id, attempt, &rid, run, input.timeout_secs)
+            .await
+            .map(|_| ())
+    }
+
+    /// `run_start` on an open session, then release the lease and set the deadline. Closes the
+    /// session.
+    async fn launch_run(
+        &self,
+        session: Session,
+        job_id: i64,
+        attempt: i32,
+        rid: &str,
+        run: RunStart,
+        timeout_secs: u64,
+    ) -> Result<Done, JobError> {
         let started = tokio::time::timeout(self.cfg.sandbox_timeout, session.run_start(run))
             .await
             .map_err(|_| sandbox_err("run_start", "timed out"))?
@@ -205,18 +270,18 @@ impl Executor {
                 return Err(e);
             }
         };
-        tracing::info!(job_id = job.id, run_id = %rid, state = ?started.accepted.state,
+        tracing::info!(job_id, run_id = %rid, state = ?started.accepted.state,
             existing = started.accepted.existing, "agent run accepted");
 
-        let secs = (input.timeout_secs as f64) + self.cfg.deadline_grace.as_secs_f64();
+        let secs = (timeout_secs as f64) + self.cfg.deadline_grace.as_secs_f64();
         let updated = sqlx::query(
             "UPDATE jobs SET lease_owner = NULL, lease_until = NULL,
                     deadline = now() + make_interval(secs => $3),
                     sandbox_wait_started_at = NULL, updated_at = now()
              WHERE id = $1 AND status = 'running' AND attempt = $2",
         )
-        .bind(job.id)
-        .bind(job.attempt)
+        .bind(job_id)
+        .bind(attempt)
         .bind(secs)
         .execute(&self.pool)
         .await;
@@ -226,18 +291,18 @@ impl Executor {
                 let cancelled: bool = sqlx::query_scalar(
                     "SELECT EXISTS (SELECT 1 FROM jobs WHERE id = $1 AND status = 'cancelled')",
                 )
-                .bind(job.id)
+                .bind(job_id)
                 .fetch_one(&self.pool)
                 .await
                 .unwrap_or(false);
                 if cancelled {
-                    let _ = session.run_cancel(&rid);
+                    let _ = session.run_cancel(rid);
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
             }
             Ok(_) => {}
             // The run is going; the lease expiring re-sends the (idempotent) run_start.
-            Err(e) => tracing::warn!(job_id = job.id, error = %e, "could not set the run deadline"),
+            Err(e) => tracing::warn!(job_id, error = %e, "could not set the run deadline"),
         }
         session.close().await;
         Ok(Done::Accepted)

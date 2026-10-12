@@ -4,7 +4,7 @@ use enzarb_proto::RunPhase;
 use enzarb_proto::session::SessionError;
 use serde_json::{Value, json};
 
-use super::callback::run_id;
+use super::callback::{current_run_id, recovery_used};
 use super::restart::RestartOutcome;
 use super::session_limit::LimitOutcome;
 use super::{Executor, JobError};
@@ -150,7 +150,7 @@ impl Executor {
     ) -> Result<Asked, JobError> {
         let project = project.ok_or_else(|| JobError::permanent("job has no project"))?;
         let session = self.dial(project).await?;
-        let rid = run_id(job_id, waits);
+        let rid = current_run_id(job_id, waits, recovery_used(input));
         let status = tokio::time::timeout(self.cfg.sandbox_timeout, session.run_status(&rid)).await;
         let result = match status {
             Err(_) => Err(JobError::transient("run_status timed out")),
@@ -199,8 +199,8 @@ impl Executor {
     /// Cancel sandbox runs of jobs that a transition cancelled after the run was accepted
     /// (`deadline` is the marker; it is cleared once the cancel was sent).
     pub async fn cancel_runs(&self) -> Result<usize, Error> {
-        let rows: Vec<(i64, i32, Option<String>)> = sqlx::query_as(
-            r"SELECT id, limit_wait_count + restart_retries, project_id FROM jobs
+        let rows: Vec<(i64, i32, Option<String>, Value)> = sqlx::query_as(
+            r"SELECT id, limit_wait_count + restart_retries, project_id, input FROM jobs
               WHERE status = 'cancelled' AND kind LIKE 'agent\_%' AND deadline IS NOT NULL
                 AND updated_at > now() - interval '1 day'
               ORDER BY id LIMIT 50",
@@ -208,11 +208,13 @@ impl Executor {
         .fetch_all(&self.pool)
         .await?;
         let mut sent = 0;
-        for (id, waits, project) in rows {
+        for (id, waits, project, input) in rows {
             let Some(project) = project else { continue };
             match self.dial(&project).await {
                 Ok(session) => {
-                    let ok = session.run_cancel(&run_id(id, waits)).is_ok();
+                    let ok = session
+                        .run_cancel(&current_run_id(id, waits, recovery_used(&input)))
+                        .is_ok();
                     session.close().await;
                     if ok {
                         sqlx::query("UPDATE jobs SET deadline = NULL WHERE id = $1")
