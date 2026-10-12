@@ -24,6 +24,8 @@ export function workStatus(state: string): Status {
 			return { tone: 'danger' };
 		case 'done':
 			return { tone: 'success' };
+		case 'ready':
+			return { tone: 'success' };
 		case 'waiting':
 			return { tone: 'warning', hollow: true };
 		default:

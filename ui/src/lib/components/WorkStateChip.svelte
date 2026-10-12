@@ -7,4 +7,6 @@
 	const s = $derived(workStatus(state));
 </script>
 
-<Badge tone={s.tone} hollow={s.hollow}>{state}</Badge>
+<Badge tone={s.tone} hollow={s.hollow}>
+	{state === 'ReadyToMerge' ? 'Ready to merge' : state}
+</Badge>

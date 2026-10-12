@@ -1,12 +1,17 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import type { Sql } from '../db.ts';
 
-const read = (f: string) => readFileSync(new URL(f, import.meta.url), 'utf8');
+const dir = new URL('./workflows/', import.meta.url);
 
-/** Applies the engine's real `workflows` tables and `workflows_api` views/functions. */
+/**
+ * Applies the engine's real `workflows` migrations in filename order, so the tables and
+ * `workflows_api` views/functions are their cumulative result.
+ */
 export async function applyWorkflowsSchema(sql: Sql): Promise<void> {
-	await sql.unsafe(read('./workflows_schema.sql'));
-	await sql.unsafe(read('./workflows_api.sql'));
+	const files = readdirSync(dir)
+		.filter((f) => f.endsWith('.sql'))
+		.sort();
+	for (const f of files) await sql.unsafe(readFileSync(new URL(f, dir), 'utf8'));
 }
 
 export interface SeedItem {

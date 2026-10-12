@@ -15,7 +15,8 @@
 	const labels: Record<WorkAction, string> = {
 		approve: 'Approve plan',
 		retry: 'Retry',
-		cancel: 'Cancel'
+		cancel: 'Cancel',
+		merge: 'Merge (squash)'
 	};
 </script>
 
@@ -23,7 +24,11 @@
 	<div class="ez-cluster">
 		{#each actions as a (a)}
 			<Button
-				variant={a === 'approve' ? 'primary' : a === 'cancel' ? 'danger' : 'secondary'}
+				variant={a === 'approve' || a === 'merge'
+					? 'primary'
+					: a === 'cancel'
+						? 'danger'
+						: 'secondary'}
 				disabled={pending !== null}
 				onclick={() => onaction(a)}
 			>

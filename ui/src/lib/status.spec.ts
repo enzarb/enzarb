@@ -9,6 +9,7 @@ describe('status tones', () => {
 		expect(workStatus('Done').tone).toBe('success');
 		expect(workStatus('AwaitingApproval')).toEqual({ tone: 'warning', hollow: true });
 		expect(workStatus('Implementing').tone).toBe('accent');
+		expect(workStatus('ReadyToMerge')).toEqual({ tone: 'success' });
 	});
 
 	it('maps run results and project steps', () => {

@@ -8,7 +8,8 @@
 	import WorkStateChip from '#lib/components/WorkStateChip.svelte';
 	import { watchWorkItems } from '#lib/live.ts';
 	import { listProjects } from '#lib/projects.remote.ts';
-	import type { WorkItemSummary } from '#lib/work-items.ts';
+	import Section from '#lib/components/ui/Section.svelte';
+	import { groupWorkItems, type WorkItemSummary } from '#lib/work-items.ts';
 	import { listWorkItems } from '#lib/work.remote.ts';
 
 	const project = $derived(page.url.searchParams.get('project') ?? undefined);
@@ -16,6 +17,8 @@
 	const projects = listProjects();
 
 	$effect(() => watchWorkItems(() => void items.refresh()));
+
+	const groups = $derived(groupWorkItems(items.current ?? []));
 
 	const options = $derived.by(() => {
 		const list = (projects.current ?? []).map((p) => ({ value: p.name, label: p.displayName }));
@@ -64,16 +67,29 @@
 	{#if items.error}
 		<Notice tone="error">Could not load work items.</Notice>
 	{:else}
-		<DataTable
-			label="Work items"
-			items={items.current ?? []}
-			{columns}
-			rowKey={(w) => w.id}
-			loading={items.loading && !items.current}
-			loadingLabel="Loading work items"
-			emptyTitle="No work items yet"
-			emptyDescription="Work appears here when an issue, change request or mention reaches a project."
-		/>
+		{#if groups.ready.length}
+			<Section title="Ready to merge" description="Checks pass. Review and merge." flush>
+				<DataTable
+					label="Ready to merge"
+					items={groups.ready}
+					{columns}
+					rowKey={(w) => w.id}
+					emptyTitle="Nothing ready to merge"
+				/>
+			</Section>
+		{/if}
+		{#if !groups.ready.length || groups.rest.length}
+			<DataTable
+				label="Work items"
+				items={groups.rest}
+				{columns}
+				rowKey={(w) => w.id}
+				loading={items.loading && !items.current}
+				loadingLabel="Loading work items"
+				emptyTitle="No work items yet"
+				emptyDescription="Work appears here when an issue, change request or mention reaches a project."
+			/>
+		{/if}
 	{/if}
 	{#snippet failed()}<Notice tone="error">Could not load work items.</Notice>{/snippet}
 </svelte:boundary>

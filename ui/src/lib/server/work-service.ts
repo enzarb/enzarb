@@ -2,6 +2,7 @@ import {
 	availableActions,
 	itemTitle,
 	itemUrl,
+	parseReadiness,
 	type JobView,
 	type TransitionView,
 	type WorkAction,
@@ -138,6 +139,7 @@ export function workService(sql: Sql, projects: readonly string[]) {
 				FROM workflows_api.job_v WHERE work_item_id = ${id} ORDER BY created_at, id`;
 			return {
 				...summary(row),
+				readiness: row.workflow === 'change_request' ? parseReadiness(row.state_data) : null,
 				actions: availableActions(row.state),
 				transitions: transitions.map((t): TransitionView => ({
 					id: Number(t.id),

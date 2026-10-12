@@ -350,6 +350,13 @@ img {
 	gap: var(--ez-gap, var(--ez-space-2));
 }
 
+// Merge readiness block on a change request: optional notice, then the step list.
+.ez-merge-readiness {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-3);
+}
+
 .ez-text-sm {
 	font-size: var(--ez-text-sm);
 }

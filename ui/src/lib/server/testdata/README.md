@@ -1,6 +1,7 @@
-`workflows_schema.sql` and `workflows_api.sql` are verbatim copies of
-`enzarb-workflows/migrations/20261008000001_workflows_schema.sql` and `…02_workflows_api.sql`
-(contracts §6). `workflows-sql.sha256` records the hashes of the source files; `testdata.spec.ts`
-fails if a copy drifts from them. To refresh after the migrations change, run
-`scripts/sync-workflows-sql.sh [path/to/enzarb-workflows]` (default: sibling checkout) and commit
-the result. The grants block skips absent roles.
+`workflows/` holds verbatim copies of every `enzarb-workflows/migrations/*.sql` (contracts §6).
+`workflows-fixture.ts` applies them in filename order, so the test database is their cumulative
+result (later migrations `CREATE OR REPLACE` earlier functions, e.g. `submit_action`).
+`workflows-sql.sha256` records the hash of each migration; `testdata.spec.ts` fails if a copy
+drifts from it or a migration is missing. To refresh after the migrations change, run
+`scripts/sync-workflows-sql.sh [path/to/enzarb-workflows [git-ref]]` (default: sibling checkout;
+pass e.g. `origin/main` to read a git ref) and commit the result. Grants blocks skip absent roles.

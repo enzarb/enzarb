@@ -150,6 +150,41 @@ describe('workService against workflows_api', () => {
 		expect(types.map((r) => r.type)).toEqual(['ApprovalGranted', 'CancelRequested']);
 	});
 
+	it('merges only from ReadyToMerge, as the session actor with an empty payload', async () => {
+		const id = await seedItem(sql, {
+			key: 'github:acme/api#20',
+			project: 'api',
+			workflow: 'change_request',
+			state: 'ReadyToMerge',
+			stateData: {
+				title: 'feat: x',
+				checklist: { ci: { status: 'ok', detail: 'green' } },
+				merge_error: ''
+			}
+		});
+		const svc = workService(sql, ['api']);
+		const d = (await svc.get(id))!;
+		expect(d.actions).toEqual(['merge', 'cancel']);
+		expect(d.readiness?.ci).toEqual({ status: 'ok', detail: 'green' });
+		expect(d.readiness?.review.status).toBe('unknown');
+		expect(d.readiness?.mergeError).toBeNull();
+		expect((await svc.get(done))!.readiness).toBeNull();
+		await expect(svc.submitAction(done, { login: 'a', id: 1 }, 'merge')).rejects.toMatchObject({
+			kind: 'invalid-action'
+		});
+		await expect(
+			workService(sql, ['web']).submitAction(id, { login: 'a', id: 1 }, 'merge')
+		).rejects.toMatchObject({ kind: 'not-found' });
+		const eventId = await svc.submitAction(id, { login: 'alice', id: 7 }, 'merge');
+		const [e] = await sql`SELECT type, payload FROM workflows.events WHERE id = ${eventId}`;
+		expect(e.type).toBe('MergeRequested');
+		expect(e.payload).toEqual({
+			actor: { login: 'alice', id: 7, is_bot: false },
+			action: 'merge',
+			data: {}
+		});
+	});
+
 	it('accepts retry from Stale', async () => {
 		const id = await seedItem(sql, { key: 'github:acme/api#9', project: 'api', state: 'Stale' });
 		const svc = workService(sql, ['api']);

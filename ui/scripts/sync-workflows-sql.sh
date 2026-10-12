@@ -1,27 +1,35 @@
 #!/usr/bin/env bash
-# Refresh src/lib/server/testdata/*.sql from a sibling enzarb-workflows checkout and record
-# their sha256 in testdata/workflows-sql.sha256 (checked by testdata.spec.ts).
-# Usage: scripts/sync-workflows-sql.sh [path/to/enzarb-workflows]   (default ../enzarb-workflows)
+# Refresh src/lib/server/testdata/workflows/*.sql from the enzarb-workflows migrations and record
+# their sha256 in testdata/workflows-sql.sha256 (checked by testdata.spec.ts). Every migration is
+# copied verbatim; the test setup applies them in filename order, so the fixture is their
+# cumulative result.
+# Usage: scripts/sync-workflows-sql.sh [path/to/enzarb-workflows [git-ref]]
+#   (default ../enzarb-workflows). With a git-ref (or WORKFLOWS_REF), the migrations are read
+#   from that ref (e.g. origin/main) instead of the working tree.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-src="${1:-$root/../enzarb-workflows}/migrations"
+repo="${1:-$root/../enzarb-workflows}"
+ref="${2:-${WORKFLOWS_REF:-}}"
 dst="$root/src/lib/server/testdata"
 
-# copy name -> source migration
-declare -A files=(
-	[workflows_schema.sql]=20261008000001_workflows_schema.sql
-	[workflows_api.sql]=20261008000002_workflows_api.sql
-)
+if [ -n "$ref" ]; then
+	mapfile -t names < <(git -C "$repo" ls-tree --name-only "$ref" migrations/ | sed 's|^migrations/||' | grep '\.sql$' | sort)
+	read_migration() { git -C "$repo" show "$ref:migrations/$1"; }
+else
+	[ -d "$repo/migrations" ] || { echo "no migrations dir at $repo/migrations" >&2; exit 1; }
+	mapfile -t names < <(cd "$repo/migrations" && ls -1 -- *.sql | sort)
+	read_migration() { cat "$repo/migrations/$1"; }
+fi
+[ "${#names[@]}" -gt 0 ] || { echo "no migrations found" >&2; exit 1; }
 
-[ -d "$src" ] || { echo "no migrations dir at $src" >&2; exit 1; }
-
+rm -rf "$dst/workflows"
+mkdir -p "$dst/workflows"
 : >"$dst/workflows-sql.sha256.tmp"
-for name in workflows_schema.sql workflows_api.sql; do
-	cp "$src/${files[$name]}" "$dst/$name"
-	# hash of the source file, keyed by the copy's name
-	printf '%s  %s\n' "$(sha256sum "$src/${files[$name]}" | cut -d' ' -f1)" "$name" \
+for name in "${names[@]}"; do
+	read_migration "$name" >"$dst/workflows/$name"
+	printf '%s  %s\n' "$(sha256sum "$dst/workflows/$name" | cut -d' ' -f1)" "$name" \
 		>>"$dst/workflows-sql.sha256.tmp"
 done
 mv "$dst/workflows-sql.sha256.tmp" "$dst/workflows-sql.sha256"
-echo "synced from $src"
+echo "synced ${#names[@]} migrations from ${ref:-$repo}"
