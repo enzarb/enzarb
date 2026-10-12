@@ -1,6 +1,8 @@
 export interface Config {
 	databaseUrl: string;
 	sessionJwtSecret: string;
+	/** Shared HS256 secret for enzarb-realtime tokens (ENZARB_REALTIME_JWT_SECRET). */
+	realtimeJwtSecret: string;
 	githubOauthClientId: string;
 	githubOauthClientSecret: string;
 	publicUrl: string;
@@ -11,6 +13,7 @@ export interface Config {
 const REQUIRED: Record<Exclude<keyof Config, 'githubAppSlug'>, string> = {
 	databaseUrl: 'DATABASE_URL',
 	sessionJwtSecret: 'ENZARB_SESSION_JWT_SECRET',
+	realtimeJwtSecret: 'ENZARB_REALTIME_JWT_SECRET',
 	githubOauthClientId: 'GITHUB_OAUTH_CLIENT_ID',
 	githubOauthClientSecret: 'GITHUB_OAUTH_CLIENT_SECRET',
 	publicUrl: 'ENZARB_PUBLIC_URL'

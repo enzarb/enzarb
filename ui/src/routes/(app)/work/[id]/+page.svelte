@@ -13,15 +13,13 @@
 	import WorkStateChip from '#lib/components/WorkStateChip.svelte';
 	import WorkTimeline from '#lib/components/WorkTimeline.svelte';
 	import { watchWorkItems } from '#lib/live.ts';
-	import type { WorkAction } from '#lib/work-items.ts';
+	import { shouldRefresh, type WorkAction } from '#lib/work-items.ts';
 	import { getWorkItem, submitAction } from '#lib/work.remote.ts';
 
 	const id = $derived(Number(page.params.id));
 	const item = $derived(getWorkItem(id));
 
-	$effect(() =>
-		watchWorkItems((changed) => (changed === null || changed === id) && void item.refresh())
-	);
+	$effect(() => watchWorkItems((changed) => shouldRefresh(changed, id) && void item.refresh()));
 
 	let pending = $state<WorkAction | null>(null);
 	let actionError = $state('');
@@ -47,7 +45,7 @@
 			const before = snapshot;
 			await submitAction({ id, action });
 			if (action === 'merge') mergeRequestedAt = before;
-			// The reducer applies the event asynchronously; the SSE stream refreshes the page then.
+			// The reducer applies the event asynchronously; the live stream refreshes the page then.
 		} catch {
 			actionError = `Could not ${action} this item. Its state may have changed.`;
 			void item.refresh();

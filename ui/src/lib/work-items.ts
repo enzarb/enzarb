@@ -174,3 +174,25 @@ export function itemTitle(key: string, stateData: unknown): string {
 	const title = (stateData as { title?: unknown } | null)?.title;
 	return typeof title === 'string' && title.trim() ? title : key;
 }
+
+/** Whether a live change (`null` = refresh everything) concerns the item shown on the detail page. */
+export const shouldRefresh = (changed: number | null, id: number): boolean =>
+	changed === null || changed === id;
+
+/** List order is `updated_at DESC, id DESC`. */
+const byRecency = (a: WorkItemSummary, b: WorkItemSummary): number =>
+	Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || b.id - a.id;
+
+/**
+ * Apply one changed item to the list: replace its row (or insert it) at its sorted position.
+ * An item outside the project filter is left out, and dropped if it was listed before.
+ */
+export function applyItemChange(
+	list: WorkItemSummary[],
+	item: WorkItemSummary,
+	project?: string
+): WorkItemSummary[] {
+	const rest = list.filter((w) => w.id !== item.id);
+	if (project && item.project !== project) return rest;
+	return [...rest, item].sort(byRecency);
+}

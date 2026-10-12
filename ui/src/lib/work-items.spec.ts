@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+	applyItemChange,
 	availableActions,
 	countPossiblyRunning,
 	groupWorkItems,
@@ -7,8 +8,54 @@ import {
 	itemUrl,
 	keyToUrl,
 	parseReadiness,
-	stateTone
+	shouldRefresh,
+	stateTone,
+	type WorkItemSummary
 } from './work-items.ts';
+
+describe('shouldRefresh', () => {
+	it('is true for a full refresh and the matching id only', () => {
+		expect(shouldRefresh(null, 3)).toBe(true);
+		expect(shouldRefresh(3, 3)).toBe(true);
+		expect(shouldRefresh(4, 3)).toBe(false);
+	});
+});
+
+describe('applyItemChange', () => {
+	const mk = (id: number, updatedAt: string, project = 'p'): WorkItemSummary => ({
+		id,
+		key: `github:o/r#${id}`,
+		project,
+		workflow: 'issue',
+		state: 'Working',
+		title: `t${id}`,
+		url: null,
+		updatedAt
+	});
+	const a = mk(1, '2026-10-11T01:00:00Z');
+	const b = mk(2, '2026-10-11T02:00:00Z');
+
+	it('updates a row in place and moves it to its sorted position', () => {
+		const changed = { ...a, state: 'Done', updatedAt: '2026-10-11T03:00:00Z' };
+		expect(applyItemChange([b, a], changed)).toEqual([changed, b]);
+	});
+
+	it('inserts a new item in order', () => {
+		const c = mk(3, '2026-10-11T01:30:00Z');
+		expect(applyItemChange([b, a], c).map((w) => w.id)).toEqual([2, 3, 1]);
+	});
+
+	it('breaks ties by id descending', () => {
+		const c = mk(3, a.updatedAt);
+		expect(applyItemChange([a], c).map((w) => w.id)).toEqual([3, 1]);
+	});
+
+	it('ignores items outside the project filter and drops stale rows', () => {
+		const other = mk(5, '2026-10-11T04:00:00Z', 'q');
+		expect(applyItemChange([b, a], other, 'p')).toEqual([b, a]);
+		expect(applyItemChange([b, a], { ...a, project: 'q' }, 'p')).toEqual([b]);
+	});
+});
 
 describe('merge', () => {
 	it('is offered only in ReadyToMerge, next to cancel', () => {

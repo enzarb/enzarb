@@ -1,9 +1,11 @@
 import { error } from '@sveltejs/kit';
 import { command, getRequestEvent, query } from '$app/server';
 import * as v from 'valibot';
+import { getConfig } from '#lib/server/config.ts';
 import { getSql } from '#lib/server/db.ts';
 import { getProjectStore } from '#lib/server/kube.ts';
 import { projectCache } from '#lib/server/project-cache.ts';
+import { mintRealtimeToken, realtimeUrl } from '#lib/server/realtime-jwt.ts';
 import { WorkError, workService } from '#lib/server/work-service.ts';
 import { SubmitActionSchema } from '#lib/work-items.ts';
 
@@ -19,6 +21,20 @@ async function service() {
 		)
 	};
 }
+
+/** Mints a fresh short-lived enzarb-realtime token and the websocket URL for it. */
+export const realtimeConnection = command(async () => {
+	const { user } = getRequestEvent().locals;
+	if (!user) error(401, 'Not signed in');
+	const projects = await projectCache.list(getProjectStore(), user.login);
+	const config = getConfig();
+	const token = await mintRealtimeToken(
+		config.realtimeJwtSecret,
+		user.login,
+		projects.map((p) => p.name)
+	);
+	return { url: realtimeUrl(config.publicUrl, token) };
+});
 
 export const listWorkItems = query(
 	v.optional(v.pipe(v.string(), v.maxLength(63))),

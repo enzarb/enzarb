@@ -9,14 +9,28 @@
 	import { watchWorkItems } from '#lib/live.ts';
 	import { listProjects } from '#lib/projects.remote.ts';
 	import Section from '#lib/components/ui/Section.svelte';
-	import { groupWorkItems, type WorkItemSummary } from '#lib/work-items.ts';
-	import { listWorkItems } from '#lib/work.remote.ts';
+	import { applyItemChange, groupWorkItems, type WorkItemSummary } from '#lib/work-items.ts';
+	import { getWorkItem, listWorkItems } from '#lib/work.remote.ts';
 
 	const project = $derived(page.url.searchParams.get('project') ?? undefined);
 	const items = $derived(listWorkItems(project));
 	const projects = listProjects();
 
-	$effect(() => watchWorkItems(() => void items.refresh()));
+	/** Patch one changed row in place; any failure falls back to reloading the whole list. */
+	async function applyChange(id: number) {
+		const query = items;
+		try {
+			const changed = await getWorkItem(id);
+			if (query !== items || !query.current) return void query.refresh();
+			query.set(applyItemChange(query.current, changed, project));
+		} catch {
+			void query.refresh();
+		}
+	}
+
+	$effect(() =>
+		watchWorkItems((changed) => void (changed === null ? items.refresh() : applyChange(changed)))
+	);
 
 	const groups = $derived(groupWorkItems(items.current ?? []));
 

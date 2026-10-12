@@ -13,6 +13,7 @@ import { OAUTH_RETURN_COOKIE } from '#lib/server/return-path.ts';
 beforeAll(() => {
 	vi.stubEnv('DATABASE_URL', 'postgres://x@localhost/x');
 	vi.stubEnv('ENZARB_SESSION_JWT_SECRET', 'test-secret');
+	vi.stubEnv('ENZARB_REALTIME_JWT_SECRET', 'test-realtime-secret');
 	vi.stubEnv('GITHUB_OAUTH_CLIENT_ID', 'Iv1.testclient');
 	vi.stubEnv('GITHUB_OAUTH_CLIENT_SECRET', 'test-client-secret');
 	vi.stubEnv('ENZARB_PUBLIC_URL', 'https://enzarb.example');
