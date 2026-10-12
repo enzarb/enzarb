@@ -764,14 +764,14 @@ spec:
       serviceAccountName: enzarb-connectors
 
       initContainers:
-        - name: wait-enzarb-migrate-ui-2f09a33451
+        - name: wait-enzarb-migrate-ui-0b54c90074
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-2f09a33451]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-0b54c90074]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: receiver
-          image: ghcr.io/enzarb/enzarb-connectors-receiver:0.5.0
+          image: ghcr.io/enzarb/enzarb-connectors-receiver:0.6.0
           imagePullPolicy: IfNotPresent
           args: [serve]
           ports:
@@ -967,10 +967,10 @@ spec:
       serviceAccountName: enzarb-ui
 
       initContainers:
-        - name: wait-enzarb-migrate-ui-2f09a33451
+        - name: wait-enzarb-migrate-ui-0b54c90074
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-2f09a33451]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-0b54c90074]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: ui
@@ -1125,10 +1125,10 @@ spec:
       terminationGracePeriodSeconds: 60
 
       initContainers:
-        - name: wait-enzarb-migrate-ui-2f09a33451
+        - name: wait-enzarb-migrate-ui-0b54c90074
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-2f09a33451]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-0b54c90074]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: workflows
@@ -1292,7 +1292,7 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: enzarb-migrate-connectors-4d8b991a0e
+  name: enzarb-migrate-connectors-168a9f568b
   labels:
     app.kubernetes.io/name: enzarb-migrate-connectors
     app.kubernetes.io/instance: enzarb
@@ -1320,7 +1320,7 @@ spec:
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: migrate
-          image: ghcr.io/enzarb/enzarb-connectors-receiver:0.5.0
+          image: ghcr.io/enzarb/enzarb-connectors-receiver:0.6.0
           imagePullPolicy: IfNotPresent
           args: [migrate]
           env:
@@ -1366,7 +1366,7 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: enzarb-migrate-ui-2f09a33451
+  name: enzarb-migrate-ui-0b54c90074
   labels:
     app.kubernetes.io/name: enzarb-migrate-ui
     app.kubernetes.io/instance: enzarb
@@ -1387,10 +1387,10 @@ spec:
       restartPolicy: OnFailure
 
       initContainers:
-        - name: wait-enzarb-migrate-connectors-4d8b991a0e
+        - name: wait-enzarb-migrate-connectors-168a9f568b
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-connectors-4d8b991a0e]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-connectors-168a9f568b]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: migrate
