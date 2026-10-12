@@ -98,17 +98,35 @@ impl Collector {
     }
 }
 
-struct Spawned {
-    pid: u32,
-    exit: tokio::sync::oneshot::Receiver<ExitStatus>,
-    stdin: pipe::Sender,
-    stdout: pipe::Receiver,
+/// A started agent: pid (= its process group), exit status and stdio pipes.
+pub(crate) struct Spawned {
+    pub pid: u32,
+    pub exit: tokio::sync::oneshot::Receiver<ExitStatus>,
+    pub stdin: pipe::Sender,
+    pub stdout: pipe::Receiver,
 }
 
 fn spawn(reaper: &Reaper, spec: &AcpSpec, stderr: Option<LineSink>) -> Result<Spawned, AcpError> {
-    let mut cmd = Command::new(&spec.bin);
-    cmd.current_dir(&spec.cwd)
-        .envs(spec.env.iter().map(|(k, v)| (k, v)))
+    spawn_agent(reaper, &spec.bin, &spec.cwd, &spec.env, false, stderr)
+}
+
+/// Start `bin` in `cwd` in its own session (process group) under the reaper,
+/// with `env` added to the inherited environment, or as the whole
+/// environment when `clear_env`. stderr lines go to `stderr`.
+pub(crate) fn spawn_agent(
+    reaper: &Reaper,
+    bin: &str,
+    cwd: &Path,
+    env: &[(String, String)],
+    clear_env: bool,
+    stderr: Option<LineSink>,
+) -> Result<Spawned, AcpError> {
+    let mut cmd = Command::new(bin);
+    if clear_env {
+        cmd.env_clear();
+    }
+    cmd.current_dir(cwd)
+        .envs(env.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -122,7 +140,7 @@ fn spawn(reaper: &Reaper, spec: &AcpSpec, stderr: Option<LineSink>) -> Result<Sp
             let pid = c.id();
             Ok((c, pid))
         })
-        .map_err(|e| AcpError::Failed(format!("cannot run {}: {e}", spec.bin)))?;
+        .map_err(|e| AcpError::Failed(format!("cannot run {bin}: {e}")))?;
     let pid = child.id();
     let (stdin, stdout, err) = (child.stdin.take(), child.stdout.take(), child.stderr.take());
     drop(child); // the reaper owns waiting

@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use sandbox_init::{
-    AppState, Config, agent::AgentRunManager, capture::ClaudeTokenCapture, reaper::Reaper, serve,
+    AppState, Config, agent::AgentRunManager, capture::ClaudeTokenCapture, chat::ChatManager,
+    reaper::Reaper, serve,
 };
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -30,10 +31,13 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(addr = %config.listen, reap_all = reaper.reaps_all(), "sandbox-init listening");
     let runs = AgentRunManager::new(config.clone(), reaper.clone());
     runs.recover();
+    let chats = ChatManager::new(config.clone(), reaper.clone(), runs.repo_locks());
+    chats.recover().await;
     let capture = ClaudeTokenCapture::new(config.claude_token_file.clone());
     let state = Arc::new(
         AppState::new(config, reaper.clone())
             .with_run_manager(Arc::new(runs))
+            .with_chats(chats.clone())
             .with_observer(Arc::new(capture)),
     );
 
@@ -43,6 +47,8 @@ async fn main() -> anyhow::Result<()> {
         _ = sigint.recv() => tracing::info!("SIGINT received"),
     }
 
+    // Chats first: `CLOSE shutdown` to each browser, then their agents stop.
+    chats.shutdown(grace).await;
     // Forward the signal to the children and give them the grace period.
     if !reaper.terminate_all(grace).await {
         tracing::warn!("children did not exit within the grace period; killed");

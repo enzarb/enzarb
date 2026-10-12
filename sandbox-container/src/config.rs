@@ -47,6 +47,19 @@ pub struct Config {
     /// `ENZARB_CALLBACK_BACKOFF_MS`, default 1000: first retry delay of the
     /// run-finished callback (doubles up to 60 s).
     pub callback_backoff: Duration,
+    /// `ENZARB_MAX_CHATS`, default 1: live chat (`acp`) channels at once; `0`
+    /// disables chat (no `acp` feature, opens get `chat_disabled`). Chats do
+    /// not use run slots.
+    pub max_chats: usize,
+    /// `ENZARB_CHAT_IDLE_SECS`, default 1800: a chat with no message in either
+    /// direction for this long is closed with `idle`.
+    pub chat_idle: Duration,
+    /// `ENZARB_CHAT_MAX_SECS`, default 28800 (8 h): hard lifetime of one chat
+    /// channel (closed with `limit`).
+    pub chat_max: Duration,
+    /// `ENZARB_CHAT_RETENTION_DAYS`, default 7: chat records (transcripts)
+    /// untouched for this long are deleted at startup.
+    pub chat_retention: Duration,
 }
 
 impl Default for Config {
@@ -68,6 +81,10 @@ impl Default for Config {
             max_runs: 2,
             default_timeout: Duration::from_secs(3600),
             callback_backoff: Duration::from_secs(1),
+            max_chats: 1,
+            chat_idle: Duration::from_secs(1800),
+            chat_max: Duration::from_secs(8 * 3600),
+            chat_retention: Duration::from_secs(7 * 86400),
         }
     }
 }
@@ -138,6 +155,30 @@ impl Config {
                     .map_err(|e| anyhow::anyhow!("ENZARB_CALLBACK_BACKOFF_MS={v:?}: {e}"))?,
             );
         }
+        if let Some(v) = get("ENZARB_MAX_CHATS") {
+            c.max_chats = v
+                .parse()
+                .map_err(|e| anyhow::anyhow!("ENZARB_MAX_CHATS={v:?}: {e}"))?;
+        }
+        let secs = |k: &str| -> anyhow::Result<Option<u64>> {
+            match get(k) {
+                None => Ok(None),
+                Some(v) => match v.parse::<u64>() {
+                    Ok(n) if n > 0 => Ok(Some(n)),
+                    Ok(_) => Err(anyhow::anyhow!("{k}={v:?}: must be at least 1")),
+                    Err(e) => Err(anyhow::anyhow!("{k}={v:?}: {e}")),
+                },
+            }
+        };
+        if let Some(n) = secs("ENZARB_CHAT_IDLE_SECS")? {
+            c.chat_idle = Duration::from_secs(n);
+        }
+        if let Some(n) = secs("ENZARB_CHAT_MAX_SECS")? {
+            c.chat_max = Duration::from_secs(n);
+        }
+        if let Some(n) = secs("ENZARB_CHAT_RETENTION_DAYS")? {
+            c.chat_retention = Duration::from_secs(n.saturating_mul(86400));
+        }
         if let Some(v) = get("ENZARB_SHELL")
             .or_else(|| get("SHELL"))
             .filter(|s| !s.is_empty())
@@ -175,6 +216,37 @@ mod tests {
         assert_eq!(c.auth_token_file, PathBuf::from("/t"));
         assert_eq!(c.grace, Duration::from_secs(3));
         assert!(Config::from_lookup(|_| Some("x".into())).is_err());
+    }
+
+    #[test]
+    fn chat_settings() {
+        let c = Config::from_lookup(|_| None).unwrap();
+        assert_eq!(c.max_chats, 1);
+        assert_eq!(c.chat_idle, Duration::from_secs(1800));
+        assert_eq!(c.chat_max, Duration::from_secs(8 * 3600));
+        assert_eq!(c.chat_retention, Duration::from_secs(7 * 86400));
+        let c = Config::from_lookup(|k| match k {
+            "ENZARB_MAX_CHATS" => Some("0".into()),
+            "ENZARB_CHAT_IDLE_SECS" => Some("5".into()),
+            "ENZARB_CHAT_MAX_SECS" => Some("60".into()),
+            "ENZARB_CHAT_RETENTION_DAYS" => Some("1".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(c.max_chats, 0);
+        assert_eq!(c.chat_idle, Duration::from_secs(5));
+        assert_eq!(c.chat_max, Duration::from_secs(60));
+        assert_eq!(c.chat_retention, Duration::from_secs(86400));
+        for k in [
+            "ENZARB_CHAT_IDLE_SECS",
+            "ENZARB_CHAT_MAX_SECS",
+            "ENZARB_MAX_CHATS",
+        ] {
+            assert!(Config::from_lookup(|q| (q == k).then(|| "x".into())).is_err());
+        }
+        assert!(
+            Config::from_lookup(|q| (q == "ENZARB_CHAT_IDLE_SECS").then(|| "0".into())).is_err()
+        );
     }
 
     #[test]

@@ -10,6 +10,7 @@
 //! * [`capture`]: Claude OAuth token capture from `claude setup-token` PTYs;
 //! * [`exec`]: running `git` under the reaper;
 //! * [`acp`]: one agent run over the Agent Client Protocol (`claude-agent-acp`);
+//! * [`chat`]: interactive chat over ACP (one agent per `acp` channel behind a filtering relay);
 //! * [`policy`]: the permission policy that answers the agent's `session/request_permission`;
 //! * [`agent`]: the agent [`RunManager`](runs::RunManager) (worktrees, ACP agent, callbacks);
 //! * [`runs`]: the [`RunManager`](runs::RunManager) extension point for `run_*` messages;
@@ -19,6 +20,7 @@ pub mod acp;
 pub mod agent;
 pub mod auth;
 pub mod capture;
+pub mod chat;
 pub mod config;
 pub mod exec;
 pub mod observer;

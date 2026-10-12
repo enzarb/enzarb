@@ -250,8 +250,25 @@ struct Inner {
     runs: Mutex<HashMap<String, Arc<Run>>>,
     sessions: Mutex<HashMap<u64, SessionCtx>>,
     slots: Semaphore,
-    repo_locks: Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
+    repo_locks: RepoLocks,
     http: reqwest::Client,
+}
+
+/// Per-clone async locks: every git operation that changes a clone's
+/// worktrees or refs (runs and chats) holds the clone's lock.
+#[derive(Clone, Default)]
+pub struct RepoLocks(Arc<Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>>);
+
+impl RepoLocks {
+    /// The lock of the clone at `dir`.
+    pub fn get(&self, dir: &Path) -> Arc<tokio::sync::Mutex<()>> {
+        self.0
+            .lock()
+            .unwrap()
+            .entry(dir.to_path_buf())
+            .or_default()
+            .clone()
+    }
 }
 
 /// The agent run manager. Cheap to clone.
@@ -275,10 +292,15 @@ impl AgentRunManager {
                 runs_dir,
                 runs: Mutex::default(),
                 sessions: Mutex::default(),
-                repo_locks: Mutex::default(),
+                repo_locks: RepoLocks::default(),
                 http,
             }),
         }
+    }
+
+    /// The clone locks, to share with the chat manager.
+    pub fn repo_locks(&self) -> RepoLocks {
+        self.inner.repo_locks.clone()
     }
 
     /// Load runs from disk: runs that were interrupted by a restart become
@@ -606,7 +628,8 @@ fn redact_value(v: Value, secrets: &[String]) -> Value {
     }
 }
 
-fn repo_dir_name(url: &str) -> String {
+/// Directory name of the clone of `url` under `<workspace>/repos/`.
+pub fn repo_dir_name(url: &str) -> String {
     let tail: String = url
         .trim_end_matches('/')
         .trim_end_matches(".git")
@@ -873,12 +896,7 @@ impl Inner {
     }
 
     fn repo_lock(&self, dir: &Path) -> Arc<tokio::sync::Mutex<()>> {
-        self.repo_locks
-            .lock()
-            .unwrap()
-            .entry(dir.to_path_buf())
-            .or_default()
-            .clone()
+        self.repo_locks.get(dir)
     }
 
     fn git_env(&self) -> Vec<(String, String)> {

@@ -16,12 +16,16 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use enzarb_proto::session::{Event, OpenRequest, ServerOptions, Session};
-use enzarb_proto::{ChannelKind, CredentialKind, Ctrl, HEADER_LEN, MAX_PAYLOAD_LEN, error_code};
+use enzarb_proto::{
+    ChannelKind, CredentialKind, Ctrl, HEADER_LEN, MAX_PAYLOAD_LEN, error_code, open_error_code,
+};
 use futures_util::{Sink, Stream};
 use tokio::task::JoinSet;
 use tokio_tungstenite::tungstenite::Message as WsMsg;
 
+use crate::agent::RepoLocks;
 use crate::auth::{self, AuthError};
+use crate::chat::ChatManager;
 use crate::config::Config;
 use crate::observer::{PtyInfo, PtyObserverFactory};
 use crate::pty::{self, Pty, PtyConfig, PtyControl};
@@ -37,19 +41,28 @@ pub struct AppState {
     pub reaper: Arc<Reaper>,
     pub runs: Arc<dyn RunManager>,
     pub observers: Vec<Arc<dyn PtyObserverFactory>>,
+    pub chats: Arc<ChatManager>,
     next_session: AtomicU64,
 }
 
 impl AppState {
-    /// State with the stub run manager and no PTY observers.
+    /// State with the stub run manager, no PTY observers and a chat manager
+    /// with its own clone locks (see [`with_chats`](Self::with_chats)).
     pub fn new(config: Config, reaper: Arc<Reaper>) -> Self {
+        let chats = ChatManager::new(config.clone(), reaper.clone(), RepoLocks::default());
         Self {
             config,
             reaper,
             runs: Arc::new(UnimplementedRunManager),
             observers: Vec::new(),
+            chats,
             next_session: AtomicU64::new(1),
         }
+    }
+
+    pub fn with_chats(mut self, chats: Arc<ChatManager>) -> Self {
+        self.chats = chats;
+        self
     }
 
     pub fn with_run_manager(mut self, runs: Arc<dyn RunManager>) -> Self {
@@ -160,7 +173,13 @@ type Controls = Arc<Mutex<HashMap<u32, PtyControl>>>;
 async fn session_loop(state: Arc<AppState>, socket: WebSocket) {
     let accepted = tokio::time::timeout(
         HANDSHAKE_TIMEOUT,
-        Session::accept(Adapter(socket), ServerOptions::default()),
+        Session::accept(
+            Adapter(socket),
+            ServerOptions {
+                features: state.chats.features(),
+                ..ServerOptions::default()
+            },
+        ),
     )
     .await;
     let (session, mut events) = match accepted {
@@ -235,7 +254,18 @@ fn open(
     tasks: &mut JoinSet<()>,
     req: OpenRequest,
 ) {
-    let ChannelKind::Pty = req.kind;
+    match req.kind {
+        ChannelKind::Pty => {}
+        // Chats run outside this session's task set: their cleanup (agent,
+        // worktree) must finish even when the socket drops.
+        ChannelKind::Acp => return state.chats.open(ctx.id, req),
+        _ => {
+            return req.reject_with_code(
+                open_error_code::UNSUPPORTED_KIND,
+                "unsupported channel kind",
+            );
+        }
+    }
     let info = PtyInfo {
         session_id: ctx.id,
         session: ctx.session.clone(),
