@@ -62,6 +62,24 @@ The kubeconfig is `~/.kube/enzarb-oldie.yaml` (context `enzarb-oldie`); it never
 - **The HelmChart is created once** by `oldie:bootstrap-helmchart` (also the last step of `oldie:up`), which calls `enzarb-kubernetes/hack/oldie-helmchart.sh`: it creates or adopts the object (refusing literal secrets in the values), points `spec.dockerRegistrySecret` at `enzarb-chart-registry`, embeds `values-oldie.yaml` as `valuesContent`, and never lowers `spec.version`. It is not an upgrade path. Pull `enzarb-helm` first (its CRDs come from the checkout and must not be older than the deployed chart). Re-run it (by a human) only when `values-oldie.yaml` changes, since that file is not in the published chart, or to repair a deleted HelmChart. If the HelmChart is missing the updater logs it and does nothing; it never creates one.
 - **Known gap: CRDs.** Neither Helm nor the helm-controller upgrades `crds/` after the first install. A chart release that changes a CRD (the `Project` CRD, pgop) needs `oldie:bootstrap-helmchart` re-run by a human, which server-side applies the chart checkout's CRDs first, until CRDs are shipped some other way.
 - **A failed upgrade** is not rolled back or alerted on yet (deferred, [architecture.md](architecture.md#self-update-chain)). The helm-controller's job log shows why: `kubectl -n kube-system logs job/helm-install-enzarb`.
+
+- **HelmChart failure policy.** The oldie HelmChart sets `spec.failurePolicy: abort` and `spec.forceConflicts: true`. The helm-controller default (`reinstall`) runs `helm uninstall` after a failed install; that is what deleted the pgop `Cluster`/`Database`/`Role` CRs and the generated Secret in the incident below. With `abort` a failed install stays failed for a human to look at. The chart also marks those CRs and the generated Secret `helm.sh/resource-policy: keep` (enzarb-helm#32; adoption on reinstall is in its README).
+
+### Recovery after a failed install
+
+1. Stop. Do not delete the PVC, the `enzarb` namespace or the pgop `Cluster`. The data PV's reclaim policy is `Delete`, so removing the PVC destroys the Postgres data.
+2. Snapshot first: on oldie, `sudo lvcreate -s -n pg-snap-$(date +%F) -L 10G <vg>/<pg-lv>` (find the LV with `lvs`; the PV is an OpenEBS LVM volume).
+3. Read-only diagnosis: `kubectl -n kube-system get helmchart enzarb -o yaml` and the `helm-install-enzarb` job log.
+4. Fix the cause (values, chart version), then re-run `mise run oldie:bootstrap-helmchart` (by a human). If kept resources exist from an earlier uninstall, see "Uninstall keeps data definitions" in the enzarb-helm README to adopt them.
+5. Confirm the Postgres pod and PVC are still bound and the app is healthy.
+
+### Incident summary (oldie outage)
+
+1. An install/upgrade of the `enzarb` HelmChart failed.
+2. The helm-controller's default `failurePolicy: reinstall` ran `helm uninstall`.
+3. That deleted the pgop `Cluster`, `Database` and `Role` CRs and the chart-generated Secret (session JWT, callback secret, realtime JWT).
+4. enzarb was down until the resources were recreated.
+5. Fixes: `failurePolicy: abort` and `forceConflicts: true` (enzarb-kubernetes#32), `resource-policy: keep` in the chart (enzarb-helm#32), this procedure.
 - **RKE2, gVisor, add-ons**: change the pin in `enzarb-kubernetes/hack/versions.env` (and the URL for remote bases), then re-run `oldie:host` / `oldie:cluster`.
 - **Drift check**: `mise run oldie:host -- --check --diff`.
 
