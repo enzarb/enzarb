@@ -8,7 +8,8 @@ use enzarb_proto::session::{
     Event, HandshakeError, ServerOptions, Session, SessionEnd, SessionError, handshake, memory,
 };
 use enzarb_proto::{
-    ChannelKind, ClientKind, Ctrl, Frame, FrameType, INITIAL_WINDOW, RunPhase, RunStart, close_code,
+    ChannelKind, ClientKind, CredentialKind, Ctrl, Frame, FrameType, INITIAL_WINDOW, RunPhase,
+    RunStart, Secret, close_code,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
@@ -33,6 +34,7 @@ fn run_start(id: &str, log: Option<u32>) -> RunStart {
         log_channel: log,
         deps_token: None,
         npm_token: None,
+        claude_token: None,
     }
 }
 
@@ -93,6 +95,7 @@ fn spawn_echo_server(session: Session, mut events: enzarb_proto::session::Events
                         .send_ctrl(&Ctrl::CredentialState {
                             kind: enzarb_proto::CredentialKind::ClaudeOauth,
                             configured: true,
+                            scope: Some("user".into()),
                         })
                         .unwrap();
                 }
@@ -112,6 +115,147 @@ async fn credential_status_is_answered_by_credential_state() {
         .unwrap();
     assert_eq!(info.kind, enzarb_proto::CredentialKind::ClaudeOauth);
     assert!(info.configured);
+    assert_eq!(info.scope.as_deref(), Some("user"));
+}
+
+#[tokio::test]
+async fn credential_clear_and_client_credential_state_reach_server_events() {
+    let ((client, mut ce), (server, mut se)) = memory::session_pair(ClientKind::Proxy).await;
+    client
+        .credential_clear(CredentialKind::ClaudeOauth)
+        .unwrap();
+    let ack = Ctrl::CredentialState {
+        kind: CredentialKind::ClaudeOauth,
+        configured: true,
+        scope: Some("user".into()),
+    };
+    client.send_ctrl(&ack).unwrap();
+    let cap = Ctrl::CredentialCaptured {
+        kind: CredentialKind::ClaudeOauth,
+        token: Some(Secret::new("tok-captured")),
+        legacy: Some(true),
+    };
+    server.send_ctrl(&cap).unwrap();
+    let ev = timeout(T, se.next()).await.unwrap().unwrap();
+    assert!(matches!(
+        ev,
+        Event::Ctrl(Ctrl::CredentialClear {
+            kind: CredentialKind::ClaudeOauth
+        })
+    ));
+    let Event::Ctrl(got) = timeout(T, se.next()).await.unwrap().unwrap() else {
+        panic!("expected ctrl event");
+    };
+    assert_eq!(got, ack);
+    // The server must not have answered with protocol_violation; its own
+    // credential_captured reaches the client as an event.
+    let Event::Ctrl(got) = timeout(T, ce.next()).await.unwrap().unwrap() else {
+        panic!("expected ctrl event");
+    };
+    assert_eq!(got, cap);
+}
+
+#[tokio::test]
+async fn client_credential_clear_is_a_protocol_violation() {
+    let ((client, _ce), (server, mut se)) = memory::session_pair(ClientKind::Proxy).await;
+    server
+        .send_ctrl(&Ctrl::CredentialClear {
+            kind: CredentialKind::ClaudeOauth,
+        })
+        .unwrap();
+    // The client answers with protocol_violation, which the server surfaces.
+    let Event::Ctrl(Ctrl::Error { code, .. }) = timeout(T, se.next()).await.unwrap().unwrap()
+    else {
+        panic!("expected error event");
+    };
+    assert_eq!(code, "protocol_violation");
+    // Session stays alive.
+    client
+        .credential_clear(CredentialKind::ClaudeOauth)
+        .unwrap();
+    assert!(matches!(
+        timeout(T, se.next()).await.unwrap().unwrap(),
+        Event::Ctrl(Ctrl::CredentialClear { .. })
+    ));
+}
+
+#[tokio::test]
+async fn open_claude_token_reaches_server_event_and_is_redacted() {
+    let ((client, _ce), (_server, mut se)) = memory::session_pair(ClientKind::Ui).await;
+    tokio::spawn(async move {
+        let _ = client
+            .open_acp_with_token(None, None, Some(Secret::new("sk-secret-open")))
+            .await;
+    });
+    let Event::Open(req) = timeout(T, se.next()).await.unwrap().unwrap() else {
+        panic!("expected open");
+    };
+    assert_eq!(
+        req.claude_token.as_ref().map(|s| s.expose()),
+        Some("sk-secret-open")
+    );
+    assert!(!format!("{:?}", req.claude_token).contains("sk-secret-open"));
+    req.reject("no");
+}
+
+#[test]
+fn debug_redacts_claude_tokens() {
+    let tok = Secret::new("sk-secret-debug");
+    let mut rs = run_start("r", None);
+    rs.claude_token = Some(tok.clone());
+    let msgs = [
+        Ctrl::RunStart(rs.clone()),
+        Ctrl::Open {
+            channel: 1,
+            kind: ChannelKind::Acp,
+            cols: 0,
+            rows: 0,
+            command: None,
+            repo: None,
+            resume: None,
+            claude_token: Some(tok.clone()),
+        },
+        Ctrl::CredentialCaptured {
+            kind: CredentialKind::ClaudeOauth,
+            token: Some(tok.clone()),
+            legacy: None,
+        },
+    ];
+    let d = format!("{rs:?} {msgs:?} {tok:?}");
+    assert!(!d.contains("sk-secret-debug"), "{d}");
+    assert!(d.contains("redacted"));
+}
+
+#[tokio::test]
+async fn unknown_message_answer_keeps_session_alive() {
+    // An old peer answers `credential_clear` with unknown_message; the
+    // session core must deliver it as an event and keep working.
+    let ((client, mut ce), (server, mut se)) = memory::session_pair(ClientKind::Ui).await;
+    client
+        .credential_clear(CredentialKind::ClaudeOauth)
+        .unwrap();
+    assert!(matches!(
+        timeout(T, se.next()).await.unwrap().unwrap(),
+        Event::Ctrl(Ctrl::CredentialClear { .. })
+    ));
+    server
+        .send_error("unknown_message", "unknown type credential_clear")
+        .unwrap();
+    assert!(matches!(
+        timeout(T, ce.next()).await.unwrap().unwrap(),
+        Event::Ctrl(Ctrl::Error { .. })
+    ));
+    server
+        .send_ctrl(&Ctrl::CredentialCaptured {
+            kind: CredentialKind::ClaudeOauth,
+            token: None,
+            legacy: None,
+        })
+        .unwrap();
+    assert!(matches!(
+        timeout(T, ce.next()).await.unwrap().unwrap(),
+        Event::Ctrl(Ctrl::CredentialCaptured { .. })
+    ));
 }
 
 #[tokio::test]
@@ -454,6 +598,7 @@ fn open_msg(channel: u32) -> Frame {
         command: None,
         repo: None,
         resume: None,
+        claude_token: None,
     })
     .unwrap()
 }

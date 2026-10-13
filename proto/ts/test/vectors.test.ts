@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
+import { inspect } from "node:util";
 import { describe, expect, it } from "vitest";
+import { secretReplacer } from "../src/secret.js";
 import {
   FrameError,
   asCtrl,
@@ -50,7 +52,8 @@ describe("ctrl.json", () => {
     it(`${v.name}: decode`, () => {
       const f = decodeFrame(fromHex(v.hex));
       expect(f.channel).toBe(0);
-      expect(parseCtrl(f)).toEqual(v.message);
+      // Tokens decode as `Secret`; compare their wire (exposed) form.
+      expect(JSON.parse(JSON.stringify(parseCtrl(f), secretReplacer))).toEqual(v.message);
     });
     // CTRL `hex` is Rust-canonical (struct field order), so compare parsed JSON, not bytes.
     it(`${v.name}: encode (parsed JSON equality)`, () => {
@@ -60,6 +63,41 @@ describe("ctrl.json", () => {
       expect(parseJson(dec.payload)).toEqual(expected);
     });
   }
+});
+
+describe("per-user claude token vectors", () => {
+  const vectors = load("ctrl.json");
+  const byName = (n: string) => vectors.find((v) => v.name === n)!;
+  const NEW_FIELDS = ["claude_token", "token", "legacy", "scope"];
+
+  it("token vectors exist and carry the new fields", () => {
+    expect(byName("run_start_claude_token").message.claude_token).toBeTypeOf("string");
+    expect(byName("open_claude_token").message.claude_token).toBeTypeOf("string");
+    expect(byName("credential_captured_token").message).toMatchObject({ legacy: true });
+    expect(byName("credential_state_scope").message.scope).toBe("user");
+    expect(byName("credential_clear").message).toEqual({ type: "credential_clear", kind: "claude_oauth" });
+  });
+
+  it("old decoders (new fields stripped) still read the shared fields", () => {
+    for (const v of vectors.filter((v) => NEW_FIELDS.some((k) => k in v.message))) {
+      const old = Object.fromEntries(Object.entries(v.message).filter(([k]) => !NEW_FIELDS.includes(k)));
+      expect(asCtrl(old)).toMatchObject(old);
+    }
+  });
+
+  it("unknown keys are tolerated", () => {
+    const m = asCtrl({ type: "credential_state", kind: "claude_oauth", configured: true, scope: "org", extra: 1 });
+    expect(m).toMatchObject({ scope: "org" });
+  });
+
+  it("a decoded token never appears in inspect/String/JSON output", () => {
+    const f = decodeFrame(fromHex(byName("open_claude_token").hex));
+    const m = parseCtrl(f);
+    const token = byName("open_claude_token").message.claude_token as string;
+    for (const text of [inspect(m, { depth: 5 }), JSON.stringify(m), String((m as { claude_token?: unknown }).claude_token)]) {
+      expect(text).not.toContain(token);
+    }
+  });
 });
 
 describe("ctrl_compat.json", () => {

@@ -2,6 +2,12 @@
 // crates/enzarb-proto/src/ctrl.rs.
 
 import { type Frame, FrameError, ctrlJson } from "./frame.js";
+import { Secret, type SecretLike } from "./secret.js";
+
+export { Secret, type SecretLike } from "./secret.js";
+
+/** Known `credential_state.scope` values. Unknown values must be tolerated, so `scope` stays an open string. */
+export const CredentialScope = { User: "user" } as const;
 
 export type ClientKind = "ui" | "proxy" | "executor";
 /**
@@ -83,6 +89,8 @@ export interface RunStartFields {
   deps_token?: string;
   /** Optional read:packages token for private npm packages (NODE_AUTH_TOKEN); never persisted. */
   npm_token?: string;
+  /** Optional per-user Claude token. Held as a `Secret` (redacted in logs); sent as a plain string. */
+  claude_token?: SecretLike;
 }
 
 /** Body POSTed to `callback_url` (not a CTRL message). */
@@ -99,7 +107,7 @@ export interface RunFinished {
 export type Ctrl =
   | { type: "hello"; versions: number[]; client: ClientKind }
   | { type: "welcome"; version: number; features?: string[] | null }
-  | { type: "open"; channel: number; kind: ChannelKind; cols: number; rows: number; command?: string[] | null; repo?: string | null; resume?: string | null }
+  | { type: "open"; channel: number; kind: ChannelKind; cols: number; rows: number; command?: string[] | null; repo?: string | null; resume?: string | null; claude_token?: SecretLike | null }
   | { type: "opened"; channel: number }
   | { type: "open_error"; channel: number; message: string; code?: string | null }
   | { type: "resize"; channel: number; cols: number; rows: number }
@@ -108,9 +116,11 @@ export type Ctrl =
   | { type: "run_status"; run_id: string }
   | { type: "run_state"; run_id: string; state: RunPhase; exit_code?: number | null; summary?: string | null }
   | { type: "run_cancel"; run_id: string }
-  | { type: "credential_captured"; kind: CredentialKind }
+  | { type: "credential_captured"; kind: CredentialKind; token?: SecretLike | null; legacy?: boolean | null }
   | { type: "credential_status" }
-  | { type: "credential_state"; kind: CredentialKind; configured: boolean }
+  | { type: "credential_state"; kind: CredentialKind; configured: boolean; scope?: string | null }
+  /** Client -> server: clear the stored credential. */
+  | { type: "credential_clear"; kind: CredentialKind }
   | { type: "error"; code: string; message: string; run_id?: string; channel?: number };
 
 export type CtrlType = Ctrl["type"];
@@ -130,6 +140,7 @@ const TYPES: ReadonlySet<string> = new Set<CtrlType>([
   "credential_captured",
   "credential_status",
   "credential_state",
+  "credential_clear",
   "error",
 ]);
 
@@ -149,6 +160,10 @@ export function asCtrl(v: unknown): Ctrl {
   const t = (v as { type?: unknown }).type;
   if (typeof t !== "string") throw new FrameError("json", "CTRL payload has no type");
   if (!TYPES.has(t)) throw new UnknownCtrlType(t);
+  // Wrap incoming tokens so logging the message cannot leak them. Unknown keys pass through untouched.
+  const o = v as Record<string, unknown>;
+  const field = t === "credential_captured" ? "token" : t === "open" || t === "run_start" ? "claude_token" : undefined;
+  if (field !== undefined && typeof o[field] === "string") return { ...o, [field]: new Secret(o[field]) } as Ctrl;
   return v as Ctrl;
 }
 

@@ -189,7 +189,7 @@ proptest! {
         for m in [
             Ctrl::RunState { run_id: run_id.clone(), state: RunPhase::Failed, exit_code: exit, summary },
             Ctrl::Resize { channel: ch, cols, rows },
-            Ctrl::Open { channel: ch, kind: ChannelKind::Pty, cols, rows, command: Some(vec![run_id.clone()]), repo: None, resume: None },
+            Ctrl::Open { channel: ch, kind: ChannelKind::Pty, cols, rows, command: Some(vec![run_id.clone()]), repo: None, resume: None, claude_token: None },
         ] {
             let f = Frame::ctrl(&m).unwrap();
             let back = Frame::from_bytes(f.to_bytes().unwrap()).unwrap();

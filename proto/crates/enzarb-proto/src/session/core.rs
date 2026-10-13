@@ -17,7 +17,7 @@ use super::handshake::{client_handshake_with_features, server_handshake_with_fea
 use super::{HandshakeError, SessionEnd, SessionError};
 use crate::{
     ChannelKind, ClientKind, CredentialKind, Ctrl, Frame, FrameType, MAX_REPO_LEN, MAX_RESUME_LEN,
-    RunPhase, RunStart, SUPPORTED_VERSIONS, close_code, error_code, open_error_code,
+    RunPhase, RunStart, SUPPORTED_VERSIONS, Secret, close_code, error_code, open_error_code,
 };
 
 /// Which side of the protocol a session plays.
@@ -67,10 +67,12 @@ pub struct RunInfo {
 }
 
 /// `credential_state` as seen by the client.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CredentialInfo {
     pub kind: CredentialKind,
     pub configured: bool,
+    /// See [`credential_scope`](crate::credential_scope).
+    pub scope: Option<String>,
 }
 
 /// Result of [`Session::run_start`].
@@ -87,7 +89,7 @@ pub enum Event {
     /// (server) The client wants a channel: [`OpenRequest::accept`] or [`OpenRequest::reject`].
     Open(OpenRequest),
     /// Any other CTRL message not consumed internally:
-    /// * server: `run_start`, `run_status`, `run_cancel`, `credential_status` (answer with `send_ctrl(Ctrl::CredentialState{..})`), `resize` (for an open channel), `error`;
+    /// * server: `run_start`, `run_status`, `run_cancel`, `credential_status` (answer with `send_ctrl(Ctrl::CredentialState{..})`), `credential_clear`, `credential_state` (a client's ack of a legacy `credential_captured`), `resize` (for an open channel), `error`;
     /// * client: `run_state` pushes, `credential_captured`, unsolicited `credential_state`, unattributed `error`.
     Ctrl(Ctrl),
 }
@@ -124,6 +126,8 @@ pub struct OpenRequest {
     pub repo: Option<String>,
     /// `acp`: ACP session id hint (at most `MAX_RESUME_LEN` bytes).
     pub resume: Option<String>,
+    /// Per-user Claude token sent with the open, if any. Never log it.
+    pub claude_token: Option<Secret>,
     decided: bool,
 }
 
@@ -411,6 +415,7 @@ impl Inner {
                     command,
                     repo,
                     resume,
+                    claude_token,
                 },
             ) => {
                 if kind == ChannelKind::Unknown {
@@ -461,6 +466,7 @@ impl Inner {
                     command,
                     repo,
                     resume,
+                    claude_token,
                     decided: false,
                 }));
             }
@@ -482,7 +488,9 @@ impl Inner {
                 m @ (Ctrl::RunStart(_)
                 | Ctrl::RunStatus { .. }
                 | Ctrl::RunCancel { .. }
-                | Ctrl::CredentialStatus),
+                | Ctrl::CredentialStatus
+                | Ctrl::CredentialClear { .. }
+                | Ctrl::CredentialState { .. }),
             ) => {
                 emit(Event::Ctrl(m));
             }
@@ -603,7 +611,14 @@ impl Inner {
                 }
             }
             (Role::Client, m @ Ctrl::CredentialCaptured { .. }) => emit(Event::Ctrl(m)),
-            (Role::Client, Ctrl::CredentialState { kind, configured }) => {
+            (
+                Role::Client,
+                Ctrl::CredentialState {
+                    kind,
+                    configured,
+                    scope,
+                },
+            ) => {
                 let waiter = {
                     let mut st = lock(&self.state);
                     let pos = st
@@ -614,9 +629,17 @@ impl Inner {
                 };
                 match waiter {
                     Some(Pending::CredentialStatus { tx }) => {
-                        let _ = tx.send(Ok(CredentialInfo { kind, configured }));
+                        let _ = tx.send(Ok(CredentialInfo {
+                            kind,
+                            configured,
+                            scope,
+                        }));
                     }
-                    _ => emit(Event::Ctrl(Ctrl::CredentialState { kind, configured })),
+                    _ => emit(Event::Ctrl(Ctrl::CredentialState {
+                        kind,
+                        configured,
+                        scope,
+                    })),
                 }
             }
             (_, m) => {
@@ -706,6 +729,7 @@ fn ctrl_name(m: &Ctrl) -> &'static str {
         Ctrl::CredentialCaptured { .. } => "credential_captured",
         Ctrl::CredentialStatus => "credential_status",
         Ctrl::CredentialState { .. } => "credential_state",
+        Ctrl::CredentialClear { .. } => "credential_clear",
         Ctrl::Error { .. } => "error",
     }
 }
@@ -968,7 +992,7 @@ impl Session {
         rows: u16,
         command: Option<Vec<String>>,
     ) -> Result<ChannelHandle, SessionError> {
-        self.open_kind(ChannelKind::Pty, cols, rows, command, None, None)
+        self.open_kind(ChannelKind::Pty, cols, rows, command, None, None, None)
             .await
     }
 
@@ -993,10 +1017,31 @@ impl Session {
                 message: "repo or resume too long".into(),
             });
         }
-        self.open_kind(ChannelKind::Acp, 0, 0, None, repo, resume)
+        self.open_kind(ChannelKind::Acp, 0, 0, None, repo, resume, None)
             .await
     }
 
+    /// Like [`open_acp`](Self::open_acp), also sending the user's Claude token
+    /// (`open.claude_token`). Old peers ignore the field.
+    pub async fn open_acp_with_token(
+        &self,
+        repo: Option<String>,
+        resume: Option<String>,
+        claude_token: Option<Secret>,
+    ) -> Result<ChannelHandle, SessionError> {
+        if repo.as_ref().is_some_and(|r| r.len() > MAX_REPO_LEN)
+            || resume.as_ref().is_some_and(|r| r.len() > MAX_RESUME_LEN)
+        {
+            return Err(SessionError::OpenRejectedCode {
+                code: open_error_code::INVALID_REQUEST.into(),
+                message: "repo or resume too long".into(),
+            });
+        }
+        self.open_kind(ChannelKind::Acp, 0, 0, None, repo, resume, claude_token)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn open_kind(
         &self,
         kind: ChannelKind,
@@ -1005,6 +1050,7 @@ impl Session {
         command: Option<Vec<String>>,
         repo: Option<String>,
         resume: Option<String>,
+        claude_token: Option<Secret>,
     ) -> Result<ChannelHandle, SessionError> {
         self.require(Role::Client)?;
         let (tx, rx) = oneshot::channel();
@@ -1025,6 +1071,7 @@ impl Session {
             command,
             repo,
             resume,
+            claude_token,
         })?;
         match rx.await {
             Ok(Ok(())) => Ok(ChannelHandle::new(chan)),
@@ -1139,6 +1186,13 @@ impl Session {
             Ok(r) => r,
             Err(_) => Err(self.inner.ended()),
         }
+    }
+
+    /// (client) `credential_clear`. No reply; a peer that does not know it
+    /// answers `unknown_message` (an `error` event).
+    pub fn credential_clear(&self, kind: CredentialKind) -> Result<(), SessionError> {
+        self.require(Role::Client)?;
+        self.inner.send_ctrl(&Ctrl::CredentialClear { kind })
     }
 
     /// (client) `run_cancel`. The new state arrives as a pushed `run_state` event.

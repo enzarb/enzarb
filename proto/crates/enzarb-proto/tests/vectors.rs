@@ -53,12 +53,15 @@ fn run_start() -> RunStart {
         log_channel: None,
         deps_token: None,
         npm_token: None,
+        claude_token: None,
     }
 }
 
 fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
     let mut with_log = run_start();
     with_log.log_channel = Some(7);
+    let mut with_claude = run_start();
+    with_claude.claude_token = Some(Secret::new("sk-ant-oat01-user"));
     vec![
         (
             "hello",
@@ -105,6 +108,7 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
                 command: None,
                 repo: None,
                 resume: None,
+                claude_token: None,
             },
         ),
         (
@@ -117,6 +121,7 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
                 command: None,
                 repo: None,
                 resume: None,
+                claude_token: None,
             },
         ),
         (
@@ -129,6 +134,7 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
                 command: None,
                 repo: Some("https://github.com/enzarb/enzarb-ui".into()),
                 resume: Some("sess_abc123".into()),
+                claude_token: None,
             },
         ),
         (
@@ -141,6 +147,20 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
                 command: Some(vec!["bash".into(), "-l".into()]),
                 repo: None,
                 resume: None,
+                claude_token: None,
+            },
+        ),
+        (
+            "open_claude_token",
+            Ctrl::Open {
+                channel: 3,
+                kind: ChannelKind::Acp,
+                cols: 0,
+                rows: 0,
+                command: None,
+                repo: None,
+                resume: None,
+                claude_token: Some(Secret::new("sk-ant-oat01-user")),
             },
         ),
         ("opened", Ctrl::Opened { channel: 1 }),
@@ -170,6 +190,7 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
         ),
         ("run_start", Ctrl::RunStart(run_start())),
         ("run_start_log_channel", Ctrl::RunStart(with_log)),
+        ("run_start_claude_token", Ctrl::RunStart(with_claude)),
         (
             "run_accepted",
             Ctrl::RunAccepted {
@@ -229,6 +250,16 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
             "credential_captured",
             Ctrl::CredentialCaptured {
                 kind: CredentialKind::ClaudeOauth,
+                token: None,
+                legacy: None,
+            },
+        ),
+        (
+            "credential_captured_token",
+            Ctrl::CredentialCaptured {
+                kind: CredentialKind::ClaudeOauth,
+                token: Some(Secret::new("sk-ant-oat01-captured")),
+                legacy: Some(true),
             },
         ),
         ("credential_status", Ctrl::CredentialStatus),
@@ -237,6 +268,21 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
             Ctrl::CredentialState {
                 kind: CredentialKind::ClaudeOauth,
                 configured: true,
+                scope: None,
+            },
+        ),
+        (
+            "credential_state_scope",
+            Ctrl::CredentialState {
+                kind: CredentialKind::ClaudeOauth,
+                configured: true,
+                scope: Some(credential_scope::USER.into()),
+            },
+        ),
+        (
+            "credential_clear",
+            Ctrl::CredentialClear {
+                kind: CredentialKind::ClaudeOauth,
             },
         ),
         (
@@ -463,6 +509,66 @@ fn run_start_npm_token_compat() {
     );
 }
 
+#[test]
+fn claude_token_is_a_plain_string_and_old_payloads_decode() {
+    let old = serde_json::to_value(run_start()).unwrap();
+    assert!(old.get("claude_token").is_none());
+    assert_eq!(
+        serde_json::from_value::<RunStart>(old)
+            .unwrap()
+            .claude_token,
+        None
+    );
+    let mut rs = run_start();
+    rs.claude_token = Some(Secret::new("sk-ant-oat01-user"));
+    let v = serde_json::to_value(&rs).unwrap();
+    assert_eq!(v["claude_token"], "sk-ant-oat01-user");
+    assert_eq!(serde_json::from_value::<RunStart>(v).unwrap(), rs);
+    let d = format!("{rs:?}");
+    assert!(!d.contains("sk-ant-oat01-user"), "{d}");
+}
+
+/// A decoder that predates the per-user token fields: minimal legacy-shape
+/// structs without them must still decode new-style payloads.
+#[test]
+fn old_decoder_ignores_new_fields() {
+    use serde::Deserialize;
+    #[derive(Deserialize)]
+    #[serde(tag = "type", rename_all = "snake_case")]
+    #[allow(dead_code)]
+    enum OldCtrl {
+        Open {
+            channel: u32,
+        },
+        CredentialCaptured {
+            kind: CredentialKind,
+        },
+        CredentialState {
+            kind: CredentialKind,
+            configured: bool,
+        },
+        RunStart {
+            run_id: String,
+        },
+    }
+    for (name, msg) in ctrl_messages() {
+        let v = serde_json::to_value(&msg).unwrap();
+        let r = serde_json::from_value::<OldCtrl>(v);
+        match name {
+            "open_claude_token"
+            | "credential_captured_token"
+            | "credential_state_scope"
+            | "run_start_claude_token" => {
+                r.unwrap_or_else(|e| panic!("{name}: {e}"));
+            }
+            // An old decoder rejects the new message type; that is answered
+            // with `unknown_message` (see the session tests).
+            "credential_clear" => assert!(r.is_err()),
+            _ => {}
+        }
+    }
+}
+
 /// Payloads a decoder must accept: old shapes (no new fields) and shapes from
 /// newer peers (unknown kind, unknown error code, unknown fields). `expect` is
 /// a subset of the decoded message that both languages must agree on.
@@ -483,6 +589,14 @@ fn ctrl_compat_vectors() {
                "expect":{"type":"open_error","channel":1,"message":"nope"}}),
         json!({"name":"open_error_unknown_code","payload":r#"{"type":"open_error","channel":1,"message":"nope","code":"brand_new"}"#,
                "expect":{"type":"open_error","channel":1,"code":"brand_new"}}),
+        json!({"name":"old_credential_captured","payload":r#"{"type":"credential_captured","kind":"claude_oauth"}"#,
+               "expect":{"type":"credential_captured","kind":"claude_oauth"}}),
+        json!({"name":"old_credential_state","payload":r#"{"type":"credential_state","kind":"claude_oauth","configured":false}"#,
+               "expect":{"type":"credential_state","kind":"claude_oauth","configured":false}}),
+        json!({"name":"credential_state_unknown_scope","payload":r#"{"type":"credential_state","kind":"claude_oauth","configured":true,"scope":"org"}"#,
+               "expect":{"type":"credential_state","configured":true,"scope":"org"}}),
+        json!({"name":"credential_captured_unknown_fields","payload":r#"{"type":"credential_captured","kind":"claude_oauth","token":null,"legacy":null,"x":1}"#,
+               "expect":{"type":"credential_captured","kind":"claude_oauth"}}),
     ];
     for c in &cases {
         let f = Frame::new(

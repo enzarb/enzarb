@@ -61,5 +61,39 @@
     },
     "name": "open_error_unknown_code",
     "payload": "{\"type\":\"open_error\",\"channel\":1,\"message\":\"nope\",\"code\":\"brand_new\"}"
+  },
+  {
+    "expect": {
+      "kind": "claude_oauth",
+      "type": "credential_captured"
+    },
+    "name": "old_credential_captured",
+    "payload": "{\"type\":\"credential_captured\",\"kind\":\"claude_oauth\"}"
+  },
+  {
+    "expect": {
+      "configured": false,
+      "kind": "claude_oauth",
+      "type": "credential_state"
+    },
+    "name": "old_credential_state",
+    "payload": "{\"type\":\"credential_state\",\"kind\":\"claude_oauth\",\"configured\":false}"
+  },
+  {
+    "expect": {
+      "configured": true,
+      "scope": "org",
+      "type": "credential_state"
+    },
+    "name": "credential_state_unknown_scope",
+    "payload": "{\"type\":\"credential_state\",\"kind\":\"claude_oauth\",\"configured\":true,\"scope\":\"org\"}"
+  },
+  {
+    "expect": {
+      "kind": "claude_oauth",
+      "type": "credential_captured"
+    },
+    "name": "credential_captured_unknown_fields",
+    "payload": "{\"type\":\"credential_captured\",\"kind\":\"claude_oauth\",\"token\":null,\"legacy\":null,\"x\":1}"
   }
 ]

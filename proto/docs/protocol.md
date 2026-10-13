@@ -66,18 +66,21 @@ JSON objects with a `"type"` field, channel 0. Unknown fields are ignored; an un
 |---|---|---|
 | `hello` | client -> server | `versions: [u16]`, `client: "ui" \| "proxy" \| "executor"` |
 | `welcome` | server -> client | `version: u16`, `features?: [string]` |
-| `open` | client -> server | `channel`, `kind: "pty" \| "acp"`, `cols`, `rows`, `command?: [string]`, `repo?: string`, `resume?: string` |
+| `open` | client -> server | `channel`, `kind: "pty" \| "acp"`, `cols`, `rows`, `command?: [string]`, `repo?: string`, `resume?: string`, `claude_token?: string` |
 | `opened` | server -> client | `channel` |
 | `open_error` | server -> client | `channel`, `message`, `code?: string` |
 | `resize` | client -> server | `channel`, `cols`, `rows` |
-| `run_start` | client -> server | `run_id, repo_url, base_ref, branch, push, clone_token, prompt, timeout_secs, callback_url, callback_token, log_channel, deps_token?, npm_token?` |
+| `run_start` | client -> server | `run_id, repo_url, base_ref, branch, push, clone_token, prompt, timeout_secs, callback_url, callback_token, log_channel, deps_token?, npm_token?, claude_token?` |
 | `run_accepted` | server -> client | `run_id`, `state`, `existing: bool` |
 | `run_status` | client -> server | `run_id` |
 | `run_state` | server -> client (reply to `run_status`, and pushed on change) | `run_id`, `state`, `exit_code?`, `summary?` |
 | `run_cancel` | client -> server | `run_id` |
-| `credential_captured` | server -> client | `kind: "claude_oauth"` |
+| `credential_captured` | server -> client | `kind: "claude_oauth"`, `token?: string`, `legacy?: bool` |
 | `credential_status` | client -> server | none; asks whether the sandbox holds a credential |
-| `credential_state` | server -> client (reply to `credential_status`) | `kind: "claude_oauth"`, `configured: bool` |
+| `credential_state` | server -> client (reply to `credential_status`); client -> server (ack of a `legacy` `credential_captured`) | `kind: "claude_oauth"`, `configured: bool`, `scope?: string` (known: `"user"`; unknown values must be tolerated) |
+| `credential_clear` | client -> server | `kind: "claude_oauth"`; no reply. A peer that does not know it answers `unknown_message` |
+
+`claude_token` (on `run_start` and `open`) and `credential_captured.token` carry a per-user Claude token as a plain string. They are optional and additive (protocol version stays 1; old peers ignore them). Implementations must not log them: the Rust `Secret` type and the TS `Secret` class redact `Debug`/`inspect`/`String()`/`JSON.stringify`, and the wire encoder writes the plain value.
 | `error` | both | `code`, `message`, optional `run_id`, optional `channel` (omitted when absent) |
 
 `state` is `queued | running | succeeded | failed | cancelled`. `run_start` is idempotent on `run_id`.

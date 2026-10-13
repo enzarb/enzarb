@@ -1,5 +1,7 @@
+import { inspect } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
+  Secret,
   ByteChannel,
   Channel,
   CloseCode,
@@ -331,6 +333,88 @@ describe("runs", () => {
     srv.ctrl({ type: "credential_state", kind: "claude_oauth", configured: false });
     await tick();
     expect(pushed.map((m) => m.type)).toEqual(["credential_state"]);
+  });
+
+  it("credential_state.scope reaches credentialStatus() and unsolicited events", async () => {
+    const { s, srv } = await connected();
+    const p = s.credentialStatus();
+    await srv.nextCtrl("credential_status");
+    srv.ctrl({ type: "credential_state", kind: "claude_oauth", configured: true, scope: "user" });
+    expect(await p).toEqual({ kind: "claude_oauth", configured: true, scope: "user" });
+
+    const pushed: Ctrl[] = [];
+    s.onCtrl((m) => pushed.push(m));
+    srv.ctrl({ type: "credential_state", kind: "claude_oauth", configured: true, scope: "user" });
+    await tick();
+    expect(pushed[0]).toMatchObject({ type: "credential_state", scope: "user" });
+  });
+
+  it("credentialClear sends credential_clear", async () => {
+    const { s, srv } = await connected();
+    s.credentialClear("claude_oauth");
+    expect(await srv.nextCtrl("credential_clear")).toEqual({ type: "credential_clear", kind: "claude_oauth" });
+  });
+
+  it("an old peer's unknown_message reply to credential_clear leaves the session alive", async () => {
+    const { s, srv } = await connected();
+    const pushed: Ctrl[] = [];
+    s.onCtrl((m) => pushed.push(m));
+    s.credentialClear();
+    await srv.nextCtrl("credential_clear");
+    srv.ctrl({ type: "error", code: "unknown_message", message: "unknown type credential_clear" });
+    await tick();
+    const p = s.credentialStatus();
+    await srv.nextCtrl("credential_status");
+    srv.ctrl({ type: "credential_state", kind: "claude_oauth", configured: false });
+    expect(await p).toMatchObject({ configured: false });
+    expect(pushed.map((m) => m.type)).toEqual(["error"]);
+  });
+
+  it("credential_captured token/legacy reach the subscriber, redacted when formatted", async () => {
+    const { s, srv } = await connected();
+    const pushed: Ctrl[] = [];
+    s.onCtrl((m) => pushed.push(m));
+    srv.ctrl({ type: "credential_captured", kind: "claude_oauth", token: "sk-secret-cap", legacy: true });
+    await tick();
+    const m = pushed[0]!;
+    if (m.type !== "credential_captured") throw new Error("wrong type");
+    expect(m.legacy).toBe(true);
+    expect(m.token).toBeInstanceOf(Secret);
+    expect((m.token as Secret).expose()).toBe("sk-secret-cap");
+    for (const text of [inspect(m, { depth: 5 }), String(m.token), JSON.stringify(m), `${m.token}`]) {
+      expect(text).not.toContain("sk-secret-cap");
+    }
+  });
+
+  it("claude_token is sent as a plain string on open and run_start, and never leaks via inspect", async () => {
+    const { s, srv } = await connected();
+    const p = s.openAcp({ claudeToken: "sk-secret-open" });
+    const f = await srv.next((f) => f.type === FrameType.Ctrl && parseCtrl(f).type === "open");
+    expect(JSON.parse(new TextDecoder().decode(f.payload)).claude_token).toBe("sk-secret-open");
+    const open = parseCtrl(f);
+    expect(inspect(open, { depth: 5 })).not.toContain("sk-secret-open");
+    expect(String(open.type === "open" ? open.claude_token : "")).not.toContain("sk-secret-open");
+    srv.ctrl({ type: "opened", channel: (open as { channel: number }).channel });
+    await p;
+
+    const req = {
+      run_id: "r1",
+      repo_url: "u",
+      base_ref: "main",
+      branch: "b",
+      push: false,
+      clone_token: "c",
+      prompt: "p",
+      timeout_secs: 1,
+      callback_url: "cb",
+      callback_token: "t",
+      claude_token: new Secret("sk-secret-run"),
+    };
+    expect(inspect(req)).not.toContain("sk-secret-run");
+    const rp = s.runStart(req);
+    const rf = await srv.next((f) => f.type === FrameType.Ctrl && parseCtrl(f).type === "run_start");
+    expect(JSON.parse(new TextDecoder().decode(rf.payload)).claude_token).toBe("sk-secret-run");
+    rp.catch(() => {});
   });
 
   it("a DOM WebSocket is assignable to WebSocketLike without a cast", () => {

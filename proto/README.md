@@ -55,6 +55,7 @@ s.resize(pty, 120, 40);
 
 const run = await s.runStart({ run_id: "job-1", /* ... */ log: true });
 for await (const d of run.log!) console.log(JSON.parse(new TextDecoder().decode(d.data)));
+s.credentialClear();                               // client -> server credential_clear
 s.onCtrl((m) => { /* pushed run_state, credential_captured, unattributed errors */ });
 ```
 

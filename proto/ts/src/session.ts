@@ -13,6 +13,7 @@ import {
   parseCtrl,
   sanitizeFeatures,
 } from "./ctrl.js";
+import { type SecretLike, toSecret } from "./secret.js";
 import { ByteChannel } from "./bytes.js";
 import { OpenError, SessionError, type SessionEnd } from "./errors.js";
 import {
@@ -67,6 +68,8 @@ export interface RunInfo {
 export interface CredentialInfo {
   kind: CredentialKind;
   configured: boolean;
+  /** Whose credential this is (e.g. `"user"`, see `CredentialScope`); open string. */
+  scope?: string | null;
 }
 
 export type RunStartRequest = Omit<RunStartFields, "log_channel"> & {
@@ -309,7 +312,7 @@ export class Session implements ChannelHost {
    * The result's streams carry ACP's newline-delimited JSON-RPC as raw bytes; pass them to
    * `ndJsonStream(byteChannel.writable, byteChannel.readable)` from `@agentclientprotocol/sdk`.
    */
-  async openAcp(opts: { repo?: string; resume?: string } = {}): Promise<ByteChannel> {
+  async openAcp(opts: { repo?: string; resume?: string; claudeToken?: SecretLike } = {}): Promise<ByteChannel> {
     this.alive();
     const enc = new TextEncoder();
     if (
@@ -325,6 +328,7 @@ export class Session implements ChannelHost {
     const m: Ctrl = { type: "open", channel: id, kind: "acp", cols: 0, rows: 0 };
     if (opts.repo !== undefined) m.repo = opts.repo;
     if (opts.resume !== undefined) m.resume = opts.resume;
+    if (opts.claudeToken !== undefined) m.claude_token = toSecret(opts.claudeToken);
     this.sendCtrl(m);
     return new ByteChannel(await p);
   }
@@ -351,7 +355,9 @@ export class Session implements ChannelHost {
     const p = new Promise<RunStarted>((resolve, reject) =>
       this.pending.push({ kind: "run_start", run_id: rest.run_id, log: logCh, resolve, reject }),
     );
-    this.sendCtrl({ type: "run_start", ...rest, log_channel: logId });
+    const start: Ctrl = { type: "run_start", ...rest, log_channel: logId };
+    if (rest.claude_token !== undefined) start.claude_token = toSecret(rest.claude_token);
+    this.sendCtrl(start);
     return p;
   }
 
@@ -373,6 +379,14 @@ export class Session implements ChannelHost {
     );
     this.sendCtrl({ type: "credential_status" });
     return p;
+  }
+
+  /**
+   * `credential_clear` (no reply). A peer that does not know it answers `unknown_message`, which
+   * arrives as an `error` through `onCtrl`.
+   */
+  credentialClear(kind: CredentialKind = "claude_oauth"): void {
+    this.send({ type: "credential_clear", kind });
   }
 
   /** `run_cancel`; the new state arrives as a pushed `run_state` through `onCtrl`. */
@@ -568,7 +582,7 @@ export class Session implements ChannelHost {
       case "credential_state": {
         const i = this.pending.findIndex((p) => p.kind === "credential_status");
         const p = i >= 0 ? this.pending.splice(i, 1)[0] : undefined;
-        if (p && p.kind === "credential_status") p.resolve({ kind: m.kind, configured: m.configured });
+        if (p && p.kind === "credential_status") p.resolve({ kind: m.kind, configured: m.configured, scope: m.scope });
         else this.emit(m);
         return;
       }

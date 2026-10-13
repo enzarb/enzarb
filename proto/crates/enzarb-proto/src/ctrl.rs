@@ -84,6 +84,48 @@ pub fn sanitize_features(features: Option<Vec<String>>) -> Vec<String> {
         .collect()
 }
 
+/// A secret string (token). Serializes as a plain JSON string; `Debug`
+/// redacts it. Read it with [`Secret::expose`]; there is deliberately no
+/// `Deref`/`Display`, so it cannot be formatted by accident.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(s: impl Into<String>) -> Self {
+        Self(s.into())
+    }
+
+    /// The secret value. Do not log it.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for Secret {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for Secret {
+    fn from(s: &str) -> Self {
+        Self(s.into())
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret([redacted])")
+    }
+}
+
+/// Known `credential_state.scope` values. Unknown values must be tolerated.
+pub mod credential_scope {
+    /// The credential is the user's own (per-user Claude token).
+    pub const USER: &str = "user";
+}
+
 /// Credential kinds reported by `credential_captured` and `credential_state`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -160,6 +202,10 @@ pub struct RunStart {
     /// persisted by implementations. Omitted when absent; old peers ignore it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub npm_token: Option<String>,
+    /// Optional per-user Claude token for the run. Omitted when absent; old
+    /// peers ignore it and old payloads decode without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_token: Option<Secret>,
 }
 
 impl std::fmt::Debug for RunStart {
@@ -179,6 +225,7 @@ impl std::fmt::Debug for RunStart {
             .field("log_channel", &self.log_channel)
             .field("deps_token", &self.deps_token.as_ref().map(|_| R))
             .field("npm_token", &self.npm_token.as_ref().map(|_| R))
+            .field("claude_token", &self.claude_token.as_ref().map(|_| R))
             .finish()
     }
 }
@@ -226,6 +273,10 @@ pub enum Ctrl {
         /// [`MAX_RESUME_LEN`] bytes). Omitted when absent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resume: Option<String>,
+        /// Optional per-user Claude token for this channel. Omitted when
+        /// absent; old peers ignore it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        claude_token: Option<Secret>,
     },
     Opened {
         channel: u32,
@@ -265,14 +316,30 @@ pub enum Ctrl {
     },
     CredentialCaptured {
         kind: CredentialKind,
+        /// The captured token, when the sender forwards it. Omitted when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token: Option<Secret>,
+        /// Set for a capture made by a legacy (shared-credential) sandbox; the
+        /// receiver acks it with `credential_state` (`scope: "user"`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        legacy: Option<bool>,
     },
     /// Client asks whether the sandbox holds a credential; answered by
     /// `credential_state`. No fields.
     CredentialStatus,
-    /// Reply to `credential_status` (the sandbox's current view).
+    /// Reply to `credential_status` (the sandbox's current view). Also sent
+    /// client -> server as the ack of a `legacy` `credential_captured`.
     CredentialState {
         kind: CredentialKind,
         configured: bool,
+        /// Whose credential this is (see [`credential_scope`]); open string.
+        /// Omitted when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
+    },
+    /// Browser -> proxy (client -> server): clear the stored credential.
+    CredentialClear {
+        kind: CredentialKind,
     },
     Error {
         code: String,

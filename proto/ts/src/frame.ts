@@ -1,5 +1,7 @@
 // Frame layout and codec. Mirrors crates/enzarb-proto/src/frame.rs; see docs/protocol.md.
 
+import { secretReplacer } from "./secret.js";
+
 export const HEADER_LEN = 10;
 export const MAX_PAYLOAD_LEN = 1 << 20;
 export const MAX_CREDIT = 2 ** 31 - 1;
@@ -175,7 +177,7 @@ export function frame(type: FrameType, channel: number, payload: Uint8Array = ne
 
 /** `CTRL` frame carrying `msg` as compact JSON. */
 export function ctrlFrame(msg: object): Frame {
-  return frame(FrameType.Ctrl, 0, encoder.encode(JSON.stringify(msg)));
+  return frame(FrameType.Ctrl, 0, encoder.encode(JSON.stringify(msg, secretReplacer)));
 }
 
 export function dataBin(channel: number, payload: Uint8Array): Frame {
