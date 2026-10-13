@@ -62,6 +62,7 @@ export function createMemoryProjectStore(initial: Project[] = [seedProject()]): 
 				if (spec.maxRuns === null) delete p.spec.maxRuns;
 				else p.spec.maxRuns = spec.maxRuns;
 			}
+			if (spec.displayName !== undefined) p.spec.displayName = spec.displayName;
 			if (spec.repositories !== undefined) p.spec.repositories = spec.repositories;
 			return p;
 		}
