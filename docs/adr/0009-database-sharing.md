@@ -17,3 +17,6 @@ See [database.md](../database.md).
 - The API schemas are versioned contracts: additive changes, or new versioned objects.
 - Splitting workflows onto its own Cluster later is possible without changing the contract, but it would lose the single-step insert-and-notify.
 - pgop's current limits (one replica, no documented backups or pooling) must be addressed before production.
+
+## Amendment 2026-10-13
+- The proxy gets a runtime role `enzarb_sandbox_proxy` for the encrypted per-user Claude token (`app.claude_credentials`), reached only through `app_api` functions; the UI role sees presence only. See [database.md](../database.md) and [ADR-0004](0004-claude-credentials.md).

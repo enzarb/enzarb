@@ -85,7 +85,7 @@ Open <https://enzarb.local> and log in with GitHub.
    ```
    claude setup-token
    ```
-   Complete the browser step, paste the code back. The sandbox captures the `sk-ant-oat01-` token (the UI shows the credential as configured). The token is per user: the proxy stores it as Secret `enzarb-claude-<owner>` and every Project you own uses it (a sandbox sees a new or changed token within about a minute). Agent runs fail with "owner has no Claude credential" until this is done. To verify on kind, capture in Project A, then confirm Project B's runs work; re-capture, then remove it (UI "Remove") and confirm new runs fail.
+   Complete the browser step, paste the code back. The sandbox captures the `sk-ant-oat01-` token (the UI shows the credential as configured). The token is per user: the proxy stores it encrypted in Postgres (it needs the key Secret `enzarb-claude-key`; the chart or `dev:secrets` must provision it, to be added with the component PRs) and every Project you own uses it (jobs get it per run, chats at open, so a change applies to the next run or chat). Agent runs fail with "owner has no Claude credential" until this is done. To verify on kind, capture in Project A, then confirm Project B's runs work; re-capture, then remove it (UI "Remove") and confirm new runs fail.
 
 ## Sandboxes run under gVisor, with Docker
 
