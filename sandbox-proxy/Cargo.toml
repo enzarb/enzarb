@@ -18,8 +18,8 @@ async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 bytes = "1"
-enzarb-crds = { git = "ssh://git@github.com/enzarb/enzarb-sandbox-operator.git", branch = "main" }
-enzarb-proto = { git = "ssh://git@github.com/enzarb/enzarb-proto.git", branch = "main", features = ["tokio"] }
+enzarb-crds = { path = "../operator/crates/enzarb-crds" }
+enzarb-proto = { path = "../proto/crates/enzarb-proto", features = ["tokio"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 k8s-openapi = { version = "0.28", default-features = false, features = ["latest"] }

@@ -1134,7 +1134,6 @@ dependencies = [
 [[package]]
 name = "enzarb-connector"
 version = "0.1.0"
-source = "git+ssh://git@github.com/enzarb/enzarb-connectors.git?branch=main#1d56ffcd4559a07b8da6188e49473d8f4a1a0c77"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1146,7 +1145,6 @@ dependencies = [
 [[package]]
 name = "enzarb-connector-github"
 version = "0.1.0"
-source = "git+ssh://git@github.com/enzarb/enzarb-connectors.git?branch=main#1d56ffcd4559a07b8da6188e49473d8f4a1a0c77"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1167,7 +1165,6 @@ dependencies = [
 [[package]]
 name = "enzarb-crds"
 version = "0.1.0"
-source = "git+ssh://git@github.com/enzarb/enzarb-sandbox-operator.git?branch=main#4c3f8fca28174a081b846135e0e376af3fbbf224"
 dependencies = [
  "k8s-openapi",
  "kube",
@@ -1181,7 +1178,6 @@ dependencies = [
 [[package]]
 name = "enzarb-proto"
 version = "0.1.0"
-source = "git+ssh://git@github.com/enzarb/enzarb-proto.git?branch=main#32e36fdf1991e9833b3179a2a27e9902a8ef344e"
 dependencies = [
  "bytes",
  "futures-util",
