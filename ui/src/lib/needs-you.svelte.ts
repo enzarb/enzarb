@@ -2,7 +2,7 @@ import { getContext, setContext } from 'svelte';
 import { applyNeedsYouChange, type WorkAction, type WorkItemSummary } from '#lib/work-items.ts';
 
 export interface NeedsYouDeps {
-	list: () => Promise<WorkItemSummary[]>;
+	list: () => Promise<{ items: WorkItemSummary[]; total: number }>;
 	get: (id: number) => Promise<WorkItemSummary>;
 	submit: (id: number, action: WorkAction) => Promise<unknown>;
 	watch: (onChange: (id: number | null) => void) => () => void;
@@ -16,7 +16,9 @@ export class NeedsYouStore {
 	items = $state<WorkItemSummary[]>([]);
 	loaded = $state(false);
 	failed = $state(false);
-	readonly count = $derived(this.items.length);
+	/** Items waiting beyond those loaded (the queue is capped server-side), fixed at the last full load. */
+	overflow = $state(0);
+	readonly count = $derived(this.items.length + this.overflow);
 
 	// plain callback registry, nothing renders from it
 	// eslint-disable-next-line svelte/prefer-svelte-reactivity
@@ -45,7 +47,9 @@ export class NeedsYouStore {
 
 	async refresh(): Promise<void> {
 		try {
-			this.items = await this.#deps.list();
+			const { items, total } = await this.#deps.list();
+			this.items = items;
+			this.overflow = Math.max(0, total - items.length);
 			this.failed = false;
 		} catch {
 			this.failed = true;

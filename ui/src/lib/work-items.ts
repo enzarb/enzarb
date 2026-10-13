@@ -110,9 +110,14 @@ export function groupWorkItems<T extends { state: string }>(
 }
 
 /** States no action can leave (engine `machine/*`: issue, change_request, mention phases). */
-const TERMINAL = new Set(['Done', 'Duplicate', 'Cancelled', 'Merged', 'Closed']);
+export const TERMINAL_STATES = ['Done', 'Duplicate', 'Cancelled', 'Merged', 'Closed'] as const;
+
+const TERMINAL = new Set<string>(TERMINAL_STATES);
 
 export const isTerminal = (state: string): boolean => TERMINAL.has(state);
+
+// `classifyNeedsYou` and `availableActions` are mirrored in SQL by `needsYouWhere` in
+// `server/work-service.ts`; change them together (a parity spec guards the two).
 
 /**
  * Actions valid in a state: approve only while AwaitingApproval, merge only while ReadyToMerge, retry when Failed or Stale, cancel
