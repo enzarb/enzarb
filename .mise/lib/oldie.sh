@@ -11,7 +11,7 @@ KUBECONFIG="${ENZARB_OLDIE_KUBECONFIG:-$HOME/.kube/enzarb-oldie.yaml}"
 export KUBECONFIG
 OLDIE_HOST="${ENZARB_OLDIE_HOST:-192.168.33.11}"  # LAN address; public access is a Cloudflare Tunnel, no inbound ports
 PUBLIC_HOST="enzarb.dev"
-KDIR="$ROOT/enzarb-kubernetes"
+KDIR="$ROOT/kubernetes"
 RKE2_DIR="$KDIR/rke2"
 
 # Optional for most tasks; individual tasks require the variables they need.

@@ -1,27 +1,29 @@
-# Cross-repo contracts
+# Cross-component contracts
 
-Interfaces that more than one repo depends on. Implementations must match this document. If a change needs a different shape, update this file in the same change (top-level `enzarb` repo) and say so in the PR.
+Interfaces that more than one component depends on. Implementations must match this document. If a change needs a different shape, update this file in the same change (same PR in the `enzarb` monorepo, github.com/enzarb/enzarb) and say so in the PR.
 
-## 1. Rust library dependencies
+## 1. Library dependencies
+
+All components live in the monorepo (ADR-0015); library dependencies are path dependencies:
 
 ```toml
-enzarb-proto       = { git = "ssh://git@github.com/enzarb/enzarb-proto.git", branch = "main" }
-enzarb-crds        = { git = "ssh://git@github.com/enzarb/enzarb-sandbox-operator.git", branch = "main" }
-enzarb-connector   = { git = "ssh://git@github.com/enzarb/enzarb-connectors.git", branch = "main" }
-enzarb-connector-github = { git = "ssh://git@github.com/enzarb/enzarb-connectors.git", branch = "main" }
+enzarb-proto            = { path = "../proto/crates/enzarb-proto" }
+enzarb-crds             = { path = "../operator/crates/enzarb-crds" }
+enzarb-connector        = { path = "../connectors/crates/connector" }
+enzarb-connector-github = { path = "../connectors/crates/connector-github" }
 ```
-- Libraries are merged to `main` before dependents use them; `Cargo.lock` pins the commit. Pick up changes with `cargo update -p <crate>`. Never commit a `[patch]` to a local path.
+- A library change and its consumers land in the same PR. Deployed components still roll out independently, so wire and schema changes stay backward compatible.
 - Crate paths:
-  - `enzarb-proto/crates/enzarb-proto`
-  - `enzarb-sandbox-operator/crates/enzarb-crds`
-  - `enzarb-connectors/crates/connector`
-  - `enzarb-connectors/crates/connector-github`
-- TS: `@enzarb/proto` is published to GitHub Packages npm (`npm.pkg.github.com`) on merge to main (enzarb-proto issue for publishing). `enzarb-ui` installs it via `.npmrc` `@enzarb:registry=https://npm.pkg.github.com`; CI authenticates with `GITHUB_TOKEN` after the package grants the repo read access.
+  - `proto/crates/enzarb-proto`
+  - `operator/crates/enzarb-crds`
+  - `connectors/crates/connector`
+  - `connectors/crates/connector-github`
+- TS: `ui/` depends on `@enzarb/proto` via `"@enzarb/proto": "file:../proto"`; no registry is involved.
 
-Shared choices across the Rust repos:
+Shared choices across the Rust components:
 - tokio, axum 0.8, tracing + tracing-subscriber (JSON logs), serde, thiserror/anyhow;
 - sqlx (postgres, runtime-tokio, tls-rustls), kube + k8s-openapi (latest k8s feature), reqwest (rustls), jsonwebtoken;
-- toolchain: stable, pinned in `rust-toolchain.toml` in each repo, edition 2024.
+- toolchain: stable, pinned in `rust-toolchain.toml` in each component dir, edition 2024.
 
 ## 2. `Project` CRD (`enzarb.dev/v1alpha1`, **cluster-scoped**)
 
@@ -67,7 +69,7 @@ Resources and pod-shape changes: `spec.sandbox.cpu` (integer 1-64) and `spec.san
 
 Repo key: a repository's **repo key** is `<connector>:<owner>/<repo>`, e.g. `github:enzarb/enzarb-ui`, always lowercase. Workflows and connectors route events by matching an event's repo key against the Projects' `spec.repositories`.
 
-One Project per repository: a repo key (`RepoKey::from_connector_url`, compared case-insensitively) belongs to at most one Project. When several Projects list it, the oldest by `(metadata.creationTimestamp, name)` wins; `name` breaks timestamp ties and is unique because the CRD is cluster-scoped. Every other Project has `ResourcesReady=False` with the terminal reason `InvalidSpec`, like an invalid name; its message names the repository only, never the winning Project. Losing Projects must receive no events: workflows and connectors must route a repository's events only to the winner. That is the contract those repos have to meet, not behaviour that exists today. The operator side is tracked in enzarb-sandbox-operator#19 (pending); the routing work is tracked in the follow-up issues linked from there.
+One Project per repository: a repo key (`RepoKey::from_connector_url`, compared case-insensitively) belongs to at most one Project. When several Projects list it, the oldest by `(metadata.creationTimestamp, name)` wins; `name` breaks timestamp ties and is unique because the CRD is cluster-scoped. Every other Project has `ResourcesReady=False` with the terminal reason `InvalidSpec`, like an invalid name; its message names the repository only, never the winning Project. Losing Projects must receive no events: workflows and connectors must route a repository's events only to the winner. That is the contract those components have to meet, not behaviour that exists today. The operator side is tracked in enzarb-sandbox-operator#19 (pending); the routing work is tracked in the follow-up issues linked from there.
 
 ## 3. sandbox-init
 
@@ -106,7 +108,7 @@ One Project per repository: a repo key (`RepoKey::from_connector_url`, compared 
 - **Limits:** at `ENZARB_MAX_CHATS` a new open closes the existing chat with `superseded`; 1 `acp` channel per socket; prompts up to 256 KiB. Chat does not block drain.
 - **CLOSE reasons on an `acp` channel:** `idle`, `superseded`, `shutdown` (sandbox-init got SIGTERM), `limit` (hard lifetime or line cap), `exit:<n>`, `signal:<n>`.
 
-**Image build:** `docker buildx build --secret id=proto_key,src=<key> --load .` (private enzarb-proto dependency). The minimal runtime image (ADR-0012, enzarb-sandbox-container#16) contains:
+**Image build:** `docker buildx build -f sandbox-container/Dockerfile --load .` from the repo root (path dependency on `proto/`). The minimal runtime image (ADR-0012, enzarb-sandbox-container#16) contains:
 - sandbox-init;
 - node 24 + claude-agent-acp + the glibc `claude` binary;
 - mise;
@@ -143,9 +145,9 @@ Secrets are redacted from all records.
 - `/workspace/.enzarb/chat-home/.claude`: `CLAUDE_CONFIG_DIR` for chat agents, so `session/load` survives pod restarts.
 - `/workspace/.enzarb/claude-token`: mode 0600. Legacy per-Project token, read only while `claude_token` is absent from `run_start`/`open`. On connect sandbox-init promotes it with `credential_captured{legacy:true}` (first Project wins), then deletes it when the proxy answers `credential_state{configured:true}`. New captures are never written to disk.
 
-## 4. enzarb-proto messages
+## 4. proto messages
 
-The wire format (frame layout, flow control) is defined in `enzarb-proto/docs/protocol.md`. Frame types: `CTRL, DATA_BIN, DATA_JSON, WINDOW, CLOSE`.
+The wire format (frame layout, flow control) is defined in `proto/docs/protocol.md`. Frame types: `CTRL, DATA_BIN, DATA_JSON, WINDOW, CLOSE`.
 
 CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
 
@@ -196,7 +198,7 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
 ```
 - **`claude_token`** (optional, additive): see "Claude token" above.
 - **`npm_token`** (optional, additive): a **long-lived** token with `read:packages`, for `npm ci` of private `@enzarb/*` packages on npm.pkg.github.com. GitHub App installation tokens cannot read org packages even with `packages: read` (E403 "Permission installation not allowed to Read organization package"), so `deps_token` cannot serve that role. The workflows executor reads it from `ENZARB_NPM_TOKEN` / `ENZARB_NPM_TOKEN_FILE` (in the chart: Secret `enzarb-updater-registry`, key `registry-token`) and sets it on implement, address-comments, resolve-conflicts and review runs only; it is never stored in `jobs.input`. sandbox-init exposes it to the agent process only, as `NODE_AUTH_TOKEN` (it takes precedence over the `deps_token` fallback; `ENZARB_DEPS_TOKEN` keeps feeding cargo/git), redacts it (and its basic-auth base64 forms) from transcripts, summaries and callbacks, and never writes it to `request.json`, state, callback files or an `.npmrc`. Debug output of `RunStart` redacts it. Absent means `NODE_AUTH_TOKEN` falls back to `deps_token`.
-- **Wire details** (`enzarb-proto/docs/protocol.md` and the `enzarb_proto::Ctrl` enum are the source of truth):
+- **Wire details** (`proto/docs/protocol.md` and the `enzarb_proto::Ctrl` enum are the source of truth):
   - 10-byte big-endian header: type, flags (0), channel u32, length u32. Max payload 1 MiB, one frame per websocket binary message.
   - 256 KiB initial window per channel and direction. `CLOSE` is a half-close.
   - Optional fields are omitted when absent; `null` is accepted on decode.
@@ -237,7 +239,7 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
 - **`type`:** one of `WorkItemOpened, CommentAdded, Mentioned, ApprovalGranted, ChangeRequestOpened, ChangeRequestUpdated, ReviewSubmitted, WorkItemClosed, CiStatusChanged`.
   - `WorkItemClosed` carries `data.merged: bool`.
   - `ReviewSubmitted` carries `data.review: {id, state, body}`.
-  - `CiStatusChanged` carries the optional `data.ci`, **one per check run, check suite or commit status** (not an aggregate): `{head_sha, state: "success" | "failure" | "pending", context?, url?}` (`state` is lowercase). Additive: consumers that ignore `CiStatusChanged` or `data.ci` are unaffected. Aggregation into one CI verdict happens in `get_merge_readiness` (below); the rule is in enzarb-connectors `docs/connectors.md`.
+  - `CiStatusChanged` carries the optional `data.ci`, **one per check run, check suite or commit status** (not an aggregate): `{head_sha, state: "success" | "failure" | "pending", context?, url?}` (`state` is lowercase). Additive: consumers that ignore `CiStatusChanged` or `data.ci` are unaffected. Aggregation into one CI verdict happens in `get_merge_readiness` (below); the rule is in `docs/connectors.md`.
 - **`subject`:** the work item key, `<repo key>#<number>`. Issues and PRs share GitHub's number space, so `#` is used for both.
 - **`ApprovalGranted`:** a `/approve` comment on its own line, or the label `enzarb:approved`.
 - **`Mentioned`:** `@<bot handle>` in a comment or issue body (handle configurable, default `enzarb`).
@@ -249,7 +251,7 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
   - `merge_change_request(item, number, expected_head_sha, commit_title, commit_body?, idempotency_key) -> MergeOutcome`. The merge is pinned to `expected_head_sha`. `MergeOutcome` is `merged{sha} | already_merged{sha?} | head_moved | not_mergeable{reason}`.
   - `get_merge_readiness(item, number) -> MergeReadiness{head_sha, mergeable: Option<bool>, mergeable_state, ci, ...}`. It aggregates CI (all checks and statuses on the head; no CI counts as passing). The remaining fields and the `mergeable_state` values are defined by `enzarb_connector::MergeReadiness`.
 
-## 6. `workflows_api` (Postgres, owned by enzarb-workflows)
+## 6. `workflows_api` (Postgres, owned by `workflows/`)
 
 ```sql
 workflows_api.ingest_event(p_source text, p_dedupe_key text, p_work_item_key text,
@@ -298,12 +300,12 @@ workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated
   - `{"topic":"work_item","id":123,"project":"enzarb"}`, sent only to clients whose `projects` contain `project`;
   - `{"topic":"resync"}`, sent to all clients: refetch everything. Sent after the service's LISTEN connection was re-established, when a work item's project could not be resolved, and when a client's bounded buffer overflowed.
 - **Keepalive:** ping every 15 s; clients that do not pong are dropped. `GET /healthz` (liveness) and `GET /readyz` (200 only while LISTEN is connected).
-- **Database:** the service `LISTEN`s on `work_item_changed` (section 6) and resolves id to project with `SELECT project FROM workflows_api.work_item_v WHERE id = $1`. Runtime role `enzarb_realtime` needs `USAGE` on `workflows_api` and `SELECT` on `workflows_api.work_item_v` only (follow-up: grant in `enzarb-workflows` migrations, pgop Role in `enzarb-helm`).
-- **Routing:** `/live/` to enzarb-realtime:8080 (follow-up in `enzarb-helm`).
+- **Database:** the service `LISTEN`s on `work_item_changed` (section 6) and resolves id to project with `SELECT project FROM workflows_api.work_item_v WHERE id = $1`. Runtime role `enzarb_realtime` needs `USAGE` on `workflows_api` and `SELECT` on `workflows_api.work_item_v` only (follow-up: grant in `workflows/` migrations, pgop Role in `helm/`).
+- **Routing:** `/live/` to enzarb-realtime:8080 (follow-up in `helm/`).
 
 ## 8. HTTP routes (one host, Envoy Gateway)
 
-- **Gateway:** `enzarb` in namespace `enzarb-system` (from enzarb-kubernetes), listeners http:80 and https:443 with TLS secret `enzarb-tls`.
+- **Gateway:** `enzarb` in namespace `enzarb-system` (from `kubernetes/`), listeners http:80 and https:443 with TLS secret `enzarb-tls`.
 - **Listeners** have no hostname, so HTTPRoutes set `hostnames: [<host>]` (dev: `enzarb.local`) and `parentRefs: [{name: enzarb, namespace: enzarb-system}]`.
 
 | Path | Service | Port |
@@ -346,26 +348,11 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 - **Install link and refresh:** `https://github.com/apps/<slug>/installations/new`. At sign-in the UI uses the user-to-server token once (never stored) to snapshot the repositories reachable through installations of this App (`GET /user/installations`, `GET /user/installations/{id}/repositories`) into `app.user_repositories`. `GET /login/github?refresh=1&return=<same-origin path>` re-runs that flow. Set the App's **Setup URL** to `<public>/login/github?refresh=1` with "Redirect on update" enabled so users land back in enzarb after installing.
 - **Registration manifest:** `docs/github-app.yml` (setup in `docs/dev.md`). The same App also provides UI login (user authorization): its callback is `<public>/login/github/callback` (`callback_urls` in the manifest) and its Client ID/secret are the UI's `GITHUB_OAUTH_CLIENT_ID`/`GITHUB_OAUTH_CLIENT_SECRET`.
 
-## 11. CI access to private enzarb dependencies
+## 11. CI access to private enzarb dependencies (obsolete)
 
-Library repos have read-only deploy keys. The org is on GitHub Free, so org secrets aren't visible to private repos; the private halves are **repo-level** secrets on each consuming repo: `ENZARB_PROTO_DEPLOY_KEY`, `ENZARB_CRDS_DEPLOY_KEY`, `ENZARB_CONNECTORS_DEPLOY_KEY`. Each key's comment is its repo's ssh URL, so `webfactory/ssh-agent` maps keys to repos. A repo with enzarb git dependencies adds this before building:
+Removed by ADR-0015. With path dependencies inside the monorepo, CI and Docker builds need no deploy keys, ssh agents or build secrets; the `ENZARB_*_DEPLOY_KEY` secrets are no longer used.
 
-```yaml
-env:
-  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-steps:
-  - uses: actions/checkout@v4
-  - uses: webfactory/ssh-agent@v0.9.1
-    with:
-      ssh-private-key: |
-        ${{ secrets.ENZARB_PROTO_DEPLOY_KEY }}
-        ${{ secrets.ENZARB_CRDS_DEPLOY_KEY }}
-        ${{ secrets.ENZARB_CONNECTORS_DEPLOY_KEY }}
-```
-- Include only the keys the repo needs.
-- npm `github:enzarb/enzarb-proto#main` dependencies fetch over ssh with the same agent. Set `git config --global url."ssh://git@github.com/".insteadOf "https://github.com/"` before `npm ci`.
-
-## 12. Agent jobs (enzarb-workflows `engine::machine`)
+## 12. Agent jobs (`workflows/` `engine::machine`)
 
 - **Agent output:** the final message ends with exactly one fenced `json` block `{ "decision": "...", "body": "<markdown>" }`, with nothing after it. The machine reads it from `RunFinished.summary`.
 - **Decisions per job kind:**
@@ -384,31 +371,24 @@ steps:
   - read-only steps: `enzarb/<step>-<n>`
   - implement: `enzarb/issue-<n>`
   - review and address_comments: the PR's `head_ref`, used as both `base_ref` and `branch`.
-- **Prompt templates:** `enzarb-workflows/crates/engine/prompts/*.md`. Untrusted text is wrapped in `<untrusted>` tags.
+- **Prompt templates:** `workflows/crates/engine/prompts/*.md`. Untrusted text is wrapped in `<untrusted>` tags.
 
-### Docker builds with private dependencies
-- **Why not `--ssh default`:** it breaks once a repo needs more than one deploy key, because ssh offers the wrong key first.
-- **Pattern** (see `enzarb-sandbox-proxy/Dockerfile`): pass each key as a build secret, e.g. `--secret id=proto_key`, `--secret id=crds_key`, `--secret id=connectors_key`. In the same `RUN`:
-  1. write each key to `/root/.ssh/<name>_key`;
-  2. add an ssh `Host gh-<name>` alias with `IdentityFile` and `IdentitiesOnly yes`;
-  3. `git config url."ssh://git@gh-<name>/enzarb/<repo>".insteadOf "ssh://git@github.com/enzarb/<repo>"`;
-  4. `cargo build --locked`;
-  5. delete the keys.
-- **CI:** run `docker build --secret id=<name>_key,env=<VAR>` with the repo-level deploy-key secrets in env. `docker/build-push-action`'s `secrets:` input mangles multi-line keys ("error in libcrypto").
-- **Locally:** pass any key that has access (e.g. `--secret id=proto_key,src=$HOME/.ssh/id_ed25519`).
+### Docker builds
+
+Components with path dependencies (`ui`, `sandbox-proxy`, `sandbox-container`, `workflows`) build with the repo root as context: `docker build -f <dir>/Dockerfile .`. No build secrets are needed (ADR-0015).
 
 ## 13. Container images (GHCR)
 
-| Image | Repo | Port(s) |
+| Image | Dir | Port(s) |
 |---|---|---|
-| `ghcr.io/enzarb/enzarb-ui` | enzarb-ui | 3000 |
-| `ghcr.io/enzarb/enzarb-sandbox-proxy` | enzarb-sandbox-proxy | 8080 |
-| `ghcr.io/enzarb/enzarb-sandbox` | enzarb-sandbox-container | 7070 |
-| `ghcr.io/enzarb/enzarb-sandbox-operator` | enzarb-sandbox-operator | 8080 (health) |
-| `ghcr.io/enzarb/enzarb-connectors-receiver` | enzarb-connectors | 8080 |
-| `ghcr.io/enzarb/enzarb-workflows` | enzarb-workflows | 8081 (executor), 8082 (health) |
-| `ghcr.io/enzarb/enzarb-updater` | enzarb-updater | 8080 |
-| `ghcr.io/enzarb/enzarb-realtime` | enzarb-realtime | 8080 |
+| `ghcr.io/enzarb/enzarb-ui` | `ui/` | 3000 |
+| `ghcr.io/enzarb/enzarb-sandbox-proxy` | `sandbox-proxy/` | 8080 |
+| `ghcr.io/enzarb/enzarb-sandbox` | `sandbox-container/` | 7070 |
+| `ghcr.io/enzarb/enzarb-sandbox-operator` | `operator/` | 8080 (health) |
+| `ghcr.io/enzarb/enzarb-connectors-receiver` | `connectors/` | 8080 |
+| `ghcr.io/enzarb/enzarb-workflows` | `workflows/` | 8081 (executor), 8082 (health) |
+| `ghcr.io/enzarb/enzarb-updater` | `updater/` | 8080 |
+| `ghcr.io/enzarb/enzarb-realtime` | `realtime/` | 8080 |
 
-- **Tags:** `main`, `sha-<short>`, and `<version>`/`latest` on `v*` tags.
+- **Tags:** `main`, `sha-<short>`, and `<version>`/`latest` on `<dir>/v*` release tags (the dir prefix is stripped).
 - **Visibility:** private. Pulling requires an image pull secret (or `kind load` in dev).

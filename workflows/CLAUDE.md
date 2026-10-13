@@ -1,5 +1,5 @@
-# enzarb-workflows
+# enzarb `workflows/`
 
-One of several separate enzarb repositories. The top-level `enzarb` repo (github.com/enzarb/enzarb, checked out one directory up, when checked out with the others) holds the architecture docs and cross-repo conventions: see `../CLAUDE.md` and `../docs/architecture.md`.
+The `workflows/` component of the enzarb monorepo (github.com/enzarb/enzarb). The repo root holds the architecture docs and shared conventions: see `../CLAUDE.md` and `../docs/architecture.md`. Releases are tagged `workflows/vX.Y.Z`.
 
-Work inside this repo with its own build/test commands. Changes to shared contracts (enzarb-proto frames, `workflows_api`/`app_api` schemas) must stay backward compatible.
+Run this component's own build/test commands from this directory. Changes to shared contracts (`proto/` frames, `workflows_api`/`app_api` schemas) must stay backward compatible.

@@ -29,15 +29,15 @@ load_env() {
   set +a
 }
 
-# component -> "repo-dir image-ref"
+# component -> "dir image-ref"
 image_spec() {
   case "$1" in
-    ui) echo "enzarb-ui ghcr.io/enzarb/enzarb-ui" ;;
-    sandbox-proxy) echo "enzarb-sandbox-proxy ghcr.io/enzarb/enzarb-sandbox-proxy" ;;
-    sandbox) echo "enzarb-sandbox-container ghcr.io/enzarb/enzarb-sandbox" ;;
-    operator) echo "enzarb-sandbox-operator ghcr.io/enzarb/enzarb-sandbox-operator" ;;
-    receiver) echo "enzarb-connectors ghcr.io/enzarb/enzarb-connectors-receiver" ;;
-    workflows) echo "enzarb-workflows ghcr.io/enzarb/enzarb-workflows" ;;
+    ui) echo "ui ghcr.io/enzarb/enzarb-ui" ;;
+    sandbox-proxy) echo "sandbox-proxy ghcr.io/enzarb/enzarb-sandbox-proxy" ;;
+    sandbox) echo "sandbox-container ghcr.io/enzarb/enzarb-sandbox" ;;
+    operator) echo "operator ghcr.io/enzarb/enzarb-sandbox-operator" ;;
+    receiver) echo "connectors ghcr.io/enzarb/enzarb-connectors-receiver" ;;
+    workflows) echo "workflows ghcr.io/enzarb/enzarb-workflows" ;;
     *) return 1 ;;
   esac
 }

@@ -15,7 +15,7 @@ The `HelmChart` is never created by the updater (the RBAC grants no `create`): i
 
 1. Verify `X-Hub-Signature-256` (HMAC-SHA256, constant-time) with `ENZARB_UPDATER_WEBHOOK_SECRET`. 401 otherwise.
 2. `X-GitHub-Event: ping` -> 200. Any other event except `release` -> 202 ignored.
-3. Act only on `action == "published"`, `repository.full_name == "enzarb/enzarb-helm"`, a non-prerelease, non-draft tag `vX.Y.Z`. Everything else -> 202 ignored.
+3. Act only on `action == "published"`, `repository.full_name == "enzarb/enzarb"`, a non-prerelease, non-draft tag `helm/vX.Y.Z` (the `helm/` prefix is stripped for the version; other components' tags are ignored). Everything else -> 202 ignored.
 4. HEAD the chart manifest `X.Y.Z` in the OCI registry (anonymous bearer-token flow, or authenticated with `ENZARB_UPDATER_REGISTRY_TOKEN`). Missing or registry error -> 503 so GitHub redelivery retries.
 5. Read the `HelmChart`. If `X.Y.Z` is greater than `spec.version`, server-side apply only `spec.version` (field manager `enzarb-updater`, forced). Equal or lower -> 200 no-op. It never downgrades.
 
@@ -27,7 +27,7 @@ Every decision is logged as one JSON line (`decision` = `ping|ignore|reject|retr
 |---|---|---|
 | `ENZARB_UPDATER_WEBHOOK_SECRET` | unset | GitHub webhook secret; unset disables `/hook` (404) |
 | `ENZARB_UPDATER_POLL_SECS` | `300` | registry poll interval; `0` disables polling, otherwise at least 30. At least one of secret and polling is required |
-| `ENZARB_UPDATER_CHART` | `oci://ghcr.io/enzarb/charts/enzarb` | chart ref `enzarb-helm`'s `publish.yml` pushes |
+| `ENZARB_UPDATER_CHART` | `oci://ghcr.io/enzarb/charts/enzarb` | chart ref the monorepo's chart publish workflow pushes |
 | `ENZARB_UPDATER_REGISTRY_TOKEN` | unset | token with `read:packages` (the GHCR chart is private); sent only to the registry host over https |
 | `ENZARB_UPDATER_HELMCHART` | `enzarb` | `HelmChart` name |
 | `ENZARB_UPDATER_NAMESPACE` | `kube-system` | `HelmChart` namespace |
@@ -48,7 +48,7 @@ rules:
 
 ## Ordering requirement
 
-`enzarb-helm` must push the OCI chart (`publish.yml`, triggered by the tag) **before** the GitHub release is published, otherwise the first delivery gets 503. GitHub does not retry failed deliveries automatically, so redeliver manually or publish in order. The updater only checks; it does not wait.
+The monorepo's chart publish workflow (triggered by the `helm/v*` tag) must push the OCI chart **before** the GitHub release is published, otherwise the first delivery gets 503. GitHub does not retry failed deliveries automatically, so redeliver manually or publish in order. The updater only checks; it does not wait.
 
 ## Operational notes
 

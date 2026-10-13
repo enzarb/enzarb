@@ -1,4 +1,4 @@
-//! enzarb-updater: turns a published `enzarb-helm` GitHub release into a patch of the
+//! enzarb-updater: turns a published `helm/vX.Y.Z` GitHub release of the enzarb monorepo into a patch of the
 //! RKE2 `HelmChart.spec.version`, by polling the chart registry and/or a release webhook.
 //! Stateless; every decision is logged.
 
