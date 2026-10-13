@@ -1,0 +1,31 @@
+name: ci-workflows
+on:
+  push:
+    branches: [main]
+    tags: ['workflows/v*']
+    paths: &paths
+      - 'workflows/**'
+      - 'operator/**'
+      - 'connectors/**'
+      - 'proto/**'
+      - .github/workflows/ci-workflows.yml
+      - .github/workflows/_rust.yml
+      - .github/workflows/_docker.yml
+  pull_request:
+    paths: *paths
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+permissions:
+  contents: read
+jobs:
+  ci:
+    uses: ./.github/workflows/_rust.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      dir: workflows
+      cargo-args: --workspace
+      image: enzarb-workflows
+      context: .

@@ -1,0 +1,107 @@
+name: ci-ui
+on:
+  push:
+    branches: [main]
+    tags: ['ui/v*']
+    paths: &paths
+      - 'ui/**'
+      - 'proto/**'
+      - .github/workflows/ci-ui.yml
+      - .github/workflows/_docker.yml
+      - .github/actions/ui-install/**
+  pull_request:
+    paths: *paths
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+permissions:
+  contents: read
+defaults:
+  run:
+    working-directory: ui
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - uses: ./.github/actions/ui-install
+      - run: npm run check
+      - run: npm run lint
+
+  # Component tests on a plain runner: browser cached, system libs via install-deps.
+  test-client:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - uses: ./.github/actions/ui-install
+      - id: pw
+        run: echo "version=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+      - id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
+      - if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: npx playwright install chromium
+      - run: npx playwright install-deps chromium
+      - run: npm run test:unit -- --run --project client
+
+  # Chat smoke test in a real browser against the dev server; Postgres comes from a testcontainer.
+  test-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - uses: ./.github/actions/ui-install
+      - id: pw
+        run: echo "version=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+      - id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
+      - if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: npx playwright install chromium
+      - run: npx playwright install-deps chromium
+      - run: npm run test:e2e
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            ui/playwright-report/
+            ui/test-results/
+          retention-days: 7
+
+  test-server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - uses: ./.github/actions/ui-install
+      - run: npm run test:unit -- --run --project server
+
+  docker:
+    uses: ./.github/workflows/_docker.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      dir: ui
+      image: enzarb-ui
+      context: .
+      timeout: 20

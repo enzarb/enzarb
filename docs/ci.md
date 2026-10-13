@@ -1,6 +1,6 @@
 # CI conventions
 
-Every enzarb repo's GitHub Actions setup follows these rules. The goals are fast feedback on PRs, building each artifact once, and caching that persists between runs.
+The monorepo's GitHub Actions setup (root `.github/`) follows these rules. Each component has its own `ci-<dir>.yml`, filtered with `paths:` to the component dir, its path-dependency dirs and its own workflow files, so a change only runs the CI of what it can affect. Rust components share the reusable `_rust.yml`; image builds share `_docker.yml`. The goals are fast feedback on PRs, building each artifact once, and caching that persists between runs.
 
 ## All workflows
 - **Cancel superseded runs:**
@@ -17,18 +17,19 @@ Every enzarb repo's GitHub Actions setup follows these rules. The goals are fast
 ## Rust repos
 - **Toolchain:** pin an exact version in `rust-toolchain.toml` (e.g. `channel = "1.99.0"`), never `stable`. Runners resolve `stable` to different versions, which changes rust-cache's environment hash so every run misses. Install it via `actions-rust-lang/setup-rust-toolchain` with its built-in cache off (`cache: false`); we use rust-cache.
 - **Separate, parallel jobs:**
-  - `fmt`: `cargo fmt --check` plus the "no `[patch]` in Cargo.lock" guard. No cache, no deps fetch.
+  - `fmt`: `cargo fmt --check` plus a guard that no `[patch]` and no git dependency on an enzarb repo remains (enzarb crates are path deps, `../<dir>`). No cache, no deps fetch.
   - `clippy`: `cargo clippy --all-targets [--all-features] -- -D warnings`.
   - `test`: `cargo nextest run` (installed with `taiki-e/install-action@nextest`) plus `cargo test --doc` if the crate has doctests. Integration tests that need Docker run here.
 - **Cache:** `Swatinem/rust-cache@v2` in clippy and test.
-  - Use a distinct `key` per job, because clippy and test build different artifacts.
+  - `workspaces: <dir> -> target` and a distinct `key` per component and job (`<dir>-clippy`, `<dir>-test`), because clippy and test build different artifacts.
   - Set `save-if: ${{ github.ref == 'refs/heads/main' }}`. PRs read the main cache but don't write, so cache churn stays low.
-- **Private enzarb git deps:** the ssh-agent step from contracts §11 runs in each job that resolves dependencies (clippy, test, docker).
+- **Toolchain file per component:** `setup-rust-toolchain` gets `rust-src-dir: <dir>`; jobs run with `working-directory: <dir>`.
 
 ## Docker images
 - **Build once per commit.** One `docker` job in `ci.yml`:
   - **On PRs:** build, and smoke-test if the repo has a smoke script. No push.
-  - **On push to `main` and `v*` tags:** build, then push to GHCR with the `docker/metadata-action` tags from contracts §13.
+  - **On push to `main` and the component's `<dir>/v*` tags:** build, then push to GHCR with the `docker/metadata-action` tags from contracts §13. A tag build's version is the tag with `<dir>/v` stripped (`ui/v0.24.0` -> `ghcr.io/enzarb/enzarb-ui:0.24.0` and `latest`).
+  - Components with path deps (`sandbox-proxy`, `sandbox-container`, `workflows`, `ui`) build from the repo root (`-f <dir>/Dockerfile .`); the others use their dir as context.
   - **Remove the separate `image.yml`**, so main isn't built twice.
 - **Layer cache:** BuildKit GHA cache with a stable scope per image.
   ```
@@ -40,12 +41,11 @@ Every enzarb repo's GitHub Actions setup follows these rules. The goals are fast
 - **Rust Dockerfiles use [cargo-chef](https://github.com/LukeMathWalker/cargo-chef).**
   - The planner and `cargo chef cook --release` stages build the dependency layer, which the GHA layer cache keeps between runs.
   - The final `cargo build` only compiles workspace crates.
-  - Private git deps are fetched in the cook stage, using the build-secret pattern.
   - BuildKit cache mounts (`--mount=type=cache`) for the cargo registry are fine but do **not** persist on hosted runners. Don't rely on them.
 - **Node Dockerfiles:** copy `package.json`/`package-lock.json` and run `npm ci` before copying sources, so the deps layer caches.
 
 ## Node repos
-- **node_modules:** cache `node_modules` itself with `actions/cache`, keyed on node version + `hashFiles('package-lock.json')`, and skip `npm ci` on a hit (the setup-node `cache: npm` only caches `~/.npm`, so `npm ci` still takes 30-90s). The repo's `.npmrc` reads `NODE_AUTH_TOKEN` for GitHub Packages. Share this as a local composite action.
+- **node_modules:** cache `node_modules` itself with `actions/cache`, keyed on node version + `hashFiles('package-lock.json')`, and skip `npm ci` on a hit (the setup-node `cache: npm` only caches `~/.npm`, so `npm ci` still takes 30-90s). `ui` depends on `file:../proto`, so `.github/actions/ui-install` caches `ui/node_modules` and `proto/node_modules` and rebuilds `proto/ts/dist` on a hit. No GitHub Packages auth is needed.
 - **Separate parallel jobs:**
   - `check`: `npm run check` and `npm run lint`.
   - `test-client`: browser component tests on a plain runner. Cache `~/.cache/ms-playwright` keyed on the installed Playwright version, run `npx playwright install chromium` only on a miss, and always run `npx playwright install-deps chromium` (about 15s). A `mcr.microsoft.com/playwright` job container was slower: the image pull costs about 55s per run.
@@ -55,12 +55,13 @@ Every enzarb repo's GitHub Actions setup follows these rules. The goals are fast
 A PR that changes CI states before/after wall-clock times for the PR run and the main run, taken from the Actions UI or `gh run view --json jobs`.
 
 ## Releases
-Every image repo (`enzarb-ui`, `-workflows`, `-connectors`, `-sandbox-proxy`, `-sandbox-operator`, `-sandbox-container`, `-realtime`, `-updater`) and `enzarb-helm` runs the same `.github/workflows/release.yml`. The canonical copy is `docs/ci/release.yml` here; edit it and run `mise run ci:sync-release` (`--check` reports drift).
+`.github/workflows/release.yml` releases every image component (`ui`, `workflows`, `connectors`, `sandbox-proxy`, `operator`, `sandbox-container`, `realtime`, `updater`) and `helm`. It runs on `workflow_run` of their `ci-<dir>` workflows (listed by name; add new ones there).
 
-- **Versions come from commits.** After `ci` succeeds on `main`, the workflow reads the Conventional Commits since the last `v*` tag: `feat` bumps minor, `fix`/`perf`/`revert` bump patch, `type!:` or a `BREAKING CHANGE:` footer bumps major (while 0.x, breaking and `feat` both bump minor). History with only `chore`/`docs`/`ci`/`test`/`refactor` releases nothing. The first release of a repo is `v0.1.0`. Use Conventional Commit subjects (squash-merge titles included) and the rest follows.
-- **Tag and release.** The workflow creates the annotated tag and a GitHub Release with generated notes, using `ENZARB_RELEASE_TOKEN` (not `GITHUB_TOKEN`: tags pushed with that token do not trigger workflows). The tag push runs `ci` again, whose `docker` job pushes `ghcr.io/enzarb/<image>:<version>` (and `latest`).
-- **Chart sync.** When the tag's `ci` run succeeds, the component dispatches `component-released` to `enzarb-helm`. Its `sync-components` workflow (also on a 6-hourly schedule as a safety net) reconciles *every* component in `scripts/components.yaml` to its latest GitHub release, but only advances one whose image tag exists in GHCR. It rewrites the tags in `enzarb/values.yaml` (and the Project CRD for the operator), refreshes the golden files, runs the chart checks and commits `feat(deps): bump ...` / `fix(deps): ...` to `main`. Because the payload is only a trigger, concurrent or lost dispatches cannot drop a bump.
-- **Chart release.** That commit goes through the same release workflow, so the chart gets its own version (a minor/major component bump is a `feat`, a patch bump a `fix`). `publish.yml` packages the chart at the tag's version and pushes `oci://ghcr.io/enzarb/charts/enzarb`. `Chart.yaml` keeps `0.0.0` placeholders.
-- **Setup per repo:** secret `ENZARB_RELEASE_TOKEN` and then the repo variable `RELEASE_ENABLED=true` (the workflow is dormant until both exist), a fine-grained PAT on the `enzarb` org with Contents read/write and Actions read on all enzarb repos (Actions read lets the chart sync confirm that a release tag's build succeeded, which is how it knows the image was pushed; GHCR itself is not accessed with this token), plus Workflows write for the repo that first adds `release.yml`. Org secrets are not visible to private repos on the Free plan, so set it as a repo-level secret on each of the nine repos (like the deploy keys in contracts.md section 11).
-- `enzarb-proto`, `enzarb-kubernetes` and the root repo are not released this way: proto is consumed as a git dependency on `main` and published by its own `publish.yml`.
+- **Versions come from commits.** After `ci-<dir>` succeeds on a push to `main`, `.github/scripts/next-version.sh` reads the Conventional Commits since the last `<dir>/vX.Y.Z` tag that touch `<dir>` or one of its path-dependency dirs (`git log --ancestry-path`, so history imported before the monorepo does not count): `feat` bumps minor, `fix`/`perf`/`revert` bump patch, `type!:` or a `BREAKING CHANGE:` footer bumps major (while 0.x, breaking and `feat` both bump minor). History with only `chore`/`docs`/`ci`/`test`/`refactor` releases nothing. A component's first release is `0.1.0`. A `feat` in `proto/` therefore releases `ui`, `workflows`, `sandbox-proxy` and `sandbox-container`.
+- **Tag and release.** The workflow creates the annotated tag `<dir>/vX.Y.Z` and a GitHub Release (notes start at the component's previous tag; component releases are `--latest=false`, so the repo's latest release is always the chart) using `ENZARB_RELEASE_TOKEN` (tags pushed with `GITHUB_TOKEN` do not trigger workflows). Tagging is serialized per component. The tag push runs `ci-<dir>` again, whose docker job pushes `ghcr.io/enzarb/<image>:<version>` and `latest`.
+- **Chart sync.** `sync-components.yml` runs when a component's tag build succeeds (plus a 6-hourly schedule and manual dispatch). `helm/scripts/sync-components.sh` reconciles *every* component in `helm/scripts/components.yaml` to its highest local `<dir>/v*` tag, but only advances one whose tag `ci-<dir>` run succeeded (the image exists). It rewrites the tags in `helm/enzarb/values.yaml` (`operator.sandboxImage` for the sandbox image; the Project CRD from `operator/deploy/crds/project.yaml` at the operator tag, read with `git show`), refreshes the goldens, runs the chart checks and commits `feat(deps): bump ...` / `fix(deps): ...` to `main` with the release token.
+- **Chart release.** That commit runs `ci-helm` and then the release workflow, so the chart gets its own `helm/vX.Y.Z` (a minor/major component bump is a `feat`, a patch bump a `fix`; versions continue from `helm/v0.69.0`). helm releases start as drafts; `publish-helm.yml` (on `helm/v*`) packages the chart at the stripped version, pushes `oci://ghcr.io/enzarb/charts/enzarb`, then publishes the release and marks it latest. `Chart.yaml` keeps `0.0.0` placeholders.
+- **Setup:** repo secret `ENZARB_RELEASE_TOKEN` (fine-grained PAT on this repo: Contents read/write, Workflows read/write so its pushes can carry workflow changes) and then the repo variable `RELEASE_ENABLED=true`; everything is dormant until both exist. The sync's build check uses `GITHUB_TOKEN` with `actions: read`.
+- `proto` and `kubernetes` are not released. `proto` is consumed in-tree (Rust path deps, `ui` via `file:../proto`), so `@enzarb/proto` is no longer published to GitHub Packages. `kubernetes` pushes its gvisor installer image on `main` (and on a manual `kubernetes/v*` tag).
+- Local check: `scripts/monorepo/test-release-version.sh` prints each component's last tag and its next version for synthetic `feat`/`fix` commits, and which `ci-*` workflows sample paths trigger.
 - Version detection reads Conventional Commit subjects. Squash-merge titles count; git's default `Revert "..."` subject does not match `revert:`, so write reverts as `revert: ...` if they should release.

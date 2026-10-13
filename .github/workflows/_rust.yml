@@ -1,0 +1,111 @@
+# Reusable: fmt / clippy / test for one Rust component (docs/ci.md "Rust repos"), plus its image.
+# Every job runs inside the component dir; rust-cache is keyed per component and job.
+name: rust
+on:
+  workflow_call:
+    inputs:
+      dir:
+        type: string
+        required: true
+      cargo-args:
+        description: Extra args for clippy, nextest and doctests (e.g. `--workspace --all-features`)
+        type: string
+        default: ""
+      node:
+        description: Node version to install for tests (empty = none)
+        type: string
+        default: ""
+      image:
+        description: Image name under ghcr.io/enzarb/ (empty = no docker job)
+        type: string
+        default: ""
+      context:
+        description: Docker build context (`.` when the Dockerfile needs path deps, else the dir)
+        type: string
+        default: ""
+      smoke:
+        type: string
+        default: ""
+      docker-timeout:
+        type: number
+        default: 30
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: ${{ inputs.dir }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+          components: rustfmt
+          rust-src-dir: ${{ inputs.dir }}
+      - run: cargo fmt --all --check
+      - name: No [patch] and no git deps on enzarb repos (path deps only in the monorepo)
+        run: |
+          if grep -rnE --include=Cargo.toml --include=Cargo.lock --exclude-dir=target --exclude-dir=node_modules '^\[+patch|git\+(https|ssh)://[^"]*enzarb|git *= *"[^"]*enzarb' .; then
+            echo "::error::use path deps (../<dir>) for enzarb crates"; exit 1
+          fi
+  clippy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ${{ inputs.dir }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+          components: clippy
+          rust-src-dir: ${{ inputs.dir }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ inputs.dir }} -> target
+          key: ${{ inputs.dir }}-clippy
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo clippy --all-targets ${{ inputs.cargo-args }} -- -D warnings
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: ${{ inputs.dir }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+          rust-src-dir: ${{ inputs.dir }}
+      - uses: actions/setup-node@v4
+        if: inputs.node != ''
+        with:
+          node-version: ${{ inputs.node }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ inputs.dir }} -> target
+          key: ${{ inputs.dir }}-test
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@nextest
+      # Docker is available on ubuntu-latest, so testcontainers integration tests run here.
+      - run: cargo nextest run ${{ inputs.cargo-args }}
+      - run: cargo test --doc ${{ inputs.cargo-args }}
+  docker:
+    if: inputs.image != ''
+    uses: ./.github/workflows/_docker.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      dir: ${{ inputs.dir }}
+      image: ${{ inputs.image }}
+      context: ${{ inputs.context || inputs.dir }}
+      smoke: ${{ inputs.smoke }}
+      timeout: ${{ inputs.docker-timeout }}
