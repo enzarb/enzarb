@@ -1,0 +1,26 @@
+name: ci-realtime
+on:
+  push:
+    branches: [main]
+    tags: ['realtime/v*']
+    paths: &paths
+      - 'realtime/**'
+      - .github/workflows/ci-realtime.yml
+      - .github/workflows/_rust.yml
+      - .github/workflows/_docker.yml
+  pull_request:
+    paths: *paths
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+permissions:
+  contents: read
+jobs:
+  ci:
+    uses: ./.github/workflows/_rust.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      dir: realtime
+      image: enzarb-realtime

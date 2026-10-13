@@ -2,7 +2,7 @@
 
 This is the **`enzarb`** monorepo (github.com/enzarb/enzarb, ADR-0015). Each component lives in its own top-level directory with its own build, checks, Dockerfile and release; `docs/` holds the architecture, contracts and ADRs shared by all of them.
 
-Single-node RKE2 install on oldie (`enzarb.dev`): `docs/oldie.md` (`mise run oldie:up`; tasks in `.mise/tasks/oldie/`). Release automation: `docs/ci.md`.
+Single-node RKE2 install on oldie (`enzarb.dev`): `docs/oldie.md` (`mise run oldie:up`; tasks in `.mise/tasks/oldie/`). CI and release automation: `docs/ci.md` (root `.github/workflows/`).
 
 Local kind setup: `docs/dev.md` (`mise run dev:cluster|images|secrets|helm-deploy|webhook-relay|down`; tasks in `.mise/tasks/dev/`, shared helpers in `.mise/lib/dev.sh`).
 

@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
-# Reconcile enzarb/values.yaml with the latest GitHub release of every component in
-# scripts/components.yaml. Idempotent: a second run changes nothing. A component only advances
-# when its image exists, i.e. when the `ci` run of the release tag succeeded (its docker job pushes
-# ghcr.io/enzarb/<image>:<version> on `v*` tags), and never to an older version than the current pin.
+# Reconcile enzarb/values.yaml with the latest release tag (<dir>/vX.Y.Z, read from local git) of
+# every component in scripts/components.yaml. Idempotent: a second run changes nothing. A component
+# only advances when its image exists, i.e. when the `ci-<dir>` run of the release tag succeeded (its
+# docker job pushes ghcr.io/enzarb/<image>:<version> on `<dir>/v*` tags), and never to an older
+# version than the current pin.
 #
-#   scripts/sync-components.sh [--message-file FILE] [--dry-run]
+#   helm/scripts/sync-components.sh [--message-file FILE] [--dry-run]
 #
 # Writes a Conventional Commit message to FILE when something changed: `feat(deps)!:` for a major
-# step, `feat(deps):` for minor, `fix(deps):` for patch (the largest step wins), which the repo's
-# release workflow turns into the next chart version. A repo without any release is skipped; any
-# other GitHub API failure (rate limit, bad token, network) fails the run loudly.
-# Needs: gh (GH_TOKEN with read access to the component repos and their Actions runs), yq (mikefarah
-# v4). SKIP_IMAGE_CHECK=1 skips the tag-build check.
+# step, `feat(deps):` for minor, `fix(deps):` for patch (the largest step wins), which the release
+# workflow turns into the next chart version. A component without any tag is skipped.
+# Needs: a clone with tags (fetch-depth 0), yq (mikefarah v4), and gh with GH_TOKEN (Actions read on
+# this repo) for the tag-build check; SKIP_IMAGE_CHECK=1 skips that check (no gh needed).
 set -euo pipefail
-# NOTE: when the operator pin bumps, also diff enzarb-sandbox-operator deploy/rbac.yaml against the
+# NOTE: when the operator pin bumps, also diff operator/deploy/rbac.yaml against the
 # operator Role/ClusterRole in enzarb/templates/rbac.yaml (v0.3.0 added pods get,delete; see #24).
 here="$(cd "$(dirname "$0")/.." && pwd)"
 values="$here/enzarb/values.yaml"
+root="$(git -C "$here" rev-parse --show-toplevel)"
 msg_file="" dry=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -29,20 +30,16 @@ done
 err=$(mktemp); tmp=""
 trap 'rm -f "$err" "$tmp"' EXIT
 
-# Prints the tag of the latest release; nothing when the repo has none; exits on any other failure.
-latest_release() { # <repo>
-  local out
-  if out=$(gh api "repos/enzarb/$1/releases/latest" --jq .tag_name 2>"$err"); then printf '%s' "$out"
-  elif grep -q 'HTTP 404' "$err"; then :
-  else cat "$err" >&2; echo "$1: cannot read the latest release" >&2; exit 1
-  fi
+# Prints the highest <dir>/vX.Y.Z tag (plain X.Y.Z only), or nothing when the component has none.
+latest_tag() { # <dir>
+  git -C "$root" tag --list "$1/v[0-9]*" | grep -E "^$1/v[0-9]+\.[0-9]+\.[0-9]+\$" | sort -V | tail -1 || true
 }
-# True when the tag's ci run succeeded (the docker job pushed the image).
-image_built() { # <repo> <version>
+# True when the tag's ci-<dir> run succeeded (the docker job pushed the image).
+image_built() { # <dir> <tag>
   [ "${SKIP_IMAGE_CHECK:-0}" = 1 ] && return 0
   local c
-  c=$(gh run list -R "enzarb/$1" --workflow ci --branch "v$2" --limit 1 --json conclusion \
-    --jq '.[0].conclusion // ""' 2>"$err") || { cat "$err" >&2; echo "$1: cannot read the ci run of v$2" >&2; exit 1; }
+  c=$(gh run list -R "${GITHUB_REPOSITORY:-enzarb/enzarb}" --workflow "ci-$1.yml" --branch "$2" --limit 1 \
+    --json conclusion --jq '.[0].conclusion // ""' 2>"$err") || { cat "$err" >&2; echo "$1: cannot read the ci run of $2" >&2; exit 1; }
   [ "$c" = success ]
 }
 # Prints major|minor|patch for old -> new (only called when new is newer).
@@ -79,14 +76,14 @@ changes=() worst=patch
 n=$(yq '.components | length' "$here/scripts/components.yaml")
 for i in $(seq 0 $((n - 1))); do
   c() { yq ".components[$i].$1 // \"\"" "$here/scripts/components.yaml"; }
-  repo=$(c repo) image=$(c image) path=$(c path) prefix=$(c prefix) crd=$(c crd)
-  latest=$(latest_release "$repo")
+  repo=$(c dir) image=$(c image) path=$(c path) prefix=$(c prefix) crd=$(c crd)
+  latest=$(latest_tag "$repo")
   if [ -z "$latest" ]; then echo "$repo: no release yet, keeping current"; continue; fi
-  new=${latest#v}
+  new=${latest#"$repo"/v}
   current=$(yq "$path" "$values"); current=${current#"$prefix"}
   if [ "$new" = "$current" ]; then echo "$repo: $current (up to date)"; continue; fi
   if ! is_newer "$current" "$new"; then echo "$repo: latest release $new is older than the pinned $current, keeping $current"; continue; fi
-  if ! image_built "$repo" "$new"; then
+  if ! image_built "$repo" "$latest"; then
     echo "$repo: $new released but its tag build has not succeeded (ghcr.io/enzarb/$image:$new), keeping $current"; continue
   fi
   lvl=$(step "$current" "$new")
@@ -96,8 +93,7 @@ for i in $(seq 0 $((n - 1))); do
   [ "$dry" = 1 ] && continue
   if [ "$crd" = true ]; then # fetch before editing anything, so a failure leaves values.yaml untouched
     tmp=$(mktemp)
-    gh api -H 'Accept: application/vnd.github.raw' \
-      "repos/enzarb/$repo/contents/deploy/crds/project.yaml?ref=$latest" > "$tmp"
+    git -C "$root" show "$latest:$repo/deploy/crds/project.yaml" > "$tmp"
   fi
   set_value "$path" "$prefix$new"
   if [ "$crd" = true ]; then "$here/scripts/sync-crds.sh" "$tmp" >/dev/null; fi
