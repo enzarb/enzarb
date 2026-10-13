@@ -1,0 +1,94 @@
+import { page } from 'vitest/browser';
+import { describe, expect, it } from 'vitest';
+import { render } from 'vitest-browser-svelte';
+import { convertFormData } from '#lib/test/kit-form.ts';
+import CheckGroupHarness from './__fixtures__/CheckGroupHarness.svelte';
+import FormHarness from './__fixtures__/FormHarness.svelte';
+
+const FORM_ID = 'abc123';
+
+function posted(): [string, string][] {
+	return JSON.parse(page.getByTestId('posted').element().textContent!);
+}
+
+describe('remote-form integration', () => {
+	it('every control posts remote-style names that convert to the expected input', async () => {
+		render(FormHarness, { formId: FORM_ID });
+		await page.getByRole('button', { name: 'Send' }).click();
+		const data = new FormData();
+		for (const [k, v] of posted()) data.append(k, v);
+		expect(convertFormData(FORM_ID, data)).toEqual({
+			name: 'abc',
+			notes: 'hi',
+			fruit: 'pear',
+			repos: ['apple', 'pear'],
+			issues: true,
+			live: true,
+			size: 'apple'
+		});
+	});
+
+	it('fires input events with the field name after each change, including to empty', async () => {
+		render(FormHarness, { formId: FORM_ID });
+		const events = () => JSON.parse(page.getByTestId('events').element().textContent!) as string[];
+		await page.getByRole('checkbox', { name: 'Issues' }).click(); // on -> off: no hidden input left
+		await expect.poll(events).toContain(`b:issues/${FORM_ID}`);
+		await page.getByRole('switch', { name: 'Live' }).click();
+		await expect.poll(events).toContain(`b:live/${FORM_ID}`);
+		await page.getByRole('button', { name: 'Remove Apple' }).click();
+		await page.getByRole('button', { name: 'Remove Pear' }).click(); // multi-select now empty
+		await expect.poll(() => events().filter((e) => e === `repos[]/${FORM_ID}`).length).toBe(2);
+		await page.getByRole('button', { name: /Fruit/ }).click();
+		await page.getByRole('option', { name: 'Apple' }).click();
+		await expect.poll(events).toContain(`fruit/${FORM_ID}`);
+		await page.getByRole('radio', { name: 'Pear' }).click();
+		await expect.poll(events).toContain(`size/${FORM_ID}`);
+	});
+
+	it('restores initial values when the form is reset', async () => {
+		render(FormHarness);
+		await page.getByRole('checkbox', { name: 'Issues' }).click();
+		await page.getByRole('switch', { name: 'Live' }).click();
+		await page.getByRole('button', { name: 'Remove Apple' }).click();
+		await page.getByRole('radio', { name: 'Pear' }).click();
+		await page.getByRole('button', { name: 'Reset' }).click();
+		await expect.element(page.getByRole('checkbox', { name: 'Issues' })).toBeChecked();
+		await expect.element(page.getByRole('switch', { name: 'Live' })).toBeChecked();
+		await expect.element(page.getByRole('button', { name: 'Remove Apple' })).toBeInTheDocument();
+		await expect.element(page.getByRole('radio', { name: 'Apple' })).toBeChecked();
+	});
+
+	it('a checkbox group with an array name keeps the other boxes values when one is cleared', async () => {
+		render(CheckGroupHarness, { name: `tags[]/${FORM_ID}` });
+		await page.getByRole('checkbox', { name: 'A' }).click();
+		await expect
+			.poll(() => page.getByRole('checkbox', { name: 'A' }).element().ariaChecked)
+			.toBe('false');
+		// the same read kit's input handler does for array names
+		const form = page.getByRole('button', { name: 'Send' }).element().closest('form')!;
+		await new Promise((r) => setTimeout(r, 50));
+		const sent = new Set<string>();
+		form.addEventListener('input', (e) => {
+			const el = e.target as HTMLInputElement;
+			const els = [...form.querySelectorAll<HTMLInputElement>(`[name="${el.name}"]`)];
+			let values = els.map((x) => x.value);
+			if (el.type === 'checkbox') values = values.filter((_, i) => els[i].checked);
+			sent.add(JSON.stringify(values));
+		});
+		await page.getByRole('checkbox', { name: 'A' }).click(); // on again
+		await page.getByRole('checkbox', { name: 'A' }).click(); // off: stand-in dispatches
+		await expect.poll(() => [...sent]).toContain('["b"]');
+		expect([...sent]).not.toContain('[]');
+	});
+
+	it('a form reset does not dispatch input events for the restore', async () => {
+		render(FormHarness, { formId: FORM_ID });
+		const events = () => JSON.parse(page.getByTestId('events').element().textContent!) as string[];
+		await page.getByRole('checkbox', { name: 'Issues' }).click();
+		await expect.poll(() => events().length).toBe(1);
+		await page.getByRole('button', { name: 'Reset' }).click();
+		await expect.element(page.getByRole('checkbox', { name: 'Issues' })).toBeChecked();
+		await new Promise((r) => setTimeout(r, 100));
+		expect(events()).toHaveLength(1);
+	});
+});
