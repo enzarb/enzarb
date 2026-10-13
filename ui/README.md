@@ -14,6 +14,8 @@ npm run check && npm run lint && npm test   # tests need Docker (testcontainers)
 GitHub login needs an OAuth app whose callback URL is `$ENZARB_PUBLIC_URL/login/github/callback`.
 The container image also carries `scripts/migrate.ts`; run it with `node scripts/migrate.ts` using the schema owner's `DATABASE_URL`.
 
+`scripts/grants.sql` (role grants for `app_api`, the `enzarb_ui` revokes) is re-run on every migrate and is not tracked in `app._migrations`. Roles that do not exist yet are skipped with a NOTICE, so create the pgop Roles (`enzarb_ui`, `enzarb_sandbox_proxy`, `enzarb_workflows`) in enzarb-helm before the UI migrate Job; a later run picks up any that were late.
+
 ## End-to-end test
 
 ```sh

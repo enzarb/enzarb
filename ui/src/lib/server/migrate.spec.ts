@@ -22,6 +22,7 @@ describe('migrations as a schema owner that does not own the database', () => {
 		inDb.pathname = '/enzarb';
 		const setup = postgres(inDb.toString(), { onnotice: () => {} });
 		await setup.unsafe(`CREATE SCHEMA app AUTHORIZATION ui_owner`);
+		await setup.unsafe(`CREATE SCHEMA app_api AUTHORIZATION ui_owner`); // as pgop provisions it
 		await setup.end();
 		const asOwner = new URL(inDb);
 		asOwner.username = 'ui_owner';
@@ -39,7 +40,8 @@ describe('migrations as a schema owner that does not own the database', () => {
 		expect(await migrate(owner)).toEqual([
 			'0001_users_sessions.sql',
 			'0002_project_settings.sql',
-			'0003_user_repositories.sql'
+			'0003_user_repositories.sql',
+			'0004_claude_credentials.sql'
 		]);
 		expect(await migrate(owner)).toEqual([]);
 		// The runtime role's grants (also made by the schema owner) took effect.
@@ -49,5 +51,9 @@ describe('migrations as a schema owner that does not own the database', () => {
 		const [repos] =
 			await owner`SELECT has_table_privilege('enzarb_ui', 'app.user_repositories', 'INSERT') AS ok`;
 		expect(repos.ok).toBe(true);
+		// ...except on the credentials table, which the runtime role must not reach directly.
+		const [creds] =
+			await owner`SELECT has_table_privilege('enzarb_ui', 'app.claude_credentials', 'INSERT') AS ok`;
+		expect(creds.ok).toBe(false);
 	});
 });

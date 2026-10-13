@@ -53,7 +53,8 @@ describe('sessions in postgres', () => {
 		expect(rows.map((r) => r.name)).toEqual([
 			'0001_users_sessions.sql',
 			'0002_project_settings.sql',
-			'0003_user_repositories.sql'
+			'0003_user_repositories.sql',
+			'0004_claude_credentials.sql'
 		]);
 	});
 

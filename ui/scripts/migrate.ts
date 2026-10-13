@@ -9,6 +9,8 @@ import postgres from 'postgres';
 
 const defaultDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../migrations');
 
+const grantsFile = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'grants.sql');
+
 export async function migrate(sql: postgres.Sql, dir = defaultDir): Promise<string[]> {
 	const files = (await readdir(dir)).filter((f) => f.endsWith('.sql')).sort();
 	// CREATE SCHEMA IF NOT EXISTS checks the database-level CREATE privilege before it looks for the
@@ -37,6 +39,8 @@ export async function migrate(sql: postgres.Sql, dir = defaultDir): Promise<stri
 		});
 		if (done) applied.push(name);
 	}
+	// Re-assertable grants: idempotent, untracked, run every time so late-provisioned roles are picked up.
+	await sql.unsafe(await readFile(grantsFile, 'utf8'));
 	return applied;
 }
 
