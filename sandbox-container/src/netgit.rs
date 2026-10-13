@@ -93,8 +93,8 @@ pub fn env(
         // Network keys a raced-in scratch config could set; env config wins.
         ("http.proxy", ""),
         ("http.sslVerify", "true"),
-        ("http.sslCert", ""),
-        ("http.sslKey", ""),
+        // No http.sslCert/sslKey pins: git reads an empty value as the path
+        // "" and every fetch fails (v0.9.1). A client cert cannot leak the token.
         ("http.cookieFile", ""),
         ("http.saveCookies", "false"),
         ("http.followRedirects", "initial"),
@@ -199,5 +199,14 @@ mod tests {
         assert_eq!(cfg.last().unwrap().1, "Authorization: x");
         assert!(cfg.contains(&("core.hooksPath".into(), "/dev/null".into())));
         assert!(cfg.contains(&("credential.helper".into(), "".into())));
+        // An empty path-valued key makes curl read the file "": every fetch fails.
+        for k in [
+            "http.sslCert",
+            "http.sslKey",
+            "http.sslCAInfo",
+            "http.sslCAPath",
+        ] {
+            assert!(!cfg.iter().any(|(a, _)| a == k), "{k} must not be pinned");
+        }
     }
 }
