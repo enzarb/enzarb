@@ -15,6 +15,7 @@
 		"format": "prettier --write .",
 		"test:unit": "vitest",
 		"test": "npm run test:unit -- --run",
+		"icons": "node scripts/generate-icons.mjs",
 		"migrate": "node scripts/migrate.ts",
 		"test:e2e": "playwright test",
 		"test:e2e:prod": "vite build --config vite.e2e.config.ts && E2E_PROD=1 playwright test"
@@ -22,6 +23,7 @@
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",
 		"@playwright/test": "^1.60.0",
+		"@resvg/resvg-js": "^2.6.2",
 		"@sveltejs/adapter-node": "^6.0.0",
 		"@sveltejs/kit": "^3.0.0",
 		"@sveltejs/vite-plugin-svelte": "^7.2.0",
@@ -34,6 +36,7 @@
 		"eslint-plugin-svelte": "^3.19.0",
 		"globals": "^17.6.0",
 		"playwright": "^1.60.0",
+		"png-to-ico": "^3.0.2",
 		"prettier": "^3.8.3",
 		"prettier-plugin-svelte": "^4.1.0",
 		"sass": "^1.105.1",
