@@ -13,6 +13,9 @@ export default defineConfig({
 				experimental: { async: true }
 			},
 			adapter: adapter(),
+			// After a deploy, open tabs notice the new version and do a full load on their next
+			// navigation instead of calling the new server with stale client code.
+			version: { pollInterval: 60_000 },
 			experimental: { remoteFunctions: true, forkPreloads: true }
 		})
 	],
