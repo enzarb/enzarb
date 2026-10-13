@@ -92,9 +92,10 @@ async function prompt(id, params) {
     run("git", "add", "agent.txt");
     run("git", "commit", "-qm", "agent change");
   }
+  if (word === "CLAUDEENV") perms = `CL=${process.env.CLAUDE_CODE_OAUTH_TOKEN ?? "unset"}\n`;
   if (word === "NPMENV") perms = `NODE=${process.env.NODE_AUTH_TOKEN ?? "unset"}\n`;
   if (word === "DIRTY") writeFileSync("dirty.txt", "dirty\n");
-  if (process.env.CLAUDE_CODE_OAUTH_TOKEN !== "tok-123") process.stderr.write("bad token\n");
+  if (!["tok-123", "sk-ant-oat01-PERRUNtoken"].includes(process.env.CLAUDE_CODE_OAUTH_TOKEN)) process.stderr.write("bad token\n");
   if (process.env.GIT_CONFIG_COUNT) process.stderr.write("git credentials leaked\n");
   chunk(sid, perms + "Looking around.\n");
   send({ method: "session/update", params: { sessionId: sid, update: { sessionUpdate: "tool_call", toolCallId: "t1", title: "x", kind: "think" } } });
@@ -122,7 +123,7 @@ rl.on("line", (line) => {
         agentInfo: { name: "fake-acp-agent", version: "0.0.1" },
       });
     case "session/new":
-      if (process.env.CLAUDE_CODE_OAUTH_TOKEN !== "tok-123") return fail(m.id, -32000, "Authentication required");
+      if (!["tok-123", "sk-ant-oat01-PERRUNtoken"].includes(process.env.CLAUDE_CODE_OAUTH_TOKEN)) return fail(m.id, -32000, "Authentication required");
       if (m.params.mcpServers.length !== 0 || m.params.cwd !== process.cwd()) return fail(m.id, -32602, "bad session/new");
       return reply(m.id, {
         sessionId: "sess-1",

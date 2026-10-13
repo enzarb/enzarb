@@ -584,10 +584,11 @@ impl ChatManager {
         }
     }
 
-    fn read_token(&self) -> Option<String> {
-        let t = std::fs::read_to_string(&self.cfg.claude_token_file).ok()?;
-        let t = t.trim();
-        t.starts_with("sk-ant-oat01-").then(|| t.to_string())
+    /// `open.claude_token`, else the legacy file (old proxies).
+    fn resolve_token(&self, req: &OpenRequest) -> Option<String> {
+        crate::capture::resolve_token(req.claude_token.as_ref(), || {
+            crate::capture::read_legacy_valid(&self.cfg.claude_token_file)
+        })
     }
 
     /// The clone directory name for `repo`, if it is cloned. Without `repo`,
@@ -874,7 +875,7 @@ impl ChatManager {
         mut stop: watch::Receiver<Option<&'static str>>,
         closing: Arc<AtomicBool>,
     ) {
-        let Some(token) = self.read_token() else {
+        let Some(token) = self.resolve_token(&req) else {
             return req.reject_with_code(
                 open_error_code::NO_CREDENTIAL,
                 "Claude is not logged in in this sandbox",

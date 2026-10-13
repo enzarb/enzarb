@@ -742,6 +742,29 @@ async fn chat_open_errors() {
     // none of these left a chat or a worktree behind
     assert_eq!(s.chats.live(), 0);
     assert!(s.chat_worktrees().is_empty());
+    // a per-open token works without the legacy file and is redacted
+    let per_open = "sk-ant-oat01-PEROPENtoken_zyxwvut";
+    let mut acp = Acp::new(
+        session
+            .open_acp_with_token(Some(s.repo_url.clone()), None, Some(per_open.into()))
+            .await
+            .unwrap(),
+    );
+    let sid = acp.start_session().await;
+    let (_, text) = acp.prompt(&sid, "LEAK").await;
+    assert!(text.contains("token=[redacted]"), "{text}");
+    assert!(!acp.all.contains("PEROPENtoken"));
+    drop(acp);
+    // an empty per-open token counts as absent
+    assert_eq!(
+        code(
+            session
+                .open_acp_with_token(Some(s.repo_url.clone()), None, Some("".into()))
+                .await
+        )
+        .as_deref(),
+        Some(open_error_code::NO_CREDENTIAL)
+    );
     // without repo: the first clone is used
     std::fs::write(s.ws.join(".enzarb/claude-token"), CLAUDE).unwrap();
     let mut acp = Acp::new(session.open_acp(None, None).await.unwrap());

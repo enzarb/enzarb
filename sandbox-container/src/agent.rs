@@ -415,6 +415,7 @@ impl RunManager for AgentRunManager {
         stored.clone_token = String::new();
         stored.deps_token = None;
         stored.npm_token = None;
+        stored.claude_token = None;
         let setup = std::fs::create_dir_all(&dir)
             .and_then(|()| {
                 write_atomic(
@@ -1429,16 +1430,18 @@ impl Inner {
         );
 
         // 2. the agent, over ACP
-        let token = std::fs::read_to_string(&self.cfg.claude_token_file)
-            .map(|t| t.trim().to_string())
-            .unwrap_or_default();
-        if token.is_empty() {
-            return Err(Abort::Fail(format!(
-                "claude is not logged in: no token in {}",
-                self.cfg.claude_token_file.display()
-            )));
-        }
+        // Per-run token from `run_start`; the legacy file only when it is absent.
+        let Some(token) = crate::capture::resolve_token(req.claude_token.as_ref(), || {
+            crate::capture::read_legacy(&self.cfg.claude_token_file)
+        }) else {
+            return Err(Abort::Fail(
+                "claude is not logged in: no_credential (no claude_token and no legacy token)"
+                    .into(),
+            ));
+        };
         secrets.push(token.clone());
+        // and its base64 encodings
+        secrets.extend(crate::chat::filter::token_forms(&token));
         // The repo's pinned toolchain, so the agent can run its checks. After
         // the token joins `secrets` so any output is redacted.
         self.install_toolchain(run, ctl, &secrets, &worktree)
@@ -1734,12 +1737,15 @@ mod npm_tests {
             log_channel: None,
             deps_token: Some("d".into()),
             npm_token: Some("ghp_npm123".into()),
+            claude_token: Some("sk-ant-oat01-x".into()),
         };
         req.clone_token = String::new();
         req.deps_token = None;
         req.npm_token = None;
+        req.claude_token = None;
         let json = serde_json::to_string(&req).unwrap();
         assert!(!json.contains("ghp_npm123") && !json.contains("npm_token"));
+        assert!(!json.contains("oat01") && !json.contains("claude_token"));
     }
 }
 

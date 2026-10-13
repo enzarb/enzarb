@@ -305,7 +305,9 @@ async fn credential_status_reflects_token_file() {
                 .await
                 .expect("no credential_state")
             {
-                Some(Event::Ctrl(Ctrl::CredentialState { kind, configured })) => {
+                Some(Event::Ctrl(Ctrl::CredentialState {
+                    kind, configured, ..
+                })) => {
                     assert_eq!(kind, CredentialKind::ClaudeOauth);
                     return configured;
                 }
@@ -322,4 +324,130 @@ async fn credential_status_reflects_token_file() {
     assert!(!ask(&session, &mut events).await, "wrong prefix");
     std::fs::write(&file, "sk-ant-oat01-abc\n").unwrap();
     assert!(ask(&session, &mut events).await, "valid token");
+}
+
+const LEGACY: &str = "sk-ant-oat01-LEGACYtoken";
+
+async fn next_captured(events: &mut Events) -> (Option<String>, Option<bool>) {
+    loop {
+        match timeout(T, events.next())
+            .await
+            .expect("no credential_captured")
+        {
+            Some(Event::Ctrl(Ctrl::CredentialCaptured { token, legacy, .. })) => {
+                return (token.map(|t| t.expose().to_string()), legacy);
+            }
+            Some(_) => continue,
+            None => panic!("session closed"),
+        }
+    }
+}
+
+async fn user_token_client(srv: &Server, kind: ClientKind) -> (Session, Events) {
+    timeout(
+        T,
+        Client::connect_offering(
+            &srv.url(),
+            TOKEN,
+            kind,
+            vec![enzarb_proto::feature::CLAUDE_USER_TOKEN.into()],
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+}
+
+fn ack(session: &Session) {
+    session
+        .send_ctrl(&Ctrl::CredentialState {
+            kind: CredentialKind::ClaudeOauth,
+            configured: true,
+            scope: Some("user".into()),
+        })
+        .unwrap();
+}
+
+#[tokio::test]
+async fn legacy_token_is_promoted_and_deleted_only_after_the_ack() {
+    let tok = tempfile::tempdir().unwrap();
+    let file = tok.path().join("claude-token");
+    std::fs::write(&file, format!("{LEGACY}\n")).unwrap();
+    let f = file.clone();
+    let srv = start_with(move |c| c.claude_token_file = f).await;
+
+    // Neither an executor nor an old proxy (no feature) ever gets the token,
+    // and an ack from them deletes nothing.
+    for kind in [ClientKind::Executor, ClientKind::Proxy, ClientKind::Ui] {
+        let (s, mut ev) = timeout(T, Client::connect(&srv.url(), TOKEN, kind))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            timeout(Duration::from_millis(500), next_captured(&mut ev))
+                .await
+                .is_err(),
+            "token promoted to {kind:?}"
+        );
+        ack(&s);
+    }
+    // A non-proxy offering the feature is not trusted with it either.
+    let (_s, mut ev) = user_token_client(&srv, ClientKind::Ui).await;
+    assert!(
+        timeout(Duration::from_millis(500), next_captured(&mut ev))
+            .await
+            .is_err()
+    );
+    assert!(file.exists());
+
+    // A new proxy that never acks (proxy down mid-way) leaves the file.
+    let (s1, mut e1) = user_token_client(&srv, ClientKind::Proxy).await;
+    assert_eq!(
+        next_captured(&mut e1).await,
+        (Some(LEGACY.into()), Some(true))
+    );
+    s1.close().await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(file.exists(), "deleted without an ack");
+
+    // The next proxy session promotes again; an ack deletes the file.
+    let (s2, mut e2) = user_token_client(&srv, ClientKind::Proxy).await;
+    assert_eq!(next_captured(&mut e2).await.1, Some(true));
+    ack(&s2);
+    timeout(T, async {
+        while file.exists() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("legacy file not deleted after the ack");
+}
+
+#[tokio::test]
+async fn legacy_file_changed_after_promotion_is_kept() {
+    let tok = tempfile::tempdir().unwrap();
+    let file = tok.path().join("claude-token");
+    std::fs::write(&file, LEGACY).unwrap();
+    let f = file.clone();
+    let srv = start_with(move |c| c.claude_token_file = f).await;
+    let (s, mut e) = user_token_client(&srv, ClientKind::Proxy).await;
+    next_captured(&mut e).await;
+    std::fs::write(&file, "sk-ant-oat01-NEWER").unwrap();
+    ack(&s);
+    // A credential_status round trip orders after the ack.
+    s.send_ctrl(&Ctrl::CredentialStatus).unwrap();
+    loop {
+        match timeout(T, e.next()).await.unwrap() {
+            Some(Event::Ctrl(Ctrl::CredentialState { configured, .. })) => {
+                assert!(configured);
+                break;
+            }
+            Some(_) => continue,
+            None => panic!("closed"),
+        }
+    }
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "sk-ant-oat01-NEWER"
+    );
 }

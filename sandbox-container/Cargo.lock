@@ -467,7 +467,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 [[package]]
 name = "enzarb-proto"
 version = "0.1.0"
-source = "git+ssh://git@github.com/enzarb/enzarb-proto.git?branch=main#85b238fdfcacb29c83d2e3555ff4232f2d24a9dc"
+source = "git+ssh://git@github.com/enzarb/enzarb-proto.git?branch=main#8cbb7c14e6ecaf046a5613c5a2c6a90332016f07"
 dependencies = [
  "bytes",
  "futures-util",

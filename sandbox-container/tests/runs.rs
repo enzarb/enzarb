@@ -996,10 +996,7 @@ async fn stale_callback_without_marker_gets_one_attempt_then_is_abandoned() {
     assert_eq!(env.attempts(), 1);
 }
 
-#[tokio::test]
-async fn setup_token_pty_captures_the_token() {
-    let env = start(0).await;
-    let (session, mut events) = env.connect().await;
+async fn capture_via(session: &Session, events: &mut Events) -> (String, Ctrl) {
     let token = format!("sk-ant-oat01-{}", "xY9_-".repeat(20));
     let (a, b) = token.split_at(70);
     let script = format!(
@@ -1011,20 +1008,129 @@ async fn setup_token_pty_captures_the_token() {
         .unwrap();
     let ev = timeout(T, async {
         loop {
-            if let Some(Event::Ctrl(Ctrl::CredentialCaptured { kind })) = events.next().await {
-                return kind;
+            if let Some(Event::Ctrl(m @ Ctrl::CredentialCaptured { .. })) = events.next().await {
+                return m;
             }
         }
     })
     .await
     .unwrap();
-    assert_eq!(ev, CredentialKind::ClaudeOauth);
+    (token, ev)
+}
+
+#[tokio::test]
+async fn setup_token_for_a_legacy_peer_writes_the_file_and_sends_no_token() {
+    let env = start(0).await;
+    // An old proxy: no `claude_user_token` feature. It relays frames verbatim.
+    let url = format!("ws://{}/v1/mux", env.addr);
+    let (session, mut events) = timeout(T, Client::connect(&url, TOKEN, ClientKind::Proxy))
+        .await
+        .unwrap()
+        .unwrap();
+    let (token, ev) = capture_via(&session, &mut events).await;
+    assert_eq!(
+        ev,
+        Ctrl::CredentialCaptured {
+            kind: CredentialKind::ClaudeOauth,
+            token: None,
+            legacy: None
+        }
+    );
     let p = env.workspace.join(".enzarb/claude-token");
     assert_eq!(std::fs::read_to_string(&p).unwrap(), token);
     assert_eq!(
         std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
         0o600
     );
+}
+
+#[tokio::test]
+async fn setup_token_for_a_user_token_proxy_sends_the_token_and_keeps_nothing() {
+    let env = start(0).await;
+    let url = format!("ws://{}/v1/mux", env.addr);
+    let (session, mut events) = timeout(
+        T,
+        Client::connect_offering(
+            &url,
+            TOKEN,
+            ClientKind::Proxy,
+            vec![enzarb_proto::feature::CLAUDE_USER_TOKEN.into()],
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let (token, ev) = capture_via(&session, &mut events).await;
+    let Ctrl::CredentialCaptured {
+        kind,
+        token: got,
+        legacy,
+    } = ev
+    else {
+        unreachable!()
+    };
+    assert_eq!(kind, CredentialKind::ClaudeOauth);
+    assert_eq!(got.as_ref().map(|t| t.expose()), Some(token.as_str()));
+    assert_eq!(legacy, None);
+    // Nothing on disk: the legacy file keeps its old contents.
+    let p = env.workspace.join(".enzarb/claude-token");
+    assert_eq!(std::fs::read_to_string(&p).unwrap().trim(), CLAUDE_TOKEN);
+    let out = Command::new("grep")
+        .args(["-r", &token])
+        .arg(env.dir.path())
+        .output()
+        .unwrap();
+    assert!(out.stdout.is_empty(), "captured token persisted");
+}
+
+#[tokio::test]
+async fn run_start_token_is_used_redacted_and_never_persisted() {
+    let env = start(0).await;
+    let (session, _e) = env.connect().await;
+    // A different (wrong) legacy token proves the per-run one takes precedence.
+    std::fs::write(env.workspace.join(".enzarb/claude-token"), "wrong\n").unwrap();
+    let tok = "sk-ant-oat01-PERRUNtoken";
+    let mut req = env.run("perrun", "CLAUDEENV", "feature", "feature", false);
+    req.claude_token = Some(tok.into());
+    assert!(!format!("{req:?}").contains(tok), "RunStart Debug leaks");
+    session.run_start(req).await.unwrap();
+    let (_, fin) = env.finished("perrun").await;
+    assert_eq!(fin.outcome, RunOutcome::Succeeded, "{}", fin.summary);
+    let t = std::fs::read_to_string(env.run_dir("perrun").join("transcript.jsonl")).unwrap();
+    assert!(t.contains("CL=***"), "{t}");
+    assert!(!t.contains("bad token"), "{t}");
+    assert!(!fin.summary.contains(tok));
+    let out = Command::new("grep")
+        .args(["-r", tok])
+        .arg(&env.workspace)
+        .output()
+        .unwrap();
+    assert!(
+        out.stdout.is_empty(),
+        "per-run token persisted: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    // The legacy file is untouched.
+    assert_eq!(
+        std::fs::read_to_string(env.workspace.join(".enzarb/claude-token")).unwrap(),
+        "wrong\n"
+    );
+
+    // Without a file, the per-run token alone suffices.
+    std::fs::remove_file(env.workspace.join(".enzarb/claude-token")).unwrap();
+    let mut req = env.run("perrun2", "NOOP", "feature", "feature", false);
+    req.claude_token = Some(tok.into());
+    session.run_start(req).await.unwrap();
+    let (_, fin) = env.finished("perrun2").await;
+    assert_eq!(fin.outcome, RunOutcome::Succeeded, "{}", fin.summary);
+
+    // An empty per-run token is absent: no file, so no_credential.
+    let mut req = env.run("perrun3", "NOOP", "feature", "feature", false);
+    req.claude_token = Some("  ".into());
+    session.run_start(req).await.unwrap();
+    let (_, fin) = env.finished("perrun3").await;
+    assert_eq!(fin.outcome, RunOutcome::Failed);
+    assert!(fin.summary.contains("no_credential"), "{}", fin.summary);
 }
 
 #[tokio::test]
