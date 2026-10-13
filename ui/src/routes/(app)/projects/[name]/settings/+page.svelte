@@ -9,10 +9,17 @@
 	import MaxRunsInput from '#lib/components/MaxRunsInput.svelte';
 	import MaxRunsNotice from '#lib/components/MaxRunsNotice.svelte';
 	import Notice from '#lib/components/ui/Notice.svelte';
+	import RepositoriesForm from '#lib/components/RepositoriesForm.svelte';
 	import SandboxResourcesForm from '#lib/components/SandboxResourcesForm.svelte';
 	import Section from '#lib/components/ui/Section.svelte';
 	import { getProjectContext } from '#lib/project-context.svelte.ts';
-	import { deleteProject, setMaxRuns, setSandboxResources } from '#lib/projects.remote.ts';
+	import {
+		deleteProject,
+		repositoryChoices,
+		setMaxRuns,
+		setRepositories,
+		setSandboxResources
+	} from '#lib/projects.remote.ts';
 	import { DEFAULT_MAX_RUNS, MaxRunsSchema } from '#lib/projects.ts';
 	import { claudeCredential } from '#lib/claude.remote.ts';
 
@@ -20,6 +27,7 @@
 	const p = $derived(ctx.project);
 	const saved = $derived(p.maxRuns ?? DEFAULT_MAX_RUNS);
 	const credential = claudeCredential();
+	const choices = repositoryChoices();
 	let confirming = $state(false);
 	let deleteError = $state('');
 
@@ -82,6 +90,20 @@
 		</div>
 		<MaxRunsNotice />
 		{#if saveError}<Notice tone="error">{saveError}</Notice>{/if}
+	</Section>
+
+	<Section title="Repositories">
+		<RepositoriesForm
+			project={p}
+			choices={choices.current?.repositories ?? []}
+			taken={choices.current?.taken ?? {}}
+			problem={choices.current?.problem?.message ?? null}
+			save={async (keys) => {
+				const r = await setRepositories({ name: p.name, repositories: keys });
+				await choices.refresh();
+				return r.ok ? { ok: true } : { ok: false, message: r.message };
+			}}
+		/>
 	</Section>
 
 	<Section title="Sandbox resources">

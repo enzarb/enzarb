@@ -357,6 +357,17 @@ img {
 	gap: var(--ez-space-3, var(--ez-space-2));
 }
 
+.ez-repo-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-2);
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	max-height: 24rem;
+	overflow-y: auto;
+}
+
 .ez-max-runs {
 	width: 8rem;
 }

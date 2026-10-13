@@ -12,6 +12,7 @@ import { KubeError, getProjectStore } from '#lib/server/kube.ts';
 import { projectCache } from '#lib/server/project-cache.ts';
 import {
 	createProjects as createProjectsFor,
+	setRepositories as setRepositoriesFor,
 	repositoryChoices as repositoryChoicesFor
 } from '#lib/server/project-onboarding.ts';
 import { getUserRepositorySnapshot } from '#lib/server/user-repositories.ts';
@@ -140,6 +141,41 @@ export const setSandboxResources = command(
 		}
 		await getProject(name).refresh();
 		await listProjects().refresh();
+	}
+);
+
+/**
+ * Owner-only: replaces the Project's repositories. Keys only, checked against the caller's fresh
+ * snapshot (see `setRepositories`). Applies without a sandbox restart or drain.
+ */
+export const setRepositories = command(
+	v.object({
+		name: NameArg,
+		repositories: v.pipe(
+			v.array(v.pipe(v.string(), v.maxLength(300))),
+			v.minLength(1),
+			v.maxLength(500)
+		)
+	}),
+	async ({ name, repositories }) => {
+		const { user } = getRequestEvent().locals;
+		if (!user) error(401, 'Not signed in');
+		const outcome = await setRepositoriesFor(
+			{
+				store: getProjectStore(),
+				owner: user.login,
+				snapshot: await getUserRepositorySnapshot(getSql(), user.id)
+			},
+			name,
+			repositories
+		);
+		if (!outcome.ok && outcome.code === 'not-found') error(404, 'Project not found');
+		if (outcome.ok) {
+			projectCache.invalidate(user.login);
+			await getProject(name).refresh();
+			await listProjects().refresh();
+		}
+		return outcome;
 	}
 );
 

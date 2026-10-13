@@ -21,7 +21,12 @@ vi.mock('#lib/projects.remote.ts', () => ({
 	getProject: () => ({ current: h.project, refresh: async () => {} }),
 	deleteProject: vi.fn(async () => {}),
 	setMaxRuns: vi.fn(async () => {}),
-	setSandboxResources: vi.fn(async () => {})
+	setSandboxResources: vi.fn(async () => {}),
+	setRepositories: vi.fn(async () => ({ ok: true })),
+	repositoryChoices: () => ({
+		current: { repositories: [], taken: {}, problem: null },
+		refresh: async () => {}
+	})
 }));
 vi.mock('#lib/work.remote.ts', () => ({
 	listWorkItems: () => ({ current: [], refresh: async () => {} })

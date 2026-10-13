@@ -186,3 +186,82 @@ async function claimAndCreate(
 		return failed(plan, 'The cluster refused or could not create the project');
 	}
 }
+
+export interface SetRepositoriesDeps {
+	store: ProjectStore;
+	owner: string;
+	snapshot: UserRepositorySnapshot;
+	now?: Date;
+}
+
+export type SetRepositoriesOutcome =
+	| { ok: true; repositories: string[] }
+	| {
+			ok: false;
+			code: 'not-found' | 'invalid' | 'no-snapshot' | 'stale-snapshot';
+			message: string;
+	  };
+
+/**
+ * Replaces a Project's `spec.repositories` with the given repository keys. Owner only.
+ *
+ * Authorization matches `createProjects`: the browser only names keys. A key already in the
+ * Project keeps its stored entry (so archived repositories, no longer in the snapshot, can still
+ * be kept or removed); every added key must match a row of the caller's fresh snapshot, from
+ * which the URL and default branch are built. A key held by any other Project is refused.
+ * No restart: repositories are not part of the sandbox pod (see contracts.md).
+ */
+export async function setRepositories(
+	deps: SetRepositoriesDeps,
+	name: string,
+	keys: string[]
+): Promise<SetRepositoriesOutcome> {
+	const { store, owner, snapshot } = deps;
+	const wanted = keys.map((k) => k.trim().toLowerCase());
+	if (wanted.length === 0)
+		return { ok: false, code: 'invalid', message: 'Select at least one repository' };
+	if (new Set(wanted).size !== wanted.length)
+		return { ok: false, code: 'invalid', message: 'A repository is listed more than once' };
+
+	return exclusive(async () => {
+		const project = await store.get(name);
+		if (!project || project.spec.owner !== owner)
+			return { ok: false, code: 'not-found', message: 'Project not found' };
+
+		const current = new Map<string, Repository>();
+		for (const r of project.spec.repositories ?? []) {
+			const key = normalizeRepoKey(r.connector, r.url);
+			if (key) current.set(key, r);
+		}
+		const added = wanted.filter((k) => !current.has(k));
+		if (added.length > 0) {
+			const problem = snapshotProblem(snapshot, deps.now ?? new Date());
+			if (problem) return { ok: false, ...problem };
+		}
+		const known = new Map(snapshot.repositories.map((r) => [r.repo.toLowerCase(), r]));
+		const taken = repoOwners(await store.list());
+		const repositories: Repository[] = [];
+		for (const key of wanted) {
+			const kept = current.get(key);
+			if (kept) {
+				repositories.push(kept);
+				continue;
+			}
+			const shown = key.replace(/^github:/, '').slice(0, 100);
+			const row = known.get(key);
+			if (!row) return { ok: false, code: 'invalid', message: `${shown} is not available to you` };
+			const holder = taken.get(key);
+			if (holder && holder.metadata.name !== name) {
+				const where = holder.spec.owner === owner ? `"${holder.metadata.name}"` : 'another project';
+				return { ok: false, code: 'invalid', message: `${shown} is already in ${where}` };
+			}
+			repositories.push({
+				url: `https://github.com/${row.repo.replace(/^github:/, '')}`,
+				connector: 'github',
+				defaultBranch: row.defaultBranch
+			});
+		}
+		await store.update(name, { repositories });
+		return { ok: true, repositories: wanted };
+	});
+}
