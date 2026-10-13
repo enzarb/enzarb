@@ -2,7 +2,6 @@ name: ci-realtime
 on:
   push:
     branches: [main]
-    tags: ['realtime/v*']
     paths: &paths
       - 'realtime/**'
       - .github/workflows/ci-realtime.yml

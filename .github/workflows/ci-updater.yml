@@ -2,7 +2,6 @@ name: ci-updater
 on:
   push:
     branches: [main]
-    tags: ['updater/v*']
     paths: &paths
       - 'updater/**'
       - .github/workflows/ci-updater.yml

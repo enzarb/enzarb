@@ -2,7 +2,6 @@ name: ci-operator
 on:
   push:
     branches: [main]
-    tags: ['operator/v*']
     paths: &paths
       - 'operator/**'
       - .github/workflows/ci-operator.yml

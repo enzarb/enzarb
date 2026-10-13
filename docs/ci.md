@@ -28,7 +28,7 @@ The monorepo's GitHub Actions setup (root `.github/`) follows these rules. Each 
 ## Docker images
 - **Build once per commit.** One `docker` job in `ci.yml`:
   - **On PRs:** build, and smoke-test if the repo has a smoke script. No push.
-  - **On push to `main` and the component's `<dir>/v*` tags:** build, then push to GHCR with the `docker/metadata-action` tags from contracts §13. A tag build's version is the tag with `<dir>/v` stripped (`ui/v0.24.0` -> `ghcr.io/enzarb/enzarb-ui:0.24.0` and `latest`).
+  - **On push to `main`:** build, then push to GHCR with the `main` and `sha-` tags. There are no tag builds (the `ci-*` workflows have no `<dir>/v*` trigger): the version and `latest` tags come from `release.yml` / `rebuild-all`.
   - Components with path deps (`sandbox-proxy`, `sandbox-container`, `workflows`, `ui`) build from the repo root (`-f <dir>/Dockerfile .`); the others use their dir as context.
   - **Remove the separate `image.yml`**, so main isn't built twice.
 - **Layer cache:** BuildKit GHA cache with a stable scope per image.
@@ -63,7 +63,7 @@ A PR that changes CI states before/after wall-clock times for the PR run and the
 - **Human chart changes.** A push under `helm/` runs `ci-helm`; on success `release.yml` runs only the chart job, which releases the chart from those commits.
 - **Safety net.** `sync-components.yml` (6-hourly schedule and manual dispatch) runs the same chart job against `main`, publishing a chart in the same run if it pinned anything or found releasable `helm/` commits. `publish-helm.yml` is manual only: it republishes an existing `helm/vX.Y.Z` tag to GHCR and makes its release latest.
 - **Branch protection:** the chart job pushes to `main` with `GITHUB_TOKEN`. A protection rule or ruleset that blocks that push (required PRs or status checks without a bypass for GitHub Actions) breaks the chart step.
-- `proto` and `kubernetes` are not released. `proto` is consumed in-tree (Rust path deps, `ui` via `file:../proto`), so `@enzarb/proto` is no longer published to GitHub Packages. `kubernetes` pushes its gvisor installer image on `main` (and on a manual `kubernetes/v*` tag).
+- `proto` and `kubernetes` are not released. `proto` is consumed in-tree (Rust path deps, `ui` via `file:../proto`), so `@enzarb/proto` is no longer published to GitHub Packages. `kubernetes` pushes its gvisor installer image on `main` (`main` and `sha-` tags) and, with version and `latest` tags, via `rebuild-all`'s installer job.
 - Local check: `scripts/monorepo/test-release-version.sh` prints each component's last tag and its next version for synthetic `feat`/`fix` commits, and which `ci-*` workflows sample paths trigger.
 - Version detection reads Conventional Commit subjects. Squash-merge titles count; git's default `Revert "..."` subject does not match `revert:`, so write reverts as `revert: ...` if they should release.
 
