@@ -1,0 +1,2487 @@
+// The only stylesheet (workspace CLAUDE.md: one global.scss, no CSS frameworks).
+//
+// Organisation
+//   1. Tokens       custom properties; light and dark themes are generated from the same names
+//   2. Base         reset, typography, links, focus
+//   3. Utilities    small, single-purpose helpers
+//   4. Layout       app shell: header, navigation, content width
+//   5. Components   one block per component, alphabetical
+//
+// Naming: every class is `ez-<block>`, `ez-<block>__<element>` or `ez-<block>--<modifier>`, so
+// nothing collides with third-party markup (xterm, bits-ui) or with Kubernetes-ish words.
+// Components carry markup and behaviour only; every colour, size, radius, shadow and duration
+// below comes from a token.
+
+// ---------------------------------------------------------------------------------------------
+// 1. Tokens
+// ---------------------------------------------------------------------------------------------
+
+// Colour tokens differ per theme; everything else is shared and lives in `:root` below.
+@mixin theme-light {
+	color-scheme: light;
+
+	// Neutral surfaces and lines
+	--ez-bg: #f8f8fa;
+	--ez-surface: #ffffff;
+	--ez-surface-sunken: #f1f1f5;
+	--ez-surface-hover: #f4f4f8;
+	--ez-border: #e5e5eb;
+	--ez-border-strong: #cfcfd9;
+	// Boundary of form controls: 3:1 against the surface (WCAG 1.4.11).
+	--ez-control-border: #878796;
+
+	// Text
+	--ez-text: #16161a;
+	--ez-text-muted: #4c4c58;
+	--ez-text-subtle: #666674;
+
+	// The one accent
+	--ez-accent: #4f46e5;
+	--ez-accent-hover: #4338ca;
+	--ez-accent-fg: #ffffff;
+	--ez-accent-text: #4338ca;
+	--ez-accent-soft: #edecfd;
+	--ez-accent-soft-border: #cfcbf8;
+
+	// Semantic colours: -fg text/icon on the -bg tint, -border for outlines, -solid for filled buttons.
+	--ez-success-fg: #146236;
+	--ez-success-bg: #e7f5ec;
+	--ez-success-border: #b3dcc2;
+	--ez-warning-fg: #84500a;
+	--ez-warning-bg: #fcf2de;
+	--ez-warning-border: #ecd29b;
+	--ez-danger-fg: #b0261e;
+	--ez-danger-bg: #fcebe9;
+	--ez-danger-border: #f1bcb7;
+	--ez-danger-solid: #c9302c;
+	--ez-danger-solid-hover: #ab2623;
+	--ez-danger-solid-fg: #ffffff;
+	--ez-info-fg: #1a5a9e;
+	--ez-info-bg: #e8f0fa;
+	--ez-info-border: #b9d2ee;
+
+	--ez-overlay: rgb(15 15 25 / 0.45);
+	--ez-terminal-bg: #0e0f14;
+	--ez-terminal-fg: #e6e6ec;
+
+	// Elevation
+	--ez-shadow-sm: 0 1px 2px rgb(16 16 30 / 0.06);
+	--ez-shadow-md: 0 4px 14px rgb(16 16 30 / 0.08), 0 1px 3px rgb(16 16 30 / 0.06);
+	--ez-shadow-lg: 0 16px 40px rgb(16 16 30 / 0.16), 0 2px 6px rgb(16 16 30 / 0.08);
+}
+
+@mixin theme-dark {
+	color-scheme: dark;
+
+	--ez-bg: #0c0d11;
+	--ez-surface: #14151b;
+	--ez-surface-sunken: #101116;
+	--ez-surface-hover: #1b1c24;
+	--ez-border: #262731;
+	--ez-border-strong: #393a47;
+	--ez-control-border: #6d6e80;
+
+	--ez-text: #ececf1;
+	--ez-text-muted: #a8a9b6;
+	--ez-text-subtle: #8f90a0;
+
+	--ez-accent: #8a90ff;
+	--ez-accent-hover: #a0a5ff;
+	--ez-accent-fg: #0c0d11;
+	--ez-accent-text: #a5a9ff;
+	--ez-accent-soft: #1d1f3d;
+	--ez-accent-soft-border: #33366a;
+
+	--ez-success-fg: #62d492;
+	--ez-success-bg: #11261a;
+	--ez-success-border: #21502f;
+	--ez-warning-fg: #f1b74f;
+	--ez-warning-bg: #2a1f0b;
+	--ez-warning-border: #5d4416;
+	--ez-danger-fg: #ff8c82;
+	--ez-danger-bg: #2c1314;
+	--ez-danger-border: #632a2c;
+	--ez-danger-solid: #ff7367;
+	--ez-danger-solid-hover: #ff8e84;
+	--ez-danger-solid-fg: #190a0a;
+	--ez-info-fg: #80b8f4;
+	--ez-info-bg: #0f1c2e;
+	--ez-info-border: #1f4066;
+
+	--ez-overlay: rgb(0 0 0 / 0.62);
+	--ez-terminal-bg: #08090c;
+	--ez-terminal-fg: #e6e6ec;
+
+	--ez-shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
+	--ez-shadow-md: 0 6px 18px rgb(0 0 0 / 0.45), 0 1px 3px rgb(0 0 0 / 0.4);
+	--ez-shadow-lg: 0 20px 48px rgb(0 0 0 / 0.6), 0 2px 8px rgb(0 0 0 / 0.5);
+}
+
+// Theme selection: `data-theme` on <html> (set before first paint by the inline script in app.html)
+// wins; with no attribute the OS preference decides. The attribute is also valid on any element, so
+// the component gallery can show both themes side by side.
+:root {
+	@include theme-light;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root:not([data-theme='light']) {
+		@include theme-dark;
+	}
+}
+
+[data-theme='light'] {
+	@include theme-light;
+}
+
+[data-theme='dark'] {
+	@include theme-dark;
+}
+
+// Tokens shared by both themes.
+:root {
+	// Type: the system UI stack keeps the app fast and offline-safe (no webfont, no CDN).
+	--ez-font:
+		ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+	--ez-mono:
+		ui-monospace, 'SFMono-Regular', 'Cascadia Code', Menlo, Consolas, 'Liberation Mono', monospace;
+
+	--ez-text-xs: 0.75rem;
+	--ez-text-sm: 0.8125rem;
+	--ez-text-base: 0.9375rem;
+	--ez-text-md: 1rem;
+	--ez-text-lg: 1.125rem;
+	--ez-text-xl: 1.375rem;
+	--ez-text-2xl: 1.75rem;
+
+	--ez-leading-tight: 1.25;
+	--ez-leading-normal: 1.55;
+
+	--ez-weight-regular: 400;
+	--ez-weight-medium: 500;
+	--ez-weight-semibold: 600;
+
+	// Spacing: a 4px base.
+	--ez-space-1: 0.25rem;
+	--ez-space-2: 0.5rem;
+	--ez-space-3: 0.75rem;
+	--ez-space-4: 1rem;
+	--ez-space-5: 1.5rem;
+	--ez-space-6: 2rem;
+	--ez-space-7: 3rem;
+	--ez-space-8: 4rem;
+
+	--ez-radius-sm: 4px;
+	--ez-radius-md: 6px;
+	--ez-radius-lg: 10px;
+	--ez-radius-full: 999px;
+
+	--ez-border-width: 1px;
+
+	// Motion: short and decelerating; collapsed to nothing under prefers-reduced-motion (section 2).
+	--ez-dur-fast: 120ms;
+	--ez-dur-base: 180ms;
+	--ez-dur-slow: 280ms;
+	--ez-ease: cubic-bezier(0.2, 0, 0, 1);
+
+	// Layers
+	--ez-z-sticky: 10;
+	--ez-z-dropdown: 30;
+	--ez-z-overlay: 40;
+	--ez-z-dialog: 50;
+	--ez-z-toast: 60;
+	--ez-z-tooltip: 70;
+
+	// Focus ring: 2px accent outline, offset so it never touches the control's own border.
+	--ez-focus-width: 2px;
+	--ez-focus-offset: 2px;
+
+	// Layout
+	--ez-content-width: 64rem;
+	--ez-nav-width: 13rem;
+	--ez-header-height: 3.25rem;
+	--ez-control-height: 2.25rem;
+}
+
+// ---------------------------------------------------------------------------------------------
+// 2. Base
+// ---------------------------------------------------------------------------------------------
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html {
+	-webkit-text-size-adjust: 100%;
+	text-size-adjust: 100%;
+}
+
+body {
+	margin: 0;
+	font: var(--ez-weight-regular) var(--ez-text-base) / var(--ez-leading-normal) var(--ez-font);
+	background: var(--ez-bg);
+	color: var(--ez-text);
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+	overflow-wrap: break-word;
+}
+
+h1,
+h2,
+h3,
+h4 {
+	margin: 0;
+	line-height: var(--ez-leading-tight);
+	font-weight: var(--ez-weight-semibold);
+	letter-spacing: -0.012em;
+}
+
+h1 {
+	font-size: var(--ez-text-2xl);
+}
+
+h2 {
+	font-size: var(--ez-text-lg);
+}
+
+h3 {
+	font-size: var(--ez-text-md);
+}
+
+p {
+	margin: 0;
+}
+
+a {
+	color: var(--ez-accent-text);
+	text-decoration: underline;
+	text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+	text-underline-offset: 0.2em;
+	transition: text-decoration-color var(--ez-dur-fast) var(--ez-ease);
+
+	&:hover {
+		text-decoration-color: currentColor;
+	}
+}
+
+code,
+kbd,
+pre {
+	font-family: var(--ez-mono);
+	font-size: 0.9em;
+}
+
+code {
+	padding: 0.1em 0.35em;
+	border-radius: var(--ez-radius-sm);
+	background: var(--ez-surface-sunken);
+}
+
+ol,
+ul {
+	margin: 0;
+	padding-left: var(--ez-space-5);
+}
+
+img {
+	max-width: 100%;
+}
+
+::selection {
+	background: var(--ez-accent-soft);
+	color: var(--ez-text);
+}
+
+:focus-visible {
+	outline: var(--ez-focus-width) solid var(--ez-accent);
+	outline-offset: var(--ez-focus-offset);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.001ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.001ms !important;
+		scroll-behavior: auto !important;
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// 3. Utilities
+// ---------------------------------------------------------------------------------------------
+
+.ez-sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+
+.ez-muted {
+	color: var(--ez-text-muted);
+}
+
+.ez-subtle {
+	color: var(--ez-text-subtle);
+}
+
+.ez-mono {
+	font-family: var(--ez-mono);
+}
+
+// Vertical rhythm between siblings; `--ez-gap` overrides the step.
+.ez-stack {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-gap, var(--ez-space-4));
+}
+
+// Horizontal group that wraps on narrow screens.
+.ez-cluster {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--ez-gap, var(--ez-space-2));
+}
+
+.ez-settings {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-start;
+	gap: var(--ez-space-3, var(--ez-space-2));
+}
+
+.ez-max-runs {
+	width: 8rem;
+}
+
+.ez-sandbox-resources {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-3, var(--ez-space-2));
+}
+
+.ez-quantity {
+	width: 8rem;
+}
+
+// Merge readiness block on a change request: optional notice, then the step list.
+.ez-merge-readiness {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-3);
+}
+
+.ez-text-sm {
+	font-size: var(--ez-text-sm);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 4. Layout: header across the top, navigation on the left (a scrolling strip on phones),
+//    content in a centred column.
+// ---------------------------------------------------------------------------------------------
+
+.ez-shell {
+	display: grid;
+	grid-template:
+		'header header' var(--ez-header-height)
+		'nav content' minmax(0, 1fr)
+		'footer footer' auto / var(--ez-nav-width) minmax(0, 1fr);
+	min-height: 100vh;
+	min-height: 100dvh;
+
+	@media (max-width: 48rem) {
+		grid-template:
+			'header' var(--ez-header-height)
+			'nav' auto
+			'content' minmax(0, 1fr)
+			'footer' auto / minmax(0, 1fr);
+	}
+
+	// Project routes fill the viewport; the tab region scrolls (or not) inside it.
+	&:has(.ez-project-view) {
+		height: 100vh;
+		height: 100dvh;
+		min-height: 0;
+	}
+}
+
+.ez-header {
+	grid-area: header;
+	position: sticky;
+	top: 0;
+	z-index: var(--ez-z-sticky);
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--ez-space-3);
+	padding: 0 var(--ez-space-5);
+	background: color-mix(in srgb, var(--ez-surface) 88%, transparent);
+	border-bottom: var(--ez-border-width) solid var(--ez-border);
+	backdrop-filter: saturate(1.4) blur(10px);
+
+	@media (max-width: 48rem) {
+		padding: 0 var(--ez-space-4);
+	}
+}
+
+.ez-logo {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--ez-space-2);
+	color: var(--ez-text);
+	font-weight: var(--ez-weight-semibold);
+	font-size: var(--ez-text-md);
+	letter-spacing: -0.02em;
+	text-decoration: none;
+
+	&__mark {
+		display: block;
+		color: var(--ez-accent);
+	}
+}
+
+.ez-nav {
+	grid-area: nav;
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-1);
+	padding: var(--ez-space-4) var(--ez-space-3);
+	border-right: var(--ez-border-width) solid var(--ez-border);
+
+	@media (max-width: 48rem) {
+		flex-direction: row;
+		overflow-x: auto;
+		padding: var(--ez-space-2) var(--ez-space-4);
+		border-right: 0;
+		border-bottom: var(--ez-border-width) solid var(--ez-border);
+		scrollbar-width: none;
+	}
+
+	&__link {
+		display: flex;
+		align-items: center;
+		min-height: 2rem;
+		padding: 0 var(--ez-space-3);
+		border-radius: var(--ez-radius-md);
+		color: var(--ez-text-muted);
+		font-weight: var(--ez-weight-medium);
+		text-decoration: none;
+		white-space: nowrap;
+		transition:
+			background var(--ez-dur-fast) var(--ez-ease),
+			color var(--ez-dur-fast) var(--ez-ease);
+
+		&:hover {
+			background: var(--ez-surface-hover);
+			color: var(--ez-text);
+		}
+
+		&[aria-current='page'] {
+			background: var(--ez-accent-soft);
+			color: var(--ez-accent-text);
+		}
+	}
+}
+
+.ez-content {
+	grid-area: content;
+	min-width: 0;
+	padding: var(--ez-space-6) var(--ez-space-5) var(--ez-space-8);
+
+	@media (max-width: 48rem) {
+		padding: var(--ez-space-5) var(--ez-space-4) var(--ez-space-7);
+	}
+
+	&:has(> .ez-page > .ez-project-view) {
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+		overflow: hidden;
+		padding-bottom: var(--ez-space-4);
+	}
+}
+
+// Centres the page column; used by the shell and by pages outside it (login, gallery).
+.ez-page {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-5);
+	max-width: var(--ez-content-width);
+	margin-inline: auto;
+
+	// Project routes: full width, bounded height (the header and Overview/Settings cap themselves).
+	&:has(> .ez-project-view) {
+		flex: 1;
+		min-height: 0;
+		width: 100%;
+		max-width: none;
+		overflow: hidden;
+	}
+}
+
+// The project view: one header row, then the active tab filling the rest of the viewport.
+.ez-project-view {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	gap: var(--ez-space-3);
+	min-height: 0;
+	min-width: 0;
+}
+
+.ez-project-header {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-end;
+	justify-content: space-between;
+	gap: var(--ez-space-2) var(--ez-space-5);
+	width: 100%;
+	max-width: var(--ez-content-width);
+	margin-inline: auto;
+	border-bottom: var(--ez-border-width) solid var(--ez-border);
+
+	&__text {
+		min-width: 0;
+	}
+
+	&__meta {
+		color: var(--ez-text-muted);
+	}
+
+	.ez-tabnav {
+		min-width: 0;
+		margin-inline-start: auto;
+		border-bottom: 0;
+
+		@media (max-width: 48rem) {
+			flex: 1 1 100%;
+			margin-inline-start: 0;
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// 5. Components
+// ---------------------------------------------------------------------------------------------
+
+// Avatar --------------------------------------------------------------------------------------
+
+.ez-avatar {
+	display: inline-grid;
+	place-items: center;
+	flex: none;
+	width: 1.75rem;
+	height: 1.75rem;
+	overflow: hidden;
+	border-radius: var(--ez-radius-full);
+	background: var(--ez-accent-soft);
+	color: var(--ez-accent-text);
+	font-size: var(--ez-text-xs);
+	font-weight: var(--ez-weight-semibold);
+	text-transform: uppercase;
+
+	img {
+		display: block;
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+	}
+}
+
+// Badge: status chips for work states, Project conditions and run results ------------------------
+
+.ez-badge {
+	--ez-badge-fg: var(--ez-text-muted);
+	--ez-badge-bg: var(--ez-surface-sunken);
+	--ez-badge-border: var(--ez-border);
+
+	display: inline-flex;
+	align-items: center;
+	gap: 0.375rem;
+	max-width: 100%;
+	padding: 0.0625rem var(--ez-space-2);
+	border: var(--ez-border-width) solid var(--ez-badge-border);
+	border-radius: var(--ez-radius-full);
+	background: var(--ez-badge-bg);
+	color: var(--ez-badge-fg);
+	font-size: var(--ez-text-xs);
+	font-weight: var(--ez-weight-medium);
+	line-height: 1.5;
+	white-space: nowrap;
+
+	&::before {
+		content: '';
+		flex: none;
+		width: 0.375rem;
+		height: 0.375rem;
+		border-radius: var(--ez-radius-full);
+		background: currentColor;
+	}
+
+	&--accent {
+		--ez-badge-fg: var(--ez-accent-text);
+		--ez-badge-bg: var(--ez-accent-soft);
+		--ez-badge-border: var(--ez-accent-soft-border);
+	}
+
+	&--success {
+		--ez-badge-fg: var(--ez-success-fg);
+		--ez-badge-bg: var(--ez-success-bg);
+		--ez-badge-border: var(--ez-success-border);
+	}
+
+	&--warning {
+		--ez-badge-fg: var(--ez-warning-fg);
+		--ez-badge-bg: var(--ez-warning-bg);
+		--ez-badge-border: var(--ez-warning-border);
+	}
+
+	&--danger {
+		--ez-badge-fg: var(--ez-danger-fg);
+		--ez-badge-bg: var(--ez-danger-bg);
+		--ez-badge-border: var(--ez-danger-border);
+	}
+
+	&--info {
+		--ez-badge-fg: var(--ez-info-fg);
+		--ez-badge-bg: var(--ez-info-bg);
+		--ez-badge-border: var(--ez-info-border);
+	}
+
+	// A hollow dot reads as "waiting"; no dot at all for plain labels.
+	&--hollow::before {
+		background: transparent;
+		box-shadow: inset 0 0 0 1.5px currentColor;
+	}
+
+	&--plain::before {
+		display: none;
+	}
+}
+
+// Button ----------------------------------------------------------------------------------------
+
+.ez-btn {
+	--ez-btn-bg: var(--ez-surface);
+	--ez-btn-bg-hover: var(--ez-surface-hover);
+	--ez-btn-fg: var(--ez-text);
+	--ez-btn-border: var(--ez-border-strong);
+
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: var(--ez-space-2);
+	min-height: var(--ez-control-height);
+	padding: 0 var(--ez-space-4);
+	border: var(--ez-border-width) solid var(--ez-btn-border);
+	border-radius: var(--ez-radius-md);
+	background: var(--ez-btn-bg);
+	color: var(--ez-btn-fg);
+	font: inherit;
+	font-size: var(--ez-text-base);
+	font-weight: var(--ez-weight-medium);
+	line-height: 1.2;
+	text-decoration: none;
+	white-space: nowrap;
+	cursor: pointer;
+	box-shadow: var(--ez-shadow-sm);
+	transition:
+		background var(--ez-dur-fast) var(--ez-ease),
+		border-color var(--ez-dur-fast) var(--ez-ease),
+		transform var(--ez-dur-fast) var(--ez-ease);
+
+	&:hover {
+		background: var(--ez-btn-bg-hover);
+		text-decoration: none;
+	}
+
+	&:active {
+		transform: translateY(1px);
+	}
+
+	&--primary {
+		--ez-btn-bg: var(--ez-accent);
+		--ez-btn-bg-hover: var(--ez-accent-hover);
+		--ez-btn-fg: var(--ez-accent-fg);
+		--ez-btn-border: transparent;
+	}
+
+	&--secondary {
+		// the defaults above
+		--ez-btn-bg: var(--ez-surface);
+	}
+
+	&--ghost {
+		--ez-btn-bg: transparent;
+		--ez-btn-border: transparent;
+		--ez-btn-fg: var(--ez-text-muted);
+
+		box-shadow: none;
+
+		&:hover {
+			--ez-btn-fg: var(--ez-text);
+		}
+	}
+
+	&--danger {
+		--ez-btn-bg: var(--ez-danger-solid);
+		--ez-btn-bg-hover: var(--ez-danger-solid-hover);
+		--ez-btn-fg: var(--ez-danger-solid-fg);
+		--ez-btn-border: transparent;
+	}
+
+	&--icon {
+		width: var(--ez-control-height);
+		padding: 0;
+	}
+
+	&--sm {
+		min-height: 1.75rem;
+		padding: 0 var(--ez-space-3);
+		font-size: var(--ez-text-sm);
+
+		&.ez-btn--icon {
+			width: 1.75rem;
+			padding: 0;
+		}
+	}
+
+	&:disabled,
+	&[aria-disabled='true'] {
+		opacity: 0.5;
+		cursor: not-allowed;
+		pointer-events: none;
+	}
+
+	// Busy: the label stays, the button is disabled and dimmed (no spinner; long work shows steps).
+	&.is-loading {
+		pointer-events: none;
+		cursor: progress;
+		opacity: 0.7;
+	}
+}
+
+// Card and section ------------------------------------------------------------------------------
+
+.ez-card {
+	min-width: 0;
+	padding: var(--ez-space-5);
+	border: var(--ez-border-width) solid var(--ez-border);
+	border-radius: var(--ez-radius-lg);
+	background: var(--ez-surface);
+	box-shadow: var(--ez-shadow-sm);
+
+	&--flush {
+		padding: 0;
+		overflow: hidden;
+	}
+
+	&--sunken {
+		background: var(--ez-surface-sunken);
+		box-shadow: none;
+	}
+
+	@media (max-width: 40rem) {
+		padding: var(--ez-space-4);
+	}
+}
+
+.ez-section {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-4);
+	min-width: 0;
+
+	// Inside a flush Card the body runs edge to edge; the header keeps the card padding.
+	&--flush > &__header {
+		padding: var(--ez-space-5) var(--ez-space-5) 0;
+
+		@media (max-width: 40rem) {
+			padding: var(--ez-space-4) var(--ez-space-4) 0;
+		}
+	}
+
+	&__header {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: var(--ez-space-3);
+	}
+
+	&__title {
+		font-size: var(--ez-text-md);
+	}
+
+	&__description {
+		margin-top: var(--ez-space-1);
+		color: var(--ez-text-muted);
+		font-size: var(--ez-text-sm);
+	}
+}
+
+// Data table: a real table from tablet width up, stacked label/value rows on phones ----------------
+
+.ez-table-wrap {
+	min-width: 0;
+}
+
+.ez-table {
+	width: 100%;
+	border-collapse: collapse;
+
+	th,
+	td {
+		padding: var(--ez-space-3) var(--ez-space-4);
+		border-bottom: var(--ez-border-width) solid var(--ez-border);
+		text-align: left;
+		vertical-align: top;
+	}
+
+	th {
+		background: var(--ez-surface-sunken);
+		color: var(--ez-text-subtle);
+		font-size: var(--ez-text-xs);
+		font-weight: var(--ez-weight-semibold);
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+	}
+
+	tbody tr {
+		transition: background var(--ez-dur-fast) var(--ez-ease);
+
+		&:hover {
+			background: var(--ez-surface-hover);
+		}
+
+		&:last-child td {
+			border-bottom: 0;
+		}
+	}
+
+	&__cell {
+		min-width: 0;
+	}
+
+	&__actions {
+		width: 1%;
+		text-align: right;
+		white-space: nowrap;
+
+		.ez-cluster {
+			flex-wrap: nowrap;
+			justify-content: flex-end;
+		}
+	}
+
+	@media (max-width: 40rem) {
+		// the header row stays for assistive tech, each cell carries its own label instead
+		thead {
+			position: absolute;
+			width: 1px;
+			height: 1px;
+			overflow: hidden;
+			clip-path: inset(50%);
+		}
+
+		tbody,
+		tr,
+		td {
+			display: block;
+		}
+
+		tr {
+			padding: var(--ez-space-3) var(--ez-space-4);
+			border-bottom: var(--ez-border-width) solid var(--ez-border);
+		}
+
+		tbody tr:last-child {
+			border-bottom: 0;
+		}
+
+		td {
+			display: grid;
+			grid-template-columns: 6.5rem minmax(0, 1fr);
+			gap: var(--ez-space-3);
+			padding: var(--ez-space-1) 0;
+			border: 0;
+
+			&::before {
+				content: attr(data-label);
+				color: var(--ez-text-subtle);
+				font-size: var(--ez-text-xs);
+				font-weight: var(--ez-weight-semibold);
+				letter-spacing: 0.04em;
+				text-transform: uppercase;
+				padding-top: 0.15em;
+			}
+		}
+
+		&__actions {
+			width: auto;
+			text-align: left;
+		}
+	}
+}
+
+// Dialog ----------------------------------------------------------------------------------------
+
+.ez-dialog {
+	&__overlay {
+		position: fixed;
+		inset: 0;
+		z-index: var(--ez-z-overlay);
+		background: var(--ez-overlay);
+		animation: ez-fade-in var(--ez-dur-base) var(--ez-ease);
+	}
+
+	&__content {
+		position: fixed;
+		z-index: var(--ez-z-dialog);
+		top: 50%;
+		left: 50%;
+		display: flex;
+		flex-direction: column;
+		gap: var(--ez-space-4);
+		width: min(28rem, calc(100vw - 2rem));
+		max-height: calc(100dvh - 2rem);
+		overflow-y: auto;
+		padding: var(--ez-space-5);
+		border: var(--ez-border-width) solid var(--ez-border);
+		border-radius: var(--ez-radius-lg);
+		background: var(--ez-surface);
+		box-shadow: var(--ez-shadow-lg);
+		transform: translate(-50%, -50%);
+		animation: ez-dialog-in var(--ez-dur-base) var(--ez-ease);
+	}
+
+	// Inline copy of the dialog for the dev gallery (the real one is fixed to the viewport).
+	&__content--static {
+		position: static;
+		transform: none;
+		animation: none;
+		width: 100%;
+	}
+
+	&__title {
+		font-size: var(--ez-text-lg);
+	}
+
+	&__description {
+		margin-top: var(--ez-space-2);
+		color: var(--ez-text-muted);
+	}
+
+	&__footer {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+		gap: var(--ez-space-2);
+	}
+}
+
+@keyframes ez-fade-in {
+	from {
+		opacity: 0;
+	}
+}
+
+@keyframes ez-dialog-in {
+	from {
+		opacity: 0;
+		transform: translate(-50%, calc(-50% + 0.5rem)) scale(0.98);
+	}
+}
+
+// Empty state -----------------------------------------------------------------------------------
+
+.ez-empty {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: var(--ez-space-2);
+	padding: var(--ez-space-7) var(--ez-space-4);
+	text-align: center;
+
+	&__icon {
+		display: grid;
+		place-items: center;
+		width: 2.5rem;
+		height: 2.5rem;
+		margin-bottom: var(--ez-space-2);
+		border-radius: var(--ez-radius-full);
+		background: var(--ez-surface-sunken);
+		color: var(--ez-text-subtle);
+	}
+
+	&__title {
+		font-size: var(--ez-text-md);
+	}
+
+	&__description {
+		max-width: 28rem;
+		color: var(--ez-text-muted);
+	}
+
+	&__actions {
+		margin-top: var(--ez-space-3);
+	}
+}
+
+// Forms -------------------------------------------------------------------------------------------
+
+.ez-field {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-1);
+	min-width: 0;
+
+	&__label {
+		font-size: var(--ez-text-sm);
+		font-weight: var(--ez-weight-medium);
+	}
+
+	&__help {
+		color: var(--ez-text-muted);
+		font-size: var(--ez-text-sm);
+	}
+
+	&__error {
+		color: var(--ez-danger-fg);
+		font-size: var(--ez-text-sm);
+	}
+}
+
+.ez-fieldset {
+	min-width: 0;
+	margin: 0;
+	padding: var(--ez-space-4);
+	border: var(--ez-border-width) solid var(--ez-border);
+	border-radius: var(--ez-radius-md);
+
+	&__legend {
+		padding: 0 var(--ez-space-2);
+		font-size: var(--ez-text-sm);
+		font-weight: var(--ez-weight-medium);
+	}
+
+	&__body {
+		display: grid;
+		gap: var(--ez-space-3);
+	}
+}
+
+// Shared by <input>, <textarea>, the Select trigger and the Combobox box.
+.ez-control {
+	display: block;
+	width: 100%;
+	min-height: var(--ez-control-height);
+	padding: 0.4rem var(--ez-space-3);
+	border: var(--ez-border-width) solid var(--ez-control-border);
+	border-radius: var(--ez-radius-md);
+	background: var(--ez-surface);
+	color: var(--ez-text);
+	font: inherit;
+	box-shadow: var(--ez-shadow-sm);
+	transition:
+		border-color var(--ez-dur-fast) var(--ez-ease),
+		box-shadow var(--ez-dur-fast) var(--ez-ease);
+
+	&::placeholder {
+		color: var(--ez-text-subtle);
+	}
+
+	&:hover:not(:disabled, [data-disabled]) {
+		border-color: var(--ez-text-muted);
+	}
+
+	&:focus-visible,
+	&:focus-within {
+		outline: var(--ez-focus-width) solid var(--ez-accent);
+		outline-offset: 0;
+		border-color: var(--ez-accent);
+	}
+
+	&[aria-invalid='true'],
+	&:has([aria-invalid='true']) {
+		border-color: var(--ez-danger-solid);
+	}
+
+	&:disabled,
+	&[data-disabled],
+	&--disabled {
+		opacity: 0.55;
+		cursor: not-allowed;
+		background: var(--ez-surface-sunken);
+	}
+}
+
+textarea.ez-control {
+	min-height: 6rem;
+	resize: vertical;
+}
+
+.ez-select {
+	&__trigger {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--ez-space-2);
+		text-align: left;
+		cursor: pointer;
+	}
+
+	&__caret {
+		flex: none;
+		color: var(--ez-text-subtle);
+	}
+}
+
+.ez-combobox {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--ez-space-1);
+	padding: var(--ez-space-1) var(--ez-space-2);
+
+	&__input {
+		flex: 1 1 8rem;
+		min-width: 6rem;
+		padding: var(--ez-space-1) 0;
+		border: 0;
+		background: transparent;
+		color: inherit;
+		font: inherit;
+		outline: none;
+
+		&::placeholder {
+			color: var(--ez-text-subtle);
+		}
+	}
+
+	&__trigger {
+		display: grid;
+		place-items: center;
+		padding: var(--ez-space-1);
+		border: 0;
+		border-radius: var(--ez-radius-sm);
+		background: transparent;
+		color: var(--ez-text-subtle);
+		cursor: pointer;
+	}
+}
+
+// Count of items waiting on the user, e.g. on the Work nav link.
+.ez-badge {
+	display: inline-block;
+	min-width: 1.25rem;
+	margin-left: var(--ez-space-2);
+	padding: 0 var(--ez-space-1);
+	border-radius: 999px;
+	background: var(--ez-accent);
+	color: var(--ez-accent-contrast, #fff);
+	font-size: var(--ez-text-sm);
+	line-height: 1.25rem;
+	text-align: center;
+}
+
+// The "needs you" queue on /work.
+.ez-needs {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-3);
+	margin: 0;
+	padding: 0;
+	list-style: none;
+
+	&__row {
+		display: flex;
+		flex-direction: column;
+		gap: var(--ez-space-2);
+		padding: var(--ez-space-3);
+		border: var(--ez-border-width) solid var(--ez-border);
+		border-left-width: 0.25rem;
+		border-radius: var(--ez-radius-md);
+
+		&--approval,
+		&--merge {
+			border-left-color: var(--ez-accent);
+		}
+	}
+
+	&__head {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: var(--ez-space-2);
+	}
+
+	&__reason,
+	&__error {
+		margin: 0;
+	}
+
+	&__error {
+		color: var(--ez-danger-text, var(--ez-text));
+	}
+}
+
+.ez-plan {
+	summary {
+		cursor: pointer;
+		font-weight: var(--ez-weight-medium);
+	}
+}
+
+.ez-done {
+	margin-top: var(--ez-space-4);
+
+	summary {
+		cursor: pointer;
+		font-weight: var(--ez-weight-medium);
+	}
+}
+
+// A removable selected value inside the combobox.
+.ez-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--ez-space-1);
+	max-width: 100%;
+	padding: 0 var(--ez-space-1) 0 var(--ez-space-2);
+	border: var(--ez-border-width) solid var(--ez-accent-soft-border);
+	border-radius: var(--ez-radius-sm);
+	background: var(--ez-accent-soft);
+	color: var(--ez-accent-text);
+	font-size: var(--ez-text-sm);
+
+	&__remove {
+		display: grid;
+		place-items: center;
+		width: 1.25rem;
+		height: 1.25rem;
+		padding: 0;
+		border: 0;
+		border-radius: var(--ez-radius-sm);
+		background: transparent;
+		color: inherit;
+		cursor: pointer;
+
+		&:hover {
+			background: var(--ez-accent-soft-border);
+		}
+	}
+}
+
+// Floating list used by Select, Combobox and the dropdown menu.
+.ez-popup {
+	z-index: var(--ez-z-dropdown);
+	min-width: var(--bits-floating-anchor-width, 12rem);
+	max-height: min(20rem, var(--bits-floating-available-height, 20rem));
+	overflow-y: auto;
+	padding: var(--ez-space-1);
+	border: var(--ez-border-width) solid var(--ez-border);
+	border-radius: var(--ez-radius-md);
+	background: var(--ez-surface);
+	box-shadow: var(--ez-shadow-md);
+	animation: ez-popup-in var(--ez-dur-fast) var(--ez-ease);
+
+	&__group-heading {
+		padding: var(--ez-space-2) var(--ez-space-2) var(--ez-space-1);
+		color: var(--ez-text-subtle);
+		font-size: var(--ez-text-xs);
+		font-weight: var(--ez-weight-semibold);
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+	}
+
+	&__empty {
+		padding: var(--ez-space-2);
+		color: var(--ez-text-muted);
+	}
+}
+
+@keyframes ez-popup-in {
+	from {
+		opacity: 0;
+		transform: translateY(-0.25rem);
+	}
+}
+
+.ez-option {
+	display: flex;
+	align-items: flex-start;
+	gap: var(--ez-space-2);
+	padding: var(--ez-space-2);
+	border-radius: var(--ez-radius-sm);
+	cursor: pointer;
+
+	&[data-highlighted] {
+		background: var(--ez-accent-soft);
+		color: var(--ez-accent-text);
+	}
+
+	&[data-disabled] {
+		opacity: 0.55;
+		cursor: not-allowed;
+	}
+
+	&__mark {
+		flex: none;
+		width: 1rem;
+		height: 1.4em;
+		color: var(--ez-accent-text);
+	}
+
+	&__description {
+		display: block;
+		color: var(--ez-text-muted);
+		font-size: var(--ez-text-sm);
+	}
+}
+
+// Checkbox / switch / radio: control on the left, label on the right.
+.ez-choice {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	gap: 0 var(--ez-space-3);
+	align-items: start;
+
+	&__label {
+		cursor: pointer;
+		line-height: 1.25rem;
+	}
+
+	&__description {
+		display: block;
+		color: var(--ez-text-muted);
+		font-size: var(--ez-text-sm);
+		line-height: var(--ez-leading-normal);
+	}
+
+	&__messages {
+		grid-column: 2;
+	}
+}
+
+.ez-choice-group {
+	display: grid;
+	gap: var(--ez-space-3);
+
+	&[data-orientation='horizontal'] {
+		grid-auto-flow: column;
+		justify-content: start;
+		gap: var(--ez-space-5);
+	}
+}
+
+.ez-checkbox,
+.ez-radio {
+	display: inline-grid;
+	place-items: center;
+	flex: none;
+	width: 1.25rem;
+	height: 1.25rem;
+	padding: 0;
+	border: var(--ez-border-width) solid var(--ez-control-border);
+	background: var(--ez-surface);
+	color: var(--ez-accent-fg);
+	cursor: pointer;
+	transition:
+		background var(--ez-dur-fast) var(--ez-ease),
+		border-color var(--ez-dur-fast) var(--ez-ease);
+
+	&:hover:not([data-disabled]) {
+		border-color: var(--ez-accent);
+	}
+
+	&[data-state='checked'] {
+		background: var(--ez-accent);
+		border-color: var(--ez-accent);
+	}
+
+	&[aria-invalid='true'] {
+		border-color: var(--ez-danger-solid);
+	}
+
+	&[data-disabled] {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+}
+
+.ez-checkbox {
+	border-radius: var(--ez-radius-sm);
+	font-size: 0.875rem;
+}
+
+.ez-radio {
+	border-radius: var(--ez-radius-full);
+
+	&__dot {
+		display: block;
+		width: 0.5rem;
+		height: 0.5rem;
+		border-radius: var(--ez-radius-full);
+		background: currentColor;
+	}
+}
+
+.ez-switch {
+	display: inline-flex;
+	align-items: center;
+	flex: none;
+	width: 2.5rem;
+	height: 1.5rem;
+	padding: 2px;
+	border: var(--ez-border-width) solid var(--ez-control-border);
+	border-radius: var(--ez-radius-full);
+	background: var(--ez-control-border);
+	cursor: pointer;
+	transition:
+		background var(--ez-dur-base) var(--ez-ease),
+		border-color var(--ez-dur-base) var(--ez-ease);
+
+	&[data-state='checked'] {
+		background: var(--ez-accent);
+		border-color: var(--ez-accent);
+	}
+
+	&[data-disabled] {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	&__thumb {
+		display: block;
+		width: 1.125rem;
+		height: 1.125rem;
+		border-radius: var(--ez-radius-full);
+		background: var(--ez-surface);
+		box-shadow: var(--ez-shadow-sm);
+		transition: transform var(--ez-dur-base) var(--ez-ease);
+
+		&[data-state='checked'] {
+			transform: translateX(1rem);
+			background: var(--ez-accent-fg);
+		}
+	}
+}
+
+// Filter bars and similar inline form rows.
+.ez-toolbar {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-end;
+	gap: var(--ez-space-3);
+
+	&__item {
+		flex: 0 1 20rem;
+		min-width: min(100%, 12rem);
+	}
+}
+
+// Icon -------------------------------------------------------------------------------------------
+
+.ez-icon {
+	display: block;
+	flex: none;
+	width: 1em;
+	height: 1em;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 1.75;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
+// Key / value list --------------------------------------------------------------------------------
+
+.ez-kv {
+	display: grid;
+	grid-template-columns: minmax(7rem, max-content) minmax(0, 1fr);
+	gap: var(--ez-space-3) var(--ez-space-5);
+	margin: 0;
+
+	&__term {
+		color: var(--ez-text-subtle);
+		font-size: var(--ez-text-sm);
+		font-weight: var(--ez-weight-medium);
+	}
+
+	&__value {
+		margin: 0;
+		min-width: 0;
+	}
+
+	@media (max-width: 30rem) {
+		grid-template-columns: minmax(0, 1fr);
+		gap: var(--ez-space-1);
+
+		&__value {
+			margin-bottom: var(--ez-space-3);
+		}
+	}
+}
+
+// Rendered markdown (server-sanitised HTML) ----------------------------------------------------
+
+.ez-markdown {
+	overflow-wrap: anywhere;
+
+	> :first-child {
+		margin-top: 0;
+	}
+
+	> :last-child {
+		margin-bottom: 0;
+	}
+
+	pre {
+		overflow-x: auto;
+		padding: var(--ez-space-3);
+		border-radius: var(--ez-radius-md);
+		background: var(--ez-surface-sunken);
+	}
+
+	pre code {
+		padding: 0;
+		background: transparent;
+	}
+}
+
+// Dropdown menu ------------------------------------------------------------------------------------
+
+.ez-menu {
+	z-index: var(--ez-z-dropdown);
+	min-width: 13rem;
+	max-width: calc(100vw - 1rem);
+	padding: var(--ez-space-1);
+	border: var(--ez-border-width) solid var(--ez-border);
+	border-radius: var(--ez-radius-md);
+	background: var(--ez-surface);
+	box-shadow: var(--ez-shadow-md);
+	animation: ez-popup-in var(--ez-dur-fast) var(--ez-ease);
+
+	&__header {
+		display: flex;
+		flex-direction: column;
+		padding: var(--ez-space-2);
+		font-size: var(--ez-text-sm);
+	}
+
+	&__label {
+		padding: var(--ez-space-2) var(--ez-space-2) var(--ez-space-1);
+		color: var(--ez-text-subtle);
+		font-size: var(--ez-text-xs);
+		font-weight: var(--ez-weight-semibold);
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+	}
+
+	&__item {
+		display: flex;
+		align-items: center;
+		gap: var(--ez-space-2);
+		padding: var(--ez-space-2);
+		border-radius: var(--ez-radius-sm);
+		color: var(--ez-text);
+		text-decoration: none;
+		cursor: pointer;
+		user-select: none;
+
+		&[data-highlighted] {
+			background: var(--ez-surface-hover);
+		}
+
+		&[data-disabled] {
+			opacity: 0.5;
+			cursor: not-allowed;
+		}
+
+		&--danger {
+			color: var(--ez-danger-fg);
+
+			&[data-highlighted] {
+				background: var(--ez-danger-bg);
+			}
+		}
+
+		&--checked {
+			color: var(--ez-accent-text);
+		}
+	}
+
+	&__check {
+		width: 1rem;
+		margin-left: auto;
+	}
+
+	&__separator {
+		height: 1px;
+		margin: var(--ez-space-1) calc(var(--ez-space-1) * -1);
+		background: var(--ez-border);
+	}
+}
+
+// Notice / banner -----------------------------------------------------------------------------------
+
+.ez-notice {
+	--ez-notice-fg: var(--ez-info-fg);
+	--ez-notice-bg: var(--ez-info-bg);
+	--ez-notice-border: var(--ez-info-border);
+
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	gap: var(--ez-space-3);
+	padding: var(--ez-space-3) var(--ez-space-4);
+	border: var(--ez-border-width) solid var(--ez-notice-border);
+	border-radius: var(--ez-radius-md);
+	background: var(--ez-notice-bg);
+
+	&--warning {
+		--ez-notice-fg: var(--ez-warning-fg);
+		--ez-notice-bg: var(--ez-warning-bg);
+		--ez-notice-border: var(--ez-warning-border);
+	}
+
+	&--error {
+		--ez-notice-fg: var(--ez-danger-fg);
+		--ez-notice-bg: var(--ez-danger-bg);
+		--ez-notice-border: var(--ez-danger-border);
+	}
+
+	&--success {
+		--ez-notice-fg: var(--ez-success-fg);
+		--ez-notice-bg: var(--ez-success-bg);
+		--ez-notice-border: var(--ez-success-border);
+	}
+
+	&__icon {
+		margin-top: 0.15rem;
+		color: var(--ez-notice-fg);
+		font-size: 1.125rem;
+	}
+
+	&__body {
+		display: flex;
+		flex-direction: column;
+		gap: var(--ez-space-1);
+		min-width: 0;
+	}
+
+	&__title {
+		color: var(--ez-notice-fg);
+		font-weight: var(--ez-weight-semibold);
+	}
+
+	&__actions {
+		margin-top: var(--ez-space-2);
+	}
+}
+
+// Page header --------------------------------------------------------------------------------------
+
+.ez-page-header {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: var(--ez-space-3) var(--ez-space-5);
+
+	&__text {
+		flex: 1 1 18rem;
+		min-width: 0;
+	}
+
+	&__description {
+		margin-top: var(--ez-space-2);
+		color: var(--ez-text-muted);
+	}
+
+	&__actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--ez-space-2);
+	}
+}
+
+// Segmented control (theme toggle) --------------------------------------------------------------------
+
+.ez-segmented {
+	display: inline-flex;
+	padding: 2px;
+	border: var(--ez-border-width) solid var(--ez-border);
+	border-radius: var(--ez-radius-md);
+	background: var(--ez-surface-sunken);
+
+	&__option {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--ez-space-1);
+		min-height: 1.75rem;
+		padding: 0 var(--ez-space-3);
+		border: 0;
+		border-radius: var(--ez-radius-sm);
+		background: transparent;
+		color: var(--ez-text-muted);
+		font: inherit;
+		font-size: var(--ez-text-sm);
+		font-weight: var(--ez-weight-medium);
+		cursor: pointer;
+		transition:
+			background var(--ez-dur-fast) var(--ez-ease),
+			color var(--ez-dur-fast) var(--ez-ease);
+
+		&:hover {
+			color: var(--ez-text);
+		}
+
+		&[aria-checked='true'] {
+			background: var(--ez-surface);
+			color: var(--ez-text);
+			box-shadow: var(--ez-shadow-sm);
+		}
+	}
+}
+
+// Skeleton: placeholder shapes for lists that are loading ----------------------------------------------
+
+.ez-skeleton {
+	display: block;
+	height: 1rem;
+	border-radius: var(--ez-radius-sm);
+	background: linear-gradient(
+		90deg,
+		var(--ez-surface-sunken) 25%,
+		var(--ez-surface-hover) 50%,
+		var(--ez-surface-sunken) 75%
+	);
+	background-size: 200% 100%;
+	animation: ez-shimmer 1.4s linear infinite;
+
+	&--short {
+		width: 40%;
+	}
+
+	&--block {
+		height: 4rem;
+	}
+}
+
+.ez-skeleton-rows {
+	display: grid;
+	gap: var(--ez-space-3);
+	padding: var(--ez-space-4);
+}
+
+@keyframes ez-shimmer {
+	to {
+		background-position: -200% 0;
+	}
+}
+
+// Step list: long operations as a checklist (boot progress, connection, credential check, timeline) --
+
+.ez-steps {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+
+	&__item {
+		position: relative;
+		display: grid;
+		grid-template-columns: 1.5rem minmax(0, 1fr) auto;
+		gap: 0 var(--ez-space-3);
+		padding: var(--ez-space-3) 0;
+
+		// the connector line between two steps
+		&:not(:last-child)::after {
+			content: '';
+			position: absolute;
+			left: 0.6875rem;
+			top: calc(var(--ez-space-3) + 1.5rem);
+			bottom: calc(var(--ez-space-3) * -1 + 0.125rem);
+			width: 1px;
+			background: var(--ez-border);
+		}
+	}
+
+	&__mark {
+		position: relative;
+		z-index: 1;
+		display: grid;
+		place-items: center;
+		width: 1.375rem;
+		height: 1.375rem;
+		margin-top: 0.1rem;
+		border: var(--ez-border-width) solid var(--ez-border-strong);
+		border-radius: var(--ez-radius-full);
+		background: var(--ez-surface);
+		color: var(--ez-text-subtle);
+		font-size: 0.8125rem;
+	}
+
+	&__label {
+		font-weight: var(--ez-weight-medium);
+	}
+
+	&__state {
+		color: var(--ez-text-subtle);
+		font-size: var(--ez-text-sm);
+		text-align: right;
+	}
+
+	&__message {
+		grid-column: 2 / -1;
+		margin-top: var(--ez-space-1);
+		color: var(--ez-text-muted);
+		font-size: var(--ez-text-sm);
+	}
+
+	// pending: the muted defaults above
+	&__item--pending &__label {
+		color: var(--ez-text-muted);
+		font-weight: var(--ez-weight-regular);
+	}
+
+	&__item--active &__mark {
+		border-color: var(--ez-accent);
+		background: var(--ez-accent-soft);
+		color: var(--ez-accent-text);
+	}
+
+	&__item--active &__state {
+		color: var(--ez-accent-text);
+	}
+
+	&__item--done &__mark {
+		border-color: var(--ez-success-fg);
+		background: var(--ez-success-bg);
+		color: var(--ez-success-fg);
+	}
+
+	&__item--failed &__mark {
+		border-color: var(--ez-danger-solid);
+		background: var(--ez-danger-bg);
+		color: var(--ez-danger-fg);
+	}
+
+	&__item--failed &__label,
+	&__item--failed &__state {
+		color: var(--ez-danger-fg);
+	}
+}
+
+// Tabs ---------------------------------------------------------------------------------------------------
+
+.ez-tabs {
+	&__list {
+		display: flex;
+		gap: var(--ez-space-1);
+		overflow-x: auto;
+		border-bottom: var(--ez-border-width) solid var(--ez-border);
+		scrollbar-width: none;
+	}
+
+	&__trigger {
+		position: relative;
+		padding: var(--ez-space-2) var(--ez-space-3);
+		border: 0;
+		background: transparent;
+		color: var(--ez-text-muted);
+		font: inherit;
+		font-weight: var(--ez-weight-medium);
+		white-space: nowrap;
+		cursor: pointer;
+		transition: color var(--ez-dur-fast) var(--ez-ease);
+
+		&::after {
+			content: '';
+			position: absolute;
+			left: var(--ez-space-2);
+			right: var(--ez-space-2);
+			bottom: -1px;
+			height: 2px;
+			border-radius: 2px;
+			background: var(--ez-accent);
+			transform: scaleX(0);
+			transition: transform var(--ez-dur-base) var(--ez-ease);
+		}
+
+		&:hover {
+			color: var(--ez-text);
+		}
+
+		&[data-state='active'] {
+			color: var(--ez-text);
+
+			&::after {
+				transform: scaleX(1);
+			}
+		}
+
+		&[data-disabled] {
+			opacity: 0.5;
+			cursor: not-allowed;
+		}
+	}
+
+	&__panel {
+		padding-top: var(--ez-space-4);
+	}
+}
+
+// Terminal host (xterm mounts inside) -----------------------------------------------------------------------
+
+.ez-terminal {
+	height: 28rem;
+	max-height: 70dvh;
+	padding: var(--ez-space-2);
+	overflow: hidden;
+	border: var(--ez-border-width) solid var(--ez-border);
+	border-radius: var(--ez-radius-lg);
+	background: var(--ez-terminal-bg);
+
+	// Fills a flex-column parent in both directions; the fit addon follows via ResizeObserver.
+	&--fill {
+		flex: 1;
+		height: auto;
+		max-height: none;
+		min-height: 0;
+	}
+}
+
+.ez-stack--fill {
+	flex: 1;
+	min-height: 0;
+}
+
+// The Terminal tab: a flex column so the terminal fills the rest of the region.
+.ez-project-terminal {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	gap: var(--ez-space-3);
+	min-height: 0;
+	overflow: hidden;
+}
+
+// Toast ------------------------------------------------------------------------------------------------------
+
+.ez-toasts {
+	position: fixed;
+	z-index: var(--ez-z-toast);
+	right: var(--ez-space-4);
+	bottom: var(--ez-space-4);
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-2);
+	width: min(24rem, calc(100vw - 2rem));
+	pointer-events: none;
+
+	@media (max-width: 40rem) {
+		right: 50%;
+		transform: translateX(50%);
+	}
+}
+
+.ez-toast {
+	--ez-toast-accent: var(--ez-accent);
+
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr) auto;
+	align-items: start;
+	gap: var(--ez-space-3);
+	padding: var(--ez-space-3) var(--ez-space-3) var(--ez-space-3) var(--ez-space-4);
+	border: var(--ez-border-width) solid var(--ez-border);
+	border-left: 3px solid var(--ez-toast-accent);
+	border-radius: var(--ez-radius-md);
+	background: var(--ez-surface);
+	box-shadow: var(--ez-shadow-md);
+	pointer-events: auto;
+	animation: ez-toast-in var(--ez-dur-slow) var(--ez-ease);
+
+	&--success {
+		--ez-toast-accent: var(--ez-success-fg);
+	}
+
+	&--warning {
+		--ez-toast-accent: var(--ez-warning-fg);
+	}
+
+	&--error {
+		--ez-toast-accent: var(--ez-danger-solid);
+	}
+
+	&--info {
+		--ez-toast-accent: var(--ez-info-fg);
+	}
+
+	&__icon {
+		margin-top: 0.15rem;
+		color: var(--ez-toast-accent);
+		font-size: 1.125rem;
+	}
+
+	&__title {
+		font-weight: var(--ez-weight-semibold);
+	}
+
+	&__description {
+		color: var(--ez-text-muted);
+		font-size: var(--ez-text-sm);
+	}
+}
+
+@keyframes ez-toast-in {
+	from {
+		opacity: 0;
+		transform: translateY(0.5rem);
+	}
+}
+
+// Tooltip -------------------------------------------------------------------------------------------------------
+
+.ez-tooltip {
+	z-index: var(--ez-z-tooltip);
+	max-width: 18rem;
+	padding: var(--ez-space-1) var(--ez-space-2);
+	border-radius: var(--ez-radius-sm);
+	background: var(--ez-text);
+	color: var(--ez-bg);
+	font-size: var(--ez-text-xs);
+	font-weight: var(--ez-weight-medium);
+	box-shadow: var(--ez-shadow-md);
+	animation: ez-fade-in var(--ez-dur-fast) var(--ez-ease);
+}
+
+// Sign-in page and the dev gallery sit outside the shell ---------------------------------------------------------
+
+.ez-login {
+	display: grid;
+	place-items: center;
+	min-height: 100vh;
+	min-height: 100dvh;
+	padding: var(--ez-space-4);
+
+	&__card {
+		display: flex;
+		flex-direction: column;
+		gap: var(--ez-space-5);
+		width: min(24rem, 100%);
+		text-align: center;
+		align-items: stretch;
+	}
+
+	&__logo {
+		display: flex;
+		justify-content: center;
+		font-size: var(--ez-text-xl);
+	}
+
+	&__footer {
+		display: flex;
+		justify-content: center;
+		margin-top: var(--ez-space-5);
+	}
+}
+
+// A scope that applies its own theme's background and text colour (gallery panels).
+.ez-themed {
+	background: var(--ez-bg);
+	color: var(--ez-text);
+}
+
+.ez-gallery {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: var(--ez-space-4);
+	padding: var(--ez-space-4);
+
+	@media (max-width: 64rem) {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	&__panel {
+		display: flex;
+		flex-direction: column;
+		gap: var(--ez-space-6);
+		min-width: 0;
+		padding: var(--ez-space-5);
+		border: var(--ez-border-width) solid var(--ez-border);
+		border-radius: var(--ez-radius-lg);
+	}
+
+	&__heading {
+		padding-bottom: var(--ez-space-2);
+		border-bottom: var(--ez-border-width) solid var(--ez-border);
+		color: var(--ez-text-subtle);
+		font-size: var(--ez-text-xs);
+		font-weight: var(--ez-weight-semibold);
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+	}
+
+	&__swatches {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(5.5rem, 1fr));
+		gap: var(--ez-space-2);
+	}
+
+	&__swatch {
+		display: flex;
+		flex-direction: column;
+		justify-content: flex-end;
+		min-height: 3.5rem;
+		padding: var(--ez-space-2);
+		border: var(--ez-border-width) solid var(--ez-border);
+		border-radius: var(--ez-radius-md);
+		font-size: var(--ez-text-xs);
+		font-family: var(--ez-mono);
+	}
+}
+
+// Project tab navigation (links; each tab is a route) ---------------------------------------------------
+
+.ez-tabnav {
+	display: flex;
+	gap: var(--ez-space-1);
+	overflow-x: auto;
+	border-bottom: var(--ez-border-width) solid var(--ez-border);
+	scrollbar-width: none;
+
+	&__link {
+		position: relative;
+		padding: var(--ez-space-2) var(--ez-space-3);
+		color: var(--ez-text-muted);
+		font-weight: var(--ez-weight-medium);
+		white-space: nowrap;
+		text-decoration: none;
+		transition: color var(--ez-dur-fast) var(--ez-ease);
+
+		&::after {
+			content: '';
+			position: absolute;
+			left: var(--ez-space-2);
+			right: var(--ez-space-2);
+			bottom: -1px;
+			height: 2px;
+			border-radius: 2px;
+			background: var(--ez-accent);
+			transform: scaleX(0);
+			transition: transform var(--ez-dur-base) var(--ez-ease);
+		}
+
+		&:hover {
+			color: var(--ez-text);
+		}
+
+		&[aria-current='page'] {
+			color: var(--ez-text);
+
+			&::after {
+				transform: scaleX(1);
+			}
+		}
+	}
+}
+
+// The scrolling region under the project header. Overview and Settings scroll inside it, capped
+// to the content width; the Terminal and Chat roots fill it and manage their own overflow.
+.ez-tabnav-panel {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	gap: var(--ez-space-4);
+	min-height: 0;
+	min-width: 0;
+	overflow: auto;
+
+	> :not(.ez-project-terminal, .ez-project-chat) {
+		width: 100%;
+		max-width: var(--ez-content-width);
+		margin-inline: auto;
+	}
+}
+
+// Chat tab: transcript, tool calls, permission requests, composer --------------------------------
+
+.ez-project-chat,
+.ez-chat {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	gap: var(--ez-space-3);
+	min-height: 0;
+}
+
+.ez-project-chat {
+	overflow: hidden;
+}
+
+.ez-chat-log {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	gap: var(--ez-space-3);
+	min-height: 0;
+	padding: var(--ez-space-3);
+	overflow-y: auto;
+}
+
+.ez-chat-msg {
+	display: grid;
+	gap: var(--ez-space-1);
+	max-width: 48rem;
+
+	&__who {
+		color: var(--ez-text-subtle);
+		font-size: 0.8125rem;
+		font-weight: var(--ez-weight-medium);
+	}
+
+	&__text {
+		margin: 0;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+	}
+
+	&--user &__text {
+		padding: var(--ez-space-2) var(--ez-space-3);
+		border-radius: var(--ez-radius-md);
+		background: var(--ez-surface-sunken);
+	}
+
+	&--thought &__text {
+		color: var(--ez-text-muted);
+		font-style: italic;
+	}
+}
+
+.ez-chat-tool,
+.ez-chat-perm,
+.ez-chat-plan {
+	max-width: 48rem;
+	padding: var(--ez-space-2) var(--ez-space-3);
+	border: var(--ez-border-width) solid var(--ez-border);
+	border-radius: var(--ez-radius-md);
+	background: var(--ez-surface);
+
+	ol {
+		margin: 0;
+		padding-left: 1.25rem;
+	}
+}
+
+.ez-chat-tool__out {
+	margin: var(--ez-space-2) 0 0;
+	max-height: 12rem;
+	overflow: auto;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	font-size: 0.8125rem;
+}
+
+.ez-chat-plan__state {
+	color: var(--ez-text-subtle);
+}
+
+.ez-chat-tool {
+	&__head {
+		display: flex;
+		justify-content: space-between;
+		gap: var(--ez-space-3);
+	}
+
+	&__title {
+		font-weight: var(--ez-weight-medium);
+		overflow-wrap: anywhere;
+	}
+
+	&__status {
+		color: var(--ez-text-subtle);
+		font-size: 0.8125rem;
+	}
+
+	&[data-status='failed'] {
+		border-color: var(--ez-danger-border);
+	}
+}
+
+.ez-chat-perm {
+	border-color: var(--ez-warning-border);
+	background: var(--ez-warning-bg);
+
+	&[data-status='blocked'],
+	&[data-status='denied'] {
+		border-color: var(--ez-danger-border);
+		background: var(--ez-danger-bg);
+	}
+
+	&[data-status='allowed'] {
+		border-color: var(--ez-success-border);
+		background: var(--ez-success-bg);
+	}
+
+	&[data-status='cancelled'] {
+		border-color: var(--ez-border);
+		background: var(--ez-surface-sunken);
+	}
+
+	&__title,
+	&__hint,
+	&__state {
+		margin: 0;
+		overflow-wrap: anywhere;
+	}
+
+	&__title {
+		font-weight: var(--ez-weight-medium);
+	}
+
+	&__hint {
+		color: var(--ez-text-muted);
+		font-size: 0.875rem;
+	}
+
+	&__actions {
+		display: flex;
+		gap: var(--ez-space-2);
+		margin-top: var(--ez-space-2);
+	}
+}
+
+.ez-chat-header {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--ez-space-2);
+}
+
+// The mode is always spelled out in text; the bypass tone only adds to it.
+.ez-chat-mode--bypass {
+	font-weight: 600;
+}
+
+.ez-chat-mode-switch,
+.ez-chat-mode-confirm {
+	display: inline-flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--ez-space-2);
+}
+
+.ez-chat-mode-select {
+	width: auto;
+}
+
+.ez-chat-notice {
+	padding: var(--ez-space-2) 0;
+	border-top: var(--ez-border-width) solid var(--ez-border);
+	color: var(--ez-text-muted);
+	font-size: 0.875rem;
+}
+
+.ez-chat-composer {
+	display: grid;
+	gap: var(--ez-space-2);
+
+	&__input {
+		width: 100%;
+		min-height: 4rem;
+		padding: var(--ez-space-2) var(--ez-space-3);
+		border: var(--ez-border-width) solid var(--ez-border-strong);
+		border-radius: var(--ez-radius-md);
+		background: var(--ez-surface);
+		color: var(--ez-text);
+		font: inherit;
+		resize: vertical;
+	}
+
+	&__limit {
+		margin: 0;
+		color: var(--ez-danger-fg);
+		font-size: 0.875rem;
+	}
+
+	&__actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: var(--ez-space-2);
+	}
+}
+
+.ez-chat-status {
+	display: grid;
+	gap: var(--ez-space-3);
+	justify-items: start;
+
+	&__message {
+		margin: 0;
+		color: var(--ez-text-muted);
+	}
+}
+
+// About page ----------------------------------------------------------------------------------
+
+.ez-footer {
+	grid-area: footer;
+	padding: var(--ez-space-3) var(--ez-space-5);
+	border-top: var(--ez-border-width) solid var(--ez-border);
+	font-size: var(--ez-text-sm);
+	color: var(--ez-text-muted);
+}
+
+.ez-about-card {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-3);
+
+	&__head {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: var(--ez-space-3);
+
+		h2 {
+			margin: 0;
+		}
+	}
+}
+
+.ez-release-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-2);
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.ez-release {
+	border: var(--ez-border-width) solid var(--ez-border);
+	border-radius: var(--ez-radius-md);
+	padding: var(--ez-space-2) var(--ez-space-3);
+
+	> summary {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--ez-space-3);
+		cursor: pointer;
+		font-weight: 600;
+	}
+
+	&__body {
+		overflow-wrap: anywhere;
+		padding-block: var(--ez-space-2);
+	}
+}
