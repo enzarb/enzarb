@@ -10,7 +10,7 @@ The owning repo is in brackets. Resolve 2–5 first: they shape the CRDs, the pr
 3. **Proxy/executor → sandbox-init trust** [enzarb-sandbox-container, enzarb-sandbox-proxy, enzarb-workflows]: mTLS or projected ServiceAccount tokens; NetworkPolicy blocking sandbox-to-sandbox traffic in the shared namespace (ADR-0013); per-Project egress policy.
 4. **Secrets** [enzarb-sandbox-operator, enzarb-connectors]:
    - where the Claude OAuth token and the GitHub App private key live;
-   - **whose Claude token pays for webhook-triggered runs** (the project owner?);
+   - ~~whose Claude token pays for webhook-triggered runs~~ resolved: the Project owner's, one per user ([ADR-0004](adr/0004-claude-credentials.md) amendment 2026-10-13);
    - keeping tokens unreadable if sandboxes ever get Kubernetes API access (ADR-0013 limits it to other namespaces).
 5. **Prompt injection** [enzarb-workflows, enzarb-connectors]: issue authors steer an agent that holds write credentials. Mitigations:
    - short-lived, single-repo clone tokens for each run;

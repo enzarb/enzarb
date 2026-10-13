@@ -55,11 +55,12 @@ status:
     - type: ResourcesReady             # auth Secret, workspace + docker PVCs, NetworkPolicy
     - type: SandboxReady
     - type: Ready
+  claudeCredentialReady: true          # presence of the owner's Secret enzarb-claude-<owner>; never the value
 ```
 
 Conditions: a failed step is `status: False` with a `reason` ending in `Failed`, `Failure` or `Error` (e.g. `NotOwnedError`: an object with the Project's name exists but has no owner), or the named terminal reason `InvalidSpec` (reported on `ResourcesReady`, for an invalid Project name and for a repository that another Project already owns, see "One Project per repository" below). Any other `False` reason is shown as in progress (e.g. `Terminating`: a deleted Project's objects with the same name are still being removed).
 
-Objects per Project (ADR-0013), all in the shared namespace and labelled `enzarb.dev/project=<name>`: Sandbox `sb-<name>` (its pod and headless Service share the name; the Service is owned by the Sandbox), Secret `sb-<name>-auth`, PVCs `sb-<name>-workspace` and `sb-<name>-docker`, NetworkPolicy `sb-<name>`, each with a controller ownerReference to the Project. Names are at most 50 characters, enforced by a CEL rule in the CRD, the operator and the UI. Sandbox pods run as ServiceAccount `enzarb-sandbox` with no token and no RBAC: **no Kubernetes API access**; any future access is limited to other namespaces. Consumers find the sandbox only through `status.namespace` and `status.sandbox` (no derived fallback).
+Objects per Project (ADR-0013), all in the shared namespace and labelled `enzarb.dev/project=<name>`: Sandbox `sb-<name>` (its pod and headless Service share the name; the Service is owned by the Sandbox), Secret `sb-<name>-auth`, PVCs `sb-<name>-workspace` and `sb-<name>-docker`, NetworkPolicy `sb-<name>`, each with a controller ownerReference to the Project. Not per Project: the owner's Claude token Secret `enzarb-claude-<spec.owner>` (labelled `enzarb.dev/claude-credential=<owner>`, no ownerReference, never deleted with a Project); `spec.owner` is immutable. Names are at most 50 characters, enforced by a CEL rule in the CRD, the operator and the UI. Sandbox pods run as ServiceAccount `enzarb-sandbox` with no token and no RBAC: **no Kubernetes API access**; any future access is limited to other namespaces. Consumers find the sandbox only through `status.namespace` and `status.sandbox` (no derived fallback).
 
 Defaults: `runMode: worktree`, all `triggers` true, `sandbox.storage: 20Gi`. Helpers in `enzarb-crds`: per-Project object names (`sandbox_name()`, `auth_secret_name()`, `workspace_pvc_name()`, `docker_pvc_name()`), `matches_repo()`, `RepoKey::from_url` / `RepoKey::from_connector_url` (github.com only for now; lowercases).
 
@@ -93,7 +94,7 @@ One Project per repository: a repo key (`RepoKey::from_connector_url`, compared 
   - Edits are limited to the worktree.
   - Reads (Read/Grep/Glob and read-only shell utilities) may also reach the Project's other repo checkouts and worktrees (`/workspace/repos`, `/workspace/worktrees`). Writes, `cd` and docker bind mounts stay inside the run's own worktree (enzarb-sandbox-container#27).
   - `git -C <dir>` is allowed only for a `<dir>` in the read roots and a read-only subcommand (`status`, `log`, `show`, `diff`, `rev-parse`, `ls-files`, `ls-tree`, `grep`, `blame`, `branch --list`, `cat-file`).
-  - Secrets are unreadable under any root: `.enzarb` (including `claude-token`), `.git-credentials`, `.gitconfig`, `.netrc`, git credential helper config.
+  - Secrets are unreadable under any root: `.enzarb` (including `claude-token`), `/run/enzarb/claude`, `.git-credentials`, `.gitconfig`, `.netrc`, git credential helper config.
   - Commands must match the allowlist; shell metacharacters and expansions are denied.
   - Network fetch is denied unless the host is allowlisted.
 - **Summary:** the verbatim agent text of the turn. `exit_code` is 0 on `end_turn`, the agent's code on a crash, and null when cancelled or timed out.
@@ -141,7 +142,7 @@ Secrets are redacted from all records.
 - `/workspace/worktrees/chat-<chat_id>/`: a chat's worktree (`chat_id` is 16 random hex chars), detached at `origin/<default branch>` of the chosen clone; commits go on the local branch `enzarb/chat-<chat_id>`. `run-*` pruning never touches it; a sweep removes chat worktrees with no live channel and no activity for `ENZARB_CHAT_RETENTION_DAYS`.
 - `/workspace/.enzarb/chats/<chat_id>/`: `meta.json` (`acp_session_id`, `repo`, `worktree`, `created`, `last_active`) and `transcript.jsonl` (0600; same record kinds as runs, plus `prompt`).
 - `/workspace/.enzarb/chat-home/.claude`: `CLAUDE_CONFIG_DIR` for chat agents, so `session/load` survives pod restarts.
-- `/workspace/.enzarb/claude-token`: mode 0600.
+- `/workspace/.enzarb/claude-token`: mode 0600. Legacy per-Project token, read only as a fallback; sandbox-init promotes it to the user Secret via `credential_captured` when the user has none, then deletes it once `/run/enzarb/claude/token` exists.
 
 ## 4. enzarb-proto messages
 
@@ -160,9 +161,12 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
 | `run_accepted` | server → client | `run_id`, `state`, `existing: bool` |
 | `run_status` → `run_state` | both | `run_id` → `run_id, state, exit_code?, summary?` |
 | `run_cancel` | client → server | `run_id` |
-| `credential_captured` | server → client | `kind: "claude_oauth"` |
+| `credential_captured` | server → client | `kind: "claude_oauth"`, `token?` (the captured token; **proxy-only**: the proxy consumes the frame, stores the token and never forwards it, and it is never logged) |
 | `credential_status` | client → server | (none); browsers may send it |
-| `credential_state` | server → client | `kind: "claude_oauth"`, `configured: bool` |
+| `credential_state` | server → client | `kind: "claude_oauth"`, `configured: bool`, `scope?: "user"` (the Claude token is per user, ADR-0004 amendment 2026-10-13) |
+| `credential_clear` | client → server | `kind: "claude_oauth"`; browsers may send it (on the proxy's allowlist). The proxy handles it locally by deleting the owner's Secret and answers `credential_state{configured:false, scope:"user"}`; it is not forwarded to the sandbox |
+
+**Claude token (per user, ADR-0004 amendment 2026-10-13):** Secret `enzarb-claude-<owner>` (key `token`, label `enzarb.dev/claude-credential=<owner>`) in the shared sandbox namespace, written and deleted only by the proxy, with the name derived from the authenticated `spec.owner`. The operator mounts it into each owned sandbox as an optional read-only volume at `/run/enzarb/claude/`, so `ENZARB_CLAUDE_TOKEN_FILE` defaults to `/run/enzarb/claude/token`. sandbox-init reads it per run and chat open, falling back to the legacy `/workspace/.enzarb/claude-token`; a missing token answers `no_credential`, which workflows reports as a non-retried "owner has no Claude credential" failure. Changes reach a running sandbox after the kubelet's Secret propagation (about a minute).
 | `error` | both | `code`, `message`, `run_id?`, `channel?` (a `run_id` routes the error to that run's pending request) |
 
 **`acp` channels (ADR-0014; additive, protocol version stays 1):**
@@ -270,7 +274,7 @@ workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated
 
 - **URL:** `wss://<host>/sandbox/v1/projects/<project>/mux?token=<jwt>`. Browsers can't set headers on websockets.
 - **JWT:** HS256, signed with `ENZARB_SESSION_JWT_SECRET`, which ui and proxy share. Claims: `sub` (GitHub login), `project`, `aud: "enzarb-sandbox-proxy"`, `exp` (≤ 5 min after issue; it is checked only at connect).
-- **Chat:** uses the same URL, token and authorization. The proxy's CTRL allowlist additionally admits `open{kind:"acp"}` (still not `run_*`), relays `acp` DATA byte for byte, and forwards `welcome.features` as described in section 4. `PROXY_IDLE_TIMEOUT_SECS` must be at least `ENZARB_CHAT_IDLE_SECS` (default 2100 s, 35 min).
+- **Chat:** uses the same URL, token and authorization. The proxy's CTRL allowlist additionally admits `open{kind:"acp"}` and `credential_clear` (still not `run_*`), relays `acp` DATA byte for byte, and forwards `welcome.features` as described in section 4. `PROXY_IDLE_TIMEOUT_SECS` must be at least `ENZARB_CHAT_IDLE_SECS` (default 2100 s, 35 min).
 - **Proxy authorization:** the proxy checks that `sub` is the Project's `spec.owner`, resolves `status.sandbox.endpoint` and the auth Secret, and dials sandbox-init with `client: "proxy"`.
 
 ### 7a. Browser realtime stream (enzarb-realtime)

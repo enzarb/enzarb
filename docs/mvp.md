@@ -5,7 +5,7 @@ An enzarb deployment that works on its own repositories:
 1. An issue opened in an `enzarb/*` repo (with the enzarb GitHub App installed) is triaged and planned by Claude in that Project's sandbox.
 2. A maintainer comments `/approve` → Claude implements in a git worktree, pushes a branch, and enzarb opens a PR.
 3. PRs get an automated review, and review comments are addressed.
-4. The UI shows Projects, their boot checklist, work items and their history. It also offers a terminal into the sandbox for the one-time `claude setup-token`.
+4. The UI shows Projects, their boot checklist, work items and their history. It also offers a terminal into the sandbox for the one-time (per user, shared by all their Projects) `claude setup-token`.
 
 **Done for this phase** = every component is built, tested in isolation, packaged as an image, and wired into the Helm chart, up to the point where deploying to a cluster has to be tested. Deployment testing is the next phase.
 
