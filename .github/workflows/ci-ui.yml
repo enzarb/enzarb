@@ -75,6 +75,8 @@ jobs:
         run: npx playwright install chromium
       - run: npx playwright install-deps chromium
       - run: npm run test:e2e
+      # Again against the production build: some client bugs only show in optimized code.
+      - run: npm run test:e2e:prod
       - if: failure()
         uses: actions/upload-artifact@v4
         with:

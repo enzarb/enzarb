@@ -16,7 +16,8 @@
 		"test:unit": "vitest",
 		"test": "npm run test:unit -- --run",
 		"migrate": "node scripts/migrate.ts",
-		"test:e2e": "playwright test"
+		"test:e2e": "playwright test",
+		"test:e2e:prod": "vite build --config vite.e2e.config.ts && E2E_PROD=1 playwright test"
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",

@@ -10,8 +10,16 @@ import path from 'node:path';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import postgres from 'postgres';
 import { migrate } from '../scripts/migrate.ts';
+import { applyWorkflowsSchema, seedItem } from '../src/lib/server/testdata/workflows-fixture.ts';
 import { SESSION_COOKIE, createSession, upsertUser } from '../src/lib/server/auth.ts';
-import { E2E_PORT, E2E_USER, SERVER_ENV, STORAGE_STATE } from './constants.ts';
+import {
+	E2E_PORT,
+	E2E_PROJECT,
+	E2E_REPOS,
+	E2E_USER,
+	SERVER_ENV,
+	STORAGE_STATE
+} from './constants.ts';
 
 const root = path.resolve(import.meta.dirname, '..');
 
@@ -25,6 +33,21 @@ if (!databaseUrl) {
 const sql = postgres(databaseUrl, { max: 1, onnotice: () => {} });
 try {
 	await migrate(sql);
+	// The workflow engine's schema with work items in the project: one waits on the user (the nav
+	// badge and the /work queue), one is in progress.
+	await applyWorkflowsSchema(sql);
+	await seedItem(sql, {
+		key: 'github:e2e-org/app#1',
+		project: E2E_PROJECT,
+		state: 'AwaitingApproval',
+		stateData: { title: 'Add search', url: 'https://github.com/e2e-org/app/issues/1' }
+	});
+	await seedItem(sql, {
+		key: 'github:e2e-org/app#2',
+		project: E2E_PROJECT,
+		state: 'Planning',
+		stateData: { title: 'Fix login', url: 'https://github.com/e2e-org/app/issues/2' }
+	});
 	const userId = await upsertUser(sql, {
 		id: 4242,
 		login: E2E_USER,
@@ -34,6 +57,13 @@ try {
 	// The user's Claude token (ciphertext is opaque to the UI; only presence is read).
 	await sql`INSERT INTO app.claude_credentials (owner, key_id, ciphertext)
 		VALUES (${E2E_USER}, 'e2e', '\\x00'::bytea) ON CONFLICT (owner) DO NOTHING`;
+	// The user's GitHub repository snapshot: the project's repository plus one more to add.
+	for (const repo of E2E_REPOS) {
+		await sql`INSERT INTO app.user_repositories
+			(user_id, repo, installation_id, account_login, private, default_branch, fetched_at)
+			VALUES (${userId}, ${repo}, 1, 'e2e-org', false, 'main', now())
+			ON CONFLICT DO NOTHING`;
+	}
 	const { token, session } = await createSession(sql, userId);
 	const state = {
 		cookies: [
@@ -57,18 +87,34 @@ try {
 	await sql.end();
 }
 
+// E2E_PROD=1 serves the production build (`vite build --config vite.e2e.config.ts`) instead of
+// vite dev, so client bugs that only show in minified, optimized code are caught too.
+const prod = process.env.E2E_PROD === '1';
 const vite = spawn(
 	process.execPath,
-	[
-		path.join(root, 'node_modules/vite/bin/vite.js'),
-		'dev',
-		'--config',
-		'vite.e2e.config.ts',
-		'--port',
-		String(E2E_PORT),
-		'--strictPort'
-	],
-	{ cwd: root, stdio: 'inherit', env: { ...process.env, ...SERVER_ENV, DATABASE_URL: databaseUrl } }
+	prod
+		? [path.join(root, 'build/index.js')]
+		: [
+				path.join(root, 'node_modules/vite/bin/vite.js'),
+				'dev',
+				'--config',
+				'vite.e2e.config.ts',
+				'--port',
+				String(E2E_PORT),
+				'--strictPort'
+			],
+	{
+		cwd: root,
+		stdio: 'inherit',
+		env: {
+			...process.env,
+			...SERVER_ENV,
+			DATABASE_URL: databaseUrl,
+			// As in the chart: the origin check reads the scheme from X-Forwarded-Proto, which the
+			// browser context sends here (playwright.config.ts) in place of the Gateway.
+			...(prod ? { PORT: String(E2E_PORT), PROTOCOL_HEADER: 'x-forwarded-proto' } : {})
+		}
+	}
 );
 
 let stopping = false;

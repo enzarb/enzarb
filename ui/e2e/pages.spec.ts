@@ -1,0 +1,99 @@
+import { expect, test, type Page } from '@playwright/test';
+import { E2E_PROJECT } from './constants.ts';
+import { installFakeSandbox } from './fake-sandbox.ts';
+
+function collectErrors(page: Page): string[] {
+	const errors: string[] = [];
+	page.on('pageerror', (e) => errors.push(`pageerror: ${e.stack ?? e.message}`));
+	page.on('console', (m) => {
+		if (m.type() === 'error' && !m.text().includes('/live/v1/stream'))
+			errors.push(`console: ${m.text()} ${m.location().url}`);
+	});
+	return errors;
+}
+
+/** A live stream that keeps reporting changes, as enzarb-realtime does while work happens. */
+async function installFakeLive(page: Page) {
+	await page.routeWebSocket(/\/live\/v1\/stream/, (ws) => {
+		let n = 0;
+		const timer = setInterval(() => {
+			n++;
+			ws.send(
+				JSON.stringify(n % 3 === 0 ? { topic: 'resync' } : { topic: 'work_item', id: (n % 2) + 1 })
+			);
+		}, 250);
+		ws.onClose(() => clearInterval(timer));
+	});
+}
+
+for (const path of [`/projects/${E2E_PROJECT}`, `/projects/${E2E_PROJECT}/settings`, '/work']) {
+	test(`${path} renders without client errors`, async ({ page }) => {
+		const errors = collectErrors(page);
+		await installFakeSandbox(page);
+		await installFakeLive(page);
+		await page.goto(path);
+		await page.waitForTimeout(1500);
+		await page.waitForTimeout(1000);
+		expect(errors).toEqual([]);
+	});
+}
+
+test('saving repositories in project settings succeeds', async ({ page }) => {
+	const errors = collectErrors(page);
+	await installFakeSandbox(page);
+	await installFakeLive(page);
+	await page.goto(`/projects/${E2E_PROJECT}/settings`);
+	await page.getByRole('button', { name: 'Edit repositories' }).click();
+	await page.getByRole('checkbox', { name: 'e2e-org/lib' }).check();
+	await page.getByRole('button', { name: 'Save repositories' }).click();
+	await expect(page.getByRole('link', { name: 'e2e-org/lib' })).toBeVisible();
+	await expect(page.getByText('Could not save the repositories.')).toHaveCount(0);
+	expect(errors).toEqual([]);
+});
+
+test('hovering links does not crash', async ({ page }) => {
+	const errors = collectErrors(page);
+	await installFakeSandbox(page);
+	await installFakeLive(page);
+	for (const start of [
+		`/projects/${E2E_PROJECT}`,
+		`/projects/${E2E_PROJECT}/settings`,
+		'/work',
+		'/projects'
+	]) {
+		await page.goto(start);
+		await page.waitForTimeout(1500);
+		for (const link of await page.getByRole('link').all()) {
+			if (await link.isVisible()) await link.hover();
+			await page.waitForTimeout(300);
+		}
+	}
+	expect(errors).toEqual([]);
+});
+
+test('client-side navigation does not crash', async ({ page }) => {
+	const errors = collectErrors(page);
+	await installFakeSandbox(page);
+	await installFakeLive(page);
+	await page.goto('/projects');
+	await page.waitForTimeout(1500);
+	await page
+		.getByRole('link', { name: /E2E project/ })
+		.first()
+		.click();
+	await expect(page.getByRole('heading', { name: 'Repositories' })).toBeVisible();
+	await page.getByRole('link', { name: 'Settings' }).last().click();
+	await expect(page.getByRole('button', { name: 'Edit repositories' })).toBeVisible();
+	await page.getByRole('link', { name: 'Overview' }).click();
+	await page.getByRole('link', { name: /Work items/ }).hover();
+	await page.waitForTimeout(500);
+	await page.getByRole('link', { name: /Work items/ }).click();
+	await page.waitForTimeout(1500);
+	await page.getByRole('link', { name: 'Projects' }).click();
+	await page
+		.getByRole('link', { name: /E2E project/ })
+		.first()
+		.click();
+	await page.waitForTimeout(1000);
+	expect(errors).toEqual([]);
+});
