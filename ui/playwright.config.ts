@@ -12,6 +12,8 @@ export default defineConfig({
 	use: {
 		baseURL: E2E_ORIGIN,
 		storageState: STORAGE_STATE,
+		// For E2E_PROD=1 (see e2e/serve.ts): what the Gateway adds in front of the production server.
+		extraHTTPHeaders: { 'X-Forwarded-Proto': 'http' },
 		trace: 'on-first-retry'
 	},
 	projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],

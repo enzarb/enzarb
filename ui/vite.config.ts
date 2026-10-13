@@ -16,7 +16,10 @@ export default defineConfig({
 			// After a deploy, open tabs notice the new version and do a full load on their next
 			// navigation instead of calling the new server with stale client code.
 			version: { pollInterval: 60_000 },
-			experimental: { remoteFunctions: true, forkPreloads: true }
+			// No `forkPreloads`: preloading in a fork (on hover) while live updates flush tears down
+			// deriveds that are still read, so Button got Svelte's internal UNINITIALIZED Symbol as its
+			// class/variant ("Cannot convert a Symbol value to a string"). Regression: e2e/pages.spec.ts.
+			experimental: { remoteFunctions: true }
 		})
 	],
 	test: {

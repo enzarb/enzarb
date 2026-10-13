@@ -11,7 +11,7 @@ export default mergeConfig(
 		resolve: {
 			alias: [
 				{
-					find: /^#lib\/server\/kube\.ts$/,
+					find: /^(#lib\/server|\.)\/kube\.ts$/,
 					replacement: path.resolve(import.meta.dirname, 'e2e/stubs/kube.ts')
 				}
 			]

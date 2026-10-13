@@ -15,7 +15,13 @@ function seedProject(): Project {
 			creationTimestamp: '2026-01-01T00:00:00Z',
 			generation: 1
 		},
-		spec: { owner: E2E_USER, displayName: 'E2E project' },
+		spec: {
+			owner: E2E_USER,
+			displayName: 'E2E project',
+			repositories: [
+				{ url: 'https://github.com/e2e-org/app', connector: 'github', defaultBranch: 'main' }
+			]
+		},
 		status: {
 			namespace: `enzarb-${E2E_PROJECT}`,
 			sandbox: { name: 'sandbox' },
@@ -56,6 +62,7 @@ export function createMemoryProjectStore(initial: Project[] = [seedProject()]): 
 				if (spec.maxRuns === null) delete p.spec.maxRuns;
 				else p.spec.maxRuns = spec.maxRuns;
 			}
+			if (spec.repositories !== undefined) p.spec.repositories = spec.repositories;
 			return p;
 		}
 	};
