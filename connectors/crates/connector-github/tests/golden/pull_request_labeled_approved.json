@@ -1,0 +1,32 @@
+{
+  "kind": "events",
+  "events": [
+    {
+      "specversion": "1.0",
+      "source": "github",
+      "id": "d-pull_request_labeled_approved",
+      "type": "ApprovalGranted",
+      "subject": "github:enzarb/enzarb-ui#57",
+      "time": "2026-10-08T13:45:00Z",
+      "data": {
+        "repo": "github:enzarb/enzarb-ui",
+        "actor": {
+          "login": "ruckc",
+          "id": 42,
+          "is_bot": false
+        },
+        "item": {
+          "kind": "change_request",
+          "number": 57,
+          "url": "https://github.com/enzarb/enzarb-ui/pull/57",
+          "title": "Fix sidebar overflow",
+          "body": "Closes #42",
+          "author": "ruckc",
+          "head_ref": "enzarb/issue-42",
+          "base_ref": "main",
+          "head_sha": "4f9c2a1b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a"
+        }
+      }
+    }
+  ]
+}

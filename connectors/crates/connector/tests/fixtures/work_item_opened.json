@@ -1,0 +1,7 @@
+{ "specversion": "1.0", "source": "github", "id": "d3", "type": "WorkItemOpened",
+  "subject": "github:enzarb/enzarb-ui#44", "time": "2026-10-08T13:00:00Z",
+  "data": {
+    "repo": "github:enzarb/enzarb-ui",
+    "actor": { "login": "dependabot[bot]", "id": 9, "is_bot": true },
+    "item": { "kind": "issue", "number": 44, "url": "https://github.com/enzarb/enzarb-ui/issues/44", "title": "t", "body": "b", "author": "dependabot[bot]", "head_ref": null, "base_ref": null, "head_sha": null }
+  } }

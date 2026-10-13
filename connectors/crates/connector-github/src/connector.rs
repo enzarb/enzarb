@@ -1,0 +1,943 @@
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+use async_trait::async_trait;
+use chrono::{DateTime, Duration, Utc};
+use enzarb_connector::{
+    Actor, ChangeRequestSpec, CheckSummary, CiInfo, CommentKind, CommentRef, CommitRef, Connector,
+    CredScope, Error, Event, ItemRef, MergeOutcome, MergeReadiness, Permission, Progress,
+    ProgressTarget, ReadCred, RepoKey, Result, ShortLivedCred, Status, StatusState, StatusSummary,
+    Thread, ThreadComment, WorkItemKey, aggregate_ci,
+};
+use jsonwebtoken::{Algorithm, EncodingKey, Header};
+use reqwest::Method;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+use crate::config::{BotIdentity, ConfigError, GitHubConfig};
+use crate::http::{Http, Resp, expect};
+use crate::normalize::{
+    Branch, Comment, CommitStatusChange, Issue, NormalizeError, Normalized, PullRequest, SOURCE,
+    User, ci_events,
+};
+
+/// Installation tokens are refreshed once they are within this long of expiry.
+const TOKEN_REFRESH_MARGIN: Duration = Duration::minutes(5);
+const PER_PAGE: usize = 100;
+const MAX_PAGES: usize = 200;
+
+#[derive(Serialize)]
+struct AppClaims {
+    iat: i64,
+    exp: i64,
+    iss: String,
+}
+
+#[derive(Deserialize)]
+struct TokenResponse {
+    token: String,
+    expires_at: DateTime<Utc>,
+}
+
+#[derive(Clone)]
+struct CachedToken {
+    token: String,
+    expires_at: DateTime<Utc>,
+}
+
+/// GitHub App implementation of [`Connector`].
+///
+/// Cheap to share behind an `Arc`; installation ids and tokens are cached
+/// in memory.
+pub struct GitHubConnector {
+    http: Http,
+    app_id: String,
+    key: EncodingKey,
+    bot: BotIdentity,
+    installations: Mutex<HashMap<String, u64>>,
+    tokens: Mutex<HashMap<u64, CachedToken>>,
+}
+
+impl std::fmt::Debug for GitHubConnector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GitHubConnector")
+            .field("app_id", &self.app_id)
+            .field("bot", &self.bot)
+            .finish_non_exhaustive()
+    }
+}
+
+fn github_repo(repo: &RepoKey) -> Result<()> {
+    if repo.connector == SOURCE {
+        Ok(())
+    } else {
+        Err(Error::Invalid(format!("not a github repo: {repo}")))
+    }
+}
+
+fn idem_marker(key: &str) -> Result<String> {
+    if key.is_empty() || key.contains("-->") || key.contains(['\n', '\r']) {
+        return Err(Error::Invalid(format!("bad idempotency key {key:?}")));
+    }
+    Ok(format!("<!-- enzarb:idem:{key} -->"))
+}
+
+fn reaction_content(p: Progress) -> &'static str {
+    match p {
+        Progress::Received => "eyes",
+        Progress::Working => "rocket",
+        Progress::Done => "+1",
+        Progress::Failed => "confused",
+    }
+}
+
+const PROGRESS_REACTIONS: [&str; 4] = ["eyes", "rocket", "+1", "confused"];
+
+impl GitHubConnector {
+    pub fn new(config: GitHubConfig) -> Result<Self> {
+        let key = EncodingKey::from_rsa_pem(config.private_key_pem.as_bytes())
+            .map_err(|e| Error::Invalid(format!("GITHUB_APP_PRIVATE_KEY: {e}")))?;
+        Ok(Self {
+            http: Http::new(&config.api_url, config.retry.clone())?,
+            app_id: config.app_id,
+            key,
+            bot: config.bot,
+            installations: Mutex::default(),
+            tokens: Mutex::default(),
+        })
+    }
+
+    /// Builds from `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`,
+    /// `ENZARB_BOT_HANDLE` and `ENZARB_BOT_LOGIN` (contracts section 9).
+    pub fn from_env() -> std::result::Result<Self, ConfigError> {
+        let cfg = GitHubConfig::from_env()?;
+        Self::new(cfg).map_err(|e| ConfigError::Invalid {
+            var: "GITHUB_APP_PRIVATE_KEY",
+            reason: e.to_string(),
+        })
+    }
+
+    pub fn bot(&self) -> &BotIdentity {
+        &self.bot
+    }
+
+    /// Normalizes a webhook delivery using this connector's bot identity.
+    /// The body must already be signature-checked.
+    pub fn normalize(
+        &self,
+        event_name: &str,
+        delivery_id: &str,
+        body: &[u8],
+    ) -> std::result::Result<Normalized, NormalizeError> {
+        self.bot.normalize(event_name, delivery_id, body)
+    }
+
+    // ---- auth ----
+
+    fn app_jwt(&self) -> Result<String> {
+        let now = Utc::now().timestamp();
+        let claims = AppClaims {
+            // Backdate to tolerate clock drift (GitHub's recommendation).
+            iat: now - 60,
+            exp: now + 9 * 60,
+            iss: self.app_id.clone(),
+        };
+        jsonwebtoken::encode(&Header::new(Algorithm::RS256), &claims, &self.key)
+            .map_err(|e| Error::Other(format!("signing app JWT: {e}")))
+    }
+
+    async fn installation_id(&self, repo: &RepoKey) -> Result<u64> {
+        let name = repo.full_name();
+        if let Some(id) = self.installations.lock().unwrap().get(&name) {
+            return Ok(*id);
+        }
+        #[derive(Deserialize)]
+        struct Inst {
+            id: u64,
+        }
+        let jwt = self.app_jwt()?;
+        let resp = self
+            .http
+            .send(
+                Method::GET,
+                &format!("/repos/{name}/installation"),
+                &jwt,
+                None,
+            )
+            .await?;
+        let inst: Inst = expect(&format!("find installation for {name}"), resp)?.json()?;
+        self.installations.lock().unwrap().insert(name, inst.id);
+        Ok(inst.id)
+    }
+
+    /// A cached installation token (refreshed 5 minutes before expiry).
+    async fn token(&self, repo: &RepoKey) -> Result<String> {
+        let id = self.installation_id(repo).await?;
+        let now = Utc::now();
+        if let Some(t) = self.tokens.lock().unwrap().get(&id)
+            && t.expires_at - TOKEN_REFRESH_MARGIN > now
+        {
+            return Ok(t.token.clone());
+        }
+        let t = self.create_token(id, None).await?;
+        self.tokens.lock().unwrap().insert(
+            id,
+            CachedToken {
+                token: t.token.clone(),
+                expires_at: t.expires_at,
+            },
+        );
+        Ok(t.token)
+    }
+
+    async fn create_token(
+        &self,
+        installation: u64,
+        restrict: Option<Value>,
+    ) -> Result<TokenResponse> {
+        let jwt = self.app_jwt()?;
+        let resp = self
+            .http
+            .send(
+                Method::POST,
+                &format!("/app/installations/{installation}/access_tokens"),
+                &jwt,
+                restrict.as_ref(),
+            )
+            .await?;
+        expect("create installation token", resp)?.json()
+    }
+
+    // ---- request helpers ----
+
+    async fn call(
+        &self,
+        repo: &RepoKey,
+        what: &str,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Resp> {
+        let resp = self.call_raw(repo, method, path, body).await?;
+        expect(what, resp)
+    }
+
+    /// Like [`call`](Self::call) but returns non-2xx responses as-is, for
+    /// callers that give specific statuses their own meaning.
+    async fn call_raw(
+        &self,
+        repo: &RepoKey,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Resp> {
+        github_repo(repo)?;
+        let token = self.token(repo).await?;
+        let resp = self
+            .http
+            .send(method.clone(), path, &token, body.as_ref())
+            .await?;
+        if resp.status == reqwest::StatusCode::UNAUTHORIZED {
+            // The cached token was revoked or expired early: drop it, retry once.
+            let id = self.installation_id(repo).await?;
+            self.tokens.lock().unwrap().remove(&id);
+            let token = self.token(repo).await?;
+            return self.http.send(method, path, &token, body.as_ref()).await;
+        }
+        Ok(resp)
+    }
+
+    /// GETs every page of an endpoint that wraps its list in an object
+    /// (`{"total_count": n, "<key>": [...]}`). Returns the first page's whole
+    /// body (for sibling fields such as the combined `state`) and all items.
+    async fn get_all_wrapped<T: serde::de::DeserializeOwned>(
+        &self,
+        repo: &RepoKey,
+        what: &str,
+        path: &str,
+        key: &str,
+    ) -> Result<(Value, Vec<T>)> {
+        let sep = if path.contains('?') { '&' } else { '?' };
+        let mut first = Value::Null;
+        let mut total = 0u64;
+        let mut out: Vec<T> = Vec::new();
+        for page in 1..=MAX_PAGES {
+            let p = format!("{path}{sep}per_page={PER_PAGE}&page={page}");
+            let root: Value = self.call(repo, what, Method::GET, &p, None).await?.json()?;
+            let items: Vec<T> =
+                serde_json::from_value(root.get(key).cloned().unwrap_or(Value::Array(vec![])))
+                    .map_err(|e| Error::Other(format!("unexpected GitHub response: {e}")))?;
+            if page == 1 {
+                total = root["total_count"].as_u64().unwrap_or(0);
+                first = root;
+            }
+            let n = items.len();
+            out.extend(items);
+            if n < PER_PAGE || out.len() as u64 >= total {
+                break;
+            }
+        }
+        Ok((first, out))
+    }
+
+    /// `AlreadyMerged` if the pull request is merged, else `None`.
+    async fn merged_outcome(&self, repo: &RepoKey, number: u64) -> Result<Option<MergeOutcome>> {
+        let pr = self.pull_state(repo, number).await?;
+        Ok(pr.merged.then_some(MergeOutcome::AlreadyMerged {
+            sha: pr.merge_commit_sha,
+        }))
+    }
+
+    async fn pull_state(&self, repo: &RepoKey, number: u64) -> Result<PullState> {
+        self.call(
+            repo,
+            "get pull request",
+            Method::GET,
+            &format!("/repos/{}/pulls/{number}", repo.full_name()),
+            None,
+        )
+        .await?
+        .json()
+    }
+
+    /// Turns a `status` delivery into `CiStatusChanged` events for the open
+    /// pull requests whose head is the status's commit. Empty when there are
+    /// none (a branch without a PR, or a commit GitHub cannot find).
+    pub async fn resolve_commit_status(&self, change: &CommitStatusChange) -> Result<Vec<Event>> {
+        let r = &change.repo;
+        let prs: Vec<PullRequest> = match self
+            .get_all(
+                r,
+                "list pull requests for commit",
+                &format!("/repos/{}/commits/{}/pulls", r.full_name(), change.sha),
+            )
+            .await
+        {
+            Ok(prs) => prs,
+            Err(Error::NotFound(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        let items: Vec<ItemRef> = prs
+            .iter()
+            .filter(|pr| {
+                pr.state.as_deref() == Some("open")
+                    && pr.head.sha.as_deref() == Some(change.sha.as_str())
+            })
+            .map(PullRequest::item)
+            .collect();
+        let ci = CiInfo {
+            head_sha: change.sha.clone(),
+            state: change.state,
+            context: change.context.clone(),
+            url: change.url.clone(),
+        };
+        Ok(ci_events(
+            &change.delivery,
+            r,
+            &change.actor,
+            change.time,
+            &ci,
+            items,
+        ))
+    }
+
+    /// GETs every page of a list endpoint.
+    async fn get_all<T: serde::de::DeserializeOwned>(
+        &self,
+        repo: &RepoKey,
+        what: &str,
+        path: &str,
+    ) -> Result<Vec<T>> {
+        let sep = if path.contains('?') { '&' } else { '?' };
+        let mut out = Vec::new();
+        for page in 1..=MAX_PAGES {
+            let p = format!("{path}{sep}per_page={PER_PAGE}&page={page}");
+            let items: Vec<T> = self.call(repo, what, Method::GET, &p, None).await?.json()?;
+            let n = items.len();
+            out.extend(items);
+            if n < PER_PAGE {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    async fn find_open_pr(&self, req: &ChangeRequestSpec) -> Result<Option<PullRequest>> {
+        let r = &req.repo;
+        let path = format!(
+            "/repos/{}/pulls?state=open&head={}:{}&base={}",
+            r.full_name(),
+            r.owner,
+            req.head_ref,
+            req.base_ref
+        );
+        let prs: Vec<PullRequest> = self
+            .call(r, "list pull requests", Method::GET, &path, None)
+            .await?
+            .json()?;
+        Ok(prs.into_iter().next())
+    }
+
+    async fn find_idem_comment(
+        &self,
+        item: &WorkItemKey,
+        marker: &str,
+    ) -> Result<Option<CommentRef>> {
+        let r = &item.repo;
+        let comments: Vec<Comment> = self
+            .get_all(
+                r,
+                "list comments",
+                &format!("/repos/{}/issues/{}/comments", r.full_name(), item.number),
+            )
+            .await?;
+        Ok(comments
+            .into_iter()
+            .find(|c| c.body.contains(marker))
+            .map(|c| c.comment_ref()))
+    }
+}
+
+#[derive(Deserialize)]
+struct ReviewComment {
+    #[serde(flatten)]
+    c: Comment,
+    user: User,
+}
+
+#[derive(Deserialize)]
+struct IssueComment {
+    #[serde(flatten)]
+    c: Comment,
+    user: User,
+}
+
+/// The parts of `GET /pulls/{n}` that merging and readiness read.
+#[derive(Deserialize)]
+struct PullState {
+    #[serde(default)]
+    merged: bool,
+    #[serde(default)]
+    merge_commit_sha: Option<String>,
+    head: Branch,
+    base: Branch,
+    /// `null` while GitHub computes it.
+    #[serde(default)]
+    mergeable: Option<bool>,
+    #[serde(default)]
+    mergeable_state: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CheckRun {
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    conclusion: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Reaction {
+    id: u64,
+    content: String,
+    user: Option<User>,
+}
+
+#[async_trait]
+impl Connector for GitHubConnector {
+    async fn fetch_thread(&self, item: &WorkItemKey) -> Result<Thread> {
+        let r = &item.repo;
+        let name = r.full_name();
+        let n = item.number;
+        let issue: Issue = self
+            .call(
+                r,
+                "get issue",
+                Method::GET,
+                &format!("/repos/{name}/issues/{n}"),
+                None,
+            )
+            .await?
+            .json()?;
+        let is_pr = issue.pull_request.is_some();
+        let item_ref = if is_pr {
+            let pr: PullRequest = self
+                .call(
+                    r,
+                    "get pull request",
+                    Method::GET,
+                    &format!("/repos/{name}/pulls/{n}"),
+                    None,
+                )
+                .await?
+                .json()?;
+            pr.item()
+        } else {
+            issue.item()
+        };
+
+        let mut comments: Vec<ThreadComment> = self
+            .get_all::<IssueComment>(
+                r,
+                "list comments",
+                &format!("/repos/{name}/issues/{n}/comments"),
+            )
+            .await?
+            .into_iter()
+            .map(|c| ThreadComment {
+                author: c.user.actor(),
+                created_at: c.c.created_at,
+                comment: c.c.comment_ref(),
+            })
+            .collect();
+        if is_pr {
+            let review = self
+                .get_all::<ReviewComment>(
+                    r,
+                    "list review comments",
+                    &format!("/repos/{name}/pulls/{n}/comments"),
+                )
+                .await?;
+            comments.extend(review.into_iter().map(|c| ThreadComment {
+                author: c.user.actor(),
+                created_at: c.c.created_at,
+                comment: c.c.comment_ref(),
+            }));
+        }
+        // Oldest first; id breaks ties (and orders when timestamps are absent).
+        comments.sort_by_key(|c| (c.created_at, c.comment.id));
+        Ok(Thread {
+            item: item_ref,
+            comments,
+        })
+    }
+
+    async fn post_comment(
+        &self,
+        item: &WorkItemKey,
+        body: &str,
+        idempotency_key: &str,
+    ) -> Result<CommentRef> {
+        let marker = idem_marker(idempotency_key)?;
+        if let Some(existing) = self.find_idem_comment(item, &marker).await? {
+            return Ok(existing);
+        }
+        let r = &item.repo;
+        let resp = self
+            .call(
+                r,
+                "post comment",
+                Method::POST,
+                &format!("/repos/{}/issues/{}/comments", r.full_name(), item.number),
+                Some(json!({ "body": format!("{body}\n\n{marker}") })),
+            )
+            .await?;
+        Ok(resp.json::<Comment>()?.comment_ref())
+    }
+
+    async fn open_change_request(
+        &self,
+        req: ChangeRequestSpec,
+        _idempotency_key: &str,
+    ) -> Result<ItemRef> {
+        let r = &req.repo;
+        let name = r.full_name();
+        if let Some(pr) = self.find_open_pr(&req).await? {
+            return Ok(pr.item());
+        }
+        let created = self
+            .call(
+                r,
+                "open pull request",
+                Method::POST,
+                &format!("/repos/{name}/pulls"),
+                Some(json!({
+                    "title": req.title,
+                    "body": req.body,
+                    "head": req.head_ref,
+                    "base": req.base_ref,
+                    "draft": req.draft,
+                })),
+            )
+            .await;
+        match created {
+            Ok(resp) => Ok(resp.json::<PullRequest>()?.item()),
+            // Lost a race with a concurrent attempt: GitHub says one exists.
+            Err(Error::Invalid(msg)) if msg.contains("already exists") => self
+                .find_open_pr(&req)
+                .await?
+                .map(|pr| pr.item())
+                .ok_or(Error::Invalid(msg)),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn set_status(
+        &self,
+        target: &CommitRef,
+        status: Status,
+        _idempotency_key: &str,
+    ) -> Result<()> {
+        let state = match status.state {
+            StatusState::Pending => "pending",
+            StatusState::Success => "success",
+            StatusState::Failure => "failure",
+            StatusState::Error => "error",
+        };
+        // GitHub limits descriptions to 140 characters.
+        let description: String = status.description.chars().take(140).collect();
+        let mut body = json!({
+            "state": state,
+            "context": status.context,
+            "description": description,
+        });
+        if let Some(url) = status.target_url {
+            body["target_url"] = url.into();
+        }
+        self.call(
+            &target.repo,
+            "set commit status",
+            Method::POST,
+            &format!("/repos/{}/statuses/{}", target.repo.full_name(), target.sha),
+            Some(body),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn set_progress(
+        &self,
+        target: &ProgressTarget,
+        progress: Progress,
+        _idempotency_key: &str,
+    ) -> Result<()> {
+        let r = &target.item.repo;
+        let name = r.full_name();
+        let base = match target.comment_id {
+            Some(c) if target.comment_kind == CommentKind::Review => {
+                format!("/repos/{name}/pulls/comments/{c}/reactions")
+            }
+            Some(c) => format!("/repos/{name}/issues/comments/{c}/reactions"),
+            None => format!("/repos/{name}/issues/{}/reactions", target.item.number),
+        };
+        let want = reaction_content(progress);
+        // Add first so there is never a moment with no marker. POST is
+        // idempotent: an existing reaction by the app returns 200.
+        self.call(
+            r,
+            "add reaction",
+            Method::POST,
+            &base,
+            Some(json!({ "content": want })),
+        )
+        .await?;
+        let existing: Vec<Reaction> = self.get_all(r, "list reactions", &base).await?;
+        for old in existing {
+            let ours = old
+                .user
+                .as_ref()
+                .is_some_and(|u| u.login.eq_ignore_ascii_case(&self.bot.login));
+            if ours && old.content != want && PROGRESS_REACTIONS.contains(&old.content.as_str()) {
+                self.call(
+                    r,
+                    "remove reaction",
+                    Method::DELETE,
+                    &format!("{base}/{}", old.id),
+                    None,
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn merge_change_request(
+        &self,
+        item: &WorkItemKey,
+        number: u64,
+        expected_head_sha: &str,
+        commit_title: &str,
+        commit_body: Option<&str>,
+        _idempotency_key: &str,
+    ) -> Result<MergeOutcome> {
+        let r = &item.repo;
+        github_repo(r)?;
+        // GitHub has no marker for an idempotency key; a merged PR is the record.
+        if let Some(done) = self.merged_outcome(r, number).await? {
+            return Ok(done);
+        }
+        let mut body = json!({
+            "merge_method": "squash",
+            "sha": expected_head_sha,
+            "commit_title": commit_title,
+        });
+        if let Some(b) = commit_body {
+            body["commit_message"] = b.into();
+        }
+        let resp = self
+            .call_raw(
+                r,
+                Method::PUT,
+                &format!("/repos/{}/pulls/{number}/merge", r.full_name()),
+                Some(body),
+            )
+            .await?;
+        match resp.status {
+            reqwest::StatusCode::METHOD_NOT_ALLOWED | reqwest::StatusCode::CONFLICT => {
+                // A concurrent or earlier attempt may have won.
+                if let Some(done) = self.merged_outcome(r, number).await? {
+                    return Ok(done);
+                }
+                if resp.status == reqwest::StatusCode::CONFLICT {
+                    return Ok(MergeOutcome::HeadMoved);
+                }
+                let reason = serde_json::from_slice::<Value>(&resp.body)
+                    .ok()
+                    .and_then(|v| v["message"].as_str().map(str::to_string))
+                    .unwrap_or_else(|| "not mergeable".to_string());
+                Ok(MergeOutcome::NotMergeable { reason })
+            }
+            _ => {
+                #[derive(Deserialize)]
+                struct Merged {
+                    sha: String,
+                }
+                let resp = expect("merge pull request", resp)?;
+                Ok(MergeOutcome::Merged {
+                    sha: resp.json::<Merged>()?.sha,
+                })
+            }
+        }
+    }
+
+    async fn get_merge_readiness(&self, item: &WorkItemKey, number: u64) -> Result<MergeReadiness> {
+        let r = &item.repo;
+        let pr = self.pull_state(r, number).await?;
+        let head_sha = pr
+            .head
+            .sha
+            .ok_or_else(|| Error::Other(format!("pull request {number} has no head sha")))?;
+        let name = r.full_name();
+        let (combined, _): (Value, Vec<Value>) = self
+            .get_all_wrapped(
+                r,
+                "get combined status",
+                &format!("/repos/{name}/commits/{head_sha}/status"),
+                "statuses",
+            )
+            .await?;
+        let (_, runs): (Value, Vec<CheckRun>) = self
+            .get_all_wrapped(
+                r,
+                "list check runs",
+                &format!("/repos/{name}/commits/{head_sha}/check-runs"),
+                "check_runs",
+            )
+            .await?;
+        let checks: Vec<CheckSummary> = runs
+            .into_iter()
+            .map(|c| CheckSummary {
+                status: c.status,
+                conclusion: c.conclusion,
+            })
+            .collect();
+        let statuses = StatusSummary {
+            total_count: combined["total_count"].as_u64().unwrap_or(0),
+            state: combined["state"].as_str().unwrap_or_default().to_string(),
+        };
+        Ok(MergeReadiness {
+            head_sha,
+            base_sha: pr.base.sha,
+            mergeable: pr.mergeable,
+            mergeable_state: pr.mergeable_state.unwrap_or_default(),
+            ci: aggregate_ci(&checks, &statuses),
+        })
+    }
+
+    async fn branch_head(&self, repo: &RepoKey, branch: &str) -> Result<Option<String>> {
+        #[derive(Deserialize)]
+        struct Commit {
+            sha: String,
+        }
+        #[derive(Deserialize)]
+        struct BranchInfo {
+            commit: Commit,
+        }
+        let path = format!(
+            "/repos/{}/branches/{}",
+            repo.full_name(),
+            encode_path(branch)
+        );
+        // Resolve auth first so a missing installation is not mistaken for a
+        // missing branch below.
+        github_repo(repo)?;
+        self.token(repo).await?;
+        match self
+            .call(repo, "get branch", Method::GET, &path, None)
+            .await
+        {
+            Ok(r) => Ok(Some(r.json::<BranchInfo>()?.commit.sha)),
+            Err(Error::NotFound(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn check_permission(&self, repo: &RepoKey, actor: &Actor) -> Result<Permission> {
+        #[derive(Deserialize)]
+        struct Perm {
+            permission: String,
+            #[serde(default)]
+            role_name: Option<String>,
+        }
+        let path = format!(
+            "/repos/{}/collaborators/{}/permission",
+            repo.full_name(),
+            actor.login
+        );
+        // Resolve auth first so a missing installation is not mistaken for a
+        // missing user below.
+        github_repo(repo)?;
+        self.token(repo).await?;
+        let perm: Perm = match self
+            .call(repo, "check permission", Method::GET, &path, None)
+            .await
+        {
+            Ok(r) => r.json()?,
+            // Unknown user: no access.
+            Err(Error::NotFound(_)) => return Ok(Permission::None),
+            Err(e) => return Err(e),
+        };
+        // `permission` only distinguishes admin/write/read/none; `role_name`
+        // also carries maintain and triage.
+        let role = perm.role_name.as_deref().unwrap_or(&perm.permission);
+        Ok(match role {
+            "admin" => Permission::Admin,
+            "maintain" => Permission::Maintain,
+            "write" => Permission::Write,
+            "triage" => Permission::Triage,
+            "read" => Permission::Read,
+            _ => match perm.permission.as_str() {
+                "admin" => Permission::Admin,
+                "write" => Permission::Write,
+                "read" => Permission::Read,
+                _ => Permission::None,
+            },
+        })
+    }
+
+    async fn mint_clone_credential(
+        &self,
+        repo: &RepoKey,
+        scope: CredScope,
+        _idempotency_key: &str,
+    ) -> Result<ShortLivedCred> {
+        github_repo(repo)?;
+        let level = match scope {
+            CredScope::Read => "read",
+            CredScope::ReadWrite => "write",
+        };
+        let id = self.installation_id(repo).await?;
+        let mut permissions = json!({ "contents": level, "pull_requests": level });
+        // GitHub only offers `workflows: write` (no read level), so only
+        // read-write tokens carry it; agents may edit `.github/workflows`.
+        if scope == CredScope::ReadWrite {
+            permissions["workflows"] = json!("write");
+        }
+        let t = self
+            .create_token(
+                id,
+                Some(json!({
+                    "repositories": [repo.repo],
+                    "permissions": permissions,
+                })),
+            )
+            .await?;
+        Ok(ShortLivedCred {
+            token: t.token,
+            repo: repo.clone(),
+            scope,
+            expires_at: t.expires_at,
+        })
+    }
+
+    async fn mint_read_credential(
+        &self,
+        repos: &[RepoKey],
+        _purpose: &str,
+    ) -> Result<Option<ReadCred>> {
+        let Some(first) = repos.first() else {
+            return Err(Error::Invalid("no repos for read credential".into()));
+        };
+        for r in repos {
+            github_repo(r)?;
+        }
+        // One token has one installation (one owner): every repo must resolve
+        // to the first repo's installation, otherwise it is outside it.
+        let id = self.installation_id(first).await?;
+        let mut names: Vec<String> = Vec::with_capacity(repos.len());
+        for r in repos {
+            if r.owner != first.owner || self.installation_id(r).await? != id {
+                return Err(Error::Invalid(format!(
+                    "{r} is outside the installation of {first}"
+                )));
+            }
+            if !names.contains(&r.repo) {
+                names.push(r.repo.clone());
+            }
+        }
+        // `packages: read` lets the sandbox `npm ci` private packages from
+        // npm.pkg.github.com. The App may not have been granted it yet (or the
+        // installation not accepted it): GitHub then rejects the whole request,
+        // so fall back to contents-only rather than break the deps token.
+        let wide = json!({
+            "repositories": names,
+            "permissions": { "contents": "read", "packages": "read" },
+        });
+        let t = match self.create_token(id, Some(wide)).await {
+            Ok(t) => t,
+            Err(Error::Invalid(m) | Error::PermissionDenied(m)) if is_permission_rejection(&m) => {
+                // Only the status/body from GitHub is logged, never a token.
+                tracing::warn!(
+                    "GitHub rejected packages:read for the deps credential; \
+                     falling back to contents:read (grant the App Packages: read): {m}"
+                );
+                self.create_token(
+                    id,
+                    Some(json!({
+                        "repositories": names,
+                        "permissions": { "contents": "read" },
+                    })),
+                )
+                .await?
+            }
+            Err(e) => return Err(e),
+        };
+        Ok(Some(ReadCred {
+            token: t.token,
+            repos: repos.to_vec(),
+            expires_at: t.expires_at,
+        }))
+    }
+}
+
+/// Percent-encode everything except unreserved characters and `/`.
+fn encode_path(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Whether an error from the token endpoint is GitHub refusing the requested
+/// permissions (422 or 403 whose body names permissions), as opposed to a bad
+/// JWT or an unknown installation.
+fn is_permission_rejection(detail: &str) -> bool {
+    (detail.contains(": 422 ") || detail.contains(": 403 "))
+        && detail.to_ascii_lowercase().contains("permission")
+}
