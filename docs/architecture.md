@@ -107,7 +107,7 @@ flowchart LR
 **Chat.** The Chat page uses the same socket with an `acp` channel ([ADR-0014](adr/0014-chat-tab-acp-over-mux.md), [design](design/chat-tab.md)): sandbox-init runs one `claude-agent-acp` per chat in its own worktree and relays ACP JSON-RPC through a filter; permission requests are hard-denied by policy or decided by the user, never auto-approved.
 
 ### 3. Claude credentials
-The user runs a guided `claude setup-token` in the sandbox terminal, and pid-1 captures the `sk-ant-oat01-` token. Third-party OAuth against Claude subscriptions is not allowed by Anthropic's terms ([ADR-0004](adr/0004-claude-credentials.md)).
+The user runs a guided `claude setup-token` in the terminal of any of their sandboxes, and pid-1 captures the `sk-ant-oat01-` token. The token is per user, not per Project: pid-1 hands it to the proxy over the mux connection, and the proxy stores it encrypted in Postgres (one row per user, key from a Secret mounted only into the proxy and workflows). Workflows sends the Project owner's token with each job's `RunStart`, and the proxy hands it to the sandbox when a chat opens; the sandbox keeps no copy on disk. The token never reaches the browser or the UI. Third-party OAuth against Claude subscriptions is not allowed by Anthropic's terms ([ADR-0004](adr/0004-claude-credentials.md)).
 
 ### 4. Event-driven workflow (e.g. a new GitHub issue)
 1. GitHub → `connectors receiver`: it checks the signature, normalizes the payload, calls `workflows_api.ingest_event`, and returns 200 within 10s.

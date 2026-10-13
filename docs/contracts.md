@@ -81,7 +81,7 @@ One Project per repository: a repo key (`RepoKey::from_connector_url`, compared 
 
 **Config (env):**
 - Core: `ENZARB_LISTEN` (default `0.0.0.0:7070`), `ENZARB_AUTH_TOKEN_FILE`, `ENZARB_WORKSPACE` (`/workspace`), `ENZARB_SHELL`, `ENZARB_GRACE_SECS` (25; the pod's `terminationGracePeriodSeconds` must be larger).
-- Runs: `ENZARB_MAX_RUNS` (2), `ENZARB_RUN_TIMEOUT_SECS` (3600), `ENZARB_CALLBACK_BACKOFF_MS`, `ENZARB_GIT_NAME`, `ENZARB_GIT_EMAIL`, `ENZARB_CLAUDE_TOKEN_FILE`.
+- Runs: `ENZARB_MAX_RUNS` (2), `ENZARB_RUN_TIMEOUT_SECS` (3600), `ENZARB_CALLBACK_BACKOFF_MS`, `ENZARB_GIT_NAME`, `ENZARB_GIT_EMAIL`, `ENZARB_CLAUDE_TOKEN_FILE` (legacy only: the per-Project legacy file, read when `claude_token` is absent; removed with the fallback).
 - Agent: `ENZARB_ACP_AGENT_BIN` (default `claude-agent-acp`), `ENZARB_CANCEL_GRACE_SECS` (10), `ENZARB_PERMISSION_POLICY` (YAML/JSON file; built-in default when unset).
 - Chat (ADR-0014; sandbox-init config only, no Project spec field): `ENZARB_MAX_CHATS` (1; `0` disables chat and removes `acp` from `welcome.features`; chats never use `ENZARB_MAX_RUNS` slots), `ENZARB_CHAT_IDLE_SECS` (1800), `ENZARB_CHAT_MAX_SECS` (28800), `ENZARB_CHAT_RETENTION_DAYS` (7).
 - Chat permission mode (ADR-0014 amendment 2026-10-12 (2); sandbox-init config only): `ENZARB_CHAT_PERMISSION_MODE` (`bypassPermissions` default | `default` | `plan`; other values fail startup; defaults to `default` when bypass is not allowed) and `ENZARB_CHAT_ALLOW_BYPASS` (true; `false` makes bypass unavailable, and `false` with an explicit bypass mode fails startup). Browser-bound `_enzarb/mode {sessionId, modeId, bypassAllowed}` is sent after session establishment and after each successful `session/set_mode`. The `session/set_mode` allowlist is {`bypassPermissions` (only while allowed), `default`, `plan`}. In bypass the agent sends no `session/request_permission` for ordinary tool calls, so `Policy::hard_deny` applies only in `default`/`plan`. Agent jobs are unchanged.
@@ -93,7 +93,7 @@ One Project per repository: a repo key (`RepoKey::from_connector_url`, compared 
   - Edits are limited to the worktree.
   - Reads (Read/Grep/Glob and read-only shell utilities) may also reach the Project's other repo checkouts and worktrees (`/workspace/repos`, `/workspace/worktrees`). Writes, `cd` and docker bind mounts stay inside the run's own worktree (enzarb-sandbox-container#27).
   - `git -C <dir>` is allowed only for a `<dir>` in the read roots and a read-only subcommand (`status`, `log`, `show`, `diff`, `rev-parse`, `ls-files`, `ls-tree`, `grep`, `blame`, `branch --list`, `cat-file`).
-  - Secrets are unreadable under any root: `.enzarb` (including `claude-token`), `.git-credentials`, `.gitconfig`, `.netrc`, git credential helper config.
+  - Secrets are unreadable under any root: `.enzarb` (including the legacy `claude-token`), `.git-credentials`, `.gitconfig`, `.netrc`, git credential helper config.
   - Commands must match the allowlist; shell metacharacters and expansions are denied.
   - Network fetch is denied unless the host is allowlisted.
 - **Summary:** the verbatim agent text of the turn. `exit_code` is 0 on `end_turn`, the agent's code on a crash, and null when cancelled or timed out.
@@ -141,7 +141,7 @@ Secrets are redacted from all records.
 - `/workspace/worktrees/chat-<chat_id>/`: a chat's worktree (`chat_id` is 16 random hex chars), detached at `origin/<default branch>` of the chosen clone; commits go on the local branch `enzarb/chat-<chat_id>`. `run-*` pruning never touches it; a sweep removes chat worktrees with no live channel and no activity for `ENZARB_CHAT_RETENTION_DAYS`.
 - `/workspace/.enzarb/chats/<chat_id>/`: `meta.json` (`acp_session_id`, `repo`, `worktree`, `created`, `last_active`) and `transcript.jsonl` (0600; same record kinds as runs, plus `prompt`).
 - `/workspace/.enzarb/chat-home/.claude`: `CLAUDE_CONFIG_DIR` for chat agents, so `session/load` survives pod restarts.
-- `/workspace/.enzarb/claude-token`: mode 0600.
+- `/workspace/.enzarb/claude-token`: mode 0600. Legacy per-Project token, read only while `claude_token` is absent from `run_start`/`open`. On connect sandbox-init promotes it with `credential_captured{legacy:true}` (first Project wins), then deletes it when the proxy answers `credential_state{configured:true}`. New captures are never written to disk.
 
 ## 4. enzarb-proto messages
 
@@ -153,17 +153,24 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
 |---|---|---|
 | `hello` | client → server | `versions: [1]`, `client: "ui" \| "proxy" \| "executor"` |
 | `welcome` | server → client | `version`, `features?: [string]` (optional; `"acp"` when chat is enabled; absent means none) |
-| `open` | client → server | `channel`, `kind: "pty" \| "acp"`, `cols`, `rows`, `command?: [..]`, `repo?`, `resume?` (see below) |
+| `open` | client → server | `channel`, `kind: "pty" \| "acp"`, `cols`, `rows`, `command?: [..]`, `repo?`, `resume?`, `claude_token?` (acp only; set by the proxy) (see below) |
 | `opened` / `open_error` | server → client | `channel` / `channel, message, code?` |
 | `resize` | client → server | `channel`, `cols`, `rows` |
 | `run_start` | client → server | see below |
 | `run_accepted` | server → client | `run_id`, `state`, `existing: bool` |
 | `run_status` → `run_state` | both | `run_id` → `run_id, state, exit_code?, summary?` |
 | `run_cancel` | client → server | `run_id` |
-| `credential_captured` | server → client | `kind: "claude_oauth"` |
+| `credential_captured` | server → client | `kind: "claude_oauth"`, `token?` (the captured token; **proxy-only**: the proxy consumes the frame, encrypts and stores the token in Postgres, never forwards it to the browser and never logs it), `legacy?: bool` (a promoted legacy file: store only if the user has no token) |
 | `credential_status` | client → server | (none); browsers may send it |
-| `credential_state` | server → client | `kind: "claude_oauth"`, `configured: bool` |
+| `credential_state` | server → client | `kind: "claude_oauth"`, `configured: bool`, `scope?: "user"` (the Claude token is per user, ADR-0004 amendment 2026-10-13). The proxy also sends it to the sandbox as the answer to a `legacy` capture |
+| `credential_clear` | client → server | `kind: "claude_oauth"`; browsers may send it (on the proxy's allowlist). The proxy handles it locally by deleting the owner's row (`claude_credential_delete`) and answers `credential_state{configured:false, scope:"user"}`; it is not forwarded to the sandbox |
 | `error` | both | `code`, `message`, `run_id?`, `channel?` (a `run_id` routes the error to that run's pending request) |
+
+**Claude token (per user, ADR-0004 amendment 2026-10-13):** one encrypted row per user in Postgres (`app.claude_credentials`, see [database.md](database.md)), keyed by the authenticated `spec.owner`, never by frame content. No Kubernetes Secret holds it, and the sandbox keeps no copy on disk. The proxy is the only writer (it consumes `credential_captured`, and handles `credential_clear`); the ciphertext is readable only by the proxy and the workflows executor, and the UI sees presence and `updated_at` only (`app_api.claude_credential_v`). Delivery is additive in proto (protocol version stays 1; old decoders ignore the fields):
+- **Jobs:** `run_start.claude_token` (optional), set by workflows per run from the Project owner's row, like `npm_token`. It is not stored in `jobs.input`, not written to `request.json`, state, callback files or the legacy file, exposed only as `CLAUDE_CODE_OAUTH_TOKEN` to the agent process, redacted (and its encodings) from transcripts, summaries and callbacks, and redacted in `RunStart` debug output. An owner without a row fails the job before dispatch with a non-retried "owner has no Claude credential" (`no_credential`).
+- **Chats:** `open{kind:"acp"}` gains `claude_token` (optional), set **only by the proxy** when it forwards the browser's `open` to the sandbox. The proxy drops any browser-supplied value, and answers the browser with `open_error{code:"no_credential"}` itself when the owner has no row. sandbox-init puts it in the chat child's environment only.
+- **Fallback during rollout:** the sandbox image rolls out first (ADR-0004 Rollout order), before the proxy and workflows enforce `no_credential`, so legacy files are promoted before enforcement. Until removal, when `claude_token` is absent sandbox-init still reads the legacy `/workspace/.enzarb/claude-token` if present; otherwise it answers `no_credential`. The fallback is removed once every sandbox runs the new image and the proxy has logged no `legacy` capture for 7 days.
+- **Logging:** Debug and tracing output of the `open` frame and of `claude_credential_get` results (proxy and workflows) redacts `claude_token`, as `RunStart` debug output does. `credential_captured.token` is never logged either.
 
 **`acp` channels (ADR-0014; additive, protocol version stays 1):**
 - `kind: "acp"` opens a byte stream of newline-delimited JSON-RPC (ACP) in DATA_BIN; messages may span frames. `cols`/`rows` are ignored (clients send `0`). `repo` (optional) names a Project repo URL that must already be cloned; `resume` (optional) is the ACP session id, informational only.
@@ -184,8 +191,10 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
   "callback_token": "<hex HMAC-SHA256(executor secret, run_id)>",
   "log_channel": null,
   "deps_token": "<optional, omitted when absent>",
-  "npm_token": "<optional, omitted when absent>" }
+  "npm_token": "<optional, omitted when absent>",
+  "claude_token": "<optional: the Project owner's Claude token, omitted when absent>" }
 ```
+- **`claude_token`** (optional, additive): see "Claude token" above.
 - **`npm_token`** (optional, additive): a **long-lived** token with `read:packages`, for `npm ci` of private `@enzarb/*` packages on npm.pkg.github.com. GitHub App installation tokens cannot read org packages even with `packages: read` (E403 "Permission installation not allowed to Read organization package"), so `deps_token` cannot serve that role. The workflows executor reads it from `ENZARB_NPM_TOKEN` / `ENZARB_NPM_TOKEN_FILE` (in the chart: Secret `enzarb-updater-registry`, key `registry-token`) and sets it on implement, address-comments, resolve-conflicts and review runs only; it is never stored in `jobs.input`. sandbox-init exposes it to the agent process only, as `NODE_AUTH_TOKEN` (it takes precedence over the `deps_token` fallback; `ENZARB_DEPS_TOKEN` keeps feeding cargo/git), redacts it (and its basic-auth base64 forms) from transcripts, summaries and callbacks, and never writes it to `request.json`, state, callback files or an `.npmrc`. Debug output of `RunStart` redacts it. Absent means `NODE_AUTH_TOKEN` falls back to `deps_token`.
 - **Wire details** (`enzarb-proto/docs/protocol.md` and the `enzarb_proto::Ctrl` enum are the source of truth):
   - 10-byte big-endian header: type, flags (0), channel u32, length u32. Max payload 1 MiB, one frame per websocket binary message.
@@ -270,7 +279,8 @@ workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated
 
 - **URL:** `wss://<host>/sandbox/v1/projects/<project>/mux?token=<jwt>`. Browsers can't set headers on websockets.
 - **JWT:** HS256, signed with `ENZARB_SESSION_JWT_SECRET`, which ui and proxy share. Claims: `sub` (GitHub login), `project`, `aud: "enzarb-sandbox-proxy"`, `exp` (≤ 5 min after issue; it is checked only at connect).
-- **Chat:** uses the same URL, token and authorization. The proxy's CTRL allowlist additionally admits `open{kind:"acp"}` (still not `run_*`), relays `acp` DATA byte for byte, and forwards `welcome.features` as described in section 4. `PROXY_IDLE_TIMEOUT_SECS` must be at least `ENZARB_CHAT_IDLE_SECS` (default 2100 s, 35 min).
+- **Chat:** uses the same URL, token and authorization. The proxy's CTRL allowlist additionally admits `open{kind:"acp"}` and `credential_clear` (still not `run_*`), relays `acp` DATA byte for byte, and forwards `welcome.features` as described in section 4. `PROXY_IDLE_TIMEOUT_SECS` must be at least `ENZARB_CHAT_IDLE_SECS` (default 2100 s, 35 min).
+- **Claude token (ADR-0004 amendment 2026-10-13):** the proxy needs a Postgres role (`enzarb_sandbox_proxy`) and the keyring Secret `enzarb-claude-key`, but **no new Secret RBAC** in `enzarb-sandboxes` (ADR-0013 unchanged). On the mux connection it strips browser-supplied `claude_token`, injects the owner's on `acp` opens, consumes `credential_captured` and handles `credential_clear` itself.
 - **Proxy authorization:** the proxy checks that `sub` is the Project's `spec.owner`, resolves `status.sandbox.endpoint` and the auth Secret, and dials sandbox-init with `client: "proxy"`.
 
 ### 7a. Browser realtime stream (enzarb-realtime)
