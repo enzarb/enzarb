@@ -2,7 +2,6 @@ name: ci-sandbox-proxy
 on:
   push:
     branches: [main]
-    tags: ['sandbox-proxy/v*']
     paths: &paths
       - 'sandbox-proxy/**'
       - 'proto/**'

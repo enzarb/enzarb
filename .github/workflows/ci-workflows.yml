@@ -2,7 +2,6 @@ name: ci-workflows
 on:
   push:
     branches: [main]
-    tags: ['workflows/v*']
     paths: &paths
       - 'workflows/**'
       - 'operator/**'

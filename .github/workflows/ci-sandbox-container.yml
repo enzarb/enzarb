@@ -2,7 +2,6 @@ name: ci-sandbox-container
 on:
   push:
     branches: [main]
-    tags: ['sandbox-container/v*']
     paths: &paths
       - 'sandbox-container/**'
       - 'proto/**'
