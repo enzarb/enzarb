@@ -1,5 +1,6 @@
 import {
 	availableActions,
+	classifyNeedsYou,
 	itemTitle,
 	itemUrl,
 	parseReadiness,
@@ -37,6 +38,9 @@ interface ItemRow {
 	updated_at: Date;
 }
 
+/** Hard cap on the needs-you queue. */
+const NEEDS_YOU_CAP = 200;
+
 const iso = (d: Date | string) => new Date(d).toISOString();
 
 function summary(r: ItemRow): WorkItemSummary {
@@ -48,7 +52,8 @@ function summary(r: ItemRow): WorkItemSummary {
 		state: r.state,
 		title: itemTitle(r.key, r.state_data),
 		url: itemUrl(r.key, r.state_data),
-		updatedAt: iso(r.updated_at)
+		updatedAt: iso(r.updated_at),
+		needs: classifyNeedsYou({ workflow: r.workflow, state: r.state, stateData: r.state_data })
 	};
 }
 
@@ -108,6 +113,40 @@ export function workService(sql: Sql, projects: readonly string[]) {
 				ORDER BY updated_at DESC, id DESC
 				LIMIT 500`;
 			return rows.map(summary);
+		},
+
+		/**
+		 * Items waiting on the user, oldest first. Not limited by recency (only the hard cap), so old
+		 * waiting items are never pushed out by newer activity.
+		 */
+		async listNeedsYou(): Promise<WorkItemSummary[]> {
+			if (owned.size === 0) return [];
+			const rows = await sql<ItemRow[]>`
+				SELECT id, key, project, workflow, state, state_data, updated_at
+				FROM workflows_api.work_item_v
+				WHERE project IN ${sql([...owned])}
+					AND (state IN ('AwaitingApproval', 'ReadyToMerge', 'AwaitingChanges', 'Failed', 'Stale')
+						OR (workflow = 'change_request'
+							AND state NOT IN ('Done', 'Duplicate', 'Cancelled', 'Merged', 'Closed')))
+				ORDER BY updated_at ASC, id ASC`;
+			return rows
+				.map(summary)
+				.filter((i) => i.needs)
+				.slice(0, NEEDS_YOU_CAP);
+		},
+
+		/** Sanitized HTML of the latest plan job's output; null when there is none or the item is not owned. */
+		async plan(id: number): Promise<string | null> {
+			if (!(await load(id))) return null;
+			const jobs = await sql<{ output: unknown }[]>`
+				SELECT output FROM workflows_api.job_v
+				WHERE work_item_id = ${id} AND kind = 'agent_plan' AND output IS NOT NULL
+				ORDER BY created_at DESC, id DESC`;
+			for (const j of jobs) {
+				const md = jobOutputMarkdown(j.output);
+				if (md) return renderMarkdown(md);
+			}
+			return null;
 		},
 
 		/** Null for missing items and items of projects the user does not own. */

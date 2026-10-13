@@ -191,3 +191,64 @@ describe('workService against workflows_api', () => {
 		expect(await svc.submitAction(id, { login: 'alice', id: 7 }, 'retry')).toBeGreaterThan(0);
 	});
 });
+
+describe('workService needs-you queue', () => {
+	let container: StartedPostgreSqlContainer;
+	let sql: postgres.Sql;
+
+	beforeAll(async () => {
+		container = await new PostgreSqlContainer('postgres:18').start();
+		sql = postgres(container.getConnectionUri(), { onnotice: () => {} });
+		await applyWorkflowsSchema(sql);
+	}, 120_000);
+
+	afterAll(async () => {
+		await sql?.end();
+		await container?.stop();
+	});
+
+	it('lists waiting items of owned projects only, oldest first, beyond 500 newer rows', async () => {
+		const oldApproval = await seedItem(sql, {
+			key: 'github:acme/q#1',
+			project: 'q',
+			state: 'AwaitingApproval'
+		});
+		await sql`UPDATE workflows.work_items SET updated_at = now() - interval '30 days' WHERE id = ${oldApproval}`;
+		await sql`
+			INSERT INTO workflows.work_items (key, project_id, workflow, state, state_data)
+			SELECT 'github:acme/q#' || (100 + n), 'q', 'issue', 'Done', '{}'::jsonb FROM generate_series(1, 520) n`;
+		const failed = await seedItem(sql, { key: 'github:acme/q#2', project: 'q', state: 'Failed' });
+		const blocked = await seedItem(sql, {
+			key: 'github:acme/q#3',
+			project: 'q',
+			workflow: 'change_request',
+			state: 'Reviewing',
+			stateData: { checklist: { ci: { status: 'failed', detail: 'tests red' } } }
+		});
+		await seedItem(sql, { key: 'github:acme/q#4', project: 'q', state: 'Planning' });
+		await seedItem(sql, { key: 'github:x/y#1', project: 'other', state: 'AwaitingApproval' });
+
+		const queue = await workService(sql, ['q']).listNeedsYou();
+		expect(queue.map((i) => i.id)).toEqual([oldApproval, failed, blocked]);
+		expect(queue.map((i) => i.needs?.category)).toEqual(['approval', 'failed', 'blocked']);
+		expect(queue[2].needs?.reason).toBe('CI: tests red');
+		expect(await workService(sql, []).listNeedsYou()).toEqual([]);
+		expect(await workService(sql, ['other']).listNeedsYou()).toHaveLength(1);
+	});
+
+	it('returns the latest plan as sanitized html, null when missing or not owned', async () => {
+		const id = await seedItem(sql, {
+			key: 'github:acme/p#1',
+			project: 'p',
+			state: 'AwaitingApproval'
+		});
+		expect(await workService(sql, ['p']).plan(id)).toBeNull();
+		await seedJob(sql, id, 'agent_plan', 'succeeded', {
+			summary: '```json\n{"decision":"plan","body":"## Plan <script>alert(1)</script>"}\n```'
+		});
+		const html = await workService(sql, ['p']).plan(id);
+		expect(html).toContain('<h2');
+		expect(html).not.toContain('<script');
+		expect(await workService(sql, ['nope']).plan(id)).toBeNull();
+	});
+});

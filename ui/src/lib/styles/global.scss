@@ -1179,6 +1179,77 @@ textarea.ez-control {
 	}
 }
 
+// Count of items waiting on the user, e.g. on the Work nav link.
+.ez-badge {
+	display: inline-block;
+	min-width: 1.25rem;
+	margin-left: var(--ez-space-2);
+	padding: 0 var(--ez-space-1);
+	border-radius: 999px;
+	background: var(--ez-accent);
+	color: var(--ez-accent-contrast, #fff);
+	font-size: var(--ez-text-sm);
+	line-height: 1.25rem;
+	text-align: center;
+}
+
+// The "needs you" queue on /work.
+.ez-needs {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-3);
+	margin: 0;
+	padding: 0;
+	list-style: none;
+
+	&__row {
+		display: flex;
+		flex-direction: column;
+		gap: var(--ez-space-2);
+		padding: var(--ez-space-3);
+		border: var(--ez-border-width) solid var(--ez-border);
+		border-left-width: 0.25rem;
+		border-radius: var(--ez-radius-md);
+
+		&--approval,
+		&--merge {
+			border-left-color: var(--ez-accent);
+		}
+	}
+
+	&__head {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: var(--ez-space-2);
+	}
+
+	&__reason,
+	&__error {
+		margin: 0;
+	}
+
+	&__error {
+		color: var(--ez-danger-text, var(--ez-text));
+	}
+}
+
+.ez-plan {
+	summary {
+		cursor: pointer;
+		font-weight: var(--ez-weight-medium);
+	}
+}
+
+.ez-done {
+	margin-top: var(--ez-space-4);
+
+	summary {
+		cursor: pointer;
+		font-weight: var(--ez-weight-medium);
+	}
+}
+
 // A removable selected value inside the combobox.
 .ez-chip {
 	display: inline-flex;

@@ -2,19 +2,21 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import Select from '#lib/components/form/Select.svelte';
+	import NeedsYouQueue from '#lib/components/NeedsYouQueue.svelte';
 	import DataTable, { type Column } from '#lib/components/ui/DataTable.svelte';
 	import Notice from '#lib/components/ui/Notice.svelte';
 	import PageHeader from '#lib/components/ui/PageHeader.svelte';
 	import WorkStateChip from '#lib/components/WorkStateChip.svelte';
-	import { watchWorkItems } from '#lib/live.ts';
+	import { getNeedsYou } from '#lib/needs-you.svelte.ts';
 	import { listProjects } from '#lib/projects.remote.ts';
 	import Section from '#lib/components/ui/Section.svelte';
-	import { applyItemChange, groupWorkItems, type WorkItemSummary } from '#lib/work-items.ts';
-	import { getWorkItem, listWorkItems } from '#lib/work.remote.ts';
+	import { applyItemChange, isTerminal, type WorkItemSummary } from '#lib/work-items.ts';
+	import { getWorkItem, getWorkItemPlan, listWorkItems } from '#lib/work.remote.ts';
 
 	const project = $derived(page.url.searchParams.get('project') ?? undefined);
 	const items = $derived(listWorkItems(project));
 	const projects = listProjects();
+	const needsYou = getNeedsYou();
 
 	/** Patch one changed row in place; any failure falls back to reloading the whole list. */
 	async function applyChange(id: number) {
@@ -28,11 +30,16 @@
 		}
 	}
 
+	// The layout owns the live socket; this page only listens to it.
 	$effect(() =>
-		watchWorkItems((changed) => void (changed === null ? items.refresh() : applyChange(changed)))
+		needsYou.onChange((changed) => void (changed === null ? items.refresh() : applyChange(changed)))
 	);
 
-	const groups = $derived(groupWorkItems(items.current ?? []));
+	const queue = $derived(needsYou.items.filter((w) => !project || w.project === project));
+	/** Items already in the queue are not listed twice. */
+	const rest = $derived((items.current ?? []).filter((w) => !w.needs));
+	const inProgress = $derived(rest.filter((w) => !isTerminal(w.state)));
+	const done = $derived(rest.filter((w) => isTerminal(w.state)));
 
 	const options = $derived.by(() => {
 		const list = (projects.current ?? []).map((p) => ({ value: p.name, label: p.displayName }));
@@ -77,32 +84,43 @@
 	</div>
 </div>
 
+<Section title="Needs you" description="Waiting on you: approve, merge, unblock or retry.">
+	{#if needsYou.failed && !needsYou.loaded}
+		<Notice tone="error">Could not load the queue.</Notice>
+	{:else}
+		<NeedsYouQueue
+			items={queue}
+			onaction={(id, action) => needsYou.act(id, action)}
+			loadPlan={(id) => getWorkItemPlan(id)}
+		/>
+	{/if}
+</Section>
+
 <svelte:boundary>
 	{#if items.error}
 		<Notice tone="error">Could not load work items.</Notice>
 	{:else}
-		{#if groups.ready.length}
-			<Section title="Ready to merge" description="Checks pass. Review and merge." flush>
+		<DataTable
+			label="In progress"
+			items={inProgress}
+			{columns}
+			rowKey={(w) => w.id}
+			loading={items.loading && !items.current}
+			loadingLabel="Loading work items"
+			emptyTitle="Nothing in progress"
+			emptyDescription="Work appears here when an issue, change request or mention reaches a project."
+		/>
+		{#if done.length}
+			<details class="ez-done">
+				<summary>Done ({done.length})</summary>
 				<DataTable
-					label="Ready to merge"
-					items={groups.ready}
+					label="Done"
+					items={done}
 					{columns}
 					rowKey={(w) => w.id}
-					emptyTitle="Nothing ready to merge"
+					emptyTitle="Nothing done"
 				/>
-			</Section>
-		{/if}
-		{#if !groups.ready.length || groups.rest.length}
-			<DataTable
-				label="Work items"
-				items={groups.rest}
-				{columns}
-				rowKey={(w) => w.id}
-				loading={items.loading && !items.current}
-				loadingLabel="Loading work items"
-				emptyTitle="No work items yet"
-				emptyDescription="Work appears here when an issue, change request or mention reaches a project."
-			/>
+			</details>
 		{/if}
 	{/if}
 	{#snippet failed()}<Notice tone="error">Could not load work items.</Notice>{/snippet}

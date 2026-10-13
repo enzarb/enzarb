@@ -20,6 +20,8 @@ export interface WorkItemSummary {
 	title: string;
 	url: string | null;
 	updatedAt: string;
+	/** Set when the item is waiting on the signed-in user (see `classifyNeedsYou`). */
+	needs?: NeedsYou | null;
 }
 
 export interface TransitionView {
@@ -195,4 +197,93 @@ export function applyItemChange(
 	const rest = list.filter((w) => w.id !== item.id);
 	if (project && item.project !== project) return rest;
 	return [...rest, item].sort(byRecency);
+}
+
+export const NEEDS_YOU_CATEGORIES = ['approval', 'merge', 'blocked', 'failed'] as const;
+export type NeedsYouCategory = (typeof NEEDS_YOU_CATEGORIES)[number];
+
+/** Why an item is waiting on the user; `reason` is the failure / blocker text when there is one. */
+export interface NeedsYou {
+	category: NeedsYouCategory;
+	reason: string | null;
+}
+
+const failedChecks = (stateData: unknown) => {
+	const r = parseReadiness(stateData);
+	return (
+		[
+			['CI', r.ci],
+			['Review', r.review],
+			['Merge', r.mergeable]
+		] as const
+	).filter(([, c]) => c.status === 'failed');
+};
+
+/** What blocks a change request: the first failed check's detail, else the last merge error. */
+export function blockedReason(stateData: unknown): string | null {
+	const [first] = failedChecks(stateData);
+	if (first) return first[1].detail ? `${first[0]}: ${first[1].detail}` : `${first[0]} failed`;
+	return parseReadiness(stateData).mergeError;
+}
+
+const failureText = (stateData: unknown): string | null => {
+	const data = asRecord(stateData);
+	for (const k of ['error', 'failure_reason', 'reason']) {
+		const x = data[k];
+		if (typeof x === 'string' && x.trim()) return x.trim();
+	}
+	return null;
+};
+
+/**
+ * Whether (and why) an item waits on its owner. Never throws; unknown states and malformed
+ * `state_data` classify as `null`.
+ */
+export function classifyNeedsYou(item: {
+	workflow: string;
+	state: string;
+	stateData: unknown;
+}): NeedsYou | null {
+	const { workflow, state, stateData } = item;
+	if (isTerminal(state)) return null;
+	const actions = availableActions(state);
+	if (actions.includes('retry')) return { category: 'failed', reason: failureText(stateData) };
+	if (workflow === 'issue' && actions.includes('approve'))
+		return { category: 'approval', reason: null };
+	if (workflow !== 'change_request') return null;
+	if (actions.includes('merge')) return { category: 'merge', reason: null };
+	if (state === 'AwaitingChanges' || failedChecks(stateData).length > 0)
+		return { category: 'blocked', reason: blockedReason(stateData) ?? 'Changes requested' };
+	return null;
+}
+
+/** The action a queue row offers inline; blocked rows only link out. */
+export function primaryAction(category: NeedsYouCategory): WorkAction | null {
+	if (category === 'approval') return 'approve';
+	if (category === 'merge') return 'merge';
+	if (category === 'failed') return 'retry';
+	return null;
+}
+
+/** Oldest-waiting first. */
+const byAge = (a: WorkItemSummary, b: WorkItemSummary): number =>
+	Date.parse(a.updatedAt) - Date.parse(b.updatedAt) || a.id - b.id;
+
+/** Apply one changed item to the needs-you list: insert, replace, or drop it once it no longer needs the user. */
+export function applyNeedsYouChange(
+	list: WorkItemSummary[],
+	item: WorkItemSummary
+): WorkItemSummary[] {
+	const rest = list.filter((w) => w.id !== item.id);
+	return item.needs ? [...rest, item].sort(byAge) : rest;
+}
+
+/** "3h" style age; `since` is an ISO timestamp. */
+export function waitingFor(since: string, now: number = Date.now()): string {
+	const mins = Math.floor((now - Date.parse(since)) / 60_000);
+	if (!Number.isFinite(mins) || mins < 1) return '<1m';
+	if (mins < 60) return `${mins}m`;
+	const hours = Math.floor(mins / 60);
+	if (hours < 48) return `${hours}h`;
+	return `${Math.floor(hours / 24)}d`;
 }

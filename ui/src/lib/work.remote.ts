@@ -29,6 +29,12 @@ export const listWorkItems = query(
 	async (project) => (await service()).work.list(project)
 );
 
+export const listNeedsYou = query(async () => (await service()).work.listNeedsYou());
+
+export const getWorkItemPlan = query(v.pipe(v.number(), v.integer(), v.minValue(1)), async (id) =>
+	(await service()).work.plan(id)
+);
+
 export const getWorkItem = query(v.pipe(v.number(), v.integer(), v.minValue(1)), async (id) => {
 	const item = await (await service()).work.get(id);
 	if (!item) error(404, 'Work item not found');

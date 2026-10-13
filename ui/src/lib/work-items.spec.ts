@@ -1,17 +1,102 @@
 import { describe, expect, it } from 'vitest';
 import {
 	applyItemChange,
+	applyNeedsYouChange,
 	availableActions,
+	blockedReason,
+	classifyNeedsYou,
 	countPossiblyRunning,
 	groupWorkItems,
 	isTerminal,
 	itemUrl,
 	keyToUrl,
 	parseReadiness,
+	primaryAction,
 	shouldRefresh,
 	stateTone,
+	waitingFor,
+	type NeedsYou,
 	type WorkItemSummary
 } from './work-items.ts';
+
+describe('needs-you classification', () => {
+	const cr = (state: string, stateData: unknown = {}) => ({
+		workflow: 'change_request',
+		state,
+		stateData
+	});
+	it('classifies each category', () => {
+		expect(
+			classifyNeedsYou({ workflow: 'issue', state: 'AwaitingApproval', stateData: {} })
+		).toEqual({ category: 'approval', reason: null });
+		expect(classifyNeedsYou(cr('ReadyToMerge'))?.category).toBe('merge');
+		expect(classifyNeedsYou(cr('AwaitingChanges'))).toEqual({
+			category: 'blocked',
+			reason: 'Changes requested'
+		});
+		expect(
+			classifyNeedsYou(cr('Reviewing', { checklist: { ci: { status: 'failed', detail: 'red' } } }))
+		).toEqual({ category: 'blocked', reason: 'CI: red' });
+		expect(
+			classifyNeedsYou({ workflow: 'issue', state: 'Failed', stateData: { error: ' boom ' } })
+		).toEqual({ category: 'failed', reason: 'boom' });
+		expect(classifyNeedsYou({ workflow: 'issue', state: 'Stale', stateData: null })?.category).toBe(
+			'failed'
+		);
+	});
+	it('ignores terminal, unknown and unrelated items and malformed data', () => {
+		const failedCi = { checklist: { ci: { status: 'failed' } } };
+		expect(classifyNeedsYou(cr('Merged', failedCi))).toBeNull();
+		expect(classifyNeedsYou(cr('Mystery'))).toBeNull();
+		expect(
+			classifyNeedsYou({ workflow: 'issue', state: 'Planning', stateData: failedCi })
+		).toBeNull();
+		expect(
+			classifyNeedsYou({ workflow: 'issue', state: 'ReadyToMerge', stateData: {} })
+		).toBeNull();
+		expect(classifyNeedsYou(cr('Reviewing', 'garbage'))).toBeNull();
+	});
+	it('blockedReason prefers failed checks, then the merge error', () => {
+		expect(blockedReason({ checklist: { mergeable: { status: 'failed' } } })).toBe('Merge failed');
+		expect(blockedReason({ merge_error: ' conflict ' })).toBe('conflict');
+		expect(blockedReason(null)).toBeNull();
+	});
+	it('primaryAction maps categories', () => {
+		expect(primaryAction('approval')).toBe('approve');
+		expect(primaryAction('merge')).toBe('merge');
+		expect(primaryAction('failed')).toBe('retry');
+		expect(primaryAction('blocked')).toBeNull();
+	});
+	it('applyNeedsYouChange inserts, replaces, orders oldest first and removes', () => {
+		const mk = (id: number, updatedAt: string, needs: NeedsYou | null): WorkItemSummary => ({
+			id,
+			key: `k${id}`,
+			project: 'p',
+			workflow: 'issue',
+			state: 's',
+			title: 't',
+			url: null,
+			updatedAt,
+			needs
+		});
+		const n: NeedsYou = { category: 'approval', reason: null };
+		let list = applyNeedsYouChange([], mk(2, '2026-01-02T00:00:00Z', n));
+		list = applyNeedsYouChange(list, mk(1, '2026-01-01T00:00:00Z', n));
+		expect(list.map((i) => i.id)).toEqual([1, 2]);
+		list = applyNeedsYouChange(list, mk(1, '2026-01-03T00:00:00Z', n));
+		expect(list.map((i) => i.id)).toEqual([2, 1]);
+		list = applyNeedsYouChange(list, mk(2, '2026-01-04T00:00:00Z', null));
+		expect(list.map((i) => i.id)).toEqual([1]);
+	});
+	it('waitingFor renders a short age', () => {
+		const now = Date.parse('2026-01-10T00:00:00Z');
+		expect(waitingFor('2026-01-09T23:59:50Z', now)).toBe('<1m');
+		expect(waitingFor('2026-01-09T23:15:00Z', now)).toBe('45m');
+		expect(waitingFor('2026-01-09T21:00:00Z', now)).toBe('3h');
+		expect(waitingFor('2026-01-05T00:00:00Z', now)).toBe('5d');
+		expect(waitingFor('nonsense', now)).toBe('<1m');
+	});
+});
 
 describe('shouldRefresh', () => {
 	it('is true for a full refresh and the matching id only', () => {
