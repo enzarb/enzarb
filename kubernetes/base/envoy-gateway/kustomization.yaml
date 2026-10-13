@@ -1,0 +1,8 @@
+# Envoy Gateway install plus the enzarb GatewayClass/Gateway (contracts.md section 8).
+# `install` must be applied and its CRDs Established before `config` can apply
+# (see README "Apply order"); applying this whole kustomization works on a second pass.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - install
+  - config

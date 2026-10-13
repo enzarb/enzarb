@@ -1,0 +1,16 @@
+# Installs gVisor on real (non-kind) nodes. Opt-in per node via the label
+# enzarb.dev/gvisor-install=true (see README "Production overlay"). For kind use
+# hack/kind-install-gvisor.sh instead. The image (installer/Dockerfile) bakes in the
+# sha512-verified gVisor bundle, runsc.toml and install.sh: no runtime downloads.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: gvisor-installer
+resources:
+  - namespace.yaml
+  - rbac.yaml
+  - daemonset.yaml
+images:
+  - name: ghcr.io/enzarb/enzarb-gvisor-installer
+    # Replaced by `digest: sha256:...` via hack/pin-installer-digest.sh after the
+    # first push to main (and on each gVisor bump). Do not hand-edit.
+    digest: sha256:c4dd61f3bbbe959ea1a061585ff0e35370dce5cd27221262a64157a507f616cb

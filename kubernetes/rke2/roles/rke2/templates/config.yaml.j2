@@ -1,0 +1,29 @@
+# managed by ansible (enzarb-kubernetes/rke2) -- edit the role, not this file
+node-name: {{ inventory_hostname }}
+node-ip: {{ rke2_node_ip }}
+tls-san:
+  - {{ rke2_node_ip }}
+  - {{ inventory_hostname }}
+{% for san in rke2_tls_sans %}
+  - {{ san }}
+{% endfor %}
+write-kubeconfig-mode: "0600"
+cni: {{ rke2_cni }}
+# Envoy Gateway is the entry point; ServiceLB (klipper-lb) binds its LoadBalancer Service to host
+# ports 80/443 (a hostPort is only granted when the port is free, unlike a NodePort in the
+# 80-32767 range, which would also capture host ports such as 6443 and 2379).
+enable-servicelb: true
+disable:
+  - rke2-ingress-nginx
+  # OpenEBS LVM ships its own snapshot controller and VolumeSnapshot CRDs (base/openebs-lvm); two
+  # controllers would fight over the same CRDs.
+  - rke2-snapshot-controller
+  - rke2-snapshot-controller-crd
+  - rke2-snapshot-validation-webhook
+secrets-encryption: true
+node-label:
+{% for label in rke2_node_labels %}
+  - {{ label }}
+{% endfor %}
+kubelet-arg:
+  - max-pods={{ rke2_max_pods }}

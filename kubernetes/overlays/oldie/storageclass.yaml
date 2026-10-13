@@ -1,0 +1,19 @@
+# Default StorageClass on oldie: one xfs logical volume per PVC, exactly the requested size, from VG `enzarb`
+# (rke2/inventory/oldie.yml: rke2_lvm_*). WaitForFirstConsumer because the volume lives on the node.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: enzarb-lvm
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: local.csi.openebs.io
+parameters:
+  storage: lvm
+  volgroup: enzarb
+  fsType: xfs
+  # Thick on purpose: OpenEBS creates and deletes its own thin pool (<vg>_thinpool) around the
+  # first/last thin volume, sized to the volumes, so thin gives no overcommit here but adds churn.
+  thinProvision: "no"
+allowVolumeExpansion: true
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete

@@ -1,0 +1,47 @@
+- name: Install packages (tar/bzip2 for the gVisor bundle, curl for operators)
+  ansible.builtin.apt:
+    name: [curl, bzip2, ca-certificates, lvm2, xfsprogs]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Declare kernel modules to load at boot
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/enzarb-rke2.conf
+    content: |
+      # managed by ansible (enzarb-kubernetes/rke2)
+      overlay
+      br_netfilter
+      dm_snapshot
+    mode: "0644"
+
+- name: Load kernel modules now
+  ansible.builtin.shell: test -d /sys/module/{{ item }} || { modprobe {{ item }} && echo loaded; }
+  args:
+    executable: /bin/bash
+  register: rke2_modprobe
+  changed_when: "'loaded' in rke2_modprobe.stdout"
+  loop: [overlay, br_netfilter, dm_snapshot]
+
+- name: Kernel network settings required by Kubernetes
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/90-enzarb-rke2.conf
+    content: |
+      # managed by ansible (enzarb-kubernetes/rke2)
+      net.ipv4.ip_forward = 1
+      net.ipv6.conf.all.forwarding = 1
+      net.bridge.bridge-nf-call-iptables = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+      fs.inotify.max_user_watches = 524288
+      fs.inotify.max_user_instances = 8192
+    mode: "0644"
+  notify: Apply sysctl
+
+- name: Apply sysctl now (before RKE2 starts)
+  ansible.builtin.meta: flush_handlers
+
+- name: Swap must be off for the kubelet
+  ansible.builtin.command: swapon --noheadings --show=NAME
+  register: rke2_swap
+  changed_when: false
+  failed_when: rke2_swap.stdout | trim | length > 0

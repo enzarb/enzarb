@@ -1,0 +1,28 @@
+- name: Assert supported platform
+  ansible.builtin.assert:
+    that:
+      - ansible_system == 'Linux'
+      - ansible_architecture == 'x86_64'
+      - ansible_service_mgr == 'systemd'
+    quiet: true
+
+- name: Kernel and sysctl prerequisites
+  ansible.builtin.import_tasks: prereqs.yml
+  tags: [prereqs]
+
+- name: Persistent-volume storage (LVM volume group)
+  ansible.builtin.import_tasks: storage.yml
+  when: rke2_lvm_pv | length > 0
+  tags: [storage]
+
+- name: Install gVisor (runsc + shim)
+  ansible.builtin.import_tasks: gvisor.yml
+  tags: [gvisor]
+
+- name: RKE2 server
+  ansible.builtin.import_tasks: rke2.yml
+  tags: [rke2]
+
+- name: Local kubeconfig
+  ansible.builtin.import_tasks: kubeconfig.yml
+  tags: [kubeconfig]

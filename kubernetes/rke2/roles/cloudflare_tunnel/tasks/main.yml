@@ -1,0 +1,4 @@
+- name: Cloudflare Tunnel
+  ansible.builtin.import_tasks: tunnel.yml
+  when: cloudflare_tunnel_enabled | bool
+  tags: [tunnel]

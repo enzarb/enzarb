@@ -1,0 +1,11 @@
+# gVisor isolation (ADR-0012). Handler `runsc` is registered in containerd by
+# hack/kind-install-gvisor.sh (dev) or by the node image/provisioning (prod).
+# Pods only schedule on nodes labelled enzarb.dev/runtime-gvisor=true.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+handler: runsc
+scheduling:
+  nodeSelector:
+    enzarb.dev/runtime-gvisor: "true"

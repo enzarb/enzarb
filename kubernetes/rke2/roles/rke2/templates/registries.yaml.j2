@@ -1,0 +1,7 @@
+# managed by ansible (enzarb-kubernetes/rke2) -- node-wide pull credentials, so every pod
+# (including sandbox pods in per-Project namespaces) can pull the private ghcr.io/enzarb/* images.
+configs:
+  "ghcr.io":
+    auth:
+      username: {{ rke2_ghcr_user | to_json }}
+      password: {{ rke2_ghcr_token | to_json }}

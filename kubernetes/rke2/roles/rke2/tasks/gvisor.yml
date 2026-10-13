@@ -1,0 +1,63 @@
+# Pinned gVisor (hack/versions.env), sha512-verified. The release bundle is flat: runsc,
+# containerd-shim-runsc-v1 and gvisor-bin/ (runsc looks for gvisor-bin next to itself).
+- name: Check installed runsc
+  ansible.builtin.command: "{{ rke2_gvisor_bin_dir }}/runsc --version"
+  register: rke2_runsc
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Check the containerd shim
+  ansible.builtin.stat:
+    path: "{{ rke2_gvisor_bin_dir }}/containerd-shim-runsc-v1"
+  register: rke2_runsc_shim
+
+- name: Install gVisor {{ rke2_gvisor_version }}
+  when: >-
+    (rke2_runsc.stdout_lines | default([]) | first | default('')) != 'runsc version release-' ~ rke2_gvisor_version
+    or not rke2_runsc_shim.stat.exists
+  vars:
+    rke2_gvisor_stage: "/var/cache/gvisor-{{ rke2_gvisor_version }}"
+  block:
+    - name: Staging directory
+      ansible.builtin.file:
+        path: "{{ rke2_gvisor_stage }}"
+        state: directory
+        mode: "0755"
+    - name: Download the bundle (sha512 verified)
+      ansible.builtin.get_url:
+        url: "https://github.com/google/gvisor/releases/download/release-{{ rke2_gvisor_version }}/gvisor-x86_64.tar.bz2"
+        dest: "{{ rke2_gvisor_stage }}.tar.bz2"
+        checksum: "sha512:{{ rke2_gvisor_sha512 }}"
+        mode: "0644"
+    - name: Unpack
+      ansible.builtin.unarchive:
+        src: "{{ rke2_gvisor_stage }}.tar.bz2"
+        dest: "{{ rke2_gvisor_stage }}"
+        remote_src: true
+        creates: "{{ rke2_gvisor_stage }}/runsc"
+    - name: Remove the previous gvisor-bin/ (no stale files from an older release)
+      ansible.builtin.file:
+        path: "{{ rke2_gvisor_bin_dir }}/gvisor-bin"
+        state: absent
+    - name: Install gvisor-bin/
+      ansible.builtin.copy:
+        src: "{{ rke2_gvisor_stage }}/gvisor-bin/"
+        dest: "{{ rke2_gvisor_bin_dir }}/gvisor-bin/"
+        remote_src: true
+        mode: preserve
+    - name: Install runsc and the containerd shim
+      ansible.builtin.copy:
+        src: "{{ rke2_gvisor_stage }}/{{ item }}"
+        dest: "{{ rke2_gvisor_bin_dir }}/{{ item }}"
+        remote_src: true
+        mode: "0755"
+      loop: [runsc, containerd-shim-runsc-v1]
+      notify: Restart rke2
+
+- name: Install runsc flags (Docker-in-gVisor, ADR-0012; single source hack/runsc.toml)
+  ansible.builtin.copy:
+    src: "{{ rke2_runsc_toml_src }}"
+    dest: "{{ rke2_runsc_conf_path }}"
+    mode: "0644"
+  notify: Restart rke2

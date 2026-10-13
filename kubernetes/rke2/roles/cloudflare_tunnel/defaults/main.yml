@@ -1,0 +1,10 @@
+# Opt-in: needs the `cf` CLI logged in on the machine running Ansible (cf auth login).
+cloudflare_tunnel_enabled: false
+cloudflare_tunnel_name: enzarb-oldie
+# Single source for the ingress rules AND the DNS hostname (the first rule with a hostname).
+cloudflare_tunnel_config_file: "{{ playbook_dir }}/../overlays/oldie/tunnel-config.json"
+cloudflare_tunnel_zone: enzarb.dev
+cloudflare_tunnel_secret_namespace: cloudflared
+cloudflare_tunnel_secret_name: cloudflared-tunnel
+cloudflare_tunnel_kubectl: /var/lib/rancher/rke2/bin/kubectl
+cloudflare_tunnel_kubeconfig: /etc/rancher/rke2/rke2.yaml

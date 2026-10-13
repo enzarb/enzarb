@@ -1,0 +1,25 @@
+# Declarative inventory: one single-node (server) cluster. Add hosts under
+# `rke2_agents` later to join agents; the role handles `rke2_role`.
+all:
+  children:
+    rke2_servers:
+      hosts:
+        oldie:
+          ansible_host: 192.168.33.11
+          ansible_user: ruckc
+          # Dedicated disk for persistent volumes (formerly the Rook disk). It must hold nothing
+          # else: the role refuses to create the volume group on a disk that carries any filesystem or
+          # partition table (and never wipes one).
+          rke2_lvm_pv: /dev/sdb
+  vars:
+    ansible_become: true
+    rke2_cluster_name: enzarb-oldie
+    # Volume group for OpenEBS LVM LocalPV (StorageClass volgroup: must match overlays/oldie/storageclass.yaml).
+    rke2_lvm_vg: enzarb
+    # Public access through a Cloudflare Tunnel (needs the `cf` CLI logged in on this machine); the
+    # ingress rules and hostname are in overlays/oldie/tunnel-config.json.
+    cloudflare_tunnel_enabled: true
+    # Extra SANs for the API server certificate (the host's IP and name are always added).
+    rke2_tls_sans: [enzarb.dev]
+    # Local kubeconfig written by the role (context/cluster/user all named rke2_cluster_name).
+    rke2_kubeconfig_dest: "{{ lookup('env', 'HOME') }}/.kube/enzarb-oldie.yaml"

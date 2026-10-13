@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gvisor-installer
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gvisor-installer
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gvisor-installer
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: gvisor-installer }
+subjects:
+  - { kind: ServiceAccount, name: gvisor-installer, namespace: gvisor-installer }

@@ -1,0 +1,12 @@
+# OpenEBS LVM LocalPV v1.10.1: a CSI driver that provisions one LVM logical volume per PVC from a
+# volume group on the node (size enforced, expandable, thin-provisionable, snapshots). The volume
+# group is created by the Ansible role (rke2/); the StorageClass is site-specific (overlays/*).
+# The upstream manifest uses the floating image tag `openebs/lvm-driver:ci`; pinned below.
+# Bump: change the version in the URL, `images:` and hack/versions.env.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - https://raw.githubusercontent.com/openebs/lvm-localpv/v1.10.1/deploy/lvm-operator.yaml
+images:
+  - name: openebs/lvm-driver
+    newTag: 1.10.1
