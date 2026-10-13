@@ -13,13 +13,17 @@
 	import WorkStateChip from '#lib/components/WorkStateChip.svelte';
 	import WorkTimeline from '#lib/components/WorkTimeline.svelte';
 	import { watchWorkItems } from '#lib/live.ts';
-	import { shouldRefresh, type WorkAction } from '#lib/work-items.ts';
+	import { parseWorkId, shouldRefresh, type WorkAction } from '#lib/work-items.ts';
 	import { getWorkItem, submitAction } from '#lib/work.remote.ts';
 
-	const id = $derived(Number(page.params.id));
-	const item = $derived(getWorkItem(id));
+	// Null for a missing or malformed param (also while params go stale during navigation): no remote call.
+	const id = $derived(parseWorkId(page.params.id));
+	const item = $derived(id === null ? null : getWorkItem(id));
 
-	$effect(() => watchWorkItems((changed) => shouldRefresh(changed, id) && void item.refresh()));
+	$effect(() => {
+		if (id === null || item === null) return;
+		return watchWorkItems((changed) => shouldRefresh(changed, id) && void item.refresh());
+	});
 
 	let pending = $state<WorkAction | null>(null);
 	let actionError = $state('');
@@ -29,7 +33,7 @@
 
 	const MERGE_STATES = ['Reviewing', 'AwaitingChanges', 'ReadyToMerge', 'Merging'];
 	const snapshot = $derived(
-		item.current ? `${item.current.state}|${item.current.readiness?.mergeError ?? ''}` : null
+		item?.current ? `${item.current.state}|${item.current.readiness?.mergeError ?? ''}` : null
 	);
 	const mergeRequested = $derived(mergeRequestedAt !== null && mergeRequestedAt === snapshot);
 
@@ -39,6 +43,7 @@
 	}
 
 	async function act(action: WorkAction) {
+		if (id === null || item === null) return;
 		pending = action;
 		actionError = '';
 		try {
@@ -58,7 +63,10 @@
 <svelte:head><title>Work item {page.params.id} · enzarb</title></svelte:head>
 
 <svelte:boundary>
-	{#if item.current}
+	{#if id === null}
+		<PageHeader title="Work item not found" />
+		<div><LinkButton href="/work">Back to work</LinkButton></div>
+	{:else if item?.current}
 		{@const w = item.current}
 		<PageHeader title={w.title}>
 			{#snippet meta()}
