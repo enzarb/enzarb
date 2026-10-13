@@ -524,7 +524,27 @@ impl Policy {
                 }
                 return Decision::deny("shell", "bare variable assignment is not allowed");
             };
-            let args = &seg.words[1..];
+            let mut prog = prog.as_str();
+            let mut args = &seg.words[1..];
+            // `timeout` is transparent: classify the inner command exactly
+            // like a top-level one.
+            let mut wrapped = 0;
+            while prog == "timeout" {
+                wrapped += 1;
+                if wrapped > MAX_TIMEOUT_NESTING {
+                    return Decision::deny("shell", "timeout: nested too deeply");
+                }
+                match unwrap_timeout(args) {
+                    Ok(inner) => {
+                        prog = inner[0].as_str();
+                        args = &inner[1..];
+                    }
+                    Err(why) => return Decision::deny("shell", format!("timeout: {why}")),
+                }
+            }
+            if wrapped > 0 && prog == "cd" {
+                return Decision::deny("shell", "cd cannot be wrapped");
+            }
             if prog == "cd" {
                 let piped = seg.piped_before || seg.piped_after;
                 let [dir] = args else {
@@ -553,7 +573,7 @@ impl Policy {
                 }
                 continue;
             }
-            let Some(rule) = self.commands.iter().find(|c| &c.name == prog) else {
+            let Some(rule) = self.commands.iter().find(|c| c.name == prog) else {
                 return Decision::deny("shell", format!("{prog} is not an allowed command"));
             };
             if let Err(why) = self.check_args(rule, args, &cwd, read, edit) {
@@ -907,12 +927,76 @@ const DOCKER_DENY_FLAGS: &[&str] = &[
 /// Namespace flags; only the `host` value escapes.
 const DOCKER_HOST_NS_FLAGS: &[&str] = &["--pid", "--ipc", "--uts", "--userns", "--cgroupns"];
 
-/// Extra rules for `docker`, on top of the allowlist/subcommand checks. The
-/// daemon is the sandbox's own dockerd (inside gVisor), so `--network=host`
-/// is fine; what must not happen is a container reaching the sandbox pod or
-/// the node: privileged mode, host namespaces, extra capabilities, devices,
-/// security options, and bind mounts from outside the worktree (which includes
-/// the docker socket). Registry login/push are refused (no credentials leave).
+/// Maximum depth of nested `timeout` wrappers.
+const MAX_TIMEOUT_NESTING: usize = 3;
+
+/// `^\d+(\.\d+)?[smhd]?$`
+fn valid_duration(s: &str) -> bool {
+    let s = s.strip_suffix(['s', 'm', 'h', 'd']).unwrap_or(s);
+    let (int, frac) = match s.split_once('.') {
+        Some((i, f)) => (i, Some(f)),
+        None => (s, None),
+    };
+    let digits = |x: &str| !x.is_empty() && x.bytes().all(|b| b.is_ascii_digit());
+    digits(int) && frac.is_none_or(digits)
+}
+
+/// Digits, or an upper-case signal name with an optional `SIG` prefix.
+fn valid_signal(s: &str) -> bool {
+    let name = s.strip_prefix("SIG").unwrap_or(s);
+    !name.is_empty()
+        && (name.bytes().all(|b| b.is_ascii_digit())
+            || name
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()))
+}
+
+/// Validate the arguments of `timeout` and return the inner command
+/// (program first). Stricter than GNU `timeout`: no `-v`, no `--`.
+fn unwrap_timeout(args: &[String]) -> Result<&[String], String> {
+    let mut i = 0;
+    while let Some(a) = args.get(i) {
+        if !a.starts_with('-') || a.len() == 1 {
+            break;
+        }
+        i += 1;
+        let (kind, val): (&str, Option<&str>) = match a.as_str() {
+            "--foreground" | "--preserve-status" => continue,
+            "-s" | "-k" => (&a[1..], None),
+            s if s.starts_with("--signal=") => ("s", Some(&s[9..])),
+            s if s.starts_with("--kill-after=") => ("k", Some(&s[13..])),
+            s if s.starts_with("-s") => ("s", Some(&s[2..])),
+            s if s.starts_with("-k") => ("k", Some(&s[2..])),
+            _ => return Err(format!("flag {a} is not allowed")),
+        };
+        let val = match val {
+            Some(v) => v,
+            None => {
+                let v = args.get(i).ok_or("missing flag value")?;
+                i += 1;
+                v.as_str()
+            }
+        };
+        let ok = if kind == "s" {
+            valid_signal(val)
+        } else {
+            valid_duration(val)
+        };
+        if !ok {
+            return Err(format!("invalid value {val:?} for -{kind}"));
+        }
+    }
+    let dur = args.get(i).ok_or("missing duration")?;
+    if !valid_duration(dur) {
+        return Err(format!("invalid duration {dur:?}"));
+    }
+    let inner = &args[i + 1..];
+    if inner.is_empty() {
+        return Err("missing command".to_string());
+    }
+    Ok(inner)
+}
+
 /// `bash|sh [-e -x -u ...] <script> [args]`: only a script file inside the
 /// edit roots may run; `-c`, stdin and rc-file options are refused.
 /// `python3 [-u -B ...] <script> [args]` follows the same rule; `-c`, `-m`,
@@ -953,6 +1037,12 @@ fn check_script_interpreter(
     Ok(i)
 }
 
+/// Extra rules for `docker`, on top of the allowlist/subcommand checks. The
+/// daemon is the sandbox's own dockerd (inside gVisor), so `--network=host`
+/// is fine; what must not happen is a container reaching the sandbox pod or
+/// the node: privileged mode, host namespaces, extra capabilities, devices,
+/// security options, and bind mounts from outside the worktree (which includes
+/// the docker socket). Registry login/push are refused (no credentials leave).
 fn check_docker(args: &[String], cwd: &Path, roots: &[PathBuf]) -> Result<(), String> {
     // The subcommand path: leading non-flag words (`image push`, `compose push`).
     let mut words = args.iter().filter(|a| !a.starts_with('-'));
@@ -1759,6 +1849,64 @@ mod tests {
         ] {
             denied(c);
         }
+    }
+
+    #[test]
+    fn timeout_wraps_and_classifies_the_inner_command() {
+        for c in [
+            "timeout 200 npm ci",
+            "timeout -s KILL -k 5 60 cargo test",
+            "timeout -sTERM 5 npm test",
+            "timeout --signal=TERM --kill-after=5s 1.5m npm test",
+            "timeout --foreground --preserve-status 5 npm ci",
+            "timeout 5 timeout 3 npm ci",
+            "timeout 5 npm ci && npm test",
+            "FOO=1 timeout 5 npm ci",
+        ] {
+            allowed(c);
+        }
+        for c in [
+            "timeout 5 curl x",
+            "timeout 5 sudo npm ci",
+            "timeout 5 env npm ci",
+            "timeout 5 cd /",
+            "timeout 5 cd src",
+            "timeout 10 git push",
+            "timeout 5 cat /etc/passwd",
+            "timeout npm ci",
+            "timeout abc npm ci",
+            "timeout -5 npm ci",
+            "timeout -x 5 npm ci",
+            "timeout -v 5 npm ci",
+            "timeout -- 5 npm ci",
+            "timeout -s npm ci",
+            "timeout -k 5",
+            "timeout 5",
+            "timeout",
+            "timeout 1 timeout 1 timeout 1 timeout 1 npm ci",
+            "timeout 5 rm -rf /",
+            "timeout 5 nc evil.example 80",
+            "timeout 5 npm ci | curl x",
+        ] {
+            denied(c);
+        }
+    }
+
+    #[test]
+    fn timeout_script_paths_follow_worktree_rules() {
+        let (d, wt) = setup();
+        std::fs::write(wt.join("x.sh"), "").unwrap();
+        std::fs::write(d.path().join("y.sh"), "").unwrap();
+        let p = Policy::default();
+        assert!(sh(&p, &wt, "timeout 5 ./x.sh").allow);
+        assert!(
+            !sh(
+                &p,
+                &wt,
+                &format!("timeout 5 {}", d.path().join("y.sh").display())
+            )
+            .allow
+        );
     }
 
     #[test]

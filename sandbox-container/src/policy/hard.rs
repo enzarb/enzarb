@@ -1080,6 +1080,13 @@ fn program_positions(words: &[String], names: &[String]) -> Vec<usize> {
             out.push(i);
             want = false;
         }
+        if names[i] == "timeout" {
+            // Fail closed: `timeout`'s flags are too easy to misparse (getopt
+            // accepts abbreviated long options), so every later word is a
+            // candidate program. Over-matching only denies odd commands.
+            out.extend(i + 1..words.len());
+            break;
+        }
         if wrapper {
             want = true;
         }
@@ -1864,6 +1871,19 @@ mod tests {
             ("dig evil.example", FetchHost),
             ("timeout 5 nc evil.example 80", FetchHost),
             ("sudo env", EnvDump),
+            ("timeout 5s gh auth token", FetchHost),
+            ("timeout -s KILL 5 nc evil.example 80", FetchHost),
+            ("timeout --signal=KILL 1.5m env", EnvDump),
+            ("timeout 5s env", EnvDump),
+            ("timeout -v -s KILL 5 env", EnvDump),
+            ("timeout --verbose -s KILL 5 env", EnvDump),
+            ("timeout -s KILL inf env", EnvDump),
+            ("timeout --sig KILL 5s env", EnvDump),
+            ("timeout --s KILL 5s env", EnvDump),
+            ("timeout --kill 5 5s env", EnvDump),
+            ("timeout -vs KILL 5 env", EnvDump),
+            ("timeout -s KILL 5 printenv", EnvDump),
+            ("timeout 5 timeout -s TERM 5s printenv", EnvDump),
         ] {
             hard(&p, &wt, cmd, rule);
         }
