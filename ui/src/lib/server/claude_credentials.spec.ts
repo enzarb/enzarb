@@ -162,7 +162,11 @@ describe('app.claude_credentials migration', () => {
 			expect(rows).toHaveLength(6);
 			for (const r of rows) {
 				expect(r.prosecdef, r.proname).toBe(true);
-				expect(r.proconfig, r.proname).toContain('search_path=pg_catalog, app');
+				const expected =
+					r.proname === 'claude_credential_delete_own'
+						? 'search_path=pg_catalog, pg_temp'
+						: 'search_path=pg_catalog, app';
+				expect(r.proconfig, r.proname).toContain(expected);
 			}
 		});
 

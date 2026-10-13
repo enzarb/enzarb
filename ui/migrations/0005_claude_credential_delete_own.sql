@@ -6,7 +6,7 @@ CREATE FUNCTION app_api.claude_credential_delete_own(owner text)
 RETURNS boolean
 LANGUAGE sql
 SECURITY DEFINER
-SET search_path = pg_catalog, app
+SET search_path = pg_catalog, pg_temp
 AS $$
 	WITH d AS (
 		DELETE FROM app.claude_credentials t WHERE t.owner = $1 RETURNING 1

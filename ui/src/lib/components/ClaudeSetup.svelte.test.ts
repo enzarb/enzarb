@@ -9,21 +9,33 @@ const h = vi.hoisted(() => ({
 	removed: 0,
 	refreshed: 0
 }));
-vi.mock('#lib/claude.remote.ts', () => ({
-	claudeCredential: () => ({
-		get current() {
-			return { configured: h.configured, updatedAt: null };
+// Like the real query, `current` changes only when refresh() re-reads the server state: refresh
+// bumps a reactive version so the component re-renders.
+vi.mock('#lib/claude.remote.ts', async () => {
+	const { SvelteMap } = await import('svelte/reactivity');
+	return {
+		claudeCredential: () => {
+			const version = new SvelteMap([['v', 0]]);
+			const served = { configured: h.configured };
+			return {
+				get current() {
+					version.get('v');
+					return { configured: served.configured, updatedAt: null };
+				},
+				error: undefined,
+				refresh: async () => {
+					h.refreshed++;
+					served.configured = h.configured;
+					version.set('v', (version.get('v') ?? 0) + 1);
+				}
+			};
 		},
-		error: undefined,
-		refresh: async () => {
-			h.refreshed++;
+		removeClaudeCredential: async () => {
+			h.removed++;
+			h.configured = false;
 		}
-	}),
-	removeClaudeCredential: async () => {
-		h.removed++;
-		h.configured = false;
-	}
-}));
+	};
+});
 vi.mock('#lib/terminal.remote.ts', () => ({
 	terminalConnection: async (name: string) => {
 		h.connections.push(name);
