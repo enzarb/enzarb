@@ -73,7 +73,7 @@ JSON objects with a `"type"` field, channel 0. Unknown fields are ignored; an un
 | `run_start` | client -> server | `run_id, repo_url, base_ref, branch, push, clone_token, prompt, timeout_secs, callback_url, callback_token, log_channel, deps_token?, npm_token?, claude_token?` |
 | `run_accepted` | server -> client | `run_id`, `state`, `existing: bool` |
 | `run_status` | client -> server | `run_id` |
-| `run_state` | server -> client (reply to `run_status`, and pushed on change) | `run_id`, `state`, `exit_code?`, `summary?` |
+| `run_state` | server -> client (reply to `run_status`, and pushed on change) | `run_id`, `state`, `exit_code?`, `summary?`, `usage?: Usage` |
 | `run_cancel` | client -> server | `run_id` |
 | `credential_captured` | server -> client | `kind: "claude_oauth"`, `token?: string`, `legacy?: bool` |
 | `credential_status` | client -> server | none; asks whether the sandbox holds a credential |
@@ -88,7 +88,11 @@ JSON objects with a `"type"` field, channel 0. Unknown fields are ignored; an un
 ### Run finished callback body (`RunFinished`)
 
 Not a CTRL message; it is the JSON body sandbox-init POSTs to `callback_url`:
-`{run_id, outcome: succeeded|failed|cancelled, exit_code?, summary, branch, head_sha, pushed}`.
+`{run_id, outcome: succeeded|failed|cancelled, exit_code?, summary, branch, head_sha, pushed, usage?: Usage}`.
+
+`Usage` (additive; on `RunFinished` and `run_state`, omitted when the agent reported none; old decoders ignore it):
+`{input_tokens?, output_tokens?, cache_read_input_tokens?, cache_creation_input_tokens?: integer, models?: string[], cost_usd?: number}`.
+Every field is omitted when unknown: absent means "not reported", never 0. `cost_usd` is the cost as reported by the agent (Claude's `total_cost_usd`), never an estimate computed by the sandbox.
 
 ### Error codes
 

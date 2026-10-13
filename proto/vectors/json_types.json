@@ -24,5 +24,27 @@
     },
     "name": "run_finished_cancelled",
     "type": "RunFinished"
+  },
+  {
+    "json": {
+      "branch": "enzarb/issue-42",
+      "exit_code": 0,
+      "head_sha": "abc123",
+      "outcome": "succeeded",
+      "pushed": true,
+      "run_id": "job-123",
+      "summary": "done",
+      "usage": {
+        "cache_read_input_tokens": 9000,
+        "cost_usd": 0.42,
+        "input_tokens": 1200,
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "output_tokens": 340
+      }
+    },
+    "name": "run_finished_usage",
+    "type": "RunFinished"
   }
 ]
