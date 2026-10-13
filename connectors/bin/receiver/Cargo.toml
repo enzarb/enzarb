@@ -18,6 +18,7 @@ path = "src/main.rs"
 axum = "0.8"
 enzarb-connector = { version = "0.1.0", path = "../../crates/connector" }
 enzarb-connector-github = { version = "0.1.0", path = "../../crates/connector-github" }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde_json = "1.0.151"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "migrate", "macros", "json"] }
 thiserror = "2.0.21"

@@ -167,3 +167,25 @@ pub(crate) fn expect(what: &str, resp: Resp) -> Result<Resp, Error> {
         _ => Error::Other(detail),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Building a client and starting a TLS connection needs a rustls provider. With
+    /// `rustls-no-provider` this panics if none is installed or if several are ambiguous; here
+    /// the connect fails cleanly instead.
+    #[tokio::test]
+    async fn https_request_uses_ring_provider() {
+        // Err means a provider is already installed, which is fine.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let retry = RetryPolicy {
+            max_attempts: 1,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(1),
+        };
+        let http = Http::new("https://127.0.0.1:1", retry).unwrap();
+        let err = http.send(Method::GET, "/", "t", None).await.err().unwrap();
+        assert!(matches!(err, Error::Transient(_)), "{err:?}");
+    }
+}
