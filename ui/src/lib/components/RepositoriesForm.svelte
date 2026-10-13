@@ -5,6 +5,7 @@
 	import Button from './form/Button.svelte';
 	import Checkbox from './form/Checkbox.svelte';
 	import Notice from './ui/Notice.svelte';
+	import RepositoryList from './RepositoryList.svelte';
 	import StepList, { type StepItem } from './ui/StepList.svelte';
 
 	export interface RepoChoice {
@@ -41,6 +42,21 @@
 			.filter((k): k is string => !!k)
 	);
 	const currentKey = $derived(current.join(','));
+	const listed = $derived.by(() => {
+		const offered = new Set(choices.map((c) => c.repo.toLowerCase()));
+		return project.repositories.flatMap((r) => {
+			const key = normalizeRepoKey(r.connector, r.url);
+			if (!key) return [];
+			return [
+				{
+					key,
+					label: key.replace(/^github:/, ''),
+					url: r.url,
+					missing: choices.length > 0 && !offered.has(key)
+				}
+			];
+		});
+	});
 	const rows = $derived.by(() => {
 		const seen = new Set<string>(); // eslint-disable-line svelte/prefer-svelte-reactivity -- local to this derivation
 		const out: { key: string; label: string; holder?: string; missing: boolean }[] = [];
@@ -61,11 +77,28 @@
 	});
 
 	const selected = new SvelteSet<string>();
-	$effect(() => {
-		void currentKey;
+	function reset() {
 		selected.clear();
 		for (const k of current) selected.add(k);
+	}
+	$effect(() => {
+		void currentKey;
+		reset();
 	});
+
+	let editing = $state(false);
+	function edit() {
+		reset();
+		phase = 'idle';
+		failure = '';
+		editing = true;
+	}
+	function cancel() {
+		reset();
+		phase = 'idle';
+		failure = '';
+		editing = false;
+	}
 
 	const keys = $derived(rows.map((r) => r.key).filter((k) => selected.has(k)));
 	const dirty = $derived(keys.join(',') !== currentKey);
@@ -79,8 +112,10 @@
 		failure = '';
 		try {
 			const r = await save(keys);
-			if (r.ok) phase = 'done';
-			else {
+			if (r.ok) {
+				phase = 'done';
+				editing = false;
+			} else {
 				phase = 'failed';
 				failure = r.message;
 			}
@@ -111,7 +146,7 @@
 </script>
 
 <div class="ez-stack">
-	{#if canEdit}
+	{#if canEdit && editing}
 		{#if problem}<Notice tone="info">{problem} You can still remove repositories.</Notice>{/if}
 		<ul class="ez-repo-list" aria-label="Repositories">
 			{#each rows as r (r.key)}
@@ -140,12 +175,16 @@
 			>
 				Save repositories
 			</Button>
+			<Button variant="ghost" disabled={phase === 'saving'} onclick={cancel}>Cancel</Button>
 		</div>
 		{#if phase !== 'idle'}<StepList {items} label="Repository change progress" />{/if}
 	{:else}
-		<ul class="ez-repo-list">
-			{#each current as k (k)}<li>{k.replace(/^github:/, '')}</li>{/each}
-		</ul>
-		<p class="ez-muted">Only the project owner can change these settings.</p>
+		<RepositoryList repos={listed} />
+		{#if canEdit}
+			<div><Button onclick={edit}>Edit repositories</Button></div>
+			{#if phase === 'done'}<StepList {items} label="Repository change progress" />{/if}
+		{:else}
+			<p class="ez-muted">Only the project owner can change these settings.</p>
+		{/if}
 	{/if}
 </div>
