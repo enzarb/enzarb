@@ -1,0 +1,28 @@
+[
+  {
+    "json": {
+      "branch": "enzarb/issue-42",
+      "exit_code": 0,
+      "head_sha": "abc123",
+      "outcome": "succeeded",
+      "pushed": true,
+      "run_id": "job-123",
+      "summary": "done"
+    },
+    "name": "run_finished",
+    "type": "RunFinished"
+  },
+  {
+    "json": {
+      "branch": "enzarb/issue-42",
+      "exit_code": null,
+      "head_sha": "abc123",
+      "outcome": "cancelled",
+      "pushed": false,
+      "run_id": "job-123",
+      "summary": ""
+    },
+    "name": "run_finished_cancelled",
+    "type": "RunFinished"
+  }
+]
