@@ -1,7 +1,7 @@
-//! Regression test for enzarb-workflows#18: with both `aws-lc-rs` (reqwest 0.13 via
-//! `enzarb-connector-github`) and `ring` (kube) linked in, kube-client's `ClientConfig::builder()`
-//! panics without a process default provider. Building a real `kube::Client` offline reaches that
-//! exact call.
+//! Regression test for enzarb-workflows#18: kube-client's `ClientConfig::builder()` panics without
+//! a process default provider (originally with both `aws-lc-rs` and `ring` linked in; now `ring` is
+//! the only one, but reqwest's `rustls-no-provider` also needs the default installed). Building a
+//! real `kube::Client` offline reaches that exact call.
 
 #[tokio::test]
 async fn builds_a_kube_client_after_init_tls() {

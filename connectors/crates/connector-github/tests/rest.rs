@@ -28,6 +28,8 @@ fn item(n: u64) -> WorkItemKey {
 }
 
 fn connector(server: &MockServer) -> GitHubConnector {
+    // reqwest has no default rustls provider; Err means one is already installed.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let mut cfg = GitHubConfig::new(APP_ID, PRIVATE_KEY);
     cfg.api_url = server.uri();
     cfg.retry = RetryPolicy {
