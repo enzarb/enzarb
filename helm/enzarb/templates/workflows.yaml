@@ -20,6 +20,8 @@ spec:
       terminationGracePeriodSeconds: {{ $c.terminationGracePeriodSeconds }}
       {{- include "enzarb.pullSecrets" . | nindent 6 }}
       {{- include "enzarb.waitMigrations" . | nindent 6 }}
+      # the keyring files are root-owned; fsGroup makes them group-readable by the non-root uid
+      securityContext: { fsGroup: 65532 }
       containers:
         - name: workflows
           image: {{ include "enzarb.image" $c }}

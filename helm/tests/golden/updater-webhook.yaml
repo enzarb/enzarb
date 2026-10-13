@@ -1118,6 +1118,8 @@ spec:
     spec:
       serviceAccountName: enzarb-sandbox-proxy
 
+      # the keyring files are root-owned; fsGroup makes them group-readable by the non-root uid
+      securityContext: { fsGroup: 65532 }
       containers:
         - name: proxy
           image: ghcr.io/enzarb/enzarb-sandbox-proxy:0.5.0
@@ -1175,7 +1177,7 @@ spec:
         - name: claude-key
           secret:
             secretName: enzarb-claude-key
-            defaultMode: 0400
+            defaultMode: 0440
 
 ---
 # Source: enzarb/templates/ui.yaml
@@ -1381,6 +1383,8 @@ spec:
           imagePullPolicy: IfNotPresent
           args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-2a1347974d]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
+      # the keyring files are root-owned; fsGroup makes them group-readable by the non-root uid
+      securityContext: { fsGroup: 65532 }
       containers:
         - name: workflows
           image: ghcr.io/enzarb/enzarb-workflows:0.17.0
@@ -1463,7 +1467,7 @@ spec:
         - name: claude-key
           secret:
             secretName: enzarb-claude-key
-            defaultMode: 0400
+            defaultMode: 0440
 
 ---
 # Source: enzarb/templates/migrations.yaml

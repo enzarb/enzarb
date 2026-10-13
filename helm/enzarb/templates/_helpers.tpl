@@ -66,7 +66,7 @@ imagePullSecrets:
 - name: claude-key
   secret:
     secretName: {{ include "enzarb.claudeKeySecret" . }}
-    defaultMode: 0400
+    defaultMode: 0440
 {{- end }}
 {{- define "enzarb.claudeKeyMount" -}}
 - { name: claude-key, mountPath: /etc/enzarb/claude-key, readOnly: true }

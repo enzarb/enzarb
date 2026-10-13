@@ -25,7 +25,9 @@ check "active names a key" "$(secret ".data.\"$active\" | length > 0" <<<"$on")"
 check "key is 32 bytes" "$(secret ".data.\"$active\"" <<<"$on" | base64 -d | wc -c | tr -d ' ')" 32
 for d in enzarb-sandbox-proxy enzarb-workflows; do
   check "$d secret" "$(vol $d .secret.secretName <<<"$on")" enzarb-claude-key
-  check "$d mode" "$(vol $d .secret.defaultMode <<<"$on")" 0400
+  check "$d mode" "$(vol $d .secret.defaultMode <<<"$on")" 0440
+  # root-owned key files must be group-readable by the non-root uid
+  check "$d fsGroup" "$(yq eval-all 'select(.kind=="Deployment" and .metadata.name=="'"$d"'") | .spec.template.spec.securityContext.fsGroup' - <<<"$on")" 65532
   check "$d readOnly" "$(mnt $d .readOnly <<<"$on")" true
 done
 check "proxy db role" "$(yq eval-all 'select(.kind=="Deployment" and .metadata.name=="enzarb-sandbox-proxy") | .spec.template.spec.containers[0].env[] | select(.name=="PGUSER") | .valueFrom.secretKeyRef.name' - <<<"$on")" enzarb-pg-sandbox-proxy-credentials

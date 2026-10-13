@@ -20,6 +20,8 @@ spec:
       restartPolicy: Never
       automountServiceAccountToken: false
       {{- include "enzarb.pullSecrets" . | nindent 6 }}
+      # the keyring files are root-owned; fsGroup makes them group-readable by the non-root uid
+      securityContext: { fsGroup: 65532 }
       containers:
         - name: rekey
           image: {{ include "enzarb.image" $c }}
