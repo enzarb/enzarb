@@ -194,7 +194,7 @@ pub(super) fn step(ctx: &Ctx, s: &MentionState, ev: &EngineEvent) -> Transition 
 
     match &ev.payload {
         EventPayload::Ui(u) => match u.action {
-            UiActionKind::Cancel if !ctx.can_write() => {
+            UiActionKind::Cancel if !ctx.can_cancel() => {
                 Transition::reject(&state, "cancel requires write access")
             }
             UiActionKind::Cancel if s.phase == Cancelled => {
@@ -206,6 +206,10 @@ pub(super) fn step(ctx: &Ctx, s: &MentionState, ev: &EngineEvent) -> Transition 
                 s,
                 Some(format!("enzarb: cancelled by @{}.", u.actor.login)),
             ),
+            UiActionKind::RepoRemoved if s.phase == Cancelled => {
+                Transition::reject(&state, "already finished")
+            }
+            UiActionKind::RepoRemoved => cancel(ctx, ev, s, None).repo_removed(),
             UiActionKind::Retry if !ctx.can_write() => {
                 Transition::reject(&state, "retry requires write access")
             }
