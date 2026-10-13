@@ -787,6 +787,11 @@ metadata:
     helm.sh/chart: enzarb-0.0.0
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app.kubernetes.io/name: enzarb-connectors
@@ -801,6 +806,7 @@ spec:
         helm.sh/chart: enzarb-0.0.0
     spec:
       serviceAccountName: enzarb-connectors
+      terminationGracePeriodSeconds: 30
 
       initContainers:
         - name: wait-enzarb-migrate-ui-6ee5acb3d1
@@ -857,8 +863,13 @@ spec:
             - { name: RUST_LOG, value: "info" }
           readinessProbe:
             httpGet: { path: /readyz, port: http }
+            periodSeconds: 2
           livenessProbe:
             httpGet: { path: /healthz, port: http }
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 10
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":10001,"seccompProfile":{"type":"RuntimeDefault"}}
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
@@ -879,6 +890,11 @@ metadata:
     helm.sh/chart: enzarb-0.0.0
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app.kubernetes.io/name: enzarb-sandbox-operator
@@ -893,6 +909,7 @@ spec:
         helm.sh/chart: enzarb-0.0.0
     spec:
       serviceAccountName: enzarb-sandbox-operator
+      terminationGracePeriodSeconds: 30
 
       containers:
         - name: operator
@@ -922,6 +939,7 @@ spec:
             - { name: RUST_LOG, value: "info" }
           readinessProbe:
             httpGet: { path: /readyz, port: health }
+            periodSeconds: 2
           livenessProbe:
             httpGet: { path: /healthz, port: health }
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
@@ -940,6 +958,11 @@ metadata:
     helm.sh/chart: enzarb-0.0.0
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app.kubernetes.io/name: enzarb-sandbox-proxy
@@ -954,6 +977,7 @@ spec:
         helm.sh/chart: enzarb-0.0.0
     spec:
       serviceAccountName: enzarb-sandbox-proxy
+      terminationGracePeriodSeconds: 30
 
       # the keyring files are root-owned; fsGroup makes them group-readable by the non-root uid
       securityContext: { fsGroup: 65532 }
@@ -1005,8 +1029,13 @@ spec:
             - { name: RUST_LOG, value: "info" }
           readinessProbe:
             httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
           livenessProbe:
             httpGet: { path: /healthz, port: http }
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 10
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
           volumeMounts:
             - { name: claude-key, mountPath: /etc/enzarb/claude-key, readOnly: true }
@@ -1030,6 +1059,11 @@ metadata:
     helm.sh/chart: enzarb-0.0.0
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app.kubernetes.io/name: enzarb-ui
@@ -1044,6 +1078,7 @@ spec:
         helm.sh/chart: enzarb-0.0.0
     spec:
       serviceAccountName: enzarb-ui
+      terminationGracePeriodSeconds: 30
 
       initContainers:
         - name: wait-enzarb-migrate-ui-6ee5acb3d1
@@ -1111,9 +1146,14 @@ spec:
           # /healthz and /readyz come from enzarb-ui#13; set ui.probes.http=false for TCP probes.
           readinessProbe:
             httpGet: { path: /readyz, port: http }
+            periodSeconds: 2
           livenessProbe:
             httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 10
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 10
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":1000,"seccompProfile":{"type":"RuntimeDefault"}}
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
@@ -1134,6 +1174,11 @@ metadata:
     helm.sh/chart: enzarb-0.0.0
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app.kubernetes.io/name: enzarb-updater
@@ -1148,6 +1193,7 @@ spec:
         helm.sh/chart: enzarb-0.0.0
     spec:
       serviceAccountName: enzarb-updater
+      terminationGracePeriodSeconds: 30
 
       containers:
         - name: updater
@@ -1168,6 +1214,10 @@ spec:
             httpGet: { path: /readyz, port: http }
           livenessProbe:
             httpGet: { path: /healthz, port: http }
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":10001,"seccompProfile":{"type":"RuntimeDefault"}}
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
@@ -1188,6 +1238,11 @@ metadata:
     helm.sh/chart: enzarb-0.0.0
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app.kubernetes.io/name: enzarb-workflows
@@ -1282,9 +1337,14 @@ spec:
           # /healthz is on sandbox.executorCallbackPort with the executor role, otherwise on 8082.
           readinessProbe:
             httpGet: { path: /healthz, port: executor }
+            periodSeconds: 2
           livenessProbe:
             httpGet: { path: /healthz, port: executor }
             initialDelaySeconds: 10
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 10
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
