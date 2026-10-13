@@ -1,0 +1,173 @@
+# Reusable: pin the chart to the released components and publish it, in one run with GITHUB_TOKEN
+# (docs/ci.md "Releases"). Used by release.yml, rebuild-all.yml and sync-components.yml.
+#   1. helm/scripts/sync-components.sh (SKIP_IMAGE_CHECK=1: a <dir>/v* tag is only created after its image
+#      was pushed) reconciles helm/enzarb/values.yaml (+ CRD) with the highest tag of every component.
+#   2. goldens + `mise run test`; if anything changed, commits `fix(deps)/feat(deps): bump ...` to main
+#      (one rebase-and-retry if main moved). GITHUB_TOKEN pushes trigger no workflow, so nothing below
+#      relies on ci-helm or a tag push running.
+#   3. chart version: bump=auto -> next-version.sh for helm (Conventional Commits under helm/ since the
+#      last helm/v* tag, which includes the deps commit); patch|minor -> forced step. Nothing releasable
+#      -> stop. Otherwise package --version, push oci://ghcr.io/enzarb/charts, tag helm/vX.Y.Z and create
+#      the GitHub Release marked latest (the `release: published` webhook drives enzarb-updater).
+# One chart job at a time across all callers (concurrency `chart`). A newer pending run replaces an
+# older pending one; that is safe because every run reconciles ALL component tags and helm history.
+name: release-chart
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit to start from (rebased onto main before pushing)
+        type: string
+        default: main
+      bump:
+        description: auto (from commits under helm/) | patch | minor
+        type: string
+        default: auto
+      versions:
+        description: "JSON {dir: version} that must be pinned afterwards; missing tags are created locally (dry runs)"
+        type: string
+        default: "{}"
+      subject:
+        description: Commit subject override (default the sync script's fix(deps)/feat(deps) subject)
+        type: string
+        default: ""
+      note:
+        description: Extra line for the commit body and suffix for the tag message
+        type: string
+        default: ""
+      dry_run:
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  chart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: chart
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      packages: write
+    defaults:
+      run:
+        working-directory: helm
+    env:
+      MISE_CEILING_PATHS: ${{ github.workspace }}
+      MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
+      VERSIONS: ${{ inputs.versions }}
+      BUMP: ${{ inputs.bump }}
+      DRY_RUN: ${{ inputs.dry_run }}
+      NOTE: ${{ inputs.note }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0   # component tags, helm history and the operator CRD at its tag come from local git
+      - uses: jdx/mise-action@v2
+        with:
+          cache: true
+          working_directory: helm
+      - run: pip install jsonschema pyyaml
+      - name: Sync component versions
+        id: sync
+        run: |
+          set -euo pipefail
+          git fetch -q --tags origin
+          # On a dry run the new component tags exist only in the caller's plan: create them locally.
+          for dir in $(jq -r 'keys[]' <<<"$VERSIONS"); do
+            tag="$dir/v$(jq -r --arg d "$dir" '.[$d]' <<<"$VERSIONS")"
+            git rev-parse -q --verify "refs/tags/$tag" >/dev/null || git tag "$tag" HEAD
+          done
+          SKIP_IMAGE_CHECK=1 scripts/sync-components.sh --message-file "$RUNNER_TEMP/sync-msg"
+          for dir in $(jq -r 'keys[]' <<<"$VERSIONS"); do   # every listed component must now be on its version
+            path=$(yq ".components[] | select(.dir == \"$dir\") | .path" scripts/components.yaml)
+            prefix=$(yq ".components[] | select(.dir == \"$dir\") | .prefix // \"\"" scripts/components.yaml)
+            want="$prefix$(jq -r --arg d "$dir" '.[$d]' <<<"$VERSIONS")"
+            got=$(yq "$path" enzarb/values.yaml)
+            [ "$got" = "$want" ] || { echo "::error::$dir: values.yaml has $got, want $want"; exit 1; }
+          done
+          if git diff --quiet; then echo "changed=false" >> "$GITHUB_OUTPUT"; else echo "changed=true" >> "$GITHUB_OUTPUT"; fi
+          git diff --stat
+      - name: Refresh goldens and run the chart checks
+        run: |
+          scripts/golden.sh --update
+          mise run test
+      - name: Commit to main
+        if: steps.sync.outputs.changed == 'true'
+        env:
+          SUBJECT: ${{ inputs.subject }}
+        run: |
+          set -euo pipefail
+          git config user.name "enzarb-release[bot]"
+          git config user.email "release@enzarb.dev"
+          {
+            if [ -n "$SUBJECT" ]; then
+              echo "$SUBJECT"; echo; sed '1,2d' "$RUNNER_TEMP/sync-msg"
+            else
+              cat "$RUNNER_TEMP/sync-msg"
+            fi
+            if [ -n "$NOTE" ]; then echo; echo "$NOTE"; fi
+          } > "$RUNNER_TEMP/msg"
+          git add -A .
+          git commit -F "$RUNNER_TEMP/msg"
+          [ "$DRY_RUN" = true ] && { echo "dry run: not pushing"; exit 0; }
+          if ! git push origin HEAD:main; then
+            echo "::warning::main moved; rebasing once and retrying"
+            git pull --rebase origin main || { echo "::error::rebase onto the new main failed; re-run the release"; exit 1; }
+            # main may have moved while this ran: the goldens and templates must still agree.
+            scripts/golden.sh || { echo "::error::goldens disagree with the new main after rebase; re-run the release"; exit 1; }
+            git push origin HEAD:main || { echo "::error::main moved again; re-run the release"; exit 1; }
+          fi
+      - name: Chart version
+        id: ver
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          last=$(git tag --list "helm/v[0-9]*" | grep -E '^helm/v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+          if [ "$BUMP" = auto ]; then
+            # shellcheck source=/dev/null
+            source .github/scripts/next-version.sh
+            v=$(next_version helm HEAD)
+          elif [ -z "$last" ]; then v=0.1.0
+          else
+            IFS=. read -r M m p <<<"${last#helm/v}"
+            if [ "$BUMP" = minor ]; then v="$M.$((m + 1)).0"; else v="$M.$m.$((p + 1))"; fi
+          fi
+          if [ -z "$v" ]; then
+            echo "helm: nothing releasable since $last" | tee -a "$GITHUB_STEP_SUMMARY"
+          elif git rev-parse -q --verify "refs/tags/helm/v$v" >/dev/null; then
+            echo "helm/v$v already exists" | tee -a "$GITHUB_STEP_SUMMARY"; v=""
+          fi
+          { echo "version=$v"; echo "last=$last"; echo "sha=$(git rev-parse HEAD)"; } >> "$GITHUB_OUTPUT"
+      - name: Package (and push oci://ghcr.io/enzarb/charts/enzarb unless dry run)
+        if: steps.ver.outputs.version != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_ACTOR: ${{ github.actor }}
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          helm package enzarb --version "$V" --app-version "$V" --destination "$RUNNER_TEMP"
+          [ "$DRY_RUN" = true ] && { echo "dry run: not pushing enzarb-$V.tgz"; exit 0; }
+          echo "$GH_TOKEN" | helm registry login ghcr.io -u "$GH_ACTOR" --password-stdin
+          helm push "$RUNNER_TEMP/enzarb-$V.tgz" oci://ghcr.io/enzarb/charts
+      - name: Tag helm/v${{ steps.ver.outputs.version }} and publish the latest release
+        if: steps.ver.outputs.version != '' && !inputs.dry_run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          V: ${{ steps.ver.outputs.version }}
+          LAST: ${{ steps.ver.outputs.last }}
+          HEAD_SHA: ${{ steps.ver.outputs.sha }}
+        run: |
+          set -euo pipefail
+          tag="helm/v$V"
+          git config user.name "enzarb-release[bot]"
+          git config user.email "release@enzarb.dev"
+          git tag -a "$tag" -m "release $tag${NOTE:+ ($NOTE)}" "$HEAD_SHA"
+          git push origin "refs/tags/$tag"
+          flags=(--latest)
+          [ -n "$LAST" ] && flags+=(--notes-start-tag "$LAST")
+          gh release create "$tag" --verify-tag --title "$tag" --generate-notes "${flags[@]}"
+          echo "released $tag" >> "$GITHUB_STEP_SUMMARY"

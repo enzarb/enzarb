@@ -1,75 +1,107 @@
-# Automatic per-component releases (docs/ci.md "Releases").
+# Automatic per-component releases in one run with GITHUB_TOKEN (docs/ci.md "Releases").
 #
-# After a component's `ci-<dir>` workflow succeeds on a push to main, the next version of THAT component
-# is computed by .github/scripts/next-version.sh from the Conventional Commits since its last
-# `<dir>/vX.Y.Z` tag that touch <dir> or one of its path-dependency dirs. The annotated tag and a
-# GitHub Release are created with ENZARB_RELEASE_TOKEN so the tag push triggers `ci-<dir>` again (image
-# build + push). helm releases start as drafts; publish-helm.yml publishes them after the OCI push.
-# Component releases are never marked "Latest", so the repo's latest release is always the chart.
-#
-# Dormant until the repo variable RELEASE_ENABLED is "true". Needs the secret ENZARB_RELEASE_TOKEN.
+# After a component's `ci-<dir>` workflow succeeds on a push to main (or on manual dispatch), the next
+# version of THAT component is computed by .github/scripts/next-version.sh from the Conventional Commits
+# since its last `<dir>/vX.Y.Z` tag that touch <dir> or one of its path-dependency dirs. Nothing
+# releasable -> stop. Otherwise:
+#   image  _release-image.yml builds + pushes ghcr.io/enzarb/<image>:<version>, tags <dir>/v<version>
+#          and creates a --latest=false GitHub Release
+#   chart  _release-chart.yml pins the new version in helm/enzarb/values.yaml, commits fix(deps)/feat(deps)
+#          to main, tags helm/vX.Y.Z, pushes the OCI chart and creates the latest release
+# For ci-helm (a human change under helm/) only the chart job runs; it releases from the helm/ commits.
+# Nothing relies on a GITHUB_TOKEN tag or push triggering another workflow (they trigger nothing).
 name: release
 on:
   workflow_run:
     # Every ci workflow of a released component (proto and kubernetes are not released).
     workflows: [ci-operator, ci-connectors, ci-workflows, ci-realtime, ci-sandbox-proxy, ci-sandbox-container, ci-ui, ci-updater, ci-helm]
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      component:
+        description: Component dir to release from main (helm releases only the chart)
+        type: choice
+        options: [operator, connectors, workflows, realtime, sandbox-proxy, sandbox-container, ui, updater, helm]
+# One release at a time per component. Runs that are filtered out (PR ci, failures) get their own
+# group, so they can never replace a pending real release.
+concurrency:
+  group: >-
+    release-${{ github.event_name == 'workflow_dispatch' && inputs.component ||
+    ((github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main') && github.event.workflow_run.name || github.run_id) }}
+  cancel-in-progress: false
 permissions:
   contents: read
 jobs:
-  tag:
-    # One tagging run at a time per component. Scoped to this job: a workflow-level group would also be
-    # shared with every other workflow_run (PR ci completions) and could cancel a pending run.
-    concurrency:
-      group: release-tag-${{ github.event.workflow_run.name }}
-      cancel-in-progress: false
+  plan:
     if: >-
-      vars.RELEASE_ENABLED == 'true' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == 'main'
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
+    outputs:
+      dir: ${{ steps.plan.outputs.dir }}
+      sha: ${{ steps.plan.outputs.sha }}
+      version: ${{ steps.plan.outputs.version }}
+      component: ${{ steps.plan.outputs.component }}
     steps:
+      - name: Only from main
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::dispatch release on main (got $GITHUB_REF)"; exit 1
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
-          token: ${{ secrets.ENZARB_RELEASE_TOKEN }}
-      - name: Compute, tag and release
+      - id: plan
         env:
-          GH_TOKEN: ${{ secrets.ENZARB_RELEASE_TOKEN }}
-          SHA: ${{ github.event.workflow_run.head_sha }}
-          WORKFLOW: ${{ github.event.workflow_run.name }}
-          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          DIR: ${{ inputs.component || github.event.workflow_run.name }}
         run: |
-          dir=${WORKFLOW#ci-}
-          [ -d "$dir" ] || { echo "::error::no component dir for workflow $WORKFLOW"; exit 1; }
+          set -euo pipefail
+          dir=${DIR#ci-}
+          [ -d "$dir" ] || { echo "::error::no component dir $dir"; exit 1; }
+          { echo "dir=$dir"; echo "sha=$SHA"; } >> "$GITHUB_OUTPUT"
+          if [ "$dir" = helm ]; then echo "helm: chart job only"; exit 0; fi
           # shellcheck source=/dev/null
           source .github/scripts/next-version.sh
           v=$(next_version "$dir" "$SHA")
-          if [ -z "$v" ]; then echo "$dir: nothing releasable since $(last_tag "$dir" "$SHA")"; exit 0; fi
-          tag="$dir/v$v"
-          last=$(last_tag "$dir" "$SHA")
-          ensure_release() { # the updater reads helm GitHub Releases; every tag gets one for its notes
-            local flags=(--latest=false)
-            # helm releases start as drafts: publish-helm.yml publishes them once the OCI chart is pushed
-            if [ "$dir" = helm ]; then flags=(--draft); fi
-            # notes since this component's previous tag (they still list every PR in that range)
-            if [ -n "$last" ]; then flags+=(--notes-start-tag "$last"); fi
-            # `gh release view` does not see drafts, so match tag_name in the full list (drafts included)
-            release_exists() {
-              [ -n "$(gh api --paginate "repos/$REPO/releases" --jq ".[] | select(.tag_name == \"$tag\") | .id")" ]
-            }
-            release_exists || gh release create "$tag" --verify-tag --title "$tag" --generate-notes "${flags[@]}" \
-              || release_exists   # publish-helm.yml created it between the check and the create
-          }
-          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-            echo "$tag already exists"; ensure_release; exit 0
+          if [ -z "$v" ]; then
+            echo "$dir: nothing releasable since $(last_tag "$dir" "$SHA")" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0
           fi
-          git config user.name "enzarb-release[bot]"
-          git config user.email "release@enzarb.dev"
-          git tag -a "$tag" -m "release $tag" "$SHA"
-          git push origin "refs/tags/$tag"
-          ensure_release
-          echo "released $tag" >> "$GITHUB_STEP_SUMMARY"
+          if git rev-parse -q --verify "refs/tags/$dir/v$v" >/dev/null; then
+            echo "$dir/v$v already exists" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0
+          fi
+          { echo "version=$v"; echo "component=$(.github/scripts/image-components.sh "$dir")"; } >> "$GITHUB_OUTPUT"
+          echo "$dir: next version $v" >> "$GITHUB_STEP_SUMMARY"
+
+  image:
+    needs: plan
+    if: needs.plan.outputs.version != ''
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/_release-image.yml
+    with:
+      dir: ${{ needs.plan.outputs.dir }}
+      image: ${{ fromJSON(needs.plan.outputs.component).image }}
+      context: ${{ fromJSON(needs.plan.outputs.component).context }}
+      smoke: ${{ fromJSON(needs.plan.outputs.component).smoke }}
+      timeout: ${{ fromJSON(needs.plan.outputs.component).timeout }}
+      version: ${{ needs.plan.outputs.version }}
+      sha: ${{ needs.plan.outputs.sha }}
+
+  chart:
+    # After a component image release, or for any successful helm run (the chart decides from its commits).
+    needs: [plan, image]
+    if: >-
+      always() && needs.plan.result == 'success' &&
+      (needs.image.result == 'success' || (needs.plan.outputs.dir == 'helm' && needs.image.result == 'skipped'))
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/_release-chart.yml
+    with:
+      ref: main

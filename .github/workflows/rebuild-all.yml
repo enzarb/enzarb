@@ -1,8 +1,7 @@
 # Force-release and rebuild EVERY component into GHCR (docs/ci.md "Rebuild everything").
 #
-# Manual only. Self-contained with GITHUB_TOKEN: it does not need ENZARB_RELEASE_TOKEN and does not rely
-# on tag pushes triggering ci-<dir> / publish-helm (GITHUB_TOKEN pushes trigger nothing, so nothing runs
-# twice). For the current main sha it:
+# Manual only. Self-contained with GITHUB_TOKEN, sharing _release-image.yml and _release-chart.yml with
+# release.yml (GITHUB_TOKEN pushes trigger nothing, so nothing runs twice). For the current main sha it:
 #   plan       next patch (or minor) version of every image component after its highest <dir>/v* tag
 #   images     builds + pushes ghcr.io/enzarb/<image>:<version> and :latest (same names, contexts and
 #              smoke test as _docker.yml), then tags <dir>/v<version> and creates a GitHub Release
@@ -63,15 +62,7 @@ jobs:
             IFS=. read -r M m p <<<"${last#"$1"/v}"
             if [ "$BUMP" = minor ]; then echo "$M.$((m + 1)).0"; else echo "$M.$m.$((p + 1))"; fi
           }
-          # dir image context smoke timeout (mirrors the _docker.yml inputs of each ci-<dir>.yml)
-          comps='operator enzarb-sandbox-operator operator - 30
-          connectors enzarb-connectors-receiver connectors - 30
-          workflows enzarb-workflows . - 30
-          realtime enzarb-realtime realtime - 30
-          sandbox-proxy enzarb-sandbox-proxy . - 30
-          sandbox-container enzarb-sandbox . scripts/smoke.sh 40
-          ui enzarb-ui . - 20
-          updater enzarb-updater updater - 30'
+          comps=$(.github/scripts/image-components.sh)   # dir image context smoke timeout
           include='[]' versions='{}'
           while read -r dir image context smoke timeout; do
             v=$(next "$dir")
@@ -92,74 +83,23 @@ jobs:
 
   images:
     needs: plan
-    runs-on: ubuntu-latest
-    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
-    env:
-      SHA: ${{ needs.plan.outputs.sha }}
-      DIR: ${{ matrix.dir }}
-      IMAGE: ghcr.io/enzarb/${{ matrix.image }}
-      SCOPE: ${{ matrix.image }}
-      CONTEXT: ${{ matrix.context }}
-      SMOKE: ${{ matrix.smoke }}
-      VERSION: ${{ matrix.version }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.plan.outputs.sha }}
-          fetch-depth: 0   # release notes start at the previous tag
-      - uses: docker/setup-buildx-action@v3
-      - uses: crazy-max/ghaction-github-runtime@v3
-      - uses: docker/login-action@v3
-        if: ${{ !inputs.dry_run }}
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build (and push unless dry run)
-        run: |
-          set -euo pipefail
-          tags=("$IMAGE:$VERSION" "$IMAGE:latest" "$IMAGE:sha-${SHA::7}")
-          args=(-f "$DIR/Dockerfile" --cache-from "type=gha,scope=$SCOPE" --cache-to "type=gha,mode=max,scope=$SCOPE"
-            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY"
-            --label "org.opencontainers.image.revision=$SHA"
-            --label "org.opencontainers.image.version=$VERSION")
-          if [ -n "$SMOKE" ] || [ "$DRY_RUN" = true ]; then
-            args+=(--load -t "$IMAGE:ci")   # loaded first; smoke-tested and pushed by the next steps
-          else
-            for t in "${tags[@]}"; do args+=(-t "$t"); done
-            args+=(--push)
-          fi
-          docker buildx build "${args[@]}" "$CONTEXT"
-      - name: Smoke test
-        if: matrix.smoke != ''
-        working-directory: ${{ matrix.dir }}
-        run: ./"$SMOKE" "$IMAGE:ci"
-      - name: Tag and push the smoke-tested image
-        if: matrix.smoke != '' && !inputs.dry_run
-        run: |
-          set -euo pipefail
-          for t in "$IMAGE:$VERSION" "$IMAGE:latest" "$IMAGE:sha-${SHA::7}"; do
-            docker tag "$IMAGE:ci" "$t"; docker push "$t"
-          done
-      - name: Tag and release ${{ matrix.dir }}/v${{ matrix.version }}
-        if: ${{ !inputs.dry_run }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          tag="$DIR/v$VERSION"
-          last=$(git tag --list "$DIR/v[0-9]*" | grep -E "^$DIR/v[0-9]+\.[0-9]+\.[0-9]+\$" | sort -V | tail -1 || true)
-          git config user.name "enzarb-release[bot]"
-          git config user.email "release@enzarb.dev"
-          git tag -a "$tag" -m "release $tag (rebuild-all)" "$SHA"
-          git push origin "refs/tags/$tag"
-          flags=(--latest=false)
-          [ -n "$last" ] && flags+=(--notes-start-tag "$last")
-          gh release create "$tag" --verify-tag --title "$tag" --generate-notes "${flags[@]}"
-          echo "released $tag ($IMAGE:$VERSION)" >> "$GITHUB_STEP_SUMMARY"
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/_release-image.yml
+    with:
+      dir: ${{ matrix.dir }}
+      image: ${{ matrix.image }}
+      context: ${{ matrix.context }}
+      smoke: ${{ matrix.smoke }}
+      timeout: ${{ matrix.timeout }}
+      version: ${{ matrix.version }}
+      sha: ${{ needs.plan.outputs.sha }}
+      dry_run: ${{ inputs.dry_run }}
+      note: " (rebuild-all)"
 
   installer:
     # kubernetes' gvisor installer image, as ci-kubernetes builds it (amd64 smoke test, amd64+arm64 push).
@@ -228,106 +168,14 @@ jobs:
 
   chart:
     needs: [plan, images, installer]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: helm
-    env:
-      SHA: ${{ needs.plan.outputs.sha }}
-      VERSIONS: ${{ needs.plan.outputs.versions }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.plan.outputs.sha }}
-          fetch-depth: 0
-      - uses: jdx/mise-action@v2
-        with:
-          cache: true
-          working_directory: helm
-      - run: pip install jsonschema pyyaml
-      - name: Pin values.yaml (and the CRD) to the rebuilt versions
-        run: |
-          set -euo pipefail
-          git fetch -q --tags origin
-          # sync-components.sh reconciles to the highest local <dir>/v* tag; the tags were just pushed by
-          # the images job (or, on a dry run, exist only here). The images were pushed in this run, so
-          # its gh-run image check is skipped.
-          for dir in $(jq -r 'keys[]' <<<"$VERSIONS"); do
-            tag="$dir/v$(jq -r --arg d "$dir" '.[$d]' <<<"$VERSIONS")"
-            git rev-parse -q --verify "refs/tags/$tag" >/dev/null || git tag "$tag" "$SHA"
-          done
-          SKIP_IMAGE_CHECK=1 scripts/sync-components.sh --message-file "$RUNNER_TEMP/sync-msg"
-          for dir in $(jq -r 'keys[]' <<<"$VERSIONS"); do   # every component must now be on its new version
-            path=$(yq ".components[] | select(.dir == \"$dir\") | .path" scripts/components.yaml)
-            prefix=$(yq ".components[] | select(.dir == \"$dir\") | .prefix // \"\"" scripts/components.yaml)
-            want="$prefix$(jq -r --arg d "$dir" '.[$d]' <<<"$VERSIONS")"
-            got=$(yq "$path" enzarb/values.yaml)
-            [ "$got" = "$want" ] || { echo "::error::$dir: values.yaml has $got, want $want"; exit 1; }
-          done
-          git diff --stat
-      - name: Refresh goldens and run the chart checks
-        run: |
-          scripts/golden.sh --update
-          mise run test
-      - name: Commit to main
-        id: commit
-        if: ${{ !inputs.dry_run }}
-        run: |
-          set -euo pipefail
-          git config user.name "enzarb-release[bot]"
-          git config user.email "release@enzarb.dev"
-          {
-            echo "fix(deps): rebuild all components"
-            echo
-            sed '1,2d' "$RUNNER_TEMP/sync-msg" 2>/dev/null || true
-            echo
-            echo "Force-released by the rebuild-all workflow (run $GITHUB_RUN_ID)."
-          } > "$RUNNER_TEMP/msg"
-          git add -A .
-          git commit -F "$RUNNER_TEMP/msg"
-          if ! git push origin HEAD:main; then
-            echo "::warning::main moved since $SHA; rebasing once and retrying"
-            git pull --rebase origin main || { echo "::error::rebase onto the new main failed; re-run rebuild-all"; exit 1; }
-            scripts/golden.sh || { echo "::error::goldens disagree with the new main after rebase; re-run rebuild-all"; exit 1; }
-            git push origin HEAD:main || { echo "::error::main moved again; re-run rebuild-all"; exit 1; }
-          fi
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - name: Chart version
-        id: ver
-        run: |
-          set -euo pipefail
-          last=$(git tag --list "helm/v[0-9]*" | grep -E '^helm/v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
-          if [ -z "$last" ]; then v=0.1.0; else
-            IFS=. read -r M m p <<<"${last#helm/v}"
-            if [ "$BUMP" = minor ]; then v="$M.$((m + 1)).0"; else v="$M.$m.$((p + 1))"; fi
-          fi
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-          echo "chart: helm/v$v" >> "$GITHUB_STEP_SUMMARY"
-      - name: Package (and push oci://ghcr.io/enzarb/charts/enzarb unless dry run)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_ACTOR: ${{ github.actor }}
-          V: ${{ steps.ver.outputs.version }}
-        run: |
-          set -euo pipefail
-          helm package enzarb --version "$V" --app-version "$V" --destination "$RUNNER_TEMP"
-          [ "$DRY_RUN" = true ] && { echo "dry run: not pushing enzarb-$V.tgz"; exit 0; }
-          echo "$GH_TOKEN" | helm registry login ghcr.io -u "$GH_ACTOR" --password-stdin
-          helm push "$RUNNER_TEMP/enzarb-$V.tgz" oci://ghcr.io/enzarb/charts
-      - name: Tag helm/v${{ steps.ver.outputs.version }} and publish the latest release
-        if: ${{ !inputs.dry_run }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          V: ${{ steps.ver.outputs.version }}
-          HEAD_SHA: ${{ steps.commit.outputs.sha }}
-        run: |
-          set -euo pipefail
-          tag="helm/v$V"
-          last=$(git tag --list "helm/v[0-9]*" | grep -E '^helm/v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
-          git tag -a "$tag" -m "release $tag (rebuild-all)" "$HEAD_SHA"
-          git push origin "refs/tags/$tag"
-          flags=(--latest)
-          [ -n "$last" ] && flags+=(--notes-start-tag "$last")
-          gh release create "$tag" --verify-tag --title "$tag" --generate-notes "${flags[@]}"
-          echo "released $tag" >> "$GITHUB_STEP_SUMMARY"
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/_release-chart.yml
+    with:
+      ref: ${{ needs.plan.outputs.sha }}
+      bump: ${{ inputs.bump }}
+      versions: ${{ needs.plan.outputs.versions }}
+      subject: "fix(deps): rebuild all components"
+      note: Force-released by the rebuild-all workflow (run ${{ github.run_id }}).
+      dry_run: ${{ inputs.dry_run }}

@@ -1,71 +1,19 @@
 name: sync-components
-# Keeps helm/enzarb/values.yaml on the latest released tag of every component. Triggered when a
-# component's `<dir>/v*` tag build (ci-<dir>, which pushes the image) succeeds; the schedule and manual
-# dispatch are a safety net. The job reconciles ALL components from local tags (the trigger is only a
-# wake-up), so concurrent or dropped triggers cannot lose a bump. The commit is pushed to main with
-# ENZARB_RELEASE_TOKEN so ci-helm runs and the release workflow tags the next chart version.
+# Reconciliation safety net (docs/ci.md "Releases"): on a 6-hourly schedule and manual dispatch, pins
+# helm/enzarb/values.yaml to the latest <dir>/v* tag of every component and, if that or any helm/ commit
+# is releasable, publishes the next chart in the same run (_release-chart.yml, GITHUB_TOKEN only).
+# release.yml normally does this right after each component release.
 on:
-  workflow_run:
-    workflows: [ci-operator, ci-connectors, ci-workflows, ci-realtime, ci-sandbox-proxy, ci-sandbox-container, ci-ui, ci-updater]
-    types: [completed]
   workflow_dispatch:
   schedule:
     - cron: "17 */6 * * *"
-concurrency:
-  group: sync-components
-  cancel-in-progress: false
 permissions:
   contents: read
-  actions: read
-env:
-  MISE_CEILING_PATHS: ${{ github.workspace }}
-  MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
 jobs:
   sync:
-    # Dormant until RELEASE_ENABLED is "true". From workflow_run, only successful tag builds
-    # (head_branch is the tag name, e.g. ui/v0.24.0) count.
-    if: >-
-      vars.RELEASE_ENABLED == 'true' &&
-      (github.event_name != 'workflow_run' ||
-        (github.event.workflow_run.conclusion == 'success' &&
-         github.event.workflow_run.event == 'push' &&
-         contains(github.event.workflow_run.head_branch, '/v')))
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: helm
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0   # component tags and the operator CRD at its tag come from local git
-          token: ${{ secrets.ENZARB_RELEASE_TOKEN }}
-      - uses: jdx/mise-action@v2
-        with:
-          cache: true
-          working_directory: helm
-      - run: pip install jsonschema pyyaml
-      - name: Sync component versions
-        id: sync
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # Actions read: was the tag's ci run green?
-        run: |
-          scripts/sync-components.sh --message-file "$RUNNER_TEMP/msg"
-          if git diff --quiet; then echo "changed=false" >> "$GITHUB_OUTPUT"; else echo "changed=true" >> "$GITHUB_OUTPUT"; fi
-      - name: Refresh goldens and run the chart checks
-        if: steps.sync.outputs.changed == 'true'
-        run: |
-          scripts/golden.sh --update
-          mise run test
-      - name: Commit to main (the release workflow tags the next chart version from this commit)
-        if: steps.sync.outputs.changed == 'true'
-        run: |
-          git config user.name "enzarb-release[bot]"
-          git config user.email "release@enzarb.dev"
-          git add -A .
-          git commit -F "$RUNNER_TEMP/msg"
-          git pull --rebase origin main
-          # main may have moved while this ran: the goldens and templates must still agree.
-          scripts/golden.sh
-          git push origin HEAD:main
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/_release-chart.yml
+    with:
+      ref: main
