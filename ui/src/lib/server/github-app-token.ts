@@ -67,7 +67,15 @@ export function createInstallationTokenSource({
 			if (typeof id !== 'number' && typeof id !== 'string') return null;
 			const res = await call(
 				`${API}/app/installations/${encodeURIComponent(String(id))}/access_tokens`,
-				{ method: 'POST' },
+				{
+					method: 'POST',
+					// Down-scope: this repo only, read-only. Releases are public, so the token
+					// exists for rate limits, not access.
+					body: JSON.stringify({
+						repositories: [RELEASES_REPO.split('/')[1]],
+						permissions: { contents: 'read' }
+					})
+				},
 				jwt
 			);
 			if (!res.ok) return null;

@@ -41,6 +41,10 @@ describe('installation token source', () => {
 			Accept: 'application/vnd.github+json',
 			'User-Agent': 'enzarb-ui'
 		});
+		expect(JSON.parse(mint.body as string)).toEqual({
+			repositories: ['enzarb'],
+			permissions: { contents: 'read' }
+		});
 		const jwt = lookup.headers.Authorization.replace('Bearer ', '');
 		expect(decodeProtectedHeader(jwt).alg).toBe('RS256');
 		const claims = decodeJwt(jwt);
