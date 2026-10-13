@@ -1,0 +1,25 @@
+{
+  "zen": "Keep it logically awesome.",
+  "hook_id": 777001,
+  "hook": {
+    "type": "App",
+    "id": 777001,
+    "active": true,
+    "events": [],
+    "config": {
+      "content_type": "json",
+      "url": "https://enzarb.example/hooks/github"
+    }
+  },
+  "sender": {
+    "login": "ruckc",
+    "id": 42,
+    "node_id": "MDQ6VXNlcjE42",
+    "avatar_url": "https://avatars.githubusercontent.com/u/42?v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/ruckc",
+    "html_url": "https://github.com/ruckc",
+    "type": "User",
+    "site_admin": false
+  }
+}
