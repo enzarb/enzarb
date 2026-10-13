@@ -4,7 +4,7 @@ import type { AcpSession, ConnectReport } from './connection.ts';
 export type MuxSession = AcpSession & { close(): Promise<unknown> };
 
 export interface SandboxConnectDeps {
-	/** Mints the short-lived proxy token and URL (the terminal's `terminalConnection`). */
+	/** Mints the short-lived proxy token and URL (`chatConnection`). */
 	connection(project: string): Promise<{ url: string }>;
 	/** Opens the websocket; the browser's `new WebSocket(url)`. */
 	openSocket(url: string): WebSocket;

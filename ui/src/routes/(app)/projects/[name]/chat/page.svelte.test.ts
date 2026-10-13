@@ -5,7 +5,7 @@ import ProjectContextHost from '#lib/components/__fixtures__/ProjectContextHost.
 import type { ProjectView } from '#lib/project-types.ts';
 import ChatPage from './+page.svelte';
 
-vi.mock('#lib/terminal.remote.ts', () => ({ terminalConnection: () => new Promise(() => {}) }));
+vi.mock('#lib/chat.remote.ts', () => ({ chatConnection: () => new Promise(() => {}) }));
 vi.mock('$app/state', () => ({
 	page: { params: { name: 'alpha' }, url: new URL('http://localhost/projects/alpha/chat') }
 }));

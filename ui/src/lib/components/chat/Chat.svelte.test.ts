@@ -5,8 +5,8 @@ import type { AcpChannel, AcpSession } from '#lib/acp/connection.ts';
 import { fakeAgentChannel, type FakeChannel, type Msg } from '#lib/test/acp-fake.ts';
 import Chat from './Chat.svelte';
 
-const terminalConnection = vi.hoisted(() => vi.fn(() => new Promise(() => {})));
-vi.mock('#lib/terminal.remote.ts', () => ({ terminalConnection }));
+const chatConnection = vi.hoisted(() => vi.fn(() => new Promise(() => {})));
+vi.mock('#lib/chat.remote.ts', () => ({ chatConnection }));
 
 function session(features: string[], ch?: FakeChannel) {
 	const openAcp = vi.fn(async () => ch as unknown as AcpChannel);
@@ -102,7 +102,7 @@ describe('Chat', () => {
 		render(Chat, { project: 'alpha', connect });
 		await expect.element(page.getByText('Chat not available')).toBeVisible();
 		expect(openAcp).not.toHaveBeenCalled();
-		expect(terminalConnection).not.toHaveBeenCalled();
+		expect(chatConnection).not.toHaveBeenCalled();
 	});
 
 	it('prompt -> streamed update -> permission -> Allow once', async () => {

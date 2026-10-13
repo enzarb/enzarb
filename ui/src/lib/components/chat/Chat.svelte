@@ -9,7 +9,7 @@
 	import { sandboxConnector, type MuxSession } from '#lib/acp/sandbox-connect.ts';
 	import * as sessionStore from '#lib/acp/session-store.ts';
 	import Notice from '#lib/components/ui/Notice.svelte';
-	import { terminalConnection } from '#lib/terminal.remote.ts';
+	import { chatConnection } from '#lib/chat.remote.ts';
 	import ChatStatus from './ChatStatus.svelte';
 	import ChatTranscript from './ChatTranscript.svelte';
 	import Composer from './Composer.svelte';
@@ -19,7 +19,7 @@
 		connect
 	}: {
 		project: string;
-		/** Override the sandbox connection (tests); defaults to the terminal's token + websocket path. */
+		/** Override the sandbox connection (tests); defaults to the chat's token + websocket path. */
 		connect?: ConnectionDeps['connect'];
 	} = $props();
 
@@ -27,7 +27,7 @@
 	const connector = sandboxConnector(
 		untrack(() => project),
 		{
-			connection: (name) => terminalConnection(name),
+			connection: (name) => chatConnection(name),
 			openSocket: (url) => new WebSocket(url),
 			handshake: async (ws) => {
 				const proto = await import('@enzarb/proto');
