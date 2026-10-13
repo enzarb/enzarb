@@ -1,0 +1,10 @@
+# cloudflared connector for a remotely managed Cloudflare Tunnel. It makes outbound-only connections to
+# Cloudflare, so the cluster needs no inbound ports or NAT rules. The tunnel, its ingress rules and the
+# DNS record are created by `mise run oldie:host`, which also creates the Secret `cloudflared-tunnel`
+# (key `token`) in this namespace. Nothing secret is committed.
+# Bump: change the image tag here and CLOUDFLARED_VERSION in hack/versions.env.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - deployment.yaml

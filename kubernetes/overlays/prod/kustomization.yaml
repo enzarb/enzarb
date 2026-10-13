@@ -1,0 +1,20 @@
+# SKELETON: production composition. See README "Production overlay".
+# Before use: pick a real Gateway certificate issuer, an Envoy Service type /
+# annotations for your load balancer, label the nodes that should run sandboxes
+# (kubectl label node <n> enzarb.dev/gvisor-install=true; base/gvisor-installer
+# then installs gVisor and sets enzarb.dev/runtime-gvisor=true), and add
+# Capsule/pgop settings (HA, resources) as strategic-merge patches.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base/cert-manager
+  - ../../base/envoy-gateway
+  - ../../base/agent-sandbox
+  - ../../base/capsule
+  - ../../base/capsule-proxy
+  - ../../base/pgop
+  - ../../base/runtimeclasses
+  - ../../base/gvisor-installer
+# TODO(prod): replace the self-signed Issuer, e.g.
+#   - target: { kind: Certificate, name: enzarb-tls }
+#     patch: |- [{op: replace, path: /spec/issuerRef, value: {kind: ClusterIssuer, name: letsencrypt}}]

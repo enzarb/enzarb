@@ -1,0 +1,27 @@
+# The single entry point for enzarb. HTTPRoutes (rendered by enzarb-helm in the
+# `enzarb` namespace) attach with parentRefs { name: enzarb, namespace: enzarb-system }.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: enzarb
+  namespace: enzarb-system
+spec:
+  gatewayClassName: enzarb
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: All
+    - name: https
+      protocol: HTTPS
+      port: 443
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: enzarb-tls
+      allowedRoutes:
+        namespaces:
+          from: All

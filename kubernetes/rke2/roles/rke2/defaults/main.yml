@@ -1,0 +1,27 @@
+rke2_role: server
+rke2_arch: amd64
+rke2_node_ip: "{{ ansible_host }}"
+rke2_tls_sans: []
+rke2_cluster_name: rke2
+rke2_kubeconfig_dest: "{{ lookup('env', 'HOME') }}/.kube/{{ rke2_cluster_name }}.yaml"
+
+# CNI with NetworkPolicy enforcement (sandbox isolation relies on it).
+rke2_cni: canal
+rke2_max_pods: 250
+rke2_node_labels:
+  - enzarb.dev/runtime-gvisor=true
+
+# Where gVisor and runsc.toml come from.
+rke2_gvisor_bin_dir: /usr/local/bin
+rke2_runsc_conf_path: /etc/containerd/runsc.toml
+rke2_runsc_toml_src: "{{ playbook_dir }}/../hack/runsc.toml"
+
+# GHCR auth for the private ghcr.io/enzarb/* images. Read from the environment at run
+# time (never stored in the repo). Empty = no registries.yaml is written.
+rke2_ghcr_user: "{{ lookup('env', 'GHCR_USER') }}"
+rke2_ghcr_token: "{{ lookup('env', 'GHCR_TOKEN') }}"
+
+# Persistent volumes: a volume group on a dedicated disk, carved into one logical volume per
+# PVC by OpenEBS LVM LocalPV. Empty rke2_lvm_pv = skip (no storage layer).
+rke2_lvm_pv: ""
+rke2_lvm_vg: enzarb

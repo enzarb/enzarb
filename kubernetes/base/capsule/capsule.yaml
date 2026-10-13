@@ -1,0 +1,1197 @@
+---
+# Source: capsule/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: capsule
+  namespace: capsule-system
+  labels:
+    helm.sh/chart: capsule-0.14.6
+    app.kubernetes.io/version: "0.14.6"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: capsule
+    app.kubernetes.io/instance: capsule
+
+---
+# Source: capsule/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: capsule:capsule:aggregate
+  labels:
+    helm.sh/chart: capsule-0.14.6
+    app.kubernetes.io/version: "0.14.6"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: capsule
+    app.kubernetes.io/instance: capsule
+aggregationRule:
+  clusterRoleSelectors:
+  - matchLabels:
+      projectcapsule.dev/aggregate-to-controller: "true"
+  - matchLabels:
+      projectcapsule.dev/aggregate-to-controller-instance: capsule
+
+---
+# Source: capsule/templates/rbac.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: capsule:capsule:aggregate
+  labels:
+    helm.sh/chart: capsule-0.14.6
+    app.kubernetes.io/version: "0.14.6"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: capsule
+    app.kubernetes.io/instance: capsule
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: capsule:capsule:aggregate
+subjects:
+- kind: ServiceAccount
+  name: capsule
+  namespace: capsule-system
+
+---
+# Source: capsule/templates/rbac.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: capsule-manager-rolebinding
+  labels:
+    helm.sh/chart: capsule-0.14.6
+    app.kubernetes.io/version: "0.14.6"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: capsule
+    app.kubernetes.io/instance: capsule
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: capsule
+  namespace: capsule-system
+
+---
+# Source: capsule/templates/metrics-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: capsule-controller-manager-metrics-service
+  namespace: capsule-system
+  labels:
+    helm.sh/chart: capsule-0.14.6
+    app.kubernetes.io/version: "0.14.6"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: capsule
+    app.kubernetes.io/instance: capsule
+spec:
+  ports:
+  - port: 8080
+    name: metrics
+    protocol: TCP
+    targetPort: 8080
+  - port: 10080
+    name: health-api
+    protocol: TCP
+    targetPort: 10080
+  selector:
+    app.kubernetes.io/name: capsule
+    app.kubernetes.io/instance: capsule
+  sessionAffinity: None
+  type: ClusterIP
+
+---
+# Source: capsule/templates/webhook-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: capsule-webhook-service
+  namespace: capsule-system
+  labels:
+    helm.sh/chart: capsule-0.14.6
+    app.kubernetes.io/version: "0.14.6"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: capsule
+    app.kubernetes.io/instance: capsule
+spec:
+  ports:
+  - port: 9443
+    name: admission
+    protocol: TCP
+    targetPort: 9443
+  selector:
+    app.kubernetes.io/name: capsule
+    app.kubernetes.io/instance: capsule
+  sessionAffinity: None
+  type: ClusterIP
+
+---
+# Source: capsule/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: capsule-controller-manager
+  namespace: capsule-system
+  labels:
+    helm.sh/chart: capsule-0.14.6
+    app.kubernetes.io/version: "0.14.6"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: capsule
+    app.kubernetes.io/instance: capsule
+spec:
+  strategy:
+    type: RollingUpdate
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: capsule
+      app.kubernetes.io/instance: capsule
+  template:
+    metadata:
+      annotations:
+      labels:
+        helm.sh/chart: capsule-0.14.6
+        app.kubernetes.io/version: "0.14.6"
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: capsule
+        app.kubernetes.io/instance: capsule
+    spec:
+      serviceAccountName: capsule
+      securityContext:
+        runAsGroup: 1002
+        runAsNonRoot: true
+        runAsUser: 1002
+        seccompProfile:
+          type: RuntimeDefault
+      hostPID: false
+      priorityClassName: 
+      volumes:
+        - name: cert
+          secret:
+            defaultMode: 420
+            secretName: capsule-tls
+      containers:
+        - name: manager
+          args:
+            - --webhook-port=9443
+            - --zap-log-level=info
+            - --configuration-name=default
+            - --workers=1
+            - --client-connection-qps=20
+            - --client-connection-burst=30
+            - --cache-sync-timeout=4m
+            - --enable-leader-election=true
+          image: ghcr.io/projectcapsule/capsule:v0.14.6
+          imagePullPolicy: IfNotPresent
+          env:
+          - name: NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          - name: SERVICE_ACCOUNT
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.serviceAccountName
+          ports:
+            - name: admission
+              protocol: TCP
+              containerPort: 9443
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+            - name: health-api
+              containerPort: 10080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 10080
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 10080
+          volumeMounts:
+            - mountPath: /tmp/k8s-webhook-server/serving-certs
+              name: cert
+              readOnly: true
+          resources:
+            {}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+
+---
+# Source: capsule/templates/configuration.yaml
+apiVersion: capsule.clastix.io/v1beta2
+kind: CapsuleConfiguration
+metadata:
+  name: default
+  namespace: capsule-system
+  labels:
+    helm.sh/chart: capsule-0.14.6
+    app.kubernetes.io/version: "0.14.6"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: capsule
+    app.kubernetes.io/instance: capsule
+  annotations:
+spec:
+  cacheInvalidation: 0h30m0s
+  rbac:
+    administrationClusterRoles:
+    - capsule-namespace-deleter
+    deleter: capsule-namespace-deleter
+    promotionClusterRoles:
+    - capsule-namespace-provisioner
+    - capsule-namespace-deleter
+    provisioner: capsule-namespace-provisioner
+  impersonation:
+    tenantDefaultServiceAccount: default
+  administrators:
+    []
+  users:
+    - kind: Group
+      name: projectcapsule.dev
+  enableTLSReconciler: false
+  overrides:
+    mutatingWebhookConfigurationName: capsule-mutating-webhook-configuration
+    TLSSecretName: capsule-tls
+    validatingWebhookConfigurationName: capsule-validating-webhook-configuration
+  forceTenantPrefix: false
+  allowServiceAccountPromotion: false
+  ignoreUserWithGroups:
+    []
+  protectedNamespaceRegex: ""
+  nodeMetadata:
+    forbiddenAnnotations:
+      denied: []
+      deniedRegex: ""
+    forbiddenLabels:
+      denied: []
+      deniedRegex: ""
+  admission:
+    serviceName: capsule-webhook-service
+    validating:
+      name: "capsule-dynamic-webhook"
+      client:
+        
+        
+        service:
+          name: capsule-webhook-service
+          namespace: capsule-system
+          port: 9443
+      annotations:
+        
+        cert-manager.io/inject-ca-from: capsule-system/capsule-webhook-cert
+      webhooks:
+      - name: generic.rules.validating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/rules/generic/validating"
+        failurePolicy:  Fail
+        matchPolicy: Equivalent
+        namespaceSelector:
+          matchExpressions:
+          - key: capsule.clastix.io/tenant
+            operator: Exists
+        matchConditions:
+          - expression: request.resource.resource != "events"
+            name: ignore-events
+        rules:
+          - apiGroups:
+            - '*'
+            apiVersions:
+            - '*'
+            operations:
+            - CREATE
+            - UPDATE
+            resources:
+            - '*/*'
+            scope: Namespaced
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: namespaces.validating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/namespaces/validating"
+        failurePolicy: Fail
+        matchPolicy: Equivalent
+        rules:
+          - apiGroups:
+              - ""
+            apiVersions:
+              - v1
+            operations:
+              - CREATE
+              - UPDATE
+              - DELETE
+            resources:
+              - namespaces
+              - namespaces/status
+              - namespaces/finalize
+            scope: '*'
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: rulestatus.validating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/rulestatus/validating"
+        failurePolicy: Fail
+        matchPolicy: Equivalent
+        rules:
+          - apiGroups:
+              - capsule.clastix.io
+            apiVersions:
+              - v1beta2
+            operations:
+              - CREATE
+              - UPDATE
+              - DELETE
+            resources:
+              - rulestatuses
+            scope: 'Namespaced'
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: customresources.validating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/generic/customresources"
+        failurePolicy:  Fail
+        matchPolicy: Equivalent
+        namespaceSelector:
+          matchExpressions:
+          - key: capsule.clastix.io/tenant
+            operator: Exists
+          - key: projectcapsule.dev/custom-resources
+            operator: Exists
+        matchConditions:
+          - expression: '!has(request.subResource) || request.subResource == ""'
+            name: ignore-subresources
+          - expression: request.resource.resource != "events"
+            name: ignore-events
+        rules:
+          - apiGroups:
+              - '*'
+            apiVersions:
+              - '*'
+            operations:
+              - CREATE
+              - UPDATE
+              - DELETE
+            resources:
+              - '*'
+            scope: Namespaced
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: cordoning.validating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/generic/cordoning"
+        failurePolicy: Fail
+        matchPolicy: Equivalent
+        namespaceSelector:
+          matchExpressions:
+          - key: capsule.clastix.io/tenant
+            operator: Exists
+          - key: projectcapsule.dev/cordoned
+            operator: In
+            values:
+            - "true"
+        matchConditions:
+          - expression: '!has(request.subResource) || request.subResource == ""'
+            name: ignore-subresources
+          - expression: request.resource.resource != "events"
+            name: ignore-events
+        rules:
+          - apiGroups:
+            - '*'
+            apiVersions:
+            - '*'
+            operations:
+            - CREATE
+            - UPDATE
+            - DELETE
+            resources:
+            - '*'
+            scope: Namespaced
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: devices.validating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/devices/validating"
+        failurePolicy: Fail
+        matchPolicy: Equivalent
+        namespaceSelector:
+          matchExpressions:
+          - key: capsule.clastix.io/tenant
+            operator: Exists
+        rules:
+          - apiGroups:
+              - resource.k8s.io
+            apiVersions:
+              - v1
+            operations:
+              - CREATE
+              - UPDATE
+            resources:
+              - resourceclaimtemplates
+              - resourceclaims
+            scope: Namespaced
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: gateway.validating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/gateways/validating"
+        failurePolicy: Fail
+        matchPolicy: Equivalent
+        namespaceSelector:
+          matchExpressions:
+          - key: capsule.clastix.io/tenant
+            operator: Exists
+        rules:
+          - apiGroups:
+              - gateway.networking.k8s.io
+            apiVersions:
+              - v1
+            operations:
+              - CREATE
+              - UPDATE
+            resources:
+              - gateways
+            scope: Namespaced
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: ingress.validating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/ingresses/validating"
+        failurePolicy: Fail
+        matchPolicy: Equivalent
+        namespaceSelector:
+          matchExpressions:
+          - key: capsule.clastix.io/tenant
+            operator: Exists
+        rules:
+          - apiGroups:
+              - networking.k8s.io
+              - extensions
+            apiVersions:
+              - v1
+              - v1beta1
+            operations:
+              - CREATE
+              - UPDATE
+            resources:
+              - ingresses
+            scope: Namespaced
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: pods.validating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/pods/validating"
+        failurePolicy: Fail
+        matchPolicy: Exact
+        namespaceSelector:
+          matchExpressions:
+          - key: capsule.clastix.io/tenant
+            operator: Exists
+        rules:
+          - apiGroups:
+              - ""
+            apiVersions:
+              - v1
+            operations:
+              - CREATE
+              - UPDATE
+            resources:
+              - pods
+              - pods/ephemeralcontainers
+            scope: Namespaced
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: pvc.validating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/persistentvolumeclaims/validating"
+        failurePolicy: Fail
+        matchPolicy: Equivalent
+        namespaceSelector:
+          matchExpressions:
+          - key: capsule.clastix.io/tenant
+            operator: Exists
+        matchConditions:
+          - name: skip-bound-pvc-updates
+            expression: >
+              request.operation != "UPDATE" ||
+              !has(oldObject.status.phase) ||
+              oldObject.status.phase != "Bound"
+          - name: requires-pvc-spec-validation
+            expression: >
+              request.operation != "UPDATE" ||
+              !has(object.metadata.deletionTimestamp) ||
+              object.spec != oldObject.spec
+        rules:
+          - apiGroups:
+              - ""
+            apiVersions:
+              - v1
+            operations:
+              - CREATE
+              - UPDATE
+            resources:
+              - persistentvolumeclaims
+            scope: Namespaced
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: services.validating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/services/validating"
+        failurePolicy: Fail
+        matchPolicy: Exact
+        namespaceSelector:
+          matchExpressions:
+          - key: capsule.clastix.io/tenant
+            operator: Exists
+        rules:
+          - apiGroups:
+              - ""
+            apiVersions:
+              - v1
+            operations:
+              - CREATE
+              - UPDATE
+            resources:
+              - services
+            scope: Namespaced
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: managed.validating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+        path: "/generic/managed"
+        failurePolicy: Fail
+        matchPolicy: Equivalent
+        objectSelector:
+          matchExpressions:
+          - key: projectcapsule.dev/managed-by
+            operator: In
+            values:
+            - controller
+        rules:
+          - apiGroups:
+            - '*'
+            apiVersions:
+            - '*'
+            operations:
+            - CREATE
+            - UPDATE
+            - DELETE
+            resources:
+            - '*'
+            scope: Namespaced
+          - apiGroups:
+            - capsule.clastix.io
+            apiVersions:
+            - v1beta2
+            operations:
+            - CREATE
+            - UPDATE
+            - DELETE
+            resources:
+            - globalresourcequotas
+            scope: Cluster
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: replications.validating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+        path: "/generic/replications"
+        failurePolicy: Fail
+        matchPolicy: Equivalent
+        objectSelector:
+          matchExpressions:
+          - key: projectcapsule.dev/created-by
+            operator: In
+            values:
+            - replications
+        rules:
+          - apiGroups:
+            - '*'
+            apiVersions:
+            - '*'
+            operations:
+            - UPDATE
+            - DELETE
+            resources:
+            - '*'
+            scope: '*'
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: tenants.validating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/tenants/validating"
+        failurePolicy:  Fail
+        matchPolicy: Exact
+        rules:
+          - apiGroups:
+              - capsule.clastix.io
+            apiVersions:
+              - v1beta2
+            operations:
+              - CREATE
+              - UPDATE
+              - DELETE
+            resources:
+              - tenants
+            scope: 'Cluster'
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: owners.validating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/tenantowners/validating"
+        failurePolicy:  Fail
+        matchPolicy: Exact
+        rules:
+          - apiGroups:
+              - capsule.clastix.io
+            apiVersions:
+              - v1beta2
+            operations:
+              - CREATE
+              - UPDATE
+              - DELETE
+            resources:
+              - tenantowners
+            scope: 'Cluster'
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: resourcepools.validating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/resourcepools/validating"
+        failurePolicy:  Fail
+        matchPolicy: Equivalent
+        rules:
+          - apiGroups:
+            - "capsule.clastix.io"
+            apiVersions:
+            - "*"
+            operations:
+            - CREATE
+            - UPDATE
+            resources:
+            - resourcepools
+            scope: '*'
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: resourcepoolclaims.validating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/resourcepools/claim/validating"
+        failurePolicy:  Fail
+        matchPolicy: Equivalent
+        rules:
+          - apiGroups:
+            - "capsule.clastix.io"
+            apiVersions:
+            - "*"
+            operations:
+            - CREATE
+            - UPDATE
+            - DELETE
+            resources:
+            - resourcepoolclaims
+            scope: '*'
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: serviceaccounts.validating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/serviceaccounts/validating"
+        failurePolicy:  Fail
+        matchPolicy: Exact
+        namespaceSelector:
+          matchExpressions:
+          - key: capsule.clastix.io/tenant
+            operator: Exists
+        matchConditions:
+          - name: requires-promotion-label
+            expression: >
+              has(object.metadata.labels) &&
+              (
+                "projectcapsule.dev/promote" in object.metadata.labels ||
+                "owner.projectcapsule.dev/promote" in object.metadata.labels
+              )
+        rules:
+          - apiGroups:
+              - '*'
+            apiVersions:
+              - '*'
+            operations:
+              - CREATE
+              - UPDATE
+            resources:
+              - 'serviceaccounts'
+            scope: Namespaced
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: config.validating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/config/validating"
+        failurePolicy:  Ignore
+        matchPolicy: Exact
+        rules:
+          - apiGroups:
+              - capsule.clastix.io
+            apiVersions:
+              - v1beta2
+            operations:
+              - CREATE
+              - UPDATE
+            resources:
+              - capsuleconfigurations
+            scope: 'Cluster'
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: namespaced.custom-quotas.validating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/custom-quotas/namespaced/validating"
+        failurePolicy:  Fail
+        matchPolicy: Equivalent
+        rules:
+          - apiGroups:
+            - capsule.clastix.io
+            apiVersions:
+            - v1beta2
+            operations:
+            - CREATE
+            - UPDATE
+            - DELETE
+            resources:
+            - customquotas
+            scope: Namespaced
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: cluster.custom-quotas.validating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/custom-quotas/cluster/validating"
+        failurePolicy:  Fail
+        matchPolicy: Equivalent
+        rules:
+          - apiGroups:
+            - capsule.clastix.io
+            apiVersions:
+            - v1beta2
+            operations:
+            - CREATE
+            - UPDATE
+            - DELETE
+            resources:
+            - globalcustomquotas
+            scope: Cluster
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: calculation.global-resource-quotas.validating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/global-resource-quotas/calculations"
+        failurePolicy: Fail
+        matchPolicy: Equivalent
+        namespaceSelector:
+          matchExpressions:
+          - key: capsule.clastix.io/tenant
+            operator: Exists
+        rules:
+          - apiGroups:
+            - '*'
+            apiVersions:
+            - '*'
+            operations:
+            - CREATE
+            - UPDATE
+            resources:
+            - '*/*'
+            scope: Namespaced
+          - apiGroups:
+            - capsule.clastix.io
+            apiVersions:
+            - v1beta2
+            operations:
+            - CREATE
+            - UPDATE
+            resources:
+            - globalresourcequotas
+            scope: Cluster
+        sideEffects: NoneOnDryRun
+        timeoutSeconds: 30
+    mutating:
+      name: "capsule-dynamic-webhook"
+      client:
+        
+        
+        service:
+          name: capsule-webhook-service
+          namespace: capsule-system
+          port: 9443
+      annotations:
+        
+        cert-manager.io/inject-ca-from: capsule-system/capsule-webhook-cert
+      webhooks:
+      - name: generic.rules.mutating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/rules/generic/mutating"
+        failurePolicy: Fail
+        matchPolicy: Equivalent
+        reinvocationPolicy: IfNeeded
+        namespaceSelector:
+          matchExpressions:
+          - key: capsule.clastix.io/tenant
+            operator: Exists
+        matchConditions:
+          - expression: request.resource.resource != "events"
+            name: ignore-events
+          - name: mutations-ignore-subresources
+            expression: '!has(request.subResource) || request.subResource == ""'
+        rules:
+          - apiGroups:
+            - '*'
+            apiVersions:
+            - '*'
+            operations:
+            - CREATE
+            - UPDATE
+            resources:
+            - '*/*'
+            scope: Namespaced
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: namespaces.mutating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/namespaces/mutating"
+        failurePolicy: Fail
+        matchPolicy: Equivalent
+        reinvocationPolicy: Never
+        rules:
+          - apiGroups:
+              - ""
+            apiVersions:
+              - v1
+            operations:
+              - CREATE
+              - UPDATE
+            resources:
+              - namespaces
+            scope: '*'
+        sideEffects: NoneOnDryRun
+        timeoutSeconds: 30
+      - name: pvc.mutating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/persistentvolumeclaims/mutating"
+        failurePolicy: Fail
+        matchPolicy: Equivalent
+        reinvocationPolicy: Never
+        namespaceSelector:
+          matchExpressions:
+          - key: capsule.clastix.io/tenant
+            operator: Exists
+        matchConditions:
+          - name: skip-bound-pvc-updates
+            expression: >
+              request.operation != "UPDATE" ||
+              !has(oldObject.status.phase) ||
+              oldObject.status.phase != "Bound"
+          - name: requires-pvc-spec-validation
+            expression: >
+              request.operation != "UPDATE" ||
+              !has(object.metadata.deletionTimestamp) ||
+              object.spec != oldObject.spec
+          - name: requires-static-binding
+            expression: >
+              has(object.spec.selector) ||
+              (
+                request.operation == "CREATE" &&
+                has(object.spec.volumeName) &&
+                object.spec.volumeName != ""
+              )
+        rules:
+          - apiGroups:
+              - ""
+            apiVersions:
+              - v1
+            operations:
+              - CREATE
+              - UPDATE
+            resources:
+              - persistentvolumeclaims
+            scope: Namespaced
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: pod.mutating.projectcapsule.dev
+        admissionReviewVersions:
+        - v1
+        path: "/defaults"
+        failurePolicy: Fail
+        matchPolicy: Exact
+        reinvocationPolicy: Never
+        namespaceSelector:
+          matchExpressions:
+          - key: capsule.clastix.io/tenant
+            operator: Exists
+        rules:
+        - apiGroups:
+          - ""
+          apiVersions:
+          - v1
+          operations:
+          - CREATE
+          resources:
+          - pods
+          scope: "Namespaced"
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: storage.mutating.projectcapsule.dev
+        admissionReviewVersions:
+        - v1
+        path: "/defaults"
+        failurePolicy: Fail
+        matchPolicy: Equivalent
+        reinvocationPolicy: Never
+        namespaceSelector:
+          matchExpressions:
+          - key: capsule.clastix.io/tenant
+            operator: Exists
+        rules:
+        - apiGroups:
+          - ""
+          apiVersions:
+          - v1
+          operations:
+          - CREATE
+          resources:
+          - persistentvolumeclaims
+          scope: "Namespaced"
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: ingress.mutating.projectcapsule.dev
+        admissionReviewVersions:
+        - v1
+        path: "/defaults"
+        failurePolicy: Fail
+        matchPolicy: Equivalent
+        reinvocationPolicy: Never
+        namespaceSelector:
+          matchExpressions:
+          - key: capsule.clastix.io/tenant
+            operator: Exists
+        rules:
+        - apiGroups:
+          - networking.k8s.io
+          apiVersions:
+          - v1beta1
+          - v1
+          operations:
+          - CREATE
+          - UPDATE
+          resources:
+          - ingresses
+          scope: "Namespaced"
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: gateway.mutating.projectcapsule.dev
+        admissionReviewVersions:
+        - v1
+        path: "/defaults"
+        failurePolicy: Fail
+        matchPolicy: Equivalent
+        reinvocationPolicy: Never
+        namespaceSelector:
+          matchExpressions:
+          - key: capsule.clastix.io/tenant
+            operator: Exists
+        rules:
+        - apiGroups:
+          - gateway.networking.k8s.io
+          apiVersions:
+          - v1
+          operations:
+          - CREATE
+          - UPDATE
+          resources:
+          - gateways
+          scope: "Namespaced"
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: resourcepools.mutating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/resourcepools/mutating"
+        failurePolicy: Fail
+        matchPolicy: Equivalent
+        reinvocationPolicy: Never
+        rules:
+          - apiGroups:
+            - "capsule.clastix.io"
+            apiVersions:
+            - "*"
+            operations:
+              - CREATE
+              - UPDATE
+            resources:
+            - resourcepools
+            scope: '*'
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: resourcepoolclaims.mutating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/resourcepools/claim/mutating"
+        failurePolicy: Fail
+        matchPolicy: Equivalent
+        reinvocationPolicy: Never
+        rules:
+          - apiGroups:
+            - "capsule.clastix.io"
+            apiVersions:
+            - "*"
+            operations:
+            - CREATE
+            - UPDATE
+            resources:
+            - resourcepoolclaims
+            scope: '*'
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: tenants.mutating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/tenants/mutating"
+        failurePolicy:  Fail
+        matchPolicy: Exact
+        reinvocationPolicy: Never
+        rules:
+          - apiGroups:
+              - capsule.clastix.io
+            apiVersions:
+              - "*"
+            operations:
+              - CREATE
+              - UPDATE
+              - DELETE
+            resources:
+              - tenants
+            scope: 'Cluster'
+        sideEffects: None
+        timeoutSeconds: 30
+      - name: metadata.mutating.projectcapsule.dev
+        admissionReviewVersions:
+          - v1
+          - v1beta1
+        path: "/generic/metadata"
+        failurePolicy:  Ignore
+        matchPolicy: Equivalent
+        reinvocationPolicy: Never
+        namespaceSelector:
+          matchExpressions:
+          - key: capsule.clastix.io/tenant
+            operator: Exists
+        matchConditions:
+          - expression: '!has(request.subResource) || request.subResource == ""'
+            name: ignore-subresources
+          - expression: request.resource.resource != "events"
+            name: ignore-events
+        rules:
+          - apiGroups:
+            - '*'
+            apiVersions:
+            - '*'
+            operations:
+            - CREATE
+            - UPDATE
+            resources:
+            - '*'
+            scope: Namespaced
+        sideEffects: None
+        timeoutSeconds: 30
+
+---
+# Source: capsule/templates/certificate.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: capsule-webhook-cert
+  namespace: capsule-system
+  labels:
+    helm.sh/chart: capsule-0.14.6
+    app.kubernetes.io/version: "0.14.6"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: capsule
+    app.kubernetes.io/instance: capsule
+spec:
+  dnsNames:
+  - capsule-webhook-service.capsule-system.svc
+  - capsule-webhook-service.capsule-system.svc.cluster.local
+  issuerRef:
+    kind: Issuer
+    name: capsule-webhook-selfsigned
+  secretName: capsule-tls
+  subject:
+    organizations:
+      - clastix.io
+
+---
+# Source: capsule/templates/certificate.yaml
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: capsule-webhook-selfsigned
+  namespace: capsule-system
+  labels:
+    helm.sh/chart: capsule-0.14.6
+    app.kubernetes.io/version: "0.14.6"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: capsule
+    app.kubernetes.io/instance: capsule
+spec:
+  selfSigned: {}

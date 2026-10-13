@@ -1,0 +1,181 @@
+# Converges a remotely managed Cloudflare Tunnel: the tunnel itself, its ingress rules (from
+# overlays/oldie/tunnel-config.json), the connector token Secret in the cluster, and the proxied CNAME
+# that points the hostname at the tunnel. Read-only lookups run in check mode so `--check --diff` is a
+# real drift report. Everything that talks to Cloudflare runs on the controller through the `cf` CLI.
+- name: Controller-side Cloudflare lookups and changes
+  delegate_to: localhost
+  run_once: true  # noqa: run-once[task]
+  vars:
+    ansible_become: false  # inventory-level ansible_become would otherwise apply to localhost
+  block:
+    - name: Check that the cf CLI is installed and logged in
+      ansible.builtin.command: cf accounts list
+      register: cloudflare_tunnel_login
+      changed_when: false
+      failed_when: false
+      check_mode: false
+    - name: Require a working cf login
+      ansible.builtin.assert:
+        that: cloudflare_tunnel_login.rc == 0
+        fail_msg: "cf is not installed or not logged in on this machine (run: cf auth login), or set cloudflare_tunnel_enabled: false"
+        quiet: true
+
+    - name: Read the desired tunnel configuration
+      ansible.builtin.set_fact:
+        cloudflare_tunnel_desired: "{{ lookup('ansible.builtin.file', cloudflare_tunnel_config_file) | from_json }}"
+    - name: Derive the public hostname (first ingress rule with a hostname)
+      ansible.builtin.set_fact:
+        cloudflare_tunnel_hostname: "{{ (cloudflare_tunnel_desired.config.ingress | selectattr('hostname', 'defined') | list | first).hostname }}"
+
+    - name: List tunnels
+      ansible.builtin.command: cf tunnels list
+      register: cloudflare_tunnel_list
+      changed_when: false
+      check_mode: false
+    - name: Find the tunnel by name
+      ansible.builtin.set_fact:
+        cloudflare_tunnel_found: >-
+          {{ cloudflare_tunnel_list.stdout | from_json
+             | selectattr('name', 'equalto', cloudflare_tunnel_name)
+             | rejectattr('deleted_at', 'truthy') | list }}
+    - name: Create the tunnel
+      ansible.builtin.command:
+        argv: [cf, tunnels, create, --name, "{{ cloudflare_tunnel_name }}", --config-source, cloudflare]
+      register: cloudflare_tunnel_created
+      when: cloudflare_tunnel_found | length == 0
+      changed_when: true
+    - name: Resolve the tunnel id
+      ansible.builtin.set_fact:
+        cloudflare_tunnel_id: >-
+          {{ (cloudflare_tunnel_created.stdout | from_json).id
+             if cloudflare_tunnel_found | length == 0 and not ansible_check_mode
+             else (cloudflare_tunnel_found | first).id | default('') }}
+
+    - name: Read the current ingress configuration
+      ansible.builtin.command:
+        argv: [cf, tunnels, config, get, "{{ cloudflare_tunnel_id }}"]
+      register: cloudflare_tunnel_current
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: cloudflare_tunnel_id | length > 0
+    - name: Compare ingress rules (hostname, service, origin server name only; the API adds defaults)
+      ansible.builtin.set_fact:
+        cloudflare_tunnel_ingress_differs: >-
+          {{ cloudflare_tunnel_id | length == 0
+             or cloudflare_tunnel_current.rc != 0
+             or (cloudflare_tunnel_current.stdout | from_json).config.ingress | default([]) | map(attribute='service') | list
+                  != cloudflare_tunnel_desired.config.ingress | map(attribute='service') | list
+             or (cloudflare_tunnel_current.stdout | from_json).config.ingress | default([]) | map(attribute='hostname', default='') | list
+                  != cloudflare_tunnel_desired.config.ingress | map(attribute='hostname', default='') | list
+             or (cloudflare_tunnel_current.stdout | from_json).config.ingress | default([])
+                  | map(attribute='originRequest.originServerName', default='') | list
+                  != cloudflare_tunnel_desired.config.ingress
+                  | map(attribute='originRequest.originServerName', default='') | list }}
+    - name: Apply the ingress configuration
+      ansible.builtin.command:
+        argv: [cf, tunnels, config, update, "{{ cloudflare_tunnel_id }}", --body, "{{ cloudflare_tunnel_desired | to_json }}"]
+      when: cloudflare_tunnel_ingress_differs | bool and cloudflare_tunnel_id | length > 0
+      changed_when: true
+
+    - name: Get the connector token
+      ansible.builtin.command:
+        argv: [cf, tunnels, token, get, "{{ cloudflare_tunnel_id }}"]
+      register: cloudflare_tunnel_token_raw
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: cloudflare_tunnel_id | length > 0
+    - name: Keep the token (JSON string or raw)
+      ansible.builtin.set_fact:
+        cloudflare_tunnel_token: "{{ cloudflare_tunnel_token_raw.stdout | trim | regex_replace('^\"|\"$', '') }}"
+      no_log: true
+      when: cloudflare_tunnel_id | length > 0
+
+    - name: List DNS records for the hostname
+      ansible.builtin.command:
+        argv: [cf, dns, records, list, --zone, "{{ cloudflare_tunnel_zone }}", --name, "{{ cloudflare_tunnel_hostname }}"]
+      register: cloudflare_tunnel_dns
+      changed_when: false
+      check_mode: false
+    - name: Work out the DNS change
+      ansible.builtin.set_fact:
+        cloudflare_tunnel_dns_target: "{{ cloudflare_tunnel_id }}.cfargotunnel.com"
+        # Only records with exactly this name and a type that cannot coexist with the tunnel CNAME
+        # (A, AAAA, CNAME). MX/TXT/etc. are never touched. A CNAME is kept only if it already points at
+        # the tunnel AND is proxied; an unproxied one is replaced.
+        cloudflare_tunnel_dns_conflicts: >-
+          {{ cloudflare_tunnel_dns.stdout | from_json
+             | selectattr('name', 'equalto', cloudflare_tunnel_hostname)
+             | selectattr('type', 'in', ['A', 'AAAA', 'CNAME'])
+             | rejectattr('content', 'equalto', cloudflare_tunnel_id ~ '.cfargotunnel.com')
+             | list
+             + (cloudflare_tunnel_dns.stdout | from_json
+                | selectattr('name', 'equalto', cloudflare_tunnel_hostname)
+                | selectattr('type', 'equalto', 'CNAME')
+                | selectattr('content', 'equalto', cloudflare_tunnel_id ~ '.cfargotunnel.com')
+                | rejectattr('proxied', 'equalto', true) | list) }}
+        cloudflare_tunnel_dns_ok: >-
+          {{ (cloudflare_tunnel_dns.stdout | from_json
+              | selectattr('name', 'equalto', cloudflare_tunnel_hostname)
+              | selectattr('type', 'equalto', 'CNAME')
+              | selectattr('content', 'equalto', cloudflare_tunnel_id ~ '.cfargotunnel.com')
+              | selectattr('proxied', 'equalto', true) | list | length) > 0 }}
+    - name: Remove records that conflict with the tunnel CNAME (A, AAAA or a different CNAME)
+      ansible.builtin.command:
+        argv: [cf, dns, records, delete, "{{ item.id }}", --zone, "{{ cloudflare_tunnel_zone }}", --force]
+      loop: "{{ cloudflare_tunnel_dns_conflicts }}"
+      loop_control:
+        label: "{{ item.type }} {{ item.name }} -> {{ item.content }}"
+      when: cloudflare_tunnel_id | length > 0
+      changed_when: true
+    - name: Create the proxied CNAME to the tunnel
+      ansible.builtin.command:
+        argv:
+          - cf
+          - dns
+          - records
+          - create
+          - --zone
+          - "{{ cloudflare_tunnel_zone }}"
+          - --body
+          - "{{ {'type': 'CNAME', 'name': cloudflare_tunnel_hostname, 'content': cloudflare_tunnel_dns_target, 'proxied': true, 'ttl': 1} | to_json }}"
+      when: cloudflare_tunnel_id | length > 0 and not cloudflare_tunnel_dns_ok | bool
+      changed_when: true
+
+# The token reaches the node as an environment variable and kubectl reads it from stdin, so it never
+# appears in a process listing. Reading and comparing runs in check mode too (drift report).
+- name: Compare the connector token Secret with the tunnel token
+  ansible.builtin.shell: |
+    set -euo pipefail
+    export KUBECONFIG={{ cloudflare_tunnel_kubeconfig }}
+    K={{ cloudflare_tunnel_kubectl }}
+    current=$($K -n {{ cloudflare_tunnel_secret_namespace }} get secret {{ cloudflare_tunnel_secret_name }} \
+      -o jsonpath='{.data.token}' 2>/dev/null | base64 -d || true)
+    if [ "$current" = "$TUNNEL_TOKEN" ]; then echo same; else echo differs; fi
+  args:
+    executable: /bin/bash
+  environment:
+    TUNNEL_TOKEN: "{{ cloudflare_tunnel_token }}"
+  register: cloudflare_tunnel_secret_state
+  changed_when: cloudflare_tunnel_secret_state.stdout | trim == 'differs'
+  check_mode: false
+  no_log: true
+  when: cloudflare_tunnel_token is defined
+
+- name: Store the connector token in the cluster (namespace and Secret)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    export KUBECONFIG={{ cloudflare_tunnel_kubeconfig }}
+    K={{ cloudflare_tunnel_kubectl }}
+    $K create namespace {{ cloudflare_tunnel_secret_namespace }} --dry-run=client -o yaml | $K apply -f - >/dev/null
+    printf '%s' "$TUNNEL_TOKEN" | $K -n {{ cloudflare_tunnel_secret_namespace }} create secret generic \
+      {{ cloudflare_tunnel_secret_name }} --from-file=token=/dev/stdin --dry-run=client -o yaml \
+      | $K apply -f - >/dev/null
+  args:
+    executable: /bin/bash
+  environment:
+    TUNNEL_TOKEN: "{{ cloudflare_tunnel_token }}"
+  changed_when: false  # reported by the comparison above
+  no_log: true
+  when: cloudflare_tunnel_token is defined and cloudflare_tunnel_secret_state.stdout | default('') | trim == 'differs'

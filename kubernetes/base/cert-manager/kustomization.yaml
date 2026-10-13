@@ -1,0 +1,7 @@
+# cert-manager v1.21.2 (CRDs + controller + webhook + cainjector), pinned release asset.
+# Bump: change the version in the URL (and hack/versions.env), then check
+#   https://github.com/cert-manager/cert-manager/releases for upgrade notes.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - https://github.com/cert-manager/cert-manager/releases/download/v1.21.2/cert-manager.yaml
