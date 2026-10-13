@@ -177,6 +177,16 @@ export function itemTitle(key: string, stateData: unknown): string {
 	return typeof title === 'string' && title.trim() ? title : key;
 }
 
+/**
+ * The work item id in a `/work/[id]` route param, or null when it is not a canonical positive safe
+ * integer (missing, `abc`, `0`, `-3`, `1.5`, `007`, ...). Callers must not make a remote call for null.
+ */
+export function parseWorkId(param: string | undefined): number | null {
+	if (param === undefined || !/^[1-9]\d*$/.test(param)) return null;
+	const n = Number(param);
+	return Number.isSafeInteger(n) ? n : null;
+}
+
 /** Whether a live change (`null` = refresh everything) concerns the item shown on the detail page. */
 export const shouldRefresh = (changed: number | null, id: number): boolean =>
 	changed === null || changed === id;

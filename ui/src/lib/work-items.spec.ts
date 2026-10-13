@@ -11,6 +11,7 @@ import {
 	itemUrl,
 	keyToUrl,
 	parseReadiness,
+	parseWorkId,
 	primaryAction,
 	shouldRefresh,
 	stateTone,
@@ -263,5 +264,27 @@ describe('countPossiblyRunning', () => {
 		];
 		expect(countPossiblyRunning(states.map((state) => ({ state })))).toBe(2);
 		expect(countPossiblyRunning([])).toBe(0);
+	});
+});
+
+describe('parseWorkId', () => {
+	it('accepts canonical positive integers', () => {
+		expect(parseWorkId('1')).toBe(1);
+		expect(parseWorkId('42')).toBe(42);
+	});
+
+	it.each([
+		undefined,
+		'',
+		'abc',
+		'0',
+		'-3',
+		'1.5',
+		'1e3',
+		' 7',
+		'007',
+		`${Number.MAX_SAFE_INTEGER}0`
+	])('rejects %j', (param) => {
+		expect(parseWorkId(param)).toBeNull();
 	});
 });
