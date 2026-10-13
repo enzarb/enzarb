@@ -25,6 +25,10 @@ run = "scripts/golden.sh"
 description = "Assert the enzarb-realtime wiring (enabled, disabled, replicas override)"
 run = "bash scripts/assert-realtime.sh"
 
+[tasks.componentversions]
+description = "Assert ENZARB_COMPONENT_VERSIONS on the UI Deployment (keys, values, disabled components, override)"
+run = "bash scripts/assert-component-versions.sh"
+
 [tasks.npmtoken]
 description = "Assert the workflows ENZARB_NPM_TOKEN wiring (default, overrides, disabled, no executor role)"
 run = "bash scripts/assert-npm-token.sh"
@@ -59,4 +63,4 @@ run = "scripts/sync-crds.sh"
 
 [tasks.test]
 description = "All checks"
-depends = ["lint", "guard", "golden", "realtime", "npmtoken", "claudekey", "kubeconform", "pgop"]
+depends = ["lint", "guard", "golden", "realtime", "componentversions", "npmtoken", "claudekey", "kubeconform", "pgop"]

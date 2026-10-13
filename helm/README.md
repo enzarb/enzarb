@@ -57,6 +57,8 @@ pgop creates `<cluster>-<role>-credentials` per Role (keys `username password ho
 
 Chat is always on; it needs sandbox >= 0.8.0 and sandbox-proxy >= 0.4.0 (both pinned). `ENZARB_MAX_CHATS` (sandbox, default 1; 0 disables chat there so the Chat tab shows "not available") is the kill switch. The former `ui.chat.enabled` value is a deprecated no-op (the schema tolerates it for one release so a stale values file cannot break `helm upgrade`); remove it from your values.
 
+The ui Deployment gets `ENZARB_COMPONENT_VERSIONS`, a single-line JSON object `{"chart": "<chart version>", "components": {"<repo name>": "<tag>"}}` for the About page, rendered from the same values the chart-sync writes. The component keys are the GitHub repo names: `enzarb-ui`, `enzarb-workflows`, `enzarb-connectors`, `enzarb-realtime` and `enzarb-updater` (only when enabled), `enzarb-sandbox-proxy`, `enzarb-sandbox-operator` and `enzarb-sandbox-container` (tag of `operator.sandboxImage`). `ui.extraEnv` can override it. Checked by `mise run componentversions`.
+
 ## Uninstall keeps data definitions
 The pgop `Cluster`, `Database` and `Role` CRs and the generated Secret (`enzarb.generatedSecret`: session JWT, executor callback secret, realtime JWT) carry `helm.sh/resource-policy: keep`, so `helm uninstall` (including the helm-controller's reinstall failure policy) cannot delete the database definition or the secrets. The PVC is created by pgop, not Helm, and is untouched. Nothing else is kept, so normal upgrades are unaffected.
 

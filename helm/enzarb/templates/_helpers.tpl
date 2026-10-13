@@ -195,3 +195,17 @@ initContainers:
 {{- $_ := set $sc "seccompProfile" (dict "type" "RuntimeDefault") -}}
 {{- toYaml $sc -}}
 {{- end }}
+
+{{/* JSON {"chart": version, "components": {repo name: tag}}, for the UI About page (ENZARB_COMPONENT_VERSIONS). */}}
+{{- define "enzarb.componentVersions" -}}
+{{- $v := .Values -}}
+{{- $out := dict "enzarb-ui" $v.ui.image.tag "enzarb-workflows" $v.workflows.image.tag "enzarb-connectors" $v.connectors.image.tag "enzarb-sandbox-proxy" $v.sandboxProxy.image.tag "enzarb-sandbox-operator" $v.operator.image.tag -}}
+{{- if $v.realtime.enabled }}{{- $_ := set $out "enzarb-realtime" $v.realtime.image.tag -}}{{- end -}}
+{{- if $v.updater.enabled }}{{- $_ := set $out "enzarb-updater" $v.updater.image.tag -}}{{- end -}}
+{{- /* sandboxImage is a full reference: drop any @digest, then take the tag after the last ":" (no tag -> whole ref). */ -}}
+{{- $ref := index (splitList "@" $v.operator.sandboxImage) 0 -}}
+{{- $tag := $ref | splitList ":" | last -}}
+{{- if or (contains "/" $tag) (eq $tag $ref) }}{{- $tag = $v.operator.sandboxImage -}}{{- end -}}
+{{- $_ := set $out "enzarb-sandbox-container" $tag -}}
+{{- dict "chart" .Chart.Version "components" $out | toJson -}}
+{{- end }}
