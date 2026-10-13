@@ -214,7 +214,7 @@ sandboxProxy:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-sandbox-proxy
-    tag: 0.4.0
+    tag: 0.5.0
     pullPolicy: ""
   # Must stay >= the chat idle (ENZARB_CHAT_IDLE_SECS, 1800); the proxy clamps lower values and
   # logs a warning. Envoy idle timeouts (route.backendTrafficPolicy) must exceed this.

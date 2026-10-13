@@ -957,7 +957,7 @@ spec:
 
       containers:
         - name: proxy
-          image: ghcr.io/enzarb/enzarb-sandbox-proxy:0.4.0
+          image: ghcr.io/enzarb/enzarb-sandbox-proxy:0.5.0
           imagePullPolicy: IfNotPresent
           ports:
             - { name: http, containerPort: 8080 }
@@ -1102,7 +1102,7 @@ spec:
                   name: enzarb-github
                   key: oauth-client-secret
             - { name: ENZARB_PUBLIC_URL, value: "https://enzarb.dev" }
-            - { name: ENZARB_COMPONENT_VERSIONS, value: "{\"chart\":\"0.0.0\",\"components\":{\"enzarb-connectors\":\"0.6.0\",\"enzarb-sandbox-container\":\"0.10.0\",\"enzarb-sandbox-operator\":\"0.8.0\",\"enzarb-sandbox-proxy\":\"0.4.0\",\"enzarb-ui\":\"0.22.0\",\"enzarb-updater\":\"0.2.0\",\"enzarb-workflows\":\"0.17.0\"}}" }
+            - { name: ENZARB_COMPONENT_VERSIONS, value: "{\"chart\":\"0.0.0\",\"components\":{\"enzarb-connectors\":\"0.6.0\",\"enzarb-sandbox-container\":\"0.10.1\",\"enzarb-sandbox-operator\":\"0.8.0\",\"enzarb-sandbox-proxy\":\"0.5.0\",\"enzarb-ui\":\"0.22.1\",\"enzarb-updater\":\"0.2.0\",\"enzarb-workflows\":\"0.17.0\"}}" }
             - { name: ENZARB_GITHUB_APP_SLUG, value: "enzarb" }
             # adapter-node derives the origin for its CSRF check from this header; the Gateway forwards it.
             - { name: PROTOCOL_HEADER, value: x-forwarded-proto }
