@@ -1,45 +1,33 @@
 # syntax=docker/dockerfile:1
 # Sandbox image: sandbox-init (pid 1), node + the ACP adapter, mise, the Docker CLI (+buildx, compose) and a C toolchain. Language toolchains come from mise at runtime.
-# Private enzarb git dependencies are fetched with a deploy key passed as a build secret:
-#   docker build --secret id=proto_key,src=KEYFILE -t enzarb-sandbox .
-# The key is bound to enzarb-proto via an ssh host alias and never reaches an image layer.
+# Build from the monorepo root (in-repo path dep on proto/):
+#   docker build -f sandbox-container/Dockerfile -t enzarb-sandbox .
 FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
-ENV CARGO_NET_GIT_FETCH_WITH_CLI=true
-RUN mkdir -p -m 0700 /root/.ssh && ssh-keyscan github.com >> /root/.ssh/known_hosts 2>/dev/null
-WORKDIR /src
+WORKDIR /src/sandbox-container
 
 # Dependency recipe: only changes when Cargo.toml/Cargo.lock change.
 FROM chef AS planner
-COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
-COPY src ./src
+COPY sandbox-container/rust-toolchain.toml sandbox-container/Cargo.toml sandbox-container/Cargo.lock ./
+COPY sandbox-container/src ./src
 RUN cargo chef prepare --recipe-path recipe.json
 
 # Dependency layer (cargo-chef cook): cached by the GHA layer cache while recipe.json is unchanged.
 FROM chef AS build
-COPY --from=planner /src/recipe.json recipe.json
-COPY rust-toolchain.toml ./
-RUN --mount=type=secret,id=proto_key \
-    --mount=type=cache,target=/usr/local/cargo/registry \
+# Path deps outside this workspace are not in the chef recipe; copy them before cooking.
+COPY proto/Cargo.toml proto/Cargo.lock /src/proto/
+COPY proto/crates /src/proto/crates
+COPY --from=planner /src/sandbox-container/recipe.json recipe.json
+COPY sandbox-container/rust-toolchain.toml ./
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    set -e; \
-    (cat /run/secrets/proto_key; echo) > /root/.ssh/proto_key; chmod 600 /root/.ssh/proto_key; \
-    printf 'Host gh-proto\n  HostName github.com\n  IdentityFile /root/.ssh/proto_key\n  IdentitiesOnly yes\n  StrictHostKeyChecking accept-new\n' > /root/.ssh/config; \
-    git config --global url."ssh://git@gh-proto/enzarb/enzarb-proto".insteadOf "ssh://git@github.com/enzarb/enzarb-proto"; \
-    cargo chef cook --release --locked --recipe-path recipe.json; \
-    rm -f /root/.ssh/proto_key /root/.gitconfig
+    cargo chef cook --release --locked --recipe-path recipe.json
 # Workspace crates only.
-COPY Cargo.toml Cargo.lock ./
-COPY src ./src
-RUN --mount=type=secret,id=proto_key \
-    --mount=type=cache,target=/usr/local/cargo/registry \
+COPY sandbox-container/Cargo.toml sandbox-container/Cargo.lock ./
+COPY sandbox-container/src ./src
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    set -e; \
-    (cat /run/secrets/proto_key; echo) > /root/.ssh/proto_key; chmod 600 /root/.ssh/proto_key; \
-    printf 'Host gh-proto\n  HostName github.com\n  IdentityFile /root/.ssh/proto_key\n  IdentitiesOnly yes\n  StrictHostKeyChecking accept-new\n' > /root/.ssh/config; \
-    git config --global url."ssh://git@gh-proto/enzarb/enzarb-proto".insteadOf "ssh://git@github.com/enzarb/enzarb-proto"; \
-    cargo build --release --locked --bin sandbox-init; \
-    cp target/release/sandbox-init /sandbox-init; \
-    rm -f /root/.ssh/proto_key /root/.gitconfig
+    cargo build --release --locked --bin sandbox-init \
+ && cp target/release/sandbox-init /sandbox-init
 
 # Node stage: download node, install the adapter, drop what the runtime does not need.
 FROM ubuntu:26.04 AS node

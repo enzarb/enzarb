@@ -1,0 +1,17 @@
+# Build context is the repo root for components with in-repo path deps
+# (docker build -f <dir>/Dockerfile .). Keep it small.
+**/target
+**/node_modules
+**/.git
+.git
+**/.svelte-kit
+ui/build
+ui/test-results
+ui/playwright-report
+**/.env
+**/.env.*
+!**/.env.example
+docs
+helm
+kubernetes
+.cloudflare
