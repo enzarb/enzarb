@@ -4,8 +4,6 @@
 	import * as v from 'valibot';
 	import Button from '#lib/components/form/Button.svelte';
 	import ConfirmDialog from '#lib/components/ui/ConfirmDialog.svelte';
-	import ClaudeTokenStatus from '#lib/components/ClaudeTokenStatus.svelte';
-	import LinkButton from '#lib/components/ui/LinkButton.svelte';
 	import MaxRunsInput from '#lib/components/MaxRunsInput.svelte';
 	import MaxRunsNotice from '#lib/components/MaxRunsNotice.svelte';
 	import Notice from '#lib/components/ui/Notice.svelte';
@@ -21,12 +19,10 @@
 		setSandboxResources
 	} from '#lib/projects.remote.ts';
 	import { DEFAULT_MAX_RUNS, MaxRunsSchema } from '#lib/projects.ts';
-	import { claudeCredential } from '#lib/claude.remote.ts';
 
 	const ctx = getProjectContext();
 	const p = $derived(ctx.project);
 	const saved = $derived(p.maxRuns ?? DEFAULT_MAX_RUNS);
-	const credential = claudeCredential();
 	const choices = repositoryChoices();
 	let confirming = $state(false);
 	let deleteError = $state('');
@@ -114,19 +110,6 @@
 				await setSandboxResources({ name: p.name, ...input });
 			}}
 		/>
-	</Section>
-
-	<Section title="Claude">
-		{#if credential.current}
-			<ClaudeTokenStatus
-				configured={credential.current.configured}
-				updatedAt={credential.current.updatedAt}
-			/>
-		{/if}
-		<p class="ez-muted">Your Claude token is set once for all your Projects.</p>
-		<div class="ez-cluster">
-			<LinkButton href="/settings#claude">Manage your Claude token</LinkButton>
-		</div>
 	</Section>
 
 	<Section title="Danger zone">
