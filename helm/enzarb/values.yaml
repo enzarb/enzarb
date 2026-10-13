@@ -129,6 +129,12 @@ ui:
   # HTTP probes (/healthz liveness, /readyz readiness). false falls back to TCP probes.
   probes:
     http: true
+  # Zero-downtime rollout: surge a new pod, keep the old one until the new one is Ready.
+  rollout: { maxSurge: 1, maxUnavailable: 0 }
+  # Sleep before SIGTERM so the Gateway stops routing first (native sleep action, Kubernetes >= 1.30).
+  # 0 omits the hook. Must be below terminationGracePeriodSeconds, which also covers the drain.
+  preStopSeconds: 10
+  terminationGracePeriodSeconds: 30
   resources: {}
   extraEnv: []
 
@@ -154,7 +160,9 @@ workflows:
     enabled: true
     existingSecret: enzarb-updater-registry
     key: registry-token
-  # Must exceed the executor drain time.
+  rollout: { maxSurge: 1, maxUnavailable: 0 }
+  preStopSeconds: 10
+  # Must exceed preStopSeconds plus the executor drain time.
   terminationGracePeriodSeconds: 60
   resources: {}
   extraEnv: []
@@ -167,6 +175,9 @@ connectors:
     pullPolicy: ""
   botHandle: enzarb
   botLogin: enzarb[bot]
+  rollout: { maxSurge: 1, maxUnavailable: 0 }
+  preStopSeconds: 10
+  terminationGracePeriodSeconds: 30
   resources: {}
   extraEnv: []
 
@@ -176,8 +187,10 @@ connectors:
 realtime:
   enabled: true
   replicaCount: 2
-  # Must be >= 10 (schema minimum) so in-flight websockets can drain.
+  # Must be >= 10 (schema minimum) so in-flight websockets can drain; keep above preStopSeconds.
   terminationGracePeriodSeconds: 30
+  rollout: { maxSurge: 1, maxUnavailable: 0 }
+  preStopSeconds: 10
   image:
     repository: ghcr.io/enzarb/enzarb-realtime
     # scripts/sync-components.sh pins the released enzarb-realtime tag here.
@@ -203,6 +216,9 @@ updater:
     intervalSecs: 300
   webhook:
     enabled: false
+  rollout: { maxSurge: 1, maxUnavailable: 0 }
+  preStopSeconds: 5
+  terminationGracePeriodSeconds: 30
   image:
     repository: ghcr.io/enzarb/enzarb-updater
     tag: 0.2.1
@@ -219,6 +235,9 @@ sandboxProxy:
   # Must stay >= the chat idle (ENZARB_CHAT_IDLE_SECS, 1800); the proxy clamps lower values and
   # logs a warning. Envoy idle timeouts (route.backendTrafficPolicy) must exceed this.
   idleTimeoutSecs: 2100
+  rollout: { maxSurge: 1, maxUnavailable: 0 }
+  preStopSeconds: 10
+  terminationGracePeriodSeconds: 30
   resources: {}
   extraEnv: []
 
@@ -253,6 +272,10 @@ sandbox:
 
 operator:
   replicaCount: 2
+  rollout: { maxSurge: 1, maxUnavailable: 0 }
+  # No traffic is routed to the operator, so no preStop sleep.
+  preStopSeconds: 0
+  terminationGracePeriodSeconds: 30
   image:
     repository: ghcr.io/enzarb/enzarb-sandbox-operator
     tag: 0.8.1

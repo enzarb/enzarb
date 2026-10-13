@@ -13,6 +13,28 @@ app.kubernetes.io/managed-by: {{ .ctx.Release.Service }}
 helm.sh/chart: {{ printf "%s-%s" .ctx.Chart.Name .ctx.Chart.Version | replace "+" "_" }}
 {{- end }}
 
+{{/* Deployment strategy: surge a new pod, never take the old one down first.
+     Usage: include "enzarb.rollout" .Values.ui | nindent 2 */}}
+{{- define "enzarb.rollout" -}}
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: {{ .rollout.maxSurge }}
+    maxUnavailable: {{ .rollout.maxUnavailable }}
+{{- end }}
+
+{{/* Container lifecycle: sleep before SIGTERM so the Gateway drops the endpoint first. Uses the native
+     sleep action (Kubernetes >= 1.30; distroless images have no sleep binary). preStopSeconds 0 omits it.
+     Usage: include "enzarb.preStop" .Values.ui | nindent 10 */}}
+{{- define "enzarb.preStop" -}}
+{{- if gt (int .preStopSeconds) 0 -}}
+lifecycle:
+  preStop:
+    sleep:
+      seconds: {{ int .preStopSeconds }}
+{{- end -}}
+{{- end }}
+
 {{/* image reference. Usage: include "enzarb.image" .Values.ui */}}
 {{- define "enzarb.image" -}}
 {{ .image.repository }}:{{ .image.tag }}
