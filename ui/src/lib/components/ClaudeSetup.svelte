@@ -7,9 +7,7 @@
 </script>
 
 <script lang="ts">
-	import { claudeCredential } from '#lib/claude.remote.ts';
-	import { clearClaudeToken } from '#lib/credential-clear.ts';
-	import { terminalConnection } from '#lib/terminal.remote.ts';
+	import { claudeCredential, removeClaudeCredential } from '#lib/claude.remote.ts';
 	import ClaudeTokenStatus from './ClaudeTokenStatus.svelte';
 	import CredentialCaptured from './CredentialCaptured.svelte';
 	import Terminal from './Terminal.svelte';
@@ -19,7 +17,8 @@
 
 	/**
 	 * The user's Claude token: status from `app_api.claude_credential_v`, guided `claude setup-token`
-	 * in one of the user's sandboxes, and Remove (`credential_clear`). The token never reaches the UI.
+	 * in one of the user's sandboxes, and Remove (a server-side delete of the user's own row, no
+	 * sandbox needed). The token never reaches the UI.
 	 */
 	let { sandboxes }: { sandboxes: SetupSandbox[] } = $props();
 
@@ -42,18 +41,8 @@
 		removing = true;
 		removeError = '';
 		try {
-			const proto = await import('@enzarb/proto');
-			const gone = await clearClaudeToken(sandbox, {
-				connect: async (name) => {
-					const { url } = await terminalConnection(name);
-					return proto.Session.connect(url, { client: 'ui' });
-				},
-				stillConfigured: async () => {
-					await credential.refresh();
-					return credential.current?.configured ?? false;
-				}
-			});
-			if (!gone) removeError = 'The token was not removed yet. Reload the page to check again.';
+			await removeClaudeCredential();
+			await credential.refresh();
 			mode = 'idle';
 		} catch {
 			removeError = 'Could not remove the token. Try again.';
@@ -88,15 +77,17 @@
 		{:else}
 			<p class="ez-muted">Setup runs in the sandbox of {ready[0].displayName}.</p>
 		{/if}
-		<div class="ez-cluster">
-			{#if mode !== 'setup'}
+		{#if mode !== 'setup'}
+			<div class="ez-cluster">
 				<Button variant="primary" disabled={removing} onclick={() => (mode = 'setup')}>
 					{configured ? 'Replace token' : 'Set up'}
 				</Button>
-			{/if}
-			{#if configured}
-				<Button variant="danger" loading={removing} onclick={remove}>Remove</Button>
-			{/if}
+			</div>
+		{/if}
+	{/if}
+	{#if configured}
+		<div class="ez-cluster">
+			<Button variant="danger" loading={removing} onclick={remove}>Remove</Button>
 		</div>
 	{/if}
 	{#if removeError}<Notice tone="error">{removeError}</Notice>{/if}

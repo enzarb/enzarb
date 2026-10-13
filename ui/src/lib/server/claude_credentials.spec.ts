@@ -10,6 +10,7 @@ const FUNCTIONS = {
 	list_stale: 'app_api.claude_credential_list_stale(text)',
 	rekey: 'app_api.claude_credential_rekey(text, text, text, bytea)'
 };
+const DELETE_OWN = 'app_api.claude_credential_delete_own(text)';
 const ALL = Object.values(FUNCTIONS);
 
 describe('app.claude_credentials migration', () => {
@@ -88,13 +89,13 @@ describe('app.claude_credentials migration', () => {
 			}
 		});
 
-		it('has no EXECUTE for the UI role on any claude_credential_* function', async () => {
+		it('has EXECUTE for the UI role on delete_own only', async () => {
 			const rows = await admin`
 				SELECT p.oid::regprocedure::text AS fn, has_function_privilege('enzarb_ui', p.oid, 'EXECUTE') AS ok
 				FROM pg_proc p
 				WHERE p.pronamespace = 'app_api'::regnamespace AND p.proname LIKE 'claude_credential\_%'`;
-			expect(rows).toHaveLength(5);
-			for (const r of rows) expect(r.ok, r.fn).toBe(false);
+			expect(rows).toHaveLength(6);
+			for (const r of rows) expect(r.ok, r.fn).toBe(r.fn.includes('delete_own'));
 		});
 
 		it('re-asserts grants when roles are created after the migration', async () => {
@@ -134,7 +135,10 @@ describe('app.claude_credentials migration', () => {
 			}
 		});
 
-		it('lets the proxy role execute all five', async () => {
+		it('lets the proxy role execute all five, not delete_own', async () => {
+			const [d] = await admin`
+				SELECT has_function_privilege('enzarb_sandbox_proxy', ${DELETE_OWN}, 'EXECUTE') AS ok`;
+			expect(d.ok).toBe(false);
 			for (const fn of ALL) {
 				const [r] = await admin`
 					SELECT has_function_privilege('enzarb_sandbox_proxy', ${fn}, 'EXECUTE') AS ok`;
@@ -143,7 +147,7 @@ describe('app.claude_credentials migration', () => {
 		});
 
 		it('does not leave EXECUTE with PUBLIC', async () => {
-			for (const fn of ALL) {
+			for (const fn of [...ALL, DELETE_OWN]) {
 				const [r] = await admin`
 					SELECT has_function_privilege('somebody_else', ${fn}, 'EXECUTE') AS ok`;
 				expect(r.ok, fn).toBe(false);
@@ -155,10 +159,14 @@ describe('app.claude_credentials migration', () => {
 				SELECT proname, prosecdef, proconfig FROM pg_proc
 				WHERE pronamespace = 'app_api'::regnamespace AND proname LIKE 'claude_credential\_%'
 					AND prokind = 'f'`;
-			expect(rows).toHaveLength(5);
+			expect(rows).toHaveLength(6);
 			for (const r of rows) {
 				expect(r.prosecdef, r.proname).toBe(true);
-				expect(r.proconfig, r.proname).toContain('search_path=pg_catalog, app');
+				const expected =
+					r.proname === 'claude_credential_delete_own'
+						? 'search_path=pg_catalog, pg_temp'
+						: 'search_path=pg_catalog, app';
+				expect(r.proconfig, r.proname).toContain(expected);
 			}
 		});
 
@@ -265,6 +273,21 @@ describe('app.claude_credentials migration', () => {
 			);
 			expect(await get('alice')).toHaveLength(0);
 			expect(await get('bob')).toHaveLength(1);
+		});
+
+		it('lets the UI role delete only the given owner row, returning a boolean', async () => {
+			await put('a', 'k1', 'a-secret', false);
+			await put('b', 'k1', 'b-secret', false);
+			const del = (o: string) =>
+				as('enzarb_ui', async (tx) => {
+					const [r] = await tx`SELECT app_api.claude_credential_delete_own(${o}) AS ok`;
+					return r.ok as boolean;
+				});
+			expect(await del('a')).toBe(true);
+			expect(await get('a')).toHaveLength(0);
+			expect(await get('b')).toHaveLength(1);
+			expect(await del('a')).toBe(false);
+			expect(await get('b')).toHaveLength(1);
 		});
 
 		it('lets the workflows role get but not put', async () => {

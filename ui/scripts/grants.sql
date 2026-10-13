@@ -39,6 +39,8 @@ BEGIN
 		REVOKE ALL ON FUNCTION app_api.claude_credential_rekey(text, text, text, bytea) FROM enzarb_ui;
 		GRANT USAGE ON SCHEMA app_api TO enzarb_ui;
 		GRANT SELECT ON app_api.claude_credential_v TO enzarb_ui;
+		-- The one function the UI may run: deletes the given owner's row, returns a boolean.
+		GRANT EXECUTE ON FUNCTION app_api.claude_credential_delete_own(text) TO enzarb_ui;
 	END IF;
 END
 $$;
