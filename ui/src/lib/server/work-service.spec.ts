@@ -1,6 +1,7 @@
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { classifyNeedsYou } from '#lib/work-items.ts';
 import { WorkError, jobOutputMarkdown, workService } from './work-service.ts';
 import {
 	applyWorkflowsSchema,
@@ -228,12 +229,119 @@ describe('workService needs-you queue', () => {
 		await seedItem(sql, { key: 'github:acme/q#4', project: 'q', state: 'Planning' });
 		await seedItem(sql, { key: 'github:x/y#1', project: 'other', state: 'AwaitingApproval' });
 
-		const queue = await workService(sql, ['q']).listNeedsYou();
+		const { items: queue, total } = await workService(sql, ['q']).listNeedsYou();
 		expect(queue.map((i) => i.id)).toEqual([oldApproval, failed, blocked]);
+		expect(total).toBe(3);
 		expect(queue.map((i) => i.needs?.category)).toEqual(['approval', 'failed', 'blocked']);
 		expect(queue[2].needs?.reason).toBe('CI: tests red');
-		expect(await workService(sql, []).listNeedsYou()).toEqual([]);
-		expect(await workService(sql, ['other']).listNeedsYou()).toHaveLength(1);
+		expect(await workService(sql, []).listNeedsYou()).toEqual({ items: [], total: 0 });
+		expect((await workService(sql, ['other']).listNeedsYou()).items).toHaveLength(1);
+	});
+
+	it('caps the queue at 200 in SQL, oldest first, and reports the full total', async () => {
+		await sql`
+			INSERT INTO workflows.work_items (key, project_id, workflow, state, state_data, updated_at)
+			SELECT 'github:acme/cap#' || n, 'cap', 'issue', 'Failed', '{}'::jsonb,
+				timestamptz '2026-01-01' + n * interval '1 minute'
+			FROM generate_series(1, 205) n`;
+		const { items, total } = await workService(sql, ['cap']).listNeedsYou();
+		expect(items).toHaveLength(200);
+		expect(total).toBe(205);
+		expect(items.map((i) => i.key)).toEqual(
+			Array.from({ length: 200 }, (_, i) => `github:acme/cap#${i + 1}`)
+		);
+	});
+
+	it('does not let open change requests without a need crowd out real ones', async () => {
+		await sql`
+			INSERT INTO workflows.work_items (key, project_id, workflow, state, state_data, updated_at)
+			SELECT 'github:acme/crowd#' || n, 'crowd', 'change_request', 'Reviewing',
+				'{"checklist":{"ci":{"status":"ok"}}}'::jsonb,
+				timestamptz '2026-02-01' + n * interval '1 minute'
+			FROM generate_series(1, 250) n`;
+		const seed = (n: number, state: string, stateData: unknown, at: string) =>
+			seedItem(sql, {
+				key: `github:acme/crowd#${1000 + n}`,
+				project: 'crowd',
+				workflow: 'change_request',
+				state,
+				stateData
+			}).then(async (id) => {
+				await sql`UPDATE workflows.work_items SET updated_at = ${at}::timestamptz WHERE id = ${id}`;
+				return id;
+			});
+		const wanted = [
+			await seed(1, 'ReadyToMerge', {}, '2026-01-01'),
+			await seed(2, 'AwaitingChanges', {}, '2026-01-02'),
+			await seed(3, 'Reviewing', { checklist: { ci: { status: 'failed' } } }, '2026-03-01'),
+			await seed(4, 'Reviewing', { checklist: { review: { status: 'FAILED' } } }, '2026-03-02')
+		];
+		const { items, total } = await workService(sql, ['crowd']).listNeedsYou();
+		expect(items.map((i) => i.id)).toEqual(wanted);
+		expect(total).toBe(4);
+	});
+
+	it('selects exactly the rows classifyNeedsYou flags', async () => {
+		const cases: [string, string, unknown][] = [
+			['issue', 'AwaitingApproval', {}],
+			['change_request', 'AwaitingApproval', {}],
+			['mention', 'AwaitingApproval', {}],
+			['issue', 'ReadyToMerge', {}],
+			['change_request', 'ReadyToMerge', {}],
+			['change_request', 'AwaitingChanges', {}],
+			['issue', 'AwaitingChanges', {}],
+			['issue', 'Failed', {}],
+			['change_request', 'Stale', {}],
+			['mention', 'Failed', {}],
+			['issue', 'Planning', {}],
+			['change_request', 'Reviewing', {}],
+			['change_request', 'Reviewing', { checklist: { ci: { status: 'failed' } } }],
+			['change_request', 'Reviewing', { checklist: { review: { status: 'Failed' } } }],
+			['change_request', 'Reviewing', { checklist: { mergeable: { status: 'failed' } } }],
+			['change_request', 'Reviewing', { checklist: { ci: { status: 'ok' } } }],
+			['issue', 'Reviewing', { checklist: { ci: { status: 'failed' } } }],
+			['change_request', 'Merged', { checklist: { ci: { status: 'failed' } } }],
+			['change_request', 'Closed', { checklist: { ci: { status: 'failed' } } }],
+			['change_request', 'Done', { checklist: { ci: { status: 'failed' } } }],
+			['change_request', 'Cancelled', { checklist: { ci: { status: 'failed' } } }],
+			['change_request', 'Duplicate', { checklist: { ci: { status: 'failed' } } }],
+			['change_request', 'Done', {}],
+			['issue', 'Failed', []],
+			['change_request', 'Reviewing', []],
+			['change_request', 'Reviewing', 'failed'],
+			['change_request', 'Reviewing', 5],
+			['change_request', 'Reviewing', { checklist: [] }],
+			['change_request', 'Reviewing', { checklist: 'failed' }],
+			['change_request', 'Reviewing', { checklist: { ci: 'failed' } }],
+			['change_request', 'Reviewing', { checklist: { ci: ['failed'] } }],
+			['change_request', 'Reviewing', { checklist: { ci: { status: 5 } } }],
+			['change_request', 'Reviewing', { checklist: { ci: { status: true } } }],
+			['change_request', 'Reviewing', { checklist: { ci: { status: null } } }],
+			['change_request', 'Reviewing', { checklist: { ci: { status: ['failed'] } } }],
+			['change_request', 'Reviewing', { checklist: { ci: { status: { x: 'failed' } } } }]
+		];
+		const ids = new Map<number, number>();
+		for (const [i, [workflow, state, stateData]] of cases.entries()) {
+			const id = await seedItem(sql, {
+				key: `github:acme/parity#${i}`,
+				project: 'parity',
+				workflow,
+				state,
+				stateData
+			});
+			ids.set(id, i);
+		}
+		const expected = cases
+			.map(([workflow, state, stateData], i) => ({
+				i,
+				needs: classifyNeedsYou({ workflow, state, stateData })
+			}))
+			.filter((c) => c.needs)
+			.map((c) => c.i);
+		expect(expected.length).toBeGreaterThan(8);
+		const { items, total } = await workService(sql, ['parity']).listNeedsYou();
+		expect(items.map((it) => ids.get(it.id)).sort((a, b) => a! - b!)).toEqual(expected);
+		expect(total).toBe(expected.length);
 	});
 
 	it('returns the latest plan as sanitized html, null when missing or not owned', async () => {

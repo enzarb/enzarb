@@ -15,7 +15,7 @@
 		list: async () => {
 			const q = listNeedsYou();
 			await q.refresh();
-			return q.current ?? [];
+			return q.current ?? { items: [], total: 0 };
 		},
 		get: async (id) => {
 			const q = getWorkItem(id);
@@ -36,7 +36,7 @@
 
 <div class="ez-shell">
 	<AppHeader />
-	<Nav needsYou={needsYou.count} />
+	<Nav needsYou={needsYou.count} needsYouMore={needsYou.overflow > 0} />
 	<main class="ez-content">
 		<div class="ez-page">
 			{#if data.installBanner}

@@ -15,6 +15,13 @@ describe('Nav', () => {
 		render(Nav, { needsYou: 3 });
 		await expect.element(page.getByRole('img', { name: '3 items need you' })).toBeVisible();
 	});
+	it('shows N+ when more items wait than are counted', async () => {
+		render(Nav, { needsYou: 200, needsYouMore: true });
+		await expect
+			.element(page.getByRole('img', { name: '200 or more items need you' }))
+			.toBeVisible();
+		await expect.element(page.getByText('200+')).toBeVisible();
+	});
 	it('uses the singular for one item', async () => {
 		render(Nav, { needsYou: 1 });
 		await expect.element(page.getByRole('img', { name: '1 item needs you' })).toBeVisible();

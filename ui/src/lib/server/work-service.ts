@@ -4,6 +4,7 @@ import {
 	itemTitle,
 	itemUrl,
 	parseReadiness,
+	TERMINAL_STATES,
 	type JobView,
 	type TransitionView,
 	type WorkAction,
@@ -40,6 +41,22 @@ interface ItemRow {
 
 /** Hard cap on the needs-you queue. */
 const NEEDS_YOU_CAP = 200;
+
+/**
+ * SQL form of `classifyNeedsYou` (and the state names of `availableActions`) over `work_item_v`,
+ * restricted to the given projects. Keep in sync with `work-items.ts`; the spec checks parity.
+ * `parseCheck` lowercases a check's status, so the SQL does too.
+ */
+function needsYouWhere(sql: Sql, projects: string[]) {
+	return sql`project IN ${sql(projects)} AND (
+		state IN ('Failed', 'Stale')
+		OR (workflow = 'issue' AND state = 'AwaitingApproval')
+		OR (workflow = 'change_request' AND state IN ('ReadyToMerge', 'AwaitingChanges'))
+		OR (workflow = 'change_request' AND state NOT IN ${sql([...TERMINAL_STATES])}
+			AND (lower(state_data->'checklist'->'ci'->>'status') = 'failed'
+				OR lower(state_data->'checklist'->'review'->>'status') = 'failed'
+				OR lower(state_data->'checklist'->'mergeable'->>'status') = 'failed')))`;
+}
 
 const iso = (d: Date | string) => new Date(d).toISOString();
 
@@ -116,23 +133,25 @@ export function workService(sql: Sql, projects: readonly string[]) {
 		},
 
 		/**
-		 * Items waiting on the user, oldest first. Not limited by recency (only the hard cap), so old
-		 * waiting items are never pushed out by newer activity.
+		 * Items waiting on the user, oldest first, at most `NEEDS_YOU_CAP` (applied in SQL). Not limited
+		 * by recency, so old waiting items are never pushed out by newer activity. `total` is the full
+		 * number waiting; it only costs a second query when the page is full.
 		 */
-		async listNeedsYou(): Promise<WorkItemSummary[]> {
-			if (owned.size === 0) return [];
+		async listNeedsYou(): Promise<{ items: WorkItemSummary[]; total: number }> {
+			if (owned.size === 0) return { items: [], total: 0 };
+			const where = needsYouWhere(sql, [...owned]);
 			const rows = await sql<ItemRow[]>`
 				SELECT id, key, project, workflow, state, state_data, updated_at
 				FROM workflows_api.work_item_v
-				WHERE project IN ${sql([...owned])}
-					AND (state IN ('AwaitingApproval', 'ReadyToMerge', 'AwaitingChanges', 'Failed', 'Stale')
-						OR (workflow = 'change_request'
-							AND state NOT IN ('Done', 'Duplicate', 'Cancelled', 'Merged', 'Closed')))
-				ORDER BY updated_at ASC, id ASC`;
-			return rows
-				.map(summary)
-				.filter((i) => i.needs)
-				.slice(0, NEEDS_YOU_CAP);
+				WHERE ${where}
+				ORDER BY updated_at ASC, id ASC
+				LIMIT ${NEEDS_YOU_CAP}`;
+			// safety net: the SQL predicate mirrors the classifier, so this should drop nothing
+			const items = rows.map(summary).filter((i) => i.needs);
+			if (rows.length < NEEDS_YOU_CAP) return { items, total: items.length };
+			const [{ n }] = await sql<{ n: number }[]>`
+				SELECT count(*)::int AS n FROM workflows_api.work_item_v WHERE ${where}`;
+			return { items, total: Math.max(n, items.length) };
 		},
 
 		/** Sanitized HTML of the latest plan job's output; null when there is none or the item is not owned. */

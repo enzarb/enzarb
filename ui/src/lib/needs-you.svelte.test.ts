@@ -17,7 +17,7 @@ const item = (id: number, needs: boolean): WorkItemSummary => ({
 function setup(overrides: Partial<NeedsYouDeps> = {}) {
 	let emit: (id: number | null) => void = () => {};
 	const deps: NeedsYouDeps = {
-		list: vi.fn(async () => [item(1, true)]),
+		list: vi.fn(async () => ({ items: [item(1, true)], total: 1 })),
 		get: vi.fn(async (id: number) => item(id, true)),
 		submit: vi.fn(async () => {}),
 		watch: (fn) => {
@@ -36,6 +36,29 @@ describe('NeedsYouStore', () => {
 		const { store } = setup();
 		await vi.waitFor(() => expect(store.count).toBe(1));
 		expect(store.loaded).toBe(true);
+	});
+
+	it('counts the items beyond the cap and keeps that overflow across live changes', async () => {
+		const { store, deps, emit } = setup({
+			list: vi.fn(async () => ({ items: [item(1, true)], total: 4 }))
+		});
+		await vi.waitFor(() => expect(store.count).toBe(4));
+		expect(store.overflow).toBe(3);
+		emit(2);
+		await vi.waitFor(() => expect(store.count).toBe(5));
+		vi.mocked(deps.get).mockResolvedValueOnce(item(2, false));
+		emit(2);
+		await vi.waitFor(() => expect(store.count).toBe(4));
+		await store.act(1, 'approve');
+		expect(store.count).toBe(3);
+		expect(store.items.length).toBeLessThanOrEqual(store.count);
+	});
+
+	it('has no overflow when the total matches the page', async () => {
+		const { store } = setup();
+		await vi.waitFor(() => expect(store.loaded).toBe(true));
+		expect(store.overflow).toBe(0);
+		expect(store.count).toBe(1);
 	});
 
 	it('increments on a live change into a needs-you state and decrements when it leaves', async () => {
