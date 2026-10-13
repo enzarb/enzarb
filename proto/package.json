@@ -26,7 +26,7 @@
   ],
   "scripts": {
     "build": "tsc -p ts/tsconfig.json",
-    "prepare": "npm run build",
+    "prepack": "npm run build",
     "check": "tsc -p ts/tsconfig.test.json",
     "test": "vitest run"
   },
