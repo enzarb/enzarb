@@ -2201,6 +2201,30 @@ textarea.ez-control {
 	}
 }
 
+.ez-chat-header {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--ez-space-2);
+}
+
+// The mode is always spelled out in text; the bypass tone only adds to it.
+.ez-chat-mode--bypass {
+	font-weight: 600;
+}
+
+.ez-chat-mode-switch,
+.ez-chat-mode-confirm {
+	display: inline-flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--ez-space-2);
+}
+
+.ez-chat-mode-select {
+	width: auto;
+}
+
 .ez-chat-notice {
 	padding: var(--ez-space-2) 0;
 	border-top: var(--ez-border-width) solid var(--ez-border);

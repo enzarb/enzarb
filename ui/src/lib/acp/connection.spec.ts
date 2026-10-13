@@ -721,3 +721,243 @@ describe('permissions', () => {
 		expect(h.conn.state().chat.items).toEqual([]);
 	});
 });
+
+describe('permission mode', () => {
+	const modes = (current: string, ids = ['bypassPermissions', 'default', 'plan']) => ({
+		currentModeId: current,
+		availableModes: ids.map((id) => ({ id, name: id }))
+	});
+	const modeMsg = (sessionId: string, modeId: string, bypassAllowed = true) => ({
+		jsonrpc: '2.0',
+		method: '_enzarb/mode',
+		params: { sessionId, modeId, bypassAllowed }
+	});
+	const modeUpdate = (sessionId: string, currentModeId: string) => ({
+		jsonrpc: '2.0',
+		method: 'session/update',
+		params: { sessionId, update: { sessionUpdate: 'current_mode_update', currentModeId } }
+	});
+
+	it('is unknown without any mode data (old sandbox)', async () => {
+		const h = harness();
+		await ready(h);
+		expect(h.conn.state().mode).toBeNull();
+	});
+
+	it('is seeded from the session/new response with bypassAllowed false', async () => {
+		const h = harness({ agent: { modes: modes('bypassPermissions') } });
+		await ready(h);
+		expect(h.conn.state().mode).toEqual({
+			modeId: 'bypassPermissions',
+			bypassAllowed: false,
+			available: ['bypassPermissions', 'default', 'plan']
+		});
+	});
+
+	it('ignores an invalid response mode', async () => {
+		const h = harness({ agent: { modes: modes('evil') } });
+		await ready(h);
+		expect(h.conn.state().mode).toBeNull();
+	});
+
+	it('is seeded from the session/load response', async () => {
+		const h = harness({
+			agent: { loadSession: true, modes: modes('plan', ['default', 'plan']) },
+			initialSessionId: 'saved'
+		});
+		await ready(h);
+		expect(h.conn.state().mode).toMatchObject({ modeId: 'plan', available: ['default', 'plan'] });
+	});
+
+	it('holds a mode event that precedes the session/new response and applies it on a match', async () => {
+		const h = harness({
+			agent: {
+				sessionId: 'sess-1',
+				modes: modes('bypassPermissions'),
+				onMessage: (m, ch) => {
+					if (m.method === 'session/new') ch.send(modeMsg('sess-1', 'default'));
+				}
+			}
+		});
+		await ready(h);
+		expect(h.conn.state().mode).toEqual({
+			modeId: 'default',
+			bypassAllowed: true,
+			available: ['bypassPermissions', 'default', 'plan']
+		});
+	});
+
+	it('discards a held mode event for another session', async () => {
+		const h = harness({
+			agent: {
+				sessionId: 'sess-1',
+				modes: modes('plan'),
+				onMessage: (m, ch) => {
+					if (m.method === 'session/new') ch.send(modeMsg('other', 'default'));
+				}
+			}
+		});
+		await ready(h);
+		expect(h.conn.state().mode).toMatchObject({ modeId: 'plan', bypassAllowed: false });
+	});
+
+	it('applies a mode event after the response directly, and rejects other sessions', async () => {
+		const h = harness({ agent: { sessionId: 'sess-1', modes: modes('bypassPermissions') } });
+		await ready(h);
+		h.channels[0].send(modeMsg('other', 'plan'));
+		h.channels[0].send(modeMsg('sess-1', 'evil'));
+		await flush();
+		expect(h.conn.state().mode?.modeId).toBe('bypassPermissions');
+		h.channels[0].send(modeMsg('sess-1', 'plan', true));
+		await flush();
+		expect(h.conn.state().mode).toMatchObject({ modeId: 'plan', bypassAllowed: true });
+		h.channels[0].send(modeUpdate('sess-1', 'default'));
+		await flush();
+		expect(h.conn.state().mode).toMatchObject({ modeId: 'default', bypassAllowed: true });
+	});
+
+	it('stores current_mode_update with bypassAllowed false when nothing was seen', async () => {
+		const h = harness({ agent: { sessionId: 'sess-1' } });
+		await ready(h);
+		h.channels[0].send(modeUpdate('sess-1', 'plan'));
+		await flush();
+		expect(h.conn.state().mode).toEqual({ modeId: 'plan', bypassAllowed: false, available: null });
+	});
+
+	it('applies a current_mode_update replayed during load, and the response does not overwrite it', async () => {
+		const h = harness({
+			agent: {
+				loadSession: true,
+				modes: modes('default', ['default', 'plan']),
+				onMessage: (m, ch) => {
+					if (m.method === 'session/load') {
+						ch.send(modeUpdate('saved', 'plan'));
+						ch.send(modeMsg('saved', 'plan', true));
+					}
+				}
+			},
+			initialSessionId: 'saved'
+		});
+		await ready(h);
+		expect(h.conn.state().mode).toEqual({
+			modeId: 'plan',
+			bypassAllowed: true,
+			available: ['default', 'plan']
+		});
+	});
+
+	it('resets on New chat, reconnect and load failure', async () => {
+		const h = harness({ agent: { modes: modes('plan') } });
+		await ready(h);
+		expect(h.conn.state().mode).not.toBeNull();
+		h.conn.newChat();
+		expect(h.conn.state().mode).toBeNull();
+		await flush();
+		expect(h.conn.state().mode?.modeId).toBe('plan');
+		h.conn.reconnect();
+		expect(h.conn.state().mode).toBeNull();
+		await flush();
+
+		const f = harness({
+			agent: { loadSession: true, load: () => new Error('gone') },
+			initialSessionId: 'saved'
+		});
+		await ready(f);
+		expect(f.conn.state().mode).toBeNull();
+	});
+
+	describe('setMode', () => {
+		const setModes = (h: Harness) =>
+			h.channels[0].received.filter((m) => m.method === 'session/set_mode');
+
+		it('changes the mode only after the sandbox confirms', async () => {
+			let confirm: (() => void) | undefined;
+			const h = harness({
+				agent: {
+					sessionId: 'sess-1',
+					modes: modes('default'),
+					onMessage: (m, ch) => {
+						if (m.method !== 'session/set_mode') return;
+						confirm = () => {
+							ch.send({ jsonrpc: '2.0', id: m.id, result: {} });
+							ch.send(modeMsg('sess-1', 'plan'));
+						};
+						return true;
+					}
+				}
+			});
+			await ready(h);
+			h.conn.setMode('plan');
+			await flush();
+			expect(h.conn.state()).toMatchObject({ switching: true });
+			expect(h.conn.state().mode?.modeId).toBe('default');
+			h.conn.setMode('default');
+			expect(setModes(h)).toHaveLength(1);
+			expect(setModes(h)[0].params).toEqual({ sessionId: 'sess-1', modeId: 'plan' });
+			confirm!();
+			await flush();
+			expect(h.conn.state()).toMatchObject({ switching: false });
+			expect(h.conn.state().mode?.modeId).toBe('plan');
+		});
+
+		it('keeps the old mode and clears switching when rejected', async () => {
+			const h = harness({
+				agent: {
+					modes: modes('default'),
+					onMessage: (m, ch) => {
+						if (m.method !== 'session/set_mode') return;
+						ch.send({ jsonrpc: '2.0', id: m.id, error: { code: -32603, message: 'no' } });
+						return true;
+					}
+				}
+			});
+			await ready(h);
+			h.conn.setMode('plan');
+			await flush();
+			const st = h.conn.state();
+			expect(st.mode?.modeId).toBe('default');
+			expect(st.switching).toBe(false);
+			expect(st.error).toBe('The mode could not be changed');
+		});
+
+		it('clears switching when set_mode resolves without a confirmation', async () => {
+			const h = harness({ agent: { modes: modes('default') } });
+			await ready(h);
+			h.conn.setMode('plan');
+			await flush();
+			expect(h.conn.state().switching).toBe(false);
+			expect(h.conn.state().mode?.modeId).toBe('default');
+		});
+
+		it('refuses a mode that was not advertised', async () => {
+			const h = harness({ agent: { modes: modes('default', ['default']) } });
+			await ready(h);
+			h.channels[0].send(modeMsg('sess-1', 'default', true));
+			await flush();
+			h.conn.setMode('plan');
+			await flush();
+			expect(setModes(h)).toHaveLength(0);
+		});
+
+		it('refuses bypass while bypassAllowed is false, and allows it once true', async () => {
+			const h = harness({ agent: { sessionId: 'sess-1', modes: modes('default') } });
+			await ready(h);
+			h.conn.setMode('bypassPermissions');
+			await flush();
+			expect(setModes(h)).toHaveLength(0);
+			h.channels[0].send(modeMsg('sess-1', 'default', true));
+			await flush();
+			h.conn.setMode('bypassPermissions');
+			await flush();
+			expect(setModes(h)).toHaveLength(1);
+		});
+
+		it('does nothing while the mode is unknown', async () => {
+			const h = harness();
+			await ready(h);
+			h.conn.setMode('plan');
+			await flush();
+			expect(setModes(h)).toHaveLength(0);
+		});
+	});
+});

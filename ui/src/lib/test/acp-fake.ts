@@ -29,6 +29,8 @@ export interface AgentOpts {
 	/** Result for `session/load` (an Error rejects it). */
 	load?: (params: Record<string, unknown>) => unknown | Error;
 	sessionId?: string;
+	/** `modes` in the `session/new` and `session/load` results (omitted when undefined). */
+	modes?: unknown;
 	/** Called for each request/notification before the default reply; return true to suppress it. */
 	onMessage?: (m: Msg, ch: FakeChannel) => boolean | void;
 }
@@ -80,13 +82,13 @@ export function fakeAgentChannel(opts: AgentOpts = {}): FakeChannel {
 				});
 				break;
 			case 'session/new':
-				reply(m, { sessionId: opts.sessionId ?? 'sess-new' });
+				reply(m, { sessionId: opts.sessionId ?? 'sess-new', modes: opts.modes });
 				break;
 			case 'session/load': {
 				const r = opts.load?.(m.params ?? {});
 				if (r instanceof Error) {
 					ch.send({ jsonrpc: '2.0', id: m.id, error: { code: -32603, message: r.message } });
-				} else reply(m, r ?? {});
+				} else reply(m, r ?? { modes: opts.modes });
 				break;
 			}
 			case 'session/prompt':

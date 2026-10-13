@@ -10,6 +10,8 @@
 	import * as sessionStore from '#lib/acp/session-store.ts';
 	import Notice from '#lib/components/ui/Notice.svelte';
 	import { chatConnection } from '#lib/chat.remote.ts';
+	import ChatModeBadge from './ChatModeBadge.svelte';
+	import ChatModeSwitch from './ChatModeSwitch.svelte';
 	import ChatStatus from './ChatStatus.svelte';
 	import ChatTranscript from './ChatTranscript.svelte';
 	import Composer from './Composer.svelte';
@@ -78,6 +80,14 @@
 				class="ez-btn ez-btn--secondary ez-btn--sm"
 				onclick={() => chat.newChat()}>New chat</button
 			>
+			{#if st.mode}
+				<ChatModeBadge modeId={st.mode.modeId} />
+				<ChatModeSwitch
+					mode={st.mode}
+					disabled={st.phase !== 'ready' || st.switching}
+					onSelect={chat.setMode}
+				/>
+			{/if}
 		</div>
 		{#if st.phase !== 'ready'}
 			<ChatStatus progress={st.progress} message={st.message} action={st.action} {onAction} />

@@ -1,11 +1,14 @@
-import type {
-	ChatItem,
-	ChatState,
-	PermissionOption,
-	PermissionStatus,
-	PlanEntry,
-	TextRole,
-	ToolView
+import {
+	MODE_IDS,
+	type ChatItem,
+	type ChatState,
+	type ModeId,
+	type ModeState,
+	type PermissionOption,
+	type PermissionStatus,
+	type PlanEntry,
+	type TextRole,
+	type ToolView
 } from './types.ts';
 
 const MAX_TEXT = 2000;
@@ -211,4 +214,69 @@ export function applyPermissionDenied(
 		status: 'blocked',
 		reason
 	});
+}
+
+const MAX_AVAILABLE_MODES = 16;
+
+function modeId(v: unknown): ModeId | undefined {
+	return typeof v === 'string' && (MODE_IDS as readonly string[]).includes(v)
+		? (v as ModeId)
+		: undefined;
+}
+
+/**
+ * The `modes` of a `session/new` / `session/load` response. `bypassAllowed` is not part of it, so
+ * it starts `false`. Null when `currentModeId` is missing or unknown.
+ */
+export function parseSessionModes(raw: unknown): ModeState | null {
+	const m = obj(raw);
+	const current = modeId(m?.currentModeId);
+	if (!m || !current) return null;
+	let available: ModeId[] | null = null;
+	if (Array.isArray(m.availableModes)) {
+		available = [];
+		for (const entry of m.availableModes.slice(0, MAX_AVAILABLE_MODES)) {
+			const id = modeId(obj(entry)?.id);
+			if (id && !available.includes(id)) available.push(id);
+		}
+	}
+	return { modeId: current, bypassAllowed: false, available };
+}
+
+export interface ModeEvent {
+	sessionId: string;
+	modeId: ModeId;
+	/** Absent for `current_mode_update`. */
+	bypassAllowed?: boolean;
+}
+
+/** The `_enzarb/mode` notification; null when malformed. `sessionId` is checked by the caller. */
+export function parseModeNotification(params: unknown): ModeEvent | null {
+	const p = obj(params);
+	if (!p || typeof p.sessionId !== 'string' || typeof p.bypassAllowed !== 'boolean') return null;
+	const id = modeId(p.modeId);
+	return id ? { sessionId: p.sessionId, modeId: id, bypassAllowed: p.bypassAllowed } : null;
+}
+
+/** The `current_mode_update` session update; null when it is not one or the id is unknown. */
+export function parseModeUpdate(update: unknown, sessionId: string): ModeEvent | null {
+	const u = obj(update);
+	if (!u || u.sessionUpdate !== 'current_mode_update') return null;
+	const id = modeId(u.currentModeId);
+	return id ? { sessionId, modeId: id } : null;
+}
+
+/** Fold a mode event into the mode; `bypassAllowed` keeps its last value (false when unseen). */
+export function applyModeUpdate(mode: ModeState | null, ev: ModeEvent): ModeState {
+	return {
+		modeId: ev.modeId,
+		bypassAllowed: ev.bypassAllowed ?? mode?.bypassAllowed ?? false,
+		available: mode?.available ?? null
+	};
+}
+
+/** The modes the switch may request. The active mode is shown as selected regardless. */
+export function offeredModes(mode: ModeState): ModeId[] {
+	const base = mode.available ?? [...MODE_IDS];
+	return base.filter((id) => id !== 'bypassPermissions' || mode.bypassAllowed);
 }

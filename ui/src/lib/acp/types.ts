@@ -54,3 +54,16 @@ export interface ChatState {
 }
 
 export const initialChat: ChatState = { items: [], nextId: 1 };
+
+/** The permission modes the browser knows; anything else from the agent is dropped. */
+export const MODE_IDS = ['bypassPermissions', 'default', 'plan'] as const;
+export type ModeId = (typeof MODE_IDS)[number];
+
+/** The chat permission mode; `null` elsewhere means unknown (old sandbox or fresh connection). */
+export interface ModeState {
+	modeId: ModeId;
+	/** Advisory only: the sandbox enforces it. */
+	bypassAllowed: boolean;
+	/** Modes the agent advertised; `null` when the response had none. */
+	available: ModeId[] | null;
+}

@@ -6,13 +6,16 @@ import {
 	type Client,
 	type InitializeResponse
 } from '@agentclientprotocol/sdk';
-import { MAX_PENDING, MAX_PROMPT_BYTES } from './types.ts';
+import { MAX_PENDING, MAX_PROMPT_BYTES, MODE_IDS, type ModeId } from './types.ts';
 import type { PermissionOutcome } from './permissions.ts';
 
 /** The only extension notification the browser trusts. */
 export const EXT_PERMISSION_DENIED = '_enzarb/permission_denied';
+/** The sandbox's mode notification: `{sessionId, modeId, bypassAllowed}`. */
+export const EXT_MODE = '_enzarb/mode';
+export { MODE_IDS };
 /** `session/set_mode` is limited to these. */
-export type SessionMode = 'default' | 'plan';
+export type SessionMode = ModeId;
 
 /** The byte streams of an `openAcp` channel (a `ByteChannel`). */
 export interface AcpStreams {
@@ -30,13 +33,15 @@ export interface AcpHandlers {
 		meta: unknown;
 	}): Promise<PermissionOutcome>;
 	permissionDenied(params: unknown): void;
+	modeChanged(params: unknown): void;
 }
 
 export interface AcpClient {
 	initialize(): Promise<InitializeResponse>;
-	newSession(): Promise<string>;
+	/** `modes` is the raw, unvalidated `modes` of the response. */
+	newSession(): Promise<{ sessionId: string; modes?: unknown }>;
 	/** `session/load`; resolves when the agent finished replaying. */
-	loadSession(sessionId: string): Promise<void>;
+	loadSession(sessionId: string): Promise<{ modes?: unknown }>;
 	prompt(sessionId: string, text: string): Promise<string>;
 	/** `session/cancel` notification. */
 	cancel(sessionId: string): Promise<void>;
@@ -86,6 +91,7 @@ export function createAcpClient(
 		},
 		extNotification(method, params) {
 			if (method === EXT_PERMISSION_DENIED) handlers.permissionDenied(params);
+			else if (method === EXT_MODE) handlers.modeChanged(params);
 		}
 	};
 	const conn = new ClientSideConnection(
@@ -113,10 +119,15 @@ export function createAcpClient(
 					clientInfo: { name: 'enzarb-ui', version: '0.0.1' }
 				})
 			),
-		newSession: () => track(async () => (await conn.newSession({ cwd, mcpServers: [] })).sessionId),
+		newSession: () =>
+			track(async () => {
+				const r = await conn.newSession({ cwd, mcpServers: [] });
+				return { sessionId: r.sessionId, modes: r.modes };
+			}),
 		loadSession: (sessionId) =>
 			track(async () => {
-				await conn.loadSession({ sessionId, cwd, mcpServers: [] });
+				const r = await conn.loadSession({ sessionId, cwd, mcpServers: [] });
+				return { modes: r?.modes };
 			}),
 		prompt: (sessionId, text) => {
 			if (new TextEncoder().encode(text).length > MAX_PROMPT_BYTES) {
@@ -128,7 +139,7 @@ export function createAcpClient(
 		},
 		cancel: (sessionId) => conn.cancel({ sessionId }),
 		setMode: (sessionId, mode) => {
-			if (mode !== 'default' && mode !== 'plan') {
+			if (!(MODE_IDS as readonly string[]).includes(mode)) {
 				return Promise.reject(new AcpLimitError('unsupported mode'));
 			}
 			return track(async () => {

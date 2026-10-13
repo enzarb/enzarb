@@ -164,3 +164,23 @@ describe('Chat', () => {
 		expect(newSession).toBeDefined();
 	});
 });
+
+describe('Chat permission mode', () => {
+	beforeEach(() => sessionStorage.clear());
+
+	it('shows nothing for an old sandbox and the badge after a mode notification', async () => {
+		const ch = fakeAgentChannel({ sessionId: 's-1' });
+		const { connect } = multi(ch);
+		render(Chat, { project: 'alpha', connect });
+		await expect.element(page.getByRole('textbox', { name: 'Message' })).toBeEnabled();
+		expect(document.querySelector('.ez-chat-mode')).toBeNull();
+
+		ch.send({
+			jsonrpc: '2.0',
+			method: '_enzarb/mode',
+			params: { sessionId: 's-1', modeId: 'bypassPermissions', bypassAllowed: true }
+		});
+		await expect.element(page.getByText('Bypass – no permission prompts')).toBeVisible();
+		await expect.element(page.getByRole('combobox', { name: 'Permission mode' })).toBeEnabled();
+	});
+});

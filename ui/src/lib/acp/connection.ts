@@ -17,13 +17,25 @@ import {
 	addNotice,
 	addPermission,
 	addUserMessage,
+	applyModeUpdate,
 	applyPermissionDenied,
 	applyUpdate,
 	cancelPending,
+	offeredModes,
+	parseModeNotification,
+	parseModeUpdate,
+	parseSessionModes,
 	resolvePermission,
-	toolView
+	toolView,
+	type ModeEvent
 } from './reducer.ts';
-import { initialChat, type ChatState, type PermissionChoice } from './types.ts';
+import {
+	initialChat,
+	type ChatState,
+	type ModeId,
+	type ModeState,
+	type PermissionChoice
+} from './types.ts';
 
 export const BACKOFF_BASE_MS = 1_000;
 export const BACKOFF_MAX_MS = 30_000;
@@ -95,6 +107,10 @@ export interface ConnectionState {
 	/** A prompt turn is running. */
 	busy: boolean;
 	chat: ChatState;
+	/** Permission mode; null while unknown (old sandbox, fresh connection). */
+	mode: ModeState | null;
+	/** A mode change was requested and is not confirmed yet. */
+	switching: boolean;
 	/** Last send failure, if any. */
 	error: string;
 }
@@ -190,6 +206,8 @@ export interface ChatConnection {
 	newChat(): void;
 	/** Cancel the running turn and every pending permission. */
 	stop(): void;
+	/** `session/set_mode`; the mode only changes when the sandbox confirms it. */
+	setMode(modeId: ModeId): void;
 	answer(id: string, choice: PermissionChoice, epoch: number): void;
 	dispose(): void;
 }
@@ -210,8 +228,16 @@ export function createChatConnection(
 		sessionId: deps.initialSessionId || null,
 		busy: false,
 		chat: initialChat,
+		mode: null,
+		switching: false,
 		error: ''
 	};
+	/** A mode event that arrived before the `session/new` response named the session. */
+	let modePending: ModeEvent | null = null;
+	/** `session/new` is in flight, so `s.sessionId` is not the new session's id yet. */
+	let awaitingNew = false;
+	/** A notification set `mode` since the last reset; a later response must not overwrite it. */
+	let modeLive = false;
 	let session: AcpSession | null = null;
 	let sessionEnded = false;
 	let channel: AcpChannel | null = null;
@@ -243,10 +269,39 @@ export function createChatConnection(
 		setChat(cancelPending(s.chat));
 	}
 
+	function resetMode(): void {
+		modePending = null;
+		awaitingNew = false;
+		modeLive = false;
+		set({ mode: null, switching: false });
+	}
+
+	function applyModeEvent(ev: ModeEvent): void {
+		if (awaitingNew) {
+			const prev = modePending?.sessionId === ev.sessionId ? modePending : null;
+			modePending = { ...ev, bypassAllowed: ev.bypassAllowed ?? prev?.bypassAllowed };
+			return;
+		}
+		if (ev.sessionId !== s.sessionId) return;
+		modeLive = true;
+		set({ mode: applyModeUpdate(s.mode, ev), switching: false });
+	}
+
 	function handlersFor(epoch: number): AcpHandlers {
 		return {
+			modeChanged(params) {
+				if (stale(epoch)) return;
+				const ev = parseModeNotification(params);
+				if (ev) applyModeEvent(ev);
+			},
 			sessionUpdate(sessionId, update) {
-				if (stale(epoch) || sessionId !== s.sessionId) return;
+				if (stale(epoch)) return;
+				const ev = parseModeUpdate(update, sessionId);
+				if (ev) {
+					applyModeEvent(ev);
+					return;
+				}
+				if (sessionId !== s.sessionId) return;
 				setChat(applyUpdate(s.chat, update));
 			},
 			permissionDenied(params) {
@@ -350,6 +405,7 @@ export function createChatConnection(
 	async function run(): Promise<void> {
 		clearWaits();
 		cancelAllPermissions();
+		resetMode();
 		const epoch = s.epoch + 1;
 		set({
 			epoch,
@@ -477,17 +533,33 @@ export function createChatConnection(
 			const old = s.chat;
 			set({ chat: initialChat, sessionId: resume });
 			try {
-				await c.loadSession(resume);
-				if (!stale(epoch)) deps.onSessionId?.(resume);
+				const r = await c.loadSession(resume);
+				if (stale(epoch)) return;
+				const baseline = parseSessionModes(r?.modes);
+				if (baseline) {
+					// A notification is newer than the response: it only fills in the advertised modes.
+					const live = modeLive ? s.mode : null;
+					set({
+						mode: live ? { ...live, available: live.available ?? baseline.available } : baseline
+					});
+				}
+				deps.onSessionId?.(resume);
 				return;
 			} catch {
 				if (stale(epoch)) return;
+				resetMode();
 				set({ chat: old, sessionId: null });
 			}
 		}
-		const id = await c.newSession();
+		awaitingNew = true;
+		const r = await c.newSession();
 		if (stale(epoch)) return;
-		set({ sessionId: id });
+		const id = r.sessionId;
+		awaitingNew = false;
+		let mode = parseSessionModes(r.modes);
+		if (modePending && modePending.sessionId === id) mode = applyModeUpdate(mode, modePending);
+		modePending = null;
+		set({ sessionId: id, mode });
 		deps.onSessionId?.(id);
 		if (resume) setChat(addNotice(s.chat, 'not_restored', NOT_RESTORED_TEXT));
 	}
@@ -531,6 +603,7 @@ export function createChatConnection(
 			if (disposed) return;
 			queued = null;
 			cancelAllPermissions();
+			resetMode();
 			set({ sessionId: null, chat: initialChat, attempt: 0 });
 			deps.onSessionId?.(null);
 			void run();
@@ -538,6 +611,23 @@ export function createChatConnection(
 		stop() {
 			if (s.busy && client && s.sessionId) void client.cancel(s.sessionId).catch(() => {});
 			cancelAllPermissions();
+		},
+		setMode(modeId) {
+			const c = client;
+			const sessionId = s.sessionId;
+			if (!c || !sessionId || !s.mode || s.phase !== 'ready' || s.switching) return;
+			if (!offeredModes(s.mode).includes(modeId)) return;
+			const epoch = s.epoch;
+			set({ switching: true, error: '' });
+			// A confirmation clears `switching` too; settling here covers a sandbox that never confirms.
+			c.setMode(sessionId, modeId).then(
+				() => {
+					if (!stale(epoch)) set({ switching: false });
+				},
+				() => {
+					if (!stale(epoch)) set({ switching: false, error: 'The mode could not be changed' });
+				}
+			);
 		},
 		answer(id, choice, epoch) {
 			const status = registry.answer(id, choice, epoch);

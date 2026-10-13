@@ -3,12 +3,146 @@ import {
 	addNotice,
 	addPermission,
 	addUserMessage,
+	applyModeUpdate,
 	applyPermissionDenied,
 	applyUpdate,
 	cancelPending,
+	offeredModes,
+	parseModeNotification,
+	parseModeUpdate,
+	parseSessionModes,
 	resolvePermission
 } from './reducer.ts';
-import { initialChat, type ChatState, type ToolView } from './types.ts';
+import { initialChat, type ChatState, type ModeState, type ToolView } from './types.ts';
+
+describe('mode events', () => {
+	const ok = { sessionId: 's', modeId: 'plan', bypassAllowed: true };
+
+	it('accepts a valid _enzarb/mode', () => {
+		expect(parseModeNotification(ok)).toEqual(ok);
+	});
+
+	it.each([
+		['unknown modeId', { ...ok, modeId: 'acceptEdits' }],
+		['non-string modeId', { ...ok, modeId: 3 }],
+		['non-boolean bypassAllowed', { ...ok, bypassAllowed: 'yes' }],
+		['missing bypassAllowed', { sessionId: 's', modeId: 'plan' }],
+		['non-string sessionId', { ...ok, sessionId: 1 }],
+		['null params', null],
+		['string params', 'plan']
+	])('drops %s', (_n, params) => {
+		expect(parseModeNotification(params)).toBeNull();
+	});
+
+	it('parses current_mode_update and validates the id', () => {
+		expect(
+			parseModeUpdate({ sessionUpdate: 'current_mode_update', currentModeId: 'default' }, 's')
+		).toEqual({ sessionId: 's', modeId: 'default' });
+		expect(
+			parseModeUpdate({ sessionUpdate: 'current_mode_update', currentModeId: 'x' }, 's')
+		).toBeNull();
+		expect(parseModeUpdate({ sessionUpdate: 'plan' }, 's')).toBeNull();
+	});
+
+	it('a current_mode_update keeps bypassAllowed and available, or uses false when unseen', () => {
+		const seen: ModeState = { modeId: 'default', bypassAllowed: true, available: ['default'] };
+		expect(applyModeUpdate(seen, { sessionId: 's', modeId: 'plan' })).toEqual({
+			modeId: 'plan',
+			bypassAllowed: true,
+			available: ['default']
+		});
+		expect(applyModeUpdate(null, { sessionId: 's', modeId: 'plan' })).toEqual({
+			modeId: 'plan',
+			bypassAllowed: false,
+			available: null
+		});
+		expect(applyModeUpdate(seen, ok as never).bypassAllowed).toBe(true);
+	});
+
+	it('applyUpdate ignores current_mode_update', () => {
+		expect(
+			applyUpdate(initialChat, { sessionUpdate: 'current_mode_update', currentModeId: 'plan' })
+		).toBe(initialChat);
+	});
+});
+
+describe('parseSessionModes', () => {
+	it('reads the current and advertised modes; bypassAllowed starts false', () => {
+		expect(
+			parseSessionModes({
+				currentModeId: 'bypassPermissions',
+				availableModes: [{ id: 'default' }, { id: 'plan' }]
+			})
+		).toEqual({
+			modeId: 'bypassPermissions',
+			bypassAllowed: false,
+			available: ['default', 'plan']
+		});
+	});
+
+	it('is null for an invalid currentModeId or non-object', () => {
+		expect(parseSessionModes({ currentModeId: 'nope', availableModes: [] })).toBeNull();
+		expect(parseSessionModes({ availableModes: [] })).toBeNull();
+		expect(parseSessionModes('plan')).toBeNull();
+		expect(parseSessionModes(undefined)).toBeNull();
+	});
+
+	it('drops unknown and malformed entries and duplicates', () => {
+		const m = parseSessionModes({
+			currentModeId: 'default',
+			availableModes: [
+				{ id: 'default' },
+				{ id: 'evil' },
+				'plan',
+				null,
+				{ id: 7 },
+				{ id: 'default' }
+			]
+		});
+		expect(m?.available).toEqual(['default']);
+	});
+
+	it('caps the list and keeps available null when absent', () => {
+		expect(parseSessionModes({ currentModeId: 'plan' })?.available).toBeNull();
+		const many = Array.from({ length: 100 }, () => ({ id: 'x' }));
+		expect(
+			parseSessionModes({ currentModeId: 'plan', availableModes: [...many, { id: 'default' }] })
+				?.available
+		).toEqual([]);
+	});
+});
+
+describe('offeredModes', () => {
+	const m = (over: Partial<ModeState>): ModeState => ({
+		modeId: 'default',
+		bypassAllowed: false,
+		available: null,
+		...over
+	});
+
+	it('intersects with the advertised modes', () => {
+		expect(offeredModes(m({ available: ['plan'] }))).toEqual(['plan']);
+	});
+
+	it('gates bypass on bypassAllowed', () => {
+		const all = ['bypassPermissions', 'default', 'plan'] as const;
+		expect(offeredModes(m({ available: [...all] }))).toEqual(['default', 'plan']);
+		expect(offeredModes(m({ available: [...all], bypassAllowed: true }))).toEqual([...all]);
+	});
+
+	it('falls back to the allow-list minus bypass when nothing is advertised', () => {
+		expect(offeredModes(m({}))).toEqual(['default', 'plan']);
+		expect(offeredModes(m({ bypassAllowed: true }))).toEqual([
+			'bypassPermissions',
+			'default',
+			'plan'
+		]);
+	});
+
+	it('does not offer bypass even when it is the active mode and not allowed', () => {
+		expect(offeredModes(m({ modeId: 'bypassPermissions' }))).not.toContain('bypassPermissions');
+	});
+});
 
 const text = (t: string) => ({ type: 'text', text: t });
 const run = (updates: unknown[], from: ChatState = initialChat) =>

@@ -1,5 +1,5 @@
 import { createChatConnection, type ConnectionDeps, type ConnectionState } from './connection.ts';
-import type { PermissionChoice } from './types.ts';
+import type { ModeId, PermissionChoice } from './types.ts';
 
 /** Page visibility as the connection wants it. */
 export const browserVisibility: ConnectionDeps['visibility'] = {
@@ -36,6 +36,7 @@ export function createChatSession(deps: ConnectionDeps) {
 		send: (text: string) => conn.send(text),
 		newChat: () => conn.newChat(),
 		stop: () => conn.stop(),
+		setMode: (modeId: ModeId) => conn.setMode(modeId),
 		answer: (id: string, choice: PermissionChoice, epoch: number) => conn.answer(id, choice, epoch),
 		dispose: () => conn.dispose()
 	};

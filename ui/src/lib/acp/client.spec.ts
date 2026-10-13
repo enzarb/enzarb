@@ -9,6 +9,7 @@ function setup(agent: AgentOpts = {}, over: Partial<AcpHandlers> = {}) {
 		sessionUpdate: vi.fn(),
 		requestPermission: vi.fn(async () => ({ outcome: 'cancelled' as const })),
 		permissionDenied: vi.fn(),
+		modeChanged: vi.fn(),
 		...over
 	};
 	return { ch, handlers, client: createAcpClient(ch, handlers) };
@@ -57,14 +58,31 @@ describe('outbound surface', () => {
 		expect(ch.received.at(-1)!.id).toBeUndefined();
 	});
 
-	it('set_mode accepts only default and plan', async () => {
+	it('set_mode accepts only the three known modes', async () => {
 		const { ch, client } = setup();
 		await client.setMode('s', 'plan');
 		await client.setMode('s', 'default');
-		await expect(client.setMode('s', 'bypassPermissions' as never)).rejects.toBeInstanceOf(
-			AcpLimitError
-		);
-		expect(ch.received.filter((m) => m.method === 'session/set_mode')).toHaveLength(2);
+		await client.setMode('s', 'bypassPermissions');
+		await expect(client.setMode('s', 'acceptEdits' as never)).rejects.toBeInstanceOf(AcpLimitError);
+		expect(ch.received.filter((m) => m.method === 'session/set_mode')).toHaveLength(3);
+	});
+
+	it('surfaces the raw modes of the session/new and session/load responses', async () => {
+		const modes = {
+			currentModeId: 'default',
+			availableModes: [{ id: 'default', name: 'Default' }]
+		};
+		const { client } = setup({ modes });
+		await client.initialize();
+		await expect(client.newSession()).resolves.toMatchObject({ sessionId: 'sess-new', modes });
+		await expect(client.loadSession('sess-new')).resolves.toEqual({ modes });
+	});
+
+	it('leaves modes undefined when the response has none', async () => {
+		const { client } = setup();
+		await client.initialize();
+		expect((await client.newSession()).modes).toBeUndefined();
+		expect((await client.loadSession('x')).modes).toBeUndefined();
 	});
 
 	it('rejects an over-cap prompt without writing it', async () => {
@@ -119,6 +137,15 @@ describe('inbound surface', () => {
 		expect(handlers.permissionDenied).toHaveBeenCalledTimes(1);
 		expect(handlers.permissionDenied).toHaveBeenCalledWith({ a: 1 });
 		expect(handlers.sessionUpdate).not.toHaveBeenCalled();
+	});
+
+	it('dispatches _enzarb/mode to modeChanged', async () => {
+		const { ch, handlers } = setup();
+		const params = { sessionId: 's', modeId: 'plan', bypassAllowed: true };
+		ch.send({ jsonrpc: '2.0', method: '_enzarb/mode', params });
+		await tick();
+		expect(handlers.modeChanged).toHaveBeenCalledWith(params);
+		expect(handlers.permissionDenied).not.toHaveBeenCalled();
 	});
 
 	it('answers permission requests with the handler outcome', async () => {
