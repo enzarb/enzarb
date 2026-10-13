@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Apply enzarb-kubernetes overlays/oldie to the oldie cluster in dependency order, then verify gVisor, NetworkPolicy and LVM volumes (idempotent)"
+#MISE description="Apply kubernetes/ overlays/oldie to the oldie cluster in dependency order, then verify gVisor, NetworkPolicy and LVM volumes (idempotent)"
 set -euo pipefail
 # shellcheck source=/dev/null
 . "${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}/.mise/lib/oldie.sh"

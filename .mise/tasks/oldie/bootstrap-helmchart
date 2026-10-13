@@ -13,10 +13,10 @@ k -n "$NS" get secret enzarb-updater-registry >/dev/null 2>&1 \
 # HelmChart's valuesContent from the checkout. Version: an existing HelmChart keeps its live version
 # (ENZARB_CHART_VERSION only raises it); a new one adopts the deployed Helm release's version, and on a
 # fresh cluster (no release) starts at ENZARB_CHART_VERSION or, failing that, the newest published tag.
-values_file="$ROOT/enzarb-helm/enzarb/values-oldie.yaml"
-[ -f "$values_file" ] || die "$values_file missing; run: mise run repos:init"
+values_file="$ROOT/helm/enzarb/values-oldie.yaml"
+[ -f "$values_file" ] || die "$values_file missing"
 script="$KDIR/hack/oldie-helmchart.sh"
-[ -f "$script" ] || die "$script missing; run: mise run repos:init"
+[ -f "$script" ] || die "$script missing"
 need helm
 # Secret the HelmChart references by name; without it the helm-controller cannot pull the private chart.
 k -n kube-system get secret enzarb-chart-registry >/dev/null 2>&1 \
@@ -54,11 +54,11 @@ if [ -z "$version" ]; then
 fi
 
 # Helm installs crds/ only on first install and never upgrades them, and the helm-controller does the
-# same. The chart's CRDs are applied here from the checkout, so the enzarb-helm checkout must be at the
+# same. The chart's CRDs are applied here from the checkout, so the helm/ checkout must be at the
 # commit of the deployed chart (git pull; never older); later CRD changes need this task again.
-if [ -d "$ROOT/enzarb-helm/enzarb/crds" ]; then
+if [ -d "$ROOT/helm/enzarb/crds" ]; then
   log "CRDs from the chart checkout"
-  kapply -f "$ROOT/enzarb-helm/enzarb/crds/"
+  kapply -f "$ROOT/helm/enzarb/crds/"
 fi
 
 log "HelmChart kube-system/enzarb (create or adopt; the version only moves up)"

@@ -1,5 +1,5 @@
-# enzarb-sandbox-container
+# enzarb `sandbox-container/`
 
-One of several separate enzarb repositories. The top-level `enzarb` repo (github.com/enzarb/enzarb, checked out one directory up, when checked out with the others) holds the architecture docs and cross-repo conventions: see `../CLAUDE.md` and `../docs/architecture.md`.
+The `sandbox-container/` component of the enzarb monorepo (github.com/enzarb/enzarb). The repo root holds the architecture docs and shared conventions: see `../CLAUDE.md` and `../docs/architecture.md`. Releases are tagged `sandbox-container/vX.Y.Z`.
 
-Work inside this repo with its own build/test commands. Changes to shared contracts (enzarb-proto frames, `workflows_api`/`app_api` schemas) must stay backward compatible.
+Run this component's own build/test commands from this directory. Changes to shared contracts (`proto/` frames, `workflows_api`/`app_api` schemas) must stay backward compatible.

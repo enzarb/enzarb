@@ -4,10 +4,10 @@
 
 | Layer | Declared in | Applied by | Converges via |
 |---|---|---|---|
-| Host: kernel settings, LVM volume group, gVisor, RKE2 and its config, registry auth, local kubeconfig, Cloudflare Tunnel (tunnel, ingress, token Secret, DNS) | `enzarb-kubernetes/rke2/` (Ansible role, inventory, pins in `hack/versions.env`) | `mise run oldie:host` | Ansible (`changed=0` on re-run; `-- --check --diff` shows drift) |
-| Cluster prerequisites: cert-manager, Envoy Gateway, Capsule, pgop, agent-sandbox, OpenEBS LVM, issuers, StorageClass | `enzarb-kubernetes/overlays/oldie` | `mise run oldie:cluster` | `kubectl apply --server-side` |
+| Host: kernel settings, LVM volume group, gVisor, RKE2 and its config, registry auth, local kubeconfig, Cloudflare Tunnel (tunnel, ingress, token Secret, DNS) | `kubernetes/rke2/` (Ansible role, inventory, pins in `hack/versions.env`) | `mise run oldie:host` | Ansible (`changed=0` on re-run; `-- --check --diff` shows drift) |
+| Cluster prerequisites: cert-manager, Envoy Gateway, Capsule, pgop, agent-sandbox, OpenEBS LVM, issuers, StorageClass | `kubernetes/overlays/oldie` | `mise run oldie:cluster` | `kubectl apply --server-side` |
 | Secrets | `.env.oldie` (not committed) | `mise run oldie:secrets` | `kubectl apply` of a generated manifest |
-| enzarb | `enzarb-helm/enzarb` (`values.yaml` pins every component, `values-oldie.yaml` is embedded in the HelmChart) | **bootstrap once**: `mise run oldie:bootstrap-helmchart`; **upgrades**: `enzarb-updater` | RKE2 helm-controller, driven by the `HelmChart` CR |
+| enzarb | `helm/enzarb` (`values.yaml` pins every component, `values-oldie.yaml` is embedded in the HelmChart) | **bootstrap once**: `mise run oldie:bootstrap-helmchart`; **upgrades**: `enzarb-updater` | RKE2 helm-controller, driven by the `HelmChart` CR |
 
 ## What oldie looks like
 
@@ -23,10 +23,10 @@
 1. **ssh**: key access as `ruckc` with passwordless sudo on oldie (`rke2/inventory/oldie.yml`).
 2. **Public access through a Cloudflare Tunnel** (no inbound ports, so NAT and pinhole rules do not matter). `mise run oldie:host` converges it with the `cloudflare_tunnel` Ansible role, using your `cf` CLI login on this machine (`cf auth login`; the login needs Tunnel and DNS edit on the account):
    - creates the tunnel `enzarb-oldie` (remotely managed) if missing;
-   - applies its ingress rules from `enzarb-kubernetes/overlays/oldie/tunnel-config.json` (the single source for the hostname `enzarb.dev` and the origin `https://enzarb-gateway.envoy-gateway-system.svc:443`, verified against the Let's Encrypt certificate);
+   - applies its ingress rules from `kubernetes/overlays/oldie/tunnel-config.json` (the single source for the hostname `enzarb.dev` and the origin `https://enzarb-gateway.envoy-gateway-system.svc:443`, verified against the Let's Encrypt certificate);
    - stores the connector token as Secret `cloudflared/cloudflared-tunnel`;
    - replaces the apex `A` record with a proxied `CNAME` to `<tunnel-id>.cfargotunnel.com` (mail `MX`/`TXT` records and other names are untouched).
-   The `cloudflared` Deployment (2 replicas, `enzarb-kubernetes/base/cloudflared`) is applied by `oldie:cluster`. Do not forward any ports on the router. `mise run oldie:host -- --check --diff --tags tunnel` reports drift without changing anything. To opt out, set `cloudflare_tunnel_enabled: false` in the inventory.
+   The `cloudflared` Deployment (2 replicas, `kubernetes/base/cloudflared`) is applied by `oldie:cluster`. Do not forward any ports on the router. `mise run oldie:host -- --check --diff --tags tunnel` reports drift without changing anything. To opt out, set `cloudflare_tunnel_enabled: false` in the inventory.
    LAN clients can also reach the Gateway directly through ServiceLB on `192.168.33.11` (`enzarb.dev` -> `192.168.33.11` by split DNS or a hosts entry).
 3. **Cloudflare token** (automated): create one *bootstrap* token in the dashboard with `Zone > Zone > Read` on the `enzarb.dev` zone plus either `User > API Tokens > Edit` (a user token: My Profile, API Tokens) or `Account API Tokens > Edit` (an account-owned token: Manage Account, Account API Tokens). The task detects which kind it is. Then:
    ```sh
@@ -59,7 +59,7 @@ The kubeconfig is `~/.kube/enzarb-oldie.yaml` (context `enzarb-oldie`); it never
 ## Upgrading
 
 - **enzarb: automatic, nobody runs a deploy task.** Merge, then release (Conventional Commits, [ci.md](ci.md#releases)), then chart publish (`oci://ghcr.io/enzarb/charts/enzarb`), then `enzarb-updater` polls the registry (every 5 minutes), takes the highest plain `X.Y.Z` tag and patches `spec.version` of the RKE2 `HelmChart` `kube-system/enzarb` (never down), then the helm-controller upgrades the release. There is no GitHub webhook and no webhook secret. Verify read-only: `kubectl -n kube-system get helmchart enzarb`, `kubectl -n enzarb logs deploy/enzarb-updater`, `kubectl -n kube-system get jobs | grep helm-install-enzarb`. If the pipeline is stuck, fix the pipeline; do not hand-deploy.
-- **The HelmChart is created once** by `oldie:bootstrap-helmchart` (also the last step of `oldie:up`), which calls `enzarb-kubernetes/hack/oldie-helmchart.sh`: it creates or adopts the object (refusing literal secrets in the values), points `spec.dockerRegistrySecret` at `enzarb-chart-registry`, embeds `values-oldie.yaml` as `valuesContent`, and never lowers `spec.version`. It is not an upgrade path. Pull `enzarb-helm` first (its CRDs come from the checkout and must not be older than the deployed chart). Re-run it (by a human) only when `values-oldie.yaml` changes, since that file is not in the published chart, or to repair a deleted HelmChart. If the HelmChart is missing the updater logs it and does nothing; it never creates one.
+- **The HelmChart is created once** by `oldie:bootstrap-helmchart` (also the last step of `oldie:up`), which calls `kubernetes/hack/oldie-helmchart.sh`: it creates or adopts the object (refusing literal secrets in the values), points `spec.dockerRegistrySecret` at `enzarb-chart-registry`, embeds `values-oldie.yaml` as `valuesContent`, and never lowers `spec.version`. It is not an upgrade path. Pull the repo first (the CRDs in `helm/` come from the checkout and must not be older than the deployed chart). Re-run it (by a human) only when `values-oldie.yaml` changes, since that file is not in the published chart, or to repair a deleted HelmChart. If the HelmChart is missing the updater logs it and does nothing; it never creates one.
 - **Known gap: CRDs.** Neither Helm nor the helm-controller upgrades `crds/` after the first install. A chart release that changes a CRD (the `Project` CRD, pgop) needs `oldie:bootstrap-helmchart` re-run by a human, which server-side applies the chart checkout's CRDs first, until CRDs are shipped some other way.
 - **A failed upgrade** is not rolled back or alerted on yet (deferred, [architecture.md](architecture.md#self-update-chain)). The helm-controller's job log shows why: `kubectl -n kube-system logs job/helm-install-enzarb`.
 
@@ -70,7 +70,7 @@ The kubeconfig is `~/.kube/enzarb-oldie.yaml` (context `enzarb-oldie`); it never
 1. Stop. Do not delete the PVC, the `enzarb` namespace or the pgop `Cluster`. The data PV's reclaim policy is `Delete`, so removing the PVC destroys the Postgres data.
 2. Snapshot first: on oldie, `sudo lvcreate -s -n pg-snap-$(date +%F) -L 10G <vg>/<pg-lv>` (find the LV with `lvs`; the PV is an OpenEBS LVM volume).
 3. Read-only diagnosis: `kubectl -n kube-system get helmchart enzarb -o yaml` and the `helm-install-enzarb` job log.
-4. Fix the cause (values, chart version), then re-run `mise run oldie:bootstrap-helmchart` (by a human). If kept resources exist from an earlier uninstall, see "Uninstall keeps data definitions" in the enzarb-helm README to adopt them.
+4. Fix the cause (values, chart version), then re-run `mise run oldie:bootstrap-helmchart` (by a human). If kept resources exist from an earlier uninstall, see "Uninstall keeps data definitions" in the `helm/` README to adopt them.
 5. Confirm the Postgres pod and PVC are still bound and the app is healthy.
 
 ### Incident summary (oldie outage)
@@ -80,7 +80,7 @@ The kubeconfig is `~/.kube/enzarb-oldie.yaml` (context `enzarb-oldie`); it never
 3. That deleted the pgop `Cluster`, `Database` and `Role` CRs and the chart-generated Secret (session JWT, callback secret, realtime JWT).
 4. enzarb was down until the resources were recreated.
 5. Fixes: `failurePolicy: abort` and `forceConflicts: true` (enzarb-kubernetes#32), `resource-policy: keep` in the chart (enzarb-helm#32), this procedure.
-- **RKE2, gVisor, add-ons**: change the pin in `enzarb-kubernetes/hack/versions.env` (and the URL for remote bases), then re-run `oldie:host` / `oldie:cluster`.
+- **RKE2, gVisor, add-ons**: change the pin in `kubernetes/hack/versions.env` (and the URL for remote bases), then re-run `oldie:host` / `oldie:cluster`.
 - **Drift check**: `mise run oldie:host -- --check --diff`.
 
 ### One-time human actions (cutover and bootstrap)
@@ -89,7 +89,7 @@ The kubeconfig is `~/.kube/enzarb-oldie.yaml` (context `enzarb-oldie`); it never
 - [ ] After `oldie:host`: `mise run oldie:secrets` (creates `kube-system/enzarb-chart-registry` and `enzarb/enzarb-updater-registry`).
 - [ ] A chart release that pins `enzarb-updater` >= 0.2.0 (polling) is published (`oci://ghcr.io/enzarb/charts/enzarb`).
 - [ ] `mise run oldie:bootstrap-helmchart` once. For an existing install the HelmChart starts at the deployed Helm release's chart version and adopts the release `enzarb` in namespace `enzarb`; the updater then moves it to the newest chart. On a fresh cluster it starts at `ENZARB_CHART_VERSION` or the newest published tag. The task waits for the helm-controller's install job.
-- [ ] Remove the old webhook leftovers, if any: the `/updater/hook` GitHub release webhook on `enzarb/enzarb-helm` (not needed any more) and the generated `enzarb/enzarb-updater` webhook Secret.
+- [ ] Remove the old webhook leftovers, if any: the `/updater/hook` GitHub release webhook on the archived `enzarb/enzarb-helm` repo (not needed any more) and the generated `enzarb/enzarb-updater` webhook Secret.
 
 ## Webhooks
 

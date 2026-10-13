@@ -204,7 +204,7 @@ mod tests {
             Ok(true),
             cur("1.0.0"),
             "release",
-            rel("v1.1.0"),
+            rel("helm/v1.1.0"),
             Some("sha256=00".into()),
         )
         .await;
@@ -246,7 +246,7 @@ mod tests {
             Ok(true),
             cur("1.0.0"),
             "release",
-            payload("created", filter::REPO, "v1.1.0"),
+            payload("created", filter::REPO, "helm/v1.1.0"),
             None,
         )
         .await;
@@ -255,18 +255,25 @@ mod tests {
             Ok(true),
             cur("1.0.0"),
             "release",
-            payload("published", "x/y", "v1.1.0"),
+            payload("published", "x/y", "helm/v1.1.0"),
             None,
         )
         .await;
         assert_eq!(st, StatusCode::ACCEPTED);
-        let (st, _) = call(Ok(true), cur("1.0.0"), "release", rel("v1.1.0-rc.1"), None).await;
+        let (st, _) = call(
+            Ok(true),
+            cur("1.0.0"),
+            "release",
+            rel("helm/v1.1.0-rc.1"),
+            None,
+        )
+        .await;
         assert_eq!(st, StatusCode::ACCEPTED);
     }
 
     #[tokio::test]
     async fn upgrade_patches() {
-        let (st, set) = call(Ok(true), cur("1.0.0"), "release", rel("v1.1.0"), None).await;
+        let (st, set) = call(Ok(true), cur("1.0.0"), "release", rel("helm/v1.1.0"), None).await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(set, vec!["1.1.0"]);
     }
@@ -274,7 +281,7 @@ mod tests {
     #[tokio::test]
     async fn equal_and_older_are_noops() {
         for c in ["1.1.0", "1.2.0"] {
-            let (st, set) = call(Ok(true), cur(c), "release", rel("v1.1.0"), None).await;
+            let (st, set) = call(Ok(true), cur(c), "release", rel("helm/v1.1.0"), None).await;
             assert_eq!(st, StatusCode::OK);
             assert!(set.is_empty());
         }
@@ -282,7 +289,14 @@ mod tests {
 
     #[tokio::test]
     async fn missing_helmchart_is_a_noop_and_not_created() {
-        let (st, set) = call(Ok(true), Current::Missing, "release", rel("v1.1.0"), None).await;
+        let (st, set) = call(
+            Ok(true),
+            Current::Missing,
+            "release",
+            rel("helm/v1.1.0"),
+            None,
+        )
+        .await;
         assert_eq!(st, StatusCode::OK);
         assert!(set.is_empty());
     }
@@ -344,7 +358,7 @@ mod tests {
     #[tokio::test]
     async fn missing_chart_or_registry_error_is_503() {
         for reg in [Ok(false), Err("boom".to_string())] {
-            let (st, set) = call(reg, cur("1.0.0"), "release", rel("v1.1.0"), None).await;
+            let (st, set) = call(reg, cur("1.0.0"), "release", rel("helm/v1.1.0"), None).await;
             assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE);
             assert!(set.is_empty());
         }

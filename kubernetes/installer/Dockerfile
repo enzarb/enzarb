@@ -33,6 +33,6 @@ COPY hack/runsc.toml /opt/enzarb/runsc.toml
 COPY --chmod=0755 installer/install.sh /usr/local/bin/install.sh
 ENV GVISOR_VERSION=$GVISOR_VERSION
 LABEL org.opencontainers.image.title="enzarb-gvisor-installer" \
-      org.opencontainers.image.source="https://github.com/enzarb/enzarb-kubernetes" \
+      org.opencontainers.image.source="https://github.com/enzarb/enzarb" \
       org.opencontainers.image.version=$GVISOR_VERSION
 ENTRYPOINT ["/usr/local/bin/install.sh"]

@@ -3,26 +3,26 @@ import type { AboutComponent, AboutRelease } from '#lib/about-types.ts';
 import { getConfig } from '#lib/server/config.ts';
 import { renderMarkdown } from '#lib/server/markdown.ts';
 import { cachedReleases } from '#lib/server/releases.ts';
-import { COMPONENTS, displayVersion, githubRepoUrl } from '#lib/versions.ts';
+import { COMPONENTS, displayVersion, componentDirUrl } from '#lib/versions.ts';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals }) => {
 	if (!locals.user) redirect(303, '/login');
 	const { chart, components: deployed } = getConfig().componentVersions;
 
-	const known = COMPONENTS.map((c) => ({ ...c, repoUrl: githubRepoUrl(c.repo) as string | null }));
+	const known = COMPONENTS.map((c) => ({ ...c, repoUrl: componentDirUrl(c.dir) as string | null }));
 	const knownNames = new Set(COMPONENTS.map((c) => c.name));
 	const extras = Object.keys(deployed)
 		.filter((name) => !knownNames.has(name))
 		.sort()
-		.map((name) => ({ name, label: name, repo: null, repoUrl: null }));
+		.map((name) => ({ name, label: name, dir: null, repoUrl: null }));
 
 	const components: AboutComponent[] = await Promise.all(
 		[...known, ...extras].map(async (c) => {
 			let releases: AboutRelease[] | null = null;
-			if (c.repo) {
+			if (c.dir) {
 				try {
-					releases = (await cachedReleases(c.repo)).map((r) => ({
+					releases = (await cachedReleases(c.dir)).map((r) => ({
 						tag: r.tag,
 						name: r.name,
 						publishedAt: r.publishedAt,

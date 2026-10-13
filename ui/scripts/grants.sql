@@ -1,5 +1,5 @@
 -- Re-assertable grants, run by scripts/migrate.ts after the migrations on every run (not tracked in
--- app._migrations). Runtime roles are provisioned by other repos (the helm pgop Roles) and may appear
+-- app._migrations). Runtime roles are provisioned by other components (the helm pgop Roles) and may appear
 -- after a migration ran, so every statement here is idempotent and guarded by pg_roles; the next
 -- migrate run picks up roles that were missing before. Ordering requirement: create the Roles
 -- before running the UI migrate Job, otherwise the grants below are skipped (with a NOTICE) until

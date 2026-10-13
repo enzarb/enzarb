@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createReleaseCache, fetchReleases, type Release } from './releases.ts';
+import { componentReleases, createReleaseCache, fetchReleases, type Release } from './releases.ts';
 
 const gh = (over: Record<string, unknown> = {}) => ({
-	tag_name: 'v1.0.0',
+	tag_name: 'ui/v1.0.0',
 	name: 'One',
 	published_at: '2026-10-01T00:00:00Z',
-	html_url: 'https://github.com/enzarb/enzarb-ui/releases/tag/v1.0.0',
+	html_url: 'https://github.com/enzarb/enzarb/releases/tag/ui/v1.0.0',
 	body: 'notes',
 	draft: false,
 	...over
@@ -15,19 +15,19 @@ const respond = (body: unknown, status = 200) =>
 
 describe('fetchReleases', () => {
 	it('maps releases, drops drafts and sends the GitHub headers', async () => {
-		const f = respond([gh(), gh({ tag_name: 'v0.9.0', draft: true })]);
-		const out = await fetchReleases('enzarb-ui', { fetch: f as unknown as typeof fetch });
+		const f = respond([gh(), gh({ tag_name: 'ui/v0.9.0', draft: true })]);
+		const out = await fetchReleases({ fetch: f as unknown as typeof fetch });
 		expect(out).toEqual([
 			{
-				tag: 'v1.0.0',
+				tag: 'ui/v1.0.0',
 				name: 'One',
 				publishedAt: '2026-10-01T00:00:00Z',
-				url: 'https://github.com/enzarb/enzarb-ui/releases/tag/v1.0.0',
+				url: 'https://github.com/enzarb/enzarb/releases/tag/ui/v1.0.0',
 				body: 'notes'
 			}
 		]);
 		const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
-		expect(url).toBe('https://api.github.com/repos/enzarb/enzarb-ui/releases?per_page=30');
+		expect(url).toBe('https://api.github.com/repos/enzarb/enzarb/releases?per_page=100');
 		expect(init.headers).toMatchObject({
 			Accept: 'application/vnd.github+json',
 			'User-Agent': 'enzarb-ui'
@@ -36,18 +36,18 @@ describe('fetchReleases', () => {
 	});
 	it('sends a token only when given', async () => {
 		const f = respond([]);
-		await fetchReleases('x', { fetch: f as unknown as typeof fetch, token: 't' });
+		await fetchReleases({ fetch: f as unknown as typeof fetch, token: 't' });
 		expect((f.mock.calls[0] as unknown as [string, RequestInit])[1].headers).toMatchObject({
 			Authorization: 'Bearer t'
 		});
 	});
 	it('throws on a non-OK response (rate limit) and on a non-array body', async () => {
 		await expect(
-			fetchReleases('x', { fetch: respond({ message: 'rate' }, 403) as unknown as typeof fetch })
+			fetchReleases({ fetch: respond({ message: 'rate' }, 403) as unknown as typeof fetch })
 		).rejects.toThrow(/HTTP 403/);
-		await expect(
-			fetchReleases('x', { fetch: respond({}) as unknown as typeof fetch })
-		).rejects.toThrow(/unexpected/);
+		await expect(fetchReleases({ fetch: respond({}) as unknown as typeof fetch })).rejects.toThrow(
+			/unexpected/
+		);
 	});
 	it('aborts on timeout', async () => {
 		const f = vi.fn(
@@ -57,8 +57,34 @@ describe('fetchReleases', () => {
 				})
 		);
 		await expect(
-			fetchReleases('x', { fetch: f as unknown as typeof fetch, signal: AbortSignal.timeout(10) })
+			fetchReleases({ fetch: f as unknown as typeof fetch, signal: AbortSignal.timeout(10) })
 		).rejects.toBeDefined();
+	});
+});
+
+describe('componentReleases', () => {
+	const r = (tag: string): Release => ({ tag, name: tag, publishedAt: null, url: 'x', body: '' });
+	it('keeps only the dir prefix, strips it and links the full tag', () => {
+		const all = [
+			r('ui/v1.2.0'),
+			r('workflows/v1.0.0'),
+			r('ui-extra/v9.0.0'),
+			r('ui/v1.1.0'),
+			r('v0.1.0')
+		];
+		expect(componentReleases('ui', all)).toEqual([
+			{
+				...r('v1.2.0'),
+				name: 'ui/v1.2.0',
+				url: 'https://github.com/enzarb/enzarb/releases/tag/ui/v1.2.0'
+			},
+			{
+				...r('v1.1.0'),
+				name: 'ui/v1.1.0',
+				url: 'https://github.com/enzarb/enzarb/releases/tag/ui/v1.1.0'
+			}
+		]);
+		expect(componentReleases('sandbox-proxy', all)).toEqual([]);
 	});
 });
 

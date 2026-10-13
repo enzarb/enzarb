@@ -7,7 +7,11 @@
     "access": "restricted"
   },
   "license": "UNLICENSED",
-  "repository": "github:enzarb/enzarb-proto",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/enzarb/enzarb.git",
+    "directory": "proto"
+  },
   "type": "module",
   "sideEffects": false,
   "main": "./ts/dist/index.js",

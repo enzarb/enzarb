@@ -2,7 +2,7 @@
 
 Umbrella chart for enzarb (`enzarb/`). Contracts: `docs/contracts.md` and `docs/database.md` in the top-level `enzarb` repo.
 
-## Prerequisites (enzarb-kubernetes)
+## Prerequisites (`kubernetes/`)
 Gateway `enzarb` in `enzarb-system` (TLS secret `enzarb-tls`), agent-sandbox, and pgop v0.9.1 CRDs/operator.
 
 ## Install
@@ -36,7 +36,7 @@ Docker is always on and the runtime class is cluster-admin config, not per Proje
 - `operator.docker.image` (`docker:29.8.2-dind`), `operator.docker.storage` (`50Gi`, size of each Project's `docker` PVC), `operator.docker.resources.{requests,limits}.{cpu,memory}` (dockerd sidecar; unset keys are omitted).
 - `operator.docker.profiles`: extra `{<runtimeClass>: {securityContext, dockerdArgs}}` profiles. When non-empty the chart renders a ConfigMap, mounts it at `/etc/enzarb/docker` and sets `ENZARB_DOCKER_PROFILES_FILE`.
 
-Every Project now has two PVCs: `workspace` and `docker`. Sandbox nodes must carry the label `enzarb.dev/runtime-gvisor=true` (installed by enzarb-kubernetes together with the `gvisor` RuntimeClass); without a matching node, sandbox pods stay Pending.
+Every Project now has two PVCs: `workspace` and `docker`. Sandbox nodes must carry the label `enzarb.dev/runtime-gvisor=true` (installed by `kubernetes/` together with the `gvisor` RuntimeClass); without a matching node, sandbox pods stay Pending.
 
 ## Private npm packages for agent runs
 
@@ -57,7 +57,7 @@ pgop creates `<cluster>-<role>-credentials` per Role (keys `username password ho
 
 Chat is always on; it needs sandbox >= 0.8.0 and sandbox-proxy >= 0.4.0 (both pinned). `ENZARB_MAX_CHATS` (sandbox, default 1; 0 disables chat there so the Chat tab shows "not available") is the kill switch. The former `ui.chat.enabled` value is a deprecated no-op (the schema tolerates it for one release so a stale values file cannot break `helm upgrade`); remove it from your values.
 
-The ui Deployment gets `ENZARB_COMPONENT_VERSIONS`, a single-line JSON object `{"chart": "<chart version>", "components": {"<repo name>": "<tag>"}}` for the About page, rendered from the same values the chart-sync writes. The component keys are the GitHub repo names: `enzarb-ui`, `enzarb-workflows`, `enzarb-connectors`, `enzarb-realtime` and `enzarb-updater` (only when enabled), `enzarb-sandbox-proxy`, `enzarb-sandbox-operator` and `enzarb-sandbox-container` (tag of `operator.sandboxImage`). `ui.extraEnv` can override it. Checked by `mise run componentversions`.
+The ui Deployment gets `ENZARB_COMPONENT_VERSIONS`, a single-line JSON object `{"chart": "<chart version>", "components": {"<repo name>": "<tag>"}}` for the About page, rendered from the same values the chart-sync writes. The component keys are the historical component (former repo) names; the UI maps each to its monorepo directory and `<dir>/v*` release tags: `enzarb-ui`, `enzarb-workflows`, `enzarb-connectors`, `enzarb-realtime` and `enzarb-updater` (only when enabled), `enzarb-sandbox-proxy`, `enzarb-sandbox-operator` and `enzarb-sandbox-container` (tag of `operator.sandboxImage`). `ui.extraEnv` can override it. Checked by `mise run componentversions`.
 
 ## Uninstall keeps data definitions
 The pgop `Cluster`, `Database` and `Role` CRs and the generated Secret (`enzarb.generatedSecret`: session JWT, executor callback secret, realtime JWT) carry `helm.sh/resource-policy: keep`, so `helm uninstall` (including the helm-controller's reinstall failure policy) cannot delete the database definition or the secrets. The PVC is created by pgop, not Helm, and is untouched. Nothing else is kept, so normal upgrades are unaffected.

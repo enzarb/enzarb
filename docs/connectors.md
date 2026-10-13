@@ -1,4 +1,4 @@
-# Connectors (`enzarb-connectors`)
+# Connectors (`connectors/`)
 
 A connector links enzarb to an outside system that can start or receive work. GitHub is the first, but nothing outside this repo depends on GitHub ([ADR-0007](adr/0007-connectors.md)).
 
@@ -11,7 +11,7 @@ The name `connectors` was chosen to avoid terms that already mean something in K
 - `crates/connector-github`: GitHub App implementation.
 - `bin/receiver`: HTTP service with one route per connector (`/hooks/github`, …).
 
-The `enzarb-workflows` executor uses the library crates to make outbound calls.
+The `workflows/` executor uses the library crates to make outbound calls.
 
 ## Inbound: normalized events
 

@@ -1,8 +1,0 @@
-#!/usr/bin/env bash
-#MISE description="Run a command in every present component repo: mise run repos:exec -- git fetch"
-set -u
-cd "${MISE_PROJECT_ROOT:-$(dirname "$0")/../../..}"
-for r in $(grep -oP '^\[repos\.\K[^\]]+' repos.toml); do
-  [ -d "$r/.git" ] || continue
-  echo "== $r"; (cd "$r" && "$@")
-done

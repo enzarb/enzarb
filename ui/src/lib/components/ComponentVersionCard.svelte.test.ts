@@ -8,13 +8,13 @@ const rel = (tag: string) => ({
 	tag,
 	name: `Release ${tag}`,
 	publishedAt: '2026-10-01T00:00:00Z',
-	url: `https://github.com/enzarb/enzarb-ui/releases/tag/${tag}`,
+	url: `https://github.com/enzarb/enzarb/releases/tag/ui/${tag}`,
 	html: `<p>notes ${tag}</p>`
 });
 const base: AboutComponent = {
 	name: 'enzarb-ui',
 	label: 'UI',
-	repoUrl: 'https://github.com/enzarb/enzarb-ui',
+	repoUrl: 'https://github.com/enzarb/enzarb/tree/main/ui',
 	deployed: 'v1.1.0',
 	releases: [rel('v1.2.0'), rel('v1.1.0'), rel('v1.0.0')]
 };
@@ -30,7 +30,7 @@ describe('ComponentVersionCard', () => {
 			'Release v1.0.0'
 		]);
 		await expect.element(page.getByText('v1.1.0', { exact: true }).first()).toBeVisible();
-		expect(document.querySelector('a[href$="releases/tag/v1.1.0"]')).not.toBeNull();
+		expect(document.querySelector('a[href$="releases/tag/ui/v1.1.0"]')).not.toBeNull();
 	});
 
 	it('says there is no matching release and collapses everything', async () => {
