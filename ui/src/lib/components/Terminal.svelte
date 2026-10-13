@@ -74,8 +74,22 @@
 			const fit = new FitAddon();
 			term.loadAddon(fit);
 			term.open(host);
-			fit.fit();
-			cleanup = () => term.dispose();
+			let s: Session | undefined;
+			let pty: Awaited<ReturnType<Session['openPty']>> | undefined;
+			const refit = () => {
+				fit.fit();
+				// Only tell the sandbox once the PTY exists; openPty and the post-open resize cover the rest.
+				if (s && pty) s.resize(pty, term.cols, term.rows);
+			};
+			// Fit after layout has settled, then again whenever the region changes size.
+			const frame = requestAnimationFrame(refit);
+			const resize = new ResizeObserver(refit);
+			resize.observe(host);
+			cleanup = () => {
+				cancelAnimationFrame(frame);
+				resize.disconnect();
+				term.dispose();
+			};
 
 			let url: string;
 			try {
@@ -93,32 +107,29 @@
 				session = await proto.Session.connect(ws, { client: 'ui' });
 				if (disposed) return void session.close();
 				advance('handshake'); // connecting is already done if `open` fired
-				const s = session;
+				s = session;
 				s.onCtrl((m) => {
 					if (m.type === 'credential_captured') oncredential?.();
 					else if (m.type === 'error') term.writeln(`\r\n[error ${m.code}] ${m.message}`);
 				});
 
-				const pty = await s.openPty({ cols: term.cols, rows: term.rows, command });
+				const opened = await s.openPty({ cols: term.cols, rows: term.rows, command });
+				pty = opened;
+				// The region may have changed size while connecting.
+				s.resize(opened, term.cols, term.rows);
 				advance('shell');
 				term.focus();
 
-				const input = term.onData((d) => void pty.write(d).catch(() => {}));
-				const resize = new ResizeObserver(() => {
-					fit.fit();
-					s.resize(pty, term.cols, term.rows);
-				});
-				resize.observe(host);
+				const input = term.onData((d) => void opened.write(d).catch(() => {}));
 				const prev = cleanup;
 				cleanup = () => {
 					input.dispose();
-					resize.disconnect();
 					prev();
 				};
 
-				for await (const d of pty) term.write(d.data);
+				for await (const d of opened) term.write(d.data);
 				if (disposed) return;
-				ended = describeClose(pty.closeInfo?.reason);
+				ended = describeClose(opened.closeInfo?.reason);
 				onclose?.(ended);
 			} catch (e) {
 				if (!disposed) fail(e);

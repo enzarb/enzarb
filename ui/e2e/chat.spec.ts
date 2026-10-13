@@ -10,6 +10,13 @@ test('chat connects and exchanges a message', async ({ page }) => {
 	const composer = page.getByRole('textbox', { name: 'Message' });
 	await expect(composer).toBeEnabled();
 
+	// The chat fills the viewport: no page scroll, composer pinned inside it.
+	const noPageScroll = await page.evaluate(
+		() => document.documentElement.scrollHeight <= window.innerHeight
+	);
+	expect(noPageScroll).toBe(true);
+	await expect(composer).toBeInViewport();
+
 	await composer.fill('Hello agent');
 	await page.getByRole('button', { name: 'Send' }).click();
 

@@ -91,6 +91,19 @@ describe('project layout and tabs', () => {
 		await expect.element(browser.getByRole('heading', { name: 'Repositories' })).toBeVisible();
 	});
 
+	it('renders the title, subtext and tabs in one header row', async () => {
+		mount(Overview);
+		const headers = document.querySelectorAll('header');
+		const header = document.querySelector('header.ez-project-header');
+		expect(header).not.toBeNull();
+		expect(document.querySelector('.ez-page-header')).toBeNull();
+		expect(headers.length).toBe(1);
+		expect(header!.querySelector('h1')?.textContent).toBe('Alpha');
+		expect(header!.textContent).toContain('sandbox');
+		expect(header!.querySelector('nav[aria-label="Project sections"]')).not.toBeNull();
+		expect(document.querySelector('.ez-project-view > .ez-tabnav-panel')).not.toBeNull();
+	});
+
 	it('marks the tab of the current route', async () => {
 		h.path = '/projects/alpha/settings';
 		mount(Settings);
@@ -146,6 +159,7 @@ describe('project layout and tabs', () => {
 		h.path = '/projects/alpha/terminal';
 		mount(Terminal);
 		await expect.element(browser.getByTestId('terminal')).toHaveAttribute('data-fill', 'true');
+		await expect.element(browser.getByText(/for emergencies/)).not.toBeInTheDocument();
 	});
 
 	it('does not mount the terminal while booting', async () => {

@@ -391,7 +391,7 @@ img {
 	display: grid;
 	grid-template:
 		'header header' var(--ez-header-height)
-		'nav content' 1fr
+		'nav content' minmax(0, 1fr)
 		'footer footer' auto / var(--ez-nav-width) minmax(0, 1fr);
 	min-height: 100vh;
 	min-height: 100dvh;
@@ -400,8 +400,15 @@ img {
 		grid-template:
 			'header' var(--ez-header-height)
 			'nav' auto
-			'content' 1fr
+			'content' minmax(0, 1fr)
 			'footer' auto / minmax(0, 1fr);
+	}
+
+	// Project routes fill the viewport; the tab region scrolls (or not) inside it.
+	&:has(.ez-project-view) {
+		height: 100vh;
+		height: 100dvh;
+		min-height: 0;
 	}
 }
 
@@ -491,6 +498,14 @@ img {
 	@media (max-width: 48rem) {
 		padding: var(--ez-space-5) var(--ez-space-4) var(--ez-space-7);
 	}
+
+	&:has(> .ez-page > .ez-project-view) {
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+		overflow: hidden;
+		padding-bottom: var(--ez-space-4);
+	}
 }
 
 // Centres the page column; used by the shell and by pages outside it (login, gallery).
@@ -500,6 +515,56 @@ img {
 	gap: var(--ez-space-5);
 	max-width: var(--ez-content-width);
 	margin-inline: auto;
+
+	// Project routes: full width, bounded height (the header and Overview/Settings cap themselves).
+	&:has(> .ez-project-view) {
+		flex: 1;
+		min-height: 0;
+		width: 100%;
+		max-width: none;
+		overflow: hidden;
+	}
+}
+
+// The project view: one header row, then the active tab filling the rest of the viewport.
+.ez-project-view {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	gap: var(--ez-space-3);
+	min-height: 0;
+	min-width: 0;
+}
+
+.ez-project-header {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-end;
+	justify-content: space-between;
+	gap: var(--ez-space-2) var(--ez-space-5);
+	width: 100%;
+	max-width: var(--ez-content-width);
+	margin-inline: auto;
+	border-bottom: var(--ez-border-width) solid var(--ez-border);
+
+	&__text {
+		min-width: 0;
+	}
+
+	&__meta {
+		color: var(--ez-text-muted);
+	}
+
+	.ez-tabnav {
+		min-width: 0;
+		margin-inline-start: auto;
+		border-bottom: 0;
+
+		@media (max-width: 48rem) {
+			flex: 1 1 100%;
+			margin-inline-start: 0;
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1820,7 +1885,7 @@ textarea.ez-control {
 		flex: 1;
 		height: auto;
 		max-height: none;
-		min-height: 20rem;
+		min-height: 0;
 	}
 }
 
@@ -1829,13 +1894,14 @@ textarea.ez-control {
 	min-height: 0;
 }
 
-// The Terminal tab: a viewport-tall flex column so the terminal fills the rest of the region.
+// The Terminal tab: a flex column so the terminal fills the rest of the region.
 .ez-project-terminal {
 	display: flex;
+	flex: 1;
 	flex-direction: column;
 	gap: var(--ez-space-3);
-	height: max(28rem, calc(100dvh - 18rem));
 	min-height: 0;
+	overflow: hidden;
 }
 
 // Toast ------------------------------------------------------------------------------------------------------
@@ -2058,8 +2124,22 @@ textarea.ez-control {
 	}
 }
 
+// The scrolling region under the project header. Overview and Settings scroll inside it, capped
+// to the content width; the Terminal and Chat roots fill it and manage their own overflow.
 .ez-tabnav-panel {
-	padding-top: var(--ez-space-4);
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	gap: var(--ez-space-4);
+	min-height: 0;
+	min-width: 0;
+	overflow: auto;
+
+	> :not(.ez-project-terminal, .ez-project-chat) {
+		width: 100%;
+		max-width: var(--ez-content-width);
+		margin-inline: auto;
+	}
 }
 
 // Chat tab: transcript, tool calls, permission requests, composer --------------------------------
@@ -2067,16 +2147,22 @@ textarea.ez-control {
 .ez-project-chat,
 .ez-chat {
 	display: flex;
+	flex: 1;
 	flex-direction: column;
 	gap: var(--ez-space-3);
 	min-height: 0;
 }
 
+.ez-project-chat {
+	overflow: hidden;
+}
+
 .ez-chat-log {
 	display: flex;
+	flex: 1;
 	flex-direction: column;
 	gap: var(--ez-space-3);
-	min-height: 8rem;
+	min-height: 0;
 	padding: var(--ez-space-3);
 	overflow-y: auto;
 }

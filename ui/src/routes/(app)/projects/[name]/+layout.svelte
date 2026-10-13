@@ -7,7 +7,7 @@
 	import Notice from '#lib/components/ui/Notice.svelte';
 	import PageHeader from '#lib/components/ui/PageHeader.svelte';
 	import PendingChangeBanner from '#lib/components/PendingChangeBanner.svelte';
-	import ProjectNav from '#lib/components/ProjectNav.svelte';
+	import ProjectHeader from '#lib/components/ProjectHeader.svelte';
 	import Skeleton from '#lib/components/ui/Skeleton.svelte';
 	import { getProject } from '#lib/projects.remote.ts';
 	import { setProjectContext } from '#lib/project-context.svelte.ts';
@@ -88,18 +88,17 @@
 		{/if}
 	{:else if project.current}
 		{@const p = project.current}
-		<PageHeader title={p.displayName}>
-			{#snippet meta()}
-				<code>{p.name}</code>
-				{#if p.sandboxName}<span class="ez-muted">sandbox <code>{p.sandboxName}</code></span>{/if}
-			{/snippet}
-		</PageHeader>
-
-		<PendingChangeBanner change={p.pendingChange} {runningJobs} />
-
-		<ProjectNav name={p.name} pathname={page.url.pathname} />
-		<div class="ez-tabnav-panel">
-			{@render children()}
+		<div class="ez-project-view">
+			<ProjectHeader
+				displayName={p.displayName}
+				name={p.name}
+				sandboxName={p.sandboxName}
+				pathname={page.url.pathname}
+			/>
+			<PendingChangeBanner change={p.pendingChange} {runningJobs} />
+			<div class="ez-tabnav-panel">
+				{@render children()}
+			</div>
 		</div>
 	{:else}
 		<Skeleton label="Loading project" rows={4} />

@@ -11,9 +11,6 @@
 
 {#if ctx.project.ready}
 	<div class="ez-project-terminal">
-		<Notice tone="info">
-			The terminal is for emergencies. Prefer the automated workflows where you can.
-		</Notice>
 		{#key ctx.project.name}
 			<Terminal project={ctx.project.name} fill />
 		{/key}
