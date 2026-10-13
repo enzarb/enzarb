@@ -1,0 +1,16 @@
+[workspace]
+resolver = "3"
+members = ["crates/enzarb-crds", "crates/operator"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+k8s-openapi = { version = "0.28", default-features = false, features = ["latest", "schemars"] }
+kube = { version = "4.2", default-features = false, features = ["derive"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+thiserror = "2"
