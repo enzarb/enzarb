@@ -803,14 +803,14 @@ spec:
       serviceAccountName: enzarb-connectors
 
       initContainers:
-        - name: wait-enzarb-migrate-ui-2b1c3540b1
+        - name: wait-enzarb-migrate-ui-91a2878c6b
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-2b1c3540b1]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-91a2878c6b]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: receiver
-          image: ghcr.io/enzarb/enzarb-connectors-receiver:0.6.1
+          image: ghcr.io/enzarb/enzarb-connectors-receiver:0.6.2
           imagePullPolicy: IfNotPresent
           args: [serve]
           ports:
@@ -1046,10 +1046,10 @@ spec:
       serviceAccountName: enzarb-ui
 
       initContainers:
-        - name: wait-enzarb-migrate-ui-2b1c3540b1
+        - name: wait-enzarb-migrate-ui-91a2878c6b
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-2b1c3540b1]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-91a2878c6b]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: ui
@@ -1104,7 +1104,7 @@ spec:
                   name: enzarb-github
                   key: oauth-client-secret
             - { name: ENZARB_PUBLIC_URL, value: "https://enzarb.dev" }
-            - { name: ENZARB_COMPONENT_VERSIONS, value: "{\"chart\":\"0.0.0\",\"components\":{\"enzarb-connectors\":\"0.6.1\",\"enzarb-sandbox-container\":\"0.10.2\",\"enzarb-sandbox-operator\":\"0.8.1\",\"enzarb-sandbox-proxy\":\"0.5.1\",\"enzarb-ui\":\"0.24.4\",\"enzarb-updater\":\"0.2.1\",\"enzarb-workflows\":\"0.18.1\"}}" }
+            - { name: ENZARB_COMPONENT_VERSIONS, value: "{\"chart\":\"0.0.0\",\"components\":{\"enzarb-connectors\":\"0.6.2\",\"enzarb-sandbox-container\":\"0.10.2\",\"enzarb-sandbox-operator\":\"0.8.1\",\"enzarb-sandbox-proxy\":\"0.5.1\",\"enzarb-ui\":\"0.24.4\",\"enzarb-updater\":\"0.2.1\",\"enzarb-workflows\":\"0.18.1\"}}" }
             - { name: ENZARB_GITHUB_APP_SLUG, value: "enzarb" }
             # adapter-node derives the origin for its CSRF check from this header; the Gateway forwards it.
             - { name: PROTOCOL_HEADER, value: x-forwarded-proto }
@@ -1205,10 +1205,10 @@ spec:
       terminationGracePeriodSeconds: 60
 
       initContainers:
-        - name: wait-enzarb-migrate-ui-2b1c3540b1
+        - name: wait-enzarb-migrate-ui-91a2878c6b
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-2b1c3540b1]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-91a2878c6b]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       # the keyring files are root-owned; fsGroup makes them group-readable by the non-root uid
       securityContext: { fsGroup: 65532 }
@@ -1386,7 +1386,7 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: enzarb-migrate-connectors-f799e1f53a
+  name: enzarb-migrate-connectors-e8d74b8b28
   labels:
     app.kubernetes.io/name: enzarb-migrate-connectors
     app.kubernetes.io/instance: enzarb
@@ -1414,7 +1414,7 @@ spec:
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: migrate
-          image: ghcr.io/enzarb/enzarb-connectors-receiver:0.6.1
+          image: ghcr.io/enzarb/enzarb-connectors-receiver:0.6.2
           imagePullPolicy: IfNotPresent
           args: [migrate]
           env:
@@ -1460,7 +1460,7 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: enzarb-migrate-ui-2b1c3540b1
+  name: enzarb-migrate-ui-91a2878c6b
   labels:
     app.kubernetes.io/name: enzarb-migrate-ui
     app.kubernetes.io/instance: enzarb
@@ -1481,10 +1481,10 @@ spec:
       restartPolicy: OnFailure
 
       initContainers:
-        - name: wait-enzarb-migrate-connectors-f799e1f53a
+        - name: wait-enzarb-migrate-connectors-e8d74b8b28
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-connectors-f799e1f53a]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-connectors-e8d74b8b28]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: migrate
