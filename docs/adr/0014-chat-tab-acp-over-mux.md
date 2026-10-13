@@ -61,3 +61,7 @@ Maintainer decision, shipped in enzarb-sandbox-container#51 (v0.9.0, issue #50).
 **Kill switches.** `ENZARB_CHAT_PERMISSION_MODE=default` (or `plan`) restores per-call prompts with S1 hard deny; `ENZARB_CHAT_ALLOW_BYPASS=false` makes bypass unavailable (not offered to the adapter, `set_mode` to it refused); `ENZARB_MAX_CHATS=0` disables chat. Agent jobs are unaffected by all three.
 
 **Follow-up.** The git hook/config token-theft risk above is tracked as enzarb/enzarb-sandbox-container#52.
+
+## Amendment 2026-10-13: shared uid accepted
+
+enzarb/enzarb-sandbox-container#53 (v0.9.1) closed the git hook/config route (#52): authenticated git runs only in scratch bare repos with an empty environment and no hooks. The remaining same-uid exposure is **accepted**: while a job's authenticated git runs, a bypass chat agent can read its token from `/proc/<pid>/environ`; it can write clones, toolchains and `.enzarb/` that later jobs use; and it can read the mux token and run callback files. A separate uid in the same pod (enzarb/enzarb-sandbox-container#54) was declined. If chat needs stronger isolation later, the direction is a **chat-specific sandbox** (its own pod and volume, no job credentials), not a second uid in the shared pod.
