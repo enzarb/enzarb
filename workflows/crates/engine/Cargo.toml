@@ -29,6 +29,7 @@ axum.workspace = true
 hmac.workspace = true
 sha2.workspace = true
 testcontainers-modules = { version = "0.15", features = ["postgres"], optional = true }
+aes-gcm = "0.10"
 
 [dev-dependencies]
 engine = { path = ".", features = ["testing"] }

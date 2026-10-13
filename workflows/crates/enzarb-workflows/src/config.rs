@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
 
-use engine::Secret;
+use engine::{ClaudeKeyring, Secret};
 
 use crate::cli::Role;
 
@@ -31,6 +31,11 @@ pub struct Config {
     /// (executor role only). From `ENZARB_NPM_TOKEN`, or the file named by
     /// `ENZARB_NPM_TOKEN_FILE` (takes precedence). Never logged.
     pub npm_token: Option<Secret>,
+    /// Per-user Claude token keyring (executor role only), loaded from the directory named by
+    /// `ENZARB_CLAUDE_KEYRING_DIR` (the mounted `enzarb-claude-key` Secret). Unset is `None`:
+    /// every agent run then fails `credential_undecryptable`. Set but unreadable, empty or with
+    /// a key that is not 32 bytes is a startup error.
+    pub claude_keyring: Option<ClaudeKeyring>,
     /// Executor callback + health server.
     pub executor_listen: SocketAddr,
     /// Health server for processes without the executor role.
@@ -45,6 +50,7 @@ impl std::fmt::Debug for Config {
             .field("executor_url", &self.executor_url)
             .field("executor_callback_secret", &"<redacted>")
             .field("npm_token", &self.npm_token.as_ref().map(|_| "<redacted>"))
+            .field("claude_keyring", &self.claude_keyring)
             .field("executor_listen", &self.executor_listen)
             .field("health_listen", &self.health_listen)
             .finish_non_exhaustive()
@@ -98,6 +104,21 @@ fn npm_token(get: &dyn Fn(&str) -> Option<String>) -> Result<Option<Secret>, Con
     Ok(Some(Secret::new(t)))
 }
 
+/// `ENZARB_CLAUDE_KEYRING_DIR`; unset or blank is `None`. Errors never include key bytes.
+fn claude_keyring(
+    get: &dyn Fn(&str) -> Option<String>,
+) -> Result<Option<ClaudeKeyring>, ConfigError> {
+    let Some(dir) = nonempty(get, "ENZARB_CLAUDE_KEYRING_DIR") else {
+        return Ok(None);
+    };
+    ClaudeKeyring::load_dir(std::path::Path::new(&dir))
+        .map(Some)
+        .map_err(|e| ConfigError::Invalid {
+            var: "ENZARB_CLAUDE_KEYRING_DIR",
+            msg: e.to_string(),
+        })
+}
+
 impl Config {
     /// Build from the process environment.
     pub fn from_env(roles: BTreeSet<Role>) -> Result<Self, ConfigError> {
@@ -148,6 +169,11 @@ impl Config {
         } else {
             None
         };
+        let claude_keyring = if roles.contains(&Role::Executor) {
+            claude_keyring(get)?
+        } else {
+            None
+        };
         let executor_listen = addr(get, "ENZARB_EXECUTOR_LISTEN", "0.0.0.0:8081")?;
         let health_listen = addr(get, "ENZARB_HEALTH_LISTEN", "0.0.0.0:8082")?;
         Ok(Config {
@@ -159,6 +185,7 @@ impl Config {
             executor_url,
             executor_callback_secret,
             npm_token,
+            claude_keyring,
             executor_listen,
             health_listen,
         })
@@ -321,6 +348,36 @@ mod tests {
         let e = exec_env(&[("ENZARB_NPM_TOKEN", "ghp_a ghp_secretb")]).unwrap_err();
         assert!(!e.to_string().contains("secretb"), "{e}");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn claude_keyring_is_executor_only_and_bad_dirs_fail_startup() {
+        let dir = std::env::temp_dir().join(format!("enzarb-ckey-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("k1"), [0x5au8; 32]).unwrap();
+        std::fs::write(dir.join("active"), "k1").unwrap();
+        let p = dir.to_str().unwrap();
+        assert!(exec_env(&[]).unwrap().claude_keyring.is_none());
+        let c = exec_env(&[("ENZARB_CLAUDE_KEYRING_DIR", p)]).unwrap();
+        let d = format!("{c:?}");
+        assert!(d.contains("k1") && !d.contains("90"), "{d}");
+        assert!(c.claude_keyring.is_some());
+        let c = Config::from_lookup(
+            roles(&[Role::Reducer]),
+            &env(&[("DATABASE_URL", "p"), ("ENZARB_CLAUDE_KEYRING_DIR", p)]),
+        )
+        .unwrap();
+        assert!(c.claude_keyring.is_none());
+        std::fs::write(dir.join("k2"), b"short").unwrap();
+        assert!(matches!(
+            exec_env(&[("ENZARB_CLAUDE_KEYRING_DIR", p)]),
+            Err(ConfigError::Invalid {
+                var: "ENZARB_CLAUDE_KEYRING_DIR",
+                ..
+            })
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(exec_env(&[("ENZARB_CLAUDE_KEYRING_DIR", p)]).is_err());
     }
 
     #[test]

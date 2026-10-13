@@ -17,7 +17,8 @@ pub mod ticker;
 
 pub use error::Error;
 pub use executor::{
-    ConnectorRegistry, Executor, ExecutorConfig, SandboxResolver, SandboxTarget, Secret,
+    ClaudeKeyring, ConnectorRegistry, Executor, ExecutorConfig, SandboxResolver, SandboxTarget,
+    Secret,
 };
 pub use index::{KubeProjectIndex, ProjectIndex, ProjectInfo, StaticProjectIndex};
 pub use permission::{

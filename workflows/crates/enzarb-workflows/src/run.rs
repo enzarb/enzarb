@@ -111,6 +111,13 @@ pub async fn run(cfg: Config) -> Result<(), Error> {
             cfg.executor_callback_secret.clone(),
         );
         ecfg.npm_token = cfg.npm_token.clone();
+        ecfg.claude_keyring = cfg.claude_keyring.clone();
+        if ecfg.claude_keyring.is_none() {
+            tracing::warn!(
+                "ENZARB_CLAUDE_KEYRING_DIR is not set: every agent run will fail with \
+                 credential_undecryptable"
+            );
+        }
         ecfg.apply_env(&|k| std::env::var(k).ok());
         let executor = Arc::new(Executor::new(
             pool.clone(),

@@ -52,6 +52,12 @@ pub trait SandboxResolver: Send + Sync {
         Ok(None)
     }
 
+    /// `Project.spec.owner` (the GitHub login whose Claude token runs use). `None` when the
+    /// Project or its owner is unknown; the caller fails closed, never picks another owner.
+    async fn project_owner(&self, _project: &str) -> Result<Option<String>, SandboxError> {
+        Ok(None)
+    }
+
     /// Pending-change state of every Project. The default lists none (no holds).
     async fn change_states(&self) -> Result<Vec<ProjectChangeState>, SandboxError> {
         Ok(Vec::new())
@@ -65,6 +71,11 @@ pub trait SandboxResolver: Send + Sync {
     ) -> Result<(), SandboxError> {
         Ok(())
     }
+}
+
+/// `spec.owner` of a Project, exactly as written; blank is `None`. Pure, for tests.
+pub fn project_owner(p: &Project) -> Option<String> {
+    (!p.spec.owner.trim().is_empty()).then(|| p.spec.owner.clone())
 }
 
 /// `spec.maxRuns` of a Project. Pure, for tests.
@@ -182,6 +193,15 @@ impl SandboxResolver for KubeSandboxResolver {
         Ok(p.as_ref().and_then(max_runs))
     }
 
+    async fn project_owner(&self, project: &str) -> Result<Option<String>, SandboxError> {
+        let projects: Api<Project> = Api::all(self.client.clone());
+        let p = projects
+            .get_opt(project)
+            .await
+            .map_err(|e| SandboxError::Kube(e.to_string()))?;
+        Ok(p.as_ref().and_then(project_owner))
+    }
+
     async fn change_states(&self) -> Result<Vec<ProjectChangeState>, SandboxError> {
         let projects: Api<Project> = Api::all(self.client.clone());
         let list = projects
@@ -218,6 +238,7 @@ pub struct StaticSandboxResolver {
     map: RwLock<HashMap<String, SandboxTarget>>,
     repos: RwLock<HashMap<String, Vec<RepoKey>>>,
     max_runs: RwLock<HashMap<String, i64>>,
+    owners: RwLock<HashMap<String, String>>,
     changes: RwLock<Vec<ProjectChangeState>>,
     drained_calls: RwLock<Vec<(String, Option<i64>)>>,
 }
@@ -246,6 +267,13 @@ impl StaticSandboxResolver {
             .write()
             .expect("resolver lock")
             .insert(project.into(), n);
+    }
+
+    pub fn set_owner(&self, project: &str, owner: &str) {
+        self.owners
+            .write()
+            .expect("resolver lock")
+            .insert(project.into(), owner.into());
     }
 
     /// Replace the Projects `change_states` reports.
@@ -282,6 +310,15 @@ impl SandboxResolver for StaticSandboxResolver {
             .get(project)
             .cloned()
             .unwrap_or_default())
+    }
+
+    async fn project_owner(&self, project: &str) -> Result<Option<String>, SandboxError> {
+        Ok(self
+            .owners
+            .read()
+            .expect("resolver lock")
+            .get(project)
+            .cloned())
     }
 
     async fn change_states(&self) -> Result<Vec<ProjectChangeState>, SandboxError> {
@@ -325,6 +362,18 @@ mod tests {
             serde_json::from_value(serde_json::json!({"owner": "ruckc", "maxRuns": 5})).unwrap();
         assert_eq!(max_runs(&Project::new("p", spec)), Some(5));
         assert_eq!(max_runs(&project(None)), None);
+    }
+
+    #[test]
+    fn owner_is_read_from_the_spec_and_blank_is_none() {
+        let spec: ProjectSpec =
+            serde_json::from_value(serde_json::json!({"owner": "ruckc"})).unwrap();
+        assert_eq!(
+            project_owner(&Project::new("p", spec)).as_deref(),
+            Some("ruckc")
+        );
+        let spec: ProjectSpec = serde_json::from_value(serde_json::json!({"owner": " "})).unwrap();
+        assert_eq!(project_owner(&Project::new("p", spec)), None);
     }
 
     fn project(status: Option<ProjectStatus>) -> Project {

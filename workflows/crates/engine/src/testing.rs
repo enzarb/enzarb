@@ -57,4 +57,44 @@ impl TestDb {
             .await
             .expect("connect as role")
     }
+
+    /// Install a copy of the UI-owned `app.claude_credentials` table and
+    /// `app_api.claude_credential_get` (enzarb-ui `migrations/0004_claude_credentials.sql`),
+    /// executable by `enzarb_workflows`. Idempotent.
+    pub async fn install_claude_credentials(&self) {
+        for stmt in [
+            "CREATE SCHEMA IF NOT EXISTS app",
+            "CREATE SCHEMA IF NOT EXISTS app_api",
+            "CREATE TABLE IF NOT EXISTS app.claude_credentials (
+                owner text PRIMARY KEY, key_id text NOT NULL, ciphertext bytea NOT NULL,
+                created_at timestamptz NOT NULL DEFAULT now(),
+                updated_at timestamptz NOT NULL DEFAULT now())",
+            "CREATE OR REPLACE FUNCTION app_api.claude_credential_get(owner text)
+             RETURNS TABLE (key_id text, ciphertext bytea)
+             LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, app
+             AS $$ SELECT t.key_id, t.ciphertext FROM app.claude_credentials t WHERE t.owner = $1 $$",
+            "REVOKE ALL ON FUNCTION app_api.claude_credential_get(text) FROM PUBLIC",
+            "GRANT USAGE ON SCHEMA app_api TO enzarb_workflows",
+            "GRANT EXECUTE ON FUNCTION app_api.claude_credential_get(text) TO enzarb_workflows",
+        ] {
+            sqlx::query(stmt)
+                .execute(&self.pool)
+                .await
+                .expect("claude credentials fixture");
+        }
+    }
+
+    /// Upsert one stored (encrypted) credential row.
+    pub async fn put_claude_credential(&self, owner: &str, key_id: &str, ciphertext: &[u8]) {
+        sqlx::query(
+            "INSERT INTO app.claude_credentials (owner, key_id, ciphertext) VALUES ($1, $2, $3)
+             ON CONFLICT (owner) DO UPDATE SET key_id = $2, ciphertext = $3",
+        )
+        .bind(owner)
+        .bind(key_id)
+        .bind(ciphertext)
+        .execute(&self.pool)
+        .await
+        .expect("put claude credential");
+    }
 }

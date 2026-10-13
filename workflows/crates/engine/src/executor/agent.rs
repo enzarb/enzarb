@@ -10,6 +10,10 @@
 //!    Project's repositories (`RunStart.deps_token`, for private git dependencies);
 //!    and, when configured, `RunStart.npm_token` (the service's `ENZARB_NPM_TOKEN`, for private
 //!    npm packages; the same job kinds, never stored);
+//!    for every agent run the Project owner's Claude token (`RunStart.claude_token`, read with
+//!    `app_api.claude_credential_get(spec.owner)` and decrypted with the keyring; never
+//!    stored). No row fails the job permanently with `no_credential`; a row that cannot be
+//!    decrypted (unknown key id, bad data, no keyring) with `credential_undecryptable`;
 //!    then `run_start` with `run_id = job-<id>` (idempotent: a retry after a crash gets the
 //!    existing run). The session is closed on every error after step 1;
 //! 4. once `run_accepted`: release the lease and set `jobs.deadline`
@@ -22,7 +26,7 @@ use enzarb_proto::session::{Client, Session};
 use enzarb_proto::{ClientKind, RunStart};
 
 use super::callback::{callback_token, recovery_run_id, run_id};
-use super::{Claimed, Done, Executor, JobError, SandboxError};
+use super::{Claimed, Done, Executor, JobError, SandboxError, Secret, claude_credential};
 use crate::machine::{AgentJobInput, JobKind, recovery_prompt, render_prompt};
 
 /// Canonical clone URL of a repository (`contracts.md` section 4: `repo_url`).
@@ -54,6 +58,11 @@ pub fn format_thread(t: &Thread) -> String {
         .join("\n\n---\n\n")
 }
 
+/// Prefix of the permanent failure for an owner without a Claude credential.
+pub const NO_CREDENTIAL: &str = "no_credential";
+/// Prefix of the permanent failure for a credential that cannot be decrypted.
+pub const CREDENTIAL_UNDECRYPTABLE: &str = "credential_undecryptable";
+
 fn sandbox_err<E: std::fmt::Display>(what: &str, e: E) -> JobError {
     JobError::transient(format!("sandbox {what}: {e}"))
 }
@@ -72,6 +81,44 @@ impl Executor {
             .map_err(|_| sandbox_err("connect", "timed out"))?
             .map_err(|e| sandbox_err("connect", e))?;
         Ok(session)
+    }
+
+    /// The Project owner's decrypted Claude token. Looks up `spec.owner` only; never falls
+    /// back to another user's or a shared token. Messages name the owner login, never key ids
+    /// or ciphertext. DB and Kubernetes errors are transient.
+    pub(crate) async fn claude_token(&self, project: &str) -> Result<Secret, JobError> {
+        let owner = match self.sandboxes.project_owner(project).await {
+            Ok(Some(o)) => o,
+            Ok(None) => {
+                return Err(JobError::permanent(format!(
+                    "{NO_CREDENTIAL}: Project `{project}` has no owner, so there is no Claude \
+                     credential to run with"
+                )));
+            }
+            Err(SandboxError::NotReady(m)) => return Err(JobError::sandbox_not_ready(m)),
+            Err(SandboxError::Kube(m)) => return Err(JobError::transient(m)),
+        };
+        let row = claude_credential::fetch(&self.pool, &owner)
+            .await
+            .map_err(|e| JobError::transient(format!("claude credential lookup: {e}")))?;
+        let Some((key_id, ciphertext)) = row else {
+            return Err(JobError::permanent(format!(
+                "{NO_CREDENTIAL}: owner `{owner}` has no Claude credential. Connect one by \
+                 running `claude setup-token` in one of their Project's sandboxes, then re-run"
+            )));
+        };
+        let undecryptable = |why: &str| {
+            tracing::error!(%owner, reason = why, "claude credential cannot be decrypted");
+            JobError::permanent(format!(
+                "{CREDENTIAL_UNDECRYPTABLE}: the stored Claude credential of owner `{owner}` \
+                 cannot be decrypted by this service; an operator must check the keyring"
+            ))
+        };
+        let Some(ring) = self.cfg.claude_keyring.as_ref() else {
+            return Err(undecryptable("keyring not configured"));
+        };
+        ring.decrypt(&owner, &key_id, &ciphertext)
+            .map_err(|e| undecryptable(&e.to_string()))
     }
 
     /// Read-only token over the Project's repositories (always including the run's own), so
@@ -124,6 +171,8 @@ impl Executor {
             .work_item_key
             .parse()
             .map_err(|e| JobError::permanent(format!("bad work item key: {e}")))?;
+        // First: an owner without a usable credential costs no GitHub calls or minted tokens.
+        let claude_token = self.claude_token(project).await?;
         let thread = connector.fetch_thread(&item).await?;
         input.context.thread = format_thread(&thread);
         input.prompt = render_prompt(kind, &input.context);
@@ -167,6 +216,7 @@ impl Executor {
             clone_token: cred.token,
             deps_token,
             npm_token,
+            claude_token: Some(claude_token.expose().into()),
             prompt: input.prompt.clone(),
             timeout_secs: input.timeout_secs,
             callback_url: format!("{}/v1/runs/{rid}/finished", self.cfg.callback_base_url),
@@ -221,18 +271,21 @@ impl Executor {
         })?;
         let connector = self.connector_for(&input.repo.connector)?;
         let session = self.dial(project).await?;
-        let cred = match connector
-            .mint_clone_credential(
-                &input.repo,
-                CredScope::Read,
-                &format!("job:{job_id}:{attempt}:recovery"),
-            )
-            .await
-        {
+        let creds = async {
+            let cred = connector
+                .mint_clone_credential(
+                    &input.repo,
+                    CredScope::Read,
+                    &format!("job:{job_id}:{attempt}:recovery"),
+                )
+                .await?;
+            Ok::<_, JobError>((cred, self.claude_token(project).await?))
+        };
+        let (cred, claude_token) = match creds.await {
             Ok(c) => c,
             Err(e) => {
                 session.close().await;
-                return Err(e.into());
+                return Err(e);
             }
         };
         let rid = recovery_run_id(job_id, generation);
@@ -247,6 +300,7 @@ impl Executor {
             clone_token: cred.token,
             deps_token: None,
             npm_token: None,
+            claude_token: Some(claude_token.expose().into()),
             prompt: recovery_prompt(input.kind),
             timeout_secs: input.timeout_secs,
             log_channel: None,

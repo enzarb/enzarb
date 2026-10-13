@@ -39,6 +39,20 @@ macro_rules! db {
 
 const REPO: &str = "github:enzarb/enzarb-ui";
 const SANDBOX_TOKEN: &str = "sandbox-secret";
+/// Owner of Project `enzarb` in every harness; has a stored Claude credential.
+const OWNER: &str = "octocat";
+const OWNER_TOKEN: &str = "sk-ant-oat01-octocat-secret";
+const KEY_ID: &str = "k1";
+
+fn test_keyring() -> engine::ClaudeKeyring {
+    engine::ClaudeKeyring::new().with_key(KEY_ID, [0x42; 32])
+}
+
+fn seal(owner: &str, key_id: &str, token: &str) -> Vec<u8> {
+    test_keyring()
+        .encrypt_with_nonce(owner, key_id, [9; 12], token)
+        .expect("known key")
+}
 
 // ---------------------------------------------------------------------------
 // Fake sandbox-init
@@ -283,7 +297,14 @@ impl H {
         );
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
+        // Tests that add Project `other` share the owner unless they override it.
+        resolver.set_owner("enzarb", OWNER);
+        resolver.set_owner("other", OWNER);
+        db.install_claude_credentials().await;
+        db.put_claude_credential(OWNER, KEY_ID, &seal(OWNER, KEY_ID, OWNER_TOKEN))
+            .await;
         let mut cfg = ExecutorConfig::new(base.clone(), b"test-secret".to_vec());
+        cfg.claude_keyring = Some(test_keyring());
         cfg.backoff_base = Duration::from_millis(1);
         cfg.sandbox_timeout = Duration::from_secs(5);
         tweak(&mut cfg);
@@ -2288,6 +2309,10 @@ async fn missing_json_block_is_recovered_by_one_follow_up_run() {
     assert_eq!(j.input["recovery_used"], json!(true));
     assert_eq!(h.sandbox.starts(), 2);
     let run = h.sandbox.run(&rec).expect("recovery run started");
+    assert_eq!(
+        run.claude_token.as_ref().map(|t| t.expose()),
+        Some(OWNER_TOKEN)
+    );
     assert_eq!(run.run_id, rec);
     assert!(!run.push);
     assert!(run.prompt.contains("Make no changes, commits or pushes"));
@@ -3182,4 +3207,172 @@ async fn failing_emit_does_not_fail_the_readiness_job() {
     let j = job(pool, id).await;
     assert_eq!(j.output.unwrap()["mergeable"], false);
     assert!(events_of(pool, "MergeConflictDetected").await.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Per-user Claude token (ADR-0004 amendment 2026-10-13)
+// ---------------------------------------------------------------------------
+
+const AGENT_KINDS: [(&str, bool); 6] = [
+    ("agent_implement", true),
+    ("agent_address_comments", true),
+    ("agent_resolve_conflicts", true),
+    ("agent_review", false),
+    ("agent_triage", false),
+    ("agent_plan", false),
+];
+
+#[tokio::test]
+async fn every_agent_run_gets_the_owners_claude_token_never_stored() {
+    let h = H::new(db!()).await;
+    let mut ids = vec![];
+    for (i, (k, push)) in AGENT_KINDS.iter().enumerate() {
+        ids.push(kind_job(&h, k, i as u64 + 1, *push).await);
+    }
+    for _ in 0..AGENT_KINDS.len() {
+        h.exec.drain().await;
+        sqlx::query("UPDATE workflows.jobs SET status='succeeded' WHERE status='running'")
+            .execute(h.pool())
+            .await
+            .unwrap();
+    }
+    for (id, (k, _)) in ids.iter().zip(AGENT_KINDS) {
+        let run = h.sandbox.run(&format!("job-{id}")).expect(k);
+        assert_eq!(
+            run.claude_token.as_ref().map(|t| t.expose()),
+            Some(OWNER_TOKEN),
+            "{k}"
+        );
+        assert!(!format!("{run:?}").contains(OWNER_TOKEN), "{k}");
+    }
+    let all: String = sqlx::query_scalar(
+        "SELECT coalesce(string_agg(input::text || coalesce(output::text, ''), ' '), '')
+         FROM workflows.jobs",
+    )
+    .fetch_one(h.pool())
+    .await
+    .unwrap();
+    assert!(!all.contains(OWNER_TOKEN));
+}
+
+#[tokio::test]
+async fn each_project_gets_its_own_owners_token() {
+    let h = H::new(db!()).await;
+    h.resolver.insert(
+        "other",
+        SandboxTarget {
+            endpoint: h.sandbox.url.clone(),
+            token: SANDBOX_TOKEN.into(),
+        },
+    );
+    h.resolver.set_owner("other", "hubot");
+    h.db.put_claude_credential("hubot", KEY_ID, &seal("hubot", KEY_ID, "sk-ant-hubot"))
+        .await;
+    let a = kind_job(&h, "agent_triage", 1, false).await;
+    h.fake.add_thread(key(2), thread_with("hi"));
+    let wi = new_item(h.pool(), 2, "other").await;
+    let b = new_job(
+        h.pool(),
+        wi,
+        "other",
+        "agent_triage",
+        0,
+        "k:other",
+        agent_input(2, "enzarb/b-2", false),
+    )
+    .await;
+    h.exec.drain().await;
+    let tok = |id: i64| {
+        h.sandbox
+            .run(&format!("job-{id}"))
+            .and_then(|r| r.claude_token.map(|t| t.expose().to_string()))
+    };
+    assert_eq!(tok(a).as_deref(), Some(OWNER_TOKEN));
+    assert_eq!(tok(b).as_deref(), Some("sk-ant-hubot"));
+}
+
+/// Runs one triage job and returns (job, its JobFailed error, whether a run was started).
+async fn failing_claude_run(h: &H) -> (Job, String, bool) {
+    let id = kind_job(h, "agent_triage", 1, false).await;
+    h.exec.drain().await;
+    let j = job(h.pool(), id).await;
+    let err = events_of(h.pool(), "JobFailed")
+        .await
+        .into_iter()
+        .find(|(_, p)| p["job_id"] == json!(id))
+        .map(|(_, p)| p["error"].as_str().unwrap_or_default().to_string())
+        .unwrap_or_default();
+    let started = h.sandbox.run(&format!("job-{id}")).is_some();
+    (j, err, started)
+}
+
+#[tokio::test]
+async fn owner_without_a_credential_fails_permanently_with_no_credential() {
+    let h = H::with(db!(), |c| c.backoff_base = Duration::from_secs(60)).await;
+    sqlx::query("DELETE FROM app.claude_credentials")
+        .execute(h.pool())
+        .await
+        .unwrap();
+    // Another user's credential must never be used.
+    h.db.put_claude_credential("hubot", KEY_ID, &seal("hubot", KEY_ID, "sk-ant-hubot"))
+        .await;
+    let (j, err, started) = failing_claude_run(&h).await;
+    assert_eq!((j.status.as_str(), j.attempt), ("failed", 1));
+    assert!(!started);
+    assert!(err.starts_with("no_credential:"), "{err}");
+    assert!(err.contains(OWNER), "{err}");
+    assert!(!err.contains("sk-ant"), "{err}");
+}
+
+#[tokio::test]
+async fn project_without_owner_fails_with_no_credential() {
+    let h = H::with(db!(), |c| c.backoff_base = Duration::from_secs(60)).await;
+    let resolver = Arc::new(StaticSandboxResolver::new());
+    resolver.insert(
+        "enzarb",
+        SandboxTarget {
+            endpoint: h.sandbox.url.clone(),
+            token: SANDBOX_TOKEN.into(),
+        },
+    );
+    let exec = Executor::new(
+        h.pool().clone(),
+        ConnectorRegistry::new().with("github", h.fake.clone()),
+        resolver,
+        h.exec.config().clone(),
+    );
+    let id = kind_job(&h, "agent_triage", 1, false).await;
+    exec.drain().await;
+    assert_eq!(job(h.pool(), id).await.status, "failed");
+    assert!(h.sandbox.run(&format!("job-{id}")).is_none());
+}
+
+#[tokio::test]
+async fn unknown_key_id_and_bad_ciphertext_fail_closed() {
+    for (key_id, ct) in [
+        ("k-retired", seal(OWNER, KEY_ID, OWNER_TOKEN)),
+        (KEY_ID, seal("hubot", KEY_ID, OWNER_TOKEN)),
+        (KEY_ID, vec![1, 2, 3]),
+    ] {
+        let h = H::with(db!(), |c| c.backoff_base = Duration::from_secs(60)).await;
+        h.db.put_claude_credential(OWNER, key_id, &ct).await;
+        let (j, err, started) = failing_claude_run(&h).await;
+        assert_eq!((j.status.as_str(), j.attempt), ("failed", 1), "{key_id}");
+        assert!(!started);
+        assert!(err.starts_with("credential_undecryptable:"), "{err}");
+        assert!(!err.contains(key_id) && !err.contains("sk-ant"), "{err}");
+    }
+}
+
+#[tokio::test]
+async fn no_keyring_fails_closed_instead_of_running_unauthenticated() {
+    let h = H::with(db!(), |c| {
+        c.backoff_base = Duration::from_secs(60);
+        c.claude_keyring = None;
+    })
+    .await;
+    let (j, err, started) = failing_claude_run(&h).await;
+    assert_eq!(j.status, "failed");
+    assert!(!started);
+    assert!(err.starts_with("credential_undecryptable:"), "{err}");
 }

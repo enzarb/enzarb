@@ -72,6 +72,7 @@
 
 mod agent;
 mod callback;
+pub mod claude_credential;
 mod connectors;
 mod jobs;
 mod restart;
@@ -93,10 +94,11 @@ use crate::machine::JobKind;
 use crate::results::{JobResult, ingest_job_result};
 
 pub use callback::{callback_token, router as callback_router};
+pub use claude_credential::{ClaudeKeyring, DecryptError, KeyringError};
 pub use connectors::ConnectorRegistry;
 pub use sandbox::{
     KubeSandboxResolver, SandboxError, SandboxResolver, SandboxTarget, StaticSandboxResolver,
-    max_runs, project_repos, secret_location,
+    max_runs, project_owner, project_repos, secret_location,
 };
 pub use sandbox_change::{ProjectChangeState, change_state};
 
@@ -169,6 +171,11 @@ pub struct ExecutorConfig {
     /// `RunStart.npm_token` so the agent's `npm ci` can read private npm packages (GitHub App
     /// installation tokens cannot). Never stored in `jobs.input`, never logged.
     pub npm_token: Option<Secret>,
+    /// Keyring for the per-user Claude token (`ENZARB_CLAUDE_KEYRING_DIR`). Every agent run
+    /// reads the Project owner's row and sends the decrypted value as `RunStart.claude_token`.
+    /// `None` (not mounted) fails every agent run with `credential_undecryptable`: there is no
+    /// unauthenticated or shared-token fallback.
+    pub claude_keyring: Option<ClaudeKeyring>,
 }
 
 impl ExecutorConfig {
@@ -195,6 +202,7 @@ impl ExecutorConfig {
             callback_secret: callback_secret.into(),
             restart_retry_cap: 3,
             npm_token: None,
+            claude_keyring: None,
         }
     }
 
