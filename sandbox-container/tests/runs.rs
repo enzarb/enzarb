@@ -794,14 +794,20 @@ async fn cancel_kills_the_process_group() {
         .run_start(env.run("slow", "SLEEP", "main", "enzarb/issue-5", false))
         .await
         .unwrap();
-    loop {
-        if session.run_status("slow").await.unwrap().state == RunPhase::Running {
-            // give the agent a moment to start its turn
-            sleep(Duration::from_millis(500)).await;
+    // Cancel only once the agent is inside its turn (its "sleep" tool call is in the
+    // transcript); a fixed delay raced the agent's startup on slow runners.
+    let in_turn = |env: &Env| {
+        std::fs::read_to_string(env.run_dir("slow").join("transcript.jsonl"))
+            .map(|t| t.contains(r#""toolCallId":"t0""#))
+            .unwrap_or(false)
+    };
+    for _ in 0..600 {
+        if in_turn(&env) {
             break;
         }
         sleep(Duration::from_millis(50)).await;
     }
+    assert!(in_turn(&env), "agent never started its turn");
     session.run_cancel("slow").unwrap();
     let (_, fin) = env.finished("slow").await; // would take 60 s if not killed
     assert_eq!(fin.outcome, RunOutcome::Cancelled);
