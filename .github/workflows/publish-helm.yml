@@ -1,13 +1,16 @@
 name: publish-helm
-# Packages the chart at the version of the helm/vX.Y.Z tag the release workflow created and pushes it
-# to GHCR, then publishes the GitHub release. release.yml creates helm releases as drafts, so the
-# `release: published` webhook (enzarb-updater) only fires once the chart is in the registry. A failed
-# push leaves the draft; re-running this workflow publishes it.
+# Manual republish of an existing helm/vX.Y.Z tag: packages the chart at that tag, pushes it to
+# oci://ghcr.io/enzarb/charts and makes sure its GitHub Release exists, is published and is latest.
+# Normal chart releases are published by _release-chart.yml in the release run itself.
 on:
-  push:
-    tags: ["helm/v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing helm/vX.Y.Z tag
+        type: string
+        required: true
 concurrency:
-  group: publish-${{ github.ref }}
+  group: publish-${{ inputs.tag }}
   cancel-in-progress: false
 permissions:
   contents: write
@@ -22,8 +25,16 @@ jobs:
     defaults:
       run:
         working-directory: helm
+    env:
+      TAG: ${{ inputs.tag }}
     steps:
+      - name: Validate the tag
+        working-directory: .
+        run: |
+          [[ $TAG =~ ^helm/v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::not a helm/vX.Y.Z tag: $TAG"; exit 1; }
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
       - uses: jdx/mise-action@v2
         with:
           cache: true
@@ -33,7 +44,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_ACTOR: ${{ github.actor }}
         run: |
-          v="${GITHUB_REF_NAME#helm/v}"
+          set -euo pipefail
+          v="${TAG#helm/v}"
           echo "$GH_TOKEN" | helm registry login ghcr.io -u "$GH_ACTOR" --password-stdin
           helm package enzarb --version "$v" --app-version "$v" --destination "$RUNNER_TEMP"
           helm push "$RUNNER_TEMP/enzarb-$v.tgz" oci://ghcr.io/enzarb/charts
@@ -42,18 +54,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
-          # `releases/tags/{tag}` (and so `gh release view <tag>`) does not return drafts, so find the
-          # release by listing and matching tag_name, which includes drafts; then publish it by id.
+          set -euo pipefail
+          # `releases/tags/{tag}` does not return drafts, so match tag_name in the full list.
           find_id() {
-            gh api --paginate "repos/$REPO/releases" --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | .id" | head -n1
+            gh api --paginate "repos/$REPO/releases" --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -n1
           }
-          # release.yml may not have created its draft yet (it runs in parallel); the chart is already
-          # pushed, so creating the release published is safe. release.yml tolerates losing that race.
           id=$(find_id)
           if [ -z "$id" ]; then
-            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes || true
-            id=$(find_id)   # if create lost a race with release.yml's draft, it is found here
+            gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes
+            id=$(find_id)
           fi
-          if [ -z "$id" ]; then echo "no release found for $GITHUB_REF_NAME" >&2; exit 1; fi
-          # helm releases are the repo's "Latest" release (component releases are created --latest=false).
           gh api -X PATCH "repos/$REPO/releases/$id" -F draft=false -f make_latest=true >/dev/null
