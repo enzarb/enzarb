@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Vendor the Project CRD from the operator repo into the chart's crds/ directory.
+# Vendor the Project CRD from operator/ into the chart's crds/ directory.
 # Usage: scripts/sync-crds.sh [path-to-project.yaml]
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"

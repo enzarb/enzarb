@@ -1,4 +1,4 @@
-`workflows/` holds verbatim copies of every `enzarb-workflows/migrations/*.sql` (contracts §6).
+`workflows/` holds verbatim copies of every `workflows/migrations/*.sql` in the monorepo (contracts §6).
 `workflows-fixture.ts` applies them in filename order, so the test database is their cumulative
 result (later migrations `CREATE OR REPLACE` earlier functions, e.g. `submit_action`).
 `workflows-sql.sha256` records the hash of each migration; `testdata.spec.ts` fails if a copy

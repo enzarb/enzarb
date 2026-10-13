@@ -9,7 +9,7 @@
   ansible.builtin.copy:
     dest: /etc/modules-load.d/enzarb-rke2.conf
     content: |
-      # managed by ansible (enzarb-kubernetes/rke2)
+      # managed by ansible (kubernetes/rke2)
       overlay
       br_netfilter
       dm_snapshot
@@ -27,7 +27,7 @@
   ansible.builtin.copy:
     dest: /etc/sysctl.d/90-enzarb-rke2.conf
     content: |
-      # managed by ansible (enzarb-kubernetes/rke2)
+      # managed by ansible (kubernetes/rke2)
       net.ipv4.ip_forward = 1
       net.ipv6.conf.all.forwarding = 1
       net.bridge.bridge-nf-call-iptables = 1

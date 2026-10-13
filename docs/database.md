@@ -5,16 +5,16 @@ Postgres is provisioned with [pgop](https://pgop.ruck.io) (`pgop.ruck.io/v1alpha
 ## Layout
 
 **One `Cluster` (`enzarb-pg`), one `Database` (`enzarb`), one schema per owning repo, one role per service.**
-- No service reads or writes another repo's tables.
-- Each repo that shares data publishes a small, versioned **API schema** of views and functions. That is the only cross-repo contract.
+- No service reads or writes another component's tables.
+- Each component that shares data publishes a small, versioned **API schema** of views and functions. That is the only cross-component contract.
 
 | Schema | Owner (migrates it) | Contents | Who else gets access |
 |---|---|---|---|
-| `workflows` | enzarb-workflows | `events`, `work_items`, `transitions`, `jobs` | nobody |
-| `workflows_api` | enzarb-workflows | views `work_item_v`, `transition_v`, `job_v`; functions `ingest_event(...)`, `submit_action(...)` (both `SECURITY DEFINER`) | ui: `SELECT` views, `EXECUTE submit_action`; connectors: `EXECUTE ingest_event` |
-| `connectors` | enzarb-connectors | installations, connector accounts, polling cursors, cached tokens (encrypted) | workflows executor, through the connectors role |
-| `app` | enzarb-ui | users, sessions, linked identities (enzarb user ↔ GitHub login), preferences, `claude_credentials` (one row per user, encrypted Claude token; the UI's runtime role has **no** grant on it) | nobody |
-| `app_api` | enzarb-ui | views `identity_v`, `claude_credential_v`; `SECURITY DEFINER` functions `claude_credential_put/delete/get/list_stale/rekey` | workflows: `SELECT identity_v` (authorizing triggers), `EXECUTE claude_credential_get`; ui: `SELECT claude_credential_v`; sandbox-proxy: `EXECUTE claude_credential_put/delete/get/list_stale/rekey` |
+| `workflows` | `workflows/` | `events`, `work_items`, `transitions`, `jobs` | nobody |
+| `workflows_api` | `workflows/` | views `work_item_v`, `transition_v`, `job_v`; functions `ingest_event(...)`, `submit_action(...)` (both `SECURITY DEFINER`) | ui: `SELECT` views, `EXECUTE submit_action`; connectors: `EXECUTE ingest_event` |
+| `connectors` | `connectors/` | installations, connector accounts, polling cursors, cached tokens (encrypted) | workflows executor, through the connectors role |
+| `app` | `ui/` | users, sessions, linked identities (enzarb user ↔ GitHub login), preferences, `claude_credentials` (one row per user, encrypted Claude token; the UI's runtime role has **no** grant on it) | nobody |
+| `app_api` | `ui/` | views `identity_v`, `claude_credential_v`; `SECURITY DEFINER` functions `claude_credential_put/delete/get/list_stale/rekey` | workflows: `SELECT identity_v` (authorizing triggers), `EXECUTE claude_credential_get`; ui: `SELECT claude_credential_v`; sandbox-proxy: `EXECUTE claude_credential_put/delete/get/list_stale/rekey` |
 
 Functions:
 - `workflows_api.ingest_event(source, dedupe_key, work_item_key, type, payload)` inserts into `workflows.events` with `ON CONFLICT DO NOTHING`, then runs `NOTIFY workflow_events`.
@@ -29,7 +29,7 @@ Functions:
 
 Projects are **not** in Postgres. They stay as Kubernetes `Project` CRs (low churn, owned by the operator). Workflows and connectors build an in-memory index of repo remote → Project by watching the CRs.
 
-## pgop resources (namespace `enzarb`, rendered by `enzarb-helm`)
+## pgop resources (namespace `enzarb`, rendered by `helm/`)
 
 ```yaml
 apiVersion: pgop.ruck.io/v1alpha1
@@ -98,7 +98,7 @@ Each service's chart includes a pre-install/pre-upgrade Job that runs its migrat
 - The UI keeps no copy of workflow state.
 
 ## Alternatives considered
-- **One schema shared by everyone:** every migration becomes a cross-repo breaking change.
+- **One schema shared by everyone:** every migration becomes a cross-component breaking change.
 - **A database per service plus an HTTP/gRPC API in workflows:** adds a service, loses LISTEN/NOTIFY and the single-step insert-and-notify, and turns UI remote functions into API clients. Still possible later, because `workflows_api` already is the contract.
 
 ## Known pgop gaps for this use

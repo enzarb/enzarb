@@ -6,19 +6,17 @@ The tasks are in `.mise/tasks/dev/`:
 
 | Task | What it does |
 |---|---|
-| `mise run dev:cluster` | Creates kind cluster `enzarb` (from `enzarb-kubernetes/kind/cluster.yaml`) if missing, installs gVisor into the nodes (`hack/kind-install-gvisor.sh`) and checks it with a `dmesg` probe pod. Applies `enzarb-kubernetes` in the staged order with `kubectl wait`, and runs a NetworkPolicy enforcement probe. |
+| `mise run dev:cluster` | Creates kind cluster `enzarb` (from `kubernetes/kind/cluster.yaml`) if missing, installs gVisor into the nodes (`hack/kind-install-gvisor.sh`) and checks it with a `dmesg` probe pod. Applies `kubernetes/` in the staged order with `kubectl wait`, and runs a NetworkPolicy enforcement probe. |
 | `mise run dev:images [component...]` | Builds the images as `:dev` with the right build secrets and `kind load`s them. Components: `ui sandbox-proxy sandbox operator receiver workflows`. No argument builds all six. |
 | `mise run dev:secrets` | Creates namespace `enzarb` and Secret `enzarb-github` from `.env.dev`. |
-| `mise run dev:helm-deploy` | `dev:cluster`, `dev:images`, `dev:secrets`, then `helm upgrade --install enzarb enzarb-helm/enzarb -f values-dev.yaml --set secrets.github.existingSecret=enzarb-github --wait`. Prints a checklist. |
+| `mise run dev:helm-deploy` | `dev:cluster`, `dev:images`, `dev:secrets`, then `helm upgrade --install enzarb helm/enzarb -f values-dev.yaml --set secrets.github.existingSecret=enzarb-github --wait`. Prints a checklist. |
 | `mise run dev:webhook-relay` | Relays smee.io deliveries to `https://enzarb.local/hooks/github`. |
 | `mise run dev:down` | Deletes the kind cluster. |
 
 ## Prerequisites
 
-- Docker with BuildKit (the builds use `--secret`), and `mise` (`mise install` provides `kind`, `kubectl`, `helm`, `gh`, `node`).
-- `gh auth login` with the `read:packages` scope (`gh auth refresh -s read:packages`). `dev:images` passes `gh auth token` to the UI build as `NODE_AUTH_TOKEN` to install `@enzarb/proto` from GitHub Packages.
-- An ssh key with read access to the private `enzarb` repos. `dev:images` uses `ENZARB_DEV_SSH_KEY` (default `~/.ssh/id_ed25519`) for all three build secrets (`proto_key`, `crds_key`, `connectors_key`). It is removed from the image layers by the Dockerfiles.
-- All component repos cloned: `mise run repos:init`.
+- Docker with BuildKit, and `mise` (`mise install` provides `kind`, `kubectl`, `helm`, `gh`, `node`).
+- A checkout of the monorepo; `dev:images` builds every image from it with no build secrets (path dependencies, ADR-0015).
 - Ports 80 and 443 free on the host (kind maps them to the Envoy Gateway).
 - Host name entry:
   ```sh
@@ -89,7 +87,7 @@ Open <https://enzarb.local> and log in with GitHub.
 
 ## Sandboxes run under gVisor, with Docker
 
-gVisor is installed automatically: `dev:cluster` runs `enzarb-kubernetes/hack/kind-install-gvisor.sh enzarb` after the cluster exists and before the overlays (RuntimeClass `gvisor` comes from `overlays/dev`). It then starts a throwaway pod with `runtimeClassName: gvisor` and fails unless its `dmesg` shows gVisor.
+gVisor is installed automatically: `dev:cluster` runs `kubernetes/hack/kind-install-gvisor.sh enzarb` after the cluster exists and before the overlays (RuntimeClass `gvisor` comes from `overlays/dev`). It then starts a throwaway pod with `runtimeClassName: gvisor` and fails unless its `dmesg` shows gVisor.
 
 Every sandbox runs under the operator's `--sandbox-runtime-class` (`gvisor` in dev) and always has a Docker sidecar (ADR-0012). There is no per-Project Docker or runtime option. Check it from any Project's terminal:
 
@@ -112,7 +110,7 @@ The first run pulls the image through the sandbox's NetworkPolicy (443 and DNS o
 ## Configuration notes
 
 - `ENZARB_DEV_CNI=calico mise run dev:cluster` creates the cluster with Calico instead of kindnet (see below). Other overrides: `ENZARB_DEV_CLUSTER` (cluster name), `ENZARB_DEV_CALICO_VERSION`, `ENZARB_DEV_HOOK_TARGET` (relay target).
-- **CNI decision.** The default is **kindnet**. kind v0.32's node networking uses kindnetd `v20260528`, and recent kindnetd releases implement `NetworkPolicy` (via kube-network-policies), so no extra CNI is installed. Because that is version-dependent, `dev:cluster` always runs a functional probe: it creates a pod, applies a deny-all ingress policy and fails the task if the pod is still reachable. If it fails, run `mise run dev:down` and then `ENZARB_DEV_CNI=calico mise run dev:cluster`, which adds `networking.disableDefaultCNI: true` to a temporary copy of the kind config (the `enzarb-kubernetes` repo is untouched) and installs Calico. The operator relies on enforcement: only the proxy and workflows executor may reach a sandbox on port 7070.
+- **CNI decision.** The default is **kindnet**. kind v0.32's node networking uses kindnetd `v20260528`, and recent kindnetd releases implement `NetworkPolicy` (via kube-network-policies), so no extra CNI is installed. Because that is version-dependent, `dev:cluster` always runs a functional probe: it creates a pod, applies a deny-all ingress policy and fails the task if the pod is still reachable. If it fails, run `mise run dev:down` and then `ENZARB_DEV_CNI=calico mise run dev:cluster`, which adds `networking.disableDefaultCNI: true` to a temporary copy of the kind config (`kubernetes/` is untouched) and installs Calico. The operator relies on enforcement: only the proxy and workflows executor may reach a sandbox on port 7070.
 
 ## Troubleshooting
 
@@ -123,8 +121,8 @@ The first run pulls the image through the sandbox's NetworkPolicy (443 and DNS o
 - **Sandboxes are reachable from where they should not be.** The CNI does not enforce NetworkPolicy. Rerun `dev:cluster` (it probes) or switch to Calico as described above.
 - **Webhooks never arrive.** Check the smee channel URL matches the App's webhook URL, that `dev:webhook-relay` is running, and App settings, Advanced, Recent deliveries. A `401` from the receiver means `GITHUB_WEBHOOK_SECRET` does not match the App's secret; re-run `dev:secrets` and restart the receiver.
 - **Browser says "Cross-site POST form submissions are forbidden" (UI).** The Gateway must forward `X-Forwarded-Proto` and the UI needs `ENZARB_PUBLIC_URL=https://enzarb.local`; the chart sets both. Use `https://`, not `http://`.
-- **Docker build cannot fetch private dependencies.** `ENZARB_DEV_SSH_KEY` must be a key with read access to `enzarb-proto`, `enzarb-sandbox-operator` and `enzarb-connectors`, and `gh auth token` needs `read:packages` for the UI build.
+- **Docker build fails on a missing sibling dir.** `ui`, `sandbox-proxy`, `sandbox-container` and `workflows` use path dependencies on `proto/`, `operator/` and `connectors/`, so they build with the repo root as context (`docker build -f <dir>/Dockerfile .`); `dev:images` does this for you. No ssh keys or tokens are needed.
 - **gVisor: `dev:cluster` fails the probe or sandbox pods stay Pending/ContainerCreating.** Check `kubectl --context kind-enzarb get runtimeclass gvisor` and `kubectl --context kind-enzarb get nodes -L enzarb.dev/runtime-gvisor` (the label must be `true`; rerun `dev:cluster`, the installer is idempotent). `docker exec enzarb-control-plane runsc --version` and `grep runsc /etc/containerd/config.toml` inside the node show whether the install took. `kubectl describe pod` shows runtime errors such as `no runtime for "runsc"`.
 - **gVisor platform and kernel features.** gVisor uses the `systrap` platform, which needs no KVM, so it works in kind and on WSL2 or cloud VMs. It does need ptrace/seccomp and user namespaces on the host kernel; an old or locked-down kernel (or a rootless Docker host with restricted seccomp) can stop `runsc` starting. The sidecar's networking relies on runsc `net-raw = "true"` (and `allow-packet-socket-write` for Docker 28+); the installer sets `net-raw`. If `docker run` fails with network errors, check `/etc/containerd/runsc.toml` in the node.
-- **Docker-in-gVisor limitations.** `iptables` is disabled, so `docker run -p` publishes nothing (reach containers by IP or use `--network=host`); storage uses `vfs` (no copy-on-write, so images use more disk and builds are slower); some syscalls and filesystems are unsupported. See [gVisor in the dev cluster](../enzarb-kubernetes/README.md#gvisor-in-the-dev-cluster) and [Docker in the sandbox](../enzarb-sandbox-operator/README.md#docker-in-the-sandbox-adr-0012).
+- **Docker-in-gVisor limitations.** `iptables` is disabled, so `docker run -p` publishes nothing (reach containers by IP or use `--network=host`); storage uses `vfs` (no copy-on-write, so images use more disk and builds are slower); some syscalls and filesystems are unsupported. See [gVisor in the dev cluster](../kubernetes/README.md#gvisor-in-the-dev-cluster) and [Docker in the sandbox](../operator/README.md#docker-in-the-sandbox-adr-0012).
 - **Start over.** `mise run dev:down`, then `mise run dev:helm-deploy`.
