@@ -13,7 +13,7 @@
 		progress: ChatProgress;
 		message?: string;
 		action?: ConnectionAction;
-		onAction: (action: Exclude<ConnectionAction, null>) => void;
+		onAction: (action: Exclude<ConnectionAction, null | 'set_up'>) => void;
 	} = $props();
 
 	const status: Record<ChatStepState, StepStatus> = {
@@ -28,7 +28,7 @@
 		done: 'Done',
 		error: 'Failed'
 	};
-	const labels: Record<Exclude<ConnectionAction, null>, string> = {
+	const labels: Record<Exclude<ConnectionAction, null | 'set_up'>, string> = {
 		retry: 'Retry',
 		reconnect: 'Reconnect',
 		take_over: 'Take over'
@@ -49,7 +49,10 @@
 <div class="ez-chat-status">
 	<StepList {items} label="Chat connection progress" />
 	{#if message}<p class="ez-chat-status__message" role="status">{message}</p>{/if}
-	{#if action}
+	{#if action === 'set_up'}
+		<a class="ez-btn ez-btn--primary ez-btn--sm" href="/settings#claude">Set up your Claude token</a
+		>
+	{:else if action}
 		<button
 			type="button"
 			class="ez-btn ez-btn--primary ez-btn--sm"

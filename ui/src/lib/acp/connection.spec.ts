@@ -152,7 +152,7 @@ describe('open errors', () => {
 	it.each([
 		['chat_disabled', 'Chat is disabled for this project', null],
 		['chat_limit', 'A chat is already open on this connection', 'retry'],
-		['no_credential', 'No Claude credential is connected for this project', 'retry'],
+		['no_credential', 'Set up your Claude token in your settings to chat', 'set_up'],
 		['repo_not_cloned', 'The repository is not cloned in the sandbox yet', 'retry'],
 		['unsupported_kind', 'This sandbox does not support chat', null],
 		['invalid_request', 'The chat request was invalid', null],

@@ -29,14 +29,18 @@ export const SANDBOX_MUX_URL = /\/sandbox\/v1\/projects\/[^/]+\/mux/;
 export interface FakeSandboxOptions {
 	/** The agent's answer to every prompt. */
 	reply?: string;
+	/** Answer chat opens like a proxy whose user has no Claude token (`open_error{no_credential}`). */
+	noCredential?: boolean;
 }
 
 /** Serve the sandbox mux websocket of every project on `page`. */
 export async function installFakeSandbox(page: Page, opts: FakeSandboxOptions = {}): Promise<void> {
-	await page.routeWebSocket(SANDBOX_MUX_URL, (ws) => serve(ws, opts.reply ?? AGENT_REPLY));
+	await page.routeWebSocket(SANDBOX_MUX_URL, (ws) =>
+		serve(ws, opts.reply ?? AGENT_REPLY, opts.noCredential ?? false)
+	);
 }
 
-function serve(ws: WebSocketRoute, reply: string): void {
+function serve(ws: WebSocketRoute, reply: string, noCredential: boolean): void {
 	const send = (f: Frame) => ws.send(Buffer.from(encodeFrame(f)));
 	const fail = (code: string, message: string) => send(ctrlFrame({ type: 'error', code, message }));
 
@@ -68,6 +72,17 @@ function serve(ws: WebSocketRoute, reply: string): void {
 				return;
 			}
 			case 'open':
+				if (noCredential) {
+					send(
+						ctrlFrame({
+							type: 'open_error',
+							channel: msg.channel,
+							message: 'owner has no Claude credential',
+							code: 'no_credential'
+						})
+					);
+					return;
+				}
 				if (msg.kind !== 'acp' || acpChannel !== null) {
 					send(
 						ctrlFrame({

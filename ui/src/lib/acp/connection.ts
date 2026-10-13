@@ -93,7 +93,8 @@ export type Phase =
 	| 'reconnecting';
 
 /** Button the status area offers for the current phase. */
-export type ConnectionAction = 'retry' | 'reconnect' | 'take_over' | null;
+/** `set_up` links to the user's Claude setup instead of reconnecting. */
+export type ConnectionAction = 'retry' | 'reconnect' | 'take_over' | 'set_up' | null;
 
 export interface ConnectionState {
 	phase: Phase;
@@ -129,8 +130,8 @@ const OPEN_FAILURES: Record<string, Failure> = {
 		action: 'retry'
 	},
 	[OpenErrorCode.NoCredential]: {
-		message: 'No Claude credential is connected for this project',
-		action: 'retry'
+		message: 'Set up your Claude token in your settings to chat',
+		action: 'set_up'
 	},
 	[OpenErrorCode.RepoNotCloned]: {
 		message: 'The repository is not cloned in the sandbox yet',

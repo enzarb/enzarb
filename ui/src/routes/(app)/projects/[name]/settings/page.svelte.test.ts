@@ -9,13 +9,9 @@ vi.mock(
 	'#lib/projects.remote.ts',
 	() => import('#lib/components/__fixtures__/fake-project-remote.svelte.ts')
 );
-vi.mock('#lib/terminal.remote.ts', async () => {
+vi.mock('#lib/claude.remote.ts', async () => {
 	const fake = await import('#lib/components/__fixtures__/fake-project-remote.svelte.ts');
-	return {
-		getProjectSettings: fake.getProjectSettings,
-		terminalConnection: () => new Promise(() => {}),
-		syncClaudeCredential: () => new Promise(() => {})
-	};
+	return { claudeCredential: fake.claudeCredential };
 });
 vi.mock('$app/state', () => ({
 	page: { params: { name: 'alpha' }, url: new URL('http://localhost/projects/alpha/settings') }
@@ -42,6 +38,14 @@ describe('settings tab', () => {
 		const screen = await render(ProjectContextHost, { Child: Settings, project });
 		await expect.element(screen.getByText('Danger zone')).toBeInTheDocument();
 		await expect.element(screen.getByText('Concurrency')).toBeInTheDocument();
+	});
+
+	it("shows the user's Claude token state and links to the user settings", async () => {
+		const screen = await render(ProjectContextHost, { Child: Settings, project });
+		await expect.element(screen.getByText('Not configured')).toBeInTheDocument();
+		await expect
+			.element(screen.getByRole('link', { name: 'Manage your Claude token' }))
+			.toHaveAttribute('href', '/settings#claude');
 	});
 
 	it('keeps the page when the settings query fails', async () => {

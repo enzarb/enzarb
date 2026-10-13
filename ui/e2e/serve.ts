@@ -31,6 +31,9 @@ try {
 		name: 'E2E User',
 		avatarUrl: null
 	});
+	// The user's Claude token (ciphertext is opaque to the UI; only presence is read).
+	await sql`INSERT INTO app.claude_credentials (owner, key_id, ciphertext)
+		VALUES (${E2E_USER}, 'e2e', '\\x00'::bytea) ON CONFLICT (owner) DO NOTHING`;
 	const { token, session } = await createSession(sql, userId);
 	const state = {
 		cookies: [

@@ -26,15 +26,9 @@ vi.mock('#lib/projects.remote.ts', () => ({
 vi.mock('#lib/work.remote.ts', () => ({
 	listWorkItems: () => ({ current: [], refresh: async () => {} })
 }));
-vi.mock('#lib/terminal.remote.ts', () => ({
-	getProjectSettings: () => ({
-		current: { claudeTokenConfigured: true, claudeConfiguredBy: 'ruckc' }
-	})
+vi.mock('#lib/claude.remote.ts', () => ({
+	claudeCredential: () => ({ current: { configured: true, updatedAt: null } })
 }));
-vi.mock(
-	'#lib/components/CredentialStatus.svelte',
-	() => import('#lib/components/__fixtures__/CredentialStatusStub.svelte')
-);
 vi.mock(
 	'#lib/components/Terminal.svelte',
 	() => import('#lib/components/__fixtures__/TerminalStub.svelte')

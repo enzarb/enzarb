@@ -22,7 +22,7 @@
 		project: string;
 		/** Run this instead of the default shell. */
 		command?: string[];
-		/** The sandbox reported `credential_captured`. */
+		/** The token was captured (`credential_captured`, or the proxy's `credential_state` after storing it). */
 		oncredential?: () => void;
 		/** The PTY ended; `message` is a human description of the CLOSE reason. */
 		onclose?: (message: string) => void;
@@ -109,7 +109,8 @@
 				advance('handshake'); // connecting is already done if `open` fired
 				s = session;
 				s.onCtrl((m) => {
-					if (m.type === 'credential_captured') oncredential?.();
+					if (m.type === 'credential_captured' || (m.type === 'credential_state' && m.configured))
+						oncredential?.();
 					else if (m.type === 'error') term.writeln(`\r\n[error ${m.code}] ${m.message}`);
 				});
 

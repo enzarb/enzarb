@@ -1,7 +1,7 @@
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { projectSettings } from './project-settings.ts';
+import { getClaudeCredential } from './claude-credential.ts';
 import { migrate } from '../../../scripts/migrate.ts';
 
 import {
@@ -106,7 +106,7 @@ describe('sessions in postgres', () => {
 	});
 });
 
-describe('project settings in postgres', () => {
+describe('claude credential view', () => {
 	let container: StartedPostgreSqlContainer;
 	let sql: postgres.Sql;
 
@@ -121,23 +121,15 @@ describe('project settings in postgres', () => {
 		await container?.stop();
 	});
 
-	it('recordClaudeState follows the sandbox answer and keeps the first who/when', async () => {
-		const s = projectSettings(sql);
-		await s.recordClaudeState('web', false, 'alice');
-		expect((await s.get('web')).claudeTokenConfigured).toBe(false);
+	it("reads presence of the user's own row only", async () => {
+		expect(await getClaudeCredential(sql, 'alice')).toEqual({ configured: false, updatedAt: null });
 
-		await s.recordClaudeState('web', true, 'alice');
-		const first = await s.get('web');
-		expect(first).toMatchObject({ claudeTokenConfigured: true, claudeConfiguredBy: 'alice' });
-
-		await s.recordClaudeState('web', true, 'bob');
-		expect(await s.get('web')).toEqual(first);
-
-		await s.recordClaudeState('web', false, 'bob');
-		expect(await s.get('web')).toMatchObject({
-			claudeTokenConfigured: false,
-			claudeConfiguredAt: null,
-			claudeConfiguredBy: null
+		await sql`INSERT INTO app.claude_credentials (owner, key_id, ciphertext, updated_at)
+			VALUES ('alice', 'k1', '\\x00'::bytea, '2026-10-13T10:00:00Z')`;
+		expect(await getClaudeCredential(sql, 'alice')).toEqual({
+			configured: true,
+			updatedAt: '2026-10-13T10:00:00.000Z'
 		});
+		expect((await getClaudeCredential(sql, 'bob')).configured).toBe(false);
 	});
 });

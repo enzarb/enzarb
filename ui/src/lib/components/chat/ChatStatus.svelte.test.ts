@@ -19,6 +19,15 @@ describe('ChatStatus', () => {
 		await expect.element(items.nth(5)).toHaveAttribute('data-state', 'pending');
 	});
 
+	it('links to the Claude setup for a missing token instead of offering a retry', async () => {
+		const onAction = vi.fn();
+		render(ChatStatus, { progress: atAgent, action: 'set_up', onAction });
+		await expect
+			.element(page.getByRole('link', { name: 'Set up your Claude token' }))
+			.toHaveAttribute('href', '/settings#claude');
+		await expect.element(page.getByRole('button')).not.toBeInTheDocument();
+	});
+
 	it('shows server-derived failure text escaped', async () => {
 		const progress = failChatStep(atAgent, '<b>boom</b>');
 		render(ChatStatus, { progress, onAction: vi.fn() });

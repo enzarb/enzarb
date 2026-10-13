@@ -1,7 +1,9 @@
 <script lang="ts">
+	import ClaudeSetup from '#lib/components/ClaudeSetup.svelte';
 	import GitHubInstallations from '#lib/components/GitHubInstallations.svelte';
 	import KeyValueList from '#lib/components/ui/KeyValueList.svelte';
 	import PageHeader from '#lib/components/ui/PageHeader.svelte';
+	import Section from '#lib/components/ui/Section.svelte';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -9,7 +11,7 @@
 
 <PageHeader
 	title="Settings"
-	description="Your GitHub account and the repositories enzarb can reach."
+	description="Your GitHub account, the repositories enzarb can reach and your Claude token."
 />
 
 <KeyValueList
@@ -25,3 +27,12 @@
 	installations={data.installations}
 	fetchedAt={data.fetchedAt}
 />
+
+<div id="claude">
+	<Section
+		title="Claude"
+		description="One Claude token for all your Projects, used by chats and workflow runs."
+	>
+		<ClaudeSetup sandboxes={data.sandboxes} />
+	</Section>
+</div>

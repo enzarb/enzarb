@@ -4,7 +4,7 @@
 	import * as v from 'valibot';
 	import Button from '#lib/components/form/Button.svelte';
 	import ConfirmDialog from '#lib/components/ui/ConfirmDialog.svelte';
-	import CredentialStatus from '#lib/components/CredentialStatus.svelte';
+	import ClaudeTokenStatus from '#lib/components/ClaudeTokenStatus.svelte';
 	import LinkButton from '#lib/components/ui/LinkButton.svelte';
 	import MaxRunsInput from '#lib/components/MaxRunsInput.svelte';
 	import MaxRunsNotice from '#lib/components/MaxRunsNotice.svelte';
@@ -14,15 +14,12 @@
 	import { getProjectContext } from '#lib/project-context.svelte.ts';
 	import { deleteProject, setMaxRuns, setSandboxResources } from '#lib/projects.remote.ts';
 	import { DEFAULT_MAX_RUNS, MaxRunsSchema } from '#lib/projects.ts';
-	import { getProjectSettings } from '#lib/terminal.remote.ts';
+	import { claudeCredential } from '#lib/claude.remote.ts';
 
 	const ctx = getProjectContext();
 	const p = $derived(ctx.project);
 	const saved = $derived(p.maxRuns ?? DEFAULT_MAX_RUNS);
-	const settings = $derived(getProjectSettings(page.params.name!));
-
-	// The sandbox's own answer, once it arrives (overrides the cached flag).
-	let configured = $state<boolean | undefined>();
+	const credential = claudeCredential();
 	let confirming = $state(false);
 	let deleteError = $state('');
 
@@ -33,7 +30,6 @@
 	// A different project has its own answers.
 	$effect(() => {
 		void page.params.name;
-		configured = undefined;
 		draft = undefined;
 		saveError = '';
 	});
@@ -98,19 +94,16 @@
 		/>
 	</Section>
 
-	<Section title="Sandbox">
-		<CredentialStatus
-			project={p.name}
-			cached={settings.current?.claudeTokenConfigured ?? false}
-			onchecked={(c) => (configured = c)}
-		/>
-		{#if settings.current?.claudeTokenConfigured && settings.current.claudeConfiguredBy}
-			<p class="ez-muted">Configured by {settings.current.claudeConfiguredBy}</p>
+	<Section title="Claude">
+		{#if credential.current}
+			<ClaudeTokenStatus
+				configured={credential.current.configured}
+				updatedAt={credential.current.updatedAt}
+			/>
 		{/if}
+		<p class="ez-muted">Your Claude token is set once for all your Projects.</p>
 		<div class="ez-cluster">
-			<LinkButton href="/projects/{p.name}/claude">
-				{(configured ?? settings.current?.claudeTokenConfigured) ? 'Redo' : 'Start'} Claude setup
-			</LinkButton>
+			<LinkButton href="/settings#claude">Manage your Claude token</LinkButton>
 		</div>
 	</Section>
 

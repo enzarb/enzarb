@@ -41,8 +41,8 @@ export const getProject = () =>
 export const deleteProject = async () => {};
 export const setMaxRuns = async () => {};
 export const setSandboxResources = async () => {};
-export const getProjectSettings = () =>
+export const claudeCredential = () =>
 	fakeQuery(() => ({
-		value: behavior.settingsError ? undefined : { claudeTokenConfigured: false },
+		value: behavior.settingsError ? undefined : { configured: false, updatedAt: null },
 		error: behavior.settingsError
 	}));

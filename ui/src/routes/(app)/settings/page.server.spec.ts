@@ -3,6 +3,17 @@ import { describe, expect, it, vi } from 'vitest';
 const snapshot = vi.hoisted(() => ({
 	value: { repositories: [] as unknown[], fetchedAt: null as Date | null }
 }));
+const projects = vi.hoisted(() => ({
+	list: async (): Promise<unknown[]> => [],
+	owners: [] as string[]
+}));
+vi.mock('#lib/server/kube.ts', () => ({ getProjectStore: () => ({}) }));
+vi.mock('#lib/server/project-service.ts', () => ({
+	projectService: (_s: unknown, owner: string) => {
+		projects.owners.push(owner);
+		return { list: () => projects.list() };
+	}
+}));
 vi.mock('#lib/server/db.ts', () => ({ getSql: () => ({}) }));
 vi.mock('#lib/server/config.ts', () => ({ getConfig: () => ({ githubAppSlug: 'my-app' }) }));
 vi.mock('#lib/server/user-repositories.ts', async (orig) => ({
@@ -48,6 +59,20 @@ describe('settings load', () => {
 		const data = await run(user);
 		expect(data.installations).toEqual([]);
 		expect(data.fetchedAt).toBeNull();
+	});
+
+	it("lists only the user's sandboxes for Claude setup", async () => {
+		projects.list = async () => [{ name: 'web', displayName: 'Web', ready: true, namespace: 'x' }];
+		const data = await run(user);
+		expect(projects.owners.at(-1)).toBe('octo');
+		expect(data.sandboxes).toEqual([{ name: 'web', displayName: 'Web', ready: true }]);
+	});
+
+	it('keeps the page when the cluster cannot list projects', async () => {
+		projects.list = async () => {
+			throw new Error('down');
+		};
+		expect((await run(user)).sandboxes).toEqual([]);
 	});
 
 	it('redirects when signed out', async () => {

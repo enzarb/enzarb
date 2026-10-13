@@ -15,13 +15,9 @@ vi.mock(
 vi.mock('#lib/work.remote.ts', () => ({
 	listWorkItems: () => ({ current: [], refresh: async () => {} })
 }));
-vi.mock('#lib/terminal.remote.ts', async () => {
+vi.mock('#lib/claude.remote.ts', async () => {
 	const fake = await import('#lib/components/__fixtures__/fake-project-remote.svelte.ts');
-	return {
-		getProjectSettings: fake.getProjectSettings,
-		terminalConnection: () => new Promise(() => {}),
-		syncClaudeCredential: () => new Promise(() => {})
-	};
+	return { claudeCredential: fake.claudeCredential };
 });
 vi.mock('$app/state', () => ({
 	page: { params: { name: 'alpha' }, url: new URL('http://localhost/projects/alpha') }

@@ -24,3 +24,19 @@ test('chat connects and exchanges a message', async ({ page }) => {
 	await expect(log).toContainText('Hello agent');
 	await expect(log).toContainText(AGENT_REPLY);
 });
+
+test('chat points to the Claude setup when the proxy reports no credential', async ({ page }) => {
+	await installFakeSandbox(page, { noCredential: true });
+	await page.goto(`/projects/${E2E_PROJECT}/chat`);
+	await expect(page.getByRole('link', { name: 'Set up your Claude token' })).toHaveAttribute(
+		'href',
+		'/settings#claude'
+	);
+});
+
+test('settings show the configured Claude token', async ({ page }) => {
+	await page.goto('/settings');
+	await expect(page.getByRole('heading', { name: 'Claude' })).toBeVisible();
+	await expect(page.getByText('Configured', { exact: true })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Remove' })).toBeVisible();
+});
