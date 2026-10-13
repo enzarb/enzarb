@@ -1,0 +1,16 @@
+enzarb {{ .Chart.Version }} installed in namespace {{ .Release.Namespace }}.
+
+URL: {{ include "enzarb.publicUrl" . }}  (routes: / -> ui, /sandbox/ -> sandbox-proxy, /hooks/ -> connectors{{ if .Values.realtime.enabled }}, /live/ -> realtime{{ end }})
+
+Migrations run as Jobs ordered workflows -> connectors -> ui; runtime pods wait for them:
+  kubectl -n {{ .Release.Namespace }} get jobs -l app.kubernetes.io/component=migrate
+{{- if not .Values.secrets.github.existingSecret }}
+{{- if not .Values.secrets.github.privateKey }}
+
+WARNING: secrets.github.* is empty. Set secrets.github.existingSecret (or the inline values);
+workflows and the receiver cannot work without the GitHub App credentials.
+{{- end }}
+{{- end }}
+
+Prerequisites (enzarb-kubernetes): Gateway {{ .Values.gateway.namespace }}/{{ .Values.gateway.name }}, agent-sandbox, pgop.
+Sandboxes run in namespace {{ .Values.sandbox.namespace }} (kept on uninstall; it holds Project volumes).

@@ -1,0 +1,292 @@
+# enzarb umbrella chart. See ../README.md for the install flow and prerequisites
+# (enzarb-kubernetes: Gateway, agent-sandbox, pgop).
+
+# Public hostname served by the Gateway (HTTPRoute hostnames).
+host: enzarb.local
+# External base URL. Empty = https://<host>. Used for ENZARB_PUBLIC_URL (OAuth callback, links).
+publicUrl: ""
+
+# The enzarb GitHub App. `slug` builds the "install the App" link in the UI
+# (https://github.com/apps/<slug>/installations/new); ENZARB_GITHUB_APP_SLUG.
+githubApp:
+  slug: enzarb
+
+# Image pull secrets for the private ghcr.io/enzarb/* images (list of {name: ...}).
+imagePullSecrets: []
+
+# Default image pull policy. Component image tags below are immutable release versions, so a
+# present image is never re-pulled. Use `Always` only when overriding a tag with a moving one.
+imagePullPolicy: IfNotPresent
+
+# COMPONENT VERSIONS: every `image.tag` below (and operator.sandboxImage) is written by
+# scripts/sync-components.sh from the latest GitHub release of the component's repo. Do not
+# edit by hand; to pin a different version, override it in an environment values file.
+
+# Common env for the Rust services.
+rustLog: info
+
+# Gateway the HTTPRoutes attach to (created by enzarb-kubernetes).
+gateway:
+  name: enzarb
+  namespace: enzarb-system
+
+route:
+  enabled: true
+  # Gateway API route timeout for /sandbox/ (websockets). "0s" disables the route
+  # request timeout, so the proxy's own PROXY_IDLE_TIMEOUT_SECS decides.
+  sandboxRequestTimeout: "0s"
+  # Same for /live/ (enzarb-realtime websockets, up to 5 min).
+  realtimeRequestTimeout: "0s"
+  # Optional Envoy Gateway BackendTrafficPolicy on the /sandbox/ and /live/ (when realtime is
+  # enabled) routes that raises the idle timeout above the proxy's idle timeout (default 2100s).
+  backendTrafficPolicy:
+    enabled: false
+    connectionIdleTimeout: 2400s
+
+# pgop resources: one Cluster, owner + runtime Roles per service, one Database.
+postgres:
+  enabled: true
+  clusterName: enzarb-pg
+  databaseName: enzarb
+  image: postgres:18
+  storage:
+    size: 20Gi
+    storageClassName: ""
+    retainPolicy: Retain
+  resources: {}
+
+# Image used by the init containers that wait for pgop and for the migration Jobs.
+waitImage:
+  repository: registry.k8s.io/kubectl
+  tag: v1.34.0
+waitTimeout: 900s
+
+secrets:
+  # HS256 secret shared by ui and sandbox-proxy. Generated (and kept across upgrades
+  # via lookup) unless existingSecret is set.
+  sessionJwt:
+    existingSecret: ""
+    key: session-jwt-secret
+  # HS256 secret shared by ui (mints stream tokens) and enzarb-realtime (verifies them).
+  # Generated (and kept across upgrades via lookup) unless existingSecret is set.
+  realtimeJwt:
+    existingSecret: ""
+    key: realtime-jwt-secret
+  # HMAC secret for executor callbacks (all workflows replicas share it).
+  executorCallback:
+    existingSecret: ""
+    key: callback-secret
+  # Keyring for per-user Claude tokens (data keys <key_id> = 32 random bytes, plus `active`).
+  # Generated once and kept (resource-policy keep) unless existingSecret is set. Mounted only
+  # into sandbox-proxy and the workflows executor, never into the sandbox namespace.
+  claudeKey:
+    existingSecret: ""
+    # Manual re-encryption Job (`mise run rekey`); not a hook, so it never runs on upgrade.
+    rekey:
+      enabled: false
+      # Job specs are immutable: set a fresh suffix per run.
+      suffix: ""
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 86400
+  # GitHub App + OAuth app credentials. Either point at an existing Secret (with the
+  # key names below) or give the values inline to have the chart create `enzarb-github`.
+  github:
+    existingSecret: ""
+    keys:
+      appId: app-id
+      privateKey: private-key
+      webhookSecret: webhook-secret
+      oauthClientId: oauth-client-id
+      oauthClientSecret: oauth-client-secret
+    appId: ""
+    privateKey: ""
+    webhookSecret: ""
+    oauthClientId: ""
+    oauthClientSecret: ""
+  # enzarb-updater (only used when updater.enabled). The registry token (read:packages, the chart
+  # in GHCR is private) is wired as ENZARB_UPDATER_REGISTRY_TOKEN from, in order: registryTokenSecret
+  # (an existing Secret + registryTokenKey: preferred, nothing secret in values), the inline
+  # registryToken, or existingSecret when hasRegistryToken. The webhook secret is only used when
+  # updater.webhook.enabled: from existingSecret, else generated (and kept across upgrades via
+  # lookup) unless webhookSecret is given.
+  updater:
+    existingSecret: ""
+    hasRegistryToken: false
+    registryTokenSecret: ""
+    registryTokenKey: registry-token
+    keys:
+      webhookSecret: webhook-secret
+      registryToken: registry-token
+    webhookSecret: ""
+    registryToken: ""
+
+ui:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/enzarb/enzarb-ui
+    tag: 0.23.0
+    pullPolicy: ""
+  # HTTP probes (/healthz liveness, /readyz readiness). false falls back to TCP probes.
+  probes:
+    http: true
+  resources: {}
+  extraEnv: []
+
+workflows:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/enzarb/enzarb-workflows
+    tag: 0.18.0
+    pullPolicy: ""
+  # Roles for `run`: reducer, executor, ticker.
+  roles: reducer,executor,ticker
+  botHandle: enzarb
+  botLogin: enzarb[bot]
+  dbMaxConnections: 10
+  # ENZARB_NPM_TOKEN (executor role): a long-lived read:packages PAT handed to agent runs as
+  # RunStart.npm_token so `npm ci` can read private @enzarb/* packages (GitHub App tokens
+  # cannot). By default it reuses the GHCR read token oldie already stores in
+  # enzarb-updater-registry (key registry-token; same namespace as the release). The env var is
+  # optional: a missing Secret or key leaves it unset and the pod still starts. Needs
+  # enzarb-workflows with ENZARB_NPM_TOKEN support. Note read:packages covers every package
+  # the owning user can read.
+  npmToken:
+    enabled: true
+    existingSecret: enzarb-updater-registry
+    key: registry-token
+  # Must exceed the executor drain time.
+  terminationGracePeriodSeconds: 60
+  resources: {}
+  extraEnv: []
+
+connectors:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/enzarb/enzarb-connectors-receiver
+    tag: 0.6.0
+    pullPolicy: ""
+  botHandle: enzarb
+  botLogin: enzarb[bot]
+  resources: {}
+  extraEnv: []
+
+# enzarb-realtime streams work item changes over websockets at /live/ (stateless; each replica
+# holds its own LISTEN). Grants on the database are applied by enzarb-workflows (at startup and
+# from its ticker), not by the chart. Needs route.enabled for /live/.
+realtime:
+  enabled: true
+  replicaCount: 2
+  # Must be >= 10 (schema minimum) so in-flight websockets can drain.
+  terminationGracePeriodSeconds: 30
+  image:
+    repository: ghcr.io/enzarb/enzarb-realtime
+    # scripts/sync-components.sh pins the released enzarb-realtime tag here.
+    tag: 0.4.0
+    pullPolicy: ""
+  # Origins allowed to open the cookie-authenticated websocket (ENZARB_REALTIME_ALLOWED_ORIGINS).
+  # Empty means https://<host> (or publicUrl reduced to its origin). Entries must be bare origins,
+  # scheme://host[:port]; realtime refuses to start on a malformed entry.
+  allowedOrigins: []
+  resources: {}
+  extraEnv: []
+
+# enzarb-updater patches the cluster-owned RKE2 HelmChart `enzarb` when a newer chart version is
+# published. Opt-in; the chart never renders the HelmChart CR. By default it polls the chart
+# registry (nothing inbound). The GitHub release webhook is optional: when enabled it is served at
+# /updater/hook on the Gateway (needs route.enabled), so its HMAC is the only protection.
+updater:
+  enabled: false
+  replicaCount: 1
+  port: 8080
+  poll:
+    # Seconds between registry polls (>= 30); 0 turns polling off (then enable the webhook).
+    intervalSecs: 300
+  webhook:
+    enabled: false
+  image:
+    repository: ghcr.io/enzarb/enzarb-updater
+    tag: 0.2.0
+    pullPolicy: ""
+  resources: {}
+  extraEnv: []
+
+sandboxProxy:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/enzarb/enzarb-sandbox-proxy
+    tag: 0.5.0
+    pullPolicy: ""
+  # Must stay >= the chat idle (ENZARB_CHAT_IDLE_SECS, 1800); the proxy clamps lower values and
+  # logs a warning. Envoy idle timeouts (route.backendTrafficPolicy) must exceed this.
+  idleTimeoutSecs: 2100
+  resources: {}
+  extraEnv: []
+
+# The one namespace that holds every Project's sandbox objects (ADR-0013). Created by this
+# chart, separate from the release namespace.
+sandbox:
+  # Must be dedicated: not the release namespace, kube-system, kube-public, kube-node-lease or default.
+  namespace: enzarb-sandboxes
+  # ServiceAccount of sandbox pods (ENZARB_SANDBOX_SERVICE_ACCOUNT). Token not mounted, no RBAC:
+  # sandboxes have no Kubernetes API access.
+  serviceAccount: enzarb-sandbox
+  # Port of the workflows executor that sandboxes may call back (ENZARB_EXECUTOR_CALLBACK_PORT).
+  executorCallbackPort: 8081
+  # Egress policy (ADR-0013). clusterCIDRs is REQUIRED (no default; rendering fails if empty):
+  # the cluster's pod, service and node networks, which contain the API server endpoint. Sandbox
+  # egress on 443 goes to the internet except these (ENZARB_SANDBOX_EGRESS_EXCLUDE_CIDRS).
+  egress:
+    # Dual-stack clusters must also list their IPv6 pod/service/node CIDRs, otherwise ::/0 is not
+    # excepted.
+    clusterCIDRs: []
+  # Optional CIDRs of DNS servers (e.g. NodeLocal DNSCache) allowed besides the cluster DNS pods
+  # (ENZARB_SANDBOX_DNS_CIDRS).
+  dnsCIDRs: []
+  # LimitRange defaults for containers without their own resources. Permissive on purpose
+  # (the dockerd sidecar builds images); Projects set real pod resources. Set to {} to omit.
+  # Note: a container that sets requests above the default limit must also set its own limits,
+  # otherwise the LimitRange rejects the pod. No `max` is set on purpose (it could block
+  # legitimate pods). The dockerd sidecar should get explicit operator.docker.resources.
+  limitRange:
+    default: { cpu: "4", memory: 8Gi }
+    defaultRequest: { cpu: 100m, memory: 256Mi }
+
+operator:
+  replicaCount: 2
+  image:
+    repository: ghcr.io/enzarb/enzarb-sandbox-operator
+    tag: 0.8.0
+    pullPolicy: ""
+  # Default sandbox image for Projects (ENZARB_SANDBOX_IMAGE).
+  sandboxImage: ghcr.io/enzarb/enzarb-sandbox:0.10.1
+  defaultStorage: 20Gi
+  # RuntimeClass of every sandbox pod (ENZARB_SANDBOX_RUNTIME_CLASS). Cluster-admin
+  # setting; Projects cannot choose. Must be in docker.runtimeClasses.
+  sandboxRuntimeClass: gvisor
+  # Docker is always on (ADR-0012): each sandbox pod gets a dockerd sidecar and a
+  # second PVC (`docker`) next to `workspace`.
+  docker:
+    # RuntimeClasses allowed to host dockerd (ENZARB_DOCKER_RUNTIME_CLASSES).
+    runtimeClasses: [gvisor]
+    image: docker:29.8.2-dind
+    # Size of each Project's `docker` PVC.
+    storage: 50Gi
+    # dockerd sidecar resources; unset keys are not passed to the operator.
+    resources: {}
+    #  requests: { cpu: 100m, memory: 256Mi }
+    #  limits: { cpu: "2", memory: 2Gi }
+    # Extra runtime profiles, {<runtimeClass>: {securityContext, dockerdArgs}}. Rendered
+    # to a ConfigMap and passed as ENZARB_DOCKER_PROFILES_FILE. Empty = built-in profiles.
+    profiles: {}
+  # Comma-separated app.kubernetes.io/name of pods allowed to reach sandboxes on 7070.
+  # Empty = operator default (enzarb-sandbox-proxy,enzarb-workflows, matching this chart).
+  netpolIngressPodNames: ""
+  resources: {}
+  extraEnv: []
+
+# Hardening applied to every pod (uid is set per component).
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]

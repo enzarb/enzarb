@@ -1,0 +1,786 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "host"
+  ],
+  "properties": {
+    "host": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"
+    },
+    "publicUrl": {
+      "type": "string",
+      "pattern": "^(https?://.+)?$"
+    },
+    "githubApp": {
+      "type": "object",
+      "properties": {
+        "slug": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "imagePullPolicy": {
+      "enum": [
+        "Always",
+        "IfNotPresent",
+        "Never"
+      ]
+    },
+    "rustLog": {
+      "type": "string"
+    },
+    "gateway": {
+      "type": "object",
+      "required": [
+        "name",
+        "namespace"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "namespace": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "route": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "sandboxRequestTimeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(ms|s|m|h)$"
+        },
+        "realtimeRequestTimeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(ms|s|m|h)$"
+        },
+        "backendTrafficPolicy": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "connectionIdleTimeout": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "postgres": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "clusterName",
+        "databaseName"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "clusterName": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        },
+        "databaseName": {
+          "type": "string",
+          "pattern": "^[a-z_][a-z0-9_]*$",
+          "maxLength": 63,
+          "not": {
+            "enum": [
+              "postgres",
+              "template0",
+              "template1"
+            ]
+          }
+        },
+        "image": {
+          "type": "string"
+        },
+        "storage": {
+          "type": "object",
+          "properties": {
+            "size": {
+              "type": "string"
+            },
+            "storageClassName": {
+              "type": "string"
+            },
+            "retainPolicy": {
+              "enum": [
+                "Retain",
+                "Delete"
+              ]
+            }
+          }
+        },
+        "resources": {
+          "type": "object"
+        }
+      }
+    },
+    "waitImage": {
+      "type": "object",
+      "required": [
+        "repository",
+        "tag"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string"
+        },
+        "tag": {
+          "type": "string"
+        }
+      }
+    },
+    "waitTimeout": {
+      "type": "string",
+      "pattern": "^[0-9]+(s|m|h)$"
+    },
+    "secrets": {
+      "type": "object",
+      "properties": {
+        "sessionJwt": {
+          "type": "object",
+          "properties": {
+            "existingSecret": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "realtimeJwt": {
+          "type": "object",
+          "properties": {
+            "existingSecret": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "executorCallback": {
+          "type": "object",
+          "properties": {
+            "existingSecret": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "updater": {
+          "type": "object",
+          "properties": {
+            "existingSecret": { "type": "string" },
+            "hasRegistryToken": { "type": "boolean" },
+            "registryTokenSecret": { "type": "string" },
+            "registryTokenKey": { "type": "string", "minLength": 1 },
+            "keys": {
+              "type": "object",
+              "required": ["webhookSecret", "registryToken"],
+              "additionalProperties": { "type": "string" }
+            },
+            "webhookSecret": { "type": "string" },
+            "registryToken": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "github": {
+          "type": "object",
+          "properties": {
+            "existingSecret": {
+              "type": "string"
+            },
+            "keys": {
+              "type": "object",
+              "required": [
+                "appId",
+                "privateKey",
+                "webhookSecret",
+                "oauthClientId",
+                "oauthClientSecret"
+              ],
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "appId": {
+              "type": [
+                "string",
+                "integer"
+              ]
+            },
+            "privateKey": {
+              "type": "string"
+            },
+            "webhookSecret": {
+              "type": "string"
+            },
+            "oauthClientId": {
+              "type": "string"
+            },
+            "oauthClientSecret": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "ui": {
+      "type": "object",
+      "required": [
+        "image"
+      ],
+      "properties": {
+        "chat": {
+          "type": "object",
+          "description": "Deprecated no-op: chat is always on. Tolerated for one release so a stale values file does not fail upgrades; remove it from your values.",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          }
+        },
+        "probes": {
+          "type": "object",
+          "properties": {
+            "http": {
+              "type": "boolean"
+            }
+          }
+        },
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "image": {
+          "type": "object",
+          "required": [
+            "repository",
+            "tag"
+          ],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pullPolicy": {
+              "enum": [
+                "",
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
+          }
+        },
+        "resources": {
+          "type": "object"
+        },
+        "extraEnv": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "workflows": {
+      "type": "object",
+      "required": [
+        "image"
+      ],
+      "properties": {
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "image": {
+          "type": "object",
+          "required": [
+            "repository",
+            "tag"
+          ],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pullPolicy": {
+              "enum": [
+                "",
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
+          }
+        },
+        "resources": {
+          "type": "object"
+        },
+        "extraEnv": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "roles": {
+          "type": "string",
+          "pattern": "^(reducer|executor|ticker)(,(reducer|executor|ticker))*$"
+        },
+        "botHandle": {
+          "type": "string"
+        },
+        "botLogin": {
+          "type": "string"
+        },
+        "dbMaxConnections": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "npmToken": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "existingSecret": {
+              "type": "string",
+              "minLength": 1
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "terminationGracePeriodSeconds": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "connectors": {
+      "type": "object",
+      "required": [
+        "image"
+      ],
+      "properties": {
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "image": {
+          "type": "object",
+          "required": [
+            "repository",
+            "tag"
+          ],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pullPolicy": {
+              "enum": [
+                "",
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
+          }
+        },
+        "resources": {
+          "type": "object"
+        },
+        "extraEnv": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "botHandle": {
+          "type": "string"
+        },
+        "botLogin": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "realtime": {
+      "type": "object",
+      "required": [
+        "image"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "allowedOrigins": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^https?://([A-Za-z0-9._-]+|\\[[0-9A-Fa-f:.]+\\])(:[0-9]+)?$"
+          }
+        },
+        "terminationGracePeriodSeconds": {
+          "type": "integer",
+          "minimum": 10
+        },
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "image": {
+          "type": "object",
+          "required": [
+            "repository",
+            "tag"
+          ],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pullPolicy": {
+              "enum": [
+                "",
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
+          }
+        },
+        "resources": {
+          "type": "object"
+        },
+        "extraEnv": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "updater": {
+      "type": "object",
+      "required": ["image"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "replicaCount": { "type": "integer", "minimum": 0 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "poll": {
+          "type": "object",
+          "properties": {
+            "intervalSecs": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "webhook": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "image": {
+          "type": "object",
+          "required": ["repository", "tag"],
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 },
+            "pullPolicy": { "enum": ["", "Always", "IfNotPresent", "Never"] }
+          }
+        },
+        "resources": { "type": "object" },
+        "extraEnv": { "type": "array", "items": { "type": "object" } }
+      },
+      "additionalProperties": false
+    },
+    "sandboxProxy": {
+      "type": "object",
+      "required": [
+        "image"
+      ],
+      "properties": {
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "image": {
+          "type": "object",
+          "required": [
+            "repository",
+            "tag"
+          ],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pullPolicy": {
+              "enum": [
+                "",
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
+          }
+        },
+        "resources": {
+          "type": "object"
+        },
+        "extraEnv": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "idleTimeoutSecs": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "sandbox": {
+      "type": "object",
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 63
+        },
+        "serviceAccount": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"
+        },
+        "executorCallbackPort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "egress": {
+          "type": "object",
+          "properties": {
+            "clusterCIDRs": {
+              "type": "array",
+              "items": { "type": "string", "pattern": "^[0-9a-fA-F:.]+/[0-9]{1,3}$" }
+            }
+          },
+          "additionalProperties": false
+        },
+        "dnsCIDRs": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[0-9a-fA-F:.]+/[0-9]{1,3}$" }
+        },
+        "limitRange": {
+          "type": "object",
+          "properties": {
+            "default": { "type": "object" },
+            "defaultRequest": { "type": "object" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "operator": {
+      "type": "object",
+      "required": [
+        "image"
+      ],
+      "properties": {
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "image": {
+          "type": "object",
+          "required": [
+            "repository",
+            "tag"
+          ],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pullPolicy": {
+              "enum": [
+                "",
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
+          }
+        },
+        "resources": {
+          "type": "object"
+        },
+        "extraEnv": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "sandboxImage": {
+          "type": "string",
+          "minLength": 1
+        },
+        "defaultStorage": {
+          "type": "string"
+        },
+        "netpolIngressPodNames": {
+          "type": "string"
+        },
+        "sandboxRuntimeClass": {
+          "enum": [
+            "gvisor"
+          ]
+        },
+        "docker": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "runtimeClasses": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "gvisor"
+                ]
+              }
+            },
+            "image": {
+              "type": "string",
+              "minLength": 1
+            },
+            "storage": {
+              "type": "string",
+              "minLength": 1
+            },
+            "resources": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "requests": {
+                  "type": "object",
+                  "properties": {
+                    "cpu": {
+                      "type": [
+                        "string",
+                        "number"
+                      ]
+                    },
+                    "memory": {
+                      "type": [
+                        "string",
+                        "number"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "limits": {
+                  "type": "object",
+                  "properties": {
+                    "cpu": {
+                      "type": [
+                        "string",
+                        "number"
+                      ]
+                    },
+                    "memory": {
+                      "type": [
+                        "string",
+                        "number"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            },
+            "profiles": {
+              "type": "object"
+            }
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "securityContext": {
+      "type": "object"
+    }
+  }
+}

@@ -1,0 +1,38 @@
+# oldie: single-node production install (RKE2, enzarb-kubernetes overlays/oldie).
+# Images are pulled from ghcr.io at the pinned release tags in values.yaml; pull credentials are
+# configured on the node (rke2 registries.yaml), so no imagePullSecrets are needed here.
+host: enzarb.dev
+publicUrl: https://enzarb.dev
+
+secrets:
+  github:
+    existingSecret: enzarb-github
+  updater:
+    # read:packages token for the private chart in GHCR; created by `mise run oldie:secrets`.
+    registryTokenSecret: enzarb-updater-registry
+
+# Upgrades: enzarb-updater polls the chart registry and patches the cluster-owned HelmChart
+# (docs/oldie.md). No GitHub webhook, no webhook secret.
+updater:
+  enabled: true
+
+postgres:
+  storage:
+    size: 50Gi
+    storageClassName: enzarb-lvm
+    retainPolicy: Retain
+
+operator:
+  replicaCount: 1        # one node; leader election buys nothing
+  defaultStorage: 20Gi
+  docker:
+    storage: 50Gi
+    # Explicit dockerd sidecar resources so it is not a tiny-request container evicted first.
+    resources:
+      requests: { cpu: 500m, memory: 1Gi }
+      limits: { cpu: "4", memory: 8Gi }
+
+sandbox:
+  egress:
+    # RKE2 on oldie: pod, service and node networks (contain the API server).
+    clusterCIDRs: [10.42.0.0/16, 10.43.0.0/16, 192.168.33.0/24]

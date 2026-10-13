@@ -1,0 +1,231 @@
+{{- /* ServiceAccounts */}}
+{{- range tuple "enzarb-ui" "enzarb-workflows" "enzarb-connectors" "enzarb-sandbox-proxy" "enzarb-sandbox-operator" "enzarb-migrate" }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ . }}
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" $ "name" .) | nindent 4 }}
+---
+{{- end }}
+{{- if .Values.realtime.enabled }}
+{{- /* realtime: no Kubernetes API access, so no Role or ClusterRole. */}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: enzarb-realtime
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-realtime") | nindent 4 }}
+---
+{{- end }}
+{{- /* ui: create/list/delete Project CRs. */}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: enzarb-ui
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-ui") | nindent 4 }}
+rules:
+  - apiGroups: [enzarb.dev]
+    resources: [projects]
+    verbs: [get, list, create, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: enzarb-ui
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-ui") | nindent 4 }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: enzarb-ui }
+subjects:
+  - { kind: ServiceAccount, name: enzarb-ui, namespace: {{ .Release.Namespace }} }
+---
+{{- /* workflows: project index (cluster-wide; patch = drained-generation annotation) + sandbox auth Secrets (sandbox namespace Role below). */}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: enzarb-workflows
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-workflows") | nindent 4 }}
+rules:
+  - apiGroups: [enzarb.dev]
+    resources: [projects]
+    verbs: [get, list, watch, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: enzarb-workflows
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-workflows") | nindent 4 }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: enzarb-workflows }
+subjects:
+  - { kind: ServiceAccount, name: enzarb-workflows, namespace: {{ .Release.Namespace }} }
+---
+{{- /* sandbox-proxy */}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: enzarb-sandbox-proxy
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-sandbox-proxy") | nindent 4 }}
+rules:
+  - apiGroups: [enzarb.dev]
+    resources: [projects]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: enzarb-sandbox-proxy
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-sandbox-proxy") | nindent 4 }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: enzarb-sandbox-proxy }
+subjects:
+  - { kind: ServiceAccount, name: enzarb-sandbox-proxy, namespace: {{ .Release.Namespace }} }
+---
+{{- /* operator: mirrors enzarb-sandbox-operator deploy/rbac.yaml (ADR-0013). Cluster scope is
+       limited to the Project CRs; everything it
+       creates lives in the sandbox namespace and is granted by the Role below. No
+       namespaces permission and no cluster-wide secrets. */}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: enzarb-sandbox-operator
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-sandbox-operator") | nindent 4 }}
+rules:
+  - apiGroups: [enzarb.dev]
+    resources: [projects]
+    verbs: [list, watch]
+  - apiGroups: [enzarb.dev]
+    resources: [projects/status]
+    verbs: [patch]
+  - apiGroups: [enzarb.dev]
+    resources: [projects/finalizers]
+    verbs: [update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: enzarb-sandbox-operator
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-sandbox-operator") | nindent 4 }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: enzarb-sandbox-operator }
+subjects:
+  - { kind: ServiceAccount, name: enzarb-sandbox-operator, namespace: {{ .Release.Namespace }} }
+---
+{{- /* Namespaced grants in the sandbox namespace (ADR-0013). Secret names are per Project
+       (sb-<project>-auth), so resourceNames cannot pin them. */}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: enzarb-sandbox-operator
+  namespace: {{ .Values.sandbox.namespace }}
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-sandbox-operator") | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, create, patch]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, create, patch]
+  - apiGroups: [agents.x-k8s.io]
+    resources: [sandboxes]
+    verbs: [get, list, watch, create, patch]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: enzarb-sandbox-operator
+  namespace: {{ .Values.sandbox.namespace }}
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-sandbox-operator") | nindent 4 }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: enzarb-sandbox-operator }
+subjects:
+  - { kind: ServiceAccount, name: enzarb-sandbox-operator, namespace: {{ .Release.Namespace }} }
+---
+{{- /* workflows executor and sandbox-proxy read the per-Project auth Secret. */}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: enzarb-sandbox-auth-reader
+  namespace: {{ .Values.sandbox.namespace }}
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb") | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: enzarb-sandbox-auth-reader
+  namespace: {{ .Values.sandbox.namespace }}
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb") | nindent 4 }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: enzarb-sandbox-auth-reader }
+subjects:
+  - { kind: ServiceAccount, name: enzarb-workflows, namespace: {{ .Release.Namespace }} }
+  - { kind: ServiceAccount, name: enzarb-sandbox-proxy, namespace: {{ .Release.Namespace }} }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: enzarb-sandbox-operator-leader
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-sandbox-operator") | nindent 4 }}
+rules:
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, create, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: enzarb-sandbox-operator-leader
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-sandbox-operator") | nindent 4 }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: enzarb-sandbox-operator-leader }
+subjects:
+  - { kind: ServiceAccount, name: enzarb-sandbox-operator, namespace: {{ .Release.Namespace }} }
+{{- if .Values.postgres.enabled }}
+---
+{{- /* Init containers (kubectl wait) of the migration Jobs and runtime pods. */}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: enzarb-wait
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb") | nindent 4 }}
+rules:
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list, watch]
+  - apiGroups: [pgop.ruck.io]
+    resources: [clusters, databases, roles]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: enzarb-wait
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb") | nindent 4 }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: enzarb-wait }
+subjects:
+  {{- range tuple "enzarb-ui" "enzarb-workflows" "enzarb-connectors" "enzarb-migrate" }}
+  - { kind: ServiceAccount, name: {{ . }}, namespace: {{ $.Release.Namespace }} }
+  {{- end }}
+  {{- if .Values.realtime.enabled }}
+  - { kind: ServiceAccount, name: enzarb-realtime, namespace: {{ .Release.Namespace }} }
+  {{- end }}
+{{- end }}
