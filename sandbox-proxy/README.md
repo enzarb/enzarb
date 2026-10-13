@@ -27,6 +27,8 @@ Routes a browser websocket to its Project's sandbox-init (contracts §7).
 | `PROXY_MAX_MESSAGE_BYTES` | `1048586` | one max frame (1 MiB + header) |
 | `PROXY_SECRET_TTL_SECS` | `30` | auth token cache |
 | `RUST_LOG` | `info` | JSON logs; the URL (token) is never logged |
+| `DATABASE_URL`, `PG*` | from the pgop `enzarb_sandbox_proxy` credentials Secret | Postgres for `app_api.claude_credential_*` (lazy pool; terminals work while it is down) |
+| `ENZARB_CLAUDE_KEYRING_DIR` | `/etc/enzarb/claude-key` | mounted `enzarb-claude-key` Secret: `active` plus one 32-byte file per key id. Required at startup |
 
 ## RBAC
 
@@ -44,4 +46,11 @@ Role plus RoleBinding **in the shared sandbox namespace** (`enzarb-sandboxes` by
 
 ## Chat (`acp`) channels
 
-The browser handshake is answered by the proxy: `welcome.features` is the sandbox's list intersected with `["acp"]`, so an old sandbox (no features) shows the browser none. `open{kind:"acp"}` is forwarded (original bytes) only if `acp` was advertised, `repo` <= 2048 and `resume` <= 256 bytes, and the socket has no other live `acp` channel. Otherwise the proxy answers `open_error` itself (`unsupported_kind`, `invalid_request`, `chat_limit`) and the socket stays up. Unknown kinds are never forwarded. `run_*` and other forbidden CTRL still close the socket with 1008.
+The browser handshake is answered by the proxy: `welcome.features` is the sandbox's list intersected with `["acp"]`, so an old sandbox (no features) shows the browser none. `open{kind:"acp"}` is forwarded only if `acp` was advertised, `repo` <= 2048 and `resume` <= 256 bytes, and the socket has no other live `acp` channel. Otherwise the proxy answers `open_error` itself (`unsupported_kind`, `invalid_request`, `chat_limit`) and the socket stays up. Unknown kinds are never forwarded. `run_*` and other forbidden CTRL still close the socket with 1008.
+
+## Claude token (per user, ADR-0004 amendment 2026-10-13)
+
+- `credential_captured` from the sandbox is consumed (never relayed, never logged), encrypted with AES-256-GCM under the active key (layout in the enzarb docs, database.md "Byte layout") and stored for the authenticated `spec.owner`. The browser gets `credential_state{configured:true, scope:"user"}`. A `legacy:true` capture is stored only if the user has none, and the sandbox gets `credential_state{configured:true, scope:"user"}` only after the write succeeded.
+- A browser `credential_clear` deletes the owner's row and is answered `credential_state{configured:false, scope:"user"}`; it is not forwarded.
+- On `open{kind:"acp"}` the proxy drops any browser `claude_token`, injects the owner's decrypted token, or answers `open_error{code:"no_credential"}` (no row) / `credential_unavailable` (store or key failure; an unknown `key_id` fails closed). A `pty` open carrying `claude_token` is refused `invalid_request`.
+- `enzarb-sandbox-proxy rekey` re-encrypts rows not under the active key (one row at a time, compare-and-set) and exits non-zero if any row failed.

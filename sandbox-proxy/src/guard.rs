@@ -28,7 +28,8 @@
 
 use bytes::Bytes;
 use enzarb_proto::{
-    ChannelKind, Ctrl, Frame, FrameType, MAX_REPO_LEN, MAX_RESUME_LEN, feature, open_error_code,
+    ChannelKind, Ctrl, Frame, FrameType, MAX_REPO_LEN, MAX_RESUME_LEN, Secret, feature,
+    open_error_code,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -54,6 +55,22 @@ pub enum Verdict {
     Forward(Allowed),
     /// Do not forward; send these bytes (an `open_error`) back to the browser.
     Reply(Bytes),
+    /// `credential_clear`: handled by the proxy (delete the owner's row), never
+    /// forwarded.
+    Clear,
+    /// An admitted `open{kind:acp}` with any browser-supplied `claude_token`
+    /// removed. The relay injects the owner's token and forwards it, or answers
+    /// `open_error` and calls [`Guard::release_acp`].
+    OpenAcp { channel: u32, open: Box<Ctrl> },
+}
+
+/// What to do with a sandbox->browser frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SandboxFrame {
+    /// Relay the original bytes to the browser.
+    Relay,
+    /// `credential_captured`: consumed by the proxy, never relayed or logged.
+    Captured { token: Option<Secret>, legacy: bool },
 }
 
 /// Features this proxy knows how to validate and relay. `welcome.features` to
@@ -113,11 +130,15 @@ impl Guard {
                     .ctrl_message()
                     .map_err(|e| Reject::Malformed(e.code().to_string()))?;
                 ctrl_allowed(&ctrl).map_err(Reject::ForbiddenCtrl)?;
+                if let Ctrl::CredentialClear { .. } = &ctrl {
+                    return Ok(Verdict::Clear);
+                }
                 if let Ctrl::Open {
                     channel,
                     kind,
                     repo,
                     resume,
+                    claude_token,
                     ..
                 } = &ctrl
                 {
@@ -142,6 +163,14 @@ impl Guard {
                         );
                     }
                     match kind {
+                        // Only the proxy sets `claude_token`, and only on acp.
+                        ChannelKind::Pty if claude_token.is_some() => {
+                            return open_error(
+                                channel,
+                                open_error_code::INVALID_REQUEST,
+                                "claude_token is not accepted from a browser",
+                            );
+                        }
                         ChannelKind::Pty => {}
                         ChannelKind::Acp => {
                             if !self.acp_enabled {
@@ -159,6 +188,14 @@ impl Guard {
                                 );
                             }
                             self.acp_channel = Some(channel);
+                            let mut open = ctrl.clone();
+                            if let Ctrl::Open { claude_token, .. } = &mut open {
+                                *claude_token = None;
+                            }
+                            return Ok(Verdict::OpenAcp {
+                                channel,
+                                open: Box::new(open),
+                            });
                         }
                         ChannelKind::Unknown => {
                             return open_error(
@@ -176,6 +213,38 @@ impl Guard {
             _ => {}
         }
         Ok(Verdict::Forward(allowed))
+    }
+
+    /// Free the `acp` slot after the proxy itself refused an admitted open.
+    pub fn release_acp(&mut self, channel: u32) {
+        if self.acp_channel == Some(channel) {
+            self.acp_channel = None;
+        }
+    }
+
+    /// Classify a sandbox->browser frame. `credential_captured` is consumed;
+    /// everything else is relayed as is (after [`Self::observe_sandbox_message`]).
+    pub fn intercept_sandbox_message(&mut self, msg: &Bytes) -> SandboxFrame {
+        self.observe_sandbox_message(msg);
+        let Ok(frame) = Frame::from_bytes(msg.clone()) else {
+            return SandboxFrame::Relay;
+        };
+        if frame.frame_type != FrameType::Ctrl {
+            return SandboxFrame::Relay;
+        }
+        match frame.ctrl_message() {
+            Ok(Ctrl::CredentialCaptured { token, legacy, .. }) => SandboxFrame::Captured {
+                token,
+                legacy: legacy.unwrap_or(false),
+            },
+            // A CTRL frame that fails to decode but names the captured type is
+            // dropped too: it may carry a token.
+            Err(_) if is_captured_type(&frame.payload) => SandboxFrame::Captured {
+                token: None,
+                legacy: false,
+            },
+            _ => SandboxFrame::Relay,
+        }
     }
 
     /// Observe a sandbox->browser frame (never altered) to track the `acp`
@@ -199,12 +268,20 @@ impl Guard {
     }
 }
 
+fn is_captured_type(payload: &[u8]) -> bool {
+    payload
+        .windows(b"credential_captured".len())
+        .any(|w| w == b"credential_captured")
+}
+
 /// CTRL messages a browser (`client: "ui"`) may send after the handshake.
 fn ctrl_allowed(m: &Ctrl) -> Result<(), &'static str> {
     match m {
-        Ctrl::Open { .. } | Ctrl::Resize { .. } | Ctrl::Error { .. } | Ctrl::CredentialStatus => {
-            Ok(())
-        }
+        Ctrl::Open { .. }
+        | Ctrl::Resize { .. }
+        | Ctrl::Error { .. }
+        | Ctrl::CredentialStatus
+        | Ctrl::CredentialClear { .. } => Ok(()),
         Ctrl::Hello { .. } => Err("hello"),
         Ctrl::Welcome { .. } => Err("welcome"),
         Ctrl::Opened { .. } => Err("opened"),
@@ -247,6 +324,7 @@ mod tests {
             log_channel: None,
             deps_token: None,
             npm_token: None,
+            claude_token: None,
         }
     }
 
@@ -260,6 +338,7 @@ mod tests {
             command: None,
             repo: None,
             resume: None,
+            claude_token: None,
         };
         assert!(check(&ctrl(&open)).is_ok());
         let resize = Ctrl::Resize {
@@ -293,6 +372,7 @@ mod tests {
             Ctrl::Hello {
                 versions: vec![1],
                 client: enzarb_proto::ClientKind::Executor,
+                features: None,
             },
         ] {
             assert!(matches!(check(&ctrl(&m)), Err(Reject::ForbiddenCtrl(_))));
@@ -304,6 +384,7 @@ mod tests {
         let m = Ctrl::CredentialState {
             kind: enzarb_proto::CredentialKind::ClaudeOauth,
             configured: true,
+            scope: None,
         };
         assert!(matches!(
             check(&ctrl(&m)),
@@ -350,6 +431,7 @@ mod tests {
             command: None,
             repo,
             resume,
+            claude_token: None,
         })
     }
 
@@ -378,13 +460,13 @@ mod tests {
         );
         assert!(matches!(
             g.check_browser_message(&m),
-            Ok(Verdict::Forward(_))
+            Ok(Verdict::OpenAcp { .. })
         ));
         // DATA on the channel is allowed.
         let d = Frame::data_bin(3, &b"{}\n"[..]).to_bytes().unwrap();
         assert!(matches!(
             g.check_browser_message(&d),
-            Ok(Verdict::Forward(_))
+            Ok(Verdict::Forward(_) | Verdict::OpenAcp { .. })
         ));
     }
 
@@ -414,7 +496,7 @@ mod tests {
         let mut g = acp_guard();
         assert!(matches!(
             g.check_browser_message(&open(3, ChannelKind::Acp, None, None)),
-            Ok(Verdict::Forward(_))
+            Ok(Verdict::Forward(_) | Verdict::OpenAcp { .. })
         ));
         let v = g
             .check_browser_message(&open(5, ChannelKind::Acp, None, None))
@@ -428,17 +510,17 @@ mod tests {
         // A pty alongside is fine.
         assert!(matches!(
             g.check_browser_message(&open(7, ChannelKind::Pty, None, None)),
-            Ok(Verdict::Forward(_))
+            Ok(Verdict::Forward(_) | Verdict::OpenAcp { .. })
         ));
         // Browser closes it: a new one is allowed.
         let c = Frame::close(3, 0, "").to_bytes().unwrap();
         assert!(matches!(
             g.check_browser_message(&c),
-            Ok(Verdict::Forward(_))
+            Ok(Verdict::Forward(_) | Verdict::OpenAcp { .. })
         ));
         assert!(matches!(
             g.check_browser_message(&open(5, ChannelKind::Acp, None, None)),
-            Ok(Verdict::Forward(_))
+            Ok(Verdict::Forward(_) | Verdict::OpenAcp { .. })
         ));
     }
 
@@ -462,7 +544,10 @@ mod tests {
             let v = g
                 .check_browser_message(&open(5, ChannelKind::Acp, None, None))
                 .unwrap();
-            assert_eq!(matches!(v, Verdict::Forward(_)), frees);
+            assert_eq!(
+                matches!(v, Verdict::Forward(_) | Verdict::OpenAcp { .. }),
+                frees
+            );
         }
     }
 
@@ -478,7 +563,7 @@ mod tests {
                 Some(ok_repo.clone()),
                 Some(ok_resume.clone())
             )),
-            Ok(Verdict::Forward(_))
+            Ok(Verdict::Forward(_) | Verdict::OpenAcp { .. })
         ));
         for (repo, resume) in [
             (Some(format!("{ok_repo}x")), None),
@@ -496,7 +581,7 @@ mod tests {
             assert_eq!(code_of(v), (4, Some("invalid_request".into())));
             assert!(matches!(
                 g.check_browser_message(&open(5, ChannelKind::Acp, None, None)),
-                Ok(Verdict::Forward(_))
+                Ok(Verdict::Forward(_) | Verdict::OpenAcp { .. })
             ));
         }
     }
@@ -507,6 +592,101 @@ mod tests {
             acp_guard().check_browser_message(&open(0, ChannelKind::Acp, None, None)),
             Err(Reject::Malformed(_))
         ));
+    }
+
+    #[test]
+    fn acp_open_drops_browser_token_and_pty_token_is_refused() {
+        let mut g = acp_guard();
+        let m = ctrl(&Ctrl::Open {
+            channel: 3,
+            kind: ChannelKind::Acp,
+            cols: 0,
+            rows: 0,
+            command: None,
+            repo: None,
+            resume: None,
+            claude_token: Some(Secret::new("browser-token")),
+        });
+        let Ok(Verdict::OpenAcp { channel, open }) = g.check_browser_message(&m) else {
+            panic!()
+        };
+        assert_eq!(channel, 3);
+        assert!(matches!(
+            *open,
+            Ctrl::Open {
+                claude_token: None,
+                ..
+            }
+        ));
+        // The proxy refuses it (no credential) and frees the slot.
+        g.release_acp(3);
+        assert!(matches!(
+            g.check_browser_message(&open_frame_acp(5)),
+            Ok(Verdict::OpenAcp { .. })
+        ));
+        let p = ctrl(&Ctrl::Open {
+            channel: 7,
+            kind: ChannelKind::Pty,
+            cols: 0,
+            rows: 0,
+            command: None,
+            repo: None,
+            resume: None,
+            claude_token: Some(Secret::new("x")),
+        });
+        let v = g.check_browser_message(&p).unwrap();
+        assert_eq!(code_of(v), (7, Some("invalid_request".into())));
+    }
+
+    fn open_frame_acp(channel: u32) -> Bytes {
+        open(channel, ChannelKind::Acp, None, None)
+    }
+
+    #[test]
+    fn credential_frames() {
+        use enzarb_proto::CredentialKind::ClaudeOauth;
+        let mut g = acp_guard();
+        assert_eq!(
+            g.check_browser_message(&ctrl(&Ctrl::CredentialClear { kind: ClaudeOauth })),
+            Ok(Verdict::Clear)
+        );
+        let cap = ctrl(&Ctrl::CredentialCaptured {
+            kind: ClaudeOauth,
+            token: Some(Secret::new("t")),
+            legacy: Some(true),
+        });
+        assert!(matches!(
+            g.check_browser_message(&cap),
+            Err(Reject::ForbiddenCtrl("credential_captured"))
+        ));
+        assert_eq!(
+            g.intercept_sandbox_message(&cap),
+            SandboxFrame::Captured {
+                token: Some(Secret::new("t")),
+                legacy: true
+            }
+        );
+        let bad = Frame::new(
+            FrameType::Ctrl,
+            0,
+            &br#"{"type":"credential_captured","token":"t","kind":"nope"}"#[..],
+        )
+        .to_bytes()
+        .unwrap();
+        assert!(matches!(
+            g.intercept_sandbox_message(&bad),
+            SandboxFrame::Captured { token: None, .. }
+        ));
+        let state = ctrl(&Ctrl::CredentialState {
+            kind: ClaudeOauth,
+            configured: true,
+            scope: None,
+        });
+        assert_eq!(g.intercept_sandbox_message(&state), SandboxFrame::Relay);
+        let d = Frame::data_bin(1, &b"credential_captured"[..])
+            .to_bytes()
+            .unwrap();
+        assert_eq!(g.intercept_sandbox_message(&d), SandboxFrame::Relay);
     }
 
     #[test]

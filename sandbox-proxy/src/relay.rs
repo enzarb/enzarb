@@ -21,7 +21,10 @@ use std::{
 
 use axum::extract::ws::{CloseFrame as AxClose, Message as AxMsg, WebSocket};
 use bytes::Bytes;
-use enzarb_proto::{ClientKind, Ctrl, Frame, FrameHeader, error_code, session::handshake};
+use enzarb_proto::{
+    ClientKind, CredentialKind, Ctrl, Frame, FrameHeader, credential_scope, error_code, feature,
+    open_error_code, session::handshake,
+};
 use futures_util::{SinkExt, StreamExt};
 use tokio::{
     net::TcpStream,
@@ -39,9 +42,78 @@ use tokio_tungstenite::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    guard::{Guard, Reject, Verdict, negotiated_features},
+    auth,
+    guard::{Guard, Reject, SandboxFrame, Verdict, negotiated_features},
     resolver::{ResolveError, Resolver, revoked},
+    store::Credentials,
 };
+
+/// `open_error` code when the credential store or keyring fails (not one of
+/// the standard codes; clients tolerate unknown values).
+pub const CREDENTIAL_UNAVAILABLE: &str = "credential_unavailable";
+
+fn encode(m: &Ctrl) -> Option<Bytes> {
+    Frame::ctrl(m).and_then(|f| f.to_bytes()).ok()
+}
+
+fn open_error_frame(channel: u32, code: &str, message: &str) -> Option<Bytes> {
+    encode(&Ctrl::OpenError {
+        channel,
+        message: message.into(),
+        code: Some(code.into()),
+    })
+}
+
+fn credential_state(configured: bool) -> Option<Bytes> {
+    encode(&Ctrl::CredentialState {
+        kind: CredentialKind::ClaudeOauth,
+        configured,
+        scope: Some(credential_scope::USER.into()),
+    })
+}
+
+/// Complete an admitted acp `open`: inject the owner's token (the browser's
+/// was already dropped by the guard). `Err` is the `open_error` to answer.
+async fn acp_open(
+    creds: &Credentials,
+    owner: Option<&str>,
+    channel: u32,
+    mut open: Box<Ctrl>,
+    project: &str,
+) -> Result<Bytes, Option<Bytes>> {
+    let no_cred = || {
+        open_error_frame(
+            channel,
+            open_error_code::NO_CREDENTIAL,
+            "no Claude credential for this user",
+        )
+    };
+    let Some(owner) = owner else {
+        return Err(no_cred());
+    };
+    let token = match creds.token_for(owner).await {
+        Ok(Some(t)) => t,
+        Ok(None) => return Err(no_cred()),
+        Err(e) => {
+            tracing::warn!(project, owner, error = %e, "claude credential unavailable");
+            return Err(open_error_frame(
+                channel,
+                CREDENTIAL_UNAVAILABLE,
+                "Claude credential unavailable",
+            ));
+        }
+    };
+    if let Ctrl::Open { claude_token, .. } = open.as_mut() {
+        *claude_token = Some(token);
+    }
+    encode(&open).ok_or_else(|| {
+        open_error_frame(
+            channel,
+            open_error_code::INVALID_REQUEST,
+            "open frame too large",
+        )
+    })
+}
 
 pub type Upstream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -100,18 +172,25 @@ pub async fn dial(
                 }
                 e => DialError::Unreachable(e.to_string()),
             })?;
-        let w = handshake::client_handshake_with_features(&mut ws, ClientKind::Proxy)
+        let w = handshake::client_handshake_offering(&mut ws, ClientKind::Proxy, &proxy_offer())
             .await
             .map_err(|e| DialError::Unreachable(e.to_string()))?;
+        let (version, features) = (w.version, w.features);
         Ok(Dialed {
             ws,
-            version: w.version,
-            features: w.features,
+            version,
+            features,
         })
     };
     tokio::time::timeout(timeout, connect)
         .await
         .map_err(|_| DialError::Unreachable("timeout".into()))?
+}
+
+/// Features the proxy offers in its `hello` to the sandbox: it consumes
+/// token-bearing `credential_captured` frames and stores them per user.
+pub fn proxy_offer() -> Vec<String> {
+    vec![feature::CLAUDE_USER_TOKEN.to_string()]
 }
 
 /// Why a relay ended. Fields are only read through `Debug` in the close log.
@@ -151,14 +230,12 @@ async fn browser_handshake(
         .ok()
         .and_then(|f| f.ctrl_message().ok())
     {
-        Some(Ctrl::Hello { versions, client })
-            if client == ClientKind::Ui && versions.contains(&version) =>
-        {
-            Ctrl::Welcome {
-                version,
-                features: (!features.is_empty()).then(|| features.to_vec()),
-            }
-        }
+        Some(Ctrl::Hello {
+            versions, client, ..
+        }) if client == ClientKind::Ui && versions.contains(&version) => Ctrl::Welcome {
+            version,
+            features: (!features.is_empty()).then(|| features.to_vec()),
+        },
         Some(Ctrl::Hello { .. }) => Ctrl::Error {
             code: error_code::UNSUPPORTED_VERSION.into(),
             message: format!("expected client \"ui\" offering version {version}"),
@@ -193,6 +270,8 @@ pub struct RelayOpts {
     pub handshake_timeout: Duration,
     /// Websocket ping interval towards the browser (keeps intermediaries open).
     pub ping_interval: Duration,
+    /// Claude token storage for this relay's owner.
+    pub creds: Arc<Credentials>,
 }
 
 /// Watches a Project for changes that revoke an open relay's authorisation.
@@ -248,6 +327,7 @@ pub async fn run(
     project: &str,
     sub: &str,
 ) {
+    let creds = opts.creds.clone();
     // The browser sees only what the sandbox offers AND this proxy can guard.
     let features = negotiated_features(&upstream.features);
     if let Err(why) = browser_handshake(
@@ -266,7 +346,15 @@ pub async fn run(
     }
 
     let (mut b_tx, mut b_rx) = browser.split();
-    let (mut u_tx, mut u_rx) = upstream.ws.split();
+    let (u_tx, mut u_rx) = upstream.ws.split();
+    // Shared: the down direction sends the legacy-capture ack upstream.
+    let u_tx = tokio::sync::Mutex::new(u_tx);
+    // Credential rows are keyed by the authorised `spec.owner` only (never by
+    // frame content); re-asserted here before any credential operation.
+    let cred_owner: Option<String> =
+        auth::authorize(sub, &watch.owner).then(|| watch.owner.clone());
+    // Serialises credential operations (capture, clear, acp open) in arrival order.
+    let cred_lock = tokio::sync::Mutex::new(());
     let counters = Counters::default();
     let start = Instant::now();
     let last = AtomicU64::new(0);
@@ -285,7 +373,7 @@ pub async fn run(
                 AxMsg::Binary(b) => {
                     touch();
                     let verdict = guard.lock().unwrap().check_browser_message(&b);
-                    match verdict {
+                    let b = match verdict {
                         Err(r) => return End::Rejected(r),
                         Ok(Verdict::Reply(reply)) => {
                             if reply_tx.send(reply).await.is_err() {
@@ -293,13 +381,60 @@ pub async fn run(
                             }
                             continue;
                         }
-                        Ok(Verdict::Forward(_)) => {}
-                    }
+                        Ok(Verdict::Clear) => {
+                            let Some(owner) = cred_owner.as_deref() else {
+                                continue;
+                            };
+                            // Release the lock before replying: the down
+                            // direction (which drains replies) may be waiting on it.
+                            let res = {
+                                let _g = cred_lock.lock().await;
+                                creds.clear(owner).await
+                            };
+                            match res {
+                                Ok(()) => {
+                                    tracing::info!(project, owner, "claude credential cleared");
+                                    if let Some(f) = credential_state(false)
+                                        && reply_tx.send(f).await.is_err()
+                                    {
+                                        return End::UpstreamClosed;
+                                    }
+                                }
+                                // Silent towards the browser by design: the proto has no
+                                // failure reply for credential ops, and replying with a
+                                // guessed `credential_state` would mislead the UI.
+                                Err(e) => tracing::warn!(
+                                    project, owner, error = %e, "claude credential clear failed"
+                                ),
+                            }
+                            continue;
+                        }
+                        Ok(Verdict::OpenAcp { channel, open }) => {
+                            let out = {
+                                let _g = cred_lock.lock().await;
+                                acp_open(&creds, cred_owner.as_deref(), channel, open, project)
+                                    .await
+                            };
+                            match out {
+                                Ok(rewritten) => rewritten,
+                                Err(reply) => {
+                                    guard.lock().unwrap().release_acp(channel);
+                                    if let Some(reply) = reply
+                                        && reply_tx.send(reply).await.is_err()
+                                    {
+                                        return End::UpstreamClosed;
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                        Ok(Verdict::Forward(_)) => b,
+                    };
                     counters.up_msgs.fetch_add(1, Ordering::Relaxed);
                     counters
                         .up_bytes
                         .fetch_add(b.len() as u64, Ordering::Relaxed);
-                    if let Err(e) = u_tx.send(TgMsg::Binary(b)).await {
+                    if let Err(e) = u_tx.lock().await.send(TgMsg::Binary(b)).await {
                         return End::Transport(e.to_string());
                     }
                 }
@@ -342,7 +477,53 @@ pub async fn run(
             match m {
                 TgMsg::Binary(b) => {
                     touch();
-                    guard.lock().unwrap().observe_sandbox_message(&b);
+                    let class = guard.lock().unwrap().intercept_sandbox_message(&b);
+                    if let SandboxFrame::Captured { token, legacy } = class {
+                        // Consumed: never relayed to the browser, never logged.
+                        drop(b);
+                        let (Some(token), Some(owner)) = (token, cred_owner.as_deref()) else {
+                            tracing::warn!(
+                                project,
+                                "credential_captured without token or owner; dropped"
+                            );
+                            continue;
+                        };
+                        let res = {
+                            let _g = cred_lock.lock().await;
+                            creds.store(owner, &token, legacy).await
+                        };
+                        drop(token);
+                        match res {
+                            Ok(present) => {
+                                tracing::info!(
+                                    project,
+                                    owner,
+                                    legacy,
+                                    present,
+                                    "claude credential stored"
+                                );
+                                if legacy {
+                                    // Ack only after the write: the sandbox then
+                                    // deletes its legacy file.
+                                    if present
+                                        && let Some(f) = credential_state(true)
+                                        && let Err(e) =
+                                            u_tx.lock().await.send(TgMsg::Binary(f)).await
+                                    {
+                                        return End::Transport(e.to_string());
+                                    }
+                                } else if let Some(f) = credential_state(true)
+                                    && let Err(e) = b_tx.send(AxMsg::Binary(f)).await
+                                {
+                                    return End::Transport(e.to_string());
+                                }
+                            }
+                            Err(e) => tracing::warn!(
+                                project, owner, legacy, error = %e, "claude credential store failed"
+                            ),
+                        }
+                        continue;
+                    }
                     if let Err(e) = FrameHeader::parse(&b) {
                         tracing::warn!(error = %e, "malformed frame from sandbox");
                     }
@@ -424,6 +605,7 @@ pub async fn run(
             })))
             .await;
         let _ = b_tx.close().await;
+        let mut u_tx = u_tx.lock().await;
         let _ = u_tx.send(TgMsg::Close(None)).await;
         let _ = u_tx.close().await;
     };

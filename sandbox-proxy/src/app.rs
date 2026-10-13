@@ -17,6 +17,7 @@ use crate::{
     config::Config,
     relay::{self, DialError, ProjectWatch, RelayOpts},
     resolver::{ResolveError, Resolver},
+    store::Credentials,
 };
 
 #[derive(Clone)]
@@ -24,12 +25,19 @@ pub struct AppState {
     pub cfg: Arc<Config>,
     pub validator: JwtValidator,
     pub resolver: Arc<dyn Resolver>,
+    pub creds: Arc<Credentials>,
     pub shutdown: CancellationToken,
 }
 
 impl AppState {
-    pub fn new(cfg: Config, resolver: Arc<dyn Resolver>, shutdown: CancellationToken) -> Self {
+    pub fn new(
+        cfg: Config,
+        resolver: Arc<dyn Resolver>,
+        creds: Arc<Credentials>,
+        shutdown: CancellationToken,
+    ) -> Self {
         Self {
+            creds,
             validator: JwtValidator::new(&cfg.jwt_secret),
             cfg: Arc::new(cfg),
             resolver,
@@ -125,6 +133,7 @@ async fn mux(
         idle_timeout: st.cfg.idle_timeout,
         handshake_timeout: Duration::from_secs(10),
         ping_interval: st.cfg.ping_interval,
+        creds: st.creds.clone(),
     };
     let shutdown = st.shutdown.clone();
     let watch = ProjectWatch {

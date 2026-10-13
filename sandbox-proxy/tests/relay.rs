@@ -16,7 +16,9 @@ use enzarb_sandbox_proxy::{
     app::{AppState, router},
     auth::{AUDIENCE, now_secs},
     config::Config,
+    credential::Keyring,
     resolver::{FakeResolver, ProjectInfo, SandboxRef},
+    store::{Credentials, MemStore},
 };
 use futures_util::{SinkExt, StreamExt};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
@@ -33,6 +35,8 @@ use tokio_util::sync::CancellationToken;
 
 const SECRET: &[u8] = b"integration-secret-integration-secret";
 const SANDBOX_TOKEN: &str = "sandbox-bearer";
+const OWNER_TOKEN: &str = "sk-ant-oat01-OWNER-SECRET";
+const CAPTURED: &str = "sk-ant-oat01-CAPTURED-SECRET";
 
 #[derive(Serialize)]
 struct Claims<'a> {
@@ -91,6 +95,10 @@ async fn fake_sandbox(features: Vec<String>) -> (SocketAddr, mpsc::UnboundedRece
                     .await
                     .unwrap();
                 assert_eq!(hello.client, ClientKind::Proxy);
+                assert_eq!(
+                    hello.features,
+                    vec![enzarb_proto::feature::CLAUDE_USER_TOKEN.to_string()]
+                );
                 let pushed = Frame::data_bin(9, &b"from-sandbox"[..]).to_bytes().unwrap();
                 ws.send(Message::Binary(pushed)).await.unwrap();
                 while let Some(Ok(m)) = ws.next().await {
@@ -111,7 +119,17 @@ async fn fake_sandbox(features: Vec<String>) -> (SocketAddr, mpsc::UnboundedRece
                                 .await
                                 .unwrap();
                         }
-                        if f.frame_type == FrameType::DataBin && &f.payload[..] == b"bye" {
+                        if f.frame_type == FrameType::DataBin && f.payload.starts_with(b"capture") {
+                            let c = Frame::ctrl(&Ctrl::CredentialCaptured {
+                                kind: CredentialKind::ClaudeOauth,
+                                token: Some(enzarb_proto::Secret::new(CAPTURED)),
+                                legacy: (&f.payload[..] == b"capture-legacy").then_some(true),
+                            })
+                            .unwrap();
+                            ws.send(Message::Binary(c.to_bytes().unwrap()))
+                                .await
+                                .unwrap();
+                        } else if f.frame_type == FrameType::DataBin && &f.payload[..] == b"bye" {
                             let c = Frame::close(f.channel, 0, "superseded");
                             ws.send(Message::Binary(c.to_bytes().unwrap()))
                                 .await
@@ -135,6 +153,8 @@ struct Harness {
     sandbox_rx: mpsc::UnboundedReceiver<Vec<u8>>,
     resolver: Arc<FakeResolver>,
     sandbox: SocketAddr,
+    store: Arc<MemStore>,
+    keyring: Arc<Keyring>,
 }
 
 impl Harness {
@@ -194,7 +214,18 @@ async fn harness_with(features: Vec<String>, tweak: impl FnOnce(&mut Config)) ->
     let r = Arc::new(r);
     let mut cfg = Config::for_tests(SECRET);
     tweak(&mut cfg);
-    let state = AppState::new(cfg, r.clone(), CancellationToken::new());
+    let keyring = Arc::new(Keyring::from_keys("k1", [("k1".to_string(), [5; 32])]).unwrap());
+    let store = Arc::new(MemStore::default());
+    let creds = Arc::new(Credentials::new(store.clone(), keyring.clone()));
+    let (key_id, ciphertext) = keyring
+        .seal("ruckc", &enzarb_proto::Secret::new(OWNER_TOKEN))
+        .unwrap();
+    store.set_row(
+        "ruckc",
+        enzarb_sandbox_proxy::store::Stored { key_id, ciphertext },
+    );
+    let h_store = store.clone();
+    let state = AppState::new(cfg, r.clone(), creds, CancellationToken::new());
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy = l.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(l, router(state)).await.unwrap() });
@@ -203,6 +234,31 @@ async fn harness_with(features: Vec<String>, tweak: impl FnOnce(&mut Config)) ->
         sandbox_rx,
         resolver: r,
         sandbox: sb,
+        store: h_store,
+        keyring,
+    }
+}
+
+impl Harness {
+    fn seed(&self, owner: &str, token: &str) {
+        let (key_id, ciphertext) = self
+            .keyring
+            .seal(owner, &enzarb_proto::Secret::new(token))
+            .unwrap();
+        self.store.set_row(
+            owner,
+            enzarb_sandbox_proxy::store::Stored { key_id, ciphertext },
+        );
+    }
+
+    fn stored(&self, owner: &str) -> Option<String> {
+        self.store.row(owner).map(|r| {
+            self.keyring
+                .open(owner, &r.key_id, &r.ciphertext)
+                .unwrap()
+                .expose()
+                .to_string()
+        })
     }
 }
 
@@ -259,6 +315,7 @@ async fn forwards_frames_both_ways() {
         command: None,
         repo: None,
         resume: None,
+        claude_token: None,
     })
     .unwrap();
     ws.send(Message::Binary(open.to_bytes().unwrap()))
@@ -298,6 +355,7 @@ fn run_start() -> RunStart {
         log_channel: None,
         deps_token: None,
         npm_token: None,
+        claude_token: None,
     }
 }
 
@@ -428,6 +486,7 @@ async fn credential_status_reaches_sandbox_but_credential_state_is_rejected() {
     let state = Frame::ctrl(&Ctrl::CredentialState {
         kind: CredentialKind::ClaudeOauth,
         configured: true,
+        scope: None,
     })
     .unwrap()
     .to_bytes()
@@ -555,11 +614,24 @@ fn open_frame(channel: u32, kind: ChannelKind, repo: Option<&str>) -> Vec<u8> {
         command: None,
         repo: repo.map(Into::into),
         resume: None,
+        claude_token: None,
     })
     .unwrap()
     .to_bytes()
     .unwrap()
     .to_vec()
+}
+
+/// `open` as the proxy forwards it: with the owner's token injected.
+fn injected(open: Vec<u8>) -> Vec<u8> {
+    let mut m = Frame::from_bytes(open.into())
+        .unwrap()
+        .ctrl_message()
+        .unwrap();
+    if let Ctrl::Open { claude_token, .. } = &mut m {
+        *claude_token = Some(enzarb_proto::Secret::new(OWNER_TOKEN));
+    }
+    ctrl_bytes(&m)
 }
 
 async fn connect_ui(h: &Harness) -> (Browser, Vec<String>) {
@@ -608,13 +680,42 @@ async fn welcome_features_are_the_intersection() {
 }
 
 #[tokio::test]
-async fn acp_open_is_forwarded_raw_and_data_relays_both_ways() {
+async fn acp_open_gets_owner_token_and_data_relays_both_ways() {
     let mut h = harness_with(acp_features(), |_| {}).await;
     let (mut ws, features) = connect_ui(&h).await;
     assert_eq!(features, acp_features());
-    let open = open_frame(3, ChannelKind::Acp, Some("https://github.com/a/b"));
-    ws.send(Message::Binary(open.clone().into())).await.unwrap();
-    assert_eq!(expect_sandbox(&mut h).await, open);
+    // A browser-supplied claude_token is dropped; the owner's is injected.
+    let open = Frame::ctrl(&Ctrl::Open {
+        channel: 3,
+        kind: ChannelKind::Acp,
+        cols: 0,
+        rows: 0,
+        command: None,
+        repo: Some("https://github.com/a/b".into()),
+        resume: None,
+        claude_token: Some(enzarb_proto::Secret::new("browser-supplied")),
+    })
+    .unwrap()
+    .to_bytes()
+    .unwrap();
+    ws.send(Message::Binary(open)).await.unwrap();
+    let got = Frame::from_bytes(expect_sandbox(&mut h).await.into())
+        .unwrap()
+        .ctrl_message()
+        .unwrap();
+    match got {
+        Ctrl::Open {
+            channel: 3,
+            kind: ChannelKind::Acp,
+            repo: Some(repo),
+            claude_token: Some(t),
+            ..
+        } => {
+            assert_eq!(repo, "https://github.com/a/b");
+            assert_eq!(t.expose(), OWNER_TOKEN);
+        }
+        m => panic!("{m:?}"),
+    }
     // A stream larger than one frame, split by the sender, echoes back intact.
     let chunk = vec![b'x'; 200 * 1024];
     for _ in 0..4 {
@@ -711,7 +812,7 @@ async fn second_acp_open_on_a_socket_is_chat_limit() {
     .unwrap();
     assert_eq!(
         expect_sandbox(&mut h).await,
-        open_frame(5, ChannelKind::Acp, None)
+        injected(open_frame(5, ChannelKind::Acp, None))
     );
 }
 
@@ -735,7 +836,7 @@ async fn sandbox_open_error_codes_pass_through_and_free_the_slot() {
     ws.send(Message::Binary(retry.clone().into()))
         .await
         .unwrap();
-    assert_eq!(expect_sandbox(&mut h).await, retry);
+    assert_eq!(expect_sandbox(&mut h).await, injected(retry));
 }
 
 #[tokio::test]
@@ -806,4 +907,229 @@ async fn data_traffic_keeps_the_relay_alive_past_idle() {
         tokio::time::sleep(Duration::from_millis(250)).await;
         send_echo(&mut ws).await;
     }
+}
+
+fn ctrl_bytes(m: &Ctrl) -> Vec<u8> {
+    Frame::ctrl(m).unwrap().to_bytes().unwrap().to_vec()
+}
+
+fn data(payload: &'static [u8]) -> Message {
+    Message::Binary(Frame::data_bin(1, payload).to_bytes().unwrap())
+}
+
+/// Drain the sandbox's received frames until `pred` matches one.
+async fn sandbox_until(h: &mut Harness, pred: impl Fn(&Frame) -> bool) -> Vec<Frame> {
+    let mut seen = Vec::new();
+    loop {
+        let f = Frame::from_bytes(expect_sandbox(h).await.into()).unwrap();
+        let done = pred(&f);
+        seen.push(f);
+        if done {
+            return seen;
+        }
+    }
+}
+
+#[tokio::test]
+async fn acp_open_without_stored_token_is_no_credential_and_frees_slot() {
+    let mut h = harness_with(acp_features(), |_| {}).await;
+    h.store.delete_row("ruckc");
+    let (mut ws, _) = connect_ui(&h).await;
+    ws.send(Message::Binary(
+        open_frame(3, ChannelKind::Acp, None).into(),
+    ))
+    .await
+    .unwrap();
+    match next_ctrl(&mut ws).await {
+        Ctrl::OpenError { channel, code, .. } => {
+            assert_eq!((channel, code.as_deref()), (3, Some("no_credential")));
+        }
+        m => panic!("{m:?}"),
+    }
+    // Store a token: the retry on another channel goes through (slot freed).
+    h.seed("ruckc", "later-token");
+    ws.send(Message::Binary(
+        open_frame(5, ChannelKind::Acp, None).into(),
+    ))
+    .await
+    .unwrap();
+    let f = Frame::from_bytes(expect_sandbox(&mut h).await.into()).unwrap();
+    assert!(matches!(
+        f.ctrl_message().unwrap(),
+        Ctrl::Open { channel: 5, claude_token: Some(t), .. } if t.expose() == "later-token"
+    ));
+}
+
+#[tokio::test]
+async fn store_failure_on_open_is_answered_and_nothing_forwarded() {
+    let mut h = harness_with(acp_features(), |_| {}).await;
+    h.store
+        .fail
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let (mut ws, _) = connect_ui(&h).await;
+    ws.send(Message::Binary(
+        open_frame(3, ChannelKind::Acp, None).into(),
+    ))
+    .await
+    .unwrap();
+    match next_ctrl(&mut ws).await {
+        Ctrl::OpenError { code, .. } => {
+            assert_eq!(code.as_deref(), Some("credential_unavailable"))
+        }
+        m => panic!("{m:?}"),
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(h.sandbox_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn capture_is_stored_for_owner_and_never_reaches_browser() {
+    let logs = LogBuf::default();
+    let _log = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(logs.clone())
+            .finish(),
+    );
+    let mut h = harness_with(acp_features(), |_| {}).await;
+    h.store.delete_row("ruckc");
+    let (mut ws, _) = connect_ui(&h).await;
+    ws.send(data(b"capture")).await.unwrap();
+    match next_ctrl(&mut ws).await {
+        Ctrl::CredentialState {
+            configured: true,
+            scope: Some(s),
+            ..
+        } => assert_eq!(s, "user"),
+        m => panic!("{m:?}"),
+    }
+    assert_eq!(h.stored("ruckc").as_deref(), Some(CAPTURED));
+    assert_eq!(
+        h.store.puts.lock().unwrap().clone(),
+        vec![("ruckc".to_string(), false)]
+    );
+    // The sandbox got no ack for a non-legacy capture.
+    sandbox_until(&mut h, |f| f.frame_type == FrameType::DataBin).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(h.sandbox_rx.try_recv().is_err());
+    // Clear: deleted, answered, never forwarded.
+    ws.send(Message::Binary(
+        ctrl_bytes(&Ctrl::CredentialClear {
+            kind: CredentialKind::ClaudeOauth,
+        })
+        .into(),
+    ))
+    .await
+    .unwrap();
+    match next_ctrl(&mut ws).await {
+        Ctrl::CredentialState {
+            configured: false,
+            scope: Some(s),
+            ..
+        } => assert_eq!(s, "user"),
+        m => panic!("{m:?}"),
+    }
+    assert!(h.stored("ruckc").is_none());
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(h.sandbox_rx.try_recv().is_err());
+    // Relay still works; no frame carried the captured token to the browser
+    // (next_ctrl would have surfaced a credential_captured above).
+    send_echo(&mut ws).await;
+    // An acp open after clear gets no_credential (uncached read).
+    ws.send(Message::Binary(
+        open_frame(3, ChannelKind::Acp, None).into(),
+    ))
+    .await
+    .unwrap();
+    assert!(matches!(
+        next_ctrl(&mut ws).await,
+        Ctrl::OpenError { code: Some(c), .. } if c == "no_credential"
+    ));
+    let text = logs.text();
+    assert!(text.contains("claude credential stored"), "{text}");
+    for secret in [CAPTURED, OWNER_TOKEN, "CAPTURED-SECRET"] {
+        assert!(!text.contains(secret), "token leaked into logs");
+    }
+}
+
+#[derive(Clone, Default)]
+struct LogBuf(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl LogBuf {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+impl std::io::Write for LogBuf {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuf {
+    type Writer = LogBuf;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+fn is_ack(f: &Frame) -> bool {
+    f.frame_type == FrameType::Ctrl
+        && matches!(
+            f.ctrl_message(),
+            Ok(Ctrl::CredentialState { configured: true, scope: Some(ref s), .. }) if s == "user"
+        )
+}
+
+#[tokio::test]
+async fn legacy_capture_is_insert_only_and_acked_to_sandbox_after_write() {
+    let mut h = harness().await;
+    // ruckc already has a token: a legacy capture must not overwrite it.
+    let (mut ws, _) = connect_ui(&h).await;
+    ws.send(data(b"capture-legacy")).await.unwrap();
+    let seen = sandbox_until(&mut h, is_ack).await;
+    assert_eq!(seen.len(), 2);
+    assert_eq!(h.stored("ruckc").as_deref(), Some(OWNER_TOKEN));
+    assert_eq!(
+        h.store.puts.lock().unwrap().clone(),
+        vec![("ruckc".to_string(), true)]
+    );
+    // Store down: no ack, so the sandbox keeps its legacy file.
+    h.store
+        .fail
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    ws.send(data(b"capture-legacy")).await.unwrap();
+    sandbox_until(&mut h, |f| f.frame_type == FrameType::DataBin).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(h.sandbox_rx.try_recv().is_err());
+    // The browser never sees an ack or the capture for the legacy path.
+    h.store
+        .fail
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    send_echo(&mut ws).await;
+}
+
+#[tokio::test]
+async fn browser_cannot_send_credential_captured() {
+    let mut h = harness().await;
+    let (mut ws, _) = connect_ui(&h).await;
+    ws.send(Message::Binary(
+        ctrl_bytes(&Ctrl::CredentialCaptured {
+            kind: CredentialKind::ClaudeOauth,
+            token: Some(enzarb_proto::Secret::new("evil")),
+            legacy: None,
+        })
+        .into(),
+    ))
+    .await
+    .unwrap();
+    let (code, _) = close_of(&mut ws).await;
+    assert_eq!(code, 1008);
+    assert_eq!(h.stored("ruckc").as_deref(), Some(OWNER_TOKEN));
+    assert!(h.sandbox_rx.try_recv().is_err());
 }

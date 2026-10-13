@@ -9,7 +9,10 @@
 pub mod app;
 pub mod auth;
 pub mod config;
+pub mod credential;
 pub mod guard;
 pub mod kube_resolver;
+pub mod rekey;
 pub mod relay;
 pub mod resolver;
+pub mod store;
