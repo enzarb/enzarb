@@ -1,0 +1,64 @@
+{{- if or (eq .Values.sandbox.namespace .Release.Namespace) (has .Values.sandbox.namespace (list "kube-system" "kube-public" "kube-node-lease" "default")) }}
+{{- fail (printf "sandbox.namespace %q must be a dedicated namespace: it must not be the release namespace or kube-system, kube-public, kube-node-lease or default (default-deny and privileged Pod Security are applied to it)" .Values.sandbox.namespace) }}
+{{- end }}
+{{- /* Shared sandbox namespace (ADR-0013): every Project's sandbox objects live here. */}}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.sandbox.namespace }}
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-sandboxes") | nindent 4 }}
+    # Pod Security: privileged. The dockerd sidecar needs SYS_ADMIN/NET_ADMIN under gVisor and
+    # the kata profile is privileged (ADR-0012); gVisor is the isolation boundary. Explicit
+    # label so a stricter cluster default cannot reject sandbox pods.
+    pod-security.kubernetes.io/enforce: privileged
+  annotations:
+    # Keep on `helm uninstall`: the namespace holds every Project's workspace and docker
+    # volumes, so removing the chart must not delete user data. Delete it by hand.
+    helm.sh/resource-policy: keep
+---
+# Created with the release, so it exists before any Sandbox (the operator never creates it).
+# Sandbox pods run as this ServiceAccount: no token mounted and no Role/RoleBinding, so
+# sandboxes have no Kubernetes API access. Future access is limited to other namespaces.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.sandbox.serviceAccount }}
+  namespace: {{ .Values.sandbox.namespace }}
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-sandbox") | nindent 4 }}
+automountServiceAccountToken: false
+{{- with .Values.sandbox.limitRange }}
+---
+# Defaults for containers that set no resources; per-Project limits come from the pod itself.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: enzarb-sandbox-defaults
+  namespace: {{ $.Values.sandbox.namespace }}
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" $ "name" "enzarb-sandboxes") | nindent 4 }}
+spec:
+  limits:
+    - type: Container
+      {{- with .default }}
+      default:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .defaultRequest }}
+      defaultRequest:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+---
+# Namespace-wide default deny. The operator adds an allow policy per Project (sb-<project>).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: {{ .Values.sandbox.namespace }}
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-sandboxes") | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]

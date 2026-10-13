@@ -1,0 +1,93 @@
+{{- $c := .Values.workflows }}
+{{- $executor := contains "executor" $c.roles }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: enzarb-workflows
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-workflows") | nindent 4 }}
+spec:
+  replicas: {{ $c.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "enzarb.selector" (dict "ctx" . "name" "enzarb-workflows") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-workflows") | nindent 8 }}
+    spec:
+      serviceAccountName: enzarb-workflows
+      terminationGracePeriodSeconds: {{ $c.terminationGracePeriodSeconds }}
+      {{- include "enzarb.pullSecrets" . | nindent 6 }}
+      {{- include "enzarb.waitMigrations" . | nindent 6 }}
+      # the keyring files are root-owned; fsGroup makes them group-readable by the non-root uid
+      securityContext: { fsGroup: 65532 }
+      containers:
+        - name: workflows
+          image: {{ include "enzarb.image" $c }}
+          imagePullPolicy: {{ include "enzarb.pullPolicy" (dict "ctx" . "c" $c) }}
+          args: [run, --roles, {{ $c.roles | quote }}]
+          ports:
+            - { name: executor, containerPort: {{ if $executor }}{{ .Values.sandbox.executorCallbackPort }}{{ else }}8082{{ end }} }
+          env:
+            {{- include "enzarb.dbEnv" (dict "ctx" . "role" "workflows") | nindent 12 }}
+            {{- include "enzarb.secretEnv" (dict "name" "GITHUB_APP_ID" "secret" (include "enzarb.githubSecret" .) "key" (include "enzarb.githubKey" (dict "ctx" . "key" "appId"))) | nindent 12 }}
+            {{- include "enzarb.secretEnv" (dict "name" "GITHUB_APP_PRIVATE_KEY" "secret" (include "enzarb.githubSecret" .) "key" (include "enzarb.githubKey" (dict "ctx" . "key" "privateKey"))) | nindent 12 }}
+            {{- include "enzarb.secretEnv" (dict "name" "ENZARB_EXECUTOR_CALLBACK_SECRET" "secret" (include "enzarb.callbackSecret" .) "key" (include "enzarb.callbackKey" .)) | nindent 12 }}
+            {{- if and $executor $c.npmToken.enabled }}
+            - name: ENZARB_NPM_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $c.npmToken.existingSecret | quote }}
+                  key: {{ $c.npmToken.key | quote }}
+                  optional: true
+            {{- end }}
+            - { name: ENZARB_EXECUTOR_URL, value: {{ printf "http://enzarb-workflows-executor.%s.svc:%v" .Release.Namespace .Values.sandbox.executorCallbackPort | quote }} }
+            {{- if $executor }}
+            {{- include "enzarb.claudeKeyEnv" . | nindent 12 }}
+            - { name: ENZARB_EXECUTOR_LISTEN, value: {{ printf "0.0.0.0:%v" .Values.sandbox.executorCallbackPort | quote }} }
+            {{- end }}
+            - { name: ENZARB_PUBLIC_URL, value: {{ include "enzarb.publicUrl" . | quote }} }
+            - { name: ENZARB_DB_MAX_CONNECTIONS, value: {{ $c.dbMaxConnections | quote }} }
+            - { name: ENZARB_BOT_HANDLE, value: {{ $c.botHandle | quote }} }
+            - { name: ENZARB_BOT_LOGIN, value: {{ $c.botLogin | quote }} }
+            - { name: RUST_LOG, value: {{ .Values.rustLog | quote }} }
+            {{- with $c.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          # /healthz is on sandbox.executorCallbackPort with the executor role, otherwise on 8082.
+          readinessProbe:
+            httpGet: { path: /healthz, port: executor }
+          livenessProbe:
+            httpGet: { path: /healthz, port: executor }
+            initialDelaySeconds: 10
+          {{- with $c.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext: {{ include "enzarb.securityContext" (dict "ctx" . "uid" 65532) | fromYaml | toJson }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            {{- if $executor }}
+            {{- include "enzarb.claudeKeyMount" . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - { name: tmp, emptyDir: {} }
+        {{- if $executor }}
+        {{- include "enzarb.claudeKeyVolume" . | nindent 8 }}
+        {{- end }}
+{{- if $executor }}
+---
+# Internal only: sandbox-init callbacks (/v1/runs/{id}/finished) and health.
+apiVersion: v1
+kind: Service
+metadata:
+  name: enzarb-workflows-executor
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-workflows") | nindent 4 }}
+spec:
+  selector:
+    {{- include "enzarb.selector" (dict "ctx" . "name" "enzarb-workflows") | nindent 4 }}
+  ports:
+    - { name: executor, port: {{ .Values.sandbox.executorCallbackPort }}, targetPort: executor }
+{{- end }}

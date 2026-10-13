@@ -1,0 +1,77 @@
+{{- $c := .Values.ui }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: enzarb-ui
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-ui") | nindent 4 }}
+spec:
+  replicas: {{ $c.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "enzarb.selector" (dict "ctx" . "name" "enzarb-ui") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-ui") | nindent 8 }}
+    spec:
+      serviceAccountName: enzarb-ui
+      {{- include "enzarb.pullSecrets" . | nindent 6 }}
+      {{- include "enzarb.waitMigrations" . | nindent 6 }}
+      containers:
+        - name: ui
+          image: {{ include "enzarb.image" $c }}
+          imagePullPolicy: {{ include "enzarb.pullPolicy" (dict "ctx" . "c" $c) }}
+          ports:
+            - { name: http, containerPort: 3000 }
+          env:
+            {{- include "enzarb.dbEnv" (dict "ctx" . "role" "ui" "urlSslmode" true) | nindent 12 }}
+            {{- include "enzarb.secretEnv" (dict "name" "ENZARB_SESSION_JWT_SECRET" "secret" (include "enzarb.jwtSecret" .) "key" (include "enzarb.jwtKey" .)) | nindent 12 }}
+            {{- include "enzarb.secretEnv" (dict "name" "GITHUB_OAUTH_CLIENT_ID" "secret" (include "enzarb.githubSecret" .) "key" (include "enzarb.githubKey" (dict "ctx" . "key" "oauthClientId"))) | nindent 12 }}
+            {{- include "enzarb.secretEnv" (dict "name" "GITHUB_OAUTH_CLIENT_SECRET" "secret" (include "enzarb.githubSecret" .) "key" (include "enzarb.githubKey" (dict "ctx" . "key" "oauthClientSecret"))) | nindent 12 }}
+            {{- if .Values.realtime.enabled }}
+            {{- include "enzarb.secretEnv" (dict "name" "ENZARB_REALTIME_JWT_SECRET" "secret" (include "enzarb.realtimeJwtSecret" .) "key" (include "enzarb.realtimeJwtKey" .)) | nindent 12 }}
+            {{- end }}
+            - { name: ENZARB_PUBLIC_URL, value: {{ include "enzarb.publicUrl" . | quote }} }
+            - { name: ENZARB_COMPONENT_VERSIONS, value: {{ include "enzarb.componentVersions" . | quote }} }
+            - { name: ENZARB_GITHUB_APP_SLUG, value: {{ .Values.githubApp.slug | default "enzarb" | quote }} }
+            # adapter-node derives the origin for its CSRF check from this header; the Gateway forwards it.
+            - { name: PROTOCOL_HEADER, value: x-forwarded-proto }
+            {{- with $c.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          # /healthz and /readyz come from enzarb-ui#13; set ui.probes.http=false for TCP probes.
+          {{- if $c.probes.http }}
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+          {{- else }}
+          readinessProbe:
+            tcpSocket: { port: http }
+          livenessProbe:
+            tcpSocket: { port: http }
+            initialDelaySeconds: 10
+          {{- end }}
+          {{- with $c.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext: {{ include "enzarb.securityContext" (dict "ctx" . "uid" 1000) | fromYaml | toJson }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: enzarb-ui
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-ui") | nindent 4 }}
+spec:
+  selector:
+    {{- include "enzarb.selector" (dict "ctx" . "name" "enzarb-ui") | nindent 4 }}
+  ports:
+    - { name: http, port: 3000, targetPort: http }

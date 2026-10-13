@@ -1,0 +1,32 @@
+{{- if not .Values.secrets.claudeKey.existingSecret }}
+{{- /* Keyring for per-user Claude tokens: data keys <key_id> (32 random bytes) plus `active`
+       (the id new tokens are encrypted with). Generated once, then kept: the live Secret is
+       reused whole (including older keys kept for rotation) when it holds an `active` entry
+       that names one of its keys; otherwise a fresh id and key are generated together. */}}
+{{- $existing := (lookup "v1" "Secret" .Release.Namespace (include "enzarb.claudeKeySecret" .)) | default dict }}
+{{- $old := get $existing "data" | default dict }}
+{{- $data := dict }}
+{{- if and (hasKey $old "active") (hasKey $old (get $old "active" | b64dec)) }}
+{{- $data = $old }}
+{{- else }}
+{{- $id := randBytes 16 | sha256sum | trunc 16 }}
+{{- $_ := set $data $id (randBytes 32) }}
+{{- $_ := set $data "active" ($id | b64enc) }}
+{{- end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "enzarb.claudeKeySecret" . }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb") | nindent 4 }}
+type: Opaque
+data:
+  active: {{ get $data "active" }}
+  {{- range $k, $v := $data }}
+  {{- if ne $k "active" }}
+  {{ $k }}: {{ $v }}
+  {{- end }}
+  {{- end }}
+{{- end }}

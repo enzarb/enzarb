@@ -1,0 +1,62 @@
+{{- $c := .Values.sandboxProxy }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: enzarb-sandbox-proxy
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-sandbox-proxy") | nindent 4 }}
+spec:
+  replicas: {{ $c.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "enzarb.selector" (dict "ctx" . "name" "enzarb-sandbox-proxy") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-sandbox-proxy") | nindent 8 }}
+    spec:
+      serviceAccountName: enzarb-sandbox-proxy
+      {{- include "enzarb.pullSecrets" . | nindent 6 }}
+      # the keyring files are root-owned; fsGroup makes them group-readable by the non-root uid
+      securityContext: { fsGroup: 65532 }
+      containers:
+        - name: proxy
+          image: {{ include "enzarb.image" $c }}
+          imagePullPolicy: {{ include "enzarb.pullPolicy" (dict "ctx" . "c" $c) }}
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            {{- include "enzarb.dbEnv" (dict "ctx" . "role" "sandbox-proxy") | nindent 12 }}
+            {{- include "enzarb.claudeKeyEnv" . | nindent 12 }}
+            {{- include "enzarb.secretEnv" (dict "name" "ENZARB_SESSION_JWT_SECRET" "secret" (include "enzarb.jwtSecret" .) "key" (include "enzarb.jwtKey" .)) | nindent 12 }}
+            - { name: PROXY_LISTEN, value: 0.0.0.0:8080 }
+            - { name: PROXY_IDLE_TIMEOUT_SECS, value: {{ $c.idleTimeoutSecs | quote }} }
+            - { name: RUST_LOG, value: {{ .Values.rustLog | quote }} }
+            {{- with $c.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+          {{- with $c.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext: {{ include "enzarb.securityContext" (dict "ctx" . "uid" 65532) | fromYaml | toJson }}
+          volumeMounts:
+            {{- include "enzarb.claudeKeyMount" . | nindent 12 }}
+      volumes:
+        {{- include "enzarb.claudeKeyVolume" . | nindent 8 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: enzarb-sandbox-proxy
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-sandbox-proxy") | nindent 4 }}
+spec:
+  selector:
+    {{- include "enzarb.selector" (dict "ctx" . "name" "enzarb-sandbox-proxy") | nindent 4 }}
+  ports:
+    - { name: http, port: 8080, targetPort: http }

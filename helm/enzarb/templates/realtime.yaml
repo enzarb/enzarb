@@ -1,0 +1,65 @@
+{{- if .Values.realtime.enabled }}
+{{- $c := .Values.realtime }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: enzarb-realtime
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-realtime") | nindent 4 }}
+spec:
+  # Stateless: every replica holds its own LISTEN.
+  replicas: {{ $c.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "enzarb.selector" (dict "ctx" . "name" "enzarb-realtime") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-realtime") | nindent 8 }}
+    spec:
+      serviceAccountName: enzarb-realtime
+      terminationGracePeriodSeconds: {{ $c.terminationGracePeriodSeconds }}
+      {{- include "enzarb.pullSecrets" . | nindent 6 }}
+      {{- include "enzarb.waitMigrations" . | nindent 6 }}
+      containers:
+        - name: realtime
+          image: {{ include "enzarb.image" $c }}
+          imagePullPolicy: {{ include "enzarb.pullPolicy" (dict "ctx" . "c" $c) }}
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            {{- include "enzarb.dbEnv" (dict "ctx" . "role" "realtime") | nindent 12 }}
+            {{- include "enzarb.secretEnv" (dict "name" "ENZARB_REALTIME_JWT_SECRET" "secret" (include "enzarb.realtimeJwtSecret" .) "key" (include "enzarb.realtimeJwtKey" .)) | nindent 12 }}
+            - { name: ENZARB_REALTIME_ALLOWED_ORIGINS, value: {{ include "enzarb.realtimeAllowedOrigins" . | quote }} }
+            - { name: RUST_LOG, value: {{ .Values.rustLog | quote }} }
+            {{- with $c.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          # /readyz is 200 only while LISTEN is up.
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+          {{- with $c.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext: {{ include "enzarb.securityContext" (dict "ctx" . "uid" 10001) | fromYaml | toJson }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: enzarb-realtime
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-realtime") | nindent 4 }}
+spec:
+  selector:
+    {{- include "enzarb.selector" (dict "ctx" . "name" "enzarb-realtime") | nindent 4 }}
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+{{- end }}

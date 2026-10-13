@@ -1,0 +1,66 @@
+[tools]
+helm = "4.3.0"
+kubeconform = "0.8.0"
+shellcheck = "latest"
+yq = "4.54.1"
+
+[tasks.lint]
+description = "helm lint (default, dev and oldie values)"
+run = "helm lint enzarb --set 'sandbox.egress.clusterCIDRs={10.0.0.0/8}' && helm lint enzarb -f enzarb/values-dev.yaml && helm lint enzarb -f enzarb/values-oldie.yaml"
+
+[tasks.guard]
+description = "sandbox.namespace guard: dangerous namespaces must fail rendering"
+run = """
+for ns in enzarb kube-system kube-public kube-node-lease default; do
+  if helm template enzarb enzarb --namespace enzarb --set "sandbox.egress.clusterCIDRs={10.0.0.0/8}" --set sandbox.namespace=$ns >/dev/null 2>&1; then echo "guard: sandbox.namespace=$ns rendered" >&2; exit 1; fi
+done
+echo guard ok
+"""
+
+[tasks.golden]
+description = "Diff rendered templates against tests/golden (pass --update to rewrite)"
+run = "scripts/golden.sh"
+
+[tasks.realtime]
+description = "Assert the enzarb-realtime wiring (enabled, disabled, replicas override)"
+run = "bash scripts/assert-realtime.sh"
+
+[tasks.componentversions]
+description = "Assert ENZARB_COMPONENT_VERSIONS on the UI Deployment (keys, values, disabled components, override)"
+run = "bash scripts/assert-component-versions.sh"
+
+[tasks.npmtoken]
+description = "Assert the workflows ENZARB_NPM_TOKEN wiring (default, overrides, disabled, no executor role)"
+run = "bash scripts/assert-npm-token.sh"
+
+[tasks.claudekey]
+description = "Assert the per-user Claude token keyring wiring (mounts, isolation, existingSecret, rekey Job)"
+run = "bash scripts/assert-claude-key.sh"
+
+[tasks.rekey]
+description = "Run the Claude token rekey Job (ENZARB_CHART, default the published chart; ENZARB_NAMESPACE, default enzarb)"
+run = """
+ns="${ENZARB_NAMESPACE:-enzarb}"
+vals="$(mktemp)"
+helm get values enzarb -n "$ns" -o yaml > "$vals"
+helm template enzarb "${ENZARB_CHART:-oci://ghcr.io/enzarb/charts/enzarb}" --namespace "$ns" --is-upgrade -f "$vals" \
+  --set secrets.claudeKey.rekey.enabled=true --set-string "secrets.claudeKey.rekey.suffix=$(date +%s)" \
+  --show-only templates/claude-rekey.yaml | kubectl apply -n "$ns" -f -
+rm -f "$vals"
+"""
+
+[tasks.kubeconform]
+description = "Validate rendered manifests with kubeconform"
+run = "scripts/kubeconform.sh"
+
+[tasks.pgop]
+description = "Validate pgop resources against the vendored pgop CRDs"
+run = "scripts/check-pgop.py"
+
+[tasks.sync-crds]
+description = "Vendor the Project CRD from ../enzarb-sandbox-operator"
+run = "scripts/sync-crds.sh"
+
+[tasks.test]
+description = "All checks"
+depends = ["lint", "guard", "golden", "realtime", "componentversions", "npmtoken", "claudekey", "kubeconform", "pgop"]
