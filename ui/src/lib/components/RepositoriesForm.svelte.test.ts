@@ -25,8 +25,65 @@ const choices = [
 ];
 const box = (name: string) => page.getByRole('checkbox', { name, exact: true });
 const saveButton = () => page.getByRole('button', { name: 'Save repositories' });
+const editButton = () => page.getByRole('button', { name: 'Edit repositories' });
 
 describe('RepositoriesForm', () => {
+	it('is read-only until Edit, and Cancel discards changes', async () => {
+		render(RepositoriesForm, {
+			project: view(['https://github.com/enzarb/enzarb-ui']),
+			choices,
+			save: vi.fn()
+		});
+		await expect
+			.element(page.getByRole('link', { name: 'enzarb/enzarb-ui' }))
+			.toHaveAttribute('href', 'https://github.com/enzarb/enzarb-ui');
+		await expect.element(page.getByText(/No longer in your GitHub list/)).toBeInTheDocument();
+		await expect.element(box('enzarb/enzarb-ui')).not.toBeInTheDocument();
+		await editButton().click();
+		await box('enzarb/enzarb').click();
+		await page.getByRole('button', { name: 'Cancel' }).click();
+		await expect.element(box('enzarb/enzarb')).not.toBeInTheDocument();
+		await expect
+			.element(page.getByRole('link', { name: 'enzarb/enzarb', exact: true }))
+			.not.toBeInTheDocument();
+		await editButton().click();
+		await expect.element(box('enzarb/enzarb')).not.toBeChecked();
+	});
+
+	it('returns to the read-only view with the new list after saving', async () => {
+		const save = vi.fn(async () => ({ ok: true as const }));
+		const r = render(RepositoriesForm, {
+			project: view(['https://github.com/enzarb/enzarb']),
+			choices,
+			save
+		});
+		await editButton().click();
+		await box('enzarb/other').click();
+		await saveButton().click();
+		await r.rerender({
+			project: view(['https://github.com/enzarb/enzarb', 'https://github.com/enzarb/other'])
+		});
+		await expect.element(page.getByRole('link', { name: 'enzarb/other' })).toBeInTheDocument();
+		await expect.element(editButton()).toBeInTheDocument();
+		await expect.element(saveButton()).not.toBeInTheDocument();
+		await expect
+			.element(page.getByRole('list', { name: 'Repository change progress' }))
+			.toBeInTheDocument();
+	});
+
+	it('shows no Edit button to non-owners', async () => {
+		render(RepositoriesForm, {
+			project: view(['https://github.com/enzarb/enzarb']),
+			choices,
+			save: vi.fn(),
+			canEdit: false
+		});
+		await expect
+			.element(page.getByText('Only the project owner can change these settings.'))
+			.toBeInTheDocument();
+		await expect.element(editButton()).not.toBeInTheDocument();
+	});
+
 	it('swaps an archived repository for a new one and shows the checklist', async () => {
 		const save = vi.fn(async () => ({ ok: true as const }));
 		render(RepositoriesForm, {
@@ -34,6 +91,7 @@ describe('RepositoriesForm', () => {
 			choices,
 			save
 		});
+		await editButton().click();
 		await expect.element(box('enzarb/enzarb-ui')).toBeChecked();
 		await expect
 			.element(page.getByText('No longer in your GitHub list (archived or access removed)'))
@@ -54,6 +112,7 @@ describe('RepositoriesForm', () => {
 			choices,
 			save: vi.fn()
 		});
+		await editButton().click();
 		await box('enzarb/enzarb').click();
 		await expect.element(page.getByText('Select at least one repository.')).toBeInTheDocument();
 		await expect.element(saveButton()).toBeDisabled();
@@ -67,6 +126,7 @@ describe('RepositoriesForm', () => {
 			taken: { 'github:enzarb/other': 'q' },
 			save
 		});
+		await editButton().click();
 		await expect.element(box('enzarb/other')).toBeDisabled();
 		await expect.element(page.getByText('In "q"')).toBeInTheDocument();
 	});
