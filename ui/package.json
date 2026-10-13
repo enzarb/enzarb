@@ -7,7 +7,8 @@
 		"dev": "node --env-file-if-exists=.env node_modules/vite/bin/vite.js dev",
 		"build": "vite build",
 		"preview": "vite preview",
-		"prepare": "svelte-kit sync || echo ''",
+		"proto:build": "npm --prefix ../proto ci --ignore-scripts && npm --prefix ../proto run build",
+		"prepare": "npm run proto:build && (svelte-kit sync || echo '')",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"lint": "prettier --check . && eslint .",
@@ -49,7 +50,7 @@
 	},
 	"dependencies": {
 		"@agentclientprotocol/sdk": "^1.8.0",
-		"@enzarb/proto": "0.1.0-main.10",
+		"@enzarb/proto": "file:../proto",
 		"@kubernetes/client-node": "^2.0.0",
 		"@xterm/addon-fit": "^0.11.0",
 		"@xterm/xterm": "^6.0.0",
