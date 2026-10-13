@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Project } from '#lib/project-types.ts';
 import { KubeError, type ProjectStore } from './kube.ts';
-import { createProjects, repositoryChoices, snapshotProblem } from './project-onboarding.ts';
+import {
+	createProjects,
+	repositoryChoices,
+	setRepositories,
+	snapshotProblem
+} from './project-onboarding.ts';
 import type { UserRepositorySnapshot } from './user-repositories.ts';
 
 const NOW = new Date('2026-06-10T12:00:00Z');
@@ -356,5 +361,70 @@ describe('repositoryChoices', () => {
 		expect(repositoryChoices(snap(hoursAgo(48)), [], 'alice', NOW).problem?.code).toBe(
 			'stale-snapshot'
 		);
+	});
+});
+
+describe('setRepositories', () => {
+	const setRepos = (store: ProjectStore, keys: string[], snapshot = snap(), owner = 'alice') =>
+		setRepositories({ store, owner, snapshot, now: NOW }, 'p', keys);
+	const old = 'https://github.com/acme/archived';
+
+	it('replaces the list: keeps stored entries, builds added ones from the snapshot', async () => {
+		const store = fakeStore([project('p', 'alice', [old, 'https://github.com/acme/web'])]);
+		const r = await setRepos(store, ['github:acme/api', 'github:acme/web']);
+		expect(r.ok).toBe(true);
+		expect(store.update).toHaveBeenCalledWith('p', {
+			repositories: [
+				{ url: 'https://github.com/acme/api', connector: 'github', defaultBranch: 'trunk' },
+				{ url: 'https://github.com/acme/web', connector: 'github', defaultBranch: 'main' }
+			]
+		});
+	});
+
+	it('removes archived repositories even with a stale snapshot', async () => {
+		const store = fakeStore([project('p', 'alice', [old, 'https://github.com/acme/web'])]);
+		const r = await setRepos(store, ['github:acme/web'], snap(hoursAgo(48)));
+		expect(r.ok).toBe(true);
+	});
+
+	it('needs a fresh snapshot to add', async () => {
+		const store = fakeStore([project('p', 'alice', [old])]);
+		const r = await setRepos(store, ['github:acme/web'], snap(hoursAgo(48)));
+		expect(r).toMatchObject({ ok: false, code: 'stale-snapshot' });
+		expect(store.update).not.toHaveBeenCalled();
+	});
+
+	it('refuses repositories outside the snapshot, empty lists and duplicates', async () => {
+		const store = fakeStore([project('p', 'alice', [old])]);
+		expect(await setRepos(store, ['github:evil/repo'])).toMatchObject({
+			ok: false,
+			message: 'evil/repo is not available to you'
+		});
+		expect(await setRepos(store, [])).toMatchObject({ ok: false, code: 'invalid' });
+		expect(await setRepos(store, ['github:acme/web', 'github:acme/web'])).toMatchObject({
+			ok: false,
+			code: 'invalid'
+		});
+		expect(store.update).not.toHaveBeenCalled();
+	});
+
+	it('enforces one Project per repository', async () => {
+		const store = fakeStore([
+			project('p', 'alice', [old]),
+			project('mine', 'alice', ['https://github.com/acme/web']),
+			project('theirs', 'bob', ['https://github.com/acme/api'])
+		]);
+		expect(await setRepos(store, ['github:acme/web'])).toMatchObject({
+			message: 'acme/web is already in "mine"'
+		});
+		expect(await setRepos(store, ['github:acme/api'])).toMatchObject({
+			message: 'acme/api is already in another project'
+		});
+		expect(store.update).not.toHaveBeenCalled();
+	});
+
+	it('is not-found for other owners', async () => {
+		const store = fakeStore([project('p', 'bob', [old])]);
+		expect(await setRepos(store, ['github:acme/web'])).toMatchObject({ code: 'not-found' });
 	});
 });

@@ -5,7 +5,7 @@ import {
 	PatchStrategy,
 	setHeaderOptions
 } from '@kubernetes/client-node';
-import type { Project } from '#lib/project-types.ts';
+import type { Project, Repository } from '#lib/project-types.ts';
 
 const GROUP = 'enzarb.dev';
 const VERSION = 'v1alpha1';
@@ -33,6 +33,8 @@ export interface ProjectStore {
 export interface SpecPatch {
 	maxRuns?: number | null;
 	sandbox?: { cpu?: number | null; memory?: string | null; storage?: string };
+	/** Replaces the whole list (merge patch replaces arrays). */
+	repositories?: Repository[];
 }
 
 function wrap(e: unknown): never {

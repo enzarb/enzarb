@@ -41,6 +41,11 @@ export const getProject = () =>
 export const deleteProject = async () => {};
 export const setMaxRuns = async () => {};
 export const setSandboxResources = async () => {};
+export const setRepositories = async () => ({ ok: true as const });
+export const repositoryChoices = () => ({
+	current: { repositories: [], taken: {}, problem: null },
+	refresh: async () => {}
+});
 export const claudeCredential = () =>
 	fakeQuery(() => ({
 		value: behavior.settingsError ? undefined : { configured: false, updatedAt: null },
