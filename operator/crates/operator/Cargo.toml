@@ -1,0 +1,26 @@
+[package]
+name = "enzarb-sandbox-operator"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "enzarb-sandbox-operator"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+clap = { version = "4", features = ["derive", "env"] }
+enzarb-crds = { path = "../enzarb-crds" }
+futures = "0.3"
+k8s-openapi.workspace = true
+kube = { workspace = true, features = ["client", "runtime", "rustls-tls", "ring"] }
+rand = "0.9"
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "sync"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
