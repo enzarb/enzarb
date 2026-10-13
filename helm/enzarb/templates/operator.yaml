@@ -7,6 +7,7 @@ metadata:
     {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-sandbox-operator") | nindent 4 }}
 spec:
   replicas: {{ $c.replicaCount }}
+  {{- include "enzarb.rollout" $c | nindent 2 }}
   selector:
     matchLabels:
       {{- include "enzarb.selector" (dict "ctx" . "name" "enzarb-sandbox-operator") | nindent 6 }}
@@ -16,6 +17,7 @@ spec:
         {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-sandbox-operator") | nindent 8 }}
     spec:
       serviceAccountName: enzarb-sandbox-operator
+      terminationGracePeriodSeconds: {{ $c.terminationGracePeriodSeconds }}
       {{- include "enzarb.pullSecrets" . | nindent 6 }}
       containers:
         - name: operator
@@ -69,8 +71,12 @@ spec:
             {{- end }}
           readinessProbe:
             httpGet: { path: /readyz, port: health }
+            periodSeconds: 2
           livenessProbe:
             httpGet: { path: /healthz, port: health }
+          {{- with include "enzarb.preStop" $c }}
+          {{- . | nindent 10 }}
+          {{- end }}
           {{- with $c.resources }}
           resources:
             {{- toYaml . | nindent 12 }}

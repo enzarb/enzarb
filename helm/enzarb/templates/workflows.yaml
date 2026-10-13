@@ -8,6 +8,7 @@ metadata:
     {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-workflows") | nindent 4 }}
 spec:
   replicas: {{ $c.replicaCount }}
+  {{- include "enzarb.rollout" $c | nindent 2 }}
   selector:
     matchLabels:
       {{- include "enzarb.selector" (dict "ctx" . "name" "enzarb-workflows") | nindent 6 }}
@@ -58,9 +59,13 @@ spec:
           # /healthz is on sandbox.executorCallbackPort with the executor role, otherwise on 8082.
           readinessProbe:
             httpGet: { path: /healthz, port: executor }
+            periodSeconds: 2
           livenessProbe:
             httpGet: { path: /healthz, port: executor }
             initialDelaySeconds: 10
+          {{- with include "enzarb.preStop" $c }}
+          {{- . | nindent 10 }}
+          {{- end }}
           {{- with $c.resources }}
           resources:
             {{- toYaml . | nindent 12 }}

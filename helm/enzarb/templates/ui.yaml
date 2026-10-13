@@ -7,6 +7,7 @@ metadata:
     {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-ui") | nindent 4 }}
 spec:
   replicas: {{ $c.replicaCount }}
+  {{- include "enzarb.rollout" $c | nindent 2 }}
   selector:
     matchLabels:
       {{- include "enzarb.selector" (dict "ctx" . "name" "enzarb-ui") | nindent 6 }}
@@ -16,6 +17,7 @@ spec:
         {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-ui") | nindent 8 }}
     spec:
       serviceAccountName: enzarb-ui
+      terminationGracePeriodSeconds: {{ $c.terminationGracePeriodSeconds }}
       {{- include "enzarb.pullSecrets" . | nindent 6 }}
       {{- include "enzarb.waitMigrations" . | nindent 6 }}
       containers:
@@ -44,15 +46,20 @@ spec:
           {{- if $c.probes.http }}
           readinessProbe:
             httpGet: { path: /readyz, port: http }
+            periodSeconds: 2
           livenessProbe:
             httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 10
           {{- else }}
           readinessProbe:
             tcpSocket: { port: http }
+            periodSeconds: 2
           livenessProbe:
             tcpSocket: { port: http }
             initialDelaySeconds: 10
+          {{- end }}
+          {{- with include "enzarb.preStop" $c }}
+          {{- . | nindent 10 }}
           {{- end }}
           {{- with $c.resources }}
           resources:

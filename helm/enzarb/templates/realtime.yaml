@@ -9,6 +9,7 @@ metadata:
 spec:
   # Stateless: every replica holds its own LISTEN.
   replicas: {{ $c.replicaCount }}
+  {{- include "enzarb.rollout" $c | nindent 2 }}
   selector:
     matchLabels:
       {{- include "enzarb.selector" (dict "ctx" . "name" "enzarb-realtime") | nindent 6 }}
@@ -38,9 +39,13 @@ spec:
           # /readyz is 200 only while LISTEN is up.
           readinessProbe:
             httpGet: { path: /readyz, port: http }
+            periodSeconds: 2
           livenessProbe:
             httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 10
+          {{- with include "enzarb.preStop" $c }}
+          {{- . | nindent 10 }}
+          {{- end }}
           {{- with $c.resources }}
           resources:
             {{- toYaml . | nindent 12 }}

@@ -73,6 +73,7 @@ metadata:
     {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-updater") | nindent 4 }}
 spec:
   replicas: {{ $c.replicaCount }}
+  {{- include "enzarb.rollout" $c | nindent 2 }}
   selector:
     matchLabels:
       {{- include "enzarb.selector" (dict "ctx" . "name" "enzarb-updater") | nindent 6 }}
@@ -82,6 +83,7 @@ spec:
         {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-updater") | nindent 8 }}
     spec:
       serviceAccountName: enzarb-updater
+      terminationGracePeriodSeconds: {{ $c.terminationGracePeriodSeconds }}
       {{- include "enzarb.pullSecrets" . | nindent 6 }}
       containers:
         - name: updater
@@ -106,6 +108,9 @@ spec:
             httpGet: { path: {{ if gt $pollSecs 0 }}/readyz{{ else }}/healthz{{ end }}, port: http }
           livenessProbe:
             httpGet: { path: /healthz, port: http }
+          {{- with include "enzarb.preStop" $c }}
+          {{- . | nindent 10 }}
+          {{- end }}
           {{- with $c.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
