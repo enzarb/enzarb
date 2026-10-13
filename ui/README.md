@@ -26,4 +26,5 @@ A Playwright smoke test (`e2e/chat.spec.ts`) opens the chat page, waits for it t
 ## Deployment notes
 
 - Behind the gateway the pod sees plain HTTP, and adapter-node derives the request origin (used by SvelteKit's CSRF check) from `X-Forwarded-Proto`; the image sets `PROTOCOL_HEADER=x-forwarded-proto`. The gateway must send that header.
+- The About page (`/about`) shows deployed versions from the optional `ENZARB_COMPONENT_VERSIONS` env, JSON written by the chart: `{"chart":"0.4.1","components":{"enzarb-ui":"v0.9.0","enzarb-operator":"v0.7.2"}}`. Missing entries show as `unknown`. Release notes come from GitHub (unauthenticated, cached 10 minutes in memory) and are omitted if GitHub is unreachable.
 - Sessions are an httpOnly `enzarb_session` cookie; only the sha-256 of the token is stored in `app.sessions`.

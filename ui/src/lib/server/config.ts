@@ -14,9 +14,50 @@ export interface Config {
 	 * TODO: remove once enzarb-realtime#8 is released everywhere.
 	 */
 	realtimeLegacyTokenUrl: boolean;
+	/**
+	 * Deployed versions written by the chart (ENZARB_COMPONENT_VERSIONS, optional JSON
+	 * `{"chart": "0.4.1", "components": {"enzarb-ui": "v0.9.0"}}`). Empty when unset.
+	 */
+	componentVersions: ComponentVersions;
 }
 
-type RequiredKey = Exclude<keyof Config, 'githubAppSlug' | 'realtimeLegacyTokenUrl'>;
+export interface ComponentVersions {
+	chart?: string;
+	components: Record<string, string>;
+}
+
+type RequiredKey = Exclude<
+	keyof Config,
+	'githubAppSlug' | 'realtimeLegacyTokenUrl' | 'componentVersions'
+>;
+
+function parseComponentVersions(raw: string | undefined): ComponentVersions {
+	const text = raw?.trim();
+	if (!text) return { components: {} };
+	const name = 'ENZARB_COMPONENT_VERSIONS';
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		throw new Error(`${name} must be valid JSON`);
+	}
+	const isObject = (v: unknown): v is Record<string, unknown> =>
+		typeof v === 'object' && v !== null && !Array.isArray(v);
+	if (!isObject(parsed)) throw new Error(`${name} must be a JSON object`);
+	const out: ComponentVersions = { components: {} };
+	if (parsed.chart !== undefined) {
+		if (typeof parsed.chart !== 'string') throw new Error(`${name}.chart must be a string`);
+		out.chart = parsed.chart;
+	}
+	if (parsed.components !== undefined) {
+		if (!isObject(parsed.components)) throw new Error(`${name}.components must be an object`);
+		for (const [key, value] of Object.entries(parsed.components)) {
+			if (typeof value !== 'string') throw new Error(`${name}.components.${key} must be a string`);
+			out.components[key] = value;
+		}
+	}
+	return out;
+}
 
 const REQUIRED: Record<RequiredKey, string> = {
 	databaseUrl: 'DATABASE_URL',
@@ -60,7 +101,12 @@ export function parseConfig(source: Record<string, string | undefined>): Config 
 	if (legacy && legacy !== 'true' && legacy !== 'false') {
 		throw new Error('ENZARB_REALTIME_LEGACY_TOKEN_URL must be true or false');
 	}
-	return { ...out, githubAppSlug, realtimeLegacyTokenUrl: legacy === 'true' };
+	return {
+		...out,
+		githubAppSlug,
+		realtimeLegacyTokenUrl: legacy === 'true',
+		componentVersions: parseComponentVersions(source.ENZARB_COMPONENT_VERSIONS)
+	};
 }
 
 let cached: Config | undefined;

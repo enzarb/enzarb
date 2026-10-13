@@ -21,7 +21,33 @@ describe('parseConfig', () => {
 			githubOauthClientSecret: 'secret',
 			publicUrl: 'https://enzarb.example.com',
 			githubAppSlug: 'enzarb',
-			realtimeLegacyTokenUrl: false
+			realtimeLegacyTokenUrl: false,
+			componentVersions: { components: {} }
+		});
+	});
+
+	describe('ENZARB_COMPONENT_VERSIONS', () => {
+		const parse = (v?: string) =>
+			parseConfig({ ...valid, ENZARB_COMPONENT_VERSIONS: v }).componentVersions;
+
+		it('is an empty map when absent or blank', () => {
+			expect(parse(undefined)).toEqual({ components: {} });
+			expect(parse('  ')).toEqual({ components: {} });
+		});
+		it('parses valid JSON', () => {
+			expect(parse('{"chart":"0.4.1","components":{"enzarb-ui":"v0.9.0"}}')).toEqual({
+				chart: '0.4.1',
+				components: { 'enzarb-ui': 'v0.9.0' }
+			});
+			expect(parse('{}')).toEqual({ components: {} });
+		});
+		it('rejects invalid JSON, non-objects and non-string tags', () => {
+			expect(() => parse('{nope')).toThrow(/valid JSON/);
+			expect(() => parse('[]')).toThrow(/JSON object/);
+			expect(() => parse('"x"')).toThrow(/JSON object/);
+			expect(() => parse('{"components":[]}')).toThrow(/components must be an object/);
+			expect(() => parse('{"components":{"enzarb-ui":1}}')).toThrow(/enzarb-ui must be a string/);
+			expect(() => parse('{"chart":2}')).toThrow(/chart must be a string/);
 		});
 	});
 

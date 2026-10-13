@@ -391,7 +391,8 @@ img {
 	display: grid;
 	grid-template:
 		'header header' var(--ez-header-height)
-		'nav content' 1fr / var(--ez-nav-width) minmax(0, 1fr);
+		'nav content' 1fr
+		'footer footer' auto / var(--ez-nav-width) minmax(0, 1fr);
 	min-height: 100vh;
 	min-height: 100dvh;
 
@@ -399,7 +400,8 @@ img {
 		grid-template:
 			'header' var(--ez-header-height)
 			'nav' auto
-			'content' 1fr / minmax(0, 1fr);
+			'content' 1fr
+			'footer' auto / minmax(0, 1fr);
 	}
 }
 
@@ -2269,5 +2271,60 @@ textarea.ez-control {
 	&__message {
 		margin: 0;
 		color: var(--ez-text-muted);
+	}
+}
+
+// About page ----------------------------------------------------------------------------------
+
+.ez-footer {
+	grid-area: footer;
+	padding: var(--ez-space-3) var(--ez-space-5);
+	border-top: var(--ez-border-width) solid var(--ez-border);
+	font-size: var(--ez-text-sm);
+	color: var(--ez-text-muted);
+}
+
+.ez-about-card {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-3);
+
+	&__head {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: var(--ez-space-3);
+
+		h2 {
+			margin: 0;
+		}
+	}
+}
+
+.ez-release-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-2);
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.ez-release {
+	border: var(--ez-border-width) solid var(--ez-border);
+	border-radius: var(--ez-radius-md);
+	padding: var(--ez-space-2) var(--ez-space-3);
+
+	> summary {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--ez-space-3);
+		cursor: pointer;
+		font-weight: 600;
+	}
+
+	&__body {
+		overflow-wrap: anywhere;
+		padding-block: var(--ez-space-2);
 	}
 }

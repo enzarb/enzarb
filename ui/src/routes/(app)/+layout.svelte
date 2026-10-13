@@ -24,4 +24,7 @@
 			{@render children()}
 		</div>
 	</main>
+	<footer class="ez-footer">
+		<a href="/about">About</a>
+	</footer>
 </div>
