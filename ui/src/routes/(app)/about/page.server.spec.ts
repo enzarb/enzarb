@@ -50,11 +50,14 @@ describe('about load', () => {
 		expect(op.deployed).toBe('unknown');
 		const extra = data.components.find((c: { name: string }) => c.name === 'enzarb-extra');
 		expect(extra).toMatchObject({ deployed: '2.0.0', repoUrl: null, releases: null });
+		expect(ui.repoUrl).toBe('https://github.com/enzarb/enzarb/tree/main/ui');
+		expect(releases.fn).toHaveBeenCalledWith('ui');
+		expect(releases.fn).toHaveBeenCalledWith('operator');
 	});
 
-	it('still returns versions when one repo fetch fails', async () => {
-		releases.fn.mockImplementation(async (repo: string) => {
-			if (repo === 'enzarb-ui') throw new Error('HTTP 403');
+	it('still returns versions when one component fetch fails', async () => {
+		releases.fn.mockImplementation(async (dir: string) => {
+			if (dir === 'ui') throw new Error('HTTP 403');
 			return [release('v1')];
 		});
 		const data = await run(user);

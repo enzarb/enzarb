@@ -6,7 +6,7 @@ members = ["crates/enzarb-proto"]
 version = "0.1.0"
 edition = "2024"
 license = "UNLICENSED"
-repository = "https://github.com/enzarb/enzarb-proto"
+repository = "https://github.com/enzarb/enzarb"
 
 [workspace.dependencies]
 bytes = "1"

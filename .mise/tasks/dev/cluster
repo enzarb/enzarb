@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-#MISE description="Create the kind cluster 'enzarb' (NetworkPolicy-enforcing) and apply enzarb-kubernetes overlays/dev"
+#MISE description="Create the kind cluster 'enzarb' (NetworkPolicy-enforcing) and apply kubernetes/ overlays/dev"
 set -euo pipefail
 # shellcheck source=/dev/null
 . "${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}/.mise/lib/dev.sh"
 need kind kubectl docker
 
-KDIR="$ROOT/enzarb-kubernetes"
-[ -d "$KDIR/overlays/dev" ] || die "$KDIR missing; run: mise run repos:init"
+KDIR="$ROOT/kubernetes"
+[ -d "$KDIR/overlays/dev" ] || die "$KDIR missing"
 CNI="${ENZARB_DEV_CNI:-kindnet}"   # kindnet (default) | calico
 
 if cluster_exists; then
@@ -14,7 +14,7 @@ if cluster_exists; then
 else
   cfg="$KDIR/kind/cluster.yaml"
   if [ "$CNI" = calico ]; then
-    # Dev patch (kept out of enzarb-kubernetes): same cluster, default CNI disabled.
+    # Dev patch (kept out of kubernetes/): same cluster, default CNI disabled.
     cfg="$(mktemp)"
     cat "$KDIR/kind/cluster.yaml" >"$cfg"
     printf '\nnetworking:\n  disableDefaultCNI: true\n  podSubnet: 10.244.0.0/16\n' >>"$cfg"
@@ -35,7 +35,7 @@ k wait --for=condition=Ready nodes --all --timeout=5m
 
 # gVisor: every sandbox runs under RuntimeClass `gvisor` (ADR-0012). Idempotent.
 log "installing gVisor into the kind nodes"
-[ -x "$KDIR/hack/kind-install-gvisor.sh" ] || die "$KDIR/hack/kind-install-gvisor.sh missing; update enzarb-kubernetes (mise run repos:init)"
+[ -x "$KDIR/hack/kind-install-gvisor.sh" ] || die "$KDIR/hack/kind-install-gvisor.sh missing"
 "$KDIR/hack/kind-install-gvisor.sh" "$CLUSTER_NAME"
 
 cd "$KDIR"

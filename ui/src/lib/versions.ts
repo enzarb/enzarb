@@ -1,26 +1,27 @@
 export interface ComponentInfo {
-	/** Key in ENZARB_COMPONENT_VERSIONS.components. */
+	/** Key in ENZARB_COMPONENT_VERSIONS.components (the chart sends the image/component names). */
 	name: string;
 	label: string;
-	/** GitHub repository name under the enzarb organisation. */
-	repo: string;
+	/** Directory in the enzarb monorepo; also the release tag prefix (`<dir>/vX.Y.Z`). */
+	dir: string;
 }
 
 /** What the About page lists; a component the chart omits still shows, as "unknown". */
 export const COMPONENTS: readonly ComponentInfo[] = [
-	{ name: 'enzarb-ui', label: 'UI', repo: 'enzarb-ui' },
-	{ name: 'enzarb-workflows', label: 'Workflows', repo: 'enzarb-workflows' },
-	{ name: 'enzarb-connectors', label: 'Connectors', repo: 'enzarb-connectors' },
-	{ name: 'enzarb-realtime', label: 'Realtime', repo: 'enzarb-realtime' },
-	{ name: 'enzarb-sandbox-proxy', label: 'Sandbox proxy', repo: 'enzarb-sandbox-proxy' },
-	{ name: 'enzarb-sandbox-operator', label: 'Operator', repo: 'enzarb-sandbox-operator' },
-	{ name: 'enzarb-sandbox-container', label: 'Sandbox', repo: 'enzarb-sandbox-container' },
-	{ name: 'enzarb-updater', label: 'Updater', repo: 'enzarb-updater' }
+	{ name: 'enzarb-ui', label: 'UI', dir: 'ui' },
+	{ name: 'enzarb-workflows', label: 'Workflows', dir: 'workflows' },
+	{ name: 'enzarb-connectors', label: 'Connectors', dir: 'connectors' },
+	{ name: 'enzarb-realtime', label: 'Realtime', dir: 'realtime' },
+	{ name: 'enzarb-sandbox-proxy', label: 'Sandbox proxy', dir: 'sandbox-proxy' },
+	{ name: 'enzarb-sandbox-operator', label: 'Operator', dir: 'operator' },
+	{ name: 'enzarb-sandbox-container', label: 'Sandbox', dir: 'sandbox-container' },
+	{ name: 'enzarb-updater', label: 'Updater', dir: 'updater' }
 ];
 
 export const UNKNOWN_VERSION = 'unknown';
 
-export const githubRepoUrl = (repo: string) => `https://github.com/enzarb/${repo}`;
+/** The component's directory in the enzarb monorepo on GitHub. */
+export const componentDirUrl = (dir: string) => `https://github.com/enzarb/enzarb/tree/main/${dir}`;
 
 /** Strips surrounding whitespace and a leading `v`, so `v1.2.3` and `1.2.3` compare equal. */
 export function normalizeTag(tag: string): string {

@@ -17,7 +17,7 @@ COPY crates ./crates
 RUN cargo build --release --locked -p enzarb-sandbox-operator
 
 FROM alpine:3.24
-LABEL org.opencontainers.image.source="https://github.com/enzarb/enzarb-sandbox-operator" \
+LABEL org.opencontainers.image.source="https://github.com/enzarb/enzarb" \
       org.opencontainers.image.description="enzarb Project operator"
 COPY --from=build /src/target/release/enzarb-sandbox-operator /usr/local/bin/enzarb-sandbox-operator
 # Unprivileged; the operator only talks to the Kubernetes API and serves health on 8080.

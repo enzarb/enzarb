@@ -3,7 +3,10 @@
 use semver::Version;
 use serde::Deserialize;
 
-pub const REPO: &str = "enzarb/enzarb-helm";
+pub const REPO: &str = "enzarb/enzarb";
+
+/// Chart releases in the monorepo are tagged `helm/vX.Y.Z`; other components' tags are ignored.
+pub const TAG_PREFIX: &str = "helm/";
 
 #[derive(Deserialize)]
 pub struct ReleaseEvent {
@@ -32,6 +35,11 @@ pub enum Filtered {
     Ignore(&'static str),
 }
 
+/// Parse a strict `helm/vX.Y.Z` release tag (no prerelease or build metadata).
+pub fn parse_release_tag(tag: &str) -> Option<Version> {
+    parse_tag(tag.strip_prefix(TAG_PREFIX)?)
+}
+
 /// Parse a strict `vX.Y.Z` tag (no prerelease or build metadata).
 pub fn parse_tag(tag: &str) -> Option<Version> {
     let v = Version::parse(tag.strip_prefix('v')?).ok()?;
@@ -43,7 +51,7 @@ pub fn filter(ev: &ReleaseEvent) -> Filtered {
         return Filtered::Ignore("action is not published");
     }
     if ev.repository.as_ref().map(|r| r.full_name.as_str()) != Some(REPO) {
-        return Filtered::Ignore("repository is not enzarb/enzarb-helm");
+        return Filtered::Ignore("repository is not enzarb/enzarb");
     }
     let Some(rel) = &ev.release else {
         return Filtered::Ignore("no release in payload");
@@ -51,9 +59,9 @@ pub fn filter(ev: &ReleaseEvent) -> Filtered {
     if rel.prerelease || rel.draft {
         return Filtered::Ignore("prerelease or draft");
     }
-    match parse_tag(&rel.tag_name) {
+    match parse_release_tag(&rel.tag_name) {
         Some(v) => Filtered::Act(v),
-        None => Filtered::Ignore("tag is not vX.Y.Z"),
+        None => Filtered::Ignore("tag is not helm/vX.Y.Z"),
     }
 }
 
@@ -100,20 +108,23 @@ mod tests {
 
     #[test]
     fn accepts_published_release() {
-        let f = filter(&ev("published", REPO, "v1.2.3", false));
+        let f = filter(&ev("published", REPO, "helm/v1.2.3", false));
         assert_eq!(f, Filtered::Act(Version::new(1, 2, 3)));
     }
 
     #[test]
     fn rejects_other_actions_repos_and_tags() {
         for e in [
-            ev("created", REPO, "v1.2.3", false),
-            ev("published", "enzarb/other", "v1.2.3", false),
-            ev("published", REPO, "1.2.3", false),
-            ev("published", REPO, "v1.2", false),
-            ev("published", REPO, "v1.2.3-rc.1", false),
-            ev("published", REPO, "v1.2.3+b", false),
-            ev("published", REPO, "v1.2.3", true),
+            ev("created", REPO, "helm/v1.2.3", false),
+            ev("published", "enzarb/other", "helm/v1.2.3", false),
+            ev("published", "enzarb/enzarb-helm", "helm/v1.2.3", false),
+            ev("published", REPO, "v1.2.3", false),
+            ev("published", REPO, "ui/v1.2.3", false),
+            ev("published", REPO, "helm/1.2.3", false),
+            ev("published", REPO, "helm/v1.2", false),
+            ev("published", REPO, "helm/v1.2.3-rc.1", false),
+            ev("published", REPO, "helm/v1.2.3+b", false),
+            ev("published", REPO, "helm/v1.2.3", true),
         ] {
             assert!(matches!(filter(&e), Filtered::Ignore(_)));
         }

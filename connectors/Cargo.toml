@@ -5,4 +5,4 @@ members = ["crates/connector", "crates/connector-github", "bin/receiver"]
 [workspace.package]
 edition = "2024"
 license = "Apache-2.0"
-repository = "https://github.com/enzarb/enzarb-connectors"
+repository = "https://github.com/enzarb/enzarb"
