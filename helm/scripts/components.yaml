@@ -1,15 +1,15 @@
-# Component repos whose releases are tracked in enzarb/values.yaml.
-#   repo:    GitHub repo under enzarb/ (its latest release = the version to run)
-#   image:   ghcr.io/enzarb/<image> built from that release tag
+# Monorepo components whose releases are tracked in enzarb/values.yaml.
+#   dir:     component directory; its tags are <dir>/vX.Y.Z (the highest one = the version to run)
+#   image:   ghcr.io/enzarb/<image> built by .github/workflows/ci-<dir>.yml on that tag
 #   path:    yq path in enzarb/values.yaml holding the version
 #   prefix:  set when the value is a whole image reference "<prefix><version>" instead of a bare tag
-#   crd:     the repo also owns the chart's crds/project.yaml (synced from deploy/crds/project.yaml at the tag)
+#   crd:     the component also owns the chart's crds/project.yaml (synced from <dir>/deploy/crds/project.yaml at the tag)
 components:
-  - { repo: enzarb-ui,                image: enzarb-ui,                  path: .ui.image.tag }
-  - { repo: enzarb-workflows,         image: enzarb-workflows,           path: .workflows.image.tag }
-  - { repo: enzarb-connectors,        image: enzarb-connectors-receiver, path: .connectors.image.tag }
-  - { repo: enzarb-realtime,          image: enzarb-realtime,            path: .realtime.image.tag }
-  - { repo: enzarb-updater,           image: enzarb-updater,             path: .updater.image.tag }
-  - { repo: enzarb-sandbox-proxy,     image: enzarb-sandbox-proxy,       path: .sandboxProxy.image.tag }
-  - { repo: enzarb-sandbox-operator,  image: enzarb-sandbox-operator,    path: .operator.image.tag, crd: true }
-  - { repo: enzarb-sandbox-container, image: enzarb-sandbox,             path: .operator.sandboxImage, prefix: "ghcr.io/enzarb/enzarb-sandbox:" }
+  - { dir: ui,                image: enzarb-ui,                  path: .ui.image.tag }
+  - { dir: workflows,         image: enzarb-workflows,           path: .workflows.image.tag }
+  - { dir: connectors,        image: enzarb-connectors-receiver, path: .connectors.image.tag }
+  - { dir: realtime,          image: enzarb-realtime,            path: .realtime.image.tag }
+  - { dir: updater,           image: enzarb-updater,             path: .updater.image.tag }
+  - { dir: sandbox-proxy,     image: enzarb-sandbox-proxy,       path: .sandboxProxy.image.tag }
+  - { dir: operator,          image: enzarb-sandbox-operator,    path: .operator.image.tag, crd: true }
+  - { dir: sandbox-container, image: enzarb-sandbox,             path: .operator.sandboxImage, prefix: "ghcr.io/enzarb/enzarb-sandbox:" }

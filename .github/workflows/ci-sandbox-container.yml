@@ -1,0 +1,32 @@
+name: ci-sandbox-container
+on:
+  push:
+    branches: [main]
+    tags: ['sandbox-container/v*']
+    paths: &paths
+      - 'sandbox-container/**'
+      - 'proto/**'
+      - .github/workflows/ci-sandbox-container.yml
+      - .github/workflows/_rust.yml
+      - .github/workflows/_docker.yml
+  pull_request:
+    paths: *paths
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+permissions:
+  contents: read
+jobs:
+  ci:
+    uses: ./.github/workflows/_rust.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      dir: sandbox-container
+      cargo-args: --locked
+      node: '24'
+      image: enzarb-sandbox
+      context: .
+      smoke: scripts/smoke.sh
+      docker-timeout: 40

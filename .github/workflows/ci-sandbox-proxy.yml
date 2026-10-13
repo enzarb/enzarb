@@ -1,0 +1,29 @@
+name: ci-sandbox-proxy
+on:
+  push:
+    branches: [main]
+    tags: ['sandbox-proxy/v*']
+    paths: &paths
+      - 'sandbox-proxy/**'
+      - 'proto/**'
+      - 'operator/**'
+      - .github/workflows/ci-sandbox-proxy.yml
+      - .github/workflows/_rust.yml
+      - .github/workflows/_docker.yml
+  pull_request:
+    paths: *paths
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+permissions:
+  contents: read
+jobs:
+  ci:
+    uses: ./.github/workflows/_rust.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      dir: sandbox-proxy
+      image: enzarb-sandbox-proxy
+      context: .

@@ -1,0 +1,25 @@
+name: ui-install
+description: >-
+  Restore ui/node_modules and proto/node_modules from cache (keyed on both lockfiles + node version);
+  npm ci on a miss (ui's `prepare` builds proto/ts/dist), otherwise just rebuild proto's TS package.
+runs:
+  using: composite
+  steps:
+    - id: node
+      shell: bash
+      run: echo "version=$(node --version)" >> "$GITHUB_OUTPUT"
+    - id: cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          ui/node_modules
+          proto/node_modules
+        key: node_modules-${{ runner.os }}-${{ steps.node.outputs.version }}-${{ hashFiles('ui/package-lock.json', 'proto/package-lock.json') }}
+    - if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      working-directory: ui
+      run: npm ci
+    - if: steps.cache.outputs.cache-hit == 'true'
+      shell: bash
+      working-directory: ui
+      run: npm --prefix ../proto run build

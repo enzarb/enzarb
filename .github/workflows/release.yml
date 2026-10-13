@@ -1,0 +1,75 @@
+# Automatic per-component releases (docs/ci.md "Releases").
+#
+# After a component's `ci-<dir>` workflow succeeds on a push to main, the next version of THAT component
+# is computed by .github/scripts/next-version.sh from the Conventional Commits since its last
+# `<dir>/vX.Y.Z` tag that touch <dir> or one of its path-dependency dirs. The annotated tag and a
+# GitHub Release are created with ENZARB_RELEASE_TOKEN so the tag push triggers `ci-<dir>` again (image
+# build + push). helm releases start as drafts; publish-helm.yml publishes them after the OCI push.
+# Component releases are never marked "Latest", so the repo's latest release is always the chart.
+#
+# Dormant until the repo variable RELEASE_ENABLED is "true". Needs the secret ENZARB_RELEASE_TOKEN.
+name: release
+on:
+  workflow_run:
+    # Every ci workflow of a released component (proto and kubernetes are not released).
+    workflows: [ci-operator, ci-connectors, ci-workflows, ci-realtime, ci-sandbox-proxy, ci-sandbox-container, ci-ui, ci-updater, ci-helm]
+    types: [completed]
+permissions:
+  contents: read
+jobs:
+  tag:
+    # One tagging run at a time per component. Scoped to this job: a workflow-level group would also be
+    # shared with every other workflow_run (PR ci completions) and could cancel a pending run.
+    concurrency:
+      group: release-tag-${{ github.event.workflow_run.name }}
+      cancel-in-progress: false
+    if: >-
+      vars.RELEASE_ENABLED == 'true' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          token: ${{ secrets.ENZARB_RELEASE_TOKEN }}
+      - name: Compute, tag and release
+        env:
+          GH_TOKEN: ${{ secrets.ENZARB_RELEASE_TOKEN }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          WORKFLOW: ${{ github.event.workflow_run.name }}
+          REPO: ${{ github.repository }}
+        run: |
+          dir=${WORKFLOW#ci-}
+          [ -d "$dir" ] || { echo "::error::no component dir for workflow $WORKFLOW"; exit 1; }
+          # shellcheck source=/dev/null
+          source .github/scripts/next-version.sh
+          v=$(next_version "$dir" "$SHA")
+          if [ -z "$v" ]; then echo "$dir: nothing releasable since $(last_tag "$dir" "$SHA")"; exit 0; fi
+          tag="$dir/v$v"
+          last=$(last_tag "$dir" "$SHA")
+          ensure_release() { # the updater reads helm GitHub Releases; every tag gets one for its notes
+            local flags=(--latest=false)
+            # helm releases start as drafts: publish-helm.yml publishes them once the OCI chart is pushed
+            if [ "$dir" = helm ]; then flags=(--draft); fi
+            # notes since this component's previous tag (they still list every PR in that range)
+            if [ -n "$last" ]; then flags+=(--notes-start-tag "$last"); fi
+            # `gh release view` does not see drafts, so match tag_name in the full list (drafts included)
+            release_exists() {
+              [ -n "$(gh api --paginate "repos/$REPO/releases" --jq ".[] | select(.tag_name == \"$tag\") | .id")" ]
+            }
+            release_exists || gh release create "$tag" --verify-tag --title "$tag" --generate-notes "${flags[@]}" \
+              || release_exists   # publish-helm.yml created it between the check and the create
+          }
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "$tag already exists"; ensure_release; exit 0
+          fi
+          git config user.name "enzarb-release[bot]"
+          git config user.email "release@enzarb.dev"
+          git tag -a "$tag" -m "release $tag" "$SHA"
+          git push origin "refs/tags/$tag"
+          ensure_release
+          echo "released $tag" >> "$GITHUB_STEP_SUMMARY"

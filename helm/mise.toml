@@ -58,7 +58,7 @@ description = "Validate pgop resources against the vendored pgop CRDs"
 run = "scripts/check-pgop.py"
 
 [tasks.sync-crds]
-description = "Vendor the Project CRD from ../enzarb-sandbox-operator"
+description = "Vendor the Project CRD from ../operator"
 run = "scripts/sync-crds.sh"
 
 [tasks.test]
