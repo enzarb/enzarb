@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { AboutRelease } from '#lib/about-types.ts';
+	import { isGithubUrl } from '#lib/versions.ts';
 
 	/** Releases newest first; the one at `openIndex` (the deployed release) starts expanded. */
 	let { releases, openIndex }: { releases: AboutRelease[]; openIndex: number } = $props();
@@ -19,8 +20,10 @@
 				</summary>
 				<!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized by renderMarkdown on the server -->
 				<div class="ez-release__body">{@html release.html}</div>
-				{#if release.url}
+				{#if isGithubUrl(release.url)}
 					<a href={release.url} target="_blank" rel="noopener noreferrer">View release on GitHub</a>
+				{:else if release.url}
+					<span class="ez-muted">View release on GitHub</span>
 				{/if}
 			</details>
 		</li>

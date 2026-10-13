@@ -332,6 +332,7 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 | `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` | ui |
 | `ENZARB_BOT_HANDLE` (default `enzarb`), `ENZARB_BOT_LOGIN` (default `enzarb[bot]`) | receiver, workflows |
 | `ENZARB_GITHUB_APP_SLUG` (optional, default `enzarb`; chart value `githubApp.slug`) | ui (the "install the App" link `https://github.com/apps/<slug>/installations/new`) |
+| `ENZARB_GITHUB_APP_ID`, `ENZARB_GITHUB_APP_PRIVATE_KEY` (both optional; from the `appId` / `privateKey` keys of the GitHub secret, `optional: true`) | ui (mints an installation token server-side to authenticate the About page's `enzarb/enzarb` release fetch; unauthenticated if unset or the App is not installed there) |
 | `ENZARB_PUBLIC_URL` | ui (OAuth callback is `$ENZARB_PUBLIC_URL/login/github/callback`), workflows (links in comments) |
 | `PROTOCOL_HEADER=x-forwarded-proto` | ui (adapter-node derives the origin for its CSRF check from it; the Gateway must forward `X-Forwarded-Proto`) |
 | `ENZARB_EXECUTOR_URL` (default `http://enzarb-workflows-executor.enzarb.svc:8081`) | workflows executor (callback base) |

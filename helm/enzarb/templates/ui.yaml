@@ -29,6 +29,8 @@ spec:
             {{- include "enzarb.secretEnv" (dict "name" "ENZARB_SESSION_JWT_SECRET" "secret" (include "enzarb.jwtSecret" .) "key" (include "enzarb.jwtKey" .)) | nindent 12 }}
             {{- include "enzarb.secretEnv" (dict "name" "GITHUB_OAUTH_CLIENT_ID" "secret" (include "enzarb.githubSecret" .) "key" (include "enzarb.githubKey" (dict "ctx" . "key" "oauthClientId"))) | nindent 12 }}
             {{- include "enzarb.secretEnv" (dict "name" "GITHUB_OAUTH_CLIENT_SECRET" "secret" (include "enzarb.githubSecret" .) "key" (include "enzarb.githubKey" (dict "ctx" . "key" "oauthClientSecret"))) | nindent 12 }}
+            {{- include "enzarb.secretEnv" (dict "name" "ENZARB_GITHUB_APP_ID" "optional" true "secret" (include "enzarb.githubSecret" .) "key" (include "enzarb.githubKey" (dict "ctx" . "key" "appId"))) | nindent 12 }}
+            {{- include "enzarb.secretEnv" (dict "name" "ENZARB_GITHUB_APP_PRIVATE_KEY" "optional" true "secret" (include "enzarb.githubSecret" .) "key" (include "enzarb.githubKey" (dict "ctx" . "key" "privateKey"))) | nindent 12 }}
             {{- if .Values.realtime.enabled }}
             {{- include "enzarb.secretEnv" (dict "name" "ENZARB_REALTIME_JWT_SECRET" "secret" (include "enzarb.realtimeJwtSecret" .) "key" (include "enzarb.realtimeJwtKey" .)) | nindent 12 }}
             {{- end }}

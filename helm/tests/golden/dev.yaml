@@ -1198,6 +1198,18 @@ spec:
                 secretKeyRef:
                   name: enzarb-github
                   key: oauth-client-secret
+            - name: ENZARB_GITHUB_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-github
+                  key: app-id
+                  optional: true
+            - name: ENZARB_GITHUB_APP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-github
+                  key: private-key
+                  optional: true
             - name: ENZARB_REALTIME_JWT_SECRET
               valueFrom:
                 secretKeyRef:

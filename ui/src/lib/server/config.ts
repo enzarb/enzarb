@@ -8,6 +8,10 @@ export interface Config {
 	publicUrl: string;
 	/** Slug of the enzarb GitHub App, used for the install link (ENZARB_GITHUB_APP_SLUG, optional). */
 	githubAppSlug: string;
+	/** GitHub App id (ENZARB_GITHUB_APP_ID, optional): with the key, authenticates release fetches. */
+	githubAppId?: string;
+	/** GitHub App private key PEM (ENZARB_GITHUB_APP_PRIVATE_KEY, optional; `\n`-escaped accepted). */
+	githubAppPrivateKey?: string;
 	/**
 	 * Also put the realtime token in the websocket URL (ENZARB_REALTIME_LEGACY_TOKEN_URL, optional,
 	 * default off). Only for an enzarb-realtime older than enzarb-realtime#8.
@@ -28,7 +32,11 @@ export interface ComponentVersions {
 
 type RequiredKey = Exclude<
 	keyof Config,
-	'githubAppSlug' | 'realtimeLegacyTokenUrl' | 'componentVersions'
+	| 'githubAppSlug'
+	| 'githubAppId'
+	| 'githubAppPrivateKey'
+	| 'realtimeLegacyTokenUrl'
+	| 'componentVersions'
 >;
 
 function parseComponentVersions(raw: string | undefined): ComponentVersions {
@@ -101,8 +109,17 @@ export function parseConfig(source: Record<string, string | undefined>): Config 
 	if (legacy && legacy !== 'true' && legacy !== 'false') {
 		throw new Error('ENZARB_REALTIME_LEGACY_TOKEN_URL must be true or false');
 	}
+	const githubAppId = source.ENZARB_GITHUB_APP_ID?.trim();
+	const pem = source.ENZARB_GITHUB_APP_PRIVATE_KEY?.trim().replaceAll('\\n', '\n');
+	// A malformed value is treated as unset (the message never carries the value).
+	const validId = githubAppId && /^\d+$/.test(githubAppId) ? githubAppId : undefined;
+	const validKey =
+		pem && /^-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]+-----END [A-Z ]*PRIVATE KEY-----$/.test(pem)
+			? pem
+			: undefined;
 	return {
 		...out,
+		...(validId && validKey ? { githubAppId: validId, githubAppPrivateKey: validKey } : {}),
 		githubAppSlug,
 		realtimeLegacyTokenUrl: legacy === 'true',
 		componentVersions: parseComponentVersions(source.ENZARB_COMPONENT_VERSIONS)
