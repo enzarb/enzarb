@@ -6,7 +6,8 @@ import ClaudeSetup from './ClaudeSetup.svelte';
 const h = vi.hoisted(() => ({
 	configured: false,
 	connections: [] as string[],
-	cleared: 0
+	removed: 0,
+	refreshed: 0
 }));
 vi.mock('#lib/claude.remote.ts', () => ({
 	claudeCredential: () => ({
@@ -14,24 +15,19 @@ vi.mock('#lib/claude.remote.ts', () => ({
 			return { configured: h.configured, updatedAt: null };
 		},
 		error: undefined,
-		refresh: async () => {}
-	})
+		refresh: async () => {
+			h.refreshed++;
+		}
+	}),
+	removeClaudeCredential: async () => {
+		h.removed++;
+		h.configured = false;
+	}
 }));
 vi.mock('#lib/terminal.remote.ts', () => ({
 	terminalConnection: async (name: string) => {
 		h.connections.push(name);
 		return { url: 'ws://fake' };
-	}
-}));
-vi.mock('@enzarb/proto', () => ({
-	Session: {
-		connect: async () => ({
-			credentialClear: () => {
-				h.cleared++;
-				h.configured = false;
-			},
-			close() {}
-		})
 	}
 }));
 vi.mock(
@@ -46,7 +42,8 @@ describe('ClaudeSetup', () => {
 	beforeEach(() => {
 		h.configured = false;
 		h.connections = [];
-		h.cleared = 0;
+		h.removed = 0;
+		h.refreshed = 0;
 	});
 
 	it('offers setup in the only ready sandbox when no token is set', async () => {
@@ -58,15 +55,24 @@ describe('ClaudeSetup', () => {
 		await expect.element(page.getByText(/claude setup-token/)).toBeVisible();
 	});
 
-	it('shows Configured with Remove, which sends credential_clear', async () => {
+	it('removes the token without any sandbox connection, refreshing once', async () => {
 		h.configured = true;
 		render(ClaudeSetup, { sandboxes: [web] });
 		await expect.element(page.getByText('Configured', { exact: true })).toBeVisible();
 		await page.getByRole('button', { name: 'Remove' }).click();
-		await expect.poll(() => h.cleared).toBe(1);
-		expect(h.connections).toEqual(['web']);
-		await expect.element(page.getByRole('button', { name: 'Remove' })).toBeEnabled();
+		await expect.poll(() => h.removed).toBe(1);
+		await expect.element(page.getByText('Not configured')).toBeVisible();
+		expect(h.connections).toEqual([]);
+		expect(h.refreshed).toBe(1);
 		await expect.element(page.getByRole('alert')).not.toBeInTheDocument();
+	});
+
+	it('removes the token when every sandbox is stopped or there is none', async () => {
+		h.configured = true;
+		render(ClaudeSetup, { sandboxes: [{ ...web, ready: false }] });
+		await page.getByRole('button', { name: 'Remove' }).click();
+		await expect.poll(() => h.removed).toBe(1);
+		expect(h.connections).toEqual([]);
 	});
 
 	it('says so when the user has no sandbox', async () => {
