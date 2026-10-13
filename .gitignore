@@ -1,5 +1,6 @@
-# Component repos are separate git repositories (see repos.toml)
-/enzarb-*/
+# Build output
+target/
+node_modules/
 
 # Local dev secrets
 /.env.dev
