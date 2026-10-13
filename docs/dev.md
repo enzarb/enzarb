@@ -7,7 +7,7 @@ The tasks are in `.mise/tasks/dev/`:
 | Task | What it does |
 |---|---|
 | `mise run dev:cluster` | Creates kind cluster `enzarb` (from `kubernetes/kind/cluster.yaml`) if missing, installs gVisor into the nodes (`hack/kind-install-gvisor.sh`) and checks it with a `dmesg` probe pod. Applies `kubernetes/` in the staged order with `kubectl wait`, and runs a NetworkPolicy enforcement probe. |
-| `mise run dev:images [component...]` | Builds the images as `:dev` with the right build secrets and `kind load`s them. Components: `ui sandbox-proxy sandbox operator receiver workflows`. No argument builds all six. |
+| `mise run dev:images [component...]` | Builds the images as `:dev` (root context for components with path deps) and `kind load`s them. Components: `ui sandbox-proxy sandbox operator receiver workflows`. No argument builds all six. |
 | `mise run dev:secrets` | Creates namespace `enzarb` and Secret `enzarb-github` from `.env.dev`. |
 | `mise run dev:helm-deploy` | `dev:cluster`, `dev:images`, `dev:secrets`, then `helm upgrade --install enzarb helm/enzarb -f values-dev.yaml --set secrets.github.existingSecret=enzarb-github --wait`. Prints a checklist. |
 | `mise run dev:webhook-relay` | Relays smee.io deliveries to `https://enzarb.local/hooks/github`. |
