@@ -764,7 +764,6 @@ dependencies = [
 [[package]]
 name = "enzarb-crds"
 version = "0.1.0"
-source = "git+ssh://git@github.com/enzarb/enzarb-sandbox-operator.git?branch=main#1d268b816b687625fba79502c039a3b3d6b2169b"
 dependencies = [
  "k8s-openapi",
  "kube",
@@ -778,7 +777,6 @@ dependencies = [
 [[package]]
 name = "enzarb-proto"
 version = "0.1.0"
-source = "git+ssh://git@github.com/enzarb/enzarb-proto.git?branch=main#8cbb7c14e6ecaf046a5613c5a2c6a90332016f07"
 dependencies = [
  "bytes",
  "futures-util",

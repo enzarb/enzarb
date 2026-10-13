@@ -202,6 +202,7 @@ mod tests {
                 run_mode: Default::default(),
                 triggers: Default::default(),
                 sandbox: Default::default(),
+                max_runs: None,
             },
         );
         p.status = status;

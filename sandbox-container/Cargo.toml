@@ -16,7 +16,7 @@ anyhow = "1"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
 bytes = "1"
-enzarb-proto = { git = "ssh://git@github.com/enzarb/enzarb-proto.git", branch = "main", features = ["tokio"] }
+enzarb-proto = { path = "../proto/crates/enzarb-proto", features = ["tokio"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 nix = { version = "0.30", features = ["signal", "process"] }
 portable-pty = "0.9"
