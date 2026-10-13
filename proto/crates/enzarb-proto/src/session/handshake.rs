@@ -24,6 +24,8 @@ pub struct ServerHello {
     pub client: ClientKind,
     /// Versions the client offered.
     pub offered: Vec<u16>,
+    /// `hello.features`, sanitized. Empty when absent.
+    pub features: Vec<String>,
 }
 
 async fn send_ctrl<S, E>(ws: &mut S, m: &Ctrl) -> Result<(), HandshakeError>
@@ -108,8 +110,15 @@ where
         Ok(None) => return Err(HandshakeError::Closed),
         Err(e) => return Err(reject(ws, error_code::PROTOCOL_VIOLATION, e).await),
     };
-    let (versions, client) = match (frame.frame_type, frame.ctrl_message()) {
-        (FrameType::Ctrl, Ok(Ctrl::Hello { versions, client })) => (versions, client),
+    let (versions, client, peer_features) = match (frame.frame_type, frame.ctrl_message()) {
+        (
+            FrameType::Ctrl,
+            Ok(Ctrl::Hello {
+                versions,
+                client,
+                features,
+            }),
+        ) => (versions, client, sanitize_features(features)),
         _ => {
             let msg = "first frame must be CTRL hello".to_string();
             return Err(reject(ws, error_code::PROTOCOL_VIOLATION, msg).await);
@@ -126,6 +135,7 @@ where
         version,
         client,
         offered: versions,
+        features: peer_features,
     })
 }
 
@@ -157,11 +167,26 @@ where
     S: Stream<Item = Result<Message, E>> + Sink<Message, Error = E> + Unpin,
     E: Display,
 {
+    client_handshake_offering(ws, kind, &[]).await
+}
+
+/// Like [`client_handshake_with_features`], also offering `features` in
+/// `hello` (omitted from the wire when empty).
+pub async fn client_handshake_offering<S, E>(
+    ws: &mut S,
+    kind: ClientKind,
+    features: &[String],
+) -> Result<ClientWelcome, HandshakeError>
+where
+    S: Stream<Item = Result<Message, E>> + Sink<Message, Error = E> + Unpin,
+    E: Display,
+{
     send_ctrl(
         ws,
         &Ctrl::Hello {
             versions: SUPPORTED_VERSIONS.to_vec(),
             client: kind,
+            features: (!features.is_empty()).then(|| features.to_vec()),
         },
     )
     .await?;

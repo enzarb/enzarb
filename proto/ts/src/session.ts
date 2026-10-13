@@ -43,6 +43,8 @@ export interface ConnectOptions {
   client?: ClientKind;
   /** Versions to offer. Defaults to [1]. */
   versions?: number[];
+  /** Client features offered in `hello` (omitted when empty). Self-declared. */
+  features?: string[];
   /** WebSocket constructor for string URLs. Defaults to `globalThis.WebSocket`. */
   WebSocket?: new (url: string) => WebSocketLike;
   /** Give up if `welcome` does not arrive in time. Default 10000; 0 disables. */
@@ -140,7 +142,12 @@ export class Session implements ChannelHost {
     ws.addEventListener("close", () => this.finish({ kind: this.end ? this.end.kind : "peer_closed" }));
     ws.addEventListener("error", () => this.finish({ kind: "transport", reason: "websocket error" }));
     const sendHello = () =>
-      this.sendCtrl({ type: "hello", versions: opts.versions ?? [1], client: opts.client ?? "ui" });
+      this.sendCtrl({
+        type: "hello",
+        versions: opts.versions ?? [1],
+        client: opts.client ?? "ui",
+        ...(opts.features?.length ? { features: opts.features } : {}),
+      });
     if (ws.readyState === OPEN) sendHello();
     else ws.addEventListener("open", sendHello);
     const ms = opts.handshakeTimeoutMs ?? 10_000;

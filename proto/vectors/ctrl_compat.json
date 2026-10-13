@@ -29,6 +29,18 @@
   },
   {
     "expect": {
+      "client": "proxy",
+      "features": [
+        "claude_user_token",
+        "future_thing"
+      ],
+      "type": "hello"
+    },
+    "name": "hello_unknown_client_feature",
+    "payload": "{\"type\":\"hello\",\"versions\":[1],\"client\":\"proxy\",\"features\":[\"claude_user_token\",\"future_thing\"]}"
+  },
+  {
+    "expect": {
       "channel": 1,
       "kind": "pty",
       "type": "open"

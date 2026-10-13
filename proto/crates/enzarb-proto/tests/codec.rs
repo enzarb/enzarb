@@ -28,6 +28,7 @@ fn ctrl_hello_wire_is_exact() {
     let f = Frame::ctrl(&Ctrl::Hello {
         versions: vec![1],
         client: ClientKind::Ui,
+        features: None,
     })
     .unwrap();
     let json = br#"{"type":"hello","versions":[1],"client":"ui"}"#;

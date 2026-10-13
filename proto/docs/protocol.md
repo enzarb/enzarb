@@ -64,7 +64,7 @@ JSON objects with a `"type"` field, channel 0. Unknown fields are ignored; an un
 
 | Message | Direction | Fields |
 |---|---|---|
-| `hello` | client -> server | `versions: [u16]`, `client: "ui" \| "proxy" \| "executor"` |
+| `hello` | client -> server | `versions: [u16]`, `client: "ui" \| "proxy" \| "executor"`, `features?: [string]` |
 | `welcome` | server -> client | `version: u16`, `features?: [string]` |
 | `open` | client -> server | `channel`, `kind: "pty" \| "acp"`, `cols`, `rows`, `command?: [string]`, `repo?: string`, `resume?: string`, `claude_token?: string` |
 | `opened` | server -> client | `channel` |
@@ -98,6 +98,7 @@ Not a CTRL message; it is the JSON body sandbox-init POSTs to `callback_url`:
 
 Additive fields (protocol version stays 1). Encoders omit them when absent; `welcome.features` is also omitted when empty. Old peers ignore them and old payloads decode without them.
 
+- `hello.features`: feature names the client supports, sanitized like `welcome.features`. Defined: `claude_user_token` (sent only by sandbox-proxy: it stores `credential_captured.token`, never relays it to a browser, and acks `legacy` captures with `credential_state`). A server sends token-bearing `credential_captured` frames **only** to a client that offered it; old clients get the token-less frame. Like `client`, it is self-declared and trusted only as far as the bearer auth.
 - `welcome.features`: feature names the server supports. Defined: `acp` (the `acp` channel kind). Decoders drop non-string, empty and longer-than-64-byte entries and keep at most 64. Unknown features are ignored. A client sends something that depends on a feature **only after** `features` contains it.
 - `open.kind`: `pty` or `acp`. A decoder maps any other kind to an "unknown" value instead of failing; a server answers it with `open_error` (`unsupported_kind`) and keeps the connection. For `acp`, `cols`/`rows` are ignored but clients send `0`, and `command` is not used.
 - `open.repo` (at most 2048 bytes) and `open.resume` (at most 256 bytes) are `acp` routing hints. Longer values are refused with `open_error` (`invalid_request`) before the application sees them.

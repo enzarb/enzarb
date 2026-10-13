@@ -34,6 +34,10 @@ pub enum ChannelKind {
 pub mod feature {
     /// The `acp` channel kind is available.
     pub const ACP: &str = "acp";
+    /// Client feature (`hello.features`): the client stores per-user Claude
+    /// tokens from `credential_captured.token` and never relays them, and acks
+    /// `legacy` captures. Only sandbox-proxy sends it.
+    pub const CLAUDE_USER_TOKEN: &str = "claude_user_token";
     /// Decoders keep at most this many features...
     pub const MAX_FEATURES: usize = 64;
     /// ...and drop any longer than this many bytes.
@@ -250,6 +254,11 @@ pub enum Ctrl {
     Hello {
         versions: Vec<u16>,
         client: ClientKind,
+        /// Optional client feature names (see [`feature`]), e.g.
+        /// [`feature::CLAUDE_USER_TOKEN`]. Omitted when empty or absent; old
+        /// servers ignore it. Self-declared by the client, like `client`.
+        #[serde(default, skip_serializing_if = "features_is_empty")]
+        features: Option<Vec<String>>,
     },
     Welcome {
         version: u16,

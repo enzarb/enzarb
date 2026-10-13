@@ -284,6 +284,27 @@ async fn handshake_roles_and_version() {
     assert_eq!(server.version(), 1);
     assert_eq!(server.peer_kind(), Some(ClientKind::Proxy));
     assert_eq!(client.peer_kind(), None);
+    assert!(server.peer_features().is_empty());
+}
+
+#[tokio::test]
+async fn hello_features_reach_the_server() {
+    let (c, s) = memory::pair();
+    let server = Session::accept(s, ServerOptions::default());
+    let client = Session::connect_offering(
+        c,
+        ClientKind::Proxy,
+        vec![
+            enzarb_proto::feature::CLAUDE_USER_TOKEN.into(),
+            String::new(),
+        ],
+    );
+    let (client, server) = timeout(T, async { tokio::join!(client, server) })
+        .await
+        .unwrap();
+    let ((_c, _ce), (server, _se)) = (client.unwrap(), server.unwrap());
+    assert!(server.peer_has_feature(enzarb_proto::feature::CLAUDE_USER_TOKEN));
+    assert_eq!(server.peer_features(), ["claude_user_token"]);
 }
 
 #[tokio::test]
@@ -656,6 +677,7 @@ async fn server_enforces_channel_table_rules() {
         Frame::ctrl(&Ctrl::Hello {
             versions: vec![1],
             client: ClientKind::Ui,
+            features: None,
         })
         .unwrap(),
     )

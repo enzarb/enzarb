@@ -18,7 +18,8 @@ export type ClientKind = "ui" | "proxy" | "executor";
 export type ChannelKind = "pty" | "acp" | (string & {});
 
 /** Feature names advertised in `welcome.features`. */
-export const Feature = { Acp: "acp" } as const;
+/** `ClaudeUserToken` is a client feature (`hello.features`), sent only by sandbox-proxy. */
+export const Feature = { Acp: "acp", ClaudeUserToken: "claude_user_token" } as const;
 /** Decoders keep at most this many features and drop any longer than `MAX_FEATURE_LEN` bytes. */
 export const MAX_FEATURES = 64;
 export const MAX_FEATURE_LEN = 64;
@@ -105,7 +106,7 @@ export interface RunFinished {
 }
 
 export type Ctrl =
-  | { type: "hello"; versions: number[]; client: ClientKind }
+  | { type: "hello"; versions: number[]; client: ClientKind; features?: string[] | null }
   | { type: "welcome"; version: number; features?: string[] | null }
   | { type: "open"; channel: number; kind: ChannelKind; cols: number; rows: number; command?: string[] | null; repo?: string | null; resume?: string | null; claude_token?: SecretLike | null }
   | { type: "opened"; channel: number }

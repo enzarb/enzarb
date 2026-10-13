@@ -34,6 +34,20 @@
     "name": "hello_executor"
   },
   {
+    "hex": "010000000000000000517b2274797065223a2268656c6c6f222c2276657273696f6e73223a5b315d2c22636c69656e74223a2270726f7879222c226665617475726573223a5b22636c617564655f757365725f746f6b656e225d7d",
+    "message": {
+      "client": "proxy",
+      "features": [
+        "claude_user_token"
+      ],
+      "type": "hello",
+      "versions": [
+        1
+      ]
+    },
+    "name": "hello_features"
+  },
+  {
     "hex": "0100000000000000001e7b2274797065223a2277656c636f6d65222c2276657273696f6e223a317d",
     "message": {
       "type": "welcome",

@@ -68,6 +68,7 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
             Ctrl::Hello {
                 versions: vec![1],
                 client: ClientKind::Ui,
+                features: None,
             },
         ),
         (
@@ -75,6 +76,7 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
             Ctrl::Hello {
                 versions: vec![1, 2],
                 client: ClientKind::Proxy,
+                features: None,
             },
         ),
         (
@@ -82,6 +84,15 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
             Ctrl::Hello {
                 versions: vec![1],
                 client: ClientKind::Executor,
+                features: None,
+            },
+        ),
+        (
+            "hello_features",
+            Ctrl::Hello {
+                versions: vec![1],
+                client: ClientKind::Proxy,
+                features: Some(vec!["claude_user_token".into()]),
             },
         ),
         (
@@ -581,6 +592,8 @@ fn ctrl_compat_vectors() {
                "expect":{"type":"welcome","version":1}}),
         json!({"name":"welcome_unknown_feature","payload":r#"{"type":"welcome","version":1,"features":["acp","future_thing"],"x":1}"#,
                "expect":{"type":"welcome","version":1,"features":["acp","future_thing"]}}),
+        json!({"name":"hello_unknown_client_feature","payload":r#"{"type":"hello","versions":[1],"client":"proxy","features":["claude_user_token","future_thing"]}"#,
+               "expect":{"type":"hello","client":"proxy","features":["claude_user_token","future_thing"]}}),
         json!({"name":"old_open_pty","payload":r#"{"type":"open","channel":1,"kind":"pty","cols":80,"rows":24}"#,
                "expect":{"type":"open","channel":1,"kind":"pty"}}),
         json!({"name":"open_unknown_kind","payload":r#"{"type":"open","channel":5,"kind":"quic","cols":0,"rows":0}"#,

@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio_tungstenite::tungstenite::Message;
 
 use super::channel::{Chan, ChannelHandle, lock};
-use super::handshake::{client_handshake_with_features, server_handshake_with_features};
+use super::handshake::{client_handshake_offering, server_handshake_with_features};
 use super::{HandshakeError, SessionEnd, SessionError};
 use crate::{
     ChannelKind, ClientKind, CredentialKind, Ctrl, Frame, FrameType, MAX_REPO_LEN, MAX_RESUME_LEN,
@@ -229,6 +229,7 @@ pub(crate) struct Inner {
     version: u16,
     features: Vec<String>,
     peer: Option<ClientKind>,
+    peer_features: Vec<String>,
     pub(crate) out: mpsc::UnboundedSender<Out>,
     pub(crate) state: Mutex<State>,
     end: watch::Sender<Option<SessionEnd>>,
@@ -842,6 +843,7 @@ impl Session {
         version: u16,
         features: Vec<String>,
         peer: Option<ClientKind>,
+        peer_features: Vec<String>,
     ) -> (Self, Events)
     where
         S: Stream<Item = Result<Message, E>> + Sink<Message, Error = E> + Unpin + Send + 'static,
@@ -854,6 +856,7 @@ impl Session {
             version,
             features,
             peer,
+            peer_features,
             out,
             state: Mutex::new(State::default()),
             end: watch::channel(None).0,
@@ -866,16 +869,33 @@ impl Session {
     }
 
     /// Client side: send `hello`, wait for `welcome`, start the session.
-    pub async fn connect<S, E>(
+    pub async fn connect<S, E>(ws: S, kind: ClientKind) -> Result<(Self, Events), HandshakeError>
+    where
+        S: Stream<Item = Result<Message, E>> + Sink<Message, Error = E> + Unpin + Send + 'static,
+        E: Display + Send + 'static,
+    {
+        Self::connect_offering(ws, kind, Vec::new()).await
+    }
+
+    /// Like [`connect`](Self::connect), offering `features` in `hello`.
+    pub async fn connect_offering<S, E>(
         mut ws: S,
         kind: ClientKind,
+        features: Vec<String>,
     ) -> Result<(Self, Events), HandshakeError>
     where
         S: Stream<Item = Result<Message, E>> + Sink<Message, Error = E> + Unpin + Send + 'static,
         E: Display + Send + 'static,
     {
-        let w = client_handshake_with_features(&mut ws, kind).await?;
-        Ok(Self::start(ws, Role::Client, w.version, w.features, None))
+        let w = client_handshake_offering(&mut ws, kind, &features).await?;
+        Ok(Self::start(
+            ws,
+            Role::Client,
+            w.version,
+            w.features,
+            None,
+            Vec::new(),
+        ))
     }
 
     /// Server side: wait for `hello`, negotiate, reply `welcome`, start the session.
@@ -896,6 +916,7 @@ impl Session {
             hello.version,
             opts.features,
             Some(hello.client),
+            hello.features,
         ))
     }
 
@@ -922,6 +943,17 @@ impl Session {
     /// (server) The `client` kind from `hello`.
     pub fn peer_kind(&self) -> Option<ClientKind> {
         self.inner.peer
+    }
+
+    /// (server) Features the client offered in `hello` (sanitized; empty for
+    /// old clients). Self-declared: trust it only as far as the bearer auth.
+    pub fn peer_features(&self) -> &[String] {
+        &self.inner.peer_features
+    }
+
+    /// (server) Whether `hello.features` carried `feature`.
+    pub fn peer_has_feature(&self, feature: &str) -> bool {
+        self.inner.peer_features.iter().any(|f| f == feature)
     }
 
     pub fn is_closed(&self) -> bool {
