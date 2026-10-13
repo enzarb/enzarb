@@ -9,9 +9,13 @@ export interface ComponentInfo {
 /** What the About page lists; a component the chart omits still shows, as "unknown". */
 export const COMPONENTS: readonly ComponentInfo[] = [
 	{ name: 'enzarb-ui', label: 'UI', repo: 'enzarb-ui' },
-	{ name: 'enzarb-operator', label: 'Operator', repo: 'enzarb-operator' },
+	{ name: 'enzarb-workflows', label: 'Workflows', repo: 'enzarb-workflows' },
+	{ name: 'enzarb-connectors', label: 'Connectors', repo: 'enzarb-connectors' },
 	{ name: 'enzarb-realtime', label: 'Realtime', repo: 'enzarb-realtime' },
-	{ name: 'enzarb-sandbox', label: 'Sandbox', repo: 'enzarb-sandbox' }
+	{ name: 'enzarb-sandbox-proxy', label: 'Sandbox proxy', repo: 'enzarb-sandbox-proxy' },
+	{ name: 'enzarb-sandbox-operator', label: 'Operator', repo: 'enzarb-sandbox-operator' },
+	{ name: 'enzarb-sandbox-container', label: 'Sandbox', repo: 'enzarb-sandbox-container' },
+	{ name: 'enzarb-updater', label: 'Updater', repo: 'enzarb-updater' }
 ];
 
 export const UNKNOWN_VERSION = 'unknown';

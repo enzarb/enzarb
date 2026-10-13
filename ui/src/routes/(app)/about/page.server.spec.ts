@@ -46,7 +46,7 @@ describe('about load', () => {
 		expect(ui.deployed).toBe('v1.0.0');
 		expect(ui.releases[0].html).toContain('<strong>b</strong>');
 		expect(ui.releases[0].html).not.toContain('<script');
-		const op = data.components.find((c: { name: string }) => c.name === 'enzarb-operator');
+		const op = data.components.find((c: { name: string }) => c.name === 'enzarb-sandbox-operator');
 		expect(op.deployed).toBe('unknown');
 		const extra = data.components.find((c: { name: string }) => c.name === 'enzarb-extra');
 		expect(extra).toMatchObject({ deployed: '2.0.0', repoUrl: null, releases: null });
@@ -60,7 +60,7 @@ describe('about load', () => {
 		const data = await run(user);
 		const ui = data.components.find((c: { name: string }) => c.name === 'enzarb-ui');
 		expect(ui).toMatchObject({ deployed: 'v1.0.0', releases: null });
-		const op = data.components.find((c: { name: string }) => c.name === 'enzarb-operator');
+		const op = data.components.find((c: { name: string }) => c.name === 'enzarb-sandbox-operator');
 		expect(op.releases).toHaveLength(1);
 	});
 
