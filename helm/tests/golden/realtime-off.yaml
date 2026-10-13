@@ -171,6 +171,25 @@ metadata:
     helm.sh/chart: enzarb-0.0.0
 
 ---
+# Source: enzarb/templates/claude-key.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: enzarb-claude-key
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    app.kubernetes.io/name: enzarb
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+type: Opaque
+data:
+  active: <generated>
+  <key-id>: <generated>
+
+---
 # Source: enzarb/templates/secrets.yaml
 apiVersion: v1
 kind: Secret
@@ -445,6 +464,26 @@ spec:
   clusterRef:
     name: enzarb-pg
   roleName: enzarb_ui
+  login: true
+
+---
+# Source: enzarb/templates/pgop.yaml
+apiVersion: pgop.ruck.io/v1alpha1
+kind: Role
+metadata:
+  name: sandbox-proxy
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    app.kubernetes.io/name: enzarb-postgres
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+spec:
+  clusterRef:
+    name: enzarb-pg
+  roleName: enzarb_sandbox_proxy
   login: true
 
 ---
@@ -923,6 +962,37 @@ spec:
           ports:
             - { name: http, containerPort: 8080 }
           env:
+
+            - name: PGHOST
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-pg-sandbox-proxy-credentials
+                  key: host
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-pg-sandbox-proxy-credentials
+                  key: password
+            - name: PGPORT
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-pg-sandbox-proxy-credentials
+                  key: port
+            - name: PGSSLMODE
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-pg-sandbox-proxy-credentials
+                  key: sslmode
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-pg-sandbox-proxy-credentials
+                  key: username
+            - name: PGDATABASE
+              value: "enzarb"
+            - name: DATABASE_URL
+              value: "postgres:///enzarb"
+            - { name: ENZARB_CLAUDE_KEYRING_DIR, value: /etc/enzarb/claude-key }
             - name: ENZARB_SESSION_JWT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -936,6 +1006,13 @@ spec:
           livenessProbe:
             httpGet: { path: /healthz, port: http }
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
+          volumeMounts:
+            - { name: claude-key, mountPath: /etc/enzarb/claude-key, readOnly: true }
+      volumes:
+        - name: claude-key
+          secret:
+            secretName: enzarb-claude-key
+            defaultMode: 0400
 
 ---
 # Source: enzarb/templates/ui.yaml
@@ -1190,6 +1267,7 @@ spec:
                   key: "registry-token"
                   optional: true
             - { name: ENZARB_EXECUTOR_URL, value: "http://enzarb-workflows-executor.enzarb.svc:8081" }
+            - { name: ENZARB_CLAUDE_KEYRING_DIR, value: /etc/enzarb/claude-key }
             - { name: ENZARB_EXECUTOR_LISTEN, value: "0.0.0.0:8081" }
             - { name: ENZARB_PUBLIC_URL, value: "https://enzarb.dev" }
             - { name: ENZARB_DB_MAX_CONNECTIONS, value: "10" }
@@ -1205,8 +1283,13 @@ spec:
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
+            - { name: claude-key, mountPath: /etc/enzarb/claude-key, readOnly: true }
       volumes:
         - { name: tmp, emptyDir: {} }
+        - name: claude-key
+          secret:
+            secretName: enzarb-claude-key
+            defaultMode: 0400
 
 ---
 # Source: enzarb/templates/migrations.yaml
@@ -1509,6 +1592,7 @@ spec:
       grants:
         - { role: enzarb_ui, privileges: [USAGE] }
         - { role: enzarb_workflows, privileges: [USAGE] }
+        - { role: enzarb_sandbox_proxy, privileges: [USAGE] }
 
 ---
 # Source: enzarb/templates/httproute.yaml

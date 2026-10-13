@@ -29,6 +29,22 @@ run = "bash scripts/assert-realtime.sh"
 description = "Assert the workflows ENZARB_NPM_TOKEN wiring (default, overrides, disabled, no executor role)"
 run = "bash scripts/assert-npm-token.sh"
 
+[tasks.claudekey]
+description = "Assert the per-user Claude token keyring wiring (mounts, isolation, existingSecret, rekey Job)"
+run = "bash scripts/assert-claude-key.sh"
+
+[tasks.rekey]
+description = "Run the Claude token rekey Job (ENZARB_CHART, default the published chart; ENZARB_NAMESPACE, default enzarb)"
+run = """
+ns="${ENZARB_NAMESPACE:-enzarb}"
+vals="$(mktemp)"
+helm get values enzarb -n "$ns" -o yaml > "$vals"
+helm template enzarb "${ENZARB_CHART:-oci://ghcr.io/enzarb/charts/enzarb}" --namespace "$ns" --is-upgrade -f "$vals" \
+  --set secrets.claudeKey.rekey.enabled=true --set-string "secrets.claudeKey.rekey.suffix=$(date +%s)" \
+  --show-only templates/claude-rekey.yaml | kubectl apply -n "$ns" -f -
+rm -f "$vals"
+"""
+
 [tasks.kubeconform]
 description = "Validate rendered manifests with kubeconform"
 run = "scripts/kubeconform.sh"
@@ -43,4 +59,4 @@ run = "scripts/sync-crds.sh"
 
 [tasks.test]
 description = "All checks"
-depends = ["lint", "guard", "golden", "realtime", "npmtoken", "kubeconform", "pgop"]
+depends = ["lint", "guard", "golden", "realtime", "npmtoken", "claudekey", "kubeconform", "pgop"]

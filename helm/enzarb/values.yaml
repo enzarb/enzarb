@@ -76,6 +76,18 @@ secrets:
   executorCallback:
     existingSecret: ""
     key: callback-secret
+  # Keyring for per-user Claude tokens (data keys <key_id> = 32 random bytes, plus `active`).
+  # Generated once and kept (resource-policy keep) unless existingSecret is set. Mounted only
+  # into sandbox-proxy and the workflows executor, never into the sandbox namespace.
+  claudeKey:
+    existingSecret: ""
+    # Manual re-encryption Job (`mise run rekey`); not a hook, so it never runs on upgrade.
+    rekey:
+      enabled: false
+      # Job specs are immutable: set a fresh suffix per run.
+      suffix: ""
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 86400
   # GitHub App + OAuth app credentials. Either point at an existing Secret (with the
   # key names below) or give the values inline to have the chart create `enzarb-github`.
   github:

@@ -60,6 +60,20 @@ imagePullSecrets:
 {{- define "enzarb.realtimeJwtKey" -}}{{ if .Values.secrets.realtimeJwt.existingSecret }}{{ .Values.secrets.realtimeJwt.key }}{{ else }}realtime-jwt-secret{{ end }}{{- end }}
 {{- define "enzarb.jwtKey" -}}{{ if .Values.secrets.sessionJwt.existingSecret }}{{ .Values.secrets.sessionJwt.key }}{{ else }}session-jwt-secret{{ end }}{{- end }}
 {{- define "enzarb.callbackKey" -}}{{ if .Values.secrets.executorCallback.existingSecret }}{{ .Values.secrets.executorCallback.key }}{{ else }}callback-secret{{ end }}{{- end }}
+{{/* Per-user Claude token keyring (release namespace only; never in the sandbox namespace). */}}
+{{- define "enzarb.claudeKeySecret" -}}{{ .Values.secrets.claudeKey.existingSecret | default "enzarb-claude-key" }}{{- end }}
+{{- define "enzarb.claudeKeyVolume" -}}
+- name: claude-key
+  secret:
+    secretName: {{ include "enzarb.claudeKeySecret" . }}
+    defaultMode: 0400
+{{- end }}
+{{- define "enzarb.claudeKeyMount" -}}
+- { name: claude-key, mountPath: /etc/enzarb/claude-key, readOnly: true }
+{{- end }}
+{{- define "enzarb.claudeKeyEnv" -}}
+- { name: ENZARB_CLAUDE_KEYRING_DIR, value: /etc/enzarb/claude-key }
+{{- end }}
 {{/* Key names inside the github Secret (the chart-created one uses the configured key names too). */}}
 {{- define "enzarb.githubKey" -}}{{ index .ctx.Values.secrets.github.keys .key }}{{- end }}
 {{/* enzarb-updater Secret: an existing one (keys from secrets.updater.keys) or the chart-created one. */}}

@@ -42,6 +42,7 @@ spec:
             {{- end }}
             - { name: ENZARB_EXECUTOR_URL, value: {{ printf "http://enzarb-workflows-executor.%s.svc:%v" .Release.Namespace .Values.sandbox.executorCallbackPort | quote }} }
             {{- if $executor }}
+            {{- include "enzarb.claudeKeyEnv" . | nindent 12 }}
             - { name: ENZARB_EXECUTOR_LISTEN, value: {{ printf "0.0.0.0:%v" .Values.sandbox.executorCallbackPort | quote }} }
             {{- end }}
             - { name: ENZARB_PUBLIC_URL, value: {{ include "enzarb.publicUrl" . | quote }} }
@@ -65,8 +66,14 @@ spec:
           securityContext: {{ include "enzarb.securityContext" (dict "ctx" . "uid" 65532) | fromYaml | toJson }}
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
+            {{- if $executor }}
+            {{- include "enzarb.claudeKeyMount" . | nindent 12 }}
+            {{- end }}
       volumes:
         - { name: tmp, emptyDir: {} }
+        {{- if $executor }}
+        {{- include "enzarb.claudeKeyVolume" . | nindent 8 }}
+        {{- end }}
 {{- if $executor }}
 ---
 # Internal only: sandbox-init callbacks (/v1/runs/{id}/finished) and health.
