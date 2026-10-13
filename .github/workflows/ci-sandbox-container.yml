@@ -1,7 +1,7 @@
 name: ci-sandbox-container
 on:
   push:
-    branches: [main]
+    branches: [main, monorepo] # TRIAL ONLY, revert before cutover
     tags: ['sandbox-container/v*']
     paths: &paths
       - 'sandbox-container/**'

@@ -1,7 +1,7 @@
 name: ci-workflows
 on:
   push:
-    branches: [main]
+    branches: [main, monorepo] # TRIAL ONLY, revert before cutover
     tags: ['workflows/v*']
     paths: &paths
       - 'workflows/**'

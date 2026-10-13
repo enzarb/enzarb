@@ -1,7 +1,7 @@
 name: ci-ui
 on:
   push:
-    branches: [main]
+    branches: [main, monorepo] # TRIAL ONLY, revert before cutover
     tags: ['ui/v*']
     paths: &paths
       - 'ui/**'

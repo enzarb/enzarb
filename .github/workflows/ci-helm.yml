@@ -1,7 +1,7 @@
 name: ci-helm
 on:
   push:
-    branches: [main]
+    branches: [main, monorepo] # TRIAL ONLY, revert before cutover
     paths: &paths
       - 'helm/**'
       - .github/workflows/ci-helm.yml

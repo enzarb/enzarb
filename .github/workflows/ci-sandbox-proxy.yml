@@ -1,7 +1,7 @@
 name: ci-sandbox-proxy
 on:
   push:
-    branches: [main]
+    branches: [main, monorepo] # TRIAL ONLY, revert before cutover
     tags: ['sandbox-proxy/v*']
     paths: &paths
       - 'sandbox-proxy/**'

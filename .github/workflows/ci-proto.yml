@@ -3,7 +3,7 @@
 name: ci-proto
 on:
   push:
-    branches: [main]
+    branches: [main, monorepo] # TRIAL ONLY, revert before cutover
     paths: &paths
       - 'proto/**'
       - .github/workflows/ci-proto.yml
