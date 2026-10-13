@@ -244,7 +244,7 @@ metadata:
 rules:
   - apiGroups: [enzarb.dev]
     resources: [projects]
-    verbs: [get, list, create, delete]
+    verbs: [get, list, create, patch, delete]
 
 ---
 # Source: enzarb/templates/rbac.yaml
