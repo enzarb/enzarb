@@ -1,0 +1,384 @@
+//! Environment configuration.
+
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use crate::policy::Policy;
+
+/// Runtime configuration of sandbox-init.
+#[derive(Debug, Clone)]
+pub struct Config {
+    /// `ENZARB_LISTEN`, default `0.0.0.0:7070`.
+    pub listen: SocketAddr,
+    /// `ENZARB_AUTH_TOKEN_FILE`, default `/var/run/enzarb/auth/token`.
+    pub auth_token_file: PathBuf,
+    /// `ENZARB_WORKSPACE`, default `/workspace`: working directory of PTYs.
+    pub workspace: PathBuf,
+    /// `ENZARB_SHELL`, then `$SHELL`, then `/bin/bash`: the login shell.
+    pub shell: String,
+    /// `ENZARB_GRACE_SECS`, default 25: how long children get after SIGTERM before SIGKILL.
+    pub grace: Duration,
+    /// `ENZARB_ACP_AGENT_BIN`, default `claude-agent-acp`: the ACP agent adapter
+    /// (stdio JSON-RPC) started for each run.
+    pub acp_bin: String,
+    /// `ENZARB_CANCEL_GRACE_SECS`, default 10: how long the agent gets to end
+    /// its turn after `session/cancel` (cancel or timeout) before it is killed.
+    pub cancel_grace: Duration,
+    /// `ENZARB_PERMISSION_POLICY`: path of a YAML/JSON policy file; the
+    /// built-in default when unset.
+    pub policy: Policy,
+    /// `ENZARB_CLAUDE_TOKEN_FILE`, default `<workspace>/.enzarb/claude-token`.
+    pub claude_token_file: PathBuf,
+    /// `ENZARB_GIT_BIN`, default `git`.
+    pub git_bin: String,
+    /// `ENZARB_MISE_BIN` (the image sets `mise`); empty disables. Run as
+    /// `mise install` in each run's worktree before the agent starts, so the
+    /// repo's pinned toolchain (`mise.toml`, `rust-toolchain.toml`) is on PATH
+    /// for its check commands. The tools live on the workspace volume.
+    pub mise_bin: String,
+    /// `ENZARB_GIT_NAME` / `ENZARB_GIT_EMAIL`: identity for commits made in runs.
+    pub git_name: String,
+    pub git_email: String,
+    /// `ENZARB_MAX_RUNS`, default 2: runs executing at once (others stay `queued`).
+    pub max_runs: usize,
+    /// `ENZARB_RUN_TIMEOUT_SECS`, default 3600: used when `run_start.timeout_secs` is 0.
+    pub default_timeout: Duration,
+    /// `ENZARB_CALLBACK_BACKOFF_MS`, default 1000: first retry delay of the
+    /// run-finished callback (doubles up to 60 s).
+    pub callback_backoff: Duration,
+    /// `ENZARB_MAX_CHATS`, default 1: live chat (`acp`) channels at once; `0`
+    /// disables chat (no `acp` feature, opens get `chat_disabled`). Chats do
+    /// not use run slots.
+    pub max_chats: usize,
+    /// `ENZARB_CHAT_IDLE_SECS`, default 1800: a chat with no message in either
+    /// direction for this long is closed with `idle`.
+    pub chat_idle: Duration,
+    /// `ENZARB_CHAT_MAX_SECS`, default 28800 (8 h): hard lifetime of one chat
+    /// channel (closed with `limit`).
+    pub chat_max: Duration,
+    /// `ENZARB_CHAT_RETENTION_DAYS`, default 7: chat records (transcripts)
+    /// untouched for this long are deleted at startup.
+    pub chat_retention: Duration,
+    /// `ENZARB_CHAT_PERMISSION_MODE`: the permission mode every chat session
+    /// starts in (`bypassPermissions`, `default` or `plan`). Default
+    /// `bypassPermissions`, or `default` when bypass is not allowed.
+    pub chat_permission_mode: ChatMode,
+    /// `ENZARB_CHAT_ALLOW_BYPASS`, default true: chats may run in (or switch
+    /// to) `bypassPermissions`. False keeps them in `default`/`plan`.
+    pub chat_allow_bypass: bool,
+}
+
+/// A chat permission mode sandbox-init lets a chat be in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatMode {
+    /// No permission prompts: tool calls run without asking the browser.
+    Bypass,
+    /// Every tool call that needs approval asks the browser.
+    Default,
+    /// Read-only planning.
+    Plan,
+}
+
+impl ChatMode {
+    /// The ACP mode id.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ChatMode::Bypass => "bypassPermissions",
+            ChatMode::Default => "default",
+            ChatMode::Plan => "plan",
+        }
+    }
+
+    /// Parse an ACP mode id (exact spelling).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "bypassPermissions" => Some(ChatMode::Bypass),
+            "default" => Some(ChatMode::Default),
+            "plan" => Some(ChatMode::Plan),
+            _ => None,
+        }
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            listen: ([0, 0, 0, 0], 7070).into(),
+            auth_token_file: "/var/run/enzarb/auth/token".into(),
+            workspace: "/workspace".into(),
+            shell: "/bin/bash".into(),
+            grace: Duration::from_secs(25),
+            acp_bin: "claude-agent-acp".into(),
+            cancel_grace: Duration::from_secs(10),
+            policy: Policy::default(),
+            claude_token_file: "/workspace/.enzarb/claude-token".into(),
+            git_bin: "git".into(),
+            mise_bin: String::new(),
+            git_name: "enzarb-agent".into(),
+            git_email: "agent@enzarb.dev".into(),
+            max_runs: 2,
+            default_timeout: Duration::from_secs(3600),
+            callback_backoff: Duration::from_secs(1),
+            max_chats: 1,
+            chat_idle: Duration::from_secs(1800),
+            chat_max: Duration::from_secs(8 * 3600),
+            chat_retention: Duration::from_secs(7 * 86400),
+            chat_permission_mode: ChatMode::Bypass,
+            chat_allow_bypass: true,
+        }
+    }
+}
+
+impl Config {
+    /// Read configuration from the environment.
+    pub fn from_env() -> anyhow::Result<Self> {
+        Self::from_lookup(|k| std::env::var(k).ok())
+    }
+
+    /// Like [`from_env`](Self::from_env) with an injectable lookup (for tests).
+    pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<Self> {
+        let mut c = Self::default();
+        if let Some(v) = get("ENZARB_LISTEN") {
+            c.listen = v
+                .parse()
+                .map_err(|e| anyhow::anyhow!("ENZARB_LISTEN={v:?}: {e}"))?;
+        }
+        if let Some(v) = get("ENZARB_AUTH_TOKEN_FILE") {
+            c.auth_token_file = v.into();
+        }
+        if let Some(v) = get("ENZARB_WORKSPACE") {
+            c.workspace = v.into();
+        }
+        c.claude_token_file = c.workspace.join(".enzarb/claude-token");
+        if let Some(v) = get("ENZARB_CLAUDE_TOKEN_FILE") {
+            c.claude_token_file = v.into();
+        }
+        if let Some(v) = get("ENZARB_ACP_AGENT_BIN").filter(|s| !s.is_empty()) {
+            c.acp_bin = v;
+        }
+        if let Some(v) = get("ENZARB_CANCEL_GRACE_SECS") {
+            c.cancel_grace = Duration::from_secs(
+                v.parse()
+                    .map_err(|e| anyhow::anyhow!("ENZARB_CANCEL_GRACE_SECS={v:?}: {e}"))?,
+            );
+        }
+        if let Some(v) = get("ENZARB_PERMISSION_POLICY").filter(|s| !s.is_empty()) {
+            c.policy = Policy::load(Some(std::path::Path::new(&v)))?;
+        }
+        if let Some(v) = get("ENZARB_GIT_BIN").filter(|s| !s.is_empty()) {
+            c.git_bin = v;
+        }
+        if let Some(v) = get("ENZARB_MISE_BIN") {
+            c.mise_bin = v;
+        }
+        if let Some(v) = get("ENZARB_GIT_NAME").filter(|s| !s.is_empty()) {
+            c.git_name = v;
+        }
+        if let Some(v) = get("ENZARB_GIT_EMAIL").filter(|s| !s.is_empty()) {
+            c.git_email = v;
+        }
+        if let Some(v) = get("ENZARB_MAX_RUNS") {
+            c.max_runs = v
+                .parse::<usize>()
+                .map_err(|e| anyhow::anyhow!("ENZARB_MAX_RUNS={v:?}: {e}"))?
+                .max(1);
+        }
+        if let Some(v) = get("ENZARB_RUN_TIMEOUT_SECS") {
+            c.default_timeout = Duration::from_secs(
+                v.parse()
+                    .map_err(|e| anyhow::anyhow!("ENZARB_RUN_TIMEOUT_SECS={v:?}: {e}"))?,
+            );
+        }
+        if let Some(v) = get("ENZARB_CALLBACK_BACKOFF_MS") {
+            c.callback_backoff = Duration::from_millis(
+                v.parse()
+                    .map_err(|e| anyhow::anyhow!("ENZARB_CALLBACK_BACKOFF_MS={v:?}: {e}"))?,
+            );
+        }
+        if let Some(v) = get("ENZARB_MAX_CHATS") {
+            c.max_chats = v
+                .parse()
+                .map_err(|e| anyhow::anyhow!("ENZARB_MAX_CHATS={v:?}: {e}"))?;
+        }
+        let secs = |k: &str| -> anyhow::Result<Option<u64>> {
+            match get(k) {
+                None => Ok(None),
+                Some(v) => match v.parse::<u64>() {
+                    Ok(n) if n > 0 => Ok(Some(n)),
+                    Ok(_) => Err(anyhow::anyhow!("{k}={v:?}: must be at least 1")),
+                    Err(e) => Err(anyhow::anyhow!("{k}={v:?}: {e}")),
+                },
+            }
+        };
+        if let Some(n) = secs("ENZARB_CHAT_IDLE_SECS")? {
+            c.chat_idle = Duration::from_secs(n);
+        }
+        if let Some(n) = secs("ENZARB_CHAT_MAX_SECS")? {
+            c.chat_max = Duration::from_secs(n);
+        }
+        if let Some(n) = secs("ENZARB_CHAT_RETENTION_DAYS")? {
+            c.chat_retention = Duration::from_secs(n.saturating_mul(86400));
+        }
+        // The values are not echoed in errors: a misplaced secret must not end
+        // up in the logs.
+        if let Some(v) = get("ENZARB_CHAT_ALLOW_BYPASS") {
+            c.chat_allow_bypass = match v.trim().to_ascii_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" => true,
+                "0" | "false" | "no" | "off" => false,
+                _ => anyhow::bail!("ENZARB_CHAT_ALLOW_BYPASS: must be true or false"),
+            };
+        }
+        c.chat_permission_mode = match get("ENZARB_CHAT_PERMISSION_MODE") {
+            Some(v) => ChatMode::parse(v.trim()).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "ENZARB_CHAT_PERMISSION_MODE: must be bypassPermissions, default or plan"
+                )
+            })?,
+            None if c.chat_allow_bypass => ChatMode::Bypass,
+            None => ChatMode::Default,
+        };
+        if c.chat_permission_mode == ChatMode::Bypass && !c.chat_allow_bypass {
+            anyhow::bail!(
+                "ENZARB_CHAT_PERMISSION_MODE=bypassPermissions needs ENZARB_CHAT_ALLOW_BYPASS=true"
+            );
+        }
+        if let Some(v) = get("ENZARB_SHELL")
+            .or_else(|| get("SHELL"))
+            .filter(|s| !s.is_empty())
+        {
+            c.shell = v;
+        }
+        if let Some(v) = get("ENZARB_GRACE_SECS") {
+            let secs: u64 = v
+                .parse()
+                .map_err(|e| anyhow::anyhow!("ENZARB_GRACE_SECS={v:?}: {e}"))?;
+            c.grace = Duration::from_secs(secs);
+        }
+        Ok(c)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_and_overrides() {
+        let c = Config::from_lookup(|_| None).unwrap();
+        assert_eq!(c.listen.port(), 7070);
+        assert_eq!(
+            c.auth_token_file,
+            PathBuf::from("/var/run/enzarb/auth/token")
+        );
+        let c = Config::from_lookup(|k| match k {
+            "ENZARB_AUTH_TOKEN_FILE" => Some("/t".into()),
+            "ENZARB_GRACE_SECS" => Some("3".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(c.auth_token_file, PathBuf::from("/t"));
+        assert_eq!(c.grace, Duration::from_secs(3));
+        assert!(Config::from_lookup(|_| Some("x".into())).is_err());
+    }
+
+    #[test]
+    fn chat_settings() {
+        let c = Config::from_lookup(|_| None).unwrap();
+        assert_eq!(c.max_chats, 1);
+        assert_eq!(c.chat_idle, Duration::from_secs(1800));
+        assert_eq!(c.chat_max, Duration::from_secs(8 * 3600));
+        assert_eq!(c.chat_retention, Duration::from_secs(7 * 86400));
+        let c = Config::from_lookup(|k| match k {
+            "ENZARB_MAX_CHATS" => Some("0".into()),
+            "ENZARB_CHAT_IDLE_SECS" => Some("5".into()),
+            "ENZARB_CHAT_MAX_SECS" => Some("60".into()),
+            "ENZARB_CHAT_RETENTION_DAYS" => Some("1".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(c.max_chats, 0);
+        assert_eq!(c.chat_idle, Duration::from_secs(5));
+        assert_eq!(c.chat_max, Duration::from_secs(60));
+        assert_eq!(c.chat_retention, Duration::from_secs(86400));
+        for k in [
+            "ENZARB_CHAT_IDLE_SECS",
+            "ENZARB_CHAT_MAX_SECS",
+            "ENZARB_MAX_CHATS",
+        ] {
+            assert!(Config::from_lookup(|q| (q == k).then(|| "x".into())).is_err());
+        }
+        assert!(
+            Config::from_lookup(|q| (q == "ENZARB_CHAT_IDLE_SECS").then(|| "0".into())).is_err()
+        );
+    }
+
+    #[test]
+    fn chat_permission_mode() {
+        let mode = |vars: &[(&str, &str)]| {
+            let vars: Vec<(String, String)> = vars
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            Config::from_lookup(move |k| vars.iter().find(|(a, _)| a == k).map(|(_, v)| v.clone()))
+                .map(|c| (c.chat_permission_mode, c.chat_allow_bypass))
+        };
+        assert_eq!(mode(&[]).unwrap(), (ChatMode::Bypass, true));
+        let m = "ENZARB_CHAT_PERMISSION_MODE";
+        let a = "ENZARB_CHAT_ALLOW_BYPASS";
+        assert_eq!(mode(&[(m, "default")]).unwrap(), (ChatMode::Default, true));
+        assert_eq!(mode(&[(m, "plan")]).unwrap(), (ChatMode::Plan, true));
+        assert_eq!(
+            mode(&[(m, "bypassPermissions")]).unwrap(),
+            (ChatMode::Bypass, true)
+        );
+        assert_eq!(mode(&[(a, "false")]).unwrap(), (ChatMode::Default, false));
+        assert_eq!(
+            mode(&[(a, "false"), (m, "plan")]).unwrap(),
+            (ChatMode::Plan, false)
+        );
+        assert!(mode(&[(a, "false"), (m, "bypassPermissions")]).is_err());
+        assert!(mode(&[(a, "maybe")]).is_err());
+        for bad in [
+            "acceptEdits",
+            "auto",
+            "dontAsk",
+            "bypass",
+            "BYPASSPERMISSIONS",
+            "",
+        ] {
+            assert!(mode(&[(m, bad)]).is_err(), "{bad}");
+        }
+        // the error does not echo the value
+        let e = mode(&[(m, "sk-ant-oat01-secret")]).unwrap_err().to_string();
+        assert!(!e.contains("secret"), "{e}");
+    }
+
+    #[test]
+    fn acp_settings() {
+        let c = Config::from_lookup(|_| None).unwrap();
+        assert_eq!(c.acp_bin, "claude-agent-acp");
+        assert_eq!(c.cancel_grace, Duration::from_secs(10));
+        assert_eq!(c.policy, Policy::default());
+        let dir = std::env::temp_dir().join(format!("enzarb-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("policy.yaml");
+        std::fs::write(&file, "fetch_allow_hosts: [docs.rs]\n").unwrap();
+        let c = Config::from_lookup(|k| match k {
+            "ENZARB_ACP_AGENT_BIN" => Some("/opt/acp".into()),
+            "ENZARB_CANCEL_GRACE_SECS" => Some("3".into()),
+            "ENZARB_PERMISSION_POLICY" => Some(file.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(c.acp_bin, "/opt/acp");
+        assert_eq!(c.cancel_grace, Duration::from_secs(3));
+        assert_eq!(c.policy.fetch_allow_hosts, ["docs.rs"]);
+        // an unreadable policy fails startup
+        assert!(
+            Config::from_lookup(|k| (k == "ENZARB_PERMISSION_POLICY").then(|| "/nope.yaml".into()))
+                .is_err()
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
