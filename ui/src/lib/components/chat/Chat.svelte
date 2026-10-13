@@ -27,7 +27,9 @@
 	const connector = sandboxConnector(
 		untrack(() => project),
 		{
-			connection: (name) => chatConnection(name),
+			// untracked: a client `command()` bumps a $state synchronously, which would re-run the start
+			// effect below; its cleanup disposes the connection and the chat stalls at "Session token"
+			connection: (name) => untrack(() => chatConnection(name)),
 			openSocket: (url) => new WebSocket(url),
 			handshake: async (ws) => {
 				const proto = await import('@enzarb/proto');
