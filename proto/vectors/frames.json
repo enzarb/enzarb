@@ -1,0 +1,82 @@
+[
+  {
+    "frame": {
+      "channel": 1,
+      "flags": 0,
+      "payload_hex": "0001ff68656c6c6f",
+      "type": "DATA_BIN"
+    },
+    "hex": "020000000001000000080001ff68656c6c6f",
+    "name": "data_bin"
+  },
+  {
+    "frame": {
+      "channel": 4294967295,
+      "flags": 0,
+      "payload_hex": "78",
+      "type": "DATA_BIN"
+    },
+    "hex": "0200ffffffff0000000178",
+    "name": "data_bin_max_channel"
+  },
+  {
+    "frame": {
+      "channel": 3,
+      "flags": 0,
+      "payload_hex": "7b226c696e65223a226869222c226e223a317d",
+      "type": "DATA_JSON"
+    },
+    "hex": "030000000003000000137b226c696e65223a226869222c226e223a317d",
+    "name": "data_json"
+  },
+  {
+    "frame": {
+      "channel": 1,
+      "flags": 0,
+      "payload_hex": "00010000",
+      "type": "WINDOW"
+    },
+    "hex": "0400000000010000000400010000",
+    "name": "window"
+  },
+  {
+    "frame": {
+      "channel": 1,
+      "flags": 0,
+      "payload_hex": "7fffffff",
+      "type": "WINDOW"
+    },
+    "hex": "040000000001000000047fffffff",
+    "name": "window_max"
+  },
+  {
+    "frame": {
+      "channel": 1,
+      "flags": 0,
+      "payload_hex": "",
+      "type": "CLOSE"
+    },
+    "hex": "05000000000100000000",
+    "name": "close_empty"
+  },
+  {
+    "frame": {
+      "channel": 1,
+      "flags": 0,
+      "payload_hex": "0001626164206672616d65",
+      "type": "CLOSE"
+    },
+    "hex": "0500000000010000000b0001626164206672616d65",
+    "name": "close_code"
+  },
+  {
+    "frame": {
+      "channel": 2,
+      "flags": 0,
+      "payload_hex": "0003",
+      "type": "CLOSE"
+    },
+    "hex": "050000000002000000020003",
+    "name": "close_code_only"
+  }
+]
