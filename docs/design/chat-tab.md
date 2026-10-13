@@ -1,16 +1,18 @@
 # Design: Project chat (enzarb-ui#66)
 
+> Written before the monorepo ([ADR-0015](../adr/0015-monorepo.md)). Repo names such as `enzarb-proto` or `enzarb-ui` now mean the `proto/` and `ui/` directories of github.com/enzarb/enzarb; issue links (`enzarb-ui#66`) point at the archived repos. File paths below use the current directories.
+
 Status: proposed (2026-10-12). Scope: a Chat page in the project view that talks to Claude through ACP inside the Project's sandbox. It covers enzarb-proto, enzarb-sandbox-container, enzarb-sandbox-proxy, enzarb-ui, enzarb-helm and root docs. enzarb-workflows and enzarb-sandbox-operator need no code changes (see section 4).
 
 This builds on enzarb's plan in the issue (separate routes under a shared layout, `@agentclientprotocol/sdk` rather than `@zed-industries/*`, no job-running notice) and settles the "to confirm" points.
 
 ## What exists today (facts this design relies on)
 
-- **Agent runs** (ADR-0011): sandbox-init is an ACP *client* of `claude-agent-acp` (`ENZARB_ACP_AGENT_BIN`). It is spawned per run in its own process group (`enzarb-sandbox-container/src/acp.rs`), offers no client capabilities, runs in `/workspace/worktrees/run-<id>`, and gets `CLAUDE_CODE_OAUTH_TOKEN` from `/workspace/.enzarb/claude-token` today (`agent.rs` ~l.1184). Under the ADR-0004 amendment 2026-10-13 it comes from `RunStart.claude_token` (the owner's token, from Postgres, per run), with the legacy file as a rollout fallback. Every `session/request_permission` is answered by `Policy::decide` (`policy.rs`), with `allow_once`/`reject_once` only. A `Semaphore` of `ENZARB_MAX_RUNS` (default 2) limits concurrent runs.
-- **Mux** (`enzarb-proto/docs/protocol.md`): `open` has `kind: "pty"` only. `ChannelKind` is a closed Rust enum with `Pty` only (`crates/enzarb-proto/src/ctrl.rs`). `welcome` carries only `version`. Frames are at most 1 MiB, and each channel has a 256 KiB credit window.
-- **Proxy** (`enzarb-sandbox-proxy/src/relay.rs`, `guard.rs`): the proxy completes the sandbox handshake itself and answers the browser's `hello` locally with `welcome{version}`. It then decodes every browser frame and allowlists CTRL (`open`, `resize`, `error`, `credential_status`). **A frame that fails to decode closes the socket with 1008.** So an old proxy given `open{kind:"acp"}` kills the terminal-style connection. The proxy also has an `idle_timeout`.
+- **Agent runs** (ADR-0011): sandbox-init is an ACP *client* of `claude-agent-acp` (`ENZARB_ACP_AGENT_BIN`). It is spawned per run in its own process group (`sandbox-container/src/acp.rs`), offers no client capabilities, runs in `/workspace/worktrees/run-<id>`, and gets `CLAUDE_CODE_OAUTH_TOKEN` from `/workspace/.enzarb/claude-token` today (`agent.rs` ~l.1184). Under the ADR-0004 amendment 2026-10-13 it comes from `RunStart.claude_token` (the owner's token, from Postgres, per run), with the legacy file as a rollout fallback. Every `session/request_permission` is answered by `Policy::decide` (`policy.rs`), with `allow_once`/`reject_once` only. A `Semaphore` of `ENZARB_MAX_RUNS` (default 2) limits concurrent runs.
+- **Mux** (`proto/docs/protocol.md`): `open` has `kind: "pty"` only. `ChannelKind` is a closed Rust enum with `Pty` only (`crates/enzarb-proto/src/ctrl.rs`). `welcome` carries only `version`. Frames are at most 1 MiB, and each channel has a 256 KiB credit window.
+- **Proxy** (`sandbox-proxy/src/relay.rs`, `guard.rs`): the proxy completes the sandbox handshake itself and answers the browser's `hello` locally with `welcome{version}`. It then decodes every browser frame and allowlists CTRL (`open`, `resize`, `error`, `credential_status`). **A frame that fails to decode closes the socket with 1008.** So an old proxy given `open{kind:"acp"}` kills the terminal-style connection. The proxy also has an `idle_timeout`.
 - **UI**: `terminalConnection(name)` (`src/lib/terminal.remote.ts`) mints a 5-minute HS256 JWT (`sub`, `project`, `aud: enzarb-sandbox-proxy`) and returns `wss://<host>/sandbox/v1/projects/<p>/mux?token=…`. `Terminal.svelte` then runs `Session.connect(ws,{client:'ui'})` and `openPty`.
-- **Drain** (`enzarb-workflows/crates/engine/src/executor/sandbox_change.rs`): the drain hold stops new job claims, and the drained annotation is set once no *job* is `running`. It knows nothing about interactive sessions.
+- **Drain** (`workflows/crates/engine/src/executor/sandbox_change.rs`): the drain hold stops new job claims, and the drained annotation is set once no *job* is `running`. It knows nothing about interactive sessions.
 - Claude's own session files live under `HOME=/home/enzarb`, which is **not** on the PVC (Dockerfile).
 
 ---
@@ -40,7 +42,7 @@ Wire changes (all additive, protocol version stays 1):
 - New proxy, new sandbox, `ENZARB_MAX_CHATS=0`: no feature, so the UI shows "Chat is disabled for this sandbox".
 - Old UI: it never opens `acp` and ignores the unknown `features` field (`Ctrl` decode ignores unknown fields).
 
-**TS package** (`enzarb-proto/ts/src/session.ts`, `channel.ts`, `ctrl.ts`):
+**TS package** (`proto/ts/src/session.ts`, `channel.ts`, `ctrl.ts`):
 - `Session.features: ReadonlySet<string>`.
 - `Session.openAcp({repo?, resume?}): Promise<ByteChannel>`, where `ByteChannel` exposes `readable: ReadableStream<Uint8Array>`, `writable: WritableStream<Uint8Array>` and `closed: Promise<{reason}>`. Credit is granted as the readable is consumed, so backpressure flows end to end.
 - `OpenError` carries `code`.
@@ -233,7 +235,7 @@ Tests (Vitest, `*.svelte.test.ts`):
 3. The proxy can deploy before or after the image; skew is handled by `features` (section 1).
 4. The UI has no flag (removed in ui v0.16.0 and enzarb-helm v0.56.0 after validation; the chart keeps `ui.chat.enabled` only as a deprecated no-op schema key for one release). Rollout was gated by version skew only: the Chat tab is always listed and degrades to "Chat not available" until the sandbox and proxy advertise `acp`. Deploys go through the updater as usual.
 5. Rollback: roll the sandbox image back (drain-first), or set `ENZARB_MAX_CHATS=0` in the sandbox env (kill switch: no `acp` feature and `chat_disabled` open errors). Both are pod-shape changes, so they drain first. There is no UI flag.
-6. Docs: update `docs/contracts.md` §3 (filesystem: `worktrees/chat-*`, `.enzarb/chats/`), §4 (mux additions), §7 (proxy forwards features, idle timeout); `enzarb-proto/docs/protocol.md`; new **ADR-0014 "Interactive chat over ACP"** recording the decisions above (it extends ADR-0011).
+6. Docs: update `docs/contracts.md` §3 (filesystem: `worktrees/chat-*`, `.enzarb/chats/`), §4 (mux additions), §7 (proxy forwards features, idle timeout); `proto/docs/protocol.md`; new **ADR-0014 "Interactive chat over ACP"** recording the decisions above (it extends ADR-0011).
 
 ## 9. Security review checklist
 

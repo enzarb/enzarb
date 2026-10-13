@@ -6,47 +6,49 @@ enzarb runs AI coding agents in isolated Kubernetes sandboxes against code repos
 
 ## Repositories
 
-Each component is its own repository. The top-level `enzarb` repo holds docs, ADRs, the repo manifest (`repos.toml`) and the cross-repo `mise` tasks.
+All components live in one monorepo, github.com/enzarb/enzarb ([ADR-0015](adr/0015-monorepo.md)), one top-level directory each. Each directory has its own build, checks, Dockerfile and release (tags `<dir>/vX.Y.Z`); the root holds docs, ADRs and the `mise` tasks.
 
-| Repo | Role | Language / artifact |
+| Dir | Role | Language / artifact |
 |---|---|---|
-| `enzarb-ui` | SvelteKit web app; remote functions are the logic layer. Login, Project management, workflow/run views, terminal client | TypeScript, container image |
-| `enzarb-sandbox-proxy` | Takes the browser's single websocket, checks authorization, routes mux frames to the right sandbox's pid-1 | Rust, container image |
-| `enzarb-sandbox-container` | Sandbox image plus pid-1 `sandbox-init`: supervises terminals, git worktrees and headless `claude -p` runs; captures the Claude token | Rust + Dockerfile |
-| `enzarb-sandbox-operator` | Reconciles `Project` (`enzarb.dev/v1alpha1`) into an agent-sandbox `Sandbox`, its auth Secret, volumes and NetworkPolicy in the shared sandbox namespace (ADR-0013); publishes the CRD types as a library crate | Rust (kube-rs), container image |
-| `enzarb-proto` *(new)* | Mux protocol: frame codec, credit-based flow control, `docs/protocol.md`, shared test vectors | Rust crate + npm package |
-| `enzarb-connectors` *(new)* | The `Connector` trait and one connector per source (GitHub first) as a library, plus the `receiver` binary that accepts webhooks | Rust library + container image |
-| `enzarb-workflows` *(new)* | The in-house Postgres workflow engine: migrations, state machines, reducer, executors, ticker | Rust, container image |
-| `enzarb-updater` *(new)* | Tiny stateless service: polls the chart registry and patches `spec.version` of the RKE2 `HelmChart` to the highest published version (never downgrades; optional release webhook) | Rust, container image |
-| `enzarb-realtime` *(new)* | Stateless change stream: `LISTEN work_item_changed`, pushes per-project `work_item` / `resync` frames to browsers over an authenticated websocket (`/live/v1/stream`); the UI refetches via remote functions | Rust, container image |
-| `enzarb-kubernetes` | Cluster prerequisites: kind config, Envoy Gateway, agent-sandbox (v0.5.x), RuntimeClasses, pgop (Capsule is installed but unused since ADR-0013) | YAML / kustomize |
-| `enzarb-helm` | Umbrella chart: all services, CRDs, HTTPRoutes, RBAC, pgop `Cluster`/`Role`/`Database`, migration Jobs | Helm |
+| `ui/` | SvelteKit web app; remote functions are the logic layer. Login, Project management, workflow/run views, terminal client | TypeScript, container image |
+| `sandbox-proxy/` | Takes the browser's single websocket, checks authorization, routes mux frames to the right sandbox's pid-1 | Rust, container image |
+| `sandbox-container/` | Sandbox image plus pid-1 `sandbox-init`: supervises terminals, git worktrees and headless `claude -p` runs; captures the Claude token | Rust + Dockerfile |
+| `operator/` | Reconciles `Project` (`enzarb.dev/v1alpha1`) into an agent-sandbox `Sandbox`, its auth Secret, volumes and NetworkPolicy in the shared sandbox namespace (ADR-0013); publishes the CRD types as a library crate | Rust (kube-rs), container image |
+| `proto/` | Mux protocol: frame codec, credit-based flow control, `docs/protocol.md`, shared test vectors | Rust crate + npm package |
+| `connectors/` | The `Connector` trait and one connector per source (GitHub first) as a library, plus the `receiver` binary that accepts webhooks | Rust library + container image |
+| `workflows/` | The in-house Postgres workflow engine: migrations, state machines, reducer, executors, ticker | Rust, container image |
+| `updater/` | Tiny stateless service: polls the chart registry and patches `spec.version` of the RKE2 `HelmChart` to the highest published version (never downgrades; optional release webhook) | Rust, container image |
+| `realtime/` | Stateless change stream: `LISTEN work_item_changed`, pushes per-project `work_item` / `resync` frames to browsers over an authenticated websocket (`/live/v1/stream`); the UI refetches via remote functions | Rust, container image |
+| `kubernetes/` | Cluster prerequisites: kind config, Envoy Gateway, agent-sandbox (v0.5.x), RuntimeClasses, pgop (Capsule is installed but unused since ADR-0013) | YAML / kustomize |
+| `helm/` | Umbrella chart: all services, CRDs, HTTPRoutes, RBAC, pgop `Cluster`/`Role`/`Database`, migration Jobs | Helm |
 
-### Library dependencies between repos
+### Library dependencies between components
 
 ```mermaid
 flowchart LR
-  proto[enzarb-proto]
-  crds[enzarb-sandbox-operator<br/>CRD types crate]
-  conn[enzarb-connectors<br/>library]
-  ui[enzarb-ui] --> proto
-  px[enzarb-sandbox-proxy] --> proto
+  proto[proto]
+  crds[operator<br/>CRD types crate]
+  conn[connectors<br/>library]
+  ui[ui] --> proto
+  px[sandbox-proxy] --> proto
   px --> crds
-  init[enzarb-sandbox-container<br/>sandbox-init] --> proto
-  wf[enzarb-workflows] --> proto
+  init[sandbox-container<br/>sandbox-init] --> proto
+  wf[workflows] --> proto
   wf --> conn
   wf --> crds
-  rcv[enzarb-connectors<br/>receiver] --> conn
+  rcv[connectors<br/>receiver] --> conn
   rcv --> crds
 ```
 
-`enzarb-proto` lives in its own repo because four programs speak it: the browser, the proxy, sandbox-init, and the workflow executor. The executor is a non-browser client that starts agent runs. See [ADR-0003](adr/0003-mux-protocol.md).
+Dependencies are path dependencies inside the monorepo (Cargo `path = "../proto/..."`, npm `file:../proto`).
+
+`proto/` is its own component because four programs speak it: the browser, the proxy, sandbox-init, and the workflow executor. The executor is a non-browser client that starts agent runs. See [ADR-0003](adr/0003-mux-protocol.md).
 
 ### Self-update chain
 
-component release → `enzarb-helm` sync bumps the image tags → chart published to `oci://ghcr.io/enzarb/charts/enzarb` → `enzarb-updater` polls the registry's tag list (every `ENZARB_UPDATER_POLL_SECS`, default 300), picks the highest plain semver and patches `HelmChart.spec.version` (never downgrades) → the RKE2 helm-controller upgrades the release. Nobody runs a deploy task. The updater needs no inbound traffic and no webhook secret; a GitHub release webhook (`/updater/hook`) remains available but is off by default.
+component release (`<dir>/vX.Y.Z` tag) → the in-repo chart sync bumps the image tags in `helm/` → `helm/vX.Y.Z` release → chart published to `oci://ghcr.io/enzarb/charts/enzarb` → `enzarb-updater` polls the registry's tag list (every `ENZARB_UPDATER_POLL_SECS`, default 300), picks the highest plain semver and patches `HelmChart.spec.version` (never downgrades) → the RKE2 helm-controller upgrades the release. Nobody runs a deploy task. The updater needs no inbound traffic and no webhook secret; a GitHub release webhook (`/updater/hook`) remains available but is off by default.
 
-The `HelmChart` CR is cluster-owned: it is created once by the cluster bootstrap (`mise run oldie:bootstrap-helmchart`, [oldie.md](oldie.md#upgrading)), never by the chart or the updater, and the updater has no `create` permission. The private chart is pulled with `spec.dockerRegistrySecret`; the updater reads tags with a `read:packages` token from a Secret. `enzarb-updater` lives in the umbrella chart, so it patches the CR before the upgrade restarts it. Monitoring a failed upgrade (rollback, alerting) and upgrading CRDs are deferred. See the [enzarb-updater README](https://github.com/enzarb/enzarb-updater) for env vars and RBAC.
+The `HelmChart` CR is cluster-owned: it is created once by the cluster bootstrap (`mise run oldie:bootstrap-helmchart`, [oldie.md](oldie.md#upgrading)), never by the chart or the updater, and the updater has no `create` permission. The private chart is pulled with `spec.dockerRegistrySecret`; the updater reads tags with a `read:packages` token from a Secret. `enzarb-updater` lives in the umbrella chart, so it patches the CR before the upgrade restarts it. Monitoring a failed upgrade (rollback, alerting) and upgrading CRDs are deferred. See the [updater README](https://github.com/enzarb/enzarb/tree/main/updater) for env vars and RBAC.
 
 ## Runtime view
 

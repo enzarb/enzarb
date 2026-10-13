@@ -1,5 +1,7 @@
 # 0001. One repo per component, plus a top-level `enzarb` repo
 
+Status: **Superseded** by [ADR-0015](0015-monorepo.md) (2026-10-13): all components now live in one repo, github.com/enzarb/enzarb, one directory each. The text below is kept as written.
+
 ## Context
 The components ship separately (UI, proxy, sandbox image, operator, connectors, workflow engine, chart) and run on different schedules. There were no commits yet, so the split cost nothing.
 

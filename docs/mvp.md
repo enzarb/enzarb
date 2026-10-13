@@ -10,14 +10,14 @@ An enzarb deployment that works on its own repositories:
 **Done for this phase** = every component is built, tested in isolation, packaged as an image, and wired into the Helm chart, up to the point where deploying to a cluster has to be tested. Deployment testing is the next phase.
 
 ## In scope
-- `enzarb-proto` v1: codec, flow control, session runtime (Rust), TS codec.
+- `proto/` v1: codec, flow control, session runtime (Rust), TS codec.
 - `Project` CRD and operator: agent-sandbox `Sandbox`, sandbox auth Secret, volumes and NetworkPolicy in one shared namespace, status conditions (ADR-0013).
 - `sandbox-init`: pid-1, mux server, PTYs, idempotent runs in git worktrees, Claude token capture.
-- `enzarb-connectors`: trait, GitHub connector, webhook receiver.
-- `enzarb-workflows`: engine (reducer, executors, ticker) and the `issue`, `change_request` and `mention` workflows.
+- `connectors/`: trait, GitHub connector, webhook receiver.
+- `workflows/`: engine (reducer, executors, ticker) and the `issue`, `change_request` and `mention` workflows.
 - `sandbox-proxy`: authenticated websocket routing.
-- `enzarb-ui`: GitHub login, Projects, work items, terminal, and the Merge action on `ReadyToMerge` change requests (the only way enzarb PRs get merged).
-- `enzarb-kubernetes` prerequisites, the `enzarb-helm` chart, and the top-level `mise` dev tasks.
+- `ui/`: GitHub login, Projects, work items, terminal, and the Merge action on `ReadyToMerge` change requests (the only way enzarb PRs get merged).
+- `kubernetes/` prerequisites, the `helm/` chart, and the top-level `mise` dev tasks.
 - CI for each repo.
 
 ## Deferred (post-MVP)
