@@ -6,6 +6,7 @@
 	import DataTable, { type Column } from '#lib/components/ui/DataTable.svelte';
 	import Notice from '#lib/components/ui/Notice.svelte';
 	import PageHeader from '#lib/components/ui/PageHeader.svelte';
+	import WaitReason from '#lib/components/WaitReason.svelte';
 	import WorkStateChip from '#lib/components/WorkStateChip.svelte';
 	import { getNeedsYou } from '#lib/needs-you.svelte.ts';
 	import { listProjects } from '#lib/projects.remote.ts';
@@ -67,7 +68,12 @@
 {/snippet}
 {#snippet projectCell(w: WorkItemSummary)}{w.project}{/snippet}
 {#snippet workflow(w: WorkItemSummary)}{w.workflow}{/snippet}
-{#snippet state(w: WorkItemSummary)}<WorkStateChip state={w.state} />{/snippet}
+{#snippet state(w: WorkItemSummary)}
+	<WorkStateChip state={w.state} />
+	{#if !isTerminal(w.state)}<div class="ez-muted">
+			<WaitReason wait={w.wait} url={w.url} />
+		</div>{/if}
+{/snippet}
 {#snippet updated(w: WorkItemSummary)}
 	<time datetime={w.updatedAt}>{w.updatedAt.slice(0, 16).replace('T', ' ')}</time>
 {/snippet}

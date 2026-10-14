@@ -22,6 +22,8 @@ export interface WorkItemSummary {
 	updatedAt: string;
 	/** Set when the item is waiting on the signed-in user (see `classifyNeedsYou`). */
 	needs?: NeedsYou | null;
+	/** Why the item is waiting, when workflows derived it (change requests). */
+	wait?: Wait | null;
 }
 
 export interface TransitionView {
@@ -214,13 +216,87 @@ export function applyItemChange(
 	return [...rest, item].sort(byRecency);
 }
 
-export const NEEDS_YOU_CATEGORIES = ['approval', 'merge', 'blocked', 'failed'] as const;
+export const WAITING_ON = ['human', 'enzarb', 'ci', 'github'] as const;
+export type WaitingOn = (typeof WAITING_ON)[number];
+
+/** Why a change request is waiting (`state_data.wait`, derived by workflows). */
+export interface Wait {
+	waitingOn: WaitingOn;
+	/** Stable code, e.g. `awaiting_review`, `ci_pending` (contracts §6). */
+	reason: string;
+	text: string;
+	/** Link target of the reason (the comment a decision is waiting on), https only. */
+	url: string | null;
+}
+
+const httpsUrl = (x: unknown): string | null => {
+	if (typeof x !== 'string') return null;
+	try {
+		const u = new URL(x);
+		return u.protocol === 'https:' ? u.href : null;
+	} catch {
+		return null;
+	}
+};
+
+/** The `wait` of a work item's `state_data`; null when absent (older workflows) or malformed. */
+export function parseWait(stateData: unknown): Wait | null {
+	const w = asRecord(asRecord(stateData).wait);
+	const on = w.waiting_on;
+	if (typeof on !== 'string' || !(WAITING_ON as readonly string[]).includes(on)) return null;
+	return {
+		waitingOn: on as WaitingOn,
+		reason: typeof w.reason === 'string' ? w.reason : '',
+		text: typeof w.text === 'string' ? w.text.trim() : '',
+		url: httpsUrl(w.url)
+	};
+}
+
+export interface WaitLink {
+	label: string;
+	href: string;
+}
+
+/** The pull request URL itself; the issue URL derived from a key is not one. */
+const prUrl = (url: string | null): string | null =>
+	url && /^https:\/\/[^/]+\/[^/]+\/[^/]+\/pull\/\d+$/.test(url) ? url : null;
+
+/** Links that help the user act on (or follow) a wait; `url` is the item's URL. */
+export function waitLinks(wait: Wait | null, url: string | null): WaitLink[] {
+	if (!wait) return [];
+	const pr = prUrl(url);
+	switch (wait.reason) {
+		case 'awaiting_review':
+			return pr ? [{ label: 'Review on GitHub', href: `${pr}/files` }] : [];
+		case 'ci_pending':
+			return pr ? [{ label: 'View checks', href: `${pr}/checks` }] : [];
+		case 'enzarb_failed':
+		case 'round_limit':
+		case 'conflict_parked':
+			return pr ? [{ label: 'Open PR', href: pr }] : [];
+		case 'decision_needed':
+			return wait.url ? [{ label: 'View comment', href: wait.url }] : [];
+		default:
+			return [];
+	}
+}
+
+export const NEEDS_YOU_CATEGORIES = [
+	'approval',
+	'merge',
+	'review',
+	'decision',
+	'blocked',
+	'failed'
+] as const;
 export type NeedsYouCategory = (typeof NEEDS_YOU_CATEGORIES)[number];
 
 /** Why an item is waiting on the user; `reason` is the failure / blocker text when there is one. */
 export interface NeedsYou {
 	category: NeedsYouCategory;
 	reason: string | null;
+	/** Specific reason text from `state_data.wait`; absent on the state-based fallback. */
+	text?: string;
 }
 
 const failedChecks = (stateData: unknown) => {
@@ -266,13 +342,23 @@ export function classifyNeedsYou(item: {
 	if (workflow === 'issue' && actions.includes('approve'))
 		return { category: 'approval', reason: null };
 	if (workflow !== 'change_request') return null;
+	const wait = parseWait(stateData);
+	if (wait) {
+		// workflows says exactly who is waited on; only a human counts as "needs you"
+		if (wait.waitingOn !== 'human') return null;
+		const text = wait.text || undefined;
+		if (wait.reason === 'ready_to_merge') return { category: 'merge', reason: null, text };
+		if (wait.reason === 'awaiting_review') return { category: 'review', reason: null, text };
+		if (wait.reason === 'decision_needed') return { category: 'decision', reason: null, text };
+		return { category: 'blocked', reason: blockedReason(stateData), text };
+	}
 	if (actions.includes('merge')) return { category: 'merge', reason: null };
 	if (state === 'AwaitingChanges' || failedChecks(stateData).length > 0)
 		return { category: 'blocked', reason: blockedReason(stateData) ?? 'Changes requested' };
 	return null;
 }
 
-/** The action a queue row offers inline; blocked rows only link out. */
+/** The action a queue row offers inline; review, decision and blocked rows only link out. */
 export function primaryAction(category: NeedsYouCategory): WorkAction | null {
 	if (category === 'approval') return 'approve';
 	if (category === 'merge') return 'merge';

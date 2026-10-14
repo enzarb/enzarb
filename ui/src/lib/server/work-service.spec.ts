@@ -318,7 +318,41 @@ describe('workService needs-you queue', () => {
 			['change_request', 'Reviewing', { checklist: { ci: { status: true } } }],
 			['change_request', 'Reviewing', { checklist: { ci: { status: null } } }],
 			['change_request', 'Reviewing', { checklist: { ci: { status: ['failed'] } } }],
-			['change_request', 'Reviewing', { checklist: { ci: { status: { x: 'failed' } } } }]
+			['change_request', 'Reviewing', { checklist: { ci: { status: { x: 'failed' } } } }],
+			// state_data.wait wins over the state-based fallback
+			[
+				'change_request',
+				'AwaitingChanges',
+				{ wait: { waiting_on: 'human', reason: 'awaiting_review' } }
+			],
+			[
+				'change_request',
+				'AwaitingChanges',
+				{ wait: { waiting_on: 'enzarb', reason: 'reviewing' } }
+			],
+			['change_request', 'AwaitingChanges', { wait: { waiting_on: 'ci', reason: 'ci_pending' } }],
+			[
+				'change_request',
+				'ReadyToMerge',
+				{ wait: { waiting_on: 'human', reason: 'ready_to_merge' } }
+			],
+			['change_request', 'ReadyToMerge', { wait: { waiting_on: 'github', reason: 'merging' } }],
+			['change_request', 'Reviewing', { wait: { waiting_on: 'human', reason: 'x' } }],
+			[
+				'change_request',
+				'ConflictParked',
+				{ wait: { waiting_on: 'human', reason: 'conflict_parked' } }
+			],
+			[
+				'change_request',
+				'Reviewing',
+				{ wait: { waiting_on: 'enzarb' }, checklist: { ci: { status: 'failed' } } }
+			],
+			['change_request', 'AwaitingChanges', { wait: null }],
+			['change_request', 'AwaitingChanges', { wait: { waiting_on: 'bogus' } }],
+			['change_request', 'AwaitingChanges', { wait: 'human' }],
+			['change_request', 'Merged', { wait: { waiting_on: 'human', reason: 'x' } }],
+			['issue', 'Reviewing', { wait: { waiting_on: 'human', reason: 'x' } }]
 		];
 		const ids = new Map<number, number>();
 		for (const [i, [workflow, state, stateData]] of cases.entries()) {
