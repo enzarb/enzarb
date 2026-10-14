@@ -1,0 +1,35 @@
+name: ci-monorepo
+# Monorepo plumbing: scripts/monorepo/*, shell scripts, workflow syntax, and the drift check that
+# keeps scripts/monorepo/affected.sh in step with the paths: filters of ci-*.yml (docs/ci.md).
+on:
+  push:
+    branches: [main]
+    paths: &paths
+      - 'scripts/**'
+      - '.mise/tasks/**'
+      - '.mise/lib/**'
+      - '.github/workflows/**'
+  pull_request:
+    paths: *paths
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+permissions:
+  contents: read
+jobs:
+  scripts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Affected-components mapping matches the CI path filters
+        run: scripts/monorepo/test-affected.sh
+      - name: shellcheck (preinstalled on ubuntu-latest)
+        run: shellcheck scripts/monorepo/*.sh .mise/tasks/test/pg
+  actionlint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.7 -color
