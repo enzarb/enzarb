@@ -1,5 +1,6 @@
 <script lang="ts">
 	import {
+		githubRefLabel,
 		primaryAction,
 		waitingFor,
 		waitLinks,
@@ -57,7 +58,13 @@
 			{item.project} · <code>{item.key}</code> ·
 			<time datetime={item.updatedAt}>waiting {waitingFor(item.updatedAt, now)}</time>
 		</span>
-		{#if item.url}<a href={item.url} rel="noopener noreferrer">View on GitHub</a>{/if}
+		{#if item.url}<a
+				href={item.url}
+				target="_blank"
+				rel="noopener noreferrer"
+				title="View on GitHub (opens in a new tab)"
+				>{githubRefLabel(item.url, item.singleRepo) ?? 'View on GitHub'}</a
+			>{/if}
 	</div>
 	{#if item.needs.reason}<p class="ez-needs__reason">{item.needs.reason}</p>{/if}
 	{#if item.needs.category === 'approval'}
@@ -72,6 +79,7 @@
 			{#each links as l (l.href)}
 				<LinkButton
 					href={l.href}
+					target="_blank"
 					rel="noopener noreferrer"
 					variant={action || l.label === 'Open PR' ? 'secondary' : 'primary'}>{l.label}</LinkButton
 				>

@@ -15,7 +15,7 @@
 	import WorkStateChip from '#lib/components/WorkStateChip.svelte';
 	import WorkTimeline from '#lib/components/WorkTimeline.svelte';
 	import { watchWorkItems } from '#lib/live.ts';
-	import { parseWorkId, shouldRefresh, type WorkAction } from '#lib/work-items.ts';
+	import { githubRefLabel, parseWorkId, shouldRefresh, type WorkAction } from '#lib/work-items.ts';
 	import { getWorkItem, submitAction } from '#lib/work.remote.ts';
 
 	// Null for a missing or malformed param (also while params go stale during navigation): no remote call.
@@ -76,7 +76,13 @@
 				<code>{w.key}</code>
 				<span class="ez-muted">project <a href="/projects/{w.project}">{w.project}</a></span>
 				<span class="ez-muted">{w.workflow}</span>
-				{#if w.url}<a href={w.url} rel="noopener noreferrer">View on GitHub</a>{/if}
+				{#if w.url}<a
+						href={w.url}
+						target="_blank"
+						rel="noopener noreferrer"
+						title="View on GitHub (opens in a new tab)"
+						>{githubRefLabel(w.url, w.singleRepo) ?? 'View on GitHub'}</a
+					>{/if}
 			{/snippet}
 			{#snippet actions()}
 				<WorkActions actions={w.actions} {pending} onaction={request} />

@@ -6,6 +6,7 @@ import {
 	blockedReason,
 	classifyNeedsYou,
 	countPossiblyRunning,
+	githubRefLabel,
 	groupWorkItems,
 	isTerminal,
 	itemUrl,
@@ -458,5 +459,22 @@ describe('parseWorkId', () => {
 		`${Number.MAX_SAFE_INTEGER}0`
 	])('rejects %j', (param) => {
 		expect(parseWorkId(param)).toBeNull();
+	});
+});
+
+describe('githubRefLabel', () => {
+	it('labels issue and pull URLs with owner/repo#n', () => {
+		expect(githubRefLabel('https://github.com/acme/web/issues/7')).toBe('acme/web#7');
+		expect(githubRefLabel('https://github.com/acme/web/pull/12')).toBe('acme/web#12');
+	});
+	it('drops the repo for single-repo projects', () => {
+		expect(githubRefLabel('https://github.com/acme/web/issues/7', true)).toBe('#7');
+		expect(githubRefLabel('https://github.com/acme/web/issues/7', false)).toBe('acme/web#7');
+	});
+	it('returns null for other or missing URLs', () => {
+		expect(githubRefLabel('https://example.com/acme/web/issues/7')).toBeNull();
+		expect(githubRefLabel('https://github.com/acme/web')).toBeNull();
+		expect(githubRefLabel('nonsense')).toBeNull();
+		expect(githubRefLabel(null)).toBeNull();
 	});
 });

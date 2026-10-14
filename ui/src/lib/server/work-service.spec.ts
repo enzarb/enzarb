@@ -93,6 +93,18 @@ describe('workService against workflows_api', () => {
 		expect(two.url).toBe('https://github.com/acme/web/issues/2');
 	});
 
+	it('sets singleRepo from the supplied repository counts', async () => {
+		const hours = 24;
+		const single = await workService(sql, ['web'], hours, new Map([['web', 1]])).list('web');
+		expect(single.every((i) => i.singleRepo === true)).toBe(true);
+		const multi = await workService(sql, ['web'], hours, new Map([['web', 2]])).list('web');
+		expect(multi.every((i) => i.singleRepo === false)).toBe(true);
+		const unknown = await workService(sql, ['web']).list('web');
+		expect(unknown.every((i) => i.singleRepo === undefined)).toBe(true);
+		const d = (await workService(sql, ['web'], hours, new Map([['web', 1]])).get(mine))!;
+		expect(d.singleRepo).toBe(true);
+	});
+
 	it('returns detail with ordered transitions and sanitized job markdown', async () => {
 		const d = (await workService(sql, ['web']).get(mine))!;
 		expect(d.transitions.map((t) => t.toState)).toEqual(['Triaging', 'Planning']);
