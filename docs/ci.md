@@ -35,8 +35,10 @@ The monorepo's GitHub Actions setup (root `.github/`) follows these rules. Each 
 | pre-commit | `npm run lint` in `ui/` | `ci-ui.yml` `check` |
 | pre-commit | `shellcheck` on staged scripts | (no dedicated job) |
 | pre-commit | `mise run lint` in `helm/` | `ci-helm.yml` |
-| pre-push | `cargo clippy --all-targets -- -D warnings` | `_rust.yml` `clippy` |
-| pre-push | `cargo test` | `_rust.yml` `test` (CI uses nextest) |
+| pre-push | `cargo clippy --all-targets <cargo-args> -- -D warnings` | `_rust.yml` `clippy` |
+| pre-push | `cargo test <cargo-args>` | `_rust.yml` `test` (CI uses nextest plus `cargo test --doc`; the hook runs plain `cargo test`, which includes doctests) |
+
+`<cargo-args>` mirror each component's `cargo-args` in its `ci-<dir>.yml`: `--workspace --all-features` (connectors), `--all-features` (operator), `--workspace` (workflows), `--locked` (sandbox-container), none for the rest. Update `lefthook.yml` when those change.
 | pre-push | `npm run check`, server unit tests in `ui/` | `ci-ui.yml` `check`, `test-server` |
 | pre-push | `mise run compat` in `helm/` | `ci-helm.yml` |
 

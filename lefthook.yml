@@ -63,15 +63,15 @@ pre-push:
     clippy-operator:
       root: operator/
       glob: "*.{rs,toml,lock}"
-      run: cargo clippy --all-targets -- -D warnings
+      run: cargo clippy --all-targets --all-features -- -D warnings
     clippy-connectors:
       root: connectors/
       glob: "*.{rs,toml,lock}"
-      run: cargo clippy --all-targets -- -D warnings
+      run: cargo clippy --all-targets --workspace --all-features -- -D warnings
     clippy-workflows:
       root: workflows/
       glob: "*.{rs,toml,lock}"
-      run: cargo clippy --all-targets -- -D warnings
+      run: cargo clippy --all-targets --workspace -- -D warnings
     clippy-realtime:
       root: realtime/
       glob: "*.{rs,toml,lock}"
@@ -83,7 +83,7 @@ pre-push:
     clippy-sandbox-container:
       root: sandbox-container/
       glob: "*.{rs,toml,lock}"
-      run: cargo clippy --all-targets -- -D warnings
+      run: cargo clippy --all-targets --locked -- -D warnings
     clippy-updater:
       root: updater/
       glob: "*.{rs,toml,lock}"
@@ -95,15 +95,15 @@ pre-push:
     test-operator:
       root: operator/
       glob: "*.{rs,toml,lock}"
-      run: cargo test
+      run: cargo test --all-features
     test-connectors:
       root: connectors/
       glob: "*.{rs,toml,lock}"
-      run: cargo test
+      run: cargo test --workspace --all-features
     test-workflows:
       root: workflows/
       glob: "*.{rs,toml,lock}"
-      run: cargo test
+      run: cargo test --workspace
     test-realtime:
       root: realtime/
       glob: "*.{rs,toml,lock}"
@@ -115,7 +115,7 @@ pre-push:
     test-sandbox-container:
       root: sandbox-container/
       glob: "*.{rs,toml,lock}"
-      run: cargo test
+      run: cargo test --locked
     test-updater:
       root: updater/
       glob: "*.{rs,toml,lock}"
