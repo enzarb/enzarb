@@ -85,6 +85,19 @@ pub fn shape_of(spec: &Value) -> PodShape {
                 out.insert(format!("env/{name}/{n}"), v.into());
             }
         }
+        // The container identity and privileges (runtime profile): sandbox-init runs as root.
+        if let Some(sc) = c.get("securityContext") {
+            for f in ["runAsUser", "privileged", "allowPrivilegeEscalation"] {
+                if let Some(v) = sc.get(f) {
+                    out.insert(format!("security/{name}/{f}"), v.to_string());
+                }
+            }
+            if let Some(caps) = sc.pointer("/capabilities/add").and_then(Value::as_array) {
+                let mut caps: Vec<&str> = caps.iter().filter_map(Value::as_str).collect();
+                caps.sort_unstable();
+                out.insert(format!("security/{name}/caps"), caps.join(","));
+            }
+        }
         for kind in ["limits", "requests"] {
             let res = c.pointer(&format!("/resources/{kind}"));
             for (r, q) in res.and_then(Value::as_object).into_iter().flatten() {
@@ -596,8 +609,10 @@ mod tests {
             "runtimeClassName": rc,
             "containers": [
                 {"name": "sandbox", "image": image, "env": env, "resources": res,
-                 "volumeMounts": [{"name": "workspace", "mountPath": "/w"}]},
-                {"name": "dockerd", "image": "docker:1", "resources": {"limits": {"memory": "4Gi"}}},
+                 "securityContext": {"runAsUser": 0, "privileged": false,
+                                     "capabilities": {"add": ["SYS_ADMIN", "CHOWN"]}},
+                 "volumeMounts": [{"name": "workspace", "mountPath": "/w"},
+                                  {"name": "docker-data", "mountPath": "/var/lib/docker"}]},
             ],
         })
     }
@@ -626,17 +641,56 @@ mod tests {
         for c in cases {
             assert!(!diff(&shape_of(&c), &have).is_empty(), "{c}");
         }
-        // dockerd resources and image count too.
+        // The container's privileges count too (runtime profile changes).
         let mut c = base_spec.clone();
-        c["containers"][1]["resources"]["limits"]["memory"] = json!("8Gi");
+        c["containers"][0]["securityContext"]["privileged"] = json!(true);
         assert_eq!(diff(&shape_of(&c), &have).len(), 1);
         let mut c = base_spec.clone();
-        c["containers"][1]["image"] = json!("docker:2");
+        c["containers"][0]["securityContext"]["runAsUser"] = json!(1000);
         assert_eq!(diff(&shape_of(&c), &have).len(), 1);
+        let mut c = base_spec.clone();
+        c["containers"][0]["securityContext"]["capabilities"]["add"] = json!(["CHOWN"]);
+        assert_eq!(diff(&shape_of(&c), &have).len(), 1);
+        // Capability order is irrelevant.
+        let mut c = base_spec.clone();
+        c["containers"][0]["securityContext"]["capabilities"]["add"] =
+            json!(["CHOWN", "SYS_ADMIN"]);
+        assert!(diff(&shape_of(&c), &have).is_empty());
         let mut c = base_spec.clone();
         c["containers"][0]["volumeMounts"][0]["mountPath"] = json!("/x");
         assert_eq!(diff(&shape_of(&c), &have).len(), 1);
         assert!(diff(&shape_of(&base_spec), &have).is_empty());
+    }
+
+    /// A pod created with the old layout (dockerd sidecar + shared `docker-sock`, ADR-0012) is
+    /// stale against the new desired shape, so existing sandboxes drain and roll once.
+    #[test]
+    fn pod_with_the_old_dockerd_sidecar_layout_is_stale() {
+        let old = json!({
+            "runtimeClassName": "gvisor",
+            "containers": [
+                {"name": "sandbox", "image": "i:1",
+                 "env": [{"name": "ENZARB_MAX_RUNS", "value": "2"},
+                         {"name": "DOCKER_HOST", "value": "unix:///var/run/docker/docker.sock"}],
+                 "volumeMounts": [{"name": "workspace", "mountPath": "/w"},
+                                  {"name": "docker-sock", "mountPath": "/var/run/docker"}]},
+                {"name": "dockerd", "image": "docker:29.8.2-dind",
+                 "volumeMounts": [{"name": "docker-sock", "mountPath": "/var/run/docker"},
+                                  {"name": "docker-data", "mountPath": "/var/lib/docker"}]},
+            ],
+        });
+        let new = spec("i:1", &[("ENZARB_MAX_RUNS", "2")], json!({}), "gvisor");
+        let d = diff(&shape_of(&new), &shape_of(&old));
+        assert!(
+            d.iter()
+                .any(|l| l.starts_with("mounts/sandbox/docker-data")),
+            "{d:?}"
+        );
+        assert!(
+            d.iter()
+                .any(|l| l.starts_with("security/sandbox/runAsUser")),
+            "{d:?}"
+        );
     }
 
     #[test]

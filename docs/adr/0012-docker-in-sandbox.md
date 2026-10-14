@@ -2,6 +2,8 @@
 
 Partly reverses the dockerd part of [ADR-0006](0006-scope-no-environments.md). Environments and deploys stay out of scope.
 
+> **Status:** the `dockerd` sidecar and the shared `docker-sock` volume are superseded by [ADR-0016](0016-dockerd-in-the-sandbox-container.md) (dockerd runs in the sandbox container, supervised by sandbox-init; the CLI-only image and the sidecar resource flags are gone). The rest of this ADR still applies. The text below is left as written.
+
 ## Context
 Agents and users need `docker build`, `docker run` and `docker compose` inside a sandbox: integration tests (testcontainers), building images, running dependent services. A Docker daemon needs privileges that are unsafe on a shared node kernel.
 

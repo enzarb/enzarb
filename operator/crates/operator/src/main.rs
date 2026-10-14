@@ -90,9 +90,6 @@ struct Args {
     /// `--docker-runtime-classes`, because every sandbox runs dockerd.
     #[arg(long, env = "ENZARB_SANDBOX_RUNTIME_CLASS", default_value = "")]
     sandbox_runtime_class: String,
-    /// Image of the `dockerd` sidecar every sandbox gets.
-    #[arg(long, env = "ENZARB_DOCKER_IMAGE", default_value = docker::DEFAULT_IMAGE)]
-    docker_image: String,
     /// Comma-separated RuntimeClass names allowed to host dockerd.
     #[arg(
         long,
@@ -104,20 +101,8 @@ struct Args {
     /// Size of each Project's PVC `docker` (`/var/lib/docker`).
     #[arg(long, env = "ENZARB_DOCKER_STORAGE", default_value = docker::DEFAULT_STORAGE)]
     docker_storage: String,
-    /// dockerd sidecar CPU request, e.g. `250m`.
-    #[arg(long, env = "ENZARB_DOCKER_CPU_REQUEST")]
-    docker_cpu_request: Option<String>,
-    /// dockerd sidecar CPU limit.
-    #[arg(long, env = "ENZARB_DOCKER_CPU_LIMIT")]
-    docker_cpu_limit: Option<String>,
-    /// dockerd sidecar memory request, e.g. `512Mi`.
-    #[arg(long, env = "ENZARB_DOCKER_MEMORY_REQUEST")]
-    docker_memory_request: Option<String>,
-    /// dockerd sidecar memory limit.
-    #[arg(long, env = "ENZARB_DOCKER_MEMORY_LIMIT")]
-    docker_memory_limit: Option<String>,
-    /// YAML file adding or replacing runtime-class profiles (sidecar securityContext and
-    /// dockerd args) over the built-in ones.
+    /// YAML file adding or replacing runtime-class profiles (`sandbox` container securityContext
+    /// and dockerd args) over the built-in ones.
     #[arg(long, env = "ENZARB_DOCKER_PROFILES_FILE")]
     docker_profiles_file: Option<std::path::PathBuf>,
     /// Address for /healthz and /readyz.
@@ -223,12 +208,10 @@ fn docker_config(args: &Args) -> anyhow::Result<docker::DockerConfig> {
         .filter(|c| !c.is_empty())
         .collect();
     let mut cfg = docker::DockerConfig::new(
-        args.docker_image.clone(),
         classes,
         args.sandbox_runtime_class.trim().to_string(),
         args.docker_storage.clone(),
     );
-    cfg.resources = docker_resources(args);
     if let Some(path) = &args.docker_profiles_file {
         let raw = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
@@ -237,30 +220,6 @@ fn docker_config(args: &Args) -> anyhow::Result<docker::DockerConfig> {
     }
     cfg.validate().map_err(|e| anyhow::anyhow!(e))?;
     Ok(cfg)
-}
-
-fn docker_resources(args: &Args) -> serde_json::Value {
-    let mut out = serde_json::Map::new();
-    for (key, cpu, mem) in [
-        (
-            "requests",
-            &args.docker_cpu_request,
-            &args.docker_memory_request,
-        ),
-        ("limits", &args.docker_cpu_limit, &args.docker_memory_limit),
-    ] {
-        let mut m = serde_json::Map::new();
-        if let Some(c) = cpu {
-            m.insert("cpu".into(), c.clone().into());
-        }
-        if let Some(c) = mem {
-            m.insert("memory".into(), c.clone().into());
-        }
-        if !m.is_empty() {
-            out.insert(key.into(), m.into());
-        }
-    }
-    out.into()
 }
 
 fn leader_config(args: &Args) -> anyhow::Result<leader::Config> {
