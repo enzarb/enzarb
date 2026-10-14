@@ -272,8 +272,10 @@ export function waitLinks(wait: Wait | null, url: string | null): WaitLink[] {
 	const pr = prUrl(url);
 	switch (wait.reason) {
 		case 'awaiting_review':
+		case 'checks_unverified':
 			return pr ? [{ label: 'Review on GitHub', href: `${pr}/files` }] : [];
 		case 'ci_pending':
+		case 'ci_stale':
 			return pr ? [{ label: 'View checks', href: `${pr}/checks` }] : [];
 		case 'enzarb_failed':
 		case 'round_limit':
@@ -384,7 +386,8 @@ export function classifyNeedsYou(
 		if (wait.waitingOn !== 'human') return null;
 		const text = wait.text || undefined;
 		if (wait.reason === 'ready_to_merge') return { category: 'merge', reason: null, text };
-		if (wait.reason === 'awaiting_review') return { category: 'review', reason: null, text };
+		if (wait.reason === 'awaiting_review' || wait.reason === 'checks_unverified')
+			return { category: 'review', reason: null, text };
 		if (wait.reason === 'decision_needed') return { category: 'decision', reason: null, text };
 		return { category: 'blocked', reason: blockedReason(stateData), text };
 	}
