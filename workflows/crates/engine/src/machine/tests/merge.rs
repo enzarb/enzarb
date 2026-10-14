@@ -845,7 +845,7 @@ fn merge_request_is_cleared_by_failed_check_or_requested_changes() {
     );
     assert!(!assert_cr(&t, CrPhase::Reviewing).merge_requested);
     // Requested changes from the review.
-    let t = run_cr(
+    let t = run_cr_manual(
         Permission::None,
         &cr_with(CrPhase::Reviewing, pending),
         &agent_ok_checks("r", JobKind::AgentReview, "request_changes", verified()),
