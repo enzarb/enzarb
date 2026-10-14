@@ -32,6 +32,45 @@ use crate::index::ProjectIndex;
 /// distinct active (repo, base) plus a readiness call per open PR on a moved base.
 pub const BASE_POLL_INTERVAL: Duration = Duration::from_secs(60);
 
+/// First wait before a change request stuck on unknown or pending CI is asked about again;
+/// doubles after every poll up to [`READINESS_POLL_MAX`].
+pub const READINESS_POLL_BASE: Duration = Duration::from_secs(60);
+
+/// Longest wait between two readiness polls of one change request head.
+pub const READINESS_POLL_MAX: Duration = Duration::from_secs(15 * 60);
+
+/// (work item key, head sha) of a change request waiting on CI.
+type ReadinessKey = (String, String);
+
+#[derive(Debug, Clone, Copy)]
+struct PollSlot {
+    next_at: Instant,
+    delay: Duration,
+}
+
+/// Whether the poll of `key` is due at `now`. The first sighting only starts the clock (the
+/// webhook is probably on its way); each due poll doubles the delay up to the maximum.
+fn poll_due(slots: &mut HashMap<ReadinessKey, PollSlot>, key: ReadinessKey, now: Instant) -> bool {
+    match slots.get_mut(&key) {
+        None => {
+            slots.insert(
+                key,
+                PollSlot {
+                    next_at: now + READINESS_POLL_BASE,
+                    delay: READINESS_POLL_BASE,
+                },
+            );
+            false
+        }
+        Some(slot) if now < slot.next_at => false,
+        Some(slot) => {
+            slot.delay = (slot.delay * 2).min(READINESS_POLL_MAX);
+            slot.next_at = now + slot.delay;
+            true
+        }
+    }
+}
+
 /// Phases in which the machine acts on `MergeConflictDetected`.
 const CONFLICT_PHASES: &[&str] = &["AwaitingChanges", "ReadyToMerge", "ConflictParked"];
 
@@ -85,6 +124,7 @@ pub struct Ticker {
     interval: Duration,
     base_poll: Option<BasePoll>,
     dep_sync: Option<DepSync>,
+    readiness_slots: Arc<Mutex<HashMap<ReadinessKey, PollSlot>>>,
 }
 
 const BATCH: i64 = 500;
@@ -96,6 +136,7 @@ impl Ticker {
             interval: Duration::from_secs(5),
             base_poll: None,
             dep_sync: None,
+            readiness_slots: Arc::default(),
         }
     }
 
@@ -372,6 +413,49 @@ impl Ticker {
         Ok(Some(emitted))
     }
 
+    /// Ask again about change requests that wait on unknown or pending CI at their head, so
+    /// one lost or filtered webhook cannot strand them. Each (item, head) is polled with
+    /// exponential backoff ([`READINESS_POLL_BASE`] to [`READINESS_POLL_MAX`]) by emitting
+    /// `ReadinessPoll`, which makes the machine queue a `check_merge_readiness` job. Returns
+    /// the number of events created.
+    pub async fn poll_readiness(&self) -> Result<usize, Error> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT key, state_data->>'head_sha'
+             FROM work_items
+             WHERE workflow = 'change_request' AND state = 'AwaitingChanges'
+               AND coalesce(state_data->>'head_sha', '') <> ''
+               AND coalesce(state_data->>'last_review', '') <> 'request_changes'
+               AND (coalesce(state_data->>'ci_sha', '') <> state_data->>'head_sha'
+                    OR coalesce(state_data->>'ci', 'unknown') IN ('pending', 'unknown'))
+             ORDER BY id LIMIT $1",
+        )
+        .bind(BATCH)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let now = Instant::now();
+        let due: Vec<ReadinessKey> = {
+            let mut slots = self
+                .readiness_slots
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            slots.retain(|k, _| rows.contains(k));
+            rows.into_iter()
+                .filter(|k| poll_due(&mut slots, k.clone(), now))
+                .collect()
+        };
+
+        let stamp = chrono::Utc::now().timestamp();
+        let mut emitted = 0;
+        for (key, sha) in due {
+            let dk = format!("readiness:{key}:{sha}:{stamp}");
+            if self.emit("ReadinessPoll", &dk, &key, json!({})).await? {
+                emitted += 1;
+            }
+        }
+        Ok(emitted)
+    }
+
     /// Tick every `interval` until `shutdown` flips to true.
     pub async fn run(self, mut shutdown: watch::Receiver<bool>) {
         let mut warned_missing = false;
@@ -393,6 +477,9 @@ impl Ticker {
             if let Err(e) = self.poll_base_heads().await {
                 tracing::warn!(error = %e, "base head poll failed");
             }
+            if let Err(e) = self.poll_readiness().await {
+                tracing::warn!(error = %e, "readiness poll failed");
+            }
             if let Err(e) = self.sync_dependencies().await {
                 tracing::warn!(error = %e, "dependency sync failed");
             }
@@ -404,5 +491,53 @@ impl Ticker {
                 return;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(sha: &str) -> ReadinessKey {
+        ("github:enzarb/enzarb#1".into(), sha.into())
+    }
+
+    #[test]
+    fn readiness_poll_backs_off_to_the_maximum() {
+        let t0 = Instant::now();
+        let mut slots = HashMap::new();
+        // First sighting only starts the clock.
+        assert!(!poll_due(&mut slots, key("a"), t0));
+        assert!(!poll_due(
+            &mut slots,
+            key("a"),
+            t0 + READINESS_POLL_BASE / 2
+        ));
+        // Due after the base delay; the next wait doubles.
+        let mut now = t0 + READINESS_POLL_BASE;
+        assert!(poll_due(&mut slots, key("a"), now));
+        assert!(!poll_due(
+            &mut slots,
+            key("a"),
+            now + Duration::from_secs(119)
+        ));
+        now += Duration::from_secs(120);
+        assert!(poll_due(&mut slots, key("a"), now));
+        // Keeps doubling, never beyond the maximum.
+        for _ in 0..10 {
+            now += READINESS_POLL_MAX;
+            assert!(poll_due(&mut slots, key("a"), now));
+        }
+        assert_eq!(slots[&key("a")].delay, READINESS_POLL_MAX);
+    }
+
+    #[test]
+    fn a_new_head_restarts_the_backoff() {
+        let t0 = Instant::now();
+        let mut slots = HashMap::new();
+        assert!(!poll_due(&mut slots, key("a"), t0));
+        assert!(poll_due(&mut slots, key("a"), t0 + READINESS_POLL_BASE));
+        assert!(!poll_due(&mut slots, key("b"), t0 + READINESS_POLL_BASE));
+        assert_eq!(slots[&key("b")].delay, READINESS_POLL_BASE);
     }
 }

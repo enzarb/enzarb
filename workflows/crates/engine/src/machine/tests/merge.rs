@@ -305,7 +305,8 @@ fn ci_events_drive_readiness() {
     ] {
         let t = run_cr(Permission::None, &ready, &ci_event(id, "sha1", st));
         assert_eq!(assert_cr(&t, CrPhase::AwaitingChanges).ci, want);
-        assert!(jobs(&t).is_empty());
+        // A failure is final; a running check is re-asked in case its result is lost.
+        assert_eq!(jobs(&t).is_empty(), want == CiState::Failure);
     }
     // Another green check keeps it ready.
     let t = run_cr(

@@ -127,3 +127,179 @@ fn approval_is_invalidated_by_a_push() {
     };
     assert_eq!(waiting(&cs.data, cs.phase).1, "reviewing");
 }
+
+fn green_awaiting_review() -> CrData {
+    CrData {
+        last_review: String::new(),
+        reviewed_sha: String::new(),
+        ci: CiState::Success,
+        ci_sha: "sha1".into(),
+        mergeable: Some(true),
+        ..cr_data()
+    }
+}
+
+fn poll_event() -> EngineEvent {
+    EngineEvent {
+        id: "p".into(),
+        payload: EventPayload::ReadinessPoll,
+    }
+}
+
+#[test]
+fn approve_command_by_a_writer_moves_to_ready_to_merge() {
+    let s = state(CrPhase::AwaitingChanges, green_awaiting_review());
+    let t = run_cr(Permission::Write, &s, &approval_comment("1", "carol"));
+    assert_eq!(assert_cr(&t, CrPhase::ReadyToMerge).last_review, "approve");
+    let t = run_cr(
+        Permission::Write,
+        &s,
+        &ui("2", "carol", UiActionKind::Approve),
+    );
+    assert_cr(&t, CrPhase::ReadyToMerge);
+    rejected(
+        &run_cr(Permission::Read, &s, &approval_comment("3", "mallory")),
+        &s,
+    );
+}
+
+#[test]
+fn approve_command_still_needs_green_ci() {
+    let s = state(CrPhase::AwaitingChanges, unreviewed_ci_pending());
+    let t = run_cr(Permission::Write, &s, &approval_comment("1", "carol"));
+    let d = assert_cr(&t, CrPhase::AwaitingChanges);
+    assert_eq!(
+        waiting(&d, CrPhase::AwaitingChanges),
+        (WaitingOn::Ci, "ci_pending")
+    );
+}
+
+#[test]
+fn comment_verdict_lists_the_unverified_checks_and_a_human_approval_clears_them() {
+    let s = state(CrPhase::Reviewing, green_awaiting_review());
+    let checks = json!([
+        { "name": "cargo test", "status": "passed" },
+        { "name": "connectors tests", "status": "not_run", "reason": "missing_tool" },
+        { "name": "cargo fmt --check", "status": "not_run" },
+    ]);
+    let t = run_cr(
+        Permission::None,
+        &s,
+        &agent_ok_checks("r", JobKind::AgentReview, "comment", checks),
+    );
+    let d = assert_cr(&t, CrPhase::AwaitingChanges);
+    assert_eq!(d.unverified_checks.len(), 2);
+    let w = wait(CrPhase::AwaitingChanges, &d, &readiness(&d)).unwrap();
+    assert_eq!(
+        (w.waiting_on, w.reason),
+        (WaitingOn::Human, "checks_unverified")
+    );
+    assert!(
+        w.text.contains("connectors tests (missing_tool)"),
+        "{}",
+        w.text
+    );
+    assert!(w.text.contains("cargo fmt --check (not_run)"), "{}", w.text);
+    assert_eq!(t.next.state_data()["wait"]["reason"], "checks_unverified");
+
+    let t = run_cr(Permission::Write, &t.next, &approval("a"));
+    let d = assert_cr(&t, CrPhase::ReadyToMerge);
+    assert!(d.unverified_checks.is_empty());
+}
+
+#[test]
+fn covered_by_ci_counts_only_while_ci_is_green() {
+    let checks = json!([
+        { "name": "cargo test", "status": "passed" },
+        { "name": "connectors tests", "status": "not_run", "reason": "covered_by_ci" },
+    ]);
+    let review = |d: CrData| {
+        run_cr(
+            Permission::None,
+            &state(CrPhase::Reviewing, d),
+            &agent_ok_checks("r", JobKind::AgentReview, "approve", checks.clone()),
+        )
+    };
+    let green = review(green_awaiting_review());
+    assert_eq!(
+        assert_cr(&green, CrPhase::ReadyToMerge).last_review,
+        "approve"
+    );
+
+    // CI not green: the claim does not count, the approve is downgraded.
+    let pending = review(unreviewed_ci_pending());
+    let d = assert_cr(&pending, CrPhase::AddressingComments);
+    assert!(d.auto_trigger);
+    assert_eq!(d.unverified_checks.len(), 1);
+}
+
+#[test]
+fn readiness_poll_asks_again_whatever_the_review_said() {
+    let d = CrData {
+        last_review: "comment".into(),
+        ..cr_data()
+    };
+    let s = state(CrPhase::AwaitingChanges, d);
+    let t = run_cr(Permission::None, &s, &poll_event());
+    assert_cr(&t, CrPhase::AwaitingChanges);
+    job_of(&t, JobKind::CheckMergeReadiness);
+
+    // Nothing to ask once CI is decided.
+    let done = state(
+        CrPhase::AwaitingChanges,
+        CrData {
+            ci: CiState::Failure,
+            ci_sha: "sha1".into(),
+            ..cr_data()
+        },
+    );
+    rejected(&run_cr(Permission::None, &done, &poll_event()), &done);
+}
+
+#[test]
+fn ci_pending_for_long_becomes_stale() {
+    let d = CrData {
+        last_review: "approve".into(),
+        ci: CiState::Pending,
+        ci_sha: "sha1".into(),
+        mergeable: Some(true),
+        ci_pending_sha: "sha1".into(),
+        ci_pending_since: Some(now() - chrono::Duration::minutes(31)),
+        ..cr_data()
+    };
+    let s = state(CrPhase::AwaitingChanges, d.clone());
+    let d2 = assert_cr(
+        &run_cr(Permission::None, &s, &poll_event()),
+        CrPhase::AwaitingChanges,
+    );
+    assert!(d2.ci_stale);
+    assert_eq!(
+        waiting(&d2, CrPhase::AwaitingChanges),
+        (WaitingOn::Human, "ci_stale")
+    );
+
+    // A recent start is not stale.
+    let fresh = CrData {
+        ci_pending_since: Some(now() - chrono::Duration::minutes(5)),
+        ..d
+    };
+    let s = state(CrPhase::AwaitingChanges, fresh);
+    let d3 = assert_cr(
+        &run_cr(Permission::None, &s, &poll_event()),
+        CrPhase::AwaitingChanges,
+    );
+    assert!(!d3.ci_stale);
+    assert_eq!(
+        waiting(&d3, CrPhase::AwaitingChanges),
+        (WaitingOn::Ci, "ci_pending")
+    );
+}
+
+#[test]
+fn state_data_without_the_new_fields_still_loads() {
+    let d: CrData = serde_json::from_value(json!({
+        "number": 7, "head_sha": "s", "last_review": "comment", "ci": "pending"
+    }))
+    .unwrap();
+    assert!(d.unverified_checks.is_empty() && d.ci_pending_since.is_none() && !d.ci_stale);
+}
