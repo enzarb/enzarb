@@ -1262,6 +1262,7 @@ spec:
                   key: realtime-jwt-secret
             - { name: ENZARB_PUBLIC_URL, value: "https://enzarb.local" }
             - { name: ENZARB_COMPONENT_VERSIONS, value: "{\"chart\":\"0.0.0\",\"components\":{\"enzarb-connectors\":\"0.6.2\",\"enzarb-realtime\":\"0.4.1\",\"enzarb-sandbox-container\":\"0.10.2\",\"enzarb-sandbox-operator\":\"0.8.1\",\"enzarb-sandbox-proxy\":\"0.5.1\",\"enzarb-ui\":\"0.27.0\",\"enzarb-workflows\":\"0.18.2\"}}" }
+            - { name: NEEDS_YOU_STALE_HOURS, value: "24" }
             - { name: ENZARB_GITHUB_APP_SLUG, value: "enzarb" }
             # adapter-node derives the origin for its CSRF check from this header; the Gateway forwards it.
             - { name: PROTOCOL_HEADER, value: x-forwarded-proto }
