@@ -775,3 +775,27 @@ fn only_a_ui_merge_reaches_merging() {
         assert_eq!(kinds(&t), [JobKind::MergeChangeRequest]);
     }
 }
+
+#[test]
+fn behind_branch_is_updated_reviewed_and_not_merged() {
+    let t = run_cr(
+        Permission::None,
+        &merging_state(),
+        &merge_result(
+            "u",
+            json!({ "outcome": "updated_branch", "actor": "carol" }),
+        ),
+    );
+    let d = assert_cr(&t, CrPhase::Reviewing);
+    assert!(d.last_review.is_empty());
+    assert_eq!((d.ci, d.mergeable), (CiState::Unknown, None));
+    assert!(kinds(&t).contains(&JobKind::AgentReview));
+    assert!(!kinds(&t).contains(&JobKind::MergeChangeRequest));
+    // A review of the new head never merges by itself: that stays a user action.
+    let t = run_cr(
+        Permission::None,
+        &t.next,
+        &agent_ok_checks("r", JobKind::AgentReview, "approve", verified()),
+    );
+    assert!(!kinds(&t).contains(&JobKind::MergeChangeRequest));
+}

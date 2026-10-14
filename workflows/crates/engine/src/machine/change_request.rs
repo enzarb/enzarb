@@ -75,6 +75,39 @@ impl CiState {
     }
 }
 
+/// Automatic resolution attempts allowed per base-branch head.
+pub const MAX_RESOLVE_ATTEMPTS: u32 = 2;
+
+/// Attempts made against `base_sha`; a new base head starts again from zero.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ResolveAttempts {
+    pub base_sha: String,
+    pub count: u32,
+}
+
+impl CrData {
+    /// Attempts already made against `base_sha`, reading the legacy single-attempt field.
+    pub fn resolve_attempts_for(&self, base_sha: &str) -> u32 {
+        if self.resolve_attempts.base_sha == base_sha {
+            self.resolve_attempts.count
+        } else if self.resolve_attempted_base_sha == base_sha {
+            1
+        } else {
+            0
+        }
+    }
+
+    fn record_resolve_attempt(&mut self, base_sha: &str) {
+        let count = self.resolve_attempts_for(base_sha) + 1;
+        self.resolve_attempts = ResolveAttempts {
+            base_sha: base_sha.to_string(),
+            count,
+        };
+        self.resolve_attempted_base_sha.clear();
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CrData {
@@ -90,7 +123,10 @@ pub struct CrData {
     pub reviewed_sha: String,
     /// Latest base-branch head reported by a merge-readiness check.
     pub base_sha: String,
-    /// Base head of the last automatic conflict resolution; at most one attempt per SHA.
+    /// Automatic conflict-resolution attempts against one base head; capped per SHA.
+    pub resolve_attempts: ResolveAttempts,
+    /// Legacy form of `resolve_attempts` (one attempt per SHA). Only read, never written.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub resolve_attempted_base_sha: String,
     pub trigger_comment_id: Option<u64>,
     pub trigger_comment_kind: CommentKind,
@@ -527,12 +563,12 @@ fn unmergeable(
     match s.phase {
         AwaitingChanges | ReadyToMerge | ConflictParked => {
             // The cap lives in state: job idempotency keys derive from the event id.
-            if s.data.resolve_attempted_base_sha == base_sha {
+            if s.data.resolve_attempts_for(base_sha) >= MAX_RESOLVE_ATTEMPTS {
                 return Transition::reject(state, "already attempted for this base commit");
             }
             let mut d = s.data.clone();
             d.base_sha = base_sha.to_string();
-            d.resolve_attempted_base_sha = base_sha.to_string();
+            d.record_resolve_attempt(base_sha);
             d.trigger_comment_id = None;
             d.trigger_comment_kind = CommentKind::default();
             d.trigger_text.clear();
@@ -573,6 +609,7 @@ fn updated(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowState) -> T
                 d.base_ref
             };
             d.base_sha = s.data.base_sha.clone();
+            d.resolve_attempts = s.data.resolve_attempts.clone();
             d.resolve_attempted_base_sha = s.data.resolve_attempted_base_sha.clone();
             // A review already running is for an older commit: restart it.
             let mut t = begin(ctx, ev, Reviewing, d, "new commits");
@@ -840,6 +877,21 @@ fn merge_finished(ctx: &Ctx, ev: &EngineEvent, s: &CrState, output: &Value) -> T
             d.mergeable = None;
             begin(ctx, ev, CrPhase::Reviewing, d, "head moved during merge")
         }
+        "updated_branch" => {
+            // Behind its base: the base was merged into the branch instead of merging. The
+            // new head is reviewed, CI reruns, and the user merges once it is ready again.
+            d.merge_error = "updating branch with the base; waiting for review and CI".into();
+            d.last_review.clear();
+            d.ci = CiState::Unknown;
+            d.mergeable = None;
+            begin(
+                ctx,
+                ev,
+                CrPhase::Reviewing,
+                d,
+                "branch updated before merge",
+            )
+        }
         "not_mergeable" => {
             let reason = text("reason");
             d.merge_error = if reason.is_empty() {
@@ -982,6 +1034,18 @@ fn job_succeeded(
             }
         }
         (ResolvingConflicts, Decision::Blocked) => {
+            let base_sha = d.base_sha.clone();
+            if !base_sha.is_empty() && d.resolve_attempts_for(&base_sha) < MAX_RESOLVE_ATTEMPTS {
+                // Second try against the same base head before a person is asked.
+                fx.done(&tgt);
+                d.record_resolve_attempt(&base_sha);
+                start_resolve(ctx, &mut fx, &d);
+                return Transition::to(
+                    st(ResolvingConflicts, d),
+                    fx.finish(),
+                    "conflict resolution retried",
+                );
+            }
             fx.comment(format!(
                 "enzarb could not resolve the merge conflict with `{}` on its own and left this change request for a person.\n\n{}\n\nMention enzarb to try again after the conflict is resolved or the base moves on.",
                 d.base_ref, out.body

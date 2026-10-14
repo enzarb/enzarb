@@ -706,6 +706,105 @@ async fn merge_job_rechecks_readiness_and_passes_the_idempotency_key() {
 }
 
 #[tokio::test]
+async fn merge_job_updates_a_behind_branch_instead_of_merging() {
+    use enzarb_connector::{CiState, UpdateBranchOutcome};
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let wi = new_item(pool, 1, "enzarb").await;
+    let input = json!({ "item": key(1), "number": 1, "title": "feat: dark mode",
+                        "expected_head_sha": "sha1", "actor": "carol" });
+    let mut behind = readiness("sha1", CiState::Success, Some(true));
+    behind.mergeable_state = "behind".into();
+    h.fake.set_merge_readiness(key(1), behind.clone());
+    let id = new_job(
+        pool,
+        wi,
+        "enzarb",
+        "merge_change_request",
+        10,
+        "k:u",
+        input.clone(),
+    )
+    .await;
+    assert_eq!(h.exec.drain().await, 1);
+    assert_eq!(
+        job(pool, id).await.output.unwrap()["outcome"],
+        "updated_branch"
+    );
+    assert!(merge_calls(&h).is_empty());
+    assert!(h.fake.applied_calls().contains(&Call::UpdateBranch {
+        item: key(1),
+        number: 1,
+        expected_head_sha: "sha1".into(),
+    }));
+
+    // A refused update (conflict) is reported as not mergeable.
+    h.fake.queue_update_outcome(UpdateBranchOutcome::Refused {
+        reason: "merge conflict".into(),
+    });
+    let id = new_job(
+        pool,
+        wi,
+        "enzarb",
+        "merge_change_request",
+        10,
+        "k:u2",
+        input,
+    )
+    .await;
+    assert_eq!(h.exec.drain().await, 1);
+    let out = job(pool, id).await.output.unwrap();
+    assert_eq!(out["outcome"], "not_mergeable");
+    assert_eq!(out["reason"], "merge conflict");
+    assert!(merge_calls(&h).is_empty());
+}
+
+#[tokio::test]
+async fn merges_are_serialised_per_repository() {
+    use enzarb_connector::CiState;
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let wi = new_item(pool, 1, "enzarb").await;
+    h.fake
+        .set_merge_readiness(key(1), readiness("sha1", CiState::Success, Some(true)));
+    let input = json!({ "item": key(1), "number": 1, "title": "feat: dark mode",
+                        "expected_head_sha": "sha1", "actor": "carol" });
+
+    // Another merge of the same repository holds the lock: the job is re-queued untouched.
+    let mut other = pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+        .bind(format!("merge:{}", key(1).repo))
+        .execute(&mut *other)
+        .await
+        .unwrap();
+    let id = new_job(pool, wi, "enzarb", "merge_change_request", 10, "k:m", input).await;
+    assert_eq!(h.exec.drain().await, 1);
+    assert_eq!(job(pool, id).await.status, "queued");
+    assert!(merge_calls(&h).is_empty());
+
+    // A different repository is not blocked by that lock.
+    let mut unrelated = pool.begin().await.unwrap();
+    let free: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtext($1))")
+        .bind("merge:github:enzarb/other")
+        .fetch_one(&mut *unrelated)
+        .await
+        .unwrap();
+    assert!(free);
+    unrelated.rollback().await.unwrap();
+
+    // Once the other merge is done the retry goes through.
+    other.rollback().await.unwrap();
+    sqlx::query("UPDATE workflows.jobs SET run_after = now() WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(h.exec.drain().await, 1);
+    assert_eq!(job(pool, id).await.output.unwrap()["outcome"], "merged");
+    assert_eq!(merge_calls(&h).len(), 1);
+}
+
+#[tokio::test]
 async fn claims_by_priority_and_serializes_one_work_item() {
     let h = H::new(db!()).await;
     let pool = h.pool();
