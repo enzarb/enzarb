@@ -40,6 +40,7 @@ use tokio::time::Instant;
 use crate::acp::{self, AcpError, AcpSpec};
 use crate::capture::write_atomic;
 use crate::config::Config;
+use crate::docker_prune::ActivityGate;
 use crate::exec::{self, CmdSpec, Ctl, LineSink, Output, Stop};
 use crate::reaper::Reaper;
 use crate::runs::{RunManager, SessionCtx};
@@ -279,6 +280,8 @@ struct Inner {
     slots: Semaphore,
     repo_locks: RepoLocks,
     http: reqwest::Client,
+    /// Counts running runs for the Docker pruner.
+    activity: ActivityGate,
 }
 
 /// Per-clone async locks: every git operation that changes a clone's
@@ -321,8 +324,18 @@ impl AgentRunManager {
                 sessions: Mutex::default(),
                 repo_locks: RepoLocks::default(),
                 http,
+                activity: ActivityGate::default(),
             }),
         }
+    }
+
+    /// Report running runs to `gate`, so Docker is not pruned under them. Call before sharing the
+    /// manager.
+    pub fn with_activity(mut self, gate: ActivityGate) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("with_activity before the manager is shared")
+            .activity = gate;
+        self
     }
 
     /// The clone locks, to share with the chat manager.
@@ -758,6 +771,8 @@ impl Inner {
             cancel: run.cancel.subscribe(),
             deadline: Instant::now() + secs,
         };
+        // Docker may be in use until the run is over (the pruner waits for this guard).
+        let _active = self.activity.begin();
         // Make room first: stale worktrees of finished or crashed runs.
         self.sweep_worktrees(PRUNE_MIN_AGE).await;
         let finish = match self.execute(&run, &req, &mut ctl).await {
@@ -1944,6 +1959,7 @@ mod retry_tests {
                 sessions: Mutex::default(),
                 repo_locks: RepoLocks::default(),
                 http: reqwest::Client::new(),
+                activity: ActivityGate::default(),
             };
             let rec = RunRecord {
                 run_id: "r".into(),

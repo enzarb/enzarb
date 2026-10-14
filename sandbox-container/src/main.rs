@@ -2,10 +2,18 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use sandbox_init::{
-    AppState, Config, agent::AgentRunManager, capture::ClaudeTokenCapture, chat::ChatManager,
-    dockerd::Dockerd, privs, reaper::Reaper, serve,
+    AppState, Config,
+    agent::AgentRunManager,
+    capture::ClaudeTokenCapture,
+    chat::ChatManager,
+    docker_prune::{ActivityGate, Pruner},
+    dockerd::Dockerd,
+    privs,
+    reaper::Reaper,
+    serve,
 };
 use tokio::signal::unix::{SignalKind, signal};
+use tokio_util::sync::CancellationToken;
 
 fn main() -> anyhow::Result<()> {
     // `sandbox-init --exec-as-sandbox-user prog args..`: PTY children drop root through us.
@@ -57,9 +65,19 @@ async fn run() -> anyhow::Result<()> {
         tracing::warn!("sandbox-init is not root: dockerd will probably fail to start");
     }
     dockerd.start();
-    let runs = AgentRunManager::new(config.clone(), reaper.clone());
+    // Prunes Docker data at startup, after runs and chats end, and when space runs low.
+    let gate = ActivityGate::default();
+    let pruner = Pruner::new(
+        config.docker_prune.clone(),
+        dockerd.subscribe(),
+        gate.clone(),
+        reaper.clone(),
+    );
+    let prune_stop = CancellationToken::new();
+    let prune_task = pruner.spawn(prune_stop.clone());
+    let runs = AgentRunManager::new(config.clone(), reaper.clone()).with_activity(gate.clone());
     runs.recover();
-    let chats = ChatManager::new(config.clone(), reaper.clone(), runs.repo_locks());
+    let chats = ChatManager::with_activity(config.clone(), reaper.clone(), runs.repo_locks(), gate);
     chats.recover().await;
     let capture = ClaudeTokenCapture::new(config.claude_token_file.clone());
     let state = Arc::new(
@@ -67,7 +85,8 @@ async fn run() -> anyhow::Result<()> {
             .with_run_manager(Arc::new(runs))
             .with_chats(chats.clone())
             .with_observer(Arc::new(capture))
-            .with_dockerd(dockerd.clone()),
+            .with_dockerd(dockerd.clone())
+            .with_pruner(pruner),
     );
 
     tokio::select! {
@@ -78,6 +97,8 @@ async fn run() -> anyhow::Result<()> {
 
     // Chats first: `CLOSE shutdown` to each browser, then their agents stop.
     chats.shutdown(grace).await;
+    prune_stop.cancel();
+    let _ = prune_task.await;
     // Then dockerd, so it stops its containers and releases its data root before the drain
     // completes (and before the blanket signal below hits containerd).
     dockerd.shutdown(grace).await;

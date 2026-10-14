@@ -70,6 +70,7 @@ use crate::acp::{self, AcpError, Spawned};
 use crate::agent::{RepoLocks, repo_dir_name};
 use crate::capture::write_atomic;
 use crate::config::Config;
+use crate::docker_prune::ActivityGate;
 use crate::exec::{self, CmdSpec, Ctl, LineSink, terminate};
 use crate::reaper::{ExitStatus, Reaper};
 use filter::{Filter, Out};
@@ -314,6 +315,8 @@ pub struct ChatManager {
     available: bool,
     state: Mutex<State>,
     next: AtomicU64,
+    /// Counts live chats for the Docker pruner.
+    activity: ActivityGate,
 }
 
 /// True when `bin` names an executable file (directly or on `PATH`).
@@ -330,6 +333,16 @@ fn find_executable(bin: &str) -> bool {
 
 impl ChatManager {
     pub fn new(cfg: Config, reaper: Arc<Reaper>, locks: RepoLocks) -> Arc<Self> {
+        Self::with_activity(cfg, reaper, locks, ActivityGate::default())
+    }
+
+    /// Like [`new`](Self::new), reporting live chats to `gate` so Docker is not pruned under them.
+    pub fn with_activity(
+        cfg: Config,
+        reaper: Arc<Reaper>,
+        locks: RepoLocks,
+        activity: ActivityGate,
+    ) -> Arc<Self> {
         let available = find_executable(&cfg.acp_bin);
         if cfg.max_chats > 0 && !available {
             tracing::warn!(bin = %cfg.acp_bin, "chat disabled: the ACP agent is not installed");
@@ -348,6 +361,7 @@ impl ChatManager {
             available,
             state: Mutex::default(),
             next: AtomicU64::new(1),
+            activity,
         })
     }
 
@@ -432,10 +446,13 @@ impl ChatManager {
             });
         }
         let this = self.clone();
+        // Held until the chat's agent is gone: the Docker pruner waits for it.
+        let active = self.activity.begin();
         tokio::spawn(async move {
             let _done = done_tx;
             this.run(conn, req, stop_rx, closing).await;
             this.state.lock().unwrap().live.retain(|l| l.conn != conn);
+            drop(active);
         });
     }
 

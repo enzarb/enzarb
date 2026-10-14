@@ -28,6 +28,7 @@ use crate::auth::{self, AuthError};
 use crate::capture::{LegacyPromotion, read_legacy_valid};
 use crate::chat::ChatManager;
 use crate::config::Config;
+use crate::docker_prune::Pruner;
 use crate::dockerd::Dockerd;
 use crate::observer::{PtyInfo, PtyObserverFactory};
 use crate::pty::{self, Pty, PtyConfig, PtyControl};
@@ -46,6 +47,8 @@ pub struct AppState {
     pub chats: Arc<ChatManager>,
     /// The supervised Docker daemon, reported in `/healthz` (never gates readiness).
     pub dockerd: Option<Arc<Dockerd>>,
+    /// Docker pruning, reported in `/healthz` as `docker_disk` and `docker_prune`.
+    pub pruner: Option<Arc<Pruner>>,
     next_session: AtomicU64,
 }
 
@@ -61,8 +64,14 @@ impl AppState {
             observers: Vec::new(),
             chats,
             dockerd: None,
+            pruner: None,
             next_session: AtomicU64::new(1),
         }
+    }
+
+    pub fn with_pruner(mut self, p: Arc<Pruner>) -> Self {
+        self.pruner = Some(p);
+        self
     }
 
     pub fn with_dockerd(mut self, d: Arc<Dockerd>) -> Self {
@@ -100,11 +109,18 @@ pub fn router(state: Arc<AppState>) -> Router {
 }
 
 /// Always 200 (the readiness probe must not depend on Docker); the body is JSON:
-/// `{"status":"ok","dockerd":{"state":"running"}}`. `dockerd` is absent without a supervisor.
+/// `{"status":"ok","dockerd":{"state":"running"},"docker_disk":{..,"low_disk":false},
+/// "docker_prune":{"enabled":true,"last":null}}`. `dockerd` is absent without a supervisor, and
+/// `docker_disk` / `docker_prune` without a pruner (`docker_disk` is null when the data root
+/// cannot be read).
 async fn healthz(State(state): State<Arc<AppState>>) -> Response {
     let mut body = serde_json::json!({"status": "ok"});
     if let Some(d) = &state.dockerd {
         body["dockerd"] = serde_json::to_value(d.state()).unwrap_or_default();
+    }
+    if let Some(p) = &state.pruner {
+        body["docker_disk"] = serde_json::to_value(p.disk_report()).unwrap_or_default();
+        body["docker_prune"] = serde_json::to_value(p.prune_report()).unwrap_or_default();
     }
     (
         [(header::CONTENT_TYPE, "application/json")],

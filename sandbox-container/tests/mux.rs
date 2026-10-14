@@ -224,6 +224,64 @@ async fn healthz_needs_no_auth() {
 }
 
 #[tokio::test]
+async fn healthz_reports_docker_disk_and_prune_additively() {
+    use sandbox_init::docker_prune::{ActivityGate, PruneConfig, Pruner};
+    use sandbox_init::dockerd::{Dockerd, DockerdConfig};
+
+    let dir = tempfile::tempdir().unwrap();
+    let reaper = Reaper::new(false);
+    tokio::spawn(reaper.clone().run());
+    let dockerd = Dockerd::new(
+        DockerdConfig {
+            enabled: false,
+            ..DockerdConfig::default()
+        },
+        reaper.clone(),
+    );
+    let prune = PruneConfig {
+        data_root: dir.path().to_path_buf(),
+        ..PruneConfig::default()
+    };
+    let pruner = Pruner::new(
+        prune,
+        dockerd.subscribe(),
+        ActivityGate::default(),
+        reaper.clone(),
+    );
+    let state = AppState::new(Config::default(), reaper)
+        .with_dockerd(dockerd)
+        .with_pruner(pruner);
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(serve(listener, Arc::new(state)));
+
+    let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+    s.write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut resp = String::new();
+    s.read_to_string(&mut resp).await.unwrap();
+    assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
+    let body: serde_json::Value =
+        serde_json::from_str(resp.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(body["status"], "ok");
+    assert_eq!(body["dockerd"], serde_json::json!({"state": "disabled"}));
+    let disk = &body["docker_disk"];
+    assert_eq!(disk["path"], dir.path().display().to_string());
+    for k in ["total_bytes", "used_bytes", "free_bytes"] {
+        assert!(disk[k].is_u64(), "{k}: {body}");
+    }
+    assert!(disk["free_percent"].is_number(), "{body}");
+    assert!(disk["low_disk"].is_boolean(), "{body}");
+    assert_eq!(
+        body["docker_prune"],
+        serde_json::json!({"enabled": true, "last": null})
+    );
+}
+
+#[tokio::test]
 async fn run_messages_are_unimplemented() {
     let srv = start().await;
     let (session, mut events) = srv.connect().await;
