@@ -1156,7 +1156,7 @@ spec:
       securityContext: { fsGroup: 65532 }
       containers:
         - name: proxy
-          image: ghcr.io/enzarb/enzarb-sandbox-proxy:0.5.1
+          image: ghcr.io/enzarb/enzarb-sandbox-proxy:0.6.0
           imagePullPolicy: IfNotPresent
           ports:
             - { name: http, containerPort: 8080 }
@@ -1329,7 +1329,7 @@ spec:
                   name: enzarb-generated
                   key: realtime-jwt-secret
             - { name: ENZARB_PUBLIC_URL, value: "https://enzarb.dev" }
-            - { name: ENZARB_COMPONENT_VERSIONS, value: "{\"chart\":\"0.0.0\",\"components\":{\"enzarb-connectors\":\"0.6.2\",\"enzarb-realtime\":\"0.4.1\",\"enzarb-sandbox-container\":\"0.11.0\",\"enzarb-sandbox-operator\":\"0.8.1\",\"enzarb-sandbox-proxy\":\"0.5.1\",\"enzarb-ui\":\"0.28.0\",\"enzarb-updater\":\"0.2.1\",\"enzarb-workflows\":\"0.19.0\"}}" }
+            - { name: ENZARB_COMPONENT_VERSIONS, value: "{\"chart\":\"0.0.0\",\"components\":{\"enzarb-connectors\":\"0.6.2\",\"enzarb-realtime\":\"0.4.1\",\"enzarb-sandbox-container\":\"0.11.0\",\"enzarb-sandbox-operator\":\"0.8.1\",\"enzarb-sandbox-proxy\":\"0.6.0\",\"enzarb-ui\":\"0.28.0\",\"enzarb-updater\":\"0.2.1\",\"enzarb-workflows\":\"0.19.0\"}}" }
             - { name: ENZARB_GITHUB_APP_SLUG, value: "enzarb" }
             # adapter-node derives the origin for its CSRF check from this header; the Gateway forwards it.
             - { name: PROTOCOL_HEADER, value: x-forwarded-proto }
