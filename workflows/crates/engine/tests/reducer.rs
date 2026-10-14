@@ -964,7 +964,15 @@ async fn project_owner_cancels_an_orphaned_item_and_others_cannot() {
     assert_eq!(h.reducer.drain().await, 1);
     let after = work_item(pool, ITEM).await.unwrap();
     assert_eq!(after.state, "Cancelled");
-    assert_eq!(pending_jobs(pool, &after).await, 0);
+    // The only job left is the terminal "cancelled by @owner" comment, queued after the
+    // Cancel effect cancelled everything else. It is safe: it only posts to the forge.
+    let pending: Vec<_> = jobs(pool, after.id)
+        .await
+        .into_iter()
+        .filter(|j| matches!(j.status.as_str(), "queued" | "running"))
+        .collect();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].kind, "post_comment");
 }
 
 #[tokio::test]
