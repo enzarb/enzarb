@@ -27,7 +27,7 @@
 //! * `retarget_change_request`: `{"item": WorkItemKey, "number": u64, "head_ref": str,
 //!   "expected_sha": str, "old_base": str, "onto": str}`
 //! * `create_sub_issues`: `{"item": WorkItemKey, "depth": u32, "sub_issues": [SubIssue]}`
-//!   (in creation order); output `{"children": [{"key": str, "item": WorkItemKey, "url": str}]}`
+//!   (in creation order); output `{"children": [{"key": str, "item": WorkItemKey, "title": str}]}`
 //!   ([`issue::CreatedChild`])
 //!
 //! Job outputs that the machines read: agent jobs store the `RunFinished` body

@@ -220,8 +220,8 @@ impl Ticker {
     }
 
     /// Re-evaluate change requests (and epics waiting for their sub-issues) whose dependencies
-    /// changed since they last looked: a
-    /// dependency was completed or closed, or a relationship was added or removed. Emits
+    /// changed since they last looked: a dependency was completed or closed, or a
+    /// relationship was added or removed. Emits
     /// `DependenciesChanged` when the open set differs from the one in `state_data`, so a
     /// finished dependency continues its dependents without a human, and a missed webhook
     /// delays that by one sweep at most.

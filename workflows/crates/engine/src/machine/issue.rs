@@ -62,8 +62,6 @@ pub struct CreatedChild {
     pub item: WorkItemKey,
     #[serde(default)]
     pub title: String,
-    #[serde(default)]
-    pub url: String,
 }
 
 /// `state_data` of an issue work item (all fields default for forward compatibility).
