@@ -584,6 +584,7 @@ impl Finish {
 }
 
 /// Why `execute` stopped early.
+#[derive(Debug)]
 enum Abort {
     Stop(Stop),
     Fail(String),
@@ -1131,6 +1132,78 @@ impl Inner {
         }
     }
 
+    /// [`net_git`](Self::net_git) for the network verbs (clone, fetch, push),
+    /// retried on transient network errors (`netgit::is_transient`) with the
+    /// configured backoff. Anything else, and the last attempt, is returned
+    /// as is. `reset` runs before each retry; `cap` bounds one attempt's
+    /// wall-clock time (a timeout inside the run's own limits is transient).
+    #[allow(clippy::too_many_arguments)]
+    async fn net_git_retry(
+        &self,
+        run: &Run,
+        ctl: &mut Ctl,
+        secrets: &[String],
+        net_env: &[(String, String)],
+        cwd: &Path,
+        args: &[&str],
+        cap: Option<Duration>,
+        reset: Option<&Path>,
+    ) -> Result<Output, Abort> {
+        let verb = args.first().copied().unwrap_or("git");
+        let attempts = (self.cfg.net_retry_delays.len() + 1).min(crate::netgit::NET_ATTEMPTS);
+        let mut attempt = 1;
+        loop {
+            let mut out = match cap {
+                None => self.net_git(run, ctl, secrets, net_env, cwd, args).await?,
+                Some(cap) => {
+                    let mut child = ctl.clone();
+                    child.deadline = child.deadline.min(Instant::now() + cap);
+                    match self
+                        .net_git(run, &mut child, secrets, net_env, cwd, args)
+                        .await
+                    {
+                        Err(Abort::Stop(Stop::TimedOut))
+                            if Instant::now() < ctl.deadline && !*ctl.cancel.borrow() =>
+                        {
+                            Output {
+                                status: None,
+                                stop: None,
+                                stdout: Vec::new(),
+                                stderr: format!(
+                                    "Operation timed out: no result after {} s",
+                                    cap.as_secs()
+                                ),
+                            }
+                        }
+                        other => other?,
+                    }
+                }
+            };
+            if out.success() || attempt >= attempts || !crate::netgit::is_transient(&out.stderr) {
+                out.stop = None;
+                return Ok(out);
+            }
+            let delay = self.cfg.net_retry_delays[attempt - 1];
+            if Instant::now() + delay >= ctl.deadline {
+                return Ok(out);
+            }
+            let first = out.stderr.lines().next().unwrap_or("").trim();
+            let msg = format!(
+                "git {verb} failed transiently (attempt {attempt}/{attempts}): {first}; retrying in {}s",
+                delay.as_secs_f64().round()
+            );
+            (line_sink(run, "git", secrets))(&msg);
+            tokio::select! {
+                s = ctl.stopped() => return Err(s.into()),
+                () = tokio::time::sleep(delay) => {}
+            }
+            if let Some(dir) = reset {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+            attempt += 1;
+        }
+    }
+
     /// A fresh, empty bare repo for one network call, borrowing `repo`'s
     /// objects. Removed when the guard drops.
     async fn net_repo(
@@ -1201,7 +1274,7 @@ impl Inner {
         let snap = std::fs::read(net.0.join("config")).unwrap_or_default();
         Self::net_untouched(&net, &snap)?;
         let out = self
-            .net_git(
+            .net_git_retry(
                 run,
                 ctl,
                 secrets,
@@ -1216,6 +1289,8 @@ impl Inner {
                     "+refs/heads/*:refs/remotes/origin/*",
                     "+refs/tags/*:refs/tags/*",
                 ],
+                Some(self.cfg.fetch_attempt_cap),
+                None,
             )
             .await?;
         Self::net_untouched(&net, &snap)?;
@@ -1262,13 +1337,15 @@ impl Inner {
         let snap = std::fs::read(net.0.join("config")).unwrap_or_default();
         Self::net_untouched(&net, &snap)?;
         let out = self
-            .net_git(
+            .net_git_retry(
                 run,
                 ctl,
                 secrets,
                 net_env,
                 &net.0,
                 &["push", "--no-verify", "--", url, refspec],
+                Some(self.cfg.push_attempt_cap),
+                None,
             )
             .await?;
         Self::net_untouched(&net, &snap)?;
@@ -1382,7 +1459,7 @@ impl Inner {
                 let tmp = crate::netgit::NetDir(tmp);
                 let t = tmp.0.to_string_lossy().into_owned();
                 let res = self
-                    .net_git(
+                    .net_git_retry(
                         run,
                         ctl,
                         &secrets,
@@ -1396,6 +1473,8 @@ impl Inner {
                             &req.repo_url,
                             &t,
                         ],
+                        Some(self.cfg.fetch_attempt_cap),
+                        Some(&tmp.0),
                     )
                     .await
                     .and_then(|o| require(o, "clone", &secrets))
@@ -1812,5 +1891,238 @@ mod prune_tests {
         assert!(m.contains("workspace volume is full"));
         assert_eq!(with_enospc_hint(m.clone()), m);
         assert_eq!(with_enospc_hint("other".into()), "other");
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    const TOKEN: &str = "ghs_tok3n";
+
+    struct Fx {
+        _dir: tempfile::TempDir,
+        dir: PathBuf,
+        inner: Inner,
+        run: Run,
+        tx: watch::Sender<bool>,
+        ctl: Ctl,
+    }
+
+    impl Fx {
+        /// A `git_bin` that fails its first `fail` network calls with `stderr`
+        /// (exit 128), then succeeds unless `reset/leftover` exists.
+        fn new(fail: usize, stderr: &str) -> Self {
+            let d = tempfile::tempdir().unwrap();
+            let dir = d.path().to_path_buf();
+            let script = dir.join("fakegit");
+            std::fs::write(
+                &script,
+                format!(
+                    "#!/bin/sh\ncase \"$1\" in push|fetch|clone)\n  echo x >> '{c}'\n  n=$(wc -l < '{c}')\n  if [ \"$n\" -le {fail} ]; then echo '{stderr}' >&2; exit 128; fi\n  [ ! -e '{r}/leftover' ] || exit 1\n  exit 0;;\nesac\nexit 0\n",
+                    c = dir.join("count").display(),
+                    r = dir.join("reset").display(),
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let cfg = Config {
+                workspace: dir.clone(),
+                git_bin: script.to_string_lossy().into_owned(),
+                net_retry_delays: vec![Duration::from_millis(5), Duration::from_millis(5)],
+                ..Config::default()
+            };
+            let reaper = Reaper::new(false);
+            tokio::spawn(reaper.clone().run());
+            let inner = Inner {
+                slots: Semaphore::new(1),
+                cfg,
+                reaper,
+                runs_dir: dir.join("runs"),
+                runs: Mutex::default(),
+                sessions: Mutex::default(),
+                repo_locks: RepoLocks::default(),
+                http: reqwest::Client::new(),
+            };
+            let rec = RunRecord {
+                run_id: "r".into(),
+                state: RunPhase::Running,
+                repo_url: String::new(),
+                base_ref: String::new(),
+                branch: String::new(),
+                push: true,
+                exit_code: None,
+                summary: None,
+                head_sha: String::new(),
+                pushed: false,
+                usage: None,
+                created_ms: 0,
+                started_ms: None,
+                finished_ms: None,
+                callback: None,
+            };
+            let run = Run {
+                id: "r".into(),
+                dir: dir.clone(),
+                transcript: Arc::new(Transcript::new(dir.join("transcript.jsonl"), false)),
+                rec: Mutex::new(rec),
+                cancel: watch::channel(false).0,
+                usage: Arc::default(),
+            };
+            let (tx, rx) = watch::channel(false);
+            let ctl = Ctl {
+                cancel: rx,
+                deadline: Instant::now() + Duration::from_secs(60),
+            };
+            Self {
+                _dir: d,
+                dir,
+                inner,
+                run,
+                tx,
+                ctl,
+            }
+        }
+
+        fn calls(&self) -> usize {
+            std::fs::read_to_string(self.dir.join("count")).map_or(0, |s| s.lines().count())
+        }
+
+        fn transcript(&self) -> String {
+            std::fs::read_to_string(self.dir.join("transcript.jsonl")).unwrap_or_default()
+        }
+
+        fn retries(&self) -> usize {
+            self.transcript().matches("failed transiently").count()
+        }
+
+        async fn go(&mut self, verb: &str, reset: Option<&Path>) -> Result<Output, Abort> {
+            let secrets = vec![TOKEN.to_string()];
+            let env = vec![(
+                "PATH".to_string(),
+                std::env::var("PATH").unwrap_or_default(),
+            )];
+            self.inner
+                .net_git_retry(
+                    &self.run,
+                    &mut self.ctl,
+                    &secrets,
+                    &env,
+                    &self.dir,
+                    &[verb, "--", "https://example.test/a/b"],
+                    None,
+                    reset,
+                )
+                .await
+        }
+    }
+
+    const TIMEOUT: &str = "fatal: unable to access 'https://x-access-token:ghs_tok3n@github.com/a/b/': Connection timed out after 300026 milliseconds";
+
+    #[tokio::test]
+    async fn succeeds_after_two_transient_failures() {
+        let mut fx = Fx::new(2, TIMEOUT);
+        let out = fx.go("push", None).await.unwrap();
+        assert!(out.success());
+        assert_eq!(fx.calls(), 3);
+        assert_eq!(fx.retries(), 2);
+        assert!(fx.transcript().contains("attempt 1/3"));
+        assert!(!fx.transcript().contains(TOKEN), "token leaked");
+    }
+
+    #[tokio::test]
+    async fn gives_up_after_three_attempts_with_the_last_error() {
+        let mut fx = Fx::new(9, TIMEOUT);
+        let out = fx.go("fetch", None).await.unwrap();
+        assert!(!out.success());
+        assert_eq!(out.code(), Some(128));
+        assert!(out.stderr.contains("Connection timed out"));
+        assert_eq!(fx.calls(), 3);
+        assert_eq!(fx.retries(), 2);
+    }
+
+    #[tokio::test]
+    async fn auth_and_rejected_pushes_are_not_retried() {
+        for e in [
+            "fatal: unable to access 'x': The requested URL returned error: 403",
+            "fatal: unable to access 'x': The requested URL returned error: 401",
+            " ! [rejected] a -> b (non-fast-forward)",
+            " ! [remote rejected] a -> b (protected branch hook declined)",
+        ] {
+            let mut fx = Fx::new(9, e);
+            let out = fx.go("push", None).await.unwrap();
+            assert_eq!(out.code(), Some(128));
+            assert_eq!(fx.calls(), 1, "{e}");
+            assert_eq!(fx.retries(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_during_backoff_returns_promptly() {
+        let mut fx = Fx::new(9, TIMEOUT);
+        fx.inner.cfg.net_retry_delays = vec![Duration::from_secs(30); 2];
+        let tx = fx.tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let _ = tx.send(true);
+        });
+        let t = std::time::Instant::now();
+        let r = fx.go("push", None).await;
+        assert!(matches!(r, Err(Abort::Stop(Stop::Cancelled))));
+        assert!(t.elapsed() < Duration::from_secs(10));
+        assert_eq!(fx.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn clone_retry_clears_the_leftover_dir() {
+        let mut fx = Fx::new(1, TIMEOUT);
+        let reset = fx.dir.join("reset");
+        std::fs::create_dir_all(&reset).unwrap();
+        std::fs::write(reset.join("leftover"), "x").unwrap();
+        let out = fx.go("clone", Some(&reset)).await.unwrap();
+        assert!(out.success());
+        assert_eq!(fx.calls(), 2);
+        assert!(!reset.exists());
+    }
+
+    /// A remote that never answers: the fake git hangs on every fetch. The
+    /// attempt cap cuts each try short, the timeout counts as transient, and
+    /// the last timeout is returned after all attempts.
+    #[tokio::test]
+    async fn hung_fetch_is_capped_and_retried() {
+        let mut fx = Fx::new(0, "");
+        std::fs::write(
+            fx.dir.join("fakegit"),
+            format!(
+                "#!/bin/sh\ncase \"$1\" in fetch)\n  echo x >> '{c}'\n  exec sleep 30;;\nesac\nexit 0\n",
+                c = fx.dir.join("count").display(),
+            ),
+        )
+        .unwrap();
+        let started = Instant::now();
+        let secrets = vec![TOKEN.to_string()];
+        let env = vec![(
+            "PATH".to_string(),
+            std::env::var("PATH").unwrap_or_default(),
+        )];
+        let out = fx
+            .inner
+            .net_git_retry(
+                &fx.run,
+                &mut fx.ctl,
+                &secrets,
+                &env,
+                &fx.dir,
+                &["fetch", "--", "https://example.test/a/b"],
+                Some(Duration::from_millis(300)),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(!out.success());
+        assert!(out.stderr.contains("Operation timed out"), "{}", out.stderr);
+        assert_eq!(fx.calls(), 3);
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 }
