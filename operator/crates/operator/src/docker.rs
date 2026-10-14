@@ -89,8 +89,9 @@ pub fn default_profiles() -> BTreeMap<String, RuntimeProfile> {
         dockerd_args: [
             "--iptables=false",
             "--ip6tables=false",
-            // vfs works on any backing fs; overlay2 on a gofer-backed PVC is unverified.
-            "--storage-driver=vfs",
+            // overlay2 works on the gofer-backed docker volume (verified in gVisor, issue #119);
+            // vfs copies every layer in full. Override via `dockerdArgs` to go back.
+            "--storage-driver=overlay2",
             "--feature=containerd-snapshotter=false",
         ]
         .map(String::from)
@@ -296,7 +297,7 @@ mod tests {
         );
         assert_eq!(p.env[1]["name"], "ENZARB_DOCKERD_ARGS");
         let args = p.env[1]["value"].as_str().unwrap();
-        assert!(args.contains("--storage-driver=vfs"), "{args}");
+        assert!(args.contains("--storage-driver=overlay2"), "{args}");
         assert!(args.contains("--iptables=false"), "{args}");
         assert!(!args.contains("tcp://"), "{args}");
         assert_eq!(

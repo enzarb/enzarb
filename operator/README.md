@@ -86,7 +86,7 @@ An existing sandbox from the sidecar layout differs from this shape (new mount, 
 
 | Runtime class | `sandbox` container securityContext | Extra dockerd args |
 |---|---|---|
-| `gvisor` | not privileged, root, `capabilities: drop ALL, add AUDIT_WRITE CHOWN DAC_OVERRIDE FOWNER FSETID KILL MKNOD NET_BIND_SERVICE NET_ADMIN NET_RAW SETFCAP SETGID SETPCAP SETUID SYS_ADMIN SYS_CHROOT SYS_PTRACE` | `--iptables=false --ip6tables=false --storage-driver=vfs --feature=containerd-snapshotter=false` |
+| `gvisor` | not privileged, root, `capabilities: drop ALL, add AUDIT_WRITE CHOWN DAC_OVERRIDE FOWNER FSETID KILL MKNOD NET_BIND_SERVICE NET_ADMIN NET_RAW SETFCAP SETGID SETPCAP SETUID SYS_ADMIN SYS_CHROOT SYS_PTRACE` | `--iptables=false --ip6tables=false --storage-driver=overlay2 --feature=containerd-snapshotter=false` |
 | `kata` | `privileged: true`, root (confined to the guest VM) | `--storage-driver=overlay2` |
 
 Sources: [Docker in gVisor](https://gvisor.dev/docs/tutorials/docker-in-gvisor/) (capability set, `--iptables=false --ip6tables=false`, v29 `containerd-snapshotter=false`, runsc `--net-raw` and, for Docker 28+, `--allow-packet-socket-write`) and Kata's [privileged containers guide](https://github.com/kata-containers/kata-containers/blob/main/docs/how-to/privileged.md) (`privileged_without_host_devices = true` so privilege stays inside the guest; kata-deploy sets it).
@@ -100,7 +100,7 @@ Sources: [Docker in gVisor](https://gvisor.dev/docs/tutorials/docker-in-gvisor/)
 **Limitations.**
 
 - gVisor: iptables is disabled, so `docker run -p/--expose` publishes nothing; use `--network=host` inside the sandbox, or reach containers by IP. User-defined networks and compose port publishing are limited accordingly. Some syscalls and filesystems are unsupported by gVisor.
-- gVisor storage uses `vfs` (no copy-on-write; each layer is a full copy, so images take more disk and builds are slower). The gVisor guide does not verify overlay2 on a PVC; override via the profiles file if you have validated it.
+- gVisor storage uses `overlay2` (verified on the docker volume, issue #119). sandbox-init deletes the leftover `vfs` directory of the old default at startup. To go back, set `runtimeProfiles.<class>.dockerdArgs` with `--storage-driver=vfs`.
 - Kata (experimental): `overlay2` needs the `docker` PVC to be mounted in the guest as a real block filesystem (ext4/xfs), not virtio-fs; with a virtio-fs-backed volume, override the profile to `--storage-driver=vfs`.
 - The `sandbox` container runs as root with `runAsNonRoot: false` (dockerd requires it); agents, jobs and chats run as uid 1000 with no-new-privs (sandbox-init drops them). dockerd, containerd and inner containers count against the container's CPU and memory limits, so a heavy build can OOM the whole container. Inner containers and builds default to `--network=host` through the image's `docker` wrapper; use `--user 1000:1000` for bind-mounted outputs you want to edit (otherwise they are root-owned). Plain-HTTP registries are blocked by the Project's NetworkPolicy (443, DNS and the executor callback only).
 
