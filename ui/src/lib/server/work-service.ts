@@ -75,7 +75,12 @@ function needsYouWhere(sql: Sql, projects: string[], staleHours: number) {
 
 const iso = (d: Date | string) => new Date(d).toISOString();
 
-function summary(r: ItemRow, staleHours: number): WorkItemSummary {
+function summary(
+	r: ItemRow,
+	staleHours: number,
+	repoCounts?: ReadonlyMap<string, number>
+): WorkItemSummary {
+	const count = repoCounts?.get(r.project ?? '');
 	return {
 		id: Number(r.id),
 		key: r.key,
@@ -90,7 +95,8 @@ function summary(r: ItemRow, staleHours: number): WorkItemSummary {
 			{ now: Date.now(), staleAfterMs: hoursToMs(staleHours) }
 		),
 		wait: parseWait(r.state_data),
-		usage: parseUsage(r.usage_totals)
+		usage: parseUsage(r.usage_totals),
+		...(count === undefined ? {} : { singleRepo: count === 1 })
 	};
 }
 
@@ -130,7 +136,9 @@ export function jobOutputMarkdown(output: unknown): string | null {
 export function workService(
 	sql: Sql,
 	projects: readonly string[],
-	staleHours: number = NEEDS_YOU_STALE_HOURS_DEFAULT
+	staleHours: number = NEEDS_YOU_STALE_HOURS_DEFAULT,
+	/** Repository count per project name; lets items say whether their project has a single repo. */
+	repoCounts?: ReadonlyMap<string, number>
 ) {
 	const owned = new Set(projects);
 
@@ -153,7 +161,7 @@ export function workService(
 				WHERE project IN ${sql(names)}
 				ORDER BY updated_at DESC, id DESC
 				LIMIT 500`;
-			return rows.map((r) => summary(r, staleHours));
+			return rows.map((r) => summary(r, staleHours, repoCounts));
 		},
 
 		/**
@@ -171,7 +179,7 @@ export function workService(
 				ORDER BY updated_at ASC, id ASC
 				LIMIT ${NEEDS_YOU_CAP}`;
 			// safety net: the SQL predicate mirrors the classifier, so this should drop nothing
-			const items = rows.map((r) => summary(r, staleHours)).filter((i) => i.needs);
+			const items = rows.map((r) => summary(r, staleHours, repoCounts)).filter((i) => i.needs);
 			if (rows.length < NEEDS_YOU_CAP) return { items, total: items.length };
 			const [{ n }] = await sql<{ n: number }[]>`
 				SELECT count(*)::int AS n FROM workflows_api.work_item_v WHERE ${where}`;
@@ -221,7 +229,7 @@ export function workService(
 				SELECT id, kind, status, attempt, updated_at, output, usage
 				FROM workflows_api.job_v WHERE work_item_id = ${id} ORDER BY created_at, id`;
 			return {
-				...summary(row, staleHours),
+				...summary(row, staleHours, repoCounts),
 				readiness: row.workflow === 'change_request' ? parseReadiness(row.state_data) : null,
 				actions: availableActions(row.state),
 				transitions: transitions.map((t): TransitionView => ({

@@ -27,6 +27,8 @@ export interface WorkItemSummary {
 	wait?: Wait | null;
 	/** Token usage and cost summed over the item's jobs; null when no job reported any. */
 	usage?: Usage | null;
+	/** True when the item's project has exactly one repository; unset when unknown. */
+	singleRepo?: boolean;
 }
 
 export interface TransitionView {
@@ -265,6 +267,13 @@ export interface WaitLink {
 /** The pull request URL itself; the issue URL derived from a key is not one. */
 const prUrl = (url: string | null): string | null =>
 	url && /^https:\/\/[^/]+\/[^/]+\/[^/]+\/pull\/\d+$/.test(url) ? url : null;
+
+/** `owner/repo#n` (or `#n` for a single-repo project) for a GitHub issue or PR URL; null otherwise. */
+export function githubRefLabel(url: string | null, singleRepo?: boolean): string | null {
+	const m = url && /^https:\/\/github\.com\/([^/]+\/[^/]+)\/(?:issues|pull)\/(\d+)$/.exec(url);
+	if (!m) return null;
+	return singleRepo ? `#${m[2]}` : `${m[1]}#${m[2]}`;
+}
 
 /** Links that help the user act on (or follow) a wait; `url` is the item's URL. */
 export function waitLinks(wait: Wait | null, url: string | null): WaitLink[] {

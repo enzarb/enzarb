@@ -2,9 +2,13 @@ import { page } from 'vitest/browser';
 import { describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import NeedsYouRow from './NeedsYouRow.svelte';
-import type { NeedsYou } from '#lib/work-items.ts';
+import type { NeedsYou, WorkItemSummary } from '#lib/work-items.ts';
 
-const row = (needs: NeedsYou, state = 'AwaitingApproval') => ({
+const row = (
+	needs: NeedsYou,
+	state = 'AwaitingApproval',
+	extra: { url?: string; singleRepo?: boolean; wait?: WorkItemSummary['wait'] } = {}
+) => ({
 	id: 7,
 	key: 'github:acme/web#7',
 	project: 'web',
@@ -13,7 +17,8 @@ const row = (needs: NeedsYou, state = 'AwaitingApproval') => ({
 	title: 'Add search',
 	url: 'https://github.com/acme/web/issues/7',
 	updatedAt: new Date(Date.now() - 3 * 3_600_000).toISOString(),
-	needs
+	needs,
+	...extra
 });
 
 describe('NeedsYouRow', () => {
@@ -27,11 +32,35 @@ describe('NeedsYouRow', () => {
 		await expect.element(page.getByText('Plan awaiting approval')).toBeVisible();
 		await expect.element(page.getByText('github:acme/web#7')).toBeVisible();
 		await expect.element(page.getByText('waiting 3h')).toBeVisible();
+		const ref = page.getByRole('link', { name: 'acme/web#7' });
+		await expect.element(ref).toHaveAttribute('href', 'https://github.com/acme/web/issues/7');
+		await expect.element(ref).toHaveAttribute('target', '_blank');
+		await expect.element(ref).toHaveAttribute('rel', expect.stringContaining('noopener'));
 		await expect
-			.element(page.getByRole('link', { name: 'View on GitHub' }))
-			.toHaveAttribute('href', 'https://github.com/acme/web/issues/7');
+			.element(page.getByRole('link', { name: 'Add search' }))
+			.not.toHaveAttribute('target');
 		await page.getByRole('button', { name: 'Approve plan' }).click();
 		expect(onaction).toHaveBeenCalledWith('approve');
+	});
+
+	it('shows just #n for single-repo projects', async () => {
+		render(NeedsYouRow, {
+			item: row({ category: 'approval', reason: null }, 'AwaitingApproval', { singleRepo: true }),
+			onaction: vi.fn(),
+			loadPlan: async () => null
+		});
+		await expect.element(page.getByRole('link', { name: '#7' })).toBeVisible();
+	});
+
+	it('falls back to "View on GitHub" for an unparseable URL', async () => {
+		render(NeedsYouRow, {
+			item: row({ category: 'approval', reason: null }, 'AwaitingApproval', {
+				url: 'https://example.com/x'
+			}),
+			onaction: vi.fn(),
+			loadPlan: async () => null
+		});
+		await expect.element(page.getByRole('link', { name: 'View on GitHub' })).toBeVisible();
 	});
 
 	it('offers retry with the failure reason for failed items', async () => {

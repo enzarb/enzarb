@@ -18,7 +18,8 @@ async function service() {
 		work: workService(
 			getSql(),
 			projects.map((p) => p.name),
-			getConfig().needsYouStaleHours
+			getConfig().needsYouStaleHours,
+			new Map(projects.map((p) => [p.name, p.repositories.length]))
 		)
 	};
 }

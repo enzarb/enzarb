@@ -10,7 +10,7 @@
 	<span class="ez-wait ez-wait--{wait.waitingOn}">
 		{wait.text}
 		{#each links as l (l.href)}
-			· <a href={l.href} rel="noopener noreferrer">{l.label}</a>
+			· <a href={l.href} target="_blank" rel="noopener noreferrer">{l.label}</a>
 		{/each}
 	</span>
 {/if}
