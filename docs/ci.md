@@ -51,6 +51,13 @@ The monorepo's GitHub Actions setup (root `.github/`) follows these rules. Each 
   - `test-client`: browser component tests on a plain runner. Cache `~/.cache/ms-playwright` keyed on the installed Playwright version, run `npx playwright install chromium` only on a miss, and always run `npx playwright install-deps chromium` (about 15s). A `mcr.microsoft.com/playwright` job container was slower: the image pull costs about 55s per run.
   - `test-server`: node tests (including testcontainers/Docker) on a plain runner. Avoid mounting the Docker socket into a job container.
 
+## Values compatibility
+Deploys (notably oldie's HelmChart `valuesContent`, set once by `mise run oldie:bootstrap-helmchart`) keep setting values keys after the chart stops using them, and a key the schema rejects makes the RKE2 helm-install job crash-loop (chart 0.82–0.84 never reached oldie this way).
+
+- **Never remove a values key in the release that stops using it.** Keep it in `values.schema.json` as an accepted, ignored key whose `description` starts with `DEPRECATED:` (see `operator.docker.resources` / `operator.docker.image`). Remove it only after every deploy no longer sets it.
+- **`mise run compat`** (in `helm/`, part of `mise run test`, run by `ci-helm` with full history so tags are present) lints and templates the current chart with the latest `helm/v*` tag's `values.yaml` and `values-oldie.yaml` (read with `git show`), each passed alone as `-f`, as the HelmChart does. A key removed in a PR but still set by the previous release fails. With no `helm/v*` tag it prints a skip notice and passes. It checks the repo-tracked files only, not the live HelmChart `valuesContent`.
+- **Visibility.** The updater serves `GET /status` (`installed`, `desired`, `latest`, `stuck`) and logs a failing upgrade; the UI About page shows it.
+
 ## Reporting
 A PR that changes CI states before/after wall-clock times for the PR run and the main run, taken from the Actions UI or `gh run view --json jobs`.
 
