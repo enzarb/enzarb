@@ -38,6 +38,19 @@ for (const path of [`/projects/${E2E_PROJECT}`, `/projects/${E2E_PROJECT}/settin
 	});
 }
 
+test('/work does not scroll sideways on a phone', async ({ page }) => {
+	await page.setViewportSize({ width: 360, height: 740 });
+	await installFakeSandbox(page);
+	await installFakeLive(page);
+	await page.goto('/work');
+	await page.waitForTimeout(1500);
+	const { scrollWidth, clientWidth } = await page.evaluate(() => ({
+		scrollWidth: document.documentElement.scrollWidth,
+		clientWidth: document.documentElement.clientWidth
+	}));
+	expect(scrollWidth).toBeLessThanOrEqual(clientWidth);
+});
+
 test('serves the web app manifest and its icons without a session', async ({
 	browser,
 	baseURL
