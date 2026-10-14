@@ -477,6 +477,13 @@ async fn chat_end_to_end() {
         !transcript.contains("FAKEclaudeTOKEN"),
         "token in transcript"
     );
+    // the registry slot is released after the worktree is removed
+    for _ in 0..100 {
+        if s.chats.live() == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     assert_eq!(s.chats.live(), 0);
 }
 
