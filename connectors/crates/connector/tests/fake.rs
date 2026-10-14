@@ -283,3 +283,26 @@ async fn set_base_retargets_seeded_change_request_idempotently() {
     let err = f.set_base(&missing, 9, "main", "k2").await.unwrap_err();
     assert!(matches!(err, Error::NotFound(_)), "{err:?}");
 }
+
+#[tokio::test]
+async fn delete_branch_is_idempotent_and_forgets_the_head() {
+    let f = FakeConnector::new();
+    let repo = item().repo;
+    f.set_branch_head(repo.clone(), "enzarb/x", "abc");
+    f.delete_branch(&repo, "enzarb/x", "k").await.unwrap();
+    f.delete_branch(&repo, "enzarb/x", "k").await.unwrap();
+    // a branch that is already gone is success too
+    f.delete_branch(&repo, "enzarb/never", "k2").await.unwrap();
+    assert_eq!(f.branch_head(&repo, "enzarb/x").await.unwrap(), None);
+    assert_eq!(f.delete_branch_calls().len(), 3);
+    assert!(f.calls()[1].replayed);
+    assert!(!f.calls()[2].replayed);
+}
+
+#[tokio::test]
+async fn delete_branch_failure_is_injected() {
+    let f = FakeConnector::new();
+    f.fail_next(Error::PermissionDenied("no".into()));
+    let err = f.delete_branch(&item().repo, "b", "k").await.unwrap_err();
+    assert!(matches!(err, Error::PermissionDenied(_)), "{err:?}");
+}

@@ -821,6 +821,26 @@ impl Connector for GitHubConnector {
         })
     }
 
+    async fn delete_branch(
+        &self,
+        repo: &RepoKey,
+        branch: &str,
+        _idempotency_key: &str,
+    ) -> Result<()> {
+        let path = format!(
+            "/repos/{}/git/refs/heads/{}",
+            repo.full_name(),
+            encode_path(branch)
+        );
+        let resp = self.call_raw(repo, Method::DELETE, &path, None).await?;
+        // 404: no such ref, 422: "Reference does not exist". Both mean it is already gone.
+        if matches!(resp.status.as_u16(), 404 | 422) {
+            return Ok(());
+        }
+        expect("delete branch", resp)?;
+        Ok(())
+    }
+
     async fn branch_head(&self, repo: &RepoKey, branch: &str) -> Result<Option<String>> {
         #[derive(Deserialize)]
         struct Commit {

@@ -77,6 +77,11 @@ pub enum Call {
         repo: RepoKey,
         branch: String,
     },
+    DeleteBranch {
+        repo: RepoKey,
+        branch: String,
+        idempotency_key: String,
+    },
     ListDependencies {
         item: WorkItemKey,
     },
@@ -219,6 +224,18 @@ impl FakeConnector {
 
     pub fn change_requests(&self) -> Vec<ItemRef> {
         self.st().change_requests.clone()
+    }
+
+    /// Every `delete_branch` call so far as `(repo, branch)`, in order (replays included).
+    pub fn delete_branch_calls(&self) -> Vec<(RepoKey, String)> {
+        self.st()
+            .calls
+            .iter()
+            .filter_map(|c| match &c.call {
+                Call::DeleteBranch { repo, branch, .. } => Some((repo.clone(), branch.clone())),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Every `set_base` call so far as `(item, number, new_base)`, in order (replays included).
@@ -496,6 +513,28 @@ impl Connector for FakeConnector {
             return Err(Error::NotFound(format!("{item} change request {number}")));
         }
         let replayed = !st.seen_keys.insert(format!("set_base:{idempotency_key}"));
+        Self::record(&mut st, call, replayed);
+        Ok(())
+    }
+
+    async fn delete_branch(
+        &self,
+        repo: &RepoKey,
+        branch: &str,
+        idempotency_key: &str,
+    ) -> Result<()> {
+        let mut st = self.st();
+        let call = Call::DeleteBranch {
+            repo: repo.clone(),
+            branch: branch.to_string(),
+            idempotency_key: idempotency_key.to_string(),
+        };
+        Self::take_failure(&mut st, call.clone())?;
+        // Deleting a branch that is not there succeeds, like the provider's already-gone answer.
+        st.branch_heads.remove(&(repo.clone(), branch.to_string()));
+        let replayed = !st
+            .seen_keys
+            .insert(format!("delete_branch:{idempotency_key}"));
         Self::record(&mut st, call, replayed);
         Ok(())
     }
