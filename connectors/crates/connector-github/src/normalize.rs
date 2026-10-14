@@ -494,7 +494,11 @@ pub fn normalize(
         .sender
         .as_ref()
         .ok_or_else(|| missing(event_name, "sender"))?;
-    if sender.login.eq_ignore_ascii_case(bot_login) {
+    // Loop protection only matters for comments and reviews. For CI events the
+    // sender is whoever pushed the commit, which is the bot for its own PRs;
+    // `from_bot(app)` below excludes check suites created by our own app.
+    let is_ci_event = matches!(event_name, "check_suite" | "check_run" | "status");
+    if !is_ci_event && sender.login.eq_ignore_ascii_case(bot_login) {
         return Ok(ignored);
     }
     let actor = sender.actor();
