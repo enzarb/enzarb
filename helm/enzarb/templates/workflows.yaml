@@ -50,6 +50,7 @@ spec:
             {{- end }}
             - { name: ENZARB_PUBLIC_URL, value: {{ include "enzarb.publicUrl" . | quote }} }
             - { name: ENZARB_DB_MAX_CONNECTIONS, value: {{ $c.dbMaxConnections | quote }} }
+            - { name: ENZARB_MAX_AUTO_ROUNDS, value: {{ $c.maxAutoRounds | quote }} }
             - { name: ENZARB_BOT_HANDLE, value: {{ $c.botHandle | quote }} }
             - { name: ENZARB_BOT_LOGIN, value: {{ $c.botLogin | quote }} }
             - { name: RUST_LOG, value: {{ .Values.rustLog | quote }} }

@@ -1,5 +1,6 @@
 //! Table-driven tests for the three state machines.
 
+mod auto_rounds;
 mod dependencies;
 mod merge;
 
@@ -309,6 +310,13 @@ fn run(perm: Permission, state: &WorkflowState, ev: &EngineEvent) -> Transition 
 
 fn run_cr(perm: Permission, state: &WorkflowState, ev: &EngineEvent) -> Transition {
     transition(&ctx_for(43, perm), state, ev)
+}
+
+/// Like `run_cr` with automatic fix rounds disabled.
+fn run_cr_manual(perm: Permission, state: &WorkflowState, ev: &EngineEvent) -> Transition {
+    let mut c = ctx_for(43, perm);
+    c.config.max_auto_rounds = 0;
+    transition(&c, state, ev)
 }
 
 #[track_caller]
@@ -1463,7 +1471,7 @@ fn cr_opened_starts_review_even_for_bots_and_strangers() {
 #[test]
 fn cr_review_decisions_all_await_changes() {
     for decision in ["approve", "request_changes", "comment"] {
-        let t = run_cr(
+        let t = run_cr_manual(
             Permission::None,
             &cr_in(CrPhase::Reviewing),
             &agent_ok_checks(
@@ -1492,7 +1500,7 @@ fn cr_unverified_approve_is_downgraded_to_comment() {
         ]),
     ];
     for checks in cases {
-        let t = run_cr(
+        let t = run_cr_manual(
             Permission::None,
             &cr_in(CrPhase::Reviewing),
             &agent_ok_checks("r", JobKind::AgentReview, "approve", checks),
@@ -1502,7 +1510,7 @@ fn cr_unverified_approve_is_downgraded_to_comment() {
         assert!(comment_bodies(&t)[0].contains("Downgraded"));
     }
     // Field absent entirely (older output shape) is unverified too.
-    let t = run_cr(
+    let t = run_cr_manual(
         Permission::None,
         &cr_in(CrPhase::Reviewing),
         &agent_ok("r", JobKind::AgentReview, "approve", "LGTM"),
@@ -1512,7 +1520,7 @@ fn cr_unverified_approve_is_downgraded_to_comment() {
         "comment"
     );
     // request_changes is never altered.
-    let t = run_cr(
+    let t = run_cr_manual(
         Permission::None,
         &cr_in(CrPhase::Reviewing),
         &agent_ok("r", JobKind::AgentReview, "request_changes", "no"),
@@ -1619,7 +1627,7 @@ fn cr_feedback_is_addressed_then_awaits_again() {
     assert_eq!(t2.effects[0], Effect::CancelJobs);
 
     // Once that review is posted, the same push is a duplicate too.
-    let t3 = run_cr(
+    let t3 = run_cr_manual(
         Permission::None,
         &t.next,
         &agent_ok("r", JobKind::AgentReview, "request_changes", "nits"),
@@ -1969,9 +1977,8 @@ fn cr_reopen_and_other_irrelevant_events() {
             rejected(&run_cr(Permission::Write, &s, &ev), &s);
         }
     }
-    // Comments while reviewing or finished are not acted on.
+    // Comments on finished items are not acted on.
     for phase in [
-        CrPhase::Reviewing,
         CrPhase::Merged,
         CrPhase::Closed,
         CrPhase::Failed,

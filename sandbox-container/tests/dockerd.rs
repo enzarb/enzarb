@@ -209,3 +209,44 @@ async fn sigkill_after_the_grace_period() {
     let pid = PathBuf::from(format!("/proc/{}", f.starts()[0]));
     until("process gone", || !pid.exists()).await;
 }
+
+#[tokio::test]
+async fn removes_leftover_vfs_before_the_first_spawn_with_overlay2() {
+    // The fake records whether `vfs` still existed when it started (data root is `$(dirname $LOG)/data`).
+    let g = Fake::new(
+        "echo \"pid $$\" >> \"$LOG\"\nif [ -e \"$(dirname \"$LOG\")/data/vfs\" ]; then echo vfs-present >> \"$LOG\"; else echo vfs-gone >> \"$LOG\"; fi\nexec sleep 300",
+    );
+    let data = g.dir.path().join("data");
+    std::fs::create_dir_all(data.join("vfs/dir/sub")).unwrap();
+    std::fs::write(data.join("vfs/dir/sub/layer"), vec![0u8; 4096]).unwrap();
+    std::fs::create_dir_all(data.join("overlay2")).unwrap();
+    let mut cfg = g.cfg();
+    cfg.args = vec!["--storage-driver=overlay2".into()];
+    let reaper = Reaper::new(false);
+    tokio::spawn(reaper.clone().run());
+    let d = Dockerd::new(cfg, reaper);
+    let task = d.start();
+    until("started", || g.log().iter().any(|l| l.starts_with("vfs-"))).await;
+    assert!(g.log().contains(&"vfs-gone".to_string()), "{:?}", g.log());
+    assert!(data.join("overlay2").is_dir());
+    d.shutdown(Duration::from_secs(2)).await;
+    task.await.unwrap();
+}
+
+#[tokio::test]
+async fn overlay2_failure_to_start_is_reported_as_failed_with_a_reason() {
+    let f = Fake::new("echo \"pid $$\" >> \"$LOG\"\necho 'overlay2 not supported' >&2\nexit 1");
+    let mut cfg = f.cfg();
+    cfg.args = vec!["--storage-driver=overlay2".into()];
+    let reaper = Reaper::new(false);
+    tokio::spawn(reaper.clone().run());
+    let d = Dockerd::new(cfg, reaper);
+    let task = d.start();
+    until(
+        "failed",
+        || matches!(d.state(), State::Failed { ref reason, .. } if !reason.is_empty()),
+    )
+    .await;
+    d.shutdown(Duration::from_secs(1)).await;
+    task.await.unwrap();
+}

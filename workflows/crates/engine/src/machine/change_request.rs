@@ -5,6 +5,11 @@
 //!   `AwaitingChanges`; `Cancelled` is the UI cancel, `Failed` is retryable.
 //! * Feedback that arrives while comments are being addressed is remembered and
 //!   handled by one more `AddressingComments` round, instead of being dropped.
+//! * enzarb's own must-fix review findings (`request_changes`, or an unverified approve
+//!   downgraded to `comment`) start an `AddressingComments` round by themselves, at most
+//!   `Config::max_auto_rounds` in a row without a human acting; then the item waits for a person.
+//! * Feedback during `Reviewing` or `Merging` is queued like during `AddressingComments`; it is
+//!   handled before any automatic round once the running job finishes.
 //! * Commits pushed by the agent itself are not re-reviewed automatically; any
 //!   other new commits (`ChangeRequestUpdated`) are.
 //! * A `ChangeRequestOpened` for a `Closed` or `Cancelled` item (reopen) restarts the review.
@@ -147,6 +152,12 @@ pub struct CrData {
     pub mergeable: Option<bool>,
     /// Why the last merge attempt did not happen; cleared on the next `ReadyToMerge`.
     pub merge_error: String,
+    /// Automatic fix rounds started since a human last acted.
+    pub auto_rounds: u32,
+    /// The current `AddressingComments` round was started by enzarb's own review.
+    pub auto_trigger: bool,
+    /// The last review had must-fix findings but `auto_rounds` hit the cap.
+    pub auto_capped: bool,
     /// A user clicked merge and the merge has not happened yet. Kept across the branch
     /// update so the merge runs by itself once the new head is reviewed, CI is green and
     /// readiness is ok; cleared by requested changes, a failed check or a refused merge.
@@ -391,8 +402,8 @@ fn wait_of(waiting_on: WaitingOn, reason: &'static str, text: &str) -> Option<Wa
     })
 }
 
-/// The reason a change request is waiting; `None` in final states. Reasons that need
-/// data not stored yet (`round_limit`, `decision_needed`) are reserved in the contract.
+/// The reason a change request is waiting; `None` in final states. `decision_needed`
+/// needs data not stored yet and is reserved in the contract.
 pub fn wait(phase: CrPhase, d: &CrData, r: &Readiness) -> Option<Wait> {
     use WaitingOn::*;
     match phase {
@@ -403,6 +414,11 @@ pub fn wait(phase: CrPhase, d: &CrData, r: &Readiness) -> Option<Wait> {
             "Branch updated with the base; reviewing before merging",
         ),
         CrPhase::Reviewing => wait_of(Enzarb, "reviewing", "enzarb is reviewing"),
+        CrPhase::AddressingComments if d.auto_trigger => wait_of(
+            Enzarb,
+            "enzarb_fixing",
+            "enzarb is fixing its own review findings",
+        ),
         CrPhase::AddressingComments => wait_of(
             Enzarb,
             "addressing_comments",
@@ -426,6 +442,13 @@ pub fn wait(phase: CrPhase, d: &CrData, r: &Readiness) -> Option<Wait> {
             let reviewed = !d.last_review.is_empty() && d.reviewed_sha == d.head_sha;
             if !reviewed {
                 return wait_of(Enzarb, "reviewing", "enzarb is reviewing");
+            }
+            if d.auto_capped && d.last_review != "approve" {
+                return wait_of(
+                    Human,
+                    "round_limit",
+                    "Automatic fix rounds used up, waiting for you",
+                );
             }
             if r.ci.status == CheckStatus::Failed {
                 return wait_of(Enzarb, "ci_failed_fixing", "CI failed, enzarb is fixing it");
@@ -462,7 +485,8 @@ pub fn wait(phase: CrPhase, d: &CrData, r: &Readiness) -> Option<Wait> {
 
 /// `work_items.state_data` for a change request: the data plus the derived `checklist`
 /// and `wait` (both ignored when the state is loaded again).
-pub(super) fn state_data(phase: CrPhase, d: &CrData) -> Value {
+pub(super) fn state_data(s: &CrState) -> Value {
+    let (phase, d) = (s.phase, &s.data);
     let mut v = serde_json::to_value(d).unwrap_or_default();
     if let Value::Object(m) = &mut v {
         let r = readiness(d);
@@ -476,6 +500,27 @@ pub(super) fn state_data(phase: CrPhase, d: &CrData) -> Value {
         );
     }
     v
+}
+
+/// Reset the automatic-round bookkeeping: a human is involved again.
+fn human_acted(d: &mut CrData) {
+    d.auto_rounds = 0;
+    d.auto_trigger = false;
+    d.auto_capped = false;
+}
+
+/// Start an `AddressingComments` round for feedback that was queued during another run.
+fn start_pending_round(ctx: &Ctx, mut fx: Fx, mut d: CrData, p: Pending) -> Transition {
+    d.trigger_comment_id = p.comment_id;
+    d.trigger_comment_kind = p.comment_kind;
+    d.trigger_text = p.text;
+    human_acted(&mut d);
+    start_address(ctx, &mut fx, &d);
+    Transition::to(
+        st(CrPhase::AddressingComments, d),
+        fx.finish(),
+        "next round",
+    )
 }
 
 /// Record the head; mergeability belongs to the old head, so it is forgotten.
@@ -953,6 +998,7 @@ fn updated(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowState) -> T
             d.carry_stack(&s.data);
             d.resolve_attempts = s.data.resolve_attempts.clone();
             d.resolve_attempted_base_sha = s.data.resolve_attempted_base_sha.clone();
+            d.pending = s.data.pending.clone();
             if s.phase == Reviewing {
                 // The branch update's own commit: the merge request stays.
                 d.merge_requested = s.data.merge_requested;
@@ -1037,9 +1083,10 @@ fn feedback(
             d.trigger_comment_id = comment.map(|c| c.0);
             d.trigger_comment_kind = comment.map(|c| c.1).unwrap_or_default();
             d.trigger_text = text.to_string();
+            human_acted(&mut d);
             begin(ctx, ev, AddressingComments, d, "feedback received")
         }
-        AddressingComments | ResolvingConflicts => {
+        AddressingComments | ResolvingConflicts | Reviewing | Merging => {
             let mut d = s.data.clone();
             d.pending = Some(Pending {
                 comment_id: comment.map(|c| c.0),
@@ -1057,8 +1104,6 @@ fn feedback(
             state,
             "parked on a merge conflict: mention enzarb to retry or resolve it by hand",
         ),
-        Reviewing => Transition::reject(state, "busy: a review is running"),
-        Merging => Transition::reject(state, "busy: a merge is running"),
         Merged | Closed | Failed | Cancelled => Transition::reject(state, "no longer active"),
     }
 }
@@ -1220,6 +1265,8 @@ fn merge_finished(ctx: &Ctx, ev: &EngineEvent, s: &CrState, output: &Value) -> T
             });
             fx.done(&target(ctx, &d));
             d.merge_error.clear();
+            // Nothing left to address once merged.
+            d.pending = None;
             d.merge_requested = false;
             Transition::to(st(CrPhase::Merged, d), fx.finish(), "merged")
         }
@@ -1229,6 +1276,13 @@ fn merge_finished(ctx: &Ctx, ev: &EngineEvent, s: &CrState, output: &Value) -> T
             d.last_review.clear();
             d.ci = CiState::Unknown;
             d.mergeable = None;
+            if let Some(p) = d.pending.take() {
+                // The human's request goes first; the new head is reviewed after the round.
+                let mut fx = Fx::new(ctx, ev);
+                fx.received(&ctx.progress_target(p.comment_id, p.comment_kind));
+                fx.wake_at(None);
+                return start_pending_round(ctx, fx, d, p);
+            }
             begin(ctx, ev, CrPhase::Reviewing, d, "head moved during merge")
         }
         "updated_branch" => {
@@ -1255,6 +1309,11 @@ fn merge_finished(ctx: &Ctx, ev: &EngineEvent, s: &CrState, output: &Value) -> T
             };
             d.mergeable = Some(false);
             d.merge_requested = false;
+            if let Some(p) = d.pending.take() {
+                let mut fx = Fx::new(ctx, ev);
+                fx.wake_at(None);
+                return start_pending_round(ctx, fx, d, p);
+            }
             Transition::to(st(CrPhase::AwaitingChanges, d), Vec::new(), "not mergeable")
         }
         other => fail(
@@ -1417,8 +1476,10 @@ fn job_succeeded(
         Err(e) => return fail(ctx, ev, s, &format!("unusable agent output: {e}"), false),
     };
     // An approval needs verified checks; otherwise it is only a comment.
+    let mut downgraded = false;
     if kind == JobKind::AgentReview && decision == Decision::Approve && !out.checks_verified() {
         decision = Decision::Comment;
+        downgraded = true;
         out.body.push_str(
             "\n\n> Downgraded from `approve` to `comment`: the review did not report all checks as passed, so the change is unverified.",
         );
@@ -1439,6 +1500,27 @@ fn job_succeeded(
             d.trigger_comment_id = None;
             d.trigger_comment_kind = CommentKind::default();
             d.trigger_text.clear();
+            d.auto_capped = false;
+            d.auto_trigger = false;
+            // A human's request that arrived during the review comes first.
+            if let Some(p) = d.pending.take() {
+                return start_pending_round(ctx, fx, d, p);
+            }
+            // Only must-fix findings: a plain comment is advisory and waits for a person.
+            if decision == Decision::RequestChanges || downgraded {
+                if d.auto_rounds < ctx.config.max_auto_rounds {
+                    d.auto_rounds += 1;
+                    d.auto_trigger = true;
+                    d.trigger_text = out.body.clone();
+                    start_address(ctx, &mut fx, &d);
+                    return Transition::to(
+                        st(AddressingComments, d),
+                        fx.finish(),
+                        "review findings: automatic round",
+                    );
+                }
+                d.auto_capped = ctx.config.max_auto_rounds > 0;
+            }
             evaluate(fx, Reviewing, d, "review posted", true)
         }
         (AddressingComments, Decision::Done) => {
@@ -1453,14 +1535,9 @@ fn job_succeeded(
                 set_head(&mut d, sha.to_string());
             }
             let pushed = d.head_sha != d.reviewed_sha;
+            d.auto_trigger = false;
             match d.pending.take() {
-                Some(p) => {
-                    d.trigger_comment_id = p.comment_id;
-                    d.trigger_comment_kind = p.comment_kind;
-                    d.trigger_text = p.text;
-                    start_address(ctx, &mut fx, &d);
-                    Transition::to(st(AddressingComments, d), fx.finish(), "next round")
-                }
+                Some(p) => start_pending_round(ctx, fx, d, p),
                 None => {
                     d.trigger_comment_id = None;
                     d.trigger_comment_kind = CommentKind::default();
@@ -1496,14 +1573,8 @@ fn job_succeeded(
             d.trigger_comment_kind = CommentKind::default();
             d.trigger_text.clear();
             match d.pending.take() {
-                Some(p) => {
-                    // Feedback queued during the merge; the merged head is reviewed afterwards.
-                    d.trigger_comment_id = p.comment_id;
-                    d.trigger_comment_kind = p.comment_kind;
-                    d.trigger_text = p.text;
-                    start_address(ctx, &mut fx, &d);
-                    Transition::to(st(AddressingComments, d), fx.finish(), "next round")
-                }
+                // Feedback queued during the merge; the merged head is reviewed afterwards.
+                Some(p) => start_pending_round(ctx, fx, d, p),
                 // `reviewed_sha` is left alone: the merge commit is reviewed like any new head.
                 None if d.head_sha != d.reviewed_sha => {
                     start_review(ctx, &mut fx, &d);

@@ -26,7 +26,7 @@ Agents and users need `docker build`, `docker run` and `docker compose` inside a
   - **Denies:** `--privileged`, `--cap-add`, `--device`, `--security-opt`, host PID/IPC/UTS/userns/cgroupns, bind mounts or build paths outside the worktree (including the docker socket), `login`/`push`, and `-H`/`--context`.
   - **Allows `--network=host`:** under gVisor dockerd runs with `--iptables=false`, so `-p` can't publish ports. The "host" network is the dockerd sidecar's namespace inside gVisor, not the node's.
   - **Limit:** the policy sees only command lines (not compose file contents); gVisor is the real boundary.
-- **Docker under gVisor:** dockerd uses `--iptables=false` and the `vfs` storage driver, and the runsc config enables `net-raw` and `allow-packet-socket-write` (Docker 28+).
+- **Docker under gVisor:** dockerd uses `--iptables=false` and the `vfs` storage driver (amended 2026-10-14: now `overlay2`, see ADR-0016), and the runsc config enables `net-raw` and `allow-packet-socket-write` (Docker 28+).
 - **Install:** enzarb-kubernetes installs gVisor (`runsc` plus the containerd shim) and RuntimeClass `gvisor`.
   - kind: a script run by `dev:cluster`.
   - Real clusters: a node-installer DaemonSet that labels capable nodes `enzarb.dev/runtime-gvisor=true`.

@@ -410,6 +410,10 @@
           "type": "integer",
           "minimum": 1
         },
+        "maxAutoRounds": {
+          "type": "integer",
+          "minimum": 0
+        },
         "npmToken": {
           "type": "object",
           "properties": {

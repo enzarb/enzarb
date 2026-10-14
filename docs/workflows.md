@@ -128,6 +128,11 @@ stateDiagram-v2
   Closed --> [*]
 ```
 
+#### Automatic fix rounds and queued feedback
+- When enzarb's own review finds must-fix problems (`request_changes`, or `comment` only when an unverified `approve` was downgraded; a plain `comment` waits for a person), the item goes `Reviewing → AddressingComments` by itself with the review body as the trigger, and the fix is re-reviewed. At most `ENZARB_MAX_AUTO_ROUNDS` (default 3, `0` = off, Helm `workflows.maxAutoRounds`) such rounds run in a row; a human comment or review, or a new head pushed by someone else, resets the count. After the cap the item stays in `AwaitingChanges` with `state_data.wait.reason = round_limit`. An `approve` goes to `ReadyToMerge` as before.
+- A human comment or review that arrives during `Reviewing` or `Merging` is queued like one during `AddressingComments` (`state_data.pending`). When the review posts, or the merge ends in `head_moved` or `not_mergeable`, the queued text starts the next `AddressingComments` round before any automatic one; if the merge succeeds it is dropped.
+- Why the item waits is only `state_data.wait` (contracts §6): `enzarb_fixing` while an automatic round runs, `round_limit` at the cap, `awaiting_review` when a person has to review.
+
 #### Merging
 enzarb never merges its own PRs on its own. A person triggers the merge from the UI.
 
