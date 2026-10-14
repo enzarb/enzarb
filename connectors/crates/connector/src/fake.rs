@@ -9,7 +9,7 @@ use chrono::{Duration, Utc};
 use crate::{
     Actor, ChangeRequestSpec, CommentRef, CommitRef, Connector, CredScope, Error, ItemKind,
     ItemRef, MergeOutcome, MergeReadiness, Permission, Progress, ProgressTarget, ReadCred, RepoKey,
-    Result, ShortLivedCred, Status, Thread, ThreadComment, WorkItemKey,
+    Result, ShortLivedCred, Status, Thread, ThreadComment, UpdateBranchOutcome, WorkItemKey,
 };
 
 /// One call made against the fake, with its arguments.
@@ -49,6 +49,11 @@ pub enum Call {
     MintReadCredential {
         repos: Vec<RepoKey>,
         purpose: String,
+    },
+    UpdateBranch {
+        item: WorkItemKey,
+        number: u64,
+        expected_head_sha: String,
     },
     MergeChangeRequest {
         item: WorkItemKey,
@@ -95,6 +100,7 @@ struct State {
     merge_outcomes: VecDeque<MergeOutcome>,
     seen_merges: HashMap<String, MergeOutcome>,
     readiness: HashMap<WorkItemKey, MergeReadiness>,
+    update_outcomes: VecDeque<UpdateBranchOutcome>,
     branch_heads: HashMap<(RepoKey, String), String>,
 }
 
@@ -135,6 +141,11 @@ impl FakeConnector {
     /// idempotency key. With the queue empty, merges succeed with a fake sha.
     pub fn queue_merge_outcome(&self, outcome: MergeOutcome) {
         self.st().merge_outcomes.push_back(outcome);
+    }
+
+    /// Queue the outcome of the next `update_branch`; with the queue empty it succeeds.
+    pub fn queue_update_outcome(&self, outcome: UpdateBranchOutcome) {
+        self.st().update_outcomes.push_back(outcome);
     }
 
     /// Seed the readiness returned for `item` (repeatable; last one wins).
@@ -388,6 +399,26 @@ impl Connector for FakeConnector {
             .get(item)
             .cloned()
             .ok_or_else(|| Error::NotFound(format!("{item} readiness")))
+    }
+
+    async fn update_branch(
+        &self,
+        item: &WorkItemKey,
+        number: u64,
+        expected_head_sha: &str,
+    ) -> Result<UpdateBranchOutcome> {
+        let mut st = self.st();
+        let call = Call::UpdateBranch {
+            item: item.clone(),
+            number,
+            expected_head_sha: expected_head_sha.to_string(),
+        };
+        Self::take_failure(&mut st, call.clone())?;
+        Self::record(&mut st, call, false);
+        Ok(st
+            .update_outcomes
+            .pop_front()
+            .unwrap_or(UpdateBranchOutcome::Updated))
     }
 
     async fn branch_head(&self, repo: &RepoKey, branch: &str) -> Result<Option<String>> {

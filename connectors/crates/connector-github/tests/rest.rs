@@ -6,7 +6,7 @@ use chrono::{SecondsFormat, Utc};
 use enzarb_connector::{
     Actor, ChangeRequestSpec, CiState, CommentKind, CommitRef, Connector, CredScope, Error,
     ItemKind, MergeOutcome, MergeReadiness, Permission, Progress, ProgressTarget, RepoKey, Status,
-    StatusState, WorkItemKey,
+    StatusState, UpdateBranchOutcome, WorkItemKey,
 };
 use enzarb_connector_github::{CommitStatusChange, GitHubConfig, GitHubConnector, RetryPolicy};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
@@ -1101,6 +1101,55 @@ async fn merge_without_body_omits_commit_message() {
         .await
         .unwrap();
     assert_eq!(out, MergeOutcome::Merged { sha: "s".into() });
+}
+
+async fn mount_update_branch(server: &MockServer, resp: ResponseTemplate) {
+    Mock::given(method("PUT"))
+        .and(path("/repos/enzarb/enzarb-ui/pulls/7/update-branch"))
+        .and(body_json(json!({ "expected_head_sha": HEAD })))
+        .respond_with(resp)
+        .expect(1)
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn update_branch_merges_base_into_head_with_expected_sha() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    mount_update_branch(
+        &server,
+        ResponseTemplate::new(202)
+            .set_body_json(json!({"message": "Updating pull request branch."})),
+    )
+    .await;
+    let out = connector(&server)
+        .update_branch(&item(7), 7, HEAD)
+        .await
+        .unwrap();
+    assert_eq!(out, UpdateBranchOutcome::Updated);
+}
+
+#[tokio::test]
+async fn update_branch_422_is_refused_with_reason() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    mount_update_branch(
+        &server,
+        ResponseTemplate::new(422)
+            .set_body_json(json!({"message": "merge conflict between base and head"})),
+    )
+    .await;
+    let out = connector(&server)
+        .update_branch(&item(7), 7, HEAD)
+        .await
+        .unwrap();
+    assert_eq!(
+        out,
+        UpdateBranchOutcome::Refused {
+            reason: "merge conflict between base and head".into()
+        }
+    );
 }
 
 #[tokio::test]
