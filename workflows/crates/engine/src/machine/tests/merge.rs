@@ -776,6 +776,92 @@ fn only_a_ui_merge_reaches_merging() {
     }
 }
 
+#[test]
+fn behind_branch_is_updated_reviewed_and_not_merged() {
+    let ready = cr_with(CrPhase::ReadyToMerge, ready_data());
+    let t = run_cr(Permission::Write, &ready, &merge_ev("m", "carol"));
+    let d = assert_cr(&t, CrPhase::Merging);
+    assert!((d.merge_requested, d.merge_actor.as_str()) == (true, "carol"));
+    let t = run_cr(
+        Permission::None,
+        &t.next,
+        &merge_result(
+            "u",
+            json!({ "outcome": "updated_branch", "actor": "carol" }),
+        ),
+    );
+    let d = assert_cr(&t, CrPhase::Reviewing);
+    assert!(d.last_review.is_empty());
+    assert_eq!((d.ci, d.mergeable), (CiState::Unknown, None));
+    assert!(d.merge_requested, "the merge request survives the update");
+    assert!(kinds(&t).contains(&JobKind::AgentReview));
+    assert!(!kinds(&t).contains(&JobKind::MergeChangeRequest));
+    assert_wait(CrPhase::Reviewing, d, "enzarb", "updating_branch");
+    // The new head is approved but CI is unknown: nothing merges yet.
+    let t = run_cr(
+        Permission::None,
+        &t.next,
+        &agent_ok_checks("r", JobKind::AgentReview, "approve", verified()),
+    );
+    assert_cr(&t, CrPhase::AwaitingChanges);
+    assert!(!kinds(&t).contains(&JobKind::MergeChangeRequest));
+    // CI green and mergeable: the merge resumes without a second click.
+    let t = run_cr(
+        Permission::None,
+        &t.next,
+        &checked("c", readiness_out("sha1", "success", json!(true))),
+    );
+    let d = assert_cr(&t, CrPhase::Merging);
+    assert!(d.merge_requested);
+    let (_, _, input) = job_of(&t, JobKind::MergeChangeRequest);
+    assert_eq!(input["actor"], "carol");
+    assert_eq!(input["expected_head_sha"], "sha1");
+}
+
+#[test]
+fn merge_request_is_cleared_by_failed_check_or_requested_changes() {
+    let pending = CrData {
+        merge_requested: true,
+        merge_actor: "carol".into(),
+        ci: CiState::Unknown,
+        ci_sha: String::new(),
+        mergeable: None,
+        ..ready_data()
+    };
+    // A failed check: waits like any other, and the intent is gone.
+    let t = run_cr(
+        Permission::None,
+        &cr_with(CrPhase::AwaitingChanges, pending.clone()),
+        &checked("c", readiness_out("sha1", "failure", json!(true))),
+    );
+    let d = assert_cr(&t, CrPhase::AwaitingChanges);
+    assert!(!d.merge_requested);
+    assert!(!kinds(&t).contains(&JobKind::MergeChangeRequest));
+    // CI going red while reviewing also clears it.
+    let t = run_cr(
+        Permission::None,
+        &cr_with(CrPhase::Reviewing, pending.clone()),
+        &ci_event("f", "sha1", enzarb_connector::CiState::Failure),
+    );
+    assert!(!assert_cr(&t, CrPhase::Reviewing).merge_requested);
+    // Requested changes from the review.
+    let t = run_cr(
+        Permission::None,
+        &cr_with(CrPhase::Reviewing, pending),
+        &agent_ok_checks("r", JobKind::AgentReview, "request_changes", verified()),
+    );
+    assert!(!assert_cr(&t, CrPhase::AwaitingChanges).merge_requested);
+    // A refused merge.
+    let mut merging = ready_data();
+    merging.merge_requested = true;
+    let t = run_cr(
+        Permission::None,
+        &cr_with(CrPhase::Merging, merging),
+        &merge_result("n", json!({ "outcome": "not_mergeable", "reason": "x" })),
+    );
+    assert!(!assert_cr(&t, CrPhase::AwaitingChanges).merge_requested);
+}
+
 fn wait_of(phase: CrPhase, data: CrData) -> (String, String) {
     let v = cr_with(phase, data).state_data();
     (

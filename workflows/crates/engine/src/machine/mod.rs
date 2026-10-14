@@ -526,6 +526,8 @@ impl Transition {
 // State
 // ---------------------------------------------------------------------------
 
+// States are short-lived values passed by reference; boxing would touch every match.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkflowState {
     /// No work item yet; the first event decides whether one is created.

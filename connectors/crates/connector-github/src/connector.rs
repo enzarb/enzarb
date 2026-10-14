@@ -7,7 +7,7 @@ use enzarb_connector::{
     Actor, ChangeRequestSpec, CheckSummary, CiInfo, CommentKind, CommentRef, CommitRef, Connector,
     CredScope, Error, Event, ItemRef, MergeOutcome, MergeReadiness, Permission, Progress,
     ProgressTarget, ReadCred, RepoKey, Result, ShortLivedCred, Status, StatusState, StatusSummary,
-    Thread, ThreadComment, WorkItemKey, aggregate_ci,
+    Thread, ThreadComment, UpdateBranchOutcome, WorkItemKey, aggregate_ci,
 };
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use reqwest::Method;
@@ -720,6 +720,38 @@ impl Connector for GitHubConnector {
                 Ok(MergeOutcome::Merged {
                     sha: resp.json::<Merged>()?.sha,
                 })
+            }
+        }
+    }
+
+    async fn update_branch(
+        &self,
+        item: &WorkItemKey,
+        number: u64,
+        expected_head_sha: &str,
+    ) -> Result<UpdateBranchOutcome> {
+        let r = &item.repo;
+        github_repo(r)?;
+        let resp = self
+            .call_raw(
+                r,
+                Method::PUT,
+                &format!("/repos/{}/pulls/{number}/update-branch", r.full_name()),
+                Some(json!({ "expected_head_sha": expected_head_sha })),
+            )
+            .await?;
+        match resp.status {
+            // 422: merge conflict or the head is not `expected_head_sha`; 409 as for merges.
+            reqwest::StatusCode::UNPROCESSABLE_ENTITY | reqwest::StatusCode::CONFLICT => {
+                let reason = serde_json::from_slice::<Value>(&resp.body)
+                    .ok()
+                    .and_then(|v| v["message"].as_str().map(str::to_string))
+                    .unwrap_or_else(|| "the branch could not be updated".to_string());
+                Ok(UpdateBranchOutcome::Refused { reason })
+            }
+            _ => {
+                expect("update pull request branch", resp)?;
+                Ok(UpdateBranchOutcome::Updated)
             }
         }
     }

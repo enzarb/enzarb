@@ -871,7 +871,7 @@ spec:
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: receiver
-          image: ghcr.io/enzarb/enzarb-connectors-receiver:0.7.0
+          image: ghcr.io/enzarb/enzarb-connectors-receiver:0.0.0-golden
           imagePullPolicy: IfNotPresent
           args: [serve]
           ports:
@@ -968,7 +968,7 @@ spec:
 
       containers:
         - name: operator
-          image: ghcr.io/enzarb/enzarb-sandbox-operator:0.9.0
+          image: ghcr.io/enzarb/enzarb-sandbox-operator:0.0.0-golden
           imagePullPolicy: IfNotPresent
           ports:
             - { name: health, containerPort: 8080 }
@@ -981,7 +981,7 @@ spec:
             - { name: ENZARB_SANDBOX_SERVICE_ACCOUNT, value: "enzarb-sandbox" }
             - { name: ENZARB_EXECUTOR_CALLBACK_PORT, value: "8081" }
             - { name: ENZARB_SANDBOX_EGRESS_EXCLUDE_CIDRS, value: "10.42.0.0/16,10.43.0.0/16,192.168.33.0/24" }
-            - { name: ENZARB_SANDBOX_IMAGE, value: "ghcr.io/enzarb/enzarb-sandbox:0.13.0" }
+            - { name: ENZARB_SANDBOX_IMAGE, value: "ghcr.io/enzarb/enzarb-sandbox:0.0.0-golden" }
             - { name: ENZARB_DEFAULT_STORAGE, value: "20Gi" }
             - { name: ENZARB_SANDBOX_RUNTIME_CLASS, value: "gvisor" }
             - { name: ENZARB_DOCKER_RUNTIME_CLASSES, value: "gvisor" }
@@ -1038,7 +1038,7 @@ spec:
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: realtime
-          image: ghcr.io/enzarb/enzarb-realtime:0.4.1
+          image: ghcr.io/enzarb/enzarb-realtime:0.0.0-golden
           imagePullPolicy: IfNotPresent
           ports:
             - { name: http, containerPort: 8080 }
@@ -1136,7 +1136,7 @@ spec:
       securityContext: { fsGroup: 65532 }
       containers:
         - name: proxy
-          image: ghcr.io/enzarb/enzarb-sandbox-proxy:0.7.0
+          image: ghcr.io/enzarb/enzarb-sandbox-proxy:0.0.0-golden
           imagePullPolicy: IfNotPresent
           ports:
             - { name: http, containerPort: 8080 }
@@ -1241,7 +1241,7 @@ spec:
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: ui
-          image: ghcr.io/enzarb/enzarb-ui:0.33.0
+          image: ghcr.io/enzarb/enzarb-ui:0.0.0-golden
           imagePullPolicy: IfNotPresent
           ports:
             - { name: http, containerPort: 3000 }
@@ -1314,7 +1314,7 @@ spec:
             - name: ENZARB_VAPID_PRIVATE_KEY
               valueFrom: { secretKeyRef: { name: "enzarb-vapid-key", key: private-key, optional: true } }
             - { name: ENZARB_PUBLIC_URL, value: "https://enzarb.dev" }
-            - { name: ENZARB_COMPONENT_VERSIONS, value: "{\"chart\":\"0.0.0\",\"components\":{\"enzarb-connectors\":\"0.7.0\",\"enzarb-realtime\":\"0.4.1\",\"enzarb-sandbox-container\":\"0.13.0\",\"enzarb-sandbox-operator\":\"0.9.0\",\"enzarb-sandbox-proxy\":\"0.7.0\",\"enzarb-ui\":\"0.33.0\",\"enzarb-updater\":\"0.2.1\",\"enzarb-workflows\":\"0.22.1\"}}" }
+            - { name: ENZARB_COMPONENT_VERSIONS, value: "{\"chart\":\"0.0.0\",\"components\":{\"enzarb-connectors\":\"0.0.0-golden\",\"enzarb-realtime\":\"0.0.0-golden\",\"enzarb-sandbox-container\":\"0.0.0-golden\",\"enzarb-sandbox-operator\":\"0.0.0-golden\",\"enzarb-sandbox-proxy\":\"0.0.0-golden\",\"enzarb-ui\":\"0.0.0-golden\",\"enzarb-updater\":\"0.0.0-golden\",\"enzarb-workflows\":\"0.0.0-golden\"}}" }
             - { name: NEEDS_YOU_STALE_HOURS, value: "24" }
             - { name: ENZARB_GITHUB_APP_SLUG, value: "enzarb" }
             # adapter-node derives the origin for its CSRF check from this header; the Gateway forwards it.
@@ -1373,7 +1373,7 @@ spec:
 
       containers:
         - name: updater
-          image: ghcr.io/enzarb/enzarb-updater:0.2.1
+          image: ghcr.io/enzarb/enzarb-updater:0.0.0-golden
           imagePullPolicy: IfNotPresent
           ports:
             - { name: http, containerPort: 8080 }
@@ -1445,7 +1445,7 @@ spec:
       securityContext: { fsGroup: 65532 }
       containers:
         - name: workflows
-          image: ghcr.io/enzarb/enzarb-workflows:0.22.1
+          image: ghcr.io/enzarb/enzarb-workflows:0.0.0-golden
           imagePullPolicy: IfNotPresent
           args: [run, --roles, "reducer,executor,ticker"]
           ports:
@@ -1577,7 +1577,7 @@ spec:
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: migrate
-          image: ghcr.io/enzarb/enzarb-workflows:0.22.1
+          image: ghcr.io/enzarb/enzarb-workflows:0.0.0-golden
           imagePullPolicy: IfNotPresent
           args: [migrate, --require-roles]
           env:
@@ -1651,7 +1651,7 @@ spec:
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: migrate
-          image: ghcr.io/enzarb/enzarb-connectors-receiver:0.7.0
+          image: ghcr.io/enzarb/enzarb-connectors-receiver:0.0.0-golden
           imagePullPolicy: IfNotPresent
           args: [migrate]
           env:
@@ -1725,7 +1725,7 @@ spec:
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: migrate
-          image: ghcr.io/enzarb/enzarb-ui:0.33.0
+          image: ghcr.io/enzarb/enzarb-ui:0.0.0-golden
           imagePullPolicy: IfNotPresent
           command: [node, scripts/migrate.ts]
           env:
@@ -2023,7 +2023,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: vapid
-          image: ghcr.io/enzarb/enzarb-ui:0.33.0
+          image: ghcr.io/enzarb/enzarb-ui:0.0.0-golden
           imagePullPolicy: IfNotPresent
           command:
             - sh

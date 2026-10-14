@@ -2,6 +2,8 @@
 # Diff `helm template` output against tests/golden/<scenario>.yaml.
 # `scripts/golden.sh --update` rewrites the snapshots.
 set -euo pipefail
+# Snapshots carry placeholder component versions, see render.sh.
+export RENDER_PIN_VERSIONS=1
 here="$(cd "$(dirname "$0")/.." && pwd)"
 rc=0
 for s in default dev oldie updater-webhook realtime realtime-replicas realtime-off realtime-btp realtime-origins; do
