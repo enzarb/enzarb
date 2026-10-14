@@ -174,11 +174,15 @@ async fn views_return_expected_columns() {
     .unwrap();
 
     let ui = db.pool_as("enzarb_ui").await;
-    let w: WorkItemView = sqlx::query_as("SELECT id, key, project, workflow, state, state_data, created_at, updated_at, waiting_for, resumes_at FROM workflows_api.work_item_v")
+    let w: WorkItemView = sqlx::query_as("SELECT id, key, project, workflow, state, state_data, created_at, updated_at, waiting_for, resumes_at, waiting_on, wait_reason, wait_text FROM workflows_api.work_item_v")
         .fetch_one(&ui).await.unwrap();
     assert_eq!(
         (w.id, w.project.as_deref(), w.state.as_str()),
         (wi, Some("enzarb-ui"), "Triaging")
+    );
+    assert_eq!(
+        (w.waiting_on, w.wait_reason, w.wait_text),
+        (None, None, None)
     );
     assert_eq!(w.state_data["a"], 1);
     let t: TransitionView = sqlx::query_as("SELECT id, work_item_id, from_state, to_state, event_type, at FROM workflows_api.transition_v")
@@ -202,7 +206,7 @@ async fn views_return_expected_columns() {
     .execute(&db.pool)
     .await
     .unwrap();
-    let w: WorkItemView = sqlx::query_as("SELECT id, key, project, workflow, state, state_data, created_at, updated_at, waiting_for, resumes_at FROM workflows_api.work_item_v")
+    let w: WorkItemView = sqlx::query_as("SELECT id, key, project, workflow, state, state_data, created_at, updated_at, waiting_for, resumes_at, waiting_on, wait_reason, wait_text FROM workflows_api.work_item_v")
         .fetch_one(&ui).await.unwrap();
     let j: JobView = sqlx::query_as("SELECT id, work_item_id, kind, status, attempt, created_at, updated_at, output, waiting_for, resumes_at FROM workflows_api.job_v")
         .fetch_one(&ui).await.unwrap();
@@ -216,11 +220,28 @@ async fn views_return_expected_columns() {
     }
     assert_eq!(w.state, "Triaging");
 
+    // The derived wait in state_data is exposed as columns.
+    sqlx::query(
+        "UPDATE workflows.work_items SET state_data = state_data ||
+         '{\"wait\":{\"waiting_on\":\"human\",\"reason\":\"awaiting_review\",\"text\":\"Waiting for your review\"}}'
+         WHERE id = $1",
+    )
+    .bind(wi)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let w: WorkItemView = sqlx::query_as("SELECT id, key, project, workflow, state, state_data, created_at, updated_at, waiting_for, resumes_at, waiting_on, wait_reason, wait_text FROM workflows_api.work_item_v")
+        .fetch_one(&ui).await.unwrap();
+    assert_eq!(w.waiting_on.as_deref(), Some("human"));
+    assert_eq!(w.wait_reason.as_deref(), Some("awaiting_review"));
+    assert_eq!(w.wait_text.as_deref(), Some("Waiting for your review"));
+    assert_eq!(w.waiting_for.as_deref(), Some("session_limit"));
+
     // Exact column lists (contract section 6).
     for (view, cols) in [
         (
             "work_item_v",
-            "id,key,project,workflow,state,state_data,created_at,updated_at,waiting_for,resumes_at",
+            "id,key,project,workflow,state,state_data,created_at,updated_at,waiting_for,resumes_at,waiting_on,wait_reason,wait_text",
         ),
         (
             "transition_v",

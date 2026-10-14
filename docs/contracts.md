@@ -261,7 +261,8 @@ workflows_api.ingest_event(p_source text, p_dedupe_key text, p_work_item_key tex
 workflows_api.submit_action(p_work_item_id bigint, p_actor jsonb, p_action text,
                             p_payload jsonb) RETURNS bigint               -- actions: approve | cancel | retry | merge
 -- views
-workflows_api.work_item_v(id, key, project, workflow, state, state_data, created_at, updated_at)
+workflows_api.work_item_v(id, key, project, workflow, state, state_data, created_at, updated_at,
+                          waiting_for, resumes_at, waiting_on, wait_reason, wait_text)
 workflows_api.transition_v(id, work_item_id, from_state, to_state, event_type, at)
 workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated_at, output)
 ```
@@ -270,7 +271,8 @@ workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated
 - `transitions.work_item_id` is nullable: events that are ignored (no Project, no workflow) get a `to_state='ignored'` row with no work item. `transitions.note` records rejections.
 - `work_items.state_data` carries `title` and `url` for display. For `change_request` items it may also carry (additive):
   - `checklist.{ci,review,mergeable}`, each `{status: "ok" | "pending" | "failed" | "unknown", detail}` (`status` is lowercase): the merge readiness shown by the UI and checked by the reducer;
-  - `merge_error` (string): set when a merge ended in `not_mergeable`.
+  - `merge_error` (string): set when a merge ended in `not_mergeable`;
+  - `wait` (object or null in final states) `{waiting_on, reason, text, url?}`: why the item is waiting, derived by `workflows` on every transition. `waiting_on` is `human` | `enzarb` | `ci` | `github`; `work_item_v.waiting_on`, `wait_reason` and `wait_text` expose `waiting_on`, `reason` and `text` (NULL until the item's next transition after the migration; clients fall back to the state). `human` means Needs you. Reason codes: `awaiting_review` (human), `ready_to_merge` (human), `enzarb_failed` (human), `conflict_parked` (human), `reviewing`, `addressing_comments`, `resolving_conflict`, `ci_failed_fixing`, `changes_requested_fixing` (all enzarb), `ci_pending` (ci), `merging` (github). Reserved for later, not emitted yet: `round_limit` and `decision_needed` (human, with `url` of the comment).
 - Work item keys and repo keys are stored lowercase.
 - `submit_action` events: source `ui`, payload `{actor, action, data}`, type `ApprovalGranted` (approve), `CancelRequested` (cancel) or `RetryRequested` (retry) or `MergeRequested` (merge). The last three are engine-internal and not part of the connector `EventType` set. A rejected `merge` (the actor lacks write access, or the readiness checklist is not all `ok`) is a reducer rejection, recorded in `transitions.note`, not a SQL error from `submit_action`.
 - Columns beyond the docs: `transitions.event_type`, `jobs.deadline`, `jobs.created_at`. `work_items.project_id` is text (the Project name), exposed as `project` in the view.
