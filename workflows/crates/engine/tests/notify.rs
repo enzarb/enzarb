@@ -72,6 +72,8 @@ async fn job_changes_notify_once_with_work_item_id() {
         "status = 'failed'",
         "status = 'cancelled'",
         "output = '{\"a\": 1}'::jsonb",
+        "usage = '{\"input_tokens\": 1}'::jsonb",
+        "usage = '{\"input_tokens\": 2}'::jsonb",
     ];
     for set in steps {
         exec(
