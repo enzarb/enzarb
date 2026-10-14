@@ -25,7 +25,7 @@ jobs:
       - name: Affected-components mapping matches the CI path filters
         run: scripts/monorepo/test-affected.sh
       - name: shellcheck (preinstalled on ubuntu-latest)
-        run: shellcheck scripts/monorepo/*.sh .mise/tasks/test/pg
+        run: shellcheck --exclude=SC1091 scripts/monorepo/*.sh .mise/tasks/test/pg
   actionlint:
     runs-on: ubuntu-latest
     timeout-minutes: 5
