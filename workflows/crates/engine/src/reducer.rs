@@ -13,7 +13,9 @@
 //! Rules:
 //! * Repo keys are lowercased before they are matched or stored (`work_items.key` is the
 //!   lowercase work item key).
-//! * An event with no Project, an unparseable event, or one that cannot start a workflow
+//! * An event for a repository in no Project is delivered to an existing work item by its key
+//!   (`Ctx.orphaned`: only close/merge, owner cancel and repo removal are accepted).
+//! * An event with no Project and no work item, an unparseable event, or one that cannot start a workflow
 //!   (nothing routes it, or the first transition rejects it) is marked processed with a
 //!   `to_state = 'ignored'` transition that has no work item. No work item is created.
 //! * The work item row is inserted only after [`machine::route`] returned a workflow and the
@@ -39,7 +41,7 @@ use crate::db::{Event as EventRow, WorkItem};
 use crate::error::Error;
 use crate::index::{ProjectIndex, ProjectInfo};
 use crate::machine::{
-    self, Ctx, Effect, EngineEvent, EventPayload, WORKFLOW_VERSION, WorkflowState,
+    self, Ctx, Effect, EngineEvent, EventPayload, Triggers, WORKFLOW_VERSION, WorkflowState,
 };
 use crate::permission::PermissionResolver;
 
@@ -302,15 +304,52 @@ impl Reducer {
         .bind(&key_s)
         .fetch_optional(&mut *tx)
         .await?;
-        let existing_id = existing.as_ref().map(|w| w.id);
 
-        let Some(project) = prep.project.clone() else {
-            ignore(&mut tx, &row, existing_id, "no project for repository").await?;
-            tx.commit().await?;
-            return Ok(Outcome::Processed);
+        // An existing item whose repo left every Project still gets close/cancel events,
+        // routed by its key; everything else about it is gated by `Ctx.orphaned`.
+        let orphaned = prep.project.is_none();
+        let project = match (prep.project.clone(), &existing) {
+            (Some(p), _) => p,
+            (None, Some(w)) => ProjectInfo {
+                name: w.project_id.clone().unwrap_or_default(),
+                triggers: Triggers {
+                    issues: false,
+                    change_requests: false,
+                    mentions: false,
+                },
+                default_branch: "main".into(),
+            },
+            (None, None) => {
+                ignore(&mut tx, &row, None, "no project for repository").await?;
+                tx.commit().await?;
+                return Ok(Outcome::Processed);
+            }
         };
+        let orphan_owner = orphaned
+            && matches!(&ev.payload, EventPayload::Ui(u)
+                if self.index.owner(&project.name)
+                    .is_some_and(|o| o.eq_ignore_ascii_case(&u.actor.login)));
+
+        // Dependencies named in the event's body or comment, inside this Project only.
+        let changed_deps = crate::dependencies::record_text(
+            &mut tx,
+            &key,
+            ev,
+            prep.permission.can_write(),
+            |dep| {
+                self.index
+                    .lookup(&dep.repo.to_string())
+                    .is_some_and(|p| p.name == project.name)
+            },
+        )
+        .await?;
+        if changed_deps {
+            tracing::debug!(item = %key, "text dependencies changed");
+        }
 
         let ctx = Ctx {
+            orphaned,
+            orphan_owner,
             work_item: key.clone(),
             now: Utc::now(),
             bot_login: self.cfg.bot_login.clone(),
@@ -319,6 +358,7 @@ impl Reducer {
             config: self.cfg.machine.clone(),
             triggers: project.triggers,
             default_branch: project.default_branch.clone(),
+            open_dependencies: crate::dependencies::open_dependencies(&mut tx, &key).await?,
         };
 
         let state = match &existing {

@@ -295,6 +295,11 @@
             }
           }
         },
+        "needsYouStaleHours": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Hours a blocked change request must sit idle before it is listed in Needs you."
+        },
         "rollout": { "$ref": "#/$defs/rollout" },
         "preStopSeconds": { "$ref": "#/$defs/preStopSeconds" },
         "terminationGracePeriodSeconds": { "$ref": "#/$defs/terminationGracePeriodSeconds" },

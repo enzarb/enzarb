@@ -7,6 +7,7 @@
 mod ci;
 pub mod command;
 mod connector;
+pub mod dependencies;
 mod error;
 mod event;
 #[cfg(feature = "fake")]
@@ -15,7 +16,8 @@ mod keys;
 mod types;
 
 pub use ci::{
-    CheckSummary, CiState, MergeOutcome, MergeReadiness, StatusSummary, aggregate_ci, check_state,
+    CheckSummary, CiState, MergeOutcome, MergeReadiness, StatusSummary, UpdateBranchOutcome,
+    aggregate_ci, check_state,
 };
 pub use connector::Connector;
 pub use error::{Error, Result};

@@ -7,7 +7,7 @@ use enzarb_connector::{
     Actor, ChangeRequestSpec, CheckSummary, CiInfo, CommentKind, CommentRef, CommitRef, Connector,
     CredScope, Error, Event, ItemRef, MergeOutcome, MergeReadiness, Permission, Progress,
     ProgressTarget, ReadCred, RepoKey, Result, ShortLivedCred, Status, StatusState, StatusSummary,
-    Thread, ThreadComment, WorkItemKey, aggregate_ci,
+    Thread, ThreadComment, UpdateBranchOutcome, WorkItemKey, aggregate_ci,
 };
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use reqwest::Method;
@@ -245,6 +245,20 @@ impl GitHubConnector {
             return self.http.send(method, path, &token, body.as_ref()).await;
         }
         Ok(resp)
+    }
+
+    /// The numeric id GitHub's dependency endpoints address an issue or pull request by.
+    async fn issue_id(&self, item: &WorkItemKey) -> Result<u64> {
+        #[derive(Deserialize)]
+        struct Id {
+            id: u64,
+        }
+        let path = format!("/repos/{}/issues/{}", item.repo.full_name(), item.number);
+        Ok(self
+            .call(&item.repo, "get issue", Method::GET, &path, None)
+            .await?
+            .json::<Id>()?
+            .id)
     }
 
     /// GETs every page of an endpoint that wraps its list in an object
@@ -710,6 +724,38 @@ impl Connector for GitHubConnector {
         }
     }
 
+    async fn update_branch(
+        &self,
+        item: &WorkItemKey,
+        number: u64,
+        expected_head_sha: &str,
+    ) -> Result<UpdateBranchOutcome> {
+        let r = &item.repo;
+        github_repo(r)?;
+        let resp = self
+            .call_raw(
+                r,
+                Method::PUT,
+                &format!("/repos/{}/pulls/{number}/update-branch", r.full_name()),
+                Some(json!({ "expected_head_sha": expected_head_sha })),
+            )
+            .await?;
+        match resp.status {
+            // 422: merge conflict or the head is not `expected_head_sha`; 409 as for merges.
+            reqwest::StatusCode::UNPROCESSABLE_ENTITY | reqwest::StatusCode::CONFLICT => {
+                let reason = serde_json::from_slice::<Value>(&resp.body)
+                    .ok()
+                    .and_then(|v| v["message"].as_str().map(str::to_string))
+                    .unwrap_or_else(|| "the branch could not be updated".to_string());
+                Ok(UpdateBranchOutcome::Refused { reason })
+            }
+            _ => {
+                expect("update pull request branch", resp)?;
+                Ok(UpdateBranchOutcome::Updated)
+            }
+        }
+    }
+
     async fn get_merge_readiness(&self, item: &WorkItemKey, number: u64) -> Result<MergeReadiness> {
         let r = &item.repo;
         let pr = self.pull_state(r, number).await?;
@@ -778,6 +824,99 @@ impl Connector for GitHubConnector {
         {
             Ok(r) => Ok(Some(r.json::<BranchInfo>()?.commit.sha)),
             Err(Error::NotFound(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn list_dependencies(&self, item: &WorkItemKey) -> Result<Vec<WorkItemKey>> {
+        #[derive(Deserialize)]
+        struct Blocker {
+            number: u64,
+            #[serde(default)]
+            repository_url: Option<String>,
+        }
+        let mut out = Vec::new();
+        for page in 1..=MAX_PAGES {
+            let path = format!(
+                "/repos/{}/issues/{}/dependencies/blocked_by?per_page={PER_PAGE}&page={page}",
+                item.repo.full_name(),
+                item.number
+            );
+            let rows: Vec<Blocker> = self
+                .call(&item.repo, "list dependencies", Method::GET, &path, None)
+                .await?
+                .json()?;
+            let n = rows.len();
+            for b in rows {
+                // `repository_url` is `<api>/repos/<owner>/<repo>`.
+                let repo = b
+                    .repository_url
+                    .as_deref()
+                    .and_then(|u| {
+                        let mut parts = u.trim_end_matches('/').rsplit('/');
+                        let repo = parts.next()?;
+                        let owner = parts.next()?;
+                        Some(RepoKey::new(SOURCE, owner, repo))
+                    })
+                    .unwrap_or_else(|| item.repo.clone());
+                out.push(WorkItemKey::new(repo, b.number));
+            }
+            if n < PER_PAGE {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    async fn add_dependency(
+        &self,
+        item: &WorkItemKey,
+        depends_on: &WorkItemKey,
+        _idempotency_key: &str,
+    ) -> Result<()> {
+        github_repo(&depends_on.repo)?;
+        let id = self.issue_id(depends_on).await?;
+        let path = format!(
+            "/repos/{}/issues/{}/dependencies/blocked_by",
+            item.repo.full_name(),
+            item.number
+        );
+        // 422 means the relationship already exists (the request is idempotent by state).
+        let resp = self
+            .call_raw(
+                &item.repo,
+                Method::POST,
+                &path,
+                Some(json!({ "issue_id": id })),
+            )
+            .await?;
+        if resp.status == reqwest::StatusCode::UNPROCESSABLE_ENTITY {
+            let existing = self.list_dependencies(item).await?;
+            if existing.contains(depends_on) {
+                return Ok(());
+            }
+        }
+        expect("add dependency", resp).map(|_| ())
+    }
+
+    async fn remove_dependency(
+        &self,
+        item: &WorkItemKey,
+        depends_on: &WorkItemKey,
+        _idempotency_key: &str,
+    ) -> Result<()> {
+        github_repo(&depends_on.repo)?;
+        let id = self.issue_id(depends_on).await?;
+        let path = format!(
+            "/repos/{}/issues/{}/dependencies/blocked_by/{id}",
+            item.repo.full_name(),
+            item.number
+        );
+        match self
+            .call(&item.repo, "remove dependency", Method::DELETE, &path, None)
+            .await
+        {
+            Ok(_) | Err(Error::NotFound(_)) => Ok(()),
             Err(e) => Err(e),
         }
     }

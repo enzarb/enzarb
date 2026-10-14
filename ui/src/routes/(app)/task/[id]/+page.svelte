@@ -62,12 +62,12 @@
 	}
 </script>
 
-<svelte:head><title>Work item {page.params.id} · enzarb</title></svelte:head>
+<svelte:head><title>Task {page.params.id} · enzarb</title></svelte:head>
 
 <svelte:boundary>
 	{#if id === null}
-		<PageHeader title="Work item not found" />
-		<div><LinkButton href="/work">Back to work</LinkButton></div>
+		<PageHeader title="Task not found" />
+		<div><LinkButton href="/work">Back to tasks</LinkButton></div>
 	{:else if item?.current}
 		{@const w = item.current}
 		<PageHeader title={w.title}>
@@ -125,10 +125,10 @@
 			<JobTable jobs={w.jobs} />
 		</Section>
 	{:else}
-		<Skeleton label="Loading work item" rows={4} />
+		<Skeleton label="Loading task" rows={4} />
 	{/if}
 	{#snippet failed()}
-		<PageHeader title="Work item not found" />
-		<div><LinkButton href="/work">Back to work</LinkButton></div>
+		<PageHeader title="Task not found" />
+		<div><LinkButton href="/work">Back to tasks</LinkButton></div>
 	{/snippet}
 </svelte:boundary>

@@ -9,5 +9,6 @@ describe('UserMenu without JavaScript', () => {
 		expect(noscript).toContain('method="POST"');
 		expect(noscript).toContain('action="/logout"');
 		expect(noscript).toContain('Sign out');
+		expect(noscript).toContain('href="/settings"');
 	});
 });

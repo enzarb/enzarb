@@ -51,7 +51,7 @@
 <li class="ez-needs__row ez-needs__row--{item.needs.category}">
 	<div class="ez-needs__head">
 		<strong>{item.needs.text ?? kinds[item.needs.category]}</strong>
-		<a href="/work/{item.id}">{item.title}</a>
+		<a href="/task/{item.id}">{item.title}</a>
 		<span class="ez-muted">
 			{item.project} · <code>{item.key}</code> ·
 			<time datetime={item.updatedAt}>waiting {waitingFor(item.updatedAt, now)}</time>

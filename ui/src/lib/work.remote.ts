@@ -1,6 +1,7 @@
 import { error } from '@sveltejs/kit';
 import { command, getRequestEvent, query } from '$app/server';
 import * as v from 'valibot';
+import { getConfig } from '#lib/server/config.ts';
 import { getSql } from '#lib/server/db.ts';
 import { getProjectStore } from '#lib/server/kube.ts';
 import { projectCache } from '#lib/server/project-cache.ts';
@@ -16,7 +17,8 @@ async function service() {
 		user,
 		work: workService(
 			getSql(),
-			projects.map((p) => p.name)
+			projects.map((p) => p.name),
+			getConfig().needsYouStaleHours
 		)
 	};
 }
@@ -37,7 +39,7 @@ export const getWorkItemPlan = query(v.pipe(v.number(), v.integer(), v.minValue(
 
 export const getWorkItem = query(v.pipe(v.number(), v.integer(), v.minValue(1)), async (id) => {
 	const item = await (await service()).work.get(id);
-	if (!item) error(404, 'Work item not found');
+	if (!item) error(404, 'Task not found');
 	return item;
 });
 

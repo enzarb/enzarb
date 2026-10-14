@@ -122,6 +122,7 @@ async fn submit_action_creates_ui_event() {
         ("cancel", "CancelRequested"),
         ("retry", "RetryRequested"),
         ("merge", "MergeRequested"),
+        ("repo-removed", "RepoRemoved"),
     ] {
         let id: i64 = sqlx::query_scalar("SELECT workflows_api.submit_action($1, '{}', $2, '{}')")
             .bind(wi)
@@ -243,7 +244,11 @@ async fn views_return_expected_columns() {
     for (view, cols) in [
         (
             "work_item_v",
-            "id,key,project,workflow,state,state_data,created_at,updated_at,waiting_for,resumes_at,usage_totals,waiting_on,wait_reason,wait_text",
+            "id,key,project,workflow,state,state_data,created_at,updated_at,waiting_for,resumes_at,usage_totals,waiting_on,wait_reason,wait_text,blocked_by_dependency",
+        ),
+        (
+            "work_item_dependency_v",
+            "work_item_key,depends_on_key,source,via,status,state,title,url",
         ),
         (
             "transition_v",

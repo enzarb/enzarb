@@ -6,7 +6,7 @@ use chrono::{SecondsFormat, Utc};
 use enzarb_connector::{
     Actor, ChangeRequestSpec, CiState, CommentKind, CommitRef, Connector, CredScope, Error,
     ItemKind, MergeOutcome, MergeReadiness, Permission, Progress, ProgressTarget, RepoKey, Status,
-    StatusState, WorkItemKey,
+    StatusState, UpdateBranchOutcome, WorkItemKey,
 };
 use enzarb_connector_github::{CommitStatusChange, GitHubConfig, GitHubConnector, RetryPolicy};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
@@ -1103,6 +1103,55 @@ async fn merge_without_body_omits_commit_message() {
     assert_eq!(out, MergeOutcome::Merged { sha: "s".into() });
 }
 
+async fn mount_update_branch(server: &MockServer, resp: ResponseTemplate) {
+    Mock::given(method("PUT"))
+        .and(path("/repos/enzarb/enzarb-ui/pulls/7/update-branch"))
+        .and(body_json(json!({ "expected_head_sha": HEAD })))
+        .respond_with(resp)
+        .expect(1)
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn update_branch_merges_base_into_head_with_expected_sha() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    mount_update_branch(
+        &server,
+        ResponseTemplate::new(202)
+            .set_body_json(json!({"message": "Updating pull request branch."})),
+    )
+    .await;
+    let out = connector(&server)
+        .update_branch(&item(7), 7, HEAD)
+        .await
+        .unwrap();
+    assert_eq!(out, UpdateBranchOutcome::Updated);
+}
+
+#[tokio::test]
+async fn update_branch_422_is_refused_with_reason() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    mount_update_branch(
+        &server,
+        ResponseTemplate::new(422)
+            .set_body_json(json!({"message": "merge conflict between base and head"})),
+    )
+    .await;
+    let out = connector(&server)
+        .update_branch(&item(7), 7, HEAD)
+        .await
+        .unwrap();
+    assert_eq!(
+        out,
+        UpdateBranchOutcome::Refused {
+            reason: "merge conflict between base and head".into()
+        }
+    );
+}
+
 #[tokio::test]
 async fn merge_405_is_not_mergeable_with_reason() {
     let server = MockServer::start().await;
@@ -1678,4 +1727,81 @@ async fn branch_head_missing_installation_is_not_none() {
         .await;
     let got = connector(&server).branch_head(&repo(), "main").await;
     assert!(got.is_err());
+}
+
+// ---- dependencies ----
+
+#[tokio::test]
+async fn list_dependencies_maps_blockers_across_repos() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/repos/enzarb/enzarb-ui/issues/5/dependencies/blocked_by",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"number": 3, "repository_url": format!("{}/repos/enzarb/enzarb-ui", server.uri())},
+            {"number": 9, "repository_url": format!("{}/repos/enzarb/workflows", server.uri())},
+        ])))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let got = connector(&server)
+        .list_dependencies(&item(5))
+        .await
+        .unwrap();
+    assert_eq!(
+        got,
+        [
+            item(3),
+            WorkItemKey::new(RepoKey::new("github", "enzarb", "workflows"), 9)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn add_dependency_posts_the_issue_id() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/enzarb/enzarb-ui/issues/3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 777, "number": 3})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(
+            "/repos/enzarb/enzarb-ui/issues/5/dependencies/blocked_by",
+        ))
+        .and(body_json(json!({"issue_id": 777})))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    connector(&server)
+        .add_dependency(&item(5), &item(3), "k")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn remove_dependency_deletes_by_issue_id_and_ignores_missing() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/enzarb/enzarb-ui/issues/3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 777, "number": 3})))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/repos/enzarb/enzarb-ui/issues/5/dependencies/blocked_by/777",
+        ))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "Not Found"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    connector(&server)
+        .remove_dependency(&item(5), &item(3), "k")
+        .await
+        .unwrap();
 }

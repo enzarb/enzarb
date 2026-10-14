@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { NeedsYouStore, type NeedsYouDeps } from './needs-you.svelte.ts';
+import { NEEDS_YOU_REFRESH_MS, NeedsYouStore, type NeedsYouDeps } from './needs-you.svelte.ts';
 import type { WorkItemSummary } from './work-items.ts';
 
 const item = (id: number, needs: boolean): WorkItemSummary => ({
@@ -36,6 +36,29 @@ describe('NeedsYouStore', () => {
 		const { store } = setup();
 		await vi.waitFor(() => expect(store.count).toBe(1));
 		expect(store.loaded).toBe(true);
+	});
+
+	it('re-reads the queue periodically until stopped', async () => {
+		vi.useFakeTimers();
+		try {
+			const list = vi.fn(async () => ({ items: [item(1, true)], total: 1 }));
+			const store = new NeedsYouStore({
+				list,
+				get: vi.fn(async (id: number) => item(id, true)),
+				submit: vi.fn(async () => {}),
+				watch: () => () => {}
+			});
+			const stop = store.start();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(list).toHaveBeenCalledTimes(1);
+			await vi.advanceTimersByTimeAsync(NEEDS_YOU_REFRESH_MS);
+			expect(list).toHaveBeenCalledTimes(2);
+			stop();
+			await vi.advanceTimersByTimeAsync(NEEDS_YOU_REFRESH_MS);
+			expect(list).toHaveBeenCalledTimes(2);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('counts the items beyond the cap and keeps that overflow across live changes', async () => {

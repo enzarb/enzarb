@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 
 use crate::{
-    Actor, ChangeRequestSpec, CommentRef, CommitRef, CredScope, ItemRef, MergeOutcome,
+    Actor, ChangeRequestSpec, CommentRef, CommitRef, CredScope, Error, ItemRef, MergeOutcome,
     MergeReadiness, Permission, Progress, ProgressTarget, ReadCred, RepoKey, Result,
-    ShortLivedCred, Status, Thread, WorkItemKey,
+    ShortLivedCred, Status, Thread, UpdateBranchOutcome, WorkItemKey,
 };
 
 /// Outbound operations against a provider.
@@ -73,10 +73,52 @@ pub trait Connector: Send + Sync {
     /// `None` while the provider is still computing it.
     async fn get_merge_readiness(&self, item: &WorkItemKey, number: u64) -> Result<MergeReadiness>;
 
+    /// Merge the base branch into the change request's head branch (GitHub's "update
+    /// branch"). Never rewrites history. A head that is not `expected_head_sha` or a
+    /// merge conflict is [`UpdateBranchOutcome::Refused`], not an `Err`. The default
+    /// implementation is unsupported.
+    async fn update_branch(
+        &self,
+        _item: &WorkItemKey,
+        _number: u64,
+        _expected_head_sha: &str,
+    ) -> Result<UpdateBranchOutcome> {
+        Err(Error::Other("update_branch is not supported".into()))
+    }
+
     /// Current head commit sha of `branch`, or `None` if the branch does not
     /// exist. The default implementation returns `Ok(None)`.
     async fn branch_head(&self, _repo: &RepoKey, _branch: &str) -> Result<Option<String>> {
         Ok(None)
+    }
+
+    /// The items `item` is blocked by, from the provider's own relationships (GitHub's
+    /// native issue dependencies). Not the text ones: those come from
+    /// [`dependencies::text_dependencies`](crate::dependencies::text_dependencies). The
+    /// default implementation reports the capability as unsupported.
+    async fn list_dependencies(&self, _item: &WorkItemKey) -> Result<Vec<WorkItemKey>> {
+        Err(Error::Invalid("dependencies are not supported".into()))
+    }
+
+    /// Records that `item` is blocked by `depends_on`. Adding an existing relationship
+    /// succeeds.
+    async fn add_dependency(
+        &self,
+        _item: &WorkItemKey,
+        _depends_on: &WorkItemKey,
+        _idempotency_key: &str,
+    ) -> Result<()> {
+        Err(Error::Invalid("dependencies are not supported".into()))
+    }
+
+    /// Removes the relationship; removing one that does not exist succeeds.
+    async fn remove_dependency(
+        &self,
+        _item: &WorkItemKey,
+        _depends_on: &WorkItemKey,
+        _idempotency_key: &str,
+    ) -> Result<()> {
+        Err(Error::Invalid("dependencies are not supported".into()))
     }
 
     async fn check_permission(&self, repo: &RepoKey, actor: &Actor) -> Result<Permission>;

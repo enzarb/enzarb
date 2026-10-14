@@ -194,18 +194,17 @@ pub(super) fn step(ctx: &Ctx, s: &MentionState, ev: &EngineEvent) -> Transition 
 
     match &ev.payload {
         EventPayload::Ui(u) => match u.action {
-            UiActionKind::Cancel if !ctx.can_write() => {
+            UiActionKind::Cancel if !ctx.can_cancel() => {
                 Transition::reject(&state, "cancel requires write access")
             }
             UiActionKind::Cancel if s.phase == Cancelled => {
                 Transition::reject(&state, "already finished")
             }
-            UiActionKind::Cancel => cancel(
-                ctx,
-                ev,
-                s,
-                Some(format!("enzarb: cancelled by @{}.", u.actor.login)),
-            ),
+            UiActionKind::Cancel => cancel(ctx, ev, s, ctx.cancel_comment(&u.actor.login)),
+            UiActionKind::RepoRemoved if s.phase == Cancelled => {
+                Transition::reject(&state, "already finished")
+            }
+            UiActionKind::RepoRemoved => cancel(ctx, ev, s, None).repo_removed(),
             UiActionKind::Retry if !ctx.can_write() => {
                 Transition::reject(&state, "retry requires write access")
             }
@@ -249,7 +248,9 @@ pub(super) fn step(ctx: &Ctx, s: &MentionState, ev: &EngineEvent) -> Transition 
             fail(ctx, ev, s, "the agent run exceeded its deadline", true)
         }
         EventPayload::TimerFired { .. } => Transition::reject(&state, "no timer expected"),
-        EventPayload::Unmergeable { .. } => Transition::reject(&state, "not a change request"),
+        EventPayload::Unmergeable { .. } | EventPayload::DependenciesChanged => {
+            Transition::reject(&state, "not a change request")
+        }
         EventPayload::Connector(_) => match ev.comment_like() {
             Some(c) if c.mention => match (s.phase, gate(ctx, ev)) {
                 (_, Err(why)) => Transition::reject(&state, why),

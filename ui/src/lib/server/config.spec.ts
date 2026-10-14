@@ -22,8 +22,17 @@ describe('parseConfig', () => {
 			publicUrl: 'https://enzarb.example.com',
 			githubAppSlug: 'enzarb',
 			realtimeLegacyTokenUrl: false,
-			componentVersions: { components: {} }
+			componentVersions: { components: {} },
+			needsYouStaleHours: 24
 		});
+	});
+
+	it('reads NEEDS_YOU_STALE_HOURS and rejects non-positive values', () => {
+		expect(parseConfig({ ...valid, NEEDS_YOU_STALE_HOURS: '6.5' }).needsYouStaleHours).toBe(6.5);
+		for (const bad of ['0', '-1', 'abc'])
+			expect(() => parseConfig({ ...valid, NEEDS_YOU_STALE_HOURS: bad })).toThrow(
+				/NEEDS_YOU_STALE_HOURS/
+			);
 	});
 
 	describe('GitHub App credentials', () => {

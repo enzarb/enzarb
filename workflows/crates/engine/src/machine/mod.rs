@@ -51,7 +51,7 @@ use enzarb_connector::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use change_request::{CiState, CrData, CrPhase, CrState};
+pub use change_request::{CiState, CrData, CrPhase, CrState, OpenDependency};
 pub use fx::{
     AgentJobInput, PRIORITY_AGENT, PRIORITY_COMMENT, PRIORITY_PROGRESS, PRIORITY_WORKING,
 };
@@ -124,6 +124,10 @@ pub enum UiActionKind {
     Retry,
     /// Squash-merge a `ReadyToMerge` change request. Only this action can start a merge.
     Merge,
+    /// System action: the work item's repository left its Project. Cancels the item without
+    /// a permission check; only the UI's owner-checked repository update emits it.
+    #[serde(rename = "repo-removed")]
+    RepoRemoved,
 }
 
 /// A `workflows_api.submit_action` event (source `ui`).
@@ -162,6 +166,10 @@ pub enum EventPayload {
     /// the machine by `conflict::emit_merge_conflict`, from the readiness jobs and the
     /// ticker's base-head fan-out.
     Unmergeable { base_sha: String },
+    /// Event type `DependenciesChanged`, payload `{}`: a dependency of the work item changed
+    /// (completed, closed, added, removed). The reducer has already put the current set in
+    /// [`Ctx::open_dependencies`]; the machine only re-evaluates. Produced by the ticker.
+    DependenciesChanged,
 }
 
 /// One input to the engine. `id` is unique per event (the `events.id` as text) and
@@ -243,7 +251,8 @@ impl EngineEvent {
                     base_sha: p.base_sha,
                 }
             }
-            "CancelRequested" | "RetryRequested" | "MergeRequested" => {
+            "DependenciesChanged" => EventPayload::DependenciesChanged,
+            "CancelRequested" | "RetryRequested" | "MergeRequested" | "RepoRemoved" => {
                 EventPayload::Ui(serde_json::from_value(payload.clone()).map_err(bad)?)
             }
             "ApprovalGranted" if payload.get("action").is_some() => {
@@ -378,6 +387,13 @@ pub struct Ctx {
     pub triggers: Triggers,
     /// Default branch of the work item's repository.
     pub default_branch: String,
+    /// The repository is in no Project any more; only closing and cancelling are accepted.
+    pub orphaned: bool,
+    /// Orphaned item and the actor owns the Project the item belonged to.
+    pub orphan_owner: bool,
+    /// What the work item still waits on, read from the database by the reducer for every
+    /// event. Only change requests use it.
+    pub open_dependencies: Vec<OpenDependency>,
 }
 
 impl Ctx {
@@ -395,6 +411,17 @@ impl Ctx {
 
     fn can_write(&self) -> bool {
         self.actor_permission.can_write()
+    }
+
+    /// Cancel needs write access, or Project ownership once the repo left every Project.
+    fn can_cancel(&self) -> bool {
+        self.can_write() || self.orphan_owner
+    }
+
+    /// The "cancelled by" forge comment. An orphaned item's repo is in no Project, so a cancel
+    /// there queues no job at all.
+    fn cancel_comment(&self, login: &str) -> Option<String> {
+        (!self.orphaned).then(|| format!("enzarb: cancelled by @{login}."))
     }
 
     /// True for the bot itself and for other bot accounts.
@@ -479,6 +506,12 @@ impl Transition {
         }
     }
 
+    /// Replace the note of a cancel caused by the repository leaving its Project.
+    pub(crate) fn repo_removed(mut self) -> Self {
+        self.note = "enzarb: repository removed from the Project.".into();
+        self
+    }
+
     pub(crate) fn to(next: WorkflowState, effects: Vec<Effect>, note: impl Into<String>) -> Self {
         Self {
             next,
@@ -493,6 +526,8 @@ impl Transition {
 // State
 // ---------------------------------------------------------------------------
 
+// States are short-lived values passed by reference; boxing would touch every match.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkflowState {
     /// No work item yet; the first event decides whether one is created.
@@ -635,6 +670,17 @@ pub fn route(ctx: &Ctx, ev: &EngineEvent) -> Option<WorkflowKind> {
 
 /// The pure transition function.
 pub fn transition(ctx: &Ctx, state: &WorkflowState, ev: &EngineEvent) -> Transition {
+    if ctx.orphaned {
+        let allowed = ev.closed().is_some()
+            || matches!(
+                &ev.payload,
+                EventPayload::Ui(u)
+                    if matches!(u.action, UiActionKind::Cancel | UiActionKind::RepoRemoved)
+            );
+        if !allowed {
+            return Transition::reject(state, "repository is no longer in a Project");
+        }
+    }
     match state {
         WorkflowState::New(kind) => match (kind, route(ctx, ev)) {
             (k, Some(r)) if *k == r => match k {

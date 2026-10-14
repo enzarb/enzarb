@@ -9,7 +9,7 @@ use chrono::{Duration, Utc};
 use crate::{
     Actor, ChangeRequestSpec, CommentRef, CommitRef, Connector, CredScope, Error, ItemKind,
     ItemRef, MergeOutcome, MergeReadiness, Permission, Progress, ProgressTarget, ReadCred, RepoKey,
-    Result, ShortLivedCred, Status, Thread, ThreadComment, WorkItemKey,
+    Result, ShortLivedCred, Status, Thread, ThreadComment, UpdateBranchOutcome, WorkItemKey,
 };
 
 /// One call made against the fake, with its arguments.
@@ -50,6 +50,11 @@ pub enum Call {
         repos: Vec<RepoKey>,
         purpose: String,
     },
+    UpdateBranch {
+        item: WorkItemKey,
+        number: u64,
+        expected_head_sha: String,
+    },
     MergeChangeRequest {
         item: WorkItemKey,
         number: u64,
@@ -65,6 +70,19 @@ pub enum Call {
     BranchHead {
         repo: RepoKey,
         branch: String,
+    },
+    ListDependencies {
+        item: WorkItemKey,
+    },
+    AddDependency {
+        item: WorkItemKey,
+        depends_on: WorkItemKey,
+        idempotency_key: String,
+    },
+    RemoveDependency {
+        item: WorkItemKey,
+        depends_on: WorkItemKey,
+        idempotency_key: String,
     },
 }
 
@@ -95,7 +113,9 @@ struct State {
     merge_outcomes: VecDeque<MergeOutcome>,
     seen_merges: HashMap<String, MergeOutcome>,
     readiness: HashMap<WorkItemKey, MergeReadiness>,
+    update_outcomes: VecDeque<UpdateBranchOutcome>,
     branch_heads: HashMap<(RepoKey, String), String>,
+    dependencies: HashMap<WorkItemKey, Vec<WorkItemKey>>,
 }
 
 /// Records every call and keeps simple in-memory state. Cheap to share by
@@ -137,6 +157,11 @@ impl FakeConnector {
         self.st().merge_outcomes.push_back(outcome);
     }
 
+    /// Queue the outcome of the next `update_branch`; with the queue empty it succeeds.
+    pub fn queue_update_outcome(&self, outcome: UpdateBranchOutcome) {
+        self.st().update_outcomes.push_back(outcome);
+    }
+
     /// Seed the readiness returned for `item` (repeatable; last one wins).
     pub fn set_merge_readiness(&self, item: WorkItemKey, readiness: MergeReadiness) {
         self.st().readiness.insert(item, readiness);
@@ -147,6 +172,11 @@ impl FakeConnector {
         self.st()
             .branch_heads
             .insert((repo, branch.to_string()), sha.to_string());
+    }
+
+    /// Seed the relationships `list_dependencies` returns for `item`.
+    pub fn set_dependencies(&self, item: WorkItemKey, depends_on: Vec<WorkItemKey>) {
+        self.st().dependencies.insert(item, depends_on);
     }
 
     /// Make the next call (any method) fail with `error`, once.
@@ -390,6 +420,26 @@ impl Connector for FakeConnector {
             .ok_or_else(|| Error::NotFound(format!("{item} readiness")))
     }
 
+    async fn update_branch(
+        &self,
+        item: &WorkItemKey,
+        number: u64,
+        expected_head_sha: &str,
+    ) -> Result<UpdateBranchOutcome> {
+        let mut st = self.st();
+        let call = Call::UpdateBranch {
+            item: item.clone(),
+            number,
+            expected_head_sha: expected_head_sha.to_string(),
+        };
+        Self::take_failure(&mut st, call.clone())?;
+        Self::record(&mut st, call, false);
+        Ok(st
+            .update_outcomes
+            .pop_front()
+            .unwrap_or(UpdateBranchOutcome::Updated))
+    }
+
     async fn branch_head(&self, repo: &RepoKey, branch: &str) -> Result<Option<String>> {
         let mut st = self.st();
         let call = Call::BranchHead {
@@ -402,6 +452,57 @@ impl Connector for FakeConnector {
             .branch_heads
             .get(&(repo.clone(), branch.to_string()))
             .cloned())
+    }
+
+    async fn list_dependencies(&self, item: &WorkItemKey) -> Result<Vec<WorkItemKey>> {
+        let mut st = self.st();
+        let call = Call::ListDependencies { item: item.clone() };
+        Self::take_failure(&mut st, call.clone())?;
+        Self::record(&mut st, call, false);
+        Ok(st.dependencies.get(item).cloned().unwrap_or_default())
+    }
+
+    async fn add_dependency(
+        &self,
+        item: &WorkItemKey,
+        depends_on: &WorkItemKey,
+        idempotency_key: &str,
+    ) -> Result<()> {
+        let mut st = self.st();
+        let call = Call::AddDependency {
+            item: item.clone(),
+            depends_on: depends_on.clone(),
+            idempotency_key: idempotency_key.to_string(),
+        };
+        Self::take_failure(&mut st, call.clone())?;
+        let replayed = !st.seen_keys.insert(idempotency_key.to_string());
+        Self::record(&mut st, call, replayed);
+        let deps = st.dependencies.entry(item.clone()).or_default();
+        if !deps.contains(depends_on) {
+            deps.push(depends_on.clone());
+        }
+        Ok(())
+    }
+
+    async fn remove_dependency(
+        &self,
+        item: &WorkItemKey,
+        depends_on: &WorkItemKey,
+        idempotency_key: &str,
+    ) -> Result<()> {
+        let mut st = self.st();
+        let call = Call::RemoveDependency {
+            item: item.clone(),
+            depends_on: depends_on.clone(),
+            idempotency_key: idempotency_key.to_string(),
+        };
+        Self::take_failure(&mut st, call.clone())?;
+        let replayed = !st.seen_keys.insert(idempotency_key.to_string());
+        Self::record(&mut st, call, replayed);
+        if let Some(deps) = st.dependencies.get_mut(item) {
+            deps.retain(|d| d != depends_on);
+        }
+        Ok(())
     }
 
     async fn check_permission(&self, repo: &RepoKey, actor: &Actor) -> Result<Permission> {

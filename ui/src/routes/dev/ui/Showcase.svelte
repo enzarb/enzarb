@@ -368,13 +368,13 @@
 {/snippet}
 
 {#snippet tables()}
-	<DataTable label="Work items" items={rows} {columns} rowKey={(r) => r.id} {rowActions} />
+	<DataTable label="Tasks" items={rows} {columns} rowKey={(r) => r.id} {rowActions} />
 	<DataTable
 		label="Empty"
 		items={[]}
 		{columns}
 		rowKey={(r: Row) => r.id}
-		emptyTitle="No work items yet"
+		emptyTitle="No tasks yet"
 		emptyDescription="Work appears here when an issue reaches a project."
 	>
 		{#snippet emptyActions()}<Button variant="primary" size="sm">Create project</Button>{/snippet}
