@@ -41,6 +41,10 @@ run = "bash scripts/assert-npm-token.sh"
 description = "Assert the per-user Claude token keyring wiring (mounts, isolation, existingSecret, rekey Job)"
 run = "bash scripts/assert-claude-key.sh"
 
+[tasks.vapidkey]
+description = "Assert the Web Push (VAPID) keypair wiring (hook Job, RBAC, ui env, existingSecret)"
+run = "bash scripts/assert-vapid-key.sh"
+
 [tasks.rekey]
 description = "Run the Claude token rekey Job (ENZARB_CHART, default the published chart; ENZARB_NAMESPACE, default enzarb)"
 run = """
@@ -67,4 +71,4 @@ run = "scripts/sync-crds.sh"
 
 [tasks.test]
 description = "All checks"
-depends = ["lint", "guard", "golden", "realtime", "rollout", "componentversions", "npmtoken", "claudekey", "kubeconform", "pgop"]
+depends = ["lint", "guard", "golden", "realtime", "rollout", "componentversions", "npmtoken", "claudekey", "vapidkey", "kubeconform", "pgop"]

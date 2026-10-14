@@ -1248,6 +1248,11 @@ spec:
                 secretKeyRef:
                   name: enzarb-generated
                   key: realtime-jwt-secret
+            # Web Push keys. Optional so pods start (notifications off) until the keypair exists.
+            - name: ENZARB_VAPID_PUBLIC_KEY
+              valueFrom: { secretKeyRef: { name: "enzarb-vapid-key", key: public-key, optional: true } }
+            - name: ENZARB_VAPID_PRIVATE_KEY
+              valueFrom: { secretKeyRef: { name: "enzarb-vapid-key", key: private-key, optional: true } }
             - { name: ENZARB_PUBLIC_URL, value: "https://enzarb.local" }
             - { name: ENZARB_COMPONENT_VERSIONS, value: "{\"chart\":\"0.0.0\",\"components\":{\"enzarb-connectors\":\"dev\",\"enzarb-realtime\":\"dev\",\"enzarb-sandbox-container\":\"dev\",\"enzarb-sandbox-operator\":\"dev\",\"enzarb-sandbox-proxy\":\"dev\",\"enzarb-ui\":\"dev\",\"enzarb-workflows\":\"dev\"}}" }
             - { name: ENZARB_GITHUB_APP_SLUG, value: "enzarb" }
@@ -1802,3 +1807,110 @@ spec:
         request: "0s"
       backendRefs:
         - { name: enzarb-realtime, port: 8080 }
+---
+# Source: enzarb/templates/vapid-key.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: enzarb-vapid
+  labels:
+    app.kubernetes.io/name: enzarb-vapid
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+
+---
+# Source: enzarb/templates/vapid-key.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: enzarb-vapid
+  labels:
+    app.kubernetes.io/name: enzarb-vapid
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: ["enzarb-vapid-key"]
+    verbs: [get]
+
+---
+# Source: enzarb/templates/vapid-key.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: enzarb-vapid
+  labels:
+    app.kubernetes.io/name: enzarb-vapid
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: enzarb-vapid }
+subjects:
+  - { kind: ServiceAccount, name: enzarb-vapid, namespace: enzarb }
+
+---
+# Source: enzarb/templates/vapid-key.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: enzarb-vapid-key
+  labels:
+    app.kubernetes.io/name: enzarb-vapid-key
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: enzarb-vapid-key
+        app.kubernetes.io/instance: enzarb
+    spec:
+      serviceAccountName: enzarb-vapid
+      restartPolicy: OnFailure
+      containers:
+        - name: vapid
+          image: ghcr.io/enzarb/enzarb-ui:dev
+          imagePullPolicy: Never
+          command:
+            - sh
+            - -c
+            - >-
+              if [ -f scripts/vapid-secret.ts ]; then exec node scripts/vapid-secret.ts;
+              else echo "vapid: this UI image has no scripts/vapid-secret.ts; push notifications stay off"; fi
+          env:
+            - { name: ENZARB_VAPID_SECRET, value: "enzarb-vapid-key" }
+            - { name: ENZARB_VAPID_NAMESPACE, value: "enzarb" }
+          securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":1000,"seccompProfile":{"type":"RuntimeDefault"}}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+

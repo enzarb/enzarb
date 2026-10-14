@@ -214,6 +214,14 @@
           },
           "additionalProperties": false
         },
+        "vapidKey": {
+          "type": "object",
+          "properties": {
+            "existingSecret": { "type": "string" },
+            "subject": { "type": "string", "pattern": "^$|^(mailto:[^\\s@]+@[^\\s@]+|https?://\\S+)$" }
+          },
+          "additionalProperties": false
+        },
         "updater": {
           "type": "object",
           "properties": {

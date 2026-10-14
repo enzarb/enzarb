@@ -88,6 +88,13 @@ secrets:
       suffix: ""
       backoffLimit: 1
       ttlSecondsAfterFinished: 86400
+  # Web Push (VAPID) keypair for UI notifications (data keys public-key and private-key).
+  # Generated once and kept (a pre-install/pre-upgrade Job creates it when absent and never
+  # replaces it) unless existingSecret is set. Only the ui Deployment reads it.
+  vapidKey:
+    existingSecret: ""
+    # `sub` claim sent to push services: mailto: or https URL. Empty uses the public URL.
+    subject: ""
   # GitHub App + OAuth app credentials. Either point at an existing Secret (with the
   # key names below) or give the values inline to have the chart create `enzarb-github`.
   github:
