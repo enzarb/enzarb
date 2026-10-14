@@ -152,7 +152,10 @@ impl TestDb {
         })
     }
 
-    async fn start_container() -> Option<TestDb> {
+    /// Like [`TestDb::start`] but always a dedicated container (roles and migrations applied), for
+    /// tests that create or inspect other cluster-global roles (e.g. `enzarb_realtime`), which
+    /// would collide on a shared server.
+    pub async fn start_container() -> Option<TestDb> {
         let (container, url) = start_container().await?;
         let pool = crate::db::connect(&url, 5).await.expect("connect");
         create_roles(&pool).await;

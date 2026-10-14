@@ -8,9 +8,11 @@ use engine::testing::TestDb;
 use sqlx::PgPool;
 use tokio::sync::watch;
 
+// `enzarb_realtime` is a cluster-global role that these tests create and expect absent, so they
+// need their own server rather than the shared one.
 macro_rules! db {
     () => {
-        match TestDb::start().await {
+        match TestDb::start_container().await {
             Some(db) => db,
             None => return,
         }
