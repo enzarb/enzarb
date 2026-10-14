@@ -61,7 +61,6 @@ describe('parseConfig', () => {
 			expect(c.githubAppPrivateKey).toBeUndefined();
 		});
 	});
-	});
 
 	describe('ENZARB_COMPONENT_VERSIONS', () => {
 		const parse = (v?: string) =>
