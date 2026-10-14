@@ -223,17 +223,18 @@ describe('workService needs-you queue', () => {
 			key: 'github:acme/q#3',
 			project: 'q',
 			workflow: 'change_request',
-			state: 'Reviewing',
+			state: 'AwaitingChanges',
 			stateData: { checklist: { ci: { status: 'failed', detail: 'tests red' } } }
 		});
+		await sql`UPDATE workflows.work_items SET updated_at = now() - interval '2 days' WHERE id = ${blocked}`;
 		await seedItem(sql, { key: 'github:acme/q#4', project: 'q', state: 'Planning' });
 		await seedItem(sql, { key: 'github:x/y#1', project: 'other', state: 'AwaitingApproval' });
 
 		const { items: queue, total } = await workService(sql, ['q']).listNeedsYou();
-		expect(queue.map((i) => i.id)).toEqual([oldApproval, failed, blocked]);
+		expect(queue.map((i) => i.id)).toEqual([oldApproval, blocked, failed]);
 		expect(total).toBe(3);
-		expect(queue.map((i) => i.needs?.category)).toEqual(['approval', 'failed', 'blocked']);
-		expect(queue[2].needs?.reason).toBe('CI: tests red');
+		expect(queue.map((i) => i.needs?.category)).toEqual(['approval', 'blocked', 'failed']);
+		expect(queue[1].needs?.reason).toBe('CI: tests red');
 		expect(await workService(sql, []).listNeedsYou()).toEqual({ items: [], total: 0 });
 		expect((await workService(sql, ['other']).listNeedsYou()).items).toHaveLength(1);
 	});
@@ -320,8 +321,17 @@ describe('workService needs-you queue', () => {
 			['change_request', 'Reviewing', { checklist: { ci: { status: ['failed'] } } }],
 			['change_request', 'Reviewing', { checklist: { ci: { status: { x: 'failed' } } } }]
 		];
+		const HOURS = 24;
+		const HOUR_MS = 3_600_000;
+		const idleAge = 25 * HOUR_MS;
+		// idle copies of every case, so the blocked ones are exercised past the threshold
+		const all: [string, string, unknown, number][] = [
+			...cases.map(([w, s, d]) => [w, s, d, 0] as [string, string, unknown, number]),
+			...cases.map(([w, s, d]) => [w, s, d, idleAge] as [string, string, unknown, number])
+		];
 		const ids = new Map<number, number>();
-		for (const [i, [workflow, state, stateData]] of cases.entries()) {
+		const rows: { workflow: string; state: string; stateData: unknown; updatedAt: Date }[] = [];
+		for (const [i, [workflow, state, stateData, age]] of all.entries()) {
 			const id = await seedItem(sql, {
 				key: `github:acme/parity#${i}`,
 				project: 'parity',
@@ -329,16 +339,18 @@ describe('workService needs-you queue', () => {
 				state,
 				stateData
 			});
+			await sql`UPDATE workflows.work_items
+				SET updated_at = now() - ${age / 1000} * interval '1 second' WHERE id = ${id}`;
 			ids.set(id, i);
+			rows.push({ workflow, state, stateData, updatedAt: new Date(Date.now() - age) });
 		}
-		const expected = cases
-			.map(([workflow, state, stateData], i) => ({
-				i,
-				needs: classifyNeedsYou({ workflow, state, stateData })
-			}))
+		const opts = { now: Date.now(), staleAfterMs: HOURS * HOUR_MS };
+		const expected = rows
+			.map((r, i) => ({ i, needs: classifyNeedsYou(r, opts) }))
 			.filter((c) => c.needs)
 			.map((c) => c.i);
-		expect(expected.length).toBeGreaterThan(8);
+		// 8 fresh approval/ready/failed/stale rows, repeated idle, plus the idle blocked ones
+		expect(expected.length).toBeGreaterThan(16);
 		const { items, total } = await workService(sql, ['parity']).listNeedsYou();
 		expect(items.map((it) => ids.get(it.id)).sort((a, b) => a! - b!)).toEqual(expected);
 		expect(total).toBe(expected.length);
