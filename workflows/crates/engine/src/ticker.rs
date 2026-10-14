@@ -22,9 +22,11 @@ use sqlx::PgPool;
 use tokio::sync::watch;
 
 use crate::conflict::emit_merge_conflict;
+use crate::dependencies::open_dependencies;
 use crate::error::Error;
 use crate::executor::ConnectorRegistry;
 use crate::grants;
+use crate::index::ProjectIndex;
 
 /// Minimum time between base-head polls; each pass costs one branch-head lookup per
 /// distinct active (repo, base) plus a readiness call per open PR on a moved base.
@@ -55,6 +57,20 @@ pub struct TickStats {
     pub wakes: usize,
     /// `TimerFired {job_id}` events created for job deadlines.
     pub deadlines: usize,
+    /// `DependenciesChanged` events created.
+    pub dependencies: usize,
+}
+
+/// Minimum time between GitHub dependency syncs; each pass lists the relationships of every
+/// active work item.
+pub const DEPENDENCY_SYNC_INTERVAL: Duration = Duration::from_secs(120);
+
+/// What the dependency sync needs: connectors to ask, and the Projects that bound it.
+#[derive(Clone)]
+struct DepSync {
+    connectors: ConnectorRegistry,
+    index: Arc<dyn ProjectIndex>,
+    last_run: Arc<Mutex<Option<Instant>>>,
 }
 
 #[derive(Clone)]
@@ -62,6 +78,7 @@ pub struct Ticker {
     pool: PgPool,
     interval: Duration,
     base_poll: Option<BasePoll>,
+    dep_sync: Option<DepSync>,
 }
 
 const BATCH: i64 = 500;
@@ -72,7 +89,22 @@ impl Ticker {
             pool,
             interval: Duration::from_secs(5),
             base_poll: None,
+            dep_sync: None,
         }
+    }
+
+    /// Enable the sync of GitHub's native "blocked by" relationships into the engine.
+    pub fn with_dependency_sync(
+        mut self,
+        connectors: ConnectorRegistry,
+        index: Arc<dyn ProjectIndex>,
+    ) -> Self {
+        self.dep_sync = Some(DepSync {
+            connectors,
+            index,
+            last_run: Arc::default(),
+        });
+        self
     }
 
     /// Enable the base-head conflict fan-out for change requests authored by `bot_login`.
@@ -109,7 +141,7 @@ impl Ticker {
         .fetch_all(&self.pool)
         .await?;
         for (key, dk) in wakes {
-            if self.emit(&dk, &key, json!({})).await? {
+            if self.emit("TimerFired", &dk, &key, json!({})).await? {
                 stats.wakes += 1;
             }
         }
@@ -128,15 +160,83 @@ impl Ticker {
         .fetch_all(&self.pool)
         .await?;
         for (key, dk, job_id) in deadlines {
-            if self.emit(&dk, &key, json!({ "job_id": job_id })).await? {
+            if self
+                .emit("TimerFired", &dk, &key, json!({ "job_id": job_id }))
+                .await?
+            {
                 stats.deadlines += 1;
             }
         }
+        stats.dependencies = self.sweep_dependencies().await?;
         Ok(stats)
+    }
+
+    /// Re-evaluate change requests whose dependencies changed since they last looked: a
+    /// dependency was completed or closed, or a relationship was added or removed. Emits
+    /// `DependenciesChanged` when the open set differs from the one in `state_data`, so a
+    /// finished dependency continues its dependents without a human, and a missed webhook
+    /// delays that by one sweep at most.
+    pub async fn sweep_dependencies(&self) -> Result<usize, Error> {
+        let rows: Vec<(String, serde_json::Value, i64)> = sqlx::query_as(
+            "SELECT w.key, coalesce(w.state_data->'open_dependencies', '[]'::jsonb),
+                    (extract(epoch FROM w.updated_at) * 1000000)::bigint
+             FROM work_items w
+             WHERE w.workflow = 'change_request'
+               AND w.state NOT IN ('Merged', 'Closed', 'Cancelled')
+               AND (jsonb_array_length(CASE WHEN jsonb_typeof(w.state_data->'open_dependencies') = 'array'
+                                            THEN w.state_data->'open_dependencies' ELSE '[]'::jsonb END) > 0
+                    OR EXISTS (SELECT 1 FROM workflows.effective_dependencies e
+                               WHERE e.work_item_key = w.key))
+             ORDER BY w.id LIMIT $1",
+        )
+        .bind(BATCH)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut emitted = 0;
+        for (key, stored, updated) in rows {
+            let Ok(item) = key.parse::<WorkItemKey>() else {
+                continue;
+            };
+            let mut conn = self.pool.acquire().await?;
+            let open = open_dependencies(&mut conn, &item).await?;
+            drop(conn);
+            if serde_json::to_value(&open).unwrap_or_default() == stored {
+                continue;
+            }
+            // One event per (item, state version): a rejected one is not repeated until the
+            // item changes.
+            let dk = format!("deps:{key}:{updated}");
+            if self
+                .emit("DependenciesChanged", &dk, &key, json!({}))
+                .await?
+            {
+                emitted += 1;
+            }
+        }
+        Ok(emitted)
+    }
+
+    /// GitHub-native dependencies, at most once per [`DEPENDENCY_SYNC_INTERVAL`]. Returns
+    /// `None` when disabled or not yet due, else how many work items changed.
+    pub async fn sync_dependencies(&self) -> Result<Option<usize>, Error> {
+        let Some(sync) = &self.dep_sync else {
+            return Ok(None);
+        };
+        {
+            let mut last = sync.last_run.lock().unwrap_or_else(|e| e.into_inner());
+            if last.is_some_and(|t| t.elapsed() < DEPENDENCY_SYNC_INTERVAL) {
+                return Ok(None);
+            }
+            *last = Some(Instant::now());
+        }
+        Ok(Some(
+            crate::dependencies::sync_github(&self.pool, &sync.connectors, &sync.index).await?,
+        ))
     }
 
     async fn emit(
         &self,
+        event_type: &str,
         dedupe: &str,
         key: &str,
         payload: serde_json::Value,
@@ -146,7 +246,7 @@ impl Ticker {
                 .bind("engine")
                 .bind(dedupe)
                 .bind(key)
-                .bind("TimerFired")
+                .bind(event_type)
                 .bind(payload)
                 .fetch_one(&self.pool)
                 .await?;
@@ -277,6 +377,9 @@ impl Ticker {
             }
             if let Err(e) = self.poll_base_heads().await {
                 tracing::warn!(error = %e, "base head poll failed");
+            }
+            if let Err(e) = self.sync_dependencies().await {
+                tracing::warn!(error = %e, "dependency sync failed");
             }
             tokio::select! {
                 _ = tokio::time::sleep(self.interval) => {}
