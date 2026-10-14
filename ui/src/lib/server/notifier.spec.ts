@@ -67,7 +67,8 @@ function setup(
 			sent.push({ target, payload });
 			if (failing.has(target.endpoint)) return 'error';
 			return gone.has(target.endpoint) ? 'gone' : 'ok';
-		}
+		},
+		now: () => Date.parse('2026-10-14T00:00:00.000Z')
 	};
 	return { items, deps, sent, removed, gone, failing, handle: createItemHandler(deps) };
 }

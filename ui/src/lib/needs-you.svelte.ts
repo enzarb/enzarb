@@ -1,6 +1,9 @@
 import { getContext, setContext } from 'svelte';
 import { applyNeedsYouChange, type WorkAction, type WorkItemSummary } from '#lib/work-items.ts';
 
+/** How often the queue is re-read so items that aged into it appear without a change event. */
+export const NEEDS_YOU_REFRESH_MS = 5 * 60_000;
+
 export interface NeedsYouDeps {
 	list: () => Promise<{ items: WorkItemSummary[]; total: number }>;
 	get: (id: number) => Promise<WorkItemSummary>;
@@ -32,11 +35,17 @@ export class NeedsYouStore {
 	/** Starts the live subscription and the first load; returns the stop function. */
 	start(): () => void {
 		void this.refresh();
-		return this.#deps.watch((id) => {
+		// a blocked change request enters the queue by going idle, which writes nothing and emits no change
+		const timer = setInterval(() => void this.refresh(), NEEDS_YOU_REFRESH_MS);
+		const unwatch = this.#deps.watch((id) => {
 			if (id === null) void this.refresh();
 			else void this.apply(id);
 			for (const l of this.#listeners) l(id);
 		});
+		return () => {
+			clearInterval(timer);
+			unwatch();
+		};
 	}
 
 	/** Receive every live change (`null` = refresh everything). Returns the unsubscribe function. */
