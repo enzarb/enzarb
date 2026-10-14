@@ -5,6 +5,7 @@ import {
 	itemUrl,
 	parseReadiness,
 	TERMINAL_STATES,
+	waitingLabel,
 	type JobView,
 	type TransitionView,
 	type WorkAction,
@@ -70,7 +71,8 @@ function summary(r: ItemRow): WorkItemSummary {
 		title: itemTitle(r.key, r.state_data),
 		url: itemUrl(r.key, r.state_data),
 		updatedAt: iso(r.updated_at),
-		needs: classifyNeedsYou({ workflow: r.workflow, state: r.state, stateData: r.state_data })
+		needs: classifyNeedsYou({ workflow: r.workflow, state: r.state, stateData: r.state_data }),
+		waiting: r.workflow === 'change_request' ? waitingLabel(r.state_data) : null
 	};
 }
 

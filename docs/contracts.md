@@ -270,7 +270,9 @@ workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated
 - `transitions.work_item_id` is nullable: events that are ignored (no Project, no workflow) get a `to_state='ignored'` row with no work item. `transitions.note` records rejections.
 - `work_items.state_data` carries `title` and `url` for display. For `change_request` items it may also carry (additive):
   - `checklist.{ci,review,mergeable}`, each `{status: "ok" | "pending" | "failed" | "unknown", detail}` (`status` is lowercase): the merge readiness shown by the UI and checked by the reducer;
-  - `merge_error` (string): set when a merge ended in `not_mergeable`.
+  - `merge_error` (string): set when a merge ended in `not_mergeable`;
+  - `waiting_reason` (string, derived): why the item waits, one of `human_review` (a review was posted, a person has to act), `enzarb_fixing` (an automatic fix round is running), `round_limit` (the automatic round cap was reached), or empty;
+  - `auto_rounds`, `auto_trigger`, `auto_capped`: bookkeeping for automatic fix rounds (see `docs/workflows.md`).
 - Work item keys and repo keys are stored lowercase.
 - `submit_action` events: source `ui`, payload `{actor, action, data}`, type `ApprovalGranted` (approve), `CancelRequested` (cancel) or `RetryRequested` (retry) or `MergeRequested` (merge). The last three are engine-internal and not part of the connector `EventType` set. A rejected `merge` (the actor lacks write access, or the readiness checklist is not all `ok`) is a reducer rejection, recorded in `transitions.note`, not a SQL error from `submit_action`.
 - Columns beyond the docs: `transitions.event_type`, `jobs.deadline`, `jobs.created_at`. `work_items.project_id` is text (the Project name), exposed as `project` in the view.
@@ -337,7 +339,7 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 | `ENZARB_EXECUTOR_URL` (default `http://enzarb-workflows-executor.enzarb.svc:8081`) | workflows executor (callback base) |
 | `ENZARB_EXECUTOR_CALLBACK_SECRET` | workflows executor (callback token = `hex(HMAC-SHA256(secret, run_id))`; shared by all replicas) |
 | `RUST_LOG` | all Rust services |
-| `ENZARB_ROLES`, `ENZARB_DB_MAX_CONNECTIONS` (10), `ENZARB_EXECUTOR_LISTEN` (`0.0.0.0:8081`), `ENZARB_HEALTH_LISTEN` (`0.0.0.0:8082`) | workflows |
+| `ENZARB_ROLES`, `ENZARB_DB_MAX_CONNECTIONS` (10), `ENZARB_MAX_AUTO_ROUNDS` (3; `0` disables automatic fix rounds), `ENZARB_EXECUTOR_LISTEN` (`0.0.0.0:8081`), `ENZARB_HEALTH_LISTEN` (`0.0.0.0:8082`) | workflows |
 | `PROXY_LISTEN` (`0.0.0.0:8080`), `PROXY_IDLE_TIMEOUT_SECS` (2100; the proxy clamps lower values up to `ENZARB_CHAT_IDLE_SECS` with a warn log), `PROXY_PING_INTERVAL_SECS` (30, browser websocket ping), `PROXY_MAX_MESSAGE_BYTES`, `PROXY_SECRET_TTL_SECS` (30) | sandbox-proxy |
 | `RECEIVER_LISTEN` (default `0.0.0.0:8080`) | connectors receiver |
 

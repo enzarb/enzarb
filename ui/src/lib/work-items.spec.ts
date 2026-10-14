@@ -16,6 +16,7 @@ import {
 	shouldRefresh,
 	stateTone,
 	waitingFor,
+	waitingLabel,
 	type NeedsYou,
 	type WorkItemSummary
 } from './work-items.ts';
@@ -44,6 +45,28 @@ describe('needs-you classification', () => {
 		expect(classifyNeedsYou({ workflow: 'issue', state: 'Stale', stateData: null })?.category).toBe(
 			'failed'
 		);
+	});
+	it('labels why a change request is waiting and keeps round_limit in the queue', () => {
+		expect(waitingLabel({ waiting_reason: 'human_review' })).toBe('Waiting for a human review');
+		expect(waitingLabel({ waiting_reason: 'enzarb_fixing' })).toBe(
+			'enzarb is fixing review findings'
+		);
+		expect(waitingLabel({ waiting_reason: 'round_limit' })).toMatch(/^Round limit reached/);
+		expect(waitingLabel({ waiting_reason: '' })).toBeNull();
+		expect(waitingLabel({ waiting_reason: 'nope' })).toBeNull();
+		expect(waitingLabel(null)).toBeNull();
+		expect(classifyNeedsYou(cr('AwaitingChanges', { waiting_reason: 'round_limit' }))).toEqual({
+			category: 'blocked',
+			reason: waitingLabel({ waiting_reason: 'round_limit' })
+		});
+		expect(classifyNeedsYou(cr('AwaitingChanges', { waiting_reason: 'human_review' }))).toEqual({
+			category: 'blocked',
+			reason: 'Waiting for a human review'
+		});
+		// enzarb is working on it: nobody needs to act.
+		expect(
+			classifyNeedsYou(cr('AddressingComments', { waiting_reason: 'enzarb_fixing' }))
+		).toBeNull();
 	});
 	it('ignores terminal, unknown and unrelated items and malformed data', () => {
 		const failedCi = { checklist: { ci: { status: 'failed' } } };

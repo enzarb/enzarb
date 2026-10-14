@@ -67,7 +67,10 @@
 {/snippet}
 {#snippet projectCell(w: WorkItemSummary)}{w.project}{/snippet}
 {#snippet workflow(w: WorkItemSummary)}{w.workflow}{/snippet}
-{#snippet state(w: WorkItemSummary)}<WorkStateChip state={w.state} />{/snippet}
+{#snippet state(w: WorkItemSummary)}
+	<WorkStateChip state={w.state} />
+	{#if w.waiting}<span class="ez-muted">{w.waiting}</span>{/if}
+{/snippet}
 {#snippet updated(w: WorkItemSummary)}
 	<time datetime={w.updatedAt}>{w.updatedAt.slice(0, 16).replace('T', ' ')}</time>
 {/snippet}
