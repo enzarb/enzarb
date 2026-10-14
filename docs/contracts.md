@@ -13,6 +13,7 @@ enzarb-connector        = { path = "../connectors/crates/connector" }
 enzarb-connector-github = { path = "../connectors/crates/connector-github" }
 ```
 - A library change and its consumers land in the same PR. Deployed components still roll out independently, so wire and schema changes stay backward compatible.
+- `workflows_api` / `app_api` view and schema additions (new columns, view fields) must be backward compatible for one release: add, never rename or drop in the same release. Consumers should tolerate a missing new column for one chart version where practical. The main guard is the chart's migration ordering (workflows migrate before ui); the second is that a commit releasing several components publishes a single chart version pinning all of them (docs/ci.md "Releases").
 - Crate paths:
   - `proto/crates/enzarb-proto`
   - `operator/crates/enzarb-crds`
