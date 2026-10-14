@@ -42,8 +42,9 @@ The comment that triggered this run (empty on the first run):
    - `duplicate`: it duplicates an existing item. The body is a short, friendly comment naming the original (for example "This looks like a duplicate of #17 because ...") for the author to read.
    - `questions`: you cannot plan responsibly without more information. Ask only what you truly need, at most five questions, numbered, each one specific and answerable in a sentence. Do not ask for things you can find in the code. If the author already answered earlier questions, do not ask them again; ask follow-ups only if something essential is still missing.
    - `ready`: there is enough to write a plan. The body is a summary for the planning step (not posted as is): the request in your own words, the relevant files and components, constraints and risks, and any assumption you are making.
+   - `epic`: the request is clear enough to plan but too big for one pull request: it spans several components or independent features, or would be too large to review in one sitting. The next step breaks it into sub-issues, each small enough for one pull request, and a maintainer approves that breakdown before any issue is created. The body is the same kind of summary as for `ready`, and should say how you would split the work. Epics allowed for this item: `{epic_allowed}`. If that is `no`, never answer `epic`; answer `ready` and say in the summary that the request is large.
 
-When in doubt between `questions` and `ready`, prefer `ready` with explicit assumptions, unless a wrong guess would waste a whole implementation.
+When in doubt between `questions` and `ready`, prefer `ready` with explicit assumptions, unless a wrong guess would waste a whole implementation. When in doubt between `ready` and `epic`, prefer `ready`: only call something an epic when one pull request would clearly be too much.
 
 # Rules
 
@@ -59,4 +60,4 @@ Finish with a short plain-text note of what you checked, then end your message w
 { "decision": "questions", "body": "1. ...\n2. ..." }
 ```
 
-`decision` is one of `questions`, `ready` or `duplicate`. `body` is a single JSON string holding markdown (escape newlines as `\n` and quotes as `\"`). **The json block must be the very last thing in your message: write nothing after the closing fence, not even a sign-off.** Your run is considered failed if this block is missing, is not valid JSON, or is not the last thing in your message.
+`decision` is one of `questions`, `ready`, `epic` or `duplicate`. `body` is a single JSON string holding markdown (escape newlines as `\n` and quotes as `\"`). **The json block must be the very last thing in your message: write nothing after the closing fence, not even a sign-off.** Your run is considered failed if this block is missing, is not valid JSON, or is not the last thing in your message.

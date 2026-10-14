@@ -7,7 +7,7 @@ use enzarb_connector::{ChangeRequestSpec, Progress, ProgressTarget, RepoKey};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::prompt::{PromptContext, render_prompt};
+use super::prompt::{PromptContext, SubIssue, render_prompt};
 use super::{Ctx, Effect, EngineEvent, JobKind};
 
 /// Acknowledgements land within seconds: above everything else.
@@ -168,6 +168,17 @@ impl<'a> Fx<'a> {
             "onto": onto,
         });
         self.job(JobKind::RetargetChangeRequest, PRIORITY_COMMENT, input);
+    }
+
+    /// Create `subs` (already in creation order) as sub-issues of this epic. `depth` is the
+    /// children's nesting depth (the epic's own plus one).
+    pub fn create_sub_issues(&mut self, depth: u32, subs: &[SubIssue]) {
+        let input = json!({
+            "item": self.ctx.work_item,
+            "depth": depth,
+            "sub_issues": subs,
+        });
+        self.job(JobKind::CreateSubIssues, PRIORITY_COMMENT, input);
     }
 
     pub fn cancel_jobs(&mut self) {

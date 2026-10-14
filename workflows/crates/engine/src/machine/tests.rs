@@ -2,6 +2,7 @@
 
 mod auto_rounds;
 mod dependencies;
+mod epic;
 mod human_approval;
 mod merge;
 
@@ -44,6 +45,7 @@ fn ctx_for(number: u64, perm: Permission) -> Ctx {
         orphan_owner: false,
         open_dependencies: Vec::new(),
         stack_parent: None,
+        epic_parent: None,
     }
 }
 
@@ -107,6 +109,7 @@ fn conn(
         merged: None,
         review: None,
         ci: None,
+        label: None,
     };
     EngineEvent {
         id: id.into(),
@@ -429,7 +432,7 @@ fn comment_bodies(t: &Transition) -> Vec<String> {
         .collect()
 }
 
-const ALL_ISSUE_PHASES: [IssuePhase; 10] = [
+const ALL_ISSUE_PHASES: [IssuePhase; 12] = [
     IssuePhase::Triaging,
     IssuePhase::AwaitingAnswers,
     IssuePhase::Stale,
@@ -437,6 +440,8 @@ const ALL_ISSUE_PHASES: [IssuePhase; 10] = [
     IssuePhase::Planning,
     IssuePhase::AwaitingApproval,
     IssuePhase::Implementing,
+    IssuePhase::Decomposing,
+    IssuePhase::AwaitingChildren,
     IssuePhase::Done,
     IssuePhase::Failed,
     IssuePhase::Cancelled,
@@ -2406,6 +2411,7 @@ fn job_kind_names_match_the_documented_kinds() {
         (JobKind::AgentTask, "agent_task"),
         (JobKind::CheckMergeReadiness, "check_merge_readiness"),
         (JobKind::MergeChangeRequest, "merge_change_request"),
+        (JobKind::CreateSubIssues, "create_sub_issues"),
     ];
     for (k, name) in all {
         assert_eq!(k.as_str(), name);
@@ -2433,6 +2439,7 @@ fn from_row_parses_every_event_type() {
                 merged: None,
                 review: None,
                 ci: None,
+                label: None,
             },
         );
         let payload = serde_json::to_value(&e).unwrap();

@@ -1,18 +1,19 @@
 //! Connector jobs: `set_progress`, `post_comment`, `open_change_request`,
 //! `check_merge_readiness`, `merge_change_request`.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use enzarb_connector::{
     ChangeRequestSpec, CiState, Connector, MergeOutcome, MergeReadiness, Progress, ProgressTarget,
-    UpdateBranchOutcome, WorkItemKey,
+    UpdateBranchOutcome, WorkItemKey, epic,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{Claimed, Done, Executor, JobError};
 use crate::conflict::emit_merge_conflict;
-use crate::machine::JobKind;
+use crate::machine::{JobKind, SubIssue};
 
 #[derive(Deserialize)]
 struct SetProgress {
@@ -45,6 +46,30 @@ struct MergeCr {
     expected_head_sha: String,
     #[serde(default)]
     actor: String,
+}
+
+#[derive(Deserialize)]
+struct CreateSubIssues {
+    item: WorkItemKey,
+    depth: u32,
+    /// In creation order: every entry comes after the ones it depends on.
+    sub_issues: Vec<SubIssue>,
+}
+
+/// The description of a sub-issue: the plan's text, what it waits for (parsed as text
+/// dependencies when the issue opens), and the hidden markers that tie it to its epic.
+fn child_body(epic: &WorkItemKey, depth: u32, s: &SubIssue, blockers: &[WorkItemKey]) -> String {
+    let mut body = s.body.trim().to_string();
+    body.push_str(&format!("\n\nPart of the epic #{}.", epic.number));
+    if !blockers.is_empty() {
+        let list: Vec<String> = blockers.iter().map(|b| format!("#{}", b.number)).collect();
+        body.push_str(&format!("\n\nBlocked by {}", list.join(", ")));
+    }
+    format!(
+        "{body}\n\n{}\n{}",
+        epic::epic_marker(epic, &s.key),
+        epic::depth_marker(depth)
+    )
 }
 
 /// How long a merge waits before retrying when another merge holds the repository lock.
@@ -135,6 +160,11 @@ impl Executor {
                 tx.commit().await.map_err(lock_error)?;
                 out
             }
+            JobKind::CreateSubIssues => {
+                let i: CreateSubIssues = input(job)?;
+                let c = self.connector_for(&i.item.repo.connector)?;
+                self.create_sub_issues(c.as_ref(), &i).await?
+            }
             other => {
                 return Err(JobError::permanent(format!(
                     "{} is not a connector job",
@@ -143,6 +173,66 @@ impl Executor {
             }
         };
         Ok(Done::Output(output))
+    }
+
+    /// Create the epic's sub-issues, link them to it and record who waits for whom. Safe to
+    /// run again after a failure part-way: each issue is found by its marker, links and
+    /// dependencies are idempotent, so a retry resumes where the last run stopped.
+    async fn create_sub_issues(
+        &self,
+        c: &dyn Connector,
+        i: &CreateSubIssues,
+    ) -> Result<Value, JobError> {
+        let mut made: HashMap<&str, WorkItemKey> = HashMap::new();
+        let mut children: Vec<Value> = Vec::new();
+        let mut edges: Vec<(WorkItemKey, Vec<WorkItemKey>)> = Vec::new();
+        for s in &i.sub_issues {
+            let mut blockers = Vec::new();
+            for d in &s.depends_on {
+                let Some(b) = made.get(d.as_str()) else {
+                    return Err(JobError::permanent(format!(
+                        "sub-issue {:?} depends on {d:?}, which is not created before it",
+                        s.key
+                    )));
+                };
+                blockers.push(b.clone());
+            }
+            let body = child_body(&i.item, i.depth, s, &blockers);
+            let idem = format!("epic-{}-{}", i.item, s.key);
+            let child = c
+                .create_issue(&i.item.repo, &s.title, &body, &[], &idem)
+                .await?;
+            made.insert(&s.key, child.clone());
+            children.push(json!({ "key": s.key, "item": child, "title": s.title }));
+            edges.push((child, blockers));
+        }
+        for (child, blockers) in &edges {
+            // Sub-issue links are a presentation of the breakdown; a connector without them
+            // does not stop the epic. Anything worth retrying does.
+            match c.link_sub_issue(&i.item, child).await {
+                Ok(()) => {}
+                Err(e) if e.is_retryable() => return Err(e.into()),
+                Err(e) => {
+                    tracing::warn!(error = %e, epic = %i.item, child = %child, "linking a sub-issue failed")
+                }
+            }
+            // Native "blocked by" relationships, best effort: the database below is the
+            // source of truth for the engine.
+            for blocker in blockers {
+                let key = format!("epic-dep-{}-{}-{}", i.item, child, blocker);
+                if let Err(e) = c.add_dependency(child, blocker, &key).await {
+                    tracing::debug!(error = %e, "adding a native dependency failed");
+                }
+            }
+            let key = format!("epic-dep-{}-{}-{}", i.item, i.item, child);
+            if let Err(e) = c.add_dependency(&i.item, child, &key).await {
+                tracing::debug!(error = %e, "adding the epic's native dependency failed");
+            }
+        }
+        crate::dependencies::record_epic(&self.pool, &i.item, &edges)
+            .await
+            .map_err(|e| JobError::transient(format!("recording epic dependencies: {e}")))?;
+        Ok(json!({ "children": children }))
     }
 
     /// Squash-merge after re-checking readiness. A refused merge is an output the machine

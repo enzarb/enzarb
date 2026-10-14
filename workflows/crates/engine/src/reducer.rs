@@ -33,7 +33,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use enzarb_connector::{Actor, Permission, RepoKey, WorkItemKey};
+use enzarb_connector::epic::parse_epic_marker;
+use enzarb_connector::{Actor, EventType, ItemKind, Permission, RepoKey, WorkItemKey};
 use sqlx::{PgPool, Postgres, Transaction};
 use tokio::sync::{Notify, watch};
 
@@ -41,7 +42,7 @@ use crate::db::{Event as EventRow, WorkItem};
 use crate::error::Error;
 use crate::index::{ProjectIndex, ProjectInfo};
 use crate::machine::{
-    self, CrPhase, Ctx, Effect, EngineEvent, EventPayload, Triggers, WORKFLOW_VERSION,
+    self, CrPhase, Ctx, Effect, EngineEvent, EpicParent, EventPayload, Triggers, WORKFLOW_VERSION,
     WorkflowState,
 };
 use crate::permission::PermissionResolver;
@@ -363,7 +364,16 @@ impl Reducer {
                 None
             };
 
+        // The stored epic that a bot-authored issue claims as its parent. Only an opening
+        // event of an unknown work item can use it; the machine decides whether to trust it.
+        let epic_parent = if existing.is_none() {
+            epic_parent(&mut tx, ev, &project.name).await?
+        } else {
+            None
+        };
+
         let ctx = Ctx {
+            epic_parent,
             stack_parent,
             orphaned,
             orphan_owner,
@@ -495,6 +505,55 @@ impl Reducer {
         tx.commit().await?;
         Ok(Outcome::Processed)
     }
+}
+
+/// The epic named by the marker in the body of an issue-opening event, if that epic is a
+/// work item of `project` that is creating or waiting for its sub-issues. Everything else is
+/// `None`: no marker, an unknown parent, another Project, another phase.
+async fn epic_parent(
+    tx: &mut Transaction<'_, Postgres>,
+    ev: &EngineEvent,
+    project: &str,
+) -> Result<Option<EpicParent>, Error> {
+    let EventPayload::Connector(e) = &ev.payload else {
+        return Ok(None);
+    };
+    if e.event_type != EventType::WorkItemOpened || e.data.item.kind != ItemKind::Issue {
+        return Ok(None);
+    }
+    let Some((parent, _)) = parse_epic_marker(&e.data.item.body) else {
+        return Ok(None);
+    };
+    let parent = normalize_key(&parent);
+    let row: Option<(String, serde_json::Value, Option<String>)> = sqlx::query_as(
+        "SELECT state, state_data, project_id FROM work_items WHERE key = $1 AND workflow = 'issue'",
+    )
+    .bind(parent.to_string())
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((state, data, project_id)) = row else {
+        return Ok(None);
+    };
+    if project_id.as_deref() != Some(project)
+        || !matches!(state.as_str(), "Decomposing" | "AwaitingChildren")
+        || data.get("epic").and_then(|v| v.as_bool()) != Some(true)
+    {
+        return Ok(None);
+    }
+    let sub_keys = data
+        .get("sub_issues")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|s| s.get("key").and_then(|k| k.as_str()).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(Some(EpicParent {
+        key: parent,
+        depth: data.get("epic_depth").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+        sub_keys,
+    }))
 }
 
 /// Mark the event processed with an `ignored` transition (no state change).
