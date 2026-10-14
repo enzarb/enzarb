@@ -115,6 +115,13 @@ stateDiagram-v2
   Merging --> Merged: merge job result merged / already_merged
   Merging --> Reviewing: head_moved
   Merging --> AwaitingChanges: not_mergeable (merge_error set)
+  Merging --> Reviewing: updated_branch (behind base: base merged into the branch, CI reruns)
+  AwaitingChanges --> ResolvingConflicts: MergeConflictDetected (base_sha)
+  ReadyToMerge --> ResolvingConflicts: MergeConflictDetected (base_sha)
+  ResolvingConflicts --> Reviewing: conflicts resolved, merge commit pushed
+  ResolvingConflicts --> ResolvingConflicts: blocked, 1st attempt on this base_sha
+  ResolvingConflicts --> ConflictParked: blocked, 2nd attempt on this base_sha
+  ConflictParked --> ResolvingConflicts: retry / mention (write access) or new base_sha
   AwaitingChanges --> Merged: WorkItemClosed (merged)
   AwaitingChanges --> Closed: WorkItemClosed
   Merged --> [*]
@@ -134,6 +141,9 @@ enzarb never merges its own PRs on its own. A person triggers the merge from the
   - `merged` or `already_merged` → `Merged`;
   - `head_moved` → `Reviewing`;
   - `not_mergeable` → `AwaitingChanges` with `state_data.merge_error` set.
+- **Behind the base:** when the readiness re-check inside the merge job reports `mergeable_state == "behind"`, it does not merge. It calls `Connector::update_branch` (GitHub `PUT /pulls/{n}/update-branch`: a merge of the base into the branch, never a rebase or force-push) and returns `updated_branch`. The new head is reviewed and CI reruns; a person clicks Merge again once it is `ReadyToMerge`. A refused update (conflict) is `not_mergeable`.
+- **Serialised per repository:** the merge job holds `pg_try_advisory_xact_lock(hashtext('merge:<repo>'))` for the duration of the readiness re-check and merge. If another merge of the same repository holds it, the job is re-queued untouched (a transient error with a short `retry_after`). The lock ends with the transaction, so a crashed worker cannot leave it held. Merges in different repositories do not block each other. A PR left behind by an earlier merge is then updated (above) or sent to conflict resolution before it merges.
+- **Conflict resolution:** `MergeConflictDetected {base_sha}` (from the base-head poll or a readiness check that says `mergeable == false`) starts `AgentResolveConflicts`: merge the base into the branch, never rebase or force-push, run the checks, push. At most 2 attempts per `base_sha` (`state_data.resolve_attempts {base_sha, count}`; the older single `resolve_attempted_base_sha` still reads as 1 attempt). After the 2nd blocked attempt the item is `ConflictParked` and appears under Needs you with "Conflict could not be resolved automatically". A new base commit resets the count. `mergeable == null` (GitHub computes it lazily) is neither a conflict nor a final answer: the poll retries it on the next pass.
 - **New commits during `Merging`** do not cancel the merge. It is pinned to the head, so GitHub refuses it and the job returns `head_moved`.
 - **Squash only.** The commit title comes from `squash_title(title, head_ref)` (workflows `machine/title.rs`): the PR title when it is already a Conventional Commit, otherwise a type prefix derived for the PR. See the engine code for the exact derivation.
 - **Invariant:** nothing but a UI Merge action merges. No event from a connector, comment or mention, and no timer, can cause `MergeRequested`.
