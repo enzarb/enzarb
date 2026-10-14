@@ -2026,7 +2026,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: vapid
-          image: ghcr.io/enzarb/enzarb-ui:0.26.0
+          image: ghcr.io/enzarb/enzarb-ui:0.29.0
           imagePullPolicy: IfNotPresent
           command:
             - sh
