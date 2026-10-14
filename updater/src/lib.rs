@@ -7,5 +7,6 @@ pub mod charts;
 pub mod filter;
 pub mod poll;
 pub mod registry;
+pub mod rollout;
 pub mod signature;
 pub mod update;
