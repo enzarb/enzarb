@@ -56,7 +56,7 @@ describe('TaskTable', () => {
 	it('shows tokens in, out and cost, compact, with a dash for unknown', async () => {
 		render(TaskTable, { items, label: 'Work' });
 		const alpha = page.getByRole('row').nth(1);
-		await expect.element(alpha).toHaveTextContent('12.3k');
+		await expect.element(alpha).toHaveTextContent('21.4k'); // uncached 12345 + cache read 9000 + cache write 50
 		await expect.element(alpha).toHaveTextContent('1.2k');
 		await expect.element(alpha).toHaveTextContent('$0.42');
 		const beta = page.getByRole('row').nth(2);
@@ -71,8 +71,9 @@ describe('TaskTable', () => {
 
 	it('breaks cache tokens down in a tooltip on the In figure', async () => {
 		render(TaskTable, { items: [items[0]], label: 'Work' });
-		await userEvent.hover(page.getByRole('button', { name: '12.3k' }));
-		await expect.element(page.getByText('Cache read 9k · Cache write 50')).toBeVisible();
+		await userEvent.hover(page.getByRole('button', { name: '21.4k' }));
+		await expect
+			.element(page.getByText('Uncached 12.3k · Cache read 9k · Cache write 50')).toBeVisible();
 	});
 
 	it('sorts by a usage column, unknown last in both directions', async () => {

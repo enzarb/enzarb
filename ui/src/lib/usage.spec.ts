@@ -5,6 +5,7 @@ import {
 	formatTokens,
 	parseUsage,
 	sumUsage,
+	totalInput,
 	type Usage
 } from './usage.ts';
 
@@ -124,12 +125,30 @@ describe('sumUsage', () => {
 	});
 });
 
-describe('cacheBreakdown', () => {
-	it('names read and write, with dashes for unknown', () => {
-		expect(cacheBreakdown(u({ cacheReadTokens: 9000, cacheWriteTokens: 50 }))).toBe(
-			'Cache read 9k · Cache write 50'
+describe('totalInput', () => {
+	it('adds uncached input, cache read and cache write', () => {
+		expect(totalInput(u({ inputTokens: 1200, cacheReadTokens: 9000, cacheWriteTokens: 50 }))).toBe(
+			10_250
 		);
-		expect(cacheBreakdown(u({ cacheReadTokens: 9000 }))).toBe('Cache read 9k · Cache write —');
-		expect(cacheBreakdown(null)).toBe('Cache read — · Cache write —');
+	});
+	it('skips fields that were not reported', () => {
+		expect(totalInput(u({ cacheReadTokens: 9000 }))).toBe(9000);
+		expect(totalInput(u({ inputTokens: 0 }))).toBe(0);
+	});
+	it('is null when nothing is reported', () => {
+		expect(totalInput(u({ outputTokens: 5 }))).toBeNull();
+		expect(totalInput(null)).toBeNull();
+	});
+});
+
+describe('cacheBreakdown', () => {
+	it('names uncached, read and write, with dashes for unknown', () => {
+		expect(
+			cacheBreakdown(u({ inputTokens: 1200, cacheReadTokens: 9000, cacheWriteTokens: 50 }))
+		).toBe('Uncached 1.2k · Cache read 9k · Cache write 50');
+		expect(cacheBreakdown(u({ cacheReadTokens: 9000 }))).toBe(
+			'Uncached — · Cache read 9k · Cache write —'
+		);
+		expect(cacheBreakdown(null)).toBe('Uncached — · Cache read — · Cache write —');
 	});
 });

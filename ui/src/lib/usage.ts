@@ -88,7 +88,19 @@ export function sumUsage(list: readonly (Usage | null | undefined)[]): Usage | n
 	return isEmpty(total) ? null : total;
 }
 
-/** Tooltip text for the cache part of a usage, e.g. `Cache read 9k · Cache write 50`. */
+/**
+ * Everything sent to the model: uncached input plus cache reads and writes (`inputTokens` alone is
+ * only the uncached part). Null fields are skipped; null when none of the three is reported.
+ */
+export function totalInput(u: Usage | null | undefined): number | null {
+	if (!u) return null;
+	const parts = [u.inputTokens, u.cacheReadTokens, u.cacheWriteTokens].filter(
+		(x): x is number => x !== null
+	);
+	return parts.length === 0 ? null : parts.reduce((a, b) => a + b, 0);
+}
+
+/** Tooltip text for the input breakdown, e.g. `Uncached 1.2k · Cache read 9k · Cache write 50`. */
 export function cacheBreakdown(u: Usage | null | undefined): string {
-	return `Cache read ${formatTokens(u?.cacheReadTokens)} · Cache write ${formatTokens(u?.cacheWriteTokens)}`;
+	return `Uncached ${formatTokens(u?.inputTokens)} · Cache read ${formatTokens(u?.cacheReadTokens)} · Cache write ${formatTokens(u?.cacheWriteTokens)}`;
 }
