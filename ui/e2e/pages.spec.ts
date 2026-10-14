@@ -38,6 +38,33 @@ for (const path of [`/projects/${E2E_PROJECT}`, `/projects/${E2E_PROJECT}/settin
 	});
 }
 
+test('/work does not scroll sideways on a phone', async ({ page }) => {
+	await page.setViewportSize({ width: 360, height: 740 });
+	await installFakeSandbox(page);
+	await installFakeLive(page);
+	await page.goto('/work');
+	const board = page.getByRole('group', { name: 'Task board' });
+	await expect(board).toBeVisible();
+	await page.waitForTimeout(1500);
+	// Columns stack: every column starts at the board's left edge, one below the other.
+	const boxes = await board.locator('.ez-board__col').evaluateAll((cols) =>
+		cols.map((c) => {
+			const r = c.getBoundingClientRect();
+			return { x: r.x, y: r.y };
+		})
+	);
+	expect(boxes.length).toBeGreaterThan(1);
+	for (const [i, b] of boxes.entries()) {
+		expect(b.x).toBe(boxes[0].x);
+		if (i > 0) expect(b.y).toBeGreaterThan(boxes[i - 1].y);
+	}
+	const { scrollWidth, clientWidth } = await page.evaluate(() => ({
+		scrollWidth: document.documentElement.scrollWidth,
+		clientWidth: document.documentElement.clientWidth
+	}));
+	expect(scrollWidth).toBeLessThanOrEqual(clientWidth);
+});
+
 test('serves the web app manifest and its icons without a session', async ({
 	browser,
 	baseURL
