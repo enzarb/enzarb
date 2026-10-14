@@ -8,4 +8,5 @@ export const isPublicPath = (path: string, dev: boolean): boolean =>
 	path === '/login' ||
 	path.startsWith('/login/') ||
 	PROBE_PATHS.has(path) ||
+	path === '/offline' ||
 	(dev && (path === '/dev' || path.startsWith('/dev/')));
