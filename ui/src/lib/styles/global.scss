@@ -335,6 +335,29 @@ img {
 	font-family: var(--ez-mono);
 }
 
+// Token usage: a figure with a tooltip breakdown, and the one-line summary of a job or item
+.ez-usage {
+	padding: 0;
+	border: 0;
+	background: none;
+	color: inherit;
+	font: inherit;
+	font-variant-numeric: tabular-nums;
+	text-decoration: underline dotted;
+	text-underline-offset: 0.2em;
+	cursor: help;
+}
+
+.ez-usage-line {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--ez-space-1) var(--ez-space-3);
+	margin: 0;
+	color: var(--ez-text-muted);
+	font-size: var(--ez-text-sm);
+	font-variant-numeric: tabular-nums;
+}
+
 // Vertical rhythm between siblings; `--ez-gap` overrides the step.
 .ez-stack {
 	display: flex;
@@ -882,6 +905,28 @@ img {
 		min-width: 0;
 	}
 
+	&__num {
+		text-align: right;
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
+	}
+
+	// a sortable column header: looks like the header text, behaves like a button
+	&__sort {
+		padding: 0;
+		border: 0;
+		background: none;
+		color: inherit;
+		font: inherit;
+		letter-spacing: inherit;
+		text-transform: inherit;
+		cursor: pointer;
+
+		&:hover {
+			color: var(--ez-text);
+		}
+	}
+
 	&__actions {
 		width: 1%;
 		text-align: right;
@@ -1243,6 +1288,12 @@ textarea.ez-control {
 	&__error {
 		color: var(--ez-danger-text, var(--ez-text));
 	}
+}
+
+// Why a change request is waiting (list cell and detail header).
+.ez-wait-banner {
+	margin: 0;
+	font-weight: var(--ez-weight-medium);
 }
 
 .ez-plan {

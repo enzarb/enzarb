@@ -11,12 +11,14 @@ import {
 	itemUrl,
 	keyToUrl,
 	parseReadiness,
+	parseWait,
 	parseWorkId,
 	primaryAction,
 	shouldRefresh,
 	stateTone,
 	waitingFor,
 	waitingLabel,
+	waitLinks,
 	type NeedsYou,
 	type WorkItemSummary
 } from './work-items.ts';
@@ -90,6 +92,94 @@ describe('needs-you classification', () => {
 		expect(primaryAction('merge')).toBe('merge');
 		expect(primaryAction('failed')).toBe('retry');
 		expect(primaryAction('blocked')).toBeNull();
+		expect(primaryAction('review')).toBeNull();
+		expect(primaryAction('decision')).toBeNull();
+	});
+	const withWait = (waiting_on: string, reason: string, text = 'T', extra = {}) => ({
+		wait: { waiting_on, reason, text, ...extra }
+	});
+	it('classifies a change request by its wait reason', () => {
+		expect(
+			classifyNeedsYou(
+				cr('AwaitingChanges', withWait('human', 'awaiting_review', 'Waiting for your review'))
+			)
+		).toEqual({
+			category: 'review',
+			reason: null,
+			text: 'Waiting for your review'
+		});
+		expect(
+			classifyNeedsYou(cr('ReadyToMerge', withWait('human', 'ready_to_merge')))?.category
+		).toBe('merge');
+		expect(
+			classifyNeedsYou(cr('AwaitingChanges', withWait('human', 'decision_needed')))?.category
+		).toBe('decision');
+		for (const reason of ['conflict_parked', 'round_limit', 'enzarb_failed']) {
+			expect(classifyNeedsYou(cr('ConflictParked', withWait('human', reason)))?.category).toBe(
+				'blocked'
+			);
+		}
+		for (const [on, reason] of [
+			['enzarb', 'reviewing'],
+			['enzarb', 'addressing_comments'],
+			['enzarb', 'resolving_conflict'],
+			['enzarb', 'ci_failed_fixing'],
+			['enzarb', 'changes_requested_fixing'],
+			['ci', 'ci_pending'],
+			['github', 'merging']
+		]) {
+			// enzarb, CI or GitHub is on it: not the user's turn, even when the state alone would say so
+			expect(classifyNeedsYou(cr('AwaitingChanges', withWait(on, reason)))).toBeNull();
+		}
+	});
+	it('falls back to the state when wait is absent, null or unknown', () => {
+		for (const wait of [undefined, null, 'x', { waiting_on: 'bogus' }]) {
+			expect(classifyNeedsYou(cr('AwaitingChanges', { wait }))?.category).toBe('blocked');
+		}
+		expect(classifyNeedsYou(cr('Merged', withWait('human', 'awaiting_review')))).toBeNull();
+	});
+	it('a failed change request still offers retry', () => {
+		expect(classifyNeedsYou(cr('Failed', withWait('human', 'enzarb_failed')))?.category).toBe(
+			'failed'
+		);
+	});
+	it('parseWait reads state_data.wait defensively', () => {
+		expect(parseWait(withWait('ci', 'ci_pending', ' Waiting for CI '))).toEqual({
+			waitingOn: 'ci',
+			reason: 'ci_pending',
+			text: 'Waiting for CI',
+			url: null
+		});
+		const url = 'https://github.com/a/b/pull/1#issuecomment-5';
+		expect(parseWait(withWait('human', 'decision_needed', 'T', { url }))?.url).toBe(url);
+		expect(
+			parseWait(withWait('human', 'decision_needed', 'T', { url: 'javascript:alert(1)' }))?.url
+		).toBeNull();
+		for (const bad of [null, undefined, 5, {}, { wait: null }, { wait: { waiting_on: 'x' } }])
+			expect(parseWait(bad)).toBeNull();
+	});
+	it('waitLinks gives the buttons and their urls', () => {
+		const pr = 'https://github.com/acme/web/pull/7';
+		const w = (reason: string, extra = {}) => parseWait(withWait('human', reason, 'T', extra));
+		expect(waitLinks(w('awaiting_review'), pr)).toEqual([
+			{ label: 'Review on GitHub', href: `${pr}/files` }
+		]);
+		expect(waitLinks(parseWait(withWait('ci', 'ci_pending')), pr)).toEqual([
+			{ label: 'View checks', href: `${pr}/checks` }
+		]);
+		for (const reason of ['enzarb_failed', 'round_limit', 'conflict_parked'])
+			expect(waitLinks(w(reason), pr)).toEqual([{ label: 'Open PR', href: pr }]);
+		const comment = `${pr}#issuecomment-9`;
+		expect(waitLinks(w('decision_needed', { url: comment }), pr)).toEqual([
+			{ label: 'View comment', href: comment }
+		]);
+		expect(waitLinks(w('decision_needed'), pr)).toEqual([]);
+		expect(waitLinks(w('ready_to_merge'), pr)).toEqual([]);
+		expect(waitLinks(parseWait(withWait('enzarb', 'reviewing')), pr)).toEqual([]);
+		// no PR url (null, or the issue url derived from the key): no link rather than a wrong one
+		expect(waitLinks(w('awaiting_review'), null)).toEqual([]);
+		expect(waitLinks(w('awaiting_review'), 'https://github.com/acme/web/issues/7')).toEqual([]);
+		expect(waitLinks(null, pr)).toEqual([]);
 	});
 	it('applyNeedsYouChange inserts, replaces, orders oldest first and removes', () => {
 		const mk = (id: number, updatedAt: string, needs: NeedsYou | null): WorkItemSummary => ({

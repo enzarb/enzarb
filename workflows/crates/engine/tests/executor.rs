@@ -221,6 +221,7 @@ async fn serve(sb: Arc<Sb>, stream: tokio::net::TcpStream) {
                                 branch: run.branch.clone(),
                                 head_sha: "abc123".into(),
                                 pushed,
+                                usage: None,
                             };
                             let resp = reqwest::Client::new()
                                 .post(&run.callback_url)
@@ -245,6 +246,7 @@ async fn serve(sb: Arc<Sb>, stream: tokio::net::TcpStream) {
                             state: r.phase,
                             exit_code: r.phase.is_terminal().then_some(0),
                             summary: r.summary.clone(),
+                            usage: None,
                         });
                 match info {
                     Some(i) => {
@@ -1584,6 +1586,7 @@ fn finished(run_id: &str, outcome: RunOutcome) -> RunFinished {
         branch: "enzarb/triage-1".into(),
         head_sha: "abc".into(),
         pushed: false,
+        usage: None,
     }
 }
 
@@ -1656,6 +1659,84 @@ async fn callback_authenticates_and_is_idempotent() {
 
     let health = reqwest::get(format!("{}/healthz", h.base)).await.unwrap();
     assert_eq!(health.status(), 200);
+}
+
+async fn job_usage(pool: &sqlx::PgPool, id: i64) -> Option<serde_json::Value> {
+    sqlx::query_scalar("SELECT usage FROM workflows.jobs WHERE id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn callback_persists_usage_once_per_run_and_sums_runs() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    h.fake.add_thread(key(1), thread_with("a"));
+    let wi = new_item(pool, 1, "enzarb").await;
+    let id = new_job(
+        pool,
+        wi,
+        "enzarb",
+        "agent_triage",
+        0,
+        "k:a",
+        agent_input(1, "enzarb/triage-1", false),
+    )
+    .await;
+    h.exec.drain().await;
+    assert_eq!(job_usage(pool, id).await, None);
+    let rid = format!("job-{id}");
+    let url = format!("{}/v1/runs/{rid}/finished", h.base);
+    let good = callback_token(b"test-secret", &rid);
+
+    // A failed run still reports its spend; a retried callback is not counted twice.
+    let mut body = finished(&rid, RunOutcome::Failed);
+    body.usage = Some(enzarb_proto::Usage {
+        input_tokens: Some(100),
+        output_tokens: Some(10),
+        models: vec!["m1".into()],
+        ..Default::default()
+    });
+    assert_eq!(post_callback(&url, &good, &body).await, 200);
+    assert_eq!(post_callback(&url, &good, &body).await, 200);
+    assert_eq!(job(pool, id).await.status, "failed");
+    let u = job_usage(pool, id).await.expect("usage");
+    assert_eq!(u["input_tokens"], 100);
+    assert_eq!(u["output_tokens"], 10);
+    assert!(u.get("cost_usd").is_none(), "no reported cost stays absent");
+    assert!(u.get("cache_read_input_tokens").is_none());
+
+    // Another run of the same job (e.g. after a session-limit wait) adds up, even though the
+    // job is no longer running; the cost is only known for this run.
+    let rid2 = format!("job-{id}-1");
+    let url2 = format!("{}/v1/runs/{rid2}/finished", h.base);
+    let mut body2 = finished(&rid2, RunOutcome::Failed);
+    body2.usage = Some(enzarb_proto::Usage {
+        input_tokens: Some(5),
+        models: vec!["m1".into(), "m2".into()],
+        cost_usd: Some(0.5),
+        ..Default::default()
+    });
+    assert_eq!(
+        post_callback(&url2, &callback_token(b"test-secret", &rid2), &body2).await,
+        200
+    );
+    let u = job_usage(pool, id).await.expect("usage");
+    assert_eq!(u["input_tokens"], 105);
+    assert_eq!(u["output_tokens"], 10);
+    assert_eq!(u["cost_usd"], 0.5);
+    assert_eq!(u["models"], serde_json::json!(["m1", "m2"]));
+
+    // The same figures through the work item view.
+    let totals: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT usage_totals FROM workflows_api.work_item_v WHERE id = $1")
+            .bind(wi)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(totals.unwrap()["input_tokens"], 105);
 }
 
 // ---------------------------------------------------------------------------

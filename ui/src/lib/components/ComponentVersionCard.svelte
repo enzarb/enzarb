@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { AboutComponent } from '#lib/about-types.ts';
-	import { matchRelease, UNKNOWN_VERSION } from '#lib/versions.ts';
+	import { isGithubUrl, matchRelease, UNKNOWN_VERSION } from '#lib/versions.ts';
 	import ReleaseNotes from './ReleaseNotes.svelte';
 
 	let { component }: { component: AboutComponent } = $props();
@@ -15,7 +15,7 @@
 	<header class="ez-about-card__head">
 		<h2>{component.label}</h2>
 		<code class="ez-about-card__version">{component.deployed}</code>
-		{#if component.repoUrl}
+		{#if isGithubUrl(component.repoUrl)}
 			<a href={component.repoUrl} target="_blank" rel="noopener noreferrer">{component.name}</a>
 		{:else}
 			<span class="ez-muted">{component.name}</span>

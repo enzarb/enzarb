@@ -13,6 +13,7 @@ enzarb-connector        = { path = "../connectors/crates/connector" }
 enzarb-connector-github = { path = "../connectors/crates/connector-github" }
 ```
 - A library change and its consumers land in the same PR. Deployed components still roll out independently, so wire and schema changes stay backward compatible.
+- `workflows_api` / `app_api` view and schema additions (new columns, view fields) must be backward compatible for one release: add, never rename or drop in the same release. Consumers should tolerate a missing new column for one chart version where practical. The main guard is the chart's migration ordering (workflows migrate before ui); the second is that a commit releasing several components publishes a single chart version pinning all of them (docs/ci.md "Releases").
 - Crate paths:
   - `proto/crates/enzarb-proto`
   - `operator/crates/enzarb-crds`
@@ -70,6 +71,8 @@ Resources and pod-shape changes: `spec.sandbox.cpu` (integer 1-64) and `spec.san
 Repo key: a repository's **repo key** is `<connector>:<owner>/<repo>`, e.g. `github:enzarb/enzarb-ui`, always lowercase. Workflows and connectors route events by matching an event's repo key against the Projects' `spec.repositories`.
 
 One Project per repository: a repo key (`RepoKey::from_connector_url`, compared case-insensitively) belongs to at most one Project. When several Projects list it, the oldest by `(metadata.creationTimestamp, name)` wins; `name` breaks timestamp ties and is unique because the CRD is cluster-scoped. Every other Project has `ResourcesReady=False` with the terminal reason `InvalidSpec`, like an invalid name; its message names the repository only, never the winning Project. Losing Projects must receive no events: workflows and connectors must route a repository's events only to the winner. That is the contract those components have to meet, not behaviour that exists today. The operator side is tracked in enzarb-sandbox-operator#19 (pending); the routing work is tracked in the follow-up issues linked from there.
+
+Renaming: the owner may change `spec.displayName` (UI `setDisplayName`; owner-only, trimmed, non-empty, at most 100 characters). `metadata.name` is immutable. No sandbox restart: the display name is not part of the pod.
 
 Changing repositories: the owner may replace `spec.repositories` after creation (UI `setRepositories`; same key-only, fresh-snapshot and one-Project-per-repository rules as creation; a repository already in the Project may be kept or removed without being in the snapshot, so archived repositories can be dropped). It takes effect without a sandbox restart and without drain-first (`status.pendingChange` is not used): repositories are not part of the sandbox pod. The workflows Project index is a watch and routes the next event by the new list; each run reads the list when it starts (deps token); the sandbox clones a repository when a job first needs it. Clones of removed repositories stay on the workspace volume until the Project is deleted; no new runs are routed to them.
 
@@ -162,7 +165,7 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
 | `resize` | client → server | `channel`, `cols`, `rows` |
 | `run_start` | client → server | see below |
 | `run_accepted` | server → client | `run_id`, `state`, `existing: bool` |
-| `run_status` → `run_state` | both | `run_id` → `run_id, state, exit_code?, summary?` |
+| `run_status` → `run_state` | both | `run_id` → `run_id, state, exit_code?, summary?, usage?` |
 | `run_cancel` | client → server | `run_id` |
 | `credential_captured` | server → client | `kind: "claude_oauth"`, `token?` (the captured token; **proxy-only**: the proxy consumes the frame, encrypts and stores the token in Postgres, never forwards it to the browser and never logs it), `legacy?: bool` (a promoted legacy file: store only if the user has no token) |
 | `credential_status` | client → server | (none); browsers may send it |
@@ -207,6 +210,7 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
 - **`run_state`** is sent in reply to `run_status` and also pushed whenever a run changes state.
 - **`log_channel`:** a non-null value is a channel the client chooses. `run_accepted` implicitly opens it, and the server streams transcript lines on it as `DATA_JSON`.
 - **`RunFinished`** (`enzarb_proto::RunFinished`) is the callback's HTTP body, not a CTRL message. `exit_code` is optional because cancelled runs may have none.
+- **`usage`** (`enzarb_proto::Usage`, optional on `RunFinished` and `run_state`; additive, old decoders ignore it and old senders omit it): `{input_tokens?, output_tokens?, cache_read_input_tokens?, cache_creation_input_tokens?, models?: [string], cost_usd?}`. A field the agent did not report is **absent**, never 0. `cost_usd` is the cost as reported by Claude (`total_cost_usd`, or the `cost` of ACP `usage_update`), even on a subscription token; nothing computes or estimates it. The whole object is absent when the agent reported nothing.
 - **Idempotent:** a repeated `run_id` returns the existing run.
 - **States:** `queued | running | succeeded | failed | cancelled`.
 - **What the run does:**
@@ -261,10 +265,15 @@ workflows_api.ingest_event(p_source text, p_dedupe_key text, p_work_item_key tex
 workflows_api.submit_action(p_work_item_id bigint, p_actor jsonb, p_action text,
                             p_payload jsonb) RETURNS bigint               -- actions: approve | cancel | retry | merge
 -- views
-workflows_api.work_item_v(id, key, project, workflow, state, state_data, created_at, updated_at)
+workflows_api.work_item_v(id, key, project, workflow, state, state_data, created_at, updated_at,
+                          waiting_for, resumes_at, usage_totals, waiting_on, wait_reason, wait_text)
 workflows_api.transition_v(id, work_item_id, from_state, to_state, event_type, at)
-workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated_at, output)
+workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated_at, output, waiting_for, resumes_at, usage)
 ```
+- View columns are append-only; existing consumers select by name.
+- **`job_v.usage`** (jsonb, nullable): token usage and cost summed over all runs of the job (session-limit waits, restart retries and the recovery run each add their run), in the `Usage` shape of section 4. Keys are absent when no run reported them; `NULL` when nothing was reported. A run is counted once (by `run_id`), for any outcome including failed and cancelled.
+- **`work_item_v.usage_totals`** (jsonb, nullable): per key, the sum over the item's jobs that reported it, plus the union of `models`. A key no job reported is absent (so `cost_usd` is absent, not 0, when no job reported a cost); `NULL` when no job has usage. Cost is as reported by Claude, not an estimate.
+- Changes to `jobs.usage` send `work_item_changed`.
 - Both functions are `SECURITY DEFINER`.
 - Connectors use dedupe key `github:<event id>`; the UI uses `ui:<uuid>`. Events the engine itself generates use source `engine` (`handoff:<id>`, `timer:…`, `job:<id>:<attempt>`).
 - `transitions.work_item_id` is nullable: events that are ignored (no Project, no workflow) get a `to_state='ignored'` row with no work item. `transitions.note` records rejections.
@@ -273,6 +282,7 @@ workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated
   - `merge_error` (string): set when a merge ended in `not_mergeable`;
   - `waiting_reason` (string, derived): why the item waits, one of `human_review` (a review was posted, a person has to act), `enzarb_fixing` (an automatic fix round is running), `round_limit` (the automatic round cap was reached), or empty;
   - `auto_rounds`, `auto_trigger`, `auto_capped`: bookkeeping for automatic fix rounds (see `docs/workflows.md`).
+  - `wait` (object or null in final states) `{waiting_on, reason, text, url?}`: why the item is waiting, derived by `workflows` on every transition. `waiting_on` is `human` | `enzarb` | `ci` | `github`; `work_item_v.waiting_on`, `wait_reason` and `wait_text` expose `waiting_on`, `reason` and `text` (NULL until the item's next transition after the migration; clients fall back to the state). `human` means Needs you. Reason codes: `awaiting_review` (human), `ready_to_merge` (human), `enzarb_failed` (human), `conflict_parked` (human), `reviewing`, `addressing_comments`, `resolving_conflict`, `ci_failed_fixing`, `changes_requested_fixing` (all enzarb), `ci_pending` (ci), `merging` (github). `round_limit` (human) is emitted when the automatic fix round cap is reached. Reserved for later, not emitted yet: `decision_needed` (human, with `url` of the comment).
 - Work item keys and repo keys are stored lowercase.
 - `submit_action` events: source `ui`, payload `{actor, action, data}`, type `ApprovalGranted` (approve), `CancelRequested` (cancel) or `RetryRequested` (retry) or `MergeRequested` (merge). The last three are engine-internal and not part of the connector `EventType` set. A rejected `merge` (the actor lacks write access, or the readiness checklist is not all `ok`) is a reducer rejection, recorded in `transitions.note`, not a SQL error from `submit_action`.
 - Columns beyond the docs: `transitions.event_type`, `jobs.deadline`, `jobs.created_at`. `work_items.project_id` is text (the Project name), exposed as `project` in the view.
@@ -334,6 +344,8 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 | `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` | ui |
 | `ENZARB_BOT_HANDLE` (default `enzarb`), `ENZARB_BOT_LOGIN` (default `enzarb[bot]`) | receiver, workflows |
 | `ENZARB_GITHUB_APP_SLUG` (optional, default `enzarb`; chart value `githubApp.slug`) | ui (the "install the App" link `https://github.com/apps/<slug>/installations/new`) |
+| `ENZARB_VAPID_PUBLIC_KEY`, `ENZARB_VAPID_PRIVATE_KEY` (base64url, optional; both or neither; unset turns push notifications off), `ENZARB_VAPID_SUBJECT` (optional `mailto:` or https URL, default `ENZARB_PUBLIC_URL`) | ui (section 14). The private key is read only by server code (`$lib/server`) and never reaches the browser |
+| `ENZARB_GITHUB_APP_ID`, `ENZARB_GITHUB_APP_PRIVATE_KEY` (both optional; from the `appId` / `privateKey` keys of the GitHub secret, `optional: true`) | ui (mints an installation token server-side to authenticate the About page's `enzarb/enzarb` release fetch; unauthenticated if unset or the App is not installed there) |
 | `ENZARB_PUBLIC_URL` | ui (OAuth callback is `$ENZARB_PUBLIC_URL/login/github/callback`), workflows (links in comments) |
 | `PROTOCOL_HEADER=x-forwarded-proto` | ui (adapter-node derives the origin for its CSRF check from it; the Gateway must forward `X-Forwarded-Proto`) |
 | `ENZARB_EXECUTOR_URL` (default `http://enzarb-workflows-executor.enzarb.svc:8081`) | workflows executor (callback base) |
@@ -396,3 +408,15 @@ Components with path dependencies (`ui`, `sandbox-proxy`, `sandbox-container`, `
 
 - **Tags:** `main`, `sha-<short>`, and `<version>`/`latest` on `<dir>/v*` release tags (the dir prefix is stripped).
 - **Visibility:** private. Pulling requires an image pull secret (or `kind load` in dev).
+
+## 14. Web Push (UI notifications)
+
+The UI is an installable PWA (`/manifest.webmanifest`, service worker `service-worker.js`) and sends Web Push (VAPID) notifications when a work item newly needs the user. Additive: nothing here changes an existing interface.
+
+- **Tables (`app`, migration `0006_push_subscriptions.sql`).** `app.push_subscriptions(id, owner, endpoint unique, p256dh, auth, categories text[], user_agent, created_at, last_used_at)`: one row per device, `owner` is the GitHub login (no FK). `app.push_sent(owner, work_item_id, category, state_key, sent_at)` with the four key columns as primary key: the sent-log used to de-duplicate across pods. `enzarb_ui` has no privilege on either table.
+- **`app_api` functions** (`SECURITY DEFINER`, all taking the owner, which the UI passes from the session login or the Project's `spec.owner`, never from client input; `EXECUTE` granted to `enzarb_ui` only): `push_subscription_upsert(owner, endpoint, p256dh, auth, categories, user_agent) -> boolean` (false and no change when the endpoint belongs to another owner), `push_subscription_list(owner)` (no keys), `push_subscription_targets(owner, category)`, `push_subscription_set_categories(owner, endpoint, categories)`, `push_subscription_delete(owner, endpoint)` (Settings, and pruning after the push service answers 404 or 410), `push_subscription_touch(owner, endpoint)`, `push_claim(owner, work_item_id, category, state_key, window_secs) -> (claimed, recent)` (`recent` counts this claim), `push_claim_release(owner, work_item_id, category, state_key) -> boolean` and `push_sent_prune(older_than_days)`.
+- **Categories** are `approval`, `merge`, `blocked`, `failed`: the Work queue's classification (`classifyNeedsYou`, `ui/src/lib/work-items.ts`). Run failures reach the sender as the work item's `Failed` state, so they use `failed`. Only Projects the user owns notify.
+- **Trigger and de-duplication.** Every UI pod `LISTEN`s on `work_item_changed` (section 6), batches ids for 500 ms, reads `workflows_api.work_item_v` and `transition_v`, and classifies. It sends only if its `push_claim` insert won: the key is `(owner, work item, category, "<state>:<id of the latest transition into that state>")`, so a pod rollout or a second replica never double-sends, and a later re-entry into the state notifies again. Delivery is at most once per transition across pods, with one exception: if no device accepted the message and none was reported gone (404/410), every send failed transiently, so the claimant releases the claim (`push_claim_release`) and the next update to the item can notify again. A crash between claim and send still drops that notification. Rows older than 30 days are pruned. If more than 3 claims by one user fall within 60 s, the extras collapse into one "N items need you" notification (tag `work-summary`).
+- **Payload** (JSON, exactly `title`, `body`, `url`, `tag`): a fixed title per category, the item title truncated to 120 characters as body, the in-app path (`/work/<id>`) as `url` and `work-<id>` as `tag`. Never `state_data`, failure text, tokens, code or logs.
+- **Secret.** `enzarb-vapid-key` (data keys `public-key`, `private-key`, base64url), created once by a chart pre-install/pre-upgrade Job running the UI image (`scripts/vapid-secret.ts`) and never replaced; `secrets.vapidKey.existingSecret` names your own. Only the `enzarb-ui` Deployment reads it (optional `secretKeyRef`s, so pods start without it, with notifications off). Changing the keypair invalidates every existing browser subscription.
+- **Remote functions** (`ui/src/lib/push.remote.ts`): `getPushState` (public key and the caller's devices), `subscribe`, `updateCategories`, `unsubscribe`, `sendTest` (rate limited to one per 10 s per user per pod). The service worker never caches `/_app/remote`, `/live/`, non-GET requests or navigation responses.

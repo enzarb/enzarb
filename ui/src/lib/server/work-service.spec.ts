@@ -104,6 +104,36 @@ describe('workService against workflows_api', () => {
 		expect(d.jobs[1].outputHtml).toBeNull();
 	});
 
+	it('exposes per-job usage and per-item totals; unknown stays null', async () => {
+		const svc = workService(sql, ['web']);
+		const before = await svc.get(mine);
+		expect(before!.usage).toBeNull();
+		expect(before!.jobs.every((j) => j.usage === null)).toBe(true);
+
+		await sql`
+			UPDATE workflows.jobs
+			SET usage = ${sql.json({ input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 900, models: ['m1'], cost_usd: 0.25 })}
+			WHERE work_item_id = ${mine} AND kind = 'agent_triage'`;
+		const detail = await svc.get(mine);
+		expect(detail!.jobs.find((j) => j.kind === 'agent_triage')!.usage).toEqual({
+			inputTokens: 100,
+			outputTokens: 10,
+			cacheReadTokens: 900,
+			cacheWriteTokens: null,
+			models: ['m1'],
+			costUsd: 0.25
+		});
+		expect(detail!.jobs.find((j) => j.kind === 'agent_plan')!.usage).toBeNull();
+		expect(detail!.usage).toMatchObject({
+			inputTokens: 100,
+			costUsd: 0.25,
+			cacheWriteTokens: null
+		});
+		const listed = await svc.list('web');
+		expect(listed.find((i) => i.id === mine)!.usage?.inputTokens).toBe(100);
+		expect(listed.find((i) => i.id === approval)!.usage).toBeNull();
+	});
+
 	it('hides other owners’ items', async () => {
 		const svc = workService(sql, ['web']);
 		expect(await svc.get(theirs)).toBeNull();
@@ -318,7 +348,41 @@ describe('workService needs-you queue', () => {
 			['change_request', 'Reviewing', { checklist: { ci: { status: true } } }],
 			['change_request', 'Reviewing', { checklist: { ci: { status: null } } }],
 			['change_request', 'Reviewing', { checklist: { ci: { status: ['failed'] } } }],
-			['change_request', 'Reviewing', { checklist: { ci: { status: { x: 'failed' } } } }]
+			['change_request', 'Reviewing', { checklist: { ci: { status: { x: 'failed' } } } }],
+			// state_data.wait wins over the state-based fallback
+			[
+				'change_request',
+				'AwaitingChanges',
+				{ wait: { waiting_on: 'human', reason: 'awaiting_review' } }
+			],
+			[
+				'change_request',
+				'AwaitingChanges',
+				{ wait: { waiting_on: 'enzarb', reason: 'reviewing' } }
+			],
+			['change_request', 'AwaitingChanges', { wait: { waiting_on: 'ci', reason: 'ci_pending' } }],
+			[
+				'change_request',
+				'ReadyToMerge',
+				{ wait: { waiting_on: 'human', reason: 'ready_to_merge' } }
+			],
+			['change_request', 'ReadyToMerge', { wait: { waiting_on: 'github', reason: 'merging' } }],
+			['change_request', 'Reviewing', { wait: { waiting_on: 'human', reason: 'x' } }],
+			[
+				'change_request',
+				'ConflictParked',
+				{ wait: { waiting_on: 'human', reason: 'conflict_parked' } }
+			],
+			[
+				'change_request',
+				'Reviewing',
+				{ wait: { waiting_on: 'enzarb' }, checklist: { ci: { status: 'failed' } } }
+			],
+			['change_request', 'AwaitingChanges', { wait: null }],
+			['change_request', 'AwaitingChanges', { wait: { waiting_on: 'bogus' } }],
+			['change_request', 'AwaitingChanges', { wait: 'human' }],
+			['change_request', 'Merged', { wait: { waiting_on: 'human', reason: 'x' } }],
+			['issue', 'Reviewing', { wait: { waiting_on: 'human', reason: 'x' } }]
 		];
 		const ids = new Map<number, number>();
 		for (const [i, [workflow, state, stateData]] of cases.entries()) {

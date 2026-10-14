@@ -775,3 +775,80 @@ fn only_a_ui_merge_reaches_merging() {
         assert_eq!(kinds(&t), [JobKind::MergeChangeRequest]);
     }
 }
+
+fn wait_of(phase: CrPhase, data: CrData) -> (String, String) {
+    let v = cr_with(phase, data).state_data();
+    (
+        v["wait"]["waiting_on"].as_str().unwrap().to_string(),
+        v["wait"]["reason"].as_str().unwrap().to_string(),
+    )
+}
+
+fn assert_wait(phase: CrPhase, data: CrData, on: &str, reason: &str) {
+    assert_eq!(
+        wait_of(phase, data),
+        (on.into(), reason.into()),
+        "{phase:?}"
+    );
+}
+
+#[test]
+fn wait_reason_per_phase() {
+    for (phase, on, reason) in [
+        (CrPhase::Reviewing, "enzarb", "reviewing"),
+        (CrPhase::AddressingComments, "enzarb", "addressing_comments"),
+        (CrPhase::ResolvingConflicts, "enzarb", "resolving_conflict"),
+        (CrPhase::ReadyToMerge, "human", "ready_to_merge"),
+        (CrPhase::Merging, "github", "merging"),
+        (CrPhase::Failed, "human", "enzarb_failed"),
+        (CrPhase::ConflictParked, "human", "conflict_parked"),
+    ] {
+        assert_wait(phase, ready_data(), on, reason);
+    }
+    for phase in [CrPhase::Merged, CrPhase::Closed, CrPhase::Cancelled] {
+        let v = cr_with(phase, ready_data()).state_data();
+        assert_eq!(v["wait"], Value::Null, "{phase:?}");
+    }
+}
+
+#[test]
+fn wait_reason_while_awaiting_changes() {
+    let p = CrPhase::AwaitingChanges;
+    // Review posted for the head but it does not approve: a human has to review.
+    let comment = CrData {
+        last_review: "comment".into(),
+        ..cr_data()
+    };
+    assert_wait(p, comment, "human", "awaiting_review");
+    // No review, or one of an older commit: enzarb is (about to be) reviewing.
+    assert_wait(p, cr_data(), "enzarb", "reviewing");
+    let stale = CrData {
+        reviewed_sha: "old".into(),
+        ..ready_data()
+    };
+    assert_wait(p, stale, "enzarb", "reviewing");
+    let changes = CrData {
+        last_review: "request_changes".into(),
+        ..cr_data()
+    };
+    assert_wait(p, changes, "enzarb", "changes_requested_fixing");
+    let ci_failed = CrData {
+        ci: CiState::Failure,
+        ..ready_data()
+    };
+    assert_wait(p, ci_failed, "enzarb", "ci_failed_fixing");
+    let ci_pending = CrData {
+        ci: CiState::Pending,
+        ..ready_data()
+    };
+    assert_wait(p, ci_pending, "ci", "ci_pending");
+    assert_wait(p, unknown_data(), "ci", "ci_pending");
+    let conflicts = CrData {
+        mergeable: Some(false),
+        ..ready_data()
+    };
+    assert_wait(p, conflicts, "human", "conflict_parked");
+    let v = cr_with(p, unknown_data()).state_data();
+    assert_eq!(v["wait"]["text"], "Waiting for CI");
+    assert!(v["wait"].get("url").is_none());
+}

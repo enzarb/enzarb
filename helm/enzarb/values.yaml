@@ -88,6 +88,13 @@ secrets:
       suffix: ""
       backoffLimit: 1
       ttlSecondsAfterFinished: 86400
+  # Web Push (VAPID) keypair for UI notifications (data keys public-key and private-key).
+  # Generated once and kept (a pre-install/pre-upgrade Job creates it when absent and never
+  # replaces it) unless existingSecret is set. Only the ui Deployment reads it.
+  vapidKey:
+    existingSecret: ""
+    # `sub` claim sent to push services: mailto: or https URL. Empty uses the public URL.
+    subject: ""
   # GitHub App + OAuth app credentials. Either point at an existing Secret (with the
   # key names below) or give the values inline to have the chart create `enzarb-github`.
   github:
@@ -124,7 +131,7 @@ ui:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-ui
-    tag: 0.26.0
+    tag: 0.29.0
     pullPolicy: ""
   # HTTP probes (/healthz liveness, /readyz readiness). false falls back to TCP probes.
   probes:
@@ -142,7 +149,7 @@ workflows:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-workflows
-    tag: 0.18.2
+    tag: 0.19.0
     pullPolicy: ""
   # Roles for `run`: reducer, executor, ticker.
   roles: reducer,executor,ticker
@@ -233,7 +240,7 @@ sandboxProxy:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-sandbox-proxy
-    tag: 0.5.1
+    tag: 0.6.0
     pullPolicy: ""
   # Must stay >= the chat idle (ENZARB_CHAT_IDLE_SECS, 1800); the proxy clamps lower values and
   # logs a warning. Envoy idle timeouts (route.backendTrafficPolicy) must exceed this.
@@ -284,7 +291,7 @@ operator:
     tag: 0.8.1
     pullPolicy: ""
   # Default sandbox image for Projects (ENZARB_SANDBOX_IMAGE).
-  sandboxImage: ghcr.io/enzarb/enzarb-sandbox:0.10.2
+  sandboxImage: ghcr.io/enzarb/enzarb-sandbox:0.11.0
   defaultStorage: 20Gi
   # RuntimeClass of every sandbox pod (ENZARB_SANDBOX_RUNTIME_CLASS). Cluster-admin
   # setting; Projects cannot choose. Must be in docker.runtimeClasses.

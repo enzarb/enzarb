@@ -64,7 +64,7 @@ COMMIT;
   1. Resolve the sandbox. In `worktree` mode, use the Project sandbox and create worktree `run-<job_id>`. In `fresh` mode, claim a sandbox from the warm pool.
   2. Over enzarb-proto, send `StartRun { run_id: job.id, repo, ref, prompt, credentials }`. The start is **idempotent**: a repeated `run_id` returns the existing run.
   3. Release the job lease. The job stays `running` with a deadline.
-  4. sandbox-init sends `RunFinished { run_id, outcome, summary, transcript_url }`, which the executor ingests as a result event.
+  4. sandbox-init sends `RunFinished { run_id, outcome, summary, transcript_url, usage? }`, which the executor ingests as a result event. `usage` (tokens, models and the cost Claude reported) is added to `jobs.usage` once per `run_id` for every outcome, so a job's total covers all its runs; see contracts section 6.
 - **Crash recovery:** when a lease expires, another executor re-sends `StartRun`, which is safe because it is idempotent.
 - **Retries:** exponential backoff through `run_after` until `max_attempts`, then a `JobFailed` event.
 

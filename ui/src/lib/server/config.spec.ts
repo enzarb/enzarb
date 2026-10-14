@@ -26,6 +26,33 @@ describe('parseConfig', () => {
 		});
 	});
 
+	describe('GitHub App credentials', () => {
+		const pem = '-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----';
+		it('are optional and unset by default', () => {
+			const c = parseConfig(valid);
+			expect(c.githubAppId).toBeUndefined();
+			expect(c.githubAppPrivateKey).toBeUndefined();
+		});
+		it('accept an \\n-escaped PEM', () => {
+			const c = parseConfig({
+				...valid,
+				ENZARB_GITHUB_APP_ID: ' 123 ',
+				ENZARB_GITHUB_APP_PRIVATE_KEY: pem.replaceAll('\n', '\\n')
+			});
+			expect(c.githubAppId).toBe('123');
+			expect(c.githubAppPrivateKey).toBe(pem);
+		});
+		it('treat a malformed value as unset without throwing', () => {
+			const c = parseConfig({
+				...valid,
+				ENZARB_GITHUB_APP_ID: '123',
+				ENZARB_GITHUB_APP_PRIVATE_KEY: 'garbage'
+			});
+			expect(c.githubAppId).toBeUndefined();
+			expect(c.githubAppPrivateKey).toBeUndefined();
+		});
+	});
+
 	describe('ENZARB_COMPONENT_VERSIONS', () => {
 		const parse = (v?: string) =>
 			parseConfig({ ...valid, ENZARB_COMPONENT_VERSIONS: v }).componentVersions;
@@ -68,6 +95,33 @@ describe('parseConfig', () => {
 		expect(() => parseConfig({ ...valid, ENZARB_GITHUB_APP_SLUG: 'a/b' })).toThrow(
 			/ENZARB_GITHUB_APP_SLUG/
 		);
+	});
+
+	describe('VAPID keys', () => {
+		const keys = { ENZARB_VAPID_PUBLIC_KEY: 'BPub_-1', ENZARB_VAPID_PRIVATE_KEY: 'priv_-2' };
+		const parse = (extra: Record<string, string>) => parseConfig({ ...valid, ...extra }).vapid;
+
+		it('is absent without keys and defaults the subject to the public origin', () => {
+			expect(parse({})).toBeUndefined();
+			expect(parse(keys)).toEqual({
+				publicKey: 'BPub_-1',
+				privateKey: 'priv_-2',
+				subject: 'https://enzarb.example.com'
+			});
+		});
+
+		it('takes a mailto subject', () => {
+			expect(parse({ ...keys, ENZARB_VAPID_SUBJECT: 'mailto:ops@example.com' })?.subject).toBe(
+				'mailto:ops@example.com'
+			);
+		});
+
+		it('rejects half a keypair, non-base64url keys and a bad subject', () => {
+			expect(() => parse({ ENZARB_VAPID_PUBLIC_KEY: 'x' })).toThrow(/set together/);
+			expect(() => parse({ ENZARB_VAPID_PRIVATE_KEY: 'x' })).toThrow(/set together/);
+			expect(() => parse({ ...keys, ENZARB_VAPID_PRIVATE_KEY: 'a+b/c=' })).toThrow(/base64url/);
+			expect(() => parse({ ...keys, ENZARB_VAPID_SUBJECT: 'ops' })).toThrow(/ENZARB_VAPID_SUBJECT/);
+		});
 	});
 
 	it('lists every missing variable at once', () => {

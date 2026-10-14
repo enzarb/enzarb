@@ -3,14 +3,13 @@
 	import { goto } from '$app/navigation';
 	import Select from '#lib/components/form/Select.svelte';
 	import NeedsYouQueue from '#lib/components/NeedsYouQueue.svelte';
-	import DataTable, { type Column } from '#lib/components/ui/DataTable.svelte';
 	import Notice from '#lib/components/ui/Notice.svelte';
 	import PageHeader from '#lib/components/ui/PageHeader.svelte';
-	import WorkStateChip from '#lib/components/WorkStateChip.svelte';
+	import WorkItemTable from '#lib/components/WorkItemTable.svelte';
 	import { getNeedsYou } from '#lib/needs-you.svelte.ts';
 	import { listProjects } from '#lib/projects.remote.ts';
 	import Section from '#lib/components/ui/Section.svelte';
-	import { applyItemChange, isTerminal, type WorkItemSummary } from '#lib/work-items.ts';
+	import { applyItemChange, isTerminal } from '#lib/work-items.ts';
 	import { getWorkItem, getWorkItemPlan, listWorkItems } from '#lib/work.remote.ts';
 
 	const project = $derived(page.url.searchParams.get('project') ?? undefined);
@@ -52,28 +51,7 @@
 	function pick(value: string) {
 		void goto(value ? `/work?project=${encodeURIComponent(value)}` : '/work');
 	}
-
-	const columns: Column<WorkItemSummary>[] = [
-		{ id: 'item', header: 'Item', cell: item },
-		{ id: 'project', header: 'Project', cell: projectCell },
-		{ id: 'workflow', header: 'Workflow', cell: workflow },
-		{ id: 'state', header: 'State', cell: state },
-		{ id: 'updated', header: 'Updated', cell: updated }
-	];
 </script>
-
-{#snippet item(w: WorkItemSummary)}
-	<a href="/work/{w.id}">{w.title}</a> <code class="ez-muted">{w.key}</code>
-{/snippet}
-{#snippet projectCell(w: WorkItemSummary)}{w.project}{/snippet}
-{#snippet workflow(w: WorkItemSummary)}{w.workflow}{/snippet}
-{#snippet state(w: WorkItemSummary)}
-	<WorkStateChip state={w.state} />
-	{#if w.waiting}<span class="ez-muted">{w.waiting}</span>{/if}
-{/snippet}
-{#snippet updated(w: WorkItemSummary)}
-	<time datetime={w.updatedAt}>{w.updatedAt.slice(0, 16).replace('T', ' ')}</time>
-{/snippet}
 
 <svelte:head><title>Work · enzarb</title></svelte:head>
 <PageHeader
@@ -103,11 +81,9 @@
 	{#if items.error}
 		<Notice tone="error">Could not load work items.</Notice>
 	{:else}
-		<DataTable
+		<WorkItemTable
 			label="In progress"
 			items={inProgress}
-			{columns}
-			rowKey={(w) => w.id}
 			loading={items.loading && !items.current}
 			loadingLabel="Loading work items"
 			emptyTitle="Nothing in progress"
@@ -116,13 +92,7 @@
 		{#if done.length}
 			<details class="ez-done">
 				<summary>Done ({done.length})</summary>
-				<DataTable
-					label="Done"
-					items={done}
-					{columns}
-					rowKey={(w) => w.id}
-					emptyTitle="Nothing done"
-				/>
+				<WorkItemTable label="Done" items={done} emptyTitle="Nothing done" />
 			</details>
 		{/if}
 	{/if}

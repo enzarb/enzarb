@@ -45,6 +45,22 @@ describe('ComponentVersionCard', () => {
 		expect(document.body.textContent).not.toMatch(/No matching release/);
 	});
 
+	it.each(['javascript:alert(1)', 'http://github.com/x', 'https://github.com.evil.test/x'])(
+		'renders no link for a non-github release url (%s)',
+		async (url) => {
+			render(ComponentVersionCard, {
+				component: { ...base, releases: [{ ...rel('v1.1.0'), url }] }
+			});
+			await expect.element(page.getByText('View release on GitHub')).toBeVisible();
+			expect(document.querySelector('.ez-release a')).toBeNull();
+		}
+	);
+
+	it('renders no link for a non-github repo url', async () => {
+		render(ComponentVersionCard, { component: { ...base, repoUrl: 'javascript:alert(1)' } });
+		expect(document.querySelector('.ez-about-card__head a')).toBeNull();
+	});
+
 	it('shows the version when release notes are unavailable', async () => {
 		render(ComponentVersionCard, { component: { ...base, releases: null } });
 		await expect.element(page.getByText('Release notes unavailable.')).toBeVisible();

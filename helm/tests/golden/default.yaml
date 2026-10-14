@@ -815,10 +815,10 @@ spec:
       terminationGracePeriodSeconds: 30
 
       initContainers:
-        - name: wait-enzarb-migrate-ui-3a621ccd4f
+        - name: wait-enzarb-migrate-ui-c9325d3562
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-3a621ccd4f]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-c9325d3562]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: receiver
@@ -932,7 +932,7 @@ spec:
             - { name: ENZARB_SANDBOX_SERVICE_ACCOUNT, value: "enzarb-sandbox" }
             - { name: ENZARB_EXECUTOR_CALLBACK_PORT, value: "8081" }
             - { name: ENZARB_SANDBOX_EGRESS_EXCLUDE_CIDRS, value: "10.42.0.0/16,10.43.0.0/16" }
-            - { name: ENZARB_SANDBOX_IMAGE, value: "ghcr.io/enzarb/enzarb-sandbox:0.10.2" }
+            - { name: ENZARB_SANDBOX_IMAGE, value: "ghcr.io/enzarb/enzarb-sandbox:0.11.0" }
             - { name: ENZARB_DEFAULT_STORAGE, value: "20Gi" }
             - { name: ENZARB_SANDBOX_RUNTIME_CLASS, value: "gvisor" }
             - { name: ENZARB_DOCKER_RUNTIME_CLASSES, value: "gvisor" }
@@ -983,10 +983,10 @@ spec:
       terminationGracePeriodSeconds: 30
 
       initContainers:
-        - name: wait-enzarb-migrate-ui-3a621ccd4f
+        - name: wait-enzarb-migrate-ui-c9325d3562
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-3a621ccd4f]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-c9325d3562]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: realtime
@@ -1088,7 +1088,7 @@ spec:
       securityContext: { fsGroup: 65532 }
       containers:
         - name: proxy
-          image: ghcr.io/enzarb/enzarb-sandbox-proxy:0.5.1
+          image: ghcr.io/enzarb/enzarb-sandbox-proxy:0.6.0
           imagePullPolicy: IfNotPresent
           ports:
             - { name: http, containerPort: 8080 }
@@ -1186,14 +1186,14 @@ spec:
       terminationGracePeriodSeconds: 30
 
       initContainers:
-        - name: wait-enzarb-migrate-ui-3a621ccd4f
+        - name: wait-enzarb-migrate-ui-c9325d3562
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-3a621ccd4f]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-c9325d3562]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: ui
-          image: ghcr.io/enzarb/enzarb-ui:0.26.0
+          image: ghcr.io/enzarb/enzarb-ui:0.29.0
           imagePullPolicy: IfNotPresent
           ports:
             - { name: http, containerPort: 3000 }
@@ -1243,13 +1243,30 @@ spec:
                 secretKeyRef:
                   name: enzarb-github
                   key: oauth-client-secret
+            - name: ENZARB_GITHUB_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-github
+                  key: app-id
+                  optional: true
+            - name: ENZARB_GITHUB_APP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-github
+                  key: private-key
+                  optional: true
             - name: ENZARB_REALTIME_JWT_SECRET
               valueFrom:
                 secretKeyRef:
                   name: enzarb-generated
                   key: realtime-jwt-secret
+            # Web Push keys. Optional so pods start (notifications off) until the keypair exists.
+            - name: ENZARB_VAPID_PUBLIC_KEY
+              valueFrom: { secretKeyRef: { name: "enzarb-vapid-key", key: public-key, optional: true } }
+            - name: ENZARB_VAPID_PRIVATE_KEY
+              valueFrom: { secretKeyRef: { name: "enzarb-vapid-key", key: private-key, optional: true } }
             - { name: ENZARB_PUBLIC_URL, value: "https://enzarb.local" }
-            - { name: ENZARB_COMPONENT_VERSIONS, value: "{\"chart\":\"0.0.0\",\"components\":{\"enzarb-connectors\":\"0.6.2\",\"enzarb-realtime\":\"0.4.1\",\"enzarb-sandbox-container\":\"0.10.2\",\"enzarb-sandbox-operator\":\"0.8.1\",\"enzarb-sandbox-proxy\":\"0.5.1\",\"enzarb-ui\":\"0.26.0\",\"enzarb-workflows\":\"0.18.2\"}}" }
+            - { name: ENZARB_COMPONENT_VERSIONS, value: "{\"chart\":\"0.0.0\",\"components\":{\"enzarb-connectors\":\"0.6.2\",\"enzarb-realtime\":\"0.4.1\",\"enzarb-sandbox-container\":\"0.11.0\",\"enzarb-sandbox-operator\":\"0.8.1\",\"enzarb-sandbox-proxy\":\"0.6.0\",\"enzarb-ui\":\"0.29.0\",\"enzarb-workflows\":\"0.19.0\"}}" }
             - { name: ENZARB_GITHUB_APP_SLUG, value: "enzarb" }
             # adapter-node derives the origin for its CSRF check from this header; the Gateway forwards it.
             - { name: PROTOCOL_HEADER, value: x-forwarded-proto }
@@ -1306,16 +1323,16 @@ spec:
       terminationGracePeriodSeconds: 60
 
       initContainers:
-        - name: wait-enzarb-migrate-ui-3a621ccd4f
+        - name: wait-enzarb-migrate-ui-c9325d3562
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-3a621ccd4f]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-c9325d3562]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       # the keyring files are root-owned; fsGroup makes them group-readable by the non-root uid
       securityContext: { fsGroup: 65532 }
       containers:
         - name: workflows
-          image: ghcr.io/enzarb/enzarb-workflows:0.18.2
+          image: ghcr.io/enzarb/enzarb-workflows:0.19.0
           imagePullPolicy: IfNotPresent
           args: [run, --roles, "reducer,executor,ticker"]
           ports:
@@ -1408,7 +1425,7 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: enzarb-migrate-workflows-b324cead0a
+  name: enzarb-migrate-workflows-6d950a47db
   labels:
     app.kubernetes.io/name: enzarb-migrate-workflows
     app.kubernetes.io/instance: enzarb
@@ -1448,7 +1465,7 @@ spec:
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: migrate
-          image: ghcr.io/enzarb/enzarb-workflows:0.18.2
+          image: ghcr.io/enzarb/enzarb-workflows:0.19.0
           imagePullPolicy: IfNotPresent
           args: [migrate, --require-roles]
           env:
@@ -1494,7 +1511,7 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: enzarb-migrate-connectors-da77b212b1
+  name: enzarb-migrate-connectors-43403b14fd
   labels:
     app.kubernetes.io/name: enzarb-migrate-connectors
     app.kubernetes.io/instance: enzarb
@@ -1515,10 +1532,10 @@ spec:
       restartPolicy: OnFailure
 
       initContainers:
-        - name: wait-enzarb-migrate-workflows-b324cead0a
+        - name: wait-enzarb-migrate-workflows-6d950a47db
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-workflows-b324cead0a]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-workflows-6d950a47db]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: migrate
@@ -1568,7 +1585,7 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: enzarb-migrate-ui-3a621ccd4f
+  name: enzarb-migrate-ui-c9325d3562
   labels:
     app.kubernetes.io/name: enzarb-migrate-ui
     app.kubernetes.io/instance: enzarb
@@ -1589,14 +1606,14 @@ spec:
       restartPolicy: OnFailure
 
       initContainers:
-        - name: wait-enzarb-migrate-connectors-da77b212b1
+        - name: wait-enzarb-migrate-connectors-43403b14fd
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-connectors-da77b212b1]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-connectors-43403b14fd]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: migrate
-          image: ghcr.io/enzarb/enzarb-ui:0.26.0
+          image: ghcr.io/enzarb/enzarb-ui:0.29.0
           imagePullPolicy: IfNotPresent
           command: [node, scripts/migrate.ts]
           env:
@@ -1803,3 +1820,110 @@ spec:
         request: "0s"
       backendRefs:
         - { name: enzarb-realtime, port: 8080 }
+---
+# Source: enzarb/templates/vapid-key.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: enzarb-vapid
+  labels:
+    app.kubernetes.io/name: enzarb-vapid
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+
+---
+# Source: enzarb/templates/vapid-key.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: enzarb-vapid
+  labels:
+    app.kubernetes.io/name: enzarb-vapid
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: ["enzarb-vapid-key"]
+    verbs: [get]
+
+---
+# Source: enzarb/templates/vapid-key.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: enzarb-vapid
+  labels:
+    app.kubernetes.io/name: enzarb-vapid
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: enzarb-vapid }
+subjects:
+  - { kind: ServiceAccount, name: enzarb-vapid, namespace: enzarb }
+
+---
+# Source: enzarb/templates/vapid-key.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: enzarb-vapid-key
+  labels:
+    app.kubernetes.io/name: enzarb-vapid-key
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: enzarb-vapid-key
+        app.kubernetes.io/instance: enzarb
+    spec:
+      serviceAccountName: enzarb-vapid
+      restartPolicy: OnFailure
+      containers:
+        - name: vapid
+          image: ghcr.io/enzarb/enzarb-ui:0.29.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - >-
+              if [ -f scripts/vapid-secret.ts ]; then exec node scripts/vapid-secret.ts;
+              else echo "vapid: this UI image has no scripts/vapid-secret.ts; push notifications stay off"; fi
+          env:
+            - { name: ENZARB_VAPID_SECRET, value: "enzarb-vapid-key" }
+            - { name: ENZARB_VAPID_NAMESPACE, value: "enzarb" }
+          securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":1000,"seccompProfile":{"type":"RuntimeDefault"}}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+

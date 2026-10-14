@@ -8,6 +8,10 @@ export interface Config {
 	publicUrl: string;
 	/** Slug of the enzarb GitHub App, used for the install link (ENZARB_GITHUB_APP_SLUG, optional). */
 	githubAppSlug: string;
+	/** GitHub App id (ENZARB_GITHUB_APP_ID, optional): with the key, authenticates release fetches. */
+	githubAppId?: string;
+	/** GitHub App private key PEM (ENZARB_GITHUB_APP_PRIVATE_KEY, optional; `\n`-escaped accepted). */
+	githubAppPrivateKey?: string;
 	/**
 	 * Also put the realtime token in the websocket URL (ENZARB_REALTIME_LEGACY_TOKEN_URL, optional,
 	 * default off). Only for an enzarb-realtime older than enzarb-realtime#8.
@@ -19,6 +23,19 @@ export interface Config {
 	 * `{"chart": "0.4.1", "components": {"enzarb-ui": "v0.9.0"}}`). Empty when unset.
 	 */
 	componentVersions: ComponentVersions;
+	/**
+	 * Web Push (ENZARB_VAPID_PUBLIC_KEY, ENZARB_VAPID_PRIVATE_KEY, ENZARB_VAPID_SUBJECT, all optional).
+	 * Absent when no keys are set: notifications are then off. The private key is read only by
+	 * `server/push.ts` and never sent to the browser.
+	 */
+	vapid?: VapidConfig;
+}
+
+export interface VapidConfig {
+	publicKey: string;
+	privateKey: string;
+	/** `mailto:` or https URL identifying the sender to push services. */
+	subject: string;
 }
 
 export interface ComponentVersions {
@@ -28,7 +45,12 @@ export interface ComponentVersions {
 
 type RequiredKey = Exclude<
 	keyof Config,
-	'githubAppSlug' | 'realtimeLegacyTokenUrl' | 'componentVersions'
+	| 'githubAppSlug'
+	| 'githubAppId'
+	| 'githubAppPrivateKey'
+	| 'realtimeLegacyTokenUrl'
+	| 'componentVersions'
+	| 'vapid'
 >;
 
 function parseComponentVersions(raw: string | undefined): ComponentVersions {
@@ -57,6 +79,25 @@ function parseComponentVersions(raw: string | undefined): ComponentVersions {
 		}
 	}
 	return out;
+}
+
+const B64URL = /^[A-Za-z0-9_-]+$/;
+
+function parseVapid(source: Record<string, string | undefined>, publicUrl: string) {
+	const publicKey = source.ENZARB_VAPID_PUBLIC_KEY?.trim();
+	const privateKey = source.ENZARB_VAPID_PRIVATE_KEY?.trim();
+	if (!publicKey && !privateKey) return undefined;
+	if (!publicKey || !privateKey) {
+		throw new Error('ENZARB_VAPID_PUBLIC_KEY and ENZARB_VAPID_PRIVATE_KEY must be set together');
+	}
+	if (!B64URL.test(publicKey) || !B64URL.test(privateKey)) {
+		throw new Error('ENZARB_VAPID_PUBLIC_KEY and ENZARB_VAPID_PRIVATE_KEY must be base64url');
+	}
+	const subject = source.ENZARB_VAPID_SUBJECT?.trim() || publicUrl;
+	if (!/^(mailto:[^\s@]+@[^\s@]+|https?:\/\/\S+)$/.test(subject)) {
+		throw new Error('ENZARB_VAPID_SUBJECT must be a mailto: or http(s) URL');
+	}
+	return { publicKey, privateKey, subject };
 }
 
 const REQUIRED: Record<RequiredKey, string> = {
@@ -101,11 +142,21 @@ export function parseConfig(source: Record<string, string | undefined>): Config 
 	if (legacy && legacy !== 'true' && legacy !== 'false') {
 		throw new Error('ENZARB_REALTIME_LEGACY_TOKEN_URL must be true or false');
 	}
+	const githubAppId = source.ENZARB_GITHUB_APP_ID?.trim();
+	const pem = source.ENZARB_GITHUB_APP_PRIVATE_KEY?.trim().replaceAll('\\n', '\n');
+	// A malformed value is treated as unset (the message never carries the value).
+	const validId = githubAppId && /^\d+$/.test(githubAppId) ? githubAppId : undefined;
+	const validKey =
+		pem && /^-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]+-----END [A-Z ]*PRIVATE KEY-----$/.test(pem)
+			? pem
+			: undefined;
 	return {
 		...out,
+		...(validId && validKey ? { githubAppId: validId, githubAppPrivateKey: validKey } : {}),
 		githubAppSlug,
 		realtimeLegacyTokenUrl: legacy === 'true',
-		componentVersions: parseComponentVersions(source.ENZARB_COMPONENT_VERSIONS)
+		componentVersions: parseComponentVersions(source.ENZARB_COMPONENT_VERSIONS),
+		vapid: parseVapid(source, out.publicUrl)
 	};
 }
 
