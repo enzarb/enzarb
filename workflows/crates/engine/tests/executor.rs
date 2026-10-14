@@ -782,6 +782,22 @@ async fn merges_are_serialised_per_repository() {
     assert_eq!(job(pool, id).await.status, "queued");
     assert!(merge_calls(&h).is_empty());
 
+    // Contention never spends attempts: far more busy rounds than `max_attempts` still
+    // leave the job queued, with `max_attempts - attempt` unchanged.
+    let first = job(pool, id).await;
+    let budget = first.max_attempts - first.attempt;
+    for _ in 0..(first.max_attempts + 3) {
+        sqlx::query("UPDATE workflows.jobs SET run_after = now() WHERE id = $1")
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+        assert_eq!(h.exec.drain().await, 1);
+        let j = job(pool, id).await;
+        assert_eq!(j.status, "queued");
+        assert_eq!(j.max_attempts - j.attempt, budget);
+    }
+
     // A different repository is not blocked by that lock.
     let mut unrelated = pool.begin().await.unwrap();
     let free: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtext($1))")

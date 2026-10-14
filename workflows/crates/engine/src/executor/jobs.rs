@@ -126,10 +126,10 @@ impl Executor {
                         .await
                         .map_err(lock_error)?;
                 if !locked {
-                    return Err(JobError {
-                        retry_after: Some(MERGE_LOCK_RETRY),
-                        ..JobError::transient("another merge is running for this repository")
-                    });
+                    return Err(JobError::contended(
+                        "another merge is running for this repository",
+                        MERGE_LOCK_RETRY,
+                    ));
                 }
                 let out = self.merge(c.as_ref(), &i, key).await?;
                 tx.commit().await.map_err(lock_error)?;
