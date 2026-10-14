@@ -756,6 +756,27 @@ impl Connector for GitHubConnector {
         }
     }
 
+    async fn set_base(
+        &self,
+        item: &WorkItemKey,
+        number: u64,
+        new_base: &str,
+        _idempotency_key: &str,
+    ) -> Result<()> {
+        let r = &item.repo;
+        github_repo(r)?;
+        // PATCH is idempotent: GitHub answers 200 when the base is already `new_base`.
+        self.call(
+            r,
+            "set pull request base",
+            Method::PATCH,
+            &format!("/repos/{}/pulls/{number}", r.full_name()),
+            Some(json!({ "base": new_base })),
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn get_merge_readiness(&self, item: &WorkItemKey, number: u64) -> Result<MergeReadiness> {
         let r = &item.repo;
         let pr = self.pull_state(r, number).await?;

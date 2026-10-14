@@ -82,6 +82,21 @@ GitHub: `PUT /repos/{o}/{r}/pulls/{n}/merge` with `merge_method=squash`,
 state: GitHub has no marker for `idempotency_key`, so the GitHub connector
 ignores it. Other failures (403, 404, 5xx) are `Err`.
 
+## `Connector::set_base`
+
+```
+set_base(item, number, new_base, idempotency_key) -> ()
+```
+
+Retargets a change request onto `new_base` (stacked change requests). Setting the
+base it already has succeeds. The default implementation returns `Err`.
+
+GitHub: `PATCH /repos/{o}/{r}/pulls/{n}` with `{"base": new_base}`. GitHub answers
+200 when the base is unchanged, so the call is naturally idempotent and
+`idempotency_key` is ignored. A 422 (unknown base branch) is `Error::Invalid`, 404
+is `Error::NotFound`. The fake updates `base_ref` on the seeded thread and on opened
+change requests, and records calls (`FakeConnector::set_base_calls()`).
+
 ## `Connector::get_merge_readiness`
 
 Returns `MergeReadiness { head_sha, base_sha, mergeable, mergeable_state, ci }`.

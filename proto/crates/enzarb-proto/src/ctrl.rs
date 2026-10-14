@@ -210,6 +210,30 @@ pub struct RunStart {
     /// peers ignore it and old payloads decode without it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_token: Option<Secret>,
+    /// When present the run is not an agent run: the sandbox rebases its own
+    /// child branch onto `onto` and pushes with an explicit lease (stacked
+    /// change requests). `push`, `branch` and `base_ref` are ignored for
+    /// pushing. Omitted when absent; old peers ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retarget: Option<Retarget>,
+}
+
+/// Parameters of a retarget run (`RunStart.retarget`): after a parent change
+/// request was squash-merged, `git rebase --onto origin/<onto> <old_base>` of
+/// the child branch, then a force-with-lease push of exactly that branch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Retarget {
+    /// The child branch to rebase and push (an enzarb-created branch).
+    pub head_ref: String,
+    /// The branch to rebase onto (the repository's default branch).
+    pub onto: String,
+    /// Full sha of the parent's head the child was cut from.
+    pub old_base: String,
+    /// Full sha the child's remote head must have; the push lease.
+    pub expected_sha: String,
+    /// Branch names that must never be rewritten. Omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub protected: Vec<String>,
 }
 
 impl std::fmt::Debug for RunStart {
@@ -230,6 +254,7 @@ impl std::fmt::Debug for RunStart {
             .field("deps_token", &self.deps_token.as_ref().map(|_| R))
             .field("npm_token", &self.npm_token.as_ref().map(|_| R))
             .field("claude_token", &self.claude_token.as_ref().map(|_| R))
+            .field("retarget", &self.retarget)
             .finish()
     }
 }
@@ -287,6 +312,9 @@ pub struct RunFinished {
 }
 
 /// Every CTRL message.
+// `RunStart` grew with the additive `retarget` field; boxing it would break the public
+// `Ctrl::RunStart` shape for every consumer.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Ctrl {

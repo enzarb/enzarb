@@ -16,6 +16,7 @@ use super::*;
 
 mod orphan;
 mod resolve;
+mod stacking;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -42,6 +43,7 @@ fn ctx_for(number: u64, perm: Permission) -> Ctx {
         orphaned: false,
         orphan_owner: false,
         open_dependencies: Vec::new(),
+        stack_parent: None,
     }
 }
 

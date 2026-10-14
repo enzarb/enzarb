@@ -1152,6 +1152,47 @@ async fn update_branch_422_is_refused_with_reason() {
     );
 }
 
+async fn mount_set_base(server: &MockServer, resp: ResponseTemplate) {
+    Mock::given(method("PATCH"))
+        .and(path("/repos/enzarb/enzarb-ui/pulls/7"))
+        .and(body_json(json!({ "base": "main" })))
+        .respond_with(resp)
+        .expect(1)
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn set_base_patches_pull_with_new_base() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    mount_set_base(
+        &server,
+        ResponseTemplate::new(200).set_body_json(json!({"number": 7, "base": {"ref": "main"}})),
+    )
+    .await;
+    connector(&server)
+        .set_base(&item(7), 7, "main", "k")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn set_base_invalid_branch_is_invalid() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    mount_set_base(
+        &server,
+        ResponseTemplate::new(422).set_body_json(json!({"message": "Validation Failed"})),
+    )
+    .await;
+    let err = connector(&server)
+        .set_base(&item(7), 7, "main", "k")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Invalid(_)), "{err:?}");
+}
+
 #[tokio::test]
 async fn merge_405_is_not_mergeable_with_reason() {
     let server = MockServer::start().await;

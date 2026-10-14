@@ -30,6 +30,7 @@ use serde_json::Value;
 
 use super::fx::{AgentSpec, Fx};
 use super::prompt::{AgentOutput, Decision, PromptContext};
+use super::stack::{RetargetOutcome, is_enzarb_branch, parse_stack_marker};
 use super::title::squash_title;
 use super::{Ctx, EngineEvent, EventPayload, JobKind, Transition, UiActionKind, WorkflowState};
 
@@ -166,6 +167,50 @@ pub struct CrData {
     /// Dependencies that are not done yet, as the reducer last read them. Refreshed from
     /// [`Ctx::open_dependencies`] on every event; kept here so the views can show it.
     pub open_dependencies: Vec<OpenDependency>,
+    /// Stacked change request: work item key of the parent change request this one is based
+    /// on (its branch is `base_ref`). Empty once retargeted, parked, or when not stacked.
+    pub stacked_on: String,
+    /// The parent's branch, `base_ref` while stacked.
+    pub stack_parent_ref: String,
+    /// The parent head this branch was cut from; `--onto` rebases only the commits after it.
+    pub stack_parent_tip: String,
+    /// The branch to retarget onto (the Project's default branch when the stack was recorded).
+    pub default_base: String,
+    /// The parent was merged / closed without merging, as the reducer last read it.
+    pub stack_parent_merged: bool,
+    pub stack_parent_closed: bool,
+    /// A `retarget_change_request` job is in flight.
+    pub retargeting: bool,
+    /// Retarget jobs queued so far; capped at [`MAX_RETARGET_ATTEMPTS`].
+    pub retarget_attempts: u32,
+}
+
+/// Automatic retarget attempts allowed per stacked change request.
+pub const MAX_RETARGET_ATTEMPTS: u32 = 2;
+
+impl CrData {
+    fn clear_stack(&mut self) {
+        self.stacked_on.clear();
+        self.stack_parent_ref.clear();
+        self.stack_parent_tip.clear();
+        self.default_base.clear();
+        self.stack_parent_merged = false;
+        self.stack_parent_closed = false;
+        self.retargeting = false;
+        self.retarget_attempts = 0;
+    }
+
+    /// Keep the stack across a rebuild of the data from the provider's item.
+    fn carry_stack(&mut self, from: &CrData) {
+        self.stacked_on = from.stacked_on.clone();
+        self.stack_parent_ref = from.stack_parent_ref.clone();
+        self.stack_parent_tip = from.stack_parent_tip.clone();
+        self.default_base = from.default_base.clone();
+        self.stack_parent_merged = from.stack_parent_merged;
+        self.stack_parent_closed = from.stack_parent_closed;
+        self.retargeting = from.retargeting;
+        self.retarget_attempts = from.retarget_attempts;
+    }
 }
 
 /// A dependency that blocks the merge.
@@ -285,6 +330,37 @@ pub fn readiness(d: &CrData) -> Readiness {
             truncate(&format!("waiting on {}", labels.join(", ")), 120),
         )
     };
+    // A stacked change request cannot merge before its parent: it would merge into the
+    // parent's branch. After the parent merged it waits for the retarget.
+    let dependencies = if d.stacked_on.is_empty() || dependencies.status == CheckStatus::Failed {
+        dependencies
+    } else if d.stack_parent_closed {
+        check(
+            CheckStatus::Failed,
+            format!(
+                "stacked on {}, which was closed without merging",
+                d.stack_parent_ref
+            ),
+        )
+    } else if d.stack_parent_merged
+        && !d.retargeting
+        && d.retarget_attempts >= MAX_RETARGET_ATTEMPTS
+    {
+        check(
+            CheckStatus::Failed,
+            "automatic retarget failed: rebase onto the default branch by hand",
+        )
+    } else if d.stack_parent_merged {
+        check(CheckStatus::Pending, "retargeting onto the default branch")
+    } else {
+        check(
+            CheckStatus::Pending,
+            truncate(
+                &format!("stacked on {}: waits for it to merge", d.stack_parent_ref),
+                120,
+            ),
+        )
+    };
     Readiness {
         ci,
         review,
@@ -357,6 +433,11 @@ pub fn wait(phase: CrPhase, d: &CrData, r: &Readiness) -> Option<Wait> {
         CrPhase::Merging => wait_of(Github, "merging", "Merging on GitHub"),
         CrPhase::Failed => wait_of(Human, "enzarb_failed", "enzarb failed"),
         CrPhase::ConflictParked => wait_of(Human, "conflict_parked", "Parked on a merge conflict"),
+        CrPhase::AwaitingChanges if d.retargeting => wait_of(
+            Enzarb,
+            "retargeting",
+            "enzarb is retargeting this onto the default branch",
+        ),
         CrPhase::AwaitingChanges => {
             let reviewed = !d.last_review.is_empty() && d.reviewed_sha == d.head_sha;
             if !reviewed {
@@ -454,6 +535,29 @@ fn set_head(d: &mut CrData, sha: String) {
 /// the effects the caller already queued. Unless `allow_check` is false (the answer to a
 /// check never asks again), unknown readiness queues one `check_merge_readiness`.
 fn evaluate(mut fx: Fx, from: CrPhase, mut d: CrData, note: &str, allow_check: bool) -> Transition {
+    // The parent was merged: move enzarb's own branch onto the default branch first.
+    if !d.stacked_on.is_empty()
+        && d.stack_parent_merged
+        && !d.retargeting
+        && d.retarget_attempts < MAX_RETARGET_ATTEMPTS
+        && !d.head_sha.is_empty()
+    {
+        d.retargeting = true;
+        d.retarget_attempts += 1;
+        d.merge_requested = false;
+        fx.retarget_change_request(
+            d.number,
+            &d.head_ref,
+            &d.head_sha,
+            &d.stack_parent_tip,
+            &d.default_base,
+        );
+        return Transition::to(
+            st(CrPhase::AwaitingChanges, d),
+            fx.finish(),
+            "parent merged; retargeting",
+        );
+    }
     let r = readiness(&d);
     if r.ci.status == CheckStatus::Failed || r.review.status == CheckStatus::Failed {
         d.merge_requested = false;
@@ -640,16 +744,44 @@ pub(super) fn start(ctx: &Ctx, state: &WorkflowState, ev: &EngineEvent) -> Trans
             if d.base_ref.is_empty() {
                 d.base_ref = ctx.default_branch.clone();
             }
+            record_stack(ctx, &mut d);
             begin(ctx, ev, CrPhase::Reviewing, d, "change request opened")
         }
         _ => Transition::reject(state, "not an opening event"),
     }
 }
 
+/// Record that a change request opened by enzarb is stacked: its issue wrote the marker, and
+/// the change request's base is the parent's enzarb branch. Anything else is not a stack.
+fn record_stack(ctx: &Ctx, d: &mut CrData) {
+    if !d.author.eq_ignore_ascii_case(&ctx.bot_login) {
+        return;
+    }
+    let Some((parent, parent_ref, tip)) = parse_stack_marker(&d.body) else {
+        return;
+    };
+    if parent_ref != d.base_ref || !is_enzarb_branch(&parent_ref) || !is_enzarb_branch(&d.head_ref)
+    {
+        return;
+    }
+    d.stacked_on = parent;
+    d.stack_parent_ref = parent_ref;
+    d.stack_parent_tip = tip;
+    d.default_base = ctx.default_branch.clone();
+}
+
 pub(super) fn step(ctx: &Ctx, stored: &CrState, ev: &EngineEvent) -> Transition {
     // Dependencies live in the database, not in the stored state: every event sees them fresh.
     let mut s = stored.clone();
     s.data.open_dependencies = ctx.open_dependencies.clone();
+    if let Some(p) = ctx
+        .stack_parent
+        .as_ref()
+        .filter(|p| !s.data.stacked_on.is_empty() && p.key == s.data.stacked_on)
+    {
+        s.data.stack_parent_merged = p.merged;
+        s.data.stack_parent_closed = p.closed;
+    }
     if matches!(ev.payload, EventPayload::DependenciesChanged) {
         return dependencies_changed(ctx, ev, stored, &s);
     }
@@ -660,7 +792,10 @@ pub(super) fn step(ctx: &Ctx, stored: &CrState, ev: &EngineEvent) -> Transition 
 fn dependencies_changed(ctx: &Ctx, ev: &EngineEvent, stored: &CrState, s: &CrState) -> Transition {
     use CrPhase::*;
     let state = WorkflowState::ChangeRequest(stored.clone());
-    if stored.data.open_dependencies == s.data.open_dependencies {
+    if stored.data.open_dependencies == s.data.open_dependencies
+        && stored.data.stack_parent_merged == s.data.stack_parent_merged
+        && stored.data.stack_parent_closed == s.data.stack_parent_closed
+    {
         return Transition::reject(&state, "dependencies unchanged");
     }
     match s.phase {
@@ -716,7 +851,13 @@ fn step_event(ctx: &Ctx, s: &CrState, ev: &EngineEvent) -> Transition {
             job_succeeded(ctx, ev, s, &state, *kind, output)
         }
         EventPayload::JobFailed { kind, error, .. } => {
-            if matches!(
+            if *kind == JobKind::RetargetChangeRequest {
+                if s.data.retargeting {
+                    retarget_park(ctx, ev, s, &format!("the retarget job failed: {error}"))
+                } else {
+                    Transition::reject(&state, "stale job result")
+                }
+            } else if matches!(
                 kind,
                 JobKind::SetProgress | JobKind::PostComment | JobKind::CheckMergeReadiness
             ) {
@@ -737,6 +878,12 @@ fn step_event(ctx: &Ctx, s: &CrState, ev: &EngineEvent) -> Transition {
             if matches!(s.phase, Reviewing | AddressingComments | ResolvingConflicts) =>
         {
             fail(ctx, ev, s, "the agent run exceeded its deadline", true)
+        }
+        EventPayload::TimerFired { job_id: Some(_) } if s.data.retargeting => {
+            // Stop the run too: it must not push after the item was handed to a person.
+            let mut t = retarget_park(ctx, ev, s, "the retarget exceeded its deadline");
+            t.effects.insert(0, super::Effect::CancelJobs);
+            t
         }
         EventPayload::TimerFired { .. } => Transition::reject(&state, "no timer expected"),
         EventPayload::Unmergeable { base_sha } => unmergeable(ctx, ev, s, &state, base_sha),
@@ -780,6 +927,7 @@ fn reopened(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowState) -> 
     if d.base_ref.is_empty() {
         d.base_ref = ctx.default_branch.clone();
     }
+    d.carry_stack(&s.data);
     begin(ctx, ev, CrPhase::Reviewing, d, "reopened")
 }
 
@@ -847,6 +995,7 @@ fn updated(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowState) -> T
                 d.base_ref
             };
             d.base_sha = s.data.base_sha.clone();
+            d.carry_stack(&s.data);
             d.resolve_attempts = s.data.resolve_attempts.clone();
             d.resolve_attempted_base_sha = s.data.resolve_attempted_base_sha.clone();
             d.pending = s.data.pending.clone();
@@ -1206,6 +1355,127 @@ fn merge_finished(ctx: &Ctx, ev: &EngineEvent, s: &CrState, output: &Value) -> T
     }
 }
 
+/// Give up retargeting: nothing was pushed that could be wrong, but a person has to move the
+/// branch. The stack is forgotten so the engine does not try again by itself.
+fn retarget_park(ctx: &Ctx, ev: &EngineEvent, s: &CrState, reason: &str) -> Transition {
+    let mut d = s.data.clone();
+    let onto = if d.default_base.is_empty() {
+        ctx.default_branch.clone()
+    } else {
+        d.default_base.clone()
+    };
+    d.clear_stack();
+    d.merge_requested = false;
+    d.merge_error = truncate(reason, 300);
+    let mut fx = Fx::new(ctx, ev);
+    if matches!(
+        s.phase,
+        CrPhase::Reviewing | CrPhase::AddressingComments | CrPhase::ResolvingConflicts
+    ) {
+        fx.cancel_jobs();
+    }
+    fx.wake_at(None);
+    fx.comment(format!(
+        "enzarb did not retarget this change request onto `{onto}` after its parent was \
+         merged: {}\n\nNothing was merged and nothing was force-pushed. A maintainer needs to \
+         rebase this branch onto `{onto}` and change its base.",
+        truncate(reason, 300)
+    ));
+    Transition::to(
+        st(CrPhase::ConflictParked, d),
+        fx.finish(),
+        "retarget parked",
+    )
+}
+
+/// The result of `retarget_change_request`. Applies in whatever phase the item is in: the
+/// push can start a review of the new head before the result arrives.
+fn retarget_finished(ctx: &Ctx, ev: &EngineEvent, s: &CrState, output: &Value) -> Transition {
+    let state = WorkflowState::ChangeRequest(s.clone());
+    if !s.data.retargeting {
+        return Transition::reject(&state, "stale job result");
+    }
+    let onto = s.data.default_base.clone();
+    let mut d = s.data.clone();
+    d.retargeting = false;
+    match RetargetOutcome::from_output(output) {
+        RetargetOutcome::Retargeted { head_sha } => {
+            d.clear_stack();
+            d.base_ref = onto.clone();
+            if !head_sha.is_empty() {
+                set_head(&mut d, head_sha);
+            }
+            // The rebased head is a new commit: review it, then the usual checks decide.
+            d.last_review.clear();
+            d.ci = CiState::Unknown;
+            d.mergeable = None;
+            d.merge_error.clear();
+            let note = format!("enzarb: retargeted onto `{onto}` after the parent was merged.");
+            let mut fx = Fx::new(ctx, ev);
+            fx.comment(note);
+            let mut t = if s.phase == CrPhase::Reviewing {
+                Transition::to(st(CrPhase::Reviewing, d), Vec::new(), "retargeted")
+            } else {
+                begin(ctx, ev, CrPhase::Reviewing, d, "retargeted")
+            };
+            t.effects.splice(0..0, fx.finish());
+            t
+        }
+        RetargetOutcome::Already => {
+            d.clear_stack();
+            d.base_ref = onto;
+            match s.phase {
+                CrPhase::AwaitingChanges | CrPhase::ReadyToMerge => {
+                    evaluate(Fx::new(ctx, ev), s.phase, d, "already retargeted", true)
+                }
+                phase => Transition::to(st(phase, d), Vec::new(), "already retargeted"),
+            }
+        }
+        RetargetOutcome::BaseNotSet { head_sha, reason } => {
+            let mut p = s.clone();
+            if !head_sha.is_empty() {
+                set_head(&mut d, head_sha);
+            }
+            p.data = d;
+            retarget_park(
+                ctx,
+                ev,
+                &p,
+                &format!("the branch was rebased but the base could not be changed ({reason})"),
+            )
+        }
+        RetargetOutcome::LeaseFailed { reason } => {
+            // The branch moved under the lease: review the new commits; the retarget runs
+            // again from the head the review ends on (up to the attempt cap).
+            let mut p = s.clone();
+            p.data = d.clone();
+            if d.retarget_attempts >= MAX_RETARGET_ATTEMPTS {
+                return retarget_park(ctx, ev, &p, &format!("the branch kept changing ({reason})"));
+            }
+            d.last_review.clear();
+            d.ci = CiState::Unknown;
+            d.mergeable = None;
+            d.merge_requested = false;
+            begin(ctx, ev, CrPhase::Reviewing, d, "head moved during retarget")
+        }
+        RetargetOutcome::Conflict { reason } => {
+            let mut p = s.clone();
+            p.data = d;
+            retarget_park(
+                ctx,
+                ev,
+                &p,
+                &format!("the rebase onto `{onto}` conflicts ({reason})"),
+            )
+        }
+        RetargetOutcome::Refused { reason } => {
+            let mut p = s.clone();
+            p.data = d;
+            retarget_park(ctx, ev, &p, &reason)
+        }
+    }
+}
+
 fn job_succeeded(
     ctx: &Ctx,
     ev: &EngineEvent,
@@ -1220,6 +1490,9 @@ fn job_succeeded(
     }
     if kind == JobKind::CheckMergeReadiness {
         return readiness_checked(ctx, ev, s, state, output);
+    }
+    if kind == JobKind::RetargetChangeRequest {
+        return retarget_finished(ctx, ev, s, output);
     }
     if awaited(s.phase) != Some(kind) {
         return Transition::reject(state, "stale job result");

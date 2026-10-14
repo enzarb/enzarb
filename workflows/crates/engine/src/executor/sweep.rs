@@ -209,7 +209,8 @@ impl Executor {
     pub async fn cancel_runs(&self) -> Result<usize, Error> {
         let rows: Vec<(i64, i32, Option<String>, Value)> = sqlx::query_as(
             r"SELECT id, limit_wait_count + restart_retries, project_id, input FROM jobs
-              WHERE status = 'cancelled' AND kind LIKE 'agent\_%' AND deadline IS NOT NULL
+              WHERE status = 'cancelled' AND deadline IS NOT NULL
+                AND (kind LIKE 'agent\_%' OR kind = 'retarget_change_request')
                 AND updated_at > now() - interval '1 day'
               ORDER BY id LIMIT 50",
         )

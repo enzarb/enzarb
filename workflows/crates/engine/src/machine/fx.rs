@@ -148,6 +148,28 @@ impl<'a> Fx<'a> {
         self.job(JobKind::MergeChangeRequest, PRIORITY_COMMENT, input);
     }
 
+    /// Rebase enzarb's own stacked child branch `head_ref` (expected at `expected_sha`) from
+    /// `old_base` onto `onto`, push it with a lease and set the change request's base.
+    /// Queued only by the change request machine, for a child whose parent was merged.
+    pub fn retarget_change_request(
+        &mut self,
+        number: u64,
+        head_ref: &str,
+        expected_sha: &str,
+        old_base: &str,
+        onto: &str,
+    ) {
+        let input = json!({
+            "item": self.ctx.work_item,
+            "number": number,
+            "head_ref": head_ref,
+            "expected_sha": expected_sha,
+            "old_base": old_base,
+            "onto": onto,
+        });
+        self.job(JobKind::RetargetChangeRequest, PRIORITY_COMMENT, input);
+    }
+
     pub fn cancel_jobs(&mut self) {
         self.effects.push(Effect::CancelJobs);
     }

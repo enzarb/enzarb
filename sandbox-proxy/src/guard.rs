@@ -325,6 +325,7 @@ mod tests {
             deps_token: None,
             npm_token: None,
             claude_token: None,
+            retarget: None,
         }
     }
 

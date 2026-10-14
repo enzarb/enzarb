@@ -24,6 +24,8 @@
 //! * `check_merge_readiness`: `{"item": WorkItemKey, "number": u64, "head_sha": str}`
 //! * `merge_change_request`: `{"item": WorkItemKey, "number": u64, "title": str,
 //!   "expected_head_sha": str, "actor": str}`
+//! * `retarget_change_request`: `{"item": WorkItemKey, "number": u64, "head_ref": str,
+//!   "expected_sha": str, "old_base": str, "onto": str}`
 //!
 //! Job outputs that the machines read: agent jobs store the `RunFinished` body
 //! (`summary` is Claude's result text, plus `branch`, `head_sha`, `pushed`),
@@ -31,13 +33,15 @@
 //! `check_merge_readiness` `{head_sha, ci, mergeable, mergeable_state}` (`ci` is
 //! `success|failure|pending`, `mergeable` a bool or null while computing) and
 //! `merge_change_request` `{outcome, actor, sha?, reason?}` with `outcome` one of `merged`,
-//! `already_merged`, `head_moved`, `not_mergeable`.
+//! `already_merged`, `head_moved`, `not_mergeable`; `retarget_change_request` stores
+//! `{outcome, head_sha?, reason?, base_set?}` ([`stack::RetargetOutcome`]).
 
 mod change_request;
 mod fx;
 mod issue;
 mod mention;
 pub mod prompt;
+pub mod stack;
 mod title;
 
 #[cfg(test)]
@@ -60,6 +64,7 @@ pub use mention::{MentionData, MentionPhase, MentionState};
 pub use prompt::{
     AgentOutput, Decision, OutputError, PromptContext, recovery_prompt, render_prompt,
 };
+pub use stack::{RetargetOutcome, StackParent};
 
 /// Version of the `state_data` shapes written by this module. Readers of older
 /// versions must be added to [`WorkflowState::from_row`] when this is bumped.
@@ -84,6 +89,9 @@ pub enum JobKind {
     AgentTask,
     CheckMergeReadiness,
     MergeChangeRequest,
+    /// Rebase enzarb's own stacked child branch onto the default branch after its parent was
+    /// squash-merged, and set the change request's base. The only force-push in enzarb.
+    RetargetChangeRequest,
 }
 
 impl JobKind {
@@ -101,6 +109,7 @@ impl JobKind {
             JobKind::AgentTask => "agent_task",
             JobKind::CheckMergeReadiness => "check_merge_readiness",
             JobKind::MergeChangeRequest => "merge_change_request",
+            JobKind::RetargetChangeRequest => "retarget_change_request",
         }
     }
 
@@ -112,6 +121,7 @@ impl JobKind {
                 | JobKind::OpenChangeRequest
                 | JobKind::CheckMergeReadiness
                 | JobKind::MergeChangeRequest
+                | JobKind::RetargetChangeRequest
         )
     }
 }
@@ -398,6 +408,10 @@ pub struct Ctx {
     /// What the work item still waits on, read from the database by the reducer for every
     /// event. Only change requests use it.
     pub open_dependencies: Vec<OpenDependency>,
+    /// The change request this item is stacked on, or could be stacked on: for an item
+    /// already stacked, its recorded parent with the current `merged` flag; otherwise the
+    /// single open parent chosen by [`stack::select_stack_parent`]. Read by the reducer.
+    pub stack_parent: Option<stack::StackParent>,
 }
 
 impl Ctx {

@@ -18,7 +18,8 @@ use sqlx::{PgConnection, PgPool};
 use crate::error::Error;
 use crate::executor::ConnectorRegistry;
 use crate::index::ProjectIndex;
-use crate::machine::{EngineEvent, EventPayload, OpenDependency};
+use crate::machine::stack::{ParentRow, select_stack_parent};
+use crate::machine::{EngineEvent, EventPayload, OpenDependency, StackParent};
 use crate::reducer::normalize_key;
 
 /// How a dependency reads from an item in `home`: `#12`, or `owner/repo#12` elsewhere.
@@ -86,6 +87,100 @@ pub async fn open_dependencies(
         });
     }
     Ok(out)
+}
+
+/// The change request `key` is stacked on, or could be stacked on (docs/workflows.md,
+/// "Stacked change requests").
+///
+/// * `stacked_on` is the parent recorded in the item's state: its current state is read, with
+///   `merged` / `closed` set accordingly.
+/// * Otherwise the parent is chosen from the item's dependencies by [`select_stack_parent`].
+pub async fn stack_parent(
+    conn: &mut PgConnection,
+    key: &WorkItemKey,
+    stacked_on: Option<&str>,
+) -> Result<Option<StackParent>, Error> {
+    if let Some(parent) = stacked_on {
+        let row: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT state, state_data->>'head_ref', state_data->>'head_sha'
+             FROM workflows.work_items WHERE key = $1",
+        )
+        .bind(parent)
+        .fetch_optional(&mut *conn)
+        .await?;
+        return Ok(row.map(|(state, head_ref, head_sha)| StackParent {
+            key: parent.to_string(),
+            head_ref: head_ref.unwrap_or_default(),
+            head_sha: head_sha.unwrap_or_default(),
+            merged: state == "Merged",
+            closed: state == "Closed" || state == "Cancelled",
+        }));
+    }
+    #[allow(clippy::type_complexity)]
+    let rows: Vec<(
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> = sqlx::query_as(
+        r"SELECT dw.state, cw.key, cw.state,
+                 cw.state_data->>'head_ref', cw.state_data->>'head_sha'
+          FROM (SELECT DISTINCT depends_on_key FROM workflows.effective_dependencies
+                WHERE work_item_key = $1) e
+          LEFT JOIN workflows.work_items dw ON dw.key = e.depends_on_key
+          LEFT JOIN workflows.work_items cw ON cw.workflow = 'change_request'
+               AND ((dw.workflow = 'change_request' AND cw.key = dw.key)
+                 OR (dw.workflow = 'issue' AND dw.state_data->>'change_request' IS NOT NULL
+                     AND cw.key = regexp_replace(dw.key, '#[0-9]+$', '') || '#'
+                                  || (dw.state_data->>'change_request')))",
+    )
+    .bind(key.to_string())
+    .fetch_all(&mut *conn)
+    .await?;
+    let rows: Vec<ParentRow> = rows
+        .into_iter()
+        .map(
+            |(dep_state, cr_key, cr_state, head_ref, head_sha)| ParentRow {
+                dep_state,
+                cr_key,
+                cr_state,
+                head_ref,
+                head_sha,
+            },
+        )
+        .collect();
+    Ok(select_stack_parent(&rows))
+}
+
+/// Tell the stacked children of the change request `parent` that it reached a final state
+/// (`DependenciesChanged`, so a merge retargets them at once rather than at the next sweep).
+/// The deduplication key makes repeating this harmless. Returns the children notified.
+pub async fn notify_stacked_children(
+    conn: &mut PgConnection,
+    parent: &WorkItemKey,
+    state: &str,
+) -> Result<usize, Error> {
+    let children: Vec<String> = sqlx::query_scalar(
+        "SELECT key FROM workflows.work_items
+         WHERE workflow = 'change_request' AND state_data->>'stacked_on' = $1
+           AND state NOT IN ('Merged', 'Closed', 'Cancelled')",
+    )
+    .bind(parent.to_string())
+    .fetch_all(&mut *conn)
+    .await?;
+    for child in &children {
+        let _: Option<i64> =
+            sqlx::query_scalar("SELECT workflows_api.ingest_event($1, $2, $3, $4, $5)")
+                .bind("engine")
+                .bind(format!("stack-parent-final:{parent}:{state}:{child}"))
+                .bind(child)
+                .bind("DependenciesChanged")
+                .bind(serde_json::json!({}))
+                .fetch_one(&mut *conn)
+                .await?;
+    }
+    Ok(children.len())
 }
 
 /// Store the dependencies written in the body or comment of a connector event on `key`.

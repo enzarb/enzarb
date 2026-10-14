@@ -34,6 +34,7 @@ pub mod policy;
 pub mod privs;
 pub mod pty;
 pub mod reaper;
+pub mod retarget;
 pub mod runs;
 pub mod server;
 

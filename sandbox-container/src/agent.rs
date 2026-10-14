@@ -1111,7 +1111,7 @@ impl Inner {
                     secrets,
                     &[],
                     Some(repo),
-                    &["worktree", "remove", "--force", &ps],
+                    &["worktree", "remove", "-f", &ps],
                 )
                 .await?;
             if !out.success() {
@@ -1344,6 +1344,7 @@ impl Inner {
         run_id: &str,
         repo: &Path,
         url: &str,
+        extra: &[String],
         refspec: &str,
     ) -> Result<Output, Abort> {
         let net = self
@@ -1351,6 +1352,10 @@ impl Inner {
             .await?;
         let snap = std::fs::read(net.0.join("config")).unwrap_or_default();
         Self::net_untouched(&net, &snap)?;
+        // `extra` is only ever the retarget lease (built in `crate::retarget`).
+        let mut args: Vec<&str> = vec!["push", "--no-verify"];
+        args.extend(extra.iter().map(String::as_str));
+        args.extend(["--", url, refspec]);
         let out = self
             .net_git_retry(
                 run,
@@ -1358,7 +1363,7 @@ impl Inner {
                 secrets,
                 net_env,
                 &net.0,
-                &["push", "--no-verify", "--", url, refspec],
+                &args,
                 Some(self.cfg.push_attempt_cap),
                 None,
             )
@@ -1417,6 +1422,108 @@ impl Inner {
             .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()))
     }
 
+    /// Clone `req.repo_url` into `repo`, or fetch into the existing clone.
+    /// The caller holds the repo lock.
+    async fn sync_repo(
+        &self,
+        run: &Run,
+        ctl: &mut Ctl,
+        secrets: &[String],
+        net_env: &[(String, String)],
+        req: &RunStart,
+        repo: &Path,
+    ) -> Result<(), Abort> {
+        let ws = &self.cfg.workspace;
+        if repo.join(".git").exists() {
+            self.net_fetch(run, ctl, secrets, net_env, &req.run_id, repo, &req.repo_url)
+                .await?;
+        } else {
+            let _ = std::fs::remove_dir_all(repo);
+            // Into a fresh, unpredictably named directory (nothing planted
+            // to read), then moved into place.
+            let tmp = crate::netgit::net_dir(ws, &format!("clone-{}", req.run_id))
+                .map_err(|e| Abort::Fail(format!("cannot name the clone dir: {e}")))?;
+            let _ = crate::privs::create_dir_all(tmp.parent().unwrap_or(ws));
+            let tmp = crate::netgit::NetDir(tmp);
+            let t = tmp.0.to_string_lossy().into_owned();
+            let res = self
+                .net_git_retry(
+                    run,
+                    ctl,
+                    secrets,
+                    net_env,
+                    &ws.join("repos"),
+                    &[
+                        "clone",
+                        "--no-checkout",
+                        "--template=",
+                        "--",
+                        &req.repo_url,
+                        &t,
+                    ],
+                    Some(self.cfg.fetch_attempt_cap),
+                    Some(&tmp.0),
+                )
+                .await
+                .and_then(|o| require(o, "clone", secrets))
+                .and_then(|o| {
+                    std::fs::rename(&tmp.0, repo)
+                        .map(|_| o)
+                        .map_err(|e| Abort::Fail(format!("cannot move the clone: {e}")))
+                });
+            if let Err(e) = res {
+                let _ = std::fs::remove_dir_all(repo);
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
+    /// A retarget run (`req.retarget`): no agent, no toolchain, no claude
+    /// token; `push`/`branch`/`base_ref` are ignored. See [`crate::retarget`].
+    async fn execute_retarget(
+        &self,
+        run: &Run,
+        req: &RunStart,
+        rt: &enzarb_proto::Retarget,
+        ctl: &mut Ctl,
+        secrets: &[String],
+        net_env: &[(String, String)],
+    ) -> Result<Finish, Abort> {
+        let ws = &self.cfg.workspace;
+        let repo = ws.join("repos").join(repo_dir_name(&req.repo_url));
+        let worktree = ws.join("worktrees").join(format!("run-{}", req.run_id));
+        let _ = crate::privs::create_dir_all(&ws.join("repos"));
+        let _ = crate::privs::create_dir_all(&ws.join("worktrees"));
+        let lock = self.repo_lock(&repo);
+        let _g = lock.lock().await;
+        let author = crate::retarget::Author {
+            name: self.cfg.git_name.clone(),
+            email: self.cfg.git_email.clone(),
+        };
+        let mut git = RetargetGit {
+            mgr: self,
+            run,
+            ctl,
+            secrets,
+            net_env,
+            req,
+            repo: &repo,
+        };
+        let out = crate::retarget::run(&mut git, rt, &repo, &worktree, &author).await?;
+        run.transcript.append(
+            "retarget",
+            json!({"outcome": out.kind.as_str(), "head_sha": out.head_sha, "reason": out.reason}),
+        );
+        Ok(Finish {
+            outcome: RunOutcome::Succeeded,
+            exit_code: Some(0),
+            summary: redact(&out.summary(), secrets),
+            head_sha: out.head_sha.clone(),
+            pushed: out.pushed(),
+        })
+    }
+
     async fn execute(&self, run: &Run, req: &RunStart, ctl: &mut Ctl) -> Result<Finish, Abort> {
         let ws = &self.cfg.workspace;
         let mut secrets = vec![req.clone_token.clone(), req.callback_token.clone()];
@@ -1445,6 +1552,12 @@ impl Inner {
         let net_env = crate::netgit::env(&req.repo_url, header.as_deref(), &self.git_env())
             .map_err(Abort::Fail)?;
 
+        if let Some(rt) = &req.retarget {
+            return self
+                .execute_retarget(run, req, rt, ctl, &secrets, &net_env)
+                .await;
+        }
+
         // 1. clone / fetch, then the worktree.
         let repo = ws.join("repos").join(repo_dir_name(&req.repo_url));
         let worktree = ws.join("worktrees").join(format!("run-{}", req.run_id));
@@ -1453,56 +1566,8 @@ impl Inner {
             let _g = lock.lock().await;
             let _ = crate::privs::create_dir_all(&ws.join("repos"));
             let _ = crate::privs::create_dir_all(&ws.join("worktrees"));
-            if repo.join(".git").exists() {
-                self.net_fetch(
-                    run,
-                    ctl,
-                    &secrets,
-                    &net_env,
-                    &req.run_id,
-                    &repo,
-                    &req.repo_url,
-                )
+            self.sync_repo(run, ctl, &secrets, &net_env, req, &repo)
                 .await?;
-            } else {
-                let _ = std::fs::remove_dir_all(&repo);
-                // Into a fresh, unpredictably named directory (nothing planted
-                // to read), then moved into place.
-                let tmp = crate::netgit::net_dir(ws, &format!("clone-{}", req.run_id))
-                    .map_err(|e| Abort::Fail(format!("cannot name the clone dir: {e}")))?;
-                let _ = crate::privs::create_dir_all(tmp.parent().unwrap_or(ws));
-                let tmp = crate::netgit::NetDir(tmp);
-                let t = tmp.0.to_string_lossy().into_owned();
-                let res = self
-                    .net_git_retry(
-                        run,
-                        ctl,
-                        &secrets,
-                        &net_env,
-                        &ws.join("repos"),
-                        &[
-                            "clone",
-                            "--no-checkout",
-                            "--template=",
-                            "--",
-                            &req.repo_url,
-                            &t,
-                        ],
-                        Some(self.cfg.fetch_attempt_cap),
-                        Some(&tmp.0),
-                    )
-                    .await
-                    .and_then(|o| require(o, "clone", &secrets))
-                    .and_then(|o| {
-                        std::fs::rename(&tmp.0, &repo)
-                            .map(|_| o)
-                            .map_err(|e| Abort::Fail(format!("cannot move the clone: {e}")))
-                    });
-                if let Err(e) = res {
-                    let _ = std::fs::remove_dir_all(&repo);
-                    return Err(e);
-                }
-            }
             let base = self.resolve_base(run, ctl, &repo, &req.base_ref).await?;
             let start = match self
                 .rev_parse(
@@ -1665,6 +1730,7 @@ impl Inner {
                         &req.run_id,
                         &repo,
                         &req.repo_url,
+                        &[],
                         &refspec,
                     )
                     .await?;
@@ -1703,6 +1769,61 @@ impl Inner {
             }
         }
         Err(Abort::Fail(format!("base_ref {base_ref:?} not found")))
+    }
+}
+
+/// The [`crate::retarget::Git`] of one run: the manager's hardened git paths.
+struct RetargetGit<'a> {
+    mgr: &'a Inner,
+    run: &'a Run,
+    ctl: &'a mut Ctl,
+    secrets: &'a [String],
+    net_env: &'a [(String, String)],
+    req: &'a RunStart,
+    repo: &'a Path,
+}
+
+impl crate::retarget::Git for RetargetGit<'_> {
+    type Err = Abort;
+
+    fn fail(msg: String) -> Abort {
+        Abort::Fail(msg)
+    }
+
+    async fn fetch(&mut self) -> Result<(), Abort> {
+        let _ = crate::privs::create_dir_all(&self.mgr.cfg.workspace.join("repos"));
+        self.mgr
+            .sync_repo(
+                self.run,
+                self.ctl,
+                self.secrets,
+                self.net_env,
+                self.req,
+                self.repo,
+            )
+            .await
+    }
+
+    async fn local(&mut self, cwd: &Path, args: &[&str]) -> Result<Output, Abort> {
+        self.mgr
+            .git_raw(self.run, self.ctl, self.secrets, &[], Some(cwd), args)
+            .await
+    }
+
+    async fn push(&mut self, extra: &[String], refspec: &str) -> Result<Output, Abort> {
+        self.mgr
+            .net_push(
+                self.run,
+                self.ctl,
+                self.secrets,
+                self.net_env,
+                &self.req.run_id,
+                self.repo,
+                &self.req.repo_url,
+                extra,
+                refspec,
+            )
+            .await
     }
 }
 
@@ -1852,6 +1973,7 @@ mod npm_tests {
             deps_token: Some("d".into()),
             npm_token: Some("ghp_npm123".into()),
             claude_token: Some("sk-ant-oat01-x".into()),
+            retarget: None,
         };
         req.clone_token = String::new();
         req.deps_token = None;
