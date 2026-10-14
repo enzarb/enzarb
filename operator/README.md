@@ -43,12 +43,11 @@ Each flag has an environment variable; the flag wins.
 | `--netpol-ingress-namespace-label` | `ENZARB_NETPOL_INGRESS_NAMESPACE_LABEL` | `kubernetes.io/metadata.name=<release namespace>` | `key=value` label of the namespace(s) allowed to reach sandbox port 7070. |
 | `--netpol-ingress-pod-names` | `ENZARB_NETPOL_INGRESS_POD_NAMES` | `enzarb-sandbox-proxy,enzarb-workflows` | Comma-separated `app.kubernetes.io/name` values of allowed client pods. |
 | `--sandbox-runtime-class` | `ENZARB_SANDBOX_RUNTIME_CLASS` | none, required | RuntimeClass of every sandbox pod (recommended `gvisor`). Must be in `--docker-runtime-classes`; the operator refuses to start otherwise. |
-| `--docker-image` | `ENZARB_DOCKER_IMAGE` | `docker:29.8.2-dind` | Image of the `dockerd` sidecar. |
 | `--docker-runtime-classes` | `ENZARB_DOCKER_RUNTIME_CLASSES` | `gvisor` | RuntimeClass names allowed to host dockerd. Each needs a profile. |
 | `--docker-storage` | `ENZARB_DOCKER_STORAGE` | `50Gi` | Size of each Project's PVC `sb-<name>-docker`. |
-| `--docker-cpu-request` / `--docker-cpu-limit` | `ENZARB_DOCKER_CPU_REQUEST` / `_LIMIT` | unset | dockerd sidecar CPU. |
-| `--docker-memory-request` / `--docker-memory-limit` | `ENZARB_DOCKER_MEMORY_REQUEST` / `_LIMIT` | unset | dockerd sidecar memory. |
-| `--docker-profiles-file` | `ENZARB_DOCKER_PROFILES_FILE` | none | YAML map `{<runtimeClass>: {securityContext, dockerdArgs}}` added over the built-in profiles. |
+| `--docker-profiles-file` | `ENZARB_DOCKER_PROFILES_FILE` | none | YAML map `{<runtimeClass>: {securityContext, dockerdArgs}}` added over the built-in profiles. `securityContext` is the `sandbox` container's. |
+
+Removed with ADR-0016 (dockerd no longer has its own container): `--docker-image`, `--docker-cpu-request`/`--docker-cpu-limit`, `--docker-memory-request`/`--docker-memory-limit`. dockerd and inner containers share the `sandbox` container's resources (`spec.sandbox.resources`).
 | `--health-addr` | `ENZARB_HEALTH_ADDR` | `0.0.0.0:8080` | Serves `/healthz` and `/readyz`. |
 | `--leader-election` | `ENZARB_LEADER_ELECTION` | `true` | Take a Lease before running the controller. Pass `false` for local runs. |
 | `--leader-election-name` | `ENZARB_LEADER_ELECTION_NAME` | `enzarb-sandbox-operator` | Lease name. |
@@ -61,7 +60,7 @@ Each flag has an environment variable; the flag wins.
 
 ## Applying pod-shape changes (drain first)
 
-Updating the Sandbox template does not recreate a running pod. The operator compares the **desired pod shape** with the running pod: the image of every container, `ENZARB_*` env vars of the `sandbox` container (including `ENZARB_MAX_RUNS`), container resources (`requests` and `limits`, compared as quantities so `1Gi` equals `1024Mi`) of `sandbox` and `dockerd`, `runtimeClassName`, and the operator-defined volume mounts. Only keys the desired template sets are compared (defaults and fields injected into the live pod never count, so an operator upgrade does not roll existing pods), except that an `ENZARB_*` var the pod carries and the operator no longer sets does count. A new field joins by adding one line to `shape_of` in `roll.rs`. Storage growth is not a pod-shape change (the PVC expands in place).
+Updating the Sandbox template does not recreate a running pod. The operator compares the **desired pod shape** with the running pod: the image of every container, `ENZARB_*` env vars of the `sandbox` container (including `ENZARB_MAX_RUNS` and `ENZARB_DOCKERD_ARGS`), container resources (`requests` and `limits`, compared as quantities so `1Gi` equals `1024Mi`), the container's `securityContext` identity and capabilities (`runAsUser`, `privileged`, `allowPrivilegeEscalation`, `capabilities.add`), `runtimeClassName`, and the operator-defined volume mounts. Only keys the desired template sets are compared (defaults and fields injected into the live pod never count, so an operator upgrade does not roll existing pods), except that an `ENZARB_*` var the pod carries and the operator no longer sets does count. A new field joins by adding one line to `shape_of` in `roll.rs`. Storage growth is not a pod-shape change (the PVC expands in place).
 
 On a difference the pod is **left alone** and the change is queued: `status.pendingChange = {generation, since, reason}` plus the informational condition `SandboxChangePending` (not part of the UI checklist, no effect on `Ready`; this replaces `SandboxImageRoll`). The pod is deleted (with a UID precondition; never the Sandbox or the PVCs) only when one of these holds, and the pod is at least two minutes old:
 
@@ -71,19 +70,21 @@ On a difference the pod is **left alone** and the change is queued: `status.pend
 
 A further spec change while one is pending bumps `generation` (so an ack for the older one no longer applies) and keeps `since`, so a stream of edits cannot postpone the apply forever. `pendingChange` stays until the recreated pod matches the template, then it and the condition are cleared. A pod that was recreated and still differs is not deleted again for the same difference.
 
-## Docker in the sandbox (ADR-0012)
+## Docker in the sandbox (ADR-0012, ADR-0016)
 
-Docker is always on, and Projects cannot choose the runtime class: both are cluster-admin settings (operator flags). Every Sandbox pod gets `runtimeClassName: <--sandbox-runtime-class>` and:
+Docker is always on, and Projects cannot choose the runtime class: both are cluster-admin settings (operator flags). Every Sandbox pod gets `runtimeClassName: <--sandbox-runtime-class>` and one container, `sandbox`, in which sandbox-init (pid 1) runs and supervises `dockerd` (there is no sidecar: under gVisor a socket cannot cross containers through an `emptyDir`, and bind mounts need the agent's filesystem). The operator adds to the `sandbox` container:
 
-- a `dockerd` sidecar (`--docker-image`), started with `command: [dockerd]` so docker:dind's entrypoint never adds a TCP listener. It listens only on `unix:///var/run/docker/docker.sock` (`--group` = the sandbox gid 1000, `--exec-root=/var/run/dockerd` so containerd state is not shared);
-- emptyDir `docker-sock` mounted at `/var/run/docker` in both containers, and `DOCKER_HOST` set in the sandbox container;
-- PVC `sb-<name>-docker` (`--docker-storage`, separate from the workspace PVC) mounted at `/var/lib/docker` in the sidecar.
+- the runtime profile's `securityContext`, which overrides the pod-level `runAsUser`/`runAsNonRoot` (sandbox-init starts as root and drops every child it spawns to uid 1000; the pod-level `runAsUser`, `runAsGroup`, `fsGroup` and `fsGroupChangePolicy` stay so the workspace and token keep their ownership);
+- `DOCKER_HOST=unix:///var/run/docker.sock` (dockerd listens only there, group 1000, mode 0660; no TCP listener) and `ENZARB_DOCKERD_ARGS` (the profile's `dockerdArgs`, space separated, so an argument cannot contain whitespace);
+- PVC `sb-<name>-docker` (`--docker-storage`, separate from the workspace PVC) as volume `docker-data` mounted at `/var/lib/docker`.
+
+An existing sandbox from the sidecar layout differs from this shape (new mount, env and security context), so it drains and rolls once through the drain-first path above.
 
 **Isolation gate (startup).** The operator refuses to start, with a clear error, if `--sandbox-runtime-class` is empty, is not in `--docker-runtime-classes`, or an allowed class has no profile. dockerd is therefore never scheduled on the node kernel. There is no per-Project refusal condition.
 
 **Runtime table** (built in; extend or override with `--docker-profiles-file`). Only `gvisor` is supported and allowed by default; `kata` is an experimental entry (it must also be added to `--docker-runtime-classes`) that is untested here:
 
-| Runtime class | Sidecar securityContext | Extra dockerd args |
+| Runtime class | `sandbox` container securityContext | Extra dockerd args |
 |---|---|---|
 | `gvisor` | not privileged, root, `capabilities: drop ALL, add AUDIT_WRITE CHOWN DAC_OVERRIDE FOWNER FSETID KILL MKNOD NET_BIND_SERVICE NET_ADMIN NET_RAW SETFCAP SETGID SETPCAP SETUID SYS_ADMIN SYS_CHROOT SYS_PTRACE` | `--iptables=false --ip6tables=false --storage-driver=vfs --feature=containerd-snapshotter=false` |
 | `kata` | `privileged: true`, root (confined to the guest VM) | `--storage-driver=overlay2` |
@@ -101,7 +102,7 @@ Sources: [Docker in gVisor](https://gvisor.dev/docs/tutorials/docker-in-gvisor/)
 - gVisor: iptables is disabled, so `docker run -p/--expose` publishes nothing; use `--network=host` inside the sandbox, or reach containers by IP. User-defined networks and compose port publishing are limited accordingly. Some syscalls and filesystems are unsupported by gVisor.
 - gVisor storage uses `vfs` (no copy-on-write; each layer is a full copy, so images take more disk and builds are slower). The gVisor guide does not verify overlay2 on a PVC; override via the profiles file if you have validated it.
 - Kata (experimental): `overlay2` needs the `docker` PVC to be mounted in the guest as a real block filesystem (ext4/xfs), not virtio-fs; with a virtio-fs-backed volume, override the profile to `--storage-driver=vfs`.
-- The sidecar runs as root with `runAsNonRoot: false` (dockerd requires it); the sandbox container stays uid 1000. Plain-HTTP registries are blocked by the Project's NetworkPolicy (443, DNS and the executor callback only).
+- The `sandbox` container runs as root with `runAsNonRoot: false` (dockerd requires it); agents, jobs and chats run as uid 1000 with no-new-privs (sandbox-init drops them). dockerd, containerd and inner containers count against the container's CPU and memory limits, so a heavy build can OOM the whole container. Inner containers and builds default to `--network=host` through the image's `docker` wrapper; use `--user 1000:1000` for bind-mounted outputs you want to edit (otherwise they are root-owned). Plain-HTTP registries are blocked by the Project's NetworkPolicy (443, DNS and the executor callback only).
 
 ## Workspace sizing
 

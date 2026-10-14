@@ -1,4 +1,4 @@
-# 0016. Work item dependencies
+# 0017. Work item dependencies
 
 ## Context
 Issues and PRs often must wait for other work. Without a model for that, a PR whose prerequisite is unmerged can reach `ReadyToMerge` and be merged out of order.

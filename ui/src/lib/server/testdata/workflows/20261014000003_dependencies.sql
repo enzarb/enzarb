@@ -1,4 +1,4 @@
--- Work item dependencies (docs/adr/0016-work-item-dependencies.md, docs/contracts.md section 6).
+-- Work item dependencies (docs/adr/0017-work-item-dependencies.md, docs/contracts.md section 6).
 -- Additive only: new table, functions and views, plus one trailing column on work_item_v.
 --
 -- `work_item_dependencies` holds what each source declared; the engine never mixes sources:

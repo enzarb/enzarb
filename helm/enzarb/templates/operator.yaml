@@ -41,24 +41,7 @@ spec:
             - { name: ENZARB_DEFAULT_STORAGE, value: {{ $c.defaultStorage | quote }} }
             - { name: ENZARB_SANDBOX_RUNTIME_CLASS, value: {{ $c.sandboxRuntimeClass | quote }} }
             - { name: ENZARB_DOCKER_RUNTIME_CLASSES, value: {{ join "," $c.docker.runtimeClasses | quote }} }
-            - { name: ENZARB_DOCKER_IMAGE, value: {{ $c.docker.image | quote }} }
             - { name: ENZARB_DOCKER_STORAGE, value: {{ $c.docker.storage | quote }} }
-            {{- with $c.docker.resources.requests }}
-            {{- with .cpu }}
-            - { name: ENZARB_DOCKER_CPU_REQUEST, value: {{ . | quote }} }
-            {{- end }}
-            {{- with .memory }}
-            - { name: ENZARB_DOCKER_MEMORY_REQUEST, value: {{ . | quote }} }
-            {{- end }}
-            {{- end }}
-            {{- with $c.docker.resources.limits }}
-            {{- with .cpu }}
-            - { name: ENZARB_DOCKER_CPU_LIMIT, value: {{ . | quote }} }
-            {{- end }}
-            {{- with .memory }}
-            - { name: ENZARB_DOCKER_MEMORY_LIMIT, value: {{ . | quote }} }
-            {{- end }}
-            {{- end }}
             {{- if $c.docker.profiles }}
             - { name: ENZARB_DOCKER_PROFILES_FILE, value: /etc/enzarb/docker/profiles.yaml }
             {{- end }}

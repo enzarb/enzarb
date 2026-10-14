@@ -1,4 +1,4 @@
-//! Work item dependencies (docs/adr/0016-work-item-dependencies.md).
+//! Work item dependencies (docs/adr/0017-work-item-dependencies.md).
 //!
 //! * [`record_text`] stores the `Depends on #N` references of a connector event's body or
 //!   comment (the `text` and `comment` sources of `work_item_dependencies`).

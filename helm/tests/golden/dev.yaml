@@ -10,8 +10,9 @@ metadata:
     app.kubernetes.io/part-of: enzarb
     app.kubernetes.io/managed-by: Helm
     helm.sh/chart: enzarb-0.0.0
-    # Pod Security: privileged. The dockerd sidecar needs SYS_ADMIN/NET_ADMIN under gVisor and
-    # the kata profile is privileged (ADR-0012); gVisor is the isolation boundary. Explicit
+    # Pod Security: privileged. dockerd (run by sandbox-init in the sandbox container) needs
+    # root and SYS_ADMIN/NET_ADMIN under gVisor, and the kata profile is privileged
+    # (ADR-0016); gVisor is the isolation boundary. Explicit
     # label so a stricter cluster default cannot reject sandbox pods.
     pod-security.kubernetes.io/enforce: privileged
   annotations:
@@ -936,7 +937,6 @@ spec:
             - { name: ENZARB_DEFAULT_STORAGE, value: "20Gi" }
             - { name: ENZARB_SANDBOX_RUNTIME_CLASS, value: "gvisor" }
             - { name: ENZARB_DOCKER_RUNTIME_CLASSES, value: "gvisor" }
-            - { name: ENZARB_DOCKER_IMAGE, value: "docker:29.8.2-dind" }
             - { name: ENZARB_DOCKER_STORAGE, value: "5Gi" }
             - { name: RUST_LOG, value: "info" }
           readinessProbe:

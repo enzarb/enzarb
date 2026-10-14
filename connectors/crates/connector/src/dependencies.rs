@@ -1,5 +1,5 @@
 //! Text dependencies: `Depends on #12`, `Blocked by owner/repo#12` in an issue, change
-//! request or comment body (docs/adr/0016-work-item-dependencies.md).
+//! request or comment body (docs/adr/0017-work-item-dependencies.md).
 //!
 //! Pure and provider-neutral. Code (fenced blocks and inline spans) and quoted lines are
 //! skipped. Several references may follow one keyword (`Depends on #1, #2 and #3`); anything

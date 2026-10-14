@@ -80,9 +80,14 @@ Changing repositories: the owner may replace `spec.repositories` after creation 
 
 **Mux endpoint:** `ws://<pod>:7070/v1/mux`. Clients must send `Authorization: Bearer <token>`. The token is the `token` key of the Secret named in `status.sandbox.authSecretRef` (`sb-<project>-auth`) in `status.namespace`; the operator generates it, and it is mounted in the sandbox at `/var/run/enzarb/auth/token`.
 - Allowed clients: `sandbox-proxy` and the workflows executor.
-- Health: `GET :7070/healthz`.
+- Health: `GET :7070/healthz`. Body is JSON `{"status":"ok","dockerd":{"state":"starting|running|failed|stopped|disabled", ...}}`, always HTTP 200 (readiness never depends on Docker). `dockerd` is absent when the supervisor is not wired.
 
-**Docker (ADR-0012):** always on. The operator sets the pod `runtimeClassName` (`gvisor`) cluster-wide via `--sandbox-runtime-class`, and adds the dockerd sidecar. `DOCKER_HOST=unix:///var/run/docker/docker.sock` (shared emptyDir with the `dockerd` sidecar). The image ships the `docker` CLI plus the buildx and compose plugins.
+**Docker (ADR-0012, sidecar superseded by ADR-0016):** always on. The operator sets the pod `runtimeClassName` (`gvisor`) cluster-wide via `--sandbox-runtime-class`. Sandbox pod layout:
+- One container, `sandbox`. No `dockerd` sidecar and no `docker-sock` volume.
+- sandbox-init (pid 1) runs and supervises `dockerd` as root and drops everything else it spawns to uid/gid 1000 with no-new-privs. The `sandbox` container's `securityContext` overrides the pod-level non-root settings: `runAsUser: 0`, `runAsNonRoot: false`, `privileged: false`, `allowPrivilegeEscalation: true`, `drop: [ALL]` plus the gVisor Docker capability set (includes `SYS_ADMIN`, `NET_ADMIN`, `NET_RAW`, `SETUID`, `SETGID`, `CHOWN`). The pod-level `runAsUser`/`runAsGroup`/`fsGroup` (1000) stay. The kata profile is `privileged: true`.
+- Volumes: `workspace` (PVC) at `/workspace`, `auth` (Secret) at `/var/run/enzarb/auth`, `docker-data` (PVC `sb-<name>-docker`) at `/var/lib/docker`.
+- Env: `DOCKER_HOST=unix:///var/run/docker.sock` (group 1000, mode 0660), `ENZARB_DOCKERD_ARGS` (the runtime profile's dockerd flags). Optional sandbox-init env: `ENZARB_DOCKERD` (`off` disables), `ENZARB_DOCKERD_BIN`, `ENZARB_DOCKERD_SOCKET`, `ENZARB_DOCKERD_DATA_ROOT`, `ENZARB_DOCKERD_EXEC_ROOT`.
+- The image ships `dockerd`, `containerd`, `runc` and the `docker` CLI plus the buildx and compose plugins. Inner containers and builds default to `--network=host` through the image's `docker` wrapper (dockerd runs with `--iptables=false`); use `--user 1000:1000` so bind-mounted files stay editable.
 
 **PTY channels:** CLOSE reason is `exit:<code>` or `signal:<n>`. A client half-close leaves the process running.
 
@@ -120,7 +125,7 @@ Changing repositories: the owner may replace `spec.repositories` after creation 
 - build-essential, pkg-config, libssl-dev;
 - git, ca-certificates, openssh-client.
 
-Plus curl (mise's Rust backend needs it for rustup) and the docker CLI with the buildx and compose plugins (29.8.2, matching the dockerd sidecar). No Rust, npm or extra CLI tools.
+Plus curl (mise's Rust backend needs it for rustup) and Docker 29.8.2 (static bundle: `dockerd`, `containerd`, `runc`, the `docker` CLI, with the buildx and compose plugins; ADR-0016). No Rust, npm or extra CLI tools.
 
 **Toolchains (mise, per project, persisted on the PVC):**
 - `MISE_DATA_DIR=/workspace/.toolchains/mise`, `MISE_CACHE_DIR=/workspace/.toolchains/cache`, `CARGO_HOME=/workspace/.toolchains/cargo`, `RUSTUP_HOME=/workspace/.toolchains/rustup`.
@@ -276,7 +281,7 @@ workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated
 - **`job_v.usage`** (jsonb, nullable): token usage and cost summed over all runs of the job (session-limit waits, restart retries and the recovery run each add their run), in the `Usage` shape of section 4. Keys are absent when no run reported them; `NULL` when nothing was reported. A run is counted once (by `run_id`), for any outcome including failed and cancelled.
 - **`work_item_v.usage_totals`** (jsonb, nullable): per key, the sum over the item's jobs that reported it, plus the union of `models`. A key no job reported is absent (so `cost_usd` is absent, not 0, when no job reported a cost); `NULL` when no job has usage. Cost is as reported by Claude, not an estimate.
 - Changes to `jobs.usage` send `work_item_changed`.
-- **Dependencies** ([ADR-0016](adr/0016-work-item-dependencies.md)): `work_item_dependency_v` lists each effective dependency of `work_item_key` (filter on `depends_on_key` for dependents). `source` is `github`, `text` or `comment`; `via` is the issue key when a change request inherited it; `status` is `done` (Done/Merged), `closed` (Cancelled/Closed/Duplicate: will not complete), `open` or `pending` (no work item yet). `work_item_v.blocked_by_dependency` is true while a change request's `state_data.open_dependencies` is not empty, and `state_data.checklist.dependencies` is a fourth check in the shape above. Changes to the table send `work_item_changed` for both ends. Event type `DependenciesChanged` (source `engine`, payload `{}`) is engine-internal.
+- **Dependencies** ([ADR-0017](adr/0017-work-item-dependencies.md)): `work_item_dependency_v` lists each effective dependency of `work_item_key` (filter on `depends_on_key` for dependents). `source` is `github`, `text` or `comment`; `via` is the issue key when a change request inherited it; `status` is `done` (Done/Merged), `closed` (Cancelled/Closed/Duplicate: will not complete), `open` or `pending` (no work item yet). `work_item_v.blocked_by_dependency` is true while a change request's `state_data.open_dependencies` is not empty, and `state_data.checklist.dependencies` is a fourth check in the shape above. Changes to the table send `work_item_changed` for both ends. Event type `DependenciesChanged` (source `engine`, payload `{}`) is engine-internal.
 - Both functions are `SECURITY DEFINER`.
 - Connectors use dedupe key `github:<event id>`; the UI uses `ui:<uuid>`. Events the engine itself generates use source `engine` (`handoff:<id>`, `timer:…`, `job:<id>:<attempt>`).
 - `transitions.work_item_id` is nullable: events that are ignored (no Project, no workflow) get a `to_state='ignored'` row with no work item. `transitions.note` records rejections.
