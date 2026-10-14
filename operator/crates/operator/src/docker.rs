@@ -1,14 +1,18 @@
-//! Docker-in-sandbox (ADR-0012): the runtime-class table and the pure sidecar builder.
+//! Docker-in-sandbox (ADR-0016, superseding the sidecar of ADR-0012): the runtime-class table and
+//! the pure builder for what Docker adds to the `sandbox` container.
 //!
-//! The table maps a RuntimeClass name to the sidecar `securityContext` and the extra `dockerd`
-//! arguments that runtime needs. Defaults for `gvisor` and `kata` are built in; a YAML file
+//! dockerd runs inside the `sandbox` container, supervised by sandbox-init (pid 1), so there is no
+//! sidecar and no shared socket volume (gVisor's gofer cannot carry Unix sockets across
+//! containers, and a sidecar has no `/workspace` for bind mounts). The table maps a RuntimeClass
+//! name to the `sandbox` container's `securityContext` and the extra `dockerd` arguments that
+//! runtime needs. Defaults for `gvisor` and `kata` are built in; a YAML file
 //! (`--docker-profiles-file`) adds or replaces entries so new runtimes slot in without code.
 //!
 //! Sources for the defaults:
 //! - gVisor, "Docker in gVisor": <https://gvisor.dev/docs/tutorials/docker-in-gvisor/>. Docker
 //!   v27-v29 needs runsc `--net-raw` (v28+ also `--allow-packet-socket-write`); run dockerd with
 //!   `--iptables=false --ip6tables=false`; v29 needs the classic graph driver
-//!   (`--feature containerd-snapshotter=false`); a documented capability set, not privileged.
+//!   (`--feature=containerd-snapshotter=false`); a documented capability set, not privileged.
 //! - Kata, privileged containers: <https://github.com/kata-containers/kata-containers/blob/main/docs/how-to/privileged.md>.
 //!   Privileged is confined to the guest VM when `privileged_without_host_devices = true`
 //!   (kata-deploy's default).
@@ -17,27 +21,23 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-/// Pinned default; override with `--docker-image`.
-pub const DEFAULT_IMAGE: &str = "docker:29.8.2-dind";
 pub const DEFAULT_RUNTIME_CLASSES: &str = "gvisor";
 pub const DEFAULT_STORAGE: &str = "50Gi";
-pub const SIDECAR_NAME: &str = "dockerd";
-pub const SOCK_VOLUME: &str = "docker-sock";
 pub const DATA_VOLUME: &str = "docker-data";
-/// Shared with the sandbox container; holds only `docker.sock`.
-pub const SOCK_DIR: &str = "/var/run/docker";
-pub const DOCKER_HOST: &str = "unix:///var/run/docker/docker.sock";
+pub const DOCKER_HOST: &str = "unix:///var/run/docker.sock";
 pub const DATA_DIR: &str = "/var/lib/docker";
-/// dockerd's exec-root (containerd socket, runtime state) is kept out of the shared socket dir.
-pub const EXEC_ROOT: &str = "/var/run/dockerd";
+/// Env var read by sandbox-init: the runtime profile's `dockerdArgs`, space separated.
+pub const ENV_DOCKERD_ARGS: &str = "ENZARB_DOCKERD_ARGS";
 
-/// Sidecar settings for one runtime class.
+/// Docker settings for one runtime class.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeProfile {
-    /// Container `securityContext` of the `dockerd` sidecar (core/v1 shape).
+    /// `securityContext` of the `sandbox` container (core/v1 shape). It overrides the pod-level
+    /// non-root settings: sandbox-init starts as root to run dockerd and drops every child it
+    /// spawns to uid 1000.
     pub security_context: Value,
-    /// Extra `dockerd` arguments appended after the common ones.
+    /// Extra `dockerd` arguments appended after the common ones (no spaces inside an argument).
     #[serde(default)]
     pub dockerd_args: Vec<String>,
 }
@@ -45,19 +45,18 @@ pub struct RuntimeProfile {
 /// Cluster-admin owned Docker settings (operator flags); Projects cannot change them.
 #[derive(Clone, Debug)]
 pub struct DockerConfig {
-    pub image: String,
     /// RuntimeClass names allowed to host dockerd.
     pub runtime_classes: Vec<String>,
     /// RuntimeClass every sandbox pod runs with. Must be in `runtime_classes`.
     pub sandbox_runtime_class: String,
     /// Size of each Project's PVC `docker`.
     pub storage: String,
-    /// Sidecar `ResourceRequirements` (core/v1 JSON).
-    pub resources: Value,
     pub profiles: BTreeMap<String, RuntimeProfile>,
 }
 
-/// Capabilities gVisor documents for Docker-in-gVisor.
+/// Capabilities gVisor documents for Docker-in-gVisor. They only exist inside the sandbox kernel,
+/// never on the host. `SETUID`, `SETGID` and `CHOWN` also let sandbox-init drop to uid 1000 and
+/// hand it files.
 const GVISOR_CAPS: &[&str] = &[
     "AUDIT_WRITE",
     "CHOWN",
@@ -110,17 +109,14 @@ pub fn default_profiles() -> BTreeMap<String, RuntimeProfile> {
 
 impl DockerConfig {
     pub fn new(
-        image: String,
         runtime_classes: Vec<String>,
         sandbox_runtime_class: String,
         storage: String,
     ) -> Self {
         Self {
-            image,
             runtime_classes,
             sandbox_runtime_class,
             storage,
-            resources: json!({}),
             profiles: default_profiles(),
         }
     }
@@ -159,6 +155,17 @@ impl DockerConfig {
                 missing.join(", ")
             ));
         }
+        for (rc, p) in &self.profiles {
+            if let Some(a) = p
+                .dockerd_args
+                .iter()
+                .find(|a| a.contains(char::is_whitespace))
+            {
+                return Err(format!(
+                    "docker profile {rc:?}: dockerdArgs entry {a:?} contains whitespace (the args reach sandbox-init as one space separated variable)"
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -168,52 +175,30 @@ impl DockerConfig {
     }
 }
 
-/// Everything Docker adds to the sandbox pod.
-pub struct Sidecar {
-    pub container: Value,
-    pub volumes: Vec<Value>,
+/// Everything Docker adds to the sandbox pod. There is no extra container.
+pub struct DockerParts {
+    /// `securityContext` of the `sandbox` container.
+    pub security_context: Value,
+    /// Env vars for the `sandbox` container.
+    pub env: Vec<Value>,
+    /// Mount of the `docker-data` volume in the `sandbox` container.
+    pub volume_mount: Value,
+    /// The `docker-data` pod volume.
+    pub volume: Value,
 }
 
-/// The `dockerd` sidecar container and volumes. `claim_name` is the Project's docker PVC
+/// The Docker parts of the `sandbox` container and pod. `claim_name` is the Project's docker PVC
 /// (`sb-<name>-docker`).
-pub fn sidecar(
-    profile: &RuntimeProfile,
-    image: &str,
-    resources: &Value,
-    gid: i64,
-    claim_name: &str,
-) -> Sidecar {
-    let mut args = vec![
-        format!("--host={DOCKER_HOST}"),
-        // Socket group = the sandbox user's gid, so the unprivileged sandbox can connect.
-        format!("--group={gid}"),
-        format!("--exec-root={EXEC_ROOT}"),
-        format!("--data-root={DATA_DIR}"),
-    ];
-    args.extend(profile.dockerd_args.iter().cloned());
-    // `command` bypasses docker:dind's entrypoint, which would add a TCP listener (2375/2376).
-    let container = json!({
-        "name": SIDECAR_NAME,
-        "image": image,
-        "command": ["dockerd"],
-        "args": args,
-        "securityContext": profile.security_context,
-        "resources": resources,
-        "readinessProbe": {
-            "exec": {"command": ["docker", "--host", DOCKER_HOST, "version"]},
-            "periodSeconds": 5,
-            "timeoutSeconds": 5,
-        },
-        "volumeMounts": [
-            {"name": SOCK_VOLUME, "mountPath": SOCK_DIR},
-            {"name": DATA_VOLUME, "mountPath": DATA_DIR},
+pub fn parts(profile: &RuntimeProfile, claim_name: &str) -> DockerParts {
+    DockerParts {
+        security_context: profile.security_context.clone(),
+        env: vec![
+            json!({"name": "DOCKER_HOST", "value": DOCKER_HOST}),
+            json!({"name": ENV_DOCKERD_ARGS, "value": profile.dockerd_args.join(" ")}),
         ],
-    });
-    let volumes = vec![
-        json!({"name": SOCK_VOLUME, "emptyDir": {}}),
-        json!({"name": DATA_VOLUME, "persistentVolumeClaim": {"claimName": claim_name}}),
-    ];
-    Sidecar { container, volumes }
+        volume_mount: json!({"name": DATA_VOLUME, "mountPath": DATA_DIR}),
+        volume: json!({"name": DATA_VOLUME, "persistentVolumeClaim": {"claimName": claim_name}}),
+    }
 }
 
 #[cfg(test)]
@@ -222,7 +207,6 @@ mod tests {
 
     fn cfg(rc: &str) -> DockerConfig {
         DockerConfig::new(
-            DEFAULT_IMAGE.into(),
             vec!["gvisor".into(), "kata".into()],
             rc.into(),
             "50Gi".into(),
@@ -235,6 +219,20 @@ mod tests {
         let g = &c.profiles["gvisor"];
         assert_eq!(g.security_context["privileged"], false);
         assert_eq!(g.security_context["capabilities"]["drop"], json!(["ALL"]));
+        // sandbox-init drops to uid 1000 and chowns: it needs these as root.
+        let caps = g.security_context["capabilities"]["add"]
+            .as_array()
+            .unwrap();
+        for c in [
+            "SETUID",
+            "SETGID",
+            "CHOWN",
+            "SYS_ADMIN",
+            "NET_ADMIN",
+            "NET_RAW",
+        ] {
+            assert!(caps.contains(&json!(c)), "{c}");
+        }
         assert!(g.dockerd_args.contains(&"--iptables=false".to_string()));
         assert_eq!(c.profiles["kata"].security_context["privileged"], true);
     }
@@ -256,7 +254,6 @@ mod tests {
         assert_eq!(c.validate(), Ok(()));
         // Only the configured class matters for the allowlist, and the default allows gvisor only.
         let d = DockerConfig::new(
-            "i".into(),
             DEFAULT_RUNTIME_CLASSES
                 .split(',')
                 .map(String::from)
@@ -265,6 +262,14 @@ mod tests {
             "1Gi".into(),
         );
         assert!(d.validate().is_err());
+    }
+
+    #[test]
+    fn args_with_whitespace_are_rejected() {
+        let mut c = cfg("gvisor");
+        c.merge_profiles_yaml("gvisor: {securityContext: {}, dockerdArgs: ['--log-level debug']}")
+            .unwrap();
+        assert!(c.validate().unwrap_err().contains("whitespace"));
     }
 
     #[test]
@@ -281,33 +286,26 @@ mod tests {
     }
 
     #[test]
-    fn sidecar_shape() {
+    fn parts_shape() {
         let c = cfg("gvisor");
-        let sc = sidecar(
-            c.profile().unwrap(),
-            &c.image,
-            &json!({}),
-            1000,
-            "sb-x-docker",
-        );
-        let k = &sc.container;
-        assert_eq!(k["name"], "dockerd");
-        assert_eq!(k["image"], DEFAULT_IMAGE);
-        assert_eq!(k["command"], json!(["dockerd"]));
-        let args: Vec<_> = k["args"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|a| a.as_str().unwrap())
-            .collect();
-        assert!(args.contains(&"--host=unix:///var/run/docker/docker.sock"));
-        assert!(args.contains(&"--group=1000"));
-        assert!(args.contains(&"--storage-driver=vfs"));
-        assert!(!args.iter().any(|a| a.contains("tcp://")));
-        assert_eq!(sc.volumes[0]["emptyDir"], json!({}));
+        let p = parts(c.profile().unwrap(), "sb-x-docker");
+        assert_eq!(p.security_context, c.profile().unwrap().security_context);
         assert_eq!(
-            sc.volumes[1]["persistentVolumeClaim"]["claimName"],
-            "sb-x-docker"
+            p.env[0],
+            json!({"name": "DOCKER_HOST", "value": "unix:///var/run/docker.sock"})
+        );
+        assert_eq!(p.env[1]["name"], "ENZARB_DOCKERD_ARGS");
+        let args = p.env[1]["value"].as_str().unwrap();
+        assert!(args.contains("--storage-driver=vfs"), "{args}");
+        assert!(args.contains("--iptables=false"), "{args}");
+        assert!(!args.contains("tcp://"), "{args}");
+        assert_eq!(
+            p.volume_mount,
+            json!({"name": "docker-data", "mountPath": "/var/lib/docker"})
+        );
+        assert_eq!(
+            p.volume,
+            json!({"name": "docker-data", "persistentVolumeClaim": {"claimName": "sb-x-docker"}})
         );
     }
 }
