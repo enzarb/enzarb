@@ -312,6 +312,9 @@ pub struct RunFinished {
 }
 
 /// Every CTRL message.
+// `RunStart` grew with the additive `retarget` field; boxing it would break the public
+// `Ctrl::RunStart` shape for every consumer.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Ctrl {
