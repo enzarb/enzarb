@@ -1409,3 +1409,100 @@ async fn planted_git_config_and_hooks_neither_run_nor_redirect_nor_see_the_token
         .unwrap_or(0);
     assert_eq!(left, 0, "scratch repos removed");
 }
+
+/// `git` as the sandbox's own configured author (`Config::default()`).
+fn git_agent(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .current_dir(dir)
+        .args([
+            "-c",
+            "user.name=enzarb-agent",
+            "-c",
+            "user.email=agent@enzarb.dev",
+        ])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[tokio::test]
+async fn retarget_run_rebases_the_child_without_an_agent_or_claude_token() {
+    let env = start(0).await;
+    // No claude token anywhere: a retarget run must not need one.
+    std::fs::remove_file(env.workspace.join(".enzarb/claude-token")).unwrap();
+    let seed = env.dir.path().join("rt-seed");
+    git(
+        env.dir.path(),
+        &[
+            "clone",
+            "-q",
+            env.origin.to_str().unwrap(),
+            seed.to_str().unwrap(),
+        ],
+    );
+    git_agent(&seed, &["checkout", "-qb", "enzarb/issue-1"]);
+    std::fs::write(seed.join("p.txt"), "p\n").unwrap();
+    git_agent(&seed, &["add", "."]);
+    git_agent(&seed, &["commit", "-qm", "parent"]);
+    let parent = git_agent(&seed, &["rev-parse", "HEAD"]);
+    git_agent(&seed, &["checkout", "-qb", "enzarb/issue-2"]);
+    std::fs::write(seed.join("c.txt"), "c\n").unwrap();
+    git_agent(&seed, &["add", "."]);
+    git_agent(&seed, &["commit", "-qm", "child"]);
+    let child = git_agent(&seed, &["rev-parse", "HEAD"]);
+    git_agent(&seed, &["checkout", "-q", "main"]);
+    std::fs::write(seed.join("p.txt"), "p\n").unwrap();
+    git(&seed, &["add", "."]);
+    git(&seed, &["commit", "-qm", "parent (#1) squashed"]);
+    let main = git(&seed, &["rev-parse", "HEAD"]);
+    for b in ["main", "enzarb/issue-1", "enzarb/issue-2"] {
+        git(&seed, &["push", "-q", "origin", b]);
+    }
+
+    let (session, _events) = env.connect().await;
+    let mut req = env.run("rt-1", "ignored", "main", "enzarb/issue-2", false);
+    req.retarget = Some(enzarb_proto::Retarget {
+        head_ref: "enzarb/issue-2".into(),
+        onto: "main".into(),
+        old_base: parent,
+        expected_sha: child.clone(),
+        protected: vec![],
+    });
+    session.run_start(req).await.unwrap();
+    let (_, fin) = env.finished("rt-1").await;
+    assert_eq!(fin.outcome, RunOutcome::Succeeded, "{}", fin.summary);
+    assert!(fin.pushed);
+    let v: serde_json::Value = serde_json::from_str(&fin.summary).unwrap();
+    assert_eq!(v["outcome"], "retargeted", "{v}");
+    let now = env.remote_sha("enzarb/issue-2").unwrap();
+    assert_ne!(now, child);
+    assert_eq!(v["head_sha"], now.as_str());
+    assert_eq!(fin.head_sha, now);
+    assert_eq!(env.remote_sha("main").unwrap(), main);
+    let parent_of = git(&env.origin, &["rev-parse", &format!("{now}~1")]);
+    assert_eq!(parent_of, main);
+    assert!(!env.workspace.join("worktrees/run-rt-1").exists());
+
+    // A request that fails validation never reaches the network and is not pushed.
+    let mut req = env.run("rt-2", "ignored", "main", "main", true);
+    req.retarget = Some(enzarb_proto::Retarget {
+        head_ref: "main".into(),
+        onto: "main".into(),
+        old_base: main.clone(),
+        expected_sha: main.clone(),
+        protected: vec![],
+    });
+    session.run_start(req).await.unwrap();
+    let (_, fin) = env.finished("rt-2").await;
+    assert_eq!(fin.outcome, RunOutcome::Succeeded);
+    assert!(!fin.pushed);
+    let v: serde_json::Value = serde_json::from_str(&fin.summary).unwrap();
+    assert_eq!(v["outcome"], "rejected");
+    assert_eq!(env.remote_sha("main").unwrap(), main);
+}

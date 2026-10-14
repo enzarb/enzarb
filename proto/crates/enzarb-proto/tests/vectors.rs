@@ -54,6 +54,7 @@ fn run_start() -> RunStart {
         deps_token: None,
         npm_token: None,
         claude_token: None,
+        retarget: None,
     }
 }
 
@@ -573,6 +574,33 @@ fn claude_token_is_a_plain_string_and_old_payloads_decode() {
     assert_eq!(serde_json::from_value::<RunStart>(v).unwrap(), rs);
     let d = format!("{rs:?}");
     assert!(!d.contains("sk-ant-oat01-user"), "{d}");
+}
+
+#[test]
+fn run_start_retarget_compat() {
+    let old = serde_json::to_value(run_start()).unwrap();
+    assert!(old.get("retarget").is_none());
+    assert_eq!(
+        serde_json::from_value::<RunStart>(old).unwrap().retarget,
+        None
+    );
+    let mut rs = run_start();
+    rs.retarget = Some(enzarb_proto::Retarget {
+        head_ref: "enzarb/issue-43".into(),
+        onto: "main".into(),
+        old_base: "a".repeat(40),
+        expected_sha: "b".repeat(40),
+        protected: vec![],
+    });
+    let v = serde_json::to_value(&rs).unwrap();
+    assert_eq!(v["retarget"]["head_ref"], "enzarb/issue-43");
+    assert!(v["retarget"].get("protected").is_none());
+    assert_eq!(serde_json::from_value::<RunStart>(v).unwrap(), rs);
+    // `protected` defaults to empty when absent.
+    let v = serde_json::json!({"head_ref": "h", "onto": "main",
+        "old_base": "a", "expected_sha": "b"});
+    let r: enzarb_proto::Retarget = serde_json::from_value(v).unwrap();
+    assert!(r.protected.is_empty());
 }
 
 /// A decoder that predates the per-user token fields: minimal legacy-shape

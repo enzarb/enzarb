@@ -73,6 +73,19 @@ export const ErrorCode = {
   Unimplemented: "unimplemented",
 } as const;
 
+/** `run_start.retarget`: rebase the child branch onto `onto` and push with a lease. */
+export interface Retarget {
+  head_ref: string;
+  /** Branch to rebase onto (the default branch). */
+  onto: string;
+  /** Parent head sha the child was cut from. */
+  old_base: string;
+  /** Child head sha the push lease expects. */
+  expected_sha: string;
+  /** Branch names that must never be rewritten. */
+  protected?: string[];
+}
+
 export interface RunStartFields {
   run_id: string;
   repo_url: string;
@@ -92,6 +105,8 @@ export interface RunStartFields {
   npm_token?: string;
   /** Optional per-user Claude token. Held as a `Secret` (redacted in logs); sent as a plain string. */
   claude_token?: SecretLike;
+  /** When set, a retarget run instead of an agent run. */
+  retarget?: Retarget;
 }
 
 /**
