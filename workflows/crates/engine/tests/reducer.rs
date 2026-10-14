@@ -838,3 +838,165 @@ async fn runtime_role_can_run_the_reducer_and_ticker() {
     assert_eq!(Ticker::new(pool.clone()).tick().await.unwrap().wakes, 1);
     assert_eq!(reducer.drain().await, 2);
 }
+
+// -- work items whose repository left every Project ---------------------------
+
+const ITEM: &str = "github:enzarb/enzarb-ui#1";
+
+/// Open item #1 (its triage job queued), then drop the repository from the index.
+async fn orphaned_item(h: &Harness) -> WorkItem {
+    open(h.pool(), "o1", REPO, 1).await.unwrap();
+    assert_eq!(h.reducer.drain().await, 1);
+    h.index.set_owner("enzarb", "ruckc");
+    h.index.remove(REPO);
+    work_item(h.pool(), ITEM).await.unwrap()
+}
+
+async fn submit(pool: &PgPool, w: &WorkItem, who: &str, action: &str) {
+    sqlx::query("SELECT workflows_api.submit_action($1, $2, $3, '{}')")
+        .bind(w.id)
+        .bind(json!({ "login": who, "id": 1, "is_bot": false }))
+        .bind(action)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn pending_jobs(pool: &PgPool, w: &WorkItem) -> usize {
+    jobs(pool, w.id)
+        .await
+        .iter()
+        .filter(|j| matches!(j.status.as_str(), "queued" | "running"))
+        .count()
+}
+
+#[tokio::test]
+async fn close_reaches_an_item_whose_repo_left_every_project() {
+    let h = Harness::new(db!()).await;
+    let pool = h.pool();
+    let w = orphaned_item(&h).await;
+    // open queues two set_progress markers plus the triage job
+    assert_eq!(pending_jobs(pool, &w).await, 3);
+
+    ingest(
+        pool,
+        "o2",
+        REPO,
+        1,
+        EventType::WorkItemClosed,
+        "alice",
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(h.reducer.drain().await, 1);
+
+    let w = work_item(pool, ITEM).await.unwrap();
+    assert_eq!(w.state, "Cancelled");
+    assert_eq!(pending_jobs(pool, &w).await, 0, "running work is cancelled");
+}
+
+#[tokio::test]
+async fn orphaned_items_reject_other_events() {
+    let h = Harness::new(db!()).await;
+    let pool = h.pool();
+    let w = orphaned_item(&h).await;
+    let before = w.state.clone();
+
+    ingest(
+        pool,
+        "o2",
+        REPO,
+        1,
+        EventType::CommentAdded,
+        "alice",
+        Some("please continue"),
+    )
+    .await
+    .unwrap();
+    h.reducer.drain().await;
+
+    let after = work_item(pool, ITEM).await.unwrap();
+    assert_eq!(after.state, before);
+    let last = transitions(pool, w.id).await.pop().unwrap();
+    assert!(
+        last.note
+            .as_deref()
+            .unwrap()
+            .contains("no longer in a Project"),
+        "{:?}",
+        last.note
+    );
+}
+
+#[tokio::test]
+async fn close_without_an_existing_item_is_still_ignored() {
+    let h = Harness::new(db!()).await;
+    let pool = h.pool();
+    h.index.remove(REPO);
+    ingest(
+        pool,
+        "o1",
+        REPO,
+        9,
+        EventType::WorkItemClosed,
+        "alice",
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(h.reducer.drain().await, 1);
+    assert!(work_item(pool, "github:enzarb/enzarb-ui#9").await.is_none());
+}
+
+#[tokio::test]
+async fn project_owner_cancels_an_orphaned_item_and_others_cannot() {
+    let h = Harness::new(db!()).await;
+    let pool = h.pool();
+    let w = orphaned_item(&h).await;
+
+    submit(pool, &w, "mallory", "cancel").await;
+    submit(pool, &w, "RuckC", "approve").await;
+    assert_eq!(h.reducer.drain().await, 2);
+    assert_eq!(work_item(pool, ITEM).await.unwrap().state, w.state);
+
+    submit(pool, &w, "RuckC", "cancel").await;
+    assert_eq!(h.reducer.drain().await, 1);
+    let after = work_item(pool, ITEM).await.unwrap();
+    assert_eq!(after.state, "Cancelled");
+    assert_eq!(pending_jobs(pool, &after).await, 0);
+}
+
+#[tokio::test]
+async fn non_writer_owner_cannot_cancel_while_the_repo_is_in_a_project() {
+    let h = Harness::new(db!()).await;
+    let pool = h.pool();
+    open(pool, "o1", REPO, 1).await.unwrap();
+    assert_eq!(h.reducer.drain().await, 1);
+    h.index.set_owner("enzarb", "ruckc");
+    let w = work_item(pool, ITEM).await.unwrap();
+
+    submit(pool, &w, "ruckc", "cancel").await;
+    assert_eq!(h.reducer.drain().await, 1);
+    assert_eq!(work_item(pool, ITEM).await.unwrap().state, w.state);
+}
+
+#[tokio::test]
+async fn repo_removed_action_cancels_without_permission() {
+    let h = Harness::new(db!()).await;
+    let pool = h.pool();
+    open(pool, "o1", REPO, 1).await.unwrap();
+    assert_eq!(h.reducer.drain().await, 1);
+    let w = work_item(pool, ITEM).await.unwrap();
+
+    submit(pool, &w, "nobody", "repo-removed").await;
+    assert_eq!(h.reducer.drain().await, 1);
+    let after = work_item(pool, ITEM).await.unwrap();
+    assert_eq!(after.state, "Cancelled");
+    assert_eq!(pending_jobs(pool, &after).await, 0);
+    let last = transitions(pool, w.id).await.pop().unwrap();
+    assert_eq!(
+        last.note.as_deref(),
+        Some("enzarb: repository removed from the Project.")
+    );
+}

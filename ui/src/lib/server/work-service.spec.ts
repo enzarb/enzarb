@@ -181,6 +181,33 @@ describe('workService against workflows_api', () => {
 		expect(types.map((r) => r.type)).toEqual(['ApprovalGranted', 'CancelRequested']);
 	});
 
+	it('cancelForRemovedRepos submits repo-removed for open items of the removed repos only', async () => {
+		const seed = (key: string, state: string, project = 'gone') =>
+			seedItem(sql, { key, project, state });
+		await seed('github:acme/old#1', 'AwaitingApproval');
+		await seed('github:acme/old#2', 'Failed');
+		await seed('github:acme/old#3', 'Cancelled');
+		await seed('github:acme/kept#4', 'AwaitingApproval');
+		await seed('github:acme/old#5', 'AwaitingApproval', 'elsewhere');
+		const actor = { login: 'alice', id: 7 };
+
+		// not the caller's Project, or nothing removed: nothing happens
+		const foreign = workService(sql, ['elsewhere']);
+		expect(await foreign.cancelForRemovedRepos('gone', ['github:ACME/old'], actor)).toBe(0);
+		const svc = workService(sql, ['gone']);
+		expect(await svc.cancelForRemovedRepos('gone', [], actor)).toBe(0);
+
+		expect(await svc.cancelForRemovedRepos('gone', ['github:ACME/old'], actor)).toBe(2);
+		const events = await sql`
+			SELECT work_item_key, payload FROM workflows.events WHERE type = 'RepoRemoved' ORDER BY id`;
+		expect(events.map((e) => e.work_item_key)).toEqual(['github:acme/old#1', 'github:acme/old#2']);
+		expect(events[0].payload).toEqual({
+			actor: { login: 'alice', id: 7, is_bot: false },
+			action: 'repo-removed',
+			data: {}
+		});
+	});
+
 	it('merges only from ReadyToMerge, as the session actor with an empty payload', async () => {
 		const id = await seedItem(sql, {
 			key: 'github:acme/api#20',
