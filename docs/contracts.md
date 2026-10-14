@@ -162,7 +162,7 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
 | `resize` | client → server | `channel`, `cols`, `rows` |
 | `run_start` | client → server | see below |
 | `run_accepted` | server → client | `run_id`, `state`, `existing: bool` |
-| `run_status` → `run_state` | both | `run_id` → `run_id, state, exit_code?, summary?` |
+| `run_status` → `run_state` | both | `run_id` → `run_id, state, exit_code?, summary?, usage?` |
 | `run_cancel` | client → server | `run_id` |
 | `credential_captured` | server → client | `kind: "claude_oauth"`, `token?` (the captured token; **proxy-only**: the proxy consumes the frame, encrypts and stores the token in Postgres, never forwards it to the browser and never logs it), `legacy?: bool` (a promoted legacy file: store only if the user has no token) |
 | `credential_status` | client → server | (none); browsers may send it |
@@ -207,6 +207,7 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
 - **`run_state`** is sent in reply to `run_status` and also pushed whenever a run changes state.
 - **`log_channel`:** a non-null value is a channel the client chooses. `run_accepted` implicitly opens it, and the server streams transcript lines on it as `DATA_JSON`.
 - **`RunFinished`** (`enzarb_proto::RunFinished`) is the callback's HTTP body, not a CTRL message. `exit_code` is optional because cancelled runs may have none.
+- **`usage`** (`enzarb_proto::Usage`, optional on `RunFinished` and `run_state`; additive, old decoders ignore it and old senders omit it): `{input_tokens?, output_tokens?, cache_read_input_tokens?, cache_creation_input_tokens?, models?: [string], cost_usd?}`. A field the agent did not report is **absent**, never 0. `cost_usd` is the cost as reported by Claude (`total_cost_usd`, or the `cost` of ACP `usage_update`), even on a subscription token; nothing computes or estimates it. The whole object is absent when the agent reported nothing.
 - **Idempotent:** a repeated `run_id` returns the existing run.
 - **States:** `queued | running | succeeded | failed | cancelled`.
 - **What the run does:**
@@ -261,10 +262,14 @@ workflows_api.ingest_event(p_source text, p_dedupe_key text, p_work_item_key tex
 workflows_api.submit_action(p_work_item_id bigint, p_actor jsonb, p_action text,
                             p_payload jsonb) RETURNS bigint               -- actions: approve | cancel | retry | merge
 -- views
-workflows_api.work_item_v(id, key, project, workflow, state, state_data, created_at, updated_at)
+workflows_api.work_item_v(id, key, project, workflow, state, state_data, created_at, updated_at, waiting_for, resumes_at, usage_totals)
 workflows_api.transition_v(id, work_item_id, from_state, to_state, event_type, at)
-workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated_at, output)
+workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated_at, output, waiting_for, resumes_at, usage)
 ```
+- View columns are append-only; existing consumers select by name.
+- **`job_v.usage`** (jsonb, nullable): token usage and cost summed over all runs of the job (session-limit waits, restart retries and the recovery run each add their run), in the `Usage` shape of section 4. Keys are absent when no run reported them; `NULL` when nothing was reported. A run is counted once (by `run_id`), for any outcome including failed and cancelled.
+- **`work_item_v.usage_totals`** (jsonb, nullable): per key, the sum over the item's jobs that reported it, plus the union of `models`. A key no job reported is absent (so `cost_usd` is absent, not 0, when no job reported a cost); `NULL` when no job has usage. Cost is as reported by Claude, not an estimate.
+- Changes to `jobs.usage` send `work_item_changed`.
 - Both functions are `SECURITY DEFINER`.
 - Connectors use dedupe key `github:<event id>`; the UI uses `ui:<uuid>`. Events the engine itself generates use source `engine` (`handoff:<id>`, `timer:…`, `job:<id>:<attempt>`).
 - `transitions.work_item_id` is nullable: events that are ignored (no Project, no workflow) get a `to_state='ignored'` row with no work item. `transitions.note` records rejections.
