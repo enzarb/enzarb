@@ -28,6 +28,10 @@ pub const DOCKER_HOST: &str = "unix:///var/run/docker.sock";
 pub const DATA_DIR: &str = "/var/lib/docker";
 /// Env var read by sandbox-init: the runtime profile's `dockerdArgs`, space separated.
 pub const ENV_DOCKERD_ARGS: &str = "ENZARB_DOCKERD_ARGS";
+/// Env vars of sandbox-init's automatic Docker pruning, passed through when set.
+pub const ENV_PRUNE: &str = "ENZARB_DOCKER_PRUNE";
+pub const ENV_PRUNE_AGE: &str = "ENZARB_DOCKER_PRUNE_AGE";
+pub const ENV_PRUNE_MIN_FREE: &str = "ENZARB_DOCKER_PRUNE_MIN_FREE";
 
 /// Docker settings for one runtime class.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -52,6 +56,9 @@ pub struct DockerConfig {
     /// Size of each Project's PVC `docker`.
     pub storage: String,
     pub profiles: BTreeMap<String, RuntimeProfile>,
+    /// Extra sandbox env for automatic Docker pruning (`ENZARB_DOCKER_PRUNE*`); only the settings
+    /// the cluster admin chose, so sandbox-init's own defaults apply to the rest.
+    pub prune_env: Vec<(String, String)>,
 }
 
 /// Capabilities gVisor documents for Docker-in-gVisor. They only exist inside the sandbox kernel,
@@ -118,7 +125,52 @@ impl DockerConfig {
             sandbox_runtime_class,
             storage,
             profiles: default_profiles(),
+            prune_env: Vec::new(),
         }
+    }
+
+    /// Sets the pruning env from the operator flags (unset or blank = left to sandbox-init's
+    /// defaults). Rejects values sandbox-init would refuse, which would crash-loop every sandbox.
+    pub fn set_prune(
+        &mut self,
+        enabled: Option<&str>,
+        age: Option<&str>,
+        min_free: Option<&str>,
+    ) -> Result<(), String> {
+        fn set(v: Option<&str>) -> Option<&str> {
+            v.map(str::trim).filter(|s| !s.is_empty())
+        }
+        self.prune_env.clear();
+        if let Some(v) = set(enabled) {
+            if !matches!(
+                v.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on" | "0" | "false" | "no" | "off"
+            ) {
+                return Err(format!("--docker-prune {v:?}: must be on or off"));
+            }
+            self.prune_env.push((ENV_PRUNE.into(), v.into()));
+        }
+        if let Some(v) = set(age) {
+            let ok = !v.is_empty()
+                && v.ends_with(|c: char| c.is_ascii_alphabetic())
+                && v.starts_with(|c: char| c.is_ascii_digit());
+            if !ok {
+                return Err(format!(
+                    "--docker-prune-age {v:?}: must be a duration such as 24h"
+                ));
+            }
+            self.prune_env.push((ENV_PRUNE_AGE.into(), v.into()));
+        }
+        if let Some(v) = set(min_free) {
+            let n = v.strip_suffix('%').unwrap_or(v).trim().parse::<u8>();
+            if !n.is_ok_and(|n| (1..=99).contains(&n)) {
+                return Err(format!(
+                    "--docker-prune-min-free {v:?}: must be a percentage from 1 to 99"
+                ));
+            }
+            self.prune_env.push((ENV_PRUNE_MIN_FREE.into(), v.into()));
+        }
+        Ok(())
     }
 
     /// Adds or replaces profiles from a YAML map `{<runtimeClass>: {securityContext, dockerdArgs}}`.
@@ -189,13 +241,23 @@ pub struct DockerParts {
 
 /// The Docker parts of the `sandbox` container and pod. `claim_name` is the Project's docker PVC
 /// (`sb-<name>-docker`).
-pub fn parts(profile: &RuntimeProfile, claim_name: &str) -> DockerParts {
+pub fn parts(
+    profile: &RuntimeProfile,
+    claim_name: &str,
+    prune_env: &[(String, String)],
+) -> DockerParts {
+    let mut env = vec![
+        json!({"name": "DOCKER_HOST", "value": DOCKER_HOST}),
+        json!({"name": ENV_DOCKERD_ARGS, "value": profile.dockerd_args.join(" ")}),
+    ];
+    env.extend(
+        prune_env
+            .iter()
+            .map(|(k, v)| json!({"name": k, "value": v})),
+    );
     DockerParts {
         security_context: profile.security_context.clone(),
-        env: vec![
-            json!({"name": "DOCKER_HOST", "value": DOCKER_HOST}),
-            json!({"name": ENV_DOCKERD_ARGS, "value": profile.dockerd_args.join(" ")}),
-        ],
+        env,
         volume_mount: json!({"name": DATA_VOLUME, "mountPath": DATA_DIR}),
         volume: json!({"name": DATA_VOLUME, "persistentVolumeClaim": {"claimName": claim_name}}),
     }
@@ -286,9 +348,36 @@ mod tests {
     }
 
     #[test]
+    fn prune_env_is_passed_through_when_set() {
+        let mut c = cfg("gvisor");
+        c.set_prune(Some("off"), Some(" 12h "), Some("20%"))
+            .unwrap();
+        let p = parts(c.profile().unwrap(), "sb-x-docker", &c.prune_env);
+        assert_eq!(
+            p.env[2..],
+            [
+                json!({"name": "ENZARB_DOCKER_PRUNE", "value": "off"}),
+                json!({"name": "ENZARB_DOCKER_PRUNE_AGE", "value": "12h"}),
+                json!({"name": "ENZARB_DOCKER_PRUNE_MIN_FREE", "value": "20%"}),
+            ]
+        );
+        c.set_prune(None, Some(""), None).unwrap();
+        assert!(c.prune_env.is_empty());
+        for bad in [
+            (Some("maybe"), None, None),
+            (None, Some("soon"), None),
+            (None, None, Some("0")),
+            (None, None, Some("100%")),
+        ] {
+            assert!(c.set_prune(bad.0, bad.1, bad.2).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
     fn parts_shape() {
         let c = cfg("gvisor");
-        let p = parts(c.profile().unwrap(), "sb-x-docker");
+        let p = parts(c.profile().unwrap(), "sb-x-docker", &[]);
+        assert_eq!(p.env.len(), 2, "no pruning env unless configured");
         assert_eq!(p.security_context, c.profile().unwrap().security_context);
         assert_eq!(
             p.env[0],

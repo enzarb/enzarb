@@ -46,6 +46,9 @@ Each flag has an environment variable; the flag wins.
 | `--docker-runtime-classes` | `ENZARB_DOCKER_RUNTIME_CLASSES` | `gvisor` | RuntimeClass names allowed to host dockerd. Each needs a profile. |
 | `--docker-storage` | `ENZARB_DOCKER_STORAGE` | `50Gi` | Size of each Project's PVC `sb-<name>-docker`. |
 | `--docker-profiles-file` | `ENZARB_DOCKER_PROFILES_FILE` | none | YAML map `{<runtimeClass>: {securityContext, dockerdArgs}}` added over the built-in profiles. `securityContext` is the `sandbox` container's. |
+| `--docker-prune` | `ENZARB_DOCKER_PRUNE` | unset (sandbox default: `on`) | `on`/`off`: sandbox-init prunes Docker images, build cache and volumes automatically. Passed to the sandbox as `ENZARB_DOCKER_PRUNE`. |
+| `--docker-prune-age` | `ENZARB_DOCKER_PRUNE_AGE` | unset (sandbox default: `24h`) | Images and build cache newer than this survive a prune. |
+| `--docker-prune-min-free` | `ENZARB_DOCKER_PRUNE_MIN_FREE` | unset (sandbox default: `15`) | Percent of `/var/lib/docker` that must stay free; below it the sandbox prunes without the age filter and `/healthz` reports `low_disk`. |
 
 Removed with ADR-0016 (dockerd no longer has its own container): `--docker-image`, `--docker-cpu-request`/`--docker-cpu-limit`, `--docker-memory-request`/`--docker-memory-limit`. dockerd and inner containers share the `sandbox` container's resources (`spec.sandbox.resources`).
 | `--health-addr` | `ENZARB_HEALTH_ADDR` | `0.0.0.0:8080` | Serves `/healthz` and `/readyz`. |
