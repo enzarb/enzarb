@@ -95,6 +95,17 @@ pub enum Call {
         depends_on: WorkItemKey,
         idempotency_key: String,
     },
+    CreateIssue {
+        repo: RepoKey,
+        title: String,
+        body: String,
+        labels: Vec<String>,
+        idempotency_key: String,
+    },
+    LinkSubIssue {
+        parent: WorkItemKey,
+        child: WorkItemKey,
+    },
 }
 
 /// A recorded call. `replayed` is true when the idempotency key had been seen
@@ -129,6 +140,10 @@ struct State {
     update_outcomes: VecDeque<UpdateBranchOutcome>,
     branch_heads: HashMap<(RepoKey, String), String>,
     dependencies: HashMap<WorkItemKey, Vec<WorkItemKey>>,
+    seen_issues: HashMap<String, WorkItemKey>,
+    created_issues: Vec<(WorkItemKey, String, String)>,
+    sub_issues: HashMap<WorkItemKey, Vec<WorkItemKey>>,
+    next_issue: u64,
 }
 
 /// Records every call and keeps simple in-memory state. Cheap to share by
@@ -190,6 +205,25 @@ impl FakeConnector {
     /// Seed the relationships `list_dependencies` returns for `item`.
     pub fn set_dependencies(&self, item: WorkItemKey, depends_on: Vec<WorkItemKey>) {
         self.st().dependencies.insert(item, depends_on);
+    }
+
+    /// The first number `create_issue` hands out (default 1000).
+    pub fn set_next_issue_number(&self, n: u64) {
+        self.st().next_issue = n;
+    }
+
+    /// Issues made by `create_issue` as `(key, title, body)`, in order.
+    pub fn created_issues(&self) -> Vec<(WorkItemKey, String, String)> {
+        self.st().created_issues.clone()
+    }
+
+    /// The sub-issues linked to `parent`, in order.
+    pub fn sub_issues(&self, parent: &WorkItemKey) -> Vec<WorkItemKey> {
+        self.st()
+            .sub_issues
+            .get(parent)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Make the next call (any method) fail with `error`, once.
@@ -621,6 +655,56 @@ impl Connector for FakeConnector {
         if let Some(deps) = st.dependencies.get_mut(item) {
             deps.retain(|d| d != depends_on);
         }
+        Ok(())
+    }
+
+    async fn create_issue(
+        &self,
+        repo: &RepoKey,
+        title: &str,
+        body: &str,
+        labels: &[String],
+        idempotency_key: &str,
+    ) -> Result<WorkItemKey> {
+        let mut st = self.st();
+        let call = Call::CreateIssue {
+            repo: repo.clone(),
+            title: title.to_string(),
+            body: body.to_string(),
+            labels: labels.to_vec(),
+            idempotency_key: idempotency_key.to_string(),
+        };
+        Self::take_failure(&mut st, call.clone())?;
+        if let Some(existing) = st.seen_issues.get(idempotency_key).cloned() {
+            Self::record(&mut st, call, true);
+            return Ok(existing);
+        }
+        Self::record(&mut st, call, false);
+        if st.next_issue == 0 {
+            st.next_issue = 1000;
+        }
+        let key = WorkItemKey::new(repo.clone(), st.next_issue);
+        st.next_issue += 1;
+        st.seen_issues
+            .insert(idempotency_key.to_string(), key.clone());
+        st.created_issues
+            .push((key.clone(), title.to_string(), body.to_string()));
+        Ok(key)
+    }
+
+    async fn link_sub_issue(&self, parent: &WorkItemKey, child: &WorkItemKey) -> Result<()> {
+        let mut st = self.st();
+        let call = Call::LinkSubIssue {
+            parent: parent.clone(),
+            child: child.clone(),
+        };
+        Self::take_failure(&mut st, call.clone())?;
+        let linked = st.sub_issues.entry(parent.clone()).or_default();
+        let replayed = linked.contains(child);
+        if !replayed {
+            linked.push(child.clone());
+        }
+        Self::record(&mut st, call, replayed);
         Ok(())
     }
 

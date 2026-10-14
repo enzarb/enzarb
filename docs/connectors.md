@@ -28,6 +28,9 @@ The receiver checks the provider's signature and **normalizes** the payload. It 
 | `ReviewSubmitted` | Review on a change request | `pull_request_review.submitted` |
 | `WorkItemClosed` | Closed or merged | `issues.closed`, `pull_request.closed` (`merged` flag) |
 | `CiStatusChanged` | A check run, check suite or commit status on a change request's head changed (`data.ci`, one per check, not an aggregate) | `check_suite`, `check_run`, `status` |
+| `WorkItemLabeled` | A label the engine acts on was added to an issue (`data.label`; GitHub: only `epic`) | `issues.labeled` |
+
+Outbound, a connector may also support `create_issue` (idempotent by a hidden body marker) and `link_sub_issue` (GitHub: the sub-issues API, falling back to a `- [ ] #N` task list inside `<!-- enzarb:subissues:start -->` … `<!-- enzarb:subissues:end -->` in the parent's body). Both default to "unsupported". The `/epic` command (a line of its own, outside code and quotes) is parsed by `enzarb_connector::command::has_epic_command` and handled by the engine like a comment, not as a separate event.
 
 The common envelope uses CloudEvents attributes:
 

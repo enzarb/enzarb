@@ -2132,6 +2132,7 @@ async fn open_issue(pool: &PgPool, n: u64) {
         comment: None,
         merged: None,
         ci: None,
+        label: None,
         review: None,
     };
     let ev = Event::new("github", "d1", EventType::WorkItemOpened, Utc::now(), data);
@@ -3894,4 +3895,148 @@ async fn a_failed_retarget_run_fails_the_job() {
     })
     .await;
     assert!(h.fake.set_base_calls().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Epics: create_sub_issues
+// ---------------------------------------------------------------------------
+
+fn sub_issues_input() -> Value {
+    json!({
+        "item": key(10),
+        "depth": 1,
+        "sub_issues": [
+            { "key": "api", "title": "Add the API", "body": "API part", "depends_on": [] },
+            { "key": "ui", "title": "Show it", "body": "UI part", "depends_on": ["api"] },
+        ],
+    })
+}
+
+#[tokio::test]
+async fn create_sub_issues_makes_links_and_records_the_structure() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    h.fake.set_next_issue_number(50);
+    let wi = new_item(pool, 10, "enzarb").await;
+    let id = new_job(
+        pool,
+        wi,
+        "enzarb",
+        "create_sub_issues",
+        10,
+        "k:epic",
+        sub_issues_input(),
+    )
+    .await;
+    h.exec.drain().await;
+
+    let j = job(pool, id).await;
+    assert_eq!(j.status, "succeeded", "{:?}", j.output);
+    let out = j.output.unwrap();
+    assert_eq!(out["children"][0]["key"], "api");
+    assert_eq!(out["children"][0]["item"], key(50).to_string());
+    assert_eq!(out["children"][1]["item"], key(51).to_string());
+
+    // Bodies carry the markers, the parent reference and what the sub-issue waits for.
+    let made = h.fake.created_issues();
+    assert_eq!(made.len(), 2);
+    assert_eq!(made[0].1, "Add the API");
+    assert!(
+        made[0]
+            .2
+            .contains("<!-- enzarb:epic=github:enzarb/enzarb-ui#10:api -->")
+    );
+    assert!(made[0].2.contains("<!-- enzarb:epic-depth=1 -->"));
+    assert!(made[0].2.contains("Part of the epic #10."));
+    assert!(!made[0].2.contains("Blocked by"));
+    assert!(made[1].2.contains("Blocked by #50"));
+    // Linked to the epic, and the native dependencies were asked for.
+    assert_eq!(h.fake.sub_issues(&key(10)), [key(50), key(51)]);
+    assert!(h.fake.applied_calls().contains(&Call::AddDependency {
+        item: key(51),
+        depends_on: key(50),
+        idempotency_key: format!("epic-dep-{}-{}-{}", key(10), key(51), key(50)),
+    }));
+    // The epic waits for both, and the second waits for the first.
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT work_item_key, depends_on_key, source FROM workflows.work_item_dependencies
+         ORDER BY work_item_key, depends_on_key",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    let epic = |a: u64, b: u64| (key(a).to_string(), key(b).to_string(), "epic".to_string());
+    assert_eq!(rows, [epic(10, 50), epic(10, 51), epic(51, 50)]);
+}
+
+#[tokio::test]
+async fn create_sub_issues_run_again_makes_no_duplicates() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    h.fake.set_next_issue_number(50);
+    let wi = new_item(pool, 10, "enzarb").await;
+    for (n, k) in [(1, "k:epic1"), (2, "k:epic2")] {
+        let id = new_job(
+            pool,
+            wi,
+            "enzarb",
+            "create_sub_issues",
+            10,
+            k,
+            sub_issues_input(),
+        )
+        .await;
+        h.exec.drain().await;
+        assert_eq!(job(pool, id).await.status, "succeeded", "run {n}");
+    }
+    assert_eq!(
+        h.fake.created_issues().len(),
+        2,
+        "the second run found them by key"
+    );
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM workflows.work_item_dependencies")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 3);
+}
+
+#[tokio::test]
+async fn create_sub_issues_retries_a_transient_failure_and_resumes() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    h.fake.set_next_issue_number(50);
+    let wi = new_item(pool, 10, "enzarb").await;
+    // The first create_issue fails once; the job is retried and finishes.
+    h.fake
+        .fail_next(enzarb_connector::Error::Transient("502".into()));
+    let id = new_job(
+        pool,
+        wi,
+        "enzarb",
+        "create_sub_issues",
+        10,
+        "k:epic",
+        sub_issues_input(),
+    )
+    .await;
+    for _ in 0..5 {
+        h.exec.drain().await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(job(pool, id).await.status, "succeeded");
+    assert_eq!(h.fake.created_issues().len(), 2);
+}
+
+#[tokio::test]
+async fn create_sub_issues_with_an_unordered_list_is_a_permanent_failure() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let wi = new_item(pool, 10, "enzarb").await;
+    let mut input = sub_issues_input();
+    input["sub_issues"].as_array_mut().unwrap().reverse();
+    let id = new_job(pool, wi, "enzarb", "create_sub_issues", 10, "k:epic", input).await;
+    h.exec.drain().await;
+    assert_eq!(job(pool, id).await.status, "failed");
+    assert!(h.fake.created_issues().len() <= 1);
 }

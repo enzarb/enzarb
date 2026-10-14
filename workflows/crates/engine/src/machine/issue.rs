@@ -8,7 +8,14 @@
 //! * `Failed` remembers the phase it failed in, so `RetryRequested` can resume it.
 //! * `AwaitingAnswers` nudges once before it goes `Stale`; a reply from the author
 //!   or a retry resumes triage from `Stale`.
+//! * Epics (docs/adr/0018-epics.md): triage may answer `epic`, or a writer asks for one with
+//!   `/epic` or the `epic` label. Planning then writes a breakdown into sub-issues, and the
+//!   usual approval leads to `Decomposing` (the `create_sub_issues` job) and `AwaitingChildren`
+//!   instead of `Implementing`. The epic never opens a change request; it is `Done` when every
+//!   sub-issue is.
 
+use enzarb_connector::command::has_epic_command;
+use enzarb_connector::epic::parse_epic_marker;
 use enzarb_connector::{
     ChangeRequestSpec, CommentKind, Event, EventData, EventType, ItemKind, ItemRef, ProgressTarget,
     WorkItemKey,
@@ -16,14 +23,18 @@ use enzarb_connector::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::change_request::OpenDependency;
 use super::fx::{AgentSpec, Fx};
-use super::prompt::{AgentOutput, Decision, PromptContext};
+use super::prompt::{AgentOutput, Decision, PromptContext, SubIssue, parse_epic_plan};
 use super::stack::{StackParent, stack_marker};
 use super::title::pr_title;
 use super::{
     Ctx, Effect, EngineEvent, EventPayload, JobKind, Transition, UiActionKind, WorkflowKind,
     WorkflowState,
 };
+
+/// The label that asks for an epic. Compared case-insensitively.
+const EPIC_LABEL: &str = "epic";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IssuePhase {
@@ -34,9 +45,23 @@ pub enum IssuePhase {
     Planning,
     AwaitingApproval,
     Implementing,
+    /// Epic: the `create_sub_issues` job is running.
+    Decomposing,
+    /// Epic: the sub-issues exist; waiting for them to be done.
+    AwaitingChildren,
     Done,
     Failed,
     Cancelled,
+}
+
+/// A sub-issue that `create_sub_issues` made (or found by its marker).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreatedChild {
+    /// The key in the approved plan.
+    pub key: String,
+    pub item: WorkItemKey,
+    #[serde(default)]
+    pub title: String,
 }
 
 /// `state_data` of an issue work item (all fields default for forward compatibility).
@@ -70,6 +95,22 @@ pub struct IssueData {
     /// implementation started (stacked change requests). `None` when it starts from the
     /// default branch.
     pub stack: Option<StackParent>,
+    /// Plan this issue as an epic (triage said so, or a writer asked).
+    pub epic: bool,
+    /// Nesting depth: `0` for a top-level issue, the parent's plus one for an epic's sub-issue.
+    /// Taken from the stored parent, never from the issue body.
+    pub epic_depth: u32,
+    /// Work item key of the epic this issue is a sub-issue of.
+    pub epic_parent: Option<String>,
+    /// The approved breakdown, in creation order (epics only).
+    pub sub_issues: Vec<SubIssue>,
+    /// The sub-issues created for this epic.
+    pub children: Vec<CreatedChild>,
+    /// Sub-issues not done yet, as last read. Refreshed on `DependenciesChanged`; the ticker
+    /// compares it with the database to decide when to send that event.
+    pub open_dependencies: Vec<OpenDependency>,
+    /// The maintainers were told that no sub-issue can complete.
+    pub children_notified: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -105,8 +146,16 @@ fn prompt_ctx(ctx: &Ctx, d: &IssueData) -> PromptContext {
         triage_summary: d.triage_summary.clone(),
         plan: d.plan.clone(),
         base_ref: ctx.default_branch.clone(),
+        epic: d.epic,
+        epic_allowed: if epic_allowed(ctx, d) { "yes" } else { "no" }.into(),
+        max_subissues: ctx.config.max_epic_children.to_string(),
         ..Default::default()
     }
+}
+
+/// Epics do not nest: an issue at the depth limit is never one.
+fn epic_allowed(ctx: &Ctx, d: &IssueData) -> bool {
+    d.epic_depth < ctx.config.max_epic_depth
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -237,11 +286,8 @@ pub(super) fn start(ctx: &Ctx, state: &WorkflowState, ev: &EngineEvent) -> Trans
     if e.event_type != EventType::WorkItemOpened || e.data.item.kind != ItemKind::Issue {
         return Transition::reject(state, "not an opening event");
     }
-    if ctx.is_bot(&e.data.actor) {
-        return Transition::reject(state, "bot actor ignored");
-    }
     let item = &e.data.item;
-    let d = IssueData {
+    let mut d = IssueData {
         number: item.number,
         url: item.url.clone(),
         title: item.title.clone(),
@@ -249,7 +295,38 @@ pub(super) fn start(ctx: &Ctx, state: &WorkflowState, ev: &EngineEvent) -> Trans
         author: item.author.clone(),
         ..Default::default()
     };
+    if ctx.is_bot(&e.data.actor) {
+        // The one bot-authored issue that starts a workflow: a sub-issue that this enzarb
+        // created for an epic. It still goes through triage, plan and approval.
+        match epic_child_of(ctx, e) {
+            Some(parent) => {
+                d.epic_depth = parent.depth + 1;
+                d.epic_parent = Some(parent.key.to_string());
+            }
+            None => return Transition::reject(state, "bot actor ignored"),
+        }
+    }
     begin(ctx, ev, IssuePhase::Triaging, d, "issue opened")
+}
+
+/// The stored epic that the bot-authored issue in `e` is a sub-issue of, if all of this holds:
+/// it was opened by this enzarb itself (not just any bot), its body names a parent in the same
+/// repository that the reducer found in the store (in `Decomposing` or `AwaitingChildren`),
+/// and the marker's key is one of the sub-issues in that parent's approved plan.
+fn epic_child_of<'a>(ctx: &'a Ctx, e: &Event) -> Option<&'a super::EpicParent> {
+    if !e.data.actor.login.eq_ignore_ascii_case(&ctx.bot_login) {
+        return None;
+    }
+    let (parent, key) = parse_epic_marker(&e.data.item.body)?;
+    let found = ctx.epic_parent.as_ref()?;
+    // GitHub names are case-insensitive; the stored keys are lowercase.
+    let same = |a: &dyn std::fmt::Display, b: &dyn std::fmt::Display| {
+        a.to_string().eq_ignore_ascii_case(&b.to_string())
+    };
+    (same(&found.key, &parent)
+        && same(&parent.repo, &ctx.work_item.repo)
+        && found.sub_keys.contains(&key))
+    .then_some(found)
 }
 
 // -- later events -------------------------------------------------------------
@@ -291,10 +368,12 @@ pub(super) fn step(ctx: &Ctx, s: &IssueState, ev: &EngineEvent) -> Transition {
         }
         EventPayload::JobFailed { kind, error, .. } => job_failed(ctx, ev, s, &state, *kind, error),
         EventPayload::TimerFired { job_id } => timer(ctx, ev, s, &state, *job_id),
-        EventPayload::Unmergeable { .. }
-        | EventPayload::DependenciesChanged
-        | EventPayload::ReadinessPoll => Transition::reject(&state, "not a change request"),
+        EventPayload::Unmergeable { .. } | EventPayload::ReadinessPoll => {
+            Transition::reject(&state, "not a change request")
+        }
+        EventPayload::DependenciesChanged => children_changed(ctx, ev, s, &state),
         EventPayload::Connector(_) if ev.is_approval() => approval(ctx, ev, s, &state),
+        EventPayload::Connector(_) if ev.labeled().is_some() => labeled(ctx, ev, s, &state),
         EventPayload::Connector(_) => match ev.comment_like() {
             Some(c) => comment(ctx, ev, s, &state, &c),
             // WorkItemOpened again, change request events, reviews: not for this workflow.
@@ -310,19 +389,222 @@ fn approval(ctx: &Ctx, ev: &EngineEvent, s: &IssueState, state: &WorkflowState) 
     if !ctx.can_write() {
         return Transition::reject(state, "approval requires write access");
     }
-    if s.phase != IssuePhase::AwaitingApproval {
-        return Transition::reject(state, "no plan is awaiting approval");
-    }
     let mut d = s.data.clone();
     let tc = ev.connector().and_then(|e| e.data.comment.as_ref());
     d.trigger_comment_id = tc.map(|c| c.id);
     d.trigger_comment_kind = tc.map(|c| c.kind).unwrap_or_default();
     d.trigger_text.clear();
-    d.implemented = false;
-    begin(ctx, ev, IssuePhase::Implementing, d, "plan approved")
+    match s.phase {
+        IssuePhase::AwaitingApproval if d.epic => decompose(ctx, ev, d),
+        IssuePhase::AwaitingApproval => {
+            d.implemented = false;
+            begin(ctx, ev, IssuePhase::Implementing, d, "plan approved")
+        }
+        // The sub-issues cannot all complete (one was closed): a maintainer decides that
+        // the epic is finished anyway.
+        IssuePhase::AwaitingChildren if stuck(&d) => {
+            let note = "closed by a maintainer with sub-issues left unfinished";
+            finish_epic(ctx, ev, d, format!("This epic is closed: {note}."), note)
+        }
+        IssuePhase::AwaitingChildren => {
+            Transition::reject(state, "sub-issues are still in progress")
+        }
+        _ => Transition::reject(state, "no plan is awaiting approval"),
+    }
 }
 
 use enzarb_connector::command::has_approve_command;
+
+// -- epics ----------------------------------------------------------------------
+
+/// `AwaitingApproval -> Decomposing`: the breakdown was approved, create the sub-issues.
+fn decompose(ctx: &Ctx, ev: &EngineEvent, d: IssueData) -> Transition {
+    let mut fx = Fx::new(ctx, ev);
+    fx.received(&target(ctx, &d));
+    fx.wake_at(None);
+    fx.create_sub_issues(d.epic_depth + 1, &d.sub_issues);
+    Transition::to(st(IssuePhase::Decomposing, d), fx.finish(), "epic approved")
+}
+
+/// Every sub-issue still open is one that will never complete.
+fn stuck(d: &IssueData) -> bool {
+    !d.open_dependencies.is_empty() && d.open_dependencies.iter().all(|o| !o.problem.is_empty())
+}
+
+/// `-> Done` for an epic: tell people and stop.
+fn finish_epic(
+    ctx: &Ctx,
+    ev: &EngineEvent,
+    d: IssueData,
+    comment: String,
+    note: &str,
+) -> Transition {
+    let mut fx = Fx::new(ctx, ev);
+    fx.comment(comment);
+    fx.done(&target(ctx, &d));
+    fx.wake_at(None);
+    Transition::to(st(IssuePhase::Done, d), fx.finish(), note)
+}
+
+/// The `create_sub_issues` job finished: remember the children and wait for them.
+fn decomposed(ctx: &Ctx, ev: &EngineEvent, s: &IssueState, output: &Value) -> Transition {
+    #[derive(Deserialize)]
+    struct Out {
+        children: Vec<CreatedChild>,
+    }
+    let children = match serde_json::from_value::<Out>(output.clone()) {
+        Ok(o) if !o.children.is_empty() => o.children,
+        Ok(_) => return fail(ctx, ev, s, "no sub-issues were created", false),
+        Err(e) => {
+            return fail(
+                ctx,
+                ev,
+                s,
+                &format!("sub-issue output unreadable: {e}"),
+                false,
+            );
+        }
+    };
+    let mut d = s.data.clone();
+    let mut list = String::new();
+    for c in &children {
+        list.push_str(&format!("\n- #{} {}", c.item.number, c.title));
+    }
+    d.children = children;
+    d.open_dependencies = ctx.open_dependencies.clone();
+    d.children_notified = false;
+    let mut fx = Fx::new(ctx, ev);
+    fx.comment(format!(
+        "enzarb created {} sub-issues for this epic. Each one is triaged and planned on its own and needs its own `/approve`:\n{list}\n\nThis epic is done when all of them are.",
+        d.children.len()
+    ));
+    fx.done(&target(ctx, &d));
+    fx.wake_at(None);
+    Transition::to(
+        st(IssuePhase::AwaitingChildren, d),
+        fx.finish(),
+        "sub-issues created",
+    )
+}
+
+/// `DependenciesChanged` for an epic waiting on its sub-issues (the reducer put the ones not
+/// done yet into `ctx.open_dependencies`).
+fn children_changed(
+    ctx: &Ctx,
+    ev: &EngineEvent,
+    s: &IssueState,
+    state: &WorkflowState,
+) -> Transition {
+    if s.phase != IssuePhase::AwaitingChildren {
+        return Transition::reject(state, "not waiting for sub-issues");
+    }
+    let mut d = s.data.clone();
+    d.open_dependencies = ctx.open_dependencies.clone();
+    if d.open_dependencies.is_empty() {
+        let n = d.children.len();
+        return finish_epic(
+            ctx,
+            ev,
+            d,
+            format!("All {n} sub-issues are done. Closing this epic."),
+            "all sub-issues done",
+        );
+    }
+    if !stuck(&d) {
+        d.children_notified = false;
+        return Transition::to(
+            st(IssuePhase::AwaitingChildren, d),
+            Vec::new(),
+            "children changed",
+        );
+    }
+    if d.children_notified {
+        return Transition::to(
+            st(IssuePhase::AwaitingChildren, d),
+            Vec::new(),
+            "children changed",
+        );
+    }
+    d.children_notified = true;
+    let why: Vec<String> = d
+        .open_dependencies
+        .iter()
+        .map(|o| format!("- {}", o.problem))
+        .collect();
+    let mut fx = Fx::new(ctx, ev);
+    fx.comment(format!(
+        "The remaining sub-issues of this epic cannot complete:\n{}\n\nA maintainer can reopen or replace them, or comment `/approve` to close this epic as it is.",
+        why.join("\n")
+    ));
+    Transition::to(
+        st(IssuePhase::AwaitingChildren, d),
+        fx.finish(),
+        "sub-issues cannot complete",
+    )
+}
+
+/// A writer asked for an epic (`/epic`, or the `epic` label). Before the plan is approved this
+/// sets the epic flag; once a plan exists it is written again as a breakdown.
+fn request_epic(
+    ctx: &Ctx,
+    ev: &EngineEvent,
+    s: &IssueState,
+    state: &WorkflowState,
+    d: IssueData,
+) -> Transition {
+    use IssuePhase::*;
+    if !ctx.can_write() {
+        return Transition::reject(state, "epic requires write access");
+    }
+    if !epic_allowed(ctx, &d) {
+        return Transition::reject(state, "sub-issues of an epic cannot be epics themselves");
+    }
+    if d.epic {
+        return Transition::reject(state, "already planned as an epic");
+    }
+    let mut d = d;
+    d.epic = true;
+    match s.phase {
+        // Remembered: the plan is written as a breakdown once triage is done.
+        Triaging | AwaitingAnswers | Stale => {
+            let mut fx = Fx::new(ctx, ev);
+            fx.received(&target(ctx, &d));
+            // Only the flag changes; the comment is not an answer to triage.
+            let mut kept = s.data.clone();
+            kept.epic = true;
+            Transition::to(st(s.phase, kept), fx.finish(), "epic requested")
+        }
+        AwaitingApproval => {
+            d.sub_issues.clear();
+            begin(ctx, ev, Planning, d, "epic requested; re-planning")
+        }
+        Planning | Implementing | Decomposing => {
+            Transition::reject(state, "busy: a job is running")
+        }
+        AwaitingChildren | Duplicate | Done | Failed | Cancelled => {
+            Transition::reject(state, "no longer active")
+        }
+    }
+}
+
+/// `WorkItemLabeled`: only the `epic` label means anything.
+fn labeled(ctx: &Ctx, ev: &EngineEvent, s: &IssueState, state: &WorkflowState) -> Transition {
+    if !ev
+        .labeled()
+        .is_some_and(|l| l.eq_ignore_ascii_case(EPIC_LABEL))
+    {
+        return Transition::reject(state, "label ignored");
+    }
+    if ev.actor().is_some_and(|a| ctx.is_bot(a)) {
+        return Transition::reject(state, "bot actor ignored");
+    }
+    let mut d = s.data.clone();
+    d.trigger_comment_id = None;
+    d.trigger_comment_kind = CommentKind::default();
+    d.trigger_text =
+        "A maintainer labeled this issue `epic`: break it down into sub-issues.".into();
+    request_epic(ctx, ev, s, state, d)
+}
 
 /// Feedback typed in the UI: handled exactly like the same comment written on GitHub (plan
 /// feedback while awaiting approval, an answer while awaiting answers), and also posted to
@@ -368,6 +650,10 @@ fn comment(
     d.trigger_comment_id = c.comment.map(|x| x.id);
     d.trigger_comment_kind = c.comment.map(|x| x.kind).unwrap_or_default();
     d.trigger_text = c.text.to_string();
+    // `/epic` from someone with write access. Anyone else's comment is just a comment.
+    if has_epic_command(c.text) && ctx.can_write() {
+        return request_epic(ctx, ev, s, state, d);
+    }
     match s.phase {
         // Only the author answers questions.
         AwaitingAnswers | Stale => {
@@ -388,7 +674,10 @@ fn comment(
             }
             begin(ctx, ev, Planning, d, "plan feedback")
         }
-        Triaging | Planning | Implementing => Transition::reject(state, "busy: a job is running"),
+        Triaging | Planning | Implementing | Decomposing => {
+            Transition::reject(state, "busy: a job is running")
+        }
+        AwaitingChildren => Transition::reject(state, "waiting for the sub-issues"),
         Duplicate | Done | Failed | Cancelled => Transition::reject(state, "no longer active"),
     }
 }
@@ -409,6 +698,8 @@ fn retry(ctx: &Ctx, ev: &EngineEvent, s: &IssueState, state: &WorkflowState) -> 
                     d.implemented = false;
                     begin(ctx, ev, phase, d, "retry")
                 }
+                // Resumes where it stopped: sub-issues already made are found by their markers.
+                IssuePhase::Decomposing => decompose(ctx, ev, d),
                 _ => begin(ctx, ev, IssuePhase::Triaging, d, "retry"),
             }
         }
@@ -449,7 +740,7 @@ fn timer(
             Transition::to(st(Stale, s.data.clone()), fx.finish(), "stale")
         }
         // A running job passed its deadline.
-        (Some(_), Triaging | Planning | Implementing) => {
+        (Some(_), Triaging | Planning | Implementing | Decomposing) => {
             fail(ctx, ev, s, "the agent run exceeded its deadline", true)
         }
         _ => Transition::reject(state, "no timer expected"),
@@ -462,6 +753,7 @@ fn awaited(phase: IssuePhase) -> &'static [JobKind] {
         IssuePhase::Triaging => &[JobKind::AgentTriage],
         IssuePhase::Planning => &[JobKind::AgentPlan],
         IssuePhase::Implementing => &[JobKind::AgentImplement, JobKind::OpenChangeRequest],
+        IssuePhase::Decomposing => &[JobKind::CreateSubIssues],
         _ => &[],
     }
 }
@@ -509,6 +801,9 @@ fn job_succeeded(
     }
     let d = s.data.clone();
 
+    if kind == JobKind::CreateSubIssues {
+        return decomposed(ctx, ev, s, output);
+    }
     if kind == JobKind::OpenChangeRequest {
         if !d.implemented {
             return Transition::reject(state, "stale job result");
@@ -551,13 +846,32 @@ fn job_succeeded(
             fx.wake_at(None);
             Transition::to(st(Duplicate, d), fx.finish(), "duplicate")
         }
-        (Triaging, Decision::Ready) => {
+        (Triaging, decision @ (Decision::Ready | Decision::Epic)) => {
             d.triage_summary = out.body;
             d.trigger_text.clear();
+            let mut note = "triage done";
+            if decision == Decision::Epic && epic_allowed(ctx, &d) {
+                d.epic = true;
+                note = "triage done: epic";
+            } else if decision == Decision::Epic {
+                // Epics do not nest: plan it as one change request.
+                d.triage_summary.push_str(
+                    "\n\n(Triage found this large, but it is itself a sub-issue of an epic and \
+                     cannot be split further: plan it as a single change request.)",
+                );
+            }
             start_plan(ctx, &mut fx, &d);
-            Transition::to(st(Planning, d), fx.finish(), "triage done")
+            Transition::to(st(Planning, d), fx.finish(), note)
         }
         (Planning, Decision::Plan) => {
+            if d.epic {
+                match parse_epic_plan(&out.body, ctx.config.max_epic_children) {
+                    Ok(subs) => d.sub_issues = subs,
+                    Err(e) => {
+                        return fail(ctx, ev, s, &format!("unusable epic breakdown: {e}"), false);
+                    }
+                }
+            }
             fx.comment(out.body.clone());
             fx.done(&tgt);
             d.plan = out.body;
@@ -648,6 +962,7 @@ fn handoff(ctx: &Ctx, ev: &EngineEvent, mut d: IssueData, pr: ItemRef) -> Transi
             merged: None,
             review: None,
             ci: None,
+            label: None,
         },
     );
     fx.effects.push(Effect::StartWorkflow {

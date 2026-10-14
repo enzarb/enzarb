@@ -219,8 +219,9 @@ impl Ticker {
         Ok(stats)
     }
 
-    /// Re-evaluate change requests whose dependencies changed since they last looked: a
-    /// dependency was completed or closed, or a relationship was added or removed. Emits
+    /// Re-evaluate change requests (and epics waiting for their sub-issues) whose dependencies
+    /// changed since they last looked: a dependency was completed or closed, or a
+    /// relationship was added or removed. Emits
     /// `DependenciesChanged` when the open set differs from the one in `state_data`, so a
     /// finished dependency continues its dependents without a human, and a missed webhook
     /// delays that by one sweep at most.
@@ -229,7 +230,8 @@ impl Ticker {
             "SELECT w.key, coalesce(w.state_data->'open_dependencies', '[]'::jsonb),
                     (extract(epoch FROM w.updated_at) * 1000000)::bigint
              FROM work_items w
-             WHERE w.workflow = 'change_request'
+             WHERE (w.workflow = 'change_request'
+                    OR (w.workflow = 'issue' AND w.state = 'AwaitingChildren'))
                AND w.state NOT IN ('Merged', 'Closed', 'Cancelled')
                AND (jsonb_array_length(CASE WHEN jsonb_typeof(w.state_data->'open_dependencies') = 'array'
                                             THEN w.state_data->'open_dependencies' ELSE '[]'::jsonb END) > 0

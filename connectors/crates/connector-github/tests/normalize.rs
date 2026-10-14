@@ -156,8 +156,11 @@ fn status_becomes_commit_status() {
 const CASES: &[(&str, &str, &[EventType])] = &[
     ("issues", "issues_opened", &[WorkItemOpened, Mentioned]),
     ("issues", "issues_opened_plain", &[WorkItemOpened]),
+    ("issues", "issues_opened_epic_child", &[WorkItemOpened]),
+    ("issues", "issues_opened_by_bot", &[]),
     ("issues", "issues_closed", &[WorkItemClosed]),
     ("issues", "issues_labeled_approved", &[ApprovalGranted]),
+    ("issues", "issues_labeled_epic", &[WorkItemLabeled]),
     ("issues", "issues_labeled_other", &[]),
     ("issues", "issues_edited", &[]),
     ("issue_comment", "issue_comment_created", &[CommentAdded]),

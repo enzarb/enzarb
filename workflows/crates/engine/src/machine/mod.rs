@@ -26,6 +26,9 @@
 //!   "expected_head_sha": str, "actor": str}`
 //! * `retarget_change_request`: `{"item": WorkItemKey, "number": u64, "head_ref": str,
 //!   "expected_sha": str, "old_base": str, "onto": str}`
+//! * `create_sub_issues`: `{"item": WorkItemKey, "depth": u32, "sub_issues": [SubIssue]}`
+//!   (in creation order); output `{"children": [{"key": str, "item": WorkItemKey, "title": str}]}`
+//!   ([`issue::CreatedChild`])
 //!
 //! Job outputs that the machines read: agent jobs store the `RunFinished` body
 //! (`summary` is Claude's result text, plus `branch`, `head_sha`, `pushed`),
@@ -59,12 +62,14 @@ pub use change_request::{CiState, CrData, CrPhase, CrState, OpenDependency};
 pub use fx::{
     AgentJobInput, PRIORITY_AGENT, PRIORITY_COMMENT, PRIORITY_PROGRESS, PRIORITY_WORKING,
 };
-pub use issue::{IssueData, IssuePhase, IssueState};
+pub use issue::{CreatedChild, IssueData, IssuePhase, IssueState};
 pub use mention::{MentionData, MentionPhase, MentionState};
 pub use prompt::{
-    AgentOutput, Decision, OutputError, PromptContext, recovery_prompt, render_prompt,
+    AgentOutput, Decision, EpicPlanError, OutputError, PromptContext, SubIssue, parse_epic_plan,
+    recovery_prompt, render_prompt,
 };
 pub use stack::{RetargetOutcome, StackParent};
+// (`EpicParent` is defined below, next to `Ctx`.)
 
 /// Version of the `state_data` shapes written by this module. Readers of older
 /// versions must be added to [`WorkflowState::from_row`] when this is bumped.
@@ -92,6 +97,8 @@ pub enum JobKind {
     /// Rebase enzarb's own stacked child branch onto the default branch after its parent was
     /// squash-merged, and set the change request's base. The only force-push in enzarb.
     RetargetChangeRequest,
+    /// Create the sub-issues of an approved epic and link them (docs/adr/0018-epics.md).
+    CreateSubIssues,
 }
 
 impl JobKind {
@@ -110,6 +117,7 @@ impl JobKind {
             JobKind::CheckMergeReadiness => "check_merge_readiness",
             JobKind::MergeChangeRequest => "merge_change_request",
             JobKind::RetargetChangeRequest => "retarget_change_request",
+            JobKind::CreateSubIssues => "create_sub_issues",
         }
     }
 
@@ -122,6 +130,7 @@ impl JobKind {
                 | JobKind::CheckMergeReadiness
                 | JobKind::MergeChangeRequest
                 | JobKind::RetargetChangeRequest
+                | JobKind::CreateSubIssues
         )
     }
 }
@@ -312,6 +321,15 @@ impl EngineEvent {
         }
     }
 
+    /// The label of a `WorkItemLabeled` event.
+    fn labeled(&self) -> Option<&str> {
+        let e = self.connector()?;
+        if e.event_type != EventType::WorkItemLabeled {
+            return None;
+        }
+        e.data.label.as_deref()
+    }
+
     /// `Some(merged)` for `WorkItemClosed`.
     fn closed(&self) -> Option<bool> {
         let e = self.connector()?;
@@ -375,6 +393,21 @@ pub struct Config {
     /// `change_request`: automatic fix rounds on enzarb's own review findings before waiting
     /// for a human. `0` turns them off.
     pub max_auto_rounds: u32,
+    /// `issue`: the most sub-issues an epic breakdown may list.
+    #[serde(default = "default_max_epic_children")]
+    pub max_epic_children: usize,
+    /// `issue`: how deep epics nest. An issue opened at this depth or deeper is never an epic;
+    /// `1` lets an epic create sub-issues that are plain issues.
+    #[serde(default = "default_max_epic_depth")]
+    pub max_epic_depth: u32,
+}
+
+fn default_max_epic_children() -> usize {
+    8
+}
+
+fn default_max_epic_depth() -> u32 {
+    1
 }
 
 impl Default for Config {
@@ -384,8 +417,22 @@ impl Default for Config {
             stale_after_secs: 4 * 24 * 3600,
             agent_timeout_secs: 3600,
             max_auto_rounds: 3,
+            max_epic_children: default_max_epic_children(),
+            max_epic_depth: default_max_epic_depth(),
         }
     }
+}
+
+/// The stored epic that a sub-issue claims to belong to, read from the work item store by the
+/// reducer for the opening event of an issue whose body carries an epic marker. It is only
+/// set when the parent exists in the same Project and is creating or waiting for its children.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EpicParent {
+    pub key: WorkItemKey,
+    /// The parent's own depth (`0` for a top-level epic).
+    pub depth: u32,
+    /// The keys of the sub-issues in the parent's approved plan.
+    pub sub_keys: Vec<String>,
 }
 
 /// Which Project triggers are enabled (`Project.spec.triggers`).
@@ -434,6 +481,8 @@ pub struct Ctx {
     /// already stacked, its recorded parent with the current `merged` flag; otherwise the
     /// single open parent chosen by [`stack::select_stack_parent`]. Read by the reducer.
     pub stack_parent: Option<stack::StackParent>,
+    /// For the opening event of an epic's sub-issue: the stored parent (see [`EpicParent`]).
+    pub epic_parent: Option<EpicParent>,
 }
 
 impl Ctx {

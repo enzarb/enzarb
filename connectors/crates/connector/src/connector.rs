@@ -146,6 +146,29 @@ pub trait Connector: Send + Sync {
         Err(Error::Invalid("dependencies are not supported".into()))
     }
 
+    /// Creates an issue in `repo` and returns its key. A call repeated with the same
+    /// `idempotency_key` returns the issue the first call created instead of making another
+    /// (GitHub: a hidden marker in the body, looked up before creating). Labels that do not
+    /// exist are created by the provider or ignored. The default implementation reports the
+    /// capability as unsupported.
+    async fn create_issue(
+        &self,
+        _repo: &RepoKey,
+        _title: &str,
+        _body: &str,
+        _labels: &[String],
+        _idempotency_key: &str,
+    ) -> Result<WorkItemKey> {
+        Err(Error::Invalid("creating issues is not supported".into()))
+    }
+
+    /// Makes `child` a sub-issue of `parent`. Linking an existing sub-issue succeeds. A
+    /// connector without native sub-issues may record the link in the parent's body instead.
+    /// The default implementation reports the capability as unsupported.
+    async fn link_sub_issue(&self, _parent: &WorkItemKey, _child: &WorkItemKey) -> Result<()> {
+        Err(Error::Invalid("sub-issues are not supported".into()))
+    }
+
     async fn check_permission(&self, repo: &RepoKey, actor: &Actor) -> Result<Permission>;
 
     /// A short-lived token restricted to the single `repo`.

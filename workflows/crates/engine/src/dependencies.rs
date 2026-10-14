@@ -244,6 +244,34 @@ async fn set(
     )
 }
 
+/// Store the structure of an epic (docs/adr/0018-epics.md): the epic waits for every child,
+/// and a child waits for the children it is `Blocked by`. `children` pairs each child with its
+/// blockers. This is the `epic` source, so GitHub syncs and text edits never remove it, and
+/// repeating the call changes nothing. Returns whether the stored set changed.
+pub async fn record_epic(
+    pool: &PgPool,
+    epic: &WorkItemKey,
+    children: &[(WorkItemKey, Vec<WorkItemKey>)],
+) -> Result<bool, Error> {
+    let mut conn = pool.acquire().await?;
+    let mut changed = false;
+    let all: Vec<String> = children
+        .iter()
+        .map(|(c, _)| normalize_key(c).to_string())
+        .collect();
+    changed |= set(&mut conn, &normalize_key(epic), "epic", &all, false).await?;
+    for (child, blockers) in children {
+        let blockers: Vec<String> = blockers
+            .iter()
+            .map(|b| normalize_key(b).to_string())
+            .collect();
+        if !blockers.is_empty() {
+            changed |= set(&mut conn, &normalize_key(child), "epic", &blockers, false).await?;
+        }
+    }
+    Ok(changed)
+}
+
 /// Replace the `github` dependencies of every active work item with what the connector
 /// reports, one batch of at most `batch` items with an id above `after`. A connector without
 /// the capability (or a token without access) is skipped. Returns how many items changed

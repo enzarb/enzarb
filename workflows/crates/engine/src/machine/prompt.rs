@@ -17,8 +17,8 @@
 //!
 //! | job kind | decisions |
 //! |---|---|
-//! | `agent_triage` | `questions` (body: the questions to post), `ready` (body: summary for planning), `duplicate` (body: comment pointing at the original) |
-//! | `agent_plan` | `plan` (body: the markdown plan) |
+//! | `agent_triage` | `questions` (body: the questions to post), `ready` (body: summary for planning), `epic` (body: summary for planning; too big for one pull request), `duplicate` (body: comment pointing at the original) |
+//! | `agent_plan` | `plan` (body: the markdown plan; for an epic, the breakdown with an `enzarb-subissues` block, see [`parse_epic_plan`]) |
 //! | `agent_implement` | `done` (body: pull request description), `blocked` (body: why) |
 //! | `agent_review` | `approve`, `request_changes`, `comment` (body: the review) |
 //! | `agent_address_comments` | `done` (body: what changed), `blocked` (body: why) |
@@ -36,6 +36,7 @@ use super::JobKind;
 
 pub const TRIAGE: &str = include_str!("../../prompts/triage.md");
 pub const PLAN: &str = include_str!("../../prompts/plan.md");
+pub const PLAN_EPIC: &str = include_str!("../../prompts/plan_epic.md");
 pub const IMPLEMENT: &str = include_str!("../../prompts/implement.md");
 pub const REVIEW: &str = include_str!("../../prompts/review.md");
 pub const ADDRESS_COMMENTS: &str = include_str!("../../prompts/address_comments.md");
@@ -82,6 +83,12 @@ pub struct PromptContext {
     pub head_ref: String,
     /// `{head_sha}`.
     pub head_sha: String,
+    /// Plan the issue as an epic: the plan run uses `plan_epic.md`.
+    pub epic: bool,
+    /// `{epic_allowed}`: `yes` or `no`; whether triage may answer `epic`.
+    pub epic_allowed: String,
+    /// `{max_subissues}`: the most sub-issues an epic breakdown may list.
+    pub max_subissues: String,
 }
 
 impl PromptContext {
@@ -104,6 +111,8 @@ impl PromptContext {
             "branch" => &self.branch,
             "head_ref" => &self.head_ref,
             "head_sha" => &self.head_sha,
+            "epic_allowed" => &self.epic_allowed,
+            "max_subissues" => &self.max_subissues,
             _ => return None,
         })
     }
@@ -188,9 +197,154 @@ pub fn render(template: &str, ctx: &PromptContext) -> String {
     out
 }
 
-/// Render the prompt for an agent job kind. Non-agent kinds render an empty string.
+/// Render the prompt for an agent job kind. Non-agent kinds render an empty string. The plan
+/// of an epic (`ctx.epic`) uses its own template.
 pub fn render_prompt(kind: JobKind, ctx: &PromptContext) -> String {
-    template(kind).map(|t| render(t, ctx)).unwrap_or_default()
+    let t = match kind {
+        JobKind::AgentPlan if ctx.epic => Some(PLAN_EPIC),
+        _ => template(kind),
+    };
+    t.map(|t| render(t, ctx)).unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
+// Epic breakdown
+// ---------------------------------------------------------------------------
+
+/// One sub-issue of an epic, from the `enzarb-subissues` block of the approved plan.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SubIssue {
+    /// Unique id within the plan, `[a-z0-9_-]{1,32}`; only used by `depends_on`.
+    pub key: String,
+    pub title: String,
+    pub body: String,
+    pub depends_on: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EpicPlanError {
+    NoBlock,
+    BadJson(String),
+    Empty,
+    TooMany { max: usize },
+    BadKey(String),
+    DuplicateKey(String),
+    EmptyTitle(String),
+    UnknownDependency { key: String, depends_on: String },
+    Cycle(String),
+}
+
+impl std::fmt::Display for EpicPlanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EpicPlanError::NoBlock => {
+                write!(f, "the plan has no `enzarb-subissues` block")
+            }
+            EpicPlanError::BadJson(e) => write!(f, "the `enzarb-subissues` block is invalid: {e}"),
+            EpicPlanError::Empty => write!(f, "the epic breakdown lists no sub-issues"),
+            EpicPlanError::TooMany { max } => {
+                write!(f, "the epic breakdown lists more than {max} sub-issues")
+            }
+            EpicPlanError::BadKey(k) => write!(f, "sub-issue key {k:?} is not [a-z0-9_-]{{1,32}}"),
+            EpicPlanError::DuplicateKey(k) => write!(f, "sub-issue key {k:?} is used twice"),
+            EpicPlanError::EmptyTitle(k) => write!(f, "sub-issue {k:?} has an empty title"),
+            EpicPlanError::UnknownDependency { key, depends_on } => {
+                write!(f, "sub-issue {key:?} depends on unknown key {depends_on:?}")
+            }
+            EpicPlanError::Cycle(k) => write!(f, "sub-issue {k:?} is on a dependency cycle"),
+        }
+    }
+}
+impl std::error::Error for EpicPlanError {}
+
+const EPIC_BLOCK: &str = "```enzarb-subissues";
+
+fn valid_sub_key(k: &str) -> bool {
+    (1..=32).contains(&k.len())
+        && k.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+}
+
+/// Parse and validate the last `enzarb-subissues` block of an epic plan body.
+///
+/// The list must have 1 to `max` entries with unique `[a-z0-9_-]{1,32}` keys and non-empty
+/// titles; every `depends_on` names another entry; the dependencies have no cycle. The result
+/// is in a creation order where every sub-issue comes after what it depends on (the plan's
+/// own order is kept wherever that allows it), so numbers of blockers exist when needed.
+pub fn parse_epic_plan(body: &str, max: usize) -> Result<Vec<SubIssue>, EpicPlanError> {
+    let mut json = None;
+    let mut rest = body;
+    while let Some(i) = rest.find(EPIC_BLOCK) {
+        let at_line_start = i == 0 || rest.as_bytes()[i - 1] == b'\n';
+        let after = &rest[i + EPIC_BLOCK.len()..];
+        rest = after;
+        // The info string must end the line: not "```enzarb-subissues2".
+        if !at_line_start || !after.starts_with(['\n', '\r']) {
+            continue;
+        }
+        if let Some(end) = after.find("\n```") {
+            json = Some(&after[..end]);
+        }
+    }
+    let json = json.ok_or(EpicPlanError::NoBlock)?;
+    let mut subs: Vec<SubIssue> =
+        serde_json::from_str(json.trim()).map_err(|e| EpicPlanError::BadJson(e.to_string()))?;
+    if subs.is_empty() {
+        return Err(EpicPlanError::Empty);
+    }
+    if subs.len() > max {
+        return Err(EpicPlanError::TooMany { max });
+    }
+    let mut seen = std::collections::HashSet::new();
+    for s in &mut subs {
+        s.title = s.title.trim().to_string();
+        s.body = s.body.trim().to_string();
+        if !valid_sub_key(&s.key) {
+            return Err(EpicPlanError::BadKey(s.key.clone()));
+        }
+        if !seen.insert(s.key.clone()) {
+            return Err(EpicPlanError::DuplicateKey(s.key.clone()));
+        }
+        if s.title.is_empty() {
+            return Err(EpicPlanError::EmptyTitle(s.key.clone()));
+        }
+        if s.title.contains('\n') || s.title.chars().count() > 200 {
+            return Err(EpicPlanError::EmptyTitle(s.key.clone()));
+        }
+        s.depends_on.sort();
+        s.depends_on.dedup();
+    }
+    for s in &subs {
+        for d in &s.depends_on {
+            if !seen.contains(d) || *d == s.key {
+                return if d == &s.key {
+                    Err(EpicPlanError::Cycle(s.key.clone()))
+                } else {
+                    Err(EpicPlanError::UnknownDependency {
+                        key: s.key.clone(),
+                        depends_on: d.clone(),
+                    })
+                };
+            }
+        }
+    }
+    // Kahn's algorithm, picking the earliest remaining entry each round.
+    let mut ordered: Vec<SubIssue> = Vec::with_capacity(subs.len());
+    let mut done: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut remaining = subs;
+    while !remaining.is_empty() {
+        let Some(i) = remaining
+            .iter()
+            .position(|s| s.depends_on.iter().all(|d| done.contains(d)))
+        else {
+            return Err(EpicPlanError::Cycle(remaining[0].key.clone()));
+        };
+        let s = remaining.remove(i);
+        done.insert(s.key.clone());
+        ordered.push(s);
+    }
+    Ok(ordered)
 }
 
 // ---------------------------------------------------------------------------
@@ -289,6 +443,8 @@ impl std::error::Error for OutputError {}
 pub enum Decision {
     Questions,
     Ready,
+    /// Triage: too big for one pull request.
+    Epic,
     Duplicate,
     Plan,
     Done,
@@ -304,6 +460,7 @@ impl Decision {
         match self {
             Decision::Questions => "questions",
             Decision::Ready => "ready",
+            Decision::Epic => "epic",
             Decision::Duplicate => "duplicate",
             Decision::Plan => "plan",
             Decision::Done => "done",
@@ -319,7 +476,7 @@ impl Decision {
     pub fn allowed(kind: JobKind) -> &'static [Decision] {
         use Decision::*;
         match kind {
-            JobKind::AgentTriage => &[Questions, Ready, Duplicate],
+            JobKind::AgentTriage => &[Questions, Ready, Epic, Duplicate],
             JobKind::AgentPlan => &[Plan],
             JobKind::AgentImplement
             | JobKind::AgentAddressComments
@@ -419,6 +576,9 @@ mod tests {
             branch: "enzarb/issue-42".into(),
             head_ref: "feature".into(),
             head_sha: "abc123".into(),
+            epic: false,
+            epic_allowed: "yes".into(),
+            max_subissues: "8".into(),
         }
     }
 
@@ -659,6 +819,180 @@ mod tests {
                 seen.insert(d.as_str());
             }
         }
-        assert_eq!(seen.len(), 10);
+        assert_eq!(seen.len(), 11);
+    }
+
+    const ALL_DECISIONS: [Decision; 11] = [
+        Decision::Questions,
+        Decision::Ready,
+        Decision::Epic,
+        Decision::Duplicate,
+        Decision::Plan,
+        Decision::Done,
+        Decision::Blocked,
+        Decision::Approve,
+        Decision::RequestChanges,
+        Decision::Comment,
+        Decision::Reply,
+    ];
+
+    /// Every prompt (the epic plan too) says which decisions it accepts, and names no
+    /// decision that its job kind would reject.
+    #[test]
+    fn each_prompt_names_exactly_its_allowed_decisions() {
+        let mut ctx = full_ctx();
+        let mut prompts: Vec<(String, JobKind, String)> = AGENT_KINDS
+            .iter()
+            .map(|k| (format!("{k:?}"), *k, render_prompt(*k, &ctx)))
+            .collect();
+        ctx.epic = true;
+        prompts.push((
+            "epic plan".into(),
+            JobKind::AgentPlan,
+            render_prompt(JobKind::AgentPlan, &ctx),
+        ));
+        for (name, kind, out) in prompts {
+            let tail = out.rsplit("# Required final message").next().unwrap();
+            let line = tail
+                .lines()
+                .find(|l| l.starts_with("`decision` "))
+                .unwrap_or_else(|| panic!("{name}: no decision line"));
+            let allowed = Decision::allowed(kind);
+            for d in ALL_DECISIONS {
+                let named = line.contains(&format!("`{}`", d.as_str()));
+                assert_eq!(named, allowed.contains(&d), "{name}: {d:?} in {line:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn triage_may_answer_epic_and_says_when_not() {
+        let mut ctx = full_ctx();
+        ctx.epic_allowed = "no".into();
+        let out = render_prompt(JobKind::AgentTriage, &ctx);
+        assert!(Decision::allowed(JobKind::AgentTriage).contains(&Decision::Epic));
+        assert!(out.contains("Epics allowed for this item: `no`"));
+        assert!(!Decision::allowed(JobKind::AgentPlan).contains(&Decision::Epic));
+        let parsed = AgentOutput::from_job_output(
+            JobKind::AgentTriage,
+            &json!({ "summary": "```json\n{\"decision\":\"epic\",\"body\":\"big\"}\n```" }),
+        )
+        .unwrap();
+        assert_eq!(parsed.0, Decision::Epic);
+    }
+
+    #[test]
+    fn epic_plan_prompt_is_used_only_for_epics() {
+        let mut ctx = full_ctx();
+        ctx.max_subissues = "8".into();
+        let plain = render_prompt(JobKind::AgentPlan, &ctx);
+        assert!(!plain.contains("enzarb-subissues"));
+        ctx.epic = true;
+        let epic = render_prompt(JobKind::AgentPlan, &ctx);
+        assert!(epic.contains("enzarb-subissues") && epic.contains("at most 8"));
+        assert!(epic.contains("TITLE-X") && epic.contains("SUMMARY-X") && epic.contains("PLAN-X"));
+        for p in placeholders(PLAN_EPIC) {
+            assert!(ctx.lookup(&p).is_some(), "unknown {{{p}}}");
+            assert!(!epic.contains(&format!("{{{p}}}")), "{p} left");
+        }
+    }
+
+    fn plan_with(block: &str) -> String {
+        format!("## Summary\nsplit\n\n```enzarb-subissues\n{block}\n```\n\nReply with feedback.")
+    }
+
+    fn sub(key: &str, deps: &[&str]) -> String {
+        let deps = deps
+            .iter()
+            .map(|d| format!("\"{d}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "{{\"key\":\"{key}\",\"title\":\"T {key}\",\"body\":\"B\",\"depends_on\":[{deps}]}}"
+        )
+    }
+
+    #[test]
+    fn epic_plan_parses_and_orders_by_dependency() {
+        let block = format!(
+            "[{},{},{}]",
+            sub("ui", &["api"]),
+            sub("api", &[]),
+            sub("docs", &[])
+        );
+        let subs = parse_epic_plan(&plan_with(&block), 8).unwrap();
+        let keys: Vec<_> = subs.iter().map(|s| s.key.as_str()).collect();
+        // `ui` waits for `api`; `docs` keeps its place after it.
+        assert_eq!(keys, ["api", "ui", "docs"]);
+        assert_eq!(subs[1].depends_on, ["api"]);
+        assert_eq!(subs[0].title, "T api");
+    }
+
+    #[test]
+    fn epic_plan_uses_the_last_block() {
+        let first = plan_with(&format!("[{}]", sub("old", &[])));
+        let both = format!("{first}\n\n```enzarb-subissues\n[{}]\n```", sub("new", &[]));
+        assert_eq!(parse_epic_plan(&both, 8).unwrap()[0].key, "new");
+    }
+
+    #[test]
+    fn epic_plan_rejects_bad_lists() {
+        let cases: Vec<(String, EpicPlanError)> = vec![
+            ("no block".into(), EpicPlanError::NoBlock),
+            (plan_with("not json"), EpicPlanError::BadJson(String::new())),
+            (plan_with("[]"), EpicPlanError::Empty),
+            (
+                plan_with(&format!(
+                    "[{},{},{}]",
+                    sub("a", &[]),
+                    sub("b", &[]),
+                    sub("c", &[])
+                )),
+                EpicPlanError::TooMany { max: 2 },
+            ),
+            (
+                plan_with(&format!("[{}]", sub("Bad Key", &[]))),
+                EpicPlanError::BadKey("Bad Key".into()),
+            ),
+            (
+                plan_with(&format!("[{},{}]", sub("a", &[]), sub("a", &[]))),
+                EpicPlanError::DuplicateKey("a".into()),
+            ),
+            (
+                plan_with(r#"[{"key":"a","title":"  ","body":"x"}]"#),
+                EpicPlanError::EmptyTitle("a".into()),
+            ),
+            (
+                plan_with(&format!("[{}]", sub("a", &["zzz"]))),
+                EpicPlanError::UnknownDependency {
+                    key: "a".into(),
+                    depends_on: "zzz".into(),
+                },
+            ),
+            (
+                plan_with(&format!("[{}]", sub("a", &["a"]))),
+                EpicPlanError::Cycle("a".into()),
+            ),
+            (
+                plan_with(&format!("[{},{}]", sub("a", &["b"]), sub("b", &["a"]))),
+                EpicPlanError::Cycle("a".into()),
+            ),
+        ];
+        for (plan, want) in cases {
+            let got = parse_epic_plan(&plan, 2).unwrap_err();
+            match (&got, &want) {
+                (EpicPlanError::BadJson(_), EpicPlanError::BadJson(_)) => {}
+                _ => assert_eq!(got, want, "plan {plan:?}"),
+            }
+            assert!(!got.to_string().is_empty());
+        }
+    }
+
+    #[test]
+    fn epic_block_info_string_must_match_exactly() {
+        let plan = format!("```enzarb-subissues2\n[{}]\n```", sub("a", &[]));
+        assert_eq!(parse_epic_plan(&plan, 8), Err(EpicPlanError::NoBlock));
+        let quoted = format!("see ```enzarb-subissues\n[{}]\n```", sub("a", &[]));
+        assert_eq!(parse_epic_plan(&quoted, 8), Err(EpicPlanError::NoBlock));
     }
 }

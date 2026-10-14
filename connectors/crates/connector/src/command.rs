@@ -88,6 +88,14 @@ pub fn has_approve_command(body: &str) -> bool {
         .any(|l| l.trim().eq_ignore_ascii_case("/approve"))
 }
 
+/// True if a line of `body` is exactly `/epic` (surrounding whitespace and ASCII case
+/// ignored), outside code blocks and quotes. Asks enzarb to plan the issue as an epic.
+pub fn has_epic_command(body: &str) -> bool {
+    strip_code_and_quotes(body)
+        .lines()
+        .any(|l| l.trim().eq_ignore_ascii_case("/epic"))
+}
+
 fn is_handle_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '-' || c == '_'
 }
@@ -160,6 +168,28 @@ mod tests {
         for (body, want) in cases {
             assert_eq!(has_approve_command(body), *want, "body {body:?}");
         }
+    }
+
+    #[test]
+    fn epic_table() {
+        let cases: &[(&str, bool)] = &[
+            ("/epic", true),
+            ("  /Epic  ", true),
+            ("Too big.\n/epic\nThanks", true),
+            ("/epic please", false),
+            ("/epics", false),
+            ("epic", false),
+            ("> /epic", false),
+            ("`/epic`", false),
+            ("```\n/epic\n```", false),
+            ("```\n/epic\n```\n/epic", true),
+            ("", false),
+        ];
+        for (body, want) in cases {
+            assert_eq!(has_epic_command(body), *want, "body {body:?}");
+        }
+        assert!(!has_epic_command("/approve"));
+        assert!(!has_approve_command("/epic"));
     }
 
     #[test]

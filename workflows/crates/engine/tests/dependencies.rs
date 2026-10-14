@@ -256,6 +256,7 @@ fn comment_event(body: &str) -> engine::machine::EngineEvent {
         merged: None,
         review: None,
         ci: None,
+        label: None,
     };
     let ev = Event::new("github", "d1", EventType::CommentAdded, Utc::now(), data);
     engine::machine::EngineEvent::from_row("1", "CommentAdded", &serde_json::to_value(&ev).unwrap())

@@ -1899,3 +1899,181 @@ async fn remove_dependency_deletes_by_issue_id_and_ignores_missing() {
         .await
         .unwrap();
 }
+
+// ---- epics: create_issue and sub-issue links ----
+
+#[tokio::test]
+async fn create_issue_embeds_marker_and_labels() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/enzarb/enzarb-ui/issues"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([issue_json(7, false)])))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/enzarb/enzarb-ui/issues"))
+        .and(body_json(json!({
+            "title": "Part one",
+            "body": "Do it.\n\n<!-- enzarb:idem:epic-1-a -->",
+            "labels": ["enzarb"],
+        })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(issue_json(8, false)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let got = connector(&server)
+        .create_issue(
+            &repo(),
+            "Part one",
+            "Do it.",
+            &["enzarb".into()],
+            "epic-1-a",
+        )
+        .await
+        .unwrap();
+    assert_eq!(got, item(8));
+}
+
+#[tokio::test]
+async fn create_issue_is_idempotent_by_marker() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    let mut existing = issue_json(9, false);
+    existing["body"] = json!("Do it.\n\n<!-- enzarb:idem:epic-1-a -->");
+    // A pull request with the same text must not count.
+    let mut pr = issue_json(10, true);
+    pr["body"] = json!("<!-- enzarb:idem:epic-1-a -->");
+    Mock::given(method("GET"))
+        .and(path("/repos/enzarb/enzarb-ui/issues"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([pr, existing])))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/enzarb/enzarb-ui/issues"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(issue_json(11, false)))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let got = connector(&server)
+        .create_issue(&repo(), "Part one", "Do it.", &[], "epic-1-a")
+        .await
+        .unwrap();
+    assert_eq!(got, item(9));
+}
+
+async fn mount_child_id(server: &MockServer, n: u64, id: u64) {
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/enzarb/enzarb-ui/issues/{n}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": id, "number": n})))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn link_sub_issue_uses_the_native_endpoint() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    mount_child_id(&server, 8, 5008).await;
+    Mock::given(method("POST"))
+        .and(path("/repos/enzarb/enzarb-ui/issues/1/sub_issues"))
+        .and(body_json(json!({"sub_issue_id": 5008})))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 1})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    connector(&server)
+        .link_sub_issue(&item(1), &item(8))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn link_sub_issue_already_linked_is_ok() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    mount_child_id(&server, 8, 5008).await;
+    Mock::given(method("POST"))
+        .and(path("/repos/enzarb/enzarb-ui/issues/1/sub_issues"))
+        .respond_with(ResponseTemplate::new(422).set_body_json(json!({"message": "exists"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/enzarb/enzarb-ui/issues/1/sub_issues"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"number": 8}])))
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    connector(&server)
+        .link_sub_issue(&item(1), &item(8))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn link_sub_issue_falls_back_to_a_task_list() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    mount_child_id(&server, 8, 5008).await;
+    Mock::given(method("POST"))
+        .and(path("/repos/enzarb/enzarb-ui/issues/1/sub_issues"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "Not Found"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/enzarb/enzarb-ui/issues/1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 5001, "number": 1,
+            "body": "Epic.\n\n<!-- enzarb:subissues:start -->\n- [ ] #7\n<!-- enzarb:subissues:end -->",
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/enzarb/enzarb-ui/issues/1"))
+        .and(body_json(json!({
+            "body": "Epic.\n\n<!-- enzarb:subissues:start -->\n- [ ] #7\n- [ ] #8\n<!-- enzarb:subissues:end -->",
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"number": 1})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    connector(&server)
+        .link_sub_issue(&item(1), &item(8))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn task_list_fallback_is_idempotent() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    mount_child_id(&server, 8, 5008).await;
+    Mock::given(method("POST"))
+        .and(path("/repos/enzarb/enzarb-ui/issues/1/sub_issues"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/enzarb/enzarb-ui/issues/1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 5001, "number": 1,
+            "body": "<!-- enzarb:subissues:start -->\n- [ ] #8\n<!-- enzarb:subissues:end -->",
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    connector(&server)
+        .link_sub_issue(&item(1), &item(8))
+        .await
+        .unwrap();
+}

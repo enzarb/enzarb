@@ -90,14 +90,30 @@ stateDiagram-v2
   AwaitingApproval --> Implementing: ApprovalGranted (write access)
   Implementing --> ChangeRequestOpened: job done, PR opened
   ChangeRequestOpened --> Done: spawns change_request workflow
+  Triaging --> Planning: job done, epic (too big for one PR)
+  AwaitingApproval --> Decomposing: ApprovalGranted (epic breakdown)
+  Decomposing --> AwaitingChildren: create_sub_issues done
+  AwaitingChildren --> Done: all sub-issues Done
   Triaging --> Failed: JobFailed
   Implementing --> Failed: JobFailed
+  Decomposing --> Failed: JobFailed
   Duplicate --> [*]
   Done --> [*]
   note right of AwaitingApproval
     Any state: WorkItemClosed → Cancelled (cancels jobs)
   end note
 ```
+
+#### Epics
+
+An issue that is too big for one pull request is broken into sub-issues instead of being implemented (docs/adr/0018-epics.md).
+
+- **Triggers.** Triage answers `epic`; or someone with write access comments `/epic` on its own line, or adds the `epic` label (the connector reports it as `WorkItemLabeled` with `data.label = "epic"`). `/epic` and the label are accepted in `Triaging`, `AwaitingAnswers` and `Stale` (remembered: `IssueData.epic`, the plan is then a breakdown) and in `AwaitingApproval` (the plan is rewritten as a breakdown). From anyone else they do nothing: the label is rejected and `/epic` is an ordinary comment.
+- **Breakdown.** Planning an epic uses `plan_epic.md`. The plan body ends its **Sub-issues** list with one fenced block whose info string is `enzarb-subissues`: a JSON array of `{key, title, body, depends_on: [key]}`. The engine validates it (`parse_epic_plan`): at most `Config::max_epic_children` (default 8) entries, unique `[a-z0-9_-]{1,32}` keys, non-empty titles, `depends_on` naming other entries, no cycle. An invalid list fails the plan step (retry from the UI) and nothing is created. The list is stored in creation order (`IssueData.sub_issues`).
+- **Approval.** `/approve` (or the UI button) moves the epic to `Decomposing` and queues one `create_sub_issues` job `{item, depth, sub_issues}`. It never starts `Implementing` and the epic never opens a change request.
+- **Creation.** For each entry, in order, the connector creates an issue whose body is the plan's text, `Part of the epic #N.`, `Blocked by #X` for each dependency (parsed as text dependencies like any other), and the hidden markers `<!-- enzarb:epic=<epic key>:<key> -->` and `<!-- enzarb:epic-depth=<n> -->`. The idempotency key is `epic-<epic key>-<key>`; the GitHub connector looks for an existing issue carrying it before creating, so a retried job or replayed event makes no duplicates. Then each is linked as a sub-issue (`Connector::link_sub_issue`: GitHub's sub-issues API, else a task list in a managed section of the parent's body), native "blocked by" relationships are added best-effort, and the job records the structure in `work_item_dependencies` with source `epic` (the epic waits for each sub-issue; a sub-issue waits for what it is ordered after). A failure part-way fails the job; **retry** (the `Failed` item's retry action) runs it again and resumes through the markers.
+- **Sub-issues are normal issues.** enzarb opens them, so the receiver lets that one bot event through and the engine accepts it only if the marker names a parent that is in the same repository and Project, is `Decomposing` or `AwaitingChildren`, whose approved plan lists that key, and the actor is enzarb's own login. The depth comes from the stored parent (`epic_depth + 1`), not from the body. Each sub-issue is then triaged, planned and approved like any other issue: nothing is implemented without a human `/approve`. `Config::max_epic_depth` (default 1) is the depth at which an issue can no longer be an epic: triage's `epic` becomes `ready` and `/epic` and the label are rejected there.
+- **Waiting.** In `AwaitingChildren` the epic is blocked by its sub-issues. The ticker's dependency sweep sends `DependenciesChanged` when the open set changes; the machine stores it (`IssueData.open_dependencies`). When none is left the epic is `Done` with a summary comment. If every remaining sub-issue was closed without completing, the epic comments once and waits; a maintainer can reopen or replace them, or `/approve` to close the epic as it is. Cancelling or closing the epic cancels only the epic: sub-issues stay open. "Done" for a sub-issue is the same as for any issue (its change request was opened), not merged.
 
 ### `change_request`
 Starts for every opened PR/MR, whether the agent opened it or not.
