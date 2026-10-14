@@ -10,8 +10,7 @@
 
 	const items = [
 		{ href: '/projects', label: 'Projects' },
-		{ href: '/work', label: 'Work items' },
-		{ href: '/settings', label: 'Settings' }
+		{ href: '/work', label: 'Work items' }
 	];
 </script>
 
