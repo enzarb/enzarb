@@ -165,6 +165,9 @@ pub struct CrData {
     pub merge_requested: bool,
     /// Who clicked merge; recorded on the merge comment.
     pub merge_actor: String,
+    /// The user asked to delete the head branch after the merge.
+    #[serde(default)]
+    pub merge_delete_branch: bool,
     /// Dependencies that are not done yet, as the reducer last read them. Refreshed from
     /// [`Ctx::open_dependencies`] on every event; kept here so the views can show it.
     pub open_dependencies: Vec<OpenDependency>,
@@ -621,7 +624,8 @@ fn evaluate(mut fx: Fx, from: CrPhase, mut d: CrData, note: &str, allow_check: b
         if d.merge_requested {
             // The user already asked for this merge: no second click.
             let title = squash_title(&d.title, &d.head_ref);
-            fx.merge_change_request(d.number, &title, &d.head_sha, &d.merge_actor);
+            let delete = d.merge_delete_branch.then_some(d.head_ref.as_str());
+            fx.merge_change_request(d.number, &title, &d.head_sha, &d.merge_actor, delete);
             return Transition::to(st(CrPhase::Merging, d), fx.finish(), "merge resumed");
         }
         return Transition::to(st(CrPhase::ReadyToMerge, d), fx.finish(), "ready to merge");
@@ -952,7 +956,17 @@ fn step_event(ctx: &Ctx, s: &CrState, ev: &EngineEvent) -> Transition {
             UiActionKind::RepoRemoved => finish(ctx, ev, s, Cancelled, None).repo_removed(),
             UiActionKind::Retry => retry(ctx, ev, s, &state),
             UiActionKind::Approve => approve_command(ctx, ev, s, &state),
-            UiActionKind::Merge => merge(ctx, ev, s, &state, &u.actor.login),
+            UiActionKind::Merge => merge(
+                ctx,
+                ev,
+                s,
+                &state,
+                &u.actor.login,
+                u.data.get("delete_branch").and_then(Value::as_bool) == Some(true),
+            ),
+            UiActionKind::Comment => {
+                Transition::reject(&state, "comments from the UI are for issues")
+            }
         },
         EventPayload::JobSucceeded { kind, output, .. } => {
             job_succeeded(ctx, ev, s, &state, *kind, output)
@@ -1118,6 +1132,7 @@ fn updated(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowState) -> T
                 // The branch update's own commit: the merge request stays.
                 d.merge_requested = s.data.merge_requested;
                 d.merge_actor = s.data.merge_actor.clone();
+                d.merge_delete_branch = s.data.merge_delete_branch;
             }
             // A review already running is for an older commit: restart it.
             let mut t = begin(ctx, ev, Reviewing, d, "new commits");
@@ -1388,6 +1403,7 @@ fn merge(
     s: &CrState,
     state: &WorkflowState,
     actor: &str,
+    delete_branch: bool,
 ) -> Transition {
     if !ctx.can_write() {
         return Transition::reject(state, "merge requires write access");
@@ -1398,9 +1414,11 @@ fn merge(
     let mut d = s.data.clone();
     d.merge_requested = true;
     d.merge_actor = actor.to_string();
+    d.merge_delete_branch = delete_branch;
     let title = squash_title(&d.title, &d.head_ref);
     let mut fx = Fx::new(ctx, ev);
-    fx.merge_change_request(d.number, &title, &d.head_sha, actor);
+    let delete = delete_branch.then_some(d.head_ref.as_str());
+    fx.merge_change_request(d.number, &title, &d.head_sha, actor, delete);
     Transition::to(st(CrPhase::Merging, d), fx.finish(), "merge requested")
 }
 
@@ -1422,7 +1440,12 @@ fn merge_finished(ctx: &Ctx, ev: &EngineEvent, s: &CrState, output: &Value) -> T
             // Nothing left to address once merged.
             d.pending = None;
             d.merge_requested = false;
-            Transition::to(st(CrPhase::Merged, d), fx.finish(), "merged")
+            // What became of the branch the user asked to delete; never a reason to fail a merge.
+            let note = match text("branch") {
+                "" => "merged".to_string(),
+                branch => format!("merged; {branch}"),
+            };
+            Transition::to(st(CrPhase::Merged, d), fx.finish(), note)
         }
         "head_moved" => {
             d.merge_error = "the branch changed while merging; reviewing the new commits".into();

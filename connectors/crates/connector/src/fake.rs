@@ -121,6 +121,7 @@ struct State {
     seen_creds: HashMap<String, ShortLivedCred>,
     next_id: u64,
     fail_next: Option<Error>,
+    fail_delete_branch: Option<Error>,
     merge_outcomes: VecDeque<MergeOutcome>,
     seen_merges: HashMap<String, MergeOutcome>,
     readiness: HashMap<WorkItemKey, MergeReadiness>,
@@ -193,6 +194,11 @@ impl FakeConnector {
     /// Make the next call (any method) fail with `error`, once.
     pub fn fail_next(&self, error: Error) {
         self.st().fail_next = Some(error);
+    }
+
+    /// Make the next `delete_branch` call fail with `error`, once; other calls are unaffected.
+    pub fn fail_delete_branch(&self, error: Error) {
+        self.st().fail_delete_branch = Some(error);
     }
 
     /// Every call so far, in order.
@@ -530,6 +536,10 @@ impl Connector for FakeConnector {
             idempotency_key: idempotency_key.to_string(),
         };
         Self::take_failure(&mut st, call.clone())?;
+        if let Some(e) = st.fail_delete_branch.take() {
+            Self::record(&mut st, call, false);
+            return Err(e);
+        }
         // Deleting a branch that is not there succeeds, like the provider's already-gone answer.
         st.branch_heads.remove(&(repo.clone(), branch.to_string()));
         let replayed = !st

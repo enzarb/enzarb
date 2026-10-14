@@ -137,6 +137,39 @@ async fn submit_action_creates_ui_event() {
             .unwrap();
         assert_eq!(t, ty);
     }
+    // A comment carries its text; the body is required and capped.
+    let id: i64 = sqlx::query_scalar("SELECT workflows_api.submit_action($1, $2, 'comment', $3)")
+        .bind(wi)
+        .bind(json!({"login": "ruckc"}))
+        .bind(json!({"body": "use CSS vars"}))
+        .fetch_one(&ui)
+        .await
+        .unwrap();
+    let (t, payload): (String, serde_json::Value) =
+        sqlx::query_as("SELECT type, payload FROM workflows.events WHERE id = $1")
+            .bind(id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(t, "CommentAdded");
+    assert_eq!(payload["action"], "comment");
+    assert_eq!(payload["data"]["body"], "use CSS vars");
+    for bad in [
+        json!({}),
+        json!({"body": "   "}),
+        json!({"body": 3}),
+        json!({"body": "x".repeat(20001)}),
+    ] {
+        assert!(
+            sqlx::query("SELECT workflows_api.submit_action($1, '{}', 'comment', $2)")
+                .bind(wi)
+                .bind(&bad)
+                .execute(&ui)
+                .await
+                .is_err(),
+            "{bad}"
+        );
+    }
     // Bad action and unknown work item are rejected.
     assert!(
         sqlx::query("SELECT workflows_api.submit_action($1, '{}', 'nuke', '{}')")
