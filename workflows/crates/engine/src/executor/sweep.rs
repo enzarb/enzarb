@@ -10,7 +10,7 @@ use super::session_limit::LimitOutcome;
 use super::{Executor, JobError};
 use crate::error::Error;
 use crate::machine::AgentJobInput;
-use crate::results::{JobResult, ingest_job_result};
+use crate::results::{JobResult, ingest_job_result, record_job_usage};
 
 /// What the sandbox said about a run past its deadline.
 enum Asked {
@@ -152,6 +152,14 @@ impl Executor {
         let session = self.dial(project).await?;
         let rid = current_run_id(job_id, waits, recovery_used(input));
         let status = tokio::time::timeout(self.cfg.sandbox_timeout, session.run_status(&rid)).await;
+        // A finished run's usage counts even though its callback never arrived (once per run).
+        if let Ok(Ok(info)) = &status
+            && info.state.is_terminal()
+            && let Some(usage) = &info.usage
+            && let Err(e) = record_job_usage(&self.pool, job_id, &rid, usage).await
+        {
+            tracing::warn!(job_id, error = %e, "run_status: recording usage failed");
+        }
         let result = match status {
             Err(_) => Err(JobError::transient("run_status timed out")),
             Ok(Err(SessionError::Remote { code, .. })) if code == "unknown_run" => Ok(

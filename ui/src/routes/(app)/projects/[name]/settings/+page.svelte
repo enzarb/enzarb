@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import Button from '#lib/components/form/Button.svelte';
 	import ConfirmDialog from '#lib/components/ui/ConfirmDialog.svelte';
+	import DisplayNameForm from '#lib/components/DisplayNameForm.svelte';
 	import Notice from '#lib/components/ui/Notice.svelte';
 	import RepositoriesForm from '#lib/components/RepositoriesForm.svelte';
 	import SandboxForm from '#lib/components/SandboxForm.svelte';
@@ -11,6 +12,7 @@
 	import {
 		deleteProject,
 		repositoryChoices,
+		setDisplayName,
 		setMaxRuns,
 		setRepositories,
 		setSandboxResources
@@ -50,6 +52,16 @@
 				}}
 			/>
 		{/key}
+	</Section>
+
+	<Section title="Display name">
+		<DisplayNameForm
+			project={p}
+			save={async (displayName) => {
+				const r = await setDisplayName({ name: p.name, displayName });
+				return r.ok ? { ok: true } : { ok: false, message: r.message };
+			}}
+		/>
 	</Section>
 
 	<Section title="Repositories">

@@ -104,6 +104,36 @@ describe('workService against workflows_api', () => {
 		expect(d.jobs[1].outputHtml).toBeNull();
 	});
 
+	it('exposes per-job usage and per-item totals; unknown stays null', async () => {
+		const svc = workService(sql, ['web']);
+		const before = await svc.get(mine);
+		expect(before!.usage).toBeNull();
+		expect(before!.jobs.every((j) => j.usage === null)).toBe(true);
+
+		await sql`
+			UPDATE workflows.jobs
+			SET usage = ${sql.json({ input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 900, models: ['m1'], cost_usd: 0.25 })}
+			WHERE work_item_id = ${mine} AND kind = 'agent_triage'`;
+		const detail = await svc.get(mine);
+		expect(detail!.jobs.find((j) => j.kind === 'agent_triage')!.usage).toEqual({
+			inputTokens: 100,
+			outputTokens: 10,
+			cacheReadTokens: 900,
+			cacheWriteTokens: null,
+			models: ['m1'],
+			costUsd: 0.25
+		});
+		expect(detail!.jobs.find((j) => j.kind === 'agent_plan')!.usage).toBeNull();
+		expect(detail!.usage).toMatchObject({
+			inputTokens: 100,
+			costUsd: 0.25,
+			cacheWriteTokens: null
+		});
+		const listed = await svc.list('web');
+		expect(listed.find((i) => i.id === mine)!.usage?.inputTokens).toBe(100);
+		expect(listed.find((i) => i.id === approval)!.usage).toBeNull();
+	});
+
 	it('hides other owners’ items', async () => {
 		const svc = workService(sql, ['web']);
 		expect(await svc.get(theirs)).toBeNull();

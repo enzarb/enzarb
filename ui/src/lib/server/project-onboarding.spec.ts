@@ -4,6 +4,7 @@ import { KubeError, type ProjectStore } from './kube.ts';
 import {
 	createProjects,
 	repositoryChoices,
+	setDisplayName,
 	setRepositories,
 	snapshotProblem
 } from './project-onboarding.ts';
@@ -361,6 +362,36 @@ describe('repositoryChoices', () => {
 		expect(repositoryChoices(snap(hoursAgo(48)), [], 'alice', NOW).problem?.code).toBe(
 			'stale-snapshot'
 		);
+	});
+});
+
+describe('setDisplayName', () => {
+	const rename = (store: ProjectStore, input: string, owner = 'alice', name = 'p') =>
+		setDisplayName({ store, owner }, name, input);
+
+	it('trims and patches only displayName', async () => {
+		const store = fakeStore([project('p', 'alice', [])]);
+		expect(await rename(store, '  New name  ')).toEqual({ ok: true, displayName: 'New name' });
+		expect(store.update).toHaveBeenCalledWith('p', { displayName: 'New name' });
+	});
+
+	it('rejects empty, whitespace-only and over-long names; accepts exactly 100', async () => {
+		const store = fakeStore([project('p', 'alice', [])]);
+		expect(await rename(store, '')).toMatchObject({ ok: false, code: 'invalid' });
+		expect(await rename(store, '   ')).toMatchObject({ ok: false, code: 'invalid' });
+		expect(await rename(store, 'x'.repeat(101))).toMatchObject({ ok: false, code: 'invalid' });
+		expect(store.update).not.toHaveBeenCalled();
+		expect((await rename(store, 'x'.repeat(100))).ok).toBe(true);
+	});
+
+	it('returns not-found for non-owners and unknown projects without updating', async () => {
+		const store = fakeStore([project('p', 'alice', [])]);
+		expect(await rename(store, 'N', 'mallory')).toMatchObject({ ok: false, code: 'not-found' });
+		expect(await rename(store, 'N', 'alice', 'nope')).toMatchObject({
+			ok: false,
+			code: 'not-found'
+		});
+		expect(store.update).not.toHaveBeenCalled();
 	});
 });
 
