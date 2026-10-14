@@ -35,6 +35,11 @@ describe('needs-you classification', () => {
 			category: 'blocked',
 			reason: 'Changes requested'
 		});
+		expect(classifyNeedsYou(cr('ConflictParked'))).toEqual({
+			category: 'blocked',
+			reason: 'Conflict could not be resolved automatically'
+		});
+		expect(stateTone('ConflictParked')).toBe('waiting');
 		expect(
 			classifyNeedsYou(cr('Reviewing', { checklist: { ci: { status: 'failed', detail: 'red' } } }))
 		).toEqual({ category: 'blocked', reason: 'CI: red' });

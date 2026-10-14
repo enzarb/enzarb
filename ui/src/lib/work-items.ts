@@ -147,6 +147,7 @@ export function stateTone(state: string): StateTone {
 		state === 'AwaitingApproval' ||
 		state === 'AwaitingAnswers' ||
 		state === 'AwaitingChanges' ||
+		state === 'ConflictParked' ||
 		state === 'Stale'
 	)
 		return 'waiting';
@@ -272,6 +273,8 @@ export function classifyNeedsYou(item: {
 		return { category: 'approval', reason: null };
 	if (workflow !== 'change_request') return null;
 	if (actions.includes('merge')) return { category: 'merge', reason: null };
+	if (state === 'ConflictParked')
+		return { category: 'blocked', reason: 'Conflict could not be resolved automatically' };
 	if (state === 'AwaitingChanges' || failedChecks(stateData).length > 0)
 		return { category: 'blocked', reason: blockedReason(stateData) ?? 'Changes requested' };
 	return null;
