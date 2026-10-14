@@ -10,4 +10,16 @@ describe('UserMenu', () => {
 		await expect.element(page.getByRole('menuitem', { name: 'Sign out' })).toBeVisible();
 		await expect.element(page.getByRole('group', { name: 'Theme' })).toBeVisible();
 	});
+
+	it('links to Settings before Sign out', async () => {
+		render(UserMenu, { login: 'ruckc', name: 'Curtis', avatarUrl: null });
+		await page.getByRole('button', { name: /Account menu/ }).click();
+		const settings = page.getByRole('menuitem', { name: 'Settings' });
+		await expect.element(settings).toHaveAttribute('href', '/settings');
+		const labels = Array.from(document.querySelectorAll('[role="menuitem"]')).map((el) =>
+			el.textContent?.trim()
+		);
+		expect(labels.indexOf('Settings')).toBeGreaterThanOrEqual(0);
+		expect(labels.indexOf('Settings')).toBeLessThan(labels.indexOf('Sign out'));
+	});
 });

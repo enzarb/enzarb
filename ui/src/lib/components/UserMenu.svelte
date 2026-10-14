@@ -28,6 +28,8 @@
 			]
 		},
 		{ type: 'separator' },
+		{ type: 'item', label: 'Settings', icon: 'settings', href: '/settings' },
+		{ type: 'separator' },
 		{ type: 'item', label: 'Sign out', icon: 'logout', onselect: () => logout?.requestSubmit() }
 	]}
 >
@@ -45,6 +47,7 @@
 <form bind:this={logout} method="POST" action="/logout" hidden></form>
 <!-- Without JavaScript the menu cannot open, so offer a plain sign-out form. -->
 <noscript>
+	<a class="ez-btn ez-btn--secondary ez-btn--sm" href="/settings">Settings</a>
 	<form method="POST" action="/logout">
 		<button class="ez-btn ez-btn--secondary ez-btn--sm" type="submit">Sign out</button>
 	</form>
