@@ -26,6 +26,33 @@ describe('parseConfig', () => {
 		});
 	});
 
+	describe('GitHub App credentials', () => {
+		const pem = '-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----';
+		it('are optional and unset by default', () => {
+			const c = parseConfig(valid);
+			expect(c.githubAppId).toBeUndefined();
+			expect(c.githubAppPrivateKey).toBeUndefined();
+		});
+		it('accept an \\n-escaped PEM', () => {
+			const c = parseConfig({
+				...valid,
+				ENZARB_GITHUB_APP_ID: ' 123 ',
+				ENZARB_GITHUB_APP_PRIVATE_KEY: pem.replaceAll('\n', '\\n')
+			});
+			expect(c.githubAppId).toBe('123');
+			expect(c.githubAppPrivateKey).toBe(pem);
+		});
+		it('treat a malformed value as unset without throwing', () => {
+			const c = parseConfig({
+				...valid,
+				ENZARB_GITHUB_APP_ID: '123',
+				ENZARB_GITHUB_APP_PRIVATE_KEY: 'garbage'
+			});
+			expect(c.githubAppId).toBeUndefined();
+			expect(c.githubAppPrivateKey).toBeUndefined();
+		});
+	});
+
 	describe('ENZARB_COMPONENT_VERSIONS', () => {
 		const parse = (v?: string) =>
 			parseConfig({ ...valid, ENZARB_COMPONENT_VERSIONS: v }).componentVersions;
