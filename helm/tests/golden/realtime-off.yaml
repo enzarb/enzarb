@@ -590,6 +590,10 @@ rules:
     resources: [helmcharts]
     resourceNames: [enzarb]
     verbs: [get, patch]
+  - apiGroups: [batch]
+    resources: [jobs]
+    resourceNames: [helm-install-enzarb]
+    verbs: [get]
 
 ---
 # Source: enzarb/templates/rbac.yaml

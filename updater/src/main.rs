@@ -6,6 +6,7 @@ use enzarb_updater::{
     charts::KubeCharts,
     poll::{self, PollHealth},
     registry::OciRegistry,
+    rollout,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -52,7 +53,16 @@ async fn main() -> Result<()> {
         registry: Arc::new(OciRegistry::new(&chart, token)?),
         charts: Arc::new(KubeCharts::new(client, &ns, &name)),
         lock: Default::default(),
+        status: Default::default(),
     };
+    // Visibility only (cached for /status, logs a failing upgrade); its death must not take the
+    // webhook or poller down.
+    tokio::spawn(rollout::run(
+        state.registry.clone(),
+        state.charts.clone(),
+        state.status.clone(),
+        Duration::from_secs(60),
+    ));
     if let Some(health) = health {
         // If the poller ever dies, exit so the pod restarts instead of silently never updating.
         let task = tokio::spawn(poll::run(

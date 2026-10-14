@@ -32,6 +32,7 @@ Run each component's checks from inside its directory.
 - **Run the checks of every component you touch** from inside its directory before calling a change done.
 - **Shared contracts:** the `proto/` frames and the `workflows_api` / `app_api` Postgres schemas. Make additive changes, or add a new versioned object; never break a consumer silently (deployed components roll out independently).
 - **Cross-component deps are path deps** (`path = "../proto/crates/..."` in Cargo, `file:../proto` in `ui/package.json`). Docker builds for components with path deps (`ui`, `sandbox-proxy`, `sandbox-container`, `workflows`) use the repo root as context: `docker build -f <dir>/Dockerfile .`.
+- **Helm values:** never remove a values key in one release; deprecate it as an accepted, ignored key first (`docs/ci.md`, "Values compatibility"; `mise run compat` in `helm/` enforces it).
 - **Releases:** PRs squash-merge with a Conventional Commit title (`feat(ui): …`, `fix(workflows): …`). Each component releases independently with tags `<dir>/vX.Y.Z` (e.g. `ui/v0.4.1`, `helm/v0.9.0`); image names are unchanged (`ghcr.io/enzarb/enzarb-ui`, …).
 - **Dockerfiles** live in the directory of the component they build.
 - **CI** follows `docs/ci.md`: per-component path-filtered jobs, rust-cache/npm/Playwright caches, cargo-chef + GHA layer cache, docker push on main.

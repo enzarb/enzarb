@@ -121,6 +121,9 @@ mod tests {
             self.set.lock().unwrap().push(v.into());
             Ok(())
         }
+        async fn rollout(&self) -> Result<crate::rollout::Rollout> {
+            Ok(Default::default())
+        }
     }
 
     fn tags(t: &[&str]) -> Result<Vec<String>, String> {

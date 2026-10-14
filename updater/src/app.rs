@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::{
-    Router,
+    Json, Router,
     body::Bytes,
     extract::State,
     http::{HeaderMap, StatusCode},
@@ -13,6 +13,7 @@ use crate::{
     filter::{self, Filtered, ReleaseEvent},
     poll::PollHealth,
     registry::Registry,
+    rollout::{Status, StatusCache},
     signature,
     update::{self, Outcome},
 };
@@ -27,12 +28,15 @@ pub struct AppState {
     pub charts: Arc<dyn Charts>,
     /// Serializes read-compare-apply so concurrent deliveries cannot apply out of order.
     pub lock: Arc<tokio::sync::Mutex<()>>,
+    /// Chart rollout status, refreshed in the background; `/status` serves it from here.
+    pub status: Arc<StatusCache>,
 }
 
 pub fn router(state: AppState) -> Router {
     let mut r = Router::new()
         .route("/healthz", get(|| async { "ok" }))
-        .route("/readyz", get(readyz));
+        .route("/readyz", get(readyz))
+        .route("/status", get(chart_status));
     if state.secret.is_some() {
         r = r.route("/hook", post(hook));
     }
@@ -104,6 +108,10 @@ async fn hook(
     }
 }
 
+async fn chart_status(State(st): State<AppState>) -> Json<Status> {
+    Json(st.status.get())
+}
+
 async fn readyz(State(st): State<AppState>) -> (StatusCode, &'static str) {
     match &st.poll {
         Some(h) if !h.ok() => (StatusCode::SERVICE_UNAVAILABLE, "last poll failed"),
@@ -149,6 +157,9 @@ mod tests {
             self.set.lock().unwrap().push(v.into());
             Ok(())
         }
+        async fn rollout(&self) -> Result<crate::rollout::Rollout> {
+            Err(anyhow!("no cluster"))
+        }
     }
 
     fn payload(action: &str, repo: &str, tag: &str) -> Vec<u8> {
@@ -178,6 +189,7 @@ mod tests {
             registry: Arc::new(FakeRegistry(reg)),
             charts: charts.clone(),
             lock: Default::default(),
+            status: Default::default(),
         });
         let sig = sig.unwrap_or_else(|| sign(SECRET, &body));
         let req = Request::post("/hook")
@@ -320,7 +332,48 @@ mod tests {
                 set: Mutex::new(vec![]),
             }),
             lock: Default::default(),
+            status: Default::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn healthz_is_ok_text_even_when_registry_and_charts_fail() {
+        let mut st = state(None, None);
+        st.registry = Arc::new(FakeRegistry(Err("down".into())));
+        let app = router(st);
+        let req = Request::get("/healthz").body(Body::empty()).unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), 1024).await.unwrap();
+        assert_eq!(&body[..], b"ok");
+    }
+
+    #[tokio::test]
+    async fn status_serves_the_cached_rollout_as_json() {
+        let st = state(None, None);
+        let req = || Request::get("/status").body(Body::empty()).unwrap();
+        let json = |res: axum::response::Response| async move {
+            let b = axum::body::to_bytes(res.into_body(), 4096).await.unwrap();
+            serde_json::from_slice::<serde_json::Value>(&b).unwrap()
+        };
+        // before the first refresh: all null, not stuck
+        let res = router(st.clone()).oneshot(req()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            json(res).await,
+            serde_json::json!({"installed": null, "desired": null, "latest": null, "stuck": false})
+        );
+        st.status.set_for_test(Status {
+            installed: Some("0.9.0".into()),
+            desired: Some("0.10.0".into()),
+            latest: Some("0.10.0".into()),
+            stuck: true,
+        });
+        let res = router(st).oneshot(req()).await.unwrap();
+        assert_eq!(
+            json(res).await,
+            serde_json::json!({"installed": "0.9.0", "desired": "0.10.0", "latest": "0.10.0", "stuck": true})
+        );
     }
 
     #[tokio::test]
