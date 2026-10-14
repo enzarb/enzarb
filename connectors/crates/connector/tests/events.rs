@@ -153,7 +153,9 @@ fn ci_optional_fields_and_old_payloads() {
 
 #[test]
 fn ci_event_type_registered() {
-    assert_eq!(EventType::ALL.len(), 9);
+    assert_eq!(EventType::ALL.len(), 10);
+    assert!(EventType::ALL.contains(&EventType::WorkItemLabeled));
+    assert_eq!(EventType::WorkItemLabeled.as_str(), "WorkItemLabeled");
     assert!(EventType::ALL.contains(&EventType::CiStatusChanged));
     assert_eq!(EventType::CiStatusChanged.as_str(), "CiStatusChanged");
     assert_eq!(

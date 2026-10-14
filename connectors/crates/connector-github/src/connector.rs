@@ -25,6 +25,11 @@ use crate::normalize::{
 const TOKEN_REFRESH_MARGIN: Duration = Duration::minutes(5);
 const PER_PAGE: usize = 100;
 const MAX_PAGES: usize = 200;
+/// Pages of recent issues searched for an idempotency marker before creating an issue.
+const MARKER_SCAN_PAGES: usize = 5;
+/// Delimiters of the task list that stands in for native sub-issues in a parent's body.
+const TASKS_START: &str = "<!-- enzarb:subissues:start -->";
+const TASKS_END: &str = "<!-- enzarb:subissues:end -->";
 
 #[derive(Serialize)]
 struct AppClaims {
@@ -80,6 +85,30 @@ fn idem_marker(key: &str) -> Result<String> {
         return Err(Error::Invalid(format!("bad idempotency key {key:?}")));
     }
     Ok(format!("<!-- enzarb:idem:{key} -->"))
+}
+
+/// `body` with `line` in its managed task list, or `None` when the list already has it. The
+/// section is created at the end of the body when missing.
+fn with_task(body: &str, line: &str) -> Option<String> {
+    if let (Some(s), Some(e)) = (body.find(TASKS_START), body.find(TASKS_END))
+        && s < e
+    {
+        let inner = &body[s + TASKS_START.len()..e];
+        if inner.lines().any(|l| l.trim() == line) {
+            return None;
+        }
+        let inner = inner.trim_end_matches('\n');
+        return Some(format!(
+            "{}{inner}\n{line}\n{}",
+            &body[..s + TASKS_START.len()],
+            &body[e..]
+        ));
+    }
+    let sep = if body.trim().is_empty() { "" } else { "\n\n" };
+    Some(format!(
+        "{}{sep}{TASKS_START}\n{line}\n{TASKS_END}",
+        body.trim_end()
+    ))
 }
 
 fn reaction_content(p: Progress) -> &'static str {
@@ -390,6 +419,70 @@ impl GitHubConnector {
             .await?
             .json()?;
         Ok(prs.into_iter().next())
+    }
+
+    /// The number of the most recently created issue (not pull request) whose body carries
+    /// `marker`. Scans the newest [`MARKER_SCAN_PAGES`] pages of the repository's issues:
+    /// the issue list is consistent right after a create, unlike the search index.
+    async fn find_idem_issue(&self, repo: &RepoKey, marker: &str) -> Result<Option<u64>> {
+        #[derive(Deserialize)]
+        struct Row {
+            number: u64,
+            #[serde(default)]
+            body: Option<String>,
+            #[serde(default)]
+            pull_request: Option<Value>,
+        }
+        for page in 1..=MARKER_SCAN_PAGES {
+            let path = format!(
+                "/repos/{}/issues?state=all&sort=created&direction=desc&per_page={PER_PAGE}&page={page}",
+                repo.full_name()
+            );
+            let rows: Vec<Row> = self
+                .call(repo, "list issues", Method::GET, &path, None)
+                .await?
+                .json()?;
+            let n = rows.len();
+            if let Some(r) = rows.into_iter().find(|r| {
+                r.pull_request.is_none() && r.body.as_deref().is_some_and(|b| b.contains(marker))
+            }) {
+                return Ok(Some(r.number));
+            }
+            if n < PER_PAGE {
+                break;
+            }
+        }
+        Ok(None)
+    }
+
+    /// Fallback link: list `child` as `- [ ] #N` in the managed task list of `parent`'s body.
+    /// The list sits between [`TASKS_START`] and [`TASKS_END`], so repeating this changes
+    /// nothing and the section can be updated in place.
+    async fn append_task_list(&self, parent: &WorkItemKey, child: &WorkItemKey) -> Result<()> {
+        #[derive(Deserialize)]
+        struct Body {
+            #[serde(default)]
+            body: Option<String>,
+        }
+        let r = &parent.repo;
+        let path = format!("/repos/{}/issues/{}", r.full_name(), parent.number);
+        let current: Body = self
+            .call(r, "get issue", Method::GET, &path, None)
+            .await?
+            .json()?;
+        let line = format!("- [ ] #{}", child.number);
+        let Some(body) = with_task(current.body.as_deref().unwrap_or(""), &line) else {
+            return Ok(());
+        };
+        self.call(
+            r,
+            "update issue body",
+            Method::PATCH,
+            &path,
+            Some(json!({ "body": body })),
+        )
+        .await?;
+        Ok(())
     }
 
     async fn find_idem_comment(
@@ -942,6 +1035,86 @@ impl Connector for GitHubConnector {
         }
     }
 
+    async fn create_issue(
+        &self,
+        repo: &RepoKey,
+        title: &str,
+        body: &str,
+        labels: &[String],
+        idempotency_key: &str,
+    ) -> Result<WorkItemKey> {
+        #[derive(Deserialize)]
+        struct Created {
+            number: u64,
+        }
+        github_repo(repo)?;
+        let marker = idem_marker(idempotency_key)?;
+        if let Some(number) = self.find_idem_issue(repo, &marker).await? {
+            return Ok(WorkItemKey::new(repo.clone(), number));
+        }
+        let resp = self
+            .call(
+                repo,
+                "create issue",
+                Method::POST,
+                &format!("/repos/{}/issues", repo.full_name()),
+                Some(json!({
+                    "title": title,
+                    "body": format!("{body}\n\n{marker}"),
+                    "labels": labels,
+                })),
+            )
+            .await?;
+        Ok(WorkItemKey::new(
+            repo.clone(),
+            resp.json::<Created>()?.number,
+        ))
+    }
+
+    async fn link_sub_issue(&self, parent: &WorkItemKey, child: &WorkItemKey) -> Result<()> {
+        github_repo(&child.repo)?;
+        if parent.repo != child.repo {
+            return Err(Error::Invalid(
+                "sub-issues must be in one repository".into(),
+            ));
+        }
+        let id = self.issue_id(child).await?;
+        let r = &parent.repo;
+        let path = format!(
+            "/repos/{}/issues/{}/sub_issues",
+            r.full_name(),
+            parent.number
+        );
+        let resp = self
+            .call_raw(r, Method::POST, &path, Some(json!({ "sub_issue_id": id })))
+            .await?;
+        if resp.status.is_success() {
+            return Ok(());
+        }
+        // 422 also means "already a sub-issue": check the list before giving up on the API.
+        if resp.status == reqwest::StatusCode::UNPROCESSABLE_ENTITY {
+            #[derive(Deserialize)]
+            struct Sub {
+                number: u64,
+            }
+            let list = format!("{path}?per_page={PER_PAGE}");
+            let subs: Vec<Sub> = self
+                .call(r, "list sub-issues", Method::GET, &list, None)
+                .await?
+                .json()?;
+            if subs.iter().any(|s| s.number == child.number) {
+                return Ok(());
+            }
+        }
+        // Sub-issues are unavailable here (older GitHub, missing permission, plan): the
+        // task list in the parent's body still shows the breakdown.
+        tracing::info!(
+            parent = %parent, child = %child, status = %resp.status,
+            "sub-issue link refused; falling back to a task list"
+        );
+        self.append_task_list(parent, child).await
+    }
+
     async fn check_permission(&self, repo: &RepoKey, actor: &Actor) -> Result<Permission> {
         #[derive(Deserialize)]
         struct Perm {
@@ -1100,4 +1273,25 @@ fn encode_path(s: &str) -> String {
 fn is_permission_rejection(detail: &str) -> bool {
     (detail.contains(": 422 ") || detail.contains(": 403 "))
         && detail.to_ascii_lowercase().contains("permission")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_task;
+
+    #[test]
+    fn task_list_section_is_created_extended_and_not_repeated() {
+        let created = with_task("Epic body.", "- [ ] #1").unwrap();
+        assert_eq!(
+            created,
+            "Epic body.\n\n<!-- enzarb:subissues:start -->\n- [ ] #1\n<!-- enzarb:subissues:end -->"
+        );
+        let extended = with_task(&created, "- [ ] #2").unwrap();
+        assert!(extended.contains("- [ ] #1\n- [ ] #2\n<!-- enzarb:subissues:end -->"));
+        assert_eq!(with_task(&extended, "- [ ] #2"), None);
+        assert_eq!(
+            with_task("", "- [ ] #1").unwrap(),
+            "<!-- enzarb:subissues:start -->\n- [ ] #1\n<!-- enzarb:subissues:end -->"
+        );
+    }
 }

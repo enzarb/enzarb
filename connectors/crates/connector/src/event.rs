@@ -17,10 +17,13 @@ pub enum EventType {
     WorkItemClosed,
     /// A check run, check suite or commit status finished on a change request's head.
     CiStatusChanged,
+    /// A label was added to an issue. Only labels the engine acts on are reported
+    /// (`epic`); the name is in [`EventData::label`] and the actor is who added it.
+    WorkItemLabeled,
 }
 
 impl EventType {
-    pub const ALL: [EventType; 9] = [
+    pub const ALL: [EventType; 10] = [
         EventType::WorkItemOpened,
         EventType::CommentAdded,
         EventType::Mentioned,
@@ -30,6 +33,7 @@ impl EventType {
         EventType::ReviewSubmitted,
         EventType::WorkItemClosed,
         EventType::CiStatusChanged,
+        EventType::WorkItemLabeled,
     ];
 
     /// The wire name, as in the envelope's `type` attribute.
@@ -44,6 +48,7 @@ impl EventType {
             EventType::ReviewSubmitted => "ReviewSubmitted",
             EventType::WorkItemClosed => "WorkItemClosed",
             EventType::CiStatusChanged => "CiStatusChanged",
+            EventType::WorkItemLabeled => "WorkItemLabeled",
         }
     }
 }
@@ -87,6 +92,9 @@ pub struct EventData {
     /// `CiStatusChanged` only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ci: Option<CiInfo>,
+    /// `WorkItemLabeled` only: the label's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// CloudEvents-style envelope; this is `workflows.events.payload`.
