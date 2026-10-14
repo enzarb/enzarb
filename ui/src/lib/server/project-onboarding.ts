@@ -192,6 +192,10 @@ export interface SetRepositoriesDeps {
 	owner: string;
 	snapshot: UserRepositorySnapshot;
 	now?: Date;
+	/** Cancels the open work items of repositories that left the Project (best effort). */
+	work?: {
+		cancelForRemovedRepos(project: string, removedKeys: string[]): Promise<unknown>;
+	};
 }
 
 export type SetRepositoriesOutcome =
@@ -262,6 +266,19 @@ export async function setRepositories(
 			});
 		}
 		await store.update(name, { repositories });
+		const removed = [...current.keys()].filter((k) => !wanted.includes(k));
+		if (removed.length > 0 && deps.work) {
+			// The update stands even if this fails: the owner can still cancel the items from the UI
+			// and closing the issue cancels them too.
+			try {
+				await deps.work.cancelForRemovedRepos(name, removed);
+			} catch (e) {
+				console.warn(
+					`could not cancel work items of removed repositories in ${name}:`,
+					(e as Error).message
+				);
+			}
+		}
 		return { ok: true, repositories: wanted };
 	});
 }
