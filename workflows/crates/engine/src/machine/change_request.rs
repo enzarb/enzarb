@@ -653,20 +653,16 @@ fn step_event(ctx: &Ctx, s: &CrState, ev: &EngineEvent) -> Transition {
     match &ev.payload {
         EventPayload::Ui(u) => match u.action {
             UiActionKind::Cancel => {
-                if !ctx.can_write() {
+                if !ctx.can_cancel() {
                     Transition::reject(&state, "cancel requires write access")
                 } else if finished {
                     Transition::reject(&state, "already finished")
                 } else {
-                    finish(
-                        ctx,
-                        ev,
-                        s,
-                        Cancelled,
-                        Some(format!("enzarb: cancelled by @{}.", u.actor.login)),
-                    )
+                    finish(ctx, ev, s, Cancelled, ctx.cancel_comment(&u.actor.login))
                 }
             }
+            UiActionKind::RepoRemoved if finished => Transition::reject(&state, "already finished"),
+            UiActionKind::RepoRemoved => finish(ctx, ev, s, Cancelled, None).repo_removed(),
             UiActionKind::Retry => retry(ctx, ev, s, &state),
             UiActionKind::Approve => Transition::reject(&state, "nothing to approve"),
             UiActionKind::Merge => merge(ctx, ev, s, &state, &u.actor.login),

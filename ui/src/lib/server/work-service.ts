@@ -243,6 +243,40 @@ export function workService(sql: Sql, projects: readonly string[]) {
 				SELECT workflows_api.submit_action(
 					${id}::bigint, ${sql.json({ login: actor.login, id: actor.id, is_bot: false })}, ${action}, ${sql.json({})}) AS id`;
 			return res?.id == null ? null : Number(res.id);
+		},
+
+		/**
+		 * Cancels the non-terminal work items of `project` whose repository is one of `removedKeys`
+		 * (`github:owner/repo`, any case), through the system action `repo-removed`. Called by the
+		 * owner-checked repository update, after the Project changed. Best effort per item: a failure
+		 * is logged and the rest still go. Returns how many were submitted.
+		 */
+		async cancelForRemovedRepos(
+			project: string,
+			removedKeys: readonly string[],
+			actor: Actor
+		): Promise<number> {
+			if (!owned.has(project) || removedKeys.length === 0) return 0;
+			const rows = await sql<{ id: string | number; key: string }[]>`
+				SELECT id, key FROM workflows_api.work_item_v
+				WHERE project = ${project}
+					AND state NOT IN ${sql([...TERMINAL_STATES])}
+					AND lower(regexp_replace(key, '#[0-9]+$', '')) IN ${sql(removedKeys.map((k) => k.toLowerCase()))}`;
+			let n = 0;
+			for (const r of rows) {
+				try {
+					await sql`
+						SELECT workflows_api.submit_action(
+							${Number(r.id)}::bigint, ${sql.json({ login: actor.login, id: actor.id, is_bot: false })}, ${'repo-removed'}, ${sql.json({})})`;
+					n++;
+				} catch (e) {
+					console.warn(
+						`could not cancel ${r.key} after its repository was removed:`,
+						(e as Error).message
+					);
+				}
+			}
+			return n;
 		}
 	};
 }

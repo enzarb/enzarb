@@ -458,4 +458,60 @@ describe('setRepositories', () => {
 		const store = fakeStore([project('p', 'bob', [old])]);
 		expect(await setRepos(store, ['github:acme/web'])).toMatchObject({ code: 'not-found' });
 	});
+
+	describe('work items of removed repositories', () => {
+		const withWork = (
+			store: ProjectStore,
+			keys: string[],
+			work: { cancelForRemovedRepos: (p: string, r: string[]) => Promise<unknown> }
+		) => setRepositories({ store, owner: 'alice', snapshot: snap(), now: NOW, work }, 'p', keys);
+
+		it('cancels only for the repositories that left the Project, after the update', async () => {
+			const store = fakeStore([
+				project('p', 'alice', [old, 'https://github.com/acme/web', 'https://github.com/acme/api'])
+			]);
+			const cancel = vi.fn(async () => 0);
+			const r = await withWork(store, ['github:acme/web', 'github:me/own'], {
+				cancelForRemovedRepos: cancel
+			});
+			expect(r.ok).toBe(true);
+			expect(cancel).toHaveBeenCalledOnce();
+			expect(cancel).toHaveBeenCalledWith('p', ['github:acme/archived', 'github:acme/api']);
+			expect(vi.mocked(store.update).mock.invocationCallOrder[0]).toBeLessThan(
+				cancel.mock.invocationCallOrder[0]
+			);
+		});
+
+		it('does not cancel when repositories are only added or kept', async () => {
+			const store = fakeStore([project('p', 'alice', ['https://github.com/acme/web'])]);
+			const cancel = vi.fn(async () => 0);
+			const r = await withWork(store, ['github:acme/web', 'github:acme/api'], {
+				cancelForRemovedRepos: cancel
+			});
+			expect(r.ok).toBe(true);
+			expect(cancel).not.toHaveBeenCalled();
+		});
+
+		it('does not cancel when the update is refused', async () => {
+			const store = fakeStore([project('p', 'alice', [old])]);
+			const cancel = vi.fn(async () => 0);
+			const r = await withWork(store, ['github:evil/repo'], { cancelForRemovedRepos: cancel });
+			expect(r.ok).toBe(false);
+			expect(cancel).not.toHaveBeenCalled();
+		});
+
+		it('still succeeds when cancelling fails', async () => {
+			const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+			const store = fakeStore([project('p', 'alice', [old, 'https://github.com/acme/web'])]);
+			const r = await withWork(store, ['github:acme/web'], {
+				cancelForRemovedRepos: async () => {
+					throw new Error('db down');
+				}
+			});
+			expect(r).toMatchObject({ ok: true, repositories: ['github:acme/web'] });
+			expect(store.update).toHaveBeenCalledOnce();
+			expect(warn).toHaveBeenCalled();
+			warn.mockRestore();
+		});
+	});
 });

@@ -122,6 +122,7 @@ async fn submit_action_creates_ui_event() {
         ("cancel", "CancelRequested"),
         ("retry", "RetryRequested"),
         ("merge", "MergeRequested"),
+        ("repo-removed", "RepoRemoved"),
     ] {
         let id: i64 = sqlx::query_scalar("SELECT workflows_api.submit_action($1, '{}', $2, '{}')")
             .bind(wi)
