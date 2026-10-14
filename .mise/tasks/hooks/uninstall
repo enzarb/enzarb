@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description="Remove the lefthook git hooks from this clone"
+set -euo pipefail
+lefthook uninstall

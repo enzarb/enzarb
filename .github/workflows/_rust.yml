@@ -49,10 +49,8 @@ jobs:
           rust-src-dir: ${{ inputs.dir }}
       - run: cargo fmt --all --check
       - name: No [patch] and no git deps on enzarb repos (path deps only in the monorepo)
-        run: |
-          if grep -rnE --include=Cargo.toml --include=Cargo.lock --exclude-dir=target --exclude-dir=node_modules '^\[+patch|git\+(https|ssh)://[^"]*enzarb|git *= *"[^"]*enzarb' .; then
-            echo "::error::use path deps (../<dir>) for enzarb crates"; exit 1
-          fi
+        working-directory: .
+        run: scripts/monorepo/check-cargo-deps.sh
   clippy:
     runs-on: ubuntu-latest
     timeout-minutes: 20
