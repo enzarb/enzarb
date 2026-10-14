@@ -77,7 +77,9 @@ if grep -q realtime <<<"$off"; then
 fi
 
 # replicaCount=3 changes only the replica count.
-diff_lines="$(diff <(printf '%s\n' "$on") <("$here/scripts/render.sh" realtime-replicas) | grep -c '^[<>]' || true)"
+# Capture both sides the same way: $(...) strips trailing newlines from the first render only.
+replicas="$("$here/scripts/render.sh" realtime-replicas)"
+diff_lines="$(diff <(printf '%s\n' "$on") <(printf '%s\n' "$replicas") | grep -c '^[<>]' || true)"
 check "replicas override diff lines" "$diff_lines" 2
 check "replicas override" "$("$here/scripts/render.sh" realtime-replicas | q 'select(.kind=="Deployment" and .metadata.name=="enzarb-realtime") | .spec.replicas')" 3
 
