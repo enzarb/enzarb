@@ -3,6 +3,7 @@
 
 pub mod conflict;
 pub mod db;
+pub mod dependencies;
 pub mod error;
 pub mod executor;
 pub mod grants;

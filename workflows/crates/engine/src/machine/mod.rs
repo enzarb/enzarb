@@ -51,7 +51,7 @@ use enzarb_connector::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use change_request::{CiState, CrData, CrPhase, CrState};
+pub use change_request::{CiState, CrData, CrPhase, CrState, OpenDependency};
 pub use fx::{
     AgentJobInput, PRIORITY_AGENT, PRIORITY_COMMENT, PRIORITY_PROGRESS, PRIORITY_WORKING,
 };
@@ -162,6 +162,10 @@ pub enum EventPayload {
     /// the machine by `conflict::emit_merge_conflict`, from the readiness jobs and the
     /// ticker's base-head fan-out.
     Unmergeable { base_sha: String },
+    /// Event type `DependenciesChanged`, payload `{}`: a dependency of the work item changed
+    /// (completed, closed, added, removed). The reducer has already put the current set in
+    /// [`Ctx::open_dependencies`]; the machine only re-evaluates. Produced by the ticker.
+    DependenciesChanged,
 }
 
 /// One input to the engine. `id` is unique per event (the `events.id` as text) and
@@ -243,6 +247,7 @@ impl EngineEvent {
                     base_sha: p.base_sha,
                 }
             }
+            "DependenciesChanged" => EventPayload::DependenciesChanged,
             "CancelRequested" | "RetryRequested" | "MergeRequested" => {
                 EventPayload::Ui(serde_json::from_value(payload.clone()).map_err(bad)?)
             }
@@ -382,6 +387,9 @@ pub struct Ctx {
     pub triggers: Triggers,
     /// Default branch of the work item's repository.
     pub default_branch: String,
+    /// What the work item still waits on, read from the database by the reducer for every
+    /// event. Only change requests use it.
+    pub open_dependencies: Vec<OpenDependency>,
 }
 
 impl Ctx {

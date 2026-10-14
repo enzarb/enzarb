@@ -1,6 +1,7 @@
 //! Table-driven tests for the three state machines.
 
 mod auto_rounds;
+mod dependencies;
 mod merge;
 
 use chrono::{DateTime, TimeZone, Utc};
@@ -36,6 +37,7 @@ fn ctx_for(number: u64, perm: Permission) -> Ctx {
         config: Config::default(),
         triggers: Triggers::default(),
         default_branch: "main".into(),
+        open_dependencies: Vec::new(),
     }
 }
 

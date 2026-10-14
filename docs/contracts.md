@@ -93,7 +93,7 @@ Changing repositories: the owner may replace `spec.repositories` after creation 
 
 **Config (env):**
 - Core: `ENZARB_LISTEN` (default `0.0.0.0:7070`), `ENZARB_AUTH_TOKEN_FILE`, `ENZARB_WORKSPACE` (`/workspace`), `ENZARB_SHELL`, `ENZARB_GRACE_SECS` (25; the pod's `terminationGracePeriodSeconds` must be larger).
-- Runs: `ENZARB_MAX_RUNS` (2), `ENZARB_RUN_TIMEOUT_SECS` (3600), `ENZARB_CALLBACK_BACKOFF_MS`, `ENZARB_GIT_NAME`, `ENZARB_GIT_EMAIL`, `ENZARB_CLAUDE_TOKEN_FILE` (legacy only: the per-Project legacy file, read when `claude_token` is absent; removed with the fallback).
+- Runs: `ENZARB_MAX_RUNS` (2), `ENZARB_RUN_TIMEOUT_SECS` (3600), `ENZARB_CALLBACK_BACKOFF_MS`, `ENZARB_NET_RETRY_DELAYS_MS` (`10000,30000`: pauses before retrying a clone/fetch/push that failed on a transient network error; auth failures and rejected pushes are never retried), `ENZARB_PUSH_ATTEMPT_SECS` (120: wall-clock cap of one push attempt), `ENZARB_FETCH_ATTEMPT_SECS` (180: wall-clock cap of one clone/fetch attempt, so a dead host fails early; a timeout counts as transient and is retried; raise it for very large repos), `ENZARB_GIT_NAME`, `ENZARB_GIT_EMAIL`, `ENZARB_CLAUDE_TOKEN_FILE` (legacy only: the per-Project legacy file, read when `claude_token` is absent; removed with the fallback).
 - Agent: `ENZARB_ACP_AGENT_BIN` (default `claude-agent-acp`), `ENZARB_CANCEL_GRACE_SECS` (10), `ENZARB_PERMISSION_POLICY` (YAML/JSON file; built-in default when unset).
 - Chat (ADR-0014; sandbox-init config only, no Project spec field): `ENZARB_MAX_CHATS` (1; `0` disables chat and removes `acp` from `welcome.features`; chats never use `ENZARB_MAX_RUNS` slots), `ENZARB_CHAT_IDLE_SECS` (1800), `ENZARB_CHAT_MAX_SECS` (28800), `ENZARB_CHAT_RETENTION_DAYS` (7).
 - Chat permission mode (ADR-0014 amendment 2026-10-12 (2); sandbox-init config only): `ENZARB_CHAT_PERMISSION_MODE` (`bypassPermissions` default | `default` | `plan`; other values fail startup; defaults to `default` when bypass is not allowed) and `ENZARB_CHAT_ALLOW_BYPASS` (true; `false` makes bypass unavailable, and `false` with an explicit bypass mode fails startup). Browser-bound `_enzarb/mode {sessionId, modeId, bypassAllowed}` is sent after session establishment and after each successful `session/set_mode`. The `session/set_mode` allowlist is {`bypassPermissions` (only while allowed), `default`, `plan`}. In bypass the agent sends no `session/request_permission` for ordinary tool calls, so `Policy::hard_deny` applies only in `default`/`plan`. Agent jobs are unchanged.
@@ -271,7 +271,9 @@ workflows_api.submit_action(p_work_item_id bigint, p_actor jsonb, p_action text,
                             p_payload jsonb) RETURNS bigint               -- actions: approve | cancel | retry | merge
 -- views
 workflows_api.work_item_v(id, key, project, workflow, state, state_data, created_at, updated_at,
-                          waiting_for, resumes_at, usage_totals, waiting_on, wait_reason, wait_text)
+                          waiting_for, resumes_at, usage_totals, waiting_on, wait_reason, wait_text,
+                          blocked_by_dependency)
+workflows_api.work_item_dependency_v(work_item_key, depends_on_key, source, via, status, state, title, url)
 workflows_api.transition_v(id, work_item_id, from_state, to_state, event_type, at)
 workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated_at, output, waiting_for, resumes_at, usage)
 ```
@@ -279,6 +281,7 @@ workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated
 - **`job_v.usage`** (jsonb, nullable): token usage and cost summed over all runs of the job (session-limit waits, restart retries and the recovery run each add their run), in the `Usage` shape of section 4. Keys are absent when no run reported them; `NULL` when nothing was reported. A run is counted once (by `run_id`), for any outcome including failed and cancelled.
 - **`work_item_v.usage_totals`** (jsonb, nullable): per key, the sum over the item's jobs that reported it, plus the union of `models`. A key no job reported is absent (so `cost_usd` is absent, not 0, when no job reported a cost); `NULL` when no job has usage. Cost is as reported by Claude, not an estimate.
 - Changes to `jobs.usage` send `work_item_changed`.
+- **Dependencies** ([ADR-0017](adr/0017-work-item-dependencies.md)): `work_item_dependency_v` lists each effective dependency of `work_item_key` (filter on `depends_on_key` for dependents). `source` is `github`, `text` or `comment`; `via` is the issue key when a change request inherited it; `status` is `done` (Done/Merged), `closed` (Cancelled/Closed/Duplicate: will not complete), `open` or `pending` (no work item yet). `work_item_v.blocked_by_dependency` is true while a change request's `state_data.open_dependencies` is not empty, and `state_data.checklist.dependencies` is a fourth check in the shape above. Changes to the table send `work_item_changed` for both ends. Event type `DependenciesChanged` (source `engine`, payload `{}`) is engine-internal.
 - Both functions are `SECURITY DEFINER`.
 - Connectors use dedupe key `github:<event id>`; the UI uses `ui:<uuid>`. Events the engine itself generates use source `engine` (`handoff:<id>`, `timer:…`, `job:<id>:<attempt>`).
 - `transitions.work_item_id` is nullable: events that are ignored (no Project, no workflow) get a `to_state='ignored'` row with no work item. `transitions.note` records rejections.

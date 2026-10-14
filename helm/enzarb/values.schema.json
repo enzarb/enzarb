@@ -754,6 +754,15 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "image": {
+              "description": "Deprecated and ignored: dockerd now runs inside the sandbox container (#101). Accepted so older values files still validate.",
+              "deprecated": true
+            },
+            "resources": {
+              "description": "Deprecated and ignored: the dockerd sidecar was removed (#101). Accepted so older values files (e.g. a HelmChart's valuesContent) still validate.",
+              "deprecated": true,
+              "type": "object"
+            },
             "runtimeClasses": {
               "type": "array",
               "minItems": 1,
