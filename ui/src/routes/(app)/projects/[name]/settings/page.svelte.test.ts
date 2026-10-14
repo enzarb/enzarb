@@ -33,7 +33,17 @@ describe('settings tab', () => {
 	it('renders the sections', async () => {
 		const screen = await render(ProjectContextHost, { Child: Settings, project });
 		await expect.element(screen.getByText('Danger zone')).toBeInTheDocument();
-		await expect.element(screen.getByText('Concurrency')).toBeInTheDocument();
+		await expect.element(screen.getByRole('heading', { name: 'Sandbox' })).toBeInTheDocument();
+		expect(screen.container.textContent).not.toContain('Sandbox resources');
+	});
+
+	it('has one Sandbox panel holding concurrency, with no Concurrency section', async () => {
+		const screen = await render(ProjectContextHost, { Child: Settings, project });
+		await expect.element(screen.getByText('Concurrent runs')).toBeInTheDocument();
+		await expect
+			.element(screen.getByRole('heading', { name: 'Concurrency' }))
+			.not.toBeInTheDocument();
+		await expect.element(screen.getByRole('button', { name: 'Edit sandbox' })).toBeInTheDocument();
 	});
 
 	it('has no Claude section', async () => {
