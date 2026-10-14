@@ -131,7 +131,7 @@ ui:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-ui
-    tag: 0.32.0
+    tag: 0.32.1
     pullPolicy: ""
   # HTTP probes (/healthz liveness, /readyz readiness). false falls back to TCP probes.
   probes:
@@ -151,7 +151,7 @@ workflows:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-workflows
-    tag: 0.22.0
+    tag: 0.22.1
     pullPolicy: ""
   # Roles for `run`: reducer, executor, ticker.
   roles: reducer,executor,ticker

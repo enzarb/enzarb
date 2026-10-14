@@ -31,6 +31,20 @@ pub struct ProjectInfo {
 /// Resolves a repo key (`github:owner/repo`, matched case-insensitively) to its Project.
 pub trait ProjectIndex: Send + Sync {
     fn lookup(&self, repo_key: &str) -> Option<ProjectInfo>;
+
+    /// `spec.owner` of the Project named `project`, if it still exists.
+    fn owner(&self, project: &str) -> Option<String>;
+}
+
+/// Pure owner lookup by Project name.
+pub fn owner_in<'a>(
+    projects: impl IntoIterator<Item = &'a Project>,
+    project: &str,
+) -> Option<String> {
+    projects
+        .into_iter()
+        .find(|p| p.metadata.name.as_deref() == Some(project))
+        .map(|p| p.spec.owner.clone())
 }
 
 /// Pure lookup over a set of Projects. When a repository is linked from several
@@ -100,12 +114,18 @@ impl ProjectIndex for KubeProjectIndex {
         let all = self.store.state();
         lookup_in(all.iter().map(|p| p.as_ref()), repo_key)
     }
+
+    fn owner(&self, project: &str) -> Option<String> {
+        let all = self.store.state();
+        owner_in(all.iter().map(|p| p.as_ref()), project)
+    }
 }
 
 /// Fixed, mutable index for tests and local runs: repo key (lowercase) -> info.
 #[derive(Default)]
 pub struct StaticProjectIndex {
     map: RwLock<HashMap<String, ProjectInfo>>,
+    owners: RwLock<HashMap<String, String>>,
 }
 
 impl StaticProjectIndex {
@@ -137,6 +157,14 @@ impl StaticProjectIndex {
             .insert(repo_key.to_ascii_lowercase(), info);
     }
 
+    /// Set the owner of the Project named `project`.
+    pub fn set_owner(&self, project: &str, owner: &str) {
+        self.owners
+            .write()
+            .expect("index lock")
+            .insert(project.into(), owner.into());
+    }
+
     pub fn remove(&self, repo_key: &str) {
         self.map
             .write()
@@ -151,6 +179,14 @@ impl ProjectIndex for StaticProjectIndex {
             .read()
             .expect("index lock")
             .get(&repo_key.to_ascii_lowercase())
+            .cloned()
+    }
+
+    fn owner(&self, project: &str) -> Option<String> {
+        self.owners
+            .read()
+            .expect("index lock")
+            .get(project)
             .cloned()
     }
 }
@@ -191,6 +227,17 @@ mod tests {
         assert_eq!(lookup_in(&ps, "github:enzarb/other").unwrap().name, "b");
         assert!(lookup_in(&ps, "github:enzarb/missing").is_none());
         assert!(lookup_in(&ps, "garbage").is_none());
+    }
+
+    #[test]
+    fn owner_is_found_by_project_name() {
+        let ps = [project("a", &[], true), project("b", &[], true)];
+        assert_eq!(owner_in(&ps, "b").as_deref(), Some("ruckc"));
+        assert!(owner_in(&ps, "missing").is_none());
+        let idx = StaticProjectIndex::new();
+        idx.set_owner("a", "ruckc");
+        assert_eq!(idx.owner("a").as_deref(), Some("ruckc"));
+        assert!(idx.owner("b").is_none());
     }
 
     const SHARED: &str = "https://github.com/x/y";
