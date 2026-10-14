@@ -116,13 +116,16 @@ imagePullSecrets:
 {{- if .Values.secrets.updater.registryTokenSecret }}{{ .Values.secrets.updater.registryTokenKey }}{{ else }}{{ include "enzarb.updaterKey" (dict "ctx" . "key" "registryToken") }}{{ end }}
 {{- end }}
 
-{{/* secretKeyRef env var. Usage: include "enzarb.secretEnv" (dict "name" "X" "secret" "s" "key" "k") */}}
+{{/* secretKeyRef env var. Usage: include "enzarb.secretEnv" (dict "name" "X" "secret" "s" "key" "k" ["optional" true]) */}}
 {{- define "enzarb.secretEnv" -}}
 - name: {{ .name }}
   valueFrom:
     secretKeyRef:
       name: {{ .secret }}
       key: {{ .key }}
+      {{- if .optional }}
+      optional: true
+      {{- end }}
 {{- end }}
 
 {{/*

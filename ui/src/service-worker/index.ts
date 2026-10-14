@@ -74,8 +74,8 @@ sw.addEventListener('push', (event) => {
 		sw.registration.showNotification(data.title, {
 			body: data.body,
 			tag: data.tag,
-			icon: '/icons/icon-192.png',
-			badge: '/icons/badge-96.png',
+			icon: '/icon-192.png',
+			badge: '/badge.png',
 			data: { url: data.url }
 		})
 	);

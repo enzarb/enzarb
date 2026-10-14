@@ -27,6 +27,9 @@ export function normalizeRepoKey(connector: string, url: string): string | undef
 	return `${connector}:${owner}/${repo}`.toLowerCase();
 }
 
+/** Longest Project display name (creation and rename). */
+export const DISPLAY_NAME_MAX = 100;
+
 export const NameSchema = v.pipe(
 	v.string(),
 	v.trim(),

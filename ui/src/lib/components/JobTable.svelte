@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { JobView } from '#lib/work-items.ts';
+	import UsageSummary from './UsageSummary.svelte';
 	import Badge from './ui/Badge.svelte';
 	import DataTable, { type Column } from './ui/DataTable.svelte';
 	import { jobStatus } from './ui/status.ts';
@@ -11,6 +12,7 @@
 		{ id: 'kind', header: 'Job', cell: kind },
 		{ id: 'status', header: 'Status', cell: status },
 		{ id: 'attempt', header: 'Attempts', cell: attempt },
+		{ id: 'usage', header: 'Usage', cell: usage },
 		{ id: 'output', header: 'Output', cell: output }
 	];
 </script>
@@ -21,6 +23,7 @@
 	<Badge tone={s.tone} hollow={s.hollow}>{j.status}</Badge>
 {/snippet}
 {#snippet attempt(j: JobView)}{j.attempt}{/snippet}
+{#snippet usage(j: JobView)}<UsageSummary usage={j.usage} />{/snippet}
 {#snippet output(j: JobView)}
 	{#if j.outputHtml}
 		<!-- Sanitized on the server (sanitize-html allow-list) before it is sent. -->

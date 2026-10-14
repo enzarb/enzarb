@@ -6,6 +6,7 @@ import {
   ErrorCode,
   type RunPhase,
   type RunStartFields,
+  type Usage,
   MAX_REPO_LEN,
   MAX_RESUME_LEN,
   OpenErrorCode,
@@ -64,6 +65,7 @@ export interface RunInfo {
   state: RunPhase;
   exit_code?: number | null;
   summary?: string | null;
+  usage?: Usage | null;
 }
 
 /** `credential_state` as seen by the client. */
@@ -566,7 +568,7 @@ export class Session implements ChannelHost {
         const i = this.pending.findIndex((p) => p.kind === "run_status" && p.run_id === m.run_id);
         const p = i >= 0 ? this.pending.splice(i, 1)[0] : undefined;
         if (p && p.kind === "run_status") {
-          p.resolve({ run_id: m.run_id, state: m.state, exit_code: m.exit_code, summary: m.summary });
+          p.resolve({ run_id: m.run_id, state: m.state, exit_code: m.exit_code, summary: m.summary, usage: m.usage });
         } else {
           this.emit(m);
         }

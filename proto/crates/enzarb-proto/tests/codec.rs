@@ -122,6 +122,45 @@ fn unknown_ctrl_type_and_extra_fields() {
 }
 
 #[test]
+fn usage_is_additive_and_unknown_stays_absent() {
+    use enzarb_proto::Usage;
+    // an old run_state (no usage) decodes with usage None
+    let f = Frame::new(
+        FrameType::Ctrl,
+        0,
+        &br#"{"type":"run_state","run_id":"r","state":"running"}"#[..],
+    );
+    assert!(matches!(
+        f.ctrl_message().unwrap(),
+        Ctrl::RunState { usage: None, .. }
+    ));
+    // unknown fields inside usage are ignored; absent fields stay None (not 0)
+    let u: Usage = serde_json::from_str(r#"{"input_tokens":3,"future":true}"#).unwrap();
+    assert_eq!(u.input_tokens, Some(3));
+    assert_eq!(u.output_tokens, None);
+    assert_eq!(u.cost_usd, None);
+    // absent fields are omitted on the wire; an empty Usage is {}
+    assert_eq!(serde_json::to_string(&u).unwrap(), r#"{"input_tokens":3}"#);
+    assert_eq!(serde_json::to_string(&Usage::default()).unwrap(), "{}");
+    assert!(Usage::default().is_empty());
+    // a zero is a value, not unknown
+    let z = Usage {
+        input_tokens: Some(0),
+        ..Default::default()
+    };
+    assert!(!z.is_empty());
+    // RunState without usage serialises without the key
+    let m = Ctrl::RunState {
+        run_id: "r".into(),
+        state: RunPhase::Running,
+        exit_code: None,
+        summary: None,
+        usage: None,
+    };
+    assert!(!serde_json::to_string(&m).unwrap().contains("usage"));
+}
+
+#[test]
 fn version_negotiation() {
     assert_eq!(negotiate_version(&[1], SUPPORTED_VERSIONS), Some(1));
     assert_eq!(negotiate_version(&[3, 2, 1], SUPPORTED_VERSIONS), Some(1));
@@ -188,7 +227,7 @@ proptest! {
     fn ctrl_roundtrip(run_id in "[a-z0-9-]{1,12}", exit in proptest::option::of(any::<i32>()),
                       summary in proptest::option::of(".{0,30}"), ch in any::<u32>(), cols in any::<u16>(), rows in any::<u16>()) {
         for m in [
-            Ctrl::RunState { run_id: run_id.clone(), state: RunPhase::Failed, exit_code: exit, summary },
+            Ctrl::RunState { run_id: run_id.clone(), state: RunPhase::Failed, exit_code: exit, summary, usage: None },
             Ctrl::Resize { channel: ch, cols, rows },
             Ctrl::Open { channel: ch, kind: ChannelKind::Pty, cols, rows, command: Some(vec![run_id.clone()]), repo: None, resume: None, claude_token: None },
         ] {

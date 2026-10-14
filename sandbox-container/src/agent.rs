@@ -30,7 +30,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use base64::Engine as _;
 use enzarb_proto::session::RunInfo;
-use enzarb_proto::{RunFinished, RunOutcome, RunPhase, RunStart};
+use enzarb_proto::{RunFinished, RunOutcome, RunPhase, RunStart, Usage};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -112,6 +112,9 @@ struct RunRecord {
     head_sha: String,
     #[serde(default)]
     pushed: bool,
+    /// Token usage and cost the agent reported (absent when none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    usage: Option<Usage>,
     created_ms: u64,
     #[serde(default)]
     started_ms: Option<u64>,
@@ -152,6 +155,7 @@ impl RunRecord {
             state: self.state,
             exit_code: self.exit_code,
             summary,
+            usage: self.usage.clone(),
         }
     }
 }
@@ -240,6 +244,9 @@ struct Run {
     rec: Mutex<RunRecord>,
     cancel: watch::Sender<bool>,
     transcript: Arc<Transcript>,
+    /// Usage reported by the agent, filled by `acp::run` whatever the outcome;
+    /// copied into the record and the callback by `finalize`.
+    usage: acp::UsageSink,
 }
 
 impl Run {
@@ -349,6 +356,7 @@ impl AgentRunManager {
                 dir: dir.clone(),
                 rec: Mutex::new(rec),
                 cancel: watch::channel(false).0,
+                usage: Arc::default(),
             });
             inner
                 .runs
@@ -406,6 +414,7 @@ impl RunManager for AgentRunManager {
             summary: None,
             head_sha: String::new(),
             pushed: false,
+            usage: None,
             created_ms: now_ms(),
             started_ms: None,
             finished_ms: None,
@@ -457,6 +466,7 @@ impl RunManager for AgentRunManager {
             dir,
             rec: Mutex::new(rec),
             cancel: watch::channel(false).0,
+            usage: Arc::default(),
         });
         run.transcript
             .append("state", json!({"state": "queued", "branch": req.branch}));
@@ -828,6 +838,14 @@ impl Inner {
             let rec = run.rec.lock().unwrap();
             (rec.branch.clone(), run.dir.join("request.json"))
         };
+        // Spend counts for any outcome. A recovered run has none in memory
+        // (its record may already carry some).
+        let usage = run
+            .usage
+            .lock()
+            .unwrap()
+            .clone()
+            .or_else(|| run.rec.lock().unwrap().usage.clone());
         let body = RunFinished {
             run_id: run.id.clone(),
             outcome: f.outcome,
@@ -836,10 +854,11 @@ impl Inner {
             branch,
             head_sha: f.head_sha.clone(),
             pushed: f.pushed,
+            usage: usage.clone(),
         };
         run.transcript.append(
             "finished",
-            json!({"outcome": f.outcome, "exit_code": f.exit_code, "head_sha": f.head_sha, "pushed": f.pushed}),
+            json!({"outcome": f.outcome, "exit_code": f.exit_code, "head_sha": f.head_sha, "pushed": f.pushed, "usage": usage}),
         );
         let pending = std::fs::read_to_string(request)
             .ok()
@@ -869,6 +888,7 @@ impl Inner {
             r.summary = Some(f.summary);
             r.head_sha = f.head_sha;
             r.pushed = f.pushed;
+            r.usage = usage;
             r.finished_ms = Some(now_ms());
         });
         run.transcript.close();
@@ -1464,6 +1484,7 @@ impl Inner {
             env,
             prompt: req.prompt.clone(),
             cancel_grace: self.cfg.cancel_grace,
+            usage: run.usage.clone(),
         };
         let emit: acp::Emit = {
             let transcript = run.transcript.clone();
