@@ -736,7 +736,7 @@ pub(crate) mod tests {
             .as_str()
             .unwrap();
         assert!(args.contains("--iptables=false"), "{args}");
-        assert!(args.contains("--storage-driver=vfs"), "{args}");
+        assert!(args.contains("--storage-driver=overlay2"), "{args}");
         assert!(
             args.contains("--feature=containerd-snapshotter=false"),
             "{args}"
