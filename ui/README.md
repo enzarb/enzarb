@@ -25,6 +25,10 @@ npm run test:e2e                  # needs Docker (a Postgres testcontainer)
 
 A Playwright smoke test (`e2e/chat.spec.ts`) opens the chat page, waits for it to connect, sends a message and checks the agent's reply. It runs against `vite dev` with an in-memory project store (`vite.e2e.config.ts`, `e2e/stubs/kube.ts`) and a signed-in session seeded by `e2e/serve.ts`. The sandbox websocket is faked in the browser (`e2e/fake-sandbox.ts`), so no cluster or GitHub is involved. Set `E2E_DATABASE_URL` to use your own Postgres instead of Docker.
 
+## Icons
+
+The logo mark and the icon set in `static/` (favicon, apple-touch icon, PWA and maskable icons, notification badge) are generated from the SVGs in `assets/icons/` by `scripts/generate-icons.mjs` (`@resvg/resvg-js` and `png-to-ico`, both npm devDependencies). After editing a source SVG run `npm run icons` and commit the results; the output is byte-stable. `src/lib/components/Logo.svelte` inlines the same glyph, so update it too.
+
 ## Deployment notes
 
 - Behind the gateway the pod sees plain HTTP, and adapter-node derives the request origin (used by SvelteKit's CSRF check) from `X-Forwarded-Proto`; the image sets `PROTOCOL_HEADER=x-forwarded-proto`. The gateway must send that header.
