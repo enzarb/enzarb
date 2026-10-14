@@ -252,12 +252,7 @@ pub(super) fn step(ctx: &Ctx, s: &IssueState, ev: &EngineEvent) -> Transition {
                 }
                 match s.phase {
                     Done | Duplicate | Cancelled => Transition::reject(&state, "already finished"),
-                    _ => cancel(
-                        ctx,
-                        ev,
-                        s,
-                        Some(format!("enzarb: cancelled by @{}.", u.actor.login)),
-                    ),
+                    _ => cancel(ctx, ev, s, ctx.cancel_comment(&u.actor.login)),
                 }
             }
             UiActionKind::RepoRemoved => match s.phase {

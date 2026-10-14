@@ -200,12 +200,7 @@ pub(super) fn step(ctx: &Ctx, s: &MentionState, ev: &EngineEvent) -> Transition 
             UiActionKind::Cancel if s.phase == Cancelled => {
                 Transition::reject(&state, "already finished")
             }
-            UiActionKind::Cancel => cancel(
-                ctx,
-                ev,
-                s,
-                Some(format!("enzarb: cancelled by @{}.", u.actor.login)),
-            ),
+            UiActionKind::Cancel => cancel(ctx, ev, s, ctx.cancel_comment(&u.actor.login)),
             UiActionKind::RepoRemoved if s.phase == Cancelled => {
                 Transition::reject(&state, "already finished")
             }

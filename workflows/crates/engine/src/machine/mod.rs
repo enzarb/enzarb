@@ -410,6 +410,12 @@ impl Ctx {
         self.can_write() || self.orphan_owner
     }
 
+    /// The "cancelled by" forge comment. An orphaned item's repo is in no Project, so a cancel
+    /// there queues no job at all.
+    fn cancel_comment(&self, login: &str) -> Option<String> {
+        (!self.orphaned).then(|| format!("enzarb: cancelled by @{login}."))
+    }
+
     /// True for the bot itself and for other bot accounts.
     fn is_bot(&self, a: &Actor) -> bool {
         a.is_bot || a.login.eq_ignore_ascii_case(&self.bot_login)

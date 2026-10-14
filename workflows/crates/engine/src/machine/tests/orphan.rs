@@ -46,6 +46,44 @@ fn orphan_owner_cancels_but_cannot_approve_retry_or_merge() {
 }
 
 #[test]
+fn orphan_owner_cancel_queues_no_job() {
+    let c = orphan_ctx(42, Permission::None, true);
+    let t = transition(
+        &c,
+        &issue_in(IssuePhase::AwaitingApproval),
+        &ui("c", "ruckc", UiActionKind::Cancel),
+    );
+    assert_issue(&t, IssuePhase::Cancelled);
+    assert!(jobs(&t).is_empty(), "{:?}", jobs(&t));
+
+    let t = transition(
+        &orphan_ctx(43, Permission::None, true),
+        &cr_in(CrPhase::ReadyToMerge),
+        &ui("c", "ruckc", UiActionKind::Cancel),
+    );
+    assert_cr(&t, CrPhase::Cancelled);
+    assert!(jobs(&t).is_empty(), "{:?}", jobs(&t));
+
+    let t = transition(
+        &c,
+        &mention_in(MentionPhase::Running),
+        &ui("c", "ruckc", UiActionKind::Cancel),
+    );
+    assert_mention(&t, MentionPhase::Cancelled);
+    assert!(jobs(&t).is_empty(), "{:?}", jobs(&t));
+}
+
+#[test]
+fn cancel_still_comments_while_the_repo_is_in_a_project() {
+    let t = transition(
+        &ctx(Permission::Write),
+        &issue_in(IssuePhase::AwaitingApproval),
+        &ui("c", "alice", UiActionKind::Cancel),
+    );
+    assert_eq!(comment_bodies(&t), ["enzarb: cancelled by @alice."]);
+}
+
+#[test]
 fn non_owner_cannot_cancel_an_orphaned_item() {
     let c = orphan_ctx(42, Permission::None, false);
     let s = issue_in(IssuePhase::AwaitingApproval);
