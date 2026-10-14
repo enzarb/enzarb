@@ -24,7 +24,7 @@ export interface NotifierDeps {
 	loadItem(id: number): Promise<NotifyItem | null>;
 	/** The Project's owner (GitHub login), or null for unknown projects. */
 	ownerOf(project: string): Promise<string | null>;
-	store: Pick<PushStore, 'targets' | 'claim' | 'remove' | 'touch'>;
+	store: Pick<PushStore, 'targets' | 'claim' | 'release' | 'remove' | 'touch'>;
 	send: Send;
 }
 
@@ -59,17 +59,23 @@ export function createItemHandler(deps: NotifierDeps, burst: BurstOptions = DEFA
 		if (!owner) return false;
 		const targets = await deps.store.targets(owner, needs.category);
 		if (targets.length === 0) return false;
-		const claim = await deps.store.claim(
-			owner,
-			item.id,
-			needs.category,
-			stateKey(item),
-			burst.windowSecs
-		);
+		const key = stateKey(item);
+		const claim = await deps.store.claim(owner, item.id, needs.category, key, burst.windowSecs);
 		if (!claim.claimed) return false;
 		const payload =
 			claim.recent > burst.limit ? summaryPayload(claim.recent) : pushPayload(item, needs.category);
-		await deliver(deps.store, deps.send, owner, targets, payload);
+		let gone = 0;
+		const counting: Send = async (t, p) => {
+			const result = await deps.send(t, p);
+			if (result === 'gone') gone++;
+			return result;
+		};
+		const accepted = await deliver(deps.store, counting, owner, targets, payload);
+		// Nothing accepted and no device reported gone: every send failed transiently, so release the
+		// claim and let the next update to the item try again.
+		if (accepted === 0 && gone === 0) {
+			await deps.store.release(owner, item.id, needs.category, key);
+		}
 		return true;
 	};
 }

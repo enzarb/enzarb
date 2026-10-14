@@ -42,6 +42,7 @@ function setup(
 	const sent: { target: PushTarget; payload: PushPayload }[] = [];
 	const removed: string[] = [];
 	const gone = new Set<string>();
+	const failing = new Set<string>();
 	const deps: NotifierDeps = {
 		loadItem: async (id) => items.get(id) ?? null,
 		ownerOf: async (p) => owners[p] ?? null,
@@ -54,6 +55,8 @@ function setup(
 				const recent = [...claims].filter((c) => c.startsWith(`${owner}|`)).length;
 				return { claimed, recent };
 			},
+			release: async (owner, id, category, key) =>
+				claims.delete([owner, id, category, key].join('|')),
 			remove: async (_o, endpoint) => {
 				removed.push(endpoint);
 				return true;
@@ -62,10 +65,11 @@ function setup(
 		},
 		send: async (target, payload) => {
 			sent.push({ target, payload });
+			if (failing.has(target.endpoint)) return 'error';
 			return gone.has(target.endpoint) ? 'gone' : 'ok';
 		}
 	};
-	return { items, deps, sent, removed, gone, handle: createItemHandler(deps) };
+	return { items, deps, sent, removed, gone, failing, handle: createItemHandler(deps) };
 }
 
 describe('classification reuse', () => {
@@ -118,6 +122,33 @@ describe('classification reuse', () => {
 
 	it('ignores unknown items', async () => {
 		expect(await setup().handle(999)).toBe(false);
+	});
+});
+
+describe('transient failures', () => {
+	it('releases the claim when every send errors, so the next update retries', async () => {
+		const t = setup();
+		t.failing.add(device(1).endpoint);
+		await t.handle(1);
+		t.failing.clear();
+		await t.handle(1);
+		expect(t.sent).toHaveLength(2);
+	});
+
+	it('keeps the claim when a device accepted', async () => {
+		const t = setup({ devices: { octo: [device(1), device(2)] } });
+		t.failing.add(device(1).endpoint);
+		await t.handle(1);
+		await t.handle(1);
+		expect(t.sent).toHaveLength(2);
+	});
+
+	it('keeps the claim when the only device was gone', async () => {
+		const t = setup();
+		t.gone.add(device(1).endpoint);
+		await t.handle(1);
+		await t.handle(1);
+		expect(t.sent).toHaveLength(1);
 	});
 });
 

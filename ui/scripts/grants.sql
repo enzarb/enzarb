@@ -51,6 +51,7 @@ BEGIN
 		GRANT EXECUTE ON FUNCTION app_api.push_subscription_delete(text, text) TO enzarb_ui;
 		GRANT EXECUTE ON FUNCTION app_api.push_subscription_touch(text, text) TO enzarb_ui;
 		GRANT EXECUTE ON FUNCTION app_api.push_claim(text, bigint, text, text, integer) TO enzarb_ui;
+		GRANT EXECUTE ON FUNCTION app_api.push_claim_release(text, bigint, text, text) TO enzarb_ui;
 		GRANT EXECUTE ON FUNCTION app_api.push_sent_prune(integer) TO enzarb_ui;
 	END IF;
 END

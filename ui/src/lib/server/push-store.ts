@@ -100,6 +100,18 @@ export function pushStore(sql: Sql) {
 			return { claimed: row?.claimed ?? false, recent: row?.recent ?? 0 };
 		},
 
+		/** Gives a claim back after a delivery in which every send failed transiently. */
+		async release(
+			owner: string,
+			workItemId: number,
+			category: NeedsYouCategory,
+			stateKey: string
+		): Promise<boolean> {
+			const [row] = await sql<{ ok: boolean }[]>`
+				SELECT app_api.push_claim_release(${owner}, ${workItemId}, ${category}, ${stateKey}) AS ok`;
+			return row?.ok ?? false;
+		},
+
 		async prune(olderThanDays: number): Promise<number> {
 			const [row] = await sql<{ n: number }[]>`
 				SELECT app_api.push_sent_prune(${olderThanDays}) AS n`;

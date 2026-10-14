@@ -135,8 +135,25 @@ AS $$
 		RETURNING 1
 	)
 	SELECT EXISTS (SELECT 1 FROM c),
-		(SELECT pg_catalog.count(*)::integer FROM app.push_sent s
-			WHERE s.owner = $1 AND s.sent_at > pg_catalog.now() - pg_catalog.make_interval(secs => $5));
+		-- The INSERT is not visible to other parts of the same statement, so add this claim by hand.
+		(SELECT pg_catalog.count(*) FROM app.push_sent s
+			WHERE s.owner = $1 AND s.sent_at > pg_catalog.now() - pg_catalog.make_interval(secs => $5))::integer
+			+ (SELECT pg_catalog.count(*) FROM c)::integer;
+$$;
+
+-- Releases a claim so a later update can notify again (nothing was delivered). Returns whether a row went.
+CREATE FUNCTION app_api.push_claim_release(owner text, work_item_id bigint, category text, state_key text)
+RETURNS boolean
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+	WITH d AS (
+		DELETE FROM app.push_sent s
+		WHERE s.owner = $1 AND s.work_item_id = $2 AND s.category = $3 AND s.state_key = $4
+		RETURNING 1
+	)
+	SELECT EXISTS (SELECT 1 FROM d);
 $$;
 
 -- Deletes sent-log rows older than the given number of days; returns how many.
@@ -160,6 +177,7 @@ REVOKE ALL ON FUNCTION app_api.push_subscription_set_categories(text, text, text
 REVOKE ALL ON FUNCTION app_api.push_subscription_delete(text, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION app_api.push_subscription_touch(text, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION app_api.push_claim(text, bigint, text, text, integer) FROM PUBLIC;
+REVOKE ALL ON FUNCTION app_api.push_claim_release(text, bigint, text, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION app_api.push_sent_prune(integer) FROM PUBLIC;
 
 -- Grants to enzarb_ui live in scripts/grants.sql (re-run on every migrate).
