@@ -273,8 +273,8 @@ describe('workService needs-you queue', () => {
 		const wanted = [
 			await seed(1, 'ReadyToMerge', {}, '2026-01-01'),
 			await seed(2, 'AwaitingChanges', {}, '2026-01-02'),
-			await seed(3, 'Reviewing', { checklist: { ci: { status: 'failed' } } }, '2026-03-01'),
-			await seed(4, 'Reviewing', { checklist: { review: { status: 'FAILED' } } }, '2026-03-02')
+			await seed(3, 'AwaitingChanges', { checklist: { ci: { status: 'failed' } } }, '2026-03-01'),
+			await seed(4, 'ConflictParked', {}, '2026-03-02')
 		];
 		const { items, total } = await workService(sql, ['crowd']).listNeedsYou();
 		expect(items.map((i) => i.id)).toEqual(wanted);
@@ -342,6 +342,74 @@ describe('workService needs-you queue', () => {
 		const { items, total } = await workService(sql, ['parity']).listNeedsYou();
 		expect(items.map((it) => ids.get(it.id)).sort((a, b) => a! - b!)).toEqual(expected);
 		expect(total).toBe(expected.length);
+	});
+
+	it('applies the idle threshold identically in SQL and in the classifier', async () => {
+		const HOURS = 24;
+		const HOUR_MS = 3_600_000;
+		// 60 s of slack either side of the threshold, so the clocks of node and Postgres cannot disagree
+		const fresh = HOURS * HOUR_MS - 60_000;
+		const idle = HOURS * HOUR_MS + 60_000;
+		const red = (c: 'ci' | 'review' | 'mergeable') => ({
+			checklist: { [c]: { status: 'failed' } }
+		});
+		const cases: [string, unknown, number][] = [
+			['AwaitingChanges', {}, fresh],
+			['AwaitingChanges', {}, idle],
+			['AwaitingChanges', red('ci'), fresh],
+			['AwaitingChanges', red('ci'), idle],
+			['AwaitingChanges', red('mergeable'), fresh],
+			['AwaitingChanges', red('mergeable'), idle],
+			['Opened', red('review'), fresh],
+			['Opened', red('review'), idle],
+			['Reviewing', red('ci'), idle],
+			['AddressingComments', red('ci'), idle],
+			['ResolvingConflicts', red('mergeable'), idle],
+			['Merging', red('ci'), idle],
+			['AddressingComments', {}, idle],
+			['ConflictParked', {}, fresh],
+			['ConflictParked', {}, idle],
+			['Failed', {}, fresh],
+			['Stale', {}, fresh],
+			['ReadyToMerge', red('review'), fresh],
+			['Merged', red('ci'), idle],
+			['Reviewing', 'garbage', idle]
+		];
+		const ids = new Map<number, number>();
+		const rows: { workflow: string; state: string; stateData: unknown; updatedAt: Date }[] = [];
+		for (const [i, [state, stateData, age]] of cases.entries()) {
+			const id = await seedItem(sql, {
+				key: `github:acme/idle#${i}`,
+				project: 'idle',
+				workflow: 'change_request',
+				state,
+				stateData
+			});
+			await sql`UPDATE workflows.work_items
+				SET updated_at = now() - ${age / 1000} * interval '1 second' WHERE id = ${id}`;
+			ids.set(id, i);
+			rows.push({
+				workflow: 'change_request',
+				state,
+				stateData,
+				updatedAt: new Date(Date.now() - age)
+			});
+		}
+		const opts = { now: Date.now(), staleAfterMs: HOURS * HOUR_MS };
+		const expected = rows
+			.map((r, i) => ({ i, needs: classifyNeedsYou(r, opts) }))
+			.filter((c) => c.needs)
+			.map((c) => c.i);
+		// idle blocked CRs, parked conflicts, Failed, Stale, ReadyToMerge only
+		expect(expected).toEqual([1, 3, 5, 7, 14, 13, 15, 16, 17].sort((a, b) => a - b));
+		const { items, total } = await workService(sql, ['idle'], HOURS).listNeedsYou();
+		expect(items.map((it) => ids.get(it.id)).sort((a, b) => a! - b!)).toEqual(expected);
+		expect(total).toBe(expected.length);
+		// a longer threshold drops the idle ones that are only just past 24 h
+		const longer = await workService(sql, ['idle'], HOURS * 2).listNeedsYou();
+		expect(longer.items.map((it) => ids.get(it.id)).sort((a, b) => a! - b!)).toEqual([
+			13, 14, 15, 16, 17
+		]);
 	});
 
 	it('returns the latest plan as sanitized html, null when missing or not owned', async () => {

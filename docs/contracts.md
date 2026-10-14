@@ -331,6 +331,7 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` (PEM), `GITHUB_WEBHOOK_SECRET` | receiver (secret only), workflows executor |
 | `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` | ui |
 | `ENZARB_BOT_HANDLE` (default `enzarb`), `ENZARB_BOT_LOGIN` (default `enzarb[bot]`) | receiver, workflows |
+| `NEEDS_YOU_STALE_HOURS` (optional, default `24`; chart value `ui.needsYouStaleHours`) | ui ("Needs you" queue and nav badge: a change request with changes requested, red checks or a conflict waits on enzarb, not the user, until its `updated_at` is this old. `ConflictParked`, `ReadyToMerge`, `AwaitingApproval` and `Failed`/`Stale` always count; phases where enzarb is acting never do) |
 | `ENZARB_GITHUB_APP_SLUG` (optional, default `enzarb`; chart value `githubApp.slug`) | ui (the "install the App" link `https://github.com/apps/<slug>/installations/new`) |
 | `ENZARB_PUBLIC_URL` | ui (OAuth callback is `$ENZARB_PUBLIC_URL/login/github/callback`), workflows (links in comments) |
 | `PROTOCOL_HEADER=x-forwarded-proto` | ui (adapter-node derives the origin for its CSRF check from it; the Gateway must forward `X-Forwarded-Proto`) |

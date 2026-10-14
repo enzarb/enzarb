@@ -1,6 +1,9 @@
 import {
 	availableActions,
 	classifyNeedsYou,
+	ENZARB_WORKING_PHASES,
+	hoursToMs,
+	NEEDS_YOU_STALE_HOURS_DEFAULT,
 	itemTitle,
 	itemUrl,
 	parseReadiness,
@@ -47,20 +50,23 @@ const NEEDS_YOU_CAP = 200;
  * restricted to the given projects. Keep in sync with `work-items.ts`; the spec checks parity.
  * `parseCheck` lowercases a check's status, so the SQL does too.
  */
-function needsYouWhere(sql: Sql, projects: string[]) {
+function needsYouWhere(sql: Sql, projects: string[], staleHours: number) {
 	return sql`project IN ${sql(projects)} AND (
 		state IN ('Failed', 'Stale')
 		OR (workflow = 'issue' AND state = 'AwaitingApproval')
-		OR (workflow = 'change_request' AND state IN ('ReadyToMerge', 'AwaitingChanges'))
+		OR (workflow = 'change_request' AND state IN ('ReadyToMerge', 'ConflictParked'))
 		OR (workflow = 'change_request' AND state NOT IN ${sql([...TERMINAL_STATES])}
-			AND (lower(state_data->'checklist'->'ci'->>'status') = 'failed'
+			AND state NOT IN ${sql([...ENZARB_WORKING_PHASES])}
+			AND updated_at <= now() - ${staleHours}::float8 * interval '1 hour'
+			AND (state = 'AwaitingChanges'
+				OR lower(state_data->'checklist'->'ci'->>'status') = 'failed'
 				OR lower(state_data->'checklist'->'review'->>'status') = 'failed'
 				OR lower(state_data->'checklist'->'mergeable'->>'status') = 'failed')))`;
 }
 
 const iso = (d: Date | string) => new Date(d).toISOString();
 
-function summary(r: ItemRow): WorkItemSummary {
+function summary(r: ItemRow, staleHours: number): WorkItemSummary {
 	return {
 		id: Number(r.id),
 		key: r.key,
@@ -70,7 +76,10 @@ function summary(r: ItemRow): WorkItemSummary {
 		title: itemTitle(r.key, r.state_data),
 		url: itemUrl(r.key, r.state_data),
 		updatedAt: iso(r.updated_at),
-		needs: classifyNeedsYou({ workflow: r.workflow, state: r.state, stateData: r.state_data })
+		needs: classifyNeedsYou(
+			{ workflow: r.workflow, state: r.state, stateData: r.state_data, updatedAt: r.updated_at },
+			{ now: Date.now(), staleAfterMs: hoursToMs(staleHours) }
+		)
 	};
 }
 
@@ -107,7 +116,11 @@ export function jobOutputMarkdown(output: unknown): string | null {
  * Work item reads and actions for one user. Reads go through the `workflows_api` views only;
  * `projects` are the names of the Projects the user owns (the views carry the project name).
  */
-export function workService(sql: Sql, projects: readonly string[]) {
+export function workService(
+	sql: Sql,
+	projects: readonly string[],
+	staleHours: number = NEEDS_YOU_STALE_HOURS_DEFAULT
+) {
 	const owned = new Set(projects);
 
 	async function load(id: number): Promise<ItemRow | null> {
@@ -129,7 +142,7 @@ export function workService(sql: Sql, projects: readonly string[]) {
 				WHERE project IN ${sql(names)}
 				ORDER BY updated_at DESC, id DESC
 				LIMIT 500`;
-			return rows.map(summary);
+			return rows.map((r) => summary(r, staleHours));
 		},
 
 		/**
@@ -139,7 +152,7 @@ export function workService(sql: Sql, projects: readonly string[]) {
 		 */
 		async listNeedsYou(): Promise<{ items: WorkItemSummary[]; total: number }> {
 			if (owned.size === 0) return { items: [], total: 0 };
-			const where = needsYouWhere(sql, [...owned]);
+			const where = needsYouWhere(sql, [...owned], staleHours);
 			const rows = await sql<ItemRow[]>`
 				SELECT id, key, project, workflow, state, state_data, updated_at
 				FROM workflows_api.work_item_v
@@ -147,7 +160,7 @@ export function workService(sql: Sql, projects: readonly string[]) {
 				ORDER BY updated_at ASC, id ASC
 				LIMIT ${NEEDS_YOU_CAP}`;
 			// safety net: the SQL predicate mirrors the classifier, so this should drop nothing
-			const items = rows.map(summary).filter((i) => i.needs);
+			const items = rows.map((r) => summary(r, staleHours)).filter((i) => i.needs);
 			if (rows.length < NEEDS_YOU_CAP) return { items, total: items.length };
 			const [{ n }] = await sql<{ n: number }[]>`
 				SELECT count(*)::int AS n FROM workflows_api.work_item_v WHERE ${where}`;
@@ -196,7 +209,7 @@ export function workService(sql: Sql, projects: readonly string[]) {
 				SELECT id, kind, status, attempt, updated_at, output
 				FROM workflows_api.job_v WHERE work_item_id = ${id} ORDER BY created_at, id`;
 			return {
-				...summary(row),
+				...summary(row, staleHours),
 				readiness: row.workflow === 'change_request' ? parseReadiness(row.state_data) : null,
 				actions: availableActions(row.state),
 				transitions: transitions.map((t): TransitionView => ({

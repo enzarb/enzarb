@@ -1,3 +1,5 @@
+import { NEEDS_YOU_STALE_HOURS_DEFAULT } from '#lib/work-items.ts';
+
 export interface Config {
 	databaseUrl: string;
 	sessionJwtSecret: string;
@@ -19,6 +21,8 @@ export interface Config {
 	 * `{"chart": "0.4.1", "components": {"enzarb-ui": "v0.9.0"}}`). Empty when unset.
 	 */
 	componentVersions: ComponentVersions;
+	/** Hours a blocked change request may sit idle before it joins "Needs you" (NEEDS_YOU_STALE_HOURS, default 24). */
+	needsYouStaleHours: number;
 }
 
 export interface ComponentVersions {
@@ -28,7 +32,7 @@ export interface ComponentVersions {
 
 type RequiredKey = Exclude<
 	keyof Config,
-	'githubAppSlug' | 'realtimeLegacyTokenUrl' | 'componentVersions'
+	'githubAppSlug' | 'realtimeLegacyTokenUrl' | 'componentVersions' | 'needsYouStaleHours'
 >;
 
 function parseComponentVersions(raw: string | undefined): ComponentVersions {
@@ -101,8 +105,14 @@ export function parseConfig(source: Record<string, string | undefined>): Config 
 	if (legacy && legacy !== 'true' && legacy !== 'false') {
 		throw new Error('ENZARB_REALTIME_LEGACY_TOKEN_URL must be true or false');
 	}
+	const staleRaw = source.NEEDS_YOU_STALE_HOURS?.trim();
+	const needsYouStaleHours = staleRaw ? Number(staleRaw) : NEEDS_YOU_STALE_HOURS_DEFAULT;
+	if (!Number.isFinite(needsYouStaleHours) || needsYouStaleHours <= 0) {
+		throw new Error('NEEDS_YOU_STALE_HOURS must be a positive number');
+	}
 	return {
 		...out,
+		needsYouStaleHours,
 		githubAppSlug,
 		realtimeLegacyTokenUrl: legacy === 'true',
 		componentVersions: parseComponentVersions(source.ENZARB_COMPONENT_VERSIONS)

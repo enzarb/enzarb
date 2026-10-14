@@ -1,6 +1,7 @@
 import { error } from '@sveltejs/kit';
 import { command, getRequestEvent, query } from '$app/server';
 import * as v from 'valibot';
+import { getConfig } from '#lib/server/config.ts';
 import { getSql } from '#lib/server/db.ts';
 import { getProjectStore } from '#lib/server/kube.ts';
 import { projectCache } from '#lib/server/project-cache.ts';
@@ -16,7 +17,8 @@ async function service() {
 		user,
 		work: workService(
 			getSql(),
-			projects.map((p) => p.name)
+			projects.map((p) => p.name),
+			getConfig().needsYouStaleHours
 		)
 	};
 }
