@@ -875,7 +875,8 @@ async fn close_reaches_an_item_whose_repo_left_every_project() {
     let h = Harness::new(db!()).await;
     let pool = h.pool();
     let w = orphaned_item(&h).await;
-    assert_eq!(pending_jobs(pool, &w).await, 1);
+    // open queues two set_progress markers plus the triage job
+    assert_eq!(pending_jobs(pool, &w).await, 3);
 
     ingest(
         pool,
