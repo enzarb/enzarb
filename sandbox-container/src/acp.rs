@@ -125,6 +125,7 @@ pub(crate) fn spawn_agent(
     if clear_env {
         cmd.env_clear();
     }
+    crate::privs::as_sandbox_user(&mut cmd);
     cmd.current_dir(cwd)
         .envs(env.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::piped())

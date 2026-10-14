@@ -84,20 +84,19 @@ impl Pty {
         let pair = native_pty_system()
             .openpty(size(cols, rows))
             .map_err(io::Error::other)?;
-        let mut cmd = match command {
-            Some([prog, args @ ..]) => {
-                let mut c = CommandBuilder::new(prog);
-                c.args(args);
-                c
-            }
-            Some([]) | None => {
-                let mut c = CommandBuilder::new(&cfg.shell);
-                c.arg("-l");
-                c
-            }
+        let argv: Vec<String> = match command {
+            Some(c) if !c.is_empty() => c.to_vec(),
+            _ => vec![cfg.shell.clone(), "-l".into()],
         };
+        // As root, the child goes through sandbox-init's drop-privileges exec mode.
+        let argv = crate::privs::wrap_pty_command(argv);
+        let mut cmd = CommandBuilder::new(&argv[0]);
+        cmd.args(&argv[1..]);
         if cfg.workspace.is_dir() {
             cmd.cwd(&cfg.workspace);
+        }
+        for (k, v) in crate::privs::pty_env() {
+            cmd.env(k, v);
         }
         cmd.env("TERM", "xterm-256color");
         let slave = pair.slave;
