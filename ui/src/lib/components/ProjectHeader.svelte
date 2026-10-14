@@ -27,20 +27,12 @@
 				{/snippet}
 			</Tooltip>
 			{#if sandboxName}
-				<span class="ez-muted">
-					<Tooltip text={SANDBOX_HINT} side="bottom">
-						{#snippet trigger(props)}
-							<!-- svelte-ignore a11y_no_noninteractive_tabindex (tooltips need a focusable trigger) -->
-							<span {...props} tabindex="0">sandbox</span>
-						{/snippet}
-					</Tooltip>
-					<Tooltip text={SANDBOX_HINT} side="bottom">
-						{#snippet trigger(props)}
-							<!-- svelte-ignore a11y_no_noninteractive_tabindex (tooltips need a focusable trigger) -->
-							<code {...props} tabindex="0">{sandboxName}</code>
-						{/snippet}
-					</Tooltip>
-				</span>
+				<Tooltip text={SANDBOX_HINT} side="bottom">
+					{#snippet trigger(props)}
+						<!-- svelte-ignore a11y_no_noninteractive_tabindex (tooltips need a focusable trigger) -->
+						<span {...props} class="ez-muted" tabindex="0">sandbox <code>{sandboxName}</code></span>
+					{/snippet}
+				</Tooltip>
 			{/if}
 		</div>
 	</div>

@@ -41,9 +41,8 @@ describe('ProjectHeader', () => {
 		await expect.element(page.getByRole('tooltip')).toHaveTextContent(nameHint);
 		await userEvent.keyboard('{Escape}');
 		await expect.poll(() => document.querySelector('[role="tooltip"]')).toBeNull();
-		await userEvent.tab({ shift: true });
 		await userEvent.tab();
-		await expect.element(page.getByRole('tooltip')).toBeInTheDocument();
+		await expect.element(page.getByRole('tooltip')).toHaveTextContent(sandboxHint);
 		await userEvent.tab();
 		await expect.poll(() => document.querySelector('[role="tooltip"]')).toBeNull();
 	});
@@ -57,12 +56,9 @@ describe('ProjectHeader', () => {
 		expect(trigger?.getAttribute('aria-describedby')).toBe(tip.id);
 	});
 
-	it('explains the sandbox label and name', async () => {
+	it('explains the sandbox label and name with one tooltip and tab stop', async () => {
 		render(ProjectHeader, props);
-		await userEvent.hover(page.getByText('sandbox', { exact: true }));
-		await expect.element(page.getByRole('tooltip')).toHaveTextContent(sandboxHint);
-		await userEvent.unhover(page.getByText('sandbox', { exact: true }));
-		await expect.poll(() => document.querySelector('[role="tooltip"]')).toBeNull();
+		expect(document.querySelectorAll('.ez-project-header__meta [tabindex="0"]').length).toBe(2);
 		await userEvent.hover(page.getByText('sb', { exact: true }));
 		await expect.element(page.getByRole('tooltip')).toHaveTextContent(sandboxHint);
 	});
