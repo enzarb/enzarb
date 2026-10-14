@@ -4,6 +4,7 @@
 
 use chrono::{DateTime, Utc};
 use enzarb_connector::command::{has_approve_command, mentions_handle};
+use enzarb_connector::epic::parse_epic_marker;
 use enzarb_connector::{
     Actor, CheckSummary, CiInfo, CiState, CommentKind, CommentRef, Event, EventData, EventType,
     ItemKind, ItemRef, RepoKey, Review, check_state,
@@ -502,7 +503,15 @@ pub fn normalize(
     // sender is whoever pushed the commit, which is the bot for its own PRs;
     // `from_bot(app)` below excludes check suites created by our own app.
     let is_ci_event = matches!(event_name, "check_suite" | "check_run" | "status");
-    if !is_ci_event && sender.login.eq_ignore_ascii_case(bot_login) {
+    // The one bot event that passes: a sub-issue enzarb created for an epic opens its own
+    // workflow. The engine checks the marker against the stored parent and the sender.
+    let epic_child = event_name == "issues"
+        && p.action == "opened"
+        && p.issue
+            .as_ref()
+            .and_then(|i| i.body.as_deref())
+            .is_some_and(|b| parse_epic_marker(b).is_some());
+    if !is_ci_event && !epic_child && sender.login.eq_ignore_ascii_case(bot_login) {
         return Ok(ignored);
     }
     let actor = sender.actor();
