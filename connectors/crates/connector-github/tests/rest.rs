@@ -1662,6 +1662,59 @@ async fn mint_read_credential_does_not_retry_unrelated_errors() {
     assert!(matches!(err, Error::Invalid(_)));
 }
 
+// ---- delete_branch ----
+
+async fn delete_branch_with(resp: ResponseTemplate) -> (Result<(), Error>, Vec<String>) {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    Mock::given(method("DELETE"))
+        .and(path_regex(r"^/repos/enzarb/enzarb-ui/git/refs/heads/"))
+        .respond_with(resp)
+        .mount(&server)
+        .await;
+    let got = connector(&server)
+        .delete_branch(&repo(), "enzarb/issue-1", "k")
+        .await;
+    let paths = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method.as_str() == "DELETE")
+        .map(|r| r.url.path().to_string())
+        .collect();
+    (got, paths)
+}
+
+#[tokio::test]
+async fn delete_branch_deletes_the_ref() {
+    let (got, paths) = delete_branch_with(ResponseTemplate::new(204)).await;
+    got.unwrap();
+    assert_eq!(
+        paths,
+        vec!["/repos/enzarb/enzarb-ui/git/refs/heads/enzarb/issue-1"]
+    );
+}
+
+#[tokio::test]
+async fn delete_branch_already_gone_is_success() {
+    let (got, _) = delete_branch_with(
+        ResponseTemplate::new(422).set_body_json(json!({"message": "Reference does not exist"})),
+    )
+    .await;
+    got.unwrap();
+    let (got, _) = delete_branch_with(ResponseTemplate::new(404)).await;
+    got.unwrap();
+}
+
+#[tokio::test]
+async fn delete_branch_forbidden_is_an_error() {
+    let (got, _) =
+        delete_branch_with(ResponseTemplate::new(403).set_body_json(json!({"message": "no"})))
+            .await;
+    assert!(matches!(got.unwrap_err(), Error::PermissionDenied(_)));
+}
+
 // ---- base_sha / branch_head ----
 
 #[tokio::test]

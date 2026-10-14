@@ -44,10 +44,10 @@ export const getWorkItem = query(v.pipe(v.number(), v.integer(), v.minValue(1)),
 	return item;
 });
 
-export const submitAction = command(SubmitActionSchema, async ({ id, action }) => {
+export const submitAction = command(SubmitActionSchema, async ({ id, action, data }) => {
 	const { user, work } = await service();
 	try {
-		await work.submitAction(id, { login: user.login, id: user.githubId }, action);
+		await work.submitAction(id, { login: user.login, id: user.githubId }, action, data);
 	} catch (e) {
 		if (e instanceof WorkError) error(e.kind === 'not-found' ? 404 : 409, e.message);
 		throw e;

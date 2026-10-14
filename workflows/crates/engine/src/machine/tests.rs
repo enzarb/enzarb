@@ -874,6 +874,83 @@ fn issue_nudge_then_stale_then_resume() {
     );
 }
 
+fn ui_comment(id: &str, who: &str, body: &str) -> EngineEvent {
+    EngineEvent {
+        id: id.into(),
+        payload: EventPayload::Ui(UiAction {
+            actor: actor(who),
+            action: UiActionKind::Comment,
+            data: json!({ "body": body }),
+        }),
+    }
+}
+
+#[test]
+fn ui_comment_on_a_plan_replans_and_posts_the_text() {
+    let s = issue_in(IssuePhase::AwaitingApproval);
+    let t = run(
+        Permission::Write,
+        &s,
+        &ui_comment("1", "carol", "  use CSS vars  "),
+    );
+    let d = assert_issue(&t, IssuePhase::Planning);
+    assert_eq!(d.trigger_text, "use CSS vars");
+    assert_eq!(d.trigger_comment_id, None);
+    assert!(kinds(&t).contains(&JobKind::AgentPlan));
+    let (_, _, posted) = job_of(&t, JobKind::PostComment);
+    let body = posted["body"].as_str().unwrap();
+    assert!(
+        body.starts_with("use CSS vars") && body.contains("@carol"),
+        "{body}"
+    );
+    assert_eq!(posted["item"], json!(WorkItemKey::new(repo(), 42)));
+    // The author without write access may too, a stranger may not.
+    assert_issue(
+        &run(Permission::Read, &s, &ui_comment("2", "alice", "x")),
+        IssuePhase::Planning,
+    );
+    rejected(
+        &run(Permission::Read, &s, &ui_comment("3", "mallory", "x")),
+        &s,
+    );
+}
+
+#[test]
+fn ui_comment_answers_questions_but_only_for_the_author() {
+    let s = issue_in(IssuePhase::AwaitingAnswers);
+    let t = run(Permission::Read, &s, &ui_comment("1", "alice", "yes, v2"));
+    assert_issue(&t, IssuePhase::Triaging);
+    assert!(kinds(&t).contains(&JobKind::PostComment));
+    rejected(
+        &run(Permission::Write, &s, &ui_comment("2", "carol", "x")),
+        &s,
+    );
+}
+
+#[test]
+fn ui_comment_is_rejected_when_empty_or_not_applicable() {
+    let s = issue_in(IssuePhase::AwaitingApproval);
+    rejected(
+        &run(Permission::Write, &s, &ui_comment("1", "carol", "  ")),
+        &s,
+    );
+    // An /approve command goes through the approve action, not through feedback.
+    rejected(
+        &run(Permission::Write, &s, &ui_comment("2", "carol", "/approve")),
+        &s,
+    );
+    let busy = issue_in(IssuePhase::Planning);
+    rejected(
+        &run(Permission::Write, &busy, &ui_comment("3", "carol", "x")),
+        &busy,
+    );
+    let m = mention_in(MentionPhase::Running);
+    rejected(
+        &run(Permission::Write, &m, &ui_comment("4", "carol", "x")),
+        &m,
+    );
+}
+
 #[test]
 fn issue_plan_feedback_replans() {
     let s = issue_in(IssuePhase::AwaitingApproval);
@@ -2481,9 +2558,11 @@ fn from_row_parses_every_event_type() {
         ("RetryRequested", UiActionKind::Retry),
         ("MergeRequested", UiActionKind::Merge),
         ("RepoRemoved", UiActionKind::RepoRemoved),
+        ("CommentAdded", UiActionKind::Comment),
     ] {
         let mut p = ui_payload.clone();
         p["action"] = json!(match action {
+            UiActionKind::Comment => "comment",
             UiActionKind::Approve => "approve",
             UiActionKind::Cancel => "cancel",
             UiActionKind::Retry => "retry",

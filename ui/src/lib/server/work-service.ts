@@ -1,6 +1,9 @@
 import {
 	availableActions,
+	canComment,
 	classifyNeedsYou,
+	COMMENT_MAX_LENGTH,
+	type ActionData,
 	ENZARB_WORKING_PHASES,
 	hoursToMs,
 	NEEDS_YOU_STALE_HOURS_DEFAULT,
@@ -255,15 +258,34 @@ export function workService(
 		},
 
 		/** Validates against the item's current state, then calls `workflows_api.submit_action`. */
-		async submitAction(id: number, actor: Actor, action: WorkAction): Promise<number | null> {
+		async submitAction(
+			id: number,
+			actor: Actor,
+			action: WorkAction,
+			data: ActionData = {}
+		): Promise<number | null> {
 			const row = await load(id);
 			if (!row) throw new WorkError('not-found', 'Task not found');
-			if (!availableActions(row.state).includes(action)) {
+			const allowed =
+				action === 'comment'
+					? canComment(row.workflow, row.state)
+					: availableActions(row.state).includes(action);
+			if (!allowed) {
 				throw new WorkError('invalid-action', `Cannot ${action} while ${row.state}`);
+			}
+			// Only the payload the action defines goes through (contracts §6).
+			let payload: Record<string, unknown> = {};
+			if (action === 'comment') {
+				const body = data.body?.trim() ?? '';
+				if (!body || body.length > COMMENT_MAX_LENGTH)
+					throw new WorkError('invalid-action', 'A comment needs text of at most 20000 characters');
+				payload = { body };
+			} else if (action === 'merge' && data.deleteBranch) {
+				payload = { delete_branch: true };
 			}
 			const [res] = await sql<{ id: string | number | null }[]>`
 				SELECT workflows_api.submit_action(
-					${id}::bigint, ${sql.json({ login: actor.login, id: actor.id, is_bot: false })}, ${action}, ${sql.json({})}) AS id`;
+					${id}::bigint, ${sql.json({ login: actor.login, id: actor.id, is_bot: false })}, ${action}, ${sql.json(payload as never)}) AS id`;
 			return res?.id == null ? null : Number(res.id);
 		},
 

@@ -1,25 +1,35 @@
 import { describe, expect, it } from 'vitest';
+import * as v from 'valibot';
 import {
 	applyItemChange,
 	applyNeedsYouChange,
 	availableActions,
 	blockedReason,
+	BOARD_COLUMNS,
+	boardColumn,
+	boardItems,
+	canComment,
 	classifyNeedsYou,
+	COMMENT_MAX_LENGTH,
 	countPossiblyRunning,
 	githubRefLabel,
+	groupByColumn,
 	groupWorkItems,
 	isTerminal,
 	itemUrl,
 	keyToUrl,
+	NEEDS_YOU_CATEGORIES,
 	parseReadiness,
 	parseWait,
 	parseWorkId,
 	primaryAction,
 	shouldRefresh,
 	stateTone,
-	waitingFor,
+	SubmitActionSchema,
+	TERMINAL_STATES,
 	waitLinks,
 	type NeedsYou,
+	type NeedsYouCategory,
 	type WorkItemSummary
 } from './work-items.ts';
 
@@ -279,13 +289,146 @@ describe('needs-you classification', () => {
 		list = applyNeedsYouChange(list, mk(2, '2026-01-04T00:00:00Z', null));
 		expect(list.map((i) => i.id)).toEqual([1]);
 	});
-	it('waitingFor renders a short age', () => {
-		const now = Date.parse('2026-01-10T00:00:00Z');
-		expect(waitingFor('2026-01-09T23:59:50Z', now)).toBe('<1m');
-		expect(waitingFor('2026-01-09T23:15:00Z', now)).toBe('45m');
-		expect(waitingFor('2026-01-09T21:00:00Z', now)).toBe('3h');
-		expect(waitingFor('2026-01-05T00:00:00Z', now)).toBe('5d');
-		expect(waitingFor('nonsense', now)).toBe('<1m');
+});
+
+describe('board columns', () => {
+	const needs = (category: NeedsYou['category']): NeedsYou => ({ category, reason: null });
+	const mk = (
+		id: number,
+		state: string,
+		n: NeedsYou | null = null,
+		updatedAt = '2026-10-14T10:00:00Z'
+	) =>
+		({
+			id,
+			key: `github:o/r#${id}`,
+			project: 'p',
+			workflow: 'issue',
+			state,
+			title: `t${id}`,
+			url: null,
+			updatedAt,
+			needs: n
+		}) satisfies WorkItemSummary;
+
+	it('runs in process order, left to right', () => {
+		expect(BOARD_COLUMNS.map((c) => c.id)).toEqual([
+			'plan',
+			'progress',
+			'blocked',
+			'review',
+			'done'
+		]);
+		expect(BOARD_COLUMNS.filter((c) => c.needsYou).map((c) => c.id)).toEqual([
+			'plan',
+			'blocked',
+			'review'
+		]);
+	});
+
+	it('places every needs-you category', () => {
+		const want: Record<NeedsYouCategory, string> = {
+			approval: 'plan',
+			question: 'plan',
+			blocked: 'blocked',
+			failed: 'blocked',
+			merge: 'review',
+			review: 'review',
+			decision: 'review'
+		};
+		expect(Object.keys(want).sort()).toEqual([...NEEDS_YOU_CATEGORIES].sort());
+		for (const c of NEEDS_YOU_CATEGORIES)
+			expect(boardColumn({ state: 'AwaitingChanges', needs: needs(c) })).toBe(want[c]);
+	});
+
+	it('places the rest by whether the state is terminal', () => {
+		for (const s of TERMINAL_STATES) expect(boardColumn({ state: s })).toBe('done');
+		for (const s of ['Triaging', 'Planning', 'Merging', 'Reviewing', 'Cancelling'])
+			expect(boardColumn({ state: s })).toBe('progress');
+		// waits on enzarb, CI or a stacked parent stay in progress
+		expect(boardColumn({ state: 'AwaitingChanges', needs: null })).toBe('progress');
+		expect(boardColumn({ state: 'SomethingNew' })).toBe('progress');
+		expect(boardColumn({ state: 'Cancelled' })).toBe('done');
+	});
+
+	it('agrees with classifyNeedsYou, including parked conflicts', () => {
+		const NOW = Date.parse('2026-10-14T12:00:00Z');
+		const classify = (workflow: string, state: string, stateData: unknown = {}) =>
+			classifyNeedsYou(
+				{ workflow, state, stateData, updatedAt: '2026-10-14T11:00:00Z' },
+				{ now: NOW, staleAfterMs: 24 * 3_600_000 }
+			);
+		const column = (workflow: string, state: string, stateData?: unknown) =>
+			boardColumn({ state, needs: classify(workflow, state, stateData) });
+		expect(column('issue', 'AwaitingApproval')).toBe('plan');
+		expect(column('issue', 'AwaitingAnswers')).toBe('plan');
+		expect(column('issue', 'Failed')).toBe('blocked');
+		expect(column('change_request', 'ConflictParked')).toBe('blocked');
+		expect(column('change_request', 'ReadyToMerge')).toBe('review');
+		expect(column('change_request', 'Reviewing')).toBe('progress');
+		expect(column('issue', 'Done')).toBe('done');
+		const wait = (reason: string, waiting_on: string) => ({
+			wait: { waiting_on, reason, text: 't' }
+		});
+		expect(column('change_request', 'AwaitingChanges', wait('conflict_parked', 'human'))).toBe(
+			'blocked'
+		);
+		expect(column('change_request', 'AwaitingChanges', wait('ci_pending', 'ci'))).toBe('progress');
+	});
+
+	it('groups items per column in input order, with every column present', () => {
+		const items = [
+			mk(1, 'Planning'),
+			mk(2, 'AwaitingApproval', needs('approval')),
+			mk(3, 'Done'),
+			mk(4, 'Planning')
+		];
+		const g = groupByColumn(items);
+		expect(g.progress.map((i) => i.id)).toEqual([1, 4]);
+		expect(g.plan.map((i) => i.id)).toEqual([2]);
+		expect(g.done.map((i) => i.id)).toEqual([3]);
+		expect(g.blocked).toEqual([]);
+		expect(g.review).toEqual([]);
+	});
+
+	it('merges the queue and the list: filtered, deduplicated, queue wins, newest first', () => {
+		const queue = [
+			mk(1, 'AwaitingApproval', needs('approval'), '2026-10-14T09:00:00Z'),
+			{ ...mk(2, 'Failed', needs('failed')), project: 'other' }
+		];
+		const list = [
+			mk(1, 'AwaitingApproval', needs('approval'), '2026-10-14T08:00:00Z'),
+			mk(3, 'Planning', null, '2026-10-14T11:00:00Z'),
+			// the list copy still says "waiting"; the queue is what moves it
+			mk(4, 'AwaitingApproval', needs('approval'))
+		];
+		expect(boardItems(queue, list).map((i) => i.id)).toEqual([3, 2, 1]);
+		expect(boardItems(queue, list, 'p').map((i) => i.id)).toEqual([3, 1]);
+		expect(boardItems(queue, list)[2].updatedAt).toBe('2026-10-14T09:00:00Z');
+		expect(boardItems([], [])).toEqual([]);
+	});
+});
+
+describe('comment', () => {
+	it('is offered on an issue plan or questions only', () => {
+		expect(canComment('issue', 'AwaitingApproval')).toBe(true);
+		expect(canComment('issue', 'AwaitingAnswers')).toBe(true);
+		expect(canComment('issue', 'Planning')).toBe(false);
+		expect(canComment('change_request', 'AwaitingApproval')).toBe(false);
+		expect(availableActions('AwaitingApproval')).not.toContain('comment');
+	});
+
+	it('needs text and caps its length', () => {
+		const ok = (x: unknown) => v.safeParse(SubmitActionSchema, x).success;
+		expect(ok({ id: 1, action: 'approve' })).toBe(true);
+		expect(ok({ id: 1, action: 'merge', data: { deleteBranch: true } })).toBe(true);
+		expect(ok({ id: 1, action: 'comment', data: { body: 'use CSS vars' } })).toBe(true);
+		expect(ok({ id: 1, action: 'comment' })).toBe(false);
+		expect(ok({ id: 1, action: 'comment', data: { body: '   ' } })).toBe(false);
+		expect(
+			ok({ id: 1, action: 'comment', data: { body: 'x'.repeat(COMMENT_MAX_LENGTH + 1) } })
+		).toBe(false);
+		expect(ok({ id: 1, action: 'nuke' })).toBe(false);
 	});
 });
 

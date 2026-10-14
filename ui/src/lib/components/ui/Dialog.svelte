@@ -11,6 +11,7 @@
 		open = $bindable(false),
 		title,
 		description,
+		wide = false,
 		trigger,
 		footer,
 		children
@@ -18,6 +19,8 @@
 		open?: boolean;
 		title: string;
 		description?: string;
+		/** A wider panel for content that is read, such as a plan or a review. */
+		wide?: boolean;
 		trigger?: Snippet<[Record<string, unknown>]>;
 		footer?: Snippet;
 		children?: Snippet;
@@ -32,14 +35,16 @@
 	{/if}
 	<Dialog.Portal>
 		<Dialog.Overlay class="ez-dialog__overlay" />
-		<Dialog.Content class="ez-dialog__content">
+		<Dialog.Content
+			class={wide ? 'ez-dialog__content ez-dialog__content--wide' : 'ez-dialog__content'}
+		>
 			<div>
 				<Dialog.Title class="ez-dialog__title">{title}</Dialog.Title>
 				{#if description}
 					<Dialog.Description class="ez-dialog__description">{description}</Dialog.Description>
 				{/if}
 			</div>
-			{#if children}<div>{@render children()}</div>{/if}
+			{#if children}<div class="ez-dialog__body">{@render children()}</div>{/if}
 			{#if footer}<div class="ez-dialog__footer">{@render footer()}</div>{/if}
 		</Dialog.Content>
 	</Dialog.Portal>

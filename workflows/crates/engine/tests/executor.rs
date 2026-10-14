@@ -705,6 +705,124 @@ async fn merge_job_rechecks_readiness_and_passes_the_idempotency_key() {
     );
 }
 
+fn delete_calls(h: &H) -> Vec<String> {
+    h.fake
+        .delete_branch_calls()
+        .into_iter()
+        .map(|(_, b)| b)
+        .collect()
+}
+
+/// Runs one merge job that merges `number`, asking to delete `delete`, and returns its output.
+async fn merge_asking_to_delete(h: &H, wi: i64, idem: &str, delete: Option<&str>) -> Value {
+    use enzarb_connector::{CiState, MergeOutcome};
+    h.fake
+        .set_merge_readiness(key(1), readiness("sha1", CiState::Success, Some(true)));
+    h.fake
+        .queue_merge_outcome(MergeOutcome::Merged { sha: "m1".into() });
+    let mut input = json!({ "item": key(1), "number": 1, "title": "feat: dark mode",
+                            "expected_head_sha": "sha1", "actor": "carol" });
+    if let Some(b) = delete {
+        input["delete_branch"] = json!(b);
+    }
+    let id = new_job(
+        h.pool(),
+        wi,
+        "enzarb",
+        "merge_change_request",
+        10,
+        idem,
+        input,
+    )
+    .await;
+    assert_eq!(h.exec.drain().await, 1);
+    let j = job(h.pool(), id).await;
+    assert_eq!(
+        j.status, "succeeded",
+        "a branch problem never fails the merge"
+    );
+    j.output.unwrap()
+}
+
+#[tokio::test]
+async fn merge_job_deletes_the_enzarb_branch_only_when_asked() {
+    let h = H::new(db!()).await;
+    let wi = new_item(h.pool(), 1, "enzarb").await;
+    let out = merge_asking_to_delete(&h, wi, "k:a", None).await;
+    assert_eq!(out["outcome"], "merged");
+    assert!(delete_calls(&h).is_empty());
+
+    let out = merge_asking_to_delete(&h, wi, "k:b", Some("enzarb/issue-1")).await;
+    assert_eq!(out["outcome"], "merged");
+    assert_eq!(out["branch"], "branch enzarb/issue-1 deleted");
+    assert_eq!(delete_calls(&h), ["enzarb/issue-1"]);
+
+    // Anything that is not an enzarb branch is never deleted.
+    let out = merge_asking_to_delete(&h, wi, "k:c", Some("main")).await;
+    assert!(
+        out["branch"]
+            .as_str()
+            .unwrap()
+            .contains("not an enzarb branch")
+    );
+    let out = merge_asking_to_delete(&h, wi, "k:d", Some("feature/x")).await;
+    assert!(out["branch"].as_str().unwrap().contains("kept"));
+    assert_eq!(delete_calls(&h), ["enzarb/issue-1"]);
+}
+
+#[tokio::test]
+async fn a_failed_branch_delete_is_reported_and_does_not_fail_the_merge() {
+    let h = H::new(db!()).await;
+    let wi = new_item(h.pool(), 1, "enzarb").await;
+    h.fake
+        .fail_delete_branch(enzarb_connector::Error::PermissionDenied(
+            "protected".into(),
+        ));
+    let out = merge_asking_to_delete(&h, wi, "k:fail", Some("enzarb/issue-1")).await;
+    assert_eq!(out["outcome"], "merged");
+    let note = out["branch"].as_str().unwrap();
+    assert!(
+        note.starts_with("branch enzarb/issue-1 not deleted:") && note.contains("protected"),
+        "{note}"
+    );
+}
+
+#[tokio::test]
+async fn merge_job_keeps_the_branch_while_a_stacked_child_awaits_its_retarget() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let wi = new_item(pool, 1, "enzarb").await;
+    sqlx::query(
+        "INSERT INTO workflows.work_items (key, project_id, workflow, state, state_data)
+         VALUES ($1, 'enzarb', 'change_request', 'AwaitingChanges', $2)",
+    )
+    .bind(key(2).to_string())
+    .bind(json!({ "stacked_on": key(1) }))
+    .execute(pool)
+    .await
+    .unwrap();
+    let out = merge_asking_to_delete(&h, wi, "k:stacked", Some("enzarb/issue-1")).await;
+    assert_eq!(out["outcome"], "merged");
+    assert!(
+        out["branch"]
+            .as_str()
+            .unwrap()
+            .contains("not retargeted yet"),
+        "{out}"
+    );
+    assert!(delete_calls(&h).is_empty());
+
+    // A child that is finished no longer holds the branch.
+    sqlx::query("UPDATE workflows.work_items SET state = 'Closed' WHERE key = $1")
+        .bind(key(2).to_string())
+        .execute(pool)
+        .await
+        .unwrap();
+    let out = merge_asking_to_delete(&h, wi, "k:free", Some("enzarb/issue-1")).await;
+    assert_eq!(out["branch"], "branch enzarb/issue-1 deleted");
+    assert_eq!(delete_calls(&h), ["enzarb/issue-1"]);
+}
+
 #[tokio::test]
 async fn merge_job_updates_a_behind_branch_instead_of_merging() {
     use enzarb_connector::{CiState, UpdateBranchOutcome};
@@ -3692,13 +3810,13 @@ async fn a_refused_base_change_is_reported_not_retried() {
         .add_thread(key(6), stacked_pr("sha1", "enzarb/issue-1"));
     h.sandbox
         .set_mode(finish_with(retarget_summary("retargeted")));
-    let id = retarget_job(&h, retarget_input("sha1", "enzarb/issue-2")).await;
-    h.exec.drain().await;
-    // The run is started; the callback follows shortly. The provider then refuses the base
-    // change after the rebase and push.
-    h.fake.fail_next(enzarb_connector::Error::Invalid(
+    // The provider refuses the base change after the rebase and push. Armed up front, and only
+    // for `set_base`, so it cannot race the callback or be spent on another call.
+    h.fake.fail_set_base(enzarb_connector::Error::Invalid(
         "base branch is invalid".into(),
     ));
+    let id = retarget_job(&h, retarget_input("sha1", "enzarb/issue-2")).await;
+    h.exec.drain().await;
     wait_for("the callback", || async {
         job(h.pool(), id).await.status == "succeeded"
     })
