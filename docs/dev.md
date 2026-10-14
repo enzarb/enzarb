@@ -13,6 +13,21 @@ The tasks are in `.mise/tasks/dev/`:
 | `mise run dev:webhook-relay` | Relays smee.io deliveries to `https://enzarb.local/hooks/github`. |
 | `mise run dev:down` | Deletes the kind cluster. |
 
+## Git hooks
+
+Optional [lefthook](https://lefthook.dev) hooks (config: `lefthook.yml`, tool pinned in `mise.toml`) run the fast CI checks before you commit or push. Installation is opt-in per clone:
+
+| Task | What it does |
+|---|---|
+| `mise run hooks:install` | Runs `lefthook install`, writing the `pre-commit` and `pre-push` hooks (also works in git worktrees). |
+| `mise run hooks:uninstall` | Runs `lefthook uninstall`. |
+
+- **pre-commit** (staged files only, no network): `cargo fmt --all --check` per Rust component with staged `.rs` files; the Cargo guard (`scripts/monorepo/check-cargo-deps.sh`) when a `Cargo.toml`/`Cargo.lock` is staged; `npm run lint` in `ui/`; `shellcheck` on staged shell scripts; `mise run lint` (helm lint) when `helm/**` is staged.
+- **pre-push** (components touched by the pushed commits): `cargo clippy --all-targets -- -D warnings` and `cargo test` per Rust component; `npm run check` and the server unit tests in `ui/`; `mise run compat` in `helm/` (it reads the previous `helm/v*` tag, so fetch tags).
+- Hooks only check; they never modify files or install dependencies. If `ui/node_modules` is missing they print a notice and skip the `ui` commands (run `npm ci`).
+- **Skip:** `git commit --no-verify`, `git push --no-verify`, or `LEFTHOOK=0` for all hooks. CI stays the source of truth.
+- Run by hand: `lefthook run pre-commit --all-files`, `lefthook run pre-push --all-files`.
+
 ## Prerequisites
 
 - Docker with BuildKit, and `mise` (`mise install` provides `kind`, `kubectl`, `helm`, `gh`, `node`).

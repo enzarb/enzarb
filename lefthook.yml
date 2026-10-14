@@ -1,0 +1,134 @@
+# Opt-in git hooks: `mise run hooks:install` once per clone (docs/dev.md, "Git hooks").
+# Skip with `git commit --no-verify`, `git push --no-verify` or `LEFTHOOK=0`.
+# Hooks only check, never modify files or install dependencies. Keep in sync with
+# the CI jobs listed in docs/ci.md ("Git hooks").
+
+pre-commit:
+  parallel: true
+  commands:
+    fmt-proto:
+      root: proto/
+      glob: "*.rs"
+      run: cargo fmt --all --check
+    fmt-operator:
+      root: operator/
+      glob: "*.rs"
+      run: cargo fmt --all --check
+    fmt-connectors:
+      root: connectors/
+      glob: "*.rs"
+      run: cargo fmt --all --check
+    fmt-workflows:
+      root: workflows/
+      glob: "*.rs"
+      run: cargo fmt --all --check
+    fmt-realtime:
+      root: realtime/
+      glob: "*.rs"
+      run: cargo fmt --all --check
+    fmt-sandbox-proxy:
+      root: sandbox-proxy/
+      glob: "*.rs"
+      run: cargo fmt --all --check
+    fmt-sandbox-container:
+      root: sandbox-container/
+      glob: "*.rs"
+      run: cargo fmt --all --check
+    fmt-updater:
+      root: updater/
+      glob: "*.rs"
+      run: cargo fmt --all --check
+    cargo-deps:
+      glob: "{Cargo.toml,Cargo.lock,**/Cargo.toml,**/Cargo.lock}"
+      run: scripts/monorepo/check-cargo-deps.sh
+    ui-lint:
+      root: ui/
+      glob: "*"
+      run: '[ -d node_modules ] || { echo "ui: node_modules missing (run npm ci), skipping lint"; exit 0; }; npm run lint'
+    shellcheck:
+      glob: "{.mise/tasks/**,.mise/lib/*.sh,.github/scripts/*.sh,scripts/**,*.sh}"
+      run: shellcheck {staged_files}
+    helm-lint:
+      root: helm/
+      glob: "*"
+      run: mise run lint
+
+pre-push:
+  parallel: true
+  commands:
+    clippy-proto:
+      root: proto/
+      glob: "*.{rs,toml,lock}"
+      run: cargo clippy --all-targets -- -D warnings
+    clippy-operator:
+      root: operator/
+      glob: "*.{rs,toml,lock}"
+      run: cargo clippy --all-targets -- -D warnings
+    clippy-connectors:
+      root: connectors/
+      glob: "*.{rs,toml,lock}"
+      run: cargo clippy --all-targets -- -D warnings
+    clippy-workflows:
+      root: workflows/
+      glob: "*.{rs,toml,lock}"
+      run: cargo clippy --all-targets -- -D warnings
+    clippy-realtime:
+      root: realtime/
+      glob: "*.{rs,toml,lock}"
+      run: cargo clippy --all-targets -- -D warnings
+    clippy-sandbox-proxy:
+      root: sandbox-proxy/
+      glob: "*.{rs,toml,lock}"
+      run: cargo clippy --all-targets -- -D warnings
+    clippy-sandbox-container:
+      root: sandbox-container/
+      glob: "*.{rs,toml,lock}"
+      run: cargo clippy --all-targets -- -D warnings
+    clippy-updater:
+      root: updater/
+      glob: "*.{rs,toml,lock}"
+      run: cargo clippy --all-targets -- -D warnings
+    test-proto:
+      root: proto/
+      glob: "*.{rs,toml,lock}"
+      run: cargo test
+    test-operator:
+      root: operator/
+      glob: "*.{rs,toml,lock}"
+      run: cargo test
+    test-connectors:
+      root: connectors/
+      glob: "*.{rs,toml,lock}"
+      run: cargo test
+    test-workflows:
+      root: workflows/
+      glob: "*.{rs,toml,lock}"
+      run: cargo test
+    test-realtime:
+      root: realtime/
+      glob: "*.{rs,toml,lock}"
+      run: cargo test
+    test-sandbox-proxy:
+      root: sandbox-proxy/
+      glob: "*.{rs,toml,lock}"
+      run: cargo test
+    test-sandbox-container:
+      root: sandbox-container/
+      glob: "*.{rs,toml,lock}"
+      run: cargo test
+    test-updater:
+      root: updater/
+      glob: "*.{rs,toml,lock}"
+      run: cargo test
+    ui-check:
+      root: ui/
+      glob: "*"
+      run: '[ -d node_modules ] || { echo "ui: node_modules missing (run npm ci), skipping check"; exit 0; }; npm run check'
+    ui-test:
+      root: ui/
+      glob: "*"
+      run: '[ -d node_modules ] || { echo "ui: node_modules missing (run npm ci), skipping tests"; exit 0; }; npm run test:unit -- --run --project server'
+    helm-compat:
+      root: helm/
+      glob: "*"
+      run: mise run compat

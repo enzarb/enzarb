@@ -28,6 +28,7 @@ Run each component's checks from inside its directory.
 
 ## Working in the monorepo
 
+- **Git hooks (opt-in):** run `mise run hooks:install` once per clone to get lefthook pre-commit/pre-push checks that mirror CI (`docs/dev.md`, "Git hooks"). Skip with `--no-verify` or `LEFTHOOK=0`.
 - **One change, one PR**, even when it spans components. Change upstream code first in the same PR: `proto/` → `operator/` CRD types → `connectors/` → services (`workflows/`, `sandbox-proxy/`, `sandbox-container/`, `ui/`) → `helm/`.
 - **Run the checks of every component you touch** from inside its directory before calling a change done.
 - **Shared contracts:** the `proto/` frames and the `workflows_api` / `app_api` Postgres schemas. Make additive changes, or add a new versioned object; never break a consumer silently (deployed components roll out independently).

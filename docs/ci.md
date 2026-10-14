@@ -25,6 +25,21 @@ The monorepo's GitHub Actions setup (root `.github/`) follows these rules. Each 
   - Set `save-if: ${{ github.ref == 'refs/heads/main' }}`. PRs read the main cache but don't write, so cache churn stays low.
 - **Toolchain file per component:** `setup-rust-toolchain` gets `rust-src-dir: <dir>`; jobs run with `working-directory: <dir>`.
 
+## Git hooks
+`lefthook.yml` (opt-in, `mise run hooks:install`, see `docs/dev.md`) runs the same checks locally. Keep the two in sync when you change either.
+
+| Hook | Command | CI job |
+|---|---|---|
+| pre-commit | `cargo fmt --all --check` per Rust component | `_rust.yml` `fmt` |
+| pre-commit | `scripts/monorepo/check-cargo-deps.sh` (shared script) | `_rust.yml` `fmt` |
+| pre-commit | `npm run lint` in `ui/` | `ci-ui.yml` `check` |
+| pre-commit | `shellcheck` on staged scripts | (no dedicated job) |
+| pre-commit | `mise run lint` in `helm/` | `ci-helm.yml` |
+| pre-push | `cargo clippy --all-targets -- -D warnings` | `_rust.yml` `clippy` |
+| pre-push | `cargo test` | `_rust.yml` `test` (CI uses nextest) |
+| pre-push | `npm run check`, server unit tests in `ui/` | `ci-ui.yml` `check`, `test-server` |
+| pre-push | `mise run compat` in `helm/` | `ci-helm.yml` |
+
 ## Docker images
 - **Build once per commit.** One `docker` job in `ci.yml`:
   - **On PRs:** build, and smoke-test if the repo has a smoke script. No push.

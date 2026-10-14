@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description="Install the git pre-commit and pre-push hooks (lefthook) in this clone"
+set -euo pipefail
+lefthook install
