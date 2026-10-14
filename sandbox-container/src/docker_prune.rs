@@ -16,7 +16,7 @@
 //! sequence.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -297,6 +297,7 @@ pub struct Pruner {
     gate: ActivityGate,
     reaper: Arc<Reaper>,
     running: tokio::sync::Mutex<()>,
+    warned_no_binary: AtomicBool,
     last: Mutex<Option<LastPrune>>,
 }
 
@@ -313,6 +314,7 @@ impl Pruner {
             gate,
             reaper,
             running: tokio::sync::Mutex::new(()),
+            warned_no_binary: AtomicBool::new(false),
             last: Mutex::new(None),
         })
     }
@@ -380,11 +382,22 @@ impl Pruner {
             return Outcome::Skipped(Skipped::Busy);
         };
         let before = self.disk();
+        let mut images = with_images;
         for args in self.plan(mode, with_images) {
+            // A run or chat may have started during an earlier (slow) step: stop touching images.
+            if matches!(args[0].as_str(), "image" | "builder") {
+                images = images && self.gate.is_idle();
+                if !images {
+                    tracing::info!(cmd = %args.join(" "), "docker prune: activity started, step skipped");
+                    continue;
+                }
+            }
             match self.docker(&args).await {
                 Ok(_) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    tracing::warn!(bin = %self.cfg.docker_bin, "docker prune skipped: docker CLI not found");
+                    if !self.warned_no_binary.swap(true, Ordering::Relaxed) {
+                        tracing::warn!(bin = %self.cfg.docker_bin, "docker prune skipped: docker CLI not found");
+                    }
                     return Outcome::Skipped(Skipped::NoBinary);
                 }
                 Err(e) => {
@@ -404,7 +417,7 @@ impl Pruner {
             mode,
             freed_bytes,
         });
-        tracing::info!(?mode, freed_bytes, images = with_images, "docker prune");
+        tracing::info!(?mode, freed_bytes, images, "docker prune");
         if let Some(d) = self.disk()
             && d.is_low(self.cfg.min_free_percent)
         {
@@ -755,6 +768,28 @@ mod tests {
         assert!(calls(&log).is_empty());
         // a low-disk prune only does what docker itself keeps safe for running containers
         assert!(matches!(p.run(Mode::Aggressive).await, Outcome::Ran { .. }));
+        assert_eq!(calls(&log), ["container prune -f", "volume prune -f"]);
+    }
+
+    #[tokio::test]
+    async fn activity_starting_mid_prune_skips_the_remaining_image_steps() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, log) = fake_docker(dir.path(), "");
+        let script = dir.path().join("docker");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> {}\ncase \"$*\" in \"container\"*) sleep 1;; esac\nexit 0\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        let (p, _tx, gate) = pruner_with(&script.display().to_string(), true, State::Running);
+        let (out, _busy) = tokio::join!(p.run(Mode::Aggressive), async {
+            wait_for_calls(&log, 1).await;
+            gate.begin()
+        });
+        assert!(matches!(out, Outcome::Ran { .. }));
         assert_eq!(calls(&log), ["container prune -f", "volume prune -f"]);
     }
 
