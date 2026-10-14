@@ -47,7 +47,7 @@ pub mod filter;
 
 use std::fs::OpenOptions;
 use std::io::Write as _;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -257,6 +257,7 @@ struct Transcript {
 
 impl Transcript {
     fn open(path: &Path) -> Self {
+        let fresh = !path.exists();
         let f = OpenOptions::new()
             .create(true)
             .append(true)
@@ -265,6 +266,9 @@ impl Transcript {
             .map_err(|e| tracing::warn!(path = %path.display(), error = %e, "cannot open chat transcript"))
             .ok()
             .map(|f| {
+                if fresh {
+                    let _ = crate::privs::own(path);
+                }
                 let len = f.metadata().map(|m| m.len()).unwrap_or(0);
                 (f, len)
             });
@@ -625,10 +629,7 @@ impl ChatManager {
 
     fn write_meta(&self, m: &Meta) {
         let dir = self.chats_dir().join(&m.chat_id);
-        let _ = std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&dir);
+        let _ = crate::privs::create_dir_all_mode(&dir, Some(0o700));
         if let Ok(b) = serde_json::to_vec_pretty(m)
             && let Err(e) = write_atomic(&dir.join("meta.json"), &b, 0o600)
         {
@@ -684,7 +685,7 @@ impl ChatManager {
         let branch = format!("enzarb/chat-{chat_id}");
         let lock = self.locks.get(clone);
         let _g = lock.lock().await;
-        let _ = std::fs::create_dir_all(self.worktrees_dir());
+        let _ = crate::privs::create_dir_all(&self.worktrees_dir());
         let kept = self.harvest(clone, &wt).await;
         self.drop_chat_repo(&wt, kept);
         let _ = self.git(clone, &["worktree", "prune"]).await;
@@ -724,12 +725,11 @@ impl ChatManager {
         self.git_ok(&self.worktrees_dir(), &["init", "-q", "--template=", &w])
             .await?;
         let info = wt.join(".git/objects/info");
-        std::fs::create_dir_all(&info)
+        crate::privs::create_dir_all(&info)
             .and_then(|_| {
-                std::fs::write(
-                    info.join("alternates"),
-                    format!("{}\n", clone.join(".git/objects").display()),
-                )
+                let f = info.join("alternates");
+                std::fs::write(&f, format!("{}\n", clone.join(".git/objects").display()))
+                    .and_then(|()| crate::privs::own(&f))
             })
             .map_err(|e| format!("cannot link the clone's objects: {e}"))?;
         let own = format!("+refs/heads/{branch}:refs/heads/{branch}");
@@ -933,10 +933,7 @@ impl ChatManager {
         ));
         let secrets = self.secrets(&token);
         let config_dir = self.cfg.workspace.join(".enzarb/chat-home/.claude");
-        let _ = std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&config_dir);
+        let _ = crate::privs::create_dir_all_mode(&config_dir, Some(0o700));
         let env = self.agent_env(&token, &config_dir);
         let sink: LineSink = {
             let t = transcript.clone();

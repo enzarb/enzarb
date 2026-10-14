@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::dockerd::DockerdConfig;
 use crate::policy::Policy;
 
 /// Runtime configuration of sandbox-init.
@@ -67,6 +68,8 @@ pub struct Config {
     /// `ENZARB_CHAT_ALLOW_BYPASS`, default true: chats may run in (or switch
     /// to) `bypassPermissions`. False keeps them in `default`/`plan`.
     pub chat_allow_bypass: bool,
+    /// `ENZARB_DOCKERD*`: the supervised Docker daemon (ADR-0016).
+    pub dockerd: DockerdConfig,
 }
 
 /// A chat permission mode sandbox-init lets a chat be in.
@@ -126,6 +129,7 @@ impl Default for Config {
             chat_retention: Duration::from_secs(7 * 86400),
             chat_permission_mode: ChatMode::Bypass,
             chat_allow_bypass: true,
+            dockerd: DockerdConfig::default(),
         }
     }
 }
@@ -255,6 +259,7 @@ impl Config {
                 .map_err(|e| anyhow::anyhow!("ENZARB_GRACE_SECS={v:?}: {e}"))?;
             c.grace = Duration::from_secs(secs);
         }
+        c.dockerd = DockerdConfig::from_lookup(&get)?;
         Ok(c)
     }
 }
@@ -352,6 +357,33 @@ mod tests {
         // the error does not echo the value
         let e = mode(&[(m, "sk-ant-oat01-secret")]).unwrap_err().to_string();
         assert!(!e.contains("secret"), "{e}");
+    }
+
+    #[test]
+    fn dockerd_settings() {
+        let c = Config::from_lookup(|_| None).unwrap().dockerd;
+        assert!(c.enabled);
+        assert_eq!(c.bin, "dockerd");
+        let a = c.command_args();
+        assert_eq!(a[0], "--host=unix:///var/run/docker.sock");
+        assert!(a.contains(&"--group=1000".to_string()));
+        assert!(a.contains(&"--data-root=/var/lib/docker".to_string()));
+        assert!(a.contains(&"--iptables=false".to_string()));
+        assert!(a.contains(&"--storage-driver=vfs".to_string()));
+        let c = Config::from_lookup(|k| match k {
+            "ENZARB_DOCKERD" => Some("off".into()),
+            "ENZARB_DOCKERD_ARGS" => Some("--storage-driver=overlay2  --debug".into()),
+            "ENZARB_DOCKERD_SOCKET" => Some("/run/d.sock".into()),
+            _ => None,
+        })
+        .unwrap()
+        .dockerd;
+        assert!(!c.enabled);
+        let a = c.command_args();
+        assert_eq!(a[0], "--host=unix:///run/d.sock");
+        assert_eq!(&a[a.len() - 2..], ["--storage-driver=overlay2", "--debug"]);
+        assert!(!a.contains(&"--iptables=false".to_string()));
+        assert!(Config::from_lookup(|k| (k == "ENZARB_DOCKERD").then(|| "maybe".into())).is_err());
     }
 
     #[test]

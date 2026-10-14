@@ -8,8 +8,9 @@ metadata:
   name: {{ .Values.sandbox.namespace }}
   labels:
     {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-sandboxes") | nindent 4 }}
-    # Pod Security: privileged. The dockerd sidecar needs SYS_ADMIN/NET_ADMIN under gVisor and
-    # the kata profile is privileged (ADR-0012); gVisor is the isolation boundary. Explicit
+    # Pod Security: privileged. dockerd (run by sandbox-init in the sandbox container) needs
+    # root and SYS_ADMIN/NET_ADMIN under gVisor, and the kata profile is privileged
+    # (ADR-0016); gVisor is the isolation boundary. Explicit
     # label so a stricter cluster default cannot reject sandbox pods.
     pod-security.kubernetes.io/enforce: privileged
   annotations:

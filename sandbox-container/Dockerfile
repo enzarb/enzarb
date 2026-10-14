@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Sandbox image: sandbox-init (pid 1), node + the ACP adapter, mise, the Docker CLI (+buildx, compose) and a C toolchain. Language toolchains come from mise at runtime.
+# Sandbox image: sandbox-init (pid 1), node + the ACP adapter, mise, Docker (dockerd + CLI, buildx, compose; dockerd is supervised by sandbox-init) and a C toolchain. Language toolchains come from mise at runtime.
 # Build from the monorepo root (in-repo path dep on proto/):
 #   docker build -f sandbox-container/Dockerfile -t enzarb-sandbox .
 FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
@@ -64,8 +64,9 @@ RUN set -e; \
     tar -xzf "$f" -C /usr/local --strip-components=1 mise/bin/mise; rm -f "$f"; \
     mise --version
 
-# Docker CLI stage: static client + buildx + compose plugins only (no daemon; dockerd is the operator's sidecar).
-# DOCKER_VERSION matches the sidecar's docker:29.x-dind. Every download is checked against a pinned sha256.
+# Docker stage: the static Docker bundle (docker, dockerd, containerd, containerd-shim-runc-v2, ctr, runc,
+# docker-init, docker-proxy) + buildx + compose plugins. sandbox-init runs and supervises dockerd (ADR-0016).
+# Every download is checked against a pinned sha256.
 FROM ubuntu:26.04 AS dockercli
 ARG DOCKER_VERSION=29.8.2
 ARG BUILDX_VERSION=v0.38.0
@@ -89,27 +90,35 @@ RUN set -e; \
     mkdir -p /out/bin /out/plugins; \
     curl --retry 5 --retry-all-errors -fsSL -o docker.tgz "https://download.docker.com/linux/static/stable/${da}/docker-${DOCKER_VERSION}.tgz"; \
     echo "${dsha}  docker.tgz" | sha256sum -c -; \
-    tar -xzf docker.tgz -C /out/bin --strip-components=1 --no-same-owner docker/docker; \
+    tar -xzf docker.tgz -C /out/bin --strip-components=1 --no-same-owner; \
+    for b in docker dockerd containerd containerd-shim-runc-v2 runc; do test -x "/out/bin/$b"; done; \
     curl --retry 5 --retry-all-errors -fsSL -o /out/plugins/docker-buildx "https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-${ba}"; \
     echo "${bsha}  /out/plugins/docker-buildx" | sha256sum -c -; \
     curl --retry 5 --retry-all-errors -fsSL -o /out/plugins/docker-compose "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-${ca}"; \
     echo "${csha}  /out/plugins/docker-compose" | sha256sum -c -; \
-    chmod 0755 /out/bin/docker /out/plugins/*; \
-    /out/bin/docker --version
+    chmod 0755 /out/plugins/*; \
+    /out/bin/docker --version; /out/bin/dockerd --version; /out/bin/runc --version
 
 FROM ubuntu:26.04
 ARG TARGETARCH
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git curl ca-certificates openssh-client build-essential pkg-config libssl-dev \
+        git curl ca-certificates openssh-client build-essential pkg-config libssl-dev procps \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 
 # node binary only (no npm), the adapter tree and the glibc claude binary, all on PATH.
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/bin/mise /usr/local/bin/mise
-# Docker client only (ADR-0012); DOCKER_HOST is set by the operator.
-COPY --from=dockercli /out/bin/docker /usr/local/bin/docker
+# Docker daemon and client (ADR-0016). The client lives in libexec; /usr/local/bin/docker is a wrapper that
+# defaults `run`/`create`/`build` to --network=host (the daemon runs with --iptables=false, so the default
+# bridge has no NAT).
+COPY --from=dockercli /out/bin/ /usr/local/bin/
 COPY --from=dockercli /out/plugins/ /usr/local/lib/docker/cli-plugins/
+COPY sandbox-container/scripts/docker-wrapper.sh /usr/local/bin/docker-wrapper
+RUN mkdir -p /usr/local/libexec/docker \
+    && mv /usr/local/bin/docker /usr/local/libexec/docker/docker \
+    && mv /usr/local/bin/docker-wrapper /usr/local/bin/docker \
+    && chmod 0755 /usr/local/bin/docker
 COPY --from=node /usr/local/lib/node_modules/@agentclientprotocol /usr/local/lib/node_modules/@agentclientprotocol
 # The adapter's bin script has `#!/usr/bin/env node`; node is on PATH, so a symlink is the launcher.
 RUN set -e; \
@@ -126,10 +135,14 @@ RUN userdel -r ubuntu 2>/dev/null || true; \
     && mkdir -p /workspace/repos /workspace/worktrees /workspace/.enzarb /workspace/.toolchains \
     && chown -R 1000:1000 /workspace
 
-USER enzarb
+# No `USER`: pid 1 (sandbox-init) starts as root to supervise dockerd, and drops every child it spawns
+# (agents, git, mise, PTY shells) to uid/gid 1000 with no-new-privs (ADR-0016). `docker exec -u enzarb`
+# gives the sandbox user's view.
 # User and project toolchains (node, rust, python, ...) come from mise and persist on the PVC.
 # MISE_YES: never prompt (no tty). MISE_TRUSTED_CONFIG_PATHS: repos cloned under /workspace are trusted.
+# DOCKER_HOST: the socket of the dockerd that sandbox-init supervises (group 1000, mode 0660).
 ENV HOME=/home/enzarb \
+    DOCKER_HOST=unix:///var/run/docker.sock \
     MISE_DATA_DIR=/workspace/.toolchains/mise \
     MISE_CACHE_DIR=/workspace/.toolchains/cache \
     CARGO_HOME=/workspace/.toolchains/cargo \
