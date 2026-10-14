@@ -70,6 +70,33 @@ describe('parseConfig', () => {
 		);
 	});
 
+	describe('VAPID keys', () => {
+		const keys = { ENZARB_VAPID_PUBLIC_KEY: 'BPub_-1', ENZARB_VAPID_PRIVATE_KEY: 'priv_-2' };
+		const parse = (extra: Record<string, string>) => parseConfig({ ...valid, ...extra }).vapid;
+
+		it('is absent without keys and defaults the subject to the public origin', () => {
+			expect(parse({})).toBeUndefined();
+			expect(parse(keys)).toEqual({
+				publicKey: 'BPub_-1',
+				privateKey: 'priv_-2',
+				subject: 'https://enzarb.example.com'
+			});
+		});
+
+		it('takes a mailto subject', () => {
+			expect(parse({ ...keys, ENZARB_VAPID_SUBJECT: 'mailto:ops@example.com' })?.subject).toBe(
+				'mailto:ops@example.com'
+			);
+		});
+
+		it('rejects half a keypair, non-base64url keys and a bad subject', () => {
+			expect(() => parse({ ENZARB_VAPID_PUBLIC_KEY: 'x' })).toThrow(/set together/);
+			expect(() => parse({ ENZARB_VAPID_PRIVATE_KEY: 'x' })).toThrow(/set together/);
+			expect(() => parse({ ...keys, ENZARB_VAPID_PRIVATE_KEY: 'a+b/c=' })).toThrow(/base64url/);
+			expect(() => parse({ ...keys, ENZARB_VAPID_SUBJECT: 'ops' })).toThrow(/ENZARB_VAPID_SUBJECT/);
+		});
+	});
+
 	it('lists every missing variable at once', () => {
 		expect(() => parseConfig({ DATABASE_URL: valid.DATABASE_URL })).toThrow(
 			/ENZARB_SESSION_JWT_SECRET, ENZARB_REALTIME_JWT_SECRET, GITHUB_OAUTH_CLIENT_ID, GITHUB_OAUTH_CLIENT_SECRET, ENZARB_PUBLIC_URL/

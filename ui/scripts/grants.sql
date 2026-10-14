@@ -41,6 +41,17 @@ BEGIN
 		GRANT SELECT ON app_api.claude_credential_v TO enzarb_ui;
 		-- The one function the UI may run: deletes the given owner's row, returns a boolean.
 		GRANT EXECUTE ON FUNCTION app_api.claude_credential_delete_own(text) TO enzarb_ui;
+		-- Web Push (0006): the tables are reachable only through these functions.
+		REVOKE ALL ON app.push_subscriptions FROM enzarb_ui;
+		REVOKE ALL ON app.push_sent FROM enzarb_ui;
+		GRANT EXECUTE ON FUNCTION app_api.push_subscription_upsert(text, text, text, text, text[], text) TO enzarb_ui;
+		GRANT EXECUTE ON FUNCTION app_api.push_subscription_list(text) TO enzarb_ui;
+		GRANT EXECUTE ON FUNCTION app_api.push_subscription_targets(text, text) TO enzarb_ui;
+		GRANT EXECUTE ON FUNCTION app_api.push_subscription_set_categories(text, text, text[]) TO enzarb_ui;
+		GRANT EXECUTE ON FUNCTION app_api.push_subscription_delete(text, text) TO enzarb_ui;
+		GRANT EXECUTE ON FUNCTION app_api.push_subscription_touch(text, text) TO enzarb_ui;
+		GRANT EXECUTE ON FUNCTION app_api.push_claim(text, bigint, text, text, integer) TO enzarb_ui;
+		GRANT EXECUTE ON FUNCTION app_api.push_sent_prune(integer) TO enzarb_ui;
 	END IF;
 END
 $$;
