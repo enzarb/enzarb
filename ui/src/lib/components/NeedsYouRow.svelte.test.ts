@@ -75,6 +75,37 @@ describe('NeedsYouRow', () => {
 		expect(onaction).toHaveBeenCalledWith('retry');
 	});
 
+	it('lists the unverified checks and links to the review for a change request', async () => {
+		const text = 'enzarb could not verify: connectors tests (missing_tool)';
+		render(NeedsYouRow, {
+			item: {
+				...row({ category: 'review', reason: null, text }, 'AwaitingChanges'),
+				workflow: 'change_request',
+				url: 'https://github.com/acme/web/pull/7',
+				wait: { waitingOn: 'human', reason: 'checks_unverified', text, url: null }
+			},
+			onaction: vi.fn(),
+			loadPlan: async () => null
+		});
+		await expect.element(page.getByText(text)).toBeVisible();
+		await expect
+			.element(page.getByRole('link', { name: 'Review on GitHub' }))
+			.toHaveAttribute('href', 'https://github.com/acme/web/pull/7/files');
+	});
+
+	it('shows an unknown wait reason as its text without an action', async () => {
+		render(NeedsYouRow, {
+			item: {
+				...row({ category: 'blocked', reason: null, text: 'Something new' }, 'AwaitingChanges'),
+				workflow: 'change_request',
+				wait: { waitingOn: 'human', reason: 'from_the_future', text: 'Something new', url: null }
+			},
+			onaction: vi.fn(),
+			loadPlan: async () => null
+		});
+		await expect.element(page.getByText('Something new')).toBeVisible();
+	});
+
 	it('asks for confirmation before merging', async () => {
 		const onaction = vi.fn();
 		render(NeedsYouRow, {

@@ -1970,11 +1970,13 @@ fn cr_reopen_and_other_irrelevant_events() {
         } else {
             rejected(&t, &s);
         }
-        for ev in [
-            approval_comment("a", "carol"),
-            ui("b", "carol", UiActionKind::Approve),
-            opened("w"),
-        ] {
+        // `/approve` is a review approval while the item awaits changes (human_approval.rs).
+        let mut events = vec![opened("w")];
+        if phase != CrPhase::AwaitingChanges {
+            events.push(approval_comment("a", "carol"));
+            events.push(ui("b", "carol", UiActionKind::Approve));
+        }
+        for ev in events {
             rejected(&run_cr(Permission::Write, &s, &ev), &s);
         }
     }

@@ -168,6 +168,19 @@ describe('needs-you classification', () => {
 			reason: null,
 			text: 'Waiting for your review'
 		});
+		const unverified = 'enzarb could not verify: connectors tests (missing_tool)';
+		expect(
+			classifyNeedsYou(cr('AwaitingChanges', withWait('human', 'checks_unverified', unverified)))
+		).toEqual({ category: 'review', reason: null, text: unverified });
+		expect(
+			classifyNeedsYou(
+				cr('AwaitingChanges', withWait('human', 'ci_stale', 'CI status looks stale; check GitHub'))
+			)
+		).toMatchObject({ category: 'blocked', text: 'CI status looks stale; check GitHub' });
+		// a reason this UI does not know yet is still the user's turn
+		expect(
+			classifyNeedsYou(cr('AwaitingChanges', withWait('human', 'from_the_future')))?.category
+		).toBe('blocked');
 		expect(
 			classifyNeedsYou(cr('ReadyToMerge', withWait('human', 'ready_to_merge')))?.category
 		).toBe('merge');
@@ -224,9 +237,13 @@ describe('needs-you classification', () => {
 		expect(waitLinks(w('awaiting_review'), pr)).toEqual([
 			{ label: 'Review on GitHub', href: `${pr}/files` }
 		]);
+		expect(waitLinks(w('checks_unverified'), pr)).toEqual([
+			{ label: 'Review on GitHub', href: `${pr}/files` }
+		]);
 		expect(waitLinks(parseWait(withWait('ci', 'ci_pending')), pr)).toEqual([
 			{ label: 'View checks', href: `${pr}/checks` }
 		]);
+		expect(waitLinks(w('ci_stale'), pr)).toEqual([{ label: 'View checks', href: `${pr}/checks` }]);
 		for (const reason of ['enzarb_failed', 'round_limit', 'conflict_parked'])
 			expect(waitLinks(w(reason), pr)).toEqual([{ label: 'Open PR', href: pr }]);
 		const comment = `${pr}#issuecomment-9`;

@@ -180,6 +180,10 @@ pub enum EventPayload {
     /// (completed, closed, added, removed). The reducer has already put the current set in
     /// [`Ctx::open_dependencies`]; the machine only re-evaluates. Produced by the ticker.
     DependenciesChanged,
+    /// Event type `ReadinessPoll`, payload `{}`: the change request has waited on unknown or
+    /// pending CI for a while; ask the connector again. Produced by the ticker with backoff,
+    /// so one lost or filtered webhook cannot strand the item.
+    ReadinessPoll,
 }
 
 /// One input to the engine. `id` is unique per event (the `events.id` as text) and
@@ -262,6 +266,7 @@ impl EngineEvent {
                 }
             }
             "DependenciesChanged" => EventPayload::DependenciesChanged,
+            "ReadinessPoll" => EventPayload::ReadinessPoll,
             "CancelRequested" | "RetryRequested" | "MergeRequested" | "RepoRemoved" => {
                 EventPayload::Ui(serde_json::from_value(payload.clone()).map_err(bad)?)
             }

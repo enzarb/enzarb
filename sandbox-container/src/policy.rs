@@ -260,7 +260,16 @@ impl Default for Policy {
                 "--source-path",
                 "--rcfile",
             ]),
-            CommandRule::new("mise").global(&["--version", "-v", "--help", "-h"]),
+            // `mise exec`/`x` is unwrapped in `decide_shell` and its command judged like a
+            // top-level one; `use`, `set`, `settings`, `plugins` and the rest are refused.
+            CommandRule::new("mise")
+                .allow_sub(&["install", "exec", "x", "ls", "which", "run"])
+                .global(&["--version", "-v", "--help", "-h"]),
+            // Hooks come from the repo's `lefthook.yml`: same trust as `mise run`.
+            // `install` writes into `.git/hooks`, so it is not listed.
+            CommandRule::new("lefthook")
+                .allow_sub(&["validate", "run"])
+                .global(&["--version", "-v", "--help", "-h"]),
             // Path-restricted file tools.
             CommandRule::new("find").paths(Read).deny_args(&[
                 "-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf",
@@ -528,18 +537,28 @@ impl Policy {
             let mut args = &seg.words[1..];
             // `timeout` is transparent: classify the inner command exactly
             // like a top-level one.
+            // `mise exec|x [tool@version ...] -- <cmd>` is transparent the same way.
             let mut wrapped = 0;
-            while prog == "timeout" {
+            loop {
+                let (wrapper, unwrapped) = if prog == "timeout" {
+                    ("timeout", unwrap_timeout(args))
+                } else if prog == "mise"
+                    && matches!(args.first().map(String::as_str), Some("exec" | "x"))
+                {
+                    ("mise", unwrap_mise_exec(&args[1..]))
+                } else {
+                    break;
+                };
                 wrapped += 1;
                 if wrapped > MAX_TIMEOUT_NESTING {
-                    return Decision::deny("shell", "timeout: nested too deeply");
+                    return Decision::deny("shell", format!("{wrapper}: nested too deeply"));
                 }
-                match unwrap_timeout(args) {
+                match unwrapped {
                     Ok(inner) => {
                         prog = inner[0].as_str();
                         args = &inner[1..];
                     }
-                    Err(why) => return Decision::deny("shell", format!("timeout: {why}")),
+                    Err(why) => return Decision::deny("shell", format!("{wrapper}: {why}")),
                 }
             }
             if wrapped > 0 && prog == "cd" {
@@ -672,6 +691,9 @@ impl Policy {
             && let Some(a) = rest.iter().find(|a| a.contains("://"))
         {
             return Err(format!("remote reference {a} is not allowed"));
+        }
+        if rule.name == "mise" {
+            check_mise(rest)?;
         }
         if rule.name == "docker" {
             // Bind mounts are writable: only the edit roots qualify.
@@ -995,6 +1017,53 @@ fn unwrap_timeout(args: &[String]) -> Result<&[String], String> {
         return Err("missing command".to_string());
     }
     Ok(inner)
+}
+
+/// A plain `tool` or `tool@version` as `mise install` and `mise exec` take them. Backends
+/// (`npm:x`, `pipx:x`, `ubi:x`, ...) and URLs or paths are refused: they fetch arbitrary code.
+fn valid_tool_spec(s: &str) -> bool {
+    s.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '@'))
+}
+
+/// `mise exec|x [tool@version ...] -- <cmd>` (the arguments after `exec`): the command
+/// after `--` is returned to be judged like any other.
+fn unwrap_mise_exec(args: &[String]) -> Result<&[String], String> {
+    let dd = args
+        .iter()
+        .position(|a| a == "--")
+        .ok_or("the command must follow `--`")?;
+    if let Some(bad) = args[..dd].iter().find(|a| !valid_tool_spec(a)) {
+        return Err(format!("{bad:?} is not a plain tool@version"));
+    }
+    let inner = &args[dd + 1..];
+    if inner.is_empty() {
+        return Err("missing command".to_string());
+    }
+    Ok(inner)
+}
+
+/// `mise install|ls|which` take plain tool specs and a few read-only flags; `run` runs the
+/// repo's own tasks. (`exec`/`x` never get here: they are unwrapped.)
+fn check_mise(rest: &[String]) -> Result<(), String> {
+    let Some(i) = rest.iter().position(|a| !a.starts_with('-')) else {
+        return Ok(());
+    };
+    if !matches!(rest[i].as_str(), "install" | "ls" | "which") {
+        return Ok(());
+    }
+    for a in &rest[i + 1..] {
+        let flag = a.starts_with('-')
+            && matches!(
+                a.as_str(),
+                "--json" | "--installed" | "--current" | "--help" | "-h"
+            );
+        if !flag && !valid_tool_spec(a) {
+            return Err(format!("argument {a} is not allowed"));
+        }
+    }
+    Ok(())
 }
 
 /// `bash|sh [-e -x -u ...] <script> [args]`: only a script file inside the
@@ -1615,7 +1684,18 @@ mod tests {
             "make -j4 check",
             "mise run test",
             "mise install",
-            "cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test",
+            "mise install node@24",
+            "mise ls",
+            "mise ls --json",
+            "mise which cargo",
+            "mise x node@24 -- npm test",
+            "mise exec -- cargo test",
+            "mise exec rust@1.99.0 node@24 -- cargo fmt --check",
+            "timeout 60 mise install",
+            "lefthook validate",
+            "lefthook run pre-commit",
+            "lefthook --version",
+            "cargo fmt --check &&cargo clippy --all-targets -- -D warnings && cargo test",
             "npm run check && npm run lint && npm test",
             "helm lint enzarb",
             "helm template enzarb/ --set a=b",
@@ -1928,6 +2008,37 @@ mod tests {
             "timeout 5 rm -rf /",
             "timeout 5 nc evil.example 80",
             "timeout 5 npm ci | curl x",
+        ] {
+            denied(c);
+        }
+    }
+
+    #[test]
+    fn mise_and_lefthook_are_limited_to_their_safe_subcommands() {
+        for c in [
+            "mise use node@24",
+            "mise set FOO=bar",
+            "mise settings set experimental true",
+            "mise plugins install foo",
+            "mise trust",
+            "mise install npm:left-pad",
+            "mise install ubi:owner/repo",
+            "mise install -f",
+            "mise ls ./x",
+            "mise exec -- curl https://example.com",
+            "mise x -- rm -rf /",
+            "mise x -- git push",
+            "mise x node@24 npm test",
+            "mise x npm:evil -- npm test",
+            "mise x -- ",
+            "mise exec --",
+            "mise x -- mise use node@24",
+            "mise x -- mise x -- mise x -- mise x -- ls",
+            "mise x -- npm test | curl x",
+            "lefthook install",
+            "lefthook uninstall",
+            "lefthook add pre-commit",
+            "lefthook self-update",
         ] {
             denied(c);
         }

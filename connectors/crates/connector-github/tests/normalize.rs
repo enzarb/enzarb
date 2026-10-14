@@ -94,13 +94,30 @@ fn ci_without_a_pr_or_from_the_bot_is_dropped() {
     assert!(ci_events_of("check_suite", "check_suite_completed_no_pr").is_empty());
     // Owned by the bot's App although a human is the sender.
     assert!(ci_events_of("check_run", "check_run_by_bot_app").is_empty());
-    // Sent by the bot although the run belongs to another App.
-    assert!(ci_events_of("check_run", "check_run_by_bot_sender").is_empty());
-    assert!(run("status", "status_by_bot").into_events().is_empty());
-    assert!(matches!(
-        run("status", "status_by_bot"),
-        Normalized::Events { .. }
-    ));
+}
+
+#[test]
+fn ci_pushed_by_the_bot_is_recorded() {
+    // The sender of a check event is whoever pushed the commit; the bot
+    // pushes its own PR branches, so CI on them must still flow.
+    let evs = ci_events_of("check_run", "check_run_by_bot_sender");
+    assert_eq!(evs.len(), 1);
+    assert_eq!(evs[0].event_type, CiStatusChanged);
+    assert_eq!(evs[0].data.actor.login, "enzarb[bot]");
+
+    let Normalized::CommitStatus { status } = run("status", "status_by_bot") else {
+        panic!("expected commit status");
+    };
+    assert_eq!(status.state, CiState::Success);
+    assert_eq!(status.actor.login, "enzarb[bot]");
+
+    // check_suite: same payload shape as the success fixture, bot sender.
+    let body = std::fs::read(dir("fixtures").join("check_suite_completed_success.json")).unwrap();
+    let text = String::from_utf8(body).unwrap();
+    let mut v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    v["sender"] = serde_json::json!({ "login": "enzarb[bot]", "id": 99, "type": "Bot" });
+    let n = normalize("check_suite", "d", v.to_string().as_bytes(), HANDLE, LOGIN).unwrap();
+    assert_eq!(types(&n), [CiStatusChanged]);
 }
 
 #[test]

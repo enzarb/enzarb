@@ -214,12 +214,37 @@ pub struct CheckResult {
     pub name: String,
     /// `passed`, `failed` or `not_run`; anything but `passed` is unverified.
     pub status: String,
+    /// Why a check was `not_run`: `refused`, `missing_tool`, `timeout`, `not_attempted` or
+    /// `covered_by_ci`. Absent for older output and for checks that ran.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+}
+
+impl CheckResult {
+    /// A check skipped because CI runs it; counts as passed only while CI is green.
+    fn covered_by_ci(&self) -> bool {
+        self.status == "not_run" && self.reason == "covered_by_ci"
+    }
 }
 
 impl AgentOutput {
-    /// True when at least one check was reported and every one passed.
-    pub fn checks_verified(&self) -> bool {
-        !self.checks.is_empty() && self.checks.iter().all(|c| c.status == "passed")
+    /// True when at least one check was reported and every one passed. A `not_run` check
+    /// with reason `covered_by_ci` does not block while `ci_green` (CI succeeded on the
+    /// head being reviewed); otherwise it does.
+    pub fn checks_verified(&self, ci_green: bool) -> bool {
+        !self.checks.is_empty()
+            && self
+                .checks
+                .iter()
+                .all(|c| c.status == "passed" || (ci_green && c.covered_by_ci()))
+    }
+
+    /// The checks that did not pass, for the "checks unverified" wait.
+    pub fn unverified_checks(&self, ci_green: bool) -> Vec<&CheckResult> {
+        self.checks
+            .iter()
+            .filter(|c| !(c.status == "passed" || (ci_green && c.covered_by_ci())))
+            .collect()
     }
 }
 
@@ -530,7 +555,7 @@ mod tests {
     fn checks_default_to_unverified() {
         let out =
             AgentOutput::parse("```json\n{\"decision\":\"approve\",\"body\":\"x\"}\n```").unwrap();
-        assert!(out.checks.is_empty() && !out.checks_verified());
+        assert!(out.checks.is_empty() && !out.checks_verified(true));
     }
 
     #[test]

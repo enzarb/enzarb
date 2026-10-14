@@ -24,6 +24,7 @@
 //! [`evaluate`] queues the merge without a second click. Requested changes, a failed check
 //! or a refused merge clear the request. Nothing else can start a merge.
 
+use chrono::{DateTime, Utc};
 use enzarb_connector::{CommentKind, EventType, ItemKind, ItemRef, ProgressTarget};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -183,6 +184,25 @@ pub struct CrData {
     pub retargeting: bool,
     /// Retarget jobs queued so far; capped at [`MAX_RETARGET_ATTEMPTS`].
     pub retarget_attempts: u32,
+    /// Checks the last review did not pass (`comment` verdict or a downgraded approve).
+    pub unverified_checks: Vec<UnverifiedCheck>,
+    /// Since when CI on `ci_pending_sha` has been pending or unknown while only CI blocks.
+    pub ci_pending_since: Option<DateTime<Utc>>,
+    pub ci_pending_sha: String,
+    /// CI has been pending for [`CI_STALE_AFTER`]: GitHub may have finished without telling us.
+    pub ci_stale: bool,
+}
+
+/// How long CI may stay pending or unknown before the item asks a person to look.
+pub const CI_STALE_AFTER: chrono::Duration = chrono::Duration::minutes(30);
+
+/// A review check that did not pass, as shown in the `checks_unverified` wait.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UnverifiedCheck {
+    pub name: String,
+    pub status: String,
+    pub reason: String,
 }
 
 /// Automatic retarget attempts allowed per stacked change request.
@@ -268,12 +288,15 @@ impl Readiness {
             .all(|c| c.status == CheckStatus::Ok)
     }
 
-    /// Worth asking the connector: the review approved, nothing has failed and something
-    /// is unknown or not yet mergeable.
+    /// Worth asking the connector: nothing has failed and either CI is unknown or pending
+    /// (whatever the review said: a lost webhook must not strand the item), or the review
+    /// approved and the head is not yet known to be mergeable.
     fn needs_check(&self) -> bool {
-        self.review.status == CheckStatus::Ok
-            && self.ci.status != CheckStatus::Failed
-            && (self.ci.status == CheckStatus::Unknown || self.mergeable.status != CheckStatus::Ok)
+        self.ci.status != CheckStatus::Failed
+            && self.review.status != CheckStatus::Failed
+            && (matches!(self.ci.status, CheckStatus::Unknown | CheckStatus::Pending)
+                || (self.review.status == CheckStatus::Ok
+                    && self.mergeable.status != CheckStatus::Ok))
     }
 }
 
@@ -402,6 +425,29 @@ fn wait_of(waiting_on: WaitingOn, reason: &'static str, text: &str) -> Option<Wa
     })
 }
 
+/// "enzarb could not verify: cargo test (missing_tool), ..." for the `checks_unverified` wait.
+fn unverified_text(d: &CrData) -> String {
+    let list: Vec<String> = d
+        .unverified_checks
+        .iter()
+        .map(|c| {
+            let why = if c.reason.is_empty() {
+                c.status.as_str()
+            } else {
+                c.reason.as_str()
+            };
+            format!("{} ({})", c.name, why)
+        })
+        .collect();
+    truncate(
+        &format!(
+            "enzarb could not verify: {}. Review it and approve to continue",
+            list.join(", ")
+        ),
+        400,
+    )
+}
+
 /// The reason a change request is waiting; `None` in final states. `decision_needed`
 /// needs data not stored yet and is reserved in the contract.
 pub fn wait(phase: CrPhase, d: &CrData, r: &Readiness) -> Option<Wait> {
@@ -460,6 +506,9 @@ pub fn wait(phase: CrPhase, d: &CrData, r: &Readiness) -> Option<Wait> {
                     "Changes requested, enzarb is fixing them",
                 ),
                 "approve" => match (r.ci.status, r.mergeable.status) {
+                    (CheckStatus::Pending | CheckStatus::Unknown, _) if d.ci_stale => {
+                        wait_of(Human, "ci_stale", "CI status looks stale; check GitHub")
+                    }
                     (CheckStatus::Pending | CheckStatus::Unknown, _) if d.merge_requested => {
                         wait_of(
                             Ci,
@@ -477,6 +526,9 @@ pub fn wait(phase: CrPhase, d: &CrData, r: &Readiness) -> Option<Wait> {
                     ),
                     _ => wait_of(Ci, "ci_pending", "Waiting for GitHub to check mergeability"),
                 },
+                _ if !d.unverified_checks.is_empty() => {
+                    wait_of(Human, "checks_unverified", &unverified_text(d))
+                }
                 _ => wait_of(Human, "awaiting_review", "Waiting for your review"),
             }
         }
@@ -782,10 +834,65 @@ pub(super) fn step(ctx: &Ctx, stored: &CrState, ev: &EngineEvent) -> Transition 
         s.data.stack_parent_merged = p.merged;
         s.data.stack_parent_closed = p.closed;
     }
-    if matches!(ev.payload, EventPayload::DependenciesChanged) {
-        return dependencies_changed(ctx, ev, stored, &s);
+    let mut t = if matches!(ev.payload, EventPayload::DependenciesChanged) {
+        dependencies_changed(ctx, ev, stored, &s)
+    } else if matches!(ev.payload, EventPayload::ReadinessPoll) {
+        readiness_poll(ctx, ev, &s)
+    } else {
+        step_event(ctx, &s, ev)
+    };
+    // An acknowledged no-op leaves the state exactly as it was.
+    let changed = !t.effects.is_empty() || t.next != WorkflowState::ChangeRequest(stored.clone());
+    if t.accepted
+        && changed
+        && let WorkflowState::ChangeRequest(next) = &mut t.next
+    {
+        track_ci_wait(ctx, next);
     }
-    step_event(ctx, &s, ev)
+    t
+}
+
+/// The ticker's backoff poll: CI is pending or unknown at the head, so ask again.
+fn readiness_poll(ctx: &Ctx, ev: &EngineEvent, s: &CrState) -> Transition {
+    let state = WorkflowState::ChangeRequest(s.clone());
+    let r = readiness(&s.data);
+    if s.phase != CrPhase::AwaitingChanges
+        || s.data.head_sha.is_empty()
+        || !matches!(r.ci.status, CheckStatus::Unknown | CheckStatus::Pending)
+    {
+        return Transition::reject(&state, "no readiness poll needed");
+    }
+    evaluate(
+        Fx::new(ctx, ev),
+        s.phase,
+        s.data.clone(),
+        "readiness polled",
+        true,
+    )
+}
+
+/// Keep `ci_pending_since` and `ci_stale` for the head CI is pending on: the clock starts
+/// when an `AwaitingChanges` item has an approved review and CI that is not decided, and
+/// resets on a new head or when CI settles.
+fn track_ci_wait(ctx: &Ctx, s: &mut CrState) {
+    let d = &mut s.data;
+    let r = readiness(d);
+    let waiting = s.phase == CrPhase::AwaitingChanges
+        && r.review.status == CheckStatus::Ok
+        && matches!(r.ci.status, CheckStatus::Unknown | CheckStatus::Pending);
+    if !waiting {
+        d.ci_pending_since = None;
+        d.ci_pending_sha.clear();
+        d.ci_stale = false;
+        return;
+    }
+    if d.ci_pending_since.is_none() || d.ci_pending_sha != d.head_sha {
+        d.ci_pending_since = Some(ctx.now);
+        d.ci_pending_sha = d.head_sha.clone();
+    }
+    d.ci_stale = d
+        .ci_pending_since
+        .is_some_and(|since| ctx.now - since >= CI_STALE_AFTER);
 }
 
 /// A dependency was completed, closed, added or removed: decide again.
@@ -844,7 +951,7 @@ fn step_event(ctx: &Ctx, s: &CrState, ev: &EngineEvent) -> Transition {
             UiActionKind::RepoRemoved if finished => Transition::reject(&state, "already finished"),
             UiActionKind::RepoRemoved => finish(ctx, ev, s, Cancelled, None).repo_removed(),
             UiActionKind::Retry => retry(ctx, ev, s, &state),
-            UiActionKind::Approve => Transition::reject(&state, "nothing to approve"),
+            UiActionKind::Approve => approve_command(ctx, ev, s, &state),
             UiActionKind::Merge => merge(ctx, ev, s, &state, &u.actor.login),
         },
         EventPayload::JobSucceeded { kind, output, .. } => {
@@ -887,7 +994,9 @@ fn step_event(ctx: &Ctx, s: &CrState, ev: &EngineEvent) -> Transition {
         }
         EventPayload::TimerFired { .. } => Transition::reject(&state, "no timer expected"),
         EventPayload::Unmergeable { base_sha } => unmergeable(ctx, ev, s, &state, base_sha),
-        EventPayload::DependenciesChanged => Transition::reject(&state, "handled by step"),
+        EventPayload::DependenciesChanged | EventPayload::ReadinessPoll => {
+            Transition::reject(&state, "handled by step")
+        }
         EventPayload::Connector(e) => match e.event_type {
             EventType::ChangeRequestOpened => reopened(ctx, ev, s, &state),
             EventType::ChangeRequestUpdated => updated(ctx, ev, s, &state),
@@ -912,7 +1021,13 @@ fn step_event(ctx: &Ctx, s: &CrState, ev: &EngineEvent) -> Transition {
                     c.text,
                 )
             }
-            EventType::ApprovalGranted => Transition::reject(&state, "nothing to approve"),
+            // `/approve` on the PR: same as a GitHub approval at the current head.
+            EventType::ApprovalGranted => {
+                if ctx.is_bot(&e.data.actor) {
+                    return Transition::reject(&state, "bot actor ignored");
+                }
+                approve_command(ctx, ev, s, &state)
+            }
             _ => Transition::reject(&state, "event not applicable to a change request"),
         },
     }
@@ -1060,6 +1175,15 @@ fn review_submitted(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowSt
     feedback(ctx, ev, s, state, &e.data.actor, None, &text)
 }
 
+/// `/approve` on the PR or the UI approve action: a GitHub approval at the current head,
+/// but only meaningful while the item waits for review; elsewhere there is nothing to approve.
+fn approve_command(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowState) -> Transition {
+    if s.phase != CrPhase::AwaitingChanges {
+        return Transition::reject(state, "nothing to approve");
+    }
+    human_approved(ctx, ev, s, state)
+}
+
 /// A human `approved` review counts as the review check for the current head. Only an
 /// idle `AwaitingChanges` records it; while enzarb has a round in flight (or the item is
 /// past review) the event is acknowledged without touching the state. The transition
@@ -1073,6 +1197,7 @@ fn human_approved(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowStat
             let mut d = s.data.clone();
             d.last_review = "approve".into();
             d.reviewed_sha = d.head_sha.clone();
+            d.unverified_checks.clear();
             human_acted(&mut d);
             evaluate(
                 Fx::new(ctx, ev),
@@ -1505,8 +1630,15 @@ fn job_succeeded(
         Err(e) => return fail(ctx, ev, s, &format!("unusable agent output: {e}"), false),
     };
     // An approval needs verified checks; otherwise it is only a comment.
+    // `covered_by_ci` only counts while CI is green on the head that was reviewed.
+    let ci_green = s.data.ci == CiState::Success
+        && !s.data.ci_sha.is_empty()
+        && s.data.ci_sha == s.data.head_sha;
     let mut downgraded = false;
-    if kind == JobKind::AgentReview && decision == Decision::Approve && !out.checks_verified() {
+    if kind == JobKind::AgentReview
+        && decision == Decision::Approve
+        && !out.checks_verified(ci_green)
+    {
         decision = Decision::Comment;
         downgraded = true;
         out.body.push_str(
@@ -1531,6 +1663,27 @@ fn job_succeeded(
             d.trigger_text.clear();
             d.auto_capped = false;
             d.auto_trigger = false;
+            d.unverified_checks = if decision == Decision::Comment {
+                let mut list: Vec<UnverifiedCheck> = out
+                    .unverified_checks(ci_green)
+                    .into_iter()
+                    .map(|c| UnverifiedCheck {
+                        name: c.name.clone(),
+                        status: c.status.clone(),
+                        reason: c.reason.clone(),
+                    })
+                    .collect();
+                if out.checks.is_empty() {
+                    list.push(UnverifiedCheck {
+                        name: "no checks reported".into(),
+                        status: "not_run".into(),
+                        reason: "not_attempted".into(),
+                    });
+                }
+                list
+            } else {
+                Vec::new()
+            };
             // A human's request that arrived during the review comes first.
             if let Some(p) = d.pending.take() {
                 return start_pending_round(ctx, fx, d, p);
