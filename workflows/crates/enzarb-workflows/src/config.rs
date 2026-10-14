@@ -25,6 +25,9 @@ pub struct Config {
     pub bot_login: String,
     pub bot_handle: String,
     pub executor_url: String,
+    /// `ENZARB_MAX_AUTO_ROUNDS`: automatic fix rounds on enzarb's own review findings per change
+    /// request before it waits for a human (default 3, `0` disables).
+    pub max_auto_rounds: u32,
     /// Empty unless the executor role is enabled.
     pub executor_callback_secret: Vec<u8>,
     /// Optional `read:packages` token for private npm packages, handed to agent runs
@@ -147,6 +150,13 @@ impl Config {
                 }
             },
         };
+        let max_auto_rounds = match nonempty(get, "ENZARB_MAX_AUTO_ROUNDS") {
+            None => 3,
+            Some(v) => v.parse::<u32>().map_err(|_| ConfigError::Invalid {
+                var: "ENZARB_MAX_AUTO_ROUNDS",
+                msg: format!("`{v}` is not a non-negative integer"),
+            })?,
+        };
         let executor_url = nonempty(get, "ENZARB_EXECUTOR_URL")
             .unwrap_or_else(|| DEFAULT_EXECUTOR_URL.to_string());
         if roles.contains(&Role::Executor)
@@ -183,6 +193,7 @@ impl Config {
             bot_login: nonempty(get, "ENZARB_BOT_LOGIN").unwrap_or_else(|| "enzarb[bot]".into()),
             bot_handle: nonempty(get, "ENZARB_BOT_HANDLE").unwrap_or_else(|| "enzarb".into()),
             executor_url,
+            max_auto_rounds,
             executor_callback_secret,
             npm_token,
             claude_keyring,
@@ -219,6 +230,7 @@ mod tests {
         assert_eq!(c.bot_login, "enzarb[bot]");
         assert_eq!(c.bot_handle, "enzarb");
         assert_eq!(c.executor_url, DEFAULT_EXECUTOR_URL);
+        assert_eq!(c.max_auto_rounds, 3);
         assert_eq!(c.executor_listen.port(), 8081);
         assert_eq!(c.health_listen.port(), 8082);
         assert!(c.executor_callback_secret.is_empty());

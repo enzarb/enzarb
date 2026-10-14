@@ -97,6 +97,26 @@ describe('needs-you classification', () => {
 			'failed'
 		);
 	});
+	it('labels why a change request is waiting and keeps round_limit in the queue', () => {
+		const wait = (waiting_on: string, reason: string, text: string) => ({
+			wait: { waiting_on, reason, text }
+		});
+		const text = 'Automatic fix rounds used up, waiting for you';
+		expect(classifyNeedsYou(cr('AwaitingChanges', wait('human', 'round_limit', text)))).toEqual({
+			category: 'blocked',
+			reason: null,
+			text
+		});
+		// enzarb is working on it: nobody needs to act.
+		expect(
+			classifyNeedsYou(
+				cr(
+					'AddressingComments',
+					wait('enzarb', 'enzarb_fixing', 'enzarb is fixing its own review findings')
+				)
+			)
+		).toBeNull();
+	});
 	it('classifies an issue awaiting answers as a question with no action', () => {
 		expect(
 			classifyNeedsYou({ workflow: 'issue', state: 'AwaitingAnswers', stateData: {} })
