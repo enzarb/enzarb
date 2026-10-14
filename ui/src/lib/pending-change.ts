@@ -1,7 +1,6 @@
-/** Shown after saving a pod-shape setting (max runs, CPU, memory) and in the pending-change banner. */
+/** Shown in the pending-change banner while a pod-shape setting (max runs, CPU, memory) is queued. */
 export const POD_SHAPE_QUEUED_COPY =
 	'The change is queued: it takes effect once currently running jobs finish. Running jobs are not interrupted.';
 
-/** Confirmation text before saving a pod-shape setting (drain-first, operator v0.7.0+). */
-export const POD_SHAPE_CONFIRM_COPY =
-	'The change is queued until running jobs finish. New jobs wait until it is applied, then the sandbox is updated.';
+/** Shown on the settings form while an unsaved edit would trigger a drain-first change. */
+export const POD_SHAPE_PRESAVE_COPY = 'Saving restarts the sandbox after the running jobs finish.';
