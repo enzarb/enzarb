@@ -2,34 +2,29 @@
 
 use super::*;
 
-fn cr_state_of(t: &Transition) -> &change_request::CrState {
-    match &t.next {
-        WorkflowState::ChangeRequest(s) => s,
-        other => panic!("not a change request: {other:?}"),
-    }
-}
-
-fn reason(t: &Transition) -> &'static str {
-    change_request::waiting_reason(cr_state_of(t))
+/// The `reason` of `state_data.wait`.
+fn reason(t: &Transition) -> String {
+    t.next.state_data()["wait"]["reason"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
 }
 
 #[test]
 fn review_findings_start_an_automatic_round() {
-    for decision in ["request_changes", "comment"] {
-        let t = run_cr(
-            Permission::None,
-            &cr_in(CrPhase::Reviewing),
-            &agent_ok("r", JobKind::AgentReview, decision, "fix the nits"),
-        );
-        let d = assert_cr(&t, CrPhase::AddressingComments);
-        assert_eq!(d.auto_rounds, 1);
-        assert!(d.auto_trigger);
-        assert_eq!(d.trigger_text, "fix the nits");
-        assert_eq!(d.trigger_comment_id, None);
-        assert_eq!(d.last_review, decision);
-        assert!(kinds(&t).contains(&JobKind::AgentAddressComments));
-        assert_eq!(reason(&t), "enzarb_fixing");
-    }
+    let t = run_cr(
+        Permission::None,
+        &cr_in(CrPhase::Reviewing),
+        &agent_ok("r", JobKind::AgentReview, "request_changes", "fix the nits"),
+    );
+    let d = assert_cr(&t, CrPhase::AddressingComments);
+    assert_eq!(d.auto_rounds, 1);
+    assert!(d.auto_trigger);
+    assert_eq!(d.trigger_text, "fix the nits");
+    assert_eq!(d.trigger_comment_id, None);
+    assert_eq!(d.last_review, "request_changes");
+    assert!(kinds(&t).contains(&JobKind::AgentAddressComments));
+    assert_eq!(reason(&t), "enzarb_fixing");
     // An unverified approve is downgraded and its note is part of the findings.
     let t = run_cr(
         Permission::None,
@@ -37,7 +32,21 @@ fn review_findings_start_an_automatic_round() {
         &agent_ok("r", JobKind::AgentReview, "approve", "LGTM"),
     );
     let d = assert_cr(&t, CrPhase::AddressingComments);
+    assert_eq!(d.last_review, "comment");
     assert!(d.trigger_text.contains("Downgraded"));
+}
+
+#[test]
+fn plain_comment_review_starts_no_automatic_round() {
+    let t = run_cr(
+        Permission::None,
+        &cr_in(CrPhase::Reviewing),
+        &agent_ok("r", JobKind::AgentReview, "comment", "a remark"),
+    );
+    let d = assert_cr(&t, CrPhase::AwaitingChanges);
+    assert_eq!(d.auto_rounds, 0);
+    assert!(!d.auto_trigger);
+    assert!(!kinds(&t).contains(&JobKind::AgentAddressComments));
 }
 
 #[test]
@@ -110,7 +119,6 @@ fn automatic_rounds_can_be_disabled() {
         &agent_ok("r", JobKind::AgentReview, "request_changes", "no"),
     );
     assert_cr(&t, CrPhase::AwaitingChanges);
-    assert_eq!(reason(&t), "human_review");
 }
 
 #[test]
@@ -133,7 +141,6 @@ fn automatic_round_without_a_push_does_not_loop() {
     assert_eq!(d.auto_rounds, 1);
     assert!(!kinds(&t).contains(&JobKind::AgentAddressComments));
     assert!(!kinds(&t).contains(&JobKind::AgentReview));
-    assert_eq!(reason(&t), "human_review");
 }
 
 #[test]
@@ -220,44 +227,51 @@ fn feedback_during_a_merge_is_queued_then_run_or_dropped() {
 
 #[test]
 fn waiting_reason_per_state() {
-    let with = |phase, data: CrData| change_request::waiting_reason(&CrState { phase, data });
+    let wait = |phase, data: CrData| {
+        let r = change_request::readiness(&data);
+        change_request::wait(phase, &data, &r).map(|w| (w.waiting_on, w.reason))
+    };
     let reviewed = CrData {
-        last_review: "request_changes".into(),
+        last_review: "comment".into(),
+        reviewed_sha: "sha1".into(),
+        head_sha: "sha1".into(),
         ..cr_data()
     };
     assert_eq!(
-        with(CrPhase::AwaitingChanges, reviewed.clone()),
-        "human_review"
+        wait(CrPhase::AwaitingChanges, reviewed.clone()),
+        Some((change_request::WaitingOn::Human, "awaiting_review"))
     );
-    assert_eq!(with(CrPhase::AwaitingChanges, cr_data()), "");
     assert_eq!(
-        with(
+        wait(
             CrPhase::AwaitingChanges,
             CrData {
+                last_review: "request_changes".into(),
                 auto_capped: true,
-                ..reviewed.clone()
+                ..reviewed
             }
         ),
-        "round_limit"
+        Some((change_request::WaitingOn::Human, "round_limit"))
     );
     assert_eq!(
-        with(
+        wait(
             CrPhase::AddressingComments,
             CrData {
                 auto_trigger: true,
                 ..cr_data()
             }
         ),
-        "enzarb_fixing"
+        Some((change_request::WaitingOn::Enzarb, "enzarb_fixing"))
     );
-    assert_eq!(with(CrPhase::AddressingComments, cr_data()), "");
-    assert_eq!(with(CrPhase::ReadyToMerge, reviewed), "");
+    assert_eq!(
+        wait(CrPhase::AddressingComments, cr_data()),
+        Some((change_request::WaitingOn::Enzarb, "addressing_comments"))
+    );
     let t = run_cr(
         Permission::None,
         &cr_in(CrPhase::Reviewing),
         &agent_ok("r", JobKind::AgentReview, "request_changes", "x"),
     );
-    assert_eq!(t.next.state_data()["waiting_reason"], "enzarb_fixing");
+    assert!(t.next.state_data().get("waiting_reason").is_none());
 }
 
 #[test]

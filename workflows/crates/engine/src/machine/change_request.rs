@@ -246,13 +246,18 @@ fn wait_of(waiting_on: WaitingOn, reason: &'static str, text: &str) -> Option<Wa
     })
 }
 
-/// The reason a change request is waiting; `None` in final states. Reasons that need
-/// data not stored yet (`round_limit`, `decision_needed`) are reserved in the contract.
+/// The reason a change request is waiting; `None` in final states. `decision_needed`
+/// needs data not stored yet and is reserved in the contract.
 pub fn wait(phase: CrPhase, d: &CrData, r: &Readiness) -> Option<Wait> {
     use WaitingOn::*;
     match phase {
         CrPhase::Merged | CrPhase::Closed | CrPhase::Cancelled => None,
         CrPhase::Reviewing => wait_of(Enzarb, "reviewing", "enzarb is reviewing"),
+        CrPhase::AddressingComments if d.auto_trigger => wait_of(
+            Enzarb,
+            "enzarb_fixing",
+            "enzarb is fixing its own review findings",
+        ),
         CrPhase::AddressingComments => wait_of(
             Enzarb,
             "addressing_comments",
@@ -320,21 +325,8 @@ pub(super) fn state_data(s: &CrState) -> Value {
             "checklist".into(),
             serde_json::to_value(r).unwrap_or_default(),
         );
-        m.insert("waiting_reason".into(), waiting_reason(s).into());
     }
     v
-}
-
-/// Why the item is waiting, for the Work page: `human_review`, `enzarb_fixing`, `round_limit`
-/// or empty when it is not waiting on anything in particular.
-pub fn waiting_reason(s: &CrState) -> &'static str {
-    let d = &s.data;
-    match s.phase {
-        CrPhase::AddressingComments if d.auto_trigger => "enzarb_fixing",
-        CrPhase::AwaitingChanges if d.auto_capped && d.last_review != "approve" => "round_limit",
-        CrPhase::AwaitingChanges if !d.last_review.is_empty() => "human_review",
-        _ => "",
-    }
 }
 
 /// Reset the automatic-round bookkeeping: a human is involved again.
@@ -1043,8 +1035,10 @@ fn job_succeeded(
         Err(e) => return fail(ctx, ev, s, &format!("unusable agent output: {e}"), false),
     };
     // An approval needs verified checks; otherwise it is only a comment.
+    let mut downgraded = false;
     if kind == JobKind::AgentReview && decision == Decision::Approve && !out.checks_verified() {
         decision = Decision::Comment;
+        downgraded = true;
         out.body.push_str(
             "\n\n> Downgraded from `approve` to `comment`: the review did not report all checks as passed, so the change is unverified.",
         );
@@ -1071,7 +1065,8 @@ fn job_succeeded(
             if let Some(p) = d.pending.take() {
                 return start_pending_round(ctx, fx, d, p);
             }
-            if matches!(decision, Decision::RequestChanges | Decision::Comment) {
+            // Only must-fix findings: a plain comment is advisory and waits for a person.
+            if decision == Decision::RequestChanges || downgraded {
                 if d.auto_rounds < ctx.config.max_auto_rounds {
                     d.auto_rounds += 1;
                     d.auto_trigger = true;
