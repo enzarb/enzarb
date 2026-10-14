@@ -122,6 +122,7 @@ struct State {
     next_id: u64,
     fail_next: Option<Error>,
     fail_delete_branch: Option<Error>,
+    fail_set_base: Option<Error>,
     merge_outcomes: VecDeque<MergeOutcome>,
     seen_merges: HashMap<String, MergeOutcome>,
     readiness: HashMap<WorkItemKey, MergeReadiness>,
@@ -199,6 +200,11 @@ impl FakeConnector {
     /// Make the next `delete_branch` call fail with `error`, once; other calls are unaffected.
     pub fn fail_delete_branch(&self, error: Error) {
         self.st().fail_delete_branch = Some(error);
+    }
+
+    /// Make the next `set_base` call fail with `error`, once; other calls are unaffected.
+    pub fn fail_set_base(&self, error: Error) {
+        self.st().fail_set_base = Some(error);
     }
 
     /// Every call so far, in order.
@@ -501,6 +507,10 @@ impl Connector for FakeConnector {
             idempotency_key: idempotency_key.to_string(),
         };
         Self::take_failure(&mut st, call.clone())?;
+        if let Some(e) = st.fail_set_base.take() {
+            Self::record(&mut st, call, false);
+            return Err(e);
+        }
         // A change request is known either as a seeded thread or one opened through the fake.
         let mut found = false;
         if let Some(t) = st.threads.get_mut(item)

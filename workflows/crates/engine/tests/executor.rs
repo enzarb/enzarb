@@ -3810,13 +3810,13 @@ async fn a_refused_base_change_is_reported_not_retried() {
         .add_thread(key(6), stacked_pr("sha1", "enzarb/issue-1"));
     h.sandbox
         .set_mode(finish_with(retarget_summary("retargeted")));
-    let id = retarget_job(&h, retarget_input("sha1", "enzarb/issue-2")).await;
-    h.exec.drain().await;
-    // The run is started; the callback follows shortly. The provider then refuses the base
-    // change after the rebase and push.
-    h.fake.fail_next(enzarb_connector::Error::Invalid(
+    // The provider refuses the base change after the rebase and push. Armed up front, and only
+    // for `set_base`, so it cannot race the callback or be spent on another call.
+    h.fake.fail_set_base(enzarb_connector::Error::Invalid(
         "base branch is invalid".into(),
     ));
+    let id = retarget_job(&h, retarget_input("sha1", "enzarb/issue-2")).await;
+    h.exec.drain().await;
     wait_for("the callback", || async {
         job(h.pool(), id).await.status == "succeeded"
     })
