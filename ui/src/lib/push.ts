@@ -17,7 +17,8 @@ export const CATEGORY_LABELS: Record<NeedsYouCategory, string> = {
 	review: 'Waiting for your review',
 	decision: 'Waiting for your decision',
 	blocked: 'Change request blocked',
-	failed: 'Failed or stale'
+	failed: 'Failed or stale',
+	question: 'Questions awaiting answers'
 };
 
 /** Fixed title per category, so no item text ends up in the title. */
@@ -27,7 +28,8 @@ const TITLES: Record<NeedsYouCategory, string> = {
 	review: 'Change request waiting for your review',
 	decision: 'Waiting for your decision',
 	blocked: 'Change request blocked',
-	failed: 'Task failed'
+	failed: 'Task failed',
+	question: 'Questions need your answer'
 };
 
 export const BODY_MAX = 120;

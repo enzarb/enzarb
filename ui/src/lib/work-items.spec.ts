@@ -97,6 +97,18 @@ describe('needs-you classification', () => {
 			'failed'
 		);
 	});
+	it('classifies an issue awaiting answers as a question with no action', () => {
+		expect(
+			classifyNeedsYou({ workflow: 'issue', state: 'AwaitingAnswers', stateData: {} })
+		).toEqual({ category: 'question', reason: null });
+		expect(primaryAction('question')).toBeNull();
+		expect(
+			classifyNeedsYou({ workflow: 'change_request', state: 'AwaitingAnswers', stateData: {} })
+		).toBeNull();
+		expect(classifyNeedsYou({ workflow: 'issue', state: 'Stale', stateData: {} })?.category).toBe(
+			'failed'
+		);
+	});
 	it('ignores terminal, unknown and unrelated items and malformed data', () => {
 		const failedCi = { checklist: { ci: { status: 'failed' } } };
 		expect(classifyNeedsYou(cr('Merged', failedCi))).toBeNull();

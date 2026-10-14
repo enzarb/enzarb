@@ -292,7 +292,8 @@ export const NEEDS_YOU_CATEGORIES = [
 	'review',
 	'decision',
 	'blocked',
-	'failed'
+	'failed',
+	'question'
 ] as const;
 export type NeedsYouCategory = (typeof NEEDS_YOU_CATEGORIES)[number];
 
@@ -374,6 +375,8 @@ export function classifyNeedsYou(
 	if (actions.includes('retry')) return { category: 'failed', reason: failureText(stateData) };
 	if (workflow === 'issue' && actions.includes('approve'))
 		return { category: 'approval', reason: null };
+	if (workflow === 'issue' && state === 'AwaitingAnswers')
+		return { category: 'question', reason: null };
 	if (workflow !== 'change_request') return null;
 	const wait = parseWait(stateData);
 	if (wait) {
@@ -397,7 +400,7 @@ export function classifyNeedsYou(
 	return { category: 'blocked', reason: blockedReason(stateData) ?? 'Changes requested' };
 }
 
-/** The action a queue row offers inline; review, decision and blocked rows only link out. */
+/** The action a queue row offers inline; review, decision, blocked and question rows only link out. */
 export function primaryAction(category: NeedsYouCategory): WorkAction | null {
 	if (category === 'approval') return 'approve';
 	if (category === 'merge') return 'merge';
