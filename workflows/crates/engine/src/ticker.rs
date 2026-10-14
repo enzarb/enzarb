@@ -61,9 +61,13 @@ pub struct TickStats {
     pub dependencies: usize,
 }
 
-/// Minimum time between GitHub dependency syncs; each pass lists the relationships of every
-/// active work item.
-pub const DEPENDENCY_SYNC_INTERVAL: Duration = Duration::from_secs(120);
+/// Minimum time between GitHub dependency syncs; each pass lists the relationships of at most
+/// [`DEPENDENCY_SYNC_BATCH`] active work items, rotating through them (about 600 calls an hour,
+/// well inside GitHub's limit).
+pub const DEPENDENCY_SYNC_INTERVAL: Duration = Duration::from_secs(300);
+
+/// Work items whose GitHub dependencies one sync pass lists.
+pub const DEPENDENCY_SYNC_BATCH: i64 = 50;
 
 /// What the dependency sync needs: connectors to ask, and the Projects that bound it.
 #[derive(Clone)]
@@ -71,6 +75,8 @@ struct DepSync {
     connectors: ConnectorRegistry,
     index: Arc<dyn ProjectIndex>,
     last_run: Arc<Mutex<Option<Instant>>>,
+    /// Id of the last work item of the previous batch; 0 starts over.
+    cursor: Arc<Mutex<i64>>,
 }
 
 #[derive(Clone)]
@@ -103,6 +109,7 @@ impl Ticker {
             connectors,
             index,
             last_run: Arc::default(),
+            cursor: Arc::default(),
         });
         self
     }
@@ -229,9 +236,17 @@ impl Ticker {
             }
             *last = Some(Instant::now());
         }
-        Ok(Some(
-            crate::dependencies::sync_github(&self.pool, &sync.connectors, &sync.index).await?,
-        ))
+        let after = *sync.cursor.lock().unwrap_or_else(|e| e.into_inner());
+        let (changed, next) = crate::dependencies::sync_github(
+            &self.pool,
+            &sync.connectors,
+            &sync.index,
+            after,
+            DEPENDENCY_SYNC_BATCH,
+        )
+        .await?;
+        *sync.cursor.lock().unwrap_or_else(|e| e.into_inner()) = next;
+        Ok(Some(changed))
     }
 
     async fn emit(

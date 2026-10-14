@@ -225,3 +225,61 @@ async fn completing_a_dependency_continues_the_dependent() {
     assert_eq!(s, "ReadyToMerge");
     assert_eq!(data["open_dependencies"], json!([]));
 }
+
+fn comment_event(body: &str) -> engine::machine::EngineEvent {
+    use chrono::Utc;
+    use enzarb_connector::{Actor, CommentRef, Event, EventData, EventType, ItemKind, ItemRef};
+    let data = EventData {
+        repo: REPO.parse().unwrap(),
+        actor: Actor {
+            login: "mallory".into(),
+            id: 7,
+            is_bot: false,
+        },
+        item: ItemRef {
+            kind: ItemKind::ChangeRequest,
+            number: 2,
+            url: String::new(),
+            title: "t".into(),
+            body: String::new(),
+            author: "alice".into(),
+            head_ref: None,
+            base_ref: None,
+            head_sha: None,
+        },
+        comment: Some(CommentRef {
+            id: 9,
+            kind: Default::default(),
+            body: body.into(),
+            url: String::new(),
+        }),
+        merged: None,
+        review: None,
+        ci: None,
+    };
+    let ev = Event::new("github", "d1", EventType::CommentAdded, Utc::now(), data);
+    engine::machine::EngineEvent::from_row("1", "CommentAdded", &serde_json::to_value(&ev).unwrap())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn only_writers_comments_record_dependencies() {
+    let db = db!();
+    let p = &db.pool;
+    let ev = comment_event("Depends on #999");
+    let k = key(2).parse().unwrap();
+    let mut conn = p.acquire().await.unwrap();
+    let same = |_: &enzarb_connector::WorkItemKey| true;
+
+    let changed = engine::dependencies::record_text(&mut conn, &k, &ev, false, same)
+        .await
+        .unwrap();
+    assert!(!changed, "a commenter without write access records nothing");
+    assert!(deps_of(p, 2).await.is_empty());
+
+    let changed = engine::dependencies::record_text(&mut conn, &k, &ev, true, same)
+        .await
+        .unwrap();
+    assert!(changed);
+    assert_eq!(deps_of(p, 2).await, [(key(999), "comment".to_string())]);
+}

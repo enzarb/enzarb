@@ -95,6 +95,7 @@ pub async fn record_text(
     conn: &mut PgConnection,
     key: &WorkItemKey,
     ev: &EngineEvent,
+    commenter_can_write: bool,
     same_project: impl Fn(&WorkItemKey) -> bool,
 ) -> Result<bool, Error> {
     let EventPayload::Connector(e) = &ev.payload else {
@@ -104,10 +105,11 @@ pub async fn record_text(
         EventType::WorkItemOpened
         | EventType::ChangeRequestOpened
         | EventType::ChangeRequestUpdated => (e.data.item.body.as_str(), "text", true),
-        // A comment can add a dependency but cannot retract what another one said.
+        // A comment can add a dependency but cannot retract what another one said. Only
+        // commenters with write access count: anyone else could close the merge gate.
         EventType::CommentAdded | EventType::Mentioned => match &e.data.comment {
-            Some(c) => (c.body.as_str(), "comment", false),
-            None => return Ok(false),
+            Some(c) if commenter_can_write => (c.body.as_str(), "comment", false),
+            _ => return Ok(false),
         },
         _ => return Ok(false),
     };
@@ -148,23 +150,34 @@ async fn set(
 }
 
 /// Replace the `github` dependencies of every active work item with what the connector
-/// reports. A connector without the capability (or a token without access) is skipped.
-/// Returns how many items changed.
+/// reports, one batch of at most `batch` items with an id above `after`. A connector without
+/// the capability (or a token without access) is skipped. Returns how many items changed
+/// and the cursor for the next pass (0 once the end is reached, so passes wrap around and
+/// every item is visited in turn).
 pub async fn sync_github(
     pool: &PgPool,
     connectors: &ConnectorRegistry,
     index: &Arc<dyn ProjectIndex>,
-) -> Result<usize, Error> {
-    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
-        "SELECT key, project_id FROM work_items
+    after: i64,
+    batch: i64,
+) -> Result<(usize, i64), Error> {
+    let rows: Vec<(i64, String, Option<String>)> = sqlx::query_as(
+        "SELECT id, key, project_id FROM work_items
          WHERE workflow IN ('issue', 'change_request')
            AND state NOT IN ('Done', 'Duplicate', 'Cancelled', 'Merged', 'Closed')
-         ORDER BY id LIMIT 500",
+           AND id > $1
+         ORDER BY id LIMIT $2",
     )
+    .bind(after)
+    .bind(batch)
     .fetch_all(pool)
     .await?;
+    let next = match rows.last() {
+        Some((id, ..)) if rows.len() as i64 == batch => *id,
+        _ => 0,
+    };
     let mut changed = 0;
-    for (key_s, project) in rows {
+    for (_, key_s, project) in rows {
         let (Some(key), Some(project)) = (parse_key(&key_s), project) else {
             continue;
         };
@@ -193,5 +206,5 @@ pub async fn sync_github(
             changed += 1;
         }
     }
-    Ok(changed)
+    Ok((changed, next))
 }
