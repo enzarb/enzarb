@@ -52,13 +52,18 @@ describe('needs-you classification', () => {
 			wait: { waiting_on, reason, text }
 		});
 		const text = 'Automatic fix rounds used up, waiting for you';
-		expect(
-			classifyNeedsYou(cr('AwaitingChanges', wait('human', 'round_limit', text)))
-		).toEqual({ category: 'blocked', reason: null, text });
+		expect(classifyNeedsYou(cr('AwaitingChanges', wait('human', 'round_limit', text)))).toEqual({
+			category: 'blocked',
+			reason: null,
+			text
+		});
 		// enzarb is working on it: nobody needs to act.
 		expect(
 			classifyNeedsYou(
-				cr('AddressingComments', wait('enzarb', 'enzarb_fixing', 'enzarb is fixing its own review findings'))
+				cr(
+					'AddressingComments',
+					wait('enzarb', 'enzarb_fixing', 'enzarb is fixing its own review findings')
+				)
 			)
 		).toBeNull();
 	});
