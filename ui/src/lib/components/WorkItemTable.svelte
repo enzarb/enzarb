@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { cacheBreakdown, formatCost, formatTokens } from '#lib/usage.ts';
-	import type { WorkItemSummary } from '#lib/work-items.ts';
+	import { isTerminal, type WorkItemSummary } from '#lib/work-items.ts';
 	import UsageFigure from './UsageFigure.svelte';
 	import DataTable, { type Column } from './ui/DataTable.svelte';
+	import WaitReason from './WaitReason.svelte';
 	import WorkStateChip from './WorkStateChip.svelte';
 
 	/**
@@ -60,7 +61,12 @@
 {/snippet}
 {#snippet projectCell(w: WorkItemSummary)}{w.project}{/snippet}
 {#snippet workflow(w: WorkItemSummary)}{w.workflow}{/snippet}
-{#snippet state(w: WorkItemSummary)}<WorkStateChip state={w.state} />{/snippet}
+{#snippet state(w: WorkItemSummary)}
+	<WorkStateChip state={w.state} />
+	{#if !isTerminal(w.state)}<div class="ez-muted">
+			<WaitReason wait={w.wait} url={w.url} />
+		</div>{/if}
+{/snippet}
 {#snippet tokensIn(w: WorkItemSummary)}
 	<UsageFigure
 		value={formatTokens(w.usage?.inputTokens)}

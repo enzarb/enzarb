@@ -109,6 +109,9 @@ CREATE OR REPLACE VIEW workflows_api.work_item_v AS
            w.created_at, w.updated_at,
            wj.waiting_for, wj.resumes_at,
            ut.usage_totals,
+           w.state_data #>> '{wait,waiting_on}' AS waiting_on,
+           w.state_data #>> '{wait,reason}' AS wait_reason,
+           w.state_data #>> '{wait,text}' AS wait_text,
            (CASE WHEN jsonb_typeof(w.state_data->'open_dependencies') = 'array'
                  THEN jsonb_array_length(w.state_data->'open_dependencies') > 0
                  ELSE false END) AS blocked_by_dependency

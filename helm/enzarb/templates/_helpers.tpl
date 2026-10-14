@@ -96,6 +96,8 @@ imagePullSecrets:
 {{- define "enzarb.claudeKeyEnv" -}}
 - { name: ENZARB_CLAUDE_KEYRING_DIR, value: /etc/enzarb/claude-key }
 {{- end }}
+{{/* Web Push (VAPID) keypair Secret: data keys public-key and private-key, in both the generated and the existing Secret. */}}
+{{- define "enzarb.vapidKeySecret" -}}{{ .Values.secrets.vapidKey.existingSecret | default "enzarb-vapid-key" }}{{- end }}
 {{/* Key names inside the github Secret (the chart-created one uses the configured key names too). */}}
 {{- define "enzarb.githubKey" -}}{{ index .ctx.Values.secrets.github.keys .key }}{{- end }}
 {{/* enzarb-updater Secret: an existing one (keys from secrets.updater.keys) or the chart-created one. */}}

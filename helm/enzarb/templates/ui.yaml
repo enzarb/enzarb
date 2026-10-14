@@ -36,6 +36,14 @@ spec:
             {{- if .Values.realtime.enabled }}
             {{- include "enzarb.secretEnv" (dict "name" "ENZARB_REALTIME_JWT_SECRET" "secret" (include "enzarb.realtimeJwtSecret" .) "key" (include "enzarb.realtimeJwtKey" .)) | nindent 12 }}
             {{- end }}
+            # Web Push keys. Optional so pods start (notifications off) until the keypair exists.
+            - name: ENZARB_VAPID_PUBLIC_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "enzarb.vapidKeySecret" . | quote }}, key: public-key, optional: true } }
+            - name: ENZARB_VAPID_PRIVATE_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "enzarb.vapidKeySecret" . | quote }}, key: private-key, optional: true } }
+            {{- with .Values.secrets.vapidKey.subject }}
+            - { name: ENZARB_VAPID_SUBJECT, value: {{ . | quote }} }
+            {{- end }}
             - { name: ENZARB_PUBLIC_URL, value: {{ include "enzarb.publicUrl" . | quote }} }
             - { name: ENZARB_COMPONENT_VERSIONS, value: {{ include "enzarb.componentVersions" . | quote }} }
             - { name: ENZARB_GITHUB_APP_SLUG, value: {{ .Values.githubApp.slug | default "enzarb" | quote }} }

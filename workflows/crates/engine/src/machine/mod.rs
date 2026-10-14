@@ -561,7 +561,7 @@ impl WorkflowState {
         let v = match self {
             WorkflowState::New(_) => serde_json::json!({}),
             WorkflowState::Issue(s) => serde_json::to_value(&s.data).unwrap_or_default(),
-            WorkflowState::ChangeRequest(s) => change_request::state_data(&s.data),
+            WorkflowState::ChangeRequest(s) => change_request::state_data(s.phase, &s.data),
             WorkflowState::Mention(s) => serde_json::to_value(&s.data).unwrap_or_default(),
         };
         if v.is_null() {

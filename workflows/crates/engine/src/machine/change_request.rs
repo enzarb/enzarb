@@ -237,14 +237,104 @@ pub fn readiness(d: &CrData) -> Readiness {
     }
 }
 
+/// Who a change request is waiting on (`workflows_api.work_item_v.waiting_on`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitingOn {
+    /// A person has to act: this counts as "Needs you".
+    Human,
+    /// enzarb is working on it, or will.
+    Enzarb,
+    Ci,
+    Github,
+}
+
+/// Why a change request is not progressing, derived from the phase and data alone.
+/// `reason` is a stable code, `text` a short label for the UI, `url` an optional link
+/// target (a decision comment).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Wait {
+    pub waiting_on: WaitingOn,
+    pub reason: &'static str,
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+fn wait_of(waiting_on: WaitingOn, reason: &'static str, text: &str) -> Option<Wait> {
+    Some(Wait {
+        waiting_on,
+        reason,
+        text: text.into(),
+        url: None,
+    })
+}
+
+/// The reason a change request is waiting; `None` in final states. Reasons that need
+/// data not stored yet (`round_limit`, `decision_needed`) are reserved in the contract.
+pub fn wait(phase: CrPhase, d: &CrData, r: &Readiness) -> Option<Wait> {
+    use WaitingOn::*;
+    match phase {
+        CrPhase::Merged | CrPhase::Closed | CrPhase::Cancelled => None,
+        CrPhase::Reviewing => wait_of(Enzarb, "reviewing", "enzarb is reviewing"),
+        CrPhase::AddressingComments => wait_of(
+            Enzarb,
+            "addressing_comments",
+            "enzarb is addressing review comments",
+        ),
+        CrPhase::ResolvingConflicts => wait_of(
+            Enzarb,
+            "resolving_conflict",
+            "enzarb is resolving a merge conflict",
+        ),
+        CrPhase::ReadyToMerge => wait_of(Human, "ready_to_merge", "Ready to merge"),
+        CrPhase::Merging => wait_of(Github, "merging", "Merging on GitHub"),
+        CrPhase::Failed => wait_of(Human, "enzarb_failed", "enzarb failed"),
+        CrPhase::ConflictParked => wait_of(Human, "conflict_parked", "Parked on a merge conflict"),
+        CrPhase::AwaitingChanges => {
+            let reviewed = !d.last_review.is_empty() && d.reviewed_sha == d.head_sha;
+            if !reviewed {
+                return wait_of(Enzarb, "reviewing", "enzarb is reviewing");
+            }
+            if r.ci.status == CheckStatus::Failed {
+                return wait_of(Enzarb, "ci_failed_fixing", "CI failed, enzarb is fixing it");
+            }
+            match d.last_review.as_str() {
+                "request_changes" => wait_of(
+                    Enzarb,
+                    "changes_requested_fixing",
+                    "Changes requested, enzarb is fixing them",
+                ),
+                "approve" => match (r.ci.status, r.mergeable.status) {
+                    (CheckStatus::Pending | CheckStatus::Unknown, _) => {
+                        wait_of(Ci, "ci_pending", "Waiting for CI")
+                    }
+                    (_, CheckStatus::Failed) => wait_of(
+                        Human,
+                        "conflict_parked",
+                        "Conflicts or blocked by branch rules",
+                    ),
+                    _ => wait_of(Ci, "ci_pending", "Waiting for GitHub to check mergeability"),
+                },
+                _ => wait_of(Human, "awaiting_review", "Waiting for your review"),
+            }
+        }
+    }
+}
+
 /// `work_items.state_data` for a change request: the data plus the derived `checklist`
-/// (ignored when the state is loaded again).
-pub(super) fn state_data(d: &CrData) -> Value {
+/// and `wait` (both ignored when the state is loaded again).
+pub(super) fn state_data(phase: CrPhase, d: &CrData) -> Value {
     let mut v = serde_json::to_value(d).unwrap_or_default();
     if let Value::Object(m) = &mut v {
+        let r = readiness(d);
+        m.insert(
+            "wait".into(),
+            serde_json::to_value(wait(phase, d, &r)).unwrap_or_default(),
+        );
         m.insert(
             "checklist".into(),
-            serde_json::to_value(readiness(d)).unwrap_or_default(),
+            serde_json::to_value(r).unwrap_or_default(),
         );
     }
     v

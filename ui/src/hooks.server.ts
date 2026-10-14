@@ -1,5 +1,5 @@
 import { redirect } from '@sveltejs/kit';
-import { dev } from '$app/env';
+import { building, dev } from '$app/env';
 import type { Handle } from '@sveltejs/kit/hooks';
 import {
 	deleteSessionCookie,
@@ -8,7 +8,17 @@ import {
 	validateSessionToken
 } from '#lib/server/auth.ts';
 import { getSql } from '#lib/server/db.ts';
+import { startNotifier } from '#lib/server/notifier.ts';
 import { PROBE_PATHS, isPublicPath } from '#lib/server/public-paths.ts';
+
+// Web Push sender (a no-op without VAPID keys). Not during the build analysis or in tests.
+if (!building && !process.env.VITEST) {
+	try {
+		startNotifier();
+	} catch (e) {
+		console.warn(`notifier not started: ${e instanceof Error ? e.message : e}`);
+	}
+}
 
 export const handle: Handle = async ({ event, resolve }) => {
 	// Probes must never depend on the database (session lookup) or the auth redirect.
