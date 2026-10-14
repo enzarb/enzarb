@@ -77,9 +77,14 @@ Changing repositories: the owner may replace `spec.repositories` after creation 
 
 **Mux endpoint:** `ws://<pod>:7070/v1/mux`. Clients must send `Authorization: Bearer <token>`. The token is the `token` key of the Secret named in `status.sandbox.authSecretRef` (`sb-<project>-auth`) in `status.namespace`; the operator generates it, and it is mounted in the sandbox at `/var/run/enzarb/auth/token`.
 - Allowed clients: `sandbox-proxy` and the workflows executor.
-- Health: `GET :7070/healthz`.
+- Health: `GET :7070/healthz`. Body is JSON `{"status":"ok","dockerd":{"state":"starting|running|failed|stopped|disabled", ...}}`, always HTTP 200 (readiness never depends on Docker). `dockerd` is absent when the supervisor is not wired.
 
-**Docker (ADR-0012):** always on. The operator sets the pod `runtimeClassName` (`gvisor`) cluster-wide via `--sandbox-runtime-class`, and adds the dockerd sidecar. `DOCKER_HOST=unix:///var/run/docker/docker.sock` (shared emptyDir with the `dockerd` sidecar). The image ships the `docker` CLI plus the buildx and compose plugins.
+**Docker (ADR-0012, sidecar superseded by ADR-0016):** always on. The operator sets the pod `runtimeClassName` (`gvisor`) cluster-wide via `--sandbox-runtime-class`. Sandbox pod layout:
+- One container, `sandbox`. No `dockerd` sidecar and no `docker-sock` volume.
+- sandbox-init (pid 1) runs and supervises `dockerd` as root and drops everything else it spawns to uid/gid 1000 with no-new-privs. The `sandbox` container's `securityContext` overrides the pod-level non-root settings: `runAsUser: 0`, `runAsNonRoot: false`, `privileged: false`, `allowPrivilegeEscalation: true`, `drop: [ALL]` plus the gVisor Docker capability set (includes `SYS_ADMIN`, `NET_ADMIN`, `NET_RAW`, `SETUID`, `SETGID`, `CHOWN`). The pod-level `runAsUser`/`runAsGroup`/`fsGroup` (1000) stay. The kata profile is `privileged: true`.
+- Volumes: `workspace` (PVC) at `/workspace`, `auth` (Secret) at `/var/run/enzarb/auth`, `docker-data` (PVC `sb-<name>-docker`) at `/var/lib/docker`.
+- Env: `DOCKER_HOST=unix:///var/run/docker.sock` (group 1000, mode 0660), `ENZARB_DOCKERD_ARGS` (the runtime profile's dockerd flags). Optional sandbox-init env: `ENZARB_DOCKERD` (`off` disables), `ENZARB_DOCKERD_BIN`, `ENZARB_DOCKERD_SOCKET`, `ENZARB_DOCKERD_DATA_ROOT`, `ENZARB_DOCKERD_EXEC_ROOT`.
+- The image ships `dockerd`, `containerd`, `runc` and the `docker` CLI plus the buildx and compose plugins. Inner containers and builds default to `--network=host` through the image's `docker` wrapper (dockerd runs with `--iptables=false`); use `--user 1000:1000` so bind-mounted files stay editable.
 
 **PTY channels:** CLOSE reason is `exit:<code>` or `signal:<n>`. A client half-close leaves the process running.
 
@@ -117,7 +122,7 @@ Changing repositories: the owner may replace `spec.repositories` after creation 
 - build-essential, pkg-config, libssl-dev;
 - git, ca-certificates, openssh-client.
 
-Plus curl (mise's Rust backend needs it for rustup) and the docker CLI with the buildx and compose plugins (29.8.2, matching the dockerd sidecar). No Rust, npm or extra CLI tools.
+Plus curl (mise's Rust backend needs it for rustup) and Docker 29.8.2 (static bundle: `dockerd`, `containerd`, `runc`, the `docker` CLI, with the buildx and compose plugins; ADR-0016). No Rust, npm or extra CLI tools.
 
 **Toolchains (mise, per project, persisted on the PVC):**
 - `MISE_DATA_DIR=/workspace/.toolchains/mise`, `MISE_CACHE_DIR=/workspace/.toolchains/cache`, `CARGO_HOME=/workspace/.toolchains/cargo`, `RUSTUP_HOME=/workspace/.toolchains/rustup`.
