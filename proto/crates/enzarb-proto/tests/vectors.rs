@@ -231,6 +231,7 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
                 state: RunPhase::Running,
                 exit_code: None,
                 summary: None,
+                usage: None,
             },
         ),
         (
@@ -240,6 +241,7 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
                 state: RunPhase::Succeeded,
                 exit_code: Some(0),
                 summary: Some("done".into()),
+                usage: None,
             },
         ),
         (
@@ -249,6 +251,24 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
                 state: RunPhase::Failed,
                 exit_code: Some(1),
                 summary: None,
+                usage: None,
+            },
+        ),
+        (
+            "run_state_usage",
+            Ctrl::RunState {
+                run_id: "job-123".into(),
+                state: RunPhase::Succeeded,
+                exit_code: Some(0),
+                summary: Some("done".into()),
+                usage: Some(Usage {
+                    input_tokens: Some(1200),
+                    output_tokens: Some(340),
+                    cache_read_input_tokens: Some(9000),
+                    cache_creation_input_tokens: Some(50),
+                    models: vec!["claude-sonnet-5-5".into()],
+                    cost_usd: None,
+                }),
             },
         ),
         (
@@ -381,6 +401,7 @@ fn json_type_vectors() {
         branch: "enzarb/issue-42".into(),
         head_sha: "abc123".into(),
         pushed: true,
+        usage: None,
     };
     let cancelled = RunFinished {
         outcome: RunOutcome::Cancelled,
@@ -389,7 +410,22 @@ fn json_type_vectors() {
         pushed: false,
         ..fin.clone()
     };
-    let items = [("run_finished", fin), ("run_finished_cancelled", cancelled)];
+    let with_usage = RunFinished {
+        usage: Some(Usage {
+            input_tokens: Some(1200),
+            output_tokens: Some(340),
+            cache_read_input_tokens: Some(9000),
+            cache_creation_input_tokens: None,
+            models: vec!["claude-sonnet-5-5".into()],
+            cost_usd: Some(0.42),
+        }),
+        ..fin.clone()
+    };
+    let items = [
+        ("run_finished", fin),
+        ("run_finished_cancelled", cancelled),
+        ("run_finished_usage", with_usage),
+    ];
     let out: Vec<Value> = items
         .iter()
         .map(|(n, v)| json!({"name": n, "type": "RunFinished", "json": serde_json::to_value(v).unwrap()}))
@@ -608,6 +644,10 @@ fn ctrl_compat_vectors() {
                "expect":{"type":"credential_state","kind":"claude_oauth","configured":false}}),
         json!({"name":"credential_state_unknown_scope","payload":r#"{"type":"credential_state","kind":"claude_oauth","configured":true,"scope":"org"}"#,
                "expect":{"type":"credential_state","configured":true,"scope":"org"}}),
+        json!({"name":"old_run_state_no_usage","payload":r#"{"type":"run_state","run_id":"r","state":"succeeded","exit_code":0}"#,
+               "expect":{"type":"run_state","run_id":"r","state":"succeeded"}}),
+        json!({"name":"run_state_usage_unknown_fields","payload":r#"{"type":"run_state","run_id":"r","state":"succeeded","usage":{"input_tokens":5,"future":1}}"#,
+               "expect":{"type":"run_state","run_id":"r","usage":{"input_tokens":5}}}),
         json!({"name":"credential_captured_unknown_fields","payload":r#"{"type":"credential_captured","kind":"claude_oauth","token":null,"legacy":null,"x":1}"#,
                "expect":{"type":"credential_captured","kind":"claude_oauth"}}),
     ];

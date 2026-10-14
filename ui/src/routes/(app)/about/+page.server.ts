@@ -1,6 +1,7 @@
 import { redirect } from '@sveltejs/kit';
 import type { AboutComponent, AboutRelease } from '#lib/about-types.ts';
 import { getConfig } from '#lib/server/config.ts';
+import { getInstallationToken, invalidateInstallationToken } from '#lib/server/github-app-token.ts';
 import { renderMarkdown } from '#lib/server/markdown.ts';
 import { cachedReleases } from '#lib/server/releases.ts';
 import { COMPONENTS, displayVersion, componentDirUrl } from '#lib/versions.ts';
@@ -17,12 +18,16 @@ export const load: PageServerLoad = async ({ locals }) => {
 		.sort()
 		.map((name) => ({ name, label: name, dir: null, repoUrl: null }));
 
+	// Server-side only: the token is never put in the returned page data.
+	const token = (await getInstallationToken().catch(() => null)) ?? undefined;
+	const releaseOpts = { token, onTokenRejected: invalidateInstallationToken };
+
 	const components: AboutComponent[] = await Promise.all(
 		[...known, ...extras].map(async (c) => {
 			let releases: AboutRelease[] | null = null;
 			if (c.dir) {
 				try {
-					releases = (await cachedReleases(c.dir)).map((r) => ({
+					releases = (await cachedReleases(c.dir, releaseOpts)).map((r) => ({
 						tag: r.tag,
 						name: r.name,
 						publishedAt: r.publishedAt,

@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { componentReleases, createReleaseCache, fetchReleases, type Release } from './releases.ts';
+import {
+	componentReleases,
+	createReleaseCache,
+	fetchReleases,
+	releaseTagUrl,
+	safeReleaseUrl,
+	type Release
+} from './releases.ts';
 
 const gh = (over: Record<string, unknown> = {}) => ({
 	tag_name: 'ui/v1.0.0',
@@ -59,6 +66,67 @@ describe('fetchReleases', () => {
 		await expect(
 			fetchReleases({ fetch: f as unknown as typeof fetch, signal: AbortSignal.timeout(10) })
 		).rejects.toBeDefined();
+	});
+});
+
+describe('fetchReleases auth and urls', () => {
+	const headersOf = (f: { mock: { calls: unknown[][] } }, i = 0) =>
+		(f.mock.calls[i] as unknown as [string, RequestInit])[1].headers as Record<string, string>;
+
+	it('omits Authorization without a token', async () => {
+		const f = respond([]);
+		await fetchReleases({ fetch: f as unknown as typeof fetch });
+		expect(headersOf(f)).not.toHaveProperty('Authorization');
+	});
+	it('retries once unauthenticated when the token is rejected', async () => {
+		const f = vi
+			.fn()
+			.mockResolvedValueOnce(new Response('{}', { status: 401 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify([gh()]), { status: 200 }));
+		const rejected = vi.fn();
+		const out = await fetchReleases({
+			fetch: f as unknown as typeof fetch,
+			token: 'bad',
+			onTokenRejected: rejected
+		});
+		expect(out).toHaveLength(1);
+		expect(rejected).toHaveBeenCalledTimes(1);
+		expect(f).toHaveBeenCalledTimes(2);
+		expect(headersOf(f, 0)).toHaveProperty('Authorization', 'Bearer bad');
+		expect(headersOf(f, 1)).not.toHaveProperty('Authorization');
+	});
+	it('does not retry an unauthenticated 403', async () => {
+		const f = respond({}, 403);
+		await expect(fetchReleases({ fetch: f as unknown as typeof fetch })).rejects.toThrow(/403/);
+		expect(f).toHaveBeenCalledTimes(1);
+	});
+	it.each([
+		['javascript:alert(1)'],
+		['http://github.com/enzarb/enzarb/releases/tag/ui/v1.0.0'],
+		['https://github.com.evil.test/x'],
+		['https://user:pw@github.com/x'],
+		['https://github.com:8443/x'],
+		['not a url'],
+		[undefined]
+	])('replaces the unsafe html_url %s with the tag url', async (html_url) => {
+		const f = respond([gh({ html_url })]);
+		const [rel] = await fetchReleases({ fetch: f as unknown as typeof fetch });
+		expect(rel.url).toBe('https://github.com/enzarb/enzarb/releases/tag/ui/v1.0.0');
+	});
+});
+
+describe('safeReleaseUrl', () => {
+	it('keeps an https github.com url', () => {
+		expect(safeReleaseUrl('https://github.com/enzarb/enzarb/releases/tag/x', 'x')).toBe(
+			'https://github.com/enzarb/enzarb/releases/tag/x'
+		);
+	});
+	it('percent-encodes odd characters in the fallback tag url', () => {
+		const tag = 'ui/v1 "<x>?#';
+		const url = safeReleaseUrl('javascript:1', tag);
+		expect(url).toBe(releaseTagUrl(tag));
+		expect(url).toBe('https://github.com/enzarb/enzarb/releases/tag/ui/v1%20%22%3Cx%3E%3F%23');
+		expect(new URL(url).hostname).toBe('github.com');
 	});
 });
 

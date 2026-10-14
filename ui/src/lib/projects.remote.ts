@@ -5,13 +5,14 @@ import { MAX_PROJECTS_PER_REQUEST } from '#lib/onboarding.ts';
 import { CREATE_REPO_PURPOSE, setCreateRepoIntentCookie } from '#lib/server/auth.ts';
 import { getConfig } from '#lib/server/config.ts';
 import { buildIntent, signIntent } from '#lib/server/create-repo-intent.ts';
-import { MaxRunsSchema } from '#lib/projects.ts';
+import { DISPLAY_NAME_MAX, MaxRunsSchema } from '#lib/projects.ts';
 import { SandboxResourcesSchema } from '#lib/sandbox-resources.ts';
 import { getSql } from '#lib/server/db.ts';
 import { KubeError, getProjectStore } from '#lib/server/kube.ts';
 import { projectCache } from '#lib/server/project-cache.ts';
 import {
 	createProjects as createProjectsFor,
+	setDisplayName as setDisplayNameFor,
 	setRepositories as setRepositoriesFor,
 	repositoryChoices as repositoryChoicesFor
 } from '#lib/server/project-onboarding.ts';
@@ -51,7 +52,7 @@ export const repositoryChoices = query(async () => {
 
 const PlanSchema = v.object({
 	name: v.pipe(v.string(), v.maxLength(200)),
-	displayName: v.optional(v.pipe(v.string(), v.maxLength(100))),
+	displayName: v.optional(v.pipe(v.string(), v.maxLength(DISPLAY_NAME_MAX))),
 	repositories: v.pipe(v.array(v.pipe(v.string(), v.maxLength(300))), v.maxLength(500)),
 	maxRuns: v.optional(MaxRunsSchema)
 });
@@ -176,6 +177,30 @@ export const setRepositories = command(
 			},
 			name,
 			repositories
+		);
+		if (!outcome.ok && outcome.code === 'not-found') error(404, 'Project not found');
+		if (outcome.ok) {
+			projectCache.invalidate(user.login);
+			await getProject(name).refresh();
+			await listProjects().refresh();
+		}
+		return outcome;
+	}
+);
+
+/** Owner-only: renames the Project's `spec.displayName` (`metadata.name` is immutable). */
+export const setDisplayName = command(
+	v.object({
+		name: NameArg,
+		displayName: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(DISPLAY_NAME_MAX))
+	}),
+	async ({ name, displayName }) => {
+		const { user } = getRequestEvent().locals;
+		if (!user) error(401, 'Not signed in');
+		const outcome = await setDisplayNameFor(
+			{ store: getProjectStore(), owner: user.login },
+			name,
+			displayName
 		);
 		if (!outcome.ok && outcome.code === 'not-found') error(404, 'Project not found');
 		if (outcome.ok) {

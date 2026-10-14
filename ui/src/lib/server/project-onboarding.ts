@@ -7,7 +7,7 @@ import {
 	type ProjectPlan,
 	type Triggers
 } from '#lib/onboarding.ts';
-import { buildProject, normalizeRepoKey } from '#lib/projects.ts';
+import { DISPLAY_NAME_MAX, buildProject, normalizeRepoKey } from '#lib/projects.ts';
 import { KubeError, type ProjectStore } from './kube.ts';
 import type { UserRepository, UserRepositorySnapshot } from './user-repositories.ts';
 
@@ -185,6 +185,32 @@ async function claimAndCreate(
 		console.error(`could not create project ${plan.name}:`, (e as Error).message);
 		return failed(plan, 'The cluster refused or could not create the project');
 	}
+}
+
+export type SetDisplayNameOutcome =
+	{ ok: true; displayName: string } | { ok: false; code: 'not-found' | 'invalid'; message: string };
+
+/** Renames a Project (`spec.displayName`). Owner only; no restart, not part of the pod. */
+export async function setDisplayName(
+	deps: { store: ProjectStore; owner: string },
+	name: string,
+	input: string
+): Promise<SetDisplayNameOutcome> {
+	const displayName = input.trim();
+	if (!displayName) return { ok: false, code: 'invalid', message: 'Enter a display name' };
+	if (displayName.length > DISPLAY_NAME_MAX)
+		return {
+			ok: false,
+			code: 'invalid',
+			message: `Display name must be at most ${DISPLAY_NAME_MAX} characters`
+		};
+	return exclusive(async () => {
+		const project = await deps.store.get(name);
+		if (!project || project.spec.owner !== deps.owner)
+			return { ok: false, code: 'not-found', message: 'Project not found' };
+		await deps.store.update(name, { displayName });
+		return { ok: true, displayName };
+	});
 }
 
 export interface SetRepositoriesDeps {

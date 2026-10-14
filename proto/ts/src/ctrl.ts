@@ -94,6 +94,19 @@ export interface RunStartFields {
   claude_token?: SecretLike;
 }
 
+/**
+ * Token usage and cost of an agent run. Every field is omitted when unknown
+ * (absent means "not reported", never 0). `cost_usd` is as reported by the agent.
+ */
+export interface Usage {
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cache_read_input_tokens?: number | null;
+  cache_creation_input_tokens?: number | null;
+  models?: string[];
+  cost_usd?: number | null;
+}
+
 /** Body POSTed to `callback_url` (not a CTRL message). */
 export interface RunFinished {
   run_id: string;
@@ -103,6 +116,7 @@ export interface RunFinished {
   branch: string;
   head_sha: string;
   pushed: boolean;
+  usage?: Usage | null;
 }
 
 export type Ctrl =
@@ -115,7 +129,7 @@ export type Ctrl =
   | ({ type: "run_start" } & RunStartFields)
   | { type: "run_accepted"; run_id: string; state: RunPhase; existing: boolean }
   | { type: "run_status"; run_id: string }
-  | { type: "run_state"; run_id: string; state: RunPhase; exit_code?: number | null; summary?: string | null }
+  | { type: "run_state"; run_id: string; state: RunPhase; exit_code?: number | null; summary?: string | null; usage?: Usage | null }
   | { type: "run_cancel"; run_id: string }
   | { type: "credential_captured"; kind: CredentialKind; token?: SecretLike | null; legacy?: boolean | null }
   | { type: "credential_status" }
