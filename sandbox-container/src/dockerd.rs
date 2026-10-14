@@ -34,8 +34,9 @@ use crate::reaper::{ExitStatus, Reaper};
 pub const DEFAULT_ARGS: &[&str] = &[
     "--iptables=false",
     "--ip6tables=false",
-    // vfs works on any backing fs; overlay2 on a gofer-backed PVC is unverified.
-    "--storage-driver=vfs",
+    // overlay2 works on the gofer-backed docker volume (verified in gVisor, issue #119); `vfs`
+    // copies every layer in full and fills the volume. Operators can go back via `dockerdArgs`.
+    "--storage-driver=overlay2",
     "--feature=containerd-snapshotter=false",
 ];
 
@@ -221,6 +222,18 @@ impl Dockerd {
             let _ = std::fs::create_dir_all(&self.cfg.exec_root);
             // A stale pidfile from a killed daemon would make dockerd refuse to start.
             let _ = std::fs::remove_file(self.cfg.exec_root.join("docker.pid"));
+            if storage_driver(&self.cfg.args).as_deref() != Some("vfs") {
+                let root = self.cfg.data_root.clone();
+                let work = tokio::task::spawn_blocking(move || reclaim_vfs(&root));
+                tokio::select! {
+                    biased;
+                    _ = self.stop.cancelled() => {
+                        self.set(State::Stopped);
+                        return;
+                    }
+                    _ = work => {}
+                }
+            }
             let (pid, mut exit) = match self.spawn() {
                 Ok(x) => x,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -318,6 +331,68 @@ impl Dockerd {
     }
 }
 
+/// The storage driver selected by `args` (`--storage-driver=X` or `--storage-driver X`; the last
+/// one wins), or `None` when dockerd's own default applies.
+pub fn storage_driver(args: &[String]) -> Option<String> {
+    let mut found = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if let Some(v) = a.strip_prefix("--storage-driver=") {
+            found = Some(v.to_string());
+        } else if a == "--storage-driver"
+            && let Some(v) = it.next()
+        {
+            found = Some(v.clone());
+        }
+    }
+    found
+}
+
+/// Delete the leftover `<data_root>/vfs` of the old default driver and log the space freed.
+/// Touches only that exact path and never follows symlinks. Failures are logged, never fatal.
+/// Returns the bytes freed, or `None` when there was nothing to delete.
+pub fn reclaim_vfs(data_root: &std::path::Path) -> Option<u64> {
+    let dir = data_root.join("vfs");
+    match std::fs::symlink_metadata(&dir) {
+        Ok(m) if m.is_dir() => {}
+        _ => return None,
+    }
+    let bytes = dir_size(&dir);
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => {
+            tracing::info!(path = %dir.display(), bytes_freed = bytes, "dockerd: removed leftover vfs storage");
+            Some(bytes)
+        }
+        Err(e) => {
+            tracing::warn!(path = %dir.display(), error = %e, "dockerd: cannot remove leftover vfs storage");
+            None
+        }
+    }
+}
+
+/// Total size of regular files below `dir`, without following symlinks; errors count as zero.
+fn dir_size(dir: &std::path::Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    let mut total = 0;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let Ok(m) = e.path().symlink_metadata() else {
+                continue;
+            };
+            if m.is_dir() {
+                stack.push(e.path());
+            } else if m.is_file() {
+                total += m.size();
+            }
+        }
+    }
+    total
+}
+
 fn describe(st: Option<ExitStatus>) -> String {
     match st {
         Some(ExitStatus::Exited(c)) => format!("code {c}"),
@@ -325,6 +400,10 @@ fn describe(st: Option<ExitStatus>) -> String {
         None => "status lost".into(),
     }
 }
+
+#[cfg(test)]
+#[path = "dockerd_tests.rs"]
+mod tests;
 
 /// `GET /_ping` on the daemon's socket.
 pub async fn ping(socket: &std::path::Path) -> bool {
