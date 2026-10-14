@@ -936,6 +936,9 @@ spec:
             - { name: ENZARB_SANDBOX_RUNTIME_CLASS, value: "gvisor" }
             - { name: ENZARB_DOCKER_RUNTIME_CLASSES, value: "gvisor" }
             - { name: ENZARB_DOCKER_STORAGE, value: "50Gi" }
+            - { name: ENZARB_DOCKER_PRUNE, value: "on" }
+            - { name: ENZARB_DOCKER_PRUNE_AGE, value: "24h" }
+            - { name: ENZARB_DOCKER_PRUNE_MIN_FREE, value: "15" }
             - { name: RUST_LOG, value: "info" }
           readinessProbe:
             httpGet: { path: /readyz, port: health }

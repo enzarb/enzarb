@@ -42,6 +42,11 @@ spec:
             - { name: ENZARB_SANDBOX_RUNTIME_CLASS, value: {{ $c.sandboxRuntimeClass | quote }} }
             - { name: ENZARB_DOCKER_RUNTIME_CLASSES, value: {{ join "," $c.docker.runtimeClasses | quote }} }
             - { name: ENZARB_DOCKER_STORAGE, value: {{ $c.docker.storage | quote }} }
+            {{- with $c.docker.prune }}
+            - { name: ENZARB_DOCKER_PRUNE, value: {{ ternary "on" "off" (.enabled | default false) | quote }} }
+            - { name: ENZARB_DOCKER_PRUNE_AGE, value: {{ .age | quote }} }
+            - { name: ENZARB_DOCKER_PRUNE_MIN_FREE, value: {{ .minFree | quote }} }
+            {{- end }}
             {{- if $c.docker.profiles }}
             - { name: ENZARB_DOCKER_PROFILES_FILE, value: /etc/enzarb/docker/profiles.yaml }
             {{- end }}
