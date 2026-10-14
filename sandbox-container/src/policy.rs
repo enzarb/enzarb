@@ -160,7 +160,7 @@ impl Default for Policy {
             CommandRule::new("npx").global(&["--version", "-v", "--help", "-h"]),
             CommandRule::new("node").global(&["--version", "-v", "--help", "-h"]),
             CommandRule::new("rustc").global(&["--version", "-V", "--help", "-h"]),
-            // Docker talks to the sandbox's own dockerd sidecar (ADR-0012). Extra checks in `check_docker`.
+            // Docker talks to the dockerd that sandbox-init runs in this container (ADR-0016). Extra checks in `check_docker`.
             CommandRule::new("docker")
                 .allow_sub(&[
                     "run",
@@ -1038,7 +1038,7 @@ fn check_script_interpreter(
 }
 
 /// Extra rules for `docker`, on top of the allowlist/subcommand checks. The
-/// daemon is the sandbox's own dockerd (inside gVisor), so `--network=host`
+/// daemon is the sandbox container's own dockerd (inside gVisor), so `--network=host`
 /// is fine; what must not happen is a container reaching the sandbox pod or
 /// the node: privileged mode, host namespaces, extra capabilities, devices,
 /// security options, and bind mounts from outside the worktree (which includes
@@ -1702,6 +1702,47 @@ mod tests {
             "docker system prune -f",
         ] {
             allowed(c);
+        }
+    }
+
+    #[test]
+    fn docker_in_the_sandbox_container_workflows_are_allowed() {
+        // The daemon runs in this container (ADR-0016): the worktree path is the same for the
+        // agent and for bind mounts.
+        let (_d, wt) = setup();
+        let w = wt.display();
+        for c in [
+            "docker version".to_string(),
+            "docker version --format '{{.Server.Version}}'".to_string(),
+            "docker info".to_string(),
+            "docker run --rm hello-world".to_string(),
+            "docker run --rm --user 1000:1000 alpine id".to_string(),
+            "docker run --rm -u 1000:1000 --network=host alpine wget -qO- https://example.com"
+                .to_string(),
+            format!("docker run --rm -v {w}:/src alpine ls /src"),
+            format!("docker run --rm --user 1000:1000 -v {w}/data:/data:ro alpine ls /data"),
+            format!("docker run --rm --mount type=bind,source={w},target=/src alpine ls /src"),
+            "docker compose up".to_string(),
+            "docker compose up --build -d".to_string(),
+            "docker build --network=host -t app:dev .".to_string(),
+        ] {
+            let d = sh(&Policy::default(), &wt, &c);
+            assert!(d.allow, "{c:?} should be allowed: {d:?}");
+        }
+    }
+
+    #[test]
+    fn docker_daemon_sockets_and_state_cannot_be_bind_mounted() {
+        for c in [
+            "docker run -v /var/run/docker.sock:/var/run/docker.sock app",
+            "docker run -v /run/docker.sock:/s app",
+            "docker run -v /var/run/dockerd:/d app",
+            "docker run -v /var/lib/docker:/d app",
+            "docker run --mount type=bind,src=/var/run/docker.sock,dst=/s app",
+            "docker run --mount type=bind,src=/var/lib/docker,dst=/d app",
+            "docker run -v /workspace/.enzarb:/e app",
+        ] {
+            denied(c);
         }
     }
 

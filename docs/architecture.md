@@ -87,7 +87,7 @@ flowchart LR
   PX --> SB
 
   subgraph T[Shared namespace enzarb-sandboxes, one sandbox per Project, no Kubernetes API access]
-    SB[Sandbox pod<br/>sandbox-init pid-1<br/>git worktrees, claude -p<br/>gVisor/Kata in prod]
+    SB[Sandbox pod: one container<br/>sandbox-init pid-1 as root supervises dockerd<br/>agents and git run as uid 1000<br/>git worktrees, claude -p<br/>gVisor/Kata in prod]
   end
   SB -- git --> SRC
   SB -- Claude API --> AN[Anthropic]
