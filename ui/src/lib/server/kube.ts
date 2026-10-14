@@ -31,6 +31,7 @@ export interface ProjectStore {
 }
 
 export interface SpecPatch {
+	displayName?: string;
 	maxRuns?: number | null;
 	sandbox?: { cpu?: number | null; memory?: string | null; storage?: string };
 	/** Replaces the whole list (merge patch replaces arrays). */
