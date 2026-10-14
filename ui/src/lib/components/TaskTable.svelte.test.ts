@@ -73,7 +73,8 @@ describe('TaskTable', () => {
 		render(TaskTable, { items: [items[0]], label: 'Work' });
 		await userEvent.hover(page.getByRole('button', { name: '21.4k' }));
 		await expect
-			.element(page.getByText('Uncached 12.3k · Cache read 9k · Cache write 50')).toBeVisible();
+			.element(page.getByText('Uncached 12.3k · Cache read 9k · Cache write 50'))
+			.toBeVisible();
 	});
 
 	it('sorts by a usage column, unknown last in both directions', async () => {
