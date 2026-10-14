@@ -76,6 +76,7 @@ pub mod claude_credential;
 mod connectors;
 mod jobs;
 mod restart;
+mod retarget;
 mod sandbox;
 mod sandbox_change;
 mod sandbox_wait;
@@ -585,6 +586,7 @@ impl Executor {
                 "unknown job kind {:?}",
                 job.kind
             ))),
+            Ok(JobKind::RetargetChangeRequest) => self.start_retarget(&job).await,
             Ok(kind) if kind.is_agent() => self.start_agent(&job, kind).await,
             Ok(kind) => self.run_connector_job(&job, kind).await,
         };

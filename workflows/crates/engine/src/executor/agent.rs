@@ -222,6 +222,7 @@ impl Executor {
             callback_url: format!("{}/v1/runs/{rid}/finished", self.cfg.callback_base_url),
             callback_token: callback_token(&self.cfg.callback_secret, rid),
             log_channel: None,
+            retarget: None,
         })
     }
 
@@ -304,6 +305,7 @@ impl Executor {
             prompt: recovery_prompt(input.kind),
             timeout_secs: input.timeout_secs,
             log_channel: None,
+            retarget: None,
         };
         self.launch_run(session, job_id, attempt, &rid, run, input.timeout_secs)
             .await
@@ -312,7 +314,7 @@ impl Executor {
 
     /// `run_start` on an open session, then release the lease and set the deadline. Closes the
     /// session.
-    async fn launch_run(
+    pub(super) async fn launch_run(
         &self,
         session: Session,
         job_id: i64,

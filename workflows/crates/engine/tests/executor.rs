@@ -3572,3 +3572,208 @@ async fn no_keyring_fails_closed_instead_of_running_unauthenticated() {
     assert!(!started);
     assert!(err.starts_with("credential_undecryptable:"), "{err}");
 }
+
+// ---------------------------------------------------------------------------
+// retarget_change_request (stacked change requests)
+// ---------------------------------------------------------------------------
+
+fn retarget_input(expected_sha: &str, head_ref: &str) -> Value {
+    json!({
+        "item": key(6), "number": 6, "head_ref": head_ref, "expected_sha": expected_sha,
+        "old_base": "a".repeat(40), "onto": "main",
+    })
+}
+
+fn stacked_pr(head_sha: &str, base: &str) -> Thread {
+    let mut t = thread_with("hi");
+    t.item.kind = ItemKind::ChangeRequest;
+    t.item.number = 6;
+    t.item.head_ref = Some("enzarb/issue-2".into());
+    t.item.base_ref = Some(base.into());
+    t.item.head_sha = Some(head_sha.into());
+    t
+}
+
+async fn retarget_job(h: &H, input: Value) -> i64 {
+    let wi = new_item(h.pool(), 6, "enzarb").await;
+    new_job(
+        h.pool(),
+        wi,
+        "enzarb",
+        "retarget_change_request",
+        10,
+        "k:retarget",
+        input,
+    )
+    .await
+}
+
+fn retarget_summary(outcome: &str) -> String {
+    json!({"outcome": outcome, "head_sha": "newsha", "reason": "why"}).to_string()
+}
+
+fn finish_with(summary: String) -> Mode {
+    Mode::Finish {
+        outcome: RunOutcome::Succeeded,
+        summary,
+        pushed: false,
+        callback: true,
+    }
+}
+
+#[tokio::test]
+async fn retarget_starts_a_leased_run_then_sets_the_base_from_the_callback() {
+    let h = H::new(db!()).await;
+    h.fake
+        .add_thread(key(6), stacked_pr("sha1", "enzarb/issue-1"));
+    h.sandbox
+        .set_mode(finish_with(retarget_summary("retargeted")));
+    let id = retarget_job(&h, retarget_input("sha1", "enzarb/issue-2")).await;
+    h.exec.drain().await;
+
+    // The run carries the retarget request, a read_write credential and never a plain push.
+    let rid = format!("job-{id}");
+    let run = h.sandbox.run(&rid).expect("run started");
+    let r = run.retarget.expect("retarget request");
+    assert_eq!(
+        (
+            r.head_ref.as_str(),
+            r.onto.as_str(),
+            r.expected_sha.as_str()
+        ),
+        ("enzarb/issue-2", "main", "sha1")
+    );
+    assert_eq!(r.protected, ["main"]);
+    assert!(!run.push && run.claude_token.is_none());
+    assert!(
+        h.fake
+            .calls()
+            .iter()
+            .any(|c| format!("{c:?}").contains("ReadWrite"))
+    );
+
+    wait_for("the callback", || async {
+        job(h.pool(), id).await.status == "succeeded"
+    })
+    .await;
+    let out = job(h.pool(), id).await.output.unwrap();
+    assert_eq!(out["outcome"], "retargeted");
+    assert_eq!(out["head_sha"], "newsha");
+    assert_eq!(
+        h.fake.set_base_calls(),
+        vec![(key(6), 6, "main".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn retarget_conflict_sets_no_base() {
+    let h = H::new(db!()).await;
+    h.fake
+        .add_thread(key(6), stacked_pr("sha1", "enzarb/issue-1"));
+    h.sandbox
+        .set_mode(finish_with(retarget_summary("conflict")));
+    let id = retarget_job(&h, retarget_input("sha1", "enzarb/issue-2")).await;
+    h.exec.drain().await;
+    wait_for("the callback", || async {
+        job(h.pool(), id).await.status == "succeeded"
+    })
+    .await;
+    assert_eq!(
+        job(h.pool(), id).await.output.unwrap()["outcome"],
+        "conflict"
+    );
+    assert!(h.fake.set_base_calls().is_empty());
+}
+
+#[tokio::test]
+async fn a_refused_base_change_is_reported_not_retried() {
+    let h = H::new(db!()).await;
+    h.fake
+        .add_thread(key(6), stacked_pr("sha1", "enzarb/issue-1"));
+    h.sandbox
+        .set_mode(finish_with(retarget_summary("retargeted")));
+    let id = retarget_job(&h, retarget_input("sha1", "enzarb/issue-2")).await;
+    h.exec.drain().await;
+    // The run is started; the callback follows shortly. The provider then refuses the base
+    // change after the rebase and push.
+    h.fake.fail_next(enzarb_connector::Error::Invalid(
+        "base branch is invalid".into(),
+    ));
+    wait_for("the callback", || async {
+        job(h.pool(), id).await.status == "succeeded"
+    })
+    .await;
+    let out = job(h.pool(), id).await.output.unwrap();
+    assert_eq!(out["outcome"], "retargeted");
+    assert_eq!(out["base_set"], false);
+}
+
+#[tokio::test]
+async fn a_moved_head_never_reaches_the_sandbox() {
+    let h = H::new(db!()).await;
+    h.fake
+        .add_thread(key(6), stacked_pr("moved", "enzarb/issue-1"));
+    let id = retarget_job(&h, retarget_input("sha1", "enzarb/issue-2")).await;
+    h.exec.drain().await;
+    let j = job(h.pool(), id).await;
+    assert_eq!(j.status, "succeeded");
+    assert_eq!(j.output.unwrap()["outcome"], "lease_failed");
+    assert_eq!(h.sandbox.starts(), 0);
+    assert!(h.fake.set_base_calls().is_empty());
+}
+
+#[tokio::test]
+async fn only_enzarb_branches_are_ever_sent_to_the_sandbox() {
+    for (head, onto) in [("feat/x", "main"), ("main", "main"), ("enzarb/issue-2", "")] {
+        let h = H::new(db!()).await;
+        h.fake
+            .add_thread(key(6), stacked_pr("sha1", "enzarb/issue-1"));
+        let mut input = retarget_input("sha1", head);
+        input["onto"] = json!(onto);
+        let id = retarget_job(&h, input).await;
+        h.exec.drain().await;
+        let j = job(h.pool(), id).await;
+        assert_eq!(j.output.unwrap()["outcome"], "rejected", "{head}");
+        assert_eq!(h.sandbox.starts(), 0, "{head}");
+    }
+}
+
+#[tokio::test]
+async fn an_old_sandbox_that_ignores_retarget_ends_in_a_refusal() {
+    let h = H::new(db!()).await;
+    h.fake
+        .add_thread(key(6), stacked_pr("sha1", "enzarb/issue-1"));
+    // An old sandbox ran an agent with the prompt and produced plain text.
+    h.sandbox.set_mode(finish_with("I looked around.".into()));
+    let id = retarget_job(&h, retarget_input("sha1", "enzarb/issue-2")).await;
+    h.exec.drain().await;
+    wait_for("the callback", || async {
+        job(h.pool(), id).await.status == "succeeded"
+    })
+    .await;
+    assert_eq!(
+        job(h.pool(), id).await.output.unwrap()["outcome"],
+        "rejected"
+    );
+    assert!(h.fake.set_base_calls().is_empty());
+}
+
+#[tokio::test]
+async fn a_failed_retarget_run_fails_the_job() {
+    let h = H::new(db!()).await;
+    h.fake
+        .add_thread(key(6), stacked_pr("sha1", "enzarb/issue-1"));
+    h.sandbox.set_mode(Mode::Finish {
+        outcome: RunOutcome::Failed,
+        summary: "git fetch failed".into(),
+        pushed: false,
+        callback: true,
+    });
+    let id = retarget_job(&h, retarget_input("sha1", "enzarb/issue-2")).await;
+    h.exec.drain().await;
+    wait_for("the callback", || async {
+        job(h.pool(), id).await.status == "failed"
+    })
+    .await;
+    assert!(h.fake.set_base_calls().is_empty());
+}

@@ -63,6 +63,7 @@ struct CallbackJob {
     generation: i32,
     project_id: Option<String>,
     input: Value,
+    kind: String,
 }
 
 /// The run whose callback finishes the job: the recovery run once it was started.
@@ -146,8 +147,9 @@ async fn finished(
     };
 
     let row: Result<Option<CallbackJob>, _> = sqlx::query_as(
-        "SELECT status, attempt, limit_wait_count + restart_retries AS generation, project_id, input
-         FROM jobs WHERE id = $1 AND kind LIKE 'agent\\_%'",
+        "SELECT status, attempt, limit_wait_count + restart_retries AS generation, project_id, input,
+                kind
+         FROM jobs WHERE id = $1 AND (kind LIKE 'agent\\_%' OR kind = 'retarget_change_request')",
     )
     .bind(job_id)
     .fetch_optional(&exec.pool)
@@ -158,6 +160,7 @@ async fn finished(
         generation,
         project_id: project,
         input,
+        kind,
     } = match row {
         Ok(Some(r)) => r,
         Ok(None) => return reply(StatusCode::NOT_FOUND, "unknown job"),
@@ -181,6 +184,17 @@ async fn finished(
     if path_run_id != current_run_id(job_id, generation, recovery_used) {
         tracing::info!(job_id, %path_run_id, "callback for an earlier run of this job; ignored");
         return (StatusCode::OK, Json(json!({ "accepted": false })));
+    }
+
+    if kind == JobKind::RetargetChangeRequest.as_str() {
+        let result = exec.finish_retarget(&input, &body).await;
+        return match ingest_job_result(&exec.pool, job_id, attempt, result).await {
+            Ok(id) => (StatusCode::OK, Json(json!({ "accepted": id.is_some() }))),
+            Err(e) => {
+                tracing::warn!(job_id, error = %e, "callback: recording the result failed");
+                reply(StatusCode::INTERNAL_SERVER_ERROR, "database error")
+            }
+        };
     }
 
     let result = match body.outcome {

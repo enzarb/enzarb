@@ -41,7 +41,8 @@ use crate::db::{Event as EventRow, WorkItem};
 use crate::error::Error;
 use crate::index::{ProjectIndex, ProjectInfo};
 use crate::machine::{
-    self, Ctx, Effect, EngineEvent, EventPayload, Triggers, WORKFLOW_VERSION, WorkflowState,
+    self, CrPhase, Ctx, Effect, EngineEvent, EventPayload, Triggers, WORKFLOW_VERSION,
+    WorkflowState,
 };
 use crate::permission::PermissionResolver;
 
@@ -347,7 +348,23 @@ impl Reducer {
             tracing::debug!(item = %key, "text dependencies changed");
         }
 
+        // The change request this item is (or could be) stacked on. An item already stacked
+        // keeps its parent; a new or issue item may pick its single open parent.
+        let stacked_on: Option<String> = existing
+            .as_ref()
+            .and_then(|w| w.state_data.get("stacked_on"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let stack_parent =
+            if stacked_on.is_some() || existing.as_ref().is_none_or(|w| w.workflow == "issue") {
+                crate::dependencies::stack_parent(&mut tx, &key, stacked_on.as_deref()).await?
+            } else {
+                None
+            };
+
         let ctx = Ctx {
+            stack_parent,
             orphaned,
             orphan_owner,
             work_item: key.clone(),
@@ -448,6 +465,21 @@ impl Reducer {
             })
             .execute(&mut *tx)
             .await?;
+        }
+
+        // A parent change request that merged or closed: its stacked children re-evaluate now
+        // (a merge retargets them) instead of at the next sweep.
+        if t.accepted
+            && state_changed
+            && matches!(&t.next, WorkflowState::ChangeRequest(c)
+                if matches!(c.phase, CrPhase::Merged | CrPhase::Closed | CrPhase::Cancelled))
+        {
+            let n =
+                crate::dependencies::notify_stacked_children(&mut tx, &key, &t.next.state_name())
+                    .await?;
+            if n > 0 {
+                tracing::info!(item = %key, children = n, "stacked change requests notified");
+            }
         }
 
         sqlx::query("UPDATE events SET processed_at = now() WHERE id = $1")

@@ -18,6 +18,7 @@ use serde_json::Value;
 
 use super::fx::{AgentSpec, Fx};
 use super::prompt::{AgentOutput, Decision, PromptContext};
+use super::stack::{StackParent, stack_marker};
 use super::title::pr_title;
 use super::{
     Ctx, Effect, EngineEvent, EventPayload, JobKind, Transition, UiActionKind, WorkflowKind,
@@ -65,6 +66,10 @@ pub struct IssueData {
     pub error: String,
     /// Number of the change request once opened.
     pub change_request: Option<u64>,
+    /// The change request the implementation branch was cut from, chosen when the
+    /// implementation started (stacked change requests). `None` when it starts from the
+    /// default branch.
+    pub stack: Option<StackParent>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -148,11 +153,18 @@ fn start_plan(ctx: &Ctx, fx: &mut Fx, d: &IssueData) {
 fn start_implement(ctx: &Ctx, fx: &mut Fx, d: &IssueData) {
     let mut pc = prompt_ctx(ctx, d);
     pc.branch = branch(d.number);
+    let base_ref = match &d.stack {
+        Some(p) => {
+            pc.base_ref = p.head_ref.clone();
+            p.head_ref.clone()
+        }
+        None => ctx.default_branch.clone(),
+    };
     fx.agent(
         JobKind::AgentImplement,
         &target(ctx, d),
         AgentSpec {
-            base_ref: ctx.default_branch.clone(),
+            base_ref,
             branch: branch(d.number),
             push: true,
         },
@@ -161,7 +173,17 @@ fn start_implement(ctx: &Ctx, fx: &mut Fx, d: &IssueData) {
 }
 
 /// Enter `phase` and queue its job, after a trigger that starts work.
-fn begin(ctx: &Ctx, ev: &EngineEvent, phase: IssuePhase, d: IssueData, note: &str) -> Transition {
+fn begin(
+    ctx: &Ctx,
+    ev: &EngineEvent,
+    phase: IssuePhase,
+    mut d: IssueData,
+    note: &str,
+) -> Transition {
+    if phase == IssuePhase::Implementing {
+        // Stack on the parent's change request when there is exactly one open one.
+        d.stack = ctx.stack_parent.clone().filter(|p| !p.merged);
+    }
     let mut fx = Fx::new(ctx, ev);
     fx.received(&target(ctx, &d));
     fx.wake_at(None);
@@ -530,6 +552,21 @@ fn job_succeeded(
                 .and_then(Value::as_str)
                 .map(str::to_string)
                 .unwrap_or_else(|| branch(d.number));
+            let mut body = format!("{}\n\nCloses #{}", out.body.trim_end(), d.number);
+            let base_ref = match &d.stack {
+                Some(p) => {
+                    body.push_str(&format!(
+                        "\n\nStacked on {}: this change request is based on `{}` and is \
+                         retargeted to `{}` when that one is merged.\n{}",
+                        p.key,
+                        p.head_ref,
+                        ctx.default_branch,
+                        stack_marker(p)
+                    ));
+                    p.head_ref.clone()
+                }
+                None => ctx.default_branch.clone(),
+            };
             fx.open_change_request(&ChangeRequestSpec {
                 repo: ctx.work_item.repo.clone(),
                 title: pr_title(
@@ -537,9 +574,9 @@ fn job_succeeded(
                     &d.title,
                     &ctx.work_item.repo.full_name(),
                 ),
-                body: format!("{}\n\nCloses #{}", out.body.trim_end(), d.number),
+                body,
                 head_ref,
-                base_ref: ctx.default_branch.clone(),
+                base_ref,
                 draft: false,
             });
             Transition::to(
