@@ -157,7 +157,7 @@ impl TokenScanner {
 pub fn write_atomic(path: &Path, data: &[u8], mode: u32) -> std::io::Result<()> {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(dir)?;
+    crate::privs::create_dir_all(dir)?;
     let tmp = dir.join(format!(
         ".{}.tmp{}-{}",
         path.file_name().and_then(|n| n.to_str()).unwrap_or("file"),
@@ -172,6 +172,7 @@ pub fn write_atomic(path: &Path, data: &[u8], mode: u32) -> std::io::Result<()> 
     let res = f
         .write_all(data)
         .and_then(|()| f.sync_all())
+        .and_then(|()| crate::privs::own(&tmp))
         .and_then(|()| std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode)))
         .and_then(|()| std::fs::rename(&tmp, path));
     if res.is_err() {

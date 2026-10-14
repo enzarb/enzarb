@@ -204,11 +204,15 @@ impl Transcript {
         v["ts"] = json!(now_ms());
         v["kind"] = json!(kind);
         let mut g = self.inner.lock().unwrap();
+        let fresh = !self.path.exists();
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.path)
         {
+            if fresh {
+                let _ = crate::privs::own(&self.path);
+            }
             let _ = writeln!(f, "{v}");
         }
         g.subs.retain(|s| s.send(v.clone()).is_ok());
@@ -425,7 +429,7 @@ impl RunManager for AgentRunManager {
         stored.deps_token = None;
         stored.npm_token = None;
         stored.claude_token = None;
-        let setup = std::fs::create_dir_all(&dir)
+        let setup = crate::privs::create_dir_all(&dir)
             .and_then(|()| {
                 write_atomic(
                     &dir.join("request.json"),
@@ -1138,14 +1142,10 @@ impl Inner {
         tag: &str,
         repo: &Path,
     ) -> Result<crate::netgit::NetDir, Abort> {
-        use std::os::unix::fs::DirBuilderExt;
         let dir = crate::netgit::net_dir(&self.cfg.workspace, tag)
             .map_err(|e| Abort::Fail(format!("cannot name the fetch repo: {e}")))?;
         let parent = dir.parent().unwrap_or(&self.cfg.workspace).to_path_buf();
-        let _ = std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&parent);
+        let _ = crate::privs::create_dir_all_mode(&parent, Some(0o700));
         let _ = std::fs::remove_dir_all(&dir);
         let guard = crate::netgit::NetDir(dir.clone());
         let d = dir.to_string_lossy().into_owned();
@@ -1161,12 +1161,11 @@ impl Inner {
             .await?;
         require(out, "init", secrets)?;
         let objects = repo.join(".git").join("objects");
-        std::fs::create_dir_all(dir.join("objects/info"))
+        crate::privs::create_dir_all(&dir.join("objects/info"))
             .and_then(|_| {
-                std::fs::write(
-                    dir.join("objects/info/alternates"),
-                    format!("{}\n", objects.display()),
-                )
+                let f = dir.join("objects/info/alternates");
+                std::fs::write(&f, format!("{}\n", objects.display()))
+                    .and_then(|()| crate::privs::own(&f))
             })
             .map_err(|e| Abort::Fail(format!("cannot prepare the fetch repo: {e}")))?;
         Ok(guard)
@@ -1360,8 +1359,8 @@ impl Inner {
         let lock = self.repo_lock(&repo);
         let (start_sha, base_sha) = {
             let _g = lock.lock().await;
-            let _ = std::fs::create_dir_all(ws.join("repos"));
-            let _ = std::fs::create_dir_all(ws.join("worktrees"));
+            let _ = crate::privs::create_dir_all(&ws.join("repos"));
+            let _ = crate::privs::create_dir_all(&ws.join("worktrees"));
             if repo.join(".git").exists() {
                 self.net_fetch(
                     run,
@@ -1379,7 +1378,7 @@ impl Inner {
                 // to read), then moved into place.
                 let tmp = crate::netgit::net_dir(ws, &format!("clone-{}", req.run_id))
                     .map_err(|e| Abort::Fail(format!("cannot name the clone dir: {e}")))?;
-                let _ = std::fs::create_dir_all(tmp.parent().unwrap_or(ws));
+                let _ = crate::privs::create_dir_all(tmp.parent().unwrap_or(ws));
                 let tmp = crate::netgit::NetDir(tmp);
                 let t = tmp.0.to_string_lossy().into_owned();
                 let res = self

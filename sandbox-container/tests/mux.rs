@@ -220,7 +220,7 @@ async fn healthz_needs_no_auth() {
     let mut resp = String::new();
     s.read_to_string(&mut resp).await.unwrap();
     assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
-    assert!(resp.ends_with("ok"), "{resp}");
+    assert!(resp.ends_with(r#"{"status":"ok"}"#), "{resp}");
 }
 
 #[tokio::test]

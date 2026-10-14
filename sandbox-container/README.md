@@ -15,9 +15,22 @@ Only system components:
 - node 24, `@agentclientprotocol/claude-agent-acp` (pinned) and the glibc `claude` binary, installed directly (not through mise). `claude-agent-acp` and `claude` are symlinks in `/usr/local/bin`.
 - `mise`
 - `build-essential`, `pkg-config`, `libssl-dev`
-- `git`, `curl`, `ca-certificates`, `openssh-client`
+- `git`, `curl`, `ca-certificates`, `openssh-client`, `procps`
+- Docker: `dockerd`, `containerd`, `runc`, the `docker` CLI, buildx and compose (see [Docker and privileges](#docker-and-privileges-adr-0016))
 
 There is no rustup/Rust, npm, ripgrep, jq or other CLI tool, and no `HEALTHCHECK` (Kubernetes probes `/healthz`). `scripts/smoke.sh` asserts both what is present and what is absent.
+
+## Docker and privileges (ADR-0016)
+
+The image contains `dockerd`, `containerd`, `runc` and the `docker` CLI (static bundle 29.8.2, sha256-pinned) plus the buildx and compose plugins. `sandbox-init` runs `dockerd` and everything else:
+
+- **Root pid 1, uid 1000 children.** The operator starts the `sandbox` container as root (the image has no `USER`; `scripts/smoke.sh` runs it that way). sandbox-init drops every process it spawns other than dockerd (agent runs, chat agents, git, `mise`, PTY shells) to uid/gid 1000 with `setgroups([1000])` and `PR_SET_NO_NEW_PRIVS` (`src/privs.rs`), with `HOME`, `USER` and `LOGNAME` set. PTYs go through `sandbox-init --exec-as-sandbox-user <cmd>`. Files it creates under `/workspace` are chowned to 1000. Without root (tests, `docker run --user 1000`) all of this is a no-op, and dockerd is expected to fail.
+- **Supervision** (`src/dockerd.rs`). dockerd listens on `unix:///var/run/docker.sock` (`DOCKER_HOST`, group 1000, mode 0660), data root `/var/lib/docker` (the `docker-data` PVC), exec root `/var/run/dockerd`. Flags come from `ENZARB_DOCKERD_ARGS` (default: the gVisor set `--iptables=false --ip6tables=false --storage-driver=vfs --feature=containerd-snapshotter=false`). It is restarted with backoff (1 s to 30 s, reset after 60 s stable). `GET /healthz` is always 200; its JSON body carries `dockerd.state` (`starting`, `running`, `failed` with `reason`, `stopped`, `disabled`). If dockerd is missing or cannot start, agents and chats still work. On SIGTERM it is stopped after the chats and before the other children. Env: `ENZARB_DOCKERD=off`, `ENZARB_DOCKERD_BIN`, `ENZARB_DOCKERD_ARGS`, `ENZARB_DOCKERD_SOCKET`, `ENZARB_DOCKERD_DATA_ROOT`, `ENZARB_DOCKERD_EXEC_ROOT`.
+- **Networking of inner containers.** dockerd runs with `--iptables=false` (gVisor), so the default bridge has no NAT and no egress. `/usr/local/bin/docker` is a wrapper (`scripts/docker-wrapper.sh`; real client in `/usr/local/libexec/docker/docker`) that adds `--network=host` to `run`, `create` and `build` unless you pass `--network`. "Host" is the sandbox container's network namespace; the Project's egress NetworkPolicy (DNS and 443) still applies. `-p` publishes nothing; compose services need `network_mode: host`. `ENZARB_DOCKER_NETWORK=default` disables the wrapper's default.
+- **Known limitations.** Files written by inner containers to a bind mount are root-owned unless you pass `--user 1000:1000` (the policy allows it but cannot add it). dockerd, containerd and inner containers share the container's CPU and memory limits. `vfs` is slow and large.
+- **Agent policy.** `docker version|info|build|buildx build|run|compose ...` are allowed. Denied: host namespaces, `--privileged`, caps, devices, bind mounts and build paths outside the worktree (which includes the docker socket and `/var/lib/docker`), `login`/`push`.
+
+`scripts/smoke.sh` starts the image with the extra capabilities dockerd needs outside gVisor. If dockerd comes up it checks `docker version` as uid 1000 (and `docker run hello-world`, best effort); if the CI runner cannot host dockerd it asserts that `/healthz` reports the failure and skips the server checks.
 
 ## Toolchains come from mise
 
