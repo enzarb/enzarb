@@ -13,8 +13,8 @@ Postgres is provisioned with [pgop](https://pgop.ruck.io) (`pgop.ruck.io/v1alpha
 | `workflows` | `workflows/` | `events`, `work_items`, `transitions`, `jobs` | nobody |
 | `workflows_api` | `workflows/` | views `work_item_v`, `transition_v`, `job_v`; functions `ingest_event(...)`, `submit_action(...)` (both `SECURITY DEFINER`) | ui: `SELECT` views, `EXECUTE submit_action`; connectors: `EXECUTE ingest_event` |
 | `connectors` | `connectors/` | installations, connector accounts, polling cursors, cached tokens (encrypted) | workflows executor, through the connectors role |
-| `app` | `ui/` | users, sessions, linked identities (enzarb user ↔ GitHub login), preferences, `claude_credentials` (one row per user, encrypted Claude token; the UI's runtime role has **no** grant on it) | nobody |
-| `app_api` | `ui/` | views `identity_v`, `claude_credential_v`; `SECURITY DEFINER` functions `claude_credential_put/delete/get/list_stale/rekey` | workflows: `SELECT identity_v` (authorizing triggers), `EXECUTE claude_credential_get`; ui: `SELECT claude_credential_v`; sandbox-proxy: `EXECUTE claude_credential_put/delete/get/list_stale/rekey` |
+| `app` | `ui/` | users, sessions, linked identities (enzarb user ↔ GitHub login), preferences, `claude_credentials` (one row per user, encrypted Claude token; the UI's runtime role has **no** grant on it), `push_subscriptions` (one row per device) and `push_sent` (notification sent-log; the UI role has **no** grant on either, see [contracts.md](contracts.md) section 14) | nobody |
+| `app_api` | `ui/` | views `identity_v`, `claude_credential_v`; `SECURITY DEFINER` functions `claude_credential_put/delete/get/list_stale/rekey` and `push_subscription_*`, `push_claim`, `push_sent_prune` (ui only) | workflows: `SELECT identity_v` (authorizing triggers), `EXECUTE claude_credential_get`; ui: `SELECT claude_credential_v`; sandbox-proxy: `EXECUTE claude_credential_put/delete/get/list_stale/rekey` |
 
 Functions:
 - `workflows_api.ingest_event(source, dedupe_key, work_item_key, type, payload)` inserts into `workflows.events` with `ON CONFLICT DO NOTHING`, then runs `NOTIFY workflow_events`.
@@ -94,6 +94,7 @@ Each service's chart includes a pre-install/pre-upgrade Job that runs its migrat
 ## Live updates to the UI
 - The reducer runs `NOTIFY work_item_changed, '<id>'`.
 - `enzarb-ui` keeps **one** direct LISTEN connection per pod and fans updates out to browsers over SSE.
+- Each pod also uses that LISTEN to send Web Push notifications; the `app.push_sent` claim makes sure only one pod sends per transition.
 - Remote-function queries then refresh from the `workflows_api` views.
 - The UI keeps no copy of workflow state.
 

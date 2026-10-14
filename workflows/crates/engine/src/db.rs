@@ -119,6 +119,10 @@ pub struct WorkItemView {
     /// Sum of the item's job usage (`enzarb_proto::Usage` shape); a field no job reported is
     /// absent. `None` when no job reported anything.
     pub usage_totals: Option<Value>,
+    /// `human`, `enzarb`, `ci` or `github`; NULL in final states and before the first transition.
+    pub waiting_on: Option<String>,
+    pub wait_reason: Option<String>,
+    pub wait_text: Option<String>,
 }
 
 /// Row of `workflows_api.transition_v`.

@@ -6,6 +6,8 @@
 # releasable -> stop. Otherwise:
 #   image  _release-image.yml builds + pushes ghcr.io/enzarb/<image>:<version>, tags <dir>/v<version>
 #          and creates a --latest=false GitHub Release
+#   settle wait-siblings.sh waits (bounded) for the other components releasable from the same commit,
+#          so one chart version pins them all
 #   chart  _release-chart.yml pins the new version in helm/enzarb/values.yaml, commits fix(deps)/feat(deps)
 #          to main, tags helm/vX.Y.Z, pushes the OCI chart and creates the latest release
 # For ci-helm (a human change under helm/) only the chart job runs; it releases from the helm/ commits.
@@ -93,11 +95,37 @@ jobs:
       version: ${{ needs.plan.outputs.version }}
       sha: ${{ needs.plan.outputs.sha }}
 
-  chart:
-    # After a component image release, or for any successful helm run (the chart decides from its commits).
+  settle:
+    # Wait for the other components released from the same commit, so one chart pins them all.
     needs: [plan, image]
     if: >-
       always() && needs.plan.result == 'success' &&
+      (needs.image.result == 'success' || (needs.plan.outputs.dir == 'helm' && needs.image.result == 'skipped'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          fetch-depth: 0
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ needs.plan.outputs.sha }}
+          SELF: ${{ needs.plan.outputs.dir }}
+          TIMEOUT: 2400
+          GRACE: 300
+        run: bash .github/scripts/wait-siblings.sh
+
+  chart:
+    # After a component image release, or for any successful helm run (the chart decides from its commits),
+    # once the sibling releases of the same commit have settled.
+    needs: [plan, image, settle]
+    if: >-
+      always() && needs.plan.result == 'success' && needs.settle.result == 'success' &&
       (needs.image.result == 'success' || (needs.plan.outputs.dir == 'helm' && needs.image.result == 'skipped'))
     permissions:
       contents: write

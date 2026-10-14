@@ -38,6 +38,35 @@ for (const path of [`/projects/${E2E_PROJECT}`, `/projects/${E2E_PROJECT}/settin
 	});
 }
 
+test('serves the web app manifest and its icons without a session', async ({
+	browser,
+	baseURL
+}) => {
+	const ctx = await browser.newContext({ baseURL, storageState: { cookies: [], origins: [] } });
+	try {
+		const res = await ctx.request.get('/manifest.webmanifest');
+		expect(res.ok()).toBe(true);
+		const manifest = await res.json();
+		expect(manifest.display).toBe('standalone');
+		expect(manifest.start_url).toBe('/work');
+		for (const icon of manifest.icons) expect((await ctx.request.get(icon.src)).ok()).toBe(true);
+	} finally {
+		await ctx.close();
+	}
+});
+
+test('settings render the notifications section', async ({ page }) => {
+	const errors = collectErrors(page);
+	await installFakeLive(page);
+	await page.goto('/settings');
+	await expect(page.getByRole('heading', { name: 'Notifications' })).toBeVisible();
+	// The e2e server has no VAPID keys.
+	await expect(
+		page.getByText('Push notifications are not configured on this server.')
+	).toBeVisible();
+	expect(errors).toEqual([]);
+});
+
 test('saving repositories in project settings succeeds', async ({ page }) => {
 	const errors = collectErrors(page);
 	await installFakeSandbox(page);
