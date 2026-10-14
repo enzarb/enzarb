@@ -23,6 +23,10 @@ on:
         description: Docker build context (`.` when the Dockerfile needs path deps, else the dir)
         type: string
         default: ""
+      postgres:
+        description: Start one shared Postgres 18 for the test job and export ENZARB_TEST_PG_URL (integration tests then use a database per test instead of a container per test)
+        type: boolean
+        default: false
       smoke:
         type: string
         default: ""
@@ -92,7 +96,16 @@ jobs:
           key: ${{ inputs.dir }}-test
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@nextest
-      # Docker is available on ubuntu-latest, so testcontainers integration tests run here.
+      # One Postgres for the whole run (a service container cannot take server args or be
+      # conditional, hence docker run). Without it, tests fall back to a testcontainer each.
+      - name: Shared Postgres
+        if: inputs.postgres
+        run: |
+          docker run -d --name enzarb-test-pg -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD=postgres \
+            --health-cmd "pg_isready -h 127.0.0.1 -U postgres" --health-interval 2s --health-retries 30 \
+            postgres:18 -c max_connections=1000 -c fsync=off -c synchronous_commit=off -c full_page_writes=off
+          until [ "$(docker inspect -f '{{.State.Health.Status}}' enzarb-test-pg)" = healthy ]; do sleep 1; done
+          echo "ENZARB_TEST_PG_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres" >> "$GITHUB_ENV"
       - run: cargo nextest run ${{ inputs.cargo-args }}
       - run: cargo test --doc ${{ inputs.cargo-args }}
   docker:

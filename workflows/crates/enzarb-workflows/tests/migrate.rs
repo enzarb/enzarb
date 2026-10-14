@@ -1,20 +1,18 @@
+use engine::testing::TestDb;
 use enzarb_workflows::migrate::{MigrateError, migrate};
 use sqlx::PgPool;
-use testcontainers_modules::postgres::Postgres;
-use testcontainers_modules::testcontainers::{ImageExt, runners::AsyncRunner};
 
-async fn bare_db() -> Option<(PgPool, impl Sized)> {
-    let c = match Postgres::default().with_tag("18").start().await {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("SKIP: Docker unavailable ({e})");
-            return None;
-        }
-    };
-    let host = c.get_host().await.unwrap();
-    let port = c.get_host_port_ipv4(5432).await.unwrap();
-    let url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
-    Some((engine::db::connect(&url, 2).await.unwrap(), c))
+/// An unmigrated database (an empty database on the shared server when `ENZARB_TEST_PG_URL` is
+/// set, so the cluster-global runtime roles may already exist). Keep the guard alive.
+async fn bare_db() -> Option<(PgPool, TestDb)> {
+    let db = TestDb::start_bare().await?;
+    Some((db.pool.clone(), db))
+}
+
+/// Like `bare_db` but on a dedicated container: no roles exist yet.
+async fn roleless_db() -> Option<(PgPool, TestDb)> {
+    let db = TestDb::start_bare_container().await?;
+    Some((db.pool.clone(), db))
 }
 
 async fn migrated(pool: &PgPool) -> bool {
@@ -36,7 +34,7 @@ async fn migrate_without_roles_applies_and_is_idempotent() {
 
 #[tokio::test]
 async fn require_roles_fails_when_missing_then_passes() {
-    let Some((pool, _c)) = bare_db().await else {
+    let Some((pool, _c)) = roleless_db().await else {
         return;
     };
     let err = migrate(&pool, true).await.unwrap_err();
@@ -86,10 +84,14 @@ async fn realtime_role_sees_only_work_item_project_view() {
     let Some((pool, _c)) = bare_db().await else {
         return;
     };
-    sqlx::query("CREATE ROLE enzarb_realtime LOGIN")
-        .execute(&pool)
-        .await
-        .unwrap();
+    // Roles are cluster-global: tolerate it existing on a shared server.
+    sqlx::query(
+        "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'enzarb_realtime') \
+         THEN CREATE ROLE enzarb_realtime LOGIN; END IF; END $$",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     migrate(&pool, false).await.unwrap();
     insert_items(&pool, &[("a", Some("p1")), ("b", Some("p2")), ("c", None)]).await;
 

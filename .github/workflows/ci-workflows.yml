@@ -26,5 +26,6 @@ jobs:
     with:
       dir: workflows
       cargo-args: --workspace
+      postgres: true
       image: enzarb-workflows
       context: .

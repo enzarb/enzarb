@@ -23,10 +23,21 @@ Optional [lefthook](https://lefthook.dev) hooks (config: `lefthook.yml`, tool pi
 | `mise run hooks:uninstall` | Runs `lefthook uninstall`. |
 
 - **pre-commit** (staged files only, no network): `cargo fmt --all --check` per Rust component with staged `.rs` files; the Cargo guard (`scripts/monorepo/check-cargo-deps.sh`) when a `Cargo.toml`/`Cargo.lock` is staged; `npm run lint` in `ui/`; `shellcheck` on staged shell scripts; `mise run lint` (helm lint) when `helm/**` is staged.
-- **pre-push** (components touched by the pushed commits): `cargo clippy --all-targets -- -D warnings` and `cargo test` per Rust component; `npm run check` and the server unit tests in `ui/`; `mise run compat` in `helm/` (it reads the previous `helm/v*` tag, so fetch tags).
+- **pre-push** (components affected by the pushed commits, `scripts/monorepo/affected.sh`, downstream components included): `cargo clippy --all-targets -- -D warnings` and `cargo test` per Rust component; `npm run check` and the server unit tests in `ui/`; `mise run compat` in `helm/` (it reads the previous `helm/v*` tag, so fetch tags). Export `ENZARB_TEST_PG_URL` first (see "Shared test Postgres") to avoid one container per test.
 - Hooks only check; they never modify files or install dependencies. If `ui/node_modules` is missing they print a notice and skip the `ui` commands (run `npm ci`).
 - **Skip:** `git commit --no-verify`, `git push --no-verify`, or `LEFTHOOK=0` for all hooks. CI stays the source of truth.
 - Run by hand: `lefthook run pre-commit --all-files`, `lefthook run pre-push --all-files`.
+
+## Shared test Postgres
+
+The Postgres integration tests (`workflows/`, `connectors/` receiver, `realtime/`) start one `postgres:18` container per test by default. Share one server instead:
+
+```
+eval "$(mise run test:pg)"   # starts (or reuses) container enzarb-test-pg, exports ENZARB_TEST_PG_URL
+cd workflows && cargo nextest run --workspace
+```
+
+`mise run test:pg` prints `export ENZARB_TEST_PG_URL=postgres://postgres:postgres@127.0.0.1:55432/postgres` (port via `ENZARB_TEST_PG_PORT`, container name via `ENZARB_TEST_PG_NAME`) and leaves the container running. With the variable set, `engine::testing::TestDb` creates the runtime roles and a migrated template database `enzarb_template` once per server (rebuilt when the migrations change), and gives each test `CREATE DATABASE test_<unique> TEMPLATE enzarb_template`, dropped when the test ends. Tests that need a pristine cluster (the `enzarb-workflows` role check) still use their own container. Unset the variable to get the per-test containers back.
 
 ## Prerequisites
 

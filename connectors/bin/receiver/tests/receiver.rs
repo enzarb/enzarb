@@ -8,6 +8,7 @@ use axum::http::{Request, StatusCode};
 use enzarb_connector_github::{BotIdentity, sign};
 use enzarb_receiver::{AppState, db, router};
 use sqlx::PgPool;
+use std::sync::atomic::{AtomicU64, Ordering};
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner};
 use tower::ServiceExt;
@@ -38,21 +39,105 @@ BEGIN
 END $$;
 "#;
 
+/// Env var naming one shared Postgres server for the whole run (see docs/dev.md). When set, each
+/// test gets its own empty database on it instead of its own container.
+const PG_URL_ENV: &str = "ENZARB_TEST_PG_URL";
+
+/// A Postgres to test against: a throwaway container, or a fresh database on the shared server
+/// (dropped, best effort, on `Drop`).
+struct Server {
+    /// Admin URL of the server (`.../postgres`).
+    admin: String,
+    /// Name of the database created for this test (shared mode only).
+    db: Option<String>,
+    _c: Option<ContainerAsync<Postgres>>,
+}
+
+impl Server {
+    async fn start() -> Server {
+        if let Some(admin) = std::env::var(PG_URL_ENV).ok().filter(|u| !u.is_empty()) {
+            static N: AtomicU64 = AtomicU64::new(0);
+            let db = format!(
+                "recv_{}_{}_{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+                N.fetch_add(1, Ordering::Relaxed)
+            );
+            let pool = sqlx::PgPool::connect(&admin).await.unwrap();
+            sqlx::query(&format!("CREATE DATABASE {db}"))
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+            return Server {
+                admin,
+                db: Some(db),
+                _c: None,
+            };
+        }
+        let c = Postgres::default()
+            .with_tag("18")
+            .start()
+            .await
+            .expect("start postgres (Docker required)");
+        let host = c.get_host().await.unwrap();
+        let port = c.get_host_port_ipv4(5432).await.unwrap();
+        Server {
+            admin: format!("postgres://postgres:postgres@{host}:{port}/postgres"),
+            db: None,
+            _c: Some(c),
+        }
+    }
+
+    /// URL of `database` on this server, as `user:password` (superuser by default).
+    fn url(&self, creds: &str, database: &str) -> String {
+        let (scheme, rest) = self.admin.split_once("://").unwrap();
+        let host = rest.rsplit_once('@').unwrap().1.split('/').next().unwrap();
+        format!("{scheme}://{creds}@{host}/{database}")
+    }
+
+    /// The database a test should use: its own on a shared server, else `postgres`.
+    fn default_db(&self) -> &str {
+        self.db.as_deref().unwrap_or("postgres")
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let Some(db) = self.db.take() else { return };
+        let admin = self.admin.clone();
+        let _ = std::thread::spawn(move || {
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            rt.block_on(async move {
+                if let Ok(pool) = sqlx::PgPool::connect(&admin).await {
+                    let _ = sqlx::query(&format!("DROP DATABASE IF EXISTS {db} WITH (FORCE)"))
+                        .execute(&pool)
+                        .await;
+                    pool.close().await;
+                }
+            });
+        })
+        .join();
+    }
+}
+
 struct Env {
     pool: PgPool,
     app: Router,
-    _c: ContainerAsync<Postgres>,
+    _s: Server,
 }
 
 async fn setup() -> Env {
-    let c = Postgres::default()
-        .with_tag("18")
-        .start()
-        .await
-        .expect("start postgres (Docker required)");
-    let host = c.get_host().await.unwrap();
-    let port = c.get_host_port_ipv4(5432).await.unwrap();
-    let url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+    let s = Server::start().await;
+    let url = s.url("postgres:postgres", s.default_db());
     let pool = db::connect(&url, 5).await.unwrap();
     sqlx::raw_sql(STUB).execute(&pool).await.unwrap();
     db::migrate(&pool).await.unwrap();
@@ -61,7 +146,7 @@ async fn setup() -> Env {
         SECRET.to_vec(),
         BotIdentity::default(),
     ));
-    Env { pool, app, _c: c }
+    Env { pool, app, _s: s }
 }
 
 /// Regression test for enzarb-connectors#15: on a pgop-provisioned database the schema exists, the
@@ -69,36 +154,44 @@ async fn setup() -> Env {
 /// fails with "permission denied for database"; migrations must succeed anyway, and twice in a row.
 #[tokio::test]
 async fn migrates_as_schema_owner_without_database_create() {
-    let c = Postgres::default()
-        .with_tag("18")
-        .start()
-        .await
-        .expect("start postgres (Docker required)");
-    let host = c.get_host().await.unwrap();
-    let port = c.get_host_port_ipv4(5432).await.unwrap();
-    let admin = format!("postgres://postgres:postgres@{host}:{port}/postgres");
-    let admin_pool = sqlx::PgPool::connect(&admin).await.unwrap();
-    for stmt in [
-        "CREATE ROLE wf_owner LOGIN PASSWORD 'x'",
-        "CREATE ROLE c_owner LOGIN PASSWORD 'x'",
-        "CREATE ROLE enzarb_connectors",
-        "CREATE DATABASE enzarb OWNER wf_owner",
+    let s = Server::start().await;
+    let admin_pool = sqlx::PgPool::connect(&s.admin).await.unwrap();
+    // Roles are cluster-global: tolerate them existing on a shared server (and racing creators).
+    for role in [
+        "wf_owner LOGIN PASSWORD 'x'",
+        "c_owner LOGIN PASSWORD 'x'",
+        "enzarb_connectors",
     ] {
-        sqlx::query(stmt).execute(&admin_pool).await.unwrap();
+        let _ = sqlx::query(&format!("CREATE ROLE {role}"))
+            .execute(&admin_pool)
+            .await;
     }
-    let in_db = sqlx::PgPool::connect(&format!(
-        "postgres://postgres:postgres@{host}:{port}/enzarb"
-    ))
-    .await
-    .unwrap();
+    // Shared server: the database already exists (unique name), so just hand it over.
+    let database = match s.db.as_deref() {
+        Some(db) => {
+            sqlx::query(&format!("ALTER DATABASE {db} OWNER TO wf_owner"))
+                .execute(&admin_pool)
+                .await
+                .unwrap();
+            db
+        }
+        None => {
+            sqlx::query("CREATE DATABASE enzarb OWNER wf_owner")
+                .execute(&admin_pool)
+                .await
+                .unwrap();
+            "enzarb"
+        }
+    };
+    let in_db = sqlx::PgPool::connect(&s.url("postgres:postgres", database))
+        .await
+        .unwrap();
     sqlx::query("CREATE SCHEMA connectors AUTHORIZATION c_owner")
         .execute(&in_db)
         .await
         .unwrap();
 
-    let pool = db::connect(&format!("postgres://c_owner:x@{host}:{port}/enzarb"), 2)
-        .await
-        .unwrap();
+    let pool = db::connect(&s.url("c_owner:x", database), 2).await.unwrap();
     db::migrate(&pool)
         .await
         .expect("first migrate as schema owner");

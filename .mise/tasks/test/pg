@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+#MISE description="Start (or reuse) one Postgres 18 for the test suites and print the ENZARB_TEST_PG_URL to export"
+# One server per run instead of one container per test (docs/dev.md, "Shared test Postgres").
+#   eval "$(mise run test:pg)"     # then: cargo nextest run / cargo test in workflows/, connectors/, realtime/
+# Env: ENZARB_TEST_PG_NAME (container, default enzarb-test-pg), ENZARB_TEST_PG_PORT (host port, default 55432).
+set -euo pipefail
+
+name=${ENZARB_TEST_PG_NAME:-enzarb-test-pg}
+port=${ENZARB_TEST_PG_PORT:-55432}
+
+state=$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null || true)
+case "$state" in
+  running) echo "reusing running container $name" >&2 ;;
+  "")
+    echo "starting $name (postgres:18) on 127.0.0.1:$port" >&2
+    # Tests run dozens of databases with several pools each: raise max_connections, and trade
+    # durability for speed (the data is throwaway).
+    docker run -d --name "$name" -p "127.0.0.1:$port:5432" \
+      -e POSTGRES_PASSWORD=postgres \
+      postgres:18 -c max_connections=1000 -c fsync=off -c synchronous_commit=off \
+      -c full_page_writes=off >&2
+    ;;
+  *)
+    echo "starting stopped container $name" >&2
+    docker start "$name" >&2
+    ;;
+esac
+
+# The port is whatever the (possibly pre-existing) container publishes.
+port=$(docker port "$name" 5432/tcp | head -n1)
+port=${port##*:}
+
+# Probe over TCP: during first-run init the entrypoint's temporary server only listens on the socket.
+for _ in $(seq 1 60); do
+  if docker exec "$name" pg_isready -h 127.0.0.1 -U postgres -q; then
+    echo "export ENZARB_TEST_PG_URL=postgres://postgres:postgres@127.0.0.1:$port/postgres"
+    exit 0
+  fi
+  sleep 1
+done
+echo "$name did not become ready in 60s" >&2
+exit 1
