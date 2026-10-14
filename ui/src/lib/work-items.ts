@@ -322,19 +322,6 @@ export function blockedReason(stateData: unknown): string | null {
 	return parseReadiness(stateData).mergeError;
 }
 
-/** Labels for the engine's `state_data.waiting_reason` codes of a change request. */
-const WAITING_LABELS: Record<string, string> = {
-	human_review: 'Waiting for a human review',
-	enzarb_fixing: 'enzarb is fixing review findings',
-	round_limit: 'Round limit reached: enzarb stopped fixing, needs a person'
-};
-
-/** The label for `state_data.waiting_reason`; `null` when absent or unknown. */
-export function waitingLabel(stateData: unknown): string | null {
-	const code = asRecord(stateData).waiting_reason;
-	return typeof code === 'string' ? (WAITING_LABELS[code] ?? null) : null;
-}
-
 const failureText = (stateData: unknown): string | null => {
 	const data = asRecord(stateData);
 	for (const k of ['error', 'failure_reason', 'reason']) {
@@ -372,15 +359,7 @@ export function classifyNeedsYou(item: {
 	}
 	if (actions.includes('merge')) return { category: 'merge', reason: null };
 	if (state === 'AwaitingChanges' || failedChecks(stateData).length > 0) {
-		const roundLimit = asRecord(stateData).waiting_reason === 'round_limit';
-		return {
-			category: 'blocked',
-			reason:
-				(roundLimit ? waitingLabel(stateData) : null) ??
-				blockedReason(stateData) ??
-				waitingLabel(stateData) ??
-				'Changes requested'
-		};
+		return { category: 'blocked', reason: blockedReason(stateData) ?? 'Changes requested' };
 	}
 	return null;
 }

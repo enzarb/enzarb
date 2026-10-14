@@ -17,7 +17,6 @@ import {
 	shouldRefresh,
 	stateTone,
 	waitingFor,
-	waitingLabel,
 	waitLinks,
 	type NeedsYou,
 	type WorkItemSummary
@@ -49,25 +48,18 @@ describe('needs-you classification', () => {
 		);
 	});
 	it('labels why a change request is waiting and keeps round_limit in the queue', () => {
-		expect(waitingLabel({ waiting_reason: 'human_review' })).toBe('Waiting for a human review');
-		expect(waitingLabel({ waiting_reason: 'enzarb_fixing' })).toBe(
-			'enzarb is fixing review findings'
-		);
-		expect(waitingLabel({ waiting_reason: 'round_limit' })).toMatch(/^Round limit reached/);
-		expect(waitingLabel({ waiting_reason: '' })).toBeNull();
-		expect(waitingLabel({ waiting_reason: 'nope' })).toBeNull();
-		expect(waitingLabel(null)).toBeNull();
-		expect(classifyNeedsYou(cr('AwaitingChanges', { waiting_reason: 'round_limit' }))).toEqual({
-			category: 'blocked',
-			reason: waitingLabel({ waiting_reason: 'round_limit' })
+		const wait = (waiting_on: string, reason: string, text: string) => ({
+			wait: { waiting_on, reason, text }
 		});
-		expect(classifyNeedsYou(cr('AwaitingChanges', { waiting_reason: 'human_review' }))).toEqual({
-			category: 'blocked',
-			reason: 'Waiting for a human review'
-		});
+		const text = 'Automatic fix rounds used up, waiting for you';
+		expect(
+			classifyNeedsYou(cr('AwaitingChanges', wait('human', 'round_limit', text)))
+		).toEqual({ category: 'blocked', reason: null, text });
 		// enzarb is working on it: nobody needs to act.
 		expect(
-			classifyNeedsYou(cr('AddressingComments', { waiting_reason: 'enzarb_fixing' }))
+			classifyNeedsYou(
+				cr('AddressingComments', wait('enzarb', 'enzarb_fixing', 'enzarb is fixing its own review findings'))
+			)
 		).toBeNull();
 	});
 	it('ignores terminal, unknown and unrelated items and malformed data', () => {
