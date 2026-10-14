@@ -32,8 +32,9 @@ if ! out="$(run)"; then
   echo "assert-compat: expected pass for identical values, got: $out" >&2; fail=1
 fi
 
-# A tagged release whose oldie values set a key the schema rejects.
-printf '\nbogusRemovedKey: true\n' >> "$repo/helm/enzarb/values-oldie.yaml"
+# A tagged release whose oldie values set a key the schema rejects. The schema root accepts unknown
+# keys, so the key goes under `ui`, which is strict (values-oldie.yaml has no `ui` block).
+printf '\nui:\n  bogusRemovedKey: true\n' >> "$repo/helm/enzarb/values-oldie.yaml"
 git -C "$repo" commit -qam "old values with a removed key"
 git -C "$repo" tag helm/v0.0.2
 if out="$(run)"; then
