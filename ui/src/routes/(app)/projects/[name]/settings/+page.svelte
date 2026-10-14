@@ -4,6 +4,7 @@
 	import * as v from 'valibot';
 	import Button from '#lib/components/form/Button.svelte';
 	import ConfirmDialog from '#lib/components/ui/ConfirmDialog.svelte';
+	import DisplayNameForm from '#lib/components/DisplayNameForm.svelte';
 	import MaxRunsInput from '#lib/components/MaxRunsInput.svelte';
 	import MaxRunsNotice from '#lib/components/MaxRunsNotice.svelte';
 	import Notice from '#lib/components/ui/Notice.svelte';
@@ -14,6 +15,7 @@
 	import {
 		deleteProject,
 		repositoryChoices,
+		setDisplayName,
 		setMaxRuns,
 		setRepositories,
 		setSandboxResources
@@ -86,6 +88,16 @@
 		</div>
 		<MaxRunsNotice />
 		{#if saveError}<Notice tone="error">{saveError}</Notice>{/if}
+	</Section>
+
+	<Section title="Display name">
+		<DisplayNameForm
+			project={p}
+			save={async (displayName) => {
+				const r = await setDisplayName({ name: p.name, displayName });
+				return r.ok ? { ok: true } : { ok: false, message: r.message };
+			}}
+		/>
 	</Section>
 
 	<Section title="Repositories">

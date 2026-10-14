@@ -13,6 +13,7 @@ import {
 	type WorkItemDetail,
 	type WorkItemSummary
 } from '#lib/work-items.ts';
+import { parseUsage } from '#lib/usage.ts';
 import type { Sql } from './db.ts';
 import { renderMarkdown } from './markdown.ts';
 
@@ -39,6 +40,7 @@ interface ItemRow {
 	state: string;
 	state_data: unknown;
 	updated_at: Date;
+	usage_totals: unknown;
 }
 
 /** Hard cap on the needs-you queue. */
@@ -77,7 +79,8 @@ function summary(r: ItemRow): WorkItemSummary {
 		url: itemUrl(r.key, r.state_data),
 		updatedAt: iso(r.updated_at),
 		needs: classifyNeedsYou({ workflow: r.workflow, state: r.state, stateData: r.state_data }),
-		wait: parseWait(r.state_data)
+		wait: parseWait(r.state_data),
+		usage: parseUsage(r.usage_totals)
 	};
 }
 
@@ -120,7 +123,7 @@ export function workService(sql: Sql, projects: readonly string[]) {
 	async function load(id: number): Promise<ItemRow | null> {
 		if (owned.size === 0) return null;
 		const [row] = await sql<ItemRow[]>`
-			SELECT id, key, project, workflow, state, state_data, updated_at
+			SELECT id, key, project, workflow, state, state_data, updated_at, usage_totals
 			FROM workflows_api.work_item_v
 			WHERE id = ${id} AND project IN ${sql([...owned])}`;
 		return row ?? null;
@@ -131,7 +134,7 @@ export function workService(sql: Sql, projects: readonly string[]) {
 			const names = project === undefined ? [...owned] : owned.has(project) ? [project] : [];
 			if (names.length === 0) return [];
 			const rows = await sql<ItemRow[]>`
-				SELECT id, key, project, workflow, state, state_data, updated_at
+				SELECT id, key, project, workflow, state, state_data, updated_at, usage_totals
 				FROM workflows_api.work_item_v
 				WHERE project IN ${sql(names)}
 				ORDER BY updated_at DESC, id DESC
@@ -148,7 +151,7 @@ export function workService(sql: Sql, projects: readonly string[]) {
 			if (owned.size === 0) return { items: [], total: 0 };
 			const where = needsYouWhere(sql, [...owned]);
 			const rows = await sql<ItemRow[]>`
-				SELECT id, key, project, workflow, state, state_data, updated_at
+				SELECT id, key, project, workflow, state, state_data, updated_at, usage_totals
 				FROM workflows_api.work_item_v
 				WHERE ${where}
 				ORDER BY updated_at ASC, id ASC
@@ -198,9 +201,10 @@ export function workService(sql: Sql, projects: readonly string[]) {
 					attempt: number;
 					updated_at: Date;
 					output: unknown;
+					usage: unknown;
 				}[]
 			>`
-				SELECT id, kind, status, attempt, updated_at, output
+				SELECT id, kind, status, attempt, updated_at, output, usage
 				FROM workflows_api.job_v WHERE work_item_id = ${id} ORDER BY created_at, id`;
 			return {
 				...summary(row),
@@ -221,7 +225,8 @@ export function workService(sql: Sql, projects: readonly string[]) {
 						status: j.status,
 						attempt: j.attempt,
 						updatedAt: iso(j.updated_at),
-						outputHtml: md ? renderMarkdown(md) : null
+						outputHtml: md ? renderMarkdown(md) : null,
+						usage: parseUsage(j.usage)
 					};
 				})
 			};

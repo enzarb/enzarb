@@ -174,7 +174,7 @@ async fn views_return_expected_columns() {
     .unwrap();
 
     let ui = db.pool_as("enzarb_ui").await;
-    let w: WorkItemView = sqlx::query_as("SELECT id, key, project, workflow, state, state_data, created_at, updated_at, waiting_for, resumes_at, waiting_on, wait_reason, wait_text FROM workflows_api.work_item_v")
+    let w: WorkItemView = sqlx::query_as("SELECT id, key, project, workflow, state, state_data, created_at, updated_at, waiting_for, resumes_at, usage_totals, waiting_on, wait_reason, wait_text FROM workflows_api.work_item_v")
         .fetch_one(&ui).await.unwrap();
     assert_eq!(
         (w.id, w.project.as_deref(), w.state.as_str()),
@@ -191,12 +191,14 @@ async fn views_return_expected_columns() {
         (t.from_state, t.event_type.as_str()),
         (None, "WorkItemOpened")
     );
-    let j: JobView = sqlx::query_as("SELECT id, work_item_id, kind, status, attempt, created_at, updated_at, output, waiting_for, resumes_at FROM workflows_api.job_v")
+    let j: JobView = sqlx::query_as("SELECT id, work_item_id, kind, status, attempt, created_at, updated_at, output, waiting_for, resumes_at, usage FROM workflows_api.job_v")
         .fetch_one(&ui).await.unwrap();
     assert_eq!((j.status.as_str(), j.attempt), ("queued", 0));
     assert_eq!(j.output.unwrap()["url"], "x");
     assert_eq!((j.waiting_for, j.resumes_at), (None, None));
     assert_eq!((w.waiting_for, w.resumes_at), (None, None));
+    // No usage reported: unknown, not zero.
+    assert_eq!((j.usage, w.usage_totals), (None, None));
 
     // A queued job waiting for a session limit shows on the job and its work item.
     sqlx::query(
@@ -206,9 +208,9 @@ async fn views_return_expected_columns() {
     .execute(&db.pool)
     .await
     .unwrap();
-    let w: WorkItemView = sqlx::query_as("SELECT id, key, project, workflow, state, state_data, created_at, updated_at, waiting_for, resumes_at, waiting_on, wait_reason, wait_text FROM workflows_api.work_item_v")
+    let w: WorkItemView = sqlx::query_as("SELECT id, key, project, workflow, state, state_data, created_at, updated_at, waiting_for, resumes_at, usage_totals, waiting_on, wait_reason, wait_text FROM workflows_api.work_item_v")
         .fetch_one(&ui).await.unwrap();
-    let j: JobView = sqlx::query_as("SELECT id, work_item_id, kind, status, attempt, created_at, updated_at, output, waiting_for, resumes_at FROM workflows_api.job_v")
+    let j: JobView = sqlx::query_as("SELECT id, work_item_id, kind, status, attempt, created_at, updated_at, output, waiting_for, resumes_at, usage FROM workflows_api.job_v")
         .fetch_one(&ui).await.unwrap();
     for (waiting_for, resumes_at) in [(w.waiting_for, w.resumes_at), (j.waiting_for, j.resumes_at)]
     {
@@ -230,7 +232,7 @@ async fn views_return_expected_columns() {
     .execute(&db.pool)
     .await
     .unwrap();
-    let w: WorkItemView = sqlx::query_as("SELECT id, key, project, workflow, state, state_data, created_at, updated_at, waiting_for, resumes_at, waiting_on, wait_reason, wait_text FROM workflows_api.work_item_v")
+    let w: WorkItemView = sqlx::query_as("SELECT id, key, project, workflow, state, state_data, created_at, updated_at, waiting_for, resumes_at, usage_totals, waiting_on, wait_reason, wait_text FROM workflows_api.work_item_v")
         .fetch_one(&ui).await.unwrap();
     assert_eq!(w.waiting_on.as_deref(), Some("human"));
     assert_eq!(w.wait_reason.as_deref(), Some("awaiting_review"));
@@ -241,7 +243,7 @@ async fn views_return_expected_columns() {
     for (view, cols) in [
         (
             "work_item_v",
-            "id,key,project,workflow,state,state_data,created_at,updated_at,waiting_for,resumes_at,waiting_on,wait_reason,wait_text",
+            "id,key,project,workflow,state,state_data,created_at,updated_at,waiting_for,resumes_at,usage_totals,waiting_on,wait_reason,wait_text",
         ),
         (
             "transition_v",
@@ -249,7 +251,7 @@ async fn views_return_expected_columns() {
         ),
         (
             "job_v",
-            "id,work_item_id,kind,status,attempt,created_at,updated_at,output,waiting_for,resumes_at",
+            "id,work_item_id,kind,status,attempt,created_at,updated_at,output,waiting_for,resumes_at,usage",
         ),
     ] {
         let got: String = sqlx::query_scalar(
@@ -269,6 +271,80 @@ async fn views_return_expected_columns() {
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn work_item_usage_totals_sum_the_jobs_that_reported() {
+    let db = db!();
+    let wi = seed_work_item(&db).await;
+    let ui = db.pool_as("enzarb_ui").await;
+    let totals = || async {
+        let w: WorkItemView = sqlx::query_as(
+            "SELECT id, key, project, workflow, state, state_data, created_at, updated_at, waiting_for, resumes_at, usage_totals, waiting_on, wait_reason, wait_text FROM workflows_api.work_item_v",
+        )
+        .fetch_one(&ui)
+        .await
+        .unwrap();
+        w.usage_totals
+    };
+    for (key, usage) in [
+        (
+            "a",
+            Some(
+                json!({"input_tokens": 100, "output_tokens": 10, "cache_read_input_tokens": 1000,
+                        "models": ["m1"], "cost_usd": 0.25}),
+            ),
+        ),
+        (
+            "b",
+            Some(json!({"input_tokens": 50, "output_tokens": 5, "models": ["m1", "m2"]})),
+        ),
+        ("c", None),
+    ] {
+        sqlx::query(
+            "INSERT INTO workflows.jobs (work_item_id, kind, idempotency_key, usage)
+             VALUES ($1, 'agent_task', $2, $3)",
+        )
+        .bind(wi)
+        .bind(key)
+        .bind(usage)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    }
+    let t = totals().await.expect("totals");
+    assert_eq!(t["input_tokens"], 150);
+    assert_eq!(t["output_tokens"], 15);
+    assert_eq!(t["cache_read_input_tokens"], 1000);
+    assert_eq!(t["cost_usd"], 0.25); // only the job that reported a cost
+    assert_eq!(t["models"], json!(["m1", "m2"]));
+    // nobody reported cache writes: the key is absent, not 0
+    assert!(t.get("cache_creation_input_tokens").is_none());
+
+    // Without any reported cost the total has no cost (not 0).
+    sqlx::query("UPDATE workflows.jobs SET usage = usage - 'cost_usd'")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let t = totals().await.expect("totals");
+    assert!(t.get("cost_usd").is_none());
+    assert_eq!(t["input_tokens"], 150);
+
+    // The per-job view carries the job's own usage.
+    let j: JobView = sqlx::query_as(
+        "SELECT id, work_item_id, kind, status, attempt, created_at, updated_at, output, waiting_for, resumes_at, usage FROM workflows_api.job_v WHERE kind = 'agent_task' AND usage IS NOT NULL ORDER BY id LIMIT 1",
+    )
+    .fetch_one(&ui)
+    .await
+    .unwrap();
+    assert_eq!(j.usage.unwrap()["input_tokens"], 100);
+
+    // No job with usage: NULL.
+    sqlx::query("UPDATE workflows.jobs SET usage = NULL")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(totals().await, None);
 }
 
 #[tokio::test]

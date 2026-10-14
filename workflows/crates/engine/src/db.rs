@@ -116,6 +116,9 @@ pub struct WorkItemView {
     /// `session_limit` while a queued agent job waits for Claude's session limit to reset.
     pub waiting_for: Option<String>,
     pub resumes_at: Option<DateTime<Utc>>,
+    /// Sum of the item's job usage (`enzarb_proto::Usage` shape); a field no job reported is
+    /// absent. `None` when no job reported anything.
+    pub usage_totals: Option<Value>,
     /// `human`, `enzarb`, `ci` or `github`; NULL in final states and before the first transition.
     pub waiting_on: Option<String>,
     pub wait_reason: Option<String>,
@@ -146,4 +149,6 @@ pub struct JobView {
     pub output: Option<Value>,
     pub waiting_for: Option<String>,
     pub resumes_at: Option<DateTime<Utc>>,
+    /// Usage summed over the job's runs (`enzarb_proto::Usage` shape); `None` when not reported.
+    pub usage: Option<Value>,
 }

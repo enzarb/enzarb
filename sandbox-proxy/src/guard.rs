@@ -368,6 +368,7 @@ mod tests {
                 state: RunPhase::Running,
                 exit_code: None,
                 summary: None,
+                usage: None,
             },
             Ctrl::Hello {
                 versions: vec![1],

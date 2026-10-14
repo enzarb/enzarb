@@ -9,6 +9,7 @@
 	import PageHeader from '#lib/components/ui/PageHeader.svelte';
 	import Section from '#lib/components/ui/Section.svelte';
 	import Skeleton from '#lib/components/ui/Skeleton.svelte';
+	import UsageSummary from '#lib/components/UsageSummary.svelte';
 	import WaitReason from '#lib/components/WaitReason.svelte';
 	import WorkActions from '#lib/components/WorkActions.svelte';
 	import WorkStateChip from '#lib/components/WorkStateChip.svelte';
@@ -115,6 +116,11 @@
 		<Section title="Timeline">
 			<WorkTimeline transitions={w.transitions} state={w.state} />
 		</Section>
+		{#if w.usage}
+			<Section title="Token usage">
+				<UsageSummary usage={w.usage} label="Total" />
+			</Section>
+		{/if}
 		<Section title="Jobs" flush>
 			<JobTable jobs={w.jobs} />
 		</Section>

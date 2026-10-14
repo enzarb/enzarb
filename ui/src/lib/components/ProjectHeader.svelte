@@ -1,5 +1,10 @@
 <script lang="ts">
 	import ProjectNav from '#lib/components/ProjectNav.svelte';
+	import Tooltip from '#lib/components/ui/Tooltip.svelte';
+
+	const NAME_HINT =
+		"The Project's Kubernetes name, used in URLs and keys. It can't be changed, unlike the display name.";
+	const SANDBOX_HINT = "The sandbox pod that runs this Project's agents, terminal and chat.";
 
 	/** One-row project header: title and subtext on the left, the tabs on the right. */
 	let {
@@ -15,8 +20,20 @@
 	<div class="ez-project-header__text">
 		<h1>{displayName}</h1>
 		<div class="ez-cluster ez-project-header__meta">
-			<code>{name}</code>
-			{#if sandboxName}<span class="ez-muted">sandbox <code>{sandboxName}</code></span>{/if}
+			<Tooltip text={NAME_HINT} side="bottom">
+				{#snippet trigger(props)}
+					<!-- svelte-ignore a11y_no_noninteractive_tabindex (tooltips need a focusable trigger) -->
+					<code {...props} tabindex="0">{name}</code>
+				{/snippet}
+			</Tooltip>
+			{#if sandboxName}
+				<Tooltip text={SANDBOX_HINT} side="bottom">
+					{#snippet trigger(props)}
+						<!-- svelte-ignore a11y_no_noninteractive_tabindex (tooltips need a focusable trigger) -->
+						<span {...props} class="ez-muted" tabindex="0">sandbox <code>{sandboxName}</code></span>
+					{/snippet}
+				</Tooltip>
+			{/if}
 		</div>
 	</div>
 	<ProjectNav {name} {pathname} />

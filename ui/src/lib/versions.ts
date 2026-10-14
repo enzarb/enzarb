@@ -43,3 +43,20 @@ export function matchRelease(
 	if (!wanted) return -1;
 	return releases.findIndex((r) => normalizeTag(r.tag) === wanted);
 }
+
+/** True only for a plain `https://github.com/...` URL (no credentials or port): safe to link. */
+export function isGithubUrl(raw: string | null | undefined): raw is string {
+	if (!raw) return false;
+	try {
+		const u = new URL(raw);
+		return (
+			u.protocol === 'https:' &&
+			u.hostname === 'github.com' &&
+			!u.username &&
+			!u.password &&
+			!u.port
+		);
+	} catch {
+		return false;
+	}
+}

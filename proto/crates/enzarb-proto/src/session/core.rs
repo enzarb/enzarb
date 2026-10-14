@@ -64,6 +64,7 @@ pub struct RunInfo {
     pub state: RunPhase,
     pub exit_code: Option<i32>,
     pub summary: Option<String>,
+    pub usage: Option<crate::Usage>,
 }
 
 /// `credential_state` as seen by the client.
@@ -584,6 +585,7 @@ impl Inner {
                     state,
                     exit_code,
                     summary,
+                    usage,
                 },
             ) => {
                 let waiter = {
@@ -598,6 +600,7 @@ impl Inner {
                     state,
                     exit_code,
                     summary,
+                    usage,
                 };
                 match waiter {
                     Some(Pending::RunStatus { tx, .. }) => {
@@ -608,6 +611,7 @@ impl Inner {
                         state: info.state,
                         exit_code: info.exit_code,
                         summary: info.summary,
+                        usage: info.usage,
                     })),
                 }
             }
@@ -1279,6 +1283,7 @@ impl Session {
             state: info.state,
             exit_code: info.exit_code,
             summary: info.summary.clone(),
+            usage: info.usage.clone(),
         })
     }
 }

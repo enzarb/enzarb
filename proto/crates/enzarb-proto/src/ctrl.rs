@@ -234,6 +234,41 @@ impl std::fmt::Debug for RunStart {
     }
 }
 
+/// Token usage and cost of an agent run (or, summed, of a job). Every field is
+/// optional and omitted when absent: `None` means unknown, not zero. `cost_usd`
+/// is whatever the agent reported; nothing here estimates it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Usage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens: Option<u64>,
+    /// Models that served the run, when known. Omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+}
+
+// Costs are finite (they come from JSON), so equality is total.
+impl Eq for Usage {}
+
+impl Usage {
+    /// True when no field carries a value.
+    pub fn is_empty(&self) -> bool {
+        self.input_tokens.is_none()
+            && self.output_tokens.is_none()
+            && self.cache_read_input_tokens.is_none()
+            && self.cache_creation_input_tokens.is_none()
+            && self.models.is_empty()
+            && self.cost_usd.is_none()
+    }
+}
+
 /// Body POSTed to `callback_url` when a run ends. Not a CTRL message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunFinished {
@@ -245,6 +280,10 @@ pub struct RunFinished {
     pub branch: String,
     pub head_sha: String,
     pub pushed: bool,
+    /// Token usage and cost of the run, when the agent reported any. Omitted
+    /// when absent; old receivers ignore it and old senders omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
 }
 
 /// Every CTRL message.
@@ -319,6 +358,9 @@ pub enum Ctrl {
         exit_code: Option<i32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         summary: Option<String>,
+        /// Token usage and cost of the run, once known. Omitted when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<Usage>,
     },
     RunCancel {
         run_id: String,

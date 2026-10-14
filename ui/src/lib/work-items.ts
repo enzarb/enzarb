@@ -1,4 +1,5 @@
 import * as v from 'valibot';
+import type { Usage } from './usage.ts';
 
 /** Actions accepted by `workflows_api.submit_action` (contracts §6). */
 export const ACTIONS = ['approve', 'cancel', 'retry', 'merge'] as const;
@@ -24,6 +25,8 @@ export interface WorkItemSummary {
 	needs?: NeedsYou | null;
 	/** Why the item is waiting, when workflows derived it (change requests). */
 	wait?: Wait | null;
+	/** Token usage and cost summed over the item's jobs; null when no job reported any. */
+	usage?: Usage | null;
 }
 
 export interface TransitionView {
@@ -42,6 +45,8 @@ export interface JobView {
 	updatedAt: string;
 	/** Sanitized HTML rendered from the job output, or null when there is none. */
 	outputHtml: string | null;
+	/** Token usage and cost over the job's runs; null when the agent reported none. */
+	usage?: Usage | null;
 }
 
 export interface WorkItemDetail extends WorkItemSummary {
