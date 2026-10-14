@@ -47,6 +47,13 @@ pub struct Config {
     /// `ENZARB_CALLBACK_BACKOFF_MS`, default 1000: first retry delay of the
     /// run-finished callback (doubles up to 60 s).
     pub callback_backoff: Duration,
+    /// `ENZARB_NET_RETRY_DELAYS_MS`, default `10000,30000`: comma-separated
+    /// pauses before each retry of a clone/fetch/push that failed on a
+    /// transient network error. The attempts are one more than the delays
+    /// (at most `netgit::NET_ATTEMPTS`).
+    pub net_retry_delays: Vec<Duration>,
+    /// `ENZARB_PUSH_ATTEMPT_SECS`, default 120: wall-clock cap of one push attempt.
+    pub push_attempt_cap: Duration,
     /// `ENZARB_MAX_CHATS`, default 1: live chat (`acp`) channels at once; `0`
     /// disables chat (no `acp` feature, opens get `chat_disabled`). Chats do
     /// not use run slots.
@@ -120,6 +127,8 @@ impl Default for Config {
             max_runs: 2,
             default_timeout: Duration::from_secs(3600),
             callback_backoff: Duration::from_secs(1),
+            net_retry_delays: crate::netgit::RETRY_DELAYS.to_vec(),
+            push_attempt_cap: crate::netgit::PUSH_ATTEMPT_CAP,
             max_chats: 1,
             chat_idle: Duration::from_secs(1800),
             chat_max: Duration::from_secs(8 * 3600),
@@ -194,6 +203,25 @@ impl Config {
             c.callback_backoff = Duration::from_millis(
                 v.parse()
                     .map_err(|e| anyhow::anyhow!("ENZARB_CALLBACK_BACKOFF_MS={v:?}: {e}"))?,
+            );
+        }
+        if let Some(v) = get("ENZARB_NET_RETRY_DELAYS_MS") {
+            c.net_retry_delays = v
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| {
+                    s.parse()
+                        .map(Duration::from_millis)
+                        .map_err(|e| anyhow::anyhow!("ENZARB_NET_RETRY_DELAYS_MS={v:?}: {e}"))
+                })
+                .collect::<anyhow::Result<_>>()?;
+        }
+        if let Some(v) = get("ENZARB_PUSH_ATTEMPT_SECS") {
+            c.push_attempt_cap = Duration::from_secs(
+                v.parse::<u64>()
+                    .map_err(|e| anyhow::anyhow!("ENZARB_PUSH_ATTEMPT_SECS={v:?}: {e}"))?
+                    .max(1),
             );
         }
         if let Some(v) = get("ENZARB_MAX_CHATS") {

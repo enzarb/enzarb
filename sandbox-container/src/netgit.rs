@@ -25,6 +25,70 @@
 //! only as `GIT_CONFIG_*` environment: it is never written to any file.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+/// Attempts per network call (the first try plus two retries).
+pub const NET_ATTEMPTS: usize = 3;
+
+/// Pauses between attempts. Three attempts need two delays; the issue's third
+/// (90 s) value would never be used.
+pub const RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(10), Duration::from_secs(30)];
+
+/// Wall-clock cap of one push attempt: a push sends small packs, so a dead
+/// connection (which libcurl's low-speed check does not catch) fails early.
+pub const PUSH_ATTEMPT_CAP: Duration = Duration::from_secs(120);
+
+/// Stderr of a failure that will not get better by trying again.
+const PERMANENT: &[&str] = &[
+    // With their context: a bare "403" also occurs in millisecond counts.
+    "error: 401",
+    "error: 403",
+    "HTTP 401",
+    "HTTP 403",
+    "Authentication failed",
+    "Permission denied",
+    "non-fast-forward",
+    "[rejected]",
+    "[remote rejected]",
+    "protected branch",
+    "fetch first",
+    "not found",
+];
+
+/// Stderr of a network failure that is worth retrying.
+const TRANSIENT: &[&str] = &[
+    "Connection timed out",
+    "Connection reset",
+    "Could not resolve host",
+    "Failed to connect",
+    "Operation timed out",
+    "RPC failed",
+    "early EOF",
+    "unexpected disconnect",
+    "returned error: 429",
+    "The remote end hung up",
+    "Operation too slow",
+];
+
+/// Whether a failed network git call (its stderr) is a transient network
+/// error. Permanent patterns win; unknown errors are not transient.
+pub fn is_transient(stderr: &str) -> bool {
+    if PERMANENT.iter().any(|p| stderr.contains(p)) {
+        return false;
+    }
+    if TRANSIENT.iter().any(|p| stderr.contains(p)) {
+        return true;
+    }
+    // HTTP 5xx: "The requested URL returned error: 503".
+    stderr.match_indices("returned error: 5").any(|(i, m)| {
+        stderr[i + m.len()..]
+            .chars()
+            .take(2)
+            .filter(char::is_ascii_digit)
+            .count()
+            == 2
+    })
+}
 
 /// Variables passed through from sandbox-init's environment.
 const PASS_ENV: &[&str] = &[
@@ -100,6 +164,9 @@ pub fn env(
         ("http.followRedirects", "initial"),
         // Reset, then (maybe) the one header.
         ("http.extraheader", ""),
+        // A stalled transfer (under 1 kB/s for 60 s) is aborted, not waited for.
+        ("http.lowSpeedLimit", "1000"),
+        ("http.lowSpeedTime", "60"),
     ]
     .iter()
     .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -198,6 +265,8 @@ mod tests {
         assert_eq!(h[0].1, "");
         assert_eq!(cfg.last().unwrap().1, "Authorization: x");
         assert!(cfg.contains(&("core.hooksPath".into(), "/dev/null".into())));
+        assert!(cfg.contains(&("http.lowSpeedLimit".into(), "1000".into())));
+        assert!(cfg.contains(&("http.lowSpeedTime".into(), "60".into())));
         assert!(cfg.contains(&("credential.helper".into(), "".into())));
         // An empty path-valued key makes curl read the file "": every fetch fails.
         for k in [
@@ -208,5 +277,48 @@ mod tests {
         ] {
             assert!(!cfg.iter().any(|(a, _)| a == k), "{k} must not be pinned");
         }
+    }
+
+    #[test]
+    fn transient_errors_are_retried() {
+        for s in [
+            "fatal: unable to access 'https://github.com/a/b/': Connection timed out after 300026 milliseconds",
+            "fatal: unable to access 'x': Recv failure: Connection reset by peer",
+            "fatal: unable to access 'x': Could not resolve host: github.com",
+            "fatal: unable to access 'x': Failed to connect to github.com port 443",
+            "fatal: unable to access 'x': Operation timed out after 1000 milliseconds",
+            "error: RPC failed; curl 56 GnuTLS recv error",
+            "fatal: early EOF",
+            "fatal: the remote end hung up unexpectedly\nThe remote end hung up",
+            "fatal: unable to access 'x': The requested URL returned error: 502",
+            "fatal: unable to access 'x': The requested URL returned error: 503",
+            "fatal: unable to access 'x': The requested URL returned error: 429",
+            "fatal: unable to access 'x': Operation too slow. Less than 1000 bytes/sec transferred",
+        ] {
+            assert!(is_transient(s), "{s}");
+        }
+    }
+
+    #[test]
+    fn permanent_and_unknown_errors_are_not_retried() {
+        for s in [
+            "fatal: unable to access 'x': The requested URL returned error: 401",
+            "fatal: unable to access 'x': The requested URL returned error: 403",
+            "remote: Invalid username or password.\nfatal: Authentication failed for 'x'",
+            "git@github.com: Permission denied (publickey).",
+            " ! [rejected]        a -> b (non-fast-forward)",
+            " ! [remote rejected] a -> b (protected branch hook declined)",
+            "hint: Updates were rejected ... (fetch first)",
+            "fatal: repository 'x' not found",
+            "The requested URL returned error: 5",
+            "fatal: something odd happened",
+            "",
+        ] {
+            assert!(!is_transient(s), "{s}");
+        }
+        // A permanent pattern beats a transient one.
+        assert!(!is_transient(
+            "Connection reset\nThe requested URL returned error: 403"
+        ));
     }
 }
