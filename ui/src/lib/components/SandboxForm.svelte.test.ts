@@ -126,9 +126,17 @@ describe('SandboxForm', () => {
 	it('sends changed storage and null for a cleared limit', async () => {
 		const h = await edit(view({ sandboxSettings: { cpu: 4, memory: null, storage: null } }));
 		await cpu().fill('');
-		await storage().fill('2Ti');
+		await storage().fill('204800Mi');
 		await saveButton().click();
-		expect(h.saveResources).toHaveBeenCalledWith({ cpu: null, memory: null, storage: '2048Gi' });
+		expect(h.saveResources).toHaveBeenCalledWith({ cpu: null, memory: null, storage: '200Gi' });
+	});
+
+	it('rejects storage above the 256Gi cap', async () => {
+		await edit();
+		await storage().fill('2Ti');
+		await expect.element(storage()).toHaveAttribute('aria-invalid', 'true');
+		await expect.element(page.getByText('Must be at most 256Gi')).toBeInTheDocument();
+		await expect.element(saveButton()).toBeDisabled();
 	});
 
 	it('one Save runs both commands, each only for what changed', async () => {
