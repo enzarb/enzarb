@@ -27,10 +27,6 @@ operator:
   defaultStorage: 20Gi
   docker:
     storage: 50Gi
-    # Explicit dockerd sidecar resources so it is not a tiny-request container evicted first.
-    resources:
-      requests: { cpu: 500m, memory: 1Gi }
-      limits: { cpu: "4", memory: 8Gi }
 
 sandbox:
   egress:
