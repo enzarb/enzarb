@@ -85,6 +85,10 @@ Open <https://enzarb.local> and log in with GitHub.
    ```
    Complete the browser step, paste the code back. The sandbox captures the `sk-ant-oat01-` token (the UI shows the credential as configured). The token is per user: the proxy stores it encrypted in Postgres (it needs the key Secret `enzarb-claude-key`; the chart or `dev:secrets` must provision it, to be added with the component PRs) and every Project you own uses it (jobs get it per run, chats at open, so a change applies to the next run or chat). Agent runs fail with "owner has no Claude credential" until this is done. To verify on kind, capture in Project A, then confirm Project B's runs work; re-capture, then remove it (UI "Remove") and confirm new runs fail.
 
+## Push notifications (optional)
+
+The chart generates the VAPID keypair (`enzarb-vapid-key`, a pre-install/pre-upgrade Job running the UI image, so the `:dev` UI image must include `scripts/vapid-secret.ts`). Without it the UI starts with notifications off and Settings says so. Browsers only allow push on `https://` origins or `localhost`; `https://enzarb.local` works once its certificate is trusted. To try it, turn notifications on under Settings, Notifications, send a test, then move an issue to "plan awaiting approval" (or open an item that needs you) and watch for the notification. Browser subscriptions are tied to the keypair: after `dev:down` creates a new one, turn notifications on again.
+
 ## Sandboxes run under gVisor, with Docker
 
 gVisor is installed automatically: `dev:cluster` runs `kubernetes/hack/kind-install-gvisor.sh enzarb` after the cluster exists and before the overlays (RuntimeClass `gvisor` comes from `overlays/dev`). It then starts a throwaway pod with `runtimeClassName: gvisor` and fails unless its `dmesg` shows gVisor.

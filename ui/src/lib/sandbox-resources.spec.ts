@@ -6,10 +6,9 @@ import {
 	SandboxResourcesSchema,
 	StorageSchema,
 	buildSandboxPatch,
-	joinQuantity,
+	parseCpuInput,
 	parseQuantity,
-	splitQuantity,
-	toMi,
+	parseQuantityInput,
 	validateStorageGrowth
 } from './sandbox-resources.ts';
 
@@ -51,15 +50,64 @@ describe('quantities', () => {
 		expect(parseQuantity('1024Mi')).toBe(parseQuantity('1Gi'));
 		expect(parseQuantity('20Gi')).toBe(20480);
 		expect(parseQuantity('20gi')).toBeNull();
-		expect(toMi(2, 'Gi')).toBe(2048);
-		expect(toMi(2, 'Mi')).toBe(2);
 	});
-	it('splits and joins form values', () => {
-		expect(splitQuantity('512Mi')).toEqual({ value: '512', unit: 'Mi' });
-		expect(splitQuantity(null)).toEqual({ value: '', unit: 'Gi' });
-		expect(joinQuantity('8', 'Gi')).toBe('8Gi');
-		expect(joinQuantity('  ', 'Gi')).toBeNull();
+});
+
+describe('parseQuantityInput', () => {
+	const valid: [string, string][] = [
+		['16Gi', '16Gi'],
+		['512Mi', '512Mi'],
+		['1024Mi', '1Gi'],
+		['1048576k', '1000Mi'],
+		['2Ti', '2048Gi'],
+		['1024Ki', '1Mi'],
+		['  8Gi  ', '8Gi'],
+		['1048576', '1Mi'],
+		['1.5Gi', '1536Mi'],
+		['0.5Gi', '512Mi']
+	];
+	for (const [text, normalized] of valid)
+		it(`accepts ${JSON.stringify(text)} as ${normalized}`, () => {
+			const r = parseQuantityInput(text);
+			expect(r.ok && r.normalized).toBe(normalized);
+		});
+	for (const bad of [
+		'',
+		'abc',
+		'1.5Mi',
+		'1500Ki',
+		'8G',
+		'500m',
+		'-1Gi',
+		'1e3',
+		'8GB',
+		'0Gi',
+		'100',
+		'1E',
+		'2P'
+	])
+		it(`rejects ${JSON.stringify(bad)}`, () => {
+			const r = parseQuantityInput(bad);
+			expect(r.ok).toBe(false);
+			if (!r.ok) expect(r.message).not.toBe('');
+		});
+	it('rejects a result that is too long', () => {
+		expect(parseQuantityInput('99999999999999Mi').ok).toBe(false);
 	});
+	it('leaves limits to the schemas, and the strict schema rejects 8G', () => {
+		const q = parseQuantityInput('300Gi');
+		expect(q.ok && ok(MemorySchema, q.normalized)).toBe(false);
+		expect(ok(MemorySchema, '8G')).toBe(false);
+	});
+});
+
+describe('parseCpuInput', () => {
+	it('accepts whole cores and empty', () => {
+		expect(parseCpuInput('8')).toEqual({ ok: true, value: 8 });
+		expect(parseCpuInput(' ')).toEqual({ ok: true, value: null });
+	});
+	for (const bad of ['500m', '0.5', '0', '65', 'x', '-1'])
+		it(`rejects ${bad}`, () => expect(parseCpuInput(bad).ok).toBe(false));
 });
 
 describe('storage', () => {

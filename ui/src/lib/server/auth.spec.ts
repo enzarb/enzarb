@@ -55,7 +55,8 @@ describe('sessions in postgres', () => {
 			'0002_project_settings.sql',
 			'0003_user_repositories.sql',
 			'0004_claude_credentials.sql',
-			'0005_claude_credential_delete_own.sql'
+			'0005_claude_credential_delete_own.sql',
+			'0006_push_subscriptions.sql'
 		]);
 	});
 

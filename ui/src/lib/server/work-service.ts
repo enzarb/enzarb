@@ -7,7 +7,9 @@ import {
 	itemTitle,
 	itemUrl,
 	parseReadiness,
+	parseWait,
 	TERMINAL_STATES,
+	WAITING_ON,
 	type JobView,
 	type TransitionView,
 	type WorkAction,
@@ -56,14 +58,18 @@ function needsYouWhere(sql: Sql, projects: string[], staleHours: number) {
 	return sql`project IN ${sql(projects)} AND (
 		state IN ('Failed', 'Stale')
 		OR (workflow = 'issue' AND state = 'AwaitingApproval')
-		OR (workflow = 'change_request' AND state IN ('ReadyToMerge', 'ConflictParked'))
 		OR (workflow = 'change_request' AND state NOT IN ${sql([...TERMINAL_STATES])}
-			AND state NOT IN ${sql([...ENZARB_WORKING_PHASES])}
-			AND updated_at <= now() - ${staleHours}::float8 * interval '1 hour'
-			AND (state = 'AwaitingChanges'
-				OR lower(state_data->'checklist'->'ci'->>'status') = 'failed'
-				OR lower(state_data->'checklist'->'review'->>'status') = 'failed'
-				OR lower(state_data->'checklist'->'mergeable'->>'status') = 'failed')))`;
+			AND CASE
+				WHEN state_data->'wait'->>'waiting_on' IN ${sql([...WAITING_ON])}
+					THEN state_data->'wait'->>'waiting_on' = 'human'
+				ELSE state IN ('ReadyToMerge', 'ConflictParked')
+					OR (state NOT IN ${sql([...ENZARB_WORKING_PHASES])}
+						AND updated_at <= now() - ${staleHours}::float8 * interval '1 hour'
+						AND (state = 'AwaitingChanges'
+							OR lower(state_data->'checklist'->'ci'->>'status') = 'failed'
+							OR lower(state_data->'checklist'->'review'->>'status') = 'failed'
+							OR lower(state_data->'checklist'->'mergeable'->>'status') = 'failed'))
+			END))`;
 }
 
 const iso = (d: Date | string) => new Date(d).toISOString();
@@ -82,6 +88,7 @@ function summary(r: ItemRow, staleHours: number): WorkItemSummary {
 			{ workflow: r.workflow, state: r.state, stateData: r.state_data, updatedAt: r.updated_at },
 			{ now: Date.now(), staleAfterMs: hoursToMs(staleHours) }
 		),
+		wait: parseWait(r.state_data),
 		usage: parseUsage(r.usage_totals)
 	};
 }

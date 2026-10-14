@@ -27,6 +27,19 @@ export interface Config {
 	componentVersions: ComponentVersions;
 	/** Hours a blocked change request may sit idle before it joins "Needs you" (NEEDS_YOU_STALE_HOURS, default 24). */
 	needsYouStaleHours: number;
+	/**
+	 * Web Push (ENZARB_VAPID_PUBLIC_KEY, ENZARB_VAPID_PRIVATE_KEY, ENZARB_VAPID_SUBJECT, all optional).
+	 * Absent when no keys are set: notifications are then off. The private key is read only by
+	 * `server/push.ts` and never sent to the browser.
+	 */
+	vapid?: VapidConfig;
+}
+
+export interface VapidConfig {
+	publicKey: string;
+	privateKey: string;
+	/** `mailto:` or https URL identifying the sender to push services. */
+	subject: string;
 }
 
 export interface ComponentVersions {
@@ -42,6 +55,7 @@ type RequiredKey = Exclude<
 	| 'realtimeLegacyTokenUrl'
 	| 'componentVersions'
 	| 'needsYouStaleHours'
+	| 'vapid'
 >;
 
 function parseComponentVersions(raw: string | undefined): ComponentVersions {
@@ -70,6 +84,25 @@ function parseComponentVersions(raw: string | undefined): ComponentVersions {
 		}
 	}
 	return out;
+}
+
+const B64URL = /^[A-Za-z0-9_-]+$/;
+
+function parseVapid(source: Record<string, string | undefined>, publicUrl: string) {
+	const publicKey = source.ENZARB_VAPID_PUBLIC_KEY?.trim();
+	const privateKey = source.ENZARB_VAPID_PRIVATE_KEY?.trim();
+	if (!publicKey && !privateKey) return undefined;
+	if (!publicKey || !privateKey) {
+		throw new Error('ENZARB_VAPID_PUBLIC_KEY and ENZARB_VAPID_PRIVATE_KEY must be set together');
+	}
+	if (!B64URL.test(publicKey) || !B64URL.test(privateKey)) {
+		throw new Error('ENZARB_VAPID_PUBLIC_KEY and ENZARB_VAPID_PRIVATE_KEY must be base64url');
+	}
+	const subject = source.ENZARB_VAPID_SUBJECT?.trim() || publicUrl;
+	if (!/^(mailto:[^\s@]+@[^\s@]+|https?:\/\/\S+)$/.test(subject)) {
+		throw new Error('ENZARB_VAPID_SUBJECT must be a mailto: or http(s) URL');
+	}
+	return { publicKey, privateKey, subject };
 }
 
 const REQUIRED: Record<RequiredKey, string> = {
@@ -133,7 +166,8 @@ export function parseConfig(source: Record<string, string | undefined>): Config 
 		...(validId && validKey ? { githubAppId: validId, githubAppPrivateKey: validKey } : {}),
 		githubAppSlug,
 		realtimeLegacyTokenUrl: legacy === 'true',
-		componentVersions: parseComponentVersions(source.ENZARB_COMPONENT_VERSIONS)
+		componentVersions: parseComponentVersions(source.ENZARB_COMPONENT_VERSIONS),
+		vapid: parseVapid(source, out.publicUrl)
 	};
 }
 

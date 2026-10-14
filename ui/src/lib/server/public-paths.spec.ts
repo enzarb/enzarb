@@ -8,6 +8,7 @@ describe('isPublicPath', () => {
 			expect(isPublicPath('/login/github/callback', dev)).toBe(true);
 			expect(isPublicPath('/healthz', dev)).toBe(true);
 			expect(isPublicPath('/readyz', dev)).toBe(true);
+			expect(isPublicPath('/offline', dev)).toBe(true); // static page the service worker caches
 			expect(isPublicPath('/projects', dev)).toBe(false);
 		}
 	});
