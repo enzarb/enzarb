@@ -152,6 +152,23 @@ pub struct CrData {
     pub merge_requested: bool,
     /// Who clicked merge; recorded on the merge comment.
     pub merge_actor: String,
+    /// Dependencies that are not done yet, as the reducer last read them. Refreshed from
+    /// [`Ctx::open_dependencies`] on every event; kept here so the views can show it.
+    pub open_dependencies: Vec<OpenDependency>,
+}
+
+/// A dependency that blocks the merge.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OpenDependency {
+    /// Work item key of the dependency; empty for a dependency cycle.
+    pub key: String,
+    /// How the dependency reads from this item: `#12`, or `owner/repo#12` in another repo.
+    pub label: String,
+    pub url: String,
+    /// Why it can never complete as things stand (closed without completing, a cycle);
+    /// empty while it is merely not done yet.
+    pub problem: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -184,11 +201,13 @@ pub struct Readiness {
     pub ci: Check,
     pub review: Check,
     pub mergeable: Check,
+    /// Every dependency is done. Never asks the connector, so `needs_check` ignores it.
+    pub dependencies: Check,
 }
 
 impl Readiness {
     fn all_ok(&self) -> bool {
-        [&self.ci, &self.review, &self.mergeable]
+        [&self.ci, &self.review, &self.mergeable, &self.dependencies]
             .iter()
             .all(|c| c.status == CheckStatus::Ok)
     }
@@ -240,10 +259,26 @@ pub fn readiness(d: &CrData) -> Readiness {
         Some(false) => check(CheckStatus::Failed, "conflicts or blocked by branch rules"),
         None => check(CheckStatus::Unknown, "checking..."),
     };
+    let dependencies = if d.open_dependencies.is_empty() {
+        check(CheckStatus::Ok, "no open dependencies")
+    } else if let Some(p) = d.open_dependencies.iter().find(|o| !o.problem.is_empty()) {
+        check(CheckStatus::Failed, truncate(&p.problem, 120))
+    } else {
+        let labels: Vec<&str> = d
+            .open_dependencies
+            .iter()
+            .map(|o| o.label.as_str())
+            .collect();
+        check(
+            CheckStatus::Pending,
+            truncate(&format!("waiting on {}", labels.join(", ")), 120),
+        )
+    };
     Readiness {
         ci,
         review,
         mergeable,
+        dependencies,
     }
 }
 
@@ -534,8 +569,9 @@ fn finish(
     Transition::to(st(phase, s.data.clone()), fx.finish(), "finished")
 }
 
-fn data_from_item(item: &ItemRef) -> CrData {
+fn data_from_item(ctx: &Ctx, item: &ItemRef) -> CrData {
     CrData {
+        open_dependencies: ctx.open_dependencies.clone(),
         number: item.number,
         url: item.url.clone(),
         title: item.title.clone(),
@@ -555,7 +591,7 @@ pub(super) fn start(ctx: &Ctx, state: &WorkflowState, ev: &EngineEvent) -> Trans
             if e.event_type == EventType::ChangeRequestOpened
                 && e.data.item.kind == ItemKind::ChangeRequest =>
         {
-            let mut d = data_from_item(&e.data.item);
+            let mut d = data_from_item(ctx, &e.data.item);
             if d.base_ref.is_empty() {
                 d.base_ref = ctx.default_branch.clone();
             }
@@ -565,7 +601,44 @@ pub(super) fn start(ctx: &Ctx, state: &WorkflowState, ev: &EngineEvent) -> Trans
     }
 }
 
-pub(super) fn step(ctx: &Ctx, s: &CrState, ev: &EngineEvent) -> Transition {
+pub(super) fn step(ctx: &Ctx, stored: &CrState, ev: &EngineEvent) -> Transition {
+    // Dependencies live in the database, not in the stored state: every event sees them fresh.
+    let mut s = stored.clone();
+    s.data.open_dependencies = ctx.open_dependencies.clone();
+    if matches!(ev.payload, EventPayload::DependenciesChanged) {
+        return dependencies_changed(ctx, ev, stored, &s);
+    }
+    step_event(ctx, &s, ev)
+}
+
+/// A dependency was completed, closed, added or removed: decide again.
+fn dependencies_changed(ctx: &Ctx, ev: &EngineEvent, stored: &CrState, s: &CrState) -> Transition {
+    use CrPhase::*;
+    let state = WorkflowState::ChangeRequest(stored.clone());
+    if stored.data.open_dependencies == s.data.open_dependencies {
+        return Transition::reject(&state, "dependencies unchanged");
+    }
+    match s.phase {
+        AwaitingChanges | ReadyToMerge => evaluate(
+            Fx::new(ctx, ev),
+            s.phase,
+            s.data.clone(),
+            "dependencies changed",
+            true,
+        ),
+        // A run or a merge is in flight: record the set; the run's end evaluates it.
+        Reviewing | AddressingComments | ResolvingConflicts | ConflictParked | Merging | Failed => {
+            Transition::to(
+                st(s.phase, s.data.clone()),
+                Vec::new(),
+                "dependencies recorded",
+            )
+        }
+        Merged | Closed | Cancelled => Transition::reject(&state, "no longer active"),
+    }
+}
+
+fn step_event(ctx: &Ctx, s: &CrState, ev: &EngineEvent) -> Transition {
     use CrPhase::*;
     let state = WorkflowState::ChangeRequest(s.clone());
     let finished = matches!(s.phase, Merged | Closed | Cancelled);
@@ -626,6 +699,7 @@ pub(super) fn step(ctx: &Ctx, s: &CrState, ev: &EngineEvent) -> Transition {
         }
         EventPayload::TimerFired { .. } => Transition::reject(&state, "no timer expected"),
         EventPayload::Unmergeable { base_sha } => unmergeable(ctx, ev, s, &state, base_sha),
+        EventPayload::DependenciesChanged => Transition::reject(&state, "handled by step"),
         EventPayload::Connector(e) => match e.event_type {
             EventType::ChangeRequestOpened => reopened(ctx, ev, s, &state),
             EventType::ChangeRequestUpdated => updated(ctx, ev, s, &state),
@@ -661,7 +735,7 @@ fn reopened(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowState) -> 
     if !matches!(s.phase, CrPhase::Closed | CrPhase::Cancelled) {
         return Transition::reject(state, "duplicate: already tracked");
     }
-    let mut d = data_from_item(item);
+    let mut d = data_from_item(ctx, item);
     if d.base_ref.is_empty() {
         d.base_ref = ctx.default_branch.clone();
     }
@@ -725,7 +799,7 @@ fn updated(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowState) -> T
             if (sha == s.data.reviewed_sha || under_review) && !sha.is_empty() {
                 return Transition::reject(state, "duplicate: this commit was already reviewed");
             }
-            let mut d = data_from_item(item);
+            let mut d = data_from_item(ctx, item);
             d.base_ref = if d.base_ref.is_empty() {
                 s.data.base_ref.clone()
             } else {

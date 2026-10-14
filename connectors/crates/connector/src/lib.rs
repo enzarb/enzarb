@@ -7,6 +7,7 @@
 mod ci;
 pub mod command;
 mod connector;
+pub mod dependencies;
 mod error;
 mod event;
 #[cfg(feature = "fake")]

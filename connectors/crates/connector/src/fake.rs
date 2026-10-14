@@ -71,6 +71,19 @@ pub enum Call {
         repo: RepoKey,
         branch: String,
     },
+    ListDependencies {
+        item: WorkItemKey,
+    },
+    AddDependency {
+        item: WorkItemKey,
+        depends_on: WorkItemKey,
+        idempotency_key: String,
+    },
+    RemoveDependency {
+        item: WorkItemKey,
+        depends_on: WorkItemKey,
+        idempotency_key: String,
+    },
 }
 
 /// A recorded call. `replayed` is true when the idempotency key had been seen
@@ -102,6 +115,7 @@ struct State {
     readiness: HashMap<WorkItemKey, MergeReadiness>,
     update_outcomes: VecDeque<UpdateBranchOutcome>,
     branch_heads: HashMap<(RepoKey, String), String>,
+    dependencies: HashMap<WorkItemKey, Vec<WorkItemKey>>,
 }
 
 /// Records every call and keeps simple in-memory state. Cheap to share by
@@ -158,6 +172,11 @@ impl FakeConnector {
         self.st()
             .branch_heads
             .insert((repo, branch.to_string()), sha.to_string());
+    }
+
+    /// Seed the relationships `list_dependencies` returns for `item`.
+    pub fn set_dependencies(&self, item: WorkItemKey, depends_on: Vec<WorkItemKey>) {
+        self.st().dependencies.insert(item, depends_on);
     }
 
     /// Make the next call (any method) fail with `error`, once.
@@ -433,6 +452,57 @@ impl Connector for FakeConnector {
             .branch_heads
             .get(&(repo.clone(), branch.to_string()))
             .cloned())
+    }
+
+    async fn list_dependencies(&self, item: &WorkItemKey) -> Result<Vec<WorkItemKey>> {
+        let mut st = self.st();
+        let call = Call::ListDependencies { item: item.clone() };
+        Self::take_failure(&mut st, call.clone())?;
+        Self::record(&mut st, call, false);
+        Ok(st.dependencies.get(item).cloned().unwrap_or_default())
+    }
+
+    async fn add_dependency(
+        &self,
+        item: &WorkItemKey,
+        depends_on: &WorkItemKey,
+        idempotency_key: &str,
+    ) -> Result<()> {
+        let mut st = self.st();
+        let call = Call::AddDependency {
+            item: item.clone(),
+            depends_on: depends_on.clone(),
+            idempotency_key: idempotency_key.to_string(),
+        };
+        Self::take_failure(&mut st, call.clone())?;
+        let replayed = !st.seen_keys.insert(idempotency_key.to_string());
+        Self::record(&mut st, call, replayed);
+        let deps = st.dependencies.entry(item.clone()).or_default();
+        if !deps.contains(depends_on) {
+            deps.push(depends_on.clone());
+        }
+        Ok(())
+    }
+
+    async fn remove_dependency(
+        &self,
+        item: &WorkItemKey,
+        depends_on: &WorkItemKey,
+        idempotency_key: &str,
+    ) -> Result<()> {
+        let mut st = self.st();
+        let call = Call::RemoveDependency {
+            item: item.clone(),
+            depends_on: depends_on.clone(),
+            idempotency_key: idempotency_key.to_string(),
+        };
+        Self::take_failure(&mut st, call.clone())?;
+        let replayed = !st.seen_keys.insert(idempotency_key.to_string());
+        Self::record(&mut st, call, replayed);
+        if let Some(deps) = st.dependencies.get_mut(item) {
+            deps.retain(|d| d != depends_on);
+        }
+        Ok(())
     }
 
     async fn check_permission(&self, repo: &RepoKey, actor: &Actor) -> Result<Permission> {
