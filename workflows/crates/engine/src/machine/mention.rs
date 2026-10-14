@@ -249,7 +249,9 @@ pub(super) fn step(ctx: &Ctx, s: &MentionState, ev: &EngineEvent) -> Transition 
             fail(ctx, ev, s, "the agent run exceeded its deadline", true)
         }
         EventPayload::TimerFired { .. } => Transition::reject(&state, "no timer expected"),
-        EventPayload::Unmergeable { .. } => Transition::reject(&state, "not a change request"),
+        EventPayload::Unmergeable { .. } | EventPayload::DependenciesChanged => {
+            Transition::reject(&state, "not a change request")
+        }
         EventPayload::Connector(_) => match ev.comment_like() {
             Some(c) if c.mention => match (s.phase, gate(ctx, ev)) {
                 (_, Err(why)) => Transition::reject(&state, why),

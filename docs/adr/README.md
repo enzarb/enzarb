@@ -20,3 +20,4 @@ Format: Context / Decision / Consequences. Status is `Accepted` unless noted. AD
 | [0014](0014-chat-tab-acp-over-mux.md) | Interactive chat over ACP, carried on a new mux channel kind | 2026-10-12 |
 | [0015](0015-monorepo.md) | Monorepo | 2026-10-13 |
 | [0016](0016-dockerd-in-the-sandbox-container.md) | dockerd in the sandbox container, supervised by sandbox-init (supersedes the sidecar of 0012) | 2026-10-14 |
+| [0017](0017-work-item-dependencies.md) | Work item dependencies | 2026-10-14 |

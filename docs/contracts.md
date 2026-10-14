@@ -271,7 +271,9 @@ workflows_api.submit_action(p_work_item_id bigint, p_actor jsonb, p_action text,
                             p_payload jsonb) RETURNS bigint               -- actions: approve | cancel | retry | merge
 -- views
 workflows_api.work_item_v(id, key, project, workflow, state, state_data, created_at, updated_at,
-                          waiting_for, resumes_at, usage_totals, waiting_on, wait_reason, wait_text)
+                          waiting_for, resumes_at, usage_totals, waiting_on, wait_reason, wait_text,
+                          blocked_by_dependency)
+workflows_api.work_item_dependency_v(work_item_key, depends_on_key, source, via, status, state, title, url)
 workflows_api.transition_v(id, work_item_id, from_state, to_state, event_type, at)
 workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated_at, output, waiting_for, resumes_at, usage)
 ```
@@ -279,6 +281,7 @@ workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated
 - **`job_v.usage`** (jsonb, nullable): token usage and cost summed over all runs of the job (session-limit waits, restart retries and the recovery run each add their run), in the `Usage` shape of section 4. Keys are absent when no run reported them; `NULL` when nothing was reported. A run is counted once (by `run_id`), for any outcome including failed and cancelled.
 - **`work_item_v.usage_totals`** (jsonb, nullable): per key, the sum over the item's jobs that reported it, plus the union of `models`. A key no job reported is absent (so `cost_usd` is absent, not 0, when no job reported a cost); `NULL` when no job has usage. Cost is as reported by Claude, not an estimate.
 - Changes to `jobs.usage` send `work_item_changed`.
+- **Dependencies** ([ADR-0017](adr/0017-work-item-dependencies.md)): `work_item_dependency_v` lists each effective dependency of `work_item_key` (filter on `depends_on_key` for dependents). `source` is `github`, `text` or `comment`; `via` is the issue key when a change request inherited it; `status` is `done` (Done/Merged), `closed` (Cancelled/Closed/Duplicate: will not complete), `open` or `pending` (no work item yet). `work_item_v.blocked_by_dependency` is true while a change request's `state_data.open_dependencies` is not empty, and `state_data.checklist.dependencies` is a fourth check in the shape above. Changes to the table send `work_item_changed` for both ends. Event type `DependenciesChanged` (source `engine`, payload `{}`) is engine-internal.
 - Both functions are `SECURITY DEFINER`.
 - Connectors use dedupe key `github:<event id>`; the UI uses `ui:<uuid>`. Events the engine itself generates use source `engine` (`handoff:<id>`, `timer:…`, `job:<id>:<attempt>`).
 - `transitions.work_item_id` is nullable: events that are ignored (no Project, no workflow) get a `to_state='ignored'` row with no work item. `transitions.note` records rejections.
