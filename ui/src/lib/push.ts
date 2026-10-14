@@ -14,6 +14,8 @@ export interface PushPayload {
 export const CATEGORY_LABELS: Record<NeedsYouCategory, string> = {
 	approval: 'Plan awaiting approval',
 	merge: 'Ready to merge',
+	review: 'Awaiting your review',
+	decision: 'Decision needed',
 	blocked: 'Change request blocked',
 	failed: 'Failed or stale'
 };
@@ -22,6 +24,8 @@ export const CATEGORY_LABELS: Record<NeedsYouCategory, string> = {
 const TITLES: Record<NeedsYouCategory, string> = {
 	approval: 'Plan awaiting your approval',
 	merge: 'Change request ready to merge',
+	review: 'Change request awaiting your review',
+	decision: 'Change request needs a decision',
 	blocked: 'Change request blocked',
 	failed: 'Work item failed'
 };
