@@ -86,6 +86,19 @@ pub trait Connector: Send + Sync {
         Err(Error::Other("update_branch is not supported".into()))
     }
 
+    /// Changes the base branch of change request `number` to `new_base` (stacked change
+    /// request retargeting). Setting the base it already has succeeds. The default
+    /// implementation is unsupported.
+    async fn set_base(
+        &self,
+        _item: &WorkItemKey,
+        _number: u64,
+        _new_base: &str,
+        _idempotency_key: &str,
+    ) -> Result<()> {
+        Err(Error::Other("set_base is not supported".into()))
+    }
+
     /// Current head commit sha of `branch`, or `None` if the branch does not
     /// exist. The default implementation returns `Ok(None)`.
     async fn branch_head(&self, _repo: &RepoKey, _branch: &str) -> Result<Option<String>> {

@@ -251,3 +251,35 @@ async fn read_credential_records_call_and_validates() {
         }
     );
 }
+
+#[tokio::test]
+async fn set_base_retargets_seeded_change_request_idempotently() {
+    let f = FakeConnector::new();
+    let key: WorkItemKey = "github:o/r#5".parse().unwrap();
+    f.add_thread(
+        key.clone(),
+        Thread {
+            item: ItemRef {
+                kind: ItemKind::ChangeRequest,
+                number: 5,
+                url: "u".into(),
+                title: "t".into(),
+                body: String::new(),
+                author: "a".into(),
+                head_ref: Some("feat".into()),
+                base_ref: Some("parent".into()),
+                head_sha: Some("abc".into()),
+            },
+            comments: vec![],
+        },
+    );
+    f.set_base(&key, 5, "main", "k").await.unwrap();
+    f.set_base(&key, 5, "main", "k").await.unwrap();
+    let t = f.fetch_thread(&key).await.unwrap();
+    assert_eq!(t.item.base_ref.as_deref(), Some("main"));
+    assert_eq!(f.set_base_calls().len(), 2);
+    assert_eq!(f.calls().iter().filter(|c| c.replayed).count(), 1);
+    let missing: WorkItemKey = "github:o/r#9".parse().unwrap();
+    let err = f.set_base(&missing, 9, "main", "k2").await.unwrap_err();
+    assert!(matches!(err, Error::NotFound(_)), "{err:?}");
+}

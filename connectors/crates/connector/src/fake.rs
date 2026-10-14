@@ -67,6 +67,12 @@ pub enum Call {
         item: WorkItemKey,
         number: u64,
     },
+    SetBase {
+        item: WorkItemKey,
+        number: u64,
+        new_base: String,
+        idempotency_key: String,
+    },
     BranchHead {
         repo: RepoKey,
         branch: String,
@@ -213,6 +219,23 @@ impl FakeConnector {
 
     pub fn change_requests(&self) -> Vec<ItemRef> {
         self.st().change_requests.clone()
+    }
+
+    /// Every `set_base` call so far as `(item, number, new_base)`, in order (replays included).
+    pub fn set_base_calls(&self) -> Vec<(WorkItemKey, u64, String)> {
+        self.st()
+            .calls
+            .iter()
+            .filter_map(|c| match &c.call {
+                Call::SetBase {
+                    item,
+                    number,
+                    new_base,
+                    ..
+                } => Some((item.clone(), *number, new_base.clone())),
+                _ => None,
+            })
+            .collect()
     }
 
     fn record(st: &mut State, call: Call, replayed: bool) {
@@ -438,6 +461,43 @@ impl Connector for FakeConnector {
             .update_outcomes
             .pop_front()
             .unwrap_or(UpdateBranchOutcome::Updated))
+    }
+
+    async fn set_base(
+        &self,
+        item: &WorkItemKey,
+        number: u64,
+        new_base: &str,
+        idempotency_key: &str,
+    ) -> Result<()> {
+        let mut st = self.st();
+        let call = Call::SetBase {
+            item: item.clone(),
+            number,
+            new_base: new_base.to_string(),
+            idempotency_key: idempotency_key.to_string(),
+        };
+        Self::take_failure(&mut st, call.clone())?;
+        // A change request is known either as a seeded thread or one opened through the fake.
+        let mut found = false;
+        if let Some(t) = st.threads.get_mut(item)
+            && t.item.kind == ItemKind::ChangeRequest
+            && t.item.number == number
+        {
+            t.item.base_ref = Some(new_base.to_string());
+            found = true;
+        }
+        for cr in st.change_requests.iter_mut().filter(|c| c.number == number) {
+            cr.base_ref = Some(new_base.to_string());
+            found = true;
+        }
+        if !found {
+            Self::record(&mut st, call, false);
+            return Err(Error::NotFound(format!("{item} change request {number}")));
+        }
+        let replayed = !st.seen_keys.insert(format!("set_base:{idempotency_key}"));
+        Self::record(&mut st, call, replayed);
+        Ok(())
     }
 
     async fn branch_head(&self, repo: &RepoKey, branch: &str) -> Result<Option<String>> {
