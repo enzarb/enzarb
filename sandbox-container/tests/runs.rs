@@ -450,6 +450,54 @@ async fn read_only_run_does_not_push() {
 }
 
 #[tokio::test]
+async fn reported_usage_reaches_the_callback_run_state_and_state_file() {
+    let env = start(0).await;
+    let (session, _e) = env.connect().await;
+    session
+        .run_start(env.run("u1", "USAGE", "main", "enzarb/issue-20", false))
+        .await
+        .unwrap();
+    let (_, fin) = env.finished("u1").await;
+    assert_eq!(fin.outcome, RunOutcome::Succeeded);
+    let u = fin.usage.clone().expect("usage in the callback");
+    assert_eq!(u.input_tokens, Some(1200));
+    assert_eq!(u.output_tokens, Some(340));
+    assert_eq!(u.cache_read_input_tokens, Some(9000));
+    assert_eq!(u.cache_creation_input_tokens, None); // not reported: unknown, not 0
+    assert_eq!(u.cost_usd, Some(0.42)); // the reported total, not the 0.25 running cost
+    assert_eq!(u.models, vec!["claude-sonnet-5-5".to_string()]);
+
+    // run_state serves it too, and so does the persisted record
+    let info = session.run_status("u1").await.unwrap();
+    assert_eq!(info.usage, fin.usage);
+    let state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(env.run_dir("u1").join("state.json")).unwrap())
+            .unwrap();
+    assert_eq!(state["usage"]["input_tokens"], 1200);
+    assert!(state["usage"].get("cache_creation_input_tokens").is_none());
+
+    // a run that reports tokens but no cost keeps the cost unknown
+    session
+        .run_start(env.run("u2", "USAGENOCOST", "main", "enzarb/issue-21", false))
+        .await
+        .unwrap();
+    let (_, fin) = env.finished("u2").await;
+    let u = fin.usage.expect("usage in the callback");
+    assert_eq!((u.input_tokens, u.output_tokens), (Some(5), Some(6)));
+    assert_eq!(u.cost_usd, None);
+
+    // an agent that reports nothing leaves usage absent
+    session
+        .run_start(env.run("u3", "NOOP", "main", "enzarb/issue-22", false))
+        .await
+        .unwrap();
+    let (_, fin) = env.finished("u3").await;
+    assert_eq!(fin.usage, None);
+    let info = session.run_status("u3").await.unwrap();
+    assert_eq!(info.usage, None);
+}
+
+#[tokio::test]
 async fn npm_token_reaches_the_agent_env_but_is_redacted_and_never_persisted() {
     let env = start(0).await;
     let (session, _e) = env.connect().await;

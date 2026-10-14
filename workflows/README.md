@@ -49,7 +49,7 @@ Reducer and executor roles need a Kubernetes client (in-cluster or `KUBECONFIG`)
 
 ### Ports
 
-- `:8081` (executor role): `POST /v1/runs/{run_id}/finished` (sandbox-init callback) and `GET /healthz`.
+- `:8081` (executor role): `POST /v1/runs/{run_id}/finished` (sandbox-init callback) and `GET /healthz`. The callback body may carry `usage` (tokens and the cost Claude reported); it is summed per job in `jobs.usage` (once per `run_id`) and exposed as `workflows_api.job_v.usage` and `work_item_v.usage_totals`.
 - `:8082` (no executor role): `GET /healthz`.
 
 ### RBAC

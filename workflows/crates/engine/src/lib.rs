@@ -14,6 +14,7 @@ pub mod results;
 #[cfg(feature = "testing")]
 pub mod testing;
 pub mod ticker;
+pub mod usage;
 
 pub use error::Error;
 pub use executor::{
@@ -25,5 +26,5 @@ pub use permission::{
     CachedPermissions, ConnectorPermissions, PermissionResolver, StaticPermissions,
 };
 pub use reducer::{Reducer, ReducerConfig};
-pub use results::{JobResult, ingest_job_result};
+pub use results::{JobResult, ingest_job_result, record_job_usage};
 pub use ticker::{TickStats, Ticker};

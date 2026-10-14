@@ -102,6 +102,26 @@
   },
   {
     "expect": {
+      "run_id": "r",
+      "state": "succeeded",
+      "type": "run_state"
+    },
+    "name": "old_run_state_no_usage",
+    "payload": "{\"type\":\"run_state\",\"run_id\":\"r\",\"state\":\"succeeded\",\"exit_code\":0}"
+  },
+  {
+    "expect": {
+      "run_id": "r",
+      "type": "run_state",
+      "usage": {
+        "input_tokens": 5
+      }
+    },
+    "name": "run_state_usage_unknown_fields",
+    "payload": "{\"type\":\"run_state\",\"run_id\":\"r\",\"state\":\"succeeded\",\"usage\":{\"input_tokens\":5,\"future\":1}}"
+  },
+  {
+    "expect": {
       "kind": "claude_oauth",
       "type": "credential_captured"
     },

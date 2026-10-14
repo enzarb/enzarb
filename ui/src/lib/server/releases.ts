@@ -13,6 +13,8 @@ export interface FetchReleasesOptions {
 	fetch?: typeof fetch;
 	token?: string;
 	signal?: AbortSignal;
+	/** Called when GitHub rejects `token` (401/403), so the caller can drop it. */
+	onTokenRejected?: () => void;
 }
 
 interface GithubRelease {
@@ -31,23 +33,55 @@ export const releaseTagUrl = (tag: string) =>
 	`https://github.com/${RELEASES_REPO}/releases/tag/${encodeURIComponent(tag).replaceAll('%2F', '/')}`;
 
 /**
+ * A release URL is only trusted if it is a plain `https://github.com/...` URL (no credentials or
+ * port); anything else falls back to the tag's release page.
+ */
+export function safeReleaseUrl(raw: unknown, tag: string): string {
+	if (typeof raw === 'string') {
+		try {
+			const u = new URL(raw);
+			if (
+				u.protocol === 'https:' &&
+				u.hostname === 'github.com' &&
+				!u.username &&
+				!u.password &&
+				!u.port
+			)
+				return u.href;
+		} catch {
+			// malformed: fall through
+		}
+	}
+	return releaseTagUrl(tag);
+}
+
+/**
  * First page (100) of the enzarb monorepo's published releases, newest first, with full tags
- * (`<dir>/vX.Y.Z`). Throws on any failure.
+ * (`<dir>/vX.Y.Z`). Throws on any failure. If the token is rejected (401/403) `onTokenRejected`
+ * is called and the request is retried once unauthenticated.
  */
 export async function fetchReleases({
 	fetch: doFetch = fetch,
 	token,
-	signal
+	signal,
+	onTokenRejected
 }: FetchReleasesOptions = {}): Promise<Release[]> {
-	const headers: Record<string, string> = {
-		Accept: 'application/vnd.github+json',
-		'User-Agent': 'enzarb-ui'
+	const request = (bearer?: string) => {
+		const headers: Record<string, string> = {
+			Accept: 'application/vnd.github+json',
+			'User-Agent': 'enzarb-ui'
+		};
+		if (bearer) headers.Authorization = `Bearer ${bearer}`;
+		return doFetch(`https://api.github.com/repos/${RELEASES_REPO}/releases?per_page=100`, {
+			headers,
+			signal: signal ?? AbortSignal.timeout(RELEASE_FETCH_TIMEOUT_MS)
+		});
 	};
-	if (token) headers.Authorization = `Bearer ${token}`;
-	const res = await doFetch(`https://api.github.com/repos/${RELEASES_REPO}/releases?per_page=100`, {
-		headers,
-		signal: signal ?? AbortSignal.timeout(RELEASE_FETCH_TIMEOUT_MS)
-	});
+	let res = await request(token);
+	if (token && (res.status === 401 || res.status === 403)) {
+		onTokenRejected?.();
+		res = await request();
+	}
 	if (!res.ok) throw new Error(`GitHub releases for ${RELEASES_REPO}: HTTP ${res.status}`);
 	const json: unknown = await res.json();
 	if (!Array.isArray(json))
@@ -58,7 +92,7 @@ export async function fetchReleases({
 			tag: r.tag_name as string,
 			name: typeof r.name === 'string' && r.name ? r.name : (r.tag_name as string),
 			publishedAt: typeof r.published_at === 'string' ? r.published_at : null,
-			url: typeof r.html_url === 'string' ? r.html_url : releaseTagUrl(r.tag_name as string),
+			url: safeReleaseUrl(r.html_url, r.tag_name as string),
 			body: typeof r.body === 'string' ? r.body : ''
 		}));
 }

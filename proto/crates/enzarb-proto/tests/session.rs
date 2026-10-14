@@ -86,6 +86,10 @@ fn spawn_echo_server(session: Session, mut events: enzarb_proto::session::Events
                                 state: RunPhase::Succeeded,
                                 exit_code: Some(0),
                                 summary: Some("ok".into()),
+                                usage: Some(enzarb_proto::Usage {
+                                    input_tokens: Some(7),
+                                    ..Default::default()
+                                }),
                             })
                             .unwrap();
                     }
@@ -472,6 +476,7 @@ async fn json_log_channel_via_run_start() {
     assert_eq!(info.state, RunPhase::Succeeded);
     assert_eq!(info.exit_code, Some(0));
     assert_eq!(info.summary.as_deref(), Some("ok"));
+    assert_eq!(info.usage.and_then(|u| u.input_tokens), Some(7));
 }
 
 #[tokio::test]
@@ -530,6 +535,7 @@ async fn error_run_id_beats_oldest_pending() {
                             state: RunPhase::Running,
                             exit_code: None,
                             summary: None,
+                            usage: None,
                         })
                         .unwrap();
                 }

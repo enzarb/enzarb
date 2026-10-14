@@ -10,6 +10,11 @@ const releases = vi.hoisted(() => ({ fn: vi.fn() }));
 vi.mock('#lib/server/config.ts', () => ({
 	getConfig: () => ({ componentVersions: versions.value })
 }));
+const tok = vi.hoisted(() => ({ get: vi.fn(), invalidate: vi.fn() }));
+vi.mock('#lib/server/github-app-token.ts', () => ({
+	getInstallationToken: tok.get,
+	invalidateInstallationToken: tok.invalidate
+}));
 vi.mock('#lib/server/releases.ts', () => ({ cachedReleases: releases.fn }));
 
 import { load } from './+page.server.ts';
@@ -27,6 +32,8 @@ const release = (tag: string, body = 'hi') => ({
 
 beforeEach(() => {
 	releases.fn.mockReset();
+	tok.get.mockReset();
+	tok.get.mockResolvedValue(null);
 	versions.value = {
 		chart: '0.4.1',
 		components: { 'enzarb-ui': 'v1.0.0', 'enzarb-extra': '2.0.0' }
@@ -51,8 +58,27 @@ describe('about load', () => {
 		const extra = data.components.find((c: { name: string }) => c.name === 'enzarb-extra');
 		expect(extra).toMatchObject({ deployed: '2.0.0', repoUrl: null, releases: null });
 		expect(ui.repoUrl).toBe('https://github.com/enzarb/enzarb/tree/main/ui');
-		expect(releases.fn).toHaveBeenCalledWith('ui');
-		expect(releases.fn).toHaveBeenCalledWith('operator');
+		expect(releases.fn).toHaveBeenCalledWith('ui', expect.anything());
+		expect(releases.fn).toHaveBeenCalledWith('operator', expect.anything());
+	});
+
+	it('passes the installation token to the fetch and keeps it out of the page data', async () => {
+		tok.get.mockResolvedValue('ghs_secret');
+		releases.fn.mockResolvedValue([release('v1.0.0')]);
+		const data = await run(user);
+		expect(releases.fn).toHaveBeenCalledWith(
+			'ui',
+			expect.objectContaining({ token: 'ghs_secret', onTokenRejected: tok.invalidate })
+		);
+		expect(JSON.stringify(data)).not.toContain('ghs_secret');
+	});
+
+	it('fetches unauthenticated when the token lookup fails', async () => {
+		tok.get.mockRejectedValue(new Error('boom'));
+		releases.fn.mockResolvedValue([release('v1.0.0')]);
+		const data = await run(user);
+		expect(releases.fn).toHaveBeenCalledWith('ui', expect.objectContaining({ token: undefined }));
+		expect(data.components[0].releases).toHaveLength(1);
 	});
 
 	it('still returns versions when one component fetch fails', async () => {
