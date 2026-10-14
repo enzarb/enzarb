@@ -505,6 +505,8 @@ impl Transition {
 // State
 // ---------------------------------------------------------------------------
 
+// `CrState` grew with the auto-round fields; the state is held by value in one place per event.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkflowState {
     /// No work item yet; the first event decides whether one is created.
