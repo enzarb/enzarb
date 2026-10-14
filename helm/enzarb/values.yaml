@@ -142,6 +142,8 @@ ui:
   # 0 omits the hook. Must be below terminationGracePeriodSeconds, which also covers the drain.
   preStopSeconds: 10
   terminationGracePeriodSeconds: 30
+  # Hours a change request blocked on review or checks may sit idle before it counts as "Needs you".
+  needsYouStaleHours: 24
   resources: {}
   extraEnv: []
 

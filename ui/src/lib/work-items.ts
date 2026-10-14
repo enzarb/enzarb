@@ -331,15 +331,43 @@ const failureText = (stateData: unknown): string | null => {
 	return null;
 };
 
+/** Hours a blocked change request may sit untouched before it needs its owner (`NEEDS_YOU_STALE_HOURS`). */
+export const NEEDS_YOU_STALE_HOURS_DEFAULT = 24;
+
+/** Phases where enzarb itself is acting on a change request, so failed checks are not the owner's to fix. */
+export const ENZARB_WORKING_PHASES = [
+	'Reviewing',
+	'AddressingComments',
+	'ResolvingConflicts',
+	'Merging'
+] as const;
+
+const WORKING = new Set<string>(ENZARB_WORKING_PHASES);
+
+export interface NeedsYouOptions {
+	/** Epoch ms treated as the present. */
+	now: number;
+	/** A blocked change request counts only after this long without activity. */
+	staleAfterMs: number;
+}
+
+export const hoursToMs = (hours: number): number => hours * 3_600_000;
+
 /**
  * Whether (and why) an item waits on its owner. Never throws; unknown states and malformed
- * `state_data` classify as `null`.
+ * `state_data` classify as `null`. A change request that is blocked (changes requested, red checks)
+ * waits on enzarb, not the owner, until it has had no activity (`updatedAt`) for `staleAfterMs`;
+ * `ConflictParked` always needs a decision.
  */
-export function classifyNeedsYou(item: {
-	workflow: string;
-	state: string;
-	stateData: unknown;
-}): NeedsYou | null {
+export function classifyNeedsYou(
+	item: {
+		workflow: string;
+		state: string;
+		stateData: unknown;
+		updatedAt?: string | number | Date;
+	},
+	opts: Partial<NeedsYouOptions> = {}
+): NeedsYou | null {
 	const { workflow, state, stateData } = item;
 	if (isTerminal(state)) return null;
 	const actions = availableActions(state);
@@ -358,9 +386,15 @@ export function classifyNeedsYou(item: {
 		return { category: 'blocked', reason: blockedReason(stateData), text };
 	}
 	if (actions.includes('merge')) return { category: 'merge', reason: null };
-	if (state === 'AwaitingChanges' || failedChecks(stateData).length > 0)
-		return { category: 'blocked', reason: blockedReason(stateData) ?? 'Changes requested' };
-	return null;
+	if (state === 'ConflictParked')
+		return { category: 'blocked', reason: 'Merge conflict needs a decision' };
+	if (WORKING.has(state)) return null;
+	if (state !== 'AwaitingChanges' && failedChecks(stateData).length === 0) return null;
+	const now = opts.now ?? Date.now();
+	const staleAfterMs = opts.staleAfterMs ?? hoursToMs(NEEDS_YOU_STALE_HOURS_DEFAULT);
+	const since = item.updatedAt === undefined ? NaN : new Date(item.updatedAt).getTime();
+	if (!Number.isFinite(since) || now - since < staleAfterMs) return null;
+	return { category: 'blocked', reason: blockedReason(stateData) ?? 'Changes requested' };
 }
 
 /** The action a queue row offers inline; review, decision and blocked rows only link out. */
