@@ -1249,44 +1249,125 @@ textarea.ez-control {
 	text-align: center;
 }
 
-// The "needs you" queue on /work.
-.ez-needs {
-	display: flex;
-	flex-direction: column;
+// The task board on /work: one column per step of the process, in DOM order left to right. The
+// grid scrolls sideways when the columns do not fit.
+.ez-board {
+	display: grid;
+	grid-auto-flow: column;
+	grid-auto-columns: minmax(16rem, 1fr);
 	gap: var(--ez-space-3);
-	margin: 0;
-	padding: 0;
-	list-style: none;
+	align-items: start;
+	overflow-x: auto;
+	padding-bottom: var(--ez-space-2);
 
-	&__row {
+	&__col {
 		display: flex;
 		flex-direction: column;
 		gap: var(--ez-space-2);
+		min-width: 0;
 		padding: var(--ez-space-3);
 		border: var(--ez-border-width) solid var(--ez-border);
-		border-left-width: 0.25rem;
 		border-radius: var(--ez-radius-md);
+		background: var(--ez-surface-sunken);
 
-		&--approval,
-		&--merge {
-			border-left-color: var(--ez-accent);
+		// Columns that wait on the user.
+		&--needs {
+			border-top: 0.25rem solid var(--ez-accent);
 		}
 	}
 
-	&__head {
+	&__title {
 		display: flex;
-		flex-wrap: wrap;
-		align-items: baseline;
+		align-items: center;
+		justify-content: space-between;
 		gap: var(--ez-space-2);
+		margin: 0;
+		font-size: var(--ez-text-md, 1rem);
 	}
 
+	&__cards {
+		display: flex;
+		flex-direction: column;
+		gap: var(--ez-space-2);
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+
+	&__empty {
+		margin: 0;
+	}
+}
+
+.ez-card {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-2);
+	padding: var(--ez-space-3);
+	border: var(--ez-border-width) solid var(--ez-border);
+	border-radius: var(--ez-radius-md);
+	background: var(--ez-surface);
+	overflow-wrap: anywhere;
+
+	&--needs {
+		border-left: 0.25rem solid var(--ez-accent);
+	}
+
+	// A cancelled task is finished but did not succeed: quieter than the rest.
+	&--cancelled {
+		opacity: 0.7;
+	}
+
+	&__title {
+		font-weight: var(--ez-weight-medium);
+	}
+
+	&__meta,
+	&__needs,
 	&__reason,
+	&__wait,
+	&__usage,
 	&__error {
 		margin: 0;
 	}
 
+	&__meta,
+	&__usage {
+		font-size: var(--ez-text-sm);
+	}
+
 	&__error {
-		color: var(--ez-danger-text, var(--ez-text));
+		color: var(--ez-danger-fg);
+	}
+}
+
+// Plan, review and merge dialogs: a wide panel whose long content scrolls on its own.
+.ez-dialog {
+	&__content--wide {
+		width: min(48rem, calc(100vw - 2rem));
+	}
+
+	&__body {
+		display: flex;
+		flex-direction: column;
+		gap: var(--ez-space-3);
+	}
+
+	&__scroll {
+		max-height: 40dvh;
+		overflow-y: auto;
+	}
+
+	&__section {
+		display: flex;
+		flex-direction: column;
+		gap: var(--ez-space-2);
+	}
+
+	&__heading {
+		margin: 0;
+		font-size: var(--ez-text-sm);
+		font-weight: var(--ez-weight-medium);
 	}
 }
 
@@ -1294,22 +1375,6 @@ textarea.ez-control {
 .ez-wait-banner {
 	margin: 0;
 	font-weight: var(--ez-weight-medium);
-}
-
-.ez-plan {
-	summary {
-		cursor: pointer;
-		font-weight: var(--ez-weight-medium);
-	}
-}
-
-.ez-done {
-	margin-top: var(--ez-space-4);
-
-	summary {
-		cursor: pointer;
-		font-weight: var(--ez-weight-medium);
-	}
 }
 
 // A removable selected value inside the combobox.

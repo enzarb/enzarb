@@ -2,15 +2,29 @@ import * as v from 'valibot';
 import type { Usage } from './usage.ts';
 
 /** Actions accepted by `workflows_api.submit_action` (contracts §6). */
-export const ACTIONS = ['approve', 'cancel', 'retry', 'merge'] as const;
+export const ACTIONS = ['approve', 'cancel', 'retry', 'merge', 'comment'] as const;
 export type WorkAction = (typeof ACTIONS)[number];
 
 export const WorkActionSchema = v.picklist(ACTIONS);
 
-export const SubmitActionSchema = v.object({
-	id: v.pipe(v.number(), v.integer(), v.minValue(1)),
-	action: WorkActionSchema
+/** Longest comment `submit_action` accepts (contracts §6). */
+export const COMMENT_MAX_LENGTH = 20_000;
+
+/** The optional payload of an action: `comment` needs `body`, `merge` may set `deleteBranch`. */
+export const ActionDataSchema = v.object({
+	body: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(COMMENT_MAX_LENGTH))),
+	deleteBranch: v.optional(v.boolean())
 });
+export type ActionData = v.InferOutput<typeof ActionDataSchema>;
+
+export const SubmitActionSchema = v.pipe(
+	v.object({
+		id: v.pipe(v.number(), v.integer(), v.minValue(1)),
+		action: WorkActionSchema,
+		data: v.optional(ActionDataSchema)
+	}),
+	v.check((i) => i.action !== 'comment' || !!i.data?.body, 'A comment needs text')
+);
 
 export interface WorkItemSummary {
 	id: number;
@@ -140,6 +154,14 @@ export function availableActions(state: string): WorkAction[] {
 	if (!isTerminal(state)) out.push('cancel');
 	return out;
 }
+
+/**
+ * Whether feedback can be sent to the item: only an issue's plan awaiting approval or questions
+ * awaiting answers take a comment (the engine rejects it elsewhere). Kept apart from
+ * `availableActions`, which lists the buttons of the task page.
+ */
+export const canComment = (workflow: string, state: string): boolean =>
+	workflow === 'issue' && (state === 'AwaitingApproval' || state === 'AwaitingAnswers');
 
 export type StateTone = 'active' | 'waiting' | 'done' | 'failed' | 'ready';
 
@@ -433,12 +455,69 @@ export function applyNeedsYouChange(
 	return item.needs ? [...rest, item].sort(byAge) : rest;
 }
 
-/** "3h" style age; `since` is an ISO timestamp. */
-export function waitingFor(since: string, now: number = Date.now()): string {
-	const mins = Math.floor((now - Date.parse(since)) / 60_000);
-	if (!Number.isFinite(mins) || mins < 1) return '<1m';
-	if (mins < 60) return `${mins}m`;
-	const hours = Math.floor(mins / 60);
-	if (hours < 48) return `${hours}h`;
-	return `${Math.floor(hours / 24)}d`;
+/**
+ * The columns of the Tasks board, in process order (left to right): plan approval, the work
+ * itself, what got stuck, review and merge, done. The array order is the render order, so
+ * keyboard and screen-reader order match the picture.
+ */
+export const BOARD_COLUMNS = [
+	{ id: 'plan', title: 'Plan approval', needsYou: true },
+	{ id: 'progress', title: 'In progress', needsYou: false },
+	{ id: 'blocked', title: 'Blocked / failed', needsYou: true },
+	{ id: 'review', title: 'Review & merge', needsYou: true },
+	{ id: 'done', title: 'Done', needsYou: false }
+] as const;
+/** How many finished tasks the Done column lists before "Show all". */
+export const DONE_LIMIT = 20;
+
+export type BoardColumnId = (typeof BOARD_COLUMNS)[number]['id'];
+
+const NEEDS_COLUMN: Record<NeedsYouCategory, BoardColumnId> = {
+	approval: 'plan',
+	question: 'plan',
+	blocked: 'blocked',
+	failed: 'blocked',
+	merge: 'review',
+	review: 'review',
+	decision: 'review'
+};
+
+/**
+ * The column of an item. Items waiting on the user sit by their `needs` category (the result of
+ * `classifyNeedsYou`; the board has no classifier of its own); everything else is in progress,
+ * or done once the state is terminal. Unknown states count as in progress.
+ */
+export function boardColumn(item: { state: string; needs?: NeedsYou | null }): BoardColumnId {
+	if (item.needs) return NEEDS_COLUMN[item.needs.category];
+	return isTerminal(item.state) ? 'done' : 'progress';
+}
+
+/** Items per column, each keeping the input order; every column is present. */
+export function groupByColumn<T extends { state: string; needs?: NeedsYou | null }>(
+	items: readonly T[]
+): Record<BoardColumnId, T[]> {
+	const out: Record<BoardColumnId, T[]> = {
+		plan: [],
+		progress: [],
+		blocked: [],
+		review: [],
+		done: []
+	};
+	for (const i of items) out[boardColumn(i)].push(i);
+	return out;
+}
+
+/**
+ * What the board shows: the needs-you queue (filtered to `project`) plus the listed items that
+ * are not waiting on the user. An id is listed once, the queue's copy wins, so a card cannot
+ * appear twice and a state change moves it between columns. Newest first.
+ */
+export function boardItems(
+	queue: readonly WorkItemSummary[],
+	list: readonly WorkItemSummary[],
+	project?: string
+): WorkItemSummary[] {
+	const waiting = queue.filter((w) => !project || w.project === project);
+	const ids = new Set(waiting.map((w) => w.id));
+	return [...waiting, ...list.filter((w) => !w.needs && !ids.has(w.id))].sort(byRecency);
 }
