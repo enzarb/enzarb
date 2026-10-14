@@ -105,6 +105,15 @@ struct Args {
     /// and dockerd args) over the built-in ones.
     #[arg(long, env = "ENZARB_DOCKER_PROFILES_FILE")]
     docker_profiles_file: Option<std::path::PathBuf>,
+    /// Automatic Docker pruning in the sandbox (`on`/`off`); unset = sandbox-init's default (on).
+    #[arg(long, env = "ENZARB_DOCKER_PRUNE")]
+    docker_prune: Option<String>,
+    /// Images and build cache newer than this survive a prune (e.g. `24h`); unset = `24h`.
+    #[arg(long, env = "ENZARB_DOCKER_PRUNE_AGE")]
+    docker_prune_age: Option<String>,
+    /// Free-space percentage of `/var/lib/docker` below which pruning ignores the age; unset = 15.
+    #[arg(long, env = "ENZARB_DOCKER_PRUNE_MIN_FREE")]
+    docker_prune_min_free: Option<String>,
     /// Address for /healthz and /readyz.
     #[arg(long, env = "ENZARB_HEALTH_ADDR", default_value = "0.0.0.0:8080")]
     health_addr: SocketAddr,
@@ -218,6 +227,12 @@ fn docker_config(args: &Args) -> anyhow::Result<docker::DockerConfig> {
         cfg.merge_profiles_yaml(&raw)
             .map_err(|e| anyhow::anyhow!("parsing {}: {e}", path.display()))?;
     }
+    cfg.set_prune(
+        args.docker_prune.as_deref(),
+        args.docker_prune_age.as_deref(),
+        args.docker_prune_min_free.as_deref(),
+    )
+    .map_err(|e| anyhow::anyhow!(e))?;
     cfg.validate().map_err(|e| anyhow::anyhow!(e))?;
     Ok(cfg)
 }

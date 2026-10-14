@@ -34,6 +34,7 @@ All Projects land in one namespace, `sandbox.namespace` (`ENZARB_SANDBOX_NAMESPA
 Docker is always on and the runtime class is cluster-admin config, not per Project.
 - `operator.sandboxRuntimeClass` (default `gvisor`; schema allows `gvisor`, `kata`) -> `ENZARB_SANDBOX_RUNTIME_CLASS`. It must be listed in `operator.docker.runtimeClasses` (default `[gvisor]`, -> `ENZARB_DOCKER_RUNTIME_CLASSES`) or the operator refuses to start.
 - `operator.docker.storage` (`50Gi`, size of each Project's `docker` PVC). `operator.docker.image` and `operator.docker.resources` were removed (ADR-0016): dockerd runs inside the `sandbox` container and shares its resources; the schema rejects the old keys, so drop them from custom values files.
+- `operator.docker.prune.{enabled,age,minFree}` (defaults `true`, `24h`, `15`) -> the operator's `ENZARB_DOCKER_PRUNE`, `ENZARB_DOCKER_PRUNE_AGE`, `ENZARB_DOCKER_PRUNE_MIN_FREE`, which it passes to every sandbox (automatic Docker pruning, ADR-0016).
 - `operator.docker.profiles`: extra `{<runtimeClass>: {securityContext, dockerdArgs}}` profiles. When non-empty the chart renders a ConfigMap, mounts it at `/etc/enzarb/docker` and sets `ENZARB_DOCKER_PROFILES_FILE`.
 
 Every Project now has two PVCs: `workspace` and `docker`. Sandbox nodes must carry the label `enzarb.dev/runtime-gvisor=true` (installed by `kubernetes/` together with the `gvisor` RuntimeClass); without a matching node, sandbox pods stay Pending.

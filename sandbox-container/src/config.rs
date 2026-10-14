@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::docker_prune::PruneConfig;
 use crate::dockerd::DockerdConfig;
 use crate::policy::Policy;
 
@@ -82,6 +83,8 @@ pub struct Config {
     pub chat_allow_bypass: bool,
     /// `ENZARB_DOCKERD*`: the supervised Docker daemon (ADR-0016).
     pub dockerd: DockerdConfig,
+    /// `ENZARB_DOCKER_PRUNE*`, `ENZARB_DOCKER_BIN`: automatic Docker pruning (ADR-0016).
+    pub docker_prune: PruneConfig,
 }
 
 /// A chat permission mode sandbox-init lets a chat be in.
@@ -145,6 +148,7 @@ impl Default for Config {
             chat_permission_mode: ChatMode::Bypass,
             chat_allow_bypass: true,
             dockerd: DockerdConfig::default(),
+            docker_prune: PruneConfig::default(),
         }
     }
 }
@@ -301,6 +305,7 @@ impl Config {
             c.grace = Duration::from_secs(secs);
         }
         c.dockerd = DockerdConfig::from_lookup(&get)?;
+        c.docker_prune = PruneConfig::from_lookup(&get, &c.dockerd)?;
         Ok(c)
     }
 }
@@ -398,6 +403,28 @@ mod tests {
         // the error does not echo the value
         let e = mode(&[(m, "sk-ant-oat01-secret")]).unwrap_err().to_string();
         assert!(!e.contains("secret"), "{e}");
+    }
+
+    #[test]
+    fn docker_prune_settings() {
+        let c = Config::from_lookup(|_| None).unwrap().docker_prune;
+        assert!(c.enabled);
+        assert_eq!(c.age, "24h");
+        assert_eq!(c.min_free_percent, 15);
+        let c = Config::from_lookup(|k| match k {
+            "ENZARB_DOCKER_PRUNE_AGE" => Some("6h".into()),
+            "ENZARB_DOCKER_PRUNE_MIN_FREE" => Some("25%".into()),
+            "ENZARB_DOCKERD_DATA_ROOT" => Some("/data/docker".into()),
+            _ => None,
+        })
+        .unwrap()
+        .docker_prune;
+        assert_eq!((c.age.as_str(), c.min_free_percent), ("6h", 25));
+        assert_eq!(c.data_root, std::path::PathBuf::from("/data/docker"));
+        assert!(
+            Config::from_lookup(|k| (k == "ENZARB_DOCKER_PRUNE_AGE").then(|| "soon".into()))
+                .is_err()
+        );
     }
 
     #[test]

@@ -172,6 +172,11 @@ impl Dockerd {
         self.state.borrow().clone()
     }
 
+    /// A receiver for state changes.
+    pub fn subscribe(&self) -> watch::Receiver<State> {
+        self.state.subscribe()
+    }
+
     fn set(&self, s: State) {
         if *self.state.borrow() != s {
             match &s {

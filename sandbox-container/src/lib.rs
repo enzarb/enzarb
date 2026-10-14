@@ -10,6 +10,7 @@
 //! * [`capture`]: Claude OAuth token capture from `claude setup-token` PTYs;
 //! * [`privs`]: root pid 1 and the drop to uid 1000 for every spawned child (ADR-0016);
 //! * [`dockerd`]: the supervised in-container Docker daemon (ADR-0016);
+//! * [`docker_prune`]: automatic pruning of Docker images, build cache and volumes (ADR-0016);
 //! * [`exec`]: running `git` under the reaper;
 //! * [`acp`]: one agent run over the Agent Client Protocol (`claude-agent-acp`);
 //! * [`chat`]: interactive chat over ACP (one agent per `acp` channel behind a filtering relay);
@@ -24,6 +25,7 @@ pub mod auth;
 pub mod capture;
 pub mod chat;
 pub mod config;
+pub mod docker_prune;
 pub mod dockerd;
 pub mod exec;
 pub mod netgit;

@@ -311,6 +311,15 @@ operator:
     # container's securityContext and the dockerd flags. Rendered to a ConfigMap and passed as
     # ENZARB_DOCKER_PROFILES_FILE. Empty = built-in profiles.
     profiles: {}
+    # Automatic pruning of Docker images, build cache and volumes in each sandbox (ADR-0016),
+    # passed to sandbox-init as ENZARB_DOCKER_PRUNE, _AGE and _MIN_FREE. Runs at startup and when
+    # the last run or chat ends (images and build cache older than `age`), and without the age
+    # filter when less than `minFree` percent of /var/lib/docker is free. /healthz reports
+    # `low_disk` under the threshold even after pruning.
+    prune:
+      enabled: true
+      age: 24h
+      minFree: 15
   # Comma-separated app.kubernetes.io/name of pods allowed to reach sandboxes on 7070.
   # Empty = operator default (enzarb-sandbox-proxy,enzarb-workflows, matching this chart).
   netpolIngressPodNames: ""

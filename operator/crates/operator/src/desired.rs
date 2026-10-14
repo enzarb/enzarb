@@ -552,7 +552,7 @@ pub fn sandbox(p: &Project, d: &Defaults) -> Sandbox {
         .docker
         .profile()
         .expect("DockerConfig::validate ran at startup");
-    let dk = docker::parts(profile, &p.docker_pvc_name());
+    let dk = docker::parts(profile, &p.docker_pvc_name(), &d.docker.prune_env);
     {
         let main = &mut pod_spec["containers"][0];
         // Overrides the pod-level runAsUser/runAsNonRoot: sandbox-init starts as root and drops
