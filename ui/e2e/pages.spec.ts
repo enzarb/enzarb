@@ -114,9 +114,9 @@ test('client-side navigation does not crash', async ({ page }) => {
 	await page.getByRole('link', { name: 'Settings' }).last().click();
 	await expect(page.getByRole('button', { name: 'Edit repositories' })).toBeVisible();
 	await page.getByRole('link', { name: 'Overview' }).click();
-	await page.getByRole('link', { name: /Work items/ }).hover();
+	await page.getByRole('link', { name: /Tasks/ }).hover();
 	await page.waitForTimeout(500);
-	await page.getByRole('link', { name: /Work items/ }).click();
+	await page.getByRole('link', { name: /Tasks/ }).click();
 	await page.waitForTimeout(1500);
 	await page.getByRole('link', { name: 'Projects' }).click();
 	await page

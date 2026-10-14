@@ -276,6 +276,9 @@ pub(crate) struct JobError {
     pub message: String,
     /// The Project's sandbox does not exist yet: waits on its own budget, see [`sandbox_wait`].
     pub not_ready: bool,
+    /// Waiting for a lock another job holds: re-queued after `retry_after` without spending
+    /// the attempt (`max_attempts + 1`), see [`Executor::requeue_refunded`].
+    pub contended: bool,
 }
 
 impl JobError {
@@ -285,6 +288,7 @@ impl JobError {
             retry_after: None,
             message: m.into(),
             not_ready: false,
+            contended: false,
         }
     }
 
@@ -294,6 +298,16 @@ impl JobError {
             retry_after: None,
             message: m.into(),
             not_ready: false,
+            contended: false,
+        }
+    }
+
+    /// A lock is busy: try again in `delay`, free of charge.
+    pub fn contended(m: impl Into<String>, delay: Duration) -> Self {
+        Self {
+            retry_after: Some(delay),
+            contended: true,
+            ..Self::transient(m)
         }
     }
 
@@ -316,6 +330,7 @@ impl From<enzarb_connector::Error> for JobError {
             retry_after,
             message: e.to_string(),
             not_ready: false,
+            contended: false,
         }
     }
 }
@@ -590,6 +605,11 @@ impl Executor {
             .await
             .map(|_| ()),
             Err(e) if e.not_ready => self.sandbox_not_ready_outcome(job, e).await,
+            Err(e) if e.contended => {
+                let delay = e.retry_after.unwrap_or_default();
+                tracing::info!(job_id = job.id, ?delay, error = %e.message, "job waits for a lock");
+                self.requeue_refunded(job, delay).await
+            }
             Err(e) if e.retryable && job.attempt < job.max_attempts => {
                 let delay = self
                     .cfg
@@ -610,6 +630,23 @@ impl Executor {
                     .map(|_| ())
             }
         }
+    }
+
+    /// Back to `queued` after `delay` with the attempt refunded, so waiting for a lock never
+    /// exhausts `max_attempts`; if this attempt still owns the job.
+    async fn requeue_refunded(&self, job: &Claimed, delay: Duration) -> Result<(), Error> {
+        sqlx::query(
+            "UPDATE jobs SET status = 'queued', lease_owner = NULL, lease_until = NULL,
+                    max_attempts = max_attempts + 1,
+                    run_after = now() + make_interval(secs => $3), updated_at = now()
+             WHERE id = $1 AND status = 'running' AND attempt = $2",
+        )
+        .bind(job.id)
+        .bind(job.attempt)
+        .bind(delay.as_secs_f64())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     /// Back to `queued` after `delay`, if this attempt still owns the job.

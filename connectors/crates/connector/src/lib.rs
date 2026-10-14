@@ -16,7 +16,8 @@ mod keys;
 mod types;
 
 pub use ci::{
-    CheckSummary, CiState, MergeOutcome, MergeReadiness, StatusSummary, aggregate_ci, check_state,
+    CheckSummary, CiState, MergeOutcome, MergeReadiness, StatusSummary, UpdateBranchOutcome,
+    aggregate_ci, check_state,
 };
 pub use connector::Connector;
 pub use error::{Error, Result};

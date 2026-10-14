@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import type { Usage } from '#lib/usage.ts';
 import type { WorkItemSummary } from '#lib/work-items.ts';
-import WorkItemTable from './WorkItemTable.svelte';
+import TaskTable from './TaskTable.svelte';
 
 const usage = (over: Partial<Usage>): Usage => ({
 	inputTokens: null,
@@ -52,9 +52,9 @@ const order = () =>
 		.slice(1)
 		.map((r) => (r.querySelector('a')?.textContent ?? '').trim());
 
-describe('WorkItemTable', () => {
+describe('TaskTable', () => {
 	it('shows tokens in, out and cost, compact, with a dash for unknown', async () => {
-		render(WorkItemTable, { items, label: 'Work' });
+		render(TaskTable, { items, label: 'Work' });
 		const alpha = page.getByRole('row').nth(1);
 		await expect.element(alpha).toHaveTextContent('12.3k');
 		await expect.element(alpha).toHaveTextContent('1.2k');
@@ -70,13 +70,13 @@ describe('WorkItemTable', () => {
 	});
 
 	it('breaks cache tokens down in a tooltip on the In figure', async () => {
-		render(WorkItemTable, { items: [items[0]], label: 'Work' });
+		render(TaskTable, { items: [items[0]], label: 'Work' });
 		await userEvent.hover(page.getByRole('button', { name: '12.3k' }));
 		await expect.element(page.getByText('Cache read 9k · Cache write 50')).toBeVisible();
 	});
 
 	it('sorts by a usage column, unknown last in both directions', async () => {
-		render(WorkItemTable, { items, label: 'Work' });
+		render(TaskTable, { items, label: 'Work' });
 		expect(order()).toEqual(['Alpha', 'Beta', 'Gamma', 'Delta']); // as given
 		const header = page.getByRole('columnheader', { name: /Tokens in/ });
 		await header.getByRole('button').click();
@@ -90,7 +90,7 @@ describe('WorkItemTable', () => {
 	});
 
 	it('leaves the other columns unsortable', async () => {
-		render(WorkItemTable, { items, label: 'Work' });
+		render(TaskTable, { items, label: 'Work' });
 		await expect
 			.element(page.getByRole('columnheader', { name: 'Project' }))
 			.not.toHaveAttribute('aria-sort');

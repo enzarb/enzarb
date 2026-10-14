@@ -95,8 +95,8 @@ describe('classification reuse', () => {
 			},
 			'Change request blocked'
 		],
-		['failed', { workflow: 'issue', state: 'Failed' }, 'Work item failed'],
-		['stale', { workflow: 'change_request', state: 'Stale' }, 'Work item failed']
+		['failed', { workflow: 'issue', state: 'Failed' }, 'Task failed'],
+		['stale', { workflow: 'change_request', state: 'Stale' }, 'Task failed']
 	];
 
 	for (const [name, over, title] of cases) {
@@ -105,7 +105,7 @@ describe('classification reuse', () => {
 			expect(await t.handle(1)).toBe(true);
 			expect(t.sent).toHaveLength(1);
 			expect(t.sent[0].payload.title).toBe(title);
-			expect(t.sent[0].payload.url).toBe('/work/1');
+			expect(t.sent[0].payload.url).toBe('/task/1');
 		});
 	}
 

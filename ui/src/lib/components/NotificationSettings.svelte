@@ -138,8 +138,8 @@
 			</div>
 		{:else}
 			<p class="ez-muted">
-				Get a notification on this device when a work item needs you: a plan to approve, a change
-				request to merge, a blocked change request, or a failure.
+				Get a notification on this device when a task needs you: a plan to approve, a change request
+				to merge, a blocked change request, or a failure.
 			</p>
 			<div class="ez-cluster">
 				<Button variant="primary" loading={busy} onclick={enable}>Turn on for this device</Button>

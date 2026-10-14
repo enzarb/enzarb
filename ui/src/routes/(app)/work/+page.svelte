@@ -5,7 +5,7 @@
 	import NeedsYouQueue from '#lib/components/NeedsYouQueue.svelte';
 	import Notice from '#lib/components/ui/Notice.svelte';
 	import PageHeader from '#lib/components/ui/PageHeader.svelte';
-	import WorkItemTable from '#lib/components/WorkItemTable.svelte';
+	import TaskTable from '#lib/components/TaskTable.svelte';
 	import { getNeedsYou } from '#lib/needs-you.svelte.ts';
 	import { listProjects } from '#lib/projects.remote.ts';
 	import Section from '#lib/components/ui/Section.svelte';
@@ -79,22 +79,22 @@
 
 <svelte:boundary>
 	{#if items.error}
-		<Notice tone="error">Could not load work items.</Notice>
+		<Notice tone="error">Could not load tasks.</Notice>
 	{:else}
-		<WorkItemTable
+		<TaskTable
 			label="In progress"
 			items={inProgress}
 			loading={items.loading && !items.current}
-			loadingLabel="Loading work items"
+			loadingLabel="Loading tasks"
 			emptyTitle="Nothing in progress"
 			emptyDescription="Work appears here when an issue, change request or mention reaches a project."
 		/>
 		{#if done.length}
 			<details class="ez-done">
 				<summary>Done ({done.length})</summary>
-				<WorkItemTable label="Done" items={done} emptyTitle="Nothing done" />
+				<TaskTable label="Done" items={done} emptyTitle="Nothing done" />
 			</details>
 		{/if}
 	{/if}
-	{#snippet failed()}<Notice tone="error">Could not load work items.</Notice>{/snippet}
+	{#snippet failed()}<Notice tone="error">Could not load tasks.</Notice>{/snippet}
 </svelte:boundary>
