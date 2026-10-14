@@ -268,7 +268,9 @@ pub(super) fn step(ctx: &Ctx, s: &IssueState, ev: &EngineEvent) -> Transition {
         }
         EventPayload::JobFailed { kind, error, .. } => job_failed(ctx, ev, s, &state, *kind, error),
         EventPayload::TimerFired { job_id } => timer(ctx, ev, s, &state, *job_id),
-        EventPayload::Unmergeable { .. } => Transition::reject(&state, "not a change request"),
+        EventPayload::Unmergeable { .. } | EventPayload::DependenciesChanged => {
+            Transition::reject(&state, "not a change request")
+        }
         EventPayload::Connector(_) if ev.is_approval() => approval(ctx, ev, s, &state),
         EventPayload::Connector(_) => match ev.comment_like() {
             Some(c) => comment(ctx, ev, s, &state, &c),

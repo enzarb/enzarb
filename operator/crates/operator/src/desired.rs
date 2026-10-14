@@ -508,12 +508,13 @@ pub fn sandbox(p: &Project, d: &Defaults) -> Sandbox {
     let sb = &p.spec.sandbox;
     let mut pod_spec = json!({
         // ADR-0013: no Kubernetes API access. Dedicated SA with no bindings, no token (this
-        // pod-level setting also covers the dockerd sidecar; no projected token volumes), and
-        // no Service env vars from the shared namespace.
+        // pod-level setting; no projected token volumes), and no Service env vars from the
+        // shared namespace.
         "serviceAccountName": d.sandbox_service_account,
         "automountServiceAccountToken": false,
         "enableServiceLinks": false,
         // Matches user `enzarb` in the sandbox image; fsGroup lets that user read the token.
+        // The `sandbox` container overrides runAsUser/runAsNonRoot (sandbox-init is root, ADR-0016).
         "securityContext": {
             "runAsUser": SANDBOX_UID,
             "runAsGroup": SANDBOX_UID,
@@ -543,44 +544,33 @@ pub fn sandbox(p: &Project, d: &Defaults) -> Sandbox {
             }},
         ],
     });
-    // Every sandbox runs in the cluster-admin chosen isolating runtime, and always gets dockerd.
+    // Every sandbox runs in the cluster-admin chosen isolating runtime, and always gets dockerd,
+    // run by sandbox-init inside the `sandbox` container (ADR-0016): no sidecar, no socket volume.
     // `DockerConfig::validate` guarantees the class is allowed and has a profile.
     pod_spec["runtimeClassName"] = json!(d.docker.sandbox_runtime_class);
     let profile = d
         .docker
         .profile()
         .expect("DockerConfig::validate ran at startup");
-    let sc = docker::sidecar(
-        profile,
-        &d.docker.image,
-        &d.docker.resources,
-        SANDBOX_UID,
-        &p.docker_pvc_name(),
-    );
+    let dk = docker::parts(profile, &p.docker_pvc_name());
     {
         let main = &mut pod_spec["containers"][0];
-        main["env"]
-            .as_array_mut()
-            .expect("env is an array")
-            .push(json!({"name": "DOCKER_HOST", "value": docker::DOCKER_HOST}));
+        // Overrides the pod-level runAsUser/runAsNonRoot: sandbox-init starts as root and drops
+        // everything it spawns to SANDBOX_UID. fsGroup and the pod-level ids stay.
+        main["securityContext"] = dk.security_context;
+        let env = main["env"].as_array_mut().expect("env is an array");
+        env.extend(dk.env);
         if let Some(n) = p.spec.max_runs {
-            main["env"]
-                .as_array_mut()
-                .expect("env is an array")
-                .push(json!({"name": ENV_MAX_RUNS, "value": n.to_string()}));
+            env.push(json!({"name": ENV_MAX_RUNS, "value": n.to_string()}));
         }
         main["volumeMounts"]
             .as_array_mut()
             .expect("volumeMounts is an array")
-            .push(json!({"name": docker::SOCK_VOLUME, "mountPath": docker::SOCK_DIR}));
-        pod_spec["containers"]
-            .as_array_mut()
-            .expect("containers is an array")
-            .push(sc.container);
+            .push(dk.volume_mount);
         pod_spec["volumes"]
             .as_array_mut()
             .expect("volumes is an array")
-            .extend(sc.volumes);
+            .push(dk.volume);
     }
     serde_json::from_value(json!({
         "apiVersion": "agents.x-k8s.io/v1beta1",
@@ -655,7 +645,6 @@ pub(crate) mod tests {
                 ..NetpolConfig::for_release_namespace("enzarb")
             },
             docker: DockerConfig::new(
-                docker::DEFAULT_IMAGE.into(),
                 vec!["gvisor".into(), "kata".into()],
                 "gvisor".into(),
                 "50Gi".into(),
@@ -670,67 +659,110 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn docker_sidecar_always_present_per_runtime_class() {
+    fn dockerd_runs_in_the_sandbox_container_per_runtime_class() {
         for (rc, privileged) in [("gvisor", false), ("kata", true)] {
             let mut d = defaults();
             d.docker.sandbox_runtime_class = rc.into();
             let s = v(&sandbox(&project("enzarb", "ruckc"), &d));
             let pod = &s["spec"]["podTemplate"]["spec"];
             assert_eq!(pod["runtimeClassName"], rc);
+            // One container: no dockerd sidecar.
             let cs = containers(&s);
-            assert_eq!(cs.len(), 2);
+            assert_eq!(cs.len(), 1);
             let main = &cs[0];
-            assert!(main["env"].as_array().unwrap().contains(
-                &json!({"name": "DOCKER_HOST", "value": "unix:///var/run/docker/docker.sock"})
-            ));
+            assert_eq!(main["name"], "sandbox");
+            let env = main["env"].as_array().unwrap();
+            assert!(
+                env.contains(
+                    &json!({"name": "DOCKER_HOST", "value": "unix:///var/run/docker.sock"})
+                )
+            );
+            assert!(env.iter().any(|e| e["name"] == "ENZARB_DOCKERD_ARGS"));
             assert!(
                 main["volumeMounts"]
                     .as_array()
                     .unwrap()
-                    .contains(&json!({"name": "docker-sock", "mountPath": "/var/run/docker"}))
+                    .contains(&json!({"name": "docker-data", "mountPath": "/var/lib/docker"}))
             );
-            let side = &cs[1];
-            assert_eq!(side["name"], "dockerd");
-            assert_eq!(side["image"], "docker:29.8.2-dind");
-            assert_eq!(side["securityContext"]["privileged"], privileged, "{rc}");
-            assert_eq!(side["securityContext"]["runAsUser"], 0);
+            // The container runs sandbox-init as root (it drops children to uid 1000).
+            let sc = &main["securityContext"];
+            assert_eq!(sc["privileged"], privileged, "{rc}");
+            assert_eq!(sc["runAsUser"], 0);
+            assert_eq!(sc["runAsNonRoot"], false);
+            // No shared socket volume, only the PVC-backed data volume.
             let vols = pod["volumes"].as_array().unwrap();
-            assert!(vols.contains(&json!({"name": "docker-sock", "emptyDir": {}})));
+            assert!(vols.iter().all(|v| v["name"] != "docker-sock"));
             assert!(vols.contains(&json!({
                 "name": "docker-data",
                 "persistentVolumeClaim": {"claimName": "sb-enzarb-docker"}
             })));
-            // The sandbox container keeps its non-root context.
-            assert_eq!(pod["securityContext"]["runAsNonRoot"], true);
+            // Pod-level identity (workspace and token ownership) is unchanged.
+            let psc = &pod["securityContext"];
+            assert_eq!(psc["runAsNonRoot"], true);
+            assert_eq!(psc["runAsUser"], 1000);
+            assert_eq!(psc["runAsGroup"], 1000);
+            assert_eq!(psc["fsGroup"], 1000);
+            assert_eq!(psc["fsGroupChangePolicy"], "OnRootMismatch");
         }
     }
 
     #[test]
-    fn gvisor_sidecar_is_not_privileged_and_uses_documented_settings() {
+    fn gvisor_sandbox_container_is_not_privileged_and_uses_documented_settings() {
         let s = v(&sandbox(&project("enzarb", "ruckc"), &defaults()));
-        let side = &containers(&s)[1];
-        let caps = side["securityContext"]["capabilities"]["add"]
-            .as_array()
-            .unwrap();
-        for c in ["SYS_ADMIN", "NET_ADMIN", "NET_RAW", "SYS_CHROOT", "MKNOD"] {
+        let main = &containers(&s)[0];
+        let sc = &main["securityContext"];
+        assert_eq!(sc["privileged"], false);
+        assert_eq!(sc["allowPrivilegeEscalation"], true);
+        assert_eq!(sc["capabilities"]["drop"], json!(["ALL"]));
+        let caps = sc["capabilities"]["add"].as_array().unwrap();
+        for c in [
+            "SYS_ADMIN",
+            "NET_ADMIN",
+            "NET_RAW",
+            "SYS_CHROOT",
+            "MKNOD",
+            "SETUID",
+            "SETGID",
+            "CHOWN",
+        ] {
             assert!(caps.contains(&json!(c)), "{c}");
         }
-        let args = side["args"].as_array().unwrap();
-        assert!(args.contains(&json!("--iptables=false")));
-        assert!(args.contains(&json!("--storage-driver=vfs")));
+        let args = main["env"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["name"] == "ENZARB_DOCKERD_ARGS")
+            .unwrap()["value"]
+            .as_str()
+            .unwrap();
+        assert!(args.contains("--iptables=false"), "{args}");
+        assert!(args.contains("--storage-driver=vfs"), "{args}");
+        assert!(
+            args.contains("--feature=containerd-snapshotter=false"),
+            "{args}"
+        );
     }
 
     #[test]
-    fn docker_pvc_and_resources_come_from_operator_config() {
+    fn docker_pvc_and_args_come_from_operator_config() {
         let mut d = defaults();
         d.docker.storage = "80Gi".into();
-        d.docker.image = "my/dind:1".into();
-        d.docker.resources = json!({"limits": {"memory": "4Gi"}});
+        d.docker
+            .merge_profiles_yaml(
+                "gvisor: {securityContext: {privileged: false}, dockerdArgs: ['--debug']}",
+            )
+            .unwrap();
         let p = project("enzarb", "ruckc");
         let s = v(&sandbox(&p, &d));
-        assert_eq!(containers(&s)[1]["image"], "my/dind:1");
-        assert_eq!(containers(&s)[1]["resources"]["limits"]["memory"], "4Gi");
-        assert_eq!(containers(&s)[0]["resources"], json!({}));
+        let main = &containers(&s)[0];
+        assert!(
+            main["env"]
+                .as_array()
+                .unwrap()
+                .contains(&json!({"name": "ENZARB_DOCKERD_ARGS", "value": "--debug"}))
+        );
+        // The sandbox container's resources are the only budget for dockerd and inner containers.
+        assert_eq!(main["resources"], json!({}));
         let c = v(&docker_pvc(&p, &d));
         assert_eq!(c["metadata"]["name"], "sb-enzarb-docker");
         assert_eq!(c["metadata"]["namespace"], "enzarb-sandboxes");
@@ -853,9 +885,16 @@ pub(crate) mod tests {
             [
                 ("workspace", "/workspace"),
                 ("auth", "/var/run/enzarb/auth"),
-                ("docker-sock", "/var/run/docker"),
+                ("docker-data", "/var/lib/docker"),
             ]
         );
+        let vols: Vec<_> = pod["volumes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(vols, ["workspace", "auth", "docker-data"]);
         assert_eq!(
             pod["volumes"][0]["persistentVolumeClaim"]["claimName"],
             "sb-enzarb-workspace"

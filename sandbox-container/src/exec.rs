@@ -122,6 +122,7 @@ pub async fn run(
     if spec.env_clear {
         cmd.env_clear();
     }
+    crate::privs::as_sandbox_user(&mut cmd);
     cmd.args(&spec.args)
         .envs(spec.env.iter().map(|(k, v)| (k, v)))
         .stdin(if spec.stdin.is_some() {

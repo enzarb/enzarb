@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::dockerd::DockerdConfig;
 use crate::policy::Policy;
 
 /// Runtime configuration of sandbox-init.
@@ -47,6 +48,18 @@ pub struct Config {
     /// `ENZARB_CALLBACK_BACKOFF_MS`, default 1000: first retry delay of the
     /// run-finished callback (doubles up to 60 s).
     pub callback_backoff: Duration,
+    /// `ENZARB_NET_RETRY_DELAYS_MS`, default `10000,30000`: comma-separated
+    /// pauses before each retry of a clone/fetch/push that failed on a
+    /// transient network error. The attempts are one more than the delays
+    /// (at most `netgit::NET_ATTEMPTS`).
+    pub net_retry_delays: Vec<Duration>,
+    /// `ENZARB_PUSH_ATTEMPT_SECS`, default 120: wall-clock cap of one push attempt.
+    pub push_attempt_cap: Duration,
+    /// `ENZARB_FETCH_ATTEMPT_SECS`, default 180: wall-clock cap of one clone or
+    /// fetch attempt, so a dead host fails early instead of after the kernel's
+    /// connect timeout (about 300 s). A transfer slower than this is retried,
+    /// then fails: raise it for very large repos.
+    pub fetch_attempt_cap: Duration,
     /// `ENZARB_MAX_CHATS`, default 1: live chat (`acp`) channels at once; `0`
     /// disables chat (no `acp` feature, opens get `chat_disabled`). Chats do
     /// not use run slots.
@@ -67,6 +80,8 @@ pub struct Config {
     /// `ENZARB_CHAT_ALLOW_BYPASS`, default true: chats may run in (or switch
     /// to) `bypassPermissions`. False keeps them in `default`/`plan`.
     pub chat_allow_bypass: bool,
+    /// `ENZARB_DOCKERD*`: the supervised Docker daemon (ADR-0016).
+    pub dockerd: DockerdConfig,
 }
 
 /// A chat permission mode sandbox-init lets a chat be in.
@@ -120,12 +135,16 @@ impl Default for Config {
             max_runs: 2,
             default_timeout: Duration::from_secs(3600),
             callback_backoff: Duration::from_secs(1),
+            net_retry_delays: crate::netgit::RETRY_DELAYS.to_vec(),
+            push_attempt_cap: crate::netgit::PUSH_ATTEMPT_CAP,
+            fetch_attempt_cap: crate::netgit::FETCH_ATTEMPT_CAP,
             max_chats: 1,
             chat_idle: Duration::from_secs(1800),
             chat_max: Duration::from_secs(8 * 3600),
             chat_retention: Duration::from_secs(7 * 86400),
             chat_permission_mode: ChatMode::Bypass,
             chat_allow_bypass: true,
+            dockerd: DockerdConfig::default(),
         }
     }
 }
@@ -196,6 +215,32 @@ impl Config {
                     .map_err(|e| anyhow::anyhow!("ENZARB_CALLBACK_BACKOFF_MS={v:?}: {e}"))?,
             );
         }
+        if let Some(v) = get("ENZARB_NET_RETRY_DELAYS_MS") {
+            c.net_retry_delays = v
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| {
+                    s.parse()
+                        .map(Duration::from_millis)
+                        .map_err(|e| anyhow::anyhow!("ENZARB_NET_RETRY_DELAYS_MS={v:?}: {e}"))
+                })
+                .collect::<anyhow::Result<_>>()?;
+        }
+        if let Some(v) = get("ENZARB_PUSH_ATTEMPT_SECS") {
+            c.push_attempt_cap = Duration::from_secs(
+                v.parse::<u64>()
+                    .map_err(|e| anyhow::anyhow!("ENZARB_PUSH_ATTEMPT_SECS={v:?}: {e}"))?
+                    .max(1),
+            );
+        }
+        if let Some(v) = get("ENZARB_FETCH_ATTEMPT_SECS") {
+            c.fetch_attempt_cap = Duration::from_secs(
+                v.parse::<u64>()
+                    .map_err(|e| anyhow::anyhow!("ENZARB_FETCH_ATTEMPT_SECS={v:?}: {e}"))?
+                    .max(1),
+            );
+        }
         if let Some(v) = get("ENZARB_MAX_CHATS") {
             c.max_chats = v
                 .parse()
@@ -255,6 +300,7 @@ impl Config {
                 .map_err(|e| anyhow::anyhow!("ENZARB_GRACE_SECS={v:?}: {e}"))?;
             c.grace = Duration::from_secs(secs);
         }
+        c.dockerd = DockerdConfig::from_lookup(&get)?;
         Ok(c)
     }
 }
@@ -352,6 +398,33 @@ mod tests {
         // the error does not echo the value
         let e = mode(&[(m, "sk-ant-oat01-secret")]).unwrap_err().to_string();
         assert!(!e.contains("secret"), "{e}");
+    }
+
+    #[test]
+    fn dockerd_settings() {
+        let c = Config::from_lookup(|_| None).unwrap().dockerd;
+        assert!(c.enabled);
+        assert_eq!(c.bin, "dockerd");
+        let a = c.command_args();
+        assert_eq!(a[0], "--host=unix:///var/run/docker.sock");
+        assert!(a.contains(&"--group=1000".to_string()));
+        assert!(a.contains(&"--data-root=/var/lib/docker".to_string()));
+        assert!(a.contains(&"--iptables=false".to_string()));
+        assert!(a.contains(&"--storage-driver=vfs".to_string()));
+        let c = Config::from_lookup(|k| match k {
+            "ENZARB_DOCKERD" => Some("off".into()),
+            "ENZARB_DOCKERD_ARGS" => Some("--storage-driver=overlay2  --debug".into()),
+            "ENZARB_DOCKERD_SOCKET" => Some("/run/d.sock".into()),
+            _ => None,
+        })
+        .unwrap()
+        .dockerd;
+        assert!(!c.enabled);
+        let a = c.command_args();
+        assert_eq!(a[0], "--host=unix:///run/d.sock");
+        assert_eq!(&a[a.len() - 2..], ["--storage-driver=overlay2", "--debug"]);
+        assert!(!a.contains(&"--iptables=false".to_string()));
+        assert!(Config::from_lookup(|k| (k == "ENZARB_DOCKERD").then(|| "maybe".into())).is_err());
     }
 
     #[test]

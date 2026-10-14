@@ -1,5 +1,6 @@
 //! Table-driven tests for the three state machines.
 
+mod dependencies;
 mod merge;
 
 use chrono::{DateTime, TimeZone, Utc};
@@ -38,6 +39,7 @@ fn ctx_for(number: u64, perm: Permission) -> Ctx {
         default_branch: "main".into(),
         orphaned: false,
         orphan_owner: false,
+        open_dependencies: Vec::new(),
     }
 }
 

@@ -24,7 +24,9 @@
 			{#snippet child({ props })}{@render trigger(props)}{/snippet}
 		</Tooltip.Trigger>
 		<Tooltip.Portal>
-			<Tooltip.Content class="ez-tooltip" {side} sideOffset={6}>{text}</Tooltip.Content>
+			<Tooltip.Content class="ez-tooltip" role="tooltip" {side} sideOffset={6}
+				>{text}</Tooltip.Content
+			>
 		</Tooltip.Portal>
 	</Tooltip.Root>
 </Tooltip.Provider>

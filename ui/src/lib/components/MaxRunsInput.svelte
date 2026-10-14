@@ -8,17 +8,22 @@
 		value = $bindable(DEFAULT_MAX_RUNS),
 		issues,
 		label = 'Concurrent runs',
-		allowEmpty = false
+		allowEmpty = false,
+		note = ''
 	}: {
 		value?: number | null | '';
 		issues?: Issues;
 		label?: string;
 		/** Empty input means "use the default" (create form) instead of being an error. */
 		allowEmpty?: boolean;
+		/** Extra help text appended to the default/range hint. */
+		note?: string;
 	} = $props();
 
 	const uid = $props.id();
-	const help = `Default: ${DEFAULT_MAX_RUNS}. Whole number from ${MIN_MAX_RUNS} to ${MAX_MAX_RUNS}.`;
+	const help = $derived(
+		`Default: ${DEFAULT_MAX_RUNS}. Whole number from ${MIN_MAX_RUNS} to ${MAX_MAX_RUNS}.${note ? ` ${note}` : ''}`
+	);
 	const empty = $derived(value === null || value === '');
 	const own = $derived.by(() => {
 		if (empty) return allowEmpty ? [] : ['Enter a whole number'];

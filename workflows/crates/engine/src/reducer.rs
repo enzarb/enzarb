@@ -330,6 +330,23 @@ impl Reducer {
                 if self.index.owner(&project.name)
                     .is_some_and(|o| o.eq_ignore_ascii_case(&u.actor.login)));
 
+        // Dependencies named in the event's body or comment, inside this Project only.
+        let changed_deps = crate::dependencies::record_text(
+            &mut tx,
+            &key,
+            ev,
+            prep.permission.can_write(),
+            |dep| {
+                self.index
+                    .lookup(&dep.repo.to_string())
+                    .is_some_and(|p| p.name == project.name)
+            },
+        )
+        .await?;
+        if changed_deps {
+            tracing::debug!(item = %key, "text dependencies changed");
+        }
+
         let ctx = Ctx {
             orphaned,
             orphan_owner,
@@ -341,6 +358,7 @@ impl Reducer {
             config: self.cfg.machine.clone(),
             triggers: project.triggers,
             default_branch: project.default_branch.clone(),
+            open_dependencies: crate::dependencies::open_dependencies(&mut tx, &key).await?,
         };
 
         let state = match &existing {

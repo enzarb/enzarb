@@ -1,0 +1,92 @@
+{{- if not .Values.secrets.vapidKey.existingSecret }}
+{{- /* Web Push (VAPID) keypair, generated once and kept. Sprig cannot make P-256 keys, so a hook Job
+       running the UI image (`scripts/vapid-secret.ts`) creates Secret enzarb-vapid-key when it does
+       not exist yet and never touches an existing one (browser subscriptions are bound to the public
+       key). The Job's ServiceAccount may only create Secrets and read this one, in this namespace.
+       The Job tolerates a UI image without the script: push notifications then stay off and the UI
+       pods still start (the Secret env is optional). */}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: enzarb-vapid
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-vapid") | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: enzarb-vapid
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-vapid") | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [{{ include "enzarb.vapidKeySecret" . | quote }}]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: enzarb-vapid
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-vapid") | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: enzarb-vapid }
+subjects:
+  - { kind: ServiceAccount, name: enzarb-vapid, namespace: {{ .Release.Namespace }} }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: enzarb-vapid-key
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-vapid-key") | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        {{- include "enzarb.selector" (dict "ctx" . "name" "enzarb-vapid-key") | nindent 8 }}
+    spec:
+      serviceAccountName: enzarb-vapid
+      restartPolicy: OnFailure
+      {{- with include "enzarb.pullSecrets" . }}
+      {{- . | nindent 6 }}
+      {{- end }}
+      containers:
+        - name: vapid
+          image: {{ include "enzarb.image" .Values.ui }}
+          imagePullPolicy: {{ include "enzarb.pullPolicy" (dict "ctx" . "c" .Values.ui) }}
+          command:
+            - sh
+            - -c
+            - >-
+              if [ -f scripts/vapid-secret.ts ]; then exec node scripts/vapid-secret.ts;
+              else echo "vapid: this UI image has no scripts/vapid-secret.ts; push notifications stay off"; fi
+          env:
+            - { name: ENZARB_VAPID_SECRET, value: {{ include "enzarb.vapidKeySecret" . | quote }} }
+            - { name: ENZARB_VAPID_NAMESPACE, value: {{ .Release.Namespace | quote }} }
+          securityContext: {{ include "enzarb.securityContext" (dict "ctx" . "uid" 1000) | fromYaml | toJson }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+{{- end }}

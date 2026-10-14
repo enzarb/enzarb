@@ -1,4 +1,4 @@
-# runsc flags for Docker-in-gVisor (ADR-0012). Keys under [runsc_config] become
+# runsc flags for Docker-in-gVisor (ADR-0012; dockerd runs in the sandbox container, ADR-0016). Keys under [runsc_config] become
 # --<key>=<value> on runsc. net-raw keeps CAP_NET_RAW in the sandbox (inner
 # bridge networking and ping). Everything else stays at gVisor's defaults:
 # rootfs overlay in sandbox memory-backed "self" file, systrap platform (works
@@ -6,7 +6,7 @@
 # Single source: used by hack/kind-install-gvisor.sh and baked into installer/Dockerfile.
 [runsc_config]
   net-raw = "true"
-  # Docker 28+ (dockerd sidecar, ADR-0012) needs AF_PACKET writes. gVisor warns this lets
+  # Docker 28+ (dockerd in the sandbox container, ADR-0016) needs AF_PACKET writes. gVisor warns this lets
   # workloads craft arbitrary packets; the per-namespace NetworkPolicy (DNS + 443 egress
   # only, ingress only from proxy/executor) bounds where they can go.
   allow-packet-socket-write = "true"

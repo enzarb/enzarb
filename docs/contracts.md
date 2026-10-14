@@ -13,6 +13,7 @@ enzarb-connector        = { path = "../connectors/crates/connector" }
 enzarb-connector-github = { path = "../connectors/crates/connector-github" }
 ```
 - A library change and its consumers land in the same PR. Deployed components still roll out independently, so wire and schema changes stay backward compatible.
+- `workflows_api` / `app_api` view and schema additions (new columns, view fields) must be backward compatible for one release: add, never rename or drop in the same release. Consumers should tolerate a missing new column for one chart version where practical. The main guard is the chart's migration ordering (workflows migrate before ui); the second is that a commit releasing several components publishes a single chart version pinning all of them (docs/ci.md "Releases").
 - Crate paths:
   - `proto/crates/enzarb-proto`
   - `operator/crates/enzarb-crds`
@@ -79,15 +80,20 @@ Changing repositories: the owner may replace `spec.repositories` after creation 
 
 **Mux endpoint:** `ws://<pod>:7070/v1/mux`. Clients must send `Authorization: Bearer <token>`. The token is the `token` key of the Secret named in `status.sandbox.authSecretRef` (`sb-<project>-auth`) in `status.namespace`; the operator generates it, and it is mounted in the sandbox at `/var/run/enzarb/auth/token`.
 - Allowed clients: `sandbox-proxy` and the workflows executor.
-- Health: `GET :7070/healthz`.
+- Health: `GET :7070/healthz`. Body is JSON `{"status":"ok","dockerd":{"state":"starting|running|failed|stopped|disabled", ...}}`, always HTTP 200 (readiness never depends on Docker). `dockerd` is absent when the supervisor is not wired.
 
-**Docker (ADR-0012):** always on. The operator sets the pod `runtimeClassName` (`gvisor`) cluster-wide via `--sandbox-runtime-class`, and adds the dockerd sidecar. `DOCKER_HOST=unix:///var/run/docker/docker.sock` (shared emptyDir with the `dockerd` sidecar). The image ships the `docker` CLI plus the buildx and compose plugins.
+**Docker (ADR-0012, sidecar superseded by ADR-0016):** always on. The operator sets the pod `runtimeClassName` (`gvisor`) cluster-wide via `--sandbox-runtime-class`. Sandbox pod layout:
+- One container, `sandbox`. No `dockerd` sidecar and no `docker-sock` volume.
+- sandbox-init (pid 1) runs and supervises `dockerd` as root and drops everything else it spawns to uid/gid 1000 with no-new-privs. The `sandbox` container's `securityContext` overrides the pod-level non-root settings: `runAsUser: 0`, `runAsNonRoot: false`, `privileged: false`, `allowPrivilegeEscalation: true`, `drop: [ALL]` plus the gVisor Docker capability set (includes `SYS_ADMIN`, `NET_ADMIN`, `NET_RAW`, `SETUID`, `SETGID`, `CHOWN`). The pod-level `runAsUser`/`runAsGroup`/`fsGroup` (1000) stay. The kata profile is `privileged: true`.
+- Volumes: `workspace` (PVC) at `/workspace`, `auth` (Secret) at `/var/run/enzarb/auth`, `docker-data` (PVC `sb-<name>-docker`) at `/var/lib/docker`.
+- Env: `DOCKER_HOST=unix:///var/run/docker.sock` (group 1000, mode 0660), `ENZARB_DOCKERD_ARGS` (the runtime profile's dockerd flags). Optional sandbox-init env: `ENZARB_DOCKERD` (`off` disables), `ENZARB_DOCKERD_BIN`, `ENZARB_DOCKERD_SOCKET`, `ENZARB_DOCKERD_DATA_ROOT`, `ENZARB_DOCKERD_EXEC_ROOT`.
+- The image ships `dockerd`, `containerd`, `runc` and the `docker` CLI plus the buildx and compose plugins. Inner containers and builds default to `--network=host` through the image's `docker` wrapper (dockerd runs with `--iptables=false`); use `--user 1000:1000` so bind-mounted files stay editable.
 
 **PTY channels:** CLOSE reason is `exit:<code>` or `signal:<n>`. A client half-close leaves the process running.
 
 **Config (env):**
 - Core: `ENZARB_LISTEN` (default `0.0.0.0:7070`), `ENZARB_AUTH_TOKEN_FILE`, `ENZARB_WORKSPACE` (`/workspace`), `ENZARB_SHELL`, `ENZARB_GRACE_SECS` (25; the pod's `terminationGracePeriodSeconds` must be larger).
-- Runs: `ENZARB_MAX_RUNS` (2), `ENZARB_RUN_TIMEOUT_SECS` (3600), `ENZARB_CALLBACK_BACKOFF_MS`, `ENZARB_GIT_NAME`, `ENZARB_GIT_EMAIL`, `ENZARB_CLAUDE_TOKEN_FILE` (legacy only: the per-Project legacy file, read when `claude_token` is absent; removed with the fallback).
+- Runs: `ENZARB_MAX_RUNS` (2), `ENZARB_RUN_TIMEOUT_SECS` (3600), `ENZARB_CALLBACK_BACKOFF_MS`, `ENZARB_NET_RETRY_DELAYS_MS` (`10000,30000`: pauses before retrying a clone/fetch/push that failed on a transient network error; auth failures and rejected pushes are never retried), `ENZARB_PUSH_ATTEMPT_SECS` (120: wall-clock cap of one push attempt), `ENZARB_FETCH_ATTEMPT_SECS` (180: wall-clock cap of one clone/fetch attempt, so a dead host fails early; a timeout counts as transient and is retried; raise it for very large repos), `ENZARB_GIT_NAME`, `ENZARB_GIT_EMAIL`, `ENZARB_CLAUDE_TOKEN_FILE` (legacy only: the per-Project legacy file, read when `claude_token` is absent; removed with the fallback).
 - Agent: `ENZARB_ACP_AGENT_BIN` (default `claude-agent-acp`), `ENZARB_CANCEL_GRACE_SECS` (10), `ENZARB_PERMISSION_POLICY` (YAML/JSON file; built-in default when unset).
 - Chat (ADR-0014; sandbox-init config only, no Project spec field): `ENZARB_MAX_CHATS` (1; `0` disables chat and removes `acp` from `welcome.features`; chats never use `ENZARB_MAX_RUNS` slots), `ENZARB_CHAT_IDLE_SECS` (1800), `ENZARB_CHAT_MAX_SECS` (28800), `ENZARB_CHAT_RETENTION_DAYS` (7).
 - Chat permission mode (ADR-0014 amendment 2026-10-12 (2); sandbox-init config only): `ENZARB_CHAT_PERMISSION_MODE` (`bypassPermissions` default | `default` | `plan`; other values fail startup; defaults to `default` when bypass is not allowed) and `ENZARB_CHAT_ALLOW_BYPASS` (true; `false` makes bypass unavailable, and `false` with an explicit bypass mode fails startup). Browser-bound `_enzarb/mode {sessionId, modeId, bypassAllowed}` is sent after session establishment and after each successful `session/set_mode`. The `session/set_mode` allowlist is {`bypassPermissions` (only while allowed), `default`, `plan`}. In bypass the agent sends no `session/request_permission` for ordinary tool calls, so `Policy::hard_deny` applies only in `default`/`plan`. Agent jobs are unchanged.
@@ -119,7 +125,7 @@ Changing repositories: the owner may replace `spec.repositories` after creation 
 - build-essential, pkg-config, libssl-dev;
 - git, ca-certificates, openssh-client.
 
-Plus curl (mise's Rust backend needs it for rustup) and the docker CLI with the buildx and compose plugins (29.8.2, matching the dockerd sidecar). No Rust, npm or extra CLI tools.
+Plus curl (mise's Rust backend needs it for rustup) and Docker 29.8.2 (static bundle: `dockerd`, `containerd`, `runc`, the `docker` CLI, with the buildx and compose plugins; ADR-0016). No Rust, npm or extra CLI tools.
 
 **Toolchains (mise, per project, persisted on the PVC):**
 - `MISE_DATA_DIR=/workspace/.toolchains/mise`, `MISE_CACHE_DIR=/workspace/.toolchains/cache`, `CARGO_HOME=/workspace/.toolchains/cargo`, `RUSTUP_HOME=/workspace/.toolchains/rustup`.
@@ -264,7 +270,10 @@ workflows_api.ingest_event(p_source text, p_dedupe_key text, p_work_item_key tex
 workflows_api.submit_action(p_work_item_id bigint, p_actor jsonb, p_action text,
                             p_payload jsonb) RETURNS bigint               -- actions: approve | cancel | retry | merge
 -- views
-workflows_api.work_item_v(id, key, project, workflow, state, state_data, created_at, updated_at, waiting_for, resumes_at, usage_totals)
+workflows_api.work_item_v(id, key, project, workflow, state, state_data, created_at, updated_at,
+                          waiting_for, resumes_at, usage_totals, waiting_on, wait_reason, wait_text,
+                          blocked_by_dependency)
+workflows_api.work_item_dependency_v(work_item_key, depends_on_key, source, via, status, state, title, url)
 workflows_api.transition_v(id, work_item_id, from_state, to_state, event_type, at)
 workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated_at, output, waiting_for, resumes_at, usage)
 ```
@@ -272,12 +281,14 @@ workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated
 - **`job_v.usage`** (jsonb, nullable): token usage and cost summed over all runs of the job (session-limit waits, restart retries and the recovery run each add their run), in the `Usage` shape of section 4. Keys are absent when no run reported them; `NULL` when nothing was reported. A run is counted once (by `run_id`), for any outcome including failed and cancelled.
 - **`work_item_v.usage_totals`** (jsonb, nullable): per key, the sum over the item's jobs that reported it, plus the union of `models`. A key no job reported is absent (so `cost_usd` is absent, not 0, when no job reported a cost); `NULL` when no job has usage. Cost is as reported by Claude, not an estimate.
 - Changes to `jobs.usage` send `work_item_changed`.
+- **Dependencies** ([ADR-0017](adr/0017-work-item-dependencies.md)): `work_item_dependency_v` lists each effective dependency of `work_item_key` (filter on `depends_on_key` for dependents). `source` is `github`, `text` or `comment`; `via` is the issue key when a change request inherited it; `status` is `done` (Done/Merged), `closed` (Cancelled/Closed/Duplicate: will not complete), `open` or `pending` (no work item yet). `work_item_v.blocked_by_dependency` is true while a change request's `state_data.open_dependencies` is not empty, and `state_data.checklist.dependencies` is a fourth check in the shape above. Changes to the table send `work_item_changed` for both ends. Event type `DependenciesChanged` (source `engine`, payload `{}`) is engine-internal.
 - Both functions are `SECURITY DEFINER`.
 - Connectors use dedupe key `github:<event id>`; the UI uses `ui:<uuid>`. Events the engine itself generates use source `engine` (`handoff:<id>`, `timer:…`, `job:<id>:<attempt>`).
 - `transitions.work_item_id` is nullable: events that are ignored (no Project, no workflow) get a `to_state='ignored'` row with no work item. `transitions.note` records rejections.
 - `work_items.state_data` carries `title` and `url` for display. For `change_request` items it may also carry (additive):
   - `checklist.{ci,review,mergeable}`, each `{status: "ok" | "pending" | "failed" | "unknown", detail}` (`status` is lowercase): the merge readiness shown by the UI and checked by the reducer;
-  - `merge_error` (string): set when a merge ended in `not_mergeable`.
+  - `merge_error` (string): set when a merge ended in `not_mergeable`;
+  - `wait` (object or null in final states) `{waiting_on, reason, text, url?}`: why the item is waiting, derived by `workflows` on every transition. `waiting_on` is `human` | `enzarb` | `ci` | `github`; `work_item_v.waiting_on`, `wait_reason` and `wait_text` expose `waiting_on`, `reason` and `text` (NULL until the item's next transition after the migration; clients fall back to the state). `human` means Needs you. Reason codes: `awaiting_review` (human), `ready_to_merge` (human), `enzarb_failed` (human), `conflict_parked` (human), `reviewing`, `addressing_comments`, `resolving_conflict`, `ci_failed_fixing`, `changes_requested_fixing` (all enzarb), `ci_pending` (ci), `merging` (github). Reserved for later, not emitted yet: `round_limit` and `decision_needed` (human, with `url` of the comment).
 - Work item keys and repo keys are stored lowercase.
 - `submit_action` events: source `ui`, payload `{actor, action, data}`, type `ApprovalGranted` (approve), `CancelRequested` (cancel) or `RetryRequested` (retry) or `MergeRequested` (merge). The last three are engine-internal and not part of the connector `EventType` set. A rejected `merge` (the actor lacks write access, or the readiness checklist is not all `ok`) is a reducer rejection, recorded in `transitions.note`, not a SQL error from `submit_action`.
 - Columns beyond the docs: `transitions.event_type`, `jobs.deadline`, `jobs.created_at`. `work_items.project_id` is text (the Project name), exposed as `project` in the view.
@@ -339,6 +350,7 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 | `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` | ui |
 | `ENZARB_BOT_HANDLE` (default `enzarb`), `ENZARB_BOT_LOGIN` (default `enzarb[bot]`) | receiver, workflows |
 | `ENZARB_GITHUB_APP_SLUG` (optional, default `enzarb`; chart value `githubApp.slug`) | ui (the "install the App" link `https://github.com/apps/<slug>/installations/new`) |
+| `ENZARB_VAPID_PUBLIC_KEY`, `ENZARB_VAPID_PRIVATE_KEY` (base64url, optional; both or neither; unset turns push notifications off), `ENZARB_VAPID_SUBJECT` (optional `mailto:` or https URL, default `ENZARB_PUBLIC_URL`) | ui (section 14). The private key is read only by server code (`$lib/server`) and never reaches the browser |
 | `ENZARB_GITHUB_APP_ID`, `ENZARB_GITHUB_APP_PRIVATE_KEY` (both optional; from the `appId` / `privateKey` keys of the GitHub secret, `optional: true`) | ui (mints an installation token server-side to authenticate the About page's `enzarb/enzarb` release fetch; unauthenticated if unset or the App is not installed there) |
 | `ENZARB_PUBLIC_URL` | ui (OAuth callback is `$ENZARB_PUBLIC_URL/login/github/callback`), workflows (links in comments) |
 | `PROTOCOL_HEADER=x-forwarded-proto` | ui (adapter-node derives the origin for its CSRF check from it; the Gateway must forward `X-Forwarded-Proto`) |
@@ -402,3 +414,15 @@ Components with path dependencies (`ui`, `sandbox-proxy`, `sandbox-container`, `
 
 - **Tags:** `main`, `sha-<short>`, and `<version>`/`latest` on `<dir>/v*` release tags (the dir prefix is stripped).
 - **Visibility:** private. Pulling requires an image pull secret (or `kind load` in dev).
+
+## 14. Web Push (UI notifications)
+
+The UI is an installable PWA (`/manifest.webmanifest`, service worker `service-worker.js`) and sends Web Push (VAPID) notifications when a work item newly needs the user. Additive: nothing here changes an existing interface.
+
+- **Tables (`app`, migration `0006_push_subscriptions.sql`).** `app.push_subscriptions(id, owner, endpoint unique, p256dh, auth, categories text[], user_agent, created_at, last_used_at)`: one row per device, `owner` is the GitHub login (no FK). `app.push_sent(owner, work_item_id, category, state_key, sent_at)` with the four key columns as primary key: the sent-log used to de-duplicate across pods. `enzarb_ui` has no privilege on either table.
+- **`app_api` functions** (`SECURITY DEFINER`, all taking the owner, which the UI passes from the session login or the Project's `spec.owner`, never from client input; `EXECUTE` granted to `enzarb_ui` only): `push_subscription_upsert(owner, endpoint, p256dh, auth, categories, user_agent) -> boolean` (false and no change when the endpoint belongs to another owner), `push_subscription_list(owner)` (no keys), `push_subscription_targets(owner, category)`, `push_subscription_set_categories(owner, endpoint, categories)`, `push_subscription_delete(owner, endpoint)` (Settings, and pruning after the push service answers 404 or 410), `push_subscription_touch(owner, endpoint)`, `push_claim(owner, work_item_id, category, state_key, window_secs) -> (claimed, recent)` (`recent` counts this claim), `push_claim_release(owner, work_item_id, category, state_key) -> boolean` and `push_sent_prune(older_than_days)`.
+- **Categories** are `approval`, `merge`, `blocked`, `failed`: the Work queue's classification (`classifyNeedsYou`, `ui/src/lib/work-items.ts`). Run failures reach the sender as the work item's `Failed` state, so they use `failed`. Only Projects the user owns notify.
+- **Trigger and de-duplication.** Every UI pod `LISTEN`s on `work_item_changed` (section 6), batches ids for 500 ms, reads `workflows_api.work_item_v` and `transition_v`, and classifies. It sends only if its `push_claim` insert won: the key is `(owner, work item, category, "<state>:<id of the latest transition into that state>")`, so a pod rollout or a second replica never double-sends, and a later re-entry into the state notifies again. Delivery is at most once per transition across pods, with one exception: if no device accepted the message and none was reported gone (404/410), every send failed transiently, so the claimant releases the claim (`push_claim_release`) and the next update to the item can notify again. A crash between claim and send still drops that notification. Rows older than 30 days are pruned. If more than 3 claims by one user fall within 60 s, the extras collapse into one "N items need you" notification (tag `work-summary`).
+- **Payload** (JSON, exactly `title`, `body`, `url`, `tag`): a fixed title per category, the item title truncated to 120 characters as body, the in-app path (`/work/<id>`) as `url` and `work-<id>` as `tag`. Never `state_data`, failure text, tokens, code or logs.
+- **Secret.** `enzarb-vapid-key` (data keys `public-key`, `private-key`, base64url), created once by a chart pre-install/pre-upgrade Job running the UI image (`scripts/vapid-secret.ts`) and never replaced; `secrets.vapidKey.existingSecret` names your own. Only the `enzarb-ui` Deployment reads it (optional `secretKeyRef`s, so pods start without it, with notifications off). Changing the keypair invalidates every existing browser subscription.
+- **Remote functions** (`ui/src/lib/push.remote.ts`): `getPushState` (public key and the caller's devices), `subscribe`, `updateCategories`, `unsubscribe`, `sendTest` (rate limited to one per 10 s per user per pod). The service worker never caches `/_app/remote`, `/live/`, non-GET requests or navigation responses.

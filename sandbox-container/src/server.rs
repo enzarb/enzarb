@@ -28,6 +28,7 @@ use crate::auth::{self, AuthError};
 use crate::capture::{LegacyPromotion, read_legacy_valid};
 use crate::chat::ChatManager;
 use crate::config::Config;
+use crate::dockerd::Dockerd;
 use crate::observer::{PtyInfo, PtyObserverFactory};
 use crate::pty::{self, Pty, PtyConfig, PtyControl};
 use crate::reaper::Reaper;
@@ -43,6 +44,8 @@ pub struct AppState {
     pub runs: Arc<dyn RunManager>,
     pub observers: Vec<Arc<dyn PtyObserverFactory>>,
     pub chats: Arc<ChatManager>,
+    /// The supervised Docker daemon, reported in `/healthz` (never gates readiness).
+    pub dockerd: Option<Arc<Dockerd>>,
     next_session: AtomicU64,
 }
 
@@ -57,8 +60,14 @@ impl AppState {
             runs: Arc::new(UnimplementedRunManager),
             observers: Vec::new(),
             chats,
+            dockerd: None,
             next_session: AtomicU64::new(1),
         }
+    }
+
+    pub fn with_dockerd(mut self, d: Arc<Dockerd>) -> Self {
+        self.dockerd = Some(d);
+        self
     }
 
     pub fn with_chats(mut self, chats: Arc<ChatManager>) -> Self {
@@ -85,9 +94,23 @@ pub fn router(state: Arc<AppState>) -> Router {
             require_bearer,
         ));
     Router::new()
-        .route("/healthz", get(|| async { "ok" }))
+        .route("/healthz", get(healthz))
         .merge(mux)
         .with_state(state)
+}
+
+/// Always 200 (the readiness probe must not depend on Docker); the body is JSON:
+/// `{"status":"ok","dockerd":{"state":"running"}}`. `dockerd` is absent without a supervisor.
+async fn healthz(State(state): State<Arc<AppState>>) -> Response {
+    let mut body = serde_json::json!({"status": "ok"});
+    if let Some(d) = &state.dockerd {
+        body["dockerd"] = serde_json::to_value(d.state()).unwrap_or_default();
+    }
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        body.to_string(),
+    )
+        .into_response()
 }
 
 /// Serve until the listener fails.

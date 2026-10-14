@@ -214,6 +214,14 @@
           },
           "additionalProperties": false
         },
+        "vapidKey": {
+          "type": "object",
+          "properties": {
+            "existingSecret": { "type": "string" },
+            "subject": { "type": "string", "pattern": "^$|^(mailto:[^\\s@]+@[^\\s@]+|https?://\\S+)$" }
+          },
+          "additionalProperties": false
+        },
         "updater": {
           "type": "object",
           "properties": {
@@ -742,6 +750,15 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "image": {
+              "description": "Deprecated and ignored: dockerd now runs inside the sandbox container (#101). Accepted so older values files still validate.",
+              "deprecated": true
+            },
+            "resources": {
+              "description": "Deprecated and ignored: the dockerd sidecar was removed (#101). Accepted so older values files (e.g. a HelmChart's valuesContent) still validate.",
+              "deprecated": true,
+              "type": "object"
+            },
             "runtimeClasses": {
               "type": "array",
               "minItems": 1,
@@ -752,55 +769,9 @@
                 ]
               }
             },
-            "image": {
-              "type": "string",
-              "minLength": 1
-            },
             "storage": {
               "type": "string",
               "minLength": 1
-            },
-            "resources": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "requests": {
-                  "type": "object",
-                  "properties": {
-                    "cpu": {
-                      "type": [
-                        "string",
-                        "number"
-                      ]
-                    },
-                    "memory": {
-                      "type": [
-                        "string",
-                        "number"
-                      ]
-                    }
-                  },
-                  "additionalProperties": false
-                },
-                "limits": {
-                  "type": "object",
-                  "properties": {
-                    "cpu": {
-                      "type": [
-                        "string",
-                        "number"
-                      ]
-                    },
-                    "memory": {
-                      "type": [
-                        "string",
-                        "number"
-                      ]
-                    }
-                  },
-                  "additionalProperties": false
-                }
-              }
             },
             "profiles": {
               "type": "object"
