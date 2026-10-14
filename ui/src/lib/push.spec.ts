@@ -19,9 +19,9 @@ describe('pushPayload', () => {
 		}
 	});
 
-	it('links to the work item with a relative url and replaces repeats through the tag', () => {
+	it('links to the task with a relative url and replaces repeats through the tag', () => {
 		const p = pushPayload({ id: 12, title: 'Add retries' }, 'merge');
-		expect(p.url).toBe('/work/12');
+		expect(p.url).toBe('/task/12');
 		expect(p.tag).toBe('work-12');
 		expect(p.body).toBe('Add retries');
 	});
