@@ -103,6 +103,22 @@ async function prompt(id, params) {
   chunk(sid, `done: ${branch}\n`);
   chunk(sid, "```json\n");
   chunk(sid, '{"decision":"done","body":"pr"}\n```');
+  const usageUpdate = (amount) =>
+    send({ method: "session/update", params: { sessionId: sid, update: { sessionUpdate: "usage_update", used: 1000, size: 200000, ...(amount === undefined ? {} : { cost: { amount, currency: "USD" } }) } } });
+  if (word === "USAGE") {
+    // cumulative cost updates (the last one wins), then a per-turn usage with the final cost in _meta
+    usageUpdate(0.1);
+    usageUpdate(0.25);
+    return reply(id, {
+      stopReason: "end_turn",
+      usage: { inputTokens: 1200, outputTokens: 340, totalTokens: 1540, cachedReadTokens: 9000 },
+      _meta: { total_cost_usd: 0.42, modelUsage: { "claude-sonnet-5-5": { inputTokens: 1200 } } },
+    });
+  }
+  if (word === "USAGENOCOST") {
+    usageUpdate();
+    return reply(id, { stopReason: "end_turn", usage: { inputTokens: 5, outputTokens: 6, totalTokens: 11 } });
+  }
   reply(id, { stopReason: "end_turn" });
 }
 

@@ -27,7 +27,7 @@ use super::Executor;
 use super::restart::RestartOutcome;
 use super::session_limit::LimitOutcome;
 use crate::machine::{AgentJobInput, AgentOutput, JobKind, OutputError};
-use crate::results::{JobResult, ingest_job_result};
+use crate::results::{JobResult, ingest_job_result, record_job_usage};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -166,6 +166,13 @@ async fn finished(
             return reply(StatusCode::INTERNAL_SERVER_ERROR, "database error");
         }
     };
+    // The spend counts for any outcome and even for a stale callback, once per run.
+    if let Some(usage) = &body.usage
+        && let Err(e) = record_job_usage(&exec.pool, job_id, &path_run_id, usage).await
+    {
+        tracing::warn!(job_id, error = %e, "callback: recording usage failed");
+        return reply(StatusCode::INTERNAL_SERVER_ERROR, "database error");
+    }
     if status != "running" {
         tracing::info!(job_id, %status, "callback for a job that is not running; ignored");
         return (StatusCode::OK, Json(json!({ "accepted": false })));
