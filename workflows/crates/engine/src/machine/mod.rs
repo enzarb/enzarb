@@ -331,6 +331,9 @@ pub struct Config {
     pub stale_after_secs: i64,
     /// Deadline handed to agent runs (`run_start.timeout_secs`).
     pub agent_timeout_secs: u64,
+    /// `change_request`: automatic fix rounds on enzarb's own review findings before waiting
+    /// for a human. `0` turns them off.
+    pub max_auto_rounds: u32,
 }
 
 impl Default for Config {
@@ -339,6 +342,7 @@ impl Default for Config {
             nudge_after_secs: 3 * 24 * 3600,
             stale_after_secs: 4 * 24 * 3600,
             agent_timeout_secs: 3600,
+            max_auto_rounds: 3,
         }
     }
 }
@@ -553,7 +557,7 @@ impl WorkflowState {
         let v = match self {
             WorkflowState::New(_) => serde_json::json!({}),
             WorkflowState::Issue(s) => serde_json::to_value(&s.data).unwrap_or_default(),
-            WorkflowState::ChangeRequest(s) => change_request::state_data(&s.data),
+            WorkflowState::ChangeRequest(s) => change_request::state_data(s),
             WorkflowState::Mention(s) => serde_json::to_value(&s.data).unwrap_or_default(),
         };
         if v.is_null() {

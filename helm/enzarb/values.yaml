@@ -149,6 +149,9 @@ workflows:
   botHandle: enzarb
   botLogin: enzarb[bot]
   dbMaxConnections: 10
+  # ENZARB_MAX_AUTO_ROUNDS: automatic fix rounds on enzarb's own review findings per change
+  # request before it waits for a human. 0 turns them off.
+  maxAutoRounds: 3
   # ENZARB_NPM_TOKEN (executor role): a long-lived read:packages PAT handed to agent runs as
   # RunStart.npm_token so `npm ci` can read private @enzarb/* packages (GitHub App tokens
   # cannot). By default it reuses the GHCR read token oldie already stores in

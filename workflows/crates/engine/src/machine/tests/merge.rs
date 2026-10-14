@@ -254,7 +254,7 @@ fn unknown_readiness_runs_one_check_and_its_result_decides() {
     assert_eq!(t4.next, t.next);
 
     // Only an approving review asks at all.
-    let t5 = run_cr(
+    let t5 = run_cr_manual(
         Permission::None,
         &s,
         &agent_ok("r", JobKind::AgentReview, "request_changes", "no"),

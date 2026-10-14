@@ -83,6 +83,10 @@ pub async fn run(cfg: Config) -> Result<(), Error> {
         let rcfg = ReducerConfig {
             bot_login: cfg.bot_login.clone(),
             bot_handle: cfg.bot_handle.clone(),
+            machine: engine::machine::Config {
+                max_auto_rounds: cfg.max_auto_rounds,
+                ..Default::default()
+            },
             ..ReducerConfig::default()
         };
         let reducer = Arc::new(Reducer::new(
