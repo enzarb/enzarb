@@ -997,7 +997,7 @@ spec:
             - { name: ENZARB_SANDBOX_SERVICE_ACCOUNT, value: "enzarb-sandbox" }
             - { name: ENZARB_EXECUTOR_CALLBACK_PORT, value: "8081" }
             - { name: ENZARB_SANDBOX_EGRESS_EXCLUDE_CIDRS, value: "10.42.0.0/16,10.43.0.0/16,192.168.33.0/24" }
-            - { name: ENZARB_SANDBOX_IMAGE, value: "ghcr.io/enzarb/enzarb-sandbox:0.12.0" }
+            - { name: ENZARB_SANDBOX_IMAGE, value: "ghcr.io/enzarb/enzarb-sandbox:0.13.0" }
             - { name: ENZARB_DEFAULT_STORAGE, value: "20Gi" }
             - { name: ENZARB_SANDBOX_RUNTIME_CLASS, value: "gvisor" }
             - { name: ENZARB_DOCKER_RUNTIME_CLASSES, value: "gvisor" }
@@ -1330,7 +1330,7 @@ spec:
             - name: ENZARB_VAPID_PRIVATE_KEY
               valueFrom: { secretKeyRef: { name: "enzarb-vapid-key", key: private-key, optional: true } }
             - { name: ENZARB_PUBLIC_URL, value: "https://enzarb.dev" }
-            - { name: ENZARB_COMPONENT_VERSIONS, value: "{\"chart\":\"0.0.0\",\"components\":{\"enzarb-connectors\":\"0.6.2\",\"enzarb-realtime\":\"0.4.1\",\"enzarb-sandbox-container\":\"0.12.0\",\"enzarb-sandbox-operator\":\"0.9.0\",\"enzarb-sandbox-proxy\":\"0.7.0\",\"enzarb-ui\":\"0.31.0\",\"enzarb-updater\":\"0.2.1\",\"enzarb-workflows\":\"0.21.0\"}}" }
+            - { name: ENZARB_COMPONENT_VERSIONS, value: "{\"chart\":\"0.0.0\",\"components\":{\"enzarb-connectors\":\"0.6.2\",\"enzarb-realtime\":\"0.4.1\",\"enzarb-sandbox-container\":\"0.13.0\",\"enzarb-sandbox-operator\":\"0.9.0\",\"enzarb-sandbox-proxy\":\"0.7.0\",\"enzarb-ui\":\"0.31.0\",\"enzarb-updater\":\"0.2.1\",\"enzarb-workflows\":\"0.21.0\"}}" }
             - { name: ENZARB_GITHUB_APP_SLUG, value: "enzarb" }
             # adapter-node derives the origin for its CSRF check from this header; the Gateway forwards it.
             - { name: PROTOCOL_HEADER, value: x-forwarded-proto }
