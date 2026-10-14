@@ -35,7 +35,8 @@
 		review: 'Waiting for your review',
 		decision: 'Waiting on your decision',
 		blocked: 'Blocked',
-		failed: 'Failed'
+		failed: 'Failed',
+		question: 'Questions awaiting your answer'
 	} as const;
 
 	const action = $derived(primaryAction(item.needs.category));
