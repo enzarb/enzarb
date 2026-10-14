@@ -701,6 +701,30 @@ mod tests {
     }
 
     #[test]
+    fn usage_cache_figures_add_over_turns() {
+        let mut c = UsageCollector::default();
+        for (i, r, w) in [(3, 18_000, 1_200), (4, 21_000, 0)] {
+            c.response(&json!({"usage": {"inputTokens": i, "outputTokens": 50,
+                "cachedReadTokens": r, "cachedWriteTokens": w}}));
+        }
+        let u = c.snapshot().unwrap();
+        assert_eq!(u.input_tokens, Some(7));
+        assert_eq!(u.cache_read_input_tokens, Some(39_000));
+        assert_eq!(u.cache_creation_input_tokens, Some(1_200));
+    }
+
+    #[test]
+    fn usage_read_takes_first_source_per_field() {
+        let u = UsageCollector::read(&json!({
+            "usage": {"inputTokens": 5},
+            "_meta": {"usage": {"input_tokens": 9, "cache_read_input_tokens": 40}, "output_tokens": 2},
+        }));
+        assert_eq!(u.input_tokens, Some(5)); // `usage` wins over `_meta.usage`
+        assert_eq!(u.cache_read_input_tokens, Some(40)); // falls through when absent
+        assert_eq!(u.output_tokens, Some(2));
+    }
+
+    #[test]
     fn usage_ignores_non_usd_cost() {
         let mut c = UsageCollector::default();
         c.update(

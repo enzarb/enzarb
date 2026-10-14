@@ -37,7 +37,7 @@ describe('JobTable', () => {
 			]
 		});
 		const first = page.getByRole('row').nth(1);
-		await expect.element(first).toHaveTextContent('12.3k');
+		await expect.element(first).toHaveTextContent('21.4k');
 		await expect.element(first).toHaveTextContent('1.2k');
 		await expect.element(first).toHaveTextContent('Cache read 9k · Cache write 50');
 		await expect.element(first).toHaveTextContent('claude-sonnet-5-5');

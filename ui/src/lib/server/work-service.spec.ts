@@ -415,7 +415,9 @@ describe('workService needs-you queue', () => {
 			['change_request', 'AwaitingChanges', { wait: { waiting_on: 'bogus' } }],
 			['change_request', 'AwaitingChanges', { wait: 'human' }],
 			['change_request', 'Merged', { wait: { waiting_on: 'human', reason: 'x' } }],
-			['issue', 'Reviewing', { wait: { waiting_on: 'human', reason: 'x' } }]
+			['issue', 'Reviewing', { wait: { waiting_on: 'human', reason: 'x' } }],
+			['issue', 'AwaitingAnswers', {}],
+			['change_request', 'AwaitingAnswers', {}]
 		];
 		const HOURS = 24;
 		const HOUR_MS = 3_600_000;

@@ -131,7 +131,7 @@ ui:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-ui
-    tag: 0.33.0
+    tag: 0.37.0
     pullPolicy: ""
   # HTTP probes (/healthz liveness, /readyz readiness). false falls back to TCP probes.
   probes:
@@ -233,7 +233,7 @@ updater:
   terminationGracePeriodSeconds: 30
   image:
     repository: ghcr.io/enzarb/enzarb-updater
-    tag: 0.2.1
+    tag: 0.3.0
     pullPolicy: ""
   resources: {}
   extraEnv: []

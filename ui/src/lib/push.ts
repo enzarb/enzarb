@@ -5,7 +5,7 @@ import { NEEDS_YOU_CATEGORIES, type NeedsYouCategory } from '#lib/work-items.ts'
 export interface PushPayload {
 	title: string;
 	body: string;
-	/** In-app path, always relative (`/work/12`). */
+	/** In-app path, always relative (`/task/12`). */
 	url: string;
 	/** Same tag replaces the earlier notification on the device. */
 	tag: string;
@@ -17,7 +17,8 @@ export const CATEGORY_LABELS: Record<NeedsYouCategory, string> = {
 	review: 'Waiting for your review',
 	decision: 'Waiting for your decision',
 	blocked: 'Change request blocked',
-	failed: 'Failed or stale'
+	failed: 'Failed or stale',
+	question: 'Questions awaiting answers'
 };
 
 /** Fixed title per category, so no item text ends up in the title. */
@@ -27,7 +28,8 @@ const TITLES: Record<NeedsYouCategory, string> = {
 	review: 'Change request waiting for your review',
 	decision: 'Waiting for your decision',
 	blocked: 'Change request blocked',
-	failed: 'Work item failed'
+	failed: 'Task failed',
+	question: 'Questions need your answer'
 };
 
 export const BODY_MAX = 120;
@@ -38,7 +40,7 @@ const truncate = (s: string, max: number) => {
 };
 
 /**
- * The notification for one work item. Built only from the item id, its display title and the
+ * The notification for one task. Built only from the item id, its display title and the
  * category: never `state_data`, the failure reason, tokens, code or logs.
  */
 export function pushPayload(
@@ -48,7 +50,7 @@ export function pushPayload(
 	return {
 		title: TITLES[category],
 		body: truncate(item.title, BODY_MAX),
-		url: `/work/${item.id}`,
+		url: `/task/${item.id}`,
 		tag: `work-${item.id}`
 	};
 }

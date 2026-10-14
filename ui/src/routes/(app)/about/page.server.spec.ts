@@ -16,6 +16,8 @@ vi.mock('#lib/server/github-app-token.ts', () => ({
 	invalidateInstallationToken: tok.invalidate
 }));
 vi.mock('#lib/server/releases.ts', () => ({ cachedReleases: releases.fn }));
+const rollout = vi.hoisted(() => ({ fn: vi.fn() }));
+vi.mock('#lib/server/updater-status.ts', () => ({ fetchChartRollout: rollout.fn }));
 
 import { load } from './+page.server.ts';
 
@@ -34,6 +36,8 @@ beforeEach(() => {
 	releases.fn.mockReset();
 	tok.get.mockReset();
 	tok.get.mockResolvedValue(null);
+	rollout.fn.mockReset();
+	rollout.fn.mockResolvedValue(null);
 	versions.value = {
 		chart: '0.4.1',
 		components: { 'enzarb-ui': 'v1.0.0', 'enzarb-extra': '2.0.0' }
@@ -79,6 +83,15 @@ describe('about load', () => {
 		const data = await run(user);
 		expect(releases.fn).toHaveBeenCalledWith('ui', expect.objectContaining({ token: undefined }));
 		expect(data.components[0].releases).toHaveLength(1);
+	});
+
+	it('includes the updater chart rollout, or null when unavailable', async () => {
+		releases.fn.mockResolvedValue([]);
+		const status = { installed: '0.9.0', desired: '0.10.0', latest: '0.10.0', stuck: true };
+		rollout.fn.mockResolvedValue(status);
+		expect((await run(user)).chartRollout).toEqual(status);
+		rollout.fn.mockResolvedValue(null);
+		expect((await run(user)).chartRollout).toBeNull();
 	});
 
 	it('still returns versions when one component fetch fails', async () => {

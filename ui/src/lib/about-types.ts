@@ -1,3 +1,14 @@
+/** The updater's `/status`: the chart oldie runs versus the latest published. */
+export interface ChartRollout {
+	/** The chart version the helm-controller last installed; null when unreadable. */
+	installed: string | null;
+	/** `HelmChart.spec.version`, what the updater asked for. */
+	desired: string | null;
+	latest: string | null;
+	/** The upgrade to `desired` is failing. */
+	stuck: boolean;
+}
+
 export interface AboutRelease {
 	tag: string;
 	name: string;

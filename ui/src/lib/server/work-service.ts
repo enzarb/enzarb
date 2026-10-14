@@ -58,6 +58,7 @@ function needsYouWhere(sql: Sql, projects: string[], staleHours: number) {
 	return sql`project IN ${sql(projects)} AND (
 		state IN ('Failed', 'Stale')
 		OR (workflow = 'issue' AND state = 'AwaitingApproval')
+		OR (workflow = 'issue' AND state = 'AwaitingAnswers')
 		OR (workflow = 'change_request' AND state NOT IN ${sql([...TERMINAL_STATES])}
 			AND CASE
 				WHEN state_data->'wait'->>'waiting_on' IN ${sql([...WAITING_ON])}
@@ -248,7 +249,7 @@ export function workService(
 		/** Validates against the item's current state, then calls `workflows_api.submit_action`. */
 		async submitAction(id: number, actor: Actor, action: WorkAction): Promise<number | null> {
 			const row = await load(id);
-			if (!row) throw new WorkError('not-found', 'Work item not found');
+			if (!row) throw new WorkError('not-found', 'Task not found');
 			if (!availableActions(row.state).includes(action)) {
 				throw new WorkError('invalid-action', `Cannot ${action} while ${row.state}`);
 			}

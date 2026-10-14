@@ -22,6 +22,11 @@ describe('Nav', () => {
 			.toBeVisible();
 		await expect.element(page.getByText('200+')).toBeVisible();
 	});
+	it('has no Settings link; it lives in the account menu', async () => {
+		render(Nav, { needsYou: 0 });
+		await expect.element(page.getByRole('link', { name: 'Projects' })).toBeVisible();
+		await expect.element(page.getByRole('link', { name: 'Settings' })).not.toBeInTheDocument();
+	});
 	it('uses the singular for one item', async () => {
 		render(Nav, { needsYou: 1 });
 		await expect.element(page.getByRole('img', { name: '1 item needs you' })).toBeVisible();

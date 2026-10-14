@@ -24,12 +24,15 @@ jobs:
         working-directory: helm
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # compat reads the previous helm/v* tag's values with git show
       - uses: jdx/mise-action@v2
         with:
           cache: true
           working_directory: helm
       - run: pip install jsonschema pyyaml
       - run: mise run lint
+      - run: mise run compat
       - run: mise run golden
       - run: mise run componentversions
       - run: mise run npmtoken

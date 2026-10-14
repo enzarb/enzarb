@@ -4,6 +4,7 @@ import { getConfig } from '#lib/server/config.ts';
 import { getInstallationToken, invalidateInstallationToken } from '#lib/server/github-app-token.ts';
 import { renderMarkdown } from '#lib/server/markdown.ts';
 import { cachedReleases } from '#lib/server/releases.ts';
+import { fetchChartRollout } from '#lib/server/updater-status.ts';
 import { COMPONENTS, displayVersion, componentDirUrl } from '#lib/versions.ts';
 import type { PageServerLoad } from './$types';
 
@@ -21,6 +22,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 	// Server-side only: the token is never put in the returned page data.
 	const token = (await getInstallationToken().catch(() => null)) ?? undefined;
 	const releaseOpts = { token, onTokenRejected: invalidateInstallationToken };
+
+	// Started now so it overlaps the GitHub release fetches; null when the updater is unavailable.
+	const chartRolloutPromise = fetchChartRollout();
 
 	const components: AboutComponent[] = await Promise.all(
 		[...known, ...extras].map(async (c) => {
@@ -47,5 +51,5 @@ export const load: PageServerLoad = async ({ locals }) => {
 			};
 		})
 	);
-	return { chart: displayVersion(chart), components };
+	return { chart: displayVersion(chart), chartRollout: await chartRolloutPromise, components };
 };
