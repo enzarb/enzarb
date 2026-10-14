@@ -395,15 +395,14 @@ fn push_or_feedback_leaves_ready_to_merge() {
         &pr_comment("c", "carol", 5, "fix it"),
     );
     assert_cr(&t, CrPhase::AddressingComments);
-    // Approving reviews and read-only authors do not.
-    rejected(
-        &run_cr(
-            Permission::Write,
-            &ready,
-            &review("a", "carol", "APPROVED", ""),
-        ),
+    // An approving review is a no-op here; read-only authors are rejected.
+    let t = run_cr(
+        Permission::Write,
         &ready,
+        &review("a", "carol", "APPROVED", ""),
     );
+    assert!(t.accepted && t.effects.is_empty());
+    assert_eq!(t.next, ready);
     rejected(
         &run_cr(
             Permission::Read,

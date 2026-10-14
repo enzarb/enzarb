@@ -2,6 +2,7 @@
 
 mod auto_rounds;
 mod dependencies;
+mod human_approval;
 mod merge;
 
 use chrono::{DateTime, TimeZone, Utc};
@@ -1688,7 +1689,7 @@ fn cr_feedback_authorization_table() {
         (
             Permission::Write,
             review("7", "carol", "approved", "x"),
-            false,
+            true,
         ),
         (
             Permission::Write,

@@ -891,7 +891,10 @@ fn review_submitted(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowSt
         return Transition::reject(state, "review missing");
     };
     let rs = r.state.to_ascii_lowercase();
-    if rs == "approved" || rs == "dismissed" {
+    if rs == "approved" {
+        return human_approved(ctx, ev, s, state);
+    }
+    if rs == "dismissed" {
         return Transition::reject(state, "review requests no changes");
     }
     if rs == "commented" && r.body.trim().is_empty() {
@@ -906,6 +909,32 @@ fn review_submitted(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowSt
         r.body.clone()
     };
     feedback(ctx, ev, s, state, &e.data.actor, None, &text)
+}
+
+/// A human `approved` review counts as the review check for the current head. Only an
+/// idle `AwaitingChanges` records it; while enzarb has a round in flight (or the item is
+/// past review) the event is acknowledged without touching the state. The transition
+/// rewrites `state_data.wait` (`ci_pending` while CI is not green).
+fn human_approved(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowState) -> Transition {
+    if !ctx.can_write() {
+        return Transition::reject(state, "approval requires write access");
+    }
+    match s.phase {
+        CrPhase::AwaitingChanges => {
+            let mut d = s.data.clone();
+            d.last_review = "approve".into();
+            d.reviewed_sha = d.head_sha.clone();
+            human_acted(&mut d);
+            evaluate(
+                Fx::new(ctx, ev),
+                CrPhase::AwaitingChanges,
+                d,
+                "review approved",
+                true,
+            )
+        }
+        _ => Transition::ack(state, "approval ignored in this phase"),
+    }
 }
 
 /// A comment or review that may ask for changes.
