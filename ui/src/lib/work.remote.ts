@@ -39,7 +39,7 @@ export const getWorkItemPlan = query(v.pipe(v.number(), v.integer(), v.minValue(
 
 export const getWorkItem = query(v.pipe(v.number(), v.integer(), v.minValue(1)), async (id) => {
 	const item = await (await service()).work.get(id);
-	if (!item) error(404, 'Work item not found');
+	if (!item) error(404, 'Task not found');
 	return item;
 });
 

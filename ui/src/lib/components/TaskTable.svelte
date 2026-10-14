@@ -57,7 +57,7 @@
 </script>
 
 {#snippet item(w: WorkItemSummary)}
-	<a href="/work/{w.id}">{w.title}</a> <code class="ez-muted">{w.key}</code>
+	<a href="/task/{w.id}">{w.title}</a> <code class="ez-muted">{w.key}</code>
 {/snippet}
 {#snippet projectCell(w: WorkItemSummary)}{w.project}{/snippet}
 {#snippet workflow(w: WorkItemSummary)}{w.workflow}{/snippet}
