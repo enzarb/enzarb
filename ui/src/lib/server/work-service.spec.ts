@@ -181,6 +181,33 @@ describe('workService against workflows_api', () => {
 		expect(types.map((r) => r.type)).toEqual(['ApprovalGranted', 'CancelRequested']);
 	});
 
+	it('cancelForRemovedRepos submits repo-removed for open items of the removed repos only', async () => {
+		const seed = (key: string, state: string, project = 'gone') =>
+			seedItem(sql, { key, project, state });
+		await seed('github:acme/old#1', 'AwaitingApproval');
+		await seed('github:acme/old#2', 'Failed');
+		await seed('github:acme/old#3', 'Cancelled');
+		await seed('github:acme/kept#4', 'AwaitingApproval');
+		await seed('github:acme/old#5', 'AwaitingApproval', 'elsewhere');
+		const actor = { login: 'alice', id: 7 };
+
+		// not the caller's Project, or nothing removed: nothing happens
+		const foreign = workService(sql, ['elsewhere']);
+		expect(await foreign.cancelForRemovedRepos('gone', ['github:ACME/old'], actor)).toBe(0);
+		const svc = workService(sql, ['gone']);
+		expect(await svc.cancelForRemovedRepos('gone', [], actor)).toBe(0);
+
+		expect(await svc.cancelForRemovedRepos('gone', ['github:ACME/old'], actor)).toBe(2);
+		const events = await sql`
+			SELECT work_item_key, payload FROM workflows.events WHERE type = 'RepoRemoved' ORDER BY id`;
+		expect(events.map((e) => e.work_item_key)).toEqual(['github:acme/old#1', 'github:acme/old#2']);
+		expect(events[0].payload).toEqual({
+			actor: { login: 'alice', id: 7, is_bot: false },
+			action: 'repo-removed',
+			data: {}
+		});
+	});
+
 	it('merges only from ReadyToMerge, as the session actor with an empty payload', async () => {
 		const id = await seedItem(sql, {
 			key: 'github:acme/api#20',
@@ -253,17 +280,18 @@ describe('workService needs-you queue', () => {
 			key: 'github:acme/q#3',
 			project: 'q',
 			workflow: 'change_request',
-			state: 'Reviewing',
+			state: 'AwaitingChanges',
 			stateData: { checklist: { ci: { status: 'failed', detail: 'tests red' } } }
 		});
+		await sql`UPDATE workflows.work_items SET updated_at = now() - interval '2 days' WHERE id = ${blocked}`;
 		await seedItem(sql, { key: 'github:acme/q#4', project: 'q', state: 'Planning' });
 		await seedItem(sql, { key: 'github:x/y#1', project: 'other', state: 'AwaitingApproval' });
 
 		const { items: queue, total } = await workService(sql, ['q']).listNeedsYou();
-		expect(queue.map((i) => i.id)).toEqual([oldApproval, failed, blocked]);
+		expect(queue.map((i) => i.id)).toEqual([oldApproval, blocked, failed]);
 		expect(total).toBe(3);
-		expect(queue.map((i) => i.needs?.category)).toEqual(['approval', 'failed', 'blocked']);
-		expect(queue[2].needs?.reason).toBe('CI: tests red');
+		expect(queue.map((i) => i.needs?.category)).toEqual(['approval', 'blocked', 'failed']);
+		expect(queue[1].needs?.reason).toBe('CI: tests red');
 		expect(await workService(sql, []).listNeedsYou()).toEqual({ items: [], total: 0 });
 		expect((await workService(sql, ['other']).listNeedsYou()).items).toHaveLength(1);
 	});
@@ -303,8 +331,8 @@ describe('workService needs-you queue', () => {
 		const wanted = [
 			await seed(1, 'ReadyToMerge', {}, '2026-01-01'),
 			await seed(2, 'AwaitingChanges', {}, '2026-01-02'),
-			await seed(3, 'Reviewing', { checklist: { ci: { status: 'failed' } } }, '2026-03-01'),
-			await seed(4, 'Reviewing', { checklist: { review: { status: 'FAILED' } } }, '2026-03-02')
+			await seed(3, 'AwaitingChanges', { checklist: { ci: { status: 'failed' } } }, '2026-03-01'),
+			await seed(4, 'ConflictParked', {}, '2026-03-02')
 		];
 		const { items, total } = await workService(sql, ['crowd']).listNeedsYou();
 		expect(items.map((i) => i.id)).toEqual(wanted);
@@ -320,6 +348,11 @@ describe('workService needs-you queue', () => {
 			['change_request', 'ReadyToMerge', {}],
 			['change_request', 'AwaitingChanges', {}],
 			['issue', 'AwaitingChanges', {}],
+			['change_request', 'AwaitingChanges', { checklist: { ci: { status: 'failed' } } }],
+			['change_request', 'AwaitingChanges', { checklist: { review: { status: 'Failed' } } }],
+			['change_request', 'AwaitingChanges', { checklist: { mergeable: { status: 'failed' } } }],
+			['change_request', 'ConflictParked', {}],
+			['issue', 'ConflictParked', {}],
 			['issue', 'Failed', {}],
 			['change_request', 'Stale', {}],
 			['mention', 'Failed', {}],
@@ -384,8 +417,17 @@ describe('workService needs-you queue', () => {
 			['change_request', 'Merged', { wait: { waiting_on: 'human', reason: 'x' } }],
 			['issue', 'Reviewing', { wait: { waiting_on: 'human', reason: 'x' } }]
 		];
+		const HOURS = 24;
+		const HOUR_MS = 3_600_000;
+		const idleAge = 25 * HOUR_MS;
+		// idle copies of every case, so the blocked ones are exercised past the threshold
+		const all: [string, string, unknown, number][] = [
+			...cases.map(([w, s, d]) => [w, s, d, 0] as [string, string, unknown, number]),
+			...cases.map(([w, s, d]) => [w, s, d, idleAge] as [string, string, unknown, number])
+		];
 		const ids = new Map<number, number>();
-		for (const [i, [workflow, state, stateData]] of cases.entries()) {
+		const rows: { workflow: string; state: string; stateData: unknown; updatedAt: Date }[] = [];
+		for (const [i, [workflow, state, stateData, age]] of all.entries()) {
 			const id = await seedItem(sql, {
 				key: `github:acme/parity#${i}`,
 				project: 'parity',
@@ -393,19 +435,89 @@ describe('workService needs-you queue', () => {
 				state,
 				stateData
 			});
+			await sql`UPDATE workflows.work_items
+				SET updated_at = now() - ${age / 1000} * interval '1 second' WHERE id = ${id}`;
 			ids.set(id, i);
+			rows.push({ workflow, state, stateData, updatedAt: new Date(Date.now() - age) });
 		}
-		const expected = cases
-			.map(([workflow, state, stateData], i) => ({
-				i,
-				needs: classifyNeedsYou({ workflow, state, stateData })
-			}))
+		const opts = { now: Date.now(), staleAfterMs: HOURS * HOUR_MS };
+		const expected = rows
+			.map((r, i) => ({ i, needs: classifyNeedsYou(r, opts) }))
 			.filter((c) => c.needs)
 			.map((c) => c.i);
-		expect(expected.length).toBeGreaterThan(8);
+		// 8 fresh approval/ready/failed/stale rows, repeated idle, plus the idle blocked ones
+		expect(expected.length).toBeGreaterThan(16);
 		const { items, total } = await workService(sql, ['parity']).listNeedsYou();
 		expect(items.map((it) => ids.get(it.id)).sort((a, b) => a! - b!)).toEqual(expected);
 		expect(total).toBe(expected.length);
+	});
+
+	it('applies the idle threshold identically in SQL and in the classifier', async () => {
+		const HOURS = 24;
+		const HOUR_MS = 3_600_000;
+		// 60 s of slack either side of the threshold, so the clocks of node and Postgres cannot disagree
+		const fresh = HOURS * HOUR_MS - 60_000;
+		const idle = HOURS * HOUR_MS + 60_000;
+		const red = (c: 'ci' | 'review' | 'mergeable') => ({
+			checklist: { [c]: { status: 'failed' } }
+		});
+		const cases: [string, unknown, number][] = [
+			['AwaitingChanges', {}, fresh],
+			['AwaitingChanges', {}, idle],
+			['AwaitingChanges', red('ci'), fresh],
+			['AwaitingChanges', red('ci'), idle],
+			['AwaitingChanges', red('mergeable'), fresh],
+			['AwaitingChanges', red('mergeable'), idle],
+			['Opened', red('review'), fresh],
+			['Opened', red('review'), idle],
+			['Reviewing', red('ci'), idle],
+			['AddressingComments', red('ci'), idle],
+			['ResolvingConflicts', red('mergeable'), idle],
+			['Merging', red('ci'), idle],
+			['AddressingComments', {}, idle],
+			['ConflictParked', {}, fresh],
+			['ConflictParked', {}, idle],
+			['Failed', {}, fresh],
+			['Stale', {}, fresh],
+			['ReadyToMerge', red('review'), fresh],
+			['Merged', red('ci'), idle],
+			['Reviewing', 'garbage', idle]
+		];
+		const ids = new Map<number, number>();
+		const rows: { workflow: string; state: string; stateData: unknown; updatedAt: Date }[] = [];
+		for (const [i, [state, stateData, age]] of cases.entries()) {
+			const id = await seedItem(sql, {
+				key: `github:acme/idle#${i}`,
+				project: 'idle',
+				workflow: 'change_request',
+				state,
+				stateData
+			});
+			await sql`UPDATE workflows.work_items
+				SET updated_at = now() - ${age / 1000} * interval '1 second' WHERE id = ${id}`;
+			ids.set(id, i);
+			rows.push({
+				workflow: 'change_request',
+				state,
+				stateData,
+				updatedAt: new Date(Date.now() - age)
+			});
+		}
+		const opts = { now: Date.now(), staleAfterMs: HOURS * HOUR_MS };
+		const expected = rows
+			.map((r, i) => ({ i, needs: classifyNeedsYou(r, opts) }))
+			.filter((c) => c.needs)
+			.map((c) => c.i);
+		// idle blocked CRs, parked conflicts, Failed, Stale, ReadyToMerge only
+		expect(expected).toEqual([1, 3, 5, 7, 14, 13, 15, 16, 17].sort((a, b) => a - b));
+		const { items, total } = await workService(sql, ['idle'], HOURS).listNeedsYou();
+		expect(items.map((it) => ids.get(it.id)).sort((a, b) => a! - b!)).toEqual(expected);
+		expect(total).toBe(expected.length);
+		// a longer threshold drops the idle ones that are only just past 24 h
+		const longer = await workService(sql, ['idle'], HOURS * 2).listNeedsYou();
+		expect(longer.items.map((it) => ids.get(it.id)).sort((a, b) => a! - b!)).toEqual([
+			13, 14, 15, 16, 17
+		]);
 	});
 
 	it('returns the latest plan as sanitized html, null when missing or not owned', async () => {

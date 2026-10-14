@@ -1,3 +1,5 @@
+import { NEEDS_YOU_STALE_HOURS_DEFAULT } from '#lib/work-items.ts';
+
 export interface Config {
 	databaseUrl: string;
 	sessionJwtSecret: string;
@@ -23,6 +25,8 @@ export interface Config {
 	 * `{"chart": "0.4.1", "components": {"enzarb-ui": "v0.9.0"}}`). Empty when unset.
 	 */
 	componentVersions: ComponentVersions;
+	/** Hours a blocked change request may sit idle before it joins "Needs you" (NEEDS_YOU_STALE_HOURS, default 24). */
+	needsYouStaleHours: number;
 	/**
 	 * Web Push (ENZARB_VAPID_PUBLIC_KEY, ENZARB_VAPID_PRIVATE_KEY, ENZARB_VAPID_SUBJECT, all optional).
 	 * Absent when no keys are set: notifications are then off. The private key is read only by
@@ -50,6 +54,7 @@ type RequiredKey = Exclude<
 	| 'githubAppPrivateKey'
 	| 'realtimeLegacyTokenUrl'
 	| 'componentVersions'
+	| 'needsYouStaleHours'
 	| 'vapid'
 >;
 
@@ -142,6 +147,11 @@ export function parseConfig(source: Record<string, string | undefined>): Config 
 	if (legacy && legacy !== 'true' && legacy !== 'false') {
 		throw new Error('ENZARB_REALTIME_LEGACY_TOKEN_URL must be true or false');
 	}
+	const staleRaw = source.NEEDS_YOU_STALE_HOURS?.trim();
+	const needsYouStaleHours = staleRaw ? Number(staleRaw) : NEEDS_YOU_STALE_HOURS_DEFAULT;
+	if (!Number.isFinite(needsYouStaleHours) || needsYouStaleHours <= 0) {
+		throw new Error('NEEDS_YOU_STALE_HOURS must be a positive number');
+	}
 	const githubAppId = source.ENZARB_GITHUB_APP_ID?.trim();
 	const pem = source.ENZARB_GITHUB_APP_PRIVATE_KEY?.trim().replaceAll('\\n', '\n');
 	// A malformed value is treated as unset (the message never carries the value).
@@ -152,6 +162,7 @@ export function parseConfig(source: Record<string, string | undefined>): Config 
 			: undefined;
 	return {
 		...out,
+		needsYouStaleHours,
 		...(validId && validKey ? { githubAppId: validId, githubAppPrivateKey: validKey } : {}),
 		githubAppSlug,
 		realtimeLegacyTokenUrl: legacy === 'true',

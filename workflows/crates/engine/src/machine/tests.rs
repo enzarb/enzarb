@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 
 use super::*;
 
+mod orphan;
 mod resolve;
 
 // ---------------------------------------------------------------------------
@@ -37,6 +38,8 @@ fn ctx_for(number: u64, perm: Permission) -> Ctx {
         config: Config::default(),
         triggers: Triggers::default(),
         default_branch: "main".into(),
+        orphaned: false,
+        orphan_owner: false,
         open_dependencies: Vec::new(),
     }
 }
@@ -2472,6 +2475,7 @@ fn from_row_parses_every_event_type() {
         ("CancelRequested", UiActionKind::Cancel),
         ("RetryRequested", UiActionKind::Retry),
         ("MergeRequested", UiActionKind::Merge),
+        ("RepoRemoved", UiActionKind::RepoRemoved),
     ] {
         let mut p = ui_payload.clone();
         p["action"] = json!(match action {
@@ -2479,6 +2483,7 @@ fn from_row_parses_every_event_type() {
             UiActionKind::Cancel => "cancel",
             UiActionKind::Retry => "retry",
             UiActionKind::Merge => "merge",
+            UiActionKind::RepoRemoved => "repo-removed",
         });
         match EngineEvent::from_row("1", ty, &p).unwrap().payload {
             EventPayload::Ui(u) => assert_eq!(u.action, action),

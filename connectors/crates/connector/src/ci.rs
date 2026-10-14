@@ -28,6 +28,16 @@ pub enum MergeOutcome {
     NotMergeable { reason: String },
 }
 
+/// Outcome of [`Connector::update_branch`](crate::Connector::update_branch).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum UpdateBranchOutcome {
+    /// The base was merged into the head branch (a new head commit, no history rewrite).
+    Updated,
+    /// The head moved since `expected_head_sha`, or the provider refused (conflicts...).
+    Refused { reason: String },
+}
+
 /// Snapshot of whether a change request can be merged now.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MergeReadiness {

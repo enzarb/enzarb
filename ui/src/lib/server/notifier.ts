@@ -26,6 +26,8 @@ export interface NotifierDeps {
 	ownerOf(project: string): Promise<string | null>;
 	store: Pick<PushStore, 'targets' | 'claim' | 'release' | 'remove' | 'touch'>;
 	send: Send;
+	/** Clock override (epoch ms), for tests. */
+	now?: () => number;
 }
 
 export interface BurstOptions {
@@ -53,7 +55,11 @@ export function createItemHandler(deps: NotifierDeps, burst: BurstOptions = DEFA
 	return async function handle(id: number): Promise<boolean> {
 		const item = await deps.loadItem(id);
 		if (!item?.project) return false;
-		const needs = classifyNeedsYou(item);
+		const needs = classifyNeedsYou(item, {
+			// runs on a state change, so a blocked item notifies immediately rather than once idle
+			now: deps.now?.(),
+			staleAfterMs: 0
+		});
 		if (!needs) return false;
 		const owner = await deps.ownerOf(item.project);
 		if (!owner) return false;

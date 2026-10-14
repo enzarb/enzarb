@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use enzarb_connector::{
     ChangeRequestSpec, CiState, Connector, MergeOutcome, MergeReadiness, Progress, ProgressTarget,
-    WorkItemKey,
+    UpdateBranchOutcome, WorkItemKey,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -45,6 +45,13 @@ struct MergeCr {
     expected_head_sha: String,
     #[serde(default)]
     actor: String,
+}
+
+/// How long a merge waits before retrying when another merge holds the repository lock.
+const MERGE_LOCK_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn lock_error(e: sqlx::Error) -> JobError {
+    JobError::transient(format!("merge lock: {e}"))
 }
 
 fn ci_wire(ci: CiState) -> &'static str {
@@ -109,7 +116,24 @@ impl Executor {
             JobKind::MergeChangeRequest => {
                 let i: MergeCr = input(job)?;
                 let c = self.connector_for(&i.item.repo.connector)?;
-                self.merge(c.as_ref(), &i, key).await?
+                // One merge at a time per repository, across all workers: the transaction
+                // holds an advisory lock that ends with it, so a crashed worker frees it.
+                let mut tx = self.pool.begin().await.map_err(lock_error)?;
+                let locked: bool =
+                    sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtext($1))")
+                        .bind(format!("merge:{}", i.item.repo))
+                        .fetch_one(&mut *tx)
+                        .await
+                        .map_err(lock_error)?;
+                if !locked {
+                    return Err(JobError::contended(
+                        "another merge is running for this repository",
+                        MERGE_LOCK_RETRY,
+                    ));
+                }
+                let out = self.merge(c.as_ref(), &i, key).await?;
+                tx.commit().await.map_err(lock_error)?;
+                out
             }
             other => {
                 return Err(JobError::permanent(format!(
@@ -135,6 +159,21 @@ impl Executor {
         self.emit_if_conflicting(&i.item, &r).await;
         if r.head_sha != i.expected_head_sha {
             return Ok(outcome("head_moved", json!({})));
+        }
+        if r.mergeable_state == "behind" {
+            // Never merge on a stale base: merge the base into the branch (no history
+            // rewrite) and let CI run on the new head.
+            return Ok(
+                match c
+                    .update_branch(&i.item, i.number, &i.expected_head_sha)
+                    .await?
+                {
+                    UpdateBranchOutcome::Updated => outcome("updated_branch", json!({})),
+                    UpdateBranchOutcome::Refused { reason } => {
+                        outcome("not_mergeable", json!({ "reason": reason }))
+                    }
+                },
+            );
         }
         if r.ci != CiState::Success {
             let reason = format!("CI is not passing on the head ({})", ci_wire(r.ci));

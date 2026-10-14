@@ -1267,6 +1267,7 @@ spec:
               valueFrom: { secretKeyRef: { name: "enzarb-vapid-key", key: private-key, optional: true } }
             - { name: ENZARB_PUBLIC_URL, value: "https://enzarb.local" }
             - { name: ENZARB_COMPONENT_VERSIONS, value: "{\"chart\":\"0.0.0\",\"components\":{\"enzarb-connectors\":\"dev\",\"enzarb-realtime\":\"dev\",\"enzarb-sandbox-container\":\"dev\",\"enzarb-sandbox-operator\":\"dev\",\"enzarb-sandbox-proxy\":\"dev\",\"enzarb-ui\":\"dev\",\"enzarb-workflows\":\"dev\"}}" }
+            - { name: NEEDS_YOU_STALE_HOURS, value: "24" }
             - { name: ENZARB_GITHUB_APP_SLUG, value: "enzarb" }
             # adapter-node derives the origin for its CSRF check from this header; the Gateway forwards it.
             - { name: PROTOCOL_HEADER, value: x-forwarded-proto }

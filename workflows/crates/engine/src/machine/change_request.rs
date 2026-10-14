@@ -18,8 +18,11 @@
 //! `AwaitingChanges` becomes `ReadyToMerge` only through [`evaluate`], when [`readiness`]
 //! says enzarb approved the current head, CI succeeded on it and it is mergeable.
 //! `ReadyToMerge` becomes `Merging` only on the UI `merge` action (write access required),
-//! which queues the single `merge_change_request` job. Nothing else, and nothing automatic,
-//! can start a merge.
+//! which queues the single `merge_change_request` job and records the request in
+//! `CrData::merge_requested`. If the branch was behind its base, the job updates it instead
+//! and the request is kept: once the new head is reviewed, CI is green and readiness is ok,
+//! [`evaluate`] queues the merge without a second click. Requested changes, a failed check
+//! or a refused merge clear the request. Nothing else can start a merge.
 
 use enzarb_connector::{CommentKind, EventType, ItemKind, ItemRef, ProgressTarget};
 use serde::{Deserialize, Serialize};
@@ -80,6 +83,39 @@ impl CiState {
     }
 }
 
+/// Automatic resolution attempts allowed per base-branch head.
+pub const MAX_RESOLVE_ATTEMPTS: u32 = 2;
+
+/// Attempts made against `base_sha`; a new base head starts again from zero.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ResolveAttempts {
+    pub base_sha: String,
+    pub count: u32,
+}
+
+impl CrData {
+    /// Attempts already made against `base_sha`, reading the legacy single-attempt field.
+    pub fn resolve_attempts_for(&self, base_sha: &str) -> u32 {
+        if self.resolve_attempts.base_sha == base_sha {
+            self.resolve_attempts.count
+        } else if self.resolve_attempted_base_sha == base_sha {
+            1
+        } else {
+            0
+        }
+    }
+
+    fn record_resolve_attempt(&mut self, base_sha: &str) {
+        let count = self.resolve_attempts_for(base_sha) + 1;
+        self.resolve_attempts = ResolveAttempts {
+            base_sha: base_sha.to_string(),
+            count,
+        };
+        self.resolve_attempted_base_sha.clear();
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CrData {
@@ -95,7 +131,10 @@ pub struct CrData {
     pub reviewed_sha: String,
     /// Latest base-branch head reported by a merge-readiness check.
     pub base_sha: String,
-    /// Base head of the last automatic conflict resolution; at most one attempt per SHA.
+    /// Automatic conflict-resolution attempts against one base head; capped per SHA.
+    pub resolve_attempts: ResolveAttempts,
+    /// Legacy form of `resolve_attempts` (one attempt per SHA). Only read, never written.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub resolve_attempted_base_sha: String,
     pub trigger_comment_id: Option<u64>,
     pub trigger_comment_kind: CommentKind,
@@ -118,6 +157,12 @@ pub struct CrData {
     pub auto_trigger: bool,
     /// The last review had must-fix findings but `auto_rounds` hit the cap.
     pub auto_capped: bool,
+    /// A user clicked merge and the merge has not happened yet. Kept across the branch
+    /// update so the merge runs by itself once the new head is reviewed, CI is green and
+    /// readiness is ok; cleared by requested changes, a failed check or a refused merge.
+    pub merge_requested: bool,
+    /// Who clicked merge; recorded on the merge comment.
+    pub merge_actor: String,
     /// Dependencies that are not done yet, as the reducer last read them. Refreshed from
     /// [`Ctx::open_dependencies`] on every event; kept here so the views can show it.
     pub open_dependencies: Vec<OpenDependency>,
@@ -287,6 +332,11 @@ pub fn wait(phase: CrPhase, d: &CrData, r: &Readiness) -> Option<Wait> {
     use WaitingOn::*;
     match phase {
         CrPhase::Merged | CrPhase::Closed | CrPhase::Cancelled => None,
+        CrPhase::Reviewing if d.merge_requested => wait_of(
+            Enzarb,
+            "updating_branch",
+            "Branch updated with the base; reviewing before merging",
+        ),
         CrPhase::Reviewing => wait_of(Enzarb, "reviewing", "enzarb is reviewing"),
         CrPhase::AddressingComments if d.auto_trigger => wait_of(
             Enzarb,
@@ -329,6 +379,13 @@ pub fn wait(phase: CrPhase, d: &CrData, r: &Readiness) -> Option<Wait> {
                     "Changes requested, enzarb is fixing them",
                 ),
                 "approve" => match (r.ci.status, r.mergeable.status) {
+                    (CheckStatus::Pending | CheckStatus::Unknown, _) if d.merge_requested => {
+                        wait_of(
+                            Ci,
+                            "updating_branch",
+                            "Branch updated; merging once CI passes",
+                        )
+                    }
                     (CheckStatus::Pending | CheckStatus::Unknown, _) => {
                         wait_of(Ci, "ci_pending", "Waiting for CI")
                     }
@@ -398,9 +455,18 @@ fn set_head(d: &mut CrData, sha: String) {
 /// check never asks again), unknown readiness queues one `check_merge_readiness`.
 fn evaluate(mut fx: Fx, from: CrPhase, mut d: CrData, note: &str, allow_check: bool) -> Transition {
     let r = readiness(&d);
+    if r.ci.status == CheckStatus::Failed || r.review.status == CheckStatus::Failed {
+        d.merge_requested = false;
+    }
     if r.all_ok() {
         if from != CrPhase::ReadyToMerge {
             d.merge_error.clear();
+        }
+        if d.merge_requested {
+            // The user already asked for this merge: no second click.
+            let title = squash_title(&d.title, &d.head_ref);
+            fx.merge_change_request(d.number, &title, &d.head_sha, &d.merge_actor);
+            return Transition::to(st(CrPhase::Merging, d), fx.finish(), "merge resumed");
         }
         return Transition::to(st(CrPhase::ReadyToMerge, d), fx.finish(), "ready to merge");
     }
@@ -498,7 +564,10 @@ fn start_resolve(ctx: &Ctx, fx: &mut Fx, d: &CrData) {
     );
 }
 
-fn begin(ctx: &Ctx, ev: &EngineEvent, phase: CrPhase, d: CrData, note: &str) -> Transition {
+fn begin(ctx: &Ctx, ev: &EngineEvent, phase: CrPhase, mut d: CrData, note: &str) -> Transition {
+    if phase == CrPhase::AddressingComments {
+        d.merge_requested = false;
+    }
     let mut fx = Fx::new(ctx, ev);
     fx.received(&target(ctx, &d));
     fx.wake_at(None);
@@ -629,20 +698,16 @@ fn step_event(ctx: &Ctx, s: &CrState, ev: &EngineEvent) -> Transition {
     match &ev.payload {
         EventPayload::Ui(u) => match u.action {
             UiActionKind::Cancel => {
-                if !ctx.can_write() {
+                if !ctx.can_cancel() {
                     Transition::reject(&state, "cancel requires write access")
                 } else if finished {
                     Transition::reject(&state, "already finished")
                 } else {
-                    finish(
-                        ctx,
-                        ev,
-                        s,
-                        Cancelled,
-                        Some(format!("enzarb: cancelled by @{}.", u.actor.login)),
-                    )
+                    finish(ctx, ev, s, Cancelled, ctx.cancel_comment(&u.actor.login))
                 }
             }
+            UiActionKind::RepoRemoved if finished => Transition::reject(&state, "already finished"),
+            UiActionKind::RepoRemoved => finish(ctx, ev, s, Cancelled, None).repo_removed(),
             UiActionKind::Retry => retry(ctx, ev, s, &state),
             UiActionKind::Approve => Transition::reject(&state, "nothing to approve"),
             UiActionKind::Merge => merge(ctx, ev, s, &state, &u.actor.login),
@@ -736,12 +801,12 @@ fn unmergeable(
     match s.phase {
         AwaitingChanges | ReadyToMerge | ConflictParked => {
             // The cap lives in state: job idempotency keys derive from the event id.
-            if s.data.resolve_attempted_base_sha == base_sha {
+            if s.data.resolve_attempts_for(base_sha) >= MAX_RESOLVE_ATTEMPTS {
                 return Transition::reject(state, "already attempted for this base commit");
             }
             let mut d = s.data.clone();
             d.base_sha = base_sha.to_string();
-            d.resolve_attempted_base_sha = base_sha.to_string();
+            d.record_resolve_attempt(base_sha);
             d.trigger_comment_id = None;
             d.trigger_comment_kind = CommentKind::default();
             d.trigger_text.clear();
@@ -782,8 +847,14 @@ fn updated(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowState) -> T
                 d.base_ref
             };
             d.base_sha = s.data.base_sha.clone();
+            d.resolve_attempts = s.data.resolve_attempts.clone();
             d.resolve_attempted_base_sha = s.data.resolve_attempted_base_sha.clone();
             d.pending = s.data.pending.clone();
+            if s.phase == Reviewing {
+                // The branch update's own commit: the merge request stays.
+                d.merge_requested = s.data.merge_requested;
+                d.merge_actor = s.data.merge_actor.clone();
+            }
             // A review already running is for an older commit: restart it.
             let mut t = begin(ctx, ev, Reviewing, d, "new commits");
             if s.phase == Reviewing {
@@ -958,7 +1029,10 @@ fn ci_changed(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowState) -
     }
     let mut d = s.data.clone();
     match ci.state {
-        enzarb_connector::CiState::Failure => d.ci = CiState::Failure,
+        enzarb_connector::CiState::Failure => {
+            d.ci = CiState::Failure;
+            d.merge_requested = false;
+        }
         enzarb_connector::CiState::Pending => d.ci = CiState::Pending,
         enzarb_connector::CiState::Success => {
             if !(d.ci == CiState::Success && d.ci_sha == ci.head_sha) {
@@ -1018,7 +1092,9 @@ fn merge(
     if s.phase != CrPhase::ReadyToMerge || !readiness(&s.data).all_ok() {
         return Transition::reject(state, "not ready to merge");
     }
-    let d = s.data.clone();
+    let mut d = s.data.clone();
+    d.merge_requested = true;
+    d.merge_actor = actor.to_string();
     let title = squash_title(&d.title, &d.head_ref);
     let mut fx = Fx::new(ctx, ev);
     fx.merge_change_request(d.number, &title, &d.head_sha, actor);
@@ -1042,10 +1118,12 @@ fn merge_finished(ctx: &Ctx, ev: &EngineEvent, s: &CrState, output: &Value) -> T
             d.merge_error.clear();
             // Nothing left to address once merged.
             d.pending = None;
+            d.merge_requested = false;
             Transition::to(st(CrPhase::Merged, d), fx.finish(), "merged")
         }
         "head_moved" => {
             d.merge_error = "the branch changed while merging; reviewing the new commits".into();
+            d.merge_requested = false;
             d.last_review.clear();
             d.ci = CiState::Unknown;
             d.mergeable = None;
@@ -1058,6 +1136,21 @@ fn merge_finished(ctx: &Ctx, ev: &EngineEvent, s: &CrState, output: &Value) -> T
             }
             begin(ctx, ev, CrPhase::Reviewing, d, "head moved during merge")
         }
+        "updated_branch" => {
+            // Behind its base: the base was merged into the branch instead of merging. The
+            // new head is reviewed, CI reruns, and the user merges once it is ready again.
+            d.merge_error = "updating branch with the base; waiting for review and CI".into();
+            d.last_review.clear();
+            d.ci = CiState::Unknown;
+            d.mergeable = None;
+            begin(
+                ctx,
+                ev,
+                CrPhase::Reviewing,
+                d,
+                "branch updated before merge",
+            )
+        }
         "not_mergeable" => {
             let reason = text("reason");
             d.merge_error = if reason.is_empty() {
@@ -1066,6 +1159,7 @@ fn merge_finished(ctx: &Ctx, ev: &EngineEvent, s: &CrState, output: &Value) -> T
                 truncate(reason, 300)
             };
             d.mergeable = Some(false);
+            d.merge_requested = false;
             if let Some(p) = d.pending.take() {
                 let mut fx = Fx::new(ctx, ev);
                 fx.wake_at(None);
@@ -1217,6 +1311,18 @@ fn job_succeeded(
             }
         }
         (ResolvingConflicts, Decision::Blocked) => {
+            let base_sha = d.base_sha.clone();
+            if !base_sha.is_empty() && d.resolve_attempts_for(&base_sha) < MAX_RESOLVE_ATTEMPTS {
+                // Second try against the same base head before a person is asked.
+                fx.done(&tgt);
+                d.record_resolve_attempt(&base_sha);
+                start_resolve(ctx, &mut fx, &d);
+                return Transition::to(
+                    st(ResolvingConflicts, d),
+                    fx.finish(),
+                    "conflict resolution retried",
+                );
+            }
             fx.comment(format!(
                 "enzarb could not resolve the merge conflict with `{}` on its own and left this change request for a person.\n\n{}\n\nMention enzarb to try again after the conflict is resolved or the base moves on.",
                 d.base_ref, out.body

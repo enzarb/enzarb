@@ -131,7 +131,7 @@ ui:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-ui
-    tag: 0.31.0
+    tag: 0.33.0
     pullPolicy: ""
   # HTTP probes (/healthz liveness, /readyz readiness). false falls back to TCP probes.
   probes:
@@ -142,6 +142,8 @@ ui:
   # 0 omits the hook. Must be below terminationGracePeriodSeconds, which also covers the drain.
   preStopSeconds: 10
   terminationGracePeriodSeconds: 30
+  # Hours a change request blocked on review or checks may sit idle before it counts as "Needs you".
+  needsYouStaleHours: 24
   resources: {}
   extraEnv: []
 
@@ -149,7 +151,7 @@ workflows:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-workflows
-    tag: 0.21.0
+    tag: 0.23.0
     pullPolicy: ""
   # Roles for `run`: reducer, executor, ticker.
   roles: reducer,executor,ticker
@@ -181,7 +183,7 @@ connectors:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-connectors-receiver
-    tag: 0.6.2
+    tag: 0.8.0
     pullPolicy: ""
   botHandle: enzarb
   botLogin: enzarb[bot]

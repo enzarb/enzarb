@@ -23,23 +23,73 @@ import {
 } from './work-items.ts';
 
 describe('needs-you classification', () => {
-	const cr = (state: string, stateData: unknown = {}) => ({
+	const NOW = Date.parse('2026-10-14T12:00:00Z');
+	const HOUR = 3_600_000;
+	const opts = { now: NOW, staleAfterMs: 24 * HOUR };
+	const ago = (ms: number) => new Date(NOW - ms).toISOString();
+	const cr = (state: string, stateData: unknown = {}, updatedAt: string = ago(30 * HOUR)) => ({
 		workflow: 'change_request',
 		state,
-		stateData
+		stateData,
+		updatedAt
+	});
+	const red = (check: 'ci' | 'review' | 'mergeable') => ({
+		checklist: { [check]: { status: 'failed', detail: 'red' } }
+	});
+	const classify = (item: ReturnType<typeof cr>) => classifyNeedsYou(item, opts);
+
+	it('does not list blocked change requests that are fresh', () => {
+		expect(classify(cr('AwaitingChanges', {}, ago(HOUR)))).toBeNull();
+		for (const check of ['ci', 'review', 'mergeable'] as const)
+			expect(classify(cr('AwaitingChanges', red(check), ago(HOUR)))).toBeNull();
+		expect(classify(cr('Opened', red('ci'), ago(HOUR)))).toBeNull();
+	});
+	it('lists blocked change requests once idle past the threshold', () => {
+		expect(classify(cr('AwaitingChanges'))).toEqual({
+			category: 'blocked',
+			reason: 'Changes requested'
+		});
+		expect(classify(cr('AwaitingChanges', red('ci')))).toEqual({
+			category: 'blocked',
+			reason: 'CI: red'
+		});
+		expect(classify(cr('AwaitingChanges', red('mergeable')))?.category).toBe('blocked');
+		expect(classify(cr('Opened', red('review')))?.category).toBe('blocked');
+	});
+	it('counts the threshold itself as idle, a millisecond earlier as fresh', () => {
+		expect(classify(cr('AwaitingChanges', {}, ago(24 * HOUR)))?.category).toBe('blocked');
+		expect(classify(cr('AwaitingChanges', {}, ago(24 * HOUR - 1)))).toBeNull();
+		expect(
+			classifyNeedsYou(cr('AwaitingChanges', {}, ago(2 * HOUR)), { now: NOW, staleAfterMs: HOUR })
+				?.category
+		).toBe('blocked');
+	});
+	it('never lists a change request enzarb is working on, however old', () => {
+		for (const state of ['Reviewing', 'AddressingComments', 'ResolvingConflicts', 'Merging'])
+			for (const check of ['ci', 'review', 'mergeable'] as const)
+				expect(classify(cr(state, red(check), ago(100 * HOUR)))).toBeNull();
+	});
+	it('always lists a parked conflict', () => {
+		expect(classify(cr('ConflictParked', {}, ago(1000)))).toEqual({
+			category: 'blocked',
+			reason: 'Merge conflict needs a decision'
+		});
+	});
+	it('does not list a blocked change request without a usable updatedAt', () => {
+		expect(classify({ ...cr('AwaitingChanges'), updatedAt: 'nope' })).toBeNull();
+		expect(
+			classifyNeedsYou(
+				{ workflow: 'change_request', state: 'AwaitingChanges', stateData: {} },
+				opts
+			)
+		).toBeNull();
 	});
 	it('classifies each category', () => {
 		expect(
 			classifyNeedsYou({ workflow: 'issue', state: 'AwaitingApproval', stateData: {} })
 		).toEqual({ category: 'approval', reason: null });
-		expect(classifyNeedsYou(cr('ReadyToMerge'))?.category).toBe('merge');
-		expect(classifyNeedsYou(cr('AwaitingChanges'))).toEqual({
-			category: 'blocked',
-			reason: 'Changes requested'
-		});
-		expect(
-			classifyNeedsYou(cr('Reviewing', { checklist: { ci: { status: 'failed', detail: 'red' } } }))
-		).toEqual({ category: 'blocked', reason: 'CI: red' });
+		expect(classify(cr('ReadyToMerge', {}, ago(1000)))?.category).toBe('merge');
+		expect(classify(cr('Failed', {}, ago(1000)))?.category).toBe('failed');
 		expect(
 			classifyNeedsYou({ workflow: 'issue', state: 'Failed', stateData: { error: ' boom ' } })
 		).toEqual({ category: 'failed', reason: 'boom' });
@@ -131,7 +181,7 @@ describe('needs-you classification', () => {
 	});
 	it('falls back to the state when wait is absent, null or unknown', () => {
 		for (const wait of [undefined, null, 'x', { waiting_on: 'bogus' }]) {
-			expect(classifyNeedsYou(cr('AwaitingChanges', { wait }))?.category).toBe('blocked');
+			expect(classify(cr('AwaitingChanges', { wait }))?.category).toBe('blocked');
 		}
 		expect(classifyNeedsYou(cr('Merged', withWait('human', 'awaiting_review')))).toBeNull();
 	});
