@@ -1398,6 +1398,7 @@ spec:
             - { name: ENZARB_EXECUTOR_LISTEN, value: "0.0.0.0:8081" }
             - { name: ENZARB_PUBLIC_URL, value: "https://enzarb.local" }
             - { name: ENZARB_DB_MAX_CONNECTIONS, value: "10" }
+            - { name: ENZARB_MAX_AUTO_ROUNDS, value: "3" }
             - { name: ENZARB_BOT_HANDLE, value: "enzarb" }
             - { name: ENZARB_BOT_LOGIN, value: "enzarb[bot]" }
             - { name: RUST_LOG, value: "info" }

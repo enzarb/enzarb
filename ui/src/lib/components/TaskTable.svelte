@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { cacheBreakdown, formatCost, formatTokens } from '#lib/usage.ts';
+	import { cacheBreakdown, formatCost, formatTokens, totalInput } from '#lib/usage.ts';
 	import { isTerminal, type WorkItemSummary } from '#lib/work-items.ts';
 	import UsageFigure from './UsageFigure.svelte';
 	import DataTable, { type Column } from './ui/DataTable.svelte';
@@ -36,7 +36,7 @@
 			header: 'Tokens in',
 			cell: tokensIn,
 			numeric: true,
-			sortValue: (w) => w.usage?.inputTokens ?? null
+			sortValue: (w) => totalInput(w.usage)
 		},
 		{
 			id: 'tokens-out',
@@ -69,7 +69,7 @@
 {/snippet}
 {#snippet tokensIn(w: WorkItemSummary)}
 	<UsageFigure
-		value={formatTokens(w.usage?.inputTokens)}
+		value={formatTokens(totalInput(w.usage))}
 		hint={w.usage ? cacheBreakdown(w.usage) : undefined}
 	/>
 {/snippet}

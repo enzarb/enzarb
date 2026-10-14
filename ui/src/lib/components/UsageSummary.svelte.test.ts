@@ -29,6 +29,18 @@ describe('UsageSummary', () => {
 		await expect.element(line).toHaveTextContent('cost $0.75');
 	});
 
+	it('counts cache reads and writes in the in figure', async () => {
+		render(UsageSummary, {
+			usage: u({ inputTokens: 1000, cacheReadTokens: 9000, cacheWriteTokens: 50 })
+		});
+		await expect.element(page.getByTestId('usage')).toHaveTextContent('in 10.1k');
+	});
+
+	it('keeps the dash for in when no input figure is reported', async () => {
+		render(UsageSummary, { usage: u({ outputTokens: 5 }) });
+		await expect.element(page.getByTestId('usage')).toHaveTextContent('in —');
+	});
+
 	it('shows a dash when nothing was reported', async () => {
 		render(UsageSummary, { usage: null, label: 'Total' });
 		await expect.element(page.getByText('Total: —')).toBeVisible();

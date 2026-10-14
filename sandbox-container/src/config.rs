@@ -437,7 +437,8 @@ mod tests {
         assert!(a.contains(&"--group=1000".to_string()));
         assert!(a.contains(&"--data-root=/var/lib/docker".to_string()));
         assert!(a.contains(&"--iptables=false".to_string()));
-        assert!(a.contains(&"--storage-driver=vfs".to_string()));
+        assert!(a.contains(&"--storage-driver=overlay2".to_string()));
+        assert!(!a.contains(&"--storage-driver=vfs".to_string()));
         let c = Config::from_lookup(|k| match k {
             "ENZARB_DOCKERD" => Some("off".into()),
             "ENZARB_DOCKERD_ARGS" => Some("--storage-driver=overlay2  --debug".into()),

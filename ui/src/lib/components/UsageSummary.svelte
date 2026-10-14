@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { cacheBreakdown, formatCost, formatTokens, type Usage } from '#lib/usage.ts';
+	import { cacheBreakdown, formatCost, formatTokens, totalInput, type Usage } from '#lib/usage.ts';
 	import UsageFigure from './UsageFigure.svelte';
 
 	/**
@@ -12,7 +12,7 @@
 {#if usage}
 	<p class="ez-usage-line" data-testid="usage">
 		{#if label}<strong>{label}</strong>{/if}
-		<span>in <UsageFigure value={formatTokens(usage.inputTokens)} /></span>
+		<span>in <UsageFigure value={formatTokens(totalInput(usage))} /></span>
 		<span>out <UsageFigure value={formatTokens(usage.outputTokens)} /></span>
 		<span>cache <span>{cacheBreakdown(usage)}</span></span>
 		{#if usage.models.length}<span><code>{usage.models.join(', ')}</code></span>{/if}
