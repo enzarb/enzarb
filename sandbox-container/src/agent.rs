@@ -1290,7 +1290,7 @@ impl Inner {
                     "+refs/heads/*:refs/remotes/origin/*",
                     "+refs/tags/*:refs/tags/*",
                 ],
-                None,
+                Some(self.cfg.fetch_attempt_cap),
                 None,
             )
             .await?;
@@ -1474,7 +1474,7 @@ impl Inner {
                             &req.repo_url,
                             &t,
                         ],
-                        None,
+                        Some(self.cfg.fetch_attempt_cap),
                         Some(&tmp.0),
                     )
                     .await
@@ -2085,5 +2085,45 @@ mod retry_tests {
         assert!(out.success());
         assert_eq!(fx.calls(), 2);
         assert!(!reset.exists());
+    }
+
+    /// A remote that never answers: the fake git hangs on every fetch. The
+    /// attempt cap cuts each try short, the timeout counts as transient, and
+    /// the last timeout is returned after all attempts.
+    #[tokio::test]
+    async fn hung_fetch_is_capped_and_retried() {
+        let mut fx = Fx::new(0, "");
+        std::fs::write(
+            fx.dir.join("fakegit"),
+            format!(
+                "#!/bin/sh\ncase \"$1\" in fetch)\n  echo x >> '{c}'\n  exec sleep 30;;\nesac\nexit 0\n",
+                c = fx.dir.join("count").display(),
+            ),
+        )
+        .unwrap();
+        let started = Instant::now();
+        let secrets = vec![TOKEN.to_string()];
+        let env = vec![(
+            "PATH".to_string(),
+            std::env::var("PATH").unwrap_or_default(),
+        )];
+        let out = fx
+            .inner
+            .net_git_retry(
+                &fx.run,
+                &mut fx.ctl,
+                &secrets,
+                &env,
+                &fx.dir,
+                &["fetch", "--", "https://example.test/a/b"],
+                Some(Duration::from_millis(300)),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(!out.success());
+        assert!(out.stderr.contains("Operation timed out"), "{}", out.stderr);
+        assert_eq!(fx.calls(), 3);
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 }

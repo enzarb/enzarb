@@ -38,6 +38,11 @@ pub const RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(10), Duration::from
 /// connection (which libcurl's low-speed check does not catch) fails early.
 pub const PUSH_ATTEMPT_CAP: Duration = Duration::from_secs(120);
 
+/// Wall-clock cap of one clone or fetch attempt. Connecting to a dead host
+/// takes the kernel's ~300 s, and `http.lowSpeedTime` does not apply until the
+/// transfer starts; generous enough for a normal repository.
+pub const FETCH_ATTEMPT_CAP: Duration = Duration::from_secs(180);
+
 /// Stderr of a failure that will not get better by trying again.
 const PERMANENT: &[&str] = &[
     // With their context: a bare "403" also occurs in millisecond counts.

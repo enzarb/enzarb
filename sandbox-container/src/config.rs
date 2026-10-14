@@ -54,6 +54,11 @@ pub struct Config {
     pub net_retry_delays: Vec<Duration>,
     /// `ENZARB_PUSH_ATTEMPT_SECS`, default 120: wall-clock cap of one push attempt.
     pub push_attempt_cap: Duration,
+    /// `ENZARB_FETCH_ATTEMPT_SECS`, default 180: wall-clock cap of one clone or
+    /// fetch attempt, so a dead host fails early instead of after the kernel's
+    /// connect timeout (about 300 s). A transfer slower than this is retried,
+    /// then fails: raise it for very large repos.
+    pub fetch_attempt_cap: Duration,
     /// `ENZARB_MAX_CHATS`, default 1: live chat (`acp`) channels at once; `0`
     /// disables chat (no `acp` feature, opens get `chat_disabled`). Chats do
     /// not use run slots.
@@ -129,6 +134,7 @@ impl Default for Config {
             callback_backoff: Duration::from_secs(1),
             net_retry_delays: crate::netgit::RETRY_DELAYS.to_vec(),
             push_attempt_cap: crate::netgit::PUSH_ATTEMPT_CAP,
+            fetch_attempt_cap: crate::netgit::FETCH_ATTEMPT_CAP,
             max_chats: 1,
             chat_idle: Duration::from_secs(1800),
             chat_max: Duration::from_secs(8 * 3600),
@@ -221,6 +227,13 @@ impl Config {
             c.push_attempt_cap = Duration::from_secs(
                 v.parse::<u64>()
                     .map_err(|e| anyhow::anyhow!("ENZARB_PUSH_ATTEMPT_SECS={v:?}: {e}"))?
+                    .max(1),
+            );
+        }
+        if let Some(v) = get("ENZARB_FETCH_ATTEMPT_SECS") {
+            c.fetch_attempt_cap = Duration::from_secs(
+                v.parse::<u64>()
+                    .map_err(|e| anyhow::anyhow!("ENZARB_FETCH_ATTEMPT_SECS={v:?}: {e}"))?
                     .max(1),
             );
         }
