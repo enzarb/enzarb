@@ -361,6 +361,7 @@ pub(super) fn step(ctx: &Ctx, s: &IssueState, ev: &EngineEvent) -> Transition {
             UiActionKind::Retry => retry(ctx, ev, s, &state),
             UiActionKind::Approve => approval(ctx, ev, s, &state),
             UiActionKind::Merge => Transition::reject(&state, "nothing to merge"),
+            UiActionKind::Comment => ui_comment(ctx, ev, s, &state, &u.actor.login),
         },
         EventPayload::JobSucceeded { kind, output, .. } => {
             job_succeeded(ctx, ev, s, &state, *kind, output)
@@ -603,6 +604,28 @@ fn labeled(ctx: &Ctx, ev: &EngineEvent, s: &IssueState, state: &WorkflowState) -
     d.trigger_text =
         "A maintainer labeled this issue `epic`: break it down into sub-issues.".into();
     request_epic(ctx, ev, s, state, d)
+}
+
+/// Feedback typed in the UI: handled exactly like the same comment written on GitHub (plan
+/// feedback while awaiting approval, an answer while awaiting answers), and also posted to
+/// the issue so the thread shows it. The bot's own comment is ignored when it comes back.
+fn ui_comment(
+    ctx: &Ctx,
+    ev: &EngineEvent,
+    s: &IssueState,
+    state: &WorkflowState,
+    login: &str,
+) -> Transition {
+    let Some(c) = ev.comment_like().filter(|c| !c.text.is_empty()) else {
+        return Transition::reject(state, "the comment is empty");
+    };
+    let mut t = comment(ctx, ev, s, state, &c);
+    if t.accepted {
+        let mut fx = Fx::new(ctx, ev);
+        fx.comment(format!("{}\n\n_Sent by @{login} from enzarb._", c.text));
+        t.effects.splice(0..0, fx.finish());
+    }
+    t
 }
 
 fn comment(

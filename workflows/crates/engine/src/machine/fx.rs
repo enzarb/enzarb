@@ -137,14 +137,19 @@ impl<'a> Fx<'a> {
         title: &str,
         expected_head_sha: &str,
         actor: &str,
+        delete_branch: Option<&str>,
     ) {
-        let input = json!({
+        let mut input = json!({
             "item": self.ctx.work_item,
             "number": number,
             "title": title,
             "expected_head_sha": expected_head_sha,
             "actor": actor,
         });
+        // `delete_branch` is the head branch to delete once merged, only set on request.
+        if let (Some(branch), Some(o)) = (delete_branch, input.as_object_mut()) {
+            o.insert("delete_branch".into(), json!(branch));
+        }
         self.job(JobKind::MergeChangeRequest, PRIORITY_COMMENT, input);
     }
 

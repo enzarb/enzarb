@@ -64,8 +64,11 @@ pub trait Connector: Send + Sync {
     async fn merge_change_request(&self, item: &WorkItemKey, number: u64, expected_head_sha: &str,
                                   commit_title: &str, commit_body: Option<&str>, idempotency_key: &str) -> Result<MergeOutcome>;
     async fn get_merge_readiness(&self, item: &WorkItemKey, number: u64) -> Result<MergeReadiness>;
+    async fn delete_branch(&self, repo: &RepoKey, branch: &str, idempotency_key: &str) -> Result<()>;
 }
 ```
+
+- `delete_branch` deletes a branch (GitHub `DELETE /repos/{repo}/git/refs/heads/{branch}`). A branch that is already gone (404, or 422 "Reference does not exist") is success. The trait's default implementation is unsupported, so connectors roll out independently of the workflows that call it. Workflows calls it only after a merge the user asked to delete the branch for, and only for `enzarb/...` branches; the GitHub App needs `contents: write`.
 
 - `merge_change_request` squash-merges, pinned to `expected_head_sha`. `MergeOutcome` is `merged{sha} | already_merged{sha?} | head_moved | not_mergeable{reason}`.
 - `get_merge_readiness` returns `MergeReadiness{head_sha, mergeable: Option<bool>, mergeable_state, ci, ...}`, with CI aggregated from all checks and statuses on the head. Exact types are in the `enzarb-connector` crate; see [contracts.md](contracts.md#5-normalized-events-enzarb-connector-crate--workflowseventspayload).

@@ -193,6 +193,61 @@ describe('workService against workflows_api', () => {
 		expect(types.map((r) => r.type)).toEqual(['ApprovalGranted', 'CancelRequested']);
 	});
 
+	it('sends a comment as a ui CommentAdded event, only where feedback is valid', async () => {
+		const svc = workService(sql, ['web', 'api']);
+		const actor = { login: 'alice', id: 7 };
+		const eventId = await svc.submitAction(approval, actor, 'comment', { body: ' use CSS vars ' });
+		const [e] = await sql`SELECT source, type, payload FROM workflows.events WHERE id = ${eventId}`;
+		expect(e.source).toBe('ui');
+		expect(e.type).toBe('CommentAdded');
+		expect(e.payload).toEqual({
+			actor: { login: 'alice', id: 7, is_bot: false },
+			action: 'comment',
+			data: { body: 'use CSS vars' }
+		});
+		await expect(svc.submitAction(approval, actor, 'comment')).rejects.toMatchObject({
+			kind: 'invalid-action'
+		});
+		await expect(
+			svc.submitAction(approval, actor, 'comment', { body: '  ' })
+		).rejects.toMatchObject({
+			kind: 'invalid-action'
+		});
+		// not an issue plan or question: failed, finished, or someone else's
+		await expect(svc.submitAction(failed, actor, 'comment', { body: 'x' })).rejects.toMatchObject({
+			kind: 'invalid-action'
+		});
+		await expect(svc.submitAction(done, actor, 'comment', { body: 'x' })).rejects.toMatchObject({
+			kind: 'invalid-action'
+		});
+		await expect(
+			workService(sql, ['web']).submitAction(theirs, actor, 'comment', { body: 'x' })
+		).rejects.toMatchObject({ kind: 'not-found' });
+	});
+
+	it('passes delete_branch on merge only when asked, and never on other actions', async () => {
+		const id = await seedItem(sql, {
+			key: 'github:acme/web#31',
+			project: 'web',
+			workflow: 'change_request',
+			state: 'ReadyToMerge'
+		});
+		const svc = workService(sql, ['web']);
+		const actor = { login: 'alice', id: 7 };
+		const dataOf = async (data?: { deleteBranch?: boolean }) => {
+			const eventId = await svc.submitAction(id, actor, 'merge', data);
+			const [e] = await sql`SELECT payload FROM workflows.events WHERE id = ${eventId}`;
+			return e.payload.data;
+		};
+		expect(await dataOf()).toEqual({});
+		expect(await dataOf({ deleteBranch: false })).toEqual({});
+		expect(await dataOf({ deleteBranch: true })).toEqual({ delete_branch: true });
+		const eventId = await svc.submitAction(id, actor, 'cancel', { deleteBranch: true });
+		const [e] = await sql`SELECT payload FROM workflows.events WHERE id = ${eventId}`;
+		expect(e.payload.data).toEqual({});
+		await sql`DELETE FROM workflows.work_items WHERE id = ${id}`;
+	});
+
 	it('cancelForRemovedRepos submits repo-removed for open items of the removed repos only', async () => {
 		const seed = (key: string, state: string, project = 'gone') =>
 			seedItem(sql, { key, project, state });

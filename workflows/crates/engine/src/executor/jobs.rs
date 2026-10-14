@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 
 use super::{Claimed, Done, Executor, JobError};
 use crate::conflict::emit_merge_conflict;
+use crate::machine::stack::is_enzarb_branch;
 use crate::machine::{JobKind, SubIssue};
 
 #[derive(Deserialize)]
@@ -46,6 +47,9 @@ struct MergeCr {
     expected_head_sha: String,
     #[serde(default)]
     actor: String,
+    /// The head branch to delete after the merge, when the user asked for that.
+    #[serde(default)]
+    delete_branch: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -284,9 +288,14 @@ impl Executor {
                 .merge_change_request(&i.item, i.number, &i.expected_head_sha, &i.title, None, key)
                 .await?
             {
-                MergeOutcome::Merged { sha } => outcome("merged", json!({ "sha": sha })),
+                MergeOutcome::Merged { sha } => {
+                    let branch = self.delete_merged_branch(c, i, key).await;
+                    outcome("merged", json!({ "sha": sha, "branch": branch }))
+                }
                 MergeOutcome::AlreadyMerged { sha } => {
-                    outcome("already_merged", json!({ "sha": sha }))
+                    // The deletion is idempotent, so a restarted job simply tries again.
+                    let branch = self.delete_merged_branch(c, i, key).await;
+                    outcome("already_merged", json!({ "sha": sha, "branch": branch }))
                 }
                 MergeOutcome::HeadMoved => outcome("head_moved", json!({})),
                 MergeOutcome::NotMergeable { reason } => {
@@ -294,6 +303,46 @@ impl Executor {
                 }
             },
         )
+    }
+
+    /// Delete the head branch of a merged change request when the user asked for it, and say
+    /// what happened (the machine records it in the transition note). Best effort: nothing here
+    /// can fail the merge. Only enzarb's own branches are deleted, and not while another open
+    /// change request is stacked on it: GitHub would then change that request's base itself,
+    /// without the rebase the retarget flow does.
+    async fn delete_merged_branch(&self, c: &dyn Connector, i: &MergeCr, key: &str) -> String {
+        let Some(branch) = i.delete_branch.as_deref().filter(|b| !b.is_empty()) else {
+            return String::new();
+        };
+        if !is_enzarb_branch(branch) {
+            return format!("branch {branch} kept: it is not an enzarb branch");
+        }
+        let stacked: Result<i64, _> = sqlx::query_scalar(
+            "SELECT count(*) FROM workflows.work_items
+             WHERE workflow = 'change_request' AND state_data->>'stacked_on' = $1
+               AND state NOT IN ('Merged', 'Closed', 'Cancelled')",
+        )
+        .bind(i.item.to_string())
+        .fetch_one(&self.pool)
+        .await;
+        match stacked {
+            Ok(0) => {}
+            Ok(_) => {
+                return format!(
+                    "branch {branch} kept: change requests stacked on it are not retargeted yet"
+                );
+            }
+            Err(e) => {
+                return format!("branch {branch} kept: could not check stacked requests ({e})");
+            }
+        }
+        match c
+            .delete_branch(&i.item.repo, branch, &format!("{key}:delete_branch"))
+            .await
+        {
+            Ok(()) => format!("branch {branch} deleted"),
+            Err(e) => format!("branch {branch} not deleted: {e}"),
+        }
     }
 
     /// Emit `MergeConflictDetected` when the provider explicitly says the change request is

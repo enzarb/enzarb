@@ -776,6 +776,87 @@ fn only_a_ui_merge_reaches_merging() {
     }
 }
 
+fn merge_ev_delete(id: &str, who: &str, delete_branch: bool) -> EngineEvent {
+    let mut e = merge_ev(id, who);
+    if let EventPayload::Ui(u) = &mut e.payload {
+        u.data = json!({ "delete_branch": delete_branch });
+    }
+    e
+}
+
+#[test]
+fn merge_asks_for_branch_deletion_only_when_the_user_did() {
+    let ready = cr_with(CrPhase::ReadyToMerge, ready_data());
+    let head_ref = ready_data().head_ref;
+    for (ev, want) in [
+        (merge_ev("a", "carol"), None),
+        (merge_ev_delete("b", "carol", false), None),
+        (merge_ev_delete("c", "carol", true), Some(head_ref)),
+    ] {
+        let t = run_cr(Permission::Write, &ready, &ev);
+        let (_, _, input) = job_of(&t, JobKind::MergeChangeRequest);
+        assert_eq!(
+            input.get("delete_branch").and_then(Value::as_str),
+            want.as_deref()
+        );
+    }
+}
+
+#[test]
+fn branch_deletion_request_survives_the_branch_update() {
+    let ready = cr_with(CrPhase::ReadyToMerge, ready_data());
+    let t = run_cr(
+        Permission::Write,
+        &ready,
+        &merge_ev_delete("m", "carol", true),
+    );
+    let t = run_cr(
+        Permission::None,
+        &t.next,
+        &merge_result(
+            "u",
+            json!({ "outcome": "updated_branch", "actor": "carol" }),
+        ),
+    );
+    let t = run_cr(
+        Permission::None,
+        &t.next,
+        &agent_ok_checks("r", JobKind::AgentReview, "approve", verified()),
+    );
+    let t = run_cr(
+        Permission::None,
+        &t.next,
+        &checked("c", readiness_out("sha1", "success", json!(true))),
+    );
+    let (_, _, input) = job_of(&t, JobKind::MergeChangeRequest);
+    assert_eq!(input["delete_branch"], json!(ready_data().head_ref));
+}
+
+#[test]
+fn merged_note_says_what_became_of_the_branch() {
+    let state = merging_state();
+    let t = run_cr(
+        Permission::None,
+        &state,
+        &merge_result("1", json!({ "outcome": "merged", "actor": "carol" })),
+    );
+    assert_eq!(t.note, "merged");
+    let t = run_cr(
+        Permission::None,
+        &state,
+        &merge_result(
+            "2",
+            json!({ "outcome": "merged", "actor": "carol",
+                    "branch": "branch enzarb/x not deleted: permission denied" }),
+        ),
+    );
+    assert_cr(&t, CrPhase::Merged);
+    assert_eq!(
+        t.note,
+        "merged; branch enzarb/x not deleted: permission denied"
+    );
+}
+
 #[test]
 fn behind_branch_is_updated_reviewed_and_not_merged() {
     let ready = cr_with(CrPhase::ReadyToMerge, ready_data());

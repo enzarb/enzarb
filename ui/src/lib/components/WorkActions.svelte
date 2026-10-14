@@ -16,7 +16,8 @@
 		approve: 'Approve plan',
 		retry: 'Retry',
 		cancel: 'Cancel',
-		merge: 'Merge (squash)'
+		merge: 'Merge (squash)',
+		comment: 'Request revision'
 	};
 </script>
 

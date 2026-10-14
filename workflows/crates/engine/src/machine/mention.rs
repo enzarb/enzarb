@@ -216,6 +216,9 @@ pub(super) fn step(ctx: &Ctx, s: &MentionState, ev: &EngineEvent) -> Transition 
             UiActionKind::Retry => Transition::reject(&state, "nothing to retry"),
             UiActionKind::Approve => Transition::reject(&state, "nothing to approve"),
             UiActionKind::Merge => Transition::reject(&state, "nothing to merge"),
+            UiActionKind::Comment => {
+                Transition::reject(&state, "comments from the UI are for issues")
+            }
         },
         EventPayload::JobSucceeded { kind, output, .. } => {
             if matches!(kind, JobKind::SetProgress | JobKind::PostComment) {

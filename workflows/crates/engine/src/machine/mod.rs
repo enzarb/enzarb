@@ -147,6 +147,9 @@ pub enum UiActionKind {
     /// a permission check; only the UI's owner-checked repository update emits it.
     #[serde(rename = "repo-removed")]
     RepoRemoved,
+    /// Feedback typed in the UI (`data.body`). On an issue awaiting approval or answers it is
+    /// posted to the issue and handled like the same comment written on GitHub.
+    Comment,
 }
 
 /// A `workflows_api.submit_action` event (source `ui`).
@@ -279,7 +282,8 @@ impl EngineEvent {
             "CancelRequested" | "RetryRequested" | "MergeRequested" | "RepoRemoved" => {
                 EventPayload::Ui(serde_json::from_value(payload.clone()).map_err(bad)?)
             }
-            "ApprovalGranted" if payload.get("action").is_some() => {
+            // Connector events of these types carry no top-level `action`.
+            "ApprovalGranted" | "CommentAdded" if payload.get("action").is_some() => {
                 EventPayload::Ui(serde_json::from_value(payload.clone()).map_err(bad)?)
             }
             t if EventType::ALL.iter().any(|e| e.as_str() == t) => EventPayload::Connector(
@@ -335,6 +339,19 @@ impl EngineEvent {
     /// `CommentAdded` and `Mentioned` look the same to workflows that already own
     /// the item (workflows.md: a mention on an item with a workflow is a comment).
     fn comment_like(&self) -> Option<CommentLike<'_>> {
+        if let EventPayload::Ui(u) = &self.payload {
+            return (u.action == UiActionKind::Comment).then(|| CommentLike {
+                actor: &u.actor,
+                comment: None,
+                text: u
+                    .data
+                    .get("body")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim(),
+                mention: false,
+            });
+        }
         let e = self.connector()?;
         if !matches!(e.event_type, EventType::CommentAdded | EventType::Mentioned) {
             return None;

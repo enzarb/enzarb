@@ -77,6 +77,11 @@ pub enum Call {
         repo: RepoKey,
         branch: String,
     },
+    DeleteBranch {
+        repo: RepoKey,
+        branch: String,
+        idempotency_key: String,
+    },
     ListDependencies {
         item: WorkItemKey,
     },
@@ -127,6 +132,8 @@ struct State {
     seen_creds: HashMap<String, ShortLivedCred>,
     next_id: u64,
     fail_next: Option<Error>,
+    fail_delete_branch: Option<Error>,
+    fail_set_base: Option<Error>,
     merge_outcomes: VecDeque<MergeOutcome>,
     seen_merges: HashMap<String, MergeOutcome>,
     readiness: HashMap<WorkItemKey, MergeReadiness>,
@@ -224,6 +231,16 @@ impl FakeConnector {
         self.st().fail_next = Some(error);
     }
 
+    /// Make the next `delete_branch` call fail with `error`, once; other calls are unaffected.
+    pub fn fail_delete_branch(&self, error: Error) {
+        self.st().fail_delete_branch = Some(error);
+    }
+
+    /// Make the next `set_base` call fail with `error`, once; other calls are unaffected.
+    pub fn fail_set_base(&self, error: Error) {
+        self.st().fail_set_base = Some(error);
+    }
+
     /// Every call so far, in order.
     pub fn calls(&self) -> Vec<RecordedCall> {
         self.st().calls.clone()
@@ -253,6 +270,18 @@ impl FakeConnector {
 
     pub fn change_requests(&self) -> Vec<ItemRef> {
         self.st().change_requests.clone()
+    }
+
+    /// Every `delete_branch` call so far as `(repo, branch)`, in order (replays included).
+    pub fn delete_branch_calls(&self) -> Vec<(RepoKey, String)> {
+        self.st()
+            .calls
+            .iter()
+            .filter_map(|c| match &c.call {
+                Call::DeleteBranch { repo, branch, .. } => Some((repo.clone(), branch.clone())),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Every `set_base` call so far as `(item, number, new_base)`, in order (replays included).
@@ -512,6 +541,10 @@ impl Connector for FakeConnector {
             idempotency_key: idempotency_key.to_string(),
         };
         Self::take_failure(&mut st, call.clone())?;
+        if let Some(e) = st.fail_set_base.take() {
+            Self::record(&mut st, call, false);
+            return Err(e);
+        }
         // A change request is known either as a seeded thread or one opened through the fake.
         let mut found = false;
         if let Some(t) = st.threads.get_mut(item)
@@ -530,6 +563,32 @@ impl Connector for FakeConnector {
             return Err(Error::NotFound(format!("{item} change request {number}")));
         }
         let replayed = !st.seen_keys.insert(format!("set_base:{idempotency_key}"));
+        Self::record(&mut st, call, replayed);
+        Ok(())
+    }
+
+    async fn delete_branch(
+        &self,
+        repo: &RepoKey,
+        branch: &str,
+        idempotency_key: &str,
+    ) -> Result<()> {
+        let mut st = self.st();
+        let call = Call::DeleteBranch {
+            repo: repo.clone(),
+            branch: branch.to_string(),
+            idempotency_key: idempotency_key.to_string(),
+        };
+        Self::take_failure(&mut st, call.clone())?;
+        if let Some(e) = st.fail_delete_branch.take() {
+            Self::record(&mut st, call, false);
+            return Err(e);
+        }
+        // Deleting a branch that is not there succeeds, like the provider's already-gone answer.
+        st.branch_heads.remove(&(repo.clone(), branch.to_string()));
+        let replayed = !st
+            .seen_keys
+            .insert(format!("delete_branch:{idempotency_key}"));
         Self::record(&mut st, call, replayed);
         Ok(())
     }

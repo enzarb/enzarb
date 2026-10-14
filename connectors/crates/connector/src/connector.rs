@@ -99,6 +99,18 @@ pub trait Connector: Send + Sync {
         Err(Error::Other("set_base is not supported".into()))
     }
 
+    /// Deletes `branch` of `repo`. A branch that is already gone succeeds, so repeating the
+    /// call is safe. The default implementation is unsupported, so connectors roll out
+    /// independently of the workflows that call it.
+    async fn delete_branch(
+        &self,
+        _repo: &RepoKey,
+        _branch: &str,
+        _idempotency_key: &str,
+    ) -> Result<()> {
+        Err(Error::Other("delete_branch is not supported".into()))
+    }
+
     /// Current head commit sha of `branch`, or `None` if the branch does not
     /// exist. The default implementation returns `Ok(None)`.
     async fn branch_head(&self, _repo: &RepoKey, _branch: &str) -> Result<Option<String>> {
