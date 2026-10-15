@@ -118,6 +118,17 @@ describe('project layout and tabs', () => {
 			.not.toHaveAttribute('aria-current');
 	});
 
+	it('keeps the Metrics tab current on a nested metrics route', async () => {
+		h.path = '/projects/alpha/metrics/timing';
+		mount(Settings);
+		await expect
+			.element(browser.getByRole('link', { name: 'Metrics' }))
+			.toHaveAttribute('aria-current', 'page');
+		await expect
+			.element(browser.getByRole('link', { name: 'Overview' }))
+			.not.toHaveAttribute('aria-current');
+	});
+
 	it('shows the pending-change banner once, on every tab', async () => {
 		h.project = view({
 			pendingChange: { since: '2026-01-01T00:00:00Z', reason: 'resources' } as never
