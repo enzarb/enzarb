@@ -484,7 +484,19 @@ describe('workService needs-you queue', () => {
 			['change_request', 'Merged', { wait: { waiting_on: 'human', reason: 'x' } }],
 			['issue', 'Reviewing', { wait: { waiting_on: 'human', reason: 'x' } }],
 			['issue', 'AwaitingAnswers', {}],
-			['change_request', 'AwaitingAnswers', {}]
+			['change_request', 'AwaitingAnswers', {}],
+			// graph tasks blocked by dependencies: only a failed one needs a human
+			[
+				'graph:issue',
+				'Blocked',
+				{ wait: { waiting_on: 'dependency', reason: 'dependencies_open', text: 'Blocked by #3' } }
+			],
+			[
+				'graph:issue',
+				'Blocked',
+				{ wait: { waiting_on: 'human', reason: 'dependency_failed', text: 'Blocked by #3' } }
+			],
+			['graph:issue', 'Waiting', { wait: { waiting_on: 'human', reason: 'x' } }]
 		];
 		const HOURS = 24;
 		const HOUR_MS = 3_600_000;
