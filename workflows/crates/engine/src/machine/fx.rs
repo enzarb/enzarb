@@ -41,6 +41,10 @@ pub struct AgentJobInput {
     /// `json` block) has been started for an unparseable result.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub recovery_used: bool,
+    /// `agent_segment` jobs: the graph segment to run (`RunStart.graph`). The executor
+    /// re-renders its `prompts` once it has the thread, like `prompt`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<enzarb_proto::GraphSegment>,
 }
 
 pub(crate) struct AgentSpec {
@@ -214,9 +218,38 @@ impl<'a> Fx<'a> {
             prompt: render_prompt(kind, &context),
             context,
             recovery_used: false,
+            graph: None,
         };
         self.job(
             kind,
+            PRIORITY_AGENT,
+            serde_json::to_value(input).expect("agent input serializes"),
+        );
+    }
+
+    /// Queue a graph segment run (`agent_segment`) and its `Working` marker on `target`.
+    pub fn segment(
+        &mut self,
+        target: &ProgressTarget,
+        spec: AgentSpec,
+        context: PromptContext,
+        segment: enzarb_proto::GraphSegment,
+    ) {
+        self.progress(target, Progress::Working, PRIORITY_WORKING);
+        let input = AgentJobInput {
+            kind: JobKind::AgentSegment,
+            repo: self.ctx.work_item.repo.clone(),
+            base_ref: spec.base_ref,
+            branch: spec.branch,
+            push: spec.push,
+            timeout_secs: self.ctx.config.agent_timeout_secs,
+            prompt: String::new(),
+            context,
+            recovery_used: false,
+            graph: Some(segment),
+        };
+        self.job(
+            JobKind::AgentSegment,
             PRIORITY_AGENT,
             serde_json::to_value(input).expect("agent input serializes"),
         );

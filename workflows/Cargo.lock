@@ -1054,6 +1054,7 @@ dependencies = [
  "enzarb-connector",
  "enzarb-connector-github",
  "enzarb-crds",
+ "enzarb-graph",
  "enzarb-proto",
  "futures",
  "hmac 0.12.1",

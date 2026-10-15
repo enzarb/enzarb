@@ -58,6 +58,10 @@ pub fn format_thread(t: &Thread) -> String {
         .join("\n\n---\n\n")
 }
 
+/// The `prompt` of a segment run, only read by a sandbox that does not know `graph`.
+pub const SEGMENT_FALLBACK_PROMPT: &str = "This sandbox is too old to run graph workflow \
+segments. Do not change any file. Reply with exactly: unsupported";
+
 /// Prefix of the permanent failure for an owner without a Claude credential.
 pub const NO_CREDENTIAL: &str = "no_credential";
 /// Prefix of the permanent failure for a credential that cannot be decrypted.
@@ -179,6 +183,19 @@ impl Executor {
             .await
             .map_err(|e| JobError::transient(format!("reading dependencies: {e}")))?;
         input.prompt = render_prompt(kind, &input.context);
+        // A segment's agent prompts are rendered per node, with the thread too.
+        let graph = match input.graph.clone() {
+            Some(mut g) => {
+                let def = enzarb_graph::Definition::from_value(&g.definition)
+                    .map_err(|e| JobError::permanent(format!("graph segment: {e}")))?;
+                g.prompts = crate::machine::graph::segment_prompts(&def, &input.context);
+                // What a sandbox that predates `RunStart.graph` runs instead: nothing to
+                // change, and its result has no graph, so the task fails with a clear error.
+                input.prompt = SEGMENT_FALLBACK_PROMPT.into();
+                Some(g)
+            }
+            None => None,
+        };
 
         let scope = if input.push {
             CredScope::ReadWrite
@@ -199,6 +216,7 @@ impl Executor {
                 | JobKind::AgentAddressComments
                 | JobKind::AgentResolveConflicts
                 | JobKind::AgentReview
+                | JobKind::AgentSegment
         );
         let deps_token = if needs_deps {
             self.mint_deps_token(job, project, &input.repo, connector)
@@ -226,6 +244,7 @@ impl Executor {
             callback_token: callback_token(&self.cfg.callback_secret, rid),
             log_channel: None,
             retarget: None,
+            graph,
         })
     }
 
@@ -309,6 +328,7 @@ impl Executor {
             timeout_secs: input.timeout_secs,
             log_channel: None,
             retarget: None,
+            graph: None,
         };
         self.launch_run(session, job_id, attempt, &rid, run, input.timeout_secs)
             .await

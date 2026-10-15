@@ -24,6 +24,7 @@ enzarb-crds = { path = "../../../operator/crates/enzarb-crds" }
 enzarb-connector = { path = "../../../connectors/crates/connector" }
 enzarb-proto = { path = "../../../proto/crates/enzarb-proto", features = ["tokio"] }
 enzarb-connector-github = { path = "../../../connectors/crates/connector-github" }
+enzarb-graph = { path = "../graph" }
 k8s-openapi.workspace = true
 axum.workspace = true
 hmac.workspace = true
