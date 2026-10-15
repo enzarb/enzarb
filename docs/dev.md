@@ -39,6 +39,14 @@ cd workflows && cargo nextest run --workspace
 
 `mise run test:pg` prints `export ENZARB_TEST_PG_URL=postgres://postgres:postgres@127.0.0.1:55432/postgres` (port via `ENZARB_TEST_PG_PORT`, container name via `ENZARB_TEST_PG_NAME`) and leaves the container running. With the variable set, `engine::testing::TestDb` creates the runtime roles and a migrated template database `enzarb_template` once per server (rebuilt when the migrations change), and gives each test `CREATE DATABASE test_<unique> TEMPLATE enzarb_template`, dropped when the test ends. Tests that need a pristine cluster (the `enzarb-workflows` role check) still use their own container. Unset the variable to get the per-test containers back.
 
+### Agent run preparation
+
+Before the agent starts, sandbox-init (`sandbox-container/src/prepare.rs`) prepares the worktree so the agent installs nothing. For the root and every top-level directory with a `package-lock.json` or `mise.toml`: `mise install`, then `npm ci --prefer-offline --no-audit --no-fund` (through `mise exec --`, so the pinned node is used). A `mise install` or `npm ci` failure fails the run and names the step. Postgres is started once per sandbox with the same recipe as `mise run test:pg` (when the repo has `workflows/`, `connectors/`, `realtime/` or a `test:pg` task) and its URL is exported to the agent as `ENZARB_TEST_PG_URL`; a Postgres failure is logged and the run goes on without the variable.
+
+`npm ci` is skipped when the lockfile hash matches an earlier install: installs are cached under `<workspace>/cache/npm/<repo>/<component>/<sha256 of package-lock.json>/node_modules` (the last two hashes per component are kept) and restored into the worktree with a hardlink copy. Do not edit files inside `node_modules` in place: they share inodes with the cache.
+
+The run log shows the timing, and the transcript has a `prepare` event with `total_ms` and the steps: `prepare: 41.2s (mise install ui 8.0s, npm ci ui 30.1s, postgres 2.3s)`. Settings: `ENZARB_PREPARE_STEP_SECS` (cap per step, default 600), `ENZARB_NPM_BIN`, `ENZARB_DOCKER_BIN`, `ENZARB_TEST_PG_NAME`, `ENZARB_TEST_PG_PORT`.
+
 ## Prerequisites
 
 - Docker with BuildKit, and `mise` (`mise install` provides `kind`, `kubectl`, `helm`, `gh`, `node`).
