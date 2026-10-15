@@ -142,6 +142,30 @@ pub fn template(kind: JobKind) -> Option<&'static str> {
     })
 }
 
+/// The job kind whose template a graph `agent` node names with its `prompt` (ADR-0020):
+/// `triage`, `plan`, `implement`, `review`, `address_comments`, `resolve_conflicts`, `task`.
+pub fn named_prompt(name: &str) -> Option<JobKind> {
+    Some(match name {
+        "triage" => JobKind::AgentTriage,
+        "plan" => JobKind::AgentPlan,
+        "implement" => JobKind::AgentImplement,
+        "review" => JobKind::AgentReview,
+        "address_comments" => JobKind::AgentAddressComments,
+        "resolve_conflicts" => JobKind::AgentResolveConflicts,
+        "task" => JobKind::AgentTask,
+        _ => return None,
+    })
+}
+
+/// The text of a graph `agent` node's prompt: a named template, or the inline text with
+/// the same `{placeholders}` substituted.
+pub fn render_graph_prompt(prompt: &str, ctx: &PromptContext) -> String {
+    match named_prompt(prompt.trim()) {
+        Some(kind) => render_prompt(kind, ctx),
+        None => render(prompt, ctx),
+    }
+}
+
 /// The short prompt for the one recovery run of a job whose final message had no usable
 /// `json` block. It is a re-run (the sandbox protocol has no way to resume the session), so it
 /// tells the agent to change nothing and only report. Non-agent kinds get an empty string.

@@ -1575,3 +1575,135 @@ async fn retarget_run_rebases_the_child_without_an_agent_or_claude_token() {
     assert_eq!(v["outcome"], "rejected");
     assert_eq!(env.remote_sha("main").unwrap(), main);
 }
+
+// ---- graph segment runs (ADR-0020) ----
+
+const SEGMENT: &str = r#"
+version: 1
+name: issue
+on: [issue_opened]
+start: hello
+nodes:
+  hello: {type: command, run: "echo hi; echo $ENZARB_RUN_ID > made.txt", next: {"exit_code == 0": check, else: failed}}
+  check: {type: command, run: "grep -q seg made.txt && echo found", next: implement}
+  implement: {type: agent, prompt: implement, next: {pushed: open_pr, else: failed}}
+  broken: {type: command, run: "exit 3", next: open_pr}
+  open_pr: {type: action, action: open_change_request, next: done}
+  failed: {type: end, status: failed}
+  done: {type: end, status: done}
+"#;
+
+fn segment(env: &Env, id: &str, start: &str) -> RunStart {
+    let mut req = env.run(id, "ignored", "main", &format!("enzarb/{id}"), true);
+    req.graph = Some(enzarb_proto::GraphSegment {
+        definition: serde_json::Value::String(SEGMENT.into()),
+        start: start.into(),
+        prompts: [("implement".to_string(), "EDIT the thing".to_string())].into(),
+        ..Default::default()
+    });
+    req
+}
+
+#[tokio::test]
+async fn segment_runs_commands_and_agent_until_an_action() {
+    let env = start(0).await;
+    let (session, _e) = env.connect().await;
+    session
+        .run_start(segment(&env, "seg-1", "hello"))
+        .await
+        .unwrap();
+    let (_, fin) = env.finished("seg-1").await;
+    assert_eq!(fin.outcome, RunOutcome::Succeeded, "{}", fin.summary);
+    let g = fin.graph.expect("graph result");
+    assert_eq!(g.stopped_at, "open_pr");
+    assert_eq!(g.outputs["hello"]["stdout"], "hi\n");
+    assert_eq!(g.outputs["hello"]["exit_code"], 0);
+    assert_eq!(g.outputs["check"]["stdout"], "found\n");
+    // The agent got the rendered prompt, committed and pushed.
+    assert_eq!(g.outputs["implement"]["decision"], "done");
+    assert_eq!(g.outputs["implement"]["pushed"], true);
+    assert_eq!(g.visits["implement"], 1);
+    assert!(fin.pushed);
+    assert_eq!(Some(fin.head_sha.clone()), env.remote_sha("enzarb/seg-1"));
+    assert_eq!(fin.summary, SUMMARY.replace("issue-1", "seg-1"));
+}
+
+#[tokio::test]
+async fn segment_failing_command_fails_the_run() {
+    let env = start(0).await;
+    let (session, _e) = env.connect().await;
+    session
+        .run_start(segment(&env, "seg-2", "broken"))
+        .await
+        .unwrap();
+    let (_, fin) = env.finished("seg-2").await;
+    assert_eq!(fin.outcome, RunOutcome::Failed);
+    assert_eq!(fin.summary, "node `broken` failed");
+    assert!(!fin.pushed);
+    let g = fin.graph.unwrap();
+    assert_eq!(g.stopped_at, "broken");
+    assert_eq!(g.outputs["broken"]["exit_code"], 3);
+    assert_eq!(g.outputs["broken"]["ok"], false);
+}
+
+#[tokio::test]
+async fn segment_starting_at_a_kernel_node_runs_nothing() {
+    let env = start(0).await;
+    let (session, _e) = env.connect().await;
+    session
+        .run_start(segment(&env, "seg-3", "open_pr"))
+        .await
+        .unwrap();
+    let (_, fin) = env.finished("seg-3").await;
+    assert_eq!(fin.outcome, RunOutcome::Succeeded);
+    assert_eq!(fin.graph.unwrap().stopped_at, "open_pr");
+    assert_eq!(env.remote_sha("enzarb/seg-3"), None);
+}
+
+#[tokio::test]
+async fn segment_with_an_invalid_definition_fails() {
+    let env = start(0).await;
+    let (session, _e) = env.connect().await;
+    let mut req = segment(&env, "seg-4", "hello");
+    req.graph.as_mut().unwrap().definition =
+        serde_json::Value::String("version: 1\nname: x\non: [a]\nstart: a\nnodes: {}".into());
+    session.run_start(req).await.unwrap();
+    let (_, fin) = env.finished("seg-4").await;
+    assert_eq!(fin.outcome, RunOutcome::Failed);
+    assert!(fin.summary.contains("invalid"), "{}", fin.summary);
+}
+
+#[tokio::test]
+async fn segment_agent_without_new_work_is_not_pushed() {
+    let env = start(0).await;
+    let (session, _e) = env.connect().await;
+    let mut req = segment(&env, "seg-5", "implement");
+    req.graph
+        .as_mut()
+        .unwrap()
+        .prompts
+        .insert("implement".into(), "LOOK only".into());
+    session.run_start(req).await.unwrap();
+    let (_, fin) = env.finished("seg-5").await;
+    assert_eq!(fin.outcome, RunOutcome::Succeeded, "{}", fin.summary);
+    let g = fin.graph.unwrap();
+    assert_eq!(g.outputs["implement"]["pushed"], false);
+    assert_eq!(g.stopped_at, "failed");
+    assert!(!fin.pushed);
+    assert_eq!(env.remote_sha("enzarb/seg-5"), None);
+}
+
+#[tokio::test]
+async fn segment_command_edits_are_pushed_at_the_stop() {
+    let env = start(0).await;
+    let (session, _e) = env.connect().await;
+    let mut req = segment(&env, "seg-6", "edit");
+    req.graph.as_mut().unwrap().definition = serde_json::Value::String(
+        "version: 1\nname: t\non: [issue_opened]\nstart: edit\nnodes:\n  edit: {type: command, run: \"echo x > c.txt\", next: open_pr}\n  open_pr: {type: action, action: open_change_request, next: done}\n  done: {type: end, status: done}\n".into(),
+    );
+    session.run_start(req).await.unwrap();
+    let (_, fin) = env.finished("seg-6").await;
+    assert_eq!(fin.outcome, RunOutcome::Succeeded, "{}", fin.summary);
+    assert!(fin.pushed);
+    assert_eq!(Some(fin.head_sha.clone()), env.remote_sha("enzarb/seg-6"));
+}

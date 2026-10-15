@@ -304,6 +304,10 @@ enum Recovery {
 /// asking again for the block.
 fn unparseable_output(input: &Value, output: &Value) -> Option<OutputError> {
     let kind = serde_json::from_value::<JobKind>(input.get("kind")?.clone()).ok()?;
+    // A segment's output is the graph result; the kernel reads it, not a `json` block.
+    if kind == JobKind::AgentSegment {
+        return None;
+    }
     match AgentOutput::from_job_output(kind, output) {
         Err(e @ (OutputError::NoJsonBlock | OutputError::BadJson(_))) => Some(e),
         _ => None,

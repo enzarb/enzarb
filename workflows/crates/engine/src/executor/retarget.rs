@@ -207,6 +207,7 @@ impl Executor {
                 expected_sha: i.expected_sha.clone(),
                 protected: vec![i.onto.clone()],
             }),
+            graph: None,
         })
     }
 }

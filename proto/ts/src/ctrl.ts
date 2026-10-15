@@ -108,6 +108,29 @@ export interface RunStartFields {
   claude_token?: SecretLike;
   /** When set, a retarget run instead of an agent run. */
   retarget?: Retarget;
+  /** When set, a graph segment run (ADR-0020); `prompt` is ignored. */
+  graph?: GraphSegment;
+}
+
+/** `run_start.graph`: a workflow graph segment for sandbox-init to walk. */
+export interface GraphSegment {
+  /** The pinned workflow definition (JSON form of the YAML). */
+  definition: unknown;
+  /** Node id to start at. */
+  start: string;
+  /** Outputs of nodes run so far, by node id. */
+  outputs?: Record<string, unknown>;
+  /** Visit counts so far, by node id. */
+  visits?: Record<string, number>;
+  /** Rendered prompt text of `agent` nodes, by node id. */
+  prompts?: Record<string, string>;
+}
+
+/** `RunFinished.graph`: where a segment run stopped and every node's output. */
+export interface GraphResult {
+  stopped_at: string;
+  outputs?: Record<string, unknown>;
+  visits?: Record<string, number>;
 }
 
 /**
@@ -133,6 +156,8 @@ export interface RunFinished {
   head_sha: string;
   pushed: boolean;
   usage?: Usage | null;
+  /** Result of a graph segment run. */
+  graph?: GraphResult | null;
 }
 
 /**

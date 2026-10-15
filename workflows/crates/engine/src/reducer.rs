@@ -39,13 +39,19 @@ use sqlx::{PgPool, Postgres, Transaction};
 use tokio::sync::{Notify, watch};
 
 use crate::db::{Event as EventRow, WorkItem};
+use crate::definitions::DefinitionSource;
 use crate::error::Error;
 use crate::index::{ProjectIndex, ProjectInfo};
+use crate::machine::graph::GraphSource;
 use crate::machine::{
     self, CrPhase, Ctx, Effect, EngineEvent, EpicParent, EventPayload, Triggers, WORKFLOW_VERSION,
     WorkflowState,
 };
 use crate::permission::PermissionResolver;
+
+/// How long the reducer waits for a graph workflow definition before it falls back to the
+/// compiled machine.
+pub const DEFINITION_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub struct ReducerConfig {
@@ -87,6 +93,9 @@ pub struct Reducer {
     index: Arc<dyn ProjectIndex>,
     permissions: Arc<dyn PermissionResolver>,
     cfg: ReducerConfig,
+    /// Reads graph workflow definitions; `None` keeps every repository on the compiled
+    /// machines.
+    definitions: Option<Arc<dyn DefinitionSource>>,
 }
 
 /// Everything resolved before the transaction opens.
@@ -95,6 +104,8 @@ struct Prepared {
     event: Result<EngineEvent, String>,
     project: Option<ProjectInfo>,
     permission: Permission,
+    /// The issue graph on the default branch, for an issue-opening event (ADR-0020).
+    graph: Option<GraphSource>,
 }
 
 /// Lowercase every part of a work item key (GitHub names are case-insensitive).
@@ -129,6 +140,48 @@ impl Reducer {
             index,
             permissions,
             cfg,
+            definitions: None,
+        }
+    }
+
+    /// Read graph workflow definitions (`.enzarb/workflows/issue.yaml`) through `source`.
+    pub fn with_definitions(mut self, source: Arc<dyn DefinitionSource>) -> Self {
+        self.definitions = Some(source);
+        self
+    }
+
+    /// The issue graph of the event's repository, for an issue-opening event in a Project
+    /// with issue triggers. Any error or a slow provider ([`DEFINITION_TIMEOUT`]) is logged
+    /// and the repository keeps the compiled machine: a provider outage never stalls events.
+    async fn graph_definition(
+        &self,
+        key: &WorkItemKey,
+        ev: &EngineEvent,
+        project: &ProjectInfo,
+    ) -> Option<GraphSource> {
+        let source = self.definitions.as_ref()?;
+        let EventPayload::Connector(e) = &ev.payload else {
+            return None;
+        };
+        if e.event_type != EventType::WorkItemOpened
+            || e.data.item.kind != ItemKind::Issue
+            || !project.triggers.issues
+        {
+            return None;
+        }
+        let fetch = source.fetch(&key.repo, &project.default_branch, "issue");
+        match tokio::time::timeout(DEFINITION_TIMEOUT, fetch).await {
+            Ok(Ok(g)) => g,
+            Ok(Err(e)) => {
+                tracing::warn!(item = %key, error = %e,
+                    "reading the workflow definition failed; using the built-in workflow");
+                None
+            }
+            Err(_) => {
+                tracing::warn!(item = %key,
+                    "reading the workflow definition timed out; using the built-in workflow");
+                None
+            }
         }
     }
 
@@ -244,11 +297,16 @@ impl Reducer {
         {
             permission = self.permissions.permission(&k.repo, actor).await?;
         }
+        let mut graph = None;
+        if let (Ok(k), Ok(ev), Some(p)) = (&key, &event, &project) {
+            graph = self.graph_definition(k, ev, p).await;
+        }
         Ok(Prepared {
             key,
             event,
             project,
             permission,
+            graph,
         })
     }
 
@@ -386,6 +444,7 @@ impl Reducer {
             triggers: project.triggers,
             default_branch: project.default_branch.clone(),
             open_dependencies: crate::dependencies::open_dependencies(&mut tx, &key).await?,
+            graph: prep.graph.clone(),
         };
 
         let state = match &existing {
@@ -419,7 +478,7 @@ impl Reducer {
                 )
                 .bind(&key_s)
                 .bind(&project.name)
-                .bind(t.next.workflow().as_str())
+                .bind(t.next.workflow_name())
                 .bind(WORKFLOW_VERSION)
                 .bind(t.next.state_name())
                 .bind(t.next.state_data())

@@ -29,8 +29,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use base64::Engine as _;
+use enzarb_graph::{Definition, GraphState};
 use enzarb_proto::session::RunInfo;
-use enzarb_proto::{RunFinished, RunOutcome, RunPhase, RunStart, Usage};
+use enzarb_proto::{GraphResult, GraphSegment, RunFinished, RunOutcome, RunPhase, RunStart, Usage};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -44,6 +45,7 @@ use crate::docker_prune::ActivityGate;
 use crate::exec::{self, CmdSpec, Ctl, LineSink, Output, Stop};
 use crate::reaper::Reaper;
 use crate::runs::{RunManager, SessionCtx};
+use crate::segment::{self, Steps, Stopped};
 
 /// Largest `summary` pushed in a `run_state` (the callback carries it whole).
 const MAX_STATE_SUMMARY: usize = 256 * 1024;
@@ -252,6 +254,9 @@ struct Run {
     /// Usage reported by the agent, filled by `acp::run` whatever the outcome;
     /// copied into the record and the callback by `finalize`.
     usage: acp::UsageSink,
+    /// Result of a graph segment run (`RunStart.graph`), set by
+    /// `execute_segment` whatever the outcome; copied into the callback.
+    graph: Mutex<Option<GraphResult>>,
 }
 
 impl Run {
@@ -374,6 +379,7 @@ impl AgentRunManager {
                 rec: Mutex::new(rec),
                 cancel: watch::channel(false).0,
                 usage: Arc::default(),
+                graph: Mutex::default(),
             });
             inner
                 .runs
@@ -484,6 +490,7 @@ impl RunManager for AgentRunManager {
             rec: Mutex::new(rec),
             cancel: watch::channel(false).0,
             usage: Arc::default(),
+            graph: Mutex::default(),
         });
         run.transcript
             .append("state", json!({"state": "queued", "branch": req.branch}));
@@ -875,6 +882,7 @@ impl Inner {
             head_sha: f.head_sha.clone(),
             pushed: f.pushed,
             usage: usage.clone(),
+            graph: run.graph.lock().unwrap().clone(),
         };
         run.transcript.append(
             "finished",
@@ -1605,6 +1613,36 @@ impl Inner {
             "worktree",
             json!({"path": worktree, "branch": req.branch, "start": start_sha, "base": base_sha}),
         );
+        let mut tok_env = Vec::new();
+        if let Some(t) = &deps_token {
+            tok_env.extend(deps_env(t));
+        }
+        if let Some(t) = &npm_token {
+            apply_npm_env(&mut tok_env, t);
+        }
+
+        // A graph segment walks its own nodes; preparation, if any, is a
+        // `command` node the repo owns (ADR-0020), so `prepare` is skipped.
+        if let Some(g) = &req.graph {
+            let mut steps = SegmentSteps {
+                mgr: self,
+                run,
+                req,
+                ctl,
+                secrets,
+                net_env: &net_env,
+                repo: &repo,
+                worktree: &worktree,
+                base_sha: &base_sha,
+                tok_env,
+                token: None,
+                head_sha: start_sha.clone(),
+                synced: start_sha.clone(),
+                pushed: false,
+                summary: String::new(),
+            };
+            return self.execute_segment(run, g, &mut steps).await;
+        }
 
         // 2. the agent, over ACP
         // Per-run token from `run_start`; the legacy file only when it is absent.
@@ -1621,13 +1659,6 @@ impl Inner {
         secrets.extend(crate::chat::filter::token_forms(&token));
         // The repo's pinned toolchain, so the agent can run its checks. After
         // the token joins `secrets` so any output is redacted.
-        let mut tok_env = Vec::new();
-        if let Some(t) = &deps_token {
-            tok_env.extend(deps_env(t));
-        }
-        if let Some(t) = &npm_token {
-            apply_npm_env(&mut tok_env, t);
-        }
         let pg_url = self
             .prepare(run, ctl, &secrets, req, tok_env.clone(), &worktree)
             .await?;
@@ -1691,69 +1722,167 @@ impl Inner {
         };
 
         // 3. commit leftovers and push
-        let mut head_sha = head_sha;
-        let mut pushed = false;
-        if req.push {
-            let status = self
-                .git(
-                    run,
-                    ctl,
-                    &secrets,
-                    &[],
-                    Some(&worktree),
-                    &["status", "--porcelain"],
+        let (head_sha, pushed) = if req.push {
+            match self
+                .commit_and_push(
+                    run, ctl, &secrets, &net_env, req, &repo, &worktree, &base_sha,
                 )
-                .await?;
-            if !status.stdout.iter().all(u8::is_ascii_whitespace) {
-                let msg = format!("enzarb: uncommitted changes from run {}", req.run_id);
-                self.git(run, ctl, &secrets, &[], Some(&worktree), &["add", "-A"])
-                    .await?;
-                self.git(
-                    run,
-                    ctl,
-                    &secrets,
-                    &[],
-                    Some(&worktree),
-                    &["-c", "commit.gpgsign=false", "commit", "-m", &msg],
-                )
-                .await?;
-                head_sha = self
-                    .rev_parse(run, ctl, &worktree, "HEAD")
-                    .await?
-                    .unwrap_or_default();
+                .await?
+            {
+                Ok(x) => x,
+                Err((msg, head_sha)) => return Ok(fail(msg, head_sha)),
             }
-            // Nothing new on a fresh branch: do not create it.
-            let nothing = req.branch != req.base_ref && head_sha == base_sha;
-            if !nothing {
-                let refspec = format!("{head_sha}:refs/heads/{}", req.branch);
-                let out = self
-                    .net_push(
-                        run,
-                        ctl,
-                        &secrets,
-                        &net_env,
-                        &req.run_id,
-                        &repo,
-                        &req.repo_url,
-                        &[],
-                        &refspec,
-                    )
-                    .await?;
-                if !out.success() {
-                    return Ok(fail(
-                        format!("git push failed ({:?}): {}", out.code(), out.stderr.trim()),
-                        head_sha,
-                    ));
-                }
-                pushed = true;
-            }
-        }
+        } else {
+            (head_sha, false)
+        };
         Ok(Finish {
             outcome: RunOutcome::Succeeded,
             exit_code,
             summary: redact(&result, &secrets),
             head_sha,
             pushed,
+        })
+    }
+
+    /// Commit leftovers in `worktree` and push `req.branch` (unless there is
+    /// nothing new on a fresh branch). `Ok(Ok((head_sha, pushed)))`, or
+    /// `Ok(Err((message, head_sha)))` when the push was refused.
+    #[allow(clippy::too_many_arguments)]
+    async fn commit_and_push(
+        &self,
+        run: &Run,
+        ctl: &mut Ctl,
+        secrets: &[String],
+        net_env: &[(String, String)],
+        req: &RunStart,
+        repo: &Path,
+        worktree: &Path,
+        base_sha: &str,
+    ) -> Result<Result<(String, bool), (String, String)>, Abort> {
+        let mut head_sha = self
+            .rev_parse(run, ctl, worktree, "HEAD")
+            .await?
+            .unwrap_or_default();
+        let status = self
+            .git(
+                run,
+                ctl,
+                secrets,
+                &[],
+                Some(worktree),
+                &["status", "--porcelain"],
+            )
+            .await?;
+        if !status.stdout.iter().all(u8::is_ascii_whitespace) {
+            let msg = format!("enzarb: uncommitted changes from run {}", req.run_id);
+            self.git(run, ctl, secrets, &[], Some(worktree), &["add", "-A"])
+                .await?;
+            self.git(
+                run,
+                ctl,
+                secrets,
+                &[],
+                Some(worktree),
+                &["-c", "commit.gpgsign=false", "commit", "-m", &msg],
+            )
+            .await?;
+            head_sha = self
+                .rev_parse(run, ctl, worktree, "HEAD")
+                .await?
+                .unwrap_or_default();
+        }
+        // Nothing new on a fresh branch: do not create it.
+        let nothing = req.branch != req.base_ref && head_sha == base_sha;
+        if nothing {
+            return Ok(Ok((head_sha, false)));
+        }
+        let refspec = format!("{head_sha}:refs/heads/{}", req.branch);
+        let out = self
+            .net_push(
+                run,
+                ctl,
+                secrets,
+                net_env,
+                &req.run_id,
+                repo,
+                &req.repo_url,
+                &[],
+                &refspec,
+            )
+            .await?;
+        if !out.success() {
+            return Ok(Err((
+                format!("git push failed ({:?}): {}", out.code(), out.stderr.trim()),
+                head_sha,
+            )));
+        }
+        Ok(Ok((head_sha, true)))
+    }
+
+    /// A graph segment run (`RunStart.graph`): walk the graph from its start
+    /// node (see [`crate::segment`]). The run succeeds when the walk stops at
+    /// a kernel node and fails when the graph fails; either way
+    /// `RunFinished.graph` carries where it stopped and every output.
+    async fn execute_segment(
+        &self,
+        run: &Run,
+        g: &GraphSegment,
+        steps: &mut SegmentSteps<'_>,
+    ) -> Result<Finish, Abort> {
+        let def = Definition::from_value(&g.definition)
+            .and_then(|d| enzarb_graph::validate(&d).map(|()| d))
+            .map_err(|e| Abort::Fail(e.to_string()))?;
+        if def.node(&g.start).is_none() {
+            return Err(Abort::Fail(format!(
+                "graph start node `{}` does not exist",
+                g.start
+            )));
+        }
+        let mut state = GraphState {
+            node: g.start.clone(),
+            outputs: g.outputs.clone(),
+            visits: g.visits.clone(),
+        };
+        run.transcript
+            .append("graph", json!({"start": g.start, "name": def.name}));
+        let mut res = segment::walk(&def, &mut state, &g.prompts, steps).await;
+        // Edits of `command` nodes after the last agent turn are pushed too.
+        if matches!(res, Ok(Stopped::At(_))) && steps.req.push {
+            match steps.sync().await {
+                Ok(Ok(())) => {}
+                Ok(Err(msg)) => {
+                    res = Ok(Stopped::Failed {
+                        node: state.node.clone(),
+                        reason: msg,
+                    })
+                }
+                Err(e) => res = Err(e),
+            }
+        }
+        let (outcome, summary) = match &res {
+            Ok(Stopped::At(n)) => {
+                run.transcript.append("graph", json!({"stopped_at": n}));
+                (RunOutcome::Succeeded, std::mem::take(&mut steps.summary))
+            }
+            Ok(Stopped::Failed { node, reason }) => {
+                run.transcript
+                    .append("graph", json!({"failed_at": node, "reason": reason}));
+                (RunOutcome::Failed, reason.clone())
+            }
+            Err(_) => (RunOutcome::Failed, String::new()),
+        };
+        *run.graph.lock().unwrap() = Some(GraphResult {
+            stopped_at: state.node.clone(),
+            outputs: state.outputs,
+            visits: state.visits,
+        });
+        res?;
+        Ok(Finish {
+            outcome,
+            exit_code: Some(0),
+            summary: redact(&summary, &steps.secrets),
+            head_sha: steps.head_sha.clone(),
+            pushed: steps.pushed,
         })
     }
 
@@ -1774,6 +1903,214 @@ impl Inner {
             }
         }
         Err(Abort::Fail(format!("base_ref {base_ref:?} not found")))
+    }
+}
+
+/// The [`Steps`] of one graph segment run: commands and agent turns in the
+/// run's worktree, with the run's secrets, deadline and cancellation.
+struct SegmentSteps<'a> {
+    mgr: &'a Inner,
+    run: &'a Run,
+    req: &'a RunStart,
+    ctl: &'a mut Ctl,
+    secrets: Vec<String>,
+    net_env: &'a [(String, String)],
+    repo: &'a Path,
+    worktree: &'a Path,
+    base_sha: &'a str,
+    /// `deps_token`/`npm_token` environment (commands and agents).
+    tok_env: Vec<(String, String)>,
+    /// The Claude token, resolved at the first agent node.
+    token: Option<String>,
+    head_sha: String,
+    /// The remote head of `branch` as far as this run knows (its start, then each push).
+    synced: String,
+    pushed: bool,
+    /// The latest agent message (the run's summary).
+    summary: String,
+}
+
+impl SegmentSteps<'_> {
+    fn base_env(&self) -> Vec<(String, String)> {
+        let mut env = self.mgr.git_env();
+        env.extend([
+            ("ENZARB_RUN_ID".to_string(), self.req.run_id.clone()),
+            ("ENZARB_BRANCH".to_string(), self.req.branch.clone()),
+        ]);
+        env.extend(self.tok_env.iter().cloned());
+        env
+    }
+
+    fn token(&mut self) -> Result<String, Abort> {
+        if let Some(t) = &self.token {
+            return Ok(t.clone());
+        }
+        let cfg = &self.mgr.cfg;
+        let Some(t) = crate::capture::resolve_token(self.req.claude_token.as_ref(), || {
+            crate::capture::read_legacy(&cfg.claude_token_file)
+        }) else {
+            return Err(Abort::Fail(
+                "claude is not logged in: no_credential (no claude_token and no legacy token)"
+                    .into(),
+            ));
+        };
+        self.secrets.push(t.clone());
+        self.secrets.extend(crate::chat::filter::token_forms(&t));
+        self.token = Some(t.clone());
+        Ok(t)
+    }
+
+    async fn head(&mut self) -> Result<String, Abort> {
+        Ok(self
+            .mgr
+            .rev_parse(self.run, self.ctl, self.worktree, "HEAD")
+            .await?
+            .unwrap_or_default())
+    }
+
+    /// Commit leftovers and push `branch` when the worktree has anything the remote does not
+    /// (uncommitted changes, or a HEAD that is not the last pushed one). `Ok(Err(message))`
+    /// when the push was refused.
+    async fn sync(&mut self) -> Result<Result<(), String>, Abort> {
+        let status = self
+            .mgr
+            .git(
+                self.run,
+                self.ctl,
+                &self.secrets,
+                &[],
+                Some(self.worktree),
+                &["status", "--porcelain"],
+            )
+            .await?;
+        let dirty = !status.stdout.iter().all(u8::is_ascii_whitespace);
+        self.head_sha = self.head().await?;
+        if !dirty && self.head_sha == self.synced {
+            return Ok(Ok(()));
+        }
+        match self
+            .mgr
+            .commit_and_push(
+                self.run,
+                self.ctl,
+                &self.secrets,
+                self.net_env,
+                self.req,
+                self.repo,
+                self.worktree,
+                self.base_sha,
+            )
+            .await?
+        {
+            Ok((sha, p)) => {
+                if p {
+                    self.synced = sha.clone();
+                    self.pushed = true;
+                }
+                self.head_sha = sha;
+                Ok(Ok(()))
+            }
+            Err((msg, sha)) => {
+                self.head_sha = sha;
+                Ok(Err(redact(&msg, &self.secrets)))
+            }
+        }
+    }
+
+    fn node_event(&self, node: &str, kind: &str, out: &Value) {
+        let mut ev = json!({"node": node, "type": kind, "ok": out["ok"]});
+        if let Some(c) = out.get("exit_code") {
+            ev["exit_code"] = c.clone();
+        }
+        self.run.transcript.append("graph_node", ev);
+    }
+}
+
+impl Steps for SegmentSteps<'_> {
+    type Err = Abort;
+
+    async fn command(&mut self, node: &str, cmd: &str) -> Result<Value, Abort> {
+        let mut spec = CmdSpec::new("/bin/sh", &["-c", cmd]);
+        spec.cwd = Some(self.worktree.to_path_buf());
+        spec.env = self.base_env();
+        let sink = line_sink(self.run, "command", &self.secrets);
+        let out = exec::run(&self.mgr.reaper, spec, self.ctl, Some(sink))
+            .await
+            .map_err(|e| Abort::Fail(format!("node `{node}`: cannot run: {e}")))?;
+        if let Some(s) = out.stop {
+            return Err(s.into());
+        }
+        let stdout = redact(&String::from_utf8_lossy(&out.stdout), &self.secrets);
+        let v = segment::command_output(out.code(), &stdout);
+        self.node_event(node, "command", &v);
+        Ok(v)
+    }
+
+    async fn agent(&mut self, node: &str, prompt: &str) -> Result<Value, Abort> {
+        let token = self.token()?;
+        let before = self.head().await?;
+        let mut env = self.base_env();
+        env.push(("CLAUDE_CODE_OAUTH_TOKEN".to_string(), token));
+        let usage: acp::UsageSink = Arc::default();
+        let spec = AcpSpec {
+            bin: self.mgr.cfg.acp_bin.clone(),
+            cwd: self.worktree.to_path_buf(),
+            env,
+            prompt: prompt.to_string(),
+            cancel_grace: self.mgr.cfg.cancel_grace,
+            usage: usage.clone(),
+        };
+        let emit: acp::Emit = {
+            let transcript = self.run.transcript.clone();
+            let secrets = self.secrets.clone();
+            Arc::new(move |kind: &str, fields: Value| {
+                transcript.append(kind, redact_value(fields, &secrets));
+            })
+        };
+        let sink = line_sink(self.run, "acp", &self.secrets);
+        let policy = self.mgr.cfg.policy.clone();
+        let res = acp::run(&self.mgr.reaper, spec, policy, self.ctl, emit, Some(sink)).await;
+        // Every turn's spend counts, whatever the outcome.
+        let turn = usage.lock().unwrap().take();
+        {
+            let mut total = self.run.usage.lock().unwrap();
+            *total = segment::add_usage(total.take(), turn);
+        }
+        let (mut ok, text) = match res {
+            Ok(o) => {
+                let text = redact(&o.text, &self.secrets);
+                self.run.transcript.append(
+                    "agent_result",
+                    json!({"node": node, "stop_reason": o.stop_reason, "text": text}),
+                );
+                match o.stop_reason.as_str() {
+                    "end_turn" if !text.trim().is_empty() => (true, text),
+                    "end_turn" => (false, "the agent produced no message".to_string()),
+                    other => (
+                        false,
+                        format!("the agent stopped with {other}: {}", text.trim()),
+                    ),
+                }
+            }
+            Err(AcpError::Stopped(s)) => return Err(s.into()),
+            Err(AcpError::Failed(m)) => (false, redact(&m, &self.secrets)),
+        };
+        let mut text = text;
+        if ok && self.req.push {
+            if let Err(msg) = self.sync().await? {
+                ok = false;
+                text = msg;
+            }
+        } else {
+            self.head_sha = self.head().await?;
+        }
+        // `pushed` means this node produced new, pushed work: HEAD moved during it and the
+        // remote branch is at the new HEAD.
+        let pushed = ok && self.req.push && self.head_sha != before && self.synced == self.head_sha;
+        self.summary = text.clone();
+        let v = segment::agent_output(ok, &text, pushed, &self.head_sha, &self.req.branch);
+        self.node_event(node, "agent", &v);
+        Ok(v)
     }
 }
 
@@ -1979,6 +2316,7 @@ mod npm_tests {
             npm_token: Some("ghp_npm123".into()),
             claude_token: Some("sk-ant-oat01-x".into()),
             retarget: None,
+            graph: None,
         };
         req.clone_token = String::new();
         req.deps_token = None;
@@ -2112,6 +2450,7 @@ mod retry_tests {
                 rec: Mutex::new(rec),
                 cancel: watch::channel(false).0,
                 usage: Arc::default(),
+                graph: Mutex::default(),
             };
             let (tx, rx) = watch::channel(false);
             let ctl = Ctl {

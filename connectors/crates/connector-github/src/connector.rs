@@ -962,6 +962,54 @@ impl Connector for GitHubConnector {
         }
     }
 
+    async fn get_file(&self, repo: &RepoKey, git_ref: &str, path: &str) -> Result<Option<String>> {
+        #[derive(Deserialize)]
+        struct Content {
+            #[serde(rename = "type")]
+            kind: String,
+            #[serde(default)]
+            encoding: String,
+            #[serde(default)]
+            content: String,
+        }
+        let api = format!(
+            "/repos/{}/contents/{}?ref={}",
+            repo.full_name(),
+            encode_path(path.trim_start_matches('/')),
+            encode_path(git_ref)
+        );
+        // Resolve auth first so a missing installation is not mistaken for a
+        // missing file below.
+        github_repo(repo)?;
+        self.token(repo).await?;
+        let r = match self.call(repo, "get file", Method::GET, &api, None).await {
+            Ok(r) => r,
+            Err(Error::NotFound(_)) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        // A directory answers with an array.
+        let v: serde_json::Value = r.json()?;
+        if !v.is_object() {
+            return Ok(None);
+        }
+        let c: Content = serde_json::from_value(v)
+            .map_err(|e| Error::Other(format!("get file: unexpected response: {e}")))?;
+        if c.kind != "file" {
+            return Ok(None);
+        }
+        if c.encoding != "base64" {
+            return Err(Error::Other(format!(
+                "get file: {path} has encoding {:?} (too large?)",
+                c.encoding
+            )));
+        }
+        let bytes = decode_base64(&c.content)
+            .ok_or_else(|| Error::Other(format!("get file: {path}: bad base64")))?;
+        String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|_| Error::Other(format!("get file: {path} is not UTF-8")))
+    }
+
     async fn list_dependencies(&self, item: &WorkItemKey) -> Result<Vec<WorkItemKey>> {
         #[derive(Deserialize)]
         struct Blocker {
@@ -1311,6 +1359,32 @@ impl Connector for GitHubConnector {
 }
 
 /// Percent-encode everything except unreserved characters and `/`.
+/// Standard base64 with padding; whitespace (GitHub wraps lines) is skipped.
+fn decode_base64(s: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let mut acc: u32 = 0;
+    let mut bits = 0;
+    for b in s.bytes() {
+        let v = match b {
+            b'A'..=b'Z' => b - b'A',
+            b'a'..=b'z' => b - b'a' + 26,
+            b'0'..=b'9' => b - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' | b'\n' | b'\r' | b' ' | b'\t' => continue,
+            _ => return None,
+        };
+        acc = (acc << 6) | u32::from(v);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}
+
 fn encode_path(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {

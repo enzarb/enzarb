@@ -4,6 +4,7 @@ mod auto_rounds;
 mod ci_fix;
 mod dependencies;
 mod epic;
+mod graph;
 mod human_approval;
 mod merge;
 
@@ -47,6 +48,7 @@ fn ctx_for(number: u64, perm: Permission) -> Ctx {
         open_dependencies: Vec::new(),
         stack_parent: None,
         epic_parent: None,
+        graph: None,
     }
 }
 

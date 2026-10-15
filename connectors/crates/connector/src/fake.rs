@@ -77,6 +77,11 @@ pub enum Call {
         repo: RepoKey,
         branch: String,
     },
+    GetFile {
+        repo: RepoKey,
+        git_ref: String,
+        path: String,
+    },
     DeleteBranch {
         repo: RepoKey,
         branch: String,
@@ -143,6 +148,7 @@ struct State {
     readiness: HashMap<WorkItemKey, MergeReadiness>,
     update_outcomes: VecDeque<UpdateBranchOutcome>,
     branch_heads: HashMap<(RepoKey, String), String>,
+    files: HashMap<(RepoKey, String, String), String>,
     dependencies: HashMap<WorkItemKey, Vec<WorkItemKey>>,
     seen_issues: HashMap<String, WorkItemKey>,
     created_issues: Vec<(WorkItemKey, String, String)>,
@@ -204,6 +210,14 @@ impl FakeConnector {
         self.st()
             .branch_heads
             .insert((repo, branch.to_string()), sha.to_string());
+    }
+
+    /// Seed the text `get_file` returns for `path` at `git_ref` (unseeded files are `None`).
+    pub fn set_file(&self, repo: RepoKey, git_ref: &str, path: &str, text: &str) {
+        self.st().files.insert(
+            (repo, git_ref.to_string(), path.to_string()),
+            text.to_string(),
+        );
     }
 
     /// Seed the relationships `list_dependencies` returns for `item`.
@@ -608,6 +622,21 @@ impl Connector for FakeConnector {
         Ok(st
             .branch_heads
             .get(&(repo.clone(), branch.to_string()))
+            .cloned())
+    }
+
+    async fn get_file(&self, repo: &RepoKey, git_ref: &str, path: &str) -> Result<Option<String>> {
+        let mut st = self.st();
+        let call = Call::GetFile {
+            repo: repo.clone(),
+            git_ref: git_ref.to_string(),
+            path: path.to_string(),
+        };
+        Self::take_failure(&mut st, call.clone())?;
+        Self::record(&mut st, call, false);
+        Ok(st
+            .files
+            .get(&(repo.clone(), git_ref.to_string(), path.to_string()))
             .cloned())
     }
 

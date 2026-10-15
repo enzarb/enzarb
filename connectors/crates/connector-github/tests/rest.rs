@@ -2125,3 +2125,62 @@ async fn task_list_fallback_is_idempotent() {
         .await
         .unwrap();
 }
+
+// ---- get_file ----
+
+async fn get_file_with(resp: ResponseTemplate) -> (Result<Option<String>, Error>, Vec<String>) {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/repos/enzarb/enzarb-ui/contents/"))
+        .respond_with(resp)
+        .mount(&server)
+        .await;
+    let got = connector(&server)
+        .get_file(&repo(), "deadbeef", ".enzarb/workflows/issue.yaml")
+        .await;
+    let urls = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path().contains("/contents/"))
+        .map(|r| format!("{}?{}", r.url.path(), r.url.query().unwrap_or("")))
+        .collect();
+    (got, urls)
+}
+
+#[tokio::test]
+async fn get_file_decodes_base64_content() {
+    // "version: 1\nname: issue\n", wrapped like GitHub does.
+    let (got, urls) = get_file_with(ResponseTemplate::new(200).set_body_json(json!({
+        "type": "file", "encoding": "base64",
+        "content": "dmVyc2lvbjogMQpu\nYW1lOiBpc3N1ZQo=\n"
+    })))
+    .await;
+    assert_eq!(got.unwrap().as_deref(), Some("version: 1\nname: issue\n"));
+    assert_eq!(
+        urls,
+        ["/repos/enzarb/enzarb-ui/contents/.enzarb/workflows/issue.yaml?ref=deadbeef"]
+    );
+}
+
+#[tokio::test]
+async fn get_file_missing_or_directory_is_none() {
+    let (got, _) =
+        get_file_with(ResponseTemplate::new(404).set_body_json(json!({"message": "Not Found"})))
+            .await;
+    assert_eq!(got.unwrap(), None);
+    let (got, _) =
+        get_file_with(ResponseTemplate::new(200).set_body_json(json!([{"type": "file"}]))).await;
+    assert_eq!(got.unwrap(), None);
+}
+
+#[tokio::test]
+async fn get_file_rejects_unexpected_encoding() {
+    let (got, _) = get_file_with(ResponseTemplate::new(200).set_body_json(json!({
+        "type": "file", "encoding": "none", "content": ""
+    })))
+    .await;
+    assert!(matches!(got.unwrap_err(), Error::Other(_)));
+}

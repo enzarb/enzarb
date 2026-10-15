@@ -23,3 +23,4 @@ Format: Context / Decision / Consequences. Status is `Accepted` unless noted. AD
 | [0017](0017-work-item-dependencies.md) | Work item dependencies | 2026-10-14 |
 | [0018](0018-epics.md) | Epics: breaking a big issue into sub-issues | 2026-10-14 |
 | [0019](0019-sandbox-utilization-polling.md) | Polling sandbox utilization from the sandbox-init API | 2026-10-15 |
+| [0020](0020-graph-workflows.md) | Graph workflows: definitions in the repo, a runner in the sandbox, a thin kernel outside | 2026-10-15 |

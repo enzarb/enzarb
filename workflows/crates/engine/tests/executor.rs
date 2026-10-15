@@ -222,6 +222,7 @@ async fn serve(sb: Arc<Sb>, stream: tokio::net::TcpStream) {
                                 head_sha: "abc123".into(),
                                 pushed,
                                 usage: None,
+                                graph: graph_result(&run),
                             };
                             let resp = reqwest::Client::new()
                                 .post(&run.callback_url)
@@ -266,6 +267,29 @@ async fn serve(sb: Arc<Sb>, stream: tokio::net::TcpStream) {
             _ => {}
         }
     }
+}
+
+/// What a sandbox-init that runs graph segments reports: every sandbox node succeeds (and
+/// pushes) until the walk reaches a kernel node.
+fn graph_result(run: &RunStart) -> Option<enzarb_proto::GraphResult> {
+    let g = run.graph.as_ref()?;
+    let def = enzarb_graph::Definition::from_value(&g.definition).ok()?;
+    let mut st = enzarb_graph::GraphState {
+        node: g.start.clone(),
+        outputs: g.outputs.clone(),
+        visits: g.visits.clone(),
+    };
+    while def.node(&st.node)?.kind.runner() == enzarb_graph::Runner::Sandbox {
+        let out = json!({"ok": true, "exit_code": 0, "pushed": true, "head_sha": "abc123"});
+        if let enzarb_graph::Next::Failed(_) = enzarb_graph::advance(&def, &mut st, out) {
+            break;
+        }
+    }
+    Some(enzarb_proto::GraphResult {
+        stopped_at: st.node,
+        outputs: st.outputs,
+        visits: st.visits,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1820,6 +1844,7 @@ fn finished(run_id: &str, outcome: RunOutcome) -> RunFinished {
         head_sha: "abc".into(),
         pushed: false,
         usage: None,
+        graph: None,
     }
 }
 
@@ -4098,4 +4123,168 @@ async fn create_sub_issues_with_an_unordered_list_is_a_permanent_failure() {
     h.exec.drain().await;
     assert_eq!(job(pool, id).await.status, "failed");
     assert!(h.fake.created_issues().len() <= 1);
+}
+
+// ---------------------------------------------------------------------------
+// Graph workflows (ADR-0020)
+// ---------------------------------------------------------------------------
+
+const ISSUE_GRAPH: &str = include_str!("../../../../docs/workflows/examples/issue.yaml");
+
+fn graph_reducer(h: &H) -> Reducer {
+    let index = StaticProjectIndex::shared();
+    index.insert(
+        REPO,
+        engine::ProjectInfo {
+            name: "enzarb".into(),
+            triggers: engine::machine::Triggers::default(),
+            default_branch: "main".into(),
+        },
+    );
+    let perms = Arc::new(StaticPermissions::new(Permission::Write));
+    let defs = engine::definitions::ConnectorDefinitions::new().with("github", h.fake.clone());
+    Reducer::new(h.pool().clone(), index, perms, ReducerConfig::default())
+        .with_definitions(Arc::new(defs))
+}
+
+async fn item_row(pool: &PgPool, n: u64) -> (String, String, Value) {
+    sqlx::query_as("SELECT workflow, state, state_data FROM workflows.work_items WHERE key=$1")
+        .bind(key(n).to_string())
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn job_id_of(pool: &PgPool, kind: &str) -> i64 {
+    sqlx::query_scalar("SELECT id FROM workflows.jobs WHERE kind=$1 ORDER BY id DESC LIMIT 1")
+        .bind(kind)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn issue_graph_runs_a_segment_then_opens_the_change_request() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let reducer = graph_reducer(&h);
+    let repo: RepoKey = REPO.parse().unwrap();
+    h.fake.set_branch_head(repo.clone(), "main", "sha-main");
+    h.fake.set_file(
+        repo,
+        "sha-main",
+        ".enzarb/workflows/issue.yaml",
+        ISSUE_GRAPH,
+    );
+    h.fake
+        .add_thread(key(1), thread_with("Use the brand colours"));
+    let block =
+        json!({"decision": "done", "body": "Adds dark mode.", "title": "feat(ui): dark mode"});
+    h.sandbox.set_mode(Mode::Finish {
+        outcome: RunOutcome::Succeeded,
+        summary: format!("Done.\n\n```json\n{block}\n```"),
+        pushed: true,
+        callback: true,
+    });
+
+    open_issue(pool, 1).await;
+    assert_eq!(reducer.drain().await, 1);
+    let (workflow, state, data) = item_row(pool, 1).await;
+    assert_eq!(
+        (workflow.as_str(), state.as_str()),
+        ("graph:issue", "Running")
+    );
+    assert_eq!(data["graph"]["sha"], "sha-main");
+    assert_eq!(data["graph"]["node"], "prepare");
+
+    // The segment runs in the sandbox with the graph, its prompts rendered with the thread.
+    h.exec.drain().await;
+    let seg = job_id_of(pool, "agent_segment").await;
+    wait_for("segment job to finish", || async {
+        job(pool, seg).await.status == "succeeded"
+    })
+    .await;
+    let run = h.sandbox.run(&format!("job-{seg}")).unwrap();
+    let g = run.graph.as_ref().expect("RunStart.graph");
+    assert_eq!(g.start, "prepare");
+    assert!(g.prompts["implement"].contains("Use the brand colours"));
+    assert!(run.push);
+    assert_eq!(run.branch, "enzarb/issue-1");
+    assert!(run.npm_token.is_none());
+
+    // The kernel continues at the action node.
+    reducer.drain().await;
+    let (_, state, data) = item_row(pool, 1).await;
+    assert_eq!(state, "Running");
+    assert_eq!(data["graph"]["node"], "open_pr");
+    assert_eq!(data["graph"]["outputs"]["implement"]["pushed"], true);
+    h.exec.drain().await;
+    let opened: Vec<ChangeRequestSpec> = h
+        .fake
+        .applied_calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            Call::OpenChangeRequest { req, .. } => Some(req),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(opened.len(), 1);
+    assert_eq!(opened[0].title, "feat(ui): dark mode");
+    assert_eq!(opened[0].head_ref, "enzarb/issue-1");
+    assert!(opened[0].body.ends_with("Closes #1"));
+
+    // Done, and the change request is handed to the change_request workflow.
+    reducer.drain().await;
+    let (_, state, data) = item_row(pool, 1).await;
+    assert_eq!(state, "Done");
+    assert!(data["change_request"].is_u64());
+    assert_eq!(events_of(pool, "ChangeRequestOpened").await.len(), 1);
+}
+
+#[tokio::test]
+async fn invalid_issue_graph_falls_back_to_the_built_in_workflow() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let reducer = graph_reducer(&h);
+    let repo: RepoKey = REPO.parse().unwrap();
+    // No branch head: the definition is read at the branch name.
+    h.fake.set_file(
+        repo,
+        "main",
+        ".enzarb/workflows/issue.yaml",
+        "version: 1\nname: issue\non: [issue_opened]\nstart: nope\nnodes: {}\n",
+    );
+    open_issue(pool, 1).await;
+    assert_eq!(reducer.drain().await, 1);
+    let (workflow, state, _) = item_row(pool, 1).await;
+    assert_eq!((workflow.as_str(), state.as_str()), ("issue", "Triaging"));
+    let comment: Value = sqlx::query_scalar(
+        "SELECT input FROM workflows.jobs WHERE idempotency_key LIKE '%:graph_invalid'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert!(
+        comment["body"]
+            .as_str()
+            .unwrap()
+            .contains("start node `nope` does not exist")
+    );
+}
+
+#[tokio::test]
+async fn unreadable_issue_graph_falls_back_instead_of_retrying() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let reducer = graph_reducer(&h);
+    let repo: RepoKey = REPO.parse().unwrap();
+    h.fake
+        .set_file(repo, "main", ".enzarb/workflows/issue.yaml", ISSUE_GRAPH);
+    // GitHub is down: the lookup fails, the event is processed anyway.
+    h.fake
+        .fail_next(enzarb_connector::Error::Transient("503".into()));
+    open_issue(pool, 1).await;
+    assert_eq!(reducer.drain().await, 1);
+    let (workflow, state, _) = item_row(pool, 1).await;
+    assert_eq!((workflow.as_str(), state.as_str()), ("issue", "Triaging"));
 }

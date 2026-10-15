@@ -41,6 +41,7 @@
 
 mod change_request;
 mod fx;
+pub mod graph;
 mod issue;
 mod mention;
 pub mod prompt;
@@ -99,6 +100,9 @@ pub enum JobKind {
     RetargetChangeRequest,
     /// Create the sub-issues of an approved epic and link them (docs/adr/0018-epics.md).
     CreateSubIssues,
+    /// A graph segment run (ADR-0020): sandbox-init walks the graph's `command` and `agent`
+    /// nodes from the current node (`AgentJobInput.graph`, sent as `RunStart.graph`).
+    AgentSegment,
 }
 
 impl JobKind {
@@ -118,6 +122,7 @@ impl JobKind {
             JobKind::MergeChangeRequest => "merge_change_request",
             JobKind::RetargetChangeRequest => "retarget_change_request",
             JobKind::CreateSubIssues => "create_sub_issues",
+            JobKind::AgentSegment => "agent_segment",
         }
     }
 
@@ -483,6 +488,9 @@ pub struct Ctx {
     pub stack_parent: Option<stack::StackParent>,
     /// For the opening event of an epic's sub-issue: the stored parent (see [`EpicParent`]).
     pub epic_parent: Option<EpicParent>,
+    /// For the opening event of an issue: the graph workflow definition read from the
+    /// default branch (`.enzarb/workflows/issue.yaml`, ADR-0020), when the repository has one.
+    pub graph: Option<graph::GraphSource>,
 }
 
 impl Ctx {
@@ -529,6 +537,8 @@ pub enum WorkflowKind {
     Issue,
     ChangeRequest,
     Mention,
+    /// A graph workflow (ADR-0020); stored as `graph:<name>`.
+    Graph,
 }
 
 impl WorkflowKind {
@@ -537,6 +547,7 @@ impl WorkflowKind {
             WorkflowKind::Issue => "issue",
             WorkflowKind::ChangeRequest => "change_request",
             WorkflowKind::Mention => "mention",
+            WorkflowKind::Graph => "graph",
         }
     }
 }
@@ -624,6 +635,7 @@ pub enum WorkflowState {
     Issue(IssueState),
     ChangeRequest(CrState),
     Mention(MentionState),
+    Graph(graph::GraphTask),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -659,6 +671,15 @@ impl WorkflowState {
             WorkflowState::Issue(_) => WorkflowKind::Issue,
             WorkflowState::ChangeRequest(_) => WorkflowKind::ChangeRequest,
             WorkflowState::Mention(_) => WorkflowKind::Mention,
+            WorkflowState::Graph(_) => WorkflowKind::Graph,
+        }
+    }
+
+    /// `work_items.workflow`: the kind, or `graph:<name>` for a graph workflow.
+    pub fn workflow_name(&self) -> String {
+        match self {
+            WorkflowState::Graph(g) => format!("{}{}", graph::PREFIX, g.data.graph.name),
+            s => s.workflow().as_str().to_string(),
         }
     }
 
@@ -669,6 +690,7 @@ impl WorkflowState {
             WorkflowState::Issue(s) => name_of(&s.phase),
             WorkflowState::ChangeRequest(s) => name_of(&s.phase),
             WorkflowState::Mention(s) => name_of(&s.phase),
+            WorkflowState::Graph(s) => name_of(&s.phase),
         }
     }
 
@@ -679,6 +701,7 @@ impl WorkflowState {
             WorkflowState::Issue(s) => serde_json::to_value(&s.data).unwrap_or_default(),
             WorkflowState::ChangeRequest(s) => change_request::state_data(s),
             WorkflowState::Mention(s) => serde_json::to_value(&s.data).unwrap_or_default(),
+            WorkflowState::Graph(s) => serde_json::to_value(&s.data).unwrap_or_default(),
         };
         if v.is_null() {
             serde_json::json!({})
@@ -701,6 +724,7 @@ impl WorkflowState {
                 CrPhase::Merged | CrPhase::Closed | CrPhase::Cancelled
             ),
             WorkflowState::Mention(s) => matches!(s.phase, MentionPhase::Cancelled),
+            WorkflowState::Graph(s) => s.phase.is_terminal(),
         }
     }
 
@@ -726,6 +750,10 @@ impl WorkflowState {
                 data: data_from(data)?,
             }),
             "mention" => WorkflowState::Mention(MentionState {
+                phase: phase_from(state)?,
+                data: data_from(data)?,
+            }),
+            w if w.starts_with(graph::PREFIX) => WorkflowState::Graph(graph::GraphTask {
                 phase: phase_from(state)?,
                 data: data_from(data)?,
             }),
@@ -773,14 +801,17 @@ pub fn transition(ctx: &Ctx, state: &WorkflowState, ev: &EngineEvent) -> Transit
     match state {
         WorkflowState::New(kind) => match (kind, route(ctx, ev)) {
             (k, Some(r)) if *k == r => match k {
-                WorkflowKind::Issue => issue::start(ctx, state, ev),
+                // A repository with an issue graph on its default branch uses it (ADR-0020).
+                WorkflowKind::Issue => graph::start_or(ctx, state, ev, issue::start),
                 WorkflowKind::ChangeRequest => change_request::start(ctx, state, ev),
                 WorkflowKind::Mention => mention::start(ctx, state, ev),
+                WorkflowKind::Graph => Transition::reject(state, "graph workflows start as issues"),
             },
             _ => Transition::reject(state, "event does not start this workflow"),
         },
         WorkflowState::Issue(s) => issue::step(ctx, s, ev),
         WorkflowState::ChangeRequest(s) => change_request::step(ctx, s, ev),
         WorkflowState::Mention(s) => mention::step(ctx, s, ev),
+        WorkflowState::Graph(s) => graph::step(ctx, s, ev),
     }
 }

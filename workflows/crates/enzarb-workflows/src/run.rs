@@ -83,7 +83,10 @@ pub async fn run(cfg: Config) -> Result<(), Error> {
             .get("github")
             .ok_or_else(|| Error::Run("github connector not registered".into()))?
             .clone();
-        let permissions = CachedPermissions::new(ConnectorPermissions::new().with("github", gh));
+        let permissions =
+            CachedPermissions::new(ConnectorPermissions::new().with("github", gh.clone()));
+        // Graph workflows (ADR-0020): a repository opts in with `.enzarb/workflows/issue.yaml`.
+        let definitions = engine::definitions::ConnectorDefinitions::new().with("github", gh);
         let rcfg = ReducerConfig {
             bot_login: cfg.bot_login.clone(),
             bot_handle: cfg.bot_handle.clone(),
@@ -93,12 +96,15 @@ pub async fn run(cfg: Config) -> Result<(), Error> {
             },
             ..ReducerConfig::default()
         };
-        let reducer = Arc::new(Reducer::new(
-            pool.clone(),
-            index.clone().expect("index"),
-            Arc::new(permissions),
-            rcfg,
-        ));
+        let reducer = Arc::new(
+            Reducer::new(
+                pool.clone(),
+                index.clone().expect("index"),
+                Arc::new(permissions),
+                rcfg,
+            )
+            .with_definitions(Arc::new(definitions)),
+        );
         let rx = rx.clone();
         tasks.spawn(async move { ("reducer", reducer.run(rx).await.map_err(|e| e.to_string())) });
     }

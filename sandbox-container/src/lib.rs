@@ -38,6 +38,7 @@ pub mod pty;
 pub mod reaper;
 pub mod retarget;
 pub mod runs;
+pub mod segment;
 pub mod server;
 pub mod stats;
 
