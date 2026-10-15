@@ -935,7 +935,6 @@ spec:
             - { name: RECEIVER_LISTEN, value: 0.0.0.0:8080 }
             - { name: ENZARB_BOT_HANDLE, value: "enzarb" }
             - { name: ENZARB_BOT_LOGIN, value: "enzarb[bot]" }
-            - { name: ENZARB_STATS_RETENTION, value: "30" }
             - { name: RUST_LOG, value: "info" }
           readinessProbe:
             httpGet: { path: /readyz, port: http }
