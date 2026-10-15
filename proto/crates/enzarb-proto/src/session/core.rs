@@ -17,7 +17,8 @@ use super::handshake::{client_handshake_offering, server_handshake_with_features
 use super::{HandshakeError, SessionEnd, SessionError};
 use crate::{
     ChannelKind, ClientKind, CredentialKind, Ctrl, Frame, FrameType, MAX_REPO_LEN, MAX_RESUME_LEN,
-    RunPhase, RunStart, SUPPORTED_VERSIONS, Secret, close_code, error_code, open_error_code,
+    PrepareRequest, Prepared, RunPhase, RunStart, SUPPORTED_VERSIONS, Secret, close_code,
+    error_code, open_error_code,
 };
 
 /// Which side of the protocol a session plays.
@@ -191,6 +192,10 @@ enum Pending {
     },
     CredentialStatus {
         tx: oneshot::Sender<Result<CredentialInfo, SessionError>>,
+    },
+    Prepare {
+        run_id: String,
+        tx: oneshot::Sender<Result<Prepared, SessionError>>,
     },
 }
 
@@ -492,6 +497,7 @@ impl Inner {
                 | Ctrl::RunCancel { .. }
                 | Ctrl::CredentialStatus
                 | Ctrl::StatsRequest
+                | Ctrl::PrepareRequest(_)
                 | Ctrl::CredentialClear { .. }
                 | Ctrl::CredentialState { .. }),
             ) => {
@@ -618,6 +624,21 @@ impl Inner {
             }
             (Role::Client, m @ Ctrl::CredentialCaptured { .. }) => emit(Event::Ctrl(m)),
             (Role::Client, m @ Ctrl::Stats(_)) => emit(Event::Ctrl(m)),
+            (Role::Client, Ctrl::Prepared(reply)) => {
+                let waiter = {
+                    let mut st = lock(&self.state);
+                    let pos = st.pending.iter().position(
+                        |p| matches!(p, Pending::Prepare { run_id: r, .. } if *r == reply.run_id),
+                    );
+                    pos.and_then(|i| st.pending.remove(i))
+                };
+                match waiter {
+                    Some(Pending::Prepare { tx, .. }) => {
+                        let _ = tx.send(Ok(reply));
+                    }
+                    _ => emit(Event::Ctrl(Ctrl::Prepared(reply))),
+                }
+            }
             (
                 Role::Client,
                 Ctrl::CredentialState {
@@ -690,16 +711,16 @@ impl Inner {
         let p = {
             let mut st = lock(&self.state);
             let p = match run_id {
-                Some(id) => {
-                    st.pending
-                        .iter()
-                        .position(|p| match p {
-                            Pending::RunStart { run_id, .. }
-                            | Pending::RunStatus { run_id, .. } => run_id == id,
-                            Pending::CredentialStatus { .. } => false,
-                        })
-                        .and_then(|i| st.pending.remove(i))
-                }
+                Some(id) => st
+                    .pending
+                    .iter()
+                    .position(|p| match p {
+                        Pending::RunStart { run_id, .. }
+                        | Pending::RunStatus { run_id, .. }
+                        | Pending::Prepare { run_id, .. } => run_id == id,
+                        Pending::CredentialStatus { .. } => false,
+                    })
+                    .and_then(|i| st.pending.remove(i)),
                 None => st.pending.pop_front(),
             };
             if let Some(Pending::RunStart { log: Some(c), .. }) = &p {
@@ -739,6 +760,8 @@ fn ctrl_name(m: &Ctrl) -> &'static str {
         Ctrl::CredentialClear { .. } => "credential_clear",
         Ctrl::StatsRequest => "stats_request",
         Ctrl::Stats(_) => "stats",
+        Ctrl::PrepareRequest(_) => "prepare_request",
+        Ctrl::Prepared(_) => "prepared",
         Ctrl::Error { .. } => "error",
     }
 }
@@ -753,6 +776,9 @@ impl Pending {
                 let _ = tx.send(Err(e));
             }
             Pending::CredentialStatus { tx } => {
+                let _ = tx.send(Err(e));
+            }
+            Pending::Prepare { tx, .. } => {
                 let _ = tx.send(Err(e));
             }
         }
@@ -1205,6 +1231,27 @@ impl Session {
         self.inner.send_ctrl(&Ctrl::RunStatus {
             run_id: run_id.into(),
         })?;
+        match rx.await {
+            Ok(r) => r,
+            Err(_) => Err(self.inner.ended()),
+        }
+    }
+
+    /// (client) `prepare_request`, resolved by the `prepared` reply with the
+    /// same `run_id`. Only call this when [`has_feature`](Self::has_feature)
+    /// `(feature::PREPARE)`. An error reply becomes [`SessionError::Remote`].
+    pub async fn prepare(&self, req: PrepareRequest) -> Result<Prepared, SessionError> {
+        self.require(Role::Client)?;
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut st = lock(&self.inner.state);
+            self.inner.check_alive()?;
+            st.pending.push_back(Pending::Prepare {
+                run_id: req.run_id.clone(),
+                tx,
+            });
+        }
+        self.inner.send_ctrl(&Ctrl::PrepareRequest(req))?;
         match rx.await {
             Ok(r) => r,
             Err(_) => Err(self.inner.ended()),

@@ -16,6 +16,7 @@
 //! * [`chat`]: interactive chat over ACP (one agent per `acp` channel behind a filtering relay);
 //! * [`policy`]: the permission policy that answers the agent's `session/request_permission`;
 //! * [`agent`]: the agent [`RunManager`](runs::RunManager) (worktrees, ACP agent, callbacks);
+//! * [`git_prep`]: parsing and caps for the `prepare_request` reply (merge base, changed files);
 //! * [`runs`]: the [`RunManager`](runs::RunManager) extension point for `run_*` messages;
 //! * [`server`]: axum app, websocket adapter and the per-session event loop;
 //! * [`stats`]: the on-demand cgroup/statvfs stats snapshot (`stats_request`).
@@ -29,6 +30,7 @@ pub mod config;
 pub mod docker_prune;
 pub mod dockerd;
 pub mod exec;
+pub mod git_prep;
 pub mod netgit;
 pub mod observer;
 pub mod policy;

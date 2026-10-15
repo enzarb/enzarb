@@ -139,6 +139,24 @@
   },
   {
     "expect": {
+      "run_id": "job-1",
+      "type": "prepared"
+    },
+    "name": "prepared_only_run_id",
+    "payload": "{\"type\":\"prepared\",\"run_id\":\"job-1\"}"
+  },
+  {
+    "expect": {
+      "changed_files_total": 1,
+      "merge_base_sha": "abc",
+      "run_id": "job-1",
+      "type": "prepared"
+    },
+    "name": "prepared_unknown_fields",
+    "payload": "{\"type\":\"prepared\",\"run_id\":\"job-1\",\"merge_base_sha\":\"abc\",\"changed_files_total\":1,\"future\":1}"
+  },
+  {
+    "expect": {
       "kind": "claude_oauth",
       "type": "credential_captured"
     },

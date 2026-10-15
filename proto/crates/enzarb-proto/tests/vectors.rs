@@ -313,6 +313,33 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
             }),
         ),
         (
+            "prepare_request",
+            Ctrl::PrepareRequest(PrepareRequest {
+                run_id: "job-1".into(),
+                repo_url: "https://github.com/o/r".into(),
+                base_ref: "main".into(),
+                branch: "enzarb/issue-1".into(),
+                clone_token: Secret::new("ghs_clone"),
+            }),
+        ),
+        (
+            "prepared",
+            Ctrl::Prepared(Prepared {
+                run_id: "job-1".into(),
+                merge_base_sha: Some("abc123".into()),
+                changed_files: vec!["ui/a.ts".into(), "docs/b.md".into()],
+                changed_files_total: 2,
+                affected: vec!["ui".into()],
+            }),
+        ),
+        (
+            "prepared_empty",
+            Ctrl::Prepared(Prepared {
+                run_id: "job-1".into(),
+                ..Default::default()
+            }),
+        ),
+        (
             "stats_partial",
             Ctrl::Stats(SandboxStats {
                 ts_ms: 1_760_000_000_000,
@@ -566,6 +593,40 @@ fn run_start_deps_token_compat() {
 }
 
 #[test]
+fn prepare_frames_round_trip_and_redact() {
+    let req = PrepareRequest {
+        run_id: "job-1".into(),
+        repo_url: "https://github.com/o/r".into(),
+        base_ref: "main".into(),
+        branch: "b".into(),
+        clone_token: Secret::new("ghs_secret_clone"),
+    };
+    let m = Ctrl::PrepareRequest(req.clone());
+    let v = serde_json::to_value(&m).unwrap();
+    assert_eq!(v["type"], "prepare_request");
+    assert_eq!(v["clone_token"], "ghs_secret_clone");
+    assert_eq!(serde_json::from_value::<Ctrl>(v).unwrap(), m);
+    let d = format!("{req:?} {m:?}");
+    assert!(!d.contains("ghs_secret_clone"), "{d}");
+
+    // An empty reply serializes to the run id only; unknown fields are ignored.
+    let empty = serde_json::to_value(Prepared {
+        run_id: "job-1".into(),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(empty, json!({"run_id": "job-1"}));
+    let got: Prepared = serde_json::from_value(json!({"run_id": "r", "x": 1})).unwrap();
+    assert_eq!(got.changed_files, Vec::<String>::new());
+    assert_eq!(got.merge_base_sha, None);
+    // Even a bare object decodes.
+    assert_eq!(
+        serde_json::from_value::<Prepared>(json!({})).unwrap(),
+        Prepared::default()
+    );
+}
+
+#[test]
 fn run_start_debug_redacts_tokens() {
     let mut rs = run_start();
     rs.deps_token = Some("ghs_deps".into());
@@ -770,6 +831,10 @@ fn ctrl_compat_vectors() {
                "expect":{"type":"stats","ts_ms":5}}),
         json!({"name":"stats_unknown_fields","payload":r#"{"type":"stats","ts_ms":5,"memory_bytes":7,"gpu_busy":1}"#,
                "expect":{"type":"stats","ts_ms":5,"memory_bytes":7}}),
+        json!({"name":"prepared_only_run_id","payload":r#"{"type":"prepared","run_id":"job-1"}"#,
+               "expect":{"type":"prepared","run_id":"job-1"}}),
+        json!({"name":"prepared_unknown_fields","payload":r#"{"type":"prepared","run_id":"job-1","merge_base_sha":"abc","changed_files_total":1,"future":1}"#,
+               "expect":{"type":"prepared","run_id":"job-1","merge_base_sha":"abc","changed_files_total":1}}),
         json!({"name":"credential_captured_unknown_fields","payload":r#"{"type":"credential_captured","kind":"claude_oauth","token":null,"legacy":null,"x":1}"#,
                "expect":{"type":"credential_captured","kind":"claude_oauth"}}),
     ];

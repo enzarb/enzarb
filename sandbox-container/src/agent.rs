@@ -31,7 +31,10 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use enzarb_graph::{Definition, GraphState};
 use enzarb_proto::session::RunInfo;
-use enzarb_proto::{GraphResult, GraphSegment, RunFinished, RunOutcome, RunPhase, RunStart, Usage};
+use enzarb_proto::{
+    GraphResult, GraphSegment, PrepareRequest, Prepared, RunFinished, RunOutcome, RunPhase,
+    RunStart, Usage,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -54,6 +57,8 @@ const MAX_CALLBACK_BACKOFF: Duration = Duration::from_secs(60);
 const CALLBACK_GIVE_UP: Duration = Duration::from_secs(24 * 3600);
 /// Before a run, only prune stale worktrees untouched for this long.
 const PRUNE_MIN_AGE: Duration = Duration::from_secs(60);
+/// Wall-clock cap of one `prepare_request` (fetch included); the engine waits less.
+const PREPARE_DEADLINE: Duration = Duration::from_secs(45);
 const ENOSPC_HINT: &str =
     " (the workspace volume is full: free space or grow the Project's sandbox storage)";
 
@@ -260,6 +265,36 @@ struct Run {
 }
 
 impl Run {
+    /// A run that is not one: the log sink of git helpers used outside a run
+    /// (`prepare_request`). Its transcript goes nowhere.
+    fn scratch(id: &str) -> Self {
+        Self {
+            id: id.into(),
+            dir: PathBuf::new(),
+            rec: Mutex::new(RunRecord {
+                run_id: id.into(),
+                state: RunPhase::Running,
+                repo_url: String::new(),
+                base_ref: String::new(),
+                branch: String::new(),
+                push: false,
+                exit_code: None,
+                summary: None,
+                head_sha: String::new(),
+                pushed: false,
+                usage: None,
+                created_ms: now_ms(),
+                started_ms: None,
+                finished_ms: None,
+                callback: None,
+            }),
+            cancel: watch::channel(false).0,
+            transcript: Arc::new(Transcript::new(PathBuf::from("/dev/null"), true)),
+            usage: Arc::default(),
+            graph: Mutex::default(),
+        }
+    }
+
     fn state(&self) -> RunPhase {
         self.rec.lock().unwrap().state
     }
@@ -536,6 +571,19 @@ impl RunManager for AgentRunManager {
                 );
             }
         }
+    }
+
+    fn supports_prepare(&self) -> bool {
+        true
+    }
+
+    async fn prepare(&self, ctx: &SessionCtx, req: PrepareRequest) {
+        let inner = self.inner.clone();
+        let session = ctx.session.clone();
+        tokio::spawn(async move {
+            let reply = inner.prepare_refs(&req).await;
+            let _ = session.send_ctrl(&enzarb_proto::Ctrl::Prepared(reply));
+        });
     }
 
     async fn session_closed(&self, session_id: u64) {
@@ -1429,26 +1477,28 @@ impl Inner {
             .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()))
     }
 
-    /// Clone `req.repo_url` into `repo`, or fetch into the existing clone.
+    /// Clone `repo_url` into `repo`, or fetch into the existing clone.
     /// The caller holds the repo lock.
+    #[allow(clippy::too_many_arguments)]
     async fn sync_repo(
         &self,
         run: &Run,
         ctl: &mut Ctl,
         secrets: &[String],
         net_env: &[(String, String)],
-        req: &RunStart,
+        run_id: &str,
+        repo_url: &str,
         repo: &Path,
     ) -> Result<(), Abort> {
         let ws = &self.cfg.workspace;
         if repo.join(".git").exists() {
-            self.net_fetch(run, ctl, secrets, net_env, &req.run_id, repo, &req.repo_url)
+            self.net_fetch(run, ctl, secrets, net_env, run_id, repo, repo_url)
                 .await?;
         } else {
             let _ = std::fs::remove_dir_all(repo);
             // Into a fresh, unpredictably named directory (nothing planted
             // to read), then moved into place.
-            let tmp = crate::netgit::net_dir(ws, &format!("clone-{}", req.run_id))
+            let tmp = crate::netgit::net_dir(ws, &format!("clone-{run_id}"))
                 .map_err(|e| Abort::Fail(format!("cannot name the clone dir: {e}")))?;
             let _ = crate::privs::create_dir_all(tmp.parent().unwrap_or(ws));
             let tmp = crate::netgit::NetDir(tmp);
@@ -1460,14 +1510,7 @@ impl Inner {
                     secrets,
                     net_env,
                     &ws.join("repos"),
-                    &[
-                        "clone",
-                        "--no-checkout",
-                        "--template=",
-                        "--",
-                        &req.repo_url,
-                        &t,
-                    ],
+                    &["clone", "--no-checkout", "--template=", "--", repo_url, &t],
                     Some(self.cfg.fetch_attempt_cap),
                     Some(&tmp.0),
                 )
@@ -1573,8 +1616,16 @@ impl Inner {
             let _g = lock.lock().await;
             let _ = crate::privs::create_dir_all(&ws.join("repos"));
             let _ = crate::privs::create_dir_all(&ws.join("worktrees"));
-            self.sync_repo(run, ctl, &secrets, &net_env, req, &repo)
-                .await?;
+            self.sync_repo(
+                run,
+                ctl,
+                &secrets,
+                &net_env,
+                &req.run_id,
+                &req.repo_url,
+                &repo,
+            )
+            .await?;
             let base = self.resolve_base(run, ctl, &repo, &req.base_ref).await?;
             let start = match self
                 .rev_parse(
@@ -1887,6 +1938,200 @@ impl Inner {
     }
 
     /// Commit of `base_ref`: `origin/<ref>`, else a tag or sha.
+    /// Answer a `prepare_request`: fetch the clone, then the merge base of
+    /// `origin/<base_ref>` and the branch, the files changed since, and the
+    /// components `affected.sh` names for them. Best-effort: whatever fails
+    /// (including a fetch, so refs are never stale) leaves its fields empty.
+    async fn prepare_refs(&self, req: &PrepareRequest) -> Prepared {
+        let mut out = Prepared {
+            run_id: req.run_id.clone(),
+            ..Prepared::default()
+        };
+        let valid = valid_ref(&req.branch)
+            && valid_ref(&req.base_ref)
+            && !req.repo_url.is_empty()
+            && !req.repo_url.starts_with('-')
+            && !req.run_id.is_empty()
+            && req.run_id.len() <= 128
+            && req
+                .run_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        if !valid {
+            tracing::debug!(run = %req.run_id, "prepare_request rejected: invalid fields");
+            return out;
+        }
+        let (_cancel, rx) = watch::channel(false);
+        let mut ctl = Ctl {
+            cancel: rx,
+            deadline: Instant::now() + PREPARE_DEADLINE,
+        };
+        let run = Run::scratch(&req.run_id);
+        if let Err(e) = self.prepare_steps(&run, &mut ctl, req, &mut out).await {
+            let why = match e {
+                Abort::Stop(s) => format!("{s:?}"),
+                Abort::Fail(m) => m,
+            };
+            tracing::debug!(run = %req.run_id, error = %why, "prepare_request incomplete");
+        }
+        out
+    }
+
+    async fn prepare_steps(
+        &self,
+        run: &Run,
+        ctl: &mut Ctl,
+        req: &PrepareRequest,
+        out: &mut Prepared,
+    ) -> Result<(), Abort> {
+        let ws = &self.cfg.workspace;
+        let token = req.clone_token.expose();
+        let mut secrets = vec![token.to_string()];
+        let header = (!token.is_empty()).then(|| {
+            let b64 =
+                base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}"));
+            secrets.push(b64.clone());
+            format!("Authorization: basic {b64}")
+        });
+        let net_env = crate::netgit::env(&req.repo_url, header.as_deref(), &self.git_env())
+            .map_err(Abort::Fail)?;
+        let repo = ws.join("repos").join(repo_dir_name(&req.repo_url));
+        let lock = self.repo_lock(&repo);
+        let _g = lock.lock().await;
+        let _ = crate::privs::create_dir_all(&ws.join("repos"));
+        // One fetch brings in every branch, so the base and the head are both
+        // current. A failed fetch must not fall back to the stale refs.
+        self.sync_repo(
+            run,
+            ctl,
+            &secrets,
+            &net_env,
+            &format!("prepare-{}", req.run_id),
+            &req.repo_url,
+            &repo,
+        )
+        .await?;
+        let base = self.resolve_base(run, ctl, &repo, &req.base_ref).await?;
+        // A branch that does not exist yet (first implement run) has no changes.
+        let head = match self
+            .rev_parse(
+                run,
+                ctl,
+                &repo,
+                &format!("refs/remotes/origin/{}^{{commit}}", req.branch),
+            )
+            .await?
+        {
+            Some(h) => h,
+            None => base.clone(),
+        };
+        let mb = self
+            .git_raw(
+                run,
+                ctl,
+                &[],
+                &[],
+                Some(&repo),
+                &["merge-base", &base, &head],
+            )
+            .await?;
+        // Unrelated histories: no merge base, so nothing to diff against.
+        let Some(mb) = mb
+            .success()
+            .then(|| crate::git_prep::parse_sha(&mb.stdout))
+            .flatten()
+        else {
+            return Ok(());
+        };
+        out.merge_base_sha = Some(mb.clone());
+        let range = format!("{mb}...{head}");
+        let diff = self
+            .git_raw(
+                run,
+                ctl,
+                &[],
+                &[],
+                Some(&repo),
+                &["diff", "--name-only", "-z", &range, "--"],
+            )
+            .await?;
+        if !diff.success() {
+            return Ok(());
+        }
+        let files = crate::git_prep::parse_names(&diff.stdout);
+        if files.is_empty() {
+            return Ok(());
+        }
+        // `affected.sh` reads the whole list, not the capped one.
+        out.affected = self
+            .affected(run, ctl, &repo, &head, &req.run_id, &files)
+            .await;
+        let (kept, total) = crate::git_prep::cap_files(files);
+        out.changed_files = kept;
+        out.changed_files_total = total;
+        Ok(())
+    }
+
+    /// Components for `files`, from the repo's own `affected.sh` as it is in
+    /// `head`. Empty when the script is absent or fails (another repo, an
+    /// older script without `--files-from`).
+    async fn affected(
+        &self,
+        run: &Run,
+        ctl: &mut Ctl,
+        repo: &Path,
+        head: &str,
+        run_id: &str,
+        files: &[String],
+    ) -> Vec<String> {
+        let spec = format!("{head}:{}", crate::git_prep::AFFECTED_SCRIPT);
+        let script = match self
+            .git_raw(run, ctl, &[], &[], Some(repo), &["show", &spec])
+            .await
+        {
+            Ok(o) if o.success() => o.stdout,
+            _ => return Vec::new(),
+        };
+        let Ok(dir) = crate::netgit::net_dir(&self.cfg.workspace, &format!("affected-{run_id}"))
+        else {
+            return Vec::new();
+        };
+        let dir = crate::netgit::NetDir(dir);
+        let list = files
+            .iter()
+            .filter(|f| !f.contains('\n'))
+            .fold(String::new(), |mut s, f| {
+                s.push_str(f);
+                s.push('\n');
+                s
+            });
+        let (script_path, list_path) = (dir.0.join("affected.sh"), dir.0.join("files"));
+        if write_atomic(&script_path, &script, 0o644).is_err()
+            || write_atomic(&list_path, list.as_bytes(), 0o644).is_err()
+        {
+            return Vec::new();
+        }
+        let mut cmd = CmdSpec::new(
+            "bash",
+            &[
+                &script_path.to_string_lossy(),
+                "--files-from",
+                &list_path.to_string_lossy(),
+            ],
+        );
+        cmd.cwd = Some(dir.0.clone());
+        cmd.env_clear = true;
+        cmd.env = vec![
+            ("PATH".into(), std::env::var("PATH").unwrap_or_default()),
+            ("HOME".into(), "/nonexistent".into()),
+            ("LC_ALL".into(), "C".into()),
+        ];
+        match exec::run(&self.reaper, cmd, ctl, None).await {
+            Ok(o) if o.success() => crate::git_prep::parse_affected(&o.stdout),
+            _ => Vec::new(),
+        }
+    }
+
     async fn resolve_base(
         &self,
         run: &Run,
@@ -2140,7 +2385,8 @@ impl crate::retarget::Git for RetargetGit<'_> {
                 self.ctl,
                 self.secrets,
                 self.net_env,
-                self.req,
+                &self.req.run_id,
+                &self.req.repo_url,
                 self.repo,
             )
             .await
@@ -2606,5 +2852,242 @@ mod retry_tests {
         assert!(out.stderr.contains("Operation timed out"), "{}", out.stderr);
         assert_eq!(fx.calls(), 3);
         assert!(started.elapsed() < Duration::from_secs(10));
+    }
+}
+
+/// `prepare_request` against real git and a local `file://` remote.
+#[cfg(test)]
+mod prepare_refs_tests {
+    use super::*;
+    use std::process::Command;
+
+    const AFFECTED_STUB: &str = "#!/usr/bin/env bash\nset -eu\n[ \"$1\" = \"--files-from\" ]\n\
+        files=$(cat \"$2\")\ncase \"$files\" in *ui/*) echo ui;; esac\n";
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(["-c", "protocol.file.allow=always"])
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.test")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.test")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    struct Fx {
+        _d: tempfile::TempDir,
+        root: PathBuf,
+        url: String,
+        seed: PathBuf,
+        inner: Arc<Inner>,
+    }
+
+    impl Fx {
+        /// `origin.git` seeded with `main` (a.txt), plus a `seed` working repo.
+        fn new() -> Self {
+            let d = tempfile::tempdir().unwrap();
+            let root = d.path().to_path_buf();
+            let origin = root.join("origin.git");
+            let seed = root.join("seed");
+            std::fs::create_dir_all(&origin).unwrap();
+            std::fs::create_dir_all(&seed).unwrap();
+            git(&origin, &["init", "-q", "--bare", "-b", "main"]);
+            git(&seed, &["init", "-q", "-b", "main"]);
+            git(
+                &seed,
+                &["remote", "add", "origin", origin.to_str().unwrap()],
+            );
+            std::fs::write(seed.join("a.txt"), "a").unwrap();
+            git(&seed, &["add", "-A"]);
+            git(&seed, &["commit", "-q", "-m", "init"]);
+            git(&seed, &["push", "-q", "origin", "main"]);
+            let cfg = Config {
+                workspace: root.join("ws"),
+                net_retry_delays: vec![],
+                ..Config::default()
+            };
+            let reaper = Reaper::new(false);
+            tokio::spawn(reaper.clone().run());
+            let inner = Arc::new(Inner {
+                slots: Semaphore::new(1),
+                reaper,
+                runs_dir: cfg.workspace.join(".enzarb/runs"),
+                cfg,
+                runs: Mutex::default(),
+                sessions: Mutex::default(),
+                repo_locks: RepoLocks::default(),
+                http: reqwest::Client::new(),
+                activity: ActivityGate::default(),
+            });
+            let url = format!("file://{}", origin.display());
+            Self {
+                _d: d,
+                root,
+                url,
+                seed,
+                inner,
+            }
+        }
+
+        fn commit(&self, file: &str, msg: &str) {
+            let p = self.seed.join(file);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, msg).unwrap();
+            git(&self.seed, &["add", "-A"]);
+            git(&self.seed, &["commit", "-q", "-m", msg]);
+        }
+
+        fn req(&self, branch: &str) -> PrepareRequest {
+            PrepareRequest {
+                run_id: "job-1".into(),
+                repo_url: self.url.clone(),
+                base_ref: "main".into(),
+                branch: branch.into(),
+                clone_token: enzarb_proto::Secret::new("ghs_secret"),
+            }
+        }
+
+        async fn prepare(&self, branch: &str) -> Prepared {
+            self.inner.prepare_refs(&self.req(branch)).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stale_local_main_is_not_used() {
+        let fx = Fx::new();
+        // First run: clones; the branch does not exist yet, so nothing changed.
+        let first = fx.prepare("feat").await;
+        let old_main = git(&fx.seed, &["rev-parse", "main"]);
+        assert_eq!(first.merge_base_sha.as_deref(), Some(old_main.as_str()));
+        assert!(first.changed_files.is_empty());
+        assert_eq!(first.changed_files_total, 0);
+
+        // origin/main moves on and `feat` is cut from the new main. The clone's
+        // own local `main` stays on the old commit.
+        fx.commit("docs/n.md", "news");
+        let new_main = git(&fx.seed, &["rev-parse", "main"]);
+        git(&fx.seed, &["push", "-q", "origin", "main"]);
+        git(&fx.seed, &["checkout", "-q", "-b", "feat"]);
+        fx.commit("ui/x.ts", "x");
+        git(&fx.seed, &["push", "-q", "origin", "feat"]);
+        let repo = fx.root.join("ws/repos").join(repo_dir_name(&fx.url));
+        assert_eq!(git(&repo, &["rev-parse", "refs/heads/main"]), old_main);
+
+        let got = fx.prepare("feat").await;
+        assert_eq!(got.run_id, "job-1");
+        assert_eq!(got.merge_base_sha.as_deref(), Some(new_main.as_str()));
+        assert_eq!(got.changed_files, vec!["ui/x.ts".to_string()]);
+        assert_eq!(got.changed_files_total, 1);
+        // No affected.sh in the repo: the list stays empty.
+        assert!(got.affected.is_empty());
+    }
+
+    #[tokio::test]
+    async fn affected_runs_the_script_of_the_head_tree() {
+        let fx = Fx::new();
+        git(&fx.seed, &["checkout", "-q", "-b", "feat"]);
+        fx.commit("scripts/monorepo/affected.sh", AFFECTED_STUB);
+        fx.commit("ui/x.ts", "x");
+        fx.commit("docs/y.md", "y");
+        git(&fx.seed, &["push", "-q", "origin", "feat"]);
+        let got = fx.prepare("feat").await;
+        assert_eq!(got.changed_files_total, 3);
+        assert_eq!(got.affected, vec!["ui".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn a_failing_script_leaves_affected_empty() {
+        let fx = Fx::new();
+        git(&fx.seed, &["checkout", "-q", "-b", "feat"]);
+        fx.commit("scripts/monorepo/affected.sh", "#!/bin/sh\nexit 3\n");
+        git(&fx.seed, &["push", "-q", "origin", "feat"]);
+        let got = fx.prepare("feat").await;
+        assert!(got.merge_base_sha.is_some());
+        assert_eq!(
+            got.changed_files,
+            vec!["scripts/monorepo/affected.sh".to_string()]
+        );
+        assert!(got.affected.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unrelated_histories_have_no_merge_base() {
+        let fx = Fx::new();
+        git(&fx.seed, &["checkout", "-q", "--orphan", "other"]);
+        fx.commit("o.txt", "o");
+        git(&fx.seed, &["push", "-q", "origin", "other"]);
+        let got = fx.prepare("other").await;
+        assert_eq!(got.merge_base_sha, None);
+        assert!(got.changed_files.is_empty());
+        assert!(got.affected.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_remote_gives_empty_fields_without_an_error() {
+        let fx = Fx::new();
+        let mut req = fx.req("feat");
+        req.repo_url = format!("file://{}", fx.root.join("missing.git").display());
+        let got = fx.inner.prepare_refs(&req).await;
+        assert_eq!(
+            got,
+            Prepared {
+                run_id: "job-1".into(),
+                ..Prepared::default()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_fetch_does_not_fall_back_to_stale_refs() {
+        let fx = Fx::new();
+        git(&fx.seed, &["checkout", "-q", "-b", "feat"]);
+        fx.commit("ui/x.ts", "x");
+        git(&fx.seed, &["push", "-q", "origin", "feat"]);
+        let ok = fx.prepare("feat").await;
+        assert_eq!(ok.changed_files, vec!["ui/x.ts".to_string()]);
+        // The remote goes away; the clone still has the old refs.
+        std::fs::remove_dir_all(fx.root.join("origin.git")).unwrap();
+        let got = fx.prepare("feat").await;
+        assert_eq!(got.merge_base_sha, None);
+        assert!(got.changed_files.is_empty());
+        assert!(got.affected.is_empty());
+    }
+
+    #[tokio::test]
+    async fn invalid_refs_are_rejected_without_touching_git() {
+        let fx = Fx::new();
+        for (base, branch) in [("-x", "feat"), ("main", "a..b"), ("main", "")] {
+            let mut req = fx.req(branch);
+            req.base_ref = base.into();
+            let got = fx.inner.prepare_refs(&req).await;
+            assert_eq!(got.merge_base_sha, None, "{base} {branch}");
+        }
+        assert!(!fx.root.join("ws/repos").exists());
+    }
+
+    #[tokio::test]
+    async fn the_list_is_capped_with_the_true_total() {
+        let fx = Fx::new();
+        git(&fx.seed, &["checkout", "-q", "-b", "feat"]);
+        let dir = fx.seed.join("many");
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..crate::git_prep::MAX_FILES + 5 {
+            std::fs::write(dir.join(format!("f{i:04}")), "x").unwrap();
+        }
+        git(&fx.seed, &["add", "-A"]);
+        git(&fx.seed, &["commit", "-q", "-m", "many"]);
+        git(&fx.seed, &["push", "-q", "origin", "feat"]);
+        let got = fx.prepare("feat").await;
+        assert_eq!(got.changed_files.len(), crate::git_prep::MAX_FILES);
+        assert_eq!(got.changed_files_total, crate::git_prep::MAX_FILES + 5);
     }
 }

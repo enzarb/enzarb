@@ -27,7 +27,7 @@ Discussion so far (oldest first):
 # What to do
 
 1. Read the repository's own guidance (`CLAUDE.md`, `README.md`, contributing notes) so you judge the change by the project's conventions.
-2. See what changed: `git diff {merge_base_sha}...HEAD` and `git log {merge_base_sha}..HEAD`. The merge base is pinned for you; never inspect, fetch or update the local `{base_ref}`. If `{merge_base_sha}` is `(none)`, it was not provided: use `git merge-base HEAD origin/{base_ref}` instead. Then read the surrounding code, not only the diff.
+2. See what changed: `git diff {merge_base_sha}...HEAD` and `git log {merge_base_sha}..HEAD`. The merge base is pinned for you; never inspect, fetch or update the local `{base_ref}`. If `{merge_base_sha}` is `(none)`, it was not provided: use `git merge-base HEAD origin/{base_ref}` instead. The files it changes, one per line (the list may be cut short; if it is `(none)`, it was not provided, so rely on the diff): `{changed_files}`. Then read the surrounding code, not only the diff.
 3. Check, in this order of importance:
    - **Correctness**: logic errors, unhandled edge cases and errors, races, resource leaks, broken invariants.
    - **Security**: injection, missing authorization, secrets in code or logs, unsafe handling of untrusted input.

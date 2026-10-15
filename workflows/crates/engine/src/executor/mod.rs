@@ -75,6 +75,7 @@ mod callback;
 pub mod claude_credential;
 mod connectors;
 mod jobs;
+mod prepare;
 mod restart;
 mod retarget;
 mod sandbox;
