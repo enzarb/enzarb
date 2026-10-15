@@ -7,6 +7,7 @@ The `enzarb` monorepo: AI coding agents running in Kubernetes sandboxes against 
 - [docs/connectors.md](docs/connectors.md): connector contract (GitHub first)
 - [docs/database.md](docs/database.md): shared Postgres via pgop
 - [docs/mvp.md](docs/mvp.md): MVP scope and execution waves
+- [docs/brand.md](docs/brand.md): brand identity, palette, typography and logo usage
 - [docs/contracts.md](docs/contracts.md): cross-component interfaces (CRD, protocol messages, events, DB API, config)
 - [docs/dev.md](docs/dev.md): local development on kind (`mise run dev:helm-deploy`), GitHub App setup, first dogfood, opt-in git hooks (`mise run hooks:install` once per clone)
 - [docs/github-app.yml](docs/github-app.yml): GitHub App manifest

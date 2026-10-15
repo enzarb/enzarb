@@ -15,6 +15,7 @@
 		"format": "prettier --write .",
 		"test:unit": "vitest",
 		"test": "npm run test:unit -- --run",
+		"brand": "node scripts/build-brand.mjs",
 		"icons": "node scripts/generate-icons.mjs",
 		"migrate": "node scripts/migrate.ts",
 		"test:e2e": "playwright test",

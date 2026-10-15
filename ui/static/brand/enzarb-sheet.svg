@@ -1,0 +1,296 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900" width="100%" height="100%">
+  <defs>
+    <!-- Canvas Background & Ambient Illumination -->
+    <radialGradient id="bgCanvas" cx="50%" cy="42%" r="65%">
+      <stop offset="0%" stop-color="#17232c" />
+      <stop offset="55%" stop-color="#0e1319" />
+      <stop offset="100%" stop-color="#070a0e" />
+    </radialGradient>
+
+    <radialGradient id="cyanGlow" cx="35%" cy="40%" r="40%">
+      <stop offset="0%" stop-color="#00f2ff" stop-opacity="0.16" />
+      <stop offset="100%" stop-color="#00f2ff" stop-opacity="0" />
+    </radialGradient>
+
+    <radialGradient id="emeraldGlow" cx="62%" cy="48%" r="40%">
+      <stop offset="0%" stop-color="#10b981" stop-opacity="0.15" />
+      <stop offset="100%" stop-color="#10b981" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Heavy Ambient Drop Shadow -->
+    <filter id="dropShadow" x="-25%" y="-25%" width="150%" height="160%">
+      <feDropShadow dx="0" dy="24" stdDeviation="24" flood-color="#000000" flood-opacity="0.88" />
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#000000" flood-opacity="0.65" />
+    </filter>
+
+    <!-- ========================================== -->
+    <!-- "E" MONOGRAM GRADIENTS (LEFT & TOP ARCH)   -->
+    <!-- ========================================== -->
+    <!-- Main flat face of the E and top-right bridge -->
+    <linearGradient id="eMainFace" x1="15%" y1="80%" x2="85%" y2="15%">
+      <stop offset="0%" stop-color="#0ea5e9" />
+      <stop offset="30%" stop-color="#00d8f6" />
+      <stop offset="58%" stop-color="#00f5d4" />
+      <stop offset="85%" stop-color="#22c55e" />
+      <stop offset="100%" stop-color="#10b981" />
+    </linearGradient>
+
+    <!-- Inner recessed step / terrace of the E -->
+    <linearGradient id="eInnerStep" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0284c7" />
+      <stop offset="50%" stop-color="#0891b2" />
+      <stop offset="100%" stop-color="#0d9488" />
+    </linearGradient>
+
+    <!-- Deep inner bevel walls (dark teal/navy shadows) -->
+    <linearGradient id="darkCavityWall" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#062c43" />
+      <stop offset="50%" stop-color="#053742" />
+      <stop offset="100%" stop-color="#042f2e" />
+    </linearGradient>
+
+    <!-- Lit inner bevel walls (catching top-left light) -->
+    <linearGradient id="litCavityBevel" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="50%" stop-color="#06b6d4" />
+      <stop offset="100%" stop-color="#0d9488" />
+    </linearGradient>
+
+    <!-- Middle E-Bar Chiseled Spear Facets -->
+    <linearGradient id="spearTop" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00e1ff" />
+      <stop offset="65%" stop-color="#5eead4" />
+      <stop offset="100%" stop-color="#a7f3d0" />
+    </linearGradient>
+
+    <linearGradient id="spearBottom" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0284c7" />
+      <stop offset="60%" stop-color="#0369a1" />
+      <stop offset="100%" stop-color="#075985" />
+    </linearGradient>
+
+    <!-- Bottom Left E-Foot Chiseled Point -->
+    <linearGradient id="eBottomFoot" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0ea5e9" />
+      <stop offset="65%" stop-color="#0284c7" />
+      <stop offset="100%" stop-color="#0369a1" />
+    </linearGradient>
+
+    <!-- ========================================== -->
+    <!-- "Z" MONOGRAM GRADIENTS (DIAGONAL & HOOK)   -->
+    <!-- ========================================== -->
+    <!-- Z Diagonal Main Face (with intense specular hot-spot at knee) -->
+    <linearGradient id="zMainFace" x1="85%" y1="15%" x2="15%" y2="85%">
+      <stop offset="0%" stop-color="#10b981" />
+      <stop offset="35%" stop-color="#34d399" />
+      <stop offset="68%" stop-color="#a7f3d0" />
+      <stop offset="78%" stop-color="#ecfdf5" />
+      <stop offset="86%" stop-color="#34d399" />
+      <stop offset="100%" stop-color="#059669" />
+    </linearGradient>
+
+    <!-- Z Vertical Front Pillar (Below the specular knee) -->
+    <linearGradient id="zFrontPillar" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6ee7b7" />
+      <stop offset="25%" stop-color="#10b981" />
+      <stop offset="70%" stop-color="#047857" />
+      <stop offset="100%" stop-color="#064e3b" />
+    </linearGradient>
+
+    <!-- Z Diagonal Long Right Bevel (Shaded Emerald) -->
+    <linearGradient id="zDiagRightBevel" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#059669" />
+      <stop offset="50%" stop-color="#047857" />
+      <stop offset="100%" stop-color="#065f46" />
+    </linearGradient>
+
+    <!-- Z Bottom Bar & Upward Barb Face -->
+    <linearGradient id="zBottomHookFace" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0d9488" />
+      <stop offset="45%" stop-color="#10b981" />
+      <stop offset="80%" stop-color="#34d399" />
+      <stop offset="100%" stop-color="#6ee7b7" />
+    </linearGradient>
+
+    <!-- Specular Glare Filter for the Knee Corner -->
+    <radialGradient id="kneeGlare" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.95" />
+      <stop offset="40%" stop-color="#a7f3d0" stop-opacity="0.45" />
+      <stop offset="100%" stop-color="#10b981" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+
+  <!-- 1. BACKGROUND CANVAS & ATMOSPHERIC LIGHTING -->
+  <rect width="1200" height="900" fill="url(#bgCanvas)" />
+  <rect width="1200" height="900" fill="url(#cyanGlow)" />
+  <rect width="1200" height="900" fill="url(#emeraldGlow)" />
+
+  <!-- ================================================================= -->
+  <!-- 2. EMBLEM GEOMETRY (EXACT PIXEL-COORDINATE FACET RECONSTRUCTION)  -->
+  <!-- ================================================================= -->
+  <g id="enzarb-emblem" filter="url(#dropShadow)">
+
+    <!-- =============================================================== -->
+    <!-- PART A: LEFT & TOP INTERLOCKING "E"                             -->
+    <!-- =============================================================== -->
+
+    <!-- A1. Outer 3D Drop Walls (Bottom-Left & Under-hangs) -->
+    <!-- Bottom-left outer drop wall under the E foot -->
+    <polygon points="342,571 524,666 521,675 342,585" fill="#082f49" />
+    <!-- Under-hang wall beneath the top-right Z overhang -->
+    <polygon points="859,233 859,276 847,288 847,242" fill="#052e2b" />
+
+    <!-- A2. Deep Recessed Inner Cavity Walls of the "E" -->
+    <!-- Top-left inner roof soffit (dark shadow) -->
+    <polygon points="391,264 600,136 600,162 418,274" fill="url(#darkCavityWall)" />
+    <!-- Top-right inner roof soffit (under the top arch) -->
+    <polygon points="600,136 772,243 744,264 600,175" fill="url(#darkCavityWall)" />
+    <polygon points="600,162 744,264 726,281 600,202" fill="#031d24" />
+    <!-- Upper-left vertical inner wall -->
+    <polygon points="391,264 418,274 440,287 440,352 418,365 391,382" fill="#075985" />
+    <polygon points="418,274 440,287 440,352 418,365" fill="#033e59" />
+    <!-- Lower-left vertical inner wall -->
+    <polygon points="391,445 418,430 418,524 391,540" fill="#075985" />
+    <polygon points="418,430 440,418 440,498 418,524" fill="#033e59" />
+    <!-- Lower inner floor ramp leading to bottom spike -->
+    <polygon points="391,540 418,524 475,556 490,590" fill="url(#litCavityBevel)" />
+    <polygon points="418,524 440,498 475,518 475,556" fill="#033e59" />
+
+    <!-- A3. Stepped Inner Frame / Terrace of the "E" -->
+    <polygon points="376,254 600,118 792,238 772,243 600,136 391,264 391,382 376,391" fill="url(#eInnerStep)" />
+    <polygon points="376,454 391,445 391,540 490,590 524,666 476,612 376,554" fill="url(#eInnerStep)" />
+
+    <!-- A4. Center Spear / Middle Crossbar of the "E" -->
+    <!-- Top lit bevel of the spear -->
+    <polygon points="391,382 598,257 578,325 391,430" fill="url(#spearTop)" />
+    <!-- Lower shaded bevel of the spear -->
+    <polygon points="391,430 578,325 568,386 391,465" fill="url(#spearBottom)" />
+    <!-- Right-side terminal chisel facet of the spear point -->
+    <polygon points="598,257 568,386 556,378 578,325" fill="#38bdf8" />
+    <!-- Under-shadow of the spear -->
+    <polygon points="391,465 568,386 556,398 418,468 391,478" fill="#042f49" />
+
+    <!-- A5. Primary Top Surface of the "E" & Upper Arch -->
+    <polygon points="342,233 600,76 859,233 822,262 600,118 376,254 376,554 476,612 524,666 342,571" fill="url(#eMainFace)" />
+
+
+    <!-- =============================================================== -->
+    <!-- PART B: RIGHT & LOWER INTERLOCKING "Z"                          -->
+    <!-- =============================================================== -->
+
+    <!-- B1. Outer 3D Drop Walls of the "Z" (Bottom & Right) -->
+    <!-- Bottom-left drop wall of the Z base -->
+    <polygon points="534,659 595,696 595,716 534,676" fill="#03261e" />
+    <!-- Bottom-right drop wall of the Z base -->
+    <polygon points="595,696 859,544 859,562 595,716" fill="#03261e" />
+    <!-- Diagonal right underside wall (thick 3D extrusion) -->
+    <polygon points="859,233 859,276 648,512 634,485" fill="url(#zDiagRightBevel)" />
+
+    <!-- B2. Inner Triangle Cavity of the Lower "Z" -->
+    <!-- Inner left vertical recess wall -->
+    <polygon points="622,528 634,515 634,598 622,612" fill="#022c22" />
+    <!-- Inner bottom sloped recess wall (dark shadow) -->
+    <polygon points="622,612 634,598 768,522 795,512" fill="#042f2e" />
+    <!-- Inner bottom lit bevel shelf -->
+    <polygon points="622,612 795,512 812,522 622,632" fill="#0f766e" />
+    <!-- Inner barb left-facing shadow facet -->
+    <polygon points="790,400 795,512 768,522 766,472" fill="#064e3b" />
+    <!-- Inner barb bright bevel facet -->
+    <polygon points="790,400 812,522 795,512" fill="#6ee7b7" />
+
+    <!-- B3. Primary Top & Front Surfaces of the "Z" -->
+    <!-- Main Diagonal Ribbon (Top-right corner down to the glowing knee) -->
+    <polygon points="822,262 859,233 582,538 534,522" fill="url(#zMainFace)" />
+
+    <!-- Left-side dark bevel of the diagonal (gives the Z bar its raised thickness) -->
+    <polygon points="792,238 822,262 534,522 534,504" fill="#065f46" />
+
+    <!-- Vertical Front Pillar (Left face of the knee dropping to bottom-left corner) -->
+    <polygon points="534,522 582,538 582,688 534,659" fill="url(#zFrontPillar)" />
+
+    <!-- Main Lower Z Hook & Upward Barb Surface -->
+    <polygon points="582,538 634,485 622,500 622,632 812,522 790,400 859,544 595,696 582,688" fill="url(#zBottomHookFace)" />
+
+
+    <!-- =============================================================== -->
+    <!-- PART C: RAZOR SPECULAR HIGHLIGHTS & EDGE GLEAMS                 -->
+    <!-- =============================================================== -->
+    <!-- Outer hexagonal top crest highlight -->
+    <polyline points="342,571 342,233 600,76 859,233" fill="none" stroke="#a5f3fc" stroke-width="2.5" stroke-linejoin="round" opacity="0.9" />
+
+    <!-- Inner E frame sharp edge highlight -->
+    <polyline points="792,238 600,118 376,254 376,554 524,666" fill="none" stroke="#67e8f9" stroke-width="1.8" stroke-linejoin="round" opacity="0.85" />
+
+    <!-- Bottom-left E-foot neon cyan edge -->
+    <line x1="342" y1="571" x2="524" y2="666" stroke="#38bdf8" stroke-width="3" stroke-linecap="round" />
+
+    <!-- Center spear ridge line -->
+    <polyline points="391,430 578,325 598,257" fill="none" stroke="#e0f2fe" stroke-width="2.2" stroke-linejoin="round" />
+    <line x1="598" y1="257" x2="568" y2="386" stroke="#bae6fd" stroke-width="1.8" />
+
+    <!-- Z Diagonal main ridge highlight -->
+    <polyline points="859,233 582,538 582,688" fill="none" stroke="#d1fae5" stroke-width="2.5" stroke-linejoin="round" />
+    <line x1="534" y1="522" x2="582" y2="538" stroke="#ffffff" stroke-width="3" stroke-linecap="round" />
+
+    <!-- Upward barb & lower base crisp edge highlights -->
+    <polyline points="790,400 859,544 595,696 534,659" fill="none" stroke="#a7f3d0" stroke-width="2" stroke-linejoin="round" opacity="0.9" />
+    <polyline points="790,400 812,522 622,632" fill="none" stroke="#ecfdf5" stroke-width="2" stroke-linejoin="round" />
+
+    <!-- Specular Starburst Glare on the Z Knee (582, 538) -->
+    <circle cx="582" cy="538" r="28" fill="url(#kneeGlare)" />
+  </g>
+
+
+  <!-- ================================================================= -->
+  <!-- 3. WORDMARK: "ENZARB.dev" (EXACT CUSTOM GEOMETRIC LETTERFORMS)    -->
+  <!-- ================================================================= -->
+  <g id="enzarb-wordmark" filter="url(#dropShadow)" transform="translate(0, 0)">
+
+    <!-- 'E' (With signature top-left diagonal chamfer cut) -->
+    <path d="M 288,760
+             L 346,760 L 346,772 L 303,772 L 288,785 Z
+             M 288,789 L 303,777 L 303,781 L 335,781 L 335,792 L 303,792 L 303,801 L 347,801 L 347,813 L 288,813 Z"
+          fill="#f1f5f9" />
+
+    <!-- 'N' -->
+    <path d="M 358,760 L 372,760 L 407,796 L 407,760 L 421,760 L 421,813 L 407,813 L 372,777 L 372,813 L 358,813 Z"
+          fill="#f1f5f9" />
+
+    <!-- 'Z' -->
+    <path d="M 432,760 L 491,760 L 491,771 L 452,801 L 491,801 L 491,813 L 431,813 L 431,802 L 470,772 L 432,772 Z"
+          fill="#f1f5f9" />
+
+    <!-- 'A' -->
+    <path d="M 498,813 L 527,760 L 543,760 L 572,813 L 556,813 L 550,801 L 520,801 L 514,813 Z
+             M 525,790 L 545,790 L 535,771 Z"
+          fill="#f1f5f9" />
+
+    <!-- 'R' -->
+    <path d="M 580,760 L 626,760 C 639,760 647,766 647,777 C 647,786 640,792 630,793 L 648,813 L 631,813 L 615,794 L 595,794 L 595,813 L 580,813 Z
+             M 595,771 L 595,783 L 623,783 C 629,783 632,781 632,777 C 632,773 629,771 623,771 Z"
+          fill="#f1f5f9" />
+
+    <!-- 'B' -->
+    <path d="M 659,760 L 706,760 C 718,760 725,765 725,773 C 725,779 721,783 715,785 C 723,787 728,792 728,799 C 728,808 720,813 706,813 L 659,813 Z
+             M 674,771 L 674,781 L 702,781 C 707,781 710,779 710,776 C 710,773 707,771 702,771 Z
+             M 674,791 L 674,802 L 704,802 C 709,802 713,800 713,796 C 713,793 709,791 704,791 Z"
+          fill="#f1f5f9" />
+
+    <!-- '.' (Cyan Period) -->
+    <circle cx="742" cy="806" r="7" fill="#00e5ff" />
+
+    <!-- 'd' -->
+    <path d="M 792,760 L 806,760 L 806,813 L 793,813 L 793,807 C 789,812 782,814 775,814 C 762,814 753,805 753,792 C 753,779 762,770 775,770 C 782,770 788,772 792,777 Z
+             M 780,780 C 772,780 767,785 767,792 C 767,799 772,804 780,804 C 787,804 792,799 792,792 C 792,785 787,780 780,780 Z"
+          fill="#00e5ff" />
+
+    <!-- 'e' -->
+    <path d="M 815,792 C 815,779 825,770 839,770 C 854,770 863,779 863,793 L 863,796 L 829,796 C 830,802 835,805 842,805 C 847,805 852,803 855,800 L 861,807 C 856,812 849,814 840,814 C 825,814 815,805 815,792 Z
+             M 850,788 C 849,782 845,779 839,779 C 833,779 829,782 829,788 Z"
+          fill="#00e5ff" />
+
+    <!-- 'v' -->
+    <path d="M 866,771 L 881,771 L 892,800 L 904,771 L 918,771 L 899,813 L 885,813 Z"
+          fill="#00e5ff" />
+  </g>
+</svg>

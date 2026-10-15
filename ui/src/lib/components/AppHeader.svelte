@@ -5,7 +5,7 @@
 </script>
 
 <header class="ez-header">
-	<Logo />
+	<Logo variant="wordmark" />
 	<svelte:boundary>
 		<UserMenu {...await currentUser()} />
 	</svelte:boundary>

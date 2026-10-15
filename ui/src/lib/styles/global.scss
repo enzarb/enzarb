@@ -36,17 +36,22 @@
 	--ez-text-subtle: #666674;
 
 	// The one accent
-	--ez-accent: #4f46e5;
-	--ez-accent-hover: #4338ca;
+	// Cyan, darkened for light surfaces: brand #00f0ff (and #0891b2 at 3.7:1) fail AA for text on white.
+	--ez-accent: #0e7490;
+	--ez-accent-hover: #155e75;
 	--ez-accent-fg: #ffffff;
-	--ez-accent-text: #4338ca;
-	--ez-accent-soft: #edecfd;
-	--ez-accent-soft-border: #cfcbf8;
+	--ez-accent-text: #0e7490;
+	--ez-accent-soft: #e4f6fa;
+	--ez-accent-soft-border: #a5dbe6;
+
+	// Logo wordmark: ink on light, cyan ".dev".
+	--ez-logo-ink: #0b0f17;
+	--ez-logo-dev: #0e7490;
 
 	// Semantic colours: -fg text/icon on the -bg tint, -border for outlines, -solid for filled buttons.
-	--ez-success-fg: #146236;
-	--ez-success-bg: #e7f5ec;
-	--ez-success-border: #b3dcc2;
+	--ez-success-fg: #047857;
+	--ez-success-bg: #e5f6ef;
+	--ez-success-border: #a6dcc6;
 	--ez-warning-fg: #84500a;
 	--ez-warning-bg: #fcf2de;
 	--ez-warning-border: #ecd29b;
@@ -73,28 +78,32 @@
 @mixin theme-dark {
 	color-scheme: dark;
 
-	--ez-bg: #0c0d11;
-	--ez-surface: #14151b;
-	--ez-surface-sunken: #101116;
-	--ez-surface-hover: #1b1c24;
-	--ez-border: #262731;
-	--ez-border-strong: #393a47;
-	--ez-control-border: #6d6e80;
+	// Brand palette (docs/brand.md): obsidian canvas, navy slate surface, steel border.
+	--ez-bg: #0b0f17;
+	--ez-surface: #131b2b;
+	--ez-surface-sunken: #0e1420;
+	--ez-surface-hover: #1a2438;
+	--ez-border: #232f46;
+	--ez-border-strong: #34425e;
+	--ez-control-border: #6b7a96;
 
-	--ez-text: #ececf1;
-	--ez-text-muted: #a8a9b6;
-	--ez-text-subtle: #8f90a0;
+	--ez-text: #f8fafc;
+	--ez-text-muted: #94a3b8;
+	--ez-text-subtle: #8795ab;
 
-	--ez-accent: #8a90ff;
-	--ez-accent-hover: #a0a5ff;
-	--ez-accent-fg: #0c0d11;
-	--ez-accent-text: #a5a9ff;
-	--ez-accent-soft: #1d1f3d;
-	--ez-accent-soft-border: #33366a;
+	--ez-accent: #00f0ff;
+	--ez-accent-hover: #5cf5ff;
+	--ez-accent-fg: #0b0f17;
+	--ez-accent-text: #00f0ff;
+	--ez-accent-soft: #0a2833;
+	--ez-accent-soft-border: #0f4a5a;
 
-	--ez-success-fg: #62d492;
-	--ez-success-bg: #11261a;
-	--ez-success-border: #21502f;
+	--ez-logo-ink: #f1f5f9;
+	--ez-logo-dev: #00e5ff;
+
+	--ez-success-fg: #10b981;
+	--ez-success-bg: #0c2a25;
+	--ez-success-border: #14503f;
 	--ez-warning-fg: #f1b74f;
 	--ez-warning-bg: #2a1f0b;
 	--ez-warning-border: #5d4416;
@@ -140,11 +149,14 @@
 
 // Tokens shared by both themes.
 :root {
-	// Type: the system UI stack keeps the app fast and offline-safe (no webfont, no CDN).
+	// Type: Inter and JetBrains Mono when installed (never fetched from a third party), else the
+	// system stack, which keeps the app fast and offline-safe.
 	--ez-font:
-		ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+		Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+		sans-serif;
 	--ez-mono:
-		ui-monospace, 'SFMono-Regular', 'Cascadia Code', Menlo, Consolas, 'Liberation Mono', monospace;
+		'JetBrains Mono', 'Fira Code', ui-monospace, 'SFMono-Regular', 'Cascadia Code', Menlo, Consolas,
+		'Liberation Mono', monospace;
 
 	--ez-text-xs: 0.75rem;
 	--ez-text-sm: 0.8125rem;
@@ -155,7 +167,7 @@
 	--ez-text-2xl: 1.75rem;
 
 	--ez-leading-tight: 1.25;
-	--ez-leading-normal: 1.55;
+	--ez-leading-normal: 1.6;
 
 	--ez-weight-regular: 400;
 	--ez-weight-medium: 500;
@@ -475,9 +487,17 @@ img {
 	letter-spacing: -0.02em;
 	text-decoration: none;
 
-	&__mark {
+	&__mark,
+	&__word {
 		display: block;
-		color: var(--ez-accent);
+	}
+
+	&__word {
+		width: auto;
+
+		@media (max-width: 30rem) {
+			display: none;
+		}
 	}
 }
 
