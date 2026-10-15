@@ -23,8 +23,19 @@ describe('parseConfig', () => {
 			githubAppSlug: 'enzarb',
 			realtimeLegacyTokenUrl: false,
 			componentVersions: { components: {} },
-			needsYouStaleHours: 24
+			needsYouStaleHours: 24,
+			sandboxStatsRetentionDays: 90
 		});
+	});
+
+	it('reads ENZARB_STATS_RETENTION and rejects non-positive or fractional values', () => {
+		expect(parseConfig({ ...valid, ENZARB_STATS_RETENTION: '14' }).sandboxStatsRetentionDays).toBe(
+			14
+		);
+		for (const bad of ['0', '-1', '1.5', 'abc'])
+			expect(() => parseConfig({ ...valid, ENZARB_STATS_RETENTION: bad })).toThrow(
+				/ENZARB_STATS_RETENTION/
+			);
 	});
 
 	it('reads NEEDS_YOU_STALE_HOURS and rejects non-positive values', () => {

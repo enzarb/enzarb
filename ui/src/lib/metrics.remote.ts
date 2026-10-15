@@ -2,8 +2,9 @@ import { error } from '@sveltejs/kit';
 import { query } from '$app/server';
 import * as v from 'valibot';
 import { parseWindow } from '#lib/metrics-window.ts';
+import { getConfig } from '#lib/server/config.ts';
 import { getSql } from '#lib/server/db.ts';
-import { projectStepTiming, projectUsage } from '#lib/server/metrics-service.ts';
+import { projectStepTiming, projectUsage, sandboxStats } from '#lib/server/metrics-service.ts';
 import { NameArg, ownedProject } from '#lib/server/owned-project.ts';
 
 const Param = v.optional(v.pipe(v.string(), v.maxLength(40)));
@@ -32,4 +33,9 @@ export const getProjectUsage = query(Args, async (args) =>
 /** Per-step timing (active and waiting) and job durations in the same window. */
 export const getProjectStepTiming = query(Args, async (args) =>
 	projectStepTiming(getSql(), args.name, await ownedWindow(args))
+);
+
+/** Sandbox CPU, memory, storage and disk I/O of the project's sandboxes, bucketed over the window. */
+export const getSandboxStats = query(Args, async (args) =>
+	sandboxStats(getSql(), args.name, await ownedWindow(args), getConfig().sandboxStatsRetentionDays)
 );

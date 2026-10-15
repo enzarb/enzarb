@@ -33,6 +33,8 @@ export interface Config {
 	 * `server/push.ts` and never sent to the browser.
 	 */
 	vapid?: VapidConfig;
+	/** Days of sandbox utilization samples kept (ENZARB_STATS_RETENTION, default 90; the workflows poller reads the same setting). */
+	sandboxStatsRetentionDays: number;
 }
 
 export interface VapidConfig {
@@ -56,6 +58,7 @@ type RequiredKey = Exclude<
 	| 'componentVersions'
 	| 'needsYouStaleHours'
 	| 'vapid'
+	| 'sandboxStatsRetentionDays'
 >;
 
 function parseComponentVersions(raw: string | undefined): ComponentVersions {
@@ -152,6 +155,11 @@ export function parseConfig(source: Record<string, string | undefined>): Config 
 	if (!Number.isFinite(needsYouStaleHours) || needsYouStaleHours <= 0) {
 		throw new Error('NEEDS_YOU_STALE_HOURS must be a positive number');
 	}
+	const retentionRaw = source.ENZARB_STATS_RETENTION?.trim();
+	const sandboxStatsRetentionDays = retentionRaw ? Number(retentionRaw) : 90;
+	if (!Number.isInteger(sandboxStatsRetentionDays) || sandboxStatsRetentionDays <= 0) {
+		throw new Error('ENZARB_STATS_RETENTION must be a positive whole number of days');
+	}
 	const githubAppId = source.ENZARB_GITHUB_APP_ID?.trim();
 	const pem = source.ENZARB_GITHUB_APP_PRIVATE_KEY?.trim().replaceAll('\\n', '\n');
 	// A malformed value is treated as unset (the message never carries the value).
@@ -163,6 +171,7 @@ export function parseConfig(source: Record<string, string | undefined>): Config 
 	return {
 		...out,
 		needsYouStaleHours,
+		sandboxStatsRetentionDays,
 		...(validId && validKey ? { githubAppId: validId, githubAppPrivateKey: validKey } : {}),
 		githubAppSlug,
 		realtimeLegacyTokenUrl: legacy === 'true',

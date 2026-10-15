@@ -83,7 +83,7 @@ impl Default for PollerConfig {
             interval,
             timeout: Duration::from_secs(5),
             concurrency: 8,
-            retention_days: 30,
+            retention_days: 90,
             jitter: interval / 4,
         }
     }

@@ -24,7 +24,11 @@ vi.mock('#lib/metrics.remote.ts', () => ({
 		h.args(a);
 		return { current: h.data, error: undefined };
 	},
-	getProjectStepTiming: () => ({ current: h.timing, error: undefined })
+	getProjectStepTiming: () => ({ current: h.timing, error: undefined }),
+	getSandboxStats: () => ({
+		current: { from: 0, to: 1000, stepMs: 10, buckets: [] },
+		error: undefined
+	})
 }));
 
 import Metrics from './+page.svelte';

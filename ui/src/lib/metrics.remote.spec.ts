@@ -7,20 +7,23 @@ const storeGet = vi.hoisted(() => vi.fn());
 const locals = vi.hoisted(() => ({ user: undefined as unknown }));
 const usage = vi.hoisted(() => vi.fn());
 const timing = vi.hoisted(() => vi.fn());
+const sandbox = vi.hoisted(() => vi.fn());
 vi.mock('#lib/server/kube.ts', () => ({
 	getProjectStore: () => ({ get: storeGet }) as unknown as ProjectStore
 }));
+vi.mock('#lib/server/config.ts', () => ({ getConfig: () => ({ sandboxStatsRetentionDays: 14 }) }));
 vi.mock('#lib/server/db.ts', () => ({ getSql: () => 'sql' }));
 vi.mock('#lib/server/metrics-service.ts', () => ({
 	projectUsage: usage,
-	projectStepTiming: timing
+	projectStepTiming: timing,
+	sandboxStats: sandbox
 }));
 vi.mock('$app/server', () => ({
 	query: (_schema: unknown, handler: object) => Object.assign(handler, { __: { type: 'query' } }),
 	getRequestEvent: () => ({ locals })
 }));
 
-import { getProjectStepTiming, getProjectUsage } from './metrics.remote.ts';
+import { getProjectStepTiming, getProjectUsage, getSandboxStats } from './metrics.remote.ts';
 
 const mine = buildProject(
 	{
@@ -51,6 +54,8 @@ beforeEach(() => {
 	usage.mockResolvedValue({ total: {}, tasks: [] });
 	timing.mockReset();
 	timing.mockResolvedValue({ states: [], jobs: [] });
+	sandbox.mockReset();
+	sandbox.mockResolvedValue({ from: 0, to: 1, stepMs: 1, buckets: [] });
 	locals.user = { id: 1, login: 'octo', name: null };
 });
 
@@ -87,6 +92,26 @@ describe('getProjectUsage', () => {
 		const t = getProjectStepTiming as unknown as (a: Args) => Promise<unknown>;
 		await t({ name: 'alpha' });
 		expect(timing).toHaveBeenCalledWith('sql', 'alpha', expect.objectContaining({ preset: '7d' }));
+	});
+
+	it('sandbox stats: checks ownership and the window before querying', async () => {
+		const s = getSandboxStats as unknown as (a: Args) => Promise<unknown>;
+		expect(await status(s({ name: 'nope' }))).toBe(404);
+		expect(await status(s({ name: 'alpha', window: '5y' }))).toBe(400);
+		locals.user = undefined;
+		expect(await status(s({ name: 'alpha' }))).toBe(401);
+		expect(sandbox).not.toHaveBeenCalled();
+	});
+
+	it('sandbox stats: queries the default window for the owner', async () => {
+		const s = getSandboxStats as unknown as (a: Args) => Promise<unknown>;
+		await s({ name: 'alpha' });
+		expect(sandbox).toHaveBeenCalledWith(
+			'sql',
+			'alpha',
+			expect.objectContaining({ preset: '7d' }),
+			14
+		);
 	});
 
 	it('queries the default window for the owner', async () => {
