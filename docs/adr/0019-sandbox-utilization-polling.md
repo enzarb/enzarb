@@ -11,7 +11,7 @@ Nothing collects sandbox CPU, memory, storage or disk I/O today (gap 11, epic #1
 - Values are **raw**: cumulative counters (`cpu_usec`, `cpu_throttled_usec`, `io_read_bytes`, `io_write_bytes`) or gauges (`mem_bytes`, `mem_limit_bytes`, `storage_used_bytes`, `storage_total_bytes`). Each reply carries `ts` (unix ms from the sandbox's clock) and `boot_id` (random, new per sandbox-init start). Rates are derived on read. sandbox-init keeps no history.
 - Under gVisor (ADR-0012) cgroup files may be missing or partial. Every field is optional: absent means "not reported", never 0 (as for `Usage`), and the poller stores NULL. This is **unverified**: `sandbox-stats` must check the real behaviour under gVisor, the only runtime (ADR-0012) and record it in `docs/contracts.md` section 3.
 
-### 2. API shape (`proto/`)
+### 2. API shape (`proto/`) (amended, see the end)
 - A new **additive CTRL request/reply on channel 0**, the same pattern as `credential_status`/`credential_state`:
   - `stats_request` (client to server, no fields);
   - `stats` (server to client): `{ts, boot_id, cpu_usec?, cpu_throttled_usec?, mem_bytes?, mem_limit_bytes?, io_read_bytes?, io_write_bytes?, storage_used_bytes?, storage_total_bytes?}`. All numbers are non-negative integers.
@@ -26,7 +26,7 @@ Nothing collects sandbox CPU, memory, storage or disk I/O today (gap 11, epic #1
 - **Failures:** unreachable, timeout, `unknown_message`, `unimplemented` or a missing `stats` feature all mean *skip the sample*. No zero rows and no gap-filling. Consecutive failures back off per project (doubling up to 5 min) and reset on success. They are logged at debug with a per-round count of ok/skipped/failed, since there is no metrics system yet.
 - **Work item attribution:** the sandbox is per Project, and worktrees share one cgroup, so attribution is approximate. At sample time the poller looks up work items with a `running` agent job on that Project. One sample row is stored once, with the lowest such `work_item_id`, or NULL when none runs.
 
-### 4. Storage
+### 4. Storage (amended, see the end)
 Table `workflows.sandbox_stats` (migration in `workflows/migrations`):
 
 | column | type | note |
@@ -44,7 +44,7 @@ Table `workflows.sandbox_stats` (migration in `workflows/migrations`):
 - **Growth bound:** at 30 s that is about 86 000 rows per sandbox over 30 days, about 150 bytes each, so roughly 13 MB. Besides the 15 s interval floor, the hourly prune caps each `(project, sandbox)` at 150 000 rows by deleting the oldest. At the 15 s floor, 30 days is about 172 800 rows, so the cap shortens retention to about 26 days at the fastest interval; that is accepted, and the cap is a safety bound rather than the retention rule. Projects that no longer exist leave rows that age out by retention.
 - **Contract (additive, `workflows_api`):** read-only view `sandbox_stats_v` (same columns, ordered by `at`) and a function `workflows_api.sandbox_stats_window(p_project text, p_from timestamptz, p_to timestamptz, p_buckets int)`. `enzarb_ui` gets `SELECT` on the view and `EXECUTE` on the function and nothing on the table; the UI checks project access before calling, as for the other views.
 
-### 5. Window query (downsampling)
+### 5. Window query (downsampling) (amended, see the end)
 - Bucket width is `(p_to - p_from) / p_buckets`. `p_buckets` is clamped to 1..300 and the window to the retention period.
 - **Gauges** (memory, storage): per bucket `avg` and `max`. Limits and totals: the last value in the bucket.
 - **Counters** (cpu, io): for each pair of consecutive samples of the same `(sandbox, boot_id)` the rate is `delta / Δt`: CPU in cores (`Δusec / (Δt in µs)`), I/O in bytes per second. The interval belongs to the bucket of its later sample. A bucket returns `avg` and `max` of its rates.
@@ -72,3 +72,40 @@ Rejected alternatives:
 - Stats cost one request per sandbox per interval and a small table. There is no history in the sandbox, so samples are lost while the poller is down.
 - Work item attribution is approximate and the sandbox's cgroup includes everything in it (dockerd, builds, terminals).
 - Not done: alerting, per-process or per-container breakdown, network metrics, Claude usage limits, external metrics export, rollups beyond 30 days.
+
+## Amendment (2026-10-15): align with the shipped `stats` frame
+The `stats` frame shipped in #158 (`proto` `SandboxStats`) differs from section 2. The frame is deployed and wire changes are additive only, so the design follows the code. Where this amendment and sections 1–5 disagree, the amendment wins.
+
+**Frame (replaces the field list in section 2).** `ts_ms` (unix ms, the sandbox's clock) plus optional non-negative integers:
+- counters `cpu_usage_usec`, `cpu_user_usec`, `cpu_system_usec`, `io_read_bytes`, `io_write_bytes`;
+- gauges `memory_bytes`, `storage_used_bytes`, `storage_total_bytes`.
+
+Absent still means "not reported", never 0.
+
+**Dropped or deferred:**
+- `boot_id` is dropped. A sandbox restart shows up as a new `sandbox` (pod name) or as a counter lower than its predecessor, and the window query drops that interval either way. A sandbox-init restart inside the same pod restarts the counters from 0, which is the same "counter went down" case.
+- `mem_limit_bytes` and `cpu_throttled_usec` are deferred. They can be added to the frame and the table later as additive optional fields.
+
+**Storage (replaces the column list in section 4).** `workflows.sandbox_stats`:
+
+| column | type | note |
+|---|---|---|
+| `project` | text not null | Project name |
+| `sandbox` | text not null | pod name; changes on restart |
+| `work_item_id` | bigint null | approximate (section 3), no foreign key |
+| `at` | timestamptz not null | from `ts_ms` |
+| `cpu_usage_usec`, `cpu_user_usec`, `cpu_system_usec`, `io_read_bytes`, `io_write_bytes` | bigint null | counters |
+| `memory_bytes`, `storage_used_bytes`, `storage_total_bytes` | bigint null | gauges |
+
+- Primary key `(project, sandbox, at)`, index `(project, at)`, no surrogate id.
+- Values are NULL when not reported and never default to 0. A CHECK keeps the reported values `>= 0`.
+- The poller writes with a plain `INSERT … ON CONFLICT DO NOTHING` as `enzarb_workflows`; there is no insert function in `workflows_api`.
+- Retention and the per-sandbox row cap are unchanged, done by the poller.
+
+**Window query (section 5).**
+- CPU comes from `cpu_usage_usec`; user/system are stored but not charted yet.
+- Return columns: `bucket_start`, `samples`, `cpu_cores_avg`, `cpu_cores_max`, `mem_bytes_avg`, `mem_bytes_max`, `io_read_bps_avg`, `io_read_bps_max`, `io_write_bps_avg`, `io_write_bps_max`, `storage_used_bytes_avg`, `storage_used_bytes_max`, `storage_total_bytes`.
+- `cpu_throttled_avg` and `mem_limit_bytes` return when their fields are added.
+- The rest of section 5 (the reset, gap and NULL rules, no row for an empty bucket, `p_buckets` clamped to 1..300) stands.
+
+**Settings.** `ENZARB_STATS_INTERVAL` (seconds, default 30, clamped 15–300), `ENZARB_STATS_TIMEOUT` (seconds, default 5), `ENZARB_STATS_CONCURRENCY` (default 8) and `ENZARB_STATS_RETENTION` (days, default 30). No other prefix is used for these.
