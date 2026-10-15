@@ -89,6 +89,9 @@ pub struct PromptContext {
     pub epic_allowed: String,
     /// `{max_subissues}`: the most sub-issues an epic breakdown may list.
     pub max_subissues: String,
+    /// `{dependencies}`: what the item waits on (number, title, state), from the
+    /// `dependency_status` view; filled by the executor like `thread`.
+    pub dependencies: String,
 }
 
 impl PromptContext {
@@ -113,6 +116,7 @@ impl PromptContext {
             "head_sha" => &self.head_sha,
             "epic_allowed" => &self.epic_allowed,
             "max_subissues" => &self.max_subissues,
+            "dependencies" => &self.dependencies,
             _ => return None,
         })
     }
@@ -227,12 +231,29 @@ pub enum EpicPlanError {
     NoBlock,
     BadJson(String),
     Empty,
-    TooMany { max: usize },
+    TooMany {
+        max: usize,
+    },
     BadKey(String),
     DuplicateKey(String),
     EmptyTitle(String),
-    UnknownDependency { key: String, depends_on: String },
+    UnknownDependency {
+        key: String,
+        depends_on: String,
+    },
     Cycle(String),
+    /// `{{issue:target}}` in the title or body of `key`, but no sub-issue has that key.
+    UnknownRef {
+        key: String,
+        target: String,
+    },
+    /// A `#<digits>` in a sub-issue; the numbers are only known after creation.
+    StrayIssueRef {
+        key: String,
+        text: String,
+    },
+    /// A title may not hold an issue reference or a placeholder.
+    RefInTitle(String),
 }
 
 impl std::fmt::Display for EpicPlanError {
@@ -253,10 +274,102 @@ impl std::fmt::Display for EpicPlanError {
                 write!(f, "sub-issue {key:?} depends on unknown key {depends_on:?}")
             }
             EpicPlanError::Cycle(k) => write!(f, "sub-issue {k:?} is on a dependency cycle"),
+            EpicPlanError::UnknownRef { key, target } => write!(
+                f,
+                "sub-issue {key:?} refers to {{{{issue:{target}}}}}, but no sub-issue has the key {target:?}"
+            ),
+            EpicPlanError::StrayIssueRef { key, text } => write!(
+                f,
+                "sub-issue {key:?} contains the issue number {text:?}: issue numbers are only known after creation, so refer to a sibling as {{{{issue:key}}}} and do not write #<number>"
+            ),
+            EpicPlanError::RefInTitle(k) => write!(
+                f,
+                "the title of sub-issue {k:?} contains an issue number or {{{{issue:key}}}} placeholder"
+            ),
         }
     }
 }
 impl std::error::Error for EpicPlanError {}
+
+const REF_OPEN: &str = "{{issue:";
+
+/// The keys named by `{{issue:key}}` placeholders in `text`, in order of appearance.
+pub fn issue_refs(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(i) = rest.find(REF_OPEN) {
+        let after = &rest[i + REF_OPEN.len()..];
+        let Some(end) = after.find("}}") else { break };
+        out.push(after[..end].trim());
+        rest = &after[end + 2..];
+    }
+    out
+}
+
+/// `text` with every `{{issue:key}}` replaced by `f(key)`; a placeholder `f` declines
+/// (returns `None`) is kept as written.
+pub fn substitute_refs(text: &str, f: impl Fn(&str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find(REF_OPEN) {
+        let after = &rest[i + REF_OPEN.len()..];
+        let Some(end) = after.find("}}") else { break };
+        out.push_str(&rest[..i]);
+        match f(after[..end].trim()) {
+            Some(s) => out.push_str(&s),
+            None => out.push_str(&rest[i..i + REF_OPEN.len() + end + 2]),
+        }
+        rest = &after[end + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `text` with fenced code blocks and inline code spans blanked out.
+fn without_code(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut fence: Option<&str> = None;
+    for line in text.lines() {
+        let t = line.trim_start();
+        let marker = ["```", "~~~"].into_iter().find(|m| t.starts_with(m));
+        match (fence, marker) {
+            (Some(open), Some(m)) if open == m => fence = None,
+            (None, Some(m)) => fence = Some(m),
+            (Some(_), _) => {}
+            _ => {
+                let mut in_code = false;
+                for c in line.chars() {
+                    if c == '`' {
+                        in_code = !in_code;
+                    } else if !in_code {
+                        out.push(c);
+                    }
+                }
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// The first `#<digits>` in `text` outside code that is not part of a word (`C#1`, `a/b#1`).
+fn stray_issue_ref(text: &str) -> Option<String> {
+    let text = without_code(text);
+    let mut prev: Option<char> = None;
+    for (i, c) in text.char_indices() {
+        if c == '#' && prev.is_none_or(|p| !p.is_alphanumeric() && p != '/') {
+            let digits: String = text[i + 1..]
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            if !digits.is_empty() {
+                return Some(format!("#{digits}"));
+            }
+        }
+        prev = Some(c);
+    }
+    None
+}
 
 const EPIC_BLOCK: &str = "```enzarb-subissues";
 
@@ -327,6 +440,25 @@ pub fn parse_epic_plan(body: &str, max: usize) -> Result<Vec<SubIssue>, EpicPlan
                     })
                 };
             }
+        }
+    }
+    for s in &subs {
+        if stray_issue_ref(&s.title).is_some() || !issue_refs(&s.title).is_empty() {
+            return Err(EpicPlanError::RefInTitle(s.key.clone()));
+        }
+        for target in issue_refs(&s.body) {
+            if !seen.contains(target) {
+                return Err(EpicPlanError::UnknownRef {
+                    key: s.key.clone(),
+                    target: target.to_string(),
+                });
+            }
+        }
+        if let Some(text) = stray_issue_ref(&s.body) {
+            return Err(EpicPlanError::StrayIssueRef {
+                key: s.key.clone(),
+                text,
+            });
         }
     }
     // Kahn's algorithm, picking the earliest remaining entry each round.
@@ -579,6 +711,7 @@ mod tests {
             epic: false,
             epic_allowed: "yes".into(),
             max_subissues: "8".into(),
+            dependencies: "DEPS-X".into(),
         }
     }
 
@@ -994,5 +1127,73 @@ mod tests {
         assert_eq!(parse_epic_plan(&plan, 8), Err(EpicPlanError::NoBlock));
         let quoted = format!("see ```enzarb-subissues\n[{}]\n```", sub("a", &[]));
         assert_eq!(parse_epic_plan(&quoted, 8), Err(EpicPlanError::NoBlock));
+    }
+
+    fn plan_of(subs: &[(&str, &str, &str)]) -> String {
+        let v: Vec<_> = subs
+            .iter()
+            .map(|(k, t, b)| serde_json::json!({ "key": k, "title": t, "body": b }))
+            .collect();
+        plan_with(&serde_json::to_string(&v).unwrap())
+    }
+
+    #[test]
+    fn placeholders_between_siblings_are_accepted() {
+        let plan = plan_of(&[
+            ("a", "A", "Pairs with {{issue:b}} and {{issue:a}}."),
+            (
+                "b",
+                "B",
+                "Needs {{ issue:a }}? No: `#12` and\n```\n#13\n```\nare code; C#1 too.",
+            ),
+        ]);
+        let subs = parse_epic_plan(&plan, 8).unwrap();
+        assert_eq!(issue_refs(&subs[0].body), ["b", "a"]);
+    }
+
+    #[test]
+    fn unknown_placeholder_is_rejected() {
+        let plan = plan_of(&[("a", "A", "See {{issue:zzz}}.")]);
+        assert_eq!(
+            parse_epic_plan(&plan, 8),
+            Err(EpicPlanError::UnknownRef {
+                key: "a".into(),
+                target: "zzz".into()
+            })
+        );
+    }
+
+    #[test]
+    fn stray_numbers_are_rejected() {
+        let plan = plan_of(&[("a", "A", "Waits for #12 (storage).")]);
+        assert_eq!(
+            parse_epic_plan(&plan, 8),
+            Err(EpicPlanError::StrayIssueRef {
+                key: "a".into(),
+                text: "#12".into()
+            })
+        );
+        let plan = plan_of(&[("a", "Fix #7", "ok")]);
+        assert_eq!(
+            parse_epic_plan(&plan, 8),
+            Err(EpicPlanError::RefInTitle("a".into()))
+        );
+        let plan = plan_of(&[("a", "A", "ok"), ("b", "See {{issue:a}}", "ok")]);
+        assert_eq!(
+            parse_epic_plan(&plan, 8),
+            Err(EpicPlanError::RefInTitle("b".into()))
+        );
+    }
+
+    #[test]
+    fn substitute_refs_replaces_known_keys_only() {
+        let got = substitute_refs("{{issue:a}} and {{issue:q}} {{issue:a}}", |k| {
+            (k == "a").then(|| "#5 (A)".to_string())
+        });
+        assert_eq!(got, "#5 (A) and {{issue:q}} #5 (A)");
+        assert_eq!(
+            substitute_refs("no refs {{issue:", |_| None),
+            "no refs {{issue:"
+        );
     }
 }

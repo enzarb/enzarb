@@ -1964,6 +1964,54 @@ async fn create_issue_is_idempotent_by_marker() {
     assert_eq!(got, item(9));
 }
 
+#[tokio::test]
+async fn update_issue_keeps_marker() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    let mut current = issue_json(8, false);
+    current["body"] = json!("Old.\n\n<!-- enzarb:idem:epic-1-a -->");
+    Mock::given(method("GET"))
+        .and(path("/repos/enzarb/enzarb-ui/issues/8"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(current))
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/enzarb/enzarb-ui/issues/8"))
+        .and(body_json(json!({
+            "body": "New #9 (Two).\n\n<!-- enzarb:idem:epic-1-a -->",
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(issue_json(8, false)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    connector(&server)
+        .update_issue(&item(8), "New #9 (Two).")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn update_issue_skips_an_unchanged_body() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    let mut current = issue_json(8, false);
+    current["body"] = json!("Same.\n\n<!-- enzarb:idem:epic-1-a -->");
+    Mock::given(method("GET"))
+        .and(path("/repos/enzarb/enzarb-ui/issues/8"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(current))
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(issue_json(8, false)))
+        .expect(0)
+        .mount(&server)
+        .await;
+    connector(&server)
+        .update_issue(&item(8), "Same.")
+        .await
+        .unwrap();
+}
+
 async fn mount_child_id(server: &MockServer, n: u64, id: u64) {
     Mock::given(method("GET"))
         .and(path(format!("/repos/enzarb/enzarb-ui/issues/{n}")))

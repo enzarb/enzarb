@@ -102,6 +102,10 @@ pub enum Call {
         labels: Vec<String>,
         idempotency_key: String,
     },
+    UpdateIssue {
+        item: WorkItemKey,
+        body: String,
+    },
     LinkSubIssue {
         parent: WorkItemKey,
         child: WorkItemKey,
@@ -690,6 +694,22 @@ impl Connector for FakeConnector {
         st.created_issues
             .push((key.clone(), title.to_string(), body.to_string()));
         Ok(key)
+    }
+
+    async fn update_issue(&self, item: &WorkItemKey, body: &str) -> Result<()> {
+        let mut st = self.st();
+        let call = Call::UpdateIssue {
+            item: item.clone(),
+            body: body.to_string(),
+        };
+        Self::take_failure(&mut st, call.clone())?;
+        let Some(entry) = st.created_issues.iter_mut().find(|(k, _, _)| k == item) else {
+            return Err(Error::NotFound(format!("issue {item}")));
+        };
+        let replayed = entry.2 == body;
+        entry.2 = body.to_string();
+        Self::record(&mut st, call, replayed);
+        Ok(())
     }
 
     async fn link_sub_issue(&self, parent: &WorkItemKey, child: &WorkItemKey) -> Result<()> {

@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use super::{Claimed, Done, Executor, JobError};
 use crate::conflict::emit_merge_conflict;
 use crate::machine::stack::is_enzarb_branch;
-use crate::machine::{JobKind, SubIssue};
+use crate::machine::{JobKind, SubIssue, substitute_refs};
 
 #[derive(Deserialize)]
 struct SetProgress {
@@ -60,14 +60,38 @@ struct CreateSubIssues {
     sub_issues: Vec<SubIssue>,
 }
 
+/// A title on one line without `#`, backticks or line breaks, so it cannot read as an issue
+/// reference or open a code span in the text around it.
+fn plain_title(title: &str) -> String {
+    title
+        .replace(['#', '`'], "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// The description of a sub-issue: the plan's text, what it waits for (parsed as text
 /// dependencies when the issue opens), and the hidden markers that tie it to its epic.
-fn child_body(epic: &WorkItemKey, depth: u32, s: &SubIssue, blockers: &[WorkItemKey]) -> String {
-    let mut body = s.body.trim().to_string();
+///
+/// `refs` turns a `{{issue:key}}` placeholder of the plan's text into what the description
+/// shows for it. The footer has one `Blocked by #N (title)` line per blocker: the text
+/// dependency parser reads one reference per keyword, so a title never hides a blocker, and
+/// titles are stripped of anything it could take for a reference.
+fn child_body(
+    epic: &WorkItemKey,
+    depth: u32,
+    s: &SubIssue,
+    blockers: &[(WorkItemKey, &str)],
+    refs: impl Fn(&str) -> Option<String>,
+) -> String {
+    let mut body = substitute_refs(s.body.trim(), refs);
     body.push_str(&format!("\n\nPart of the epic #{}.", epic.number));
     if !blockers.is_empty() {
-        let list: Vec<String> = blockers.iter().map(|b| format!("#{}", b.number)).collect();
-        body.push_str(&format!("\n\nBlocked by {}", list.join(", ")));
+        let lines: Vec<String> = blockers
+            .iter()
+            .map(|(b, title)| format!("Blocked by #{} ({})", b.number, plain_title(title)))
+            .collect();
+        body.push_str(&format!("\n\n{}", lines.join("\n")));
     }
     format!(
         "{body}\n\n{}\n{}",
@@ -190,6 +214,14 @@ impl Executor {
         let mut made: HashMap<&str, WorkItemKey> = HashMap::new();
         let mut children: Vec<Value> = Vec::new();
         let mut edges: Vec<(WorkItemKey, Vec<WorkItemKey>)> = Vec::new();
+        let titles: HashMap<&str, &str> = i
+            .sub_issues
+            .iter()
+            .map(|s| (s.key.as_str(), s.title.as_str()))
+            .collect();
+        // Pass 1: create in dependency order. A sibling's number is not known yet, so the
+        // text names it by title only.
+        let mut created_bodies: Vec<String> = Vec::new();
         for s in &i.sub_issues {
             let mut blockers = Vec::new();
             for d in &s.depends_on {
@@ -199,16 +231,35 @@ impl Executor {
                         s.key
                     )));
                 };
-                blockers.push(b.clone());
+                blockers.push((b.clone(), titles.get(d.as_str()).copied().unwrap_or("")));
             }
-            let body = child_body(&i.item, i.depth, s, &blockers);
+            let body = child_body(&i.item, i.depth, s, &blockers, |k| {
+                titles.get(k).map(|t| plain_title(t))
+            });
             let idem = format!("epic-{}-{}", i.item, s.key);
             let child = c
                 .create_issue(&i.item.repo, &s.title, &body, &[], &idem)
                 .await?;
             made.insert(&s.key, child.clone());
             children.push(json!({ "key": s.key, "item": child, "title": s.title }));
-            edges.push((child, blockers));
+            created_bodies.push(body);
+            edges.push((child, blockers.into_iter().map(|(b, _)| b).collect()));
+        }
+        // Pass 2: every child exists, so a placeholder can become `#N (title)`. The result
+        // depends only on the plan and the numbers, so a retry writes the same text.
+        for ((s, (child, _)), first) in i.sub_issues.iter().zip(&edges).zip(&created_bodies) {
+            let blockers: Vec<(WorkItemKey, &str)> = s
+                .depends_on
+                .iter()
+                .filter_map(|d| Some((made.get(d.as_str())?.clone(), *titles.get(d.as_str())?)))
+                .collect();
+            let body = child_body(&i.item, i.depth, s, &blockers, |k| {
+                let n = made.get(k)?;
+                Some(format!("#{} ({})", n.number, plain_title(titles.get(k)?)))
+            });
+            if *first != body {
+                c.update_issue(child, &body).await?;
+            }
         }
         for (child, blockers) in &edges {
             // Sub-issue links are a presentation of the breakdown; a connector without them

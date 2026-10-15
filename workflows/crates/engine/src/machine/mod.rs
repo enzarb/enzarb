@@ -66,7 +66,7 @@ pub use issue::{CreatedChild, IssueData, IssuePhase, IssueState};
 pub use mention::{MentionData, MentionPhase, MentionState};
 pub use prompt::{
     AgentOutput, Decision, EpicPlanError, OutputError, PromptContext, SubIssue, parse_epic_plan,
-    recovery_prompt, render_prompt,
+    recovery_prompt, render_prompt, substitute_refs,
 };
 pub use stack::{RetargetOutcome, StackParent};
 // (`EpicParent` is defined below, next to `Ctx`.)
