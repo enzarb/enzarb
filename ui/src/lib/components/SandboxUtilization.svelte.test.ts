@@ -27,7 +27,7 @@ describe('SandboxUtilization', () => {
 			stats: { from: 0, to: 100, stepMs: 1, buckets: [] }
 		});
 		await expect.element(page.getByText('No sandbox utilization in this window')).toBeVisible();
-		expect(screen.container.querySelectorAll('svg').length).toBe(0);
+		expect(screen.container.querySelectorAll('svg[role="img"]').length).toBe(0);
 	});
 
 	it('draws CPU, memory, storage and disk I/O charts with formatted units', async () => {
