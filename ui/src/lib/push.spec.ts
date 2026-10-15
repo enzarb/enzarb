@@ -57,7 +57,7 @@ describe('pushPayload', () => {
 describe('other payloads', () => {
 	it('collapses a burst into one tagged summary', () => {
 		const p = summaryPayload(7);
-		expect(p.title).toBe('7 items need you');
+		expect(p.title).toBe('7 tasks need you');
 		expect(p.url).toBe('/work');
 		expect(p.tag).toBe('work-summary');
 		expect(Object.keys(p).sort()).toEqual(['body', 'tag', 'title', 'url']);

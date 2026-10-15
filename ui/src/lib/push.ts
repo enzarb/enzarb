@@ -58,8 +58,8 @@ export function pushPayload(
 /** One notification standing in for a burst; replaces itself through its tag. */
 export function summaryPayload(count: number): PushPayload {
 	return {
-		title: `${count} items need you`,
-		body: 'Open the work queue to see what is waiting.',
+		title: `${count} tasks need you`,
+		body: 'Open the task list to see what is waiting.',
 		url: '/work',
 		tag: 'work-summary'
 	};

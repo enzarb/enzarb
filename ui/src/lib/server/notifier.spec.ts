@@ -237,7 +237,7 @@ describe('bursts', () => {
 		for (const i of items) await t.handle(i.id);
 		const titles = t.sent.map((s) => s.payload.title);
 		expect(titles.slice(0, 3)).toEqual(Array(3).fill('Plan awaiting your approval'));
-		expect(titles.slice(3)).toEqual(['4 items need you', '5 items need you']);
+		expect(titles.slice(3)).toEqual(['4 tasks need you', '5 tasks need you']);
 		expect(t.sent[4].payload.tag).toBe('work-summary');
 		expect(t.sent[4].payload.url).toBe('/work');
 	});

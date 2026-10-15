@@ -64,7 +64,7 @@
 {:else if items.length === 0}
 	<EmptyState
 		title="No tasks yet"
-		description="Work appears here when an issue, change request or mention reaches a project."
+		description="Tasks appear here when an issue, change request or mention reaches a project."
 	/>
 {:else}
 	<div class="ez-board" role="group" aria-label="Task board">

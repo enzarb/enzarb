@@ -89,7 +89,7 @@ export interface ClientsLike {
 
 /**
  * Notification click: focus (and navigate) an open window of the app, else open one. A url that is
- * not same-origin falls back to the work queue.
+ * not same-origin falls back to the task list.
  */
 export async function openOrFocus(
 	clients: ClientsLike,

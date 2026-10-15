@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 
 	/**
-	 * Items waiting on the user; shown as a badge on the Work link when above zero. `needsYouMore`
+	 * Items waiting on the user; shown as a badge on the Tasks link when above zero. `needsYouMore`
 	 * means more are waiting than the count (the queue is capped), so the badge reads `N+`.
 	 */
 	let { needsYou = 0, needsYouMore = false }: { needsYou?: number; needsYouMore?: boolean } =
