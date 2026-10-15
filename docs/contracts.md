@@ -314,7 +314,14 @@ workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated
 - NOTIFY channels:
   - `workflow_events` (payload: event id), sent by ingest;
   - `work_item_changed` (payload: work item id), sent by the reducer.
-- Runtime roles: `enzarb_connectors` gets `EXECUTE ingest_event`; `enzarb_ui` gets `SELECT` on the views and `EXECUTE submit_action`.
+- Runtime roles: `enzarb_connectors` gets `EXECUTE ingest_event`; `enzarb_ui` gets `SELECT` on the views and `EXECUTE submit_action`, `project_usage` and `project_step_timing`.
+- **Project metrics** (additive, read-only, `SECURITY DEFINER`, only items of `p_project`; windows are half-open `[p_from, p_to)`):
+  - `workflows_api.project_usage(p_project text, p_from timestamptz, p_to timestamptz)` returns `kind` (`total` | `task`), `work_item_key`, `state`, `items`, the sums `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `cost_usd` (numeric), and, on the `total` row only, `input_tokens_reporters`, `output_tokens_reporters`, `cost_usd_reporters`, `*_avg` and `*_median`. The window is on `work_items.created_at`. One `total` row (always present) and one `task` row per work item, by id; a `task` row carries that item's `work_item_v.usage_totals` fields.
+  - **NULL semantics:** a field missing from `usage_totals` is *not reported*, not 0. Sums, averages and medians only count the items that reported the field (`*_reporters` says how many) and are NULL when none did; `cost_usd = 0` reported by an item counts as a reporter.
+  - `workflows_api.project_step_timing(p_project text, p_from timestamptz, p_to timestamptz, p_include_open boolean DEFAULT false)` returns `kind` (`state` | `job`), `name`, `n`, `open_excluded`, `wait_count`, `wait_s`, `min_s`, `max_s`, `avg_s`, `median_s` (`percentile_cont(0.5)`), `p95_s` (`percentile_cont(0.95)`); durations are seconds (double precision).
+  - `state` rows: one sample per visit to a state (fix rounds count separately), `lead(at) - at` over the item's transitions ordered by id, attributed to `to_state`; the window is on the entering transition's `at`. The item's last (open) state has no end: it is excluded and counted in `open_excluded`, or measured up to `now()` with `p_include_open`.
+  - **Waiting rule:** transitions carry no wait marker; only the current wait is stored (`state_data.wait`). An open state whose item is waiting now is therefore never an active sample: it is counted in `wait_count` with its elapsed time in `wait_s`, with or without `p_include_open`. **Limit:** waits that already ended (including session-limit waits) are inside the closed durations and cannot be separated.
+  - `job` rows: jobs of the project's items by `jobs.kind`, `updated_at - created_at`, window on `jobs.created_at`, finished jobs only (`succeeded`, `failed`, `cancelled`); `open_excluded` and `wait_count` are 0.
 
 ## 7. Browser → proxy
 
