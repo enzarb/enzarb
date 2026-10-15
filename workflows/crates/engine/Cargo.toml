@@ -32,6 +32,7 @@ testcontainers-modules = { version = "0.15", features = ["postgres"], optional =
 aes-gcm = "0.10"
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 engine = { path = ".", features = ["testing"] }
 enzarb-connector = { path = "../../../connectors/crates/connector", features = ["fake"] }
 k8s-openapi.workspace = true

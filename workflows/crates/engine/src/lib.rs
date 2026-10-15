@@ -12,6 +12,7 @@ pub mod machine;
 pub mod permission;
 pub mod reducer;
 pub mod results;
+pub mod sandbox_poller;
 #[cfg(feature = "testing")]
 pub mod testing;
 pub mod ticker;

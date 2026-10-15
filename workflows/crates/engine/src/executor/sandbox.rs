@@ -27,6 +27,16 @@ impl std::fmt::Debug for SandboxTarget {
     }
 }
 
+/// A Project whose sandbox is provisioned, for the stats poller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunningSandbox {
+    /// `Project.metadata.name`.
+    pub project: String,
+    /// `Project.status.sandbox.name` (the pod name; changes on restart).
+    pub sandbox: String,
+    pub target: SandboxTarget,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SandboxError {
     /// The Project does not exist, or its sandbox is not provisioned yet. Retryable.
@@ -60,6 +70,12 @@ pub trait SandboxResolver: Send + Sync {
 
     /// Pending-change state of every Project. The default lists none (no holds).
     async fn change_states(&self) -> Result<Vec<ProjectChangeState>, SandboxError> {
+        Ok(Vec::new())
+    }
+
+    /// Every Project whose sandbox is provisioned (`Project.status`). Projects that are not
+    /// ready are left out. The default lists none.
+    async fn running_sandboxes(&self) -> Result<Vec<RunningSandbox>, SandboxError> {
         Ok(Vec::new())
     }
 
@@ -146,6 +162,31 @@ pub fn secret_location(p: &Project) -> Result<(String, String, String, String), 
     ))
 }
 
+/// `Project.status.sandbox.name`; `None` until the sandbox is provisioned (the same condition as
+/// [`secret_location`]). Pure, for tests.
+pub fn sandbox_name(p: &Project) -> Option<String> {
+    secret_location(p).ok()?;
+    Some(p.status.as_ref()?.sandbox.as_ref()?.name.clone())
+}
+
+impl KubeSandboxResolver {
+    async fn read_token(&self, ns: &str, secret: &str, key: &str) -> Result<String, SandboxError> {
+        let secrets: Api<Secret> = Api::namespaced(self.client.clone(), ns);
+        let s = secrets
+            .get_opt(secret)
+            .await
+            .map_err(|e| SandboxError::Kube(e.to_string()))?
+            .ok_or_else(|| SandboxError::NotReady(format!("secret {ns}/{secret} not found")))?;
+        let bytes =
+            s.data.as_ref().and_then(|d| d.get(key)).ok_or_else(|| {
+                SandboxError::NotReady(format!("secret {ns}/{secret} has no {key}"))
+            })?;
+        let token = String::from_utf8(bytes.0.clone())
+            .map_err(|_| SandboxError::Kube(format!("secret {ns}/{secret} {key} is not utf-8")))?;
+        Ok(token.trim().to_string())
+    }
+}
+
 #[async_trait]
 impl SandboxResolver for KubeSandboxResolver {
     async fn resolve(&self, project: &str) -> Result<SandboxTarget, SandboxError> {
@@ -156,22 +197,36 @@ impl SandboxResolver for KubeSandboxResolver {
             .map_err(|e| SandboxError::Kube(e.to_string()))?
             .ok_or_else(|| SandboxError::NotReady(format!("project {project} not found")))?;
         let (endpoint, ns, secret, key) = secret_location(&p)?;
-        let secrets: Api<Secret> = Api::namespaced(self.client.clone(), &ns);
-        let s = secrets
-            .get_opt(&secret)
+        let token = self.read_token(&ns, &secret, &key).await?;
+        Ok(SandboxTarget { endpoint, token })
+    }
+
+    async fn running_sandboxes(&self) -> Result<Vec<RunningSandbox>, SandboxError> {
+        let projects: Api<Project> = Api::all(self.client.clone());
+        let list = projects
+            .list(&Default::default())
             .await
-            .map_err(|e| SandboxError::Kube(e.to_string()))?
-            .ok_or_else(|| SandboxError::NotReady(format!("secret {ns}/{secret} not found")))?;
-        let bytes =
-            s.data.as_ref().and_then(|d| d.get(&key)).ok_or_else(|| {
-                SandboxError::NotReady(format!("secret {ns}/{secret} has no {key}"))
-            })?;
-        let token = String::from_utf8(bytes.0.clone())
-            .map_err(|_| SandboxError::Kube(format!("secret {ns}/{secret} {key} is not utf-8")))?;
-        Ok(SandboxTarget {
-            endpoint,
-            token: token.trim().to_string(),
-        })
+            .map_err(|e| SandboxError::Kube(e.to_string()))?;
+        let mut out = Vec::new();
+        for p in &list.items {
+            let (Some(sandbox), Ok((endpoint, ns, secret, key))) =
+                (sandbox_name(p), secret_location(p))
+            else {
+                continue;
+            };
+            let project = p.metadata.name.clone().unwrap_or_default();
+            match self.read_token(&ns, &secret, &key).await {
+                Ok(token) => out.push(RunningSandbox {
+                    project,
+                    sandbox,
+                    target: SandboxTarget { endpoint, token },
+                }),
+                // Not provisioned far enough yet: skipped silently.
+                Err(SandboxError::NotReady(_)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(out)
     }
 
     async fn project_repos(&self, project: &str) -> Result<Vec<RepoKey>, SandboxError> {
@@ -425,6 +480,31 @@ mod tests {
             (ns.as_str(), name.as_str(), key.as_str()),
             ("enzarb-sandboxes", "sb-enzarb-auth", "token")
         );
+    }
+
+    #[test]
+    fn sandbox_name_needs_a_provisioned_status() {
+        let status = |namespace: Option<&str>| {
+            project(Some(ProjectStatus {
+                namespace: namespace.map(Into::into),
+                sandbox: Some(SandboxStatus {
+                    name: "sb-enzarb".into(),
+                    endpoint: "ws://sb-enzarb.enzarb-sandboxes.svc:7070/v1/mux".into(),
+                    auth_secret_ref: SecretKeyRef {
+                        name: "sb-enzarb-auth".into(),
+                        key: "token".into(),
+                    },
+                }),
+                ..Default::default()
+            }))
+        };
+        assert_eq!(
+            sandbox_name(&status(Some("enzarb-sandboxes"))).as_deref(),
+            Some("sb-enzarb")
+        );
+        assert_eq!(sandbox_name(&status(None)), None);
+        assert_eq!(sandbox_name(&project(None)), None);
+        assert_eq!(sandbox_name(&project(Some(ProjectStatus::default()))), None);
     }
 
     #[test]

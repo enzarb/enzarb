@@ -3,6 +3,9 @@
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
 
+use std::time::Duration;
+
+use engine::sandbox_poller::{MAX_INTERVAL_SECS, MIN_INTERVAL_SECS, PollerConfig};
 use engine::{ClaudeKeyring, Secret};
 
 use crate::cli::Role;
@@ -43,6 +46,10 @@ pub struct Config {
     pub executor_listen: SocketAddr,
     /// Health server for processes without the executor role.
     pub health_listen: SocketAddr,
+    /// Sandbox stats poller (ticker role): `ENZARB_STATS_INTERVAL` (seconds, default 30, clamped
+    /// to 15-300), `ENZARB_STATS_TIMEOUT` (seconds, default 5), `ENZARB_STATS_CONCURRENCY`
+    /// (default 8) and `ENZARB_STATS_RETENTION` (days, default 30).
+    pub stats: PollerConfig,
 }
 
 impl std::fmt::Debug for Config {
@@ -76,6 +83,55 @@ fn addr(
         var,
         msg: format!("`{v}`: {e}"),
     })
+}
+
+/// A positive integer setting; unset or blank is `default`.
+fn positive(
+    get: &dyn Fn(&str) -> Option<String>,
+    var: &'static str,
+    default: u64,
+) -> Result<u64, ConfigError> {
+    match nonempty(get, var) {
+        None => Ok(default),
+        Some(v) => match v.parse::<u64>() {
+            Ok(n) if n > 0 => Ok(n),
+            _ => Err(ConfigError::Invalid {
+                var,
+                msg: format!("`{v}` is not a positive integer"),
+            }),
+        },
+    }
+}
+
+/// The `ENZARB_STATS_*` settings. A non-numeric value is an error; an interval outside the
+/// accepted range is clamped (and logged), not rejected.
+fn stats(get: &dyn Fn(&str) -> Option<String>) -> Result<PollerConfig, ConfigError> {
+    let asked = match nonempty(get, "ENZARB_STATS_INTERVAL") {
+        None => 30,
+        Some(v) => v.parse::<u64>().map_err(|_| ConfigError::Invalid {
+            var: "ENZARB_STATS_INTERVAL",
+            msg: format!("`{v}` is not a non-negative integer"),
+        })?,
+    };
+    let mut cfg = PollerConfig::with_interval_secs(asked);
+    if cfg.interval.as_secs() != asked {
+        tracing::warn!(
+            asked,
+            used = cfg.interval.as_secs(),
+            "ENZARB_STATS_INTERVAL is outside {MIN_INTERVAL_SECS}-{MAX_INTERVAL_SECS} seconds; clamped"
+        );
+    }
+    cfg.timeout = Duration::from_secs(positive(get, "ENZARB_STATS_TIMEOUT", 5)?);
+    cfg.concurrency =
+        usize::try_from(positive(get, "ENZARB_STATS_CONCURRENCY", 8)?).unwrap_or(usize::MAX);
+    cfg.retention_days =
+        i32::try_from(positive(get, "ENZARB_STATS_RETENTION", 30)?).map_err(|_| {
+            ConfigError::Invalid {
+                var: "ENZARB_STATS_RETENTION",
+                msg: "too many days".into(),
+            }
+        })?;
+    Ok(cfg)
 }
 
 /// `ENZARB_NPM_TOKEN_FILE` (preferred) or `ENZARB_NPM_TOKEN`; unset or blank is `None`.
@@ -199,6 +255,7 @@ impl Config {
             claude_keyring,
             executor_listen,
             health_listen,
+            stats: stats(get)?,
         })
     }
 }
@@ -234,6 +291,56 @@ mod tests {
         assert_eq!(c.executor_listen.port(), 8081);
         assert_eq!(c.health_listen.port(), 8082);
         assert!(c.executor_callback_secret.is_empty());
+    }
+
+    fn stats_env(extra: &[(&str, &str)]) -> Result<PollerConfig, ConfigError> {
+        let mut pairs = vec![("DATABASE_URL", "postgres://x")];
+        pairs.extend_from_slice(extra);
+        Config::from_lookup(roles(&[Role::Ticker]), &env(&pairs)).map(|c| c.stats)
+    }
+
+    #[test]
+    fn stats_defaults_and_overrides() {
+        let d = stats_env(&[]).unwrap();
+        assert_eq!(d.interval, Duration::from_secs(30));
+        assert_eq!(d.timeout, Duration::from_secs(5));
+        assert_eq!((d.concurrency, d.retention_days), (8, 30));
+        let c = stats_env(&[
+            ("ENZARB_STATS_INTERVAL", "60"),
+            ("ENZARB_STATS_TIMEOUT", "2"),
+            ("ENZARB_STATS_CONCURRENCY", "4"),
+            ("ENZARB_STATS_RETENTION", "7"),
+        ])
+        .unwrap();
+        assert_eq!(c.interval, Duration::from_secs(60));
+        assert_eq!(c.timeout, Duration::from_secs(2));
+        assert_eq!((c.concurrency, c.retention_days), (4, 7));
+    }
+
+    #[test]
+    fn stats_interval_is_clamped_not_rejected() {
+        let secs = |v| stats_env(&[("ENZARB_STATS_INTERVAL", v)]).unwrap().interval;
+        assert_eq!(secs("1"), Duration::from_secs(15));
+        assert_eq!(secs("0"), Duration::from_secs(15));
+        assert_eq!(secs("86400"), Duration::from_secs(300));
+    }
+
+    #[test]
+    fn stats_rejects_zero_and_garbage() {
+        for (var, v) in [
+            ("ENZARB_STATS_INTERVAL", "soon"),
+            ("ENZARB_STATS_INTERVAL", "-5"),
+            ("ENZARB_STATS_TIMEOUT", "0"),
+            ("ENZARB_STATS_TIMEOUT", "5s"),
+            ("ENZARB_STATS_CONCURRENCY", "0"),
+            ("ENZARB_STATS_RETENTION", "0"),
+            ("ENZARB_STATS_RETENTION", "99999999999"),
+        ] {
+            assert!(
+                matches!(stats_env(&[(var, v)]), Err(ConfigError::Invalid { var: e, .. }) if e == var),
+                "{var}={v}"
+            );
+        }
     }
 
     #[test]
