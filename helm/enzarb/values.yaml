@@ -27,7 +27,7 @@ rustLog: info
 
 # Days of sandbox utilization samples kept. One setting for both sides: the workflows poller prunes
 # older rows and the UI clamps its charts to it (ENZARB_STATS_RETENTION).
-sandboxStatsRetentionDays: 30
+sandboxStatsRetentionDays: 90
 
 # Gateway the HTTPRoutes attach to (created by enzarb-kubernetes).
 gateway:

@@ -254,7 +254,7 @@ export const SANDBOX_BUCKETS = 120;
  * retention before bucketing; the deployment sets it once (`sandboxStatsRetentionDays` in the Helm
  * values, ENZARB_STATS_RETENTION) for both this service and the workflows poller.
  */
-export const SANDBOX_RETENTION_DAYS = 30;
+export const SANDBOX_RETENTION_DAYS = 90;
 
 /** Maps the function's rows, oldest first; `from` is the effective start, clamped to the retention. Rows with an unreadable start are dropped. */
 export function mapSandboxStatsRows(

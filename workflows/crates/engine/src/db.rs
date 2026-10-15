@@ -154,7 +154,7 @@ pub struct JobView {
 }
 
 /// Per-`(project, sandbox)` row cap of `workflows.sandbox_stats` (ADR-0019 section 4).
-pub const SANDBOX_STATS_ROW_CAP: i64 = 150_000;
+pub const SANDBOX_STATS_ROW_CAP: i64 = 300_000;
 
 /// Row of `workflows_api.sandbox_stats_window`. Rates are `None` when the bucket has no usable
 /// interval, gauges when not reported.

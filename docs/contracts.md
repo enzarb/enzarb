@@ -388,7 +388,7 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 | `ENZARB_EXECUTOR_CALLBACK_SECRET` | workflows executor (callback token = `hex(HMAC-SHA256(secret, run_id))`; shared by all replicas) |
 | `RUST_LOG` | all Rust services |
 | `ENZARB_ROLES`, `ENZARB_DB_MAX_CONNECTIONS` (10), `ENZARB_MAX_AUTO_ROUNDS` (3; `0` disables automatic fix rounds), `ENZARB_EXECUTOR_LISTEN` (`0.0.0.0:8081`), `ENZARB_HEALTH_LISTEN` (`0.0.0.0:8082`) | workflows |
-| `ENZARB_STATS_INTERVAL` (seconds, 30; clamped to 15-300 with a log), `ENZARB_STATS_TIMEOUT` (seconds per sandbox, 5), `ENZARB_STATS_CONCURRENCY` (sandboxes asked at once, 8), `ENZARB_STATS_RETENTION` (days, 30). Zero or non-numeric values (except an interval, which is clamped) fail startup | workflows ticker role (the sandbox stats poller) |
+| `ENZARB_STATS_INTERVAL` (seconds, 30; clamped to 15-300 with a log), `ENZARB_STATS_TIMEOUT` (seconds per sandbox, 5), `ENZARB_STATS_CONCURRENCY` (sandboxes asked at once, 8), `ENZARB_STATS_RETENTION` (days, 90). Zero or non-numeric values (except an interval, which is clamped) fail startup | workflows ticker role (the sandbox stats poller) |
 | `PROXY_LISTEN` (`0.0.0.0:8080`), `PROXY_IDLE_TIMEOUT_SECS` (2100; the proxy clamps lower values up to `ENZARB_CHAT_IDLE_SECS` with a warn log), `PROXY_PING_INTERVAL_SECS` (30, browser websocket ping), `PROXY_MAX_MESSAGE_BYTES`, `PROXY_SECRET_TTL_SECS` (30) | sandbox-proxy |
 | `RECEIVER_LISTEN` (default `0.0.0.0:8080`) | connectors receiver |
 

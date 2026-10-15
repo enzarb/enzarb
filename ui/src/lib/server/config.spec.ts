@@ -24,7 +24,7 @@ describe('parseConfig', () => {
 			realtimeLegacyTokenUrl: false,
 			componentVersions: { components: {} },
 			needsYouStaleHours: 24,
-			sandboxStatsRetentionDays: 30
+			sandboxStatsRetentionDays: 90
 		});
 	});
 

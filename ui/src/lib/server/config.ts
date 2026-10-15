@@ -33,7 +33,7 @@ export interface Config {
 	 * `server/push.ts` and never sent to the browser.
 	 */
 	vapid?: VapidConfig;
-	/** Days of sandbox utilization samples kept (ENZARB_STATS_RETENTION, default 30; the workflows poller reads the same setting). */
+	/** Days of sandbox utilization samples kept (ENZARB_STATS_RETENTION, default 90; the workflows poller reads the same setting). */
 	sandboxStatsRetentionDays: number;
 }
 
@@ -156,7 +156,7 @@ export function parseConfig(source: Record<string, string | undefined>): Config 
 		throw new Error('NEEDS_YOU_STALE_HOURS must be a positive number');
 	}
 	const retentionRaw = source.ENZARB_STATS_RETENTION?.trim();
-	const sandboxStatsRetentionDays = retentionRaw ? Number(retentionRaw) : 30;
+	const sandboxStatsRetentionDays = retentionRaw ? Number(retentionRaw) : 90;
 	if (!Number.isInteger(sandboxStatsRetentionDays) || sandboxStatsRetentionDays <= 0) {
 		throw new Error('ENZARB_STATS_RETENTION must be a positive whole number of days');
 	}

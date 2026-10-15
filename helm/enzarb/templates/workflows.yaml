@@ -53,7 +53,7 @@ spec:
             - { name: ENZARB_MAX_AUTO_ROUNDS, value: {{ $c.maxAutoRounds | quote }} }
             - { name: ENZARB_BOT_HANDLE, value: {{ $c.botHandle | quote }} }
             - { name: ENZARB_BOT_LOGIN, value: {{ $c.botLogin | quote }} }
-            - { name: ENZARB_STATS_RETENTION, value: {{ .Values.sandboxStatsRetentionDays | default 30 | quote }} }
+            - { name: ENZARB_STATS_RETENTION, value: {{ .Values.sandboxStatsRetentionDays | default 90 | quote }} }
             - { name: RUST_LOG, value: {{ .Values.rustLog | quote }} }
             {{- with $c.extraEnv }}
             {{- toYaml . | nindent 12 }}

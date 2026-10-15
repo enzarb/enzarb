@@ -40,8 +40,8 @@ Table `workflows.sandbox_stats` (migration in `workflows/migrations`):
 | `mem_bytes`, `mem_limit_bytes`, `storage_used_bytes`, `storage_total_bytes` | bigint null | gauges |
 
 - Primary key `(project, sandbox, at)` (so a retried insert is `ON CONFLICT DO NOTHING`); index `(project, at)`.
-- **Retention:** 30 days by default (`ENZARB_STATS_RETENTION`). The poller deletes older rows in batches (for example 10 000 per statement) once an hour.
-- **Growth bound:** at 30 s that is about 86 000 rows per sandbox over 30 days, about 150 bytes each, so roughly 13 MB. Besides the 15 s interval floor, the hourly prune caps each `(project, sandbox)` at 150 000 rows by deleting the oldest. At the 15 s floor, 30 days is about 172 800 rows, so the cap shortens retention to about 26 days at the fastest interval; that is accepted, and the cap is a safety bound rather than the retention rule. Projects that no longer exist leave rows that age out by retention.
+- **Retention:** 90 days by default (`ENZARB_STATS_RETENTION`). The poller deletes older rows in batches (for example 10 000 per statement) once an hour.
+- **Growth bound:** at 30 s that is about 259 000 rows per sandbox over 90 days, about 150 bytes each, so roughly 39 MB. Besides the 15 s interval floor, the hourly prune caps each `(project, sandbox)` at 300 000 rows by deleting the oldest. At the 15 s floor, 90 days is about 518 400 rows, so the cap shortens retention to about 52 days at the fastest interval; that is accepted, and the cap is a safety bound rather than the retention rule. Projects that no longer exist leave rows that age out by retention.
 - **Contract (additive, `workflows_api`):** read-only view `sandbox_stats_v` (same columns, ordered by `at`) and a function `workflows_api.sandbox_stats_window(p_project text, p_from timestamptz, p_to timestamptz, p_buckets int)`. `enzarb_ui` gets `SELECT` on the view and `EXECUTE` on the function and nothing on the table; the UI checks project access before calling, as for the other views.
 
 ### 5. Window query (downsampling) (amended, see the end)
@@ -113,4 +113,4 @@ Absent still means "not reported", never 0.
 
 **Tests (section 6).** The `sandbox-store` tests replace the `boot_id` change case with two cases: a sandbox-init restart (counters drop to near 0, same `sandbox`) and a new `sandbox` name.
 
-**Settings.** `ENZARB_STATS_INTERVAL` (seconds, default 30, clamped 15–300), `ENZARB_STATS_TIMEOUT` (seconds, default 5), `ENZARB_STATS_CONCURRENCY` (default 8) and `ENZARB_STATS_RETENTION` (days, default 30). No other prefix is used for these.
+**Settings.** `ENZARB_STATS_INTERVAL` (seconds, default 30, clamped 15–300), `ENZARB_STATS_TIMEOUT` (seconds, default 5), `ENZARB_STATS_CONCURRENCY` (default 8) and `ENZARB_STATS_RETENTION` (days, default 90). No other prefix is used for these.

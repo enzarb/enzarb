@@ -47,7 +47,7 @@ spec:
             - { name: ENZARB_PUBLIC_URL, value: {{ include "enzarb.publicUrl" . | quote }} }
             - { name: ENZARB_COMPONENT_VERSIONS, value: {{ include "enzarb.componentVersions" . | quote }} }
             - { name: NEEDS_YOU_STALE_HOURS, value: {{ $c.needsYouStaleHours | default 24 | quote }} }
-            - { name: ENZARB_STATS_RETENTION, value: {{ .Values.sandboxStatsRetentionDays | default 30 | quote }} }
+            - { name: ENZARB_STATS_RETENTION, value: {{ .Values.sandboxStatsRetentionDays | default 90 | quote }} }
             - { name: ENZARB_GITHUB_APP_SLUG, value: {{ .Values.githubApp.slug | default "enzarb" | quote }} }
             # adapter-node derives the origin for its CSRF check from this header; the Gateway forwards it.
             - { name: PROTOCOL_HEADER, value: x-forwarded-proto }

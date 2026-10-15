@@ -48,7 +48,7 @@ pub struct Config {
     pub health_listen: SocketAddr,
     /// Sandbox stats poller (ticker role): `ENZARB_STATS_INTERVAL` (seconds, default 30, clamped
     /// to 15-300), `ENZARB_STATS_TIMEOUT` (seconds, default 5), `ENZARB_STATS_CONCURRENCY`
-    /// (default 8) and `ENZARB_STATS_RETENTION` (days, default 30).
+    /// (default 8) and `ENZARB_STATS_RETENTION` (days, default 90).
     pub stats: PollerConfig,
 }
 
@@ -125,7 +125,7 @@ fn stats(get: &dyn Fn(&str) -> Option<String>) -> Result<PollerConfig, ConfigErr
     cfg.concurrency =
         usize::try_from(positive(get, "ENZARB_STATS_CONCURRENCY", 8)?).unwrap_or(usize::MAX);
     cfg.retention_days =
-        i32::try_from(positive(get, "ENZARB_STATS_RETENTION", 30)?).map_err(|_| {
+        i32::try_from(positive(get, "ENZARB_STATS_RETENTION", 90)?).map_err(|_| {
             ConfigError::Invalid {
                 var: "ENZARB_STATS_RETENTION",
                 msg: "too many days".into(),
@@ -304,7 +304,7 @@ mod tests {
         let d = stats_env(&[]).unwrap();
         assert_eq!(d.interval, Duration::from_secs(30));
         assert_eq!(d.timeout, Duration::from_secs(5));
-        assert_eq!((d.concurrency, d.retention_days), (8, 30));
+        assert_eq!((d.concurrency, d.retention_days), (8, 90));
         let c = stats_env(&[
             ("ENZARB_STATS_INTERVAL", "60"),
             ("ENZARB_STATS_TIMEOUT", "2"),
