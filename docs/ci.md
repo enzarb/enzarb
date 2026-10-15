@@ -37,7 +37,7 @@ The monorepo's GitHub Actions setup (root `.github/`) follows these rules. Each 
 | pre-commit | `mise run lint` in `helm/` | `ci-helm.yml` |
 | pre-push | `cargo clippy --all-targets <cargo-args> -- -D warnings` | `_rust.yml` `clippy` |
 | pre-push | `cargo test <cargo-args>` | `_rust.yml` `test` (CI uses nextest plus `cargo test --doc`; the hook runs plain `cargo test`, which includes doctests) |
-| pre-push | `npm run check`, server unit tests in `ui/` | `ci-ui.yml` `check`, `test-server` |
+| pre-push | `npm run lint`, `npm run check`, server unit tests in `ui/` (lint also runs at pre-commit; both skip with a message when `ui/node_modules` is missing, so run `npm ci` in `ui/`) | `ci-ui.yml` `check`, `test-server` |
 | pre-push | `mise run compat` in `helm/` | `ci-helm.yml` |
 | pre-push | `scripts/monorepo/test-affected.sh` | `ci-monorepo.yml` |
 

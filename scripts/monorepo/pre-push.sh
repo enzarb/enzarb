@@ -65,6 +65,7 @@ for c in $components; do
       ;;
     ui)
       if npm_ready ui; then
+        run ui npm run lint
         run ui npm run check
         run ui npm run test:unit -- --run --project server
       fi
