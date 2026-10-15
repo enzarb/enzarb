@@ -22,3 +22,4 @@ Format: Context / Decision / Consequences. Status is `Accepted` unless noted. AD
 | [0016](0016-dockerd-in-the-sandbox-container.md) | dockerd in the sandbox container, supervised by sandbox-init (supersedes the sidecar of 0012) | 2026-10-14 |
 | [0017](0017-work-item-dependencies.md) | Work item dependencies | 2026-10-14 |
 | [0018](0018-epics.md) | Epics: breaking a big issue into sub-issues | 2026-10-14 |
+| [0019](0019-sandbox-utilization-polling.md) | Polling sandbox utilization from the sandbox-init API | 2026-10-15 |

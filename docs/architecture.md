@@ -117,6 +117,9 @@ The user runs a guided `claude setup-token` in the terminal of any of their sand
 3. An executor starts the triage run in the Project's sandbox, in a new worktree or a fresh sandbox, over enzarb-proto. sandbox-init reports `RunFinished`, which becomes an event.
 4. The workflow continues: questions → plan → `/approve` → implement → PR → review loop. Details in [workflows.md](workflows.md).
 
+### 5. Sandbox utilization
+sandbox-init never pushes metrics. The workflows executor polls each ready sandbox every 30 s over the mux (`stats_request`/`stats`, authenticated like run dispatch) and stores the raw cgroup counters in Postgres; the UI reads bucketed windows through `workflows_api` ([ADR-0019](adr/0019-sandbox-utilization-polling.md)).
+
 ## Further reading
 - [workflows.md](workflows.md): the workflow engine
 - [connectors.md](connectors.md): connector contract and normalized events
