@@ -289,7 +289,7 @@ fn walk_def() -> Definition {
     load(&with_nodes(
         "prep",
         "  prep: {type: command, run: x, optional: true, next: impl}
-  impl: {type: agent, prompt: implement, next: {\"pushed && decision == 'done'\": pr, \"exit_code != 0\": fix, else: failed}}
+  impl: {type: agent, prompt: implement, optional: true, next: {\"pushed && decision == 'done'\": pr, \"exit_code != 0\": fix, else: failed}}
   fix: {type: agent, prompt: fix, next: impl, max_visits: 2, on_limit: failed}
   check: {type: command, run: test, next: pr}
   pr: {type: action, action: open_change_request, next: done}
@@ -379,10 +379,25 @@ fn advance_cases() {
 }
 
 #[test]
+fn a_failed_non_optional_step_fails_whatever_its_edges() {
+    let d = load(&with_nodes(
+        "a",
+        "  a: {type: command, run: x, next: {\"exit_code == 0\": e, else: f}}\n  e: {type: end, status: done}\n  f: {type: end, status: failed}\n",
+    ))
+    .unwrap();
+    let (mut s, _) = GraphState::begin(&d);
+    assert_eq!(
+        advance(&d, &mut s, json!({"exit_code": 1})),
+        Next::Failed("node `a` failed".into())
+    );
+    assert_eq!(s.outputs["a"]["exit_code"], 1);
+}
+
+#[test]
 fn limit_without_on_limit_fails() {
     let d = load(&with_nodes(
         "a",
-        "  a: {type: command, run: x, next: {\"exit_code == 0\": e, else: a}, max_visits: 2}\n  e: {type: end, status: done}\n",
+        "  a: {type: command, run: x, optional: true, next: {\"exit_code == 0\": e, else: a}, max_visits: 2}\n  e: {type: end, status: done}\n",
     ))
     .unwrap();
     let (mut s, _) = GraphState::begin(&d);
@@ -413,6 +428,57 @@ fn chained_on_limit() {
     s.visits.insert("a".into(), 1);
     // b -> limit -> c -> limit -> a -> limit, no on_limit: fails, no infinite loop.
     assert!(matches!(enter(&d, &mut s, "b"), Next::Failed(_)));
+}
+
+#[test]
+fn segment_stops_are_kernel_nodes_behind_sandbox_nodes() {
+    let d = load(&with_nodes(
+        "a",
+        "  a: {type: command, run: x, optional: true, next: {ok: w, else: b}, on_limit: f}
+  b: {type: agent, prompt: p, next: p2}
+  p2: {type: action, action: post_comment, next: c}
+  w: {type: wait, events: [comment], next: c}
+  c: {type: command, run: y, next: e}
+  e: {type: end, status: done}
+  f: {type: end, status: failed}
+",
+    ))
+    .unwrap();
+    let names = |s: BTreeSet<String>| s.into_iter().collect::<Vec<_>>();
+    assert_eq!(names(segment_stops(&d, "a")), ["f", "p2", "w"]);
+    assert_eq!(names(segment_stops(&d, "c")), ["e"]);
+    assert_eq!(names(segment_stops(&d, "w")), ["w"]);
+}
+
+#[test]
+fn wait_from_parses() {
+    let d = def(&with_nodes(
+        "w",
+        "  w: {type: wait, events: [comment], from: anyone, next: e}\n  e: {type: end, status: done}\n",
+    ));
+    assert_eq!(
+        d.node("w").unwrap().kind,
+        NodeKind::Wait {
+            events: vec!["comment".into()],
+            from: WaitFrom::Anyone
+        }
+    );
+    let d = def(&with_nodes(
+        "w",
+        "  w: {type: wait, events: [comment], next: e}\n  e: {type: end, status: done}\n",
+    ));
+    assert!(matches!(
+        d.node("w").unwrap().kind,
+        NodeKind::Wait {
+            from: WaitFrom::Writers,
+            ..
+        }
+    ));
+    let bad = with_nodes(
+        "w",
+        "  w: {type: wait, events: [comment], from: everyone, next: e}\n  e: {type: end, status: done}\n",
+    );
+    assert!(matches!(Definition::from_yaml(&bad), Err(Error::Parse(_))));
 }
 
 #[test]

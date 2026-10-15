@@ -80,7 +80,7 @@ pub struct Node {
     /// graph `failed`.
     #[serde(default)]
     pub on_limit: Option<String>,
-    /// `command`/`agent`: a failure still follows a plain `next`.
+    /// `command`/`agent`: a failure follows the edges instead of failing the graph.
     #[serde(default)]
     pub optional: bool,
 }
@@ -98,8 +98,12 @@ pub enum NodeKind {
     /// An agent run (sandbox). `prompt` is a prompt name (one word) or inline
     /// prompt text.
     Agent { prompt: String },
-    /// Suspends until one of `events` arrives (kernel).
-    Wait { events: Vec<String> },
+    /// Suspends until one of `events` arrives (kernel). `from` says whose comments count.
+    Wait {
+        events: Vec<String>,
+        #[serde(default)]
+        from: WaitFrom,
+    },
     /// A privileged connector call (kernel). `body` is the text of a
     /// `post_comment`; absent means the latest agent output's `body`.
     Action {
@@ -109,6 +113,17 @@ pub enum NodeKind {
     },
     /// Terminal (kernel).
     End { status: EndStatus },
+}
+
+/// Whose `comment` resumes a `wait` node. Approvals always need write access.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitFrom {
+    /// Users with write access (the default).
+    #[default]
+    Writers,
+    /// Anyone but bots (opt-in).
+    Anyone,
 }
 
 /// Terminal status of an `end` node.
@@ -294,7 +309,7 @@ pub fn validate(d: &Definition) -> Result<(), Error> {
             NodeKind::Agent { prompt } if prompt.trim().is_empty() => {
                 p.push(format!("node `{id}`: `prompt` is empty"))
             }
-            NodeKind::Wait { events } => {
+            NodeKind::Wait { events, .. } => {
                 if events.is_empty() {
                     p.push(format!("node `{id}`: `events` is empty"));
                 }
@@ -383,7 +398,7 @@ pub fn validate(d: &Definition) -> Result<(), Error> {
             if !edges_of(n).any(|t| t == mid) {
                 continue;
             }
-            let gated = matches!(&n.kind, NodeKind::Wait { events }
+            let gated = matches!(&n.kind, NodeKind::Wait { events, .. }
                 if events.iter().all(|e| e == "merge_requested") && !events.is_empty())
                 && n.on_limit.as_deref() != Some(mid.as_str());
             if !gated {
@@ -407,6 +422,27 @@ fn edges_of(n: &Node) -> impl Iterator<Item = &str> {
         .chain(n.on_limit.as_deref())
 }
 
+/// The kernel nodes a segment starting at `start` can stop at: those reachable from it
+/// through sandbox nodes only (edges and `on_limit`). The kernel rejects a segment result
+/// that stops anywhere else, so a sandbox cannot skip a `wait`, gate or action.
+pub fn segment_stops(def: &Definition, start: &str) -> BTreeSet<String> {
+    let mut stops = BTreeSet::new();
+    let mut seen = BTreeSet::new();
+    let mut queue = VecDeque::from([start.to_string()]);
+    while let Some(id) = queue.pop_front() {
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        let Some(n) = def.node(&id) else { continue };
+        if n.kind.runner() == Runner::Kernel {
+            stops.insert(id);
+            continue;
+        }
+        queue.extend(edges_of(n).map(str::to_string));
+    }
+    stops
+}
+
 /// The position of a running graph: the current node, every node's latest
 /// output and visit counts. Persisted by the kernel, carried by segments.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, Deserialize)]
@@ -424,8 +460,7 @@ pub enum Next {
     /// The graph is now at this node (`GraphState::node`); its visit is counted.
     Node(String),
     /// The graph ends `failed` without an end node (a failed non-optional
-    /// step on a plain edge, no matching condition, or a visit limit with no
-    /// `on_limit`).
+    /// sandbox step, no matching condition, or a visit limit with no `on_limit`).
     Failed(String),
 }
 
@@ -488,15 +523,14 @@ pub fn advance(def: &Definition, state: &mut GraphState, output: Value) -> Next 
     let ok = output_ok(&output);
     state.outputs.insert(cur.clone(), output);
     let out = &state.outputs[&cur];
+    // A failed sandbox step fails the graph, whatever its edges, unless it is optional;
+    // an optional step's edges (conditions on `ok`, `exit_code`, ...) decide.
+    if node.kind.runner() == Runner::Sandbox && !ok && !node.optional {
+        return Next::Failed(format!("node `{cur}` failed"));
+    }
     let target = match &node.next {
         None => return Next::Failed(format!("node `{cur}` has no `next`")),
-        Some(Edges::To(t)) => {
-            let fallible = node.kind.runner() == Runner::Sandbox;
-            if fallible && !ok && !node.optional {
-                return Next::Failed(format!("node `{cur}` failed"));
-            }
-            t.clone()
-        }
+        Some(Edges::To(t)) => t.clone(),
         Some(Edges::Cond(c)) => {
             let hit = c.iter().find(|(cond, _)| {
                 cond == ELSE || expr::parse(cond).is_ok_and(|e| expr::eval(&e, out))
