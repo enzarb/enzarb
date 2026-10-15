@@ -24,11 +24,16 @@ async fn ingest(pool: &sqlx::PgPool, dedupe: &str) -> Option<i64> {
         .unwrap()
 }
 
-mod samples {
+mod stats {
     use super::*;
     use chrono::{DateTime, Duration, TimeZone, Utc};
-    use engine::db::{SandboxSample, SandboxSeriesPoint, record_sandbox_sample, sandbox_series};
-    use std::time::Duration as Std;
+    use engine::db::{
+        SandboxStatsBucket, insert_sandbox_stats, prune_sandbox_stats,
+        prune_sandbox_stats_over_cap, sandbox_stats_window,
+    };
+    use enzarb_proto::SandboxStats;
+
+    const SEC: i64 = 1_000_000; // usec per second
 
     fn t0() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap()
@@ -38,51 +43,58 @@ mod samples {
         t0() + Duration::seconds(secs)
     }
 
-    fn sample(project: &str, sandbox: &str, when: DateTime<Utc>) -> SandboxSample {
-        SandboxSample {
-            project: project.into(),
-            work_item_id: None,
-            sandbox: sandbox.into(),
-            sampled_at: when,
-            cpu_usage_ns: 0,
-            memory_bytes: 100,
-            storage_bytes: 1000,
-            disk_read_bytes: 0,
-            disk_write_bytes: 0,
+    fn frame(when: DateTime<Utc>) -> SandboxStats {
+        SandboxStats {
+            ts_ms: when.timestamp_millis() as u64,
+            ..Default::default()
         }
     }
 
-    /// (secs, cpu_ns, memory, storage, read, write)
-    type Row = (i64, i64, i64, i64, i64, i64);
+    /// (secs, cpu_usec, memory, storage_used, io_read, io_write); storage_total is 5000.
+    type Row = (i64, u64, u64, u64, u64, u64);
+
+    fn full(r: Row) -> SandboxStats {
+        SandboxStats {
+            cpu_usage_usec: Some(r.1),
+            memory_bytes: Some(r.2),
+            storage_used_bytes: Some(r.3),
+            storage_total_bytes: Some(5000),
+            io_read_bytes: Some(r.4),
+            io_write_bytes: Some(r.5),
+            ..frame(at(r.0))
+        }
+    }
+
+    async fn put_frames(pool: &sqlx::PgPool, project: &str, sandbox: &str, f: &[SandboxStats]) {
+        for s in f {
+            assert!(
+                insert_sandbox_stats(pool, project, sandbox, None, s)
+                    .await
+                    .unwrap()
+            );
+        }
+    }
 
     async fn put(pool: &sqlx::PgPool, project: &str, sandbox: &str, rows: &[Row]) {
-        for &(secs, cpu, mem, sto, dr, dw) in rows {
-            let s = SandboxSample {
-                cpu_usage_ns: cpu,
-                memory_bytes: mem,
-                storage_bytes: sto,
-                disk_read_bytes: dr,
-                disk_write_bytes: dw,
-                ..sample(project, sandbox, at(secs))
-            };
-            assert!(record_sandbox_sample(pool, &s).await.unwrap());
-        }
+        let f: Vec<_> = rows.iter().map(|&r| full(r)).collect();
+        put_frames(pool, project, sandbox, &f).await;
     }
 
-    async fn series(
+    /// Window at 30 s polls and 30 days retention (the defaults).
+    async fn window(
         pool: &sqlx::PgPool,
         project: &str,
         from: i64,
         to: i64,
-        bucket: u64,
-    ) -> Vec<SandboxSeriesPoint> {
-        sandbox_series(pool, project, at(from), at(to), Std::from_secs(bucket))
+        buckets: i32,
+    ) -> Vec<SandboxStatsBucket> {
+        sandbox_stats_window(pool, project, at(from), at(to), buckets, 30, 30)
             .await
             .unwrap()
     }
 
     async fn count(pool: &sqlx::PgPool) -> i64 {
-        sqlx::query_scalar("SELECT count(*) FROM workflows.sandbox_samples")
+        sqlx::query_scalar("SELECT count(*) FROM workflows.sandbox_stats")
             .fetch_one(pool)
             .await
             .unwrap()
@@ -94,137 +106,83 @@ mod samples {
     }
 
     #[tokio::test]
-    async fn insert_stores_and_dedupes() {
+    async fn insert_stores_null_for_unreported_and_retry_is_a_noop() {
         let db = db!();
-        let mut s = sample("p", "sb", at(0));
-        s.work_item_id = Some(7);
-        assert!(record_sandbox_sample(&db.pool, &s).await.unwrap());
-        assert!(!record_sandbox_sample(&db.pool, &s).await.unwrap());
+        let s = SandboxStats {
+            memory_bytes: Some(7),
+            ..frame(at(0))
+        };
+        assert!(
+            insert_sandbox_stats(&db.pool, "p", "sb", Some(9), &s)
+                .await
+                .unwrap()
+        );
+        // The same (project, sandbox, at) again, even with different values, changes nothing.
+        let again = SandboxStats {
+            memory_bytes: Some(8),
+            cpu_usage_usec: Some(1),
+            ..s.clone()
+        };
+        assert!(
+            !insert_sandbox_stats(&db.pool, "p", "sb", None, &again)
+                .await
+                .unwrap()
+        );
         assert_eq!(count(&db.pool).await, 1);
-        let wi: Option<i64> =
-            sqlx::query_scalar("SELECT work_item_id FROM workflows.sandbox_samples")
-                .fetch_one(&db.pool)
-                .await
-                .unwrap();
-        assert_eq!(wi, Some(7));
-    }
-
-    #[tokio::test]
-    async fn insert_rejects_invalid_input() {
-        let db = db!();
-        let ok = sample("p", "sb", at(0));
-        for bad in [
-            SandboxSample {
-                cpu_usage_ns: -1,
-                ..ok.clone()
-            },
-            SandboxSample {
-                memory_bytes: -1,
-                ..ok.clone()
-            },
-            SandboxSample {
-                storage_bytes: -1,
-                ..ok.clone()
-            },
-            SandboxSample {
-                disk_read_bytes: -1,
-                ..ok.clone()
-            },
-            SandboxSample {
-                disk_write_bytes: -1,
-                ..ok.clone()
-            },
-            SandboxSample {
-                project: String::new(),
-                ..ok.clone()
-            },
-            SandboxSample {
-                sandbox: String::new(),
-                ..ok.clone()
-            },
-            SandboxSample {
-                sampled_at: Utc::now() + Duration::hours(1),
-                ..ok.clone()
-            },
-        ] {
-            assert!(
-                record_sandbox_sample(&db.pool, &bad).await.is_err(),
-                "{bad:?}"
-            );
-        }
-        let null: Result<bool, _> = sqlx::query_scalar(
-            "SELECT workflows_api.record_sandbox_sample('p', NULL, 'sb', now(), NULL, 1, 1, 1, 1)",
-        )
-        .fetch_one(&db.pool)
-        .await;
-        assert!(null.is_err());
-        assert_eq!(count(&db.pool).await, 0);
-    }
-
-    #[tokio::test]
-    async fn prune_deletes_only_old_samples_in_batches() {
-        let db = db!();
-        let now = Utc::now();
-        for (i, days) in [31, 29, 0].into_iter().enumerate() {
-            let s = sample(
-                "p",
-                &format!("sb{i}"),
-                now - Duration::days(days) - Duration::seconds(1),
-            );
-            assert!(record_sandbox_sample(&db.pool, &s).await.unwrap());
-        }
-        let n: i64 = sqlx::query_scalar("SELECT workflows.prune_sandbox_samples()")
-            .fetch_one(&db.pool)
-            .await
-            .unwrap();
-        assert_eq!(n, 1);
-        assert_eq!(count(&db.pool).await, 2);
-
-        // Batching: a limit smaller than the backlog needs repeated calls.
-        for i in 0..5 {
-            let s = sample("q", "sb", now - Duration::days(40) - Duration::seconds(i));
-            assert!(record_sandbox_sample(&db.pool, &s).await.unwrap());
-        }
-        let mut gone = Vec::new();
-        loop {
-            let n: i64 = sqlx::query_scalar("SELECT workflows.prune_sandbox_samples('30 days', 2)")
-                .fetch_one(&db.pool)
-                .await
-                .unwrap();
-            gone.push(n);
-            if n < 2 {
-                break;
-            }
-        }
-        assert_eq!(gone, vec![2, 2, 1]);
-        assert_eq!(count(&db.pool).await, 2);
-        // Project does not matter: only the two recent rows of "p" remain.
-        let projects: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM workflows.sandbox_samples WHERE project_id = 'p'",
+        let row: (Option<i64>, Option<i64>, Option<i64>, Option<i64>) = sqlx::query_as(
+            "SELECT work_item_id, memory_bytes, cpu_usage_usec, io_read_bytes
+             FROM workflows.sandbox_stats",
         )
         .fetch_one(&db.pool)
         .await
         .unwrap();
-        assert_eq!(projects, 2);
+        assert_eq!(row, (Some(9), Some(7), None, None));
+        // Another sandbox at the same instant is a different row.
+        assert!(
+            insert_sandbox_stats(&db.pool, "p", "other", None, &s)
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
-    async fn ticker_prunes_and_honours_the_throttle() {
+    async fn insert_rejects_values_that_do_not_fit() {
         let db = db!();
-        let old = sample("p", "sb", Utc::now() - Duration::days(10));
-        assert!(record_sandbox_sample(&db.pool, &old).await.unwrap());
-        let ticker =
-            engine::Ticker::new(db.pool.clone()).with_sample_retention(Std::from_secs(24 * 3600));
-        assert_eq!(ticker.prune_sandbox_samples().await.unwrap(), Some(1));
+        let big = SandboxStats {
+            cpu_usage_usec: Some(u64::MAX),
+            ..frame(at(0))
+        };
+        assert!(
+            insert_sandbox_stats(&db.pool, "p", "sb", None, &big)
+                .await
+                .is_err()
+        );
+        let bad_ts = SandboxStats {
+            ts_ms: u64::MAX,
+            ..Default::default()
+        };
+        assert!(
+            insert_sandbox_stats(&db.pool, "p", "sb", None, &bad_ts)
+                .await
+                .is_err()
+        );
+        assert!(
+            insert_sandbox_stats(&db.pool, "", "sb", None, &frame(at(0)))
+                .await
+                .is_err()
+        );
+        let negative = sqlx::query(
+            "INSERT INTO workflows.sandbox_stats (project, sandbox, at, memory_bytes)
+             VALUES ('p', 'sb', now(), -1)",
+        )
+        .execute(&db.pool)
+        .await;
+        assert!(negative.is_err());
         assert_eq!(count(&db.pool).await, 0);
-        let again = sample("p", "sb", Utc::now() - Duration::days(9));
-        assert!(record_sandbox_sample(&db.pool, &again).await.unwrap());
-        assert_eq!(ticker.prune_sandbox_samples().await.unwrap(), None);
-        assert_eq!(count(&db.pool).await, 1);
     }
 
     #[tokio::test]
-    async fn bucketing_aligns_gauges_and_fills_empty_buckets() {
+    async fn bucketing_aligns_gauges_and_empty_buckets_return_no_row() {
         let db = db!();
         put(
             &db.pool,
@@ -237,222 +195,472 @@ mod samples {
             ],
         )
         .await;
-        let s = series(&db.pool, "p", 0, 60, 20).await;
-        assert_eq!(s.len(), 3);
-        assert_eq!(s[0].bucket, at(0));
-        assert_eq!(s[1].bucket, at(20));
-        assert_eq!(s[2].bucket, at(40));
+        // Three buckets of 20 s; the middle one is empty.
+        let s = window(&db.pool, "p", 0, 60, 3).await;
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[0].bucket_start, at(0));
+        assert_eq!(s[1].bucket_start, at(40));
         assert_eq!(s[0].samples, 2);
-        close(s[0].memory_bytes_avg, 200.0);
-        assert_eq!(s[0].memory_bytes_max, Some(300));
-        assert_eq!(s[0].storage_bytes_max, Some(2000));
-        assert_eq!(s[1].samples, 0);
-        assert!(s[1].memory_bytes_avg.is_none() && s[1].cpu_cores.is_none());
-        assert_eq!(s[2].memory_bytes_max, Some(50));
+        close(s[0].mem_bytes_avg, 200.0);
+        assert_eq!(s[0].mem_bytes_max, Some(300));
+        close(s[0].storage_used_bytes_avg, 1500.0);
+        assert_eq!(s[0].storage_used_bytes_max, Some(2000));
+        assert_eq!(s[0].storage_total_bytes, Some(5000));
+        assert_eq!(s[1].samples, 1);
+        assert_eq!(s[1].mem_bytes_max, Some(50));
+        // Flat counters give a rate of 0 (reported), not NULL.
+        close(s[0].cpu_cores_avg, 0.0);
+        close(s[0].io_read_bps_avg, 0.0);
+        assert!(window(&db.pool, "p", 100, 160, 3).await.is_empty());
     }
 
     #[tokio::test]
-    async fn multiple_sandboxes_are_summed() {
+    async fn rates_from_steady_counters() {
         let db = db!();
-        let gb = 1_000_000_000;
+        // 0.5 cores, 100 B/s read, 50 B/s write, polled every 10 s.
+        let rows: Vec<Row> = (0..6)
+            .map(|i| (i as i64 * 10, i * 5 * SEC as u64, 1, 1, i * 1000, i * 500))
+            .collect();
+        put(&db.pool, "p", "a", &rows).await;
+        let s = window(&db.pool, "p", 0, 60, 2).await;
+        assert_eq!(s.len(), 2);
+        // The first sample has no predecessor, so bucket 0 has the intervals ending at 10, 20.
+        for b in &s {
+            close(b.cpu_cores_avg, 0.5);
+            close(b.cpu_cores_max, 0.5);
+            close(b.io_read_bps_avg, 100.0);
+            close(b.io_write_bps_max, 50.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn bucket_rate_is_avg_and_max_of_its_intervals() {
+        let db = db!();
+        // 1.0 core over the first interval, 0.5 over the second.
         put(
             &db.pool,
             "p",
             "a",
-            &[(0, 0, 100, 10, 0, 0), (10, 5 * gb, 100, 10, 1000, 0)],
+            &[
+                (0, 0, 1, 1, 0, 0),
+                (10, 10 * SEC as u64, 1, 1, 1000, 0),
+                (20, 15 * SEC as u64, 1, 1, 1500, 0),
+            ],
+        )
+        .await;
+        let s = window(&db.pool, "p", 0, 30, 1).await;
+        close(s[0].cpu_cores_avg, 0.75);
+        close(s[0].cpu_cores_max, 1.0);
+        close(s[0].io_read_bps_avg, 75.0);
+        close(s[0].io_read_bps_max, 100.0);
+    }
+
+    #[tokio::test]
+    async fn multiple_sandboxes_have_their_own_deltas() {
+        let db = db!();
+        put(
+            &db.pool,
+            "p",
+            "a",
+            &[
+                (0, 0, 100, 10, 0, 0),
+                (10, 5 * SEC as u64, 100, 10, 1000, 0),
+            ],
         )
         .await;
         put(
             &db.pool,
             "p",
             "b",
-            &[(0, 0, 200, 20, 0, 0), (10, 10 * gb, 200, 20, 3000, 0)],
+            &[
+                (0, 900 * SEC as u64, 200, 20, 0, 0),
+                (10, 910 * SEC as u64, 200, 20, 3000, 0),
+            ],
         )
         .await;
-        let s = series(&db.pool, "p", 0, 20, 20).await;
+        let s = window(&db.pool, "p", 0, 20, 1).await;
         assert_eq!(s.len(), 1);
-        close(s[0].cpu_cores, 1.5);
-        close(s[0].disk_read_bps, 400.0);
-        close(s[0].memory_bytes_avg, 300.0);
-        assert_eq!(s[0].memory_bytes_max, Some(300));
-        assert_eq!(s[0].storage_bytes_max, Some(30));
+        // Deltas are per sandbox: 0.5 and 1.0 cores, never a mix of the two counters.
+        close(s[0].cpu_cores_avg, 0.75);
+        close(s[0].cpu_cores_max, 1.0);
+        close(s[0].io_read_bps_avg, 200.0);
+        close(s[0].io_read_bps_max, 300.0);
+        close(s[0].mem_bytes_avg, 150.0);
+        assert_eq!(s[0].mem_bytes_max, Some(200));
         assert_eq!(s[0].samples, 4);
     }
 
     #[tokio::test]
-    async fn rates_from_steady_counters() {
+    async fn counter_reset_drops_the_interval() {
         let db = db!();
-        let gb = 1_000_000_000;
-        // 0.5 cores, 100 B/s read, 50 B/s write, polled every 10 s.
-        let rows: Vec<Row> = (0..6)
-            .map(|i| (i * 10, i * 5 * gb, 1, 1, i * 1000, i * 500))
-            .collect();
-        put(&db.pool, "p", "a", &rows).await;
-        let s = series(&db.pool, "p", 0, 60, 30).await;
-        assert_eq!(s.len(), 2);
-        // The first sample has no predecessor: bucket 0 has two intervals (10-20, 20-30 is
-        // bucket 1), so only 10 and 20 count.
-        close(s[0].cpu_cores, 0.5);
-        close(s[0].disk_read_bps, 100.0);
-        close(s[0].disk_write_bps, 50.0);
-        close(s[1].cpu_cores, 0.5);
-        close(s[1].disk_read_bps, 100.0);
-    }
-
-    #[tokio::test]
-    async fn counter_reset_counts_the_new_value_and_never_goes_negative() {
-        let db = db!();
-        let gb = 1_000_000_000;
         put(
             &db.pool,
             "p",
             "a",
             &[
-                (0, 100 * gb, 1, 1, 5000, 0),
-                (10, 101 * gb, 1, 1, 6000, 0),
-                (20, 2 * gb, 1, 1, 400, 0),
+                (0, 100 * SEC as u64, 1, 1, 5000, 0),
+                (10, 101 * SEC as u64, 1, 1, 6000, 0),
+                (20, 2 * SEC as u64, 1, 1, 400, 0),
+                (30, 3 * SEC as u64, 1, 1, 500, 0),
             ],
         )
         .await;
-        let s = series(&db.pool, "p", 0, 30, 30).await;
-        // Intervals: +1 core-second-ish gb over 10 s, then reset to 2 gb over 10 s.
-        close(s[0].cpu_cores, 3.0 * gb as f64 / 20.0 / 1e9);
-        close(s[0].disk_read_bps, (1000.0 + 400.0) / 20.0);
-        assert!(s[0].disk_write_bps.unwrap() >= 0.0);
+        let s = window(&db.pool, "p", 0, 40, 1).await;
+        // 10 s and 30 s are kept (0.1 cores, 100 B/s); the 20 s interval is the reset, dropped
+        // rather than counted as 2 s of CPU or as a negative rate.
+        close(s[0].cpu_cores_avg, 0.1);
+        close(s[0].cpu_cores_max, 0.1);
+        close(s[0].io_read_bps_avg, 55.0);
+        close(s[0].io_read_bps_max, 100.0);
+        assert_eq!(s[0].samples, 4);
+
+        // Only a reset: the bucket still has its samples (gauges) but no rate.
+        let only = window(&db.pool, "p", 15, 25, 1).await;
+        assert_eq!(only[0].samples, 1);
+        assert!(only[0].cpu_cores_avg.is_none() && only[0].io_read_bps_avg.is_none());
+        close(only[0].io_write_bps_avg, 0.0);
+    }
+
+    #[tokio::test]
+    async fn a_new_sandbox_name_has_no_interval_to_the_old_one() {
+        let db = db!();
+        put(&db.pool, "p", "old", &[(0, 500 * SEC as u64, 1, 1, 0, 0)]).await;
+        put(&db.pool, "p", "new", &[(10, 600 * SEC as u64, 1, 1, 0, 0)]).await;
+        let s = window(&db.pool, "p", 0, 20, 1).await;
+        assert_eq!(s[0].samples, 2);
+        assert!(s[0].cpu_cores_avg.is_none());
+    }
+
+    #[tokio::test]
+    async fn gap_longer_than_three_intervals_is_dropped() {
+        let db = db!();
+        // 30 s poll interval: 90 s is the longest usable interval.
+        put(
+            &db.pool,
+            "p",
+            "a",
+            &[
+                (0, 0, 1, 1, 0, 0),
+                (91, 100 * SEC as u64, 1, 1, 0, 0),
+                (121, 130 * SEC as u64, 1, 1, 0, 0),
+                (211, 220 * SEC as u64, 1, 1, 0, 0),
+            ],
+        )
+        .await;
+        let s = window(&db.pool, "p", 0, 300, 1).await;
+        assert_eq!(s[0].samples, 4);
+        // 0 -> 91 s is a gap; 91 -> 121 (1.0 core) and 121 -> 211 (exactly 3x, 1.0 core) stay.
+        close(s[0].cpu_cores_avg, 1.0);
+        close(s[0].cpu_cores_max, 1.0);
+        let g = sandbox_stats_window(&db.pool, "p", at(0), at(100), 1, 30, 30)
+            .await
+            .unwrap();
+        assert!(g[0].cpu_cores_avg.is_none());
+        // With a 60 s poll interval the 91 s interval is usable: 100 s of CPU over 91 s.
+        let wide = sandbox_stats_window(&db.pool, "p", at(0), at(100), 1, 60, 30)
+            .await
+            .unwrap();
+        close(wide[0].cpu_cores_avg, 100.0 / 91.0);
+    }
+
+    #[tokio::test]
+    async fn a_null_field_drops_the_intervals_on_both_sides() {
+        let db = db!();
+        let mut rows: Vec<SandboxStats> = (0..4)
+            .map(|i| {
+                full((
+                    i * 10,
+                    i as u64 * 10 * SEC as u64,
+                    100,
+                    10,
+                    i as u64 * 1000,
+                    0,
+                ))
+            })
+            .collect();
+        rows[1].cpu_usage_usec = None;
+        rows[1].memory_bytes = None;
+        rows[1].storage_total_bytes = None;
+        put_frames(&db.pool, "p", "a", &rows).await;
+        let s = window(&db.pool, "p", 0, 40, 1).await;
+        // Only the interval 20 -> 30 has CPU on both ends. I/O is unaffected.
+        close(s[0].cpu_cores_avg, 1.0);
+        close(s[0].io_read_bps_avg, 100.0);
+        // The unreported gauge is not counted as 0.
+        close(s[0].mem_bytes_avg, 100.0);
+        assert_eq!(s[0].samples, 4);
+
+        // A bucket where nothing was reported has NULLs, not zeros.
+        put_frames(&db.pool, "p", "b", &[frame(at(100))]).await;
+        let n = window(&db.pool, "p", 100, 110, 1).await;
+        assert_eq!(n[0].samples, 1);
+        assert!(n[0].mem_bytes_avg.is_none() && n[0].mem_bytes_max.is_none());
+        assert!(n[0].storage_total_bytes.is_none() && n[0].cpu_cores_avg.is_none());
     }
 
     #[tokio::test]
     async fn first_sample_in_window_uses_the_sample_before_from() {
         let db = db!();
-        let gb = 1_000_000_000;
         put(
             &db.pool,
             "p",
             "a",
-            &[(-10, 0, 1, 1, 0, 0), (10, 10 * gb, 1, 1, 0, 0)],
+            &[(-10, 0, 1, 1, 0, 0), (10, 10 * SEC as u64, 1, 1, 0, 0)],
         )
         .await;
         // A 20 s interval crosses `from`: it belongs to the bucket of its end sample.
-        let s = series(&db.pool, "p", 0, 20, 20).await;
-        close(s[0].cpu_cores, 0.5);
+        let s = window(&db.pool, "p", 0, 20, 1).await;
+        close(s[0].cpu_cores_avg, 0.5);
         assert_eq!(s[0].samples, 1);
     }
 
     #[tokio::test]
-    async fn long_gaps_yield_no_rate() {
-        let db = db!();
-        let gb = 1_000_000_000;
-        put(
-            &db.pool,
-            "p",
-            "a",
-            &[(0, 0, 1, 1, 0, 0), (3600, 100 * gb, 1, 1, 0, 0)],
-        )
-        .await;
-        let s = series(&db.pool, "p", 0, 3601, 3601).await;
-        assert_eq!(s[0].samples, 2);
-        assert!(s[0].cpu_cores.is_none() && s[0].disk_read_bps.is_none());
-    }
-
-    #[tokio::test]
-    async fn window_is_half_open() {
+    async fn samples_on_bucket_edges_and_the_half_open_window() {
         let db = db!();
         put(
             &db.pool,
             "p",
             "a",
             &[
+                (-1, 0, 5, 1, 0, 0),
                 (0, 0, 10, 1, 0, 0),
-                (60, 0, 20, 1, 0, 0),
-                (120, 0, 30, 1, 0, 0),
+                (20, 0, 20, 1, 0, 0),
+                (40, 0, 30, 1, 0, 0),
             ],
         )
         .await;
-        let s = series(&db.pool, "p", 60, 120, 30).await;
+        // [0, 40) in two buckets: a sample on `from` and on the inner edge count in the later
+        // bucket; the one on `to` and the one before `from` do not.
+        let s = window(&db.pool, "p", 0, 40, 2).await;
         assert_eq!(s.len(), 2);
+        assert_eq!((s[0].bucket_start, s[0].samples), (at(0), 1));
+        assert_eq!(s[0].mem_bytes_max, Some(10));
+        assert_eq!((s[1].bucket_start, s[1].samples), (at(20), 1));
+        assert_eq!(s[1].mem_bytes_max, Some(20));
+    }
+
+    #[tokio::test]
+    async fn bucket_count_is_clamped_to_1_and_300() {
+        let db = db!();
+        let rows: Vec<Row> = (0..300).map(|i| (i, 0, 1, 1, 0, 0)).collect();
+        put(&db.pool, "p", "a", &rows).await;
+        let many = window(&db.pool, "p", 0, 300, 1000).await;
+        assert_eq!(many.len(), 300);
+        assert!(many.iter().all(|b| b.samples == 1));
+        assert_eq!(many[299].bucket_start, at(299));
+        for n in [0, -5] {
+            let one = window(&db.pool, "p", 0, 300, n).await;
+            assert_eq!(one.len(), 1);
+            assert_eq!(one[0].samples, 300);
+        }
+    }
+
+    #[tokio::test]
+    async fn window_is_clamped_to_retention() {
+        let db = db!();
+        put(
+            &db.pool,
+            "p",
+            "a",
+            &[(0, 0, 1, 1, 0, 0), (39 * 86_400, 0, 1, 1, 0, 0)],
+        )
+        .await;
+        let to = 40 * 86_400;
+        let s = window(&db.pool, "p", 0, to, 1).await;
         assert_eq!(s[0].samples, 1);
-        assert_eq!(s[0].memory_bytes_max, Some(20));
-        assert_eq!(s[1].samples, 0);
+        let wide = sandbox_stats_window(&db.pool, "p", at(0), at(to), 1, 30, 60)
+            .await
+            .unwrap();
+        assert_eq!(wide[0].samples, 2);
     }
 
     #[tokio::test]
     async fn bad_arguments_are_rejected() {
         let db = db!();
         let p = &db.pool;
-        let bad = |from: i64, to: i64, b: u64| {
-            let p = p.clone();
-            async move {
-                sandbox_series(&p, "p", at(from), at(to), Std::from_secs(b))
-                    .await
-                    .is_err()
-            }
-        };
-        assert!(bad(0, 60, 0).await);
-        assert!(bad(60, 60, 10).await);
-        assert!(bad(60, 0, 10).await);
-        assert!(bad(0, 1001, 1).await);
-        assert!(!bad(0, 1000, 1).await);
-        let sub_second = sqlx::query("SELECT * FROM workflows_api.sandbox_series('p', now() - interval '1 minute', now(), interval '500 ms')")
+        for (from, to) in [(60, 60), (60, 0)] {
+            let r = sandbox_stats_window(p, "p", at(from), at(to), 10, 30, 30).await;
+            assert!(r.is_err(), "{from}..{to}");
+        }
+        let null =
+            sqlx::query("SELECT * FROM workflows_api.sandbox_stats_window('p', now(), NULL, 1)")
+                .fetch_all(p)
+                .await;
+        assert!(null.is_err());
+        // The four-argument form of the contract works with the defaults.
+        let four = sqlx::query("SELECT * FROM workflows_api.sandbox_stats_window('p', now() - interval '1 hour', now(), 10)")
             .fetch_all(p)
             .await;
-        assert!(sub_second.is_err());
+        assert!(four.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn projects_are_isolated() {
         let db = db!();
-        let gb = 1_000_000_000;
         put(
             &db.pool,
             "a",
             "sb",
-            &[(0, 0, 100, 1, 0, 0), (10, 10 * gb, 100, 1, 0, 0)],
+            &[(0, 0, 100, 1, 0, 0), (10, 10 * SEC as u64, 100, 1, 0, 0)],
         )
         .await;
         put(
             &db.pool,
             "b",
             "sb",
-            &[(0, 0, 7, 1, 0, 0), (10, gb, 7, 1, 0, 0)],
+            &[(0, 0, 7, 1, 0, 0), (10, SEC as u64, 7, 1, 0, 0)],
         )
         .await;
-        let a = series(&db.pool, "a", 0, 20, 20).await;
-        let b = series(&db.pool, "b", 0, 20, 20).await;
-        assert_eq!(a[0].samples, 2);
-        assert_eq!(b[0].samples, 2);
-        assert_eq!(a[0].memory_bytes_max, Some(100));
-        assert_eq!(b[0].memory_bytes_max, Some(7));
-        close(a[0].cpu_cores, 1.0);
-        close(b[0].cpu_cores, 0.1);
-        let none = series(&db.pool, "c", 0, 20, 20).await;
-        assert_eq!(none.len(), 1);
-        assert_eq!(none[0].samples, 0);
+        let a = window(&db.pool, "a", 0, 20, 1).await;
+        let b = window(&db.pool, "b", 0, 20, 1).await;
+        assert_eq!((a[0].samples, a[0].mem_bytes_max), (2, Some(100)));
+        assert_eq!((b[0].samples, b[0].mem_bytes_max), (2, Some(7)));
+        close(a[0].cpu_cores_avg, 1.0);
+        close(b[0].cpu_cores_avg, 0.1);
+        assert!(window(&db.pool, "c", 0, 20, 1).await.is_empty());
     }
 
     #[tokio::test]
-    async fn function_grants_match_the_roles() {
+    async fn prune_by_age_deletes_in_batches() {
         let db = db!();
-        let can = |role: &'static str, f: &'static str| {
-            let p = db.pool.clone();
-            async move {
-                sqlx::query_scalar::<_, bool>("SELECT has_function_privilege($1, $2, 'EXECUTE')")
-                    .bind(role)
-                    .bind(f)
-                    .fetch_one(&p)
-                    .await
-                    .unwrap()
+        let now = Utc::now();
+        for (i, days) in [31, 29, 0].into_iter().enumerate() {
+            let s = frame(now - Duration::days(days) - Duration::seconds(1));
+            put_frames(&db.pool, "p", &format!("sb{i}"), &[s]).await;
+        }
+        assert_eq!(prune_sandbox_stats(&db.pool, 30, 100).await.unwrap(), 1);
+        assert_eq!(count(&db.pool).await, 2);
+
+        for i in 0..5 {
+            let s = frame(now - Duration::days(40) - Duration::seconds(i));
+            put_frames(&db.pool, "q", "sb", &[s]).await;
+        }
+        let mut gone = Vec::new();
+        loop {
+            let n = prune_sandbox_stats(&db.pool, 30, 2).await.unwrap();
+            gone.push(n);
+            if n < 2 {
+                break;
             }
+        }
+        assert_eq!(gone, vec![2, 2, 1]);
+        assert_eq!(count(&db.pool).await, 2);
+    }
+
+    #[tokio::test]
+    async fn prune_by_row_cap_keeps_the_newest_per_sandbox() {
+        let db = db!();
+        let now = Utc::now();
+        let series = |n: i64| -> Vec<SandboxStats> {
+            (0..n)
+                .map(|i| frame(now - Duration::seconds(100 - i)))
+                .collect()
         };
-        let insert = "workflows_api.record_sandbox_sample(text, bigint, text, timestamptz, bigint, bigint, bigint, bigint, bigint)";
-        let read = "workflows_api.sandbox_series(text, timestamptz, timestamptz, interval)";
-        let prune = "workflows.prune_sandbox_samples(interval, integer)";
-        assert!(can("enzarb_workflows", insert).await);
-        assert!(!can("enzarb_ui", insert).await);
-        assert!(!can("enzarb_connectors", insert).await);
-        assert!(can("enzarb_ui", read).await);
-        assert!(!can("enzarb_connectors", read).await);
-        assert!(can("enzarb_workflows", prune).await);
-        assert!(!can("enzarb_ui", prune).await);
+        put_frames(&db.pool, "p", "a", &series(5)).await;
+        put_frames(&db.pool, "p", "b", &series(2)).await;
+        put_frames(&db.pool, "q", "a", &series(4)).await;
+        // Cap 3: two oldest of p/a and one of q/a go; p/b is under the cap.
+        assert_eq!(
+            prune_sandbox_stats_over_cap(&db.pool, 3, 100)
+                .await
+                .unwrap(),
+            3
+        );
+        let per: Vec<(String, String, i64)> = sqlx::query_as(
+            "SELECT project, sandbox, count(*) FROM workflows.sandbox_stats
+             GROUP BY 1, 2 ORDER BY 1, 2",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            per,
+            vec![
+                ("p".into(), "a".into(), 3),
+                ("p".into(), "b".into(), 2),
+                ("q".into(), "a".into(), 3)
+            ]
+        );
+        // The newest rows survive.
+        let oldest: DateTime<Utc> = sqlx::query_scalar(
+            "SELECT min(at) FROM workflows.sandbox_stats WHERE project = 'p' AND sandbox = 'a'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert!(oldest > now - Duration::seconds(100 - 1));
+
+        // Batching: cap 1 leaves 2 + 1 + 2 rows to delete, in batches of 2.
+        let mut gone = Vec::new();
+        loop {
+            let n = prune_sandbox_stats_over_cap(&db.pool, 1, 2).await.unwrap();
+            gone.push(n);
+            if n < 2 {
+                break;
+            }
+        }
+        assert_eq!(gone, vec![2, 2, 1]);
+        assert_eq!(count(&db.pool).await, 3);
+    }
+
+    #[tokio::test]
+    async fn ui_reads_the_view_and_function_but_not_the_table() {
+        let db = db!();
+        put(&db.pool, "p", "a", &[(0, 0, 1, 1, 0, 0)]).await;
+        let ui = db.pool_as("enzarb_ui").await;
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT sandbox FROM workflows_api.sandbox_stats_v WHERE project = 'p'")
+                .fetch_all(&ui)
+                .await
+                .unwrap();
+        assert_eq!(rows, vec![("a".to_string(),)]);
+        let s = sandbox_stats_window(&ui, "p", at(0), at(10), 1, 30, 30)
+            .await
+            .unwrap();
+        assert_eq!(s.len(), 1);
+        assert!(
+            sqlx::query("SELECT * FROM workflows.sandbox_stats")
+                .fetch_all(&ui)
+                .await
+                .is_err()
+        );
+        assert!(
+            sqlx::query("INSERT INTO workflows.sandbox_stats (project, sandbox, at) VALUES ('p', 'x', now())")
+                .execute(&ui)
+                .await
+                .is_err()
+        );
+        assert!(
+            sqlx::query("DELETE FROM workflows.sandbox_stats")
+                .execute(&ui)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn workflows_role_inserts_reads_and_prunes_and_others_cannot() {
+        let db = db!();
+        let wf = db.pool_as("enzarb_workflows").await;
+        let s = SandboxStats {
+            memory_bytes: Some(1),
+            ..frame(Utc::now() - Duration::days(40))
+        };
+        assert!(insert_sandbox_stats(&wf, "p", "a", None, &s).await.unwrap());
+        assert_eq!(count(&wf).await, 1);
+        assert_eq!(prune_sandbox_stats(&wf, 30, 10).await.unwrap(), 1);
+        assert_eq!(prune_sandbox_stats_over_cap(&wf, 1, 10).await.unwrap(), 0);
+        let conn = db.pool_as("enzarb_connectors").await;
+        assert!(
+            insert_sandbox_stats(&conn, "p", "a", None, &s)
+                .await
+                .is_err()
+        );
+        let old = sqlx::query("SELECT * FROM pg_proc WHERE proname IN ('record_sandbox_sample', 'sandbox_series', 'prune_sandbox_samples')")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+        assert!(old.is_empty());
     }
 }
 

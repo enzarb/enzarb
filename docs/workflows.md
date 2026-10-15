@@ -72,7 +72,7 @@ COMMIT;
 Turns `work_items.wake_at` and expired job deadlines into `TimerFired` events: nudges, question timeouts, runaway runs.
 
 ### Sandbox stats poller
-A single-leader loop (Postgres advisory lock) polls each ready sandbox for CPU, memory, storage and I/O counters every 30 s and writes `workflows.sandbox_stats`. Unreachable or not-ready sandboxes are skipped with per-project backoff, never zero-filled. Rows are pruned after 30 days. See [ADR-0019](adr/0019-sandbox-utilization-polling.md).
+A single-leader loop (Postgres advisory lock) polls each ready sandbox for CPU, memory, storage and I/O counters every `ENZARB_STATS_INTERVAL` (30 s) and writes `workflows.sandbox_stats`. Unreachable or not-ready sandboxes are skipped with per-project backoff, never zero-filled. Rows are pruned after `ENZARB_STATS_RETENTION` days (30). See [ADR-0019](adr/0019-sandbox-utilization-polling.md).
 
 ### Wakeups
 LISTEN/NOTIFY gives low latency, and a polling sweep every few seconds acts as the safety net. LISTEN connections must be direct, session-mode connections, never through a transaction-mode pooler.
