@@ -5,7 +5,7 @@ Nothing collects sandbox CPU, memory, storage or disk I/O today (gap 11, epic #1
 
 ## Decision
 
-### 1. Stats source (sandbox-init)
+### 1. Stats source (sandbox-init) (amended, see the end)
 - sandbox-init reads the cgroup v2 files of **its own cgroup** (path from `/proc/self/cgroup`, unified mount at `/sys/fs/cgroup`): `cpu.stat` (`usage_usec`, and `throttled_usec` if present), `memory.current`, `memory.max` (`max` means no limit), `io.stat` (`rbytes` and `wbytes` summed over all devices), and `statfs` of `/workspace` for used and total bytes.
 - dockerd is supervised inside the same container (ADR-0016), so its containers are descendants in the same cgroup subtree. The container's own cgroup therefore includes them; no per-container breakdown is made.
 - Values are **raw**: cumulative counters (`cpu_usec`, `cpu_throttled_usec`, `io_read_bytes`, `io_write_bytes`) or gauges (`mem_bytes`, `mem_limit_bytes`, `storage_used_bytes`, `storage_total_bytes`). Each reply carries `ts` (unix ms from the sandbox's clock) and `boot_id` (random, new per sandbox-init start). Rates are derived on read. sandbox-init keeps no history.
@@ -74,7 +74,7 @@ Rejected alternatives:
 - Not done: alerting, per-process or per-container breakdown, network metrics, Claude usage limits, external metrics export, rollups beyond 30 days.
 
 ## Amendment (2026-10-15): align with the shipped `stats` frame
-The `stats` frame shipped in #158 (`proto` `SandboxStats`) differs from section 2. The frame is deployed and wire changes are additive only, so the design follows the code. Where this amendment and sections 1–5 disagree, the amendment wins.
+The `stats` frame shipped in #158 (`proto` `SandboxStats`) differs from section 2. The frame is deployed and wire changes are additive only, so the design follows the code. Where this amendment and sections 1–6 disagree, the amendment wins.
 
 **Frame (replaces the field list in section 2).** `ts_ms` (unix ms, the sandbox's clock) plus optional non-negative integers:
 - counters `cpu_usage_usec`, `cpu_user_usec`, `cpu_system_usec`, `io_read_bytes`, `io_write_bytes`;
@@ -83,8 +83,10 @@ The `stats` frame shipped in #158 (`proto` `SandboxStats`) differs from section 
 Absent still means "not reported", never 0.
 
 **Dropped or deferred:**
-- `boot_id` is dropped. A sandbox restart shows up as a new `sandbox` (pod name) or as a counter lower than its predecessor, and the window query drops that interval either way. A sandbox-init restart inside the same pod restarts the counters from 0, which is the same "counter went down" case.
+- `boot_id` is dropped. A new pod shows up as a new `sandbox` (pod name). sandbox-init is pid 1, so its restart is a container restart in the same pod: a new container cgroup whose counters start near 0, normally lower than the previous sample, so the negative-delta rule drops that interval. Known limitation: if the previous instance was itself very young (a crashloop), the new counter can exceed the old one and one wrong positive interval is kept. This is accepted; an optional `boot_id`/`started_ms` field can close it later, additively.
 - `mem_limit_bytes` and `cpu_throttled_usec` are deferred. They can be added to the frame and the table later as additive optional fields.
+
+**Source (section 1).** sandbox-init reads `cpu.stat` `usage_usec`/`user_usec`/`system_usec`, `memory.current`, `io.stat` and statfs of the workspace. `memory.max` and `throttled_usec` are not read yet.
 
 **Storage (replaces the column list in section 4).** `workflows.sandbox_stats`:
 
@@ -106,6 +108,9 @@ Absent still means "not reported", never 0.
 - CPU comes from `cpu_usage_usec`; user/system are stored but not charted yet.
 - Return columns: `bucket_start`, `samples`, `cpu_cores_avg`, `cpu_cores_max`, `mem_bytes_avg`, `mem_bytes_max`, `io_read_bps_avg`, `io_read_bps_max`, `io_write_bps_avg`, `io_write_bps_max`, `storage_used_bytes_avg`, `storage_used_bytes_max`, `storage_total_bytes`.
 - `cpu_throttled_avg` and `mem_limit_bytes` return when their fields are added.
-- The rest of section 5 (the reset, gap and NULL rules, no row for an empty bucket, `p_buckets` clamped to 1..300) stands.
+- Aggregates: `memory_bytes` and `storage_used_bytes` give avg and max; `storage_total_bytes` gives the last value in the bucket; CPU and I/O give avg and max of their rates.
+- The rest of section 5 stands, except that the reset rule no longer uses `boot_id`. A negative delta, a change of `sandbox`, or a NULL on either side drops the interval, and so does an interval longer than 3x the poll interval. Empty buckets return no row, and `p_buckets` is clamped to 1..300.
+
+**Tests (section 6).** The `sandbox-store` tests replace the `boot_id` change case with two cases: a sandbox-init restart (counters drop to near 0, same `sandbox`) and a new `sandbox` name.
 
 **Settings.** `ENZARB_STATS_INTERVAL` (seconds, default 30, clamped 15–300), `ENZARB_STATS_TIMEOUT` (seconds, default 5), `ENZARB_STATS_CONCURRENCY` (default 8) and `ENZARB_STATS_RETENTION` (days, default 30). No other prefix is used for these.
