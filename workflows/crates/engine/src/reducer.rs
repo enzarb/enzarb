@@ -483,6 +483,8 @@ impl Reducer {
             triggers: project.triggers,
             default_branch: project.default_branch.clone(),
             open_dependencies: crate::dependencies::open_dependencies(&mut tx, &key).await?,
+            blocking_dependencies: crate::dependencies::blocking_dependencies(&mut tx, &key)
+                .await?,
             graph: prep.graph.clone(),
             live_agent_jobs: match &existing {
                 Some(w) => {
@@ -637,19 +639,25 @@ async fn epic_parent(
         return Ok(None);
     };
     let parent = normalize_key(&parent);
-    let row: Option<(String, serde_json::Value, Option<String>)> = sqlx::query_as(
-        "SELECT state, state_data, project_id FROM work_items WHERE key = $1 AND workflow = 'issue'",
+    let row: Option<(String, String, serde_json::Value, Option<String>)> = sqlx::query_as(
+        "SELECT workflow, state, state_data, project_id FROM work_items
+         WHERE key = $1 AND (workflow = 'issue' OR workflow LIKE 'graph:%')",
     )
     .bind(parent.to_string())
     .fetch_optional(&mut **tx)
     .await?;
-    let Some((state, data, project_id)) = row else {
+    let Some((workflow, state, data, project_id)) = row else {
         return Ok(None);
     };
-    if project_id.as_deref() != Some(project)
-        || !matches!(state.as_str(), "Decomposing" | "AwaitingChildren")
-        || data.get("epic").and_then(|v| v.as_bool()) != Some(true)
-    {
+    let flag = |k: &str| data.get(k).and_then(|v| v.as_bool()) == Some(true);
+    // A compiled epic creating or awaiting its sub-issues, or a graph task at
+    // `create_sub_issues` or waiting on its children.
+    let accepting = if workflow == "issue" {
+        matches!(state.as_str(), "Decomposing" | "AwaitingChildren") && flag("epic")
+    } else {
+        flag("accepts_children")
+    };
+    if project_id.as_deref() != Some(project) || !accepting {
         return Ok(None);
     }
     let sub_keys = data

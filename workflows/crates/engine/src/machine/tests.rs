@@ -5,6 +5,7 @@ mod ci_fix;
 mod dependencies;
 mod epic;
 mod graph;
+mod graph_epics;
 mod human_approval;
 mod merge;
 
@@ -50,6 +51,7 @@ fn ctx_for(number: u64, perm: Permission) -> Ctx {
         epic_parent: None,
         graph: None,
         live_agent_jobs: false,
+        blocking_dependencies: Vec::new(),
     }
 }
 

@@ -313,7 +313,7 @@ pub(super) fn start(ctx: &Ctx, state: &WorkflowState, ev: &EngineEvent) -> Trans
 /// it was opened by this enzarb itself (not just any bot), its body names a parent in the same
 /// repository that the reducer found in the store (in `Decomposing` or `AwaitingChildren`),
 /// and the marker's key is one of the sub-issues in that parent's approved plan.
-fn epic_child_of<'a>(ctx: &'a Ctx, e: &Event) -> Option<&'a super::EpicParent> {
+pub(super) fn epic_child_of<'a>(ctx: &'a Ctx, e: &Event) -> Option<&'a super::EpicParent> {
     if !e.data.actor.login.eq_ignore_ascii_case(&ctx.bot_login) {
         return None;
     }

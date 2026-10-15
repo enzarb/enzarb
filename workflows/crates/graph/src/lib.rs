@@ -40,7 +40,15 @@ pub const KNOWN_ACTIONS: &[&str] = &[
     "post_comment",
     "open_change_request",
     "merge_change_request",
+    "create_sub_issues",
 ];
+/// The action that only a `wait` on `approval` may lead to: nothing creates issues
+/// without a human approve.
+pub const CREATE_ACTION: &str = "create_sub_issues";
+/// Reserved output key: facts about the work item (`epic`, `epic_allowed`, ...) kept by the
+/// kernel. A condition's identifier that the last node's output lacks is looked up here, so a
+/// definition can branch on `epic`.
+pub const ITEM: &str = "_item";
 /// The action that only a `wait` on `merge_requested` may lead to.
 pub const MERGE_ACTION: &str = "merge_change_request";
 /// Events a `wait` node may list.
@@ -51,6 +59,7 @@ pub const KNOWN_EVENTS: &[&str] = &[
     "review",
     "merge_requested",
     "dependencies_done",
+    "children_done",
     "timer",
 ];
 
@@ -271,6 +280,7 @@ pub fn load(src: &str) -> Result<Definition, Error> {
 
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
+        && !id.starts_with('_')
         && id.len() <= 64
         && id
             .bytes()
@@ -300,7 +310,9 @@ pub fn validate(d: &Definition) -> Result<(), Error> {
     }
     for (id, n) in &d.nodes {
         if !valid_id(id) {
-            p.push(format!("node id `{id}` must match [a-z0-9_-]{{1,64}}"));
+            p.push(format!(
+                "node id `{id}` must match [a-z0-9_-]{{1,64}} and not start with `_`"
+            ));
         }
         match &n.kind {
             NodeKind::Command { run } if run.trim().is_empty() => {
@@ -404,6 +416,30 @@ pub fn validate(d: &Definition) -> Result<(), Error> {
             if !gated {
                 p.push(format!(
                     "node `{id}`: `{MERGE_ACTION}` (`{mid}`) is reachable only through a wait on `merge_requested`"
+                ));
+            }
+        }
+    }
+    // The approval gate: sub-issues are created only after a wait that takes an approval.
+    for (cid, c) in &d.nodes {
+        if !matches!(&c.kind, NodeKind::Action { action, .. } if action == CREATE_ACTION) {
+            continue;
+        }
+        if *cid == d.start {
+            p.push(format!(
+                "node `{cid}`: `{CREATE_ACTION}` cannot be the start node"
+            ));
+        }
+        for (id, n) in &d.nodes {
+            if !edges_of(n).any(|t| t == cid) {
+                continue;
+            }
+            let gated = matches!(&n.kind, NodeKind::Wait { events, .. }
+                if events.iter().any(|e| e == "approval"))
+                && n.on_limit.as_deref() != Some(cid.as_str());
+            if !gated {
+                p.push(format!(
+                    "node `{id}`: `{CREATE_ACTION}` (`{cid}`) is reachable only through a wait on `approval`"
                 ));
             }
         }
@@ -522,7 +558,14 @@ pub fn advance(def: &Definition, state: &mut GraphState, output: Value) -> Next 
     };
     let ok = output_ok(&output);
     state.outputs.insert(cur.clone(), output);
-    let out = &state.outputs[&cur];
+    // Conditions see the output, then the item facts for what it lacks.
+    let mut ctx = state.outputs[&cur].clone();
+    if let (Value::Object(o), Some(Value::Object(item))) = (&mut ctx, state.outputs.get(ITEM)) {
+        for (k, v) in item {
+            o.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+    }
+    let out = &ctx;
     // A failed sandbox step fails the graph, whatever its edges, unless it is optional;
     // an optional step's edges (conditions on `ok`, `exit_code`, ...) decide.
     if node.kind.runner() == Runner::Sandbox && !ok && !node.optional {

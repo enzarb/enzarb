@@ -18,6 +18,7 @@ use sqlx::{PgConnection, PgPool};
 use crate::error::Error;
 use crate::executor::ConnectorRegistry;
 use crate::index::ProjectIndex;
+use crate::machine::graph::{BlockingDependency, DependencyProgress, dependency_progress};
 use crate::machine::stack::{ParentRow, select_stack_parent};
 use crate::machine::{EngineEvent, EventPayload, OpenDependency, StackParent};
 use crate::reducer::normalize_key;
@@ -87,6 +88,66 @@ pub async fn dependency_context(pool: &PgPool, key: &WorkItemKey) -> Result<Stri
     .fetch_all(pool)
     .await?;
     Ok(format_dependencies(&key.repo, &rows))
+}
+
+/// The dependencies of `key` that are not *completed* (see
+/// [`crate::machine::graph::dependency_progress`]): what blocks a graph task from starting, or
+/// from running an agent that pushes. Stable order (by key).
+pub async fn blocking_dependencies(
+    conn: &mut PgConnection,
+    key: &WorkItemKey,
+) -> Result<Vec<BlockingDependency>, Error> {
+    #[allow(clippy::type_complexity)]
+    let rows: Vec<(
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        bool,
+    )> = sqlx::query_as(
+        r"SELECT DISTINCT ON (e.depends_on_key) e.depends_on_key, dw.workflow, dw.state,
+                 dw.state_data->>'title', dw.state_data->>'url', cw.state, cw.state_data->>'url',
+                 (dw.state_data->>'change_request') IS NOT NULL
+          FROM workflows.effective_dependencies e
+          LEFT JOIN workflows.work_items dw ON dw.key = e.depends_on_key
+          LEFT JOIN workflows.work_items cw ON cw.workflow = 'change_request'
+               AND ((dw.workflow = 'change_request' AND cw.key = dw.key)
+                 OR ((dw.workflow = 'issue' OR dw.workflow LIKE 'graph:%')
+                     AND dw.state_data->>'change_request' IS NOT NULL
+                     AND cw.key = regexp_replace(dw.key, '#[0-9]+$', '') || '#'
+                                  || (dw.state_data->>'change_request')))
+          WHERE e.work_item_key = $1
+          ORDER BY e.depends_on_key",
+    )
+    .bind(key.to_string())
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut out = Vec::new();
+    for (dep_key, workflow, state, title, url, cr_state, cr_url, has_cr) in rows {
+        // A change request that is not tracked (yet) is not merged.
+        let cr_state = cr_state.or_else(|| has_cr.then(|| "Open".to_string()));
+        let progress =
+            dependency_progress(workflow.as_deref(), state.as_deref(), cr_state.as_deref());
+        if progress == DependencyProgress::Completed {
+            continue;
+        }
+        let Some(dep) = parse_key(&dep_key) else {
+            continue;
+        };
+        out.push(BlockingDependency {
+            label: label(&key.repo, &dep),
+            key: dep_key,
+            title: title.unwrap_or_default(),
+            state: state.unwrap_or_default(),
+            url: url.unwrap_or_default(),
+            pr_url: cr_url.unwrap_or_default(),
+            failed: progress == DependencyProgress::Failed,
+        });
+    }
+    Ok(out)
 }
 
 /// What `key` still waits on, in a stable order: dependencies that are not done, then its
@@ -185,7 +246,8 @@ pub async fn stack_parent(
           LEFT JOIN workflows.work_items dw ON dw.key = e.depends_on_key
           LEFT JOIN workflows.work_items cw ON cw.workflow = 'change_request'
                AND ((dw.workflow = 'change_request' AND cw.key = dw.key)
-                 OR (dw.workflow = 'issue' AND dw.state_data->>'change_request' IS NOT NULL
+                 OR ((dw.workflow = 'issue' OR dw.workflow LIKE 'graph:%')
+                     AND dw.state_data->>'change_request' IS NOT NULL
                      AND cw.key = regexp_replace(dw.key, '#[0-9]+$', '') || '#'
                                   || (dw.state_data->>'change_request')))",
     )

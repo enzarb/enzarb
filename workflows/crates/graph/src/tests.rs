@@ -527,3 +527,148 @@ fn enzarb_issue_workflow_gates_implementation_on_approval() {
         Next::Node("open_pr".into())
     );
 }
+const EPIC_EXAMPLE: &str = include_str!("../../../../docs/workflows/examples/epic-issue.yaml");
+
+#[test]
+fn epic_example_validates_and_walks() {
+    let d = load(EPIC_EXAMPLE).unwrap();
+    let walk = |item: Value, steps: &[Value]| {
+        let (mut s, _) = GraphState::begin(&d);
+        s.outputs.insert(ITEM.into(), item);
+        let mut path = vec![s.node.clone()];
+        for out in steps {
+            match advance(&d, &mut s, out.clone()) {
+                Next::Node(n) => path.push(n),
+                Next::Failed(r) => path.push(format!("failed: {r}")),
+            }
+        }
+        path
+    };
+    let yes = json!({"epic": false, "epic_allowed": true});
+    // Triage says epic; the item becomes an epic (the kernel sets the fact).
+    let epic = json!({"epic": true, "epic_allowed": true});
+    assert_eq!(
+        walk(yes.clone(), &[json!({"decision": "epic"})]),
+        ["triage", "plan_epic"]
+    );
+    let approved = json!({"event": "approval"});
+    assert_eq!(
+        walk(
+            epic.clone(),
+            &[
+                json!({"decision": "ready"}),
+                json!({"decision": "plan"}),
+                json!({"id": 1}),
+                approved.clone(),
+                json!({"created": []}),
+                json!({"event": "children_done", "failed": []}),
+            ]
+        ),
+        [
+            "triage",
+            "plan_epic",
+            "post_plan",
+            "approval",
+            "create",
+            "children",
+            "done"
+        ]
+    );
+    // A closed sub-issue: tell people, wait for a human or for it to be replaced.
+    assert_eq!(
+        walk(
+            epic.clone(),
+            &[
+                json!({}),
+                json!({}),
+                json!({}),
+                approved.clone(),
+                json!({}),
+                json!({"event": "children_done", "failed": ["#3"]}),
+                json!({}),
+                json!({"event": "children_done", "failed": ["#3"]}),
+                approved.clone(),
+            ]
+        ),
+        [
+            "triage",
+            "plan_epic",
+            "post_plan",
+            "approval",
+            "create",
+            "children",
+            "tell_stuck",
+            "stuck",
+            "stuck",
+            "done"
+        ]
+    );
+    // Not an epic, or not allowed at this depth: the ordinary path.
+    let no = json!({"epic": false, "epic_allowed": false});
+    assert_eq!(
+        walk(
+            no,
+            &[json!({"decision": "epic"}), json!({}), json!({}), approved]
+        ),
+        ["triage", "plan", "post_plan", "approval", "implement"]
+    );
+}
+
+#[test]
+fn create_sub_issues_needs_an_approval_wait() {
+    let end = "  e: {type: end, status: done}\n";
+    let bad = [
+        format!(
+            "  a: {{type: agent, prompt: x, next: c}}\n  c: {{type: action, action: create_sub_issues, next: e}}\n{end}"
+        ),
+        format!(
+            "  a: {{type: wait, events: [comment], next: c}}\n  c: {{type: action, action: create_sub_issues, next: e}}\n{end}"
+        ),
+        format!(
+            "  a: {{type: wait, events: [approval], next: e, on_limit: c}}\n  c: {{type: action, action: create_sub_issues, next: e}}\n{end}"
+        ),
+    ];
+    for nodes in bad {
+        let Err(Error::Invalid(p)) = validate(&def(&with_nodes("a", &nodes))) else {
+            panic!("{nodes}")
+        };
+        assert!(
+            p.iter()
+                .any(|x| x.contains("reachable only through a wait on `approval`")),
+            "{p:?}"
+        );
+    }
+    let ok = format!(
+        "  a: {{type: wait, events: [approval, comment], next: c}}\n  c: {{type: action, action: create_sub_issues, next: e}}\n{end}"
+    );
+    validate(&def(&with_nodes("a", &ok))).unwrap();
+    let Err(Error::Invalid(p)) =
+        validate(&def(&with_nodes("_x", "  _x: {type: end, status: done}\n")))
+    else {
+        panic!()
+    };
+    assert!(p.iter().any(|x| x.contains("not start with `_`")));
+}
+
+#[test]
+fn item_facts_fill_missing_identifiers_only() {
+    let d = load(&with_nodes(
+        "a",
+        "  a: {type: command, run: x, next: {epic: e, else: f}}\n  e: {type: end, status: done}\n  f: {type: end, status: failed}\n",
+    ))
+    .unwrap();
+    let run = |item: Value, out: Value| {
+        let (mut s, _) = GraphState::begin(&d);
+        s.outputs.insert(ITEM.into(), item);
+        advance(&d, &mut s, out)
+    };
+    assert_eq!(
+        run(json!({"epic": true}), json!({})),
+        Next::Node("e".into())
+    );
+    assert_eq!(
+        run(json!({"epic": true}), json!({"epic": false})),
+        Next::Node("f".into())
+    );
+    assert_eq!(run(json!({}), json!({})), Next::Node("f".into()));
+}

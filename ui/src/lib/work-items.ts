@@ -250,7 +250,7 @@ export function applyItemChange(
 	return [...rest, item].sort(byRecency);
 }
 
-export const WAITING_ON = ['human', 'enzarb', 'ci', 'github'] as const;
+export const WAITING_ON = ['human', 'enzarb', 'ci', 'github', 'dependency'] as const;
 export type WaitingOn = (typeof WAITING_ON)[number];
 
 /** Why a change request is waiting (`state_data.wait`, derived by workflows). */
@@ -427,6 +427,14 @@ export function classifyNeedsYou(
 		return { category: 'approval', reason: null };
 	if (workflow === 'issue' && state === 'AwaitingAnswers')
 		return { category: 'question', reason: null };
+	if (workflow.startsWith('graph:')) {
+		// A graph task blocked by a dependency that cannot complete by itself needs a human;
+		// one waiting for dependencies to merge does not.
+		const w = state === 'Blocked' ? parseWait(stateData) : null;
+		return w?.waitingOn === 'human'
+			? { category: 'blocked', reason: w.text || null, text: w.text || undefined }
+			: null;
+	}
 	if (workflow !== 'change_request') return null;
 	const wait = parseWait(stateData);
 	if (wait) {

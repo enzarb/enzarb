@@ -315,6 +315,30 @@ describe('needs-you classification', () => {
 	});
 });
 
+describe('graph tasks blocked by dependencies', () => {
+	const blocked = (waiting_on: string, reason: string) => ({
+		workflow: 'graph:issue',
+		state: 'Blocked',
+		stateData: { wait: { waiting_on, reason, text: 'Blocked by #3 (API, Done, PR x not merged)' } }
+	});
+	it('shows the wait and needs a human only when a dependency failed', () => {
+		const open = blocked('dependency', 'dependencies_open');
+		expect(parseWait(open.stateData)).toEqual({
+			waitingOn: 'dependency',
+			reason: 'dependencies_open',
+			text: 'Blocked by #3 (API, Done, PR x not merged)',
+			url: null
+		});
+		expect(classifyNeedsYou(open)).toBeNull();
+		expect(classifyNeedsYou(blocked('human', 'dependency_failed'))).toEqual({
+			category: 'blocked',
+			reason: 'Blocked by #3 (API, Done, PR x not merged)',
+			text: 'Blocked by #3 (API, Done, PR x not merged)'
+		});
+		expect(classifyNeedsYou({ ...blocked('human', 'x'), state: 'Waiting' })).toBeNull();
+	});
+});
+
 describe('board columns', () => {
 	const needs = (category: NeedsYou['category']): NeedsYou => ({ category, reason: null });
 	const mk = (
