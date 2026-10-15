@@ -26,6 +26,11 @@
       "type": "string",
       "pattern": "^(https?://.+)?$"
     },
+    "sandboxStatsRetentionDays": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Days of sandbox utilization samples kept; read by the workflows poller and the UI (ENZARB_STATS_RETENTION)."
+    },
     "githubApp": {
       "type": "object",
       "properties": {

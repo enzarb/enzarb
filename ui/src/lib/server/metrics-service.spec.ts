@@ -257,6 +257,15 @@ describe('mapSandboxStatsRows', () => {
 		expect(r.stepMs).toBe((30 * day) / 120);
 	});
 
+	it('clamps to a configured retention', () => {
+		const long = {
+			from: new Date('2026-01-01T00:00:00Z'),
+			to: new Date('2026-10-14T00:00:00Z')
+		};
+		const r = mapSandboxStatsRows([], long, 120, 7);
+		expect(r.from).toBe(long.to.getTime() - 7 * 86_400_000);
+	});
+
 	it('is empty when no row comes back', () => {
 		expect(mapSandboxStatsRows([], window).buckets).toEqual([]);
 	});
@@ -277,7 +286,7 @@ describe('sandboxStats', () => {
 			...unknown[]
 		];
 		expect(strings.join('?')).toContain('workflows_api.sandbox_stats_window(');
-		expect(values).toEqual(['alpha', from.toISOString(), to.toISOString(), 120]);
+		expect(values).toEqual(['alpha', from.toISOString(), to.toISOString(), 120, 30]);
 		expect(r.buckets).toHaveLength(1);
 	});
 });

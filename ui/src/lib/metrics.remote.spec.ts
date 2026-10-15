@@ -11,6 +11,7 @@ const sandbox = vi.hoisted(() => vi.fn());
 vi.mock('#lib/server/kube.ts', () => ({
 	getProjectStore: () => ({ get: storeGet }) as unknown as ProjectStore
 }));
+vi.mock('#lib/server/config.ts', () => ({ getConfig: () => ({ sandboxStatsRetentionDays: 14 }) }));
 vi.mock('#lib/server/db.ts', () => ({ getSql: () => 'sql' }));
 vi.mock('#lib/server/metrics-service.ts', () => ({
 	projectUsage: usage,
@@ -105,7 +106,12 @@ describe('getProjectUsage', () => {
 	it('sandbox stats: queries the default window for the owner', async () => {
 		const s = getSandboxStats as unknown as (a: Args) => Promise<unknown>;
 		await s({ name: 'alpha' });
-		expect(sandbox).toHaveBeenCalledWith('sql', 'alpha', expect.objectContaining({ preset: '7d' }));
+		expect(sandbox).toHaveBeenCalledWith(
+			'sql',
+			'alpha',
+			expect.objectContaining({ preset: '7d' }),
+			14
+		);
 	});
 
 	it('queries the default window for the owner', async () => {

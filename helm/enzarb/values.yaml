@@ -25,6 +25,10 @@ imagePullPolicy: IfNotPresent
 # Common env for the Rust services.
 rustLog: info
 
+# Days of sandbox utilization samples kept. One setting for both sides: the workflows poller prunes
+# older rows and the UI clamps its charts to it (ENZARB_STATS_RETENTION).
+sandboxStatsRetentionDays: 30
+
 # Gateway the HTTPRoutes attach to (created by enzarb-kubernetes).
 gateway:
   name: enzarb
