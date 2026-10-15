@@ -654,6 +654,12 @@ img {
 	max-width: var(--ez-content-width);
 	margin-inline: auto;
 
+	// Board page: the page itself is uncapped; the header and toolbar sit in `.ez-page__narrow`.
+	&:has(> .ez-board-page) {
+		width: 100%;
+		max-width: none;
+	}
+
 	// Project routes: full width, bounded height (the header and Overview/Settings cap themselves).
 	&:has(> .ez-project-view) {
 		flex: 1;
@@ -662,6 +668,23 @@ img {
 		max-width: none;
 		overflow: hidden;
 	}
+}
+
+.ez-board-page {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-5);
+	min-width: 0;
+}
+
+// A readable-width column inside a full-width page (header, toolbar and notices above a wide board).
+.ez-page__narrow {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-5);
+	width: 100%;
+	max-width: var(--ez-content-width);
+	margin-inline: auto;
 }
 
 // The project view: one header row, then the active tab filling the rest of the viewport.
@@ -1353,7 +1376,7 @@ textarea.ez-control {
 	text-align: center;
 }
 
-// The task board on /work: one column per step of the process, in DOM order left to right. The
+// The task board on /work (full width, outside the capped page column): one column per step of the process, in DOM order left to right. The
 // grid scrolls sideways when the columns do not fit.
 .ez-board {
 	display: grid;

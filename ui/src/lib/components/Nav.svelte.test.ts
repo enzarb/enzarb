@@ -11,7 +11,7 @@ describe('Nav', () => {
 		render(Nav, { needsYou: 0 });
 		await expect.element(page.getByRole('img')).not.toBeInTheDocument();
 	});
-	it('shows an accessible count on the Work link', async () => {
+	it('shows an accessible count on the Tasks link', async () => {
 		render(Nav, { needsYou: 3 });
 		await expect.element(page.getByRole('img', { name: '3 items need you' })).toBeVisible();
 	});

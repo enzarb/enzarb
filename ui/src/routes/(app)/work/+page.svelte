@@ -65,43 +65,51 @@
 	}
 </script>
 
-<svelte:head><title>Work · enzarb</title></svelte:head>
-<PageHeader
-	title="Work"
-	description="Issues, change requests and mentions your projects are handling. Columns on the left of the board need a plan approved; on the right, a change merged."
-/>
-
-<div class="ez-toolbar">
-	<div class="ez-toolbar__item">
-		<Select label="Project" value={project ?? ''} onchange={pick} {options} />
-	</div>
-</div>
-
-<svelte:boundary>
-	{#if items.error}
-		<Notice tone="error">Could not load tasks.</Notice>
-	{:else}
-		{#if needsYou.failed && !needsYou.loaded}
-			<Notice tone="error">Could not load the queue of tasks waiting on you.</Notice>
-		{/if}
-		<TaskBoard
-			items={board}
-			{project}
-			{now}
-			loading={(items.loading && !items.current) || (!needsYou.loaded && !needsYou.failed)}
-			onaction={(id, action) => needsYou.act(id, action)}
-			onplan={(w) => {
-				planId = w.id;
-				planOpen = true;
-			}}
-			onreview={(w) => {
-				reviewId = w.id;
-				reviewOpen = true;
-			}}
+<svelte:head><title>Tasks · enzarb</title></svelte:head>
+<div class="ez-board-page">
+	<div class="ez-page__narrow">
+		<PageHeader
+			title="Tasks"
+			description="Issues, change requests and mentions your projects are handling. Columns on the left of the board need a plan approved; on the right, a change merged."
 		/>
-	{/if}
-	{#snippet failed()}<Notice tone="error">Could not load tasks.</Notice>{/snippet}
-</svelte:boundary>
+
+		<div class="ez-toolbar">
+			<div class="ez-toolbar__item">
+				<Select label="Project" value={project ?? ''} onchange={pick} {options} />
+			</div>
+		</div>
+
+		<svelte:boundary>
+			{#if items.error}
+				<Notice tone="error">Could not load tasks.</Notice>
+			{:else if needsYou.failed && !needsYou.loaded}
+				<Notice tone="error">Could not load the queue of tasks waiting on you.</Notice>
+			{/if}
+			{#snippet failed()}<Notice tone="error">Could not load tasks.</Notice>{/snippet}
+		</svelte:boundary>
+	</div>
+
+	<svelte:boundary>
+		{#if !items.error}
+			<TaskBoard
+				items={board}
+				{project}
+				{now}
+				loading={(items.loading && !items.current) || (!needsYou.loaded && !needsYou.failed)}
+				onaction={(id, action) => needsYou.act(id, action)}
+				onplan={(w) => {
+					planId = w.id;
+					planOpen = true;
+				}}
+				onreview={(w) => {
+					reviewId = w.id;
+					reviewOpen = true;
+				}}
+			/>
+		{/if}
+		{#snippet failed()}<Notice tone="error">Could not load tasks.</Notice>{/snippet}
+	</svelte:boundary>
+</div>
 
 <PlanDialog
 	bind:open={planOpen}
