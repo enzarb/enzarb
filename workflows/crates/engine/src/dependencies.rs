@@ -43,18 +43,18 @@ fn one_line(s: &str) -> String {
         .replace(['<', '>'], "")
 }
 
+/// One `dependency_status` row: `(depends_on_key, status, state, title, url)`.
+pub type DependencyRow = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 /// Render `dependency_status` rows `(depends_on_key, status, state, title, url)` as the
 /// `{dependencies}` block of a prompt, one line per dependency.
-pub fn format_dependencies(
-    home: &RepoKey,
-    rows: &[(
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    )],
-) -> String {
+pub fn format_dependencies(home: &RepoKey, rows: &[DependencyRow]) -> String {
     let mut lines = Vec::new();
     for (dep_key, status, state, title, url) in rows {
         let Some(dep) = parse_key(dep_key) else {
@@ -77,13 +77,7 @@ pub fn format_dependencies(
 /// The `{dependencies}` block for `key`: everything it waits on, done or not. Empty when it
 /// has no dependencies (the prompt renders that as `(none)`).
 pub async fn dependency_context(pool: &PgPool, key: &WorkItemKey) -> Result<String, Error> {
-    let rows: Vec<(
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    )> = sqlx::query_as(
+    let rows: Vec<DependencyRow> = sqlx::query_as(
         "SELECT DISTINCT ON (depends_on_key) depends_on_key, status, state, title, url
              FROM workflows.dependency_status
              WHERE work_item_key = $1
