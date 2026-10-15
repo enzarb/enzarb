@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Button from '#lib/components/form/Button.svelte';
+	import DateField from '#lib/components/form/DateField.svelte';
 	import { parseWindow, PRESETS, windowToParams, type MetricsWindow } from '#lib/metrics-window.ts';
 
 	/**
@@ -37,9 +38,9 @@
 			>
 		{/each}
 	</div>
-	<form class="ez-cluster" onsubmit={applyCustom}>
-		<label>From <input type="date" bind:value={from} /></label>
-		<label>To <input type="date" bind:value={to} /></label>
+	<form class="ez-cluster ez-cluster--end" onsubmit={applyCustom}>
+		<DateField label="From" bind:value={from} />
+		<DateField label="To" bind:value={to} />
 		<Button type="submit" size="sm" aria-pressed={value.preset === 'custom'}>Apply</Button>
 	</form>
 	{#if error}<p class="ez-window-picker__error" role="alert">{error}</p>{/if}
