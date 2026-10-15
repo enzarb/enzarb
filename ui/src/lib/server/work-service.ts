@@ -234,7 +234,7 @@ export function workService(
 			return {
 				...summary(row, staleHours, repoCounts),
 				readiness: row.workflow === 'change_request' ? parseReadiness(row.state_data) : null,
-				actions: availableActions(row.state),
+				actions: availableActions(row.state, row.state_data),
 				transitions: transitions.map((t): TransitionView => ({
 					id: Number(t.id),
 					fromState: t.from_state,
@@ -269,7 +269,7 @@ export function workService(
 			const allowed =
 				action === 'comment'
 					? canComment(row.workflow, row.state)
-					: availableActions(row.state).includes(action);
+					: availableActions(row.state, row.state_data).includes(action);
 			if (!allowed) {
 				throw new WorkError('invalid-action', `Cannot ${action} while ${row.state}`);
 			}

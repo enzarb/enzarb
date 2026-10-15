@@ -139,17 +139,22 @@ const TERMINAL = new Set<string>(TERMINAL_STATES);
 
 export const isTerminal = (state: string): boolean => TERMINAL.has(state);
 
+const isCiFailedWait = (wait: Wait | null): boolean =>
+	wait?.waitingOn === 'human' && wait.reason === 'ci_failed';
+
 // `classifyNeedsYou` and `availableActions` are mirrored in SQL by `needsYouWhere` in
 // `server/work-service.ts`; change them together (a parity spec guards the two).
 
 /**
  * Actions valid in a state: approve only while AwaitingApproval, merge only while ReadyToMerge, retry when Failed or Stale, cancel
- * for every non-terminal state.
+ * for every non-terminal state. A change request waiting on `ci_failed` (no fix round is running)
+ * can also retry, which starts another CI-fix round; that needs the `state_data`.
  */
-export function availableActions(state: string): WorkAction[] {
+export function availableActions(state: string, stateData?: unknown): WorkAction[] {
 	const out: WorkAction[] = [];
 	if (state === 'AwaitingApproval') out.push('approve');
 	if (state === 'Failed' || state === 'Stale') out.push('retry');
+	else if (state === 'AwaitingChanges' && isCiFailedWait(parseWait(stateData))) out.push('retry');
 	if (state === 'ReadyToMerge') out.push('merge');
 	if (!isTerminal(state)) out.push('cancel');
 	return out;
@@ -308,6 +313,9 @@ export function waitLinks(wait: Wait | null, url: string | null): WaitLink[] {
 		case 'ci_pending':
 		case 'ci_stale':
 			return pr ? [{ label: 'View checks', href: `${pr}/checks` }] : [];
+		case 'ci_failed':
+			if (wait.url) return [{ label: 'View failing check', href: wait.url }];
+			return pr ? [{ label: 'View failing check', href: `${pr}/checks` }] : [];
 		case 'enzarb_failed':
 		case 'round_limit':
 		case 'conflict_parked':
@@ -404,8 +412,17 @@ export function classifyNeedsYou(
 ): NeedsYou | null {
 	const { workflow, state, stateData } = item;
 	if (isTerminal(state)) return null;
-	const actions = availableActions(state);
-	if (actions.includes('retry')) return { category: 'failed', reason: failureText(stateData) };
+	const actions = availableActions(state, stateData);
+	if (actions.includes('retry')) {
+		const wait = workflow === 'change_request' ? parseWait(stateData) : null;
+		if (isCiFailedWait(wait))
+			return {
+				category: 'failed',
+				reason: wait?.text || 'CI failed',
+				text: wait?.text || undefined
+			};
+		return { category: 'failed', reason: failureText(stateData) };
+	}
 	if (workflow === 'issue' && actions.includes('approve'))
 		return { category: 'approval', reason: null };
 	if (workflow === 'issue' && state === 'AwaitingAnswers')

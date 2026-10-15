@@ -1,6 +1,7 @@
 //! Table-driven tests for the three state machines.
 
 mod auto_rounds;
+mod ci_fix;
 mod dependencies;
 mod epic;
 mod human_approval;

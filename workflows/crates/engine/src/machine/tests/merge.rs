@@ -289,7 +289,8 @@ fn ci_events_drive_readiness() {
     job_of(&t, JobKind::CheckMergeReadiness);
 
     // A failure is taken as is, with no check.
-    let t = run_cr(
+    // (automatic rounds are off here: with them on, a CI-fix round starts, see `ci_fix`).
+    let t = run_cr_manual(
         Permission::None,
         &awaiting,
         &ci_event("e2", "sha1", Ev::Failure),
@@ -303,7 +304,7 @@ fn ci_events_drive_readiness() {
         ("f", Ev::Failure, CiState::Failure),
         ("p", Ev::Pending, CiState::Pending),
     ] {
-        let t = run_cr(Permission::None, &ready, &ci_event(id, "sha1", st));
+        let t = run_cr_manual(Permission::None, &ready, &ci_event(id, "sha1", st));
         assert_eq!(assert_cr(&t, CrPhase::AwaitingChanges).ci, want);
         // A failure is final; a running check is re-asked in case its result is lost.
         assert_eq!(jobs(&t).is_empty(), want == CiState::Failure);
@@ -1003,7 +1004,8 @@ fn wait_reason_while_awaiting_changes() {
         ci: CiState::Failure,
         ..ready_data()
     };
-    assert_wait(p, ci_failed, "enzarb", "ci_failed_fixing");
+    // No fix job exists in this phase (a round moves the item to AddressingComments).
+    assert_wait(p, ci_failed, "human", "ci_failed");
     let ci_pending = CrData {
         ci: CiState::Pending,
         ..ready_data()

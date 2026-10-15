@@ -8,6 +8,9 @@
 //! * enzarb's own must-fix review findings (`request_changes`, or an unverified approve
 //!   downgraded to `comment`) start an `AddressingComments` round by themselves, at most
 //!   `Config::max_auto_rounds` in a row without a human acting; then the item waits for a person.
+//! * A failed CI on the reviewed head starts one `AddressingComments` round per head SHA
+//!   (`CrData::ci_fix_sha`), sharing the `auto_rounds` cap; the trigger names the failing
+//!   checks. When no round can start, `AwaitingChanges` waits on a human (`ci_failed`).
 //! * Feedback during `Reviewing` or `Merging` is queued like during `AddressingComments`; it is
 //!   handled before any automatic round once the running job finishes.
 //! * Commits pushed by the agent itself are not re-reviewed automatically; any
@@ -194,6 +197,19 @@ pub struct CrData {
     pub ci_pending_sha: String,
     /// CI has been pending for [`CI_STALE_AFTER`]: GitHub may have finished without telling us.
     pub ci_stale: bool,
+    /// The head a CI-fix round was started for; one round per head, however many checks fail.
+    pub ci_fix_sha: String,
+    /// Failing checks reported for `ci_failures_sha`.
+    pub ci_failures: Vec<CiFailure>,
+    pub ci_failures_sha: String,
+}
+
+/// A failing check of the head, as named in the CI-fix trigger and the `ci_failed` wait.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CiFailure {
+    pub name: String,
+    pub url: String,
 }
 
 /// How long CI may stay pending or unknown before the item asks a person to look.
@@ -451,6 +467,21 @@ fn unverified_text(d: &CrData) -> String {
     )
 }
 
+/// "CI failed: actionlint, scripts" for the `ci_failed` wait.
+fn ci_failed_text(d: &CrData) -> String {
+    let names: Vec<&str> = d
+        .ci_failures
+        .iter()
+        .filter(|f| !f.name.is_empty())
+        .map(|f| f.name.as_str())
+        .collect();
+    if names.is_empty() {
+        "CI failed".into()
+    } else {
+        truncate(&format!("CI failed: {}", names.join(", ")), 400)
+    }
+}
+
 /// The reason a change request is waiting; `None` in final states. `decision_needed`
 /// needs data not stored yet and is reserved in the contract.
 pub fn wait(phase: CrPhase, d: &CrData, r: &Readiness) -> Option<Wait> {
@@ -492,15 +523,26 @@ pub fn wait(phase: CrPhase, d: &CrData, r: &Readiness) -> Option<Wait> {
             if !reviewed {
                 return wait_of(Enzarb, "reviewing", "enzarb is reviewing");
             }
+            // Starting a CI-fix round leaves `AwaitingChanges`, so a failed CI seen here has
+            // no fix job: it is a person's to look at.
+            if r.ci.status == CheckStatus::Failed {
+                return Some(Wait {
+                    waiting_on: Human,
+                    reason: "ci_failed",
+                    text: ci_failed_text(d),
+                    url: d
+                        .ci_failures
+                        .first()
+                        .map(|f| f.url.clone())
+                        .filter(|u| !u.is_empty()),
+                });
+            }
             if d.auto_capped && d.last_review != "approve" {
                 return wait_of(
                     Human,
                     "round_limit",
                     "Automatic fix rounds used up, waiting for you",
                 );
-            }
-            if r.ci.status == CheckStatus::Failed {
-                return wait_of(Enzarb, "ci_failed_fixing", "CI failed, enzarb is fixing it");
             }
             match d.last_review.as_str() {
                 "request_changes" => wait_of(
@@ -582,8 +624,76 @@ fn start_pending_round(ctx: &Ctx, mut fx: Fx, mut d: CrData, p: Pending) -> Tran
 fn set_head(d: &mut CrData, sha: String) {
     if d.head_sha != sha {
         d.mergeable = None;
+        d.ci_fix_sha.clear();
+        d.ci_failures.clear();
+        d.ci_failures_sha.clear();
     }
     d.head_sha = sha;
+}
+
+/// Start the one CI-fix round of the current head, when CI failed on a reviewed head and
+/// automatic rounds are left. Otherwise hands `fx` and the data back unchanged.
+fn maybe_start_ci_fix<'a>(
+    ctx: &'a Ctx,
+    mut fx: Fx<'a>,
+    mut d: CrData,
+) -> Result<Transition, Box<(Fx<'a>, CrData)>> {
+    let stack_moving = d.retargeting || (!d.stacked_on.is_empty() && d.stack_parent_merged);
+    if d.ci != CiState::Failure
+        || d.ci_sha != d.head_sha
+        || d.head_sha.is_empty()
+        || d.ci_fix_sha == d.head_sha
+        || d.last_review.is_empty()
+        || d.reviewed_sha != d.head_sha
+        || stack_moving
+        || d.auto_rounds >= ctx.config.max_auto_rounds
+    {
+        return Err(Box::new((fx, d)));
+    }
+    d.auto_rounds += 1;
+    d.auto_trigger = true;
+    d.merge_requested = false;
+    d.ci_fix_sha = d.head_sha.clone();
+    let mut text = format!("CI failed on {}:", short(&d.head_sha));
+    if d.ci_failures_sha == d.head_sha && !d.ci_failures.is_empty() {
+        for f in &d.ci_failures {
+            text.push_str(&format!("\n- {}", f.name));
+            if !f.url.is_empty() {
+                text.push_str(&format!(" ({})", f.url));
+            }
+        }
+    } else {
+        text.push_str(
+            "\n- (the failing checks were not named; see the checks of the pull request)",
+        );
+    }
+    d.trigger_text = text;
+    d.trigger_comment_id = None;
+    d.trigger_comment_kind = CommentKind::default();
+    start_address(ctx, &mut fx, &d);
+    Ok(Transition::to(
+        st(CrPhase::AddressingComments, d),
+        fx.finish(),
+        "ci failed: automatic round",
+    ))
+}
+
+/// [`evaluate`], but a failed CI on the reviewed head starts a fix round first.
+fn evaluate_ci(
+    ctx: &Ctx,
+    fx: Fx,
+    from: CrPhase,
+    d: CrData,
+    note: &str,
+    allow_check: bool,
+) -> Transition {
+    match maybe_start_ci_fix(ctx, fx, d) {
+        Ok(t) => t,
+        Err(back) => {
+            let (fx, d) = *back;
+            evaluate(fx, from, d, note, allow_check)
+        }
+    }
 }
 
 /// Decide between `AwaitingChanges` and `ReadyToMerge` from the data alone. `fx` carries
@@ -1281,6 +1391,20 @@ fn retry(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowState) -> Tra
     if !ctx.can_write() {
         return Transition::reject(state, "retry requires write access");
     }
+    if s.phase == CrPhase::AwaitingChanges {
+        // The `ci_failed` wait: a person asks for another CI-fix round.
+        let mut d = s.data.clone();
+        if d.ci != CiState::Failure || d.ci_sha != d.head_sha || d.retargeting {
+            return Transition::reject(state, "nothing to retry");
+        }
+        human_acted(&mut d);
+        d.ci_fix_sha.clear();
+        let fx = Fx::new(ctx, ev);
+        return match maybe_start_ci_fix(ctx, fx, d) {
+            Ok(t) => t,
+            Err(_) => Transition::reject(state, "nothing to retry"),
+        };
+    }
     if !matches!(s.phase, CrPhase::Failed | CrPhase::ConflictParked) {
         return Transition::reject(state, "nothing to retry");
     }
@@ -1350,18 +1474,37 @@ fn ci_changed(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowState) -
         enzarb_connector::CiState::Failure => {
             d.ci = CiState::Failure;
             d.merge_requested = false;
+            if d.ci_failures_sha != ci.head_sha {
+                d.ci_failures.clear();
+                d.ci_failures_sha = ci.head_sha.clone();
+            }
+            let name = ci.context.clone().unwrap_or_default();
+            let url = ci.url.clone().unwrap_or_default();
+            match d.ci_failures.iter_mut().find(|f| f.name == name) {
+                Some(f) => f.url = url,
+                None => d.ci_failures.push(CiFailure { name, url }),
+            }
         }
-        enzarb_connector::CiState::Pending => d.ci = CiState::Pending,
+        enzarb_connector::CiState::Pending => {
+            d.ci = CiState::Pending;
+            d.ci_failures.clear();
+        }
         enzarb_connector::CiState::Success => {
-            if !(d.ci == CiState::Success && d.ci_sha == ci.head_sha) {
+            if let Some(name) = &ci.context {
+                d.ci_failures.retain(|f| &f.name != name);
+            }
+            if d.ci_failures.is_empty() && !(d.ci == CiState::Success && d.ci_sha == ci.head_sha) {
                 d.ci = CiState::Unknown;
+            } else if !d.ci_failures.is_empty() {
+                // Another check still fails: a success elsewhere does not clear the failure.
+                d.ci = CiState::Failure;
             }
         }
     }
     d.ci_sha = ci.head_sha.clone();
     match s.phase {
         AwaitingChanges | ReadyToMerge => {
-            evaluate(Fx::new(ctx, ev), s.phase, d, "ci status changed", true)
+            evaluate_ci(ctx, Fx::new(ctx, ev), s.phase, d, "ci status changed", true)
         }
         _ => Transition::to(st(s.phase, d), Vec::new(), "ci status recorded"),
     }
@@ -1726,7 +1869,7 @@ fn job_succeeded(
                 }
                 d.auto_capped = ctx.config.max_auto_rounds > 0;
             }
-            evaluate(fx, Reviewing, d, "review posted", true)
+            evaluate_ci(ctx, fx, Reviewing, d, "review posted", true)
         }
         (AddressingComments, Decision::Done) => {
             fx.comment(out.body);
@@ -1752,7 +1895,7 @@ fn job_succeeded(
                         start_review(ctx, &mut fx, &d);
                         Transition::to(st(Reviewing, d), fx.finish(), "fixes pushed")
                     } else {
-                        evaluate(fx, AddressingComments, d, "comments addressed", true)
+                        evaluate_ci(ctx, fx, AddressingComments, d, "comments addressed", true)
                     }
                 }
             }
@@ -1772,7 +1915,7 @@ fn job_succeeded(
                 .and_then(Value::as_str)
                 .filter(|s| !s.is_empty())
             {
-                d.head_sha = sha.to_string();
+                set_head(&mut d, sha.to_string());
             }
             d.trigger_comment_id = None;
             d.trigger_comment_kind = CommentKind::default();
@@ -1785,7 +1928,13 @@ fn job_succeeded(
                     start_review(ctx, &mut fx, &d);
                     Transition::to(st(Reviewing, d), fx.finish(), "conflicts resolved")
                 }
-                None => Transition::to(st(AwaitingChanges, d), fx.finish(), "nothing to merge"),
+                None => match maybe_start_ci_fix(ctx, fx, d) {
+                    Ok(t) => t,
+                    Err(back) => {
+                        let (fx, d) = *back;
+                        Transition::to(st(AwaitingChanges, d), fx.finish(), "nothing to merge")
+                    }
+                },
             }
         }
         (ResolvingConflicts, Decision::Blocked) => {
