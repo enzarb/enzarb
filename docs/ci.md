@@ -37,10 +37,19 @@ The monorepo's GitHub Actions setup (root `.github/`) follows these rules. Each 
 | pre-commit | `mise run lint` in `helm/` | `ci-helm.yml` |
 | pre-push | `cargo clippy --all-targets <cargo-args> -- -D warnings` | `_rust.yml` `clippy` |
 | pre-push | `cargo test <cargo-args>` | `_rust.yml` `test` (CI uses nextest plus `cargo test --doc`; the hook runs plain `cargo test`, which includes doctests) |
-
-`<cargo-args>` mirror each component's `cargo-args` in its `ci-<dir>.yml`: `--workspace --all-features` (connectors), `--all-features` (operator), `--workspace` (workflows), `--locked` (sandbox-container), none for the rest. Update `lefthook.yml` when those change.
 | pre-push | `npm run check`, server unit tests in `ui/` | `ci-ui.yml` `check`, `test-server` |
 | pre-push | `mise run compat` in `helm/` | `ci-helm.yml` |
+| pre-push | `scripts/monorepo/test-affected.sh` | `ci-monorepo.yml` |
+
+The pre-push hook runs `scripts/monorepo/pre-push.sh`, which checks only the components reported by `affected.sh` (below). `<cargo-args>` mirror each component's `cargo-args` in its `ci-<dir>.yml`: `--workspace --all-features` (connectors), `--all-features` (operator), `--workspace` (workflows), `--locked` (sandbox-container), none for the rest. Update `scripts/monorepo/pre-push.sh` when those change.
+
+## Affected components
+`scripts/monorepo/affected.sh <base>` (or `--files-from -` with paths on stdin) maps `git diff --name-only <base>...HEAD` to components, one per line in dependency order. Its rule table is the same as the `paths:` filters of `ci-<component>.yml`, including downstream components via path deps (e.g. `proto/**` also affects `workflows`, `sandbox-proxy`, `sandbox-container` and `ui`), and the shared workflow files (`_rust.yml`, `_docker.yml`). `monorepo` is a pseudo-component for the plumbing itself (`scripts/**`, `.mise/tasks/**`, any workflow). Files matching nothing (`docs/**`, root files) affect no component. The pre-push hook and the reviewer prompt use it; CI keeps its own `paths:` filters.
+
+`scripts/monorepo/test-affected.sh` runs in `ci-monorepo.yml` (with `shellcheck` and `actionlint`) and fails when the two drift apart: it parses every `ci-*.yml` `on.push.paths` (and checks `pull_request.paths` is the same list), turns each filter into a probe path, and requires `affected.sh` to print exactly the components whose filters match it. When you change a `paths:` filter, update the table in `affected.sh` in the same PR.
+
+## Test Postgres
+Integration tests that need Postgres (`workflows`, `connectors` receiver, `realtime`, `enzarb-workflows` migrate) use one server per run when `ENZARB_TEST_PG_URL` is set, and one testcontainer per test otherwise. `_rust.yml` takes `postgres: true` (set for workflows, connectors and realtime): it starts one `postgres:18` before the test step and exports the URL. The engine `testing` fixture (`TestDb`) then builds a migrated `enzarb_template` database once (guarded by an advisory lock, rebuilt when the migration checksum changes) and clones it per test.
 
 ## Docker images
 - **Build once per commit.** One `docker` job in `ci.yml`:

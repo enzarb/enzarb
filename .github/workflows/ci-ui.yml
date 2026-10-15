@@ -2,14 +2,19 @@ name: ci-ui
 on:
   push:
     branches: [main]
-    paths: &paths
+    paths:
       - 'ui/**'
       - 'proto/**'
       - .github/workflows/ci-ui.yml
       - .github/workflows/_docker.yml
       - .github/actions/ui-install/**
   pull_request:
-    paths: *paths
+    paths:
+      - 'ui/**'
+      - 'proto/**'
+      - .github/workflows/ci-ui.yml
+      - .github/workflows/_docker.yml
+      - .github/actions/ui-install/**
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

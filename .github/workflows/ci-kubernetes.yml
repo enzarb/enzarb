@@ -2,11 +2,13 @@ name: ci-kubernetes
 on:
   push:
     branches: [main]
-    paths: &paths
+    paths:
       - 'kubernetes/**'
       - .github/workflows/ci-kubernetes.yml
   pull_request:
-    paths: *paths
+    paths:
+      - 'kubernetes/**'
+      - .github/workflows/ci-kubernetes.yml
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

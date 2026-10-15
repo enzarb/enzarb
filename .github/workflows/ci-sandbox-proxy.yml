@@ -2,7 +2,7 @@ name: ci-sandbox-proxy
 on:
   push:
     branches: [main]
-    paths: &paths
+    paths:
       - 'sandbox-proxy/**'
       - 'proto/**'
       - 'operator/**'
@@ -10,7 +10,13 @@ on:
       - .github/workflows/_rust.yml
       - .github/workflows/_docker.yml
   pull_request:
-    paths: *paths
+    paths:
+      - 'sandbox-proxy/**'
+      - 'proto/**'
+      - 'operator/**'
+      - .github/workflows/ci-sandbox-proxy.yml
+      - .github/workflows/_rust.yml
+      - .github/workflows/_docker.yml
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

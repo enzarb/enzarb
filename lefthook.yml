@@ -53,82 +53,10 @@ pre-commit:
       glob: "*"
       run: mise run lint
 
+# Only the components affected by the push (scripts/monorepo/affected.sh, same paths as the CI
+# `paths:` filters, downstream components included) are checked; the per-component commands are
+# in scripts/monorepo/pre-push.sh.
 pre-push:
-  parallel: true
   commands:
-    clippy-proto:
-      root: proto/
-      glob: "*.{rs,toml,lock}"
-      run: cargo clippy --all-targets -- -D warnings
-    clippy-operator:
-      root: operator/
-      glob: "*.{rs,toml,lock}"
-      run: cargo clippy --all-targets --all-features -- -D warnings
-    clippy-connectors:
-      root: connectors/
-      glob: "*.{rs,toml,lock}"
-      run: cargo clippy --all-targets --workspace --all-features -- -D warnings
-    clippy-workflows:
-      root: workflows/
-      glob: "*.{rs,toml,lock}"
-      run: cargo clippy --all-targets --workspace -- -D warnings
-    clippy-realtime:
-      root: realtime/
-      glob: "*.{rs,toml,lock}"
-      run: cargo clippy --all-targets -- -D warnings
-    clippy-sandbox-proxy:
-      root: sandbox-proxy/
-      glob: "*.{rs,toml,lock}"
-      run: cargo clippy --all-targets -- -D warnings
-    clippy-sandbox-container:
-      root: sandbox-container/
-      glob: "*.{rs,toml,lock}"
-      run: cargo clippy --all-targets --locked -- -D warnings
-    clippy-updater:
-      root: updater/
-      glob: "*.{rs,toml,lock}"
-      run: cargo clippy --all-targets -- -D warnings
-    test-proto:
-      root: proto/
-      glob: "*.{rs,toml,lock}"
-      run: cargo test
-    test-operator:
-      root: operator/
-      glob: "*.{rs,toml,lock}"
-      run: cargo test --all-features
-    test-connectors:
-      root: connectors/
-      glob: "*.{rs,toml,lock}"
-      run: cargo test --workspace --all-features
-    test-workflows:
-      root: workflows/
-      glob: "*.{rs,toml,lock}"
-      run: cargo test --workspace
-    test-realtime:
-      root: realtime/
-      glob: "*.{rs,toml,lock}"
-      run: cargo test
-    test-sandbox-proxy:
-      root: sandbox-proxy/
-      glob: "*.{rs,toml,lock}"
-      run: cargo test
-    test-sandbox-container:
-      root: sandbox-container/
-      glob: "*.{rs,toml,lock}"
-      run: cargo test --locked
-    test-updater:
-      root: updater/
-      glob: "*.{rs,toml,lock}"
-      run: cargo test
-    ui-check:
-      root: ui/
-      glob: "*"
-      run: '[ -d node_modules ] || { echo "ui: node_modules missing (run npm ci), skipping check"; exit 0; }; npm run check'
-    ui-test:
-      root: ui/
-      glob: "*"
-      run: '[ -d node_modules ] || { echo "ui: node_modules missing (run npm ci), skipping tests"; exit 0; }; npm run test:unit -- --run --project server'
-    helm-compat:
-      root: helm/
-      glob: "*"
-      run: mise run compat
+    affected:
+      run: scripts/monorepo/pre-push.sh

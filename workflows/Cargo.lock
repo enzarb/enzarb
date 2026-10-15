@@ -1159,7 +1159,6 @@ dependencies = [
  "kube",
  "rustls",
  "sqlx",
- "testcontainers-modules",
  "thiserror",
  "tokio",
  "tracing",
