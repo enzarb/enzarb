@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Sandbox image: sandbox-init (pid 1), node + the ACP adapter, mise, Docker (dockerd + CLI, buildx, compose; dockerd is supervised by sandbox-init) and a C toolchain. Language toolchains come from mise at runtime.
+# Sandbox image: sandbox-init (pid 1), node + the ACP adapter, mise, Docker (dockerd + CLI, buildx, compose; dockerd is supervised by sandbox-init), a C toolchain, sccache (RUSTC_WRAPPER, cache on the PVC) and Chromium for Playwright (/opt/ms-playwright). Language toolchains come from mise at runtime.
 # Build from the monorepo root (in-repo path dep on proto/):
 #   docker build -f sandbox-container/Dockerfile -t enzarb-sandbox .
 FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
@@ -99,12 +99,53 @@ RUN set -e; \
     chmod 0755 /out/plugins/*; \
     /out/bin/docker --version; /out/bin/dockerd --version; /out/bin/runc --version
 
+# sccache stage: the static musl release, checked against the sha256 file published next to it.
+FROM ubuntu:26.04 AS sccache
+ARG SCCACHE_VERSION=v0.10.0
+ARG TARGETARCH
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN set -e; \
+    case "$TARGETARCH" in amd64) a=x86_64;; arm64) a=aarch64;; *) echo "unsupported arch $TARGETARCH"; exit 1;; esac; \
+    d="sccache-${SCCACHE_VERSION}-${a}-unknown-linux-musl"; \
+    base="https://github.com/mozilla/sccache/releases/download/${SCCACHE_VERSION}"; \
+    curl --retry 5 --retry-all-errors -fsSLO "${base}/${d}.tar.gz"; \
+    curl --retry 5 --retry-all-errors -fsSLO "${base}/${d}.tar.gz.sha256"; \
+    echo "$(cut -d' ' -f1 "${d}.tar.gz.sha256")  ${d}.tar.gz" | sha256sum -c -; \
+    tar -xzf "${d}.tar.gz" --strip-components=1 --no-same-owner "${d}/sccache"; \
+    install -m 0755 sccache /usr/local/bin/sccache; \
+    /usr/local/bin/sccache --version
+
+# Playwright stage: Chromium for the ui browser tests, installed into /opt/ms-playwright. Keep
+# PLAYWRIGHT_VERSION equal to the playwright version in ui/package-lock.json
+# (scripts/check-playwright-version.sh, run in CI).
+FROM node AS playwright
+ARG PLAYWRIGHT_VERSION=1.64.0
+ARG TARGETARCH
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+RUN npm install -g --fetch-retries=8 --fetch-retry-mintimeout=2000 "playwright@${PLAYWRIGHT_VERSION}"
+# Installs both chromium and chromium-headless-shell; --with-deps is not used (the final stage installs the libs).
+# Playwright does not know Ubuntu 26.04 and refuses to pick a build; use its 24.04 one.
+RUN set -e; \
+    case "$TARGETARCH" in amd64) a=x64;; arm64) a=arm64;; *) echo "unsupported arch $TARGETARCH"; exit 1;; esac; \
+    PLAYWRIGHT_HOST_PLATFORM_OVERRIDE="ubuntu24.04-${a}" playwright install chromium
+RUN chmod -R a+rX /opt/ms-playwright && ls /opt/ms-playwright
+
 FROM ubuntu:26.04
 ARG TARGETARCH
 ENV DEBIAN_FRONTEND=noninteractive
+# The second line is Chromium's runtime libraries (Playwright's own list, by hand: --with-deps does not know this release).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git curl ca-certificates openssh-client build-essential pkg-config libssl-dev procps \
+        libnss3 libnspr4 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libdrm2 libgbm1 libxkbcommon0 \
+        libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libpango-1.0-0 libcairo2 libasound2t64 \
+        libx11-6 libxcb1 libxext6 libdbus-1-3 libglib2.0-0t64 fonts-liberation fonts-noto-color-emoji \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
+
+COPY --from=sccache /usr/local/bin/sccache /usr/local/bin/sccache
+# Chromium lives outside /workspace: the PVC mount would shadow it.
+COPY --from=playwright /opt/ms-playwright /opt/ms-playwright
 
 # node binary only (no npm), the adapter tree and the glibc claude binary, all on PATH.
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
@@ -132,7 +173,7 @@ RUN set -e; \
 # uid/gid 1000 matches the operator's securityContext; ubuntu images ship an `ubuntu` user at 1000.
 RUN userdel -r ubuntu 2>/dev/null || true; \
     groupadd -g 1000 enzarb && useradd -m -u 1000 -g 1000 -s /bin/bash enzarb \
-    && mkdir -p /workspace/repos /workspace/worktrees /workspace/.enzarb /workspace/.toolchains \
+    && mkdir -p /workspace/repos /workspace/worktrees /workspace/.enzarb /workspace/.toolchains /workspace/.cache \
     && chown -R 1000:1000 /workspace
 
 # No `USER`: pid 1 (sandbox-init) starts as root to supervise dockerd, and drops every child it spawns
@@ -151,6 +192,12 @@ ENV HOME=/home/enzarb \
     ENZARB_MISE_BIN=mise \
     MISE_TRUSTED_CONFIG_PATHS=/workspace \
     MISE_IDIOMATIC_VERSION_FILE_ENABLE_TOOLS=rust \
+    RUSTC_WRAPPER=sccache \
+    SCCACHE_DIR=/workspace/.cache/sccache \
+    SCCACHE_CACHE_SIZE=20G \
+    npm_config_cache=/workspace/.cache/npm \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
     PATH=/usr/local/bin:/workspace/.toolchains/mise/shims:/usr/bin:/bin:/usr/sbin:/sbin
 
 COPY --from=build /sandbox-init /usr/local/bin/sandbox-init

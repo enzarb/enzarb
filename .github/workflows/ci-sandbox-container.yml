@@ -5,6 +5,7 @@ on:
     paths:
       - 'sandbox-container/**'
       - 'proto/**'
+      - ui/package-lock.json
       - .github/workflows/ci-sandbox-container.yml
       - .github/workflows/_rust.yml
       - .github/workflows/_docker.yml
@@ -12,6 +13,7 @@ on:
     paths:
       - 'sandbox-container/**'
       - 'proto/**'
+      - ui/package-lock.json
       - .github/workflows/ci-sandbox-container.yml
       - .github/workflows/_rust.yml
       - .github/workflows/_docker.yml
@@ -21,6 +23,11 @@ concurrency:
 permissions:
   contents: read
 jobs:
+  playwright-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash sandbox-container/scripts/check-playwright-version.sh
   ci:
     uses: ./.github/workflows/_rust.yml
     permissions:
