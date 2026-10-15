@@ -61,7 +61,11 @@ fn shared_item_conditions() {
         if !case[1].is_null() {
             s.outputs.insert(ITEM.into(), case[1].clone());
         }
-        let want = if case[3].as_bool().unwrap() { "yes" } else { "no" };
+        let want = if case[3].as_bool().unwrap() {
+            "yes"
+        } else {
+            "no"
+        };
         assert_eq!(
             advance(&d, &mut s, case[0].clone()),
             Next::Node(want.into()),
