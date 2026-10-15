@@ -9,13 +9,13 @@ Nothing collects sandbox CPU, memory, storage or disk I/O today (gap 11, epic #1
 - sandbox-init reads the cgroup v2 files of **its own cgroup** (path from `/proc/self/cgroup`, unified mount at `/sys/fs/cgroup`): `cpu.stat` (`usage_usec`, and `throttled_usec` if present), `memory.current`, `memory.max` (`max` means no limit), `io.stat` (`rbytes` and `wbytes` summed over all devices), and `statfs` of `/workspace` for used and total bytes.
 - dockerd is supervised inside the same container (ADR-0016), so its containers are descendants in the same cgroup subtree. The container's own cgroup therefore includes them; no per-container breakdown is made.
 - Values are **raw**: cumulative counters (`cpu_usec`, `cpu_throttled_usec`, `io_read_bytes`, `io_write_bytes`) or gauges (`mem_bytes`, `mem_limit_bytes`, `storage_used_bytes`, `storage_total_bytes`). Each reply carries `ts` (unix ms from the sandbox's clock) and `boot_id` (random, new per sandbox-init start). Rates are derived on read. sandbox-init keeps no history.
-- Under gVisor (ADR-0012) cgroup files may be missing or partial. Every field is optional: absent means "not reported", never 0 (as for `Usage`), and the poller stores NULL. This is **unverified**: `sandbox-stats` must check the real behaviour on the target runtimes (gVisor and kata) and record it in `docs/contracts.md` section 3.
+- Under gVisor (ADR-0012) cgroup files may be missing or partial. Every field is optional: absent means "not reported", never 0 (as for `Usage`), and the poller stores NULL. This is **unverified**: `sandbox-stats` must check the real behaviour under gVisor, the only runtime (ADR-0012) and record it in `docs/contracts.md` section 3.
 
 ### 2. API shape (`proto/`)
 - A new **additive CTRL request/reply on channel 0**, the same pattern as `credential_status`/`credential_state`:
   - `stats_request` (client to server, no fields);
   - `stats` (server to client): `{ts, boot_id, cpu_usec?, cpu_throttled_usec?, mem_bytes?, mem_limit_bytes?, io_read_bytes?, io_write_bytes?, storage_used_bytes?, storage_total_bytes?}`. All numbers are non-negative integers.
-- Gated by a new `welcome.features` entry `stats`. A client sends `stats_request` only after the `welcome` listed it: an old sandbox answers `unknown_message`, and an old proxy closes the socket on a frame it cannot decode (the "old proxy" hazard in the protocol spec).
+- Gated by a new `welcome.features` entry `stats`. A client sends `stats_request` only after the `welcome` listed it: an old sandbox answers `unknown_message`, and an old proxy closes the socket on a frame it cannot decode (the "old proxy" hazard in the protocol spec). The hazard applies to browser clients, which go through sandbox-proxy. The poller is an executor-side client that connects to the sandbox directly, as run dispatch does, so no proxy sits in its path; the feature gate still protects it from old sandboxes.
 - Protocol version stays 1 (ADR-0003). No new channel kind: a reply is one small JSON object and needs no flow control.
 - **Auth:** the existing bearer token on the websocket upgrade. The poller resolves the target and token exactly as run dispatch does (`SandboxResolver`) and says `client: "executor"` in `hello`. No extra credential travels in the protocol. sandbox-proxy does not relay `stats` to browsers; the UI reads Postgres.
 
@@ -41,7 +41,7 @@ Table `workflows.sandbox_stats` (migration in `workflows/migrations`):
 
 - Primary key `(project, sandbox, at)` (so a retried insert is `ON CONFLICT DO NOTHING`); index `(project, at)`.
 - **Retention:** 30 days by default (`ENZARB_STATS_RETENTION`). The poller deletes older rows in batches (for example 10 000 per statement) once an hour.
-- **Growth bound:** at 30 s that is about 86 000 rows per sandbox over 30 days, about 150 bytes each, so roughly 13 MB. Besides the 15 s interval floor, the hourly prune caps each `(project, sandbox)` at 150 000 rows by deleting the oldest. Projects that no longer exist leave rows that age out by retention.
+- **Growth bound:** at 30 s that is about 86 000 rows per sandbox over 30 days, about 150 bytes each, so roughly 13 MB. Besides the 15 s interval floor, the hourly prune caps each `(project, sandbox)` at 150 000 rows by deleting the oldest. At the 15 s floor, 30 days is about 172 800 rows, so the cap shortens retention to about 26 days at the fastest interval; that is accepted, and the cap is a safety bound rather than the retention rule. Projects that no longer exist leave rows that age out by retention.
 - **Contract (additive, `workflows_api`):** read-only view `sandbox_stats_v` (same columns, ordered by `at`) and a function `workflows_api.sandbox_stats_window(p_project text, p_from timestamptz, p_to timestamptz, p_buckets int)`. `enzarb_ui` gets `SELECT` on the view and `EXECUTE` on the function and nothing on the table; the UI checks project access before calling, as for the other views.
 
 ### 5. Window query (downsampling)
@@ -50,6 +50,7 @@ Table `workflows.sandbox_stats` (migration in `workflows/migrations`):
 - **Counters** (cpu, io): for each pair of consecutive samples of the same `(sandbox, boot_id)` the rate is `delta / Δt`: CPU in cores (`Δusec / (Δt in µs)`), I/O in bytes per second. The interval belongs to the bucket of its later sample. A bucket returns `avg` and `max` of its rates.
 - A **negative delta** (counter reset), a change of `boot_id` or sandbox, or a NULL on either side drops that interval; it is never shown as a negative value or a spike. An interval longer than 3x the configured poll interval is a gap: it is dropped, not averaged across.
 - A bucket without usable samples returns **no row**, and the UI draws a gap.
+- `cpu_throttled_avg` is in cores, like `cpu_cores_*`: the delta of `cpu_throttled_usec` divided by the elapsed microseconds, so 0.5 means half a core's worth of time spent throttled.
 - Returned columns (append-only): `bucket_start`, `samples`, `cpu_cores_avg`, `cpu_cores_max`, `cpu_throttled_avg`, `mem_bytes_avg`, `mem_bytes_max`, `mem_limit_bytes`, `io_read_bps_avg`, `io_read_bps_max`, `io_write_bps_avg`, `io_write_bps_max`, `storage_used_bytes_avg`, `storage_used_bytes_max`, `storage_total_bytes`.
 
 ### 6. Acceptance tests of the follow-ups
