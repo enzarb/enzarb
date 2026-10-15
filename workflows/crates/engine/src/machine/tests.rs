@@ -49,6 +49,7 @@ fn ctx_for(number: u64, perm: Permission) -> Ctx {
         stack_parent: None,
         epic_parent: None,
         graph: None,
+        live_agent_jobs: false,
     }
 }
 

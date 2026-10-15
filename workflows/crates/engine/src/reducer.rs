@@ -160,13 +160,7 @@ impl Reducer {
         project: &ProjectInfo,
     ) -> Option<GraphSource> {
         let source = self.definitions.as_ref()?;
-        let EventPayload::Connector(e) = &ev.payload else {
-            return None;
-        };
-        if e.event_type != EventType::WorkItemOpened
-            || e.data.item.kind != ItemKind::Issue
-            || !project.triggers.issues
-        {
+        if !project.triggers.issues || !self.may_use_graph(key, ev).await {
             return None;
         }
         let fetch = source.fetch(&key.repo, &project.default_branch, "issue");
@@ -182,6 +176,51 @@ impl Reducer {
                     "reading the workflow definition timed out; using the built-in workflow");
                 None
             }
+        }
+    }
+
+    /// Whether `ev` could start or move this item onto the issue graph: an issue opening,
+    /// an approval of a compiled issue's plan, or a retry of a failed or stale compiled issue
+    /// or of a failed graph task. Reads the item outside the event's transaction (a stale read
+    /// only costs or saves one definition lookup; the transition decides).
+    async fn may_use_graph(&self, key: &WorkItemKey, ev: &EngineEvent) -> bool {
+        let opened = |e: &enzarb_connector::Event| {
+            e.event_type == EventType::WorkItemOpened && e.data.item.kind == ItemKind::Issue
+        };
+        let approval = match &ev.payload {
+            EventPayload::Connector(e) => e.event_type == EventType::ApprovalGranted,
+            EventPayload::Ui(u) => u.action == machine::UiActionKind::Approve,
+            _ => false,
+        };
+        let retry = match &ev.payload {
+            EventPayload::Connector(e) => e.event_type == EventType::Mentioned,
+            EventPayload::Ui(u) => u.action == machine::UiActionKind::Retry,
+            _ => false,
+        };
+        if let EventPayload::Connector(e) = &ev.payload
+            && opened(e)
+        {
+            return true;
+        }
+        if !approval && !retry {
+            return false;
+        }
+        let row: Option<(String, String, bool)> = sqlx::query_as(
+            "SELECT workflow, state, COALESCE((state_data->>'epic')::bool, false)
+             FROM work_items WHERE key = $1",
+        )
+        .bind(key.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .unwrap_or(None);
+        let Some((workflow, state, epic)) = row else {
+            return false;
+        };
+        match (workflow.as_str(), state.as_str()) {
+            ("issue", "AwaitingApproval") => approval && !epic,
+            ("issue", "Failed" | "Stale") => retry && !epic,
+            (w, "Failed") => retry && w.starts_with(machine::graph::PREFIX),
+            _ => false,
         }
     }
 
@@ -445,6 +484,18 @@ impl Reducer {
             default_branch: project.default_branch.clone(),
             open_dependencies: crate::dependencies::open_dependencies(&mut tx, &key).await?,
             graph: prep.graph.clone(),
+            live_agent_jobs: match &existing {
+                Some(w) => {
+                    sqlx::query_scalar(
+                        "SELECT EXISTS (SELECT 1 FROM jobs WHERE work_item_id = $1
+                       AND status IN ('queued', 'running') AND kind LIKE 'agent\\_%')",
+                    )
+                    .bind(w.id)
+                    .fetch_one(&mut *tx)
+                    .await?
+                }
+                None => false,
+            },
         };
 
         let state = match &existing {
@@ -493,12 +544,14 @@ impl Reducer {
         if t.accepted && state_changed {
             sqlx::query(
                 "UPDATE work_items SET state = $2, state_data = $3, workflow_version = $4,
-                        updated_at = now() WHERE id = $1",
+                        workflow = $5, updated_at = now() WHERE id = $1",
             )
             .bind(work_item_id)
             .bind(t.next.state_name())
             .bind(t.next.state_data())
             .bind(WORKFLOW_VERSION)
+            // Changes only when a compiled `issue` item moves to `graph:issue`.
+            .bind(t.next.workflow_name())
             .execute(&mut *tx)
             .await?;
         }

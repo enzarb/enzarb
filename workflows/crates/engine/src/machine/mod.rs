@@ -491,6 +491,9 @@ pub struct Ctx {
     /// For the opening event of an issue: the graph workflow definition read from the
     /// default branch (`.enzarb/workflows/issue.yaml`, ADR-0020), when the repository has one.
     pub graph: Option<graph::GraphSource>,
+    /// The work item has a queued or running agent job (read by the reducer). An item with
+    /// one is never moved to a graph workflow.
+    pub live_agent_jobs: bool,
 }
 
 impl Ctx {
@@ -809,7 +812,8 @@ pub fn transition(ctx: &Ctx, state: &WorkflowState, ev: &EngineEvent) -> Transit
             },
             _ => Transition::reject(state, "event does not start this workflow"),
         },
-        WorkflowState::Issue(s) => issue::step(ctx, s, ev),
+        // A human approval or retry may move it to the repository's issue graph (ADR-0020).
+        WorkflowState::Issue(s) => graph::adopt_or(ctx, s, ev, issue::step),
         WorkflowState::ChangeRequest(s) => change_request::step(ctx, s, ev),
         WorkflowState::Mention(s) => mention::step(ctx, s, ev),
         WorkflowState::Graph(s) => graph::step(ctx, s, ev),
