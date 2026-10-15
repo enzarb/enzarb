@@ -7,8 +7,8 @@
 #      component, and for every probe path (taken from all filters) affected.sh must print exactly
 #      the components whose CI filters match it. Drift in either direction fails.
 #
-# The workflow files are parsed without yq: `on.push.paths` is a block list (usually anchored as
-# `&paths`), and `on.pull_request.paths` must be the alias `*paths` or an identical list.
+# The workflow files are parsed without yq: `on.push.paths` and `on.pull_request.paths` are block
+# lists and must be identical (no YAML anchors: actionlint rejects them).
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."

@@ -2,11 +2,13 @@ name: ci-helm
 on:
   push:
     branches: [main]
-    paths: &paths
+    paths:
       - 'helm/**'
       - .github/workflows/ci-helm.yml
   pull_request:
-    paths: *paths
+    paths:
+      - 'helm/**'
+      - .github/workflows/ci-helm.yml
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
