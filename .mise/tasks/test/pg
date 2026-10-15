@@ -2,8 +2,22 @@
 #MISE description="Start (or reuse) one Postgres 18 for the test suites and print the ENZARB_TEST_PG_URL to export"
 # One server per run instead of one container per test (docs/dev.md, "Shared test Postgres").
 #   eval "$(mise run test:pg)"     # then: cargo nextest run / cargo test in workflows/, connectors/, realtime/
-# Env: ENZARB_TEST_PG_NAME (container, default enzarb-test-pg), ENZARB_TEST_PG_PORT (host port, default 55432).
+# Contract: stdout is exactly one line, `export ENZARB_TEST_PG_URL=...`; everything else goes to stderr.
+# Safe to call repeatedly (reuses the container), so run preparation can call it once per sandbox.
+# Env: ENZARB_TEST_PG_URL (already set: printed unchanged, Docker untouched; use it for a sidecar or external server),
+#      ENZARB_TEST_PG_NAME (container, default enzarb-test-pg), ENZARB_TEST_PG_PORT (host port, default 55432).
 set -euo pipefail
+
+if [ -n "${ENZARB_TEST_PG_URL:-}" ]; then
+  echo "using ENZARB_TEST_PG_URL as given" >&2
+  echo "export ENZARB_TEST_PG_URL=$ENZARB_TEST_PG_URL"
+  exit 0
+fi
+
+if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+  echo "docker is not available (missing, or the daemon is unreachable); start it, or set ENZARB_TEST_PG_URL to an existing Postgres" >&2
+  exit 1
+fi
 
 name=${ENZARB_TEST_PG_NAME:-enzarb-test-pg}
 port=${ENZARB_TEST_PG_PORT:-55432}
