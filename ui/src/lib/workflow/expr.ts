@@ -293,3 +293,14 @@ export function evalExpr(e: Expr, ctx: Json): boolean {
 			return evalExpr(e.l, ctx) || evalExpr(e.r, ctx);
 	}
 }
+
+/**
+ * What a condition sees after a node ran: its output, then the work item's facts (`_item`) for
+ * keys the output lacks (`advance` in the Rust crate).
+ */
+export function conditionContext(output: Json, item: Json | undefined): Json {
+	const isObj = (v: Json | undefined): v is { [k: string]: Json } =>
+		v !== null && v !== undefined && typeof v === 'object' && !Array.isArray(v);
+	if (!isObj(output) || !isObj(item)) return output;
+	return { ...item, ...output };
+}

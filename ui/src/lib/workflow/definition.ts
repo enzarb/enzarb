@@ -16,8 +16,13 @@ export const ELSE = 'else';
 export const KNOWN_ACTIONS = [
 	'post_comment',
 	'open_change_request',
-	'merge_change_request'
+	'merge_change_request',
+	'create_sub_issues'
 ] as const;
+/** The action that only a `wait` listing `approval` may lead to. */
+export const CREATE_ACTION = 'create_sub_issues';
+/** Reserved output key with the work item's facts; conditions fall back to it (evaluation only). */
+export const ITEM = '_item';
 export const MERGE_ACTION = 'merge_change_request';
 export const KNOWN_EVENTS = [
 	'comment',
@@ -26,6 +31,7 @@ export const KNOWN_EVENTS = [
 	'review',
 	'merge_requested',
 	'dependencies_done',
+	'children_done',
 	'timer'
 ] as const;
 export const NODE_TYPES = ['command', 'agent', 'wait', 'action', 'end'] as const;
@@ -39,7 +45,8 @@ export const NAMED_PROMPTS = [
 	'review',
 	'address_comments',
 	'resolve_conflicts',
-	'task'
+	'task',
+	'plan_epic'
 ] as const;
 /** Where prompt files live in a repository. */
 export const PROMPT_DIR = '.enzarb/prompts/';
@@ -245,7 +252,7 @@ export function parseWorkflow(src: string): { doc: Document; def: Definition } {
 // --- validation -----------------------------------------------------------------------------
 
 function validId(id: string): boolean {
-	return /^[a-z0-9_-]{1,64}$/.test(id);
+	return /^[a-z0-9_-]{1,64}$/.test(id) && !id.startsWith('_');
 }
 
 function promptText(p: Prompt | undefined): string {
@@ -285,7 +292,8 @@ export function validate(d: Definition): Problem[] {
 	if (!map.has(d.start)) push(`start node \`${d.start}\` does not exist`);
 	for (const n of nodes) {
 		const id = n.id;
-		if (!validId(id)) push(`node id \`${id}\` must match [a-z0-9_-]{1,64}`, id);
+		if (!validId(id))
+			push(`node id \`${id}\` must match [a-z0-9_-]{1,64} and not start with \`_\``, id);
 		if (n.type === 'command' && (n.run ?? '').trim() === '')
 			push(`node \`${id}\`: \`run\` is empty`, id);
 		if (n.type === 'agent') {
@@ -355,6 +363,22 @@ export function validate(d: Definition): Problem[] {
 			if (!gated)
 				push(
 					`node \`${n.id}\`: \`${MERGE_ACTION}\` (\`${m.id}\`) is reachable only through a wait on \`merge_requested\``,
+					n.id
+				);
+		}
+	}
+	// The approval gate: sub-issues are created only after a wait that takes an approval.
+	for (const c of nodes) {
+		if (!(c.type === 'action' && c.action === CREATE_ACTION)) continue;
+		if (c.id === d.start)
+			push(`node \`${c.id}\`: \`${CREATE_ACTION}\` cannot be the start node`, c.id);
+		for (const n of nodes) {
+			if (!edgesOf(n).includes(c.id)) continue;
+			const gated =
+				n.type === 'wait' && (n.events ?? []).includes('approval') && n.on_limit !== c.id;
+			if (!gated)
+				push(
+					`node \`${n.id}\`: \`${CREATE_ACTION}\` (\`${c.id}\`) is reachable only through a wait on \`approval\``,
 					n.id
 				);
 		}

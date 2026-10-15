@@ -8,13 +8,14 @@ import {
 	validate,
 	type Definition
 } from './definition.ts';
-import { evalExpr, parseExpr, type Json } from './expr.ts';
+import { conditionContext, evalExpr, parseExpr, type Json } from './expr.ts';
 
 const root = new URL('../../../../', import.meta.url);
 const fixtures = JSON.parse(
 	readFileSync(new URL('workflows/crates/graph/tests/fixtures/validate.json', root), 'utf8')
 ) as {
 	cases: { name: string; yaml: string; parse_error: boolean; errors: string[] }[];
+	item_conditions: [Json, Json, string, boolean][];
 	expressions: { ctx: Json; eval: [string, boolean][]; reject: string[] };
 };
 const EXAMPLE = readFileSync(new URL('docs/workflows/examples/issue.yaml', root), 'utf8');
@@ -41,6 +42,13 @@ describe('shared fixtures (workflows/crates/graph/tests/fixtures/validate.json)'
 	it('evaluates conditions', () => {
 		for (const [src, want] of fixtures.expressions.eval)
 			expect(evalExpr(parseExpr(src), fixtures.expressions.ctx), src).toBe(want);
+	});
+
+	it('falls back to _item facts', () => {
+		for (const [output, item, cond, want] of fixtures.item_conditions)
+			expect(evalExpr(parseExpr(cond), conditionContext(output, item ?? undefined)), cond).toBe(
+				want
+			);
 	});
 
 	it('rejects conditions', () => {

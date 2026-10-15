@@ -19,6 +19,9 @@ describe('built-in prompt copy', () => {
 		const body = src.slice(src.indexOf('pub fn named_prompt'));
 		const arms = body.slice(0, body.indexOf('_ => return None'));
 		const names = [...arms.matchAll(/"([a-z_]+)" =>/g)].map((m) => m[1]);
+		// `render_graph_prompt` resolves `plan_epic` itself (the plan template, epic flavour).
+		expect(src).toContain('if prompt.trim() == "plan_epic"');
+		names.push('plan_epic');
 		expect(names.sort()).toEqual([...NAMED_PROMPTS].sort());
 	});
 });

@@ -1,7 +1,7 @@
 //! Shared validator fixtures: `tests/fixtures/validate.json` is also run by the UI's TypeScript
 //! port (`ui/src/lib/workflow/definition.spec.ts`), so the two validators cannot drift.
 
-use enzarb_graph::{Definition, Error, expr, validate};
+use enzarb_graph::{Definition, Error, GraphState, ITEM, Next, advance, expr, validate};
 use serde_json::Value;
 
 const FIXTURES: &str = include_str!("fixtures/validate.json");
@@ -43,6 +43,30 @@ fn shared_validation_cases() {
                 "{name}: wanted `{w}` in {problems:?}"
             );
         }
+    }
+}
+
+/// `[output, _item facts or null, condition, taken]`: conditions fall back to `_item`.
+#[test]
+fn shared_item_conditions() {
+    let f: Value = serde_json::from_str(FIXTURES).unwrap();
+    for case in f["item_conditions"].as_array().unwrap() {
+        let cond = case[2].as_str().unwrap();
+        let src = format!(
+            "version: 1\nname: t\non: [x]\nstart: a\nnodes:\n  a: {{type: agent, prompt: x, next: {{{}: yes, else: no}}}}\n  yes: {{type: end, status: done}}\n  no: {{type: end, status: failed}}\n",
+            serde_json::to_string(cond).unwrap()
+        );
+        let d = enzarb_graph::load(&src).unwrap();
+        let (mut s, _) = GraphState::begin(&d);
+        if !case[1].is_null() {
+            s.outputs.insert(ITEM.into(), case[1].clone());
+        }
+        let want = if case[3].as_bool().unwrap() { "yes" } else { "no" };
+        assert_eq!(
+            advance(&d, &mut s, case[0].clone()),
+            Next::Node(want.into()),
+            "{case}"
+        );
     }
 }
 

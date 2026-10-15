@@ -1,4 +1,53 @@
 {
+ "item_conditions": [
+  [
+   {
+    "pushed": true
+   },
+   {
+    "epic": true
+   },
+   "epic",
+   true
+  ],
+  [
+   {
+    "pushed": true
+   },
+   {
+    "epic": false
+   },
+   "epic",
+   false
+  ],
+  [
+   {
+    "epic": false
+   },
+   {
+    "epic": true
+   },
+   "epic",
+   false
+  ],
+  [
+   {},
+   {
+    "epic_allowed": true,
+    "epic": true
+   },
+   "epic && epic_allowed",
+   true
+  ],
+  [
+   {
+    "exit_code": 0
+   },
+   null,
+   "epic",
+   false
+  ]
+ ],
  "cases": [
   {
    "name": "example",
@@ -293,6 +342,58 @@
    "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: e\nnodes:\n  e: {type: end, status: done, next: null}\n",
    "parse_error": false,
    "errors": []
+  },
+  {
+   "name": "underscore id",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: e\nnodes:\n  _x: {type: command, run: x, next: e}\n  e: {type: end, status: done}\n",
+   "parse_error": false,
+   "errors": [
+    "node id `_x` must match [a-z0-9_-]{1,64} and not start with `_`"
+   ]
+  },
+  {
+   "name": "valid create after approval wait",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: w\nnodes:\n  w: {type: wait, events: [approval, comment], next: {event == \"approval\": c, else: e}}\n  c: {type: action, action: create_sub_issues, next: e}\n  e: {type: end, status: done}\n",
+   "parse_error": false,
+   "errors": []
+  },
+  {
+   "name": "valid plan_epic and children_done",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: p\nnodes:\n  p: {type: agent, prompt: plan_epic, next: w}\n  w: {type: wait, events: [children_done, dependencies_done], next: e}\n  e: {type: end, status: done}\n",
+   "parse_error": false,
+   "errors": []
+  },
+  {
+   "name": "create without wait",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: a\nnodes:\n  a: {type: agent, prompt: plan_epic, next: c}\n  c: {type: action, action: create_sub_issues, next: e}\n  e: {type: end, status: done}\n",
+   "parse_error": false,
+   "errors": [
+    "node `a`: `create_sub_issues` (`c`) is reachable only through a wait on `approval`"
+   ]
+  },
+  {
+   "name": "create after wait on comment",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: w\nnodes:\n  w: {type: wait, events: [comment], next: c}\n  c: {type: action, action: create_sub_issues, next: e}\n  e: {type: end, status: done}\n",
+   "parse_error": false,
+   "errors": [
+    "node `w`: `create_sub_issues` (`c`) is reachable only through a wait on `approval`"
+   ]
+  },
+  {
+   "name": "create via on_limit",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: w\nnodes:\n  w: {type: wait, events: [approval], next: e, on_limit: c}\n  c: {type: action, action: create_sub_issues, next: e}\n  e: {type: end, status: done}\n",
+   "parse_error": false,
+   "errors": [
+    "node `w`: `create_sub_issues` (`c`) is reachable only through a wait on `approval`"
+   ]
+  },
+  {
+   "name": "create as start",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: c\nnodes:\n  c: {type: action, action: create_sub_issues, next: e}\n  e: {type: end, status: done}\n",
+   "parse_error": false,
+   "errors": [
+    "node `c`: `create_sub_issues` cannot be the start node"
+   ]
   },
   {
    "name": "unknown type",

@@ -11,7 +11,8 @@ const NAMES = [
 	'review',
 	'address_comments',
 	'resolve_conflicts',
-	'task'
+	'task',
+	'plan_epic'
 ];
 const dir = new URL('../../workflows/crates/engine/prompts/', import.meta.url);
 const out = Object.fromEntries(
