@@ -293,6 +293,8 @@ fn ctrl_allowed(m: &Ctrl) -> Result<(), &'static str> {
         Ctrl::RunCancel { .. } => Err("run_cancel"),
         Ctrl::CredentialCaptured { .. } => Err("credential_captured"),
         Ctrl::CredentialState { .. } => Err("credential_state"),
+        Ctrl::StatsRequest => Err("stats_request"),
+        Ctrl::Stats(_) => Err("stats"),
     }
 }
 
@@ -391,6 +393,19 @@ mod tests {
         assert!(matches!(
             check(&ctrl(&m)),
             Err(Reject::ForbiddenCtrl("credential_state"))
+        ));
+    }
+
+    #[test]
+    fn rejects_stats_messages_from_browser() {
+        assert!(matches!(
+            check(&ctrl(&Ctrl::StatsRequest)),
+            Err(Reject::ForbiddenCtrl("stats_request"))
+        ));
+        let m = Ctrl::Stats(enzarb_proto::SandboxStats::default());
+        assert!(matches!(
+            check(&ctrl(&m)),
+            Err(Reject::ForbiddenCtrl("stats"))
         ));
     }
 
