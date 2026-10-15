@@ -63,7 +63,7 @@
 	const area = (s: { t: number; v: number }[]) =>
 		`${line(s)} L${x(s[s.length - 1].t).toFixed(1)},${H} L${x(s[0].t).toFixed(1)},${H} Z`;
 
-	const times = $derived([...new Set(lines.flatMap((l) => l.points.map((p) => p.t)))].sort());
+	const times = $derived([...new Set(lines.flatMap((l) => l.points.map((p) => p.t)))].sort((a, b) => a - b));
 	const valueAt = (l: Line, t: number) => l.points.find((p) => p.t === t)?.v ?? null;
 </script>
 

@@ -249,14 +249,17 @@ export interface SandboxStatsDbRow {
 /** Buckets asked for per window; the function clamps the count to 1..300. */
 export const SANDBOX_BUCKETS = 120;
 
-/** Maps the function's rows, oldest first; rows with an unreadable start are dropped. */
+/** Days of samples kept; `sandbox_stats_window` clamps its start to this before bucketing (workflows default). */
+export const SANDBOX_RETENTION_DAYS = 30;
+
+/** Maps the function's rows, oldest first; `from` is the effective start, clamped to the retention. Rows with an unreadable start are dropped. */
 export function mapSandboxStatsRows(
 	rows: readonly SandboxStatsDbRow[],
 	window: Pick<MetricsWindow, 'from' | 'to'>,
 	buckets: number = SANDBOX_BUCKETS
 ): SandboxStats {
-	const from = window.from.getTime();
 	const to = window.to.getTime();
+	const from = Math.max(window.from.getTime(), to - SANDBOX_RETENTION_DAYS * 86_400_000);
 	const mapped: SandboxBucket[] = [];
 	for (const r of rows) {
 		const t = new Date(r.bucket_start).getTime();

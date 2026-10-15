@@ -245,6 +245,18 @@ describe('mapSandboxStatsRows', () => {
 		expect(r.from).toBe(window.from.getTime());
 	});
 
+	it('clamps the start of a window longer than the retention', () => {
+		const long = {
+			from: new Date('2026-01-01T00:00:00Z'),
+			to: new Date('2026-10-14T00:00:00Z')
+		};
+		const r = mapSandboxStatsRows([], long, 120);
+		const day = 86_400_000;
+		expect(r.to).toBe(long.to.getTime());
+		expect(r.from).toBe(long.to.getTime() - 30 * day);
+		expect(r.stepMs).toBe((30 * day) / 120);
+	});
+
 	it('is empty when no row comes back', () => {
 		expect(mapSandboxStatsRows([], window).buckets).toEqual([]);
 	});
