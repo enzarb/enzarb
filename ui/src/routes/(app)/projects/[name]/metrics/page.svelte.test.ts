@@ -5,9 +5,10 @@ import { render } from 'vitest-browser-svelte';
 const h = vi.hoisted(() => ({
 	search: '',
 	data: undefined as unknown,
-	goto: vi.fn(),
+	error: undefined as unknown,
 	args: vi.fn(),
-	timing: { states: [], jobs: [] } as unknown
+	timing: vi.fn(),
+	sandbox: vi.fn()
 }));
 
 vi.mock('$app/state', () => ({
@@ -18,20 +19,22 @@ vi.mock('$app/state', () => ({
 		params: { name: 'alpha' }
 	}
 }));
-vi.mock('$app/navigation', () => ({ goto: h.goto }));
 vi.mock('#lib/metrics.remote.ts', () => ({
 	getProjectUsage: (a: unknown) => {
 		h.args(a);
-		return { current: h.data, error: undefined };
+		return { current: h.data, error: h.error };
 	},
-	getProjectStepTiming: () => ({ current: h.timing, error: undefined }),
-	getSandboxStats: () => ({
-		current: { from: 0, to: 1000, stepMs: 10, buckets: [] },
-		error: undefined
-	})
+	getProjectStepTiming: (a: unknown) => {
+		h.timing(a);
+		return { current: undefined, error: undefined };
+	},
+	getSandboxStats: (a: unknown) => {
+		h.sandbox(a);
+		return { current: undefined, error: undefined };
+	}
 }));
 
-import Metrics from './+page.svelte';
+import Usage from './+page.svelte';
 
 const none = { reporters: 0, avg: null, median: null };
 const empty = {
@@ -42,61 +45,51 @@ const empty = {
 beforeEach(() => {
 	h.search = '';
 	h.data = empty;
-	h.timing = { states: [], jobs: [] };
-	h.goto.mockClear();
+	h.error = undefined;
 	h.args.mockClear();
+	h.timing.mockClear();
+	h.sandbox.mockClear();
 });
 
-describe('metrics tab', () => {
+describe('usage subpage', () => {
+	it('shows a skeleton while loading', async () => {
+		h.data = undefined;
+		render(Usage);
+		await expect.element(browser.getByText('Loading usage')).toBeInTheDocument();
+	});
+
+	it('shows an error when loading fails', async () => {
+		h.data = undefined;
+		h.error = new Error('boom');
+		render(Usage);
+		await expect.element(browser.getByText('Could not load usage')).toBeVisible();
+	});
+
 	it('shows the empty state for a window without usage', async () => {
-		render(Metrics);
+		render(Usage);
 		await expect.element(browser.getByText('No usage in this window')).toBeVisible();
 		expect(h.args).toHaveBeenCalledWith({ name: 'alpha', window: '7d' });
 	});
 
-	it('shows step timing even when the window has no usage', async () => {
-		h.timing = {
-			states: [
-				{
-					name: 'Implementing',
-					active: { n: 2, min: 1, max: 9, mean: 5, median: 5, p95: 9 },
-					openExcluded: 0,
-					waiting: null
-				}
-			],
-			jobs: []
-		};
-		render(Metrics);
+	it('fetches only usage', async () => {
+		render(Usage);
 		await expect.element(browser.getByText('No usage in this window')).toBeVisible();
-		await expect.element(browser.getByTestId('step-timing')).toBeVisible();
-	});
-
-	it('shows the step timing empty state', async () => {
-		render(Metrics);
-		await expect.element(browser.getByText('No step timing in this window')).toBeVisible();
+		expect(h.timing).not.toHaveBeenCalled();
+		expect(h.sandbox).not.toHaveBeenCalled();
 	});
 
 	it('reads the window from the URL', async () => {
 		h.search = '?from=2026-01-01&to=2026-01-31';
-		render(Metrics);
+		render(Usage);
 		await expect.element(browser.getByText('No usage in this window')).toBeVisible();
 		expect(h.args).toHaveBeenCalledWith({ name: 'alpha', from: '2026-01-01', to: '2026-01-31' });
 	});
 
-	it('falls back to 7d with a notice for an invalid window', async () => {
+	it('falls back to 7d for an invalid window', async () => {
 		h.search = '?window=5y';
-		render(Metrics);
-		await expect.element(browser.getByText('Showing the last 7 days')).toBeVisible();
+		render(Usage);
+		await expect.element(browser.getByText('No usage in this window')).toBeVisible();
 		expect(h.args).toHaveBeenCalledWith({ name: 'alpha', window: '7d' });
-	});
-
-	it('puts the chosen window in the URL', async () => {
-		render(Metrics);
-		await browser.getByRole('button', { name: '24h' }).click();
-		expect(h.goto).toHaveBeenCalledWith(
-			'?window=24h',
-			expect.objectContaining({ replace: true, reset: false })
-		);
 	});
 
 	it('shows totals, the chart and the table for a window with usage', async () => {
@@ -131,7 +124,7 @@ describe('metrics tab', () => {
 				{ key: 'a#2', state: 'Done', usage: null }
 			]
 		};
-		const screen = render(Metrics);
+		const screen = render(Usage);
 		await expect
 			.element(browser.getByRole('table', { name: 'Cost per task', exact: true }))
 			.toBeVisible();

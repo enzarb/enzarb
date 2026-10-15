@@ -111,3 +111,9 @@ export function windowToParams(w: MetricsWindow): URLSearchParams {
 	}
 	return new URLSearchParams({ from: w.from.toISOString(), to: w.to.toISOString() });
 }
+
+/** The parse result plus the window to query: the parsed one, or the default when the URL is invalid. */
+export function resolveWindow(params: Pick<URLSearchParams, 'get'>, now: Date) {
+	const parsed = parseWindow(params, now);
+	return { parsed, current: parsed.ok ? parsed.window : defaultWindow(now) };
+}

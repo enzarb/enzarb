@@ -6,7 +6,8 @@
 	const base = $derived(`/projects/${encodeURIComponent(name)}`);
 	const current = (slug: string) => {
 		const path = pathname.replace(/\/$/, '');
-		return slug ? path === `${base}/${slug}` : path === base;
+		if (!slug) return path === base;
+		return path === `${base}/${slug}` || path.startsWith(`${base}/${slug}/`);
 	};
 </script>
 

@@ -47,6 +47,14 @@ Before the agent starts, sandbox-init (`sandbox-container/src/prepare.rs`) prepa
 
 The run log shows the timing, and the transcript has a `prepare` event with `total_ms` and the steps: `prepare: 41.2s (mise install ui 8.0s, npm ci ui 30.1s, postgres 2.3s)`. Settings: `ENZARB_PREPARE_STEP_SECS` (cap per step, default 600), `ENZARB_NPM_BIN`, `ENZARB_DOCKER_BIN`, `ENZARB_TEST_PG_NAME`, `ENZARB_TEST_PG_PORT`.
 
+The `ENZARB_TEST_PG_URL` contract of `mise run test:pg`:
+
+- Stdout is one `export ENZARB_TEST_PG_URL=...` line (for `eval`); progress goes to stderr. It is safe to call repeatedly: a running container is reused, a stopped one is started.
+- If `ENZARB_TEST_PG_URL` is already set, it is printed unchanged and Docker is not touched. Use this to point the tests at a sidecar or an external server.
+- `ENZARB_TEST_PG_PORT` and `ENZARB_TEST_PG_NAME` are honoured. If `docker` is missing or its daemon is unreachable, the task exits 1 and names the escape hatch above.
+- In a sandbox the task uses Docker through the sandbox's `dockerd` (supervised by `sandbox-init`); there is no sidecar. The root `mise.toml` must stay free of tools that need a build step (such as `pipx:` packages), because mise installs every `[tools]` entry before running a task; component-only tools (ansible in `kubernetes/mise.toml`) belong in the component's own file.
+- Run preparation calls the task once per sandbox and exports the URL on the test commands.
+
 ## Prerequisites
 
 - Docker with BuildKit, and `mise` (`mise install` provides `kind`, `kubectl`, `helm`, `gh`, `node`).

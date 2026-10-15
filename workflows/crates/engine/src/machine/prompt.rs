@@ -77,6 +77,10 @@ pub struct PromptContext {
     pub plan: String,
     /// `{base_ref}`.
     pub base_ref: String,
+    /// `{merge_base_sha}`: the pinned merge base of the source branch and `{base_ref}`.
+    pub merge_base_sha: String,
+    /// `{affected}`: the components the change reaches, one directory per line.
+    pub affected: String,
     /// `{branch}`: the branch to commit to.
     pub branch: String,
     /// `{head_ref}`: the change request's source branch.
@@ -108,6 +112,8 @@ impl PromptContext {
             "triage_summary" => &self.triage_summary,
             "plan" => &self.plan,
             "base_ref" => &self.base_ref,
+            "merge_base_sha" => &self.merge_base_sha,
+            "affected" => &self.affected,
             "branch" => &self.branch,
             "head_ref" => &self.head_ref,
             "head_sha" => &self.head_sha,
@@ -573,6 +579,8 @@ mod tests {
             triage_summary: "SUMMARY-X".into(),
             plan: "PLAN-X".into(),
             base_ref: "main".into(),
+            merge_base_sha: "MBASE-X".into(),
+            affected: "AFFECTED-X".into(),
             branch: "enzarb/issue-42".into(),
             head_ref: "feature".into(),
             head_sha: "abc123".into(),
@@ -663,6 +671,57 @@ mod tests {
         }
         let review = render_prompt(JobKind::AgentReview, &ctx);
         assert!(review.contains("must NOT be `approve`") && review.contains("\"checks\""));
+    }
+
+    #[test]
+    fn prompts_diff_against_the_merge_base_and_check_the_affected_components() {
+        let ctx = full_ctx();
+        for kind in [JobKind::AgentReview, JobKind::AgentAddressComments] {
+            let out = render_prompt(kind, &ctx);
+            assert!(out.contains("MBASE-X...HEAD"), "{kind:?}");
+            assert!(!out.contains("main...HEAD"), "{kind:?}");
+        }
+        for kind in [
+            JobKind::AgentReview,
+            JobKind::AgentAddressComments,
+            JobKind::AgentResolveConflicts,
+            JobKind::AgentImplement,
+        ] {
+            let out = render_prompt(kind, &ctx);
+            assert!(out.contains("AFFECTED-X"), "{kind:?}");
+            assert!(!out.contains("affected.sh"), "{kind:?}");
+        }
+        let review = render_prompt(JobKind::AgentReview, &ctx);
+        assert!(review.contains("never inspect, fetch or update the local `main`"));
+        assert!(review.contains("Name the components you skipped as unaffected"));
+    }
+
+    #[test]
+    fn missing_merge_base_and_affected_render_with_a_fallback() {
+        let ctx = PromptContext {
+            base_ref: "main".into(),
+            ..Default::default()
+        };
+        for kind in [
+            JobKind::AgentReview,
+            JobKind::AgentAddressComments,
+            JobKind::AgentResolveConflicts,
+            JobKind::AgentImplement,
+        ] {
+            let out = render_prompt(kind, &ctx);
+            assert!(out.contains("is `(none)`, it was not provided"), "{kind:?}");
+            assert!(out.contains("fall back to the components"), "{kind:?}");
+        }
+        let review = render_prompt(JobKind::AgentReview, &ctx);
+        assert!(review.contains("git merge-base HEAD origin/main"));
+    }
+
+    #[test]
+    fn implement_never_commits_unchecked_work_silently() {
+        let out = render_prompt(JobKind::AgentImplement, &full_ctx());
+        assert!(out.contains("checks of the affected components, `AFFECTED-X`"));
+        assert!(out.contains("Never commit work that you could not check without saying so"));
+        assert!(out.contains("\"Not run\""));
     }
 
     #[test]
