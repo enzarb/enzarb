@@ -103,7 +103,7 @@ describe('metrics tab', () => {
 			]
 		};
 		const screen = render(Metrics);
-		await expect.element(browser.getByRole('table', { name: 'Cost per task' })).toBeVisible();
+		await expect.element(browser.getByRole('table', { name: 'Cost per task', exact: true })).toBeVisible();
 		expect(screen.container.querySelectorAll('[data-testid="bar"]').length).toBe(1);
 		await expect.element(browser.getByTestId('usage-summary')).toBeVisible();
 	});
