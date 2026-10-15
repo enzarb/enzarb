@@ -38,9 +38,11 @@ describe('generated icons', () => {
 	});
 
 	it('keeps the maskable glyph inside the 80% safe zone', () => {
-		const svg = readFileSync(new URL('assets/icons/mark-maskable.svg', root), 'utf8');
-		// Drop the background so only the glyph has alpha.
-		const glyph = svg.replace(/<rect[^>]*\/>/, '');
+		const svg = readFileSync(new URL('static/brand/enzarb-mark-flat.svg', root), 'utf8');
+		// Drop the squircle so only the glyph has alpha, then apply the maskable transform
+		// from generate-icons.mjs (central 70%).
+		const body = svg.replace(/<rect[^>]*\/>/, '').replace(/<\/?svg[^>]*>/g, '');
+		const glyph = `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><g transform="translate(9.6 9.6) scale(0.7)">${body}</g></svg>`;
 		const img = new Resvg(glyph, { fitTo: { mode: 'width', value: 640 } }).render();
 		const { width, height, pixels } = img;
 		let min = width;

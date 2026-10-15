@@ -10,7 +10,7 @@
 	<div class="ez-login__card">
 		<Card>
 			<div class="ez-stack" style="--ez-gap: var(--ez-space-5)">
-				<div class="ez-login__logo"><Logo /></div>
+				<div class="ez-login__logo"><Logo variant="wordmark" size={32} /></div>
 				<p class="ez-muted">Sandboxes, events and workflows for your code repositories.</p>
 				<!-- A full navigation, not enhanced: it leaves the app for GitHub. -->
 				<LinkButton variant="primary" href="/login/github" data-sveltekit-reload>

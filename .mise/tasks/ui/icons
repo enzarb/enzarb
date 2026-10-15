@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Regenerate the UI brand assets, favicons and app icons from the logo sources"
+set -euo pipefail
+cd "${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}/ui"
+npm run brand
+npm run icons
