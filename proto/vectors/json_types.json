@@ -46,5 +46,35 @@
     },
     "name": "run_finished_usage",
     "type": "RunFinished"
+  },
+  {
+    "json": {
+      "branch": "enzarb/issue-42",
+      "exit_code": 0,
+      "graph": {
+        "outputs": {
+          "implement": {
+            "head_sha": "abc123",
+            "pushed": true
+          },
+          "prepare": {
+            "exit_code": 0,
+            "stdout": "ok\n"
+          }
+        },
+        "stopped_at": "open_pr",
+        "visits": {
+          "implement": 1,
+          "prepare": 1
+        }
+      },
+      "head_sha": "abc123",
+      "outcome": "succeeded",
+      "pushed": true,
+      "run_id": "job-123",
+      "summary": "done"
+    },
+    "name": "run_finished_graph",
+    "type": "RunFinished"
   }
 ]

@@ -55,6 +55,7 @@ fn run_start() -> RunStart {
         npm_token: None,
         claude_token: None,
         retarget: None,
+        graph: None,
     }
 }
 
@@ -203,6 +204,7 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
         ("run_start", Ctrl::RunStart(run_start())),
         ("run_start_log_channel", Ctrl::RunStart(with_log)),
         ("run_start_claude_token", Ctrl::RunStart(with_claude)),
+        ("run_start_graph", Ctrl::RunStart(with_graph())),
         (
             "run_accepted",
             Ctrl::RunAccepted {
@@ -426,6 +428,7 @@ fn json_type_vectors() {
         head_sha: "abc123".into(),
         pushed: true,
         usage: None,
+        graph: None,
     };
     let cancelled = RunFinished {
         outcome: RunOutcome::Cancelled,
@@ -445,10 +448,29 @@ fn json_type_vectors() {
         }),
         ..fin.clone()
     };
+    let with_graph = RunFinished {
+        graph: Some(GraphResult {
+            stopped_at: "open_pr".into(),
+            outputs: [
+                (
+                    "prepare".to_string(),
+                    json!({"exit_code": 0, "stdout": "ok\n"}),
+                ),
+                (
+                    "implement".to_string(),
+                    json!({"pushed": true, "head_sha": "abc123"}),
+                ),
+            ]
+            .into(),
+            visits: [("prepare".to_string(), 1), ("implement".to_string(), 1)].into(),
+        }),
+        ..fin.clone()
+    };
     let items = [
         ("run_finished", fin),
         ("run_finished_cancelled", cancelled),
         ("run_finished_usage", with_usage),
+        ("run_finished_graph", with_graph),
     ];
     let out: Vec<Value> = items
         .iter()
@@ -599,6 +621,50 @@ fn claude_token_is_a_plain_string_and_old_payloads_decode() {
     assert!(!d.contains("sk-ant-oat01-user"), "{d}");
 }
 
+fn with_graph() -> RunStart {
+    RunStart {
+        prompt: String::new(),
+        graph: Some(GraphSegment {
+            definition: json!({"version": 1, "name": "issue", "start": "implement",
+                "nodes": {"implement": {"type": "agent", "prompt": "implement", "next": "done"},
+                          "done": {"type": "end", "status": "done"}}}),
+            start: "implement".into(),
+            outputs: Default::default(),
+            visits: Default::default(),
+            prompts: [("implement".to_string(), "Implement issue #42".to_string())].into(),
+        }),
+        ..run_start()
+    }
+}
+
+#[test]
+fn graph_fields_compat() {
+    // Old payloads decode with no graph; new ones round-trip.
+    let old = serde_json::to_value(run_start()).unwrap();
+    assert!(old.get("graph").is_none());
+    assert_eq!(serde_json::from_value::<RunStart>(old).unwrap().graph, None);
+    let rs = with_graph();
+    let v = serde_json::to_value(&rs).unwrap();
+    assert_eq!(v["graph"]["start"], "implement");
+    assert!(v["graph"].get("outputs").is_none());
+    assert_eq!(serde_json::from_value::<RunStart>(v).unwrap(), rs);
+    assert!(format!("{rs:?}").contains("graph"));
+    let fin = json!({"run_id": "r", "outcome": "succeeded", "summary": "",
+        "branch": "b", "head_sha": "", "pushed": false});
+    assert_eq!(
+        serde_json::from_value::<RunFinished>(fin).unwrap().graph,
+        None
+    );
+    let fin = json!({"run_id": "r", "outcome": "succeeded", "summary": "",
+        "branch": "b", "head_sha": "", "pushed": false, "graph": {"stopped_at": "done"}});
+    let g = serde_json::from_value::<RunFinished>(fin)
+        .unwrap()
+        .graph
+        .unwrap();
+    assert_eq!(g.stopped_at, "done");
+    assert!(g.outputs.is_empty());
+}
+
 #[test]
 fn run_start_retarget_compat() {
     let old = serde_json::to_value(run_start()).unwrap();
@@ -656,7 +722,8 @@ fn old_decoder_ignores_new_fields() {
             "open_claude_token"
             | "credential_captured_token"
             | "credential_state_scope"
-            | "run_start_claude_token" => {
+            | "run_start_claude_token"
+            | "run_start_graph" => {
                 r.unwrap_or_else(|e| panic!("{name}: {e}"));
             }
             // An old decoder rejects the new message type; that is answered

@@ -4,6 +4,8 @@
 //! values are a decode error and should be answered with `error`
 //! (`unknown_message`).
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Who is connecting.
@@ -219,6 +221,48 @@ pub struct RunStart {
     /// pushing. Omitted when absent; old peers ignore it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retarget: Option<Retarget>,
+    /// When present the run is a graph **segment run** (ADR-0020): the sandbox
+    /// walks the workflow graph from `start`, running consecutive `command` and
+    /// `agent` nodes, and stops at the first `wait`, `action` or `end` node.
+    /// `prompt` is ignored. Omitted when absent; old peers ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<GraphSegment>,
+}
+
+/// A graph segment to run (`RunStart.graph`). The definition is opaque to
+/// this crate: it is the JSON form of a `workflows/crates/graph` definition.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraphSegment {
+    /// The pinned workflow definition, as JSON.
+    pub definition: serde_json::Value,
+    /// Node id to start at.
+    pub start: String,
+    /// Outputs of the nodes run so far, by node id. Omitted when empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub outputs: BTreeMap<String, serde_json::Value>,
+    /// Visit counts so far, by node id. Omitted when empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub visits: BTreeMap<String, u32>,
+    /// Rendered prompt text of `agent` nodes, by node id; the sender resolves
+    /// named prompts. A node missing here uses its inline `prompt`. Omitted
+    /// when empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub prompts: BTreeMap<String, String>,
+}
+
+/// Result of a segment run (`RunFinished.graph`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraphResult {
+    /// The node the segment stopped at (a `wait`, `action` or `end` node), or
+    /// the node that was running when the run failed or was cancelled.
+    pub stopped_at: String,
+    /// Outputs of every node run so far (including the segment's input
+    /// outputs), by node id. Omitted when empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub outputs: BTreeMap<String, serde_json::Value>,
+    /// Visit counts after the segment, by node id. Omitted when empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub visits: BTreeMap<String, u32>,
 }
 
 /// Parameters of a retarget run (`RunStart.retarget`): after a parent change
@@ -258,6 +302,7 @@ impl std::fmt::Debug for RunStart {
             .field("npm_token", &self.npm_token.as_ref().map(|_| R))
             .field("claude_token", &self.claude_token.as_ref().map(|_| R))
             .field("retarget", &self.retarget)
+            .field("graph", &self.graph)
             .finish()
     }
 }
@@ -312,6 +357,10 @@ pub struct RunFinished {
     /// when absent; old receivers ignore it and old senders omit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
+    /// Result of a graph segment run (`RunStart.graph`). Omitted when absent;
+    /// old receivers ignore it and old senders omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<GraphResult>,
 }
 
 /// Raw cumulative resource counters of a sandbox, read on demand from cgroup

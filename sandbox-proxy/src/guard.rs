@@ -328,6 +328,7 @@ mod tests {
             npm_token: None,
             claude_token: None,
             retarget: None,
+            graph: None,
         }
     }
 
