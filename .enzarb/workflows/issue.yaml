@@ -1,0 +1,16 @@
+# enzarb's own issue workflow (ADR-0020). Plan, wait for a human /approve
+# (feedback re-plans), then prepare, implement and open a change request.
+# The change request itself is still run by the compiled change_request machine.
+version: 1
+name: issue
+on: [issue_opened]
+start: plan
+nodes:
+  plan:      {type: agent, prompt: plan, max_visits: 6, on_limit: failed, next: post_plan}
+  post_plan: {type: action, action: post_comment, next: approval}
+  approval:  {type: wait, events: [approval, comment], next: {'event == "approval"': prepare, else: plan}}
+  prepare:   {type: command, run: "mise run prepare", optional: true, next: implement}
+  implement: {type: agent, prompt: implement, next: {pushed: open_pr, else: failed}}
+  open_pr:   {type: action, action: open_change_request, next: done}
+  failed:    {type: end, status: failed}
+  done:      {type: end, status: done}

@@ -494,3 +494,36 @@ fn output_ok_rules() {
         assert_eq!(output_ok(&v), want, "{v}");
     }
 }
+
+const ENZARB_ISSUE: &str = include_str!("../../../../.enzarb/workflows/issue.yaml");
+
+/// enzarb's own definition: feedback re-plans, only an approval implements.
+#[test]
+fn enzarb_issue_workflow_gates_implementation_on_approval() {
+    let d = load(ENZARB_ISSUE).unwrap();
+    let (mut s, n) = GraphState::begin(&d);
+    assert_eq!(n, Next::Node("plan".into()));
+    assert_eq!(
+        advance(&d, &mut s, json!({"ok": true})),
+        Next::Node("post_plan".into())
+    );
+    assert_eq!(
+        advance(&d, &mut s, json!({})),
+        Next::Node("approval".into())
+    );
+    let feedback = json!({"event": "comment", "author": "a", "body": "x", "can_write": true});
+    assert_eq!(advance(&d, &mut s, feedback), Next::Node("plan".into()));
+    advance(&d, &mut s, json!({"ok": true}));
+    advance(&d, &mut s, json!({}));
+    let approved = json!({"event": "approval", "author": "a"});
+    assert_eq!(advance(&d, &mut s, approved), Next::Node("prepare".into()));
+    // A failing optional prepare still implements.
+    assert_eq!(
+        advance(&d, &mut s, json!({"exit_code": 1})),
+        Next::Node("implement".into())
+    );
+    assert_eq!(
+        advance(&d, &mut s, json!({"ok": true, "pushed": true})),
+        Next::Node("open_pr".into())
+    );
+}
