@@ -91,11 +91,18 @@ struct Env {
 }
 
 async fn start(fail_callbacks: u32) -> Env {
-    start_with(fail_callbacks, None).await
+    start_with(fail_callbacks, None, None).await
 }
 
-/// `mise_script`: body of a fake `mise` that sandbox-init runs in each worktree.
-async fn start_with(fail_callbacks: u32, mise_script: Option<&str>) -> Env {
+/// `mise_script`: body of a fake `mise` that sandbox-init runs in each worktree;
+/// the repo then carries a `mise.toml`, so a failing install fails the run.
+/// `docker_script`: body of a fake `docker`; the repo then has a `workflows/`
+/// dir, so run preparation starts the test Postgres through it.
+async fn start_with(
+    fail_callbacks: u32,
+    mise_script: Option<&str>,
+    docker_script: Option<&str>,
+) -> Env {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     // origin with main (+ a feature branch)
@@ -114,6 +121,13 @@ async fn start_with(fail_callbacks: u32, mise_script: Option<&str>) -> Env {
     let seed = root.join("seed");
     git(root, &["init", "-q", "-b", "main", seed.to_str().unwrap()]);
     std::fs::write(seed.join("README"), "hello\n").unwrap();
+    if mise_script.is_some() {
+        std::fs::write(seed.join("mise.toml"), "[tools]\n").unwrap();
+    }
+    if docker_script.is_some() {
+        std::fs::create_dir(seed.join("workflows")).unwrap();
+        std::fs::write(seed.join("workflows/.keep"), "").unwrap();
+    }
     git(&seed, &["add", "."]);
     git(&seed, &["commit", "-qm", "init"]);
     git(&seed, &["push", "-q", origin.to_str().unwrap(), "main"]);
@@ -148,14 +162,20 @@ async fn start_with(fail_callbacks: u32, mise_script: Option<&str>) -> Env {
     let app = Router::new().route("/cb", post(cb)).with_state(cbs.clone());
     tokio::spawn(async move { axum::serve(l, app).await });
 
-    let mise_bin = mise_script.map_or(String::new(), |body| {
-        let m = root.join("fake-mise");
+    let fake_bin = |name: &str, body: &str| {
+        let m = root.join(name);
         std::fs::write(&m, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&m, std::fs::Permissions::from_mode(0o755)).unwrap();
         m.to_string_lossy().into_owned()
-    });
+    };
+    let mise_bin = mise_script.map_or(String::new(), |body| fake_bin("fake-mise", body));
+    let docker_bin = docker_script.map_or_else(
+        || Config::default().docker_bin,
+        |body| fake_bin("fake-docker", body),
+    );
     let config = Config {
         mise_bin,
+        docker_bin,
         listen: ([127, 0, 0, 1], 0).into(),
         auth_token_file: token_file,
         workspace: workspace.clone(),
@@ -537,7 +557,9 @@ async fn without_an_npm_token_node_auth_token_is_unset() {
     let (_, fin) = env.finished("nonpm").await;
     assert_eq!(fin.outcome, RunOutcome::Succeeded);
     let t = std::fs::read_to_string(env.run_dir("nonpm").join("transcript.jsonl")).unwrap();
-    assert!(t.contains("NODE=unset"), "{t}");
+    // Nothing of ours is set; the agent only inherits the process's own value.
+    let ambient = std::env::var("NODE_AUTH_TOKEN").unwrap_or_else(|_| "unset".into());
+    assert!(t.contains(&format!("NODE={ambient}")), "{t}");
 }
 
 #[tokio::test]
@@ -545,6 +567,7 @@ async fn toolchain_is_installed_in_the_worktree_before_the_agent_runs() {
     let env = start_with(
         0,
         Some(r#"test "$1" = install && pwd > "$PWD/../mise-ran""#),
+        None,
     )
     .await;
     let (session, _e) = env.connect().await;
@@ -557,24 +580,72 @@ async fn toolchain_is_installed_in_the_worktree_before_the_agent_runs() {
     let ran = std::fs::read_to_string(env.workspace.join("worktrees/mise-ran")).unwrap();
     assert!(ran.trim().ends_with("worktrees/run-tc"), "{ran}");
     let t = transcript(&env, "tc");
-    assert_eq!(of_kind(&t, "toolchain")[0]["ok"], true);
+    let prep = of_kind(&t, "prepare")[0];
+    assert_eq!(prep["ok"], true);
+    assert_eq!(prep["steps"][0]["step"], "mise install");
+    assert_eq!(prep["steps"][0]["status"], "ok");
 }
 
 #[tokio::test]
-async fn a_failing_toolchain_install_does_not_fail_the_run() {
-    let env = start_with(0, Some("echo boom >&2; exit 3")).await;
+async fn a_failing_mise_install_fails_the_run_and_names_the_step() {
+    let env = start_with(0, Some("echo boom >&2; exit 3"), None).await;
     let (session, _e) = env.connect().await;
     session
         .run_start(env.run("tcf", "EDIT", "feature", "feature", false))
         .await
         .unwrap();
     let (_, fin) = env.finished("tcf").await;
-    assert_eq!(fin.outcome, RunOutcome::Succeeded);
+    assert_eq!(fin.outcome, RunOutcome::Failed);
+    assert!(fin.summary.contains("mise install"), "{}", fin.summary);
+    assert!(fin.summary.contains("boom"), "{}", fin.summary);
     let t = transcript(&env, "tcf");
-    let rec = of_kind(&t, "toolchain")[0];
-    assert_eq!(rec["ok"], false);
-    assert_eq!(rec["code"], 3);
-    assert!(rec["stderr"].as_str().unwrap().contains("boom"));
+    let prep = of_kind(&t, "prepare")[0];
+    assert_eq!(prep["ok"], false);
+    assert_eq!(prep["steps"][0]["status"], "failed");
+    // The agent never started.
+    assert!(of_kind(&t, "acp").is_empty());
+}
+
+#[tokio::test]
+async fn test_postgres_url_reaches_the_agent_env() {
+    let docker =
+        r#"case "$1" in inspect) echo running;; port) echo 127.0.0.1:55432;; *) exit 0;; esac"#;
+    let env = start_with(0, None, Some(docker)).await;
+    let (session, _e) = env.connect().await;
+    session
+        .run_start(env.run("pg", "PGENV", "feature", "feature", false))
+        .await
+        .unwrap();
+    let (_, fin) = env.finished("pg").await;
+    assert_eq!(fin.outcome, RunOutcome::Succeeded);
+    let t = transcript(&env, "pg");
+    let prep = of_kind(&t, "prepare")[0];
+    let pg = prep["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["step"] == "postgres")
+        .unwrap();
+    assert_eq!(pg["status"], "ok");
+    let raw = std::fs::read_to_string(env.run_dir("pg").join("transcript.jsonl")).unwrap();
+    assert!(
+        raw.contains("PG=postgres://postgres:postgres@127.0.0.1:55432/postgres"),
+        "{raw}"
+    );
+}
+
+#[tokio::test]
+async fn without_a_postgres_repo_the_url_is_unset() {
+    let env = start(0).await;
+    let (session, _e) = env.connect().await;
+    session
+        .run_start(env.run("nopg", "PGENV", "feature", "feature", false))
+        .await
+        .unwrap();
+    let (_, fin) = env.finished("nopg").await;
+    assert_eq!(fin.outcome, RunOutcome::Succeeded);
+    let raw = std::fs::read_to_string(env.run_dir("nopg").join("transcript.jsonl")).unwrap();
+    assert!(raw.contains("PG=unset"), "{raw}");
 }
 
 /// All transcript records of a run (the file, once the run is over).
