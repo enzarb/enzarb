@@ -152,3 +152,134 @@ pub struct JobView {
     /// Usage summed over the job's runs (`enzarb_proto::Usage` shape); `None` when not reported.
     pub usage: Option<Value>,
 }
+
+/// Per-`(project, sandbox)` row cap of `workflows.sandbox_stats` (ADR-0019 section 4).
+pub const SANDBOX_STATS_ROW_CAP: i64 = 150_000;
+
+/// Row of `workflows_api.sandbox_stats_window`. Rates are `None` when the bucket has no usable
+/// interval, gauges when not reported.
+#[derive(Debug, Clone, FromRow)]
+pub struct SandboxStatsBucket {
+    pub bucket_start: DateTime<Utc>,
+    pub samples: i32,
+    pub cpu_cores_avg: Option<f64>,
+    pub cpu_cores_max: Option<f64>,
+    pub mem_bytes_avg: Option<f64>,
+    pub mem_bytes_max: Option<i64>,
+    pub io_read_bps_avg: Option<f64>,
+    pub io_read_bps_max: Option<f64>,
+    pub io_write_bps_avg: Option<f64>,
+    pub io_write_bps_max: Option<f64>,
+    pub storage_used_bytes_avg: Option<f64>,
+    pub storage_used_bytes_max: Option<i64>,
+    pub storage_total_bytes: Option<i64>,
+}
+
+fn stat_i64(v: Option<u64>, name: &str) -> Result<Option<i64>, sqlx::Error> {
+    v.map(|v| {
+        i64::try_from(v).map_err(|_| sqlx::Error::Encode(format!("{name} out of range").into()))
+    })
+    .transpose()
+}
+
+/// Store one `stats` reply; `false` when `(project, sandbox, at)` was already recorded. A field
+/// the sandbox did not report is stored as NULL.
+pub async fn insert_sandbox_stats(
+    pool: &PgPool,
+    project: &str,
+    sandbox: &str,
+    work_item_id: Option<i64>,
+    s: &enzarb_proto::SandboxStats,
+) -> Result<bool, sqlx::Error> {
+    let at = i64::try_from(s.ts_ms)
+        .ok()
+        .and_then(DateTime::from_timestamp_millis)
+        .ok_or_else(|| sqlx::Error::Encode("ts_ms out of range".into()))?;
+    let done = sqlx::query(
+        "INSERT INTO workflows.sandbox_stats
+            (project, sandbox, work_item_id, at, cpu_usage_usec, cpu_user_usec, cpu_system_usec,
+             memory_bytes, io_read_bytes, io_write_bytes, storage_used_bytes, storage_total_bytes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         ON CONFLICT (project, sandbox, at) DO NOTHING",
+    )
+    .bind(project)
+    .bind(sandbox)
+    .bind(work_item_id)
+    .bind(at)
+    .bind(stat_i64(s.cpu_usage_usec, "cpu_usage_usec")?)
+    .bind(stat_i64(s.cpu_user_usec, "cpu_user_usec")?)
+    .bind(stat_i64(s.cpu_system_usec, "cpu_system_usec")?)
+    .bind(stat_i64(s.memory_bytes, "memory_bytes")?)
+    .bind(stat_i64(s.io_read_bytes, "io_read_bytes")?)
+    .bind(stat_i64(s.io_write_bytes, "io_write_bytes")?)
+    .bind(stat_i64(s.storage_used_bytes, "storage_used_bytes")?)
+    .bind(stat_i64(s.storage_total_bytes, "storage_total_bytes")?)
+    .execute(pool)
+    .await?;
+    Ok(done.rows_affected() == 1)
+}
+
+/// Bucketed stats of a project over `[from, to)`. `interval_secs` and `retention_days` are the
+/// poller's `ENZARB_STATS_INTERVAL` and `ENZARB_STATS_RETENTION` (they set the gap cutoff and the
+/// window clamp).
+pub async fn sandbox_stats_window(
+    pool: &PgPool,
+    project: &str,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    buckets: i32,
+    interval_secs: i32,
+    retention_days: i32,
+) -> Result<Vec<SandboxStatsBucket>, sqlx::Error> {
+    sqlx::query_as("SELECT * FROM workflows_api.sandbox_stats_window($1, $2, $3, $4, $5, $6)")
+        .bind(project)
+        .bind(from)
+        .bind(to)
+        .bind(buckets)
+        .bind(interval_secs)
+        .bind(retention_days)
+        .fetch_all(pool)
+        .await
+}
+
+/// Delete at most `batch` rows older than `older_than_days`; returns how many. Callers repeat
+/// while a full batch comes back.
+pub async fn prune_sandbox_stats(
+    pool: &PgPool,
+    older_than_days: i32,
+    batch: i64,
+) -> Result<u64, sqlx::Error> {
+    let done = sqlx::query(
+        "DELETE FROM workflows.sandbox_stats WHERE (project, sandbox, at) IN (
+             SELECT project, sandbox, at FROM workflows.sandbox_stats
+             WHERE at < now() - make_interval(days => $1)
+             ORDER BY at LIMIT $2)",
+    )
+    .bind(older_than_days)
+    .bind(batch)
+    .execute(pool)
+    .await?;
+    Ok(done.rows_affected())
+}
+
+/// Delete at most `batch` of the oldest rows beyond `cap` per `(project, sandbox)` (use
+/// [`SANDBOX_STATS_ROW_CAP`]); returns how many. Callers repeat while a full batch comes back.
+pub async fn prune_sandbox_stats_over_cap(
+    pool: &PgPool,
+    cap: i64,
+    batch: i64,
+) -> Result<u64, sqlx::Error> {
+    let done = sqlx::query(
+        "DELETE FROM workflows.sandbox_stats WHERE (project, sandbox, at) IN (
+             SELECT project, sandbox, at FROM (
+                 SELECT project, sandbox, at,
+                        row_number() OVER (PARTITION BY project, sandbox ORDER BY at DESC) AS rn
+                 FROM workflows.sandbox_stats) t
+             WHERE rn > $1 LIMIT $2)",
+    )
+    .bind(cap)
+    .bind(batch)
+    .execute(pool)
+    .await?;
+    Ok(done.rows_affected())
+}
