@@ -45,6 +45,10 @@ pub struct AgentJobInput {
     /// re-renders its `prompts` once it has the thread, like `prompt`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph: Option<enzarb_proto::GraphSegment>,
+    /// `agent_segment` jobs: the pinned prompt files (path → text) the executor renders
+    /// file prompts from.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub prompt_files: std::collections::BTreeMap<String, String>,
 }
 
 pub(crate) struct AgentSpec {
@@ -219,6 +223,7 @@ impl<'a> Fx<'a> {
             context,
             recovery_used: false,
             graph: None,
+            prompt_files: Default::default(),
         };
         self.job(
             kind,
@@ -228,12 +233,13 @@ impl<'a> Fx<'a> {
     }
 
     /// Queue a graph segment run (`agent_segment`) and its `Working` marker on `target`.
-    pub fn segment(
+    pub fn segment_with_files(
         &mut self,
         target: &ProgressTarget,
         spec: AgentSpec,
         context: PromptContext,
         segment: enzarb_proto::GraphSegment,
+        prompt_files: std::collections::BTreeMap<String, String>,
     ) {
         self.progress(target, Progress::Working, PRIORITY_WORKING);
         let input = AgentJobInput {
@@ -247,6 +253,7 @@ impl<'a> Fx<'a> {
             context,
             recovery_used: false,
             graph: Some(segment),
+            prompt_files,
         };
         self.job(
             JobKind::AgentSegment,

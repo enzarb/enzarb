@@ -4612,3 +4612,52 @@ async fn graph_epic_creates_blocked_sub_issues_and_finishes_when_they_merge() {
         2
     );
 }
+
+#[tokio::test]
+async fn issue_graph_prompt_files_are_read_pinned_and_rendered() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let reducer = graph_reducer(&h);
+    let repo: RepoKey = REPO.parse().unwrap();
+    h.fake.set_branch_head(repo.clone(), "main", "sha-main");
+    let yaml = ISSUE_GRAPH.replace(
+        "prompt: implement",
+        "prompt: {file: .enzarb/prompts/implement.md}",
+    );
+    h.fake.set_file(
+        repo.clone(),
+        "sha-main",
+        ".enzarb/workflows/issue.yaml",
+        &yaml,
+    );
+    h.fake.set_file(
+        repo.clone(),
+        "sha-main",
+        ".enzarb/prompts/implement.md",
+        "Implement {title}. Thread:\n{thread}",
+    );
+    // A newer file on the branch is not used: the commit is pinned.
+    h.fake
+        .set_file(repo, "main", ".enzarb/prompts/implement.md", "WRONG");
+    h.fake
+        .add_thread(key(1), thread_with("Use the brand colours"));
+    h.sandbox.set_mode(Mode::Hold);
+
+    open_issue(pool, 1).await;
+    assert_eq!(reducer.drain().await, 1);
+    let (workflow, _, data) = item_row(pool, 1).await;
+    assert_eq!(workflow, "graph:issue");
+    assert_eq!(
+        data["graph"]["prompts"][".enzarb/prompts/implement.md"],
+        "Implement {title}. Thread:\n{thread}"
+    );
+    h.exec.drain().await;
+    let seg = job_id_of(pool, "agent_segment").await;
+    let run = h.sandbox.run(&format!("job-{seg}")).unwrap();
+    let prompt = &run.graph.as_ref().unwrap().prompts["implement"];
+    assert!(
+        prompt.starts_with("Implement Add dark mode. Thread:"),
+        "{prompt}"
+    );
+    assert!(prompt.contains("Use the brand colours"), "{prompt}");
+}

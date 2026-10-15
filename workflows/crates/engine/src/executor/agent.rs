@@ -188,7 +188,11 @@ impl Executor {
             Some(mut g) => {
                 let def = enzarb_graph::Definition::from_value(&g.definition)
                     .map_err(|e| JobError::permanent(format!("graph segment: {e}")))?;
-                g.prompts = crate::machine::graph::segment_prompts(&def, &input.context);
+                g.prompts = crate::machine::graph::segment_prompts(
+                    &def,
+                    &input.context,
+                    &input.prompt_files,
+                );
                 // What a sandbox that predates `RunStart.graph` runs instead: nothing to
                 // change, and its result has no graph, so the task fails with a clear error.
                 input.prompt = SEGMENT_FALLBACK_PROMPT.into();

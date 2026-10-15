@@ -677,6 +677,57 @@ fn item_facts_fill_missing_identifiers_only() {
     assert_eq!(run(json!({}), json!({})), Next::Node("f".into()));
 }
 
+#[test]
+fn prompts_are_text_or_a_repo_file() {
+    let d = load(&with_nodes(
+        "a",
+        "  a: {type: agent, prompt: implement, next: b}
+  b: {type: agent, prompt: {file: .enzarb/prompts/review_me.md}, next: c}
+  c: {type: agent, prompt: {file: .enzarb/prompts/review_me.md}, next: e}
+  e: {type: end, status: done}
+",
+    ))
+    .unwrap();
+    assert_eq!(
+        d.node("a").unwrap().kind,
+        NodeKind::Agent {
+            prompt: "implement".into()
+        }
+    );
+    assert_eq!(
+        d.node("b").unwrap().kind,
+        NodeKind::Agent {
+            prompt: Prompt::File {
+                file: ".enzarb/prompts/review_me.md".into()
+            }
+        }
+    );
+    assert_eq!(d.prompt_files(), [".enzarb/prompts/review_me.md"]);
+    for bad in [
+        ".enzarb/prompts/../x.md",
+        ".enzarb/prompts/a b.md",
+        ".enzarb/prompts/.md",
+        ".enzarb/prompts/x.txt",
+        "prompts/x.md",
+        "/.enzarb/prompts/x.md",
+        ".enzarb/prompts/sub/x.md",
+    ] {
+        let Err(Error::Invalid(p)) = validate(&def(&with_nodes(
+            "a",
+            &format!(
+                "  a: {{type: agent, prompt: {{file: \"{bad}\"}}, next: e}}\n  e: {{type: end, status: done}}\n"
+            ),
+        ))) else {
+            panic!("{bad}")
+        };
+        assert!(
+            p.iter().any(|x| x.contains("must match .enzarb/prompts/")),
+            "{bad}: {p:?}"
+        );
+    }
+    assert!(valid_prompt_path(".enzarb/prompts/A-z_9.md"));
+}
+
 /// enzarb's own definition, epic path: breakdown, approval, sub-issues, children.
 #[test]
 fn enzarb_issue_workflow_epic_creates_sub_issues_after_approval() {

@@ -81,12 +81,28 @@ impl DefinitionSource for ConnectorDefinitions {
                 .insert(miss_key.clone(), Instant::now());
         };
         match c.get_file(repo, &sha, &path).await {
-            Ok(Some(source)) => Ok(Some(GraphSource {
-                name: name.to_string(),
-                path,
-                sha,
-                source,
-            })),
+            Ok(Some(source)) => {
+                // Prompt files at the same commit. A missing one is left out: the kernel
+                // rejects the definition (with a comment) rather than this lookup.
+                let mut prompts = std::collections::BTreeMap::new();
+                if let Ok(def) = enzarb_graph::Definition::from_yaml(&source) {
+                    for f in def.prompt_files() {
+                        if !enzarb_graph::valid_prompt_path(&f) {
+                            continue;
+                        }
+                        if let Some(text) = c.get_file(repo, &sha, &f).await? {
+                            prompts.insert(f, text);
+                        }
+                    }
+                }
+                Ok(Some(GraphSource {
+                    name: name.to_string(),
+                    path,
+                    sha,
+                    source,
+                    prompts,
+                }))
+            }
             Ok(None) => {
                 remember();
                 Ok(None)

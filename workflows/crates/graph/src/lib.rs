@@ -104,9 +104,9 @@ fn default_max_visits() -> u32 {
 pub enum NodeKind {
     /// A shell command in the run's worktree (sandbox).
     Command { run: String },
-    /// An agent run (sandbox). `prompt` is a prompt name (one word) or inline
-    /// prompt text.
-    Agent { prompt: String },
+    /// An agent run (sandbox). `prompt` is a prompt name (one word), inline prompt text, or
+    /// `{file: .enzarb/prompts/<name>.md}` in the repository.
+    Agent { prompt: Prompt },
     /// Suspends until one of `events` arrives (kernel). `from` says whose comments count.
     Wait {
         events: Vec<String>,
@@ -122,6 +122,65 @@ pub enum NodeKind {
     },
     /// Terminal (kernel).
     End { status: EndStatus },
+}
+
+/// An agent node's prompt.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum Prompt {
+    /// A built-in prompt name, or inline text.
+    Text(String),
+    /// A prompt file in the repository (read with the definition, at the same commit).
+    File { file: String },
+}
+
+impl Prompt {
+    /// The inline text or name; `None` for a file.
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Self::Text(t) => Some(t),
+            Self::File { .. } => None,
+        }
+    }
+
+    pub fn file(&self) -> Option<&str> {
+        match self {
+            Self::File { file } => Some(file),
+            Self::Text(_) => None,
+        }
+    }
+}
+
+impl From<&str> for Prompt {
+    fn from(s: &str) -> Self {
+        Self::Text(s.into())
+    }
+}
+
+/// Whether `path` is a prompt file path: `.enzarb/prompts/<[A-Za-z0-9_-]+>.md`.
+pub fn valid_prompt_path(path: &str) -> bool {
+    path.strip_prefix(".enzarb/prompts/")
+        .and_then(|r| r.strip_suffix(".md"))
+        .is_some_and(|n| {
+            !n.is_empty()
+                && n.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        })
+}
+
+impl Definition {
+    /// Every prompt file the definition's agent nodes name, sorted, without duplicates.
+    pub fn prompt_files(&self) -> Vec<String> {
+        let set: BTreeSet<String> = self
+            .nodes
+            .values()
+            .filter_map(|n| match &n.kind {
+                NodeKind::Agent { prompt } => prompt.file().map(str::to_string),
+                _ => None,
+            })
+            .collect();
+        set.into_iter().collect()
+    }
 }
 
 /// Whose `comment` resumes a `wait` node. Approvals always need write access.
@@ -318,9 +377,14 @@ pub fn validate(d: &Definition) -> Result<(), Error> {
             NodeKind::Command { run } if run.trim().is_empty() => {
                 p.push(format!("node `{id}`: `run` is empty"))
             }
-            NodeKind::Agent { prompt } if prompt.trim().is_empty() => {
-                p.push(format!("node `{id}`: `prompt` is empty"))
-            }
+            NodeKind::Agent {
+                prompt: Prompt::Text(t),
+            } if t.trim().is_empty() => p.push(format!("node `{id}`: `prompt` is empty")),
+            NodeKind::Agent {
+                prompt: Prompt::File { file },
+            } if !valid_prompt_path(file) => p.push(format!(
+                "node `{id}`: prompt file `{file}` must match .enzarb/prompts/<[A-Za-z0-9_-]+>.md"
+            )),
             NodeKind::Wait { events, .. } => {
                 if events.is_empty() {
                     p.push(format!("node `{id}`: `events` is empty"));
