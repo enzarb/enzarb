@@ -34,6 +34,7 @@ fn run_start(id: &str, log: Option<u32>) -> RunStart {
         log_channel: log,
         deps_token: None,
         npm_token: None,
+        ci_read_token: None,
         claude_token: None,
         retarget: None,
         graph: None,

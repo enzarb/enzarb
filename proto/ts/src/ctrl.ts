@@ -104,6 +104,8 @@ export interface RunStartFields {
   deps_token?: string;
   /** Optional read:packages token for private npm packages (NODE_AUTH_TOKEN); never persisted. */
   npm_token?: string;
+  /** Optional short-lived read-only token (`actions: read`) for `gh` CI log reads (GH_TOKEN, agent process only); never persisted. */
+  ci_read_token?: string;
   /** Optional per-user Claude token. Held as a `Secret` (redacted in logs); sent as a plain string. */
   claude_token?: SecretLike;
   /** When set, a retarget run instead of an agent run. */

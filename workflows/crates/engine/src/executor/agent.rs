@@ -323,6 +323,7 @@ impl Executor {
             clone_token: cred.token,
             deps_token: None,
             npm_token: None,
+            ci_read_token: None,
             claude_token: Some(claude_token.expose().into()),
             prompt: recovery_prompt(input.kind),
             timeout_secs: input.timeout_secs,
