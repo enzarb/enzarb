@@ -1,16 +1,30 @@
-# enzarb's own issue workflow (ADR-0020). Plan, wait for a human /approve
-# (feedback re-plans), then prepare, implement and open a change request.
-# The change request itself is still run by the compiled change_request machine.
+# enzarb's own issue workflow (ADR-0020). Plan (a sub-issue breakdown for an epic: `/epic` or the
+# `epic` label from a writer), wait for a human /approve (feedback re-plans), then implement and
+# open a change request, or create the sub-issues and wait for them. The kernel keeps a task
+# Blocked until its dependencies are merged. Change requests are still run by the compiled machine.
 version: 1
 name: issue
 on: [issue_opened]
-start: plan
+start: route
 nodes:
-  plan:      {type: agent, prompt: plan, max_visits: 6, on_limit: failed, next: post_plan}
-  post_plan: {type: action, action: post_comment, next: approval}
-  approval:  {type: wait, events: [approval, comment], next: {'event == "approval"': prepare, else: plan}}
-  prepare:   {type: command, run: "mise run prepare", optional: true, next: implement}
-  implement: {type: agent, prompt: implement, next: {pushed: open_pr, else: failed}}
-  open_pr:   {type: action, action: open_change_request, next: done}
-  failed:    {type: end, status: failed}
-  done:      {type: end, status: done}
+  route:      {type: command, run: "true", next: {epic: plan_epic, else: plan}}
+  plan:       {type: agent, prompt: plan, max_visits: 6, on_limit: failed, next: post_plan}
+  plan_epic:  {type: agent, prompt: plan_epic, max_visits: 6, on_limit: failed, next: post_plan}
+  post_plan:  {type: action, action: post_comment, next: approval}
+  approval:
+    type: wait
+    events: [approval, comment]
+    next:
+      'event == "approval" && epic': create
+      'event == "approval"': prepare
+      epic: plan_epic
+      else: plan
+  prepare:    {type: command, run: "mise run prepare", optional: true, next: implement}
+  implement:  {type: agent, prompt: implement, next: {pushed: open_pr, else: failed}}
+  open_pr:    {type: action, action: open_change_request, next: done}
+  create:     {type: action, action: create_sub_issues, next: children}
+  children:   {type: wait, events: [children_done], next: {failed: tell_stuck, else: done}}
+  tell_stuck: {type: action, action: post_comment, body: "Some sub-issues were closed without completing. A maintainer can reopen or replace them, or `/approve` to close this epic as it is.", next: stuck}
+  stuck:      {type: wait, events: [approval, children_done], max_visits: 50, on_limit: failed, next: {'event == "approval" || !failed': done, else: stuck}}
+  failed:     {type: end, status: failed}
+  done:       {type: end, status: done}
