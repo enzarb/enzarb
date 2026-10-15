@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import JobTable from '#lib/components/JobTable.svelte';
 	import MergeReadiness from '#lib/components/MergeReadiness.svelte';
+	import ReviewStatsBlock from '#lib/components/ReviewStatsBlock.svelte';
 	import ConfirmDialog from '#lib/components/ui/ConfirmDialog.svelte';
 	import StepList from '#lib/components/ui/StepList.svelte';
 	import LinkButton from '#lib/components/ui/LinkButton.svelte';
@@ -122,6 +123,11 @@
 		<Section title="Timeline">
 			<WorkTimeline transitions={w.transitions} state={w.state} />
 		</Section>
+		{#if w.stats}
+			<Section title="Review cost">
+				<ReviewStatsBlock stats={w.stats} />
+			</Section>
+		{/if}
 		{#if w.usage}
 			<Section title="Token usage">
 				<UsageSummary usage={w.usage} label="Total" />
