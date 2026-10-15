@@ -865,6 +865,7 @@ spec:
             - { name: RECEIVER_LISTEN, value: 0.0.0.0:8080 }
             - { name: ENZARB_BOT_HANDLE, value: "enzarb" }
             - { name: ENZARB_BOT_LOGIN, value: "enzarb[bot]" }
+            - { name: ENZARB_STATS_RETENTION, value: "30" }
             - { name: RUST_LOG, value: "info" }
           readinessProbe:
             httpGet: { path: /readyz, port: http }
@@ -1161,6 +1162,7 @@ spec:
             - { name: ENZARB_PUBLIC_URL, value: "https://enzarb.dev" }
             - { name: ENZARB_COMPONENT_VERSIONS, value: "{\"chart\":\"0.0.0\",\"components\":{\"enzarb-connectors\":\"0.0.0-golden\",\"enzarb-sandbox-container\":\"0.0.0-golden\",\"enzarb-sandbox-operator\":\"0.0.0-golden\",\"enzarb-sandbox-proxy\":\"0.0.0-golden\",\"enzarb-ui\":\"0.0.0-golden\",\"enzarb-updater\":\"0.0.0-golden\",\"enzarb-workflows\":\"0.0.0-golden\"}}" }
             - { name: NEEDS_YOU_STALE_HOURS, value: "24" }
+            - { name: ENZARB_STATS_RETENTION, value: "30" }
             - { name: ENZARB_GITHUB_APP_SLUG, value: "enzarb" }
             # adapter-node derives the origin for its CSRF check from this header; the Gateway forwards it.
             - { name: PROTOCOL_HEADER, value: x-forwarded-proto }
@@ -1355,6 +1357,7 @@ spec:
             - { name: ENZARB_MAX_AUTO_ROUNDS, value: "3" }
             - { name: ENZARB_BOT_HANDLE, value: "enzarb" }
             - { name: ENZARB_BOT_LOGIN, value: "enzarb[bot]" }
+            - { name: ENZARB_STATS_RETENTION, value: "30" }
             - { name: RUST_LOG, value: "info" }
           # /healthz is on sandbox.executorCallbackPort with the executor role, otherwise on 8082.
           readinessProbe:
