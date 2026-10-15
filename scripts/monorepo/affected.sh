@@ -23,7 +23,7 @@ RULES=(
   'realtime|realtime/** .github/workflows/ci-realtime.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
   'sandbox-proxy|sandbox-proxy/** proto/** operator/** .github/workflows/ci-sandbox-proxy.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
   'sandbox-container|sandbox-container/** proto/** workflows/crates/graph/** ui/package-lock.json .github/workflows/ci-sandbox-container.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
-  'ui|ui/** proto/** .github/workflows/ci-ui.yml .github/workflows/_docker.yml .github/actions/ui-install/**'
+  'ui|ui/** proto/** workflows/crates/graph/tests/fixtures/** workflows/crates/engine/prompts/** workflows/crates/engine/src/machine/prompt.rs docs/workflows/examples/** .github/workflows/ci-ui.yml .github/workflows/_docker.yml .github/actions/ui-install/**'
   'updater|updater/** .github/workflows/ci-updater.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
   'kubernetes|kubernetes/** .github/workflows/ci-kubernetes.yml'
   'helm|helm/** .github/workflows/ci-helm.yml'

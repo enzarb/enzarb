@@ -1,0 +1,3 @@
+/** A copy of docs/workflows/examples/issue.yaml (a test keeps them equal), for Start from example. */
+export const EXAMPLE_ISSUE =
+	'# Example graph workflow (ADR-0020). A repository opts in by committing a\n# definition as `.enzarb/workflows/issue.yaml` on its default branch.\nversion: 1\nname: issue\non: [issue_opened]            # triggers that create a task\nstart: prepare\nnodes:\n  prepare:   {type: command, run: "mise run prepare", optional: true, next: implement}\n  implement: {type: agent, prompt: implement, next: {pushed: open_pr, else: failed}}\n  open_pr:   {type: action, action: open_change_request, next: done}\n  failed:    {type: end, status: failed}\n  done:      {type: end, status: done}\n';
