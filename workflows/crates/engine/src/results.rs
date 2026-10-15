@@ -59,6 +59,15 @@ pub async fn record_job_usage(
     Ok(true)
 }
 
+/// `output` with `elapsed_secs` added when it is a JSON object; anything else is unchanged.
+fn with_elapsed(output: &Value, elapsed_secs: i64) -> Value {
+    let mut v = output.clone();
+    if let Some(o) = v.as_object_mut() {
+        o.entry("elapsed_secs").or_insert(json!(elapsed_secs));
+    }
+    v
+}
+
 /// Record the result of `attempt` of job `job_id` and queue the matching engine event.
 ///
 /// In one transaction: lock the job, finish it (`succeeded` / `failed`, `output`, lease
@@ -76,15 +85,16 @@ pub async fn ingest_job_result(
     result: JobResult,
 ) -> Result<Option<i64>, Error> {
     let mut tx = pool.begin().await?;
-    let row: Option<(String, String, i32, String)> = sqlx::query_as(
-        "SELECT j.status, j.kind, j.attempt, w.key
+    let row: Option<(String, String, i32, String, i64)> = sqlx::query_as(
+        "SELECT j.status, j.kind, j.attempt, w.key,
+                GREATEST(EXTRACT(EPOCH FROM now() - j.created_at)::bigint, 0)
          FROM jobs j JOIN work_items w ON w.id = j.work_item_id
          WHERE j.id = $1 FOR UPDATE OF j",
     )
     .bind(job_id)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((status, kind, current, key)) = row else {
+    let Some((status, kind, current, key, elapsed_secs)) = row else {
         return Err(Error::JobNotFound(job_id));
     };
     if status != "running" || current != attempt {
@@ -97,7 +107,9 @@ pub async fn ingest_job_result(
         JobResult::Succeeded { output } => (
             "succeeded",
             "JobSucceeded",
-            json!({ "job_id": job_id, "kind": kind, "output": output }),
+            // `elapsed_secs` (queued to finished) is added to the event's copy of the output
+            // only, for the change request's agent-time metric.
+            json!({ "job_id": job_id, "kind": kind, "output": with_elapsed(&output, elapsed_secs) }),
             Some(output),
         ),
         JobResult::Failed { error } => (

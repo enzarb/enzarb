@@ -890,6 +890,7 @@ fn job_succeeded(
                 .map(str::to_string)
                 .unwrap_or_else(|| branch(d.number));
             let mut body = format!("{}\n\nCloses #{}", out.body.trim_end(), d.number);
+            body.push_str(&super::change_request::unverified_push_note(&out));
             let base_ref = match &d.stack {
                 Some(p) => {
                     body.push_str(&format!(
