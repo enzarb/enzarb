@@ -608,7 +608,9 @@ fn run_start_ci_read_token_compat() {
     let old = serde_json::to_value(run_start()).unwrap();
     assert!(old.get("ci_read_token").is_none());
     assert_eq!(
-        serde_json::from_value::<RunStart>(old).unwrap().ci_read_token,
+        serde_json::from_value::<RunStart>(old)
+            .unwrap()
+            .ci_read_token,
         None
     );
     let mut rs = run_start();
