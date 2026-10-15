@@ -417,6 +417,43 @@ img {
 	}
 }
 
+.step-timing {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-4);
+
+	&__title {
+		margin: 0 0 var(--ez-space-2);
+		font-size: var(--ez-text-lg);
+	}
+
+	&__track {
+		position: relative;
+		min-width: 6rem;
+		height: 0.75rem;
+	}
+
+	// Width and marker position come from `--pct` (0 to 100).
+	&__bar {
+		width: calc(var(--pct) * 1%);
+		height: 100%;
+		background: var(--ez-accent);
+	}
+
+	&__p95 {
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		left: calc(var(--pct) * 1%);
+		width: 2px;
+		background: var(--ez-text-muted);
+	}
+
+	&__jobs {
+		font-size: var(--ez-text-sm);
+	}
+}
+
 // Vertical rhythm between siblings; `--ez-gap` overrides the step.
 .ez-stack {
 	display: flex;

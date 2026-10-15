@@ -3,13 +3,14 @@
 	import { page } from '$app/state';
 	import BarChart from '#lib/components/BarChart.svelte';
 	import ProjectUsageSummary from '#lib/components/ProjectUsageSummary.svelte';
+	import StepTimingTable from '#lib/components/StepTimingTable.svelte';
 	import TaskCostTable from '#lib/components/TaskCostTable.svelte';
 	import WindowPicker from '#lib/components/WindowPicker.svelte';
 	import EmptyState from '#lib/components/ui/EmptyState.svelte';
 	import Notice from '#lib/components/ui/Notice.svelte';
 	import Section from '#lib/components/ui/Section.svelte';
 	import Skeleton from '#lib/components/ui/Skeleton.svelte';
-	import { getProjectUsage } from '#lib/metrics.remote.ts';
+	import { getProjectStepTiming, getProjectUsage } from '#lib/metrics.remote.ts';
 	import { defaultWindow, parseWindow, windowToParams } from '#lib/metrics-window.ts';
 	import { formatCost } from '#lib/usage.ts';
 
@@ -20,6 +21,13 @@
 	const current = $derived(parsed.ok ? parsed.window : defaultWindow(new Date()));
 	const usage = $derived(
 		getProjectUsage({ name: page.params.name!, ...Object.fromEntries(windowToParams(current)) })
+	);
+
+	const timing = $derived(
+		getProjectStepTiming({
+			name: page.params.name!,
+			...Object.fromEntries(windowToParams(current))
+		})
 	);
 
 	function change(params: URLSearchParams) {
@@ -67,4 +75,16 @@
 			<TaskCostTable tasks={u.tasks} />
 		</Section>
 	{/if}
+
+	<Section title="Step timing">
+		{#if timing.error && !timing.current}
+			<Notice tone="error" title="Could not load step timing"
+				>Something went wrong while loading step timing.</Notice
+			>
+		{:else if !timing.current}
+			<Skeleton label="Loading step timing" rows={3} />
+		{:else}
+			<StepTimingTable timing={timing.current} />
+		{/if}
+	</Section>
 </div>

@@ -6,7 +6,8 @@ const h = vi.hoisted(() => ({
 	search: '',
 	data: undefined as unknown,
 	goto: vi.fn(),
-	args: vi.fn()
+	args: vi.fn(),
+	timing: { states: [], jobs: [] } as unknown
 }));
 
 vi.mock('$app/state', () => ({
@@ -22,7 +23,8 @@ vi.mock('#lib/metrics.remote.ts', () => ({
 	getProjectUsage: (a: unknown) => {
 		h.args(a);
 		return { current: h.data, error: undefined };
-	}
+	},
+	getProjectStepTiming: () => ({ current: h.timing, error: undefined })
 }));
 
 import Metrics from './+page.svelte';
@@ -36,6 +38,7 @@ const empty = {
 beforeEach(() => {
 	h.search = '';
 	h.data = empty;
+	h.timing = { states: [], jobs: [] };
 	h.goto.mockClear();
 	h.args.mockClear();
 });
@@ -45,6 +48,28 @@ describe('metrics tab', () => {
 		render(Metrics);
 		await expect.element(browser.getByText('No usage in this window')).toBeVisible();
 		expect(h.args).toHaveBeenCalledWith({ name: 'alpha', window: '7d' });
+	});
+
+	it('shows step timing even when the window has no usage', async () => {
+		h.timing = {
+			states: [
+				{
+					name: 'Implementing',
+					active: { n: 2, min: 1, max: 9, mean: 5, median: 5, p95: 9 },
+					openExcluded: 0,
+					waiting: null
+				}
+			],
+			jobs: []
+		};
+		render(Metrics);
+		await expect.element(browser.getByText('No usage in this window')).toBeVisible();
+		await expect.element(browser.getByTestId('step-timing')).toBeVisible();
+	});
+
+	it('shows the step timing empty state', async () => {
+		render(Metrics);
+		await expect.element(browser.getByText('No step timing in this window')).toBeVisible();
 	});
 
 	it('reads the window from the URL', async () => {
