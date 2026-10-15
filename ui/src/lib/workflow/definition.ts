@@ -297,9 +297,14 @@ export function validate(d: Definition): Problem[] {
 		if (n.type === 'command' && (n.run ?? '').trim() === '')
 			push(`node \`${id}\`: \`run\` is empty`, id);
 		if (n.type === 'agent') {
-			if (promptText(n.prompt).trim() === '') push(`node \`${id}\`: \`prompt\` is empty`, id);
-			else if (typeof n.prompt === 'object' && !isPromptPath(n.prompt.file))
-				push(`node \`${id}\`: prompt file \`${n.prompt.file}\` must be ${PROMPT_DIR}<name>.md`, id);
+			if (typeof n.prompt === 'object') {
+				if (!isPromptPath(n.prompt.file))
+					push(
+						`node \`${id}\`: prompt file \`${n.prompt.file}\` must match .enzarb/prompts/<[A-Za-z0-9_-]+>.md`,
+						id
+					);
+			} else if (promptText(n.prompt).trim() === '')
+				push(`node \`${id}\`: \`prompt\` is empty`, id);
 		}
 		if (n.type === 'wait') {
 			const events = n.events ?? [];
@@ -387,7 +392,8 @@ export function validate(d: Definition): Problem[] {
 }
 
 export function isPromptPath(path: string): boolean {
-	return /^\.enzarb\/prompts\/[A-Za-z0-9_-][A-Za-z0-9_.-]*\.md$/.test(path) && !path.includes('..');
+	// `valid_prompt_path` in the Rust crate.
+	return /^\.enzarb\/prompts\/[A-Za-z0-9_-]+\.md$/.test(path);
 }
 
 /** Parse and validate YAML. Messages match the Rust `load` problems. */

@@ -81,7 +81,7 @@ describe('parseWorkflow', () => {
 			'version: 1\nname: t\non: [x]\nstart: a\nnodes:\n  a: {type: agent, prompt: {file: ../secret.md}, next: e}\n  e: {type: end, status: done}\n'
 		);
 		expect(r.problems.map((p) => p.message)).toEqual([
-			'node `a`: prompt file `../secret.md` must be .enzarb/prompts/<name>.md'
+			'node `a`: prompt file `../secret.md` must match .enzarb/prompts/<[A-Za-z0-9_-]+>.md'
 		]);
 	});
 

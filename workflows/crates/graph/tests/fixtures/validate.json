@@ -396,6 +396,68 @@
    ]
   },
   {
+   "name": "valid file prompt",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: a\nnodes:\n  a: {type: agent, prompt: {file: \".enzarb/prompts/fix-it_2.md\"}, next: e}\n  e: {type: end, status: done}\n",
+   "parse_error": false,
+   "errors": []
+  },
+  {
+   "name": "bad prompt file dotdot",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: a\nnodes:\n  a: {type: agent, prompt: {file: \".enzarb/prompts/../x.md\"}, next: e}\n  e: {type: end, status: done}\n",
+   "parse_error": false,
+   "errors": [
+    "node `a`: prompt file `.enzarb/prompts/../x.md` must match .enzarb/prompts/<[A-Za-z0-9_-]+>.md"
+   ]
+  },
+  {
+   "name": "bad prompt file subdirectory",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: a\nnodes:\n  a: {type: agent, prompt: {file: \".enzarb/prompts/sub/x.md\"}, next: e}\n  e: {type: end, status: done}\n",
+   "parse_error": false,
+   "errors": [
+    "node `a`: prompt file `.enzarb/prompts/sub/x.md` must match .enzarb/prompts/<[A-Za-z0-9_-]+>.md"
+   ]
+  },
+  {
+   "name": "bad prompt file txt",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: a\nnodes:\n  a: {type: agent, prompt: {file: \".enzarb/prompts/x.txt\"}, next: e}\n  e: {type: end, status: done}\n",
+   "parse_error": false,
+   "errors": [
+    "node `a`: prompt file `.enzarb/prompts/x.txt` must match .enzarb/prompts/<[A-Za-z0-9_-]+>.md"
+   ]
+  },
+  {
+   "name": "bad prompt file leading slash",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: a\nnodes:\n  a: {type: agent, prompt: {file: \"/.enzarb/prompts/x.md\"}, next: e}\n  e: {type: end, status: done}\n",
+   "parse_error": false,
+   "errors": [
+    "node `a`: prompt file `/.enzarb/prompts/x.md` must match .enzarb/prompts/<[A-Za-z0-9_-]+>.md"
+   ]
+  },
+  {
+   "name": "bad prompt file outside prompts",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: a\nnodes:\n  a: {type: agent, prompt: {file: \".enzarb/workflows/x.md\"}, next: e}\n  e: {type: end, status: done}\n",
+   "parse_error": false,
+   "errors": [
+    "node `a`: prompt file `.enzarb/workflows/x.md` must match .enzarb/prompts/<[A-Za-z0-9_-]+>.md"
+   ]
+  },
+  {
+   "name": "bad prompt file dot in name",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: a\nnodes:\n  a: {type: agent, prompt: {file: \".enzarb/prompts/a.b.md\"}, next: e}\n  e: {type: end, status: done}\n",
+   "parse_error": false,
+   "errors": [
+    "node `a`: prompt file `.enzarb/prompts/a.b.md` must match .enzarb/prompts/<[A-Za-z0-9_-]+>.md"
+   ]
+  },
+  {
+   "name": "bad prompt file empty",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: a\nnodes:\n  a: {type: agent, prompt: {file: \"\"}, next: e}\n  e: {type: end, status: done}\n",
+   "parse_error": false,
+   "errors": [
+    "node `a`: prompt file `` must match .enzarb/prompts/<[A-Za-z0-9_-]+>.md"
+   ]
+  },
+  {
    "name": "unknown type",
    "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: a\nnodes:\n  a: {type: teleport, next: a}\n",
    "parse_error": true,
@@ -440,6 +502,12 @@
   {
    "name": "negative visits",
    "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: a\nnodes:\n  a: {type: command, run: x, next: e, max_visits: -1}\n  e: {type: end, status: done}\n",
+   "parse_error": true,
+   "errors": []
+  },
+  {
+   "name": "prompt map without file",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: a\nnodes:\n  a: {type: agent, prompt: {path: x}, next: a}\n",
    "parse_error": true,
    "errors": []
   },
