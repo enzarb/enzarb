@@ -23,3 +23,6 @@ Rejected alternatives:
 - A sub-issue is `Done` when its change request is opened, so the epic is `Done` at that point, not when the changes are merged. Merge order is still enforced by the dependency gate of ADR-0017.
 - Closing or cancelling an epic leaves its sub-issues open.
 - Not done: UI display of the epic and its sub-issues, re-planning an epic after its sub-issues exist, adding or removing sub-issues later, a `no-epic` opt-out label, sub-issues in other repositories.
+
+## Amendment (2026-10, graph workflows)
+With graph workflows ([ADR-0020](0020-graph-workflows.md)) the same behaviour is expressed as nodes: a `create_sub_issues` action (only after a wait on `approval`), `children_done` waits, and the `epic` item fact; see [workflows.md](../workflows.md#graph-workflows). Graph tasks also differ on one point, on request: a sub-issue (any graph task) whose dependencies are not *merged* stays `Blocked`, including for triage and planning, and starts by itself once they are. An open change request does not unblock it. Compiled epics keep the behaviour above.
