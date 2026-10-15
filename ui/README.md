@@ -27,7 +27,7 @@ A Playwright smoke test (`e2e/chat.spec.ts`) opens the chat page, waits for it t
 
 ## Icons
 
-The logo mark and the icon set in `static/` (favicon, apple-touch icon, PWA and maskable icons, notification badge) are generated from `static/brand/enzarb-mark-flat.svg` by `scripts/generate-icons.mjs` (`@resvg/resvg-js` and `png-to-ico`, both npm devDependencies). The other files in `static/brand/` are derived from `enzarb-sheet.svg` by `scripts/build-brand.mjs`. After editing a source SVG run `mise run ui:icons` (or `npm run brand && npm run icons`) and commit the results; the output is byte-stable. `src/lib/components/Logo.svelte` inlines the same glyph, so update it too. See `docs/brand.md`.
+The logo mark and the icon set in `static/` (favicon, apple-touch icon, PWA and maskable icons, notification badge) are generated from `static/brand/enzarb-mark-flat.svg` (48px and up) and `enzarb-mark-tiny.svg` (16-32px) by `scripts/generate-icons.mjs` (placement in `scripts/icon-lib.mjs`; `npm run icons:preview` renders the preview sheet) (`@resvg/resvg-js` and `png-to-ico`, both npm devDependencies). The other files in `static/brand/` are derived from `enzarb-sheet.svg` by `scripts/build-brand.mjs`. After editing a source SVG run `mise run ui:icons` (or `npm run brand && npm run icons`) and commit the results; the output is byte-stable. `src/lib/components/Logo.svelte` inlines the tiny glyph (a test keeps them equal), so update it too. See `docs/brand.md`.
 
 ## Deployment notes
 

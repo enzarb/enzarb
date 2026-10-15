@@ -1,5 +1,5 @@
 // Derives the logo assets in static/brand/ from the maintainer's logo sheet. Run: npm run brand
-// enzarb-sheet.svg is the source of truth and is never rewritten; enzarb-mark-flat.svg is hand-authored.
+// enzarb-sheet.svg is the source of truth and is never rewritten; enzarb-mark-flat.svg and enzarb-mark-tiny.svg are hand-authored.
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const dir = (name) => new URL(`../static/brand/${name}`, import.meta.url);
