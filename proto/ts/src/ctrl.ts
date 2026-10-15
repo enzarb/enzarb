@@ -19,7 +19,8 @@ export type ChannelKind = "pty" | "acp" | (string & {});
 
 /** Feature names advertised in `welcome.features`. */
 /** `ClaudeUserToken` is a client feature (`hello.features`), sent only by sandbox-proxy. */
-export const Feature = { Acp: "acp", ClaudeUserToken: "claude_user_token" } as const;
+/** `Stats`: the server answers `stats_request` with `stats`; send the request only after seeing it. */
+export const Feature = { Acp: "acp", ClaudeUserToken: "claude_user_token", Stats: "stats" } as const;
 /** Decoders keep at most this many features and drop any longer than `MAX_FEATURE_LEN` bytes. */
 export const MAX_FEATURES = 64;
 export const MAX_FEATURE_LEN = 64;
@@ -134,6 +135,24 @@ export interface RunFinished {
   usage?: Usage | null;
 }
 
+/**
+ * Raw cumulative sandbox counters (`stats` reply). Every field but `ts_ms` is omitted when it could
+ * not be read (absent means unknown, never 0). Consumers compute rates from two snapshots.
+ */
+export interface SandboxStats {
+  /** Unix time of the snapshot in milliseconds. */
+  ts_ms: number;
+  cpu_usage_usec?: number | null;
+  cpu_user_usec?: number | null;
+  cpu_system_usec?: number | null;
+  /** `memory.current` in bytes (a gauge). */
+  memory_bytes?: number | null;
+  io_read_bytes?: number | null;
+  io_write_bytes?: number | null;
+  storage_used_bytes?: number | null;
+  storage_total_bytes?: number | null;
+}
+
 export type Ctrl =
   | { type: "hello"; versions: number[]; client: ClientKind; features?: string[] | null }
   | { type: "welcome"; version: number; features?: string[] | null }
@@ -149,6 +168,8 @@ export type Ctrl =
   | { type: "credential_captured"; kind: CredentialKind; token?: SecretLike | null; legacy?: boolean | null }
   | { type: "credential_status" }
   | { type: "credential_state"; kind: CredentialKind; configured: boolean; scope?: string | null }
+  | { type: "stats_request" }
+  | ({ type: "stats" } & SandboxStats)
   /** Client -> server: clear the stored credential. */
   | { type: "credential_clear"; kind: CredentialKind }
   | { type: "error"; code: string; message: string; run_id?: string; channel?: number };
@@ -171,6 +192,8 @@ const TYPES: ReadonlySet<string> = new Set<CtrlType>([
   "credential_status",
   "credential_state",
   "credential_clear",
+  "stats_request",
+  "stats",
   "error",
 ]);
 

@@ -34,6 +34,9 @@ pub enum ChannelKind {
 pub mod feature {
     /// The `acp` channel kind is available.
     pub const ACP: &str = "acp";
+    /// The server answers `stats_request` with `stats`. Clients must only
+    /// send `stats_request` after seeing it (an old server ignores the request).
+    pub const STATS: &str = "stats";
     /// Client feature (`hello.features`): the client stores per-user Claude
     /// tokens from `credential_captured.token` and never relays them, and acks
     /// `legacy` captures. Only sandbox-proxy sends it.
@@ -311,6 +314,40 @@ pub struct RunFinished {
     pub usage: Option<Usage>,
 }
 
+/// Raw cumulative resource counters of a sandbox, read on demand from cgroup
+/// v2 and statfs (`stats` reply). Every field but `ts_ms` is omitted when it
+/// could not be read: absent means unknown, never 0. Consumers compute rates
+/// from two snapshots.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxStats {
+    /// Unix time of the snapshot in milliseconds.
+    pub ts_ms: u64,
+    /// `cpu.stat` `usage_usec`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_usage_usec: Option<u64>,
+    /// `cpu.stat` `user_usec`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_user_usec: Option<u64>,
+    /// `cpu.stat` `system_usec`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_system_usec: Option<u64>,
+    /// `memory.current` in bytes (a gauge, not cumulative).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_bytes: Option<u64>,
+    /// `io.stat` `rbytes` summed over devices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_read_bytes: Option<u64>,
+    /// `io.stat` `wbytes` summed over devices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_write_bytes: Option<u64>,
+    /// Used bytes of the workspace filesystem (statfs; a gauge).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_used_bytes: Option<u64>,
+    /// Total bytes of the workspace filesystem (statfs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_total_bytes: Option<u64>,
+}
+
 /// Every CTRL message.
 // `RunStart` grew with the additive `retarget` field; boxing it would break the public
 // `Ctrl::RunStart` shape for every consumer.
@@ -416,6 +453,11 @@ pub enum Ctrl {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<String>,
     },
+    /// Client asks for a stats snapshot; answered by `stats`. No fields. Only
+    /// send it after `welcome.features` contained [`feature::STATS`].
+    StatsRequest,
+    /// Reply to `stats_request`.
+    Stats(SandboxStats),
     /// Browser -> proxy (client -> server): clear the stored credential.
     CredentialClear {
         kind: CredentialKind,

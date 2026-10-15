@@ -295,6 +295,29 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
             },
         ),
         ("credential_status", Ctrl::CredentialStatus),
+        ("stats_request", Ctrl::StatsRequest),
+        (
+            "stats",
+            Ctrl::Stats(SandboxStats {
+                ts_ms: 1_760_000_000_000,
+                cpu_usage_usec: Some(12_345_678),
+                cpu_user_usec: Some(10_000_000),
+                cpu_system_usec: Some(2_345_678),
+                memory_bytes: Some(268_435_456),
+                io_read_bytes: Some(1024),
+                io_write_bytes: Some(2048),
+                storage_used_bytes: Some(5_000_000_000),
+                storage_total_bytes: Some(20_000_000_000),
+            }),
+        ),
+        (
+            "stats_partial",
+            Ctrl::Stats(SandboxStats {
+                ts_ms: 1_760_000_000_000,
+                memory_bytes: Some(1),
+                ..Default::default()
+            }),
+        ),
         (
             "credential_state",
             Ctrl::CredentialState {
@@ -676,6 +699,10 @@ fn ctrl_compat_vectors() {
                "expect":{"type":"run_state","run_id":"r","state":"succeeded"}}),
         json!({"name":"run_state_usage_unknown_fields","payload":r#"{"type":"run_state","run_id":"r","state":"succeeded","usage":{"input_tokens":5,"future":1}}"#,
                "expect":{"type":"run_state","run_id":"r","usage":{"input_tokens":5}}}),
+        json!({"name":"stats_only_ts","payload":r#"{"type":"stats","ts_ms":5}"#,
+               "expect":{"type":"stats","ts_ms":5}}),
+        json!({"name":"stats_unknown_fields","payload":r#"{"type":"stats","ts_ms":5,"memory_bytes":7,"gpu_busy":1}"#,
+               "expect":{"type":"stats","ts_ms":5,"memory_bytes":7}}),
         json!({"name":"credential_captured_unknown_fields","payload":r#"{"type":"credential_captured","kind":"claude_oauth","token":null,"legacy":null,"x":1}"#,
                "expect":{"type":"credential_captured","kind":"claude_oauth"}}),
     ];

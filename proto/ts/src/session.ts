@@ -596,6 +596,7 @@ export class Session implements ChannelHost {
         return;
       }
       case "credential_captured":
+      case "stats":
         this.emit(m);
         return;
       default:
