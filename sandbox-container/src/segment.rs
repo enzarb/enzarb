@@ -168,7 +168,7 @@ start: prepare
 nodes:
   prepare: {type: command, run: "prep", optional: true, next: implement}
   implement: {type: agent, prompt: implement, next: {pushed: check, else: failed}}
-  check: {type: command, run: "test", next: {"exit_code == 0": open_pr, else: fix}}
+  check: {type: command, run: "test", optional: true, next: {"exit_code == 0": open_pr, else: fix}}
   fix: {type: agent, prompt: "fix it", next: check, max_visits: 2}
   open_pr: {type: action, action: open_change_request, next: done}
   failed: {type: end, status: failed}

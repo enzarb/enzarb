@@ -1672,3 +1672,38 @@ async fn segment_with_an_invalid_definition_fails() {
     assert_eq!(fin.outcome, RunOutcome::Failed);
     assert!(fin.summary.contains("invalid"), "{}", fin.summary);
 }
+
+#[tokio::test]
+async fn segment_agent_without_new_work_is_not_pushed() {
+    let env = start(0).await;
+    let (session, _e) = env.connect().await;
+    let mut req = segment(&env, "seg-5", "implement");
+    req.graph
+        .as_mut()
+        .unwrap()
+        .prompts
+        .insert("implement".into(), "LOOK only".into());
+    session.run_start(req).await.unwrap();
+    let (_, fin) = env.finished("seg-5").await;
+    assert_eq!(fin.outcome, RunOutcome::Succeeded, "{}", fin.summary);
+    let g = fin.graph.unwrap();
+    assert_eq!(g.outputs["implement"]["pushed"], false);
+    assert_eq!(g.stopped_at, "failed");
+    assert!(!fin.pushed);
+    assert_eq!(env.remote_sha("enzarb/seg-5"), None);
+}
+
+#[tokio::test]
+async fn segment_command_edits_are_pushed_at_the_stop() {
+    let env = start(0).await;
+    let (session, _e) = env.connect().await;
+    let mut req = segment(&env, "seg-6", "edit");
+    req.graph.as_mut().unwrap().definition = serde_json::Value::String(
+        "version: 1\nname: t\non: [issue_opened]\nstart: edit\nnodes:\n  edit: {type: command, run: \"echo x > c.txt\", next: open_pr}\n  open_pr: {type: action, action: open_change_request, next: done}\n  done: {type: end, status: done}\n".into(),
+    );
+    session.run_start(req).await.unwrap();
+    let (_, fin) = env.finished("seg-6").await;
+    assert_eq!(fin.outcome, RunOutcome::Succeeded, "{}", fin.summary);
+    assert!(fin.pushed);
+    assert_eq!(Some(fin.head_sha.clone()), env.remote_sha("enzarb/seg-6"));
+}

@@ -1637,6 +1637,7 @@ impl Inner {
                 tok_env,
                 token: None,
                 head_sha: start_sha.clone(),
+                synced: start_sha.clone(),
                 pushed: false,
                 summary: String::new(),
             };
@@ -1844,7 +1845,20 @@ impl Inner {
         };
         run.transcript
             .append("graph", json!({"start": g.start, "name": def.name}));
-        let res = segment::walk(&def, &mut state, &g.prompts, steps).await;
+        let mut res = segment::walk(&def, &mut state, &g.prompts, steps).await;
+        // Edits of `command` nodes after the last agent turn are pushed too.
+        if matches!(res, Ok(Stopped::At(_))) && steps.req.push {
+            match steps.sync().await {
+                Ok(Ok(())) => {}
+                Ok(Err(msg)) => {
+                    res = Ok(Stopped::Failed {
+                        node: state.node.clone(),
+                        reason: msg,
+                    })
+                }
+                Err(e) => res = Err(e),
+            }
+        }
         let (outcome, summary) = match &res {
             Ok(Stopped::At(n)) => {
                 run.transcript.append("graph", json!({"stopped_at": n}));
@@ -1909,6 +1923,8 @@ struct SegmentSteps<'a> {
     /// The Claude token, resolved at the first agent node.
     token: Option<String>,
     head_sha: String,
+    /// The remote head of `branch` as far as this run knows (its start, then each push).
+    synced: String,
     pushed: bool,
     /// The latest agent message (the run's summary).
     summary: String,
@@ -1944,6 +1960,63 @@ impl SegmentSteps<'_> {
         Ok(t)
     }
 
+    async fn head(&mut self) -> Result<String, Abort> {
+        Ok(self
+            .mgr
+            .rev_parse(self.run, self.ctl, self.worktree, "HEAD")
+            .await?
+            .unwrap_or_default())
+    }
+
+    /// Commit leftovers and push `branch` when the worktree has anything the remote does not
+    /// (uncommitted changes, or a HEAD that is not the last pushed one). `Ok(Err(message))`
+    /// when the push was refused.
+    async fn sync(&mut self) -> Result<Result<(), String>, Abort> {
+        let status = self
+            .mgr
+            .git(
+                self.run,
+                self.ctl,
+                &self.secrets,
+                &[],
+                Some(self.worktree),
+                &["status", "--porcelain"],
+            )
+            .await?;
+        let dirty = !status.stdout.iter().all(u8::is_ascii_whitespace);
+        self.head_sha = self.head().await?;
+        if !dirty && self.head_sha == self.synced {
+            return Ok(Ok(()));
+        }
+        match self
+            .mgr
+            .commit_and_push(
+                self.run,
+                self.ctl,
+                &self.secrets,
+                self.net_env,
+                self.req,
+                self.repo,
+                self.worktree,
+                self.base_sha,
+            )
+            .await?
+        {
+            Ok((sha, p)) => {
+                if p {
+                    self.synced = sha.clone();
+                    self.pushed = true;
+                }
+                self.head_sha = sha;
+                Ok(Ok(()))
+            }
+            Err((msg, sha)) => {
+                self.head_sha = sha;
+                Ok(Err(redact(&msg, &self.secrets)))
+            }
+        }
+    }
+
     fn node_event(&self, node: &str, kind: &str, out: &Value) {
         let mut ev = json!({"node": node, "type": kind, "ok": out["ok"]});
         if let Some(c) = out.get("exit_code") {
@@ -1975,6 +2048,7 @@ impl Steps for SegmentSteps<'_> {
 
     async fn agent(&mut self, node: &str, prompt: &str) -> Result<Value, Abort> {
         let token = self.token()?;
+        let before = self.head().await?;
         let mut env = self.base_env();
         env.push(("CLAUDE_CODE_OAUTH_TOKEN".to_string(), token));
         let usage: acp::UsageSink = Arc::default();
@@ -2021,41 +2095,18 @@ impl Steps for SegmentSteps<'_> {
             Err(AcpError::Stopped(s)) => return Err(s.into()),
             Err(AcpError::Failed(m)) => (false, redact(&m, &self.secrets)),
         };
-        let mut pushed = false;
         let mut text = text;
         if ok && self.req.push {
-            match self
-                .mgr
-                .commit_and_push(
-                    self.run,
-                    self.ctl,
-                    &self.secrets,
-                    self.net_env,
-                    self.req,
-                    self.repo,
-                    self.worktree,
-                    self.base_sha,
-                )
-                .await?
-            {
-                Ok((sha, p)) => {
-                    self.head_sha = sha;
-                    pushed = p;
-                }
-                Err((msg, sha)) => {
-                    self.head_sha = sha;
-                    ok = false;
-                    text = redact(&msg, &self.secrets);
-                }
+            if let Err(msg) = self.sync().await? {
+                ok = false;
+                text = msg;
             }
-        } else if let Some(sha) = self
-            .mgr
-            .rev_parse(self.run, self.ctl, self.worktree, "HEAD")
-            .await?
-        {
-            self.head_sha = sha;
+        } else {
+            self.head_sha = self.head().await?;
         }
-        self.pushed |= pushed;
+        // `pushed` means this node produced new, pushed work: HEAD moved during it and the
+        // remote branch is at the new HEAD.
+        let pushed = ok && self.req.push && self.head_sha != before && self.synced == self.head_sha;
         self.summary = text.clone();
         let v = segment::agent_output(ok, &text, pushed, &self.head_sha, &self.req.branch);
         self.node_event(node, "agent", &v);
