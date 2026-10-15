@@ -467,6 +467,11 @@ img {
 	flex-wrap: wrap;
 	align-items: center;
 	gap: var(--ez-gap, var(--ez-space-2));
+
+	// Lines buttons up with labelled inputs rather than with their labels.
+	&--end {
+		align-items: flex-end;
+	}
 }
 
 .ez-settings {
@@ -1310,6 +1315,21 @@ img {
 textarea.ez-control {
 	min-height: 6rem;
 	resize: vertical;
+}
+
+// Native date input: the box follows the theme's color-scheme (picker icon and popup too).
+.ez-control[type='date'] {
+	min-width: 10rem;
+	font-variant-numeric: tabular-nums;
+
+	&::-webkit-calendar-picker-indicator {
+		cursor: pointer;
+		opacity: 0.7;
+
+		&:hover {
+			opacity: 1;
+		}
+	}
 }
 
 .ez-select {
