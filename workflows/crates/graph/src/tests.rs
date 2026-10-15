@@ -502,7 +502,11 @@ const ENZARB_ISSUE: &str = include_str!("../../../../.enzarb/workflows/issue.yam
 fn enzarb_issue_workflow_gates_implementation_on_approval() {
     let d = load(ENZARB_ISSUE).unwrap();
     let (mut s, n) = GraphState::begin(&d);
-    assert_eq!(n, Next::Node("plan".into()));
+    assert_eq!(n, Next::Node("route".into()));
+    assert_eq!(
+        advance(&d, &mut s, json!({"exit_code": 0})),
+        Next::Node("plan".into())
+    );
     assert_eq!(
         advance(&d, &mut s, json!({"ok": true})),
         Next::Node("post_plan".into())
@@ -671,4 +675,26 @@ fn item_facts_fill_missing_identifiers_only() {
         Next::Node("f".into())
     );
     assert_eq!(run(json!({}), json!({})), Next::Node("f".into()));
+}
+
+/// enzarb's own definition, epic path: breakdown, approval, sub-issues, children.
+#[test]
+fn enzarb_issue_workflow_epic_creates_sub_issues_after_approval() {
+    let d = load(ENZARB_ISSUE).unwrap();
+    let (mut s, _) = GraphState::begin(&d);
+    s.outputs.insert(ITEM.into(), json!({"epic": true}));
+    assert_eq!(
+        advance(&d, &mut s, json!({"exit_code": 0})),
+        Next::Node("plan_epic".into())
+    );
+    advance(&d, &mut s, json!({"ok": true}));
+    advance(&d, &mut s, json!({}));
+    let approved = json!({"event": "approval", "author": "a"});
+    assert_eq!(advance(&d, &mut s, approved), Next::Node("create".into()));
+    assert_eq!(
+        advance(&d, &mut s, json!({"created": []})),
+        Next::Node("children".into())
+    );
+    let done = json!({"event": "children_done", "open": [], "completed": ["a"], "failed": []});
+    assert_eq!(advance(&d, &mut s, done), Next::Node("done".into()));
 }
