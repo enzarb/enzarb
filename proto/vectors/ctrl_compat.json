@@ -122,6 +122,23 @@
   },
   {
     "expect": {
+      "ts_ms": 5,
+      "type": "stats"
+    },
+    "name": "stats_only_ts",
+    "payload": "{\"type\":\"stats\",\"ts_ms\":5}"
+  },
+  {
+    "expect": {
+      "memory_bytes": 7,
+      "ts_ms": 5,
+      "type": "stats"
+    },
+    "name": "stats_unknown_fields",
+    "payload": "{\"type\":\"stats\",\"ts_ms\":5,\"memory_bytes\":7,\"gpu_busy\":1}"
+  },
+  {
+    "expect": {
       "kind": "claude_oauth",
       "type": "credential_captured"
     },

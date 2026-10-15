@@ -509,3 +509,62 @@ async fn legacy_file_changed_after_promotion_is_kept() {
         "sk-ant-oat01-NEWER"
     );
 }
+
+async fn ask_stats(session: &Session, events: &mut Events) -> enzarb_proto::SandboxStats {
+    session.send_ctrl(&Ctrl::StatsRequest).unwrap();
+    loop {
+        match timeout(T, events.next()).await.expect("no stats") {
+            Some(Event::Ctrl(Ctrl::Stats(s))) => return s,
+            Some(_) => continue,
+            None => panic!("closed"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn stats_request_reads_cgroup_files_on_demand() {
+    let cg = tempfile::tempdir().unwrap();
+    std::fs::write(cg.path().join("cpu.stat"), "usage_usec 11\nuser_usec 7\n").unwrap();
+    std::fs::write(cg.path().join("memory.current"), "4096\n").unwrap();
+    let root = cg.path().to_path_buf();
+    let srv = start_with(move |c| c.cgroup_root = root).await;
+    let (session, mut events) = srv.connect().await;
+    assert!(
+        session
+            .features()
+            .iter()
+            .any(|f| f == enzarb_proto::feature::STATS)
+    );
+
+    let s = ask_stats(&session, &mut events).await;
+    assert!(s.ts_ms > 1_700_000_000_000);
+    assert_eq!(s.cpu_usage_usec, Some(11));
+    assert_eq!(s.cpu_user_usec, Some(7));
+    assert_eq!(s.cpu_system_usec, None);
+    assert_eq!(s.memory_bytes, Some(4096));
+    assert_eq!(s.io_read_bytes, None);
+    assert!(s.storage_total_bytes.is_some_and(|t| t > 0));
+
+    // Counters are read per request, not cached.
+    std::fs::write(cg.path().join("memory.current"), "max\n").unwrap();
+    assert_eq!(ask_stats(&session, &mut events).await.memory_bytes, None);
+    session.close().await;
+}
+
+#[tokio::test]
+async fn stats_request_without_cgroup_files_still_replies() {
+    let srv = start_with(|c| c.cgroup_root = "/nonexistent/cgroup".into()).await;
+    let (session, mut events) = srv.connect().await;
+    let s = ask_stats(&session, &mut events).await;
+    assert!(s.ts_ms > 0);
+    assert_eq!(s.cpu_usage_usec, None);
+    assert_eq!(s.memory_bytes, None);
+    // The session is unaffected: a pty still works.
+    let pty = session
+        .open_pty(80, 24, argv(&["echo", "ok"]))
+        .await
+        .unwrap();
+    let (_send, mut recv) = pty.split();
+    read_until(&mut recv, "ok").await;
+    session.close().await;
+}
