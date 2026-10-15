@@ -108,6 +108,24 @@ describe('needs-you classification', () => {
 			'failed'
 		);
 	});
+	it('puts a ci_failed wait in Needs you with the failing checks and a Retry', () => {
+		const text = 'CI failed: actionlint, scripts';
+		const data = {
+			wait: { waiting_on: 'human', reason: 'ci_failed', text, url: 'https://ci.example/run/1' }
+		};
+		expect(classifyNeedsYou(cr('AwaitingChanges', data))).toEqual({
+			category: 'failed',
+			reason: text,
+			text
+		});
+		expect(availableActions('AwaitingChanges', data)).toContain('retry');
+		expect(availableActions('AwaitingChanges', {})).not.toContain('retry');
+		expect(primaryAction('failed')).toBe('retry');
+		// enzarb is on it: not in the queue, and no retry
+		const fixing = { wait: { waiting_on: 'enzarb', reason: 'enzarb_fixing', text: 'x' } };
+		expect(classifyNeedsYou(cr('AddressingComments', fixing))).toBeNull();
+		expect(availableActions('AddressingComments', fixing)).not.toContain('retry');
+	});
 	it('labels why a change request is waiting and keeps round_limit in the queue', () => {
 		const wait = (waiting_on: string, reason: string, text: string) => ({
 			wait: { waiting_on, reason, text }
@@ -256,6 +274,12 @@ describe('needs-you classification', () => {
 		expect(waitLinks(w('ci_stale'), pr)).toEqual([{ label: 'View checks', href: `${pr}/checks` }]);
 		for (const reason of ['enzarb_failed', 'round_limit', 'conflict_parked'])
 			expect(waitLinks(w(reason), pr)).toEqual([{ label: 'Open PR', href: pr }]);
+		expect(waitLinks(w('ci_failed'), pr)).toEqual([
+			{ label: 'View failing check', href: `${pr}/checks` }
+		]);
+		expect(waitLinks(w('ci_failed', { url: 'https://ci.example/run/1' }), pr)).toEqual([
+			{ label: 'View failing check', href: 'https://ci.example/run/1' }
+		]);
 		const comment = `${pr}#issuecomment-9`;
 		expect(waitLinks(w('decision_needed', { url: comment }), pr)).toEqual([
 			{ label: 'View comment', href: comment }
