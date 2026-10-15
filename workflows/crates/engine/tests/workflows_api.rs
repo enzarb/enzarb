@@ -422,6 +422,370 @@ async fn connectors_role_can_only_execute_ingest_event() {
     let _ = wi;
 }
 
+async fn metrics_item(db: &TestDb, project: &str, key: &str, created: &str) -> i64 {
+    sqlx::query_scalar(
+        "INSERT INTO workflows.work_items (key, project_id, workflow, state, created_at)
+         VALUES ($1, $2, 'issue', 'Done', $3::timestamptz) RETURNING id",
+    )
+    .bind(key)
+    .bind(project)
+    .bind(created)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap()
+}
+
+async fn metrics_job(
+    db: &TestDb,
+    wi: i64,
+    kind: &str,
+    created: &str,
+    updated: &str,
+    status: &str,
+    usage: Option<serde_json::Value>,
+) {
+    sqlx::query(
+        "INSERT INTO workflows.jobs (work_item_id, kind, idempotency_key, status, usage, created_at, updated_at)
+         VALUES ($1, $2, gen_random_uuid()::text, $3, $4, $5::timestamptz, $6::timestamptz)",
+    )
+    .bind(wi)
+    .bind(kind)
+    .bind(status)
+    .bind(usage)
+    .bind(created)
+    .bind(updated)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+}
+
+/// A transition at `at` into `to_state`; ids ascend with call order.
+async fn metrics_transition(db: &TestDb, wi: i64, to_state: &str, at: &str) {
+    sqlx::query(
+        "INSERT INTO workflows.transitions (work_item_id, to_state, event_type, at)
+         VALUES ($1, $2, 'X', $3::timestamptz)",
+    )
+    .bind(wi)
+    .bind(to_state)
+    .bind(at)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+}
+
+const T0: &str = "2026-10-01T00:00:00Z";
+const T1: &str = "2026-10-02T00:00:00Z";
+
+type UsageRow = (
+    String,
+    Option<String>,
+    Option<f64>,
+    Option<f64>,
+    Option<f64>,
+    Option<i64>,
+);
+
+async fn usage_rows(ui: &sqlx::PgPool, project: &str, from: &str, to: &str) -> Vec<UsageRow> {
+    sqlx::query_as(
+        "SELECT kind, work_item_key, input_tokens::float8, cost_usd::float8, cost_usd_avg::float8, cost_usd_reporters
+         FROM workflows_api.project_usage($1, $2::timestamptz, $3::timestamptz)",
+    )
+    .bind(project)
+    .bind(from)
+    .bind(to)
+    .fetch_all(ui)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn project_usage_window_null_vs_zero_and_project_scope() {
+    let db = db!();
+    let ui = db.pool_as("enzarb_ui").await;
+    // at `from` (in), reports cost 0
+    let a = metrics_item(&db, "p", "k:a", T0).await;
+    metrics_job(
+        &db,
+        a,
+        "agent_task",
+        T0,
+        T0,
+        "succeeded",
+        Some(json!({"input_tokens": 10, "cost_usd": 0})),
+    )
+    .await;
+    // inside, reports cost 3
+    let b = metrics_item(&db, "p", "k:b", "2026-10-01T12:00:00Z").await;
+    metrics_job(
+        &db,
+        b,
+        "agent_task",
+        T0,
+        T0,
+        "succeeded",
+        Some(json!({"input_tokens": 30, "cost_usd": 3})),
+    )
+    .await;
+    // inside, reports nothing
+    metrics_item(&db, "p", "k:c", "2026-10-01T13:00:00Z").await;
+    // exactly at `to` (out)
+    let d = metrics_item(&db, "p", "k:d", T1).await;
+    metrics_job(
+        &db,
+        d,
+        "agent_task",
+        T0,
+        T0,
+        "succeeded",
+        Some(json!({"input_tokens": 999, "cost_usd": 99})),
+    )
+    .await;
+    // other project (out)
+    let e = metrics_item(&db, "q", "k:e", "2026-10-01T12:00:00Z").await;
+    metrics_job(
+        &db,
+        e,
+        "agent_task",
+        T0,
+        T0,
+        "succeeded",
+        Some(json!({"input_tokens": 500, "cost_usd": 50})),
+    )
+    .await;
+
+    let rows = usage_rows(&ui, "p", T0, T1).await;
+    let total = &rows[0];
+    assert_eq!(total.0, "total");
+    assert_eq!(total.2, Some(40.0)); // input tokens: a + b
+    assert_eq!(total.3, Some(3.0));
+    assert_eq!(total.4, Some(1.5)); // avg over the two reporters, 0 counts
+    assert_eq!(total.5, Some(2));
+    let keys: Vec<_> = rows[1..].iter().map(|r| r.1.clone().unwrap()).collect();
+    assert_eq!(keys, ["k:a", "k:b", "k:c"]);
+    assert_eq!(rows[1].3, Some(0.0)); // reported 0
+    assert_eq!(rows[3].3, None); // not reported
+    assert_eq!(rows[3].2, None);
+
+    let (items, median): (i64, Option<f64>) = sqlx::query_as(
+        "SELECT items, cost_usd_median FROM workflows_api.project_usage('p', $1::timestamptz, $2::timestamptz) WHERE kind = 'total'",
+    )
+    .bind(T0)
+    .bind(T1)
+    .fetch_one(&ui)
+    .await
+    .unwrap();
+    assert_eq!((items, median), (3, Some(1.5)));
+
+    // Nobody reported in this window: NULL, not 0.
+    let rows = usage_rows(&ui, "p", "2026-10-01T13:00:00Z", "2026-10-01T14:00:00Z").await;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        (rows[0].2, rows[0].3, rows[0].4, rows[0].5),
+        (None, None, None, Some(0))
+    );
+}
+
+type TimingRow = (
+    String,
+    i64,
+    i64,
+    i64,
+    Option<f64>,
+    Option<f64>,
+    Option<f64>,
+    Option<f64>,
+    Option<f64>,
+    Option<f64>,
+);
+
+async fn timing(
+    ui: &sqlx::PgPool,
+    kind: &str,
+    from: &str,
+    to: &str,
+    open: bool,
+) -> Vec<(String, TimingRow)> {
+    let rows: Vec<TimingRow> = sqlx::query_as(
+        "SELECT name, n, open_excluded, wait_count, wait_s, min_s, max_s, avg_s, median_s, p95_s
+         FROM workflows_api.project_step_timing('p', $1::timestamptz, $2::timestamptz, $3)
+         WHERE kind = $4 ORDER BY name",
+    )
+    .bind(from)
+    .bind(to)
+    .bind(open)
+    .bind(kind)
+    .fetch_all(ui)
+    .await
+    .unwrap();
+    rows.into_iter().map(|r| (r.0.clone(), r)).collect()
+}
+
+#[tokio::test]
+async fn project_step_timing_statistics_windows_open_and_scope() {
+    let db = db!();
+    let ui = db.pool_as("enzarb_ui").await;
+    // Durations in `Working`: 10, 20, 30, 40 s. Each item then ends in `Done` (open).
+    for (i, secs) in [10, 20, 30, 40].into_iter().enumerate() {
+        let wi = metrics_item(&db, "p", &format!("k:{i}"), T0).await;
+        let start = format!("2026-10-01T00:{:02}:00Z", i);
+        let end = format!("2026-10-01T00:{:02}:{:02}Z", i, secs);
+        metrics_transition(&db, wi, "Working", &start).await;
+        metrics_transition(&db, wi, "Done", &end).await;
+    }
+    // Transition exactly at `to` is out of the window; so is another project's.
+    let w = metrics_item(&db, "p", "k:late", T0).await;
+    metrics_transition(&db, w, "Working", T1).await;
+    metrics_transition(&db, w, "Done", "2026-10-02T00:01:00Z").await;
+    let o = metrics_item(&db, "q", "k:other", T0).await;
+    metrics_transition(&db, o, "Working", "2026-10-01T00:00:00Z").await;
+    metrics_transition(&db, o, "Done", "2026-10-01T05:00:00Z").await;
+
+    let rows = timing(&ui, "state", T0, T1, false).await;
+    let working = &rows.iter().find(|r| r.0 == "Working").unwrap().1;
+    // n, open_excluded, wait_count, wait_s, min, max, avg, median, p95
+    assert_eq!((working.1, working.2, working.3), (4, 0, 0));
+    assert_eq!(working.5, Some(10.0));
+    assert_eq!(working.6, Some(40.0));
+    assert_eq!(working.7, Some(25.0));
+    assert_eq!(working.8, Some(25.0));
+    assert!((working.9.unwrap() - 38.5).abs() < 1e-9); // 30 + 0.85 * 10
+    // The open `Done` states are excluded and flagged.
+    let done = &rows.iter().find(|r| r.0 == "Done").unwrap().1;
+    assert_eq!((done.1, done.2, done.5), (0, 4, None));
+
+    // Including the open state measures it up to now().
+    let rows = timing(&ui, "state", T0, T1, true).await;
+    let done = &rows.iter().find(|r| r.0 == "Done").unwrap().1;
+    assert_eq!((done.1, done.2), (4, 0));
+    assert!(done.6.unwrap() > 86_400.0);
+
+    // Window start is inclusive: from just after the first start drops one sample.
+    let rows = timing(&ui, "state", "2026-10-01T00:00:01Z", T1, false).await;
+    assert_eq!(rows.iter().find(|r| r.0 == "Working").unwrap().1.1, 3);
+}
+
+#[tokio::test]
+async fn project_step_timing_separates_waiting_and_breaks_down_jobs() {
+    let db = db!();
+    let ui = db.pool_as("enzarb_ui").await;
+    let wi = metrics_item(&db, "p", "k:w", T0).await;
+    sqlx::query("UPDATE workflows.work_items SET state_data = '{\"wait\":{\"waiting_on\":\"human\",\"reason\":\"awaiting_review\",\"text\":\"t\"}}' WHERE id = $1")
+        .bind(wi)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    metrics_transition(&db, wi, "Working", T0).await;
+    metrics_transition(&db, wi, "AwaitingReview", "2026-10-01T00:00:10Z").await;
+
+    for include_open in [false, true] {
+        let rows = timing(&ui, "state", T0, T1, include_open).await;
+        let w = &rows.iter().find(|r| r.0 == "AwaitingReview").unwrap().1;
+        assert_eq!((w.1, w.2, w.3), (0, 0, 1), "include_open={include_open}");
+        assert!(w.4.unwrap() > 86_400.0);
+        assert_eq!(w.5, None);
+        let working = &rows.iter().find(|r| r.0 == "Working").unwrap().1;
+        assert_eq!((working.1, working.3, working.7), (1, 0, Some(10.0)));
+    }
+
+    // Jobs by kind: finished ones only; window half-open on created_at; other project excluded.
+    metrics_job(
+        &db,
+        wi,
+        "agent_task",
+        T0,
+        "2026-10-01T00:01:00Z",
+        "succeeded",
+        None,
+    )
+    .await;
+    metrics_job(
+        &db,
+        wi,
+        "agent_task",
+        "2026-10-01T01:00:00Z",
+        "2026-10-01T01:03:00Z",
+        "failed",
+        None,
+    )
+    .await;
+    metrics_job(
+        &db,
+        wi,
+        "agent_task",
+        "2026-10-01T02:00:00Z",
+        "2026-10-01T09:00:00Z",
+        "running",
+        None,
+    )
+    .await;
+    metrics_job(
+        &db,
+        wi,
+        "agent_task",
+        T1,
+        "2026-10-02T00:10:00Z",
+        "succeeded",
+        None,
+    )
+    .await;
+    metrics_job(
+        &db,
+        wi,
+        "merge",
+        T0,
+        "2026-10-01T00:00:05Z",
+        "succeeded",
+        None,
+    )
+    .await;
+    let o = metrics_item(&db, "q", "k:o", T0).await;
+    metrics_job(
+        &db,
+        o,
+        "merge",
+        T0,
+        "2026-10-01T05:00:00Z",
+        "succeeded",
+        None,
+    )
+    .await;
+
+    let rows = timing(&ui, "job", T0, T1, false).await;
+    assert_eq!(
+        rows.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(),
+        ["agent_task", "merge"]
+    );
+    let a = &rows[0].1;
+    assert_eq!(
+        (a.1, a.5, a.6, a.7),
+        (2, Some(60.0), Some(180.0), Some(120.0))
+    );
+    let m = &rows[1].1;
+    assert_eq!((m.1, m.6), (1, Some(5.0)));
+}
+
+#[tokio::test]
+async fn metrics_functions_are_granted_to_ui_only() {
+    let db = db!();
+    let c = db.pool_as("enzarb_connectors").await;
+    for sql in [
+        "SELECT * FROM workflows_api.project_usage('p', now(), now())",
+        "SELECT * FROM workflows_api.project_step_timing('p', now(), now())",
+    ] {
+        let err = sqlx::query(sql).execute(&c).await.expect_err(sql);
+        assert_eq!(
+            err.as_database_error().and_then(|e| e.code()).as_deref(),
+            Some("42501"),
+            "{sql}: {err}"
+        );
+    }
+    let ui = db.pool_as("enzarb_ui").await;
+    sqlx::query("SELECT * FROM workflows_api.project_usage('p', now(), now())")
+        .execute(&ui)
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn claim_query_uses_priority_then_run_after() {
     let db = db!();
