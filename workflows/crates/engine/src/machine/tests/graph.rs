@@ -483,3 +483,227 @@ fn sandbox_reports_cannot_reset_visits_or_write_kernel_outputs() {
     assert_eq!(g.data.graph.visits["approve"], 1);
     assert_eq!(g.data.graph.outputs["approve"]["author"], "alice");
 }
+
+// -- adoption of compiled `issue` items ----------------------------------------
+
+/// enzarb's own issue graph: plan, approval wait, prepare, implement, open PR.
+const ADOPT: &str = r#"
+version: 1
+name: issue
+on: [issue_opened]
+start: plan
+nodes:
+  plan:      {type: agent, prompt: plan, max_visits: 6, on_limit: failed, next: post_plan}
+  post_plan: {type: action, action: post_comment, next: approval}
+  approval:  {type: wait, events: [approval, comment], next: {'event == "approval"': prepare, else: plan}}
+  prepare:   {type: command, run: "mise run prepare", optional: true, next: implement}
+  implement: {type: agent, prompt: implement, next: {pushed: open_pr, else: failed}}
+  open_pr:   {type: action, action: open_change_request, next: done}
+  failed:    {type: end, status: failed}
+  done:      {type: end, status: done}
+"#;
+
+fn mention(id: &str, who: &str) -> EngineEvent {
+    conn(
+        id,
+        EventType::Mentioned,
+        issue_item(),
+        actor(who),
+        Some((77, "@enzarb please retry")),
+    )
+}
+
+#[test]
+fn an_approved_plan_moves_to_the_graph_at_its_approval_wait() {
+    let c = gctx(Permission::Write, Some(ADOPT));
+    for ev in [
+        approval_comment("e1", "alice"),
+        approval_label("e1", "alice"),
+        ui("e1", "alice", UiActionKind::Approve),
+    ] {
+        let t = transition(&c, &issue_in(IssuePhase::AwaitingApproval), &ev);
+        let g = assert_graph(&t, GraphPhase::Running);
+        assert_eq!(t.next.workflow_name(), "graph:issue");
+        assert_eq!(t.note, "plan approved; moved to graph workflow at prepare");
+        assert_eq!(g.data.graph.node, "prepare");
+        assert_eq!(g.data.graph.visits["approval"], 1);
+        assert_eq!(g.data.graph.outputs["approval"]["event"], "approval");
+        assert_eq!(g.data.graph.outputs["approval"]["author"], "alice");
+        assert_eq!(g.data.plan, "PLAN");
+        assert_eq!(g.data.number, 42);
+        assert_eq!(progress_values(&t)[0], "Received");
+        let (_, _, input) = job_of(&t, JobKind::AgentSegment);
+        assert_eq!(input["graph"]["start"], "prepare");
+        assert!(
+            input["graph"]["prompts"]["implement"]
+                .as_str()
+                .unwrap()
+                .contains("PLAN")
+        );
+        assert!(kinds(&t).iter().all(|k| *k != JobKind::AgentImplement));
+    }
+}
+
+#[test]
+fn a_retry_moves_a_failed_or_stale_issue_to_the_graph_start() {
+    let c = gctx(Permission::Write, Some(ADOPT));
+    let cases = [
+        (IssuePhase::Failed, ui("e1", "bob", UiActionKind::Retry)),
+        (IssuePhase::Failed, mention("e1", "bob")),
+        (IssuePhase::Stale, ui("e1", "bob", UiActionKind::Retry)),
+        (IssuePhase::Stale, mention("e1", "bob")),
+    ];
+    for (phase, ev) in cases {
+        let t = transition(&c, &issue_in(phase), &ev);
+        let g = assert_graph(&t, GraphPhase::Running);
+        assert_eq!(
+            t.note, "retry; moved to graph workflow at plan",
+            "{phase:?}"
+        );
+        assert_eq!(g.data.graph.node, "plan");
+        assert_eq!(g.data.graph.visits["plan"], 1);
+        let (_, _, input) = job_of(&t, JobKind::AgentSegment);
+        assert_eq!(input["graph"]["start"], "plan");
+    }
+}
+
+#[test]
+fn everything_else_stays_with_the_compiled_machine() {
+    let write = gctx(Permission::Write, Some(ADOPT));
+    let mut epic = issue_data();
+    epic.epic = true;
+    let epic_awaiting = WorkflowState::Issue(IssueState {
+        phase: IssuePhase::AwaitingApproval,
+        data: epic,
+    });
+    let busy = Ctx {
+        live_agent_jobs: true,
+        ..write.clone()
+    };
+    let no_wait = gctx(Permission::Write, Some(EXAMPLE));
+    let invalid = gctx(
+        Permission::Write,
+        Some("version: 1\nname: issue\non: [issue_opened]\nstart: x\nnodes: {}"),
+    );
+    let lookup_failed = gctx(Permission::Write, None);
+    let awaiting = issue_in(IssuePhase::AwaitingApproval);
+    let cases: Vec<(&str, &Ctx, WorkflowState, EngineEvent)> = vec![
+        (
+            "plan feedback",
+            &write,
+            awaiting.clone(),
+            comment_by("e1", "alice", 5, "also X"),
+        ),
+        (
+            "epic approval",
+            &write,
+            epic_awaiting,
+            approval_comment("e1", "alice"),
+        ),
+        (
+            "live agent job",
+            &busy,
+            awaiting.clone(),
+            approval_comment("e1", "alice"),
+        ),
+        (
+            "no approval wait",
+            &no_wait,
+            awaiting.clone(),
+            approval_comment("e1", "alice"),
+        ),
+        (
+            "invalid definition",
+            &invalid,
+            awaiting.clone(),
+            approval_comment("e1", "alice"),
+        ),
+        (
+            "no definition",
+            &lookup_failed,
+            awaiting.clone(),
+            approval_comment("e1", "alice"),
+        ),
+        (
+            "stale author answers",
+            &write,
+            issue_in(IssuePhase::Stale),
+            mention("e1", "alice"),
+        ),
+        (
+            "triaging",
+            &write,
+            issue_in(IssuePhase::Triaging),
+            comment_by("e1", "alice", 5, "x"),
+        ),
+        (
+            "awaiting answers",
+            &write,
+            issue_in(IssuePhase::AwaitingAnswers),
+            comment_by("e1", "alice", 5, "x"),
+        ),
+    ];
+    for (name, c, s, ev) in cases {
+        let legacy = transition(&gctx(c.actor_permission, None), &s, &ev);
+        let t = transition(c, &s, &ev);
+        assert_eq!(t, legacy, "{name}");
+        assert!(!matches!(t.next, WorkflowState::Graph(_)), "{name}");
+    }
+    // Without write access an approval or retry is rejected as before.
+    let read = gctx(Permission::Read, Some(ADOPT));
+    let s = issue_in(IssuePhase::AwaitingApproval);
+    rejected(&transition(&read, &s, &approval_comment("e1", "bob")), &s);
+    let s = issue_in(IssuePhase::Failed);
+    rejected(
+        &transition(&read, &s, &ui("e1", "bob", UiActionKind::Retry)),
+        &s,
+    );
+}
+
+#[test]
+fn a_failed_graph_task_retries_from_start_with_a_fresh_definition() {
+    let failed = {
+        let c = gctx(Permission::Read, Some(EXAMPLE));
+        transition(
+            &c,
+            &running(EXAMPLE),
+            &segment_done("e2", "failed", "no", json!({})),
+        )
+        .next
+    };
+    assert_graph(
+        &Transition::to(failed.clone(), vec![], ""),
+        GraphPhase::Failed,
+    );
+    // A new definition on the default branch is used.
+    let mut c = gctx(Permission::Write, Some(ADOPT));
+    c.graph.as_mut().unwrap().sha = "newsha".into();
+    let t = transition(&c, &failed, &ui("r", "alice", UiActionKind::Retry));
+    let g = assert_graph(&t, GraphPhase::Running);
+    assert_eq!(g.data.graph.sha, "newsha");
+    assert_eq!(g.data.graph.node, "plan");
+    assert!(g.data.error.is_empty());
+    assert_eq!(t.note, "retry; restarted at plan");
+    // Without one (lookup failed), the pinned definition runs again.
+    let c = gctx(Permission::Write, None);
+    let t = transition(&c, &failed, &mention("r", "alice"));
+    let g = assert_graph(&t, GraphPhase::Running);
+    assert_eq!(
+        (g.data.graph.sha.as_str(), g.data.graph.node.as_str()),
+        ("c0ffee", "prepare")
+    );
+    // Write access is required; other phases have nothing to retry.
+    rejected(
+        &transition(
+            &gctx(Permission::Read, None),
+            &failed,
+            &ui("r", "bob", UiActionKind::Retry),
+        ),
+        &failed,
+    );
+    let s = running(EXAMPLE);
+    rejected(
+        &transition(&c, &s, &ui("r", "alice", UiActionKind::Retry)),
+        &s,
+    );
+}

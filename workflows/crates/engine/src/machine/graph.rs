@@ -122,6 +122,10 @@ pub struct GraphData {
     pub waiting_on: Option<JobKind>,
     /// Segment runs queued so far.
     pub segments: u32,
+    /// The latest approved-or-posted plan (`{plan}` in prompts): the body of the latest
+    /// `plan` decision, or the compiled machine's plan of an adopted issue.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub plan: String,
     /// The latest agent message (`RunFinished.summary` of the latest segment).
     pub summary: String,
     /// The branch the latest segment pushed.
@@ -196,6 +200,7 @@ fn prompt_ctx(ctx: &Ctx, d: &GraphData) -> PromptContext {
         author: d.author.clone(),
         base_ref: ctx.default_branch.clone(),
         branch: branch(d.number),
+        plan: d.plan.clone(),
         ..Default::default()
     }
 }
@@ -449,6 +454,9 @@ fn cancel(ctx: &Ctx, ev: &EngineEvent, s: &GraphTask, comment: Option<String>) -
 
 pub(super) fn step(ctx: &Ctx, s: &GraphTask, ev: &EngineEvent) -> Transition {
     let state = WorkflowState::Graph(s.clone());
+    if s.phase == GraphPhase::Failed && is_retry(ctx, ev, false) {
+        return retry(ctx, ev, s, &state);
+    }
     if s.phase.is_terminal() {
         return Transition::reject(&state, "already finished");
     }
@@ -473,9 +481,7 @@ pub(super) fn step(ctx: &Ctx, s: &GraphTask, ev: &EngineEvent) -> Transition {
             UiActionKind::RepoRemoved => cancel(ctx, ev, s, None).repo_removed(),
             UiActionKind::Approve => wait_event(ctx, ev, s, &state, &def),
             UiActionKind::Comment => wait_event(ctx, ev, s, &state, &def),
-            UiActionKind::Retry => {
-                Transition::reject(&state, "retry is not supported for graph workflows yet")
-            }
+            UiActionKind::Retry => Transition::reject(&state, "nothing to retry"),
             UiActionKind::Merge => Transition::reject(&state, "nothing to merge"),
         },
         EventPayload::JobSucceeded { kind, output, .. } if s.data.waiting_on == Some(*kind) => {
@@ -531,6 +537,11 @@ fn job_succeeded(
                 );
                 let phase = failed(ctx, &mut fx, &mut d, &why);
                 return Transition::to(st(phase, d), fx.finish(), "segment result rejected");
+            }
+            if let Ok(o) = AgentOutput::parse(&fin.summary)
+                && o.decision == "plan"
+            {
+                d.plan = o.body;
             }
             d.summary = fin.summary;
             if fin.pushed {
@@ -661,4 +672,177 @@ fn wait_event(
         return advance(ctx, ev, s, def, out, "comment received");
     }
     Transition::reject(state, "event not applicable to a graph workflow")
+}
+
+// ---------------------------------------------------------------------------
+// Retry and adoption of compiled `issue` items
+// ---------------------------------------------------------------------------
+
+/// A retry request with write access: the UI retry, or an explicit @mention (not by the
+/// issue author when `author_answers`, whose mention on a `Stale` issue is an answer).
+fn is_retry(ctx: &Ctx, ev: &EngineEvent, author_answers: bool) -> bool {
+    if ev.actor().is_some_and(|a| ctx.is_bot(a)) || !ctx.can_write() {
+        return false;
+    }
+    match &ev.payload {
+        EventPayload::Ui(u) => u.action == UiActionKind::Retry,
+        EventPayload::Connector(_) => ev
+            .comment_like()
+            .is_some_and(|c| c.mention && !author_answers),
+        _ => false,
+    }
+}
+
+/// Starts `d` (task fields kept, position reset) at the definition's `start`.
+fn begin_fresh(
+    ctx: &Ctx,
+    ev: &EngineEvent,
+    src: &GraphSource,
+    def: &Definition,
+    mut d: GraphData,
+    note: &str,
+) -> Transition {
+    d.graph = GraphPin {
+        name: def.name.clone(),
+        path: src.path.clone(),
+        sha: src.sha.clone(),
+        source: src.source.clone(),
+        ..Default::default()
+    };
+    d.error.clear();
+    d.waiting_on = None;
+    let mut fx = Fx::new(ctx, ev);
+    fx.received(&target(ctx));
+    let (pos, next) = GraphState::begin(def);
+    d.graph.set_position(pos);
+    let phase = match next {
+        Next::Node(_) => drive(ctx, &mut fx, def, &mut d),
+        Next::Failed(r) => failed(ctx, &mut fx, &mut d, &r),
+    };
+    let note = format!("{note}; moved to graph workflow at {}", d.graph.node);
+    Transition::to(st(phase, d), fx.finish(), note)
+}
+
+/// `Failed -> start`: the definition is re-read from the default branch ([`Ctx::graph`]);
+/// without a usable one the pinned definition runs again.
+fn retry(ctx: &Ctx, ev: &EngineEvent, s: &GraphTask, state: &WorkflowState) -> Transition {
+    let pinned = GraphSource {
+        name: s.data.graph.name.clone(),
+        path: s.data.graph.path.clone(),
+        sha: s.data.graph.sha.clone(),
+        source: s.data.graph.source.clone(),
+    };
+    let fresh = ctx
+        .graph
+        .as_ref()
+        .and_then(|src| load(src).ok().map(|d| (src.clone(), d)));
+    let Some((src, def)) = fresh.or_else(|| load(&pinned).ok().map(|d| (pinned, d))) else {
+        return Transition::reject(state, "the pinned definition no longer loads");
+    };
+    let mut t = begin_fresh(ctx, ev, &src, &def, s.data.clone(), "retry");
+    t.note = t.note.replace("moved to graph workflow at", "restarted at");
+    t
+}
+
+/// The first `wait` node listening for `approval`, breadth-first from `start`.
+fn approval_wait(def: &Definition) -> Option<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut queue = std::collections::VecDeque::from([def.start.clone()]);
+    while let Some(id) = queue.pop_front() {
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        let Some(n) = def.node(&id) else { continue };
+        if let NodeKind::Wait { events, .. } = &n.kind
+            && events.iter().any(|e| e == "approval")
+        {
+            return Some(id);
+        }
+        queue.extend(n.next.iter().flat_map(|e| e.targets()).map(str::to_string));
+        queue.extend(n.on_limit.clone());
+    }
+    None
+}
+
+/// A compiled `issue` item moves to the repository's issue graph when a human acts on it:
+/// an approval of its plan (`AwaitingApproval`) resumes the graph at its first approval
+/// wait, a retry (`Failed`, `Stale`) starts the graph fresh. `legacy` runs first and decides
+/// whether the event is accepted at all; everything else stays with the compiled machine.
+pub(super) fn adopt_or(
+    ctx: &Ctx,
+    s: &super::IssueState,
+    ev: &EngineEvent,
+    legacy: fn(&Ctx, &super::IssueState, &EngineEvent) -> Transition,
+) -> Transition {
+    let t = legacy(ctx, s, ev);
+    if !t.accepted {
+        return t;
+    }
+    adopt(ctx, s, ev).unwrap_or(t)
+}
+
+fn adopt(ctx: &Ctx, s: &super::IssueState, ev: &EngineEvent) -> Option<Transition> {
+    use super::IssuePhase;
+    let src = ctx.graph.as_ref()?;
+    if s.data.epic || ctx.live_agent_jobs {
+        return None;
+    }
+    let def = load(src)
+        .ok()
+        .filter(|d| d.on.iter().any(|t| t == ISSUE_TRIGGER))?;
+    let d = GraphData {
+        number: s.data.number,
+        url: s.data.url.clone(),
+        title: s.data.title.clone(),
+        body: s.data.body.clone(),
+        author: s.data.author.clone(),
+        plan: s.data.plan.clone(),
+        ..Default::default()
+    };
+    match s.phase {
+        IssuePhase::AwaitingApproval
+            if ev.is_approval()
+                && ctx.can_write()
+                && !ev.actor().is_some_and(|a| ctx.is_bot(a)) =>
+        {
+            let wait = approval_wait(&def)?;
+            let mut d = d;
+            d.graph = GraphPin {
+                name: def.name.clone(),
+                path: src.path.clone(),
+                sha: src.sha.clone(),
+                source: src.source.clone(),
+                node: wait.clone(),
+                visits: [(wait, 1)].into(),
+                ..Default::default()
+            };
+            let task = GraphTask {
+                phase: GraphPhase::Waiting,
+                data: d,
+            };
+            let login = ev.actor().map(|a| a.login.clone()).unwrap_or_default();
+            let out = json!({"event": "approval", "author": login});
+            let mut t = advance(ctx, ev, &task, &def, out, "plan approved");
+            if let WorkflowState::Graph(g) = &t.next {
+                t.note = format!(
+                    "plan approved; moved to graph workflow at {}",
+                    g.data.graph.node
+                );
+            }
+            let mut fx = Fx::new(ctx, ev);
+            fx.received(&target(ctx));
+            let mut effects = fx.finish();
+            effects.append(&mut t.effects);
+            t.effects = effects;
+            Some(t)
+        }
+        IssuePhase::Failed | IssuePhase::Stale => {
+            let author = ev
+                .actor()
+                .is_some_and(|a| a.login.eq_ignore_ascii_case(&s.data.author));
+            let answers = s.phase == IssuePhase::Stale && author;
+            is_retry(ctx, ev, answers).then(|| begin_fresh(ctx, ev, src, &def, d, "retry"))
+        }
+        _ => None,
+    }
 }

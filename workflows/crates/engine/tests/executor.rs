@@ -4288,3 +4288,95 @@ async fn unreadable_issue_graph_falls_back_instead_of_retrying() {
     let (workflow, state, _) = item_row(pool, 1).await;
     assert_eq!((workflow.as_str(), state.as_str()), ("issue", "Triaging"));
 }
+
+#[tokio::test]
+async fn an_approved_legacy_plan_moves_to_the_issue_graph() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let reducer = graph_reducer(&h);
+    let repo: RepoKey = REPO.parse().unwrap();
+    h.fake.set_branch_head(repo.clone(), "main", "sha-main");
+    let adopt = ISSUE_GRAPH.replace("start: prepare", "start: plan").replace(
+        "nodes:\n",
+        "nodes:\n  plan: {type: agent, prompt: plan, next: post}\n  post: {type: action, action: post_comment, next: approval}\n  approval: {type: wait, events: [approval], next: prepare}\n",
+    );
+    h.fake.set_file(
+        repo.clone(),
+        "sha-main",
+        ".enzarb/workflows/issue.yaml",
+        &adopt,
+    );
+    sqlx::query(
+        "INSERT INTO workflows.work_items (key, project_id, workflow, state, state_data)
+         VALUES ($1, 'enzarb', 'issue', 'AwaitingApproval', $2)",
+    )
+    .bind(key(1).to_string())
+    .bind(json!({"number": 1, "title": "Add dark mode", "author": "alice", "plan": "PLAN"}))
+    .execute(pool)
+    .await
+    .unwrap();
+    let data = EventData {
+        repo,
+        actor: Actor {
+            login: "alice".into(),
+            id: 7,
+            is_bot: false,
+        },
+        item: ItemRef {
+            kind: ItemKind::Issue,
+            number: 1,
+            url: "https://github.com/enzarb/enzarb-ui/issues/1".into(),
+            title: "Add dark mode".into(),
+            body: String::new(),
+            author: "alice".into(),
+            head_ref: None,
+            base_ref: None,
+            head_sha: None,
+        },
+        comment: None,
+        merged: None,
+        ci: None,
+        label: None,
+        review: None,
+    };
+    let ev = Event::new("github", "a1", EventType::ApprovalGranted, Utc::now(), data);
+    let _: Option<i64> =
+        sqlx::query_scalar("SELECT workflows_api.ingest_event($1, $2, $3, $4, $5)")
+            .bind("github")
+            .bind(ev.dedupe_key())
+            .bind(ev.subject.to_string())
+            .bind("ApprovalGranted")
+            .bind(serde_json::to_value(&ev).unwrap())
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(reducer.drain().await, 1);
+
+    let (workflow, state, data) = item_row(pool, 1).await;
+    assert_eq!(
+        (workflow.as_str(), state.as_str()),
+        ("graph:issue", "Running")
+    );
+    assert_eq!(data["graph"]["node"], "prepare");
+    assert_eq!(data["graph"]["sha"], "sha-main");
+    let note: String = sqlx::query_scalar(
+        "SELECT note FROM workflows.transitions WHERE event_type = 'ApprovalGranted'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(note, "plan approved; moved to graph workflow at prepare");
+    let input: Value = sqlx::query_scalar(
+        "SELECT input FROM workflows.jobs WHERE kind = 'agent_segment' AND status = 'queued'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(input["graph"]["start"], "prepare");
+    let legacy: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM workflows.jobs WHERE kind = 'agent_implement'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(legacy, 0);
+}
