@@ -39,6 +39,18 @@ pub struct Config {
     /// repo's pinned toolchain (`mise.toml`, `rust-toolchain.toml`) is on PATH
     /// for its check commands. The tools live on the workspace volume.
     pub mise_bin: String,
+    /// `ENZARB_NPM_BIN`, default `npm`: run (through `mise exec --` when
+    /// `mise_bin` is set) as `npm ci` by the run preparation.
+    pub npm_bin: String,
+    /// `ENZARB_DOCKER_BIN`, default `docker`: starts the shared test Postgres.
+    pub docker_bin: String,
+    /// `ENZARB_TEST_PG_NAME`, default `enzarb-test-pg`: that container's name.
+    pub pg_name: String,
+    /// `ENZARB_TEST_PG_PORT`, default 55432: its host port (when created).
+    pub pg_port: u16,
+    /// `ENZARB_PREPARE_STEP_SECS`, default 600: cap of one preparation step
+    /// (`npm ci`, `mise install`, Postgres start).
+    pub prepare_step_timeout: Duration,
     /// `ENZARB_GIT_NAME` / `ENZARB_GIT_EMAIL`: identity for commits made in runs.
     pub git_name: String,
     pub git_email: String,
@@ -136,6 +148,11 @@ impl Default for Config {
             claude_token_file: "/workspace/.enzarb/claude-token".into(),
             git_bin: "git".into(),
             mise_bin: String::new(),
+            npm_bin: "npm".into(),
+            docker_bin: "docker".into(),
+            pg_name: "enzarb-test-pg".into(),
+            pg_port: 55432,
+            prepare_step_timeout: Duration::from_secs(600),
             git_name: "enzarb-agent".into(),
             git_email: "agent@enzarb.dev".into(),
             max_runs: 2,
@@ -201,6 +218,26 @@ impl Config {
         }
         if let Some(v) = get("ENZARB_MISE_BIN") {
             c.mise_bin = v;
+        }
+        if let Some(v) = get("ENZARB_NPM_BIN").filter(|s| !s.is_empty()) {
+            c.npm_bin = v;
+        }
+        if let Some(v) = get("ENZARB_DOCKER_BIN").filter(|s| !s.is_empty()) {
+            c.docker_bin = v;
+        }
+        if let Some(v) = get("ENZARB_TEST_PG_NAME").filter(|s| !s.is_empty()) {
+            c.pg_name = v;
+        }
+        if let Some(v) = get("ENZARB_TEST_PG_PORT") {
+            c.pg_port = v
+                .parse()
+                .map_err(|e| anyhow::anyhow!("ENZARB_TEST_PG_PORT={v:?}: {e}"))?;
+        }
+        if let Some(v) = get("ENZARB_PREPARE_STEP_SECS") {
+            c.prepare_step_timeout = Duration::from_secs(
+                v.parse()
+                    .map_err(|e| anyhow::anyhow!("ENZARB_PREPARE_STEP_SECS={v:?}: {e}"))?,
+            );
         }
         if let Some(v) = get("ENZARB_GIT_NAME").filter(|s| !s.is_empty()) {
             c.git_name = v;
@@ -338,6 +375,26 @@ mod tests {
         assert_eq!(c.auth_token_file, PathBuf::from("/t"));
         assert_eq!(c.grace, Duration::from_secs(3));
         assert!(Config::from_lookup(|_| Some("x".into())).is_err());
+    }
+
+    #[test]
+    fn prepare_settings() {
+        let c = Config::from_lookup(|_| None).unwrap();
+        assert_eq!(c.npm_bin, "npm");
+        assert_eq!(c.docker_bin, "docker");
+        assert_eq!(c.pg_name, "enzarb-test-pg");
+        assert_eq!(c.pg_port, 55432);
+        assert_eq!(c.prepare_step_timeout, Duration::from_secs(600));
+        let c = Config::from_lookup(|k| match k {
+            "ENZARB_TEST_PG_PORT" => Some("6000".into()),
+            "ENZARB_PREPARE_STEP_SECS" => Some("5".into()),
+            "ENZARB_DOCKER_BIN" => Some("/d".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(c.pg_port, 6000);
+        assert_eq!(c.prepare_step_timeout, Duration::from_secs(5));
+        assert_eq!(c.docker_bin, "/d");
     }
 
     #[test]

@@ -1012,38 +1012,37 @@ impl Inner {
         }
     }
 
-    /// `mise install` in the worktree (tools persist on the workspace volume).
-    /// Best effort: a failure is recorded in the transcript and the run goes
-    /// on, since the repo may pin nothing and the agent can retry by hand.
-    async fn install_toolchain(
+    /// Run preparation (`crate::prepare`): the repo's pinned toolchain, npm
+    /// dependencies and the shared test Postgres, so the agent can run its
+    /// checks. Returns the `ENZARB_TEST_PG_URL`, when Postgres is up.
+    async fn prepare(
         &self,
         run: &Run,
         ctl: &mut Ctl,
         secrets: &[String],
+        req: &RunStart,
+        env: Vec<(String, String)>,
         worktree: &Path,
-    ) -> Result<(), Abort> {
-        if self.cfg.mise_bin.is_empty() {
-            return Ok(());
-        }
-        let mut spec = CmdSpec::new(&self.cfg.mise_bin, &["install"]);
-        spec.cwd = Some(worktree.to_path_buf());
-        let sink = line_sink(run, "mise", secrets);
-        match exec::run(&self.reaper, spec, ctl, Some(sink)).await {
-            Ok(out) => {
-                if let Some(s) = out.stop {
-                    return Err(s.into());
-                }
-                run.transcript.append(
-                    "toolchain",
-                    json!({"ok": out.success(), "code": out.code(),
-                           "stderr": redact(out.stderr.trim(), secrets)}),
-                );
-            }
-            Err(e) => run
-                .transcript
-                .append("toolchain", json!({"ok": false, "error": e.to_string()})),
-        }
-        Ok(())
+    ) -> Result<Option<String>, Abort> {
+        let sink = |source: &'static str| line_sink(run, source, secrets);
+        let event = |kind: &str, fields: Value| {
+            run.transcript.append(kind, redact_value(fields, secrets));
+        };
+        let ctx = crate::prepare::Ctx {
+            reaper: &self.reaper,
+            cfg: &self.cfg,
+            locks: &self.repo_locks,
+            repo: repo_dir_name(&req.repo_url),
+            env,
+            sink: &sink,
+            event: &event,
+        };
+        crate::prepare::run(&ctx, ctl, worktree)
+            .await
+            .map_err(|e| match e {
+                crate::prepare::PrepError::Stop(s) => s.into(),
+                crate::prepare::PrepError::Fail(m) => Abort::Fail(redact(&m, secrets)),
+            })
     }
 
     /// Remove other worktrees that have `branch` checked out. Fails if the
@@ -1622,7 +1621,15 @@ impl Inner {
         secrets.extend(crate::chat::filter::token_forms(&token));
         // The repo's pinned toolchain, so the agent can run its checks. After
         // the token joins `secrets` so any output is redacted.
-        self.install_toolchain(run, ctl, &secrets, &worktree)
+        let mut tok_env = Vec::new();
+        if let Some(t) = &deps_token {
+            tok_env.extend(deps_env(t));
+        }
+        if let Some(t) = &npm_token {
+            apply_npm_env(&mut tok_env, t);
+        }
+        let pg_url = self
+            .prepare(run, ctl, &secrets, req, tok_env.clone(), &worktree)
             .await?;
         let mut env = self.git_env();
         env.extend([
@@ -1630,12 +1637,10 @@ impl Inner {
             ("ENZARB_RUN_ID".to_string(), req.run_id.clone()),
             ("ENZARB_BRANCH".to_string(), req.branch.clone()),
         ]);
-        if let Some(t) = &deps_token {
-            env.extend(deps_env(t));
+        if let Some(u) = pg_url {
+            env.push(("ENZARB_TEST_PG_URL".to_string(), u));
         }
-        if let Some(t) = &npm_token {
-            apply_npm_env(&mut env, t);
-        }
+        env.extend(tok_env);
         let spec = AcpSpec {
             bin: self.cfg.acp_bin.clone(),
             cwd: worktree.clone(),

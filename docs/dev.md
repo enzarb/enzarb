@@ -45,7 +45,15 @@ The `ENZARB_TEST_PG_URL` contract of `mise run test:pg`:
 - If `ENZARB_TEST_PG_URL` is already set, it is printed unchanged and Docker is not touched. Use this to point the tests at a sidecar or an external server.
 - `ENZARB_TEST_PG_PORT` and `ENZARB_TEST_PG_NAME` are honoured. If `docker` is missing or its daemon is unreachable, the task exits 1 and names the escape hatch above.
 - In a sandbox the task uses Docker through the sandbox's `dockerd` (supervised by `sandbox-init`); there is no sidecar. The root `mise.toml` must stay free of tools that need a build step (such as `pipx:` packages), because mise installs every `[tools]` entry before running a task; component-only tools (ansible in `kubernetes/mise.toml`) belong in the component's own file.
-- Run preparation calls the task once per sandbox and exports the URL on the test commands.
+- Run preparation (below) starts the same container once per sandbox and exports the URL to the agent.
+
+### Agent run preparation
+
+Before the agent starts, sandbox-init (`sandbox-container/src/prepare.rs`) prepares the worktree so the agent installs nothing. For the root and every top-level directory with a `package-lock.json` or `mise.toml`: `mise install`, then `npm ci --prefer-offline --no-audit --no-fund` (through `mise exec --`, so the pinned node is used). A `mise install` or `npm ci` failure fails the run and names the step. Postgres is started once per sandbox with the same recipe as `mise run test:pg` (when the repo has `workflows/`, `connectors/`, `realtime/` or a `test:pg` task) and its URL is exported to the agent as `ENZARB_TEST_PG_URL`; a Postgres failure is logged and the run goes on without the variable.
+
+`npm ci` is skipped when the lockfile hash matches an earlier install: installs are cached under `<workspace>/cache/npm/<repo>/<component>/<sha256 of package-lock.json>/node_modules` (the last two hashes per component are kept) and restored into the worktree with a hardlink copy. Do not edit files inside `node_modules` in place: they share inodes with the cache.
+
+The run log shows the timing, and the transcript has a `prepare` event with `total_ms` and the steps: `prepare: 41.2s (mise install ui 8.0s, npm ci ui 30.1s, postgres 2.3s)`. Settings: `ENZARB_PREPARE_STEP_SECS` (cap per step, default 600), `ENZARB_NPM_BIN`, `ENZARB_DOCKER_BIN`, `ENZARB_TEST_PG_NAME`, `ENZARB_TEST_PG_PORT`.
 
 ## Prerequisites
 

@@ -94,6 +94,7 @@ async function prompt(id, params) {
   }
   if (word === "CLAUDEENV") perms = `CL=${process.env.CLAUDE_CODE_OAUTH_TOKEN ?? "unset"}\n`;
   if (word === "NPMENV") perms = `NODE=${process.env.NODE_AUTH_TOKEN ?? "unset"}\n`;
+  if (word === "PGENV") perms = `PG=${process.env.ENZARB_TEST_PG_URL ?? "unset"}\n`;
   if (word === "DIRTY") writeFileSync("dirty.txt", "dirty\n");
   if (!["tok-123", "sk-ant-oat01-PERRUNtoken"].includes(process.env.CLAUDE_CODE_OAUTH_TOKEN)) process.stderr.write("bad token\n");
   if (process.env.GIT_CONFIG_COUNT) process.stderr.write("git credentials leaked\n");

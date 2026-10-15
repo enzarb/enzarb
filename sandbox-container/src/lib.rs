@@ -32,6 +32,7 @@ pub mod exec;
 pub mod netgit;
 pub mod observer;
 pub mod policy;
+pub mod prepare;
 pub mod privs;
 pub mod pty;
 pub mod reaper;
