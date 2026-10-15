@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import BarChart from '#lib/components/BarChart.svelte';
 	import ProjectUsageSummary from '#lib/components/ProjectUsageSummary.svelte';
+	import SandboxUtilization from '#lib/components/SandboxUtilization.svelte';
 	import StepTimingTable from '#lib/components/StepTimingTable.svelte';
 	import TaskCostTable from '#lib/components/TaskCostTable.svelte';
 	import WindowPicker from '#lib/components/WindowPicker.svelte';
@@ -10,7 +11,7 @@
 	import Notice from '#lib/components/ui/Notice.svelte';
 	import Section from '#lib/components/ui/Section.svelte';
 	import Skeleton from '#lib/components/ui/Skeleton.svelte';
-	import { getProjectStepTiming, getProjectUsage } from '#lib/metrics.remote.ts';
+	import { getProjectStepTiming, getProjectUsage, getSandboxStats } from '#lib/metrics.remote.ts';
 	import { defaultWindow, parseWindow, windowToParams } from '#lib/metrics-window.ts';
 	import { formatCost } from '#lib/usage.ts';
 
@@ -28,6 +29,10 @@
 			name: page.params.name!,
 			...Object.fromEntries(windowToParams(current))
 		})
+	);
+
+	const sandbox = $derived(
+		getSandboxStats({ name: page.params.name!, ...Object.fromEntries(windowToParams(current)) })
 	);
 
 	function change(params: URLSearchParams) {
@@ -85,6 +90,18 @@
 			<Skeleton label="Loading step timing" rows={3} />
 		{:else}
 			<StepTimingTable timing={timing.current} />
+		{/if}
+	</Section>
+
+	<Section title="Sandbox utilization">
+		{#if sandbox.error && !sandbox.current}
+			<Notice tone="error" title="Could not load sandbox utilization"
+				>Something went wrong while loading sandbox utilization.</Notice
+			>
+		{:else if !sandbox.current}
+			<Skeleton label="Loading sandbox utilization" rows={3} />
+		{:else}
+			<SandboxUtilization stats={sandbox.current} />
 		{/if}
 	</Section>
 </div>

@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from './db.ts';
 import {
+	mapSandboxStatsRows,
 	mapStepTimingRows,
 	mapUsageRows,
 	numeric,
 	projectStepTiming,
 	projectUsage,
+	sandboxStats,
+	type SandboxStatsDbRow,
 	type StepTimingDbRow,
 	type UsageDbRow
 } from './metrics-service.ts';
@@ -196,5 +199,73 @@ describe('projectUsage', () => {
 		expect(strings.join('?')).toContain('workflows_api.project_usage(');
 		expect(values).toEqual(['alpha', from.toISOString(), to.toISOString()]);
 		expect(r.total.items).toBe(0);
+	});
+});
+
+const srow = (over: Partial<SandboxStatsDbRow>): SandboxStatsDbRow => ({
+	bucket_start: new Date('2026-10-14T00:00:00Z'),
+	samples: '4',
+	cpu_cores_avg: '0.5',
+	cpu_cores_max: '1.25',
+	mem_bytes_avg: '1048576',
+	mem_bytes_max: 2097152,
+	io_read_bps_avg: null,
+	io_read_bps_max: null,
+	io_write_bps_avg: '10',
+	io_write_bps_max: '20',
+	storage_used_bytes_avg: '100',
+	storage_used_bytes_max: '120',
+	storage_total_bytes: '1000',
+	...over
+});
+
+describe('mapSandboxStatsRows', () => {
+	const window = {
+		from: new Date('2026-10-14T00:00:00Z'),
+		to: new Date('2026-10-14T01:00:00Z')
+	};
+
+	it('maps numeric strings, keeps NULL as null and sorts oldest first', () => {
+		const later = srow({ bucket_start: '2026-10-14T00:30:00Z' });
+		const r = mapSandboxStatsRows([later, srow({})], window, 60);
+		expect(r.buckets.map((b) => b.t)).toEqual([
+			Date.parse('2026-10-14T00:00:00Z'),
+			Date.parse('2026-10-14T00:30:00Z')
+		]);
+		expect(r.buckets[0]).toMatchObject({
+			samples: 4,
+			cpuAvg: 0.5,
+			cpuMax: 1.25,
+			memMax: 2097152,
+			readAvg: null,
+			writeAvg: 10,
+			storageTotal: 1000
+		});
+		expect(r.stepMs).toBe(60_000);
+		expect(r.from).toBe(window.from.getTime());
+	});
+
+	it('is empty when no row comes back', () => {
+		expect(mapSandboxStatsRows([], window).buckets).toEqual([]);
+	});
+
+	it('drops rows with an unreadable start', () => {
+		expect(mapSandboxStatsRows([srow({ bucket_start: 'nope' })], window).buckets).toEqual([]);
+	});
+});
+
+describe('sandboxStats', () => {
+	it('binds the project, the ISO window and the bucket count', async () => {
+		const sql = vi.fn(async () => [srow({})]);
+		const from = new Date('2026-10-08T00:00:00Z');
+		const to = new Date('2026-10-15T00:00:00Z');
+		const r = await sandboxStats(sql as unknown as Sql, 'alpha', { from, to });
+		const [strings, ...values] = sql.mock.calls[0] as unknown as [
+			TemplateStringsArray,
+			...unknown[]
+		];
+		expect(strings.join('?')).toContain('workflows_api.sandbox_stats_window(');
+		expect(values).toEqual(['alpha', from.toISOString(), to.toISOString(), 120]);
+		expect(r.buckets).toHaveLength(1);
 	});
 });

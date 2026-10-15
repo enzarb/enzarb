@@ -201,3 +201,95 @@ export async function projectStepTiming(
 			${project}, ${window.from.toISOString()}::timestamptz, ${window.to.toISOString()}::timestamptz)`;
 	return mapStepTimingRows(rows);
 }
+
+/** One populated bucket of the sandbox utilization series; a null field is not reported, never 0. */
+export interface SandboxBucket {
+	/** Bucket start, ms since the epoch. */
+	t: number;
+	samples: number;
+	cpuAvg: number | null;
+	cpuMax: number | null;
+	memAvg: number | null;
+	memMax: number | null;
+	readAvg: number | null;
+	readMax: number | null;
+	writeAvg: number | null;
+	writeMax: number | null;
+	storageUsedAvg: number | null;
+	storageUsedMax: number | null;
+	storageTotal: number | null;
+}
+
+/** The project's sandboxes together over a window. Empty buckets have no entry: the chart draws a gap. */
+export interface SandboxStats {
+	/** Window bounds and bucket width in ms, so charts can place buckets and spot the gaps. */
+	from: number;
+	to: number;
+	stepMs: number;
+	buckets: SandboxBucket[];
+}
+
+/** A row of `workflows_api.sandbox_stats_window` (contracts §6). numeric/bigint arrive as strings. */
+export interface SandboxStatsDbRow {
+	bucket_start: Date | string;
+	samples: unknown;
+	cpu_cores_avg: unknown;
+	cpu_cores_max: unknown;
+	mem_bytes_avg: unknown;
+	mem_bytes_max: unknown;
+	io_read_bps_avg: unknown;
+	io_read_bps_max: unknown;
+	io_write_bps_avg: unknown;
+	io_write_bps_max: unknown;
+	storage_used_bytes_avg: unknown;
+	storage_used_bytes_max: unknown;
+	storage_total_bytes: unknown;
+}
+
+/** Buckets asked for per window; the function clamps the count to 1..300. */
+export const SANDBOX_BUCKETS = 120;
+
+/** Maps the function's rows, oldest first; rows with an unreadable start are dropped. */
+export function mapSandboxStatsRows(
+	rows: readonly SandboxStatsDbRow[],
+	window: Pick<MetricsWindow, 'from' | 'to'>,
+	buckets: number = SANDBOX_BUCKETS
+): SandboxStats {
+	const from = window.from.getTime();
+	const to = window.to.getTime();
+	const mapped: SandboxBucket[] = [];
+	for (const r of rows) {
+		const t = new Date(r.bucket_start).getTime();
+		if (!Number.isFinite(t)) continue;
+		mapped.push({
+			t,
+			samples: count(r.samples),
+			cpuAvg: numeric(r.cpu_cores_avg),
+			cpuMax: numeric(r.cpu_cores_max),
+			memAvg: numeric(r.mem_bytes_avg),
+			memMax: numeric(r.mem_bytes_max),
+			readAvg: numeric(r.io_read_bps_avg),
+			readMax: numeric(r.io_read_bps_max),
+			writeAvg: numeric(r.io_write_bps_avg),
+			writeMax: numeric(r.io_write_bps_max),
+			storageUsedAvg: numeric(r.storage_used_bytes_avg),
+			storageUsedMax: numeric(r.storage_used_bytes_max),
+			storageTotal: numeric(r.storage_total_bytes)
+		});
+	}
+	mapped.sort((a, b) => a.t - b.t);
+	return { from, to, stepMs: (to - from) / Math.max(1, buckets), buckets: mapped };
+}
+
+/** Sandbox utilization of the project in `window`. The caller has checked ownership. */
+export async function sandboxStats(
+	sql: Sql,
+	project: string,
+	window: Pick<MetricsWindow, 'from' | 'to'>,
+	buckets: number = SANDBOX_BUCKETS
+): Promise<SandboxStats> {
+	const rows = await sql<SandboxStatsDbRow[]>`
+		SELECT * FROM workflows_api.sandbox_stats_window(
+			${project}, ${window.from.toISOString()}::timestamptz, ${window.to.toISOString()}::timestamptz, ${buckets}::int)`;
+	return mapSandboxStatsRows(rows, window, buckets);
+}
