@@ -7,6 +7,10 @@
 //! step is timed; the summary goes to the transcript (`prepare` event) and to
 //! the log (`prepare: 41.2s (npm ci ui 30.1s, ...)`).
 //!
+//! Preparation is best-effort: a failed step is logged and recorded as
+//! `failed`, and the agent still starts (it can install what it needs itself).
+//! Only a stop (cancel, run deadline) aborts the run.
+//!
 //! The npm cache lives on the workspace volume, next to the worktrees (same
 //! filesystem, so a hit is a hardlink copy):
 //! `<workspace>/cache/npm/<repo>/<component>/<sha256(package-lock.json)>/node_modules`.
@@ -160,7 +164,7 @@ fn tail(s: &str) -> String {
 }
 
 /// Prepare `worktree`. Returns the `ENZARB_TEST_PG_URL` when Postgres is up.
-/// The summary is emitted whether or not a step fails.
+/// Fails only on a stop; failed steps are logged and the summary is emitted.
 pub async fn run(
     ctx: &Ctx<'_>,
     ctl: &mut Ctl,
@@ -177,7 +181,7 @@ pub async fn run(
         "prepare",
         json!({"total_ms": total, "steps": p.steps.iter().map(|s| json!({
             "step": s.step, "component": s.component, "status": s.status, "ms": s.ms,
-        })).collect::<Vec<_>>(), "ok": res.is_ok()}),
+        })).collect::<Vec<_>>(), "ok": res.is_ok() && p.steps.iter().all(|s| s.status != "failed")}),
     );
     (ctx.sink)("prepare")(&summary(&p.steps, total));
     res
@@ -205,10 +209,12 @@ impl Prep<'_, '_> {
             let dir = worktree.join(&comp);
             let has_mise = dir.join("mise.toml").is_file();
             if !cfg.mise_bin.is_empty() && (comp == "." || has_mise) {
-                self.mise_install(ctl, &comp, &dir, has_mise).await?;
+                let r = self.mise_install(ctl, &comp, &dir).await;
+                self.tolerate(r)?;
             }
             if dir.join("package-lock.json").is_file() {
-                self.npm_ci(ctl, &comp, &dir).await?;
+                let r = self.npm_ci(ctl, &comp, &dir).await;
+                self.tolerate(r)?;
             }
         }
         if !needs_pg(worktree) {
@@ -226,6 +232,17 @@ impl Prep<'_, '_> {
                 self.record("postgres", "", "failed", t);
                 Ok(None)
             }
+        }
+    }
+
+    /// Log a failed step and go on; a stop still aborts the run.
+    fn tolerate(&self, r: Result<(), PrepError>) -> Result<(), PrepError> {
+        match r {
+            Err(PrepError::Fail(m)) => {
+                (self.ctx.sink)("prepare")(&m);
+                Ok(())
+            }
+            other => other,
         }
     }
 
@@ -267,7 +284,6 @@ impl Prep<'_, '_> {
         ctl: &mut Ctl,
         comp: &str,
         dir: &Path,
-        fatal: bool,
     ) -> Result<(), PrepError> {
         let t = Instant::now();
         let mut spec = CmdSpec::new(&self.ctx.cfg.mise_bin, &["install"]);
@@ -275,36 +291,21 @@ impl Prep<'_, '_> {
         spec.env = self.ctx.env.clone();
         let what = format!("mise install {comp}");
         let mut sc = self.step_ctl(ctl);
-        match self.exec(ctl, &mut sc, spec, "mise", &what).await {
-            Ok(out) if out.success() => {
-                self.record("mise install", comp, "ok", t);
-                Ok(())
-            }
-            Ok(out) => {
-                self.record("mise install", comp, "failed", t);
-                let msg = format!(
-                    "{what} failed (exit {:?}): {}",
-                    out.code(),
-                    tail(&out.stderr)
-                );
-                if fatal {
-                    Err(PrepError::Fail(msg))
-                } else {
-                    (self.ctx.sink)("prepare")(&msg);
-                    Ok(())
-                }
-            }
-            Err(PrepError::Fail(m)) => {
-                self.record("mise install", comp, "failed", t);
-                if fatal {
-                    Err(PrepError::Fail(m))
-                } else {
-                    (self.ctx.sink)("prepare")(&m);
-                    Ok(())
-                }
-            }
+        let res = match self.exec(ctl, &mut sc, spec, "mise", &what).await {
+            Ok(out) if out.success() => Ok(()),
+            Ok(out) => Err(PrepError::Fail(format!(
+                "{what} failed (exit {:?}): {}",
+                out.code(),
+                tail(&out.stderr)
+            ))),
             Err(e) => Err(e),
+        };
+        match &res {
+            Ok(()) => self.record("mise install", comp, "ok", t),
+            Err(PrepError::Fail(_)) => self.record("mise install", comp, "failed", t),
+            Err(PrepError::Stop(_)) => {}
         }
+        res
     }
 
     async fn npm_ci(&mut self, ctl: &mut Ctl, comp: &str, dir: &Path) -> Result<(), PrepError> {
@@ -694,17 +695,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_npm_ci_writes_no_cache_and_names_the_step() {
+    async fn failed_npm_ci_is_logged_writes_no_cache_and_the_run_goes_on() {
         let mut fx = Fx::new("echo boom >&2; exit 1");
         let a = fx.worktree("a", "lock-1");
-        let err = fx.prepare(&a).await.unwrap_err();
-        match err {
-            PrepError::Fail(m) => {
-                assert!(m.contains("npm ci ui failed"), "{m}");
-                assert!(m.contains("boom"), "{m}");
-            }
-            PrepError::Stop(s) => panic!("stopped: {s:?}"),
-        }
+        fx.prepare(&a).await.unwrap();
+        let logs = fx.logs.lock().unwrap().clone();
+        assert!(
+            logs.iter()
+                .any(|l| l.contains("npm ci ui failed") && l.contains("boom")),
+            "{logs:?}"
+        );
         assert!(!fx.cfg.workspace.join("cache").exists());
         assert!(!a.join("ui/node_modules").join(MARKER).exists());
         let ev = fx.events.lock().unwrap().clone();
@@ -756,26 +756,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn step_timeout_fails_the_step() {
+    async fn step_timeout_fails_the_step_not_the_run() {
         let mut fx = Fx::new("sleep 30");
         fx.cfg.prepare_step_timeout = Duration::from_millis(300);
         let a = fx.worktree("a", "lock-1");
-        match fx.prepare(&a).await.unwrap_err() {
-            PrepError::Fail(m) => assert!(m.contains("timed out"), "{m}"),
-            PrepError::Stop(s) => panic!("stopped: {s:?}"),
-        }
+        fx.prepare(&a).await.unwrap();
+        let logs = fx.logs.lock().unwrap().clone();
+        assert!(logs.iter().any(|l| l.contains("timed out")), "{logs:?}");
+        assert_eq!(fx.events.lock().unwrap()[0]["data"]["ok"], false);
     }
 
     #[tokio::test]
     async fn timing_output_never_holds_the_token() {
         let mut fx = Fx::new("echo \"token ghp_secret9\" >&2; exit 1");
         let a = fx.worktree("a", "lock-1");
-        // The failure message carries stderr; the caller redacts it.
-        let PrepError::Fail(m) = fx.prepare(&a).await.unwrap_err() else {
-            panic!("expected failure")
-        };
-        let red = m.replace("ghp_secret9", "***");
-        assert!(!red.contains("ghp_secret9"));
+        // The failure line carries stderr (the caller's sink redacts it);
+        // the timing summary never does.
+        fx.prepare(&a).await.unwrap();
         for l in fx
             .logs
             .lock()
