@@ -26,3 +26,10 @@ export const PROJECT_TABS = [
 	{ slug: 'metrics', label: 'Metrics' },
 	{ slug: 'settings', label: 'Settings' }
 ] as const;
+
+/** Sub-tabs of the Metrics tab. Each is a child route of `/projects/[name]/metrics`; Usage is the index. */
+export const METRICS_TABS = [
+	{ slug: '', label: 'Usage' },
+	{ slug: 'timing', label: 'Step timing' },
+	{ slug: 'sandbox', label: 'Sandbox' }
+] as const;
