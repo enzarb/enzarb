@@ -1091,6 +1091,43 @@ impl Connector for GitHubConnector {
         ))
     }
 
+    async fn update_issue(&self, item: &WorkItemKey, body: &str) -> Result<()> {
+        #[derive(Deserialize)]
+        struct Current {
+            #[serde(default)]
+            body: Option<String>,
+        }
+        github_repo(&item.repo)?;
+        let path = format!("/repos/{}/issues/{}", item.repo.full_name(), item.number);
+        let current: Current = self
+            .call(&item.repo, "get issue", Method::GET, &path, None)
+            .await?
+            .json()?;
+        // Keep the idempotency marker `create_issue` appended, or a retried creation would
+        // not find this issue and make another.
+        let marker = current
+            .body
+            .as_deref()
+            .and_then(|b| b.rfind("<!-- enzarb:idem:").map(|i| &b[i..]))
+            .and_then(|t| t.find("-->").map(|e| &t[..e + 3]));
+        let new = match marker {
+            Some(m) => format!("{body}\n\n{m}"),
+            None => body.to_string(),
+        };
+        if current.body.as_deref() == Some(new.as_str()) {
+            return Ok(());
+        }
+        self.call(
+            &item.repo,
+            "update issue",
+            Method::PATCH,
+            &path,
+            Some(json!({ "body": new })),
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn link_sub_issue(&self, parent: &WorkItemKey, child: &WorkItemKey) -> Result<()> {
         github_repo(&child.repo)?;
         if parent.repo != child.repo {

@@ -63,7 +63,7 @@ Previous version of the breakdown (empty for the first one):
 
    - `key`: a short unique id of lowercase letters, digits, `-` or `_` (at most 32 characters). It is only used to refer to the sub-issue in `depends_on`.
    - `title`: a plain, specific issue title. Not empty.
-   - `body`: markdown for the issue description. Self-contained: it states the scope and the acceptance criteria, and refers to the epic as #{number}. Do not mention `@{bot_handle}` and do not write `/approve` or `/epic` in it.
+   - `body`: markdown for the issue description. Self-contained: it states the scope and the acceptance criteria. Never write an issue number (`#12`): GitHub assigns the numbers only when the sub-issues are created, so a guessed one points at the wrong issue. Refer to another sub-issue of this list as `{{issue:key}}` (its `key`); it becomes `#<number> (<title>)` on creation. Do not name the epic by number either: "Part of the epic #{number}" is added for you. Do not mention `@{bot_handle}` and do not write `/approve` or `/epic` in it.
    - `depends_on`: keys of other sub-issues in the same list.
 8. Epics are not nested: sub-issues are never split into further epics.
 

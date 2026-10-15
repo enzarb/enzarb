@@ -162,6 +162,13 @@ pub trait Connector: Send + Sync {
         Err(Error::Invalid("creating issues is not supported".into()))
     }
 
+    /// Replaces the description of an issue made by `create_issue`, keeping whatever hidden
+    /// idempotency marker the provider embedded there. Setting the same body again succeeds.
+    /// The default implementation reports the capability as unsupported.
+    async fn update_issue(&self, _item: &WorkItemKey, _body: &str) -> Result<()> {
+        Err(Error::Invalid("updating issues is not supported".into()))
+    }
+
     /// Makes `child` a sub-issue of `parent`. Linking an existing sub-issue succeeds. A
     /// connector without native sub-issues may record the link in the parent's body instead.
     /// The default implementation reports the capability as unsupported.

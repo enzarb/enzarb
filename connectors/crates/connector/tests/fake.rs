@@ -8,6 +8,23 @@ fn item() -> WorkItemKey {
 }
 
 #[tokio::test]
+async fn update_issue_replaces_the_body_and_replays() {
+    let f = FakeConnector::new();
+    let key = f
+        .create_issue(&item().repo, "T", "old", &[], "k")
+        .await
+        .unwrap();
+    f.update_issue(&key, "new").await.unwrap();
+    f.update_issue(&key, "new").await.unwrap();
+    assert_eq!(f.created_issues()[0].2, "new");
+    let calls = f.calls();
+    assert!(!calls[1].replayed);
+    assert!(calls[2].replayed);
+    let missing = f.update_issue(&item(), "x").await.unwrap_err();
+    assert!(matches!(missing, Error::NotFound(_)), "{missing:?}");
+}
+
+#[tokio::test]
 async fn post_comment_is_idempotent_and_recorded() {
     let f = FakeConnector::new();
     let a = f.post_comment(&item(), "hi", "k1").await.unwrap();

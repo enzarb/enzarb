@@ -3969,6 +3969,65 @@ async fn create_sub_issues_makes_links_and_records_the_structure() {
     assert_eq!(rows, [epic(10, 50), epic(10, 51), epic(51, 50)]);
 }
 
+/// `store` is created first (the others wait for it) but listed in the plan after `poller`,
+/// which names its siblings by placeholder, including one created later.
+fn placeholder_input() -> Value {
+    json!({
+        "item": key(10),
+        "depth": 1,
+        "sub_issues": [
+            { "key": "store", "title": "Add sample storage #7, v2", "body": "Storage.", "depends_on": [] },
+            { "key": "stats", "title": "Serve a stats snapshot", "body": "Snapshot, feeds {{issue:store}}.", "depends_on": ["store"] },
+            { "key": "poller", "title": "Poll sandboxes", "body": "Uses {{issue:stats}} then {{issue:store}}; see {{issue:poller}}.", "depends_on": ["store", "stats"] },
+        ],
+    })
+}
+
+async fn run_sub_issues(h: &H, wi: i64, input: Value, k: &str) -> i64 {
+    let id = new_job(h.pool(), wi, "enzarb", "create_sub_issues", 10, k, input).await;
+    h.exec.drain().await;
+    id
+}
+
+#[tokio::test]
+async fn create_sub_issues_rewrites_placeholders_with_real_numbers() {
+    let h = H::new(db!()).await;
+    h.fake.set_next_issue_number(53);
+    let wi = new_item(h.pool(), 10, "enzarb").await;
+    let id = run_sub_issues(&h, wi, placeholder_input(), "k:epic").await;
+    assert_eq!(job(h.pool(), id).await.status, "succeeded");
+    let made = h.fake.created_issues();
+    assert_eq!(made[0].0, key(53));
+    assert!(
+        made[1]
+            .2
+            .contains("Snapshot, feeds #53 (Add sample storage 7, v2).")
+    );
+    assert!(
+        made[2]
+            .2
+            .contains("Uses #54 (Serve a stats snapshot) then #53 (Add sample storage 7, v2); see #55 (Poll sandboxes).")
+    );
+    for (_, _, body) in &made {
+        assert!(!body.contains("{{issue:"), "{body}");
+    }
+    // The footer names titles and still parses to exactly the blockers.
+    let home = key(10).repo;
+    let deps = enzarb_connector::dependencies::text_dependencies(&made[2].2, &home);
+    assert_eq!(deps, [key(53), key(54)]);
+    assert!(
+        made[2]
+            .2
+            .contains("Blocked by #54 (Serve a stats snapshot)")
+    );
+    // A run again changes nothing.
+    let before = h.fake.applied_calls().len();
+    let id = run_sub_issues(&h, wi, placeholder_input(), "k:epic2").await;
+    assert_eq!(job(h.pool(), id).await.status, "succeeded");
+    assert_eq!(h.fake.applied_calls().len(), before);
+    assert_eq!(h.fake.created_issues(), made);
+}
+
 #[tokio::test]
 async fn create_sub_issues_run_again_makes_no_duplicates() {
     let h = H::new(db!()).await;

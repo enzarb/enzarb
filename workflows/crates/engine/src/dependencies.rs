@@ -35,6 +35,60 @@ fn parse_key(s: &str) -> Option<WorkItemKey> {
     s.parse::<WorkItemKey>().ok().map(|k| normalize_key(&k))
 }
 
+/// A title as one line of plain text for a prompt.
+fn one_line(s: &str) -> String {
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace(['<', '>'], "")
+}
+
+/// One `dependency_status` row: `(depends_on_key, status, state, title, url)`.
+pub type DependencyRow = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+/// Render `dependency_status` rows `(depends_on_key, status, state, title, url)` as the
+/// `{dependencies}` block of a prompt, one line per dependency.
+pub fn format_dependencies(home: &RepoKey, rows: &[DependencyRow]) -> String {
+    let mut lines = Vec::new();
+    for (dep_key, status, state, title, url) in rows {
+        let Some(dep) = parse_key(dep_key) else {
+            continue;
+        };
+        let mut line = format!("- {}", label(home, &dep));
+        if let Some(t) = title.as_deref().map(one_line).filter(|t| !t.is_empty()) {
+            line.push_str(&format!(" ({t})"));
+        }
+        let state = state.as_deref().unwrap_or("not started");
+        line.push_str(&format!(": {status} ({state})"));
+        if let Some(u) = url.as_deref().filter(|u| !u.is_empty()) {
+            line.push_str(&format!(" {u}"));
+        }
+        lines.push(line);
+    }
+    lines.join("\n")
+}
+
+/// The `{dependencies}` block for `key`: everything it waits on, done or not. Empty when it
+/// has no dependencies (the prompt renders that as `(none)`).
+pub async fn dependency_context(pool: &PgPool, key: &WorkItemKey) -> Result<String, Error> {
+    let rows: Vec<DependencyRow> = sqlx::query_as(
+        "SELECT DISTINCT ON (depends_on_key) depends_on_key, status, state, title, url
+             FROM workflows.dependency_status
+             WHERE work_item_key = $1
+             ORDER BY depends_on_key",
+    )
+    .bind(key.to_string())
+    .fetch_all(pool)
+    .await?;
+    Ok(format_dependencies(&key.repo, &rows))
+}
+
 /// What `key` still waits on, in a stable order: dependencies that are not done, then its
 /// dependency cycle if it is on one.
 pub async fn open_dependencies(

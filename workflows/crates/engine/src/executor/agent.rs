@@ -175,6 +175,9 @@ impl Executor {
         let claude_token = self.claude_token(project).await?;
         let thread = connector.fetch_thread(&item).await?;
         input.context.thread = format_thread(&thread);
+        input.context.dependencies = crate::dependencies::dependency_context(&self.pool, &item)
+            .await
+            .map_err(|e| JobError::transient(format!("reading dependencies: {e}")))?;
         input.prompt = render_prompt(kind, &input.context);
 
         let scope = if input.push {
