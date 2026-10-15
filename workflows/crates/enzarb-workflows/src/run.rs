@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use engine::executor::KubeSandboxResolver;
+use engine::sandbox_poller::{MuxStatsClient, PgPollLock, PgSampleSink, SandboxPoller};
 use engine::{
     CachedPermissions, ConnectorPermissions, ConnectorRegistry, Executor, ExecutorConfig,
     KubeProjectIndex, Reducer, ReducerConfig, Ticker,
@@ -37,8 +38,11 @@ pub async fn run(cfg: Config) -> Result<(), Error> {
         .await
         .map_err(|e| Error::Run(format!("connecting to database: {e}")))?;
 
-    let needs_kube = cfg.roles.contains(&Role::Reducer) || cfg.roles.contains(&Role::Executor);
-    let needs_connector = needs_kube || cfg.roles.contains(&Role::Ticker);
+    // The ticker needs the Project index (dependency sync) and the stats poller lists Projects.
+    let needs_kube = cfg.roles.contains(&Role::Reducer)
+        || cfg.roles.contains(&Role::Executor)
+        || cfg.roles.contains(&Role::Ticker);
+    let needs_connector = needs_kube;
     let kube_client = if needs_kube {
         Some(
             kube::Client::try_default()
@@ -106,10 +110,24 @@ pub async fn run(cfg: Config) -> Result<(), Error> {
                 connectors.clone().expect("connectors"),
                 index.clone().expect("index"),
             );
+        let ticker_rx = rx.clone();
+        tasks.spawn(async move {
+            ticker.run(ticker_rx).await;
+            ("ticker", Ok(()))
+        });
+
+        // Its own task: a hung sandbox must never delay the ticker.
+        let poller = SandboxPoller::new(
+            Arc::new(KubeSandboxResolver::new(kube_client.clone().expect("kube"))),
+            Arc::new(MuxStatsClient),
+            Arc::new(PgSampleSink::new(pool.clone())),
+            Arc::new(PgPollLock::new(pool.clone())),
+            cfg.stats.clone(),
+        );
         let rx = rx.clone();
         tasks.spawn(async move {
-            ticker.run(rx).await;
-            ("ticker", Ok(()))
+            poller.run(rx).await;
+            ("sandbox-poller", Ok(()))
         });
     }
 

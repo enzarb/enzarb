@@ -98,8 +98,8 @@ pub use callback::{callback_token, router as callback_router};
 pub use claude_credential::{ClaudeKeyring, DecryptError, KeyringError};
 pub use connectors::ConnectorRegistry;
 pub use sandbox::{
-    KubeSandboxResolver, SandboxError, SandboxResolver, SandboxTarget, StaticSandboxResolver,
-    max_runs, project_owner, project_repos, secret_location,
+    KubeSandboxResolver, RunningSandbox, SandboxError, SandboxResolver, SandboxTarget,
+    StaticSandboxResolver, max_runs, project_owner, project_repos, sandbox_name, secret_location,
 };
 pub use sandbox_change::{ProjectChangeState, change_state};
 
