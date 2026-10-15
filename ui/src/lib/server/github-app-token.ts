@@ -1,11 +1,7 @@
-import { createPrivateKey } from 'node:crypto';
-import { SignJWT } from 'jose';
 import { getConfig } from './config.ts';
+import { GITHUB_API as API, githubHeaders, signAppJwt } from './github-app.ts';
 import { RELEASES_REPO } from './releases.ts';
 
-const API = 'https://api.github.com';
-const JWT_BACKDATE_S = 60;
-const JWT_TTL_S = 9 * 60;
 export const TOKEN_REFRESH_MARGIN_MS = 5 * 60_000;
 const TIMEOUT_MS = 5_000;
 
@@ -41,12 +37,7 @@ export function createInstallationTokenSource({
 	async function call(url: string, init: RequestInit, jwt: string) {
 		return doFetch(url, {
 			...init,
-			headers: {
-				Accept: 'application/vnd.github+json',
-				'User-Agent': 'enzarb-ui',
-				'X-GitHub-Api-Version': '2022-11-28',
-				Authorization: `Bearer ${jwt}`
-			},
+			headers: githubHeaders(jwt),
 			signal: AbortSignal.timeout(TIMEOUT_MS)
 		});
 	}
@@ -54,13 +45,7 @@ export function createInstallationTokenSource({
 	async function mint(): Promise<string | null> {
 		if (!appId || !privateKey) return null;
 		try {
-			const iat = Math.floor(now() / 1000) - JWT_BACKDATE_S;
-			const jwt = await new SignJWT({})
-				.setProtectedHeader({ alg: 'RS256' })
-				.setIssuer(appId)
-				.setIssuedAt(iat)
-				.setExpirationTime(iat + JWT_TTL_S)
-				.sign(createPrivateKey(privateKey));
+			const jwt = await signAppJwt(appId, privateKey, now());
 			const inst = await call(`${API}/repos/${RELEASES_REPO}/installation`, { method: 'GET' }, jwt);
 			if (!inst.ok) return null;
 			const id = ((await inst.json()) as { id?: unknown }).id;

@@ -1,5 +1,5 @@
 <script lang="ts" module>
-	import type { ChangedFileInput } from '#lib/workflow/propose.ts';
+	import { WORKFLOW_NAME_RE, type ChangedFileInput } from '#lib/workflow/propose.ts';
 
 	export type ProposeFn = (
 		files: ChangedFileInput[],
@@ -14,6 +14,7 @@
 	import {
 		applyToDocument,
 		check,
+		isPromptPath,
 		NODE_TYPES,
 		promptKind,
 		validate,
@@ -101,14 +102,15 @@
 		}
 		return out;
 	});
+	const nameOk = $derived(!def || WORKFLOW_NAME_RE.test(def.name));
 	const canPropose = $derived(
-		!!def && !parseError && problems.length === 0 && changed.length > 0 && !busy
+		!!def && !parseError && problems.length === 0 && nameOk && changed.length > 0 && !busy
 	);
 
 	// Load prompt files the definition references (once each).
 	$effect(() => {
 		for (const p of promptPaths) {
-			if (p in files || !/^\.enzarb\/prompts\/[^/]+\.md$/.test(p)) continue;
+			if (p in files || !isPromptPath(p)) continue;
 			files[p] = { text: null, original: null, loaded: false };
 			const done = (t: string | null) => {
 				// A file the user already started writing keeps their text.
@@ -234,6 +236,12 @@
 		<Button variant="primary" disabled={!canPropose} onclick={submit}>Propose change</Button>
 	</div>
 
+	{#if !nameOk}
+		<Notice tone="warning"
+			>To propose a change, the workflow name must be letters, digits, spaces, ".", "_" or "-" (at
+			most 64).</Notice
+		>
+	{/if}
 	{#if parseError}
 		<Notice tone="error" title="The YAML does not parse">{parseError}</Notice>
 	{/if}

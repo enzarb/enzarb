@@ -2,21 +2,33 @@
  * Reading and proposing changes to `.enzarb/workflows/*.yaml` and `.enzarb/prompts/*.md` of a
  * project repository, server-side with a GitHub App installation token (never in the browser).
  * A change is always a new branch `enzarb/workflow-<slug>-<short>` plus a pull request; nothing is
- * ever committed to the default branch.
+ * ever committed to the default branch. The three steps are chained by a signed proposal token,
+ * so a client cannot point a later step at another branch, repository or user.
  */
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { GITHUB_API, githubHeaders } from './github-app.ts';
 import { isPromptPath, PROMPT_DIR, WORKFLOW_DIR } from '#lib/workflow/definition.ts';
+import { WORKFLOW_NAME_RE } from '#lib/workflow/propose.ts';
 
 const TIMEOUT_MS = 15_000;
 /** Largest file read or written, in bytes. */
 export const MAX_FILE_BYTES = 256 * 1024;
+/** Largest total of one commit, in bytes. */
+export const MAX_TOTAL_BYTES = 1024 * 1024;
+export const MAX_FILES = 20;
 export const BRANCH_PREFIX = 'enzarb/workflow-';
+/** How long a proposal token is accepted. */
+export const PROPOSAL_TTL_MS = 60 * 60_000;
 
+/**
+ * A failed repository operation. `message` is a fixed text safe to show; `detail` (GitHub's own
+ * message) is only logged.
+ */
 export class RepoError extends Error {
 	constructor(
 		message: string,
-		readonly status?: number
+		readonly status?: number,
+		readonly detail?: string
 	) {
 		super(message);
 		this.name = 'RepoError';
@@ -47,8 +59,10 @@ export interface RepoApi {
 	getFile(path: string, ref: string): Promise<FileContent | null>;
 	branchSha(branch: string): Promise<string | null>;
 	createBranch(branch: string, sha: string): Promise<void>;
-	/** One commit with every file on top of `branch`; returns the new commit sha. */
-	commitFiles(branch: string, files: ChangedFile[], message: string): Promise<string>;
+	/** One commit with every file on top of `head` (the branch's current head); returns its sha. */
+	commitFiles(branch: string, head: string, files: ChangedFile[], message: string): Promise<string>;
+	/** Paths changed between `base` and `head` (`GET /compare`). */
+	changedPaths(base: string, head: string): Promise<string[]>;
 	openPullRequest(input: {
 		head: string;
 		base: string;
@@ -88,11 +102,16 @@ export function githubRepoApi(
 		let detail = '';
 		try {
 			const m = ((await res.json()) as { message?: unknown }).message;
-			if (typeof m === 'string') detail = `: ${m.slice(0, 200)}`;
+			if (typeof m === 'string') detail = m.slice(0, 300);
 		} catch {
 			// no body
 		}
-		throw new RepoError(`GitHub could not ${what} (${res.status}${detail}).`, res.status);
+		throw new RepoError(`GitHub could not ${what}.`, res.status, `${res.status} ${detail}`);
+	}
+	async function branchSha(branch: string) {
+		const res = await call('GET', `/git/ref/heads/${encPath(branch)}`);
+		if (res.status === 404) return null;
+		return (await ok<{ object: { sha: string } }>(res, 'read the branch')).object.sha;
 	}
 	return {
 		async defaultBranch() {
@@ -102,7 +121,7 @@ export function githubRepoApi(
 		async listDir(path, ref) {
 			const res = await call('GET', `/contents/${encPath(path)}?ref=${enc(ref)}`);
 			if (res.status === 404) return [];
-			const body = await ok<unknown>(res, `list ${path}`);
+			const body = await ok<unknown>(res, 'list the files');
 			return Array.isArray(body)
 				? body.map((e: DirEntry) => ({ name: e.name, path: e.path, type: e.type }))
 				: [];
@@ -112,28 +131,22 @@ export function githubRepoApi(
 			if (res.status === 404) return null;
 			const body = await ok<{ type?: string; content?: string; sha: string; size?: number }>(
 				res,
-				`read ${path}`
+				'read the file'
 			);
 			if (body.type !== 'file' || typeof body.content !== 'string') return null;
-			if ((body.size ?? 0) > MAX_FILE_BYTES) throw new RepoError(`${path} is too large.`);
+			if ((body.size ?? 0) > MAX_FILE_BYTES) throw new RepoError('The file is too large.');
 			return { path, sha: body.sha, text: Buffer.from(body.content, 'base64').toString('utf8') };
 		},
-		async branchSha(branch) {
-			const res = await call('GET', `/git/ref/heads/${encPath(branch)}`);
-			if (res.status === 404) return null;
-			return (await ok<{ object: { sha: string } }>(res, `read ${branch}`)).object.sha;
-		},
+		branchSha,
 		async createBranch(branch, sha) {
 			await ok(
 				await call('POST', '/git/refs', { ref: `refs/heads/${branch}`, sha }),
-				`create the branch ${branch}`
+				'create the branch'
 			);
 		},
-		async commitFiles(branch, files, message) {
-			const head = await this.branchSha(branch);
-			if (!head) throw new RepoError(`The branch ${branch} does not exist.`);
+		async commitFiles(branch, head, files, message) {
 			const commit = await ok<{ tree: { sha: string } }>(
-				await call('GET', `/git/commits/${head}`),
+				await call('GET', `/git/commits/${enc(head)}`),
 				'read the branch head'
 			);
 			const tree = await ok<{ sha: string }>(
@@ -147,14 +160,22 @@ export function githubRepoApi(
 				await call('POST', '/git/commits', { message, tree: tree.sha, parents: [head] }),
 				'commit'
 			);
+			// Not forced: GitHub refuses if the branch moved since `head`.
 			await ok(
 				await call('PATCH', `/git/refs/heads/${encPath(branch)}`, {
 					sha: created.sha,
 					force: false
 				}),
-				`update ${branch}`
+				'update the branch'
 			);
 			return created.sha;
+		},
+		async changedPaths(baseRef, headRef) {
+			const body = await ok<{ files?: { filename: string }[] }>(
+				await call('GET', `/compare/${enc(baseRef)}...${enc(headRef)}`),
+				'compare the branch'
+			);
+			return (body.files ?? []).map((f) => f.filename);
 		},
 		async openPullRequest({ head, base: baseBranch, title, body }) {
 			const pr = await ok<{ number: number; html_url: string }>(
@@ -173,39 +194,102 @@ export function githubRepoApi(
 	};
 }
 
+// --- paths -----------------------------------------------------------------------------------
+
+export function isWorkflowPath(path: string): boolean {
+	return /^\.enzarb\/workflows\/[A-Za-z0-9_-]+\.ya?ml$/.test(path);
+}
+
+/** Only workflow definitions and prompt files are read or written through the editor. */
+export function isEditablePath(path: string): boolean {
+	return isWorkflowPath(path) || isPromptPath(path);
+}
+
 // --- reading ---------------------------------------------------------------------------------
 
 export interface RepoWorkflows {
 	defaultBranch: string;
 	/** `.enzarb/workflows/*.yaml`, sorted. */
 	workflows: string[];
-	/** `.enzarb/prompts/*.md`, sorted. */
+	/** `.enzarb/prompts/*.md`, sorted (the paths the graph crate accepts). */
 	prompts: string[];
+}
+
+export async function requireRead(api: RepoApi, login: string): Promise<void> {
+	if ((await api.permission(login)) === 'none')
+		throw new RepoError('You have no access to this repository.', 403);
 }
 
 export async function listRepoWorkflows(api: RepoApi): Promise<RepoWorkflows> {
 	const defaultBranch = await api.defaultBranch();
-	const files = async (dir: string, re: RegExp) =>
+	const files = async (dir: string, keep: (path: string) => boolean) =>
 		(await api.listDir(dir.replace(/\/$/, ''), defaultBranch))
-			.filter((e) => e.type === 'file' && re.test(e.name))
+			.filter((e) => e.type === 'file')
 			.map((e) => `${dir}${e.name}`)
+			.filter(keep)
 			.sort();
 	const [workflows, prompts] = await Promise.all([
-		files(WORKFLOW_DIR, /^[A-Za-z0-9_-][A-Za-z0-9_.-]*\.ya?ml$/),
-		files(PROMPT_DIR, /^[A-Za-z0-9_-][A-Za-z0-9_.-]*\.md$/)
+		files(WORKFLOW_DIR, isWorkflowPath),
+		files(PROMPT_DIR, isPromptPath)
 	]);
 	return { defaultBranch, workflows, prompts };
 }
 
-export function isWorkflowPath(path: string): boolean {
-	return (
-		/^\.enzarb\/workflows\/[A-Za-z0-9_-][A-Za-z0-9_.-]*\.ya?ml$/.test(path) && !path.includes('..')
-	);
+// --- proposal token --------------------------------------------------------------------------
+
+/** What a proposal token binds: who, where, and the commit the next step must build on. */
+export interface ProposalClaims {
+	project: string;
+	repo: string;
+	login: string;
+	branch: string;
+	base: string;
+	/** Head of the default branch the proposal branch was created at. */
+	baseSha: string;
+	/** The commit this flow made, once step 2 ran. */
+	headSha?: string;
+	/** ms epoch. */
+	exp: number;
 }
 
-/** Only workflow definitions and prompt files are read or written through the editor. */
-export function isEditablePath(path: string): boolean {
-	return isWorkflowPath(path) || isPromptPath(path);
+const b64 = (b: Buffer | string) => Buffer.from(b).toString('base64url');
+const mac = (secret: string, payload: string) =>
+	createHmac('sha256', `enzarb-workflow-proposal\0${secret}`).update(payload).digest();
+
+export function signProposal(secret: string, claims: ProposalClaims): string {
+	const payload = b64(JSON.stringify(claims));
+	return `${payload}.${b64(mac(secret, payload))}`;
+}
+
+/** The claims of a valid, unexpired token for the same project, repository and user. */
+export function verifyProposal(
+	secret: string,
+	token: string,
+	expect: { project: string; repo: string; login: string },
+	now = Date.now()
+): ProposalClaims {
+	const bad = () => new RepoError('The proposal expired or is invalid. Start again.', 400);
+	const [payload, sig, extra] = token.split('.');
+	if (!payload || !sig || extra !== undefined) throw bad();
+	const want = mac(secret, payload);
+	const got = Buffer.from(sig, 'base64url');
+	if (got.length !== want.length || !timingSafeEqual(got, want)) throw bad();
+	let c: ProposalClaims;
+	try {
+		c = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as ProposalClaims;
+	} catch {
+		throw bad();
+	}
+	if (
+		typeof c.exp !== 'number' ||
+		c.exp < now ||
+		c.project !== expect.project ||
+		c.repo !== expect.repo ||
+		c.login !== expect.login ||
+		!isProposalBranch(c.branch)
+	)
+		throw bad();
+	return c;
 }
 
 // --- proposing -------------------------------------------------------------------------------
@@ -216,6 +300,17 @@ export async function requireWrite(api: RepoApi, login: string): Promise<void> {
 	const role = await api.permission(login);
 	if (!WRITE_ROLES.has(role))
 		throw new RepoError('You need write access to this repository to propose a change.', 403);
+}
+
+/** Names that may appear in a branch, commit message and PR title: printable, one line. */
+export { WORKFLOW_NAME_RE };
+
+export function checkWorkflowName(name: string): void {
+	if (!WORKFLOW_NAME_RE.test(name))
+		throw new RepoError(
+			'The workflow name must be letters, digits, spaces, ".", "_" or "-" (at most 64).',
+			400
+		);
 }
 
 /** `enzarb/workflow-<slug>-<short>`: slug from the workflow name, short random suffix. */
@@ -232,71 +327,111 @@ export function proposalBranch(
 	return `${BRANCH_PREFIX}${slug}-${short}`;
 }
 
-function isProposalBranch(branch: string): boolean {
-	return /^enzarb\/workflow-[a-z0-9-]{1,40}-[a-f0-9]{6}$/.test(branch);
+function isProposalBranch(branch: unknown): boolean {
+	return (
+		typeof branch === 'string' && /^enzarb\/workflow-[a-z0-9-]{1,40}-[a-f0-9]{6}$/.test(branch)
+	);
 }
 
+/** Paths, count and sizes; cheap, so it runs before any GitHub call. */
 export function checkFiles(files: ChangedFile[]): void {
-	if (files.length === 0) throw new RepoError('Nothing to commit.');
-	if (files.length > 20) throw new RepoError('At most 20 files per change.');
+	if (files.length === 0) throw new RepoError('Nothing to commit.', 400);
+	if (files.length > MAX_FILES) throw new RepoError(`At most ${MAX_FILES} files per change.`, 400);
 	const seen = new Set<string>();
+	let total = 0;
 	for (const f of files) {
 		if (!isEditablePath(f.path))
-			throw new RepoError(`${f.path} is not a workflow definition or prompt file.`);
-		if (seen.has(f.path)) throw new RepoError(`${f.path} is listed twice.`);
+			throw new RepoError('Only workflow definitions and prompt files can be changed.', 400);
+		if (seen.has(f.path)) throw new RepoError('A file is listed twice.', 400);
 		seen.add(f.path);
-		if (Buffer.byteLength(f.text, 'utf8') > MAX_FILE_BYTES)
-			throw new RepoError(`${f.path} is too large.`);
+		const size = Buffer.byteLength(f.text, 'utf8');
+		if (size > MAX_FILE_BYTES) throw new RepoError('A file is too large.', 413);
+		total += size;
 	}
+	if (total > MAX_TOTAL_BYTES) throw new RepoError('The change is too large.', 413);
 }
 
-/** Step 1: a new branch from the default branch head. Returns the branch and base. */
+export interface ProposalScope {
+	project: string;
+	repo: string;
+	login: string;
+	secret: string;
+	now?: number;
+}
+
+/** Step 1: a new branch from the default branch head. Returns the proposal token. */
 export async function createProposalBranch(
 	api: RepoApi,
-	login: string,
+	scope: ProposalScope,
 	workflowName: string
-): Promise<{ branch: string; base: string }> {
-	await requireWrite(api, login);
+): Promise<{ branch: string; token: string }> {
+	checkWorkflowName(workflowName);
+	await requireWrite(api, scope.login);
 	const base = await api.defaultBranch();
-	const sha = await api.branchSha(base);
-	if (!sha) throw new RepoError(`The default branch ${base} has no head.`);
+	const baseSha = await api.branchSha(base);
+	if (!baseSha) throw new RepoError('The default branch has no head.');
 	const branch = proposalBranch(workflowName);
-	await api.createBranch(branch, sha);
-	return { branch, base };
+	await api.createBranch(branch, baseSha);
+	const claims: ProposalClaims = {
+		project: scope.project,
+		repo: scope.repo,
+		login: scope.login,
+		branch,
+		base,
+		baseSha,
+		exp: (scope.now ?? Date.now()) + PROPOSAL_TTL_MS
+	};
+	return { branch, token: signProposal(scope.secret, claims) };
 }
 
-/** Step 2: one commit with the changed files on the proposal branch (never the default branch). */
+/**
+ * Step 2: one commit with the changed files on the token's branch, only while the branch is
+ * still where this flow left it. Returns the commit and the token for step 3.
+ */
 export async function commitProposal(
 	api: RepoApi,
-	login: string,
-	branch: string,
+	scope: ProposalScope,
+	token: string,
 	workflowName: string,
 	files: ChangedFile[]
-): Promise<string> {
-	await requireWrite(api, login);
-	if (!isProposalBranch(branch)) throw new RepoError('Not a workflow proposal branch.');
-	if (branch === (await api.defaultBranch()))
-		throw new RepoError('Refusing to commit to the default branch.');
+): Promise<{ sha: string; token: string }> {
 	checkFiles(files);
-	return api.commitFiles(branch, files, `chore(workflows): update ${workflowName} workflow`);
+	checkWorkflowName(workflowName);
+	const c = verifyProposal(scope.secret, token, scope, scope.now);
+	await requireWrite(api, scope.login);
+	if (c.branch === (await api.defaultBranch()))
+		throw new RepoError('Refusing to commit to the default branch.', 400);
+	const head = await api.branchSha(c.branch);
+	if (!head || head !== (c.headSha ?? c.baseSha))
+		throw new RepoError('The proposal branch changed. Start again.', 409);
+	const sha = await api.commitFiles(
+		c.branch,
+		head,
+		files,
+		`chore(workflows): update ${workflowName} workflow\n\nProposed-by: @${scope.login} via enzarb`
+	);
+	return { sha, token: signProposal(scope.secret, { ...c, headSha: sha }) };
 }
 
-/** Step 3: the pull request from the proposal branch into the default branch. */
+/** Step 3: the pull request, listing the files GitHub reports changed on the branch. */
 export async function openProposal(
 	api: RepoApi,
-	login: string,
-	branch: string,
-	workflowName: string,
-	files: string[]
+	scope: ProposalScope,
+	token: string,
+	workflowName: string
 ): Promise<{ number: number; url: string }> {
-	await requireWrite(api, login);
-	if (!isProposalBranch(branch)) throw new RepoError('Not a workflow proposal branch.');
-	const base = await api.defaultBranch();
-	const list = files.map((f) => `- \`${f}\``).join('\n');
+	checkWorkflowName(workflowName);
+	const c = verifyProposal(scope.secret, token, scope, scope.now);
+	if (!c.headSha) throw new RepoError('Nothing was committed yet.', 400);
+	await requireWrite(api, scope.login);
+	const paths = await api.changedPaths(c.baseSha, c.headSha);
+	if (paths.length === 0 || !paths.every(isEditablePath))
+		throw new RepoError('The proposal branch has unexpected changes.', 409);
+	const list = paths.map((f) => `- \`${f}\``).join('\n');
 	return api.openPullRequest({
-		head: branch,
-		base,
+		head: c.branch,
+		base: c.base,
 		title: `chore(workflows): update ${workflowName} workflow`,
-		body: `Proposed by @${login} with the enzarb workflow editor.\n\nChanged files:\n${list}\n`
+		body: `Proposed by @${scope.login} with the enzarb workflow editor.\n\nChanged files:\n${list}\n`
 	});
 }
