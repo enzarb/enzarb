@@ -285,7 +285,7 @@ mod samples {
         let gb = 1_000_000_000;
         // 0.5 cores, 100 B/s read, 50 B/s write, polled every 10 s.
         let rows: Vec<Row> = (0..6)
-            .map(|i| (i * 10, i * 5 * gb / 10, 1, 1, i * 1000, i * 500))
+            .map(|i| (i * 10, i * 5 * gb, 1, 1, i * 1000, i * 500))
             .collect();
         put(&db.pool, "p", "a", &rows).await;
         let s = series(&db.pool, "p", 0, 60, 30).await;
