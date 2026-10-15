@@ -1,15 +1,18 @@
 [package]
 name = "enzarb-graph"
 version = "0.1.0"
-edition.workspace = true
-publish.workspace = true
+# Explicit (not `workspace = true`): sandbox-container uses this crate as a
+# path dependency and its Docker build copies only this directory.
+edition = "2024"
+license = "Apache-2.0"
+publish = false
 description = "Graph workflow definitions (ADR-0020): schema, validation, conditions and advance. Pure: no IO."
 
 [lib]
 name = "enzarb_graph"
 
 [dependencies]
-serde.workspace = true
-serde_json.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 serde_yaml_ng = "0.10"
-thiserror.workspace = true
+thiserror = "2"
