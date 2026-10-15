@@ -59,6 +59,11 @@
 					.slice(-CHART_TASKS)
 					.map((t) => ({ label: t.key, value: t.usage?.costUsd ?? null }))}
 			/>
+			{#if u.tasks.length > CHART_TASKS}
+				<p class="ez-muted">
+					The chart shows the last {CHART_TASKS} of {u.tasks.length} tasks; the table lists all of them.
+				</p>
+			{/if}
 			<TaskCostTable tasks={u.tasks} />
 		</Section>
 	{/if}
