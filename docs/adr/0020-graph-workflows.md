@@ -19,7 +19,7 @@ A definition is YAML, `.enzarb/workflows/<name>.yaml`:
 version: 1
 name: issue
 on: [issue_opened]            # triggers that create a task
-start: implement
+start: prepare
 nodes:
   prepare:   {type: command, run: "mise run prepare", optional: true, next: implement}
   implement: {type: agent, prompt: implement, next: {pushed: open_pr, else: failed}}
