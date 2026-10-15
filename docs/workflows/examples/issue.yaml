@@ -1,0 +1,12 @@
+# Example graph workflow (ADR-0020). A repository opts in by committing a
+# definition as `.enzarb/workflows/issue.yaml` on its default branch.
+version: 1
+name: issue
+on: [issue_opened]            # triggers that create a task
+start: prepare
+nodes:
+  prepare:   {type: command, run: "mise run prepare", optional: true, next: implement}
+  implement: {type: agent, prompt: implement, next: {pushed: open_pr, else: failed}}
+  open_pr:   {type: action, action: open_change_request, next: done}
+  failed:    {type: end, status: failed}
+  done:      {type: end, status: done}

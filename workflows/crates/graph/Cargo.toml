@@ -1,0 +1,15 @@
+[package]
+name = "enzarb-graph"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+description = "Graph workflow definitions (ADR-0020): schema, validation, conditions and advance. Pure: no IO."
+
+[lib]
+name = "enzarb_graph"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng = "0.10"
+thiserror.workspace = true
