@@ -1,6 +1,103 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from './db.ts';
-import { mapUsageRows, numeric, projectUsage, type UsageDbRow } from './metrics-service.ts';
+import {
+	mapStepTimingRows,
+	mapUsageRows,
+	numeric,
+	projectStepTiming,
+	projectUsage,
+	type StepTimingDbRow,
+	type UsageDbRow
+} from './metrics-service.ts';
+
+const trow = (over: Partial<StepTimingDbRow>): StepTimingDbRow => ({
+	kind: 'state',
+	name: 'Implementing',
+	n: '0',
+	open_excluded: '0',
+	wait_count: '0',
+	wait_s: null,
+	min_s: null,
+	max_s: null,
+	avg_s: null,
+	median_s: null,
+	p95_s: null,
+	...over
+});
+
+describe('mapStepTimingRows', () => {
+	it('maps numeric strings to numbers in seconds', () => {
+		const r = mapStepTimingRows([
+			trow({ n: '3', min_s: '1.5', max_s: 90, avg_s: '30', median_s: '20', p95_s: '85' })
+		]);
+		expect(r.states).toEqual([
+			{
+				name: 'Implementing',
+				active: { n: 3, min: 1.5, max: 90, mean: 30, median: 20, p95: 85 },
+				openExcluded: 0,
+				waiting: null
+			}
+		]);
+	});
+
+	it('keeps waiting apart from active time', () => {
+		const [s] = mapStepTimingRows([trow({ wait_count: '2', wait_s: '600' })]).states;
+		expect(s.active).toBeNull();
+		expect(s.waiting).toEqual({ count: 2, totalS: 600 });
+		const [both] = mapStepTimingRows([
+			trow({
+				n: '1',
+				min_s: 5,
+				max_s: 5,
+				avg_s: 5,
+				median_s: 5,
+				p95_s: 5,
+				wait_count: 1,
+				wait_s: 7
+			})
+		]).states;
+		expect(both.active?.n).toBe(1);
+		expect(both.waiting).toEqual({ count: 1, totalS: 7 });
+	});
+
+	it('maps job rows by kind and leaves null percentiles null', () => {
+		const r = mapStepTimingRows([
+			trow({ kind: 'job', name: 'agent', n: '2', min_s: 1, max_s: 2, avg_s: 1.5 })
+		]);
+		expect(r.states).toEqual([]);
+		expect(r.jobs).toEqual([
+			{ kind: 'agent', stats: { n: 2, min: 1, max: 2, mean: 1.5, median: null, p95: null } }
+		]);
+	});
+
+	it('drops empty rows and rows without a name, and reads no rows as empty', () => {
+		expect(mapStepTimingRows([])).toEqual({ states: [], jobs: [] });
+		expect(mapStepTimingRows([trow({}), trow({ name: null, n: 1 })])).toEqual({
+			states: [],
+			jobs: []
+		});
+	});
+
+	it('keeps a state that only has open visits', () => {
+		expect(mapStepTimingRows([trow({ open_excluded: '4' })]).states[0].openExcluded).toBe(4);
+	});
+});
+
+describe('projectStepTiming', () => {
+	it('binds the project and the ISO window, and maps the rows', async () => {
+		const sql = vi.fn(async () => [trow({ n: '1', min_s: 2, max_s: 2, avg_s: 2 })]);
+		const from = new Date('2026-10-08T00:00:00Z');
+		const to = new Date('2026-10-15T00:00:00Z');
+		const r = await projectStepTiming(sql as unknown as Sql, 'alpha', { from, to });
+		const [strings, ...values] = sql.mock.calls[0] as unknown as [
+			TemplateStringsArray,
+			...unknown[]
+		];
+		expect(strings.join('?')).toContain('workflows_api.project_step_timing(');
+		expect(values).toEqual(['alpha', from.toISOString(), to.toISOString()]);
+		expect(r.states).toHaveLength(1);
+	});
+});
 
 const row = (over: Partial<UsageDbRow>): UsageDbRow => ({
 	kind: 'task',

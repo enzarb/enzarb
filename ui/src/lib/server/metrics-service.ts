@@ -110,3 +110,94 @@ export async function projectUsage(
 			${project}, ${window.from.toISOString()}::timestamptz, ${window.to.toISOString()}::timestamptz)`;
 	return mapUsageRows(rows);
 }
+
+/** Duration statistics in seconds; a statistic is null when no sample backs it. */
+export interface DurationStats {
+	n: number;
+	min: number | null;
+	max: number | null;
+	mean: number | null;
+	median: number | null;
+	p95: number | null;
+}
+
+/** A state's finished visits (active time) and the items waiting in it right now. */
+export interface StateTiming {
+	name: string;
+	/** Null when no visit to the state was measured in the window. */
+	active: DurationStats | null;
+	/** Open visits left out of `active` (the item is still in the state). */
+	openExcluded: number;
+	/** Items waiting in the state now; `totalS` is their summed elapsed wait. Never in `active`. */
+	waiting: { count: number; totalS: number } | null;
+}
+
+export interface JobTiming {
+	kind: string;
+	stats: DurationStats;
+}
+
+export interface StepTiming {
+	states: StateTiming[];
+	jobs: JobTiming[];
+}
+
+/** A row of `workflows_api.project_step_timing` (contracts §6). bigint arrives as a string. */
+export interface StepTimingDbRow {
+	kind: string;
+	name: string | null;
+	n: unknown;
+	open_excluded: unknown;
+	wait_count: unknown;
+	wait_s: unknown;
+	min_s: unknown;
+	max_s: unknown;
+	avg_s: unknown;
+	median_s: unknown;
+	p95_s: unknown;
+}
+
+const durationStats = (r: StepTimingDbRow): DurationStats => ({
+	n: count(r.n),
+	min: numeric(r.min_s),
+	max: numeric(r.max_s),
+	mean: numeric(r.avg_s),
+	median: numeric(r.median_s),
+	p95: numeric(r.p95_s)
+});
+
+/** Maps the function's rows; states with no measured visit, open visit or wait are dropped. */
+export function mapStepTimingRows(rows: readonly StepTimingDbRow[]): StepTiming {
+	const states: StateTiming[] = [];
+	const jobs: JobTiming[] = [];
+	for (const r of rows) {
+		if (typeof r.name !== 'string') continue;
+		const stats = durationStats(r);
+		if (r.kind === 'job') {
+			if (stats.n > 0) jobs.push({ kind: r.name, stats });
+		} else if (r.kind === 'state') {
+			const waitCount = count(r.wait_count);
+			const openExcluded = count(r.open_excluded);
+			if (stats.n === 0 && waitCount === 0 && openExcluded === 0) continue;
+			states.push({
+				name: r.name,
+				active: stats.n > 0 ? stats : null,
+				openExcluded,
+				waiting: waitCount > 0 ? { count: waitCount, totalS: numeric(r.wait_s) ?? 0 } : null
+			});
+		}
+	}
+	return { states, jobs };
+}
+
+/** Step timing of the project's work items in `window`. The caller has checked ownership. */
+export async function projectStepTiming(
+	sql: Sql,
+	project: string,
+	window: Pick<MetricsWindow, 'from' | 'to'>
+): Promise<StepTiming> {
+	const rows = await sql<StepTimingDbRow[]>`
+		SELECT * FROM workflows_api.project_step_timing(
+			${project}, ${window.from.toISOString()}::timestamptz, ${window.to.toISOString()}::timestamptz)`;
+	return mapStepTimingRows(rows);
+}
