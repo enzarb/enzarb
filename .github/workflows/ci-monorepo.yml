@@ -4,13 +4,17 @@ name: ci-monorepo
 on:
   push:
     branches: [main]
-    paths: &paths
+    paths:
       - 'scripts/**'
       - '.mise/tasks/**'
       - '.mise/lib/**'
       - '.github/workflows/**'
   pull_request:
-    paths: *paths
+    paths:
+      - 'scripts/**'
+      - '.mise/tasks/**'
+      - '.mise/lib/**'
+      - '.github/workflows/**'
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
