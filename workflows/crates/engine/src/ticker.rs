@@ -219,19 +219,23 @@ impl Ticker {
         Ok(stats)
     }
 
-    /// Re-evaluate change requests (and epics waiting for their sub-issues) whose dependencies
+    /// Re-evaluate change requests, epics waiting for their sub-issues, and graph tasks at a wait
+    /// or `Blocked` (whose merged-dependency set is compared too) whose dependencies
     /// changed since they last looked: a dependency was completed or closed, or a
     /// relationship was added or removed. Emits
     /// `DependenciesChanged` when the open set differs from the one in `state_data`, so a
     /// finished dependency continues its dependents without a human, and a missed webhook
     /// delays that by one sweep at most.
     pub async fn sweep_dependencies(&self) -> Result<usize, Error> {
-        let rows: Vec<(String, serde_json::Value, i64)> = sqlx::query_as(
+        let rows: Vec<(String, serde_json::Value, i64, Option<serde_json::Value>)> = sqlx::query_as(
             "SELECT w.key, coalesce(w.state_data->'open_dependencies', '[]'::jsonb),
-                    (extract(epoch FROM w.updated_at) * 1000000)::bigint
+                    (extract(epoch FROM w.updated_at) * 1000000)::bigint,
+                    CASE WHEN w.state = 'Blocked'
+                         THEN coalesce(w.state_data->'blocked_by', '[]'::jsonb) END
              FROM work_items w
              WHERE (w.workflow = 'change_request'
-                    OR (w.workflow = 'issue' AND w.state = 'AwaitingChildren'))
+                    OR (w.workflow = 'issue' AND w.state = 'AwaitingChildren')
+                    OR (w.workflow LIKE 'graph:%' AND w.state IN ('Blocked', 'Waiting')))
                AND w.state NOT IN ('Merged', 'Closed', 'Cancelled')
                AND (jsonb_array_length(CASE WHEN jsonb_typeof(w.state_data->'open_dependencies') = 'array'
                                             THEN w.state_data->'open_dependencies' ELSE '[]'::jsonb END) > 0
@@ -243,14 +247,26 @@ impl Ticker {
         .fetch_all(&self.pool)
         .await?;
         let mut emitted = 0;
-        for (key, stored, updated) in rows {
+        for (key, stored, updated, blocked_by) in rows {
             let Ok(item) = key.parse::<WorkItemKey>() else {
                 continue;
             };
             let mut conn = self.pool.acquire().await?;
             let open = open_dependencies(&mut conn, &item).await?;
+            // A blocked graph task waits for merged dependencies, which the open set (done =
+            // `Done`) does not see.
+            let blocking = match &blocked_by {
+                Some(_) => {
+                    Some(crate::dependencies::blocking_dependencies(&mut conn, &item).await?)
+                }
+                None => None,
+            };
             drop(conn);
-            if serde_json::to_value(&open).unwrap_or_default() == stored {
+            let blocking_same = match (&blocking, &blocked_by) {
+                (Some(b), Some(stored)) => serde_json::to_value(b).unwrap_or_default() == *stored,
+                _ => true,
+            };
+            if serde_json::to_value(&open).unwrap_or_default() == stored && blocking_same {
                 continue;
             }
             // One event per (item, state version): a rejected one is not repeated until the

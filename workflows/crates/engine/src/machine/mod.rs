@@ -494,6 +494,9 @@ pub struct Ctx {
     /// The work item has a queued or running agent job (read by the reducer). An item with
     /// one is never moved to a graph workflow.
     pub live_agent_jobs: bool,
+    /// The work item's dependencies that are not completed (merged), read by the reducer for
+    /// every event. Graph tasks do not start, or run an agent that pushes, while any is left.
+    pub blocking_dependencies: Vec<graph::BlockingDependency>,
 }
 
 impl Ctx {

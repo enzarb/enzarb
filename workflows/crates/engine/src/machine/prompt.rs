@@ -143,7 +143,8 @@ pub fn template(kind: JobKind) -> Option<&'static str> {
 }
 
 /// The job kind whose template a graph `agent` node names with its `prompt` (ADR-0020):
-/// `triage`, `plan`, `implement`, `review`, `address_comments`, `resolve_conflicts`, `task`.
+/// `triage`, `plan`, `implement`, `review`, `address_comments`, `resolve_conflicts`, `task`
+/// (and `plan_epic`, the breakdown plan, in [`render_graph_prompt`]).
 pub fn named_prompt(name: &str) -> Option<JobKind> {
     Some(match name {
         "triage" => JobKind::AgentTriage,
@@ -160,6 +161,13 @@ pub fn named_prompt(name: &str) -> Option<JobKind> {
 /// The text of a graph `agent` node's prompt: a named template, or the inline text with
 /// the same `{placeholders}` substituted.
 pub fn render_graph_prompt(prompt: &str, ctx: &PromptContext) -> String {
+    if prompt.trim() == "plan_epic" {
+        let epic = PromptContext {
+            epic: true,
+            ..ctx.clone()
+        };
+        return render_prompt(JobKind::AgentPlan, &epic);
+    }
     match named_prompt(prompt.trim()) {
         Some(kind) => render_prompt(kind, ctx),
         None => render(prompt, ctx),

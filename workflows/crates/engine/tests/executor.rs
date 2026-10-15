@@ -4380,3 +4380,235 @@ async fn an_approved_legacy_plan_moves_to_the_issue_graph() {
             .unwrap();
     assert_eq!(legacy, 0);
 }
+
+// ---------------------------------------------------------------------------
+// Graph epics and the dependency guard
+// ---------------------------------------------------------------------------
+
+const EPIC_GRAPH: &str = "version: 1
+name: issue
+on: [issue_opened]
+start: plan_epic
+nodes:
+  plan_epic: {type: agent, prompt: plan_epic, next: post_plan}
+  post_plan: {type: action, action: post_comment, next: approval}
+  approval:  {type: wait, events: [approval], next: create}
+  create:    {type: action, action: create_sub_issues, next: children}
+  children:  {type: wait, events: [children_done], next: {failed: failed, else: done}}
+  failed:    {type: end, status: failed}
+  done:      {type: end, status: done}
+";
+
+async fn ingest_as(pool: &PgPool, delivery: &str, ty: EventType, n: u64, who: Actor, body: &str) {
+    let data = EventData {
+        repo: REPO.parse().unwrap(),
+        actor: who,
+        item: ItemRef {
+            kind: ItemKind::Issue,
+            number: n,
+            url: format!("https://github.com/enzarb/enzarb-ui/issues/{n}"),
+            title: format!("Issue {n}"),
+            body: body.into(),
+            author: "alice".into(),
+            head_ref: None,
+            base_ref: None,
+            head_sha: None,
+        },
+        comment: None,
+        merged: None,
+        ci: None,
+        label: None,
+        review: None,
+    };
+    let ev = Event::new("github", delivery, ty, Utc::now(), data);
+    let _: Option<i64> =
+        sqlx::query_scalar("SELECT workflows_api.ingest_event($1, $2, $3, $4, $5)")
+            .bind("github")
+            .bind(ev.dedupe_key())
+            .bind(ev.subject.to_string())
+            .bind(ty.as_str())
+            .bind(serde_json::to_value(&ev).unwrap())
+            .fetch_one(pool)
+            .await
+            .unwrap();
+}
+
+async fn set_item(pool: &PgPool, n: u64, state: &str, patch: Value) {
+    sqlx::query(
+        "UPDATE workflows.work_items SET state = $2, state_data = state_data || $3,
+                updated_at = now() WHERE key = $1",
+    )
+    .bind(key(n).to_string())
+    .bind(state)
+    .bind(patch)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn graph_epic_creates_blocked_sub_issues_and_finishes_when_they_merge() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let reducer = graph_reducer(&h);
+    let ticker = engine::Ticker::new(pool.clone());
+    let repo: RepoKey = REPO.parse().unwrap();
+    h.fake
+        .set_file(repo, "main", ".enzarb/workflows/issue.yaml", EPIC_GRAPH);
+    h.fake.add_thread(key(1), thread_with("split it"));
+    let plan = "## Sub-issues\n\n```enzarb-subissues\n[\
+        {\"key\":\"api\",\"title\":\"Add the API\",\"body\":\"API part\",\"depends_on\":[]},\
+        {\"key\":\"ui\",\"title\":\"Show it\",\"body\":\"UI part\",\"depends_on\":[\"api\"]}]\n```\n";
+    let block = json!({"decision": "plan", "body": plan});
+    h.sandbox.set_mode(Mode::Finish {
+        outcome: RunOutcome::Succeeded,
+        summary: format!("Planned.\n\n```json\n{block}\n```"),
+        pushed: false,
+        callback: true,
+    });
+    let alice = Actor {
+        login: "alice".into(),
+        id: 7,
+        is_bot: false,
+    };
+
+    // Planned and posted: waiting for approval.
+    ingest_as(
+        pool,
+        "o1",
+        EventType::WorkItemOpened,
+        1,
+        alice.clone(),
+        "Big",
+    )
+    .await;
+    reducer.drain().await;
+    h.exec.drain().await;
+    let seg = job_id_of(pool, "agent_segment").await;
+    wait_for("plan segment", || async {
+        job(pool, seg).await.status == "succeeded"
+    })
+    .await;
+    reducer.drain().await;
+    h.exec.drain().await;
+    reducer.drain().await;
+    let (_, state, data) = item_row(pool, 1).await;
+    assert_eq!(
+        (state.as_str(), data["graph"]["node"].as_str()),
+        ("Waiting", Some("approval"))
+    );
+
+    // Approved: the sub-issues are created and the epic waits for them.
+    ingest_as(pool, "a1", EventType::ApprovalGranted, 1, alice.clone(), "").await;
+    reducer.drain().await;
+    h.exec.drain().await;
+    reducer.drain().await;
+    let (_, state, data) = item_row(pool, 1).await;
+    assert_eq!(
+        (state.as_str(), data["graph"]["node"].as_str()),
+        ("Waiting", Some("children"))
+    );
+    assert_eq!(data["accepts_children"], true);
+    let bodies: Vec<(u64, String)> = h
+        .fake
+        .applied_calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            Call::CreateIssue { body, .. } => Some(body),
+            _ => None,
+        })
+        .zip([1000u64, 1001])
+        .map(|(b, n)| (n, b))
+        .collect();
+    assert_eq!(bodies.len(), 2);
+
+    // enzarb opens them: `api` starts, `ui` (after `api`) is blocked.
+    let bot = Actor {
+        login: "enzarb[bot]".into(),
+        id: 1,
+        is_bot: true,
+    };
+    for (n, body) in &bodies {
+        ingest_as(
+            pool,
+            &format!("c{n}"),
+            EventType::WorkItemOpened,
+            *n,
+            bot.clone(),
+            body,
+        )
+        .await;
+    }
+    reducer.drain().await;
+    let (wf, state, data) = item_row(pool, 1000).await;
+    assert_eq!((wf.as_str(), state.as_str()), ("graph:issue", "Running"));
+    assert_eq!(data["epic_depth"], 1);
+    let (_, state, data) = item_row(pool, 1001).await;
+    assert_eq!(state, "Blocked");
+    assert_eq!(data["wait"]["reason"], "dependencies_open");
+    assert!(data["wait"]["text"].as_str().unwrap().contains("#1000"));
+
+    // `api`'s change request opens: `ui` stays blocked.
+    set_item(pool, 1000, "Done", json!({"change_request": 2000})).await;
+    sqlx::query(
+        "INSERT INTO workflows.work_items (key, project_id, workflow, state, state_data)
+         VALUES ($1, 'enzarb', 'change_request', 'Reviewing', $2)",
+    )
+    .bind(key(2000).to_string())
+    .bind(json!({"url": "https://github.com/enzarb/enzarb-ui/pull/2000"}))
+    .execute(pool)
+    .await
+    .unwrap();
+    ticker.sweep_dependencies().await.unwrap();
+    reducer.drain().await;
+    let (_, state, data) = item_row(pool, 1001).await;
+    assert_eq!(state, "Blocked");
+    assert!(
+        data["wait"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("pull/2000 not merged"),
+        "{}",
+        data["wait"]
+    );
+    let ui_segments: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM workflows.jobs j JOIN workflows.work_items w ON w.id = j.work_item_id
+         WHERE w.key = $1 AND j.kind = 'agent_segment'",
+    )
+    .bind(key(1001).to_string())
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(ui_segments, 0, "no planning while blocked");
+
+    // Merged: `ui` starts by itself.
+    set_item(pool, 2000, "Merged", json!({})).await;
+    ticker.sweep_dependencies().await.unwrap();
+    reducer.drain().await;
+    let (_, state, data) = item_row(pool, 1001).await;
+    assert_eq!(state, "Running");
+    assert!(data["wait"].is_null());
+    let ui_segments: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM workflows.jobs j JOIN workflows.work_items w ON w.id = j.work_item_id
+         WHERE w.key = $1 AND j.kind = 'agent_segment'",
+    )
+    .bind(key(1001).to_string())
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(ui_segments, 1);
+
+    // Both sub-issues done: the epic is done.
+    set_item(pool, 1001, "Done", json!({})).await;
+    ticker.sweep_dependencies().await.unwrap();
+    reducer.drain().await;
+    let (_, state, data) = item_row(pool, 1).await;
+    assert_eq!(state, "Done", "{data}");
+    assert_eq!(
+        data["graph"]["outputs"]["children"]["completed"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}

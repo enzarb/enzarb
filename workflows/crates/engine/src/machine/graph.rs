@@ -29,8 +29,10 @@ use enzarb_proto::{GraphSegment, RunFinished};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use super::change_request::OpenDependency;
 use super::fx::{AgentSpec, Fx};
-use super::prompt::{AgentOutput, PromptContext, render_graph_prompt};
+use super::issue::CreatedChild;
+use super::prompt::{AgentOutput, PromptContext, SubIssue, parse_epic_plan, render_graph_prompt};
 use super::{
     Ctx, Effect, EngineEvent, EventPayload, JobKind, PRIORITY_COMMENT, Transition, UiActionKind,
     WorkflowKind, WorkflowState,
@@ -41,12 +43,57 @@ pub const PREFIX: &str = "graph:";
 /// The trigger that starts an issue graph.
 pub const ISSUE_TRIGGER: &str = "issue_opened";
 /// Actions this kernel runs. `merge_change_request` validates but is not run yet.
-pub const KERNEL_ACTIONS: &[&str] = &["post_comment", "open_change_request"];
+pub const KERNEL_ACTIONS: &[&str] = &["post_comment", "open_change_request", "create_sub_issues"];
 /// Events a `wait` node can resume on in this kernel.
-pub const KERNEL_EVENTS: &[&str] = &["comment", "approval"];
+pub const KERNEL_EVENTS: &[&str] = &["comment", "approval", "children_done", "dependencies_done"];
 /// Where a repository keeps its graph definitions.
 pub fn definition_path(name: &str) -> String {
     format!(".enzarb/workflows/{name}.yaml")
+}
+
+/// A dependency of a graph task that is not completed (read by the reducer).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BlockingDependency {
+    pub key: String,
+    /// `#12`, or `owner/repo#12` in another repository.
+    pub label: String,
+    pub title: String,
+    /// The dependency's work item state; empty when enzarb does not track it.
+    pub state: String,
+    pub url: String,
+    /// Its change request, when it has one.
+    pub pr_url: String,
+    /// It can no longer complete by itself (closed, cancelled, failed): a human must act.
+    pub failed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DependencyProgress {
+    Completed,
+    Open,
+    Failed,
+}
+
+/// Whether a dependency is completed: its change request is merged, or (without one) it
+/// finished `Done` (an epic, or work that needed no change request). An open change request
+/// is not completed. A closed or cancelled change request, or a dependency that failed, was
+/// cancelled, closed or is a duplicate, cannot complete by itself.
+pub fn dependency_progress(
+    workflow: Option<&str>,
+    state: Option<&str>,
+    cr_state: Option<&str>,
+) -> DependencyProgress {
+    use DependencyProgress::*;
+    match (workflow, state, cr_state) {
+        (None, _, _) => Open,
+        (_, _, Some("Merged")) => Completed,
+        (_, _, Some("Closed" | "Cancelled")) => Failed,
+        (_, _, Some(_)) => Open,
+        (_, Some("Done" | "Merged"), None) => Completed,
+        (_, Some("Cancelled" | "Closed" | "Duplicate" | "Failed"), None) => Failed,
+        _ => Open,
+    }
 }
 
 /// A definition read from a repository's default branch, before validation.
@@ -65,6 +112,9 @@ pub enum GraphPhase {
     Running,
     /// At a `wait` node.
     Waiting,
+    /// Waiting for dependencies to complete before `start`, or before a segment that can run
+    /// an agent that pushes (`blocked_resume`). Not a definition node: the kernel enforces it.
+    Blocked,
     Done,
     Failed,
     Cancelled,
@@ -134,6 +184,41 @@ pub struct GraphData {
     pub change_request: Option<u64>,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub error: String,
+    /// Epics (ADR-0018 as graph nodes). `epic`: the item is to be broken into sub-issues
+    /// (triage `epic`, or `/epic` / the `epic` label from a writer); exposed to conditions as
+    /// the item facts `epic` and `epic_allowed`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub epic: bool,
+    /// Nesting depth (`0` for a top-level issue); from the stored parent for a sub-issue.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub epic_depth: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub epic_parent: Option<String>,
+    /// The approved breakdown, in creation order (from the latest plan).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sub_issues: Vec<SubIssue>,
+    /// The sub-issues created.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<CreatedChild>,
+    /// Dependencies not done yet, as last read (`DependenciesChanged`; the ticker compares).
+    pub open_dependencies: Vec<OpenDependency>,
+    /// At `create_sub_issues` or a wait on `children_done`/`dependencies_done`: a sub-issue
+    /// that names this item as its epic is accepted.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub accepts_children: bool,
+    /// `Blocked`: the dependencies not completed, as last read.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub blocked_by: Vec<BlockingDependency>,
+    /// `Blocked`: the node to resume at once they complete; `None` is `start`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked_resume: Option<String>,
+    /// Why the task waits (`{waiting_on, reason, text}`, contracts §6), set while `Blocked`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait: Option<Value>,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -201,7 +286,34 @@ fn prompt_ctx(ctx: &Ctx, d: &GraphData) -> PromptContext {
         base_ref: ctx.default_branch.clone(),
         branch: branch(d.number),
         plan: d.plan.clone(),
+        epic: d.epic,
+        epic_allowed: if epic_allowed(ctx, d) { "yes" } else { "no" }.into(),
+        max_subissues: ctx.config.max_epic_children.to_string(),
         ..Default::default()
+    }
+}
+
+/// Below the configured depth an issue may be an epic.
+fn epic_allowed(ctx: &Ctx, d: &GraphData) -> bool {
+    d.epic_depth < ctx.config.max_epic_depth
+}
+
+/// Writes the item facts conditions can read ([`enzarb_graph::ITEM`]).
+fn set_item(ctx: &Ctx, d: &mut GraphData) {
+    let allowed = epic_allowed(ctx, d);
+    d.graph.outputs.insert(
+        enzarb_graph::ITEM.into(),
+        json!({"epic": d.epic && allowed, "epic_allowed": allowed, "epic_depth": d.epic_depth}),
+    );
+}
+
+fn waits_on_children(n: &enzarb_graph::Node) -> bool {
+    match &n.kind {
+        NodeKind::Wait { events, .. } => events
+            .iter()
+            .any(|e| e == "children_done" || e == "dependencies_done"),
+        NodeKind::Action { action, .. } => action == "create_sub_issues",
+        _ => false,
     }
 }
 
@@ -268,9 +380,16 @@ fn start(
     if e.event_type != EventType::WorkItemOpened || e.data.item.kind != ItemKind::Issue {
         return Transition::reject(state, "not an opening event");
     }
-    if ctx.is_bot(&e.data.actor) {
-        return Transition::reject(state, "bot actor ignored");
-    }
+    // The one bot-authored issue that starts a workflow: a sub-issue this enzarb created
+    // for a stored epic (compiled or graph), checked like the compiled machine does.
+    let child_of = if ctx.is_bot(&e.data.actor) {
+        match super::issue::epic_child_of(ctx, e) {
+            Some(p) => Some(p),
+            None => return Transition::reject(state, "bot actor ignored"),
+        }
+    } else {
+        None
+    };
     let item = &e.data.item;
     let mut d = GraphData {
         graph: GraphPin {
@@ -285,21 +404,113 @@ fn start(
         title: item.title.clone(),
         body: item.body.clone(),
         author: item.author.clone(),
+        epic_depth: child_of.map_or(0, |p| p.depth + 1),
+        epic_parent: child_of.map(|p| p.key.to_string()),
         ..Default::default()
     };
     let mut fx = Fx::new(ctx, ev);
     fx.received(&target(ctx));
-    let (pos, next) = GraphState::begin(def);
-    d.graph.set_position(pos);
-    let phase = match next {
-        Next::Node(_) => drive(ctx, &mut fx, def, &mut d),
-        Next::Failed(r) => failed(ctx, &mut fx, &mut d, &r),
+    let phase = enter_start(ctx, &mut fx, def, &mut d);
+    let note = if phase == GraphPhase::Blocked {
+        format!("graph `{}` blocked by dependencies", def.name)
+    } else {
+        format!("graph `{}` started", def.name)
     };
-    Transition::to(
-        st(phase, d),
-        fx.finish(),
-        format!("graph `{}` started", def.name),
-    )
+    Transition::to(st(phase, d), fx.finish(), note)
+}
+
+/// Enters `start`, unless a dependency is not completed: then `Blocked` until it is.
+fn enter_start(ctx: &Ctx, fx: &mut Fx, def: &Definition, d: &mut GraphData) -> GraphPhase {
+    if blocked(ctx, d) {
+        d.blocked_resume = None;
+        d.waiting_on = None;
+        return GraphPhase::Blocked;
+    }
+    let (mut pos, next) = GraphState::begin(def);
+    // The item facts are there before the first edge is taken.
+    let mut probe = d.clone();
+    set_item(ctx, &mut probe);
+    pos.outputs.extend(probe.graph.outputs);
+    d.graph.set_position(pos);
+    match next {
+        Next::Node(_) => drive(ctx, fx, def, d),
+        Next::Failed(r) => failed(ctx, fx, d, &r),
+    }
+}
+
+/// The one dependency guard (before `start`, and before a segment that can run an agent that
+/// pushes): true, with `blocked_by` and `wait` set, while any dependency is not completed.
+fn blocked(ctx: &Ctx, d: &mut GraphData) -> bool {
+    if ctx.blocking_dependencies.is_empty() {
+        d.blocked_by.clear();
+        d.wait = None;
+        return false;
+    }
+    d.blocked_by = ctx.blocking_dependencies.clone();
+    let list = d
+        .blocked_by
+        .iter()
+        .map(|b| {
+            let mut facts = Vec::new();
+            if !b.title.is_empty() {
+                facts.push(b.title.clone());
+            }
+            facts.push(if b.state.is_empty() {
+                "not tracked by enzarb".to_string()
+            } else {
+                b.state.clone()
+            });
+            if !b.pr_url.is_empty() {
+                facts.push(format!("PR {} not merged", b.pr_url));
+            }
+            format!("{} ({})", b.label, facts.join(", "))
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    d.wait = Some(if d.blocked_by.iter().any(|b| b.failed) {
+        json!({
+            "waiting_on": "human",
+            "reason": "dependency_failed",
+            "text": format!(
+                "Blocked by {list}. A dependency cannot complete by itself: reopen or replace it, \
+                 or remove the dependency"
+            ),
+        })
+    } else {
+        json!({
+            "waiting_on": "dependency",
+            "reason": "dependencies_open",
+            "text": format!("Blocked by {list}"),
+        })
+    });
+    true
+}
+
+/// An `agent` node that pushes code: anything but the read-only prompts.
+fn pushes(n: &enzarb_graph::Node) -> bool {
+    matches!(&n.kind, NodeKind::Agent { prompt }
+        if !["triage", "plan", "plan_epic", "review"].contains(&prompt.trim()))
+}
+
+/// Whether a segment starting at `start` can reach an agent that pushes.
+fn pushes_ahead(def: &Definition, start: &str) -> bool {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut queue = std::collections::VecDeque::from([start.to_string()]);
+    while let Some(id) = queue.pop_front() {
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        let Some(n) = def.node(&id) else { continue };
+        if n.kind.runner() != Runner::Sandbox {
+            continue;
+        }
+        if pushes(n) {
+            return true;
+        }
+        queue.extend(n.next.iter().flat_map(|e| e.targets()).map(str::to_string));
+        queue.extend(n.on_limit.clone());
+    }
+    false
 }
 
 fn target(ctx: &Ctx) -> enzarb_connector::ProgressTarget {
@@ -309,6 +520,7 @@ fn target(ctx: &Ctx) -> enzarb_connector::ProgressTarget {
 fn failed(ctx: &Ctx, fx: &mut Fx, d: &mut GraphData, error: &str) -> GraphPhase {
     d.error = truncate(error, 500);
     d.waiting_on = None;
+    d.accepts_children = false;
     fx.comment(format!("enzarb stopped while working on this: {}", d.error));
     fx.failed(&target(ctx));
     GraphPhase::Failed
@@ -320,8 +532,16 @@ fn drive(ctx: &Ctx, fx: &mut Fx, def: &Definition, d: &mut GraphData) -> GraphPh
     let Some(node) = def.node(&id) else {
         return failed(ctx, fx, d, &format!("node `{id}` does not exist"));
     };
+    set_item(ctx, d);
+    d.accepts_children = waits_on_children(node);
     match &node.kind {
         NodeKind::Command { .. } | NodeKind::Agent { .. } => {
+            if pushes_ahead(def, &id) && blocked(ctx, d) {
+                d.blocked_resume = Some(id);
+                d.waiting_on = None;
+                d.accepts_children = false;
+                return GraphPhase::Blocked;
+            }
             let pc = prompt_ctx(ctx, d);
             let segment = GraphSegment {
                 // The YAML source keeps the order of conditions (ADR-0020 §1).
@@ -356,6 +576,23 @@ fn drive(ctx: &Ctx, fx: &mut Fx, def: &Definition, d: &mut GraphData) -> GraphPh
                 d.waiting_on = Some(JobKind::PostComment);
                 GraphPhase::Running
             }
+            "create_sub_issues" => match parse_epic_plan(&d.plan, ctx.config.max_epic_children) {
+                Ok(subs) => {
+                    fx.create_sub_issues(d.epic_depth + 1, &subs);
+                    d.sub_issues = subs;
+                    d.waiting_on = Some(JobKind::CreateSubIssues);
+                    GraphPhase::Running
+                }
+                Err(e) => {
+                    d.accepts_children = false;
+                    failed(
+                        ctx,
+                        fx,
+                        d,
+                        &format!("node `{id}`: unusable sub-issue breakdown: {e}"),
+                    )
+                }
+            },
             "open_change_request" => {
                 let out = AgentOutput::parse(&d.summary).ok();
                 let title = out
@@ -472,6 +709,11 @@ pub(super) fn step(ctx: &Ctx, s: &GraphTask, ev: &EngineEvent) -> Transition {
             return Transition::to(st(phase, d), fx.finish(), "failed");
         }
     };
+    if s.phase == GraphPhase::Blocked
+        && let Some(t) = blocked_step(ctx, ev, s, &state, &def)
+    {
+        return t;
+    }
     match &ev.payload {
         EventPayload::Ui(u) => match u.action {
             UiActionKind::Cancel if ctx.can_cancel() => {
@@ -496,9 +738,145 @@ pub(super) fn step(ctx: &Ctx, s: &GraphTask, ev: &EngineEvent) -> Transition {
         EventPayload::JobSucceeded { .. } | EventPayload::JobFailed { .. } => {
             Transition::ack(&state, "not the job this graph waits on")
         }
-        EventPayload::Connector(_) => wait_event(ctx, ev, s, &state, &def),
+        EventPayload::DependenciesChanged => dependencies_changed(ctx, ev, s, &def),
+        EventPayload::Connector(_) => match epic_request(ctx, ev, s, &state) {
+            Some(Ok(t)) => t,
+            Some(Err(flagged)) => wait_event(ctx, ev, &flagged, &state, &def),
+            None => wait_event(ctx, ev, s, &state, &def),
+        },
         _ => Transition::reject(&state, "event not applicable to a graph workflow"),
     }
+}
+
+/// An event for a `Blocked` task. Dependency changes and a write-access retry re-evaluate
+/// (no override); cancel, close and repository removal go on as usual (`None`); anything
+/// else waits.
+fn blocked_step(
+    ctx: &Ctx,
+    ev: &EngineEvent,
+    s: &GraphTask,
+    state: &WorkflowState,
+    def: &Definition,
+) -> Option<Transition> {
+    let reevaluate =
+        matches!(ev.payload, EventPayload::DependenciesChanged) || is_retry(ctx, ev, false);
+    if !reevaluate {
+        return match &ev.payload {
+            EventPayload::Ui(u)
+                if matches!(u.action, UiActionKind::Cancel | UiActionKind::RepoRemoved) =>
+            {
+                None
+            }
+            _ => Some(Transition::reject(state, "blocked by dependencies")),
+        };
+    }
+    let mut d = s.data.clone();
+    d.open_dependencies = ctx.open_dependencies.clone();
+    let mut fx = Fx::new(ctx, ev);
+    if blocked(ctx, &mut d) {
+        return Some(Transition::to(
+            st(GraphPhase::Blocked, d),
+            Vec::new(),
+            "still blocked",
+        ));
+    }
+    let phase = match d.blocked_resume.take() {
+        None => enter_start(ctx, &mut fx, def, &mut d),
+        Some(node) => {
+            d.graph.node = node;
+            drive(ctx, &mut fx, def, &mut d)
+        }
+    };
+    let note = format!("dependencies completed; resumed at {}", d.graph.node);
+    Some(Transition::to(st(phase, d), fx.finish(), note))
+}
+
+/// `/epic` on its own line or the `epic` label, from a writer: the item is an epic from now
+/// on (an item fact). A label is answered here; a `/epic` comment also goes on as a comment
+/// (`Err` carries the flagged task), so a wait on comments can re-plan it as a breakdown.
+fn epic_request(
+    ctx: &Ctx,
+    ev: &EngineEvent,
+    s: &GraphTask,
+    state: &WorkflowState,
+) -> Option<Result<Transition, Box<GraphTask>>> {
+    let label = ev.labeled() == Some("epic");
+    let comment = ev
+        .comment_like()
+        .is_some_and(|c| enzarb_connector::command::has_epic_command(c.text));
+    if !(label || comment) || ev.actor().is_some_and(|a| ctx.is_bot(a)) || !ctx.can_write() {
+        return label.then(|| Ok(Transition::reject(state, "epic requires write access")));
+    }
+    if !epic_allowed(ctx, &s.data) {
+        return label.then(|| {
+            Ok(Transition::reject(
+                state,
+                "sub-issues of an epic cannot be epics themselves",
+            ))
+        });
+    }
+    let mut flagged = s.clone();
+    flagged.data.epic = true;
+    set_item(ctx, &mut flagged.data);
+    if label {
+        Some(Ok(Transition::to(
+            WorkflowState::Graph(flagged),
+            Vec::new(),
+            "epic requested",
+        )))
+    } else {
+        Some(Err(Box::new(flagged)))
+    }
+}
+
+/// `DependenciesChanged` (the reducer put the dependencies not done yet in
+/// `ctx.open_dependencies`). Stored always; at a wait on `children_done` (only the
+/// sub-issues count) or `dependencies_done`, the graph resumes once none is still pending,
+/// with `{event, open, completed, failed}` (work item keys; `failed`: closed without
+/// completing) so the definition can branch.
+fn dependencies_changed(
+    ctx: &Ctx,
+    ev: &EngineEvent,
+    s: &GraphTask,
+    def: &Definition,
+) -> Transition {
+    let mut task = s.clone();
+    task.data.open_dependencies = ctx.open_dependencies.clone();
+    let event = match def.node(&s.data.graph.node).map(|n| &n.kind) {
+        Some(NodeKind::Wait { events, .. }) if s.phase == GraphPhase::Waiting => events
+            .iter()
+            .find(|e| *e == "children_done" || *e == "dependencies_done")
+            .cloned(),
+        _ => None,
+    };
+    let unchanged =
+        |t: GraphTask| Transition::to(WorkflowState::Graph(t), Vec::new(), "dependencies changed");
+    let Some(event) = event else {
+        return unchanged(task);
+    };
+    let children: Vec<String> = s
+        .data
+        .children
+        .iter()
+        .map(|c| super::super::reducer::normalize_key(&c.item).to_string())
+        .collect();
+    let counts = |k: &str| event == "dependencies_done" || children.iter().any(|c| c == k);
+    let deps: Vec<&OpenDependency> = ctx
+        .open_dependencies
+        .iter()
+        .filter(|o| counts(&o.key))
+        .collect();
+    if deps.iter().any(|o| o.problem.is_empty()) {
+        return unchanged(task);
+    }
+    let failed: Vec<&str> = deps.iter().map(|o| o.key.as_str()).collect();
+    let completed: Vec<&str> = children
+        .iter()
+        .map(String::as_str)
+        .filter(|c| !failed.contains(c))
+        .collect();
+    let out = json!({"event": event, "open": [], "completed": completed, "failed": failed});
+    advance(ctx, ev, &task, def, out, "dependencies settled")
 }
 
 fn job_succeeded(
@@ -555,6 +933,12 @@ fn job_succeeded(
                     .node(&id)
                     .is_some_and(|n| n.kind.runner() == Runner::Sandbox)
                 {
+                    // A triage `epic` decision makes the item an epic (when allowed).
+                    if out.get("decision").and_then(Value::as_str) == Some("epic")
+                        && epic_allowed(ctx, &d)
+                    {
+                        d.epic = true;
+                    }
                     pos.outputs.insert(id, out);
                 }
             }
@@ -578,6 +962,27 @@ fn job_succeeded(
                 }
             };
             Transition::to(st(phase, d), fx.finish(), "segment finished")
+        }
+        JobKind::CreateSubIssues => {
+            let children: Vec<CreatedChild> = output
+                .get("children")
+                .cloned()
+                .and_then(|c| serde_json::from_value(c).ok())
+                .unwrap_or_default();
+            let created: Vec<Value> = children
+                .iter()
+                .map(|c| json!({"key": c.key, "number": c.item.number}))
+                .collect();
+            let mut task = s.clone();
+            task.data.children = children;
+            advance(
+                ctx,
+                ev,
+                &task,
+                def,
+                json!({ "created": created }),
+                "sub-issues created",
+            )
         }
         JobKind::OpenChangeRequest => {
             let Ok(pr) = serde_json::from_value::<ItemRef>(output.clone()) else {
@@ -713,13 +1118,12 @@ fn begin_fresh(
     d.waiting_on = None;
     let mut fx = Fx::new(ctx, ev);
     fx.received(&target(ctx));
-    let (pos, next) = GraphState::begin(def);
-    d.graph.set_position(pos);
-    let phase = match next {
-        Next::Node(_) => drive(ctx, &mut fx, def, &mut d),
-        Next::Failed(r) => failed(ctx, &mut fx, &mut d, &r),
+    let phase = enter_start(ctx, &mut fx, def, &mut d);
+    let note = if phase == GraphPhase::Blocked {
+        format!("{note}; moved to graph workflow, blocked by dependencies")
+    } else {
+        format!("{note}; moved to graph workflow at {}", d.graph.node)
     };
-    let note = format!("{note}; moved to graph workflow at {}", d.graph.node);
     Transition::to(st(phase, d), fx.finish(), note)
 }
 
