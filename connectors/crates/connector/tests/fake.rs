@@ -245,6 +245,24 @@ async fn branch_head_is_seeded_and_recorded() {
 }
 
 #[tokio::test]
+async fn get_file_is_seeded_and_recorded() {
+    let f = FakeConnector::new();
+    let repo = RepoKey::new("github", "enzarb", "enzarb-proto");
+    let path = ".enzarb/workflows/issue.yaml";
+    assert_eq!(f.get_file(&repo, "abc", path).await.unwrap(), None);
+    f.set_file(repo.clone(), "abc", path, "version: 1\n");
+    assert_eq!(
+        f.get_file(&repo, "abc", path).await.unwrap().as_deref(),
+        Some("version: 1\n")
+    );
+    assert_eq!(f.get_file(&repo, "other", path).await.unwrap(), None);
+    assert!(matches!(
+        &f.calls()[1].call,
+        Call::GetFile { git_ref, .. } if git_ref == "abc"
+    ));
+}
+
+#[tokio::test]
 async fn read_credential_records_call_and_validates() {
     let f = FakeConnector::new();
     let repos = vec![RepoKey::new("github", "enzarb", "enzarb-proto")];

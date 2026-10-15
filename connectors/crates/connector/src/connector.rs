@@ -117,6 +117,19 @@ pub trait Connector: Send + Sync {
         Ok(None)
     }
 
+    /// The text of the file at `path` in `repo` at `git_ref` (a branch, tag or commit sha), or
+    /// `None` when there is no such file (or it is a directory). Read with the connector's own
+    /// credential; nothing enters a sandbox. The default implementation reports the capability
+    /// as unsupported, so connectors roll out independently of the workflows that call it.
+    async fn get_file(
+        &self,
+        _repo: &RepoKey,
+        _git_ref: &str,
+        _path: &str,
+    ) -> Result<Option<String>> {
+        Err(Error::Invalid("reading files is not supported".into()))
+    }
+
     /// The items `item` is blocked by, from the provider's own relationships (GitHub's
     /// native issue dependencies). Not the text ones: those come from
     /// [`dependencies::text_dependencies`](crate::dependencies::text_dependencies). The
