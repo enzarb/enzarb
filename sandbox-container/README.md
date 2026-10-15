@@ -33,6 +33,10 @@ The image contains `dockerd`, `containerd`, `runc` and the `docker` CLI (static 
 
 `scripts/smoke.sh` starts the image with the extra capabilities dockerd needs outside gVisor. If dockerd comes up it checks `docker version` as uid 1000 (and `docker run hello-world`, best effort); if the CI runner cannot host dockerd it asserts that `/healthz` reports the failure and skips the server checks.
 
+## Stats snapshot
+
+A `stats_request` ctrl message (advertised as the `stats` feature in `welcome`) is answered with `stats`: raw cgroup v2 counters (`cpu.stat`, `memory.current`, `io.stat`, read under `ENZARB_CGROUP_ROOT`, default `/sys/fs/cgroup`) and used/total bytes of the workspace filesystem (statvfs of `ENZARB_WORKSPACE`), plus `ts_ms`. It is read on demand only (`src/stats.rs`): no sampling, no push. A missing or oddly formatted file makes that field absent; it never produces an error and never affects the session or other channels. Field meanings are in `docs/contracts.md` §4.
+
 ## Toolchains come from mise
 
 All user and project toolchains are installed by mise onto the `/workspace` PVC, so they persist per sandbox:
