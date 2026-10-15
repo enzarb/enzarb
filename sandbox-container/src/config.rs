@@ -81,6 +81,9 @@ pub struct Config {
     /// `ENZARB_CHAT_ALLOW_BYPASS`, default true: chats may run in (or switch
     /// to) `bypassPermissions`. False keeps them in `default`/`plan`.
     pub chat_allow_bypass: bool,
+    /// `ENZARB_CGROUP_ROOT`, default `/sys/fs/cgroup`: the cgroup v2 directory
+    /// read for `stats_request` (the container's own cgroup).
+    pub cgroup_root: PathBuf,
     /// `ENZARB_DOCKERD*`: the supervised Docker daemon (ADR-0016).
     pub dockerd: DockerdConfig,
     /// `ENZARB_DOCKER_PRUNE*`, `ENZARB_DOCKER_BIN`: automatic Docker pruning (ADR-0016).
@@ -147,6 +150,7 @@ impl Default for Config {
             chat_retention: Duration::from_secs(7 * 86400),
             chat_permission_mode: ChatMode::Bypass,
             chat_allow_bypass: true,
+            cgroup_root: "/sys/fs/cgroup".into(),
             dockerd: DockerdConfig::default(),
             docker_prune: PruneConfig::default(),
         }
@@ -176,6 +180,9 @@ impl Config {
         c.claude_token_file = c.workspace.join(".enzarb/claude-token");
         if let Some(v) = get("ENZARB_CLAUDE_TOKEN_FILE") {
             c.claude_token_file = v.into();
+        }
+        if let Some(v) = get("ENZARB_CGROUP_ROOT").filter(|s| !s.is_empty()) {
+            c.cgroup_root = v.into();
         }
         if let Some(v) = get("ENZARB_ACP_AGENT_BIN").filter(|s| !s.is_empty()) {
             c.acp_bin = v;

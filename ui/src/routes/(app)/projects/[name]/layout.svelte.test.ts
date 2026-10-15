@@ -83,6 +83,9 @@ describe('project layout and tabs', () => {
 			.element(nav.getByRole('link', { name: 'Settings' }))
 			.toHaveAttribute('href', '/projects/alpha/settings');
 		await expect
+			.element(nav.getByRole('link', { name: 'Metrics' }))
+			.toHaveAttribute('href', '/projects/alpha/metrics');
+		await expect
 			.element(nav.getByRole('link', { name: 'Overview' }))
 			.toHaveAttribute('aria-current', 'page');
 		await expect

@@ -17,7 +17,8 @@
 //! * [`policy`]: the permission policy that answers the agent's `session/request_permission`;
 //! * [`agent`]: the agent [`RunManager`](runs::RunManager) (worktrees, ACP agent, callbacks);
 //! * [`runs`]: the [`RunManager`](runs::RunManager) extension point for `run_*` messages;
-//! * [`server`]: axum app, websocket adapter and the per-session event loop.
+//! * [`server`]: axum app, websocket adapter and the per-session event loop;
+//! * [`stats`]: the on-demand cgroup/statvfs stats snapshot (`stats_request`).
 
 pub mod acp;
 pub mod agent;
@@ -37,6 +38,7 @@ pub mod reaper;
 pub mod retarget;
 pub mod runs;
 pub mod server;
+pub mod stats;
 
 pub use config::{ChatMode, Config};
 pub use server::{AppState, router, serve};

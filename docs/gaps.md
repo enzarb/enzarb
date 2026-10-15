@@ -22,7 +22,7 @@ The owning repo is in brackets. Resolve 2–5 first: they shape the CRDs, the pr
 8. **Proxy availability** [sandbox-proxy, proto]: websockets are stateful. Running several replicas needs reconnect and resume semantics in the protocol and timeouts on flow-control credit. Workspace persistence (PVC lifecycle, hibernate/resume) is also open.
 9. **pgop for a durable engine** [kubernetes, pgop]: max 1 replica; backups, PITR and pooling aren't documented. LISTEN needs a direct session-mode connection. Confirm whether object-level grants are possible in pgop. See [database.md](database.md#known-pgop-gaps-for-this-use).
 10. **Transcript storage** [workflows, sandbox-container]: which object store (S3-compatible? MinIO in dev?), retention, and access control for transcripts.
-11. **Observability** [all]: tracing from connectors → workflows → sandbox, with the delivery id as the correlation id; metrics; workflow admin views for stuck items, retries and dead jobs; audit of terminal sessions; limits on Claude usage and CPU.
+11. **Observability** [all]: tracing from connectors → workflows → sandbox, with the delivery id as the correlation id; sandbox utilization metrics (decided in [ADR-0019](adr/0019-sandbox-utilization-polling.md): workflows polls sandbox-init, stored in Postgres; open until implemented); workflow admin views for stuck items, retries and dead jobs; audit of terminal sessions; limits on Claude usage and CPU.
 12. **CRD versioning** [operator]: a conversion strategy for `v1alpha1`, and status conditions designed so the UI's boot checklist maps 1:1 to them.
 13. **Testing** [all]:
     - table tests for pure transitions;

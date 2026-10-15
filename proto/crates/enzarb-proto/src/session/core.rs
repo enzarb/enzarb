@@ -491,6 +491,7 @@ impl Inner {
                 | Ctrl::RunStatus { .. }
                 | Ctrl::RunCancel { .. }
                 | Ctrl::CredentialStatus
+                | Ctrl::StatsRequest
                 | Ctrl::CredentialClear { .. }
                 | Ctrl::CredentialState { .. }),
             ) => {
@@ -616,6 +617,7 @@ impl Inner {
                 }
             }
             (Role::Client, m @ Ctrl::CredentialCaptured { .. }) => emit(Event::Ctrl(m)),
+            (Role::Client, m @ Ctrl::Stats(_)) => emit(Event::Ctrl(m)),
             (
                 Role::Client,
                 Ctrl::CredentialState {
@@ -735,6 +737,8 @@ fn ctrl_name(m: &Ctrl) -> &'static str {
         Ctrl::CredentialStatus => "credential_status",
         Ctrl::CredentialState { .. } => "credential_state",
         Ctrl::CredentialClear { .. } => "credential_clear",
+        Ctrl::StatsRequest => "stats_request",
+        Ctrl::Stats(_) => "stats",
         Ctrl::Error { .. } => "error",
     }
 }

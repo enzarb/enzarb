@@ -316,6 +316,15 @@ describe("runs", () => {
     expect(pushed.map((m) => m.type)).toEqual(["run_state", "credential_captured"]);
   });
 
+  it("a stats reply is delivered to onCtrl", async () => {
+    const { s, srv } = await connected();
+    const pushed: Ctrl[] = [];
+    s.onCtrl((m) => pushed.push(m));
+    srv.ctrl({ type: "stats", ts_ms: 5, memory_bytes: 7 });
+    await tick();
+    expect(pushed).toEqual([{ type: "stats", ts_ms: 5, memory_bytes: 7 }]);
+  });
+
   it("credentialStatus resolves from credential_state; error rejects", async () => {
     const { s, srv } = await connected();
     const p = s.credentialStatus();

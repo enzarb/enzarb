@@ -17,7 +17,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use enzarb_proto::session::{Event, OpenRequest, ServerOptions, Session};
 use enzarb_proto::{
-    ChannelKind, CredentialKind, Ctrl, HEADER_LEN, MAX_PAYLOAD_LEN, error_code, open_error_code,
+    ChannelKind, CredentialKind, Ctrl, HEADER_LEN, MAX_PAYLOAD_LEN, SandboxStats, error_code,
+    feature, open_error_code,
 };
 use futures_util::{Sink, Stream};
 use tokio::task::JoinSet;
@@ -34,6 +35,7 @@ use crate::observer::{PtyInfo, PtyObserverFactory};
 use crate::pty::{self, Pty, PtyConfig, PtyControl};
 use crate::reaper::Reaper;
 use crate::runs::{RunManager, SessionCtx, UnimplementedRunManager};
+use crate::stats::{self, SystemSource};
 
 /// How long a client has to complete the hello/welcome handshake.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -216,7 +218,11 @@ async fn session_loop(state: Arc<AppState>, socket: WebSocket) {
         Session::accept(
             Adapter(socket),
             ServerOptions {
-                features: state.chats.features(),
+                features: {
+                    let mut f = state.chats.features();
+                    f.push(feature::STATS.to_string());
+                    f
+                },
                 ..ServerOptions::default()
             },
         ),
@@ -284,6 +290,31 @@ async fn session_loop(state: Arc<AppState>, socket: WebSocket) {
                 }) {
                     tracing::warn!(session = id, error = %e, "credential_state send failed");
                 }
+            }
+            // On demand only: a few small file reads, off the event loop. A
+            // failure never ends the session; the reply just lacks the fields.
+            Event::Ctrl(Ctrl::StatsRequest) => {
+                let src = SystemSource {
+                    cgroup_root: state.config.cgroup_root.clone(),
+                    data_path: state.config.workspace.clone(),
+                };
+                let session = session.clone();
+                tasks.spawn(async move {
+                    let stats =
+                        match tokio::task::spawn_blocking(move || stats::snapshot(&src)).await {
+                            Ok(s) => s,
+                            Err(e) => {
+                                tracing::debug!(session = id, error = %e, "stats snapshot failed");
+                                SandboxStats {
+                                    ts_ms: stats::unix_ms(),
+                                    ..SandboxStats::default()
+                                }
+                            }
+                        };
+                    if let Err(e) = session.send_ctrl(&Ctrl::Stats(stats)) {
+                        tracing::debug!(session = id, error = %e, "stats send failed");
+                    }
+                });
             }
             // The proxy's ack of a legacy `credential_captured`.
             Event::Ctrl(Ctrl::CredentialState {

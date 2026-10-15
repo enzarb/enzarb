@@ -370,6 +370,90 @@ img {
 	font-variant-numeric: tabular-nums;
 }
 
+// Project Metrics tab: window picker, totals and the inline-SVG bar chart
+.ez-window-picker {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--ez-space-3) var(--ez-space-5);
+
+	&__error {
+		flex-basis: 100%;
+		margin: 0;
+		color: var(--ez-danger-fg);
+		font-size: var(--ez-text-sm);
+	}
+}
+
+.ez-metrics-summary {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+	gap: var(--ez-space-3);
+	margin: 0;
+	font-variant-numeric: tabular-nums;
+
+	dt {
+		color: var(--ez-text-muted);
+		font-size: var(--ez-text-sm);
+	}
+
+	dd {
+		margin: 0;
+		font-size: var(--ez-text-lg);
+	}
+}
+
+.ez-barchart {
+	margin: 0 0 var(--ez-space-4);
+
+	svg {
+		display: block;
+		width: 100%;
+		height: 7.5rem;
+	}
+
+	&__bar {
+		fill: var(--ez-accent);
+	}
+}
+
+.step-timing {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-4);
+
+	&__title {
+		margin: 0 0 var(--ez-space-2);
+		font-size: var(--ez-text-lg);
+	}
+
+	&__track {
+		position: relative;
+		min-width: 6rem;
+		height: 0.75rem;
+	}
+
+	// Width and marker position come from `--pct` (0 to 100).
+	&__bar {
+		width: calc(var(--pct) * 1%);
+		height: 100%;
+		background: var(--ez-accent);
+	}
+
+	&__p95 {
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		left: calc(var(--pct) * 1%);
+		width: 2px;
+		background: var(--ez-text-muted);
+	}
+
+	&__jobs {
+		font-size: var(--ez-text-sm);
+	}
+}
+
 // Vertical rhythm between siblings; `--ez-gap` overrides the step.
 .ez-stack {
 	display: flex;

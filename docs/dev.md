@@ -24,7 +24,7 @@ Optional [lefthook](https://lefthook.dev) hooks (config: `lefthook.yml`, tool pi
 
 - **pre-commit** (staged files only, no network): `cargo fmt --all --check` per Rust component with staged `.rs` files; the Cargo guard (`scripts/monorepo/check-cargo-deps.sh`) when a `Cargo.toml`/`Cargo.lock` is staged; `npm run lint` in `ui/`; `shellcheck` on staged shell scripts; `mise run lint` (helm lint) when `helm/**` is staged.
 - **pre-push** (components affected by the pushed commits, `scripts/monorepo/affected.sh`, downstream components included): `cargo clippy --all-targets -- -D warnings` and `cargo test` per Rust component; `npm run check` and the server unit tests in `ui/`; `mise run compat` in `helm/` (it reads the previous `helm/v*` tag, so fetch tags). Export `ENZARB_TEST_PG_URL` first (see "Shared test Postgres") to avoid one container per test.
-- Hooks only check; they never modify files or install dependencies. If `ui/node_modules` is missing they print a notice and skip the `ui` commands (run `npm ci`).
+- Hooks only check; they never modify files. If `ui/node_modules` is missing they run `npm ci` in `ui/` before the `ui` commands, so the checks are never silently skipped.
 - **Skip:** `git commit --no-verify`, `git push --no-verify`, or `LEFTHOOK=0` for all hooks. CI stays the source of truth.
 - Run by hand: `lefthook run pre-commit --all-files`, `lefthook run pre-push --all-files`.
 
