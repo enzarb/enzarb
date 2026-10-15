@@ -587,7 +587,7 @@ async fn toolchain_is_installed_in_the_worktree_before_the_agent_runs() {
 }
 
 #[tokio::test]
-async fn a_failing_mise_install_fails_the_run_and_names_the_step() {
+async fn a_failing_mise_install_is_logged_and_the_agent_still_runs() {
     let env = start_with(0, Some("echo boom >&2; exit 3"), None).await;
     let (session, _e) = env.connect().await;
     session
@@ -595,15 +595,13 @@ async fn a_failing_mise_install_fails_the_run_and_names_the_step() {
         .await
         .unwrap();
     let (_, fin) = env.finished("tcf").await;
-    assert_eq!(fin.outcome, RunOutcome::Failed);
-    assert!(fin.summary.contains("mise install"), "{}", fin.summary);
-    assert!(fin.summary.contains("boom"), "{}", fin.summary);
+    assert_eq!(fin.outcome, RunOutcome::Succeeded, "{}", fin.summary);
     let t = transcript(&env, "tcf");
     let prep = of_kind(&t, "prepare")[0];
     assert_eq!(prep["ok"], false);
     assert_eq!(prep["steps"][0]["status"], "failed");
-    // The agent never started.
-    assert!(of_kind(&t, "acp").is_empty());
+    // Preparation is best-effort: the agent started anyway.
+    assert!(!of_kind(&t, "acp").is_empty());
 }
 
 #[tokio::test]
