@@ -44,7 +44,7 @@ pre-commit:
     ui-lint:
       root: ui/
       glob: "*"
-      run: '[ -d node_modules ] || { echo "ui: node_modules missing (run npm ci), skipping lint"; exit 0; }; npm run lint'
+      run: '[ -d node_modules ] || { echo "ui: node_modules missing, running npm ci"; npm ci; }; npm run lint'
     shellcheck:
       glob: "{.mise/tasks/**,.mise/lib/*.sh,.github/scripts/*.sh,scripts/**,*.sh}"
       run: shellcheck {staged_files}
