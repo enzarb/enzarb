@@ -131,7 +131,7 @@ ui:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-ui
-    tag: 0.41.1
+    tag: 0.42.0
     pullPolicy: ""
   # HTTP probes (/healthz liveness, /readyz readiness). false falls back to TCP probes.
   probes:
@@ -151,7 +151,7 @@ workflows:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-workflows
-    tag: 0.29.0
+    tag: 0.30.0
     pullPolicy: ""
   # Roles for `run`: reducer, executor, ticker.
   roles: reducer,executor,ticker
@@ -183,7 +183,7 @@ connectors:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-connectors-receiver
-    tag: 0.11.0
+    tag: 0.12.0
     pullPolicy: ""
   botHandle: enzarb
   botLogin: enzarb[bot]
@@ -206,7 +206,7 @@ realtime:
   image:
     repository: ghcr.io/enzarb/enzarb-realtime
     # scripts/sync-components.sh pins the released enzarb-realtime tag here.
-    tag: 0.4.1
+    tag: 0.5.0
     pullPolicy: ""
   # Origins allowed to open the cookie-authenticated websocket (ENZARB_REALTIME_ALLOWED_ORIGINS).
   # Empty means https://<host> (or publicUrl reduced to its origin). Entries must be bare origins,
