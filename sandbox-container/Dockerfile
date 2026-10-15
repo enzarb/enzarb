@@ -122,12 +122,14 @@ RUN set -e; \
 # (scripts/check-playwright-version.sh, run in CI).
 FROM node AS playwright
 ARG PLAYWRIGHT_VERSION=1.64.0
+ARG TARGETARCH
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 RUN npm install -g --fetch-retries=8 --fetch-retry-mintimeout=2000 "playwright@${PLAYWRIGHT_VERSION}"
 # Installs both chromium and chromium-headless-shell; --with-deps is not used (the final stage installs the libs).
-RUN playwright install chromium
-# Prints the apt packages Playwright would want, to compare with the final stage's list (informational).
-RUN playwright install-deps --dry-run chromium || true
+# Playwright does not know Ubuntu 26.04 and refuses to pick a build; use its 24.04 one.
+RUN set -e; \
+    case "$TARGETARCH" in amd64) a=x64;; arm64) a=arm64;; *) echo "unsupported arch $TARGETARCH"; exit 1;; esac; \
+    PLAYWRIGHT_HOST_PLATFORM_OVERRIDE="ubuntu24.04-${a}" playwright install chromium
 RUN chmod -R a+rX /opt/ms-playwright && ls /opt/ms-playwright
 
 FROM ubuntu:26.04
