@@ -3,6 +3,8 @@
 set -euo pipefail
 # shellcheck source=/dev/null
 . "${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}/.mise/lib/oldie.sh"
+# ansible is pinned in kubernetes/mise.toml, not the root one: re-run under that toolset (root tools still apply).
+[ -n "${ENZARB_IN_K8S_TOOLS:-}" ] || exec env ENZARB_IN_K8S_TOOLS=1 mise -C "$KDIR" exec -- "$0" "$@"
 need ansible-playbook ansible-galaxy ssh
 # The cloudflare_tunnel role drives the cf CLI (logged in: cf auth login).
 grep -qE '^[[:space:]]*cloudflare_tunnel_enabled:[[:space:]]*true' "$RKE2_DIR/inventory/oldie.yml" && need cf
