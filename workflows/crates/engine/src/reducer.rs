@@ -49,6 +49,10 @@ use crate::machine::{
 };
 use crate::permission::PermissionResolver;
 
+/// How long the reducer waits for a graph workflow definition before it falls back to the
+/// compiled machine.
+pub const DEFINITION_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[derive(Debug, Clone)]
 pub struct ReducerConfig {
     /// `ENZARB_BOT_LOGIN`.
@@ -147,36 +151,36 @@ impl Reducer {
     }
 
     /// The issue graph of the event's repository, for an issue-opening event in a Project
-    /// with issue triggers. Transient connector errors leave the event for a retry; other
-    /// errors are logged and the repository keeps the compiled machine.
+    /// with issue triggers. Any error or a slow provider ([`DEFINITION_TIMEOUT`]) is logged
+    /// and the repository keeps the compiled machine: a provider outage never stalls events.
     async fn graph_definition(
         &self,
         key: &WorkItemKey,
         ev: &EngineEvent,
         project: &ProjectInfo,
-    ) -> Result<Option<GraphSource>, Error> {
-        let Some(source) = &self.definitions else {
-            return Ok(None);
-        };
+    ) -> Option<GraphSource> {
+        let source = self.definitions.as_ref()?;
         let EventPayload::Connector(e) = &ev.payload else {
-            return Ok(None);
+            return None;
         };
         if e.event_type != EventType::WorkItemOpened
             || e.data.item.kind != ItemKind::Issue
             || !project.triggers.issues
         {
-            return Ok(None);
+            return None;
         }
-        match source
-            .fetch(&key.repo, &project.default_branch, "issue")
-            .await
-        {
-            Ok(g) => Ok(g),
-            Err(e) if e.is_retryable() => Err(Error::Definition(e.to_string())),
-            Err(e) => {
+        let fetch = source.fetch(&key.repo, &project.default_branch, "issue");
+        match tokio::time::timeout(DEFINITION_TIMEOUT, fetch).await {
+            Ok(Ok(g)) => g,
+            Ok(Err(e)) => {
                 tracing::warn!(item = %key, error = %e,
                     "reading the workflow definition failed; using the built-in workflow");
-                Ok(None)
+                None
+            }
+            Err(_) => {
+                tracing::warn!(item = %key,
+                    "reading the workflow definition timed out; using the built-in workflow");
+                None
             }
         }
     }
@@ -295,7 +299,7 @@ impl Reducer {
         }
         let mut graph = None;
         if let (Ok(k), Ok(ev), Some(p)) = (&key, &event, &project) {
-            graph = self.graph_definition(k, ev, p).await?;
+            graph = self.graph_definition(k, ev, p).await;
         }
         Ok(Prepared {
             key,

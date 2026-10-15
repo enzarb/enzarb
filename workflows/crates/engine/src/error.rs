@@ -11,7 +11,4 @@ pub enum Error {
     State(String),
     #[error("job {0} not found")]
     JobNotFound(i64),
-    /// Reading a graph workflow definition failed transiently (the event is retried).
-    #[error("workflow definition: {0}")]
-    Definition(String),
 }

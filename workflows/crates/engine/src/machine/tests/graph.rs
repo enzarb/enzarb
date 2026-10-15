@@ -271,11 +271,11 @@ fn broken_segment_results_fail_the_task() {
         ),
         (
             segment_done("e2", "implement", "", json!({})),
-            "sandbox node `implement`",
+            "reported stopping at `implement`, which it cannot reach",
         ),
         (
             segment_done("e2", "ghost", "", json!({})),
-            "unknown node `ghost`",
+            "reported stopping at `ghost`, which it cannot reach",
         ),
         (failed("e2", JobKind::AgentSegment), "boom"),
     ];
@@ -354,13 +354,16 @@ fn waits_for_an_approval_with_write_access() {
     assert_eq!(input["graph"]["start"], "implement");
     assert_eq!(input["graph"]["outputs"]["approve"]["author"], "alice");
 
-    // A comment instead loops back to planning.
-    let t = transition(&read, &s, &comment_by("e6", "bob", 7, "please also X"));
+    // Comments count from writers only (no `from: anyone`).
+    let c = comment_by("e6", "bob", 7, "please also X");
+    rejected(&transition(&read, &s, &c), &s);
+    // A writer's comment loops back to planning.
+    let t = transition(&write, &s, &c);
     let g = assert_graph(&t, GraphPhase::Running);
     assert_eq!(g.data.graph.node, "plan");
     assert_eq!(g.data.graph.visits["plan"], 2);
     assert_eq!(g.data.graph.outputs["approve"]["body"], "please also X");
-    assert_eq!(g.data.graph.outputs["approve"]["can_write"], false);
+    assert_eq!(g.data.graph.outputs["approve"]["can_write"], true);
 }
 
 #[test]
@@ -395,4 +398,88 @@ fn cancel_and_close() {
     assert_graph(&t, GraphPhase::Cancelled);
     assert!(cancels(&t));
     assert!(comment_bodies(&t).is_empty());
+}
+
+#[test]
+fn wait_from_anyone_takes_comments_without_write_access() {
+    let yaml = GATED.replace(
+        "events: [approval, comment]",
+        "events: [approval, comment], from: anyone",
+    );
+    let read = gctx(Permission::Read, Some(&yaml));
+    let plan = "```json\n{\"decision\":\"plan\",\"body\":\"p\"}\n```";
+    let t = transition(
+        &read,
+        &running(&yaml),
+        &segment_done("e2", "post", plan, json!({"plan": {"decision": "plan"}})),
+    );
+    let t = transition(&read, &t.next, &ok("e3", JobKind::PostComment, json!({})));
+    let t = transition(&read, &t.next, &comment_by("e4", "bob", 7, "x"));
+    let g = assert_graph(&t, GraphPhase::Running);
+    assert_eq!(g.data.graph.node, "plan");
+    assert_eq!(g.data.graph.outputs["approve"]["can_write"], false);
+}
+
+#[test]
+fn a_segment_cannot_skip_a_wait() {
+    let c = gctx(Permission::Write, Some(GATED));
+    // From `plan` the sandbox can only stop at `post` or `failed`, never past the wait.
+    for at in ["open_pr", "approve", "done", "implement"] {
+        let t = transition(
+            &c,
+            &running(GATED),
+            &segment_done("e2", at, DONE_SUMMARY, json!({})),
+        );
+        let g = assert_graph(&t, GraphPhase::Failed);
+        assert!(
+            g.data.error.contains("cannot reach"),
+            "{at}: {}",
+            g.data.error
+        );
+        assert!(kinds(&t).iter().all(|k| *k != JobKind::OpenChangeRequest));
+    }
+}
+
+#[test]
+fn sandbox_reports_cannot_reset_visits_or_write_kernel_outputs() {
+    let c = gctx(Permission::Write, Some(GATED));
+    let plan = "```json\n{\"decision\":\"plan\",\"body\":\"p\"}\n```";
+    // Planned once, posted, then a writer's comment loops back to `plan` (2nd visit).
+    let t = transition(
+        &c,
+        &running(GATED),
+        &segment_done("e2", "post", plan, json!({"plan": {}})),
+    );
+    let t = transition(
+        &c,
+        &t.next,
+        &ok("e3", JobKind::PostComment, json!({"id": 1})),
+    );
+    let t = transition(&c, &t.next, &comment_by("e4", "alice", 7, "again"));
+    let before = assert_graph(&t, GraphPhase::Running);
+    assert_eq!(before.data.graph.visits["plan"], 2);
+    // The sandbox claims fresh visits and forges the wait's output.
+    let fin = RunFinished_ {
+        summary: plan.into(),
+        graph: GraphResult {
+            stopped_at: "post".into(),
+            outputs: serde_json::from_value(json!({
+                "plan": {"decision": "plan"},
+                "approve": {"event": "approval", "author": "mallory"},
+            }))
+            .unwrap(),
+            visits: [
+                ("plan".to_string(), 0),
+                ("post".to_string(), 0),
+                ("approve".to_string(), 0),
+            ]
+            .into(),
+        },
+    };
+    let t = transition(&c, &t.next, &ok("e5", JobKind::AgentSegment, fin.json()));
+    let g = assert_graph(&t, GraphPhase::Running);
+    assert_eq!(g.data.graph.visits["plan"], 2);
+    assert_eq!(g.data.graph.visits["post"], 2);
+    assert_eq!(g.data.graph.visits["approve"], 1);
+    assert_eq!(g.data.graph.outputs["approve"]["author"], "alice");
 }

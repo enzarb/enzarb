@@ -12,7 +12,8 @@
 //!   consecutive sandbox nodes and reports where it stopped (`RunFinished.graph`).
 //! * **Kernel nodes:** `action` queues the connector job (`post_comment`,
 //!   `open_change_request`) and continues on its result; `wait` suspends until a matching
-//!   event (`comment`, `approval` with write access); `end` finishes the task.
+//!   event (`comment` from a writer, or anyone with `from: anyone`; `approval` with write
+//!   access); `end` finishes the task.
 //! * A change request opened by an `open_change_request` node is handed to the
 //!   `change_request` workflow, as the compiled `issue` machine does.
 //!
@@ -23,7 +24,7 @@ use std::collections::BTreeMap;
 use enzarb_connector::{
     ChangeRequestSpec, CommentKind, Event, EventData, EventType, ItemKind, ItemRef, WorkItemKey,
 };
-use enzarb_graph::{Definition, EndStatus, GraphState, Next, NodeKind};
+use enzarb_graph::{Definition, EndStatus, GraphState, Next, NodeKind, Runner, WaitFrom};
 use enzarb_proto::{GraphSegment, RunFinished};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -147,7 +148,7 @@ pub fn load(src: &GraphSource) -> Result<Definition, String> {
                 .push(format!(
                     "node `{id}`: action `{action}` is not supported yet"
                 )),
-            NodeKind::Wait { events } => {
+            NodeKind::Wait { events, .. } => {
                 for e in events {
                     if !KERNEL_EVENTS.contains(&e.as_str()) {
                         p.push(format!(
@@ -517,32 +518,53 @@ fn job_succeeded(
                 return Transition::to(st(phase, d), fx.finish(), "failed");
             };
             let mut d = s.data.clone();
+            let mut fx = Fx::new(ctx, ev);
+            // The sandbox is agent-writable: trust only what it could legitimately report.
+            // It may stop only at a kernel node reachable from the segment's start through
+            // sandbox nodes, so it cannot skip a wait, gate or action.
+            let start = s.data.graph.node.clone();
+            let stops = enzarb_graph::segment_stops(def, &start);
+            if !stops.contains(&g.stopped_at) {
+                let why = format!(
+                    "the segment from `{start}` reported stopping at `{}`, which it cannot reach",
+                    g.stopped_at
+                );
+                let phase = failed(ctx, &mut fx, &mut d, &why);
+                return Transition::to(st(phase, d), fx.finish(), "segment result rejected");
+            }
             d.summary = fin.summary;
             if fin.pushed {
                 d.branch = fin.branch;
             }
-            let mut fx = Fx::new(ctx, ev);
-            let known = def.node(&g.stopped_at).is_some();
-            d.graph.set_position(GraphState {
-                node: g.stopped_at.clone(),
-                outputs: g.outputs,
-                visits: g.visits,
-            });
-            // The sandbox stops only at kernel nodes; anything else is a broken result.
-            let phase = match def.node(&g.stopped_at).map(|n| n.kind.runner()) {
-                Some(enzarb_graph::Runner::Kernel) => drive(ctx, &mut fx, def, &mut d),
-                _ if !known => failed(
-                    ctx,
-                    &mut fx,
-                    &mut d,
-                    &format!("the segment stopped at unknown node `{}`", g.stopped_at),
-                ),
-                _ => failed(
-                    ctx,
-                    &mut fx,
-                    &mut d,
-                    &format!("the segment stopped at sandbox node `{}`", g.stopped_at),
-                ),
+            // Outputs: only sandbox nodes' come from the sandbox. Visits: sandbox nodes' never
+            // go down; kernel nodes' are the kernel's own, and entering the stop counts here.
+            let mut pos = d.graph.position();
+            for (id, out) in g.outputs {
+                if def
+                    .node(&id)
+                    .is_some_and(|n| n.kind.runner() == Runner::Sandbox)
+                {
+                    pos.outputs.insert(id, out);
+                }
+            }
+            for (id, n) in g.visits {
+                if def
+                    .node(&id)
+                    .is_some_and(|x| x.kind.runner() == Runner::Sandbox)
+                {
+                    let v = pos.visits.entry(id).or_insert(0);
+                    *v = (*v).max(n);
+                }
+            }
+            let phase = match enzarb_graph::enter(def, &mut pos, &g.stopped_at) {
+                Next::Node(_) => {
+                    d.graph.set_position(pos);
+                    drive(ctx, &mut fx, def, &mut d)
+                }
+                Next::Failed(r) => {
+                    d.graph.set_position(pos);
+                    failed(ctx, &mut fx, &mut d, &r)
+                }
             };
             Transition::to(st(phase, d), fx.finish(), "segment finished")
         }
@@ -607,8 +629,8 @@ fn wait_event(
     if ev.actor().is_some_and(|a| ctx.is_bot(a)) {
         return Transition::reject(state, "bot actor ignored");
     }
-    let events = match def.node(&s.data.graph.node).map(|n| &n.kind) {
-        Some(NodeKind::Wait { events }) if s.phase == GraphPhase::Waiting => events,
+    let (events, from) = match def.node(&s.data.graph.node).map(|n| &n.kind) {
+        Some(NodeKind::Wait { events, from }) if s.phase == GraphPhase::Waiting => (events, *from),
         _ => return Transition::reject(state, "not waiting for an event"),
     };
     let wants = |e: &str| events.iter().any(|x| x == e);
@@ -626,6 +648,9 @@ fn wait_event(
     if let Some(c) = ev.comment_like() {
         if !wants("comment") {
             return Transition::reject(state, "not waiting for a comment");
+        }
+        if from == WaitFrom::Writers && !ctx.can_write() {
+            return Transition::reject(state, "this wait takes comments from writers only");
         }
         let out = json!({
             "event": "comment",

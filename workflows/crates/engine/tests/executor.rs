@@ -4271,3 +4271,20 @@ async fn invalid_issue_graph_falls_back_to_the_built_in_workflow() {
             .contains("start node `nope` does not exist")
     );
 }
+
+#[tokio::test]
+async fn unreadable_issue_graph_falls_back_instead_of_retrying() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let reducer = graph_reducer(&h);
+    let repo: RepoKey = REPO.parse().unwrap();
+    h.fake
+        .set_file(repo, "main", ".enzarb/workflows/issue.yaml", ISSUE_GRAPH);
+    // GitHub is down: the lookup fails, the event is processed anyway.
+    h.fake
+        .fail_next(enzarb_connector::Error::Transient("503".into()));
+    open_issue(pool, 1).await;
+    assert_eq!(reducer.drain().await, 1);
+    let (workflow, state, _) = item_row(pool, 1).await;
+    assert_eq!((workflow.as_str(), state.as_str()), ("issue", "Triaging"));
+}

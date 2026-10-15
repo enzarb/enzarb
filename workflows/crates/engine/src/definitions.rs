@@ -7,7 +7,8 @@
 //! branch is read, so a definition changes only through a merged change request.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use enzarb_connector::{Connector, Error, RepoKey};
@@ -26,10 +27,15 @@ pub trait DefinitionSource: Send + Sync {
     ) -> Result<Option<GraphSource>, Error>;
 }
 
-/// Routes to the `Connector` named by the repo key.
+/// How long "no definition at this commit" is remembered.
+pub const MISS_TTL: Duration = Duration::from_secs(5 * 60);
+
+/// Routes to the `Connector` named by the repo key. Remembers, per repository and head sha,
+/// that there is no definition, so most issues cost one `branch_head` call.
 #[derive(Default)]
 pub struct ConnectorDefinitions {
     connectors: HashMap<String, Arc<dyn Connector>>,
+    misses: Mutex<HashMap<(String, String), Instant>>,
 }
 
 impl ConnectorDefinitions {
@@ -60,6 +66,20 @@ impl DefinitionSource for ConnectorDefinitions {
             .await?
             .unwrap_or_else(|| branch.to_string());
         let path = definition_path(name);
+        let miss_key = (format!("{repo}:{path}"), sha.clone());
+        {
+            let mut misses = self.misses.lock().unwrap_or_else(|e| e.into_inner());
+            misses.retain(|_, at| at.elapsed() < MISS_TTL);
+            if misses.contains_key(&miss_key) {
+                return Ok(None);
+            }
+        }
+        let remember = || {
+            self.misses
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(miss_key.clone(), Instant::now());
+        };
         match c.get_file(repo, &sha, &path).await {
             Ok(Some(source)) => Ok(Some(GraphSource {
                 name: name.to_string(),
@@ -67,9 +87,15 @@ impl DefinitionSource for ConnectorDefinitions {
                 sha,
                 source,
             })),
-            Ok(None) => Ok(None),
+            Ok(None) => {
+                remember();
+                Ok(None)
+            }
             // The connector cannot read files: no graph workflows there.
-            Err(Error::Invalid(_)) => Ok(None),
+            Err(Error::Invalid(_)) => {
+                remember();
+                Ok(None)
+            }
             Err(e) => Err(e),
         }
     }
@@ -85,6 +111,9 @@ mod tests {
         let f = Arc::new(FakeConnector::new());
         let repo = RepoKey::new("github", "o", "r");
         let defs = ConnectorDefinitions::new().with("github", f.clone());
+        assert_eq!(defs.fetch(&repo, "main", "issue").await.unwrap(), None);
+        // A miss is remembered per head sha.
+        f.set_file(repo.clone(), "main", ".enzarb/workflows/issue.yaml", "y");
         assert_eq!(defs.fetch(&repo, "main", "issue").await.unwrap(), None);
         f.set_branch_head(repo.clone(), "main", "abc");
         f.set_file(repo.clone(), "abc", ".enzarb/workflows/issue.yaml", "x");
