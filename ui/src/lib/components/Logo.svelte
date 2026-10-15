@@ -1,15 +1,21 @@
 <script lang="ts">
-	// `mark` is the simplified flat mark plus the name set in text; `wordmark` swaps the text for the
+	// `mark` is the thick-stroked tiny mark (static/brand/enzarb-mark-tiny.svg, nav sizes) plus the name set in text; `wordmark` swaps the text for the
 	// logo wordmark (static/brand/enzarb-wordmark*.svg, inlined so its colours follow the theme).
 	// The flat mark carries no gradients or ids, so any number of instances can share a page.
 	let { variant = 'mark', size = 22 }: { variant?: 'mark' | 'wordmark'; size?: number } = $props();
 </script>
 
 <a class="ez-logo" href="/" aria-label="enzarb home">
-	<svg class="ez-logo__mark" width={size} height={size} viewBox="0 0 64 64" aria-hidden="true">
-		<rect width="64" height="64" rx="14" fill="#0b0f17" />
-		<polygon points="12,12 52,12 52,21 21,21 21,27 36,27 36,35 21,35 21,52 12,52" fill="#00d8f6" />
-		<polygon points="52,24 52,33 38,43 52,43 52,52 25,52 25,44 44,30" fill="#10b981" />
+	<svg class="ez-logo__mark" width={size} height={size} viewBox="250 46 700 700" aria-hidden="true">
+		<rect x="250" y="46" width="700" height="700" rx="150" fill="#0b0f17" />
+		<path
+			d="M 342,233 L 600,76 L 859,233 L 757,248 L 600,153 L 412,267 L 412,369 L 560,279 L 510,413 L 412,459 L 412,532 L 470,563 L 500,653 L 342,571 Z"
+			fill="#00d8f6"
+		/>
+		<path
+			d="M 859,233 L 650,463 L 650,583 L 806,493 L 786,396 L 859,544 L 595,696 L 576,686 L 576,447 L 757,248 Z"
+			fill="#10b981"
+		/>
 	</svg>
 	{#if variant === 'wordmark'}
 		<svg

@@ -36,7 +36,8 @@ describe('brand assets', () => {
 		'enzarb-lockup.svg',
 		'enzarb-wordmark.svg',
 		'enzarb-wordmark-on-light.svg',
-		'enzarb-mark-flat.svg'
+		'enzarb-mark-flat.svg',
+		'enzarb-mark-tiny.svg'
 	])('%s is a standalone svg with no filter and no background', (name) => {
 		const svg = read(name);
 		expect(svg).toMatch(/^<svg [^>]*viewBox="/);
@@ -48,11 +49,23 @@ describe('brand assets', () => {
 		for (const [, id] of svg.matchAll(/url\(#([^)]+)\)/g)) expect(svg).toContain(`id="${id}"`);
 	});
 
-	it('the flat mark is two flat facets on an obsidian squircle', () => {
-		const svg = read('enzarb-mark-flat.svg');
-		expect(svg).toContain('fill="#0b0f17"');
-		expect(svg.match(/<polygon /g)).toHaveLength(2);
-		expect(svg).not.toMatch(/Gradient|stroke/);
+	it.each(['enzarb-mark-flat.svg', 'enzarb-mark-tiny.svg'])(
+		'%s is one cyan E path and one emerald Z path on an obsidian squircle',
+		(name) => {
+			const svg = read(name);
+			expect(svg).toContain('viewBox="250 46 700 700"');
+			expect(svg).toContain('fill="#0b0f17"');
+			expect(svg.match(/<path /g)).toHaveLength(2);
+			expect(svg).toMatch(/<path fill="#00d8f6"/);
+			expect(svg).toMatch(/<path fill="#10b981"/);
+			expect(svg).not.toMatch(/Gradient|stroke|<polygon/);
+		}
+	);
+
+	it('Logo.svelte inlines the tiny mark paths', () => {
+		const logo = readFileSync(new URL('./Logo.svelte', import.meta.url), 'utf8');
+		for (const [, d] of read('enzarb-mark-tiny.svg').matchAll(/ d="([^"]+)"/g))
+			expect(logo).toContain(d);
 	});
 
 	it('ships the sheet unchanged, filter included', () => {
@@ -65,6 +78,7 @@ describe('brand assets', () => {
 		expect(readdirSync(dir).sort()).toEqual([
 			'enzarb-lockup.svg',
 			'enzarb-mark-flat.svg',
+			'enzarb-mark-tiny.svg',
 			'enzarb-mark.svg',
 			'enzarb-sheet.svg',
 			'enzarb-wordmark-on-light.svg',
