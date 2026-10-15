@@ -10,7 +10,7 @@ fail=0
 
 repo() { # repo <name>: a fresh repository with an initial commit, cwd set to it
   mkdir -p "$tmp/$1"
-  cd "$tmp/$1"
+  cd "$tmp/$1" || exit 1
   git init -q -b main
   git config user.email test@example.test
   git config user.name test
