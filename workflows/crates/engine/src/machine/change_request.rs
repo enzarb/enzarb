@@ -790,8 +790,70 @@ fn prompt_ctx(ctx: &Ctx, d: &CrData) -> PromptContext {
         head_ref: d.head_ref.clone(),
         head_sha: d.head_sha.clone(),
         branch: d.head_ref.clone(),
+        ci_fix: is_ci_fix_round(d),
+        ci_failure: ci_failure_text(d),
         ..Default::default()
     }
+}
+
+/// The current round was started by [`maybe_start_ci_fix`]: an automatic round on the head
+/// it recorded as `ci_fix_sha` (a new head clears it; a person acting clears `auto_trigger`).
+fn is_ci_fix_round(d: &CrData) -> bool {
+    d.auto_trigger && !d.head_sha.is_empty() && d.ci_fix_sha == d.head_sha
+}
+
+/// `(run id, job id)` of a GitHub Actions check URL
+/// (`https://github.com/o/r/actions/runs/{run}/job/{id}`).
+pub(crate) fn actions_ids(url: &str) -> Option<(String, Option<String>)> {
+    let rest = url.split("/actions/runs/").nth(1)?;
+    let mut parts = rest.split(['/', '?', '#']);
+    let run = parts
+        .next()
+        .filter(|r| !r.is_empty() && r.bytes().all(|b| b.is_ascii_digit()))?;
+    let job = match parts.next() {
+        Some("job" | "jobs") => parts
+            .next()
+            .filter(|j| !j.is_empty() && j.bytes().all(|b| b.is_ascii_digit()))
+            .map(str::to_string),
+        _ => None,
+    };
+    Some((run.to_string(), job))
+}
+
+/// `{ci_failure}`: the failing checks of a CI-fix round with their conclusion and, for
+/// GitHub Actions, the run and job id to give `gh run view`. Empty outside CI-fix rounds.
+fn ci_failure_text(d: &CrData) -> String {
+    if !is_ci_fix_round(d) {
+        return String::new();
+    }
+    if d.ci_failures_sha != d.head_sha || d.ci_failures.is_empty() {
+        return format!(
+            "CI failed on {}; the failing checks were not named. Run `gh run list --commit {} \
+             --status failure` to find them.",
+            short(&d.head_sha),
+            d.head_sha
+        );
+    }
+    let mut out = String::new();
+    for f in &d.ci_failures {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&format!("- check: {}\n  conclusion: failure", f.name));
+        if !f.url.is_empty() {
+            out.push_str(&format!("\n  url: {}", f.url));
+        }
+        match actions_ids(&f.url) {
+            Some((run, job)) => {
+                out.push_str(&format!("\n  run id: {run}"));
+                if let Some(job) = job {
+                    out.push_str(&format!("\n  job id: {job}"));
+                }
+            }
+            None => out.push_str("\n  (not a GitHub Actions run: no log to read with `gh`)"),
+        }
+    }
+    out
 }
 
 fn start_review(ctx: &Ctx, fx: &mut Fx, d: &CrData) {

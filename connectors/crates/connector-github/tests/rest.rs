@@ -1603,6 +1603,56 @@ async fn mount_installation(server: &MockServer) {
 }
 
 #[tokio::test]
+async fn mint_ci_read_credential_is_one_repo_and_read_only() {
+    let server = MockServer::start().await;
+    mount_installation(&server).await;
+    Mock::given(method("POST"))
+        .and(path(format!(
+            "/app/installations/{INSTALLATION}/access_tokens"
+        )))
+        .and(body_json(json!({
+            "repositories": ["enzarb-ui"],
+            "permissions": {"actions": "read", "checks": "read", "metadata": "read"},
+        })))
+        .respond_with(
+            ResponseTemplate::new(201)
+                .set_body_json(json!({"token": "ghs_ci", "expires_at": ts(3600)})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let cred = connector(&server)
+        .mint_ci_read_credential(&repo_named("enzarb-ui"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(cred.token, "ghs_ci");
+    assert_eq!(cred.repos, vec![repo_named("enzarb-ui")]);
+    assert!(!format!("{cred:?}").contains("ghs_ci"));
+}
+
+#[tokio::test]
+async fn mint_ci_read_credential_is_none_when_permission_not_granted() {
+    let server = MockServer::start().await;
+    mount_installation(&server).await;
+    Mock::given(method("POST"))
+        .and(path(format!(
+            "/app/installations/{INSTALLATION}/access_tokens"
+        )))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+            "message": "The permissions requested are not granted to this installation."
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let got = connector(&server)
+        .mint_ci_read_credential(&repo_named("enzarb-ui"))
+        .await
+        .unwrap();
+    assert!(got.is_none());
+}
+
+#[tokio::test]
 async fn mint_read_credential_falls_back_without_packages_permission() {
     for status in [422u16, 403] {
         let server = MockServer::start().await;

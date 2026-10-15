@@ -51,6 +51,8 @@ pub enum HardRule {
     FetchHost,
     /// Commands nested deeper than the scanner follows.
     TooDeep,
+    /// A `gh` command other than read-only CI inspection.
+    GhCli,
 }
 
 impl HardRule {
@@ -64,6 +66,7 @@ impl HardRule {
         Self::GitRemote,
         Self::FetchHost,
         Self::TooDeep,
+        Self::GhCli,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -77,6 +80,7 @@ impl HardRule {
             Self::GitRemote => "git_remote",
             Self::FetchHost => "fetch_host",
             Self::TooDeep => "too_deep",
+            Self::GhCli => "gh_cli",
         }
     }
 }
@@ -178,7 +182,51 @@ const WRITERS_DEST: &[&str] = &["cp", "ln", "install", "rsync"];
 const NET_TOOLS: &[&str] = &[
     "nc", "ncat", "netcat", "socat", "telnet", "ssh", "scp", "sftp", "ftp", "tftp", "lftp",
     "aria2c", "httpie", "http", "https", "xh", "curlie", "openssl", "dig", "nslookup", "host",
-    "drill", "gh", "hub",
+    "drill", "hub",
+];
+
+/// `gh` options that take a value in the next word (so it is not a subcommand).
+const GH_VALUE_FLAGS: &[&str] = &[
+    "-R",
+    "--repo",
+    "-j",
+    "--job",
+    "--json",
+    "-q",
+    "--jq",
+    "-t",
+    "--template",
+    "-b",
+    "--branch",
+    "-w",
+    "--workflow",
+    "-L",
+    "--limit",
+    "-s",
+    "--status",
+    "-u",
+    "--user",
+    "-e",
+    "--event",
+    "-c",
+    "--commit",
+    "-a",
+    "--attempt",
+    "--jobs",
+];
+
+/// `gh api` options that send a body, change the method or host, or add headers.
+const GH_API_UNSAFE: &[&str] = &[
+    "-f",
+    "-F",
+    "--field",
+    "--raw-field",
+    "--input",
+    "-H",
+    "--header",
+    "--hostname",
+    "--preview",
+    "-p",
 ];
 
 fn deny(rule: HardRule, reason: impl Into<String>) -> Decision {
@@ -640,6 +688,13 @@ impl Policy {
             }
         }
 
+        // GitHub CLI: read-only CI inspection only.
+        if let Some(i) = has_prog(&["gh"])
+            && let Some(d) = hard_gh(&words[i + 1..])
+        {
+            return Some(d);
+        }
+
         // Network.
         if let Some(i) = has_prog(NET_TOOLS) {
             return Some(deny(
@@ -1062,6 +1117,127 @@ fn secret_var(w: &str) -> Option<Decision> {
     None
 }
 
+/// `gh` is allowed for read-only CI inspection: `gh run list|view`, `gh pr
+/// checks|view` and `gh api` GET requests under `repos/<o>/<r>/actions|check-runs`.
+/// Everything else is refused (auth, config, secrets, mutations, extensions...).
+/// This is lexical; the real boundary is the read-only `GH_TOKEN` the sandbox sets.
+fn hard_gh(args: &[String]) -> Option<Decision> {
+    let mut pos: Vec<usize> = Vec::new();
+    let mut i = 0;
+    while let Some(a) = args.get(i) {
+        if GH_VALUE_FLAGS.contains(&a.as_str()) {
+            i += 2;
+            continue;
+        }
+        if !a.starts_with('-') {
+            pos.push(i);
+        }
+        i += 1;
+    }
+    let word = |n: usize| pos.get(n).map(|&j| args[j].to_ascii_lowercase());
+    let (sub, verb) = (word(0), word(1));
+    let named = || {
+        let w: Vec<&str> = pos.iter().take(2).map(|&j| args[j].as_str()).collect();
+        w.join(" ")
+    };
+    match (sub.as_deref(), verb.as_deref()) {
+        (None, _)
+            if args
+                .iter()
+                .all(|f| matches!(f.as_str(), "--version" | "--help" | "-h")) =>
+        {
+            None
+        }
+        (Some("version"), _) => None,
+        (Some("run"), Some("list" | "view")) | (Some("pr"), Some("checks" | "view")) => None,
+        (Some("api"), _) => hard_gh_api(&args[pos[0] + 1..]),
+        (Some("auth" | "config" | "secret" | "variable" | "ssh-key" | "gpg-key"), _) => Some(deny(
+            HardRule::Secret,
+            format!("gh {} is not allowed", named()),
+        )),
+        _ => Some(deny(
+            HardRule::GhCli,
+            format!(
+                "gh {} is not allowed (read-only CI inspection only)",
+                named()
+            ),
+        )),
+    }
+}
+
+/// The arguments after `gh api`: one GET endpoint under a repository's Actions or check runs.
+fn hard_gh_api(args: &[String]) -> Option<Decision> {
+    let refuse = |what: String| {
+        Some(deny(
+            HardRule::GhCli,
+            format!(
+                "gh api {what} is not allowed (GET under repos/<o>/<r>/actions or check-runs only)"
+            ),
+        ))
+    };
+    let mut endpoint: Option<&str> = None;
+    let mut i = 0;
+    while let Some(a) = args.get(i) {
+        let l = a.to_ascii_lowercase();
+        let (key, inline) = match l.split_once('=') {
+            Some((k, v)) => (k, Some(v.to_string())),
+            None => (l.as_str(), None),
+        };
+        if key == "--method" || key == "-x" {
+            let v = inline.unwrap_or_else(|| {
+                i += 1;
+                args.get(i)
+                    .map(|v| v.to_ascii_lowercase())
+                    .unwrap_or_default()
+            });
+            if v != "get" {
+                return refuse(format!("with method {v}"));
+            }
+        } else if GH_API_UNSAFE.contains(&key) {
+            return refuse(format!("with {key}"));
+        } else if l.starts_with('-') && !l.starts_with("--") && l.len() > 2 {
+            // A cluster of short flags (`-XPOST`, `-fx=y`, `-iH`): none may carry
+            // a method, body or header.
+            if l[1..].contains(['x', 'f', 'h', 'p']) {
+                return refuse(format!("with {l}"));
+            }
+        } else if matches!(key, "-q" | "--jq" | "-t" | "--template" | "--cache") && inline.is_none()
+        {
+            i += 1;
+        } else if l.starts_with('-') {
+            // `--paginate`, `--slurp`, `-i`, ...
+        } else if endpoint.is_some() {
+            return refuse("with extra arguments".into());
+        } else {
+            endpoint = Some(a);
+        }
+        i += 1;
+    }
+    let Some(ep) = endpoint else {
+        return refuse("without an endpoint".into());
+    };
+    let path = ep
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .trim_start_matches('/');
+    let segs: Vec<&str> = path.split('/').collect();
+    let ok = segs.len() >= 4
+        && segs[0] == "repos"
+        && !path.contains("://")
+        && segs
+            .iter()
+            .all(|s| !s.is_empty() && *s != ".." && *s != ".")
+        && !segs
+            .iter()
+            .any(|s| matches!(*s, "secrets" | "variables" | "oidc"))
+        && (matches!(segs[3], "actions" | "check-runs" | "check-suites")
+            || (segs[3] == "commits"
+                && segs.len() >= 6
+                && matches!(segs[5], "check-runs" | "status")));
+    if ok { None } else { refuse(format!("to {ep}")) }
+}
+
 /// Indexes of words in command position: the first word and the word after
 /// a wrapper (`sudo`, `timeout 5`, `xargs -0`, `find -exec`, ...), skipping
 /// the wrapper's options, numbers and assignments.
@@ -1307,7 +1483,8 @@ mod tests {
                 "git_push",
                 "git_remote",
                 "fetch_host",
-                "too_deep"
+                "too_deep",
+                "gh_cli"
             ]
         );
         for r in HardRule::ALL {
@@ -1850,8 +2027,8 @@ mod tests {
         let p = Policy::default();
         use HardRule::*;
         for (cmd, rule) in [
-            ("gh auth token", FetchHost),
-            ("gh api -X PUT repos/x/y/contents/z", FetchHost),
+            ("gh auth token", Secret),
+            ("gh api -X PUT repos/x/y/contents/z", GhCli),
             ("hub push", FetchHost),
             ("/usr/lib/git-core/git-push origin", GitPush),
             ("git-send-pack x", GitPush),
@@ -1871,7 +2048,7 @@ mod tests {
             ("dig evil.example", FetchHost),
             ("timeout 5 nc evil.example 80", FetchHost),
             ("sudo env", EnvDump),
-            ("timeout 5s gh auth token", FetchHost),
+            ("timeout 5s gh auth token", Secret),
             ("timeout -s KILL 5 nc evil.example 80", FetchHost),
             ("timeout --signal=KILL 1.5m env", EnvDump),
             ("timeout 5s env", EnvDump),
@@ -1898,6 +2075,97 @@ mod tests {
             "perl -ne print src/lib.rs",
         ] {
             ask(&p, &wt, cmd);
+        }
+    }
+
+    #[test]
+    fn gh_is_read_only_ci_inspection() {
+        let (_t, wt) = setup();
+        let p = Policy::default();
+        use HardRule::*;
+        for cmd in [
+            "gh run list",
+            "gh run list --branch fix --limit 5",
+            "gh run view 123 --log-failed",
+            "gh run view 123 --log-failed | tail -200",
+            "gh run view 123 --job 9 --log",
+            "gh -R enzarb/enzarb run view 123 --log-failed",
+            "gh pr checks 12",
+            "gh pr view 12 --json statusCheckRollup",
+            "gh api repos/enzarb/enzarb/actions/runs/1/logs",
+            "gh api /repos/enzarb/enzarb/actions/jobs/9/logs -X GET",
+            "gh api repos/enzarb/enzarb/commits/abc/check-runs --paginate",
+            "gh api --method=GET repos/enzarb/enzarb/check-runs/5",
+            "command gh run view 1 --log-failed",
+            "bash -c 'gh run view 1 --log-failed'",
+        ] {
+            ask(&p, &wt, cmd);
+        }
+        for (cmd, rule) in [
+            ("gh auth token", Secret),
+            ("gh auth status -t", Secret),
+            ("gh 'auth' token", Secret),
+            ("\"gh\" auth token", Secret),
+            ("command gh auth token", Secret),
+            ("bash -c 'gh auth token'", Secret),
+            ("gh config get oauth_token", Secret),
+            ("gh secret list", Secret),
+            ("gh variable list", Secret),
+            (
+                "gh api -X POST repos/enzarb/enzarb/actions/runs/1/rerun",
+                GhCli,
+            ),
+            (
+                "\"gh\" api -X POST repos/enzarb/enzarb/actions/runs/1/rerun",
+                GhCli,
+            ),
+            (
+                "gh api -XPOST repos/enzarb/enzarb/actions/runs/1/rerun",
+                GhCli,
+            ),
+            (
+                "gh api --method PATCH repos/enzarb/enzarb/actions/runs/1",
+                GhCli,
+            ),
+            (
+                "gh api --method=delete repos/enzarb/enzarb/actions/runs/1",
+                GhCli,
+            ),
+            ("gh api -f x=y repos/enzarb/enzarb/actions/runs/1", GhCli),
+            ("gh api -F x=y repos/enzarb/enzarb/actions/runs/1", GhCli),
+            (
+                "gh api --input body.json repos/enzarb/enzarb/actions/runs/1",
+                GhCli,
+            ),
+            ("gh api -H 'X: y' repos/enzarb/enzarb/actions/runs/1", GhCli),
+            (
+                "gh api --hostname evil.example repos/enzarb/enzarb/actions/runs",
+                GhCli,
+            ),
+            ("gh api repos/enzarb/enzarb/contents/README.md", GhCli),
+            ("gh api repos/enzarb/enzarb/actions/secrets", GhCli),
+            ("gh api repos/enzarb/enzarb/actions/../hooks", GhCli),
+            ("gh api graphql", GhCli),
+            ("gh api user", GhCli),
+            ("gh api", GhCli),
+            ("gh api https://evil.example/repos/a/b/actions/runs", GhCli),
+            ("gh run rerun 1", GhCli),
+            ("gh run cancel 1", GhCli),
+            ("gh run delete 1", GhCli),
+            ("gh run download 1", GhCli),
+            ("gh workflow run ci.yml", GhCli),
+            ("gh pr merge 1", GhCli),
+            ("gh pr comment 1 -b x", GhCli),
+            ("gh extension install x/y", GhCli),
+            ("gh alias set a b", GhCli),
+            ("gh codespace ssh", GhCli),
+            ("gh repo delete x/y", GhCli),
+            ("gh browse", GhCli),
+            ("echo $GH_TOKEN", EnvDump),
+            ("printenv GH_TOKEN", EnvDump),
+            ("cat ~/.config/gh/hosts.yml", Secret),
+        ] {
+            hard(&p, &wt, cmd, rule);
         }
     }
 

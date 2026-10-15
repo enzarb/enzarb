@@ -223,6 +223,89 @@ fn failure_during_a_run_is_recorded_and_acted_on_when_it_ends() {
     }
 }
 
+fn fix_input(t: &Transition) -> AgentJobInput {
+    serde_json::from_value(job_of(t, JobKind::AgentAddressComments).2).unwrap()
+}
+
+#[test]
+fn a_ci_fix_round_carries_the_failing_check_and_the_run_id() {
+    let mut e = fail_event("f0", "ci / test");
+    if let EventPayload::Connector(c) = &mut e.payload {
+        c.data.ci.as_mut().unwrap().url =
+            Some("https://github.com/enzarb/enzarb/actions/runs/777/job/888".into());
+    }
+    let t = run_cr(Permission::None, &awaiting("comment"), &e);
+    assert_cr(&t, CrPhase::AddressingComments);
+    let input = fix_input(&t);
+    assert!(input.context.ci_fix);
+    for needle in [
+        "check: ci / test",
+        "conclusion: failure",
+        "url: https://github.com/enzarb/enzarb/actions/runs/777/job/888",
+        "run id: 777",
+        "job id: 888",
+    ] {
+        assert!(input.context.ci_failure.contains(needle), "{needle}");
+        assert!(input.prompt.contains(needle), "{needle}");
+    }
+    assert!(input.prompt.contains("gh run view <run id> --log-failed"));
+}
+
+#[test]
+fn a_non_actions_check_has_no_run_id() {
+    let t = run_cr(
+        Permission::None,
+        &awaiting("comment"),
+        &fail_event("f0", "actionlint"),
+    );
+    let input = fix_input(&t);
+    assert!(input.context.ci_fix);
+    assert!(input.context.ci_failure.contains("check: actionlint"));
+    assert!(!input.context.ci_failure.contains("run id"));
+    assert!(
+        input
+            .context
+            .ci_failure
+            .contains("not a GitHub Actions run")
+    );
+}
+
+#[test]
+fn only_ci_fix_rounds_are_flagged() {
+    // A round started by a person's comment has no CI failure and no flag.
+    let t = run_cr(
+        Permission::Admin,
+        &awaiting("comment"),
+        &conn(
+            "c1",
+            EventType::CommentAdded,
+            pr_item("sha1"),
+            actor("alice"),
+            Some((9, "please rename this")),
+        ),
+    );
+    assert_cr(&t, CrPhase::AddressingComments);
+    let input = fix_input(&t);
+    assert!(!input.context.ci_fix && input.context.ci_failure.is_empty());
+    assert!(input.prompt.contains("<untrusted>\n(none)\n</untrusted>"));
+}
+
+#[test]
+fn actions_urls_are_parsed() {
+    use crate::machine::change_request::actions_ids;
+    let id = |u: &str| actions_ids(u);
+    assert_eq!(
+        id("https://github.com/o/r/actions/runs/12/job/34"),
+        Some(("12".into(), Some("34".into())))
+    );
+    assert_eq!(
+        id("https://github.com/o/r/actions/runs/12"),
+        Some(("12".into(), None))
+    );
+    assert_eq!(id("https://ci.example/x"), None);
+    assert_eq!(id("https://github.com/o/r/actions/runs/abc"), None);
+}
+
 #[test]
 fn a_new_head_clears_the_ci_fix_bookkeeping() {
     let t = run_cr(

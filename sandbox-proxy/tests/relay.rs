@@ -355,6 +355,7 @@ fn run_start() -> RunStart {
         log_channel: None,
         deps_token: None,
         npm_token: None,
+        ci_read_token: None,
         claude_token: None,
         retarget: None,
         graph: None,

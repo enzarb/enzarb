@@ -1391,6 +1391,53 @@ async fn no_npm_token_when_not_configured() {
 }
 
 #[tokio::test]
+async fn ci_read_token_only_for_ci_fix_address_rounds_and_never_stored() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    // (kind, ci_fix flag in the prompt context)
+    let cases = [
+        ("agent_address_comments", true),
+        ("agent_address_comments", false),
+        ("agent_implement", true),
+        ("agent_review", true),
+    ];
+    let mut ids = vec![];
+    for (i, (k, ci_fix)) in cases.iter().enumerate() {
+        let n = i as u64 + 1;
+        h.fake.add_thread(key(n), thread_with("hi"));
+        let wi = new_item(pool, n, "enzarb").await;
+        let mut input = agent_input(n, &format!("enzarb/b-{n}"), true);
+        input["context"]["ci_fix"] = json!(ci_fix);
+        ids.push(new_job(pool, wi, "enzarb", k, 0, &format!("k:ci{n}"), input).await);
+    }
+    for _ in 0..cases.len() {
+        h.exec.drain().await;
+        sqlx::query("UPDATE workflows.jobs SET status='succeeded' WHERE status='running'")
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+    for (id, (k, ci_fix)) in ids.iter().zip(cases) {
+        let run = h.sandbox.run(&format!("job-{id}")).expect(k);
+        let want = k == "agent_address_comments" && ci_fix;
+        assert_eq!(run.ci_read_token.is_some(), want, "{k} ci_fix={ci_fix}");
+        let input = job(pool, *id).await.input.to_string();
+        if let Some(t) = &run.ci_read_token {
+            assert!(t.starts_with("fake-ci-token-"));
+            assert!(!input.contains(t));
+            assert!(!format!("{run:?}").contains(t));
+        }
+    }
+    let minted = h
+        .fake
+        .applied_calls()
+        .iter()
+        .filter(|c| matches!(c, Call::MintCiReadCredential { .. }))
+        .count();
+    assert_eq!(minted, 1);
+}
+
+#[tokio::test]
 async fn deps_token_for_implement_address_review_only() {
     let h = H::new(db!()).await;
     h.resolver.set_repos("enzarb", proj_repos());
