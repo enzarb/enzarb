@@ -79,4 +79,15 @@ describe('StepTimingTable', () => {
 		await render(StepTimingTable, { timing });
 		await expect.element(page.getByText('1 visit still open, not counted.')).toBeVisible();
 	});
+
+	it('shows the open-visits note instead of the empty state when only open visits exist', async () => {
+		render(StepTimingTable, {
+			timing: {
+				states: [{ name: 'Implementing', active: null, openExcluded: 2, waiting: null }],
+				jobs: []
+			}
+		});
+		await expect.element(page.getByText('2 visits still open, not counted.')).toBeVisible();
+		await expect.element(page.getByText('No step timing in this window')).not.toBeInTheDocument();
+	});
 });

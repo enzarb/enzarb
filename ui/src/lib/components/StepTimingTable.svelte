@@ -13,7 +13,9 @@
 	const active = $derived(timing.states.filter((s) => s.active));
 	const waiting = $derived(timing.states.filter((s) => s.waiting));
 	const openExcluded = $derived(timing.states.reduce((n, s) => n + s.openExcluded, 0));
-	const empty = $derived(active.length === 0 && waiting.length === 0 && timing.jobs.length === 0);
+	const empty = $derived(
+		active.length === 0 && waiting.length === 0 && timing.jobs.length === 0 && openExcluded === 0
+	);
 
 	const top = $derived(
 		Math.max(0, ...active.map((s) => Math.max(s.active!.p95 ?? 0, s.active!.max ?? 0)))
@@ -75,11 +77,6 @@
 						</tbody>
 					</table>
 				</div>
-				{#if openExcluded > 0}
-					<p class="ez-muted">
-						{openExcluded} visit{openExcluded === 1 ? '' : 's'} still open, not counted.
-					</p>
-				{/if}
 			</section>
 		{/if}
 
@@ -149,6 +146,12 @@
 					</table>
 				</div>
 			</section>
+		{/if}
+
+		{#if openExcluded > 0}
+			<p class="ez-muted">
+				{openExcluded} visit{openExcluded === 1 ? '' : 's'} still open, not counted.
+			</p>
 		{/if}
 	</div>
 {/if}
