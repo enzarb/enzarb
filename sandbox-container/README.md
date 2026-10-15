@@ -16,6 +16,11 @@ Only system components:
 - `mise`
 - `build-essential`, `pkg-config`, `libssl-dev`
 - `git`, `curl`, `ca-certificates`, `openssh-client`, `procps`
+- `sccache` (pinned musl release, sha256-checked). `RUSTC_WRAPPER=sccache`, `SCCACHE_DIR=/workspace/.cache/sccache` and `SCCACHE_CACHE_SIZE=20G` are image `ENV`, so compiles share a cache on the PVC; `CARGO_TARGET_DIR` stays unset (`target/` is per worktree). A repo that sets its own `RUSTC_WRAPPER` overrides it. `npm_config_cache=/workspace/.cache/npm`.
+- Chromium (and chromium-headless-shell) for Playwright in `/opt/ms-playwright` (outside the PVC, so the mount does not hide it), with its runtime libraries. `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright` and `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`, so the `ui` browser tests download nothing. The Playwright npm package itself is not in the image.
+- These cache and Playwright variables are also in `PASS_ENV` (`src/chat.rs`), so chat agents (which get a scrubbed environment) see them.
+
+**Bumping Playwright:** when `ui/package-lock.json` resolves a new `playwright`, set `ARG PLAYWRIGHT_VERSION` in the `Dockerfile` to the same version. `scripts/check-playwright-version.sh` (CI job `playwright-version`) fails on drift.
 - Docker: `dockerd`, `containerd`, `runc`, the `docker` CLI, buildx and compose (see [Docker and privileges](#docker-and-privileges-adr-0016))
 
 There is no rustup/Rust, npm, ripgrep, jq or other CLI tool, and no `HEALTHCHECK` (Kubernetes probes `/healthz`). `scripts/smoke.sh` asserts both what is present and what is absent.

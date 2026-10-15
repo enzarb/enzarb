@@ -752,6 +752,16 @@ fn agent_env_is_minimal() {
     for (k, _) in &env {
         assert!(allowed.contains(k.as_str()), "{k}");
     }
+    for k in [
+        "RUSTC_WRAPPER",
+        "SCCACHE_DIR",
+        "SCCACHE_CACHE_SIZE",
+        "npm_config_cache",
+        "PLAYWRIGHT_BROWSERS_PATH",
+        "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD",
+    ] {
+        assert!(PASS_ENV.contains(&k), "{k} must reach agents");
+    }
     let get = |k: &str| env.iter().find(|(a, _)| a == k).map(|(_, v)| v.as_str());
     assert_eq!(get("CLAUDE_CODE_OAUTH_TOKEN"), Some("sk-ant-oat01-x"));
     assert_eq!(
