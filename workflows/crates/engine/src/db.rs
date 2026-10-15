@@ -152,3 +152,70 @@ pub struct JobView {
     /// Usage summed over the job's runs (`enzarb_proto::Usage` shape); `None` when not reported.
     pub usage: Option<Value>,
 }
+
+/// One poll of one sandbox, as stored by `workflows_api.record_sandbox_sample`. CPU time and
+/// disk bytes are monotonic counters; memory and storage are gauges.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SandboxSample {
+    pub project: String,
+    /// The work item the sandbox serves; `None` while it is idle.
+    pub work_item_id: Option<i64>,
+    pub sandbox: String,
+    pub sampled_at: DateTime<Utc>,
+    pub cpu_usage_ns: i64,
+    pub memory_bytes: i64,
+    pub storage_bytes: i64,
+    pub disk_read_bytes: i64,
+    pub disk_write_bytes: i64,
+}
+
+/// Row of `workflows_api.sandbox_series`. Values are `None` in a bucket without samples (rates:
+/// without a usable interval).
+#[derive(Debug, Clone, FromRow)]
+pub struct SandboxSeriesPoint {
+    pub bucket: DateTime<Utc>,
+    pub cpu_cores: Option<f64>,
+    pub memory_bytes_avg: Option<f64>,
+    pub memory_bytes_max: Option<i64>,
+    pub storage_bytes_max: Option<i64>,
+    pub disk_read_bps: Option<f64>,
+    pub disk_write_bps: Option<f64>,
+    pub samples: i32,
+}
+
+/// Store a sample; `false` when that (project, sandbox, sampled_at) was already recorded.
+pub async fn record_sandbox_sample(pool: &PgPool, s: &SandboxSample) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT workflows_api.record_sandbox_sample($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+    )
+    .bind(&s.project)
+    .bind(s.work_item_id)
+    .bind(&s.sandbox)
+    .bind(s.sampled_at)
+    .bind(s.cpu_usage_ns)
+    .bind(s.memory_bytes)
+    .bind(s.storage_bytes)
+    .bind(s.disk_read_bytes)
+    .bind(s.disk_write_bytes)
+    .fetch_one(pool)
+    .await
+}
+
+/// Bucketed series of a project over `[from, to)`.
+pub async fn sandbox_series(
+    pool: &PgPool,
+    project: &str,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    bucket: std::time::Duration,
+) -> Result<Vec<SandboxSeriesPoint>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT * FROM workflows_api.sandbox_series($1, $2, $3, $4::bigint * interval '1 microsecond')",
+    )
+    .bind(project)
+    .bind(from)
+    .bind(to)
+    .bind(i64::try_from(bucket.as_micros()).unwrap_or(i64::MAX))
+    .fetch_all(pool)
+    .await
+}

@@ -101,6 +101,9 @@ pub async fn run(cfg: Config) -> Result<(), Error> {
 
     if cfg.roles.contains(&Role::Ticker) {
         let ticker = Ticker::new(pool.clone())
+            .with_sample_retention(std::time::Duration::from_secs(
+                u64::from(cfg.sample_retention_days) * 24 * 3600,
+            ))
             .with_base_poll(connectors.clone().expect("connectors"), &cfg.bot_login)
             .with_dependency_sync(
                 connectors.clone().expect("connectors"),

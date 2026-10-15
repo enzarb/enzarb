@@ -294,6 +294,21 @@ workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated
 - **`work_item_v.usage_totals`** (jsonb, nullable): per key, the sum over the item's jobs that reported it, plus the union of `models`. A key no job reported is absent (so `cost_usd` is absent, not 0, when no job reported a cost); `NULL` when no job has usage. Cost is as reported by Claude, not an estimate.
 - Changes to `jobs.usage` send `work_item_changed`.
 - **Dependencies** ([ADR-0017](adr/0017-work-item-dependencies.md)): `work_item_dependency_v` lists each effective dependency of `work_item_key` (filter on `depends_on_key` for dependents). `source` is `github`, `text` or `comment`; `via` is the issue key when a change request inherited it; `status` is `done` (Done/Merged), `closed` (Cancelled/Closed/Duplicate: will not complete), `open` or `pending` (no work item yet). `work_item_v.blocked_by_dependency` is true while a change request's `state_data.open_dependencies` is not empty, and `state_data.checklist.dependencies` is a fourth check in the shape above. Changes to the table send `work_item_changed` for both ends. Event type `DependenciesChanged` (source `engine`, payload `{}`) is engine-internal.
+- **Sandbox samples** (project metrics; additive). `workflows.sandbox_samples(project_id, work_item_id, sandbox, sampled_at, cpu_usage_ns, memory_bytes, storage_bytes, disk_read_bytes, disk_write_bytes)`, unique on `(project_id, sandbox, sampled_at)`, one row per poll of one sandbox. `cpu_usage_ns`, `disk_read_bytes` and `disk_write_bytes` are monotonic counters (they restart from 0 with the sandbox); `memory_bytes` and `storage_bytes` are gauges; all are `>= 0`. `work_item_id` has no foreign key and is NULL while the sandbox is idle. The table is not wired to `work_item_changed`.
+  ```sql
+  workflows_api.record_sandbox_sample(p_project text, p_work_item_id bigint, p_sandbox text,
+      p_sampled_at timestamptz, p_cpu_ns bigint, p_mem bigint, p_storage bigint,
+      p_disk_read bigint, p_disk_write bigint) RETURNS boolean            -- false if duplicate
+  workflows_api.sandbox_series(p_project text, p_from timestamptz, p_to timestamptz,
+      p_bucket interval) RETURNS TABLE(bucket, cpu_cores, memory_bytes_avg, memory_bytes_max,
+      storage_bytes_max, disk_read_bps, disk_write_bps, samples)
+  workflows.prune_sandbox_samples(p_older_than interval DEFAULT '30 days',
+      p_limit integer DEFAULT 10000) RETURNS bigint                       -- rows deleted
+  ```
+  - `record_sandbox_sample` (the poller is the only writer) raises on NULL or negative values, an empty project or sandbox, and a `sampled_at` more than 5 minutes in the future.
+  - `sandbox_series` covers the half-open window `[p_from, p_to)`. Buckets start at `p_from` and are `p_bucket` wide (the last may be partial); every bucket is returned, empty ones with NULL values and `samples = 0`. `p_bucket` must be at least 1 s and the window at most 1000 buckets, else it raises. Rates come from counter deltas between consecutive samples of one sandbox, including the last sample before `p_from`; an interval belongs to the bucket of its end sample. A counter lower than its predecessor is a reset and the delta is the new value (never negative). Intervals that are not positive or longer than 5 minutes give no rate. A sandbox's rate in a bucket is its summed delta over its summed interval; the project's is the sum over its sandboxes. Units: `cpu_cores` (CPU seconds per second), `disk_*_bps` (bytes per second), bytes for gauges, which are the per-sandbox avg/max in the bucket summed over sandboxes. Return columns are append-only.
+  - Grants: `record_sandbox_sample` only to `enzarb_workflows`; `sandbox_series` to `enzarb_ui` and `enzarb_workflows` (project authorization is the caller's job, as for the views); `prune_sandbox_samples` only to `enzarb_workflows`.
+  - Retention: the workflows ticker calls `prune_sandbox_samples` at most hourly and deletes samples older than `ENZARB_SANDBOX_SAMPLE_RETENTION_DAYS` (default 30).
 - Both functions are `SECURITY DEFINER`.
 - Connectors use dedupe key `github:<event id>`; the UI uses `ui:<uuid>`. Events the engine itself generates use source `engine` (`handoff:<id>`, `timer:…`, `job:<id>:<attempt>`).
 - `transitions.work_item_id` is nullable: events that are ignored (no Project, no workflow) get a `to_state='ignored'` row with no work item. `transitions.note` records rejections.
@@ -377,7 +392,7 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 | `ENZARB_EXECUTOR_URL` (default `http://enzarb-workflows-executor.enzarb.svc:8081`) | workflows executor (callback base) |
 | `ENZARB_EXECUTOR_CALLBACK_SECRET` | workflows executor (callback token = `hex(HMAC-SHA256(secret, run_id))`; shared by all replicas) |
 | `RUST_LOG` | all Rust services |
-| `ENZARB_ROLES`, `ENZARB_DB_MAX_CONNECTIONS` (10), `ENZARB_MAX_AUTO_ROUNDS` (3; `0` disables automatic fix rounds), `ENZARB_EXECUTOR_LISTEN` (`0.0.0.0:8081`), `ENZARB_HEALTH_LISTEN` (`0.0.0.0:8082`) | workflows |
+| `ENZARB_ROLES`, `ENZARB_DB_MAX_CONNECTIONS` (10), `ENZARB_MAX_AUTO_ROUNDS` (3; `0` disables automatic fix rounds), `ENZARB_SANDBOX_SAMPLE_RETENTION_DAYS` (30), `ENZARB_EXECUTOR_LISTEN` (`0.0.0.0:8081`), `ENZARB_HEALTH_LISTEN` (`0.0.0.0:8082`) | workflows |
 | `PROXY_LISTEN` (`0.0.0.0:8080`), `PROXY_IDLE_TIMEOUT_SECS` (2100; the proxy clamps lower values up to `ENZARB_CHAT_IDLE_SECS` with a warn log), `PROXY_PING_INTERVAL_SECS` (30, browser websocket ping), `PROXY_MAX_MESSAGE_BYTES`, `PROXY_SECRET_TTL_SECS` (30) | sandbox-proxy |
 | `RECEIVER_LISTEN` (default `0.0.0.0:8080`) | connectors receiver |
 

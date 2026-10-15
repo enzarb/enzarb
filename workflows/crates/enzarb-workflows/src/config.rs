@@ -28,6 +28,9 @@ pub struct Config {
     /// `ENZARB_MAX_AUTO_ROUNDS`: automatic fix rounds on enzarb's own review findings per change
     /// request before it waits for a human (default 3, `0` disables).
     pub max_auto_rounds: u32,
+    /// `ENZARB_SANDBOX_SAMPLE_RETENTION_DAYS`: age in days after which the ticker deletes
+    /// sandbox samples (default 30).
+    pub sample_retention_days: u32,
     /// Empty unless the executor role is enabled.
     pub executor_callback_secret: Vec<u8>,
     /// Optional `read:packages` token for private npm packages, handed to agent runs
@@ -157,6 +160,18 @@ impl Config {
                 msg: format!("`{v}` is not a non-negative integer"),
             })?,
         };
+        let sample_retention_days = match nonempty(get, "ENZARB_SANDBOX_SAMPLE_RETENTION_DAYS") {
+            None => 30,
+            Some(v) => match v.parse::<u32>() {
+                Ok(n) if n > 0 => n,
+                _ => {
+                    return Err(ConfigError::Invalid {
+                        var: "ENZARB_SANDBOX_SAMPLE_RETENTION_DAYS",
+                        msg: format!("`{v}` is not a positive integer"),
+                    });
+                }
+            },
+        };
         let executor_url = nonempty(get, "ENZARB_EXECUTOR_URL")
             .unwrap_or_else(|| DEFAULT_EXECUTOR_URL.to_string());
         if roles.contains(&Role::Executor)
@@ -194,6 +209,7 @@ impl Config {
             bot_handle: nonempty(get, "ENZARB_BOT_HANDLE").unwrap_or_else(|| "enzarb".into()),
             executor_url,
             max_auto_rounds,
+            sample_retention_days,
             executor_callback_secret,
             npm_token,
             claude_keyring,

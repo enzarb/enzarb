@@ -125,9 +125,20 @@ pub struct Ticker {
     base_poll: Option<BasePoll>,
     dep_sync: Option<DepSync>,
     readiness_slots: Arc<Mutex<HashMap<ReadinessKey, PollSlot>>>,
+    sample_retention: Duration,
+    last_prune: Arc<Mutex<Option<Instant>>>,
 }
 
 const BATCH: i64 = 500;
+
+/// Minimum time between sandbox sample prunes.
+pub const SAMPLE_PRUNE_INTERVAL: Duration = Duration::from_secs(3600);
+
+/// Default age after which sandbox samples are deleted.
+pub const DEFAULT_SAMPLE_RETENTION: Duration = Duration::from_secs(30 * 24 * 3600);
+
+/// Rows one prune statement deletes; a pass repeats until a batch comes back short.
+const PRUNE_BATCH: i32 = 10_000;
 
 impl Ticker {
     pub fn new(pool: PgPool) -> Self {
@@ -137,6 +148,39 @@ impl Ticker {
             base_poll: None,
             dep_sync: None,
             readiness_slots: Arc::default(),
+            sample_retention: DEFAULT_SAMPLE_RETENTION,
+            last_prune: Arc::default(),
+        }
+    }
+
+    /// Delete sandbox samples older than `retention` (default 30 days).
+    pub fn with_sample_retention(mut self, retention: Duration) -> Self {
+        self.sample_retention = retention;
+        self
+    }
+
+    /// Delete expired sandbox samples, at most once per [`SAMPLE_PRUNE_INTERVAL`]. Returns
+    /// `None` when not yet due, else the number of rows deleted. A failed pass is retried on
+    /// the next interval.
+    pub async fn prune_sandbox_samples(&self) -> Result<Option<u64>, Error> {
+        {
+            let mut last = self.last_prune.lock().unwrap_or_else(|e| e.into_inner());
+            if last.is_some_and(|t| t.elapsed() < SAMPLE_PRUNE_INTERVAL) {
+                return Ok(None);
+            }
+            *last = Some(Instant::now());
+        }
+        let mut total = 0u64;
+        loop {
+            let n: i64 = sqlx::query_scalar("SELECT workflows.prune_sandbox_samples($1, $2)")
+                .bind(self.sample_retention)
+                .bind(PRUNE_BATCH)
+                .fetch_one(&self.pool)
+                .await?;
+            total += n as u64;
+            if n < i64::from(PRUNE_BATCH) {
+                return Ok(Some(total));
+            }
         }
     }
 
@@ -484,6 +528,11 @@ impl Ticker {
             }
             if let Err(e) = self.sync_dependencies().await {
                 tracing::warn!(error = %e, "dependency sync failed");
+            }
+            match self.prune_sandbox_samples().await {
+                Ok(Some(n)) if n > 0 => tracing::info!(deleted = n, "pruned sandbox samples"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "sandbox sample prune failed"),
             }
             tokio::select! {
                 _ = tokio::time::sleep(self.interval) => {}
