@@ -1,0 +1,32 @@
+# Example graph workflow with epics (ADR-0018 behaviour as graph nodes, ADR-0020).
+# Triage decides whether the issue is an epic; an epic is planned as a breakdown, and after a
+# human approval its sub-issues are created and the epic waits for them.
+#
+# `epic` and `epic_allowed` are item facts kept by the kernel: `/epic` or the `epic` label
+# from a writer, or a triage `epic` decision, set `epic`; at the configured depth limit both
+# are false.
+version: 1
+name: issue
+on: [issue_opened]
+start: triage
+nodes:
+  triage:     {type: agent, prompt: triage, next: {"epic_allowed && (epic || decision == 'epic')": plan_epic, else: plan}}
+  plan:       {type: agent, prompt: plan, max_visits: 6, on_limit: failed, next: post_plan}
+  plan_epic:  {type: agent, prompt: plan_epic, max_visits: 6, on_limit: failed, next: post_plan}
+  post_plan:  {type: action, action: post_comment, next: approval}
+  approval:
+    type: wait
+    events: [approval, comment]
+    next:
+      'event == "approval" && epic': create
+      'event == "approval"': implement
+      epic: plan_epic
+      else: plan
+  implement:  {type: agent, prompt: implement, next: {pushed: open_pr, else: failed}}
+  open_pr:    {type: action, action: open_change_request, next: done}
+  create:     {type: action, action: create_sub_issues, next: children}
+  children:   {type: wait, events: [children_done], next: {failed: tell_stuck, else: done}}
+  tell_stuck: {type: action, action: post_comment, body: "Some sub-issues were closed without completing. A maintainer can reopen or replace them, or `/approve` to close this epic as it is.", next: stuck}
+  stuck:      {type: wait, events: [approval, children_done], max_visits: 50, on_limit: failed, next: {'event == "approval" || !failed': done, else: stuck}}
+  failed:     {type: end, status: failed}
+  done:       {type: end, status: done}
