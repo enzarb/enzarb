@@ -209,7 +209,6 @@
 	--ez-focus-offset: 2px;
 
 	// Layout
-	--ez-content-width: 64rem;
 	--ez-nav-width: 13rem;
 	--ez-header-height: 3.25rem;
 	--ez-control-height: 2.25rem;
@@ -725,45 +724,20 @@ img {
 	}
 }
 
-// Centres the page column; used by the shell and by pages outside it (login, gallery).
+// The page column: full width; used by the shell and by pages outside it (login, gallery).
 .ez-page {
 	display: flex;
 	flex-direction: column;
 	gap: var(--ez-space-5);
-	max-width: var(--ez-content-width);
-	margin-inline: auto;
+	width: 100%;
+	min-width: 0;
 
-	// Board page: the page itself is uncapped; the header and toolbar sit in `.ez-page__narrow`.
-	&:has(> .ez-board-page) {
-		width: 100%;
-		max-width: none;
-	}
-
-	// Project routes: full width, bounded height (the header and Overview/Settings cap themselves).
+	// Project routes: bounded height (the tab content scrolls inside it).
 	&:has(> .ez-project-view) {
 		flex: 1;
 		min-height: 0;
-		width: 100%;
-		max-width: none;
 		overflow: hidden;
 	}
-}
-
-.ez-board-page {
-	display: flex;
-	flex-direction: column;
-	gap: var(--ez-space-5);
-	min-width: 0;
-}
-
-// A readable-width column inside a full-width page (header, toolbar and notices above a wide board).
-.ez-page__narrow {
-	display: flex;
-	flex-direction: column;
-	gap: var(--ez-space-5);
-	width: 100%;
-	max-width: var(--ez-content-width);
-	margin-inline: auto;
 }
 
 // The project view: one header row, then the active tab filling the rest of the viewport.
@@ -783,8 +757,6 @@ img {
 	justify-content: space-between;
 	gap: var(--ez-space-2) var(--ez-space-5);
 	width: 100%;
-	max-width: var(--ez-content-width);
-	margin-inline: auto;
 	border-bottom: var(--ez-border-width) solid var(--ez-border);
 
 	&__text {
@@ -2571,8 +2543,6 @@ textarea.ez-control {
 
 	> :not(.ez-project-terminal, .ez-project-chat) {
 		width: 100%;
-		max-width: var(--ez-content-width);
-		margin-inline: auto;
 	}
 }
 
