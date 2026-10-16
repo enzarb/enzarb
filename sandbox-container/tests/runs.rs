@@ -304,6 +304,23 @@ impl Env {
         .expect("callback abandoned");
     }
 
+    /// Serve `m` on a new port (with this env's auth token).
+    async fn serve(&self, m: AgentRunManager) -> SocketAddr {
+        let config = Config {
+            listen: ([127, 0, 0, 1], 0).into(),
+            auth_token_file: self.dir.path().join("auth-token"),
+            workspace: self.workspace.clone(),
+            ..Config::default()
+        };
+        let reaper = Reaper::new(false);
+        tokio::spawn(reaper.clone().run());
+        let state = AppState::new(config.clone(), reaper).with_run_manager(Arc::new(m));
+        let listener = tokio::net::TcpListener::bind(config.listen).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(serve(listener, Arc::new(state)));
+        addr
+    }
+
     /// A second manager over the same workspace, as after a pod roll.
     fn restart(&self) -> AgentRunManager {
         let cfg = Config {
@@ -1701,4 +1718,74 @@ async fn segment_command_edits_are_pushed_at_the_stop() {
     assert_eq!(fin.outcome, RunOutcome::Succeeded, "{}", fin.summary);
     assert!(fin.pushed);
     assert_eq!(Some(fin.head_sha.clone()), env.remote_sha("enzarb/seg-6"));
+}
+
+/// A run started without a callback (`feature::RUN_RESULTS`): the result is
+/// pushed as `run_finished` to the starting session, nothing is POSTed, no
+/// `callback.json` (or token) is written, and `run_status` returns the full
+/// result, also after sandbox-init restarts.
+#[tokio::test]
+async fn run_without_callback_delivers_run_finished_and_run_status_after_restart() {
+    let env = start(0).await;
+    let (session, mut events) = env.connect().await;
+    assert!(
+        session.has_feature(enzarb_proto::feature::RUN_RESULTS),
+        "{:?}",
+        session.features()
+    );
+    let mut req = env.run("job-nocb", "EDIT", "main", "enzarb/issue-9", true);
+    req.callback_url = String::new();
+    req.callback_token = String::new();
+    session.run_start(req).await.unwrap();
+    let fin = timeout(T, async {
+        loop {
+            match events.next().await {
+                Some(Event::Ctrl(Ctrl::RunFinished(f))) => return f,
+                Some(_) => {}
+                None => panic!("session ended"),
+            }
+        }
+    })
+    .await
+    .expect("run_finished pushed");
+    assert_eq!(fin.run_id, "job-nocb");
+    assert_eq!(fin.outcome, RunOutcome::Succeeded);
+    assert!(fin.pushed);
+    assert_eq!(Some(fin.head_sha.clone()), env.remote_sha("enzarb/issue-9"));
+
+    let rd = env.run_dir("job-nocb");
+    assert!(!rd.join("callback.json").exists(), "no callback file");
+    let request = std::fs::read_to_string(rd.join("request.json")).unwrap();
+    assert!(!request.contains("callback"), "{request}");
+    sleep(Duration::from_millis(300)).await;
+    assert!(env.got.lock().unwrap().is_empty(), "nothing POSTed");
+    assert_eq!(env.attempts(), 0);
+
+    let st = session.run_status("job-nocb").await.unwrap();
+    assert_eq!(st.result.as_ref(), Some(&fin));
+
+    // A subscription after the end is answered at once.
+    session.run_subscribe(vec!["job-nocb".into()]).unwrap();
+    let again = timeout(T, async {
+        loop {
+            if let Some(Event::Ctrl(Ctrl::RunFinished(f))) = events.next().await {
+                return f;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(again, fin);
+
+    // After a restart the result is still there.
+    let addr = env.serve(env.restart()).await;
+    let url = format!("ws://{addr}/v1/mux");
+    let (s2, _e2) = timeout(T, Client::connect(&url, TOKEN, ClientKind::Executor))
+        .await
+        .unwrap()
+        .unwrap();
+    let st = s2.run_status("job-nocb").await.unwrap();
+    assert_eq!(st.state, RunPhase::Succeeded);
+    assert_eq!(st.result, Some(fin));
+    assert!(!rd.join("callback.json").exists());
 }
