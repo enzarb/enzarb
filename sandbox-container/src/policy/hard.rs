@@ -1121,7 +1121,7 @@ fn secret_var(w: &str) -> Option<Decision> {
 /// checks|view` and `gh api` GET requests under `repos/<o>/<r>/actions|check-runs`.
 /// Everything else is refused (auth, config, secrets, mutations, extensions...).
 /// This is lexical; the real boundary is the read-only `GH_TOKEN` the sandbox sets.
-fn hard_gh(args: &[String]) -> Option<Decision> {
+pub(crate) fn hard_gh(args: &[String]) -> Option<Decision> {
     let mut pos: Vec<usize> = Vec::new();
     let mut i = 0;
     while let Some(a) = args.get(i) {
