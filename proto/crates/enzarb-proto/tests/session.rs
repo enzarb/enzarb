@@ -31,6 +31,7 @@ fn step(id: &str) -> StepStart {
         },
         outputs: Default::default(),
         env: Default::default(),
+        files: Default::default(),
         github_token: None,
     }
 }

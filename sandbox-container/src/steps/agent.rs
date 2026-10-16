@@ -205,7 +205,6 @@ pub async fn run(
     let mut queued: VecDeque<String> = VecDeque::new();
     let mut stopping: Option<Instant> = None;
     let mut exited = false;
-    let deadline = ctl.deadline;
     let mut stop_reason = String::new();
 
     let end: Result<(), String> = loop {
@@ -341,13 +340,7 @@ pub async fn run(
     }
     let _ = killpg(Pid::from_raw(pid as i32), Signal::SIGKILL);
     let cancelled = *ctl.cancel.borrow();
-    let timed_out = !cancelled && Instant::now() >= deadline;
     match end {
-        _ if timed_out => AgentEnd {
-            exit: exit::FAILURE,
-            error: Some("the step timed out".into()),
-            usage,
-        },
         _ if cancelled || stopping.is_some() => AgentEnd {
             exit: exit::INTERRUPTED,
             error: None,

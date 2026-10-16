@@ -41,9 +41,6 @@ pub struct Config {
     /// `ENZARB_GIT_NAME` / `ENZARB_GIT_EMAIL`: identity for commits made in runs.
     pub git_name: String,
     pub git_email: String,
-    /// `ENZARB_STEP_TIMEOUT_SECS`, default 86400: hard cap of one step (the
-    /// engine enforces its own timeouts and stops the step first).
-    pub step_timeout: Duration,
     /// `ENZARB_NET_RETRY_DELAYS_MS`, default `10000,30000`: comma-separated
     /// pauses before each retry of a clone/fetch/push that failed on a
     /// transient network error. The attempts are one more than the delays
@@ -133,7 +130,6 @@ impl Default for Config {
             mise_bin: String::new(),
             git_name: "enzarb-agent".into(),
             git_email: "agent@enzarb.dev".into(),
-            step_timeout: Duration::from_secs(86400),
             net_retry_delays: crate::netgit::RETRY_DELAYS.to_vec(),
             push_attempt_cap: crate::netgit::PUSH_ATTEMPT_CAP,
             fetch_attempt_cap: crate::netgit::FETCH_ATTEMPT_CAP,
@@ -202,13 +198,6 @@ impl Config {
         }
         if let Some(v) = get("ENZARB_GIT_EMAIL").filter(|s| !s.is_empty()) {
             c.git_email = v;
-        }
-        if let Some(v) = get("ENZARB_STEP_TIMEOUT_SECS") {
-            c.step_timeout = Duration::from_secs(
-                v.parse::<u64>()
-                    .map_err(|e| anyhow::anyhow!("ENZARB_STEP_TIMEOUT_SECS={v:?}: {e}"))?
-                    .max(1),
-            );
         }
         if let Some(v) = get("ENZARB_NET_RETRY_DELAYS_MS") {
             c.net_retry_delays = v
@@ -327,18 +316,15 @@ mod tests {
     #[test]
     fn step_settings() {
         let c = Config::from_lookup(|_| None).unwrap();
-        assert_eq!(c.step_timeout, Duration::from_secs(86400));
         assert_eq!(
             c.chat_runtime_tool,
             "npm:@agentclientprotocol/claude-agent-acp"
         );
         let c = Config::from_lookup(|k| match k {
-            "ENZARB_STEP_TIMEOUT_SECS" => Some("5".into()),
             "ENZARB_CHAT_RUNTIME_TOOL" => Some(String::new()),
             _ => None,
         })
         .unwrap();
-        assert_eq!(c.step_timeout, Duration::from_secs(5));
         assert!(c.chat_runtime_tool.is_empty());
     }
 

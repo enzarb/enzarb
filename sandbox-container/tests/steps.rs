@@ -189,6 +189,7 @@ fn step(id: &str, exec: StepExec, workspaces: Vec<StepWorkspace>) -> StepStart {
         exec,
         outputs: Default::default(),
         env: [("API_KEY".to_string(), Secret::new(API_KEY))].into(),
+        files: Default::default(),
         github_token: Some(Secret::new("ghs_githubTOKEN987654")),
     }
 }
@@ -202,7 +203,9 @@ async fn command_step_outputs_events_and_leased_push() {
         "cmd-1",
         StepExec::Command {
             run: "echo hi > out.txt && echo '{\"a\":1}' > res.json && echo \"to-stdout $API_KEY\" \
-                  && echo to-stderr >&2 && test -n \"$GH_TOKEN\""
+                  && echo to-stderr >&2 && test -n \"$GH_TOKEN\" \
+                  && echo \"file $(cat .enzarb/sec.txt)\" && test \"$(stat -c %a .enzarb/sec.txt)\" = 600 \
+                  && git add -A && git status --porcelain --ignored > status.txt"
                 .into(),
             tools: vec![],
         },
@@ -235,6 +238,11 @@ async fn command_step_outputs_events_and_leased_push() {
         ),
     ]
     .into();
+    st.files = [(
+        ".enzarb/sec.txt".to_string(),
+        Secret::new("filesecretVALUE42"),
+    )]
+    .into();
     assert_eq!(start(&s, &mut ev, st).await, (StepPhase::Running, false));
     let (evs, fin) = collect(&mut ev, "cmd-1", |_| false).await;
     let fin = fin.unwrap();
@@ -244,6 +252,13 @@ async fn command_step_outputs_events_and_leased_push() {
     assert!(!fin.outputs.contains_key("gone"));
     let stdout = texts(&evs, "stdout");
     assert!(stdout.contains("to-stdout [redacted]"), "{stdout}");
+    assert!(stdout.contains("file [redacted]"), "{stdout}");
+    assert!(!stdout.contains("filesecretVALUE42"));
+    let tree = git(
+        &env.bare,
+        &["ls-tree", "-r", "--name-only", "refs/heads/feature/x"],
+    );
+    assert!(!tree.contains("sec.txt"), "{tree}");
     assert!(texts(&evs, "stderr").contains("to-stderr"));
     // seq is dense from 1
     for (i, e) in evs.iter().enumerate() {

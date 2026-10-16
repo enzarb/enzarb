@@ -128,6 +128,10 @@ pub struct StepStart {
     /// Named secrets as environment variables (injected into this step's process only).
     #[serde(default)]
     pub env: BTreeMap<String, Secret>,
+    /// Named secrets as files: path relative to the primary workspace (mode 0600, excluded from
+    /// commits, removed when the step ends). Additive.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub files: BTreeMap<String, Secret>,
     /// Short-lived GitHub token with exactly the step's requested permissions (`GH_TOKEN`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_token: Option<Secret>,
@@ -143,6 +147,7 @@ impl std::fmt::Debug for StepStart {
             .field("exec", &self.exec)
             .field("outputs", &self.outputs)
             .field("env", &self.env.keys().collect::<Vec<_>>())
+            .field("files", &self.files.keys().collect::<Vec<_>>())
             .finish_non_exhaustive()
     }
 }
@@ -151,6 +156,7 @@ impl StepStart {
     /// Every secret value the step got, for redaction.
     pub fn secret_values(&self) -> Vec<&str> {
         let mut v: Vec<&str> = self.env.values().map(Secret::expose).collect();
+        v.extend(self.files.values().map(Secret::expose));
         v.extend(self.workspaces.iter().map(|w| w.token.expose()));
         v.extend(self.github_token.iter().map(Secret::expose));
         v.retain(|s| !s.is_empty());

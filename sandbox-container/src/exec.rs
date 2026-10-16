@@ -58,11 +58,20 @@ pub enum Stop {
     TimedOut,
 }
 
-/// Cancellation and deadline of a run.
+/// Cancellation and optional deadline of a run. Steps have none (ADR-0022: no timeouts; the
+/// engine pauses stalled steps); only bounded helper commands (network attempts, prune) do.
 #[derive(Clone)]
 pub struct Ctl {
     pub cancel: watch::Receiver<bool>,
-    pub deadline: Instant,
+    pub deadline: Option<Instant>,
+}
+
+/// Sleeps until `d`, or forever without one.
+pub async fn sleep_until_opt(d: Option<Instant>) {
+    match d {
+        Some(d) => tokio::time::sleep_until(d).await,
+        None => std::future::pending().await,
+    }
 }
 
 impl Ctl {
@@ -84,7 +93,7 @@ impl Ctl {
         let deadline = self.deadline;
         tokio::select! {
             () = self.cancelled() => Stop::Cancelled,
-            () = tokio::time::sleep_until(deadline) => Stop::TimedOut,
+            () = sleep_until_opt(deadline) => Stop::TimedOut,
         }
     }
 }
@@ -218,7 +227,7 @@ pub async fn run_lines(
     let status = tokio::select! {
         r = &mut exit => r.ok(),
         _ = ctl.cancelled() => { stop = Some(Stop::Cancelled); terminate(pid, &mut exit).await }
-        _ = tokio::time::sleep_until(deadline) => { stop = Some(Stop::TimedOut); terminate(pid, &mut exit).await }
+        _ = sleep_until_opt(deadline) => { stop = Some(Stop::TimedOut); terminate(pid, &mut exit).await }
     };
     // Whatever the child left behind in its group goes too (this also closes the pipes).
     let _ = killpg(Pid::from_raw(pid as i32), Signal::SIGKILL);

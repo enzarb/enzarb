@@ -733,7 +733,7 @@ impl ChatManager {
         let (_keep, cancel) = watch::channel(false);
         let mut ctl = Ctl {
             cancel,
-            deadline: Instant::now() + Duration::from_secs(120),
+            deadline: Some(Instant::now() + Duration::from_secs(120)),
         };
         exec::run(&self.reaper, spec, &mut ctl, None).await
     }

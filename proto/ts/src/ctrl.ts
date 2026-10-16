@@ -137,6 +137,8 @@ export interface StepStart {
   outputs?: Record<string, StepOutput>;
   /** Named secrets as environment variables. */
   env?: Record<string, SecretLike>;
+  /** Named secrets as files (path relative to the primary workspace). */
+  files?: Record<string, SecretLike>;
   /** `GH_TOKEN` for the step. */
   github_token?: SecretLike | null;
 }
@@ -291,6 +293,9 @@ function wrapStepStart(o: Record<string, unknown>): Record<string, unknown> {
   }
   if (typeof o.env === "object" && o.env !== null && !Array.isArray(o.env)) {
     out.env = Object.fromEntries(Object.entries(o.env).map(([k, v]) => [k, wrap(v)]));
+  }
+  if (typeof o.files === "object" && o.files !== null && !Array.isArray(o.files)) {
+    out.files = Object.fromEntries(Object.entries(o.files).map(([k, v]) => [k, wrap(v)]));
   }
   if ("github_token" in o) out.github_token = wrap(o.github_token);
   return out;

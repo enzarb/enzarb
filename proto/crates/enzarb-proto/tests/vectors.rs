@@ -97,6 +97,7 @@ fn step_start_agent() -> StepStart {
         )]
         .into(),
         env: [("API_KEY".to_string(), Secret::new("s3cret"))].into(),
+        files: Default::default(),
         github_token: Some(Secret::new("ghs_step")),
     }
 }
@@ -109,6 +110,7 @@ fn step_start_command() -> StepStart {
         },
         outputs: Default::default(),
         env: Default::default(),
+        files: Default::default(),
         github_token: None,
         ..step_start_agent()
     }

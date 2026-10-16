@@ -441,7 +441,7 @@ impl Pruner {
         let (_keep, cancel) = watch::channel(false);
         let mut ctl = Ctl {
             cancel,
-            deadline: Instant::now() + COMMAND_TIMEOUT,
+            deadline: Some(Instant::now() + COMMAND_TIMEOUT),
         };
         let out = exec::run(&self.reaper, spec, &mut ctl, None).await?;
         if !out.success() {

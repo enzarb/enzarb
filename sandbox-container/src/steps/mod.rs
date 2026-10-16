@@ -181,6 +181,9 @@ fn blank(s: &StepStart) -> StepStart {
     for v in s.env.values_mut() {
         *v = Secret::new("");
     }
+    for v in s.files.values_mut() {
+        *v = Secret::new("");
+    }
     s.github_token = None;
     s
 }
@@ -566,6 +569,9 @@ fn validate(s: &StepStart) -> Result<(), String> {
             return Err(format!("invalid env name {name:?}"));
         }
     }
+    for f in s.files.keys() {
+        safe_rel(f).ok_or_else(|| format!("invalid secret file path {f:?}"))?;
+    }
     for o in s.outputs.values() {
         safe_rel(&o.file).ok_or_else(|| format!("invalid output path {:?}", o.file))?;
     }
@@ -581,6 +587,36 @@ fn validate(s: &StepStart) -> Result<(), String> {
 }
 
 /// A relative path without `..`.
+/// Writes `step_start.files` under `cwd` and lists them in the repository's local exclude file.
+fn write_secret_files(cwd: &Path, start: &StepStart) -> Vec<std::path::PathBuf> {
+    let mut written = Vec::new();
+    for (rel, v) in &start.files {
+        let Some(r) = safe_rel(rel) else { continue };
+        let p = cwd.join(r);
+        if let Err(e) = crate::capture::write_atomic(&p, v.expose().as_bytes(), 0o600) {
+            tracing::warn!(path = %rel, error = %e, "cannot write secret file");
+            continue;
+        }
+        let exclude = cwd.join(".git/info/exclude");
+        if exclude.parent().is_some_and(Path::is_dir) {
+            let line = format!("/{}", r.display());
+            let cur = std::fs::read_to_string(&exclude).unwrap_or_default();
+            if !cur.lines().any(|l| l == line) {
+                use std::io::Write as _;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&exclude)
+                {
+                    let _ = writeln!(f, "{line}");
+                }
+            }
+        }
+        written.push(p);
+    }
+    written
+}
+
 fn safe_rel(p: &str) -> Option<&Path> {
     let path = Path::new(p);
     (!p.is_empty()
@@ -721,7 +757,7 @@ impl Inner {
     ) -> StepFinished {
         let mut ctl = Ctl {
             cancel: stop,
-            deadline: Instant::now() + self.cfg.step_timeout,
+            deadline: None,
         };
         let id = &start.run_id;
         run.emit(
@@ -769,8 +805,10 @@ impl Inner {
                 d
             }
         };
+        // Secret files: 0600, kept out of commits, removed when the step ends.
+        let secret_files = write_secret_files(&cwd, start);
         // Execute.
-        let mut fin = match &start.exec {
+        let fin = match &start.exec {
             StepExec::Command { run: cmd, tools } => {
                 self.command(run, start, &cwd, cmd, tools, &mut ctl).await
             }
@@ -779,6 +817,10 @@ impl Inner {
                     .await
             }
         };
+        for p in &secret_files {
+            let _ = std::fs::remove_file(p);
+        }
+        let mut fin = fin;
         if fin.exit == exit::INTERRUPTED {
             return fin;
         }
@@ -804,7 +846,8 @@ impl Inner {
         // Git.
         let mut ctl = Ctl {
             cancel: watch::channel(false).1,
-            deadline: Instant::now() + Duration::from_secs(600),
+            // Each network attempt has its own cap (git.rs); the finalization as a whole has none.
+            deadline: None,
         };
         for (i, w) in start.workspaces.iter().enumerate() {
             if w.mode != enzarb_proto::Mode::Write {

@@ -133,7 +133,8 @@ impl Git<'_> {
             spec.env = env.to_vec();
             spec.env_clear = true;
             let mut child = ctl.clone();
-            child.deadline = child.deadline.min(tokio::time::Instant::now() + cap);
+            let attempt_end = tokio::time::Instant::now() + cap;
+            child.deadline = Some(child.deadline.map_or(attempt_end, |d| d.min(attempt_end)));
             let out = exec::run(self.reaper, spec, &mut child, Some(self.log.clone()))
                 .await
                 .map_err(|e| format!("cannot run git: {e}"))?;
