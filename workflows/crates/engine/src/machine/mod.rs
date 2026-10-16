@@ -430,6 +430,24 @@ pub struct Config {
     /// most this many changed lines; a larger delta gets a full review.
     #[serde(default = "default_review_delta_max_lines")]
     pub review_delta_max_lines: u32,
+    /// `change_request`: regex of check names / status contexts that never count toward CI
+    /// (advisory bots such as Copilot code review). Empty ignores nothing.
+    #[serde(default = "default_ci_ignore_checks")]
+    pub ci_ignore_checks: String,
+}
+
+fn default_ci_ignore_checks() -> String {
+    enzarb_connector::CI_IGNORE_CHECKS_DEFAULT.into()
+}
+
+impl Config {
+    /// `name` never counts toward CI ([`Config::ci_ignore_checks`]; an invalid pattern,
+    /// rejected at startup, ignores nothing).
+    pub fn ci_ignored(&self, name: &str) -> bool {
+        enzarb_connector::CiIgnore::new(&self.ci_ignore_checks)
+            .unwrap_or_else(|_| enzarb_connector::CiIgnore::none())
+            .is_ignored(name)
+    }
 }
 
 fn default_review_delta_max_lines() -> u32 {
@@ -454,6 +472,7 @@ impl Default for Config {
             max_epic_children: default_max_epic_children(),
             max_epic_depth: default_max_epic_depth(),
             review_delta_max_lines: default_review_delta_max_lines(),
+            ci_ignore_checks: default_ci_ignore_checks(),
         }
     }
 }

@@ -358,6 +358,7 @@ export function waitLinks(wait: Wait | null, url: string | null): WaitLink[] {
 		case 'ci_stale':
 			return pr ? [{ label: 'View checks', href: `${pr}/checks` }] : [];
 		case 'ci_failed':
+		case 'ci_failed_external':
 			if (wait.url) return [{ label: 'View failing check', href: wait.url }];
 			return pr ? [{ label: 'View failing check', href: `${pr}/checks` }] : [];
 		case 'enzarb_failed':

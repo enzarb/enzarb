@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 engine = { path = "../engine" }
+enzarb-connector = { path = "../../../connectors/crates/connector" }
 clap = { version = "4", features = ["derive", "env"] }
 tokio = { workspace = true, features = ["signal", "net"] }
 axum.workspace = true

@@ -1098,6 +1098,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "regex",
  "serde",
  "serde_json",
  "thiserror",
@@ -1167,6 +1168,7 @@ dependencies = [
  "axum",
  "clap",
  "engine",
+ "enzarb-connector",
  "kube",
  "rustls",
  "sqlx",
