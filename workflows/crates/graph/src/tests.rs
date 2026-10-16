@@ -1056,3 +1056,16 @@ fn wait_options_after_and_reason_are_validated() {
         assert_eq!(parse_duration(bad), None, "{bad}");
     }
 }
+
+const ENZARB_CR: &str = include_str!("../../../../.enzarb/workflows/change_request.yaml");
+
+/// enzarb's own change request definition validates and is the shipped example.
+#[test]
+fn enzarb_change_request_workflow_validates() {
+    let d = load(ENZARB_CR).unwrap();
+    let example = load(include_str!(
+        "../../../../docs/workflows/examples/change_request.yaml"
+    ))
+    .unwrap();
+    assert_eq!(d, example);
+}
