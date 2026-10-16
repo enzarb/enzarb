@@ -37,48 +37,84 @@ fn frame_json(f: &Frame) -> Value {
     })
 }
 
-fn finished() -> RunFinished {
-    RunFinished {
-        run_id: "job-123".into(),
-        outcome: RunOutcome::Succeeded,
-        exit_code: Some(0),
-        summary: "done".into(),
-        branch: "enzarb/issue-42".into(),
-        head_sha: "abc123".into(),
-        pushed: true,
+fn finished() -> StepFinished {
+    StepFinished {
+        run_id: "run-123".into(),
+        exit: "success".into(),
+        outputs: [("plan".to_string(), json!("# Plan"))]
+            .into_iter()
+            .collect(),
+        result: Some(json!({"verdict": "approve"})),
+        git: vec![StepGit {
+            repo: "enzarb/enzarb".into(),
+            branch: "enzarb/issue-42".into(),
+            head_sha: "abc123".into(),
+            pushed: true,
+        }],
         usage: None,
-        graph: None,
+        error: None,
     }
 }
 
-fn run_start() -> RunStart {
-    RunStart {
-        run_id: "job-123".into(),
-        repo_url: "https://github.com/enzarb/enzarb-ui".into(),
-        base_ref: "main".into(),
+fn workspace() -> StepWorkspace {
+    StepWorkspace {
+        repo: "enzarb/enzarb".into(),
+        url: "https://github.com/enzarb/enzarb".into(),
+        mode: Mode::Write,
         branch: "enzarb/issue-42".into(),
+        base: "main".into(),
         push: true,
-        clone_token: "ghs_clone".into(),
-        prompt: "Fix the bug \u{1f41b}".into(),
-        timeout_secs: 3600,
-        callback_url: "http://enzarb-workflows-executor.enzarb.svc:8081/v1/runs/job-123/finished"
-            .into(),
-        callback_token: "cb-secret".into(),
-        log_channel: None,
-        deps_token: None,
-        npm_token: None,
-        ci_read_token: None,
-        claude_token: None,
-        retarget: None,
-        graph: None,
+        token: Secret::new("ghs_clone"),
+    }
+}
+
+fn step_start_agent() -> StepStart {
+    StepStart {
+        run_id: "run-123".into(),
+        attempt: 1,
+        task_id: "task-1".into(),
+        workspaces: vec![workspace()],
+        exec: StepExec::Agent {
+            runtime: Runtime {
+                name: "claude".into(),
+                install: vec!["npm:@agentclientprotocol/claude-agent-acp@0.5".into()],
+                protocol: "acp".into(),
+                command: vec!["claude-agent-acp".into()],
+                env: Default::default(),
+                capabilities: json!({"sessions": true, "resume": true}),
+            },
+            model: Some("claude-sonnet-5-5".into()),
+            prompt: "Fix the bug \u{1f41b}".into(),
+            result_schema: Some(json!({"type": "object"})),
+        },
+        outputs: [(
+            "plan".to_string(),
+            StepOutput {
+                file: "plan.md".into(),
+                format: Some("markdown".into()),
+                optional: false,
+            },
+        )]
+        .into(),
+        env: [("API_KEY".to_string(), Secret::new("s3cret"))].into(),
+        github_token: Some(Secret::new("ghs_step")),
+    }
+}
+
+fn step_start_command() -> StepStart {
+    StepStart {
+        exec: StepExec::Command {
+            run: "make test".into(),
+            tools: vec!["node@22".into()],
+        },
+        outputs: Default::default(),
+        env: Default::default(),
+        github_token: None,
+        ..step_start_agent()
     }
 }
 
 fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
-    let mut with_log = run_start();
-    with_log.log_channel = Some(7);
-    let mut with_claude = run_start();
-    with_claude.claude_token = Some(Secret::new("sk-ant-oat01-user"));
     vec![
         (
             "hello",
@@ -216,115 +252,76 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
                 rows: 30,
             },
         ),
-        ("run_start", Ctrl::RunStart(run_start())),
-        ("run_start_log_channel", Ctrl::RunStart(with_log)),
-        ("run_start_claude_token", Ctrl::RunStart(with_claude)),
-        ("run_start_graph", Ctrl::RunStart(with_graph())),
         (
-            "run_accepted",
-            Ctrl::RunAccepted {
-                run_id: "job-123".into(),
-                state: RunPhase::Queued,
+            "step_start_agent",
+            Ctrl::StepStart(Box::new(step_start_agent())),
+        ),
+        (
+            "step_start_command",
+            Ctrl::StepStart(Box::new(step_start_command())),
+        ),
+        (
+            "step_accepted",
+            Ctrl::StepAccepted {
+                run_id: "run-123".into(),
+                state: StepPhase::Running,
                 existing: false,
             },
         ),
         (
-            "run_accepted_existing",
-            Ctrl::RunAccepted {
-                run_id: "job-123".into(),
-                state: RunPhase::Running,
-                existing: true,
+            "step_steer",
+            Ctrl::StepSteer {
+                run_id: "run-123".into(),
+                text: "also add tests".into(),
             },
         ),
         (
-            "run_status",
-            Ctrl::RunStatus {
-                run_id: "job-123".into(),
+            "step_stop",
+            Ctrl::StepStop {
+                run_id: "run-123".into(),
             },
         ),
         (
-            "run_state_running",
-            Ctrl::RunState {
-                run_id: "job-123".into(),
-                state: RunPhase::Running,
-                exit_code: None,
-                summary: None,
-                usage: None,
+            "step_resume",
+            Ctrl::StepResume {
+                run_id: "run-123".into(),
+            },
+        ),
+        (
+            "step_status",
+            Ctrl::StepStatus {
+                run_id: "run-123".into(),
+                after_seq: 17,
+            },
+        ),
+        (
+            "step_state_running",
+            Ctrl::StepState {
+                run_id: "run-123".into(),
+                state: StepPhase::Running,
                 result: None,
             },
         ),
         (
-            "run_state_done",
-            Ctrl::RunState {
-                run_id: "job-123".into(),
-                state: RunPhase::Succeeded,
-                exit_code: Some(0),
-                summary: Some("done".into()),
-                usage: None,
-                result: None,
-            },
-        ),
-        (
-            "run_state_failed",
-            Ctrl::RunState {
-                run_id: "job-123".into(),
-                state: RunPhase::Failed,
-                exit_code: Some(1),
-                summary: None,
-                usage: None,
-                result: None,
-            },
-        ),
-        (
-            "run_state_usage",
-            Ctrl::RunState {
-                run_id: "job-123".into(),
-                state: RunPhase::Succeeded,
-                exit_code: Some(0),
-                summary: Some("done".into()),
-                usage: Some(Usage {
-                    input_tokens: Some(1200),
-                    output_tokens: Some(340),
-                    cache_read_input_tokens: Some(9000),
-                    cache_creation_input_tokens: Some(50),
-                    models: vec!["claude-sonnet-5-5".into()],
-                    cost_usd: None,
-                }),
-                result: None,
-            },
-        ),
-        (
-            "run_state_result",
-            Ctrl::RunState {
-                run_id: "job-123".into(),
-                state: RunPhase::Succeeded,
-                exit_code: Some(0),
-                summary: Some("done".into()),
-                usage: None,
+            "step_state_finished",
+            Ctrl::StepState {
+                run_id: "run-123".into(),
+                state: StepPhase::Finished,
                 result: Some(finished()),
             },
         ),
-        ("run_finished", Ctrl::RunFinished(finished())),
         (
-            "run_subscribe",
-            Ctrl::RunSubscribe {
-                run_ids: vec!["job-123".into(), "job-124-r1".into()],
-            },
-        ),
-        (
-            "run_start_no_callback",
-            Ctrl::RunStart(RunStart {
-                callback_url: String::new(),
-                callback_token: String::new(),
-                ..run_start()
+            "session_event",
+            Ctrl::SessionEvent(SessionEvent {
+                run_id: "run-123".into(),
+                seq: 1,
+                at: "2026-10-16T12:00:00Z".into(),
+                kind: "assistant".into(),
+                payload: json!({"text": "hi"}),
+                truncated: false,
             }),
         ),
-        (
-            "run_cancel",
-            Ctrl::RunCancel {
-                run_id: "job-123".into(),
-            },
-        ),
+        ("step_finished", Ctrl::StepFinished(finished())),
         (
             "credential_captured",
             Ctrl::CredentialCaptured {
@@ -355,33 +352,6 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
                 io_write_bytes: Some(2048),
                 storage_used_bytes: Some(5_000_000_000),
                 storage_total_bytes: Some(20_000_000_000),
-            }),
-        ),
-        (
-            "prepare_request",
-            Ctrl::PrepareRequest(PrepareRequest {
-                run_id: "job-1".into(),
-                repo_url: "https://github.com/o/r".into(),
-                base_ref: "main".into(),
-                branch: "enzarb/issue-1".into(),
-                clone_token: Secret::new("ghs_clone"),
-            }),
-        ),
-        (
-            "prepared",
-            Ctrl::Prepared(Prepared {
-                run_id: "job-1".into(),
-                merge_base_sha: Some("abc123".into()),
-                changed_files: vec!["ui/a.ts".into(), "docs/b.md".into()],
-                changed_files_total: 2,
-                affected: vec!["ui".into()],
-            }),
-        ),
-        (
-            "prepared_empty",
-            Ctrl::Prepared(Prepared {
-                run_id: "job-1".into(),
-                ..Default::default()
             }),
         ),
         (
@@ -491,25 +461,16 @@ fn frame_vectors() {
 
 #[test]
 fn json_type_vectors() {
-    let fin = RunFinished {
-        run_id: "job-123".into(),
-        outcome: RunOutcome::Succeeded,
-        exit_code: Some(0),
-        summary: "done".into(),
-        branch: "enzarb/issue-42".into(),
-        head_sha: "abc123".into(),
-        pushed: true,
-        usage: None,
-        graph: None,
-    };
-    let cancelled = RunFinished {
-        outcome: RunOutcome::Cancelled,
-        exit_code: None,
-        summary: String::new(),
-        pushed: false,
+    let fin = finished();
+    let failed = StepFinished {
+        exit: "failure".into(),
+        outputs: Default::default(),
+        result: None,
+        git: vec![],
+        error: Some("exit status 1".into()),
         ..fin.clone()
     };
-    let with_usage = RunFinished {
+    let with_usage = StepFinished {
         usage: Some(Usage {
             input_tokens: Some(1200),
             output_tokens: Some(340),
@@ -520,37 +481,18 @@ fn json_type_vectors() {
         }),
         ..fin.clone()
     };
-    let with_graph = RunFinished {
-        graph: Some(GraphResult {
-            stopped_at: "open_pr".into(),
-            outputs: [
-                (
-                    "prepare".to_string(),
-                    json!({"exit_code": 0, "stdout": "ok\n"}),
-                ),
-                (
-                    "implement".to_string(),
-                    json!({"pushed": true, "head_sha": "abc123"}),
-                ),
-            ]
-            .into(),
-            visits: [("prepare".to_string(), 1), ("implement".to_string(), 1)].into(),
-        }),
-        ..fin.clone()
-    };
     let items = [
-        ("run_finished", fin),
-        ("run_finished_cancelled", cancelled),
-        ("run_finished_usage", with_usage),
-        ("run_finished_graph", with_graph),
+        ("step_finished", fin),
+        ("step_finished_failure", failed),
+        ("step_finished_usage", with_usage),
     ];
     let out: Vec<Value> = items
         .iter()
-        .map(|(n, v)| json!({"name": n, "type": "RunFinished", "json": serde_json::to_value(v).unwrap()}))
+        .map(|(n, v)| json!({"name": n, "type": "StepFinished", "json": serde_json::to_value(v).unwrap()}))
         .collect();
     for (_, v) in &items {
         let s = serde_json::to_string(v).unwrap();
-        assert_eq!(&serde_json::from_str::<RunFinished>(&s).unwrap(), v);
+        assert_eq!(&serde_json::from_str::<StepFinished>(&s).unwrap(), v);
     }
     check_or_write("json_types.json", &Value::Array(out));
 }
@@ -616,204 +558,31 @@ fn error_vectors() {
 }
 
 #[test]
-fn run_start_deps_token_compat() {
-    // Old payload without the field decodes to None and re-encodes without it.
-    let old = serde_json::to_value(run_start()).unwrap();
-    assert!(old.get("deps_token").is_none());
-    let back: RunStart = serde_json::from_value(old).unwrap();
-    assert_eq!(back.deps_token, None);
-    // Round trip with the field set.
-    let mut rs = run_start();
-    rs.deps_token = Some("ghs_deps".into());
-    let v = serde_json::to_value(&rs).unwrap();
-    assert_eq!(v["deps_token"], "ghs_deps");
-    assert_eq!(serde_json::from_value::<RunStart>(v).unwrap(), rs);
-    // Explicit null decodes as None.
-    let mut v = serde_json::to_value(run_start()).unwrap();
-    v["deps_token"] = serde_json::Value::Null;
-    assert_eq!(
-        serde_json::from_value::<RunStart>(v).unwrap().deps_token,
-        None
-    );
-}
-
-#[test]
-fn prepare_frames_round_trip_and_redact() {
-    let req = PrepareRequest {
-        run_id: "job-1".into(),
-        repo_url: "https://github.com/o/r".into(),
-        base_ref: "main".into(),
-        branch: "b".into(),
-        clone_token: Secret::new("ghs_secret_clone"),
-    };
-    let m = Ctrl::PrepareRequest(req.clone());
-    let v = serde_json::to_value(&m).unwrap();
-    assert_eq!(v["type"], "prepare_request");
-    assert_eq!(v["clone_token"], "ghs_secret_clone");
-    assert_eq!(serde_json::from_value::<Ctrl>(v).unwrap(), m);
-    let d = format!("{req:?} {m:?}");
-    assert!(!d.contains("ghs_secret_clone"), "{d}");
-
-    // An empty reply serializes to the run id only; unknown fields are ignored.
-    let empty = serde_json::to_value(Prepared {
-        run_id: "job-1".into(),
-        ..Default::default()
-    })
-    .unwrap();
-    assert_eq!(empty, json!({"run_id": "job-1"}));
-    let got: Prepared = serde_json::from_value(json!({"run_id": "r", "x": 1})).unwrap();
-    assert_eq!(got.changed_files, Vec::<String>::new());
-    assert_eq!(got.merge_base_sha, None);
-    // Even a bare object decodes.
-    assert_eq!(
-        serde_json::from_value::<Prepared>(json!({})).unwrap(),
-        Prepared::default()
-    );
-}
-
-#[test]
-fn run_start_debug_redacts_tokens() {
-    let mut rs = run_start();
-    rs.deps_token = Some("ghs_deps".into());
-    rs.npm_token = Some("ghp_npm".into());
-    let d = format!("{rs:?} {:?}", Ctrl::RunStart(rs.clone()));
-    for secret in ["ghs_deps", "ghp_npm", "ghs_clone", "cb-secret"] {
+fn step_start_debug_redacts_secrets() {
+    let ss = step_start_agent();
+    let d = format!("{ss:?} {:?}", Ctrl::StepStart(Box::new(ss.clone())));
+    for secret in ["ghs_clone", "s3cret", "ghs_step"] {
         assert!(!d.contains(secret), "{secret} leaked: {d}");
     }
-    assert!(d.contains("job-123"));
+    assert!(d.contains("run-123"));
+    let mut v = ss.secret_values();
+    v.sort();
+    assert_eq!(v, ["ghs_clone", "ghs_step", "s3cret"]);
 }
 
 #[test]
-fn run_start_npm_token_compat() {
-    // Old payload without the field decodes to None and re-encodes without it.
-    let old = serde_json::to_value(run_start()).unwrap();
-    assert!(old.get("npm_token").is_none());
+fn step_start_defaults() {
+    let v = json!({"run_id": "r", "attempt": 1, "task_id": "t", "workspaces": [],
+        "exec": {"kind": "command", "run": "true"}, "future": 1});
+    let ss: StepStart = serde_json::from_value(v).unwrap();
+    assert!(ss.outputs.is_empty() && ss.env.is_empty() && ss.github_token.is_none());
     assert_eq!(
-        serde_json::from_value::<RunStart>(old).unwrap().npm_token,
-        None
+        ss.exec,
+        StepExec::Command {
+            run: "true".into(),
+            tools: vec![]
+        }
     );
-    // Round trip with the field set; independent of deps_token.
-    let mut rs = run_start();
-    rs.npm_token = Some("ghp_npm".into());
-    let v = serde_json::to_value(&rs).unwrap();
-    assert_eq!(v["npm_token"], "ghp_npm");
-    assert!(v.get("deps_token").is_none());
-    assert_eq!(serde_json::from_value::<RunStart>(v).unwrap(), rs);
-    // Explicit null decodes as None.
-    let mut v = serde_json::to_value(run_start()).unwrap();
-    v["npm_token"] = serde_json::Value::Null;
-    assert_eq!(
-        serde_json::from_value::<RunStart>(v).unwrap().npm_token,
-        None
-    );
-}
-
-#[test]
-fn run_start_ci_read_token_compat() {
-    let old = serde_json::to_value(run_start()).unwrap();
-    assert!(old.get("ci_read_token").is_none());
-    assert_eq!(
-        serde_json::from_value::<RunStart>(old)
-            .unwrap()
-            .ci_read_token,
-        None
-    );
-    let mut rs = run_start();
-    rs.ci_read_token = Some("ghs_ci".into());
-    let v = serde_json::to_value(&rs).unwrap();
-    assert_eq!(v["ci_read_token"], "ghs_ci");
-    assert_eq!(serde_json::from_value::<RunStart>(v).unwrap(), rs);
-    assert!(!format!("{rs:?}").contains("ghs_ci"));
-}
-
-#[test]
-fn claude_token_is_a_plain_string_and_old_payloads_decode() {
-    let old = serde_json::to_value(run_start()).unwrap();
-    assert!(old.get("claude_token").is_none());
-    assert_eq!(
-        serde_json::from_value::<RunStart>(old)
-            .unwrap()
-            .claude_token,
-        None
-    );
-    let mut rs = run_start();
-    rs.claude_token = Some(Secret::new("sk-ant-oat01-user"));
-    let v = serde_json::to_value(&rs).unwrap();
-    assert_eq!(v["claude_token"], "sk-ant-oat01-user");
-    assert_eq!(serde_json::from_value::<RunStart>(v).unwrap(), rs);
-    let d = format!("{rs:?}");
-    assert!(!d.contains("sk-ant-oat01-user"), "{d}");
-}
-
-fn with_graph() -> RunStart {
-    RunStart {
-        prompt: String::new(),
-        graph: Some(GraphSegment {
-            definition: json!({"version": 1, "name": "issue", "start": "implement",
-                "nodes": {"implement": {"type": "agent", "prompt": "implement", "next": "done"},
-                          "done": {"type": "end", "status": "done"}}}),
-            start: "implement".into(),
-            outputs: Default::default(),
-            visits: Default::default(),
-            prompts: [("implement".to_string(), "Implement issue #42".to_string())].into(),
-        }),
-        ..run_start()
-    }
-}
-
-#[test]
-fn graph_fields_compat() {
-    // Old payloads decode with no graph; new ones round-trip.
-    let old = serde_json::to_value(run_start()).unwrap();
-    assert!(old.get("graph").is_none());
-    assert_eq!(serde_json::from_value::<RunStart>(old).unwrap().graph, None);
-    let rs = with_graph();
-    let v = serde_json::to_value(&rs).unwrap();
-    assert_eq!(v["graph"]["start"], "implement");
-    assert!(v["graph"].get("outputs").is_none());
-    assert_eq!(serde_json::from_value::<RunStart>(v).unwrap(), rs);
-    assert!(format!("{rs:?}").contains("graph"));
-    let fin = json!({"run_id": "r", "outcome": "succeeded", "summary": "",
-        "branch": "b", "head_sha": "", "pushed": false});
-    assert_eq!(
-        serde_json::from_value::<RunFinished>(fin).unwrap().graph,
-        None
-    );
-    let fin = json!({"run_id": "r", "outcome": "succeeded", "summary": "",
-        "branch": "b", "head_sha": "", "pushed": false, "graph": {"stopped_at": "done"}});
-    let g = serde_json::from_value::<RunFinished>(fin)
-        .unwrap()
-        .graph
-        .unwrap();
-    assert_eq!(g.stopped_at, "done");
-    assert!(g.outputs.is_empty());
-}
-
-#[test]
-fn run_start_retarget_compat() {
-    let old = serde_json::to_value(run_start()).unwrap();
-    assert!(old.get("retarget").is_none());
-    assert_eq!(
-        serde_json::from_value::<RunStart>(old).unwrap().retarget,
-        None
-    );
-    let mut rs = run_start();
-    rs.retarget = Some(enzarb_proto::Retarget {
-        head_ref: "enzarb/issue-43".into(),
-        onto: "main".into(),
-        old_base: "a".repeat(40),
-        expected_sha: "b".repeat(40),
-        protected: vec![],
-    });
-    let v = serde_json::to_value(&rs).unwrap();
-    assert_eq!(v["retarget"]["head_ref"], "enzarb/issue-43");
-    assert!(v["retarget"].get("protected").is_none());
-    assert_eq!(serde_json::from_value::<RunStart>(v).unwrap(), rs);
-    // `protected` defaults to empty when absent.
-    let v = serde_json::json!({"head_ref": "h", "onto": "main",
-        "old_base": "a", "expected_sha": "b"});
-    let r: enzarb_proto::Retarget = serde_json::from_value(v).unwrap();
-    assert!(r.protected.is_empty());
 }
 
 /// A decoder that predates the per-user token fields: minimal legacy-shape
@@ -835,24 +604,17 @@ fn old_decoder_ignores_new_fields() {
             kind: CredentialKind,
             configured: bool,
         },
-        RunStart {
-            run_id: String,
-        },
     }
     for (name, msg) in ctrl_messages() {
         let v = serde_json::to_value(&msg).unwrap();
         let r = serde_json::from_value::<OldCtrl>(v);
         match name {
-            "open_claude_token"
-            | "credential_captured_token"
-            | "credential_state_scope"
-            | "run_start_claude_token"
-            | "run_start_graph" => {
+            "open_claude_token" | "credential_captured_token" | "credential_state_scope" => {
                 r.unwrap_or_else(|e| panic!("{name}: {e}"));
             }
             // An old decoder rejects the new message type; that is answered
             // with `unknown_message` (see the session tests).
-            "credential_clear" | "run_finished" | "run_subscribe" => assert!(r.is_err()),
+            "credential_clear" | "step_start_agent" | "step_finished" => assert!(r.is_err()),
             _ => {}
         }
     }
@@ -886,26 +648,18 @@ fn ctrl_compat_vectors() {
                "expect":{"type":"credential_state","kind":"claude_oauth","configured":false}}),
         json!({"name":"credential_state_unknown_scope","payload":r#"{"type":"credential_state","kind":"claude_oauth","configured":true,"scope":"org"}"#,
                "expect":{"type":"credential_state","configured":true,"scope":"org"}}),
-        json!({"name":"old_run_state_no_usage","payload":r#"{"type":"run_state","run_id":"r","state":"succeeded","exit_code":0}"#,
-               "expect":{"type":"run_state","run_id":"r","state":"succeeded"}}),
-        json!({"name":"run_state_usage_unknown_fields","payload":r#"{"type":"run_state","run_id":"r","state":"succeeded","usage":{"input_tokens":5,"future":1}}"#,
-               "expect":{"type":"run_state","run_id":"r","usage":{"input_tokens":5}}}),
-        json!({"name":"old_run_start_with_callback","payload":r#"{"type":"run_start","run_id":"r","repo_url":"u","base_ref":"main","branch":"b","push":true,"clone_token":"t","prompt":"p","timeout_secs":5,"callback_url":"http://x/cb","callback_token":"k","log_channel":null}"#,
-               "expect":{"type":"run_start","run_id":"r","callback_url":"http://x/cb","callback_token":"k"}}),
-        json!({"name":"run_start_without_callback","payload":r#"{"type":"run_start","run_id":"r","repo_url":"u","base_ref":"main","branch":"b","push":true,"clone_token":"t","prompt":"p","timeout_secs":5}"#,
-               "expect":{"type":"run_start","run_id":"r"}}),
-        json!({"name":"run_finished_unknown_fields","payload":r#"{"type":"run_finished","run_id":"r","outcome":"failed","exit_code":1,"summary":"s","branch":"b","head_sha":"","pushed":false,"future":1}"#,
-               "expect":{"type":"run_finished","run_id":"r","outcome":"failed","pushed":false}}),
-        json!({"name":"run_state_result_unknown_fields","payload":r#"{"type":"run_state","run_id":"r","state":"failed","result":{"run_id":"r","outcome":"failed","exit_code":null,"summary":"s","branch":"b","head_sha":"","pushed":false,"x":2}}"#,
-               "expect":{"type":"run_state","run_id":"r","result":{"run_id":"r","outcome":"failed","exit_code":null,"summary":"s","branch":"b","head_sha":"","pushed":false}}}),
+        json!({"name":"step_state_unknown_fields","payload":r#"{"type":"step_state","run_id":"r","state":"finished","result":{"run_id":"r","exit":"failure","x":2},"y":1}"#,
+               "expect":{"type":"step_state","run_id":"r","state":"finished","result":{"run_id":"r","exit":"failure","outputs":{},"git":[]}}}),
+        json!({"name":"step_status_no_after_seq","payload":r#"{"type":"step_status","run_id":"r"}"#,
+               "expect":{"type":"step_status","run_id":"r","after_seq":0}}),
+        json!({"name":"session_event_unknown_kind","payload":r#"{"type":"session_event","run_id":"r","seq":3,"at":"2026-10-16T12:00:00Z","kind":"future_kind","payload":{"a":1}}"#,
+               "expect":{"type":"session_event","seq":3,"kind":"future_kind","truncated":false}}),
+        json!({"name":"step_finished_usage_unknown_fields","payload":r#"{"type":"step_finished","run_id":"r","exit":"success","usage":{"input_tokens":5,"future":1}}"#,
+               "expect":{"type":"step_finished","run_id":"r","usage":{"input_tokens":5}}}),
         json!({"name":"stats_only_ts","payload":r#"{"type":"stats","ts_ms":5}"#,
                "expect":{"type":"stats","ts_ms":5}}),
         json!({"name":"stats_unknown_fields","payload":r#"{"type":"stats","ts_ms":5,"memory_bytes":7,"gpu_busy":1}"#,
                "expect":{"type":"stats","ts_ms":5,"memory_bytes":7}}),
-        json!({"name":"prepared_only_run_id","payload":r#"{"type":"prepared","run_id":"job-1"}"#,
-               "expect":{"type":"prepared","run_id":"job-1"}}),
-        json!({"name":"prepared_unknown_fields","payload":r#"{"type":"prepared","run_id":"job-1","merge_base_sha":"abc","changed_files_total":1,"future":1}"#,
-               "expect":{"type":"prepared","run_id":"job-1","merge_base_sha":"abc","changed_files_total":1}}),
         json!({"name":"credential_captured_unknown_fields","payload":r#"{"type":"credential_captured","kind":"claude_oauth","token":null,"legacy":null,"x":1}"#,
                "expect":{"type":"credential_captured","kind":"claude_oauth"}}),
     ];

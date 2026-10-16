@@ -102,68 +102,48 @@
   },
   {
     "expect": {
+      "result": {
+        "exit": "failure",
+        "git": [],
+        "outputs": {},
+        "run_id": "r"
+      },
       "run_id": "r",
-      "state": "succeeded",
-      "type": "run_state"
+      "state": "finished",
+      "type": "step_state"
     },
-    "name": "old_run_state_no_usage",
-    "payload": "{\"type\":\"run_state\",\"run_id\":\"r\",\"state\":\"succeeded\",\"exit_code\":0}"
+    "name": "step_state_unknown_fields",
+    "payload": "{\"type\":\"step_state\",\"run_id\":\"r\",\"state\":\"finished\",\"result\":{\"run_id\":\"r\",\"exit\":\"failure\",\"x\":2},\"y\":1}"
+  },
+  {
+    "expect": {
+      "after_seq": 0,
+      "run_id": "r",
+      "type": "step_status"
+    },
+    "name": "step_status_no_after_seq",
+    "payload": "{\"type\":\"step_status\",\"run_id\":\"r\"}"
+  },
+  {
+    "expect": {
+      "kind": "future_kind",
+      "seq": 3,
+      "truncated": false,
+      "type": "session_event"
+    },
+    "name": "session_event_unknown_kind",
+    "payload": "{\"type\":\"session_event\",\"run_id\":\"r\",\"seq\":3,\"at\":\"2026-10-16T12:00:00Z\",\"kind\":\"future_kind\",\"payload\":{\"a\":1}}"
   },
   {
     "expect": {
       "run_id": "r",
-      "type": "run_state",
+      "type": "step_finished",
       "usage": {
         "input_tokens": 5
       }
     },
-    "name": "run_state_usage_unknown_fields",
-    "payload": "{\"type\":\"run_state\",\"run_id\":\"r\",\"state\":\"succeeded\",\"usage\":{\"input_tokens\":5,\"future\":1}}"
-  },
-  {
-    "expect": {
-      "callback_token": "k",
-      "callback_url": "http://x/cb",
-      "run_id": "r",
-      "type": "run_start"
-    },
-    "name": "old_run_start_with_callback",
-    "payload": "{\"type\":\"run_start\",\"run_id\":\"r\",\"repo_url\":\"u\",\"base_ref\":\"main\",\"branch\":\"b\",\"push\":true,\"clone_token\":\"t\",\"prompt\":\"p\",\"timeout_secs\":5,\"callback_url\":\"http://x/cb\",\"callback_token\":\"k\",\"log_channel\":null}"
-  },
-  {
-    "expect": {
-      "run_id": "r",
-      "type": "run_start"
-    },
-    "name": "run_start_without_callback",
-    "payload": "{\"type\":\"run_start\",\"run_id\":\"r\",\"repo_url\":\"u\",\"base_ref\":\"main\",\"branch\":\"b\",\"push\":true,\"clone_token\":\"t\",\"prompt\":\"p\",\"timeout_secs\":5}"
-  },
-  {
-    "expect": {
-      "outcome": "failed",
-      "pushed": false,
-      "run_id": "r",
-      "type": "run_finished"
-    },
-    "name": "run_finished_unknown_fields",
-    "payload": "{\"type\":\"run_finished\",\"run_id\":\"r\",\"outcome\":\"failed\",\"exit_code\":1,\"summary\":\"s\",\"branch\":\"b\",\"head_sha\":\"\",\"pushed\":false,\"future\":1}"
-  },
-  {
-    "expect": {
-      "result": {
-        "branch": "b",
-        "exit_code": null,
-        "head_sha": "",
-        "outcome": "failed",
-        "pushed": false,
-        "run_id": "r",
-        "summary": "s"
-      },
-      "run_id": "r",
-      "type": "run_state"
-    },
-    "name": "run_state_result_unknown_fields",
-    "payload": "{\"type\":\"run_state\",\"run_id\":\"r\",\"state\":\"failed\",\"result\":{\"run_id\":\"r\",\"outcome\":\"failed\",\"exit_code\":null,\"summary\":\"s\",\"branch\":\"b\",\"head_sha\":\"\",\"pushed\":false,\"x\":2}}"
+    "name": "step_finished_usage_unknown_fields",
+    "payload": "{\"type\":\"step_finished\",\"run_id\":\"r\",\"exit\":\"success\",\"usage\":{\"input_tokens\":5,\"future\":1}}"
   },
   {
     "expect": {
@@ -181,24 +161,6 @@
     },
     "name": "stats_unknown_fields",
     "payload": "{\"type\":\"stats\",\"ts_ms\":5,\"memory_bytes\":7,\"gpu_busy\":1}"
-  },
-  {
-    "expect": {
-      "run_id": "job-1",
-      "type": "prepared"
-    },
-    "name": "prepared_only_run_id",
-    "payload": "{\"type\":\"prepared\",\"run_id\":\"job-1\"}"
-  },
-  {
-    "expect": {
-      "changed_files_total": 1,
-      "merge_base_sha": "abc",
-      "run_id": "job-1",
-      "type": "prepared"
-    },
-    "name": "prepared_unknown_fields",
-    "payload": "{\"type\":\"prepared\",\"run_id\":\"job-1\",\"merge_base_sha\":\"abc\",\"changed_files_total\":1,\"future\":1}"
   },
   {
     "expect": {

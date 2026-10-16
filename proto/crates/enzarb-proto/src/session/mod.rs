@@ -22,7 +22,7 @@
 //!
 //! ```no_run
 //! use enzarb_proto::session::{Event, ServerOptions, Session};
-//! use enzarb_proto::{Ctrl, RunPhase};
+//! use enzarb_proto::{Ctrl, StepPhase};
 //! use tokio::io::{AsyncReadExt, AsyncWriteExt};
 //!
 //! # async fn serve<S, E>(ws: S) -> Result<(), Box<dyn std::error::Error>>
@@ -46,11 +46,8 @@
 //!                 let _ = (cols, rows);
 //!             });
 //!         }
-//!         Event::Ctrl(Ctrl::RunStart(run)) => {
-//!             let mut log = session.accept_run(&run.run_id, RunPhase::Queued, false, run.log_channel)?;
-//!             if let Some(log) = log.as_mut() {
-//!                 log.send.send_json(&serde_json::json!({"line": "started"})).await?;
-//!             }
+//!         Event::Ctrl(Ctrl::StepStart(step)) => {
+//!             session.accept_step(&step.run_id, StepPhase::Running, false)?;
 //!         }
 //!         Event::Ctrl(Ctrl::Resize { channel, cols, rows }) => { /* ioctl(TIOCSWINSZ) */ }
 //!         Event::Ctrl(_) => {}
@@ -63,23 +60,27 @@
 //!
 //! ```no_run
 //! use enzarb_proto::session::Client;
-//! use enzarb_proto::{ClientKind, RunStart};
+//! use enzarb_proto::{ClientKind, Ctrl, StepStart};
+//! use enzarb_proto::session::Event;
 //! use tokio::io::AsyncWriteExt;
 //!
-//! # async fn go(run: RunStart) -> Result<(), Box<dyn std::error::Error>> {
-//! let (session, _events) =
+//! # async fn go(step: StepStart) -> Result<(), Box<dyn std::error::Error>> {
+//! let (session, mut events) =
 //!     Client::connect("ws://sandbox:7070/v1/mux", "token", ClientKind::Executor).await?;
 //!
 //! let mut pty = session.open_pty(80, 24, None).await?;
 //! pty.write_all(b"ls\n").await?;
 //!
-//! let started = session.run_start_logged(run).await?; // allocates the log channel
-//! let mut log = started.log.unwrap();
-//! while let Some(line) = log.recv.recv_json::<serde_json::Value>().await? {
-//!     println!("{line}");
+//! let run_id = step.run_id.clone();
+//! session.send_ctrl(&Ctrl::StepStart(Box::new(step)))?;
+//! session.send_ctrl(&Ctrl::StepStatus { run_id, after_seq: 0 })?;
+//! while let Some(ev) = events.next().await {
+//!     match ev {
+//!         Event::Ctrl(Ctrl::SessionEvent(e)) => println!("{} {}", e.seq, e.kind),
+//!         Event::Ctrl(Ctrl::StepFinished(f)) => { println!("{}", f.exit); break; }
+//!         _ => {}
+//!     }
 //! }
-//! let state = session.run_status(&started.accepted.run_id).await?;
-//! println!("{:?}", state.state);
 //! session.close().await;
 //! # Ok(()) }
 //! ```
@@ -106,8 +107,8 @@
 //!   do not keep it alive.
 //! * Dropping a [`ChannelSender`] sends `CLOSE`; dropping a [`ChannelReceiver`]
 //!   discards (and credits back) further data.
-//! * CTRL `error` replies are matched to the oldest pending `run_start` /
-//!   `run_status` when the code is `unknown_run`, `internal`, `unauthorized`,
+//! * CTRL `error` replies are matched to the oldest pending `step_start` /
+//!   `step_status` when the code is `unknown_run`, `internal`, `unauthorized`,
 //!   `unknown_message` or `unimplemented`; an `error` carrying `run_id` is instead attributed to the pending request for that run (any code); other errors are delivered as events.
 
 mod channel;
@@ -120,7 +121,7 @@ pub mod memory;
 pub use channel::{ChannelHandle, ChannelReceiver, ChannelSender, Data, SEND_CHUNK};
 pub use client::Client;
 pub use core::{
-    CredentialInfo, Event, Events, OpenRequest, Role, RunAccepted, RunInfo, RunStarted,
-    ServerOptions, Session,
+    CredentialInfo, Event, Events, OpenRequest, Role, ServerOptions, Session, StepAccepted,
+    StepInfo,
 };
 pub use error::{ConnectError, HandshakeError, SessionEnd, SessionError};
