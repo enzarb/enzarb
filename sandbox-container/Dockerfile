@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Sandbox image: sandbox-init (pid 1), node + the ACP adapter, mise, Docker (dockerd + CLI, buildx, compose; dockerd is supervised by sandbox-init), a C toolchain, sccache (RUSTC_WRAPPER, cache on the PVC) and Chromium for Playwright (/opt/ms-playwright). Language toolchains come from mise at runtime.
-# Build from the monorepo root (in-repo path deps on proto/ and workflows/crates/graph/):
+# Build from the monorepo root (in-repo path dep on proto/):
 #   docker build -f sandbox-container/Dockerfile -t enzarb-sandbox .
 FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
 WORKDIR /src/sandbox-container
@@ -16,7 +16,6 @@ FROM chef AS build
 # Path deps outside this workspace are not in the chef recipe; copy them before cooking.
 COPY proto/Cargo.toml proto/Cargo.lock /src/proto/
 COPY proto/crates /src/proto/crates
-COPY workflows/crates/graph /src/workflows/crates/graph
 COPY --from=planner /src/sandbox-container/recipe.json recipe.json
 COPY sandbox-container/rust-toolchain.toml ./
 RUN --mount=type=cache,target=/usr/local/cargo/registry \

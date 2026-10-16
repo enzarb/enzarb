@@ -314,6 +314,7 @@ pub async fn run(
                 }
             }
             () = tokio::time::sleep_until(grace), if stopping.is_some() => break Ok(()),
+            () = tokio::time::sleep(Duration::from_millis(500)), if d.chunk.is_some() => d.flush(),
             st = &mut exit_rx, if !exited => {
                 exited = true;
                 // Let the reader drain what it wrote; EOF ends the loop next.
