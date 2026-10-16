@@ -21,7 +21,12 @@ pub const PG_URL_ENV: &str = "ENZARB_TEST_PG_URL";
 pub const TEMPLATE_DB: &str = "enzarb_template";
 /// Session advisory lock serialising template setup and cloning across processes.
 const LOCK_KEY: i64 = 0x656e_7a61_7262;
-const ROLES: [&str; 3] = ["enzarb_connectors", "enzarb_ui", "enzarb_workflows"];
+const ROLES: [&str; 4] = [
+    "enzarb_connectors",
+    "enzarb_sandbox_proxy",
+    "enzarb_ui",
+    "enzarb_workflows",
+];
 
 pub struct TestDb {
     /// Superuser pool (owner role; migrations were applied through it).

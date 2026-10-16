@@ -351,6 +351,7 @@ fn step_start() -> StepStart {
             tools: vec![],
         },
         outputs: Default::default(),
+        files: Default::default(),
         env: Default::default(),
         github_token: None,
     }

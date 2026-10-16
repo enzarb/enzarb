@@ -215,6 +215,11 @@ impl Guard {
         Ok(Verdict::Forward(allowed))
     }
 
+    /// The `acp` channel this socket has open, if any.
+    pub fn acp_channel(&self) -> Option<u32> {
+        self.acp_channel
+    }
+
     /// Free the `acp` slot after the proxy itself refused an admitted open.
     pub fn release_acp(&mut self, channel: u32) {
         if self.acp_channel == Some(channel) {
@@ -328,6 +333,7 @@ mod tests {
                 tools: vec![],
             },
             outputs: Default::default(),
+            files: Default::default(),
             env: Default::default(),
             github_token: None,
         }

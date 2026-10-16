@@ -8,6 +8,7 @@
 
 pub mod app;
 pub mod auth;
+pub mod chat;
 pub mod config;
 pub mod credential;
 pub mod guard;

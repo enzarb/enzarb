@@ -31,3 +31,4 @@ jobs:
       cargo-args: --workspace --all-features
       postgres: true
       image: enzarb-connectors-receiver
+      context: .

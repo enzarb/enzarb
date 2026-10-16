@@ -664,3 +664,58 @@ async fn claude_token_comes_from_the_users_stored_credential() {
         .unwrap();
     assert_eq!(r.env["CLAUDE_CODE_OAUTH_TOKEN"], "explicit");
 }
+
+/// Chats recorded by sandbox-proxy (`engine_api.chat_record`/`chat_event`, run `chat-<id>`) show
+/// in the UI's chat list and session reads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_capture_feeds_chat_v_and_session_v() {
+    let Some(db) = TestDb::start().await else {
+        return;
+    };
+    let proxy = db.pool_as("enzarb_sandbox_proxy").await;
+    sqlx::query("SELECT engine_api.chat_record('chat-s1', 'p', 'octo', '')")
+        .execute(&proxy)
+        .await
+        .unwrap();
+    sqlx::query("SELECT engine_api.chat_record('chat-s1', 'p', 'octo', 'Fix the bug')")
+        .execute(&proxy)
+        .await
+        .unwrap();
+    for (k, p) in [
+        ("user", json!({"text": "Fix the bug"})),
+        ("assistant", json!({"content": {"text": "ok"}})),
+    ] {
+        sqlx::query("SELECT engine_api.chat_event('chat-s1', $1, $2)")
+            .bind(k)
+            .bind(p)
+            .execute(&proxy)
+            .await
+            .unwrap();
+    }
+    // Unknown chats are refused; the proxy may not read tables.
+    assert!(
+        sqlx::query("SELECT engine_api.chat_event('chat-nope', 'user', '{}')")
+            .execute(&proxy)
+            .await
+            .is_err()
+    );
+    assert!(
+        sqlx::query("SELECT 1 FROM engine.chats")
+            .execute(&proxy)
+            .await
+            .is_err()
+    );
+    let ui = db.pool_as("enzarb_ui").await;
+    let (title, events): (String, i64) =
+        sqlx::query_as("SELECT title, events FROM engine_api.chat_v('octo')")
+            .fetch_one(&ui)
+            .await
+            .unwrap();
+    assert_eq!((title.as_str(), events), ("Fix the bug", 2));
+    let kinds: Vec<String> =
+        sqlx::query_scalar("SELECT kind FROM engine_api.session_v('chat-s1', 0, 10)")
+            .fetch_all(&ui)
+            .await
+            .unwrap();
+    assert_eq!(kinds, ["user", "assistant"]);
+}
