@@ -94,7 +94,6 @@ mod tests {
     use enzarb_connector::RepoKey;
     use enzarb_proto::session::{Event, ServerOptions, memory::session_pair_with};
     use enzarb_proto::{ClientKind, Ctrl};
-    use futures::StreamExt;
 
     use super::*;
     use crate::machine::{JobKind, render_prompt};
