@@ -16,7 +16,7 @@ set -euo pipefail
 # Path dependencies (keep in sync with the `paths:` filters of .github/workflows/ci-<dir>.yml).
 deps_of() { # <dir>
   case $1 in
-    sandbox-container) echo proto workflows/crates/graph ;;
+    sandbox-container) echo proto ;;
     sandbox-proxy) echo proto operator ;;
     workflows) echo operator connectors proto ;;
     ui) echo proto workflows/crates/engine/prompts ;;
