@@ -154,6 +154,31 @@ async fn an_epic_is_done_when_every_sub_issue_is() {
             .any(|c| c.contains("All 2 sub-issues are done")),
         "{comments:?}"
     );
+    // The epic's issue is closed as completed (ordinary issues close via `Closes #n`).
+    let closes: Vec<Value> = sqlx::query_scalar(
+        "SELECT j.input FROM workflows.jobs j
+         JOIN workflows.work_items w ON w.id = j.work_item_id
+         WHERE w.key = $1 AND j.kind = 'close_issue'",
+    )
+    .bind(key(1))
+    .fetch_all(&p)
+    .await
+    .unwrap();
+    assert_eq!(closes.len(), 1, "{closes:?}");
+    assert_eq!(closes[0]["reason"], "completed");
+    assert_eq!(closes[0]["item"], json!(wk(1)));
+    for n in [2, 3] {
+        let other: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM workflows.jobs j
+             JOIN workflows.work_items w ON w.id = j.work_item_id
+             WHERE w.key = $1 AND j.kind = 'close_issue'",
+        )
+        .bind(key(n))
+        .fetch_one(&p)
+        .await
+        .unwrap();
+        assert_eq!(other, 0);
+    }
     // No change request was ever handed off.
     let handoffs: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM workflows.events WHERE dedupe_key LIKE 'handoff:%'",

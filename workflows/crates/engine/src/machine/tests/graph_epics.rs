@@ -188,6 +188,18 @@ fn an_approved_epic_creates_its_sub_issues_and_waits_for_them() {
     // All done: the epic is done.
     let t3 = transition(&with(vec![]), &t2.next, &deps_changed("e7"));
     let g = graph_of(&t3, GraphPhase::Done);
+    let (_, _, close) = job_of(&t3, JobKind::CloseIssue);
+    assert_eq!(close["reason"], "completed");
+    assert_eq!(close["item"], json!(c.work_item));
+    // The bot's own close event and the job's result are ignored at the end.
+    rejected(
+        &transition(&c, &t3.next, &closed("c1", issue_item(), false)),
+        &t3.next,
+    );
+    rejected(
+        &transition(&c, &t3.next, &ok("c2", JobKind::CloseIssue, json!({}))),
+        &t3.next,
+    );
     assert_eq!(
         g.data.graph.outputs["children"]["completed"]
             .as_array()
@@ -212,6 +224,7 @@ fn an_approved_epic_creates_its_sub_issues_and_waits_for_them() {
     graph_of(&t5, GraphPhase::Waiting);
     let t6 = transition(&c, &t5.next, &approval_comment("e10", "alice"));
     graph_of(&t6, GraphPhase::Done);
+    assert!(kinds(&t6).contains(&JobKind::CloseIssue));
 }
 
 #[test]

@@ -29,6 +29,8 @@
 //! * `create_sub_issues`: `{"item": WorkItemKey, "depth": u32, "sub_issues": [SubIssue]}`
 //!   (in creation order); output `{"children": [{"key": str, "item": WorkItemKey, "title": str}]}`
 //!   ([`issue::CreatedChild`])
+//! * `close_issue`: `{"item": WorkItemKey, "reason": "completed"|"not_planned"}`; output `{}`.
+//!   Queued only when an epic finishes (ordinary issues close through the PR's `Closes #n`).
 //!
 //! Job outputs that the machines read: agent jobs store the `RunFinished` body
 //! (`summary` is Claude's result text, plus `branch`, `head_sha`, `pushed`),
@@ -103,6 +105,9 @@ pub enum JobKind {
     /// A graph segment run (ADR-0020): sandbox-init walks the graph's `command` and `agent`
     /// nodes from the current node (`AgentJobInput.graph`, sent as `RunStart.graph`).
     AgentSegment,
+    /// Close a finished epic's issue (`Connector::close_issue`); queued after its summary
+    /// comment. Closing an already closed issue succeeds, so a retry is harmless.
+    CloseIssue,
 }
 
 impl JobKind {
@@ -123,6 +128,7 @@ impl JobKind {
             JobKind::RetargetChangeRequest => "retarget_change_request",
             JobKind::CreateSubIssues => "create_sub_issues",
             JobKind::AgentSegment => "agent_segment",
+            JobKind::CloseIssue => "close_issue",
         }
     }
 
@@ -136,6 +142,7 @@ impl JobKind {
                 | JobKind::MergeChangeRequest
                 | JobKind::RetargetChangeRequest
                 | JobKind::CreateSubIssues
+                | JobKind::CloseIssue
         )
     }
 }

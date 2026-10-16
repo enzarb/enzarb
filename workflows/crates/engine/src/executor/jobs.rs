@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use enzarb_connector::{
-    ChangeRequestSpec, CiState, Connector, MergeOutcome, MergeReadiness, Progress, ProgressTarget,
-    UpdateBranchOutcome, WorkItemKey, epic,
+    ChangeRequestSpec, CiState, CloseReason, Connector, MergeOutcome, MergeReadiness, Progress,
+    ProgressTarget, UpdateBranchOutcome, WorkItemKey, epic,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -26,6 +26,12 @@ struct SetProgress {
 struct PostComment {
     item: WorkItemKey,
     body: String,
+}
+
+#[derive(Deserialize)]
+struct CloseIssue {
+    item: WorkItemKey,
+    reason: CloseReason,
 }
 
 #[derive(Deserialize)]
@@ -147,6 +153,12 @@ impl Executor {
                 let i: PostComment = input(job)?;
                 let c = self.connector_for(&i.item.repo.connector)?;
                 to_value(c.post_comment(&i.item, &i.body, key).await?)
+            }
+            JobKind::CloseIssue => {
+                let i: CloseIssue = input(job)?;
+                let c = self.connector_for(&i.item.repo.connector)?;
+                c.close_issue(&i.item, i.reason).await?;
+                json!({})
             }
             JobKind::OpenChangeRequest => {
                 let i: OpenCr = input(job)?;
