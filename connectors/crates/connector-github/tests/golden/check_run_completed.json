@@ -1,0 +1,48 @@
+[
+  {
+    "suffix": "0",
+    "type": "check_run",
+    "event": {
+      "type": "check_run",
+      "sha": "9fceb02d0ae598e95dc970b74767f19372d61af8",
+      "name": "build",
+      "status": "completed",
+      "conclusion": "timed_out",
+      "id": "d-1",
+      "repo": "enzarb/enzarb-ui",
+      "actor": {
+        "login": "ruckc",
+        "can_write": false,
+        "bot": false
+      },
+      "subject": {
+        "kind": "pull_request",
+        "number": 57
+      },
+      "at": "2026-10-09T10:20:00Z"
+    }
+  },
+  {
+    "suffix": "1",
+    "type": "check_run",
+    "event": {
+      "type": "check_run",
+      "sha": "9fceb02d0ae598e95dc970b74767f19372d61af8",
+      "name": "build",
+      "status": "completed",
+      "conclusion": "timed_out",
+      "id": "d-1",
+      "repo": "enzarb/enzarb-ui",
+      "actor": {
+        "login": "ruckc",
+        "can_write": false,
+        "bot": false
+      },
+      "subject": {
+        "kind": "pull_request",
+        "number": 58
+      },
+      "at": "2026-10-09T10:20:00Z"
+    }
+  }
+]

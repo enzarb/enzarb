@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "GitHub webhook receiver: verifies, normalizes and hands events to workflows_api.ingest_event"
+description = "GitHub webhook receiver: verifies, maps webhooks to the event catalog and hands them to engine_api.ingest"
 
 [lib]
 name = "enzarb_receiver"
@@ -16,7 +16,13 @@ path = "src/main.rs"
 
 [dependencies]
 axum = "0.8"
-enzarb-connector = { version = "0.1.0", path = "../../crates/connector" }
+aes-gcm = "0.10.3"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+enzarb-flow = { path = "../../../workflows/crates/flow" }
+hex = "0.4.3"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.11.0"
 enzarb-connector-github = { version = "0.1.0", path = "../../crates/connector-github" }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde_json = "1.0.151"

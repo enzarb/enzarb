@@ -1,0 +1,1 @@
+{"action": "created", "deployment_status": {"state": "success", "environment": "prod", "updated_at": "2026-10-08T13:10:00Z"}, "deployment": {"sha": "bbb", "environment": "prod"}, "repository": {"full_name": "Enzarb/Enzarb-UI", "name": "Enzarb-UI", "owner": {"login": "Enzarb", "id": 1}}, "sender": {"login": "ruckc", "id": 42, "type": "User"}}

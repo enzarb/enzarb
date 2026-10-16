@@ -1,11 +1,13 @@
 //! Integration tests against a throwaway Postgres (testcontainers).
-//! `workflows_api.ingest_event` is stubbed here; the real one is owned by
-//! enzarb-workflows (same signature, returns NULL for a duplicate dedupe key).
+//! `engine_api.ingest` and `engine_api.secret_for_receiver` are stubbed here; the real
+//! ones are owned by the workflow engine (same signatures; ingest returns NULL for a
+//! duplicate dedupe key).
 
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use enzarb_connector_github::{BotIdentity, sign};
+use enzarb_receiver::secrets::SecretsKey;
 use enzarb_receiver::{AppState, db, router};
 use sqlx::PgPool;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,27 +18,38 @@ use tower::ServiceExt;
 const SECRET: &[u8] = b"hook-secret";
 
 const STUB: &str = r#"
-CREATE SCHEMA workflows;
-CREATE TABLE workflows.events (
+CREATE SCHEMA engine;
+CREATE TABLE engine.events (
     id bigserial PRIMARY KEY,
-    source text NOT NULL,
     dedupe_key text NOT NULL UNIQUE,
-    work_item_key text NOT NULL,
+    project text,
+    subject_key text,
     type text NOT NULL,
     payload jsonb NOT NULL
 );
-CREATE SCHEMA workflows_api;
-CREATE FUNCTION workflows_api.ingest_event(
-    p_source text, p_dedupe_key text, p_work_item_key text, p_type text, p_payload jsonb
+CREATE TABLE engine.secrets (
+    project text NOT NULL,
+    name text NOT NULL,
+    ciphertext bytea,
+    pending text,
+    PRIMARY KEY (project, name)
+);
+CREATE SCHEMA engine_api;
+CREATE FUNCTION engine_api.ingest(
+    p_dedupe_key text, p_project text, p_subject_key text, p_type text, p_payload jsonb
 ) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE v_id bigint;
 BEGIN
-    INSERT INTO workflows.events (source, dedupe_key, work_item_key, type, payload)
-    VALUES (p_source, p_dedupe_key, p_work_item_key, p_type, COALESCE(p_payload, '{}'::jsonb))
+    INSERT INTO engine.events (dedupe_key, project, subject_key, type, payload)
+    VALUES (p_dedupe_key, p_project, p_subject_key, p_type, p_payload)
     ON CONFLICT (dedupe_key) DO NOTHING
     RETURNING id INTO v_id;
     RETURN v_id;
 END $$;
+CREATE FUNCTION engine_api.secret_for_receiver(p_project text, p_name text)
+RETURNS TABLE (ciphertext bytea, pending text) LANGUAGE sql AS $$
+    SELECT ciphertext, pending FROM engine.secrets WHERE project = p_project AND name = p_name
+$$;
 "#;
 
 /// Env var naming one shared Postgres server for the whole run (see docs/dev.md). When set, each
@@ -141,11 +154,10 @@ async fn setup() -> Env {
     let pool = db::connect(&url, 5).await.unwrap();
     sqlx::raw_sql(STUB).execute(&pool).await.unwrap();
     db::migrate(&pool).await.unwrap();
-    let app = router(AppState::new(
-        pool.clone(),
-        SECRET.to_vec(),
-        BotIdentity::default(),
-    ));
+    let app = router(
+        AppState::new(pool.clone(), SECRET.to_vec(), BotIdentity::default())
+            .with_custom_events("events_hmac".into(), Some(secrets_key())),
+    );
     Env { pool, app, _s: s }
 }
 
@@ -244,7 +256,7 @@ async fn get(app: &Router, path: &str) -> StatusCode {
 }
 
 async fn count_events(pool: &PgPool) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM workflows.events")
+    sqlx::query_scalar("SELECT count(*) FROM engine.events")
         .fetch_one(pool)
         .await
         .unwrap()
@@ -337,10 +349,6 @@ async fn ingests_events_dedupes_and_lowercases() {
         StatusCode::NO_CONTENT
     );
     assert_eq!(
-        post_signed(&env.app, "issues", "e1", &fixture("issues_edited")).await,
-        StatusCode::NO_CONTENT
-    );
-    assert_eq!(
         post_signed(
             &env.app,
             "issue_comment",
@@ -352,14 +360,14 @@ async fn ingests_events_dedupes_and_lowercases() {
     );
     assert_eq!(count_events(&env.pool).await, 0);
 
-    // One delivery, three events (comment + mention + approval).
-    let body = fixture("issue_comment_mention_approve_on_pr");
+    // One check run naming two pull requests: two events.
+    let body = fixture("check_run_completed");
     assert_eq!(
-        post_signed(&env.app, "issue_comment", "dlv-1", &body).await,
+        post_signed(&env.app, "check_run", "dlv-1", &body).await,
         StatusCode::ACCEPTED
     );
-    let rows: Vec<(String, String, String, String)> = sqlx::query_as(
-        "SELECT source, dedupe_key, work_item_key, type FROM workflows.events ORDER BY id",
+    let rows: Vec<(String, Option<String>, Option<String>, String)> = sqlx::query_as(
+        "SELECT dedupe_key, project, subject_key, type FROM engine.events ORDER BY id",
     )
     .fetch_all(&env.pool)
     .await
@@ -368,43 +376,36 @@ async fn ingests_events_dedupes_and_lowercases() {
         rows,
         vec![
             (
-                "github".into(),
-                "github:dlv-1".into(),
-                "github:enzarb/enzarb-ui#57".into(),
-                "CommentAdded".into()
+                "github:dlv-1:0".into(),
+                None,
+                Some("github:enzarb/enzarb-ui#57".into()),
+                "check_run".into()
             ),
             (
-                "github".into(),
-                "github:dlv-1#mentioned".into(),
-                "github:enzarb/enzarb-ui#57".into(),
-                "Mentioned".into()
-            ),
-            (
-                "github".into(),
-                "github:dlv-1#approved".into(),
-                "github:enzarb/enzarb-ui#57".into(),
-                "ApprovalGranted".into()
+                "github:dlv-1:1".into(),
+                None,
+                Some("github:enzarb/enzarb-ui#58".into()),
+                "check_run".into()
             ),
         ]
     );
-    let payload: serde_json::Value = sqlx::query_scalar(
-        "SELECT payload FROM workflows.events WHERE dedupe_key = 'github:dlv-1'",
-    )
-    .fetch_one(&env.pool)
-    .await
-    .unwrap();
-    assert_eq!(payload["subject"], "github:enzarb/enzarb-ui#57");
-    assert_eq!(payload["type"], "CommentAdded");
+    let payload: serde_json::Value =
+        sqlx::query_scalar("SELECT payload FROM engine.events WHERE dedupe_key = 'github:dlv-1:0'")
+            .fetch_one(&env.pool)
+            .await
+            .unwrap();
+    assert_eq!(payload["type"], "check_run");
     assert_eq!(payload["id"], "dlv-1");
+    assert_eq!(payload["subject"]["number"], 57);
 
     // Redelivery is a no-op but still acknowledged.
     assert_eq!(
-        post_signed(&env.app, "issue_comment", "dlv-1", &body).await,
+        post_signed(&env.app, "check_run", "dlv-1", &body).await,
         StatusCode::ACCEPTED
     );
-    assert_eq!(count_events(&env.pool).await, 3);
+    assert_eq!(count_events(&env.pool).await, 2);
 
-    // Mixed-case repo names are lowercased in key, subject and payload.
+    // Mixed-case repo names are lowercased in subject key and payload.
     let mixed = String::from_utf8(fixture("issues_opened"))
         .unwrap()
         .replace("enzarb/enzarb-ui", "EnZarb/Enzarb-UI")
@@ -414,26 +415,142 @@ async fn ingests_events_dedupes_and_lowercases() {
         StatusCode::ACCEPTED
     );
     let (key, payload): (String, serde_json::Value) = sqlx::query_as(
-        "SELECT work_item_key, payload FROM workflows.events WHERE dedupe_key = 'github:dlv-2'",
+        "SELECT subject_key, payload FROM engine.events WHERE dedupe_key = 'github:dlv-2:0'",
     )
     .fetch_one(&env.pool)
     .await
     .unwrap();
-    assert!(key.starts_with("github:enzarb/enzarb-ui#"), "{key}");
-    assert_eq!(payload["subject"], key);
-    assert_eq!(payload["data"]["repo"], "github:enzarb/enzarb-ui");
+    assert_eq!(key, "github:enzarb/enzarb-ui#42");
+    assert_eq!(payload["repo"], "enzarb/enzarb-ui");
+    assert_eq!(payload["type"], "issue");
+
+    // A push has no subject.
+    assert_eq!(
+        post_signed(&env.app, "push", "dlv-3", &fixture("push")).await,
+        StatusCode::ACCEPTED
+    );
+    let key: Option<String> = sqlx::query_scalar(
+        "SELECT subject_key FROM engine.events WHERE dedupe_key = 'github:dlv-3:0'",
+    )
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(key, None);
 }
 
 #[tokio::test]
 async fn database_failure_returns_500() {
     let env = setup().await;
-    sqlx::query("DROP FUNCTION workflows_api.ingest_event(text, text, text, text, jsonb)")
+    sqlx::query("DROP FUNCTION engine_api.ingest(text, text, text, text, jsonb)")
         .execute(&env.pool)
         .await
         .unwrap();
     assert_eq!(
         post_signed(&env.app, "issues", "x1", &fixture("issues_opened")).await,
         StatusCode::INTERNAL_SERVER_ERROR
+    );
+}
+
+// ---- custom events ----
+
+fn secrets_key() -> SecretsKey {
+    SecretsKey::from_base64("BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=").unwrap()
+}
+
+async fn post_custom(app: &Router, project: &str, body: &[u8], sig: Option<&str>) -> StatusCode {
+    let mut req = Request::post(format!("/v1/events/{project}"));
+    if let Some(s) = sig {
+        req = req.header("x-enzarb-signature", s);
+    }
+    app.clone()
+        .oneshot(req.body(Body::from(body.to_vec())).unwrap())
+        .await
+        .unwrap()
+        .status()
+}
+
+#[tokio::test]
+async fn custom_events_are_signed_per_project() {
+    let env = setup().await;
+    // `acme` has an encrypted secret, `beta` a pending (plaintext) one.
+    sqlx::query("INSERT INTO engine.secrets VALUES ('acme', 'events_hmac', $1, NULL), ('beta', 'events_hmac', NULL, 'beta-key')")
+        .bind(secrets_key().encrypt([3; 12], b"acme-key"))
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    let body = br#"{"name":"deployed","payload":{"env":"prod"},"id":"dep-1","repo":"Enzarb/UI","subject":{"kind":"issue","number":7}}"#;
+
+    // Missing, wrong-key and wrong-body signatures: 401.
+    assert_eq!(
+        post_custom(&env.app, "acme", body, None).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let wrong = sign(b"nope", body);
+    assert_eq!(
+        post_custom(&env.app, "acme", body, Some(&wrong)).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let beta_sig = sign(b"beta-key", body);
+    assert_eq!(
+        post_custom(&env.app, "acme", body, Some(&beta_sig)).await,
+        StatusCode::UNAUTHORIZED
+    );
+    // No secret for the project: 404.
+    let sig = sign(b"acme-key", body);
+    assert_eq!(
+        post_custom(&env.app, "ghost", body, Some(&sig)).await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(count_events(&env.pool).await, 0);
+
+    assert_eq!(
+        post_custom(&env.app, "acme", body, Some(&sig)).await,
+        StatusCode::ACCEPTED
+    );
+    assert_eq!(
+        post_custom(&env.app, "acme", body, Some(&sig)).await,
+        StatusCode::ACCEPTED
+    );
+    type Row = (
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        serde_json::Value,
+    );
+    let rows: Vec<Row> =
+        sqlx::query_as("SELECT dedupe_key, project, subject_key, type, payload FROM engine.events")
+            .fetch_all(&env.pool)
+            .await
+            .unwrap();
+    assert_eq!(rows.len(), 1, "duplicate ignored");
+    let (key, project, subject, ty, payload) = &rows[0];
+    assert_eq!(key, "custom:acme:dep-1");
+    assert_eq!(project.as_deref(), Some("acme"));
+    assert_eq!(subject.as_deref(), Some("github:enzarb/ui#7"));
+    assert_eq!(ty, "deployed");
+    assert_eq!(payload["type"], "custom");
+    assert_eq!(payload["name"], "deployed");
+    assert_eq!(payload["payload"], serde_json::json!({"env": "prod"}));
+    assert_eq!(payload["repo"], "enzarb/ui");
+
+    // Pending secret; no id: the body hash dedupes. Malformed bodies are 400.
+    let body = br#"{"name":"ping","payload":{}}"#;
+    let sig = sign(b"beta-key", body);
+    assert_eq!(
+        post_custom(&env.app, "beta", body, Some(&sig)).await,
+        StatusCode::ACCEPTED
+    );
+    let key: String =
+        sqlx::query_scalar("SELECT dedupe_key FROM engine.events WHERE project = 'beta'")
+            .fetch_one(&env.pool)
+            .await
+            .unwrap();
+    assert_eq!(key.len(), "custom:beta:".len() + 64, "{key}");
+    let bad = b"{\"payload\":1}";
+    assert_eq!(
+        post_custom(&env.app, "beta", bad, Some(&sign(b"beta-key", bad))).await,
+        StatusCode::BAD_REQUEST
     );
 }
 

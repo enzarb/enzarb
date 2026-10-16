@@ -1,0 +1,23 @@
+[
+  {
+    "suffix": "0",
+    "type": "label",
+    "event": {
+      "type": "label",
+      "action": "removed",
+      "label": "needs-plan",
+      "id": "d-1",
+      "repo": "enzarb/enzarb-ui",
+      "actor": {
+        "login": "ruckc",
+        "can_write": false,
+        "bot": false
+      },
+      "subject": {
+        "kind": "pull_request",
+        "number": 57
+      },
+      "at": "2026-10-08T13:30:00Z"
+    }
+  }
+]

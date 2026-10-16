@@ -1,0 +1,24 @@
+[
+  {
+    "suffix": "0",
+    "type": "ci_status",
+    "event": {
+      "type": "ci_status",
+      "sha": "9fceb02d0ae598e95dc970b74767f19372d61af8",
+      "state": "failure",
+      "context": "github-actions",
+      "id": "d-1",
+      "repo": "enzarb/enzarb-ui",
+      "actor": {
+        "login": "ruckc",
+        "can_write": false,
+        "bot": false
+      },
+      "subject": {
+        "kind": "pull_request",
+        "number": 57
+      },
+      "at": "2026-10-09T10:05:00Z"
+    }
+  }
+]

@@ -4,23 +4,24 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use enzarb_connector::{
-    Actor, ChangeRequestSpec, CheckSummary, CiIgnore, CiInfo, CloseReason, CommentKind, CommentRef,
-    CommitRef, Connector, CredScope, Error, Event, ItemRef, MergeOutcome, MergeReadiness,
-    Permission, Progress, ProgressTarget, ReadCred, RepoKey, Result, ShortLivedCred, Status,
-    StatusState, StatusSummary, Thread, ThreadComment, UpdateBranchOutcome, WorkItemKey,
-    aggregate_ci, aggregate_statuses,
+    Actor, ChangeRequestSpec, CheckSummary, CiIgnore, CloseReason, CommentKind, CommentRef,
+    CommitRef, Connector, CredScope, Error, ItemRef, MergeOutcome, MergeReadiness, Permission,
+    Progress, ProgressTarget, ReadCred, RepoKey, Result, ShortLivedCred, Status, StatusState,
+    StatusSummary, Thread, ThreadComment, UpdateBranchOutcome, WorkItemKey, aggregate_ci,
+    aggregate_statuses,
 };
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::catalog::closing_references;
 use crate::config::{BotIdentity, ConfigError, GitHubConfig};
 use crate::http::{Http, Resp, expect};
-use crate::normalize::{
-    Branch, Comment, CommitStatusChange, Issue, NormalizeError, Normalized, PullRequest, SOURCE,
-    User, ci_events,
-};
+use crate::payload::{Branch, Comment, Issue, PullRequest, SOURCE, User};
+
+/// Bytes of a failing job's log kept in `ci_details` (its tail).
+const LOG_EXCERPT_BYTES: usize = 4000;
 
 /// Installation tokens are refreshed once they are within this long of expiry.
 const TOKEN_REFRESH_MARGIN: Duration = Duration::minutes(5);
@@ -151,17 +152,6 @@ impl GitHubConnector {
 
     pub fn bot(&self) -> &BotIdentity {
         &self.bot
-    }
-
-    /// Normalizes a webhook delivery using this connector's bot identity.
-    /// The body must already be signature-checked.
-    pub fn normalize(
-        &self,
-        event_name: &str,
-        delivery_id: &str,
-        body: &[u8],
-    ) -> std::result::Result<Normalized, NormalizeError> {
-        self.bot.normalize(event_name, delivery_id, body)
     }
 
     // ---- auth ----
@@ -346,45 +336,31 @@ impl GitHubConnector {
         .json()
     }
 
-    /// Turns a `status` delivery into `CiStatusChanged` events for the open
-    /// pull requests whose head is the status's commit. Empty when there are
-    /// none (a branch without a PR, or a commit GitHub cannot find).
-    pub async fn resolve_commit_status(&self, change: &CommitStatusChange) -> Result<Vec<Event>> {
-        let r = &change.repo;
-        let prs: Vec<PullRequest> = match self
-            .get_all(
-                r,
-                "list pull requests for commit",
-                &format!("/repos/{}/commits/{}/pulls", r.full_name(), change.sha),
+    /// The body of pull request `number`.
+    async fn pull_state_body(&self, repo: &RepoKey, number: u64) -> Result<String> {
+        let pr: PullRequest = self
+            .call(
+                repo,
+                "get pull request",
+                Method::GET,
+                &format!("/repos/{}/pulls/{number}", repo.full_name()),
+                None,
             )
+            .await?
+            .json()?;
+        Ok(pr.body.unwrap_or_default())
+    }
+
+    /// Tail of the log of the Actions job behind a failing check run, best effort.
+    async fn job_log_excerpt(&self, repo: &RepoKey, job_id: u64) -> Option<String> {
+        let path = format!("/repos/{}/actions/jobs/{job_id}/logs", repo.full_name());
+        // The API answers 302 to a signed URL; reqwest follows it.
+        let resp = self
+            .call(repo, "get job log", Method::GET, &path, None)
             .await
-        {
-            Ok(prs) => prs,
-            Err(Error::NotFound(_)) => return Ok(Vec::new()),
-            Err(e) => return Err(e),
-        };
-        let items: Vec<ItemRef> = prs
-            .iter()
-            .filter(|pr| {
-                pr.state.as_deref() == Some("open")
-                    && pr.head.sha.as_deref() == Some(change.sha.as_str())
-            })
-            .map(PullRequest::item)
-            .collect();
-        let ci = CiInfo {
-            head_sha: change.sha.clone(),
-            state: change.state,
-            context: change.context.clone(),
-            url: change.url.clone(),
-        };
-        Ok(ci_events(
-            &change.delivery,
-            r,
-            &change.actor,
-            change.time,
-            &ci,
-            items,
-        ))
+            .ok()?;
+        let text = String::from_utf8_lossy(&resp.body);
+        Some(tail(&text, LOG_EXCERPT_BYTES))
     }
 
     /// GETs every page of a list endpoint.
@@ -1439,6 +1415,405 @@ impl Connector for GitHubConnector {
             Err(e) => Err(e),
         }
     }
+
+    // ---- ADR-0022 generic building blocks ----
+
+    async fn resolve_ref(&self, repo: &RepoKey, git_ref: &str) -> Result<Option<String>> {
+        #[derive(Deserialize)]
+        struct Commit {
+            sha: String,
+        }
+        github_repo(repo)?;
+        self.token(repo).await?;
+        // `commits/{ref}` resolves branches, tags (peeled) and (short) shas alike.
+        let path = format!(
+            "/repos/{}/commits/{}",
+            repo.full_name(),
+            encode_path(git_ref)
+        );
+        match self
+            .call(repo, "resolve ref", Method::GET, &path, None)
+            .await
+        {
+            Ok(r) => Ok(Some(r.json::<Commit>()?.sha)),
+            Err(Error::NotFound(_) | Error::Invalid(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn list_open_issues(&self, repo: &RepoKey) -> Result<Vec<ItemRef>> {
+        let issues: Vec<Issue> = self
+            .get_all(
+                repo,
+                "list open issues",
+                &format!("/repos/{}/issues?state=open", repo.full_name()),
+            )
+            .await?;
+        Ok(issues
+            .into_iter()
+            .filter(|i| i.pull_request.is_none())
+            .map(|i| i.item())
+            .collect())
+    }
+
+    async fn pr_references(&self, item: &WorkItemKey) -> Result<Vec<u64>> {
+        let r = &item.repo;
+        let query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){body closingIssuesReferences(first:50){nodes{number repository{nameWithOwner}}}}}}";
+        let resp = self
+            .call_raw(
+                r,
+                Method::POST,
+                "/graphql",
+                Some(json!({
+                    "query": query,
+                    "variables": {"owner": r.owner, "name": r.repo, "number": item.number},
+                })),
+            )
+            .await?;
+        let full = r.full_name().to_lowercase();
+        let v: Option<Value> = expect("pull request references", resp)
+            .ok()
+            .and_then(|r| r.json().ok());
+        let pr = v
+            .as_ref()
+            .map(|v| &v["data"]["repository"]["pullRequest"])
+            .filter(|p| p.is_object());
+        let mut out = match pr {
+            Some(pr) => {
+                let mut out: Vec<u64> = pr["closingIssuesReferences"]["nodes"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|n| {
+                        n["repository"]["nameWithOwner"]
+                            .as_str()
+                            .is_some_and(|s| s.eq_ignore_ascii_case(&full))
+                    })
+                    .filter_map(|n| n["number"].as_u64())
+                    .collect();
+                out.extend(closing_references(
+                    pr["body"].as_str().unwrap_or_default(),
+                    &full,
+                ));
+                out
+            }
+            // GraphQL unavailable: parse the body from REST.
+            None => {
+                let pr = self.pull_state_body(r, item.number).await?;
+                closing_references(&pr, &full)
+            }
+        };
+        out.sort_unstable();
+        out.dedup();
+        Ok(out)
+    }
+
+    async fn add_label(&self, item: &WorkItemKey, label: &str) -> Result<()> {
+        let r = &item.repo;
+        self.call(
+            r,
+            "add label",
+            Method::POST,
+            &format!("/repos/{}/issues/{}/labels", r.full_name(), item.number),
+            Some(json!({ "labels": [label] })),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn remove_label(&self, item: &WorkItemKey, label: &str) -> Result<()> {
+        let r = &item.repo;
+        let path = format!(
+            "/repos/{}/issues/{}/labels/{}",
+            r.full_name(),
+            item.number,
+            encode_segment(label)
+        );
+        match self
+            .call(r, "remove label", Method::DELETE, &path, None)
+            .await
+        {
+            Ok(_) | Err(Error::NotFound(_)) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn update_pull_request(
+        &self,
+        item: &WorkItemKey,
+        title: Option<&str>,
+        body: Option<&str>,
+    ) -> Result<()> {
+        let mut patch = serde_json::Map::new();
+        if let Some(t) = title {
+            patch.insert("title".into(), t.into());
+        }
+        if let Some(b) = body {
+            patch.insert("body".into(), b.into());
+        }
+        if patch.is_empty() {
+            return Ok(());
+        }
+        let r = &item.repo;
+        self.call(
+            r,
+            "update pull request",
+            Method::PATCH,
+            &format!("/repos/{}/pulls/{}", r.full_name(), item.number),
+            Some(Value::Object(patch)),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn ci_details(&self, repo: &RepoKey, sha: &str) -> Result<Value> {
+        #[derive(Deserialize)]
+        struct Run {
+            #[serde(default)]
+            id: u64,
+            #[serde(default)]
+            name: String,
+            #[serde(default)]
+            status: String,
+            #[serde(default)]
+            conclusion: Option<String>,
+            #[serde(default)]
+            html_url: Option<String>,
+            #[serde(default)]
+            details_url: Option<String>,
+            #[serde(default)]
+            app: Option<Value>,
+        }
+        let name = repo.full_name();
+        let (combined, statuses): (Value, Vec<Value>) = self
+            .get_all_wrapped(
+                repo,
+                "get combined status",
+                &format!("/repos/{name}/commits/{sha}/status"),
+                "statuses",
+            )
+            .await?;
+        let (_, runs): (Value, Vec<Run>) = self
+            .get_all_wrapped(
+                repo,
+                "list check runs",
+                &format!("/repos/{name}/commits/{sha}/check-runs"),
+                "check_runs",
+            )
+            .await?;
+        let runs: Vec<Run> = runs
+            .into_iter()
+            .filter(|c| !self.ci_ignore.is_ignored(&c.name))
+            .collect();
+        let checks: Vec<CheckSummary> = runs
+            .iter()
+            .map(|c| CheckSummary {
+                status: c.status.clone(),
+                conclusion: c.conclusion.clone(),
+            })
+            .collect();
+        let named: Vec<(&str, &str)> = statuses
+            .iter()
+            .map(|s| {
+                (
+                    s["context"].as_str().unwrap_or_default(),
+                    s["state"].as_str().unwrap_or_default(),
+                )
+            })
+            .collect();
+        let summary = if named.iter().any(|(c, _)| self.ci_ignore.is_ignored(c)) {
+            aggregate_statuses(named.iter().copied(), &self.ci_ignore)
+        } else {
+            StatusSummary {
+                total_count: combined["total_count"].as_u64().unwrap_or(0),
+                state: combined["state"].as_str().unwrap_or_default().to_string(),
+            }
+        };
+        let state = match aggregate_ci(&checks, &summary) {
+            enzarb_connector::CiState::Success => "success",
+            enzarb_connector::CiState::Failure => "failure",
+            enzarb_connector::CiState::Pending => "pending",
+        };
+        let mut failing = Vec::new();
+        for (ctx, st) in &named {
+            if matches!(*st, "failure" | "error") && !self.ci_ignore.is_ignored(ctx) {
+                let url = statuses
+                    .iter()
+                    .find(|s| s["context"].as_str() == Some(ctx))
+                    .and_then(|s| s["target_url"].as_str())
+                    .unwrap_or_default();
+                failing.push(json!({
+                    "name": ctx, "kind": "status", "url": url, "conclusion": st,
+                    "log_excerpt": "", "actionable": false,
+                }));
+            }
+        }
+        for (run, summary) in runs.iter().zip(&checks) {
+            if enzarb_connector::check_state(summary) != enzarb_connector::CiState::Failure {
+                continue;
+            }
+            let is_actions = run
+                .app
+                .as_ref()
+                .and_then(|a| a["slug"].as_str())
+                .is_some_and(|s| s == "github-actions");
+            let excerpt = if is_actions && run.id != 0 && failing.len() < 5 {
+                self.job_log_excerpt(repo, run.id).await.unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let url = run
+                .html_url
+                .clone()
+                .or_else(|| run.details_url.clone())
+                .unwrap_or_default();
+            let mut entry = json!({
+                "name": run.name,
+                "kind": if is_actions { "actions" } else { "check" },
+                "url": url,
+                "conclusion": run.conclusion.clone().unwrap_or_default(),
+                "log_excerpt": excerpt,
+                "actionable": false,
+            });
+            if is_actions && run.id != 0 {
+                // An Actions check run's id is its job id; the run id is in the details URL
+                // (`…/actions/runs/<run>/job/<job>`, any host).
+                entry["job_id"] = json!(run.id);
+                let run_id = run
+                    .details_url
+                    .as_deref()
+                    .and_then(|u| u.split("/actions/runs/").nth(1))
+                    .and_then(|r| r.split('/').next())
+                    .and_then(|r| r.parse::<u64>().ok());
+                if let Some(r) = run_id {
+                    entry["run_id"] = json!(r);
+                }
+                entry["actionable"] = json!(true);
+            }
+            failing.push(entry);
+        }
+        Ok(json!({ "sha": sha, "state": state, "failing": failing }))
+    }
+
+    async fn list_reviews(&self, item: &WorkItemKey) -> Result<Value> {
+        #[derive(Deserialize)]
+        struct Rev {
+            user: Option<User>,
+            #[serde(default)]
+            state: String,
+            #[serde(default)]
+            body: Option<String>,
+        }
+        let r = &item.repo;
+        let reviews: Vec<Rev> = self
+            .get_all(
+                r,
+                "list reviews",
+                &format!("/repos/{}/pulls/{}/reviews", r.full_name(), item.number),
+            )
+            .await?;
+        // Oldest first: a later review of the same author replaces the earlier one.
+        let mut latest: Vec<Value> = Vec::new();
+        for rev in reviews {
+            let Some(user) = rev.user else { continue };
+            if rev.state.eq_ignore_ascii_case("pending") {
+                continue;
+            }
+            let fact = json!({
+                "author": user.login,
+                "state": rev.state.to_ascii_lowercase(),
+                "body": rev.body.unwrap_or_default(),
+            });
+            match latest.iter_mut().find(|f| f["author"] == fact["author"]) {
+                Some(f) => *f = fact,
+                None => latest.push(fact),
+            }
+        }
+        let sha = self.pull_state(r, item.number).await?.head.sha;
+        Ok(json!({ "sha": sha, "reviews": latest }))
+    }
+
+    async fn contains(&self, repo: &RepoKey, sha: &str, git_ref: &str) -> Result<Option<bool>> {
+        #[derive(Deserialize)]
+        struct Comparison {
+            status: String,
+        }
+        github_repo(repo)?;
+        self.token(repo).await?;
+        // base...head: `sha` is in `git_ref` when the ref is identical to or ahead of it.
+        let path = format!(
+            "/repos/{}/compare/{}...{}",
+            repo.full_name(),
+            encode_path(sha),
+            encode_path(git_ref)
+        );
+        match self
+            .call(repo, "compare commits", Method::GET, &path, None)
+            .await
+        {
+            Ok(r) => Ok(Some(matches!(
+                r.json::<Comparison>()?.status.as_str(),
+                "identical" | "ahead"
+            ))),
+            Err(Error::NotFound(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn mint_step_token(
+        &self,
+        repos: &[RepoKey],
+        permissions: &std::collections::BTreeMap<String, String>,
+    ) -> Result<ReadCred> {
+        let Some(first) = repos.first() else {
+            return Err(Error::Invalid("no repos for step token".into()));
+        };
+        if permissions.is_empty() {
+            return Err(Error::Invalid("no permissions for step token".into()));
+        }
+        let id = self.installation_id(first).await?;
+        let mut names: Vec<String> = Vec::with_capacity(repos.len());
+        for r in repos {
+            github_repo(r)?;
+            if r.owner != first.owner || self.installation_id(r).await? != id {
+                return Err(Error::Invalid(format!(
+                    "{r} is outside the installation of {first}"
+                )));
+            }
+            if !names.contains(&r.repo) {
+                names.push(r.repo.clone());
+            }
+        }
+        let t = self
+            .create_token(
+                id,
+                Some(json!({ "repositories": names, "permissions": permissions })),
+            )
+            .await?;
+        Ok(ReadCred {
+            token: t.token,
+            repos: repos.to_vec(),
+            expires_at: t.expires_at,
+        })
+    }
+}
+
+/// The last `max` bytes of `s` (on a char boundary), from the start of a line when possible.
+fn tail(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut start = s.len() - max;
+    while !s.is_char_boundary(start) {
+        start += 1;
+    }
+    let t = &s[start..];
+    t.find('\n').map_or(t, |i| &t[i + 1..]).to_string()
+}
+
+/// Percent-encode everything except unreserved characters (one path segment).
+fn encode_segment(s: &str) -> String {
+    encode_path(s).replace('/', "%2F")
 }
 
 /// Percent-encode everything except unreserved characters and `/`.

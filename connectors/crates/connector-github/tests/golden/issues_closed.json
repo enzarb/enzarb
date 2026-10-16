@@ -1,33 +1,25 @@
-{
-  "kind": "events",
-  "events": [
-    {
-      "specversion": "1.0",
-      "source": "github",
-      "id": "d-issues_closed",
-      "type": "WorkItemClosed",
-      "subject": "github:enzarb/enzarb-ui#42",
-      "time": "2026-10-08T15:00:00Z",
-      "data": {
-        "repo": "github:enzarb/enzarb-ui",
-        "actor": {
-          "login": "ruckc",
-          "id": 42,
-          "is_bot": false
-        },
-        "item": {
-          "kind": "issue",
-          "number": 42,
-          "url": "https://github.com/enzarb/enzarb-ui/issues/42",
-          "title": "Sidebar overflows on mobile",
-          "body": "The sidebar overflows on narrow screens.\n\n@enzarb please propose a fix.",
-          "author": "ruckc",
-          "head_ref": null,
-          "base_ref": null,
-          "head_sha": null
-        },
-        "merged": false
-      }
+[
+  {
+    "suffix": "0",
+    "type": "issue",
+    "event": {
+      "type": "issue",
+      "action": "closed",
+      "number": 42,
+      "title": "Sidebar overflows on mobile",
+      "body": "The sidebar overflows on narrow screens.\n\n@enzarb please propose a fix.",
+      "id": "d-1",
+      "repo": "enzarb/enzarb-ui",
+      "actor": {
+        "login": "ruckc",
+        "can_write": false,
+        "bot": false
+      },
+      "subject": {
+        "kind": "issue",
+        "number": 42
+      },
+      "at": "2026-10-08T15:00:00Z"
     }
-  ]
-}
+  }
+]
