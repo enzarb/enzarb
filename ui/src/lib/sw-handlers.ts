@@ -31,8 +31,17 @@ export function safeTargetUrl(url: unknown, origin: string): string | null {
 	return `${parsed.pathname}${parsed.search}${parsed.hash}`;
 }
 
-/** Parses a push message body; anything but the expected string fields is dropped. */
-export function parsePush(text: string | null): NotificationData | null {
+/** A data-only push asking the worker to close the notifications with `tag`. */
+export interface ClearData {
+	type: 'clear';
+	tag: string;
+}
+
+/**
+ * Parses a push message body; anything but the expected string fields is dropped. A body with
+ * `type: "clear"` and a string `tag` is a clear request.
+ */
+export function parsePush(text: string | null): NotificationData | ClearData | null {
 	if (!text) return null;
 	let raw: unknown;
 	try {
@@ -42,6 +51,8 @@ export function parsePush(text: string | null): NotificationData | null {
 	}
 	if (typeof raw !== 'object' || raw === null) return null;
 	const r = raw as Record<string, unknown>;
+	if (r.type === 'clear')
+		return typeof r.tag === 'string' && r.tag ? { type: 'clear', tag: r.tag } : null;
 	if (typeof r.title !== 'string' || !r.title) return null;
 	return {
 		title: r.title,
@@ -108,4 +119,31 @@ export async function openOrFocus(
 		return;
 	}
 	await clients.openWindow(path);
+}
+
+export interface RegistrationLike {
+	getNotifications(filter: { tag: string }): Promise<readonly { close(): void }[]>;
+	showNotification(title: string, options: NotificationOptions): Promise<void>;
+}
+
+/**
+ * Push handler body. A clear closes the notifications with its tag and shows nothing, even when
+ * none is open: the server only sends a clear to a device it showed that tag on, so Chrome's
+ * "must show a notification" rule for userVisibleOnly pushes is rarely hit (when the user already
+ * dismissed it, Chrome may show its generic "updated in the background" notice; see
+ * docs/notifications.md).
+ */
+export async function handlePush(reg: RegistrationLike, data: NotificationData | ClearData | null) {
+	if (!data) return;
+	if ('type' in data) {
+		for (const n of await reg.getNotifications({ tag: data.tag })) n.close();
+		return;
+	}
+	await reg.showNotification(data.title, {
+		body: data.body,
+		tag: data.tag,
+		icon: '/icon-192.png',
+		badge: '/badge.png',
+		data: { url: data.url }
+	});
 }

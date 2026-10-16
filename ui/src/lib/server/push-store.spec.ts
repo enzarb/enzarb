@@ -3,7 +3,7 @@ import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { migrate } from '../../../scripts/migrate.ts';
 import type { Sql } from './db.ts';
-import { pushStore } from './push-store.ts';
+import { pushStore, type PushEntry } from './push-store.ts';
 
 const sub = (
 	endpoint: string,
@@ -41,6 +41,9 @@ describe('push subscriptions and sent-log (app_api.push_*)', () => {
 			c: Parameters<ReturnType<typeof pushStore>['setCategories']>[2]
 		) => asUi((x) => x.setCategories(o, e, c)),
 		remove: (o: string, e: string) => asUi((x) => x.remove(o, e)),
+		entry: (o: string, id: number) => asUi((x) => x.entry(o, id)),
+		setEntry: (o: string, id: number, e: PushEntry) => asUi((x) => x.setEntry(o, id, e)),
+		clearEntry: (o: string, id: number) => asUi((x) => x.clearEntry(o, id)),
 		claim: (o: string, id: number, c: 'approval' | 'merge', k: string) =>
 			asUi((x) => x.claim(o, id, c, k, 60)),
 		prune: (d: number) => asUi((x) => x.prune(d))
@@ -70,7 +73,7 @@ describe('push subscriptions and sent-log (app_api.push_*)', () => {
 	});
 
 	it('gives the UI role no direct access to the tables', async () => {
-		for (const table of ['app.push_subscriptions', 'app.push_sent']) {
+		for (const table of ['app.push_subscriptions', 'app.push_sent', 'app.push_item']) {
 			for (const priv of ['SELECT', 'INSERT', 'UPDATE', 'DELETE']) {
 				const [r] = await admin`SELECT has_table_privilege('enzarb_ui', ${table}, ${priv}) AS ok`;
 				expect(r.ok, `${table} ${priv}`).toBe(false);
@@ -131,5 +134,29 @@ describe('push subscriptions and sent-log (app_api.push_*)', () => {
 		await owner`UPDATE app.push_sent SET sent_at = now() - interval '40 days' WHERE owner = 'bob'`;
 		expect(await store.prune(30)).toBe(1);
 		expect(await store.prune(30)).toBe(0);
+	});
+
+	it('keeps one open entry per item and clears it once, only when shown', async () => {
+		expect(await store.entry('alice', 9)).toBeNull();
+		await store.setEntry('alice', 9, { category: 'failed', stateKey: 'Failed:3', shown: true });
+		expect(await store.entry('alice', 9)).toEqual({
+			category: 'failed',
+			stateKey: 'Failed:3',
+			shown: true
+		});
+		expect(await store.entry('bob', 9)).toBeNull();
+		expect(await store.clearEntry('bob', 9)).toBe(false);
+		expect(await store.clearEntry('alice', 9)).toBe(true);
+		expect(await store.clearEntry('alice', 9)).toBe(false);
+		expect(await store.entry('alice', 9)).toBeNull();
+		await store.setEntry('alice', 9, {
+			category: 'merge',
+			stateKey: 'ReadyToMerge:4',
+			shown: false
+		});
+		expect(await store.clearEntry('alice', 9)).toBe(false);
+		expect(await store.entry('alice', 9)).toBeNull();
+		await owner`UPDATE app.push_item SET updated_at = now() - interval '40 days'`;
+		expect(await store.prune(30)).toBe(1);
 	});
 });

@@ -4,7 +4,7 @@
 
 import { assets, immutable } from '$app/manifest';
 import { self as sw } from '$app/service-worker';
-import { OFFLINE_PATH, openOrFocus, parsePush, planFetch } from '#lib/sw-handlers.ts';
+import { handlePush, OFFLINE_PATH, openOrFocus, parsePush, planFetch } from '#lib/sw-handlers.ts';
 
 // Static shell only: hashed build assets, files from `static/` and the prerendered /offline page.
 // Navigations always go to the network first and are never stored, so no authenticated HTML,
@@ -68,17 +68,7 @@ sw.addEventListener('fetch', (event) => {
 });
 
 sw.addEventListener('push', (event) => {
-	const data = parsePush(event.data ? event.data.text() : null);
-	if (!data) return;
-	event.waitUntil(
-		sw.registration.showNotification(data.title, {
-			body: data.body,
-			tag: data.tag,
-			icon: '/icon-192.png',
-			badge: '/badge.png',
-			data: { url: data.url }
-		})
-	);
+	event.waitUntil(handlePush(sw.registration, parsePush(event.data ? event.data.text() : null)));
 });
 
 sw.addEventListener('notificationclick', (event) => {

@@ -30,7 +30,10 @@
 		error = '',
 		onaction,
 		onplan,
-		onreview
+		onreview,
+		highlighted = false,
+		note = null,
+		onhighlight
 	}: {
 		item: WorkItemSummary;
 		/** The project the page is filtered to; its name is left off the card. */
@@ -41,6 +44,11 @@
 		onaction: (action: WorkAction) => void;
 		onplan?: () => void;
 		onreview?: () => void;
+		/** Opened from a notification: accented, and handed to `onhighlight` to scroll and focus. */
+		highlighted?: boolean;
+		/** What changed since the notification, shown on a highlighted card. */
+		note?: string | null;
+		onhighlight?: (el: HTMLElement) => void;
 	} = $props();
 
 	// Fallback headings when workflows gave no specific reason text.
@@ -70,10 +78,20 @@
 	}
 </script>
 
+<!-- tabindex is -1 or absent: a highlighted card takes programmatic focus only, never a tab stop -->
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <li
-	class="ez-card"
-	class:ez-card--needs={needs !== null}
-	class:ez-card--cancelled={item.state === 'Cancelled'}
+	class={[
+		'ez-card',
+		needs !== null && 'ez-card--needs',
+		item.state === 'Cancelled' && 'ez-card--cancelled',
+		highlighted && 'ez-card--highlight'
+	]}
+	tabindex={highlighted ? -1 : undefined}
+	aria-current={highlighted ? 'true' : undefined}
+	{@attach (el) => {
+		if (highlighted) onhighlight?.(el);
+	}}
 >
 	<a class="ez-card__title" href="/task/{item.id}">{item.title}</a>
 	<p class="ez-card__meta ez-muted">
@@ -92,6 +110,7 @@
 		·
 		<time datetime={item.updatedAt} title={item.updatedAt}>{timeSince(item.updatedAt, now)}</time>
 	</p>
+	{#if highlighted && note}<p class="ez-card__note">{note}</p>{/if}
 	{#if needs}
 		<p class="ez-card__needs"><strong>{needs.text ?? kinds[needs.category]}</strong></p>
 		{#if needs.reason}<p class="ez-card__reason">{needs.reason}</p>{/if}

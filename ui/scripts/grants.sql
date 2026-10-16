@@ -53,6 +53,12 @@ BEGIN
 		GRANT EXECUTE ON FUNCTION app_api.push_claim(text, bigint, text, text, integer) TO enzarb_ui;
 		GRANT EXECUTE ON FUNCTION app_api.push_claim_release(text, bigint, text, text) TO enzarb_ui;
 		GRANT EXECUTE ON FUNCTION app_api.push_sent_prune(integer) TO enzarb_ui;
+		-- Web Push entries (0007).
+		REVOKE ALL ON app.push_item FROM enzarb_ui;
+		GRANT EXECUTE ON FUNCTION app_api.push_item_get(text, bigint) TO enzarb_ui;
+		GRANT EXECUTE ON FUNCTION app_api.push_item_set(text, bigint, text, text, boolean) TO enzarb_ui;
+		GRANT EXECUTE ON FUNCTION app_api.push_item_clear(text, bigint) TO enzarb_ui;
+		GRANT EXECUTE ON FUNCTION app_api.push_item_prune(integer) TO enzarb_ui;
 	END IF;
 END
 $$;
