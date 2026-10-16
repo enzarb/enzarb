@@ -29,6 +29,70 @@ pub struct TaskDocument {
     /// Bounded summary of recent tasks of the project (filled by the engine).
     #[serde(default)]
     pub history: Vec<HistoryEntry>,
+    /// Task variables assigned by `set` (nodes, handlers). Scoped to the
+    /// task; persist across phase re-entry.
+    #[serde(default)]
+    pub vars: Map<String, Value>,
+    /// The enzarb instance (filled by the engine).
+    #[serde(default)]
+    pub instance: Instance,
+}
+
+/// What a binding's `if` and `with` read when the engine routes an event
+/// about an unlinked object: the event, plus a summary of the live tasks the
+/// event's object is related to (e.g. the task of an issue a new PR
+/// references), supplied by the engine.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RoutingContext {
+    pub event: Event,
+    #[serde(default)]
+    pub relations: Vec<RoutingRelation>,
+}
+
+/// A related task, as seen at routing time.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+pub struct RoutingRelation {
+    /// How the event's object relates to the task (`references`, `parent`, …).
+    pub kind: String,
+    /// The related task's id.
+    pub task: String,
+    #[serde(default)]
+    pub workflow: String,
+    /// Engine phase or end status of the related task.
+    #[serde(default)]
+    pub status: String,
+    /// `phase/…` and node of the related task.
+    #[serde(default)]
+    pub phase: String,
+    #[serde(default)]
+    pub node: String,
+    /// The related task's `vars`.
+    #[serde(default)]
+    pub vars: Map<String, Value>,
+    /// The related task's primary subject.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<crate::events::SubjectRef>,
+}
+
+/// The enzarb instance the task runs on.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+pub struct Instance {
+    #[serde(default)]
+    pub bot: Bot,
+    /// Base URL of the instance UI.
+    #[serde(default)]
+    pub url: String,
+}
+
+/// The GitHub App identity of the instance.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+pub struct Bot {
+    /// GitHub login (`enzarb[bot]`).
+    #[serde(default)]
+    pub login: String,
+    /// Mention handle without `@` (`enzarb`).
+    #[serde(default)]
+    pub handle: String,
 }
 
 /// Root names a template may use without declaring an input.
@@ -41,6 +105,8 @@ pub const ROOTS: &[&str] = &[
     "facts",
     "relations",
     "history",
+    "vars",
+    "instance",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]

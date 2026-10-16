@@ -45,7 +45,24 @@ phases:
   - `exits:` maps an exit to `next`, to any phase id (earlier or later), or to `{end: <status>}`.
   - An unmapped exit other than `done` ends the task with the exit name as its status.
 - **`max_entries`/`on_limit`:** entering a phase more than `max_entries` times takes its `on_limit` exit instead (routed like any exit; if it routes back to the same phase the task ends with that status).
-- **Re-entry** starts the phase fresh (visit counts reset); outputs, artifacts and facts persist.
+- **Re-entry** starts the phase fresh (visit counts reset); outputs, artifacts, facts and `vars` persist.
+- **`params`** (same types as phase params) are set by the binding's `with`. Phase entries pass them down as `{param: <name>}` in `with` and `max_entries`. A workflow with a required param resolves only with a value (`resolve_with`); lint uses placeholders.
+
+### Task-wide handlers
+
+```yaml
+on:
+  - {events: [{event: comment, from: writer, if: "event.command == 'cancel'"}], do: cancel}
+  - {events: [comment], if: "event.command == 'replan'", do: "goto:plan"}
+  - {events: [{event: label, if: "event.label == 'halt'"}], do: stop_step}
+  - {events: [{event: issue, if: "event.action == 'closed'"}], do: "end:closed"}
+  - {events: [comment], if: "event.mentioned", set: {mentions: "(vars.mentions or 0) + 1"}}
+```
+
+- Tried in order on every catalog or custom event, in any phase, at any wait, while a step or action runs and while paused. The first handler whose matchers (and `if`) match wins. `params` is the workflow's params.
+- **`do`:** `cancel` ends the task with status `cancelled`; `end:<status>` ends it with that status; `goto:<phase>` enters that top-level phase (it counts as an entry); `stop_step` stops the running step (it finishes `interrupted` and its edges decide; without a running step the handler does not match).
+- For `cancel`, `end` and `goto`, a running step first gets `stop_step`; its late result, and a pending action's, are stale and ignored. The event becomes `event`; any timer is dropped.
+- **`set`** assigns task variables before `do`. A handler with only `set` does not consume the event: it is still offered to the step's stop/steer matchers or the wait.
 
 ## Phase file
 
@@ -74,7 +91,7 @@ nodes:
 
 ## Nodes and edges
 
-Each node has exactly one of `step`, `wait`, `action`, `end`, `phase`, and (except `end`) a `next`.
+Each node has exactly one of `step`, `wait`, `action`, `end`, `phase`, `decide` (a node with only `set` is a decide node), and (except `end`) a `next`.
 
 ```yaml
 nodes:
@@ -94,7 +111,43 @@ nodes:
   - A wait may omit `else`: when no branch matches, it keeps waiting.
 - **`end: {status: s}`** leaves the phase through exit `s` (which must be `done`, `limit_reached` or declared).
 - **`phase: {use, with}`** runs a nested phase; its exit is `exit` in this node's branches.
-- **`action: {name, args, relate}`** is a generic connector call. String `args` are templates. `relate: {kind, targets}` also creates relations (`targets` is an expression yielding a list). The node continues when the action finishes (`last.ok`, `last.result`, `exit` = `success`/`failure`).
+- **`decide: {}`** has no effect: on entry its `next` is followed at once (it must end with `else`; no match pauses the task).
+- **`action: {name, args, relate, as, subject}`** is a generic connector call. The node continues when the action finishes (`last.ok`, `last.result`, `exit` = `success`/`failure`).
+  - **`args`** is any YAML. String leaves are templates; a leaf that is exactly one `{{ expr }}` keeps the expression's JSON type (`number: "{{ subjects.issue.number }}"` is a number, `labels: "{{ outputs.labels }}"` a list); `{param: x}` anywhere is the param's value.
+  - **`relate: {kind, targets}`** creates relations before the call (`targets` is an expression yielding a list). **`relate: {kind, from}`** instead evaluates `from` after a successful call, with `result` in scope, yielding one target or a list (`from: "{'repo': result.repo, 'number': result.number}"`). Either way the interpreter emits `create_relations` with the concrete targets.
+  - **`as: <name>`** stores a successful call's result as `outputs.<name>`.
+  - **`subject: true`** links the object the call returned as a subject: the result must have `kind` (`issue`/`pull_request`) and `number`, and may have `repo` (default `task.repo`), `title`, `url`. **`subject: {kind, number, repo}`** gives `number`/`repo` as expressions over `result` (defaults `result.number`, `result.repo`). The interpreter emits `link_subject {kind, repo, number}` and adds the subject to the document (a pull request is appended; an issue is set if the task has none).
+  - On failure (`ok: false`) none of `as`, `subject`, `relate.from` apply.
+
+### Task variables
+
+```yaml
+  init:
+    set: {rounds: 0, reviewer: "subjects.issue.author"}   # a node with only `set` is a decide node
+    next: work
+  work:
+    step: {use: std/steps/implement}
+    set_on_exit: {rounds: "vars.rounds + 1"}
+    next: [{if: "vars.rounds < params.max_rounds and last.exit != 'success'", to: work}, {else: done}]
+```
+
+- **`set`** (on entry, after the visit cap check) and **`set_on_exit`** (when the node is left, after its edge was chosen and before the target is entered; `last`, `exit` and, at a wait, the accepted `event` are in scope) assign `vars.<name>`. Handlers have `set` too.
+- Values: a string is an expression; any other YAML value is a literal; `{param: x}` is the param's value as a literal. Assignments run in order and each sees the ones before it.
+- `vars` is task-scoped: it persists across phases and phase re-entry and is readable as `vars.*` in every template and condition. Names are identifiers (`[A-Za-z_][A-Za-z0-9_]*`). An error in an expression pauses the task at the node.
+
+### Templated literals
+
+These fields accept `{param: <name>}` and templates, so phase params drive them:
+
+| Field | Accepts | Rendered |
+|---|---|---|
+| `max_visits`, phase entry `max_entries` | integer, `{param}`, template over `params` | at resolution (an integer ≥ 1) |
+| wait `timer.seconds` | integer, duration (`90s`, `15m`, `2h`, `14d`, `1w`, `1h30m`), `{param}`, template | at resolution when it reads only `params`, else on entry |
+| wait `reason`, `text`, `column`, action button `label`/`command` | string (template), `{param}` | in the projection, on every update |
+| step `agent.model` | string (template), `{param}` | when the step starts |
+
+- Lint renders param-only templates with the actual (or placeholder) params and checks the type; a template for `max_visits`/`max_entries` that reads anything but `params` is an error. A literal `column` must name a board column, a literal `command` must be one word without `/`.
+- An empty rendered `reason`/`column` is unset (the board default applies); a button whose command renders empty is dropped.
 - **`step: {use, with}`** or **`step: {inline: <step file body>, with}`** runs a step.
 
 ### Wait
@@ -125,6 +178,7 @@ nodes:
 - **`from: writer`** requires `event.actor.can_write`, which the engine fills from GitHub; it is never taken from a payload.
 - **Accepting an event** sets `event` in the document to it (timers and facts don't), then follows `next`.
 - **`actions`** are UI buttons; each posts `/command` as the clicking user, so it arrives as a `comment` event like a typed command.
+- **Re-rendering:** while the task stays at a wait, any event that changes what its `reason`, `text`, `column` or buttons render to (a `fact_updated`, a handler's `set`) emits `update_projection` without re-entering the node. Nothing is emitted when the rendering is unchanged.
 
 ## Step file
 
@@ -148,9 +202,16 @@ outputs:
 result:
   as: plan_result                    # output name (default: the node id)
   schema: {type: object, required: [children], properties: {children: {type: array}}}
-workspaces: [{repo: "{{ task.repo }}-docs", mode: write}]
+workspaces:
+  - repo: "{{ task.repo }}-docs"
+    mode: write
+    branch: "enzarb/{{ task.id }}"       # write workspaces only; a template
+    base: "{{ task.default_branch }}"    # ref to branch from / check out; a template
 github: {contents: write, pull_requests: write}
-secrets: [ANTHROPIC_API_KEY]
+secrets:
+  - ANTHROPIC_API_KEY                    # = {name: ANTHROPIC_API_KEY, scope: project, env: ANTHROPIC_API_KEY}
+  - {name: npm_token, scope: user, file: .npmrc}
+  - {name: SIGNING_KEY, scope: instance, env: GPG_KEY}
 priority: 10
 concurrency: {group: "{{ task.repo }}", max: 1}
 retry: {max: 2, on: [failure]}       # extra attempts; default `on` is [failure]
@@ -172,6 +233,8 @@ outputs:
 - **`result`** is the only way to return non-file data: the runtime offers a `submit_result` tool typed with `schema` and validates at call time. The result is stored in `outputs.<as>`.
 - **Exits** are reported by the executor (`success`, `failure`, `interrupted`, …).
 - **`retry`** re-runs the step (same node visit) when it exits with one of `on`.
+- **`secrets`** (steps and runtimes): a bare name is a project-scope secret injected as the env var of that name; the full form is `{name, scope: user|project|instance, env: VAR | file: path}` (one of `env`/`file`; neither means `env: <name>`). `file` is relative to the workspace root, without `..`. `run_step` carries the step's secrets normalized; the runtime's are in its file.
+- **Workspaces:** `branch` and `base` are rendered into `run_step.workspaces[].branch/base`; `branch` on a read workspace is an error.
 
 ## Runtime file
 
@@ -220,20 +283,33 @@ bindings:
   - {id: prs, on: pull_request, if: "event.action == 'opened' and not event.references", use: std/workflows/change_request}
   - {id: retro, on: {schedule: "0 6 * * 1"}, use: std/workflows/retrospective}
   - {id: mentions, disabled: true}            # removes an inherited binding
+  - id: stacked
+    on: pull_request
+    if: "relations | selectattr('kind', 'eq', 'references') | list | length > 0"
+    use: std/workflows/change_request
+    with: {parent: "{{ relations[0].task }}", number: "{{ event.number }}"}
 ```
 
 - **Layering** (`merge_bindings`): a binding whose `id` appears in a higher layer is replaced by it; `disabled: true` removes it; bindings without an id are kept.
 - **Selection** (`select_binding`): the merged list is ordered repo, Project, library; the first binding whose trigger and `if` match wins.
-- **`if`** may only read `event`.
+- **Routing context:** `if` and `with` read only `event` and `relations` (`RoutingContext`). The engine fills `relations` with a summary of the live tasks the event's object is related to (e.g. the task of an issue a new PR references): `{kind, task, workflow, status, phase, node, vars, subject}` each.
+- **`with`** gives the bound workflow's `params`. String leaves are templates over the routing context (a sole `{{ expr }}` keeps its JSON type). `select_binding_in(&bindings, &routing)` returns the binding and the rendered params for `resolve_with`. Lint checks `with` keys against the workflow's declared params.
 
 ## Templates and conditions
 
 - **One language:** prompts, `text`, action `args`, workspace repos, `concurrency.group` and `command.run` are [MiniJinja](https://docs.rs/minijinja) templates; `if` conditions are MiniJinja expressions over the same context.
-- **The context:** the [task document](task-document.md) roots (`task`, `subjects`, `event`, `outputs`, `artifacts`, `facts`, `relations`, `history`), plus `params`, `last`, `exit`, and for steps their declared `inputs` by name.
+- **The context:** the [task document](task-document.md) roots (`task`, `subjects`, `event`, `outputs`, `artifacts`, `facts`, `relations`, `history`, `vars`, `instance`), plus `params`, `last`, `exit`, and for steps their declared `inputs` by name. Action `relate.from` and `subject` expressions also see `result`.
+- **`instance`** is `{bot: {login, handle}, url}`, filled by the engine. Comment events carry `mentioned: true` when the body mentions `@<instance.bot.handle>`.
+- **Filters and tests** besides MiniJinja's built-ins (`lower`, `upper`, `default`, `join`, …):
+  - `tojson`;
+  - `x | shell_quote`: one single-quoted POSIX shell word;
+  - `x | contains(y)` / `x is contains(y)`: substring, list membership or map key (false on undefined);
+  - `s | regex_match(re)` / `s is regex_match(re)`: Rust regex, unanchored (a bad pattern is an error);
+  - `"14d" | duration`: seconds (`s`, `m`, `h`, `d`, `w`, combinable; integers pass through).
 - **Undefined is an error at lint time:**
   - a root that isn't a document root or declared input;
   - `params.<x>` for an undeclared param;
-  - an unknown second-level field of `task`, `subjects` or `facts`.
+  - an unknown second-level field of `task`, `subjects`, `facts` or `instance` (`vars.*` and `outputs.*` are open).
 - **Undefined at run time** (e.g. `outputs.review` before review ran) is falsy and renders empty.
 - **Errors** point at the template's file and line when it lives in its own file (also through a `prompt` param), else at the YAML key.
 
@@ -251,8 +327,9 @@ bindings:
 - **Effects out:**
   - `run_step` (rendered prompt or command, runtime, workspaces, GitHub permissions, secret names, priority, concurrency, outputs, result schema);
   - `steer` and `stop_step`;
-  - `call_action`, `refresh_fact`, `set_timer` and `create_relations`;
+  - `call_action`, `refresh_fact`, `set_timer`, `create_relations` and `link_subject {kind, repo, number}`;
   - `update_projection` (status, phase, node, column, `waiting_on`, reason, text, actions, artifacts, `needs_you`).
+- **Handlers first:** every catalog/custom event is offered to the workflow's `on:` handlers before the step or wait (see [task-wide handlers](#task-wide-handlers)).
 - **While a step runs:** an event matching the step's `stop` emits `stop_step`. The executor then reports exit `interrupted`, and edges decide what follows. An event matching `steer` emits `steer`. Other events are ignored.
 - **Stale results are ignored:** a result or timer with an unknown id changes nothing.
 - **Stall:** `stall_detected` pauses the task and keeps the running step.
@@ -272,7 +349,8 @@ Schema: [`schemas/scenario.json`](schemas/scenario.json). Files under `tests/` (
 ```yaml
 name: an approved issue is implemented and released
 workflow: .enzarb/workflows/issue.yaml
-document: {subjects: {issue: {repo: acme/app, number: 7, title: Crash on start}}}
+params: {max_rounds: 3}                  # workflow params, as a binding's `with` gives them
+document: {subjects: {issue: {repo: acme/app, number: 7, title: Crash on start}}, vars: {seed: 1}}
 start: {type: issue, action: opened, number: 7}
 stubs:                                   # step results by phase/…/node or bare node id; the last one repeats
   work/implement: [{exit: success, git: {pushed: true}, outputs: {summary: "Fixed."}}]
@@ -291,7 +369,10 @@ expect:
   status: ended:done                     # running | waiting | paused | ended:<status>
   path: [gate/wait, gate/done, …]        # every node entered, exactly
   outputs: {summary: "Fixed."}
+  vars: {rounds: 1}                      # task variables with these values
 ```
+
+`effects` names include `link_subject`; a `fact` item that only re-renders the wait expects `effects: []` and checks `projection`.
 
 ## enzarb-lint
 

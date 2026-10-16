@@ -183,6 +183,27 @@
           ],
           "description": "Runs a nested phase; its exit is `exit` in the edge conditions."
         },
+        "decide": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Decide"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Pure branching: no effect, `next` is followed as soon as the node is entered."
+        },
+        "set": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Task variables assigned on entry, in order: `name: <expression>`\n(strings are expressions; other YAML values and `{param: x}` are\nliterals). Stored in `vars`. A node with only `set` and `next` is a\ndecide node."
+        },
+        "set_on_exit": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Task variables assigned when the node is left, after its edge was\nchosen (`last`, `exit` and, at a wait, `event` are in scope)."
+        },
         "next": {
           "anyOf": [
             {
@@ -195,13 +216,15 @@
           "description": "The next node. Not allowed on `end`."
         },
         "max_visits": {
-          "type": [
-            "integer",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NumField"
+            },
+            {
+              "type": "null"
+            }
           ],
-          "format": "uint32",
-          "minimum": 0,
-          "description": "How often this node may be entered per phase entry (default 10)."
+          "description": "How often this node may be entered per phase entry (default 10). A\nnumber, `{param: <name>}`, or a template over `params`."
         },
         "on_limit": {
           "type": [
@@ -335,9 +358,9 @@
         "secrets": {
           "type": "array",
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/SecretDecl"
           },
-          "description": "Names of secrets injected into this step's process."
+          "description": "Secrets injected into this step's process: a bare name (project\nscope, env var of that name) or `{name, scope, env | file}`."
         },
         "priority": {
           "type": [
@@ -395,10 +418,15 @@
           "description": "Reference to a runtime file."
         },
         "model": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextField"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Model name (text field: `{param: x}` or a template)."
         },
         "prompt": {
           "$ref": "#/$defs/Source",
@@ -409,6 +437,25 @@
         "runtime",
         "prompt"
       ]
+    },
+    "TextField": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "param": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "param"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "description": "A text field: a string (a MiniJinja template when it contains `{{`/`{%`)\nor `{param: <name>}`."
     },
     "Source": {
       "anyOf": [
@@ -565,6 +612,20 @@
         },
         "mode": {
           "$ref": "#/$defs/Access"
+        },
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Branch to work on and push (write workspaces only; a template)."
+        },
+        "base": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Base ref to branch from or check out (a template)."
         }
       },
       "required": [
@@ -577,6 +638,65 @@
       "enum": [
         "read",
         "write"
+      ]
+    },
+    "SecretDecl": {
+      "anyOf": [
+        {
+          "type": "string",
+          "description": "Project scope, injected as the env var `NAME`."
+        },
+        {
+          "$ref": "#/$defs/Secret"
+        }
+      ],
+      "description": "A named secret as written: `NAME` or `{name, scope, env | file}`."
+    },
+    "Secret": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/SecretScope",
+          "default": "project"
+        },
+        "env": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Environment variable to set."
+        },
+        "file": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "File (relative to the workspace root) to write the value to."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "description": "A secret: where it is stored and how the process receives it."
+    },
+    "SecretScope": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "project",
+            "instance"
+          ]
+        },
+        {
+          "type": "string",
+          "const": "user",
+          "description": "The user the step acts for."
+        }
       ]
     },
     "Concurrency": {
@@ -699,25 +819,37 @@
           "description": "Who may send them (default `anyone`); applies to every matcher that sets no `from`."
         },
         "reason": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextField"
+            },
+            {
+              "type": "null"
+            }
           ],
-          "description": "Machine-readable wait reason shown in the projection."
+          "description": "Machine-readable wait reason shown in the projection (text field)."
         },
         "text": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextField"
+            },
+            {
+              "type": "null"
+            }
           ],
-          "description": "Human text (a MiniJinja template)."
+          "description": "Human text (a MiniJinja template, or `{param: x}`)."
         },
         "column": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextField"
+            },
+            {
+              "type": "null"
+            }
           ],
-          "description": "Board column id while waiting here."
+          "description": "Board column id while waiting here (text field)."
         },
         "waiting_on": {
           "anyOf": [
@@ -733,7 +865,7 @@
         "actions": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/UiAction"
+            "$ref": "#/$defs/UiActionSpec"
           },
           "description": "UI buttons; each posts its `/command` as the clicking user."
         },
@@ -776,15 +908,15 @@
         "external"
       ]
     },
-    "UiAction": {
+    "UiActionSpec": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "label": {
-          "type": "string"
+          "$ref": "#/$defs/TextField"
         },
         "command": {
-          "type": "string",
+          "$ref": "#/$defs/TextField",
           "description": "Command word posted as `/command` (without the slash)."
         }
       },
@@ -792,21 +924,44 @@
         "label",
         "command"
       ],
-      "description": "A UI button at a wait."
+      "description": "A UI button as declared at a wait: `label` and `command` are text fields."
     },
     "Timer": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "seconds": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
+          "$ref": "#/$defs/NumField",
+          "description": "Seconds, a duration (`14d`), `{param: x}`, or a template. A template\nthat reads more than `params` is rendered on entry."
         }
       },
       "required": [
         "seconds"
       ]
+    },
+    "NumField": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        {
+          "type": "object",
+          "properties": {
+            "param": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "param"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "description": "An integer field: a number, `{param: <name>}`, or a string: a duration\n(`90s`, `15m`, `2h`, `14d`, `1w`, where durations are allowed) or a\ntemplate (`\"{{ params.rounds * 2 }}\"`) rendering to one."
     },
     "Action": {
       "type": "object",
@@ -819,7 +974,7 @@
         "args": {
           "type": "object",
           "additionalProperties": true,
-          "description": "Arguments; strings are MiniJinja templates."
+          "description": "Arguments: any YAML. String leaves are MiniJinja templates; a leaf\nthat is exactly one `{{ expr }}` keeps the expression's JSON type;\n`{param: x}` is the param's value."
         },
         "relate": {
           "anyOf": [
@@ -830,7 +985,25 @@
               "type": "null"
             }
           ],
-          "description": "Task relations created together with the call."
+          "description": "Task relations: `targets` (evaluated before the call) or `from`\n(evaluated over the call's `result`)."
+        },
+        "as": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Stores a successful call's result as `outputs.<as>`."
+        },
+        "subject": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SubjectLink"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Links the GitHub object the call returned as a subject of the task:\n`true` reads `kind`, `number` and `repo` from the result, or give\n`{kind, number, repo}` (`number`/`repo` are expressions over `result`)."
         }
       },
       "required": [
@@ -846,14 +1019,69 @@
           "type": "string"
         },
         "targets": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Expression yielding a list, evaluated before the call."
+        },
+        "from": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Expression over the call's `result` (and the document) yielding a\ntarget or a list of them, evaluated after a successful call."
         }
       },
       "required": [
-        "kind",
-        "targets"
+        "kind"
       ],
-      "description": "Relations to create: `targets` is an expression yielding a list."
+      "description": "Relations to create. Exactly one of `targets` and `from`."
+    },
+    "SubjectLink": {
+      "anyOf": [
+        {
+          "type": "boolean",
+          "description": "`true`: the result has `kind` (`issue`/`pull_request`), `number` and optionally `repo`."
+        },
+        {
+          "$ref": "#/$defs/SubjectSpec"
+        }
+      ],
+      "description": "How an action's result becomes a linked subject."
+    },
+    "SubjectSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/SubjectKind"
+        },
+        "number": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Expression over `result` (default `result.number`)."
+        },
+        "repo": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Expression over `result` (default `result.repo`, else `task.repo`)."
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "SubjectKind": {
+      "type": "string",
+      "enum": [
+        "issue",
+        "pull_request"
+      ]
     },
     "End": {
       "type": "object",
@@ -884,6 +1112,20 @@
         "use"
       ],
       "description": "Use of a nested phase file."
+    },
+    "Decide": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Free text shown in the viewer."
+        }
+      },
+      "description": "A decide node: no effect, only edges."
     },
     "Next": {
       "anyOf": [

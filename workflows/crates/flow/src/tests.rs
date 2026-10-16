@@ -9,6 +9,8 @@ use crate::resolve::*;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 
+mod blocks;
+
 const LIB: &str = "lib/std";
 const APP: &str = "acme/app";
 
@@ -539,7 +541,7 @@ fn standalone_phase_and_step_files() {
         path: "steps/agent.yaml".into(),
     };
     let (s, _) = resolve_step_file(&e, &m, &Options::default()).unwrap();
-    assert_eq!(s.secrets, ["API_KEY"]);
+    assert_eq!(s.secrets, [SecretDecl::from("API_KEY").normalized()]);
     // A phase alone may wait on events only a workflow declares: a warning.
     let m = m.put(LIB, "phases/c.yaml", "version: 1\nstart: a\nnodes:\n  a: {wait: {events: [deployed]}, next: b}\n  b: {end: {status: done}}\n  z: {end: {status: done}}\n");
     let e = Entry {
@@ -840,7 +842,10 @@ fn happy_path() {
     assert_eq!(model.as_deref(), Some("opus"));
     assert_eq!(
         (rs.secrets.clone(), rs.github["contents"]),
-        (vec!["API_KEY".to_string()], Access::Write)
+        (
+            vec![SecretDecl::from("API_KEY").normalized()],
+            Access::Write
+        )
     );
     assert_eq!(r.projection().column.as_deref(), Some("doing"));
     assert_eq!(r.s.doc.event.as_ref().unwrap().type_name(), "comment");
