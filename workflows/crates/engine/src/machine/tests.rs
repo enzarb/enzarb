@@ -237,6 +237,7 @@ fn failed(id: &str, kind: JobKind) -> EngineEvent {
             job_id: 1,
             kind,
             error: "boom".into(),
+            elapsed_secs: 0,
         },
     }
 }
@@ -1467,6 +1468,7 @@ fn long_errors_are_truncated() {
             job_id: 1,
             kind: JobKind::AgentPlan,
             error: "x".repeat(2000),
+            elapsed_secs: 0,
         },
     };
     let t = run(Permission::None, &issue_in(IssuePhase::Planning), &ev);

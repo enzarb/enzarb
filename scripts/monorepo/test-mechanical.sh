@@ -54,6 +54,22 @@ printf 'fn main() {\n    println!("changed");\n}\n' >workflows/crates/engine/src
 commit mixed
 expect "lockfile plus a code change" not_mechanical "$base" HEAD
 
+repo manifest
+base=$(git rev-parse HEAD)
+printf '[package]\n' >workflows/Cargo.toml
+printf '# lock changed\n' >workflows/Cargo.lock
+commit manifest
+expect "a lockfile change together with a manifest change" not_mechanical "$base" HEAD
+
+repo dts
+mkdir -p ui/src
+printf 'export {};\n' >ui/src/types.d.ts
+commit dts
+base=$(git rev-parse HEAD)
+printf 'export type A = 1;\n' >ui/src/types.d.ts
+commit dts2
+expect "a hand-written .d.ts edit" not_mechanical "$base" HEAD
+
 repo newfile
 base=$(git rev-parse HEAD)
 printf 'fn x() {}\n' >workflows/crates/engine/src/new.rs

@@ -1153,7 +1153,12 @@ fn step_event(ctx: &Ctx, s: &CrState, ev: &EngineEvent) -> Transition {
         EventPayload::JobSucceeded { kind, output, .. } => {
             job_succeeded(ctx, ev, s, &state, *kind, output)
         }
-        EventPayload::JobFailed { kind, error, .. } => {
+        EventPayload::JobFailed {
+            kind,
+            error,
+            elapsed_secs,
+            ..
+        } => {
             if *kind == JobKind::RetargetChangeRequest {
                 if s.data.retargeting {
                     retarget_park(ctx, ev, s, &format!("the retarget job failed: {error}"))
@@ -1169,8 +1174,10 @@ fn step_event(ctx: &Ctx, s: &CrState, ev: &EngineEvent) -> Transition {
                 if s.phase == Reviewing && s.data.mechanical_check {
                     // The cheap step is only an optimization: review the delta for real.
                     let mut d = s.data.clone();
+                    d.stats.agent_secs = d.stats.agent_secs.saturating_add(*elapsed_secs);
                     let mut fx = Fx::new(ctx, ev);
-                    start_agent_review(ctx, &mut fx, &mut d, None);
+                    let delta = delta_base(&d);
+                    start_agent_review(ctx, &mut fx, &mut d, delta.as_deref());
                     Transition::to(
                         st(Reviewing, d),
                         fx.finish(),
@@ -1914,7 +1921,8 @@ fn mechanical_finished(ctx: &Ctx, ev: &EngineEvent, s: &CrState, output: &Value)
     // Red CI on this head is not covered by an old verdict.
     let ci_red = d.ci == CiState::Failure && d.ci_sha == d.head_sha;
     if !mechanical || ci_red || d.prior_review.verdict != "approve" {
-        start_agent_review(ctx, &mut fx, &mut d, None);
+        let delta = delta_base(&d);
+        start_agent_review(ctx, &mut fx, &mut d, delta.as_deref());
         return Transition::to(
             st(CrPhase::Reviewing, d),
             fx.finish(),

@@ -188,6 +188,8 @@ pub enum EventPayload {
         job_id: i64,
         kind: JobKind,
         error: String,
+        /// Seconds from queued to finished (additive; 0 when the row predates it).
+        elapsed_secs: u64,
     },
     /// Event type `TimerFired`, payload `{job_id?}`. Without `job_id` the work
     /// item's `wake_at` is due; with it, that running job passed its deadline.
@@ -251,6 +253,8 @@ impl EngineEvent {
                     output: Value,
                     #[serde(default)]
                     error: String,
+                    #[serde(default)]
+                    elapsed_secs: u64,
                 }
                 let p: P = serde_json::from_value(payload.clone()).map_err(bad)?;
                 if event_type == "JobSucceeded" {
@@ -264,6 +268,7 @@ impl EngineEvent {
                         job_id: p.job_id,
                         kind: p.kind,
                         error: p.error,
+                        elapsed_secs: p.elapsed_secs,
                     }
                 }
             }

@@ -8,8 +8,7 @@
 # for a verdict; exit 2 is a usage error.
 #
 # A delta is mechanical only when every changed file is either
-#   - generated or regenerated output (lockfiles, goldens, snapshots, generated types, kopium
-#     output), or
+#   - a lockfile, when no `Cargo.toml` / `package.json` changed in the delta, or
 #   - unchanged by the formatter once both versions are formatted (`rustfmt` for *.rs, `prettier`
 #     for the UI's files), that is, a formatting-only change.
 # The check is conservative: anything uncertain (the previous sha is not an ancestor, the delta is
@@ -43,14 +42,21 @@ lines=$(git diff --numstat --no-renames "$prev..$head" | awk '$1 == "-" || $2 ==
 files=$(git diff --name-only --no-renames "$prev..$head")
 [ -n "$files" ] || no "no changed files"
 
-is_generated() {
+is_lockfile() {
   case "$1" in
     package-lock.json | */package-lock.json | Cargo.lock | */Cargo.lock | pnpm-lock.yaml | */pnpm-lock.yaml | yarn.lock | */yarn.lock) return 0 ;;
-    *.golden | */__snapshots__/* | *.snap) return 0 ;;
-    *.generated.* | */generated/* | */upstream/*.rs | *.d.ts) return 0 ;;
   esac
   return 1
 }
+
+# A lockfile change is regeneration only when no dependency manifest changed with it; a manifest
+# change (a swapped or bumped dependency) needs a real review. Hand-written files that merely
+# look generated (`*.d.ts`, `generated/` directories, snapshots) are not trusted by path.
+if grep -Eq '(^|/)(Cargo\.toml|package\.json)$' <<<"$files"; then
+  while IFS= read -r f; do
+    ! is_lockfile "$f" || no "$f changed together with a dependency manifest"
+  done <<<"$files"
+fi
 
 # True when `git show <rev>:<file>` formats to the same text in both revisions.
 format_only() {
@@ -74,7 +80,7 @@ format_only() {
 
 while IFS= read -r f; do
   [ -n "$f" ] || continue
-  if is_generated "$f"; then
+  if is_lockfile "$f"; then
     continue
   fi
   # A formatter comparison needs the file on both sides.

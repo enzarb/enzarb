@@ -236,8 +236,31 @@ fn a_non_mechanical_or_failed_check_starts_a_full_agent_review() {
         assert!(!d.mechanical_check);
         assert_eq!(d.reviewed_sha, "sha1", "the head is still unreviewed");
         let input = job_input(&t, JobKind::AgentReview);
-        assert_eq!(input.context.previous_reviewed_sha, "");
+        assert_eq!(
+            input.context.previous_reviewed_sha, "sha1",
+            "the fallback is still a delta review"
+        );
     }
+}
+
+#[test]
+fn a_failed_mechanical_check_adds_its_time() {
+    let d = CrData {
+        mechanical_check: true,
+        ..reviewed_earlier("approve")
+    };
+    let ev = EngineEvent {
+        id: "f".into(),
+        payload: EventPayload::JobFailed {
+            job_id: 1,
+            kind: JobKind::MechanicalCheck,
+            error: "boom".into(),
+            elapsed_secs: 17,
+        },
+    };
+    let t = run_cr(Permission::None, &reviewing(d), &ev);
+    let d = assert_cr(&t, CrPhase::Reviewing);
+    assert_eq!(d.stats.agent_secs, 17);
 }
 
 #[test]

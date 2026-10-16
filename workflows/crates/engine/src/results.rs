@@ -115,7 +115,7 @@ pub async fn ingest_job_result(
         JobResult::Failed { error } => (
             "failed",
             "JobFailed",
-            json!({ "job_id": job_id, "kind": kind, "error": error }),
+            json!({ "job_id": job_id, "kind": kind, "error": error, "elapsed_secs": elapsed_secs }),
             None,
         ),
     };
