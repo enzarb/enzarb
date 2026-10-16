@@ -198,7 +198,19 @@ impl Reducer {
             && e.event_type == EventType::ChangeRequestOpened
             && e.data.item.kind == ItemKind::ChangeRequest
         {
-            return Some("change_request".into());
+            // A compiled change request (a bot handoff replay or a reopen) stays compiled:
+            // no lookup for it.
+            let workflow: Option<String> =
+                sqlx::query_scalar("SELECT workflow FROM work_items WHERE key = $1")
+                    .bind(key.to_string())
+                    .fetch_optional(&self.pool)
+                    .await
+                    .unwrap_or(None);
+            return match workflow.as_deref() {
+                None => Some("change_request".into()),
+                Some(w) if w.starts_with(machine::graph::PREFIX) => Some("change_request".into()),
+                Some(_) => None,
+            };
         }
         let approval = match &ev.payload {
             EventPayload::Connector(e) => e.event_type == EventType::ApprovalGranted,

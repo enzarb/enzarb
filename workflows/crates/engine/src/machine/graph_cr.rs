@@ -83,6 +83,13 @@ pub struct CrGraph {
     pub trigger: Trigger,
     /// The head the latest segment ended at (what its review saw).
     pub review_head: String,
+    /// The head the stored merge click was given for; the click counts only at this head.
+    pub merge_head: String,
+    /// The next head change is the base merged in by the merge job's `updated_branch` (or an
+    /// `update_branch` action): the click moves to that head. Any other head change drops it.
+    pub update_allowed: bool,
+    /// The head when the running segment started.
+    pub run_head: String,
     /// `post_review`: its output, given to the graph once the comment is posted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub review_output: Option<Value>,
@@ -200,6 +207,39 @@ fn at_wait(def: &Definition, s: &GraphTask, event: &str) -> bool {
 
 fn crg(t: &mut GraphTask) -> &mut CrGraph {
     t.data.cr.as_mut().expect("a change request graph")
+}
+
+/// Records a new head. A stored merge click survives only the base update the merge job made
+/// (`update_allowed`); any other new commit needs a new click.
+fn set_head(c: &mut CrGraph, sha: String) {
+    if c.data.head_sha != sha {
+        if c.update_allowed && c.data.merge_requested {
+            c.merge_head = sha.clone();
+        } else {
+            clear_click(c);
+        }
+        c.update_allowed = false;
+    }
+    crm::set_head(&mut c.data, sha);
+}
+
+fn clear_click(c: &mut CrGraph) {
+    c.data.merge_requested = false;
+    c.merge_head.clear();
+    c.update_allowed = false;
+}
+
+/// The base was merged into the branch by enzarb: the click moves to the new head. When its
+/// webhook already moved the head during the job (`update_allowed` was provisional), the
+/// click is already on it.
+fn allow_update(c: &mut CrGraph) {
+    // `run_head` is the head the job started at: unchanged means the update commit is next.
+    c.update_allowed = c.data.merge_requested && c.data.head_sha == c.run_head;
+}
+
+/// A stored click for the current head.
+fn click_valid(c: &CrGraph) -> bool {
+    c.data.merge_requested && !c.data.head_sha.is_empty() && c.merge_head == c.data.head_sha
 }
 
 fn clear_trigger(d: &mut CrData) {
@@ -344,10 +384,12 @@ fn prompt_name<'a>(def: &'a Definition, id: &str) -> &'a str {
 /// waits on enzarb. Returns `state_data.wait`.
 pub(super) fn prepare_run(c: &mut CrGraph, def: &Definition, id: &str) -> Value {
     let prompt = prompt_name(def, id);
+    c.run_head = c.data.head_sha.clone();
     let trigger = std::mem::take(&mut c.trigger);
     let d = &mut c.data;
     if prompt == "address_comments" {
         d.merge_requested = false;
+        c.merge_head.clear();
         match trigger {
             Trigger::Human => d.auto_trigger = false,
             Trigger::Review => {
@@ -398,19 +440,28 @@ pub(super) fn prepare_run(c: &mut CrGraph, def: &Definition, id: &str) -> Value 
     }
 }
 
-/// A segment finished at `head_sha` (the head its last run saw, or pushed).
-pub(super) fn segment_finished(c: &mut CrGraph, head_sha: &str) {
-    if head_sha.is_empty() {
-        return;
-    }
-    c.review_head = head_sha.to_string();
-    if c.data.head_sha != head_sha {
-        crm::set_head(&mut c.data, head_sha.to_string());
+/// A segment finished. Its review saw the head it started at; the sandbox's head is taken
+/// only when the segment pushed and nobody moved the head during the run (a person's push
+/// recorded meanwhile wins and is reviewed next).
+pub(super) fn segment_finished(c: &mut CrGraph, head_sha: &str, pushed: bool) {
+    c.review_head = if c.run_head.is_empty() {
+        c.data.head_sha.clone()
+    } else {
+        c.run_head.clone()
+    };
+    if pushed && !head_sha.is_empty() && c.data.head_sha == c.run_head {
+        set_head(c, head_sha.to_string());
+        // What the run pushed is what a review later in the same segment saw.
+        c.review_head = head_sha.to_string();
     }
 }
 
 /// Entering a wait: what arrived while a job ran and the wait takes, in this order.
-pub(super) fn on_enter_wait(d: &mut GraphData, node: &enzarb_graph::Node) -> Option<Value> {
+pub(super) fn on_enter_wait(
+    ctx: &Ctx,
+    d: &mut GraphData,
+    node: &enzarb_graph::Node,
+) -> Option<Value> {
     let NodeKind::Wait { events, .. } = &node.kind else {
         return None;
     };
@@ -431,6 +482,11 @@ pub(super) fn on_enter_wait(d: &mut GraphData, node: &enzarb_graph::Node) -> Opt
         return Some(json!({"event": "pushed", "head_sha": c.data.head_sha, "author": ""}));
     }
     if wants("merge_requested") && c.data.merge_requested {
+        if !click_valid(c) || !ctx.open_dependencies.is_empty() {
+            // A click for another head, or dependencies left: a person clicks again.
+            clear_click(c);
+            return None;
+        }
         return Some(json!({
             "event": "merge_requested",
             "author": c.data.merge_actor,
@@ -453,6 +509,7 @@ pub(super) fn on_enter_wait(d: &mut GraphData, node: &enzarb_graph::Node) -> Opt
 pub(super) fn action(
     ctx: &Ctx,
     fx: &mut Fx,
+    def: &Definition,
     d: &mut GraphData,
     id: &str,
     action: &str,
@@ -479,7 +536,8 @@ pub(super) fn action(
             GraphPhase::Running
         }
         "update_branch" => {
-            let c = d.cr.as_ref().expect("change request");
+            let c = d.cr.as_mut().expect("change request");
+            c.run_head = c.data.head_sha.clone();
             fx.update_branch(c.data.number, &c.data.head_sha);
             d.waiting_on = Some(JobKind::UpdateBranch);
             d.wait = Some(wait_json(
@@ -490,12 +548,22 @@ pub(super) fn action(
             GraphPhase::Running
         }
         "merge_change_request" => {
-            let c = d.cr.as_ref().expect("change request");
             // Validation puts a wait on `merge_requested` before every merge; this is only
-            // defence in depth: no stored click, no merge.
-            if !c.data.merge_requested {
+            // defence in depth: no stored click for this head, no merge.
+            if !click_valid(d.cr.as_ref().expect("change request")) {
                 return failed(ctx, fx, d, &format!("node `{id}`: no merge was requested"));
             }
+            let c = d.cr.as_mut().expect("change request");
+            if !ctx.open_dependencies.is_empty() {
+                // Dependencies reopened since the click: no merge; the graph decides as for a
+                // refused merge.
+                clear_click(c);
+                c.data.merge_error = "dependencies are not done".into();
+                let out =
+                    json!({"outcome": "not_mergeable", "reason": "dependencies are not done"});
+                return super::resume(ctx, fx, def, d, out);
+            }
+            c.run_head = c.data.head_sha.clone();
             let c = &c.data;
             let title = squash_title(&c.title, &c.head_ref);
             let delete = c.merge_delete_branch.then_some(c.head_ref.as_str());
@@ -548,6 +616,11 @@ fn post_review(ctx: &Ctx, fx: &mut Fx, d: &mut GraphData, id: &str) -> GraphPhas
             "\n\n> Downgraded from `approve` to `comment`: the review did not report all checks as passed, so the change is unverified.",
         );
     }
+    if decision != Decision::Approve {
+        // Mirrors the compiled `evaluate`: requested changes drop a stored merge click.
+        clear_click(c);
+    }
+    let data = &mut c.data;
     data.last_review = decision.as_str().to_string();
     data.reviewed_sha = if c.review_head.is_empty() {
         data.head_sha.clone()
@@ -663,7 +736,21 @@ pub(super) fn step(
                 JobKind::CheckMergeReadiness => readiness(ctx, ev, s, def, output, true),
                 JobKind::MergeChangeRequest => merge_finished(ctx, ev, s, def, output),
                 JobKind::UpdateBranch => {
-                    advance(ctx, ev, s, def, output.clone(), "branch update finished")
+                    let mut task = s.clone();
+                    let c = crg(&mut task);
+                    if output.get("outcome").and_then(Value::as_str) == Some("updated") {
+                        allow_update(c);
+                    } else {
+                        c.update_allowed = false;
+                    }
+                    advance(
+                        ctx,
+                        ev,
+                        &task,
+                        def,
+                        output.clone(),
+                        "branch update finished",
+                    )
                 }
                 _ => return None,
             }
@@ -736,6 +823,8 @@ fn merge(
     let mut task = s.clone();
     let c = crg(&mut task);
     c.data.merge_requested = true;
+    c.merge_head = c.data.head_sha.clone();
+    c.update_allowed = false;
     c.data.merge_actor = actor.to_string();
     c.data.merge_delete_branch = delete_branch;
     let out = json!({"event": "merge_requested", "author": actor, "delete_branch": delete_branch});
@@ -757,11 +846,21 @@ fn updated(
     }
     let mut task = s.clone();
     let c = crg(&mut task);
-    crm::set_head(&mut c.data, sha.clone());
     let person = !ctx.is_bot(&e.data.actor);
+    // enzarb's own base update, pushed while the merge job (or `update_branch`) that made it
+    // still runs: the click may follow it to this head (the job's outcome confirms or clears).
+    if !person
+        && matches!(
+            s.data.waiting_on,
+            Some(JobKind::MergeChangeRequest | JobKind::UpdateBranch)
+        )
+    {
+        c.update_allowed = c.data.merge_requested && c.data.head_sha == c.run_head;
+    }
+    set_head(c, sha.clone());
     if person {
         crm::human_acted(&mut c.data);
-        c.data.merge_requested = false;
+        clear_click(c);
     }
     if at_wait(def, s, "pushed") && sha != c.data.reviewed_sha {
         c.push_pending = false;
@@ -986,6 +1085,10 @@ fn readiness(
         c.data.ci = CiState::from_wire(output.get("ci").and_then(Value::as_str).unwrap_or(""));
         c.data.ci_sha = sha.to_string();
         c.data.mergeable = output.get("mergeable").and_then(Value::as_bool);
+        // As the compiled `evaluate`: a red CI or requested changes drop a stored click.
+        if c.data.ci == CiState::Failure || c.data.last_review == "request_changes" {
+            clear_click(c);
+        }
     }
     if awaited {
         mark_ci_seen(c);
@@ -1105,9 +1208,12 @@ fn merge_finished(
             Transition::to(st(GraphPhase::Merged, d), fx.finish(), note)
         }
         outcome => {
-            let d = &mut c.data;
+            if outcome != "updated_branch" {
+                clear_click(c);
+            }
             match outcome {
                 "head_moved" => {
+                    let d = &mut c.data;
                     d.merge_error =
                         "the branch changed while merging; reviewing the new commits".into();
                     d.merge_requested = false;
@@ -1116,7 +1222,10 @@ fn merge_finished(
                     d.mergeable = None;
                 }
                 "updated_branch" => {
-                    // The click stays: the next wait on `merge_requested` resumes by itself.
+                    // The click stays for the update commit only: the next wait on
+                    // `merge_requested` at that head resumes by itself.
+                    allow_update(c);
+                    let d = &mut c.data;
                     d.merge_error =
                         "updating branch with the base; waiting for review and CI".into();
                     d.last_review.clear();
@@ -1124,6 +1233,7 @@ fn merge_finished(
                     d.mergeable = None;
                 }
                 "not_mergeable" => {
+                    let d = &mut c.data;
                     let reason = text("reason");
                     d.merge_error = if reason.is_empty() {
                         "the change request cannot be merged".into()

@@ -5456,6 +5456,51 @@ async fn change_request_graph_fixes_a_ci_failure_with_the_failing_logs() {
 }
 
 #[tokio::test]
+async fn a_compiled_change_request_is_not_looked_up_again_when_reopened() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let reducer = graph_reducer(&h);
+    let repo: RepoKey = REPO.parse().unwrap();
+    // No definition yet: compiled.
+    h.fake.set_branch_head(repo.clone(), "main", "sha-old");
+    ingest(
+        pool,
+        EventType::ChangeRequestOpened,
+        "o1",
+        cr_data(5, "alice"),
+    )
+    .await;
+    reducer.drain().await;
+    assert_eq!(item_row(pool, 5).await.0, "change_request");
+    // The definition lands; a closed and reopened compiled change request stays compiled
+    // without reading it.
+    cr_graph_repo(&h);
+    let mut closed = cr_data(5, "alice");
+    closed.merged = Some(false);
+    ingest(pool, EventType::WorkItemClosed, "o2", closed).await;
+    reducer.drain().await;
+    let reads_before = h.fake.calls().len();
+    ingest(
+        pool,
+        EventType::ChangeRequestOpened,
+        "o3",
+        cr_data(5, "alice"),
+    )
+    .await;
+    reducer.drain().await;
+    let (workflow, state, _) = item_row(pool, 5).await;
+    assert_eq!(
+        (workflow.as_str(), state.as_str()),
+        ("change_request", "Reviewing")
+    );
+    let lookups = h.fake.calls()[reads_before..]
+        .iter()
+        .filter(|c| matches!(&c.call, Call::GetFile { path, .. } if path.ends_with("change_request.yaml")))
+        .count();
+    assert_eq!(lookups, 0);
+}
+
+#[tokio::test]
 async fn change_request_graph_resolves_a_conflict() {
     use enzarb_connector::CiState;
     let h = H::new(db!()).await;

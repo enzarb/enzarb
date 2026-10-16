@@ -728,14 +728,14 @@ fn drive(ctx: &Ctx, fx: &mut Fx, def: &Definition, d: &mut GraphData) -> GraphPh
             }
             // Something that arrived while a job ran resumes the wait at once.
             if d.cr.is_some()
-                && let Some(out) = cr::on_enter_wait(d, node)
+                && let Some(out) = cr::on_enter_wait(ctx, d, node)
             {
                 return resume(ctx, fx, def, d, out);
             }
             GraphPhase::Waiting
         }
         NodeKind::Action { action, .. } if CR_ACTIONS.contains(&action.as_str()) => {
-            cr::action(ctx, fx, d, &id, action)
+            cr::action(ctx, fx, def, d, &id, action)
         }
         NodeKind::Action { action, body } => issue_action(ctx, fx, d, &id, action, body),
         NodeKind::End { status } => {
@@ -1225,7 +1225,7 @@ fn job_succeeded(
             }
             d.summary = fin.summary;
             if let Some(c) = &mut d.cr {
-                cr::segment_finished(c, &fin.head_sha);
+                cr::segment_finished(c, &fin.head_sha, fin.pushed);
             }
             if fin.pushed {
                 d.branch = fin.branch;

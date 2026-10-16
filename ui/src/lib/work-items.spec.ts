@@ -342,6 +342,34 @@ describe('graph tasks blocked by dependencies', () => {
 	});
 });
 
+describe('graph change requests classify like compiled ones', () => {
+	it('gives the same category and reason for the same wait', () => {
+		const checklist = { ci: { status: 'failed', detail: 'CI failed on abc' } };
+		for (const reason of [
+			'ready_to_merge',
+			'awaiting_review',
+			'checks_unverified',
+			'round_limit',
+			// (ci_failed: compiled offers Retry, a CI-fix round; a graph routes CI failures itself, so blocked)
+			'conflict_parked',
+			'decision_needed'
+		]) {
+			const stateData = { wait: { waiting_on: 'human', reason, text: 'Why' }, checklist };
+			const compiled = classifyNeedsYou({
+				workflow: 'change_request',
+				state: 'AwaitingChanges',
+				stateData
+			});
+			const graph = classifyNeedsYou({
+				workflow: 'graph:change_request',
+				state: 'Waiting',
+				stateData
+			});
+			expect(graph, reason).toEqual(compiled);
+		}
+	});
+});
+
 describe('graph tasks at a wait', () => {
 	const at = (workflow: string, waiting_on: string, reason: string, state = 'Waiting') => ({
 		workflow,

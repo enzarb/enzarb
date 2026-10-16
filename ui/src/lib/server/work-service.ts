@@ -5,6 +5,7 @@ import {
 	COMMENT_MAX_LENGTH,
 	type ActionData,
 	ENZARB_WORKING_PHASES,
+	isChangeRequest,
 	hoursToMs,
 	NEEDS_YOU_STALE_HOURS_DEFAULT,
 	itemTitle,
@@ -235,7 +236,7 @@ export function workService(
 				FROM workflows_api.job_v WHERE work_item_id = ${id} ORDER BY created_at, id`;
 			return {
 				...summary(row, staleHours, repoCounts),
-				readiness: row.workflow === 'change_request' ? parseReadiness(row.state_data) : null,
+				readiness: isChangeRequest(row.workflow) ? parseReadiness(row.state_data) : null,
 				actions: availableActions(row.state, row.state_data),
 				transitions: transitions.map((t): TransitionView => ({
 					id: Number(t.id),

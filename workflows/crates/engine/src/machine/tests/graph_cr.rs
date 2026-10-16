@@ -83,7 +83,7 @@ fn segment(id: &str, at: &str, summary: &str, head: &str, outputs: Value) -> Eng
         summary: summary.into(),
         branch: "enzarb/issue-42".into(),
         head_sha: head.into(),
-        pushed: false,
+        pushed: outputs.to_string().contains("\"pushed\":true"),
         usage: None,
         graph: Some(GraphResult {
             stopped_at: at.into(),
@@ -738,4 +738,227 @@ nodes:
     assert_eq!(wait_of(&t), ("human".into(), "approval".into()));
     let t = transition(&c, &t.next, &comment_by("e3", "carol", 5, "what about X?"));
     assert_eq!(wait_of(&t), ("human".into(), "question".into()));
+}
+
+fn bot() -> Actor {
+    let mut a = actor(BOT);
+    a.is_bot = true;
+    a
+}
+
+fn cr_of(t: &Transition) -> crate::machine::graph::CrGraph {
+    match &t.next {
+        WorkflowState::Graph(g) => g.data.cr.clone().unwrap(),
+        _ => panic!("not a graph"),
+    }
+}
+
+/// Ready at sha1, clicked, the merge job updated the branch (update commit sha2 by enzarb),
+/// the new head reviewed and approved: at the stored click's replay.
+fn clicked_then_updated(c: &Ctx) -> Transition {
+    let t = ready(c);
+    let m = transition(c, &t.next, &merge_click("m1", "carol"));
+    assert_eq!(node(&m), "merge");
+    let upd = pushed_by("m2", "sha2", bot());
+    let m = transition(c, &m.next, &upd);
+    let t = transition(
+        c,
+        &m.next,
+        &ok(
+            "m3",
+            JobKind::MergeChangeRequest,
+            json!({"outcome": "updated_branch"}),
+        ),
+    );
+    assert_eq!(node(&t), "review");
+    let k = cr_of(&t);
+    assert!(k.data.merge_requested);
+    assert_eq!(k.merge_head, "sha2");
+    t
+}
+
+#[test]
+fn the_click_follows_only_the_base_update_commit() {
+    let c = cctx(Permission::Write);
+    let t = clicked_then_updated(&c);
+    let t = transition(
+        &c,
+        &t.next,
+        &segment(
+            "r1",
+            "post_review",
+            &review_summary("approve", "ok"),
+            "sha2",
+            json!({}),
+        ),
+    );
+    let t = transition(
+        &c,
+        &t.next,
+        &ok("r2", JobKind::PostComment, json!({"id": 3})),
+    );
+    let t = transition(
+        &c,
+        &t.next,
+        &readiness_ok("r3", "sha2", "success", json!(true)),
+    );
+    // No second click needed for the update commit.
+    assert_eq!(node(&t), "merge");
+    let (_, _, input) = job_of(&t, JobKind::MergeChangeRequest);
+    assert_eq!(input["expected_head_sha"], "sha2");
+}
+
+#[test]
+fn the_click_does_not_survive_enzarbs_own_later_commits() {
+    let c = cctx(Permission::Write);
+    let t = clicked_then_updated(&c);
+    // A conflict is reported during the review; GitHub says the update does not merge.
+    let t = transition(&c, &t.next, &unmergeable("u1", "base9"));
+    let t = transition(
+        &c,
+        &t.next,
+        &segment(
+            "r1",
+            "post_review",
+            &review_summary("approve", "ok"),
+            "sha2",
+            json!({}),
+        ),
+    );
+    let t = transition(
+        &c,
+        &t.next,
+        &ok("r2", JobKind::PostComment, json!({"id": 3})),
+    );
+    let t = transition(
+        &c,
+        &t.next,
+        &readiness_ok("r3", "sha2", "success", json!(false)),
+    );
+    assert_eq!(node(&t), "resolve");
+    // The resolve pushes sha3, which is reviewed and approved in the same segment.
+    let t = transition(
+        &c,
+        &t.next,
+        &segment(
+            "r4",
+            "post_review",
+            &review_summary("approve", "ok"),
+            "sha3",
+            json!({"resolve": {"ok": true, "decision": "done", "pushed": true}}),
+        ),
+    );
+    assert!(
+        !cr_of(&t).data.merge_requested,
+        "a new commit drops the click"
+    );
+    let t = transition(
+        &c,
+        &t.next,
+        &ok("r5", JobKind::PostComment, json!({"id": 4})),
+    );
+    let t = transition(
+        &c,
+        &t.next,
+        &readiness_ok("r6", "sha3", "success", json!(true)),
+    );
+    // Ready, and waiting for a new click: nothing merges.
+    task(&t, GraphPhase::Waiting);
+    assert_eq!(node(&t), "ready");
+    assert!(jobs(&t).iter().all(|j| j.0 != JobKind::MergeChangeRequest));
+}
+
+#[test]
+fn the_click_is_dropped_by_requested_changes_red_ci_and_open_dependencies() {
+    let c = cctx(Permission::Write);
+    // Requested changes on the update commit.
+    let t = clicked_then_updated(&c);
+    let rc = segment(
+        "r1",
+        "post_review",
+        &review_summary("request_changes", "no"),
+        "sha2",
+        json!({}),
+    );
+    let t2 = transition(&c, &t.next, &rc);
+    assert!(!cr_of(&t2).data.merge_requested);
+    // A red CI in the readiness check.
+    let ap = segment(
+        "r1",
+        "post_review",
+        &review_summary("approve", "ok"),
+        "sha2",
+        json!({}),
+    );
+    let t2 = transition(&c, &t.next, &ap);
+    let t2 = transition(
+        &c,
+        &t2.next,
+        &ok("r2", JobKind::PostComment, json!({"id": 3})),
+    );
+    let red = transition(
+        &c,
+        &t2.next,
+        &readiness_ok("r3", "sha2", "failure", json!(true)),
+    );
+    assert!(!cr_of(&red).data.merge_requested);
+    // A dependency reopened since the click: ready, but no merge and no click left.
+    let deps = Ctx {
+        open_dependencies: vec![OpenDependency {
+            key: "github:enzarb/enzarb-ui#9".into(),
+            label: "#9".into(),
+            ..Default::default()
+        }],
+        ..cctx(Permission::Write)
+    };
+    let d = transition(
+        &deps,
+        &t2.next,
+        &readiness_ok("r3", "sha2", "success", json!(true)),
+    );
+    assert_eq!(node(&d), "ready");
+    assert!(jobs(&d).iter().all(|j| j.0 != JobKind::MergeChangeRequest));
+    assert!(!cr_of(&d).data.merge_requested);
+}
+
+#[test]
+fn a_push_by_a_person_during_the_review_is_kept_and_reviewed() {
+    let c = cctx(Permission::Write);
+    let t = transition(
+        &c,
+        &WorkflowState::New(WorkflowKind::ChangeRequest),
+        &pr_opened("e1"),
+    );
+    let t = transition(&c, &t.next, &pushed_by("p1", "sha9", actor("carol")));
+    task(&t, GraphPhase::Running);
+    // The review of sha1 ends; the sandbox reports the head it saw, nothing pushed.
+    let t = transition(
+        &c,
+        &t.next,
+        &segment(
+            "e2",
+            "post_review",
+            &review_summary("approve", "ok"),
+            "sha1",
+            json!({}),
+        ),
+    );
+    let k = cr_of(&t);
+    assert_eq!(
+        k.data.head_sha, "sha9",
+        "the person's push is not rolled back"
+    );
+    assert_eq!(k.data.reviewed_sha, "sha1");
+    // CI for the real head is taken.
+    let ci = ci_event("c1", "sha9", enzarb_connector::CiState::Pending, "");
+    assert!(transition(&c, &t.next, &ci).accepted);
+    // Once posted, the review is of an older commit: sha9 is reviewed next.
+    let t = transition(
+        &c,
+        &t.next,
+        &ok("e3", JobKind::PostComment, json!({"id": 1})),
+    );
+    assert_eq!(node(&t), "review");
+    let (_, _, input) = job_of(&t, JobKind::AgentSegment);
+    assert_eq!(input["context"]["head_sha"], "sha9");
 }

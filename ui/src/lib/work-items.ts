@@ -142,6 +142,10 @@ export const isTerminal = (state: string): boolean => TERMINAL.has(state);
 const isCiFailedWait = (wait: Wait | null): boolean =>
 	wait?.waitingOn === 'human' && wait.reason === 'ci_failed';
 
+/** A change request, run by the compiled machine or by a graph (ADR-0020). */
+export const isChangeRequest = (workflow: string): boolean =>
+	workflow === 'change_request' || workflow === 'graph:change_request';
+
 /** The reason of a wait on a human, else null. */
 const humanWaitReason = (stateData: unknown): string | null => {
 	const w = parseWait(stateData);
@@ -423,7 +427,7 @@ export function classifyNeedsYou(
 	if (isTerminal(state)) return null;
 	const actions = availableActions(state, stateData);
 	if (actions.includes('retry')) {
-		const wait = workflow === 'change_request' ? parseWait(stateData) : null;
+		const wait = isChangeRequest(workflow) ? parseWait(stateData) : null;
 		if (isCiFailedWait(wait))
 			return {
 				category: 'failed',
@@ -451,7 +455,9 @@ export function classifyNeedsYou(
 			if (w.reason === 'question') return { category: 'question', reason: null, text };
 			if (w.reason === 'decision_needed') return { category: 'decision', reason: null, text };
 		}
-		return { category: 'blocked', reason: w.text || null, text };
+		// A change request's blockers read as for a compiled one (checklist, merge error).
+		const why = workflow === 'graph:change_request' ? blockedReason(stateData) : null;
+		return { category: 'blocked', reason: why ?? (w.text || null), text };
 	}
 	if (workflow !== 'change_request') return null;
 	const wait = parseWait(stateData);
