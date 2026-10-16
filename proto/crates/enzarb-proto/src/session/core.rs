@@ -65,6 +65,9 @@ pub struct RunInfo {
     pub exit_code: Option<i32>,
     pub summary: Option<String>,
     pub usage: Option<crate::Usage>,
+    /// The full final result of a terminal run (`run_state.result`), from
+    /// servers with [`feature::RUN_RESULTS`](crate::feature::RUN_RESULTS).
+    pub result: Option<crate::RunFinished>,
 }
 
 /// `credential_state` as seen by the client.
@@ -90,8 +93,8 @@ pub enum Event {
     /// (server) The client wants a channel: [`OpenRequest::accept`] or [`OpenRequest::reject`].
     Open(OpenRequest),
     /// Any other CTRL message not consumed internally:
-    /// * server: `run_start`, `run_status`, `run_cancel`, `credential_status` (answer with `send_ctrl(Ctrl::CredentialState{..})`), `credential_clear`, `credential_state` (a client's ack of a legacy `credential_captured`), `resize` (for an open channel), `error`;
-    /// * client: `run_state` pushes, `credential_captured`, unsolicited `credential_state`, unattributed `error`.
+    /// * server: `run_start`, `run_status`, `run_subscribe`, `run_cancel`, `credential_status` (answer with `send_ctrl(Ctrl::CredentialState{..})`), `credential_clear`, `credential_state` (a client's ack of a legacy `credential_captured`), `resize` (for an open channel), `error`;
+    /// * client: `run_state` pushes, `run_finished`, `credential_captured`, unsolicited `credential_state`, unattributed `error`.
     Ctrl(Ctrl),
 }
 
@@ -489,6 +492,7 @@ impl Inner {
                 Role::Server,
                 m @ (Ctrl::RunStart(_)
                 | Ctrl::RunStatus { .. }
+                | Ctrl::RunSubscribe { .. }
                 | Ctrl::RunCancel { .. }
                 | Ctrl::CredentialStatus
                 | Ctrl::StatsRequest
@@ -587,6 +591,7 @@ impl Inner {
                     exit_code,
                     summary,
                     usage,
+                    result,
                 },
             ) => {
                 let waiter = {
@@ -602,6 +607,7 @@ impl Inner {
                     exit_code,
                     summary,
                     usage,
+                    result,
                 };
                 match waiter {
                     Some(Pending::RunStatus { tx, .. }) => {
@@ -613,11 +619,13 @@ impl Inner {
                         exit_code: info.exit_code,
                         summary: info.summary,
                         usage: info.usage,
+                        result: info.result,
                     })),
                 }
             }
             (Role::Client, m @ Ctrl::CredentialCaptured { .. }) => emit(Event::Ctrl(m)),
             (Role::Client, m @ Ctrl::Stats(_)) => emit(Event::Ctrl(m)),
+            (Role::Client, m @ Ctrl::RunFinished(_)) => emit(Event::Ctrl(m)),
             (
                 Role::Client,
                 Ctrl::CredentialState {
@@ -732,6 +740,8 @@ fn ctrl_name(m: &Ctrl) -> &'static str {
         Ctrl::RunAccepted { .. } => "run_accepted",
         Ctrl::RunStatus { .. } => "run_status",
         Ctrl::RunState { .. } => "run_state",
+        Ctrl::RunFinished(_) => "run_finished",
+        Ctrl::RunSubscribe { .. } => "run_subscribe",
         Ctrl::RunCancel { .. } => "run_cancel",
         Ctrl::CredentialCaptured { .. } => "credential_captured",
         Ctrl::CredentialStatus => "credential_status",
@@ -1235,6 +1245,20 @@ impl Session {
         self.inner.send_ctrl(&Ctrl::CredentialClear { kind })
     }
 
+    /// (client) `run_subscribe`: ask for `run_finished` pushes (as
+    /// [`Event::Ctrl`]) for these runs. No reply. Only send it after
+    /// `welcome.features` contained [`feature::RUN_RESULTS`](crate::feature::RUN_RESULTS).
+    pub fn run_subscribe(&self, run_ids: Vec<String>) -> Result<(), SessionError> {
+        self.require(Role::Client)?;
+        self.inner.send_ctrl(&Ctrl::RunSubscribe { run_ids })
+    }
+
+    /// (server) Push `run_finished`.
+    pub fn send_run_finished(&self, result: &crate::RunFinished) -> Result<(), SessionError> {
+        self.require(Role::Server)?;
+        self.inner.send_ctrl(&Ctrl::RunFinished(result.clone()))
+    }
+
     /// (client) `run_cancel`. The new state arrives as a pushed `run_state` event.
     pub fn run_cancel(&self, run_id: &str) -> Result<(), SessionError> {
         self.require(Role::Client)?;
@@ -1288,6 +1312,7 @@ impl Session {
             exit_code: info.exit_code,
             summary: info.summary.clone(),
             usage: info.usage.clone(),
+            result: info.result.clone(),
         })
     }
 }
