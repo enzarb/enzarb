@@ -1708,9 +1708,8 @@ impl Inner {
                 transcript.append(kind, redact_value(fields, &secrets));
             })
         };
-        let policy = self.cfg.policy.clone();
         let sink = line_sink(run, "acp", &secrets);
-        let out = match acp::run(&self.reaper, spec, policy, ctl, emit, Some(sink)).await {
+        let out = match acp::run(&self.reaper, spec, ctl, emit, Some(sink)).await {
             Ok(o) => o,
             Err(AcpError::Stopped(s)) => return Err(s.into()),
             Err(AcpError::Failed(m)) => return Err(Abort::Fail(redact(&m, &secrets))),
@@ -2089,8 +2088,7 @@ impl Steps for SegmentSteps<'_> {
             })
         };
         let sink = line_sink(self.run, "acp", &self.secrets);
-        let policy = self.mgr.cfg.policy.clone();
-        let res = acp::run(&self.mgr.reaper, spec, policy, self.ctl, emit, Some(sink)).await;
+        let res = acp::run(&self.mgr.reaper, spec, self.ctl, emit, Some(sink)).await;
         // Every turn's spend counts, whatever the outcome.
         let turn = usage.lock().unwrap().take();
         {

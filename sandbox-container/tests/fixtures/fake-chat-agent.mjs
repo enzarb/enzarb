@@ -89,13 +89,13 @@ async function prompt(id, params) {
   if (word === "PERM") {
     const a = await permission(sid, "a", "execute", "cargo test", { command: "cargo test" });
     const b = await permission(sid, "b", "read", "Read token", { file_path: "/workspace/.enzarb/claude-token" });
-    const c = await permission(sid, "c", "execute", "ls", { command: "ls -la" });
+    const c = await permission(sid, "c", "switch_mode", "Ready to code?", { plan: "ls -la" });
     chunk(sid, `perm: a=${a},b=${b},c=${c}`);
     return reply(id, { stopReason: "end_turn" });
   }
   if (word === "SLEEP") {
     chunk(sid, "working");
-    const p = permission(sid, "s", "execute", "make", { command: "make" });
+    const p = permission(sid, "s", "switch_mode", "Ready to code?", { plan: "make" });
     await new Promise((resolve) => (cancelled = resolve));
     const outcome = await p;
     chunk(sid, `cancelled perm=${outcome}`);

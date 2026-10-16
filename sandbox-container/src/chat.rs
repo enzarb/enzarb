@@ -15,8 +15,8 @@
 //!
 //! Permission mode: every session starts in `ENZARB_CHAT_PERMISSION_MODE`
 //! (default `bypassPermissions`: the sandbox is the boundary). In bypass the
-//! agent asks for no permission, so the hard-deny policy only sees the calls
-//! Claude Code still asks about; what bounds the agent then is its scrubbed
+//! agent asks for no permission; in the other modes sandbox-init allows every
+//! request but leaving plan mode itself. What bounds the agent is its scrubbed
 //! environment (no clone, deps or npm token), its worktree, the pod's egress
 //! policy and gVisor. It runs as the same uid as sandbox-init, so file modes
 //! do not hide sandbox-init's files from it (see the README).
@@ -995,7 +995,6 @@ impl ChatManager {
             json!({"event": "opened", "resume": resume_sid.is_some()}),
         );
         let filter = Filter::new(
-            self.cfg.policy.clone(),
             self.cfg.chat_permission_mode,
             self.cfg.chat_allow_bypass,
             wt.clone(),

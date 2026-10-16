@@ -392,35 +392,22 @@ async fn chat_end_to_end() {
     let id = acp.request("authenticate", json!({"methodId": "x"})).await;
     assert_eq!(acp.response(id).await.0["error"]["code"], -32601);
 
-    // permissions: allow passes, hard deny never reaches the browser as a request,
-    // allow_always becomes reject
+    // permissions: a and b are allowed in the sandbox (allow_always), only
+    // leaving plan mode (c) reaches the browser; allow_always becomes reject there
     let pid_req = acp
         .request(
             "session/prompt",
             json!({"sessionId": sid, "prompt": [{"type": "text", "text": "PERM"}]}),
         )
         .await;
-    let (a, _) = acp
+    let (c, before) = acp
         .until(|m| m["method"] == "session/request_permission")
-        .await;
-    assert_eq!(a["params"]["toolCall"]["toolCallId"], "a");
-    assert!(a["params"]["_meta"]["enzarb"]["policy"].is_string());
-    acp.send(json!({"jsonrpc": "2.0", "id": a["id"], "result": {"outcome": {"outcome": "selected", "optionId": "yes"}}}))
-        .await;
-    let (denied, before) = acp
-        .until(|m| m["method"] == "_enzarb/permission_denied")
         .await;
     assert!(
         before
             .iter()
             .all(|m| m["method"] != "session/request_permission")
     );
-    assert_eq!(denied["params"]["toolCall"]["toolCallId"], "b");
-    assert_eq!(denied["params"]["rule"], "enzarb_internal");
-    assert_eq!(denied["params"]["sessionId"], json!(sid));
-    let (c, _) = acp
-        .until(|m| m["method"] == "session/request_permission")
-        .await;
     assert_eq!(c["params"]["toolCall"]["toolCallId"], "c");
     // an answer to an id never issued is ignored, then allow_always is replaced
     acp.send(json!({"jsonrpc": "2.0", "id": 424242, "result": {"outcome": {"outcome": "selected", "optionId": "yes"}}}))
@@ -429,7 +416,7 @@ async fn chat_end_to_end() {
         .await;
     let (r, seen) = acp.response(pid_req).await;
     assert_eq!(r["result"]["stopReason"], "end_turn");
-    assert_eq!(chunks(&seen), "perm: a=yes,b=no,c=no");
+    assert_eq!(chunks(&seen), "perm: a=always,b=always,c=no");
 
     // agent requests to the client are refused; spoofed notifications dropped
     let (_, text) = acp.prompt(&sid, "FSREQ").await;
@@ -472,7 +459,7 @@ async fn chat_end_to_end() {
     assert_eq!(mode, 0o600);
     let transcript = std::fs::read_to_string(&tr).unwrap();
     assert!(transcript.contains("\"permission\""));
-    assert!(transcript.contains("hard_deny"));
+    assert!(transcript.contains("\"sandbox\""));
     assert!(
         !transcript.contains("FAKEclaudeTOKEN"),
         "token in transcript"
@@ -952,7 +939,7 @@ async fn chat_bypass_is_the_default_mode() {
     assert_eq!(i["modes"], json!(["bypassPermissions"]));
     assert_eq!(i["currentMode"], "bypassPermissions");
 
-    // no permission requests reach the browser (nor the hard-deny policy)
+    // no permission requests reach the browser
     let (r, text) = acp.prompt(&sid, "PERM").await;
     assert_eq!(r["result"]["stopReason"], "end_turn");
     assert_eq!(text, "perm: a=bypassed,b=bypassed,c=bypassed");
@@ -980,19 +967,12 @@ async fn chat_bypass_is_the_default_mode() {
             assert_eq!(note["params"]["modeId"], m);
         }
     }
-    // back in default: the permission flow is the strict one again
+    // back in default: sandbox-init answers, leaving plan mode goes to the user
     let id = acp
         .request(
             "session/prompt",
             json!({"sessionId": sid, "prompt": [{"type": "text", "text": "PERM"}]}),
         )
-        .await;
-    let (a, _) = acp
-        .until(|m| m["method"] == "session/request_permission")
-        .await;
-    acp.send(json!({"jsonrpc": "2.0", "id": a["id"], "result": {"outcome": {"outcome": "selected", "optionId": "yes"}}}))
-        .await;
-    acp.until(|m| m["method"] == "_enzarb/permission_denied")
         .await;
     let (c, _) = acp
         .until(|m| m["method"] == "session/request_permission")
@@ -1000,7 +980,7 @@ async fn chat_bypass_is_the_default_mode() {
     acp.send(json!({"jsonrpc": "2.0", "id": c["id"], "result": {"outcome": {"outcome": "selected", "optionId": "no"}}}))
         .await;
     let (_, seen) = acp.response(id).await;
-    assert_eq!(chunks(&seen), "perm: a=yes,b=no,c=no");
+    assert_eq!(chunks(&seen), "perm: a=always,b=always,c=no");
 }
 
 #[tokio::test]

@@ -478,12 +478,6 @@ mod tests {
                 if p.extension().is_none_or(|x| x != "rs") || p.ends_with("retarget.rs") {
                     continue;
                 }
-                // The agent permission policy names the flags to DENY them.
-                if p.components().any(|c| c.as_os_str() == "policy")
-                    || p.file_name().is_some_and(|n| n == "policy.rs")
-                {
-                    continue;
-                }
                 seen += 1;
                 for (i, l) in std::fs::read_to_string(&p).unwrap().lines().enumerate() {
                     if l.trim_start().starts_with("//") {
