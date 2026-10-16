@@ -10,7 +10,11 @@ import path from 'node:path';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import postgres from 'postgres';
 import { migrate } from '../scripts/migrate.ts';
-import { applyEngineSchema, seedTask } from '../src/lib/server/testdata/engine-fixture.ts';
+import {
+	applyEngineSchema,
+	seedBoard,
+	seedTask
+} from '../src/lib/server/testdata/engine-fixture.ts';
 import { SESSION_COOKIE, createSession, upsertUser } from '../src/lib/server/auth.ts';
 import {
 	E2E_PORT,
@@ -36,13 +40,12 @@ try {
 	// The engine's API with two tasks in the project: one waits on the user (the nav badge and the
 	// /tasks queue), one is running.
 	await applyEngineSchema(sql);
-	await sql`INSERT INTO engine.boards (project, board) VALUES (${E2E_PROJECT},
-		${sql.json({
-			columns: [
-				{ id: 'doing', title: 'In progress' },
-				{ id: 'review', title: 'Review' }
-			]
-		})})`;
+	await seedBoard(sql, E2E_PROJECT, 'e2e-org/app', {
+		columns: [
+			{ id: 'doing', title: 'In progress' },
+			{ id: 'review', title: 'Review' }
+		]
+	});
 	await seedTask(sql, {
 		project: E2E_PROJECT,
 		title: 'Add search',

@@ -19,7 +19,8 @@ deps_of() { # <dir>
     sandbox-container) echo proto ;;
     sandbox-proxy) echo proto operator ;;
     workflows) echo operator connectors proto ;;
-    ui) echo proto workflows/crates/engine/prompts ;;
+    ui) echo proto ;;
+    connectors) echo workflows/crates/flow ;;
     *) echo ;;
   esac
 }

@@ -36,8 +36,8 @@ check "operator fans out" "operator workflows sandbox-proxy" operator/crates/enz
 check "connectors fans out" "connectors workflows" connectors/bin/receiver/src/main.rs
 check "realtime only" "realtime" realtime/src/lib.rs
 check "ui only" "ui" ui/src/routes/+page.svelte
-check "graph fixtures feed the ui tests" "workflows ui" workflows/crates/graph/tests/fixtures/validate.json
-check "engine prompts feed the ui copy" "workflows ui" workflows/crates/engine/prompts/plan.md
+check "engine migrations feed the ui tests" "workflows ui" workflows/migrations/20261016000002_engine_api.sql
+check "flow crate is compiled into connectors" "connectors workflows" workflows/crates/flow/src/lib.rs
 check "helm only" "helm" helm/enzarb/values.yaml
 check "dependency order" "proto operator workflows sandbox-proxy sandbox-container ui" ui/a.ts operator/b.rs proto/c.rs
 check "shared rust workflow" "operator connectors workflows realtime sandbox-proxy sandbox-container updater monorepo" .github/workflows/_rust.yml

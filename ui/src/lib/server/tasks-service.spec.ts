@@ -5,6 +5,8 @@ import { TaskError, chatsService, secretsService, tasksService } from './tasks-s
 import { createItemHandler, loadItemFrom } from './notifier.ts';
 import {
 	applyEngineSchema,
+	seedBoard,
+	seedWorkflowView,
 	seedSessionEvent,
 	seedStepRun,
 	seedTask
@@ -48,15 +50,17 @@ describe('tasksService against engine_api', () => {
 		await seedSessionEvent(sql, 'run-1', 1, 'prompt', { text: 'Plan the change' });
 		await seedSessionEvent(sql, 'run-1', 2, 'assistant', { text: 'Here is the plan' });
 		await seedSessionEvent(sql, 'run-1', 3, 'tool_call', { name: 'Read', input: { path: 'x' } });
-		await sql`INSERT INTO engine.boards (project, board) VALUES ('web',
-			${sql.json({
-				columns: [
-					{ id: 'doing', title: 'In progress', limit: 3 },
-					{ id: 'review', title: 'Review' }
-				]
-			})})`;
-		await sql`INSERT INTO engine.workflow_views (project, repo, view) VALUES ('web', 'acme/web',
-			${sql.json({ bindings: [{ id: 'issues', on: 'issue', use: 'std/workflows/issue' }], workflows: [], lint: [{ level: 'error', message: 'bad' }] })})`;
+		await seedBoard(sql, 'web', 'acme/web', {
+			columns: [
+				{ id: 'doing', title: 'In progress', limit: 3 },
+				{ id: 'review', title: 'Review' }
+			]
+		});
+		await seedWorkflowView(sql, 'web', 'acme/web', {
+			bindings: [{ id: 'issues', on: 'issue', use: 'std/workflows/issue' }],
+			workflows: [],
+			lint: [{ level: 'error', message: 'bad' }]
+		});
 		await sql`INSERT INTO engine.chats (run_id, "user", project, title) VALUES ('chat-1', 'octo', 'web', 'Hi')`;
 		await seedSessionEvent(sql, 'chat-1', 1, 'user', { text: 'hello' });
 	}, 120_000);

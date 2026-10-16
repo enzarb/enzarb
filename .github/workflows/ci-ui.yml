@@ -5,10 +5,7 @@ on:
     paths:
       - 'ui/**'
       - 'proto/**'
-      - 'workflows/crates/graph/tests/fixtures/**'
-      - 'workflows/crates/engine/prompts/**'
-      - 'workflows/crates/engine/src/machine/prompt.rs'
-      - 'docs/workflows/examples/**'
+      - 'workflows/migrations/**'
       - .github/workflows/ci-ui.yml
       - .github/workflows/_docker.yml
       - .github/actions/ui-install/**
@@ -16,10 +13,7 @@ on:
     paths:
       - 'ui/**'
       - 'proto/**'
-      - 'workflows/crates/graph/tests/fixtures/**'
-      - 'workflows/crates/engine/prompts/**'
-      - 'workflows/crates/engine/src/machine/prompt.rs'
-      - 'docs/workflows/examples/**'
+      - 'workflows/migrations/**'
       - .github/workflows/ci-ui.yml
       - .github/workflows/_docker.yml
       - .github/actions/ui-install/**
