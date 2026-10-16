@@ -80,6 +80,9 @@ pub struct PromptContext {
     pub base_ref: String,
     /// `{merge_base_sha}`: the pinned merge base of the source branch and `{base_ref}`.
     pub merge_base_sha: String,
+    /// `{changed_files}`: the files the source branch changes since the merge base, one per
+    /// line (capped by the sandbox, with a trailing note when the list is cut short).
+    pub changed_files: String,
     /// `{affected}`: the components the change reaches, one directory per line.
     pub affected: String,
     /// `{branch}`: the branch to commit to.
@@ -129,6 +132,7 @@ impl PromptContext {
             "plan" => &self.plan,
             "base_ref" => &self.base_ref,
             "merge_base_sha" => &self.merge_base_sha,
+            "changed_files" => &self.changed_files,
             "affected" => &self.affected,
             "branch" => &self.branch,
             "head_ref" => &self.head_ref,
@@ -771,6 +775,7 @@ mod tests {
             plan: "PLAN-X".into(),
             base_ref: "main".into(),
             merge_base_sha: "MBASE-X".into(),
+            changed_files: "FILES-X".into(),
             affected: "AFFECTED-X".into(),
             branch: "enzarb/issue-42".into(),
             head_ref: "feature".into(),
@@ -913,6 +918,16 @@ mod tests {
         let review = render_prompt(JobKind::AgentReview, &ctx);
         assert!(review.contains("never inspect, fetch or update the local `main`"));
         assert!(review.contains("Name the components you skipped as unaffected"));
+        assert!(review.contains("`FILES-X`"));
+    }
+
+    #[test]
+    fn old_contexts_without_the_prepared_fields_still_decode() {
+        let old = serde_json::json!({"repo": "github:o/r", "base_ref": "main", "affected": "ui"});
+        let ctx: PromptContext = serde_json::from_value(old).unwrap();
+        assert_eq!(ctx.changed_files, "");
+        assert_eq!(ctx.merge_base_sha, "");
+        assert_eq!(ctx.affected, "ui");
     }
 
     #[test]

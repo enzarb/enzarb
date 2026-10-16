@@ -24,7 +24,7 @@ export type ChannelKind = "pty" | "acp" | (string & {});
  * `RunResults`: the server pushes `run_finished` to the session that started or subscribed to a run,
  * answers `run_status` with `run_state.result`, and accepts `run_start` without a callback.
  */
-export const Feature = { Acp: "acp", ClaudeUserToken: "claude_user_token", Stats: "stats", RunResults: "run_results" } as const;
+export const Feature = { Acp: "acp", ClaudeUserToken: "claude_user_token", Stats: "stats", RunResults: "run_results", Prepare: "prepare" } as const;
 /** Decoders keep at most this many features and drop any longer than `MAX_FEATURE_LEN` bytes. */
 export const MAX_FEATURES = 64;
 export const MAX_FEATURE_LEN = 64;
@@ -186,6 +186,16 @@ export interface SandboxStats {
   storage_total_bytes?: number | null;
 }
 
+/** `prepared` reply: best-effort run preparation results; empty fields are omitted. */
+export interface Prepared {
+  run_id: string;
+  merge_base_sha?: string | null;
+  changed_files?: string[];
+  /** The true number of changed files (may exceed `changed_files.length`). */
+  changed_files_total?: number;
+  affected?: string[];
+}
+
 export type Ctrl =
   | { type: "hello"; versions: number[]; client: ClientKind; features?: string[] | null }
   | { type: "welcome"; version: number; features?: string[] | null }
@@ -205,6 +215,8 @@ export type Ctrl =
   | { type: "credential_state"; kind: CredentialKind; configured: boolean; scope?: string | null }
   | { type: "stats_request" }
   | ({ type: "stats" } & SandboxStats)
+  | { type: "prepare_request"; run_id: string; repo_url: string; base_ref: string; branch: string; clone_token: SecretLike }
+  | ({ type: "prepared" } & Prepared)
   /** Client -> server: clear the stored credential. */
   | { type: "credential_clear"; kind: CredentialKind }
   | { type: "error"; code: string; message: string; run_id?: string; channel?: number };
@@ -231,6 +243,8 @@ const TYPES: ReadonlySet<string> = new Set<CtrlType>([
   "credential_clear",
   "stats_request",
   "stats",
+  "prepare_request",
+  "prepared",
   "error",
 ]);
 
@@ -252,7 +266,14 @@ export function asCtrl(v: unknown): Ctrl {
   if (!TYPES.has(t)) throw new UnknownCtrlType(t);
   // Wrap incoming tokens so logging the message cannot leak them. Unknown keys pass through untouched.
   const o = v as Record<string, unknown>;
-  const field = t === "credential_captured" ? "token" : t === "open" || t === "run_start" ? "claude_token" : undefined;
+  const field =
+    t === "credential_captured"
+      ? "token"
+      : t === "open" || t === "run_start"
+        ? "claude_token"
+        : t === "prepare_request"
+          ? "clone_token"
+          : undefined;
   if (field !== undefined && typeof o[field] === "string") return { ...o, [field]: new Secret(o[field]) } as Ctrl;
   return v as Ctrl;
 }

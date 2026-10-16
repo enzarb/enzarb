@@ -12,8 +12,8 @@
 //! the [`SessionCtx`] clones you need and drop them in `session_closed`.
 
 use async_trait::async_trait;
-use enzarb_proto::RunStart;
 use enzarb_proto::session::Session;
+use enzarb_proto::{PrepareRequest, RunStart};
 
 /// One mux connection.
 #[derive(Clone)]
@@ -33,6 +33,18 @@ pub trait RunManager: Send + Sync + 'static {
 
     /// CTRL `run_cancel`.
     async fn cancel(&self, ctx: &SessionCtx, run_id: &str);
+
+    /// Whether [`prepare`](Self::prepare) is implemented; the server then
+    /// advertises `feature::PREPARE`.
+    fn supports_prepare(&self) -> bool {
+        false
+    }
+
+    /// CTRL `prepare_request`. Answer with `prepared` (empty fields when a
+    /// step failed). Only called when [`supports_prepare`](Self::supports_prepare).
+    async fn prepare(&self, ctx: &SessionCtx, _req: PrepareRequest) {
+        unimplemented(ctx, "prepare_request");
+    }
 
     /// CTRL `run_subscribe`: push `run_finished` for these runs to this
     /// session (at once for runs already over). Only called when

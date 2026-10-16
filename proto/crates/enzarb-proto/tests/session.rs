@@ -266,6 +266,60 @@ async fn unknown_message_answer_keeps_session_alive() {
     ));
 }
 
+fn prepare_req(run_id: &str) -> enzarb_proto::PrepareRequest {
+    enzarb_proto::PrepareRequest {
+        run_id: run_id.into(),
+        repo_url: "https://github.com/o/r".into(),
+        base_ref: "main".into(),
+        branch: "b".into(),
+        clone_token: Secret::new("ghs_clone"),
+    }
+}
+
+#[tokio::test]
+async fn prepare_is_answered_by_prepared_with_the_same_run_id() {
+    let ((client, _ce), (server, mut se)) = memory::session_pair(ClientKind::Executor).await;
+    tokio::spawn(async move {
+        while let Some(ev) = se.next().await {
+            if let Event::Ctrl(Ctrl::PrepareRequest(req)) = ev {
+                server
+                    .send_ctrl(&Ctrl::Prepared(enzarb_proto::Prepared {
+                        run_id: req.run_id,
+                        merge_base_sha: Some("abc".into()),
+                        changed_files: vec!["a".into()],
+                        changed_files_total: 1,
+                        affected: vec![],
+                    }))
+                    .unwrap();
+            }
+        }
+    });
+    let got = timeout(T, client.prepare(prepare_req("job-9")))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(got.run_id, "job-9");
+    assert_eq!(got.merge_base_sha.as_deref(), Some("abc"));
+    assert_eq!(got.changed_files, vec!["a".to_string()]);
+}
+
+#[tokio::test]
+async fn prepare_unknown_message_error_fails_request() {
+    let ((client, _ce), (server, mut se)) = memory::session_pair(ClientKind::Executor).await;
+    tokio::spawn(async move {
+        while let Some(ev) = se.next().await {
+            if let Event::Ctrl(Ctrl::PrepareRequest(_)) = ev {
+                server.send_error("unknown_message", "no").unwrap();
+            }
+        }
+    });
+    let e = timeout(T, client.prepare(prepare_req("job-9")))
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(e, SessionError::Remote { ref code, .. } if code == "unknown_message"));
+}
+
 #[tokio::test]
 async fn credential_status_unimplemented_error_fails_request() {
     let ((client, _ce), (server, mut se)) = memory::session_pair(ClientKind::Ui).await;
