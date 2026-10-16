@@ -127,6 +127,23 @@ pub struct Status {
     pub target_url: Option<String>,
 }
 
+/// Why an issue is closed (GitHub `state_reason`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseReason {
+    Completed,
+    NotPlanned,
+}
+
+impl CloseReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CloseReason::Completed => "completed",
+            CloseReason::NotPlanned => "not_planned",
+        }
+    }
+}
+
 /// A user's access to a repository, lowest to highest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
