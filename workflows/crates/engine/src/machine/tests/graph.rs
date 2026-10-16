@@ -28,6 +28,7 @@ fn source(yaml: &str) -> GraphSource {
         path: ".enzarb/workflows/issue.yaml".into(),
         sha: "c0ffee".into(),
         source: yaml.into(),
+        prompts: Default::default(),
     }
 }
 
@@ -705,5 +706,62 @@ fn a_failed_graph_task_retries_from_start_with_a_fresh_definition() {
     rejected(
         &transition(&c, &s, &ui("r", "alice", UiActionKind::Retry)),
         &s,
+    );
+}
+
+// -- prompt files ----------------------------------------------------------------
+
+const FILE_GRAPH: &str = "version: 1
+name: issue
+on: [issue_opened]
+start: implement
+nodes:
+  implement: {type: agent, prompt: {file: .enzarb/prompts/implement.md}, next: {pushed: open_pr, else: failed}}
+  open_pr:   {type: action, action: open_change_request, next: done}
+  failed:    {type: end, status: failed}
+  done:      {type: end, status: done}
+";
+
+#[test]
+fn prompt_files_are_pinned_and_rendered() {
+    let mut src = source(FILE_GRAPH);
+    src.prompts.insert(
+        ".enzarb/prompts/implement.md".into(),
+        "Do {title} (#{number}) carefully.".into(),
+    );
+    let c = Ctx {
+        graph: Some(src),
+        ..ctx(Permission::Read)
+    };
+    let t = start(&c);
+    let g = assert_graph(&t, GraphPhase::Running);
+    assert_eq!(
+        g.data.graph.prompts[".enzarb/prompts/implement.md"],
+        "Do {title} (#{number}) carefully."
+    );
+    assert_eq!(
+        t.next.state_data()["graph"]["prompts"][".enzarb/prompts/implement.md"],
+        "Do {title} (#{number}) carefully."
+    );
+    let (_, _, input) = job_of(&t, JobKind::AgentSegment);
+    assert_eq!(
+        input["graph"]["prompts"]["implement"],
+        "Do Add dark mode (#42) carefully."
+    );
+    assert_eq!(
+        input["prompt_files"][".enzarb/prompts/implement.md"],
+        "Do {title} (#{number}) carefully."
+    );
+}
+
+#[test]
+fn a_missing_prompt_file_falls_back_with_a_comment() {
+    let t = start(&gctx(Permission::Read, Some(FILE_GRAPH)));
+    assert_issue(&t, IssuePhase::Triaging);
+    let bodies = comment_bodies(&t);
+    assert!(
+        bodies[0].contains("prompt file `.enzarb/prompts/implement.md` does not exist at c0ffee"),
+        "{}",
+        bodies[0]
     );
 }

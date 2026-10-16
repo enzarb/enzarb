@@ -39,7 +39,6 @@ use std::io::{self, BufRead};
 use std::os::unix::process::CommandExt;
 
 use crate::exec::{Ctl, LineSink, Stop, terminate};
-use crate::policy::Policy;
 use crate::reaper::{ExitStatus, Reaper};
 
 /// Receives transcript records `(kind, fields)`.
@@ -372,21 +371,23 @@ fn acp_err(what: &str, e: agent_client_protocol::Error) -> AcpError {
     AcpError::Failed(format!("{what}: {e}"))
 }
 
-/// Pick the option to answer a permission request with.
-fn choose_option(options: &[Value], allow: bool) -> Option<String> {
-    let want = if allow { "allow_once" } else { "reject_once" };
-    options
-        .iter()
-        .find(|o| o.get("kind").and_then(Value::as_str) == Some(want))
-        .and_then(|o| o.get("optionId").and_then(Value::as_str))
-        .map(String::from)
+/// Pick the allow option to answer a permission request with: the sandbox
+/// (gVisor, network policy, scoped tokens) is the security boundary, so every
+/// request is allowed (`allow_always` when offered, else `allow_once`).
+pub(crate) fn allow_option(options: &[Value]) -> Option<String> {
+    ["allow_always", "allow_once"].iter().find_map(|want| {
+        options
+            .iter()
+            .find(|o| o.get("kind").and_then(Value::as_str) == Some(*want))
+            .and_then(|o| o.get("optionId").and_then(Value::as_str))
+            .map(String::from)
+    })
 }
 
 /// Run one prompt to completion (or until stopped), then stop the agent.
 pub async fn run(
     reaper: &Reaper,
     spec: AcpSpec,
-    policy: Policy,
     ctl: &mut Ctl,
     emit: Emit,
     stderr: Option<LineSink>,
@@ -396,7 +397,6 @@ pub async fn run(
     let mut exit = sp.exit;
     let cancelling = Arc::new(AtomicBool::new(false));
     let collector = Arc::new(Mutex::new(Collector::default()));
-    let worktree = spec.cwd.clone();
 
     let on_update = {
         let emit = emit.clone();
@@ -422,16 +422,15 @@ pub async fn run(
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default();
-            let decision = policy.decide(&tool_call, &worktree);
-            let option = choose_option(&options, decision.allow);
+            let option = allow_option(&options);
             let record = json!({
                 "tool_call_id": tool_call.get("toolCallId"),
                 "tool_kind": tool_call.get("kind"),
                 "title": tool_call.get("title"),
                 "input": tool_call.get("rawInput"),
-                "decision": if decision.allow { "allow" } else { "deny" },
-                "rule": decision.rule,
-                "reason": decision.reason,
+                "decision": "allow",
+                "rule": "sandbox",
+                "reason": "the sandbox is the security boundary",
                 "option_id": option,
             });
             emit("permission", record);
@@ -734,15 +733,15 @@ mod tests {
     }
 
     #[test]
-    fn chooses_one_shot_options_only() {
+    fn always_chooses_an_allow_option() {
         let opts = vec![
             json!({"optionId": "always", "kind": "allow_always"}),
             json!({"optionId": "yes", "kind": "allow_once"}),
             json!({"optionId": "no", "kind": "reject_once"}),
         ];
-        assert_eq!(choose_option(&opts, true).as_deref(), Some("yes"));
-        assert_eq!(choose_option(&opts, false).as_deref(), Some("no"));
-        assert_eq!(choose_option(&opts[..1], true), None);
-        assert_eq!(choose_option(&[], false), None);
+        assert_eq!(allow_option(&opts).as_deref(), Some("always"));
+        assert_eq!(allow_option(&opts[1..]).as_deref(), Some("yes"));
+        assert_eq!(allow_option(&opts[2..]), None);
+        assert_eq!(allow_option(&[]), None);
     }
 }

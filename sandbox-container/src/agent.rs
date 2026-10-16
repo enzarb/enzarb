@@ -482,6 +482,7 @@ impl RunManager for AgentRunManager {
         stored.clone_token = String::new();
         stored.deps_token = None;
         stored.npm_token = None;
+        stored.ci_read_token = None;
         stored.claude_token = None;
         let setup = crate::privs::create_dir_all(&dir)
             .and_then(|()| {
@@ -707,6 +708,19 @@ fn npm_env(token: &str) -> Vec<(String, String)> {
 fn apply_npm_env(env: &mut Vec<(String, String)>, token: &str) {
     env.retain(|(k, _)| k != "NODE_AUTH_TOKEN");
     env.extend(npm_env(token));
+}
+
+/// `GH_TOKEN` for the agent process only, so `gh run view --log-failed` can read the
+/// repository's CI logs. The token is a short-lived installation token with
+/// `actions: read`, `checks: read` and `metadata: read` on this one repository: env
+/// only, no `gh` config or git config is written, never stored in request.json/state.
+fn ci_env(token: &str) -> Vec<(String, String)> {
+    vec![
+        ("GH_TOKEN".to_string(), token.to_string()),
+        // No update checks or prompts from `gh` in a non-interactive run.
+        ("GH_NO_UPDATE_NOTIFIER".to_string(), "1".to_string()),
+        ("GH_PROMPT_DISABLED".to_string(), "1".to_string()),
+    ]
 }
 
 fn redact(s: &str, secrets: &[String]) -> String {
@@ -1582,6 +1596,10 @@ impl Inner {
             secrets.push(t.clone());
             secrets.push(basic_b64(t));
         }
+        let ci_read_token = req.ci_read_token.clone().filter(|t| !t.is_empty());
+        if let Some(t) = &ci_read_token {
+            secrets.push(t.clone());
+        }
         let npm_token = req.npm_token.clone().filter(|t| !t.is_empty());
         if let Some(t) = &npm_token {
             secrets.push(t.clone());
@@ -1671,6 +1689,9 @@ impl Inner {
         if let Some(t) = &npm_token {
             apply_npm_env(&mut tok_env, t);
         }
+        if let Some(t) = &ci_read_token {
+            tok_env.extend(ci_env(t));
+        }
 
         // A graph segment walks its own nodes; preparation, if any, is a
         // `command` node the repo owns (ADR-0020), so `prepare` is skipped.
@@ -1738,9 +1759,8 @@ impl Inner {
                 transcript.append(kind, redact_value(fields, &secrets));
             })
         };
-        let policy = self.cfg.policy.clone();
         let sink = line_sink(run, "acp", &secrets);
-        let out = match acp::run(&self.reaper, spec, policy, ctl, emit, Some(sink)).await {
+        let out = match acp::run(&self.reaper, spec, ctl, emit, Some(sink)).await {
             Ok(o) => o,
             Err(AcpError::Stopped(s)) => return Err(s.into()),
             Err(AcpError::Failed(m)) => return Err(Abort::Fail(redact(&m, &secrets))),
@@ -2313,8 +2333,7 @@ impl Steps for SegmentSteps<'_> {
             })
         };
         let sink = line_sink(self.run, "acp", &self.secrets);
-        let policy = self.mgr.cfg.policy.clone();
-        let res = acp::run(&self.mgr.reaper, spec, policy, self.ctl, emit, Some(sink)).await;
+        let res = acp::run(&self.mgr.reaper, spec, self.ctl, emit, Some(sink)).await;
         // Every turn's spend counts, whatever the outcome.
         let turn = usage.lock().unwrap().take();
         {
@@ -2560,6 +2579,7 @@ mod npm_tests {
             log_channel: None,
             deps_token: Some("d".into()),
             npm_token: Some("ghp_npm123".into()),
+            ci_read_token: Some("ghs_ci123".into()),
             claude_token: Some("sk-ant-oat01-x".into()),
             retarget: None,
             graph: None,
@@ -2567,10 +2587,37 @@ mod npm_tests {
         req.clone_token = String::new();
         req.deps_token = None;
         req.npm_token = None;
+        req.ci_read_token = None;
         req.claude_token = None;
         let json = serde_json::to_string(&req).unwrap();
         assert!(!json.contains("ghp_npm123") && !json.contains("npm_token"));
+        assert!(!json.contains("ghs_ci123") && !json.contains("ci_read_token"));
         assert!(!json.contains("oat01") && !json.contains("claude_token"));
+    }
+
+    #[test]
+    fn ci_read_token_is_only_gh_token_in_env() {
+        let env = ci_env("ghs_ci123");
+        let with: Vec<_> = env
+            .iter()
+            .filter(|(_, v)| v.contains("ghs_ci123"))
+            .collect();
+        assert_eq!(with, [&("GH_TOKEN".to_string(), "ghs_ci123".to_string())]);
+        // No git config, no other credential variable.
+        assert!(env.iter().all(|(k, _)| !k.starts_with("GIT_CONFIG")));
+        assert!(
+            !env.iter()
+                .any(|(k, _)| k == "GITHUB_TOKEN" || k == "ENZARB_DEPS_TOKEN")
+        );
+        // Unset: nothing is added (the caller only extends when the token is set).
+        let none: Option<String> = None;
+        let mut tok_env: Vec<(String, String)> = Vec::new();
+        if let Some(t) = &none {
+            tok_env.extend(ci_env(t));
+        }
+        assert!(tok_env.is_empty());
+        let secrets = vec!["ghs_ci123".to_string()];
+        assert_eq!(redact("log ghs_ci123 end", &secrets), "log *** end");
     }
 }
 

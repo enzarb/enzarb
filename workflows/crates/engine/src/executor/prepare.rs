@@ -135,6 +135,7 @@ mod tests {
             prompt: String::new(),
             recovery_used: false,
             graph: None,
+            prompt_files: Default::default(),
         }
     }
 

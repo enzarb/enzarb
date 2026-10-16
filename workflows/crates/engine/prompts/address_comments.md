@@ -30,6 +30,16 @@ All discussion so far (oldest first). Other unresolved comments may be here; add
 {thread}
 </untrusted>
 
+CI failure (`(none)` unless this round was started because a CI check failed on the head):
+
+<untrusted>
+{ci_failure}
+</untrusted>
+
+# CI failures
+
+If the CI failure above is not `(none)`, read the failing log first; do not guess. For a GitHub Actions check, run `gh run view <run id> --log-failed | tail -200` (the run id is above; `gh run view --job <job id> --log` shows one job). `gh` is read-only in this sandbox and already authenticated for this repository's checks and Actions logs only. Find the failing test or error, then reproduce only that: `cargo nextest run -E 'test(<name>)'` or `cargo test --test <file> <name>` for Rust; the single test or file for other stacks. Do not run the whole workspace or test suite to find out what failed. Fix the test or the code, check that test and then the component's usual checks. If `gh` returns an error (for example a missing permission or an expired log) or the check has no log, say so in the `blocked` body with the exact error instead of guessing.
+
 # What to do
 
 1. Read the repository's own guidance (`CLAUDE.md`, `README.md`, contributing notes) and follow its conventions.

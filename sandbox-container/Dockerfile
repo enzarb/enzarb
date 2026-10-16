@@ -121,6 +121,25 @@ RUN set -e; \
 # Playwright stage: Chromium for the ui browser tests, installed into /opt/ms-playwright. Keep
 # PLAYWRIGHT_VERSION equal to the playwright version in ui/package-lock.json
 # (scripts/check-playwright-version.sh, run in CI).
+# gh stage: the GitHub CLI, checked against the checksums file published with the release. Only a
+# CI-fix run has a GH_TOKEN, read-only and for one repository (`gh run view --log-failed`); see the
+# README.
+FROM ubuntu:26.04 AS gh
+ARG GH_VERSION=2.76.2
+ARG TARGETARCH
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN set -e; \
+    case "$TARGETARCH" in amd64|arm64) ;; *) echo "unsupported arch $TARGETARCH"; exit 1;; esac; \
+    d="gh_${GH_VERSION}_linux_${TARGETARCH}"; \
+    base="https://github.com/cli/cli/releases/download/v${GH_VERSION}"; \
+    curl --retry 5 --retry-all-errors -fsSLO "${base}/${d}.tar.gz"; \
+    curl --retry 5 --retry-all-errors -fsSL "${base}/gh_${GH_VERSION}_checksums.txt" | grep " ${d}.tar.gz\$" | sha256sum -c -; \
+    tar -xzf "${d}.tar.gz" --strip-components=2 --no-same-owner "${d}/bin/gh"; \
+    install -m 0755 gh /usr/local/bin/gh; \
+    /usr/local/bin/gh --version
+
 FROM node AS playwright
 ARG PLAYWRIGHT_VERSION=1.64.0
 ARG TARGETARCH
@@ -145,6 +164,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 
 COPY --from=sccache /usr/local/bin/sccache /usr/local/bin/sccache
+COPY --from=gh /usr/local/bin/gh /usr/local/bin/gh
 # Chromium lives outside /workspace: the PVC mount would shadow it.
 COPY --from=playwright /opt/ms-playwright /opt/ms-playwright
 

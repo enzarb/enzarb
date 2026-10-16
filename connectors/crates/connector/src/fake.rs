@@ -50,6 +50,9 @@ pub enum Call {
         repos: Vec<RepoKey>,
         purpose: String,
     },
+    MintCiReadCredential {
+        repo: RepoKey,
+    },
     UpdateBranch {
         item: WorkItemKey,
         number: u64,
@@ -822,6 +825,20 @@ impl Connector for FakeConnector {
         let cred = ReadCred {
             token: format!("fake-read-token-{}", st.next_id),
             repos: repos.to_vec(),
+            expires_at: Utc::now() + Duration::hours(1),
+        };
+        Self::record(&mut st, call, false);
+        Ok(Some(cred))
+    }
+
+    async fn mint_ci_read_credential(&self, repo: &RepoKey) -> Result<Option<ReadCred>> {
+        let mut st = self.st();
+        let call = Call::MintCiReadCredential { repo: repo.clone() };
+        Self::take_failure(&mut st, call.clone())?;
+        st.next_id += 1;
+        let cred = ReadCred {
+            token: format!("fake-ci-token-{}", st.next_id),
+            repos: vec![repo.clone()],
             expires_at: Utc::now() + Duration::hours(1),
         };
         Self::record(&mut st, call, false);

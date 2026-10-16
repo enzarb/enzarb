@@ -3,7 +3,6 @@ use std::collections::HashSet;
 use super::filter::{self, Filter, Out, code};
 use super::*;
 use crate::config::ChatMode;
-use crate::policy::Policy;
 
 const TOKEN: &str = "sk-ant-oat01-SECRETsecretSECRET_0123456789";
 
@@ -17,7 +16,6 @@ fn filter_with(resume: Option<&str>) -> Filter {
 
 fn filter_mode(resume: Option<&str>, mode: ChatMode, allow_bypass: bool) -> Filter {
     Filter::new(
-        Policy::default(),
         mode,
         allow_bypass,
         wt(),
@@ -88,7 +86,8 @@ fn permission_request(id: i64, tool_call: Value) -> Vec<u8> {
 }
 
 fn ask_tool() -> Value {
-    json!({"toolCallId": "t1", "kind": "execute", "title": "cargo test", "rawInput": {"command": "cargo test"}})
+    // leaving plan mode is the only request forwarded to the user
+    json!({"toolCallId": "t1", "kind": "switch_mode", "title": "Ready to code?", "rawInput": {"plan": "cargo test"}})
 }
 
 // ---- method allowlist ----
@@ -378,7 +377,7 @@ fn failed_load_allows_a_new_session() {
 // ---- permissions ----
 
 #[test]
-fn permission_is_forwarded_with_hint_and_never_auto_approved() {
+fn leaving_plan_mode_is_forwarded_and_never_auto_approved() {
     let mut f = filter_with(None);
     ready(&mut f, false);
     let outs = f.from_agent(&permission_request(100, ask_tool()));
@@ -389,9 +388,6 @@ fn permission_is_forwarded_with_hint_and_never_auto_approved() {
     let b = browser_msgs(&outs);
     assert_eq!(b.len(), 1);
     assert_eq!(b[0]["method"], "session/request_permission");
-    let hint = &b[0]["params"]["_meta"]["enzarb"];
-    assert!(["allow", "deny", "unknown"].contains(&hint["policy"].as_str().unwrap()));
-    assert!(hint["rule"].is_string());
     assert_eq!(f.pending_permissions(), 1);
 }
 
@@ -480,7 +476,10 @@ fn cancel_and_close_resolve_pending_as_cancelled() {
     let mut f = filter_with(None);
     ready(&mut f, false);
     f.from_agent(&permission_request(1, ask_tool()));
-    f.from_agent(&permission_request(2, json!({"toolCallId":"t2","kind":"edit","title":"Edit","rawInput":{"file_path": "/workspace/worktrees/chat-0123456789abcdef/a"}})));
+    f.from_agent(&permission_request(
+        2,
+        json!({"toolCallId":"t2","kind":"switch_mode","title":"Plan","rawInput":{"plan": "x"}}),
+    ));
     let outs = f.from_browser(&line(
         json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"s-1"}}),
     ));
@@ -508,16 +507,14 @@ fn cancel_and_close_resolve_pending_as_cancelled() {
 }
 
 #[test]
-fn hard_deny_is_answered_in_the_sandbox() {
-    let denied = [
-        json!({"toolCallId":"h1","kind":"read","title":"Read","rawInput":{"file_path":"/workspace/.enzarb/claude-token"}}),
+fn every_other_permission_is_allowed_in_the_sandbox() {
+    let calls = [
+        json!({"toolCallId":"h1","kind":"read","title":"Read","rawInput":{"file_path":"/etc/hosts"}}),
         json!({"toolCallId":"h2","kind":"execute","title":"git push","rawInput":{"command":"git push origin HEAD"}}),
-        json!({"toolCallId":"h3","kind":"read","title":"Read","rawInput":{"file_path":"/var/run/enzarb/auth/token"}}),
         json!({"toolCallId":"h4","kind":"edit","title":"Edit","rawInput":{"file_path":"/workspace/repos/x/a"}}),
-        json!({"toolCallId":"h5","kind":"execute","title":"env","rawInput":{"command":"printenv CLAUDE_CODE_OAUTH_TOKEN"}}),
-        json!({"toolCallId":"h6","kind":"fetch","title":"fetch","rawInput":{"url":"https://evil.example/x"}}),
+        json!({"toolCallId":"h6","kind":"fetch","title":"fetch","rawInput":{"url":"https://example.com/x"}}),
     ];
-    for tc in denied {
+    for tc in calls {
         let mut f = filter_with(None);
         ready(&mut f, false);
         let outs = f.from_agent(&permission_request(1, tc.clone()));
@@ -525,31 +522,41 @@ fn hard_deny_is_answered_in_the_sandbox() {
         assert_eq!(a.len(), 1, "{tc}");
         assert_eq!(
             a[0]["result"]["outcome"],
-            json!({"outcome":"selected","optionId":"no"}),
+            json!({"outcome":"selected","optionId":"always"}),
             "{tc}"
         );
-        let b = browser_msgs(&outs);
-        assert_eq!(b.len(), 1);
-        assert_eq!(b[0]["method"], filter::PERMISSION_DENIED);
-        assert!(b[0].get("id").is_none(), "a notification");
-        assert_eq!(b[0]["params"]["sessionId"], "s-1");
-        assert!(b[0]["params"]["rule"].is_string());
-        assert!(b[0]["params"]["reason"].is_string());
-        assert_eq!(b[0]["params"]["toolCall"]["toolCallId"], tc["toolCallId"]);
+        assert!(browser_msgs(&outs).is_empty());
+        let rec = outs
+            .iter()
+            .find_map(|o| match o {
+                Out::Record("permission", v) => Some(v),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(rec["decision"], "allow");
+        assert_eq!(rec["rule"], "sandbox");
         assert_eq!(f.pending_permissions(), 0);
         // the browser cannot answer it
-        let outs = f.from_browser(&line(json!({"jsonrpc":"2.0","id":1,"result":{"outcome":{"outcome":"selected","optionId":"yes"}}})));
+        let outs = f.from_browser(&line(json!({"jsonrpc":"2.0","id":1,"result":{"outcome":{"outcome":"selected","optionId":"no"}}})));
         assert!(agent_msgs(&outs).is_empty());
     }
-    // without a reject_once option the hard deny is `cancelled`
+    // without allow_always, allow_once; without any allow option, cancelled
     let mut f = filter_with(None);
     ready(&mut f, false);
-    let outs = f.from_agent(&line(
-        json!({"jsonrpc":"2.0","id":4,"method":"session/request_permission","params":{
-        "sessionId":"s-1",
-        "toolCall":{"toolCallId":"x","kind":"execute","rawInput":{"command":"git push"}},
-        "options":[{"optionId":"yes","kind":"allow_once"}]}}),
-    ));
+    let req = |id: i64, opts: Value| {
+        line(
+            json!({"jsonrpc":"2.0","id":id,"method":"session/request_permission","params":{
+            "sessionId":"s-1",
+            "toolCall":{"toolCallId":"x","kind":"execute","rawInput":{"command":"git push"}},
+            "options":opts}}),
+        )
+    };
+    let outs = f.from_agent(&req(4, json!([{"optionId":"yes","kind":"allow_once"}])));
+    assert_eq!(
+        agent_msgs(&outs)[0]["result"]["outcome"],
+        json!({"outcome":"selected","optionId":"yes"})
+    );
+    let outs = f.from_agent(&req(5, json!([{"optionId":"no","kind":"reject_once"}])));
     assert_eq!(
         agent_msgs(&outs)[0]["result"]["outcome"],
         json!({"outcome":"cancelled"})
@@ -576,7 +583,7 @@ fn agent_requests_other_than_permission_are_refused() {
     }
     // notifications other than session/update are not relayed (no spoofed _enzarb/*)
     let outs = f.from_agent(&line(
-        json!({"jsonrpc":"2.0","method":filter::PERMISSION_DENIED,"params":{}}),
+        json!({"jsonrpc":"2.0","method":"_enzarb/permission_denied","params":{}}),
     ));
     assert!(browser_msgs(&outs).is_empty());
     // a response to nothing is dropped

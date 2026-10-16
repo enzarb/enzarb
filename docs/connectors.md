@@ -61,6 +61,8 @@ pub trait Connector: Send + Sync {
     async fn set_progress(&self, target: &ProgressTarget, progress: Progress, idempotency_key: &str) -> Result<()>;
     async fn check_permission(&self, repo: &RepoKey, actor: &Actor) -> Result<Permission>;
     async fn mint_clone_credential(&self, repo: &RepoKey, scope: CredScope, idempotency_key: &str) -> Result<ShortLivedCred>;
+    /// Default `Ok(None)`. Read-only CI token (actions, checks, metadata) for one repo.
+    async fn mint_ci_read_credential(&self, repo: &RepoKey) -> Result<Option<ReadCred>>;
     async fn merge_change_request(&self, item: &WorkItemKey, number: u64, expected_head_sha: &str,
                                   commit_title: &str, commit_body: Option<&str>, idempotency_key: &str) -> Result<MergeOutcome>;
     async fn get_merge_readiness(&self, item: &WorkItemKey, number: u64) -> Result<MergeReadiness>;
@@ -79,6 +81,7 @@ Items are addressed by `WorkItemKey` (`github:org/repo#42`) and repos by `RepoKe
 - `ShortLivedCred`, whose token is redacted in `Debug`;
 - `Thread`.
 
+- `mint_ci_read_credential` (issue #165) returns a short-lived installation token for one repository with `actions: read`, `checks: read` and `metadata: read` only, so a CI-fix agent can read job logs with `gh`. A connector without the capability, or an App that was not granted `actions: read` yet (GitHub answers 403/422 about permissions), returns `Ok(None)`.
 - `mint_clone_credential` returns a **short-lived, single-repo** token: a GitHub App installation token restricted to that one repository with minimal permissions. It is handed to sandbox-init for each run, and it is never the App's private key.
 - Every call accepts an idempotency key, so repeated job executions don't double-post (for example, a hidden marker in the comment body checked before posting).
 

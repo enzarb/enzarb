@@ -215,6 +215,12 @@ pub struct RunStart {
     /// persisted by implementations. Omitted when absent; old peers ignore it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub npm_token: Option<String>,
+    /// Optional short-lived, read-only token (`actions: read`, `checks: read`)
+    /// for reading the repository's CI logs with `gh` (exposed to the agent
+    /// process only, as `GH_TOKEN`). Never persisted. Omitted when absent; old
+    /// peers ignore it and old payloads decode without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ci_read_token: Option<String>,
     /// Optional per-user Claude token for the run. Omitted when absent; old
     /// peers ignore it and old payloads decode without it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -356,6 +362,7 @@ impl std::fmt::Debug for RunStart {
             .field("log_channel", &self.log_channel)
             .field("deps_token", &self.deps_token.as_ref().map(|_| R))
             .field("npm_token", &self.npm_token.as_ref().map(|_| R))
+            .field("ci_read_token", &self.ci_read_token.as_ref().map(|_| R))
             .field("claude_token", &self.claude_token.as_ref().map(|_| R))
             .field("retarget", &self.retarget)
             .field("graph", &self.graph)

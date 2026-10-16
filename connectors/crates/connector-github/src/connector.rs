@@ -1356,6 +1356,33 @@ impl Connector for GitHubConnector {
             expires_at: t.expires_at,
         }))
     }
+
+    async fn mint_ci_read_credential(&self, repo: &RepoKey) -> Result<Option<ReadCred>> {
+        github_repo(repo)?;
+        let id = self.installation_id(repo).await?;
+        // No contents access: only CI data of this one repository. The App may not
+        // have been granted `actions: read` yet; GitHub then rejects the request and
+        // the run goes without a token.
+        let body = json!({
+            "repositories": [repo.repo],
+            "permissions": { "actions": "read", "checks": "read", "metadata": "read" },
+        });
+        match self.create_token(id, Some(body)).await {
+            Ok(t) => Ok(Some(ReadCred {
+                token: t.token,
+                repos: vec![repo.clone()],
+                expires_at: t.expires_at,
+            })),
+            Err(Error::Invalid(m) | Error::PermissionDenied(m)) if is_permission_rejection(&m) => {
+                tracing::warn!(
+                    "GitHub rejected actions:read for the CI read credential \
+                     (grant the App Actions: read): {m}"
+                );
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
+    }
 }
 
 /// Percent-encode everything except unreserved characters and `/`.

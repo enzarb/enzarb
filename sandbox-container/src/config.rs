@@ -6,7 +6,6 @@ use std::time::Duration;
 
 use crate::docker_prune::PruneConfig;
 use crate::dockerd::DockerdConfig;
-use crate::policy::Policy;
 
 /// Runtime configuration of sandbox-init.
 #[derive(Debug, Clone)]
@@ -27,9 +26,6 @@ pub struct Config {
     /// `ENZARB_CANCEL_GRACE_SECS`, default 10: how long the agent gets to end
     /// its turn after `session/cancel` (cancel or timeout) before it is killed.
     pub cancel_grace: Duration,
-    /// `ENZARB_PERMISSION_POLICY`: path of a YAML/JSON policy file; the
-    /// built-in default when unset.
-    pub policy: Policy,
     /// `ENZARB_CLAUDE_TOKEN_FILE`, default `<workspace>/.enzarb/claude-token`.
     pub claude_token_file: PathBuf,
     /// `ENZARB_GIT_BIN`, default `git`.
@@ -144,7 +140,6 @@ impl Default for Config {
             grace: Duration::from_secs(25),
             acp_bin: "claude-agent-acp".into(),
             cancel_grace: Duration::from_secs(10),
-            policy: Policy::default(),
             claude_token_file: "/workspace/.enzarb/claude-token".into(),
             git_bin: "git".into(),
             mise_bin: String::new(),
@@ -210,9 +205,8 @@ impl Config {
                     .map_err(|e| anyhow::anyhow!("ENZARB_CANCEL_GRACE_SECS={v:?}: {e}"))?,
             );
         }
-        if let Some(v) = get("ENZARB_PERMISSION_POLICY").filter(|s| !s.is_empty()) {
-            c.policy = Policy::load(Some(std::path::Path::new(&v)))?;
-        }
+        // `ENZARB_PERMISSION_POLICY` is ignored: there is no permission
+        // policy any more (the sandbox is the security boundary).
         if let Some(v) = get("ENZARB_GIT_BIN").filter(|s| !s.is_empty()) {
             c.git_bin = v;
         }
@@ -524,26 +518,14 @@ mod tests {
         let c = Config::from_lookup(|_| None).unwrap();
         assert_eq!(c.acp_bin, "claude-agent-acp");
         assert_eq!(c.cancel_grace, Duration::from_secs(10));
-        assert_eq!(c.policy, Policy::default());
-        let dir = std::env::temp_dir().join(format!("enzarb-cfg-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("policy.yaml");
-        std::fs::write(&file, "fetch_allow_hosts: [docs.rs]\n").unwrap();
         let c = Config::from_lookup(|k| match k {
             "ENZARB_ACP_AGENT_BIN" => Some("/opt/acp".into()),
             "ENZARB_CANCEL_GRACE_SECS" => Some("3".into()),
-            "ENZARB_PERMISSION_POLICY" => Some(file.to_string_lossy().into_owned()),
+            "ENZARB_PERMISSION_POLICY" => Some("/nope.yaml".into()),
             _ => None,
         })
         .unwrap();
         assert_eq!(c.acp_bin, "/opt/acp");
         assert_eq!(c.cancel_grace, Duration::from_secs(3));
-        assert_eq!(c.policy.fetch_allow_hosts, ["docs.rs"]);
-        // an unreadable policy fails startup
-        assert!(
-            Config::from_lookup(|k| (k == "ENZARB_PERMISSION_POLICY").then(|| "/nope.yaml".into()))
-                .is_err()
-        );
-        let _ = std::fs::remove_dir_all(dir);
     }
 }

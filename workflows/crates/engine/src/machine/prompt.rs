@@ -99,6 +99,12 @@ pub struct PromptContext {
     /// `{dependencies}`: what the item waits on (number, title, state), from the
     /// `dependency_status` view; filled by the executor like `thread`.
     pub dependencies: String,
+    /// The round was started because CI failed on the head: the executor gives the run a
+    /// read-only token so `gh run view --log-failed` works. Not a placeholder.
+    pub ci_fix: bool,
+    /// `{ci_failure}`: the failing checks of a CI-fix round (name, conclusion, url, run and
+    /// job id).
+    pub ci_failure: String,
 }
 
 impl PromptContext {
@@ -127,6 +133,7 @@ impl PromptContext {
             "epic_allowed" => &self.epic_allowed,
             "max_subissues" => &self.max_subissues,
             "dependencies" => &self.dependencies,
+            "ci_failure" => &self.ci_failure,
             _ => return None,
         })
     }
@@ -757,7 +764,27 @@ mod tests {
             epic_allowed: "yes".into(),
             max_subissues: "8".into(),
             dependencies: "DEPS-X".into(),
+            ci_fix: false,
+            ci_failure: "CI-FAILURE-X".into(),
         }
+    }
+
+    #[test]
+    fn address_prompt_reads_the_ci_log_with_gh_and_reproduces_one_test() {
+        let out = render_prompt(JobKind::AgentAddressComments, &full_ctx());
+        assert!(out.contains("CI-FAILURE-X"));
+        assert!(out.contains("gh run view <run id> --log-failed"));
+        assert!(out.contains("cargo nextest run -E 'test(<name>)'"));
+        assert!(out.contains("cargo test --test <file> <name>"));
+        assert!(out.contains("Do not run the whole workspace"));
+        assert!(out.contains("`blocked` body"));
+        // Outside a CI-fix round the section renders `(none)`.
+        let ctx = PromptContext {
+            ci_failure: String::new(),
+            ..full_ctx()
+        };
+        let out = render_prompt(JobKind::AgentAddressComments, &ctx);
+        assert!(out.contains("<untrusted>\n(none)\n</untrusted>"));
     }
 
     /// Every `{name}` in a template must be a known placeholder.

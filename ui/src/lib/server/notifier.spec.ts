@@ -7,7 +7,7 @@ import {
 	type NotifierDeps,
 	type NotifyItem
 } from './notifier.ts';
-import type { PushTarget } from './push-store.ts';
+import type { PushEntry, PushTarget } from './push-store.ts';
 
 const device = (n: number): PushTarget => ({
 	endpoint: `https://push.example/${n}`,
@@ -39,10 +39,11 @@ function setup(
 	const owners = opts.owners ?? { proj: 'octo' };
 	const devices = opts.devices ?? { octo: [device(1)] };
 	const claims = new Set<string>();
-	const sent: { target: PushTarget; payload: PushPayload }[] = [];
+	const sent: { target: PushTarget; payload: PushPayload & { type?: 'clear' } }[] = [];
 	const removed: string[] = [];
 	const gone = new Set<string>();
 	const failing = new Set<string>();
+	const entries = new Map<string, PushEntry & { cleared: boolean }>();
 	const deps: NotifierDeps = {
 		loadItem: async (id) => items.get(id) ?? null,
 		ownerOf: async (p) => owners[p] ?? null,
@@ -61,16 +62,30 @@ function setup(
 				removed.push(endpoint);
 				return true;
 			},
-			touch: async () => {}
+			touch: async () => {},
+			entry: async (owner, id) => {
+				const e = entries.get(`${owner}|${id}`);
+				return e && !e.cleared
+					? { category: e.category, stateKey: e.stateKey, shown: e.shown }
+					: null;
+			},
+			setEntry: async (owner, id, e) =>
+				void entries.set(`${owner}|${id}`, { ...e, cleared: false }),
+			clearEntry: async (owner, id) => {
+				const e = entries.get(`${owner}|${id}`);
+				if (!e || e.cleared) return false;
+				e.cleared = true;
+				return e.shown;
+			}
 		},
 		send: async (target, payload) => {
-			sent.push({ target, payload });
+			sent.push({ target, payload: payload as PushPayload });
 			if (failing.has(target.endpoint)) return 'error';
 			return gone.has(target.endpoint) ? 'gone' : 'ok';
 		},
 		now: () => Date.parse('2026-10-14T00:00:00.000Z')
 	};
-	return { items, deps, sent, removed, gone, failing, handle: createItemHandler(deps) };
+	return { items, entries, deps, sent, removed, gone, failing, handle: createItemHandler(deps) };
 }
 
 describe('classification reuse', () => {
@@ -105,7 +120,7 @@ describe('classification reuse', () => {
 			expect(await t.handle(1)).toBe(true);
 			expect(t.sent).toHaveLength(1);
 			expect(t.sent[0].payload.title).toBe(title);
-			expect(t.sent[0].payload.url).toBe('/task/1');
+			expect(t.sent[0].payload).toMatchObject({ tag: 'item-1' });
 		});
 	}
 
@@ -196,19 +211,99 @@ describe('de-duplication', () => {
 		expect(t.sent).toHaveLength(1);
 	});
 
-	it('sends again for a new transition into the same state', async () => {
+	it('sends again after leaving and re-entering the same state', async () => {
 		const t = setup();
 		await t.handle(1);
-		t.items.set(1, item({ transitionId: 11 }));
+		t.items.set(1, item({ state: 'Planning', transitionId: 11 }));
+		await t.handle(1);
+		t.items.set(1, item({ transitionId: 12 }));
 		expect(await t.handle(1)).toBe(true);
-		expect(t.sent).toHaveLength(2);
+		expect(t.sent.filter((s) => !('type' in s.payload))).toHaveLength(2);
 	});
 
-	it('falls back to updated_at when the view has no transition', () => {
+	it('falls back to created_at, then updated_at, when the view has no entry transition', () => {
 		expect(stateKey(item({ transitionId: null }))).toBe(
 			'AwaitingApproval:2026-10-13T10:00:00.000Z'
 		);
+		expect(stateKey(item({ transitionId: null, createdAt: '2026-10-01T00:00:00.000Z' }))).toBe(
+			'AwaitingApproval:2026-10-01T00:00:00.000Z'
+		);
 		expect(stateKey(item())).toBe('AwaitingApproval:10');
+	});
+});
+
+describe('state entries', () => {
+	const failed = (over: Partial<NotifyItem> = {}) =>
+		item({ state: 'Failed', transitionId: 20, ...over });
+
+	it('does not re-notify for self-transitions (entry id unchanged)', async () => {
+		const t = setup({ items: [failed()] });
+		expect(await t.handle(1)).toBe(true);
+		// every later event records Failed -> Failed; the entry transition stays 20
+		for (let i = 0; i < 20; i++) {
+			t.items.set(1, failed({ updatedAt: `2026-10-13T11:${String(i).padStart(2, '0')}:00.000Z` }));
+			expect(await t.handle(1)).toBe(false);
+		}
+		expect(t.sent).toHaveLength(1);
+	});
+
+	it('does not notify again while the category stays, even across states', async () => {
+		const t = setup({ items: [failed()] });
+		await t.handle(1);
+		t.items.set(1, item({ workflow: 'change_request', state: 'Stale', transitionId: 21 }));
+		expect(await t.handle(1)).toBe(false);
+		expect(t.sent).toHaveLength(1);
+	});
+
+	it('clears once when the item stops needing the user, and notifies on re-entry', async () => {
+		const t = setup({ items: [failed()] });
+		await t.handle(1);
+		t.items.set(1, item({ state: 'Planning', transitionId: 21 }));
+		expect(await t.handle(1)).toBe(false);
+		await t.handle(1);
+		expect(t.sent.map((s) => s.payload)).toEqual([
+			expect.objectContaining({ title: 'Task failed', tag: 'item-1' }),
+			{ type: 'clear', tag: 'item-1' }
+		]);
+		t.items.set(1, failed({ transitionId: 22 }));
+		expect(await t.handle(1)).toBe(true);
+		expect(t.sent).toHaveLength(3);
+		expect(t.sent[2].payload).toMatchObject({ title: 'Task failed', tag: 'item-1' });
+	});
+
+	it('clears and notifies when the category changes', async () => {
+		const t = setup({
+			items: [item({ workflow: 'change_request', state: 'ReadyToMerge', transitionId: 30 })]
+		});
+		await t.handle(1);
+		t.items.set(
+			1,
+			item({ workflow: 'change_request', state: 'AwaitingChanges', transitionId: 31 })
+		);
+		expect(await t.handle(1)).toBe(true);
+		expect(t.sent.map((s) => ('type' in s.payload ? 'clear' : s.payload.title))).toEqual([
+			'Change request ready to merge',
+			'clear',
+			'Change request blocked'
+		]);
+	});
+
+	it('sends no clear for an item that only got a burst summary', async () => {
+		const items = [1, 2, 3, 4].map((id) => item({ id }));
+		const t = setup({ items });
+		for (const i of items) await t.handle(i.id);
+		t.items.set(4, item({ id: 4, state: 'Planning', transitionId: 99 }));
+		await t.handle(4);
+		expect(t.sent).toHaveLength(4);
+		expect(t.sent[3].payload.tag).toBe('work-summary');
+	});
+
+	it('links to the board with the card highlighted', async () => {
+		const t = setup();
+		await t.handle(1);
+		expect(t.sent[0].payload).toMatchObject({
+			url: '/work?project=proj&highlight=1&was=approval'
+		});
 	});
 });
 
