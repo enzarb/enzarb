@@ -7,7 +7,6 @@ import { getConfig } from '#lib/server/config.ts';
 import { buildIntent, signIntent } from '#lib/server/create-repo-intent.ts';
 import { DISPLAY_NAME_MAX, MaxRunsSchema } from '#lib/projects.ts';
 import { SandboxResourcesSchema } from '#lib/sandbox-resources.ts';
-import { getSql } from '#lib/server/db.ts';
 import { KubeError, getProjectStore } from '#lib/server/kube.ts';
 import { projectCache } from '#lib/server/project-cache.ts';
 import {
