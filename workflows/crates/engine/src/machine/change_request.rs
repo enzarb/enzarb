@@ -78,7 +78,7 @@ pub enum CiState {
 }
 
 impl CiState {
-    fn from_wire(s: &str) -> Self {
+    pub(super) fn from_wire(s: &str) -> Self {
         match s {
             "success" => CiState::Success,
             "failure" => CiState::Failure,
@@ -111,7 +111,7 @@ impl CrData {
         }
     }
 
-    fn record_resolve_attempt(&mut self, base_sha: &str) {
+    pub(super) fn record_resolve_attempt(&mut self, base_sha: &str) {
         let count = self.resolve_attempts_for(base_sha) + 1;
         self.resolve_attempts = ResolveAttempts {
             base_sha: base_sha.to_string(),
@@ -349,7 +349,7 @@ impl Readiness {
     }
 }
 
-fn short(sha: &str) -> &str {
+pub(super) fn short(sha: &str) -> &str {
     sha.get(..7).unwrap_or(sha)
 }
 
@@ -475,7 +475,7 @@ fn wait_of(waiting_on: WaitingOn, reason: &'static str, text: &str) -> Option<Wa
 }
 
 /// "enzarb could not verify: cargo test (missing_tool), ..." for the `checks_unverified` wait.
-fn unverified_text(d: &CrData) -> String {
+pub(super) fn unverified_text(d: &CrData) -> String {
     let list: Vec<String> = d
         .unverified_checks
         .iter()
@@ -498,7 +498,7 @@ fn unverified_text(d: &CrData) -> String {
 }
 
 /// "CI failed: actionlint, scripts" for the `ci_failed` wait.
-fn ci_failed_text(d: &CrData) -> String {
+pub(super) fn ci_failed_text(d: &CrData) -> String {
     let names: Vec<&str> = d
         .ci_failures
         .iter()
@@ -630,7 +630,7 @@ pub(super) fn state_data(s: &CrState) -> Value {
 }
 
 /// Reset the automatic-round bookkeeping: a human is involved again.
-fn human_acted(d: &mut CrData) {
+pub(super) fn human_acted(d: &mut CrData) {
     d.auto_rounds = 0;
     d.auto_trigger = false;
     d.auto_capped = false;
@@ -651,7 +651,7 @@ fn start_pending_round(ctx: &Ctx, mut fx: Fx, mut d: CrData, p: Pending) -> Tran
 }
 
 /// Record the head; mergeability belongs to the old head, so it is forgotten.
-fn set_head(d: &mut CrData, sha: String) {
+pub(super) fn set_head(d: &mut CrData, sha: String) {
     if d.head_sha != sha {
         d.mergeable = None;
         d.ci_fix_sha.clear();
@@ -681,6 +681,18 @@ fn maybe_start_ci_fix<'a>(
         return Err(Box::new((fx, d)));
     }
     d.auto_rounds += 1;
+    begin_ci_fix(&mut d);
+    start_address(ctx, &mut fx, &mut d);
+    Ok(Transition::to(
+        st(CrPhase::AddressingComments, d),
+        fx.finish(),
+        "ci failed: automatic round",
+    ))
+}
+
+/// Mark the current head's CI-fix round as started and write its trigger: the failing checks
+/// with their URLs. Does not count the round.
+pub(super) fn begin_ci_fix(d: &mut CrData) {
     d.auto_trigger = true;
     d.merge_requested = false;
     d.ci_fix_sha = d.head_sha.clone();
@@ -700,12 +712,44 @@ fn maybe_start_ci_fix<'a>(
     d.trigger_text = text;
     d.trigger_comment_id = None;
     d.trigger_comment_kind = CommentKind::default();
-    start_address(ctx, &mut fx, &mut d);
-    Ok(Transition::to(
-        st(CrPhase::AddressingComments, d),
-        fx.finish(),
-        "ci failed: automatic round",
-    ))
+}
+
+/// Record a `CiStatusChanged` for one check of `ci.head_sha` (the caller checked it is the
+/// head). A failure or a running check is taken as is; a success says nothing about the other
+/// checks, so it leaves the aggregate unknown unless it was already a success.
+pub(super) fn apply_ci(d: &mut CrData, ci: &enzarb_connector::CiInfo) {
+    match ci.state {
+        enzarb_connector::CiState::Failure => {
+            d.ci = CiState::Failure;
+            d.merge_requested = false;
+            if d.ci_failures_sha != ci.head_sha {
+                d.ci_failures.clear();
+                d.ci_failures_sha = ci.head_sha.clone();
+            }
+            let name = ci.context.clone().unwrap_or_default();
+            let url = ci.url.clone().unwrap_or_default();
+            match d.ci_failures.iter_mut().find(|f| f.name == name) {
+                Some(f) => f.url = url,
+                None => d.ci_failures.push(CiFailure { name, url }),
+            }
+        }
+        enzarb_connector::CiState::Pending => {
+            d.ci = CiState::Pending;
+            d.ci_failures.clear();
+        }
+        enzarb_connector::CiState::Success => {
+            if let Some(name) = &ci.context {
+                d.ci_failures.retain(|f| &f.name != name);
+            }
+            if d.ci_failures.is_empty() && !(d.ci == CiState::Success && d.ci_sha == ci.head_sha) {
+                d.ci = CiState::Unknown;
+            } else if !d.ci_failures.is_empty() {
+                // Another check still fails: a success elsewhere does not clear the failure.
+                d.ci = CiState::Failure;
+            }
+        }
+    }
+    d.ci_sha = ci.head_sha.clone();
 }
 
 /// [`evaluate`], but a failed CI on the reviewed head starts a fix round first.
@@ -804,7 +848,11 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-fn prompt_ctx(ctx: &Ctx, d: &CrData, previous_reviewed_sha: Option<&str>) -> PromptContext {
+pub(super) fn prompt_ctx(
+    ctx: &Ctx,
+    d: &CrData,
+    previous_reviewed_sha: Option<&str>,
+) -> PromptContext {
     PromptContext {
         previous_reviewed_sha: previous_reviewed_sha.unwrap_or_default().to_string(),
         delta_max_lines: ctx.config.review_delta_max_lines.to_string(),
@@ -1018,7 +1066,7 @@ fn finish(
     Transition::to(st(phase, s.data.clone()), fx.finish(), "finished")
 }
 
-fn data_from_item(ctx: &Ctx, item: &ItemRef) -> CrData {
+pub(super) fn data_from_item(ctx: &Ctx, item: &ItemRef) -> CrData {
     CrData {
         open_dependencies: ctx.open_dependencies.clone(),
         number: item.number,
@@ -1053,7 +1101,7 @@ pub(super) fn start(ctx: &Ctx, state: &WorkflowState, ev: &EngineEvent) -> Trans
 
 /// Record that a change request opened by enzarb is stacked: its issue wrote the marker, and
 /// the change request's base is the parent's enzarb branch. Anything else is not a stack.
-fn record_stack(ctx: &Ctx, d: &mut CrData) {
+pub(super) fn record_stack(ctx: &Ctx, d: &mut CrData) {
     if !d.author.eq_ignore_ascii_case(&ctx.bot_login) {
         return;
     }
@@ -1627,38 +1675,7 @@ fn ci_changed(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowState) -
         return Transition::reject(state, "ci result is for another commit");
     }
     let mut d = s.data.clone();
-    match ci.state {
-        enzarb_connector::CiState::Failure => {
-            d.ci = CiState::Failure;
-            d.merge_requested = false;
-            if d.ci_failures_sha != ci.head_sha {
-                d.ci_failures.clear();
-                d.ci_failures_sha = ci.head_sha.clone();
-            }
-            let name = ci.context.clone().unwrap_or_default();
-            let url = ci.url.clone().unwrap_or_default();
-            match d.ci_failures.iter_mut().find(|f| f.name == name) {
-                Some(f) => f.url = url,
-                None => d.ci_failures.push(CiFailure { name, url }),
-            }
-        }
-        enzarb_connector::CiState::Pending => {
-            d.ci = CiState::Pending;
-            d.ci_failures.clear();
-        }
-        enzarb_connector::CiState::Success => {
-            if let Some(name) = &ci.context {
-                d.ci_failures.retain(|f| &f.name != name);
-            }
-            if d.ci_failures.is_empty() && !(d.ci == CiState::Success && d.ci_sha == ci.head_sha) {
-                d.ci = CiState::Unknown;
-            } else if !d.ci_failures.is_empty() {
-                // Another check still fails: a success elsewhere does not clear the failure.
-                d.ci = CiState::Failure;
-            }
-        }
-    }
-    d.ci_sha = ci.head_sha.clone();
+    apply_ci(&mut d, ci);
     match s.phase {
         AwaitingChanges | ReadyToMerge => {
             evaluate_ci(ctx, Fx::new(ctx, ev), s.phase, d, "ci status changed", true)

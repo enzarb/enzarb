@@ -17,7 +17,10 @@ export const KNOWN_ACTIONS = [
 	'post_comment',
 	'open_change_request',
 	'merge_change_request',
-	'create_sub_issues'
+	'create_sub_issues',
+	'post_review',
+	'check_merge_readiness',
+	'update_branch'
 ] as const;
 /** The action that only a `wait` listing `approval` may lead to. */
 export const CREATE_ACTION = 'create_sub_issues';
@@ -32,7 +35,9 @@ export const KNOWN_EVENTS = [
 	'merge_requested',
 	'dependencies_done',
 	'children_done',
-	'timer'
+	'timer',
+	'pushed',
+	'conflict'
 ] as const;
 export const NODE_TYPES = ['command', 'agent', 'wait', 'action', 'end'] as const;
 export const END_STATUSES = ['done', 'failed', 'cancelled'] as const;
@@ -71,6 +76,12 @@ export interface WorkflowNode {
 	prompt?: Prompt;
 	events?: string[];
 	from?: WaitFrom;
+	/** `wait` on `timer`: a duration like `30m`, `2h` or `1d` ({@link parseDuration}). */
+	after?: string;
+	/** `wait`: why it waits, for the views (`state_data.wait.reason`). */
+	reason?: string;
+	/** `wait`: the text shown with `reason`. */
+	text?: string;
 	action?: string;
 	body?: string;
 	status?: EndStatus;
@@ -212,6 +223,8 @@ function parseNode(id: string, n: unknown): WorkflowNode {
 		case 'wait':
 			node.events = strList(need('events'), `${f}.events`);
 			if (e.has('from')) node.from = oneOf(e.get('from'), `${f}.from`, WAIT_FROM);
+			for (const k of ['after', 'reason', 'text'] as const)
+				if (e.has(k) && !isNull(e.get(k))) node[k] = str(e.get(k), `${f}.${k}`);
 			break;
 		case 'action':
 			node.action = str(need('action'), `${f}.action`);
@@ -312,6 +325,15 @@ export function validate(d: Definition): Problem[] {
 			for (const e of events)
 				if (!(KNOWN_EVENTS as readonly string[]).includes(e))
 					push(`node \`${id}\`: unknown event \`${e}\``, id);
+			const timer = events.includes('timer');
+			if (n.after === undefined) {
+				if (timer) push(`node \`${id}\`: a wait on \`timer\` needs \`after\``, id);
+			} else if (parseDuration(n.after) === null)
+				push(`node \`${id}\`: \`after\` must be a duration like 30m, 2h or 1d`, id);
+			else if (!timer)
+				push(`node \`${id}\`: \`after\` is set but \`timer\` is not in \`events\``, id);
+			if (n.reason !== undefined && !/^[a-z_]{1,64}$/.test(n.reason))
+				push(`node \`${id}\`: \`reason\` must match [a-z_]{1,64}`, id);
 		}
 		if (n.type === 'action' && !(KNOWN_ACTIONS as readonly string[]).includes(n.action ?? ''))
 			push(`node \`${id}\`: unknown action \`${n.action ?? ''}\``, id);
@@ -391,6 +413,15 @@ export function validate(d: Definition): Problem[] {
 	return p;
 }
 
+/** A wait's `after` in seconds: a positive whole number and one unit (`parse_duration` in Rust). */
+export function parseDuration(s: string): number | null {
+	const m = /^(\d{1,9})([smhd])$/.exec(s.trim());
+	if (!m) return null;
+	const n = Number(m[1]);
+	if (n === 0) return null;
+	return n * { s: 1, m: 60, h: 3600, d: 86_400 }[m[2] as 's' | 'm' | 'h' | 'd'];
+}
+
 export function isPromptPath(path: string): boolean {
 	// `valid_prompt_path` in the Rust crate.
 	return /^\.enzarb\/prompts\/[A-Za-z0-9_-]+\.md$/.test(path);
@@ -436,6 +467,8 @@ function nodeFields(n: WorkflowNode): [string, unknown][] {
 		case 'wait':
 			out.push(['events', [...(n.events ?? [])]]);
 			if (n.from && n.from !== 'writers') out.push(['from', n.from]);
+			for (const k of ['after', 'reason', 'text'] as const)
+				if (n[k] !== undefined) out.push([k, n[k]]);
 			break;
 		case 'action':
 			out.push(['action', n.action ?? '']);

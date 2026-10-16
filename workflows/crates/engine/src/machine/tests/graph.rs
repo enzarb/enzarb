@@ -153,11 +153,11 @@ fn rejected_definitions_fall_back_with_a_comment() {
         ("{{{", "does not parse"),
         (
             "version: 1\nname: issue\non: [issue_opened]\nstart: w\nnodes:\n  w: {type: wait, events: [merge_requested], next: m}\n  m: {type: action, action: merge_change_request, next: e}\n  e: {type: end, status: done}\n",
-            "action `merge_change_request` is not supported yet",
+            "action `merge_change_request` cannot run for an issue",
         ),
         (
             "version: 1\nname: issue\non: [issue_opened]\nstart: w\nnodes:\n  w: {type: wait, events: [ci], next: e}\n  e: {type: end, status: done}\n",
-            "waiting on `ci` is not supported yet",
+            "waiting on `ci` is not possible for an issue",
         ),
     ];
     for (yaml, want) in cases {

@@ -4399,6 +4399,52 @@ async fn issue_graph_runs_a_segment_then_opens_the_change_request() {
     assert_eq!(state, "Done");
     assert!(data["change_request"].is_u64());
     assert_eq!(events_of(pool, "ChangeRequestOpened").await.len(), 1);
+    // Without a change request graph the handed-off change request is compiled.
+    let wf: String =
+        sqlx::query_scalar("SELECT workflow FROM workflows.work_items WHERE key LIKE '%#' || $1")
+            .bind(data["change_request"].to_string())
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(wf, "change_request");
+}
+
+#[tokio::test]
+async fn an_issue_graph_hands_its_change_request_to_the_change_request_graph() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let reducer = graph_reducer(&h);
+    let repo: RepoKey = REPO.parse().unwrap();
+    h.fake.set_branch_head(repo.clone(), "main", "sha-main");
+    h.fake
+        .set_branch_head(repo.clone(), "enzarb/issue-1", HEAD_SHA);
+    h.fake.set_file(
+        repo.clone(),
+        "sha-main",
+        ".enzarb/workflows/issue.yaml",
+        ISSUE_GRAPH,
+    );
+    h.fake.set_file(
+        repo,
+        "sha-main",
+        ".enzarb/workflows/change_request.yaml",
+        CR_GRAPH,
+    );
+    h.fake.add_thread(key(1), thread_with("Go"));
+    let block =
+        json!({"decision": "done", "body": "Adds dark mode.", "title": "feat(ui): dark mode"});
+    cr_finish_with(&h, format!("Done.\n\n```json\n{block}\n```"));
+    open_issue(pool, 1).await;
+    settle(&h, &reducer).await;
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT workflow, state FROM workflows.work_items WHERE key <> $1 ORDER BY id",
+    )
+    .bind(key(1).to_string())
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].0, "graph:change_request");
 }
 
 #[tokio::test]
@@ -4747,7 +4793,7 @@ async fn graph_epic_creates_blocked_sub_issues_and_finishes_when_they_merge() {
     reducer.drain().await;
     let (_, state, data) = item_row(pool, 1001).await;
     assert_eq!(state, "Running");
-    assert!(data["wait"].is_null());
+    assert_eq!(data["wait"]["waiting_on"], "enzarb");
     let ui_segments: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM workflows.jobs j JOIN workflows.work_items w ON w.id = j.work_item_id
          WHERE w.key = $1 AND j.kind = 'agent_segment'",
@@ -5106,4 +5152,396 @@ async fn a_recovery_run_never_overwrites_the_push_facts() {
     let output = evs[0].1["output"].clone();
     let fin: RunFinished = serde_json::from_value(output).unwrap();
     assert!(fin.pushed && fin.head_sha == sha);
+}
+
+// ---------------------------------------------------------------------------
+// Change request graphs (ADR-0020)
+// ---------------------------------------------------------------------------
+
+const CR_GRAPH: &str = include_str!("../../../../docs/workflows/examples/change_request.yaml");
+
+/// A repository with the example change request graph on its default branch.
+fn cr_graph_repo(h: &H) {
+    let repo: RepoKey = REPO.parse().unwrap();
+    h.fake.set_branch_head(repo.clone(), "main", "sha-main");
+    h.fake.set_file(
+        repo,
+        "sha-main",
+        ".enzarb/workflows/change_request.yaml",
+        CR_GRAPH,
+    );
+    h.fake
+        .add_thread(key(5), thread_with("Please keep it small"));
+}
+
+fn review_block(decision: &str, body: &str) -> String {
+    let block = json!({"decision": decision, "body": body,
+                       "checks": [{"name": "cargo test", "status": "passed"}]});
+    format!("Reviewed.\n\n```json\n{block}\n```")
+}
+
+fn cr_finish_with(h: &H, summary: String) {
+    h.sandbox.set_mode(Mode::Finish {
+        outcome: RunOutcome::Succeeded,
+        summary,
+        pushed: true,
+        callback: true,
+    });
+}
+
+async fn ingest(pool: &PgPool, ty: EventType, dedupe: &str, data: EventData) {
+    let ev = Event::new("github", dedupe, ty, Utc::now(), data);
+    let _: Option<i64> =
+        sqlx::query_scalar("SELECT workflows_api.ingest_event($1, $2, $3, $4, $5)")
+            .bind("github")
+            .bind(ev.dedupe_key())
+            .bind(ev.subject.to_string())
+            .bind(ty.as_str())
+            .bind(serde_json::to_value(&ev).unwrap())
+            .fetch_one(pool)
+            .await
+            .unwrap();
+}
+
+fn cr_data(n: u64, who: &str) -> EventData {
+    EventData {
+        repo: REPO.parse().unwrap(),
+        actor: Actor {
+            login: who.into(),
+            id: 9,
+            is_bot: who.ends_with("[bot]"),
+        },
+        item: ItemRef {
+            kind: ItemKind::ChangeRequest,
+            number: n,
+            url: format!("https://github.com/enzarb/enzarb-ui/pull/{n}"),
+            title: "Dark mode".into(),
+            body: "Adds dark mode".into(),
+            author: "enzarb[bot]".into(),
+            head_ref: Some("enzarb/issue-1".into()),
+            base_ref: Some("main".into()),
+            head_sha: Some(HEAD_SHA.into()),
+        },
+        comment: None,
+        merged: None,
+        ci: None,
+        label: None,
+        review: None,
+    }
+}
+
+/// Process events and run jobs until nothing is left to do.
+async fn settle(h: &H, reducer: &Reducer) {
+    for _ in 0..60 {
+        reducer.drain().await;
+        h.exec.drain().await;
+        let busy: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM workflows.jobs WHERE status IN ('queued', 'running'))
+                 OR EXISTS (SELECT 1 FROM workflows.events WHERE processed_at IS NULL)",
+        )
+        .fetch_one(h.pool())
+        .await
+        .unwrap();
+        if !busy {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("work did not settle");
+}
+
+/// Opens change request 5 and runs it until it waits.
+async fn open_graph_cr(h: &H, reducer: &Reducer) {
+    ingest(
+        h.pool(),
+        EventType::ChangeRequestOpened,
+        "cr5",
+        cr_data(5, "enzarb[bot]"),
+    )
+    .await;
+    settle(h, reducer).await;
+}
+
+async fn segment_runs(h: &H) -> Vec<RunStart> {
+    let ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM workflows.jobs WHERE kind = 'agent_segment' ORDER BY id",
+    )
+    .fetch_all(h.pool())
+    .await
+    .unwrap();
+    ids.iter()
+        .filter_map(|id| h.sandbox.run(&format!("job-{id}")))
+        .collect()
+}
+
+fn posted(h: &H) -> Vec<String> {
+    h.fake
+        .applied_calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            Call::PostComment { body, .. } => Some(body),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn change_request_graph_reviews_waits_for_the_merge_click_and_merges() {
+    use enzarb_connector::{CiState, MergeOutcome};
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let reducer = graph_reducer(&h);
+    cr_graph_repo(&h);
+    h.fake
+        .set_merge_readiness(key(5), readiness(HEAD_SHA, CiState::Success, Some(true)));
+    cr_finish_with(&h, review_block("approve", "Looks right."));
+
+    open_graph_cr(&h, &reducer).await;
+    let (workflow, state, data) = item_row(pool, 5).await;
+    let notes: Vec<(String, Option<String>)> =
+        sqlx::query_as("SELECT to_state, note FROM workflows.transitions ORDER BY id")
+            .fetch_all(pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (workflow.as_str(), state.as_str()),
+        ("graph:change_request", "Waiting"),
+        "{data}\n{notes:?}"
+    );
+    assert_eq!(data["graph"]["node"], "ready");
+    // Needs you: the same wait a compiled ReadyToMerge has.
+    assert_eq!(data["wait"]["waiting_on"], "human");
+    assert_eq!(data["wait"]["reason"], "ready_to_merge");
+    assert_eq!(data["checklist"]["ci"]["status"], "ok");
+    assert!(
+        posted(&h)
+            .iter()
+            .any(|b| b.starts_with("### enzarb review: approve"))
+    );
+    let runs = segment_runs(&h).await;
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].graph.as_ref().unwrap().start, "review");
+    assert!(!runs[0].push);
+    assert_eq!(runs[0].branch, "enzarb/issue-1");
+    assert!(merge_calls(&h).is_empty());
+
+    // The merge click (write access) merges at the approved head.
+    h.fake
+        .queue_merge_outcome(MergeOutcome::Merged { sha: "m1".into() });
+    let id: i64 = sqlx::query_scalar("SELECT id FROM workflows.work_items WHERE key = $1")
+        .bind(key(5).to_string())
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    sqlx::query("SELECT workflows_api.submit_action($1, $2, 'merge', '{}')")
+        .bind(id)
+        .bind(json!({"login": "carol", "id": 3, "is_bot": false}))
+        .execute(pool)
+        .await
+        .unwrap();
+    settle(&h, &reducer).await;
+    let (_, state, _) = item_row(pool, 5).await;
+    assert_eq!(state, "Merged");
+    match &merge_calls(&h)[..] {
+        [
+            Call::MergeChangeRequest {
+                expected_head_sha, ..
+            },
+        ] => assert_eq!(expected_head_sha, HEAD_SHA),
+        other => panic!("{other:?}"),
+    }
+    assert!(posted(&h).iter().any(|b| b == "enzarb: merged by @carol."));
+}
+
+#[tokio::test]
+async fn change_request_graph_fixes_must_fix_findings_and_reviews_again() {
+    use enzarb_connector::CiState;
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let reducer = graph_reducer(&h);
+    cr_graph_repo(&h);
+    h.fake
+        .set_merge_readiness(key(5), readiness(HEAD_SHA, CiState::Pending, None));
+    // The first review asks for changes; the re-review after the fix approves.
+    cr_finish_with(
+        &h,
+        review_block("request_changes", "Handle the empty list."),
+    );
+    ingest(
+        pool,
+        EventType::ChangeRequestOpened,
+        "cr5",
+        cr_data(5, "enzarb[bot]"),
+    )
+    .await;
+    reducer.drain().await;
+    h.exec.drain().await;
+    let first = job_id_of(pool, "agent_segment").await;
+    wait_for("review", || async {
+        job(pool, first).await.status == "succeeded"
+    })
+    .await;
+    cr_finish_with(&h, review_block("approve", "Fixed."));
+    settle(&h, &reducer).await;
+
+    let runs = segment_runs(&h).await;
+    assert_eq!(
+        runs.len(),
+        2,
+        "review, then fix and re-review in one segment"
+    );
+    let fix = runs[1].graph.as_ref().unwrap();
+    assert_eq!(fix.start, "fix");
+    assert!(runs[1].push);
+    assert!(fix.prompts["fix"].contains("Handle the empty list."));
+    let reviews: Vec<String> = posted(&h)
+        .into_iter()
+        .filter(|b| b.starts_with("### enzarb review"))
+        .collect();
+    assert_eq!(reviews.len(), 2, "{reviews:?}");
+    assert!(reviews[1].starts_with("### enzarb review: approve"));
+    // Approved, CI still running: waiting for CI, not for a person.
+    let (_, state, data) = item_row(pool, 5).await;
+    assert_eq!(state, "Waiting");
+    assert_eq!(data["graph"]["node"], "checks");
+    assert_eq!(data["wait"]["waiting_on"], "ci");
+    assert_eq!(data["cr"]["data"]["auto_rounds"], 1);
+}
+
+#[tokio::test]
+async fn change_request_graph_fixes_a_ci_failure_with_the_failing_logs() {
+    use enzarb_connector::CiState;
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let reducer = graph_reducer(&h);
+    cr_graph_repo(&h);
+    h.fake
+        .set_merge_readiness(key(5), readiness(HEAD_SHA, CiState::Success, Some(true)));
+    cr_finish_with(&h, review_block("approve", "Looks right."));
+    open_graph_cr(&h, &reducer).await;
+    assert_eq!(item_row(pool, 5).await.2["graph"]["node"], "ready");
+
+    let mut data = cr_data(5, "github-actions[bot]");
+    data.ci = Some(enzarb_connector::CiInfo {
+        head_sha: HEAD_SHA.into(),
+        state: CiState::Failure,
+        context: Some("test".into()),
+        url: Some("https://github.com/enzarb/enzarb-ui/actions/runs/77/job/88".into()),
+    });
+    ingest(pool, EventType::CiStatusChanged, "ci1", data).await;
+    reducer.drain().await;
+    let (_, state, data) = item_row(pool, 5).await;
+    assert_eq!(
+        (state.as_str(), data["graph"]["node"].as_str()),
+        ("Running", Some("fix"))
+    );
+    let seg = job_id_of(pool, "agent_segment").await;
+    let input = job(pool, seg).await.input;
+    assert_eq!(input["context"]["ci_fix"], true);
+    assert!(
+        input["context"]["ci_failure"]
+            .as_str()
+            .unwrap()
+            .contains("run id: 77")
+    );
+    h.exec.drain().await;
+    wait_for("fix run", || async {
+        h.sandbox.run(&format!("job-{seg}")).is_some()
+    })
+    .await;
+    let run = h.sandbox.run(&format!("job-{seg}")).unwrap();
+    // The CI-fix run reads the failed log with a read-only token.
+    assert!(run.ci_read_token.is_some());
+    assert!(run.graph.as_ref().unwrap().prompts["fix"].contains("run id: 77"));
+}
+
+#[tokio::test]
+async fn a_compiled_change_request_is_not_looked_up_again_when_reopened() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let reducer = graph_reducer(&h);
+    let repo: RepoKey = REPO.parse().unwrap();
+    // No definition yet: compiled.
+    h.fake.set_branch_head(repo.clone(), "main", "sha-old");
+    ingest(
+        pool,
+        EventType::ChangeRequestOpened,
+        "o1",
+        cr_data(5, "alice"),
+    )
+    .await;
+    reducer.drain().await;
+    assert_eq!(item_row(pool, 5).await.0, "change_request");
+    // The definition lands; a closed and reopened compiled change request stays compiled
+    // without reading it.
+    cr_graph_repo(&h);
+    let mut closed = cr_data(5, "alice");
+    closed.merged = Some(false);
+    ingest(pool, EventType::WorkItemClosed, "o2", closed).await;
+    reducer.drain().await;
+    let reads_before = h.fake.calls().len();
+    ingest(
+        pool,
+        EventType::ChangeRequestOpened,
+        "o3",
+        cr_data(5, "alice"),
+    )
+    .await;
+    reducer.drain().await;
+    let (workflow, state, _) = item_row(pool, 5).await;
+    assert_eq!(
+        (workflow.as_str(), state.as_str()),
+        ("change_request", "Reviewing")
+    );
+    let lookups = h.fake.calls()[reads_before..]
+        .iter()
+        .filter(|c| matches!(&c.call, Call::GetFile { path, .. } if path.ends_with("change_request.yaml")))
+        .count();
+    assert_eq!(lookups, 0);
+}
+
+#[tokio::test]
+async fn change_request_graph_resolves_a_conflict() {
+    use enzarb_connector::CiState;
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let reducer = graph_reducer(&h);
+    cr_graph_repo(&h);
+    h.fake
+        .set_merge_readiness(key(5), readiness(HEAD_SHA, CiState::Pending, None));
+    cr_finish_with(&h, review_block("approve", "Looks right."));
+    open_graph_cr(&h, &reducer).await;
+    assert_eq!(item_row(pool, 5).await.2["graph"]["node"], "checks");
+
+    engine::conflict::emit_merge_conflict(pool, &key(5).to_string(), "base-2")
+        .await
+        .unwrap();
+    reducer.drain().await;
+    let (_, state, data) = item_row(pool, 5).await;
+    assert_eq!(
+        (state.as_str(), data["graph"]["node"].as_str()),
+        ("Running", Some("resolve"))
+    );
+    assert_eq!(data["wait"]["reason"], "resolving_conflict");
+    assert_eq!(data["cr"]["data"]["base_sha"], "base-2");
+    h.exec.drain().await;
+    let seg = job_id_of(pool, "agent_segment").await;
+    wait_for("resolve run", || async {
+        h.sandbox.run(&format!("job-{seg}")).is_some()
+    })
+    .await;
+    let run = h.sandbox.run(&format!("job-{seg}")).unwrap();
+    assert_eq!(run.graph.as_ref().unwrap().start, "resolve");
+    assert!(run.push);
+    // The same base again is not a second conflict.
+    engine::conflict::emit_merge_conflict(pool, &key(5).to_string(), "base-2")
+        .await
+        .unwrap();
+    settle(&h, &reducer).await;
+    let n: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM workflows.transitions WHERE note = 'unmergeable'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(n, 1);
 }

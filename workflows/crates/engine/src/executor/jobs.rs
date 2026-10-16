@@ -59,6 +59,13 @@ struct MergeCr {
 }
 
 #[derive(Deserialize)]
+struct UpdateBranch {
+    item: WorkItemKey,
+    number: u64,
+    expected_head_sha: String,
+}
+
+#[derive(Deserialize)]
 struct CreateSubIssues {
     item: WorkItemKey,
     depth: u32,
@@ -199,6 +206,19 @@ impl Executor {
                 let out = self.merge(c.as_ref(), &i, key).await?;
                 tx.commit().await.map_err(lock_error)?;
                 out
+            }
+            JobKind::UpdateBranch => {
+                let i: UpdateBranch = input(job)?;
+                let c = self.connector_for(&i.item.repo.connector)?;
+                match c
+                    .update_branch(&i.item, i.number, &i.expected_head_sha)
+                    .await?
+                {
+                    UpdateBranchOutcome::Updated => json!({ "outcome": "updated" }),
+                    UpdateBranchOutcome::Refused { reason } => {
+                        json!({ "outcome": "refused", "reason": reason })
+                    }
+                }
             }
             JobKind::CreateSubIssues => {
                 let i: CreateSubIssues = input(job)?;

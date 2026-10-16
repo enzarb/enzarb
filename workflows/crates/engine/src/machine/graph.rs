@@ -16,6 +16,9 @@
 //!   access); `end` finishes the task.
 //! * A change request opened by an `open_change_request` node is handed to the
 //!   `change_request` workflow, as the compiled `issue` machine does.
+//! * **Change requests.** A change request opened in a repository with
+//!   `.enzarb/workflows/change_request.yaml` starts a `graph:change_request` task (stacked
+//!   ones stay compiled); its waits, actions and facts are in `graph_cr.rs`.
 //!
 //! `work_items.state` is the [`GraphPhase`]; `state_data` is [`GraphData`].
 
@@ -42,10 +45,46 @@ use super::{
 pub const PREFIX: &str = "graph:";
 /// The trigger that starts an issue graph.
 pub const ISSUE_TRIGGER: &str = "issue_opened";
-/// Actions this kernel runs. `merge_change_request` validates but is not run yet.
-pub const KERNEL_ACTIONS: &[&str] = &["post_comment", "open_change_request", "create_sub_issues"];
+/// The trigger that starts a change request graph.
+pub const CR_TRIGGER: &str = "change_request_opened";
+/// Actions this kernel runs.
+pub const KERNEL_ACTIONS: &[&str] = &[
+    "post_comment",
+    "open_change_request",
+    "create_sub_issues",
+    "post_review",
+    "check_merge_readiness",
+    "merge_change_request",
+    "update_branch",
+];
 /// Events a `wait` node can resume on in this kernel.
-pub const KERNEL_EVENTS: &[&str] = &["comment", "approval", "children_done", "dependencies_done"];
+pub const KERNEL_EVENTS: &[&str] = &[
+    "comment",
+    "approval",
+    "children_done",
+    "dependencies_done",
+    "timer",
+    "ci",
+    "review",
+    "pushed",
+    "merge_requested",
+    "conflict",
+];
+/// Actions and events that need a change request (a `change_request` graph).
+const CR_ACTIONS: &[&str] = &[
+    "post_review",
+    "check_merge_readiness",
+    "merge_change_request",
+    "update_branch",
+];
+const CR_EVENTS: &[&str] = &["ci", "review", "pushed", "merge_requested", "conflict"];
+/// Actions and events that need an issue.
+const ISSUE_ACTIONS: &[&str] = &["open_change_request", "create_sub_issues"];
+const ISSUE_EVENTS: &[&str] = &["children_done"];
+
+#[path = "graph_cr.rs"]
+mod cr;
+pub use cr::CrGraph;
 /// Where a repository keeps its graph definitions.
 pub fn definition_path(name: &str) -> String {
     format!(".enzarb/workflows/{name}.yaml")
@@ -121,12 +160,20 @@ pub enum GraphPhase {
     Done,
     Failed,
     Cancelled,
+    /// A change request graph whose change request was merged (by its merge action, or on
+    /// the provider).
+    Merged,
+    /// A change request graph whose change request was closed without merging.
+    Closed,
 }
 
 impl GraphPhase {
-    /// There is no retry for graph tasks yet, so `Failed` is final too.
+    /// `Failed` can be retried (by [`step`] before this check), but no other event moves it.
     pub fn is_terminal(self) -> bool {
-        matches!(self, Self::Done | Self::Failed | Self::Cancelled)
+        matches!(
+            self,
+            Self::Done | Self::Failed | Self::Cancelled | Self::Merged | Self::Closed
+        )
     }
 }
 
@@ -218,9 +265,14 @@ pub struct GraphData {
     /// `Blocked`: the node to resume at once they complete; `None` is `start`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocked_resume: Option<String>,
-    /// Why the task waits (`{waiting_on, reason, text}`, contracts §6), set while `Blocked`.
+    /// Why the task waits (`{waiting_on, reason, text}`, contracts §6): set while `Blocked`,
+    /// at every `wait` node and while a job runs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wait: Option<Value>,
+    /// A `change_request` graph: the change request's facts (the compiled machine's data)
+    /// and what the kernel tracks for its events. `None` for an issue graph.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cr: Option<CrGraph>,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -233,9 +285,20 @@ pub struct GraphTask {
     pub data: GraphData,
 }
 
-/// Loads `src` and checks that this kernel can run every node.
+/// Loads an issue definition and checks that this kernel can run every node.
 pub fn load(src: &GraphSource) -> Result<Definition, String> {
+    load_for(src, false)
+}
+
+/// Loads `src` for an issue (`cr == false`) or a change request, and checks that this
+/// kernel can run every node for that kind of item.
+pub fn load_for(src: &GraphSource, cr: bool) -> Result<Definition, String> {
     let def = enzarb_graph::load(&src.source).map_err(|e| e.to_string())?;
+    let (no_actions, no_events, kind) = if cr {
+        (ISSUE_ACTIONS, ISSUE_EVENTS, "a change request")
+    } else {
+        (CR_ACTIONS, CR_EVENTS, "an issue")
+    };
     let mut p = Vec::new();
     for f in def.prompt_files() {
         if !src.prompts.contains_key(&f) {
@@ -248,11 +311,18 @@ pub fn load(src: &GraphSource) -> Result<Definition, String> {
                 .push(format!(
                     "node `{id}`: action `{action}` is not supported yet"
                 )),
+            NodeKind::Action { action, .. } if no_actions.contains(&action.as_str()) => p.push(
+                format!("node `{id}`: action `{action}` cannot run for {kind}"),
+            ),
             NodeKind::Wait { events, .. } => {
                 for e in events {
                     if !KERNEL_EVENTS.contains(&e.as_str()) {
                         p.push(format!(
                             "node `{id}`: waiting on `{e}` is not supported yet"
+                        ));
+                    } else if no_events.contains(&e.as_str()) {
+                        p.push(format!(
+                            "node `{id}`: waiting on `{e}` is not possible for {kind}"
                         ));
                     }
                 }
@@ -284,6 +354,12 @@ fn st(phase: GraphPhase, data: GraphData) -> WorkflowState {
 }
 
 fn prompt_ctx(ctx: &Ctx, d: &GraphData) -> PromptContext {
+    if let Some(c) = &d.cr {
+        // The same context as the compiled machine's runs (trigger, ci_failure, ...).
+        // A re-review is a delta of the last reviewed head when eligible (#202).
+        let delta = super::change_request::delta_base(&c.data);
+        return super::change_request::prompt_ctx(ctx, &c.data, delta.as_deref());
+    }
     PromptContext {
         bot_handle: ctx.bot_handle.clone(),
         repo: ctx.work_item.repo.to_string(),
@@ -311,6 +387,11 @@ fn epic_allowed(ctx: &Ctx, d: &GraphData) -> bool {
 
 /// Writes the item facts conditions can read ([`enzarb_graph::ITEM`]).
 fn set_item(ctx: &Ctx, d: &mut GraphData) {
+    if let Some(c) = &d.cr {
+        let facts = cr::facts(ctx, c);
+        d.graph.outputs.insert(enzarb_graph::ITEM.into(), facts);
+        return;
+    }
     let allowed = epic_allowed(ctx, d);
     d.graph.outputs.insert(
         enzarb_graph::ITEM.into(),
@@ -366,31 +447,57 @@ pub(super) fn start_or(
     };
     match load(src) {
         Ok(def) if def.on.iter().any(|t| t == ISSUE_TRIGGER) => start(ctx, state, ev, src, &def),
-        Ok(_) => legacy(ctx, state, ev),
-        Err(e) => {
-            let mut t = legacy(ctx, state, ev);
-            if t.accepted {
-                // Its own key: the legacy start may post a comment from this event too.
-                t.effects.push(Effect::Job {
-                    kind: JobKind::PostComment,
-                    priority: PRIORITY_COMMENT,
-                    idempotency_key: format!("{}:{}:graph_invalid", ctx.work_item, ev.id),
-                    input: json!({
-                        "item": ctx.work_item,
-                        "body": format!(
-                            "enzarb could not use `{}` (at {}), so it runs the built-in \
-                             workflow instead.\n\n{}",
-                            src.path,
-                            src.sha,
-                            truncate(&e, 2000)
-                        ),
-                    }),
-                });
-                t.note = format!("{}; graph definition rejected", t.note);
-            }
-            t
+        Err(e) if !not_for(src, ISSUE_TRIGGER) => {
+            rejected_definition(ctx, ev, src, &e, legacy(ctx, state, ev))
         }
+        _ => legacy(ctx, state, ev),
     }
+}
+
+/// A definition that parses and validates but does not list `trigger`: it is not meant for
+/// this item, so it falls back silently.
+fn not_for(src: &GraphSource, trigger: &str) -> bool {
+    enzarb_graph::load(&src.source).is_ok_and(|d| !d.on.iter().any(|t| t == trigger))
+}
+
+/// Starts the change request graph when [`Ctx::graph`] holds one, else `legacy`.
+pub(super) fn start_cr_or(
+    ctx: &Ctx,
+    state: &WorkflowState,
+    ev: &EngineEvent,
+    legacy: fn(&Ctx, &WorkflowState, &EngineEvent) -> Transition,
+) -> Transition {
+    cr::start_or(ctx, state, ev, legacy)
+}
+
+/// `t` (the compiled machine's start), plus a comment naming why `src` was not used.
+fn rejected_definition(
+    ctx: &Ctx,
+    ev: &EngineEvent,
+    src: &GraphSource,
+    e: &str,
+    mut t: Transition,
+) -> Transition {
+    if t.accepted {
+        // Its own key: the legacy start may post a comment from this event too.
+        t.effects.push(Effect::Job {
+            kind: JobKind::PostComment,
+            priority: PRIORITY_COMMENT,
+            idempotency_key: format!("{}:{}:graph_invalid", ctx.work_item, ev.id),
+            input: json!({
+                "item": ctx.work_item,
+                "body": format!(
+                    "enzarb could not use `{}` (at {}), so it runs the built-in \
+                     workflow instead.\n\n{}",
+                    src.path,
+                    src.sha,
+                    truncate(e, 2000)
+                ),
+            }),
+        });
+        t.note = format!("{}; graph definition rejected", t.note);
+    }
+    t
 }
 
 fn start(
@@ -468,7 +575,8 @@ fn enter_start(ctx: &Ctx, fx: &mut Fx, def: &Definition, d: &mut GraphData) -> G
 /// The one dependency guard (before `start`, and before a segment that can run an agent that
 /// pushes): true, with `blocked_by` and `wait` set, while any dependency is not completed.
 fn blocked(ctx: &Ctx, d: &mut GraphData) -> bool {
-    if ctx.blocking_dependencies.is_empty() {
+    // A change request is not held up by its dependencies (they gate only its merge).
+    if ctx.blocking_dependencies.is_empty() || d.cr.is_some() {
         d.blocked_by.clear();
         d.wait = None;
         return false;
@@ -549,6 +657,11 @@ fn failed(ctx: &Ctx, fx: &mut Fx, d: &mut GraphData, error: &str) -> GraphPhase 
     d.error = truncate(error, 500);
     d.waiting_on = None;
     d.accepts_children = false;
+    d.wait = Some(wait_json("human", "enzarb_failed", "enzarb failed"));
+    if let Some(c) = &mut d.cr {
+        c.data.merge_requested = false;
+        c.queued = None;
+    }
     fx.comment(format!("enzarb stopped while working on this: {}", d.error));
     fx.failed(&target(ctx));
     GraphPhase::Failed
@@ -570,6 +683,30 @@ fn drive(ctx: &Ctx, fx: &mut Fx, def: &Definition, d: &mut GraphData) -> GraphPh
                 d.accepts_children = false;
                 return GraphPhase::Blocked;
             }
+            // A change request's runs work on its own branch; the trigger, CI-fix context and
+            // automatic-round count are set from what led here.
+            let spec = match d.cr.as_mut() {
+                Some(c) => {
+                    let wait = cr::prepare_run(c, def, &id);
+                    d.wait = Some(wait);
+                    let c = d.cr.as_ref().expect("change request");
+                    AgentSpec {
+                        base_ref: c.data.head_ref.clone(),
+                        branch: c.data.head_ref.clone(),
+                        push: pushes_ahead(def, &id),
+                    }
+                }
+                None => {
+                    d.wait = Some(wait_json("enzarb", "working", "enzarb is working on this"));
+                    AgentSpec {
+                        base_ref: ctx.default_branch.clone(),
+                        branch: branch(d.number),
+                        push: true,
+                    }
+                }
+            };
+            // The item facts again: preparing the run may have counted a round.
+            set_item(ctx, d);
             let pc = prompt_ctx(ctx, d);
             let segment = GraphSegment {
                 // The YAML source keeps the order of conditions (ADR-0020 §1).
@@ -579,86 +716,33 @@ fn drive(ctx: &Ctx, fx: &mut Fx, def: &Definition, d: &mut GraphData) -> GraphPh
                 visits: d.graph.visits.clone(),
                 prompts: segment_prompts(def, &pc, &d.graph.prompts),
             };
-            fx.segment_with_files(
-                &target(ctx),
-                AgentSpec {
-                    base_ref: ctx.default_branch.clone(),
-                    branch: branch(d.number),
-                    push: true,
-                },
-                pc,
-                segment,
-                d.graph.prompts.clone(),
-            );
+            fx.segment_with_files(&target(ctx), spec, pc, segment, d.graph.prompts.clone());
             d.segments += 1;
             d.waiting_on = Some(JobKind::AgentSegment);
             GraphPhase::Running
         }
-        NodeKind::Wait { .. } => {
+        NodeKind::Wait { after, .. } => {
             d.waiting_on = None;
+            d.wait = Some(wait_info(node, d));
+            if let Some(secs) = after.as_deref().and_then(enzarb_graph::parse_duration) {
+                let secs = i64::try_from(secs).unwrap_or(i64::MAX / 1000);
+                fx.wake_at(Some(ctx.now + chrono::Duration::seconds(secs)));
+            }
+            // Something that arrived while a job ran resumes the wait at once.
+            if d.cr.is_some()
+                && let Some(out) = cr::on_enter_wait(ctx, d, node)
+            {
+                return resume(ctx, fx, def, d, out);
+            }
             GraphPhase::Waiting
         }
-        NodeKind::Action { action, body } => match action.as_str() {
-            "post_comment" => {
-                let text = body.clone().unwrap_or_else(|| agent_body(&d.summary));
-                fx.comment(text);
-                d.waiting_on = Some(JobKind::PostComment);
-                GraphPhase::Running
-            }
-            "create_sub_issues" => match parse_epic_plan(&d.plan, ctx.config.max_epic_children) {
-                Ok(subs) => {
-                    fx.create_sub_issues(d.epic_depth + 1, &subs);
-                    d.sub_issues = subs;
-                    d.waiting_on = Some(JobKind::CreateSubIssues);
-                    GraphPhase::Running
-                }
-                Err(e) => {
-                    d.accepts_children = false;
-                    failed(
-                        ctx,
-                        fx,
-                        d,
-                        &format!("node `{id}`: unusable sub-issue breakdown: {e}"),
-                    )
-                }
-            },
-            "open_change_request" => {
-                let out = AgentOutput::parse(&d.summary).ok();
-                let title = out
-                    .as_ref()
-                    .and_then(|o| o.title.clone())
-                    .filter(|t| !t.trim().is_empty())
-                    .unwrap_or_else(|| d.title.clone());
-                let body = format!(
-                    "{}\n\nCloses #{}",
-                    agent_body(&d.summary).trim_end(),
-                    d.number
-                );
-                let head_ref = if d.branch.is_empty() {
-                    branch(d.number)
-                } else {
-                    d.branch.clone()
-                };
-                fx.open_change_request(&ChangeRequestSpec {
-                    repo: ctx.work_item.repo.clone(),
-                    title,
-                    body,
-                    head_ref,
-                    base_ref: ctx.default_branch.clone(),
-                    draft: false,
-                });
-                d.waiting_on = Some(JobKind::OpenChangeRequest);
-                GraphPhase::Running
-            }
-            other => failed(
-                ctx,
-                fx,
-                d,
-                &format!("action `{other}` is not supported yet"),
-            ),
-        },
+        NodeKind::Action { action, .. } if CR_ACTIONS.contains(&action.as_str()) => {
+            cr::action(ctx, fx, def, d, &id, action)
+        }
+        NodeKind::Action { action, body } => issue_action(ctx, fx, d, &id, action, body),
         NodeKind::End { status } => {
             d.waiting_on = None;
+            d.wait = None;
             match status {
                 EndStatus::Done => {
                     fx.done(&target(ctx));
@@ -678,6 +762,77 @@ fn drive(ctx: &Ctx, fx: &mut Fx, def: &Definition, d: &mut GraphData) -> GraphPh
     }
 }
 
+/// The actions of issue graphs (and `post_comment`, which any graph can use).
+fn issue_action(
+    ctx: &Ctx,
+    fx: &mut Fx,
+    d: &mut GraphData,
+    id: &str,
+    action: &str,
+    body: &Option<String>,
+) -> GraphPhase {
+    d.wait = Some(wait_json("enzarb", "working", "enzarb is working on this"));
+    match action {
+        "post_comment" => {
+            let text = body.clone().unwrap_or_else(|| agent_body(&d.summary));
+            fx.comment(text);
+            d.waiting_on = Some(JobKind::PostComment);
+            GraphPhase::Running
+        }
+        "create_sub_issues" => match parse_epic_plan(&d.plan, ctx.config.max_epic_children) {
+            Ok(subs) => {
+                fx.create_sub_issues(d.epic_depth + 1, &subs);
+                d.sub_issues = subs;
+                d.waiting_on = Some(JobKind::CreateSubIssues);
+                GraphPhase::Running
+            }
+            Err(e) => {
+                d.accepts_children = false;
+                failed(
+                    ctx,
+                    fx,
+                    d,
+                    &format!("node `{id}`: unusable sub-issue breakdown: {e}"),
+                )
+            }
+        },
+        "open_change_request" => {
+            let out = AgentOutput::parse(&d.summary).ok();
+            let title = out
+                .as_ref()
+                .and_then(|o| o.title.clone())
+                .filter(|t| !t.trim().is_empty())
+                .unwrap_or_else(|| d.title.clone());
+            let body = format!(
+                "{}\n\nCloses #{}",
+                agent_body(&d.summary).trim_end(),
+                d.number
+            );
+            let head_ref = if d.branch.is_empty() {
+                branch(d.number)
+            } else {
+                d.branch.clone()
+            };
+            fx.open_change_request(&ChangeRequestSpec {
+                repo: ctx.work_item.repo.clone(),
+                title,
+                body,
+                head_ref,
+                base_ref: ctx.default_branch.clone(),
+                draft: false,
+            });
+            d.waiting_on = Some(JobKind::OpenChangeRequest);
+            GraphPhase::Running
+        }
+        other => failed(
+            ctx,
+            fx,
+            d,
+            &format!("action `{other}` is not supported yet"),
+        ),
+    }
+}
+
 /// The `body` of the agent's final `json` block, else the whole message.
 fn agent_body(summary: &str) -> String {
     match AgentOutput::parse(summary) {
@@ -686,7 +841,95 @@ fn agent_body(summary: &str) -> String {
     }
 }
 
+/// `state_data.wait`.
+fn wait_json(waiting_on: &str, reason: &str, text: &str) -> Value {
+    json!({"waiting_on": waiting_on, "reason": reason, "text": text})
+}
+
+/// Who a wait reason waits on (contracts §6); a reason not listed here waits on enzarb.
+fn waiting_on_of(reason: &str) -> &'static str {
+    match reason {
+        "ready_to_merge" | "approval" | "question" | "awaiting_review" | "checks_unverified"
+        | "round_limit" | "ci_failed" | "ci_stale" | "conflict_parked" | "decision_needed"
+        | "enzarb_failed" | "dependency_failed" => "human",
+        "ci_pending" | "updating_branch" => "ci",
+        "children_open" | "dependencies_open" => "dependency",
+        "merging" => "github",
+        _ => "enzarb",
+    }
+}
+
+/// `state_data.wait` at a `wait` node: the node's `reason` and `text`, or one derived from
+/// the events it waits for, so the views classify graph tasks like compiled ones.
+fn wait_info(node: &enzarb_graph::Node, d: &GraphData) -> Value {
+    let NodeKind::Wait {
+        events,
+        reason,
+        text,
+        ..
+    } = &node.kind
+    else {
+        return Value::Null;
+    };
+    let has = |e: &str| events.iter().any(|x| x == e);
+    let cr = d.cr.as_ref().map(|c| &c.data);
+    let (reason, default): (String, String) = match reason {
+        Some(r) => (r.clone(), r.replace('_', " ")),
+        None if has("merge_requested") => ("ready_to_merge".into(), "Ready to merge".into()),
+        None if has("approval") && cr.is_none() => {
+            ("approval".into(), "Waiting for your approval".into())
+        }
+        None if has("comment") || has("review") || has("approval") => match cr {
+            Some(c) if !c.unverified_checks.is_empty() && c.last_review != "approve" => (
+                "checks_unverified".into(),
+                super::change_request::unverified_text(c),
+            ),
+            Some(_) => ("awaiting_review".into(), "Waiting for your review".into()),
+            None => ("question".into(), "Waiting for your answer".into()),
+        },
+        None if has("ci") => ("ci_pending".into(), "Waiting for CI".into()),
+        None if has("children_done") || has("dependencies_done") => (
+            "children_open".into(),
+            "Waiting for sub-issues or dependencies".into(),
+        ),
+        None => ("waiting".into(), "Waiting".into()),
+    };
+    let default = match (reason.as_str(), cr) {
+        ("ci_failed", Some(c)) => super::change_request::ci_failed_text(c),
+        ("round_limit", _) => "Automatic fix rounds used up, waiting for you".into(),
+        ("conflict_parked", _) => "Parked on a merge conflict".into(),
+        _ => default,
+    };
+    let text = text.clone().unwrap_or(default);
+    wait_json(waiting_on_of(&reason), &reason, &text)
+}
+
 /// Records `output` for the current node, follows its edges and acts on the next node.
+fn resume(
+    ctx: &Ctx,
+    fx: &mut Fx,
+    def: &Definition,
+    d: &mut GraphData,
+    output: Value,
+) -> GraphPhase {
+    // Leaving a wait with a timer: the timer is no longer wanted.
+    if matches!(
+        def.node(&d.graph.node).map(|n| &n.kind),
+        Some(NodeKind::Wait { after: Some(_), .. })
+    ) {
+        fx.wake_at(None);
+    }
+    set_item(ctx, d);
+    let mut pos = d.graph.position();
+    let next = enzarb_graph::advance(def, &mut pos, output);
+    d.graph.set_position(pos);
+    match next {
+        Next::Node(_) => drive(ctx, fx, def, d),
+        Next::Failed(r) => failed(ctx, fx, d, &r),
+    }
+}
+
+/// [`resume`] as a transition from `s`.
 fn advance(
     ctx: &Ctx,
     ev: &EngineEvent,
@@ -695,19 +938,20 @@ fn advance(
     output: Value,
     note: &str,
 ) -> Transition {
+    advance_with(ctx, Fx::new(ctx, ev), s, def, output, note)
+}
+
+/// [`advance`] after the effects already in `fx`.
+fn advance_with(
+    ctx: &Ctx,
+    mut fx: Fx,
+    s: &GraphTask,
+    def: &Definition,
+    output: Value,
+    note: &str,
+) -> Transition {
     let mut d = s.data.clone();
-    let mut fx = Fx::new(ctx, ev);
-    let mut pos = d.graph.position();
-    let phase = match enzarb_graph::advance(def, &mut pos, output) {
-        Next::Node(_) => {
-            d.graph.set_position(pos);
-            drive(ctx, &mut fx, def, &mut d)
-        }
-        Next::Failed(r) => {
-            d.graph.set_position(pos);
-            failed(ctx, &mut fx, &mut d, &r)
-        }
-    };
+    let phase = resume(ctx, &mut fx, def, &mut d, output);
     Transition::to(st(phase, d), fx.finish(), note)
 }
 
@@ -727,11 +971,27 @@ pub(super) fn step(ctx: &Ctx, s: &GraphTask, ev: &EngineEvent) -> Transition {
     if s.phase == GraphPhase::Failed && is_retry(ctx, ev, false) {
         return retry(ctx, ev, s, &state);
     }
+    if s.data.cr.is_some()
+        && matches!(s.phase, GraphPhase::Closed | GraphPhase::Cancelled)
+        && ev
+            .connector()
+            .is_some_and(|e| e.event_type == enzarb_connector::EventType::ChangeRequestOpened)
+    {
+        // Reopened: start again from `start`, like the compiled machine restarts its review.
+        let mut fresh = s.clone();
+        cr::reopened(ctx, ev, &mut fresh.data);
+        let mut t = retry(ctx, ev, &fresh, &state);
+        t.note = t.note.replace("retry", "reopened");
+        return t;
+    }
     if s.phase.is_terminal() {
         return Transition::reject(&state, "already finished");
     }
-    if ev.closed().is_some() {
-        return cancel(ctx, ev, s, None);
+    if let Some(merged) = ev.closed() {
+        return match s.data.cr {
+            Some(_) => cr::closed(ctx, ev, s, merged),
+            None => cancel(ctx, ev, s, None),
+        };
     }
     let def = match enzarb_graph::load(&s.data.graph.source) {
         Ok(d) => d,
@@ -747,7 +1007,21 @@ pub(super) fn step(ctx: &Ctx, s: &GraphTask, ev: &EngineEvent) -> Transition {
     {
         return t;
     }
+    if s.data.cr.is_some()
+        && let Some(t) = cr::step(ctx, ev, s, &state, &def)
+    {
+        return t;
+    }
     match &ev.payload {
+        EventPayload::TimerFired { job_id: None } => {
+            let timer = matches!(def.node(&s.data.graph.node).map(|n| &n.kind),
+                Some(NodeKind::Wait { events, .. }) if events.iter().any(|e| e == "timer"));
+            if s.phase == GraphPhase::Waiting && timer {
+                advance(ctx, ev, s, &def, json!({"event": "timer"}), "timer fired")
+            } else {
+                Transition::reject(&state, "no timer expected")
+            }
+        }
         EventPayload::Ui(u) => match u.action {
             UiActionKind::Cancel if ctx.can_cancel() => {
                 cancel(ctx, ev, s, ctx.cancel_comment(&u.actor.login))
@@ -772,6 +1046,7 @@ pub(super) fn step(ctx: &Ctx, s: &GraphTask, ev: &EngineEvent) -> Transition {
             Transition::ack(&state, "not the job this graph waits on")
         }
         EventPayload::DependenciesChanged => dependencies_changed(ctx, ev, s, &def),
+        EventPayload::Connector(_) if s.data.cr.is_some() => wait_event(ctx, ev, s, &state, &def),
         EventPayload::Connector(_) => match epic_request(ctx, ev, s, &state) {
             Some(Ok(t)) => t,
             Some(Err(flagged)) => wait_event(ctx, ev, &flagged, &state, &def),
@@ -955,6 +1230,9 @@ fn job_succeeded(
                 d.plan = o.body;
             }
             d.summary = fin.summary;
+            if let Some(c) = &mut d.cr {
+                cr::segment_finished(c, &fin.head_sha, fin.pushed);
+            }
             if fin.pushed {
                 d.branch = fin.branch;
             }
@@ -1079,7 +1357,9 @@ fn wait_event(
         return Transition::reject(state, "bot actor ignored");
     }
     let (events, from) = match def.node(&s.data.graph.node).map(|n| &n.kind) {
-        Some(NodeKind::Wait { events, from }) if s.phase == GraphPhase::Waiting => (events, *from),
+        Some(NodeKind::Wait { events, from, .. }) if s.phase == GraphPhase::Waiting => {
+            (events, *from)
+        }
         _ => return Transition::reject(state, "not waiting for an event"),
     };
     let wants = |e: &str| events.iter().any(|x| x == e);
@@ -1171,11 +1451,13 @@ fn retry(ctx: &Ctx, ev: &EngineEvent, s: &GraphTask, state: &WorkflowState) -> T
         source: s.data.graph.source.clone(),
         prompts: s.data.graph.prompts.clone(),
     };
+    let cr = s.data.cr.is_some();
     let fresh = ctx
         .graph
         .as_ref()
-        .and_then(|src| load(src).ok().map(|d| (src.clone(), d)));
-    let Some((src, def)) = fresh.or_else(|| load(&pinned).ok().map(|d| (pinned, d))) else {
+        .filter(|src| s.data.graph.path.is_empty() || src.path == s.data.graph.path)
+        .and_then(|src| load_for(src, cr).ok().map(|d| (src.clone(), d)));
+    let Some((src, def)) = fresh.or_else(|| load_for(&pinned, cr).ok().map(|d| (pinned, d))) else {
         return Transition::reject(state, "the pinned definition no longer loads");
     };
     let mut t = begin_fresh(ctx, ev, &src, &def, s.data.clone(), "retry");

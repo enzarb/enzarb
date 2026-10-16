@@ -113,8 +113,8 @@ pub async fn blocking_dependencies(
                  (dw.state_data->>'change_request') IS NOT NULL
           FROM workflows.effective_dependencies e
           LEFT JOIN workflows.work_items dw ON dw.key = e.depends_on_key
-          LEFT JOIN workflows.work_items cw ON cw.workflow = 'change_request'
-               AND ((dw.workflow = 'change_request' AND cw.key = dw.key)
+          LEFT JOIN workflows.work_items cw ON cw.workflow IN ('change_request', 'graph:change_request')
+               AND ((dw.workflow IN ('change_request', 'graph:change_request') AND cw.key = dw.key)
                  OR ((dw.workflow = 'issue' OR dw.workflow LIKE 'graph:%')
                      AND dw.state_data->>'change_request' IS NOT NULL
                      AND cw.key = regexp_replace(dw.key, '#[0-9]+$', '') || '#'
