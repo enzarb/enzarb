@@ -31,6 +31,9 @@ pub struct Config {
     /// `ENZARB_MAX_AUTO_ROUNDS`: automatic fix rounds on enzarb's own review findings per change
     /// request before it waits for a human (default 3, `0` disables).
     pub max_auto_rounds: u32,
+    /// `ENZARB_CI_IGNORE_CHECKS`: regex of check names / status contexts that never count
+    /// toward CI (helm `workflows.ciIgnoreChecks`). Unset: `(?i)copilot`; empty: none.
+    pub ci_ignore_checks: String,
     /// Empty unless the executor role is enabled.
     pub executor_callback_secret: Vec<u8>,
     /// Optional `read:packages` token for private npm packages, handed to agent runs
@@ -213,6 +216,12 @@ impl Config {
                 msg: format!("`{v}` is not a non-negative integer"),
             })?,
         };
+        let ci_ignore_checks = get(enzarb_connector::CI_IGNORE_CHECKS_ENV)
+            .unwrap_or_else(|| enzarb_connector::CI_IGNORE_CHECKS_DEFAULT.to_string());
+        enzarb_connector::CiIgnore::new(&ci_ignore_checks).map_err(|e| ConfigError::Invalid {
+            var: enzarb_connector::CI_IGNORE_CHECKS_ENV,
+            msg: e.to_string(),
+        })?;
         let executor_url = nonempty(get, "ENZARB_EXECUTOR_URL")
             .unwrap_or_else(|| DEFAULT_EXECUTOR_URL.to_string());
         if roles.contains(&Role::Executor)
@@ -250,6 +259,7 @@ impl Config {
             bot_handle: nonempty(get, "ENZARB_BOT_HANDLE").unwrap_or_else(|| "enzarb".into()),
             executor_url,
             max_auto_rounds,
+            ci_ignore_checks,
             executor_callback_secret,
             npm_token,
             claude_keyring,
@@ -288,6 +298,7 @@ mod tests {
         assert_eq!(c.bot_handle, "enzarb");
         assert_eq!(c.executor_url, DEFAULT_EXECUTOR_URL);
         assert_eq!(c.max_auto_rounds, 3);
+        assert_eq!(c.ci_ignore_checks, "(?i)copilot");
         assert_eq!(c.executor_listen.port(), 8081);
         assert_eq!(c.health_listen.port(), 8082);
         assert!(c.executor_callback_secret.is_empty());

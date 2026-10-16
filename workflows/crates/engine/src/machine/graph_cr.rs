@@ -113,7 +113,10 @@ fn review_current(d: &CrData) -> bool {
 }
 
 fn ci_fix_due(d: &CrData) -> bool {
-    ci_wire(d) == "failure" && review_current(d) && d.ci_fix_sha != d.head_sha
+    ci_wire(d) == "failure"
+        && review_current(d)
+        && d.ci_fix_sha != d.head_sha
+        && !crm::ci_failed_external(d)
 }
 
 /// The item facts conditions read (`_item`).
@@ -136,15 +139,20 @@ pub(super) fn facts(ctx: &Ctx, c: &CrGraph) -> Value {
 /// The dedupe key of a CI resume: a failure once per head, a success once per mergeability.
 fn ci_key(d: &CrData) -> String {
     match ci_wire(d) {
+        // Once more when an Actions job joins external-only failures (it becomes fixable).
+        "failure" if crm::ci_failed_external(d) => format!("{}:failure:external", d.head_sha),
         "failure" => format!("{}:failure", d.head_sha),
         s => format!("{}:{s}:{:?}", d.head_sha, d.mergeable),
     }
 }
 
 fn ci_output(d: &CrData) -> Value {
-    let failing: Vec<Value> = if d.ci_failures_sha == d.head_sha {
+    let current = d.ci_failures_sha == d.head_sha;
+    // Only GitHub Actions jobs are fixable (the agent reads their log); the rest is `external`.
+    let failing: Vec<Value> = if current {
         d.ci_failures
             .iter()
+            .filter(|f| crm::actionable(f))
             .map(|f| {
                 let ids = crm::actions_ids(&f.url);
                 json!({
@@ -158,10 +166,21 @@ fn ci_output(d: &CrData) -> Value {
     } else {
         Vec::new()
     };
+    let external: Vec<&str> = if current {
+        d.ci_failures
+            .iter()
+            .filter(|f| !crm::actionable(f))
+            .map(|f| f.name.as_str())
+            .collect()
+    } else {
+        Vec::new()
+    };
     json!({
         "event": "ci",
         "status": ci_wire(d),
         "failing": failing,
+        "actionable": !crm::ci_failed_external(d),
+        "external": external,
         "head_sha": d.head_sha,
         "mergeable": d.mergeable,
     })
@@ -1052,6 +1071,13 @@ fn ci_changed(
     }
     if ci.head_sha.is_empty() || ci.head_sha != c.data.head_sha {
         return Transition::reject(state, "ci result is for another commit");
+    }
+    if ci
+        .context
+        .as_deref()
+        .is_some_and(|n| ctx.config.ci_ignored(n))
+    {
+        return Transition::ack(state, "ignored check");
     }
     let mut task = s.clone();
     let c = crg(&mut task);

@@ -4,11 +4,11 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use enzarb_connector::{
-    Actor, ChangeRequestSpec, CheckSummary, CiInfo, CloseReason, CommentKind, CommentRef,
+    Actor, ChangeRequestSpec, CheckSummary, CiIgnore, CiInfo, CloseReason, CommentKind, CommentRef,
     CommitRef, Connector, CredScope, Error, Event, ItemRef, MergeOutcome, MergeReadiness,
     Permission, Progress, ProgressTarget, ReadCred, RepoKey, Result, ShortLivedCred, Status,
     StatusState, StatusSummary, Thread, ThreadComment, UpdateBranchOutcome, WorkItemKey,
-    aggregate_ci,
+    aggregate_ci, aggregate_statuses,
 };
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use reqwest::Method;
@@ -60,6 +60,7 @@ pub struct GitHubConnector {
     app_id: String,
     key: EncodingKey,
     bot: BotIdentity,
+    ci_ignore: CiIgnore,
     installations: Mutex<HashMap<String, u64>>,
     tokens: Mutex<HashMap<u64, CachedToken>>,
 }
@@ -132,6 +133,7 @@ impl GitHubConnector {
             app_id: config.app_id,
             key,
             bot: config.bot,
+            ci_ignore: config.ci_ignore,
             installations: Mutex::default(),
             tokens: Mutex::default(),
         })
@@ -539,6 +541,8 @@ struct PullState {
 #[derive(Deserialize)]
 struct CheckRun {
     #[serde(default)]
+    name: String,
+    #[serde(default)]
     status: String,
     #[serde(default)]
     conclusion: Option<String>,
@@ -879,7 +883,7 @@ impl Connector for GitHubConnector {
             .sha
             .ok_or_else(|| Error::Other(format!("pull request {number} has no head sha")))?;
         let name = r.full_name();
-        let (combined, _): (Value, Vec<Value>) = self
+        let (combined, statuses): (Value, Vec<Value>) = self
             .get_all_wrapped(
                 r,
                 "get combined status",
@@ -895,16 +899,30 @@ impl Connector for GitHubConnector {
                 "check_runs",
             )
             .await?;
+        // Advisory checks (`ENZARB_CI_IGNORE_CHECKS`, e.g. Copilot code review) never count.
         let checks: Vec<CheckSummary> = runs
             .into_iter()
+            .filter(|c| !self.ci_ignore.is_ignored(&c.name))
             .map(|c| CheckSummary {
                 status: c.status,
                 conclusion: c.conclusion,
             })
             .collect();
-        let statuses = StatusSummary {
-            total_count: combined["total_count"].as_u64().unwrap_or(0),
-            state: combined["state"].as_str().unwrap_or_default().to_string(),
+        let named = || {
+            statuses.iter().map(|s| {
+                (
+                    s["context"].as_str().unwrap_or_default(),
+                    s["state"].as_str().unwrap_or_default(),
+                )
+            })
+        };
+        let statuses = if named().any(|(c, _)| self.ci_ignore.is_ignored(c)) {
+            aggregate_statuses(named(), &self.ci_ignore)
+        } else {
+            StatusSummary {
+                total_count: combined["total_count"].as_u64().unwrap_or(0),
+                state: combined["state"].as_str().unwrap_or_default().to_string(),
+            }
         };
         Ok(MergeReadiness {
             head_sha,

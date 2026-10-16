@@ -121,9 +121,104 @@ pub fn aggregate_ci(checks: &[CheckSummary], statuses: &StatusSummary) -> CiStat
     }
 }
 
+/// Env var holding the [`CiIgnore`] pattern (helm `workflows.ciIgnoreChecks`).
+pub const CI_IGNORE_CHECKS_ENV: &str = "ENZARB_CI_IGNORE_CHECKS";
+/// Default [`CiIgnore`] pattern: Copilot code review is advisory, never CI.
+pub const CI_IGNORE_CHECKS_DEFAULT: &str = "(?i)copilot";
+
+/// Check names / status contexts that never count toward CI (advisory bots such as
+/// Copilot code review): left out of [`aggregate_ci`] inputs and of per-check events.
+#[derive(Debug, Clone)]
+pub struct CiIgnore(Option<regex::Regex>);
+
+impl Default for CiIgnore {
+    fn default() -> Self {
+        Self::new(CI_IGNORE_CHECKS_DEFAULT).expect("default pattern compiles")
+    }
+}
+
+impl CiIgnore {
+    /// An empty (or blank) pattern ignores nothing.
+    pub fn new(pattern: &str) -> Result<Self, regex::Error> {
+        let p = pattern.trim();
+        if p.is_empty() {
+            return Ok(Self(None));
+        }
+        regex::Regex::new(p).map(|r| Self(Some(r)))
+    }
+
+    /// Nothing is ignored.
+    pub fn none() -> Self {
+        Self(None)
+    }
+
+    /// From [`CI_IGNORE_CHECKS_ENV`]: unset means [`CI_IGNORE_CHECKS_DEFAULT`], set but empty
+    /// means nothing is ignored.
+    pub fn from_env() -> Result<Self, regex::Error> {
+        match std::env::var(CI_IGNORE_CHECKS_ENV) {
+            Ok(v) => Self::new(&v),
+            Err(_) => Ok(Self::default()),
+        }
+    }
+
+    /// `name` (a check run name or a commit status context) never counts toward CI.
+    pub fn is_ignored(&self, name: &str) -> bool {
+        self.0.as_ref().is_some_and(|r| r.is_match(name))
+    }
+}
+
+/// Combined state of individual commit statuses `(context, state)`, as GitHub combines
+/// them, leaving out the ignored contexts. Used instead of the provider's combined state
+/// when a context is ignored.
+pub fn aggregate_statuses<'a>(
+    statuses: impl IntoIterator<Item = (&'a str, &'a str)>,
+    ignore: &CiIgnore,
+) -> StatusSummary {
+    let mut total = 0;
+    let mut state = "success";
+    for (ctx, st) in statuses {
+        if ignore.is_ignored(ctx) {
+            continue;
+        }
+        total += 1;
+        match st {
+            "failure" | "error" => state = "failure",
+            "success" => {}
+            _ if state != "failure" => state = "pending",
+            _ => {}
+        }
+    }
+    StatusSummary {
+        total_count: total,
+        state: if total == 0 { "pending" } else { state }.into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ignore_copilot_by_default() {
+        let i = CiIgnore::default();
+        assert!(i.is_ignored("Copilot code review"));
+        assert!(i.is_ignored("Running Copilot Code Review"));
+        assert!(!i.is_ignored("scripts"));
+        assert!(!CiIgnore::new("").unwrap().is_ignored("Copilot"));
+        assert!(CiIgnore::new("(").is_err());
+    }
+
+    #[test]
+    fn ignored_status_does_not_fail_aggregate() {
+        let i = CiIgnore::default();
+        let s = aggregate_statuses([("Copilot", "error"), ("lint", "success")], &i);
+        assert_eq!(s, st(1, "success"));
+        assert_eq!(aggregate_ci(&[], &s), CiState::Success);
+        let only = aggregate_statuses([("Copilot", "failure")], &i);
+        assert_eq!(aggregate_ci(&[], &only), CiState::Success);
+        let s = aggregate_statuses([("a", "pending"), ("b", "failure")], &i);
+        assert_eq!(s.state, "failure");
+    }
 
     fn check(status: &str, conclusion: Option<&str>) -> CheckSummary {
         CheckSummary {

@@ -1423,6 +1423,36 @@ async fn readiness_reads_every_check_run_page() {
     assert_eq!(r.ci, CiState::Failure);
 }
 
+#[tokio::test]
+async fn readiness_ignores_copilot_checks_and_statuses() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    mount_pull(&server, pull_state(false, json!(true), "clean"), None).await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/repos/enzarb/enzarb-ui/commits/{HEAD}/status"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "state": "failure", "total_count": 2, "sha": HEAD,
+            "statuses": [
+                {"context": "Running Copilot Code Review", "state": "error"},
+                {"context": "lint", "state": "success"},
+            ],
+        })))
+        .mount(&server)
+        .await;
+    let runs = vec![
+        json!({"status": "completed", "conclusion": "success", "name": "scripts"}),
+        json!({"status": "completed", "conclusion": "failure", "name": "Copilot code review"}),
+    ];
+    mount_checks(&server, 2, None, runs).await;
+    let r = connector(&server)
+        .get_merge_readiness(&item(7), 7)
+        .await
+        .unwrap();
+    assert_eq!(r.ci, CiState::Success);
+}
+
 // ---- status -> pull requests ----
 
 fn status_change() -> CommitStatusChange {

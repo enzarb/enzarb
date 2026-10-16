@@ -419,6 +419,9 @@
           "type": "integer",
           "minimum": 0
         },
+        "ciIgnoreChecks": {
+          "type": "string"
+        },
         "npmToken": {
           "type": "object",
           "properties": {

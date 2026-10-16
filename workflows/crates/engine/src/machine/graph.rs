@@ -851,7 +851,7 @@ fn waiting_on_of(reason: &str) -> &'static str {
     match reason {
         "ready_to_merge" | "approval" | "question" | "awaiting_review" | "checks_unverified"
         | "round_limit" | "ci_failed" | "ci_stale" | "conflict_parked" | "decision_needed"
-        | "enzarb_failed" | "dependency_failed" => "human",
+        | "enzarb_failed" | "dependency_failed" | "ci_failed_external" => "human",
         "ci_pending" | "updating_branch" => "ci",
         "children_open" | "dependencies_open" => "dependency",
         "merging" => "github",
@@ -874,6 +874,19 @@ fn wait_info(node: &enzarb_graph::Node, d: &GraphData) -> Value {
     let has = |e: &str| events.iter().any(|x| x == e);
     let cr = d.cr.as_ref().map(|c| &c.data);
     let (reason, default): (String, String) = match reason {
+        // Red CI that enzarb cannot read (no GitHub Actions job): say so, whatever the node.
+        _ if has("ci")
+            && cr.is_some_and(|c| {
+                c.ci == super::change_request::CiState::Failure
+                    && c.ci_sha == c.head_sha
+                    && super::change_request::ci_failed_external(c)
+            }) =>
+        {
+            (
+                "ci_failed_external".into(),
+                super::change_request::ci_failed_external_text(cr.expect("cr")),
+            )
+        }
         Some(r) => (r.clone(), r.replace('_', " ")),
         None if has("merge_requested") => ("ready_to_merge".into(), "Ready to merge".into()),
         None if has("approval") && cr.is_none() => {
@@ -900,7 +913,10 @@ fn wait_info(node: &enzarb_graph::Node, d: &GraphData) -> Value {
         ("conflict_parked", _) => "Parked on a merge conflict".into(),
         _ => default,
     };
-    let text = text.clone().unwrap_or(default);
+    let text = match text {
+        Some(t) if reason != "ci_failed_external" => t.clone(),
+        _ => default,
+    };
     wait_json(waiting_on_of(&reason), &reason, &text)
 }
 

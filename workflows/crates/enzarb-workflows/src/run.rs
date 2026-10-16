@@ -92,6 +92,7 @@ pub async fn run(cfg: Config) -> Result<(), Error> {
             bot_handle: cfg.bot_handle.clone(),
             machine: engine::machine::Config {
                 max_auto_rounds: cfg.max_auto_rounds,
+                ci_ignore_checks: cfg.ci_ignore_checks.clone(),
                 ..Default::default()
             },
             ..ReducerConfig::default()

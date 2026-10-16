@@ -90,6 +90,8 @@ pub struct GitHubConfig {
     /// REST base URL; override for GitHub Enterprise or tests.
     pub api_url: String,
     pub retry: RetryPolicy,
+    /// Checks and statuses left out of the merge-readiness CI aggregate.
+    pub ci_ignore: enzarb_connector::CiIgnore,
 }
 
 impl std::fmt::Debug for GitHubConfig {
@@ -100,6 +102,7 @@ impl std::fmt::Debug for GitHubConfig {
             .field("bot", &self.bot)
             .field("api_url", &self.api_url)
             .field("retry", &self.retry)
+            .field("ci_ignore", &self.ci_ignore)
             .finish()
     }
 }
@@ -112,6 +115,7 @@ impl GitHubConfig {
             bot: BotIdentity::default(),
             api_url: DEFAULT_API_URL.into(),
             retry: RetryPolicy::default(),
+            ci_ignore: enzarb_connector::CiIgnore::default(),
         }
     }
 
@@ -128,6 +132,11 @@ impl GitHubConfig {
             .map_err(|_| ConfigError::Missing("GITHUB_APP_PRIVATE_KEY"))?;
         let mut cfg = Self::new(app_id.trim(), pem.replace("\\n", "\n"));
         cfg.bot = BotIdentity::from_env();
+        cfg.ci_ignore =
+            enzarb_connector::CiIgnore::from_env().map_err(|e| ConfigError::Invalid {
+                var: enzarb_connector::CI_IGNORE_CHECKS_ENV,
+                reason: e.to_string(),
+            })?;
         if let Ok(u) = std::env::var("GITHUB_API_URL")
             && !u.trim().is_empty()
         {

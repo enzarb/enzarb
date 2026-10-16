@@ -478,6 +478,17 @@ describe('workService needs-you queue', () => {
 				'Reviewing',
 				{ wait: { waiting_on: 'enzarb' }, checklist: { ci: { status: 'failed' } } }
 			],
+			[
+				'change_request',
+				'AwaitingChanges',
+				{
+					wait: {
+						waiting_on: 'human',
+						reason: 'ci_failed_external',
+						text: "Vercel failed outside GitHub Actions; enzarb can't read it"
+					}
+				}
+			],
 			['change_request', 'AwaitingChanges', { wait: null }],
 			['change_request', 'AwaitingChanges', { wait: { waiting_on: 'bogus' } }],
 			['change_request', 'AwaitingChanges', { wait: 'human' }],
