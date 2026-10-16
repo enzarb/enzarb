@@ -1,798 +1,795 @@
-//! The reducer: one transaction per event (workflows.md "Reducer").
-//!
-//! Per event:
-//! 1. **Before the transaction:** parse the event, find its Project through the
-//!    [`ProjectIndex`], and resolve the actor's permission through the
-//!    [`PermissionResolver`] (the only I/O a decision needs).
-//! 2. **Transaction:** claim the event (`FOR UPDATE SKIP LOCKED`), take a per-work-item
-//!    advisory lock (so events of one item are serialized even before its row exists, and
-//!    never overtake an earlier unprocessed event of the same item), lock the work item row,
-//!    run [`machine::transition`], then persist state, effects, a `transitions` row, mark
-//!    the event processed and `NOTIFY work_item_changed`.
-//!
-//! Rules:
-//! * Repo keys are lowercased before they are matched or stored (`work_items.key` is the
-//!   lowercase work item key).
-//! * An event for a repository in no Project is delivered to an existing work item by its key
-//!   (`Ctx.orphaned`: only close/merge, owner cancel and repo removal are accepted).
-//! * An event with no Project and no work item, an unparseable event, or one that cannot start a workflow
-//!   (nothing routes it, or the first transition rejects it) is marked processed with a
-//!   `to_state = 'ignored'` transition that has no work item. No work item is created.
-//! * The work item row is inserted only after [`machine::route`] returned a workflow and the
-//!   first transition accepted the event.
-//! * Effects apply in order: `CancelJobs` cancels queued/running jobs of the item, `Job`
-//!   inserts (`ON CONFLICT (idempotency_key) DO NOTHING`), `SetWakeAt`, and `StartWorkflow`
-//!   inserts the handoff event (`handoff:<event.id>`) in the same transaction.
-//! * A rejected event gets a transition row with `note`; an accepted no-op (same state,
-//!   same data, no effects) gets none.
-//! * Infrastructure errors (database, permission lookup, unreadable stored state) roll the
-//!   transaction back and leave the event unprocessed to be retried; later events of that
-//!   work item wait behind it.
+//! The reducer (ADR-0008 kept, ADR-0022 §6): an inbox with dedupe keys, one event per
+//! transaction, a row lock per task, effects queued and the projection written in the same
+//! transaction. Routing: a linked subject goes to its task; a PR referencing issues is linked to
+//! their task; anything else goes through the merged bindings.
 
-use std::sync::Arc;
-use std::time::Duration;
+use enzarb_connector::{Actor as CActor, WorkItemKey};
+use enzarb_flow::document::{Subject, SubjectComment, TaskDocument, TaskInfo};
+use enzarb_flow::events::{Event, Payload, SubjectKind};
+use enzarb_flow::interp::{self, Effect, Status, TaskEvent, TaskState};
+use enzarb_flow::resolve::{Entry, Resolved};
+use serde_json::{Value, json};
+use sqlx::{Postgres, Row, Transaction};
+use tokio::sync::watch;
 
-use chrono::Utc;
-use enzarb_connector::epic::parse_epic_marker;
-use enzarb_connector::{Actor, EventType, ItemKind, Permission, RepoKey, WorkItemKey};
-use sqlx::{PgPool, Postgres, Transaction};
-use tokio::sync::{Notify, watch};
-
-use crate::db::{Event as EventRow, WorkItem};
-use crate::definitions::DefinitionSource;
+use crate::engine::{Engine, parse_subject_key, repo_key, subject_key};
 use crate::error::Error;
-use crate::index::{ProjectIndex, ProjectInfo};
-use crate::machine::graph::GraphSource;
-use crate::machine::{
-    self, CrPhase, Ctx, Effect, EngineEvent, EpicParent, EventPayload, Triggers, WORKFLOW_VERSION,
-    WorkflowState,
-};
-use crate::permission::PermissionResolver;
+use crate::index::ProjectInfo;
 
-/// How long the reducer waits for a graph workflow definition before it falls back to the
-/// compiled machine.
-pub const DEFINITION_TIMEOUT: Duration = Duration::from_secs(5);
+type Tx<'a> = Transaction<'a, Postgres>;
 
-#[derive(Debug, Clone)]
-pub struct ReducerConfig {
-    /// `ENZARB_BOT_LOGIN`.
-    pub bot_login: String,
-    /// `ENZARB_BOT_HANDLE`.
-    pub bot_handle: String,
-    pub machine: machine::Config,
-    /// Concurrent workers in [`Reducer::run`].
-    pub workers: usize,
-    /// Fallback poll when no `workflow_events` notification arrives.
-    pub poll_interval: Duration,
-    /// Unprocessed events looked at per pass.
-    pub batch: i64,
+/// Inbox `type` prefix of engine-produced events (payload = a `TaskEvent`).
+pub const ENGINE_PREFIX: &str = "engine:";
+
+pub(crate) struct TaskRow {
+    pub id: i64,
+    pub project: String,
+    pub repo: String,
+    pub state: TaskState,
+    pub resolved: Resolved,
 }
 
-impl Default for ReducerConfig {
-    fn default() -> Self {
-        Self {
-            bot_login: "enzarb[bot]".into(),
-            bot_handle: "enzarb".into(),
-            machine: machine::Config::default(),
-            workers: 4,
-            poll_interval: Duration::from_secs(2),
-            batch: 32,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Outcome {
-    Processed,
-    /// Claimed elsewhere, or waiting behind an earlier event of the same item.
-    Skipped,
-}
-
-pub struct Reducer {
-    pool: PgPool,
-    index: Arc<dyn ProjectIndex>,
-    permissions: Arc<dyn PermissionResolver>,
-    cfg: ReducerConfig,
-    /// Reads graph workflow definitions; `None` keeps every repository on the compiled
-    /// machines.
-    definitions: Option<Arc<dyn DefinitionSource>>,
-}
-
-/// Everything resolved before the transaction opens.
-struct Prepared {
-    key: Result<WorkItemKey, String>,
-    event: Result<EngineEvent, String>,
-    project: Option<ProjectInfo>,
-    permission: Permission,
-    /// The issue graph on the default branch, for an issue-opening event (ADR-0020).
-    graph: Option<GraphSource>,
-}
-
-/// Lowercase every part of a work item key (GitHub names are case-insensitive).
-pub fn normalize_key(key: &WorkItemKey) -> WorkItemKey {
-    WorkItemKey::new(
-        RepoKey::new(
-            key.repo.connector.to_ascii_lowercase(),
-            key.repo.owner.to_ascii_lowercase(),
-            key.repo.repo.to_ascii_lowercase(),
-        ),
-        key.number,
-    )
-}
-
-fn actor_of(ev: &EngineEvent) -> Option<&Actor> {
-    match &ev.payload {
-        EventPayload::Connector(e) => Some(&e.data.actor),
-        EventPayload::Ui(u) => Some(&u.actor),
-        _ => None,
-    }
-}
-
-impl Reducer {
-    pub fn new(
-        pool: PgPool,
-        index: Arc<dyn ProjectIndex>,
-        permissions: Arc<dyn PermissionResolver>,
-        cfg: ReducerConfig,
-    ) -> Self {
-        Self {
-            pool,
-            index,
-            permissions,
-            cfg,
-            definitions: None,
+impl Engine {
+    /// Runs until shutdown: wakes on `NOTIFY engine_events` and on a poll interval.
+    pub async fn run_reducer(&self, mut shutdown: watch::Receiver<bool>) -> Result<(), Error> {
+        let mut listener = sqlx::postgres::PgListener::connect_with(&self.pool).await?;
+        listener.listen("engine_events").await?;
+        loop {
+            while self.process_next().await? {
+                if *shutdown.borrow() {
+                    return Ok(());
+                }
+            }
+            tokio::select! {
+                _ = shutdown.changed() => return Ok(()),
+                _ = listener.recv() => {}
+                _ = tokio::time::sleep(self.cfg.poll) => {}
+            }
         }
     }
 
-    /// Read graph workflow definitions (`.enzarb/workflows/issue.yaml`) through `source`.
-    pub fn with_definitions(mut self, source: Arc<dyn DefinitionSource>) -> Self {
-        self.definitions = Some(source);
-        self
+    /// Processes one inbox event. `false` when the inbox is empty.
+    pub async fn process_next(&self) -> Result<bool, Error> {
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query(
+            "SELECT id, project, subject_key, task_id, type, payload FROM engine.events
+             WHERE processed_at IS NULL ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED",
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let id: i64 = row.get("id");
+        let ty: String = row.get("type");
+        let payload: Value = row.get("payload");
+        let task_id: Option<i64> = row.get("task_id");
+        let note = if ty.starts_with(ENGINE_PREFIX) {
+            self.on_engine_event(&mut tx, id, task_id, &ty, payload).await
+        } else {
+            let project: Option<String> = row.get("project");
+            let skey: Option<String> = row.get("subject_key");
+            self.on_catalog_event(&mut tx, id, project, skey, task_id, payload)
+                .await
+        };
+        let (note, task) = match note {
+            Ok(x) => x,
+            Err(e) => {
+                // Never wedge the inbox: record and move on (the task, if any, is untouched).
+                tracing::error!(event = id, "processing failed: {e}");
+                tx.rollback().await?;
+                tx = self.pool.begin().await?;
+                (Some(format!("error: {e}")), None)
+            }
+        };
+        sqlx::query(
+            "UPDATE engine.events SET processed_at = now(), note = $2,
+                    task_id = COALESCE(task_id, $3) WHERE id = $1",
+        )
+        .bind(id)
+        .bind(note)
+        .bind(task)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(true)
     }
 
-    /// The issue graph of the event's repository, for an issue-opening event in a Project
-    /// with issue triggers. Any error or a slow provider ([`DEFINITION_TIMEOUT`]) is logged
-    /// and the repository keeps the compiled machine: a provider outage never stalls events.
-    async fn graph_definition(
+    async fn on_engine_event(
         &self,
-        key: &WorkItemKey,
-        ev: &EngineEvent,
-        project: &ProjectInfo,
-    ) -> Option<GraphSource> {
-        let source = self.definitions.as_ref()?;
-        let name = self.graph_name(key, ev).await?;
-        let enabled = match name.as_str() {
-            "change_request" => project.triggers.change_requests,
-            _ => project.triggers.issues,
+        tx: &mut Tx<'_>,
+        event_id: i64,
+        task_id: Option<i64>,
+        ty: &str,
+        payload: Value,
+    ) -> Result<(Option<String>, Option<i64>), Error> {
+        let Some(task_id) = task_id else {
+            return Ok((Some("engine event without task".into()), None));
         };
-        if !enabled {
-            return None;
-        }
-        let fetch = source.fetch(&key.repo, &project.default_branch, &name);
-        match tokio::time::timeout(DEFINITION_TIMEOUT, fetch).await {
-            Ok(Ok(g)) => g,
-            Ok(Err(e)) => {
-                tracing::warn!(item = %key, error = %e,
-                    "reading the workflow definition failed; using the built-in workflow");
-                None
+        let ev: TaskEvent = serde_json::from_value(payload.clone())
+            .map_err(|e| Error::State(format!("{ty}: {e}")))?;
+        if matches!(ev, TaskEvent::Resume) {
+            // A UI resume: writers only.
+            let login = payload
+                .pointer("/actor/login")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let mut task = self.lock_task(tx, task_id).await?;
+            if !login.is_empty() && !self.can_write(&task.repo, login).await {
+                return Ok((Some(format!("{login} may not resume")), Some(task_id)));
             }
-            Err(_) => {
-                tracing::warn!(item = %key,
-                    "reading the workflow definition timed out; using the built-in workflow");
-                None
-            }
+            // Jobs that waited on a human (a missing secret) run again.
+            sqlx::query(
+                "UPDATE engine.jobs SET status = 'queued', run_after = now(), updated_at = now()
+                 WHERE task_id = $1 AND status = 'blocked'",
+            )
+            .bind(task_id)
+            .execute(&mut **tx)
+            .await?;
+            self.apply(tx, &mut task, Some(event_id), &ev).await?;
+            return Ok((None, Some(task_id)));
         }
+        let mut task = self.lock_task(tx, task_id).await?;
+        if let TaskEvent::ActionFinished { result, .. } = &ev {
+            self.link_from_result(tx, &mut task, result).await?;
+        }
+        self.apply(tx, &mut task, Some(event_id), &ev).await?;
+        Ok((None, Some(task_id)))
     }
 
-    /// The definition (`.enzarb/workflows/<name>.yaml`) `ev` could start or move this item
-    /// onto: `issue` for an issue opening, an approval of a compiled issue's plan or a retry
-    /// of a failed or stale compiled issue; `change_request` for a change request opening
-    /// (also a reopened graph change request); the task's own definition for a retry of a
-    /// failed graph task. Reads the item outside the event's transaction (a stale read only
-    /// costs or saves one definition lookup; the transition decides).
-    async fn graph_name(&self, key: &WorkItemKey, ev: &EngineEvent) -> Option<String> {
-        let opened = |e: &enzarb_connector::Event| {
-            e.event_type == EventType::WorkItemOpened && e.data.item.kind == ItemKind::Issue
+    async fn can_write(&self, repo: &str, login: &str) -> bool {
+        let actor = CActor {
+            login: login.to_string(),
+            id: 0,
+            is_bot: false,
         };
-        if let EventPayload::Connector(e) = &ev.payload
-            && e.event_type == EventType::ChangeRequestOpened
-            && e.data.item.kind == ItemKind::ChangeRequest
-        {
-            // A compiled change request (a bot handoff replay or a reopen) stays compiled:
-            // no lookup for it.
-            let workflow: Option<String> =
-                sqlx::query_scalar("SELECT workflow FROM work_items WHERE key = $1")
-                    .bind(key.to_string())
-                    .fetch_optional(&self.pool)
-                    .await
-                    .unwrap_or(None);
-            return match workflow.as_deref() {
-                None => Some("change_request".into()),
-                Some(w) if w.starts_with(machine::graph::PREFIX) => Some("change_request".into()),
-                Some(_) => None,
-            };
-        }
-        let approval = match &ev.payload {
-            EventPayload::Connector(e) => e.event_type == EventType::ApprovalGranted,
-            EventPayload::Ui(u) => u.action == machine::UiActionKind::Approve,
-            _ => false,
+        self.permissions
+            .permission(&repo_key(repo), &actor)
+            .await
+            .map(|p| p.can_write())
+            .unwrap_or(false)
+    }
+
+    async fn on_catalog_event(
+        &self,
+        tx: &mut Tx<'_>,
+        event_id: i64,
+        project: Option<String>,
+        skey: Option<String>,
+        task_id: Option<i64>,
+        payload: Value,
+    ) -> Result<(Option<String>, Option<i64>), Error> {
+        let mut ev: Event = match serde_json::from_value(payload) {
+            Ok(e) => e,
+            Err(e) => return Ok((Some(format!("not a catalog event: {e}")), None)),
         };
-        let retry = match &ev.payload {
-            EventPayload::Connector(e) => e.event_type == EventType::Mentioned,
-            EventPayload::Ui(u) => u.action == machine::UiActionKind::Retry,
-            _ => false,
-        };
-        if let EventPayload::Connector(e) = &ev.payload
-            && opened(e)
-        {
-            return Some("issue".into());
+        // can_write comes from GitHub, never from the payload.
+        if let (Some(repo), Some(actor)) = (ev.repo.clone(), ev.actor.as_mut()) {
+            actor.can_write = !actor.login.is_empty() && self.can_write(&repo, &actor.login).await;
         }
-        if !approval && !retry {
-            return None;
-        }
-        let row: Option<(String, String, bool, Option<String>)> = sqlx::query_as(
-            "SELECT workflow, state, COALESCE((state_data->>'epic')::bool, false),
-                    state_data->'graph'->>'path'
-             FROM work_items WHERE key = $1",
-        )
-        .bind(key.to_string())
-        .fetch_optional(&self.pool)
-        .await
-        .unwrap_or(None);
-        let (workflow, state, epic, path) = row?;
-        match (workflow.as_str(), state.as_str()) {
-            ("issue", "AwaitingApproval") if approval && !epic => Some("issue".into()),
-            ("issue", "Failed" | "Stale") if retry && !epic => Some("issue".into()),
-            (w, "Failed") if retry && w.starts_with(machine::graph::PREFIX) => {
-                // The file the task's definition was read from.
-                let from_path = path.as_deref().and_then(|p| {
-                    p.strip_prefix(".enzarb/workflows/")
-                        .and_then(|n| n.strip_suffix(".yaml"))
-                        .map(str::to_string)
-                });
-                from_path.or_else(|| Some(w[machine::graph::PREFIX.len()..].to_string()))
-            }
+        let repo = ev.repo.clone().map(|r| r.to_ascii_lowercase());
+        let info = match (&project, &repo) {
+            (Some(p), _) => self.index.get(p),
+            (None, Some(r)) => self.index.lookup(r),
             _ => None,
-        }
-    }
+        };
+        let Some(info) = info else {
+            return Ok((Some("no project for this event".into()), None));
+        };
+        let skey = skey.or_else(|| {
+            let (r, s) = (repo.as_ref()?, ev.subject.as_ref()?);
+            Some(subject_key(r, s.number))
+        });
 
-    /// One pass over the oldest unprocessed events, in id order. Returns how many were
-    /// processed. Errors on single events are logged and leave that event for a retry.
-    pub async fn pass(&self) -> usize {
-        let rows: Vec<EventRow> = match sqlx::query_as(
-            "SELECT id, source, dedupe_key, work_item_key, type, payload, received_at, processed_at
-             FROM events WHERE processed_at IS NULL ORDER BY id LIMIT $1",
-        )
-        .bind(self.cfg.batch)
-        .fetch_all(&self.pool)
-        .await
+        // 1. Routed explicitly (UI submit) or by a linked subject.
+        let mut target = task_id;
+        if target.is_none()
+            && let Some(k) = &skey
         {
+            target = sqlx::query_scalar(
+                "SELECT task_id FROM engine.subjects WHERE key = $1 AND NOT ended",
+            )
+            .bind(k)
+            .fetch_optional(&mut **tx)
+            .await?;
+        }
+        // 2. A pull request that references issues joins their task.
+        if target.is_none()
+            && let (Payload::PullRequest(pr), Some(r), Some(k)) = (&ev.payload, &repo, &skey)
+        {
+            let mut refs = pr.references.clone();
+            if let Ok(more) = self
+                .connector()
+                .pr_references(&WorkItemKey::new(repo_key(r), pr.number))
+                .await
+            {
+                refs.extend(more);
+            }
+            refs.sort();
+            refs.dedup();
+            for n in refs {
+                let t: Option<i64> = sqlx::query_scalar(
+                    "SELECT task_id FROM engine.subjects WHERE key = $1 AND NOT ended",
+                )
+                .bind(subject_key(r, n))
+                .fetch_optional(&mut **tx)
+                .await?;
+                if let Some(t) = t {
+                    self.link_subject(tx, t, "pull_request", k, &pr_url(r, pr.number))
+                        .await?;
+                    target = Some(t);
+                    break;
+                }
+            }
+        }
+        if let Some(t) = target {
+            let mut task = self.lock_task(tx, t).await?;
+            if let Err(e) = validate_custom(&task.resolved, &ev) {
+                return Ok((Some(e), Some(t)));
+            }
+            self.refresh_doc(&mut task.state.doc, &ev).await;
+            self.apply(tx, &mut task, Some(event_id), &TaskEvent::Event { event: ev })
+                .await?;
+            return Ok((None, Some(t)));
+        }
+
+        // 3. Bindings.
+        let Some(repo) = repo else {
+            return Ok((Some("unrouted: no repo".into()), None));
+        };
+        if ev
+            .actor
+            .as_ref()
+            .is_some_and(|a| a.login.eq_ignore_ascii_case(&self.cfg.bot_login))
+        {
+            return Ok((Some("unrouted: own event".into()), None));
+        }
+        let bindings = match self.library.bindings(&info, &repo).await {
+            Ok(b) => b,
+            Err(e) => {
+                self.record_resolution(&info, &repo, None, &[], Some(&e)).await;
+                return Ok((Some(format!("bindings: {e}")), None));
+            }
+        };
+        let b = match enzarb_flow::resolve::select_binding(&bindings, &ev) {
+            Ok(Some(b)) => b.clone(),
+            Ok(None) => return Ok((Some("unrouted: no binding matched".into()), None)),
+            Err(e) => return Ok((Some(format!("bindings: {e}")), None)),
+        };
+        let resolved = match self.library.resolve(&info, b.workflow.clone()).await {
             Ok(r) => r,
             Err(e) => {
-                tracing::warn!(error = %e, "reducer: listing events failed");
-                return 0;
+                self.record_resolution(&info, &repo, None, &bindings, Some(&e))
+                    .await;
+                return Ok((Some(format!("workflow {}: {e}", b.workflow.path)), None));
             }
         };
-        let mut done = 0;
-        for row in rows {
-            let id = row.id;
-            match self.process(row).await {
-                Ok(Outcome::Processed) => done += 1,
-                Ok(Outcome::Skipped) => {}
-                Err(e) => {
-                    tracing::warn!(event_id = id, error = %e, "reducer: event failed; will retry")
-                }
-            }
+        self.record_resolution(&info, &repo, Some(&resolved), &bindings, None)
+            .await;
+        if let Err(e) = validate_custom(&resolved, &ev) {
+            return Ok((Some(e), None));
         }
-        done
+        let t = self
+            .create_task(tx, &info, &repo, b.id.as_deref(), &b.workflow, resolved, &ev, skey)
+            .await?;
+        Ok((None, Some(t)))
     }
 
-    /// Run passes until nothing more can be processed. Returns the total processed.
-    pub async fn drain(&self) -> usize {
-        let mut total = 0;
-        loop {
-            let n = self.pass().await;
-            if n == 0 {
-                return total;
-            }
-            total += n;
+    #[allow(clippy::too_many_arguments)]
+    async fn create_task(
+        &self,
+        tx: &mut Tx<'_>,
+        info: &ProjectInfo,
+        repo: &str,
+        binding: Option<&str>,
+        entry: &Entry,
+        resolved: Resolved,
+        ev: &Event,
+        skey: Option<String>,
+    ) -> Result<i64, Error> {
+        let wref = format!("{}@{}:{}", entry.repo, entry.rref, entry.path);
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO engine.tasks (project, repo, binding, workflow_ref, state, resolved, origins, started_by)
+             VALUES ($1, $2, $3, $4, '{}', '{}', $5, $6) RETURNING id",
+        )
+        .bind(&info.name)
+        .bind(repo)
+        .bind(binding)
+        .bind(&wref)
+        .bind(serde_json::to_value(&resolved.origins).unwrap_or_default())
+        .bind(ev.actor.as_ref().map(|a| a.login.clone()))
+        .fetch_one(&mut **tx)
+        .await?;
+        let mut doc = TaskDocument {
+            task: TaskInfo {
+                id: id.to_string(),
+                project: info.name.clone(),
+                repo: repo.to_string(),
+                workflow: wref,
+                default_branch: info.default_branch(repo).unwrap_or("main").to_string(),
+            },
+            ..Default::default()
+        };
+        doc.history = self.history(tx, &info.name).await?;
+        self.refresh_doc(&mut doc, ev).await;
+        if let (Some(k), Some(s)) = (&skey, &ev.subject) {
+            let kind = match s.kind {
+                SubjectKind::Issue => "issue",
+                SubjectKind::PullRequest => "pull_request",
+            };
+            let url = match s.kind {
+                SubjectKind::Issue => issue_url(repo, s.number),
+                SubjectKind::PullRequest => pr_url(repo, s.number),
+            };
+            self.link_subject(tx, id, kind, k, &url).await?;
+        }
+        let mut task = TaskRow {
+            id,
+            project: info.name.clone(),
+            repo: repo.to_string(),
+            state: TaskState::new(doc),
+            resolved,
+        };
+        self.apply(tx, &mut task, None, &TaskEvent::Start { event: ev.clone() })
+            .await?;
+        Ok(id)
+    }
+
+    async fn history(
+        &self,
+        tx: &mut Tx<'_>,
+        project: &str,
+    ) -> Result<Vec<enzarb_flow::document::HistoryEntry>, Error> {
+        let rows = sqlx::query(
+            "SELECT t.id, t.workflow_ref, p.status, p.end_status, p.title, t.ended_at
+             FROM engine.tasks t JOIN engine.projection p ON p.task_id = t.id
+             WHERE t.project = $1 ORDER BY t.updated_at DESC LIMIT 20",
+        )
+        .bind(project)
+        .fetch_all(&mut **tx)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| enzarb_flow::document::HistoryEntry {
+                task: r.get::<i64, _>("id").to_string(),
+                workflow: r.get("workflow_ref"),
+                status: r
+                    .get::<Option<String>, _>("end_status")
+                    .unwrap_or_else(|| r.get("status")),
+                title: r.get("title"),
+                ended_at: r
+                    .get::<Option<chrono::DateTime<chrono::Utc>>, _>("ended_at")
+                    .map(|t| t.to_rfc3339())
+                    .unwrap_or_default(),
+            })
+            .collect())
+    }
+
+    /// Writes what was last resolved for a Project/repo (board, bindings, workflows) for the UI.
+    async fn record_resolution(
+        &self,
+        info: &ProjectInfo,
+        repo: &str,
+        resolved: Option<&Resolved>,
+        bindings: &[enzarb_flow::resolve::RBinding],
+        error: Option<&str>,
+    ) {
+        let wf = resolved.map(|r| {
+            json!({ format!("{}@{}:{}", r.entry.repo, r.entry.rref, r.entry.path): {
+                "description": r.description,
+                "phases": r.phases.iter().map(|p| json!({
+                    "id": p.id, "origin": p.origin, "params": p.params, "exits": p.exits,
+                    "routes": p.routes, "description": p.description,
+                })).collect::<Vec<_>>(),
+                "origins": r.origins,
+            }})
+        });
+        let res = sqlx::query(
+            "INSERT INTO engine.resolutions (project, repo, board, bindings, workflows, errors, updated_at)
+             VALUES ($1, $2, COALESCE($3, '{}'), $4, COALESCE($5, '{}'), $6, now())
+             ON CONFLICT (project, repo) DO UPDATE SET
+                board = COALESCE($3, engine.resolutions.board),
+                bindings = $4,
+                workflows = engine.resolutions.workflows || COALESCE($5, '{}'),
+                errors = $6, updated_at = now()",
+        )
+        .bind(&info.name)
+        .bind(repo)
+        .bind(resolved.map(|r| serde_json::to_value(&r.board).unwrap_or_default()))
+        .bind(serde_json::to_value(bindings).unwrap_or_default())
+        .bind(wf)
+        .bind(json!(error.map(|e| vec![e]).unwrap_or_default()))
+        .execute(&self.pool)
+        .await;
+        if let Err(e) = res {
+            tracing::warn!("recording resolution: {e}");
         }
     }
 
-    /// Run `cfg.workers` workers until `shutdown` flips to true. Workers wake on
-    /// `NOTIFY workflow_events` and otherwise poll every `cfg.poll_interval`.
-    pub async fn run(self: Arc<Self>, shutdown: watch::Receiver<bool>) -> Result<(), Error> {
-        let wake = Arc::new(Notify::new());
-        let mut listener = sqlx::postgres::PgListener::connect_with(&self.pool).await?;
-        listener.listen("workflow_events").await?;
+    pub(crate) async fn lock_task(&self, tx: &mut Tx<'_>, id: i64) -> Result<TaskRow, Error> {
+        let r = sqlx::query(
+            "SELECT id, project, repo, state, resolved FROM engine.tasks WHERE id = $1 FOR UPDATE",
+        )
+        .bind(id)
+        .fetch_one(&mut **tx)
+        .await?;
+        Ok(TaskRow {
+            id,
+            project: r.get("project"),
+            repo: r.get("repo"),
+            state: serde_json::from_value(r.get("state"))
+                .map_err(|e| Error::State(format!("task {id} state: {e}")))?,
+            resolved: serde_json::from_value(r.get("resolved"))
+                .map_err(|e| Error::State(format!("task {id} definition: {e}")))?,
+        })
+    }
 
-        let mut tasks = tokio::task::JoinSet::new();
-        {
-            let wake = wake.clone();
-            let mut shutdown = shutdown.clone();
-            tasks.spawn(async move {
-                loop {
-                    tokio::select! {
-                        r = listener.recv() => match r {
-                            Ok(_) => wake.notify_waiters(),
-                            Err(e) => {
-                                tracing::warn!(error = %e, "reducer: listener error");
-                                tokio::time::sleep(Duration::from_secs(1)).await;
-                            }
-                        },
-                        _ = shutdown.changed() => {}
-                    }
-                    if *shutdown.borrow() {
-                        return;
-                    }
-                }
-            });
+    pub(crate) async fn link_subject(
+        &self,
+        tx: &mut Tx<'_>,
+        task: i64,
+        kind: &str,
+        key: &str,
+        url: &str,
+    ) -> Result<bool, Error> {
+        let n = sqlx::query(
+            "INSERT INTO engine.subjects (task_id, kind, key, url) VALUES ($1, $2, $3, $4)
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(task)
+        .bind(kind)
+        .bind(key)
+        .bind(url)
+        .execute(&mut **tx)
+        .await?;
+        Ok(n.rows_affected() == 1)
+    }
+
+    /// An action result may name a subject to link (`{"subject": {"kind", "repo", "number"}}`,
+    /// e.g. a pull request the action opened).
+    async fn link_from_result(&self, tx: &mut Tx<'_>, task: &mut TaskRow, result: &Value) -> Result<(), Error> {
+        let Some(s) = result.get("subject") else {
+            return Ok(());
+        };
+        let (Some(kind), Some(repo), Some(n)) = (
+            s.get("kind").and_then(Value::as_str),
+            s.get("repo").and_then(Value::as_str),
+            s.get("number").and_then(Value::as_u64),
+        ) else {
+            return Ok(());
+        };
+        let url = s.get("url").and_then(Value::as_str).unwrap_or("").to_string();
+        self.link_subject(tx, task.id, kind, &subject_key(repo, n), &url)
+            .await?;
+        if kind == "pull_request" {
+            let item = WorkItemKey::new(repo_key(repo), n);
+            let subj = match self.connector().fetch_thread(&item).await {
+                Ok(t) => thread_subject(repo, &t, "open"),
+                Err(_) => Subject {
+                    repo: repo.into(),
+                    number: n,
+                    url,
+                    state: "open".into(),
+                    ..Default::default()
+                },
+            };
+            let prs = &mut task.state.doc.subjects.pull_requests;
+            prs.retain(|p| !(p.repo == subj.repo && p.number == subj.number));
+            prs.push(subj);
         }
-        for _ in 0..self.cfg.workers.max(1) {
-            let me = self.clone();
-            let wake = wake.clone();
-            let mut shutdown = shutdown.clone();
-            tasks.spawn(async move {
-                while !*shutdown.borrow() {
-                    if me.pass().await > 0 {
-                        continue;
-                    }
-                    tokio::select! {
-                        _ = wake.notified() => {}
-                        _ = tokio::time::sleep(me.cfg.poll_interval) => {}
-                        _ = shutdown.changed() => {}
-                    }
-                }
-            });
-        }
-        while tasks.join_next().await.is_some() {}
         Ok(())
     }
 
-    async fn prepare(&self, row: &EventRow) -> Result<Prepared, Error> {
-        let key = row
-            .work_item_key
-            .parse::<WorkItemKey>()
-            .map(|k| normalize_key(&k))
-            .map_err(|e| e.to_string());
-        let event = EngineEvent::from_row(row.id.to_string(), &row.r#type, &row.payload)
-            .map_err(|e| e.to_string());
-        let project = key
-            .as_ref()
-            .ok()
-            .and_then(|k| self.index.lookup(&k.repo.to_string()));
-        let mut permission = Permission::None;
-        if let (Ok(k), Ok(ev), Some(_)) = (&key, &event, &project)
-            && let Some(actor) = actor_of(ev)
-            && !actor.is_bot
-        {
-            permission = self.permissions.permission(&k.repo, actor).await?;
-        }
-        let mut graph = None;
-        if let (Ok(k), Ok(ev), Some(p)) = (&key, &event, &project) {
-            graph = self.graph_definition(k, ev, p).await;
-        }
-        Ok(Prepared {
-            key,
-            event,
-            project,
-            permission,
-            graph,
-        })
-    }
-
-    async fn process(&self, row: EventRow) -> Result<Outcome, Error> {
-        let prep = self.prepare(&row).await?;
-        let mut tx = self.pool.begin().await?;
-
-        let claimed: Option<i64> = sqlx::query_scalar(
-            "SELECT id FROM events WHERE id = $1 AND processed_at IS NULL FOR UPDATE SKIP LOCKED",
-        )
-        .bind(row.id)
-        .fetch_optional(&mut *tx)
-        .await?;
-        if claimed.is_none() {
-            return Ok(Outcome::Skipped);
-        }
-
-        let (key, ev) = match (&prep.key, &prep.event) {
-            (Ok(k), Ok(e)) => (k.clone(), e),
-            (k, e) => {
-                let why = k
-                    .as_ref()
-                    .err()
-                    .or(e.as_ref().err())
-                    .cloned()
-                    .unwrap_or_default();
-                ignore(&mut tx, &row, None, &format!("unparseable event: {why}")).await?;
-                tx.commit().await?;
-                return Ok(Outcome::Processed);
-            }
+    /// Keeps the task document's subjects current from GitHub (verified data, not agent output).
+    async fn refresh_doc(&self, doc: &mut TaskDocument, ev: &Event) {
+        let (Some(repo), Some(s)) = (ev.repo.as_ref(), ev.subject.as_ref()) else {
+            return;
         };
-        let key_s = key.to_string();
-
-        // Serialize per work item, whether or not its row exists yet.
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-            .bind(&key_s)
-            .execute(&mut *tx)
-            .await?;
-        let earlier: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM events
-                            WHERE id < $1 AND processed_at IS NULL AND lower(work_item_key) = $2)",
-        )
-        .bind(row.id)
-        .bind(&key_s)
-        .fetch_one(&mut *tx)
-        .await?;
-        if earlier {
-            return Ok(Outcome::Skipped);
-        }
-
-        let existing: Option<WorkItem> = sqlx::query_as(
-            "SELECT id, key, project_id, workflow, workflow_version, state, state_data, wake_at,
-                    created_at, updated_at FROM work_items WHERE key = $1 FOR UPDATE",
-        )
-        .bind(&key_s)
-        .fetch_optional(&mut *tx)
-        .await?;
-
-        // An existing item whose repo left every Project still gets close/cancel events,
-        // routed by its key; everything else about it is gated by `Ctx.orphaned`.
-        let orphaned = prep.project.is_none();
-        let project = match (prep.project.clone(), &existing) {
-            (Some(p), _) => p,
-            (None, Some(w)) => ProjectInfo {
-                name: w.project_id.clone().unwrap_or_default(),
-                triggers: Triggers {
-                    issues: false,
-                    change_requests: false,
-                    mentions: false,
-                },
-                default_branch: "main".into(),
+        let repo = repo.to_ascii_lowercase();
+        let item = WorkItemKey::new(repo_key(&repo), s.number);
+        let state = match &ev.payload {
+            Payload::Issue(i) if i.action == "closed" => "closed",
+            Payload::PullRequest(p) if p.merged => "merged",
+            Payload::PullRequest(p) if p.action == "closed" => "closed",
+            _ => "open",
+        };
+        let fetched = self.connector().fetch_thread(&item).await.ok();
+        let mut subj = match &fetched {
+            Some(t) => thread_subject(&repo, t, state),
+            None => Subject {
+                repo: repo.clone(),
+                number: s.number,
+                state: state.into(),
+                ..Default::default()
             },
-            (None, None) => {
-                ignore(&mut tx, &row, None, "no project for repository").await?;
-                tx.commit().await?;
-                return Ok(Outcome::Processed);
-            }
         };
-        let orphan_owner = orphaned
-            && matches!(&ev.payload, EventPayload::Ui(u)
-                if self.index.owner(&project.name)
-                    .is_some_and(|o| o.eq_ignore_ascii_case(&u.actor.login)));
-
-        // Dependencies named in the event's body or comment, inside this Project only.
-        let changed_deps = crate::dependencies::record_text(
-            &mut tx,
-            &key,
-            ev,
-            prep.permission.can_write(),
-            |dep| {
-                self.index
-                    .lookup(&dep.repo.to_string())
-                    .is_some_and(|p| p.name == project.name)
-            },
-        )
-        .await?;
-        if changed_deps {
-            tracing::debug!(item = %key, "text dependencies changed");
-        }
-
-        // The change request this item is (or could be) stacked on. An item already stacked
-        // keeps its parent; a new or issue item may pick its single open parent.
-        let stacked_on: Option<String> = existing
-            .as_ref()
-            .and_then(|w| w.state_data.get("stacked_on"))
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(str::to_string);
-        let stack_parent =
-            if stacked_on.is_some() || existing.as_ref().is_none_or(|w| w.workflow == "issue") {
-                crate::dependencies::stack_parent(&mut tx, &key, stacked_on.as_deref()).await?
-            } else {
-                None
-            };
-
-        // The stored epic that a bot-authored issue claims as its parent. Only an opening
-        // event of an unknown work item can use it; the machine decides whether to trust it.
-        let epic_parent = if existing.is_none() {
-            epic_parent(&mut tx, ev, &project.name).await?
-        } else {
-            None
-        };
-
-        let ctx = Ctx {
-            epic_parent,
-            stack_parent,
-            orphaned,
-            orphan_owner,
-            work_item: key.clone(),
-            now: Utc::now(),
-            bot_login: self.cfg.bot_login.clone(),
-            bot_handle: self.cfg.bot_handle.clone(),
-            actor_permission: prep.permission,
-            config: self.cfg.machine.clone(),
-            triggers: project.triggers,
-            default_branch: project.default_branch.clone(),
-            open_dependencies: crate::dependencies::open_dependencies(&mut tx, &key).await?,
-            blocking_dependencies: crate::dependencies::blocking_dependencies(&mut tx, &key)
-                .await?,
-            graph: prep.graph.clone(),
-            live_agent_jobs: match &existing {
-                Some(w) => {
-                    sqlx::query_scalar(
-                        "SELECT EXISTS (SELECT 1 FROM jobs WHERE work_item_id = $1
-                       AND status IN ('queued', 'running') AND kind LIKE 'agent\\_%')",
-                    )
-                    .bind(w.id)
-                    .fetch_one(&mut *tx)
-                    .await?
+        match &ev.payload {
+            Payload::Issue(i) => {
+                if subj.title.is_empty() {
+                    subj.title = i.title.clone();
+                    subj.body = i.body.clone();
                 }
-                None => false,
-            },
-        };
-
-        let state = match &existing {
-            Some(w) => {
-                WorkflowState::from_row(&w.workflow, w.workflow_version, &w.state, &w.state_data)
-                    .map_err(|e| Error::State(format!("work item {}: {e}", w.key)))?
-            }
-            None => match machine::route(&ctx, ev) {
-                Some(kind) => WorkflowState::New(kind),
-                None => {
-                    ignore(&mut tx, &row, None, "event starts no workflow").await?;
-                    tx.commit().await?;
-                    return Ok(Outcome::Processed);
+                subj.labels = i.labels.clone();
+                if subj.url.is_empty() {
+                    subj.url = issue_url(&repo, s.number);
                 }
-            },
+            }
+            Payload::PullRequest(p) => {
+                if subj.title.is_empty() {
+                    subj.title = p.title.clone();
+                    subj.body = p.body.clone();
+                }
+                subj.head = Some(p.head.clone()).filter(|h| !h.is_empty()).or(subj.head);
+                subj.base = Some(p.base.clone()).filter(|b| !b.is_empty()).or(subj.base);
+                if subj.url.is_empty() {
+                    subj.url = pr_url(&repo, s.number);
+                }
+            }
+            _ => {}
+        }
+        match s.kind {
+            SubjectKind::Issue => {
+                if doc.subjects.issue.as_ref().is_none_or(|i| i.number == s.number && i.repo == repo) {
+                    doc.subjects.issue = Some(subj);
+                }
+            }
+            SubjectKind::PullRequest => {
+                let prs = &mut doc.subjects.pull_requests;
+                prs.retain(|p| !(p.repo == repo && p.number == s.number));
+                prs.push(subj);
+            }
+        }
+    }
+
+    /// Re-resolves at a wait (auto-upgrade, ADR-0022 §4), steps the interpreter and persists
+    /// state, transition, effects and projection.
+    pub(crate) async fn apply(
+        &self,
+        tx: &mut Tx<'_>,
+        task: &mut TaskRow,
+        event_id: Option<i64>,
+        ev: &TaskEvent,
+    ) -> Result<(), Error> {
+        if task.state.status == Status::Waiting && task.state.pending.is_none() {
+            self.reresolve(task).await;
+        }
+        let from = summary(&task.state);
+        let (next, effects) = interp::step(&task.resolved, &task.state, ev);
+        task.state = next;
+        self.persist(tx, task, event_id, from, &effects).await
+    }
+
+    async fn reresolve(&self, task: &mut TaskRow) {
+        let Some(info) = self.index.get(&task.project) else {
+            return;
         };
-
-        let t = machine::transition(&ctx, &state, ev);
-
-        let work_item_id = match &existing {
-            Some(w) => w.id,
-            None if !t.accepted => {
-                ignore(&mut tx, &row, None, &t.note).await?;
-                tx.commit().await?;
-                return Ok(Outcome::Processed);
-            }
-            None => {
-                sqlx::query_scalar(
-                    "INSERT INTO work_items (key, project_id, workflow, workflow_version, state, state_data)
-                     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
-                )
-                .bind(&key_s)
-                .bind(&project.name)
-                .bind(t.next.workflow_name())
-                .bind(WORKFLOW_VERSION)
-                .bind(t.next.state_name())
-                .bind(t.next.state_data())
-                .fetch_one(&mut *tx)
-                .await?
-            }
+        let e = &task.resolved.entry;
+        let entry = Entry {
+            repo: e.repo.clone(),
+            rref: e.rref.clone(),
+            path: e.path.clone(),
         };
-
-        let from_state = existing.as_ref().map(|w| w.state.clone());
-        let unchanged = t.next == state && t.effects.is_empty() && existing.is_some();
-        let state_changed = existing.is_some() && t.next != state;
-        if t.accepted && state_changed {
-            sqlx::query(
-                "UPDATE work_items SET state = $2, state_data = $3, workflow_version = $4,
-                        workflow = $5, updated_at = now() WHERE id = $1",
-            )
-            .bind(work_item_id)
-            .bind(t.next.state_name())
-            .bind(t.next.state_data())
-            .bind(WORKFLOW_VERSION)
-            // Changes only when a compiled `issue` item moves to `graph:issue`.
-            .bind(t.next.workflow_name())
-            .execute(&mut *tx)
-            .await?;
-        }
-
-        if t.accepted {
-            for effect in &t.effects {
-                apply_effect(&mut tx, work_item_id, &project.name, effect).await?;
+        match self.library.resolve(&info, entry).await {
+            Ok(new) if new != task.resolved => {
+                let (s, outcome) = interp::reresolve(&new, &task.state);
+                task.state = s;
+                if outcome == interp::Reresolution::Upgraded {
+                    task.resolved = new;
+                }
             }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(task = task.id, "re-resolution failed, keeping definition: {e}"),
         }
-
-        if !(t.accepted && unchanged) {
-            let effects = if t.accepted {
-                serde_json::to_value(&t.effects).unwrap_or_default()
-            } else {
-                serde_json::json!([])
-            };
-            sqlx::query(
-                "INSERT INTO transitions (work_item_id, from_state, to_state, event_id, event_type, effects, note)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
-            )
-            .bind(work_item_id)
-            .bind(&from_state)
-            .bind(if t.accepted { t.next.state_name() } else { state.state_name() })
-            .bind(row.id)
-            .bind(&row.r#type)
-            .bind(effects)
-            .bind(if t.note.is_empty() {
-                None
-            } else if t.accepted {
-                Some(t.note.clone())
-            } else {
-                Some(format!("rejected: {}", t.note))
-            })
-            .execute(&mut *tx)
-            .await?;
-        }
-
-        // A parent change request that merged or closed: its stacked children re-evaluate now
-        // (a merge retargets them) instead of at the next sweep.
-        if t.accepted
-            && state_changed
-            && (matches!(&t.next, WorkflowState::ChangeRequest(c)
-                if matches!(c.phase, CrPhase::Merged | CrPhase::Closed | CrPhase::Cancelled))
-                || matches!(&t.next, WorkflowState::Graph(g)
-                if g.data.cr.is_some() && matches!(g.phase,
-                    machine::graph::GraphPhase::Merged
-                        | machine::graph::GraphPhase::Closed
-                        | machine::graph::GraphPhase::Cancelled)))
-        {
-            let n =
-                crate::dependencies::notify_stacked_children(&mut tx, &key, &t.next.state_name())
-                    .await?;
-            if n > 0 {
-                tracing::info!(item = %key, children = n, "stacked change requests notified");
-            }
-        }
-
-        sqlx::query("UPDATE events SET processed_at = now() WHERE id = $1")
-            .bind(row.id)
-            .execute(&mut *tx)
-            .await?;
-        if t.accepted && !unchanged {
-            sqlx::query("SELECT pg_notify('work_item_changed', $1)")
-                .bind(work_item_id.to_string())
-                .execute(&mut *tx)
-                .await?;
-        }
-        tx.commit().await?;
-        Ok(Outcome::Processed)
     }
-}
 
-/// The epic named by the marker in the body of an issue-opening event, if that epic is a
-/// work item of `project` that is creating or waiting for its sub-issues. Everything else is
-/// `None`: no marker, an unknown parent, another Project, another phase.
-async fn epic_parent(
-    tx: &mut Transaction<'_, Postgres>,
-    ev: &EngineEvent,
-    project: &str,
-) -> Result<Option<EpicParent>, Error> {
-    let EventPayload::Connector(e) = &ev.payload else {
-        return Ok(None);
-    };
-    if e.event_type != EventType::WorkItemOpened || e.data.item.kind != ItemKind::Issue {
-        return Ok(None);
-    }
-    let Some((parent, _)) = parse_epic_marker(&e.data.item.body) else {
-        return Ok(None);
-    };
-    let parent = normalize_key(&parent);
-    let row: Option<(String, String, serde_json::Value, Option<String>)> = sqlx::query_as(
-        "SELECT workflow, state, state_data, project_id FROM work_items
-         WHERE key = $1 AND (workflow = 'issue' OR workflow LIKE 'graph:%')",
-    )
-    .bind(parent.to_string())
-    .fetch_optional(&mut **tx)
-    .await?;
-    let Some((workflow, state, data, project_id)) = row else {
-        return Ok(None);
-    };
-    let flag = |k: &str| data.get(k).and_then(|v| v.as_bool()) == Some(true);
-    // A compiled epic creating or awaiting its sub-issues, or a graph task at
-    // `create_sub_issues` or waiting on its children.
-    let accepting = if workflow == "issue" {
-        matches!(state.as_str(), "Decomposing" | "AwaitingChildren") && flag("epic")
-    } else {
-        flag("accepts_children")
-    };
-    if project_id.as_deref() != Some(project) || !accepting {
-        return Ok(None);
-    }
-    let sub_keys = data
-        .get("sub_issues")
-        .and_then(|v| v.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|s| s.get("key").and_then(|k| k.as_str()).map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
-    Ok(Some(EpicParent {
-        key: parent,
-        depth: data.get("epic_depth").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-        sub_keys,
-    }))
-}
-
-/// Mark the event processed with an `ignored` transition (no state change).
-async fn ignore(
-    tx: &mut Transaction<'_, Postgres>,
-    row: &EventRow,
-    work_item_id: Option<i64>,
-    note: &str,
-) -> Result<(), Error> {
-    sqlx::query(
-        "INSERT INTO transitions (work_item_id, from_state, to_state, event_id, event_type, note)
-         VALUES ($1, NULL, 'ignored', $2, $3, $4)",
-    )
-    .bind(work_item_id)
-    .bind(row.id)
-    .bind(&row.r#type)
-    .bind(note)
-    .execute(&mut **tx)
-    .await?;
-    sqlx::query("UPDATE events SET processed_at = now() WHERE id = $1")
-        .bind(row.id)
+    async fn persist(
+        &self,
+        tx: &mut Tx<'_>,
+        task: &TaskRow,
+        event_id: Option<i64>,
+        from: Value,
+        effects: &[Effect],
+    ) -> Result<(), Error> {
+        let ended = matches!(task.state.status, Status::Ended { .. });
+        sqlx::query(
+            "UPDATE engine.tasks SET state = $2, resolved = $3, origins = $4, updated_at = now(),
+                    ended_at = CASE WHEN $5 THEN COALESCE(ended_at, now()) END
+             WHERE id = $1",
+        )
+        .bind(task.id)
+        .bind(serde_json::to_value(&task.state).map_err(|e| Error::State(e.to_string()))?)
+        .bind(serde_json::to_value(&task.resolved).map_err(|e| Error::State(e.to_string()))?)
+        .bind(serde_json::to_value(&task.resolved.origins).unwrap_or_default())
+        .bind(ended)
         .execute(&mut **tx)
         .await?;
-    Ok(())
-}
-
-async fn apply_effect(
-    tx: &mut Transaction<'_, Postgres>,
-    work_item_id: i64,
-    project: &str,
-    effect: &Effect,
-) -> Result<(), Error> {
-    match effect {
-        Effect::Job {
-            kind,
-            priority,
-            idempotency_key,
-            input,
-        } => {
-            sqlx::query(
-                "INSERT INTO jobs (work_item_id, project_id, kind, priority, idempotency_key, input)
-                 VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (idempotency_key) DO NOTHING",
-            )
-            .bind(work_item_id)
-            .bind(project)
-            .bind(kind.as_str())
-            .bind(priority)
-            .bind(idempotency_key)
-            .bind(input)
+        sqlx::query("UPDATE engine.subjects SET ended = $2 WHERE task_id = $1")
+            .bind(task.id)
+            .bind(ended)
             .execute(&mut **tx)
             .await?;
+        sqlx::query(
+            "INSERT INTO engine.transitions (task_id, event_id, from_state, to_state, effects)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(task.id)
+        .bind(event_id)
+        .bind(from)
+        .bind(summary(&task.state))
+        .bind(serde_json::to_value(effects).unwrap_or_default())
+        .execute(&mut **tx)
+        .await?;
+        let mut projected = false;
+        for fx in effects {
+            if matches!(fx, Effect::UpdateProjection(_)) {
+                projected = true;
+            }
+            self.queue_effect(tx, task, event_id, fx).await?;
         }
-        Effect::CancelJobs => {
-            sqlx::query(
-                "UPDATE jobs SET status = 'cancelled', lease_owner = NULL, lease_until = NULL,
-                        updated_at = now()
-                 WHERE work_item_id = $1 AND status IN ('queued', 'running')",
-            )
-            .bind(work_item_id)
-            .execute(&mut **tx)
-            .await?;
-        }
-        Effect::SetWakeAt { at } => {
-            sqlx::query("UPDATE work_items SET wake_at = $2 WHERE id = $1")
-                .bind(work_item_id)
-                .bind(at)
+        if !projected {
+            // Keep the projection's subjects, title and cost current.
+            sqlx::query("UPDATE engine.projection SET updated_at = now() WHERE task_id = $1")
+                .bind(task.id)
                 .execute(&mut **tx)
                 .await?;
         }
-        Effect::StartWorkflow { key, event, .. } => {
-            let key = normalize_key(key).to_string();
-            sqlx::query_scalar::<_, Option<i64>>(
-                "SELECT workflows_api.ingest_event($1, $2, $3, $4, $5)",
-            )
-            .bind("engine")
-            .bind(format!("handoff:{}", event.id))
-            .bind(key)
-            .bind(event.event_type.as_str())
-            .bind(serde_json::to_value(event.as_ref()).unwrap_or_default())
-            .fetch_one(&mut **tx)
-            .await?;
+        if ended {
+            self.notify_related(tx, task).await?;
         }
+        Ok(())
     }
-    Ok(())
+
+    /// When a task ends: `child_ended`/`all_children_ended` to its parent and
+    /// `dependency_changed` to tasks blocked by it.
+    async fn notify_related(&self, tx: &mut Tx<'_>, task: &TaskRow) -> Result<(), Error> {
+        let status = match &task.state.status {
+            Status::Ended { status } => status.clone(),
+            _ => return Ok(()),
+        };
+        let keys: Vec<String> = sqlx::query_scalar("SELECT key FROM engine.subjects WHERE task_id = $1")
+            .bind(task.id)
+            .fetch_all(&mut **tx)
+            .await?;
+        let mut targets = keys.clone();
+        targets.push(format!("task:{}", task.id));
+        // Tasks blocked by this one.
+        let blocked: Vec<i64> = sqlx::query_scalar(
+            "SELECT DISTINCT r.task_id FROM engine.relations r JOIN engine.tasks t ON t.id = r.task_id
+             WHERE r.kind = 'blocked_by' AND r.target_key = ANY($1) AND t.ended_at IS NULL",
+        )
+        .bind(&targets)
+        .fetch_all(&mut **tx)
+        .await?;
+        for b in blocked {
+            let ev = json!({"type": "dependency_changed", "task": task.id.to_string(), "status": status});
+            self.insert_event(tx, &format!("dep:{}:{}", task.id, b), &task.project, b, "dependency_changed", ev)
+                .await?;
+        }
+        // The parent.
+        let parents: Vec<String> = sqlx::query_scalar(
+            "SELECT target_key FROM engine.relations WHERE task_id = $1 AND kind = 'parent'",
+        )
+        .bind(task.id)
+        .fetch_all(&mut **tx)
+        .await?;
+        for pkey in parents {
+            let parent: Option<i64> = match pkey.strip_prefix("task:") {
+                Some(id) => id.parse().ok(),
+                None => sqlx::query_scalar(
+                    "SELECT task_id FROM engine.subjects WHERE key = $1 ORDER BY ended, linked_at DESC LIMIT 1",
+                )
+                .bind(&pkey)
+                .fetch_optional(&mut **tx)
+                .await?,
+            };
+            let Some(parent) = parent else { continue };
+            let ev = json!({"type": "child_ended", "task": task.id.to_string(), "status": status});
+            self.insert_event(tx, &format!("child:{}:{}", task.id, parent), &task.project, parent, "child_ended", ev)
+                .await?;
+            let rows = sqlx::query(
+                "SELECT t.id, t.ended_at IS NOT NULL AS ended, t.state->'status' AS st
+                 FROM engine.relations r JOIN engine.tasks t ON t.id = r.task_id
+                 WHERE r.kind = 'parent' AND r.target_key = $1",
+            )
+            .bind(&pkey)
+            .fetch_all(&mut **tx)
+            .await?;
+            if rows.iter().all(|r| r.get::<bool, _>("ended") || r.get::<i64, _>("id") == task.id) {
+                let statuses: serde_json::Map<String, Value> = rows
+                    .iter()
+                    .map(|r| {
+                        let id: i64 = r.get("id");
+                        let st: Value = r.get("st");
+                        let s = if id == task.id {
+                            status.clone()
+                        } else {
+                            st.get("status").and_then(Value::as_str).unwrap_or("").to_string()
+                        };
+                        (id.to_string(), Value::String(s))
+                    })
+                    .collect();
+                let ev = json!({"type": "all_children_ended", "statuses": statuses});
+                self.insert_event(tx, &format!("children:{parent}:{pkey}"), &task.project, parent, "all_children_ended", ev)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn insert_event(
+        &self,
+        tx: &mut Tx<'_>,
+        dedupe: &str,
+        project: &str,
+        task_id: i64,
+        ty: &str,
+        payload: Value,
+    ) -> Result<(), Error> {
+        sqlx::query(
+            "INSERT INTO engine.events (dedupe_key, project, task_id, type, payload)
+             VALUES ($1, $2, $3, $4, $5) ON CONFLICT (dedupe_key) DO NOTHING",
+        )
+        .bind(dedupe)
+        .bind(project)
+        .bind(task_id)
+        .bind(ty)
+        .bind(payload)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+}
+
+/// `{status, position}` of a state, for the transition log.
+fn summary(s: &TaskState) -> Value {
+    json!({"status": s.status, "position": s.position(), "pending": s.pending})
+}
+
+/// Custom events must match the schema their workflow declares.
+fn validate_custom(res: &Resolved, ev: &Event) -> Result<(), String> {
+    let Payload::Custom(c) = &ev.payload else {
+        return Ok(());
+    };
+    let Some(decl) = res.events.get(&c.name) else {
+        return Err(format!("custom event `{}` is not declared", c.name));
+    };
+    crate::schema::validate(&decl.schema, &c.payload)
+        .map_err(|e| format!("custom event `{}`: {e}", c.name))
+}
+
+pub(crate) fn issue_url(repo: &str, n: u64) -> String {
+    format!("https://github.com/{repo}/issues/{n}")
+}
+
+pub(crate) fn pr_url(repo: &str, n: u64) -> String {
+    format!("https://github.com/{repo}/pull/{n}")
+}
+
+pub(crate) fn thread_subject(repo: &str, t: &enzarb_connector::Thread, state: &str) -> Subject {
+    Subject {
+        repo: repo.to_string(),
+        number: t.item.number,
+        title: t.item.title.clone(),
+        body: t.item.body.clone(),
+        url: t.item.url.clone(),
+        state: state.to_string(),
+        labels: Vec::new(),
+        author: t.item.author.clone(),
+        head: t.item.head_ref.clone(),
+        base: t.item.base_ref.clone(),
+        comments: t
+            .comments
+            .iter()
+            .map(|c| SubjectComment {
+                author: c.author.login.clone(),
+                body: c.comment.body.clone(),
+                at: c.created_at.map(|t| t.to_rfc3339()).unwrap_or_default(),
+            })
+            .collect(),
+    }
+}
+
+/// `github:o/r#n` of the task's subjects of `kind`.
+pub(crate) fn _subject_parts(key: &str) -> Option<(String, u64)> {
+    parse_subject_key(key)
 }
