@@ -1,11 +1,19 @@
-# enzarb's own change request workflow (ADR-0020), from docs/workflows/examples/change_request.yaml.
-# Review, fix rounds (at most 3), CI-fix rounds, conflict resolution (2 tries), and a human
-# Merge click that is tied to the reviewed head.
+# enzarb's own change request workflow: a copy of docs/workflows/examples/change_request.yaml (a test keeps them equal).
+# The compiled `change_request` machine as a graph (ADR-0020, docs/workflows.md "Graph
+# workflows"). Every new head is reviewed and the review posted. Must-fix findings and red CI
+# are fixed automatically (3 rounds, then a person), merge conflicts get 2 attempts per base
+# commit, and nothing merges until a person clicks Merge. Commit it as
+# `.enzarb/workflows/change_request.yaml` on the default branch to use it.
 #
 # Conditions read the node's output first, then the item facts (`_item`): `review` (enzarb's
 # verdict on the current head), `must_fix`, `ci` (success|failure|pending|unknown),
-# `ci_fix_due` (CI failed on the reviewed head and no fix round ran for it), `mergeable`,
+# `ci_fix_due` (CI failed on the reviewed head, a failing check is a GitHub Actions job, and
+# no fix round ran for it), `mergeable`,
 # `auto_rounds`, `head_sha`, `stacked`, `dependencies_open`.
+# A `ci` event's `actionable` is false when every failing check is outside GitHub Actions (a
+# commit status or third-party app; listed in `external`): enzarb cannot read it, so a person
+# looks (`ci_failed`, shown as `ci_failed_external`). Checks matching ENZARB_CI_IGNORE_CHECKS
+# (Copilot code review by default) never count.
 version: 1
 name: change_request
 on: [change_request_opened]
@@ -62,7 +70,8 @@ nodes:
     next:
       'event == "pushed"': review
       'event == "conflict"': resolve
-      'event == "ci" && status == "failure"': fix
+      'event == "ci" && status == "failure" && actionable': fix
+      'event == "ci" && status == "failure"': ci_failed
       'event == "ci"': readiness
       'event == "review" && state == "approved"': readiness
       else: address
@@ -77,7 +86,8 @@ nodes:
       'event == "merge_requested"': merge_gate
       'event == "pushed"': review
       'event == "conflict"': resolve
-      'event == "ci" && status == "failure"': fix
+      'event == "ci" && status == "failure" && actionable': fix
+      'event == "ci" && status == "failure"': ci_failed
       'event == "ci"': readiness
       'event == "review" && state == "approved"': ready
       else: address
@@ -103,7 +113,8 @@ nodes:
     next:
       'event == "pushed"': review
       'event == "conflict"': resolve
-      'event == "ci" && status == "failure"': fix
+      'event == "ci" && status == "failure" && actionable': fix
+      'event == "ci" && status == "failure"': ci_failed
       'event == "ci"': human
       'event == "approval" || (event == "review" && state == "approved")': readiness
       else: address
@@ -127,6 +138,8 @@ nodes:
     next:
       'event == "pushed"': review
       'event == "conflict"': resolve
+      # Only external checks failed until now; an Actions job failing as well is fixable.
+      'event == "ci" && status == "failure" && actionable': fix
       'event == "ci" && status == "failure"': ci_failed
       'event == "ci" || event == "approval" || (event == "review" && state == "approved")': readiness
       else: address
