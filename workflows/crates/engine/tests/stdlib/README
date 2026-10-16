@@ -1,2 +1,2 @@
-Snapshot of the standard library (enzarb/workflows, commit 984bdbb) for engine tests that
+Snapshot of the standard library (enzarb/workflows, commit 2b5ae0d) for engine tests that
 route and run real workflow definitions. Refresh by copying the library files again.

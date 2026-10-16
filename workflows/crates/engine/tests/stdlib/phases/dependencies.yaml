@@ -13,7 +13,7 @@ nodes:
   check:
     decide: {}
     next:
-      - {if: "facts.dependencies and facts.dependencies | rejectattr('status', 'in', params.done_statuses) | list | length == 0", to: done}
+      - {if: "facts.dependencies is not none and facts.dependencies | rejectattr('status', 'in', params.done_statuses) | list | length == 0", to: done}
       - {else: wait}
   wait:
     wait:
