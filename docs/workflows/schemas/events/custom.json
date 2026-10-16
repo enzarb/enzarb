@@ -1,0 +1,18 @@
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Declared event name (the type waits match on)."
+    },
+    "payload": {
+      "description": "Payload, validated against the declared schema.",
+      "default": null
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "title": "Custom",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

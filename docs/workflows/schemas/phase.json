@@ -1,0 +1,929 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "imports": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "params": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Param"
+      }
+    },
+    "exits": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Exit names besides the implicit `done` and `limit_reached`."
+    },
+    "start": {
+      "type": "string",
+      "description": "The first node."
+    },
+    "nodes": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Node"
+      }
+    }
+  },
+  "required": [
+    "version",
+    "start",
+    "nodes"
+  ],
+  "description": "A phase file: a subgraph with typed params, named exits and private nodes.",
+  "title": "PhaseFile",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "Param": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/ParamType"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "default": {
+          "description": "Value used when the caller gives none. A param without a default is required."
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Allowed values of an `enum` param."
+        },
+        "items": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ParamType"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Item type of a `list` param (default `string`)."
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "description": "A typed parameter of a phase or step file."
+    },
+    "ParamType": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "string",
+            "integer",
+            "boolean"
+          ]
+        },
+        {
+          "type": "string",
+          "const": "prompt",
+          "description": "A MiniJinja prompt template: inline text or `{file: path}`."
+        },
+        {
+          "type": "string",
+          "const": "command",
+          "description": "A shell command line."
+        },
+        {
+          "type": "string",
+          "const": "enum",
+          "description": "One of `values`."
+        },
+        {
+          "type": "string",
+          "const": "list",
+          "description": "A list of `items`."
+        }
+      ]
+    },
+    "Node": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "step": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepUse"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Runs a step in the sandbox."
+        },
+        "wait": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Wait"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Waits for events."
+        },
+        "action": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Action"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Calls a generic connector action."
+        },
+        "end": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/End"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Leaves the phase through the exit named `status`."
+        },
+        "phase": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PhaseUse"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Runs a nested phase; its exit is `exit` in the edge conditions."
+        },
+        "next": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Next"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The next node. Not allowed on `end`."
+        },
+        "max_visits": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "description": "How often this node may be entered per phase entry (default 10)."
+        },
+        "on_limit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Node entered instead once `max_visits` is exceeded. Without it the\nphase exits with `limit_reached`."
+        }
+      },
+      "description": "A node: exactly one of `step`, `wait`, `action`, `end`, `phase`, plus edges."
+    },
+    "StepUse": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "use": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "inline": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepFile"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "An inline step (instead of `use`)."
+        },
+        "with": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Param values. `{param: name}` passes a param of the enclosing phase."
+        }
+      },
+      "description": "Use of a step file, or an inline step definition."
+    },
+    "StepFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "imports": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Param"
+          }
+        },
+        "agent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Agent"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "An agent step (exactly one of `agent` and `command`)."
+        },
+        "command": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Command"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Input"
+          },
+          "description": "Named template variables taken from the task document."
+        },
+        "outputs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Output"
+          },
+          "description": "Output files collected after the step."
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResultSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Structured result submitted through the `submit_result` tool."
+        },
+        "workspaces": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Workspace"
+          },
+          "description": "Extra workspaces besides the task's primary one."
+        },
+        "github": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Access"
+          },
+          "description": "GitHub token permissions (`contents: write`)."
+        },
+        "secrets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Names of secrets injected into this step's process."
+        },
+        "priority": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "concurrency": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Concurrency"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Retry"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "steer": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Matcher"
+          },
+          "description": "Events delivered into the running agent session as user turns."
+        },
+        "stop": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/Matcher"
+          },
+          "description": "Events that stop the running step (it then finishes with exit\n`interrupted`). Default: a `stop` command from a writer."
+        }
+      },
+      "description": "A step file: one unit of work in the sandbox, an agent or a command."
+    },
+    "Agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runtime": {
+          "type": "string",
+          "description": "Reference to a runtime file."
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prompt": {
+          "$ref": "#/$defs/Source",
+          "description": "MiniJinja prompt template."
+        }
+      },
+      "required": [
+        "runtime",
+        "prompt"
+      ]
+    },
+    "Source": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "file": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "file"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "param": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "param"
+          ]
+        }
+      ],
+      "description": "A value that is either given inline, read from a file in the referencing\nrepository, or taken from a param of the enclosing file."
+    },
+    "Command": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/Source",
+          "description": "Shell command line (a MiniJinja template)."
+        },
+        "tools": {
+          "$ref": "#/$defs/Tools"
+        }
+      },
+      "required": [
+        "run"
+      ]
+    },
+    "Tools": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mise": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "mise tool specs installed before the step (`node@22`)."
+        }
+      }
+    },
+    "Input": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "Dotted path into the task document (`outputs.plan`, `subjects.issue.body`)."
+        },
+        "type": {
+          "$ref": "#/$defs/InputType",
+          "default": "any"
+        },
+        "required": {
+          "type": "boolean",
+          "description": "When true (default) a missing value pauses the task instead of rendering.",
+          "default": true
+        },
+        "default": true
+      },
+      "required": [
+        "from"
+      ],
+      "description": "A typed reference into the task document."
+    },
+    "InputType": {
+      "type": "string",
+      "enum": [
+        "any",
+        "string",
+        "integer",
+        "number",
+        "boolean",
+        "object",
+        "list"
+      ]
+    },
+    "Output": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Path in the workspace, read after the step finishes."
+        },
+        "artifact": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "When set, the file is also kept as an artifact with this title."
+        },
+        "format": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`markdown`, `json` (parsed) or `text`. Default from the extension."
+        },
+        "optional": {
+          "type": "boolean",
+          "description": "A missing optional file is not an error."
+        }
+      },
+      "required": [
+        "file"
+      ]
+    },
+    "ResultSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "description": "JSON Schema of the result (the `submit_result` tool's input)."
+        },
+        "as": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Output name the result is stored under (default: the node id)."
+        }
+      },
+      "required": [
+        "schema"
+      ]
+    },
+    "Workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repo": {
+          "type": "string",
+          "description": "`owner/repo`; a template."
+        },
+        "mode": {
+          "$ref": "#/$defs/Access"
+        }
+      },
+      "required": [
+        "repo",
+        "mode"
+      ]
+    },
+    "Access": {
+      "type": "string",
+      "enum": [
+        "read",
+        "write"
+      ]
+    },
+    "Concurrency": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "group": {
+          "type": "string",
+          "description": "Group key (a template, e.g. `{{ task.repo }}`)."
+        },
+        "max": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "group",
+        "max"
+      ]
+    },
+    "Retry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Extra attempts."
+        },
+        "on": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Exits that are retried (default `failure`)."
+        }
+      },
+      "required": [
+        "max"
+      ]
+    },
+    "Matcher": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/MatcherSpec"
+        }
+      ],
+      "description": "An event matcher: a type name, or a type with a sender requirement and condition."
+    },
+    "MatcherSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "type": "string"
+        },
+        "from": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sender"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "if": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "MiniJinja expression over the task document; `event` is the candidate."
+        }
+      },
+      "required": [
+        "event"
+      ]
+    },
+    "Sender": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "anyone"
+          ]
+        },
+        {
+          "type": "string",
+          "const": "writer",
+          "description": "The actor must have write access (`actor.can_write`, supplied by the engine)."
+        }
+      ],
+      "description": "Required sender of an event."
+    },
+    "Wait": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Matcher"
+          },
+          "description": "Event types that can satisfy the wait (catalog types, declared custom\nevents, `timer`, or `fact`)."
+        },
+        "from": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sender"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Who may send them (default `anyone`); applies to every matcher that sets no `from`."
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Machine-readable wait reason shown in the projection."
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Human text (a MiniJinja template)."
+        },
+        "column": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Board column id while waiting here."
+        },
+        "waiting_on": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WaitingOn"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Who the task waits on. Default: `human` if the wait has actions or\nrequires a writer, else `external`."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/UiAction"
+          },
+          "description": "UI buttons; each posts its `/command` as the clicking user."
+        },
+        "steer": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Matcher"
+          },
+          "description": "Events forwarded into the task's last agent session while waiting."
+        },
+        "refresh": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Facts refreshed when the wait is entered."
+        },
+        "timer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A timer set when the wait is entered; it fires a `timer` event."
+        }
+      },
+      "required": [
+        "events"
+      ],
+      "description": "A wait node (engine side)."
+    },
+    "WaitingOn": {
+      "type": "string",
+      "enum": [
+        "human",
+        "agent",
+        "external"
+      ]
+    },
+    "UiAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string",
+          "description": "Command word posted as `/command` (without the slash)."
+        }
+      },
+      "required": [
+        "label",
+        "command"
+      ],
+      "description": "A UI button at a wait."
+    },
+    "Timer": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "seconds"
+      ]
+    },
+    "Action": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Connector action name."
+        },
+        "args": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Arguments; strings are MiniJinja templates."
+        },
+        "relate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Relate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Task relations created together with the call."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "description": "A generic connector call made by the engine."
+    },
+    "Relate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "targets": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "targets"
+      ],
+      "description": "Relations to create: `targets` is an expression yielding a list."
+    },
+    "End": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "description": "The exit name (inside a phase); for the task, its end status."
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
+    "PhaseUse": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "use": {
+          "type": "string"
+        },
+        "with": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "use"
+      ],
+      "description": "Use of a nested phase file."
+    },
+    "Next": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Branch"
+          }
+        }
+      ],
+      "description": "Edges: a node id, or ordered branches where the first true `if` wins."
+    },
+    "Branch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "if": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A MiniJinja expression over the task document."
+        },
+        "to": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "else": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "description": "`{if: <expression>, to: <node>}` or a final `{else: <node>}`."
+    }
+  }
+}

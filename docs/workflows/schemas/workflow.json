@@ -1,0 +1,142 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "description": "Format version. Always `1`."
+    },
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Free text shown in the viewer."
+    },
+    "imports": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "phases": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/PhaseEntry"
+      },
+      "description": "The phases, run in order. `done` of one phase enters the next."
+    },
+    "events": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/CustomEventDecl"
+      },
+      "description": "Custom events this workflow can wait on, by name."
+    },
+    "board": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Reference to a board file (`std/board`). Layered over the library board."
+    }
+  },
+  "required": [
+    "version",
+    "phases"
+  ],
+  "description": "A workflow file: an ordered list of phases.",
+  "title": "WorkflowFile",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "PhaseEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Unique id in this workflow. Defaults to the last segment of `use`."
+        },
+        "use": {
+          "type": "string",
+          "description": "Reference to a phase file (`std/phases/plan`, `.enzarb/phases/lint`)."
+        },
+        "with": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Values for the phase's params."
+        },
+        "exits": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/ExitTo"
+          },
+          "description": "Where each exit goes. Unmapped `done` enters the next phase; any other\nunmapped exit ends the task with the exit name as status."
+        },
+        "max_entries": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "description": "How often the phase may be entered (default 5)."
+        },
+        "on_limit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The exit taken instead of entering the phase once more than\n`max_entries` times (default `limit_reached`)."
+        }
+      },
+      "required": [
+        "use"
+      ],
+      "description": "One phase of a workflow."
+    },
+    "ExitTo": {
+      "anyOf": [
+        {
+          "type": "string",
+          "description": "`next` (the following phase) or the id of any phase, earlier or later."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "end": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "end"
+          ],
+          "description": "End the task with this status."
+        }
+      ],
+      "description": "Target of a phase exit."
+    },
+    "CustomEventDecl": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "schema": {
+          "description": "JSON Schema of the payload.",
+          "default": {}
+        }
+      },
+      "required": [
+        "description"
+      ],
+      "description": "Declaration of a custom event (ADR-0022 §5)."
+    }
+  }
+}

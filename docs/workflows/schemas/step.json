@@ -1,0 +1,510 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
+    },
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "imports": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "params": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Param"
+      }
+    },
+    "agent": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Agent"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "An agent step (exactly one of `agent` and `command`)."
+    },
+    "command": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Command"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Input"
+      },
+      "description": "Named template variables taken from the task document."
+    },
+    "outputs": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Output"
+      },
+      "description": "Output files collected after the step."
+    },
+    "result": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ResultSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Structured result submitted through the `submit_result` tool."
+    },
+    "workspaces": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Workspace"
+      },
+      "description": "Extra workspaces besides the task's primary one."
+    },
+    "github": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Access"
+      },
+      "description": "GitHub token permissions (`contents: write`)."
+    },
+    "secrets": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Names of secrets injected into this step's process."
+    },
+    "priority": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "int32"
+    },
+    "concurrency": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Concurrency"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "retry": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Retry"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "steer": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Matcher"
+      },
+      "description": "Events delivered into the running agent session as user turns."
+    },
+    "stop": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/$defs/Matcher"
+      },
+      "description": "Events that stop the running step (it then finishes with exit\n`interrupted`). Default: a `stop` command from a writer."
+    }
+  },
+  "description": "A step file: one unit of work in the sandbox, an agent or a command.",
+  "title": "StepFile",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "Param": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/ParamType"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "default": {
+          "description": "Value used when the caller gives none. A param without a default is required."
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Allowed values of an `enum` param."
+        },
+        "items": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ParamType"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Item type of a `list` param (default `string`)."
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "description": "A typed parameter of a phase or step file."
+    },
+    "ParamType": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "string",
+            "integer",
+            "boolean"
+          ]
+        },
+        {
+          "type": "string",
+          "const": "prompt",
+          "description": "A MiniJinja prompt template: inline text or `{file: path}`."
+        },
+        {
+          "type": "string",
+          "const": "command",
+          "description": "A shell command line."
+        },
+        {
+          "type": "string",
+          "const": "enum",
+          "description": "One of `values`."
+        },
+        {
+          "type": "string",
+          "const": "list",
+          "description": "A list of `items`."
+        }
+      ]
+    },
+    "Agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runtime": {
+          "type": "string",
+          "description": "Reference to a runtime file."
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prompt": {
+          "$ref": "#/$defs/Source",
+          "description": "MiniJinja prompt template."
+        }
+      },
+      "required": [
+        "runtime",
+        "prompt"
+      ]
+    },
+    "Source": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "file": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "file"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "param": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "param"
+          ]
+        }
+      ],
+      "description": "A value that is either given inline, read from a file in the referencing\nrepository, or taken from a param of the enclosing file."
+    },
+    "Command": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/Source",
+          "description": "Shell command line (a MiniJinja template)."
+        },
+        "tools": {
+          "$ref": "#/$defs/Tools"
+        }
+      },
+      "required": [
+        "run"
+      ]
+    },
+    "Tools": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mise": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "mise tool specs installed before the step (`node@22`)."
+        }
+      }
+    },
+    "Input": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "Dotted path into the task document (`outputs.plan`, `subjects.issue.body`)."
+        },
+        "type": {
+          "$ref": "#/$defs/InputType",
+          "default": "any"
+        },
+        "required": {
+          "type": "boolean",
+          "description": "When true (default) a missing value pauses the task instead of rendering.",
+          "default": true
+        },
+        "default": true
+      },
+      "required": [
+        "from"
+      ],
+      "description": "A typed reference into the task document."
+    },
+    "InputType": {
+      "type": "string",
+      "enum": [
+        "any",
+        "string",
+        "integer",
+        "number",
+        "boolean",
+        "object",
+        "list"
+      ]
+    },
+    "Output": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Path in the workspace, read after the step finishes."
+        },
+        "artifact": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "When set, the file is also kept as an artifact with this title."
+        },
+        "format": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`markdown`, `json` (parsed) or `text`. Default from the extension."
+        },
+        "optional": {
+          "type": "boolean",
+          "description": "A missing optional file is not an error."
+        }
+      },
+      "required": [
+        "file"
+      ]
+    },
+    "ResultSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "description": "JSON Schema of the result (the `submit_result` tool's input)."
+        },
+        "as": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Output name the result is stored under (default: the node id)."
+        }
+      },
+      "required": [
+        "schema"
+      ]
+    },
+    "Workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repo": {
+          "type": "string",
+          "description": "`owner/repo`; a template."
+        },
+        "mode": {
+          "$ref": "#/$defs/Access"
+        }
+      },
+      "required": [
+        "repo",
+        "mode"
+      ]
+    },
+    "Access": {
+      "type": "string",
+      "enum": [
+        "read",
+        "write"
+      ]
+    },
+    "Concurrency": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "group": {
+          "type": "string",
+          "description": "Group key (a template, e.g. `{{ task.repo }}`)."
+        },
+        "max": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "group",
+        "max"
+      ]
+    },
+    "Retry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Extra attempts."
+        },
+        "on": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Exits that are retried (default `failure`)."
+        }
+      },
+      "required": [
+        "max"
+      ]
+    },
+    "Matcher": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/MatcherSpec"
+        }
+      ],
+      "description": "An event matcher: a type name, or a type with a sender requirement and condition."
+    },
+    "MatcherSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "type": "string"
+        },
+        "from": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sender"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "if": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "MiniJinja expression over the task document; `event` is the candidate."
+        }
+      },
+      "required": [
+        "event"
+      ]
+    },
+    "Sender": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "anyone"
+          ]
+        },
+        {
+          "type": "string",
+          "const": "writer",
+          "description": "The actor must have write access (`actor.can_write`, supplied by the engine)."
+        }
+      ],
+      "description": "Required sender of an event."
+    }
+  }
+}

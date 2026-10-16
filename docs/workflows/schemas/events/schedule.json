@@ -1,0 +1,19 @@
+{
+  "type": "object",
+  "properties": {
+    "cron": {
+      "type": "string"
+    },
+    "binding": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "cron"
+  ],
+  "title": "Schedule",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

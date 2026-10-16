@@ -1,0 +1,55 @@
+{
+  "type": "object",
+  "properties": {
+    "task": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "description": "The dependency's engine phase or end status."
+    },
+    "subject": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SubjectRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "task",
+    "status"
+  ],
+  "title": "DependencyChanged",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "SubjectRef": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/SubjectKind"
+        },
+        "number": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "kind",
+        "number"
+      ],
+      "description": "A GitHub object: `{kind: issue|pull_request, number}`."
+    },
+    "SubjectKind": {
+      "type": "string",
+      "enum": [
+        "issue",
+        "pull_request"
+      ]
+    }
+  }
+}

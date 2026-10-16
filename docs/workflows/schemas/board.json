@@ -1,0 +1,97 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
+    },
+    "columns": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Column"
+      }
+    },
+    "defaults": {
+      "$ref": "#/$defs/BoardDefaults",
+      "default": {}
+    }
+  },
+  "description": "A board: ordered columns and the default column per engine phase.",
+  "title": "BoardFile",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "Column": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "description": "WIP limit (display only)."
+        }
+      },
+      "required": [
+        "id",
+        "title"
+      ]
+    },
+    "BoardDefaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "running": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "waiting_human": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "waiting_agent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "waiting_external": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "paused": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ended": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "description": "Column used when the current node declares none."
+    }
+  }
+}

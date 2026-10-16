@@ -1,0 +1,57 @@
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "description": "`opened`, `synchronize`, `closed`, `ready_for_review`, …"
+    },
+    "number": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "title": {
+      "type": "string",
+      "default": ""
+    },
+    "body": {
+      "type": "string",
+      "default": ""
+    },
+    "head": {
+      "type": "string",
+      "default": ""
+    },
+    "base": {
+      "type": "string",
+      "default": ""
+    },
+    "head_sha": {
+      "type": "string",
+      "default": ""
+    },
+    "merged": {
+      "type": "boolean",
+      "default": false
+    },
+    "draft": {
+      "type": "boolean",
+      "default": false
+    },
+    "references": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "format": "uint64",
+        "minimum": 0
+      },
+      "description": "Issues this PR references (closing keywords or Development links)."
+    }
+  },
+  "required": [
+    "action",
+    "number"
+  ],
+  "title": "PullRequest",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

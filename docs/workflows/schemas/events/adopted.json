@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "reason": {
+      "type": "string",
+      "default": ""
+    }
+  },
+  "title": "Adopted",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}
