@@ -59,6 +59,7 @@ pub async fn run(cfg: Config) -> Result<(), Error> {
         runner: Arc::new(MuxStepRunner::new(sandboxes.clone())),
         sandboxes: sandboxes.clone(),
         secrets_key: cfg.secrets_key.clone(),
+        claude: cfg.claude.clone(),
         cfg: EngineConfig {
             bot_handle: cfg.bot_handle.clone(),
             bot_login: cfg.bot_login.clone(),

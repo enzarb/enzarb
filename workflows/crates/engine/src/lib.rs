@@ -2,6 +2,7 @@
 //! the generic executor and the ticker. No workflow-specific knowledge lives here.
 
 pub mod actions;
+pub mod claude_credential;
 pub mod db;
 pub mod effects;
 pub mod engine;

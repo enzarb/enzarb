@@ -77,11 +77,22 @@ pub async fn encrypt_pending(pool: &PgPool, key: &SecretsKey) -> Result<u64, sql
     Ok(n)
 }
 
-/// Resolves `names`, most specific scope first: user (`user`), Project, instance. Returns the
-/// values found and the names that are missing.
+/// The per-user Claude token store (`app.claude_credentials`, written by the UI's credential
+/// capture flow) as the source of one user-scope secret name.
+#[derive(Clone, Debug)]
+pub struct ClaudeSource {
+    /// The user-scope secret name it answers (`ENZARB_CLAUDE_SECRET_NAME`, default `claude_token`).
+    pub name: String,
+    pub keyring: crate::claude_credential::ClaudeKeyring,
+}
+
+/// Resolves `names`, most specific scope first: user (`user`), Project, instance. The user's
+/// stored Claude credential answers `claude.name` at user scope when `engine.secrets` has no
+/// user row for it. Returns the values found and the names that are missing.
 pub async fn resolve(
     pool: &PgPool,
     key: Option<&SecretsKey>,
+    claude: Option<&ClaudeSource>,
     user: Option<&str>,
     project: &str,
     names: &[String],
@@ -89,6 +100,33 @@ pub async fn resolve(
     let mut found = BTreeMap::new();
     let mut missing = Vec::new();
     for name in names {
+        if let (Some(c), Some(u)) = (claude, user)
+            && c.name == *name
+        {
+            let user_row: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM engine.secrets WHERE scope = 'user' AND owner = $1 AND name = $2)",
+            )
+            .bind(u)
+            .bind(name)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+            if !user_row {
+                match crate::claude_credential::fetch(pool, u).await {
+                    Ok(Some((key_id, ct))) => {
+                        let v = c
+                            .keyring
+                            .decrypt(u, &key_id, &ct)
+                            .map_err(|e| format!("stored Claude credential of {u}: {e}"))?;
+                        found.insert(name.clone(), v);
+                        continue;
+                    }
+                    Ok(None) => {}
+                    // The UI's schema may be absent (tests, a fresh install): fall through.
+                    Err(e) => tracing::debug!(error = %e, "claude_credential_get unavailable"),
+                }
+            }
+        }
         let row: Option<(Option<Vec<u8>>, Option<String>)> = sqlx::query_as(
             "SELECT ciphertext, pending FROM engine.secrets
              WHERE name = $1 AND ((scope = 'user' AND owner = $2) OR (scope = 'project' AND owner = $3)

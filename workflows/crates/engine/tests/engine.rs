@@ -84,6 +84,7 @@ async fn start(stall: Duration, background: bool) -> Option<H> {
         runner: Arc::new(runner.clone()),
         sandboxes: Arc::new(StaticSandboxResolver::new()),
         secrets_key: Some(key),
+        claude: None,
         cfg: EngineConfig {
             stall,
             poll: Duration::from_millis(50),
@@ -603,4 +604,49 @@ async fn quiet_step_stalls_and_pauses_and_bad_results_fail() {
         .wait_status(task, |p| p["status"] == "ended", "failed")
         .await;
     assert_eq!(p["end_status"], "failed");
+}
+
+/// The user-scope secret `claude_token` comes from the UI-captured per-user Claude credential
+/// (`app.claude_credentials`) of the given user; an explicit `engine.secrets` user row wins, and
+/// another user's token is never used.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_token_comes_from_the_users_stored_credential() {
+    use engine::claude_credential::ClaudeKeyring;
+    use engine::secrets::{ClaudeSource, resolve};
+    let Some(db) = TestDb::start().await else {
+        return;
+    };
+    db.install_claude_credentials().await;
+    let ring = ClaudeKeyring::new().with_key("k1", [3u8; 32]);
+    let ct = ring
+        .encrypt_with_nonce("alice", "k1", [1u8; 12], "sk-ant-oat01-alice")
+        .unwrap();
+    db.put_claude_credential("alice", "k1", &ct).await;
+    let src = ClaudeSource {
+        name: "claude_token".into(),
+        keyring: ring,
+    };
+    let names = vec!["claude_token".to_string()];
+    let (found, missing) = resolve(&db.pool, None, Some(&src), Some("alice"), "p", &names)
+        .await
+        .unwrap();
+    assert!(missing.is_empty());
+    assert_eq!(found["claude_token"], "sk-ant-oat01-alice");
+    // Another user has no row: missing (never alice's).
+    let (found, missing) = resolve(&db.pool, None, Some(&src), Some("bob"), "p", &names)
+        .await
+        .unwrap();
+    assert!(found.is_empty());
+    assert_eq!(missing, names);
+    // An explicit user secret wins.
+    sqlx::query(
+        "INSERT INTO engine.secrets (scope, owner, name, pending) VALUES ('user', 'alice', 'claude_token', 'explicit')",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let (found, _) = resolve(&db.pool, None, Some(&src), Some("alice"), "p", &names)
+        .await
+        .unwrap();
+    assert_eq!(found["claude_token"], "explicit");
 }

@@ -39,6 +39,10 @@ pub struct Config {
     pub library_repos: Vec<String>,
     /// `ENZARB_SECRETS_KEY`: 32 bytes, base64. Without it only not-yet-encrypted secrets resolve.
     pub secrets_key: Option<SecretsKey>,
+    /// `ENZARB_CLAUDE_KEYRING_DIR` (the mounted `enzarb-claude-key` Secret) plus
+    /// `ENZARB_CLAUDE_SECRET_NAME` (default `claude_token`): the user-scope secret answered by
+    /// the UI-captured per-user Claude token.
+    pub claude: Option<engine::secrets::ClaudeSource>,
     /// `ENZARB_STALL_SECS` (default 1800).
     pub stall_secs: u64,
     /// `ENZARB_MAX_STEPS_PER_PROJECT` (default 4).
@@ -176,7 +180,22 @@ impl Config {
                 })?,
             ),
         };
+        let claude = match nonempty(get, "ENZARB_CLAUDE_KEYRING_DIR") {
+            None => None,
+            Some(dir) => Some(engine::secrets::ClaudeSource {
+                name: nonempty(get, "ENZARB_CLAUDE_SECRET_NAME")
+                    .unwrap_or_else(|| "claude_token".into()),
+                keyring: engine::claude_credential::ClaudeKeyring::load_dir(std::path::Path::new(
+                    &dir,
+                ))
+                .map_err(|e| ConfigError::Invalid {
+                    var: "ENZARB_CLAUDE_KEYRING_DIR",
+                    msg: e.to_string(),
+                })?,
+            }),
+        };
         Ok(Config {
+            claude,
             roles,
             database_url,
             db_max_connections,

@@ -227,10 +227,18 @@ impl Engine {
         }
         names.sort();
         names.dedup();
+        // The task's user is the Project owner (whose Claude token pays for the run); the
+        // starter only when the Project is unknown to the index.
+        let user = info
+            .as_ref()
+            .map(|i| i.owner.clone())
+            .filter(|o| !o.is_empty())
+            .or(started_by);
         let (env, missing) = crate::secrets::resolve(
             &self.pool,
             self.secrets_key.as_ref(),
-            started_by.as_deref(),
+            self.claude.as_ref(),
+            user.as_deref(),
             &job.project,
             &names,
         )

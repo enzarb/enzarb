@@ -59,6 +59,8 @@ pub struct Engine {
     pub runner: Arc<dyn StepRunner>,
     pub sandboxes: Arc<dyn SandboxResolver>,
     pub secrets_key: Option<SecretsKey>,
+    /// The UI-captured per-user Claude token store, as a user-scope secret source.
+    pub claude: Option<crate::secrets::ClaudeSource>,
     pub cfg: EngineConfig,
 }
 
