@@ -53,6 +53,7 @@ fn run_start() -> RunStart {
         log_channel: None,
         deps_token: None,
         npm_token: None,
+        ci_read_token: None,
         claude_token: None,
         retarget: None,
         graph: None,
@@ -600,6 +601,24 @@ fn run_start_npm_token_compat() {
         serde_json::from_value::<RunStart>(v).unwrap().npm_token,
         None
     );
+}
+
+#[test]
+fn run_start_ci_read_token_compat() {
+    let old = serde_json::to_value(run_start()).unwrap();
+    assert!(old.get("ci_read_token").is_none());
+    assert_eq!(
+        serde_json::from_value::<RunStart>(old)
+            .unwrap()
+            .ci_read_token,
+        None
+    );
+    let mut rs = run_start();
+    rs.ci_read_token = Some("ghs_ci".into());
+    let v = serde_json::to_value(&rs).unwrap();
+    assert_eq!(v["ci_read_token"], "ghs_ci");
+    assert_eq!(serde_json::from_value::<RunStart>(v).unwrap(), rs);
+    assert!(!format!("{rs:?}").contains("ghs_ci"));
 }
 
 #[test]

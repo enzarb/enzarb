@@ -62,7 +62,13 @@ pub async fn walk<S: Steps>(
         let out = match &node.kind {
             NodeKind::Command { run } => steps.command(&id, run).await?,
             NodeKind::Agent { prompt } => {
-                let p = prompts.get(&id).unwrap_or(prompt);
+                // The kernel sends every agent prompt rendered; a prompt file cannot be read
+                // here (it is pinned by the kernel), so without one the node gets no text.
+                let p = prompts
+                    .get(&id)
+                    .map(String::as_str)
+                    .or(prompt.text())
+                    .unwrap_or("");
                 steps.agent(&id, p).await?
             }
             NodeKind::Wait { .. } | NodeKind::Action { .. } | NodeKind::End { .. } => {

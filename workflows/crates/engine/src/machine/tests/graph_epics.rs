@@ -43,6 +43,7 @@ fn gsource(yaml: &str) -> GraphSource {
         path: ".enzarb/workflows/issue.yaml".into(),
         sha: "c0ffee".into(),
         source: yaml.into(),
+        prompts: Default::default(),
     }
 }
 

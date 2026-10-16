@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 use enzarb_connector::{
     ChangeRequestSpec, CommentKind, Event, EventData, EventType, ItemKind, ItemRef, WorkItemKey,
 };
-use enzarb_graph::{Definition, EndStatus, GraphState, Next, NodeKind, Runner, WaitFrom};
+use enzarb_graph::{Definition, EndStatus, GraphState, Next, NodeKind, Prompt, Runner, WaitFrom};
 use enzarb_proto::{GraphSegment, RunFinished};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -104,6 +104,9 @@ pub struct GraphSource {
     /// The commit it was read at (the default branch head).
     pub sha: String,
     pub source: String,
+    /// The prompt files its agent nodes name, read at the same commit (path → text). A file
+    /// missing here makes the definition unusable.
+    pub prompts: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,6 +139,9 @@ pub struct GraphPin {
     pub sha: String,
     /// The definition's YAML source, as read at `sha`.
     pub source: String,
+    /// Its prompt files as read at `sha` (path → text), pinned with it.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub prompts: BTreeMap<String, String>,
     pub node: String,
     pub outputs: BTreeMap<String, Value>,
     pub visits: BTreeMap<String, u32>,
@@ -231,6 +237,11 @@ pub struct GraphTask {
 pub fn load(src: &GraphSource) -> Result<Definition, String> {
     let def = enzarb_graph::load(&src.source).map_err(|e| e.to_string())?;
     let mut p = Vec::new();
+    for f in def.prompt_files() {
+        if !src.prompts.contains_key(&f) {
+            p.push(format!("prompt file `{f}` does not exist at {}", src.sha));
+        }
+    }
     for (id, n) in &def.nodes {
         match &n.kind {
             NodeKind::Action { action, .. } if !KERNEL_ACTIONS.contains(&action.as_str()) => p
@@ -318,11 +329,26 @@ fn waits_on_children(n: &enzarb_graph::Node) -> bool {
 }
 
 /// The rendered prompt of every `agent` node, by node id.
-pub fn segment_prompts(def: &Definition, pc: &PromptContext) -> BTreeMap<String, String> {
+/// `files` holds the pinned prompt files (path → text); a file prompt is rendered with the
+/// same `{placeholders}` as the built-ins.
+pub fn segment_prompts(
+    def: &Definition,
+    pc: &PromptContext,
+    files: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
     def.nodes
         .iter()
         .filter_map(|(id, n)| match &n.kind {
-            NodeKind::Agent { prompt } => Some((id.clone(), render_graph_prompt(prompt, pc))),
+            NodeKind::Agent { prompt } => {
+                let text = match prompt {
+                    Prompt::Text(t) => render_graph_prompt(t, pc),
+                    Prompt::File { file } => files
+                        .get(file)
+                        .map(|t| super::prompt::render(t, pc))
+                        .unwrap_or_default(),
+                };
+                Some((id.clone(), text))
+            }
             _ => None,
         })
         .collect()
@@ -397,6 +423,7 @@ fn start(
             path: src.path.clone(),
             sha: src.sha.clone(),
             source: src.source.clone(),
+            prompts: src.prompts.clone(),
             ..Default::default()
         },
         number: item.number,
@@ -488,8 +515,9 @@ fn blocked(ctx: &Ctx, d: &mut GraphData) -> bool {
 
 /// An `agent` node that pushes code: anything but the read-only prompts.
 fn pushes(n: &enzarb_graph::Node) -> bool {
+    // A prompt file may do anything: it counts as pushing.
     matches!(&n.kind, NodeKind::Agent { prompt }
-        if !["triage", "plan", "plan_epic", "review"].contains(&prompt.trim()))
+        if !prompt.text().is_some_and(|t| ["triage", "plan", "plan_epic", "review"].contains(&t.trim())))
 }
 
 /// Whether a segment starting at `start` can reach an agent that pushes.
@@ -549,9 +577,9 @@ fn drive(ctx: &Ctx, fx: &mut Fx, def: &Definition, d: &mut GraphData) -> GraphPh
                 start: id,
                 outputs: d.graph.outputs.clone(),
                 visits: d.graph.visits.clone(),
-                prompts: segment_prompts(def, &pc),
+                prompts: segment_prompts(def, &pc, &d.graph.prompts),
             };
-            fx.segment(
+            fx.segment_with_files(
                 &target(ctx),
                 AgentSpec {
                     base_ref: ctx.default_branch.clone(),
@@ -560,6 +588,7 @@ fn drive(ctx: &Ctx, fx: &mut Fx, def: &Definition, d: &mut GraphData) -> GraphPh
                 },
                 pc,
                 segment,
+                d.graph.prompts.clone(),
             );
             d.segments += 1;
             d.waiting_on = Some(JobKind::AgentSegment);
@@ -1112,6 +1141,7 @@ fn begin_fresh(
         path: src.path.clone(),
         sha: src.sha.clone(),
         source: src.source.clone(),
+        prompts: src.prompts.clone(),
         ..Default::default()
     };
     d.error.clear();
@@ -1135,6 +1165,7 @@ fn retry(ctx: &Ctx, ev: &EngineEvent, s: &GraphTask, state: &WorkflowState) -> T
         path: s.data.graph.path.clone(),
         sha: s.data.graph.sha.clone(),
         source: s.data.graph.source.clone(),
+        prompts: s.data.graph.prompts.clone(),
     };
     let fresh = ctx
         .graph
@@ -1216,6 +1247,7 @@ fn adopt(ctx: &Ctx, s: &super::IssueState, ev: &EngineEvent) -> Option<Transitio
                 path: src.path.clone(),
                 sha: src.sha.clone(),
                 source: src.source.clone(),
+                prompts: src.prompts.clone(),
                 node: wait.clone(),
                 visits: [(wait, 1)].into(),
                 ..Default::default()

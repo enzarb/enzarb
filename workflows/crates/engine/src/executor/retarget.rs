@@ -191,6 +191,7 @@ impl Executor {
             clone_token: cred.token,
             deps_token: None,
             npm_token: None,
+            ci_read_token: None,
             claude_token: None,
             prompt: format!(
                 "retarget {} from {} onto {}",

@@ -159,6 +159,27 @@ impl Executor {
         }
     }
 
+    /// Read-only token (`actions: read`, `checks: read`) over the run's own repository, so a
+    /// CI-fix agent can run `gh run view --log-failed`. Never stored; only sent in
+    /// `RunStart`. Any failure (the connector has none, the App lacks `actions: read`, a
+    /// GitHub error) is logged and the run proceeds without it: the prompt tells the agent
+    /// to report a `gh` error in the `blocked` body.
+    async fn mint_ci_read_token(
+        &self,
+        job: &Claimed,
+        repo: &RepoKey,
+        connector: &std::sync::Arc<dyn Connector>,
+    ) -> Option<String> {
+        match connector.mint_ci_read_credential(repo).await {
+            Ok(cred) => cred.map(|c| c.token),
+            Err(e) => {
+                tracing::warn!(job_id = job.id, error = %e,
+                    "CI read credential failed; running without GH_TOKEN");
+                None
+            }
+        }
+    }
+
     /// Fetch the thread, re-render the prompt and mint the credentials for one attempt.
     #[allow(clippy::too_many_arguments)]
     async fn prepare_run(
@@ -188,7 +209,11 @@ impl Executor {
             Some(mut g) => {
                 let def = enzarb_graph::Definition::from_value(&g.definition)
                     .map_err(|e| JobError::permanent(format!("graph segment: {e}")))?;
-                g.prompts = crate::machine::graph::segment_prompts(&def, &input.context);
+                g.prompts = crate::machine::graph::segment_prompts(
+                    &def,
+                    &input.context,
+                    &input.prompt_files,
+                );
                 // What a sandbox that predates `RunStart.graph` runs instead: nothing to
                 // change, and its result has no graph, so the task fails with a clear error.
                 input.prompt = SEGMENT_FALLBACK_PROMPT.into();
@@ -228,6 +253,12 @@ impl Executor {
         let npm_token = needs_deps
             .then(|| self.cfg.npm_token.as_ref().map(|t| t.expose().to_string()))
             .flatten();
+        // Only a CI-fix round reads CI logs; chats and other jobs never get this token.
+        let ci_read_token = if kind == JobKind::AgentAddressComments && input.context.ci_fix {
+            self.mint_ci_read_token(job, &input.repo, connector).await
+        } else {
+            None
+        };
 
         Ok(RunStart {
             run_id: rid.to_string(),
@@ -238,6 +269,7 @@ impl Executor {
             clone_token: cred.token,
             deps_token,
             npm_token,
+            ci_read_token,
             claude_token: Some(claude_token.expose().into()),
             prompt: input.prompt.clone(),
             timeout_secs: input.timeout_secs,
@@ -324,6 +356,7 @@ impl Executor {
             clone_token: cred.token,
             deps_token: None,
             npm_token: None,
+            ci_read_token: None,
             claude_token: Some(claude_token.expose().into()),
             prompt: recovery_prompt(input.kind),
             timeout_secs: input.timeout_secs,

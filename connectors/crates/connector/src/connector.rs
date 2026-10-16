@@ -211,4 +211,13 @@ pub trait Connector: Send + Sync {
     ) -> Result<Option<ReadCred>> {
         Ok(None)
     }
+
+    /// A short-lived token restricted to the single `repo` with read-only access
+    /// to CI data (Actions runs/logs and check runs, no contents), so an agent can
+    /// read failure logs with `gh`. Connectors without this capability return
+    /// `Ok(None)` (the default); so does a connector whose App was not granted the
+    /// permission yet (the caller then runs without it).
+    async fn mint_ci_read_credential(&self, _repo: &RepoKey) -> Result<Option<ReadCred>> {
+        Ok(None)
+    }
 }
