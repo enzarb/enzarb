@@ -74,6 +74,21 @@ pub struct ProjectSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1, max = 16))]
     pub max_runs: Option<u32>,
+    /// Workflow settings (ADR-0022 §4): the library and the Project's bindings layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflows: Option<ProjectWorkflows>,
+}
+
+/// `spec.workflows` (ADR-0022 §4).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectWorkflows {
+    /// Library to inherit from, `owner/repo@ref` (default: the instance's `defaultLibrary`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub library: Option<String>,
+    /// A bindings file (YAML text, `{version, imports, bindings}`) layered over the library's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bindings: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]

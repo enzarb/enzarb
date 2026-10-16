@@ -152,6 +152,19 @@ spec:
                     default: true
                     type: boolean
                 type: object
+              workflows:
+                description: 'Workflow settings (ADR-0022 §4): the library and the Project''s bindings layer.'
+                nullable: true
+                properties:
+                  bindings:
+                    description: A bindings file (YAML text, `{version, imports, bindings}`) layered over the library's.
+                    nullable: true
+                    type: string
+                  library:
+                    description: 'Library to inherit from, `owner/repo@ref` (default: the instance''s `defaultLibrary`).'
+                    nullable: true
+                    type: string
+                type: object
             required:
             - owner
             type: object
