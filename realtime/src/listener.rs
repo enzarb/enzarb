@@ -8,7 +8,7 @@ use async_trait::async_trait;
 
 use crate::hub::{Frame, Hub};
 
-/// A live `LISTEN work_item_changed` stream.
+/// A live `LISTEN engine_projection` stream.
 #[async_trait]
 pub trait Listener: Send {
     /// Next work item id. `Err` means the connection is lost and must be re-established.
@@ -24,7 +24,7 @@ pub trait Connector: Send + Sync {
 /// Work item id to project name. `None` when the item is not visible/does not exist.
 #[async_trait]
 pub trait ProjectLookup: Send + Sync {
-    async fn project(&self, work_item_id: i64) -> Result<Option<String>>;
+    async fn project(&self, task_id: i64) -> Result<Option<String>>;
 }
 
 #[derive(Clone, Copy)]
@@ -65,7 +65,7 @@ pub async fn run(
         };
         let connected_at = tokio::time::Instant::now();
         hub.set_ready(true);
-        tracing::info!("listening on work_item_changed");
+        tracing::info!("listening on engine_projection");
         if needs_resync {
             hub.publish(Frame::Resync);
         }
@@ -90,13 +90,13 @@ pub async fn run(
     }
 }
 
-/// A failed or empty lookup degrades to `resync` (never to an unfiltered work_item frame).
+/// A failed or empty lookup degrades to `resync` (never to an unfiltered task frame).
 async fn frame_for(id: i64, lookup: &dyn ProjectLookup) -> Frame {
     let r = tokio::time::timeout(Duration::from_secs(2), lookup.project(id))
         .await
         .unwrap_or_else(|_| Err(anyhow::anyhow!("lookup timed out")));
     match r {
-        Ok(Some(project)) => Frame::WorkItem { id, project },
+        Ok(Some(project)) => Frame::Task { id, project },
         Ok(None) => {
             tracing::debug!(id, "work item has no project; resync");
             Frame::Resync
@@ -168,7 +168,7 @@ mod tests {
         tx1.send(Ok(1)).unwrap();
         assert_eq!(
             sub.recv().await.unwrap(),
-            Frame::WorkItem {
+            Frame::Task {
                 id: 1,
                 project: "enzarb".into()
             }
@@ -186,7 +186,7 @@ mod tests {
         tx2.send(Ok(1)).unwrap();
         assert!(matches!(
             sub.recv().await.unwrap(),
-            Frame::WorkItem { id: 1, .. }
+            Frame::Task { id: 1, .. }
         ));
     }
 
@@ -200,7 +200,7 @@ mod tests {
         tx.send(Ok(1)).unwrap();
         assert!(matches!(
             sub.recv().await.unwrap(),
-            Frame::WorkItem { id: 1, .. }
+            Frame::Task { id: 1, .. }
         ));
     }
 }

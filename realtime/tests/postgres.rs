@@ -108,17 +108,17 @@ async fn notify_to_frame() {
                  ALTER ROLE enzarb_realtime LOGIN PASSWORD 'rt';
                END IF;
              END $$;
-             CREATE SCHEMA workflows_api;
+             CREATE SCHEMA engine_api;
              CREATE TABLE public.wi (id bigint PRIMARY KEY, project text NOT NULL);
-             CREATE VIEW workflows_api.work_item_v AS SELECT id, project, 'secret' AS other FROM public.wi;
-             CREATE VIEW workflows_api.work_item_project_v AS SELECT id, project FROM public.wi;
+             CREATE VIEW engine_api.secret_v AS SELECT id, project, 'secret' AS other FROM public.wi;
+             CREATE VIEW engine_api.task_v AS SELECT id AS task_id, project FROM public.wi;
              INSERT INTO public.wi VALUES (7, 'enzarb');
-             GRANT USAGE ON SCHEMA workflows_api TO enzarb_realtime;
-             GRANT SELECT ON workflows_api.work_item_project_v TO enzarb_realtime;",
+             GRANT USAGE ON SCHEMA engine_api TO enzarb_realtime;
+             GRANT SELECT ON engine_api.task_v TO enzarb_realtime;",
         )
         .await
         .unwrap();
-    // The runtime role holds only the new grants (nothing on work_item_v).
+    // The runtime role holds only the new grants (nothing on secret_v).
 
     let hub = Arc::new(Hub::new(16));
     let mut rx = hub.subscribe();
@@ -136,7 +136,7 @@ async fn notify_to_frame() {
     }
     assert!(hub.is_ready());
     admin
-        .execute("SELECT pg_notify('work_item_changed', '7')")
+        .execute("SELECT pg_notify('engine_projection', '7')")
         .await
         .unwrap();
     let f = tokio::time::timeout(Duration::from_secs(10), rx.recv())
@@ -145,7 +145,7 @@ async fn notify_to_frame() {
         .unwrap();
     assert_eq!(
         f,
-        Frame::WorkItem {
+        Frame::Task {
             id: 7,
             project: "enzarb".into()
         }

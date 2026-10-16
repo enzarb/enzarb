@@ -185,7 +185,7 @@ async fn text(
 }
 
 fn wi(id: i64, p: &str) -> Frame {
-    Frame::WorkItem {
+    Frame::Task {
         id,
         project: p.into(),
     }
@@ -204,7 +204,7 @@ async fn filters_by_project_and_formats_frames() {
     hub.publish(Frame::Resync);
     assert_eq!(
         text(&mut ws).await,
-        r#"{"topic":"work_item","id":123,"project":"enzarb"}"#
+        r#"{"topic":"task","id":123,"project":"enzarb"}"#
     );
     assert_eq!(text(&mut ws).await, r#"{"topic":"resync"}"#);
 }
