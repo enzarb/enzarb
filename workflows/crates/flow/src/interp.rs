@@ -2,11 +2,12 @@
 //! `step(resolved, state, event) -> (state, effects)`. No IO, no clock:
 //! time and every result arrive as events.
 
-use crate::document::{Artifact, GitFacts, Relation, TaskDocument};
-use crate::events::Event;
+use crate::document::{Artifact, GitFacts, Relation, Subject, TaskDocument};
+use crate::events::{Event, SubjectKind};
 use crate::format::{
-    Access, Concurrency, Matcher, MatcherSpec, Output, ResultSpec, Sender, Tools, UiAction, Wait,
-    WaitingOn,
+    Access, Action, CANCELLED, Concurrency, HandlerDo, Matcher, MatcherSpec, NumField, Output,
+    ResultSpec, Secret, Sender, SubjectLink, TextField, Tools, UiAction, Wait, WaitingOn,
+    parse_duration,
 };
 use crate::resolve::{EXIT_LIMIT, Exec, RKind, RNode, RPhase, RRuntime, RStep, Resolved, Route};
 use crate::template;
@@ -211,6 +212,12 @@ pub enum Effect {
         kind: String,
         targets: Vec<Value>,
     },
+    /// Link a GitHub object an action returned as a subject of the task.
+    LinkSubject {
+        kind: SubjectKind,
+        repo: String,
+        number: u64,
+    },
     UpdateProjection(Box<Projection>),
 }
 
@@ -226,7 +233,8 @@ pub struct RunStep {
     pub exec: RunExec,
     pub workspaces: Vec<RunWorkspace>,
     pub github: BTreeMap<String, Access>,
-    pub secrets: Vec<String>,
+    /// The step's secrets, normalized (the runtime's own are in its file).
+    pub secrets: Vec<Secret>,
     pub priority: i32,
     pub concurrency: Option<Concurrency>,
     pub outputs: BTreeMap<String, Output>,
@@ -252,6 +260,12 @@ pub enum RunExec {
 pub struct RunWorkspace {
     pub repo: String,
     pub mode: Access,
+    /// Rendered `branch` (write workspaces).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// Rendered `base`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
 }
 
 /// What the UI, notifications and API read about a task (ADR-0022 §9).
@@ -302,6 +316,27 @@ impl<'a> Machine<'a> {
         if matches!(self.s.status, Status::Ended { .. }) {
             return;
         }
+        // A wait's projection re-renders when a fact or var it reads changes
+        // without the node being re-entered.
+        let before = (self.s.status == Status::Waiting)
+            .then(|| (self.s.position(), self.build_projection()));
+        self.dispatch(ev);
+        if let Some((pos, old)) = before
+            && self.s.status == Status::Waiting
+            && self.s.position() == pos
+            && !self
+                .fx
+                .iter()
+                .any(|e| matches!(e, Effect::UpdateProjection(_)))
+        {
+            let now = self.build_projection();
+            if now != old {
+                self.fx.push(Effect::UpdateProjection(Box::new(now)));
+            }
+        }
+    }
+
+    fn dispatch(&mut self, ev: &TaskEvent) {
         match ev {
             TaskEvent::Start { event } => {
                 if self.s.status != Status::New {
@@ -353,6 +388,14 @@ impl<'a> Machine<'a> {
                 self.s.pending = None;
                 let node = self.s.position().unwrap_or_default();
                 self.s.last = json!({"node": node, "exit": if *ok { "success" } else { "failure" }, "ok": ok, "result": result});
+                if *ok
+                    && let Some(RKind::Action(a)) = self.node().map(|n| &n.kind)
+                    && let Err(e) = self.action_results(a, result)
+                {
+                    let here = self.s.frames.last().map(|f| f.node.clone());
+                    self.pause(e, here);
+                    return;
+                }
                 self.after_finish();
             }
             TaskEvent::Timer { timer_id } => {
@@ -441,6 +484,9 @@ impl<'a> Machine<'a> {
         let ty = event.type_name().to_string();
         let ev = serde_json::to_value(event).unwrap_or_default();
         let can_write = event.can_write();
+        if self.s.status != Status::New && self.handle(&ty, &ev, can_write, event) {
+            return;
+        }
         if let Some(Pending::Step { run_id, .. }) = self.s.pending.clone() {
             let Some(RKind::Step(st)) = self.node().map(|n| &n.kind) else {
                 return;
@@ -467,6 +513,167 @@ impl<'a> Machine<'a> {
         if self.s.status == Status::Waiting {
             self.wait_event(&ty, &ev, can_write, Some(event));
         }
+    }
+
+    /// Tries the workflow's task-wide handlers; true when one consumed the event.
+    fn handle(&mut self, ty: &str, ev: &Value, can_write: bool, event: &Event) -> bool {
+        let res = self.res;
+        let Some(h) = res.handlers.iter().find(|h| {
+            let from = h.from.unwrap_or_default();
+            h.events
+                .iter()
+                .any(|m| self.matches(m, ty, ev, can_write, from, &res.params))
+                && h.cond.as_ref().is_none_or(|c| {
+                    template::truthy(c, &self.ctx(&res.params, &[("event", ev.clone())]))
+                        .unwrap_or(false)
+                })
+        }) else {
+            return false;
+        };
+        let running = match &self.s.pending {
+            Some(Pending::Step { run_id, .. }) => Some(run_id.clone()),
+            _ => None,
+        };
+        if matches!(h.do_, Some(HandlerDo::StopStep)) && running.is_none() {
+            return false;
+        }
+        if let Err(e) = self.apply_set(&h.set, &res.params, &[("event", ev.clone())]) {
+            self.s.notes.push(format!("handler set: {e}"));
+        }
+        let Some(action) = &h.do_ else {
+            return false;
+        };
+        if let Some(run_id) = running {
+            self.fx.push(Effect::StopStep { run_id });
+        }
+        if matches!(action, HandlerDo::StopStep) {
+            return true;
+        }
+        self.s.doc.event = Some(event.clone());
+        self.s.pending = None;
+        self.s.timer = None;
+        match action {
+            HandlerDo::Cancel => self.end(CANCELLED),
+            HandlerDo::End(s) => self.end(s),
+            HandlerDo::Goto(p) => {
+                self.s.status = Status::Running;
+                self.enter_phase(p, 0);
+            }
+            HandlerDo::StopStep => {}
+        }
+        true
+    }
+
+    /// Assigns task variables in order; each sees the ones before it.
+    fn apply_set(
+        &mut self,
+        set: &Map<String, Value>,
+        params: &Map<String, Value>,
+        extra: &[(&str, Value)],
+    ) -> Result<(), String> {
+        for (k, v) in set {
+            let val = match v {
+                Value::String(e) => template::eval(e, &self.ctx(params, extra))
+                    .map_err(|e| format!("set `{k}`: {}", e.message))?,
+                other => other.clone(),
+            };
+            self.s.doc.vars.insert(k.clone(), val);
+        }
+        Ok(())
+    }
+
+    /// Leaves the current node toward `to`: `set_on_exit`, then enter.
+    fn leave(&mut self, to: String, extra: &[(&str, Value)]) -> Flow {
+        let (Some(node), Some(phase)) = (self.node(), self.phase()) else {
+            return Flow::Enter(to);
+        };
+        if let Err(e) = self.apply_set(&node.set_on_exit, &phase.params, extra) {
+            let here = self.s.frames.last().map(|f| f.node.clone());
+            self.pause(e, here);
+            return Flow::Stop;
+        }
+        Flow::Enter(to)
+    }
+
+    /// `as`, `subject` and `relate.from` of a successful action.
+    fn action_results(&mut self, a: &Action, result: &Value) -> Result<(), String> {
+        let params = self.phase().map(|p| p.params.clone()).unwrap_or_default();
+        if let Some(name) = &a.as_ {
+            self.s.doc.outputs.insert(name.clone(), result.clone());
+        }
+        let ctx = self.ctx(&params, &[("result", result.clone())]);
+        let eval = |e: &str| template::eval(e, &ctx).map_err(|e| e.message);
+        let link = match &a.subject {
+            None | Some(SubjectLink::Flag(false)) => None,
+            Some(SubjectLink::Flag(true)) => {
+                let kind: SubjectKind = serde_json::from_value(result["kind"].clone())
+                    .map_err(|_| format!("subject: result has no valid `kind`: {result}"))?;
+                Some((kind, result["number"].clone(), result["repo"].clone()))
+            }
+            Some(SubjectLink::Spec(s)) => Some((
+                s.kind,
+                eval(s.number.as_deref().unwrap_or("result.number"))?,
+                eval(s.repo.as_deref().unwrap_or("result.repo"))?,
+            )),
+        };
+        if let Some((kind, number, repo)) = link {
+            let number = number
+                .as_u64()
+                .or_else(|| number.as_str().and_then(|s| s.parse().ok()))
+                .ok_or_else(|| format!("subject: `number` is not a number: {number}"))?;
+            let repo = match repo.as_str() {
+                Some(r) if !r.is_empty() => r.to_string(),
+                _ => self.s.doc.task.repo.clone(),
+            };
+            let subject = Subject {
+                repo: repo.clone(),
+                number,
+                title: result["title"].as_str().unwrap_or_default().into(),
+                url: result["url"].as_str().unwrap_or_default().into(),
+                state: "open".into(),
+                ..Default::default()
+            };
+            let subs = &mut self.s.doc.subjects;
+            match kind {
+                SubjectKind::PullRequest => {
+                    if !subs
+                        .pull_requests
+                        .iter()
+                        .any(|p| p.repo == repo && p.number == number)
+                    {
+                        subs.pull_requests.push(subject);
+                    }
+                }
+                SubjectKind::Issue => {
+                    if subs.issue.is_none() {
+                        subs.issue = Some(subject);
+                    }
+                }
+            }
+            self.fx.push(Effect::LinkSubject { kind, repo, number });
+        }
+        if let Some(rel) = &a.relate
+            && let Some(from) = &rel.from
+        {
+            let targets = match eval(from).map_err(|e| format!("relate.from: {e}"))? {
+                Value::Null => Vec::new(),
+                Value::Array(a) => a,
+                v => vec![v],
+            };
+            if !targets.is_empty() {
+                for t in &targets {
+                    self.s.doc.relations.push(Relation {
+                        kind: rel.kind.clone(),
+                        target: t.clone(),
+                    });
+                }
+                self.fx.push(Effect::CreateRelations {
+                    kind: rel.kind.clone(),
+                    targets,
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Offers an event to the current wait.
@@ -501,7 +708,8 @@ impl<'a> Machine<'a> {
                 }
                 self.s.timer = None;
                 self.s.status = Status::Running;
-                self.run(Flow::Enter(to));
+                let f = self.leave(to, &[("event", ev.clone())]);
+                self.run(f);
             }
             Ok(None) => {} // keep waiting
             Err(e) => self.pause(format!("condition error: {e}"), None),
@@ -604,7 +812,10 @@ impl<'a> Machine<'a> {
         let ctx = self.ctx(&phase.params, &[]);
         self.s.status = Status::Running;
         match follow(&node.next, &ctx) {
-            Ok(Some(to)) => self.run(Flow::Enter(to)),
+            Ok(Some(to)) => {
+                let f = self.leave(to, &[]);
+                self.run(f)
+            }
             Ok(None) => {
                 let here = self.s.frames.last().map(|f| f.node.clone());
                 self.pause("no edge matched".into(), here);
@@ -693,8 +904,26 @@ impl<'a> Machine<'a> {
             };
         }
         self.s.path.push(self.s.position().unwrap_or_default());
+        if let Err(e) = self.apply_set(&node.set, &phase.params, &[]) {
+            self.pause(e, Some(id));
+            return Flow::Stop;
+        }
         match &node.kind {
             RKind::End(status) => Flow::Exit(status.clone()),
+            RKind::Decide => {
+                let ctx = self.ctx(&phase.params, &[]);
+                match follow(&node.next, &ctx) {
+                    Ok(Some(to)) => self.leave(to, &[]),
+                    Ok(None) => {
+                        self.pause("no edge matched".into(), Some(id));
+                        Flow::Stop
+                    }
+                    Err(e) => {
+                        self.pause(format!("condition error: {e}"), Some(id));
+                        Flow::Stop
+                    }
+                }
+            }
             RKind::Phase(inner) => {
                 self.s.frames.push(Frame {
                     id: id.clone(),
@@ -709,16 +938,18 @@ impl<'a> Machine<'a> {
             }
             RKind::Action(a) => {
                 let ctx = self.ctx(&phase.params, &[]);
-                let args = match render_value(&Value::Object(a.args.clone()), &ctx) {
+                let args = match template::render_value(&Value::Object(a.args.clone()), &ctx) {
                     Ok(Value::Object(o)) => o,
                     Ok(_) => Map::new(),
                     Err(e) => {
-                        self.pause(format!("action `{}`: {e}", a.name), Some(id));
+                        self.pause(format!("action `{}`: {}", a.name, e.message), Some(id));
                         return Flow::Stop;
                     }
                 };
-                if let Some(rel) = &a.relate {
-                    match template::eval(&rel.targets, &ctx) {
+                if let Some(rel) = &a.relate
+                    && let Some(targets) = &rel.targets
+                {
+                    match template::eval(targets, &ctx) {
                         Ok(Value::Array(targets)) => {
                             for t in &targets {
                                 self.s.doc.relations.push(Relation {
@@ -763,12 +994,27 @@ impl<'a> Machine<'a> {
                     self.fx.push(Effect::RefreshFact { fact: f.clone() });
                 }
                 if let Some(t) = &w.timer {
+                    let seconds = match &t.seconds {
+                        NumField::Int(n) => Ok(*n),
+                        NumField::Value(s) => template::render(s, &self.ctx(&phase.params, &[]))
+                            .map_err(|e| e.message)
+                            .and_then(|r| {
+                                parse_duration(&r).ok_or_else(|| {
+                                    format!("`{r}` is not a number of seconds or a duration")
+                                })
+                            }),
+                        NumField::Param { param } => Err(format!("unresolved param `{param}`")),
+                    };
+                    let seconds = match seconds {
+                        Ok(s) => s,
+                        Err(e) => {
+                            self.pause(format!("timer.seconds: {e}"), Some(id));
+                            return Flow::Stop;
+                        }
+                    };
                     let timer_id = self.next_id("timer");
                     self.s.timer = Some(timer_id.clone());
-                    self.fx.push(Effect::SetTimer {
-                        timer_id,
-                        seconds: t.seconds,
-                    });
+                    self.fx.push(Effect::SetTimer { timer_id, seconds });
                 }
                 self.s.status = Status::Waiting;
                 self.project();
@@ -802,7 +1048,7 @@ impl<'a> Machine<'a> {
         let ctx = self.ctx(&phase.params, &[("exit", json!(exit))]);
         self.s.last = json!({"node": self.s.position(), "exit": exit});
         match follow(&node.next, &ctx) {
-            Ok(Some(to)) => Flow::Enter(to),
+            Ok(Some(to)) => self.leave(to, &[("exit", json!(exit))]),
             Ok(None) => {
                 self.pause(format!("no edge matched exit `{exit}`"), None);
                 Flow::Stop
@@ -850,10 +1096,16 @@ impl<'a> Machine<'a> {
                 runtime,
                 model,
                 prompt,
-            } => render(prompt).map(|p| RunExec::Agent {
-                runtime: runtime.clone(),
-                model: model.clone(),
-                prompt: p,
+            } => render(prompt).and_then(|p| {
+                let model = match model {
+                    Some(m) if template::is_template(m) => Some(render(m)?.trim().to_string()),
+                    m => m.clone(),
+                };
+                Ok(RunExec::Agent {
+                    runtime: runtime.clone(),
+                    model: model.filter(|m| !m.is_empty()),
+                    prompt: p,
+                })
             }),
             Exec::Command { run, tools } => render(run).map(|r| RunExec::Command {
                 run: r,
@@ -863,7 +1115,19 @@ impl<'a> Machine<'a> {
         let workspaces: Result<Vec<_>, _> = st
             .workspaces
             .iter()
-            .map(|w| render(&w.repo).map(|repo| RunWorkspace { repo, mode: w.mode }))
+            .map(|w| {
+                let opt = |v: &Option<String>| -> Result<Option<String>, String> {
+                    v.as_deref()
+                        .map(|s| render(s).map(|r| r.trim().to_string()))
+                        .transpose()
+                };
+                Ok(RunWorkspace {
+                    repo: render(&w.repo)?,
+                    mode: w.mode,
+                    branch: opt(&w.branch)?,
+                    base: opt(&w.base)?,
+                })
+            })
             .collect();
         let concurrency = match &st.concurrency {
             Some(c) => render(&c.group).map(|group| Some(Concurrency { group, max: c.max })),
@@ -928,6 +1192,11 @@ impl<'a> Machine<'a> {
     // ------------------------------------------------------------ projection
 
     fn project(&mut self) {
+        let p = self.build_projection();
+        self.fx.push(Effect::UpdateProjection(Box::new(p)));
+    }
+
+    fn build_projection(&self) -> Projection {
         let board = &self.res.board.defaults;
         let phase = self
             .s
@@ -990,14 +1259,36 @@ impl<'a> Machine<'a> {
                     });
                     p.waiting_on = Some(on);
                     p.needs_you = on == WaitingOn::Human;
-                    p.reason = w.reason.clone();
                     let params = self.phase().map(|p| p.params.clone()).unwrap_or_default();
+                    let ctx = self.ctx(&params, &[]);
+                    let field = |t: &TextField| -> Result<String, String> {
+                        let s = t.as_str();
+                        if template::is_template(s) {
+                            template::render(s, &ctx).map_err(|e| e.message)
+                        } else {
+                            Ok(s.to_string())
+                        }
+                    };
+                    let short = |t: &TextField| field(t).ok().map(|s| s.trim().to_string());
+                    p.reason = w.reason.as_ref().and_then(short).filter(|s| !s.is_empty());
                     p.text = w.text.as_ref().map(|t| {
-                        template::render(t, &self.ctx(&params, &[]))
-                            .unwrap_or_else(|e| format!("{t} (template error: {})", e.message))
+                        template::render(t.as_str(), &ctx).unwrap_or_else(|e| {
+                            format!("{} (template error: {})", t.as_str(), e.message)
+                        })
                     });
-                    p.actions = w.actions.clone();
-                    p.column = w.column.clone().or_else(|| match on {
+                    p.actions = w
+                        .actions
+                        .iter()
+                        .filter_map(|a| {
+                            Some(UiAction {
+                                label: short(&a.label)?,
+                                command: short(&a.command)?,
+                            })
+                        })
+                        .filter(|a| !a.command.is_empty())
+                        .collect();
+                    let col = w.column.as_ref().and_then(short).filter(|s| !s.is_empty());
+                    p.column = col.or_else(|| match on {
                         WaitingOn::Human => board.waiting_human.clone(),
                         WaitingOn::Agent => board.waiting_agent.clone(),
                         WaitingOn::External => board.waiting_external.clone(),
@@ -1009,7 +1300,7 @@ impl<'a> Machine<'a> {
                 p.column = board.running.clone();
             }
         }
-        self.fx.push(Effect::UpdateProjection(Box::new(p)));
+        p
     }
 }
 
@@ -1025,23 +1316,6 @@ fn follow(edges: &[crate::resolve::REdge], ctx: &Value) -> Result<Option<String>
         }
     }
     Ok(None)
-}
-
-fn render_value(v: &Value, ctx: &Value) -> Result<Value, String> {
-    Ok(match v {
-        Value::String(s) => Value::String(template::render(s, ctx).map_err(|e| e.message)?),
-        Value::Array(a) => Value::Array(
-            a.iter()
-                .map(|x| render_value(x, ctx))
-                .collect::<Result<_, _>>()?,
-        ),
-        Value::Object(o) => Value::Object(
-            o.iter()
-                .map(|(k, x)| Ok((k.clone(), render_value(x, ctx)?)))
-                .collect::<Result<_, String>>()?,
-        ),
-        other => other.clone(),
-    })
 }
 
 fn type_ok(t: crate::format::InputType, v: &Value) -> bool {

@@ -39,6 +39,163 @@ pub struct WorkflowFile {
     /// Reference to a board file (`std/board`). Layered over the library board.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub board: Option<String>,
+    /// Typed params of the workflow, set by the binding's `with`. Phase
+    /// entries pass them down as `{param: <name>}`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub params: BTreeMap<String, Param>,
+    /// Task-wide handlers, tried in order on every event in any phase, wait
+    /// or running step; the first match wins.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on: Vec<Handler>,
+}
+
+/// A task-wide event handler (`on:` of a workflow).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Handler {
+    /// Events that trigger the handler (same matchers as a wait).
+    pub events: Vec<Matcher>,
+    /// Default sender requirement for matchers without `from` (default `anyone`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<Sender>,
+    /// Extra condition (an expression; `event` is the candidate).
+    #[serde(rename = "if", default, skip_serializing_if = "Option::is_none")]
+    pub cond: Option<String>,
+    /// Task variables assigned when the handler fires (see node `set`).
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub set: Map<String, Value>,
+    /// What to do: `cancel` (end with status `cancelled`), `end:<status>`,
+    /// `goto:<phase id>` or `stop_step`. Without `do` the handler only
+    /// assigns `set` and the event is still offered to the step or wait.
+    #[serde(rename = "do", default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>")]
+    pub do_: Option<HandlerDo>,
+}
+
+/// The action of a task-wide handler.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub enum HandlerDo {
+    /// End the task with status `cancelled`.
+    Cancel,
+    /// End the task with this status.
+    End(String),
+    /// Enter this top-level phase (counts as an entry).
+    Goto(String),
+    /// Stop the running step (it finishes `interrupted`; its edges decide).
+    StopStep,
+}
+
+/// End status used by `do: cancel`.
+pub const CANCELLED: &str = "cancelled";
+
+impl TryFrom<String> for HandlerDo {
+    type Error = String;
+    fn try_from(s: String) -> Result<Self, String> {
+        let s = s.trim();
+        match s.split_once(':') {
+            None if s == "cancel" => Ok(HandlerDo::Cancel),
+            None if s == "stop_step" => Ok(HandlerDo::StopStep),
+            Some(("end", v)) if !v.trim().is_empty() => Ok(HandlerDo::End(v.trim().into())),
+            Some(("goto", v)) if !v.trim().is_empty() => Ok(HandlerDo::Goto(v.trim().into())),
+            _ => Err(format!(
+                "`do: {s}` must be `cancel`, `end:<status>`, `goto:<phase>` or `stop_step`"
+            )),
+        }
+    }
+}
+
+impl From<HandlerDo> for String {
+    fn from(d: HandlerDo) -> String {
+        match d {
+            HandlerDo::Cancel => "cancel".into(),
+            HandlerDo::StopStep => "stop_step".into(),
+            HandlerDo::End(s) => format!("end:{s}"),
+            HandlerDo::Goto(p) => format!("goto:{p}"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------- templated literals
+
+/// An integer field: a number, `{param: <name>}`, or a string: a duration
+/// (`90s`, `15m`, `2h`, `14d`, `1w`, where durations are allowed) or a
+/// template (`"{{ params.rounds * 2 }}"`) rendering to one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum NumField {
+    Int(u64),
+    Param { param: String },
+    Value(String),
+}
+
+impl From<u64> for NumField {
+    fn from(n: u64) -> Self {
+        NumField::Int(n)
+    }
+}
+
+/// A text field: a string (a MiniJinja template when it contains `{{`/`{%`)
+/// or `{param: <name>}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum TextField {
+    Param { param: String },
+    Value(String),
+}
+
+impl TextField {
+    /// The text, or the param name for an unresolved `{param}`.
+    pub fn as_str(&self) -> &str {
+        match self {
+            TextField::Param { param } => param,
+            TextField::Value(s) => s,
+        }
+    }
+}
+
+impl From<&str> for TextField {
+    fn from(s: &str) -> Self {
+        TextField::Value(s.into())
+    }
+}
+
+impl From<String> for TextField {
+    fn from(s: String) -> Self {
+        TextField::Value(s)
+    }
+}
+
+/// Parses an integer or a duration (`90`, `90s`, `15m`, `2h`, `14d`, `1w`,
+/// also combined like `1h30m`) into seconds.
+pub fn parse_duration(s: &str) -> Option<u64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Ok(n) = s.parse::<u64>() {
+        return Some(n);
+    }
+    let mut total: u64 = 0;
+    let mut num = String::new();
+    for c in s.chars() {
+        if c.is_ascii_digit() {
+            num.push(c);
+            continue;
+        }
+        let unit = match c {
+            's' => 1,
+            'm' => 60,
+            'h' => 3600,
+            'd' => 86_400,
+            'w' => 604_800,
+            _ => return None,
+        };
+        let n: u64 = num.parse().ok()?;
+        num.clear();
+        total = total.checked_add(n.checked_mul(unit)?)?;
+    }
+    num.is_empty().then_some(total)
 }
 
 /// One phase of a workflow.
@@ -58,9 +215,10 @@ pub struct PhaseEntry {
     /// unmapped exit ends the task with the exit name as status.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub exits: BTreeMap<String, ExitTo>,
-    /// How often the phase may be entered (default 5).
+    /// How often the phase may be entered (default 5). A number,
+    /// `{param: <name>}` of the workflow, or a template over `params`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_entries: Option<u32>,
+    pub max_entries: Option<NumField>,
     /// The exit taken instead of entering the phase once more than
     /// `max_entries` times (default `limit_reached`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -178,16 +336,39 @@ pub struct Node {
     /// Runs a nested phase; its exit is `exit` in the edge conditions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<PhaseUse>,
+    /// Pure branching: no effect, `next` is followed as soon as the node is entered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decide: Option<Decide>,
+    /// Task variables assigned on entry, in order: `name: <expression>`
+    /// (strings are expressions; other YAML values and `{param: x}` are
+    /// literals). Stored in `vars`. A node with only `set` and `next` is a
+    /// decide node.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub set: Map<String, Value>,
+    /// Task variables assigned when the node is left, after its edge was
+    /// chosen (`last`, `exit` and, at a wait, `event` are in scope).
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub set_on_exit: Map<String, Value>,
     /// The next node. Not allowed on `end`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next: Option<Next>,
-    /// How often this node may be entered per phase entry (default 10).
+    /// How often this node may be entered per phase entry (default 10). A
+    /// number, `{param: <name>}`, or a template over `params`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_visits: Option<u32>,
+    pub max_visits: Option<NumField>,
     /// Node entered instead once `max_visits` is exceeded. Without it the
     /// phase exits with `limit_reached`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_limit: Option<String>,
+}
+
+/// A decide node: no effect, only edges.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Decide {
+    /// Free text shown in the viewer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// Edges: a node id, or ordered branches where the first true `if` wins.
@@ -245,22 +426,22 @@ pub struct Wait {
     /// Who may send them (default `anyone`); applies to every matcher that sets no `from`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<Sender>,
-    /// Machine-readable wait reason shown in the projection.
+    /// Machine-readable wait reason shown in the projection (text field).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-    /// Human text (a MiniJinja template).
+    pub reason: Option<TextField>,
+    /// Human text (a MiniJinja template, or `{param: x}`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
-    /// Board column id while waiting here.
+    pub text: Option<TextField>,
+    /// Board column id while waiting here (text field).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub column: Option<String>,
+    pub column: Option<TextField>,
     /// Who the task waits on. Default: `human` if the wait has actions or
     /// requires a writer, else `external`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting_on: Option<WaitingOn>,
     /// UI buttons; each posts its `/command` as the clicking user.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub actions: Vec<UiAction>,
+    pub actions: Vec<UiActionSpec>,
     /// Events forwarded into the task's last agent session while waiting.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steer: Vec<Matcher>,
@@ -275,7 +456,9 @@ pub struct Wait {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Timer {
-    pub seconds: u64,
+    /// Seconds, a duration (`14d`), `{param: x}`, or a template. A template
+    /// that reads more than `params` is rendered on entry.
+    pub seconds: NumField,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -324,7 +507,16 @@ impl Matcher {
     }
 }
 
-/// A UI button at a wait.
+/// A UI button as declared at a wait: `label` and `command` are text fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UiActionSpec {
+    pub label: TextField,
+    /// Command word posted as `/command` (without the slash).
+    pub command: TextField,
+}
+
+/// A rendered UI button (the projection's `actions`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UiAction {
@@ -339,20 +531,58 @@ pub struct UiAction {
 pub struct Action {
     /// Connector action name.
     pub name: String,
-    /// Arguments; strings are MiniJinja templates.
+    /// Arguments: any YAML. String leaves are MiniJinja templates; a leaf
+    /// that is exactly one `{{ expr }}` keeps the expression's JSON type;
+    /// `{param: x}` is the param's value.
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub args: Map<String, Value>,
-    /// Task relations created together with the call.
+    /// Task relations: `targets` (evaluated before the call) or `from`
+    /// (evaluated over the call's `result`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relate: Option<Relate>,
+    /// Stores a successful call's result as `outputs.<as>`.
+    #[serde(rename = "as", default, skip_serializing_if = "Option::is_none")]
+    pub as_: Option<String>,
+    /// Links the GitHub object the call returned as a subject of the task:
+    /// `true` reads `kind`, `number` and `repo` from the result, or give
+    /// `{kind, number, repo}` (`number`/`repo` are expressions over `result`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<SubjectLink>,
 }
 
-/// Relations to create: `targets` is an expression yielding a list.
+/// Relations to create. Exactly one of `targets` and `from`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Relate {
     pub kind: String,
-    pub targets: String,
+    /// Expression yielding a list, evaluated before the call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub targets: Option<String>,
+    /// Expression over the call's `result` (and the document) yielding a
+    /// target or a list of them, evaluated after a successful call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+}
+
+/// How an action's result becomes a linked subject.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum SubjectLink {
+    /// `true`: the result has `kind` (`issue`/`pull_request`), `number` and optionally `repo`.
+    Flag(bool),
+    Spec(SubjectSpec),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SubjectSpec {
+    pub kind: crate::events::SubjectKind,
+    /// Expression over `result` (default `result.number`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<String>,
+    /// Expression over `result` (default `result.repo`, else `task.repo`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -396,9 +626,10 @@ pub struct StepFile {
     /// GitHub token permissions (`contents: write`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub github: BTreeMap<String, Access>,
-    /// Names of secrets injected into this step's process.
+    /// Secrets injected into this step's process: a bare name (project
+    /// scope, env var of that name) or `{name, scope, env | file}`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub secrets: Vec<String>,
+    pub secrets: Vec<SecretDecl>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -419,8 +650,9 @@ pub struct StepFile {
 pub struct Agent {
     /// Reference to a runtime file.
     pub runtime: String,
+    /// Model name (text field: `{param: x}` or a template).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
+    pub model: Option<TextField>,
     /// MiniJinja prompt template.
     pub prompt: Source,
 }
@@ -506,12 +738,80 @@ pub struct ResultSpec {
     pub as_: Option<String>,
 }
 
+/// A named secret as written: `NAME` or `{name, scope, env | file}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum SecretDecl {
+    /// Project scope, injected as the env var `NAME`.
+    Name(String),
+    Full(Secret),
+}
+
+impl SecretDecl {
+    /// The full form (bare name: project scope, env var of the same name;
+    /// neither `env` nor `file`: env var named like the secret).
+    pub fn normalized(&self) -> Secret {
+        match self {
+            SecretDecl::Name(n) => Secret {
+                name: n.clone(),
+                scope: SecretScope::Project,
+                env: Some(n.clone()),
+                file: None,
+            },
+            SecretDecl::Full(s) => {
+                let mut s = s.clone();
+                if s.env.is_none() && s.file.is_none() {
+                    s.env = Some(s.name.clone());
+                }
+                s
+            }
+        }
+    }
+}
+
+impl From<&str> for SecretDecl {
+    fn from(s: &str) -> Self {
+        SecretDecl::Name(s.into())
+    }
+}
+
+/// A secret: where it is stored and how the process receives it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Secret {
+    pub name: String,
+    #[serde(default)]
+    pub scope: SecretScope,
+    /// Environment variable to set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<String>,
+    /// File (relative to the workspace root) to write the value to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretScope {
+    /// The user the step acts for.
+    User,
+    #[default]
+    Project,
+    Instance,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Workspace {
     /// `owner/repo`; a template.
     pub repo: String,
     pub mode: Access,
+    /// Branch to work on and push (write workspaces only; a template).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// Base ref to branch from or check out (a template).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -553,9 +853,9 @@ pub struct RuntimeFile {
     pub launch: Launch,
     #[serde(default)]
     pub capabilities: Capabilities,
-    /// Secrets the runtime needs (e.g. an API key), by name.
+    /// Secrets the runtime needs (e.g. an API key), as in a step.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub secrets: Vec<String>,
+    pub secrets: Vec<SecretDecl>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -680,9 +980,13 @@ pub struct Binding {
     /// The trigger. Required unless `disabled`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on: Option<Trigger>,
-    /// MiniJinja expression over `event`.
+    /// MiniJinja expression over the routing context (`event`, `relations`).
     #[serde(rename = "if", default, skip_serializing_if = "Option::is_none")]
     pub cond: Option<String>,
+    /// Params of the bound workflow. String leaves are templates over the
+    /// routing context.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub with: Map<String, Value>,
     /// Workflow file reference. Required unless `disabled`.
     #[serde(rename = "use", default, skip_serializing_if = "Option::is_none")]
     pub use_: Option<String>,

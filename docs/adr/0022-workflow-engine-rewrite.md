@@ -217,6 +217,16 @@ M1 (`workflows/crates/flow`, crate `enzarb-flow`) settles details the decision l
   - a template or input error, or no matching branch;
   - more than 1000 engine transitions for one event.
   - `resume` re-enters the node.
+- **Generic building blocks** (added for the standard library; none knows a workflow):
+  - a `decide` node (pure branching), and task variables: `set`/`set_on_exit` on any node and on handlers, stored in `vars`;
+  - templated literals: `max_visits`, `max_entries`, timer `seconds` (durations like `14d`), `column`, `reason`, `model` and button `label`/`command` accept `{param}` and templates;
+  - MiniJinja `tojson`, `shell_quote`, `contains`, `regex_match`, `duration`; structured action `args` whose sole-expression leaves keep their JSON type;
+  - action results: `as`, `subject` (emits `link_subject`) and `relate.from` (relations over the result);
+  - workflow `params` set by a binding's `with`; binding `if`/`with` read a routing context (`event` + related-task summary `relations`);
+  - workflow-level `on:` handlers (`cancel`, `end:<s>`, `goto:<phase>`, `stop_step`), which stop a running step before transitioning;
+  - secrets with scope and `env`/`file` (a bare name is project scope, env of that name); workspace `branch`/`base`;
+  - a wait's projection re-renders when what it reads changes without re-entering the node;
+  - `instance: {bot: {login, handle}, url}` in the document and `mentioned` on comments (filled by the engine).
 - **Not in M1:**
   - JSON Schema validation of `result` and custom event payloads (M4 validates `submit_result` at call time; M5 validates custom events at the endpoint);
   - replay;

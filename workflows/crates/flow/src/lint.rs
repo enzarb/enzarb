@@ -163,7 +163,12 @@ impl Workspace {
             }
         }
         for w in &workflows {
-            push(diags(resolve::resolve(&self.entry(w), &self.loader, &opts)));
+            push(diags(resolve::resolve_with(
+                &self.entry(w),
+                &self.loader,
+                &opts,
+                None,
+            )));
         }
         let mut seen = BTreeSet::new();
         out.into_iter()
@@ -214,19 +219,19 @@ impl Workspace {
                         format!("invalid expression: {}", e.message),
                     )),
                     Ok(vars) => {
-                        let bad: Vec<String> = vars
-                            .iter()
-                            .filter(|v| !v.starts_with("event"))
-                            .cloned()
-                            .collect();
-                        for v in bad {
+                        for v in routing_violations(&vars) {
                             out.push(sf.error(
                                 &format!("{at}.if"),
-                                format!("bindings can only read `event`, not `{v}`"),
+                                format!(
+                                    "bindings can only read `event` and `relations`, not `{v}`"
+                                ),
                             ));
                         }
                     }
                 }
+            }
+            for (k, v) in &bind.with {
+                check_with_templates(&sf, &format!("{at}.with.{k}"), v, &mut out);
             }
             if (bind.use_.is_none() || bind.on.is_none()) && !bind.disabled {
                 out.push(sf.error(&at, "a binding needs `on` and `use` (or `disabled: true`)"));
@@ -238,9 +243,34 @@ impl Workspace {
                 for r in &rb {
                     if r.workflow.repo == self.cfg.repo {
                         workflows.insert(r.workflow.path.clone());
-                    } else if let Err(d) = resolve::resolve(&r.workflow, &self.loader, &self.opts())
-                    {
-                        out.extend(d.0);
+                    }
+                    match resolve::resolve_with(&r.workflow, &self.loader, &self.opts(), None) {
+                        Ok((res, _)) => {
+                            let i = b
+                                .bindings
+                                .iter()
+                                .position(|x| x.id == r.id && x.with == r.with)
+                                .unwrap_or(0);
+                            for k in r.with.keys() {
+                                if !res.params.contains_key(k) {
+                                    let declared: Vec<_> = res.params.keys().cloned().collect();
+                                    out.push(sf.error(
+                                        &format!("bindings[{i}].with.{k}"),
+                                        format!(
+                                            "workflow `{}` has no param `{k}` (declared: {})",
+                                            r.workflow.path,
+                                            if declared.is_empty() {
+                                                "none".into()
+                                            } else {
+                                                declared.join(", ")
+                                            }
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+                        Err(d) if r.workflow.repo != self.cfg.repo => out.extend(d.0),
+                        Err(_) => {} // reported when the workflow itself is checked
                     }
                 }
             }
@@ -265,8 +295,12 @@ impl Workspace {
                     continue;
                 }
             };
-            let res = match resolve::resolve(&self.entry(&sc.workflow), &self.loader, &self.opts())
-            {
+            let res = match resolve::resolve_with(
+                &self.entry(&sc.workflow),
+                &self.loader,
+                &self.opts(),
+                Some(&sc.params),
+            ) {
                 Ok((r, _)) => r,
                 Err(d) => {
                     out.push(sf.error(
@@ -284,6 +318,46 @@ impl Workspace {
             }
         }
         (n, out.into_iter().map(|d| self.localize(d)).collect())
+    }
+}
+
+/// Variables a binding may not read (anything but `event` and `relations`).
+fn routing_violations(vars: &BTreeSet<String>) -> Vec<String> {
+    vars.iter()
+        .filter(|v| !matches!(v.split('.').next(), Some("event" | "relations")))
+        .cloned()
+        .collect()
+}
+
+fn check_with_templates(
+    sf: &SourceFile,
+    path: &str,
+    v: &serde_json::Value,
+    out: &mut Vec<Diagnostic>,
+) {
+    match v {
+        serde_json::Value::String(s) => match template::template_vars(s) {
+            Err(e) => out.push(sf.error(path, format!("invalid template: {}", e.message))),
+            Ok(vars) => {
+                for v in routing_violations(&vars) {
+                    out.push(sf.error(
+                        path,
+                        format!("binding `with` can only read `event` and `relations`, not `{v}`"),
+                    ));
+                }
+            }
+        },
+        serde_json::Value::Array(a) => {
+            for (i, x) in a.iter().enumerate() {
+                check_with_templates(sf, &format!("{path}[{i}]"), x, out);
+            }
+        }
+        serde_json::Value::Object(o) => {
+            for (k, x) in o {
+                check_with_templates(sf, &format!("{path}.{k}"), x, out);
+            }
+        }
+        _ => {}
     }
 }
 

@@ -91,9 +91,9 @@
     "secrets": {
       "type": "array",
       "items": {
-        "type": "string"
+        "$ref": "#/$defs/SecretDecl"
       },
-      "description": "Names of secrets injected into this step's process."
+      "description": "Secrets injected into this step's process: a bare name (project\nscope, env var of that name) or `{name, scope, env | file}`."
     },
     "priority": {
       "type": [
@@ -225,10 +225,15 @@
           "description": "Reference to a runtime file."
         },
         "model": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextField"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Model name (text field: `{param: x}` or a template)."
         },
         "prompt": {
           "$ref": "#/$defs/Source",
@@ -239,6 +244,25 @@
         "runtime",
         "prompt"
       ]
+    },
+    "TextField": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "param": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "param"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "description": "A text field: a string (a MiniJinja template when it contains `{{`/`{%`)\nor `{param: <name>}`."
     },
     "Source": {
       "anyOf": [
@@ -395,6 +419,20 @@
         },
         "mode": {
           "$ref": "#/$defs/Access"
+        },
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Branch to work on and push (write workspaces only; a template)."
+        },
+        "base": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Base ref to branch from or check out (a template)."
         }
       },
       "required": [
@@ -407,6 +445,65 @@
       "enum": [
         "read",
         "write"
+      ]
+    },
+    "SecretDecl": {
+      "anyOf": [
+        {
+          "type": "string",
+          "description": "Project scope, injected as the env var `NAME`."
+        },
+        {
+          "$ref": "#/$defs/Secret"
+        }
+      ],
+      "description": "A named secret as written: `NAME` or `{name, scope, env | file}`."
+    },
+    "Secret": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/SecretScope",
+          "default": "project"
+        },
+        "env": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Environment variable to set."
+        },
+        "file": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "File (relative to the workspace root) to write the value to."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "description": "A secret: where it is stored and how the process receives it."
+    },
+    "SecretScope": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "project",
+            "instance"
+          ]
+        },
+        {
+          "type": "string",
+          "const": "user",
+          "description": "The user the step acts for."
+        }
       ]
     },
     "Concurrency": {

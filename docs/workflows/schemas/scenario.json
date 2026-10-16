@@ -12,9 +12,14 @@
       "type": "string",
       "description": "Workflow file path in the repository under test."
     },
+    "params": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Workflow params, as a binding's `with` would give them."
+    },
     "document": {
       "$ref": "#/$defs/TaskDocument",
-      "description": "Initial task document (subjects, task info, …).",
+      "description": "Initial task document (subjects, task info, `vars`, `facts`,\n`instance`, …).",
       "default": {
         "task": {
           "id": "",
@@ -32,7 +37,15 @@
         "artifacts": [],
         "facts": {},
         "relations": [],
-        "history": []
+        "history": [],
+        "vars": {},
+        "instance": {
+          "bot": {
+            "login": "",
+            "handle": ""
+          },
+          "url": ""
+        }
       }
     },
     "start": {
@@ -149,6 +162,23 @@
           },
           "description": "Bounded summary of recent tasks of the project (filled by the engine).",
           "default": []
+        },
+        "vars": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Task variables assigned by `set` (nodes, handlers). Scoped to the\ntask; persist across phase re-entry.",
+          "default": {}
+        },
+        "instance": {
+          "$ref": "#/$defs/Instance",
+          "description": "The enzarb instance (filled by the engine).",
+          "default": {
+            "bot": {
+              "login": "",
+              "handle": ""
+            },
+            "url": ""
+          }
         }
       },
       "description": "Everything known about a task."
@@ -628,6 +658,10 @@
             "string",
             "null"
           ]
+        },
+        "mentioned": {
+          "type": "boolean",
+          "description": "The body mentions the instance's bot handle (`@<instance.bot.handle>`\nanywhere). Filled by the engine."
         }
       },
       "required": [
@@ -1335,6 +1369,40 @@
         "status"
       ]
     },
+    "Instance": {
+      "type": "object",
+      "properties": {
+        "bot": {
+          "$ref": "#/$defs/Bot",
+          "default": {
+            "login": "",
+            "handle": ""
+          }
+        },
+        "url": {
+          "type": "string",
+          "description": "Base URL of the instance UI.",
+          "default": ""
+        }
+      },
+      "description": "The enzarb instance the task runs on."
+    },
+    "Bot": {
+      "type": "object",
+      "properties": {
+        "login": {
+          "type": "string",
+          "description": "GitHub login (`enzarb[bot]`).",
+          "default": ""
+        },
+        "handle": {
+          "type": "string",
+          "description": "Mention handle without `@` (`enzarb`).",
+          "default": ""
+        }
+      },
+      "description": "The GitHub App identity of the instance."
+    },
     "Stub": {
       "type": "object",
       "additionalProperties": false,
@@ -1501,6 +1569,14 @@
           ],
           "additionalProperties": true,
           "description": "Outputs that must be present with these values."
+        },
+        "vars": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true,
+          "description": "Task variables that must have these values."
         }
       }
     },

@@ -34,6 +34,7 @@ Schema: [`schemas/events/comment.json`](schemas/events/comment.json) (`Comment`)
 | `command` | string |  |  |
 | `args` | list of string |  |  |
 | `url` | string |  |  |
+| `mentioned` | boolean |  | The body mentions the instance's bot handle (`@<instance.bot.handle>` anywhere). Filled by the engine. |
 
 ### `issue`
 

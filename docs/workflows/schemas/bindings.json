@@ -55,7 +55,12 @@
             "string",
             "null"
           ],
-          "description": "MiniJinja expression over `event`."
+          "description": "MiniJinja expression over the routing context (`event`, `relations`)."
+        },
+        "with": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Params of the bound workflow. String leaves are templates over the\nrouting context."
         },
         "use": {
           "type": [

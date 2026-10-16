@@ -154,6 +154,10 @@ pub struct Comment {
     pub args: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// The body mentions the instance's bot handle (`@<instance.bot.handle>`
+    /// anywhere). Filled by the engine.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mentioned: bool,
 }
 
 impl Comment {
@@ -166,8 +170,23 @@ impl Comment {
             command,
             args: args.unwrap_or_default(),
             url: None,
+            mentioned: bot.is_some_and(|b| mentions(body, b)),
         }
     }
+}
+
+/// Whether `body` mentions `@handle` (case-insensitive, word-bounded).
+pub fn mentions(body: &str, handle: &str) -> bool {
+    if handle.is_empty() {
+        return false;
+    }
+    let lower = body.to_ascii_lowercase();
+    let needle = format!("@{}", handle.to_ascii_lowercase());
+    lower.match_indices(&needle).any(|(i, _)| {
+        let before_ok = i == 0 || !lower.as_bytes()[i - 1].is_ascii_alphanumeric();
+        let after = lower[i + needle.len()..].chars().next();
+        before_ok && !after.is_some_and(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    })
 }
 
 /// Parses `/word args…` from the first non-empty line, allowing one leading

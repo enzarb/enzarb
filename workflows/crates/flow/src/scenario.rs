@@ -20,7 +20,11 @@ pub struct Scenario {
     pub name: Option<String>,
     /// Workflow file path in the repository under test.
     pub workflow: String,
-    /// Initial task document (subjects, task info, …).
+    /// Workflow params, as a binding's `with` would give them.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub params: Map<String, Value>,
+    /// Initial task document (subjects, task info, `vars`, `facts`,
+    /// `instance`, …).
     #[serde(default)]
     pub document: TaskDocument,
     /// The event that starts the task.
@@ -121,6 +125,9 @@ pub struct Expect {
     /// Outputs that must be present with these values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outputs: Option<Map<String, Value>>,
+    /// Task variables that must have these values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vars: Option<Map<String, Value>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
@@ -359,6 +366,20 @@ impl Runner<'_> {
                         &format!("{base}.outputs.{k}"),
                         format!("output `{k}` is {got}"),
                     );
+                }
+            }
+        }
+        if let Some(want) = &x.vars {
+            for (k, v) in want {
+                if self.state.doc.vars.get(k) != Some(v) {
+                    let got = self
+                        .state
+                        .doc
+                        .vars
+                        .get(k)
+                        .map(Value::to_string)
+                        .unwrap_or_else(|| "missing".into());
+                    self.fail(&format!("{base}.vars.{k}"), format!("var `{k}` is {got}"));
                 }
             }
         }

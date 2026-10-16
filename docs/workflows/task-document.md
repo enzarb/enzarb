@@ -16,6 +16,8 @@ The data every prompt template, `text`, action argument and condition reads (ADR
 | `facts` | Facts |  |  |
 | `relations` | list of Relation |  |  |
 | `history` | list of HistoryEntry |  | Bounded summary of recent tasks of the project (filled by the engine). |
+| `vars` | object |  | Task variables assigned by `set` (nodes, handlers). Scoped to the task; persist across phase re-entry. |
+| `instance` | Instance |  | The enzarb instance (filled by the engine). |
 
 ## `TaskInfo`
 
@@ -71,6 +73,7 @@ optionally after a leading `@bot` mention).
 | `command` | string |  |  |
 | `args` | list of string |  |  |
 | `url` | string |  |  |
+| `mentioned` | boolean |  | The body mentions the instance's bot handle (`@<instance.bot.handle>` anywhere). Filled by the engine. |
 
 ## `Issue`
 
@@ -324,5 +327,23 @@ Facts the engine verified from git and GitHub (never from agent output).
 | `status` | string | yes |  |
 | `title` | string |  |  |
 | `ended_at` | string |  |  |
+
+## `Instance`
+
+The enzarb instance the task runs on.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `bot` | Bot |  |  |
+| `url` | string |  | Base URL of the instance UI. |
+
+## `Bot`
+
+The GitHub App identity of the instance.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `login` | string |  | GitHub login (`enzarb[bot]`). |
+| `handle` | string |  | Mention handle without `@` (`enzarb`). |
 
 `event` is an [event](events.md) object.

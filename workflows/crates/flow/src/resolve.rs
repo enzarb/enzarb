@@ -76,6 +76,12 @@ pub struct Resolved {
     pub board: BoardFile,
     /// Every file used, for pinning and the viewer's origin badges.
     pub origins: Vec<Origin>,
+    /// The workflow's bound params (`params` in handler conditions).
+    #[serde(default)]
+    pub params: Map<String, Value>,
+    /// Task-wide handlers (`on:`), `set` params substituted.
+    #[serde(default)]
+    pub handlers: Vec<Handler>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -110,16 +116,27 @@ pub struct RNode {
     pub max_visits: u32,
     #[serde(default)]
     pub on_limit: Option<String>,
+    /// Assigned on entry (strings are expressions, other values literals).
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub set: Map<String, Value>,
+    /// Assigned when leaving, after the edge was chosen.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub set_on_exit: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RKind {
     Step(Box<RStep>),
+    /// Params substituted: text fields are `TextField::Value`; a timer whose
+    /// template reads only params is already `NumField::Int`.
     Wait(Box<Wait>),
+    /// Params substituted in `args`.
     Action(Box<Action>),
     End(String),
     Phase(Box<RPhase>),
+    /// Pure branching (a `decide` node, or a node with only `set`).
+    Decide,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,7 +158,8 @@ pub struct RStep {
     pub result: Option<ResultSpec>,
     pub workspaces: Vec<Workspace>,
     pub github: BTreeMap<String, Access>,
-    pub secrets: Vec<String>,
+    /// Normalized (`SecretDecl::normalized`).
+    pub secrets: Vec<Secret>,
     pub priority: Option<i32>,
     pub concurrency: Option<Concurrency>,
     pub retry: Option<Retry>,
@@ -200,14 +218,26 @@ pub fn default_stop() -> Vec<Matcher> {
 
 // ---------------------------------------------------------------- entry points
 
-/// Resolves a workflow file.
+/// Resolves a workflow file without params (a workflow with required params
+/// is an error; see [`resolve_with`]).
 pub fn resolve(
     entry: &Entry,
     loader: &dyn Loader,
     opts: &Options,
 ) -> Result<(Resolved, Vec<Diagnostic>), Diagnostics> {
+    resolve_with(entry, loader, opts, Some(&Map::new()))
+}
+
+/// Resolves a workflow file with the workflow params a binding's `with`
+/// produced. `None` uses placeholders for missing required params (lint).
+pub fn resolve_with(
+    entry: &Entry,
+    loader: &dyn Loader,
+    opts: &Options,
+    params: Option<&Map<String, Value>>,
+) -> Result<(Resolved, Vec<Diagnostic>), Diagnostics> {
     let mut r = Resolver::new(loader, opts, &entry.repo);
-    let out = r.workflow(entry);
+    let out = r.workflow(entry, params);
     r.finish(out)
 }
 
@@ -517,7 +547,7 @@ impl<'l> Resolver<'l> {
 
     // ------------------------------------------------------------ workflow
 
-    fn workflow(&mut self, entry: &Entry) -> Option<Resolved> {
+    fn workflow(&mut self, entry: &Entry, given: Option<&Map<String, Value>>) -> Option<Resolved> {
         let path = with_ext(&entry.path);
         let file = self.load(&entry.repo, &entry.rref, &path, true, None)?;
         let wf: WorkflowFile = self.typed(&file)?;
@@ -528,6 +558,19 @@ impl<'l> Resolver<'l> {
             imports: wf.imports.clone(),
         };
         self.check_imports(&file, &wf.imports);
+        let was = self.placeholders;
+        self.placeholders = given.is_none();
+        let empty = Map::new();
+        let wparams = self.bind(
+            &wf.params,
+            &ctx,
+            &file,
+            given.unwrap_or(&empty),
+            &ctx,
+            None,
+            &Map::new(),
+        );
+        self.placeholders = was;
         self.custom_events = Some(wf.events.keys().cloned().collect());
         for (name, decl) in &wf.events {
             let at = At {
@@ -611,12 +654,24 @@ impl<'l> Resolver<'l> {
                 &ids[i],
                 Some(&at),
                 &p.with,
-                &Map::new(),
+                &wparams,
                 Some((&file, &with_at)),
             ) else {
                 continue;
             };
-            phase.max_entries = p.max_entries.unwrap_or(DEFAULT_MAX_ENTRIES);
+            phase.max_entries = match &p.max_entries {
+                None => DEFAULT_MAX_ENTRIES,
+                Some(n) => {
+                    let at = At {
+                        file: &file,
+                        path: format!("phases[{i}].max_entries"),
+                    };
+                    match self.num(n, &wparams, &at, false, None) {
+                        Some(NumField::Int(n)) => u32::try_from(n).unwrap_or(u32::MAX),
+                        _ => DEFAULT_MAX_ENTRIES,
+                    }
+                }
+            };
             if phase.max_entries == 0 {
                 self.err(
                     &At {
@@ -681,6 +736,41 @@ impl<'l> Resolver<'l> {
             phases.push(phase);
         }
 
+        let mut handlers = Vec::new();
+        let hscope = Scope {
+            names: ["event".to_string()].into(),
+            params: wf.params.keys().cloned().collect(),
+        };
+        for (i, h) in wf.on.iter().enumerate() {
+            let base = format!("on[{i}]");
+            let at = At {
+                file: &file,
+                path: base.clone(),
+            };
+            if h.events.is_empty() {
+                self.err(&at, "a handler needs at least one event");
+            }
+            self.check_matchers(&file, &format!("{base}.events"), &h.events, &hscope);
+            if let Some(c) = &h.cond {
+                self.check_expr(&file, &format!("{base}.if"), c, &hscope);
+            }
+            let set = self.sets(&file, &format!("{base}.set"), &h.set, &wparams, &hscope);
+            match &h.do_ {
+                None if h.set.is_empty() => self.err(&at, "a handler needs `do` or `set`"),
+                Some(HandlerDo::Goto(p)) if !ids.contains(p) => self.err(
+                    &At {
+                        file: &file,
+                        path: format!("{base}.do"),
+                    },
+                    format!("`goto:{p}`: not a phase id (phases: {})", ids.join(", ")),
+                ),
+                _ => {}
+            }
+            let mut h = h.clone();
+            h.set = set;
+            handlers.push(h);
+        }
+
         let origins: Vec<Origin> = self.files.values().map(|f| f.0.clone()).collect();
         Some(Resolved {
             entry: self.origin(&file),
@@ -689,7 +779,218 @@ impl<'l> Resolver<'l> {
             events: wf.events,
             board: self.board.clone(),
             origins,
+            params: wparams,
+            handlers,
         })
+    }
+
+    // ------------------------------------------------------------ templated literals
+
+    /// Resolves an integer field against `params`. A template that reads
+    /// only params is rendered now; one that reads more is kept for run time
+    /// when `runtime` gives its scope, else it is an error.
+    fn num(
+        &mut self,
+        f: &NumField,
+        params: &Map<String, Value>,
+        at: &At,
+        durations: bool,
+        runtime: Option<&Scope>,
+    ) -> Option<NumField> {
+        let (val, derived) = match f {
+            NumField::Int(n) => return Some(NumField::Int(*n)),
+            NumField::Param { param } => match params.get(param) {
+                Some(v) => (v.clone(), true),
+                None => {
+                    self.err(at, format!("`{{param: {param}}}`: no param `{param}`"));
+                    return None;
+                }
+            },
+            NumField::Value(s) if template::is_template(s) => {
+                let vars = match template::template_vars(s) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        self.err(at, format!("invalid template: {}", e.message));
+                        return None;
+                    }
+                };
+                if vars.iter().any(|v| v.split('.').next() != Some("params")) {
+                    match runtime {
+                        Some(scope) => {
+                            for m in template::check_vars(&vars, scope) {
+                                self.err(at, m);
+                            }
+                            return Some(f.clone());
+                        }
+                        None => {
+                            self.err(at, "this template may only read `params`");
+                            return None;
+                        }
+                    }
+                }
+                let scope = Scope {
+                    names: BTreeSet::new(),
+                    params: params.keys().cloned().collect(),
+                };
+                let msgs = template::check_vars(&vars, &scope);
+                if !msgs.is_empty() {
+                    for m in msgs {
+                        self.err(at, m);
+                    }
+                    return None;
+                }
+                match template::render(s, &json!({ "params": params })) {
+                    Ok(r) => (Value::String(r), true),
+                    Err(e) => {
+                        self.err(at, format!("template error: {}", e.message));
+                        return None;
+                    }
+                }
+            }
+            NumField::Value(s) => (Value::String(s.clone()), false),
+        };
+        let n = match &val {
+            Value::Number(n) => n.as_u64(),
+            Value::String(s) if durations => parse_duration(s),
+            Value::String(s) => s.trim().parse::<u64>().ok(),
+            _ => None,
+        };
+        match n {
+            Some(n) => Some(NumField::Int(n)),
+            None if derived && self.placeholders => Some(NumField::Int(1)),
+            None => {
+                let want = if durations {
+                    "a non-negative integer or a duration (90s, 15m, 2h, 14d, 1w)"
+                } else {
+                    "a non-negative integer"
+                };
+                self.err(at, format!("must be {want}, got {val}"));
+                None
+            }
+        }
+    }
+
+    /// Resolves a text field: `{param}` substituted, templates checked.
+    fn text(
+        &mut self,
+        f: &TextField,
+        params: &Map<String, Value>,
+        file: &str,
+        path: &str,
+        scope: &Scope,
+    ) -> TextField {
+        let s = match f {
+            TextField::Param { param } => match params.get(param) {
+                Some(Value::String(s)) => s.clone(),
+                Some(v) => v.to_string(),
+                None => {
+                    self.err(
+                        &At {
+                            file,
+                            path: path.into(),
+                        },
+                        format!("`{{param: {param}}}`: no param `{param}`"),
+                    );
+                    return f.clone();
+                }
+            },
+            TextField::Value(s) => s.clone(),
+        };
+        if template::is_template(&s) {
+            self.check_template(file, path, &s, scope, None);
+        }
+        TextField::Value(s)
+    }
+
+    /// Checks a `set` map: identifier keys, expressions; substitutes `{param}`.
+    fn sets(
+        &mut self,
+        file: &str,
+        base: &str,
+        m: &Map<String, Value>,
+        params: &Map<String, Value>,
+        scope: &Scope,
+    ) -> Map<String, Value> {
+        let mut out = Map::new();
+        for (k, v) in m {
+            let path = format!("{base}.{k}");
+            if !is_ident(k) {
+                self.err(
+                    &At {
+                        file,
+                        path: path.clone(),
+                    },
+                    format!("`{k}` is not a variable name (letters, digits, `_`)"),
+                );
+            }
+            let v = match subst_params(v, params) {
+                Ok(v) => v,
+                Err(p) => {
+                    self.err(
+                        &At {
+                            file,
+                            path: path.clone(),
+                        },
+                        format!("`{{param: {p}}}`: no param `{p}`"),
+                    );
+                    continue;
+                }
+            };
+            // Strings are expressions; a string param becomes a string literal.
+            let v = match (v, is_param_ref(&m[k])) {
+                (Value::String(s), true) => {
+                    Value::String(serde_json::to_string(&s).unwrap_or_default())
+                }
+                (Value::String(e), false) => {
+                    self.check_expr(file, &path, &e, scope);
+                    Value::String(e)
+                }
+                (v, _) => v,
+            };
+            out.insert(k.clone(), v);
+        }
+        out
+    }
+
+    fn check_secrets(&mut self, file: &str, base: &str, decls: &[SecretDecl]) -> Vec<Secret> {
+        let mut out: Vec<Secret> = Vec::new();
+        for (i, d) in decls.iter().enumerate() {
+            let at = At {
+                file,
+                path: format!("{base}[{i}]"),
+            };
+            let s = d.normalized();
+            if s.name.trim().is_empty() {
+                self.err(&at, "a secret needs a name");
+            }
+            if let SecretDecl::Full(f) = d
+                && f.env.is_some()
+                && f.file.is_some()
+            {
+                self.err(&at, "a secret has `env` or `file`, not both");
+            }
+            if let Some(e) = &s.env
+                && !is_env_name(e)
+            {
+                self.err(
+                    &at,
+                    format!("`{e}` is not an environment variable name ([A-Za-z_][A-Za-z0-9_]*)"),
+                );
+            }
+            if let Some(f) = &s.file
+                && (f.is_empty() || f.starts_with('/') || f.split('/').any(|x| x == ".."))
+            {
+                self.err(
+                    &at,
+                    format!("secret file `{f}` must be a relative path without `..`"),
+                );
+            }
+            if out.iter().any(|o| o.name == s.name && o.scope == s.scope) {
+                self.err(&at, format!("duplicate secret `{}`", s.name));
+            }
+            out.push(s);
+        }
+        out
     }
 
     fn check_imports(&mut self, file: &str, imports: &Imports) {
@@ -1121,11 +1422,16 @@ impl<'l> Resolver<'l> {
             node.action.is_some(),
             node.end.is_some(),
             node.phase.is_some(),
+            node.decide.is_some(),
         ];
-        if kinds.iter().filter(|k| **k).count() != 1 {
+        let count = kinds.iter().filter(|k| **k).count();
+        let set_only = count == 0 && !node.set.is_empty();
+        if count != 1 && !set_only {
             self.err(
                 &at,
-                format!("node `{id}` must have exactly one of step, wait, action, end, phase"),
+                format!(
+                    "node `{id}` must have exactly one of step, wait, action, end, phase, decide (or only `set`)"
+                ),
             );
             return None;
         }
@@ -1133,7 +1439,10 @@ impl<'l> Resolver<'l> {
             names: ["last".to_string(), "exit".into()].into(),
             params: param_names.clone(),
         };
-        let kind = if let Some(s) = &node.step {
+        let set = self.sets(file, &format!("{base}.set"), &node.set, params, &scope);
+        let kind = if node.decide.is_some() || set_only {
+            RKind::Decide
+        } else if let Some(s) = &node.step {
             RKind::Step(Box::new(self.step_use(
                 ctx,
                 file,
@@ -1142,20 +1451,69 @@ impl<'l> Resolver<'l> {
                 params,
             )?))
         } else if let Some(w) = &node.wait {
-            self.check_wait(file, &format!("{base}.wait"), w, &scope);
-            RKind::Wait(Box::new(w.clone()))
+            let w = self.check_wait(file, &format!("{base}.wait"), w, &scope, params);
+            RKind::Wait(Box::new(w))
         } else if let Some(a) = &node.action {
             let aat = format!("{base}.action");
+            let mut a = a.clone();
+            match subst_params(&Value::Object(a.args.clone()), params) {
+                Ok(Value::Object(o)) => a.args = o,
+                Ok(_) => {}
+                Err(p) => self.err(
+                    &At {
+                        file,
+                        path: format!("{aat}.args"),
+                    },
+                    format!("`{{param: {p}}}`: no param `{p}`"),
+                ),
+            }
             self.check_value_templates(
                 file,
                 &format!("{aat}.args"),
                 &Value::Object(a.args.clone()),
                 &scope,
             );
+            let rscope = scope.clone().with_names(["result"]);
             if let Some(rel) = &a.relate {
-                self.check_expr(file, &format!("{aat}.relate.targets"), &rel.targets, &scope);
+                match (&rel.targets, &rel.from) {
+                    (Some(t), None) => {
+                        self.check_expr(file, &format!("{aat}.relate.targets"), t, &scope)
+                    }
+                    (None, Some(f)) => {
+                        self.check_expr(file, &format!("{aat}.relate.from"), f, &rscope)
+                    }
+                    _ => self.err(
+                        &At {
+                            file,
+                            path: format!("{aat}.relate"),
+                        },
+                        "relate has exactly one of `targets` and `from`",
+                    ),
+                }
             }
-            RKind::Action(Box::new(a.clone()))
+            if let Some(n) = &a.as_
+                && !is_ident(n)
+            {
+                self.err(
+                    &At {
+                        file,
+                        path: format!("{aat}.as"),
+                    },
+                    format!("`{n}` is not an output name (letters, digits, `_`)"),
+                );
+            }
+            match &a.subject {
+                Some(SubjectLink::Flag(false)) | None => {}
+                Some(SubjectLink::Flag(true)) => {}
+                Some(SubjectLink::Spec(s)) => {
+                    for (k, e) in [("number", &s.number), ("repo", &s.repo)] {
+                        if let Some(e) = e {
+                            self.check_expr(file, &format!("{aat}.subject.{k}"), e, &rscope);
+                        }
+                    }
+                }
+            }
+            RKind::Action(Box::new(a))
         } else if let Some(e) = &node.end {
             if !exits.contains(&e.status) {
                 self.err(
@@ -1200,6 +1558,22 @@ impl<'l> Resolver<'l> {
         };
         if matches!(kind, RKind::Wait(_)) {
             scope.names.insert("event".into());
+        }
+        let set_on_exit = self.sets(
+            file,
+            &format!("{base}.set_on_exit"),
+            &node.set_on_exit,
+            params,
+            &scope,
+        );
+        if matches!(kind, RKind::End(_)) && !node.set_on_exit.is_empty() {
+            self.err(
+                &At {
+                    file,
+                    path: format!("{base}.set_on_exit"),
+                },
+                "an end node has no `set_on_exit` (use `set`)",
+            );
         }
 
         let mut next = Vec::new();
@@ -1268,7 +1642,19 @@ impl<'l> Resolver<'l> {
                 format!("unknown node `{l}`"),
             );
         }
-        let max_visits = node.max_visits.unwrap_or(DEFAULT_MAX_VISITS);
+        let max_visits = match &node.max_visits {
+            None => DEFAULT_MAX_VISITS,
+            Some(n) => {
+                let at = At {
+                    file,
+                    path: format!("{base}.max_visits"),
+                };
+                match self.num(n, params, &at, false, None) {
+                    Some(NumField::Int(n)) => u32::try_from(n).unwrap_or(u32::MAX),
+                    _ => DEFAULT_MAX_VISITS,
+                }
+            }
+        };
         if max_visits == 0 {
             self.err(
                 &At {
@@ -1283,6 +1669,8 @@ impl<'l> Resolver<'l> {
             next,
             max_visits,
             on_limit: node.on_limit.clone(),
+            set,
+            set_on_exit,
         })
     }
 
@@ -1319,7 +1707,57 @@ impl<'l> Resolver<'l> {
         }
     }
 
-    fn check_wait(&mut self, file: &str, base: &str, w: &Wait, scope: &Scope) {
+    fn check_wait(
+        &mut self,
+        file: &str,
+        base: &str,
+        w: &Wait,
+        scope: &Scope,
+        params: &Map<String, Value>,
+    ) -> Wait {
+        let mut out = w.clone();
+        out.reason = w
+            .reason
+            .as_ref()
+            .map(|t| self.text(t, params, file, &format!("{base}.reason"), scope));
+        out.text = w
+            .text
+            .as_ref()
+            .map(|t| self.text(t, params, file, &format!("{base}.text"), scope));
+        out.column = w
+            .column
+            .as_ref()
+            .map(|t| self.text(t, params, file, &format!("{base}.column"), scope));
+        for (i, a) in w.actions.iter().enumerate() {
+            out.actions[i].label = self.text(
+                &a.label,
+                params,
+                file,
+                &format!("{base}.actions[{i}].label"),
+                scope,
+            );
+            out.actions[i].command = self.text(
+                &a.command,
+                params,
+                file,
+                &format!("{base}.actions[{i}].command"),
+                scope,
+            );
+        }
+        if let Some(t) = &w.timer {
+            let at = At {
+                file,
+                path: format!("{base}.timer.seconds"),
+            };
+            if let Some(n) = self.num(&t.seconds, params, &at, true, Some(scope)) {
+                out.timer = Some(Timer { seconds: n });
+            }
+        }
+        self.check_wait_rest(file, base, &out, scope);
+        out
+    }
+
+    fn check_wait_rest(&mut self, file: &str, base: &str, w: &Wait, scope: &Scope) {
         if w.events.is_empty() {
             self.err(
                 &At {
@@ -1331,12 +1769,17 @@ impl<'l> Resolver<'l> {
         }
         self.check_matchers(file, &format!("{base}.events"), &w.events, scope);
         self.check_matchers(file, &format!("{base}.steer"), &w.steer, scope);
-        if let Some(t) = &w.text {
-            self.check_template(file, &format!("{base}.text"), t, scope, None);
+        if let Some(t) = &w.text
+            && !template::is_template(t.as_str())
+        {
+            // Plain text is still a template (e.g. `{{` escapes); check it.
+            self.check_template(file, &format!("{base}.text"), t.as_str(), scope, None);
         }
-        if let Some(c) = &w.column
+        if let Some(c) = w.column.as_ref().map(|c| c.as_str().to_string())
+            && !template::is_template(&c)
+            && !(self.placeholders && c.is_empty())
             && !self.board.columns.is_empty()
-            && !self.board.columns.iter().any(|x| &x.id == c)
+            && !self.board.columns.iter().any(|x| x.id == c)
         {
             let ids: Vec<_> = self.board.columns.iter().map(|c| c.id.clone()).collect();
             self.err(
@@ -1359,7 +1802,11 @@ impl<'l> Resolver<'l> {
             }
         }
         for (i, a) in w.actions.iter().enumerate() {
-            if a.command.starts_with('/') || a.command.contains(char::is_whitespace) {
+            let c = a.command.as_str();
+            if !template::is_template(c)
+                && !(self.placeholders && c.is_empty())
+                && (c.is_empty() || c.starts_with('/') || c.contains(char::is_whitespace))
+            {
                 self.err(
                     &At {
                         file,
@@ -1597,6 +2044,12 @@ impl<'l> Resolver<'l> {
                 let rk = self.load(&rrepo, &rref, &rpath, true, Some(&rat))?;
                 let rf: RuntimeFile = self.typed(&rk)?;
                 self.check_version(&rk, Some(rf.version));
+                self.check_secrets(&rk, "secrets", &rf.secrets);
+                let model = a
+                    .model
+                    .as_ref()
+                    .map(|m| self.text(m, &params, k, &p("agent.model"), &scope))
+                    .map(|m| m.as_str().to_string());
                 if rf.launch.command.is_empty() {
                     self.err(
                         &At {
@@ -1616,7 +2069,7 @@ impl<'l> Resolver<'l> {
                 };
                 Exec::Agent {
                     runtime: Box::new(runtime),
-                    model: a.model.clone(),
+                    model,
                     prompt,
                 }
             }
@@ -1662,7 +2115,22 @@ impl<'l> Resolver<'l> {
                 &scope,
                 None,
             );
+            for (f, v) in [("branch", &w.branch), ("base", &w.base)] {
+                if let Some(v) = v {
+                    self.check_template(k, &p(&format!("workspaces[{i}].{f}")), v, &scope, None);
+                }
+            }
+            if w.branch.is_some() && w.mode == Access::Read {
+                self.err(
+                    &At {
+                        file: k,
+                        path: p(&format!("workspaces[{i}].branch")),
+                    },
+                    "`branch` is only for write workspaces",
+                );
+            }
         }
+        let secrets = self.check_secrets(k, &p("secrets"), &sf.secrets);
         if let Some(c) = &sf.concurrency {
             self.check_template(k, &p("concurrency.group"), &c.group, &scope, None);
             if c.max == 0 {
@@ -1690,7 +2158,7 @@ impl<'l> Resolver<'l> {
             result: sf.result.clone(),
             workspaces: sf.workspaces.clone(),
             github: sf.github.clone(),
-            secrets: sf.secrets.clone(),
+            secrets,
             priority: sf.priority,
             concurrency: sf.concurrency.clone(),
             retry: sf.retry.clone(),
@@ -1721,9 +2189,49 @@ fn targets(n: &Node) -> Vec<String> {
     t
 }
 
+fn is_ident(s: &str) -> bool {
+    let mut c = s.chars();
+    c.next()
+        .is_some_and(|f| f.is_ascii_alphabetic() || f == '_')
+        && c.all(|x| x.is_ascii_alphanumeric() || x == '_')
+}
+
+fn is_env_name(s: &str) -> bool {
+    is_ident(s)
+}
+
+/// `{param: <name>}` (an object with exactly that key).
+fn is_param_ref(v: &Value) -> bool {
+    v.as_object()
+        .is_some_and(|o| o.len() == 1 && o.get("param").is_some_and(Value::is_string))
+}
+
+/// Replaces every `{param: x}` in a value with the param's value; `Err`
+/// names an unknown param.
+fn subst_params(v: &Value, params: &Map<String, Value>) -> Result<Value, String> {
+    if is_param_ref(v) {
+        let p = v["param"].as_str().unwrap_or_default();
+        return params.get(p).cloned().ok_or_else(|| p.to_string());
+    }
+    Ok(match v {
+        Value::Array(a) => Value::Array(
+            a.iter()
+                .map(|x| subst_params(x, params))
+                .collect::<Result<_, _>>()?,
+        ),
+        Value::Object(o) => Value::Object(
+            o.iter()
+                .map(|(k, x)| Ok((k.clone(), subst_params(x, params)?)))
+                .collect::<Result<_, String>>()?,
+        ),
+        other => other.clone(),
+    })
+}
+
 fn placeholder(p: &Param) -> Value {
     match p.ty {
-        ParamType::Integer => json!(0),
+        // 1, not 0: integer params often feed caps that must be at least 1.
+        ParamType::Integer => json!(1),
         ParamType::Boolean => json!(false),
         ParamType::Enum => json!(p.values.first().cloned().unwrap_or_default()),
         ParamType::List => json!([]),
@@ -1771,7 +2279,18 @@ pub struct RBinding {
     pub layer: String,
     pub on: Trigger,
     pub cond: Option<String>,
+    /// Workflow params; string leaves are templates over the routing context.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub with: Map<String, Value>,
     pub workflow: Entry,
+}
+
+/// The binding chosen for an event, with its `with` rendered.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Selected<'a> {
+    pub binding: &'a RBinding,
+    /// Params for [`resolve_with`].
+    pub params: Map<String, Value>,
 }
 
 /// Pure merge of bindings layers. A binding with the id of a lower-layer
@@ -1813,6 +2332,7 @@ pub fn merge_bindings(layers: &[Layer]) -> Result<Vec<RBinding>, String> {
                 layer: l.name.clone(),
                 on,
                 cond: b.cond.clone(),
+                with: b.with.clone(),
                 workflow: Entry {
                     repo,
                     rref,
@@ -1824,12 +2344,27 @@ pub fn merge_bindings(layers: &[Layer]) -> Result<Vec<RBinding>, String> {
     Ok(out)
 }
 
-/// The binding that starts a task for `event`, if any.
+/// The binding that starts a task for `event`, if any (routing context
+/// without relations; see [`select_binding_in`]).
 pub fn select_binding<'a>(
     bindings: &'a [RBinding],
     event: &crate::events::Event,
 ) -> Result<Option<&'a RBinding>, String> {
-    let ctx = json!({ "event": event });
+    let ctx = crate::document::RoutingContext {
+        event: event.clone(),
+        relations: Vec::new(),
+    };
+    Ok(select_binding_in(bindings, &ctx)?.map(|s| s.binding))
+}
+
+/// The binding that starts a task for the routing context, with its
+/// `with` rendered over `{event, relations}`.
+pub fn select_binding_in<'a>(
+    bindings: &'a [RBinding],
+    routing: &crate::document::RoutingContext,
+) -> Result<Option<Selected<'a>>, String> {
+    let event = &routing.event;
+    let ctx = serde_json::to_value(routing).map_err(|e| e.to_string())?;
     for b in bindings {
         let on = match (&b.on, &event.payload) {
             (Trigger::Event(t), _) => t == event.type_name(),
@@ -1847,7 +2382,13 @@ pub fn select_binding<'a>(
         {
             continue;
         }
-        return Ok(Some(b));
+        let params = match template::render_value(&Value::Object(b.with.clone()), &ctx)
+            .map_err(|e| format!("binding {:?}: with: {}", b.id, e.message))?
+        {
+            Value::Object(o) => o,
+            _ => Map::new(),
+        };
+        return Ok(Some(Selected { binding: b, params }));
     }
     Ok(None)
 }

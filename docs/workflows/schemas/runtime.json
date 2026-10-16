@@ -33,9 +33,9 @@
     "secrets": {
       "type": "array",
       "items": {
-        "type": "string"
+        "$ref": "#/$defs/SecretDecl"
       },
-      "description": "Secrets the runtime needs (e.g. an API key), by name."
+      "description": "Secrets the runtime needs (e.g. an API key), as in a step."
     }
   },
   "required": [
@@ -117,6 +117,65 @@
           "default": false
         }
       }
+    },
+    "SecretDecl": {
+      "anyOf": [
+        {
+          "type": "string",
+          "description": "Project scope, injected as the env var `NAME`."
+        },
+        {
+          "$ref": "#/$defs/Secret"
+        }
+      ],
+      "description": "A named secret as written: `NAME` or `{name, scope, env | file}`."
+    },
+    "Secret": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/SecretScope",
+          "default": "project"
+        },
+        "env": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Environment variable to set."
+        },
+        "file": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "File (relative to the workspace root) to write the value to."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "description": "A secret: where it is stored and how the process receives it."
+    },
+    "SecretScope": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "project",
+            "instance"
+          ]
+        },
+        {
+          "type": "string",
+          "const": "user",
+          "description": "The user the step acts for."
+        }
+      ]
     }
   }
 }

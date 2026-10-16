@@ -21,6 +21,10 @@
         "string",
         "null"
       ]
+    },
+    "mentioned": {
+      "type": "boolean",
+      "description": "The body mentions the instance's bot handle (`@<instance.bot.handle>`\nanywhere). Filled by the engine."
     }
   },
   "required": [

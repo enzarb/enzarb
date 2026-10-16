@@ -14,7 +14,103 @@ fn env() -> &'static Environment<'static> {
         // linter catches misspelt roots statically.
         e.set_undefined_behavior(UndefinedBehavior::Chainable);
         e.set_keep_trailing_newline(true);
+        e.add_filter("shell_quote", shell_quote);
+        e.add_filter("contains", contains);
+        e.add_test("contains", contains);
+        e.add_filter("regex_match", regex_match);
+        e.add_test("regex_match", regex_match);
+        e.add_filter("duration", duration);
         e
+    })
+}
+
+/// `x | shell_quote`: one POSIX shell word (single-quoted).
+fn shell_quote(v: JValue) -> String {
+    let s = match v.as_str() {
+        Some(s) => s.to_string(),
+        None => v.to_string(),
+    };
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// `haystack | contains(needle)` / `haystack is contains(needle)`: substring
+/// for strings, membership for lists, key for maps.
+fn contains(hay: JValue, needle: JValue) -> Result<bool, minijinja::Error> {
+    if let (Some(h), Some(n)) = (hay.as_str(), needle.as_str()) {
+        return Ok(h.contains(n));
+    }
+    if hay.is_undefined() || hay.is_none() {
+        return Ok(false);
+    }
+    // Lists and maps: `in` semantics.
+    let mut it = match hay.try_iter() {
+        Ok(it) => it,
+        Err(_) => return Ok(false),
+    };
+    Ok(it.any(|x| x == needle))
+}
+
+/// `s | regex_match(pattern)` / `s is regex_match(pattern)`: the pattern
+/// (Rust regex syntax) matches somewhere in `s`.
+fn regex_match(s: JValue, pattern: &str) -> Result<bool, minijinja::Error> {
+    let re = regex::Regex::new(pattern).map_err(|e| {
+        minijinja::Error::new(
+            minijinja::ErrorKind::InvalidOperation,
+            format!("bad regex: {e}"),
+        )
+    })?;
+    Ok(match s.as_str() {
+        Some(s) => re.is_match(s),
+        None if s.is_undefined() || s.is_none() => false,
+        None => re.is_match(&s.to_string()),
+    })
+}
+
+/// `"14d" | duration` → seconds (integers pass through).
+fn duration(v: JValue) -> Result<u64, minijinja::Error> {
+    let s = match v.as_str() {
+        Some(s) => s.to_string(),
+        None => v.to_string(),
+    };
+    crate::format::parse_duration(&s).ok_or_else(|| {
+        minijinja::Error::new(
+            minijinja::ErrorKind::InvalidOperation,
+            format!("`{s}` is not a duration (e.g. 90s, 15m, 2h, 14d, 1w)"),
+        )
+    })
+}
+
+/// Whether a string is a template (contains `{{` or `{%`).
+pub fn is_template(s: &str) -> bool {
+    s.contains("{{") || s.contains("{%")
+}
+
+/// The expression of a string that is exactly one `{{ expr }}`.
+pub fn sole_expr(s: &str) -> Option<&str> {
+    let t = s.trim();
+    let inner = t.strip_prefix("{{")?.strip_suffix("}}")?;
+    (!inner.contains("{{") && !inner.contains("}}") && !inner.contains("{%")).then(|| inner.trim())
+}
+
+/// Renders every string leaf of a YAML value; a leaf that is exactly one
+/// `{{ expr }}` evaluates to the expression's JSON value.
+pub fn render_value(v: &Value, ctx: &Value) -> Result<Value, TemplateError> {
+    Ok(match v {
+        Value::String(s) => match sole_expr(s) {
+            Some(e) => eval(e, ctx)?,
+            None => Value::String(render(s, ctx)?),
+        },
+        Value::Array(a) => Value::Array(
+            a.iter()
+                .map(|x| render_value(x, ctx))
+                .collect::<Result<_, _>>()?,
+        ),
+        Value::Object(o) => Value::Object(
+            o.iter()
+                .map(|(k, x)| Ok((k.clone(), render_value(x, ctx)?)))
+                .collect::<Result<_, TemplateError>>()?,
+        ),
+        other => other.clone(),
     })
 }
 
@@ -96,7 +192,7 @@ fn doc_fields() -> &'static BTreeMap<String, BTreeSet<String>> {
     F.get_or_init(|| {
         let schema = serde_json::to_value(schemars::schema_for!(TaskDocument)).unwrap_or_default();
         let mut out = BTreeMap::new();
-        for root in ["task", "subjects", "facts"] {
+        for root in ["task", "subjects", "facts", "instance"] {
             let r = schema["properties"][root]["$ref"]
                 .as_str()
                 .unwrap_or_default();
@@ -225,6 +321,28 @@ mod tests {
             &scope(),
         );
         assert_eq!(got.len(), 1);
+    }
+
+    #[test]
+    fn filters_and_tests() {
+        let ctx = json!({"s": "it's", "l": ["a", "b"], "m": {"k": 1}, "t": "Fix: CRASH"});
+        let r = |t: &str| render(t, &ctx).unwrap();
+        assert_eq!(r("{{ s | shell_quote }}"), r"'it'\''s'");
+        assert_eq!(r("{{ l | tojson }}"), r#"["a","b"]"#);
+        assert_eq!(r("{{ t | lower }} {{ s | upper }}"), "fix: crash IT'S");
+        assert!(truthy("l is contains('b') and t | contains('CRASH')", &ctx).unwrap());
+        assert!(truthy("m | contains('k')", &ctx).unwrap());
+        assert!(!truthy("missing | contains('x')", &ctx).unwrap());
+        assert!(truthy("t is regex_match('^Fix: [A-Z]+$')", &ctx).unwrap());
+        assert!(!truthy("t | regex_match('^fix')", &ctx).unwrap());
+        assert!(truthy("t | regex_match('(')", &ctx).is_err());
+        assert_eq!(eval("'14d' | duration", &ctx).unwrap(), json!(1_209_600));
+        assert_eq!(eval("'1h30m' | duration", &ctx).unwrap(), json!(5400));
+        assert_eq!(eval("90 | duration", &ctx).unwrap(), json!(90));
+        assert!(eval("'soon' | duration", &ctx).is_err());
+        assert_eq!(sole_expr(" {{ a.b }} "), Some("a.b"));
+        assert_eq!(sole_expr("x {{ a }}"), None);
+        assert_eq!(sole_expr("{{ a }}{{ b }}"), None);
     }
 
     #[test]
