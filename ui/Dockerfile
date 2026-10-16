@@ -7,6 +7,8 @@ COPY proto/package.json proto/package-lock.json /repo/proto/
 COPY proto/ts /repo/proto/ts
 COPY ui/package.json ui/package-lock.json ui/.npmrc ./
 RUN npm ci
+# Built-in prompt templates, read by the UI at build time (src/lib/workflow/builtin-prompts.ts).
+COPY workflows/crates/engine/prompts /repo/workflows/crates/engine/prompts
 COPY ui/ .
 RUN npm run build
 RUN npm prune --omit=dev

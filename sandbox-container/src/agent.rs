@@ -6,9 +6,13 @@
 //! 2. `running`: ensure the clone, create worktree `run-<run_id>` on `branch`,
 //!    run the agent in it over ACP (`acp`), optionally commit leftovers and push `branch`;
 //! 3. terminal (`succeeded | failed | cancelled`): `state.json` is final and
-//!    the [`RunFinished`] callback is delivered with retries
-//!    (`callback.json` exists until a 2xx or until the callback is abandoned:
-//!    a permanent 4xx, or 24 h of failures; `state.json` then says `abandoned`).
+//!    holds the [`RunFinished`] result. It is pushed as `run_finished` to every
+//!    live session that started the run or sent `run_subscribe` for it, and
+//!    returned in `run_state.result` (`feature::RUN_RESULTS`). Only for a
+//!    legacy request that carries a `callback_url` is it also POSTed with
+//!    retries (`callback.json` exists until a 2xx or until the callback is
+//!    abandoned: a permanent 4xx, or 24 h of failures; `state.json` then says
+//!    `abandoned`). Requests without a callback never put a token on disk.
 //!
 //! On-disk layout:
 //! * `<ws>/repos/<name>-<hash>/`: clones (one per repo URL);
@@ -20,7 +24,8 @@
 //!   finish a run after a restart);
 //! * `.../transcript.jsonl`: one JSON object per line (state changes, git and
 //!   agent stderr lines, ACP updates, permission decisions and the agent result);
-//! * `.../callback.json` (0600): the pending callback, removed once delivered or abandoned.
+//! * `.../callback.json` (0600, legacy requests only): the pending callback,
+//!   removed once delivered or abandoned.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -126,6 +131,10 @@ struct RunRecord {
     /// Set when delivery of the callback was given up on (never retried again).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     callback: Option<CallbackState>,
+    /// The final result (terminal runs), as delivered in `run_finished` and
+    /// `run_state.result`. Absent in records written by older versions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    result: Option<RunFinished>,
 }
 
 /// Terminal outcome of callback delivery, when it is not a success.
@@ -159,8 +168,69 @@ impl RunRecord {
             exit_code: self.exit_code,
             summary,
             usage: self.usage.clone(),
+            result: self
+                .state
+                .is_terminal()
+                .then(|| self.result.clone().map(fit_result))
+                .flatten(),
         }
     }
+}
+
+/// Largest serialized `RunFinished` sent over the mux (a frame holds at most
+/// `MAX_PAYLOAD_LEN`; leave room for the envelope).
+const MAX_RESULT_BYTES: usize = enzarb_proto::MAX_PAYLOAD_LEN - 64 * 1024;
+/// Graph output strings are cut to this when a result is too large.
+const MAX_RESULT_OUTPUT_STR: usize = 16 * 1024;
+
+fn result_len(r: &RunFinished) -> usize {
+    serde_json::to_vec(r).map_or(usize::MAX, |v| v.len())
+}
+
+/// The last `max` bytes of `s` (on a char boundary): the agent's result
+/// block is at the end of its final message.
+fn keep_tail(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut cut = s.len() - max;
+    while !s.is_char_boundary(cut) {
+        cut += 1;
+    }
+    s[cut..].to_string()
+}
+
+fn cut_strings(v: Value, max: usize) -> Value {
+    match v {
+        Value::String(s) if s.len() > max => Value::String(keep_tail(&s, max)),
+        Value::Array(a) => Value::Array(a.into_iter().map(|x| cut_strings(x, max)).collect()),
+        Value::Object(m) => Value::Object(
+            m.into_iter()
+                .map(|(k, x)| (k, cut_strings(x, max)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+/// Shrink a result so it fits in one CTRL frame: first cut long graph output
+/// strings, then keep only the tail of `summary`.
+fn fit_result(mut r: RunFinished) -> RunFinished {
+    if result_len(&r) <= MAX_RESULT_BYTES {
+        return r;
+    }
+    if let Some(g) = r.graph.as_mut() {
+        for v in g.outputs.values_mut() {
+            *v = cut_strings(std::mem::take(v), MAX_RESULT_OUTPUT_STR);
+        }
+    }
+    let len = result_len(&r);
+    if len > MAX_RESULT_BYTES {
+        let over = len - MAX_RESULT_BYTES;
+        let keep = r.summary.len().saturating_sub(over + 1024);
+        r.summary = keep_tail(&r.summary, keep);
+    }
+    r
 }
 
 /// `callback.json`.
@@ -282,6 +352,9 @@ struct Inner {
     runs_dir: PathBuf,
     runs: Mutex<HashMap<String, Arc<Run>>>,
     sessions: Mutex<HashMap<u64, SessionCtx>>,
+    /// Sessions that get `run_finished` for a run: the one that started it
+    /// (or re-sent `run_start`) and those that sent `run_subscribe`.
+    subscribers: Mutex<HashMap<String, HashSet<u64>>>,
     slots: Semaphore,
     repo_locks: RepoLocks,
     http: reqwest::Client,
@@ -327,6 +400,7 @@ impl AgentRunManager {
                 runs_dir,
                 runs: Mutex::default(),
                 sessions: Mutex::default(),
+                subscribers: Mutex::default(),
                 repo_locks: RepoLocks::default(),
                 http,
                 activity: ActivityGate::default(),
@@ -416,7 +490,10 @@ impl RunManager for AgentRunManager {
             drop(runs);
             let state = run.state();
             match ctx.session.accept_run(&id, state, true, req.log_channel) {
-                Ok(log) => inner.attach_log(&run, log),
+                Ok(log) => {
+                    inner.attach_log(&run, log);
+                    inner.subscribe(ctx, &run);
+                }
                 Err(e) => {
                     let _ = ctx
                         .session
@@ -442,6 +519,7 @@ impl RunManager for AgentRunManager {
             started_ms: None,
             finished_ms: None,
             callback: None,
+            result: None,
         };
         let mut stored = req.clone();
         stored.clone_token = String::new();
@@ -498,6 +576,7 @@ impl RunManager for AgentRunManager {
         runs.insert(id, run.clone());
         drop(runs);
         inner.attach_log(&run, log);
+        inner.subscribe(ctx, &run);
         let inner = inner.clone();
         tokio::spawn(async move { inner.work(run, req).await });
     }
@@ -539,8 +618,27 @@ impl RunManager for AgentRunManager {
         }
     }
 
+    async fn subscribe(&self, ctx: &SessionCtx, run_ids: Vec<String>) {
+        self.inner.remember(ctx);
+        for id in run_ids.iter().take(1024) {
+            let run = self.inner.runs.lock().unwrap().get(id).cloned();
+            if let Some(run) = run {
+                self.inner.subscribe(ctx, &run);
+            }
+        }
+    }
+
+    fn delivers_results(&self) -> bool {
+        true
+    }
+
     async fn session_closed(&self, session_id: u64) {
         self.inner.sessions.lock().unwrap().remove(&session_id);
+        let mut subs = self.inner.subscribers.lock().unwrap();
+        subs.retain(|_, s| {
+            s.remove(&session_id);
+            !s.is_empty()
+        });
     }
 }
 
@@ -728,6 +826,52 @@ impl Inner {
         self.sessions.lock().unwrap().insert(ctx.id, ctx.clone());
     }
 
+    /// Deliver `run_finished` for `run` to `ctx`: now if it is over, else
+    /// when it ends.
+    fn subscribe(&self, ctx: &SessionCtx, run: &Run) {
+        // Register before reading the state: `finalize` stores the result,
+        // then notifies subscribers, so a concurrent end is not missed (it may
+        // be delivered twice, which receivers tolerate).
+        self.subscribers
+            .lock()
+            .unwrap()
+            .entry(run.id.clone())
+            .or_default()
+            .insert(ctx.id);
+        let result = {
+            let rec = run.rec.lock().unwrap();
+            rec.state
+                .is_terminal()
+                .then(|| rec.result.clone())
+                .flatten()
+        };
+        if let Some(r) = result {
+            let _ = ctx.session.send_run_finished(&fit_result(r));
+        }
+    }
+
+    /// Push `run_finished` to the run's live subscribers.
+    fn notify_finished(&self, run_id: &str, result: &RunFinished) {
+        let ids: Vec<u64> = self
+            .subscribers
+            .lock()
+            .unwrap()
+            .get(run_id)
+            .map(|s| s.iter().copied().collect())
+            .unwrap_or_default();
+        if ids.is_empty() {
+            return;
+        }
+        let fitted = fit_result(result.clone());
+        let sessions: Vec<SessionCtx> = {
+            let all = self.sessions.lock().unwrap();
+            ids.iter().filter_map(|i| all.get(i).cloned()).collect()
+        };
+        for s in sessions {
+            let _ = s.session.send_run_finished(&fitted);
+        }
+    }
+
     fn publish(&self, run: &Run) {
         let info = run.info();
         let sessions: Vec<SessionCtx> = self.sessions.lock().unwrap().values().cloned().collect();
@@ -902,24 +1046,26 @@ impl Inner {
             "finished",
             json!({"outcome": f.outcome, "exit_code": f.exit_code, "head_sha": f.head_sha, "pushed": f.pushed, "usage": usage}),
         );
+        // Legacy requests (from executors without `run_results`) carry a
+        // callback; new ones do not, and then no token is ever written.
         let pending = std::fs::read_to_string(request)
             .ok()
             .and_then(|t| serde_json::from_str::<RunStart>(&t).ok())
+            .filter(|r| !r.callback_url.is_empty())
             .map(|r| PendingCallback {
                 url: r.callback_url,
                 token: r.callback_token,
-                body,
+                body: body.clone(),
                 first_attempt_ms: now_ms(),
             });
-        match pending {
-            Some(p) => {
-                let data = serde_json::to_vec_pretty(&p).unwrap_or_default();
-                if let Err(e) = write_atomic(&run.dir.join("callback.json"), &data, 0o600) {
-                    tracing::error!(run = %run.id, error = %e, "cannot persist callback");
-                }
+        let legacy = pending.is_some();
+        if let Some(p) = pending {
+            let data = serde_json::to_vec_pretty(&p).unwrap_or_default();
+            if let Err(e) = write_atomic(&run.dir.join("callback.json"), &data, 0o600) {
+                tracing::error!(run = %run.id, error = %e, "cannot persist callback");
             }
-            None => tracing::error!(run = %run.id, "request.json missing; no callback"),
         }
+        let result = body.clone();
         self.set_state(run, |r| {
             r.state = match f.outcome {
                 RunOutcome::Succeeded => RunPhase::Succeeded,
@@ -932,9 +1078,13 @@ impl Inner {
             r.pushed = f.pushed;
             r.usage = usage;
             r.finished_ms = Some(now_ms());
+            r.result = Some(result);
         });
         run.transcript.close();
-        self.spawn_callback(run.dir.clone(), run.id.clone());
+        self.notify_finished(&run.id, &body);
+        if legacy {
+            self.spawn_callback(run.dir.clone(), run.id.clone());
+        }
     }
 
     fn spawn_callback(self: &Arc<Self>, dir: PathBuf, run_id: String) {
@@ -1547,7 +1697,10 @@ impl Inner {
 
     async fn execute(&self, run: &Run, req: &RunStart, ctl: &mut Ctl) -> Result<Finish, Abort> {
         let ws = &self.cfg.workspace;
-        let mut secrets = vec![req.clone_token.clone(), req.callback_token.clone()];
+        let mut secrets = vec![req.clone_token.clone()];
+        if !req.callback_token.is_empty() {
+            secrets.push(req.callback_token.clone());
+        }
         let deps_token = req.deps_token.clone().filter(|t| !t.is_empty());
         if let Some(t) = &deps_token {
             secrets.push(t.clone());
@@ -1708,9 +1861,8 @@ impl Inner {
                 transcript.append(kind, redact_value(fields, &secrets));
             })
         };
-        let policy = self.cfg.policy.clone();
         let sink = line_sink(run, "acp", &secrets);
-        let out = match acp::run(&self.reaper, spec, policy, ctl, emit, Some(sink)).await {
+        let out = match acp::run(&self.reaper, spec, ctl, emit, Some(sink)).await {
             Ok(o) => o,
             Err(AcpError::Stopped(s)) => return Err(s.into()),
             Err(AcpError::Failed(m)) => return Err(Abort::Fail(redact(&m, &secrets))),
@@ -2089,8 +2241,7 @@ impl Steps for SegmentSteps<'_> {
             })
         };
         let sink = line_sink(self.run, "acp", &self.secrets);
-        let policy = self.mgr.cfg.policy.clone();
-        let res = acp::run(&self.mgr.reaper, spec, policy, self.ctl, emit, Some(sink)).await;
+        let res = acp::run(&self.mgr.reaper, spec, self.ctl, emit, Some(sink)).await;
         // Every turn's spend counts, whatever the outcome.
         let turn = usage.lock().unwrap().take();
         {
@@ -2280,6 +2431,39 @@ mod callback_tests {
         rec.callback = Some(CallbackState::Abandoned);
         let text = serde_json::to_string(&rec).unwrap();
         assert!(text.contains(r#""callback":"abandoned""#), "{text}");
+        // Old records have no result; run_state then carries none.
+        assert_eq!(rec.result, None);
+        assert_eq!(rec.info().result, None);
+    }
+
+    #[test]
+    fn oversized_results_fit_one_frame_and_keep_the_summary_tail() {
+        let big = "x".repeat(2 << 20) + "\n```json\n{\"decision\":\"done\"}\n```";
+        let r = RunFinished {
+            run_id: "r".into(),
+            outcome: RunOutcome::Succeeded,
+            exit_code: Some(0),
+            summary: big,
+            branch: "b".into(),
+            head_sha: "abc".into(),
+            pushed: true,
+            usage: None,
+            graph: Some(GraphResult {
+                stopped_at: "end".into(),
+                outputs: [("cmd".to_string(), json!({"stdout": "y".repeat(1 << 20)}))].into(),
+                visits: Default::default(),
+            }),
+        };
+        let f = fit_result(r.clone());
+        assert!(result_len(&f) <= MAX_RESULT_BYTES);
+        assert!(f.summary.ends_with("{\"decision\":\"done\"}\n```"));
+        assert_eq!((f.pushed, f.head_sha.as_str()), (true, "abc"));
+        let small = RunFinished {
+            summary: "ok".into(),
+            graph: None,
+            ..r
+        };
+        assert_eq!(fit_result(small.clone()), small);
     }
 }
 
@@ -2471,6 +2655,7 @@ mod retry_tests {
                 runs_dir: dir.join("runs"),
                 runs: Mutex::default(),
                 sessions: Mutex::default(),
+                subscribers: Mutex::default(),
                 repo_locks: RepoLocks::default(),
                 http: reqwest::Client::new(),
                 activity: ActivityGate::default(),
@@ -2491,6 +2676,7 @@ mod retry_tests {
                 started_ms: None,
                 finished_ms: None,
                 callback: None,
+                result: None,
             };
             let run = Run {
                 id: "r".into(),

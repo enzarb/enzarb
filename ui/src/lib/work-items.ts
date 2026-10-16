@@ -577,3 +577,58 @@ export function boardItems(
 	const ids = new Set(waiting.map((w) => w.id));
 	return [...waiting, ...list.filter((w) => !w.needs && !ids.has(w.id))].sort(byRecency);
 }
+
+/** The card a notification click asks the board to highlight (`?highlight=<id>&was=<category>`). */
+export interface Highlight {
+	id: number;
+	/** The category the notification was sent for; null when absent or unknown. */
+	was: NeedsYouCategory | null;
+}
+
+export function parseHighlight(params: { get(name: string): string | null }): Highlight | null {
+	const id = parseWorkId(params.get('highlight') ?? undefined);
+	if (id === null) return null;
+	const was = params.get('was') ?? '';
+	return {
+		id,
+		was: (NEEDS_YOU_CATEGORIES as readonly string[]).includes(was)
+			? (was as NeedsYouCategory)
+			: null
+	};
+}
+
+const WAS_TEXT: Record<NeedsYouCategory, string> = {
+	approval: 'Was waiting for your plan approval',
+	merge: 'Was ready to merge',
+	review: 'Was waiting for your review',
+	decision: 'Was waiting for your decision',
+	blocked: 'Was blocked',
+	failed: 'Had failed',
+	question: 'Was waiting for your answers'
+};
+
+const NOW_TEXT: Record<NeedsYouCategory, string> = {
+	approval: 'plan awaiting your approval',
+	merge: 'ready to merge',
+	review: 'waiting for your review',
+	decision: 'waiting for your decision',
+	blocked: 'blocked',
+	failed: 'failed',
+	question: 'questions awaiting your answer'
+};
+
+/**
+ * One line for a highlighted card whose situation changed since the notification; null when it
+ * still needs the user for the same category (or `was` is unknown).
+ */
+export function highlightNote(
+	item: Pick<WorkItemSummary, 'state' | 'needs' | 'wait'>,
+	was: NeedsYouCategory | null
+): string | null {
+	if (!was || item.needs?.category === was) return null;
+	const now = item.needs
+		? (item.needs.text ?? NOW_TEXT[item.needs.category])
+		: item.wait?.text ||
+			(isTerminal(item.state) ? item.state.toLowerCase() : 'in progress, nothing needed from you');
+	return `${WAS_TEXT[was]} — now: ${now}`;
+}

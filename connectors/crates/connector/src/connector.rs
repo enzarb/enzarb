@@ -117,6 +117,13 @@ pub trait Connector: Send + Sync {
         Ok(None)
     }
 
+    /// How many commits `head` has that `base` does not (both a branch name or commit sha), or
+    /// `None` when either is unknown to the provider. The default implementation returns
+    /// `Ok(None)`, so connectors roll out independently of the workflows that call it.
+    async fn ahead_by(&self, _repo: &RepoKey, _base: &str, _head: &str) -> Result<Option<u64>> {
+        Ok(None)
+    }
+
     /// The text of the file at `path` in `repo` at `git_ref` (a branch, tag or commit sha), or
     /// `None` when there is no such file (or it is a directory). Read with the connector's own
     /// credential; nothing enters a sandbox. The default implementation reports the capability

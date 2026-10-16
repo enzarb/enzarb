@@ -4,6 +4,7 @@ import {
 	BODY_MAX,
 	CategoriesSchema,
 	SubscriptionSchema,
+	clearPayload,
 	pushPayload,
 	summaryPayload,
 	testPayload,
@@ -19,10 +20,14 @@ describe('pushPayload', () => {
 		}
 	});
 
-	it('links to the task with a relative url and replaces repeats through the tag', () => {
+	it('links to the highlighted card on the board and replaces repeats through the tag', () => {
 		const p = pushPayload({ id: 12, title: 'Add retries' }, 'merge');
-		expect(p.url).toBe('/task/12');
-		expect(p.tag).toBe('work-12');
+		expect(p.url).toBe('/work?highlight=12&was=merge');
+		expect(p.tag).toBe('item-12');
+		expect(pushPayload({ id: 3, title: 'x', project: 'a b' }, 'failed').url).toBe(
+			'/work?project=a+b&highlight=3&was=failed'
+		);
+		expect(clearPayload(12)).toEqual({ type: 'clear', tag: 'item-12' });
 		expect(p.body).toBe('Add retries');
 	});
 

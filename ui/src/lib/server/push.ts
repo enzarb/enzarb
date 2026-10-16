@@ -1,11 +1,11 @@
 import webpush from 'web-push';
-import type { PushPayload } from '#lib/push.ts';
+import type { PushMessage } from '#lib/push.ts';
 import { getConfig, type VapidConfig } from './config.ts';
 import { getSql } from './db.ts';
 import { pushStore, type PushStore, type PushTarget } from './push-store.ts';
 
 export type SendResult = 'ok' | 'gone' | 'error';
-export type Send = (target: PushTarget, payload: PushPayload) => Promise<SendResult>;
+export type Send = (target: PushTarget, payload: PushMessage) => Promise<SendResult>;
 
 /** Seconds a push service may hold a message for an offline device. */
 const TTL_SECS = 3600;
@@ -49,7 +49,7 @@ export async function deliver(
 	send: Send,
 	owner: string,
 	targets: PushTarget[],
-	payload: PushPayload
+	payload: PushMessage
 ): Promise<number> {
 	let ok = 0;
 	await Promise.all(

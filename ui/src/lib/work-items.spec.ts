@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import * as v from 'valibot';
 import {
+	highlightNote,
+	parseHighlight,
 	applyItemChange,
 	applyNeedsYouChange,
 	availableActions,
@@ -709,5 +711,32 @@ describe('parseReviewStats / formatAgentTime', () => {
 		expect(formatAgentTime(45)).toBe('45 s');
 		expect(formatAgentTime(720)).toBe('12 min');
 		expect(formatAgentTime(3900)).toBe('1 h 5 min');
+	});
+});
+
+describe('parseHighlight / highlightNote', () => {
+	it('reads the id and a known category only', () => {
+		expect(parseHighlight(new URLSearchParams('highlight=4&was=review'))).toEqual({
+			id: 4,
+			was: 'review'
+		});
+		expect(parseHighlight(new URLSearchParams('highlight=4&was=bogus'))).toEqual({
+			id: 4,
+			was: null
+		});
+		expect(parseHighlight(new URLSearchParams('highlight=x'))).toBeNull();
+		expect(parseHighlight(new URLSearchParams(''))).toBeNull();
+	});
+
+	it('notes a changed or finished item, nothing when the category is the same', () => {
+		const review = { category: 'review', reason: null } as const;
+		expect(highlightNote({ state: 'Open', needs: review }, 'review')).toBeNull();
+		expect(highlightNote({ state: 'Open', needs: null }, null)).toBeNull();
+		expect(highlightNote({ state: 'Merged', needs: null }, 'review')).toBe(
+			'Was waiting for your review — now: merged'
+		);
+		expect(
+			highlightNote({ state: 'Open', needs: { category: 'merge', reason: null } }, 'review')
+		).toBe('Was waiting for your review — now: ready to merge');
 	});
 });

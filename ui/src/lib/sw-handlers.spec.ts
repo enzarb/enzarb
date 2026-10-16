@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+	handlePush,
 	OFFLINE_PATH,
 	openOrFocus,
 	parsePush,
@@ -139,5 +140,46 @@ describe('parsePush', () => {
 		for (const t of [null, '', 'nope', '[]', '{"body":"x"}', '{"title":3}']) {
 			expect(parsePush(t), String(t)).toBeNull();
 		}
+	});
+
+	it('parses a clear request, and drops one without a tag', () => {
+		expect(parsePush('{"type":"clear","tag":"item-3"}')).toEqual({ type: 'clear', tag: 'item-3' });
+		expect(parsePush('{"type":"clear"}')).toBeNull();
+	});
+});
+
+describe('handlePush', () => {
+	const reg = (open: string[]) => {
+		const closed: string[] = [];
+		return {
+			closed,
+			getNotifications: vi.fn(async ({ tag }: { tag: string }) =>
+				open.filter((t) => t === tag).map((t) => ({ close: () => closed.push(t) }))
+			),
+			showNotification: vi.fn(async () => {})
+		};
+	};
+
+	it('shows a notification with its tag and url', async () => {
+		const r = reg([]);
+		await handlePush(r, { title: 'T', body: 'B', url: '/work?highlight=1', tag: 'item-1' });
+		expect(r.showNotification).toHaveBeenCalledWith(
+			'T',
+			expect.objectContaining({ tag: 'item-1', data: { url: '/work?highlight=1' } })
+		);
+	});
+
+	it('closes the matching notifications on a clear and shows nothing', async () => {
+		const r = reg(['item-1', 'item-2']);
+		await handlePush(r, { type: 'clear', tag: 'item-1' });
+		expect(r.closed).toEqual(['item-1']);
+		expect(r.showNotification).not.toHaveBeenCalled();
+	});
+
+	it('does nothing visible when there is nothing to clear', async () => {
+		const r = reg([]);
+		await handlePush(r, { type: 'clear', tag: 'item-9' });
+		await handlePush(r, null);
+		expect(r.showNotification).not.toHaveBeenCalled();
 	});
 });

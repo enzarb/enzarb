@@ -39,21 +39,46 @@ const truncate = (s: string, max: number) => {
 	return t.length <= max ? t : `${t.slice(0, max - 1).trimEnd()}…`;
 };
 
+/** Data-only push: close the notifications with this tag on the device, show nothing. */
+export interface ClearPayload {
+	type: 'clear';
+	tag: string;
+}
+
+export type PushMessage = PushPayload | ClearPayload;
+
+/** One tag per task, so a newer notification replaces the older one and a clear can find it. */
+export const itemTag = (id: number): string => `item-${id}`;
+
+/** The board with the card highlighted, remembering which category the notification was for. */
+export function highlightUrl(
+	item: { id: number; project?: string | null },
+	category: NeedsYouCategory
+): string {
+	const q = new URLSearchParams();
+	if (item.project) q.set('project', item.project);
+	q.set('highlight', String(item.id));
+	q.set('was', category);
+	return `/work?${q}`;
+}
+
 /**
- * The notification for one task. Built only from the item id, its display title and the
+ * The notification for one task. Built only from the item id, project, its display title and the
  * category: never `state_data`, the failure reason, tokens, code or logs.
  */
 export function pushPayload(
-	item: { id: number; title: string },
+	item: { id: number; title: string; project?: string | null },
 	category: NeedsYouCategory
 ): PushPayload {
 	return {
 		title: TITLES[category],
 		body: truncate(item.title, BODY_MAX),
-		url: `/task/${item.id}`,
-		tag: `work-${item.id}`
+		url: highlightUrl(item, category),
+		tag: itemTag(item.id)
 	};
 }
+
+export const clearPayload = (id: number): ClearPayload => ({ type: 'clear', tag: itemTag(id) });
 
 /** One notification standing in for a burst; replaces itself through its tag. */
 export function summaryPayload(count: number): PushPayload {

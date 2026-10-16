@@ -121,9 +121,9 @@ RUN set -e; \
 # Playwright stage: Chromium for the ui browser tests, installed into /opt/ms-playwright. Keep
 # PLAYWRIGHT_VERSION equal to the playwright version in ui/package-lock.json
 # (scripts/check-playwright-version.sh, run in CI).
-# gh stage: the GitHub CLI, checked against the checksums file published with the release. The
-# sandbox policy only lets it do read-only CI inspection (`gh run view --log-failed`), and only a
-# CI-fix run has a (read-only, one-repository) GH_TOKEN; see the README.
+# gh stage: the GitHub CLI, checked against the checksums file published with the release. Only a
+# CI-fix run has a GH_TOKEN, read-only and for one repository (`gh run view --log-failed`); see the
+# README.
 FROM ubuntu:26.04 AS gh
 ARG GH_VERSION=2.76.2
 ARG TARGETARCH

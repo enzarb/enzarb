@@ -168,6 +168,64 @@ describe('TaskBoard', () => {
 		await expect.element(page.getByRole('alert')).toHaveTextContent('Could not retry');
 	});
 
+	describe('highlight from a notification', () => {
+		const review: NeedsYou = { category: 'review', reason: null };
+		const card = (name: string) =>
+			page.getByRole('link', { name }).element().closest('li') as HTMLElement;
+
+		it('scrolls to, focuses and accents the card, with no note when unchanged', async () => {
+			const spy = vi.spyOn(HTMLElement.prototype, 'scrollIntoView');
+			render(
+				TaskBoard,
+				props([item(1, 'Planning'), item(2, 'Open', review, { workflow: 'change_request' })], {
+					highlight: { id: 2, was: 'review' }
+				})
+			);
+			await expect.element(region('Review & merge').getByText('Task 2')).toBeVisible();
+			await vi.waitFor(() => expect(document.activeElement).toBe(card('Task 2')));
+			expect(card('Task 2')).toHaveClass('ez-card--highlight');
+			expect(card('Task 1')).not.toHaveClass('ez-card--highlight');
+			expect(spy).toHaveBeenCalled();
+			await expect.element(page.getByText(/^Was /)).not.toBeInTheDocument();
+			spy.mockRestore();
+		});
+
+		it('notes what changed when the item moved on', async () => {
+			render(
+				TaskBoard,
+				props(
+					[
+						item(2, 'ResolvingConflicts', null, {
+							workflow: 'change_request',
+							wait: { waitingOn: 'enzarb', reason: 'x', text: 'Resolving conflicts', url: null }
+						})
+					],
+					{ highlight: { id: 2, was: 'review' } }
+				)
+			);
+			await expect
+				.element(
+					region('In progress').getByText('Was waiting for your review — now: Resolving conflicts')
+				)
+				.toBeVisible();
+			await vi.waitFor(() => expect(document.activeElement).toBe(card('Task 2')));
+		});
+
+		it('lists a highlighted card past the Done cap', async () => {
+			const done = Array.from({ length: 25 }, (_, i) => item(i + 1, 'Done'));
+			render(TaskBoard, props(done, { highlight: { id: 25, was: 'merge' } }));
+			await expect.element(page.getByText('Was ready to merge — now: done')).toBeVisible();
+		});
+
+		it('shows a banner linking to the task when it is not on the board', async () => {
+			render(TaskBoard, props([item(1, 'Planning')], { highlight: { id: 9, was: 'failed' } }));
+			await expect.element(page.getByText('This task is not on the board')).toBeVisible();
+			await expect
+				.element(page.getByRole('link', { name: 'Open task #9' }))
+				.toHaveAttribute('href', '/task/9');
+		});
+	});
+
 	it('opens the plan and review dialogs from their cards', async () => {
 		const onplan = vi.fn();
 		const onreview = vi.fn();

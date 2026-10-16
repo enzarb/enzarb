@@ -5,9 +5,11 @@
 //!   as the provider idempotency key, and report through [`ingest_job_result`].
 //! * **Agent jobs** (`agent_*`) prepare a run (thread, clone credential, prompt), send
 //!   `run_start` to the Project's sandbox-init over `enzarb-proto`, and then *release the
-//!   lease*. The job stays `running` with `jobs.deadline` set; sandbox-init reports the end
-//!   of the run by POSTing `RunFinished` to the callback [`Router`](axum::Router)
-//!   ([`Executor::callback_router`]).
+//!   lease*. The job stays `running` with `jobs.deadline` set. The executor keeps a session
+//!   per sandbox with accepted runs and takes the `RunFinished` from a `run_finished` push or
+//!   `run_state.result` ([`results`]); sandboxes without `feature::RUN_RESULTS` still POST it
+//!   to the deprecated callback [`Router`](axum::Router) ([`Executor::callback_router`]).
+//!   Either way [`finish`] records it, checking push facts against the remote.
 //!
 //! # Claiming
 //! A claim is one statement under a global advisory lock, so the limits below hold across
@@ -74,8 +76,10 @@ mod agent;
 mod callback;
 pub mod claude_credential;
 mod connectors;
+mod finish;
 mod jobs;
 mod restart;
+mod results;
 mod retarget;
 mod sandbox;
 mod sandbox_change;
@@ -146,6 +150,9 @@ pub struct ExecutorConfig {
     /// Fallback poll when no `work_item_changed` notification arrives.
     pub poll_interval: Duration,
     pub sweep_interval: Duration,
+    /// Between two results passes ([`Executor::watch_results`]): new runs are subscribed to
+    /// and every accepted run's `run_status` is read this often.
+    pub results_interval: Duration,
     pub backoff_base: Duration,
     pub backoff_max: Duration,
     /// Added to `timeout_secs` for `jobs.deadline`, so the sandbox's own timeout fires first.
@@ -192,6 +199,7 @@ impl ExecutorConfig {
             lease: Duration::from_secs(120),
             poll_interval: Duration::from_secs(2),
             sweep_interval: Duration::from_secs(30),
+            results_interval: Duration::from_secs(15),
             backoff_base: Duration::from_secs(5),
             backoff_max: Duration::from_secs(300),
             deadline_grace: Duration::from_secs(120),
@@ -352,6 +360,8 @@ pub struct Executor {
     /// project id -> (resolved `maxRuns`, fetched at).
     change_warned: std::sync::Mutex<std::collections::HashSet<String>>,
     limits: std::sync::Mutex<std::collections::HashMap<String, (Option<i64>, std::time::Instant)>>,
+    /// One results session per Project sandbox with accepted runs, see [`results`].
+    watchers: results::Watchers,
 }
 
 impl Executor {
@@ -368,6 +378,7 @@ impl Executor {
             cfg,
             limits: Default::default(),
             change_warned: Default::default(),
+            watchers: Default::default(),
         }
     }
 
@@ -507,6 +518,22 @@ impl Executor {
                         _ = shutdown.changed() => {}
                     }
                 }
+            });
+        }
+        {
+            let me = self.clone();
+            let mut shutdown = shutdown.clone();
+            tasks.spawn(async move {
+                while !*shutdown.borrow() {
+                    if let Err(e) = me.watch_results().await {
+                        tracing::warn!(error = %e, "results pass failed");
+                    }
+                    tokio::select! {
+                        _ = tokio::time::sleep(me.cfg.results_interval) => {}
+                        _ = shutdown.changed() => {}
+                    }
+                }
+                me.stop_watchers();
             });
         }
         while tasks.join_next().await.is_some() {}

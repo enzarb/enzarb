@@ -34,6 +34,18 @@ pub trait RunManager: Send + Sync + 'static {
     /// CTRL `run_cancel`.
     async fn cancel(&self, ctx: &SessionCtx, run_id: &str);
 
+    /// CTRL `run_subscribe`: push `run_finished` for these runs to this
+    /// session (at once for runs already over). Only called when
+    /// [`delivers_results`](Self::delivers_results) is true; no reply.
+    async fn subscribe(&self, _ctx: &SessionCtx, _run_ids: Vec<String>) {}
+
+    /// Whether this manager implements `feature::RUN_RESULTS` (advertised in
+    /// `welcome`): `run_finished` pushes, `run_state.result`, and runs without
+    /// an HTTP callback.
+    fn delivers_results(&self) -> bool {
+        false
+    }
+
     /// The session ended. Runs are not tied to sessions and keep going.
     async fn session_closed(&self, _session_id: u64) {}
 }
