@@ -35,7 +35,9 @@
         "event": null,
         "outputs": {},
         "artifacts": [],
-        "facts": {},
+        "facts": {
+          "dependencies": null
+        },
         "relations": [],
         "history": [],
         "vars": {},
@@ -146,7 +148,9 @@
         },
         "facts": {
           "$ref": "#/$defs/Facts",
-          "default": {}
+          "default": {
+            "dependencies": null
+          }
         },
         "relations": {
           "type": "array",
@@ -286,6 +290,13 @@
             "string",
             "null"
           ]
+        },
+        "merge_sha": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Merged pull requests: the merge commit (verified, from GitHub)."
         },
         "comments": {
           "type": "array",
@@ -782,6 +793,10 @@
           "type": "boolean",
           "default": false
         },
+        "merge_sha": {
+          "type": "string",
+          "description": "The merge commit, once merged."
+        },
         "draft": {
           "type": "boolean",
           "default": false
@@ -1206,10 +1221,15 @@
           "description": "Tag that contains the merged change, once released."
         },
         "dependencies": {
-          "type": "array",
+          "type": [
+            "array",
+            "null"
+          ],
           "items": {
             "$ref": "#/$defs/DependencyFact"
-          }
+          },
+          "description": "`None` until the engine knows; `[]` means known to have none (so `facts.dependencies is\nnot none` tells empty from unknown).",
+          "default": null
         }
       },
       "description": "Facts the engine verified from git and GitHub (never from agent output)."

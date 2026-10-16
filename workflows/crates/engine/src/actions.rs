@@ -132,9 +132,14 @@ pub async fn call(
                 base_ref: base,
                 draft: args.get("draft").and_then(Value::as_bool).unwrap_or(false),
             };
+            let title = spec.title.clone();
             let it = c.open_change_request(spec, key).await.map_err(transient)?;
-            Ok(json!({"number": it.number, "url": it.url,
-                      "subject": {"kind": "pull_request", "repo": r, "number": it.number, "url": it.url}}))
+            // `subject` makes the engine link the pull request to the task.
+            Ok(
+                json!({"kind": "pull_request", "repo": r, "number": it.number, "title": title,
+                      "url": it.url,
+                      "subject": {"kind": "pull_request", "repo": r, "number": it.number, "url": it.url}}),
+            )
         }
         "update_pull_request" => {
             c.update_pull_request(&pr(repo, state, args)?, s(args, "title"), s(args, "body"))
@@ -191,7 +196,11 @@ pub async fn call(
                     .create_issue(&repo_key(&r), title, body, &ls, &format!("{key}:{i}"))
                     .await
                     .map_err(transient)?;
-                out.push(json!({"number": k.number, "repo": r, "key": subject_key(&r, k.number)}));
+                out.push(
+                    json!({"kind": "issue", "repo": r, "number": k.number, "title": title,
+                                "url": format!("https://github.com/{r}/issues/{}", k.number),
+                                "key": subject_key(&r, k.number)}),
+                );
             }
             Ok(json!({"issues": out}))
         }
@@ -344,15 +353,18 @@ pub async fn fact(
                 .iter()
                 .any(|p| p.state == "merged")
         ),
-        "contained_in_tag" => Value::Null,
+        // Set when a release-like event whose ref contains the merge commit is routed to the
+        // task; a refresh keeps the verified value.
+        "contained_in_tag" => json!(state.doc.facts.contained_in_tag),
         "dependencies" => {
             let Some(issue) = &state.doc.subjects.issue else {
                 return Ok(json!([]));
             };
+            // An error is "unknown", never "none".
             let deps = c
                 .list_dependencies(&WorkItemKey::new(rk.clone(), issue.number))
                 .await
-                .unwrap_or_default();
+                .map_err(|e| e.to_string())?;
             let mut out = Vec::new();
             for d in deps {
                 let key = d.to_string();

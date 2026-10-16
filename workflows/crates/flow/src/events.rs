@@ -267,6 +267,9 @@ pub struct PullRequest {
     pub head_sha: String,
     #[serde(default)]
     pub merged: bool,
+    /// The merge commit, once merged.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub merge_sha: String,
     #[serde(default)]
     pub draft: bool,
     /// Issues this PR references (closing keywords or Development links).

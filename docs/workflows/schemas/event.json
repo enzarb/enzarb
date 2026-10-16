@@ -463,6 +463,10 @@
           "type": "boolean",
           "default": false
         },
+        "merge_sha": {
+          "type": "string",
+          "description": "The merge commit, once merged."
+        },
         "draft": {
           "type": "boolean",
           "default": false

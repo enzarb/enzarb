@@ -314,12 +314,55 @@ impl Engine {
                 }
             }
         }
+        // 3. A push to the head branch of a live task's open pull request (also foreign pushes).
+        if target.is_none()
+            && let (Payload::Push(p), Some(r)) = (&ev.payload, &repo)
+        {
+            target = sqlx::query_scalar(
+                "SELECT id FROM engine.tasks WHERE repo = $1 AND ended_at IS NULL
+                   AND state->'doc'->'subjects'->'pull_requests' @> jsonb_build_array(jsonb_build_object('head', $2::text, 'state', 'open'))
+                 ORDER BY id LIMIT 1",
+            )
+            .bind(r)
+            .bind(&p.branch)
+            .fetch_optional(&mut **tx)
+            .await?;
+        }
+        // 4. Release-like events go to every live task whose merged commit the ref contains.
+        if target.is_none()
+            && ev.subject.is_none()
+            && let Some(r) = &repo
+            && let Some((git_ref, tag)) = released_ref(&ev.payload)
+        {
+            let ids = self.containing_tasks(tx, r, &git_ref).await?;
+            let mut first = None;
+            for id in ids {
+                let mut task = self.lock_task(tx, id).await?;
+                if let Some(tag) = &tag {
+                    let _ = task.state.doc.set_fact("contained_in_tag", json!(tag));
+                }
+                self.apply(
+                    tx,
+                    &mut task,
+                    Some(event_id),
+                    &TaskEvent::Event { event: ev.clone() },
+                )
+                .await?;
+                first.get_or_insert(id);
+            }
+            if first.is_some() {
+                return Ok((None, first));
+            }
+        }
         if let Some(t) = target {
             let mut task = self.lock_task(tx, t).await?;
             if let Err(e) = validate_custom(&task.resolved, &ev) {
                 return Ok((Some(e), Some(t)));
             }
+            let old_head = open_pr_head_sha(&task);
             self.refresh_doc(&mut task.state.doc, &ev).await;
+            self.refresh_on_head_change(tx, &task, event_id, &ev, old_head)
+                .await?;
             self.apply(
                 tx,
                 &mut task,
@@ -393,9 +436,10 @@ impl Engine {
         Ok((None, Some(t)))
     }
 
-    /// Live or ended tasks the event's object relates to, for a binding's `if`/`with`: tasks
-    /// that declared the object a child (`parent`), and tasks of the issues a pull request
-    /// references (`references`).
+    /// Tasks the event's object relates to, for a binding's `if`/`with`. `kind` is the related
+    /// task's role towards the object, as in its relation row (T, kind, object): an epic's
+    /// `parent` rows make it the `parent` of each sub-issue. Tasks of issues a pull request
+    /// references come as `references`.
     async fn routing_relations(
         &self,
         tx: &mut Tx<'_>,
@@ -405,13 +449,11 @@ impl Engine {
     ) -> Result<Vec<enzarb_flow::document::RoutingRelation>, Error> {
         let mut rows: Vec<(String, i64)> = Vec::new();
         if let Some(k) = skey {
-            let r: Vec<(String, i64)> = sqlx::query_as(
-                "SELECT CASE kind WHEN 'child' THEN 'parent' WHEN 'parent' THEN 'child' ELSE kind END, task_id
-                 FROM engine.relations WHERE target_key = $1",
-            )
-            .bind(k)
-            .fetch_all(&mut **tx)
-            .await?;
+            let r: Vec<(String, i64)> =
+                sqlx::query_as("SELECT kind, task_id FROM engine.relations WHERE target_key = $1")
+                    .bind(k)
+                    .fetch_all(&mut **tx)
+                    .await?;
             rows.extend(r);
         }
         if let Payload::PullRequest(pr) = &ev.payload {
@@ -460,6 +502,94 @@ impl Engine {
             });
         }
         Ok(out)
+    }
+
+    /// Live tasks of `repo` with a merged pull request whose merge commit `git_ref` contains
+    /// (connector compare: the merge commit is not ahead of the ref).
+    async fn containing_tasks(
+        &self,
+        tx: &mut Tx<'_>,
+        repo: &str,
+        git_ref: &str,
+    ) -> Result<Vec<i64>, Error> {
+        let rows: Vec<(i64, Value)> = sqlx::query_as(
+            "SELECT id, state->'doc'->'subjects'->'pull_requests' FROM engine.tasks
+             WHERE repo = $1 AND ended_at IS NULL ORDER BY id",
+        )
+        .bind(repo)
+        .fetch_all(&mut **tx)
+        .await?;
+        let mut out = Vec::new();
+        for (id, prs) in rows {
+            let prs: Vec<Subject> = serde_json::from_value(prs).unwrap_or_default();
+            for p in prs.iter().filter(|p| p.state == "merged") {
+                let Some(sha) = &p.merge_sha else { continue };
+                if let Ok(Some(0)) = self
+                    .connector()
+                    .ahead_by(&repo_key(repo), git_ref, sha)
+                    .await
+                {
+                    out.push(id);
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// On a verified change of the open pull request's head (any pusher), the head-bound facts
+    /// (`ci`, `mergeable`, `reviews`) are refreshed.
+    async fn refresh_on_head_change(
+        &self,
+        tx: &mut Tx<'_>,
+        task: &TaskRow,
+        event_id: i64,
+        ev: &Event,
+        old_head: Option<String>,
+    ) -> Result<(), Error> {
+        let claimed = match &ev.payload {
+            Payload::PullRequest(p) if !p.head_sha.is_empty() => p.head_sha.clone(),
+            Payload::Push(p) => p.after.clone(),
+            _ => return Ok(()),
+        };
+        let Some(n) = task
+            .state
+            .doc
+            .subjects
+            .pull_requests
+            .iter()
+            .rev()
+            .find(|p| p.state == "open")
+            .map(|p| (p.repo.clone(), p.number))
+        else {
+            return Ok(());
+        };
+        let known = task.state.doc.facts.ci.as_ref().map(|c| c.sha.clone());
+        if old_head.as_deref() == Some(claimed.as_str()) && known.as_deref() == Some(&claimed) {
+            return Ok(());
+        }
+        // Verify on GitHub; never trust the payload alone.
+        let item = WorkItemKey::new(repo_key(&n.0), n.1);
+        let verified = match self.connector().get_merge_readiness(&item, n.1).await {
+            Ok(r) => r.head_sha,
+            Err(e) => {
+                tracing::debug!(task = task.id, "head verification: {e}");
+                return Ok(());
+            }
+        };
+        if verified != claimed || known.as_deref() == Some(verified.as_str()) {
+            return Ok(());
+        }
+        for fact in ["ci", "mergeable", "reviews"] {
+            self.queue_effect(
+                tx,
+                task,
+                Some(event_id),
+                &Effect::RefreshFact { fact: fact.into() },
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     /// `instance` of task documents, from config.
@@ -521,11 +651,21 @@ impl Engine {
             };
             self.link_subject(tx, id, kind, k, &url).await?;
         }
+        let mut state = TaskState::new(doc);
+        // Known from the start (possibly `[]`), so a workflow can tell "none" from "unknown".
+        if state.doc.subjects.issue.is_some() {
+            match crate::actions::fact(self, id, repo, &state, "dependencies").await {
+                Ok(v) => {
+                    let _ = state.doc.set_fact("dependencies", v);
+                }
+                Err(e) => tracing::debug!(task = id, "dependencies at start: {e}"),
+            }
+        }
         let mut task = TaskRow {
             id,
             project: info.name.clone(),
             repo: repo.to_string(),
-            state: TaskState::new(doc),
+            state,
             resolved,
         };
         self.apply(tx, &mut task, None, &TaskEvent::Start { event: ev.clone() })
@@ -727,6 +867,16 @@ impl Engine {
                     subj.body = p.body.clone();
                 }
                 subj.head = Some(p.head.clone()).filter(|h| !h.is_empty()).or(subj.head);
+                subj.merge_sha =
+                    Some(p.merge_sha.clone())
+                        .filter(|m| !m.is_empty())
+                        .or_else(|| {
+                            doc.subjects
+                                .pull_requests
+                                .iter()
+                                .find(|x| x.repo == repo && x.number == s.number)
+                                .and_then(|x| x.merge_sha.clone())
+                        });
                 subj.base = Some(p.base.clone()).filter(|b| !b.is_empty()).or(subj.base);
                 if subj.url.is_empty() {
                     subj.url = pr_url(&repo, s.number);
@@ -902,24 +1052,29 @@ impl Engine {
             )
             .await?;
         }
-        // The parent.
-        let parents: Vec<String> = sqlx::query_scalar(
-            "SELECT target_key FROM engine.relations WHERE task_id = $1 AND kind = 'parent'",
+        // Parents. A relation row (T, kind, X) reads "T is <kind> of X": the epic's
+        // (E, parent, child) and a child's own (C, child, E) both make E the parent of C.
+        let mut parents: Vec<i64> = sqlx::query_scalar(
+            "SELECT DISTINCT task_id FROM engine.relations WHERE kind = 'parent' AND target_key = ANY($1)",
+        )
+        .bind(&targets)
+        .fetch_all(&mut **tx)
+        .await?;
+        let up: Vec<String> = sqlx::query_scalar(
+            "SELECT target_key FROM engine.relations WHERE task_id = $1 AND kind = 'child'",
         )
         .bind(task.id)
         .fetch_all(&mut **tx)
         .await?;
-        for pkey in parents {
-            let parent: Option<i64> = match pkey.strip_prefix("task:") {
-                Some(id) => id.parse().ok(),
-                None => sqlx::query_scalar(
-                    "SELECT task_id FROM engine.subjects WHERE key = $1 ORDER BY ended, linked_at DESC LIMIT 1",
-                )
-                .bind(&pkey)
-                .fetch_optional(&mut **tx)
-                .await?,
-            };
-            let Some(parent) = parent else { continue };
+        for k in up {
+            if let Some(id) = self.task_of_key(tx, &k).await? {
+                parents.push(id);
+            }
+        }
+        parents.sort();
+        parents.dedup();
+        parents.retain(|p| *p != task.id);
+        for parent in parents {
             let ev = json!({"type": "child_ended", "task": task.id.to_string(), "status": status});
             self.insert_event(
                 tx,
@@ -930,38 +1085,64 @@ impl Engine {
                 ev,
             )
             .await?;
-            let rows = sqlx::query(
-                "SELECT t.id, t.ended_at IS NOT NULL AS ended, t.state->'status' AS st
-                 FROM engine.relations r JOIN engine.tasks t ON t.id = r.task_id
-                 WHERE r.kind = 'parent' AND r.target_key = $1",
+            // Every child of the parent: (parent, parent, X) targets and (C, child, parent) rows.
+            let mut children: Vec<Option<i64>> = Vec::new();
+            let down: Vec<String> = sqlx::query_scalar(
+                "SELECT target_key FROM engine.relations WHERE task_id = $1 AND kind = 'parent'",
             )
-            .bind(&pkey)
+            .bind(parent)
             .fetch_all(&mut **tx)
             .await?;
-            if rows
-                .iter()
-                .all(|r| r.get::<bool, _>("ended") || r.get::<i64, _>("id") == task.id)
-            {
-                let statuses: serde_json::Map<String, Value> = rows
-                    .iter()
-                    .map(|r| {
-                        let id: i64 = r.get("id");
-                        let st: Value = r.get("st");
-                        let s = if id == task.id {
-                            status.clone()
-                        } else {
-                            st.get("status")
-                                .and_then(Value::as_str)
-                                .unwrap_or("")
-                                .to_string()
-                        };
-                        (id.to_string(), Value::String(s))
-                    })
-                    .collect();
+            for k in down {
+                children.push(self.task_of_key(tx, &k).await?);
+            }
+            let mut pkeys: Vec<String> =
+                sqlx::query_scalar("SELECT key FROM engine.subjects WHERE task_id = $1")
+                    .bind(parent)
+                    .fetch_all(&mut **tx)
+                    .await?;
+            pkeys.push(format!("task:{parent}"));
+            let more: Vec<i64> = sqlx::query_scalar(
+                "SELECT DISTINCT task_id FROM engine.relations WHERE kind = 'child' AND target_key = ANY($1)",
+            )
+            .bind(&pkeys)
+            .fetch_all(&mut **tx)
+            .await?;
+            children.extend(more.into_iter().map(Some));
+            let mut statuses = serde_json::Map::new();
+            let mut all = true;
+            for c in children {
+                let Some(c) = c else {
+                    all = false; // a child issue without a task has not run yet
+                    continue;
+                };
+                if c == task.id {
+                    statuses.insert(c.to_string(), Value::String(status.clone()));
+                    continue;
+                }
+                let row: Option<(bool, Value)> = sqlx::query_as(
+                    "SELECT ended_at IS NOT NULL, state->'status' FROM engine.tasks WHERE id = $1",
+                )
+                .bind(c)
+                .fetch_optional(&mut **tx)
+                .await?;
+                match row {
+                    Some((true, st)) => {
+                        let s = st
+                            .get("status")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
+                        statuses.insert(c.to_string(), Value::String(s));
+                    }
+                    _ => all = false,
+                }
+            }
+            if all && !statuses.is_empty() {
                 let ev = json!({"type": "all_children_ended", "statuses": statuses});
                 self.insert_event(
                     tx,
-                    &format!("children:{parent}:{pkey}"),
+                    &format!("children:{parent}"),
                     &task.project,
                     parent,
                     "all_children_ended",
@@ -971,6 +1152,19 @@ impl Engine {
             }
         }
         Ok(())
+    }
+
+    /// The task of a relation target (`task:<id>`, or the latest task of a subject key).
+    async fn task_of_key(&self, tx: &mut Tx<'_>, key: &str) -> Result<Option<i64>, Error> {
+        Ok(match key.strip_prefix("task:") {
+            Some(id) => id.parse().ok(),
+            None => sqlx::query_scalar(
+                "SELECT task_id FROM engine.subjects WHERE key = $1 ORDER BY ended, linked_at DESC LIMIT 1",
+            )
+            .bind(key)
+            .fetch_optional(&mut **tx)
+            .await?,
+        })
     }
 
     pub(crate) async fn insert_event(
@@ -1022,6 +1216,32 @@ pub(crate) fn pr_url(repo: &str, n: u64) -> String {
     format!("https://github.com/{repo}/pull/{n}")
 }
 
+/// The ref a release-like event names, and the tag (for `contained_in_tag`) when it is one.
+fn released_ref(p: &Payload) -> Option<(String, Option<String>)> {
+    match p {
+        Payload::Release(r) if !r.tag.is_empty() => Some((r.tag.clone(), Some(r.tag.clone()))),
+        Payload::Tag(t) if t.action != "deleted" && !t.name.is_empty() => {
+            Some((t.name.clone(), Some(t.name.clone())))
+        }
+        Payload::Deployment(d) if !d.sha.is_empty() => Some((d.sha.clone(), None)),
+        Payload::Package(p) if !p.version.is_empty() => {
+            // Packages are commonly built from tag `v<version>`; `<version>` is tried by GitHub
+            // compare only through that tag name.
+            let tag = if p.version.starts_with('v') {
+                p.version.clone()
+            } else {
+                format!("v{}", p.version)
+            };
+            Some((tag, None))
+        }
+        _ => None,
+    }
+}
+
+fn open_pr_head_sha(task: &TaskRow) -> Option<String> {
+    task.state.doc.facts.git.as_ref().map(|g| g.head.clone())
+}
+
 pub(crate) fn thread_subject(repo: &str, t: &enzarb_connector::Thread, state: &str) -> Subject {
     Subject {
         repo: repo.to_string(),
@@ -1034,6 +1254,7 @@ pub(crate) fn thread_subject(repo: &str, t: &enzarb_connector::Thread, state: &s
         author: t.item.author.clone(),
         head: t.item.head_ref.clone(),
         base: t.item.base_ref.clone(),
+        merge_sha: None,
         comments: t
             .comments
             .iter()

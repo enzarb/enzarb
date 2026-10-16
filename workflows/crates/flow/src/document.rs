@@ -157,6 +157,9 @@ pub struct Subject {
     pub head: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
+    /// Merged pull requests: the merge commit (verified, from GitHub).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_sha: Option<String>,
     #[serde(default)]
     pub comments: Vec<SubjectComment>,
 }
@@ -196,8 +199,10 @@ pub struct Facts {
     /// Tag that contains the merged change, once released.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contained_in_tag: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub dependencies: Vec<DependencyFact>,
+    /// `None` until the engine knows; `[]` means known to have none (so `facts.dependencies is
+    /// not none` tells empty from unknown).
+    #[serde(default)]
+    pub dependencies: Option<Vec<DependencyFact>>,
 }
 
 /// Fact kinds that `refresh` and `RefreshFact` name.

@@ -91,6 +91,7 @@ Schema: [`schemas/events/pull_request.json`](schemas/events/pull_request.json) (
 | `base` | string |  |  |
 | `head_sha` | string |  |  |
 | `merged` | boolean |  |  |
+| `merge_sha` | string |  | The merge commit, once merged. |
 | `draft` | boolean |  |  |
 | `references` | list of integer |  | Issues this PR references (closing keywords or Development links). |
 

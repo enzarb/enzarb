@@ -257,6 +257,7 @@ pub fn map(
                 base: s(&pr["base"]["ref"]),
                 head_sha: s(&pr["head"]["sha"]),
                 merged: pr["merged"].as_bool().unwrap_or(false),
+                merge_sha: s(&pr["merge_commit_sha"]),
                 draft: pr["draft"].as_bool().unwrap_or(false),
             });
             vec![ev(payload, Some(pr_subject(number)), &pr["updated_at"])]

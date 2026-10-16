@@ -52,6 +52,7 @@ The GitHub objects linked to the task.
 | `author` | string |  |  |
 | `head` | string |  | Pull requests only. |
 | `base` | string |  |  |
+| `merge_sha` | string |  | Merged pull requests: the merge commit (verified, from GitHub). |
 | `comments` | list of SubjectComment |  |  |
 
 ## `SubjectComment`
@@ -114,6 +115,7 @@ optionally after a leading `@bot` mention).
 | `base` | string |  |  |
 | `head_sha` | string |  |  |
 | `merged` | boolean |  |  |
+| `merge_sha` | string |  | The merge commit, once merged. |
 | `draft` | boolean |  |  |
 | `references` | list of integer |  | Issues this PR references (closing keywords or Development links). |
 
@@ -267,7 +269,7 @@ Facts the engine verified from git and GitHub (never from agent output).
 | `mergeable` | boolean |  |  |
 | `merged` | boolean |  |  |
 | `contained_in_tag` | string |  | Tag that contains the merged change, once released. |
-| `dependencies` | list of DependencyFact |  |  |
+| `dependencies` | list of DependencyFact |  | `None` until the engine knows; `[]` means known to have none (so `facts.dependencies is not none` tells empty from unknown). |
 
 ## `GitFacts`
 
