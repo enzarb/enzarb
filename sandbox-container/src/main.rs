@@ -3,14 +3,15 @@ use std::sync::Arc;
 use anyhow::Context;
 use sandbox_init::{
     AppState, Config,
-    agent::AgentRunManager,
     capture::ClaudeTokenCapture,
     chat::ChatManager,
     docker_prune::{ActivityGate, Pruner},
     dockerd::Dockerd,
-    privs,
+    mcp, privs,
     reaper::Reaper,
+    repos::RepoLocks,
     serve,
+    steps::StepManager,
 };
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::sync::CancellationToken;
@@ -20,6 +21,10 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some(privs::EXEC_FLAG) {
         privs::exec_mode(&args[2..]);
+    }
+    // `sandbox-init mcp-submit-result <schema> <out>`: the agent's submit_result tool.
+    if args.get(1).map(String::as_str) == Some(mcp::SUBCOMMAND) {
+        mcp::main(&args[2..]);
     }
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -75,14 +80,17 @@ async fn run() -> anyhow::Result<()> {
     );
     let prune_stop = CancellationToken::new();
     let prune_task = pruner.spawn(prune_stop.clone());
-    let runs = AgentRunManager::new(config.clone(), reaper.clone()).with_activity(gate.clone());
-    runs.recover();
-    let chats = ChatManager::with_activity(config.clone(), reaper.clone(), runs.repo_locks(), gate);
+    let locks = RepoLocks::default();
+    let steps =
+        StepManager::new(config.clone(), reaper.clone(), locks.clone()).with_activity(gate.clone());
+    steps.recover();
+    let chats = ChatManager::with_activity(config.clone(), reaper.clone(), locks, gate);
+    chats.set_sink(steps.sink());
     chats.recover().await;
     let capture = ClaudeTokenCapture::new(config.claude_token_file.clone());
     let state = Arc::new(
         AppState::new(config, reaper.clone())
-            .with_run_manager(Arc::new(runs))
+            .with_steps(steps)
             .with_chats(chats.clone())
             .with_observer(Arc::new(capture))
             .with_dockerd(dockerd.clone())

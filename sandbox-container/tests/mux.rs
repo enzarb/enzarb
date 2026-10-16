@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use enzarb_proto::session::{Client, ConnectError, Event, Events, Session};
-use enzarb_proto::{ClientKind, CredentialKind, Ctrl, RunStart};
+use enzarb_proto::{ClientKind, CredentialKind, Ctrl};
 use nix::errno::Errno;
 use nix::sys::signal::kill;
 use nix::unistd::Pid;
@@ -282,30 +282,30 @@ async fn healthz_reports_docker_disk_and_prune_additively() {
 }
 
 #[tokio::test]
-async fn run_messages_are_unimplemented() {
+async fn steps_are_advertised_and_unknown_runs_answered() {
     let srv = start().await;
     let (session, mut events) = srv.connect().await;
-    let run: RunStart = serde_json::from_value(serde_json::json!({
-        "run_id": "job-1", "repo_url": "https://github.com/enzarb/x", "base_ref": "main",
-        "branch": "b", "push": false, "clone_token": "t", "prompt": "p", "timeout_secs": 1,
-        "callback_url": "http://x", "callback_token": "t", "log_channel": null
-    }))
-    .unwrap();
-    let msgs = [
-        Ctrl::RunStart(run),
-        Ctrl::RunStatus {
-            run_id: "job-1".into(),
-        },
-        Ctrl::RunCancel {
-            run_id: "job-1".into(),
-        },
-    ];
-    for m in msgs {
-        session.send_ctrl(&m).unwrap();
-        match timeout(T, events.next()).await.unwrap() {
-            Some(Event::Ctrl(Ctrl::Error { code, .. })) => assert_eq!(code, "unimplemented"),
-            _ => panic!("expected error unimplemented for {m:?}"),
+    assert!(session.has_feature(enzarb_proto::feature::STEPS));
+    session
+        .send_ctrl(&Ctrl::StepStatus {
+            run_id: "nope".into(),
+            after_seq: 0,
+        })
+        .unwrap();
+    match timeout(T, events.next()).await.unwrap() {
+        Some(Event::Ctrl(Ctrl::StepState { state, .. })) => {
+            assert_eq!(state, enzarb_proto::StepPhase::Unknown)
         }
+        _ => panic!("expected step_state"),
+    }
+    session
+        .send_ctrl(&Ctrl::StepStop {
+            run_id: "nope".into(),
+        })
+        .unwrap();
+    match timeout(T, events.next()).await.unwrap() {
+        Some(Event::Ctrl(Ctrl::Error { code, .. })) => assert_eq!(code, "unknown_run"),
+        _ => panic!("expected error"),
     }
 }
 

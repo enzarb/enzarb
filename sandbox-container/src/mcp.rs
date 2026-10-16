@@ -139,7 +139,9 @@ fn serve(schema: &Path, out: &Path) -> i32 {
             Err(e) => Some(error(Value::Null, -32700, &format!("parse error: {e}"))),
         };
         if let Some(r) = reply
-            && writeln!(stdout, "{r}").and_then(|()| stdout.flush()).is_err()
+            && writeln!(stdout, "{r}")
+                .and_then(|()| stdout.flush())
+                .is_err()
         {
             break;
         }
@@ -161,7 +163,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("result.json");
         let s = schema();
-        let r = handle(&s, &out, &json!({"id": 1, "method": "initialize", "params": {}})).unwrap();
+        let r = handle(
+            &s,
+            &out,
+            &json!({"id": 1, "method": "initialize", "params": {}}),
+        )
+        .unwrap();
         assert_eq!(r["result"]["capabilities"]["tools"], json!({}));
         let r = handle(&s, &out, &json!({"id": 2, "method": "tools/list"})).unwrap();
         assert_eq!(r["result"]["tools"][0]["name"], TOOL);

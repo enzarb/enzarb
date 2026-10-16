@@ -308,6 +308,7 @@ pub(crate) fn allow_option(options: &[Value]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn usage_update(cost: Option<f64>) -> Value {
         let mut u = json!({"sessionUpdate": "usage_update", "used": 5000, "size": 200000});
