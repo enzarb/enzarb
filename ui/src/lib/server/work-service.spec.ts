@@ -511,6 +511,24 @@ describe('workService needs-you queue', () => {
 			// graph tasks at a wait: classified from state_data.wait like compiled ones
 			['graph:issue', 'Waiting', { wait: { waiting_on: 'human', reason: 'approval' } }],
 			['graph:issue', 'Waiting', { wait: { waiting_on: 'human', reason: 'question' } }],
+			// a human wait with declared buttons (the start gate) sits with plan approvals
+			[
+				'graph:issue',
+				'Waiting',
+				{
+					wait: {
+						waiting_on: 'human',
+						reason: 'awaiting_start',
+						text: 'Waiting for a maintainer to start planning (/plan)',
+						actions: [{ label: 'Start planning', command: 'plan' }]
+					}
+				}
+			],
+			[
+				'graph:issue',
+				'Waiting',
+				{ wait: { waiting_on: 'human', reason: 'awaiting_start', actions: [{ label: 'x' }] } }
+			],
 			['graph:issue', 'Waiting', { wait: { waiting_on: 'dependency', reason: 'children_open' } }],
 			['graph:issue', 'Running', { wait: { waiting_on: 'enzarb', reason: 'working' } }],
 			[

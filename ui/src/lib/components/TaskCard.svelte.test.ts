@@ -50,6 +50,30 @@ describe('TaskCard', () => {
 		expect(onaction).toHaveBeenCalledWith('approve');
 	});
 
+	it("offers a gate wait's declared button instead of approve and posts its command", async () => {
+		const oncommand = vi.fn();
+		const onplan = vi.fn();
+		const text = 'Waiting for a maintainer to start planning (/plan)';
+		const item = card({ category: 'approval', reason: null, text }, 'Waiting', {
+			workflow: 'graph:issue',
+			wait: {
+				waitingOn: 'human',
+				reason: 'awaiting_start',
+				text,
+				url: null,
+				actions: [{ label: 'Start planning', command: 'plan' }]
+			}
+		});
+		render(TaskCard, props(item, { oncommand, onplan }));
+		await expect.element(page.getByText(text)).toBeVisible();
+		await expect
+			.element(page.getByRole('button', { name: 'Approve plan' }))
+			.not.toBeInTheDocument();
+		await expect.element(page.getByRole('button', { name: 'View plan' })).not.toBeInTheDocument();
+		await page.getByRole('button', { name: 'Start planning' }).click();
+		expect(oncommand).toHaveBeenCalledWith('plan');
+	});
+
 	it('shows time since with the exact timestamp in the title', async () => {
 		const item = card(null, 'Planning');
 		render(TaskCard, props(item));

@@ -161,7 +161,7 @@ const CASES: &[(&str, &str, &[EventType])] = &[
     ("issues", "issues_closed", &[WorkItemClosed]),
     ("issues", "issues_labeled_approved", &[ApprovalGranted]),
     ("issues", "issues_labeled_epic", &[WorkItemLabeled]),
-    ("issues", "issues_labeled_other", &[]),
+    ("issues", "issues_labeled_other", &[WorkItemLabeled]),
     ("issues", "issues_edited", &[]),
     ("issue_comment", "issue_comment_created", &[CommentAdded]),
     (

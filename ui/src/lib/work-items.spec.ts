@@ -410,6 +410,40 @@ describe('graph tasks at a wait', () => {
 			null
 		);
 	});
+	it('puts a human wait with declared buttons with plan approvals, without approve', () => {
+		const gate = {
+			workflow: 'graph:issue',
+			state: 'Waiting',
+			stateData: {
+				wait: {
+					waiting_on: 'human',
+					reason: 'awaiting_start',
+					text: 'Waiting for a maintainer to start planning (/plan)',
+					actions: [
+						{ label: 'Start planning', command: 'plan' },
+						{ label: 'Bad', command: 'Not A Word' },
+						{ command: 'nolabel' }
+					]
+				}
+			}
+		};
+		expect(parseWait(gate.stateData)?.actions).toEqual([
+			{ label: 'Start planning', command: 'plan' }
+		]);
+		expect(classifyNeedsYou(gate)).toEqual({
+			category: 'approval',
+			reason: null,
+			text: 'Waiting for a maintainer to start planning (/plan)'
+		});
+		expect(boardColumn({ state: 'Waiting', needs: classifyNeedsYou(gate) })).toBe('plan');
+		expect(availableActions('Waiting', gate.stateData)).toEqual(['cancel']);
+		// Without buttons the same reason is just blocked on a human.
+		const plain = {
+			...gate,
+			stateData: { wait: { waiting_on: 'human', reason: 'awaiting_start' } }
+		};
+		expect(classifyNeedsYou(plain)?.category).toBe('blocked');
+	});
 	it('offers approve and merge at the matching waits only', () => {
 		const sd = (on: string, reason: string) => ({ wait: { waiting_on: on, reason } });
 		expect(availableActions('Waiting', sd('human', 'approval'))).toEqual(['approve', 'cancel']);

@@ -96,6 +96,9 @@
 			loading={(items.loading && !items.current) || (!needsYou.loaded && !needsYou.failed)}
 			{highlight}
 			onaction={(id, action) => needsYou.act(id, action)}
+			oncommand={async (id, command) => {
+				await submitAction({ id, action: 'comment', data: { body: `/${command}` } });
+			}}
 			onplan={(w) => {
 				planId = w.id;
 				planOpen = true;

@@ -12,6 +12,7 @@
 	import Skeleton from '#lib/components/ui/Skeleton.svelte';
 	import UsageSummary from '#lib/components/UsageSummary.svelte';
 	import WaitReason from '#lib/components/WaitReason.svelte';
+	import WaitButtons from '#lib/components/WaitButtons.svelte';
 	import WorkActions from '#lib/components/WorkActions.svelte';
 	import WorkStateChip from '#lib/components/WorkStateChip.svelte';
 	import WorkTimeline from '#lib/components/WorkTimeline.svelte';
@@ -45,13 +46,18 @@
 		else void act(action);
 	}
 
-	async function act(action: WorkAction) {
+	/** A wait's declared button: the comment `/<command>`, as the user. */
+	async function command(c: string) {
+		await act('comment', `/${c}`);
+	}
+
+	async function act(action: WorkAction, body?: string) {
 		if (id === null || item === null) return;
 		pending = action;
 		actionError = '';
 		try {
 			const before = snapshot;
-			await submitAction({ id, action });
+			await submitAction(body === undefined ? { id, action } : { id, action, data: { body } });
 			if (action === 'merge') mergeRequestedAt = before;
 			// The reducer applies the event asynchronously; the live stream refreshes the page then.
 		} catch {
@@ -86,6 +92,9 @@
 					>{/if}
 			{/snippet}
 			{#snippet actions()}
+				{#if w.state === 'Waiting' && w.wait?.actions?.length}
+					<WaitButtons buttons={w.wait.actions} disabled={pending !== null} oncommand={command} />
+				{/if}
 				<WorkActions actions={w.actions} {pending} onaction={request} />
 			{/snippet}
 		</PageHeader>

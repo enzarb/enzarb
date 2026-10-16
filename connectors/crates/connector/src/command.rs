@@ -80,20 +80,70 @@ fn strip_inline_code(line: &str) -> String {
     out
 }
 
-/// True if a line of `body` is exactly `/approve` (surrounding whitespace and
-/// ASCII case ignored), outside code blocks and quotes.
-pub fn has_approve_command(body: &str) -> bool {
+/// The lines of `body` outside code blocks and quotes, trimmed, each without a leading
+/// `@handle` (or `@handle[bot]`) mention, so `@enzarb /approve` reads as `/approve`.
+fn command_lines(body: &str, handle: &str) -> Vec<String> {
     strip_code_and_quotes(body)
         .lines()
-        .any(|l| l.trim().eq_ignore_ascii_case("/approve"))
+        .map(|l| strip_mention(l.trim(), handle).to_string())
+        .collect()
 }
 
-/// True if a line of `body` is exactly `/epic` (surrounding whitespace and ASCII case
-/// ignored), outside code blocks and quotes. Asks enzarb to plan the issue as an epic.
-pub fn has_epic_command(body: &str) -> bool {
-    strip_code_and_quotes(body)
-        .lines()
-        .any(|l| l.trim().eq_ignore_ascii_case("/epic"))
+fn strip_mention<'a>(line: &'a str, handle: &str) -> &'a str {
+    if handle.is_empty() {
+        return line;
+    }
+    let Some(rest) = line.strip_prefix('@') else {
+        return line;
+    };
+    let Some(head) = rest.get(..handle.len()) else {
+        return line;
+    };
+    if !head.eq_ignore_ascii_case(handle) {
+        return line;
+    }
+    let rest = &rest[handle.len()..];
+    let rest = rest.strip_prefix("[bot]").unwrap_or(rest);
+    let rest = rest.strip_prefix([',', ':']).unwrap_or(rest);
+    match rest.chars().next() {
+        None => "",
+        Some(c) if c.is_whitespace() => rest.trim_start(),
+        _ => line,
+    }
+}
+
+/// True if a line of `body` is exactly `/approve` (surrounding whitespace and
+/// ASCII case ignored, and after an optional leading `@handle`), outside code blocks and
+/// quotes.
+pub fn has_approve_command(body: &str, handle: &str) -> bool {
+    command_lines(body, handle)
+        .iter()
+        .any(|l| l.eq_ignore_ascii_case("/approve"))
+}
+
+/// True if a line of `body` is exactly `/epic` (as [`has_approve_command`]). Asks enzarb to
+/// plan the issue as an epic.
+pub fn has_epic_command(body: &str, handle: &str) -> bool {
+    command_lines(body, handle)
+        .iter()
+        .any(|l| l.eq_ignore_ascii_case("/epic"))
+}
+
+/// The first slash command of `body`: the first line (outside code blocks and quotes, after
+/// an optional leading `@handle`) that starts with `/<word>`, `word` being
+/// `[A-Za-z][A-Za-z0-9_-]*` followed by the end of the line or whitespace. Returns the word
+/// in lowercase and the rest of that line, trimmed. Generic: no command name is known here.
+pub fn first_command(body: &str, handle: &str) -> Option<(String, String)> {
+    command_lines(body, handle).into_iter().find_map(|l| {
+        let rest = l.strip_prefix('/')?;
+        let end = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+            .unwrap_or(rest.len());
+        let (word, args) = rest.split_at(end);
+        let starts = word.chars().next().is_some_and(|c| c.is_ascii_alphabetic());
+        let ends = args.chars().next().is_none_or(char::is_whitespace);
+        (starts && ends).then(|| (word.to_ascii_lowercase(), args.trim().to_string()))
+    })
 }
 
 fn is_handle_char(c: char) -> bool {
@@ -164,9 +214,16 @@ mod tests {
             ("`/approve`", false),
             ("```\n/approve", false), // unterminated fence swallows the rest
             ("````\n```\n/approve\n```\n````", false),
+            ("@enzarb /approve", true),
+            ("@Enzarb[bot] /approve", true),
+            ("@enzarb, /approve", true),
+            ("thanks\n  @enzarb   /approve  ", true),
+            ("@enzarbx /approve", false),
+            ("@alice /approve", false),
+            ("@enzarb please /approve", false),
         ];
         for (body, want) in cases {
-            assert_eq!(has_approve_command(body), *want, "body {body:?}");
+            assert_eq!(has_approve_command(body, "enzarb"), *want, "body {body:?}");
         }
     }
 
@@ -183,13 +240,40 @@ mod tests {
             ("`/epic`", false),
             ("```\n/epic\n```", false),
             ("```\n/epic\n```\n/epic", true),
+            ("@enzarb /epic", true),
             ("", false),
         ];
         for (body, want) in cases {
-            assert_eq!(has_epic_command(body), *want, "body {body:?}");
+            assert_eq!(has_epic_command(body, "enzarb"), *want, "body {body:?}");
         }
-        assert!(!has_epic_command("/approve"));
-        assert!(!has_approve_command("/epic"));
+        assert!(!has_epic_command("/approve", "enzarb"));
+        assert!(!has_approve_command("/epic", "enzarb"));
+    }
+
+    #[test]
+    fn first_command_table() {
+        let some = |c: &str, a: &str| Some((c.to_string(), a.to_string()));
+        let cases: &[(&str, Option<(String, String)>)] = &[
+            ("/plan", some("plan", "")),
+            ("  /PLAN  ", some("plan", "")),
+            ("@enzarb /plan", some("plan", "")),
+            ("@enzarb[bot]: /plan now please", some("plan", "now please")),
+            ("hello\n/plan\n/approve", some("plan", "")),
+            ("no command here", None),
+            ("please /plan", None),
+            ("@alice /plan", None),
+            ("/plan-b x", some("plan-b", "x")),
+            ("/plan!", None),
+            ("/1x", None),
+            ("/", None),
+            ("`/plan`", None),
+            ("> /plan", None),
+            ("```\n/plan\n```", None),
+            ("/a/b\n/go", some("go", "")),
+        ];
+        for (body, want) in cases {
+            assert_eq!(&first_command(body, "enzarb"), want, "body {body:?}");
+        }
     }
 
     #[test]
