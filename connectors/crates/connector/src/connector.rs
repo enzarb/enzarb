@@ -234,4 +234,71 @@ pub trait Connector: Send + Sync {
     async fn mint_ci_read_credential(&self, _repo: &RepoKey) -> Result<Option<ReadCred>> {
         Ok(None)
     }
+
+    // ---- ADR-0022 generic building blocks. Defaults report "unsupported" so
+    // ---- connectors roll out independently of the engine.
+
+    /// The commit sha `git_ref` (branch, tag or sha) points at, or `None` when unknown.
+    async fn resolve_ref(&self, _repo: &RepoKey, _git_ref: &str) -> Result<Option<String>> {
+        Err(Error::Invalid("resolve_ref is not supported".into()))
+    }
+
+    /// Open issues of `repo` (not pull requests), for the engine's adopt pass.
+    async fn list_open_issues(&self, _repo: &RepoKey) -> Result<Vec<ItemRef>> {
+        Err(Error::Invalid("listing issues is not supported".into()))
+    }
+
+    /// Issue numbers (same repo) a pull request references: closing keywords and
+    /// the provider's development links.
+    async fn pr_references(&self, _item: &WorkItemKey) -> Result<Vec<u64>> {
+        Ok(Vec::new())
+    }
+
+    /// Adds a label (an existing label is a no-op).
+    async fn add_label(&self, _item: &WorkItemKey, _label: &str) -> Result<()> {
+        Err(Error::Invalid("labels are not supported".into()))
+    }
+
+    /// Removes a label (a missing label is a no-op).
+    async fn remove_label(&self, _item: &WorkItemKey, _label: &str) -> Result<()> {
+        Err(Error::Invalid("labels are not supported".into()))
+    }
+
+    /// Changes a pull request's title and/or body.
+    async fn update_pull_request(
+        &self,
+        _item: &WorkItemKey,
+        _title: Option<&str>,
+        _body: Option<&str>,
+    ) -> Result<()> {
+        Err(Error::Invalid(
+            "updating pull requests is not supported".into(),
+        ))
+    }
+
+    /// CI of `sha` in the shape of the interpreter's `facts.ci`:
+    /// `{state, failing: [{name, url?, log_excerpt?}]}`.
+    async fn ci_details(&self, _repo: &RepoKey, _sha: &str) -> Result<serde_json::Value> {
+        Err(Error::Invalid("ci details are not supported".into()))
+    }
+
+    /// Reviews of a pull request: `[{author, state, body}]`, latest per author.
+    async fn list_reviews(&self, _item: &WorkItemKey) -> Result<serde_json::Value> {
+        Err(Error::Invalid("reviews are not supported".into()))
+    }
+
+    /// Whether commit `sha` is reachable from `git_ref`; `None` when unknown.
+    async fn contains(&self, _repo: &RepoKey, _sha: &str, _git_ref: &str) -> Result<Option<bool>> {
+        Ok(None)
+    }
+
+    /// A short-lived token restricted to `repos` with exactly `permissions`
+    /// (`{"contents": "write", "actions": "read"}`), for one sandbox step.
+    async fn mint_step_token(
+        &self,
+        _repos: &[RepoKey],
+        _permissions: &std::collections::BTreeMap<String, String>,
+    ) -> Result<ReadCred> {
+        Err(Error::Invalid("step tokens are not supported".into()))
+    }
 }

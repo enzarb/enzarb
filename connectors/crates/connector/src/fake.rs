@@ -128,6 +128,11 @@ pub enum Call {
         item: WorkItemKey,
         reason: CloseReason,
     },
+    /// An ADR-0022 generic call (`add_label`, `update_pull_request`, `mint_step_token`, ...).
+    Generic {
+        name: String,
+        args: serde_json::Value,
+    },
 }
 
 /// A recorded call. `replayed` is true when the idempotency key had been seen
@@ -169,6 +174,13 @@ struct State {
     sub_issues: HashMap<WorkItemKey, Vec<WorkItemKey>>,
     closed_issues: HashMap<WorkItemKey, CloseReason>,
     next_issue: u64,
+    refs: HashMap<(RepoKey, String), String>,
+    open_issues: HashMap<RepoKey, Vec<ItemRef>>,
+    pr_refs: HashMap<WorkItemKey, Vec<u64>>,
+    labels: HashMap<WorkItemKey, Vec<String>>,
+    ci: HashMap<(RepoKey, String), serde_json::Value>,
+    reviews: HashMap<WorkItemKey, serde_json::Value>,
+    contains: HashMap<(RepoKey, String, String), bool>,
 }
 
 /// Records every call and keeps simple in-memory state. Cheap to share by
@@ -185,6 +197,68 @@ impl FakeConnector {
 
     fn st(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Seed `resolve_ref` (falls back to `branch_heads`).
+    pub fn set_ref(&self, repo: RepoKey, git_ref: &str, sha: &str) {
+        self.st()
+            .refs
+            .insert((repo, git_ref.to_string()), sha.to_string());
+    }
+
+    /// Seed `list_open_issues`.
+    pub fn set_open_issues(&self, repo: RepoKey, issues: Vec<ItemRef>) {
+        self.st().open_issues.insert(repo, issues);
+    }
+
+    /// Seed `pr_references`.
+    pub fn set_pr_references(&self, pr: WorkItemKey, issues: Vec<u64>) {
+        self.st().pr_refs.insert(pr, issues);
+    }
+
+    /// Seed `ci_details`.
+    pub fn set_ci(&self, repo: RepoKey, sha: &str, ci: serde_json::Value) {
+        self.st().ci.insert((repo, sha.to_string()), ci);
+    }
+
+    /// Seed `list_reviews`.
+    pub fn set_reviews(&self, pr: WorkItemKey, reviews: serde_json::Value) {
+        self.st().reviews.insert(pr, reviews);
+    }
+
+    /// Seed `contains`.
+    pub fn set_contains(&self, repo: RepoKey, sha: &str, git_ref: &str, yes: bool) {
+        self.st()
+            .contains
+            .insert((repo, sha.to_string(), git_ref.to_string()), yes);
+    }
+
+    /// Current labels set through `add_label`/`remove_label`.
+    pub fn labels(&self, item: &WorkItemKey) -> Vec<String> {
+        self.st().labels.get(item).cloned().unwrap_or_default()
+    }
+
+    /// Generic calls named `name`, in order.
+    pub fn generic_calls(&self, name: &str) -> Vec<serde_json::Value> {
+        self.st()
+            .calls
+            .iter()
+            .filter_map(|c| match &c.call {
+                Call::Generic { name: n, args } if n == name => Some(args.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn generic(&self, name: &str, args: serde_json::Value) -> Result<MutexGuard<'_, State>> {
+        let mut st = self.st();
+        let call = Call::Generic {
+            name: name.to_string(),
+            args,
+        };
+        Self::take_failure(&mut st, call.clone())?;
+        Self::record(&mut st, call, false);
+        Ok(st)
     }
 
     /// Seed a thread returned by `fetch_thread`.
@@ -897,5 +971,122 @@ impl Connector for FakeConnector {
         };
         Self::record(&mut st, call, false);
         Ok(Some(cred))
+    }
+
+    async fn resolve_ref(&self, repo: &RepoKey, git_ref: &str) -> Result<Option<String>> {
+        let st = self.generic(
+            "resolve_ref",
+            serde_json::json!({"repo": repo.to_string(), "ref": git_ref}),
+        )?;
+        let k = (repo.clone(), git_ref.to_string());
+        Ok(st.refs.get(&k).or_else(|| st.branch_heads.get(&k)).cloned())
+    }
+
+    async fn list_open_issues(&self, repo: &RepoKey) -> Result<Vec<ItemRef>> {
+        let st = self.generic(
+            "list_open_issues",
+            serde_json::json!({"repo": repo.to_string()}),
+        )?;
+        Ok(st.open_issues.get(repo).cloned().unwrap_or_default())
+    }
+
+    async fn pr_references(&self, item: &WorkItemKey) -> Result<Vec<u64>> {
+        let st = self.generic(
+            "pr_references",
+            serde_json::json!({"item": item.to_string()}),
+        )?;
+        Ok(st.pr_refs.get(item).cloned().unwrap_or_default())
+    }
+
+    async fn add_label(&self, item: &WorkItemKey, label: &str) -> Result<()> {
+        let mut st = self.generic(
+            "add_label",
+            serde_json::json!({"item": item.to_string(), "label": label}),
+        )?;
+        let l = st.labels.entry(item.clone()).or_default();
+        if !l.iter().any(|x| x == label) {
+            l.push(label.to_string());
+        }
+        Ok(())
+    }
+
+    async fn remove_label(&self, item: &WorkItemKey, label: &str) -> Result<()> {
+        let mut st = self.generic(
+            "remove_label",
+            serde_json::json!({"item": item.to_string(), "label": label}),
+        )?;
+        st.labels
+            .entry(item.clone())
+            .or_default()
+            .retain(|x| x != label);
+        Ok(())
+    }
+
+    async fn update_pull_request(
+        &self,
+        item: &WorkItemKey,
+        title: Option<&str>,
+        body: Option<&str>,
+    ) -> Result<()> {
+        let _st = self.generic(
+            "update_pull_request",
+            serde_json::json!({"item": item.to_string(), "title": title, "body": body}),
+        )?;
+        Ok(())
+    }
+
+    async fn ci_details(&self, repo: &RepoKey, sha: &str) -> Result<serde_json::Value> {
+        let st = self.generic(
+            "ci_details",
+            serde_json::json!({"repo": repo.to_string(), "sha": sha}),
+        )?;
+        Ok(st
+            .ci
+            .get(&(repo.clone(), sha.to_string()))
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({"state": "pending", "failing": []})))
+    }
+
+    async fn list_reviews(&self, item: &WorkItemKey) -> Result<serde_json::Value> {
+        let st = self.generic(
+            "list_reviews",
+            serde_json::json!({"item": item.to_string()}),
+        )?;
+        Ok(st
+            .reviews
+            .get(item)
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([])))
+    }
+
+    async fn contains(&self, repo: &RepoKey, sha: &str, git_ref: &str) -> Result<Option<bool>> {
+        let st = self.generic(
+            "contains",
+            serde_json::json!({"repo": repo.to_string(), "sha": sha, "ref": git_ref}),
+        )?;
+        Ok(st
+            .contains
+            .get(&(repo.clone(), sha.to_string(), git_ref.to_string()))
+            .copied())
+    }
+
+    async fn mint_step_token(
+        &self,
+        repos: &[RepoKey],
+        permissions: &std::collections::BTreeMap<String, String>,
+    ) -> Result<ReadCred> {
+        let mut st = self.generic(
+            "mint_step_token",
+            serde_json::json!({
+                "repos": repos.iter().map(|r| r.to_string()).collect::<Vec<_>>(),
+                "permissions": permissions,
+            }),
+        )?;
+        st.next_id += 1;
+        Ok(ReadCred {
+            token: format!("fake-step-token-{}", st.next_id),
+            repos: repos.to_vec(),
+            expires_at: Utc::now() + Duration::hours(1),
+        })
     }
 }
