@@ -315,9 +315,36 @@
   },
   {
    "name": "valid all events",
-   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: a\nnodes:\n  a: {type: wait, events: [comment, approval, ci, review, merge_requested, dependencies_done, timer], from: anyone, next: p}\n  p: {type: action, action: post_comment, body: hi, next: o}\n  o: {type: action, action: open_change_request, next: e}\n  e: {type: end, status: done}\n  f: {type: end, status: failed}\n",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: a\nnodes:\n  a: {type: wait, events: [comment, approval, ci, review, merge_requested, dependencies_done, timer, pushed, conflict], after: 1h, from: anyone, next: p}\n  p: {type: action, action: post_comment, body: hi, next: o}\n  o: {type: action, action: open_change_request, next: e}\n  e: {type: end, status: done}\n  f: {type: end, status: failed}\n",
    "parse_error": false,
    "errors": []
+  },
+  {
+   "name": "valid change request actions and wait options",
+   "yaml": "version: 1\nname: t\non: [change_request_opened]\nstart: r\nnodes:\n  r: {type: action, action: post_review, next: c}\n  c: {type: action, action: check_merge_readiness, next: u}\n  u: {type: action, action: update_branch, next: w}\n  w: {type: wait, events: [ci, timer], after: 30m, reason: ci_pending, text: Waiting for CI, next: e}\n  e: {type: end, status: done}\n",
+   "parse_error": false,
+   "errors": []
+  },
+  {
+   "name": "timer without after",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: w\nnodes:\n  w: {type: wait, events: [timer], next: e}\n  e: {type: end, status: done}\n",
+   "parse_error": false,
+   "errors": ["node `w`: a wait on `timer` needs `after`"]
+  },
+  {
+   "name": "bad after",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: w\nnodes:\n  w: {type: wait, events: [timer], after: 1h30m, next: e}\n  e: {type: end, status: done}\n",
+   "parse_error": false,
+   "errors": ["node `w`: `after` must be a duration like 30m, 2h or 1d"]
+  },
+  {
+   "name": "after without timer and bad reason",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: w\nnodes:\n  w: {type: wait, events: [comment], after: 1d, reason: Ready-Now, next: e}\n  e: {type: end, status: done}\n",
+   "parse_error": false,
+   "errors": [
+    "node `w`: `after` is set but `timer` is not in `events`",
+    "node `w`: `reason` must match [a-z_]{1,64}"
+   ]
   },
   {
    "name": "valid bool and int condition keys",

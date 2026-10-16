@@ -41,6 +41,9 @@ pub const KNOWN_ACTIONS: &[&str] = &[
     "open_change_request",
     "merge_change_request",
     "create_sub_issues",
+    "post_review",
+    "check_merge_readiness",
+    "update_branch",
 ];
 /// The action that only a `wait` on `approval` may lead to: nothing creates issues
 /// without a human approve.
@@ -61,6 +64,8 @@ pub const KNOWN_EVENTS: &[&str] = &[
     "dependencies_done",
     "children_done",
     "timer",
+    "pushed",
+    "conflict",
 ];
 
 /// A parsed workflow definition. Run [`validate`] (or use [`load`]) before
@@ -112,6 +117,17 @@ pub enum NodeKind {
         events: Vec<String>,
         #[serde(default)]
         from: WaitFrom,
+        /// `timer`: how long after entering the wait the timer fires (`30s`, `30m`, `2h`,
+        /// `1d`; see [`parse_duration`]).
+        #[serde(default)]
+        after: Option<String>,
+        /// Why the task waits, for the UI (`state_data.wait.reason`); the kernel derives one
+        /// from `events` when absent.
+        #[serde(default)]
+        reason: Option<String>,
+        /// The text shown with `reason`.
+        #[serde(default)]
+        text: Option<String>,
     },
     /// A privileged connector call (kernel). `body` is the text of a
     /// `post_comment`; absent means the latest agent output's `body`.
@@ -155,6 +171,28 @@ impl From<&str> for Prompt {
     fn from(s: &str) -> Self {
         Self::Text(s.into())
     }
+}
+
+/// A wait's `after`: a positive whole number and one unit, `s`, `m`, `h` or `d`; in seconds.
+pub fn parse_duration(s: &str) -> Option<u64> {
+    let s = s.trim();
+    let unit = match s.chars().last()? {
+        's' => 1,
+        'm' => 60,
+        'h' => 3600,
+        'd' => 86_400,
+        _ => return None,
+    };
+    let n = &s[..s.len() - 1];
+    if n.is_empty() || n.len() > 9 || !n.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let n: u64 = n.parse().ok()?;
+    (n > 0).then_some(n * unit)
+}
+
+fn valid_reason(r: &str) -> bool {
+    !r.is_empty() && r.len() <= 64 && r.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
 }
 
 /// Whether `path` is a prompt file path: `.enzarb/prompts/<[A-Za-z0-9_-]+>.md`.
@@ -385,7 +423,12 @@ pub fn validate(d: &Definition) -> Result<(), Error> {
             } if !valid_prompt_path(file) => p.push(format!(
                 "node `{id}`: prompt file `{file}` must match .enzarb/prompts/<[A-Za-z0-9_-]+>.md"
             )),
-            NodeKind::Wait { events, .. } => {
+            NodeKind::Wait {
+                events,
+                after,
+                reason,
+                ..
+            } => {
                 if events.is_empty() {
                     p.push(format!("node `{id}`: `events` is empty"));
                 }
@@ -393,6 +436,22 @@ pub fn validate(d: &Definition) -> Result<(), Error> {
                     if !KNOWN_EVENTS.contains(&e.as_str()) {
                         p.push(format!("node `{id}`: unknown event `{e}`"));
                     }
+                }
+                let timer = events.iter().any(|e| e == "timer");
+                match after {
+                    None if timer => {
+                        p.push(format!("node `{id}`: a wait on `timer` needs `after`"))
+                    }
+                    Some(a) if parse_duration(a).is_none() => p.push(format!(
+                        "node `{id}`: `after` must be a duration like 30m, 2h or 1d"
+                    )),
+                    Some(_) if !timer => p.push(format!(
+                        "node `{id}`: `after` is set but `timer` is not in `events`"
+                    )),
+                    _ => {}
+                }
+                if reason.as_deref().is_some_and(|r| !valid_reason(r)) {
+                    p.push(format!("node `{id}`: `reason` must match [a-z_]{{1,64}}"));
                 }
             }
             NodeKind::Action { action, .. } if !KNOWN_ACTIONS.contains(&action.as_str()) => {

@@ -507,7 +507,28 @@ describe('workService needs-you queue', () => {
 				'Blocked',
 				{ wait: { waiting_on: 'human', reason: 'dependency_failed', text: 'Blocked by #3' } }
 			],
-			['graph:issue', 'Waiting', { wait: { waiting_on: 'human', reason: 'x' } }]
+			['graph:issue', 'Waiting', { wait: { waiting_on: 'human', reason: 'x' } }],
+			// graph tasks at a wait: classified from state_data.wait like compiled ones
+			['graph:issue', 'Waiting', { wait: { waiting_on: 'human', reason: 'approval' } }],
+			['graph:issue', 'Waiting', { wait: { waiting_on: 'human', reason: 'question' } }],
+			['graph:issue', 'Waiting', { wait: { waiting_on: 'dependency', reason: 'children_open' } }],
+			['graph:issue', 'Running', { wait: { waiting_on: 'enzarb', reason: 'working' } }],
+			[
+				'graph:change_request',
+				'Waiting',
+				{ wait: { waiting_on: 'human', reason: 'ready_to_merge' } }
+			],
+			[
+				'graph:change_request',
+				'Waiting',
+				{ wait: { waiting_on: 'human', reason: 'awaiting_review' } }
+			],
+			['graph:change_request', 'Waiting', { wait: { waiting_on: 'human', reason: 'round_limit' } }],
+			['graph:change_request', 'Waiting', { wait: { waiting_on: 'ci', reason: 'ci_pending' } }],
+			['graph:change_request', 'Running', { wait: { waiting_on: 'enzarb', reason: 'reviewing' } }],
+			['graph:change_request', 'Running', { wait: { waiting_on: 'github', reason: 'merging' } }],
+			['graph:change_request', 'Merged', { wait: { waiting_on: 'human', reason: 'x' } }],
+			['graph:change_request', 'Failed', {}]
 		];
 		const HOURS = 24;
 		const HOUR_MS = 3_600_000;

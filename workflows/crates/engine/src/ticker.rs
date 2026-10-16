@@ -348,12 +348,18 @@ impl Ticker {
         }
 
         let rows: Vec<(String, String, i64)> = sqlx::query_as(
-            "SELECT key, state_data->>'base_ref', (state_data->>'number')::bigint
-             FROM work_items
-             WHERE workflow = 'change_request' AND state = ANY($1)
-               AND lower(state_data->>'author') = lower($2)
-               AND coalesce(state_data->>'base_ref', '') <> ''
-               AND state_data->>'number' ~ '^[0-9]+$'
+            // A change request graph keeps the change request's facts in `state_data.cr.data`
+            // and takes conflicts at its waits.
+            "SELECT key, d->>'base_ref', (d->>'number')::bigint
+             FROM (SELECT id, key, workflow, state,
+                          CASE WHEN workflow = 'graph:change_request'
+                               THEN state_data->'cr'->'data' ELSE state_data END AS d
+                   FROM work_items
+                   WHERE (workflow = 'change_request' AND state = ANY($1))
+                      OR (workflow = 'graph:change_request' AND state = 'Waiting')) w
+             WHERE lower(d->>'author') = lower($2)
+               AND coalesce(d->>'base_ref', '') <> ''
+               AND d->>'number' ~ '^[0-9]+$'
              ORDER BY id",
         )
         .bind(CONFLICT_PHASES)
@@ -445,7 +451,14 @@ impl Ticker {
                AND coalesce(state_data->>'last_review', '') <> 'request_changes'
                AND (coalesce(state_data->>'ci_sha', '') <> state_data->>'head_sha'
                     OR coalesce(state_data->>'ci', 'unknown') IN ('pending', 'unknown'))
-             ORDER BY id LIMIT $1",
+             UNION ALL
+             -- A change request graph at a wait that says it waits on CI.
+             SELECT key, state_data->'cr'->'data'->>'head_sha'
+             FROM work_items
+             WHERE workflow = 'graph:change_request' AND state = 'Waiting'
+               AND state_data->'wait'->>'waiting_on' = 'ci'
+               AND coalesce(state_data->'cr'->'data'->>'head_sha', '') <> ''
+             ORDER BY 1 LIMIT $1",
         )
         .bind(BATCH)
         .fetch_all(&self.pool)

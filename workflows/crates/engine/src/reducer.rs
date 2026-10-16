@@ -160,10 +160,15 @@ impl Reducer {
         project: &ProjectInfo,
     ) -> Option<GraphSource> {
         let source = self.definitions.as_ref()?;
-        if !project.triggers.issues || !self.may_use_graph(key, ev).await {
+        let name = self.graph_name(key, ev).await?;
+        let enabled = match name.as_str() {
+            "change_request" => project.triggers.change_requests,
+            _ => project.triggers.issues,
+        };
+        if !enabled {
             return None;
         }
-        let fetch = source.fetch(&key.repo, &project.default_branch, "issue");
+        let fetch = source.fetch(&key.repo, &project.default_branch, &name);
         match tokio::time::timeout(DEFINITION_TIMEOUT, fetch).await {
             Ok(Ok(g)) => g,
             Ok(Err(e)) => {
@@ -179,14 +184,34 @@ impl Reducer {
         }
     }
 
-    /// Whether `ev` could start or move this item onto the issue graph: an issue opening,
-    /// an approval of a compiled issue's plan, or a retry of a failed or stale compiled issue
-    /// or of a failed graph task. Reads the item outside the event's transaction (a stale read
-    /// only costs or saves one definition lookup; the transition decides).
-    async fn may_use_graph(&self, key: &WorkItemKey, ev: &EngineEvent) -> bool {
+    /// The definition (`.enzarb/workflows/<name>.yaml`) `ev` could start or move this item
+    /// onto: `issue` for an issue opening, an approval of a compiled issue's plan or a retry
+    /// of a failed or stale compiled issue; `change_request` for a change request opening
+    /// (also a reopened graph change request); the task's own definition for a retry of a
+    /// failed graph task. Reads the item outside the event's transaction (a stale read only
+    /// costs or saves one definition lookup; the transition decides).
+    async fn graph_name(&self, key: &WorkItemKey, ev: &EngineEvent) -> Option<String> {
         let opened = |e: &enzarb_connector::Event| {
             e.event_type == EventType::WorkItemOpened && e.data.item.kind == ItemKind::Issue
         };
+        if let EventPayload::Connector(e) = &ev.payload
+            && e.event_type == EventType::ChangeRequestOpened
+            && e.data.item.kind == ItemKind::ChangeRequest
+        {
+            // A compiled change request (a bot handoff replay or a reopen) stays compiled:
+            // no lookup for it.
+            let workflow: Option<String> =
+                sqlx::query_scalar("SELECT workflow FROM work_items WHERE key = $1")
+                    .bind(key.to_string())
+                    .fetch_optional(&self.pool)
+                    .await
+                    .unwrap_or(None);
+            return match workflow.as_deref() {
+                None => Some("change_request".into()),
+                Some(w) if w.starts_with(machine::graph::PREFIX) => Some("change_request".into()),
+                Some(_) => None,
+            };
+        }
         let approval = match &ev.payload {
             EventPayload::Connector(e) => e.event_type == EventType::ApprovalGranted,
             EventPayload::Ui(u) => u.action == machine::UiActionKind::Approve,
@@ -200,27 +225,34 @@ impl Reducer {
         if let EventPayload::Connector(e) = &ev.payload
             && opened(e)
         {
-            return true;
+            return Some("issue".into());
         }
         if !approval && !retry {
-            return false;
+            return None;
         }
-        let row: Option<(String, String, bool)> = sqlx::query_as(
-            "SELECT workflow, state, COALESCE((state_data->>'epic')::bool, false)
+        let row: Option<(String, String, bool, Option<String>)> = sqlx::query_as(
+            "SELECT workflow, state, COALESCE((state_data->>'epic')::bool, false),
+                    state_data->'graph'->>'path'
              FROM work_items WHERE key = $1",
         )
         .bind(key.to_string())
         .fetch_optional(&self.pool)
         .await
         .unwrap_or(None);
-        let Some((workflow, state, epic)) = row else {
-            return false;
-        };
+        let (workflow, state, epic, path) = row?;
         match (workflow.as_str(), state.as_str()) {
-            ("issue", "AwaitingApproval") => approval && !epic,
-            ("issue", "Failed" | "Stale") => retry && !epic,
-            (w, "Failed") => retry && w.starts_with(machine::graph::PREFIX),
-            _ => false,
+            ("issue", "AwaitingApproval") if approval && !epic => Some("issue".into()),
+            ("issue", "Failed" | "Stale") if retry && !epic => Some("issue".into()),
+            (w, "Failed") if retry && w.starts_with(machine::graph::PREFIX) => {
+                // The file the task's definition was read from.
+                let from_path = path.as_deref().and_then(|p| {
+                    p.strip_prefix(".enzarb/workflows/")
+                        .and_then(|n| n.strip_suffix(".yaml"))
+                        .map(str::to_string)
+                });
+                from_path.or_else(|| Some(w[machine::graph::PREFIX.len()..].to_string()))
+            }
+            _ => None,
         }
     }
 
@@ -595,8 +627,13 @@ impl Reducer {
         // (a merge retargets them) instead of at the next sweep.
         if t.accepted
             && state_changed
-            && matches!(&t.next, WorkflowState::ChangeRequest(c)
+            && (matches!(&t.next, WorkflowState::ChangeRequest(c)
                 if matches!(c.phase, CrPhase::Merged | CrPhase::Closed | CrPhase::Cancelled))
+                || matches!(&t.next, WorkflowState::Graph(g)
+                if g.data.cr.is_some() && matches!(g.phase,
+                    machine::graph::GraphPhase::Merged
+                        | machine::graph::GraphPhase::Closed
+                        | machine::graph::GraphPhase::Cancelled)))
         {
             let n =
                 crate::dependencies::notify_stacked_children(&mut tx, &key, &t.next.state_name())

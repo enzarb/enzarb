@@ -173,6 +173,16 @@ export const isTerminal = (state: string): boolean => TERMINAL.has(state);
 const isCiFailedWait = (wait: Wait | null): boolean =>
 	wait?.waitingOn === 'human' && wait.reason === 'ci_failed';
 
+/** A change request, run by the compiled machine or by a graph (ADR-0020). */
+export const isChangeRequest = (workflow: string): boolean =>
+	workflow === 'change_request' || workflow === 'graph:change_request';
+
+/** The reason of a wait on a human, else null. */
+const humanWaitReason = (stateData: unknown): string | null => {
+	const w = parseWait(stateData);
+	return w?.waitingOn === 'human' ? w.reason : null;
+};
+
 // `classifyNeedsYou` and `availableActions` are mirrored in SQL by `needsYouWhere` in
 // `server/work-service.ts`; change them together (a parity spec guards the two).
 
@@ -183,10 +193,12 @@ const isCiFailedWait = (wait: Wait | null): boolean =>
  */
 export function availableActions(state: string, stateData?: unknown): WorkAction[] {
 	const out: WorkAction[] = [];
-	if (state === 'AwaitingApproval') out.push('approve');
+	// A graph task (ADR-0020) at a wait says what it waits for in `state_data.wait`.
+	const graphWait = state === 'Waiting' ? humanWaitReason(stateData) : null;
+	if (state === 'AwaitingApproval' || graphWait === 'approval') out.push('approve');
 	if (state === 'Failed' || state === 'Stale') out.push('retry');
 	else if (state === 'AwaitingChanges' && isCiFailedWait(parseWait(stateData))) out.push('retry');
-	if (state === 'ReadyToMerge') out.push('merge');
+	if (state === 'ReadyToMerge' || graphWait === 'ready_to_merge') out.push('merge');
 	if (!isTerminal(state)) out.push('cancel');
 	return out;
 }
@@ -209,7 +221,8 @@ export function stateTone(state: string): StateTone {
 		state === 'AwaitingApproval' ||
 		state === 'AwaitingAnswers' ||
 		state === 'AwaitingChanges' ||
-		state === 'Stale'
+		state === 'Stale' ||
+		state === 'Waiting'
 	)
 		return 'waiting';
 	return 'active';
@@ -446,7 +459,7 @@ export function classifyNeedsYou(
 	if (isTerminal(state)) return null;
 	const actions = availableActions(state, stateData);
 	if (actions.includes('retry')) {
-		const wait = workflow === 'change_request' ? parseWait(stateData) : null;
+		const wait = isChangeRequest(workflow) ? parseWait(stateData) : null;
 		if (isCiFailedWait(wait))
 			return {
 				category: 'failed',
@@ -460,12 +473,23 @@ export function classifyNeedsYou(
 	if (workflow === 'issue' && state === 'AwaitingAnswers')
 		return { category: 'question', reason: null };
 	if (workflow.startsWith('graph:')) {
-		// A graph task blocked by a dependency that cannot complete by itself needs a human;
-		// one waiting for dependencies to merge does not.
-		const w = state === 'Blocked' ? parseWait(stateData) : null;
-		return w?.waitingOn === 'human'
-			? { category: 'blocked', reason: w.text || null, text: w.text || undefined }
-			: null;
+		// A graph task (ADR-0020) needs a human only when its `state_data.wait` says so: at a
+		// wait on a person (the same reasons as a compiled item), or blocked by a dependency that
+		// cannot complete by itself. Running and waiting on CI, GitHub or dependencies do not.
+		const w = state === 'Blocked' || state === 'Waiting' ? parseWait(stateData) : null;
+		if (w?.waitingOn !== 'human') return null;
+		const text = w.text || undefined;
+		if (state === 'Waiting') {
+			if (w.reason === 'approval') return { category: 'approval', reason: null, text };
+			if (w.reason === 'ready_to_merge') return { category: 'merge', reason: null, text };
+			if (w.reason === 'awaiting_review' || w.reason === 'checks_unverified')
+				return { category: 'review', reason: null, text };
+			if (w.reason === 'question') return { category: 'question', reason: null, text };
+			if (w.reason === 'decision_needed') return { category: 'decision', reason: null, text };
+		}
+		// A change request's blockers read as for a compiled one (checklist, merge error).
+		const why = workflow === 'graph:change_request' ? blockedReason(stateData) : null;
+		return { category: 'blocked', reason: why ?? (w.text || null), text };
 	}
 	if (workflow !== 'change_request') return null;
 	const wait = parseWait(stateData);
