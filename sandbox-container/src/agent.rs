@@ -1937,7 +1937,6 @@ impl Inner {
         })
     }
 
-    /// Commit of `base_ref`: `origin/<ref>`, else a tag or sha.
     /// Answer a `prepare_request`: fetch the clone, then the merge base of
     /// `origin/<base_ref>` and the branch, the files changed since, and the
     /// components `affected.sh` names for them. Best-effort: whatever fails
@@ -2132,6 +2131,7 @@ impl Inner {
         }
     }
 
+    /// Commit of `base_ref`: `origin/<ref>`, else a tag or sha.
     async fn resolve_base(
         &self,
         run: &Run,
