@@ -502,19 +502,19 @@ pub(super) fn unverified_text(d: &CrData) -> String {
 }
 
 /// A failing check the agent can act on: a GitHub Actions run, whose log `gh` can read.
-fn actionable(f: &CiFailure) -> bool {
+pub(super) fn actionable(f: &CiFailure) -> bool {
     actions_ids(&f.url).is_some()
 }
 
 /// CI failed on the head, the failing checks are known, and none of them is [`actionable`].
-fn ci_failed_external(d: &CrData) -> bool {
+pub(super) fn ci_failed_external(d: &CrData) -> bool {
     d.ci_failures_sha == d.head_sha
         && !d.ci_failures.is_empty()
         && !d.ci_failures.iter().any(actionable)
 }
 
 /// "lint, Vercel failed outside GitHub Actions; ..." for the `ci_failed_external` wait.
-fn ci_failed_external_text(d: &CrData) -> String {
+pub(super) fn ci_failed_external_text(d: &CrData) -> String {
     let names: Vec<&str> = d
         .ci_failures
         .iter()

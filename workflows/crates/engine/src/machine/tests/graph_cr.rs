@@ -451,6 +451,95 @@ fn a_ci_failure_at_the_merge_wait_starts_a_fix_round_with_the_failing_checks() {
     assert!(jobs(&t2).iter().all(|j| j.0 != JobKind::AgentSegment));
 }
 
+fn named_ci(id: &str, name: &str, url: &str) -> EngineEvent {
+    let mut e = ci_event(id, "sha1", enzarb_connector::CiState::Failure, url);
+    if let EventPayload::Connector(c) = &mut e.payload {
+        c.data.ci.as_mut().unwrap().context = Some(name.into());
+    }
+    e
+}
+
+#[test]
+fn an_external_only_failure_waits_on_a_human_without_a_round() {
+    let c = cctx(Permission::Read);
+    let t = ready(&c);
+    let t = transition(
+        &c,
+        &t.next,
+        &named_ci("c1", "Vercel", "https://vercel.com/x"),
+    );
+    let g = task(&t, GraphPhase::Waiting);
+    assert_eq!(g.data.graph.node, "ci_failed");
+    let out = &g.data.graph.outputs["ready"];
+    assert_eq!(out["status"], "failure");
+    assert_eq!(out["actionable"], false);
+    assert_eq!(out["external"], json!(["Vercel"]));
+    assert_eq!(out["failing"], json!([]));
+    assert!(jobs(&t).iter().all(|j| j.0 != JobKind::AgentSegment));
+    assert_eq!(
+        wait_of(&t),
+        ("human".to_string(), "ci_failed_external".to_string())
+    );
+    assert_eq!(
+        t.next.state_data()["wait"]["text"],
+        "Vercel failed outside GitHub Actions; enzarb can't read it"
+    );
+    // `ci_fix_due` is false: the readiness path does not start a round either.
+    let t = transition(
+        &c,
+        &t.next,
+        &readiness_ok("e8", "sha1", "failure", json!(true)),
+    );
+    assert_eq!(node(&t), "ci_failed");
+    assert!(jobs(&t).iter().all(|j| j.0 != JobKind::AgentSegment));
+    // An Actions job failing too: the round lists only it.
+    let url = "https://github.com/enzarb/enzarb-ui/actions/runs/7/job/8";
+    let t = transition(&c, &t.next, &named_ci("c2", "ci / test", url));
+    let g = task(&t, GraphPhase::Running);
+    assert_eq!(g.data.graph.node, "fix");
+    assert_eq!(g.data.graph.outputs["ci_failed"]["actionable"], true);
+}
+
+#[test]
+fn a_mixed_failure_lists_only_actions_jobs() {
+    let c = cctx(Permission::Read);
+    let t = ready(&c);
+    let t = transition(
+        &c,
+        &t.next,
+        &named_ci("c1", "Vercel", "https://vercel.com/x"),
+    );
+    // An Actions job fails as well: the round names only it.
+    let url = "https://github.com/enzarb/enzarb-ui/actions/runs/7/job/8";
+    let t = transition(&c, &t.next, &named_ci("c2", "ci / test", url));
+    let g = task(&t, GraphPhase::Running);
+    assert_eq!(g.data.graph.node, "fix");
+    let (_, _, input) = job_of(&t, JobKind::AgentSegment);
+    let f = input["context"]["ci_failure"].as_str().unwrap();
+    assert!(
+        f.contains("check: ci / test") && f.contains("run id: 7"),
+        "{f}"
+    );
+    assert!(!f.contains("Vercel"), "{f}");
+    assert!(
+        !input["context"]["trigger"]
+            .as_str()
+            .unwrap()
+            .contains("Vercel")
+    );
+}
+
+#[test]
+fn ignored_checks_never_reach_graph_ci() {
+    let c = cctx(Permission::Read);
+    let t = ready(&c);
+    let url = "https://github.com/enzarb/enzarb-ui/actions/runs/1/job/2";
+    let t2 = transition(&c, &t.next, &named_ci("c1", "Copilot code review", url));
+    assert_eq!(node(&t2), "ready");
+    assert!(jobs(&t2).is_empty());
+    assert_eq!(cr_of(&t2).data.ci_failures.len(), 0);
+}
+
 #[test]
 fn a_passing_check_asks_for_the_aggregate_and_a_green_result_resumes_the_ci_wait() {
     let c = cctx(Permission::Read);

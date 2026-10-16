@@ -864,9 +864,60 @@ fn change_request_example_validates_and_walks_its_paths() {
                 approved.clone(),
                 json!({"ci": "success", "mergeable": true})
             ),
-            (red.clone(), json!({"event": "ci", "status": "failure"})),
+            (
+                red.clone(),
+                json!({"event": "ci", "status": "failure", "actionable": true})
+            ),
         ]),
         ["review", "post_review", "readiness", "ready", "fix"]
+    );
+    // Only checks outside GitHub Actions fail: no round, a person looks.
+    let external = json!({"review": "approve", "must_fix": 0, "ci": "failure",
+        "ci_fix_due": false, "mergeable": true, "auto_rounds": 0, "stacked": false});
+    assert_eq!(
+        cr_walk(&[
+            (none.clone(), json!({"ok": true})),
+            (approved.clone(), review_out("approve", 0)),
+            (
+                approved.clone(),
+                json!({"ci": "success", "mergeable": true})
+            ),
+            (
+                external.clone(),
+                json!({"event": "ci", "status": "failure", "actionable": false,
+                       "external": ["Vercel"]})
+            ),
+        ]),
+        ["review", "post_review", "readiness", "ready", "ci_failed"]
+    );
+    // ... until an Actions job fails as well: then it is fixable.
+    let path = cr_walk(&[
+        (none.clone(), json!({"ok": true})),
+        (approved.clone(), review_out("approve", 0)),
+        (
+            approved.clone(),
+            json!({"ci": "success", "mergeable": true}),
+        ),
+        (
+            external.clone(),
+            json!({"event": "ci", "status": "failure", "actionable": false}),
+        ),
+        (
+            red.clone(),
+            json!({"event": "ci", "status": "failure", "actionable": true}),
+        ),
+    ]);
+    assert_eq!(path.last().unwrap(), "fix", "{path:?}");
+    assert_eq!(
+        cr_walk(&[
+            (none.clone(), json!({"ok": true})),
+            (external.clone(), review_out("approve", 0)),
+            (
+                external.clone(),
+                json!({"ci": "failure", "mergeable": true})
+            ),
+        ]),
+        ["review", "post_review", "readiness", "ci_failed"]
     );
 
     // A conflict: two attempts against the base, then parked for a person.
