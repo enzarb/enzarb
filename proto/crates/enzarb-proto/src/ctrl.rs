@@ -4,7 +4,6 @@
 //! values are a decode error and should be answered with `error`
 //! (`unknown_message`).
 
-use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -39,18 +38,9 @@ pub mod feature {
     /// The server answers `stats_request` with `stats`. Clients must only
     /// send `stats_request` after seeing it (an old server ignores the request).
     pub const STATS: &str = "stats";
-    /// The server answers `prepare_request` with `prepared`. Clients must only
-    /// send `prepare_request` after seeing it (an old server answers
-    /// `unknown_message`).
-    pub const PREPARE: &str = "prepare";
-    /// The server delivers run results over the mux (ADR-0008 amendment of
-    /// 2026-10-15): it pushes `run_finished` to the session that started a
-    /// run or sent `run_subscribe` for it, answers `run_status` for a
-    /// finished run with `run_state.result`, keeps that result across
-    /// restarts, and accepts `run_start` without `callback_url`/
-    /// `callback_token` (then it makes no HTTP callback). Clients must only
-    /// omit the callback or send `run_subscribe` after seeing it.
-    pub const RUN_RESULTS: &str = "run_results";
+    /// The server runs ADR-0022 steps (`step_*` and `session_event`). Clients
+    /// must only send `step_*` after seeing it.
+    pub const STEPS: &str = "steps";
     /// Client feature (`hello.features`): the client stores per-user Claude
     /// tokens from `credential_captured.token` and never relays them, and acks
     /// `legacy` captures. Only sandbox-proxy sends it.
@@ -154,32 +144,6 @@ pub enum CredentialKind {
     ClaudeOauth,
 }
 
-/// Run lifecycle state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RunPhase {
-    Queued,
-    Running,
-    Succeeded,
-    Failed,
-    Cancelled,
-}
-
-impl RunPhase {
-    pub fn is_terminal(self) -> bool {
-        matches!(self, Self::Succeeded | Self::Failed | Self::Cancelled)
-    }
-}
-
-/// Final outcome in the run-finished callback.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RunOutcome {
-    Succeeded,
-    Failed,
-    Cancelled,
-}
-
 /// Standard `error.code` values.
 pub mod error_code {
     pub const UNSUPPORTED_VERSION: &str = "unsupported_version";
@@ -192,197 +156,6 @@ pub mod error_code {
     pub const INTERNAL: &str = "internal";
     /// The peer does not implement the request (e.g. `run_*` without a run manager).
     pub const UNIMPLEMENTED: &str = "unimplemented";
-}
-
-/// Body of `run_start`.
-///
-/// `Debug` is hand-written and redacts every token field.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunStart {
-    pub run_id: String,
-    pub repo_url: String,
-    pub base_ref: String,
-    pub branch: String,
-    pub push: bool,
-    pub clone_token: String,
-    pub prompt: String,
-    pub timeout_secs: u64,
-    /// **Deprecated.** URL the sandbox POSTs [`RunFinished`] to. Empty (and
-    /// omitted on the wire) when the client gets results over the mux
-    /// ([`feature::RUN_RESULTS`]); only send it empty to such servers, since
-    /// old servers require it. Old payloads always carry it.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub callback_url: String,
-    /// **Deprecated.** Bearer token for `callback_url`; empty with it.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub callback_token: String,
-    /// Client-allocated channel on which the server streams the transcript as
-    /// `DATA_JSON`, or `null` for none. Serialized as `null` when absent.
-    #[serde(default)]
-    pub log_channel: Option<u32>,
-    /// Optional read-only token (`contents: read`) for fetching private git
-    /// dependencies from the same Project. Never used for push. Omitted when
-    /// absent; old peers ignore it and old payloads decode without it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deps_token: Option<String>,
-    /// Optional long-lived token with `read:packages` for installing private
-    /// npm packages (exposed to the run process as `NODE_AUTH_TOKEN`). Never
-    /// persisted by implementations. Omitted when absent; old peers ignore it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub npm_token: Option<String>,
-    /// Optional short-lived, read-only token (`actions: read`, `checks: read`)
-    /// for reading the repository's CI logs with `gh` (exposed to the agent
-    /// process only, as `GH_TOKEN`). Never persisted. Omitted when absent; old
-    /// peers ignore it and old payloads decode without it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ci_read_token: Option<String>,
-    /// Optional per-user Claude token for the run. Omitted when absent; old
-    /// peers ignore it and old payloads decode without it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub claude_token: Option<Secret>,
-    /// When present the run is not an agent run: the sandbox rebases its own
-    /// child branch onto `onto` and pushes with an explicit lease (stacked
-    /// change requests). `push`, `branch` and `base_ref` are ignored for
-    /// pushing. Omitted when absent; old peers ignore it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub retarget: Option<Retarget>,
-    /// When present the run is a graph **segment run** (ADR-0020): the sandbox
-    /// walks the workflow graph from `start`, running consecutive `command` and
-    /// `agent` nodes, and stops at the first `wait`, `action` or `end` node.
-    /// `prompt` is ignored. Omitted when absent; old peers ignore it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub graph: Option<GraphSegment>,
-}
-
-/// Body of `prepare_request`: ask the sandbox to fetch the run's refs in its
-/// clone and report the merge base, the changed files and the affected
-/// components, before the run's worktree exists.
-///
-/// `Debug` is hand-written and redacts `clone_token`.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PrepareRequest {
-    pub run_id: String,
-    pub repo_url: String,
-    pub base_ref: String,
-    pub branch: String,
-    /// Credential to fetch with (the run's own clone credential).
-    pub clone_token: Secret,
-}
-
-impl std::fmt::Debug for PrepareRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PrepareRequest")
-            .field("run_id", &self.run_id)
-            .field("repo_url", &self.repo_url)
-            .field("base_ref", &self.base_ref)
-            .field("branch", &self.branch)
-            .field("clone_token", &"<redacted>")
-            .finish()
-    }
-}
-
-fn is_zero(n: &usize) -> bool {
-    *n == 0
-}
-
-/// Reply to `prepare_request`. Every field is best-effort: a step that failed
-/// leaves its field empty. Empty fields are omitted; old payloads decode.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Prepared {
-    #[serde(default)]
-    pub run_id: String,
-    /// `git merge-base origin/<base_ref> <head>`; absent when unknown.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub merge_base_sha: Option<String>,
-    /// `git diff --name-only <merge_base>...<head>`, capped by the sandbox.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub changed_files: Vec<String>,
-    /// The true number of changed files (may exceed `changed_files.len()`).
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub changed_files_total: usize,
-    /// Affected components from `scripts/monorepo/affected.sh`; empty when the
-    /// script is absent or failed.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub affected: Vec<String>,
-}
-
-/// A graph segment to run (`RunStart.graph`). The definition is opaque to
-/// this crate: it is the JSON form of a `workflows/crates/graph` definition.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GraphSegment {
-    /// The pinned workflow definition, as JSON.
-    pub definition: serde_json::Value,
-    /// Node id to start at.
-    pub start: String,
-    /// Outputs of the nodes run so far, by node id. Omitted when empty.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub outputs: BTreeMap<String, serde_json::Value>,
-    /// Visit counts so far, by node id. Omitted when empty.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub visits: BTreeMap<String, u32>,
-    /// Rendered prompt text of `agent` nodes, by node id; the sender resolves
-    /// named prompts. A node missing here uses its inline `prompt`. Omitted
-    /// when empty.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub prompts: BTreeMap<String, String>,
-}
-
-/// Result of a segment run (`RunFinished.graph`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GraphResult {
-    /// The node the segment stopped at (a `wait`, `action` or `end` node), or
-    /// the node that was running when the run failed or was cancelled.
-    pub stopped_at: String,
-    /// Outputs of every node run so far (including the segment's input
-    /// outputs), by node id. Omitted when empty.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub outputs: BTreeMap<String, serde_json::Value>,
-    /// Visit counts after the segment, by node id. Omitted when empty.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub visits: BTreeMap<String, u32>,
-}
-
-/// Parameters of a retarget run (`RunStart.retarget`): after a parent change
-/// request was squash-merged, `git rebase --onto origin/<onto> <old_base>` of
-/// the child branch, then a force-with-lease push of exactly that branch.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Retarget {
-    /// The child branch to rebase and push (an enzarb-created branch).
-    pub head_ref: String,
-    /// The branch to rebase onto (the repository's default branch).
-    pub onto: String,
-    /// Full sha of the parent's head the child was cut from.
-    pub old_base: String,
-    /// Full sha the child's remote head must have; the push lease.
-    pub expected_sha: String,
-    /// Branch names that must never be rewritten. Omitted when empty.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub protected: Vec<String>,
-}
-
-impl std::fmt::Debug for RunStart {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        const R: &str = "<redacted>";
-        f.debug_struct("RunStart")
-            .field("run_id", &self.run_id)
-            .field("repo_url", &self.repo_url)
-            .field("base_ref", &self.base_ref)
-            .field("branch", &self.branch)
-            .field("push", &self.push)
-            .field("clone_token", &R)
-            .field("prompt", &self.prompt)
-            .field("timeout_secs", &self.timeout_secs)
-            .field("callback_url", &self.callback_url)
-            .field("callback_token", &R)
-            .field("log_channel", &self.log_channel)
-            .field("deps_token", &self.deps_token.as_ref().map(|_| R))
-            .field("npm_token", &self.npm_token.as_ref().map(|_| R))
-            .field("ci_read_token", &self.ci_read_token.as_ref().map(|_| R))
-            .field("claude_token", &self.claude_token.as_ref().map(|_| R))
-            .field("retarget", &self.retarget)
-            .field("graph", &self.graph)
-            .finish()
-    }
 }
 
 /// Token usage and cost of an agent run (or, summed, of a job). Every field is
@@ -418,29 +191,6 @@ impl Usage {
             && self.models.is_empty()
             && self.cost_usd.is_none()
     }
-}
-
-/// The final result of a run: the body of the `run_finished` CTRL message
-/// and of `run_state.result`, and (deprecated) the body POSTed to
-/// `callback_url`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunFinished {
-    pub run_id: String,
-    pub outcome: RunOutcome,
-    #[serde(default)]
-    pub exit_code: Option<i32>,
-    pub summary: String,
-    pub branch: String,
-    pub head_sha: String,
-    pub pushed: bool,
-    /// Token usage and cost of the run, when the agent reported any. Omitted
-    /// when absent; old receivers ignore it and old senders omit it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub usage: Option<Usage>,
-    /// Result of a graph segment run (`RunStart.graph`). Omitted when absent;
-    /// old receivers ignore it and old senders omit it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub graph: Option<GraphResult>,
 }
 
 /// Raw cumulative resource counters of a sandbox, read on demand from cgroup
@@ -480,8 +230,7 @@ pub struct SandboxStats {
 /// Every CTRL message.
 // `RunStart` grew with the additive `retarget` field; boxing it would break the public
 // `Ctrl::RunStart` shape for every consumer.
-#[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Ctrl {
     Hello {
@@ -536,44 +285,46 @@ pub enum Ctrl {
         cols: u16,
         rows: u16,
     },
-    RunStart(RunStart),
-    RunAccepted {
+    /// Client -> server: run a step (ADR-0022). Answered by `step_accepted`.
+    /// Repeating a `run_id` is idempotent (`existing: true`).
+    StepStart(Box<crate::step::StepStart>),
+    StepAccepted {
         run_id: String,
-        state: RunPhase,
+        state: crate::step::StepPhase,
         existing: bool,
     },
-    RunStatus {
+    /// Client -> server: deliver a user turn into the running agent session.
+    StepSteer {
+        run_id: String,
+        text: String,
+    },
+    /// Client -> server: stop the step at the next checkpoint; it finishes with exit `interrupted`.
+    StepStop {
         run_id: String,
     },
-    RunState {
-        run_id: String,
-        state: RunPhase,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        exit_code: Option<i32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        summary: Option<String>,
-        /// Token usage and cost of the run, once known. Omitted when absent.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        usage: Option<Usage>,
-        /// The full final result, once the run is terminal (only from servers
-        /// with [`feature::RUN_RESULTS`]). Omitted when absent.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        result: Option<RunFinished>,
-    },
-    /// Server -> client, [`feature::RUN_RESULTS`] only: a run ended. Sent to
-    /// every open session that started the run or subscribed to it. The
-    /// receiver must treat it idempotently (it may arrive more than once, and
-    /// also as `run_state.result`).
-    RunFinished(RunFinished),
-    /// Client -> server, [`feature::RUN_RESULTS`] only: deliver `run_finished`
-    /// for these runs on this session. A run that already ended is delivered
-    /// at once; an unknown run id is ignored. No reply.
-    RunSubscribe {
-        run_ids: Vec<String>,
-    },
-    RunCancel {
+    /// Client -> server: continue an interrupted step (after a sandbox restart) by
+    /// re-attaching to its saved agent session (ACP `session/load`).
+    StepResume {
         run_id: String,
     },
+    /// Client -> server: replay `session_event`s with `seq > after_seq` and answer
+    /// `step_state`. Also subscribes this session to the run's further events.
+    StepStatus {
+        run_id: String,
+        #[serde(default)]
+        after_seq: u64,
+    },
+    StepState {
+        run_id: String,
+        state: crate::step::StepPhase,
+        /// Set once the step is terminal.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<crate::step::StepFinished>,
+    },
+    /// Server -> client: one captured, redacted session event.
+    SessionEvent(crate::step::SessionEvent),
+    /// Server -> client: a step ended. May arrive more than once.
+    StepFinished(crate::step::StepFinished),
     CredentialCaptured {
         kind: CredentialKind,
         /// The captured token, when the sender forwards it. Omitted when absent.
@@ -602,12 +353,6 @@ pub enum Ctrl {
     StatsRequest,
     /// Reply to `stats_request`.
     Stats(SandboxStats),
-    /// Client asks the sandbox to fetch a run's refs and report the merge
-    /// base, changed files and affected components; answered by `prepared`.
-    /// Only send it after `welcome.features` contained [`feature::PREPARE`].
-    PrepareRequest(PrepareRequest),
-    /// Reply to `prepare_request`.
-    Prepared(Prepared),
     /// Browser -> proxy (client -> server): clear the stored credential.
     CredentialClear {
         kind: CredentialKind,

@@ -12,14 +12,18 @@
 pub mod ctrl;
 pub mod flow;
 pub mod frame;
+pub mod step;
 #[cfg(feature = "tokio")]
 pub mod session;
 
 pub use ctrl::{
-    ChannelKind, ClientKind, CredentialKind, Ctrl, GraphResult, GraphSegment, MAX_REPO_LEN,
-    MAX_RESUME_LEN, PrepareRequest, Prepared, Retarget, RunFinished, RunOutcome, RunPhase,
-    RunStart, SandboxStats, Secret, Usage, close_reason, credential_scope, error_code, feature,
-    open_error_code, sanitize_features,
+    ChannelKind, ClientKind, CredentialKind, Ctrl, MAX_REPO_LEN, MAX_RESUME_LEN, SandboxStats,
+    Secret, Usage, close_reason, credential_scope, error_code, feature, open_error_code,
+    sanitize_features,
+};
+pub use step::{
+    Mode, Runtime, SessionEvent, StepExec, StepFinished, StepGit, StepOutput, StepPhase, StepStart,
+    StepWorkspace,
 };
 pub use flow::{FlowControl, FlowError};
 pub use frame::{
