@@ -2,6 +2,7 @@ import { inspect } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
   Secret,
+  asCtrl,
   ByteChannel,
   Channel,
   CloseCode,
@@ -261,59 +262,36 @@ describe("channels", () => {
   });
 });
 
-describe("runs", () => {
-  const run = {
-    run_id: "job-1",
-    repo_url: "https://x/r",
-    base_ref: "main",
-    branch: "b",
-    push: false,
-    clone_token: "t",
-    prompt: "p",
-    timeout_secs: 60,
-    callback_url: "http://cb",
-    callback_token: "c",
-  };
-
-  it("run_start with a log channel", async () => {
-    const { s, srv } = await connected();
-    const p = s.runStart({ ...run, log: true });
-    const m = await srv.nextCtrl("run_start");
-    expect(m.log_channel).toBeTypeOf("number");
-    srv.ctrl({ type: "run_accepted", run_id: "job-1", state: "running", existing: false });
-    const r = await p;
-    expect(r.accepted).toEqual({ run_id: "job-1", state: "running", existing: false });
-    srv.send(dataJson(r.log!.id, { line: "hi" }));
-    expect(await r.log!.readJson()).toEqual({ line: "hi" });
-  });
-
-  it("run_start without log sends log_channel null", async () => {
-    const { s, srv } = await connected();
-    const p = s.runStart(run);
-    const m = await srv.nextCtrl("run_start");
-    expect(m.log_channel).toBeNull();
-    srv.ctrl({ type: "run_accepted", run_id: "job-1", state: "queued", existing: true });
-    expect((await p).log).toBeUndefined();
-  });
-
-  it("run_status resolves from run_state; unknown_run rejects; pushes go to onCtrl", async () => {
+describe("ctrl", () => {
+  it("step frames from the server go to onCtrl", async () => {
     const { s, srv } = await connected();
     const pushed: Ctrl[] = [];
     s.onCtrl((m) => pushed.push(m));
-    const p = s.runStatus("job-1");
-    await srv.nextCtrl("run_status");
-    srv.ctrl({ type: "run_state", run_id: "job-1", state: "succeeded", exit_code: 0, summary: "ok" });
-    expect(await p).toMatchObject({ state: "succeeded", exit_code: 0 });
-
-    const q = s.runStatus("nope");
-    await srv.nextCtrl("run_status");
-    srv.ctrl({ type: "error", code: "unknown_run", message: "no" });
-    await expect(q).rejects.toMatchObject({ code: "remote", details: { remote: { code: "unknown_run" } } });
-
-    srv.ctrl({ type: "run_state", run_id: "job-1", state: "failed" });
+    srv.ctrl({ type: "step_accepted", run_id: "r", state: "running", existing: false });
+    srv.ctrl({ type: "session_event", run_id: "r", seq: 1, at: "2026-10-16T00:00:00Z", kind: "stdout", payload: { text: "hi" } });
+    srv.ctrl({ type: "step_state", run_id: "r", state: "finished", result: { run_id: "r", exit: "success" } });
+    srv.ctrl({ type: "step_finished", run_id: "r", exit: "success" });
     srv.ctrl({ type: "credential_captured", kind: "claude_oauth" });
     await tick();
-    expect(pushed.map((m) => m.type)).toEqual(["run_state", "credential_captured"]);
+    expect(pushed.map((m) => m.type)).toEqual(["step_accepted", "session_event", "step_state", "step_finished", "credential_captured"]);
+  });
+
+  it("step_start tokens are wrapped in Secrets when parsed", () => {
+    const m = asCtrl({
+      type: "step_start",
+      run_id: "r",
+      attempt: 1,
+      task_id: "t",
+      workspaces: [{ repo: "o/r", url: "u", mode: "write", branch: "b", base: "main", token: "ghs_ws_secret" }],
+      exec: { kind: "command", run: "true" },
+      env: { API_KEY: "env_secret" },
+      github_token: "ghs_gh_secret",
+    });
+    const d = inspect(m, { depth: 10 }) + JSON.stringify(m);
+    for (const secret of ["ghs_ws_secret", "env_secret", "ghs_gh_secret"]) expect(d).not.toContain(secret);
+    if (m.type !== "step_start") throw new Error("type");
+    expect((m.workspaces[0]!.token as Secret).expose()).toBe("ghs_ws_secret");
+    expect((m.env!.API_KEY as Secret).expose()).toBe("env_secret");
   });
 
   it("a stats reply is delivered to onCtrl", async () => {
@@ -395,7 +373,7 @@ describe("runs", () => {
     }
   });
 
-  it("claude_token is sent as a plain string on open and run_start, and never leaks via inspect", async () => {
+  it("claude_token is sent as a plain string on open, and never leaks via inspect", async () => {
     const { s, srv } = await connected();
     const p = s.openAcp({ claudeToken: "sk-secret-open" });
     const f = await srv.next((f) => f.type === FrameType.Ctrl && parseCtrl(f).type === "open");
@@ -405,25 +383,6 @@ describe("runs", () => {
     expect(String(open.type === "open" ? open.claude_token : "")).not.toContain("sk-secret-open");
     srv.ctrl({ type: "opened", channel: (open as { channel: number }).channel });
     await p;
-
-    const req = {
-      run_id: "r1",
-      repo_url: "u",
-      base_ref: "main",
-      branch: "b",
-      push: false,
-      clone_token: "c",
-      prompt: "p",
-      timeout_secs: 1,
-      callback_url: "cb",
-      callback_token: "t",
-      claude_token: new Secret("sk-secret-run"),
-    };
-    expect(inspect(req)).not.toContain("sk-secret-run");
-    const rp = s.runStart(req);
-    const rf = await srv.next((f) => f.type === FrameType.Ctrl && parseCtrl(f).type === "run_start");
-    expect(JSON.parse(new TextDecoder().decode(rf.payload)).claude_token).toBe("sk-secret-run");
-    rp.catch(() => {});
   });
 
   it("a DOM WebSocket is assignable to WebSocketLike without a cast", () => {
@@ -435,65 +394,12 @@ describe("runs", () => {
     expect(ctor).toBeDefined();
   });
 
-  it("attributes unimplemented errors to the oldest pending run request", async () => {
+  it("attributes unimplemented errors to the oldest pending request", async () => {
     const { s, srv } = await connected();
-    const p = s.runStatus("job-1");
-    await srv.nextCtrl("run_status");
-    srv.ctrl({ type: "error", code: "unimplemented", message: "no run manager" });
+    const p = s.credentialStatus();
+    await srv.nextCtrl("credential_status");
+    srv.ctrl({ type: "error", code: "unimplemented", message: "no" });
     await expect(p).rejects.toMatchObject({ code: "remote", details: { remote: { code: "unimplemented" } } });
-  });
-
-  it("prefers error.run_id over the oldest pending request", async () => {
-    const { s, srv } = await connected();
-    const a = s.runStatus("a");
-    const b = s.runStatus("b");
-    await srv.nextCtrl("run_status");
-    await srv.nextCtrl("run_status");
-    srv.ctrl({ type: "error", code: "weird_code", message: "no", run_id: "b" });
-    srv.ctrl({ type: "run_state", run_id: "a", state: "running" });
-    await expect(b).rejects.toMatchObject({ code: "remote", details: { remote: { code: "weird_code", run_id: "b" } } });
-    expect(await a).toMatchObject({ state: "running" });
-  });
-
-  it("a rejected run_start frees its channel id", async () => {
-    const { s, srv } = await connected();
-    const p = s.runStart({ ...run, log: 50 });
-    await srv.nextCtrl("run_start");
-    srv.ctrl({ type: "error", code: "internal", message: "boom" });
-    await expect(p).rejects.toBeInstanceOf(SessionError);
-    await expect(s.runStart({ ...run, log: 0 })).rejects.toMatchObject({ code: "channel_in_use" });
-    const p2 = s.runStart({ ...run, log: 50 });
-    await srv.nextCtrl("run_start");
-    srv.ctrl({ type: "run_accepted", run_id: "job-1", state: "queued", existing: false });
-    expect((await p2).log!.id).toBe(50);
-  });
-
-  it("is omitted when absent and passed through when set", async () => {
-    const { s, srv } = await connected();
-    const p1 = s.runStart(run);
-    const m1 = await srv.nextCtrl("run_start");
-    expect("deps_token" in m1).toBe(false);
-    srv.ctrl({ type: "run_accepted", run_id: "job-1", state: "queued", existing: false });
-    await p1;
-    const p2 = s.runStart({ ...run, deps_token: "ghs_deps" });
-    const m2 = await srv.nextCtrl("run_start");
-    expect(m2.deps_token).toBe("ghs_deps");
-    srv.ctrl({ type: "run_accepted", run_id: "job-1", state: "queued", existing: true });
-    await p2;
-  });
-
-  it("passes npm_token through only when set", async () => {
-    const { s, srv } = await connected();
-    const p1 = s.runStart(run);
-    const m1 = await srv.nextCtrl("run_start");
-    expect("npm_token" in m1).toBe(false);
-    srv.ctrl({ type: "run_accepted", run_id: "job-1", state: "queued", existing: false });
-    await p1;
-    const p2 = s.runStart({ ...run, npm_token: "ghp_npm" });
-    const m2 = await srv.nextCtrl("run_start");
-    expect(m2.npm_token).toBe("ghp_npm");
-    srv.ctrl({ type: "run_accepted", run_id: "job-1", state: "queued", existing: true });
-    await p2;
   });
 });
 
@@ -513,8 +419,8 @@ describe("shutdown", () => {
 
   it("a bad frame is fatal and fails pending work", async () => {
     const { s, srv } = await connected();
-    const p = s.runStatus("x");
-    await srv.nextCtrl("run_status");
+    const p = s.credentialStatus();
+    await srv.nextCtrl("credential_status");
     srv.ws.send(new Uint8Array([9, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
     await expect(p).rejects.toMatchObject({ code: "ended" });
     expect((await s.closed).kind).toBe("protocol");

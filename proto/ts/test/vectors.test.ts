@@ -65,12 +65,12 @@ describe("ctrl.json", () => {
   }
 });
 
-describe("graph segment vectors", () => {
-  it("run_start_graph and run_finished_graph carry the graph fields", () => {
-    const rs = load("ctrl.json").find((v) => v.name === "run_start_graph")!;
-    expect(rs.message.graph).toMatchObject({ start: "implement", prompts: { implement: "Implement issue #42" } });
-    const fin = load("json_types.json").find((v) => v.name === "run_finished_graph")!;
-    expect(fin.json.graph).toMatchObject({ stopped_at: "open_pr", visits: { implement: 1 } });
+describe("step vectors", () => {
+  it("step_start carries the step fields; step_finished carries git facts", () => {
+    const ss = load("ctrl.json").find((v) => v.name === "step_start_agent")!;
+    expect(ss.message).toMatchObject({ run_id: "run-123", exec: { kind: "agent" }, github_token: "ghs_step" });
+    const fin = load("json_types.json").find((v) => v.name === "step_finished")!;
+    expect(fin.json.git[0]).toMatchObject({ pushed: true, head_sha: "abc123" });
   });
 });
 
@@ -80,7 +80,6 @@ describe("per-user claude token vectors", () => {
   const NEW_FIELDS = ["claude_token", "token", "legacy", "scope"];
 
   it("token vectors exist and carry the new fields", () => {
-    expect(byName("run_start_claude_token").message.claude_token).toBeTypeOf("string");
     expect(byName("open_claude_token").message.claude_token).toBeTypeOf("string");
     expect(byName("credential_captured_token").message).toMatchObject({ legacy: true });
     expect(byName("credential_state_scope").message.scope).toBe("user");

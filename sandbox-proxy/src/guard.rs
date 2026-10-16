@@ -49,7 +49,7 @@ pub struct Allowed {
 }
 
 /// What to do with a valid browser frame.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Verdict {
     /// Send the original bytes to the sandbox.
     Forward(Allowed),
@@ -286,26 +286,28 @@ fn ctrl_allowed(m: &Ctrl) -> Result<(), &'static str> {
         Ctrl::Welcome { .. } => Err("welcome"),
         Ctrl::Opened { .. } => Err("opened"),
         Ctrl::OpenError { .. } => Err("open_error"),
-        Ctrl::RunStart(_) => Err("run_start"),
-        Ctrl::RunAccepted { .. } => Err("run_accepted"),
-        Ctrl::RunStatus { .. } => Err("run_status"),
-        Ctrl::RunState { .. } => Err("run_state"),
-        Ctrl::RunFinished(_) => Err("run_finished"),
-        Ctrl::RunSubscribe { .. } => Err("run_subscribe"),
-        Ctrl::RunCancel { .. } => Err("run_cancel"),
+        // Steps are engine-only (ADR-0022): browsers neither start nor drive them,
+        // and never send the server's replies.
+        Ctrl::StepStart(_) => Err("step_start"),
+        Ctrl::StepSteer { .. } => Err("step_steer"),
+        Ctrl::StepStop { .. } => Err("step_stop"),
+        Ctrl::StepResume { .. } => Err("step_resume"),
+        Ctrl::StepStatus { .. } => Err("step_status"),
+        Ctrl::StepAccepted { .. } => Err("step_accepted"),
+        Ctrl::StepState { .. } => Err("step_state"),
+        Ctrl::SessionEvent(_) => Err("session_event"),
+        Ctrl::StepFinished(_) => Err("step_finished"),
         Ctrl::CredentialCaptured { .. } => Err("credential_captured"),
         Ctrl::CredentialState { .. } => Err("credential_state"),
         Ctrl::StatsRequest => Err("stats_request"),
         Ctrl::Stats(_) => Err("stats"),
-        Ctrl::PrepareRequest(_) => Err("prepare_request"),
-        Ctrl::Prepared(_) => Err("prepared"),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use enzarb_proto::{ChannelKind, RunPhase, RunStart};
+    use enzarb_proto::{ChannelKind, StepExec, StepFinished, StepPhase, StepStart};
 
     fn check(m: &Bytes) -> Result<Verdict, Reject> {
         Guard::new(&["acp".to_string()]).check_browser_message(m)
@@ -315,25 +317,19 @@ mod tests {
         Frame::ctrl(m).unwrap().to_bytes().unwrap()
     }
 
-    fn run_start() -> RunStart {
-        RunStart {
+    fn step_start() -> StepStart {
+        StepStart {
             run_id: "j".into(),
-            repo_url: "https://github.com/a/b".into(),
-            base_ref: "main".into(),
-            branch: "x".into(),
-            push: false,
-            clone_token: "t".into(),
-            prompt: "p".into(),
-            timeout_secs: 1,
-            callback_url: "http://x".into(),
-            callback_token: "t".into(),
-            log_channel: None,
-            deps_token: None,
-            npm_token: None,
-            ci_read_token: None,
-            claude_token: None,
-            retarget: None,
-            graph: None,
+            attempt: 1,
+            task_id: "t".into(),
+            workspaces: vec![],
+            exec: StepExec::Command {
+                run: "true".into(),
+                tools: vec![],
+            },
+            outputs: Default::default(),
+            env: Default::default(),
+            github_token: None,
         }
     }
 
@@ -367,22 +363,46 @@ mod tests {
     }
 
     #[test]
-    fn rejects_run_control() {
+    fn rejects_step_control() {
         for m in [
-            Ctrl::RunStart(run_start()),
-            Ctrl::RunCancel { run_id: "j".into() },
-            Ctrl::RunStatus { run_id: "j".into() },
-            Ctrl::RunSubscribe {
-                run_ids: vec!["j".into()],
-            },
-            Ctrl::RunState {
+            Ctrl::StepStart(Box::new(step_start())),
+            Ctrl::StepSteer {
                 run_id: "j".into(),
-                state: RunPhase::Running,
-                exit_code: None,
-                summary: None,
-                usage: None,
+                text: "x".into(),
+            },
+            Ctrl::StepStop { run_id: "j".into() },
+            Ctrl::StepResume { run_id: "j".into() },
+            Ctrl::StepStatus {
+                run_id: "j".into(),
+                after_seq: 0,
+            },
+            Ctrl::StepAccepted {
+                run_id: "j".into(),
+                state: StepPhase::Running,
+                existing: false,
+            },
+            Ctrl::StepState {
+                run_id: "j".into(),
+                state: StepPhase::Running,
                 result: None,
             },
+            Ctrl::SessionEvent(enzarb_proto::SessionEvent {
+                run_id: "j".into(),
+                seq: 1,
+                at: "2026-10-16T00:00:00Z".into(),
+                kind: "user".into(),
+                payload: Default::default(),
+                truncated: false,
+            }),
+            Ctrl::StepFinished(StepFinished {
+                run_id: "j".into(),
+                exit: "success".into(),
+                outputs: Default::default(),
+                result: None,
+                git: vec![],
+                usage: None,
+                error: None,
+            }),
             Ctrl::Hello {
                 versions: vec![1],
                 client: enzarb_proto::ClientKind::Executor,

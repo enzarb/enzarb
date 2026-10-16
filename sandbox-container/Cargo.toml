@@ -17,7 +17,6 @@ async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
 bytes = "1"
 enzarb-proto = { path = "../proto/crates/enzarb-proto", features = ["tokio"] }
-enzarb-graph = { path = "../workflows/crates/graph" }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 nix = { version = "0.30", features = ["signal", "process", "user", "fs"] }
 portable-pty = "0.9"
@@ -35,6 +34,7 @@ sha2 = "0.11.0"
 serde_yaml_ng = "0.10.0"
 agent-client-protocol = { version = "3.2", features = ["unstable_end_turn_token_usage"] }
 tokio-util = { version = "0.7", features = ["compat"] }
+jsonschema = { version = "0.58.6", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

@@ -118,6 +118,18 @@ pub async fn run(
     ctl: &mut Ctl,
     on_stderr: Option<LineSink>,
 ) -> io::Result<Output> {
+    run_lines(reaper, spec, ctl, None, on_stderr).await
+}
+
+/// Like [`run`], and with `on_stdout` set, each stdout line goes to it as it is
+/// produced (and only the last [`STDERR_TAIL`] bytes of stdout are kept).
+pub async fn run_lines(
+    reaper: &Reaper,
+    spec: CmdSpec,
+    ctl: &mut Ctl,
+    on_stdout: Option<LineSink>,
+    on_stderr: Option<LineSink>,
+) -> io::Result<Output> {
     let mut cmd = Command::new(&spec.program);
     if spec.env_clear {
         cmd.env_clear();
@@ -158,8 +170,22 @@ pub async fn run(
     }
     let out_task = tokio::task::spawn_blocking(move || {
         let mut buf = Vec::new();
-        if let Some(r) = stdout {
-            let _ = r.take(STDOUT_CAP).read_to_end(&mut buf);
+        let Some(r) = stdout else { return buf };
+        match on_stdout {
+            None => {
+                let _ = r.take(STDOUT_CAP).read_to_end(&mut buf);
+            }
+            Some(f) => {
+                for line in io::BufReader::new(r).split(b'\n') {
+                    let Ok(line) = line else { break };
+                    f(String::from_utf8_lossy(&line).trim_end_matches('\r'));
+                    buf.extend_from_slice(&line);
+                    buf.push(b'\n');
+                    if buf.len() > STDERR_TAIL * 2 {
+                        buf.drain(..buf.len() - STDERR_TAIL);
+                    }
+                }
+            }
         }
         buf
     });
