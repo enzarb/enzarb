@@ -62,7 +62,7 @@ function needsYouWhere(sql: Sql, projects: string[], staleHours: number) {
 		state IN ('Failed', 'Stale')
 		OR (workflow = 'issue' AND state = 'AwaitingApproval')
 		OR (workflow = 'issue' AND state = 'AwaitingAnswers')
-		OR (workflow LIKE 'graph:%' AND state = 'Blocked'
+		OR (workflow LIKE 'graph:%' AND state IN ('Blocked', 'Waiting')
 			AND state_data->'wait'->>'waiting_on' = 'human')
 		OR (workflow = 'change_request' AND state NOT IN ${sql([...TERMINAL_STATES])}
 			AND CASE

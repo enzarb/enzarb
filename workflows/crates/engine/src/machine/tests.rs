@@ -5,6 +5,7 @@ mod ci_fix;
 mod dependencies;
 mod epic;
 mod graph;
+mod graph_cr;
 mod graph_epics;
 mod human_approval;
 mod merge;

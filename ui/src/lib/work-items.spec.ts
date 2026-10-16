@@ -337,7 +337,48 @@ describe('graph tasks blocked by dependencies', () => {
 			reason: 'Blocked by #3 (API, Done, PR x not merged)',
 			text: 'Blocked by #3 (API, Done, PR x not merged)'
 		});
-		expect(classifyNeedsYou({ ...blocked('human', 'x'), state: 'Waiting' })).toBeNull();
+		expect(classifyNeedsYou({ ...blocked('enzarb', 'x'), state: 'Waiting' })).toBeNull();
+		expect(classifyNeedsYou({ ...blocked('human', 'x'), state: 'Running' })).toBeNull();
+	});
+});
+
+describe('graph tasks at a wait', () => {
+	const at = (workflow: string, waiting_on: string, reason: string, state = 'Waiting') => ({
+		workflow,
+		state,
+		stateData: { wait: { waiting_on, reason, text: 'Why' } }
+	});
+	it('classify like compiled items from state_data.wait', () => {
+		const cases: [string, string, string, NeedsYou['category'] | null][] = [
+			['graph:issue', 'human', 'approval', 'approval'],
+			['graph:issue', 'human', 'question', 'question'],
+			['graph:issue', 'dependency', 'children_open', null],
+			['graph:change_request', 'human', 'ready_to_merge', 'merge'],
+			['graph:change_request', 'human', 'awaiting_review', 'review'],
+			['graph:change_request', 'human', 'checks_unverified', 'review'],
+			['graph:change_request', 'human', 'round_limit', 'blocked'],
+			['graph:change_request', 'human', 'ci_failed', 'blocked'],
+			['graph:change_request', 'human', 'conflict_parked', 'blocked'],
+			['graph:change_request', 'ci', 'ci_pending', null],
+			['graph:change_request', 'enzarb', 'reviewing', null],
+			['graph:change_request', 'github', 'merging', null]
+		];
+		for (const [workflow, on, reason, want] of cases) {
+			expect(classifyNeedsYou(at(workflow, on, reason))?.category ?? null, reason).toBe(want);
+		}
+		// A running graph task never needs you, whatever its wait says.
+		expect(classifyNeedsYou(at('graph:change_request', 'human', 'ready_to_merge', 'Running'))).toBe(
+			null
+		);
+	});
+	it('offers approve and merge at the matching waits only', () => {
+		const sd = (on: string, reason: string) => ({ wait: { waiting_on: on, reason } });
+		expect(availableActions('Waiting', sd('human', 'approval'))).toEqual(['approve', 'cancel']);
+		expect(availableActions('Waiting', sd('human', 'ready_to_merge'))).toEqual(['merge', 'cancel']);
+		expect(availableActions('Waiting', sd('ci', 'ready_to_merge'))).toEqual(['cancel']);
+		expect(availableActions('Running', sd('human', 'ready_to_merge'))).toEqual(['cancel']);
+		expect(availableActions('Merged', sd('human', 'ready_to_merge'))).toEqual([]);
+		expect(stateTone('Waiting')).toBe('waiting');
 	});
 });
 

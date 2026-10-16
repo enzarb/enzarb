@@ -276,7 +276,7 @@ fn valid_graphs() {
         ),
         // Every wait event and the two other actions.
         format!(
-            "  a: {{type: wait, events: [comment, approval, ci, review, merge_requested, dependencies_done, timer], next: p}}\n  p: {{type: action, action: post_comment, body: hi, next: o}}\n  o: {{type: action, action: open_change_request, next: e}}\n{end}"
+            "  a: {{type: wait, events: [comment, approval, ci, review, merge_requested, dependencies_done, timer, pushed, conflict], after: 1h, next: p}}\n  p: {{type: action, action: post_comment, body: hi, next: o}}\n  o: {{type: action, action: open_change_request, next: e}}\n{end}"
         ),
     ] {
         let start = if nodes.starts_with("  w:") { "w" } else { "a" };
@@ -460,7 +460,10 @@ fn wait_from_parses() {
         d.node("w").unwrap().kind,
         NodeKind::Wait {
             events: vec!["comment".into()],
-            from: WaitFrom::Anyone
+            from: WaitFrom::Anyone,
+            after: None,
+            reason: None,
+            text: None,
         }
     );
     let d = def(&with_nodes(
@@ -748,4 +751,257 @@ fn enzarb_issue_workflow_epic_creates_sub_issues_after_approval() {
     );
     let done = json!({"event": "children_done", "open": [], "completed": ["a"], "failed": []});
     assert_eq!(advance(&d, &mut s, done), Next::Node("done".into()));
+}
+
+const CR_EXAMPLE: &str = include_str!("../../../../docs/workflows/examples/change_request.yaml");
+
+/// Walks the change request example: `steps` are `(item facts, output)` of each node in turn.
+fn cr_walk(steps: &[(Value, Value)]) -> Vec<String> {
+    let d = load(CR_EXAMPLE).unwrap();
+    let (mut s, _) = GraphState::begin(&d);
+    let mut path = vec![s.node.clone()];
+    for (item, out) in steps {
+        s.outputs.insert(ITEM.into(), item.clone());
+        match advance(&d, &mut s, out.clone()) {
+            Next::Node(n) => path.push(n),
+            Next::Failed(r) => path.push(format!("failed: {r}")),
+        }
+    }
+    path
+}
+
+fn cr_facts(review: &str, must_fix: u32, ci: &str, mergeable: Value) -> Value {
+    let fix_due = ci == "failure" && !review.is_empty();
+    json!({"review": review, "must_fix": must_fix, "ci": ci, "ci_fix_due": fix_due,
+           "mergeable": mergeable, "auto_rounds": 0, "stacked": false})
+}
+
+#[test]
+fn change_request_example_validates_and_walks_its_paths() {
+    let d = load(CR_EXAMPLE).unwrap();
+    assert_eq!(d.on, ["change_request_opened"]);
+    let none = cr_facts("", 0, "unknown", Value::Null);
+    let approved = cr_facts("approve", 0, "success", json!(true));
+    let review_out =
+        |decision: &str, must_fix: u32| json!({"decision": decision, "must_fix": must_fix});
+
+    // Approve, CI green, mergeable: wait for a person's merge, then merge.
+    assert_eq!(
+        cr_walk(&[
+            (none.clone(), json!({"ok": true, "decision": "approve"})),
+            (approved.clone(), review_out("approve", 0)),
+            (
+                approved.clone(),
+                json!({"ci": "success", "mergeable": true})
+            ),
+            (
+                approved.clone(),
+                json!({"event": "merge_requested", "author": "carol"})
+            ),
+            (
+                approved.clone(),
+                json!({"event": "merge_requested", "author": "carol"})
+            ),
+            (approved.clone(), json!({"outcome": "merged"})),
+        ]),
+        [
+            "review",
+            "post_review",
+            "readiness",
+            "ready",
+            "merge_gate",
+            "merge",
+            "done"
+        ]
+    );
+
+    // Must-fix findings: an automatic round, pushed, reviewed again.
+    let rc = cr_facts("request_changes", 1, "unknown", Value::Null);
+    assert_eq!(
+        cr_walk(&[
+            (
+                none.clone(),
+                json!({"ok": true, "decision": "request_changes"})
+            ),
+            (rc.clone(), review_out("request_changes", 1)),
+            (
+                rc.clone(),
+                json!({"ok": true, "decision": "done", "pushed": true})
+            ),
+        ]),
+        ["review", "post_review", "fix", "review"]
+    );
+
+    // At most 3 automatic rounds, then a person.
+    let mut steps = vec![(none.clone(), json!({"ok": true}))];
+    for _ in 0..4 {
+        steps.push((rc.clone(), review_out("request_changes", 1)));
+        steps.push((
+            rc.clone(),
+            json!({"ok": true, "decision": "done", "pushed": true}),
+        ));
+        steps.push((none.clone(), json!({"ok": true})));
+    }
+    let path = cr_walk(&steps[..11]);
+    assert_eq!(path.iter().filter(|n| *n == "fix").count(), 3, "{path:?}");
+    assert_eq!(path.last().unwrap(), "capped", "{path:?}");
+
+    // CI fails on the approved head: a fix round with the failing checks.
+    let red = cr_facts("approve", 0, "failure", json!(true));
+    assert_eq!(
+        cr_walk(&[
+            (none.clone(), json!({"ok": true})),
+            (red.clone(), review_out("approve", 0)),
+        ]),
+        ["review", "post_review", "fix"]
+    );
+    // ... or later, at the merge wait.
+    assert_eq!(
+        cr_walk(&[
+            (none.clone(), json!({"ok": true})),
+            (approved.clone(), review_out("approve", 0)),
+            (
+                approved.clone(),
+                json!({"ci": "success", "mergeable": true})
+            ),
+            (red.clone(), json!({"event": "ci", "status": "failure"})),
+        ]),
+        ["review", "post_review", "readiness", "ready", "fix"]
+    );
+
+    // A conflict: two attempts against the base, then parked for a person.
+    let pending = cr_facts("approve", 0, "pending", Value::Null);
+    assert_eq!(
+        cr_walk(&[
+            (none.clone(), json!({"ok": true})),
+            (pending.clone(), review_out("approve", 0)),
+            (pending.clone(), json!({"ci": "pending", "mergeable": null})),
+            (
+                pending.clone(),
+                json!({"event": "conflict", "base_sha": "b1"})
+            ),
+            (pending.clone(), json!({"ok": true, "decision": "blocked"})),
+            (pending.clone(), json!({"ok": true, "decision": "blocked"})),
+            (pending.clone(), json!({"id": 1})),
+            (
+                pending.clone(),
+                json!({"event": "comment", "body": "try again"})
+            ),
+        ]),
+        [
+            "review",
+            "post_review",
+            "readiness",
+            "checks",
+            "resolve",
+            "resolve_again",
+            "tell_parked",
+            "parked",
+            "resolve"
+        ]
+    );
+    // Resolved: the merge commit is reviewed.
+    assert_eq!(
+        cr_walk(&[
+            (none.clone(), json!({"ok": true})),
+            (pending.clone(), review_out("approve", 0)),
+            (pending.clone(), json!({"ci": "pending"})),
+            (
+                pending.clone(),
+                json!({"event": "conflict", "base_sha": "b1"})
+            ),
+            (
+                pending.clone(),
+                json!({"ok": true, "decision": "done", "pushed": true})
+            ),
+        ]),
+        [
+            "review",
+            "post_review",
+            "readiness",
+            "checks",
+            "resolve",
+            "review"
+        ]
+    );
+
+    // A comment verdict waits for a person; their feedback is addressed, a push re-reviewed.
+    let comment = cr_facts("comment", 0, "success", json!(true));
+    assert_eq!(
+        cr_walk(&[
+            (none.clone(), json!({"ok": true})),
+            (comment.clone(), review_out("comment", 0)),
+            (
+                comment.clone(),
+                json!({"event": "review", "state": "changes_requested"})
+            ),
+            (
+                comment.clone(),
+                json!({"ok": true, "decision": "done", "pushed": true})
+            ),
+        ]),
+        ["review", "post_review", "human", "address", "review"]
+    );
+    assert_eq!(
+        cr_walk(&[
+            (none.clone(), json!({"ok": true})),
+            (comment.clone(), review_out("comment", 0)),
+            (
+                comment.clone(),
+                json!({"event": "pushed", "head_sha": "s2"})
+            ),
+        ]),
+        ["review", "post_review", "human", "review"]
+    );
+
+    // The merge is reachable only through the wait on `merge_requested`.
+    let gate: Vec<&str> = d
+        .nodes
+        .iter()
+        .filter(|(_, n)| {
+            n.next
+                .as_ref()
+                .is_some_and(|e| e.targets().contains(&"merge"))
+        })
+        .map(|(id, _)| id.as_str())
+        .collect();
+    assert_eq!(gate, ["merge_gate"]);
+}
+
+#[test]
+fn wait_options_after_and_reason_are_validated() {
+    let ok = with_nodes(
+        "w",
+        "  w: {type: wait, events: [timer, comment], after: 2h, reason: nudge_due, text: Nudge, next: e}\n  e: {type: end, status: done}\n",
+    );
+    let d = load(&ok).unwrap();
+    assert!(matches!(
+        &d.node("w").unwrap().kind,
+        NodeKind::Wait { after: Some(a), reason: Some(r), .. } if a == "2h" && r == "nudge_due"
+    ));
+    for (body, want) in [
+        ("events: [timer]", "a wait on `timer` needs `after`"),
+        ("events: [timer], after: soon", "`after` must be a duration"),
+        (
+            "events: [comment], after: 1d",
+            "`after` is set but `timer` is not in `events`",
+        ),
+        ("events: [comment], reason: Not-ok", "`reason` must match"),
+    ] {
+        let src = with_nodes(
+            "w",
+            &format!("  w: {{type: wait, {body}, next: e}}\n  e: {{type: end, status: done}}\n"),
+        );
+        let p = match validate(&def(&src)) {
+            Err(Error::Invalid(p)) => p,
+            other => panic!("{body}: {other:?}"),
+        };
+        assert!(p.iter().any(|x| x.contains(want)), "{body}: {p:?}");
+    }
+    assert_eq!(parse_duration("30s"), Some(30));
+    assert_eq!(parse_duration("30m"), Some(1800));
+    assert_eq!(parse_duration("1d"), Some(86_400));
+    for bad in ["", "0m", "m", "1w", "1.5h", "-1h", "1h30m"] {
+        assert_eq!(parse_duration(bad), None, "{bad}");
+    }
 }

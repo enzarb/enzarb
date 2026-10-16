@@ -103,6 +103,8 @@ pub enum JobKind {
     /// A graph segment run (ADR-0020): sandbox-init walks the graph's `command` and `agent`
     /// nodes from the current node (`AgentJobInput.graph`, sent as `RunStart.graph`).
     AgentSegment,
+    /// Merge the base into a change request's branch (the graph `update_branch` action).
+    UpdateBranch,
 }
 
 impl JobKind {
@@ -123,6 +125,7 @@ impl JobKind {
             JobKind::RetargetChangeRequest => "retarget_change_request",
             JobKind::CreateSubIssues => "create_sub_issues",
             JobKind::AgentSegment => "agent_segment",
+            JobKind::UpdateBranch => "update_branch",
         }
     }
 
@@ -136,6 +139,7 @@ impl JobKind {
                 | JobKind::MergeChangeRequest
                 | JobKind::RetargetChangeRequest
                 | JobKind::CreateSubIssues
+                | JobKind::UpdateBranch
         )
     }
 }
@@ -707,7 +711,19 @@ impl WorkflowState {
             WorkflowState::Issue(s) => serde_json::to_value(&s.data).unwrap_or_default(),
             WorkflowState::ChangeRequest(s) => change_request::state_data(s),
             WorkflowState::Mention(s) => serde_json::to_value(&s.data).unwrap_or_default(),
-            WorkflowState::Graph(s) => serde_json::to_value(&s.data).unwrap_or_default(),
+            WorkflowState::Graph(s) => {
+                let mut v = serde_json::to_value(&s.data).unwrap_or_default();
+                // A change request graph shows the same readiness checklist as the compiled
+                // machine (derived, ignored on load).
+                if let (Some(c), Value::Object(m)) = (&s.data.cr, &mut v) {
+                    m.insert(
+                        "checklist".into(),
+                        serde_json::to_value(change_request::readiness(&c.data))
+                            .unwrap_or_default(),
+                    );
+                }
+                v
+            }
         };
         if v.is_null() {
             serde_json::json!({})
@@ -809,7 +825,10 @@ pub fn transition(ctx: &Ctx, state: &WorkflowState, ev: &EngineEvent) -> Transit
             (k, Some(r)) if *k == r => match k {
                 // A repository with an issue graph on its default branch uses it (ADR-0020).
                 WorkflowKind::Issue => graph::start_or(ctx, state, ev, issue::start),
-                WorkflowKind::ChangeRequest => change_request::start(ctx, state, ev),
+                // Likewise a change request graph (ADR-0020), unless the request is stacked.
+                WorkflowKind::ChangeRequest => {
+                    graph::start_cr_or(ctx, state, ev, change_request::start)
+                }
                 WorkflowKind::Mention => mention::start(ctx, state, ev),
                 WorkflowKind::Graph => Transition::reject(state, "graph workflows start as issues"),
             },

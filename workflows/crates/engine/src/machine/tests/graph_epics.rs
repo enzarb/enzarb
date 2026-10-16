@@ -436,7 +436,7 @@ fn a_task_with_open_dependencies_is_blocked_before_start() {
     let t = transition(&gc(Permission::Read, ADOPT), &t.next, &deps_changed("d2"));
     let g = graph_of(&t, GraphPhase::Running);
     assert_eq!(g.data.graph.node, "plan");
-    assert!(g.data.wait.is_none());
+    assert_eq!(g.data.wait.as_ref().unwrap()["waiting_on"], "enzarb");
     assert_eq!(t.note, "dependencies completed; resumed at plan");
     let (_, _, input) = job_of(&t, JobKind::AgentSegment);
     assert_eq!(input["graph"]["start"], "plan");

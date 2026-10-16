@@ -138,6 +138,17 @@ impl<'a> Fx<'a> {
         self.job(JobKind::CheckMergeReadiness, PRIORITY_COMMENT, input);
     }
 
+    /// Merge the base into the change request's branch (`Connector::update_branch`: never a
+    /// rebase or force-push), pinned to `expected_head_sha`.
+    pub fn update_branch(&mut self, number: u64, expected_head_sha: &str) {
+        let input = json!({
+            "item": self.ctx.work_item,
+            "number": number,
+            "expected_head_sha": expected_head_sha,
+        });
+        self.job(JobKind::UpdateBranch, PRIORITY_COMMENT, input);
+    }
+
     /// The human-triggered squash merge. Only the UI `merge` handler may call this.
     pub fn merge_change_request(
         &mut self,

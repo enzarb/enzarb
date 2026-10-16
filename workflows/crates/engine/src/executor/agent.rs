@@ -262,7 +262,9 @@ impl Executor {
             .then(|| self.cfg.npm_token.as_ref().map(|t| t.expose().to_string()))
             .flatten();
         // Only a CI-fix round reads CI logs; chats and other jobs never get this token.
-        let ci_read_token = if kind == JobKind::AgentAddressComments && input.context.ci_fix {
+        let ci_read_token = if matches!(kind, JobKind::AgentAddressComments | JobKind::AgentSegment)
+            && input.context.ci_fix
+        {
             self.mint_ci_read_token(job, &input.repo, connector).await
         } else {
             None
