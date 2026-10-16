@@ -196,7 +196,8 @@ async fn ci_details_lists_failures_with_log_tail() {
         200,
         json!({"total_count": 3, "check_runs": [
             {"id": 11, "name": "test", "status": "completed", "conclusion": "failure",
-             "html_url": "https://gh/11", "app": {"slug": "github-actions"}},
+             "html_url": "https://gh/11",
+             "details_url": "https://ghe.example/o/r/actions/runs/99/job/11", "app": {"slug": "github-actions"}},
             {"id": 12, "name": "lint", "status": "completed", "conclusion": "success"},
             {"id": 13, "name": "Copilot review", "status": "completed", "conclusion": "failure"},
         ]}),
@@ -211,8 +212,10 @@ async fn ci_details_lists_failures_with_log_tail() {
     assert_eq!(
         got,
         json!({"sha": "sha1", "state": "failure", "failing": [
-            {"name": "ci/ext", "url": "https://ci/1", "log_excerpt": ""},
-            {"name": "test", "url": "https://gh/11", "log_excerpt": "line1\nerror: boom\n"},
+            {"name": "ci/ext", "kind": "status", "url": "https://ci/1", "conclusion": "error",
+             "log_excerpt": "", "actionable": false},
+            {"name": "test", "kind": "actions", "url": "https://gh/11", "conclusion": "failure",
+             "log_excerpt": "line1\nerror: boom\n", "actionable": true, "job_id": 11, "run_id": 99},
         ]})
     );
 }
@@ -254,8 +257,15 @@ async fn list_reviews_keeps_latest_per_author() {
         ]),
     )
     .await;
+    get(
+        &s,
+        "/repos/enzarb/enzarb-ui/pulls/7",
+        200,
+        json!({"head": {"ref": "h", "sha": "hs"}, "base": {"ref": "main"}}),
+    )
+    .await;
     assert_eq!(
-        c.list_reviews(&item(7)).await.unwrap(),
+        c.list_reviews(&item(7)).await.unwrap()["reviews"],
         json!([
             {"author": "a", "state": "approved", "body": "ok"},
             {"author": "b", "state": "commented", "body": ""},

@@ -1642,7 +1642,10 @@ impl Connector for GitHubConnector {
                     .find(|s| s["context"].as_str() == Some(ctx))
                     .and_then(|s| s["target_url"].as_str())
                     .unwrap_or_default();
-                failing.push(json!({ "name": ctx, "url": url, "log_excerpt": "" }));
+                failing.push(json!({
+                    "name": ctx, "kind": "status", "url": url, "conclusion": st,
+                    "log_excerpt": "", "actionable": false,
+                }));
             }
         }
         for (run, summary) in runs.iter().zip(&checks) {
@@ -1664,7 +1667,30 @@ impl Connector for GitHubConnector {
                 .clone()
                 .or_else(|| run.details_url.clone())
                 .unwrap_or_default();
-            failing.push(json!({ "name": run.name, "url": url, "log_excerpt": excerpt }));
+            let mut entry = json!({
+                "name": run.name,
+                "kind": if is_actions { "actions" } else { "check" },
+                "url": url,
+                "conclusion": run.conclusion.clone().unwrap_or_default(),
+                "log_excerpt": excerpt,
+                "actionable": false,
+            });
+            if is_actions && run.id != 0 {
+                // An Actions check run's id is its job id; the run id is in the details URL
+                // (`…/actions/runs/<run>/job/<job>`, any host).
+                entry["job_id"] = json!(run.id);
+                let run_id = run
+                    .details_url
+                    .as_deref()
+                    .and_then(|u| u.split("/actions/runs/").nth(1))
+                    .and_then(|r| r.split('/').next())
+                    .and_then(|r| r.parse::<u64>().ok());
+                if let Some(r) = run_id {
+                    entry["run_id"] = json!(r);
+                }
+                entry["actionable"] = json!(true);
+            }
+            failing.push(entry);
         }
         Ok(json!({ "sha": sha, "state": state, "failing": failing }))
     }
@@ -1703,7 +1729,8 @@ impl Connector for GitHubConnector {
                 None => latest.push(fact),
             }
         }
-        Ok(Value::Array(latest))
+        let sha = self.pull_state(r, item.number).await?.head.sha;
+        Ok(json!({ "sha": sha, "reviews": latest }))
     }
 
     async fn contains(&self, repo: &RepoKey, sha: &str, git_ref: &str) -> Result<Option<bool>> {
