@@ -592,6 +592,15 @@ impl Policy {
                 }
                 continue;
             }
+            if prog == "gh" {
+                // Read-only CI inspection only, by the same rule as the hard
+                // policy (`gh run view`, `gh pr checks`, GET `gh api` under
+                // actions/check-runs); the sandbox's GH_TOKEN is read-only too.
+                if let Some(d) = hard::hard_gh(args) {
+                    return d;
+                }
+                continue;
+            }
             let Some(rule) = self.commands.iter().find(|c| c.name == prog) else {
                 return Decision::deny("shell", format!("{prog} is not an allowed command"));
             };
@@ -1689,6 +1698,29 @@ mod tests {
         let (_d, wt) = setup();
         let d = sh(&Policy::default(), &wt, cmd);
         assert!(!d.allow, "{cmd:?} should be denied: {d:?}");
+    }
+
+    #[test]
+    fn gh_read_only_ci_inspection() {
+        for c in [
+            "gh run view 38830485602 --log-failed",
+            "gh run view --job 116747891772 --log",
+            "gh run list --limit 5",
+            "gh pr checks 202",
+            "gh api repos/enzarb/enzarb/actions/jobs/116747891772/logs",
+            "gh run view 1 --log-failed | tail -200",
+        ] {
+            allowed(c);
+        }
+        for c in [
+            "gh pr merge 202",
+            "gh auth token",
+            "gh api -X POST repos/enzarb/enzarb/actions/runs/1/rerun",
+            "gh api repos/enzarb/enzarb/contents/x",
+            "gh repo clone enzarb/enzarb",
+        ] {
+            denied(c);
+        }
     }
 
     #[test]
