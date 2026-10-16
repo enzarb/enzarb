@@ -188,3 +188,36 @@ Milestones:
 - **One more repository** to version (`enzarb/workflows`), with semver and moving major tags. A breaking library change needs a major bump.
 - **Larger Postgres** from session capture (jsonb, partitioned).
 - **No compatibility window:** in-flight work at the cutover is limited to adopting open issues.
+
+## Implementation notes
+M1 (`workflows/crates/flow`, crate `enzarb-flow`) settles details the decision left open. The full spec is [workflows/format.md](../workflows/format.md).
+
+- **Exits:**
+  - Every phase has two implicit exits, `done` and `limit_reached` (the default `on_limit`).
+  - Inside a phase, an `end: {status}` node leaves through the exit of that name.
+  - Exits map to `next`, a phase id or `{end: <status>}`.
+- **Edges:**
+  - Branches are `{if, to}` and must end with `{else}`, except at a wait, where no match means keep waiting.
+  - The default `max_visits` is 10.
+- **Steps:**
+  - A node runs a step with `step: {use | inline, with}`.
+  - `{param: <name>}` passes an enclosing phase's param down.
+- **Outputs:**
+  - `outputs` is one flat, task-wide map by output name. A step `result` is stored under `result.as` (default: the node id).
+  - Edges read the last finished step or action as `last` (`exit`, `outputs`, `result`, `git`, `missing_outputs`).
+  - A missing required output is reported in `last.missing_outputs` and doesn't change the exit.
+- **Bindings files** are `{version, imports, bindings: [...]}`, not a bare list, so `use` can name an alias.
+  - `on` is optional only with `disabled: true`.
+  - The merged list is ordered repo, Project, library; the first match wins.
+- **Events:**
+  - The catalog adds `issue` (bindings need it).
+  - Waits can also match two engine types, `timer` (a wait's `timer`) and `fact` (a refreshed fact).
+- **Compiled defaults:** a step's `stop` defaults to a `stop` command from a writer, as §6 names it. It is overridable data, not a rule.
+- **Errors pause the task, never the engine:**
+  - a template or input error, or no matching branch;
+  - more than 1000 engine transitions for one event.
+  - `resume` re-enters the node.
+- **Not in M1:**
+  - JSON Schema validation of `result` and custom event payloads (M4 validates `submit_result` at call time; M5 validates custom events at the endpoint);
+  - replay;
+  - the WASM build.
