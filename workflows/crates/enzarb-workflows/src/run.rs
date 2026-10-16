@@ -52,7 +52,8 @@ pub async fn run(cfg: Config) -> Result<(), Error> {
     let engine = Engine {
         pool: pool.clone(),
         index: Arc::new(index),
-        library: Library::new(gh.clone(), &cfg.default_library, cfg.library_repos.clone()),
+        library: Library::new(gh.clone(), &cfg.default_library, cfg.library_repos.clone())
+            .with_budget(std::time::Duration::from_secs(cfg.resolve_budget_secs)),
         permissions: Arc::new(CachedPermissions::new(
             ConnectorPermissions::new().with("github", gh.clone()),
         )),

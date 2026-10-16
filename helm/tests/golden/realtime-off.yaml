@@ -1334,6 +1334,7 @@ spec:
             - { name: ENZARB_DEFAULT_LIBRARY, value: "enzarb/workflows@v1" }
             - { name: ENZARB_LIBRARY_REPOS, value: "" }
             - { name: ENZARB_STALL_SECS, value: "1800" }
+            - { name: ENZARB_RESOLVE_BUDGET_SECS, value: "30" }
             - { name: ENZARB_MAX_STEPS_PER_PROJECT, value: "4" }
             - { name: ENZARB_CI_IGNORE_CHECKS, value: "(?i)copilot" }
             - { name: ENZARB_BOT_HANDLE, value: "enzarb" }

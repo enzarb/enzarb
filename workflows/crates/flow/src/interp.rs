@@ -161,6 +161,16 @@ pub enum TaskEvent {
     },
     /// A human resumed a paused task.
     Resume,
+    /// A writer cancelled the task (engine-native, not a workflow handler): any running step
+    /// is stopped and the task ends `cancelled`.
+    Cancel,
+    /// The engine could not start the pending step (a missing secret, a token the provider
+    /// refuses): nothing ran. The step is forgotten and the task pauses at its node, so a
+    /// resume (on a possibly re-resolved definition) starts it afresh.
+    StepNotStarted {
+        run_id: String,
+        reason: String,
+    },
 }
 
 /// The result of a step, reported by the executor.
@@ -369,6 +379,25 @@ impl<'a> Machine<'a> {
                         None => self.project(),
                     }
                 }
+            }
+            TaskEvent::Cancel => {
+                if self.s.status == Status::New {
+                    return;
+                }
+                if let Some(Pending::Step { run_id, .. }) = self.s.pending.clone() {
+                    self.fx.push(Effect::StopStep { run_id });
+                }
+                self.end(CANCELLED);
+            }
+            TaskEvent::StepNotStarted { run_id, reason } => {
+                if !matches!(&self.s.pending, Some(Pending::Step { run_id: r, .. }) if r == run_id)
+                {
+                    return;
+                }
+                self.unpause_for_result();
+                self.s.pending = None;
+                let here = self.s.frames.last().map(|f| f.node.clone());
+                self.pause(reason.clone(), here);
             }
             TaskEvent::Event { event } => self.on_event(event),
             TaskEvent::StepFinished(f) => self.on_step_finished(f),
@@ -1140,7 +1169,12 @@ impl<'a> Machine<'a> {
                 return;
             }
         };
-        let run_id = self.next_id("run");
+        // Run ids are global (step_runs, session events, the Project's sandbox): qualify them
+        // with the task so two tasks never share one.
+        let run_id = match self.s.doc.task.id.as_str() {
+            "" => self.next_id("run"),
+            t => self.next_id(&format!("task-{t}-run")),
+        };
         if matches!(exec, RunExec::Agent { .. }) {
             self.s.last_agent_run = Some(run_id.clone());
         }

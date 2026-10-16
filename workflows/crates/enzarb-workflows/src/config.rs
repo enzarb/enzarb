@@ -49,6 +49,8 @@ pub struct Config {
     pub stall_secs: u64,
     /// `ENZARB_MAX_STEPS_PER_PROJECT` (default 4).
     pub max_steps_per_project: u64,
+    /// `ENZARB_RESOLVE_BUDGET_SECS` (default 30): definition resolution budget per call.
+    pub resolve_budget_secs: u64,
 }
 
 impl std::fmt::Debug for Config {
@@ -63,6 +65,7 @@ impl std::fmt::Debug for Config {
                 &self.secrets_key.as_ref().map(|_| "<redacted>"),
             )
             .field("stall_secs", &self.stall_secs)
+            .field("resolve_budget_secs", &self.resolve_budget_secs)
             .finish_non_exhaustive()
     }
 }
@@ -213,6 +216,7 @@ impl Config {
             secrets_key,
             stall_secs: positive(get, "ENZARB_STALL_SECS", 1800)?,
             max_steps_per_project: positive(get, "ENZARB_MAX_STEPS_PER_PROJECT", 4)?,
+            resolve_budget_secs: positive(get, "ENZARB_RESOLVE_BUDGET_SECS", 30)?,
         })
     }
 }
@@ -232,6 +236,7 @@ mod tests {
             Config::from_lookup(roles.clone(), &env(&[("DATABASE_URL", "postgres://x")])).unwrap();
         assert_eq!(c.default_library, DEFAULT_LIBRARY);
         assert_eq!(c.stall_secs, 1800);
+        assert_eq!(c.resolve_budget_secs, 30);
         assert_eq!(c.health_listen.port(), 8082);
         assert!(c.secrets_key.is_none());
         let bad = Config::from_lookup(
@@ -248,10 +253,12 @@ mod tests {
                 ("DATABASE_URL", "postgres://x"),
                 ("ENZARB_LIBRARY_REPOS", "Enzarb/Workflows, a/b"),
                 ("ENZARB_STALL_SECS", "60"),
+                ("ENZARB_RESOLVE_BUDGET_SECS", "90"),
             ]),
         )
         .unwrap();
         assert_eq!(c.library_repos, vec!["enzarb/workflows", "a/b"]);
         assert_eq!(c.stall_secs, 60);
+        assert_eq!(c.resolve_budget_secs, 90);
     }
 }

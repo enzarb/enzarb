@@ -685,6 +685,11 @@ fn finished(run_id: &str, exit: &str, error: Option<String>) -> StepFinished {
     }
 }
 
+/// A git credential helper answering `get` with `$GH_TOKEN` (evaluated by git's shell, never
+/// stored).
+const GH_TOKEN_HELPER: &str =
+    "!f() { test \"$1\" = get && echo username=x-access-token && echo \"password=$GH_TOKEN\"; }; f";
+
 impl Inner {
     fn base_env(&self, start: &StepStart) -> Vec<(String, String)> {
         let mut env: Vec<(String, String)> = start
@@ -696,6 +701,17 @@ impl Inner {
             env.push(("GH_TOKEN".into(), t.expose().into()));
             env.push(("GH_NO_UPDATE_NOTIFIER".into(), "1".into()));
             env.push(("GH_PROMPT_DISABLED".into(), "1".into()));
+            // The step's own git calls (`git fetch` in a workspace) authenticate with the same
+            // token through an env-only credential helper: it reads `$GH_TOKEN` when git asks,
+            // so the token is never written to git config or disk.
+            if !env.iter().any(|(k, _)| k == "GIT_CONFIG_COUNT") {
+                env.push(("GIT_CONFIG_COUNT".into(), "1".into()));
+                env.push((
+                    "GIT_CONFIG_KEY_0".into(),
+                    "credential.https://github.com.helper".into(),
+                ));
+                env.push(("GIT_CONFIG_VALUE_0".into(), GH_TOKEN_HELPER.into()));
+            }
         }
         env.push(("GIT_AUTHOR_NAME".into(), self.cfg.git_name.clone()));
         env.push(("GIT_AUTHOR_EMAIL".into(), self.cfg.git_email.clone()));

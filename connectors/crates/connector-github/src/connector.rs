@@ -1028,6 +1028,48 @@ impl Connector for GitHubConnector {
             .map_err(|_| Error::Other(format!("get file: {path} is not UTF-8")))
     }
 
+    async fn list_files(
+        &self,
+        repo: &RepoKey,
+        git_ref: &str,
+    ) -> Result<Option<Vec<(String, u64)>>> {
+        #[derive(Deserialize)]
+        struct Entry {
+            path: String,
+            #[serde(rename = "type")]
+            kind: String,
+            #[serde(default)]
+            size: u64,
+        }
+        #[derive(Deserialize)]
+        struct Tree {
+            #[serde(default)]
+            tree: Vec<Entry>,
+            #[serde(default)]
+            truncated: bool,
+        }
+        github_repo(repo)?;
+        let api = format!(
+            "/repos/{}/git/trees/{}?recursive=1",
+            repo.full_name(),
+            encode_path(git_ref)
+        );
+        let t: Tree = self
+            .call(repo, "list files", Method::GET, &api, None)
+            .await?
+            .json()?;
+        if t.truncated {
+            return Ok(None);
+        }
+        Ok(Some(
+            t.tree
+                .into_iter()
+                .filter(|e| e.kind == "blob")
+                .map(|e| (e.path, e.size))
+                .collect(),
+        ))
+    }
+
     async fn list_dependencies(&self, item: &WorkItemKey) -> Result<Vec<WorkItemKey>> {
         #[derive(Deserialize)]
         struct Blocker {

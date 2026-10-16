@@ -1196,6 +1196,66 @@ fn engine_loop_without_wait_pauses() {
 }
 
 #[test]
+fn step_not_started_pauses_and_allows_reresolution() {
+    let res = resolved(&base());
+    let mut r = Run::new(res.clone());
+    r.on(start()).on(comment("/start", true));
+    let run_id = r.run_id();
+    let node = r.at();
+    // While it is pending the step defers re-resolution.
+    assert_eq!(reresolve(&res, &r.s).1, Reresolution::Deferred);
+    // A foreign run id is ignored.
+    r.on(TaskEvent::StepNotStarted {
+        run_id: "other".into(),
+        reason: "x".into(),
+    });
+    assert_eq!(r.run_id(), run_id);
+    r.on(TaskEvent::StepNotStarted {
+        run_id: run_id.clone(),
+        reason: "the GitHub App lacks actions: read requested by step work/do".into(),
+    });
+    assert_eq!(r.s.pending, None, "a step that never started is forgotten");
+    assert!(
+        matches!(&r.s.status, Status::Paused { reason, .. } if reason.contains("actions: read"))
+    );
+    assert_eq!(r.projection().status, "paused");
+    // Nothing runs, so the task can take a new definition while paused.
+    assert_eq!(reresolve(&res, &r.s).1, Reresolution::Upgraded);
+    // Resume re-enters the step node: a new run starts.
+    r.on(TaskEvent::Resume);
+    assert_eq!(r.at(), node);
+    assert_eq!(r.kinds(), ["run_step"]);
+    assert_ne!(r.run_id(), run_id);
+}
+
+#[test]
+fn cancel_stops_the_running_step_and_ends() {
+    let mut r = Run::new(resolved(&base()));
+    r.on(start()).on(comment("/start", true));
+    let run_id = r.run_id();
+    r.on(TaskEvent::Cancel);
+    assert!(r.fx.contains(&Effect::StopStep { run_id }));
+    assert_eq!(
+        r.s.status,
+        Status::Ended {
+            status: "cancelled".into()
+        }
+    );
+    assert_eq!(r.projection().end_status.as_deref(), Some("cancelled"));
+    // Ended tasks ignore it.
+    r.on(TaskEvent::Cancel);
+    assert!(r.fx.is_empty());
+}
+
+#[test]
+fn run_ids_carry_the_task() {
+    let mut r = Run::new(resolved(&base()));
+    r.s.doc.task.id = "42".into();
+    r.on(start()).on(comment("/start", true));
+    assert!(r.run_id().starts_with("task-42-run-"), "{}", r.run_id());
+}
+
+#[test]
 fn upgrade_keeps_position_or_pins() {
     let res = resolved(&base());
     let mut r = Run::new(res.clone());

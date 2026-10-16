@@ -175,6 +175,8 @@ workflows:
   libraryRepos: []
   # ENZARB_STALL_SECS: a running step with no session activity for this long pauses its task.
   stallSecs: 1800
+  # ENZARB_RESOLVE_BUDGET_SECS: budget for resolving a workflow definition (a new library commit is fetched whole).
+  resolveBudgetSecs: 30
   # ENZARB_MAX_STEPS_PER_PROJECT: concurrent sandbox steps per Project.
   maxStepsPerProject: 4
   # Deprecated (ADR-0022, accepted and ignored): maxAutoRounds, npmToken. Workflow policy now

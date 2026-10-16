@@ -137,6 +137,18 @@ pub trait Connector: Send + Sync {
         Err(Error::Invalid("reading files is not supported".into()))
     }
 
+    /// Every file (blob) of `repo` at `git_ref` as `(path, size in bytes)`, in one call, so a
+    /// caller reading many files of one commit can fetch them concurrently. `Ok(None)` when the
+    /// listing is unsupported (the default) or incomplete (e.g. truncated by the provider);
+    /// callers then read files one by one with [`get_file`](Self::get_file).
+    async fn list_files(
+        &self,
+        _repo: &RepoKey,
+        _git_ref: &str,
+    ) -> Result<Option<Vec<(String, u64)>>> {
+        Ok(None)
+    }
+
     /// The items `item` is blocked by, from the provider's own relationships (GitHub's
     /// native issue dependencies). Not the text ones: those come from
     /// [`dependencies::text_dependencies`](crate::dependencies::text_dependencies). The

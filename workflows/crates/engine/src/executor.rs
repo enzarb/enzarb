@@ -38,13 +38,12 @@ pub struct Job {
 }
 
 /// Outcome of one dispatch.
+#[allow(clippy::large_enum_variant)]
 enum Done {
     /// Finished; the reducer gets this event (type suffix, payload).
     Event(TaskEvent),
     /// Nothing to report (steer, stop).
     Quiet,
-    /// Waits on a human (a missing secret); the reducer gets this event too.
-    Blocked(TaskEvent),
 }
 
 impl Engine {
@@ -150,7 +149,6 @@ impl Engine {
                 let (status, ev) = match done {
                     Done::Event(e) => ("done", Some(e)),
                     Done::Quiet => ("done", None),
-                    Done::Blocked(e) => ("blocked", Some(e)),
                 };
                 sqlx::query("UPDATE engine.jobs SET status = $2, lease_owner = NULL, updated_at = now() WHERE id = $1")
                     .bind(job.id)
@@ -245,12 +243,12 @@ impl Engine {
         .map_err(StepError::Other)?;
         let (env, files, missing) = (resolved.env, resolved.files, resolved.missing);
         if !missing.is_empty() {
-            return Ok(Done::Blocked(TaskEvent::StallDetected {
-                reason: Some(format!(
-                    "missing secret(s) {}: set them, then resume",
-                    missing.join(", ")
-                )),
-            }));
+            let reason = format!(
+                "missing secret(s) {} for step {}: set them, then resume",
+                missing.join(", "),
+                rs.node
+            );
+            return self.not_started(&rs, reason).await;
         }
 
         // Workspaces: the task's repo first, then the step's extra ones.
@@ -309,11 +307,26 @@ impl Engine {
             } else {
                 enzarb_connector::CredScope::Read
             };
-            let cred = self
+            let cred = match self
                 .connector()
                 .mint_clone_credential(&repo_key(r), scope, &format!("{}:{r}", rs.run_id))
                 .await
-                .map_err(|e| StepError::Unavailable(format!("clone token for {r}: {e}")))?;
+            {
+                Ok(c) => c,
+                Err(e) if refused(&e) => {
+                    let reason = format!(
+                        "the GitHub App cannot get a {} clone token for {r} needed by step {}: {e}",
+                        if *mode == Mode::Write {
+                            "write"
+                        } else {
+                            "read"
+                        },
+                        rs.node
+                    );
+                    return self.not_started(&rs, reason).await;
+                }
+                Err(e) => return Err(StepError::Unavailable(format!("clone token for {r}: {e}"))),
+            };
             workspaces.push(StepWorkspace {
                 repo: r.clone(),
                 url: format!("https://github.com/{r}.git"),
@@ -324,28 +337,40 @@ impl Engine {
                 token: Secret::new(cred.token),
             });
         }
-        // A token with exactly the requested permissions.
-        let github_token = if rs.github.is_empty() {
-            None
-        } else {
-            let perms: BTreeMap<String, String> = rs
-                .github
-                .iter()
-                .map(|(k, v)| {
-                    (
-                        k.clone(),
-                        if *v == Access::Write { "write" } else { "read" }.to_string(),
-                    )
-                })
-                .collect();
-            let repos: Vec<_> = ws.iter().map(|(r, ..)| repo_key(r)).collect();
-            Some(Secret::new(
-                self.connector()
-                    .mint_step_token(&repos, &perms)
-                    .await
-                    .map_err(|e| StepError::Unavailable(format!("step token: {e}")))?
-                    .token,
-            ))
+        // A token with exactly the requested permissions, plus `contents: read` so the agent can
+        // fetch its workspaces (the clone token is not left in the workspace). Steps without
+        // permissions get that read-only token alone.
+        let mut perms: BTreeMap<String, String> = rs
+            .github
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    if *v == Access::Write { "write" } else { "read" }.to_string(),
+                )
+            })
+            .collect();
+        perms
+            .entry("contents".into())
+            .or_insert_with(|| "read".into());
+        let repos: Vec<_> = ws.iter().map(|(r, ..)| repo_key(r)).collect();
+        let github_token = match self.connector().mint_step_token(&repos, &perms).await {
+            Ok(t) => Some(Secret::new(t.token)),
+            Err(e) if refused(&e) => {
+                let asked = perms
+                    .iter()
+                    .map(|(k, v)| format!("{k}: {v}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let reason = format!(
+                    "the GitHub App installation lacks {asked} requested by step {}; grant them \
+                     in the App settings and accept them in the installation settings (a \
+                     permission change may be pending acceptance there), or change the step ({e})",
+                    rs.node
+                );
+                return self.not_started(&rs, reason).await;
+            }
+            Err(e) => return Err(StepError::Unavailable(format!("step token: {e}"))),
         };
         let exec = match &rs.exec {
             RunExec::Agent {
@@ -500,6 +525,27 @@ impl Engine {
         })))
     }
 
+    /// The step cannot start for a reason retrying will not fix: nothing is sent to the sandbox,
+    /// the run is recorded as `not_started` and the task pauses at the step (see
+    /// [`TaskEvent::StepNotStarted`]).
+    async fn not_started(&self, rs: &RunStep, reason: String) -> Result<Done, StepError> {
+        tracing::warn!(run = %rs.run_id, "step not started: {reason}");
+        sqlx::query(
+            "UPDATE engine.step_runs SET ended_at = now(), exit = 'not_started',
+                 sandbox = COALESCE(sandbox, '{}'::jsonb) || jsonb_build_object('error', $2::text)
+             WHERE run_id = $1",
+        )
+        .bind(&rs.run_id)
+        .bind(&reason)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(Done::Event(TaskEvent::StepNotStarted {
+            run_id: rs.run_id.clone(),
+            reason,
+        }))
+    }
+
     async fn steer(&self, job: &Job) -> Result<Done, StepError> {
         let run_id = job.input["run_id"].as_str().unwrap_or_default();
         let text = job.input["text"].as_str().unwrap_or_default();
@@ -555,6 +601,15 @@ impl Engine {
         .map_err(db)?;
         Ok(Done::Event(TaskEvent::FactUpdated { fact, value }))
     }
+}
+
+/// A provider refusal that retrying the same request cannot fix (GitHub 4xx such as
+/// "The permissions requested are not granted to this installation").
+fn refused(e: &enzarb_connector::Error) -> bool {
+    matches!(
+        e,
+        enzarb_connector::Error::Invalid(_) | enzarb_connector::Error::PermissionDenied(_)
+    )
 }
 
 fn db(e: sqlx::Error) -> StepError {

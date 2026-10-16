@@ -522,6 +522,10 @@
           "type": "integer",
           "minimum": 60
         },
+        "resolveBudgetSecs": {
+          "type": "integer",
+          "minimum": 1
+        },
         "maxStepsPerProject": {
           "type": "integer",
           "minimum": 1
