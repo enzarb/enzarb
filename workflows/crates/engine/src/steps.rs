@@ -140,6 +140,19 @@ impl StepRunner for MuxStepRunner {
                 s.step_start(start).await.map_err(unavailable)?;
             }
         }
+        // Subscribe (and replay what was logged since `after_seq`) in case the sandbox did not
+        // subscribe the starting session; a step that already ended answers with its result.
+        let info = s
+            .step_status(&run_id, after_seq)
+            .await
+            .map_err(unavailable)?;
+        if let Some(r) = info.result {
+            pump.abort();
+            return Ok(RunOutcome {
+                finished: r,
+                resumed,
+            });
+        }
         let out = tokio::select! {
             f = fin_rx.recv() => f.ok_or_else(|| unavailable("session ended before step_finished")),
             end = s.closed() => Err(unavailable(format!("session ended: {end:?}"))),

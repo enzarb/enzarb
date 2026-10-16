@@ -286,7 +286,7 @@ async fn session_loop(state: Arc<AppState>, socket: WebSocket) {
                     }
                 }
             }
-            Event::Ctrl(Ctrl::StepStart(step)) => state.steps.start(&session, *step),
+            Event::Ctrl(Ctrl::StepStart(step)) => state.steps.start(id, &session, *step),
             Event::Ctrl(Ctrl::StepStatus { run_id, after_seq }) => {
                 state.steps.status(id, &session, &run_id, after_seq)
             }

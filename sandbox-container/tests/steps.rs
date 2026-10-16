@@ -537,3 +537,28 @@ async fn agent_step_resumes_after_a_restart() {
     })
     .unwrap();
 }
+
+/// The executor sends only `step_start` (no `step_status`) and must still receive the run's
+/// `session_event`s and its `step_finished` on that session.
+#[tokio::test]
+async fn the_starting_session_receives_events_and_the_result() {
+    let env = Env::new();
+    let addr = env.server().await;
+    let (s, mut ev) = connect(addr).await;
+    let st = step(
+        "only-start-1",
+        StepExec::Command {
+            run: "echo started-only".into(),
+            tools: vec![],
+        },
+        vec![env.workspace("feature/only-start")],
+    );
+    s.send_ctrl(&Ctrl::StepStart(Box::new(st))).unwrap();
+    let (events, fin) = collect(&mut ev, "only-start-1", |_| false).await;
+    let fin = fin.expect("step_finished on the starting session");
+    assert_eq!(fin.exit, "success", "{fin:?}");
+    assert!(
+        !events.is_empty(),
+        "session events reach the starting session"
+    );
+}

@@ -392,8 +392,10 @@ impl StepManager {
         let _ = session.send_run_error(run_id, code, msg);
     }
 
-    /// CTRL `step_start`.
-    pub fn start(&self, session: &Session, start: StepStart) {
+    /// CTRL `step_start`. For a new run the starting session is subscribed to its frames
+    /// (`session_event`, `step_state`, `step_finished`); an existing run is subscribed (after
+    /// a replay) by `step_status`.
+    pub fn start(&self, session_id: u64, session: &Session, start: StepStart) {
         let id = start.run_id.clone();
         if let Err(e) = validate(&start) {
             return Self::reply_error(session, &id, "invalid_request", &e);
@@ -402,6 +404,8 @@ impl StepManager {
         let run = match existing {
             Some(run) => {
                 let phase = run.inner.lock().unwrap().phase;
+                // An existing run is subscribed by `step_status`, which replays the logged events
+                // first, so the starting session sees them in order.
                 if phase != StepPhase::Interrupted {
                     let _ = session.accept_step(&id, phase, true);
                     return;
@@ -429,6 +433,11 @@ impl StepManager {
                 run
             }
         };
+        run.inner
+            .lock()
+            .unwrap()
+            .subs
+            .insert(session_id, session.clone());
         let _ = session.accept_step(&id, StepPhase::Running, false);
         self.launch(run, Arc::new(start), false);
     }
