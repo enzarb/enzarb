@@ -1228,6 +1228,12 @@ img {
 	}
 }
 
+@keyframes ez-card-pulse {
+	50% {
+		box-shadow: 0 0 0 0.5rem var(--ez-accent-soft);
+	}
+}
+
 @keyframes ez-dialog-in {
 	from {
 		opacity: 0;
@@ -1519,6 +1525,22 @@ textarea.ez-control {
 
 	&--needs {
 		border-left: 0.25rem solid var(--ez-accent);
+	}
+
+	// Opened from a notification: an accent ring that pulses twice (one frame under
+	// prefers-reduced-motion, section 2), then stays.
+	&--highlight {
+		outline: var(--ez-focus-width) solid var(--ez-accent);
+		outline-offset: var(--ez-focus-offset);
+		animation: ez-card-pulse 0.9s var(--ez-ease) 2;
+	}
+
+	&__note {
+		margin: 0;
+		padding: var(--ez-space-1) var(--ez-space-2);
+		border-radius: var(--ez-radius-sm);
+		background: var(--ez-accent-soft);
+		font-size: var(--ez-text-sm);
 	}
 
 	// A cancelled task is finished but did not succeed: quieter than the rest.

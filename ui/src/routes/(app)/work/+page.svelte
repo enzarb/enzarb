@@ -9,10 +9,11 @@
 	import TaskBoard from '#lib/components/TaskBoard.svelte';
 	import { getNeedsYou } from '#lib/needs-you.svelte.ts';
 	import { listProjects } from '#lib/projects.remote.ts';
-	import { applyItemChange, boardItems } from '#lib/work-items.ts';
+	import { applyItemChange, boardItems, parseHighlight } from '#lib/work-items.ts';
 	import { getWorkItem, getWorkItemPlan, listWorkItems, submitAction } from '#lib/work.remote.ts';
 
 	const project = $derived(page.url.searchParams.get('project') ?? undefined);
+	const highlight = $derived(parseHighlight(page.url.searchParams));
 	const items = $derived(listWorkItems(project));
 	const projects = listProjects();
 	const needsYou = getNeedsYou();
@@ -93,6 +94,7 @@
 			{project}
 			{now}
 			loading={(items.loading && !items.current) || (!needsYou.loaded && !needsYou.failed)}
+			{highlight}
 			onaction={(id, action) => needsYou.act(id, action)}
 			onplan={(w) => {
 				planId = w.id;

@@ -34,6 +34,14 @@ export interface Claim {
 	recent: number;
 }
 
+/** The entry into a "needs you" category the owner was notified for (`app.push_item`). */
+export interface PushEntry {
+	category: NeedsYouCategory;
+	stateKey: string;
+	/** A notification tagged `item-<id>` was shown (not only a burst summary). */
+	shown: boolean;
+}
+
 /**
  * Storage for push subscriptions and the sent-log, through the `app_api.push_*` functions only.
  * Every method takes the owner explicitly; callers pass the authenticated session login (remote
@@ -112,10 +120,31 @@ export function pushStore(sql: Sql) {
 			return row?.ok ?? false;
 		},
 
+		/** The open "needs you" entry of a work item for this owner, if any. */
+		async entry(owner: string, workItemId: number): Promise<PushEntry | null> {
+			const [row] = await sql<{ category: string; state_key: string; shown: boolean }[]>`
+				SELECT category, state_key, shown FROM app_api.push_item_get(${owner}, ${workItemId})`;
+			return row
+				? { category: row.category as NeedsYouCategory, stateKey: row.state_key, shown: row.shown }
+				: null;
+		},
+
+		async setEntry(owner: string, workItemId: number, entry: PushEntry): Promise<void> {
+			await sql`SELECT app_api.push_item_set(${owner}, ${workItemId}, ${entry.category}, ${entry.stateKey}, ${entry.shown})`;
+		},
+
+		/** Closes the open entry; true for the one caller that should send the clear push. */
+		async clearEntry(owner: string, workItemId: number): Promise<boolean> {
+			const [row] = await sql<{ ok: boolean }[]>`
+				SELECT app_api.push_item_clear(${owner}, ${workItemId}) AS ok`;
+			return row?.ok ?? false;
+		},
+
 		async prune(olderThanDays: number): Promise<number> {
-			const [row] = await sql<{ n: number }[]>`
-				SELECT app_api.push_sent_prune(${olderThanDays}) AS n`;
-			return row?.n ?? 0;
+			const [row] = await sql<{ n: number; m: number }[]>`
+				SELECT app_api.push_sent_prune(${olderThanDays}) AS n,
+					app_api.push_item_prune(${olderThanDays}) AS m`;
+			return (row?.n ?? 0) + (row?.m ?? 0);
 		}
 	};
 }
