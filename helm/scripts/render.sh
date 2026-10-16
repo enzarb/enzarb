@@ -26,6 +26,6 @@ pin() {
 }
 # generated secret values are random; mask them so snapshots are stable
 helm template enzarb "$here/enzarb" --namespace enzarb "${extra[@]}" \
-  | sed -E 's/[ \t]+$//; s/^  [0-9a-f]{16}: .*/  <key-id>: <generated>/; s/^  active: .*/  active: <generated>/; s/^(  (session-jwt-secret|callback-secret|realtime-jwt-secret|updater-webhook-secret)): .*/\1: <generated>/' \
+  | sed -E 's/[ \t]+$//; s/^  [0-9a-f]{16}: .*/  <key-id>: <generated>/; s/^  active: .*/  active: <generated>/; s/^(  (session-jwt-secret|callback-secret|realtime-jwt-secret|updater-webhook-secret|secrets-key)): .*/\1: <generated>/' \
   | pin \
   | cat -s

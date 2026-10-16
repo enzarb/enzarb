@@ -9,13 +9,31 @@
     "rollout": {
       "type": "object",
       "properties": {
-        "maxSurge": { "type": ["integer", "string"], "minimum": 0 },
-        "maxUnavailable": { "type": ["integer", "string"], "minimum": 0 }
+        "maxSurge": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "minimum": 0
+        },
+        "maxUnavailable": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "minimum": 0
+        }
       },
       "additionalProperties": false
     },
-    "preStopSeconds": { "type": "integer", "minimum": 0 },
-    "terminationGracePeriodSeconds": { "type": "integer", "minimum": 1 }
+    "preStopSeconds": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "terminationGracePeriodSeconds": {
+      "type": "integer",
+      "minimum": 1
+    }
   },
   "properties": {
     "host": {
@@ -222,25 +240,48 @@
         "vapidKey": {
           "type": "object",
           "properties": {
-            "existingSecret": { "type": "string" },
-            "subject": { "type": "string", "pattern": "^$|^(mailto:[^\\s@]+@[^\\s@]+|https?://\\S+)$" }
+            "existingSecret": {
+              "type": "string"
+            },
+            "subject": {
+              "type": "string",
+              "pattern": "^$|^(mailto:[^\\s@]+@[^\\s@]+|https?://\\S+)$"
+            }
           },
           "additionalProperties": false
         },
         "updater": {
           "type": "object",
           "properties": {
-            "existingSecret": { "type": "string" },
-            "hasRegistryToken": { "type": "boolean" },
-            "registryTokenSecret": { "type": "string" },
-            "registryTokenKey": { "type": "string", "minLength": 1 },
+            "existingSecret": {
+              "type": "string"
+            },
+            "hasRegistryToken": {
+              "type": "boolean"
+            },
+            "registryTokenSecret": {
+              "type": "string"
+            },
+            "registryTokenKey": {
+              "type": "string",
+              "minLength": 1
+            },
             "keys": {
               "type": "object",
-              "required": ["webhookSecret", "registryToken"],
-              "additionalProperties": { "type": "string" }
+              "required": [
+                "webhookSecret",
+                "registryToken"
+              ],
+              "additionalProperties": {
+                "type": "string"
+              }
             },
-            "webhookSecret": { "type": "string" },
-            "registryToken": { "type": "string" }
+            "webhookSecret": {
+              "type": "string"
+            },
+            "registryToken": {
+              "type": "string"
+            }
           },
           "additionalProperties": false
         },
@@ -282,6 +323,18 @@
               "type": "string"
             }
           }
+        },
+        "engineSecretsKey": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "existingSecret": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            }
+          }
         }
       }
     },
@@ -305,9 +358,15 @@
           "exclusiveMinimum": 0,
           "description": "Hours a blocked change request must sit idle before it is listed in Needs you."
         },
-        "rollout": { "$ref": "#/$defs/rollout" },
-        "preStopSeconds": { "$ref": "#/$defs/preStopSeconds" },
-        "terminationGracePeriodSeconds": { "$ref": "#/$defs/terminationGracePeriodSeconds" },
+        "rollout": {
+          "$ref": "#/$defs/rollout"
+        },
+        "preStopSeconds": {
+          "$ref": "#/$defs/preStopSeconds"
+        },
+        "terminationGracePeriodSeconds": {
+          "$ref": "#/$defs/terminationGracePeriodSeconds"
+        },
         "probes": {
           "type": "object",
           "properties": {
@@ -443,8 +502,30 @@
           "type": "integer",
           "minimum": 0
         },
-        "rollout": { "$ref": "#/$defs/rollout" },
-        "preStopSeconds": { "$ref": "#/$defs/preStopSeconds" }
+        "rollout": {
+          "$ref": "#/$defs/rollout"
+        },
+        "preStopSeconds": {
+          "$ref": "#/$defs/preStopSeconds"
+        },
+        "defaultLibrary": {
+          "type": "string",
+          "pattern": "^[^/@\\s]+/[^/@\\s]+@\\S+$"
+        },
+        "libraryRepos": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "stallSecs": {
+          "type": "integer",
+          "minimum": 60
+        },
+        "maxStepsPerProject": {
+          "type": "integer",
+          "minimum": 1
+        }
       },
       "additionalProperties": false
     },
@@ -498,9 +579,15 @@
         "botLogin": {
           "type": "string"
         },
-        "rollout": { "$ref": "#/$defs/rollout" },
-        "preStopSeconds": { "$ref": "#/$defs/preStopSeconds" },
-        "terminationGracePeriodSeconds": { "$ref": "#/$defs/terminationGracePeriodSeconds" }
+        "rollout": {
+          "$ref": "#/$defs/rollout"
+        },
+        "preStopSeconds": {
+          "$ref": "#/$defs/preStopSeconds"
+        },
+        "terminationGracePeriodSeconds": {
+          "$ref": "#/$defs/terminationGracePeriodSeconds"
+        }
       },
       "additionalProperties": false
     },
@@ -524,8 +611,12 @@
           "type": "integer",
           "minimum": 10
         },
-        "rollout": { "$ref": "#/$defs/rollout" },
-        "preStopSeconds": { "$ref": "#/$defs/preStopSeconds" },
+        "rollout": {
+          "$ref": "#/$defs/rollout"
+        },
+        "preStopSeconds": {
+          "$ref": "#/$defs/preStopSeconds"
+        },
         "replicaCount": {
           "type": "integer",
           "minimum": 0
@@ -569,39 +660,84 @@
     },
     "updater": {
       "type": "object",
-      "required": ["image"],
+      "required": [
+        "image"
+      ],
       "properties": {
-        "enabled": { "type": "boolean" },
-        "replicaCount": { "type": "integer", "minimum": 0 },
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-        "rollout": { "$ref": "#/$defs/rollout" },
-        "preStopSeconds": { "$ref": "#/$defs/preStopSeconds" },
-        "terminationGracePeriodSeconds": { "$ref": "#/$defs/terminationGracePeriodSeconds" },
+        "enabled": {
+          "type": "boolean"
+        },
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "rollout": {
+          "$ref": "#/$defs/rollout"
+        },
+        "preStopSeconds": {
+          "$ref": "#/$defs/preStopSeconds"
+        },
+        "terminationGracePeriodSeconds": {
+          "$ref": "#/$defs/terminationGracePeriodSeconds"
+        },
         "poll": {
           "type": "object",
           "properties": {
-            "intervalSecs": { "type": "integer", "minimum": 0 }
+            "intervalSecs": {
+              "type": "integer",
+              "minimum": 0
+            }
           },
           "additionalProperties": false
         },
         "webhook": {
           "type": "object",
           "properties": {
-            "enabled": { "type": "boolean" }
+            "enabled": {
+              "type": "boolean"
+            }
           },
           "additionalProperties": false
         },
         "image": {
           "type": "object",
-          "required": ["repository", "tag"],
+          "required": [
+            "repository",
+            "tag"
+          ],
           "properties": {
-            "repository": { "type": "string", "minLength": 1 },
-            "tag": { "type": "string", "minLength": 1 },
-            "pullPolicy": { "enum": ["", "Always", "IfNotPresent", "Never"] }
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pullPolicy": {
+              "enum": [
+                "",
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
           }
         },
-        "resources": { "type": "object" },
-        "extraEnv": { "type": "array", "items": { "type": "object" } }
+        "resources": {
+          "type": "object"
+        },
+        "extraEnv": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
       },
       "additionalProperties": false
     },
@@ -653,9 +789,15 @@
           "type": "integer",
           "minimum": 1
         },
-        "rollout": { "$ref": "#/$defs/rollout" },
-        "preStopSeconds": { "$ref": "#/$defs/preStopSeconds" },
-        "terminationGracePeriodSeconds": { "$ref": "#/$defs/terminationGracePeriodSeconds" }
+        "rollout": {
+          "$ref": "#/$defs/rollout"
+        },
+        "preStopSeconds": {
+          "$ref": "#/$defs/preStopSeconds"
+        },
+        "terminationGracePeriodSeconds": {
+          "$ref": "#/$defs/terminationGracePeriodSeconds"
+        }
       },
       "additionalProperties": false
     },
@@ -681,20 +823,30 @@
           "properties": {
             "clusterCIDRs": {
               "type": "array",
-              "items": { "type": "string", "pattern": "^[0-9a-fA-F:.]+/[0-9]{1,3}$" }
+              "items": {
+                "type": "string",
+                "pattern": "^[0-9a-fA-F:.]+/[0-9]{1,3}$"
+              }
             }
           },
           "additionalProperties": false
         },
         "dnsCIDRs": {
           "type": "array",
-          "items": { "type": "string", "pattern": "^[0-9a-fA-F:.]+/[0-9]{1,3}$" }
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F:.]+/[0-9]{1,3}$"
+          }
         },
         "limitRange": {
           "type": "object",
           "properties": {
-            "default": { "type": "object" },
-            "defaultRequest": { "type": "object" }
+            "default": {
+              "type": "object"
+            },
+            "defaultRequest": {
+              "type": "object"
+            }
           },
           "additionalProperties": false
         }
@@ -707,9 +859,15 @@
         "image"
       ],
       "properties": {
-        "rollout": { "$ref": "#/$defs/rollout" },
-        "preStopSeconds": { "$ref": "#/$defs/preStopSeconds" },
-        "terminationGracePeriodSeconds": { "$ref": "#/$defs/terminationGracePeriodSeconds" },
+        "rollout": {
+          "$ref": "#/$defs/rollout"
+        },
+        "preStopSeconds": {
+          "$ref": "#/$defs/preStopSeconds"
+        },
+        "terminationGracePeriodSeconds": {
+          "$ref": "#/$defs/terminationGracePeriodSeconds"
+        },
         "replicaCount": {
           "type": "integer",
           "minimum": 0

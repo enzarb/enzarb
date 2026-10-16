@@ -76,10 +76,15 @@ secrets:
   realtimeJwt:
     existingSecret: ""
     key: realtime-jwt-secret
-  # HMAC secret for executor callbacks (all workflows replicas share it).
+  # Deprecated (ADR-0022 removed the executor HTTP callback): accepted and ignored.
   executorCallback:
     existingSecret: ""
     key: callback-secret
+  # Key for named secrets in engine.secrets (ENZARB_SECRETS_KEY, 32 bytes base64). Generated once
+  # and kept in the chart's generated Secret unless existingSecret is set.
+  engineSecretsKey:
+    existingSecret: ""
+    key: secrets-key
   # Keyring for per-user Claude tokens (data keys <key_id> = 32 random bytes, plus `active`).
   # Generated once and kept (resource-policy keep) unless existingSecret is set. Mounted only
   # into sandbox-proxy and the workflows executor, never into the sandbox namespace.
@@ -162,6 +167,18 @@ workflows:
   botHandle: enzarb
   botLogin: enzarb[bot]
   dbMaxConnections: 10
+  # ADR-0022 engine. ENZARB_DEFAULT_LIBRARY: the workflow library every Project inherits
+  # (`owner/repo@ref`; a Project overrides it with spec.workflows.library).
+  defaultLibrary: enzarb/workflows@v1
+  # ENZARB_LIBRARY_REPOS: extra repositories definitions may be imported from (besides each
+  # Project's repositories and the libraries above).
+  libraryRepos: []
+  # ENZARB_STALL_SECS: a running step with no session activity for this long pauses its task.
+  stallSecs: 1800
+  # ENZARB_MAX_STEPS_PER_PROJECT: concurrent sandbox steps per Project.
+  maxStepsPerProject: 4
+  # Deprecated (ADR-0022, accepted and ignored): maxAutoRounds, npmToken. Workflow policy now
+  # lives in the YAML library. ciIgnoreChecks is still passed to the CI fact.
   # ENZARB_MAX_AUTO_ROUNDS: automatic fix rounds on enzarb's own review findings per change
   # request before it waits for a human. 0 turns them off.
   maxAutoRounds: 3
