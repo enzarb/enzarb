@@ -1,0 +1,17 @@
+version: 1
+exits: [failed]
+start: plan
+nodes:
+  plan:
+    step: {use: steps/plan}
+    next: [{if: "last.exit == 'success'", to: approve}, {else: failed}]
+  approve:
+    wait:
+      events: [{event: comment, from: writer, if: "event.command == 'approve'"}]
+      reason: awaiting_approval
+      text: "Approve the plan for #{{ subjects.issue.number }}"
+      column: review
+      actions: [{label: Approve, command: approve}]
+    next: [{else: done}]
+  done: {end: {status: done}}
+  failed: {end: {status: failed}}

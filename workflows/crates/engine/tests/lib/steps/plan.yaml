@@ -1,0 +1,10 @@
+version: 1
+agent:
+  runtime: runtimes/fake
+  model: test-model
+  prompt: "Plan {{ subjects.issue.title }}"
+result:
+  as: plan
+  schema: {type: object, required: [summary], properties: {summary: {type: string}}}
+secrets: [API_KEY]
+steer: [comment]

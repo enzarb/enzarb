@@ -16,7 +16,7 @@ async fn roleless_db() -> Option<(PgPool, TestDb)> {
 }
 
 async fn migrated(pool: &PgPool) -> bool {
-    sqlx::query_scalar::<_, bool>("SELECT to_regclass('workflows.work_items') IS NOT NULL")
+    sqlx::query_scalar::<_, bool>("SELECT to_regclass('engine.tasks') IS NOT NULL")
         .fetch_one(pool)
         .await
         .unwrap()
@@ -66,92 +66,29 @@ async fn require_roles_fails_when_missing_then_passes() {
     assert!(migrated(&pool).await);
 }
 
-async fn insert_items(pool: &PgPool, items: &[(&str, Option<&str>)]) {
-    for (key, project) in items {
-        sqlx::query(
-            "INSERT INTO workflows.work_items (key, project_id, workflow, state) VALUES ($1, $2, 'w', 's')",
-        )
-        .bind(key)
-        .bind(project)
-        .execute(pool)
-        .await
-        .unwrap();
-    }
-}
-
 #[tokio::test]
-async fn realtime_role_sees_only_work_item_project_view() {
-    let Some((pool, _c)) = bare_db().await else {
+async fn ui_role_reads_engine_api_but_not_engine_tables() {
+    let Some(db) = TestDb::start_container().await else {
         return;
     };
-    // Roles are cluster-global: tolerate it existing on a shared server.
-    sqlx::query(
-        "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'enzarb_realtime') \
-         THEN CREATE ROLE enzarb_realtime LOGIN; END IF; END $$",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    migrate(&pool, false).await.unwrap();
-    insert_items(&pool, &[("a", Some("p1")), ("b", Some("p2")), ("c", None)]).await;
-
-    let mut conn = pool.acquire().await.unwrap();
-    sqlx::query("SET ROLE enzarb_realtime")
-        .execute(&mut *conn)
+    migrate(&db.pool, false).await.unwrap();
+    let ui = db.pool_as("enzarb_ui").await;
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM engine_api.task_v")
+        .fetch_one(&ui)
         .await
         .unwrap();
-    let rows: Vec<(i64, Option<String>)> =
-        sqlx::query_as("SELECT id, project FROM workflows_api.work_item_project_v ORDER BY id")
-            .fetch_all(&mut *conn)
+    assert_eq!(n, 0);
+    assert!(
+        sqlx::query("SELECT * FROM engine.tasks")
+            .execute(&ui)
             .await
-            .unwrap();
-    assert_eq!(rows.len(), 3);
-    for denied in [
-        "SELECT * FROM workflows_api.work_item_v",
-        "SELECT * FROM workflows_api.job_v",
-        "SELECT * FROM workflows.work_items",
-    ] {
-        let err = sqlx::query(denied).fetch_all(&mut *conn).await.unwrap_err();
-        assert!(
-            err.to_string().contains("permission denied"),
-            "{denied}: {err}"
-        );
-    }
-    let can_connect: bool = sqlx::query_scalar(
-        "SELECT has_database_privilege('enzarb_realtime', current_database(), 'CONNECT')",
-    )
-    .fetch_one(&mut *conn)
-    .await
-    .unwrap();
-    assert!(can_connect);
-}
-
-#[tokio::test]
-async fn work_item_project_view_matches_work_item_view() {
-    let Some((pool, _c)) = bare_db().await else {
-        return;
-    };
-    migrate(&pool, false).await.unwrap();
-    insert_items(
-        &pool,
-        &[
-            ("a", Some("p1")),
-            ("b", Some("p2")),
-            ("c", Some("p1")),
-            ("d", None),
-        ],
-    )
-    .await;
-    let narrow: Vec<(i64, Option<String>)> =
-        sqlx::query_as("SELECT id, project FROM workflows_api.work_item_project_v ORDER BY id")
-            .fetch_all(&pool)
+            .is_err()
+    );
+    assert!(
+        sqlx::query("SELECT engine_api.ingest('x', NULL, NULL, 'issue', '{}')")
+            .execute(&ui)
             .await
-            .unwrap();
-    let full: Vec<(i64, Option<String>)> =
-        sqlx::query_as("SELECT id, project FROM workflows_api.work_item_v ORDER BY id")
-            .fetch_all(&pool)
-            .await
-            .unwrap();
-    assert_eq!(narrow.len(), 4);
-    assert_eq!(narrow, full);
+            .is_err(),
+        "only the receiver ingests"
+    );
 }

@@ -14,7 +14,7 @@ use crate::sandbox::{SandboxError, SandboxResolver};
 #[derive(Debug, thiserror::Error)]
 pub enum StepError {
     /// The sandbox cannot be reached or went away; the job retries with backoff.
-    #[error("sandbox unavailable: {0}")]
+    #[error("unavailable: {0}")]
     Unavailable(String),
     #[error("sandbox: {0}")]
     Other(String),
@@ -120,23 +120,21 @@ impl StepRunner for MuxStepRunner {
             .await
             .map_err(unavailable)?;
         let mut resumed = false;
+        let _ = &mut resumed;
+        if let Some(r) = info.result {
+            pump.abort();
+            return Ok(RunOutcome {
+                finished: r,
+                resumed,
+            });
+        }
         match info.state {
-            StepPhase::Finished => {
-                if let Some(r) = info.result {
-                    pump.abort();
-                    return Ok(RunOutcome {
-                        finished: r,
-                        resumed,
-                    });
-                }
-            }
             StepPhase::Running => {}
-            StepPhase::Interrupted => {
-                // Tokens and secrets are never persisted by the sandbox: re-sending step_start
-                // for a known run continues it (ACP session/load), it does not restart it.
+            // After a sandbox restart secrets live nowhere: re-sending step_start for the known
+            // run continues it with fresh secrets (ACP session/load), it does not restart it.
+            StepPhase::Interrupted | StepPhase::Finished => {
                 resumed = true;
                 s.step_start(start).await.map_err(unavailable)?;
-                s.step_resume(&run_id).map_err(unavailable)?;
             }
             StepPhase::Unknown => {
                 s.step_start(start).await.map_err(unavailable)?;
