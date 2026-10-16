@@ -38,26 +38,36 @@ struct H {
 }
 
 fn load_library(gh: &FakeConnector) {
+    load_library_at(gh, LIB_SHA, &[]);
+    gh.set_ref(rk(LIB), "v1", LIB_SHA);
+    gh.set_ref(rk(APP), "main", APP_SHA);
+}
+
+/// The test library at `sha`, with `overrides` (path, text) replacing files.
+fn load_library_at(gh: &FakeConnector, sha: &str, overrides: &[(&str, &str)]) {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/lib");
-    fn walk(gh: &FakeConnector, root: &std::path::Path, dir: &std::path::Path) {
+    fn walk(
+        gh: &FakeConnector,
+        root: &std::path::Path,
+        dir: &std::path::Path,
+        sha: &str,
+        overrides: &[(&str, &str)],
+    ) {
         for e in std::fs::read_dir(dir).unwrap() {
             let p = e.unwrap().path();
             if p.is_dir() {
-                walk(gh, root, &p);
+                walk(gh, root, &p, sha, overrides);
             } else {
                 let rel = p.strip_prefix(root).unwrap().to_string_lossy().to_string();
-                gh.set_file(
-                    rk(LIB),
-                    LIB_SHA,
-                    &rel,
-                    &std::fs::read_to_string(&p).unwrap(),
-                );
+                let text = match overrides.iter().find(|(o, _)| *o == rel) {
+                    Some((_, t)) => t.to_string(),
+                    None => std::fs::read_to_string(&p).unwrap(),
+                };
+                gh.set_file(rk(LIB), sha, &rel, &text);
             }
         }
     }
-    walk(gh, &root, &root);
-    gh.set_ref(rk(LIB), "v1", LIB_SHA);
-    gh.set_ref(rk(APP), "main", APP_SHA);
+    walk(gh, &root, &root, sha, overrides);
 }
 
 async fn start(stall: Duration, background: bool) -> Option<H> {
@@ -79,7 +89,8 @@ async fn start(stall: Duration, background: bool) -> Option<H> {
     let engine = Engine {
         pool: db.pool.clone(),
         index,
-        library: Library::new(gh.clone(), &format!("{LIB}@v1"), vec![]),
+        library: Library::new(gh.clone(), &format!("{LIB}@v1"), vec![])
+            .with_ref_ttl(Duration::ZERO),
         permissions: perms.clone(),
         runner: Arc::new(runner.clone()),
         sandboxes: Arc::new(StaticSandboxResolver::new()),
@@ -718,4 +729,158 @@ async fn chat_capture_feeds_chat_v_and_session_v() {
             .await
             .unwrap();
     assert_eq!(kinds, ["user", "assistant"]);
+}
+
+/// A step token GitHub refuses (422: permissions not granted to the installation) is not
+/// retried: the task pauses naming the step and the permissions, nothing reaches the sandbox,
+/// and a resume after a library fix re-resolves and starts the step from the new definition.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn refused_step_token_pauses_and_resume_reresolves() {
+    let Some(h) = start(Duration::from_secs(3600), true).await else {
+        return;
+    };
+    h.set_secret("API_KEY", "k").await;
+    h.gh.fail_step_token(enzarb_connector::Error::Invalid(
+        "create installation token: 422 Unprocessable Entity: {\"message\":\"The permissions requested are not granted to this installation.\"}".into(),
+    ));
+    h.open_issue(3, "Perms").await;
+    let task = h.first_task().await;
+    let p = h
+        .wait_status(task, |p| p["status"] == "paused", "paused on refused token")
+        .await;
+    let text = p["text"].as_str().unwrap();
+    assert!(
+        text.contains(
+            "the GitHub App installation lacks contents: read requested by step plan/plan"
+        ),
+        "{text}"
+    );
+    assert!(h.runner.started().is_empty(), "no step_start sent");
+    let (exit, jobs): (String, i64) = sqlx::query_as(
+        "SELECT r.exit, (SELECT count(*) FROM engine.jobs j WHERE j.task_id = r.task_id AND j.status <> 'done')
+         FROM engine.step_runs r WHERE r.task_id = $1",
+    )
+    .bind(task)
+    .fetch_one(&h.db.pool)
+    .await
+    .unwrap();
+    assert_eq!((exit.as_str(), jobs), ("not_started", 0), "not retried");
+
+    // The library changes the step; resume re-resolves and starts it from the new definition.
+    let v2 = "4444444444444444444444444444444444444444";
+    let plan = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/lib/steps/plan.yaml"),
+    )
+    .unwrap()
+    .replace("Plan {{", "Plan v2 {{");
+    load_library_at(&h.gh, v2, &[("steps/plan.yaml", &plan)]);
+    h.gh.set_ref(rk(LIB), "v1", v2);
+    h.submit(task, "resume", json!({})).await;
+    let run = h.started(1).await;
+    let StepExec::Agent { prompt, .. } = &run.exec else {
+        panic!("agent step")
+    };
+    assert_eq!(prompt, "Plan v2 Perms");
+    let sha: String =
+        sqlx::query_scalar("SELECT resolved->'entry'->>'sha' FROM engine.tasks WHERE id = $1")
+            .bind(task)
+            .fetch_one(&h.db.pool)
+            .await
+            .unwrap();
+    assert_eq!(sha, v2);
+    assert_eq!(h.projection(task).await["status"], "running");
+}
+
+/// UI cancel is engine-native and writer-only: a non-writer is ignored; a writer's cancel stops
+/// the running step and ends the task `cancelled`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ui_cancel_stops_the_step_and_ends_the_task() {
+    let Some(h) = start(Duration::from_secs(3600), true).await else {
+        return;
+    };
+    h.set_secret("API_KEY", "k").await;
+    h.open_issue(4, "Cancel me").await;
+    let task = h.first_task().await;
+    let run = h.started(1).await;
+    sqlx::query("SELECT engine_api.submit($1, '{\"login\": \"bob\"}', 'cancel', '{}')")
+        .bind(task)
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+    let note: String = h
+        .until("bob refused", || async {
+            sqlx::query_scalar(
+                "SELECT note FROM engine.events WHERE type = 'ui.cancel' AND processed_at IS NOT NULL",
+            )
+            .fetch_optional(&h.db.pool)
+            .await
+            .unwrap()
+            .flatten()
+        })
+        .await;
+    assert_eq!(note, "bob may not cancel");
+    assert_eq!(h.projection(task).await["status"], "running");
+    assert!(h.runner.stops().is_empty());
+
+    h.submit(task, "cancel", json!({})).await;
+    let p = h
+        .wait_status(task, |p| p["status"] == "ended", "cancelled")
+        .await;
+    assert_eq!(p["end_status"], "cancelled");
+    h.until("step stopped", || async {
+        h.runner.stops().contains(&run.run_id).then_some(())
+    })
+    .await;
+}
+
+/// Every step run is recorded under its own task (run ids are unique across tasks), and a
+/// read-only workspace step gets a `contents: read` token for its own git calls.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_step_run_is_recorded_and_read_steps_get_a_token() {
+    let Some(h) = start(Duration::from_secs(3600), true).await else {
+        return;
+    };
+    h.set_secret("API_KEY", "k").await;
+    h.open_issue(1, "One").await;
+    h.open_issue(2, "Two").await;
+    let a = h.started(1).await;
+    let b = h.started(2).await;
+    assert_ne!(a.run_id, b.run_id, "run ids are unique across tasks");
+    for s in [&a, &b] {
+        assert_eq!(s.workspaces[0].mode, enzarb_proto::Mode::Read);
+        assert!(!s.workspaces[0].token.expose().is_empty());
+        assert!(
+            s.github_token
+                .as_ref()
+                .is_some_and(|t| !t.expose().is_empty())
+        );
+    }
+    let perms: Vec<Value> =
+        h.gh.generic_calls("mint_step_token")
+            .into_iter()
+            .map(|c| c["permissions"].clone())
+            .collect();
+    assert!(
+        perms.iter().all(|p| *p == json!({"contents": "read"})),
+        "{perms:?}"
+    );
+    // Both result-only steps finish and are recorded, one row per task.
+    for s in [&a, &b] {
+        let mut f = finished(&s.run_id, "success");
+        f.result = Some(json!({"summary": "ok"}));
+        h.runner.finish(f);
+    }
+    let rows: Vec<(i64, String, String)> = h
+        .until("both recorded", || async {
+            let r: Vec<(i64, String, String)> = sqlx::query_as(
+                "SELECT task_id, run_id, exit FROM engine.step_runs WHERE exit IS NOT NULL ORDER BY task_id",
+            )
+            .fetch_all(&h.db.pool)
+            .await
+            .unwrap();
+            (r.len() == 2).then_some(r)
+        })
+        .await;
+    assert_ne!(rows[0].0, rows[1].0);
+    assert!(rows.iter().all(|(_, _, e)| e == "success"));
 }

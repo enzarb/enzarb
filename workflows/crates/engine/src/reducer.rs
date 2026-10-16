@@ -111,15 +111,21 @@ impl Engine {
         };
         let ev: TaskEvent = serde_json::from_value(payload.clone())
             .map_err(|e| Error::State(format!("{ty}: {e}")))?;
-        if matches!(ev, TaskEvent::Resume) {
-            // A UI resume: writers only.
+        if matches!(ev, TaskEvent::Resume | TaskEvent::Cancel) {
+            // UI resume and cancel (ADR-0022 §9 generic actions): writers only.
+            let what = if matches!(ev, TaskEvent::Cancel) {
+                "cancel"
+            } else {
+                "resume"
+            };
             let login = payload
                 .pointer("/actor/login")
                 .and_then(Value::as_str)
                 .unwrap_or("");
             let mut task = self.lock_task(tx, task_id).await?;
-            if !login.is_empty() && !self.can_write(&task.repo, login).await {
-                return Ok((Some(format!("{login} may not resume")), Some(task_id)));
+            if login.is_empty() || !self.can_write(&task.repo, login).await {
+                let who = if login.is_empty() { "anonymous" } else { login };
+                return Ok((Some(format!("{who} may not {what}")), Some(task_id)));
             }
             // Jobs that waited on a human (a missing secret) run again.
             sqlx::query(
@@ -141,8 +147,8 @@ impl Engine {
     }
 
     /// `engine_api.submit`: `{source: ui, actor: {login}, kind, data}`. Commands, comments,
-    /// stop, cancel and steer become a `comment` catalog event on the task (the workflow's waits
-    /// and steer/stop matchers decide); `resume` resumes a paused task (writers only).
+    /// stop and steer become a `comment` catalog event on the task (the workflow's waits and
+    /// steer/stop matchers decide); `resume` and `cancel` are engine-native (writers only).
     async fn on_ui_event(
         &self,
         tx: &mut Tx<'_>,
@@ -159,14 +165,16 @@ impl Engine {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
-        if kind == "resume" {
+        if kind == "resume" || kind == "cancel" {
+            // Engine-native: resume re-resolves (in `apply`) and continues; cancel stops any
+            // running step and ends the task `cancelled`.
             return self
                 .on_engine_event(
                     tx,
                     event_id,
                     Some(task_id),
-                    "engine:resume",
-                    json!({"kind": "resume", "actor": {"login": login}}),
+                    &format!("{ENGINE_PREFIX}{kind}"),
+                    json!({"kind": kind, "actor": {"login": login}}),
                 )
                 .await;
         }
@@ -198,7 +206,7 @@ impl Engine {
                     .join(" ");
                 (body, Some(cmd), args)
             }
-            "stop" | "cancel" => (format!("/{kind}"), Some(kind.to_string()), Vec::new()),
+            "stop" => (format!("/{kind}"), Some(kind.to_string()), Vec::new()),
             "comment" | "steer" => {
                 let body = data
                     .get("body")

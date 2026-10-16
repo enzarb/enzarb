@@ -161,6 +161,7 @@ struct State {
     fail_next: Option<Error>,
     fail_delete_branch: Option<Error>,
     fail_set_base: Option<Error>,
+    fail_step_token: Option<Error>,
     merge_outcomes: VecDeque<MergeOutcome>,
     seen_merges: HashMap<String, MergeOutcome>,
     readiness: HashMap<WorkItemKey, MergeReadiness>,
@@ -358,6 +359,11 @@ impl FakeConnector {
     /// Make the next `set_base` call fail with `error`, once; other calls are unaffected.
     pub fn fail_set_base(&self, error: Error) {
         self.st().fail_set_base = Some(error);
+    }
+
+    /// Make the next `mint_step_token` call fail with `error`, once; other calls are unaffected.
+    pub fn fail_step_token(&self, error: Error) {
+        self.st().fail_step_token = Some(error);
     }
 
     /// Every call so far, in order.
@@ -756,6 +762,25 @@ impl Connector for FakeConnector {
             .cloned())
     }
 
+    async fn list_files(
+        &self,
+        repo: &RepoKey,
+        git_ref: &str,
+    ) -> Result<Option<Vec<(String, u64)>>> {
+        let st = self.generic(
+            "list_files",
+            serde_json::json!({"repo": repo.to_string(), "ref": git_ref}),
+        )?;
+        let mut v: Vec<(String, u64)> = st
+            .files
+            .iter()
+            .filter(|((r, g, _), _)| r == repo && g == git_ref)
+            .map(|((_, _, p), t)| (p.clone(), t.len() as u64))
+            .collect();
+        v.sort();
+        Ok(Some(v))
+    }
+
     async fn list_dependencies(&self, item: &WorkItemKey) -> Result<Vec<WorkItemKey>> {
         let mut st = self.st();
         let call = Call::ListDependencies { item: item.clone() };
@@ -1082,6 +1107,9 @@ impl Connector for FakeConnector {
                 "permissions": permissions,
             }),
         )?;
+        if let Some(e) = st.fail_step_token.take() {
+            return Err(e);
+        }
         st.next_id += 1;
         Ok(ReadCred {
             token: format!("fake-step-token-{}", st.next_id),

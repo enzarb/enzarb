@@ -204,6 +204,8 @@ async fn command_step_outputs_events_and_leased_push() {
         StepExec::Command {
             run: "echo hi > out.txt && echo '{\"a\":1}' > res.json && echo \"to-stdout $API_KEY\" \
                   && echo to-stderr >&2 && test -n \"$GH_TOKEN\" \
+                  && printf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill \
+                     | grep -qx \"password=$GH_TOKEN\" \
                   && echo \"file $(cat .enzarb/sec.txt)\" && test \"$(stat -c %a .enzarb/sec.txt)\" = 600 \
                   && git add -A && git status --porcelain --ignored > status.txt"
                 .into(),

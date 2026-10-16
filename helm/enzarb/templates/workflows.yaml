@@ -43,6 +43,7 @@ spec:
             - { name: ENZARB_DEFAULT_LIBRARY, value: {{ $c.defaultLibrary | quote }} }
             - { name: ENZARB_LIBRARY_REPOS, value: {{ join "," $c.libraryRepos | quote }} }
             - { name: ENZARB_STALL_SECS, value: {{ $c.stallSecs | quote }} }
+            - { name: ENZARB_RESOLVE_BUDGET_SECS, value: {{ $c.resolveBudgetSecs | default 30 | quote }} }
             - { name: ENZARB_MAX_STEPS_PER_PROJECT, value: {{ $c.maxStepsPerProject | quote }} }
             - { name: ENZARB_CI_IGNORE_CHECKS, value: {{ $c.ciIgnoreChecks | default "" | quote }} }
             - { name: ENZARB_BOT_HANDLE, value: {{ $c.botHandle | quote }} }
