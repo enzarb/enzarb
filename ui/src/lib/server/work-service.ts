@@ -195,7 +195,12 @@ export function workService(
 
 		/** Sanitized HTML of the latest plan job's output; null when there is none or the item is not owned. */
 		async plan(id: number): Promise<string | null> {
-			if (!(await load(id))) return null;
+			const row = await load(id);
+			if (!row) return null;
+			// The current plan as the engine stored it (graph tasks plan in an `agent_segment`
+			// job, so there is no `agent_plan` output to read); older items fall back to the job.
+			const stored = (row.state_data as { plan?: unknown } | null)?.plan;
+			if (typeof stored === 'string' && stored.trim()) return renderMarkdown(stored);
 			const jobs = await sql<{ output: unknown }[]>`
 				SELECT output FROM workflows_api.job_v
 				WHERE work_item_id = ${id} AND kind = 'agent_plan' AND output IS NOT NULL

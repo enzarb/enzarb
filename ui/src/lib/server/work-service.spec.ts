@@ -651,6 +651,21 @@ describe('workService needs-you queue', () => {
 		]);
 	});
 
+	it('returns a graph task plan from state_data.plan', async () => {
+		const id = await seedItem(sql, {
+			key: 'github:acme/p#2',
+			project: 'p',
+			workflow: 'graph:issue',
+			state: 'Waiting',
+			stateData: { plan: '## Summary\nDo it <script>alert(1)</script>' }
+		});
+		await seedJob(sql, id, 'agent_segment', 'succeeded', { summary: 'segment output' });
+		const html = await workService(sql, ['p']).plan(id);
+		expect(html).toContain('<h2');
+		expect(html).toContain('Do it');
+		expect(html).not.toContain('<script');
+	});
+
 	it('returns the latest plan as sanitized html, null when missing or not owned', async () => {
 		const id = await seedItem(sql, {
 			key: 'github:acme/p#1',
