@@ -97,6 +97,8 @@ Every message in both directions is appended, redacted, to the chat's `transcrip
 - **Cancellation:** the Stop button sends `session/cancel`. The agent ends the turn with `stopReason: cancelled`, and pending permissions resolve `cancelled` (section 3).
 
 ## 3. Permissions and policy
+> **Amended 2026-10-15 (ADR-0011 amendment): no permission policy.** `Policy::hard_deny`, `Policy::decide`, the `_meta.enzarb` hint and `_enzarb/permission_denied` are gone. sandbox-init allows every chat permission request itself (`allow_always` if offered, else `allow_once`), except leaving plan mode, which still goes to the user. The sandbox is the security boundary.
+
 
 > **Amended 2026-10-12 (ADR-0014 amendment 2): chat defaults to `bypassPermissions`.** The text below describes the `default`/`plan` modes, which stay available (`ENZARB_CHAT_PERMISSION_MODE=default|plan`, `ENZARB_CHAT_ALLOW_BYPASS=false`). In bypass the agent raises no `session/request_permission` for ordinary tool calls, so tier 1 (`Policy::hard_deny`) and tier 2 (user prompts) apply only in `default` and `plan`; the sandbox is the boundary. `session/set_mode` accepts `bypassPermissions` (only while allowed), `default` and `plan`; sandbox-init enforces the configured start mode itself (the adapter ignores `_meta` `permissionMode`) and notifies the browser with `_enzarb/mode {sessionId, modeId, bypassAllowed}`. Agent jobs are unchanged. The UI mode indicator/switch is not shipped (enzarb-ui#87).
 

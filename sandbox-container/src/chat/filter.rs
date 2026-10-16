@@ -39,10 +39,11 @@
 //! Agent → browser:
 //! * responses to forwarded requests and `session/update`, with the Claude
 //!   token redacted from every string;
-//! * `session/request_permission`: [`Policy::classify`]. A hard deny is
-//!   answered `reject_once` here and reported to the browser as the
-//!   `_enzarb/permission_denied` notification; everything else is forwarded
-//!   with the policy's opinion in `_meta.enzarb` (a hint, never a default);
+//! * `session/request_permission`: answered here with the allow option
+//!   (`allow_always` if offered, else `allow_once`), recorded as decision
+//!   `allow`, rule `sandbox`: the sandbox is the security boundary. Only a
+//!   `switch_mode` request (leaving plan mode, the user's call) is forwarded
+//!   to the browser;
 //! * every other request (`fs/*`, `terminal/*`, ...) gets `-32601` back, and
 //!   other notifications are dropped.
 
@@ -53,7 +54,6 @@ use std::path::PathBuf;
 use serde_json::{Map, Value, json};
 
 use crate::config::ChatMode;
-use crate::policy::{Classification, Policy};
 
 /// Largest total text of one `session/prompt`.
 pub const MAX_PROMPT_BYTES: usize = 256 * 1024;
@@ -68,8 +68,6 @@ pub const ALLOWED_MODES: &[&str] = &["bypassPermissions", "default", "plan"];
 pub const MODE: &str = "_enzarb/mode";
 /// Id prefix of the `session/set_mode` requests sandbox-init sends itself.
 const OWN_ID_PREFIX: &str = "enzarb-mode-";
-/// The browser notification for a hard deny.
-pub const PERMISSION_DENIED: &str = "_enzarb/permission_denied";
 /// Longest JSON-RPC string id accepted from the browser.
 const MAX_ID_LEN: usize = 128;
 /// Longest ACP session id accepted (Claude's are UUIDs).
@@ -131,7 +129,6 @@ pub fn valid_session_id(s: &str) -> bool {
 
 /// Per-channel filter state.
 pub struct Filter {
-    policy: Policy,
     mode: ChatMode,
     allow_bypass: bool,
     own_ids: u64,
@@ -196,7 +193,6 @@ impl Filter {
     /// browser switch to `bypassPermissions` (and must be true for a
     /// `bypassPermissions` mode).
     pub fn new(
-        policy: Policy,
         mode: ChatMode,
         allow_bypass: bool,
         worktree: PathBuf,
@@ -204,7 +200,6 @@ impl Filter {
         resume: Option<String>,
     ) -> Self {
         Self {
-            policy,
             mode,
             allow_bypass: allow_bypass || mode == ChatMode::Bypass,
             own_ids: 0,
@@ -766,10 +761,6 @@ impl Filter {
                     .collect()
             })
             .unwrap_or_default();
-        let session_id = p
-            .and_then(|p| p.get("sessionId"))
-            .cloned()
-            .unwrap_or(Value::Null);
         let key = id_key(&id);
         let tool_call_id = tool_call.get("toolCallId").cloned().unwrap_or(Value::Null);
         let mut ids: Vec<&str> = options.iter().map(|(o, _)| o.as_str()).collect();
@@ -786,73 +777,52 @@ impl Filter {
                 self.dropped("agent", "permission request id in use or too many pending"),
             ];
         }
-        match self.policy.classify(&tool_call, &self.worktree) {
-            Classification::HardDeny(d) => {
-                let outcome = match reject_option(&options) {
-                    Some(o) => json!({"outcome": "selected", "optionId": o}),
-                    None => json!({"outcome": "cancelled"}),
-                };
-                let note = self.redact(json!({
-                    "jsonrpc": "2.0",
-                    "method": PERMISSION_DENIED,
-                    "params": {
-                        "sessionId": session_id,
-                        "toolCall": tool_call,
-                        "rule": d.rule,
-                        "reason": d.reason,
-                    },
-                }));
-                vec![
-                    Out::Agent(json!({"jsonrpc": "2.0", "id": id, "result": {"outcome": outcome}})),
-                    Out::Record(
-                        "permission",
-                        self.redact(json!({
-                            "tool_call_id": tool_call_id,
-                            "tool_kind": tool_call.get("kind"),
-                            "title": tool_call.get("title"),
-                            "input": tool_call.get("rawInput"),
-                            "decision": "hard_deny",
-                            "rule": d.rule,
-                            "reason": d.reason,
-                        })),
-                    ),
-                    Out::Browser(note),
-                ]
-            }
-            Classification::Ask(hint) => {
-                self.permissions.insert(
-                    key,
-                    PermReq {
-                        id: id.clone(),
-                        options,
-                        tool_call_id: tool_call_id.clone(),
-                    },
-                );
-                let mut msg = Value::Object(m.clone());
-                let hint = serde_json::to_value(&hint).unwrap_or(Value::Null);
-                if let Some(params) = msg.get_mut("params").and_then(Value::as_object_mut) {
-                    let meta = params.entry("_meta").or_insert_with(|| json!({}));
-                    if !meta.is_object() {
-                        *meta = json!({});
-                    }
-                    meta["enzarb"] = hint.clone();
-                }
-                vec![
-                    Out::Record(
-                        "permission",
-                        self.redact(json!({
-                            "tool_call_id": tool_call_id,
-                            "tool_kind": tool_call.get("kind"),
-                            "title": tool_call.get("title"),
-                            "input": tool_call.get("rawInput"),
-                            "decision": "ask",
-                            "hint": hint,
-                        })),
-                    ),
-                    Out::Browser(self.redact(msg)),
-                ]
-            }
+        // Leaving plan mode is the user's call, not a security decision: it
+        // goes to the browser. Everything else is allowed here, the sandbox
+        // (gVisor, network policy, scoped tokens) being the security boundary.
+        if tool_call.get("kind").and_then(Value::as_str) == Some("switch_mode") {
+            self.permissions.insert(
+                key,
+                PermReq {
+                    id: id.clone(),
+                    options,
+                    tool_call_id: tool_call_id.clone(),
+                },
+            );
+            return vec![
+                Out::Record(
+                    "permission",
+                    self.redact(json!({
+                        "tool_call_id": tool_call_id,
+                        "tool_kind": tool_call.get("kind"),
+                        "title": tool_call.get("title"),
+                        "input": tool_call.get("rawInput"),
+                        "decision": "ask",
+                    })),
+                ),
+                Out::Browser(self.redact(Value::Object(m.clone()))),
+            ];
         }
+        let option = allow_option(&options);
+        let outcome = match &option {
+            Some(o) => json!({"outcome": "selected", "optionId": o}),
+            None => json!({"outcome": "cancelled"}),
+        };
+        vec![
+            Out::Agent(json!({"jsonrpc": "2.0", "id": id, "result": {"outcome": outcome}})),
+            Out::Record(
+                "permission",
+                self.redact(json!({
+                    "tool_call_id": tool_call_id,
+                    "tool_kind": tool_call.get("kind"),
+                    "title": tool_call.get("title"),
+                    "input": tool_call.get("rawInput"),
+                    "decision": "allow",
+                    "rule": "sandbox",
+                    "option_id": option,
+                })),
+            ),
+        ]
     }
 
     // ---- shutdown ----
@@ -887,6 +857,16 @@ impl Filter {
 
 fn truncate(s: &str) -> String {
     s.chars().take(64).collect()
+}
+
+/// `allow_always` when offered, else `allow_once`.
+fn allow_option(options: &[(String, String)]) -> Option<String> {
+    ["allow_always", "allow_once"].iter().find_map(|want| {
+        options
+            .iter()
+            .find(|(_, k)| k == want)
+            .map(|(o, _)| o.clone())
+    })
 }
 
 fn reject_option(options: &[(String, String)]) -> Option<String> {

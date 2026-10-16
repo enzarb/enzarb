@@ -745,7 +745,7 @@ async fn missing_token_fails_and_a_rejected_token_surfaces_the_agent_error() {
 }
 
 #[tokio::test]
-async fn permission_decisions_follow_the_policy_and_are_recorded() {
+async fn every_permission_is_allowed_and_recorded() {
     let env = start(0).await;
     let (session, _e) = env.connect().await;
     let mut req = env.run("perm", "PERM", "main", "enzarb/issue-14", false);
@@ -754,12 +754,13 @@ async fn permission_decisions_follow_the_policy_and_are_recorded() {
     let mut log = started.log.unwrap();
     let (_, fin) = env.finished("perm").await;
     assert_eq!(fin.outcome, RunOutcome::Succeeded, "{}", fin.summary);
-    // what the agent received: allow_once ("allow-once") or reject_once ("reject"), never "always"
+    // the sandbox is the boundary: every request gets allow_always
+    let a = "allow-with-updates";
     assert!(
-        fin.summary.starts_with(
-            "perm: git-status=allow-once,git-push=reject,curl=reject,read-in=allow-once,\
-             read-out=reject,edit-in=allow-once,edit-out=reject,fetch=reject\n"
-        ),
+        fin.summary.starts_with(&format!(
+            "perm: git-status={a},git-push={a},curl={a},read-in={a},\
+             read-out={a},edit-in={a},edit-out={a},fetch={a}\n"
+        )),
         "{}",
         fin.summary
     );
@@ -772,26 +773,20 @@ async fn permission_decisions_follow_the_policy_and_are_recorded() {
             .find(|p| p["tool_call_id"] == id)
             .unwrap_or_else(|| panic!("no permission record for {id}"))
     };
-    for (id, decision, rule) in [
-        ("git-status", "allow", "shell"),
-        ("git-push", "deny", "shell"),
-        ("curl", "deny", "shell"),
-        ("read-in", "allow", "read"),
-        ("read-out", "deny", "read"),
-        ("edit-in", "allow", "edit"),
-        ("edit-out", "deny", "edit"),
-        ("fetch", "deny", "fetch"),
+    for id in [
+        "git-status",
+        "git-push",
+        "curl",
+        "read-in",
+        "read-out",
+        "edit-in",
+        "edit-out",
+        "fetch",
     ] {
         let p = by_id(id);
-        assert_eq!(p["decision"], decision, "{id}: {p}");
-        assert_eq!(p["rule"], rule, "{id}: {p}");
-        assert!(!p["reason"].as_str().unwrap().is_empty());
-        let option = if decision == "allow" {
-            "allow-once"
-        } else {
-            "reject"
-        };
-        assert_eq!(p["option_id"], option);
+        assert_eq!(p["decision"], "allow", "{id}: {p}");
+        assert_eq!(p["rule"], "sandbox", "{id}: {p}");
+        assert_eq!(p["option_id"], a);
     }
     assert_eq!(
         by_id("git-push")["input"]["command"],
