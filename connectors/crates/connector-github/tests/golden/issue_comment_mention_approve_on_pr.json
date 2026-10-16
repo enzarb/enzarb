@@ -1,104 +1,23 @@
-{
-  "kind": "events",
-  "events": [
-    {
-      "specversion": "1.0",
-      "source": "github",
-      "id": "d-issue_comment_mention_approve_on_pr",
-      "type": "CommentAdded",
-      "subject": "github:enzarb/enzarb-ui#57",
-      "time": "2026-10-08T13:00:00Z",
-      "data": {
-        "repo": "github:enzarb/enzarb-ui",
-        "actor": {
-          "login": "ruckc",
-          "id": 42,
-          "is_bot": false
-        },
-        "item": {
-          "kind": "change_request",
-          "number": 57,
-          "url": "https://github.com/enzarb/enzarb-ui/pull/57",
-          "title": "Fix sidebar overflow",
-          "body": "Closes #42",
-          "author": "ruckc",
-          "head_ref": null,
-          "base_ref": null,
-          "head_sha": null
-        },
-        "comment": {
-          "id": 990,
-          "kind": "conversation",
-          "body": "@enzarb thanks, merging after checks.\n/approve",
-          "url": "https://github.com/enzarb/enzarb-ui/pull/57#issuecomment-990"
-        }
-      }
-    },
-    {
-      "specversion": "1.0",
-      "source": "github",
-      "id": "d-issue_comment_mention_approve_on_pr#mentioned",
-      "type": "Mentioned",
-      "subject": "github:enzarb/enzarb-ui#57",
-      "time": "2026-10-08T13:00:00Z",
-      "data": {
-        "repo": "github:enzarb/enzarb-ui",
-        "actor": {
-          "login": "ruckc",
-          "id": 42,
-          "is_bot": false
-        },
-        "item": {
-          "kind": "change_request",
-          "number": 57,
-          "url": "https://github.com/enzarb/enzarb-ui/pull/57",
-          "title": "Fix sidebar overflow",
-          "body": "Closes #42",
-          "author": "ruckc",
-          "head_ref": null,
-          "base_ref": null,
-          "head_sha": null
-        },
-        "comment": {
-          "id": 990,
-          "kind": "conversation",
-          "body": "@enzarb thanks, merging after checks.\n/approve",
-          "url": "https://github.com/enzarb/enzarb-ui/pull/57#issuecomment-990"
-        }
-      }
-    },
-    {
-      "specversion": "1.0",
-      "source": "github",
-      "id": "d-issue_comment_mention_approve_on_pr#approved",
-      "type": "ApprovalGranted",
-      "subject": "github:enzarb/enzarb-ui#57",
-      "time": "2026-10-08T13:00:00Z",
-      "data": {
-        "repo": "github:enzarb/enzarb-ui",
-        "actor": {
-          "login": "ruckc",
-          "id": 42,
-          "is_bot": false
-        },
-        "item": {
-          "kind": "change_request",
-          "number": 57,
-          "url": "https://github.com/enzarb/enzarb-ui/pull/57",
-          "title": "Fix sidebar overflow",
-          "body": "Closes #42",
-          "author": "ruckc",
-          "head_ref": null,
-          "base_ref": null,
-          "head_sha": null
-        },
-        "comment": {
-          "id": 990,
-          "kind": "conversation",
-          "body": "@enzarb thanks, merging after checks.\n/approve",
-          "url": "https://github.com/enzarb/enzarb-ui/pull/57#issuecomment-990"
-        }
-      }
+[
+  {
+    "suffix": "0",
+    "type": "comment",
+    "event": {
+      "type": "comment",
+      "body": "@enzarb thanks, merging after checks.\n/approve",
+      "url": "https://github.com/enzarb/enzarb-ui/pull/57#issuecomment-990",
+      "id": "d-1",
+      "repo": "enzarb/enzarb-ui",
+      "actor": {
+        "login": "ruckc",
+        "can_write": false,
+        "bot": false
+      },
+      "subject": {
+        "kind": "pull_request",
+        "number": 57
+      },
+      "at": "2026-10-08T13:00:00Z"
     }
-  ]
-}
+  }
+]

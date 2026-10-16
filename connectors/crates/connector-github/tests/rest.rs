@@ -8,7 +8,7 @@ use enzarb_connector::{
     Error, ItemKind, MergeOutcome, MergeReadiness, Permission, Progress, ProgressTarget, RepoKey,
     Status, StatusState, UpdateBranchOutcome, WorkItemKey,
 };
-use enzarb_connector_github::{CommitStatusChange, GitHubConfig, GitHubConnector, RetryPolicy};
+use enzarb_connector_github::{GitHubConfig, GitHubConnector, RetryPolicy};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde_json::{Value, json};
 use wiremock::matchers::{body_json, header, method, path, path_regex, query_param};
@@ -1451,78 +1451,6 @@ async fn readiness_ignores_copilot_checks_and_statuses() {
         .await
         .unwrap();
     assert_eq!(r.ci, CiState::Success);
-}
-
-// ---- status -> pull requests ----
-
-fn status_change() -> CommitStatusChange {
-    CommitStatusChange {
-        delivery: "delivery-1".into(),
-        repo: repo(),
-        sha: HEAD.into(),
-        state: CiState::Success,
-        context: Some("ci/jenkins".into()),
-        url: Some("https://ci.example.com/1".into()),
-        actor: Actor {
-            login: "ci-user".into(),
-            id: 43,
-            is_bot: false,
-        },
-        time: None,
-    }
-}
-
-#[tokio::test]
-async fn resolve_commit_status_maps_open_prs_with_that_head() {
-    let server = MockServer::start().await;
-    mount_auth(&server, 3600, 1, 1).await;
-    let mut closed = pr_json(8);
-    closed["state"] = json!("closed");
-    let mut moved = pr_json(9);
-    moved["head"]["sha"] = json!("othersha");
-    Mock::given(method("GET"))
-        .and(path(format!(
-            "/repos/enzarb/enzarb-ui/commits/{HEAD}/pulls"
-        )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
-            pr_json(7),
-            closed,
-            moved,
-            pr_json(10)
-        ])))
-        .mount(&server)
-        .await;
-    let evs = connector(&server)
-        .resolve_commit_status(&status_change())
-        .await
-        .unwrap();
-    let numbers: Vec<_> = evs.iter().map(|e| e.subject.number).collect();
-    assert_eq!(numbers, [7, 10]);
-    assert_eq!(evs[0].id, "delivery-1");
-    assert_eq!(evs[1].id, "delivery-1#pr10");
-    let ci = evs[0].data.ci.as_ref().unwrap();
-    assert_eq!(ci.state, CiState::Success);
-    assert_eq!(ci.context.as_deref(), Some("ci/jenkins"));
-    assert_eq!(ci.head_sha, HEAD);
-    assert_eq!(evs[0].data.item.title, "Fix sidebar overflow");
-}
-
-#[tokio::test]
-async fn resolve_commit_status_without_prs_is_empty() {
-    let server = MockServer::start().await;
-    mount_auth(&server, 3600, 1, 1).await;
-    Mock::given(method("GET"))
-        .and(path(format!(
-            "/repos/enzarb/enzarb-ui/commits/{HEAD}/pulls"
-        )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
-        .mount(&server)
-        .await;
-    let evs = connector(&server)
-        .resolve_commit_status(&status_change())
-        .await
-        .unwrap();
-    assert!(evs.is_empty());
 }
 
 // ---- read credential ----

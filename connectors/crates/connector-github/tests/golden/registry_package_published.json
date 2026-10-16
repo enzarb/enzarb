@@ -1,0 +1,21 @@
+[
+  {
+    "suffix": "0",
+    "type": "package",
+    "event": {
+      "type": "package",
+      "action": "published",
+      "name": "enzarb-ui",
+      "version": "0.4.1",
+      "ecosystem": "container",
+      "id": "d-1",
+      "repo": "enzarb/enzarb-ui",
+      "actor": {
+        "login": "ruckc",
+        "can_write": false,
+        "bot": false
+      },
+      "at": "2026-10-08T13:05:00Z"
+    }
+  }
+]

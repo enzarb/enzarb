@@ -10,6 +10,7 @@ description = "GitHub App implementation of the enzarb Connector trait, with web
 async-trait = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["serde", "std", "clock"] }
 enzarb-connector = { version = "0.1.0", path = "../connector" }
+enzarb-flow = { path = "../../../workflows/crates/flow" }
 hex = "0.4.3"
 hmac = "0.13.0"
 jsonwebtoken = { version = "11.1.0", default-features = false, features = ["rust_crypto", "use_pem"] }
