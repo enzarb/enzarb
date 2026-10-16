@@ -250,6 +250,7 @@ impl Executor {
                 | JobKind::AgentAddressComments
                 | JobKind::AgentResolveConflicts
                 | JobKind::AgentReview
+                | JobKind::MechanicalCheck
                 | JobKind::AgentSegment
         );
         let deps_token = if needs_deps {

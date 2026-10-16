@@ -95,6 +95,10 @@ pub enum JobKind {
     AgentAddressComments,
     AgentResolveConflicts,
     AgentTask,
+    /// Cheap pre-review step for a re-review: runs `scripts/monorepo/mechanical.sh` on the delta
+    /// since the last review and the component checks. Answers `approve` (mechanical, checks
+    /// passed) or `comment`; the change request machine then skips or starts the agent review.
+    MechanicalCheck,
     CheckMergeReadiness,
     MergeChangeRequest,
     /// Rebase enzarb's own stacked child branch onto the default branch after its parent was
@@ -123,6 +127,7 @@ impl JobKind {
             JobKind::AgentAddressComments => "agent_address_comments",
             JobKind::AgentResolveConflicts => "agent_resolve_conflicts",
             JobKind::AgentTask => "agent_task",
+            JobKind::MechanicalCheck => "mechanical_check",
             JobKind::CheckMergeReadiness => "check_merge_readiness",
             JobKind::MergeChangeRequest => "merge_change_request",
             JobKind::RetargetChangeRequest => "retarget_change_request",
@@ -190,6 +195,8 @@ pub enum EventPayload {
         job_id: i64,
         kind: JobKind,
         error: String,
+        /// Seconds from queued to finished (additive; 0 when the row predates it).
+        elapsed_secs: u64,
     },
     /// Event type `TimerFired`, payload `{job_id?}`. Without `job_id` the work
     /// item's `wake_at` is due; with it, that running job passed its deadline.
@@ -253,6 +260,8 @@ impl EngineEvent {
                     output: Value,
                     #[serde(default)]
                     error: String,
+                    #[serde(default)]
+                    elapsed_secs: u64,
                 }
                 let p: P = serde_json::from_value(payload.clone()).map_err(bad)?;
                 if event_type == "JobSucceeded" {
@@ -266,6 +275,7 @@ impl EngineEvent {
                         job_id: p.job_id,
                         kind: p.kind,
                         error: p.error,
+                        elapsed_secs: p.elapsed_secs,
                     }
                 }
             }
@@ -412,6 +422,14 @@ pub struct Config {
     /// `1` lets an epic create sub-issues that are plain issues.
     #[serde(default = "default_max_epic_depth")]
     pub max_epic_depth: u32,
+    /// `change_request`: a re-review covers only the delta since the last review when it is at
+    /// most this many changed lines; a larger delta gets a full review.
+    #[serde(default = "default_review_delta_max_lines")]
+    pub review_delta_max_lines: u32,
+}
+
+fn default_review_delta_max_lines() -> u32 {
+    300
 }
 
 fn default_max_epic_children() -> usize {
@@ -431,6 +449,7 @@ impl Default for Config {
             max_auto_rounds: 3,
             max_epic_children: default_max_epic_children(),
             max_epic_depth: default_max_epic_depth(),
+            review_delta_max_lines: default_review_delta_max_lines(),
         }
     }
 }

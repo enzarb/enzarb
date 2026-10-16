@@ -760,10 +760,10 @@ async fn ingest_job_result_is_idempotent_and_drops_stale_attempts() {
             .await
             .unwrap();
     assert_eq!(ty, "JobFailed");
-    assert_eq!(
-        payload,
-        json!({"job_id": triage.id, "kind": "agent_triage", "error": "boom"})
-    );
+    assert_eq!(payload["job_id"], json!(triage.id));
+    assert_eq!(payload["kind"], "agent_triage");
+    assert_eq!(payload["error"], "boom");
+    assert!(payload["elapsed_secs"].is_i64());
     assert_eq!(key, "github:enzarb/enzarb-ui#1");
     let j = job_of_kind(pool, w.id, JobKind::AgentTriage).await;
     assert_eq!(j.status, "failed");
