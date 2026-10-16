@@ -71,6 +71,37 @@ export interface WorkItemDetail extends WorkItemSummary {
 	jobs: JobView[];
 	/** Merge readiness for change requests, null for every other workflow. */
 	readiness: Readiness | null;
+	/** Review rounds, fix rounds and agent time of a change request; absent for other workflows. */
+	stats?: ReviewStats | null;
+}
+
+/** What a change request cost (`state_data.stats`, written by workflows). */
+export interface ReviewStats {
+	reviewRounds: number;
+	fixRounds: number;
+	agentSecs: number;
+}
+
+const count = (x: unknown): number =>
+	typeof x === 'number' && Number.isFinite(x) && x >= 0 ? Math.floor(x) : 0;
+
+/** `state_data.stats`; null when absent (older workflows) or not an object. */
+export function parseReviewStats(stateData: unknown): ReviewStats | null {
+	const raw = asRecord(stateData).stats;
+	if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+	const s = raw as Record<string, unknown>;
+	return {
+		reviewRounds: count(s.review_rounds),
+		fixRounds: count(s.fix_rounds),
+		agentSecs: count(s.agent_secs)
+	};
+}
+
+/** `1 h 5 min`, `12 min`, `45 s`: agent time at a glance. */
+export function formatAgentTime(secs: number): string {
+	if (secs < 60) return `${secs} s`;
+	const min = Math.round(secs / 60);
+	return min < 60 ? `${min} min` : `${Math.floor(min / 60)} h ${min % 60} min`;
 }
 
 export const CHECK_STATUSES = ['ok', 'pending', 'failed', 'unknown'] as const;

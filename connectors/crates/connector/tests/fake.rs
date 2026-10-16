@@ -341,3 +341,26 @@ async fn delete_branch_failure_is_injected() {
     let err = f.delete_branch(&item().repo, "b", "k").await.unwrap_err();
     assert!(matches!(err, Error::PermissionDenied(_)), "{err:?}");
 }
+
+#[tokio::test]
+async fn close_issue_records_the_reason_and_replays() {
+    let f = FakeConnector::new();
+    assert_eq!(f.closed_issue(&item()), None);
+    f.close_issue(&item(), CloseReason::Completed)
+        .await
+        .unwrap();
+    f.close_issue(&item(), CloseReason::Completed)
+        .await
+        .unwrap();
+    assert_eq!(f.closed_issue(&item()), Some(CloseReason::Completed));
+    let calls = f.calls();
+    assert_eq!(
+        calls[0].call,
+        Call::CloseIssue {
+            item: item(),
+            reason: CloseReason::Completed
+        }
+    );
+    assert!(!calls[0].replayed);
+    assert!(calls[1].replayed);
+}

@@ -78,6 +78,7 @@ pub mod claude_credential;
 mod connectors;
 mod finish;
 mod jobs;
+mod prepare;
 mod restart;
 mod results;
 mod retarget;

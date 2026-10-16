@@ -740,6 +740,27 @@ nodes:
     assert_eq!(wait_of(&t), ("human".into(), "question".into()));
 }
 
+#[test]
+fn a_re_review_after_a_push_is_a_delta_of_the_last_reviewed_head() {
+    let c = cctx(Permission::Write);
+    let t = reviewed(&c, "approve", "LGTM");
+    let r = ok(
+        "e4",
+        JobKind::CheckMergeReadiness,
+        json!({"head_sha": "sha1", "ci": "success", "mergeable": true, "base_sha": "b0"}),
+    );
+    let t = transition(&c, &t.next, &r);
+    assert_eq!(node(&t), "ready");
+    let k = cr_of(&t);
+    assert_eq!(k.data.prior_review.sha, "sha1");
+    assert_eq!(k.data.prior_review.base_sha, "b0");
+    assert_eq!(k.data.stats.review_rounds, 1);
+    let t = transition(&c, &t.next, &pushed_by("p1", "sha9", actor("carol")));
+    assert_eq!(node(&t), "review");
+    let (_, _, input) = job_of(&t, JobKind::AgentSegment);
+    assert_eq!(input["context"]["previous_reviewed_sha"], "sha1");
+}
+
 fn bot() -> Actor {
     let mut a = actor(BOT);
     a.is_bot = true;

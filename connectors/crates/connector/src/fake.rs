@@ -7,9 +7,10 @@ use async_trait::async_trait;
 use chrono::{Duration, Utc};
 
 use crate::{
-    Actor, ChangeRequestSpec, CommentRef, CommitRef, Connector, CredScope, Error, ItemKind,
-    ItemRef, MergeOutcome, MergeReadiness, Permission, Progress, ProgressTarget, ReadCred, RepoKey,
-    Result, ShortLivedCred, Status, Thread, ThreadComment, UpdateBranchOutcome, WorkItemKey,
+    Actor, ChangeRequestSpec, CloseReason, CommentRef, CommitRef, Connector, CredScope, Error,
+    ItemKind, ItemRef, MergeOutcome, MergeReadiness, Permission, Progress, ProgressTarget,
+    ReadCred, RepoKey, Result, ShortLivedCred, Status, Thread, ThreadComment, UpdateBranchOutcome,
+    WorkItemKey,
 };
 
 /// One call made against the fake, with its arguments.
@@ -123,6 +124,10 @@ pub enum Call {
         parent: WorkItemKey,
         child: WorkItemKey,
     },
+    CloseIssue {
+        item: WorkItemKey,
+        reason: CloseReason,
+    },
 }
 
 /// A recorded call. `replayed` is true when the idempotency key had been seen
@@ -162,6 +167,7 @@ struct State {
     seen_issues: HashMap<String, WorkItemKey>,
     created_issues: Vec<(WorkItemKey, String, String)>,
     sub_issues: HashMap<WorkItemKey, Vec<WorkItemKey>>,
+    closed_issues: HashMap<WorkItemKey, CloseReason>,
     next_issue: u64,
 }
 
@@ -249,6 +255,11 @@ impl FakeConnector {
     /// Issues made by `create_issue` as `(key, title, body)`, in order.
     pub fn created_issues(&self) -> Vec<(WorkItemKey, String, String)> {
         self.st().created_issues.clone()
+    }
+
+    /// How `item` was closed by `close_issue`, if it was.
+    pub fn closed_issue(&self, item: &WorkItemKey) -> Option<CloseReason> {
+        self.st().closed_issues.get(item).copied()
     }
 
     /// The sub-issues linked to `parent`, in order.
@@ -768,6 +779,21 @@ impl Connector for FakeConnector {
         };
         let replayed = entry.2 == body;
         entry.2 = body.to_string();
+        Self::record(&mut st, call, replayed);
+        Ok(())
+    }
+
+    async fn close_issue(&self, item: &WorkItemKey, reason: CloseReason) -> Result<()> {
+        let mut st = self.st();
+        let call = Call::CloseIssue {
+            item: item.clone(),
+            reason,
+        };
+        Self::take_failure(&mut st, call.clone())?;
+        let replayed = st.closed_issues.contains_key(item);
+        if !replayed {
+            st.closed_issues.insert(item.clone(), reason);
+        }
         Self::record(&mut st, call, replayed);
         Ok(())
     }

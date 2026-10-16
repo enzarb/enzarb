@@ -39,6 +39,10 @@ pub mod feature {
     /// The server answers `stats_request` with `stats`. Clients must only
     /// send `stats_request` after seeing it (an old server ignores the request).
     pub const STATS: &str = "stats";
+    /// The server answers `prepare_request` with `prepared`. Clients must only
+    /// send `prepare_request` after seeing it (an old server answers
+    /// `unknown_message`).
+    pub const PREPARE: &str = "prepare";
     /// The server delivers run results over the mux (ADR-0008 amendment of
     /// 2026-10-15): it pushes `run_finished` to the session that started a
     /// run or sent `run_subscribe` for it, answers `run_status` for a
@@ -248,6 +252,58 @@ pub struct RunStart {
     /// `prompt` is ignored. Omitted when absent; old peers ignore it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph: Option<GraphSegment>,
+}
+
+/// Body of `prepare_request`: ask the sandbox to fetch the run's refs in its
+/// clone and report the merge base, the changed files and the affected
+/// components, before the run's worktree exists.
+///
+/// `Debug` is hand-written and redacts `clone_token`.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrepareRequest {
+    pub run_id: String,
+    pub repo_url: String,
+    pub base_ref: String,
+    pub branch: String,
+    /// Credential to fetch with (the run's own clone credential).
+    pub clone_token: Secret,
+}
+
+impl std::fmt::Debug for PrepareRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PrepareRequest")
+            .field("run_id", &self.run_id)
+            .field("repo_url", &self.repo_url)
+            .field("base_ref", &self.base_ref)
+            .field("branch", &self.branch)
+            .field("clone_token", &"<redacted>")
+            .finish()
+    }
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// Reply to `prepare_request`. Every field is best-effort: a step that failed
+/// leaves its field empty. Empty fields are omitted; old payloads decode.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Prepared {
+    #[serde(default)]
+    pub run_id: String,
+    /// `git merge-base origin/<base_ref> <head>`; absent when unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_base_sha: Option<String>,
+    /// `git diff --name-only <merge_base>...<head>`, capped by the sandbox.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed_files: Vec<String>,
+    /// The true number of changed files (may exceed `changed_files.len()`).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub changed_files_total: usize,
+    /// Affected components from `scripts/monorepo/affected.sh`; empty when the
+    /// script is absent or failed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub affected: Vec<String>,
 }
 
 /// A graph segment to run (`RunStart.graph`). The definition is opaque to
@@ -546,6 +602,12 @@ pub enum Ctrl {
     StatsRequest,
     /// Reply to `stats_request`.
     Stats(SandboxStats),
+    /// Client asks the sandbox to fetch a run's refs and report the merge
+    /// base, changed files and affected components; answered by `prepared`.
+    /// Only send it after `welcome.features` contained [`feature::PREPARE`].
+    PrepareRequest(PrepareRequest),
+    /// Reply to `prepare_request`.
+    Prepared(Prepared),
     /// Browser -> proxy (client -> server): clear the stored credential.
     CredentialClear {
         kind: CredentialKind,

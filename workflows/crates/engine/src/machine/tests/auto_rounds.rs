@@ -25,15 +25,59 @@ fn review_findings_start_an_automatic_round() {
     assert_eq!(d.last_review, "request_changes");
     assert!(kinds(&t).contains(&JobKind::AgentAddressComments));
     assert_eq!(reason(&t), "enzarb_fixing");
-    // An unverified approve is downgraded and its note is part of the findings.
+    // An unverified approve is downgraded; with must-fix items the note is part of the findings.
     let t = run_cr(
         Permission::None,
         &cr_in(CrPhase::Reviewing),
-        &agent_ok("r", JobKind::AgentReview, "approve", "LGTM"),
+        &review_ok("r", "approve", json!(["fix the lint"]), json!([])),
     );
     let d = assert_cr(&t, CrPhase::AddressingComments);
     assert_eq!(d.last_review, "comment");
     assert!(d.trigger_text.contains("Downgraded"));
+}
+
+#[test]
+fn a_review_without_must_fix_items_starts_no_address_round() {
+    for decision in ["approve", "comment"] {
+        // `approve` is downgraded (no checks); `comment` is advisory.
+        for must_fix in [json!([]), json!(null)] {
+            let t = run_cr(
+                Permission::None,
+                &cr_in(CrPhase::Reviewing),
+                &review_ok("r", decision, must_fix, json!([])),
+            );
+            let d = assert_cr(&t, CrPhase::AwaitingChanges);
+            assert_eq!(d.auto_rounds, 0, "{decision}");
+            assert!(!d.auto_trigger);
+            assert_eq!(d.last_review, "comment");
+            assert_eq!(d.stats.fix_rounds, 0);
+            assert!(!kinds(&t).contains(&JobKind::AgentAddressComments));
+        }
+    }
+}
+
+#[test]
+fn must_fix_items_in_a_comment_start_a_round() {
+    let t = run_cr(
+        Permission::None,
+        &cr_in(CrPhase::Reviewing),
+        &review_ok("r", "comment", json!(["`a.rs:1` leaks"]), json!([])),
+    );
+    let d = assert_cr(&t, CrPhase::AddressingComments);
+    assert!(d.auto_trigger);
+    assert_eq!(d.stats.fix_rounds, 1);
+    assert!(kinds(&t).contains(&JobKind::AgentAddressComments));
+}
+
+#[test]
+fn request_changes_without_a_must_fix_list_still_starts_a_round() {
+    let t = run_cr(
+        Permission::None,
+        &cr_in(CrPhase::Reviewing),
+        &review_ok("r", "request_changes", json!(null), json!([])),
+    );
+    assert_cr(&t, CrPhase::AddressingComments);
+    assert!(kinds(&t).contains(&JobKind::AgentAddressComments));
 }
 
 #[test]

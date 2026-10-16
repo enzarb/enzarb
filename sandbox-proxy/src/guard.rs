@@ -297,6 +297,8 @@ fn ctrl_allowed(m: &Ctrl) -> Result<(), &'static str> {
         Ctrl::CredentialState { .. } => Err("credential_state"),
         Ctrl::StatsRequest => Err("stats_request"),
         Ctrl::Stats(_) => Err("stats"),
+        Ctrl::PrepareRequest(_) => Err("prepare_request"),
+        Ctrl::Prepared(_) => Err("prepared"),
     }
 }
 

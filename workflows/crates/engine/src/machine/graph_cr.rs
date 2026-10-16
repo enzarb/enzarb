@@ -390,6 +390,7 @@ pub(super) fn prepare_run(c: &mut CrGraph, def: &Definition, id: &str) -> Value 
     if prompt == "address_comments" {
         d.merge_requested = false;
         c.merge_head.clear();
+        d.stats.fix_rounds += 1;
         match trigger {
             Trigger::Human => d.auto_trigger = false,
             Trigger::Review => {
@@ -628,6 +629,12 @@ fn post_review(ctx: &Ctx, fx: &mut Fx, d: &mut GraphData, id: &str) -> GraphPhas
         c.review_head.clone()
     };
     data.auto_capped = false;
+    data.stats.review_rounds += 1;
+    data.prior_review = crm::PriorReview {
+        sha: data.reviewed_sha.clone(),
+        base_sha: data.base_sha.clone(),
+        verdict: decision.as_str().to_string(),
+    };
     data.unverified_checks = if decision == Decision::Comment {
         let mut list: Vec<crm::UnverifiedCheck> = out
             .unverified_checks(ci_green)
@@ -1085,6 +1092,18 @@ fn readiness(
         c.data.ci = CiState::from_wire(output.get("ci").and_then(Value::as_str).unwrap_or(""));
         c.data.ci_sha = sha.to_string();
         c.data.mergeable = output.get("mergeable").and_then(Value::as_bool);
+        // The base the review covered, for delta re-reviews (as the compiled check does).
+        if let Some(base) = output
+            .get("base_sha")
+            .and_then(Value::as_str)
+            .filter(|b| !b.is_empty())
+        {
+            c.data.base_sha = base.to_string();
+            let p = &mut c.data.prior_review;
+            if p.base_sha.is_empty() && p.sha == sha {
+                p.base_sha = base.to_string();
+            }
+        }
         // As the compiled `evaluate`: a red CI or requested changes drop a stored click.
         if c.data.ci == CiState::Failure || c.data.last_review == "request_changes" {
             clear_click(c);

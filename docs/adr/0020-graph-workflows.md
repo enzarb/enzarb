@@ -85,3 +85,4 @@ So an agent with full control of its sandbox can change what happens *inside* a 
 - **Two engines for a while.** Both are tested; the compiled machine shrinks as default graphs replace it.
 - **The kernel must stay small and generic.** A request for workflow-specific logic in the kernel is a request for a new node type or action instead.
 - **A UI graph editor comes later.** It saves by opening a PR against the definition file.
+- **`prepare_request`/`prepared` is a bridge.** The frames and the `affected.sh` step (issue #182) serve the compiled `issue`/`change_request` machines only. They are removed once default graphs own preparation as `command` nodes; segment runs skip them.

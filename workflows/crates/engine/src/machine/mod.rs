@@ -29,6 +29,8 @@
 //! * `create_sub_issues`: `{"item": WorkItemKey, "depth": u32, "sub_issues": [SubIssue]}`
 //!   (in creation order); output `{"children": [{"key": str, "item": WorkItemKey, "title": str}]}`
 //!   ([`issue::CreatedChild`])
+//! * `close_issue`: `{"item": WorkItemKey, "reason": "completed"|"not_planned"}`; output `{}`.
+//!   Queued only when an epic finishes (ordinary issues close through the PR's `Closes #n`).
 //!
 //! Job outputs that the machines read: agent jobs store the `RunFinished` body
 //! (`summary` is Claude's result text, plus `branch`, `head_sha`, `pushed`),
@@ -93,6 +95,10 @@ pub enum JobKind {
     AgentAddressComments,
     AgentResolveConflicts,
     AgentTask,
+    /// Cheap pre-review step for a re-review: runs `scripts/monorepo/mechanical.sh` on the delta
+    /// since the last review and the component checks. Answers `approve` (mechanical, checks
+    /// passed) or `comment`; the change request machine then skips or starts the agent review.
+    MechanicalCheck,
     CheckMergeReadiness,
     MergeChangeRequest,
     /// Rebase enzarb's own stacked child branch onto the default branch after its parent was
@@ -105,6 +111,9 @@ pub enum JobKind {
     AgentSegment,
     /// Merge the base into a change request's branch (the graph `update_branch` action).
     UpdateBranch,
+    /// Close a finished epic's issue (`Connector::close_issue`); queued after its summary
+    /// comment. Closing an already closed issue succeeds, so a retry is harmless.
+    CloseIssue,
 }
 
 impl JobKind {
@@ -120,12 +129,14 @@ impl JobKind {
             JobKind::AgentAddressComments => "agent_address_comments",
             JobKind::AgentResolveConflicts => "agent_resolve_conflicts",
             JobKind::AgentTask => "agent_task",
+            JobKind::MechanicalCheck => "mechanical_check",
             JobKind::CheckMergeReadiness => "check_merge_readiness",
             JobKind::MergeChangeRequest => "merge_change_request",
             JobKind::RetargetChangeRequest => "retarget_change_request",
             JobKind::CreateSubIssues => "create_sub_issues",
             JobKind::AgentSegment => "agent_segment",
             JobKind::UpdateBranch => "update_branch",
+            JobKind::CloseIssue => "close_issue",
         }
     }
 
@@ -140,6 +151,7 @@ impl JobKind {
                 | JobKind::RetargetChangeRequest
                 | JobKind::CreateSubIssues
                 | JobKind::UpdateBranch
+                | JobKind::CloseIssue
         )
     }
 }
@@ -187,6 +199,8 @@ pub enum EventPayload {
         job_id: i64,
         kind: JobKind,
         error: String,
+        /// Seconds from queued to finished (additive; 0 when the row predates it).
+        elapsed_secs: u64,
     },
     /// Event type `TimerFired`, payload `{job_id?}`. Without `job_id` the work
     /// item's `wake_at` is due; with it, that running job passed its deadline.
@@ -250,6 +264,8 @@ impl EngineEvent {
                     output: Value,
                     #[serde(default)]
                     error: String,
+                    #[serde(default)]
+                    elapsed_secs: u64,
                 }
                 let p: P = serde_json::from_value(payload.clone()).map_err(bad)?;
                 if event_type == "JobSucceeded" {
@@ -263,6 +279,7 @@ impl EngineEvent {
                         job_id: p.job_id,
                         kind: p.kind,
                         error: p.error,
+                        elapsed_secs: p.elapsed_secs,
                     }
                 }
             }
@@ -409,6 +426,14 @@ pub struct Config {
     /// `1` lets an epic create sub-issues that are plain issues.
     #[serde(default = "default_max_epic_depth")]
     pub max_epic_depth: u32,
+    /// `change_request`: a re-review covers only the delta since the last review when it is at
+    /// most this many changed lines; a larger delta gets a full review.
+    #[serde(default = "default_review_delta_max_lines")]
+    pub review_delta_max_lines: u32,
+}
+
+fn default_review_delta_max_lines() -> u32 {
+    300
 }
 
 fn default_max_epic_children() -> usize {
@@ -428,6 +453,7 @@ impl Default for Config {
             max_auto_rounds: 3,
             max_epic_children: default_max_epic_children(),
             max_epic_depth: default_max_epic_depth(),
+            review_delta_max_lines: default_review_delta_max_lines(),
         }
     }
 }

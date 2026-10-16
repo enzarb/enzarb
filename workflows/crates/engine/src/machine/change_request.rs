@@ -202,6 +202,36 @@ pub struct CrData {
     /// Failing checks reported for `ci_failures_sha`.
     pub ci_failures: Vec<CiFailure>,
     pub ci_failures_sha: String,
+    /// The last posted review (or accepted mechanical delta): what a re-review is a delta of.
+    pub prior_review: PriorReview,
+    /// A `mechanical_check` job for the current head is in flight instead of an agent review.
+    pub mechanical_check: bool,
+    /// Per-change-request cost counters, shown on the work item page.
+    pub stats: CrStats,
+}
+
+/// The head and base the last review covered, and its verdict. Only moves when a review is
+/// posted or a mechanical delta is accepted; survives new commits.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PriorReview {
+    pub sha: String,
+    /// Base-branch head when the review was posted; empty when it was not known.
+    pub base_sha: String,
+    /// `approve`, `request_changes` or `comment`.
+    pub verdict: String,
+}
+
+/// Review rounds, fix rounds and agent time of one change request (`state_data.stats`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CrStats {
+    /// Agent reviews posted.
+    pub review_rounds: u32,
+    /// `AddressingComments` rounds started (automatic, CI-fix and human-triggered).
+    pub fix_rounds: u32,
+    /// Seconds from queueing to finishing, summed over the finished agent jobs.
+    pub agent_secs: u64,
 }
 
 /// A failing check of the head, as named in the CI-fix trigger and the `ci_failed` wait.
@@ -612,7 +642,7 @@ fn start_pending_round(ctx: &Ctx, mut fx: Fx, mut d: CrData, p: Pending) -> Tran
     d.trigger_comment_kind = p.comment_kind;
     d.trigger_text = p.text;
     human_acted(&mut d);
-    start_address(ctx, &mut fx, &d);
+    start_address(ctx, &mut fx, &mut d);
     Transition::to(
         st(CrPhase::AddressingComments, d),
         fx.finish(),
@@ -652,7 +682,7 @@ fn maybe_start_ci_fix<'a>(
     }
     d.auto_rounds += 1;
     begin_ci_fix(&mut d);
-    start_address(ctx, &mut fx, &d);
+    start_address(ctx, &mut fx, &mut d);
     Ok(Transition::to(
         st(CrPhase::AddressingComments, d),
         fx.finish(),
@@ -818,8 +848,14 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-pub(super) fn prompt_ctx(ctx: &Ctx, d: &CrData) -> PromptContext {
+pub(super) fn prompt_ctx(
+    ctx: &Ctx,
+    d: &CrData,
+    previous_reviewed_sha: Option<&str>,
+) -> PromptContext {
     PromptContext {
+        previous_reviewed_sha: previous_reviewed_sha.unwrap_or_default().to_string(),
+        delta_max_lines: ctx.config.review_delta_max_lines.to_string(),
         bot_handle: ctx.bot_handle.clone(),
         repo: ctx.work_item.repo.to_string(),
         repo_name: ctx.work_item.repo.full_name(),
@@ -838,6 +874,58 @@ pub(super) fn prompt_ctx(ctx: &Ctx, d: &CrData) -> PromptContext {
         ci_failure: ci_failure_text(d),
         ..Default::default()
     }
+}
+
+/// The earlier head a re-review may be a delta of: a review already covered an earlier head of
+/// this branch, and the base has not moved since. The git-dependent conditions (the earlier head
+/// is an ancestor, the delta is small) are checked in the sandbox by the prompt and by
+/// `scripts/monorepo/mechanical.sh`, which fall back to a full review. Old state without the
+/// base recorded, or a moved base, gets a full review.
+pub(super) fn delta_base(d: &CrData) -> Option<String> {
+    let p = &d.prior_review;
+    let eligible = !p.sha.is_empty()
+        && !d.head_sha.is_empty()
+        && p.sha != d.head_sha
+        && !p.base_sha.is_empty()
+        && p.base_sha == d.base_sha;
+    eligible.then(|| p.sha.clone())
+}
+
+fn review_spec(d: &CrData) -> AgentSpec {
+    AgentSpec {
+        // Review the source branch as it is; nothing is pushed.
+        base_ref: d.head_ref.clone(),
+        branch: d.head_ref.clone(),
+        push: false,
+    }
+}
+
+/// Start the review of the current head: a cheap mechanical check first when the delta since an
+/// approving review qualifies, otherwise the agent review (in delta mode when eligible).
+fn start_review(ctx: &Ctx, fx: &mut Fx, d: &mut CrData) {
+    let delta = delta_base(d);
+    if delta.is_some() && d.prior_review.verdict == "approve" {
+        d.mechanical_check = true;
+        fx.agent(
+            JobKind::MechanicalCheck,
+            &target(ctx, d),
+            review_spec(d),
+            prompt_ctx(ctx, d, delta.as_deref()),
+        );
+    } else {
+        start_agent_review(ctx, fx, d, delta.as_deref());
+    }
+}
+
+/// Queue the agent review; `delta` is the earlier reviewed head for a delta-mode review.
+fn start_agent_review(ctx: &Ctx, fx: &mut Fx, d: &mut CrData, delta: Option<&str>) {
+    d.mechanical_check = false;
+    fx.agent(
+        JobKind::AgentReview,
+        &target(ctx, d),
+        review_spec(d),
+        prompt_ctx(ctx, d, delta),
+    );
 }
 
 /// The current round was started by [`maybe_start_ci_fix`]: an automatic round on the head
@@ -900,21 +988,9 @@ fn ci_failure_text(d: &CrData) -> String {
     out
 }
 
-fn start_review(ctx: &Ctx, fx: &mut Fx, d: &CrData) {
-    fx.agent(
-        JobKind::AgentReview,
-        &target(ctx, d),
-        AgentSpec {
-            // Review the source branch as it is; nothing is pushed.
-            base_ref: d.head_ref.clone(),
-            branch: d.head_ref.clone(),
-            push: false,
-        },
-        prompt_ctx(ctx, d),
-    );
-}
-
-fn start_address(ctx: &Ctx, fx: &mut Fx, d: &CrData) {
+/// Count the round and queue the address job.
+fn start_address(ctx: &Ctx, fx: &mut Fx, d: &mut CrData) {
+    d.stats.fix_rounds += 1;
     fx.agent(
         JobKind::AgentAddressComments,
         &target(ctx, d),
@@ -923,7 +999,7 @@ fn start_address(ctx: &Ctx, fx: &mut Fx, d: &CrData) {
             branch: d.head_ref.clone(),
             push: true,
         },
-        prompt_ctx(ctx, d),
+        prompt_ctx(ctx, d, None),
     );
 }
 
@@ -936,7 +1012,7 @@ fn start_resolve(ctx: &Ctx, fx: &mut Fx, d: &CrData) {
             branch: d.head_ref.clone(),
             push: true,
         },
-        prompt_ctx(ctx, d),
+        prompt_ctx(ctx, d, None),
     );
 }
 
@@ -948,8 +1024,8 @@ fn begin(ctx: &Ctx, ev: &EngineEvent, phase: CrPhase, mut d: CrData, note: &str)
     fx.received(&target(ctx, &d));
     fx.wake_at(None);
     match phase {
-        CrPhase::Reviewing => start_review(ctx, &mut fx, &d),
-        CrPhase::AddressingComments => start_address(ctx, &mut fx, &d),
+        CrPhase::Reviewing => start_review(ctx, &mut fx, &mut d),
+        CrPhase::AddressingComments => start_address(ctx, &mut fx, &mut d),
         CrPhase::ResolvingConflicts => start_resolve(ctx, &mut fx, &d),
         _ => unreachable!("begin is only used for agent phases"),
     }
@@ -1187,7 +1263,12 @@ fn step_event(ctx: &Ctx, s: &CrState, ev: &EngineEvent) -> Transition {
         EventPayload::JobSucceeded { kind, output, .. } => {
             job_succeeded(ctx, ev, s, &state, *kind, output)
         }
-        EventPayload::JobFailed { kind, error, .. } => {
+        EventPayload::JobFailed {
+            kind,
+            error,
+            elapsed_secs,
+            ..
+        } => {
             if *kind == JobKind::RetargetChangeRequest {
                 if s.data.retargeting {
                     retarget_park(ctx, ev, s, &format!("the retarget job failed: {error}"))
@@ -1199,6 +1280,22 @@ fn step_event(ctx: &Ctx, s: &CrState, ev: &EngineEvent) -> Transition {
                 JobKind::SetProgress | JobKind::PostComment | JobKind::CheckMergeReadiness
             ) {
                 Transition::ack(&state, "best-effort job failed; ignored")
+            } else if *kind == JobKind::MechanicalCheck {
+                if s.phase == Reviewing && s.data.mechanical_check {
+                    // The cheap step is only an optimization: review the delta for real.
+                    let mut d = s.data.clone();
+                    d.stats.agent_secs = d.stats.agent_secs.saturating_add(*elapsed_secs);
+                    let mut fx = Fx::new(ctx, ev);
+                    let delta = delta_base(&d);
+                    start_agent_review(ctx, &mut fx, &mut d, delta.as_deref());
+                    Transition::to(
+                        st(Reviewing, d),
+                        fx.finish(),
+                        "mechanical check failed: agent review",
+                    )
+                } else {
+                    Transition::reject(&state, "stale job result")
+                }
             } else if awaited(s.phase) == Some(*kind) {
                 fail(
                     ctx,
@@ -1340,6 +1437,8 @@ fn updated(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowState) -> T
                 d.base_ref
             };
             d.base_sha = s.data.base_sha.clone();
+            d.prior_review = s.data.prior_review.clone();
+            d.stats = s.data.stats.clone();
             d.carry_stack(&s.data);
             d.resolve_attempts = s.data.resolve_attempts.clone();
             d.resolve_attempted_base_sha = s.data.resolve_attempted_base_sha.clone();
@@ -1605,6 +1704,17 @@ fn readiness_checked(
     d.ci = CiState::from_wire(output.get("ci").and_then(Value::as_str).unwrap_or(""));
     d.ci_sha = sha.to_string();
     d.mergeable = output.get("mergeable").and_then(Value::as_bool);
+    // The base head the review ran against, learned while the reviewed head is unchanged.
+    if let Some(base) = output
+        .get("base_sha")
+        .and_then(Value::as_str)
+        .filter(|b| !b.is_empty())
+    {
+        if d.prior_review.base_sha.is_empty() && d.prior_review.sha == d.head_sha {
+            d.prior_review.base_sha = base.to_string();
+        }
+        d.base_sha = base.to_string();
+    }
     match s.phase {
         // The answer never asks again: still-unknown readiness holds until the next event.
         AwaitingChanges | ReadyToMerge => {
@@ -1842,6 +1952,93 @@ fn retarget_finished(ctx: &Ctx, ev: &EngineEvent, s: &CrState, output: &Value) -
     }
 }
 
+/// Add the job's wall time (`elapsed_secs`, added by `ingest_job_result`) to the agent time.
+fn add_agent_secs(d: &mut CrData, output: &Value) {
+    let secs = output
+        .get("elapsed_secs")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    d.stats.agent_secs = d.stats.agent_secs.saturating_add(secs);
+}
+
+/// The note appended to the comment of a push whose checks did not all pass: the push is not
+/// blocked, but a reader sees what was not verified. Empty when every reported check passed.
+pub(super) fn unverified_push_note(out: &AgentOutput) -> String {
+    if out.checks.is_empty() {
+        return "\n\n> Pushed with unverified checks: the run reported no checks.".into();
+    }
+    let list: Vec<String> = out
+        .checks
+        .iter()
+        .filter(|c| c.status != "passed")
+        .map(|c| {
+            if c.reason.is_empty() {
+                format!("`{}` ({})", c.name, c.status)
+            } else {
+                format!("`{}` ({}: {})", c.name, c.status, c.reason)
+            }
+        })
+        .collect();
+    if list.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n> Pushed with unverified checks: {}.", list.join(", "))
+    }
+}
+
+/// The result of the `mechanical_check` job for the head under review. A mechanical delta
+/// whose component checks passed keeps the earlier approval (CI on the head stands in for the
+/// review); anything else, including a failed or unusable result, gets the full agent review.
+fn mechanical_finished(ctx: &Ctx, ev: &EngineEvent, s: &CrState, output: &Value) -> Transition {
+    let mut d = s.data.clone();
+    add_agent_secs(&mut d, output);
+    let mut fx = Fx::new(ctx, ev);
+    let mechanical = matches!(
+        AgentOutput::from_job_output(JobKind::MechanicalCheck, output),
+        Ok((Decision::Approve, out)) if out.checks_verified(false)
+    );
+    // Red CI on this head is not covered by an old verdict.
+    let ci_red = d.ci == CiState::Failure && d.ci_sha == d.head_sha;
+    if !mechanical || ci_red || d.prior_review.verdict != "approve" {
+        let delta = delta_base(&d);
+        start_agent_review(ctx, &mut fx, &mut d, delta.as_deref());
+        return Transition::to(
+            st(CrPhase::Reviewing, d),
+            fx.finish(),
+            "not a mechanical delta: agent review",
+        );
+    }
+    let tgt = target(ctx, &d);
+    fx.comment(format!(
+        "### enzarb review: skipped\n\nEverything since {} is formatting or regenerated files, and the component checks passed, so the agent review was skipped. The earlier verdict (`approve`) stands, with CI on the head `{}` as the check.",
+        short(&d.prior_review.sha),
+        short(&d.head_sha),
+    ));
+    fx.done(&tgt);
+    d.mechanical_check = false;
+    d.reviewed_sha = d.head_sha.clone();
+    d.prior_review.sha = d.head_sha.clone();
+    d.prior_review.base_sha = d.base_sha.clone();
+    d.last_review = d.prior_review.verdict.clone();
+    d.unverified_checks = Vec::new();
+    d.trigger_comment_id = None;
+    d.trigger_comment_kind = CommentKind::default();
+    d.trigger_text.clear();
+    d.auto_capped = false;
+    d.auto_trigger = false;
+    if let Some(p) = d.pending.take() {
+        return start_pending_round(ctx, fx, d, p);
+    }
+    evaluate_ci(
+        ctx,
+        fx,
+        CrPhase::Reviewing,
+        d,
+        "mechanical delta: review skipped",
+        true,
+    )
+}
+
 fn job_succeeded(
     ctx: &Ctx,
     ev: &EngineEvent,
@@ -1859,6 +2056,13 @@ fn job_succeeded(
     }
     if kind == JobKind::RetargetChangeRequest {
         return retarget_finished(ctx, ev, s, output);
+    }
+    if kind == JobKind::MechanicalCheck {
+        return if s.phase == CrPhase::Reviewing && s.data.mechanical_check {
+            mechanical_finished(ctx, ev, s, output)
+        } else {
+            Transition::reject(state, "stale job result")
+        };
     }
     if awaited(s.phase) != Some(kind) {
         return Transition::reject(state, "stale job result");
@@ -1887,10 +2091,17 @@ fn job_succeeded(
         );
     }
     let mut d = s.data.clone();
+    add_agent_secs(&mut d, output);
     let mut fx = Fx::new(ctx, ev);
     let tgt = target(ctx, &d);
     match (s.phase, decision) {
         (Reviewing, _) => {
+            d.stats.review_rounds += 1;
+            d.prior_review = PriorReview {
+                sha: d.head_sha.clone(),
+                base_sha: d.base_sha.clone(),
+                verdict: decision.as_str().to_string(),
+            };
             fx.comment(format!(
                 "### enzarb review: {}\n\n{}",
                 decision.as_str(),
@@ -1929,13 +2140,17 @@ fn job_succeeded(
             if let Some(p) = d.pending.take() {
                 return start_pending_round(ctx, fx, d, p);
             }
-            // Only must-fix findings: a plain comment is advisory and waits for a person.
-            if decision == Decision::RequestChanges || downgraded {
+            // Only must-fix findings start a round: a `request_changes` always does (older
+            // output lists none); a `comment` or a downgraded approve only with must-fix
+            // items, otherwise it is advisory (or only unverified) and waits for a person.
+            if decision == Decision::RequestChanges
+                || ((downgraded || decision == Decision::Comment) && !out.must_fix.is_empty())
+            {
                 if d.auto_rounds < ctx.config.max_auto_rounds {
                     d.auto_rounds += 1;
                     d.auto_trigger = true;
                     d.trigger_text = out.body.clone();
-                    start_address(ctx, &mut fx, &d);
+                    start_address(ctx, &mut fx, &mut d);
                     return Transition::to(
                         st(AddressingComments, d),
                         fx.finish(),
@@ -1947,8 +2162,6 @@ fn job_succeeded(
             evaluate_ci(ctx, fx, Reviewing, d, "review posted", true)
         }
         (AddressingComments, Decision::Done) => {
-            fx.comment(out.body);
-            fx.done(&tgt);
             // Record the pushed head; `reviewed_sha` only moves when a review is posted.
             if let Some(sha) = output
                 .get("head_sha")
@@ -1958,6 +2171,12 @@ fn job_succeeded(
                 set_head(&mut d, sha.to_string());
             }
             let pushed = d.head_sha != d.reviewed_sha;
+            let mut comment = out.body.clone();
+            if pushed {
+                comment.push_str(&unverified_push_note(&out));
+            }
+            fx.comment(comment);
+            fx.done(&tgt);
             d.auto_trigger = false;
             match d.pending.take() {
                 Some(p) => start_pending_round(ctx, fx, d, p),
@@ -1967,7 +2186,7 @@ fn job_succeeded(
                     d.trigger_text.clear();
                     if pushed {
                         // The agent's fixes are reviewed like any other new head.
-                        start_review(ctx, &mut fx, &d);
+                        start_review(ctx, &mut fx, &mut d);
                         Transition::to(st(Reviewing, d), fx.finish(), "fixes pushed")
                     } else {
                         evaluate_ci(ctx, fx, AddressingComments, d, "comments addressed", true)
@@ -2000,7 +2219,7 @@ fn job_succeeded(
                 Some(p) => start_pending_round(ctx, fx, d, p),
                 // `reviewed_sha` is left alone: the merge commit is reviewed like any new head.
                 None if d.head_sha != d.reviewed_sha => {
-                    start_review(ctx, &mut fx, &d);
+                    start_review(ctx, &mut fx, &mut d);
                     Transition::to(st(Reviewing, d), fx.finish(), "conflicts resolved")
                 }
                 None => match maybe_start_ci_fix(ctx, fx, d) {

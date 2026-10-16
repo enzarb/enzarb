@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 
 use crate::{
-    Actor, ChangeRequestSpec, CommentRef, CommitRef, CredScope, Error, ItemRef, MergeOutcome,
-    MergeReadiness, Permission, Progress, ProgressTarget, ReadCred, RepoKey, Result,
+    Actor, ChangeRequestSpec, CloseReason, CommentRef, CommitRef, CredScope, Error, ItemRef,
+    MergeOutcome, MergeReadiness, Permission, Progress, ProgressTarget, ReadCred, RepoKey, Result,
     ShortLivedCred, Status, Thread, UpdateBranchOutcome, WorkItemKey,
 };
 
@@ -187,6 +187,13 @@ pub trait Connector: Send + Sync {
     /// The default implementation reports the capability as unsupported.
     async fn update_issue(&self, _item: &WorkItemKey, _body: &str) -> Result<()> {
         Err(Error::Invalid("updating issues is not supported".into()))
+    }
+
+    /// Closes an issue with `reason`. Closing an issue that is already closed succeeds
+    /// without changing it, so a retried job is harmless. The default implementation
+    /// reports the capability as unsupported.
+    async fn close_issue(&self, _item: &WorkItemKey, _reason: CloseReason) -> Result<()> {
+        Err(Error::Invalid("closing issues is not supported".into()))
     }
 
     /// Makes `child` a sub-issue of `parent`. Linking an existing sub-issue succeeds. A

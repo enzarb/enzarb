@@ -21,6 +21,7 @@ use super::*;
 
 mod orphan;
 mod resolve;
+mod review_cost;
 mod stacking;
 
 // ---------------------------------------------------------------------------
@@ -202,6 +203,19 @@ fn agent_ok_checks(id: &str, kind: JobKind, decision: &str, checks: Value) -> En
     )
 }
 
+/// An agent result with `must_fix` (JSON `null` leaves the field out) and `checks`.
+fn review_ok(id: &str, decision: &str, must_fix: Value, checks: Value) -> EngineEvent {
+    let mut block = json!({ "decision": decision, "body": "LGTM", "checks": checks });
+    if !must_fix.is_null() {
+        block["must_fix"] = must_fix;
+    }
+    ok(
+        id,
+        JobKind::AgentReview,
+        json!({ "summary": format!("Done.\n\n```json\n{block}\n```\n") }),
+    )
+}
+
 fn ok(id: &str, kind: JobKind, output: Value) -> EngineEvent {
     EngineEvent {
         id: id.into(),
@@ -224,6 +238,7 @@ fn failed(id: &str, kind: JobKind) -> EngineEvent {
             job_id: 1,
             kind,
             error: "boom".into(),
+            elapsed_secs: 0,
         },
     }
 }
@@ -721,12 +736,10 @@ fn issue_happy_path_to_change_request_handoff() {
     assert_eq!(spec["head_ref"], "enzarb/issue-42");
     assert_eq!(spec["base_ref"], "main");
     assert_eq!(spec["title"], "feat(ui): add dark mode");
-    assert!(
-        spec["body"]
-            .as_str()
-            .unwrap()
-            .ends_with("PR text\n\nCloses #42")
-    );
+    // The agent reported no checks: the push is flagged in the pull request description.
+    assert!(spec["body"].as_str().unwrap().ends_with(
+        "PR text\n\nCloses #42\n\n> Pushed with unverified checks: the run reported no checks."
+    ));
     state = t.next;
 
     // PR opened -> Done and hand off
@@ -1456,6 +1469,7 @@ fn long_errors_are_truncated() {
             job_id: 1,
             kind: JobKind::AgentPlan,
             error: "x".repeat(2000),
+            elapsed_secs: 0,
         },
     };
     let t = run(Permission::None, &issue_in(IssuePhase::Planning), &ev);
@@ -1703,7 +1717,13 @@ fn cr_feedback_is_addressed_then_awaits_again() {
         ("sha9", "sha1")
     );
     assert!(kinds(&t).contains(&JobKind::AgentReview));
-    assert_eq!(comment_bodies(&t), vec!["Fixed it".to_string()]);
+    // The output reported no checks: the push is flagged in the comment.
+    assert_eq!(
+        comment_bodies(&t),
+        vec![
+            "Fixed it\n\n> Pushed with unverified checks: the run reported no checks.".to_string()
+        ]
+    );
     // The round is done and the review of the pushed head has started.
     assert_eq!(progress_values(&t), vec!["Done", "Working"]);
     // The webhook for that same push while it is under review is a duplicate.

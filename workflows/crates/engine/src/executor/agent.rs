@@ -15,7 +15,11 @@
 //!    stored). No row fails the job permanently with `no_credential`; a row that cannot be
 //!    decrypted (unknown key id, bad data, no keyring) with `credential_undecryptable`;
 //!    then `run_start` with `run_id = job-<id>` (idempotent: a retry after a crash gets the
-//!    existing run). The session is closed on every error after step 1;
+//!    existing run). The session is closed on every error after step 1.
+//!    For the kinds that work on the branch's code, `prepare_request` (see `prepare`) first asks
+//!    the sandbox for the merge base, changed files and affected components, and the prompt is
+//!    rendered with them. It is best-effort and skipped by a sandbox without the `prepare`
+//!    feature;
 //! 4. once `run_accepted`: release the lease and set `jobs.deadline`
 //!    (`timeout_secs + deadline_grace`). The job stays `running`; its result arrives over the
 //!    mux ([`results`](super::results)), or, from a sandbox without `feature::RUN_RESULTS`,
@@ -200,6 +204,7 @@ impl Executor {
         repo_url: String,
         rid: &str,
         connector: &std::sync::Arc<dyn Connector>,
+        git: &dyn super::prepare::GitPrep,
     ) -> Result<RunStart, JobError> {
         let item = job
             .work_item_key
@@ -212,25 +217,6 @@ impl Executor {
         input.context.dependencies = crate::dependencies::dependency_context(&self.pool, &item)
             .await
             .map_err(|e| JobError::transient(format!("reading dependencies: {e}")))?;
-        input.prompt = render_prompt(kind, &input.context);
-        // A segment's agent prompts are rendered per node, with the thread too.
-        let graph = match input.graph.clone() {
-            Some(mut g) => {
-                let def = enzarb_graph::Definition::from_value(&g.definition)
-                    .map_err(|e| JobError::permanent(format!("graph segment: {e}")))?;
-                g.prompts = crate::machine::graph::segment_prompts(
-                    &def,
-                    &input.context,
-                    &input.prompt_files,
-                );
-                // What a sandbox that predates `RunStart.graph` runs instead: nothing to
-                // change, and its result has no graph, so the task fails with a clear error.
-                input.prompt = SEGMENT_FALLBACK_PROMPT.into();
-                Some(g)
-            }
-            None => None,
-        };
-
         let scope = if input.push {
             CredScope::ReadWrite
         } else {
@@ -250,8 +236,34 @@ impl Executor {
                 | JobKind::AgentAddressComments
                 | JobKind::AgentResolveConflicts
                 | JobKind::AgentReview
+                | JobKind::MechanicalCheck
                 | JobKind::AgentSegment
         );
+        // The merge base, changed files and affected components, from the sandbox's clone,
+        // before the prompt is rendered. Best-effort: it never fails the job. Only the kinds
+        // that work on the branch's code use it.
+        if needs_deps {
+            super::prepare::prepare_context(git, rid, &repo_url, input, &cred.token).await;
+        }
+        input.prompt = render_prompt(kind, &input.context);
+        // A segment's agent prompts are rendered per node, with the thread too.
+        let graph = match input.graph.clone() {
+            Some(mut g) => {
+                let def = enzarb_graph::Definition::from_value(&g.definition)
+                    .map_err(|e| JobError::permanent(format!("graph segment: {e}")))?;
+                g.prompts = crate::machine::graph::segment_prompts(
+                    &def,
+                    &input.context,
+                    &input.prompt_files,
+                );
+                // What a sandbox that predates `RunStart.graph` runs instead: nothing to
+                // change, and its result has no graph, so the task fails with a clear error.
+                input.prompt = SEGMENT_FALLBACK_PROMPT.into();
+                Some(g)
+            }
+            None => None,
+        };
+
         let deps_token = if needs_deps {
             self.mint_deps_token(job, project, &input.repo, connector)
                 .await?
@@ -307,7 +319,9 @@ impl Executor {
         let session = self.dial(&project).await?;
         let rid = run_id(job.id, job.limit_wait_count + job.restart_retries);
         let run = match self
-            .prepare_run(job, kind, &mut input, &project, repo_url, &rid, connector)
+            .prepare_run(
+                job, kind, &mut input, &project, repo_url, &rid, connector, &session,
+            )
             .await
         {
             Ok(run) => run,

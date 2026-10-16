@@ -175,6 +175,36 @@ fn triage_epic_plans_a_breakdown_then_creates_sub_issues_and_waits_for_them() {
     assert!(!has(&t, |e| matches!(e, Effect::StartWorkflow { .. })));
     assert!(!kinds(&t).contains(&JobKind::OpenChangeRequest));
     assert_eq!(wake(&t), Some(None));
+    // The issue is closed as completed, after the summary comment.
+    let (close_p, _, input) = job_of(&t, JobKind::CloseIssue);
+    assert_eq!(input["reason"], "completed");
+    assert_eq!(input["item"], json!(ctx(Permission::None).work_item));
+    let (comment_p, _, _) = job_of(&t, JobKind::PostComment);
+    assert!(close_p < comment_p, "the comment runs first");
+    let done = t.next.clone();
+
+    // The bot's own close coming back, and the close job's result, change nothing.
+    rejected(
+        &run(Permission::None, &done, &closed("7", issue_item(), false)),
+        &done,
+    );
+    for ev in [
+        ok("8", JobKind::CloseIssue, json!({})),
+        failed("9", JobKind::CloseIssue),
+    ] {
+        let t = run(Permission::None, &done, &ev);
+        assert_eq!(t.next, done);
+        assert!(t.effects.is_empty());
+    }
+}
+
+#[test]
+fn ordinary_issues_never_queue_close_issue() {
+    for phase in ALL_ISSUE_PHASES {
+        let s = issue_in(phase);
+        let t = run(Permission::Write, &s, &approval_comment("1", "carol"));
+        assert!(!kinds(&t).contains(&JobKind::CloseIssue), "{phase:?}");
+    }
 }
 
 #[test]
@@ -576,6 +606,7 @@ fn closed_sub_issues_park_the_epic_until_a_maintainer_decides() {
     let t = run(Permission::Write, &parked, &approval_comment("5", "carol"));
     assert_issue(&t, IssuePhase::Done);
     assert!(comment_bodies(&t)[0].contains("closed"));
+    assert_eq!(job_of(&t, JobKind::CloseIssue).2["reason"], "not_planned");
     let t = run(
         Permission::Write,
         &parked,

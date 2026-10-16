@@ -42,6 +42,7 @@ pub const REVIEW: &str = include_str!("../../prompts/review.md");
 pub const ADDRESS_COMMENTS: &str = include_str!("../../prompts/address_comments.md");
 pub const RESOLVE_CONFLICTS: &str = include_str!("../../prompts/resolve_conflicts.md");
 pub const TASK: &str = include_str!("../../prompts/task.md");
+pub const MECHANICAL_CHECK: &str = include_str!("../../prompts/mechanical_check.md");
 
 /// Values for the `{placeholders}` in the templates. Empty values render as
 /// `(none)`. Everything here except `thread` is known to the pure machine; the
@@ -79,6 +80,9 @@ pub struct PromptContext {
     pub base_ref: String,
     /// `{merge_base_sha}`: the pinned merge base of the source branch and `{base_ref}`.
     pub merge_base_sha: String,
+    /// `{changed_files}`: the files the source branch changes since the merge base, one per
+    /// line (capped by the sandbox, with a trailing note when the list is cut short).
+    pub changed_files: String,
     /// `{affected}`: the components the change reaches, one directory per line.
     pub affected: String,
     /// `{branch}`: the branch to commit to.
@@ -96,6 +100,12 @@ pub struct PromptContext {
     /// `{dependencies}`: what the item waits on (number, title, state), from the
     /// `dependency_status` view; filled by the executor like `thread`.
     pub dependencies: String,
+    /// `{previous_reviewed_sha}`: the head an earlier review of this change request covered,
+    /// when the machine found the re-review eligible for delta mode (same base, an earlier
+    /// head of the same branch). Empty means a full review.
+    pub previous_reviewed_sha: String,
+    /// `{delta_max_lines}`: the largest delta (changed lines) a delta-mode review may cover.
+    pub delta_max_lines: String,
     /// The round was started because CI failed on the head: the executor gives the run a
     /// read-only token so `gh run view --log-failed` works. Not a placeholder.
     pub ci_fix: bool,
@@ -122,6 +132,7 @@ impl PromptContext {
             "plan" => &self.plan,
             "base_ref" => &self.base_ref,
             "merge_base_sha" => &self.merge_base_sha,
+            "changed_files" => &self.changed_files,
             "affected" => &self.affected,
             "branch" => &self.branch,
             "head_ref" => &self.head_ref,
@@ -129,6 +140,8 @@ impl PromptContext {
             "epic_allowed" => &self.epic_allowed,
             "max_subissues" => &self.max_subissues,
             "dependencies" => &self.dependencies,
+            "previous_reviewed_sha" => &self.previous_reviewed_sha,
+            "delta_max_lines" => &self.delta_max_lines,
             "ci_failure" => &self.ci_failure,
             _ => return None,
         })
@@ -145,6 +158,7 @@ pub fn template(kind: JobKind) -> Option<&'static str> {
         JobKind::AgentAddressComments => ADDRESS_COMMENTS,
         JobKind::AgentResolveConflicts => RESOLVE_CONFLICTS,
         JobKind::AgentTask => TASK,
+        JobKind::MechanicalCheck => MECHANICAL_CHECK,
         _ => return None,
     })
 }
@@ -196,10 +210,13 @@ pub fn recovery_prompt(kind: JobKind) -> String {
         .join(", ");
     let example = match kind {
         JobKind::AgentImplement => {
-            r###"{ "decision": "done", "title": "fix(scope): short description", "body": "## Summary\n..." }"###
+            r###"{ "decision": "done", "title": "fix(scope): short description", "body": "## Summary\n...", "checks": [{ "name": "cargo test", "status": "not_run", "reason": "not_attempted" }] }"###
+        }
+        JobKind::AgentAddressComments => {
+            r###"{ "decision": "done", "body": "## Changes\n...", "checks": [{ "name": "cargo test", "status": "not_run", "reason": "not_attempted" }] }"###
         }
         JobKind::AgentReview => {
-            r###"{ "decision": "comment", "body": "## Review\n...", "checks": [{ "name": "cargo test", "status": "not_run" }] }"###
+            r###"{ "decision": "comment", "body": "## Review\n...", "must_fix": [], "checks": [{ "name": "cargo test", "status": "not_run" }] }"###
         }
         _ => r#"{ "decision": "<decision>", "body": "<markdown>" }"#,
     };
@@ -535,9 +552,14 @@ pub struct AgentOutput {
     /// Conventional Commit PR title; only read for `done` on implement jobs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// Checks the agent ran (review only). Absent means unverified.
+    /// Checks the agent ran (reviews; implement and address rounds report them before the
+    /// push). Absent means unverified.
     #[serde(default)]
     pub checks: Vec<CheckResult>,
+    /// Must-fix findings of a review, one string each (review only, optional). A review
+    /// that asks for changes with none listed still starts a fix round.
+    #[serde(default)]
+    pub must_fix: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -659,6 +681,8 @@ impl Decision {
             | JobKind::AgentAddressComments
             | JobKind::AgentResolveConflicts => &[Done, Blocked],
             JobKind::AgentReview => &[Approve, RequestChanges, Comment],
+            // `approve`: the delta is mechanical and the checks passed; `comment`: anything else.
+            JobKind::MechanicalCheck => &[Approve, Comment],
             JobKind::AgentTask => &[Reply, Blocked],
             _ => &[],
         }
@@ -751,6 +775,7 @@ mod tests {
             plan: "PLAN-X".into(),
             base_ref: "main".into(),
             merge_base_sha: "MBASE-X".into(),
+            changed_files: "FILES-X".into(),
             affected: "AFFECTED-X".into(),
             branch: "enzarb/issue-42".into(),
             head_ref: "feature".into(),
@@ -759,6 +784,8 @@ mod tests {
             epic_allowed: "yes".into(),
             max_subissues: "8".into(),
             dependencies: "DEPS-X".into(),
+            previous_reviewed_sha: "PREV-X".into(),
+            delta_max_lines: "300".into(),
             ci_fix: false,
             ci_failure: "CI-FAILURE-X".into(),
         }
@@ -881,11 +908,84 @@ mod tests {
         ] {
             let out = render_prompt(kind, &ctx);
             assert!(out.contains("AFFECTED-X"), "{kind:?}");
-            assert!(!out.contains("affected.sh"), "{kind:?}");
+            // Only the review's delta mode asks for `affected.sh`, against the previous head.
+            assert_eq!(
+                out.contains("affected.sh"),
+                kind == JobKind::AgentReview,
+                "{kind:?}"
+            );
         }
         let review = render_prompt(JobKind::AgentReview, &ctx);
         assert!(review.contains("never inspect, fetch or update the local `main`"));
         assert!(review.contains("Name the components you skipped as unaffected"));
+        assert!(review.contains("`FILES-X`"));
+    }
+
+    #[test]
+    fn old_contexts_without_the_prepared_fields_still_decode() {
+        let old = serde_json::json!({"repo": "github:o/r", "base_ref": "main", "affected": "ui"});
+        let ctx: PromptContext = serde_json::from_value(old).unwrap();
+        assert_eq!(ctx.changed_files, "");
+        assert_eq!(ctx.merge_base_sha, "");
+        assert_eq!(ctx.affected, "ui");
+    }
+
+    #[test]
+    fn the_review_prompt_has_a_delta_mode_and_the_must_fix_list() {
+        let mut ctx = full_ctx();
+        let review = render_prompt(JobKind::AgentReview, &ctx);
+        assert!(review.contains("git diff PREV-X..HEAD"));
+        assert!(review.contains("scripts/monorepo/affected.sh PREV-X"));
+        assert!(review.contains("covered_by_ci"));
+        assert!(review.contains("at most 300 changed lines"));
+        assert!(review.contains("\"must_fix\""));
+        // A full review says so: the placeholder renders as `(none)`.
+        ctx.previous_reviewed_sha.clear();
+        let full = render_prompt(JobKind::AgentReview, &ctx);
+        assert!(full.contains("If it is `(none)`, this is a full review"));
+    }
+
+    #[test]
+    fn implement_and_address_check_before_the_push_and_report_checks() {
+        let ctx = full_ctx();
+        for kind in [JobKind::AgentImplement, JobKind::AgentAddressComments] {
+            let out = render_prompt(kind, &ctx);
+            assert!(out.contains("Check before the push"), "{kind:?}");
+            assert!(out.contains("`npm run lint`"), "{kind:?}");
+            let tail = out.rsplit("# Required final message").next().unwrap();
+            assert!(tail.contains("\"checks\": [{"), "{kind:?}");
+            assert!(tail.contains("\"reason\""), "{kind:?}");
+            assert!(tail.contains("flagged in the comment"), "{kind:?}");
+            let recovery = recovery_prompt(kind);
+            assert!(recovery.contains("\"checks\""), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn the_mechanical_check_prompt_runs_the_classifier_and_names_its_decisions() {
+        let out = render_prompt(JobKind::MechanicalCheck, &full_ctx());
+        assert!(out.contains("scripts/monorepo/mechanical.sh PREV-X HEAD 300"));
+        let allowed = Decision::allowed(JobKind::MechanicalCheck);
+        assert_eq!(allowed, &[Decision::Approve, Decision::Comment]);
+        let tail = out.rsplit("# Required final message").next().unwrap();
+        let line = tail.lines().find(|l| l.starts_with("`decision` ")).unwrap();
+        for d in ALL_DECISIONS {
+            assert_eq!(
+                line.contains(&format!("`{}`", d.as_str())),
+                allowed.contains(&d),
+                "{d:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn must_fix_is_optional_in_the_output() {
+        let text = |extra: &str| {
+            format!("ok\n\n```json\n{{ \"decision\": \"comment\", \"body\": \"b\"{extra} }}\n```")
+        };
+        assert!(AgentOutput::parse(&text("")).unwrap().must_fix.is_empty());
+        let o = AgentOutput::parse(&text(", \"must_fix\": [\"a\", \"b\"]")).unwrap();
+        assert_eq!(o.must_fix, vec!["a".to_string(), "b".to_string()]);
     }
 
     #[test]

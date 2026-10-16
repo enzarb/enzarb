@@ -356,7 +356,9 @@ fn st(phase: GraphPhase, data: GraphData) -> WorkflowState {
 fn prompt_ctx(ctx: &Ctx, d: &GraphData) -> PromptContext {
     if let Some(c) = &d.cr {
         // The same context as the compiled machine's runs (trigger, ci_failure, ...).
-        return super::change_request::prompt_ctx(ctx, &c.data);
+        // A re-review is a delta of the last reviewed head when eligible (#202).
+        let delta = super::change_request::delta_base(&c.data);
+        return super::change_request::prompt_ctx(ctx, &c.data, delta.as_deref());
     }
     PromptContext {
         bot_handle: ctx.bot_handle.clone(),
@@ -744,6 +746,10 @@ fn drive(ctx: &Ctx, fx: &mut Fx, def: &Definition, d: &mut GraphData) -> GraphPh
             match status {
                 EndStatus::Done => {
                     fx.done(&target(ctx));
+                    // An epic (it made sub-issues) has no change request to close it.
+                    if !d.children.is_empty() {
+                        fx.close_issue(enzarb_connector::CloseReason::Completed);
+                    }
                     GraphPhase::Done
                 }
                 EndStatus::Failed => {

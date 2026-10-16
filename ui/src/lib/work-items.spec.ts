@@ -21,7 +21,9 @@ import {
 	itemUrl,
 	keyToUrl,
 	NEEDS_YOU_CATEGORIES,
+	formatAgentTime,
 	parseReadiness,
+	parseReviewStats,
 	parseWait,
 	parseWorkId,
 	primaryAction,
@@ -755,6 +757,29 @@ describe('githubRefLabel', () => {
 		expect(githubRefLabel('https://github.com/acme/web')).toBeNull();
 		expect(githubRefLabel('nonsense')).toBeNull();
 		expect(githubRefLabel(null)).toBeNull();
+	});
+});
+
+describe('parseReviewStats / formatAgentTime', () => {
+	it('reads state_data.stats and floors bad numbers to 0', () => {
+		expect(
+			parseReviewStats({ stats: { review_rounds: 3, fix_rounds: 2, agent_secs: 600 } })
+		).toEqual({ reviewRounds: 3, fixRounds: 2, agentSecs: 600 });
+		expect(parseReviewStats({ stats: { review_rounds: -1, fix_rounds: 'x' } })).toEqual({
+			reviewRounds: 0,
+			fixRounds: 0,
+			agentSecs: 0
+		});
+	});
+	it('is null when absent or malformed', () => {
+		for (const bad of [null, 'x', 3, [], {}, { stats: 'x' }, { stats: [] }, { stats: null }]) {
+			expect(parseReviewStats(bad)).toBeNull();
+		}
+	});
+	it('formats agent time', () => {
+		expect(formatAgentTime(45)).toBe('45 s');
+		expect(formatAgentTime(720)).toBe('12 min');
+		expect(formatAgentTime(3900)).toBe('1 h 5 min');
 	});
 });
 
