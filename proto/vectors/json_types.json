@@ -1,39 +1,55 @@
 [
   {
     "json": {
-      "branch": "enzarb/issue-42",
-      "exit_code": 0,
-      "head_sha": "abc123",
-      "outcome": "succeeded",
-      "pushed": true,
-      "run_id": "job-123",
-      "summary": "done"
+      "exit": "success",
+      "git": [
+        {
+          "branch": "enzarb/issue-42",
+          "head_sha": "abc123",
+          "pushed": true,
+          "repo": "enzarb/enzarb"
+        }
+      ],
+      "outputs": {
+        "plan": "# Plan"
+      },
+      "result": {
+        "verdict": "approve"
+      },
+      "run_id": "run-123"
     },
-    "name": "run_finished",
-    "type": "RunFinished"
+    "name": "step_finished",
+    "type": "StepFinished"
   },
   {
     "json": {
-      "branch": "enzarb/issue-42",
-      "exit_code": null,
-      "head_sha": "abc123",
-      "outcome": "cancelled",
-      "pushed": false,
-      "run_id": "job-123",
-      "summary": ""
+      "error": "exit status 1",
+      "exit": "failure",
+      "git": [],
+      "outputs": {},
+      "run_id": "run-123"
     },
-    "name": "run_finished_cancelled",
-    "type": "RunFinished"
+    "name": "step_finished_failure",
+    "type": "StepFinished"
   },
   {
     "json": {
-      "branch": "enzarb/issue-42",
-      "exit_code": 0,
-      "head_sha": "abc123",
-      "outcome": "succeeded",
-      "pushed": true,
-      "run_id": "job-123",
-      "summary": "done",
+      "exit": "success",
+      "git": [
+        {
+          "branch": "enzarb/issue-42",
+          "head_sha": "abc123",
+          "pushed": true,
+          "repo": "enzarb/enzarb"
+        }
+      ],
+      "outputs": {
+        "plan": "# Plan"
+      },
+      "result": {
+        "verdict": "approve"
+      },
+      "run_id": "run-123",
       "usage": {
         "cache_read_input_tokens": 9000,
         "cost_usd": 0.42,
@@ -44,37 +60,7 @@
         "output_tokens": 340
       }
     },
-    "name": "run_finished_usage",
-    "type": "RunFinished"
-  },
-  {
-    "json": {
-      "branch": "enzarb/issue-42",
-      "exit_code": 0,
-      "graph": {
-        "outputs": {
-          "implement": {
-            "head_sha": "abc123",
-            "pushed": true
-          },
-          "prepare": {
-            "exit_code": 0,
-            "stdout": "ok\n"
-          }
-        },
-        "stopped_at": "open_pr",
-        "visits": {
-          "implement": 1,
-          "prepare": 1
-        }
-      },
-      "head_sha": "abc123",
-      "outcome": "succeeded",
-      "pushed": true,
-      "run_id": "job-123",
-      "summary": "done"
-    },
-    "name": "run_finished_graph",
-    "type": "RunFinished"
+    "name": "step_finished_usage",
+    "type": "StepFinished"
   }
 ]

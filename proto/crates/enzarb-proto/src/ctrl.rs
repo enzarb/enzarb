@@ -4,7 +4,6 @@
 //! values are a decode error and should be answered with `error`
 //! (`unknown_message`).
 
-
 use serde::{Deserialize, Serialize};
 
 /// Who is connecting.
@@ -228,8 +227,6 @@ pub struct SandboxStats {
 }
 
 /// Every CTRL message.
-// `RunStart` grew with the additive `retarget` field; boxing it would break the public
-// `Ctrl::RunStart` shape for every consumer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Ctrl {

@@ -110,29 +110,26 @@ fn unknown_ctrl_type_and_extra_fields() {
     let f = Frame::new(
         FrameType::Ctrl,
         0,
-        &br#"{"type":"run_state","run_id":"r","state":"queued","exit_code":null,"summary":null}"#[..],
+        &br#"{"type":"step_state","run_id":"r","state":"running","result":null}"#[..],
     );
     assert!(matches!(
         f.ctrl_message().unwrap(),
-        Ctrl::RunState {
-            exit_code: None,
-            ..
-        }
+        Ctrl::StepState { result: None, .. }
     ));
 }
 
 #[test]
 fn usage_is_additive_and_unknown_stays_absent() {
     use enzarb_proto::Usage;
-    // an old run_state (no usage) decodes with usage None
+    // a step_finished without usage decodes with usage None
     let f = Frame::new(
         FrameType::Ctrl,
         0,
-        &br#"{"type":"run_state","run_id":"r","state":"running"}"#[..],
+        &br#"{"type":"step_finished","run_id":"r","exit":"success"}"#[..],
     );
     assert!(matches!(
         f.ctrl_message().unwrap(),
-        Ctrl::RunState { usage: None, .. }
+        Ctrl::StepFinished(enzarb_proto::step::StepFinished { usage: None, .. })
     ));
     // unknown fields inside usage are ignored; absent fields stay None (not 0)
     let u: Usage = serde_json::from_str(r#"{"input_tokens":3,"future":true}"#).unwrap();
@@ -149,15 +146,16 @@ fn usage_is_additive_and_unknown_stays_absent() {
         ..Default::default()
     };
     assert!(!z.is_empty());
-    // RunState without usage serialises without the key
-    let m = Ctrl::RunState {
+    // StepFinished without usage serialises without the key
+    let m = Ctrl::StepFinished(enzarb_proto::step::StepFinished {
         run_id: "r".into(),
-        state: RunPhase::Running,
-        exit_code: None,
-        summary: None,
-        usage: None,
+        exit: "success".into(),
+        outputs: Default::default(),
         result: None,
-    };
+        git: vec![],
+        usage: None,
+        error: None,
+    });
     assert!(!serde_json::to_string(&m).unwrap().contains("usage"));
 }
 
@@ -225,10 +223,9 @@ proptest! {
     }
 
     #[test]
-    fn ctrl_roundtrip(run_id in "[a-z0-9-]{1,12}", exit in proptest::option::of(any::<i32>()),
-                      summary in proptest::option::of(".{0,30}"), ch in any::<u32>(), cols in any::<u16>(), rows in any::<u16>()) {
+    fn ctrl_roundtrip(run_id in "[a-z0-9-]{1,12}", text in ".{0,30}", ch in any::<u32>(), cols in any::<u16>(), rows in any::<u16>()) {
         for m in [
-            Ctrl::RunState { run_id: run_id.clone(), state: RunPhase::Failed, exit_code: exit, summary, usage: None, result: None },
+            Ctrl::StepSteer { run_id: run_id.clone(), text },
             Ctrl::Resize { channel: ch, cols, rows },
             Ctrl::Open { channel: ch, kind: ChannelKind::Pty, cols, rows, command: Some(vec![run_id.clone()]), repo: None, resume: None, claude_token: None },
         ] {
