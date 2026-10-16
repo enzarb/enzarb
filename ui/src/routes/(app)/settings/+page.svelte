@@ -4,6 +4,7 @@
 	import NotificationSettings from '#lib/components/NotificationSettings.svelte';
 	import KeyValueList from '#lib/components/ui/KeyValueList.svelte';
 	import PageHeader from '#lib/components/ui/PageHeader.svelte';
+	import SecretsSection from '#lib/components/tasks/SecretsSection.svelte';
 	import Section from '#lib/components/ui/Section.svelte';
 	import type { PageProps } from './$types';
 
@@ -45,4 +46,8 @@
 	>
 		<ClaudeSetup sandboxes={data.sandboxes} />
 	</Section>
+</div>
+
+<div id="secrets">
+	<SecretsSection />
 </div>

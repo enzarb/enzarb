@@ -1,4 +1,5 @@
-import { NEEDS_YOU_STALE_HOURS_DEFAULT } from '#lib/work-items.ts';
+/** Deprecated: the engine decides `needs_you` (ADR-0022); still parsed so old values stay valid. */
+const NEEDS_YOU_STALE_HOURS_DEFAULT = 24;
 
 export interface Config {
 	databaseUrl: string;
@@ -25,7 +26,7 @@ export interface Config {
 	 * `{"chart": "0.4.1", "components": {"enzarb-ui": "v0.9.0"}}`). Empty when unset.
 	 */
 	componentVersions: ComponentVersions;
-	/** Hours a blocked change request may sit idle before it joins "Needs you" (NEEDS_YOU_STALE_HOURS, default 24). */
+	/** Deprecated and unused since ADR-0022 (NEEDS_YOU_STALE_HOURS, default 24); accepted for compatibility. */
 	needsYouStaleHours: number;
 	/**
 	 * Web Push (ENZARB_VAPID_PUBLIC_KEY, ENZARB_VAPID_PRIVATE_KEY, ENZARB_VAPID_SUBJECT, all optional).

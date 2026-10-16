@@ -21,16 +21,10 @@ export const getProjectContext = () => getContext<ProjectContext>(KEY);
  */
 export const PROJECT_TABS = [
 	{ slug: '', label: 'Overview' },
+	{ slug: 'tasks', label: 'Tasks' },
 	{ slug: 'terminal', label: 'Terminal' },
 	{ slug: 'chat', label: 'Chat' },
 	{ slug: 'workflows', label: 'Workflows' },
 	{ slug: 'metrics', label: 'Metrics' },
 	{ slug: 'settings', label: 'Settings' }
-] as const;
-
-/** Sub-tabs of the Metrics tab. Each is a child route of `/projects/[name]/metrics`; Usage is the index. */
-export const METRICS_TABS = [
-	{ slug: '', label: 'Usage' },
-	{ slug: 'timing', label: 'Step timing' },
-	{ slug: 'sandbox', label: 'Sandbox' }
 ] as const;

@@ -1,17 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { jobStatus, stepStatus, workStatus } from './components/ui/status.ts';
+import { jobStatus, stepStatus } from './components/ui/status.ts';
 import { applyTheme, readTheme, writeTheme, THEME_KEY } from './theme.ts';
 
 describe('status tones', () => {
-	it('maps work states from the existing classification', () => {
-		expect(workStatus('Failed').tone).toBe('danger');
-		expect(workStatus('Cancelled').tone).toBe('danger');
-		expect(workStatus('Done').tone).toBe('success');
-		expect(workStatus('AwaitingApproval')).toEqual({ tone: 'warning', hollow: true });
-		expect(workStatus('Implementing').tone).toBe('accent');
-		expect(workStatus('ReadyToMerge')).toEqual({ tone: 'success' });
-	});
-
 	it('maps run results and project steps', () => {
 		expect(jobStatus('succeeded').tone).toBe('success');
 		expect(jobStatus('failed').tone).toBe('danger');

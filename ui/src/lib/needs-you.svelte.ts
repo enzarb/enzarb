@@ -1,27 +1,23 @@
 import { getContext, setContext } from 'svelte';
-import { applyNeedsYouChange, type WorkAction, type WorkItemSummary } from '#lib/work-items.ts';
-
-/** How often the queue is re-read so items that aged into it appear without a change event. */
-export const NEEDS_YOU_REFRESH_MS = 5 * 60_000;
+import { applyRow, type TaskRow } from '#lib/tasks.ts';
 
 export interface NeedsYouDeps {
-	list: () => Promise<{ items: WorkItemSummary[]; total: number }>;
-	get: (id: number) => Promise<WorkItemSummary>;
-	submit: (id: number, action: WorkAction) => Promise<unknown>;
+	list: () => Promise<TaskRow[]>;
+	/** The changed row, or null when it is gone. */
+	get: (id: number) => Promise<TaskRow | null>;
 	watch: (onChange: (id: number | null) => void) => () => void;
 }
 
 /**
- * The live "needs you" queue behind both the nav badge and the `/work` list. One watcher serves the
- * whole app; `onChange` fans each change out so pages need no socket of their own.
+ * The live "Waiting on you" queue (projection rows with `needs_you`) behind the nav badge and the
+ * Tasks page. One watcher serves the whole app; `onChange` fans each change out so pages need no
+ * socket of their own. Membership is the engine's `needs_you`, never decided here.
  */
 export class NeedsYouStore {
-	items = $state<WorkItemSummary[]>([]);
+	items = $state.raw<TaskRow[]>([]);
 	loaded = $state(false);
 	failed = $state(false);
-	/** Items waiting beyond those loaded (the queue is capped server-side), fixed at the last full load. */
-	overflow = $state(0);
-	readonly count = $derived(this.items.length + this.overflow);
+	readonly count = $derived(this.items.length);
 
 	// plain callback registry, nothing renders from it
 	// eslint-disable-next-line svelte/prefer-svelte-reactivity
@@ -32,23 +28,15 @@ export class NeedsYouStore {
 		this.#deps = deps;
 	}
 
-	/** Starts the live subscription and the first load; returns the stop function. */
 	start(): () => void {
 		void this.refresh();
-		// a blocked change request enters the queue by going idle, which writes nothing and emits no change
-		const timer = setInterval(() => void this.refresh(), NEEDS_YOU_REFRESH_MS);
-		const unwatch = this.#deps.watch((id) => {
+		return this.#deps.watch((id) => {
 			if (id === null) void this.refresh();
 			else void this.apply(id);
 			for (const l of this.#listeners) l(id);
 		});
-		return () => {
-			clearInterval(timer);
-			unwatch();
-		};
 	}
 
-	/** Receive every live change (`null` = refresh everything). Returns the unsubscribe function. */
 	onChange(fn: (id: number | null) => void): () => void {
 		this.#listeners.add(fn);
 		return () => this.#listeners.delete(fn);
@@ -56,9 +44,7 @@ export class NeedsYouStore {
 
 	async refresh(): Promise<void> {
 		try {
-			const { items, total } = await this.#deps.list();
-			this.items = items;
-			this.overflow = Math.max(0, total - items.length);
+			this.items = await this.#deps.list();
 			this.failed = false;
 		} catch {
 			this.failed = true;
@@ -67,25 +53,11 @@ export class NeedsYouStore {
 		}
 	}
 
-	/** Re-reads one changed item and adds, replaces or removes its row; falls back to a full refresh. */
 	async apply(id: number): Promise<void> {
 		try {
-			this.items = applyNeedsYouChange(this.items, await this.#deps.get(id));
+			this.items = applyRow(this.items, id, await this.#deps.get(id), (t) => t.needsYou);
 		} catch {
 			await this.refresh();
-		}
-	}
-
-	/** Submits an action; the row leaves optimistically and the list is reloaded if it fails. */
-	async act(id: number, action: WorkAction): Promise<void> {
-		const before = this.items;
-		this.items = before.filter((w) => w.id !== id);
-		try {
-			await this.#deps.submit(id, action);
-		} catch (e) {
-			this.items = before;
-			void this.refresh();
-			throw e;
 		}
 	}
 }

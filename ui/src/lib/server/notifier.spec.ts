@@ -3,7 +3,7 @@ import type { PushPayload } from '#lib/push.ts';
 import {
 	createBatcher,
 	createItemHandler,
-	stateKey,
+	entryCategory,
 	type NotifierDeps,
 	type NotifyItem
 } from './notifier.ts';
@@ -18,12 +18,12 @@ const device = (n: number): PushTarget => ({
 const item = (over: Partial<NotifyItem> = {}): NotifyItem => ({
 	id: 1,
 	project: 'proj',
-	workflow: 'issue',
-	state: 'AwaitingApproval',
-	stateData: { title: 'Add retries', token: 'ghp_secret' },
-	updatedAt: '2026-10-13T10:00:00.000Z',
-	transitionId: 10,
 	title: 'Add retries',
+	needsYou: true,
+	node: 'plan/approve',
+	column: 'review',
+	reason: 'Plan awaiting approval',
+	updatedAt: '2026-10-13T10:00:00.000Z',
 	...over
 });
 
@@ -82,61 +82,31 @@ function setup(
 			sent.push({ target, payload: payload as PushPayload });
 			if (failing.has(target.endpoint)) return 'error';
 			return gone.has(target.endpoint) ? 'gone' : 'ok';
-		},
-		now: () => Date.parse('2026-10-14T00:00:00.000Z')
+		}
 	};
 	return { items, entries, deps, sent, removed, gone, failing, handle: createItemHandler(deps) };
 }
 
-describe('classification reuse', () => {
-	const cases: [string, Partial<NotifyItem>, string][] = [
-		['approval', { workflow: 'issue', state: 'AwaitingApproval' }, 'Plan awaiting your approval'],
-		[
-			'merge',
-			{ workflow: 'change_request', state: 'ReadyToMerge' },
-			'Change request ready to merge'
-		],
-		[
-			'blocked (changes requested)',
-			{ workflow: 'change_request', state: 'AwaitingChanges' },
-			'Change request blocked'
-		],
-		[
-			'blocked (failed check)',
-			{
-				workflow: 'change_request',
-				state: 'Open',
-				stateData: { checklist: { ci: { status: 'failed', detail: 'x' } } }
-			},
-			'Change request blocked'
-		],
-		['failed', { workflow: 'issue', state: 'Failed' }, 'Task failed'],
-		['stale', { workflow: 'change_request', state: 'Stale' }, 'Task failed']
-	];
-
-	for (const [name, over, title] of cases) {
-		it(`notifies for ${name}`, async () => {
-			const t = setup({ items: [item(over)] });
-			expect(await t.handle(1)).toBe(true);
-			expect(t.sent).toHaveLength(1);
-			expect(t.sent[0].payload.title).toBe(title);
-			expect(t.sent[0].payload).toMatchObject({ tag: 'item-1' });
-		});
-	}
-
-	it('stays quiet for items that do not need the user', async () => {
-		for (const over of [
-			{ state: 'Planning' },
-			{ state: 'Done' },
-			{ workflow: 'change_request', state: 'Merged' }
-		]) {
-			const t = setup({ items: [item(over)] });
-			expect(await t.handle(1)).toBe(false);
-			expect(t.sent).toHaveLength(0);
-		}
+describe('projection needs_you', () => {
+	it('notifies with the declared reason as the title', async () => {
+		const t = setup();
+		expect(await t.handle(1)).toBe(true);
+		expect(t.sent).toHaveLength(1);
+		expect(t.sent[0].payload).toMatchObject({ title: 'Plan awaiting approval', tag: 'item-1' });
 	});
 
-	it('ignores unknown items', async () => {
+	it('stays quiet for tasks that do not need the user', async () => {
+		const t = setup({ items: [item({ needsYou: false })] });
+		expect(await t.handle(1)).toBe(false);
+		expect(t.sent).toHaveLength(0);
+	});
+
+	it('keys an entry by node, column and reason', () => {
+		expect(entryCategory(item())).toBe('plan/approve|review|Plan awaiting approval');
+		expect(entryCategory(item({ needsYou: false }))).toBeNull();
+	});
+
+	it('ignores unknown tasks', async () => {
 		expect(await setup().handle(999)).toBe(false);
 	});
 });
@@ -189,8 +159,8 @@ describe('ownership', () => {
 		expect(await t.handle(1)).toBe(true);
 	});
 
-	it('items without a project are ignored', async () => {
-		const t = setup({ items: [item({ project: null })] });
+	it('tasks without a project are ignored', async () => {
+		const t = setup({ items: [item({ project: '' })] });
 		expect(await t.handle(1)).toBe(false);
 	});
 });
@@ -203,125 +173,78 @@ describe('de-duplication', () => {
 		expect(t.sent).toHaveLength(1);
 	});
 
-	it('does not repeat for a non-state update of the same transition', async () => {
+	it('does not repeat for a projection update on the same wait', async () => {
 		const t = setup();
-		await t.handle(1);
-		t.items.set(1, item({ updatedAt: '2026-10-13T11:00:00.000Z' }));
-		expect(await t.handle(1)).toBe(false);
-		expect(t.sent).toHaveLength(1);
-	});
-
-	it('sends again after leaving and re-entering the same state', async () => {
-		const t = setup();
-		await t.handle(1);
-		t.items.set(1, item({ state: 'Planning', transitionId: 11 }));
-		await t.handle(1);
-		t.items.set(1, item({ transitionId: 12 }));
-		expect(await t.handle(1)).toBe(true);
-		expect(t.sent.filter((s) => !('type' in s.payload))).toHaveLength(2);
-	});
-
-	it('falls back to created_at, then updated_at, when the view has no entry transition', () => {
-		expect(stateKey(item({ transitionId: null }))).toBe(
-			'AwaitingApproval:2026-10-13T10:00:00.000Z'
-		);
-		expect(stateKey(item({ transitionId: null, createdAt: '2026-10-01T00:00:00.000Z' }))).toBe(
-			'AwaitingApproval:2026-10-01T00:00:00.000Z'
-		);
-		expect(stateKey(item())).toBe('AwaitingApproval:10');
-	});
-});
-
-describe('state entries', () => {
-	const failed = (over: Partial<NotifyItem> = {}) =>
-		item({ state: 'Failed', transitionId: 20, ...over });
-
-	it('does not re-notify for self-transitions (entry id unchanged)', async () => {
-		const t = setup({ items: [failed()] });
-		expect(await t.handle(1)).toBe(true);
-		// every later event records Failed -> Failed; the entry transition stays 20
-		for (let i = 0; i < 20; i++) {
-			t.items.set(1, failed({ updatedAt: `2026-10-13T11:${String(i).padStart(2, '0')}:00.000Z` }));
-			expect(await t.handle(1)).toBe(false);
-		}
-		expect(t.sent).toHaveLength(1);
-	});
-
-	it('does not notify again while the category stays, even across states', async () => {
-		const t = setup({ items: [failed()] });
-		await t.handle(1);
-		t.items.set(1, item({ workflow: 'change_request', state: 'Stale', transitionId: 21 }));
-		expect(await t.handle(1)).toBe(false);
-		expect(t.sent).toHaveLength(1);
-	});
-
-	it('clears once when the item stops needing the user, and notifies on re-entry', async () => {
-		const t = setup({ items: [failed()] });
-		await t.handle(1);
-		t.items.set(1, item({ state: 'Planning', transitionId: 21 }));
-		expect(await t.handle(1)).toBe(false);
-		await t.handle(1);
-		expect(t.sent.map((s) => s.payload)).toEqual([
-			expect.objectContaining({ title: 'Task failed', tag: 'item-1' }),
-			{ type: 'clear', tag: 'item-1' }
-		]);
-		t.items.set(1, failed({ transitionId: 22 }));
-		expect(await t.handle(1)).toBe(true);
-		expect(t.sent).toHaveLength(3);
-		expect(t.sent[2].payload).toMatchObject({ title: 'Task failed', tag: 'item-1' });
-	});
-
-	it('clears and notifies when the category changes', async () => {
-		const t = setup({
-			items: [item({ workflow: 'change_request', state: 'ReadyToMerge', transitionId: 30 })]
-		});
 		await t.handle(1);
 		t.items.set(
 			1,
-			item({ workflow: 'change_request', state: 'AwaitingChanges', transitionId: 31 })
+			item({ updatedAt: '2026-10-13T11:00:00.000Z', text: 'x' } as Partial<NotifyItem>)
 		);
+		expect(await t.handle(1)).toBe(false);
+		expect(t.sent).toHaveLength(1);
+	});
+
+	it('sends again after leaving and re-entering the same wait', async () => {
+		const t = setup();
+		await t.handle(1);
+		t.items.set(
+			1,
+			item({ needsYou: false, node: 'implement/run', updatedAt: '2026-10-13T11:00:00.000Z' })
+		);
+		await t.handle(1);
+		t.items.set(1, item({ updatedAt: '2026-10-13T12:00:00.000Z' }));
 		expect(await t.handle(1)).toBe(true);
-		expect(t.sent.map((s) => ('type' in s.payload ? 'clear' : s.payload.title))).toEqual([
-			'Change request ready to merge',
-			'clear',
-			'Change request blocked'
+		expect(t.sent.filter((s) => !('type' in s.payload))).toHaveLength(2);
+	});
+});
+
+describe('wait entries', () => {
+	it('clears once when the task stops needing the user', async () => {
+		const t = setup();
+		await t.handle(1);
+		t.items.set(1, item({ needsYou: false }));
+		expect(await t.handle(1)).toBe(false);
+		await t.handle(1);
+		expect(t.sent.map((s) => s.payload)).toEqual([
+			expect.objectContaining({ title: 'Plan awaiting approval', tag: 'item-1' }),
+			{ type: 'clear', tag: 'item-1' }
 		]);
 	});
 
-	it('sends no clear for an item that only got a burst summary', async () => {
+	it('clears and notifies when the wait changes', async () => {
+		const t = setup();
+		await t.handle(1);
+		t.items.set(1, item({ node: 'merge/ready', reason: 'Ready to merge' }));
+		expect(await t.handle(1)).toBe(true);
+		expect(t.sent.map((s) => ('type' in s.payload ? 'clear' : s.payload.title))).toEqual([
+			'Plan awaiting approval',
+			'clear',
+			'Ready to merge'
+		]);
+	});
+
+	it('sends no clear for a task that only got a burst summary', async () => {
 		const items = [1, 2, 3, 4].map((id) => item({ id }));
 		const t = setup({ items });
 		for (const i of items) await t.handle(i.id);
-		t.items.set(4, item({ id: 4, state: 'Planning', transitionId: 99 }));
+		t.items.set(4, item({ id: 4, needsYou: false }));
 		await t.handle(4);
 		expect(t.sent).toHaveLength(4);
 		expect(t.sent[3].payload.tag).toBe('work-summary');
 	});
 
-	it('links to the board with the card highlighted', async () => {
+	it('links to the Tasks page with the card highlighted', async () => {
 		const t = setup();
 		await t.handle(1);
-		expect(t.sent[0].payload).toMatchObject({
-			url: '/work?project=proj&highlight=1&was=approval'
-		});
+		expect(t.sent[0].payload).toMatchObject({ url: '/tasks?highlight=1' });
 	});
 });
 
 describe('payload', () => {
-	it('carries no state_data, token or reason', async () => {
-		const t = setup({
-			items: [
-				item({
-					state: 'Failed',
-					stateData: { title: 'T', error: 'secret failure', token: 'ghp_secret' }
-				})
-			]
-		});
+	it('has only title, body, url and tag', async () => {
+		const t = setup();
 		await t.handle(1);
-		const json = JSON.stringify(t.sent[0].payload);
 		expect(Object.keys(t.sent[0].payload).sort()).toEqual(['body', 'tag', 'title', 'url']);
-		expect(json).not.toContain('ghp_secret');
-		expect(json).not.toContain('secret failure');
 	});
 });
 
@@ -331,10 +254,10 @@ describe('bursts', () => {
 		const t = setup({ items });
 		for (const i of items) await t.handle(i.id);
 		const titles = t.sent.map((s) => s.payload.title);
-		expect(titles.slice(0, 3)).toEqual(Array(3).fill('Plan awaiting your approval'));
+		expect(titles.slice(0, 3)).toEqual(Array(3).fill('Plan awaiting approval'));
 		expect(titles.slice(3)).toEqual(['4 tasks need you', '5 tasks need you']);
 		expect(t.sent[4].payload.tag).toBe('work-summary');
-		expect(t.sent[4].payload.url).toBe('/work');
+		expect(t.sent[4].payload.url).toBe('/tasks');
 	});
 });
 

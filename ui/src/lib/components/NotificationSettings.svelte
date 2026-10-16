@@ -1,14 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import {
-		getPushState,
-		sendTest,
-		subscribe,
-		unsubscribe,
-		updateCategories
-	} from '#lib/push.remote.ts';
+	import { getPushState, sendTest, subscribe, unsubscribe } from '#lib/push.remote.ts';
 	import { InstallPrompt } from '#lib/install-prompt.svelte.ts';
-	import { CATEGORY_LABELS } from '#lib/push.ts';
 	import {
 		browserEnv,
 		currentSubscription,
@@ -17,7 +10,7 @@
 		unsubscribeThisDevice,
 		type PushSupport
 	} from '#lib/push-client.ts';
-	import { NEEDS_YOU_CATEGORIES, type NeedsYouCategory } from '#lib/work-items.ts';
+	import { NEEDS_YOU_CATEGORIES } from '#lib/push.ts';
 	import Button from './form/Button.svelte';
 	import Notice from './ui/Notice.svelte';
 
@@ -82,14 +75,6 @@
 			endpoint = null;
 		});
 
-	function toggle(category: NeedsYouCategory, on: boolean) {
-		if (!device || !endpoint) return;
-		const next = NEEDS_YOU_CATEGORIES.filter((c) =>
-			c === category ? on : device.categories.includes(c)
-		);
-		return run(() => updateCategories({ endpoint: endpoint!, categories: next }));
-	}
-
 	const test = () =>
 		run(async () => {
 			await sendTest(endpoint!);
@@ -118,28 +103,17 @@
 		</Notice>
 	{:else if support === 'ok'}
 		{#if device}
-			<p class="ez-muted">Notifications are on for this device. Tell me when:</p>
-			<fieldset class="ez-stack" style="--ez-gap: var(--ez-space-2)" disabled={busy}>
-				<legend class="ez-sr-only">Events</legend>
-				{#each NEEDS_YOU_CATEGORIES as category (category)}
-					<label class="ez-cluster">
-						<input
-							type="checkbox"
-							checked={device.categories.includes(category)}
-							onchange={(e) => toggle(category, e.currentTarget.checked)}
-						/>
-						{CATEGORY_LABELS[category]}
-					</label>
-				{/each}
-			</fieldset>
+			<p class="ez-muted">
+				Notifications are on for this device: you hear about every task that starts waiting on you.
+			</p>
 			<div class="ez-cluster">
 				<Button loading={busy} onclick={test}>Send a test</Button>
 				<Button variant="danger" loading={busy} onclick={disable}>Turn off for this device</Button>
 			</div>
 		{:else}
 			<p class="ez-muted">
-				Get a notification on this device when a task needs you: a plan to approve, a change request
-				to merge, a blocked change request, or a failure.
+				Get a notification on this device when a task starts waiting on you, as its workflow
+				declares (an approval, a decision, a failure).
 			</p>
 			<div class="ez-cluster">
 				<Button variant="primary" loading={busy} onclick={enable}>Turn on for this device</Button>

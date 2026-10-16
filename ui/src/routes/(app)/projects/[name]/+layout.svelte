@@ -11,9 +11,8 @@
 	import Skeleton from '#lib/components/ui/Skeleton.svelte';
 	import { getProject } from '#lib/projects.remote.ts';
 	import { setProjectContext } from '#lib/project-context.svelte.ts';
-	import { watchWorkItems } from '#lib/live.ts';
-	import { countPossiblyRunning } from '#lib/work-items.ts';
-	import { listWorkItems } from '#lib/work.remote.ts';
+	import { watchTasks } from '#lib/live.ts';
+	import { listTasks } from '#lib/tasks.remote.ts';
 
 	let { children }: { children: Snippet } = $props();
 
@@ -34,11 +33,12 @@
 		}
 	});
 
-	const workItems = $derived(listWorkItems(page.params.name!));
-	// Approximation of the jobs the operator waits for: work items in an active state. The workflows
-	// contract does not list which states hold a running pod, so only zero/non-zero is used and the
-	// count is never shown. null until the list has loaded, so the banner does not claim the jobs are finished.
-	const runningJobs = $derived(workItems.current ? countPossiblyRunning(workItems.current) : null);
+	const tasks = $derived(listTasks(page.params.name!));
+	// Tasks the engine reports as running a step; only zero/non-zero is used. null until loaded, so
+	// the banner does not claim the steps are finished.
+	const runningJobs = $derived(
+		tasks.current ? tasks.current.filter((t) => t.status === 'running').length : null
+	);
 
 	// Poll while the project is not Ready, has a change pending or a sandbox-resources change is in
 	// flight (no timers when idle). A failed poll is ignored until the next tick; it must not replace
@@ -59,7 +59,7 @@
 	// Refresh the job count promptly while a change is pending.
 	$effect(() => {
 		if (!project.current?.pendingChange) return;
-		return watchWorkItems(() => void workItems.refresh());
+		return watchTasks(() => void tasks.refresh());
 	});
 
 	// A different project starts with a clean slate.

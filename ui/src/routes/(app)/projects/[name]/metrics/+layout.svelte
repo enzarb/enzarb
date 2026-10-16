@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import MetricsNav from '#lib/components/MetricsNav.svelte';
 	import WindowPicker from '#lib/components/WindowPicker.svelte';
 	import Notice from '#lib/components/ui/Notice.svelte';
 	import { resolveWindow } from '#lib/metrics-window.ts';
@@ -24,6 +23,5 @@
 		<Notice tone="warning" title="Showing the last 7 days">{parsed.error.message}</Notice>
 	{/if}
 	<WindowPicker value={resolved.current} onchange={change} />
-	<MetricsNav name={page.params.name!} pathname={page.url.pathname} search={page.url.search} />
 	{@render children()}
 </div>

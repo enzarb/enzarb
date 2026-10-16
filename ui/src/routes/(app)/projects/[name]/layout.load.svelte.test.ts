@@ -12,8 +12,15 @@ vi.mock(
 	'#lib/projects.remote.ts',
 	() => import('#lib/components/__fixtures__/fake-project-remote.svelte.ts')
 );
-vi.mock('#lib/work.remote.ts', () => ({
-	listWorkItems: () => ({ current: [], refresh: async () => {} })
+vi.mock('#lib/tasks.remote.ts', () => ({
+	listTasks: () => ({ current: [], refresh: async () => {} }),
+	listSecrets: () => ({ current: [] }),
+	setSecret: async () => {},
+	deleteSecret: async () => {},
+	listChats: () => ({ current: [] }),
+	getChatSession: () => ({ current: [], refresh: async () => {} }),
+	getWorkflowView: () => ({ current: null }),
+	getBoard: () => ({ current: { columns: [] } })
 }));
 vi.mock('#lib/claude.remote.ts', async () => {
 	const fake = await import('#lib/components/__fixtures__/fake-project-remote.svelte.ts');
