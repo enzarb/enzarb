@@ -1,0 +1,220 @@
+version: 1
+description: >-
+  One review cycle of the pull request; the `review` phase runs it and re-runs it on exit
+  `restart` (a person's feedback, a new head pushed by someone else, or `/retry`).
+  Internal: use `phases/review`.
+  Review → post → must-fix findings get automatic fix rounds (`vars.fix_rounds`, at most
+  `max_rounds`; a person's comment resets it) → wait for CI and mergeability. Red CI
+  (GitHub Actions checks of this repo, minus names matching the `ci_ignore` regex) gets fix
+  rounds with the failing logs (at most `max_ci_rounds` per cycle); a conflict gets
+  `max_conflict_attempts` resolution attempts per base sha (`vars.conflict_base`), then a person.
+  Each review stores the head it looked at in `vars.reviewed_sha`; the next review is a delta review.
+params:
+  review_prompt: {type: prompt, default: {file: prompts/review.md}}
+  address_prompt: {type: prompt, default: {file: prompts/address.md}}
+  ci_fix_prompt: {type: prompt, default: {file: prompts/ci_fix.md}}
+  resolve_prompt: {type: prompt, default: {file: prompts/resolve_conflicts.md}}
+  ci_ignore: {type: string, default: "(?i)copilot", description: Regex; failing checks whose name matches it are ignored}
+  retry_command: {type: string, default: retry}
+  retry_label: {type: string, default: Retry}
+  max_rounds: {type: integer, default: 3, description: Automatic fix rounds on the review's must-fix findings}
+  max_ci_rounds: {type: integer, default: 3, description: Automatic CI-fix rounds per cycle}
+  max_conflict_attempts: {type: integer, default: 2, description: Conflict resolution attempts per base sha}
+exits: [restart, merged, closed]
+start: context
+nodes:
+  context:
+    step: {use: steps/context}
+    max_visits: 20
+    next: review
+  review:
+    step: {use: steps/review, with: {prompt: {param: review_prompt}}}
+    max_visits: 20
+    set_on_exit:
+      reviewed_sha: "(outputs.context.head or facts.git.head or vars.reviewed_sha) if last.exit == 'success' else vars.reviewed_sha"
+    next:
+      - {if: "last.exit == 'success' and outputs.review", to: post_review}
+      - {else: human}
+  post_review:
+    action:
+      name: comment
+      args:
+        number: "{{ (subjects.pull_requests | last).number }}"
+        body: "{{ outputs.review.body }}"
+        verdict: "{{ outputs.review.verdict }}"
+    max_visits: 20
+    next:
+      - {if: "outputs.review.must_fix | length > 0", to: fix_gate}
+      - {if: "outputs.review.verdict == 'approve'", to: checks}
+      - {else: human}
+
+  # Automatic rounds on the bot's own findings, counted in `vars.fix_rounds`.
+  fix_gate:
+    decide: {}
+    max_visits: 50
+    next:
+      - {if: "(vars.fix_rounds or 0) >= params.max_rounds", to: round_limit}
+      - {else: address}
+  address:
+    step: {use: steps/address, with: {prompt: {param: address_prompt}}}
+    max_visits: 50
+    set_on_exit: {fix_rounds: "(vars.fix_rounds or 0) + 1"}
+    next:
+      - {if: "last.exit == 'success' and outputs.address.decision == 'done' and facts.git.pushed", to: post_address}
+      - {else: human}
+  post_address:
+    action:
+      name: comment
+      args: {number: "{{ (subjects.pull_requests | last).number }}", body: "{{ outputs.address.body }}"}
+    max_visits: 50
+    next: context
+
+  # Approved: wait for CI and mergeability of the head.
+  checks:
+    wait:
+      events: &pr_events
+        - {event: fact, if: "event.fact in ['ci', 'mergeable']"}
+        - ci_status
+        - check_run
+        - workflow_run
+        - {event: comment, if: "not event.actor.bot and not event.command"}
+        - {event: review, if: "not event.actor.bot"}
+        - {event: pull_request, if: "event.action in ['synchronize', 'closed']"}
+      refresh: [ci, mergeable]
+      reason: awaiting_ci
+      text: "Approved by {{ instance.bot.handle or 'enzarb' }}; waiting for CI and mergeability"
+      column: review
+      waiting_on: external
+    max_visits: 500
+    on_limit: human
+    next:
+      - {if: "event.type == 'pull_request' and event.action == 'closed' and event.merged", to: merged}
+      - {if: "event.type == 'pull_request' and event.action == 'closed'", to: closed}
+      - {if: "event.type == 'pull_request'", to: reset}
+      - {if: "event.type in ['comment', 'review']", to: address_human}
+      - {if: "event.type in ['ci_status', 'check_run', 'workflow_run']", to: checks}
+      - {if: "facts.ci.state == 'failure' and (facts.ci.failing | selectattr('url', 'startingwith', 'https://github.com/' ~ task.repo ~ '/actions/runs/') | rejectattr('name', 'regex_match', params.ci_ignore) | list | length) > 0", to: ci_fix}
+      - {if: "facts.ci.state == 'failure'", to: ci_failed}
+      - {if: "facts.mergeable == false", to: conflict_gate}
+      - {if: "facts.ci.state == 'success' and facts.mergeable", to: done}
+
+  ci_fix:
+    step: {use: steps/ci_fix, with: {prompt: {param: ci_fix_prompt}}}
+    max_visits: {param: max_ci_rounds}
+    on_limit: ci_failed
+    next:
+      - {if: "last.exit == 'success' and outputs.ci_fix.decision == 'done' and facts.git.pushed", to: post_ci_fix}
+      - {else: ci_failed}
+  post_ci_fix:
+    action:
+      name: comment
+      args: {number: "{{ (subjects.pull_requests | last).number }}", body: "{{ outputs.ci_fix.body }}"}
+    max_visits: 50
+    next: context
+
+  # Conflict attempts are counted per base sha: a base that moved gets fresh attempts.
+  conflict_gate:
+    set:
+      conflict_attempts: "((vars.conflict_attempts or 0) + 1) if (vars.conflict_base or '') == (outputs.context.base_sha or '') else 1"
+      conflict_base: "outputs.context.base_sha or ''"
+    max_visits: 50
+    next:
+      - {if: "vars.conflict_attempts > params.max_conflict_attempts", to: conflict_parked}
+      - {else: resolve}
+  resolve:
+    step: {use: steps/resolve_conflicts, with: {prompt: {param: resolve_prompt}}}
+    max_visits: 50
+    next:
+      - {if: "last.exit == 'success' and outputs.resolve.decision == 'done' and facts.git.pushed", to: context}
+      - {else: conflict_gate}
+
+  # A person's comment or review: one round (it resets the fix-round count), then a fresh cycle.
+  address_human:
+    step: {use: steps/address, with: {prompt: {param: address_prompt}}}
+    max_visits: 50
+    set_on_exit: {fix_rounds: 0}
+    next:
+      - {if: "last.exit == 'success' and outputs.address.decision == 'done' and facts.git.pushed", to: post_human}
+      - {else: human}
+  post_human:
+    action:
+      name: comment
+      args: {number: "{{ (subjects.pull_requests | last).number }}", body: "{{ outputs.address.body }}"}
+    max_visits: 50
+    next: restart
+
+  # Waits on a person. Feedback starts a round; `/retry` restarts the cycle with fresh caps.
+  human:
+    wait:
+      events: &human_events
+        - {event: comment, if: "not event.actor.bot"}
+        - {event: review, if: "not event.actor.bot"}
+        - {event: pull_request, if: "event.action in ['synchronize', 'closed']"}
+      reason: awaiting_review
+      text: "The review by {{ instance.bot.handle or 'enzarb' }} needs a person: reply with feedback, or /{{ params.retry_command }}"
+      column: review
+      waiting_on: human
+      actions: &retry [{label: {param: retry_label}, command: {param: retry_command}}]
+    max_visits: 100
+    next: &human_next
+      - {if: "event.type == 'pull_request' and event.action == 'closed' and event.merged", to: merged}
+      - {if: "event.type == 'pull_request' and event.action == 'closed'", to: closed}
+      - {if: "event.type == 'pull_request'", to: reset}
+      - {if: "event.type == 'comment' and event.command == params.retry_command and event.actor.can_write", to: retry}
+      - {if: "event.type == 'review' and event.state == 'approved' and event.actor.can_write", to: checks}
+      - {if: "not event.command", to: address_human}
+  round_limit:
+    wait:
+      events: *human_events
+      reason: round_limit
+      text: "{{ params.max_rounds }} automatic fix rounds did not settle the review: reply with feedback, or /{{ params.retry_command }}"
+      column: review
+      waiting_on: human
+      actions: *retry
+    max_visits: 100
+    next: *human_next
+  ci_failed:
+    wait:
+      events: *pr_events
+      refresh: [ci]
+      reason: ci_failed
+      text: "CI is failing on the head{% for f in facts.ci.failing %} · {{ f.name }}{% endfor %}"
+      column: blocked
+      waiting_on: human
+      actions: *retry
+    max_visits: 500
+    on_limit: human
+    next:
+      - {if: "event.type == 'pull_request' and event.action == 'closed' and event.merged", to: merged}
+      - {if: "event.type == 'pull_request' and event.action == 'closed'", to: closed}
+      - {if: "event.type == 'pull_request'", to: reset}
+      - {if: "event.type == 'comment' and event.command == params.retry_command and event.actor.can_write", to: retry}
+      - {if: "event.type in ['comment', 'review'] and not event.command", to: address_human}
+      - {if: "event.type in ['ci_status', 'check_run', 'workflow_run']", to: ci_failed}
+      - {if: "event.type == 'fact' and facts.ci.state == 'success'", to: checks}
+  conflict_parked:
+    wait:
+      events: *human_events
+      reason: conflict_parked
+      text: "The merge conflict could not be resolved automatically: resolve it, or /{{ params.retry_command }}"
+      column: blocked
+      waiting_on: human
+      actions: *retry
+    max_visits: 100
+    next: *human_next
+
+  # `/retry`: fresh caps, including the conflict attempts of the current base.
+  retry:
+    set: {fix_rounds: 0, conflict_attempts: 0}
+    next: restart
+  # A new head pushed by someone else: fresh fix rounds.
+  reset:
+    set: {fix_rounds: 0}
+    next: restart
+
+  done: {end: {status: done}}
+  restart: {end: {status: restart}}
+  merged:
+    set: {merged: true}
+    end: {status: merged}
+  closed: {end: {status: closed}}

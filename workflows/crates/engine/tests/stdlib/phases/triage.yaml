@@ -1,0 +1,68 @@
+version: 1
+description: >-
+  Triage: duplicate (comment, end `duplicate`), questions (comment, wait for the author's
+  answer, stale after `stale_after`; an answer re-triages), ready (done) or epic (exit
+  `epic`). An epic decision, `epic: true` or an earlier epic marker (`vars.epic`) is
+  remembered in `vars.epic` for the later phases.
+params:
+  prompt: {type: prompt, default: {file: prompts/triage.md}}
+  epic: {type: boolean, default: false, description: Treat the issue as an epic regardless of the triage decision}
+  epic_allowed: {type: boolean, default: true, description: Whether the issue may become an epic (false for sub-issues of an epic)}
+  stale_after: {type: string, default: 14d, description: "How long to wait for answers before the issue is stale (a duration: 90s, 2h, 14d, 1w)"}
+exits: [epic, duplicate, closed, failed]
+start: triage
+nodes:
+  triage:
+    step: {use: steps/triage, with: {prompt: {param: prompt}, epic_allowed: {param: epic_allowed}}}
+    max_visits: 6
+    next:
+      - {if: "last.exit != 'success' or not outputs.triage", to: failed}
+      - {if: "outputs.triage.decision == 'duplicate'", to: post_duplicate}
+      - {if: "(params.epic or vars.epic) and params.epic_allowed", to: epic}
+      - {if: "outputs.triage.decision == 'questions'", to: post_questions}
+      - {if: "outputs.triage.decision == 'epic' and params.epic_allowed", to: epic}
+      - {else: done}
+  post_duplicate:
+    action:
+      name: comment
+      args: {number: "{{ subjects.issue.number }}", body: "{{ outputs.triage.body }}"}
+    next: duplicate
+  post_questions:
+    action:
+      name: comment
+      args: {number: "{{ subjects.issue.number }}", body: "{{ outputs.triage.body }}"}
+    next: answers
+  answers:
+    wait:
+      events:
+        - {event: comment, if: "not event.actor.bot and (event.actor.login == subjects.issue.author or event.actor.can_write)"}
+        - {event: issue, if: "event.action == 'closed'"}
+        - timer
+      timer: {seconds: {param: stale_after}}
+      reason: awaiting_answers
+      text: "Waiting for @{{ subjects.issue.author }} to answer the triage questions"
+      column: blocked
+      waiting_on: human
+    next:
+      - {if: "event.type == 'timer'", to: stale}
+      - {if: "event.type == 'issue'", to: closed}
+      - {else: triage}
+  stale:
+    wait:
+      events:
+        - {event: comment, if: "not event.actor.bot and (event.actor.login == subjects.issue.author or event.actor.can_write)"}
+        - {event: issue, if: "event.action == 'closed'"}
+      reason: stale
+      text: "No answer to the triage questions for {{ params.stale_after }}; comment to pick it up again"
+      column: blocked
+      waiting_on: human
+    next:
+      - {if: "event.type == 'issue'", to: closed}
+      - {else: triage}
+  done: {end: {status: done}}
+  epic:
+    set: {epic: true}
+    end: {status: epic}
+  duplicate: {end: {status: duplicate}}
+  closed: {end: {status: closed}}
+  failed: {end: {status: failed}}

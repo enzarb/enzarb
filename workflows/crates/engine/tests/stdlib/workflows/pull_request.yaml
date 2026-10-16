@@ -1,0 +1,13 @@
+version: 1
+description: A pull request that references no issue (opened by a person or adopted) → review → merge (human) → release.
+board: board
+params:
+  release_when: {type: list, items: string, default: [], description: Release events that end the task; empty ends it at the merge}
+  max_rounds: {type: integer, default: 3, description: Automatic fix rounds on the review's must-fix findings}
+on:
+  # Closing the pull request without merging ends the task anywhere, stopping a running step first.
+  - {events: [{event: pull_request, if: "event.action == 'closed' and not event.merged"}], do: "end:closed"}
+phases:
+  - {use: phases/review, with: {max_rounds: {param: max_rounds}}, exits: {merged: release}, max_entries: 10}
+  - {use: phases/merge, exits: {changed: review}, max_entries: 10}
+  - {use: phases/release, with: {when: {param: release_when}}}

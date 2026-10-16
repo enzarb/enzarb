@@ -1,0 +1,20 @@
+version: 1
+description: Decide whether an issue is a duplicate, needs questions, is ready to plan, or is an epic
+params:
+  prompt: {type: prompt, default: {file: prompts/triage.md}}
+  epic_allowed: {type: boolean, default: true, description: Whether `epic` is an allowed decision}
+agent:
+  runtime: runtimes/claude-code
+  prompt: {param: prompt}
+inputs:
+  epic_allowed: {from: params.epic_allowed, type: boolean}
+result:
+  as: triage
+  schema:
+    type: object
+    required: [decision, body]
+    properties:
+      decision: {type: string, enum: [questions, ready, epic, duplicate]}
+      body: {type: string, description: Markdown; posted for questions and duplicate, else the summary for planning}
+github: {contents: read, issues: read}
+steer: [comment]

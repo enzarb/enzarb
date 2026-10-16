@@ -1,0 +1,34 @@
+version: 1
+description: >-
+  Issue to release: dependencies → start gate (/plan) → triage → plan (approval) →
+  implement → review → merge (human) → release; epics go triage/plan → breakdown.
+  The `epics` binding runs it with `epic: true`; sub-issues of an epic run it with
+  `epic_allowed: false`.
+board: board
+params:
+  epic: {type: boolean, default: false, description: The issue is an epic (labelled `epic_label` when opened)}
+  epic_allowed: {type: boolean, default: true, description: The issue may become an epic (false for sub-issues)}
+  epic_label: {type: string, default: epic}
+  stale_after: {type: string, default: 14d, description: Triage questions go stale after this long}
+  release_when: {type: list, items: string, default: [], description: Release events that end the task; empty ends it at the merge}
+  max_rounds: {type: integer, default: 3, description: Automatic fix rounds on the review's must-fix findings}
+on:
+  # Closing the issue or closing the pull request without merging ends the task anywhere,
+  # stopping a running step first. An issue closed by the merge itself does not.
+  - {events: [{event: issue, if: "event.action == 'closed' and not vars.merged"}], do: "end:closed"}
+  - {events: [{event: pull_request, if: "event.action == 'closed' and not event.merged"}], do: "end:closed"}
+  # The epic label added later is remembered for triage and plan.
+  - events: [{event: label, from: writer, if: "event.action == 'added' and event.label == params.epic_label and params.epic_allowed"}]
+    set: {epic: true}
+phases:
+  - {use: phases/dependencies}
+  - {use: phases/start_gate}
+  - use: phases/triage
+    with: {epic: {param: epic}, epic_allowed: {param: epic_allowed}, stale_after: {param: stale_after}}
+    exits: {epic: breakdown}
+  - {use: phases/plan, with: {epic_allowed: {param: epic_allowed}}, exits: {epic: breakdown}}
+  - {use: phases/implement}
+  - {use: phases/review, with: {max_rounds: {param: max_rounds}}, exits: {merged: release}, max_entries: 10}
+  - {use: phases/merge, exits: {changed: review}, max_entries: 10}
+  - {use: phases/release, with: {when: {param: release_when}}, exits: {done: {end: done}}}
+  - {use: phases/breakdown}

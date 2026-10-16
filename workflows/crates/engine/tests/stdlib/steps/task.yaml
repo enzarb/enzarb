@@ -1,0 +1,17 @@
+version: 1
+description: Answer an @mention (read-only); the reply is posted as a comment
+params:
+  prompt: {type: prompt, default: {file: prompts/task.md}}
+agent:
+  runtime: runtimes/claude-code
+  prompt: {param: prompt}
+result:
+  as: task
+  schema:
+    type: object
+    required: [decision, body]
+    properties:
+      decision: {type: string, enum: [reply, blocked]}
+      body: {type: string}
+github: {contents: read}
+steer: [comment]

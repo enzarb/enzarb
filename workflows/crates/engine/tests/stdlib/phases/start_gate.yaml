@@ -1,0 +1,27 @@
+version: 1
+description: >-
+  Wait for a maintainer to start the work: a `/plan` comment, the `plan` label, or the
+  "Start planning" button. Closing the issue ends the task (the workflow's handler).
+params:
+  command: {type: string, default: plan, description: Command word that starts the work}
+  label: {type: string, default: plan, description: Label that starts the work}
+  button: {type: string, default: Start planning, description: Label of the start button}
+exits: [closed]
+start: wait
+nodes:
+  wait:
+    wait:
+      events:
+        - {event: comment, from: writer, if: "event.command == params.command"}
+        - {event: label, from: writer, if: "event.action == 'added' and event.label == params.label"}
+        - {event: issue, if: "event.action == 'closed'"}
+      reason: awaiting_start
+      text: "Comment /{{ params.command }}, add the `{{ params.label }}` label, or click {{ params.button }}"
+      column: backlog
+      waiting_on: human
+      actions: [{label: {param: button}, command: {param: command}}]
+    next:
+      - {if: "event.type == 'issue'", to: closed}
+      - {else: done}
+  done: {end: {status: done}}
+  closed: {end: {status: closed}}

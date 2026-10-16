@@ -1,0 +1,16 @@
+version: 1
+description: Write (or revise) the implementation plan of an issue
+params:
+  prompt: {type: prompt, default: {file: prompts/plan.md}}
+  approve_command: {type: string, default: approve}
+agent:
+  runtime: runtimes/claude-code
+  prompt: {param: prompt}
+inputs:
+  approve_command: {from: params.approve_command, type: string}
+  previous_plan: {from: outputs.plan, type: string, required: false}
+  triage_summary: {from: outputs.triage.body, type: string, required: false}
+outputs:
+  plan: {file: .enzarb/out/plan.md, artifact: Plan}
+github: {contents: read, issues: read}
+steer: [comment]

@@ -1,0 +1,33 @@
+version: 1
+description: Review the pull request head; must-fix findings start fix rounds
+params:
+  prompt: {type: prompt, default: {file: prompts/review.md}}
+agent:
+  runtime: runtimes/claude-code
+  prompt: {param: prompt}
+inputs:
+  context: {from: outputs.context, type: object, required: false}
+  # The head the last review of this task looked at (set by the review phase): a delta review.
+  previous_reviewed_sha: {from: vars.reviewed_sha, type: string, required: false}
+outputs:
+  review_body: {file: .enzarb/out/review.md, artifact: Review}
+result:
+  as: review
+  schema:
+    type: object
+    required: [verdict, must_fix, body, checks]
+    properties:
+      verdict: {type: string, enum: [approve, request_changes, comment]}
+      must_fix: {type: array, items: {type: string}}
+      body: {type: string}
+      checks:
+        type: array
+        items:
+          type: object
+          required: [name, status]
+          properties:
+            name: {type: string}
+            status: {type: string, enum: [passed, failed, not_run]}
+            reason: {type: string, enum: [refused, missing_tool, timeout, not_attempted, covered_by_ci]}
+github: {contents: read, pull_requests: read, actions: read, checks: read}
+steer: [comment]
