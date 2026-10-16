@@ -52,7 +52,11 @@ fn repo_key(repo: &str) -> Result<RepoKey, String> {
 }
 
 impl Library {
-    pub fn new(connector: Arc<dyn Connector>, default_library: &str, library_repos: Vec<String>) -> Self {
+    pub fn new(
+        connector: Arc<dyn Connector>,
+        default_library: &str,
+        library_repos: Vec<String>,
+    ) -> Self {
         Self {
             connector,
             default_library: default_library.to_string(),
@@ -107,7 +111,12 @@ impl Library {
     }
 
     /// Reads a file at a ref, cached by sha. `None` when the file does not exist.
-    pub async fn read(&self, repo: &str, rref: &str, path: &str) -> Result<(String, Option<Vec<u8>>), String> {
+    pub async fn read(
+        &self,
+        repo: &str,
+        rref: &str,
+        path: &str,
+    ) -> Result<(String, Option<Vec<u8>>), String> {
         let sha = self.sha_of(repo, rref).await?;
         let k = (repo.to_string(), sha.clone(), path.to_string());
         if let Some(v) = self.cache.lock().expect("cache").files.get(&k) {
@@ -166,7 +175,10 @@ impl Library {
     /// The merged bindings for `repo` of Project `p` (highest layer first).
     pub async fn bindings(&self, p: &ProjectInfo, repo: &str) -> Result<Vec<RBinding>, String> {
         let mut layers = Vec::new();
-        let lib = p.library.clone().unwrap_or_else(|| self.default_library.clone());
+        let lib = p
+            .library
+            .clone()
+            .unwrap_or_else(|| self.default_library.clone());
         let (lrepo, lref) = lib
             .split_once('@')
             .ok_or_else(|| format!("library `{lib}` must be owner/repo@ref"))?;
@@ -176,7 +188,13 @@ impl Library {
         }
         if let Some(text) = &p.bindings {
             // Unaliased `use` in the Project layer resolves against the library.
-            layers.push(layer("project", lrepo, lref, "spec.workflows.bindings", text.as_bytes())?);
+            layers.push(layer(
+                "project",
+                lrepo,
+                lref,
+                "spec.workflows.bindings",
+                text.as_bytes(),
+            )?);
         }
         let branch = p.default_branch(repo).unwrap_or("main").to_string();
         let (_, bytes) = self.read(repo, &branch, REPO_BINDINGS).await?;

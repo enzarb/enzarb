@@ -9,5 +9,9 @@ pub fn validate(schema: &Value, value: &Value) -> Result<(), String> {
         .take(5)
         .map(|e| format!("{}: {e}", e.instance_path))
         .collect();
-    if errs.is_empty() { Ok(()) } else { Err(errs.join("; ")) }
+    if errs.is_empty() {
+        Ok(())
+    } else {
+        Err(errs.join("; "))
+    }
 }

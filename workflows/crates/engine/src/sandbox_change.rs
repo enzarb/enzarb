@@ -2,7 +2,6 @@
 
 use enzarb_crds::{ANNOTATION_DRAINED_GENERATION, COND_SANDBOX_READY, Project};
 
-
 /// What the reconciler needs to know about one Project.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectChangeState {

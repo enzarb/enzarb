@@ -70,11 +70,18 @@ fn info(p: &Project) -> Option<ProjectInfo> {
 
 /// Pure lookup: when a repository is linked from several Projects the oldest wins by
 /// `(creationTimestamp, name)` (the operator's [`cmp_precedence`]).
-pub fn lookup_in<'a>(projects: impl IntoIterator<Item = &'a Project>, repo: &str) -> Option<ProjectInfo> {
+pub fn lookup_in<'a>(
+    projects: impl IntoIterator<Item = &'a Project>,
+    repo: &str,
+) -> Option<ProjectInfo> {
     projects
         .into_iter()
         .filter(|p| p.metadata.deletion_timestamp.is_none())
-        .filter_map(|p| info(p).filter(|i| i.default_branch(repo).is_some()).map(|i| (p, i)))
+        .filter_map(|p| {
+            info(p)
+                .filter(|i| i.default_branch(repo).is_some())
+                .map(|i| (p, i))
+        })
         .min_by(|(a, _), (b, _)| cmp_precedence(a, b))
         .map(|(_, i)| i)
 }
@@ -154,17 +161,30 @@ impl StaticProjectIndex {
 impl ProjectIndex for StaticProjectIndex {
     fn lookup(&self, repo: &str) -> Option<ProjectInfo> {
         let m = self.projects.read().expect("index lock");
-        let mut v: Vec<_> = m.values().filter(|p| p.default_branch(repo).is_some()).collect();
+        let mut v: Vec<_> = m
+            .values()
+            .filter(|p| p.default_branch(repo).is_some())
+            .collect();
         v.sort_by(|a, b| a.name.cmp(&b.name));
         v.first().map(|p| (*p).clone())
     }
 
     fn get(&self, project: &str) -> Option<ProjectInfo> {
-        self.projects.read().expect("index lock").get(project).cloned()
+        self.projects
+            .read()
+            .expect("index lock")
+            .get(project)
+            .cloned()
     }
 
     fn all(&self) -> Vec<ProjectInfo> {
-        let mut v: Vec<_> = self.projects.read().expect("index lock").values().cloned().collect();
+        let mut v: Vec<_> = self
+            .projects
+            .read()
+            .expect("index lock")
+            .values()
+            .cloned()
+            .collect();
         v.sort_by(|a, b| a.name.cmp(&b.name));
         v
     }

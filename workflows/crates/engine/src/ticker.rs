@@ -47,8 +47,13 @@ impl Engine {
         .await?;
         for r in &due {
             let (task, timer, project): (i64, String, String) = (r.get(0), r.get(1), r.get(2));
-            self.emit(&format!("timer:{task}:{timer}"), &project, task, &TaskEvent::Timer { timer_id: timer })
-                .await?;
+            self.emit(
+                &format!("timer:{task}:{timer}"),
+                &project,
+                task,
+                &TaskEvent::Timer { timer_id: timer },
+            )
+            .await?;
             st.timers += 1;
         }
         // Stall detection: no session events for `stall`; reported once per quiet period.
@@ -63,10 +68,21 @@ impl Engine {
         .fetch_all(&self.pool)
         .await?;
         for r in &stalled {
-            let (run, task, project, n): (String, i64, String, i32) = (r.get(0), r.get(1), r.get(2), r.get(3));
-            let reason = format!("step {run} has shown no activity for {} minutes", self.cfg.stall.as_secs() / 60);
-            self.emit(&format!("stall:{run}:{n}"), &project, task, &TaskEvent::StallDetected { reason: Some(reason) })
-                .await?;
+            let (run, task, project, n): (String, i64, String, i32) =
+                (r.get(0), r.get(1), r.get(2), r.get(3));
+            let reason = format!(
+                "step {run} has shown no activity for {} minutes",
+                self.cfg.stall.as_secs() / 60
+            );
+            self.emit(
+                &format!("stall:{run}:{n}"),
+                &project,
+                task,
+                &TaskEvent::StallDetected {
+                    reason: Some(reason),
+                },
+            )
+            .await?;
             st.stalls += 1;
         }
         // Partitions for this and next month.
@@ -76,15 +92,32 @@ impl Engine {
         if let Some(k) = &self.secrets_key {
             st.secrets = crate::secrets::encrypt_pending(&self.pool, k).await?;
         }
+        // Runtime roles may be created after the migration ran.
+        if let Err(e) = sqlx::query("SELECT engine.apply_grants()")
+            .execute(&self.pool)
+            .await
+        {
+            tracing::debug!("grants: {e}");
+        }
         if let Err(e) = self.reconcile_holds().await {
             tracing::warn!("sandbox holds: {e}");
         }
         Ok(st)
     }
 
-    async fn emit(&self, dedupe: &str, project: &str, task: i64, ev: &TaskEvent) -> Result<(), Error> {
+    async fn emit(
+        &self,
+        dedupe: &str,
+        project: &str,
+        task: i64,
+        ev: &TaskEvent,
+    ) -> Result<(), Error> {
         let v = serde_json::to_value(ev).unwrap_or_default();
-        let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("").to_string();
+        let kind = v
+            .get("kind")
+            .and_then(|k| k.as_str())
+            .unwrap_or("")
+            .to_string();
         sqlx::query(
             "INSERT INTO engine.events (dedupe_key, project, task_id, type, payload)
              VALUES ($1, $2, $3, $4, $5) ON CONFLICT (dedupe_key) DO NOTHING",
@@ -118,9 +151,14 @@ impl Engine {
                         id: Some(format!("adopt:{key}")),
                         repo: Some(repo.clone()),
                         actor: None,
-                        subject: Some(SubjectRef { kind: SubjectKind::Issue, number: i.number }),
+                        subject: Some(SubjectRef {
+                            kind: SubjectKind::Issue,
+                            number: i.number,
+                        }),
                         at: Some(chrono::Utc::now().to_rfc3339()),
-                        ..Event::new(Payload::Adopted(Adopted { reason: "first start".into() }))
+                        ..Event::new(Payload::Adopted(Adopted {
+                            reason: "first start".into(),
+                        }))
                     };
                     let done = sqlx::query(
                         "INSERT INTO engine.events (dedupe_key, project, subject_key, type, payload)

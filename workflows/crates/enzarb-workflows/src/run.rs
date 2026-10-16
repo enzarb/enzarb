@@ -1,13 +1,14 @@
 //! `run`: start the selected roles under one shutdown signal.
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use engine::executor::KubeSandboxResolver;
 use engine::sandbox_poller::{MuxStatsClient, PgPollLock, PgSampleSink, SandboxPoller};
 use engine::{
-    CachedPermissions, ConnectorPermissions, ConnectorRegistry, Executor, ExecutorConfig,
-    KubeProjectIndex, Reducer, ReducerConfig, Ticker,
+    CachedPermissions, ConnectorPermissions, Engine, EngineConfig, KubeProjectIndex,
+    KubeSandboxResolver, Library, MuxStepRunner,
 };
+use enzarb_connector::Connector;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
@@ -16,7 +17,6 @@ use crate::cli::Role;
 use crate::config::Config;
 use crate::health;
 
-/// Flip the returned sender's watch on SIGTERM or SIGINT.
 fn spawn_signal_listener(tx: watch::Sender<bool>) {
     tokio::spawn(async move {
         use tokio::signal::unix::{SignalKind, signal};
@@ -37,95 +37,64 @@ pub async fn run(cfg: Config) -> Result<(), Error> {
     let pool = engine::db::connect(&cfg.database_url, cfg.db_max_connections)
         .await
         .map_err(|e| Error::Run(format!("connecting to database: {e}")))?;
-
-    // The ticker needs the Project index (dependency sync) and the stats poller lists Projects.
-    let needs_kube = cfg.roles.contains(&Role::Reducer)
-        || cfg.roles.contains(&Role::Executor)
-        || cfg.roles.contains(&Role::Ticker);
-    let needs_connector = needs_kube;
-    let kube_client = if needs_kube {
-        Some(
-            kube::Client::try_default()
-                .await
-                .map_err(|e| Error::Run(format!("kubernetes client: {e}")))?,
-        )
-    } else {
-        None
-    };
-    let connectors = if needs_connector {
-        // GitHub App credentials come from GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY.
-        Some(
-            ConnectorRegistry::github_from_env()
-                .map_err(|e| Error::Run(format!("github connector: {e}")))?,
-        )
-    } else {
-        None
+    let kube = kube::Client::try_default()
+        .await
+        .map_err(|e| Error::Run(format!("kubernetes client: {e}")))?;
+    // GitHub App credentials come from GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY.
+    let gh: Arc<dyn Connector> = Arc::new(
+        enzarb_connector_github::GitHubConnector::from_env()
+            .map_err(|e| Error::Run(format!("github connector: {e}")))?,
+    );
+    let (index, index_task) = KubeProjectIndex::start(kube.clone());
+    tracing::info!("waiting for the Project index");
+    index.wait_ready().await;
+    let sandboxes = Arc::new(KubeSandboxResolver::new(kube.clone()));
+    let engine = Engine {
+        pool: pool.clone(),
+        index: Arc::new(index),
+        library: Library::new(gh.clone(), &cfg.default_library, cfg.library_repos.clone()),
+        permissions: Arc::new(CachedPermissions::new(
+            ConnectorPermissions::new().with("github", gh.clone()),
+        )),
+        runner: Arc::new(MuxStepRunner::new(sandboxes.clone())),
+        sandboxes: sandboxes.clone(),
+        secrets_key: cfg.secrets_key.clone(),
+        cfg: EngineConfig {
+            bot_handle: cfg.bot_handle.clone(),
+            bot_login: cfg.bot_login.clone(),
+            stall: Duration::from_secs(cfg.stall_secs),
+            max_steps_per_project: cfg.max_steps_per_project as i64,
+            worker_id: std::env::var("HOSTNAME")
+                .unwrap_or_else(|_| format!("workflows-{}", std::process::id())),
+            ..EngineConfig::default()
+        },
     };
 
     let mut tasks: JoinSet<(&'static str, Result<(), String>)> = JoinSet::new();
-    let mut index_task = None;
-
-    // Project index is shared by reducer and executor; start it once.
-    let index = match &kube_client {
-        Some(c) => {
-            let (index, task) = KubeProjectIndex::start(c.clone());
-            index_task = Some(task);
-            tracing::info!("waiting for the Project index");
-            index.wait_ready().await;
-            Some(Arc::new(index))
-        }
-        None => None,
-    };
-
     if cfg.roles.contains(&Role::Reducer) {
-        let connectors = connectors.as_ref().expect("connectors");
-        let gh = connectors
-            .get("github")
-            .ok_or_else(|| Error::Run("github connector not registered".into()))?
-            .clone();
-        let permissions =
-            CachedPermissions::new(ConnectorPermissions::new().with("github", gh.clone()));
-        // Graph workflows (ADR-0020): a repository opts in with `.enzarb/workflows/issue.yaml`.
-        let definitions = engine::definitions::ConnectorDefinitions::new().with("github", gh);
-        let rcfg = ReducerConfig {
-            bot_login: cfg.bot_login.clone(),
-            bot_handle: cfg.bot_handle.clone(),
-            machine: engine::machine::Config {
-                max_auto_rounds: cfg.max_auto_rounds,
-                ci_ignore_checks: cfg.ci_ignore_checks.clone(),
-                ..Default::default()
-            },
-            ..ReducerConfig::default()
-        };
-        let reducer = Arc::new(
-            Reducer::new(
-                pool.clone(),
-                index.clone().expect("index"),
-                Arc::new(permissions),
-                rcfg,
-            )
-            .with_definitions(Arc::new(definitions)),
-        );
-        let rx = rx.clone();
-        tasks.spawn(async move { ("reducer", reducer.run(rx).await.map_err(|e| e.to_string())) });
-    }
-
-    if cfg.roles.contains(&Role::Ticker) {
-        let ticker = Ticker::new(pool.clone())
-            .with_base_poll(connectors.clone().expect("connectors"), &cfg.bot_login)
-            .with_dependency_sync(
-                connectors.clone().expect("connectors"),
-                index.clone().expect("index"),
-            );
-        let ticker_rx = rx.clone();
+        let (e, rx) = (engine.clone(), rx.clone());
         tasks.spawn(async move {
-            ticker.run(ticker_rx).await;
-            ("ticker", Ok(()))
+            (
+                "reducer",
+                e.run_reducer(rx).await.map_err(|e| e.to_string()),
+            )
         });
-
+    }
+    if cfg.roles.contains(&Role::Executor) {
+        let (e, rx) = (engine.clone(), rx.clone());
+        tasks.spawn(async move {
+            (
+                "executor",
+                e.run_executor(rx).await.map_err(|e| e.to_string()),
+            )
+        });
+    }
+    if cfg.roles.contains(&Role::Ticker) {
+        let (e, rx2) = (engine.clone(), rx.clone());
+        tasks.spawn(async move { ("ticker", e.run_ticker(rx2).await.map_err(|e| e.to_string())) });
         // Its own task: a hung sandbox must never delay the ticker.
         let poller = SandboxPoller::new(
-            Arc::new(KubeSandboxResolver::new(kube_client.clone().expect("kube"))),
+            sandboxes.clone(),
             Arc::new(MuxStatsClient),
             Arc::new(PgSampleSink::new(pool.clone())),
             Arc::new(PgPollLock::new(pool.clone())),
@@ -137,64 +106,19 @@ pub async fn run(cfg: Config) -> Result<(), Error> {
             ("sandbox-poller", Ok(()))
         });
     }
-
-    if cfg.roles.contains(&Role::Executor) {
-        let mut ecfg = ExecutorConfig::new(
-            cfg.executor_url.clone(),
-            cfg.executor_callback_secret.clone(),
-        );
-        ecfg.npm_token = cfg.npm_token.clone();
-        ecfg.claude_keyring = cfg.claude_keyring.clone();
-        if ecfg.claude_keyring.is_none() {
-            tracing::warn!(
-                "ENZARB_CLAUDE_KEYRING_DIR is not set: every agent run will fail with \
-                 credential_undecryptable"
-            );
-        }
-        ecfg.apply_env(&|k| std::env::var(k).ok());
-        let executor = Arc::new(Executor::new(
-            pool.clone(),
-            connectors.clone().expect("connectors"),
-            Arc::new(KubeSandboxResolver::new(kube_client.clone().expect("kube"))),
-            ecfg,
-        ));
-        let listener = tokio::net::TcpListener::bind(cfg.executor_listen)
-            .await
-            .map_err(|e| Error::Run(format!("binding {}: {e}", cfg.executor_listen)))?;
-        tracing::info!(addr = %cfg.executor_listen, "executor callback + health server");
-        let app = executor.callback_router();
-        let (srx, ex_rx) = (rx.clone(), rx.clone());
-        tasks.spawn(async move {
-            (
-                "executor-http",
-                health::serve_on(listener, app, srx)
-                    .await
-                    .map_err(|e| e.to_string()),
-            )
-        });
-        tasks.spawn(async move {
-            (
-                "executor",
-                executor.run(ex_rx).await.map_err(|e| e.to_string()),
-            )
-        });
-    } else {
-        let addr = cfg.health_listen;
-        let listener = tokio::net::TcpListener::bind(addr)
-            .await
-            .map_err(|e| Error::Run(format!("binding {addr}: {e}")))?;
-        tracing::info!(%addr, "health server");
-        let srx = rx.clone();
-        tasks.spawn(async move {
-            (
-                "health",
-                health::serve_on(listener, health::router(), srx)
-                    .await
-                    .map_err(|e| e.to_string()),
-            )
-        });
-    }
-
+    let listener = tokio::net::TcpListener::bind(cfg.health_listen)
+        .await
+        .map_err(|e| Error::Run(format!("binding {}: {e}", cfg.health_listen)))?;
+    tracing::info!(addr = %cfg.health_listen, "health server");
+    let srx = rx.clone();
+    tasks.spawn(async move {
+        (
+            "health",
+            health::serve_on(listener, health::router(), srx)
+                .await
+                .map_err(|e| e.to_string()),
+        )
+    });
     tracing::info!(roles = ?cfg.roles.iter().map(|r| r.as_str()).collect::<Vec<_>>(), "started");
 
     // Any task finishing (error or not) before shutdown brings the whole process down.
@@ -213,9 +137,7 @@ pub async fn run(cfg: Config) -> Result<(), Error> {
         }
         let _ = tx.send(true);
     }
-    if let Some(t) = index_task {
-        t.abort();
-    }
+    index_task.abort();
     match failure {
         Some(f) => Err(Error::Run(f)),
         None => Ok(()),

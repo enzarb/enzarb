@@ -197,7 +197,7 @@ CREATE TABLE engine.projection (
     phase text NOT NULL DEFAULT '',
     node text NOT NULL DEFAULT '',
     "column" text,
-    waiting_on jsonb,
+    waiting_on text,
     reason text,
     text text,
     actions jsonb NOT NULL DEFAULT '[]',
@@ -214,10 +214,10 @@ CREATE INDEX projection_needs_you ON engine.projection (updated_at DESC) WHERE n
 CREATE TABLE engine.resolutions (
     project text NOT NULL,
     repo text NOT NULL,
-    board jsonb NOT NULL DEFAULT '{}',
-    bindings jsonb NOT NULL DEFAULT '[]',
-    workflows jsonb NOT NULL DEFAULT '{}',
-    errors jsonb NOT NULL DEFAULT '[]',
+    -- {columns: [{id, title, limit}], defaults}
+    board jsonb NOT NULL DEFAULT '{"columns": []}',
+    -- {bindings, workflows: [{ref, origin, phases: [...]}], lint: [errors]}
+    view jsonb NOT NULL DEFAULT '{}',
     updated_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (project, repo)
 );
@@ -228,8 +228,7 @@ CREATE TABLE engine.chats (
     project text NOT NULL,
     "user" text NOT NULL,
     title text NOT NULL DEFAULT '',
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
+    started_at timestamptz NOT NULL DEFAULT now()
 );
 
 -- Sandbox utilization samples (ADR-0019), attributed to the step runs running at the time.

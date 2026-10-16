@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use sqlx::{Postgres, Row, Transaction};
 use tokio::sync::watch;
 
-use crate::engine::{Engine, parse_subject_key, repo_key, subject_key};
+use crate::engine::{Engine, repo_key, subject_key};
 use crate::error::Error;
 use crate::index::ProjectInfo;
 
@@ -64,8 +64,11 @@ impl Engine {
         let ty: String = row.get("type");
         let payload: Value = row.get("payload");
         let task_id: Option<i64> = row.get("task_id");
-        let note = if ty.starts_with(ENGINE_PREFIX) {
-            self.on_engine_event(&mut tx, id, task_id, &ty, payload).await
+        let note = if let Some(kind) = ty.strip_prefix("ui.") {
+            self.on_ui_event(&mut tx, id, task_id, kind, payload).await
+        } else if ty.starts_with(ENGINE_PREFIX) {
+            self.on_engine_event(&mut tx, id, task_id, &ty, payload)
+                .await
         } else {
             let project: Option<String> = row.get("project");
             let skey: Option<String> = row.get("subject_key");
@@ -135,6 +138,91 @@ impl Engine {
         }
         self.apply(tx, &mut task, Some(event_id), &ev).await?;
         Ok((None, Some(task_id)))
+    }
+
+    /// `engine_api.submit`: `{source: ui, actor: {login}, kind, data}`. Commands, comments,
+    /// stop, cancel and steer become a `comment` catalog event on the task (the workflow's waits
+    /// and steer/stop matchers decide); `resume` resumes a paused task (writers only).
+    async fn on_ui_event(
+        &self,
+        tx: &mut Tx<'_>,
+        event_id: i64,
+        task_id: Option<i64>,
+        kind: &str,
+        payload: Value,
+    ) -> Result<(Option<String>, Option<i64>), Error> {
+        let Some(task_id) = task_id else {
+            return Ok((Some("ui event without task".into()), None));
+        };
+        let login = payload
+            .pointer("/actor/login")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        if kind == "resume" {
+            return self
+                .on_engine_event(
+                    tx,
+                    event_id,
+                    Some(task_id),
+                    "engine:resume",
+                    json!({"kind": "resume", "actor": {"login": login}}),
+                )
+                .await;
+        }
+        let data = payload.get("data").cloned().unwrap_or(Value::Null);
+        let words = |s: &str| s.to_string();
+        let (body, command, args) = match kind {
+            "command" => {
+                let cmd = data
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim_start_matches('/')
+                    .to_ascii_lowercase();
+                if cmd.is_empty()
+                    || !cmd
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                {
+                    return Ok((Some("invalid command".into()), Some(task_id)));
+                }
+                let args: Vec<String> = data
+                    .get("args")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(words)).collect())
+                    .unwrap_or_default();
+                let body = std::iter::once(format!("/{cmd}"))
+                    .chain(args.iter().cloned())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                (body, Some(cmd), args)
+            }
+            "stop" | "cancel" => (format!("/{kind}"), Some(kind.to_string()), Vec::new()),
+            "comment" | "steer" => {
+                let body = data
+                    .get("body")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let parsed =
+                    enzarb_flow::events::Comment::parsed(&body, Some(&self.cfg.bot_handle));
+                (body, parsed.command, parsed.args)
+            }
+            other => return Ok((Some(format!("unknown ui kind {other}")), Some(task_id))),
+        };
+        let repo: String = sqlx::query_scalar("SELECT repo FROM engine.tasks WHERE id = $1")
+            .bind(task_id)
+            .fetch_one(&mut **tx)
+            .await?;
+        let ev = json!({
+            "type": "comment", "body": body, "command": command, "args": args,
+            "id": format!("ui:{event_id}"), "repo": repo,
+            "actor": {"login": login, "can_write": false, "bot": false},
+            "at": chrono::Utc::now().to_rfc3339(),
+        });
+        self.on_catalog_event(tx, event_id, None, None, Some(task_id), ev)
+            .await
     }
 
     async fn can_write(&self, repo: &str, login: &str) -> bool {
@@ -228,8 +316,13 @@ impl Engine {
                 return Ok((Some(e), Some(t)));
             }
             self.refresh_doc(&mut task.state.doc, &ev).await;
-            self.apply(tx, &mut task, Some(event_id), &TaskEvent::Event { event: ev })
-                .await?;
+            self.apply(
+                tx,
+                &mut task,
+                Some(event_id),
+                &TaskEvent::Event { event: ev },
+            )
+            .await?;
             return Ok((None, Some(t)));
         }
 
@@ -247,7 +340,8 @@ impl Engine {
         let bindings = match self.library.bindings(&info, &repo).await {
             Ok(b) => b,
             Err(e) => {
-                self.record_resolution(&info, &repo, None, &[], Some(&e)).await;
+                self.record_resolution(&info, &repo, None, &[], Some(&e))
+                    .await;
                 return Ok((Some(format!("bindings: {e}")), None));
             }
         };
@@ -270,7 +364,16 @@ impl Engine {
             return Ok((Some(e), None));
         }
         let t = self
-            .create_task(tx, &info, &repo, b.id.as_deref(), &b.workflow, resolved, &ev, skey)
+            .create_task(
+                tx,
+                &info,
+                &repo,
+                b.id.as_deref(),
+                &b.workflow,
+                resolved,
+                &ev,
+                skey,
+            )
             .await?;
         Ok((None, Some(t)))
     }
@@ -365,7 +468,7 @@ impl Engine {
             .collect())
     }
 
-    /// Writes what was last resolved for a Project/repo (board, bindings, workflows) for the UI.
+    /// Writes what was last resolved for a Project/repo (board and the read-only viewer).
     async fn record_resolution(
         &self,
         info: &ProjectInfo,
@@ -374,28 +477,28 @@ impl Engine {
         bindings: &[enzarb_flow::resolve::RBinding],
         error: Option<&str>,
     ) {
-        let wf = resolved.map(|r| {
-            json!({ format!("{}@{}:{}", r.entry.repo, r.entry.rref, r.entry.path): {
-                "description": r.description,
-                "phases": r.phases.iter().map(|p| json!({
-                    "id": p.id, "origin": p.origin, "params": p.params, "exits": p.exits,
-                    "routes": p.routes, "description": p.description,
-                })).collect::<Vec<_>>(),
-                "origins": r.origins,
-            }})
-        });
+        let wf = resolved.map(viewer_workflow);
+        let board = resolved.map(|r| serde_json::to_value(&r.board).unwrap_or_default());
         let res = sqlx::query(
-            "INSERT INTO engine.resolutions (project, repo, board, bindings, workflows, errors, updated_at)
-             VALUES ($1, $2, COALESCE($3, '{}'), $4, COALESCE($5, '{}'), $6, now())
+            "INSERT INTO engine.resolutions (project, repo, board, view, updated_at)
+             VALUES ($1, $2, COALESCE($3, '{\"columns\": []}'),
+                     jsonb_build_object('bindings', $4::jsonb,
+                                        'workflows', CASE WHEN $5::jsonb IS NULL THEN '[]'::jsonb ELSE jsonb_build_array($5::jsonb) END,
+                                        'lint', $6::jsonb), now())
              ON CONFLICT (project, repo) DO UPDATE SET
                 board = COALESCE($3, engine.resolutions.board),
-                bindings = $4,
-                workflows = engine.resolutions.workflows || COALESCE($5, '{}'),
-                errors = $6, updated_at = now()",
+                view = jsonb_build_object(
+                    'bindings', $4::jsonb,
+                    'workflows', COALESCE((
+                        SELECT jsonb_agg(w) FROM jsonb_array_elements(COALESCE(engine.resolutions.view->'workflows', '[]')) w
+                        WHERE $5::jsonb IS NULL OR w->>'ref' <> $5::jsonb->>'ref'), '[]')
+                        || CASE WHEN $5::jsonb IS NULL THEN '[]'::jsonb ELSE jsonb_build_array($5::jsonb) END,
+                    'lint', $6::jsonb),
+                updated_at = now()",
         )
         .bind(&info.name)
         .bind(repo)
-        .bind(resolved.map(|r| serde_json::to_value(&r.board).unwrap_or_default()))
+        .bind(board)
         .bind(serde_json::to_value(bindings).unwrap_or_default())
         .bind(wf)
         .bind(json!(error.map(|e| vec![e]).unwrap_or_default()))
@@ -447,7 +550,12 @@ impl Engine {
 
     /// An action result may name a subject to link (`{"subject": {"kind", "repo", "number"}}`,
     /// e.g. a pull request the action opened).
-    async fn link_from_result(&self, tx: &mut Tx<'_>, task: &mut TaskRow, result: &Value) -> Result<(), Error> {
+    async fn link_from_result(
+        &self,
+        tx: &mut Tx<'_>,
+        task: &mut TaskRow,
+        result: &Value,
+    ) -> Result<(), Error> {
         let Some(s) = result.get("subject") else {
             return Ok(());
         };
@@ -458,7 +566,11 @@ impl Engine {
         ) else {
             return Ok(());
         };
-        let url = s.get("url").and_then(Value::as_str).unwrap_or("").to_string();
+        let url = s
+            .get("url")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         self.link_subject(tx, task.id, kind, &subject_key(repo, n), &url)
             .await?;
         if kind == "pull_request" {
@@ -529,7 +641,12 @@ impl Engine {
         }
         match s.kind {
             SubjectKind::Issue => {
-                if doc.subjects.issue.as_ref().is_none_or(|i| i.number == s.number && i.repo == repo) {
+                if doc
+                    .subjects
+                    .issue
+                    .as_ref()
+                    .is_none_or(|i| i.number == s.number && i.repo == repo)
+                {
                     doc.subjects.issue = Some(subj);
                 }
             }
@@ -578,7 +695,10 @@ impl Engine {
                 }
             }
             Ok(_) => {}
-            Err(e) => tracing::warn!(task = task.id, "re-resolution failed, keeping definition: {e}"),
+            Err(e) => tracing::warn!(
+                task = task.id,
+                "re-resolution failed, keeping definition: {e}"
+            ),
         }
     }
 
@@ -646,10 +766,11 @@ impl Engine {
             Status::Ended { status } => status.clone(),
             _ => return Ok(()),
         };
-        let keys: Vec<String> = sqlx::query_scalar("SELECT key FROM engine.subjects WHERE task_id = $1")
-            .bind(task.id)
-            .fetch_all(&mut **tx)
-            .await?;
+        let keys: Vec<String> =
+            sqlx::query_scalar("SELECT key FROM engine.subjects WHERE task_id = $1")
+                .bind(task.id)
+                .fetch_all(&mut **tx)
+                .await?;
         let mut targets = keys.clone();
         targets.push(format!("task:{}", task.id));
         // Tasks blocked by this one.
@@ -662,8 +783,15 @@ impl Engine {
         .await?;
         for b in blocked {
             let ev = json!({"type": "dependency_changed", "task": task.id.to_string(), "status": status});
-            self.insert_event(tx, &format!("dep:{}:{}", task.id, b), &task.project, b, "dependency_changed", ev)
-                .await?;
+            self.insert_event(
+                tx,
+                &format!("dep:{}:{}", task.id, b),
+                &task.project,
+                b,
+                "dependency_changed",
+                ev,
+            )
+            .await?;
         }
         // The parent.
         let parents: Vec<String> = sqlx::query_scalar(
@@ -684,8 +812,15 @@ impl Engine {
             };
             let Some(parent) = parent else { continue };
             let ev = json!({"type": "child_ended", "task": task.id.to_string(), "status": status});
-            self.insert_event(tx, &format!("child:{}:{}", task.id, parent), &task.project, parent, "child_ended", ev)
-                .await?;
+            self.insert_event(
+                tx,
+                &format!("child:{}:{}", task.id, parent),
+                &task.project,
+                parent,
+                "child_ended",
+                ev,
+            )
+            .await?;
             let rows = sqlx::query(
                 "SELECT t.id, t.ended_at IS NOT NULL AS ended, t.state->'status' AS st
                  FROM engine.relations r JOIN engine.tasks t ON t.id = r.task_id
@@ -694,7 +829,10 @@ impl Engine {
             .bind(&pkey)
             .fetch_all(&mut **tx)
             .await?;
-            if rows.iter().all(|r| r.get::<bool, _>("ended") || r.get::<i64, _>("id") == task.id) {
+            if rows
+                .iter()
+                .all(|r| r.get::<bool, _>("ended") || r.get::<i64, _>("id") == task.id)
+            {
                 let statuses: serde_json::Map<String, Value> = rows
                     .iter()
                     .map(|r| {
@@ -703,14 +841,24 @@ impl Engine {
                         let s = if id == task.id {
                             status.clone()
                         } else {
-                            st.get("status").and_then(Value::as_str).unwrap_or("").to_string()
+                            st.get("status")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string()
                         };
                         (id.to_string(), Value::String(s))
                     })
                     .collect();
                 let ev = json!({"type": "all_children_ended", "statuses": statuses});
-                self.insert_event(tx, &format!("children:{parent}:{pkey}"), &task.project, parent, "all_children_ended", ev)
-                    .await?;
+                self.insert_event(
+                    tx,
+                    &format!("children:{parent}:{pkey}"),
+                    &task.project,
+                    parent,
+                    "all_children_ended",
+                    ev,
+                )
+                .await?;
             }
         }
         Ok(())
@@ -742,7 +890,7 @@ impl Engine {
 
 /// `{status, position}` of a state, for the transition log.
 fn summary(s: &TaskState) -> Value {
-    json!({"status": s.status, "position": s.position(), "pending": s.pending})
+    json!({"status": s.status.label(), "node": s.position(), "pending": s.pending})
 }
 
 /// Custom events must match the schema their workflow declares.
@@ -789,7 +937,49 @@ pub(crate) fn thread_subject(repo: &str, t: &enzarb_connector::Thread, state: &s
     }
 }
 
-/// `github:o/r#n` of the task's subjects of `kind`.
-pub(crate) fn _subject_parts(key: &str) -> Option<(String, u64)> {
-    parse_subject_key(key)
+/// The viewer's shape of a resolved workflow: `{ref, origin, phases: [{id, use, origin, params,
+/// with, exits, routes, graph: {nodes, edges}}]}`.
+fn viewer_workflow(r: &Resolved) -> Value {
+    use enzarb_flow::resolve::RKind;
+    let phases: Vec<Value> = r
+        .phases
+        .iter()
+        .map(|p| {
+            let nodes: Vec<Value> = p
+                .nodes
+                .iter()
+                .map(|(id, n)| {
+                    let (kind, detail) = match &n.kind {
+                        RKind::Step(s) => ("step", json!({"use": s.name})),
+                        RKind::Wait(w) => ("wait", json!({"reason": w.reason, "column": w.column})),
+                        RKind::Action(a) => ("action", serde_json::to_value(a).unwrap_or_default()),
+                        RKind::End(s) => ("end", json!({"status": s})),
+                        RKind::Phase(ph) => ("phase", json!({"use": ph.origin.path})),
+                    };
+                    json!({"id": id, "kind": kind, "detail": detail, "start": *id == p.start})
+                })
+                .collect();
+            let edges: Vec<Value> = p
+                .nodes
+                .iter()
+                .flat_map(|(id, n)| {
+                    n.next
+                        .iter()
+                        .map(move |e| json!({"from": id, "to": e.to, "if": e.cond}))
+                })
+                .collect();
+            json!({
+                "id": p.id, "use": p.origin.path, "origin": p.origin, "params": p.params,
+                "with": p.params, "exits": p.exits, "routes": p.routes,
+                "description": p.description, "graph": {"nodes": nodes, "edges": edges},
+            })
+        })
+        .collect();
+    json!({
+        "ref": format!("{}@{}:{}", r.entry.repo, r.entry.rref, r.entry.path),
+        "origin": r.entry,
+        "description": r.description,
+        "phases": phases,
+        "origins": r.origins,
+    })
 }

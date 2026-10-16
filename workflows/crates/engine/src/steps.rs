@@ -64,7 +64,13 @@ impl MuxStepRunner {
     async fn connect(
         &self,
         project: &str,
-    ) -> Result<(enzarb_proto::session::Session, enzarb_proto::session::Events), StepError> {
+    ) -> Result<
+        (
+            enzarb_proto::session::Session,
+            enzarb_proto::session::Events,
+        ),
+        StepError,
+    > {
         let t = self.resolver.resolve(project).await?;
         let (s, ev) = Client::connect(&t.endpoint, &t.token, ClientKind::Executor)
             .await
@@ -109,7 +115,10 @@ impl StepRunner for MuxStepRunner {
                 }
             }
         });
-        let info = s.step_status(&run_id, after_seq).await.map_err(unavailable)?;
+        let info = s
+            .step_status(&run_id, after_seq)
+            .await
+            .map_err(unavailable)?;
         let mut resumed = false;
         match info.state {
             StepPhase::Finished => {
@@ -245,9 +254,10 @@ impl StepRunner for FakeStepRunner {
             {
                 let mut st = self.lock();
                 if let Some(q) = st.events.get(&run_id) {
-                    for e in q.iter().filter(|e| e.seq > sent) {
-                        let _ = events.send(e.clone());
+                    let fresh: Vec<_> = q.iter().filter(|e| e.seq > sent).cloned().collect();
+                    for e in fresh {
                         sent = e.seq;
+                        let _ = events.send(e);
                     }
                 }
                 if st.fail_once.remove(&run_id).is_some() {

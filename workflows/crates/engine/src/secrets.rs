@@ -32,7 +32,10 @@ impl SecretsKey {
         let c = Aes256Gcm::new(&self.0);
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let mut out = nonce.to_vec();
-        out.extend(c.encrypt(&nonce, plaintext.as_bytes()).expect("aes-gcm encrypt"));
+        out.extend(
+            c.encrypt(&nonce, plaintext.as_bytes())
+                .expect("aes-gcm encrypt"),
+        );
         out
     }
 
@@ -118,8 +121,9 @@ mod tests {
 
     #[test]
     fn roundtrip_and_wrong_key() {
-        let k = SecretsKey::from_base64(&base64::engine::general_purpose::STANDARD.encode([7u8; 32]))
-            .unwrap();
+        let k =
+            SecretsKey::from_base64(&base64::engine::general_purpose::STANDARD.encode([7u8; 32]))
+                .unwrap();
         let ct = k.encrypt("hunter2");
         assert_eq!(k.decrypt(&ct).unwrap(), "hunter2");
         let other =

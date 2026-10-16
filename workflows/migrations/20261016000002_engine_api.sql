@@ -2,135 +2,97 @@
 -- rights; functions are SECURITY DEFINER with a pinned search_path.
 
 CREATE VIEW engine_api.task_v AS
-SELECT p.task_id, p.project, p.repo, p.workflow, p.title, p.subjects, p.status, p.end_status,
+SELECT p.task_id, p.project, t.repo, t.workflow_ref, p.title, p.subjects, p.status, p.end_status,
        p.phase, p.node, p."column", p.waiting_on, p.reason, p.text, p.actions,
        -- artifacts without content (task_detail has the content)
        COALESCE((SELECT jsonb_agg(a - 'content') FROM jsonb_array_elements(p.artifacts) a), '[]') AS artifacts,
-       p.needs_you, p.cost_usd, p.created_at, p.updated_at
-FROM engine.projection p;
-
--- For realtime: map a NOTIFY payload to its Project.
-CREATE VIEW engine_api.task_project_v AS
-SELECT task_id AS id, project FROM engine.projection;
+       p.needs_you, p.cost_usd, t.created_at, p.updated_at, t.ended_at
+FROM engine.projection p JOIN engine.tasks t ON t.id = p.task_id;
 
 CREATE FUNCTION engine_api.task_detail(p_task_id bigint) RETURNS jsonb
-LANGUAGE sql STABLE SECURITY DEFINER SET search_path = engine, pg_temp AS $$
-SELECT jsonb_build_object(
-    'projection', to_jsonb(p),
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = engine, engine_api, pg_temp AS $$
+SELECT to_jsonb(v) - 'artifacts' || jsonb_build_object(
+    'artifacts', (SELECT p.artifacts FROM projection p WHERE p.task_id = v.task_id),
     'transitions', COALESCE((
         SELECT jsonb_agg(jsonb_build_object(
-            'id', t.id, 'event_id', t.event_id, 'event_type', e.type, 'at', t.at,
-            'from', t.from_state, 'to', t.to_state,
-            'effects', (SELECT COALESCE(jsonb_agg(x->>'effect'), '[]') FROM jsonb_array_elements(t.effects) x))
-            ORDER BY t.id)
-        FROM transitions t LEFT JOIN events e ON e.id = t.event_id
-        WHERE t.task_id = p.task_id), '[]'),
+            'at', tr.at, 'event_type', e.type,
+            'from', jsonb_build_object('status', tr.from_state->>'status', 'node', tr.from_state->>'node'),
+            'to', jsonb_build_object('status', tr.to_state->>'status', 'node', tr.to_state->>'node'),
+            'effects', jsonb_array_length(tr.effects)) ORDER BY tr.id)
+        FROM transitions tr LEFT JOIN events e ON e.id = tr.event_id
+        WHERE tr.task_id = v.task_id), '[]'),
     'step_runs', COALESCE((
-        SELECT jsonb_agg(to_jsonb(r) - 'stall_reported_at' ORDER BY r.queued_at)
-        FROM step_runs r WHERE r.task_id = p.task_id), '[]'),
-    'artifacts', p.artifacts,
-    'facts', COALESCE((SELECT jsonb_object_agg(f.name, f.value) FROM facts f WHERE f.task_id = p.task_id), '{}'),
-    'relations', COALESCE((SELECT jsonb_agg(to_jsonb(r)) FROM relations r WHERE r.task_id = p.task_id), '[]'))
-FROM projection p WHERE p.task_id = p_task_id
+        SELECT jsonb_agg(to_jsonb(s) - 'task_id' - 'stall_reported_at' ORDER BY s.started_at NULLS LAST, s.run_id)
+        FROM step_runs s WHERE s.task_id = v.task_id), '[]'),
+    'facts', COALESCE((SELECT jsonb_object_agg(f.name, f.value) FROM facts f WHERE f.task_id = v.task_id), '{}'),
+    'relations', COALESCE((SELECT jsonb_agg(jsonb_build_object('kind', r.kind, 'target', r.target_key))
+                           FROM relations r WHERE r.task_id = v.task_id), '[]'))
+FROM task_v v WHERE v.task_id = p_task_id
 $$;
 
-CREATE FUNCTION engine_api.session_v(p_run_id text, p_after_seq int DEFAULT 0, p_limit int DEFAULT 500)
-RETURNS TABLE (run_id text, seq int, at timestamptz, kind text, payload jsonb, truncated boolean)
+CREATE FUNCTION engine_api.session_v(p_run_id text, p_after_seq int, p_limit int)
+RETURNS TABLE (seq int, at timestamptz, kind text, payload jsonb, truncated boolean)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = engine, pg_temp AS $$
-SELECT s.run_id, s.seq, s.at, s.kind, s.payload, s.truncated FROM session_events s
+SELECT s.seq, s.at, s.kind, s.payload, s.truncated FROM session_events s
 WHERE s.run_id = p_run_id AND s.seq > p_after_seq
 ORDER BY s.seq LIMIT LEAST(GREATEST(p_limit, 1), 5000)
 $$;
 
 CREATE FUNCTION engine_api.session_search(p_project text, p_query text)
-RETURNS TABLE (run_id text, seq int, at timestamptz, kind text, task_id bigint)
+RETURNS TABLE (run_id text, task_id bigint, seq int, at timestamptz, kind text, snippet text)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = engine, pg_temp AS $$
-SELECT s.run_id, s.seq, s.at, s.kind, r.task_id FROM session_events s
-JOIN step_runs r ON r.run_id = s.run_id
-WHERE r.project = p_project AND s.payload::text ILIKE '%' || p_query || '%'
-ORDER BY s.at DESC LIMIT 200
+SELECT e.run_id, s.task_id, e.seq, e.at, e.kind, left(e.payload::text, 200)
+FROM session_events e JOIN step_runs s ON s.run_id = e.run_id
+WHERE s.project = p_project AND e.payload::text ILIKE '%' || p_query || '%'
+ORDER BY e.at DESC LIMIT 100
 $$;
 
 CREATE FUNCTION engine_api.board_v(p_project text) RETURNS jsonb
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = engine, pg_temp AS $$
-SELECT r.board FROM resolutions r WHERE r.project = p_project ORDER BY r.updated_at DESC LIMIT 1
+SELECT COALESCE((SELECT r.board FROM resolutions r WHERE r.project = p_project
+                 ORDER BY r.updated_at DESC LIMIT 1), '{"columns": []}')
 $$;
 
 CREATE FUNCTION engine_api.workflow_v(p_project text, p_repo text) RETURNS jsonb
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = engine, pg_temp AS $$
-SELECT jsonb_build_object('bindings', r.bindings, 'workflows', r.workflows, 'errors', r.errors,
-                          'updated_at', r.updated_at)
-FROM resolutions r WHERE r.project = p_project AND r.repo = lower(p_repo)
+SELECT r.view FROM resolutions r WHERE r.project = p_project AND r.repo = lower(p_repo)
 $$;
 
 CREATE FUNCTION engine_api.metrics(p_project text, p_from timestamptz, p_to timestamptz)
-RETURNS TABLE (workflow text, phase text, step text, runs bigint, failures bigint,
-               active_secs double precision, queue_secs double precision, cost_usd numeric,
-               resumes bigint, stalls bigint, steers bigint)
+RETURNS TABLE (workflow text, phase text, step text, runs bigint, avg_wall_secs double precision,
+               active_secs double precision, queue_secs double precision, input_tokens bigint,
+               output_tokens bigint, cost_usd numeric, retries bigint, resumes bigint, stalls bigint,
+               steers bigint)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = engine, pg_temp AS $$
-SELECT t.workflow_ref, split_part(r.node, '/', 1), r.step, count(*),
-       count(*) FILTER (WHERE r.exit IS DISTINCT FROM 'success'),
-       sum(r.active_secs), sum(r.queue_secs), COALESCE(sum(r.cost_usd), 0),
-       sum(r.resumes), sum(r.stalls), sum(r.steers)
-FROM step_runs r JOIN tasks t ON t.id = r.task_id
-WHERE r.project = p_project AND r.queued_at >= p_from AND r.queued_at < p_to
+SELECT t.workflow_ref, split_part(s.node, '/', 1), s.step, count(*),
+       avg(extract(epoch FROM s.ended_at - s.started_at))::double precision,
+       sum(s.active_secs), sum(s.queue_secs),
+       sum((s.tokens->>'input')::bigint), sum((s.tokens->>'output')::bigint), sum(s.cost_usd),
+       sum(GREATEST(s.attempt - 1, 0)), sum(s.resumes), sum(s.stalls), sum(s.steers)
+FROM step_runs s JOIN tasks t ON t.id = s.task_id
+WHERE s.project = p_project AND s.started_at >= p_from AND s.started_at < p_to
 GROUP BY 1, 2, 3 ORDER BY 1, 2, 3
 $$;
 
--- The UI's only write path: a catalog event (source `ui`) for the task. The engine decides.
+-- The UI's only write path. The engine turns `ui.<kind>` into a catalog event (or a resume)
+-- and decides everything; nothing is validated against task state here.
 CREATE FUNCTION engine_api.submit(p_task_id bigint, p_actor jsonb, p_kind text, p_data jsonb)
 RETURNS bigint
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = engine, pg_temp AS $$
 DECLARE
-    t tasks;
-    body text;
-    cmd text;
-    args jsonb := '[]';
-    payload jsonb;
-    ty text := 'comment';
     id bigint;
 BEGIN
-    SELECT * INTO t FROM tasks WHERE tasks.id = p_task_id;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'no task %', p_task_id USING ERRCODE = 'no_data_found';
+    IF p_kind NOT IN ('command', 'comment', 'cancel', 'resume', 'stop', 'steer') THEN
+        RAISE EXCEPTION 'unknown kind %', p_kind USING ERRCODE = '22023';
     END IF;
-    IF p_actor->>'login' IS NULL OR p_actor->>'login' = '' THEN
-        RAISE EXCEPTION 'actor.login is required' USING ERRCODE = 'invalid_parameter_value';
-    END IF;
-    CASE p_kind
-        WHEN 'command' THEN
-            cmd := lower(p_data->>'command');
-            IF cmd IS NULL OR cmd !~ '^[a-z0-9_-]+$' THEN
-                RAISE EXCEPTION 'invalid command' USING ERRCODE = 'invalid_parameter_value';
-            END IF;
-            args := COALESCE(p_data->'args', '[]');
-            body := '/' || cmd || COALESCE((SELECT ' ' || string_agg(a, ' ') FROM jsonb_array_elements_text(args) a), '');
-        WHEN 'comment', 'steer' THEN
-            body := COALESCE(p_data->>'body', '');
-        WHEN 'cancel', 'stop' THEN
-            cmd := p_kind;
-            body := '/' || p_kind;
-        WHEN 'resume' THEN
-            ty := 'engine:resume';
-        ELSE
-            RAISE EXCEPTION 'unknown kind %', p_kind USING ERRCODE = 'invalid_parameter_value';
-    END CASE;
-    IF ty = 'comment' THEN
-        payload := jsonb_build_object('type', 'comment', 'body', body)
-            || CASE WHEN cmd IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('command', cmd, 'args', args) END;
-    ELSE
-        payload := jsonb_build_object('kind', 'resume');
-    END IF;
-    payload := payload || jsonb_build_object(
-        'id', 'ui:' || gen_random_uuid()::text,
-        'repo', t.repo,
-        -- can_write is filled by the engine from GitHub, never from here.
-        'actor', jsonb_build_object('login', p_actor->>'login', 'can_write', false, 'bot', false),
-        'at', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
-        'source', 'ui');
     INSERT INTO events (dedupe_key, project, task_id, type, payload)
-    VALUES (payload->>'id', t.project, t.id, ty, payload)
+    SELECT 'ui:' || gen_random_uuid(), t.project, t.id, 'ui.' || p_kind,
+           jsonb_build_object('source', 'ui', 'actor', p_actor, 'kind', p_kind, 'data', COALESCE(p_data, '{}'))
+    FROM tasks t WHERE t.id = p_task_id
     RETURNING events.id INTO id;
+    IF id IS NULL THEN
+        RAISE EXCEPTION 'task % not found', p_task_id USING ERRCODE = 'P0002';
+    END IF;
     RETURN id;
 END
 $$;
@@ -145,6 +107,7 @@ ON CONFLICT (dedupe_key) DO NOTHING
 RETURNING id
 $$;
 
+-- Stored as `pending`; the engine encrypts it with ENZARB_SECRETS_KEY on its next tick.
 CREATE FUNCTION engine_api.secret_set(p_scope text, p_owner text, p_name text, p_plaintext text)
 RETURNS void
 LANGUAGE sql SECURITY DEFINER SET search_path = engine, pg_temp AS $$
@@ -154,9 +117,11 @@ ON CONFLICT (scope, owner, name) DO UPDATE
 SET ciphertext = NULL, pending = EXCLUDED.pending, updated_at = now()
 $$;
 
-CREATE FUNCTION engine_api.secret_delete(p_scope text, p_owner text, p_name text) RETURNS void
+CREATE FUNCTION engine_api.secret_delete(p_scope text, p_owner text, p_name text) RETURNS boolean
 LANGUAGE sql SECURITY DEFINER SET search_path = engine, pg_temp AS $$
-DELETE FROM secrets WHERE scope = p_scope AND owner = COALESCE(p_owner, '') AND name = p_name
+WITH d AS (DELETE FROM secrets WHERE scope = p_scope AND owner = COALESCE(p_owner, '') AND name = p_name
+           RETURNING 1)
+SELECT EXISTS (SELECT 1 FROM d)
 $$;
 
 CREATE FUNCTION engine_api.secret_list(p_scope text, p_owner text)
@@ -175,16 +140,19 @@ WHERE s.scope = 'project' AND s.owner = p_project AND s.name = p_name
 $$;
 
 CREATE FUNCTION engine_api.chat_v(p_user text)
-RETURNS TABLE (run_id text, project text, title text, created_at timestamptz, updated_at timestamptz)
+RETURNS TABLE (run_id text, project text, title text, started_at timestamptz, last_at timestamptz, events bigint)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = engine, pg_temp AS $$
-SELECT c.run_id, c.project, c.title, c.created_at, c.updated_at FROM chats c
-WHERE c."user" = p_user ORDER BY c.updated_at DESC
+SELECT c.run_id, c.project, c.title, c.started_at,
+       (SELECT max(e.at) FROM session_events e WHERE e.run_id = c.run_id),
+       (SELECT count(*) FROM session_events e WHERE e.run_id = c.run_id)
+FROM chats c WHERE c."user" = p_user ORDER BY c.started_at DESC
 $$;
 
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA engine_api FROM PUBLIC;
 
--- Grants, guarded: pgop creates the runtime roles.
-DO $$
+-- Grants, guarded: pgop creates the runtime roles (re-asserted by `enzarb-workflows migrate`).
+CREATE FUNCTION engine.apply_grants() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = engine, pg_temp AS $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'enzarb_workflows') THEN
         GRANT USAGE ON SCHEMA engine, engine_api TO enzarb_workflows;
@@ -193,12 +161,10 @@ BEGIN
         GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA engine TO enzarb_workflows;
         GRANT SELECT ON ALL TABLES IN SCHEMA engine_api TO enzarb_workflows;
         GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA engine_api TO enzarb_workflows;
-        ALTER DEFAULT PRIVILEGES IN SCHEMA engine GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO enzarb_workflows;
-        ALTER DEFAULT PRIVILEGES IN SCHEMA engine GRANT USAGE, SELECT ON SEQUENCES TO enzarb_workflows;
     END IF;
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'enzarb_ui') THEN
         GRANT USAGE ON SCHEMA engine_api TO enzarb_ui;
-        GRANT SELECT ON engine_api.task_v, engine_api.task_project_v TO enzarb_ui;
+        GRANT SELECT ON engine_api.task_v TO enzarb_ui;
         GRANT EXECUTE ON FUNCTION
             engine_api.task_detail(bigint), engine_api.session_v(text, int, int),
             engine_api.session_search(text, text), engine_api.board_v(text),
@@ -214,8 +180,16 @@ BEGIN
             engine_api.secret_for_receiver(text, text) TO enzarb_connectors;
     END IF;
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'enzarb_realtime') THEN
+        EXECUTE format('GRANT CONNECT ON DATABASE %I TO enzarb_realtime', current_database());
         GRANT USAGE ON SCHEMA engine_api TO enzarb_realtime;
-        GRANT SELECT ON engine_api.task_project_v TO enzarb_realtime;
+        GRANT SELECT ON engine_api.task_v TO enzarb_realtime;
     END IF;
 END
 $$;
+SELECT engine.apply_grants();
+REVOKE ALL ON FUNCTION engine.apply_grants() FROM PUBLIC;
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'enzarb_workflows') THEN
+        GRANT EXECUTE ON FUNCTION engine.apply_grants() TO enzarb_workflows;
+    END IF;
+END $$;

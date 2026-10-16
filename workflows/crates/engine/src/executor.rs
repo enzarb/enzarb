@@ -9,7 +9,9 @@ use chrono::{DateTime, Utc};
 use enzarb_flow::document::GitFacts;
 use enzarb_flow::format::Access;
 use enzarb_flow::interp::{RunExec, RunStep, StepFinished as FlowFinished, TaskEvent, TaskState};
-use enzarb_proto::{Mode, Runtime, Secret, SessionEvent, StepExec, StepOutput, StepStart, StepWorkspace};
+use enzarb_proto::{
+    Mode, Runtime, Secret, SessionEvent, StepExec, StepOutput, StepStart, StepWorkspace,
+};
 use serde_json::{Value, json};
 use sqlx::Row;
 use tokio::sync::{Semaphore, mpsc, watch};
@@ -161,9 +163,15 @@ impl Engine {
                         .and_then(|v| v.get("kind").and_then(Value::as_str).map(str::to_string))
                         .unwrap_or_default();
                     let dedupe = format!("job:{}:{}:{kind}", job.id, job.attempt);
-                    self.insert_event(&mut tx, &dedupe, &job.project, job.task_id,
+                    self.insert_event(
+                        &mut tx,
+                        &dedupe,
+                        &job.project,
+                        job.task_id,
                         &format!("{ENGINE_PREFIX}{kind}"),
-                        serde_json::to_value(&e).unwrap_or_default()).await?;
+                        serde_json::to_value(&e).unwrap_or_default(),
+                    )
+                    .await?;
                 }
             }
             Err(e) => {
@@ -186,13 +194,17 @@ impl Engine {
         Ok(())
     }
 
-    async fn task_state(&self, task_id: i64) -> Result<(String, Option<String>, TaskState), StepError> {
+    async fn task_state(
+        &self,
+        task_id: i64,
+    ) -> Result<(String, Option<String>, TaskState), StepError> {
         let r = sqlx::query("SELECT repo, started_by, state FROM engine.tasks WHERE id = $1")
             .bind(task_id)
             .fetch_one(&self.pool)
             .await
             .map_err(db)?;
-        let state: TaskState = serde_json::from_value(r.get("state")).map_err(|e| StepError::Other(e.to_string()))?;
+        let state: TaskState =
+            serde_json::from_value(r.get("state")).map_err(|e| StepError::Other(e.to_string()))?;
         Ok((r.get("repo"), r.get("started_by"), state))
     }
 
@@ -215,36 +227,68 @@ impl Engine {
         }
         names.sort();
         names.dedup();
-        let (env, missing) = crate::secrets::resolve(&self.pool, self.secrets_key.as_ref(),
-            started_by.as_deref(), &job.project, &names).await.map_err(StepError::Other)?;
+        let (env, missing) = crate::secrets::resolve(
+            &self.pool,
+            self.secrets_key.as_ref(),
+            started_by.as_deref(),
+            &job.project,
+            &names,
+        )
+        .await
+        .map_err(StepError::Other)?;
         if !missing.is_empty() {
             return Ok(Done::Blocked(TaskEvent::StallDetected {
-                reason: Some(format!("missing secret(s) {}: set them, then resume", missing.join(", "))),
+                reason: Some(format!(
+                    "missing secret(s) {}: set them, then resume",
+                    missing.join(", ")
+                )),
             }));
         }
 
         // Workspaces: the task's repo first, then the step's extra ones.
         let task_branch = format!("enzarb/task-{}", job.task_id);
-        let pr_head = state.doc.subjects.pull_requests.iter()
+        let pr_head = state
+            .doc
+            .subjects
+            .pull_requests
+            .iter()
             .find(|p| p.repo.eq_ignore_ascii_case(&repo) && p.state == "open")
             .and_then(|p| p.head.clone());
         let writes = rs.github.get("contents") == Some(&Access::Write);
-        let mut ws = vec![(repo.clone(), if writes { Mode::Write } else { Mode::Read },
-            pr_head.unwrap_or_else(|| task_branch.clone()), default_branch.clone())];
+        let mut ws = vec![(
+            repo.clone(),
+            if writes { Mode::Write } else { Mode::Read },
+            pr_head.unwrap_or_else(|| task_branch.clone()),
+            default_branch.clone(),
+        )];
         for w in &rs.workspaces {
             if !w.repo.eq_ignore_ascii_case(&repo) {
-                let base = self.index.lookup(&w.repo)
+                let base = self
+                    .index
+                    .lookup(&w.repo)
                     .and_then(|i| i.default_branch(&w.repo).map(str::to_string))
                     .unwrap_or_else(|| "main".into());
-                ws.push((w.repo.to_ascii_lowercase(),
-                    if w.mode == Access::Write { Mode::Write } else { Mode::Read },
-                    task_branch.clone(), base));
+                ws.push((
+                    w.repo.to_ascii_lowercase(),
+                    if w.mode == Access::Write {
+                        Mode::Write
+                    } else {
+                        Mode::Read
+                    },
+                    task_branch.clone(),
+                    base,
+                ));
             }
         }
         let mut workspaces = Vec::new();
         for (r, mode, branch, base) in &ws {
-            let scope = if *mode == Mode::Write { enzarb_connector::CredScope::ReadWrite } else { enzarb_connector::CredScope::Read };
-            let cred = self.connector()
+            let scope = if *mode == Mode::Write {
+                enzarb_connector::CredScope::ReadWrite
+            } else {
+                enzarb_connector::CredScope::Read
+            };
+            let cred = self
+                .connector()
                 .mint_clone_credential(&repo_key(r), scope, &format!("{}:{r}", rs.run_id))
                 .await
                 .map_err(|e| StepError::Unavailable(format!("clone token for {r}: {e}")))?;
@@ -262,15 +306,31 @@ impl Engine {
         let github_token = if rs.github.is_empty() {
             None
         } else {
-            let perms: BTreeMap<String, String> = rs.github.iter()
-                .map(|(k, v)| (k.clone(), if *v == Access::Write { "write" } else { "read" }.to_string()))
+            let perms: BTreeMap<String, String> = rs
+                .github
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        if *v == Access::Write { "write" } else { "read" }.to_string(),
+                    )
+                })
                 .collect();
             let repos: Vec<_> = ws.iter().map(|(r, ..)| repo_key(r)).collect();
-            Some(Secret::new(self.connector().mint_step_token(&repos, &perms).await
-                .map_err(|e| StepError::Unavailable(format!("step token: {e}")))?.token))
+            Some(Secret::new(
+                self.connector()
+                    .mint_step_token(&repos, &perms)
+                    .await
+                    .map_err(|e| StepError::Unavailable(format!("step token: {e}")))?
+                    .token,
+            ))
         };
         let exec = match &rs.exec {
-            RunExec::Agent { runtime, model, prompt } => StepExec::Agent {
+            RunExec::Agent {
+                runtime,
+                model,
+                prompt,
+            } => StepExec::Agent {
                 runtime: Runtime {
                     name: runtime.name.clone(),
                     install: runtime.file.install.mise.clone(),
@@ -280,13 +340,17 @@ impl Engine {
                     },
                     command: runtime.file.launch.command.clone(),
                     env: runtime.file.launch.env.clone(),
-                    capabilities: serde_json::to_value(runtime.file.capabilities).unwrap_or_default(),
+                    capabilities: serde_json::to_value(runtime.file.capabilities)
+                        .unwrap_or_default(),
                 },
                 model: model.clone(),
                 prompt: prompt.clone(),
                 result_schema: rs.result.as_ref().map(|r| r.schema.clone()),
             },
-            RunExec::Command { run, tools } => StepExec::Command { run: run.clone(), tools: tools.mise.clone() },
+            RunExec::Command { run, tools } => StepExec::Command {
+                run: run.clone(),
+                tools: tools.mise.clone(),
+            },
         };
         let start = StepStart {
             run_id: rs.run_id.clone(),
@@ -294,9 +358,20 @@ impl Engine {
             task_id: job.task_id.to_string(),
             workspaces,
             exec,
-            outputs: rs.outputs.iter().map(|(k, o)| (k.clone(), StepOutput {
-                file: o.file.clone(), format: o.format.clone(), optional: o.optional,
-            })).collect(),
+            outputs: rs
+                .outputs
+                .iter()
+                .map(|(k, o)| {
+                    (
+                        k.clone(),
+                        StepOutput {
+                            file: o.file.clone(),
+                            format: o.format.clone(),
+                            optional: o.optional,
+                        },
+                    )
+                })
+                .collect(),
             env: env.into_iter().map(|(k, v)| (k, Secret::new(v))).collect(),
             github_token,
         };
@@ -316,26 +391,46 @@ impl Engine {
 
         let (tx, rx) = mpsc::unbounded_channel();
         let writer = tokio::spawn(store_session_events(self.pool.clone(), rx));
-        let res = self.runner.run(&job.project, start, after_seq as u64, tx).await;
+        let res = self
+            .runner
+            .run(&job.project, start, after_seq as u64, tx)
+            .await;
         let _ = writer.await;
         let out = res?;
         if out.resumed {
             sqlx::query("UPDATE engine.step_runs SET resumes = resumes + 1 WHERE run_id = $1")
-                .bind(&rs.run_id).execute(&self.pool).await.map_err(db)?;
+                .bind(&rs.run_id)
+                .execute(&self.pool)
+                .await
+                .map_err(db)?;
         }
         let f = out.finished;
 
         // Never trust sandbox-reported facts: the branch head must be on GitHub.
         let mut git = None;
         for (i, g) in f.git.iter().enumerate() {
-            let head = self.connector().branch_head(&repo_key(&g.repo), &g.branch).await
+            let head = self
+                .connector()
+                .branch_head(&repo_key(&g.repo), &g.branch)
+                .await
                 .map_err(|e| StepError::Unavailable(format!("verifying {}: {e}", g.repo)))?;
             let pushed = g.pushed && head.as_deref() == Some(g.head_sha.as_str());
             if i == 0 {
-                let base = ws.iter().find(|(r, ..)| *r == g.repo).map(|(.., b)| b.clone()).unwrap_or_else(|| default_branch.clone());
+                let base = ws
+                    .iter()
+                    .find(|(r, ..)| *r == g.repo)
+                    .map(|(.., b)| b.clone())
+                    .unwrap_or_else(|| default_branch.clone());
                 let ahead = if pushed {
-                    self.connector().ahead_by(&repo_key(&g.repo), &base, &g.head_sha).await.ok().flatten().unwrap_or(0)
-                } else { 0 };
+                    self.connector()
+                        .ahead_by(&repo_key(&g.repo), &base, &g.head_sha)
+                        .await
+                        .ok()
+                        .flatten()
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
                 git = Some(GitFacts {
                     branch: g.branch.clone(),
                     head: head.clone().unwrap_or_default(),
@@ -357,15 +452,15 @@ impl Engine {
         }
         let usage = f.usage.clone();
         sqlx::query(
-            "UPDATE engine.step_runs SET ended_at = now(), exit = $2, tokens = $3, cost_usd = $4,
+            "UPDATE engine.step_runs SET ended_at = now(), exit = $2, tokens = $3, cost_usd = $4::float8::numeric,
                  active_secs = extract(epoch FROM now() - started_at),
                  sandbox = COALESCE(sandbox, '{}'::jsonb) || jsonb_build_object('error', $5::text)
              WHERE run_id = $1",
         )
         .bind(&rs.run_id)
         .bind(&exit)
-        .bind(usage.as_ref().map(|u| serde_json::to_value(u).unwrap_or_default()))
-        .bind(usage.as_ref().and_then(|u| u.cost_usd).map(|c| sqlx::types::BigDecimal::try_from(c).unwrap_or_default()))
+        .bind(usage.as_ref().map(|u| json!({"input": u.input_tokens, "output": u.output_tokens, "cache_read": u.cache_read_input_tokens, "cache_creation": u.cache_creation_input_tokens, "models": u.models})))
+        .bind(usage.as_ref().and_then(|u| u.cost_usd))
         .bind(note)
         .execute(&self.pool)
         .await
@@ -393,17 +488,27 @@ impl Engine {
     }
 
     async fn call_action(&self, job: &Job) -> Result<Done, StepError> {
-        let call_id = job.input["call_id"].as_str().unwrap_or_default().to_string();
+        let call_id = job.input["call_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
         let name = job.input["name"].as_str().unwrap_or_default().to_string();
         let args = job.input["args"].as_object().cloned().unwrap_or_default();
         let (repo, _, state) = self.task_state(job.task_id).await?;
         let key = format!("{}:{call_id}", job.task_id);
-        let (ok, result) = match crate::actions::call(self, &repo, &state, &name, &args, &key).await {
+        let (ok, result) = match crate::actions::call(self, &repo, &state, &name, &args, &key).await
+        {
             Ok(v) => (true, v),
             Err(crate::actions::ActionError::Refused(why)) => (false, json!({"error": why})),
-            Err(crate::actions::ActionError::Transient(e)) => return Err(StepError::Unavailable(e)),
+            Err(crate::actions::ActionError::Transient(e)) => {
+                return Err(StepError::Unavailable(e));
+            }
         };
-        Ok(Done::Event(TaskEvent::ActionFinished { call_id, ok, result }))
+        Ok(Done::Event(TaskEvent::ActionFinished {
+            call_id,
+            ok,
+            result,
+        }))
     }
 
     async fn refresh_fact(&self, job: &Job) -> Result<Done, StepError> {
@@ -416,8 +521,12 @@ impl Engine {
             "INSERT INTO engine.facts (task_id, name, value, source) VALUES ($1, $2, $3, 'github')
              ON CONFLICT (task_id, name) DO UPDATE SET value = EXCLUDED.value, at = now()",
         )
-        .bind(job.task_id).bind(&fact).bind(&value)
-        .execute(&self.pool).await.map_err(db)?;
+        .bind(job.task_id)
+        .bind(&fact)
+        .bind(&value)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
         Ok(Done::Event(TaskEvent::FactUpdated { fact, value }))
     }
 }
@@ -441,13 +550,18 @@ pub fn cap_payload(payload: Value) -> (Value, bool) {
     while !s.is_char_boundary(b) {
         b += 1;
     }
-    (json!({"head": &s[..a], "tail": &s[b..], "bytes": s.len()}), true)
+    (
+        json!({"head": &s[..a], "tail": &s[b..], "bytes": s.len()}),
+        true,
+    )
 }
 
 async fn store_session_events(pool: sqlx::PgPool, mut rx: mpsc::UnboundedReceiver<SessionEvent>) {
     while let Some(e) = rx.recv().await {
         let (payload, cut) = cap_payload(e.payload);
-        let at = DateTime::parse_from_rfc3339(&e.at).map(|t| t.with_timezone(&Utc)).unwrap_or_else(|_| Utc::now());
+        let at = DateTime::parse_from_rfc3339(&e.at)
+            .map(|t| t.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now());
         let res = sqlx::query(
             "WITH ins AS (
                 INSERT INTO engine.session_events (run_id, seq, at, kind, payload, truncated)

@@ -1,5 +1,5 @@
 //! Sandbox stats poller (ADR-0019 section 3): asks each running sandbox-init for a `stats`
-//! snapshot every interval and stores it in `workflows.sandbox_stats`.
+//! snapshot every interval and stores it in `engine.sandbox_stats`.
 //!
 //! * Only one replica polls: the holder of a Postgres session advisory lock ([`PgPollLock`]);
 //!   the others retry the lock every interval. Duplicate inserts are no-ops anyway (primary
@@ -31,7 +31,7 @@ use tokio::sync::{Semaphore, watch};
 use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::db;
-use crate::executor::{RunningSandbox, SandboxResolver, SandboxTarget};
+use crate::sandbox::{RunningSandbox, SandboxResolver, SandboxTarget};
 
 /// Accepted `ENZARB_STATS_INTERVAL` range in seconds; values outside it are clamped.
 pub const MIN_INTERVAL_SECS: u64 = 15;
@@ -208,7 +208,7 @@ impl SandboxPoller {
     }
 
     /// One pass over every running sandbox that is not backing off.
-    pub async fn poll_once(&self) -> Result<PollStats, crate::executor::SandboxError> {
+    pub async fn poll_once(&self) -> Result<PollStats, crate::sandbox::SandboxError> {
         let all = self.resolver.running_sandboxes().await?;
         let now = Instant::now();
         let mut stats = PollStats::default();
@@ -414,20 +414,6 @@ impl PgSampleSink {
     }
 }
 
-/// The lowest work item with a running agent job on `project`, or `None` (ADR-0019 section 3).
-pub async fn attributed_work_item(
-    pool: &PgPool,
-    project: &str,
-) -> Result<Option<i64>, sqlx::Error> {
-    sqlx::query_scalar(
-        "SELECT min(work_item_id) FROM workflows.jobs
-         WHERE project_id = $1 AND status = 'running' AND kind LIKE 'agent\\_%'",
-    )
-    .bind(project)
-    .fetch_one(pool)
-    .await
-}
-
 #[async_trait]
 impl SampleSink for PgSampleSink {
     async fn store(
@@ -436,10 +422,7 @@ impl SampleSink for PgSampleSink {
         sandbox: &str,
         stats: &SandboxStats,
     ) -> Result<bool, String> {
-        let item = attributed_work_item(&self.pool, project)
-            .await
-            .map_err(|e| e.to_string())?;
-        db::insert_sandbox_stats(&self.pool, project, sandbox, item, stats)
+        db::insert_sandbox_stats(&self.pool, project, sandbox, stats)
             .await
             .map_err(|e| e.to_string())
     }
@@ -455,19 +438,7 @@ impl SampleSink for PgSampleSink {
                 break;
             }
         }
-        loop {
-            let n = db::prune_sandbox_stats_over_cap(
-                &self.pool,
-                db::SANDBOX_STATS_ROW_CAP,
-                PRUNE_BATCH,
-            )
-            .await
-            .map_err(|e| e.to_string())?;
-            total += n;
-            if n < PRUNE_BATCH as u64 {
-                break;
-            }
-        }
+
         Ok(total)
     }
 }
@@ -523,7 +494,7 @@ mod tests {
     use enzarb_proto::session::{Event, ServerOptions};
 
     use super::*;
-    use crate::executor::SandboxError;
+    use crate::sandbox::SandboxError;
 
     fn target(name: &str) -> SandboxTarget {
         SandboxTarget {

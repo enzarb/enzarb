@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/engine", "crates/enzarb-workflows", "crates/flow", "crates/graph"]
+members = ["crates/engine", "crates/enzarb-workflows", "crates/flow"]
 
 [workspace.package]
 edition = "2024"

@@ -19,7 +19,9 @@ impl Engine {
         event_id: Option<i64>,
         fx: &Effect,
     ) -> Result<(), Error> {
-        let ev = event_id.map(|e| e.to_string()).unwrap_or_else(|| "start".into());
+        let ev = event_id
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "start".into());
         match fx {
             Effect::RunStep(rs) => self.queue_step(tx, task, rs).await?,
             Effect::Steer { run_id, event } => {
@@ -28,26 +30,69 @@ impl Engine {
                     _ => serde_json::to_string(event).unwrap_or_default(),
                 };
                 let login = event.actor.as_ref().map(|a| a.login.as_str()).unwrap_or("");
-                let text = if login.is_empty() { text } else { format!("{login}: {text}") };
-                self.queue_job(tx, task, "steer", json!({"run_id": run_id, "text": text}),
-                    &format!("steer:{}:{run_id}:{ev}", task.id), 10, None, None).await?;
+                let text = if login.is_empty() {
+                    text
+                } else {
+                    format!("{login}: {text}")
+                };
+                self.queue_job(
+                    tx,
+                    task,
+                    "steer",
+                    json!({"run_id": run_id, "text": text}),
+                    &format!("steer:{}:{run_id}:{ev}", task.id),
+                    10,
+                    None,
+                    None,
+                )
+                .await?;
                 sqlx::query("UPDATE engine.step_runs SET steers = steers + 1 WHERE run_id = $1")
                     .bind(run_id)
                     .execute(&mut **tx)
                     .await?;
             }
             Effect::StopStep { run_id } => {
-                self.queue_job(tx, task, "stop_step", json!({"run_id": run_id}),
-                    &format!("stop:{}:{run_id}", task.id), 10, None, None).await?;
+                self.queue_job(
+                    tx,
+                    task,
+                    "stop_step",
+                    json!({"run_id": run_id}),
+                    &format!("stop:{}:{run_id}", task.id),
+                    10,
+                    None,
+                    None,
+                )
+                .await?;
             }
-            Effect::CallAction { call_id, name, args } => {
-                self.queue_job(tx, task, "call_action",
+            Effect::CallAction {
+                call_id,
+                name,
+                args,
+            } => {
+                self.queue_job(
+                    tx,
+                    task,
+                    "call_action",
                     json!({"call_id": call_id, "name": name, "args": args}),
-                    &format!("action:{}:{call_id}", task.id), 5, None, None).await?;
+                    &format!("action:{}:{call_id}", task.id),
+                    5,
+                    None,
+                    None,
+                )
+                .await?;
             }
             Effect::RefreshFact { fact } => {
-                self.queue_job(tx, task, "refresh_fact", json!({"fact": fact}),
-                    &format!("fact:{}:{fact}:{ev}", task.id), 5, None, None).await?;
+                self.queue_job(
+                    tx,
+                    task,
+                    "refresh_fact",
+                    json!({"fact": fact}),
+                    &format!("fact:{}:{fact}:{ev}", task.id),
+                    5,
+                    None,
+                    None,
+                )
+                .await?;
             }
             Effect::SetTimer { timer_id, seconds } => {
                 sqlx::query(
@@ -146,7 +191,12 @@ impl Engine {
         Ok(())
     }
 
-    async fn write_projection(&self, tx: &mut Tx<'_>, task: &TaskRow, p: &Projection) -> Result<(), Error> {
+    async fn write_projection(
+        &self,
+        tx: &mut Tx<'_>,
+        task: &TaskRow,
+        p: &Projection,
+    ) -> Result<(), Error> {
         let d = &task.state.doc.subjects;
         let title = d
             .issue
@@ -180,7 +230,7 @@ impl Engine {
         .bind(&p.phase)
         .bind(&p.node)
         .bind(&p.column)
-        .bind(p.waiting_on.map(|w| serde_json::to_value(w).unwrap_or_default()))
+        .bind(p.waiting_on.and_then(|w| serde_json::to_value(w).ok()).and_then(|v| v.as_str().map(str::to_string)))
         .bind(&p.reason)
         .bind(&p.text)
         .bind(serde_json::to_value(&p.actions).unwrap_or_default())
@@ -204,7 +254,12 @@ fn relation_key(repo: &str, t: &Value) -> Option<String> {
             .map(|n| subject_key(repo, n)),
         Value::Object(o) => {
             if let Some(task) = o.get("task") {
-                return Some(format!("task:{}", task.as_str().map(str::to_string).unwrap_or_else(|| task.to_string())));
+                return Some(format!(
+                    "task:{}",
+                    task.as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| task.to_string())
+                ));
             }
             let n = o.get("number").and_then(Value::as_u64)?;
             let r = o.get("repo").and_then(Value::as_str).unwrap_or(repo);

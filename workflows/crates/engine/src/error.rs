@@ -6,9 +6,7 @@ pub enum Error {
     Db(#[from] sqlx::Error),
     #[error(transparent)]
     Permission(#[from] PermissionError),
-    /// A stored work item that this build cannot read (unknown workflow, state or version).
+    /// A stored task this build cannot read, or an unreadable engine event.
     #[error("state: {0}")]
     State(String),
-    #[error("job {0} not found")]
-    JobNotFound(i64),
 }
