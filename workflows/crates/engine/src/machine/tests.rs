@@ -7,6 +7,7 @@ mod epic;
 mod graph;
 mod graph_cr;
 mod graph_epics;
+mod graph_gate;
 mod human_approval;
 mod merge;
 

@@ -305,7 +305,33 @@ export interface Wait {
 	text: string;
 	/** Link target of the reason (the comment a decision is waiting on), https only. */
 	url: string | null;
+	/**
+	 * Buttons a graph wait declares (ADR-0020): a click posts the comment `/<command>` as the
+	 * user through `submit_action(..., 'comment')`; the engine checks write access.
+	 */
+	actions?: WaitButton[];
 }
+
+export interface WaitButton {
+	label: string;
+	command: string;
+}
+
+/** Most buttons a wait declares (`MAX_WAIT_ACTIONS` in the graph crate). */
+const MAX_WAIT_BUTTONS = 4;
+
+const waitButtons = (x: unknown): WaitButton[] =>
+	(Array.isArray(x) ? x : [])
+		.map((a) => asRecord(a))
+		.filter(
+			(a): a is { label: string; command: string } =>
+				typeof a.label === 'string' &&
+				a.label.trim() !== '' &&
+				typeof a.command === 'string' &&
+				/^[a-z][a-z0-9_-]{0,31}$/.test(a.command)
+		)
+		.slice(0, MAX_WAIT_BUTTONS)
+		.map((a) => ({ label: a.label.trim(), command: a.command }));
 
 const httpsUrl = (x: unknown): string | null => {
 	if (typeof x !== 'string') return null;
@@ -320,13 +346,15 @@ const httpsUrl = (x: unknown): string | null => {
 /** The `wait` of a work item's `state_data`; null when absent (older workflows) or malformed. */
 export function parseWait(stateData: unknown): Wait | null {
 	const w = asRecord(asRecord(stateData).wait);
+	const buttons = waitButtons(w.actions);
 	const on = w.waiting_on;
 	if (typeof on !== 'string' || !(WAITING_ON as readonly string[]).includes(on)) return null;
 	return {
 		waitingOn: on as WaitingOn,
 		reason: typeof w.reason === 'string' ? w.reason : '',
 		text: typeof w.text === 'string' ? w.text.trim() : '',
-		url: httpsUrl(w.url)
+		url: httpsUrl(w.url),
+		...(buttons.length ? { actions: buttons } : {})
 	};
 }
 
@@ -486,6 +514,9 @@ export function classifyNeedsYou(
 				return { category: 'review', reason: null, text };
 			if (w.reason === 'question') return { category: 'question', reason: null, text };
 			if (w.reason === 'decision_needed') return { category: 'decision', reason: null, text };
+			// Any other human wait that declares buttons (enzarb's start gate) sits with plan
+			// approvals; the card shows its buttons instead of approve.
+			if (w.actions?.length) return { category: 'approval', reason: null, text };
 		}
 		// A change request's blockers read as for a compiled one (checklist, merge error).
 		const why = workflow === 'graph:change_request' ? blockedReason(stateData) : null;

@@ -27,6 +27,7 @@
 		now = Date.now(),
 		loading = false,
 		onaction,
+		oncommand,
 		onplan,
 		onreview,
 		highlight = null
@@ -37,6 +38,8 @@
 		now?: number;
 		loading?: boolean;
 		onaction: (id: number, action: WorkAction) => Promise<void>;
+		/** A wait's declared button on a card: post `/<command>` (a comment) as the user. */
+		oncommand?: (id: number, command: string) => Promise<void>;
 		onplan?: (item: WorkItemSummary) => void;
 		onreview?: (item: WorkItemSummary) => void;
 		/** A card to scroll to, focus and accent (from a notification click). */
@@ -77,6 +80,19 @@
 			await onaction(id, action);
 		} catch {
 			errors[id] = `Could not ${action} this item. Its state may have changed.`;
+		} finally {
+			pending = null;
+		}
+	}
+
+	async function command(id: number, c: string) {
+		if (!oncommand) return;
+		pending = { id, action: 'comment' };
+		errors[id] = '';
+		try {
+			await oncommand(id, c);
+		} catch {
+			errors[id] = `Could not send /${c}. The task's state may have changed.`;
 		} finally {
 			pending = null;
 		}
@@ -123,6 +139,7 @@
 								pending={pending?.id === item.id ? pending.action : null}
 								error={errors[item.id] ?? ''}
 								onaction={(a) => act(item.id, a)}
+								oncommand={oncommand ? (c) => command(item.id, c) : undefined}
 								onplan={onplan ? () => onplan(item) : undefined}
 								onreview={onreview ? () => onreview(item) : undefined}
 								highlighted={highlight?.id === item.id}

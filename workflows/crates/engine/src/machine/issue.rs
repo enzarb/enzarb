@@ -661,7 +661,7 @@ fn comment(
     d.trigger_comment_kind = c.comment.map(|x| x.kind).unwrap_or_default();
     d.trigger_text = c.text.to_string();
     // `/epic` from someone with write access. Anyone else's comment is just a comment.
-    if has_epic_command(c.text) && ctx.can_write() {
+    if has_epic_command(c.text, &ctx.bot_handle) && ctx.can_write() {
         return request_epic(ctx, ev, s, state, d);
     }
     match s.phase {
@@ -676,7 +676,7 @@ fn comment(
         AwaitingApproval => {
             // The connector pairs an `/approve` comment with an `ApprovalGranted`
             // event; the latter owns it, so it is not plan feedback.
-            if has_approve_command(c.text) {
+            if has_approve_command(c.text, &ctx.bot_handle) {
                 return Transition::reject(state, "approve command is handled as an approval");
             }
             if !is_author && !ctx.can_write() {

@@ -986,7 +986,7 @@ fn comment(
     if ctx.is_bot(cl.actor) {
         return Transition::reject(state, "bot actor ignored");
     }
-    if enzarb_connector::command::has_approve_command(cl.text) {
+    if enzarb_connector::command::has_approve_command(cl.text, &ctx.bot_handle) {
         return Transition::reject(state, "approve command is not feedback");
     }
     if let Err(why) = feedback_allowed(ctx, s, def, "comment") {

@@ -10,3 +10,15 @@ nodes:
   open_pr:   {type: action, action: open_change_request, next: done}
   failed:    {type: end, status: failed}
   done:      {type: end, status: done}
+# Optional: a human gate before any work. Set `start: gate` and add this node (enzarb's own
+# `.enzarb/workflows/issue.yaml` does): it waits until a writer comments `/plan` (or
+# `@enzarb /plan`), adds the `plan` label or clicks the "Start planning" button.
+#  gate:
+#    type: wait
+#    events: [comment, labeled]
+#    reason: awaiting_start
+#    text: "Waiting for a maintainer to start planning (/plan)"
+#    actions: [{label: "Start planning", command: plan}]
+#    max_visits: 50
+#    on_limit: failed
+#    next: {'command == "plan" || label == "plan"': <the old start>, else: gate}

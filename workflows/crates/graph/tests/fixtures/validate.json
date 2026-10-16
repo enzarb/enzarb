@@ -329,13 +329,17 @@
    "name": "timer without after",
    "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: w\nnodes:\n  w: {type: wait, events: [timer], next: e}\n  e: {type: end, status: done}\n",
    "parse_error": false,
-   "errors": ["node `w`: a wait on `timer` needs `after`"]
+   "errors": [
+    "node `w`: a wait on `timer` needs `after`"
+   ]
   },
   {
    "name": "bad after",
    "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: w\nnodes:\n  w: {type: wait, events: [timer], after: 1h30m, next: e}\n  e: {type: end, status: done}\n",
    "parse_error": false,
-   "errors": ["node `w`: `after` must be a duration like 30m, 2h or 1d"]
+   "errors": [
+    "node `w`: `after` must be a duration like 30m, 2h or 1d"
+   ]
   },
   {
    "name": "after without timer and bad reason",
@@ -541,6 +545,51 @@
   {
    "name": "missing nodes",
    "yaml": "version: 1\nname: t\non: [x]\nstart: a\n",
+   "parse_error": true,
+   "errors": []
+  },
+  {
+   "name": "valid gate with actions and labeled",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: w\nnodes:\n  w: {type: wait, events: [comment, labeled], reason: awaiting_start, text: \"Waiting\", actions: [{label: \"Start planning\", command: plan}, {label: Go, command: go-2_x}], max_visits: 50, on_limit: e, next: {'command == \"plan\" || label == \"plan\"': e, else: w}}\n  e: {type: end, status: done}\n",
+   "parse_error": false,
+   "errors": []
+  },
+  {
+   "name": "wait action bad command",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: w\nnodes:\n  w: {type: wait, events: [comment], actions: [{label: Go, command: Plan}, {label: Go, command: \"1x\"}], next: e}\n  e: {type: end, status: done}\n",
+   "parse_error": false,
+   "errors": [
+    "action command `Plan`",
+    "action command `1x`"
+   ]
+  },
+  {
+   "name": "wait action empty label",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: w\nnodes:\n  w: {type: wait, events: [comment], actions: [{label: \" \", command: go}], next: e}\n  e: {type: end, status: done}\n",
+   "parse_error": false,
+   "errors": [
+    "an action `label`"
+   ]
+  },
+  {
+   "name": "wait too many actions",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: w\nnodes:\n  w: {type: wait, events: [comment], actions: [{label: a, command: a}, {label: b, command: b}, {label: c, command: c}, {label: d, command: d}, {label: f, command: f}], next: e}\n  e: {type: end, status: done}\n",
+   "parse_error": false,
+   "errors": [
+    "at most 4 `actions`"
+   ]
+  },
+  {
+   "name": "wait actions need comment",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: w\nnodes:\n  w: {type: wait, events: [labeled], actions: [{label: Go, command: go}], next: e}\n  e: {type: end, status: done}\n",
+   "parse_error": false,
+   "errors": [
+    "`actions` post comments"
+   ]
+  },
+  {
+   "name": "wait action unknown field",
+   "yaml": "version: 1\nname: t\non: [issue_opened]\nstart: w\nnodes:\n  w: {type: wait, events: [comment], actions: [{label: Go, command: go, url: x}], next: e}\n  e: {type: end, status: done}\n",
    "parse_error": true,
    "errors": []
   }

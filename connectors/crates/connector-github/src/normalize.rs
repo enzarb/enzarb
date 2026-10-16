@@ -17,9 +17,6 @@ pub const SOURCE: &str = "github";
 /// Label that grants approval when added to an issue or PR.
 pub const APPROVED_LABEL: &str = "enzarb:approved";
 
-/// Label that asks for an issue to be planned as an epic (a `WorkItemLabeled` event).
-pub const EPIC_LABEL: &str = "epic";
-
 #[derive(Debug, thiserror::Error)]
 pub enum NormalizeError {
     #[error("malformed {event} payload: {source}")]
@@ -634,8 +631,10 @@ pub fn normalize(
                     None,
                     None,
                 );
-            } else if is_epic_label(&p) {
-                b.push_labeled(i.updated_at, i.item(), EPIC_LABEL);
+            } else if let Some(l) = &p.label {
+                // Any other label (lowercased): `epic`, and the labels graph waits on
+                // `labeled` branch on (ADR-0020). Workflows ignore the rest.
+                b.push_labeled(i.updated_at, i.item(), &l.name.to_ascii_lowercase());
             }
         }
         ("issue_comment", "created") => {
@@ -764,12 +763,6 @@ fn is_approval_label(p: &Payload) -> bool {
         .is_some_and(|l| l.name.eq_ignore_ascii_case(APPROVED_LABEL))
 }
 
-fn is_epic_label(p: &Payload) -> bool {
-    p.label
-        .as_ref()
-        .is_some_and(|l| l.name.eq_ignore_ascii_case(EPIC_LABEL))
-}
-
 struct Builder<'a> {
     delivery: &'a str,
     repo: RepoKey,
@@ -863,7 +856,7 @@ impl Builder<'_> {
                 Some(cref.clone()),
             );
         }
-        if has_approve_command(&c.body) {
+        if has_approve_command(&c.body, bot_handle) {
             self.push_extra(
                 EventType::ApprovalGranted,
                 "approved",

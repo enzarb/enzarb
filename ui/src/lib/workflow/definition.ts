@@ -37,8 +37,11 @@ export const KNOWN_EVENTS = [
 	'children_done',
 	'timer',
 	'pushed',
-	'conflict'
+	'conflict',
+	'labeled'
 ] as const;
+/** Most UI buttons a `wait` node may declare (`MAX_WAIT_ACTIONS`). */
+export const MAX_WAIT_ACTIONS = 4;
 export const NODE_TYPES = ['command', 'agent', 'wait', 'action', 'end'] as const;
 export const END_STATUSES = ['done', 'failed', 'cancelled'] as const;
 export const WAIT_FROM = ['writers', 'anyone'] as const;
@@ -82,6 +85,8 @@ export interface WorkflowNode {
 	reason?: string;
 	/** `wait`: the text shown with `reason`. */
 	text?: string;
+	/** `wait`: UI buttons; a click posts the comment `/<command>` as the user. */
+	actions?: WaitAction[];
 	action?: string;
 	body?: string;
 	status?: EndStatus;
@@ -91,6 +96,14 @@ export interface WorkflowNode {
 	on_limit?: string;
 	optional?: boolean;
 }
+
+export interface WaitAction {
+	label: string;
+	command: string;
+}
+
+/** A command word: `[a-z][a-z0-9_-]*`, at most 32 characters (`valid_command` in Rust). */
+export const isCommandWord = (c: string): boolean => /^[a-z][a-z0-9_-]{0,31}$/.test(c);
 
 export interface Definition {
 	version: number;
@@ -204,6 +217,22 @@ function oneOf<T extends string>(n: unknown, field: string, allowed: readonly T[
 	return v as T;
 }
 
+function parseActions(n: unknown, field: string): WaitAction[] {
+	if (!isSeq(n)) fail(`${field}: invalid type, expected a sequence`);
+	return (n as { items: unknown[] }).items.map((x, i) => {
+		const f = `${field}[${i}]`;
+		const e = new Map(entries(x, f));
+		for (const k of e.keys())
+			if (k !== 'label' && k !== 'command')
+				fail(`${f}: unknown field \`${k}\`, expected \`label\` or \`command\``);
+		for (const k of ['label', 'command']) if (!e.has(k)) fail(`${f}: missing field \`${k}\``);
+		return {
+			label: str(e.get('label'), `${f}.label`),
+			command: str(e.get('command'), `${f}.command`)
+		};
+	});
+}
+
 function parseNode(id: string, n: unknown): WorkflowNode {
 	const f = `nodes.${id}`;
 	const e = new Map(entries(n, f));
@@ -225,6 +254,8 @@ function parseNode(id: string, n: unknown): WorkflowNode {
 			if (e.has('from')) node.from = oneOf(e.get('from'), `${f}.from`, WAIT_FROM);
 			for (const k of ['after', 'reason', 'text'] as const)
 				if (e.has(k) && !isNull(e.get(k))) node[k] = str(e.get(k), `${f}.${k}`);
+			if (e.has('actions') && !isNull(e.get('actions')))
+				node.actions = parseActions(e.get('actions'), `${f}.actions`);
 			break;
 		case 'action':
 			node.action = str(need('action'), `${f}.action`);
@@ -321,6 +352,20 @@ export function validate(d: Definition): Problem[] {
 		}
 		if (n.type === 'wait') {
 			const events = n.events ?? [];
+			const actions = n.actions ?? [];
+			if (actions.length > MAX_WAIT_ACTIONS)
+				push(`node \`${id}\`: at most ${MAX_WAIT_ACTIONS} \`actions\``, id);
+			for (const a of actions) {
+				if (!isCommandWord(a.command))
+					push(
+						`node \`${id}\`: action command \`${a.command}\` must match [a-z][a-z0-9_-]{0,31}`,
+						id
+					);
+				if (a.label.trim() === '' || [...a.label].length > 40)
+					push(`node \`${id}\`: an action \`label\` must be 1 to 40 characters`, id);
+			}
+			if (actions.length > 0 && !events.includes('comment'))
+				push(`node \`${id}\`: \`actions\` post comments, so \`events\` must list \`comment\``, id);
 			if (events.length === 0) push(`node \`${id}\`: \`events\` is empty`, id);
 			for (const e of events)
 				if (!(KNOWN_EVENTS as readonly string[]).includes(e))
@@ -469,6 +514,8 @@ function nodeFields(n: WorkflowNode): [string, unknown][] {
 			if (n.from && n.from !== 'writers') out.push(['from', n.from]);
 			for (const k of ['after', 'reason', 'text'] as const)
 				if (n[k] !== undefined) out.push([k, n[k]]);
+			if (n.actions?.length)
+				out.push(['actions', n.actions.map((a) => ({ label: a.label, command: a.command }))]);
 			break;
 		case 'action':
 			out.push(['action', n.action ?? '']);

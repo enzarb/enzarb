@@ -464,6 +464,7 @@ fn wait_from_parses() {
             after: None,
             reason: None,
             text: None,
+            actions: vec![],
         }
     );
     let d = def(&with_nodes(
@@ -500,12 +501,55 @@ fn output_ok_rules() {
 
 const ENZARB_ISSUE: &str = include_str!("../../../../.enzarb/workflows/issue.yaml");
 
+/// enzarb's gate: other comments and labels loop back; `/plan` goes on to `route`.
+fn pass_gate(d: &Definition, s: &mut GraphState) {
+    let comment = |command: Value| {
+        json!({"event": "comment", "author": "a", "body": "x", "can_write": true,
+               "command": command, "args": null})
+    };
+    assert_eq!(
+        advance(d, s, comment(Value::Null)),
+        Next::Node("gate".into())
+    );
+    assert_eq!(
+        advance(d, s, comment(json!("approve"))),
+        Next::Node("gate".into())
+    );
+    let other = json!({"event": "labeled", "label": "bug", "author": "a", "can_write": true});
+    assert_eq!(advance(d, s, other), Next::Node("gate".into()));
+    assert_eq!(
+        advance(d, s, comment(json!("plan"))),
+        Next::Node("route".into())
+    );
+}
+
+#[test]
+fn enzarb_issue_workflow_gate_declares_its_button() {
+    let d = load(ENZARB_ISSUE).unwrap();
+    let NodeKind::Wait {
+        actions, reason, ..
+    } = &d.node("gate").unwrap().kind
+    else {
+        panic!("gate is a wait");
+    };
+    assert_eq!(reason.as_deref(), Some("awaiting_start"));
+    assert_eq!(actions, &[enzarb_graph_action("Start planning", "plan")]);
+}
+
+fn enzarb_graph_action(label: &str, command: &str) -> crate::WaitAction {
+    crate::WaitAction {
+        label: label.into(),
+        command: command.into(),
+    }
+}
+
 /// enzarb's own definition: feedback re-plans, only an approval implements.
 #[test]
 fn enzarb_issue_workflow_gates_implementation_on_approval() {
     let d = load(ENZARB_ISSUE).unwrap();
     let (mut s, n) = GraphState::begin(&d);
-    assert_eq!(n, Next::Node("route".into()));
+    assert_eq!(n, Next::Node("gate".into()));
+    pass_gate(&d, &mut s);
     assert_eq!(
         advance(&d, &mut s, json!({"exit_code": 0})),
         Next::Node("plan".into())
@@ -737,6 +781,9 @@ fn enzarb_issue_workflow_epic_creates_sub_issues_after_approval() {
     let d = load(ENZARB_ISSUE).unwrap();
     let (mut s, _) = GraphState::begin(&d);
     s.outputs.insert(ITEM.into(), json!({"epic": true}));
+    // The `plan` label starts it too.
+    let label = json!({"event": "labeled", "label": "plan", "author": "a", "can_write": true});
+    assert_eq!(advance(&d, &mut s, label), Next::Node("route".into()));
     assert_eq!(
         advance(&d, &mut s, json!({"exit_code": 0})),
         Next::Node("plan_epic".into())

@@ -4320,6 +4320,67 @@ async fn job_id_of(pool: &PgPool, kind: &str) -> i64 {
         .unwrap()
 }
 
+const ENZARB_ISSUE_GRAPH: &str = include_str!("../../../../.enzarb/workflows/issue.yaml");
+
+/// enzarb's own definition: the issue waits at `gate` until the UI's "Start planning" button
+/// posts `/plan` (an ordinary `submit_action(..., 'comment')`), then the plan segment runs.
+#[tokio::test]
+async fn issue_graph_waits_at_the_gate_until_the_ui_button_posts_plan() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    let reducer = graph_reducer(&h);
+    let repo: RepoKey = REPO.parse().unwrap();
+    h.fake.set_branch_head(repo.clone(), "main", "sha-main");
+    h.fake.set_file(
+        repo,
+        "sha-main",
+        ".enzarb/workflows/issue.yaml",
+        ENZARB_ISSUE_GRAPH,
+    );
+    open_issue(pool, 1).await;
+    assert_eq!(reducer.drain().await, 1);
+    let (workflow, state, data) = item_row(pool, 1).await;
+    assert_eq!(
+        (workflow.as_str(), state.as_str()),
+        ("graph:issue", "Waiting")
+    );
+    assert_eq!(data["graph"]["node"], "gate");
+    assert_eq!(data["wait"]["reason"], "awaiting_start");
+    assert_eq!(data["wait"]["waiting_on"], "human");
+    assert_eq!(data["wait"]["actions"][0]["command"], "plan");
+    let segments: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM workflows.jobs WHERE kind = 'agent_segment'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(segments, 0);
+
+    let id: i64 = sqlx::query_scalar("SELECT id FROM workflows.work_items WHERE key = $1")
+        .bind(key(1).to_string())
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    sqlx::query("SELECT workflows_api.submit_action($1, $2, 'comment', $3)")
+        .bind(id)
+        .bind(json!({"login": "carol", "id": 3, "is_bot": false}))
+        .bind(json!({"body": "/plan"}))
+        .execute(pool)
+        .await
+        .unwrap();
+    reducer.drain().await;
+    let (_, state, data) = item_row(pool, 1).await;
+    assert_eq!(state, "Running");
+    assert_eq!(data["graph"]["node"], "route");
+    assert_eq!(data["graph"]["outputs"]["gate"]["command"], "plan");
+    let seg = job_id_of(pool, "agent_segment").await;
+    let input: Value = sqlx::query_scalar("SELECT input FROM workflows.jobs WHERE id = $1")
+        .bind(seg)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(input["graph"]["start"], "route");
+}
+
 #[tokio::test]
 async fn issue_graph_runs_a_segment_then_opens_the_change_request() {
     let h = H::new(db!()).await;

@@ -66,7 +66,10 @@ pub const KNOWN_EVENTS: &[&str] = &[
     "timer",
     "pushed",
     "conflict",
+    "labeled",
 ];
+/// Most UI buttons a `wait` node may declare.
+pub const MAX_WAIT_ACTIONS: usize = 4;
 
 /// A parsed workflow definition. Run [`validate`] (or use [`load`]) before
 /// trusting it.
@@ -128,6 +131,10 @@ pub enum NodeKind {
         /// The text shown with `reason`.
         #[serde(default)]
         text: Option<String>,
+        /// UI buttons shown while waiting (`state_data.wait.actions`). A click posts the
+        /// comment `/<command>` as the user, so it resumes the wait like that comment.
+        #[serde(default)]
+        actions: Vec<WaitAction>,
     },
     /// A privileged connector call (kernel). `body` is the text of a
     /// `post_comment`; absent means the latest agent output's `body`.
@@ -138,6 +145,23 @@ pub enum NodeKind {
     },
     /// Terminal (kernel).
     End { status: EndStatus },
+}
+
+/// A button of a `wait` node: `label` is its text, `command` the word of the `/<command>`
+/// comment a click posts.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WaitAction {
+    pub label: String,
+    pub command: String,
+}
+
+/// Whether `c` is a command word: `[a-z][a-z0-9_-]*`, at most 32 characters.
+pub fn valid_command(c: &str) -> bool {
+    c.len() <= 32
+        && c.bytes().next().is_some_and(|b| b.is_ascii_lowercase())
+        && c.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
 }
 
 /// An agent node's prompt.
@@ -427,8 +451,30 @@ pub fn validate(d: &Definition) -> Result<(), Error> {
                 events,
                 after,
                 reason,
+                actions,
                 ..
             } => {
+                if actions.len() > MAX_WAIT_ACTIONS {
+                    p.push(format!("node `{id}`: at most {MAX_WAIT_ACTIONS} `actions`"));
+                }
+                for a in actions {
+                    if !valid_command(&a.command) {
+                        p.push(format!(
+                            "node `{id}`: action command `{}` must match [a-z][a-z0-9_-]{{0,31}}",
+                            a.command
+                        ));
+                    }
+                    if a.label.trim().is_empty() || a.label.chars().count() > 40 {
+                        p.push(format!(
+                            "node `{id}`: an action `label` must be 1 to 40 characters"
+                        ));
+                    }
+                }
+                if !actions.is_empty() && !events.iter().any(|e| e == "comment") {
+                    p.push(format!(
+                        "node `{id}`: `actions` post comments, so `events` must list `comment`"
+                    ));
+                }
                 if events.is_empty() {
                     p.push(format!("node `{id}`: `events` is empty"));
                 }

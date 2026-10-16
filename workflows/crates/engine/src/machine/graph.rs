@@ -12,8 +12,11 @@
 //!   consecutive sandbox nodes and reports where it stopped (`RunFinished.graph`).
 //! * **Kernel nodes:** `action` queues the connector job (`post_comment`,
 //!   `open_change_request`) and continues on its result; `wait` suspends until a matching
-//!   event (`comment` from a writer, or anyone with `from: anyone`; `approval` with write
-//!   access); `end` finishes the task.
+//!   event (`comment` or `labeled` from a writer, or anyone with `from: anyone`; `approval`
+//!   with write access); `end` finishes the task. A comment's output carries its first slash
+//!   command (`command`, `args`; the kernel knows no command names), so a definition gates on
+//!   `command == "plan"`. A wait's `actions` are UI buttons (`state_data.wait.actions`) that post
+//!   `/<command>` as the user. An event that arrives while no wait takes it is not kept.
 //! * A change request opened by an `open_change_request` node is handed to the
 //!   `change_request` workflow, as the compiled `issue` machine does.
 //! * **Change requests.** A change request opened in a repository with
@@ -69,6 +72,7 @@ pub const KERNEL_EVENTS: &[&str] = &[
     "pushed",
     "merge_requested",
     "conflict",
+    "labeled",
 ];
 /// Actions and events that need a change request (a `change_request` graph).
 const CR_ACTIONS: &[&str] = &[
@@ -866,6 +870,7 @@ fn wait_info(node: &enzarb_graph::Node, d: &GraphData) -> Value {
         events,
         reason,
         text,
+        actions,
         ..
     } = &node.kind
     else {
@@ -917,7 +922,13 @@ fn wait_info(node: &enzarb_graph::Node, d: &GraphData) -> Value {
         Some(t) if reason != "ci_failed_external" => t.clone(),
         _ => default,
     };
-    wait_json(waiting_on_of(&reason), &reason, &text)
+    if actions.is_empty() {
+        return wait_json(waiting_on_of(&reason), &reason, &text);
+    }
+    // Buttons are for a person: a wait that declares them waits on a human.
+    let mut w = wait_json("human", &reason, &text);
+    w["actions"] = json!(actions);
+    w
 }
 
 /// Records `output` for the current node, follows its edges and acts on the next node.
@@ -1045,7 +1056,7 @@ pub(super) fn step(ctx: &Ctx, s: &GraphTask, ev: &EngineEvent) -> Transition {
             UiActionKind::Cancel => Transition::reject(&state, "cancel requires write access"),
             UiActionKind::RepoRemoved => cancel(ctx, ev, s, None).repo_removed(),
             UiActionKind::Approve => wait_event(ctx, ev, s, &state, &def),
-            UiActionKind::Comment => wait_event(ctx, ev, s, &state, &def),
+            UiActionKind::Comment => ui_comment(ctx, ev, s, &state, &def, &u.actor.login),
             UiActionKind::Retry => Transition::reject(&state, "nothing to retry"),
             UiActionKind::Merge => Transition::reject(&state, "nothing to merge"),
         },
@@ -1127,7 +1138,7 @@ fn epic_request(
     let label = ev.labeled() == Some("epic");
     let comment = ev
         .comment_like()
-        .is_some_and(|c| enzarb_connector::command::has_epic_command(c.text));
+        .is_some_and(|c| enzarb_connector::command::has_epic_command(c.text, &ctx.bot_handle));
     if !(label || comment) || ev.actor().is_some_and(|a| ctx.is_bot(a)) || !ctx.can_write() {
         return label.then(|| Ok(Transition::reject(state, "epic requires write access")));
     }
@@ -1361,6 +1372,30 @@ fn handoff(ctx: &Ctx, ev: &EngineEvent, pr: ItemRef) -> Effect {
     }
 }
 
+/// A comment typed in the UI (or a wait's button, which sends `/<command>`): handled like the
+/// same comment on GitHub, and posted to the item so the thread shows it (its echo is the
+/// bot's, so it is ignored).
+fn ui_comment(
+    ctx: &Ctx,
+    ev: &EngineEvent,
+    s: &GraphTask,
+    state: &WorkflowState,
+    def: &Definition,
+    login: &str,
+) -> Transition {
+    let Some(c) = ev.comment_like().filter(|c| !c.text.is_empty()) else {
+        return Transition::reject(state, "the comment is empty");
+    };
+    let text = c.text.to_string();
+    let mut t = wait_event(ctx, ev, s, state, def);
+    if t.accepted {
+        let mut fx = Fx::new(ctx, ev);
+        fx.comment(format!("{text}\n\n_Sent by @{login} from enzarb._"));
+        t.effects.splice(0..0, fx.finish());
+    }
+    t
+}
+
 /// An event while the task may be at a `wait` node.
 fn wait_event(
     ctx: &Ctx,
@@ -1390,6 +1425,21 @@ fn wait_event(
         let out = json!({"event": "approval", "author": login});
         return advance(ctx, ev, s, def, out, "approved");
     }
+    if let Some(label) = ev.labeled() {
+        if !wants("labeled") {
+            return Transition::reject(state, "not waiting for a label");
+        }
+        if from == WaitFrom::Writers && !ctx.can_write() {
+            return Transition::reject(state, "this wait takes labels from writers only");
+        }
+        let out = json!({
+            "event": "labeled",
+            "label": label,
+            "author": login,
+            "can_write": ctx.can_write(),
+        });
+        return advance(ctx, ev, s, def, out, "label received");
+    }
     if let Some(c) = ev.comment_like() {
         if !wants("comment") {
             return Transition::reject(state, "not waiting for a comment");
@@ -1397,11 +1447,14 @@ fn wait_event(
         if from == WaitFrom::Writers && !ctx.can_write() {
             return Transition::reject(state, "this wait takes comments from writers only");
         }
+        let command = enzarb_connector::command::first_command(c.text, &ctx.bot_handle);
         let out = json!({
             "event": "comment",
             "author": login,
             "body": c.text,
             "can_write": ctx.can_write(),
+            "command": command.as_ref().map(|(c, _)| c),
+            "args": command.as_ref().map(|(_, a)| a),
         });
         return advance(ctx, ev, s, def, out, "comment received");
     }

@@ -11,6 +11,7 @@
 	} from '#lib/work-items.ts';
 	import UsageFigure from './UsageFigure.svelte';
 	import WaitReason from './WaitReason.svelte';
+	import WaitButtons from './WaitButtons.svelte';
 	import WorkActions from './WorkActions.svelte';
 	import Button from './form/Button.svelte';
 	import ConfirmDialog from './ui/ConfirmDialog.svelte';
@@ -29,6 +30,7 @@
 		pending = null,
 		error = '',
 		onaction,
+		oncommand,
 		onplan,
 		onreview,
 		highlighted = false,
@@ -42,6 +44,8 @@
 		pending?: WorkAction | null;
 		error?: string;
 		onaction: (action: WorkAction) => void;
+		/** A wait's declared button: post `/<command>` as the user. */
+		oncommand?: (command: string) => void;
 		onplan?: () => void;
 		onreview?: () => void;
 		/** Opened from a notification: accented, and handed to `onhighlight` to scroll and focus. */
@@ -63,9 +67,11 @@
 	} as const;
 
 	const needs = $derived(item.needs ?? null);
-	const action = $derived(needs ? primaryAction(needs.category) : null);
+	// A wait that declares buttons (enzarb's start gate) offers those instead of approve.
+	const buttons = $derived(needs && oncommand ? (item.wait?.actions ?? []) : []);
+	const action = $derived(needs && !buttons.length ? primaryAction(needs.category) : null);
 	const links = $derived(needs ? waitLinks(item.wait ?? null, item.url) : []);
-	const isPlan = $derived(needs?.category === 'approval');
+	const isPlan = $derived(needs?.category === 'approval' && !item.wait?.actions?.length);
 	const isReview = $derived(
 		item.workflow === 'change_request' &&
 			(needs?.category === 'merge' || needs?.category === 'review')
@@ -126,7 +132,7 @@
 		</p>
 	{/if}
 	{#if error}<p class="ez-card__error" role="alert">{error}</p>{/if}
-	{#if action || links.length || (isPlan && onplan) || (isReview && onreview)}
+	{#if action || buttons.length || links.length || (isPlan && onplan) || (isReview && onreview)}
 		<div class="ez-cluster">
 			{#if isPlan && onplan}
 				<Button variant="secondary" onclick={onplan}>View plan</Button>
@@ -136,6 +142,9 @@
 			{/if}
 			{#if action}
 				<WorkActions actions={[action]} {pending} onaction={request} />
+			{/if}
+			{#if buttons.length && oncommand}
+				<WaitButtons {buttons} disabled={pending !== null} {oncommand} />
 			{/if}
 			{#each links as l (l.href)}
 				<LinkButton

@@ -1604,7 +1604,7 @@ fn feedback(
     if ctx.is_bot(actor) {
         return Transition::reject(state, "bot actor ignored");
     }
-    if enzarb_connector::command::has_approve_command(text) {
+    if enzarb_connector::command::has_approve_command(text, &ctx.bot_handle) {
         return Transition::reject(state, "approve command is not feedback");
     }
     if !ctx.can_write() {
