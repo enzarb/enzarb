@@ -11,17 +11,17 @@
 //! * [`privs`]: root pid 1 and the drop to uid 1000 for every spawned child (ADR-0016);
 //! * [`dockerd`]: the supervised in-container Docker daemon (ADR-0016);
 //! * [`docker_prune`]: automatic pruning of Docker images, build cache and volumes (ADR-0016);
-//! * [`exec`]: running `git` under the reaper;
-//! * [`acp`]: one agent run over the Agent Client Protocol (`claude-agent-acp`);
+//! * [`exec`]: running helper processes under the reaper;
+//! * [`netgit`]: the hardened environment of authenticated git calls;
+//! * [`repos`]: per-repo locks and clone names;
+//! * [`acp`]: shared ACP helpers (agent spawn, permission answer, usage);
 //! * [`chat`]: interactive chat over ACP (one agent per `acp` channel behind a filtering relay);
-//! * [`agent`]: the agent [`RunManager`](runs::RunManager) (worktrees, ACP agent, callbacks);
-//! * [`git_prep`]: parsing and caps for the `prepare_request` reply (merge base, changed files);
-//! * [`runs`]: the [`RunManager`](runs::RunManager) extension point for `run_*` messages;
+//! * [`steps`]: the ADR-0022 step executor (`step_*`, `session_event`);
+//! * [`mcp`]: the `submit_result` MCP server (a sandbox-init subcommand);
 //! * [`server`]: axum app, websocket adapter and the per-session event loop;
 //! * [`stats`]: the on-demand cgroup/statvfs stats snapshot (`stats_request`).
 
 pub mod acp;
-pub mod agent;
 pub mod auth;
 pub mod capture;
 pub mod chat;
@@ -29,18 +29,16 @@ pub mod config;
 pub mod docker_prune;
 pub mod dockerd;
 pub mod exec;
-pub mod git_prep;
+pub mod mcp;
 pub mod netgit;
 pub mod observer;
-pub mod prepare;
 pub mod privs;
 pub mod pty;
 pub mod reaper;
-pub mod retarget;
-pub mod runs;
-pub mod segment;
+pub mod repos;
 pub mod server;
 pub mod stats;
+pub mod steps;
 
 pub use config::{ChatMode, Config};
 pub use server::{AppState, router, serve};

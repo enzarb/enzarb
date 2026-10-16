@@ -67,12 +67,13 @@ use tokio::sync::{Notify, mpsc, watch};
 use tokio::time::Instant;
 
 use crate::acp::{self, AcpError, Spawned};
-use crate::agent::{RepoLocks, repo_dir_name};
 use crate::capture::write_atomic;
 use crate::config::Config;
 use crate::docker_prune::ActivityGate;
 use crate::exec::{self, CmdSpec, Ctl, LineSink, terminate};
 use crate::reaper::{ExitStatus, Reaper};
+use crate::repos::{RepoLocks, repo_dir_name};
+use crate::steps::SessionSink;
 use filter::{Filter, Out};
 
 /// Longest NDJSON line in either direction; longer closes the chat (`limit`).
@@ -257,9 +258,36 @@ impl Drop for PidGuard {
     }
 }
 
-/// Append-only, size-capped, 0600 transcript.
+/// Append-only, size-capped, 0600 transcript. Records are also captured as
+/// session events of run `chat-<chat_id>` (ADR-0022) when a sink is set.
 struct Transcript {
     file: Mutex<Option<(std::fs::File, u64)>>,
+    capture: Option<(Arc<dyn SessionSink>, String)>,
+}
+
+/// A transcript record as a session event `(kind, payload)`.
+fn session_event(kind: &str, fields: &Value) -> (&'static str, Value) {
+    use enzarb_proto::step::session_kind as k;
+    match kind {
+        "prompt" => (k::USER, fields.clone()),
+        "update" => {
+            let u = fields.get("update").cloned().unwrap_or(Value::Null);
+            let kind = match u.get("sessionUpdate").and_then(Value::as_str) {
+                Some("agent_message_chunk") => k::ASSISTANT,
+                Some("agent_thought_chunk") => k::THINKING,
+                Some("user_message_chunk") => k::USER,
+                Some("tool_call") => k::TOOL_CALL,
+                Some("tool_call_update") => match u.get("status").and_then(Value::as_str) {
+                    Some("completed" | "failed") => k::TOOL_RESULT,
+                    _ => k::TOOL_CALL,
+                },
+                Some("usage_update") => k::USAGE,
+                _ => k::SYSTEM,
+            };
+            (kind, u)
+        }
+        other => (k::SYSTEM, json!({"record": other, "fields": fields})),
+    }
 }
 
 impl Transcript {
@@ -281,11 +309,16 @@ impl Transcript {
             });
         Self {
             file: Mutex::new(f),
+            capture: None,
         }
     }
 
     /// `fields` must already be redacted.
     fn append(&self, kind: &str, fields: Value) {
+        if let Some((sink, run_id)) = &self.capture {
+            let (k, payload) = session_event(kind, &fields);
+            sink.event(run_id, k, payload);
+        }
         let mut rec = json!({"ts": now_ms(), "kind": kind});
         match fields {
             Value::Object(m) => {
@@ -323,10 +356,12 @@ pub struct ChatManager {
     next: AtomicU64,
     /// Counts live chats for the Docker pruner.
     activity: ActivityGate,
+    /// Where chat sessions are captured (the step executor).
+    sink: std::sync::OnceLock<Arc<dyn SessionSink>>,
 }
 
 /// True when `bin` names an executable file (directly or on `PATH`).
-fn find_executable(bin: &str) -> bool {
+pub(crate) fn find_executable(bin: &str) -> bool {
     use std::os::unix::fs::PermissionsExt;
     let exec = |p: &Path| {
         std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
@@ -335,6 +370,31 @@ fn find_executable(bin: &str) -> bool {
         return exec(Path::new(bin));
     }
     std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| exec(&d.join(bin))))
+}
+
+/// The chat agent's argv: `acp_bin` when it is installed, else `mise exec
+/// <chat_runtime_tool> -- acp_bin` (mise installs the runtime on first use).
+/// `None` when neither is available.
+pub(crate) fn chat_command(cfg: &Config) -> Option<(String, Vec<String>)> {
+    if find_executable(&cfg.acp_bin) {
+        return Some((cfg.acp_bin.clone(), Vec::new()));
+    }
+    if cfg.mise_bin.is_empty()
+        || cfg.chat_runtime_tool.is_empty()
+        || !find_executable(&cfg.mise_bin)
+    {
+        return None;
+    }
+    let args = [
+        "exec",
+        cfg.chat_runtime_tool.as_str(),
+        "--",
+        cfg.acp_bin.as_str(),
+    ];
+    Some((
+        cfg.mise_bin.clone(),
+        args.iter().map(|s| s.to_string()).collect(),
+    ))
 }
 
 impl ChatManager {
@@ -349,7 +409,7 @@ impl ChatManager {
         locks: RepoLocks,
         activity: ActivityGate,
     ) -> Arc<Self> {
-        let available = find_executable(&cfg.acp_bin);
+        let available = chat_command(&cfg).is_some();
         if cfg.max_chats > 0 && !available {
             tracing::warn!(bin = %cfg.acp_bin, "chat disabled: the ACP agent is not installed");
         }
@@ -368,7 +428,13 @@ impl ChatManager {
             state: Mutex::default(),
             next: AtomicU64::new(1),
             activity,
+            sink: std::sync::OnceLock::new(),
         })
+    }
+
+    /// Capture every chat's session as events of run `chat-<chat_id>`.
+    pub fn set_sink(&self, sink: Arc<dyn SessionSink>) {
+        let _ = self.sink.set(sink);
     }
 
     /// Chat is enabled and the adapter is present.
@@ -667,7 +733,7 @@ impl ChatManager {
         let (_keep, cancel) = watch::channel(false);
         let mut ctl = Ctl {
             cancel,
-            deadline: Instant::now() + Duration::from_secs(120),
+            deadline: Some(Instant::now() + Duration::from_secs(120)),
         };
         exec::run(&self.reaper, spec, &mut ctl, None).await
     }
@@ -951,9 +1017,12 @@ impl ChatManager {
             last_active: now_ms(),
         };
         self.write_meta(&meta);
-        let transcript = Arc::new(Transcript::open(
-            &self.chats_dir().join(&chat_id).join("transcript.jsonl"),
-        ));
+        let mut t = Transcript::open(&self.chats_dir().join(&chat_id).join("transcript.jsonl"));
+        t.capture = self
+            .sink
+            .get()
+            .map(|s| (s.clone(), format!("chat-{chat_id}")));
+        let transcript = Arc::new(t);
         let secrets = self.secrets(&token);
         let config_dir = self.cfg.workspace.join(".enzarb/chat-home/.claude");
         let _ = crate::privs::create_dir_all_mode(&config_dir, Some(0o700));
@@ -968,18 +1037,18 @@ impl ChatManager {
                 );
             })
         };
-        let sp =
-            match acp::spawn_agent(&self.reaper, &self.cfg.acp_bin, &wt, &env, true, Some(sink)) {
-                Ok(sp) => sp,
-                Err(e) => {
-                    let m = match e {
-                        AcpError::Failed(m) => m,
-                        AcpError::Stopped(s) => format!("{s:?}"),
-                    };
-                    self.remove_worktree(&clone, &wt).await;
-                    return req.reject(&format!("cannot start the chat agent: {m}"));
-                }
-            };
+        let (bin, args) = chat_command(&self.cfg).unwrap_or((self.cfg.acp_bin.clone(), Vec::new()));
+        let sp = match acp::spawn_agent(&self.reaper, &bin, &args, &wt, &env, true, Some(sink)) {
+            Ok(sp) => sp,
+            Err(e) => {
+                let m = match e {
+                    AcpError::Failed(m) => m,
+                    AcpError::Stopped(s) => format!("{s:?}"),
+                };
+                self.remove_worktree(&clone, &wt).await;
+                return req.reject(&format!("cannot start the chat agent: {m}"));
+            }
+        };
         let guard = PidGuard(sp.pid);
         let handle = match req.accept() {
             Ok(h) => h,
@@ -1031,6 +1100,9 @@ impl ChatManager {
             "lifecycle",
             json!({"event": "closed", "reason": end.reason()}),
         );
+        if let Some((sink, run_id)) = &transcript.capture {
+            sink.ended(run_id);
+        }
         tracing::info!(chat = %chat_id, reason = %end.reason(), "chat closed");
         if let Some(s) = session {
             meta.acp_session_id = Some(s);

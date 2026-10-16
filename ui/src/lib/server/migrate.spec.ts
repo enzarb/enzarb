@@ -44,7 +44,8 @@ describe('migrations as a schema owner that does not own the database', () => {
 			'0004_claude_credentials.sql',
 			'0005_claude_credential_delete_own.sql',
 			'0006_push_subscriptions.sql',
-			'0007_push_item_entries.sql'
+			'0007_push_item_entries.sql',
+			'0008_clear_push_items.sql'
 		]);
 		expect(await migrate(owner)).toEqual([]);
 		// The runtime role's grants (also made by the schema owner) took effect.

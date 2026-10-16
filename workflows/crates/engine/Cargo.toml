@@ -24,10 +24,10 @@ enzarb-crds = { path = "../../../operator/crates/enzarb-crds" }
 enzarb-connector = { path = "../../../connectors/crates/connector" }
 enzarb-proto = { path = "../../../proto/crates/enzarb-proto", features = ["tokio"] }
 enzarb-connector-github = { path = "../../../connectors/crates/connector-github" }
-enzarb-graph = { path = "../graph" }
+enzarb-flow = { path = "../flow" }
+jsonschema = { version = "0.30", default-features = false }
+base64 = "0.22"
 k8s-openapi.workspace = true
-axum.workspace = true
-hmac.workspace = true
 sha2.workspace = true
 testcontainers-modules = { version = "0.15", features = ["postgres"], optional = true }
 aes-gcm = "0.10"

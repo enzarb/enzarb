@@ -25,3 +25,4 @@ Format: Context / Decision / Consequences. Status is `Accepted` unless noted. AD
 | [0019](0019-sandbox-utilization-polling.md) | Polling sandbox utilization from the sandbox-init API | 2026-10-15 |
 | [0020](0020-graph-workflows.md) | Graph workflows: definitions in the repo, a runner in the sandbox, a thin kernel outside | 2026-10-15 |
 | [0021](0021-shared-workflow-library.md) | Shared workflow library: steps, prompts and graphs as data, nothing compiled in | 2026-10-16 |
+| [0022](0022-workflow-engine-rewrite.md) | Workflow engine rewrite: a generic interpreter, every workflow in YAML (proposed; supersedes 0020, 0021) | 2026-10-16 |

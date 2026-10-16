@@ -34,7 +34,7 @@ description = "Assert ENZARB_COMPONENT_VERSIONS on the UI Deployment (keys, valu
 run = "bash scripts/assert-component-versions.sh"
 
 [tasks.npmtoken]
-description = "Assert the workflows ENZARB_NPM_TOKEN wiring (default, overrides, disabled, no executor role)"
+description = "Deprecated (ADR-0022): workflows.npmToken is accepted and ignored"
 run = "bash scripts/assert-npm-token.sh"
 
 [tasks.claudekey]
@@ -75,4 +75,4 @@ run = "scripts/sync-crds.sh"
 
 [tasks.test]
 description = "All checks"
-depends = ["lint", "compat", "guard", "golden", "realtime", "rollout", "componentversions", "npmtoken", "claudekey", "vapidkey", "kubeconform", "pgop"]
+depends = ["lint", "compat", "guard", "golden", "realtime", "rollout", "componentversions", "claudekey", "vapidkey", "kubeconform", "pgop"]

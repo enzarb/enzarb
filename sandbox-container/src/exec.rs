@@ -58,11 +58,20 @@ pub enum Stop {
     TimedOut,
 }
 
-/// Cancellation and deadline of a run.
+/// Cancellation and optional deadline of a run. Steps have none (ADR-0022: no timeouts; the
+/// engine pauses stalled steps); only bounded helper commands (network attempts, prune) do.
 #[derive(Clone)]
 pub struct Ctl {
     pub cancel: watch::Receiver<bool>,
-    pub deadline: Instant,
+    pub deadline: Option<Instant>,
+}
+
+/// Sleeps until `d`, or forever without one.
+pub async fn sleep_until_opt(d: Option<Instant>) {
+    match d {
+        Some(d) => tokio::time::sleep_until(d).await,
+        None => std::future::pending().await,
+    }
 }
 
 impl Ctl {
@@ -84,7 +93,7 @@ impl Ctl {
         let deadline = self.deadline;
         tokio::select! {
             () = self.cancelled() => Stop::Cancelled,
-            () = tokio::time::sleep_until(deadline) => Stop::TimedOut,
+            () = sleep_until_opt(deadline) => Stop::TimedOut,
         }
     }
 }
@@ -116,6 +125,18 @@ pub async fn run(
     reaper: &Reaper,
     spec: CmdSpec,
     ctl: &mut Ctl,
+    on_stderr: Option<LineSink>,
+) -> io::Result<Output> {
+    run_lines(reaper, spec, ctl, None, on_stderr).await
+}
+
+/// Like [`run`], and with `on_stdout` set, each stdout line goes to it as it is
+/// produced (and only the last [`STDERR_TAIL`] bytes of stdout are kept).
+pub async fn run_lines(
+    reaper: &Reaper,
+    spec: CmdSpec,
+    ctl: &mut Ctl,
+    on_stdout: Option<LineSink>,
     on_stderr: Option<LineSink>,
 ) -> io::Result<Output> {
     let mut cmd = Command::new(&spec.program);
@@ -158,8 +179,22 @@ pub async fn run(
     }
     let out_task = tokio::task::spawn_blocking(move || {
         let mut buf = Vec::new();
-        if let Some(r) = stdout {
-            let _ = r.take(STDOUT_CAP).read_to_end(&mut buf);
+        let Some(r) = stdout else { return buf };
+        match on_stdout {
+            None => {
+                let _ = r.take(STDOUT_CAP).read_to_end(&mut buf);
+            }
+            Some(f) => {
+                for line in io::BufReader::new(r).split(b'\n') {
+                    let Ok(line) = line else { break };
+                    f(String::from_utf8_lossy(&line).trim_end_matches('\r'));
+                    buf.extend_from_slice(&line);
+                    buf.push(b'\n');
+                    if buf.len() > STDERR_TAIL * 2 {
+                        buf.drain(..buf.len() - STDERR_TAIL);
+                    }
+                }
+            }
         }
         buf
     });
@@ -192,7 +227,7 @@ pub async fn run(
     let status = tokio::select! {
         r = &mut exit => r.ok(),
         _ = ctl.cancelled() => { stop = Some(Stop::Cancelled); terminate(pid, &mut exit).await }
-        _ = tokio::time::sleep_until(deadline) => { stop = Some(Stop::TimedOut); terminate(pid, &mut exit).await }
+        _ = sleep_until_opt(deadline) => { stop = Some(Stop::TimedOut); terminate(pid, &mut exit).await }
     };
     // Whatever the child left behind in its group goes too (this also closes the pipes).
     let _ = killpg(Pid::from_raw(pid as i32), Signal::SIGKILL);

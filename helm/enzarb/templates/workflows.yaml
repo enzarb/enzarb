@@ -29,28 +29,21 @@ spec:
           imagePullPolicy: {{ include "enzarb.pullPolicy" (dict "ctx" . "c" $c) }}
           args: [run, --roles, {{ $c.roles | quote }}]
           ports:
-            - { name: executor, containerPort: {{ if $executor }}{{ .Values.sandbox.executorCallbackPort }}{{ else }}8082{{ end }} }
+            - { name: health, containerPort: 8082 }
           env:
             {{- include "enzarb.dbEnv" (dict "ctx" . "role" "workflows") | nindent 12 }}
             {{- include "enzarb.secretEnv" (dict "name" "GITHUB_APP_ID" "secret" (include "enzarb.githubSecret" .) "key" (include "enzarb.githubKey" (dict "ctx" . "key" "appId"))) | nindent 12 }}
             {{- include "enzarb.secretEnv" (dict "name" "GITHUB_APP_PRIVATE_KEY" "secret" (include "enzarb.githubSecret" .) "key" (include "enzarb.githubKey" (dict "ctx" . "key" "privateKey"))) | nindent 12 }}
-            {{- include "enzarb.secretEnv" (dict "name" "ENZARB_EXECUTOR_CALLBACK_SECRET" "secret" (include "enzarb.callbackSecret" .) "key" (include "enzarb.callbackKey" .)) | nindent 12 }}
-            {{- if and $executor $c.npmToken.enabled }}
-            - name: ENZARB_NPM_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $c.npmToken.existingSecret | quote }}
-                  key: {{ $c.npmToken.key | quote }}
-                  optional: true
-            {{- end }}
-            - { name: ENZARB_EXECUTOR_URL, value: {{ printf "http://enzarb-workflows-executor.%s.svc:%v" .Release.Namespace .Values.sandbox.executorCallbackPort | quote }} }
+            {{- include "enzarb.secretEnv" (dict "name" "ENZARB_SECRETS_KEY" "secret" (include "enzarb.secretsKeySecret" .) "key" (include "enzarb.secretsKeyKey" .)) | nindent 12 }}
             {{- if $executor }}
             {{- include "enzarb.claudeKeyEnv" . | nindent 12 }}
-            - { name: ENZARB_EXECUTOR_LISTEN, value: {{ printf "0.0.0.0:%v" .Values.sandbox.executorCallbackPort | quote }} }
             {{- end }}
             - { name: ENZARB_PUBLIC_URL, value: {{ include "enzarb.publicUrl" . | quote }} }
             - { name: ENZARB_DB_MAX_CONNECTIONS, value: {{ $c.dbMaxConnections | quote }} }
-            - { name: ENZARB_MAX_AUTO_ROUNDS, value: {{ $c.maxAutoRounds | quote }} }
+            - { name: ENZARB_DEFAULT_LIBRARY, value: {{ $c.defaultLibrary | quote }} }
+            - { name: ENZARB_LIBRARY_REPOS, value: {{ join "," $c.libraryRepos | quote }} }
+            - { name: ENZARB_STALL_SECS, value: {{ $c.stallSecs | quote }} }
+            - { name: ENZARB_MAX_STEPS_PER_PROJECT, value: {{ $c.maxStepsPerProject | quote }} }
             - { name: ENZARB_CI_IGNORE_CHECKS, value: {{ $c.ciIgnoreChecks | default "" | quote }} }
             - { name: ENZARB_BOT_HANDLE, value: {{ $c.botHandle | quote }} }
             - { name: ENZARB_BOT_LOGIN, value: {{ $c.botLogin | quote }} }
@@ -59,12 +52,11 @@ spec:
             {{- with $c.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          # /healthz is on sandbox.executorCallbackPort with the executor role, otherwise on 8082.
           readinessProbe:
-            httpGet: { path: /healthz, port: executor }
+            httpGet: { path: /healthz, port: health }
             periodSeconds: 2
           livenessProbe:
-            httpGet: { path: /healthz, port: executor }
+            httpGet: { path: /healthz, port: health }
             initialDelaySeconds: 10
           {{- with include "enzarb.preStop" $c }}
           {{- . | nindent 10 }}
@@ -84,18 +76,3 @@ spec:
         {{- if $executor }}
         {{- include "enzarb.claudeKeyVolume" . | nindent 8 }}
         {{- end }}
-{{- if $executor }}
----
-# Internal only: sandbox-init callbacks (/v1/runs/{id}/finished) and health.
-apiVersion: v1
-kind: Service
-metadata:
-  name: enzarb-workflows-executor
-  labels:
-    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-workflows") | nindent 4 }}
-spec:
-  selector:
-    {{- include "enzarb.selector" (dict "ctx" . "name" "enzarb-workflows") | nindent 4 }}
-  ports:
-    - { name: executor, port: {{ .Values.sandbox.executorCallbackPort }}, targetPort: executor }
-{{- end }}

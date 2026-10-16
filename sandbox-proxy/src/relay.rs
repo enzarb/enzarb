@@ -272,6 +272,8 @@ pub struct RelayOpts {
     pub ping_interval: Duration,
     /// Claude token storage for this relay's owner.
     pub creds: Arc<Credentials>,
+    /// Chat capture into the engine (none: not recorded).
+    pub chats: Option<Arc<dyn crate::chat::ChatSink>>,
 }
 
 /// Watches a Project for changes that revoke an open relay's authorisation.
@@ -359,6 +361,19 @@ pub async fn run(
     let start = Instant::now();
     let last = AtomicU64::new(0);
     let guard = Mutex::new(Guard::new(&features));
+    let recorder = opts.chats.clone().map(|sink| {
+        Mutex::new(crate::chat::ChatRecorder::start(
+            sink,
+            project.to_string(),
+            sub.to_string(),
+        ))
+    });
+    let observe = |from_browser: bool, b: &[u8]| {
+        if let Some(r) = &recorder {
+            let ch = guard.lock().unwrap().acp_channel();
+            r.lock().unwrap().observe(from_browser, b, ch);
+        }
+    };
     // Proxy-originated frames for the browser (open_error replies from the guard).
     let (reply_tx, mut reply_rx) = mpsc::channel::<Bytes>(32);
     let touch = || last.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
@@ -430,6 +445,7 @@ pub async fn run(
                         }
                         Ok(Verdict::Forward(_)) => b,
                     };
+                    observe(true, &b);
                     counters.up_msgs.fetch_add(1, Ordering::Relaxed);
                     counters
                         .up_bytes
@@ -527,6 +543,7 @@ pub async fn run(
                     if let Err(e) = FrameHeader::parse(&b) {
                         tracing::warn!(error = %e, "malformed frame from sandbox");
                     }
+                    observe(false, &b);
                     counters.down_msgs.fetch_add(1, Ordering::Relaxed);
                     counters
                         .down_bytes

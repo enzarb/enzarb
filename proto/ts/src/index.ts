@@ -7,11 +7,7 @@ export { ByteChannel } from "./bytes.js";
 export {
   Session,
   type ConnectOptions,
-  type RunAccepted,
   type CredentialInfo,
-  type RunInfo,
-  type RunStartRequest,
-  type RunStarted,
   type WebSocketLike,
 } from "./session.js";
 

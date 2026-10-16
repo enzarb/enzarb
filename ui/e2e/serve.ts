@@ -10,7 +10,11 @@ import path from 'node:path';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import postgres from 'postgres';
 import { migrate } from '../scripts/migrate.ts';
-import { applyWorkflowsSchema, seedItem } from '../src/lib/server/testdata/workflows-fixture.ts';
+import {
+	applyEngineSchema,
+	seedBoard,
+	seedTask
+} from '../src/lib/server/testdata/engine-fixture.ts';
 import { SESSION_COOKIE, createSession, upsertUser } from '../src/lib/server/auth.ts';
 import {
 	E2E_PORT,
@@ -33,20 +37,32 @@ if (!databaseUrl) {
 const sql = postgres(databaseUrl, { max: 1, onnotice: () => {} });
 try {
 	await migrate(sql);
-	// The workflow engine's schema with work items in the project: one waits on the user (the nav
-	// badge and the /work queue), one is in progress.
-	await applyWorkflowsSchema(sql);
-	await seedItem(sql, {
-		key: 'github:e2e-org/app#1',
-		project: E2E_PROJECT,
-		state: 'AwaitingApproval',
-		stateData: { title: 'Add search', url: 'https://github.com/e2e-org/app/issues/1' }
+	// The engine's API with two tasks in the project: one waits on the user (the nav badge and the
+	// /tasks queue), one is running.
+	await applyEngineSchema(sql);
+	await seedBoard(sql, E2E_PROJECT, 'e2e-org/app', {
+		columns: [
+			{ id: 'doing', title: 'In progress' },
+			{ id: 'review', title: 'Review' }
+		]
 	});
-	await seedItem(sql, {
-		key: 'github:e2e-org/app#2',
+	await seedTask(sql, {
 		project: E2E_PROJECT,
-		state: 'Planning',
-		stateData: { title: 'Fix login', url: 'https://github.com/e2e-org/app/issues/2' }
+		title: 'Add search',
+		status: 'waiting',
+		column: 'review',
+		reason: 'Plan awaiting approval',
+		needsYou: true,
+		actions: [{ label: 'Approve', command: 'approve' }],
+		subjects: [
+			{ kind: 'issue', key: 'github:e2e-org/app#1', url: 'https://github.com/e2e-org/app/issues/1' }
+		]
+	});
+	await seedTask(sql, {
+		project: E2E_PROJECT,
+		title: 'Fix login',
+		status: 'running',
+		column: 'doing'
 	});
 	const userId = await upsertUser(sql, {
 		id: 4242,

@@ -1,7 +1,7 @@
 //! Postgres implementations of the listener traits.
 //!
 //! Required grants for the runtime role (`enzarb_realtime`): `CONNECT` on the database,
-//! `USAGE` on schema `workflows_api` and `SELECT` on `workflows_api.work_item_project_v (id, project)` only.
+//! `USAGE` on schema `engine_api` and `SELECT` on `engine_api.task_v`.
 //! `LISTEN` needs no grant.
 
 use anyhow::Result;
@@ -14,7 +14,7 @@ use sqlx::{
 use crate::listener::{Connector, Listener, ProjectLookup};
 
 const PROBE_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
-pub const CHANNEL: &str = "work_item_changed";
+pub const CHANNEL: &str = "engine_projection";
 
 pub struct PgConnector {
     pub url: String,
@@ -76,11 +76,11 @@ impl PgLookup {
 #[async_trait]
 impl ProjectLookup for PgLookup {
     async fn project(&self, id: i64) -> Result<Option<String>> {
-        Ok(sqlx::query_scalar(
-            "SELECT project FROM workflows_api.work_item_project_v WHERE id = $1",
+        Ok(
+            sqlx::query_scalar("SELECT project FROM engine_api.task_v WHERE task_id = $1")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?,
         )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?)
     }
 }

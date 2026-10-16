@@ -8,8 +8,8 @@ use enzarb_proto::session::{
     Event, HandshakeError, ServerOptions, Session, SessionEnd, SessionError, handshake, memory,
 };
 use enzarb_proto::{
-    ChannelKind, ClientKind, CredentialKind, Ctrl, Frame, FrameType, INITIAL_WINDOW, RunPhase,
-    RunStart, Secret, close_code,
+    ChannelKind, ClientKind, CredentialKind, Ctrl, Frame, FrameType, INITIAL_WINDOW, Secret,
+    StepExec, StepFinished, StepPhase, StepStart, close_code,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
@@ -19,29 +19,36 @@ use tokio_tungstenite::tungstenite::Message;
 
 const T: Duration = Duration::from_secs(5);
 
-fn run_start(id: &str, log: Option<u32>) -> RunStart {
-    RunStart {
+fn step(id: &str) -> StepStart {
+    StepStart {
         run_id: id.into(),
-        repo_url: "https://example.com/r".into(),
-        base_ref: "main".into(),
-        branch: "b".into(),
-        push: false,
-        clone_token: "t".into(),
-        prompt: "p".into(),
-        timeout_secs: 60,
-        callback_url: "http://cb".into(),
-        callback_token: "cb".into(),
-        log_channel: log,
-        deps_token: None,
-        npm_token: None,
-        ci_read_token: None,
-        claude_token: None,
-        retarget: None,
-        graph: None,
+        attempt: 1,
+        task_id: "t".into(),
+        workspaces: vec![],
+        exec: StepExec::Command {
+            run: "true".into(),
+            tools: vec![],
+        },
+        outputs: Default::default(),
+        env: Default::default(),
+        files: Default::default(),
+        github_token: None,
     }
 }
 
-/// Server that accepts every open as an echo pty and answers run_* messages.
+fn finished(id: &str) -> StepFinished {
+    StepFinished {
+        run_id: id.into(),
+        exit: "success".into(),
+        outputs: Default::default(),
+        result: None,
+        git: vec![],
+        usage: None,
+        error: None,
+    }
+}
+
+/// Server that accepts every open as an echo pty and answers step_* messages.
 fn spawn_echo_server(session: Session, mut events: enzarb_proto::session::Events) {
     tokio::spawn(async move {
         while let Some(ev) = events.next().await {
@@ -58,24 +65,16 @@ fn spawn_echo_server(session: Session, mut events: enzarb_proto::session::Events
                         }
                     });
                 }
-                Event::Ctrl(Ctrl::RunStart(run)) => {
+                Event::Ctrl(Ctrl::StepStart(run)) => {
                     if run.run_id == "dup" {
                         session.send_error("internal", "refusing dup").unwrap();
                         continue;
                     }
-                    let log = session
-                        .accept_run(&run.run_id, RunPhase::Running, false, run.log_channel)
+                    session
+                        .accept_step(&run.run_id, StepPhase::Running, false)
                         .unwrap();
-                    if let Some(mut log) = log {
-                        tokio::spawn(async move {
-                            for i in 0..3 {
-                                log.send.send_json(&json!({"line": i})).await.unwrap();
-                            }
-                            log.send.close(0, "done").unwrap();
-                        });
-                    }
                 }
-                Event::Ctrl(Ctrl::RunStatus { run_id }) => {
+                Event::Ctrl(Ctrl::StepStatus { run_id, after_seq }) => {
                     if run_id == "unimpl" {
                         session
                             .send_error("unimplemented", "no run manager")
@@ -83,17 +82,23 @@ fn spawn_echo_server(session: Session, mut events: enzarb_proto::session::Events
                     } else if run_id == "nope" {
                         session.send_error("unknown_run", "no such run").unwrap();
                     } else {
+                        for seq in after_seq + 1..=3 {
+                            session
+                                .send_session_event(&enzarb_proto::SessionEvent {
+                                    run_id: run_id.clone(),
+                                    seq,
+                                    at: "2026-10-16T00:00:00Z".into(),
+                                    kind: "stdout".into(),
+                                    payload: json!({"text": seq}),
+                                    truncated: false,
+                                })
+                                .unwrap();
+                        }
                         session
-                            .send_run_state(&enzarb_proto::session::RunInfo {
-                                run_id,
-                                state: RunPhase::Succeeded,
-                                exit_code: Some(0),
-                                summary: Some("ok".into()),
-                                usage: Some(enzarb_proto::Usage {
-                                    input_tokens: Some(7),
-                                    ..Default::default()
-                                }),
-                                result: None,
+                            .send_step_state(&enzarb_proto::session::StepInfo {
+                                run_id: run_id.clone(),
+                                state: StepPhase::Finished,
+                                result: Some(finished(&run_id)),
                             })
                             .unwrap();
                     }
@@ -209,10 +214,10 @@ async fn open_claude_token_reaches_server_event_and_is_redacted() {
 #[test]
 fn debug_redacts_claude_tokens() {
     let tok = Secret::new("sk-secret-debug");
-    let mut rs = run_start("r", None);
-    rs.claude_token = Some(tok.clone());
+    let mut rs = step("r");
+    rs.github_token = Some(tok.clone());
     let msgs = [
-        Ctrl::RunStart(rs.clone()),
+        Ctrl::StepStart(Box::new(rs.clone())),
         Ctrl::Open {
             channel: 1,
             kind: ChannelKind::Acp,
@@ -264,60 +269,6 @@ async fn unknown_message_answer_keeps_session_alive() {
         timeout(T, ce.next()).await.unwrap().unwrap(),
         Event::Ctrl(Ctrl::CredentialCaptured { .. })
     ));
-}
-
-fn prepare_req(run_id: &str) -> enzarb_proto::PrepareRequest {
-    enzarb_proto::PrepareRequest {
-        run_id: run_id.into(),
-        repo_url: "https://github.com/o/r".into(),
-        base_ref: "main".into(),
-        branch: "b".into(),
-        clone_token: Secret::new("ghs_clone"),
-    }
-}
-
-#[tokio::test]
-async fn prepare_is_answered_by_prepared_with_the_same_run_id() {
-    let ((client, _ce), (server, mut se)) = memory::session_pair(ClientKind::Executor).await;
-    tokio::spawn(async move {
-        while let Some(ev) = se.next().await {
-            if let Event::Ctrl(Ctrl::PrepareRequest(req)) = ev {
-                server
-                    .send_ctrl(&Ctrl::Prepared(enzarb_proto::Prepared {
-                        run_id: req.run_id,
-                        merge_base_sha: Some("abc".into()),
-                        changed_files: vec!["a".into()],
-                        changed_files_total: 1,
-                        affected: vec![],
-                    }))
-                    .unwrap();
-            }
-        }
-    });
-    let got = timeout(T, client.prepare(prepare_req("job-9")))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(got.run_id, "job-9");
-    assert_eq!(got.merge_base_sha.as_deref(), Some("abc"));
-    assert_eq!(got.changed_files, vec!["a".to_string()]);
-}
-
-#[tokio::test]
-async fn prepare_unknown_message_error_fails_request() {
-    let ((client, _ce), (server, mut se)) = memory::session_pair(ClientKind::Executor).await;
-    tokio::spawn(async move {
-        while let Some(ev) = se.next().await {
-            if let Event::Ctrl(Ctrl::PrepareRequest(_)) = ev {
-                server.send_error("unknown_message", "no").unwrap();
-            }
-        }
-    });
-    let e = timeout(T, client.prepare(prepare_req("job-9")))
-        .await
-        .unwrap()
-        .unwrap_err();
-    assert!(matches!(e, SessionError::Remote { ref code, .. } if code == "unknown_message"));
 }
 
 #[tokio::test]
@@ -498,76 +449,66 @@ async fn saturated_channel_does_not_block_others() {
 }
 
 #[tokio::test]
-async fn json_log_channel_via_run_start() {
-    let ((client, _ce), (server, se)) = memory::session_pair(ClientKind::Executor).await;
+async fn step_start_and_status() {
+    let ((client, mut ce), (server, se)) = memory::session_pair(ClientKind::Executor).await;
     spawn_echo_server(server, se);
 
-    let started = client
-        .run_start_logged(run_start("job-1", None))
-        .await
-        .unwrap();
-    assert_eq!(started.accepted.run_id, "job-1");
-    assert_eq!(started.accepted.state, RunPhase::Running);
-    assert!(!started.accepted.existing);
-    let mut log = started.log.expect("log channel");
-    for i in 0..3 {
-        let v: serde_json::Value = timeout(T, log.recv.recv_json())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        assert_eq!(v, json!({"line": i}));
+    let acc = client.step_start(step("job-1")).await.unwrap();
+    assert_eq!(acc.run_id, "job-1");
+    assert_eq!(acc.state, StepPhase::Running);
+    assert!(!acc.existing);
+
+    let info = client.step_status("job-1", 1).await.unwrap();
+    assert_eq!(info.state, StepPhase::Finished);
+    assert_eq!(info.result, Some(finished("job-1")));
+    // The replayed events (seq > after_seq) arrived before the reply.
+    for want in [2, 3] {
+        let Event::Ctrl(Ctrl::SessionEvent(e)) = timeout(T, ce.next()).await.unwrap().unwrap()
+        else {
+            panic!("expected session_event")
+        };
+        assert_eq!(e.seq, want);
     }
-    assert!(timeout(T, log.recv.recv()).await.unwrap().is_none());
-    assert_eq!(log.recv.close_info().unwrap().reason, "done");
 
-    // Client-chosen id, and no log channel at all.
-    let s = client
-        .run_start(run_start("job-2", Some(900)))
-        .await
+    // Via send_ctrl (the engine's way) the replies are events.
+    client
+        .send_ctrl(&Ctrl::StepStart(Box::new(step("job-2"))))
         .unwrap();
-    assert_eq!(s.log.unwrap().id(), 900);
-    let s = client.run_start(run_start("job-3", None)).await.unwrap();
-    assert!(s.log.is_none());
-
-    let info = client.run_status("job-1").await.unwrap();
-    assert_eq!(info.state, RunPhase::Succeeded);
-    assert_eq!(info.exit_code, Some(0));
-    assert_eq!(info.summary.as_deref(), Some("ok"));
-    assert_eq!(info.usage.and_then(|u| u.input_tokens), Some(7));
+    assert!(matches!(
+        timeout(T, ce.next()).await.unwrap().unwrap(),
+        Event::Ctrl(Ctrl::StepAccepted { ref run_id, .. }) if run_id == "job-2"
+    ));
+    client
+        .send_ctrl(&Ctrl::StepStatus {
+            run_id: "job-2".into(),
+            after_seq: 3,
+        })
+        .unwrap();
+    assert!(matches!(
+        timeout(T, ce.next()).await.unwrap().unwrap(),
+        Event::Ctrl(Ctrl::StepState {
+            state: StepPhase::Finished,
+            ..
+        })
+    ));
 }
 
 #[tokio::test]
 async fn error_replies_are_attributed_to_requests() {
     let ((client, _ce), (server, se)) = memory::session_pair(ClientKind::Executor).await;
     spawn_echo_server(server, se);
-    let e = client.run_status("nope").await.unwrap_err();
+    let e = client.step_status("nope", 0).await.unwrap_err();
     assert!(matches!(e, SessionError::Remote { ref code, .. } if code == "unknown_run"));
-    // A failed run_start releases its reserved log channel id.
-    let e = client
-        .run_start(run_start("dup", Some(77)))
-        .await
-        .err()
-        .unwrap();
+    let e = client.step_start(step("dup")).await.unwrap_err();
     assert!(matches!(e, SessionError::Remote { ref code, .. } if code == "internal"));
-    let held = client.run_start(run_start("ok", Some(77))).await.unwrap();
-    // The same id twice is refused locally.
-    assert!(matches!(
-        client
-            .run_start(run_start("again", Some(77)))
-            .await
-            .err()
-            .unwrap(),
-        SessionError::ChannelInUse(77)
-    ));
-    drop(held);
+    assert!(client.step_start(step("ok")).await.is_ok());
 }
 
 #[tokio::test]
 async fn unimplemented_error_fails_pending_run_request() {
     let ((client, _ce), (server, se)) = memory::session_pair(ClientKind::Executor).await;
     spawn_echo_server(server, se);
-    let e = timeout(T, client.run_status("unimpl"))
+    let e = timeout(T, client.step_status("unimpl", 0))
         .await
         .unwrap()
         .unwrap_err();
@@ -580,7 +521,7 @@ async fn error_run_id_beats_oldest_pending() {
     tokio::spawn(async move {
         let mut seen = 0;
         while let Some(ev) = se.next().await {
-            if let Event::Ctrl(Ctrl::RunStatus { run_id }) = ev {
+            if let Event::Ctrl(Ctrl::StepStatus { run_id, .. }) = ev {
                 seen += 1;
                 if seen == 2 {
                     // Fail the *newer* request by run_id, then answer the older.
@@ -588,12 +529,9 @@ async fn error_run_id_beats_oldest_pending() {
                         .send_run_error(&run_id, "weird_code", "nope")
                         .unwrap();
                     server
-                        .send_run_state(&enzarb_proto::session::RunInfo {
+                        .send_step_state(&enzarb_proto::session::StepInfo {
                             run_id: "a".into(),
-                            state: RunPhase::Running,
-                            exit_code: None,
-                            summary: None,
-                            usage: None,
+                            state: StepPhase::Running,
                             result: None,
                         })
                         .unwrap();
@@ -602,11 +540,11 @@ async fn error_run_id_beats_oldest_pending() {
         }
     });
     let (a, b) = timeout(T, async {
-        tokio::join!(client.run_status("a"), client.run_status("b"))
+        tokio::join!(client.step_status("a", 0), client.step_status("b", 0))
     })
     .await
     .unwrap();
-    assert_eq!(a.unwrap().state, RunPhase::Running);
+    assert_eq!(a.unwrap().state, StepPhase::Running);
     assert!(
         matches!(b.unwrap_err(), SessionError::Remote { ref code, .. } if code == "weird_code")
     );
@@ -967,49 +905,21 @@ async fn dropping_last_session_closes_the_connection() {
 }
 
 #[tokio::test]
-async fn run_subscribe_and_run_finished_and_run_state_result() {
+async fn steer_stop_resume_reach_the_server_and_step_finished_is_pushed() {
     let ((client, mut ce), (server, mut se)) = memory::session_pair(ClientKind::Executor).await;
-    let fin = enzarb_proto::RunFinished {
-        run_id: "a".into(),
-        outcome: enzarb_proto::RunOutcome::Succeeded,
-        exit_code: Some(0),
-        summary: "ok".into(),
-        branch: "b".into(),
-        head_sha: "abc".into(),
-        pushed: true,
-        usage: None,
-        graph: None,
-    };
-    let f2 = fin.clone();
-    tokio::spawn(async move {
-        while let Some(ev) = se.next().await {
-            match ev {
-                Event::Ctrl(Ctrl::RunSubscribe { run_ids }) => {
-                    assert_eq!(run_ids, vec!["a".to_string()]);
-                    server.send_run_finished(&f2).unwrap();
-                }
-                Event::Ctrl(Ctrl::RunStatus { run_id }) => {
-                    server
-                        .send_run_state(&enzarb_proto::session::RunInfo {
-                            run_id,
-                            state: RunPhase::Succeeded,
-                            exit_code: Some(0),
-                            summary: Some("ok".into()),
-                            usage: None,
-                            result: Some(f2.clone()),
-                        })
-                        .unwrap();
-                }
-                _ => {}
-            }
+    client.step_steer("a", "more tests").unwrap();
+    client.step_stop("a").unwrap();
+    client.step_resume("a").unwrap();
+    for _ in 0..3 {
+        match timeout(T, se.next()).await.unwrap().unwrap() {
+            Event::Ctrl(Ctrl::StepSteer { text, .. }) => assert_eq!(text, "more tests"),
+            Event::Ctrl(Ctrl::StepStop { .. } | Ctrl::StepResume { .. }) => {}
+            _ => panic!("unexpected event"),
         }
-    });
-    client.run_subscribe(vec!["a".into()]).unwrap();
-    let ev = timeout(T, ce.next()).await.unwrap().unwrap();
-    let Event::Ctrl(Ctrl::RunFinished(got)) = ev else {
-        panic!("expected run_finished")
+    }
+    server.send_step_finished(&finished("a")).unwrap();
+    let Event::Ctrl(Ctrl::StepFinished(got)) = timeout(T, ce.next()).await.unwrap().unwrap() else {
+        panic!("expected step_finished")
     };
-    assert_eq!(got, fin);
-    let st = timeout(T, client.run_status("a")).await.unwrap().unwrap();
-    assert_eq!(st.result, Some(fin));
+    assert_eq!(got, finished("a"));
 }

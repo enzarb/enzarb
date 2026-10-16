@@ -1,0 +1,18 @@
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "description": "`added` or `removed`."
+    },
+    "label": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "action",
+    "label"
+  ],
+  "title": "Label",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

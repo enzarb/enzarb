@@ -20,9 +20,14 @@ pub struct Config {
     pub shell: String,
     /// `ENZARB_GRACE_SECS`, default 25: how long children get after SIGTERM before SIGKILL.
     pub grace: Duration,
-    /// `ENZARB_ACP_AGENT_BIN`, default `claude-agent-acp`: the ACP agent adapter
-    /// (stdio JSON-RPC) started for each run.
+    /// `ENZARB_ACP_AGENT_BIN`, default `claude-agent-acp`: the chat ACP agent
+    /// (stdio JSON-RPC). Used as is when it is on `PATH`, else through
+    /// `mise exec <chat_runtime_tool> --`.
     pub acp_bin: String,
+    /// `ENZARB_CHAT_RUNTIME_TOOL`, default
+    /// `npm:@agentclientprotocol/claude-agent-acp`: the mise tool that provides
+    /// `acp_bin` when it is not installed in the image. Empty disables.
+    pub chat_runtime_tool: String,
     /// `ENZARB_CANCEL_GRACE_SECS`, default 10: how long the agent gets to end
     /// its turn after `session/cancel` (cancel or timeout) before it is killed.
     pub cancel_grace: Duration,
@@ -30,33 +35,12 @@ pub struct Config {
     pub claude_token_file: PathBuf,
     /// `ENZARB_GIT_BIN`, default `git`.
     pub git_bin: String,
-    /// `ENZARB_MISE_BIN` (the image sets `mise`); empty disables. Run as
-    /// `mise install` in each run's worktree before the agent starts, so the
-    /// repo's pinned toolchain (`mise.toml`, `rust-toolchain.toml`) is on PATH
-    /// for its check commands. The tools live on the workspace volume.
+    /// `ENZARB_MISE_BIN` (the image sets `mise`); empty disables: steps then
+    /// run commands and agents directly and ignore `tools`/`runtime.install`.
     pub mise_bin: String,
-    /// `ENZARB_NPM_BIN`, default `npm`: run (through `mise exec --` when
-    /// `mise_bin` is set) as `npm ci` by the run preparation.
-    pub npm_bin: String,
-    /// `ENZARB_DOCKER_BIN`, default `docker`: starts the shared test Postgres.
-    pub docker_bin: String,
-    /// `ENZARB_TEST_PG_NAME`, default `enzarb-test-pg`: that container's name.
-    pub pg_name: String,
-    /// `ENZARB_TEST_PG_PORT`, default 55432: its host port (when created).
-    pub pg_port: u16,
-    /// `ENZARB_PREPARE_STEP_SECS`, default 600: cap of one preparation step
-    /// (`npm ci`, `mise install`, Postgres start).
-    pub prepare_step_timeout: Duration,
     /// `ENZARB_GIT_NAME` / `ENZARB_GIT_EMAIL`: identity for commits made in runs.
     pub git_name: String,
     pub git_email: String,
-    /// `ENZARB_MAX_RUNS`, default 2: runs executing at once (others stay `queued`).
-    pub max_runs: usize,
-    /// `ENZARB_RUN_TIMEOUT_SECS`, default 3600: used when `run_start.timeout_secs` is 0.
-    pub default_timeout: Duration,
-    /// `ENZARB_CALLBACK_BACKOFF_MS`, default 1000: first retry delay of the
-    /// run-finished callback (doubles up to 60 s).
-    pub callback_backoff: Duration,
     /// `ENZARB_NET_RETRY_DELAYS_MS`, default `10000,30000`: comma-separated
     /// pauses before each retry of a clone/fetch/push that failed on a
     /// transient network error. The attempts are one more than the delays
@@ -139,20 +123,13 @@ impl Default for Config {
             shell: "/bin/bash".into(),
             grace: Duration::from_secs(25),
             acp_bin: "claude-agent-acp".into(),
+            chat_runtime_tool: "npm:@agentclientprotocol/claude-agent-acp".into(),
             cancel_grace: Duration::from_secs(10),
             claude_token_file: "/workspace/.enzarb/claude-token".into(),
             git_bin: "git".into(),
             mise_bin: String::new(),
-            npm_bin: "npm".into(),
-            docker_bin: "docker".into(),
-            pg_name: "enzarb-test-pg".into(),
-            pg_port: 55432,
-            prepare_step_timeout: Duration::from_secs(600),
             git_name: "enzarb-agent".into(),
             git_email: "agent@enzarb.dev".into(),
-            max_runs: 2,
-            default_timeout: Duration::from_secs(3600),
-            callback_backoff: Duration::from_secs(1),
             net_retry_delays: crate::netgit::RETRY_DELAYS.to_vec(),
             push_attempt_cap: crate::netgit::PUSH_ATTEMPT_CAP,
             fetch_attempt_cap: crate::netgit::FETCH_ATTEMPT_CAP,
@@ -199,6 +176,9 @@ impl Config {
         if let Some(v) = get("ENZARB_ACP_AGENT_BIN").filter(|s| !s.is_empty()) {
             c.acp_bin = v;
         }
+        if let Some(v) = get("ENZARB_CHAT_RUNTIME_TOOL") {
+            c.chat_runtime_tool = v;
+        }
         if let Some(v) = get("ENZARB_CANCEL_GRACE_SECS") {
             c.cancel_grace = Duration::from_secs(
                 v.parse()
@@ -213,49 +193,11 @@ impl Config {
         if let Some(v) = get("ENZARB_MISE_BIN") {
             c.mise_bin = v;
         }
-        if let Some(v) = get("ENZARB_NPM_BIN").filter(|s| !s.is_empty()) {
-            c.npm_bin = v;
-        }
-        if let Some(v) = get("ENZARB_DOCKER_BIN").filter(|s| !s.is_empty()) {
-            c.docker_bin = v;
-        }
-        if let Some(v) = get("ENZARB_TEST_PG_NAME").filter(|s| !s.is_empty()) {
-            c.pg_name = v;
-        }
-        if let Some(v) = get("ENZARB_TEST_PG_PORT") {
-            c.pg_port = v
-                .parse()
-                .map_err(|e| anyhow::anyhow!("ENZARB_TEST_PG_PORT={v:?}: {e}"))?;
-        }
-        if let Some(v) = get("ENZARB_PREPARE_STEP_SECS") {
-            c.prepare_step_timeout = Duration::from_secs(
-                v.parse()
-                    .map_err(|e| anyhow::anyhow!("ENZARB_PREPARE_STEP_SECS={v:?}: {e}"))?,
-            );
-        }
         if let Some(v) = get("ENZARB_GIT_NAME").filter(|s| !s.is_empty()) {
             c.git_name = v;
         }
         if let Some(v) = get("ENZARB_GIT_EMAIL").filter(|s| !s.is_empty()) {
             c.git_email = v;
-        }
-        if let Some(v) = get("ENZARB_MAX_RUNS") {
-            c.max_runs = v
-                .parse::<usize>()
-                .map_err(|e| anyhow::anyhow!("ENZARB_MAX_RUNS={v:?}: {e}"))?
-                .max(1);
-        }
-        if let Some(v) = get("ENZARB_RUN_TIMEOUT_SECS") {
-            c.default_timeout = Duration::from_secs(
-                v.parse()
-                    .map_err(|e| anyhow::anyhow!("ENZARB_RUN_TIMEOUT_SECS={v:?}: {e}"))?,
-            );
-        }
-        if let Some(v) = get("ENZARB_CALLBACK_BACKOFF_MS") {
-            c.callback_backoff = Duration::from_millis(
-                v.parse()
-                    .map_err(|e| anyhow::anyhow!("ENZARB_CALLBACK_BACKOFF_MS={v:?}: {e}"))?,
-            );
         }
         if let Some(v) = get("ENZARB_NET_RETRY_DELAYS_MS") {
             c.net_retry_delays = v
@@ -372,23 +314,18 @@ mod tests {
     }
 
     #[test]
-    fn prepare_settings() {
+    fn step_settings() {
         let c = Config::from_lookup(|_| None).unwrap();
-        assert_eq!(c.npm_bin, "npm");
-        assert_eq!(c.docker_bin, "docker");
-        assert_eq!(c.pg_name, "enzarb-test-pg");
-        assert_eq!(c.pg_port, 55432);
-        assert_eq!(c.prepare_step_timeout, Duration::from_secs(600));
+        assert_eq!(
+            c.chat_runtime_tool,
+            "npm:@agentclientprotocol/claude-agent-acp"
+        );
         let c = Config::from_lookup(|k| match k {
-            "ENZARB_TEST_PG_PORT" => Some("6000".into()),
-            "ENZARB_PREPARE_STEP_SECS" => Some("5".into()),
-            "ENZARB_DOCKER_BIN" => Some("/d".into()),
+            "ENZARB_CHAT_RUNTIME_TOOL" => Some(String::new()),
             _ => None,
         })
         .unwrap();
-        assert_eq!(c.pg_port, 6000);
-        assert_eq!(c.prepare_step_timeout, Duration::from_secs(5));
-        assert_eq!(c.docker_bin, "/d");
+        assert!(c.chat_runtime_tool.is_empty());
     }
 
     #[test]

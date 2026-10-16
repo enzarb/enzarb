@@ -17,16 +17,16 @@ use super::handshake::{client_handshake_offering, server_handshake_with_features
 use super::{HandshakeError, SessionEnd, SessionError};
 use crate::{
     ChannelKind, ClientKind, CredentialKind, Ctrl, Frame, FrameType, MAX_REPO_LEN, MAX_RESUME_LEN,
-    PrepareRequest, Prepared, RunPhase, RunStart, SUPPORTED_VERSIONS, Secret, close_code,
-    error_code, open_error_code,
+    SUPPORTED_VERSIONS, Secret, StepFinished, StepPhase, StepStart, close_code, error_code,
+    open_error_code,
 };
 
 /// Which side of the protocol a session plays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
-    /// Sent `hello`: ui, proxy, executor. Picks channel ids, opens channels, starts runs.
+    /// Sent `hello`: ui, proxy, executor. Picks channel ids, opens channels, starts steps.
     Client,
-    /// Sent `welcome`: sandbox-init. Answers `open`/`run_*`.
+    /// Sent `welcome`: sandbox-init. Answers `open`/`step_*`.
     Server,
 }
 
@@ -49,26 +49,22 @@ impl Default for ServerOptions {
     }
 }
 
-/// `run_accepted` as seen by the client.
+/// `step_accepted` as seen by the client.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RunAccepted {
+pub struct StepAccepted {
     pub run_id: String,
-    pub state: RunPhase,
-    /// The `run_id` was already known (idempotent `run_start`).
+    pub state: StepPhase,
+    /// The `run_id` was already known (idempotent `step_start`).
     pub existing: bool,
 }
 
-/// `run_state` as seen by the client.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RunInfo {
+/// `step_state` as seen by the client.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StepInfo {
     pub run_id: String,
-    pub state: RunPhase,
-    pub exit_code: Option<i32>,
-    pub summary: Option<String>,
-    pub usage: Option<crate::Usage>,
-    /// The full final result of a terminal run (`run_state.result`), from
-    /// servers with [`feature::RUN_RESULTS`](crate::feature::RUN_RESULTS).
-    pub result: Option<crate::RunFinished>,
+    pub state: StepPhase,
+    /// Set once the step is terminal.
+    pub result: Option<StepFinished>,
 }
 
 /// `credential_state` as seen by the client.
@@ -80,22 +76,13 @@ pub struct CredentialInfo {
     pub scope: Option<String>,
 }
 
-/// Result of [`Session::run_start`].
-pub struct RunStarted {
-    pub accepted: RunAccepted,
-    /// The transcript channel (`DATA_JSON` lines), if `log_channel` was set.
-    pub log: Option<ChannelHandle>,
-}
-
 /// Unsolicited inbound CTRL traffic, in arrival order.
-// `Ctrl` carries `RunStart` inline; boxing it would break the public `Event::Ctrl` shape.
-#[allow(clippy::large_enum_variant)]
 pub enum Event {
     /// (server) The client wants a channel: [`OpenRequest::accept`] or [`OpenRequest::reject`].
     Open(OpenRequest),
     /// Any other CTRL message not consumed internally:
-    /// * server: `run_start`, `run_status`, `run_subscribe`, `run_cancel`, `credential_status` (answer with `send_ctrl(Ctrl::CredentialState{..})`), `credential_clear`, `credential_state` (a client's ack of a legacy `credential_captured`), `resize` (for an open channel), `error`;
-    /// * client: `run_state` pushes, `run_finished`, `credential_captured`, unsolicited `credential_state`, unattributed `error`.
+    /// * server: `step_start`, `step_status`, `step_steer`, `step_stop`, `step_resume`, `credential_status` (answer with `send_ctrl(Ctrl::CredentialState{..})`), `credential_clear`, `credential_state` (a client's ack of a legacy `credential_captured`), `resize` (for an open channel), `error`;
+    /// * client: unsolicited `step_state`, `session_event`, `step_finished`, `credential_captured`, unsolicited `credential_state`, unattributed `error`.
     Ctrl(Ctrl),
 }
 
@@ -181,24 +168,18 @@ impl Drop for OpenRequest {
 }
 
 type PendingOpen = (Arc<Chan>, oneshot::Sender<Result<(), SessionError>>);
-type RunStartReply = Result<(RunAccepted, Option<Arc<Chan>>), SessionError>;
 
 enum Pending {
-    RunStart {
+    StepStart {
         run_id: String,
-        log: Option<Arc<Chan>>,
-        tx: oneshot::Sender<RunStartReply>,
+        tx: oneshot::Sender<Result<StepAccepted, SessionError>>,
     },
-    RunStatus {
+    StepStatus {
         run_id: String,
-        tx: oneshot::Sender<Result<RunInfo, SessionError>>,
+        tx: oneshot::Sender<Result<StepInfo, SessionError>>,
     },
     CredentialStatus {
         tx: oneshot::Sender<Result<CredentialInfo, SessionError>>,
-    },
-    Prepare {
-        run_id: String,
-        tx: oneshot::Sender<Result<Prepared, SessionError>>,
     },
 }
 
@@ -495,13 +476,13 @@ impl Inner {
             }
             (
                 Role::Server,
-                m @ (Ctrl::RunStart(_)
-                | Ctrl::RunStatus { .. }
-                | Ctrl::RunSubscribe { .. }
-                | Ctrl::RunCancel { .. }
+                m @ (Ctrl::StepStart(_)
+                | Ctrl::StepStatus { .. }
+                | Ctrl::StepSteer { .. }
+                | Ctrl::StepStop { .. }
+                | Ctrl::StepResume { .. }
                 | Ctrl::CredentialStatus
                 | Ctrl::StatsRequest
-                | Ctrl::PrepareRequest(_)
                 | Ctrl::CredentialClear { .. }
                 | Ctrl::CredentialState { .. }),
             ) => {
@@ -554,7 +535,7 @@ impl Inner {
             }
             (
                 Role::Client,
-                Ctrl::RunAccepted {
+                Ctrl::StepAccepted {
                     run_id,
                     state,
                     existing,
@@ -563,90 +544,61 @@ impl Inner {
                 let found = {
                     let mut st = lock(&self.state);
                     let pos = st.pending.iter().position(
-                        |p| matches!(p, Pending::RunStart { run_id: r, .. } if *r == run_id),
+                        |p| matches!(p, Pending::StepStart { run_id: r, .. } if *r == run_id),
                     );
-                    let p = pos.and_then(|i| st.pending.remove(i));
-                    if let Some(Pending::RunStart { log: Some(c), .. }) = &p {
-                        st.reserved.remove(&c.id);
-                        st.channels.insert(c.id, c.clone());
-                    }
-                    p
+                    pos.and_then(|i| st.pending.remove(i))
                 };
                 match found {
-                    Some(Pending::RunStart { log, tx, .. }) => {
-                        let acc = RunAccepted {
+                    Some(Pending::StepStart { tx, .. }) => {
+                        let _ = tx.send(Ok(StepAccepted {
                             run_id,
                             state,
                             existing,
-                        };
-                        if let Err(Ok((_, Some(c)))) = tx.send(Ok((acc, log))) {
-                            let _ = c.close_local(close_code::CANCELLED, "run_start cancelled");
-                        }
+                        }));
                     }
-                    _ => self.send_error(
-                        error_code::PROTOCOL_VIOLATION,
-                        &format!("unsolicited run_accepted for {run_id}"),
-                    ),
+                    // Sent via `send_ctrl`: the caller reads it from `Events`.
+                    _ => emit(Event::Ctrl(Ctrl::StepAccepted {
+                        run_id,
+                        state,
+                        existing,
+                    })),
                 }
             }
             (
                 Role::Client,
-                Ctrl::RunState {
+                Ctrl::StepState {
                     run_id,
                     state,
-                    exit_code,
-                    summary,
-                    usage,
                     result,
                 },
             ) => {
                 let waiter = {
                     let mut st = lock(&self.state);
                     let pos = st.pending.iter().position(
-                        |p| matches!(p, Pending::RunStatus { run_id: r, .. } if *r == run_id),
+                        |p| matches!(p, Pending::StepStatus { run_id: r, .. } if *r == run_id),
                     );
                     pos.and_then(|i| st.pending.remove(i))
                 };
-                let info = RunInfo {
-                    run_id,
-                    state,
-                    exit_code,
-                    summary,
-                    usage,
-                    result,
-                };
                 match waiter {
-                    Some(Pending::RunStatus { tx, .. }) => {
-                        let _ = tx.send(Ok(info));
+                    Some(Pending::StepStatus { tx, .. }) => {
+                        let _ = tx.send(Ok(StepInfo {
+                            run_id,
+                            state,
+                            result,
+                        }));
                     }
-                    _ => emit(Event::Ctrl(Ctrl::RunState {
-                        run_id: info.run_id,
-                        state: info.state,
-                        exit_code: info.exit_code,
-                        summary: info.summary,
-                        usage: info.usage,
-                        result: info.result,
+                    _ => emit(Event::Ctrl(Ctrl::StepState {
+                        run_id,
+                        state,
+                        result,
                     })),
                 }
             }
             (Role::Client, m @ Ctrl::CredentialCaptured { .. }) => emit(Event::Ctrl(m)),
             (Role::Client, m @ Ctrl::Stats(_)) => emit(Event::Ctrl(m)),
-            (Role::Client, Ctrl::Prepared(reply)) => {
-                let waiter = {
-                    let mut st = lock(&self.state);
-                    let pos = st.pending.iter().position(
-                        |p| matches!(p, Pending::Prepare { run_id: r, .. } if *r == reply.run_id),
-                    );
-                    pos.and_then(|i| st.pending.remove(i))
-                };
-                match waiter {
-                    Some(Pending::Prepare { tx, .. }) => {
-                        let _ = tx.send(Ok(reply));
-                    }
-                    _ => emit(Event::Ctrl(Ctrl::Prepared(reply))),
-                }
+            (Role::Client, m @ (Ctrl::SessionEvent(_) | Ctrl::StepFinished(_))) => {
+                emit(Event::Ctrl(m))
             }
-            (Role::Client, m @ Ctrl::RunFinished(_)) => emit(Event::Ctrl(m)),
             (
                 Role::Client,
                 Ctrl::CredentialState {
@@ -718,23 +670,19 @@ impl Inner {
         }
         let p = {
             let mut st = lock(&self.state);
-            let p = match run_id {
-                Some(id) => st
-                    .pending
-                    .iter()
-                    .position(|p| match p {
-                        Pending::RunStart { run_id, .. }
-                        | Pending::RunStatus { run_id, .. }
-                        | Pending::Prepare { run_id, .. } => run_id == id,
-                        Pending::CredentialStatus { .. } => false,
-                    })
-                    .and_then(|i| st.pending.remove(i)),
+            match run_id {
+                Some(id) => {
+                    st.pending
+                        .iter()
+                        .position(|p| match p {
+                            Pending::StepStart { run_id, .. }
+                            | Pending::StepStatus { run_id, .. } => run_id == id,
+                            Pending::CredentialStatus { .. } => false,
+                        })
+                        .and_then(|i| st.pending.remove(i))
+                }
                 None => st.pending.pop_front(),
-            };
-            if let Some(Pending::RunStart { log: Some(c), .. }) = &p {
-                st.reserved.remove(&c.id);
             }
-            p
         };
         match p {
             Some(p) => {
@@ -757,21 +705,21 @@ fn ctrl_name(m: &Ctrl) -> &'static str {
         Ctrl::Opened { .. } => "opened",
         Ctrl::OpenError { .. } => "open_error",
         Ctrl::Resize { .. } => "resize",
-        Ctrl::RunStart(_) => "run_start",
-        Ctrl::RunAccepted { .. } => "run_accepted",
-        Ctrl::RunStatus { .. } => "run_status",
-        Ctrl::RunState { .. } => "run_state",
-        Ctrl::RunFinished(_) => "run_finished",
-        Ctrl::RunSubscribe { .. } => "run_subscribe",
-        Ctrl::RunCancel { .. } => "run_cancel",
+        Ctrl::StepStart(_) => "step_start",
+        Ctrl::StepAccepted { .. } => "step_accepted",
+        Ctrl::StepSteer { .. } => "step_steer",
+        Ctrl::StepStop { .. } => "step_stop",
+        Ctrl::StepResume { .. } => "step_resume",
+        Ctrl::StepStatus { .. } => "step_status",
+        Ctrl::StepState { .. } => "step_state",
+        Ctrl::SessionEvent(_) => "session_event",
+        Ctrl::StepFinished(_) => "step_finished",
         Ctrl::CredentialCaptured { .. } => "credential_captured",
         Ctrl::CredentialStatus => "credential_status",
         Ctrl::CredentialState { .. } => "credential_state",
         Ctrl::CredentialClear { .. } => "credential_clear",
         Ctrl::StatsRequest => "stats_request",
         Ctrl::Stats(_) => "stats",
-        Ctrl::PrepareRequest(_) => "prepare_request",
-        Ctrl::Prepared(_) => "prepared",
         Ctrl::Error { .. } => "error",
     }
 }
@@ -779,16 +727,13 @@ fn ctrl_name(m: &Ctrl) -> &'static str {
 impl Pending {
     fn fail(self, e: SessionError) {
         match self {
-            Pending::RunStart { tx, .. } => {
+            Pending::StepStart { tx, .. } => {
                 let _ = tx.send(Err(e));
             }
-            Pending::RunStatus { tx, .. } => {
+            Pending::StepStatus { tx, .. } => {
                 let _ = tx.send(Err(e));
             }
             Pending::CredentialStatus { tx } => {
-                let _ = tx.send(Err(e));
-            }
-            Pending::Prepare { tx, .. } => {
                 let _ = tx.send(Err(e));
             }
         }
@@ -1036,7 +981,7 @@ impl Session {
     }
 
     /// Send an `error` CTRL message attributed to `run_id` (so a client awaiting
-    /// that run's `run_start`/`run_status` fails it directly).
+    /// that run's `step_start`/`step_status` fails it directly).
     pub fn send_run_error(
         &self,
         run_id: &str,
@@ -1167,79 +1112,48 @@ impl Session {
         })
     }
 
-    /// (client) `run_start`. If `run.log_channel` is `Some(id)` the id must be
-    /// unused; the returned [`RunStarted::log`] is that channel.
-    pub async fn run_start(&self, run: RunStart) -> Result<RunStarted, SessionError> {
-        self.run_start_inner(run, false).await
-    }
-
-    /// (client) Like [`run_start`](Self::run_start) but allocates the log
-    /// channel id for you (overwriting `run.log_channel`).
-    pub async fn run_start_logged(&self, run: RunStart) -> Result<RunStarted, SessionError> {
-        self.run_start_inner(run, true).await
-    }
-
-    async fn run_start_inner(
-        &self,
-        mut run: RunStart,
-        alloc: bool,
-    ) -> Result<RunStarted, SessionError> {
-        self.require(Role::Client)?;
-        let (tx, rx) = oneshot::channel();
-        let log = {
-            let mut st = lock(&self.inner.state);
-            self.inner.check_alive()?;
-            if alloc {
-                run.log_channel = Some(st.alloc()?);
-            }
-            let log = match run.log_channel {
-                None => None,
-                Some(0) => return Err(SessionError::ReservedChannel),
-                Some(id) if st.in_use(id) => return Err(SessionError::ChannelInUse(id)),
-                Some(id) => {
-                    st.reserved.insert(id);
-                    Some(Chan::new(id, &self.inner))
-                }
-            };
-            st.pending.push_back(Pending::RunStart {
-                run_id: run.run_id.clone(),
-                log: log.clone(),
-                tx,
-            });
-            log
-        };
-        let log_id = log.as_ref().map(|c| c.id);
-        if let Err(e) = self.inner.send_ctrl(&Ctrl::RunStart(run)) {
-            if let Some(id) = log_id {
-                lock(&self.inner.state).reserved.remove(&id);
-            }
-            return Err(e);
-        }
-        match rx.await {
-            Ok(Ok((accepted, log))) => Ok(RunStarted {
-                accepted,
-                log: log.map(ChannelHandle::new),
-            }),
-            Ok(Err(e)) => Err(e),
-            Err(_) => Err(self.inner.ended()),
-        }
-    }
-
-    /// (client) `run_status`, resolved by the matching `run_state` reply.
-    /// An `unknown_run` error reply becomes [`SessionError::Remote`].
-    pub async fn run_status(&self, run_id: &str) -> Result<RunInfo, SessionError> {
+    /// (client) `step_start`, resolved by the matching `step_accepted`. Only
+    /// call it when [`has_feature`](Self::has_feature)`(feature::STEPS)`.
+    pub async fn step_start(&self, step: StepStart) -> Result<StepAccepted, SessionError> {
         self.require(Role::Client)?;
         let (tx, rx) = oneshot::channel();
         {
             let mut st = lock(&self.inner.state);
             self.inner.check_alive()?;
-            st.pending.push_back(Pending::RunStatus {
+            st.pending.push_back(Pending::StepStart {
+                run_id: step.run_id.clone(),
+                tx,
+            });
+        }
+        self.inner.send_ctrl(&Ctrl::StepStart(Box::new(step)))?;
+        match rx.await {
+            Ok(r) => r,
+            Err(_) => Err(self.inner.ended()),
+        }
+    }
+
+    /// (client) `step_status`, resolved by the matching `step_state`. The
+    /// replayed `session_event`s (`seq > after_seq`) arrive as
+    /// [`Event::Ctrl`] before it resolves; later events and `step_finished`
+    /// keep arriving there (the call subscribes this session to the run).
+    pub async fn step_status(
+        &self,
+        run_id: &str,
+        after_seq: u64,
+    ) -> Result<StepInfo, SessionError> {
+        self.require(Role::Client)?;
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut st = lock(&self.inner.state);
+            self.inner.check_alive()?;
+            st.pending.push_back(Pending::StepStatus {
                 run_id: run_id.into(),
                 tx,
             });
         }
-        self.inner.send_ctrl(&Ctrl::RunStatus {
+        self.inner.send_ctrl(&Ctrl::StepStatus {
             run_id: run_id.into(),
+            after_seq,
         })?;
         match rx.await {
             Ok(r) => r,
@@ -1247,25 +1161,29 @@ impl Session {
         }
     }
 
-    /// (client) `prepare_request`, resolved by the `prepared` reply with the
-    /// same `run_id`. Only call this when [`has_feature`](Self::has_feature)
-    /// `(feature::PREPARE)`. An error reply becomes [`SessionError::Remote`].
-    pub async fn prepare(&self, req: PrepareRequest) -> Result<Prepared, SessionError> {
+    /// (client) `step_steer`: a user turn for the running agent. No reply.
+    pub fn step_steer(&self, run_id: &str, text: &str) -> Result<(), SessionError> {
         self.require(Role::Client)?;
-        let (tx, rx) = oneshot::channel();
-        {
-            let mut st = lock(&self.inner.state);
-            self.inner.check_alive()?;
-            st.pending.push_back(Pending::Prepare {
-                run_id: req.run_id.clone(),
-                tx,
-            });
-        }
-        self.inner.send_ctrl(&Ctrl::PrepareRequest(req))?;
-        match rx.await {
-            Ok(r) => r,
-            Err(_) => Err(self.inner.ended()),
-        }
+        self.inner.send_ctrl(&Ctrl::StepSteer {
+            run_id: run_id.into(),
+            text: text.into(),
+        })
+    }
+
+    /// (client) `step_stop`. The step finishes with exit `interrupted`.
+    pub fn step_stop(&self, run_id: &str) -> Result<(), SessionError> {
+        self.require(Role::Client)?;
+        self.inner.send_ctrl(&Ctrl::StepStop {
+            run_id: run_id.into(),
+        })
+    }
+
+    /// (client) `step_resume`: continue an interrupted step.
+    pub fn step_resume(&self, run_id: &str) -> Result<(), SessionError> {
+        self.require(Role::Client)?;
+        self.inner.send_ctrl(&Ctrl::StepResume {
+            run_id: run_id.into(),
+        })
     }
 
     /// (client) `credential_status`, resolved by the matching `credential_state`
@@ -1292,74 +1210,42 @@ impl Session {
         self.inner.send_ctrl(&Ctrl::CredentialClear { kind })
     }
 
-    /// (client) `run_subscribe`: ask for `run_finished` pushes (as
-    /// [`Event::Ctrl`]) for these runs. No reply. Only send it after
-    /// `welcome.features` contained [`feature::RUN_RESULTS`](crate::feature::RUN_RESULTS).
-    pub fn run_subscribe(&self, run_ids: Vec<String>) -> Result<(), SessionError> {
-        self.require(Role::Client)?;
-        self.inner.send_ctrl(&Ctrl::RunSubscribe { run_ids })
-    }
-
-    /// (server) Push `run_finished`.
-    pub fn send_run_finished(&self, result: &crate::RunFinished) -> Result<(), SessionError> {
-        self.require(Role::Server)?;
-        self.inner.send_ctrl(&Ctrl::RunFinished(result.clone()))
-    }
-
-    /// (client) `run_cancel`. The new state arrives as a pushed `run_state` event.
-    pub fn run_cancel(&self, run_id: &str) -> Result<(), SessionError> {
-        self.require(Role::Client)?;
-        self.inner.send_ctrl(&Ctrl::RunCancel {
-            run_id: run_id.into(),
-        })
-    }
-
     // ---- server API ----
 
-    /// (server) Answer `run_start` with `run_accepted`. When `log_channel` is
-    /// `Some`, the transcript channel is registered (implicitly opened) first
-    /// and returned; on `Err(ChannelInUse | ReservedChannel)` nothing was sent
-    /// and the caller should reply with [`send_error`](Self::send_error).
-    pub fn accept_run(
+    /// (server) Answer `step_start` with `step_accepted`.
+    pub fn accept_step(
         &self,
         run_id: &str,
-        state: RunPhase,
+        state: StepPhase,
         existing: bool,
-        log_channel: Option<u32>,
-    ) -> Result<Option<ChannelHandle>, SessionError> {
+    ) -> Result<(), SessionError> {
         self.require(Role::Server)?;
-        let chan = {
-            let mut st = lock(&self.inner.state);
-            self.inner.check_alive()?;
-            match log_channel {
-                None => None,
-                Some(0) => return Err(SessionError::ReservedChannel),
-                Some(id) if st.in_use(id) => return Err(SessionError::ChannelInUse(id)),
-                Some(id) => {
-                    let c = Chan::new(id, &self.inner);
-                    st.channels.insert(id, c.clone());
-                    Some(c)
-                }
-            }
-        };
-        self.inner.send_ctrl(&Ctrl::RunAccepted {
+        self.inner.send_ctrl(&Ctrl::StepAccepted {
             run_id: run_id.into(),
             state,
             existing,
-        })?;
-        Ok(chan.map(ChannelHandle::new))
+        })
     }
 
-    /// (server) Send `run_state`: the reply to `run_status`, or a push on change.
-    pub fn send_run_state(&self, info: &RunInfo) -> Result<(), SessionError> {
+    /// (server) Send `step_state`: the reply to `step_status`.
+    pub fn send_step_state(&self, info: &StepInfo) -> Result<(), SessionError> {
         self.require(Role::Server)?;
-        self.inner.send_ctrl(&Ctrl::RunState {
+        self.inner.send_ctrl(&Ctrl::StepState {
             run_id: info.run_id.clone(),
             state: info.state,
-            exit_code: info.exit_code,
-            summary: info.summary.clone(),
-            usage: info.usage.clone(),
             result: info.result.clone(),
         })
+    }
+
+    /// (server) Push one `session_event`.
+    pub fn send_session_event(&self, ev: &crate::SessionEvent) -> Result<(), SessionError> {
+        self.require(Role::Server)?;
+        self.inner.send_ctrl(&Ctrl::SessionEvent(ev.clone()))
+    }
+
+    /// (server) Push `step_finished`.
+    pub fn send_step_finished(&self, fin: &StepFinished) -> Result<(), SessionError> {
+        self.require(Role::Server)?;
+        self.inner.send_ctrl(&Ctrl::StepFinished(fin.clone()))
     }
 }

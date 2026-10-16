@@ -1,0 +1,20 @@
+version: 1
+params:
+  command: {type: string, default: start}
+exits: [rejected]
+start: wait
+nodes:
+  wait:
+    wait:
+      events:
+        - {event: comment, from: writer, if: "event.command == params.command"}
+        - label
+      reason: awaiting_start
+      text: "Waiting for /{{ params.command }}"
+      column: waiting
+      actions: [{label: Start, command: start}]
+    next:
+      - {if: "event.type == 'label' and event.label == 'reject'", to: rejected}
+      - {if: "event.type == 'comment' or event.label == 'go'", to: done}
+  done: {end: {status: done}}
+  rejected: {end: {status: rejected}}

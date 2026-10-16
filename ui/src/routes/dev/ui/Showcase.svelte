@@ -11,8 +11,8 @@
 	import TextArea from '#lib/components/form/TextArea.svelte';
 	import TextField from '#lib/components/form/TextField.svelte';
 	import StatusBadge from '#lib/components/StatusBadge.svelte';
-	import WorkStateChip from '#lib/components/WorkStateChip.svelte';
-	import WorkTimeline from '#lib/components/WorkTimeline.svelte';
+	import TaskStatus from '#lib/components/tasks/TaskStatus.svelte';
+	import TaskTimeline from '#lib/components/tasks/TaskTimeline.svelte';
 	import Avatar from '#lib/components/ui/Avatar.svelte';
 	import Badge from '#lib/components/ui/Badge.svelte';
 	import Card from '#lib/components/ui/Card.svelte';
@@ -81,10 +81,10 @@
 		when: string;
 	}
 	const rows: Row[] = [
-		{ id: 1, name: 'Fix flaky login test', state: 'AwaitingApproval', when: '2026-10-09 14:02' },
-		{ id: 2, name: 'Upgrade bits-ui', state: 'Implementing', when: '2026-10-09 13:40' },
-		{ id: 3, name: 'Docs typo', state: 'Done', when: '2026-10-08 09:12' },
-		{ id: 4, name: 'Broken deploy hook', state: 'Failed', when: '2026-10-07 18:30' }
+		{ id: 1, name: 'Fix flaky login test', state: 'waiting', when: '2026-10-09 14:02' },
+		{ id: 2, name: 'Upgrade bits-ui', state: 'running', when: '2026-10-09 13:40' },
+		{ id: 3, name: 'Docs typo', state: 'ended', when: '2026-10-08 09:12' },
+		{ id: 4, name: 'Broken deploy hook', state: 'paused', when: '2026-10-07 18:30' }
 	];
 	const columns: Column<Row>[] = [
 		{ id: 'name', header: 'Item', cell: nameCell },
@@ -108,9 +108,20 @@
 	];
 	const at = '2026-10-08T12:00:00.000Z';
 	const transitions = [
-		{ id: 1, fromState: null, toState: 'Triaging', eventType: 'WorkItemOpened', at },
-		{ id: 2, fromState: 'Triaging', toState: 'Planning', eventType: 'JobSucceeded', at },
-		{ id: 3, fromState: 'Planning', toState: 'AwaitingApproval', eventType: 'JobSucceeded', at }
+		{
+			at,
+			eventType: 'issue',
+			from: { status: null, node: null },
+			to: { status: 'running', node: 'plan/plan' },
+			effects: 1
+		},
+		{
+			at,
+			eventType: 'step_finished',
+			from: { status: 'running', node: 'plan/plan' },
+			to: { status: 'waiting', node: 'plan/approve' },
+			effects: 0
+		}
 	];
 
 	async function fakeConfirm() {
@@ -119,7 +130,7 @@
 </script>
 
 {#snippet nameCell(r: Row)}<a href="#row-{r.id}">{r.name}</a>{/snippet}
-{#snippet stateCell(r: Row)}<WorkStateChip state={r.state} />{/snippet}
+{#snippet stateCell(r: Row)}<TaskStatus status={r.state} />{/snippet}
 {#snippet whenCell(r: Row)}<time>{r.when}</time>{/snippet}
 {#snippet rowActions(r: Row)}
 	<Button size="sm" variant="ghost">View</Button>
@@ -213,8 +224,8 @@
 		<StatusBadge state="failed" />
 	</div>
 	<div class="ez-cluster">
-		{#each ['Triaging', 'AwaitingApproval', 'Implementing', 'Done', 'Failed', 'Cancelled'] as s (s)}
-			<WorkStateChip state={s} />
+		{#each ['running', 'waiting', 'paused', 'ended'] as s (s)}
+			<TaskStatus status={s} endStatus={s === 'ended' ? 'done' : null} />
 		{/each}
 	</div>
 {/snippet}
@@ -385,7 +396,7 @@
 {#snippet steps()}
 	<ConditionChecklist conditions={bootConditions} />
 	<ConditionChecklist conditions={failedConditions} />
-	<WorkTimeline state="AwaitingApproval" {transitions} />
+	<TaskTimeline {transitions} />
 	<StepList
 		label="All states"
 		items={[
@@ -405,7 +416,7 @@
 
 {#snippet layoutPieces()}
 	<PageHeader title="Page header" description="A description line under the title.">
-		{#snippet meta()}<WorkStateChip state="Implementing" /><code>acme/web#12</code>{/snippet}
+		{#snippet meta()}<TaskStatus status="running" /><code>acme/web#12</code>{/snippet}
 		{#snippet actions()}<Button variant="primary">Primary action</Button><Button>Secondary</Button
 			>{/snippet}
 	</PageHeader>

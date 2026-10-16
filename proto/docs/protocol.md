@@ -38,11 +38,10 @@ The codec does not parse `DATA_*` payloads; the channel's owner does.
 - Channel **0** is control. Only `CTRL` frames use it.
 - Channels 1..=u32::MAX are data channels. The **client** picks the id in `open` (must be unused). The server may refuse with `open_error`.
 - A channel exists from `open` until both directions have sent `CLOSE`. After that the id may be reused.
-- `run_start.log_channel`, when non-null, is a client-chosen id on which the server streams the run transcript as `DATA_JSON` frames. It is implicitly opened by `run_accepted` and uses the same flow control and close rules.
 
 ## 4. Flow control (credit based)
 
-- Each data channel has an independent **window per direction**. Both start at `INITIAL_WINDOW` = 262,144 bytes (256 KiB) as soon as the channel is open (when the server's `opened` is sent/received, or for a log channel when `run_accepted` is).
+- Each data channel has an independent **window per direction**. Both start at `INITIAL_WINDOW` = 262,144 bytes (256 KiB) as soon as the channel is open (when the server's `opened` is sent/received).
 - Only `DATA_BIN` and `DATA_JSON` **payload bytes** consume credit. `CTRL`, `WINDOW`, `CLOSE` are free.
 - A sender must not send a data frame larger than its remaining credit. Frames up to 1 MiB are legal framing, but a sender must split data to fit its credit (and should prefer frames <= 16 KiB).
 - A receiver that gets more bytes than it granted must treat it as a violation: send `error` (`flow_control`), `CLOSE` the channel with code 1, and may drop the connection.
@@ -60,7 +59,7 @@ The codec does not parse `DATA_*` payloads; the channel's owner does.
 
 ## 5. CTRL messages
 
-JSON objects with a `"type"` field, channel 0. Unknown fields are ignored; an unknown `type` is answered with `error` (`unknown_message`). Optional fields may be absent or `null`; encoders omit `None` except `run_start.log_channel` which is always written (`null`). `run_start.deps_token` is an optional read-only (`contents: read`) token for fetching same-Project git dependencies; it is never used for push, and implementations must not log it. `run_start.npm_token` is an optional long-lived token with `read:packages` for installing private npm packages; implementations expose it to the run process only (as `NODE_AUTH_TOKEN`), must not log or persist it, and must redact it from transcripts. Definitions mirror contracts section 4 and `crates/enzarb-proto/src/ctrl.rs`.
+JSON objects with a `"type"` field, channel 0. Unknown fields are ignored; an unknown `type` is answered with `error` (`unknown_message`). Optional fields may be absent or `null`; encoders omit `None`. Definitions mirror contracts section 4 and `crates/enzarb-proto/src/ctrl.rs`.
 
 | Message | Direction | Fields |
 |---|---|---|
@@ -70,48 +69,54 @@ JSON objects with a `"type"` field, channel 0. Unknown fields are ignored; an un
 | `opened` | server -> client | `channel` |
 | `open_error` | server -> client | `channel`, `message`, `code?: string` |
 | `resize` | client -> server | `channel`, `cols`, `rows` |
-| `run_start` | client -> server | `run_id, repo_url, base_ref, branch, push, clone_token, prompt, timeout_secs, callback_url?, callback_token?, log_channel, deps_token?, npm_token?, claude_token?, retarget?, graph?` (`callback_*` deprecated: omitted, or empty, only towards a server with `run_results`; old servers require them) |
-| `run_accepted` | server -> client | `run_id`, `state`, `existing: bool` |
-| `run_status` | client -> server | `run_id` |
-| `run_state` | server -> client (reply to `run_status`, and pushed on change) | `run_id`, `state`, `exit_code?`, `summary?`, `usage?: Usage`, `result?: RunFinished` (terminal runs, `run_results` servers) |
-| `run_finished` | server -> client (`run_results` only) | the `RunFinished` fields; pushed when a run ends to each open session that started it or subscribed to it |
-| `run_subscribe` | client -> server (only after `run_results`) | `run_ids: [string]`; no reply. Runs that already ended are answered with `run_finished` at once; unknown ids are ignored |
-| `run_cancel` | client -> server | `run_id` |
+| `step_start` | client -> server (only after `steps`) | `StepStart` (below). Idempotent on `run_id`: a repeat is answered `step_accepted{existing: true}` |
+| `step_accepted` | server -> client | `run_id`, `state: StepPhase`, `existing: bool` |
+| `step_status` | client -> server | `run_id`, `after_seq?: u64` (default 0). The server replays `session_event`s with `seq > after_seq`, then answers `step_state`, and subscribes the session to the run's further `session_event`s and `step_finished` |
+| `step_state` | server -> client (reply to `step_status`) | `run_id`, `state: StepPhase`, `result?: StepFinished` (terminal steps) |
+| `step_steer` | client -> server | `run_id`, `text`: a user turn into the running agent session (queued after the current turn) |
+| `step_stop` | client -> server | `run_id`: stop at the next checkpoint; the step finishes with exit `interrupted` |
+| `step_resume` | client -> server | `run_id`: continue an `interrupted` step by re-attaching to its saved agent session (ACP `session/load`) |
+| `session_event` | server -> client | `SessionEvent` (below), pushed to subscribed sessions |
+| `step_finished` | server -> client | `StepFinished` (below); may arrive more than once, receivers ingest it idempotently |
 | `credential_captured` | server -> client | `kind: "claude_oauth"`, `token?: string`, `legacy?: bool` |
 | `credential_status` | client -> server | none; asks whether the sandbox holds a credential |
 | `credential_state` | server -> client (reply to `credential_status`); client -> server (ack of a `legacy` `credential_captured`) | `kind: "claude_oauth"`, `configured: bool`, `scope?: string` (known: `"user"`; unknown values must be tolerated) |
-| `prepare_request` | client -> server | `run_id`, `repo_url`, `base_ref`, `branch`, `clone_token`. Send only after `welcome.features` contains `prepare`. See `docs/contracts.md` section 4 |
-| `prepared` | server -> client (reply to `prepare_request`) | `run_id` and, each omitted when empty: `merge_base_sha`, `changed_files`, `changed_files_total`, `affected`. Decoders ignore unknown fields |
 | `stats_request` | client -> server | none; asks for a utilization sample. Send only after `welcome.features` contains `stats`. [ADR-0019](../../docs/adr/0019-sandbox-utilization-polling.md) |
 | `stats` | server -> client (reply to `stats_request`) | `ts_ms` (unix ms, the sandbox's clock) and optional non-negative integers: counters `cpu_usage_usec`, `cpu_user_usec`, `cpu_system_usec` (`cpu.stat`), `io_read_bytes`, `io_write_bytes` (`io.stat`, summed over devices); gauges `memory_bytes` (`memory.current`), `storage_used_bytes`, `storage_total_bytes` (statfs of the workspace). Counters are cumulative and restart near 0 when the sandbox container restarts (new cgroup); absent means "not reported", never 0 |
 | `credential_clear` | client -> server | `kind: "claude_oauth"`; no reply. A peer that does not know it answers `unknown_message` |
 
-`claude_token` (on `run_start` and `open`) and `credential_captured.token` carry a per-user Claude token as a plain string. They are optional and additive (protocol version stays 1; old peers ignore them). Implementations must not log them: the Rust `Secret` type and the TS `Secret` class redact `Debug`/`inspect`/`String()`/`JSON.stringify`, and the wire encoder writes the plain value.
+`claude_token` (on `open`) and `credential_captured.token` carry a per-user Claude token as a plain string. They are optional and additive (protocol version stays 1; old peers ignore them). Implementations must not log them: the Rust `Secret` type and the TS `Secret` class redact `Debug`/`inspect`/`String()`/`JSON.stringify`, and the wire encoder writes the plain value.
 | `error` | both | `code`, `message`, optional `run_id`, optional `channel` (omitted when absent) |
 
-`state` is `queued | running | succeeded | failed | cancelled`. `run_start` is idempotent on `run_id`.
+### Steps (ADR-0022)
 
-### Run result (`RunFinished`)
+`StepPhase` is `running | interrupted | finished | unknown` (`unknown`: the sandbox does not know the run).
 
-The body of `run_finished` and `run_state.result`, and (deprecated) the JSON body sandbox-init POSTs to `callback_url` for requests that carry one. Receivers must ingest it idempotently; a result too large for one frame has long graph output strings cut and keeps the tail of `summary`:
-`{run_id, outcome: succeeded|failed|cancelled, exit_code?, summary, branch, head_sha, pushed, usage?: Usage, graph?: GraphResult}`.
+`StepStart`: `{run_id, attempt, task_id, workspaces: [StepWorkspace], exec: StepExec, outputs?: {[name]: StepOutput}, env?: {[NAME]: string}, github_token?: string}`.
 
-`run_start.graph` (`GraphSegment`, additive) makes the run a graph segment run: `{definition, start: string, outputs?: {[node]: any}, visits?: {[node]: integer}, prompts?: {[node]: string}}`. `definition` is a workflow definition (preferably its YAML source as a string). `RunFinished.graph` (`GraphResult`, additive) reports `{stopped_at: string, outputs?, visits?}`. Old peers ignore both. Semantics: contracts section 4 and ADR-0020.
+- `StepWorkspace`: `{repo: "owner/repo", url, mode: "read" | "write", branch, base, push?: bool, token: string}`. Checked out under `/workspace/tasks/<task_id>/<owner>/<repo>`; the first workspace is the primary one (working directory). `branch` is created from `origin/<base>` when missing remotely. With `push`, the sandbox commits all changes and pushes `branch` with a lease on the remote head it saw when the step started.
+- `StepExec`: `{kind: "agent", runtime: Runtime, model?, prompt, result_schema?}` or `{kind: "command", run, tools?: [mise tool spec]}`. `Runtime`: `{name, install?: [mise tool spec], protocol: "acp" | "stdio-json", command: [argv], env?, capabilities?}`. With `result_schema`, the agent is offered an MCP tool `submit_result` whose input schema it is (validated at call time).
+- `StepOutput`: `{file, format?: "markdown" | "json" | "text", optional?: bool}`, relative to the primary workspace; `json` outputs are parsed.
+- `env` values, workspace tokens and `github_token` are secrets: implementations never log or persist them, inject them into the step's process only (`github_token` as `GH_TOKEN`), and redact them from session events. The Rust `Secret` and TS `Secret` types redact them in logs.
 
-`Usage` (additive; on `RunFinished` and `run_state`, omitted when the agent reported none; old decoders ignore it):
+`SessionEvent`: `{run_id, seq, at: RFC 3339, kind, payload: any, truncated?: bool}`. `seq` starts at 1 and is dense per run. Kinds (open set): `prompt`, `user`, `assistant`, `thinking`, `tool_call`, `tool_result`, `usage`, `steer`, `system`, `stdout`, `stderr`. Payloads are capped (head and tail kept, `truncated: true`).
+
+`StepFinished`: `{run_id, exit: "success" | "failure" | "interrupted", outputs?: {[name]: any}, result?: any, git?: [StepGit], usage?: Usage, error?: string}`. `StepGit`: `{repo, branch, head_sha, pushed}`, one per write workspace in `step_start.workspaces` order. The engine re-verifies the git facts. A missing required output is left out (the engine reports it).
+
+`Usage` (on `StepFinished`, omitted when the agent reported none; old decoders ignore it):
 `{input_tokens?, output_tokens?, cache_read_input_tokens?, cache_creation_input_tokens?: integer, models?: string[], cost_usd?: number}`.
 Every field is omitted when unknown: absent means "not reported", never 0. `cost_usd` is the cost as reported by the agent (Claude's `total_cost_usd`), never an estimate computed by the sandbox.
 
 ### Error codes
 
-`unsupported_version`, `unknown_message`, `protocol_violation`, `flow_control`, `unauthorized`, `unknown_channel`, `unknown_run`, `internal`, `unimplemented` (peer lacks the feature, e.g. `run_*` without a run manager). Unknown codes must be tolerated.
+`unsupported_version`, `unknown_message`, `protocol_violation`, `flow_control`, `unauthorized`, `unknown_channel`, `unknown_run`, `internal`, `unimplemented` (peer lacks the feature, e.g. `step_*` without a step executor). Unknown codes must be tolerated.
 
 ### `welcome.features`, `open.repo`/`resume`, `open_error.code`
 
 Additive fields (protocol version stays 1). Encoders omit them when absent; `welcome.features` is also omitted when empty. Old peers ignore them and old payloads decode without them.
 
 - `hello.features`: feature names the client supports, sanitized like `welcome.features`. Defined: `claude_user_token` (sent only by sandbox-proxy: it stores `credential_captured.token`, never relays it to a browser, and acks `legacy` captures with `credential_state`). A server sends token-bearing `credential_captured` frames **only** to a client that offered it; old clients get the token-less frame. Like `client`, it is self-declared and trusted only as far as the bearer auth.
-- `welcome.features`: feature names the server supports. Defined: `acp` (the `acp` channel kind), `prepare` (the `prepare_request`/`prepared` frames; a sandbox without it answers `prepare_request` with `unknown_message`), `stats` (the `stats_request`/`stats` frames; a sandbox without it answers `stats_request` with `unknown_message`, so clients wait for the feature), `run_results` (`run_finished`, `run_subscribe`, `run_state.result`, results kept across restarts, and `run_start` without a callback). Decoders drop non-string, empty and longer-than-64-byte entries and keep at most 64. Unknown features are ignored. A client sends something that depends on a feature **only after** `features` contains it.
+- `welcome.features`: feature names the server supports. Defined: `acp` (the `acp` channel kind), `stats` (the `stats_request`/`stats` frames; a sandbox without it answers `stats_request` with `unknown_message`, so clients wait for the feature), `steps` (the `step_*` and `session_event` frames). Decoders drop non-string, empty and longer-than-64-byte entries and keep at most 64. Unknown features are ignored. A client sends something that depends on a feature **only after** `features` contains it.
 - `open.kind`: `pty` or `acp`. A decoder maps any other kind to an "unknown" value instead of failing; a server answers it with `open_error` (`unsupported_kind`) and keeps the connection. For `acp`, `cols`/`rows` are ignored but clients send `0`, and `command` is not used.
 - `open.repo` (at most 2048 bytes) and `open.resume` (at most 256 bytes) are `acp` routing hints. Longer values are refused with `open_error` (`invalid_request`) before the application sees them.
 - `open_error.code`: machine-readable reason. Known: `chat_disabled`, `chat_limit`, `no_credential`, `repo_not_cloned`, `unsupported_kind`, `invalid_request`. Unknown codes must be tolerated; `message` stays the human text.
@@ -157,8 +162,7 @@ Regenerate with `ENZARB_UPDATE_VECTORS=1 cargo test -p enzarb-proto --test vecto
 - **Per-channel violations** (credit overrun, `WINDOW` overflow, data after the peer's `CLOSE`): `error` (`flow_control`), `CLOSE` code 1 on that channel, and that channel is failed. The connection stays up.
 - **Non-fatal replies:** data for an unknown channel -> `error` (`unknown_channel`); `resize` for an unknown channel -> `error` (`unknown_channel`); unknown CTRL `type` -> `error` (`unknown_message`); a second `hello`, or a message sent in the wrong direction -> `error` (`protocol_violation`).
 - **`open`:** channel 0 or an id in use (including one with a pending `open`) is answered with `open_error`. The server's handler may accept (`opened`) or refuse (`open_error`).
-- **`run_start` with `log_channel`:** `run_accepted` is sent only after the channel is registered; if the id is in use the server answers with `error` instead and no channel is created.
-- **Reply correlation:** replies carry no request id except by `channel` (`opened`/`open_error`) and `run_id` (`run_accepted`, `run_state`). An `error` with `run_id` is attributed to the client's pending `run_start`/`run_status` for that run (any code; if none matches it is delivered as an event). Without `run_id`, an `error` with code `unknown_run`, `internal`, `unauthorized`, `unknown_message` or `unimplemented` is attributed to the oldest pending `run_start`/`run_status`; other error codes are delivered as unsolicited events.
+- **Reply correlation:** replies carry no request id except by `channel` (`opened`/`open_error`) and `run_id` (`step_accepted`, `step_state`). An `error` with `run_id` is attributed to the client's pending `step_start`/`step_status` for that run (any code; if none matches it is delivered as an event). Without `run_id`, an `error` with code `unknown_run`, `internal`, `unauthorized`, `unknown_message` or `unimplemented` is attributed to the oldest pending request; other error codes are delivered as unsolicited events.
 - **Credit:** a receiver returns credit when the application *reads* data, batched at half the initial window. If the application drops a channel's receiver, further data is discarded and credited immediately so the peer does not stall.
 - **DATA_JSON** frames cannot be split, so the runtime refuses to send one larger than the initial window (256 KiB).
 - Dropping the last session handle (or the sender of a channel) closes gracefully: `CLOSE` going-away on every open channel, then the websocket.

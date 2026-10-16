@@ -4,12 +4,14 @@ on:
     branches: [main]
     paths:
       - 'connectors/**'
+      - 'workflows/crates/flow/**'
       - .github/workflows/ci-connectors.yml
       - .github/workflows/_rust.yml
       - .github/workflows/_docker.yml
   pull_request:
     paths:
       - 'connectors/**'
+      - 'workflows/crates/flow/**'
       - .github/workflows/ci-connectors.yml
       - .github/workflows/_rust.yml
       - .github/workflows/_docker.yml
@@ -29,3 +31,4 @@ jobs:
       cargo-args: --workspace --all-features
       postgres: true
       image: enzarb-connectors-receiver
+      context: .

@@ -6,10 +6,20 @@
 	import { claudeCredential } from '#lib/claude.remote.ts';
 	import Notice from '#lib/components/ui/Notice.svelte';
 	import { getProjectContext } from '#lib/project-context.svelte.ts';
+	import ChatHistory from '#lib/components/tasks/ChatHistory.svelte';
+	import Section from '#lib/components/ui/Section.svelte';
+	import { getChatSession, listChats } from '#lib/tasks.remote.ts';
 
 	const ctx = getProjectContext();
 	// Presence only. A failed read falls through to the chat: the proxy answers `no_credential` then.
 	const credential = claudeCredential();
+	const chats = $derived(listChats(ctx.project.name));
+
+	async function readChat(runId: string, afterSeq: number) {
+		const q = getChatSession({ runId, afterSeq });
+		await q.refresh();
+		return q.current ?? [];
+	}
 </script>
 
 <svelte:head><title>Chat · {page.params.name} · enzarb</title></svelte:head>
@@ -30,4 +40,10 @@
 	</div>
 {:else}
 	<Notice tone="info">Sandbox is still booting. Chat is available once it is ready.</Notice>
+{/if}
+
+{#if chats.current?.length}
+	<Section title="Previous chats" description="Captured sessions of your chats in this project.">
+		<ChatHistory chats={chats.current} load={readChat} />
+	</Section>
 {/if}

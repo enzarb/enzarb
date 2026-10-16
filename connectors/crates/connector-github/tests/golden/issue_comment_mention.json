@@ -1,71 +1,24 @@
-{
-  "kind": "events",
-  "events": [
-    {
-      "specversion": "1.0",
-      "source": "github",
-      "id": "d-issue_comment_mention",
-      "type": "CommentAdded",
-      "subject": "github:enzarb/enzarb-ui#42",
-      "time": "2026-10-08T12:10:00Z",
-      "data": {
-        "repo": "github:enzarb/enzarb-ui",
-        "actor": {
-          "login": "ruckc",
-          "id": 42,
-          "is_bot": false
-        },
-        "item": {
-          "kind": "issue",
-          "number": 42,
-          "url": "https://github.com/enzarb/enzarb-ui/issues/42",
-          "title": "Sidebar overflows on mobile",
-          "body": "The sidebar overflows on narrow screens.\n\n@enzarb please propose a fix.",
-          "author": "ruckc",
-          "head_ref": null,
-          "base_ref": null,
-          "head_sha": null
-        },
-        "comment": {
-          "id": 988,
-          "kind": "conversation",
-          "body": "@enzarb go ahead and look at the header too",
-          "url": "https://github.com/enzarb/enzarb-ui/issues/42#issuecomment-988"
-        }
-      }
-    },
-    {
-      "specversion": "1.0",
-      "source": "github",
-      "id": "d-issue_comment_mention#mentioned",
-      "type": "Mentioned",
-      "subject": "github:enzarb/enzarb-ui#42",
-      "time": "2026-10-08T12:10:00Z",
-      "data": {
-        "repo": "github:enzarb/enzarb-ui",
-        "actor": {
-          "login": "ruckc",
-          "id": 42,
-          "is_bot": false
-        },
-        "item": {
-          "kind": "issue",
-          "number": 42,
-          "url": "https://github.com/enzarb/enzarb-ui/issues/42",
-          "title": "Sidebar overflows on mobile",
-          "body": "The sidebar overflows on narrow screens.\n\n@enzarb please propose a fix.",
-          "author": "ruckc",
-          "head_ref": null,
-          "base_ref": null,
-          "head_sha": null
-        },
-        "comment": {
-          "id": 988,
-          "kind": "conversation",
-          "body": "@enzarb go ahead and look at the header too",
-          "url": "https://github.com/enzarb/enzarb-ui/issues/42#issuecomment-988"
-        }
-      }
+[
+  {
+    "suffix": "0",
+    "type": "comment",
+    "event": {
+      "type": "comment",
+      "body": "@enzarb go ahead and look at the header too",
+      "url": "https://github.com/enzarb/enzarb-ui/issues/42#issuecomment-988",
+      "mentioned": true,
+      "id": "d-1",
+      "repo": "enzarb/enzarb-ui",
+      "actor": {
+        "login": "ruckc",
+        "can_write": false,
+        "bot": false
+      },
+      "subject": {
+        "kind": "issue",
+        "number": 42
+      },
+      "at": "2026-10-08T12:10:00Z"
     }
-  ]
-}
+  }
+]

@@ -1,0 +1,25 @@
+[package]
+name = "enzarb-flow"
+version = "0.1.0"
+# Explicit (not `workspace = true`) so the crate can be used as a path
+# dependency from other workspaces (sandbox-container, a WASM build).
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Workflow formats, resolution, templates and the pure interpreter (ADR-0022). No IO in the library."
+
+[lib]
+name = "enzarb_flow"
+
+[[bin]]
+name = "enzarb-lint"
+path = "src/bin/enzarb-lint.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_path_to_error = "0.1"
+yaml-rust2 = "0.10"
+minijinja = { version = "2", features = ["unstable_machinery", "json"] }
+regex = "1"
+schemars = "1"

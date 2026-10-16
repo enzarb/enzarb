@@ -1,23 +1,19 @@
 //! GitHub App implementation of [`enzarb_connector::Connector`], plus webhook
-//! signature verification and normalization.
+//! signature verification and mapping to the standard event catalog.
 //!
-//! * Receiver (no App credentials needed): [`verify_signature`] and
-//!   [`normalize`], or [`WebhookConfig`] if the bot identity comes from env.
+//! * Receiver (no App credentials needed): [`verify_signature`],
+//!   [`catalog::map`] / [`BotIdentity::map`] and [`installation_change`].
 //! * Executor: [`GitHubConnector::from_env`] and the `Connector` trait.
-//!
-//! See `docs/connectors.md` and contracts sections 5, 9 and 10 in the
-//! top-level `enzarb` repo.
 
+pub mod catalog;
 mod config;
 mod connector;
 mod http;
-mod normalize;
+mod payload;
 mod webhook;
 
+pub use catalog::{MapError, Mapped};
 pub use config::{BotIdentity, ConfigError, GitHubConfig, RetryPolicy};
 pub use connector::GitHubConnector;
-pub use normalize::{
-    APPROVED_LABEL, CommitStatusChange, InstallationChange, NormalizeError, Normalized, SOURCE,
-    normalize,
-};
+pub use payload::{InstallationChange, SOURCE, installation_change};
 pub use webhook::{sign, verify_signature};

@@ -1,0 +1,36 @@
+version: 1
+description: Implement the approved plan on a branch (the executor pushes it)
+params:
+  prompt: {type: prompt, default: {file: prompts/implement.md}}
+agent:
+  runtime: runtimes/claude-code
+  prompt: {param: prompt}
+inputs:
+  plan: {from: outputs.plan, type: string, required: false}
+  context: {from: outputs.context, type: object, required: false}
+  checks_log: {from: outputs.checks_log, type: string, required: false}
+result:
+  as: implement
+  schema:
+    type: object
+    required: [decision, body]
+    properties:
+      decision: {type: string, enum: [done, blocked]}
+      title: {type: string, maxLength: 100, description: Conventional Commit PR title}
+      body: {type: string, description: PR description, or why it is blocked}
+      checks:
+        type: array
+        items:
+          type: object
+          required: [name, status]
+          properties:
+            name: {type: string}
+            status: {type: string, enum: [passed, failed, not_run]}
+            reason: {type: string}
+workspaces:
+  - repo: "{{ task.repo }}"
+    mode: write
+    branch: "enzarb/issue-{{ subjects.issue.number }}"
+    base: "{{ task.default_branch }}"
+github: {contents: write}
+steer: [comment]

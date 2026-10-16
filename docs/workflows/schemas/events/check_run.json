@@ -1,0 +1,28 @@
+{
+  "type": "object",
+  "properties": {
+    "sha": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "description": "`queued`, `in_progress`, `completed`."
+    },
+    "conclusion": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "sha",
+    "name",
+    "status"
+  ],
+  "title": "CheckRun",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

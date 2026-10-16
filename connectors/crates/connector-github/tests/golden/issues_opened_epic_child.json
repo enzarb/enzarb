@@ -1,32 +1,25 @@
-{
-  "kind": "events",
-  "events": [
-    {
-      "specversion": "1.0",
-      "source": "github",
-      "id": "d-issues_opened_epic_child",
-      "type": "WorkItemOpened",
-      "subject": "github:enzarb/enzarb-ui#43",
-      "time": "2026-10-08T12:00:00Z",
-      "data": {
-        "repo": "github:enzarb/enzarb-ui",
-        "actor": {
-          "login": "enzarb[bot]",
-          "id": 9000,
-          "is_bot": true
-        },
-        "item": {
-          "kind": "issue",
-          "number": 43,
-          "url": "https://github.com/enzarb/enzarb-ui/issues/43",
-          "title": "Typo in footer",
-          "body": "Part one.\n\n<!-- enzarb:epic=github:enzarb/enzarb-ui#40:api -->\n<!-- enzarb:epic-depth=1 -->",
-          "author": "alice",
-          "head_ref": null,
-          "base_ref": null,
-          "head_sha": null
-        }
-      }
+[
+  {
+    "suffix": "0",
+    "type": "issue",
+    "event": {
+      "type": "issue",
+      "action": "opened",
+      "number": 43,
+      "title": "Typo in footer",
+      "body": "Part one.\n\n<!-- enzarb:epic=github:enzarb/enzarb-ui#40:api -->\n<!-- enzarb:epic-depth=1 -->",
+      "id": "d-1",
+      "repo": "enzarb/enzarb-ui",
+      "actor": {
+        "login": "enzarb[bot]",
+        "can_write": false,
+        "bot": true
+      },
+      "subject": {
+        "kind": "issue",
+        "number": 43
+      },
+      "at": "2026-10-08T12:00:00Z"
     }
-  ]
-}
+  }
+]

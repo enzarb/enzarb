@@ -7,7 +7,7 @@ use std::{
 };
 
 use enzarb_proto::{
-    ChannelKind, ClientKind, CredentialKind, Ctrl, Frame, FrameType, RunStart,
+    ChannelKind, ClientKind, CredentialKind, Ctrl, Frame, FrameType, StepStart,
     session::handshake::{
         client_handshake, client_handshake_with_features, server_handshake_with_features,
     },
@@ -340,34 +340,32 @@ async fn forwards_frames_both_ways() {
     ws.close(None).await.unwrap();
 }
 
-fn run_start() -> RunStart {
-    RunStart {
+fn step_start() -> StepStart {
+    StepStart {
         run_id: "evil".into(),
-        repo_url: "https://github.com/a/b".into(),
-        base_ref: "main".into(),
-        branch: "x".into(),
-        push: true,
-        clone_token: "t".into(),
-        prompt: "rm -rf".into(),
-        timeout_secs: 1,
-        callback_url: "http://attacker".into(),
-        callback_token: "t".into(),
-        log_channel: None,
-        deps_token: None,
-        npm_token: None,
-        ci_read_token: None,
-        claude_token: None,
-        retarget: None,
-        graph: None,
+        attempt: 1,
+        task_id: "t".into(),
+        workspaces: vec![],
+        exec: enzarb_proto::StepExec::Command {
+            run: "rm -rf".into(),
+            tools: vec![],
+        },
+        outputs: Default::default(),
+        files: Default::default(),
+        env: Default::default(),
+        github_token: None,
     }
 }
 
 #[tokio::test]
 async fn run_control_from_browser_is_rejected() {
     for msg in [
-        Ctrl::RunStart(run_start()),
-        Ctrl::RunCancel { run_id: "j".into() },
-        Ctrl::RunStatus { run_id: "j".into() },
+        Ctrl::StepStart(Box::new(step_start())),
+        Ctrl::StepStop { run_id: "j".into() },
+        Ctrl::StepStatus {
+            run_id: "j".into(),
+            after_seq: 0,
+        },
     ] {
         let mut h = harness().await;
         let (mut ws, _) = connect_async(url(&h, "demo", &jwt("ruckc", "demo")))
@@ -863,7 +861,7 @@ async fn oversize_repo_and_resume_are_refused_locally() {
 async fn run_control_still_rejected_with_acp_enabled() {
     let mut h = harness_with(acp_features(), |_| {}).await;
     let (mut ws, _) = connect_ui(&h).await;
-    let bytes = Frame::ctrl(&Ctrl::RunStart(run_start()))
+    let bytes = Frame::ctrl(&Ctrl::StepStart(Box::new(step_start())))
         .unwrap()
         .to_bytes()
         .unwrap();

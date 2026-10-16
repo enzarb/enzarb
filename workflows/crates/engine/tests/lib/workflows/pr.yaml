@@ -1,0 +1,4 @@
+version: 1
+board: board
+phases:
+  - {id: watch, use: phases/watch}

@@ -1,0 +1,1672 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "workflow": {
+      "type": "string",
+      "description": "Workflow file path in the repository under test."
+    },
+    "params": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Workflow params, as a binding's `with` would give them."
+    },
+    "document": {
+      "$ref": "#/$defs/TaskDocument",
+      "description": "Initial task document (subjects, task info, `vars`, `facts`,\n`instance`, …).",
+      "default": {
+        "task": {
+          "id": "",
+          "project": "",
+          "repo": "",
+          "workflow": "",
+          "default_branch": ""
+        },
+        "subjects": {
+          "issue": null,
+          "pull_requests": []
+        },
+        "event": null,
+        "outputs": {},
+        "artifacts": [],
+        "facts": {
+          "dependencies": null
+        },
+        "relations": [],
+        "history": [],
+        "vars": {},
+        "instance": {
+          "bot": {
+            "login": "",
+            "handle": ""
+          },
+          "url": ""
+        }
+      }
+    },
+    "start": {
+      "$ref": "#/$defs/Event",
+      "description": "The event that starts the task."
+    },
+    "stubs": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/Stub"
+        }
+      },
+      "description": "Step results by `phase/…/node` (or bare node id), used in order; the\nlast one repeats."
+    },
+    "actions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/ActionStub"
+        }
+      },
+      "description": "Action results by action name (default `{ok: true}`)."
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Item"
+      },
+      "description": "Inputs after the start event, each followed by an optional expectation."
+    },
+    "expect": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Expect"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Expectations after the last input."
+    }
+  },
+  "required": [
+    "workflow",
+    "start"
+  ],
+  "description": "A scenario file.",
+  "title": "Scenario",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "TaskDocument": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "$ref": "#/$defs/TaskInfo",
+          "default": {
+            "id": "",
+            "project": "",
+            "repo": "",
+            "workflow": "",
+            "default_branch": ""
+          }
+        },
+        "subjects": {
+          "$ref": "#/$defs/Subjects",
+          "default": {
+            "issue": null,
+            "pull_requests": []
+          }
+        },
+        "event": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Event"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The event that triggered the task, or the last event a wait accepted.",
+          "default": null
+        },
+        "outputs": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Validated step outputs by name (output files, and `result` under its\n`as` name). Persist across phase re-entry; later writes replace.",
+          "default": {}
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Artifact"
+          },
+          "default": []
+        },
+        "facts": {
+          "$ref": "#/$defs/Facts",
+          "default": {
+            "dependencies": null
+          }
+        },
+        "relations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Relation"
+          },
+          "default": []
+        },
+        "history": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HistoryEntry"
+          },
+          "description": "Bounded summary of recent tasks of the project (filled by the engine).",
+          "default": []
+        },
+        "vars": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Task variables assigned by `set` (nodes, handlers). Scoped to the\ntask; persist across phase re-entry.",
+          "default": {}
+        },
+        "instance": {
+          "$ref": "#/$defs/Instance",
+          "description": "The enzarb instance (filled by the engine).",
+          "default": {
+            "bot": {
+              "login": "",
+              "handle": ""
+            },
+            "url": ""
+          }
+        }
+      },
+      "description": "Everything known about a task."
+    },
+    "TaskInfo": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "default": ""
+        },
+        "project": {
+          "type": "string",
+          "default": ""
+        },
+        "repo": {
+          "type": "string",
+          "description": "The triggering repository, `owner/repo` (the primary workspace).",
+          "default": ""
+        },
+        "workflow": {
+          "type": "string",
+          "description": "Workflow file reference the task runs.",
+          "default": ""
+        },
+        "default_branch": {
+          "type": "string",
+          "description": "The default branch of `repo`.",
+          "default": ""
+        }
+      }
+    },
+    "Subjects": {
+      "type": "object",
+      "properties": {
+        "issue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Subject"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "pull_requests": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Subject"
+          },
+          "default": []
+        }
+      },
+      "description": "The GitHub objects linked to the task."
+    },
+    "Subject": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string"
+        },
+        "number": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "title": {
+          "type": "string",
+          "default": ""
+        },
+        "body": {
+          "type": "string",
+          "default": ""
+        },
+        "url": {
+          "type": "string",
+          "default": ""
+        },
+        "state": {
+          "type": "string",
+          "description": "`open`, `closed` or `merged`.",
+          "default": ""
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "author": {
+          "type": "string",
+          "default": ""
+        },
+        "head": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Pull requests only."
+        },
+        "base": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "merge_sha": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Merged pull requests: the merge commit (verified, from GitHub)."
+        },
+        "comments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SubjectComment"
+          },
+          "default": []
+        }
+      },
+      "required": [
+        "repo",
+        "number"
+      ]
+    },
+    "SubjectComment": {
+      "type": "object",
+      "properties": {
+        "author": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "at": {
+          "type": "string",
+          "default": ""
+        }
+      },
+      "required": [
+        "author",
+        "body"
+      ]
+    },
+    "Event": {
+      "type": "object",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Comment",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "comment"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "A comment on an issue or pull request."
+        },
+        {
+          "$ref": "#/$defs/Issue",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "issue"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "An issue was opened, edited, closed or reopened."
+        },
+        {
+          "$ref": "#/$defs/Label",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "label"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "A label was added or removed."
+        },
+        {
+          "$ref": "#/$defs/Push",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "push"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Commits were pushed to a branch."
+        },
+        {
+          "$ref": "#/$defs/PullRequest",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "pull_request"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "A pull request changed."
+        },
+        {
+          "$ref": "#/$defs/CiStatus",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "ci_status"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "A commit status changed."
+        },
+        {
+          "$ref": "#/$defs/CheckRun",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "check_run"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "A check run changed."
+        },
+        {
+          "$ref": "#/$defs/Review",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "review"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "A pull request review was submitted."
+        },
+        {
+          "$ref": "#/$defs/Release",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "release"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "A release changed."
+        },
+        {
+          "$ref": "#/$defs/Tag",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "tag"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "A tag was created or deleted."
+        },
+        {
+          "$ref": "#/$defs/Package",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "package"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "A package version was published."
+        },
+        {
+          "$ref": "#/$defs/Deployment",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "deployment"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "A deployment status changed."
+        },
+        {
+          "$ref": "#/$defs/WorkflowRun",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "workflow_run"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "A CI workflow run changed."
+        },
+        {
+          "$ref": "#/$defs/Schedule",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "schedule"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "A cron binding fired."
+        },
+        {
+          "$ref": "#/$defs/Adopted",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "adopted"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "The task was created by the adopt pass for an existing object."
+        },
+        {
+          "$ref": "#/$defs/DependencyChanged",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "dependency_changed"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "A task this task depends on changed status."
+        },
+        {
+          "$ref": "#/$defs/ChildEnded",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "child_ended"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "A child task ended."
+        },
+        {
+          "$ref": "#/$defs/AllChildrenEnded",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "all_children_ended"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Every child task has ended."
+        },
+        {
+          "$ref": "#/$defs/Custom",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "custom"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "A project-declared event sent through `POST /v1/events/<project>`."
+        }
+      ],
+      "description": "An event as delivered to a task: envelope fields plus a typed payload.",
+      "properties": {
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Dedupe id assigned by the source."
+        },
+        "repo": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`owner/repo` the event is about."
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "subject": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SubjectRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The GitHub object the event is about, used for routing."
+        },
+        "at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "RFC 3339 time the event happened. The interpreter's only clock."
+        }
+      }
+    },
+    "Comment": {
+      "type": "object",
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mentioned": {
+          "type": "boolean",
+          "description": "The body mentions the instance's bot handle (`@<instance.bot.handle>`\nanywhere). Filled by the engine."
+        }
+      },
+      "required": [
+        "body"
+      ],
+      "description": "`command`/`args` are parsed from the first line (`/word a b`,\noptionally after a leading `@bot` mention)."
+    },
+    "Issue": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "description": "`opened`, `edited`, `closed`, `reopened`, …"
+        },
+        "number": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "title": {
+          "type": "string",
+          "default": ""
+        },
+        "body": {
+          "type": "string",
+          "default": ""
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "action",
+        "number"
+      ]
+    },
+    "Label": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "description": "`added` or `removed`."
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "label"
+      ]
+    },
+    "Push": {
+      "type": "object",
+      "properties": {
+        "branch": {
+          "type": "string"
+        },
+        "before": {
+          "type": "string",
+          "default": ""
+        },
+        "after": {
+          "type": "string"
+        },
+        "commits": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 0
+        },
+        "forced": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "branch",
+        "after"
+      ]
+    },
+    "PullRequest": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "description": "`opened`, `synchronize`, `closed`, `ready_for_review`, …"
+        },
+        "number": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "title": {
+          "type": "string",
+          "default": ""
+        },
+        "body": {
+          "type": "string",
+          "default": ""
+        },
+        "head": {
+          "type": "string",
+          "default": ""
+        },
+        "base": {
+          "type": "string",
+          "default": ""
+        },
+        "head_sha": {
+          "type": "string",
+          "default": ""
+        },
+        "merged": {
+          "type": "boolean",
+          "default": false
+        },
+        "merge_sha": {
+          "type": "string",
+          "description": "The merge commit, once merged."
+        },
+        "draft": {
+          "type": "boolean",
+          "default": false
+        },
+        "references": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "description": "Issues this PR references (closing keywords or Development links)."
+        }
+      },
+      "required": [
+        "action",
+        "number"
+      ]
+    },
+    "CiStatus": {
+      "type": "object",
+      "properties": {
+        "sha": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "description": "`pending`, `success`, `failure` or `error`; for the combined status of `sha`."
+        },
+        "context": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "sha",
+        "state"
+      ]
+    },
+    "CheckRun": {
+      "type": "object",
+      "properties": {
+        "sha": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "description": "`queued`, `in_progress`, `completed`."
+        },
+        "conclusion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "sha",
+        "name",
+        "status"
+      ]
+    },
+    "Review": {
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "state": {
+          "type": "string",
+          "description": "`approved`, `changes_requested` or `commented`."
+        },
+        "body": {
+          "type": "string",
+          "default": ""
+        }
+      },
+      "required": [
+        "number",
+        "state"
+      ]
+    },
+    "Release": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "description": "`published`, `created`, `edited`, …"
+        },
+        "tag": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string",
+          "default": ""
+        },
+        "prerelease": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "action",
+        "tag"
+      ]
+    },
+    "Tag": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "description": "`created` or `deleted`."
+        },
+        "name": {
+          "type": "string"
+        },
+        "sha": {
+          "type": "string",
+          "default": ""
+        }
+      },
+      "required": [
+        "action",
+        "name"
+      ]
+    },
+    "Package": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "ecosystem": {
+          "type": "string",
+          "default": ""
+        }
+      },
+      "required": [
+        "action",
+        "name",
+        "version"
+      ]
+    },
+    "Deployment": {
+      "type": "object",
+      "properties": {
+        "environment": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "sha": {
+          "type": "string",
+          "default": ""
+        }
+      },
+      "required": [
+        "environment",
+        "state"
+      ]
+    },
+    "WorkflowRun": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "conclusion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sha": {
+          "type": "string",
+          "default": ""
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "status"
+      ]
+    },
+    "Schedule": {
+      "type": "object",
+      "properties": {
+        "cron": {
+          "type": "string"
+        },
+        "binding": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "cron"
+      ]
+    },
+    "Adopted": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "default": ""
+        }
+      }
+    },
+    "SubjectRef": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/SubjectKind"
+        },
+        "number": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "kind",
+        "number"
+      ],
+      "description": "A GitHub object: `{kind: issue|pull_request, number}`."
+    },
+    "SubjectKind": {
+      "type": "string",
+      "enum": [
+        "issue",
+        "pull_request"
+      ]
+    },
+    "DependencyChanged": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "description": "The dependency's engine phase or end status."
+        },
+        "subject": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SubjectRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "task",
+        "status"
+      ]
+    },
+    "ChildEnded": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "task",
+        "status"
+      ]
+    },
+    "AllChildrenEnded": {
+      "type": "object",
+      "properties": {
+        "statuses": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "End status per child task id."
+        }
+      },
+      "required": [
+        "statuses"
+      ]
+    },
+    "Custom": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Declared event name (the type waits match on)."
+        },
+        "payload": {
+          "description": "Payload, validated against the declared schema.",
+          "default": null
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "Actor": {
+      "type": "object",
+      "properties": {
+        "login": {
+          "type": "string"
+        },
+        "can_write": {
+          "type": "boolean",
+          "description": "Whether the actor has write access to the repo. Supplied by the engine\nfrom GitHub, never from the payload sender.",
+          "default": false
+        },
+        "bot": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "login"
+      ],
+      "description": "Who caused an event."
+    },
+    "Artifact": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "format": {
+          "type": "string",
+          "description": "`markdown`, `json` or `text`."
+        },
+        "content": {
+          "type": "string"
+        },
+        "node": {
+          "type": "string",
+          "description": "`phase/node` that produced it.",
+          "default": ""
+        }
+      },
+      "required": [
+        "title",
+        "format",
+        "content"
+      ]
+    },
+    "Facts": {
+      "type": "object",
+      "properties": {
+        "git": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GitFacts"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ci": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CiFacts"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reviews": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReviewFact"
+          }
+        },
+        "mergeable": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "merged": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "contained_in_tag": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Tag that contains the merged change, once released."
+        },
+        "dependencies": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/DependencyFact"
+          },
+          "description": "`None` until the engine knows; `[]` means known to have none (so `facts.dependencies is\nnot none` tells empty from unknown).",
+          "default": null
+        }
+      },
+      "description": "Facts the engine verified from git and GitHub (never from agent output)."
+    },
+    "GitFacts": {
+      "type": "object",
+      "properties": {
+        "branch": {
+          "type": "string",
+          "default": ""
+        },
+        "head": {
+          "type": "string",
+          "default": ""
+        },
+        "pushed": {
+          "type": "boolean",
+          "description": "The branch is on the remote at `head`.",
+          "default": false
+        },
+        "ahead": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Commits ahead of the base branch.",
+          "default": 0
+        },
+        "changed_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      }
+    },
+    "CiFacts": {
+      "type": "object",
+      "properties": {
+        "sha": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "description": "`pending`, `success` or `failure`."
+        },
+        "failing": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FailingCheck"
+          },
+          "default": []
+        }
+      },
+      "required": [
+        "sha",
+        "state"
+      ]
+    },
+    "FailingCheck": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "log_excerpt": {
+          "type": "string",
+          "default": ""
+        },
+        "url": {
+          "type": "string",
+          "default": ""
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "ReviewFact": {
+      "type": "object",
+      "properties": {
+        "author": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string",
+          "default": ""
+        }
+      },
+      "required": [
+        "author",
+        "state"
+      ]
+    },
+    "DependencyFact": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "ended": {
+          "type": "boolean",
+          "description": "The dependency has ended.",
+          "default": false
+        }
+      },
+      "required": [
+        "task",
+        "status"
+      ]
+    },
+    "Relation": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "target": {
+          "description": "Target task id, or a subject reference until the engine links it."
+        }
+      },
+      "required": [
+        "kind",
+        "target"
+      ]
+    },
+    "HistoryEntry": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string"
+        },
+        "workflow": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string",
+          "default": ""
+        },
+        "ended_at": {
+          "type": "string",
+          "default": ""
+        }
+      },
+      "required": [
+        "task",
+        "workflow",
+        "status"
+      ]
+    },
+    "Instance": {
+      "type": "object",
+      "properties": {
+        "bot": {
+          "$ref": "#/$defs/Bot",
+          "default": {
+            "login": "",
+            "handle": ""
+          }
+        },
+        "url": {
+          "type": "string",
+          "description": "Base URL of the instance UI.",
+          "default": ""
+        }
+      },
+      "description": "The enzarb instance the task runs on."
+    },
+    "Bot": {
+      "type": "object",
+      "properties": {
+        "login": {
+          "type": "string",
+          "description": "GitHub login (`enzarb[bot]`).",
+          "default": ""
+        },
+        "handle": {
+          "type": "string",
+          "description": "Mention handle without `@` (`enzarb`).",
+          "default": ""
+        }
+      },
+      "description": "The GitHub App identity of the instance."
+    },
+    "Stub": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "exit": {
+          "type": "string",
+          "default": "success"
+        },
+        "outputs": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "result": true,
+        "git": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GitFacts"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "ActionStub": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "type": "boolean",
+          "default": true
+        },
+        "result": {
+          "default": null
+        }
+      }
+    },
+    "Item": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Event"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FactIn"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A refreshed fact: `{fact: ci, value: {…}}`."
+        },
+        "timer": {
+          "type": "boolean",
+          "description": "Fires the current wait's timer."
+        },
+        "stall": {
+          "type": "boolean"
+        },
+        "resume": {
+          "type": "boolean"
+        },
+        "step_finished": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Stub"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Finishes the pending step with this result (instead of a stub)."
+        },
+        "expect": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expect"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "description": "One input. Exactly one of the input fields is set (an `expect`-only item checks the current state)."
+    },
+    "FactIn": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fact": {
+          "type": "string"
+        },
+        "value": true
+      },
+      "required": [
+        "fact",
+        "value"
+      ]
+    },
+    "Expect": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`running`, `waiting`, `paused`, or `ended:<status>`."
+        },
+        "at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Current `phase/…/node`."
+        },
+        "path": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Every node entered so far, exactly."
+        },
+        "projection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExpectProjection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effects": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Effect kinds emitted while handling this input, in order\n(`run_step`, `steer`, `stop_step`, `call_action`, …; projection updates are left out)."
+        },
+        "outputs": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true,
+          "description": "Outputs that must be present with these values."
+        },
+        "vars": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true,
+          "description": "Task variables that must have these values."
+        }
+      }
+    },
+    "ExpectProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "column": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "waiting_on": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WaitingOn"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "needs_you": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "actions": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Button labels."
+        },
+        "artifacts": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Artifact titles."
+        }
+      }
+    },
+    "WaitingOn": {
+      "type": "string",
+      "enum": [
+        "human",
+        "agent",
+        "external"
+      ]
+    }
+  }
+}

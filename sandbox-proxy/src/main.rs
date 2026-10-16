@@ -29,13 +29,15 @@ async fn main() -> Result<()> {
         }
         Some(other) => anyhow::bail!("unknown subcommand {other:?} (expected serve or rekey)"),
     }
+    let chat_pool = store.pool();
     let creds = Arc::new(Credentials::new(store, keyring));
     let cfg = Config::from_env()?;
     let client = kube::Client::try_default().await?;
     let resolver = Arc::new(KubeResolver::start(client, cfg.secret_ttl).await?);
     let shutdown = CancellationToken::new();
     let listen = cfg.listen;
-    let state = app::AppState::new(cfg, resolver, creds, shutdown.clone());
+    let chats = Arc::new(enzarb_sandbox_proxy::chat::PgChats { pool: chat_pool });
+    let state = app::AppState::new(cfg, resolver, creds, shutdown.clone()).with_chats(chats);
     let listener = tokio::net::TcpListener::bind(listen).await?;
     tracing::info!(%listen, "listening");
 

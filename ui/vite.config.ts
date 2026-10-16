@@ -22,8 +22,7 @@ export default defineConfig({
 			experimental: { remoteFunctions: true }
 		})
 	],
-	// Built-in prompt text comes straight from the engine's templates (src/lib/workflow/builtin-prompts.ts).
-	server: { fs: { allow: ['.', '../proto', '../workflows/crates/engine/prompts'] } },
+	server: { fs: { allow: ['.', '../proto'] } },
 	test: {
 		expect: { requireAssertions: true },
 		projects: [

@@ -24,7 +24,6 @@ use futures_util::{Sink, Stream};
 use tokio::task::JoinSet;
 use tokio_tungstenite::tungstenite::Message as WsMsg;
 
-use crate::agent::RepoLocks;
 use crate::auth::{self, AuthError};
 use crate::capture::{LegacyPromotion, read_legacy_valid};
 use crate::chat::ChatManager;
@@ -34,8 +33,9 @@ use crate::dockerd::Dockerd;
 use crate::observer::{PtyInfo, PtyObserverFactory};
 use crate::pty::{self, Pty, PtyConfig, PtyControl};
 use crate::reaper::Reaper;
-use crate::runs::{RunManager, SessionCtx, UnimplementedRunManager};
+use crate::repos::RepoLocks;
 use crate::stats::{self, SystemSource};
+use crate::steps::StepManager;
 
 /// How long a client has to complete the hello/welcome handshake.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -44,7 +44,7 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct AppState {
     pub config: Config,
     pub reaper: Arc<Reaper>,
-    pub runs: Arc<dyn RunManager>,
+    pub steps: StepManager,
     pub observers: Vec<Arc<dyn PtyObserverFactory>>,
     pub chats: Arc<ChatManager>,
     /// The supervised Docker daemon, reported in `/healthz` (never gates readiness).
@@ -58,11 +58,13 @@ impl AppState {
     /// State with the stub run manager, no PTY observers and a chat manager
     /// with its own clone locks (see [`with_chats`](Self::with_chats)).
     pub fn new(config: Config, reaper: Arc<Reaper>) -> Self {
-        let chats = ChatManager::new(config.clone(), reaper.clone(), RepoLocks::default());
+        let locks = RepoLocks::default();
+        let chats = ChatManager::new(config.clone(), reaper.clone(), locks.clone());
+        let steps = StepManager::new(config.clone(), reaper.clone(), locks);
         Self {
             config,
             reaper,
-            runs: Arc::new(UnimplementedRunManager),
+            steps,
             observers: Vec::new(),
             chats,
             dockerd: None,
@@ -86,8 +88,8 @@ impl AppState {
         self
     }
 
-    pub fn with_run_manager(mut self, runs: Arc<dyn RunManager>) -> Self {
-        self.runs = runs;
+    pub fn with_steps(mut self, steps: StepManager) -> Self {
+        self.steps = steps;
         self
     }
 
@@ -212,6 +214,13 @@ impl Sink<WsMsg> for Adapter {
 
 type Controls = Arc<Mutex<HashMap<u32, PtyControl>>>;
 
+/// One mux connection.
+#[derive(Clone)]
+struct SessionCtx {
+    id: u64,
+    session: Session,
+}
+
 async fn session_loop(state: Arc<AppState>, socket: WebSocket) {
     let accepted = tokio::time::timeout(
         HANDSHAKE_TIMEOUT,
@@ -221,12 +230,7 @@ async fn session_loop(state: Arc<AppState>, socket: WebSocket) {
                 features: {
                     let mut f = state.chats.features();
                     f.push(feature::STATS.to_string());
-                    if state.runs.supports_prepare() {
-                        f.push(feature::PREPARE.to_string());
-                    }
-                    if state.runs.delivers_results() {
-                        f.push(feature::RUN_RESULTS.to_string());
-                    }
+                    f.push(feature::STEPS.to_string());
                     f
                 },
                 ..ServerOptions::default()
@@ -282,13 +286,15 @@ async fn session_loop(state: Arc<AppState>, socket: WebSocket) {
                     }
                 }
             }
-            Event::Ctrl(Ctrl::RunStart(run)) => state.runs.start(&ctx, run).await,
-            Event::Ctrl(Ctrl::RunStatus { run_id }) => state.runs.status(&ctx, &run_id).await,
-            Event::Ctrl(Ctrl::RunCancel { run_id }) => state.runs.cancel(&ctx, &run_id).await,
-            Event::Ctrl(Ctrl::PrepareRequest(req)) => state.runs.prepare(&ctx, req).await,
-            Event::Ctrl(Ctrl::RunSubscribe { run_ids }) => {
-                state.runs.subscribe(&ctx, run_ids).await
+            Event::Ctrl(Ctrl::StepStart(step)) => state.steps.start(&session, *step),
+            Event::Ctrl(Ctrl::StepStatus { run_id, after_seq }) => {
+                state.steps.status(id, &session, &run_id, after_seq)
             }
+            Event::Ctrl(Ctrl::StepSteer { run_id, text }) => {
+                state.steps.steer(&session, &run_id, text)
+            }
+            Event::Ctrl(Ctrl::StepStop { run_id }) => state.steps.stop(&session, &run_id),
+            Event::Ctrl(Ctrl::StepResume { run_id }) => state.steps.resume(&session, &run_id),
             Event::Ctrl(Ctrl::CredentialStatus) => {
                 promotion.promote(&session, &state.config.claude_token_file);
                 // File-based: a per-request token cannot be known here.
@@ -339,7 +345,7 @@ async fn session_loop(state: Arc<AppState>, socket: WebSocket) {
     }
     // Per-session cleanup: aborting the bridges drops the `Pty`s, which kills their process groups.
     tasks.shutdown().await;
-    state.runs.session_closed(id).await;
+    state.steps.session_closed(id);
     tracing::info!(session = id, "mux session closed");
 }
 

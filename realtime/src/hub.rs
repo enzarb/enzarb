@@ -9,7 +9,7 @@ use tokio::sync::broadcast;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "topic", rename_all = "snake_case")]
 pub enum Frame {
-    WorkItem {
+    Task {
         id: i64,
         project: String,
     },
@@ -21,7 +21,7 @@ impl Frame {
     /// Whether a client allowed to see `projects` should receive this frame.
     pub fn visible_to(&self, projects: &[String]) -> bool {
         match self {
-            Frame::WorkItem { project, .. } => projects.iter().any(|p| p == project),
+            Frame::Task { project, .. } => projects.iter().any(|p| p == project),
             Frame::Resync => true,
         }
     }
@@ -61,13 +61,13 @@ mod tests {
 
     #[test]
     fn frame_format() {
-        let f = Frame::WorkItem {
+        let f = Frame::Task {
             id: 123,
             project: "enzarb".into(),
         };
         assert_eq!(
             serde_json::to_string(&f).unwrap(),
-            r#"{"topic":"work_item","id":123,"project":"enzarb"}"#
+            r#"{"topic":"task","id":123,"project":"enzarb"}"#
         );
         assert_eq!(
             serde_json::to_string(&Frame::Resync).unwrap(),
@@ -77,7 +77,7 @@ mod tests {
 
     #[test]
     fn project_filtering() {
-        let f = Frame::WorkItem {
+        let f = Frame::Task {
             id: 1,
             project: "a".into(),
         };

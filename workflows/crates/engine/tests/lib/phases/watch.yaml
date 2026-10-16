@@ -1,0 +1,9 @@
+version: 1
+start: wait
+nodes:
+  wait:
+    wait:
+      events: [{event: pull_request, if: "event.action == 'closed'"}]
+      reason: awaiting_merge
+    next: [{else: done}]
+  done: {end: {status: done}}

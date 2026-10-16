@@ -7,7 +7,7 @@
 # smoke is "-" in the table when the component has no smoke script (empty in the JSON).
 set -euo pipefail
 table='operator enzarb-sandbox-operator operator - 30
-connectors enzarb-connectors-receiver connectors - 30
+connectors enzarb-connectors-receiver . - 30
 workflows enzarb-workflows . - 30
 realtime enzarb-realtime realtime - 30
 sandbox-proxy enzarb-sandbox-proxy . - 30

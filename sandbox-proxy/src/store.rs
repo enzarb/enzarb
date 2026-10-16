@@ -101,6 +101,11 @@ impl PgStore {
             .connect_lazy_with(opts);
         Ok(Self { pool })
     }
+
+    /// The same pool, for chat capture.
+    pub fn pool(&self) -> PgPool {
+        self.pool.clone()
+    }
 }
 
 #[async_trait]

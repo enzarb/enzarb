@@ -27,6 +27,8 @@ pub struct AppState {
     pub resolver: Arc<dyn Resolver>,
     pub creds: Arc<Credentials>,
     pub shutdown: CancellationToken,
+    /// Chat capture into the engine (`engine_api.chat_*`); none in tests.
+    pub chats: Option<Arc<dyn crate::chat::ChatSink>>,
 }
 
 impl AppState {
@@ -42,7 +44,13 @@ impl AppState {
             cfg: Arc::new(cfg),
             resolver,
             shutdown,
+            chats: None,
         }
+    }
+
+    pub fn with_chats(mut self, chats: Arc<dyn crate::chat::ChatSink>) -> Self {
+        self.chats = Some(chats);
+        self
     }
 }
 
@@ -134,6 +142,7 @@ async fn mux(
         handshake_timeout: Duration::from_secs(10),
         ping_interval: st.cfg.ping_interval,
         creds: st.creds.clone(),
+        chats: st.chats.clone(),
     };
     let shutdown = st.shutdown.clone();
     let watch = ProjectWatch {

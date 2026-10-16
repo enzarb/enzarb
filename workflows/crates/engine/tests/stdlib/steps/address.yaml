@@ -1,0 +1,26 @@
+version: 1
+description: Address review findings or a person's feedback on the pull request (the executor pushes)
+params:
+  prompt: {type: prompt, default: {file: prompts/address.md}}
+agent:
+  runtime: runtimes/claude-code
+  prompt: {param: prompt}
+inputs:
+  context: {from: outputs.context, type: object, required: false}
+  review: {from: outputs.review, type: object, required: false}
+result:
+  as: address
+  schema:
+    type: object
+    required: [decision, body]
+    properties:
+      decision: {type: string, enum: [done, blocked]}
+      body: {type: string}
+      checks: {type: array, items: {type: object}}
+workspaces:
+  - repo: "{{ task.repo }}"
+    mode: write
+    branch: "{{ (subjects.pull_requests | last).head or facts.git.branch }}"
+    base: "{{ (subjects.pull_requests | last).base or task.default_branch }}"
+github: {contents: write, pull_requests: read}
+steer: [comment, review]

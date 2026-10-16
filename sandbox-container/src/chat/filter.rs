@@ -926,25 +926,36 @@ fn rebuild_prompt(blocks: &[Value]) -> Result<Vec<Value>, &'static str> {
 
 // ---- redaction ----
 
-/// Prefix of Anthropic credentials; any such token is redacted, not only the
-/// configured one.
-const TOKEN_PREFIX: &str = "sk-ant-";
+/// Prefixes of credentials redacted wherever they appear, not only the
+/// configured ones: Anthropic and GitHub tokens.
+const TOKEN_PREFIXES: &[&str] = &[
+    "sk-ant-",
+    "github_pat_",
+    "ghp_",
+    "ghs_",
+    "gho_",
+    "ghu_",
+    "ghr_",
+];
 const REDACTED: &str = "[redacted]";
 
-/// Redact `secrets` (exact) and anything that looks like an Anthropic token.
+/// Redact `secrets` (exact) and anything that looks like an Anthropic or GitHub token.
 pub fn redact_str<'a>(s: &'a str, secrets: &[String]) -> Cow<'a, str> {
     let mut out: Cow<'a, str> = Cow::Borrowed(s);
     for sec in secrets {
-        if out.contains(sec.as_str()) {
+        if !sec.is_empty() && out.contains(sec.as_str()) {
             out = Cow::Owned(out.replace(sec.as_str(), REDACTED));
         }
     }
-    if out.contains(TOKEN_PREFIX) {
+    for prefix in TOKEN_PREFIXES {
+        if !out.contains(prefix) {
+            continue;
+        }
         let mut r = String::with_capacity(out.len());
         let mut rest: &str = &out;
-        while let Some(i) = rest.find(TOKEN_PREFIX) {
+        while let Some(i) = rest.find(prefix) {
             r.push_str(&rest[..i]);
-            let tail = &rest[i + TOKEN_PREFIX.len()..];
+            let tail = &rest[i + prefix.len()..];
             let n = tail
                 .bytes()
                 .take_while(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
@@ -952,7 +963,7 @@ pub fn redact_str<'a>(s: &'a str, secrets: &[String]) -> Cow<'a, str> {
             if n >= 8 {
                 r.push_str(REDACTED);
             } else {
-                r.push_str(&rest[i..i + TOKEN_PREFIX.len() + n]);
+                r.push_str(&rest[i..i + prefix.len() + n]);
             }
             rest = &tail[n..];
         }

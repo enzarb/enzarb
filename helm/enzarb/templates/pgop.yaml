@@ -77,6 +77,17 @@ spec:
         - { role: enzarb_workflows, privileges: [USAGE] }
         - { role: enzarb_connectors, privileges: [USAGE] }
         - { role: enzarb_ui, privileges: [USAGE] }
+    - name: engine
+      owner: enzarb_workflows_owner
+      grants:
+        - { role: enzarb_workflows, privileges: [USAGE] }
+    - name: engine_api
+      owner: enzarb_workflows_owner
+      grants:
+        - { role: enzarb_workflows, privileges: [USAGE] }
+        - { role: enzarb_connectors, privileges: [USAGE] }
+        - { role: enzarb_ui, privileges: [USAGE] }
+        - { role: enzarb_sandbox_proxy, privileges: [USAGE] }
     - name: connectors
       owner: enzarb_connectors_owner
       grants:

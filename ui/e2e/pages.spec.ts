@@ -19,14 +19,14 @@ async function installFakeLive(page: Page) {
 		const timer = setInterval(() => {
 			n++;
 			ws.send(
-				JSON.stringify(n % 3 === 0 ? { topic: 'resync' } : { topic: 'work_item', id: (n % 2) + 1 })
+				JSON.stringify(n % 3 === 0 ? { topic: 'resync' } : { topic: 'task', id: (n % 2) + 1 })
 			);
 		}, 250);
 		ws.onClose(() => clearInterval(timer));
 	});
 }
 
-for (const path of [`/projects/${E2E_PROJECT}`, `/projects/${E2E_PROJECT}/settings`, '/work']) {
+for (const path of [`/projects/${E2E_PROJECT}`, `/projects/${E2E_PROJECT}/settings`, '/tasks']) {
 	test(`${path} renders without client errors`, async ({ page }) => {
 		const errors = collectErrors(page);
 		await installFakeSandbox(page);
@@ -38,11 +38,11 @@ for (const path of [`/projects/${E2E_PROJECT}`, `/projects/${E2E_PROJECT}/settin
 	});
 }
 
-test('/work does not scroll sideways on a phone', async ({ page }) => {
+test('the project board does not scroll sideways on a phone', async ({ page }) => {
 	await page.setViewportSize({ width: 360, height: 740 });
 	await installFakeSandbox(page);
 	await installFakeLive(page);
-	await page.goto('/work');
+	await page.goto(`/projects/${E2E_PROJECT}/tasks`);
 	const board = page.getByRole('group', { name: 'Task board' });
 	await expect(board).toBeVisible();
 	await page.waitForTimeout(1500);
@@ -114,7 +114,8 @@ test('hovering links does not crash', async ({ page }) => {
 	for (const start of [
 		`/projects/${E2E_PROJECT}`,
 		`/projects/${E2E_PROJECT}/settings`,
-		'/work',
+		'/tasks',
+		`/projects/${E2E_PROJECT}/tasks`,
 		'/projects'
 	]) {
 		await page.goto(start);
@@ -141,9 +142,9 @@ test('client-side navigation does not crash', async ({ page }) => {
 	await page.getByRole('link', { name: 'Settings' }).last().click();
 	await expect(page.getByRole('button', { name: 'Edit repositories' })).toBeVisible();
 	await page.getByRole('link', { name: 'Overview' }).click();
-	await page.getByRole('link', { name: /Tasks/ }).hover();
+	await page.getByRole('link', { name: /Tasks/ }).first().hover();
 	await page.waitForTimeout(500);
-	await page.getByRole('link', { name: /Tasks/ }).click();
+	await page.getByRole('link', { name: /Tasks/ }).first().click();
 	await page.waitForTimeout(1500);
 	await page.getByRole('link', { name: 'Projects' }).click();
 	await page

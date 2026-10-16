@@ -1,28 +1,22 @@
 import postgres from 'postgres';
 import { clearPayload, pushPayload, summaryPayload } from '#lib/push.ts';
-import { classifyNeedsYou } from '#lib/work-items.ts';
 import { getConfig } from './config.ts';
 import { getSql, type Sql } from './db.ts';
 import { getProjectStore } from './kube.ts';
 import { deliver, getSend, type Send } from './push.ts';
 import { pushStore, type PushStore } from './push-store.ts';
 
-/** A work item as the notifier needs it: `work_item_v` plus the id of the entry into its state. */
+/** A task as the notifier needs it: its `engine_api.task_v` projection row. */
 export interface NotifyItem {
 	id: number;
-	project: string | null;
-	workflow: string;
-	state: string;
-	stateData: unknown;
-	updatedAt: string;
-	/** Creation time; the entry key when the item never transitioned into its state. */
-	createdAt?: string;
-	/**
-	 * The entry into `state`: the latest transition into it from a different state. Self-transitions
-	 * (`Failed` -> `Failed` on every event) never count. Null when there is none.
-	 */
-	transitionId: number | null;
+	project: string;
 	title: string;
+	needsYou: boolean;
+	node: string;
+	column: string | null;
+	reason: string | null;
+	/** Projection update time: part of the claim key of an entry into a wait. */
+	updatedAt: string;
 }
 
 export interface NotifierDeps {
@@ -34,8 +28,6 @@ export interface NotifierDeps {
 		'targets' | 'claim' | 'release' | 'remove' | 'touch' | 'entry' | 'setEntry' | 'clearEntry'
 	>;
 	send: Send;
-	/** Clock override (epoch ms), for tests. */
-	now?: () => number;
 }
 
 export interface BurstOptions {
@@ -47,52 +39,46 @@ export interface BurstOptions {
 export const DEFAULT_BURST: BurstOptions = { limit: 3, windowSecs: 60 };
 
 /**
- * One notification per entry into a state: the claim key is the state plus the transition that
- * entered it from another state, so self-transitions and non-state updates do not notify again and
- * leaving and re-entering does.
+ * What the owner is waiting on, as the engine's projection says: the node with its declared column
+ * and reason. Null when the projection does not have `needs_you`. The open entry (`app.push_item`)
+ * stores this as its category, so updates that stay on the same wait never notify again, and
+ * moving to another wait (or leaving and re-entering) does.
  */
-export const stateKey = (
-	i: Pick<NotifyItem, 'state' | 'transitionId' | 'updatedAt' | 'createdAt'>
-): string => `${i.state}:${i.transitionId ?? i.createdAt ?? i.updatedAt}`;
+export const entryCategory = (i: NotifyItem): string | null =>
+	i.needsYou ? `${i.node}|${i.column ?? ''}|${i.reason ?? ''}` : null;
 
 /**
- * Handles one changed work item: classify with the shared "needs you" classifier, skip Projects
- * nobody owns. If the owner's open entry (`app.push_item`) is for another category, or the item no
- * longer needs them, close it and (once, for a shown notification) send a data-only clear push. A
- * category that stays never notifies again. Otherwise skip owners without a device for the
- * category, claim the entry in the sent-log (only the claimant sends, which keeps two pods from
- * double-sending), deliver and record the entry. Returns whether a claim was won and a notification
- * attempted. Run failures reach this as the `Failed` state.
+ * Handles one changed projection row, skipping Projects nobody owns. If the owner's open entry is
+ * for another wait, or the task no longer needs them, close it and (once, for a shown notification)
+ * send a data-only clear push. Otherwise claim the entry in the sent-log (only the claimant sends,
+ * which keeps two pods from double-sending), deliver to the owner's devices and record the entry.
+ * Returns whether a claim was won and a notification attempted.
  */
 export function createItemHandler(deps: NotifierDeps, burst: BurstOptions = DEFAULT_BURST) {
 	return async function handle(id: number): Promise<boolean> {
 		const item = await deps.loadItem(id);
 		if (!item?.project) return false;
-		const needs = classifyNeedsYou(item, {
-			// runs on a state change, so a blocked item notifies immediately rather than once idle
-			now: deps.now?.(),
-			staleAfterMs: 0
-		});
+		const category = entryCategory(item);
 		const owner = await deps.ownerOf(item.project);
 		if (!owner) return false;
 		const entry = await deps.store.entry(owner, item.id);
-		if (entry && entry.category !== needs?.category) {
-			if (await deps.store.clearEntry(owner, item.id)) {
-				// Only devices that could have shown it: a clear with nothing to close may make the
-				// browser show a generic notification (docs/notifications.md).
-				const devices = await deps.store.targets(owner, entry.category);
+		if (entry && entry.category !== category) {
+			if ((await deps.store.clearEntry(owner, item.id)) && entry.shown) {
+				// Only for a shown notification: a clear with nothing to close may make the browser
+				// show a generic notification (docs/notifications.md).
+				const devices = await deps.store.targets(owner, null);
 				await deliver(deps.store, deps.send, owner, devices, clearPayload(item.id));
 			}
 		}
-		if (!needs) return false;
-		if (entry?.category === needs.category) return false;
-		const targets = await deps.store.targets(owner, needs.category);
+		if (!category) return false;
+		if (entry?.category === category) return false;
+		const targets = await deps.store.targets(owner, null);
 		if (targets.length === 0) return false;
-		const key = stateKey(item);
-		const claim = await deps.store.claim(owner, item.id, needs.category, key, burst.windowSecs);
+		const key = `${category}:${item.updatedAt}`;
+		const claim = await deps.store.claim(owner, item.id, category, key, burst.windowSecs);
 		if (!claim.claimed) return false;
 		const summary = claim.recent > burst.limit;
-		const payload = summary ? summaryPayload(claim.recent) : pushPayload(item, needs.category);
+		const payload = summary ? summaryPayload(claim.recent) : pushPayload(item);
 		let gone = 0;
 		const counting: Send = async (t, p) => {
 			const result = await deps.send(t, p);
@@ -101,15 +87,11 @@ export function createItemHandler(deps: NotifierDeps, burst: BurstOptions = DEFA
 		};
 		const accepted = await deliver(deps.store, counting, owner, targets, payload);
 		// Nothing accepted and no device reported gone: every send failed transiently, so release the
-		// claim and let the next update to the item try again.
+		// claim and let the next update to the task try again.
 		if (accepted === 0 && gone === 0) {
-			await deps.store.release(owner, item.id, needs.category, key);
+			await deps.store.release(owner, item.id, category, key);
 		} else if (accepted > 0) {
-			await deps.store.setEntry(owner, item.id, {
-				category: needs.category,
-				stateKey: key,
-				shown: !summary
-			});
+			await deps.store.setEntry(owner, item.id, { category, stateKey: key, shown: !summary });
 		}
 		return true;
 	};
@@ -172,38 +154,32 @@ function createOwnerLookup(now: () => number = Date.now) {
 	};
 }
 
-function loadItemFrom(sql: Sql) {
+export function loadItemFrom(sql: Sql) {
 	return async (id: number): Promise<NotifyItem | null> => {
 		const [r] = await sql<
 			{
-				id: string | number;
-				key: string;
-				project: string | null;
-				workflow: string;
-				state: string;
-				state_data: unknown;
+				task_id: string | number;
+				project: string;
+				title: string;
+				needs_you: boolean;
+				node: string;
+				column: string | null;
+				reason: string | null;
 				updated_at: Date;
-				created_at: Date;
-				transition_id: string | number | null;
 			}[]
 		>`
-			SELECT w.id, w.key, w.project, w.workflow, w.state, w.state_data, w.updated_at, w.created_at,
-				(SELECT max(t.id) FROM workflows_api.transition_v t
-					WHERE t.work_item_id = w.id AND t.to_state = w.state
-						AND t.from_state IS DISTINCT FROM t.to_state) AS transition_id
-			FROM workflows_api.work_item_v w WHERE w.id = ${id}`;
+			SELECT task_id, project, title, needs_you, node, "column", reason, updated_at
+			FROM engine_api.task_v WHERE task_id = ${id}`;
 		if (!r) return null;
-		const sd = r.state_data as { title?: unknown } | null;
 		return {
-			id: Number(r.id),
+			id: Number(r.task_id),
 			project: r.project,
-			workflow: r.workflow,
-			state: r.state,
-			stateData: r.state_data,
-			updatedAt: r.updated_at.toISOString(),
-			createdAt: r.created_at.toISOString(),
-			transitionId: r.transition_id == null ? null : Number(r.transition_id),
-			title: typeof sd?.title === 'string' && sd.title.trim() ? sd.title : r.key
+			title: r.title,
+			needsYou: r.needs_you,
+			node: r.node,
+			column: r.column,
+			reason: r.reason,
+			updatedAt: r.updated_at.toISOString()
 		};
 	};
 }
@@ -215,8 +191,8 @@ let started: { stop(): Promise<void> } | undefined;
 
 /**
  * Starts the listener in this process (idempotent; a no-op without VAPID keys). Every UI pod
- * listens; the sent-log claim makes sure each transition is sent by exactly one of them. The
- * `postgres` driver reconnects and re-LISTENs by itself.
+ * listens on `engine_projection`; the sent-log claim makes sure each entry is sent by exactly one
+ * of them. The `postgres` driver reconnects and re-LISTENs by itself.
  */
 export function startNotifier(): { stop(): Promise<void> } | null {
 	if (started) return started;
@@ -236,14 +212,14 @@ export function startNotifier(): { stop(): Promise<void> } | null {
 	const batcher = createBatcher(async (ids) => {
 		for (const id of ids) {
 			await handle(id).catch((e) =>
-				console.warn(`notifier: work item ${id}: ${e instanceof Error ? e.message : 'failed'}`)
+				console.warn(`notifier: task ${id}: ${e instanceof Error ? e.message : 'failed'}`)
 			);
 		}
 	});
 	// A dedicated connection: LISTEN must not sit in the pool.
 	const listener = postgres(getConfig().databaseUrl, { max: 1, onnotice: () => {} });
 	void listener
-		.listen('work_item_changed', (payload) => {
+		.listen('engine_projection', (payload) => {
 			const id = Number(payload);
 			if (Number.isSafeInteger(id) && id > 0) batcher.add(id);
 		})

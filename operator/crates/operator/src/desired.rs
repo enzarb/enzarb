@@ -624,6 +624,7 @@ pub(crate) mod tests {
                 triggers: Default::default(),
                 sandbox: SandboxSpec::default(),
                 max_runs: None,
+                workflows: None,
             },
         );
         p.metadata.uid = Some("uid-1".into());

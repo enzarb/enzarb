@@ -1,4 +1,3 @@
-import type { NeedsYouCategory } from '#lib/work-items.ts';
 import type { Sql } from './db.ts';
 
 /** pg_type oid of `text`, for `sql.array`. */
@@ -7,7 +6,7 @@ const TEXT_OID = 25;
 /** A device as shown in Settings: never the keys. */
 export interface PushDevice {
 	endpoint: string;
-	categories: NeedsYouCategory[];
+	categories: string[];
 	userAgent: string | null;
 	createdAt: string;
 }
@@ -23,7 +22,7 @@ export interface NewSubscription {
 	endpoint: string;
 	p256dh: string;
 	auth: string;
-	categories: NeedsYouCategory[];
+	categories: string[];
 	userAgent: string | null;
 }
 
@@ -36,7 +35,7 @@ export interface Claim {
 
 /** The entry into a "needs you" category the owner was notified for (`app.push_item`). */
 export interface PushEntry {
-	category: NeedsYouCategory;
+	category: string;
 	stateKey: string;
 	/** A notification tagged `item-<id>` was shown (not only a burst summary). */
 	shown: boolean;
@@ -63,23 +62,19 @@ export function pushStore(sql: Sql) {
 			>`SELECT endpoint, categories, user_agent, created_at FROM app_api.push_subscription_list(${owner})`;
 			return rows.map((r) => ({
 				endpoint: r.endpoint,
-				categories: r.categories as NeedsYouCategory[],
+				categories: r.categories as string[],
 				userAgent: r.user_agent,
 				createdAt: r.created_at.toISOString()
 			}));
 		},
 
 		/** The owner's devices subscribed to `category`; every device when it is null. */
-		async targets(owner: string, category: NeedsYouCategory | null): Promise<PushTarget[]> {
+		async targets(owner: string, category: string | null): Promise<PushTarget[]> {
 			return sql<PushTarget[]>`
 				SELECT endpoint, p256dh, auth FROM app_api.push_subscription_targets(${owner}, ${category})`;
 		},
 
-		async setCategories(
-			owner: string,
-			endpoint: string,
-			categories: NeedsYouCategory[]
-		): Promise<boolean> {
+		async setCategories(owner: string, endpoint: string, categories: string[]): Promise<boolean> {
 			const [row] = await sql<{ ok: boolean }[]>`
 				SELECT app_api.push_subscription_set_categories(${owner}, ${endpoint}, ${sql.array(categories, TEXT_OID)}) AS ok`;
 			return row?.ok ?? false;
@@ -99,7 +94,7 @@ export function pushStore(sql: Sql) {
 		async claim(
 			owner: string,
 			workItemId: number,
-			category: NeedsYouCategory,
+			category: string,
 			stateKey: string,
 			windowSecs: number
 		): Promise<Claim> {
@@ -112,7 +107,7 @@ export function pushStore(sql: Sql) {
 		async release(
 			owner: string,
 			workItemId: number,
-			category: NeedsYouCategory,
+			category: string,
 			stateKey: string
 		): Promise<boolean> {
 			const [row] = await sql<{ ok: boolean }[]>`
@@ -125,7 +120,7 @@ export function pushStore(sql: Sql) {
 			const [row] = await sql<{ category: string; state_key: string; shown: boolean }[]>`
 				SELECT category, state_key, shown FROM app_api.push_item_get(${owner}, ${workItemId})`;
 			return row
-				? { category: row.category as NeedsYouCategory, stateKey: row.state_key, shown: row.shown }
+				? { category: row.category as string, stateKey: row.state_key, shown: row.shown }
 				: null;
 		},
 

@@ -1,33 +1,33 @@
-//! enzarb workflow engine library: schema access, state machines, reducer, ticker,
-//! job-result ingestion and executors.
+//! enzarb workflow engine (ADR-0022): storage, the reducer around the `enzarb-flow` interpreter,
+//! the generic executor and the ticker. No workflow-specific knowledge lives here.
 
-pub mod conflict;
+pub mod actions;
+pub mod claude_credential;
 pub mod db;
-pub mod definitions;
-pub mod dependencies;
+pub mod effects;
+pub mod engine;
 pub mod error;
 pub mod executor;
-pub mod grants;
 pub mod index;
-pub mod machine;
+pub mod library;
 pub mod permission;
 pub mod reducer;
-pub mod results;
+pub mod sandbox;
+pub mod sandbox_change;
 pub mod sandbox_poller;
+pub mod schema;
+pub mod secrets;
+pub mod steps;
 #[cfg(feature = "testing")]
 pub mod testing;
 pub mod ticker;
-pub mod usage;
 
+pub use engine::{Engine, EngineConfig};
 pub use error::Error;
-pub use executor::{
-    ClaudeKeyring, ConnectorRegistry, Executor, ExecutorConfig, SandboxResolver, SandboxTarget,
-    Secret,
-};
 pub use index::{KubeProjectIndex, ProjectIndex, ProjectInfo, StaticProjectIndex};
+pub use library::Library;
 pub use permission::{
     CachedPermissions, ConnectorPermissions, PermissionResolver, StaticPermissions,
 };
-pub use reducer::{Reducer, ReducerConfig};
-pub use results::{JobResult, ingest_job_result, record_job_usage};
-pub use ticker::{TickStats, Ticker};
+pub use sandbox::{KubeSandboxResolver, SandboxResolver, SandboxTarget, StaticSandboxResolver};
+pub use steps::{FakeStepRunner, MuxStepRunner, StepRunner};

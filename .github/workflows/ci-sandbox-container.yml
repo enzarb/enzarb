@@ -5,7 +5,6 @@ on:
     paths:
       - 'sandbox-container/**'
       - 'proto/**'
-      - 'workflows/crates/graph/**'
       - ui/package-lock.json
       - .github/workflows/ci-sandbox-container.yml
       - .github/workflows/_rust.yml
@@ -14,7 +13,6 @@ on:
     paths:
       - 'sandbox-container/**'
       - 'proto/**'
-      - 'workflows/crates/graph/**'
       - ui/package-lock.json
       - .github/workflows/ci-sandbox-container.yml
       - .github/workflows/_rust.yml

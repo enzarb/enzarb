@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::normalize::{NormalizeError, Normalized, normalize};
+use crate::catalog::{MapError, Mapped, map};
 
 pub const DEFAULT_API_URL: &str = "https://api.github.com";
 pub const DEFAULT_BOT_HANDLE: &str = "enzarb";
@@ -47,15 +47,15 @@ impl BotIdentity {
         }
     }
 
-    /// [`normalize`] with this identity. The receiver can use this without
-    /// any App credentials.
-    pub fn normalize(
+    /// [`map`] with this identity. The receiver can use this without any App
+    /// credentials.
+    pub fn map(
         &self,
         event_name: &str,
         delivery_id: &str,
         body: &[u8],
-    ) -> Result<Normalized, NormalizeError> {
-        normalize(event_name, delivery_id, body, &self.handle, &self.login)
+    ) -> Result<Vec<Mapped>, MapError> {
+        map(event_name, delivery_id, body, &self.handle, &self.login)
     }
 }
 

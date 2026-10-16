@@ -20,11 +20,8 @@ export type ChannelKind = "pty" | "acp" | (string & {});
 /** Feature names advertised in `welcome.features`. */
 /** `ClaudeUserToken` is a client feature (`hello.features`), sent only by sandbox-proxy. */
 /** `Stats`: the server answers `stats_request` with `stats`; send the request only after seeing it. */
-/**
- * `RunResults`: the server pushes `run_finished` to the session that started or subscribed to a run,
- * answers `run_status` with `run_state.result`, and accepts `run_start` without a callback.
- */
-export const Feature = { Acp: "acp", ClaudeUserToken: "claude_user_token", Stats: "stats", RunResults: "run_results", Prepare: "prepare" } as const;
+/** `Steps`: the server runs ADR-0022 steps (`step_*`, `session_event`); send `step_*` only after seeing it. */
+export const Feature = { Acp: "acp", ClaudeUserToken: "claude_user_token", Stats: "stats", Steps: "steps" } as const;
 /** Decoders keep at most this many features and drop any longer than `MAX_FEATURE_LEN` bytes. */
 export const MAX_FEATURES = 64;
 export const MAX_FEATURE_LEN = 64;
@@ -62,8 +59,24 @@ export function sanitizeFeatures(v: unknown): string[] {
   return out;
 }
 export type CredentialKind = "claude_oauth";
-export type RunPhase = "queued" | "running" | "succeeded" | "failed" | "cancelled";
-export type RunOutcome = "succeeded" | "failed" | "cancelled";
+/** Lifecycle of a step in the sandbox. */
+export type StepPhase = "running" | "interrupted" | "finished" | "unknown";
+/** `step_finished.exit` values (an open string on the wire). */
+export const StepExit = { Success: "success", Failure: "failure", Interrupted: "interrupted" } as const;
+/** Session event kinds (an open set; receivers tolerate others). */
+export const SessionKind = {
+  Prompt: "prompt",
+  User: "user",
+  Assistant: "assistant",
+  Thinking: "thinking",
+  ToolCall: "tool_call",
+  ToolResult: "tool_result",
+  Usage: "usage",
+  Steer: "steer",
+  System: "system",
+  Stdout: "stdout",
+  Stderr: "stderr",
+} as const;
 
 export const ErrorCode = {
   UnsupportedVersion: "unsupported_version",
@@ -74,71 +87,91 @@ export const ErrorCode = {
   UnknownChannel: "unknown_channel",
   UnknownRun: "unknown_run",
   Internal: "internal",
-  /** The peer does not implement the request (e.g. `run_*` without a run manager). */
+  /** The peer does not implement the request (e.g. `step_*` without a step executor). */
   Unimplemented: "unimplemented",
 } as const;
 
-/** `run_start.retarget`: rebase the child branch onto `onto` and push with a lease. */
-export interface Retarget {
-  head_ref: string;
-  /** Branch to rebase onto (the default branch). */
-  onto: string;
-  /** Parent head sha the child was cut from. */
-  old_base: string;
-  /** Child head sha the push lease expects. */
-  expected_sha: string;
-  /** Branch names that must never be rewritten. */
-  protected?: string[];
-}
-
-export interface RunStartFields {
-  run_id: string;
-  repo_url: string;
-  base_ref: string;
+/** A repository checked out for the step; the first is the primary workspace. */
+export interface StepWorkspace {
+  /** `owner/repo`. */
+  repo: string;
+  url: string;
+  mode: "read" | "write";
   branch: string;
-  push: boolean;
-  clone_token: string;
-  prompt: string;
-  timeout_secs: number;
-  /** Deprecated: omit when the server advertises `run_results` (old servers require it). */
-  callback_url?: string;
-  /** Deprecated: bearer token for `callback_url`; omit with it. */
-  callback_token?: string;
-  /** Client-chosen channel for the transcript (DATA_JSON), or null. */
-  log_channel: number | null;
-  /** Optional read-only token for same-Project git deps; never for push. */
-  deps_token?: string;
-  /** Optional read:packages token for private npm packages (NODE_AUTH_TOKEN); never persisted. */
-  npm_token?: string;
-  /** Optional short-lived read-only token (`actions: read`) for `gh` CI log reads (GH_TOKEN, agent process only); never persisted. */
-  ci_read_token?: string;
-  /** Optional per-user Claude token. Held as a `Secret` (redacted in logs); sent as a plain string. */
-  claude_token?: SecretLike;
-  /** When set, a retarget run instead of an agent run. */
-  retarget?: Retarget;
-  /** When set, a graph segment run (ADR-0020); `prompt` is ignored. */
-  graph?: GraphSegment;
+  base: string;
+  push?: boolean;
+  /** Short-lived token for fetching and pushing this repo. */
+  token: SecretLike;
 }
 
-/** `run_start.graph`: a workflow graph segment for sandbox-init to walk. */
-export interface GraphSegment {
-  /** The pinned workflow definition (JSON form of the YAML). */
-  definition: unknown;
-  /** Node id to start at. */
-  start: string;
-  /** Outputs of nodes run so far, by node id. */
-  outputs?: Record<string, unknown>;
-  /** Visit counts so far, by node id. */
-  visits?: Record<string, number>;
-  /** Rendered prompt text of `agent` nodes, by node id. */
-  prompts?: Record<string, string>;
+/** An agent runtime, resolved by the engine from the library's runtime file. */
+export interface Runtime {
+  name: string;
+  install?: string[];
+  /** `acp` or `stdio-json`. */
+  protocol: string;
+  command: string[];
+  env?: Record<string, string>;
+  capabilities?: unknown;
 }
 
-/** `RunFinished.graph`: where a segment run stopped and every node's output. */
-export interface GraphResult {
-  stopped_at: string;
+export type StepExec =
+  | { kind: "agent"; runtime: Runtime; model?: string | null; prompt: string; result_schema?: unknown }
+  | { kind: "command"; run: string; tools?: string[] };
+
+/** A declared output file, read from the primary workspace after the step. */
+export interface StepOutput {
+  file: string;
+  /** `markdown`, `json` (parsed) or `text`. */
+  format?: string | null;
+  optional?: boolean;
+}
+
+/** Body of `step_start`. */
+export interface StepStart {
+  run_id: string;
+  attempt: number;
+  task_id: string;
+  workspaces: StepWorkspace[];
+  exec: StepExec;
+  outputs?: Record<string, StepOutput>;
+  /** Named secrets as environment variables. */
+  env?: Record<string, SecretLike>;
+  /** Named secrets as files (path relative to the primary workspace). */
+  files?: Record<string, SecretLike>;
+  /** `GH_TOKEN` for the step. */
+  github_token?: SecretLike | null;
+}
+
+/** One captured, redacted session event; `seq` starts at 1 and is dense per run. */
+export interface SessionEvent {
+  run_id: string;
+  seq: number;
+  /** RFC 3339. */
+  at: string;
+  kind: string;
+  payload: unknown;
+  truncated?: boolean;
+}
+
+/** Git state of one write workspace after the step. */
+export interface StepGit {
+  repo: string;
+  branch: string;
+  head_sha: string;
+  pushed: boolean;
+}
+
+/** Body of `step_finished` (and `step_state.result`). */
+export interface StepFinished {
+  run_id: string;
+  /** See `StepExit`. */
+  exit: string;
   outputs?: Record<string, unknown>;
-  visits?: Record<string, number>;
+  result?: unknown;
+  git?: StepGit[];
+  usage?: Usage | null;
+  error?: string | null;
 }
 
 /**
@@ -152,20 +185,6 @@ export interface Usage {
   cache_creation_input_tokens?: number | null;
   models?: string[];
   cost_usd?: number | null;
-}
-
-/** Final run result: body of `run_finished` and `run_state.result` (and, deprecated, of the callback POST). */
-export interface RunFinished {
-  run_id: string;
-  outcome: RunOutcome;
-  exit_code?: number | null;
-  summary: string;
-  branch: string;
-  head_sha: string;
-  pushed: boolean;
-  usage?: Usage | null;
-  /** Result of a graph segment run. */
-  graph?: GraphResult | null;
 }
 
 /**
@@ -186,16 +205,6 @@ export interface SandboxStats {
   storage_total_bytes?: number | null;
 }
 
-/** `prepared` reply: best-effort run preparation results; empty fields are omitted. */
-export interface Prepared {
-  run_id: string;
-  merge_base_sha?: string | null;
-  changed_files?: string[];
-  /** The true number of changed files (may exceed `changed_files.length`). */
-  changed_files_total?: number;
-  affected?: string[];
-}
-
 export type Ctrl =
   | { type: "hello"; versions: number[]; client: ClientKind; features?: string[] | null }
   | { type: "welcome"; version: number; features?: string[] | null }
@@ -203,20 +212,20 @@ export type Ctrl =
   | { type: "opened"; channel: number }
   | { type: "open_error"; channel: number; message: string; code?: string | null }
   | { type: "resize"; channel: number; cols: number; rows: number }
-  | ({ type: "run_start" } & RunStartFields)
-  | { type: "run_accepted"; run_id: string; state: RunPhase; existing: boolean }
-  | { type: "run_status"; run_id: string }
-  | { type: "run_state"; run_id: string; state: RunPhase; exit_code?: number | null; summary?: string | null; usage?: Usage | null; result?: RunFinished | null }
-  | ({ type: "run_finished" } & RunFinished)
-  | { type: "run_subscribe"; run_ids: string[] }
-  | { type: "run_cancel"; run_id: string }
+  | ({ type: "step_start" } & StepStart)
+  | { type: "step_accepted"; run_id: string; state: StepPhase; existing: boolean }
+  | { type: "step_steer"; run_id: string; text: string }
+  | { type: "step_stop"; run_id: string }
+  | { type: "step_resume"; run_id: string }
+  | { type: "step_status"; run_id: string; after_seq?: number }
+  | { type: "step_state"; run_id: string; state: StepPhase; result?: StepFinished | null }
+  | ({ type: "session_event" } & SessionEvent)
+  | ({ type: "step_finished" } & StepFinished)
   | { type: "credential_captured"; kind: CredentialKind; token?: SecretLike | null; legacy?: boolean | null }
   | { type: "credential_status" }
   | { type: "credential_state"; kind: CredentialKind; configured: boolean; scope?: string | null }
   | { type: "stats_request" }
   | ({ type: "stats" } & SandboxStats)
-  | { type: "prepare_request"; run_id: string; repo_url: string; base_ref: string; branch: string; clone_token: SecretLike }
-  | ({ type: "prepared" } & Prepared)
   /** Client -> server: clear the stored credential. */
   | { type: "credential_clear"; kind: CredentialKind }
   | { type: "error"; code: string; message: string; run_id?: string; channel?: number };
@@ -230,21 +239,21 @@ const TYPES: ReadonlySet<string> = new Set<CtrlType>([
   "opened",
   "open_error",
   "resize",
-  "run_start",
-  "run_accepted",
-  "run_status",
-  "run_state",
-  "run_finished",
-  "run_subscribe",
-  "run_cancel",
+  "step_start",
+  "step_accepted",
+  "step_steer",
+  "step_stop",
+  "step_resume",
+  "step_status",
+  "step_state",
+  "session_event",
+  "step_finished",
   "credential_captured",
   "credential_status",
   "credential_state",
   "credential_clear",
   "stats_request",
   "stats",
-  "prepare_request",
-  "prepared",
   "error",
 ]);
 
@@ -266,16 +275,30 @@ export function asCtrl(v: unknown): Ctrl {
   if (!TYPES.has(t)) throw new UnknownCtrlType(t);
   // Wrap incoming tokens so logging the message cannot leak them. Unknown keys pass through untouched.
   const o = v as Record<string, unknown>;
-  const field =
-    t === "credential_captured"
-      ? "token"
-      : t === "open" || t === "run_start"
-        ? "claude_token"
-        : t === "prepare_request"
-          ? "clone_token"
-          : undefined;
+  if (t === "step_start") return wrapStepStart(o) as Ctrl;
+  const field = t === "credential_captured" ? "token" : t === "open" ? "claude_token" : undefined;
   if (field !== undefined && typeof o[field] === "string") return { ...o, [field]: new Secret(o[field]) } as Ctrl;
   return v as Ctrl;
+}
+
+const wrap = (v: unknown): unknown => (typeof v === "string" ? new Secret(v) : v);
+
+/** Wrap `step_start` tokens (workspace tokens, env values, `github_token`) in `Secret`s. */
+function wrapStepStart(o: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...o };
+  if (Array.isArray(o.workspaces)) {
+    out.workspaces = o.workspaces.map((w: unknown) =>
+      typeof w === "object" && w !== null ? { ...w, token: wrap((w as Record<string, unknown>).token) } : w,
+    );
+  }
+  if (typeof o.env === "object" && o.env !== null && !Array.isArray(o.env)) {
+    out.env = Object.fromEntries(Object.entries(o.env).map(([k, v]) => [k, wrap(v)]));
+  }
+  if (typeof o.files === "object" && o.files !== null && !Array.isArray(o.files)) {
+    out.files = Object.fromEntries(Object.entries(o.files).map(([k, v]) => [k, wrap(v)]));
+  }
+  if ("github_token" in o) out.github_token = wrap(o.github_token);
+  return out;
 }
 
 export function parseCtrl(f: Frame): Ctrl {

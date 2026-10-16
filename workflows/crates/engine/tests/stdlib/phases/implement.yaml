@@ -1,0 +1,70 @@
+version: 1
+description: >-
+  Prepare the workspace, implement the approved plan, run the repository's checks (a failure
+  goes back to the agent with the log; `max_rounds` attempts in all), then open the pull request
+  (linked to the issue and to the task as a subject). A blocked agent or a failed open waits for a maintainer's `/retry`.
+params:
+  prompt: {type: prompt, default: {file: prompts/implement.md}}
+  prepare: {type: command, default: "mise run prepare"}
+  check: {type: command, default: "mise run check"}
+  retry_command: {type: string, default: retry}
+  draft: {type: boolean, default: false}
+  max_rounds: {type: integer, default: 3, description: Implementation attempts against failing checks before a person decides}
+  retry_label: {type: string, default: Retry}
+exits: [closed]
+start: prepare
+nodes:
+  prepare:
+    step: {use: steps/prepare, with: {run: {param: prepare}}}
+    # A failed prepare is not fatal: the agent can still install what it needs.
+    next: implement
+  implement:
+    step: {use: steps/implement, with: {prompt: {param: prompt}}}
+    max_visits: {param: max_rounds}
+    on_limit: blocked
+    next:
+      - {if: "last.exit == 'success' and outputs.implement.decision == 'done' and facts.git.pushed", to: checks}
+      - {else: blocked}
+  checks:
+    step: {use: steps/checks, with: {run: {param: check}}}
+    next:
+      - {if: "last.exit == 'success'", to: open_pr}
+      - {else: implement}
+  open_pr:
+    action:
+      name: open_pull_request
+      args:
+        head: "{{ facts.git.branch }}"
+        base: "{{ task.default_branch }}"
+        title: "{{ outputs.implement.title or subjects.issue.title }}"
+        body: "{{ outputs.implement.body }}"
+        issue: "{{ subjects.issue.number }}"
+        draft: "{{ params.draft }}"
+      # The new pull request becomes a subject of the task (appended to subjects.pull_requests).
+      subject: true
+      as: pull_request
+    next:
+      - {if: "last.ok", to: done}
+      - {else: blocked}
+  blocked:
+    wait:
+      events:
+        - {event: comment, from: writer, if: "event.command == params.retry_command"}
+        - {event: issue, if: "event.action == 'closed'"}
+      reason: implement_blocked
+      text: "{{ outputs.implement.body if outputs.implement.decision == 'blocked' else 'The implementation could not be completed or the pull request could not be opened' }}"
+      column: blocked
+      waiting_on: human
+      actions: [{label: {param: retry_label}, command: {param: retry_command}}]
+    next:
+      - {if: "event.type == 'issue'", to: closed}
+      - {else: retry}
+  # Re-entering this phase from the workflow resets the attempt caps; here one more round.
+  retry:
+    step: {use: steps/implement, with: {prompt: {param: prompt}}}
+    max_visits: 5
+    next:
+      - {if: "last.exit == 'success' and outputs.implement.decision == 'done' and facts.git.pushed", to: open_pr}
+      - {else: blocked}
+  done: {end: {status: done}}
+  closed: {end: {status: closed}}

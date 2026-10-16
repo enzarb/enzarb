@@ -1,0 +1,20 @@
+[
+  {
+    "suffix": "0",
+    "type": "tag",
+    "event": {
+      "type": "tag",
+      "action": "created",
+      "name": "v1.0.0",
+      "sha": "",
+      "id": "d-1",
+      "repo": "enzarb/enzarb-ui",
+      "actor": {
+        "login": "ruckc",
+        "can_write": false,
+        "bot": false
+      },
+      "at": "<now>"
+    }
+  }
+]

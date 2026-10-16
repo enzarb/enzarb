@@ -1,5 +1,20 @@
 import * as v from 'valibot';
-import { NEEDS_YOU_CATEGORIES, type NeedsYouCategory } from '#lib/work-items.ts';
+
+/**
+ * Device subscription categories. Since ADR-0022 there is one: the engine's `needs_you`. Older
+ * devices may still hold the former per-state names; the notifier sends to every device.
+ */
+export const NEEDS_YOU_CATEGORIES = ['needs_you'] as const;
+export type NeedsYouCategory = (typeof NEEDS_YOU_CATEGORIES)[number];
+const LEGACY_CATEGORIES = [
+	'approval',
+	'merge',
+	'review',
+	'decision',
+	'blocked',
+	'failed',
+	'question'
+] as const;
 
 /** What the push service carries to the device (and the service worker shows): nothing else. */
 export interface PushPayload {
@@ -12,24 +27,7 @@ export interface PushPayload {
 }
 
 export const CATEGORY_LABELS: Record<NeedsYouCategory, string> = {
-	approval: 'Plan awaiting approval',
-	merge: 'Ready to merge',
-	review: 'Waiting for your review',
-	decision: 'Waiting for your decision',
-	blocked: 'Change request blocked',
-	failed: 'Failed or stale',
-	question: 'Questions awaiting answers'
-};
-
-/** Fixed title per category, so no item text ends up in the title. */
-const TITLES: Record<NeedsYouCategory, string> = {
-	approval: 'Plan awaiting your approval',
-	merge: 'Change request ready to merge',
-	review: 'Change request waiting for your review',
-	decision: 'Waiting for your decision',
-	blocked: 'Change request blocked',
-	failed: 'Task failed',
-	question: 'Questions need your answer'
+	needs_you: 'A task is waiting on you'
 };
 
 export const BODY_MAX = 120;
@@ -50,30 +48,24 @@ export type PushMessage = PushPayload | ClearPayload;
 /** One tag per task, so a newer notification replaces the older one and a clear can find it. */
 export const itemTag = (id: number): string => `item-${id}`;
 
-/** The board with the card highlighted, remembering which category the notification was for. */
-export function highlightUrl(
-	item: { id: number; project?: string | null },
-	category: NeedsYouCategory
-): string {
-	const q = new URLSearchParams();
-	if (item.project) q.set('project', item.project);
-	q.set('highlight', String(item.id));
-	q.set('was', category);
-	return `/work?${q}`;
+/** The "Waiting on you" page with the card highlighted. */
+export function highlightUrl(item: { id: number }): string {
+	return `/tasks?${new URLSearchParams({ highlight: String(item.id) })}`;
 }
 
 /**
- * The notification for one task. Built only from the item id, project, its display title and the
- * category: never `state_data`, the failure reason, tokens, code or logs.
+ * The notification for one task. Built only from the id, the display title and the projection's
+ * reason (a short label the workflow declares): never task state, tokens, code or logs.
  */
-export function pushPayload(
-	item: { id: number; title: string; project?: string | null },
-	category: NeedsYouCategory
-): PushPayload {
+export function pushPayload(item: {
+	id: number;
+	title: string;
+	reason?: string | null;
+}): PushPayload {
 	return {
-		title: TITLES[category],
+		title: truncate(item.reason?.trim() || 'A task is waiting on you', BODY_MAX),
 		body: truncate(item.title, BODY_MAX),
-		url: highlightUrl(item, category),
+		url: highlightUrl(item),
 		tag: itemTag(item.id)
 	};
 }
@@ -85,7 +77,7 @@ export function summaryPayload(count: number): PushPayload {
 	return {
 		title: `${count} tasks need you`,
 		body: 'Open the task list to see what is waiting.',
-		url: '/work',
+		url: '/tasks',
 		tag: 'work-summary'
 	};
 }
@@ -100,8 +92,8 @@ export function testPayload(): PushPayload {
 }
 
 export const CategoriesSchema = v.pipe(
-	v.array(v.picklist(NEEDS_YOU_CATEGORIES)),
-	v.maxLength(NEEDS_YOU_CATEGORIES.length)
+	v.array(v.picklist([...NEEDS_YOU_CATEGORIES, ...LEGACY_CATEGORIES])),
+	v.maxLength(NEEDS_YOU_CATEGORIES.length + LEGACY_CATEGORIES.length)
 );
 
 export const SubscriptionSchema = v.object({

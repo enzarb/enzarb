@@ -1,0 +1,35 @@
+version: 1
+description: Break an epic into sub-issues (the list `create_issues` takes)
+params:
+  prompt: {type: prompt, default: {file: prompts/breakdown.md}}
+  max_subissues: {type: integer, default: 8}
+  approve_command: {type: string, default: approve}
+agent:
+  runtime: runtimes/claude-code
+  prompt: {param: prompt}
+inputs:
+  max_subissues: {from: params.max_subissues, type: integer}
+  approve_command: {from: params.approve_command, type: string}
+  previous: {from: outputs.breakdown_plan, type: string, required: false}
+  triage_summary: {from: outputs.triage.body, type: string, required: false}
+outputs:
+  breakdown_plan: {file: .enzarb/out/breakdown.md, artifact: Breakdown}
+result:
+  as: breakdown
+  schema:
+    type: object
+    required: [issues]
+    properties:
+      issues:
+        type: array
+        maxItems: 20
+        items:
+          type: object
+          required: [key, title, body, depends_on]
+          properties:
+            key: {type: string, pattern: "^[a-z0-9_-]{1,32}$"}
+            title: {type: string, minLength: 1}
+            body: {type: string}
+            depends_on: {type: array, items: {type: string}}
+github: {contents: read, issues: read}
+steer: [comment]

@@ -34,7 +34,12 @@ COPY connectors/Cargo.toml connectors/Cargo.lock /src/connectors/
 COPY connectors/crates /src/connectors/crates
 COPY connectors/bin /src/connectors/bin
 COPY --from=planner /src/workflows/recipe.json recipe.json
-RUN cargo chef cook --release --locked --recipe-path recipe.json -p enzarb-workflows
+# connectors (a path dep) compiles against the flow crate, so the skeleton of crates/flow is
+# replaced by the real crate before the dependency layer builds.
+RUN cargo chef cook --release --locked --recipe-path recipe.json -p enzarb-workflows --no-build
+COPY workflows/crates/flow crates/flow
+# Not --locked: the skeleton manifests differ from the real ones; the final build is locked.
+RUN cargo build --release -p enzarb-workflows
 COPY workflows/ .
 RUN cargo build --release --locked -p enzarb-workflows \
  && cp target/release/enzarb-workflows /enzarb-workflows

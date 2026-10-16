@@ -18,7 +18,7 @@ for c in $comps; do
   [ -f "$ROOT/$dir/Dockerfile" ] || die "$dir/Dockerfile missing"
   # Components that use path deps on sibling dirs build with the repo root as context.
   case "$dir" in
-    ui | sandbox-proxy | sandbox-container | workflows) ctx="$ROOT" ;;
+    ui | sandbox-proxy | sandbox-container | workflows | connectors) ctx="$ROOT" ;;
     *) ctx="$ROOT/$dir" ;;
   esac
   log "building $image from $dir"

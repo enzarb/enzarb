@@ -1,0 +1,14 @@
+version: 1
+description: >-
+  Prepare the workspace before an agent works in it: runs the repository's
+  `mise run prepare` task when it has one, else does nothing.
+params:
+  run: {type: command, default: "mise run prepare"}
+command:
+  run: |
+    set -eu
+    if mise tasks ls 2>/dev/null | awk '{print $1}' | grep -qx prepare; then
+      {{ params.run }}
+    else
+      echo "prepare: no prepare task; skipped"
+    fi

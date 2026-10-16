@@ -1,0 +1,7 @@
+version: 1
+columns:
+  - {id: review, title: Review}
+  - {id: doing, title: Doing}
+  - {id: stuck, title: Stuck}
+  - {id: done, title: Done}
+defaults: {running: doing, waiting_human: review, waiting_external: doing, paused: stuck, ended: done}

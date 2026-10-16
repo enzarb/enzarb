@@ -77,6 +77,8 @@ imagePullSecrets:
 {{- define "enzarb.generatedSecret" -}}enzarb-generated{{- end }}
 {{- define "enzarb.githubSecret" -}}{{ .Values.secrets.github.existingSecret | default "enzarb-github" }}{{- end }}
 {{- define "enzarb.jwtSecret" -}}{{ .Values.secrets.sessionJwt.existingSecret | default (include "enzarb.generatedSecret" .) }}{{- end }}
+{{- define "enzarb.secretsKeySecret" -}}{{ .Values.secrets.engineSecretsKey.existingSecret | default (include "enzarb.generatedSecret" .) }}{{- end }}
+{{- define "enzarb.secretsKeyKey" -}}{{ if .Values.secrets.engineSecretsKey.existingSecret }}{{ .Values.secrets.engineSecretsKey.key }}{{ else }}secrets-key{{ end }}{{- end }}
 {{- define "enzarb.callbackSecret" -}}{{ .Values.secrets.executorCallback.existingSecret | default (include "enzarb.generatedSecret" .) }}{{- end }}
 {{- define "enzarb.realtimeJwtSecret" -}}{{ .Values.secrets.realtimeJwt.existingSecret | default (include "enzarb.generatedSecret" .) }}{{- end }}
 {{- define "enzarb.realtimeJwtKey" -}}{{ if .Values.secrets.realtimeJwt.existingSecret }}{{ .Values.secrets.realtimeJwt.key }}{{ else }}realtime-jwt-secret{{ end }}{{- end }}

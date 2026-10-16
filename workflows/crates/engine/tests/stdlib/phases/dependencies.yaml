@@ -1,0 +1,36 @@
+version: 1
+description: >-
+  Wait until every issue this one depends on has ended with one of `done_statuses`.
+  When the document already lists dependencies and all of them are finished, the phase
+  passes at once (a `decide` node); otherwise it refreshes the fact and waits (an empty
+  fact is indistinguishable from an unknown one, so no dependencies needs the refresh).
+  A maintainer can start anyway with `/unblock`.
+params:
+  done_statuses: {type: list, items: string, default: [done, merged, released], description: End statuses that count as finished}
+  unblock_command: {type: string, default: unblock}
+start: check
+nodes:
+  check:
+    decide: {}
+    next:
+      - {if: "facts.dependencies is not none and facts.dependencies | rejectattr('status', 'in', params.done_statuses) | list | length == 0", to: done}
+      - {else: wait}
+  wait:
+    wait:
+      events:
+        - {event: fact, if: "event.fact == 'dependencies'"}
+        - dependency_changed
+        - {event: comment, from: writer, if: "event.command == params.unblock_command"}
+      refresh: [dependencies]
+      reason: blocked_by_dependencies
+      text: "Waiting for the issues this one depends on to finish"
+      column: blocked
+      waiting_on: external
+      actions: [{label: Start anyway, command: {param: unblock_command}}]
+    max_visits: 500
+    next:
+      - {if: "event.type == 'comment'", to: done}
+      - {if: "facts.dependencies | rejectattr('status', 'in', params.done_statuses) | list | length == 0", to: done}
+      # A dependency changed: re-enter to refresh the fact.
+      - {if: "event.type == 'dependency_changed'", to: wait}
+  done: {end: {status: done}}

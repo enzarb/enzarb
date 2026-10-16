@@ -221,6 +221,7 @@ type: Opaque
 data:
   session-jwt-secret: <generated>
   callback-secret: <generated>
+  secrets-key: <generated>
   realtime-jwt-secret: <generated>
 
 ---
@@ -813,26 +814,6 @@ spec:
     - { name: http, port: 8080, targetPort: http }
 
 ---
-# Source: enzarb/templates/workflows.yaml
-# Internal only: sandbox-init callbacks (/v1/runs/{id}/finished) and health.
-apiVersion: v1
-kind: Service
-metadata:
-  name: enzarb-workflows-executor
-  labels:
-    app.kubernetes.io/name: enzarb-workflows
-    app.kubernetes.io/instance: enzarb
-    app.kubernetes.io/part-of: enzarb
-    app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: enzarb-0.0.0
-spec:
-  selector:
-    app.kubernetes.io/name: enzarb-workflows
-    app.kubernetes.io/instance: enzarb
-  ports:
-    - { name: executor, port: 8081, targetPort: executor }
-
----
 # Source: enzarb/templates/connectors.yaml
 apiVersion: apps/v1
 kind: Deployment
@@ -911,6 +892,11 @@ spec:
               value: "enzarb"
             - name: DATABASE_URL
               value: "postgres:///enzarb"
+            - name: ENZARB_SECRETS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-generated
+                  key: secrets-key
             - name: GITHUB_WEBHOOK_SECRET
               valueFrom:
                 secretKeyRef:
@@ -1457,7 +1443,7 @@ spec:
           imagePullPolicy: IfNotPresent
           args: [run, --roles, "reducer,executor,ticker"]
           ports:
-            - { name: executor, containerPort: 8081 }
+            - { name: health, containerPort: 8082 }
           env:
 
             - name: PGHOST
@@ -1499,34 +1485,28 @@ spec:
                 secretKeyRef:
                   name: enzarb-github
                   key: private-key
-            - name: ENZARB_EXECUTOR_CALLBACK_SECRET
+            - name: ENZARB_SECRETS_KEY
               valueFrom:
                 secretKeyRef:
                   name: enzarb-generated
-                  key: callback-secret
-            - name: ENZARB_NPM_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: "enzarb-updater-registry"
-                  key: "registry-token"
-                  optional: true
-            - { name: ENZARB_EXECUTOR_URL, value: "http://enzarb-workflows-executor.enzarb.svc:8081" }
+                  key: secrets-key
             - { name: ENZARB_CLAUDE_KEYRING_DIR, value: /etc/enzarb/claude-key }
-            - { name: ENZARB_EXECUTOR_LISTEN, value: "0.0.0.0:8081" }
             - { name: ENZARB_PUBLIC_URL, value: "https://enzarb.dev" }
             - { name: ENZARB_DB_MAX_CONNECTIONS, value: "10" }
-            - { name: ENZARB_MAX_AUTO_ROUNDS, value: "3" }
+            - { name: ENZARB_DEFAULT_LIBRARY, value: "enzarb/workflows@v1" }
+            - { name: ENZARB_LIBRARY_REPOS, value: "" }
+            - { name: ENZARB_STALL_SECS, value: "1800" }
+            - { name: ENZARB_MAX_STEPS_PER_PROJECT, value: "4" }
             - { name: ENZARB_CI_IGNORE_CHECKS, value: "(?i)copilot" }
             - { name: ENZARB_BOT_HANDLE, value: "enzarb" }
             - { name: ENZARB_BOT_LOGIN, value: "enzarb[bot]" }
             - { name: ENZARB_STATS_RETENTION, value: "90" }
             - { name: RUST_LOG, value: "info" }
-          # /healthz is on sandbox.executorCallbackPort with the executor role, otherwise on 8082.
           readinessProbe:
-            httpGet: { path: /healthz, port: executor }
+            httpGet: { path: /healthz, port: health }
             periodSeconds: 2
           livenessProbe:
-            httpGet: { path: /healthz, port: executor }
+            httpGet: { path: /healthz, port: health }
             initialDelaySeconds: 10
           lifecycle:
             preStop:
@@ -1831,6 +1811,17 @@ spec:
         - { role: enzarb_workflows, privileges: [USAGE] }
         - { role: enzarb_connectors, privileges: [USAGE] }
         - { role: enzarb_ui, privileges: [USAGE] }
+    - name: engine
+      owner: enzarb_workflows_owner
+      grants:
+        - { role: enzarb_workflows, privileges: [USAGE] }
+    - name: engine_api
+      owner: enzarb_workflows_owner
+      grants:
+        - { role: enzarb_workflows, privileges: [USAGE] }
+        - { role: enzarb_connectors, privileges: [USAGE] }
+        - { role: enzarb_ui, privileges: [USAGE] }
+        - { role: enzarb_sandbox_proxy, privileges: [USAGE] }
     - name: connectors
       owner: enzarb_connectors_owner
       grants:

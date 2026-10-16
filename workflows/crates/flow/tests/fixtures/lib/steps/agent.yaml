@@ -1,0 +1,12 @@
+version: 1
+params:
+  prompt: {type: prompt}
+agent: {runtime: runtimes/claude, model: opus, prompt: {param: prompt}}
+inputs:
+  plan: {from: outputs.plan, type: string, required: false}
+outputs:
+  summary: {file: .enzarb/out/summary.md, artifact: Summary, optional: true}
+result: {schema: {type: object}, as: work}
+github: {contents: write}
+secrets: [API_KEY]
+steer: [comment]
