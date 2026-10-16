@@ -774,7 +774,11 @@ impl<'l> Resolver<'l> {
                 join(&mut p, k);
                 let msg = format!(
                     "unknown param `{k}` (declared: {})",
-                    decls.keys().cloned().collect::<Vec<_>>().join(", ")
+                    if decls.is_empty() {
+                        "none".to_string()
+                    } else {
+                        decls.keys().cloned().collect::<Vec<_>>().join(", ")
+                    }
                 );
                 self.err(
                     &At {

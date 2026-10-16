@@ -8,8 +8,8 @@ The data every prompt template, `text`, action argument and condition reads (ADR
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `task` | TaskInfo | yes |  |
-| `subjects` | Subjects | yes |  |
+| `task` | TaskInfo |  |  |
+| `subjects` | Subjects |  |  |
 | `event` | Event |  | The event that triggered the task, or the last event a wait accepted. |
 | `outputs` | object |  | Validated step outputs by name (output files, and `result` under its `as` name). Persist across phase re-entry; later writes replace. |
 | `artifacts` | list of Artifact |  |  |

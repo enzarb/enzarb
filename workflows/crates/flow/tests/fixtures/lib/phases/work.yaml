@@ -1,0 +1,25 @@
+version: 1
+params:
+  prompt: {type: prompt, default: {file: prompts/work.md}}
+  max_rounds: {type: integer, default: 3}
+exits: [failed]
+start: implement
+nodes:
+  implement:
+    step: {use: steps/agent, with: {prompt: {param: prompt}}}
+    max_visits: 3
+    on_limit: give_up
+    next:
+      - {if: "last.exit == 'success' and facts.git.pushed", to: check}
+      - {if: "last.exit == 'interrupted'", to: stopped}
+      - {else: implement}
+  check:
+    step:
+      inline:
+        command: {run: "mise run check --rounds {{ params.rounds }}"}
+        params: {rounds: {type: integer}}
+      with: {rounds: {param: max_rounds}}
+    next: [{if: "exit == 'success'", to: done}, {else: implement}]
+  give_up: {end: {status: failed}}
+  stopped: {end: {status: failed}}
+  done: {end: {status: done}}

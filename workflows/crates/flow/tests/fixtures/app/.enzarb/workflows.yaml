@@ -1,0 +1,4 @@
+version: 1
+imports: {std: lib/std@v1}
+bindings:
+  - {id: issues, on: issue, if: "event.action == 'opened'", use: .enzarb/workflows/issue}

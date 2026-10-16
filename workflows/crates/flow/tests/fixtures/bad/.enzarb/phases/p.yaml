@@ -1,0 +1,6 @@
+version: 1
+start: a
+nodes:
+  a:
+    step: {inline: {command: {run: "echo {{ subjects.isue.title }}"}}}
+    next: b

@@ -1,0 +1,4 @@
+version: 1
+phases:
+  - use: .enzarb/phases/p
+    with: {colour: blue}

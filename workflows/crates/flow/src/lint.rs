@@ -49,6 +49,8 @@ pub struct Workspace {
     cfg: Config,
     loader: FsLoader,
     files: Vec<String>,
+    /// Every repository some file imports (allowed; it may still be unavailable locally).
+    imported: BTreeSet<String>,
 }
 
 impl Workspace {
@@ -83,12 +85,23 @@ impl Workspace {
             };
             loader.roots.insert(repo, p.clone());
         }
-        Ok(Self { cfg, loader, files })
+        Ok(Self {
+            cfg,
+            loader,
+            files,
+            imported: aliases.into_values().collect(),
+        })
     }
 
     fn opts(&self) -> Options {
         Options {
-            allow: self.loader.roots.keys().cloned().collect(),
+            allow: self
+                .loader
+                .roots
+                .keys()
+                .chain(&self.imported)
+                .cloned()
+                .collect(),
         }
     }
 

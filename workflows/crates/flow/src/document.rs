@@ -9,6 +9,7 @@ use serde_json::{Map, Value};
 
 /// Everything known about a task.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct TaskDocument {
     pub task: TaskInfo,
     pub subjects: Subjects,

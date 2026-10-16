@@ -2,10 +2,21 @@
   "type": "object",
   "properties": {
     "task": {
-      "$ref": "#/$defs/TaskInfo"
+      "$ref": "#/$defs/TaskInfo",
+      "default": {
+        "id": "",
+        "project": "",
+        "repo": "",
+        "workflow": "",
+        "default_branch": ""
+      }
     },
     "subjects": {
-      "$ref": "#/$defs/Subjects"
+      "$ref": "#/$defs/Subjects",
+      "default": {
+        "issue": null,
+        "pull_requests": []
+      }
     },
     "event": {
       "anyOf": [
@@ -52,10 +63,6 @@
       "default": []
     }
   },
-  "required": [
-    "task",
-    "subjects"
-  ],
   "description": "Everything known about a task.",
   "title": "TaskDocument",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
