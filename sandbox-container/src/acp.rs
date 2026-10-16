@@ -1,71 +1,25 @@
-//! One agent run over the Agent Client Protocol (ACP).
+//! Shared ACP (Agent Client Protocol) helpers: starting an agent process
+//! under the reaper, the permission answer, and usage accounting.
 //!
-//! sandbox-init spawns the adapter (`claude-agent-acp`, see
-//! `ENZARB_ACP_AGENT_BIN`) through [`Reaper::spawn_with`] in its own session
-//! (so the whole process group can be killed) and acts as the ACP *client*
-//! over the child's stdio:
-//!
-//! 1. `initialize` (protocol v1, no client capabilities: no fs, no terminal);
-//! 2. `session/new` with `cwd` = the run worktree and no MCP servers;
-//! 3. `session/prompt` with the rendered prompt. While it runs, every
-//!    `session/update` is emitted as a transcript record and the agent text is
-//!    collected, and every `session/request_permission` is answered by the
-//!    [`Policy`] (`allow_once` or `reject_once`, never a persistent option);
-//! 4. on cancel or timeout: `session/cancel`, wait up to `cancel_grace` for the
-//!    turn to end, then SIGTERM/SIGKILL of the process group.
+//! Agents are started through [`Reaper::spawn_with`] in their own session (so
+//! the whole process group can be killed) and spoken to over stdio as
+//! newline-delimited JSON-RPC by [`crate::chat`] (a filtering relay) and
+//! [`crate::steps::agent`] (sandbox-init as the ACP client).
 
+use std::io::{self, BufRead};
 use std::os::fd::OwnedFd;
-use std::path::{Path, PathBuf};
+use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
-use agent_client_protocol::schema::ProtocolVersion;
-use agent_client_protocol::schema::v1::{
-    CancelNotification, ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionNotification, TextContent,
-};
-use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use enzarb_proto::Usage;
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio::net::unix::pipe;
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use std::io::{self, BufRead};
-use std::os::unix::process::CommandExt;
-
-use crate::exec::{Ctl, LineSink, Stop, terminate};
+use crate::exec::{LineSink, Stop};
 use crate::reaper::{ExitStatus, Reaper};
-
-/// Receives transcript records `(kind, fields)`.
-pub type Emit = Arc<dyn Fn(&str, Value) + Send + Sync>;
-
-/// What to run.
-pub struct AcpSpec {
-    pub bin: String,
-    pub cwd: PathBuf,
-    pub env: Vec<(String, String)>,
-    pub prompt: String,
-    /// How long the agent gets to end its turn after `session/cancel`.
-    pub cancel_grace: Duration,
-    /// Receives the usage reported so far when [`run`] returns, whatever the outcome.
-    pub usage: UsageSink,
-}
-
-/// A finished turn.
-#[derive(Debug)]
-pub struct AcpOutput {
-    /// ACP stop reason: `end_turn`, `max_tokens`, `max_turn_requests`, `refusal`, `cancelled`.
-    pub stop_reason: String,
-    /// The agent's message text of the turn, verbatim.
-    pub text: String,
-    /// Token usage and cost the agent reported, if any.
-    pub usage: Option<Usage>,
-}
 
 #[derive(Debug)]
 pub enum AcpError {
@@ -81,10 +35,6 @@ impl From<Stop> for AcpError {
     }
 }
 
-/// Where [`run`] leaves the usage collected so far, also when the run ends in
-/// an error, a cancel or a timeout (the spend happened either way).
-pub type UsageSink = Arc<Mutex<Option<Usage>>>;
-
 /// Token usage and cost as the agent reports them. Nothing is estimated: a
 /// field the agent never sent stays `None`.
 ///
@@ -95,7 +45,7 @@ pub type UsageSink = Arc<Mutex<Option<Usage>>>;
 ///
 /// Per field, the per-turn figure wins over the cumulative one.
 #[derive(Default)]
-struct UsageCollector {
+pub(crate) struct UsageCollector {
     turns: Usage,
     cumulative: Usage,
 }
@@ -191,7 +141,7 @@ impl UsageCollector {
     }
 
     /// A `session/update` payload; only `usage_update` carries usage.
-    fn update(&mut self, update: &Value) {
+    pub(crate) fn update(&mut self, update: &Value) {
         if update.get("sessionUpdate").and_then(Value::as_str) == Some("usage_update") {
             let u = Self::read(update);
             merge_latest(&mut self.cumulative, u);
@@ -199,7 +149,7 @@ impl UsageCollector {
     }
 
     /// The `session/prompt` response (one turn).
-    fn response(&mut self, response: &Value) {
+    pub(crate) fn response(&mut self, response: &Value) {
         let u = Self::read(response);
         let t = &mut self.turns;
         let add = |a: &mut Option<u64>, b: Option<u64>| {
@@ -225,7 +175,7 @@ impl UsageCollector {
     }
 
     /// What was reported so far, `None` when nothing was.
-    fn snapshot(&self) -> Option<Usage> {
+    pub(crate) fn snapshot(&self) -> Option<Usage> {
         let (t, c) = (&self.turns, &self.cumulative);
         let mut models = t.models.clone();
         for m in &c.models {
@@ -263,29 +213,6 @@ fn merge_latest(into: &mut Usage, u: Usage) {
     }
 }
 
-/// Collects the agent's message text: the concatenated `agent_message_chunk`
-/// text of the turn, verbatim (the engine parses the trailing ```json block).
-#[derive(Default)]
-struct Collector {
-    text: String,
-    usage: UsageCollector,
-}
-
-impl Collector {
-    fn update(&mut self, update: &Value) {
-        self.usage.update(update);
-        if update.get("sessionUpdate").and_then(Value::as_str) != Some("agent_message_chunk") {
-            return;
-        }
-        let c = update.get("content");
-        if c.and_then(|c| c.get("type")).and_then(Value::as_str) == Some("text")
-            && let Some(t) = c.and_then(|c| c.get("text")).and_then(Value::as_str)
-        {
-            self.text.push_str(t);
-        }
-    }
-}
-
 /// A started agent: pid (= its process group), exit status and stdio pipes.
 pub(crate) struct Spawned {
     pub pid: u32,
@@ -294,22 +221,20 @@ pub(crate) struct Spawned {
     pub stdout: pipe::Receiver,
 }
 
-fn spawn(reaper: &Reaper, spec: &AcpSpec, stderr: Option<LineSink>) -> Result<Spawned, AcpError> {
-    spawn_agent(reaper, &spec.bin, &spec.cwd, &spec.env, false, stderr)
-}
-
-/// Start `bin` in `cwd` in its own session (process group) under the reaper,
-/// with `env` added to the inherited environment, or as the whole
+/// Start `bin args..` in `cwd` in its own session (process group) under the
+/// reaper, with `env` added to the inherited environment, or as the whole
 /// environment when `clear_env`. stderr lines go to `stderr`.
 pub(crate) fn spawn_agent(
     reaper: &Reaper,
     bin: &str,
+    args: &[String],
     cwd: &Path,
     env: &[(String, String)],
     clear_env: bool,
     stderr: Option<LineSink>,
 ) -> Result<Spawned, AcpError> {
     let mut cmd = Command::new(bin);
+    cmd.args(args);
     if clear_env {
         cmd.env_clear();
     }
@@ -367,10 +292,6 @@ pub(crate) fn spawn_agent(
     }
 }
 
-fn acp_err(what: &str, e: agent_client_protocol::Error) -> AcpError {
-    AcpError::Failed(format!("{what}: {e}"))
-}
-
 /// Pick the allow option to answer a permission request with: the sandbox
 /// (gVisor, network policy, scoped tokens) is the security boundary, so every
 /// request is allowed (`allow_always` when offered, else `allow_once`).
@@ -384,253 +305,9 @@ pub(crate) fn allow_option(options: &[Value]) -> Option<String> {
     })
 }
 
-/// Run one prompt to completion (or until stopped), then stop the agent.
-pub async fn run(
-    reaper: &Reaper,
-    spec: AcpSpec,
-    ctl: &mut Ctl,
-    emit: Emit,
-    stderr: Option<LineSink>,
-) -> Result<AcpOutput, AcpError> {
-    let sp = spawn(reaper, &spec, stderr)?;
-    let pid = sp.pid;
-    let mut exit = sp.exit;
-    let cancelling = Arc::new(AtomicBool::new(false));
-    let collector = Arc::new(Mutex::new(Collector::default()));
-
-    let on_update = {
-        let emit = emit.clone();
-        let collector = collector.clone();
-        async move |n: SessionNotification, _cx: ConnectionTo<Agent>| {
-            if let Ok(v) = serde_json::to_value(&n.update) {
-                collector.lock().unwrap().update(&v);
-                emit("update", json!({"session_id": n.session_id, "update": v}));
-            }
-            Ok(())
-        }
-    };
-    let on_permission = {
-        let emit = emit.clone();
-        let cancelling = cancelling.clone();
-        async move |req: RequestPermissionRequest,
-                    responder: agent_client_protocol::Responder<RequestPermissionResponse>,
-                    _cx: ConnectionTo<Agent>| {
-            let v = serde_json::to_value(&req).unwrap_or(Value::Null);
-            let tool_call = v.get("toolCall").cloned().unwrap_or(Value::Null);
-            let options: Vec<Value> = v
-                .get("options")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            let option = allow_option(&options);
-            let record = json!({
-                "tool_call_id": tool_call.get("toolCallId"),
-                "tool_kind": tool_call.get("kind"),
-                "title": tool_call.get("title"),
-                "input": tool_call.get("rawInput"),
-                "decision": "allow",
-                "rule": "sandbox",
-                "reason": "the sandbox is the security boundary",
-                "option_id": option,
-            });
-            emit("permission", record);
-            let outcome = match option {
-                Some(id) if !cancelling.load(Ordering::Relaxed) => {
-                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(id))
-                }
-                _ => RequestPermissionOutcome::Cancelled,
-            };
-            responder.respond(RequestPermissionResponse::new(outcome))
-        }
-    };
-
-    let prompt = spec.prompt.clone();
-    let cwd = spec.cwd.clone();
-    let grace = spec.cancel_grace;
-    let emit2 = emit.clone();
-    let cancelling2 = cancelling.clone();
-    let collector2 = collector.clone();
-    let conn = Client
-        .builder()
-        .name("sandbox-init")
-        .on_receive_notification(on_update, agent_client_protocol::on_receive_notification!())
-        .on_receive_request(on_permission, agent_client_protocol::on_receive_request!())
-        .connect_with(
-            ByteStreams::new(sp.stdin.compat_write(), sp.stdout.compat()),
-            async |cx: ConnectionTo<Agent>| {
-                Ok(drive(
-                    cx,
-                    &prompt,
-                    &cwd,
-                    ctl,
-                    grace,
-                    &emit2,
-                    &cancelling2,
-                    &collector2,
-                )
-                .await)
-            },
-        );
-    let mut conn = Box::pin(conn);
-
-    // The exit status once `exit` has resolved (a oneshot must not be polled again).
-    let mut exited: Option<Option<ExitStatus>> = None;
-    let result = tokio::select! {
-        biased;
-        r = &mut conn => flatten(r),
-        st = &mut exit => {
-            let st = st.ok();
-            exited = Some(st);
-            // The agent ended; it may have answered first.
-            match tokio::time::timeout(Duration::from_secs(2), &mut conn).await {
-                Ok(r) => flatten(r),
-                Err(_) => Err(AcpError::Failed(describe_exit(st))),
-            }
-        }
-    };
-    // Closing the connection closes the agent's stdin: give it a moment to
-    // exit, then stop whatever is left of its process group.
-    drop(conn);
-    let own_exit = match exited {
-        Some(st) => st,
-        None => match tokio::time::timeout(Duration::from_secs(2), &mut exit).await {
-            Ok(st) => st.ok(),
-            Err(_) => {
-                terminate(pid, &mut exit).await;
-                None
-            }
-        },
-    };
-    // The connection broke because the agent died: say how.
-    let result = match (result, own_exit) {
-        (Err(AcpError::Failed(m)), Some(st)) if st != ExitStatus::Exited(0) => Err(
-            AcpError::Failed(format!("{} ({m})", describe_exit(Some(st)))),
-        ),
-        (r, _) => r,
-    };
-    let _ = killpg(Pid::from_raw(pid as i32), Signal::SIGKILL);
-    let usage = collector.lock().unwrap().usage.snapshot();
-    *spec.usage.lock().unwrap() = usage.clone();
-    let mut result = result?;
-    result.text = std::mem::take(&mut collector.lock().unwrap().text);
-    result.usage = usage;
-    Ok(result)
-}
-
-fn describe_exit(st: Option<ExitStatus>) -> String {
-    match st {
-        Some(ExitStatus::Exited(c)) => format!("agent exited unexpectedly with code {c}"),
-        Some(ExitStatus::Signaled(s)) => format!("agent was killed by signal {s}"),
-        None => "agent exited unexpectedly".into(),
-    }
-}
-
-fn flatten(
-    r: Result<Result<AcpOutput, AcpError>, agent_client_protocol::Error>,
-) -> Result<AcpOutput, AcpError> {
-    match r {
-        Ok(inner) => inner,
-        Err(e) => Err(AcpError::Failed(format!("agent connection: {e}"))),
-    }
-}
-
-/// The client side of the conversation.
-#[allow(clippy::too_many_arguments)]
-async fn drive(
-    cx: ConnectionTo<Agent>,
-    prompt: &str,
-    cwd: &Path,
-    ctl: &mut Ctl,
-    grace: Duration,
-    emit: &Emit,
-    cancelling: &Arc<AtomicBool>,
-    collector: &Arc<Mutex<Collector>>,
-) -> Result<AcpOutput, AcpError> {
-    let init = cx
-        .send_request(InitializeRequest::new(ProtocolVersion::V1))
-        .block_task();
-    let init = tokio::select! {
-        r = init => r.map_err(|e| acp_err("initialize", e))?,
-        s = ctl.stopped() => return Err(s.into()),
-    };
-    emit(
-        "acp",
-        json!({
-            "event": "initialized",
-            "agent_info": serde_json::to_value(&init.agent_info).unwrap_or(Value::Null),
-            "protocol_version": serde_json::to_value(init.protocol_version).unwrap_or(Value::Null),
-        }),
-    );
-    let new = cx
-        .send_request(NewSessionRequest::new(cwd.to_path_buf()))
-        .block_task();
-    let new = tokio::select! {
-        r = new => r.map_err(|e| acp_err("session/new", e))?,
-        s = ctl.stopped() => return Err(s.into()),
-    };
-    let session_id = new.session_id.clone();
-    emit(
-        "acp",
-        json!({
-            "event": "session",
-            "session_id": session_id,
-            "modes": serde_json::to_value(&new.modes).unwrap_or(Value::Null),
-        }),
-    );
-    let turn = cx
-        .send_request(PromptRequest::new(
-            session_id.clone(),
-            vec![ContentBlock::Text(TextContent::new(prompt.to_string()))],
-        ))
-        .block_task();
-    tokio::pin!(turn);
-    let stopped = tokio::select! {
-        r = &mut turn => {
-            let r = r.map_err(|e| acp_err("session/prompt", e))?;
-            if let Ok(v) = serde_json::to_value(&r) {                collector.lock().unwrap().usage.response(&v);
-            }
-            return Ok(AcpOutput {
-                stop_reason: stop_reason(&r),
-                text: String::new(),
-                usage: None,
-            });
-        }
-        s = ctl.stopped() => s,
-    };
-    // Ask the agent to stop and give it a moment to end the turn cleanly.
-    cancelling.store(true, Ordering::Relaxed);
-    emit(
-        "acp",
-        json!({"event": "cancel", "reason": format!("{stopped:?}")}),
-    );
-    let _ = cx.send_notification(CancelNotification::new(session_id));
-    let _ = tokio::time::timeout(grace, &mut turn).await;
-    Err(stopped.into())
-}
-
-fn stop_reason(r: &agent_client_protocol::schema::v1::PromptResponse) -> String {
-    serde_json::to_value(r.stop_reason)
-        .ok()
-        .and_then(|v| v.as_str().map(String::from))
-        .unwrap_or_else(|| "unknown".into())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn collector_concatenates_message_chunks_only() {
-        let chunk = |t: &str| json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": t}});
-        let mut c = Collector::default();
-        c.update(&chunk("Hel"));
-        c.update(&chunk("lo\n"));
-        c.update(&json!({"sessionUpdate": "tool_call", "toolCallId": "1"}));
-        c.update(&json!({"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "hmm"}}));
-        c.update(&chunk("done\n```json\n{}\n```"));
-        c.update(&json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "image"}}));
-        assert_eq!(c.text, "Hello\ndone\n```json\n{}\n```");
-    }
 
     fn usage_update(cost: Option<f64>) -> Value {
         let mut u = json!({"sessionUpdate": "usage_update", "used": 5000, "size": 200000});

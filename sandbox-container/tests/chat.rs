@@ -14,7 +14,7 @@ use enzarb_proto::{ClientKind, open_error_code};
 use nix::errno::Errno;
 use nix::sys::signal::kill;
 use nix::unistd::Pid;
-use sandbox_init::agent::repo_dir_name;
+use sandbox_init::repos::repo_dir_name;
 use sandbox_init::chat::{ChatManager, PASS_ENV};
 use sandbox_init::reaper::Reaper;
 use sandbox_init::{AppState, ChatMode, Config, serve};

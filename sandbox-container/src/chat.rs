@@ -67,7 +67,7 @@ use tokio::sync::{Notify, mpsc, watch};
 use tokio::time::Instant;
 
 use crate::acp::{self, AcpError, Spawned};
-use crate::agent::{RepoLocks, repo_dir_name};
+use crate::repos::{RepoLocks, repo_dir_name};
 use crate::capture::write_atomic;
 use crate::config::Config;
 use crate::docker_prune::ActivityGate;
@@ -326,7 +326,7 @@ pub struct ChatManager {
 }
 
 /// True when `bin` names an executable file (directly or on `PATH`).
-fn find_executable(bin: &str) -> bool {
+pub(crate) fn find_executable(bin: &str) -> bool {
     use std::os::unix::fs::PermissionsExt;
     let exec = |p: &Path| {
         std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
@@ -335,6 +335,26 @@ fn find_executable(bin: &str) -> bool {
         return exec(Path::new(bin));
     }
     std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| exec(&d.join(bin))))
+}
+
+/// The chat agent's argv: `acp_bin` when it is installed, else `mise exec
+/// <chat_runtime_tool> -- acp_bin` (mise installs the runtime on first use).
+/// `None` when neither is available.
+pub(crate) fn chat_command(cfg: &Config) -> Option<(String, Vec<String>)> {
+    if find_executable(&cfg.acp_bin) {
+        return Some((cfg.acp_bin.clone(), Vec::new()));
+    }
+    if cfg.mise_bin.is_empty()
+        || cfg.chat_runtime_tool.is_empty()
+        || !find_executable(&cfg.mise_bin)
+    {
+        return None;
+    }
+    let args = ["exec", cfg.chat_runtime_tool.as_str(), "--", cfg.acp_bin.as_str()];
+    Some((
+        cfg.mise_bin.clone(),
+        args.iter().map(|s| s.to_string()).collect(),
+    ))
 }
 
 impl ChatManager {
@@ -349,7 +369,7 @@ impl ChatManager {
         locks: RepoLocks,
         activity: ActivityGate,
     ) -> Arc<Self> {
-        let available = find_executable(&cfg.acp_bin);
+        let available = chat_command(&cfg).is_some();
         if cfg.max_chats > 0 && !available {
             tracing::warn!(bin = %cfg.acp_bin, "chat disabled: the ACP agent is not installed");
         }
@@ -968,8 +988,9 @@ impl ChatManager {
                 );
             })
         };
+        let (bin, args) = chat_command(&self.cfg).unwrap_or((self.cfg.acp_bin.clone(), Vec::new()));
         let sp =
-            match acp::spawn_agent(&self.reaper, &self.cfg.acp_bin, &wt, &env, true, Some(sink)) {
+            match acp::spawn_agent(&self.reaper, &bin, &args, &wt, &env, true, Some(sink)) {
                 Ok(sp) => sp,
                 Err(e) => {
                     let m = match e {
