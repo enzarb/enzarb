@@ -226,11 +226,14 @@ fn covered_by_ci_counts_only_while_ci_is_green() {
         "approve"
     );
 
-    // CI not green: the claim does not count, the approve is downgraded.
+    // CI not green: the claim does not count, the approve is downgraded. With no must-fix
+    // items there is nothing to fix: no round, the item waits on the unverified check.
     let pending = review(unreviewed_ci_pending());
-    let d = assert_cr(&pending, CrPhase::AddressingComments);
-    assert!(d.auto_trigger);
+    let d = assert_cr(&pending, CrPhase::AwaitingChanges);
+    assert!(!d.auto_trigger);
+    assert_eq!(d.last_review, "comment");
     assert_eq!(d.unverified_checks.len(), 1);
+    assert!(!kinds(&pending).contains(&JobKind::AgentAddressComments));
 }
 
 #[test]

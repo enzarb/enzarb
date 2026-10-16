@@ -4,10 +4,11 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use enzarb_connector::{
-    Actor, ChangeRequestSpec, CheckSummary, CiInfo, CommentKind, CommentRef, CommitRef, Connector,
-    CredScope, Error, Event, ItemRef, MergeOutcome, MergeReadiness, Permission, Progress,
-    ProgressTarget, ReadCred, RepoKey, Result, ShortLivedCred, Status, StatusState, StatusSummary,
-    Thread, ThreadComment, UpdateBranchOutcome, WorkItemKey, aggregate_ci,
+    Actor, ChangeRequestSpec, CheckSummary, CiInfo, CloseReason, CommentKind, CommentRef,
+    CommitRef, Connector, CredScope, Error, Event, ItemRef, MergeOutcome, MergeReadiness,
+    Permission, Progress, ProgressTarget, ReadCred, RepoKey, Result, ShortLivedCred, Status,
+    StatusState, StatusSummary, Thread, ThreadComment, UpdateBranchOutcome, WorkItemKey,
+    aggregate_ci,
 };
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use reqwest::Method;
@@ -1160,6 +1161,20 @@ impl Connector for GitHubConnector {
             repo.clone(),
             resp.json::<Created>()?.number,
         ))
+    }
+
+    async fn close_issue(&self, item: &WorkItemKey, reason: CloseReason) -> Result<()> {
+        github_repo(&item.repo)?;
+        // PATCHing a closed issue to closed again is a no-op on GitHub, so retries are safe.
+        self.call(
+            &item.repo,
+            "close issue",
+            Method::PATCH,
+            &format!("/repos/{}/issues/{}", item.repo.full_name(), item.number),
+            Some(json!({ "state": "closed", "state_reason": reason.as_str() })),
+        )
+        .await?;
+        Ok(())
     }
 
     async fn update_issue(&self, item: &WorkItemKey, body: &str) -> Result<()> {

@@ -236,6 +236,7 @@ impl Executor {
                 | JobKind::AgentAddressComments
                 | JobKind::AgentResolveConflicts
                 | JobKind::AgentReview
+                | JobKind::MechanicalCheck
                 | JobKind::AgentSegment
         );
         // The merge base, changed files and affected components, from the sandbox's clone,

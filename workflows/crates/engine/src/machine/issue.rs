@@ -17,8 +17,8 @@
 use enzarb_connector::command::has_epic_command;
 use enzarb_connector::epic::parse_epic_marker;
 use enzarb_connector::{
-    ChangeRequestSpec, CommentKind, Event, EventData, EventType, ItemKind, ItemRef, ProgressTarget,
-    WorkItemKey,
+    ChangeRequestSpec, CloseReason, CommentKind, Event, EventData, EventType, ItemKind, ItemRef,
+    ProgressTarget, WorkItemKey,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -404,7 +404,14 @@ fn approval(ctx: &Ctx, ev: &EngineEvent, s: &IssueState, state: &WorkflowState) 
         // the epic is finished anyway.
         IssuePhase::AwaitingChildren if stuck(&d) => {
             let note = "closed by a maintainer with sub-issues left unfinished";
-            finish_epic(ctx, ev, d, format!("This epic is closed: {note}."), note)
+            finish_epic(
+                ctx,
+                ev,
+                d,
+                format!("This epic is closed: {note}."),
+                note,
+                CloseReason::NotPlanned,
+            )
         }
         IssuePhase::AwaitingChildren => {
             Transition::reject(state, "sub-issues are still in progress")
@@ -438,9 +445,11 @@ fn finish_epic(
     d: IssueData,
     comment: String,
     note: &str,
+    reason: CloseReason,
 ) -> Transition {
     let mut fx = Fx::new(ctx, ev);
     fx.comment(comment);
+    fx.close_issue(reason);
     fx.done(&target(ctx, &d));
     fx.wake_at(None);
     Transition::to(st(IssuePhase::Done, d), fx.finish(), note)
@@ -508,6 +517,7 @@ fn children_changed(
             d,
             format!("All {n} sub-issues are done. Closing this epic."),
             "all sub-issues done",
+            CloseReason::Completed,
         );
     }
     if !stuck(&d) {
@@ -781,6 +791,9 @@ fn job_failed(
     if kind == JobKind::PostComment {
         return Transition::ack(state, "comment failed; ignored");
     }
+    if kind == JobKind::CloseIssue {
+        return Transition::ack(state, "closing the epic failed; ignored");
+    }
     Transition::reject(state, "stale job result")
 }
 
@@ -793,7 +806,10 @@ fn job_succeeded(
     output: &Value,
 ) -> Transition {
     use IssuePhase::*;
-    if matches!(kind, JobKind::SetProgress | JobKind::PostComment) {
+    if matches!(
+        kind,
+        JobKind::SetProgress | JobKind::PostComment | JobKind::CloseIssue
+    ) {
         return Transition::ack(state, "ack");
     }
     if !awaited(s.phase).contains(&kind) {
@@ -890,6 +906,7 @@ fn job_succeeded(
                 .map(str::to_string)
                 .unwrap_or_else(|| branch(d.number));
             let mut body = format!("{}\n\nCloses #{}", out.body.trim_end(), d.number);
+            body.push_str(&super::change_request::unverified_push_note(&out));
             let base_ref = match &d.stack {
                 Some(p) => {
                     body.push_str(&format!(

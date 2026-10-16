@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use chrono::{SecondsFormat, Utc};
 use enzarb_connector::{
-    Actor, ChangeRequestSpec, CiState, CommentKind, CommitRef, Connector, CredScope, Error,
-    ItemKind, MergeOutcome, MergeReadiness, Permission, Progress, ProgressTarget, RepoKey, Status,
-    StatusState, UpdateBranchOutcome, WorkItemKey,
+    Actor, ChangeRequestSpec, CiState, CloseReason, CommentKind, CommitRef, Connector, CredScope,
+    Error, ItemKind, MergeOutcome, MergeReadiness, Permission, Progress, ProgressTarget, RepoKey,
+    Status, StatusState, UpdateBranchOutcome, WorkItemKey,
 };
 use enzarb_connector_github::{CommitStatusChange, GitHubConfig, GitHubConnector, RetryPolicy};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
@@ -2036,6 +2036,25 @@ async fn update_issue_keeps_marker() {
         .await;
     connector(&server)
         .update_issue(&item(8), "New #9 (Two).")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn close_issue_patches_state_completed() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/enzarb/enzarb-ui/issues/8"))
+        .and(body_json(
+            json!({ "state": "closed", "state_reason": "completed" }),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(issue_json(8, false)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    connector(&server)
+        .close_issue(&item(8), CloseReason::Completed)
         .await
         .unwrap();
 }

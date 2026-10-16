@@ -662,6 +662,10 @@ fn drive(ctx: &Ctx, fx: &mut Fx, def: &Definition, d: &mut GraphData) -> GraphPh
             match status {
                 EndStatus::Done => {
                     fx.done(&target(ctx));
+                    // An epic (it made sub-issues) has no change request to close it.
+                    if !d.children.is_empty() {
+                        fx.close_issue(enzarb_connector::CloseReason::Completed);
+                    }
                     GraphPhase::Done
                 }
                 EndStatus::Failed => {

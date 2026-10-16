@@ -194,6 +194,13 @@ impl<'a> Fx<'a> {
         self.job(JobKind::CreateSubIssues, PRIORITY_COMMENT, input);
     }
 
+    /// Close this work item's issue with `reason`. Runs after the comments queued with it
+    /// (lower priority), so the summary is posted before the issue closes.
+    pub fn close_issue(&mut self, reason: enzarb_connector::CloseReason) {
+        let input = json!({ "item": self.ctx.work_item, "reason": reason });
+        self.job(JobKind::CloseIssue, PRIORITY_COMMENT - 1, input);
+    }
+
     pub fn cancel_jobs(&mut self) {
         self.effects.push(Effect::CancelJobs);
     }

@@ -10,6 +10,7 @@ import {
 	itemTitle,
 	itemUrl,
 	parseReadiness,
+	parseReviewStats,
 	parseWait,
 	TERMINAL_STATES,
 	WAITING_ON,
@@ -236,6 +237,7 @@ export function workService(
 			return {
 				...summary(row, staleHours, repoCounts),
 				readiness: row.workflow === 'change_request' ? parseReadiness(row.state_data) : null,
+				stats: row.workflow === 'change_request' ? parseReviewStats(row.state_data) : null,
 				actions: availableActions(row.state, row.state_data),
 				transitions: transitions.map((t): TransitionView => ({
 					id: Number(t.id),
