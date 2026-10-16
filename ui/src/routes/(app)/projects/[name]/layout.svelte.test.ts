@@ -29,8 +29,15 @@ vi.mock('#lib/projects.remote.ts', () => ({
 		refresh: async () => {}
 	})
 }));
-vi.mock('#lib/work.remote.ts', () => ({
-	listWorkItems: () => ({ current: [], refresh: async () => {} })
+vi.mock('#lib/tasks.remote.ts', () => ({
+	listTasks: () => ({ current: [], refresh: async () => {} }),
+	listSecrets: () => ({ current: [] }),
+	setSecret: async () => {},
+	deleteSecret: async () => {},
+	listChats: () => ({ current: [] }),
+	getChatSession: () => ({ current: [], refresh: async () => {} }),
+	getWorkflowView: () => ({ current: null }),
+	getBoard: () => ({ current: { columns: [] } })
 }));
 vi.mock('#lib/claude.remote.ts', () => ({
 	claudeCredential: () => ({ current: { configured: true, updatedAt: null } })

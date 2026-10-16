@@ -51,8 +51,7 @@
 	{:else if event.kind === 'usage'}
 		{@const u = usageOf(event)}
 		<p class="ez-muted">
-			{formatTokens(u.input)} in · {formatTokens(u.output)} out{#if u.cost !== null}
-				· {formatCost(u.cost)}{/if}
+			{`${formatTokens(u.input)} in · ${formatTokens(u.output)} out${u.cost !== null ? ` · ${formatCost(u.cost)}` : ''}`}
 		</p>
 	{:else if event.kind === 'stdout' || event.kind === 'stderr'}
 		<pre class="ez-session-event__pre">{text ?? JSON.stringify(event.payload)}</pre>
