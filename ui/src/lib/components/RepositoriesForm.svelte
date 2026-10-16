@@ -5,6 +5,8 @@
 	import Button from './form/Button.svelte';
 	import Checkbox from './form/Checkbox.svelte';
 	import Notice from './ui/Notice.svelte';
+	import RefreshRepositoriesButton from './RefreshRepositoriesButton.svelte';
+	import { REPOSITORY_LIST_HELP } from '#lib/onboarding.ts';
 	import RepositoryList from './RepositoryList.svelte';
 	import StepList, { type StepItem } from './ui/StepList.svelte';
 
@@ -16,7 +18,7 @@
 
 	/**
 	 * Which repositories belong to the Project. Offers the current ones (always, so a repository
-	 * that was archived or left the user's list can still be removed) plus the user's snapshot;
+	 * that was archived or left the user's list can still be removed) plus the user's live list;
 	 * repositories in another of the user's Projects are disabled. Applies without a restart.
 	 */
 	let {
@@ -25,6 +27,7 @@
 		taken = {},
 		problem = null,
 		save,
+		refresh,
 		canEdit = true
 	}: {
 		project: ProjectView;
@@ -33,6 +36,8 @@
 		taken?: Record<string, string>;
 		problem?: string | null;
 		save: (keys: string[]) => Promise<SaveOutcome>;
+		/** Re-reads the repository list from GitHub; omit to hide the Refresh button. */
+		refresh?: () => Promise<void>;
 		canEdit?: boolean;
 	} = $props();
 
@@ -148,6 +153,10 @@
 <div class="ez-stack">
 	{#if canEdit && editing}
 		{#if problem}<Notice tone="info">{problem} You can still remove repositories.</Notice>{/if}
+		<div class="ez-cluster">
+			<p class="ez-muted">Missing a repository? {REPOSITORY_LIST_HELP}</p>
+			{#if refresh}<RefreshRepositoriesButton {refresh} />{/if}
+		</div>
 		<ul class="ez-repo-list" aria-label="Repositories">
 			{#each rows as r (r.key)}
 				<li>

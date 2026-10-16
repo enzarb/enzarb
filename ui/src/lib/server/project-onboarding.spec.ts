@@ -6,12 +6,11 @@ import {
 	repositoryChoices,
 	setDisplayName,
 	setRepositories,
-	snapshotProblem
+	listProblem
 } from './project-onboarding.ts';
-import type { UserRepositorySnapshot } from './user-repositories.ts';
+import type { UserRepositoryList } from './user-repositories.ts';
 
 const NOW = new Date('2026-06-10T12:00:00Z');
-const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 3600_000);
 const triggers = { issues: true, changeRequests: false, mentions: true };
 
 function repo(full: string, extra: Partial<{ private: boolean; defaultBranch: string }> = {}) {
@@ -25,9 +24,11 @@ function repo(full: string, extra: Partial<{ private: boolean; defaultBranch: st
 	};
 }
 const snap = (
-	fetchedAt: Date | null = hoursAgo(1),
 	repositories = [repo('acme/web'), repo('acme/api', { defaultBranch: 'trunk' }), repo('me/own')]
-): UserRepositorySnapshot => ({ repositories, fetchedAt });
+): UserRepositoryList => ({ repositories, fetchedAt: NOW });
+/** A live check answering from `list` (what GitHub would say right now), recording each call. */
+const checkOf = (list = snap()) =>
+	vi.fn(async (key: string) => list.repositories.find((r) => r.repo === key) ?? null);
 
 function project(name: string, owner: string, urls: string[]): Project {
 	return {
@@ -66,17 +67,15 @@ function fakeStore(initial: Project[] = []) {
 const run = (
 	store: ProjectStore,
 	plans: { name: string; repositories: string[]; maxRuns?: number }[],
-	snapshot = snap()
-) => createProjects({ store, owner: 'alice', snapshot, now: NOW }, plans, triggers);
+	check = checkOf()
+) => createProjects({ store, owner: 'alice', check }, plans, triggers);
 
-describe('snapshotProblem', () => {
-	it('accepts a fresh snapshot', () => expect(snapshotProblem(snap(), NOW)).toBeNull());
-	it('accepts up to 24 hours and rejects beyond', () => {
-		expect(snapshotProblem(snap(hoursAgo(24)), NOW)).toBeNull();
-		expect(snapshotProblem(snap(hoursAgo(24.01)), NOW)?.code).toBe('stale-snapshot');
-	});
-	it('rejects an empty snapshot', () => {
-		expect(snapshotProblem(snap(null, []), NOW)?.code).toBe('no-snapshot');
+describe('listProblem', () => {
+	it('accepts a non-empty list', () => expect(listProblem(snap())).toBeNull());
+	it('explains an empty list', () => {
+		expect(listProblem(snap([]))?.message).toMatch(
+			/repositories the enzarb GitHub App can access where you have write access/
+		);
 	});
 });
 
@@ -84,27 +83,22 @@ describe('createProjects: authorization', () => {
 	let store: ReturnType<typeof fakeStore>;
 	beforeEach(() => (store = fakeStore()));
 
-	it('refuses everything when the snapshot is stale, creating nothing', async () => {
+	it('checks every repository live at add time and refuses revoked access', async () => {
+		const check = checkOf(snap([repo('acme/api', { defaultBranch: 'trunk' })]));
 		const out = await run(
 			store,
-			[{ name: 'web', repositories: ['github:acme/web'] }],
-			snap(hoursAgo(30))
+			[
+				{ name: 'web', repositories: ['github:acme/web'] },
+				{ name: 'api', repositories: ['github:acme/api'] }
+			],
+			check
 		);
-		expect(out).toMatchObject({ ok: false, code: 'stale-snapshot' });
-		expect(store.create).not.toHaveBeenCalled();
+		expect(check.mock.calls.map((c) => c[0])).toEqual(['github:acme/web', 'github:acme/api']);
+		expect(out.ok && out.results.map((r) => r.status)).toEqual(['failed', 'created']);
+		expect([...store.items.keys()]).toEqual(['api']);
 	});
 
-	it('refuses everything without a snapshot', async () => {
-		const out = await run(
-			store,
-			[{ name: 'web', repositories: ['github:acme/web'] }],
-			snap(null, [])
-		);
-		expect(out).toMatchObject({ ok: false, code: 'no-snapshot' });
-		expect(store.create).not.toHaveBeenCalled();
-	});
-
-	it('fails a plan holding a repository outside the snapshot, others still succeed', async () => {
+	it('fails a plan holding a repository the check refuses, others still succeed', async () => {
 		const out = await run(store, [
 			{ name: 'evil', repositories: ['github:victim/secret'] },
 			{ name: 'mixed', repositories: ['github:acme/web', 'github:victim/secret'] },
@@ -117,7 +111,7 @@ describe('createProjects: authorization', () => {
 		expect([...store.items.keys()]).toEqual(['good']);
 	});
 
-	it('builds url, connector and branch from the snapshot, never from the request', async () => {
+	it('builds url, connector and branch from the live check, never from the request', async () => {
 		await run(store, [{ name: 'both', repositories: ['github:acme/web', 'github:acme/api'] }]);
 		const p = store.items.get('both')!;
 		expect(p.spec.owner).toBe('alice');
@@ -137,7 +131,7 @@ describe('createProjects: authorization', () => {
 		expect(store.items.get('busy')!.spec.maxRuns).toBe(8);
 	});
 
-	it('rejects URL-shaped or case-mismatched keys (only exact snapshot keys match)', async () => {
+	it('rejects URL-shaped or case-mismatched keys (only exact keys match)', async () => {
 		const out = await run(store, [
 			{ name: 'a', repositories: ['https://github.com/acme/web'] },
 			{ name: 'b', repositories: ['github:Acme/Web'] }
@@ -228,7 +222,7 @@ describe('createProjects: duplicates and validation', () => {
 	it('trims the display name and truncates echoed keys', async () => {
 		const store = fakeStore();
 		const out = await createProjects(
-			{ store, owner: 'alice', snapshot: snap(), now: NOW },
+			{ store, owner: 'alice', check: checkOf() },
 			[
 				{ name: 'dn', displayName: '  Nice  ', repositories: ['github:acme/web'] },
 				{ name: 'long', repositories: [`github:${'x'.repeat(500)}/y`] }
@@ -339,15 +333,14 @@ describe('createProjects: result collection', () => {
 });
 
 describe('repositoryChoices', () => {
-	it('lists the snapshot and marks only the caller’s projects as holders', () => {
+	it('lists the live list and marks only the caller’s projects as holders', () => {
 		const choices = repositoryChoices(
 			snap(),
 			[
 				project('mine', 'alice', ['https://github.com/acme/web']),
 				project('theirs', 'bob', ['https://github.com/acme/api'])
 			],
-			'alice',
-			NOW
+			'alice'
 		);
 		expect(choices.repositories.map((r) => r.repo)).toEqual([
 			'github:acme/web',
@@ -358,10 +351,10 @@ describe('repositoryChoices', () => {
 		expect(choices.projectNames).toEqual(['mine']);
 		expect(choices.problem).toBeNull();
 	});
-	it('reports a stale snapshot', () => {
-		expect(repositoryChoices(snap(hoursAgo(48)), [], 'alice', NOW).problem?.code).toBe(
-			'stale-snapshot'
-		);
+	it('reports an empty list and passes the fetch time', () => {
+		const choices = repositoryChoices(snap([]), [], 'alice');
+		expect(choices.problem?.code).toBe('empty');
+		expect(choices.fetchedAt).toBe(NOW.toISOString());
 	});
 });
 
@@ -396,11 +389,11 @@ describe('setDisplayName', () => {
 });
 
 describe('setRepositories', () => {
-	const setRepos = (store: ProjectStore, keys: string[], snapshot = snap(), owner = 'alice') =>
-		setRepositories({ store, owner, snapshot, now: NOW }, 'p', keys);
+	const setRepos = (store: ProjectStore, keys: string[], check = checkOf(), owner = 'alice') =>
+		setRepositories({ store, owner, check }, 'p', keys);
 	const old = 'https://github.com/acme/archived';
 
-	it('replaces the list: keeps stored entries, builds added ones from the snapshot', async () => {
+	it('replaces the list: keeps stored entries, builds added ones from the live check', async () => {
 		const store = fakeStore([project('p', 'alice', [old, 'https://github.com/acme/web'])]);
 		const r = await setRepos(store, ['github:acme/api', 'github:acme/web']);
 		expect(r.ok).toBe(true);
@@ -412,20 +405,24 @@ describe('setRepositories', () => {
 		});
 	});
 
-	it('removes archived repositories even with a stale snapshot', async () => {
+	it('keeps and removes stored repositories without asking GitHub', async () => {
 		const store = fakeStore([project('p', 'alice', [old, 'https://github.com/acme/web'])]);
-		const r = await setRepos(store, ['github:acme/web'], snap(hoursAgo(48)));
+		const check = checkOf(snap([]));
+		const r = await setRepos(store, ['github:acme/web'], check);
 		expect(r.ok).toBe(true);
+		expect(check).not.toHaveBeenCalled();
 	});
 
-	it('needs a fresh snapshot to add', async () => {
+	it('checks an added repository live: revoked access is refused', async () => {
 		const store = fakeStore([project('p', 'alice', [old])]);
-		const r = await setRepos(store, ['github:acme/web'], snap(hoursAgo(48)));
-		expect(r).toMatchObject({ ok: false, code: 'stale-snapshot' });
+		const check = checkOf(snap([]));
+		const r = await setRepos(store, [`github:acme/archived`, 'github:acme/web'], check);
+		expect(r).toMatchObject({ ok: false, message: 'acme/web is not available to you' });
+		expect(check.mock.calls.map((c) => c[0])).toEqual(['github:acme/web']);
 		expect(store.update).not.toHaveBeenCalled();
 	});
 
-	it('refuses repositories outside the snapshot, empty lists and duplicates', async () => {
+	it('refuses repositories the check refuses, empty lists and duplicates', async () => {
 		const store = fakeStore([project('p', 'alice', [old])]);
 		expect(await setRepos(store, ['github:evil/repo'])).toMatchObject({
 			ok: false,
@@ -464,7 +461,7 @@ describe('setRepositories', () => {
 			store: ProjectStore,
 			keys: string[],
 			work: { cancelForRemovedRepos: (p: string, r: string[]) => Promise<unknown> }
-		) => setRepositories({ store, owner: 'alice', snapshot: snap(), now: NOW, work }, 'p', keys);
+		) => setRepositories({ store, owner: 'alice', check: checkOf(), work }, 'p', keys);
 
 		it('cancels only for the repositories that left the Project, after the update', async () => {
 			const store = fakeStore([

@@ -11,6 +11,7 @@
 	import { getProjectContext } from '#lib/project-context.svelte.ts';
 	import {
 		deleteProject,
+		refreshRepositoryChoices,
 		repositoryChoices,
 		setDisplayName,
 		setMaxRuns,
@@ -70,6 +71,7 @@
 			choices={choices.current?.repositories ?? []}
 			taken={choices.current?.taken ?? {}}
 			problem={choices.current?.problem?.message ?? null}
+			refresh={() => refreshRepositoryChoices()}
 			save={async (keys) => {
 				const r = await setRepositories({ name: p.name, repositories: keys });
 				await choices.refresh();

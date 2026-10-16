@@ -5,6 +5,8 @@
 	import KeyValueList from '#lib/components/ui/KeyValueList.svelte';
 	import PageHeader from '#lib/components/ui/PageHeader.svelte';
 	import Section from '#lib/components/ui/Section.svelte';
+	import { invalidateAll } from '$app/navigation';
+	import { refreshRepositoryChoices } from '#lib/projects.remote.ts';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -24,7 +26,10 @@
 
 <GitHubInstallations
 	installUrl={data.installUrl}
-	refreshHref="/login/github?refresh=1&return=%2Fsettings"
+	refresh={async () => {
+		await refreshRepositoryChoices();
+		await invalidateAll();
+	}}
 	installations={data.installations}
 	fetchedAt={data.fetchedAt}
 />

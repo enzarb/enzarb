@@ -2,6 +2,7 @@
 	import { untrack } from 'svelte';
 	import * as v from 'valibot';
 	import MaxRunsInput from './MaxRunsInput.svelte';
+	import RefreshRepositoriesButton from './RefreshRepositoriesButton.svelte';
 	import Button from './form/Button.svelte';
 	import Checkbox from './form/Checkbox.svelte';
 	import Combobox from './form/Combobox.svelte';
@@ -16,6 +17,7 @@
 	import { validateDescription, validateRepoName, type RepoResult } from '#lib/repo-names.ts';
 	import {
 		MAX_PROJECTS_PER_REQUEST,
+		REPOSITORY_LIST_HELP,
 		expandNameTemplate,
 		planProblems,
 		splitRepoKey,
@@ -45,7 +47,7 @@
 
 	let {
 		choices,
-		refreshHref,
+		refresh,
 		create,
 		startCreateRepo,
 		newRepo = null,
@@ -53,7 +55,8 @@
 		navigate = (href: string) => location.assign(href)
 	}: {
 		choices: RepositoryChoices;
-		refreshHref: string;
+		/** Re-reads the repository list from GitHub (skips the display cache). */
+		refresh: () => Promise<void>;
 		create: (plans: ProjectPlan[], triggers: Triggers) => Promise<CreateProjectsOutcome>;
 		/** Starts the GitHub re-authorization that creates a repository; omit to hide the section. */
 		startCreateRepo?: StartCreateRepo;
@@ -94,7 +97,7 @@
 	let triggers = $state<Triggers>({ issues: true, changeRequests: true, mentions: true });
 	let maxRuns = $state<number | null | ''>(DEFAULT_MAX_RUNS);
 	let pending = $state(false);
-	let failure = $state<{ message: string; stale: boolean } | null>(null);
+	let failure = $state<{ message: string } | null>(null);
 	let rejected = $state<{ name: string; reason: string }[]>([]);
 
 	function defaultName(key: string): string {
@@ -245,13 +248,13 @@
 		rejected = [];
 		try {
 			const outcome = await create($state.snapshot(plans), $state.snapshot(triggers));
-			if (!outcome.ok) failure = { message: outcome.message, stale: true };
+			if (!outcome.ok) failure = { message: outcome.message };
 			else
 				rejected = outcome.results.flatMap((r) =>
 					r.status === 'failed' ? [{ name: r.name, reason: r.reason }] : []
 				);
 		} catch {
-			failure = { message: 'Could not create the projects. Try again.', stale: false };
+			failure = { message: 'Could not create the projects. Try again.' };
 		} finally {
 			pending = false;
 		}
@@ -263,7 +266,6 @@
 		{#if choices.problem}
 			<Notice tone="error">
 				{choices.problem.message}
-				<a href={refreshHref} data-sveltekit-reload>Refresh repositories</a>
 			</Notice>
 		{/if}
 
@@ -276,6 +278,10 @@
 			disabled={blocked}
 			help="Repositories already in a project cannot be selected."
 		/>
+		<div class="ez-cluster">
+			<p class="ez-muted">Missing a repository? {REPOSITORY_LIST_HELP}</p>
+			<RefreshRepositoriesButton {refresh} />
+		</div>
 
 		{#if repoResult?.code === 'identity-mismatch'}
 			<Notice tone="error" title="No repository was created">
@@ -386,7 +392,6 @@
 		{#if failure}
 			<Notice tone="error">
 				{failure.message}
-				{#if failure.stale}<a href={refreshHref} data-sveltekit-reload>Refresh repositories</a>{/if}
 			</Notice>
 		{/if}
 

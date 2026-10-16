@@ -28,6 +28,24 @@ const saveButton = () => page.getByRole('button', { name: 'Save repositories' })
 const editButton = () => page.getByRole('button', { name: 'Edit repositories' });
 
 describe('RepositoriesForm', () => {
+	it('offers Refresh while editing and explains which repositories are listed', async () => {
+		const refresh = vi.fn(async () => {});
+		render(RepositoriesForm, {
+			project: view(['https://github.com/enzarb/enzarb']),
+			choices,
+			save: vi.fn(),
+			refresh
+		});
+		await editButton().click();
+		await expect
+			.element(
+				page.getByText(/repositories the enzarb GitHub App can access where you have write access/)
+			)
+			.toBeVisible();
+		await page.getByRole('button', { name: 'Refresh repositories' }).click();
+		expect(refresh).toHaveBeenCalledOnce();
+	});
+
 	it('is read-only until Edit, and Cancel discards changes', async () => {
 		render(RepositoriesForm, {
 			project: view(['https://github.com/enzarb/enzarb-ui']),

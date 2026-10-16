@@ -1,10 +1,26 @@
-import type { Sql } from './db.ts';
+import { GITHUB_API as API, githubHeaders, signAppJwt } from './github-app.ts';
 
-const API = 'https://api.github.com';
+/**
+ * Live list of the repositories a user may put in a Project: every repository an installation of
+ * the enzarb GitHub App can access (`GET /app/installations`, then `GET /installation/repositories`
+ * with each installation's token) where the user has write, maintain or admin
+ * (`GET /repos/{o}/{r}/collaborators/{login}/permission`). No user token is used or stored.
+ *
+ * The list is cached per user for `LIST_TTL_MS` purely for display. Authorization when a
+ * repository is added to a Project never reads it: `check` asks GitHub again for that repository.
+ */
+
 const MAX_PAGES = 50;
-/** Overall budget for one snapshot fetch (all requests). */
-export const SYNC_TIMEOUT_MS = 10_000;
-const CONCURRENCY = 4;
+/** Overall budget for one list or check (all requests). */
+export const LIST_TIMEOUT_MS = 15_000;
+/** How long a user's list is shown from memory before GitHub is asked again. */
+export const LIST_TTL_MS = 60_000;
+/** Permission checks in flight at once for one list. */
+const CONCURRENCY = 8;
+/** Installation tokens are refreshed this long before they expire. */
+const TOKEN_MARGIN_MS = 5 * 60_000;
+/** Roles that may put a repository into a Project. */
+const WRITE_ROLES = new Set(['admin', 'maintain', 'write']);
 
 export interface UserRepository {
 	/** Repository key `github:<owner>/<repo>`, lowercase. */
@@ -15,51 +31,34 @@ export interface UserRepository {
 	defaultBranch: string;
 }
 
+export interface UserRepositoryList {
+	/** Ordered by key. */
+	repositories: UserRepository[];
+	/** When GitHub was asked. */
+	fetchedAt: Date;
+}
+
 type FetchFn = typeof fetch;
 
-function headers(token: string): Record<string, string> {
-	return {
-		Authorization: `Bearer ${token}`,
-		Accept: 'application/vnd.github+json',
-		'X-GitHub-Api-Version': '2022-11-28',
-		'User-Agent': 'enzarb-ui'
-	};
+export interface RepositoryAccessOptions {
+	appId?: string;
+	privateKey?: string;
+	fetch?: FetchFn;
+	now?: () => number;
+	ttlMs?: number;
+	timeoutMs?: number;
 }
 
-function nextLink(res: Response): string | null {
-	for (const part of (res.headers.get('link') ?? '').split(',')) {
-		const m = /<([^>]+)>\s*;\s*rel="next"/.exec(part);
-		if (m) return m[1];
-	}
-	return null;
-}
-
-/** Follows `Link: rel="next"` and collects `pick(body)` from every page. */
-async function paginate<T>(
-	token: string,
-	path: string,
-	pick: (body: unknown) => T[],
-	fetchFn: FetchFn,
-	signal: AbortSignal,
-	opts: { notFoundIsEmpty?: boolean } = {}
-): Promise<T[]> {
-	const out: T[] = [];
-	let url: string | null = `${API}${path}${path.includes('?') ? '&' : '?'}per_page=100`;
-	for (let page = 0; url; page++) {
-		if (page >= MAX_PAGES) throw new Error(`GitHub ${path} has more than ${MAX_PAGES} pages`);
-		// Never send the token anywhere but the GitHub API.
-		if (!url.startsWith(`${API}/`)) throw new Error('GitHub returned an unexpected pagination URL');
-		const res: Response = await fetchFn(url, {
-			headers: headers(token),
-			signal,
-			redirect: 'error'
-		});
-		if (res.status === 404 && opts.notFoundIsEmpty) return out;
-		if (!res.ok) throw new Error(`GitHub ${path} returned ${res.status}`);
-		out.push(...pick(await res.json()));
-		url = nextLink(res);
-	}
-	return out;
+export interface RepositoryAccess {
+	/** Whether the App credentials are configured (otherwise every list is empty). */
+	readonly configured: boolean;
+	/** The user's repositories; `refresh` skips the display cache. Throws when GitHub fails. */
+	list(login: string, opts?: { refresh?: boolean }): Promise<UserRepositoryList>;
+	/**
+	 * Live authorization for one repository key: the repository when the App can access it and
+	 * `login` has write, maintain or admin right now; null otherwise (including any GitHub failure).
+	 */
+	check(login: string, key: string): Promise<UserRepository | null>;
 }
 
 interface RawInstallation {
@@ -71,174 +70,191 @@ interface RawRepository {
 	full_name: string;
 	private: boolean;
 	default_branch: string;
+	archived?: boolean;
 }
 
-/**
- * The repositories of every installation of this App that the token's user can access
- * (`GET /user/installations`, then `GET /user/installations/{id}/repositories`).
- * Throws on any API failure so callers keep the previous snapshot rather than a partial one.
- */
-export async function fetchUserRepositories(
-	token: string,
-	fetchFn: FetchFn = fetch,
-	timeoutMs = SYNC_TIMEOUT_MS
-): Promise<UserRepository[]> {
-	const signal = AbortSignal.timeout(timeoutMs);
-	const all = await paginate<RawInstallation>(
-		token,
-		'/user/installations',
-		(b) => (b as { installations?: RawInstallation[] }).installations ?? [],
-		fetchFn,
-		signal
-	);
-	// Suspended installations grant nothing.
-	const installations = all.filter((i) => !i.suspended_at);
-	const perInstallation: UserRepository[][] = new Array(installations.length);
-	let next = 0;
-	const worker = async () => {
-		while (next < installations.length) {
-			const idx = next++;
-			const inst = installations[idx];
-			// A 404 means this installation has no repositories for the user; anything else is fatal.
+function nextLink(res: Response): string | null {
+	for (const part of (res.headers.get('link') ?? '').split(',')) {
+		const m = /<([^>]+)>\s*;\s*rel="next"/.exec(part);
+		if (m) return m[1];
+	}
+	return null;
+}
+
+const enc = encodeURIComponent;
+
+/** `github:owner/repo` -> parts; null for anything else. */
+function parseKey(key: string): { owner: string; repo: string } | null {
+	const m = /^github:([\w.-]+)\/([\w.-]+)$/.exec(key);
+	return m ? { owner: m[1], repo: m[2] } : null;
+}
+
+export function createRepositoryAccess({
+	appId,
+	privateKey,
+	fetch: doFetch = fetch,
+	now = Date.now,
+	ttlMs = LIST_TTL_MS,
+	timeoutMs = LIST_TIMEOUT_MS
+}: RepositoryAccessOptions): RepositoryAccess {
+	const tokens = new Map<number, { token: string; refreshAt: number }>();
+	const cache = new Map<string, { value: UserRepositoryList; until: number }>();
+	const inflight = new Map<string, Promise<UserRepositoryList>>();
+
+	const call = (url: string, token: string, signal: AbortSignal, init: RequestInit = {}) => {
+		// Never send a token anywhere but the GitHub API.
+		if (!url.startsWith(`${API}/`)) throw new Error('unexpected GitHub URL');
+		return doFetch(url, { ...init, headers: githubHeaders(token), signal, redirect: 'error' });
+	};
+
+	async function paginate<T>(
+		token: string,
+		path: string,
+		pick: (body: unknown) => T[],
+		signal: AbortSignal
+	): Promise<T[]> {
+		const out: T[] = [];
+		let url: string | null = `${API}${path}${path.includes('?') ? '&' : '?'}per_page=100`;
+		for (let page = 0; url; page++) {
+			if (page >= MAX_PAGES) throw new Error(`GitHub ${path} has more than ${MAX_PAGES} pages`);
+			const res: Response = await call(url, token, signal);
+			if (!res.ok) throw new Error(`GitHub ${path} returned ${res.status}`);
+			out.push(...pick(await res.json()));
+			url = nextLink(res);
+		}
+		return out;
+	}
+
+	const appJwt = () => signAppJwt(appId!, privateKey!, now());
+
+	async function installationToken(id: number, signal: AbortSignal): Promise<string> {
+		const hit = tokens.get(id);
+		if (hit && now() < hit.refreshAt) return hit.token;
+		const res = await call(`${API}/app/installations/${id}/access_tokens`, await appJwt(), signal, {
+			method: 'POST',
+			body: JSON.stringify({ permissions: { metadata: 'read' } })
+		});
+		if (!res.ok) throw new Error(`GitHub installation token returned ${res.status}`);
+		const body = (await res.json()) as { token?: unknown; expires_at?: unknown };
+		if (typeof body.token !== 'string' || !body.token) throw new Error('no installation token');
+		const expires = typeof body.expires_at === 'string' ? Date.parse(body.expires_at) : NaN;
+		const end = Number.isFinite(expires) ? expires : now() + 60 * 60_000;
+		tokens.set(id, { token: body.token, refreshAt: end - TOKEN_MARGIN_MS });
+		return body.token;
+	}
+
+	/** The user's role on a repository (`none` on 404). Throws on other failures. */
+	async function role(
+		token: string,
+		owner: string,
+		repo: string,
+		login: string,
+		signal: AbortSignal
+	): Promise<string> {
+		const res = await call(
+			`${API}/repos/${enc(owner)}/${enc(repo)}/collaborators/${enc(login)}/permission`,
+			token,
+			signal
+		);
+		if (res.status === 404) return 'none';
+		if (!res.ok) throw new Error(`GitHub permission check returned ${res.status}`);
+		const body = (await res.json()) as { permission?: string; role_name?: string };
+		// `role_name` distinguishes maintain from write; `permission` folds it into write.
+		return body.role_name ?? body.permission ?? 'none';
+	}
+
+	const toRepository = (r: RawRepository, inst: number, account: string): UserRepository => ({
+		repo: `github:${r.full_name.toLowerCase()}`,
+		installationId: inst,
+		accountLogin: account,
+		private: r.private,
+		defaultBranch: r.default_branch
+	});
+
+	async function fetchList(login: string): Promise<UserRepositoryList> {
+		const fetchedAt = new Date(now());
+		if (!appId || !privateKey) return { repositories: [], fetchedAt };
+		const signal = AbortSignal.timeout(timeoutMs);
+		const all = await paginate<RawInstallation>(
+			await appJwt(),
+			'/app/installations',
+			(b) => (Array.isArray(b) ? (b as RawInstallation[]) : []),
+			signal
+		);
+		// Suspended installations grant nothing.
+		const candidates: { token: string; repo: RawRepository; inst: RawInstallation }[] = [];
+		for (const inst of all.filter((i) => !i.suspended_at)) {
+			const token = await installationToken(inst.id, signal);
 			const repos = await paginate<RawRepository>(
 				token,
-				`/user/installations/${inst.id}/repositories`,
+				'/installation/repositories',
 				(b) => (b as { repositories?: RawRepository[] }).repositories ?? [],
-				fetchFn,
-				signal,
-				{ notFoundIsEmpty: true }
+				signal
 			);
-			perInstallation[idx] = repos.map((r) => ({
-				repo: `github:${r.full_name.toLowerCase()}`,
-				installationId: inst.id,
-				accountLogin: inst.account?.login ?? r.full_name.split('/')[0],
-				private: r.private,
-				defaultBranch: r.default_branch
-			}));
+			for (const repo of repos) if (!repo.archived) candidates.push({ token, repo, inst });
 		}
-	};
-	await Promise.all(Array.from({ length: Math.min(CONCURRENCY, installations.length) }, worker));
-	const out = new Map<string, UserRepository>();
-	for (const r of perInstallation.flat()) out.set(r.repo, r);
-	return [...out.values()];
-}
-
-/** Replaces the user's snapshot atomically. */
-export async function replaceUserRepositories(
-	sql: Sql,
-	userId: number,
-	repos: UserRepository[]
-): Promise<void> {
-	await sql.begin(async (tx) => {
-		await tx`DELETE FROM app.user_repositories WHERE user_id = ${userId}`;
-		if (repos.length === 0) return;
-		const rows = repos.map((r) => ({
-			user_id: userId,
-			repo: r.repo,
-			installation_id: r.installationId,
-			account_login: r.accountLogin,
-			private: r.private,
-			default_branch: r.defaultBranch
-		}));
-		await tx`INSERT INTO app.user_repositories ${tx(
-			rows,
-			'user_id',
-			'repo',
-			'installation_id',
-			'account_login',
-			'private',
-			'default_branch'
-		)}`;
-	});
-}
-
-/**
- * Sign-in hook: fetch with the user-to-server token and store the snapshot. The token is only
- * used here and never stored. A GitHub (or database) failure is logged and the previous snapshot
- * is kept, so sign-in is never blocked.
- */
-export async function syncUserRepositories(
-	sql: Sql,
-	userId: number,
-	token: string,
-	fetchFn: FetchFn = fetch
-): Promise<boolean> {
-	try {
-		await replaceUserRepositories(sql, userId, await fetchUserRepositories(token, fetchFn));
-		return true;
-	} catch (e) {
-		console.error('could not refresh the user repository snapshot:', (e as Error).message);
-		return false;
+		const allowed: (UserRepository | null)[] = new Array(candidates.length).fill(null);
+		let next = 0;
+		const worker = async () => {
+			while (next < candidates.length) {
+				const idx = next++;
+				const { token, repo, inst } = candidates[idx];
+				const [owner, name] = repo.full_name.split('/');
+				if (WRITE_ROLES.has(await role(token, owner, name, login, signal)))
+					allowed[idx] = toRepository(repo, inst.id, inst.account?.login ?? owner);
+			}
+		};
+		await Promise.all(Array.from({ length: Math.min(CONCURRENCY, candidates.length) }, worker));
+		const out = new Map<string, UserRepository>();
+		for (const r of allowed) if (r) out.set(r.repo, r);
+		return {
+			repositories: [...out.values()].sort((a, b) => a.repo.localeCompare(b.repo)),
+			fetchedAt
+		};
 	}
-}
 
-/**
- * After creating a repository: re-sync the snapshot with the same token until `key` is in it
- * (GitHub can lag). Bounded: `tries` syncs, `delayMs` apart. Returns whether it appeared.
- */
-export async function waitForRepository(
-	sql: Sql,
-	userId: number,
-	token: string,
-	key: string,
-	opts: { tries?: number; delayMs?: number; fetchFn?: FetchFn } = {}
-): Promise<boolean> {
-	const { tries = 5, delayMs = 2000, fetchFn = fetch } = opts;
-	for (let attempt = 0; attempt < tries; attempt++) {
-		if (attempt > 0) await new Promise((r) => setTimeout(r, delayMs));
-		if (await syncUserRepositories(sql, userId, token, fetchFn)) {
-			const [row] = await sql<
-				{ found: boolean }[]
-			>`SELECT EXISTS (SELECT 1 FROM app.user_repositories WHERE user_id = ${userId} AND repo = ${key}) AS found`;
-			if (row.found) return true;
-		}
-	}
-	return false;
-}
-
-export interface UserRepositorySnapshot {
-	repositories: UserRepository[];
-	/** When the snapshot was fetched (the oldest row, to be conservative); null when empty. */
-	fetchedAt: Date | null;
-}
-
-/**
- * The current user's repository snapshot, ordered by key. It authorizes exactly one thing:
- * which repositories the user may select when creating a Project (see
- * `project-onboarding.ts`), and only while it is younger than `SNAPSHOT_MAX_AGE_MS`. Nothing
- * else (access to a sandbox, to events, to existing Projects) is decided from it.
- */
-export async function getUserRepositorySnapshot(
-	sql: Sql,
-	userId: number
-): Promise<UserRepositorySnapshot> {
-	const rows = await sql<
-		{
-			repo: string;
-			installation_id: string;
-			account_login: string;
-			private: boolean;
-			default_branch: string;
-			fetched_at: Date;
-		}[]
-	>`SELECT repo, installation_id, account_login, private, default_branch, fetched_at
-		FROM app.user_repositories WHERE user_id = ${userId} ORDER BY repo`;
-	const times = rows.map((r) => r.fetched_at.getTime());
 	return {
-		repositories: rows.map((r) => ({
-			repo: r.repo,
-			installationId: Number(r.installation_id),
-			accountLogin: r.account_login,
-			private: r.private,
-			defaultBranch: r.default_branch
-		})),
-		fetchedAt: times.length ? new Date(Math.min(...times)) : null
+		configured: !!appId && !!privateKey,
+		list(login, { refresh = false } = {}) {
+			const key = login.toLowerCase();
+			const hit = cache.get(key);
+			if (!refresh && hit && now() < hit.until) return Promise.resolve(hit.value);
+			let p = inflight.get(key);
+			if (!p) {
+				p = fetchList(login)
+					.then((value) => {
+						cache.set(key, { value, until: now() + ttlMs });
+						return value;
+					})
+					.finally(() => inflight.delete(key));
+				inflight.set(key, p);
+			}
+			return p;
+		},
+		async check(login, key) {
+			const parts = parseKey(key);
+			if (!parts || !appId || !privateKey) return null;
+			try {
+				const signal = AbortSignal.timeout(timeoutMs);
+				const base = `${API}/repos/${enc(parts.owner)}/${enc(parts.repo)}`;
+				const instRes = await call(`${base}/installation`, await appJwt(), signal);
+				if (!instRes.ok) return null;
+				const inst = (await instRes.json()) as RawInstallation;
+				if (typeof inst.id !== 'number' || inst.suspended_at) return null;
+				const token = await installationToken(inst.id, signal);
+				const repoRes = await call(base, token, signal);
+				if (!repoRes.ok) return null;
+				const repo = (await repoRes.json()) as RawRepository;
+				const found = toRepository(repo, inst.id, inst.account?.login ?? parts.owner);
+				if (found.repo !== key.toLowerCase() || repo.archived) return null;
+				const r = await role(token, parts.owner, parts.repo, login, signal);
+				return WRITE_ROLES.has(r) ? found : null;
+			} catch {
+				// Deny on any failure; the message could carry key material.
+				return null;
+			}
+		}
 	};
-}
-
-/** The repositories of `getUserRepositorySnapshot`, without the fetch time. */
-export async function listUserRepositories(sql: Sql, userId: number): Promise<UserRepository[]> {
-	return (await getUserRepositorySnapshot(sql, userId)).repositories;
 }
 
 export function installUrl(slug: string): string {
@@ -251,7 +267,7 @@ export interface AccountInstallation {
 	repositoryCount: number;
 }
 
-/** Groups snapshot rows by installation account, ordered by login. */
+/** Groups repositories by installation account, ordered by login. */
 export function groupByAccount(repos: UserRepository[]): AccountInstallation[] {
 	const groups = new Map<string, AccountInstallation>();
 	for (const r of repos) {
@@ -266,12 +282,4 @@ export function groupByAccount(repos: UserRepository[]): AccountInstallation[] {
 			});
 	}
 	return [...groups.values()].sort((a, b) => a.accountLogin.localeCompare(b.accountLogin));
-}
-
-/** Whether the snapshot holds at least one repository (drives the install-the-App banner). */
-export async function hasUserRepositories(sql: Sql, userId: number): Promise<boolean> {
-	const [row] = await sql<
-		{ found: boolean }[]
-	>`SELECT EXISTS (SELECT 1 FROM app.user_repositories WHERE user_id = ${userId}) AS found`;
-	return row.found;
 }

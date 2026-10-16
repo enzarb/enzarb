@@ -17,9 +17,9 @@ import type { RequestHandler } from './$types';
 
 /**
  * Starts GitHub sign-in. `?return=/path` (same-origin relative paths only) is where to land
- * afterwards; `?refresh=1` is the same flow, used as the App's Setup URL and by the
- * "Refresh repositories" action: GitHub skips consent when already authorized, and the callback
- * re-reads the user's installations.
+ * afterwards; `?refresh=1` is the same flow, kept as the App's Setup URL so users land back in
+ * enzarb after installing (GitHub skips consent when already authorized). The repository list
+ * itself is live (`user-repositories.ts`) and needs no sign-in to refresh.
  *
  * `?purpose=create-repo` is the re-authorization of `startCreateRepo`: it needs a session and the
  * signed intent cookie, and binds the OAuth state to the intent's nonce.
