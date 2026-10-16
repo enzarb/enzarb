@@ -18,3 +18,9 @@ See [workflows.md](../workflows.md).
 - **Gains:** one fewer system to run; Postgres is needed anyway; state is queryable for the UI; all Rust.
 - **We own** retries, leases, timers and admin tooling, and must keep the scope small (no generic engine).
 - **Postgres availability** now bounds workflow durability ([gaps.md](../gaps.md) #9).
+
+## Amendment 2026-10-15: run results are pulled, push facts verified
+- **Pulled, not called back.** The executor keeps one `executor` mux session per sandbox with accepted agent runs, subscribes to them (`run_subscribe`) and ingests `run_finished` pushes; a 15 s results pass also asks `run_status` (which now returns the full result, `run_state.result`) for every accepted run. Sandboxes advertise this as `welcome.features` `run_results`; they keep results on disk across restarts.
+- **No token in the sandbox.** `run_start` to such a sandbox carries no `callback_url`/`callback_token` (now optional and deprecated), so the agent, which shares sandbox-init's uid, can no longer read a bearer token from `callback.json` and forge a result. The HTTP callback stays for older sandboxes until they roll ([gaps](../gaps.md) #20).
+- **Push facts come from the remote** (#192): `pushed` is true iff the job's branch is on the remote at the reported `head_sha` (or ahead of the base when no sha was reported); a recovery run keeps the original run's push facts.
+- **Rollout:** proto, connectors, sandbox-container, then workflows (any order works: an old executor ignores the feature and still sends a callback; a new executor falls back to the callback for an old sandbox).

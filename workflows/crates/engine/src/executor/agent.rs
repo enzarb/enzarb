@@ -21,13 +21,15 @@
 //!    rendered with them. It is best-effort and skipped by a sandbox without the `prepare`
 //!    feature;
 //! 4. once `run_accepted`: release the lease and set `jobs.deadline`
-//!    (`timeout_secs + deadline_grace`). The job stays `running`; the callback finishes it.
+//!    (`timeout_secs + deadline_grace`). The job stays `running`; its result arrives over the
+//!    mux ([`results`](super::results)), or, from a sandbox without `feature::RUN_RESULTS`,
+//!    through the deprecated callback (`RunStart.callback_url` is only sent to those).
 
 use std::time::Duration;
 
 use enzarb_connector::{Connector, CredScope, RepoKey, Thread};
-use enzarb_proto::session::{Client, Session};
-use enzarb_proto::{ClientKind, RunStart};
+use enzarb_proto::session::{Client, Events, Session};
+use enzarb_proto::{ClientKind, RunStart, feature};
 
 use super::callback::{callback_token, recovery_run_id, run_id};
 use super::{Claimed, Done, Executor, JobError, SandboxError, Secret, claude_credential};
@@ -78,17 +80,24 @@ fn sandbox_err<E: std::fmt::Display>(what: &str, e: E) -> JobError {
 impl Executor {
     /// Connect to a Project's sandbox-init as `executor`.
     pub(crate) async fn dial(&self, project: &str) -> Result<Session, JobError> {
+        Ok(self.dial_with_events(project).await?.0)
+    }
+
+    /// Like [`dial`](Self::dial), keeping the session's event stream (`run_finished` pushes).
+    pub(crate) async fn dial_with_events(
+        &self,
+        project: &str,
+    ) -> Result<(Session, Events), JobError> {
         let target = self.sandboxes.resolve(project).await.map_err(|e| match e {
             SandboxError::NotReady(_) => JobError::sandbox_not_ready(e.to_string()),
             SandboxError::Kube(_) => JobError::transient(e.to_string()),
         })?;
         let t = self.cfg.sandbox_timeout;
         let connect = Client::connect(&target.endpoint, &target.token, ClientKind::Executor);
-        let (session, _events) = tokio::time::timeout(t, connect)
+        tokio::time::timeout(t, connect)
             .await
             .map_err(|_| sandbox_err("connect", "timed out"))?
-            .map_err(|e| sandbox_err("connect", e))?;
-        Ok(session)
+            .map_err(|e| sandbox_err("connect", e))
     }
 
     /// The Project owner's decrypted Claude token. Looks up `spec.owner` only; never falls
@@ -389,9 +398,15 @@ impl Executor {
         job_id: i64,
         attempt: i32,
         rid: &str,
-        run: RunStart,
+        mut run: RunStart,
         timeout_secs: u64,
     ) -> Result<Done, JobError> {
+        // A sandbox that delivers results over the mux gets no callback, so no bearer token
+        // ever reaches it (or its disk); older ones still call back.
+        if session.has_feature(feature::RUN_RESULTS) {
+            run.callback_url.clear();
+            run.callback_token.clear();
+        }
         let started = tokio::time::timeout(self.cfg.sandbox_timeout, session.run_start(run))
             .await
             .map_err(|_| sandbox_err("run_start", "timed out"))?

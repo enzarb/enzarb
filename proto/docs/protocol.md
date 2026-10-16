@@ -70,10 +70,12 @@ JSON objects with a `"type"` field, channel 0. Unknown fields are ignored; an un
 | `opened` | server -> client | `channel` |
 | `open_error` | server -> client | `channel`, `message`, `code?: string` |
 | `resize` | client -> server | `channel`, `cols`, `rows` |
-| `run_start` | client -> server | `run_id, repo_url, base_ref, branch, push, clone_token, prompt, timeout_secs, callback_url, callback_token, log_channel, deps_token?, npm_token?, claude_token?, retarget?, graph?` |
+| `run_start` | client -> server | `run_id, repo_url, base_ref, branch, push, clone_token, prompt, timeout_secs, callback_url?, callback_token?, log_channel, deps_token?, npm_token?, claude_token?, retarget?, graph?` (`callback_*` deprecated: omitted, or empty, only towards a server with `run_results`; old servers require them) |
 | `run_accepted` | server -> client | `run_id`, `state`, `existing: bool` |
 | `run_status` | client -> server | `run_id` |
-| `run_state` | server -> client (reply to `run_status`, and pushed on change) | `run_id`, `state`, `exit_code?`, `summary?`, `usage?: Usage` |
+| `run_state` | server -> client (reply to `run_status`, and pushed on change) | `run_id`, `state`, `exit_code?`, `summary?`, `usage?: Usage`, `result?: RunFinished` (terminal runs, `run_results` servers) |
+| `run_finished` | server -> client (`run_results` only) | the `RunFinished` fields; pushed when a run ends to each open session that started it or subscribed to it |
+| `run_subscribe` | client -> server (only after `run_results`) | `run_ids: [string]`; no reply. Runs that already ended are answered with `run_finished` at once; unknown ids are ignored |
 | `run_cancel` | client -> server | `run_id` |
 | `credential_captured` | server -> client | `kind: "claude_oauth"`, `token?: string`, `legacy?: bool` |
 | `credential_status` | client -> server | none; asks whether the sandbox holds a credential |
@@ -89,9 +91,9 @@ JSON objects with a `"type"` field, channel 0. Unknown fields are ignored; an un
 
 `state` is `queued | running | succeeded | failed | cancelled`. `run_start` is idempotent on `run_id`.
 
-### Run finished callback body (`RunFinished`)
+### Run result (`RunFinished`)
 
-Not a CTRL message; it is the JSON body sandbox-init POSTs to `callback_url`:
+The body of `run_finished` and `run_state.result`, and (deprecated) the JSON body sandbox-init POSTs to `callback_url` for requests that carry one. Receivers must ingest it idempotently; a result too large for one frame has long graph output strings cut and keeps the tail of `summary`:
 `{run_id, outcome: succeeded|failed|cancelled, exit_code?, summary, branch, head_sha, pushed, usage?: Usage, graph?: GraphResult}`.
 
 `run_start.graph` (`GraphSegment`, additive) makes the run a graph segment run: `{definition, start: string, outputs?: {[node]: any}, visits?: {[node]: integer}, prompts?: {[node]: string}}`. `definition` is a workflow definition (preferably its YAML source as a string). `RunFinished.graph` (`GraphResult`, additive) reports `{stopped_at: string, outputs?, visits?}`. Old peers ignore both. Semantics: contracts section 4 and ADR-0020.
@@ -109,7 +111,7 @@ Every field is omitted when unknown: absent means "not reported", never 0. `cost
 Additive fields (protocol version stays 1). Encoders omit them when absent; `welcome.features` is also omitted when empty. Old peers ignore them and old payloads decode without them.
 
 - `hello.features`: feature names the client supports, sanitized like `welcome.features`. Defined: `claude_user_token` (sent only by sandbox-proxy: it stores `credential_captured.token`, never relays it to a browser, and acks `legacy` captures with `credential_state`). A server sends token-bearing `credential_captured` frames **only** to a client that offered it; old clients get the token-less frame. Like `client`, it is self-declared and trusted only as far as the bearer auth.
-- `welcome.features`: feature names the server supports. Defined: `acp` (the `acp` channel kind), `prepare` (the `prepare_request`/`prepared` frames; a sandbox without it answers `prepare_request` with `unknown_message`), `stats` (the `stats_request`/`stats` frames; a sandbox without it answers `stats_request` with `unknown_message`, so clients wait for the feature). Decoders drop non-string, empty and longer-than-64-byte entries and keep at most 64. Unknown features are ignored. A client sends something that depends on a feature **only after** `features` contains it.
+- `welcome.features`: feature names the server supports. Defined: `acp` (the `acp` channel kind), `prepare` (the `prepare_request`/`prepared` frames; a sandbox without it answers `prepare_request` with `unknown_message`), `stats` (the `stats_request`/`stats` frames; a sandbox without it answers `stats_request` with `unknown_message`, so clients wait for the feature), `run_results` (`run_finished`, `run_subscribe`, `run_state.result`, results kept across restarts, and `run_start` without a callback). Decoders drop non-string, empty and longer-than-64-byte entries and keep at most 64. Unknown features are ignored. A client sends something that depends on a feature **only after** `features` contains it.
 - `open.kind`: `pty` or `acp`. A decoder maps any other kind to an "unknown" value instead of failing; a server answers it with `open_error` (`unsupported_kind`) and keeps the connection. For `acp`, `cols`/`rows` are ignored but clients send `0`, and `command` is not used.
 - `open.repo` (at most 2048 bytes) and `open.resume` (at most 256 bytes) are `acp` routing hints. Longer values are refused with `open_error` (`invalid_request`) before the application sees them.
 - `open_error.code`: machine-readable reason. Known: `chat_disabled`, `chat_limit`, `no_credential`, `repo_not_cloned`, `unsupported_kind`, `invalid_request`. Unknown codes must be tolerated; `message` stays the human text.

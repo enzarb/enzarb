@@ -4,6 +4,7 @@ import {
   type CredentialKind,
   type Ctrl,
   ErrorCode,
+  type RunFinished,
   type RunPhase,
   type RunStartFields,
   type Usage,
@@ -66,6 +67,8 @@ export interface RunInfo {
   exit_code?: number | null;
   summary?: string | null;
   usage?: Usage | null;
+  /** Full final result of a terminal run (servers with `run_results`). */
+  result?: RunFinished | null;
 }
 
 /** `credential_state` as seen by the client. */
@@ -181,7 +184,7 @@ export class Session implements ChannelHost {
     return this.end !== null;
   }
 
-  /** Subscribe to unsolicited CTRL messages (pushed `run_state`, `credential_captured`, unsolicited `credential_state`, unattributed `error`). */
+  /** Subscribe to unsolicited CTRL messages (pushed `run_state`, `run_finished`, `credential_captured`, unsolicited `credential_state`, unattributed `error`). */
   onCtrl(listener: CtrlListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -398,6 +401,11 @@ export class Session implements ChannelHost {
     this.send({ type: "credential_clear", kind });
   }
 
+  /** `run_subscribe` (no reply): `run_finished` for these runs arrives through `onCtrl`. Only after `run_results`. */
+  runSubscribe(runIds: string[]): void {
+    this.send({ type: "run_subscribe", run_ids: runIds });
+  }
+
   /** `run_cancel`; the new state arrives as a pushed `run_state` through `onCtrl`. */
   runCancel(runId: string): void {
     this.send({ type: "run_cancel", run_id: runId });
@@ -568,7 +576,7 @@ export class Session implements ChannelHost {
         const i = this.pending.findIndex((p) => p.kind === "run_status" && p.run_id === m.run_id);
         const p = i >= 0 ? this.pending.splice(i, 1)[0] : undefined;
         if (p && p.kind === "run_status") {
-          p.resolve({ run_id: m.run_id, state: m.state, exit_code: m.exit_code, summary: m.summary, usage: m.usage });
+          p.resolve({ run_id: m.run_id, state: m.state, exit_code: m.exit_code, summary: m.summary, usage: m.usage, result: m.result });
         } else {
           this.emit(m);
         }
@@ -596,6 +604,7 @@ export class Session implements ChannelHost {
         return;
       }
       case "credential_captured":
+      case "run_finished":
       case "stats":
         this.emit(m);
         return;

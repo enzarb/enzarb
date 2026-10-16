@@ -43,6 +43,8 @@ const SANDBOX_TOKEN: &str = "sandbox-secret";
 const OWNER: &str = "octocat";
 const OWNER_TOKEN: &str = "sk-ant-oat01-octocat-secret";
 const KEY_ID: &str = "k1";
+/// The head commit the fake sandbox reports.
+const HEAD_SHA: &str = "abc1230000000000000000000000000000000abc";
 
 fn test_keyring() -> engine::ClaudeKeyring {
     engine::ClaudeKeyring::new().with_key(KEY_ID, [0x42; 32])
@@ -78,6 +80,16 @@ struct Run {
 }
 
 struct Sb {
+    /// Advertise `feature::RUN_RESULTS` (deliver results over the mux, no callback).
+    results: Mutex<bool>,
+    /// With `results`: push `run_finished` to sessions (off: only `run_status` has it).
+    push: Mutex<bool>,
+    /// Final results, for `run_state.result` and `run_finished`.
+    finished: Mutex<HashMap<String, RunFinished>>,
+    /// Open server sessions.
+    sessions: Mutex<Vec<Session>>,
+    /// Every `run_subscribe` received.
+    subscribes: Mutex<Vec<Vec<String>>>,
     mode: Mutex<Mode>,
     runs: Mutex<HashMap<String, Run>>,
     starts: Mutex<usize>,
@@ -96,6 +108,11 @@ impl FakeSandbox {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("ws://{}/v1/mux", listener.local_addr().unwrap());
         let sb = Arc::new(Sb {
+            results: Mutex::new(false),
+            push: Mutex::new(true),
+            finished: Mutex::default(),
+            sessions: Mutex::default(),
+            subscribes: Mutex::default(),
             mode: Mutex::new(Mode::Hold),
             runs: Mutex::default(),
             starts: Mutex::new(0),
@@ -137,11 +154,65 @@ impl FakeSandbox {
         self.sb.runs.lock().unwrap().remove(run_id);
     }
 
+    /// Behave like a sandbox with `feature::RUN_RESULTS` (for new connections).
+    fn set_results(&self, on: bool) {
+        *self.sb.results.lock().unwrap() = on;
+    }
+
+    /// Whether `run_finished` is pushed (off: results only through `run_status`).
+    fn set_push(&self, on: bool) {
+        *self.sb.push.lock().unwrap() = on;
+    }
+
+    fn subscribes(&self) -> Vec<Vec<String>> {
+        self.sb.subscribes.lock().unwrap().clone()
+    }
+
+    /// Close every open session from the sandbox side (a dropped connection).
+    async fn drop_sessions(&self) {
+        let sessions: Vec<Session> = self.sb.sessions.lock().unwrap().drain(..).collect();
+        for s in sessions {
+            s.close().await;
+        }
+    }
+
+    /// End a run with `body` (a `run_results` sandbox): stored for `run_status`, pushed when
+    /// pushing is on.
+    fn finish_with(&self, body: RunFinished) {
+        {
+            let mut runs = self.sb.runs.lock().unwrap();
+            if let Some(r) = runs.get_mut(&body.run_id) {
+                r.phase = match body.outcome {
+                    RunOutcome::Succeeded => RunPhase::Succeeded,
+                    RunOutcome::Failed => RunPhase::Failed,
+                    RunOutcome::Cancelled => RunPhase::Cancelled,
+                };
+                r.summary = Some(body.summary.clone());
+            }
+        }
+        self.sb
+            .finished
+            .lock()
+            .unwrap()
+            .insert(body.run_id.clone(), body.clone());
+        push_finished(&self.sb, &body);
+    }
+
     fn finish_with_state(&self, run_id: &str, phase: RunPhase, summary: &str) {
         let mut runs = self.sb.runs.lock().unwrap();
         let r = runs.get_mut(run_id).unwrap();
         r.phase = phase;
         r.summary = Some(summary.into());
+    }
+}
+
+/// Push `run_finished` to every open session (when pushing is on).
+fn push_finished(sb: &Sb, body: &RunFinished) {
+    if !*sb.push.lock().unwrap() {
+        return;
+    }
+    for s in sb.sessions.lock().unwrap().iter() {
+        let _ = s.send_run_finished(body);
     }
 }
 
@@ -162,9 +233,19 @@ async fn serve(sb: Arc<Sb>, stream: tokio::net::TcpStream) {
     };
     let ws = tokio_tungstenite::accept_hdr_async(stream, check).await;
     let Ok(ws) = ws else { return };
-    let Ok((session, mut events)) = Session::accept(ws, ServerOptions::default()).await else {
+    let results = *sb.results.lock().unwrap();
+    let opts = ServerOptions {
+        features: if results {
+            vec![enzarb_proto::feature::RUN_RESULTS.to_string()]
+        } else {
+            vec![]
+        },
+        ..ServerOptions::default()
+    };
+    let Ok((session, mut events)) = Session::accept(ws, opts).await else {
         return;
     };
+    sb.sessions.lock().unwrap().push(session.clone());
     while let Some(ev) = events.next().await {
         let SessionEvent::Ctrl(ctrl) = ev else {
             continue;
@@ -209,21 +290,34 @@ async fn serve(sb: Arc<Sb>, stream: tokio::net::TcpStream) {
                         r.phase = phase;
                         r.summary = Some(summary.clone());
                     }
-                    if callback {
+                    let body = RunFinished {
+                        run_id: run.run_id.clone(),
+                        outcome,
+                        exit_code: Some(0),
+                        summary: summary.clone(),
+                        branch: run.branch.clone(),
+                        head_sha: HEAD_SHA.into(),
+                        pushed,
+                        usage: None,
+                        graph: graph_result(&run),
+                    };
+                    if results {
+                        sb.finished
+                            .lock()
+                            .unwrap()
+                            .insert(run.run_id.clone(), body.clone());
+                        assert!(run.callback_url.is_empty() && run.callback_token.is_empty());
+                    }
+                    if callback && results {
                         let sb = sb.clone();
                         tokio::spawn(async move {
                             tokio::time::sleep(Duration::from_millis(150)).await;
-                            let body = RunFinished {
-                                run_id: run.run_id.clone(),
-                                outcome,
-                                exit_code: Some(0),
-                                summary,
-                                branch: run.branch.clone(),
-                                head_sha: "abc123".into(),
-                                pushed,
-                                usage: None,
-                                graph: graph_result(&run),
-                            };
+                            push_finished(&sb, &body);
+                        });
+                    } else if callback {
+                        let sb = sb.clone();
+                        tokio::spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(150)).await;
                             let resp = reqwest::Client::new()
                                 .post(&run.callback_url)
                                 .bearer_auth(&run.callback_token)
@@ -248,6 +342,11 @@ async fn serve(sb: Arc<Sb>, stream: tokio::net::TcpStream) {
                             exit_code: r.phase.is_terminal().then_some(0),
                             summary: r.summary.clone(),
                             usage: None,
+                            result: if results {
+                                sb.finished.lock().unwrap().get(&run_id).cloned()
+                            } else {
+                                None
+                            },
                         });
                 match info {
                     Some(i) => {
@@ -255,6 +354,17 @@ async fn serve(sb: Arc<Sb>, stream: tokio::net::TcpStream) {
                     }
                     None => {
                         let _ = session.send_run_error(&run_id, "unknown_run", "unknown run");
+                    }
+                }
+            }
+            Ctrl::RunSubscribe { run_ids } => {
+                sb.subscribes.lock().unwrap().push(run_ids.clone());
+                for id in run_ids {
+                    let done = sb.finished.lock().unwrap().get(&id).cloned();
+                    if let Some(b) = done
+                        && *sb.push.lock().unwrap()
+                    {
+                        let _ = session.send_run_finished(&b);
                     }
                 }
             }
@@ -280,7 +390,7 @@ fn graph_result(run: &RunStart) -> Option<enzarb_proto::GraphResult> {
         visits: g.visits.clone(),
     };
     while def.node(&st.node)?.kind.runner() == enzarb_graph::Runner::Sandbox {
-        let out = json!({"ok": true, "exit_code": 0, "pushed": true, "head_sha": "abc123"});
+        let out = json!({"ok": true, "exit_code": 0, "pushed": true, "head_sha": HEAD_SHA});
         if let enzarb_graph::Next::Failed(_) = enzarb_graph::advance(&def, &mut st, out) {
             break;
         }
@@ -2270,7 +2380,7 @@ async fn issue_triage_runs_end_to_end_through_the_sandbox() {
     assert!(run.prompt.contains("Add dark mode"));
     // output keeps the RunFinished fields the machine reads
     let out = job(pool, triage_id).await.output.unwrap();
-    assert_eq!(out["head_sha"], "abc123");
+    assert_eq!(out["head_sha"], HEAD_SHA);
     assert_eq!(out["pushed"], false);
     assert!(out["summary"].as_str().unwrap().contains("Clear enough"));
 
@@ -4217,6 +4327,9 @@ async fn issue_graph_runs_a_segment_then_opens_the_change_request() {
     let reducer = graph_reducer(&h);
     let repo: RepoKey = REPO.parse().unwrap();
     h.fake.set_branch_head(repo.clone(), "main", "sha-main");
+    // The segment's push is on the remote.
+    h.fake
+        .set_branch_head(repo.clone(), "enzarb/issue-1", HEAD_SHA);
     h.fake.set_file(
         repo,
         "sha-main",
@@ -4707,4 +4820,290 @@ async fn issue_graph_prompt_files_are_read_pinned_and_rendered() {
         "{prompt}"
     );
     assert!(prompt.contains("Use the brand colours"), "{prompt}");
+}
+
+// ---------------------------------------------------------------------------
+// Results over the mux (feature::RUN_RESULTS) and remote-verified push facts
+// ---------------------------------------------------------------------------
+
+const DONE_BLOCK: &str = "Implemented.\n\n```json\n{\"decision\":\"done\",\"body\":\"Adds dark mode.\",\"title\":\"feat(ui): dark mode\"}\n```\n";
+
+fn result(rid: &str, summary: &str, branch: &str, head_sha: &str, pushed: bool) -> RunFinished {
+    RunFinished {
+        run_id: rid.into(),
+        outcome: RunOutcome::Succeeded,
+        exit_code: Some(0),
+        summary: summary.into(),
+        branch: branch.into(),
+        head_sha: head_sha.into(),
+        pushed,
+        usage: None,
+        graph: None,
+    }
+}
+
+/// Run results passes until `what` holds.
+async fn pass_until<F, Fut>(h: &H, what: &str, mut f: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    for _ in 0..100 {
+        h.exec.watch_results().await.unwrap();
+        if f().await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("timed out waiting for {what}");
+}
+
+async fn subscribed(h: &H, rid: &str) {
+    wait_for("run_subscribe", || async {
+        h.sandbox.subscribes().iter().flatten().any(|r| r == rid)
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn results_arrive_over_the_mux_without_a_callback() {
+    let h = H::new(db!()).await;
+    h.sandbox.set_results(true);
+    let pool = h.pool();
+    h.sandbox.set_mode(Mode::Finish {
+        outcome: RunOutcome::Succeeded,
+        summary: GOOD_BLOCK.into(),
+        pushed: false,
+        callback: true,
+    });
+    let id = start_triage(&h).await;
+    let rid = format!("job-{id}");
+    // No callback (and so no bearer token) reaches a sandbox with run_results.
+    let run = h.sandbox.run(&rid).unwrap();
+    assert!(run.callback_url.is_empty() && run.callback_token.is_empty());
+
+    assert_eq!(h.exec.watch_results().await.unwrap(), 1);
+    wait_for("result pushed", || async {
+        job(pool, id).await.status == "succeeded"
+    })
+    .await;
+    subscribed(&h, &rid).await;
+    assert!(h.sandbox.sb.callbacks.lock().unwrap().is_empty());
+    assert_eq!(events_of(pool, "JobSucceeded").await.len(), 1);
+    // Nothing left to watch.
+    assert_eq!(h.exec.watch_results().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn a_dropped_push_is_picked_up_by_the_results_sweep() {
+    let h = H::new(db!()).await;
+    h.sandbox.set_results(true);
+    let pool = h.pool();
+    let id = start_triage(&h).await;
+    let rid = format!("job-{id}");
+    h.exec.watch_results().await.unwrap();
+    subscribed(&h, &rid).await;
+
+    // The connection drops and the push is lost; the sandbox keeps the result.
+    h.sandbox.set_push(false);
+    h.sandbox.drop_sessions().await;
+    h.sandbox
+        .finish_with(result(&rid, GOOD_BLOCK, "enzarb/triage-1", HEAD_SHA, false));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(job(pool, id).await.status, "running");
+
+    // The next pass re-dials and reads it with run_status.
+    pass_until(&h, "result swept", || async {
+        job(pool, id).await.status == "succeeded"
+    })
+    .await;
+    assert_eq!(events_of(pool, "JobSucceeded").await.len(), 1);
+}
+
+#[tokio::test]
+async fn duplicate_result_deliveries_are_idempotent() {
+    let h = H::new(db!()).await;
+    h.sandbox.set_results(true);
+    let pool = h.pool();
+    let id = start_triage(&h).await;
+    let rid = format!("job-{id}");
+    h.exec.watch_results().await.unwrap();
+    subscribed(&h, &rid).await;
+
+    let mut body = result(&rid, GOOD_BLOCK, "enzarb/triage-1", HEAD_SHA, false);
+    body.usage = Some(enzarb_proto::Usage {
+        input_tokens: Some(10),
+        ..Default::default()
+    });
+    h.sandbox.finish_with(body.clone());
+    push_finished(&h.sandbox.sb, &body);
+    push_finished(&h.sandbox.sb, &body);
+    wait_for("result", || async {
+        job(pool, id).await.status == "succeeded"
+    })
+    .await;
+    // run_status sweeps deliver it again, and so does a stray callback.
+    h.exec.watch_results().await.unwrap();
+    h.exec.watch_results().await.unwrap();
+    let url = format!("{}/v1/runs/{rid}/finished", h.base);
+    assert_eq!(
+        post_callback(&url, &callback_token(b"test-secret", &rid), &body).await,
+        200
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(events_of(pool, "JobSucceeded").await.len(), 1);
+    assert_eq!(job_usage(pool, id).await.unwrap()["input_tokens"], 10);
+}
+
+#[tokio::test]
+async fn a_sandbox_without_run_results_still_calls_back() {
+    let h = H::new(db!()).await;
+    let pool = h.pool();
+    h.sandbox.set_mode(Mode::Finish {
+        outcome: RunOutcome::Succeeded,
+        summary: GOOD_BLOCK.into(),
+        pushed: false,
+        callback: true,
+    });
+    let id = start_triage(&h).await;
+    let rid = format!("job-{id}");
+    let run = h.sandbox.run(&rid).unwrap();
+    assert!(
+        run.callback_url
+            .ends_with(&format!("/v1/runs/{rid}/finished"))
+    );
+    assert_eq!(run.callback_token, callback_token(b"test-secret", &rid));
+    // The results pass does not subscribe on an old sandbox.
+    h.exec.watch_results().await.unwrap();
+    wait_for("callback", || async {
+        job(pool, id).await.status == "succeeded"
+    })
+    .await;
+    assert_eq!(h.sandbox.sb.callbacks.lock().unwrap().as_slice(), [200]);
+    assert!(h.sandbox.subscribes().is_empty());
+}
+
+/// An implement job on `enzarb/b-<n>` that ends with `body`; returns its output.
+async fn implement_output(h: &H, n: u64, body: impl Fn(&str) -> RunFinished) -> Value {
+    let pool = h.pool();
+    let id = kind_job(h, "agent_implement", n, true).await;
+    h.exec.drain().await;
+    let rid = format!("job-{id}");
+    h.exec.watch_results().await.unwrap();
+    subscribed(h, &rid).await;
+    h.sandbox.finish_with(body(&rid));
+    pass_until(h, "implement result", || async {
+        job(pool, id).await.status == "succeeded"
+    })
+    .await;
+    job(pool, id).await.output.unwrap()
+}
+
+#[tokio::test]
+async fn pushed_is_decided_by_the_remote_branch() {
+    let h = H::new(db!()).await;
+    h.sandbox.set_results(true);
+    let repo: RepoKey = REPO.parse().unwrap();
+
+    // The remote is at the reported head: pushed, whatever the sandbox said.
+    h.fake.set_branch_head(repo.clone(), "enzarb/b-1", HEAD_SHA);
+    let out = implement_output(&h, 1, |rid| {
+        result(rid, DONE_BLOCK, "evil/branch", HEAD_SHA, false)
+    })
+    .await;
+    assert_eq!(out["pushed"], true);
+    assert_eq!(out["branch"], "enzarb/b-1");
+    assert_eq!(out["head_sha"], HEAD_SHA);
+
+    // No remote branch: not pushed, whatever the sandbox said.
+    let out = implement_output(&h, 2, |rid| {
+        result(rid, DONE_BLOCK, "enzarb/b-2", HEAD_SHA, true)
+    })
+    .await;
+    assert_eq!(out["pushed"], false);
+
+    // The remote is elsewhere: not pushed.
+    h.fake
+        .set_branch_head(repo.clone(), "enzarb/b-3", &"d".repeat(40));
+    let out = implement_output(&h, 3, |rid| {
+        result(rid, DONE_BLOCK, "enzarb/b-3", HEAD_SHA, true)
+    })
+    .await;
+    assert_eq!(out["pushed"], false);
+
+    // No usable head_sha: pushed iff the remote branch is ahead of the base.
+    let remote = "e".repeat(40);
+    h.fake.set_branch_head(repo.clone(), "enzarb/b-4", &remote);
+    h.fake.set_ahead_by(repo.clone(), "main", &remote, 2);
+    let out = implement_output(&h, 4, |rid| result(rid, DONE_BLOCK, "x", "garbage", false)).await;
+    assert_eq!(out["pushed"], true);
+    assert_eq!(out["head_sha"], remote);
+    let even = "f".repeat(40);
+    h.fake.set_branch_head(repo.clone(), "enzarb/b-5", &even);
+    h.fake.set_ahead_by(repo, "main", &even, 0);
+    let out = implement_output(&h, 5, |rid| result(rid, DONE_BLOCK, "x", "", true)).await;
+    assert_eq!(out["pushed"], false);
+}
+
+/// #192, job 5830/6022: the implement run pushes `enzarb/issue-164` at `b5a9ea3` but its
+/// result has no usable block; the recovery run (`push: false`) returns a good block with
+/// `pushed: false`. The final output keeps the original push facts and the remote confirms
+/// them, so the issue opens its change request instead of failing.
+#[tokio::test]
+async fn a_recovery_run_never_overwrites_the_push_facts() {
+    let h = H::new(db!()).await;
+    h.sandbox.set_results(true);
+    let pool = h.pool();
+    let repo: RepoKey = REPO.parse().unwrap();
+    let sha = format!("b5a9ea3{}", "0".repeat(33));
+    h.fake.set_branch_head(repo, "enzarb/b-164", &sha);
+    let id = kind_job(&h, "agent_implement", 164, true).await;
+    h.exec.drain().await;
+    let rid = format!("job-{id}");
+    let rec = format!("job-{id}-r1");
+    h.exec.watch_results().await.unwrap();
+    subscribed(&h, &rid).await;
+
+    h.sandbox.finish_with(result(
+        &rid,
+        "Implemented and pushed. Here is the result: {decision: done",
+        "enzarb/b-164",
+        &sha,
+        true,
+    ));
+    wait_for("recovery run", || async { h.sandbox.run(&rec).is_some() }).await;
+    assert!(!h.sandbox.run(&rec).unwrap().push);
+    assert_eq!(
+        job(pool, id).await.input["recovery_push"]["head_sha"],
+        sha.as_str()
+    );
+
+    pass_until(&h, "subscribed to the recovery", || async {
+        h.sandbox.subscribes().iter().flatten().any(|r| *r == rec)
+    })
+    .await;
+    h.sandbox
+        .finish_with(result(&rec, DONE_BLOCK, "enzarb/b-164", "", false));
+    pass_until(&h, "recovered result", || async {
+        job(pool, id).await.status == "succeeded"
+    })
+    .await;
+    let out = job(pool, id).await.output.unwrap();
+    assert_eq!(out["pushed"], true);
+    assert_eq!(out["head_sha"], sha.as_str());
+    assert_eq!(out["branch"], "enzarb/b-164");
+    assert!(
+        out["summary"]
+            .as_str()
+            .unwrap()
+            .contains("\"decision\":\"done\"")
+    );
+    let evs = events_of(pool, "JobSucceeded").await;
+    assert_eq!(evs.len(), 1);
+    assert_eq!(evs[0].1["output"]["pushed"], true);
+
+    // The issue machine opens the change request from that output (not "not pushed").
+    let output = evs[0].1["output"].clone();
+    let fin: RunFinished = serde_json::from_value(output).unwrap();
+    assert!(fin.pushed && fin.head_sha == sha);
 }

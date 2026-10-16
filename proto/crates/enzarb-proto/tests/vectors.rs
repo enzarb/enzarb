@@ -37,6 +37,20 @@ fn frame_json(f: &Frame) -> Value {
     })
 }
 
+fn finished() -> RunFinished {
+    RunFinished {
+        run_id: "job-123".into(),
+        outcome: RunOutcome::Succeeded,
+        exit_code: Some(0),
+        summary: "done".into(),
+        branch: "enzarb/issue-42".into(),
+        head_sha: "abc123".into(),
+        pushed: true,
+        usage: None,
+        graph: None,
+    }
+}
+
 fn run_start() -> RunStart {
     RunStart {
         run_id: "job-123".into(),
@@ -236,6 +250,7 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
                 exit_code: None,
                 summary: None,
                 usage: None,
+                result: None,
             },
         ),
         (
@@ -246,6 +261,7 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
                 exit_code: Some(0),
                 summary: Some("done".into()),
                 usage: None,
+                result: None,
             },
         ),
         (
@@ -256,6 +272,7 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
                 exit_code: Some(1),
                 summary: None,
                 usage: None,
+                result: None,
             },
         ),
         (
@@ -273,7 +290,34 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
                     models: vec!["claude-sonnet-5-5".into()],
                     cost_usd: None,
                 }),
+                result: None,
             },
+        ),
+        (
+            "run_state_result",
+            Ctrl::RunState {
+                run_id: "job-123".into(),
+                state: RunPhase::Succeeded,
+                exit_code: Some(0),
+                summary: Some("done".into()),
+                usage: None,
+                result: Some(finished()),
+            },
+        ),
+        ("run_finished", Ctrl::RunFinished(finished())),
+        (
+            "run_subscribe",
+            Ctrl::RunSubscribe {
+                run_ids: vec!["job-123".into(), "job-124-r1".into()],
+            },
+        ),
+        (
+            "run_start_no_callback",
+            Ctrl::RunStart(RunStart {
+                callback_url: String::new(),
+                callback_token: String::new(),
+                ..run_start()
+            }),
         ),
         (
             "run_cancel",
@@ -808,7 +852,7 @@ fn old_decoder_ignores_new_fields() {
             }
             // An old decoder rejects the new message type; that is answered
             // with `unknown_message` (see the session tests).
-            "credential_clear" => assert!(r.is_err()),
+            "credential_clear" | "run_finished" | "run_subscribe" => assert!(r.is_err()),
             _ => {}
         }
     }
@@ -846,6 +890,14 @@ fn ctrl_compat_vectors() {
                "expect":{"type":"run_state","run_id":"r","state":"succeeded"}}),
         json!({"name":"run_state_usage_unknown_fields","payload":r#"{"type":"run_state","run_id":"r","state":"succeeded","usage":{"input_tokens":5,"future":1}}"#,
                "expect":{"type":"run_state","run_id":"r","usage":{"input_tokens":5}}}),
+        json!({"name":"old_run_start_with_callback","payload":r#"{"type":"run_start","run_id":"r","repo_url":"u","base_ref":"main","branch":"b","push":true,"clone_token":"t","prompt":"p","timeout_secs":5,"callback_url":"http://x/cb","callback_token":"k","log_channel":null}"#,
+               "expect":{"type":"run_start","run_id":"r","callback_url":"http://x/cb","callback_token":"k"}}),
+        json!({"name":"run_start_without_callback","payload":r#"{"type":"run_start","run_id":"r","repo_url":"u","base_ref":"main","branch":"b","push":true,"clone_token":"t","prompt":"p","timeout_secs":5}"#,
+               "expect":{"type":"run_start","run_id":"r"}}),
+        json!({"name":"run_finished_unknown_fields","payload":r#"{"type":"run_finished","run_id":"r","outcome":"failed","exit_code":1,"summary":"s","branch":"b","head_sha":"","pushed":false,"future":1}"#,
+               "expect":{"type":"run_finished","run_id":"r","outcome":"failed","pushed":false}}),
+        json!({"name":"run_state_result_unknown_fields","payload":r#"{"type":"run_state","run_id":"r","state":"failed","result":{"run_id":"r","outcome":"failed","exit_code":null,"summary":"s","branch":"b","head_sha":"","pushed":false,"x":2}}"#,
+               "expect":{"type":"run_state","run_id":"r","result":{"run_id":"r","outcome":"failed","exit_code":null,"summary":"s","branch":"b","head_sha":"","pushed":false}}}),
         json!({"name":"stats_only_ts","payload":r#"{"type":"stats","ts_ms":5}"#,
                "expect":{"type":"stats","ts_ms":5}}),
         json!({"name":"stats_unknown_fields","payload":r#"{"type":"stats","ts_ms":5,"memory_bytes":7,"gpu_busy":1}"#,

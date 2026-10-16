@@ -18,6 +18,8 @@ enum Asked {
     Result(JobResult),
     /// The run was cancelled or vanished while its job was still running: a sandbox restart.
     Restarted(String),
+    /// The sandbox's full final result (`run_state.result`).
+    Finished(Box<enzarb_proto::RunFinished>),
 }
 
 impl Executor {
@@ -69,8 +71,9 @@ impl Executor {
 
     /// Fallback for missing callbacks: ask the sandbox about runs past their deadline.
     ///
-    /// * terminal run: report it (a succeeded run reports `pushed: false`, because only the
-    ///   callback knows the head commit);
+    /// * terminal run with `run_state.result` (`feature::RUN_RESULTS`): ingest it like a push;
+    /// * other terminal run (older sandbox): report it (a succeeded run reports
+    ///   `pushed: false`, because only the callback knows the head commit);
     /// * run still going: cancel it and report a failure;
     /// * unknown run: report a failure;
     /// * sandbox unreachable: try again next sweep, and give up after `poll_give_up`.
@@ -92,6 +95,16 @@ impl Executor {
                 .ask_sandbox(id, waits, project.as_deref(), &input)
                 .await
             {
+                Ok(Asked::Finished(fin)) => {
+                    match self.ingest_run_finished(project.as_deref(), *fin).await {
+                        Ok(true) => reported += 1,
+                        Ok(false) => {}
+                        Err(e) => {
+                            tracing::warn!(job_id = id, error = %e, "deadline poll: result not recorded")
+                        }
+                    }
+                    continue;
+                }
                 Ok(Asked::Result(r)) => r,
                 Ok(Asked::Restarted(reason)) => {
                     match self.restart_outcome(id, attempt, &reason).await? {
@@ -166,6 +179,10 @@ impl Executor {
                 Asked::Restarted("the sandbox does not know this run".into()),
             ),
             Ok(Err(e)) => Err(JobError::transient(format!("run_status: {e}"))),
+            // A sandbox with `run_results` has the full result: ingest it like a push.
+            Ok(Ok(info)) if info.state.is_terminal() && info.result.is_some() => {
+                Ok(Asked::Finished(Box::new(info.result.expect("checked"))))
+            }
             Ok(Ok(info)) if matches!(info.state, RunPhase::Cancelled) => {
                 Ok(Asked::Restarted(format!(
                     "the agent run ended as Cancelled: {}",

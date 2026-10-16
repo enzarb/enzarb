@@ -20,7 +20,11 @@ export type ChannelKind = "pty" | "acp" | (string & {});
 /** Feature names advertised in `welcome.features`. */
 /** `ClaudeUserToken` is a client feature (`hello.features`), sent only by sandbox-proxy. */
 /** `Stats`: the server answers `stats_request` with `stats`; send the request only after seeing it. */
-export const Feature = { Acp: "acp", ClaudeUserToken: "claude_user_token", Stats: "stats", Prepare: "prepare" } as const;
+/**
+ * `RunResults`: the server pushes `run_finished` to the session that started or subscribed to a run,
+ * answers `run_status` with `run_state.result`, and accepts `run_start` without a callback.
+ */
+export const Feature = { Acp: "acp", ClaudeUserToken: "claude_user_token", Stats: "stats", RunResults: "run_results", Prepare: "prepare" } as const;
 /** Decoders keep at most this many features and drop any longer than `MAX_FEATURE_LEN` bytes. */
 export const MAX_FEATURES = 64;
 export const MAX_FEATURE_LEN = 64;
@@ -96,8 +100,10 @@ export interface RunStartFields {
   clone_token: string;
   prompt: string;
   timeout_secs: number;
-  callback_url: string;
-  callback_token: string;
+  /** Deprecated: omit when the server advertises `run_results` (old servers require it). */
+  callback_url?: string;
+  /** Deprecated: bearer token for `callback_url`; omit with it. */
+  callback_token?: string;
   /** Client-chosen channel for the transcript (DATA_JSON), or null. */
   log_channel: number | null;
   /** Optional read-only token for same-Project git deps; never for push. */
@@ -148,7 +154,7 @@ export interface Usage {
   cost_usd?: number | null;
 }
 
-/** Body POSTed to `callback_url` (not a CTRL message). */
+/** Final run result: body of `run_finished` and `run_state.result` (and, deprecated, of the callback POST). */
 export interface RunFinished {
   run_id: string;
   outcome: RunOutcome;
@@ -200,7 +206,9 @@ export type Ctrl =
   | ({ type: "run_start" } & RunStartFields)
   | { type: "run_accepted"; run_id: string; state: RunPhase; existing: boolean }
   | { type: "run_status"; run_id: string }
-  | { type: "run_state"; run_id: string; state: RunPhase; exit_code?: number | null; summary?: string | null; usage?: Usage | null }
+  | { type: "run_state"; run_id: string; state: RunPhase; exit_code?: number | null; summary?: string | null; usage?: Usage | null; result?: RunFinished | null }
+  | ({ type: "run_finished" } & RunFinished)
+  | { type: "run_subscribe"; run_ids: string[] }
   | { type: "run_cancel"; run_id: string }
   | { type: "credential_captured"; kind: CredentialKind; token?: SecretLike | null; legacy?: boolean | null }
   | { type: "credential_status" }
@@ -226,6 +234,8 @@ const TYPES: ReadonlySet<string> = new Set<CtrlType>([
   "run_accepted",
   "run_status",
   "run_state",
+  "run_finished",
+  "run_subscribe",
   "run_cancel",
   "credential_captured",
   "credential_status",

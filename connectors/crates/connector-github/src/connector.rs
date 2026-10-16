@@ -962,6 +962,29 @@ impl Connector for GitHubConnector {
         }
     }
 
+    async fn ahead_by(&self, repo: &RepoKey, base: &str, head: &str) -> Result<Option<u64>> {
+        #[derive(Deserialize)]
+        struct Comparison {
+            ahead_by: u64,
+        }
+        let path = format!(
+            "/repos/{}/compare/{}...{}",
+            repo.full_name(),
+            encode_path(base),
+            encode_path(head)
+        );
+        github_repo(repo)?;
+        self.token(repo).await?;
+        match self
+            .call(repo, "compare commits", Method::GET, &path, None)
+            .await
+        {
+            Ok(r) => Ok(Some(r.json::<Comparison>()?.ahead_by)),
+            Err(Error::NotFound(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     async fn get_file(&self, repo: &RepoKey, git_ref: &str, path: &str) -> Result<Option<String>> {
         #[derive(Deserialize)]
         struct Content {

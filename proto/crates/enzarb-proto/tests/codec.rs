@@ -156,6 +156,7 @@ fn usage_is_additive_and_unknown_stays_absent() {
         exit_code: None,
         summary: None,
         usage: None,
+        result: None,
     };
     assert!(!serde_json::to_string(&m).unwrap().contains("usage"));
 }
@@ -227,7 +228,7 @@ proptest! {
     fn ctrl_roundtrip(run_id in "[a-z0-9-]{1,12}", exit in proptest::option::of(any::<i32>()),
                       summary in proptest::option::of(".{0,30}"), ch in any::<u32>(), cols in any::<u16>(), rows in any::<u16>()) {
         for m in [
-            Ctrl::RunState { run_id: run_id.clone(), state: RunPhase::Failed, exit_code: exit, summary, usage: None },
+            Ctrl::RunState { run_id: run_id.clone(), state: RunPhase::Failed, exit_code: exit, summary, usage: None, result: None },
             Ctrl::Resize { channel: ch, cols, rows },
             Ctrl::Open { channel: ch, kind: ChannelKind::Pty, cols, rows, command: Some(vec![run_id.clone()]), repo: None, resume: None, claude_token: None },
         ] {
