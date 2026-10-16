@@ -221,6 +221,9 @@ async fn session_loop(state: Arc<AppState>, socket: WebSocket) {
                 features: {
                     let mut f = state.chats.features();
                     f.push(feature::STATS.to_string());
+                    if state.runs.delivers_results() {
+                        f.push(feature::RUN_RESULTS.to_string());
+                    }
                     f
                 },
                 ..ServerOptions::default()
@@ -279,6 +282,9 @@ async fn session_loop(state: Arc<AppState>, socket: WebSocket) {
             Event::Ctrl(Ctrl::RunStart(run)) => state.runs.start(&ctx, run).await,
             Event::Ctrl(Ctrl::RunStatus { run_id }) => state.runs.status(&ctx, &run_id).await,
             Event::Ctrl(Ctrl::RunCancel { run_id }) => state.runs.cancel(&ctx, &run_id).await,
+            Event::Ctrl(Ctrl::RunSubscribe { run_ids }) => {
+                state.runs.subscribe(&ctx, run_ids).await
+            }
             Event::Ctrl(Ctrl::CredentialStatus) => {
                 promotion.promote(&session, &state.config.claude_token_file);
                 // File-based: a per-request token cannot be known here.

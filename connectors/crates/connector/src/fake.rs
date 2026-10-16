@@ -80,6 +80,11 @@ pub enum Call {
         repo: RepoKey,
         branch: String,
     },
+    AheadBy {
+        repo: RepoKey,
+        base: String,
+        head: String,
+    },
     GetFile {
         repo: RepoKey,
         git_ref: String,
@@ -151,6 +156,7 @@ struct State {
     readiness: HashMap<WorkItemKey, MergeReadiness>,
     update_outcomes: VecDeque<UpdateBranchOutcome>,
     branch_heads: HashMap<(RepoKey, String), String>,
+    ahead: HashMap<(RepoKey, String, String), u64>,
     files: HashMap<(RepoKey, String, String), String>,
     dependencies: HashMap<WorkItemKey, Vec<WorkItemKey>>,
     seen_issues: HashMap<String, WorkItemKey>,
@@ -213,6 +219,13 @@ impl FakeConnector {
         self.st()
             .branch_heads
             .insert((repo, branch.to_string()), sha.to_string());
+    }
+
+    /// Seed what `ahead_by(repo, base, head)` returns (unseeded pairs are `None`).
+    pub fn set_ahead_by(&self, repo: RepoKey, base: &str, head: &str, n: u64) {
+        self.st()
+            .ahead
+            .insert((repo, base.to_string(), head.to_string()), n);
     }
 
     /// Seed the text `get_file` returns for `path` at `git_ref` (unseeded files are `None`).
@@ -626,6 +639,21 @@ impl Connector for FakeConnector {
             .branch_heads
             .get(&(repo.clone(), branch.to_string()))
             .cloned())
+    }
+
+    async fn ahead_by(&self, repo: &RepoKey, base: &str, head: &str) -> Result<Option<u64>> {
+        let mut st = self.st();
+        let call = Call::AheadBy {
+            repo: repo.clone(),
+            base: base.to_string(),
+            head: head.to_string(),
+        };
+        Self::take_failure(&mut st, call.clone())?;
+        Self::record(&mut st, call, false);
+        Ok(st
+            .ahead
+            .get(&(repo.clone(), base.to_string(), head.to_string()))
+            .copied())
     }
 
     async fn get_file(&self, repo: &RepoKey, git_ref: &str, path: &str) -> Result<Option<String>> {

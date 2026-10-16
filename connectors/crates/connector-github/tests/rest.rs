@@ -2234,3 +2234,58 @@ async fn get_file_rejects_unexpected_encoding() {
     .await;
     assert!(matches!(got.unwrap_err(), Error::Other(_)));
 }
+
+// ---- ahead_by ----
+
+async fn ahead_by_with(
+    base: &str,
+    head: &str,
+    resp: ResponseTemplate,
+) -> (Result<Option<u64>, Error>, Vec<String>) {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/repos/enzarb/enzarb-ui/compare/"))
+        .respond_with(resp)
+        .mount(&server)
+        .await;
+    let got = connector(&server).ahead_by(&repo(), base, head).await;
+    let paths = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.url.path().to_string())
+        .filter(|p| p.contains("/compare/"))
+        .collect();
+    (got, paths)
+}
+
+#[tokio::test]
+async fn ahead_by_reads_the_comparison() {
+    let (got, paths) = ahead_by_with(
+        "main",
+        "enzarb/issue-1",
+        ResponseTemplate::new(200)
+            .set_body_json(json!({"status": "ahead", "ahead_by": 3, "behind_by": 0})),
+    )
+    .await;
+    assert_eq!(got.unwrap(), Some(3));
+    assert_eq!(
+        paths,
+        vec!["/repos/enzarb/enzarb-ui/compare/main...enzarb/issue-1"]
+    );
+}
+
+#[tokio::test]
+async fn ahead_by_unknown_ref_is_none_and_errors_propagate() {
+    let (got, _) = ahead_by_with(
+        "main",
+        "gone",
+        ResponseTemplate::new(404).set_body_json(json!({"message": "Not Found"})),
+    )
+    .await;
+    assert_eq!(got.unwrap(), None);
+    let (got, _) = ahead_by_with("main", "x", ResponseTemplate::new(500)).await;
+    assert!(got.is_err());
+}

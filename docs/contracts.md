@@ -143,7 +143,7 @@ Secrets are redacted from all records.
 - `/workspace/.toolchains/`: mise data and cache, cargo, rustup.
 - `/workspace/repos/<slug>-<hash>/`: one clone per repo URL.
 - `/workspace/worktrees/run-<run_id>/`: the run's worktree. It starts from `origin/<branch>` if that exists, otherwise from `base_ref`. It is deleted when the run ends (the branch stays in the clone); at sandbox-init startup and before each run, `run-*` dirs of no active run are pruned.
-- `/workspace/.enzarb/runs/<run_id>/`: `state.json`, `request.json` (0600, clone token blanked), `transcript.jsonl`, and `callback.json` while a callback is pending.
+- `/workspace/.enzarb/runs/<run_id>/`: `state.json` (including the final `RunFinished` as `result` once the run ended, so `run_status` returns it after a restart), `request.json` (0600, clone token blanked), `transcript.jsonl`, and, for legacy requests that carry a `callback_url` only, `callback.json` while that callback is pending. A request without a callback never puts a token on disk.
 - `/workspace/worktrees/chat-<chat_id>/`: a chat's worktree (`chat_id` is 16 random hex chars), detached at `origin/<default branch>` of the chosen clone; commits go on the local branch `enzarb/chat-<chat_id>`. `run-*` pruning never touches it; a sweep removes chat worktrees with no live channel and no activity for `ENZARB_CHAT_RETENTION_DAYS`.
 - `/workspace/.enzarb/chats/<chat_id>/`: `meta.json` (`acp_session_id`, `repo`, `worktree`, `created`, `last_active`) and `transcript.jsonl` (0600; same record kinds as runs, plus `prompt`).
 - `/workspace/.enzarb/chat-home/.claude`: `CLAUDE_CONFIG_DIR` for chat agents, so `session/load` survives pod restarts.
@@ -218,9 +218,10 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
   - 10-byte big-endian header: type, flags (0), channel u32, length u32. Max payload 1 MiB, one frame per websocket binary message.
   - 256 KiB initial window per channel and direction. `CLOSE` is a half-close.
   - Optional fields are omitted when absent; `null` is accepted on decode.
-- **`run_state`** is sent in reply to `run_status` and also pushed whenever a run changes state.
+- **`run_state`** is sent in reply to `run_status` and also pushed whenever a run changes state. From a sandbox with `welcome.features` `run_results` it carries `result` (the full `RunFinished`) once the run is terminal.
+- **`run_finished`** (`Ctrl::RunFinished`, server → client, `run_results` only): the `RunFinished` body, pushed when a run ends to every open session that started it (or re-sent its `run_start`) or sent **`run_subscribe {run_ids}`** for it; a subscription to a run that already ended is answered at once, unknown ids are ignored. Receivers must be idempotent: it may arrive more than once and also as `run_state.result`. A result that does not fit one frame has long graph output strings cut and keeps only the tail of `summary` (where the result block is).
 - **`log_channel`:** a non-null value is a channel the client chooses. `run_accepted` implicitly opens it, and the server streams transcript lines on it as `DATA_JSON`.
-- **`RunFinished`** (`enzarb_proto::RunFinished`) is the callback's HTTP body, not a CTRL message. `exit_code` is optional because cancelled runs may have none.
+- **`RunFinished`** (`enzarb_proto::RunFinished`) is the body of `run_finished` and `run_state.result` (and of the deprecated callback). `exit_code` is optional because cancelled runs may have none. Its `branch`, `head_sha` and `pushed` are **not trusted**: workflows replaces them with the remote's (section 6, `docs/workflows.md` "Executors").
 - **`RunFinished.graph`** (`enzarb_proto::GraphResult`, optional, additive; old receivers ignore it and old senders omit it): `{stopped_at, outputs?, visits?}` for a segment run: the node the walk stopped at, and every node's latest output and visit count (including those the segment started with). A segment that stops at a `wait`, `action` or `end` node ends `succeeded`; one whose graph fails (a failed non-optional step on a plain edge, no matching condition, a visit limit without `on_limit`) ends `failed` with the reason as `summary` and `stopped_at` the node that ran last. Receivers must not trust it: workflows accepts `stopped_at` only if it is a kernel node reachable from the segment's start through sandbox nodes, ignores outputs of kernel nodes and never lowers a visit count. `summary` of a succeeded segment is the latest agent message, `pushed` is true when any agent node pushed.
 - **`usage`** (`enzarb_proto::Usage`, optional on `RunFinished` and `run_state`; additive, old decoders ignore it and old senders omit it): `{input_tokens?, output_tokens?, cache_read_input_tokens?, cache_creation_input_tokens?, models?: [string], cost_usd?}`. A field the agent did not report is **absent**, never 0. `cost_usd` is the cost as reported by Claude (`total_cost_usd`, or the `cost` of ACP `usage_update`), even on a subscription token; nothing computes or estimates it. The whole object is absent when the agent reported nothing. `input_tokens` is the **uncached** input only; the UI shows total input (`input_tokens` + `cache_read_input_tokens` + `cache_creation_input_tokens`) as "in".
 - **Idempotent:** a repeated `run_id` returns the existing run.
@@ -230,14 +231,16 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
   2. runs the ACP agent with the prompt (see Agent runs above);
   3. if `push`, pushes `branch` with `clone_token`.
 
-**Run finished callback:**
+**Run results (engine-pulled):** the workflows executor keeps one `executor` session per sandbox with accepted runs, subscribes to them, ingests `run_finished`, and every 15 s asks `run_status` for each accepted run and ingests `run_state.result` (covering dropped sessions and restarts). It sends `run_start` **without** `callback_url`/`callback_token` to sandboxes advertising `run_results`.
+
+**Run finished callback (deprecated, legacy sandboxes only):** `RunStart.callback_url`/`callback_token` are optional (`#[serde(default)]`, omitted when empty) and only sent to sandboxes without `run_results`; the endpoint is removed once every sandbox has rolled ([gaps](gaps.md) #20).
 - **Request:** `POST callback_url` with `Authorization: Bearer <callback_token>`. sandbox-init retries with backoff until it gets a 2xx.
   ```json
   { "run_id": "job-123", "outcome": "succeeded|failed|cancelled", "exit_code": 0,
     "summary": "<claude result text>", "branch": "enzarb/issue-42",
     "head_sha": "abc…", "pushed": true }
   ```
-- **Fallback:** the executor also polls `run_status` for jobs past their deadline.
+- **Fallback:** the executor also polls `run_status` for jobs past their deadline (with `result` from a `run_results` sandbox, ingested like a push).
 - **Comments:** the executor posts comments to GitHub. Sandboxes never get a GitHub token other than the repo-scoped `clone_token`.
 
 ## 5. Normalized events (`enzarb-connector` crate → `workflows.events.payload`)
@@ -416,7 +419,7 @@ Removed by ADR-0015. With path dependencies inside the monorepo, CI and Docker b
   - task: `reply | blocked`
   - A missing or invalid block → `Failed` (retryable).
 - **Engine events:**
-  - `JobSucceeded {job_id, kind, output}` / `JobFailed {job_id, kind, error}`, where `output` is the `RunFinished` fields (`summary, branch, head_sha, pushed`). Implement requires `pushed: true`.
+  - `JobSucceeded {job_id, kind, output}` / `JobFailed {job_id, kind, error}`, where `output` is the `RunFinished` fields (`summary, branch, head_sha, pushed`). Implement requires `pushed: true`. For pushing jobs (implement, address comments, resolve conflicts, segments with `push`) the executor sets `branch` to the job's own, and `pushed` true iff the remote branch (`Connector::branch_head`) is at the reported `head_sha` (when `head_sha` is not a full sha: iff the remote branch is ahead of `base_ref`, `Connector::ahead_by`, and `head_sha` becomes the remote head); if not pushed, segment node outputs' `pushed` are cleared too. A recovery run (`-r1`) keeps the original run's push facts (`jobs.input.recovery_push`) and contributes only its summary.
   - `TimerFired {job_id?}`: with a `job_id` it is a job deadline, otherwise the work item's `wake_at`.
 - **Handoff:** `StartWorkflow {key, workflow, event}`. The reducer inserts `event` (a synthesized `ChangeRequestOpened`) with dedupe key `handoff:<event.id>` in the same transaction.
 - **Branches:**

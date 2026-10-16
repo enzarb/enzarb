@@ -290,6 +290,8 @@ fn ctrl_allowed(m: &Ctrl) -> Result<(), &'static str> {
         Ctrl::RunAccepted { .. } => Err("run_accepted"),
         Ctrl::RunStatus { .. } => Err("run_status"),
         Ctrl::RunState { .. } => Err("run_state"),
+        Ctrl::RunFinished(_) => Err("run_finished"),
+        Ctrl::RunSubscribe { .. } => Err("run_subscribe"),
         Ctrl::RunCancel { .. } => Err("run_cancel"),
         Ctrl::CredentialCaptured { .. } => Err("credential_captured"),
         Ctrl::CredentialState { .. } => Err("credential_state"),
@@ -368,12 +370,16 @@ mod tests {
             Ctrl::RunStart(run_start()),
             Ctrl::RunCancel { run_id: "j".into() },
             Ctrl::RunStatus { run_id: "j".into() },
+            Ctrl::RunSubscribe {
+                run_ids: vec!["j".into()],
+            },
             Ctrl::RunState {
                 run_id: "j".into(),
                 state: RunPhase::Running,
                 exit_code: None,
                 summary: None,
                 usage: None,
+                result: None,
             },
             Ctrl::Hello {
                 versions: vec![1],

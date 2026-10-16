@@ -93,6 +93,7 @@ fn spawn_echo_server(session: Session, mut events: enzarb_proto::session::Events
                                     input_tokens: Some(7),
                                     ..Default::default()
                                 }),
+                                result: None,
                             })
                             .unwrap();
                     }
@@ -539,6 +540,7 @@ async fn error_run_id_beats_oldest_pending() {
                             exit_code: None,
                             summary: None,
                             usage: None,
+                            result: None,
                         })
                         .unwrap();
                 }
@@ -908,4 +910,52 @@ async fn dropping_last_session_closes_the_connection() {
         SessionEnd::PeerClosed
     );
     assert!(se.next().await.is_none());
+}
+
+#[tokio::test]
+async fn run_subscribe_and_run_finished_and_run_state_result() {
+    let ((client, mut ce), (server, mut se)) = memory::session_pair(ClientKind::Executor).await;
+    let fin = enzarb_proto::RunFinished {
+        run_id: "a".into(),
+        outcome: enzarb_proto::RunOutcome::Succeeded,
+        exit_code: Some(0),
+        summary: "ok".into(),
+        branch: "b".into(),
+        head_sha: "abc".into(),
+        pushed: true,
+        usage: None,
+        graph: None,
+    };
+    let f2 = fin.clone();
+    tokio::spawn(async move {
+        while let Some(ev) = se.next().await {
+            match ev {
+                Event::Ctrl(Ctrl::RunSubscribe { run_ids }) => {
+                    assert_eq!(run_ids, vec!["a".to_string()]);
+                    server.send_run_finished(&f2).unwrap();
+                }
+                Event::Ctrl(Ctrl::RunStatus { run_id }) => {
+                    server
+                        .send_run_state(&enzarb_proto::session::RunInfo {
+                            run_id,
+                            state: RunPhase::Succeeded,
+                            exit_code: Some(0),
+                            summary: Some("ok".into()),
+                            usage: None,
+                            result: Some(f2.clone()),
+                        })
+                        .unwrap();
+                }
+                _ => {}
+            }
+        }
+    });
+    client.run_subscribe(vec!["a".into()]).unwrap();
+    let ev = timeout(T, ce.next()).await.unwrap().unwrap();
+    let Event::Ctrl(Ctrl::RunFinished(got)) = ev else {
+        panic!("expected run_finished")
+    };
+    assert_eq!(got, fin);
+    let st = timeout(T, client.run_status("a")).await.unwrap().unwrap();
+    assert_eq!(st.result, Some(fin));
 }

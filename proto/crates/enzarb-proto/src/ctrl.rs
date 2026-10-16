@@ -39,6 +39,14 @@ pub mod feature {
     /// The server answers `stats_request` with `stats`. Clients must only
     /// send `stats_request` after seeing it (an old server ignores the request).
     pub const STATS: &str = "stats";
+    /// The server delivers run results over the mux (ADR-0008 amendment of
+    /// 2026-10-15): it pushes `run_finished` to the session that started a
+    /// run or sent `run_subscribe` for it, answers `run_status` for a
+    /// finished run with `run_state.result`, keeps that result across
+    /// restarts, and accepts `run_start` without `callback_url`/
+    /// `callback_token` (then it makes no HTTP callback). Clients must only
+    /// omit the callback or send `run_subscribe` after seeing it.
+    pub const RUN_RESULTS: &str = "run_results";
     /// Client feature (`hello.features`): the client stores per-user Claude
     /// tokens from `credential_captured.token` and never relays them, and acks
     /// `legacy` captures. Only sandbox-proxy sends it.
@@ -195,7 +203,14 @@ pub struct RunStart {
     pub clone_token: String,
     pub prompt: String,
     pub timeout_secs: u64,
+    /// **Deprecated.** URL the sandbox POSTs [`RunFinished`] to. Empty (and
+    /// omitted on the wire) when the client gets results over the mux
+    /// ([`feature::RUN_RESULTS`]); only send it empty to such servers, since
+    /// old servers require it. Old payloads always carry it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub callback_url: String,
+    /// **Deprecated.** Bearer token for `callback_url`; empty with it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub callback_token: String,
     /// Client-allocated channel on which the server streams the transcript as
     /// `DATA_JSON`, or `null` for none. Serialized as `null` when absent.
@@ -349,7 +364,9 @@ impl Usage {
     }
 }
 
-/// Body POSTed to `callback_url` when a run ends. Not a CTRL message.
+/// The final result of a run: the body of the `run_finished` CTRL message
+/// and of `run_state.result`, and (deprecated) the body POSTed to
+/// `callback_url`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunFinished {
     pub run_id: String,
@@ -482,6 +499,21 @@ pub enum Ctrl {
         /// Token usage and cost of the run, once known. Omitted when absent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usage: Option<Usage>,
+        /// The full final result, once the run is terminal (only from servers
+        /// with [`feature::RUN_RESULTS`]). Omitted when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<RunFinished>,
+    },
+    /// Server -> client, [`feature::RUN_RESULTS`] only: a run ended. Sent to
+    /// every open session that started the run or subscribed to it. The
+    /// receiver must treat it idempotently (it may arrive more than once, and
+    /// also as `run_state.result`).
+    RunFinished(RunFinished),
+    /// Client -> server, [`feature::RUN_RESULTS`] only: deliver `run_finished`
+    /// for these runs on this session. A run that already ended is delivered
+    /// at once; an unknown run id is ignored. No reply.
+    RunSubscribe {
+        run_ids: Vec<String>,
     },
     RunCancel {
         run_id: String,
