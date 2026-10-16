@@ -1842,6 +1842,7 @@ spec:
         - { role: enzarb_workflows, privileges: [USAGE] }
         - { role: enzarb_connectors, privileges: [USAGE] }
         - { role: enzarb_ui, privileges: [USAGE] }
+        - { role: enzarb_sandbox_proxy, privileges: [USAGE] }
     - name: connectors
       owner: enzarb_connectors_owner
       grants:
