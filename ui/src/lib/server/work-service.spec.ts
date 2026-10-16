@@ -651,6 +651,23 @@ describe('workService needs-you queue', () => {
 		]);
 	});
 
+	it('accepts a comment (a wait button) on a waiting graph task, end to end', async () => {
+		const id = await seedItem(sql, {
+			key: 'github:acme/web#90',
+			project: 'web',
+			workflow: 'graph:issue',
+			state: 'Waiting',
+			stateData: { wait: { waiting_on: 'human', reason: 'awaiting_start' } }
+		});
+		const svc = workService(sql, ['web']);
+		const actor = { login: 'alice', id: 7 };
+		const event = await svc.submitAction(id, actor, 'comment', { body: '/plan' });
+		expect(event).not.toBeNull();
+		const [row] = await sql<{ type: string; body: string }[]>`
+			SELECT type, payload->'data'->>'body' AS body FROM workflows.events WHERE id = ${event!}`;
+		expect(row).toEqual({ type: 'CommentAdded', body: '/plan' });
+	});
+
 	it('returns a graph task plan from state_data.plan', async () => {
 		const id = await seedItem(sql, {
 			key: 'github:acme/p#2',

@@ -209,7 +209,10 @@ export function availableActions(state: string, stateData?: unknown): WorkAction
  * `availableActions`, which lists the buttons of the task page.
  */
 export const canComment = (workflow: string, state: string): boolean =>
-	workflow === 'issue' && (state === 'AwaitingApproval' || state === 'AwaitingAnswers');
+	// A graph task (ADR-0020) takes comments at any wait; the engine decides whether the wait
+	// accepts it (its `events`, write access) and the wait's declared buttons post commands.
+	(workflow.startsWith('graph:') && state === 'Waiting') ||
+	(workflow === 'issue' && (state === 'AwaitingApproval' || state === 'AwaitingAnswers'));
 
 export type StateTone = 'active' | 'waiting' | 'done' | 'failed' | 'ready';
 

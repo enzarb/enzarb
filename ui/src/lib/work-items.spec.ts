@@ -578,6 +578,10 @@ describe('comment', () => {
 		expect(canComment('issue', 'AwaitingApproval')).toBe(true);
 		expect(canComment('issue', 'AwaitingAnswers')).toBe(true);
 		expect(canComment('issue', 'Planning')).toBe(false);
+		expect(canComment('graph:issue', 'Waiting')).toBe(true);
+		expect(canComment('graph:change_request', 'Waiting')).toBe(true);
+		expect(canComment('graph:issue', 'Running')).toBe(false);
+		expect(canComment('graph:issue', 'Done')).toBe(false);
 		expect(canComment('change_request', 'AwaitingApproval')).toBe(false);
 		expect(availableActions('AwaitingApproval')).not.toContain('comment');
 	});
