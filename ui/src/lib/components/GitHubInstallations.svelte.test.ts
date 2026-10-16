@@ -1,22 +1,22 @@
 import { page } from 'vitest/browser';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import GitHubInstallations from './GitHubInstallations.svelte';
 
 const base = {
 	installUrl: 'https://github.com/apps/my-app/installations/new',
-	refreshHref: '/login/github?refresh=1&return=%2Fsettings'
+	refresh: async () => {}
 };
 
 describe('GitHubInstallations', () => {
-	it('links to the install page in a new tab and to the refresh flow', async () => {
-		render(GitHubInstallations, { ...base, installations: [], fetchedAt: null });
+	it('links to the install page in a new tab and refreshes in place', async () => {
+		const refresh = vi.fn(async () => {});
+		render(GitHubInstallations, { ...base, refresh, installations: [], fetchedAt: null });
 		const install = page.getByRole('link', { name: /Install \/ configure the GitHub App/ });
 		await expect.element(install).toHaveAttribute('href', base.installUrl);
 		await expect.element(install).toHaveAttribute('target', '_blank');
-		await expect
-			.element(page.getByRole('link', { name: 'Refresh repositories' }))
-			.toHaveAttribute('href', base.refreshHref);
+		await page.getByRole('button', { name: 'Refresh repositories' }).click();
+		expect(refresh).toHaveBeenCalledOnce();
 	});
 
 	it('lists accounts with repository counts', async () => {

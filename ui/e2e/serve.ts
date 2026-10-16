@@ -16,14 +16,7 @@ import {
 	seedTask
 } from '../src/lib/server/testdata/engine-fixture.ts';
 import { SESSION_COOKIE, createSession, upsertUser } from '../src/lib/server/auth.ts';
-import {
-	E2E_PORT,
-	E2E_PROJECT,
-	E2E_REPOS,
-	E2E_USER,
-	SERVER_ENV,
-	STORAGE_STATE
-} from './constants.ts';
+import { E2E_PORT, E2E_PROJECT, E2E_USER, SERVER_ENV, STORAGE_STATE } from './constants.ts';
 
 const root = path.resolve(import.meta.dirname, '..');
 
@@ -73,13 +66,6 @@ try {
 	// The user's Claude token (ciphertext is opaque to the UI; only presence is read).
 	await sql`INSERT INTO app.claude_credentials (owner, key_id, ciphertext)
 		VALUES (${E2E_USER}, 'e2e', '\\x00'::bytea) ON CONFLICT (owner) DO NOTHING`;
-	// The user's GitHub repository snapshot: the project's repository plus one more to add.
-	for (const repo of E2E_REPOS) {
-		await sql`INSERT INTO app.user_repositories
-			(user_id, repo, installation_id, account_login, private, default_branch, fetched_at)
-			VALUES (${userId}, ${repo}, 1, 'e2e-org', false, 'main', now())
-			ON CONFLICT DO NOTHING`;
-	}
 	const { token, session } = await createSession(sql, userId);
 	const state = {
 		cookies: [

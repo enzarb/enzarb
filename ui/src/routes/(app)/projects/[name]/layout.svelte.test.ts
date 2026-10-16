@@ -24,6 +24,7 @@ vi.mock('#lib/projects.remote.ts', () => ({
 	setSandboxResources: vi.fn(async () => {}),
 	setDisplayName: vi.fn(async () => ({ ok: true })),
 	setRepositories: vi.fn(async () => ({ ok: true })),
+	refreshRepositoryChoices: vi.fn(async () => {}),
 	repositoryChoices: () => ({
 		current: { repositories: [], taken: {}, problem: null },
 		refresh: async () => {}

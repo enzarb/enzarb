@@ -1,8 +1,9 @@
 import * as v from 'valibot';
 import { MAX_NAME_LENGTH, NameSchema } from './projects.ts';
 
-/** How long a repository snapshot may authorize Project creation. */
-export const SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+/** Picker copy: what the repository list holds. */
+export const REPOSITORY_LIST_HELP =
+	'The list shows repositories the enzarb GitHub App can access where you have write access.';
 /** Upper bound for one bulk request. */
 export const MAX_PROJECTS_PER_REQUEST = 50;
 
@@ -26,8 +27,7 @@ export type PlanResult =
 	| { name: string; status: 'failed'; repositories: string[]; reason: string };
 
 export type CreateProjectsOutcome =
-	| { ok: true; results: PlanResult[] }
-	| { ok: false; code: 'no-snapshot' | 'stale-snapshot'; message: string };
+	{ ok: true; results: PlanResult[] } | { ok: false; code: 'unavailable'; message: string };
 
 /**
  * A DNS label from free text: lowercase `[a-z0-9-]`, no leading or trailing hyphen, at most

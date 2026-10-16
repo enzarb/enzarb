@@ -1,6 +1,6 @@
 import type { Project, Repository } from '#lib/project-types.ts';
 import {
-	SNAPSHOT_MAX_AGE_MS,
+	REPOSITORY_LIST_HELP,
 	validateProjectName,
 	type CreateProjectsOutcome,
 	type PlanResult,
@@ -9,27 +9,21 @@ import {
 } from '#lib/onboarding.ts';
 import { DISPLAY_NAME_MAX, buildProject, normalizeRepoKey } from '#lib/projects.ts';
 import { KubeError, type ProjectStore } from './kube.ts';
-import type { UserRepository, UserRepositorySnapshot } from './user-repositories.ts';
+import type { UserRepository, UserRepositoryList } from './user-repositories.ts';
 
-/** Why a snapshot cannot be used for selecting repositories, or null when it can. */
-export function snapshotProblem(
-	snapshot: UserRepositorySnapshot,
-	now: Date
-): { code: 'no-snapshot' | 'stale-snapshot'; message: string } | null {
-	if (!snapshot.fetchedAt || snapshot.repositories.length === 0) {
+/**
+ * Live authorization for one repository key at the moment it is added to a Project: the
+ * repository (URL and default branch come from GitHub) or null when the user may not add it.
+ */
+export type CheckRepository = (key: string) => Promise<UserRepository | null>;
+
+/** Why the list offers nothing to select, or null when it offers something. */
+export function listProblem(list: UserRepositoryList): { code: 'empty'; message: string } | null {
+	if (list.repositories.length === 0)
 		return {
-			code: 'no-snapshot',
-			message:
-				'No repositories are available to you yet. Install the GitHub App and refresh the repository list.'
+			code: 'empty',
+			message: `No repositories are available to you. ${REPOSITORY_LIST_HELP}`
 		};
-	}
-	if (now.getTime() - snapshot.fetchedAt.getTime() > SNAPSHOT_MAX_AGE_MS) {
-		return {
-			code: 'stale-snapshot',
-			message:
-				'Your repository list is more than 24 hours old. Refresh it from GitHub, then try again.'
-		};
-	}
 	return null;
 }
 
@@ -45,20 +39,15 @@ export function repoOwners(projects: Project[]): Map<string, Project> {
 	return out;
 }
 
-/** What the new-project page offers: the fresh snapshot plus which repos are taken (own Projects only). */
-export function repositoryChoices(
-	snapshot: UserRepositorySnapshot,
-	projects: Project[],
-	owner: string,
-	now = new Date()
-) {
+/** What the pickers offer: the live list plus which repos are taken (own Projects only). */
+export function repositoryChoices(list: UserRepositoryList, projects: Project[], owner: string) {
 	const taken: Record<string, string> = {};
 	const projectNames = projects.filter((p) => p.spec.owner === owner).map((p) => p.metadata.name);
 	for (const [key, p] of repoOwners(projects)) {
 		if (p.spec.owner === owner) taken[key] = p.metadata.name;
 	}
 	return {
-		repositories: snapshot.repositories.map((r) => ({
+		repositories: list.repositories.map((r) => ({
 			repo: r.repo,
 			accountLogin: r.accountLogin,
 			private: r.private,
@@ -66,7 +55,8 @@ export function repositoryChoices(
 		})),
 		taken,
 		projectNames,
-		problem: snapshotProblem(snapshot, now)
+		fetchedAt: list.fetchedAt.toISOString(),
+		problem: listProblem(list)
 	};
 }
 
@@ -74,9 +64,8 @@ export interface CreateProjectsDeps {
 	store: ProjectStore;
 	/** GitHub login of the requesting user; becomes `spec.owner`. */
 	owner: string;
-	/** The requesting user's own snapshot, read by the caller. */
-	snapshot: UserRepositorySnapshot;
-	now?: Date;
+	/** Live access check for the requesting user. */
+	check: CheckRepository;
 }
 
 function failed(plan: ProjectPlan, reason: string): PlanResult {
@@ -87,25 +76,21 @@ function failed(plan: ProjectPlan, reason: string): PlanResult {
  * Creates the planned Projects one by one and reports each outcome; a failure never stops the
  * others.
  *
- * Authorization: the browser only names repository keys. Each key must match a row of the
- * requester's snapshot, which must be younger than 24 hours; the stored URL and default branch
- * are built here from that row. The cluster is re-listed right before every create, so a
- * repository or name taken a moment ago (by this request or another) is refused.
+ * Authorization: the browser only names repository keys. Each key is checked live with GitHub
+ * (`deps.check`: the App can access it and the requester has write access now); the stored URL
+ * and default branch come from that answer. The cluster is re-listed right before every create, so
+ * a repository or name taken a moment ago (by this request or another) is refused.
  */
 export async function createProjects(
 	deps: CreateProjectsDeps,
 	plans: ProjectPlan[],
 	triggers: Triggers
 ): Promise<CreateProjectsOutcome> {
-	const { store, owner, snapshot } = deps;
-	const problem = snapshotProblem(snapshot, deps.now ?? new Date());
-	if (problem) return { ok: false, ...problem };
-
-	const known = new Map<string, UserRepository>(snapshot.repositories.map((r) => [r.repo, r]));
+	const { store, owner, check } = deps;
 	const results: PlanResult[] = [];
 	for (const rawPlan of plans) {
 		const plan = { ...rawPlan, name: rawPlan.name.trim() };
-		results.push(await createOne(store, owner, known, plan, triggers));
+		results.push(await createOne(store, owner, check, plan, triggers));
 	}
 	return { ok: true, results };
 }
@@ -126,7 +111,7 @@ function exclusive<T>(fn: () => Promise<T>): Promise<T> {
 async function createOne(
 	store: ProjectStore,
 	owner: string,
-	known: Map<string, UserRepository>,
+	check: CheckRepository,
 	plan: ProjectPlan,
 	triggers: Triggers
 ): Promise<PlanResult> {
@@ -138,7 +123,7 @@ async function createOne(
 
 	const repositories: Repository[] = [];
 	for (const key of plan.repositories) {
-		const row = known.get(key);
+		const row = await check(key);
 		if (!row)
 			return failed(plan, `${key.replace(/^github:/, '').slice(0, 100)} is not available to you`);
 		repositories.push({
@@ -216,8 +201,8 @@ export async function setDisplayName(
 export interface SetRepositoriesDeps {
 	store: ProjectStore;
 	owner: string;
-	snapshot: UserRepositorySnapshot;
-	now?: Date;
+	/** Live access check for the requesting user (added repositories only). */
+	check: CheckRepository;
 	/** Cancels the open work items of repositories that left the Project (best effort). */
 	work?: {
 		cancelForRemovedRepos(project: string, removedKeys: string[]): Promise<unknown>;
@@ -228,7 +213,7 @@ export type SetRepositoriesOutcome =
 	| { ok: true; repositories: string[] }
 	| {
 			ok: false;
-			code: 'not-found' | 'invalid' | 'no-snapshot' | 'stale-snapshot';
+			code: 'not-found' | 'invalid';
 			message: string;
 	  };
 
@@ -236,9 +221,9 @@ export type SetRepositoriesOutcome =
  * Replaces a Project's `spec.repositories` with the given repository keys. Owner only.
  *
  * Authorization matches `createProjects`: the browser only names keys. A key already in the
- * Project keeps its stored entry (so archived repositories, no longer in the snapshot, can still
- * be kept or removed); every added key must match a row of the caller's fresh snapshot, from
- * which the URL and default branch are built. A key held by any other Project is refused.
+ * Project keeps its stored entry (so archived repositories, no longer listed, can still be kept
+ * or removed); every added key is checked live with GitHub (`deps.check`), whose answer gives the
+ * URL and default branch. A key held by any other Project is refused.
  * No restart: repositories are not part of the sandbox pod (see contracts.md).
  */
 export async function setRepositories(
@@ -246,7 +231,7 @@ export async function setRepositories(
 	name: string,
 	keys: string[]
 ): Promise<SetRepositoriesOutcome> {
-	const { store, owner, snapshot } = deps;
+	const { store, owner, check } = deps;
 	const wanted = keys.map((k) => k.trim().toLowerCase());
 	if (wanted.length === 0)
 		return { ok: false, code: 'invalid', message: 'Select at least one repository' };
@@ -263,12 +248,6 @@ export async function setRepositories(
 			const key = normalizeRepoKey(r.connector, r.url);
 			if (key) current.set(key, r);
 		}
-		const added = wanted.filter((k) => !current.has(k));
-		if (added.length > 0) {
-			const problem = snapshotProblem(snapshot, deps.now ?? new Date());
-			if (problem) return { ok: false, ...problem };
-		}
-		const known = new Map(snapshot.repositories.map((r) => [r.repo.toLowerCase(), r]));
 		const taken = repoOwners(await store.list());
 		const repositories: Repository[] = [];
 		for (const key of wanted) {
@@ -278,13 +257,13 @@ export async function setRepositories(
 				continue;
 			}
 			const shown = key.replace(/^github:/, '').slice(0, 100);
-			const row = known.get(key);
-			if (!row) return { ok: false, code: 'invalid', message: `${shown} is not available to you` };
 			const holder = taken.get(key);
 			if (holder && holder.metadata.name !== name) {
 				const where = holder.spec.owner === owner ? `"${holder.metadata.name}"` : 'another project';
 				return { ok: false, code: 'invalid', message: `${shown} is already in ${where}` };
 			}
+			const row = await check(key);
+			if (!row) return { ok: false, code: 'invalid', message: `${shown} is not available to you` };
 			repositories.push({
 				url: `https://github.com/${row.repo.replace(/^github:/, '')}`,
 				connector: 'github',

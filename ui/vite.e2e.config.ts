@@ -13,6 +13,10 @@ export default mergeConfig(
 				{
 					find: /^(#lib\/server|\.)\/kube\.ts$/,
 					replacement: path.resolve(import.meta.dirname, 'e2e/stubs/kube.ts')
+				},
+				{
+					find: /^(#lib\/server|\.)\/repo-access\.ts$/,
+					replacement: path.resolve(import.meta.dirname, 'e2e/stubs/repo-access.ts')
 				}
 			]
 		}

@@ -2,7 +2,7 @@ export const E2E_PORT = 5273;
 export const E2E_ORIGIN = `http://localhost:${E2E_PORT}`;
 export const E2E_USER = 'e2e-user';
 export const E2E_PROJECT = 'e2e-project';
-/** The e2e user's repository snapshot; the project holds the first. */
+/** The e2e user's writable repositories (e2e/stubs/repo-access.ts); the project holds the first. */
 export const E2E_REPOS = ['github:e2e-org/app', 'github:e2e-org/lib'];
 export const STORAGE_STATE = 'test-results/.auth/state.json';
 

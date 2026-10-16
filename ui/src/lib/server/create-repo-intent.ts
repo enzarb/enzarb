@@ -3,15 +3,15 @@ import { SignJWT, jwtVerify } from 'jose';
 import type { Project } from '#lib/project-types.ts';
 import { sameOwner, validateDescription, validateRepoName } from '#lib/repo-names.ts';
 import { safeReturnPath } from './return-path.ts';
-import { repoOwners, snapshotProblem } from './project-onboarding.ts';
-import type { UserRepositorySnapshot } from './user-repositories.ts';
+import { listProblem, repoOwners } from './project-onboarding.ts';
+import type { UserRepositoryList } from './user-repositories.ts';
 
 export const INTENT_TTL_SECONDS = 10 * 60;
 const AUDIENCE = 'enzarb-create-repo-intent';
 
 /** What the user asked for, validated and signed by `startCreateRepo`. Never holds a token. */
 export interface CreateRepoIntent {
-	/** Canonicalised to the snapshot's spelling of the account login. */
+	/** Canonicalised to the repository list's spelling of the account login. */
 	owner: string;
 	name: string;
 	visibility: 'private' | 'public';
@@ -104,22 +104,22 @@ export interface CreateRepoRequest {
 }
 
 /**
- * Validates a create-repository request against the user's own snapshot and the cluster's
- * Projects. The owner is never taken as typed: it must be an `accountLogin` of the snapshot.
+ * Validates a create-repository request against the user's live repository list and the cluster's
+ * Projects. The owner is never taken as typed: it must be an `accountLogin` of that list.
  */
 export function buildIntent(
 	deps: {
 		user: { id: number; githubId: number; login: string };
-		snapshot: UserRepositorySnapshot;
+		/** The user's live repository list. */
+		list: UserRepositoryList;
 		projects: Project[];
 		returnPath: string;
-		now?: Date;
 	},
 	input: CreateRepoRequest
 ): { ok: true; intent: CreateRepoIntent } | { ok: false; message: string } {
-	const problem = snapshotProblem(deps.snapshot, deps.now ?? new Date());
+	const problem = listProblem(deps.list);
 	if (problem) return { ok: false, message: problem.message };
-	const account = deps.snapshot.repositories.find((r) => sameOwner(r.accountLogin, input.owner));
+	const account = deps.list.repositories.find((r) => sameOwner(r.accountLogin, input.owner));
 	if (!account) return { ok: false, message: 'Choose one of your GitHub App installations' };
 	const name = input.name.trim();
 	const bad = validateRepoName(name) ?? validateDescription(input.description);

@@ -1,19 +1,21 @@
 <script lang="ts">
+	import { REPOSITORY_LIST_HELP } from '#lib/onboarding.ts';
+	import RefreshRepositoriesButton from './RefreshRepositoriesButton.svelte';
 	import KeyValueList from './ui/KeyValueList.svelte';
 	import LinkButton from './ui/LinkButton.svelte';
 	import Notice from './ui/Notice.svelte';
 
-	/** GitHub App installations reachable by the user, with the install and refresh actions. */
+	/** GitHub App installations holding repositories the user can write to, with install and refresh. */
 	let {
 		installUrl,
-		refreshHref,
+		refresh,
 		installations,
 		fetchedAt
 	}: {
 		installUrl: string;
-		refreshHref: string;
+		refresh: () => Promise<void>;
 		installations: { accountLogin: string; installationId: number; repositoryCount: number }[];
-		/** ISO time of the snapshot, or null when there is none. */
+		/** ISO time GitHub was last asked, or null when it could not be. */
 		fetchedAt: string | null;
 	} = $props();
 
@@ -23,7 +25,7 @@
 
 <section class="ez-stack" aria-labelledby="gh-installations">
 	<h2 id="gh-installations">GitHub App installations</h2>
-	<KeyValueList items={[{ term: 'Repositories last refreshed', value: fetchedAt ?? 'Never' }]} />
+	<KeyValueList items={[{ term: 'Repositories last read', value: fetchedAt ?? 'Never' }]} />
 	{#if installations.length === 0}
 		<p>No installations found. Install the GitHub App on an account or organization.</p>
 	{:else}
@@ -36,15 +38,13 @@
 		</ul>
 	{/if}
 	<Notice tone="info" title="Adding organizations or repositories">
-		Install or configure the GitHub App on GitHub, then choose "Refresh repositories". New
-		repositories only appear here after a refresh. The refreshed list also bounds which repositories
-		can go into a new Project (for 24 hours). Organizations with OAuth-app restrictions may not
-		appear in this list, so not every installation is necessarily shown.
+		{REPOSITORY_LIST_HELP} The list is read live from GitHub (kept for about a minute); install or configure
+		the GitHub App on GitHub, then choose "Refresh repositories" to see a change right away.
 		{#snippet actions()}
 			<LinkButton variant="primary" href={installUrl} target="_blank" rel="noopener noreferrer">
 				Install / configure the GitHub App<span class="ez-sr-only"> (opens in a new tab)</span>
 			</LinkButton>
-			<LinkButton href={refreshHref} data-sveltekit-reload>Refresh repositories</LinkButton>
+			<RefreshRepositoriesButton {refresh} />
 		{/snippet}
 	</Notice>
 </section>

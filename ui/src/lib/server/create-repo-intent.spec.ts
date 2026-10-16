@@ -9,14 +9,14 @@ import {
 	verifyIntent,
 	type CreateRepoIntent
 } from './create-repo-intent.ts';
-import type { UserRepositorySnapshot } from './user-repositories.ts';
+import type { UserRepositoryList } from './user-repositories.ts';
 
 const SECRET = 'test-secret';
 const NOW = new Date('2026-06-10T12:00:00Z');
 const nowSeconds = Math.floor(NOW.getTime() / 1000);
 
-const snapshot: UserRepositorySnapshot = {
-	fetchedAt: new Date(NOW.getTime() - 3600_000),
+const list: UserRepositoryList = {
+	fetchedAt: NOW,
 	repositories: [
 		{
 			repo: 'github:acme/web',
@@ -54,10 +54,7 @@ const projectHolding = (url: string): Project => ({
 	}
 });
 const build = (over: Partial<typeof request> = {}, projects: Project[] = []) =>
-	buildIntent(
-		{ user, snapshot, projects, returnPath: '/projects/new', now: NOW },
-		{ ...request, ...over }
-	);
+	buildIntent({ user, list, projects, returnPath: '/projects/new' }, { ...request, ...over });
 
 describe('buildIntent (startCreateRepo validation)', () => {
 	it('accepts an owner that differs only in case and canonicalises it', () => {
@@ -84,17 +81,14 @@ describe('buildIntent (startCreateRepo validation)', () => {
 		const r = build({ name: 'Web' }, [projectHolding('https://github.com/acme/web')]);
 		expect(r).toMatchObject({ ok: false });
 	});
-	it('refuses a stale snapshot', () => {
-		const stale = { ...snapshot, fetchedAt: new Date(NOW.getTime() - 48 * 3600_000) };
-		const r = buildIntent(
-			{ user, snapshot: stale, projects: [], returnPath: '/', now: NOW },
-			request
-		);
+	it('refuses an empty repository list', () => {
+		const empty = { ...list, repositories: [] };
+		const r = buildIntent({ user, list: empty, projects: [], returnPath: '/' }, request);
 		expect(r.ok).toBe(false);
 	});
 	it('runs the return path through safeReturnPath', () => {
 		const r = buildIntent(
-			{ user, snapshot, projects: [], returnPath: 'https://evil.example', now: NOW },
+			{ user, list, projects: [], returnPath: 'https://evil.example' },
 			request
 		);
 		expect(r.ok && r.intent.ret).toBe('/');

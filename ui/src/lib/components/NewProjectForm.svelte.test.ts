@@ -19,10 +19,14 @@ const choices = (over: Partial<RepositoryChoices> = {}): RepositoryChoices => ({
 
 const ok: CreateProjectsOutcome = { ok: true, results: [] };
 
-function setup(over: Partial<RepositoryChoices> = {}, create = vi.fn(async () => ok)) {
+function setup(
+	over: Partial<RepositoryChoices> = {},
+	create = vi.fn(async () => ok),
+	refresh = vi.fn(async () => {})
+) {
 	render(NewProjectForm, {
 		choices: choices(over),
-		refreshHref: '/login/github?refresh=1',
+		refresh,
 		create
 	});
 	return create;
@@ -161,34 +165,37 @@ describe('NewProjectForm', () => {
 		await expect.element(submit).toBeEnabled();
 	});
 
-	it('shows a refresh link and blocks the form when the snapshot is stale', async () => {
-		setup({
-			problem: {
-				code: 'stale-snapshot',
-				message: 'Your repository list is more than 24 hours old.'
-			}
-		});
-		await expect.element(page.getByRole('alert')).toHaveTextContent('more than 24 hours old');
+	it('blocks the form when the list is empty and explains what it shows', async () => {
+		setup({ problem: { code: 'empty', message: 'No repositories are available to you.' } });
 		await expect
-			.element(page.getByRole('link', { name: 'Refresh repositories' }))
-			.toHaveAttribute('href', '/login/github?refresh=1');
+			.element(page.getByRole('alert'))
+			.toHaveTextContent('No repositories are available');
+		await expect
+			.element(
+				page.getByText(/repositories the enzarb GitHub App can access where you have write access/)
+			)
+			.toBeVisible();
 		await expect.element(page.getByRole('button', { name: 'Create project' })).toBeDisabled();
 	});
 
-	it('shows the server’s refusal with a refresh link', async () => {
+	it('Refresh re-reads the list without leaving the page', async () => {
+		const refresh = vi.fn(async () => {});
+		setup({}, undefined, refresh);
+		await page.getByRole('button', { name: 'Refresh repositories' }).click();
+		expect(refresh).toHaveBeenCalledOnce();
+	});
+
+	it('shows the server’s refusal', async () => {
 		const create = vi.fn(async (): Promise<CreateProjectsOutcome> => ({
 			ok: false,
-			code: 'stale-snapshot',
-			message: 'Refresh it.'
+			code: 'unavailable',
+			message: 'Not configured.'
 		}));
 		setup({}, create);
 		await pick(/acme\/web/);
 		await page.getByRole('textbox', { name: 'Project name' }).fill('x');
 		await page.getByRole('button', { name: 'Create project' }).click();
-		await expect.element(page.getByRole('alert')).toHaveTextContent('Refresh it.');
-		await expect
-			.element(page.getByRole('link', { name: 'Refresh repositories' }))
-			.toBeInTheDocument();
+		await expect.element(page.getByRole('alert')).toHaveTextContent('Not configured.');
 	});
 
 	it('keeps the form and selections and shows reasons when every project failed', async () => {
@@ -245,7 +252,7 @@ describe('NewProjectForm: create a new GitHub repository', () => {
 		const navigate = vi.fn();
 		render(NewProjectForm, {
 			choices: choices(),
-			refreshHref: '/login/github?refresh=1',
+			refresh: async () => {},
 			create,
 			startCreateRepo,
 			navigate,
