@@ -18,7 +18,6 @@ import {
 } from '#lib/server/project-onboarding.ts';
 import { getUserRepositorySnapshot } from '#lib/server/user-repositories.ts';
 import { projectService } from '#lib/server/project-service.ts';
-import { workService } from '#lib/server/work-service.ts';
 
 function service() {
 	const { user } = getRequestEvent().locals;
@@ -166,14 +165,8 @@ export const setRepositories = command(
 			{
 				store: getProjectStore(),
 				owner: user.login,
-				snapshot: await getUserRepositorySnapshot(getSql(), user.id),
-				work: {
-					cancelForRemovedRepos: (project, removedKeys) =>
-						workService(getSql(), [project]).cancelForRemovedRepos(project, removedKeys, {
-							login: user.login,
-							id: user.id
-						})
-				}
+				// Tasks of removed repositories are the engine's to end (ADR-0022); the UI decides nothing.
+				snapshot: await getUserRepositorySnapshot(getSql(), user.id)
 			},
 			name,
 			repositories

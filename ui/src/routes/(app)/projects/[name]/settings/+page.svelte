@@ -7,6 +7,7 @@
 	import Notice from '#lib/components/ui/Notice.svelte';
 	import RepositoriesForm from '#lib/components/RepositoriesForm.svelte';
 	import SandboxForm from '#lib/components/SandboxForm.svelte';
+	import SecretsSection from '#lib/components/tasks/SecretsSection.svelte';
 	import Section from '#lib/components/ui/Section.svelte';
 	import { getProjectContext } from '#lib/project-context.svelte.ts';
 	import {
@@ -77,6 +78,8 @@
 			}}
 		/>
 	</Section>
+
+	<SecretsSection project={p.name} />
 
 	<Section title="Danger zone">
 		<p class="ez-muted">Deleting the project removes the sandbox and everything in it.</p>

@@ -2840,3 +2840,228 @@ textarea.ez-control {
 		padding-block: var(--ez-space-2);
 	}
 }
+
+// ---------------------------------------------------------------- tasks (engine v2 projection)
+
+.ez-task-card__head {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: var(--ez-space-2);
+}
+
+.ez-task-card__artifacts,
+.ez-task-subjects,
+.ez-secrets {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--ez-space-1) var(--ez-space-3);
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	font-size: var(--ez-text-sm);
+}
+
+.ez-secrets {
+	flex-direction: column;
+
+	li {
+		display: flex;
+		align-items: center;
+		gap: var(--ez-space-2);
+	}
+}
+
+.ez-task-error {
+	margin: 0;
+	color: var(--ez-danger-fg);
+}
+
+.ez-board__over {
+	color: var(--ez-danger-fg);
+	font-weight: var(--ez-weight-medium);
+}
+
+.ez-needs-you__group {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-2);
+	margin-bottom: var(--ez-space-4);
+}
+
+.ez-needs-you__cards {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 1fr));
+	gap: var(--ez-space-3);
+}
+
+.ez-artifact {
+	margin-bottom: var(--ez-space-2);
+	padding: var(--ez-space-2) var(--ez-space-3);
+	border: var(--ez-border-width) solid var(--ez-border);
+	border-radius: var(--ez-radius-md);
+
+	summary {
+		display: flex;
+		gap: var(--ez-space-2);
+		cursor: pointer;
+	}
+
+	&__pre {
+		overflow-x: auto;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+	}
+}
+
+.ez-timeline {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-1);
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	font-size: var(--ez-text-sm);
+
+	&__item {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--ez-space-2);
+	}
+}
+
+.ez-step-run {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-2);
+	padding: var(--ez-space-3) 0;
+	border-bottom: var(--ez-border-width) solid var(--ez-border);
+
+	&__head {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--ez-space-2);
+	}
+
+	&__metrics {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--ez-space-1) var(--ez-space-4);
+		margin: 0;
+		font-size: var(--ez-text-sm);
+
+		dd {
+			margin: 0;
+			font-weight: var(--ez-weight-medium);
+		}
+	}
+}
+
+.ez-session {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-2);
+
+	&__toolbar {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: flex-end;
+		gap: var(--ez-space-2);
+	}
+
+	&__events {
+		display: flex;
+		flex-direction: column;
+		gap: var(--ez-space-2);
+		max-height: 70dvh;
+		overflow-y: auto;
+	}
+}
+
+.ez-session-event {
+	padding: var(--ez-space-2) var(--ez-space-3);
+	border-left: 0.2rem solid var(--ez-border);
+	border-radius: var(--ez-radius-sm);
+	background: var(--ez-surface);
+	overflow-wrap: anywhere;
+
+	&--prompt,
+	&--user,
+	&--steer {
+		border-left-color: var(--ez-accent);
+		background: var(--ez-accent-soft);
+	}
+
+	&--error {
+		border-left-color: var(--ez-danger-fg);
+	}
+
+	&__meta {
+		display: flex;
+		align-items: center;
+		gap: var(--ez-space-2);
+		font-size: var(--ez-text-sm);
+	}
+
+	&__kind {
+		font-weight: var(--ez-weight-medium);
+	}
+
+	&__text {
+		margin: var(--ez-space-1) 0 0;
+		white-space: pre-wrap;
+	}
+
+	&__pre {
+		max-height: 24rem;
+		margin: var(--ez-space-1) 0 0;
+		overflow: auto;
+		white-space: pre-wrap;
+		font-size: var(--ez-text-sm);
+	}
+}
+
+.ez-wf-binding {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--ez-space-2);
+	padding: var(--ez-space-1) 0;
+}
+
+.ez-wf-phases {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-3);
+	margin: 0;
+	padding-left: var(--ez-space-4);
+
+	p {
+		margin: 0;
+		overflow-wrap: anywhere;
+	}
+}
+
+.ez-wf-phase {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-1);
+}
+
+.ez-link-button {
+	align-self: flex-start;
+	padding: 0;
+	border: 0;
+	background: none;
+	color: var(--ez-accent-text);
+	text-decoration: underline;
+	cursor: pointer;
+	font: inherit;
+}
+
+.ez-phase-graph {
+	height: 24rem;
+	border: var(--ez-border-width) solid var(--ez-border);
+	border-radius: var(--ez-radius-md);
+}

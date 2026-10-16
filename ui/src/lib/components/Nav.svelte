@@ -10,7 +10,7 @@
 
 	const items = [
 		{ href: '/projects', label: 'Projects' },
-		{ href: '/work', label: 'Tasks' }
+		{ href: '/tasks', label: 'Tasks' }
 	];
 </script>
 
@@ -22,7 +22,7 @@
 			aria-current={page.url.pathname === item.href || page.url.pathname.startsWith(item.href + '/')
 				? 'page'
 				: undefined}
-			>{item.label}{#if item.href === '/work' && needsYou > 0}<span
+			>{item.label}{#if item.href === '/tasks' && needsYou > 0}<span
 					class="ez-badge"
 					role="img"
 					aria-label={needsYouMore
