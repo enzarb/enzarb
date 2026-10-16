@@ -17,10 +17,10 @@
 # this script only classifies (docs/contracts.md, "change request review").
 set -euo pipefail
 
-[ $# -ge 1 ] && [ $# -le 3 ] || {
+if [ $# -lt 1 ] || [ $# -gt 3 ]; then
   echo "usage: $0 <previous_reviewed_sha> [<head>] [<max_lines>]" >&2
   exit 2
-}
+fi
 prev=$1
 head=${2:-HEAD}
 max_lines=${3:-300}
