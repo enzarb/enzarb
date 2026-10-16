@@ -17,8 +17,22 @@ fn check_event(id: &str, sha: &str, name: &str, state: Ev) -> EngineEvent {
             head_sha: sha.into(),
             state,
             context: Some(name.into()),
-            url: Some(format!("https://ci.example/{name}")),
+            url: Some(url_of(name)),
         });
+    }
+    e
+}
+
+/// A GitHub Actions run URL for check `name` (actionable: the agent can read its log).
+fn url_of(name: &str) -> String {
+    format!("https://github.com/o/r/actions/runs/1?check={name}")
+}
+
+/// A failing check outside GitHub Actions (a commit status or third-party app).
+fn external_fail_event(id: &str, name: &str) -> EngineEvent {
+    let mut e = fail_event(id, name);
+    if let EventPayload::Connector(c) = &mut e.payload {
+        c.data.ci.as_mut().unwrap().url = Some(format!("https://ci.example/{name}"));
     }
     e
 }
@@ -70,7 +84,7 @@ fn ci_failure_after_a_comment_review_starts_one_round() {
     assert!(d.trigger_text.starts_with("CI failed on sha1"));
     assert!(
         d.trigger_text
-            .contains("- actionlint (https://ci.example/actionlint)")
+            .contains(&format!("- actionlint ({})", url_of("actionlint")))
     );
     // Burst debounce: the later failures of the same head only record.
     let mut state = t.next;
@@ -108,7 +122,7 @@ fn checks_seen_before_the_review_ends_are_all_listed() {
     for name in ["actionlint", "scripts", "ci / test"] {
         assert!(
             d.trigger_text
-                .contains(&format!("- {name} (https://ci.example/{name})")),
+                .contains(&format!("- {name} ({})", url_of(name))),
             "{}",
             d.trigger_text
         );
@@ -159,10 +173,7 @@ fn rounds_used_up_wait_for_a_human_with_the_failing_checks() {
     let (on, reason, text) = wait_of_state(&t);
     assert_eq!((on.as_str(), reason.as_str()), ("human", "ci_failed"));
     assert_eq!(text, "CI failed: scripts");
-    assert_eq!(
-        t.next.state_data()["wait"]["url"],
-        json!("https://ci.example/scripts")
-    );
+    assert_eq!(t.next.state_data()["wait"]["url"], json!(url_of("scripts")));
     // Automatic rounds switched off.
     let t = run_cr_manual(
         Permission::None,
@@ -252,22 +263,96 @@ fn a_ci_fix_round_carries_the_failing_check_and_the_run_id() {
 }
 
 #[test]
-fn a_non_actions_check_has_no_run_id() {
+fn only_external_failures_start_no_round_and_wait_on_a_human() {
+    // PR #205: a failing status outside GitHub Actions; the agent could not read it.
     let t = run_cr(
         Permission::None,
         &awaiting("comment"),
-        &fail_event("f0", "actionlint"),
+        &external_fail_event("f0", "Vercel"),
     );
+    let d = assert_cr(&t, CrPhase::AwaitingChanges);
+    assert_eq!(fix_jobs(&t), 0);
+    assert_eq!(d.auto_rounds, 0);
+    let (on, reason, text) = wait_of_state(&t);
+    assert_eq!(
+        (on.as_str(), reason.as_str()),
+        ("human", "ci_failed_external")
+    );
+    assert_eq!(
+        text,
+        "Vercel failed outside GitHub Actions; enzarb can't read it"
+    );
+    // A retry has nothing the agent can act on either.
+    let r = run_cr(
+        Permission::Write,
+        &t.next,
+        &ui("r", "carol", UiActionKind::Retry),
+    );
+    assert!(!r.accepted);
+    // An Actions job failing as well starts the round.
+    let t = run_cr(Permission::None, &t.next, &fail_event("f1", "ci / test"));
+    assert_cr(&t, CrPhase::AddressingComments);
+    assert_eq!(fix_jobs(&t), 1);
+}
+
+#[test]
+fn an_unnamed_external_failure_says_an_external_status() {
+    let mut e = external_fail_event("f0", "x");
+    if let EventPayload::Connector(c) = &mut e.payload {
+        c.data.ci.as_mut().unwrap().context = Some(String::new());
+    }
+    let t = run_cr(Permission::None, &awaiting("comment"), &e);
+    assert_eq!(fix_jobs(&t), 0);
+    let (_, reason, text) = wait_of_state(&t);
+    assert_eq!(reason, "ci_failed_external");
+    assert!(text.starts_with("an external status failed outside GitHub Actions"));
+}
+
+#[test]
+fn a_mixed_round_lists_only_the_actions_checks() {
+    let t = run_cr(
+        Permission::None,
+        &cr_in(CrPhase::Reviewing),
+        &external_fail_event("f0", "Vercel"),
+    );
+    let t = run_cr(Permission::None, &t.next, &fail_event("f1", "ci / test"));
+    let t = run_cr(
+        Permission::None,
+        &t.next,
+        &agent_ok("r", JobKind::AgentReview, "comment", "remark"),
+    );
+    let d = assert_cr(&t, CrPhase::AddressingComments);
+    assert!(d.trigger_text.contains("ci / test"));
+    assert!(!d.trigger_text.contains("Vercel"), "{}", d.trigger_text);
     let input = fix_input(&t);
-    assert!(input.context.ci_fix);
-    assert!(input.context.ci_failure.contains("check: actionlint"));
-    assert!(!input.context.ci_failure.contains("run id"));
-    assert!(
-        input
-            .context
-            .ci_failure
-            .contains("not a GitHub Actions run")
+    assert!(input.context.ci_failure.contains("check: ci / test"));
+    assert!(input.context.ci_failure.contains("run id: 1"));
+    assert!(!input.context.ci_failure.contains("Vercel"));
+}
+
+#[test]
+fn ignored_checks_never_count_toward_ci() {
+    // Copilot code review is advisory: its failure neither starts a round nor fails CI.
+    let t = run_cr(
+        Permission::None,
+        &awaiting("comment"),
+        &fail_event("f0", "Running Copilot Code Review"),
     );
+    assert_eq!(fix_jobs(&t), 0);
+    let d = assert_cr(&t, CrPhase::AwaitingChanges);
+    assert_ne!(d.ci, CiState::Failure);
+    assert!(d.ci_failures.is_empty());
+    // An empty ignore list counts it like any other check.
+    let mut c = ctx_for(43, Permission::None);
+    c.config.ci_ignore_checks = String::new();
+    let t = transition(
+        &c,
+        &awaiting("comment"),
+        &external_fail_event("f1", "Copilot"),
+    );
+    let d = assert_cr(&t, CrPhase::AwaitingChanges);
+    assert_eq!(d.ci, CiState::Failure);
+    assert_eq!(wait_of_state(&t).1, "ci_failed_external");
 }
 
 #[test]
@@ -370,7 +455,7 @@ fn enzarb_never_waits_on_ci_without_a_job() {
                         auto_rounds: rounds,
                         ci_failures: vec![CiFailure {
                             name: "a".into(),
-                            url: String::new(),
+                            url: url_of("a"),
                         }],
                         ci_failures_sha: "sha1".into(),
                         ..cr_data()

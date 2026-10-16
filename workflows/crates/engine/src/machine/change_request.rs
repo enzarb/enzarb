@@ -11,6 +11,10 @@
 //! * A failed CI on the reviewed head starts one `AddressingComments` round per head SHA
 //!   (`CrData::ci_fix_sha`), sharing the `auto_rounds` cap; the trigger names the failing
 //!   checks. When no round can start, `AwaitingChanges` waits on a human (`ci_failed`).
+//!   Only GitHub Actions runs count toward a round (the agent can read their logs); when every
+//!   failing check is outside Actions (a commit status, a third-party app) no round starts and
+//!   the item waits on a human (`ci_failed_external`). Checks matching
+//!   `Config::ci_ignore_checks` (Copilot code review by default) never count toward CI.
 //! * Feedback during `Reviewing` or `Merging` is queued like during `AddressingComments`; it is
 //!   handled before any automatic round once the running job finishes.
 //! * Commits pushed by the agent itself are not re-reviewed automatically; any
@@ -497,6 +501,37 @@ fn unverified_text(d: &CrData) -> String {
     )
 }
 
+/// A failing check the agent can act on: a GitHub Actions run, whose log `gh` can read.
+fn actionable(f: &CiFailure) -> bool {
+    actions_ids(&f.url).is_some()
+}
+
+/// CI failed on the head, the failing checks are known, and none of them is [`actionable`].
+fn ci_failed_external(d: &CrData) -> bool {
+    d.ci_failures_sha == d.head_sha
+        && !d.ci_failures.is_empty()
+        && !d.ci_failures.iter().any(actionable)
+}
+
+/// "lint, Vercel failed outside GitHub Actions; ..." for the `ci_failed_external` wait.
+fn ci_failed_external_text(d: &CrData) -> String {
+    let names: Vec<&str> = d
+        .ci_failures
+        .iter()
+        .filter(|f| !f.name.is_empty())
+        .map(|f| f.name.as_str())
+        .collect();
+    let what = if names.is_empty() {
+        "an external status".to_string()
+    } else {
+        names.join(", ")
+    };
+    truncate(
+        &format!("{what} failed outside GitHub Actions; enzarb can't read it"),
+        400,
+    )
+}
+
 /// "CI failed: actionlint, scripts" for the `ci_failed` wait.
 fn ci_failed_text(d: &CrData) -> String {
     let names: Vec<&str> = d
@@ -555,6 +590,18 @@ pub fn wait(phase: CrPhase, d: &CrData, r: &Readiness) -> Option<Wait> {
             }
             // Starting a CI-fix round leaves `AwaitingChanges`, so a failed CI seen here has
             // no fix job: it is a person's to look at.
+            if r.ci.status == CheckStatus::Failed && ci_failed_external(d) {
+                return Some(Wait {
+                    waiting_on: Human,
+                    reason: "ci_failed_external",
+                    text: ci_failed_external_text(d),
+                    url: d
+                        .ci_failures
+                        .iter()
+                        .map(|f| f.url.clone())
+                        .find(|u| !u.is_empty()),
+                });
+            }
             if r.ci.status == CheckStatus::Failed {
                 return Some(Wait {
                     waiting_on: Human,
@@ -677,6 +724,8 @@ fn maybe_start_ci_fix<'a>(
         || d.reviewed_sha != d.head_sha
         || stack_moving
         || d.auto_rounds >= ctx.config.max_auto_rounds
+        // Nothing the agent can read: a person has to look (`ci_failed_external`).
+        || ci_failed_external(&d)
     {
         return Err(Box::new((fx, d)));
     }
@@ -686,7 +735,7 @@ fn maybe_start_ci_fix<'a>(
     d.ci_fix_sha = d.head_sha.clone();
     let mut text = format!("CI failed on {}:", short(&d.head_sha));
     if d.ci_failures_sha == d.head_sha && !d.ci_failures.is_empty() {
-        for f in &d.ci_failures {
+        for f in d.ci_failures.iter().filter(|f| actionable(f)) {
             text.push_str(&format!("\n- {}", f.name));
             if !f.url.is_empty() {
                 text.push_str(&format!(" ({})", f.url));
@@ -919,7 +968,7 @@ fn ci_failure_text(d: &CrData) -> String {
         );
     }
     let mut out = String::new();
-    for f in &d.ci_failures {
+    for f in d.ci_failures.iter().filter(|f| actionable(f)) {
         if !out.is_empty() {
             out.push('\n');
         }
@@ -1625,6 +1674,13 @@ fn ci_changed(ctx: &Ctx, ev: &EngineEvent, s: &CrState, state: &WorkflowState) -
     }
     if ci.head_sha.is_empty() || ci.head_sha != s.data.head_sha {
         return Transition::reject(state, "ci result is for another commit");
+    }
+    if ci
+        .context
+        .as_deref()
+        .is_some_and(|c| ctx.config.ci_ignored(c))
+    {
+        return Transition::ack(state, "ignored check");
     }
     let mut d = s.data.clone();
     match ci.state {

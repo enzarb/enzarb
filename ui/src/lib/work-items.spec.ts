@@ -130,6 +130,12 @@ describe('needs-you classification', () => {
 		expect(classifyNeedsYou(cr('AddressingComments', fixing))).toBeNull();
 		expect(availableActions('AddressingComments', fixing)).not.toContain('retry');
 	});
+	it('puts a ci_failed_external wait in Blocked without a Retry', () => {
+		const text = "Vercel failed outside GitHub Actions; enzarb can't read it";
+		const data = { wait: { waiting_on: 'human', reason: 'ci_failed_external', text } };
+		expect(classifyNeedsYou(cr('AwaitingChanges', data))?.category).toBe('blocked');
+		expect(availableActions('AwaitingChanges', data)).not.toContain('retry');
+	});
 	it('labels why a change request is waiting and keeps round_limit in the queue', () => {
 		const wait = (waiting_on: string, reason: string, text: string) => ({
 			wait: { waiting_on, reason, text }
@@ -283,6 +289,9 @@ describe('needs-you classification', () => {
 		]);
 		expect(waitLinks(w('ci_failed', { url: 'https://ci.example/run/1' }), pr)).toEqual([
 			{ label: 'View failing check', href: 'https://ci.example/run/1' }
+		]);
+		expect(waitLinks(w('ci_failed_external', { url: 'https://ci.example/x' }), pr)).toEqual([
+			{ label: 'View failing check', href: 'https://ci.example/x' }
 		]);
 		const comment = `${pr}#issuecomment-9`;
 		expect(waitLinks(w('decision_needed', { url: comment }), pr)).toEqual([
