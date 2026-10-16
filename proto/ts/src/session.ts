@@ -4,9 +4,6 @@ import {
   type CredentialKind,
   type Ctrl,
   ErrorCode,
-  type RunFinished,
-  type RunPhase,
-  type RunStartFields,
   type Usage,
   MAX_REPO_LEN,
   MAX_RESUME_LEN,
@@ -53,24 +50,6 @@ export interface ConnectOptions {
   handshakeTimeoutMs?: number;
 }
 
-/** `run_accepted` as seen by the client. */
-export interface RunAccepted {
-  run_id: string;
-  state: RunPhase;
-  existing: boolean;
-}
-
-/** `run_state` as seen by the client. */
-export interface RunInfo {
-  run_id: string;
-  state: RunPhase;
-  exit_code?: number | null;
-  summary?: string | null;
-  usage?: Usage | null;
-  /** Full final result of a terminal run (servers with `run_results`). */
-  result?: RunFinished | null;
-}
-
 /** `credential_state` as seen by the client. */
 export interface CredentialInfo {
   kind: CredentialKind;
@@ -79,22 +58,9 @@ export interface CredentialInfo {
   scope?: string | null;
 }
 
-export type RunStartRequest = Omit<RunStartFields, "log_channel"> & {
-  /** `true` (allocate a transcript channel), a specific channel id, or omit/`false` for none. */
-  log?: boolean | number;
-};
-
-export interface RunStarted {
-  accepted: RunAccepted;
-  /** The transcript channel (DATA_JSON lines) when requested. */
-  log?: Channel;
-}
-
 type CtrlListener = (msg: Ctrl) => void;
 
 type Pending =
-  | { kind: "run_start"; run_id: string; log?: Channel; resolve: (r: RunStarted) => void; reject: (e: unknown) => void }
-  | { kind: "run_status"; run_id: string; resolve: (r: RunInfo) => void; reject: (e: unknown) => void }
   | { kind: "credential_status"; run_id?: undefined; resolve: (r: CredentialInfo) => void; reject: (e: unknown) => void };
 
 const OPEN = 1;
@@ -184,7 +150,7 @@ export class Session implements ChannelHost {
     return this.end !== null;
   }
 
-  /** Subscribe to unsolicited CTRL messages (pushed `run_state`, `run_finished`, `credential_captured`, unsolicited `credential_state`, unattributed `error`). */
+  /** Subscribe to unsolicited CTRL messages (`step_*` replies, `session_event`, `credential_captured`, unsolicited `credential_state`, unattributed `error`). */
   onCtrl(listener: CtrlListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -350,39 +316,6 @@ export class Session implements ChannelHost {
     this.send({ type: "resize", channel: typeof channel === "number" ? channel : channel.id, cols, rows });
   }
 
-  /** `run_start`. With `log` set, resolves with the transcript channel (DATA_JSON). */
-  async runStart(req: RunStartRequest): Promise<RunStarted> {
-    this.alive();
-    const { log, ...rest } = req;
-    let logCh: Channel | undefined;
-    let logId: number | null = null;
-    if (log !== undefined && log !== false) {
-      if (log === true) logId = this.alloc();
-      else if (log === 0) throw new SessionError("channel_in_use", "channel 0 is reserved");
-      else if (this.inUse(log)) throw new SessionError("channel_in_use", `channel ${log} is already in use`);
-      else logId = log;
-      this.reserved.add(logId);
-      logCh = new Channel(logId, this);
-    }
-    const p = new Promise<RunStarted>((resolve, reject) =>
-      this.pending.push({ kind: "run_start", run_id: rest.run_id, log: logCh, resolve, reject }),
-    );
-    const start: Ctrl = { type: "run_start", ...rest, log_channel: logId };
-    if (rest.claude_token !== undefined) start.claude_token = toSecret(rest.claude_token);
-    this.sendCtrl(start);
-    return p;
-  }
-
-  /** `run_status`, resolved by the matching `run_state` reply (`unknown_run` rejects with code "remote"). */
-  async runStatus(runId: string): Promise<RunInfo> {
-    this.alive();
-    const p = new Promise<RunInfo>((resolve, reject) =>
-      this.pending.push({ kind: "run_status", run_id: runId, resolve, reject }),
-    );
-    this.sendCtrl({ type: "run_status", run_id: runId });
-    return p;
-  }
-
   /** `credential_status`, resolved by the matching `credential_state` reply (an `error` reply rejects with code "remote"). */
   async credentialStatus(): Promise<CredentialInfo> {
     this.alive();
@@ -399,16 +332,6 @@ export class Session implements ChannelHost {
    */
   credentialClear(kind: CredentialKind = "claude_oauth"): void {
     this.send({ type: "credential_clear", kind });
-  }
-
-  /** `run_subscribe` (no reply): `run_finished` for these runs arrives through `onCtrl`. Only after `run_results`. */
-  runSubscribe(runIds: string[]): void {
-    this.send({ type: "run_subscribe", run_ids: runIds });
-  }
-
-  /** `run_cancel`; the new state arrives as a pushed `run_state` through `onCtrl`. */
-  runCancel(runId: string): void {
-    this.send({ type: "run_cancel", run_id: runId });
   }
 
   // ---- inbound ----
@@ -554,34 +477,6 @@ export class Session implements ChannelHost {
         }
         return;
       }
-      case "run_accepted": {
-        const i = this.pending.findIndex((p) => p.kind === "run_start" && p.run_id === m.run_id);
-        const p = i >= 0 ? this.pending.splice(i, 1)[0] : undefined;
-        if (!p || p.kind !== "run_start") {
-          this.trySendCtrl({
-            type: "error",
-            code: ErrorCode.ProtocolViolation,
-            message: `unsolicited run_accepted for ${m.run_id}`,
-          });
-          return;
-        }
-        if (p.log) {
-          this.reserved.delete(p.log.id);
-          this.channels.set(p.log.id, p.log);
-        }
-        p.resolve({ accepted: { run_id: m.run_id, state: m.state, existing: m.existing }, log: p.log });
-        return;
-      }
-      case "run_state": {
-        const i = this.pending.findIndex((p) => p.kind === "run_status" && p.run_id === m.run_id);
-        const p = i >= 0 ? this.pending.splice(i, 1)[0] : undefined;
-        if (p && p.kind === "run_status") {
-          p.resolve({ run_id: m.run_id, state: m.state, exit_code: m.exit_code, summary: m.summary, usage: m.usage, result: m.result });
-        } else {
-          this.emit(m);
-        }
-        return;
-      }
       case "error": {
         // An explicit run_id wins (any code); else run-related codes hit the oldest pending.
         let idx = -1;
@@ -589,7 +484,6 @@ export class Session implements ChannelHost {
         else if (ATTRIBUTABLE.has(m.code)) idx = this.pending.length > 0 ? 0 : -1;
         if (idx >= 0) {
           const p = this.pending.splice(idx, 1)[0]!;
-          if (p.kind === "run_start" && p.log) this.reserved.delete(p.log.id);
           p.reject(new SessionError("remote", `peer error ${m.code}: ${m.message}`, { remote: m }));
           return;
         }
@@ -604,8 +498,11 @@ export class Session implements ChannelHost {
         return;
       }
       case "credential_captured":
-      case "run_finished":
       case "stats":
+      case "step_accepted":
+      case "step_state":
+      case "session_event":
+      case "step_finished":
         this.emit(m);
         return;
       default:

@@ -102,12 +102,6 @@
   },
   {
     "expect": {
-      "result": {
-        "exit": "failure",
-        "git": [],
-        "outputs": {},
-        "run_id": "r"
-      },
       "run_id": "r",
       "state": "finished",
       "type": "step_state"
@@ -117,7 +111,6 @@
   },
   {
     "expect": {
-      "after_seq": 0,
       "run_id": "r",
       "type": "step_status"
     },
@@ -128,7 +121,6 @@
     "expect": {
       "kind": "future_kind",
       "seq": 3,
-      "truncated": false,
       "type": "session_event"
     },
     "name": "session_event_unknown_kind",

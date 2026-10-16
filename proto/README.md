@@ -21,11 +21,11 @@ Without features you get the pure codec, `Ctrl` and `FlowControl`. Feature `toki
 
 | Consumer | Use |
 |---|---|
-| sandbox-init (server) | `Session::accept(ws, ServerOptions::default())`, then loop over `Events`: `Event::Open(req)` -> `req.accept()` gives a `ChannelHandle` (`AsyncRead + AsyncWrite`) for the pty; `Event::Ctrl(Ctrl::RunStart(..))` -> `session.accept_run(..)` (returns the transcript channel when `log_channel` is set), `session.send_run_state(..)` for `run_status` replies and pushes. |
-| workflows executor (client) | `Client::connect(url, token, ClientKind::Executor)`, then `session.run_start_logged(run)` / `run_start(run)`, `session.run_status(id)`, `session.run_cancel(id)`; read the transcript with `log.recv.recv_json::<T>()`. |
+| sandbox-init (server) | `Session::accept(ws, ServerOptions::default())`, then loop over `Events`: `Event::Open(req)` -> `req.accept()` gives a `ChannelHandle` (`AsyncRead + AsyncWrite`) for the pty; `Event::Ctrl(Ctrl::StepStart(..))` -> `session.accept_step(..)`; `step_status` -> `send_session_event(..)` replays then `send_step_state(..)`; `send_step_finished(..)` when a step ends. |
+| workflows executor (client) | `Client::connect(url, token, ClientKind::Executor)`, then `session.send_ctrl(&Ctrl::StepStart(..))` / `StepStatus{run_id, after_seq}` / `StepSteer` / `StepStop` / `StepResume` (or the typed `step_start`/`step_status` helpers) and read `step_accepted`, `step_state`, `session_event` and `step_finished` from `Events`. |
 | sandbox-proxy | Mostly raw forwarding: `session::handshake::server_handshake` on the browser socket, `client_handshake` on the sandbox socket, then relay binary messages, using `FrameHeader::parse` for routing. Flow control is end to end, so unmodified frames keep it intact. |
 
-The runtime enforces the session rules for you: hello first, a channel table (ids are client chosen; reuse is refused), automatic `WINDOW` when the application reads, `error` replies for violations, and the `log_channel` lifecycle (opened by `run_accepted`). Writers wait for credit (backpressure, never drops). See the module docs of `enzarb_proto::session` for full server and client examples; `session::memory` provides an in-memory websocket for tests.
+The runtime enforces the session rules for you: hello first, a channel table (ids are client chosen; reuse is refused), automatic `WINDOW` when the application reads, `error` replies for violations. Writers wait for credit (backpressure, never drops). See the module docs of `enzarb_proto::session` for full server and client examples; `session::memory` provides an in-memory websocket for tests.
 
 ## TypeScript
 
@@ -46,10 +46,8 @@ await pty.write("ls\n");                       // waits for credit
 for await (const d of pty) term.write(d.data); // credit is returned as you read
 s.resize(pty, 120, 40);
 
-const run = await s.runStart({ run_id: "job-1", /* ... */ log: true });
-for await (const d of run.log!) console.log(JSON.parse(new TextDecoder().decode(d.data)));
 s.credentialClear();                               // client -> server credential_clear
-s.onCtrl((m) => { /* pushed run_state, credential_captured, unattributed errors */ });
+s.onCtrl((m) => { /* credential_captured, unattributed errors */ });
 ```
 
 ACP over a byte channel (only when `s.features.has("acp")`; an old proxy closes the socket on an unknown kind):
