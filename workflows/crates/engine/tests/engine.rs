@@ -210,7 +210,7 @@ impl H {
     }
 
     async fn set_secret(&self, name: &str, value: &str) {
-        sqlx::query("SELECT engine_api.secret_set('instance', '', $1, $2)")
+        sqlx::query("SELECT engine_api.secret_set('project', 'p', $1, $2)")
             .bind(name)
             .bind(value)
             .execute(&self.db.pool)
@@ -607,12 +607,13 @@ async fn quiet_step_stalls_and_pauses_and_bad_results_fail() {
 }
 
 /// The user-scope secret `claude_token` comes from the UI-captured per-user Claude credential
-/// (`app.claude_credentials`) of the given user; an explicit `engine.secrets` user row wins, and
-/// another user's token is never used.
+/// (`app.claude_credentials`) of the given user, injected by its declared env/file; an explicit
+/// `engine.secrets` user row wins; another user's token and other scopes are never used.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn claude_token_comes_from_the_users_stored_credential() {
     use engine::claude_credential::ClaudeKeyring;
     use engine::secrets::{ClaudeSource, resolve};
+    use enzarb_flow::format::{Secret, SecretScope};
     let Some(db) = TestDb::start().await else {
         return;
     };
@@ -626,18 +627,31 @@ async fn claude_token_comes_from_the_users_stored_credential() {
         name: "claude_token".into(),
         keyring: ring,
     };
-    let names = vec!["claude_token".to_string()];
-    let (found, missing) = resolve(&db.pool, None, Some(&src), Some("alice"), "p", &names)
+    let decls = vec![Secret {
+        name: "claude_token".into(),
+        scope: SecretScope::User,
+        env: Some("CLAUDE_CODE_OAUTH_TOKEN".into()),
+        file: Some(".enzarb/token".into()),
+    }];
+    let r = resolve(&db.pool, None, Some(&src), Some("alice"), "p", &decls)
         .await
         .unwrap();
-    assert!(missing.is_empty());
-    assert_eq!(found["claude_token"], "sk-ant-oat01-alice");
+    assert!(r.missing.is_empty());
+    assert_eq!(r.env["CLAUDE_CODE_OAUTH_TOKEN"], "sk-ant-oat01-alice");
+    assert_eq!(r.files[".enzarb/token"], "sk-ant-oat01-alice");
     // Another user has no row: missing (never alice's).
-    let (found, missing) = resolve(&db.pool, None, Some(&src), Some("bob"), "p", &names)
+    let r = resolve(&db.pool, None, Some(&src), Some("bob"), "p", &decls)
         .await
         .unwrap();
-    assert!(found.is_empty());
-    assert_eq!(missing, names);
+    assert!(r.env.is_empty());
+    assert_eq!(r.missing, vec!["user:claude_token".to_string()]);
+    // Project scope never reads the user store.
+    let mut proj = decls.clone();
+    proj[0].scope = SecretScope::Project;
+    let r = resolve(&db.pool, None, Some(&src), Some("alice"), "p", &proj)
+        .await
+        .unwrap();
+    assert_eq!(r.missing, vec!["project:claude_token".to_string()]);
     // An explicit user secret wins.
     sqlx::query(
         "INSERT INTO engine.secrets (scope, owner, name, pending) VALUES ('user', 'alice', 'claude_token', 'explicit')",
@@ -645,8 +659,8 @@ async fn claude_token_comes_from_the_users_stored_credential() {
     .execute(&db.pool)
     .await
     .unwrap();
-    let (found, _) = resolve(&db.pool, None, Some(&src), Some("alice"), "p", &names)
+    let r = resolve(&db.pool, None, Some(&src), Some("alice"), "p", &decls)
         .await
         .unwrap();
-    assert_eq!(found["claude_token"], "explicit");
+    assert_eq!(r.env["CLAUDE_CODE_OAUTH_TOKEN"], "explicit");
 }

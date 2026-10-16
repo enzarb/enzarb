@@ -223,9 +223,8 @@ impl Engine {
         // Secrets: the step's plus its runtime's, by name, most specific scope first.
         let mut names = rs.secrets.clone();
         if let RunExec::Agent { runtime, .. } = &rs.exec {
-            names.extend(runtime.file.secrets.iter().cloned());
+            names.extend(runtime.file.secrets.iter().map(|s| s.normalized()));
         }
-        names.sort();
         names.dedup();
         // The task's user is the Project owner (whose Claude token pays for the run); the
         // starter only when the Project is unknown to the index.
@@ -234,7 +233,7 @@ impl Engine {
             .map(|i| i.owner.clone())
             .filter(|o| !o.is_empty())
             .or(started_by);
-        let (env, missing) = crate::secrets::resolve(
+        let resolved = crate::secrets::resolve(
             &self.pool,
             self.secrets_key.as_ref(),
             self.claude.as_ref(),
@@ -244,6 +243,7 @@ impl Engine {
         )
         .await
         .map_err(StepError::Other)?;
+        let (env, files, missing) = (resolved.env, resolved.files, resolved.missing);
         if !missing.is_empty() {
             return Ok(Done::Blocked(TaskEvent::StallDetected {
                 reason: Some(format!(
@@ -263,19 +263,33 @@ impl Engine {
             .find(|p| p.repo.eq_ignore_ascii_case(&repo) && p.state == "open")
             .and_then(|p| p.head.clone());
         let writes = rs.github.get("contents") == Some(&Access::Write);
+        // A workspace entry for the task's own repo may set its branch and base.
+        let own = rs
+            .workspaces
+            .iter()
+            .find(|w| w.repo.eq_ignore_ascii_case(&repo));
+        let nonempty = |s: &Option<String>| s.clone().filter(|s| !s.trim().is_empty());
         let mut ws = vec![(
             repo.clone(),
-            if writes { Mode::Write } else { Mode::Read },
-            pr_head.unwrap_or_else(|| task_branch.clone()),
-            default_branch.clone(),
+            if writes || own.is_some_and(|w| w.mode == Access::Write) {
+                Mode::Write
+            } else {
+                Mode::Read
+            },
+            own.and_then(|w| nonempty(&w.branch))
+                .or(pr_head)
+                .unwrap_or_else(|| task_branch.clone()),
+            own.and_then(|w| nonempty(&w.base))
+                .unwrap_or_else(|| default_branch.clone()),
         )];
         for w in &rs.workspaces {
             if !w.repo.eq_ignore_ascii_case(&repo) {
-                let base = self
-                    .index
-                    .lookup(&w.repo)
-                    .and_then(|i| i.default_branch(&w.repo).map(str::to_string))
-                    .unwrap_or_else(|| "main".into());
+                let base = nonempty(&w.base).unwrap_or_else(|| {
+                    self.index
+                        .lookup(&w.repo)
+                        .and_then(|i| i.default_branch(&w.repo).map(str::to_string))
+                        .unwrap_or_else(|| "main".into())
+                });
                 ws.push((
                     w.repo.to_ascii_lowercase(),
                     if w.mode == Access::Write {
@@ -283,7 +297,7 @@ impl Engine {
                     } else {
                         Mode::Read
                     },
-                    task_branch.clone(),
+                    nonempty(&w.branch).unwrap_or_else(|| task_branch.clone()),
                     base,
                 ));
             }
@@ -381,6 +395,10 @@ impl Engine {
                 })
                 .collect(),
             env: env.into_iter().map(|(k, v)| (k, Secret::new(v))).collect(),
+            files: files
+                .into_iter()
+                .map(|(k, v)| (k, Secret::new(v)))
+                .collect(),
             github_token,
         };
 

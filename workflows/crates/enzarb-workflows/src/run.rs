@@ -63,6 +63,7 @@ pub async fn run(cfg: Config) -> Result<(), Error> {
         cfg: EngineConfig {
             bot_handle: cfg.bot_handle.clone(),
             bot_login: cfg.bot_login.clone(),
+            public_url: cfg.public_url.clone(),
             stall: Duration::from_secs(cfg.stall_secs),
             max_steps_per_project: cfg.max_steps_per_project as i64,
             worker_id: std::env::var("HOSTNAME")

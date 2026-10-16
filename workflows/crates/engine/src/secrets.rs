@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use base64::Engine as _;
+use enzarb_flow::format::{Secret, SecretScope};
 use sqlx::PgPool;
 
 #[derive(Clone)]
@@ -86,71 +87,97 @@ pub struct ClaudeSource {
     pub keyring: crate::claude_credential::ClaudeKeyring,
 }
 
-/// Resolves `names`, most specific scope first: user (`user`), Project, instance. The user's
-/// stored Claude credential answers `claude.name` at user scope when `engine.secrets` has no
-/// user row for it. Returns the values found and the names that are missing.
+/// Resolved secrets of one step: env vars and files (path relative to the primary workspace).
+#[derive(Default)]
+pub struct Resolved {
+    pub env: BTreeMap<String, String>,
+    pub files: BTreeMap<String, String>,
+    /// `scope:name` of each secret that has no value.
+    pub missing: Vec<String>,
+}
+
+/// Resolves declared secrets, each in its own scope: `user` (the task's user), `project` or
+/// `instance`. At user scope the user's stored Claude credential answers `claude.name` when
+/// `engine.secrets` has no row for it. Never another user's value.
 pub async fn resolve(
     pool: &PgPool,
     key: Option<&SecretsKey>,
     claude: Option<&ClaudeSource>,
     user: Option<&str>,
     project: &str,
-    names: &[String],
-) -> Result<(BTreeMap<String, String>, Vec<String>), String> {
-    let mut found = BTreeMap::new();
-    let mut missing = Vec::new();
-    for name in names {
-        if let (Some(c), Some(u)) = (claude, user)
-            && c.name == *name
-        {
-            let user_row: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM engine.secrets WHERE scope = 'user' AND owner = $1 AND name = $2)",
-            )
-            .bind(u)
-            .bind(name)
-            .fetch_one(pool)
-            .await
-            .map_err(|e| e.to_string())?;
-            if !user_row {
-                match crate::claude_credential::fetch(pool, u).await {
-                    Ok(Some((key_id, ct))) => {
-                        let v = c
-                            .keyring
-                            .decrypt(u, &key_id, &ct)
-                            .map_err(|e| format!("stored Claude credential of {u}: {e}"))?;
-                        found.insert(name.clone(), v);
-                        continue;
-                    }
-                    Ok(None) => {}
-                    // The UI's schema may be absent (tests, a fresh install): fall through.
-                    Err(e) => tracing::debug!(error = %e, "claude_credential_get unavailable"),
-                }
-            }
+    decls: &[Secret],
+) -> Result<Resolved, String> {
+    let mut out = Resolved::default();
+    for d in decls {
+        let (scope, owner) = match d.scope {
+            SecretScope::User => ("user", user),
+            SecretScope::Project => ("project", Some(project)),
+            SecretScope::Instance => ("instance", Some("")),
+        };
+        let value = match owner {
+            None => None,
+            Some(owner) => lookup(pool, key, claude, scope, owner, &d.name).await?,
+        };
+        let Some(v) = value else {
+            out.missing.push(format!("{scope}:{}", d.name));
+            continue;
+        };
+        if let Some(e) = &d.env {
+            out.env.insert(e.clone(), v.clone());
         }
-        let row: Option<(Option<Vec<u8>>, Option<String>)> = sqlx::query_as(
-            "SELECT ciphertext, pending FROM engine.secrets
-             WHERE name = $1 AND ((scope = 'user' AND owner = $2) OR (scope = 'project' AND owner = $3)
-                                  OR (scope = 'instance'))
-             ORDER BY CASE scope WHEN 'user' THEN 0 WHEN 'project' THEN 1 ELSE 2 END LIMIT 1",
-        )
-        .bind(name)
-        .bind(user.unwrap_or("\u{0}"))
-        .bind(project)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-        match row {
-            Some((_, Some(p))) => {
-                found.insert(name.clone(), p);
-            }
-            Some((Some(ct), None)) => {
-                let k = key.ok_or("ENZARB_SECRETS_KEY is not set")?;
-                found.insert(name.clone(), k.decrypt(&ct)?);
-            }
-            _ => missing.push(name.clone()),
+        if let Some(f) = &d.file {
+            out.files.insert(f.clone(), v.clone());
+        }
+        if d.env.is_none() && d.file.is_none() {
+            out.env.insert(d.name.clone(), v);
         }
     }
-    Ok((found, missing))
+    Ok(out)
+}
+
+async fn lookup(
+    pool: &PgPool,
+    key: Option<&SecretsKey>,
+    claude: Option<&ClaudeSource>,
+    scope: &str,
+    owner: &str,
+    name: &str,
+) -> Result<Option<String>, String> {
+    let row: Option<(Option<Vec<u8>>, Option<String>)> = sqlx::query_as(
+        "SELECT ciphertext, pending FROM engine.secrets WHERE scope = $1 AND owner = $2 AND name = $3",
+    )
+    .bind(scope)
+    .bind(owner)
+    .bind(name)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    match row {
+        Some((_, Some(p))) => return Ok(Some(p)),
+        Some((Some(ct), None)) => {
+            let k = key.ok_or("ENZARB_SECRETS_KEY is not set")?;
+            return k.decrypt(&ct).map(Some);
+        }
+        _ => {}
+    }
+    if scope == "user"
+        && let Some(c) = claude
+        && c.name == name
+    {
+        match crate::claude_credential::fetch(pool, owner).await {
+            Ok(Some((key_id, ct))) => {
+                return c
+                    .keyring
+                    .decrypt(owner, &key_id, &ct)
+                    .map(Some)
+                    .map_err(|e| format!("stored Claude credential of {owner}: {e}"));
+            }
+            Ok(None) => {}
+            // The UI's schema may be absent (tests, a fresh install).
+            Err(e) => tracing::debug!(error = %e, "claude_credential_get unavailable"),
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]

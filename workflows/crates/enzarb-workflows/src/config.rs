@@ -43,6 +43,8 @@ pub struct Config {
     /// `ENZARB_CLAUDE_SECRET_NAME` (default `claude_token`): the user-scope secret answered by
     /// the UI-captured per-user Claude token.
     pub claude: Option<engine::secrets::ClaudeSource>,
+    /// `ENZARB_PUBLIC_URL`: base URL of the UI (`instance.url` in task documents).
+    pub public_url: String,
     /// `ENZARB_STALL_SECS` (default 1800).
     pub stall_secs: u64,
     /// `ENZARB_MAX_STEPS_PER_PROJECT` (default 4).
@@ -195,6 +197,9 @@ impl Config {
             }),
         };
         Ok(Config {
+            public_url: nonempty(get, "ENZARB_PUBLIC_URL")
+                .map(|u| u.trim_end_matches('/').to_string())
+                .unwrap_or_default(),
             claude,
             roles,
             database_url,

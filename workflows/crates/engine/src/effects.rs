@@ -121,6 +121,18 @@ impl Engine {
                     }
                 }
             }
+            Effect::LinkSubject { kind, repo, number } => {
+                // The object becomes a subject of this task (unless a live task already owns it);
+                // its webhooks then route here and refresh the document's subjects.
+                let kind = match kind {
+                    enzarb_flow::events::SubjectKind::Issue => "issue",
+                    enzarb_flow::events::SubjectKind::PullRequest => "pull_request",
+                };
+                let path = if kind == "issue" { "issues" } else { "pull" };
+                let url = format!("https://github.com/{repo}/{path}/{number}");
+                self.link_subject(tx, task.id, kind, &subject_key(repo, *number), &url)
+                    .await?;
+            }
             Effect::UpdateProjection(p) => self.write_projection(tx, task, p).await?,
         }
         Ok(())

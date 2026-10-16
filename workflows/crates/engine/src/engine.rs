@@ -20,6 +20,8 @@ pub struct EngineConfig {
     pub bot_handle: String,
     /// The App's bot login; its own events never start tasks.
     pub bot_login: String,
+    /// Base URL of the instance UI (`ENZARB_PUBLIC_URL`), for `instance.url`.
+    pub public_url: String,
     /// No session events for this long pauses the task (`ENZARB_STALL_SECS`, default 1800).
     pub stall: Duration,
     /// Concurrent sandbox steps per Project (admin capacity).
@@ -39,6 +41,7 @@ impl Default for EngineConfig {
         Self {
             bot_handle: "enzarb".into(),
             bot_login: "enzarb[bot]".into(),
+            public_url: String::new(),
             stall: Duration::from_secs(1800),
             max_steps_per_project: 4,
             executor_slots: 32,

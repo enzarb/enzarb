@@ -157,9 +157,14 @@ impl Library {
     }
 
     /// Resolves a workflow entry for a Project.
-    pub async fn resolve(&self, p: &ProjectInfo, entry: Entry) -> Result<Resolved, String> {
+    pub async fn resolve(
+        &self,
+        p: &ProjectInfo,
+        entry: Entry,
+        params: Option<serde_json::Map<String, serde_json::Value>>,
+    ) -> Result<Resolved, String> {
         self.with_loader(self.allow(p), move |l, o| {
-            resolve::resolve(&entry, l, o)
+            resolve::resolve_with(&entry, l, o, params.as_ref())
                 .map(|(r, _warnings)| r)
                 .map_err(|d| {
                     d.0.iter()

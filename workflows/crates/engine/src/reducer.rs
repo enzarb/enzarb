@@ -251,6 +251,10 @@ impl Engine {
             Ok(e) => e,
             Err(e) => return Ok((Some(format!("not a catalog event: {e}")), None)),
         };
+        // `mentioned` uses this instance's handle, whatever the sender computed.
+        if let Payload::Comment(c) = &mut ev.payload {
+            c.mentioned = enzarb_flow::events::mentions(&c.body, &self.cfg.bot_handle);
+        }
         // can_write comes from GitHub, never from the payload.
         if let (Some(repo), Some(actor)) = (ev.repo.clone(), ev.actor.as_mut()) {
             actor.can_write = !actor.login.is_empty() && self.can_write(&repo, &actor.login).await;
@@ -345,12 +349,23 @@ impl Engine {
                 return Ok((Some(format!("bindings: {e}")), None));
             }
         };
-        let b = match enzarb_flow::resolve::select_binding(&bindings, &ev) {
-            Ok(Some(b)) => b.clone(),
+        let routing = enzarb_flow::document::RoutingContext {
+            relations: self
+                .routing_relations(tx, &ev, &repo, skey.as_deref())
+                .await?,
+            event: ev.clone(),
+        };
+        let (b, params) = match enzarb_flow::resolve::select_binding_in(&bindings, &routing) {
+            Ok(Some(s)) => (s.binding.clone(), s.params),
             Ok(None) => return Ok((Some("unrouted: no binding matched".into()), None)),
             Err(e) => return Ok((Some(format!("bindings: {e}")), None)),
         };
-        let resolved = match self.library.resolve(&info, b.workflow.clone()).await {
+        let params = (!params.is_empty()).then_some(params);
+        let resolved = match self
+            .library
+            .resolve(&info, b.workflow.clone(), params)
+            .await
+        {
             Ok(r) => r,
             Err(e) => {
                 self.record_resolution(&info, &repo, None, &bindings, Some(&e))
@@ -376,6 +391,86 @@ impl Engine {
             )
             .await?;
         Ok((None, Some(t)))
+    }
+
+    /// Live or ended tasks the event's object relates to, for a binding's `if`/`with`: tasks
+    /// that declared the object a child (`parent`), and tasks of the issues a pull request
+    /// references (`references`).
+    async fn routing_relations(
+        &self,
+        tx: &mut Tx<'_>,
+        ev: &Event,
+        repo: &str,
+        skey: Option<&str>,
+    ) -> Result<Vec<enzarb_flow::document::RoutingRelation>, Error> {
+        let mut rows: Vec<(String, i64)> = Vec::new();
+        if let Some(k) = skey {
+            let r: Vec<(String, i64)> = sqlx::query_as(
+                "SELECT CASE kind WHEN 'child' THEN 'parent' WHEN 'parent' THEN 'child' ELSE kind END, task_id
+                 FROM engine.relations WHERE target_key = $1",
+            )
+            .bind(k)
+            .fetch_all(&mut **tx)
+            .await?;
+            rows.extend(r);
+        }
+        if let Payload::PullRequest(pr) = &ev.payload {
+            for n in &pr.references {
+                let t: Option<i64> = sqlx::query_scalar(
+                    "SELECT task_id FROM engine.subjects WHERE key = $1 ORDER BY ended, linked_at DESC LIMIT 1",
+                )
+                .bind(subject_key(repo, *n))
+                .fetch_optional(&mut **tx)
+                .await?;
+                if let Some(t) = t {
+                    rows.push(("references".into(), t));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for (kind, id) in rows {
+            let r: Option<(String, Value)> =
+                sqlx::query_as("SELECT workflow_ref, state FROM engine.tasks WHERE id = $1")
+                    .bind(id)
+                    .fetch_optional(&mut **tx)
+                    .await?;
+            let Some((workflow, state)) = r else { continue };
+            let Ok(st) = serde_json::from_value::<TaskState>(state) else {
+                continue;
+            };
+            let status = match &st.status {
+                Status::Ended { status } => status.clone(),
+                s => s.label().to_string(),
+            };
+            let phase = st
+                .frames
+                .iter()
+                .map(|f| f.id.clone())
+                .collect::<Vec<_>>()
+                .join("/");
+            out.push(enzarb_flow::document::RoutingRelation {
+                kind,
+                task: id.to_string(),
+                workflow,
+                status,
+                phase,
+                node: st.frames.last().map(|f| f.node.clone()).unwrap_or_default(),
+                vars: st.doc.vars.clone(),
+                subject: None,
+            });
+        }
+        Ok(out)
+    }
+
+    /// `instance` of task documents, from config.
+    fn instance(&self) -> enzarb_flow::document::Instance {
+        enzarb_flow::document::Instance {
+            bot: enzarb_flow::document::Bot {
+                login: self.cfg.bot_login.clone(),
+                handle: self.cfg.bot_handle.clone(),
+            },
+            url: self.cfg.public_url.clone(),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -667,7 +762,17 @@ impl Engine {
         event_id: Option<i64>,
         ev: &TaskEvent,
     ) -> Result<(), Error> {
-        if task.state.status == Status::Waiting && task.state.pending.is_none() {
+        task.state.doc.instance = self.instance();
+        // Auto-upgrade (ADR-0022 §4) at each wait and before each step: with nothing in flight,
+        // or when this event finishes what was in flight (the next node, often a step, then
+        // comes from the new definition). A running step keeps the definition it started with.
+        let finishing = matches!(
+            ev,
+            TaskEvent::StepFinished(_) | TaskEvent::ActionFinished { .. }
+        );
+        if !matches!(task.state.status, Status::Ended { .. } | Status::New)
+            && (task.state.pending.is_none() || finishing)
+        {
             self.reresolve(task).await;
         }
         let from = summary(&task.state);
@@ -686,9 +791,13 @@ impl Engine {
             rref: e.rref.clone(),
             path: e.path.clone(),
         };
-        match self.library.resolve(&info, entry).await {
+        let params = (!task.resolved.params.is_empty()).then(|| task.resolved.params.clone());
+        match self.library.resolve(&info, entry, params).await {
             Ok(new) if new != task.resolved => {
-                let (s, outcome) = interp::reresolve(&new, &task.state);
+                // The finishing step or action no longer holds the definition.
+                let pending = task.state.pending.take();
+                let (mut s, outcome) = interp::reresolve(&new, &task.state);
+                s.pending = pending;
                 task.state = s;
                 if outcome == interp::Reresolution::Upgraded {
                     task.resolved = new;
@@ -955,6 +1064,7 @@ fn viewer_workflow(r: &Resolved) -> Value {
                         RKind::Action(a) => ("action", serde_json::to_value(a).unwrap_or_default()),
                         RKind::End(s) => ("end", json!({"status": s})),
                         RKind::Phase(ph) => ("phase", json!({"use": ph.origin.path})),
+                        RKind::Decide => ("decide", json!({"set": n.set})),
                     };
                     json!({"id": id, "kind": kind, "detail": detail, "start": *id == p.start})
                 })
