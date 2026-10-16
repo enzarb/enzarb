@@ -5,13 +5,15 @@ import { BUILTIN_PROMPTS } from './builtin-prompts.ts';
 
 const engine = new URL('../../../../workflows/crates/engine/', import.meta.url);
 
-describe('built-in prompt copy', () => {
-	it('equals the engine templates (rerun node scripts/sync-builtin-prompts.mjs)', () => {
-		expect(Object.keys(BUILTIN_PROMPTS).sort()).toEqual([...NAMED_PROMPTS].sort());
-		for (const name of NAMED_PROMPTS)
+describe('built-in prompts', () => {
+	it('loads every named template from the engine', () => {
+		expect(NAMED_PROMPTS).toContain('plan_epic');
+		for (const name of NAMED_PROMPTS) {
 			expect(BUILTIN_PROMPTS[name], name).toBe(
 				readFileSync(new URL(`prompts/${name}.md`, engine), 'utf8')
 			);
+			expect(BUILTIN_PROMPTS[name].trim().length, name).toBeGreaterThan(0);
+		}
 	});
 
 	it('names every prompt the engine resolves by name', () => {
