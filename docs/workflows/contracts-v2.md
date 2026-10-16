@@ -5,60 +5,64 @@ This file is the shared interface for the parallel milestones:
 - **M6:** UI;
 - **M2:** library.
 
-The interpreter types in `workflows/crates/flow` (`TaskState`, `TaskEvent`, `Effect`, `RunStep`, `Projection`, `TaskDocument`) are authoritative. This file only adds storage and the read API. Change it in the same commit as the code that needs the change.
+The interpreter types in `workflows/crates/flow` (`TaskState`, `TaskEvent`, `Effect`, `RunStep`, `Projection`, `TaskDocument`) are authoritative. This file only adds storage and the read API. Change it in the same commit as the code that needs the change. The migrations in `workflows/migrations/2026101600000*` are the implementation.
 
 ## Postgres schema `engine` (owned by workflows; replaces `workflows`/`workflows_api`)
 | Table | Columns (key ones) | Notes |
 |---|---|---|
-| `tasks` | `id bigserial`, `project text`, `repo text`, `binding text`, `workflow_ref text`, `state jsonb` (TaskState), `resolved jsonb` (Resolved, pinned), `origins jsonb`, `created_at`, `updated_at`, `ended_at` | `state` and `resolved` are opaque to everything but the engine |
-| `subjects` | `task_id`, `kind text` (issue, pull_request, chat_thread), `key text unique` (`github:o/r#n`), `url`, `linked_at` | An object belongs to at most one live task (partial unique index where the task is not ended) |
-| `relations` | `task_id`, `kind text` (parent, child, blocked_by), `target_key text`, `source text` | `blocks` is derived |
-| `events` | `id bigserial`, `dedupe_key text unique`, `project`, `subject_key`, `task_id null`, `type text`, `payload jsonb` (a catalog event), `received_at`, `processed_at` | The inbox. Unrouted events are processed with no task (kept for audit) |
-| `transitions` | `task_id`, `event_id`, `from jsonb`, `to jsonb`, `effects jsonb`, `at` | Append-only, used for replay |
-| `jobs` | `id`, `task_id`, `kind text` (run_step, steer, stop_step, call_action, refresh_fact), `input jsonb`, `status`, `attempt`, `run_after`, `lease_owner`, `lease_until`, `output jsonb`, `idempotency_key unique`, `priority int`, `concurrency_group text null` | The generic executor queue. No per-kind logic beyond dispatch |
-| `step_runs` | `run_id text pk`, `task_id`, `node`, `step`, `attempt`, `runtime`, `model`, `started_at`, `ended_at`, `active_secs`, `queue_secs`, `exit`, `tokens jsonb`, `cost_usd numeric`, `resumes int`, `stalls int`, `steers int`, `sandbox jsonb` | Metrics (ADR-0022 §10) |
-| `session_events` | `run_id`, `seq int`, `at`, `kind text` (prompt, user, assistant, thinking, tool_call, tool_result, usage, steer, system, stdout, stderr), `payload jsonb`, `truncated bool`, PK `(run_id, seq)` | Partitioned by month on `at`; GIN index on `payload`; redacted before insert |
+| `tasks` | `id bigserial`, `project text`, `repo text`, `binding text`, `workflow_ref text`, `state jsonb` (TaskState), `resolved jsonb` (Resolved, pinned), `origins jsonb`, `started_by`, `created_at`, `updated_at`, `ended_at` | `state` and `resolved` are opaque to everything but the engine. `started_by` is the login whose event started the task (user-scope secrets) |
+| `subjects` | `task_id`, `kind text` (issue, pull_request, chat_thread), `key text` (`github:o/r#n`), `url`, `linked_at`, `ended bool` | An object belongs to at most one live task (unique index on `key` where not `ended`) |
+| `relations` | `task_id`, `kind text` (parent, child, blocked_by), `target_key text` (a subject key or `task:<id>`), `source text` | `blocks` is derived |
+| `events` | `id bigserial`, `dedupe_key text unique`, `project`, `subject_key`, `task_id null`, `type text`, `payload jsonb`, `received_at`, `processed_at`, `note` | The inbox. `type` is a catalog type (payload = a catalog `Event`), `ui.<kind>` (from `submit`) or `engine:<kind>` (payload = a `TaskEvent`). Unrouted events are processed with no task and a `note` (kept for audit) |
+| `transitions` | `task_id`, `event_id`, `from_state jsonb`, `to_state jsonb` (`{status, node, pending}`), `effects jsonb`, `at` | Append-only, used for replay |
+| `jobs` | `id`, `task_id`, `project`, `kind text` (run_step, steer, stop_step, call_action, refresh_fact), `input jsonb`, `status` (queued, running, done, blocked), `attempt`, `run_after`, `lease_owner`, `lease_until`, `output jsonb`, `error`, `idempotency_key unique`, `priority int`, `concurrency_group text null`, `concurrency_max` | The generic executor queue. One backoff (`base·2^n`, capped at 10 min) for infrastructure errors; `blocked` waits on a human (a missing secret) until `resume` |
+| `timers` | `task_id`, `timer_id`, `fire_at`, `fired` | `SetTimer` → absolute wake → `Timer` event |
+| `step_runs` | `run_id text pk`, `task_id`, `project`, `node`, `step`, `attempt`, `runtime`, `model`, `queued_at`, `started_at`, `ended_at`, `last_activity_at`, `active_secs`, `queue_secs`, `exit`, `tokens jsonb` (`{input, output, cache_read, cache_creation, models}`), `cost_usd numeric`, `resumes int`, `stalls int`, `steers int`, `sandbox jsonb` | Metrics (ADR-0022 §10) |
+| `session_events` | `run_id`, `seq int`, `at`, `kind text` (prompt, user, assistant, thinking, tool_call, tool_result, usage, steer, system, stdout, stderr), `payload jsonb`, `truncated bool`, PK `(run_id, seq, at)` | Partitioned by month on `at` (plus a default partition); GIN index on `payload`; redacted before insert; payload capped at 1 MB (head and tail) |
 | `facts` | `task_id`, `name text`, `value jsonb`, `source text`, `at` | Verified only (git, GitHub) |
-| `secrets` | `scope text` (user, project, instance), `owner text`, `name text`, `ciphertext bytea`, `updated_at` | Encrypted with a key from a Kubernetes Secret |
-| `projection` | `task_id pk`, `project`, `title`, `subjects jsonb`, `status`, `end_status`, `phase`, `node`, `column`, `waiting_on`, `reason`, `text`, `actions jsonb`, `artifacts jsonb`, `needs_you bool`, `cost_usd`, `updated_at` | Written in the same transaction as each transition. **The UI's only task source.** `NOTIFY engine_projection, '<task_id>'` |
+| `secrets` | `scope text` (user, project, instance), `owner text` (`''` for instance), `name text`, `ciphertext bytea`, `pending text`, `updated_at` | AES-256-GCM, `nonce(12) ‖ ciphertext+tag`, key `ENZARB_SECRETS_KEY` (32 bytes, base64, from a Kubernetes Secret). `secret_set` writes `pending`; the engine encrypts it on its next tick |
+| `projection` | `task_id pk`, `project`, `repo`, `workflow`, `title`, `subjects jsonb`, `status`, `end_status`, `phase`, `node`, `column`, `waiting_on text`, `reason`, `text`, `actions jsonb`, `artifacts jsonb`, `needs_you bool`, `cost_usd`, `created_at`, `updated_at` | Written in the same transaction as each transition. **The UI's only task source.** `NOTIFY engine_projection, '<task_id>'` |
+| `resolutions` | `project`, `repo`, `board jsonb`, `view jsonb`, `updated_at` | What the engine last resolved, for `board_v`/`workflow_v` |
+| `chats` | `run_id` (`chat-<id>`), `project`, `user`, `title`, `started_at` | Chats are not tasks |
+| `sandbox_stats` | `project`, `sandbox`, `at`, `run_ids text[]`, cgroup counters | Samples attributed to the step runs running at the time |
+| `sandbox_holds` | `project`, `generation`, `since` | No new step starts while a sandbox roll is pending |
 
-## Read and write API for the UI (schema `engine_api`, SQL, granted to the UI role)
+NOTIFY channels: `engine_projection` (task id), `engine_events` (inbox id, wakes the reducer), `engine_session` (`<run_id>:<seq>`).
+
+## Read and write API (schema `engine_api`, SQL, SECURITY DEFINER)
 - **Projection reads:**
-  - `engine_api.task_v`: projection rows plus `project`;
-  - `engine_api.task_detail(task_id)`: the projection plus `transitions` (a summary), `step_runs` and `artifacts` with content.
-- **Session reads:** `engine_api.session_v(run_id, after_seq, limit)`, and a search `engine_api.session_search(project, query)`.
-- **Board:** `engine_api.board_v(project)` returns the resolved board (`columns[]`) for a Project.
-- **Workflow viewer:** `engine_api.workflow_v(project, repo)` returns the resolved bindings and workflows (the phase list, params, exits, origins), read-only.
-- **Metrics:** `engine_api.metrics(project, from, to)`, aggregated by workflow, phase and step.
-- **Write path:** `engine_api.submit(task_id, actor jsonb, kind text, data jsonb) -> event_id`, with kind one of:
-  - `command` (`{command, args}`, which is what a declared action button posts);
-  - `comment` (`{body}`);
-  - `cancel`, `resume`, `stop`, `steer` (`{body}`).
+  - `engine_api.task_v`: projection columns plus `repo`, `workflow_ref`, `created_at`, `ended_at`; `artifacts` without `content`;
+  - `engine_api.task_detail(task_id) -> jsonb`: the `task_v` row plus `artifacts` (with content), `transitions` (`[{at, event_type, from: {status, node}, to: {status, node}, effects: <count>}]`), `step_runs` (table columns), `facts` (`{name: value}`) and `relations`.
+- **Session reads:** `engine_api.session_v(run_id, after_seq, limit)` returns `(seq, at, kind, payload, truncated)`; `engine_api.session_search(project, query)` returns `(run_id, task_id, seq, at, kind, snippet)`.
+- **Board:** `engine_api.board_v(project) -> jsonb` `{columns: [{id, title, limit}], defaults}` (empty columns until something resolved).
+- **Workflow viewer:** `engine_api.workflow_v(project, 'owner/repo') -> jsonb` `{bindings, workflows: [{ref, origin, description, phases: [{id, use, origin, params, with, exits, routes, graph: {nodes, edges}}], origins}], lint: [errors]}` or null.
+- **Metrics:** `engine_api.metrics(project, from, to)` returns `(workflow, phase, step, runs, avg_wall_secs, active_secs, queue_secs, input_tokens, output_tokens, cost_usd, retries, resumes, stalls, steers)`.
+- **Write path:** `engine_api.submit(task_id, actor jsonb, kind text, data jsonb) -> event_id`, kind one of `command` (`{command, args}`), `comment` (`{body}`), `cancel`, `resume`, `stop`, `steer` (`{body}`). It inserts an inbox event of type `ui.<kind>` (`{source: ui, actor, kind, data}`). The engine turns it into a `comment` catalog event on the task (`/command args`, `/stop`, `/cancel`, or the body), with `actor.can_write` filled from GitHub; `resume` resumes a paused task (writers only) and re-queues jobs blocked on a human. The UI never validates state.
+- **Secrets:** `engine_api.secret_set(scope, owner, name, plaintext)`, `secret_list(scope, owner) -> (name, updated_at)` (names only), `secret_delete(scope, owner, name) -> boolean`.
+- **Chat:** `engine_api.chat_v(user) -> (run_id, project, title, started_at, last_at, events)`; chat sessions use `session_events` with `run_id` `chat-<id>`.
+- **Connector receiver:** `engine_api.ingest(dedupe_key, project, subject_key, type, payload) -> bigint` (NULL for a duplicate), and `engine_api.secret_for_receiver(project, name) -> (ciphertext, pending)` for the custom-event HMAC.
 
-  It inserts a catalog event with source `ui`. The engine decides everything; the UI never validates state.
-- **Secrets:** `engine_api.secret_set(scope, owner, name, plaintext)` and `secret_list(scope, owner)`, which returns names only.
-- **Chat:** chats are not tasks, but their sessions use `session_events` keyed by a `run_id` prefixed `chat-`. `engine_api.chat_v(user)` lists them.
+Grants (in the migration, re-asserted each tick by `engine.apply_grants()`): `enzarb_ui` gets `task_v` and the UI functions; `enzarb_connectors` gets `ingest` and `secret_for_receiver`; `enzarb_realtime` gets `CONNECT` and `task_v`; `enzarb_workflows` gets the `engine` tables.
 
-## Sandbox protocol (proto, defined in M4)
+## Sandbox protocol (proto)
+Defined in `proto/crates/enzarb-proto/src/step.rs` and mirrored in `proto/ts`; features `steps`.
 - **Step frames:**
-  - `step_start {run_id, attempt, workspace(s), exec: agent{runtime, prompt, model, result_schema?, outputs[], secrets{env}, github_token} | command{run, tools, outputs}}`;
-  - `step_steer {run_id, text}`;
-  - `step_stop {run_id}`;
-  - `step_resume {run_id}`;
-  - `session_event {run_id, seq, …}` (streamed);
-  - `step_finished {run_id, exit, outputs{}, result?, git{branch, head_sha, pushed}}`.
-
-  The git facts are re-verified by the engine.
-- **Chat:** `chat_*` frames as today (ADR-0014), re-pointed at runtimes and session capture.
+  - `step_start {run_id, attempt, task_id, workspaces: [{repo, url, mode, branch, base, push, token}], exec: agent{runtime{name, install, protocol, command, env, capabilities}, model, prompt, result_schema?} | command{run, tools}, outputs{name: {file, format, optional}}, env{NAME: secret}, github_token?}` → `step_accepted {run_id, state, existing}`;
+  - `step_steer {run_id, text}`; `step_stop {run_id}`; `step_resume {run_id}`;
+  - `step_status {run_id, after_seq}` → replayed `session_event`s, then `step_state {run_id, state: running|interrupted|finished|unknown, result?}`, and subscribes the session;
+  - `session_event {run_id, seq, at, kind, payload, truncated}` (streamed);
+  - `step_finished {run_id, exit, outputs{}, result?, git: [{repo, branch, head_sha, pushed}], usage?, error?}`.
+- **Resume:** the sandbox never persists secrets. After a sandbox restart a running step is `interrupted`; the engine re-sends `step_start` with the same `run_id`, which continues it (ACP `session/load`), never restarts it. (`step_resume` without secrets answers `error {code: secrets_required}`.)
+- **Git facts** are re-verified by the engine (`branch_head == head_sha` on GitHub) before `StepFinished` reaches the interpreter; `result` is validated against its schema (invalid → exit `failure`).
+- **Chat:** `chat_*` frames as before (ADR-0014), captured as `session_event`s of run `chat-<id>`.
 
 ## Connectors (M5)
-- **Event catalog:** each provider webhook maps to a `flow::events` catalog event.
-- **Generic actions:**
+- **Event catalog:** `connector-github::catalog::map` maps each webhook to a `flow::events` catalog event; the receiver calls `engine_api.ingest`. Signed custom events: `POST /v1/events/<project>`, `X-Enzarb-Signature: sha256=<hex hmac>`, key = Project secret `ENZARB_EVENTS_SECRET_NAME` (default `events_hmac`); payloads are validated against the workflow's declared schema by the engine.
+- **Generic actions** (engine `actions.rs`; targets default to the task's subjects, `number`/`repo` override):
   - `comment`, `label`, `unlabel`;
-  - `open_pull_request`, `update_pull_request`, `merge_pull_request`;
+  - `open_pull_request` (links the PR as a subject), `update_pull_request`, `merge_pull_request`;
   - `create_issues`, `close_issue`, `set_base`, `update_branch`, `delete_branch`;
   - `read_file`, `resolve_ref`.
 - **Facts:**
-  - `ci(sha)` with failing checks and log excerpts;
-  - `reviews(pr)`, `mergeable(pr)`, `contains(sha, ref)`;
-  - `dependencies(issue)`, `permission(actor, repo)`.
+  - `ci` `{sha, state, failing: [{name, kind, url, conclusion, log_excerpt, actionable, job_id?, run_id?}]}` (ignore regex `ENZARB_CI_IGNORE_CHECKS`);
+  - `reviews`, `mergeable`, `merged`, `git`, `dependencies`; `contained_in_tag` is not implemented yet (null).
