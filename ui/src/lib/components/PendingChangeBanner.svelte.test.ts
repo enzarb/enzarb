@@ -39,3 +39,18 @@ describe('PendingChangeBanner', () => {
 		await expect.element(page.getByTestId('pending-change')).not.toBeInTheDocument();
 	});
 });
+
+describe('PendingChangeBanner roll now', () => {
+	it('offers Roll now only while a change is pending and an action is given', async () => {
+		const roll = vi.fn().mockResolvedValue(undefined);
+		const view = render(PendingChangeBanner, { change, runningJobs: 1, roll });
+		await expect.element(page.getByRole('button', { name: 'Roll now' })).toBeVisible();
+		await view.rerender({ change: null, runningJobs: 0, roll });
+		await expect.element(page.getByRole('button', { name: 'Roll now' })).not.toBeInTheDocument();
+	});
+
+	it('shows no button without the action', async () => {
+		render(PendingChangeBanner, { change, runningJobs: 1 });
+		await expect.element(page.getByRole('button', { name: 'Roll now' })).not.toBeInTheDocument();
+	});
+});

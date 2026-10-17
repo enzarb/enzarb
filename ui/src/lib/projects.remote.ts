@@ -167,6 +167,23 @@ export const setMaxRuns = command(
 	}
 );
 
+/** Owner-only; releases the queued sandbox change for the generation the user saw (ADR-0023). */
+export const rollSandboxNow = command(
+	v.object({ name: NameArg, generation: v.pipe(v.number(), v.integer(), v.minValue(1)) }),
+	async ({ name, generation }) => {
+		try {
+			await service().rollNow(name, generation);
+			projectCache.invalidate(getRequestEvent().locals.user!.login);
+		} catch (e) {
+			if (e instanceof KubeError && e.kind === 'not-found') error(404, 'Project not found');
+			if (e instanceof KubeError && e.kind === 'conflict') error(409, e.message);
+			throw e;
+		}
+		await getProject(name).refresh();
+		await listProjects().refresh();
+	}
+);
+
 /** Owner-only; the change is queued by the operator until running jobs finish (drain-first). */
 export const setSandboxResources = command(
 	v.object({ name: NameArg, ...SandboxResourcesSchema.entries }),

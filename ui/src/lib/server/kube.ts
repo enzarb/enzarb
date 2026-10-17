@@ -28,6 +28,8 @@ export interface ProjectStore {
 	delete(name: string): Promise<void>;
 	/** JSON merge patch on `spec` (recursive); a `null` value removes the field. */
 	update(name: string, spec: SpecPatch): Promise<Project>;
+	/** JSON merge patch on `metadata.annotations` only; a `null` value removes the annotation. */
+	annotate(name: string, annotations: Record<string, string | null>): Promise<Project>;
 }
 
 export interface SpecPatch {
@@ -80,6 +82,16 @@ export function createProjectStore(kc = new KubeConfig()): ProjectStore {
 			try {
 				return (await api.patchClusterCustomObject(
 					{ ...ref, name, body: { spec } },
+					setHeaderOptions('Content-Type', PatchStrategy.MergePatch)
+				)) as Project;
+			} catch (e) {
+				wrap(e);
+			}
+		},
+		async annotate(name, annotations) {
+			try {
+				return (await api.patchClusterCustomObject(
+					{ ...ref, name, body: { metadata: { annotations } } },
 					setHeaderOptions('Content-Type', PatchStrategy.MergePatch)
 				)) as Project;
 			} catch (e) {

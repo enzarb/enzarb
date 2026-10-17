@@ -56,6 +56,17 @@ export function createMemoryProjectStore(initial: Project[] = [seedProject()]): 
 			need(name);
 			projects.delete(name);
 		},
+		async annotate(name, annotations) {
+			const p = need(name);
+			const merged = { ...p.metadata.annotations };
+			for (const [k, v] of Object.entries(annotations)) {
+				if (v === null) delete merged[k];
+				else merged[k] = v;
+			}
+			const next = { ...p, metadata: { ...p.metadata, annotations: merged } };
+			projects.set(name, next);
+			return next;
+		},
 		async update(name, spec) {
 			const p = need(name);
 			if (spec.maxRuns !== undefined) {

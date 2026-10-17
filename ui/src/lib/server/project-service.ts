@@ -7,6 +7,9 @@ import {
 } from '#lib/sandbox-resources.ts';
 import { KubeError, type ProjectStore } from './kube.ts';
 
+/** Operator contract (ADR-0023): releases the pending sandbox roll with this exact generation. */
+export const ANNOTATION_ROLL_NOW_GENERATION = 'enzarb.dev/roll-now-generation';
+
 /** Owner-scoped project operations; everything a remote function does goes through here. */
 export function projectService(store: ProjectStore, owner: string) {
 	const mine = (p: Project | null): p is Project => !!p && p.spec.owner === owner;
@@ -32,6 +35,17 @@ export function projectService(store: ProjectStore, owner: string) {
 			const p = await store.get(name);
 			if (!mine(p)) throw new KubeError('not-found', 'Project not found');
 			await store.update(name, { maxRuns });
+		},
+		/**
+		 * "Roll now": asks the operator to restart the sandbox pod for the pending change the user saw.
+		 * Not-found for non-owners; `conflict` when nothing is pending or the generation moved on.
+		 */
+		async rollNow(name: string, generation: number): Promise<void> {
+			const p = await store.get(name);
+			if (!mine(p)) throw new KubeError('not-found', 'Project not found');
+			if (p.status?.pendingChange?.generation !== generation)
+				throw new KubeError('conflict', 'The pending change moved on; review it and try again');
+			await store.annotate(name, { [ANNOTATION_ROLL_NOW_GENERATION]: String(generation) });
 		},
 		/**
 		 * Sets `spec.sandbox.{cpu,memory,storage}`; null cpu/memory clear them. Storage may only grow
