@@ -9,7 +9,7 @@
 	import PendingChangeBanner from '#lib/components/PendingChangeBanner.svelte';
 	import ProjectHeader from '#lib/components/ProjectHeader.svelte';
 	import Skeleton from '#lib/components/ui/Skeleton.svelte';
-	import { getProject } from '#lib/projects.remote.ts';
+	import { getProject, rollSandboxNow } from '#lib/projects.remote.ts';
 	import { setProjectContext } from '#lib/project-context.svelte.ts';
 	import { watchTasks } from '#lib/live.ts';
 	import { listTasks } from '#lib/tasks.remote.ts';
@@ -95,7 +95,11 @@
 				sandboxName={p.sandboxName}
 				pathname={page.url.pathname}
 			/>
-			<PendingChangeBanner change={p.pendingChange} {runningJobs} />
+			<PendingChangeBanner
+				change={p.pendingChange}
+				{runningJobs}
+				roll={(generation) => rollSandboxNow({ name: p.name, generation })}
+			/>
 			<div class="ez-tabnav-panel">
 				{@render children()}
 			</div>

@@ -13,16 +13,14 @@
 # chore/docs/ci/test/refactor-only history releases nothing. First release is 0.1.0.
 set -euo pipefail
 
-# Path dependencies (keep in sync with the `paths:` filters of .github/workflows/ci-<dir>.yml).
-deps_of() { # <dir>
-  case $1 in
-    sandbox-container) echo proto ;;
-    sandbox-proxy) echo proto operator ;;
-    workflows) echo operator connectors proto ;;
-    ui) echo proto ;;
-    connectors) echo workflows/crates/flow ;;
-    *) echo ;;
-  esac
+# Path dependencies come from scripts/monorepo/graph.generated.sh (scripts/monorepo/gen-graph.sh).
+# shellcheck source=scripts/monorepo/graph.generated.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../../scripts/monorepo/graph.generated.sh"
+
+deps_of() { # <dir>   path-dependency dirs and non-code inputs (git pathspecs), empty if unknown
+  [[ $1 =~ ^[A-Za-z0-9_-]+$ ]] || return 0
+  local -n _deps="DEPS_${1//-/_}"
+  echo "${_deps[@]+"${_deps[@]}"}"
 }
 
 release_paths() { # <dir>

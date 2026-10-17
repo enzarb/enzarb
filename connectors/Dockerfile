@@ -1,25 +1,39 @@
 # Build from the monorepo root (path dep on workflows/crates/flow):
 #   docker build -f connectors/Dockerfile .
 FROM lukemathwalker/cargo-chef:latest-rust-1-bookworm AS chef
-WORKDIR /src/connectors
+WORKDIR /src
 
 FROM chef AS planner
-COPY workflows/crates/flow /src/workflows/crates/flow
-COPY connectors/rust-toolchain.toml connectors/Cargo.toml connectors/Cargo.lock ./
-COPY connectors/crates crates
-COPY connectors/bin bin
+# Every workspace member is part of the recipe: the root workspace resolves as a whole. The recipe
+# only changes when a manifest or Cargo.lock does, so the cook layer below survives source edits.
+# BEGIN generated:copy
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY connectors/bin/receiver connectors/bin/receiver
+COPY connectors/crates/connector connectors/crates/connector
+COPY connectors/crates/connector-github connectors/crates/connector-github
+COPY operator/crates/enzarb-crds operator/crates/enzarb-crds
+COPY operator/crates/operator operator/crates/operator
+COPY operator/deploy operator/deploy
+COPY proto/crates/enzarb-proto proto/crates/enzarb-proto
+COPY proto/vectors proto/vectors
+COPY realtime realtime
+COPY sandbox-container sandbox-container
+COPY sandbox-proxy sandbox-proxy
+COPY updater updater
+COPY workflows/crates/engine workflows/crates/engine
+COPY workflows/crates/enzarb-workflows workflows/crates/enzarb-workflows
+COPY workflows/crates/flow workflows/crates/flow
+COPY workflows/migrations workflows/migrations
+# END generated:copy
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS build
-# Path deps outside this workspace are not in the chef recipe; copy them before cooking.
-COPY workflows/crates/flow /src/workflows/crates/flow
-COPY --from=planner /src/connectors/recipe.json recipe.json
-COPY connectors/rust-toolchain.toml ./
+COPY rust-toolchain.toml ./
+COPY --from=planner /src/recipe.json recipe.json
 # Dependency layer: cached until the dependency graph changes.
 RUN cargo chef cook --release --locked --recipe-path recipe.json -p enzarb-receiver --bin receiver
-COPY connectors/Cargo.toml connectors/Cargo.lock ./
-COPY connectors/crates crates
-COPY connectors/bin bin
+# Real sources of every workspace member (the planner copied them all), not cargo-chef 0.0.1 stubs: --locked fails otherwise.
+COPY --from=planner /src/ ./
 RUN cargo build --release --locked -p enzarb-receiver --bin receiver
 
 FROM debian:bookworm-slim
@@ -27,7 +41,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 receiver
-COPY --from=build /src/connectors/target/release/receiver /usr/local/bin/receiver
+COPY --from=build /src/target/release/receiver /usr/local/bin/receiver
 USER 10001
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/receiver"]

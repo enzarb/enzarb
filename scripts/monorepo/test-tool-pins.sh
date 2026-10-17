@@ -12,7 +12,7 @@ fail=0
 # fresh <dir>: a copy of the files the check reads.
 fresh() {
   mkdir -p "$1"
-  (cd "$src" && cp --parents mise.toml ./*/mise.toml ./*/rust-toolchain.toml ./*/Dockerfile kubernetes/installer/Dockerfile \
+  (cd "$src" && cp --parents mise.toml rust-toolchain.toml ./*/mise.toml ./*/Dockerfile kubernetes/installer/Dockerfile \
     kubernetes/hack/versions.env sandbox-container/scripts/check-playwright-version.sh "$1") 2>/dev/null || true
   mkdir -p "$1/ui"
   cp "$src/ui/package-lock.json" "$1/ui/"

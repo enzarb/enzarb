@@ -2,42 +2,34 @@ name: ci-sandbox-container
 on:
   push:
     branches: [main]
-    paths:
-      - 'sandbox-container/**'
-      - 'proto/**'
-      - ui/package-lock.json
-      - .github/workflows/ci-sandbox-container.yml
-      - .github/workflows/_rust.yml
-      - .github/workflows/_docker.yml
-      - .github/actions/setup-node/**
   pull_request:
-    paths:
-      - 'sandbox-container/**'
-      - 'proto/**'
-      - ui/package-lock.json
-      - .github/workflows/ci-sandbox-container.yml
-      - .github/workflows/_rust.yml
-      - .github/workflows/_docker.yml
-      - .github/actions/setup-node/**
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
+  changes:
+    uses: ./.github/workflows/_changes.yml
+    with:
+      component: sandbox-container
   playwright-version:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: bash sandbox-container/scripts/check-playwright-version.sh
   ci:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     uses: ./.github/workflows/_rust.yml
     permissions:
       contents: read
       packages: write
     with:
       dir: sandbox-container
-      cargo-args: --locked
+      cargo-args: --locked -p sandbox-init
       node: true
       image: enzarb-sandbox
       context: .

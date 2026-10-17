@@ -2,15 +2,7 @@ name: ci-helm
 on:
   push:
     branches: [main]
-    paths:
-      - 'helm/**'
-      - mise.toml
-      - .github/workflows/ci-helm.yml
   pull_request:
-    paths:
-      - 'helm/**'
-      - mise.toml
-      - .github/workflows/ci-helm.yml
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -19,7 +11,13 @@ permissions:
 env:
   MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
 jobs:
+  changes:
+    uses: ./.github/workflows/_changes.yml
+    with:
+      component: helm
   chart:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:

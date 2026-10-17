@@ -3,30 +3,45 @@
 # Build from the monorepo root (in-repo path dep on proto/):
 #   docker build -f sandbox-container/Dockerfile -t enzarb-sandbox .
 FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
-WORKDIR /src/sandbox-container
+WORKDIR /src
 
-# Dependency recipe: only changes when Cargo.toml/Cargo.lock change.
+# Dependency recipe: only changes when a Cargo.toml/Cargo.lock changes.
 FROM chef AS planner
-COPY sandbox-container/rust-toolchain.toml sandbox-container/Cargo.toml sandbox-container/Cargo.lock ./
-COPY sandbox-container/src ./src
+# Every workspace member is part of the recipe: the root workspace resolves as a whole. The recipe
+# only changes when a manifest or Cargo.lock does, so the cook layer below survives source edits.
+# BEGIN generated:copy
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY connectors/bin/receiver connectors/bin/receiver
+COPY connectors/crates/connector connectors/crates/connector
+COPY connectors/crates/connector-github connectors/crates/connector-github
+COPY operator/crates/enzarb-crds operator/crates/enzarb-crds
+COPY operator/crates/operator operator/crates/operator
+COPY operator/deploy operator/deploy
+COPY proto/crates/enzarb-proto proto/crates/enzarb-proto
+COPY proto/vectors proto/vectors
+COPY realtime realtime
+COPY sandbox-container sandbox-container
+COPY sandbox-proxy sandbox-proxy
+COPY updater updater
+COPY workflows/crates/engine workflows/crates/engine
+COPY workflows/crates/enzarb-workflows workflows/crates/enzarb-workflows
+COPY workflows/crates/flow workflows/crates/flow
+COPY workflows/migrations workflows/migrations
+# END generated:copy
 RUN cargo chef prepare --recipe-path recipe.json
 
 # Dependency layer (cargo-chef cook): cached by the GHA layer cache while recipe.json is unchanged.
 FROM chef AS build
-# Path deps outside this workspace are not in the chef recipe; copy them before cooking.
-COPY proto/Cargo.toml proto/Cargo.lock /src/proto/
-COPY proto/crates /src/proto/crates
-COPY --from=planner /src/sandbox-container/recipe.json recipe.json
-COPY sandbox-container/rust-toolchain.toml ./
+COPY --from=planner /src/recipe.json recipe.json
+COPY rust-toolchain.toml ./
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo chef cook --release --locked --recipe-path recipe.json
-# Workspace crates only.
-COPY sandbox-container/Cargo.toml sandbox-container/Cargo.lock ./
-COPY sandbox-container/src ./src
+    cargo chef cook --release --locked --recipe-path recipe.json -p sandbox-init
+# Real sources of every workspace member (the planner copied them all), not cargo-chef 0.0.1 stubs: --locked fails otherwise.
+COPY --from=planner /src/ ./
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo build --release --locked --bin sandbox-init \
+    cargo build --release --locked -p sandbox-init --bin sandbox-init \
  && cp target/release/sandbox-init /sandbox-init
 
 # Node stage: download node, install the adapter, drop what the runtime does not need.

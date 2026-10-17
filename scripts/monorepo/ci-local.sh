@@ -30,13 +30,13 @@ step() { # step <name> <dir> <command...>
 
 nextest() { mise exec cargo:cargo-nextest@latest -- cargo nextest "$@"; }
 
-rust() { # rust <dir> <cargo-args...>   (_rust.yml: fmt, check-cargo-deps, clippy -D warnings, nextest, doctests)
-  local dir=$1
+rust() { # rust <name> <cargo-args...>   (_rust.yml: fmt, check-cargo-deps, clippy -D warnings, nextest, doctests; one root workspace, packages picked with -p)
+  local name=$1
   shift
-  step "$dir fmt" "$dir" cargo fmt --all --check
-  step "$dir clippy" "$dir" cargo clippy --all-targets "$@" -- -D warnings
-  step "$dir nextest" "$dir" nextest run "$@"
-  step "$dir doctests" "$dir" cargo test --doc "$@"
+  step "$name fmt" . cargo fmt --all --check
+  step "$name clippy" . cargo clippy --all-targets "$@" -- -D warnings
+  step "$name nextest" . nextest run "$@"
+  step "$name doctests" . cargo test --doc "$@"
 }
 
 pg() { [ -n "${ENZARB_TEST_PG_URL:-}" ] || eval "$(mise run test:pg)"; export ENZARB_TEST_PG_URL; }
@@ -46,33 +46,37 @@ for g in $groups; do
   case $g in
     monorepo)
       step "check-cargo-deps" . scripts/monorepo/check-cargo-deps.sh
+      step "graph-fresh" . scripts/monorepo/gen-graph.sh --check
+      step "test-graph" . scripts/monorepo/test-graph.sh
       step "test-affected" . scripts/monorepo/test-affected.sh
       step "test-mechanical" . bash scripts/monorepo/test-mechanical.sh
-      step "shellcheck" . shellcheck --exclude=SC1091 scripts/monorepo/*.sh .mise/tasks/test/pg
+      step "check-tool-pins" . scripts/monorepo/check-tool-pins.sh
+      step "test-tool-pins" . bash scripts/monorepo/test-tool-pins.sh
+      step "shellcheck" . shellcheck --exclude=SC1091 scripts/monorepo/*.sh .github/scripts/*.sh .mise/tasks/test/pg .mise/tasks/graph/gen
       step "actionlint" . docker run --rm -v "$ROOT:/repo" -w /repo rhysd/actionlint:1.7.7 -color
       ;;
     proto)
-      step "proto fmt" proto cargo fmt --all --check
-      step "proto clippy" proto cargo clippy --workspace --all-targets -- -D warnings
+      step "proto fmt" . cargo fmt --all --check
+      step "proto clippy" . cargo clippy -p enzarb-proto --all-targets -- -D warnings
       step "proto ctrl.gen.ts" proto bash ../.mise/tasks/proto/gen --check
-      step "proto clippy all-features" proto cargo clippy --workspace --all-targets --all-features -- -D warnings
-      step "proto nextest" proto nextest run --workspace
-      step "proto nextest all-features" proto nextest run --workspace --all-features
-      step "proto doctests" proto cargo test --workspace --doc --all-features
+      step "proto clippy all-features" . cargo clippy -p enzarb-proto --all-targets --all-features -- -D warnings
+      step "proto nextest" . nextest run -p enzarb-proto
+      step "proto nextest all-features" . nextest run -p enzarb-proto --all-features
+      step "proto doctests" . cargo test -p enzarb-proto --doc --all-features
       step "proto npm ci" proto npm ci
       step "proto npm check" proto npm run check
       step "proto npm test" proto npm test
       ;;
-    operator) rust operator --all-features ;;
-    connectors) pg; rust connectors --workspace --all-features ;;
-    workflows) pg; rust workflows --workspace ;;
-    realtime) pg; rust realtime ;;
-    sandbox-proxy) rust sandbox-proxy ;;
+    operator) rust operator -p enzarb-crds -p enzarb-sandbox-operator --all-features ;;
+    connectors) pg; rust connectors -p enzarb-connector -p enzarb-connector-github -p enzarb-receiver --all-features ;;
+    workflows) pg; rust workflows -p engine -p enzarb-workflows -p enzarb-flow ;;
+    realtime) pg; rust realtime -p enzarb-realtime ;;
+    sandbox-proxy) rust sandbox-proxy -p enzarb-sandbox-proxy ;;
     sandbox-container)
       step "sandbox-container playwright version" . bash sandbox-container/scripts/check-playwright-version.sh
-      rust sandbox-container --locked
+      rust sandbox-container --locked -p sandbox-init
       ;;
-    updater) rust updater ;;
+    updater) rust updater -p enzarb-updater ;;
     ui)
       step "ui npm ci" ui npm ci
       step "ui check" ui npm run check

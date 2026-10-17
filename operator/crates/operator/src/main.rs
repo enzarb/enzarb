@@ -30,11 +30,11 @@ struct Args {
     #[arg(long, env = "ENZARB_SANDBOX_IMAGE", default_value = "")]
     sandbox_image: String,
     /// How long a pending pod-shape change (image, env, resources, ...) waits for the drain ack
-    /// (`enzarb.dev/drained-generation`) or idleness before the pod is deleted anyway. Humantime-style: `30s`, `10m`.
+    /// (`enzarb.dev/drained-generation`), a roll-now (`enzarb.dev/roll-now-generation`) or idleness before the pod is deleted anyway. Humantime-style: `30s`, `10m`.
     #[arg(
         long,
         env = "ENZARB_SANDBOX_ROLL_DRAIN_TIMEOUT",
-        default_value = "2h",
+        default_value = "30m",
         value_parser = parse_duration
     )]
     sandbox_roll_drain_timeout: Duration,

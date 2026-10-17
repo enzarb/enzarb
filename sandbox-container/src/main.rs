@@ -12,6 +12,7 @@ use sandbox_init::{
     repos::RepoLocks,
     serve,
     steps::StepManager,
+    workspace_prune::WorkspacePruner,
 };
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::sync::CancellationToken;
@@ -84,6 +85,13 @@ async fn run() -> anyhow::Result<()> {
     let steps =
         StepManager::new(config.clone(), reaper.clone(), locks.clone()).with_activity(gate.clone());
     steps.recover();
+    // Removes build caches from idle task workspaces when the workspace runs low on space.
+    let ws_prune_task = WorkspacePruner::new(
+        config.workspace_prune.clone(),
+        config.workspace.clone(),
+        steps.clone(),
+    )
+    .spawn(prune_stop.clone());
     let chats = ChatManager::with_activity(config.clone(), reaper.clone(), locks, gate);
     chats.set_sink(steps.sink());
     chats.recover().await;
@@ -110,6 +118,7 @@ async fn run() -> anyhow::Result<()> {
     chats.shutdown(grace).await;
     prune_stop.cancel();
     let _ = prune_task.await;
+    let _ = ws_prune_task.await;
     // Then dockerd, so it stops its containers and releases its data root before the drain
     // completes (and before the blanket signal below hits containerd).
     dockerd.shutdown(grace).await;

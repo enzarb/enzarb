@@ -7,7 +7,7 @@ The tasks are in `.mise/tasks/dev/`:
 | Task | What it does |
 |---|---|
 | `mise run dev:cluster` | Creates kind cluster `enzarb` (from `kubernetes/kind/cluster.yaml`) if missing, installs gVisor into the nodes (`hack/kind-install-gvisor.sh`) and checks it with a `dmesg` probe pod. Applies `kubernetes/` in the staged order with `kubectl wait`, and runs a NetworkPolicy enforcement probe. |
-| `mise run dev:images [component...]` | Builds the images as `:dev` (root context for components with path deps) and `kind load`s them. Components: `ui sandbox-proxy sandbox operator receiver workflows`. No argument builds all six. |
+| `mise run dev:images [component...]` | Builds the images as `:dev` (repo root as context) and `kind load`s them. Components: `ui sandbox-proxy sandbox operator receiver workflows`. No argument builds all six. |
 | `mise run dev:secrets` | Creates namespace `enzarb` and Secret `enzarb-github` from `.env.dev`. |
 | `mise run dev:helm-deploy` | `dev:cluster`, `dev:images`, `dev:secrets`, then `helm upgrade --install enzarb helm/enzarb -f values-dev.yaml --set secrets.github.existingSecret=enzarb-github --wait`. Prints a checklist. |
 | `mise run dev:webhook-relay` | Relays smee.io deliveries to `https://enzarb.local/hooks/github`. |
@@ -22,8 +22,8 @@ Optional [lefthook](https://lefthook.dev) hooks (config: `lefthook.yml`, tool pi
 | `mise run hooks:install` | Runs `lefthook install`, writing the `pre-commit` and `pre-push` hooks (also works in git worktrees). |
 | `mise run hooks:uninstall` | Runs `lefthook uninstall`. |
 
-- **pre-commit** (staged files only, no network): `cargo fmt --all --check` per Rust component with staged `.rs` files; the Cargo guard (`scripts/monorepo/check-cargo-deps.sh`) when a `Cargo.toml`/`Cargo.lock` is staged; `npm run lint` in `ui/`; `shellcheck` on staged shell scripts; `mise run lint` (helm lint) when `helm/**` is staged.
-- **pre-push** (components affected by the pushed commits, `scripts/monorepo/affected.sh`, downstream components included): `cargo clippy --all-targets -- -D warnings` and `cargo test` per Rust component; `npm run check` and the server unit tests in `ui/`; `mise run compat` in `helm/` (it reads the previous `helm/v*` tag, so fetch tags). Export `ENZARB_TEST_PG_URL` first (see "Shared test Postgres") to avoid one container per test.
+- **pre-commit** (staged files only, no network): `cargo fmt --all --check` at the root when `.rs` files are staged; the Cargo guard (`scripts/monorepo/check-cargo-deps.sh`: one lockfile and toolchain file, every crate a workspace member) when a `Cargo.toml`/`Cargo.lock`/`rust-toolchain.toml` is staged; `npm run lint` in `ui/`; `shellcheck` on staged shell scripts; `mise run lint` (helm lint) when `helm/**` is staged.
+- **pre-push** (components affected by the pushed commits, `scripts/monorepo/affected.sh`, downstream components included): `cargo clippy -p <crates> --all-targets -- -D warnings` and `cargo test -p <crates>` per Rust component; `npm run check` and the server unit tests in `ui/`; `mise run compat` in `helm/` (it reads the previous `helm/v*` tag, so fetch tags). Export `ENZARB_TEST_PG_URL` first (see "Shared test Postgres") to avoid one container per test.
 - Hooks only check; they never modify files. If `ui/node_modules` is missing they run `npm ci` in `ui/` before the `ui` commands, so the checks are never silently skipped.
 - **Skip:** `git commit --no-verify`, `git push --no-verify`, or `LEFTHOOK=0` for all hooks. CI stays the source of truth.
 - Run by hand: `lefthook run pre-commit --all-files`, `lefthook run pre-push --all-files`.
@@ -34,7 +34,7 @@ The Postgres integration tests (`workflows/`, `connectors/` receiver, `realtime/
 
 ```
 eval "$(mise run test:pg)"   # starts (or reuses) container enzarb-test-pg, exports ENZARB_TEST_PG_URL
-cd workflows && cargo nextest run --workspace
+cargo nextest run -p engine -p enzarb-workflows -p enzarb-flow
 ```
 
 `mise run test:pg` prints `export ENZARB_TEST_PG_URL=postgres://postgres:postgres@127.0.0.1:55432/postgres` (port via `ENZARB_TEST_PG_PORT`, container name via `ENZARB_TEST_PG_NAME`) and leaves the container running. With the variable set, `engine::testing::TestDb` creates the runtime roles and a migrated template database `enzarb_template` once per server (rebuilt when the migrations change), and gives each test `CREATE DATABASE test_<unique> TEMPLATE enzarb_template`, dropped when the test ends. Tests that need a pristine cluster (the `enzarb-workflows` role check) still use their own container. Unset the variable to get the per-test containers back.
@@ -170,7 +170,7 @@ The first run pulls the image through the sandbox's NetworkPolicy (443 and DNS o
 - **Sandboxes are reachable from where they should not be.** The CNI does not enforce NetworkPolicy. Rerun `dev:cluster` (it probes) or switch to Calico as described above.
 - **Webhooks never arrive.** Check the smee channel URL matches the App's webhook URL, that `dev:webhook-relay` is running, and App settings, Advanced, Recent deliveries. A `401` from the receiver means `GITHUB_WEBHOOK_SECRET` does not match the App's secret; re-run `dev:secrets` and restart the receiver.
 - **Browser says "Cross-site POST form submissions are forbidden" (UI).** The Gateway must forward `X-Forwarded-Proto` and the UI needs `ENZARB_PUBLIC_URL=https://enzarb.local`; the chart sets both. Use `https://`, not `http://`.
-- **Docker build fails on a missing sibling dir.** `ui`, `sandbox-proxy`, `sandbox-container`, `workflows` and `connectors` use path dependencies on `proto/`, `operator/`, `connectors/` and `workflows/crates/flow`, so they build with the repo root as context (`docker build -f <dir>/Dockerfile .`); `dev:images` does this for you. No ssh keys or tokens are needed.
+- **Docker build fails on a missing sibling dir.** Every image builds the root Cargo workspace (and `ui` depends on `proto/`), so they all build with the repo root as context (`docker build -f <dir>/Dockerfile .`); `dev:images` does this for you. No ssh keys or tokens are needed.
 - **gVisor: `dev:cluster` fails the probe or sandbox pods stay Pending/ContainerCreating.** Check `kubectl --context kind-enzarb get runtimeclass gvisor` and `kubectl --context kind-enzarb get nodes -L enzarb.dev/runtime-gvisor` (the label must be `true`; rerun `dev:cluster`, the installer is idempotent). `docker exec enzarb-control-plane runsc --version` and `grep runsc /etc/containerd/config.toml` inside the node show whether the install took. `kubectl describe pod` shows runtime errors such as `no runtime for "runsc"`.
 - **gVisor platform and kernel features.** gVisor uses the `systrap` platform, which needs no KVM, so it works in kind and on WSL2 or cloud VMs. It does need ptrace/seccomp and user namespaces on the host kernel; an old or locked-down kernel (or a rootless Docker host with restricted seccomp) can stop `runsc` starting. dockerd's networking relies on runsc `net-raw = "true"` (and `allow-packet-socket-write` for Docker 28+); the installer sets `net-raw`. If `docker run` fails with network errors, check `/etc/containerd/runsc.toml` in the node.
 - **Docker-in-gVisor limitations.** `iptables` is disabled, so `docker run -p` publishes nothing (reach containers by IP or use `--network=host`); storage uses `overlay2` (`vfs` is the fallback via `dockerdArgs`); some syscalls and filesystems are unsupported. See [gVisor in the dev cluster](../kubernetes/README.md#gvisor-in-the-dev-cluster) and [Docker in the sandbox](../operator/README.md#docker-in-the-sandbox-adr-0012).

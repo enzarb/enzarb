@@ -66,8 +66,8 @@ The TS `Session` is the client role only (ui, and Node clients). The codec (`dec
 
 ```sh
 cargo fmt --all --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
+cargo clippy -p enzarb-proto --all-targets --all-features -- -D warnings
+cargo test -p enzarb-proto --all-features
 npm ci && npm run check && npm test
 ```
 

@@ -364,7 +364,7 @@ fn agent_exec(env: &Env, prompt: &str, schema: Option<Value>) -> StepExec {
         "/tests/fixtures/fake-step-agent.mjs"
     );
     StepExec::Agent {
-        runtime: Runtime {
+        runtime: Box::new(Runtime {
             name: "fake".into(),
             install: vec![],
             protocol: "acp".into(),
@@ -379,7 +379,7 @@ fn agent_exec(env: &Env, prompt: &str, schema: Option<Value>) -> StepExec {
             )]
             .into(),
             capabilities: json!({}),
-        },
+        }),
         model: Some("claude-test-model".into()),
         prompt: prompt.into(),
         result_schema: schema,
@@ -724,4 +724,61 @@ async fn tracked_step_outputs_do_not_block_switching_branches() {
     );
     assert!(files.contains("code.txt"), "{files}");
     assert!(!files.contains(".enzarb/out"), "{files}");
+}
+
+/// When space is low, build caches (`CACHEDIR.TAG` directories) go from idle task workspaces;
+/// a task with a running step keeps its cache.
+#[tokio::test]
+async fn workspace_prune_spares_tasks_with_a_running_step() {
+    let env = Env::new();
+    let (addr, steps) = env.server_with_steps().await;
+    let cache = |task: &str| env.ws.join("tasks").join(task).join("o/r/target");
+    for t in ["task-1", "task-idle"] {
+        std::fs::create_dir_all(cache(t)).unwrap();
+        std::fs::write(
+            cache(t).join("CACHEDIR.TAG"),
+            "Signature: 8a477f597d28d172789f06886806bc55\n",
+        )
+        .unwrap();
+    }
+    std::fs::create_dir_all(env.ws.join("tasks/task-idle/o/r/src")).unwrap();
+    let (s, mut ev) = connect(addr).await;
+    // A running step of task-1 (`step` uses that task id).
+    start(
+        &s,
+        &mut ev,
+        step(
+            "busy-1",
+            StepExec::Command {
+                run: "sleep 3".into(),
+                tools: vec![],
+            },
+            vec![],
+        ),
+    )
+    .await;
+    // 100% free required: always "low", so every idle cache goes.
+    // Like a full disk: nothing new can be created at the workspace root.
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&env.ws, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let removed = sandbox_init::workspace_prune::prune_once(&env.ws, &steps, 100);
+    std::fs::set_permissions(&env.ws, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(removed, 1);
+    assert!(cache("task-1").exists(), "the busy task kept its cache");
+    assert!(
+        !cache("task-idle").exists(),
+        "the idle task's cache was removed"
+    );
+    assert!(
+        std::fs::read_dir(env.ws.join("tasks/task-idle/o/r"))
+            .unwrap()
+            .flatten()
+            .all(|e| !e.file_name().to_string_lossy().contains("enzarb-prune")),
+        "nothing left aside"
+    );
+    assert!(
+        env.ws.join("tasks/task-idle/o/r/src").exists(),
+        "sources stay"
+    );
+    s.step_stop("busy-1").ok();
 }

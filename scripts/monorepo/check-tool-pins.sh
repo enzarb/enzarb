@@ -4,7 +4,7 @@
 #   - a root pin is `latest`;
 #   - a Dockerfile ARG tool version differs from the root pin (table below), or an `ARG *_VERSION`
 #     is neither mapped nor listed as unmapped;
-#   - root `rust` differs from a rust-toolchain.toml channel, or kubernetes/hack/versions.env
+#   - root `rust` differs from a rust-toolchain.toml channel (root or nested), or kubernetes/hack/versions.env
 #     HELM_VERSION differs from root `helm`.
 # Shared by .github/workflows/ci-monorepo.yml and the lefthook pre-commit hook.
 # The root can be given as $1 (used by test-tool-pins.sh); default is the git toplevel.
@@ -107,7 +107,7 @@ fi
 
 # 4. Root rust equals every rust-toolchain.toml channel.
 rust=$(pin mise.toml rust)
-for f in */rust-toolchain.toml; do
+for f in rust-toolchain.toml */rust-toolchain.toml; do
   [ -e "$f" ] || continue
   channel=$(sed -n 's/^channel *= *"\(.*\)"$/\1/p' "$f" | head -n1)
   [ "$channel" = "$rust" ] || err "$f: channel $channel but mise.toml pins rust = ${rust:-<none>}"

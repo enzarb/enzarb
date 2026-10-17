@@ -22,6 +22,7 @@ vi.mock('#lib/projects.remote.ts', () => ({
 	deleteProject: vi.fn(async () => {}),
 	setMaxRuns: vi.fn(async () => {}),
 	setSandboxResources: vi.fn(async () => {}),
+	rollSandboxNow: vi.fn(async () => {}),
 	setDisplayName: vi.fn(async () => ({ ok: true })),
 	setRepositories: vi.fn(async () => ({ ok: true })),
 	refreshRepositoryChoices: vi.fn(async () => {}),

@@ -140,7 +140,7 @@ ui:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-ui
-    tag: 0.61.1
+    tag: 0.63.0
     pullPolicy: ""
   # HTTP probes (/healthz liveness, /readyz readiness). false falls back to TCP probes.
   probes:
@@ -160,7 +160,7 @@ workflows:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-workflows
-    tag: 0.53.0
+    tag: 0.55.1
     pullPolicy: ""
   # Roles for `run`: reducer, executor, ticker.
   roles: reducer,executor,ticker
@@ -269,7 +269,7 @@ sandboxProxy:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-sandbox-proxy
-    tag: 0.17.0
+    tag: 0.18.0
     pullPolicy: ""
   # Must stay >= the chat idle (ENZARB_CHAT_IDLE_SECS, 1800); the proxy clamps lower values and
   # logs a warning. Envoy idle timeouts (route.backendTrafficPolicy) must exceed this.
@@ -318,10 +318,10 @@ operator:
   terminationGracePeriodSeconds: 30
   image:
     repository: ghcr.io/enzarb/enzarb-sandbox-operator
-    tag: 0.12.0
+    tag: 0.13.0
     pullPolicy: ""
   # Default sandbox image for Projects (ENZARB_SANDBOX_IMAGE).
-  sandboxImage: ghcr.io/enzarb/enzarb-sandbox:0.30.3
+  sandboxImage: ghcr.io/enzarb/enzarb-sandbox:0.31.1
   defaultStorage: 20Gi
   # RuntimeClass of every sandbox pod (ENZARB_SANDBOX_RUNTIME_CLASS). Cluster-admin
   # setting; Projects cannot choose. Must be in docker.runtimeClasses.

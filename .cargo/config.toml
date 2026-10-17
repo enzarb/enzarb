@@ -1,16 +1,15 @@
-# Workspace-local Cargo config. It applies to every enzarb-*/ Rust repo built
-# from inside this directory; CI clones a repo alone and doesn't see it.
+# Workspace-local Cargo config. It applies to every Rust crate in the repo (one Cargo
+# workspace at the root); CI clones the repo alone and doesn't see it.
 #
-# Each repo keeps its own target/ so parallel builds in different repos don't
-# block each other on a shared lock.
+# There is a single target/ at the root, shared by every component. Cargo's build-directory
+# lock serialises concurrent builds; use `-p <crate>` so a component only builds its own graph.
 
 [net]
 # Private enzarb repos are git dependencies over ssh; use the git CLI (ssh agent).
 git-fetch-with-cli = true
 
-# There are deliberately no [patch] entries here. Cargo records patches in each
-# repo's Cargo.lock (including unused ones), which would leak local paths into
-# committed lockfiles. Library changes are merged to main before dependents use
-# them; run `cargo update -p <crate>` to pick them up. For a quick experiment
-# against an unmerged sibling, add a temporary [patch] in that repo and don't
-# commit it.
+# There are deliberately no [patch] entries here. Cargo records patches in Cargo.lock
+# (including unused ones), which would leak local paths into the committed lockfile. Library
+# changes are merged to main before dependents use them; run `cargo update -p <crate>` to pick
+# them up. For a quick experiment against an unmerged sibling, add a temporary [patch] in the root
+# Cargo.toml and don't commit it.

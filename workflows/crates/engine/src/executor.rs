@@ -378,7 +378,7 @@ impl Engine {
                 model,
                 prompt,
             } => StepExec::Agent {
-                runtime: Runtime {
+                runtime: Box::new(Runtime {
                     name: runtime.name.clone(),
                     install: runtime.file.install.mise.clone(),
                     protocol: match runtime.file.launch.protocol {
@@ -389,7 +389,7 @@ impl Engine {
                     env: runtime.file.launch.env.clone(),
                     capabilities: serde_json::to_value(runtime.file.capabilities)
                         .unwrap_or_default(),
-                },
+                }),
                 model: model.clone(),
                 prompt: prompt.clone(),
                 result_schema: rs.result.as_ref().map(|r| r.schema.clone()),
@@ -661,5 +661,29 @@ async fn store_session_events(pool: sqlx::PgPool, mut rx: mpsc::UnboundedReceive
         if let Err(err) = res {
             tracing::warn!(run = %e.run_id, seq = e.seq, "storing session event: {err}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn small_payloads_pass_through() {
+        let p = json!({"text": "hi"});
+        assert_eq!(cap_payload(p.clone()), (p, false));
+    }
+
+    #[test]
+    fn oversized_payloads_keep_head_and_tail() {
+        let text = format!("start{}end", "é".repeat(MAX_PAYLOAD));
+        let (capped, cut) = cap_payload(json!({ "text": text }));
+        assert!(cut);
+        let head = capped["head"].as_str().unwrap();
+        let tail = capped["tail"].as_str().unwrap();
+        assert!(head.contains("start"));
+        assert!(tail.ends_with("end\"}"));
+        assert!(head.len() + tail.len() < MAX_PAYLOAD);
+        assert!(capped["bytes"].as_u64().unwrap() as usize > MAX_PAYLOAD);
     }
 }

@@ -1,5 +1,6 @@
 # Build context is the repo root for components with in-repo path deps
 # (docker build -f <dir>/Dockerfile .). Keep it small.
+# Per-directory .dockerignore files do not apply with this context; add exclusions here.
 **/target
 **/node_modules
 **/.git
@@ -15,3 +16,4 @@ docs
 helm
 kubernetes
 .cloudflare
+sandbox-container/tests

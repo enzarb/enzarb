@@ -241,4 +241,4 @@ Before a transition accepts an event, it checks:
 - the bot's own comments and reactions are ignored, which prevents loops.
 
 ## Out of the engine
-Run logs and transcripts never go through these tables. Live output streams from sandbox-init to the UI through the proxy (an enzarb-proto channel). The final transcript goes to object storage, and `jobs.output` keeps only a URL.
+Run logs and transcripts never go through these tables. Live output streams from sandbox-init to the UI through the proxy (an enzarb-proto channel). Each step's transcript is stored in `engine.session_events` (ADR-0022), not in object storage, and `jobs.output` keeps only the summary.

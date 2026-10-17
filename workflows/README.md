@@ -81,6 +81,6 @@ The image runs as uid 65532 and defaults to `run --roles reducer,executor,ticker
 
 ```
 cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace     # integration tests start Postgres via testcontainers (Docker)
+cargo clippy -p engine -p enzarb-workflows -p enzarb-flow --all-targets -- -D warnings
+cargo test -p engine -p enzarb-workflows -p enzarb-flow     # integration tests start Postgres via testcontainers (Docker)
 ```

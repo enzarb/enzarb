@@ -6,40 +6,11 @@
 pre-commit:
   parallel: true
   commands:
-    fmt-proto:
-      root: proto/
-      glob: "*.rs"
-      run: cargo fmt --all --check
-    fmt-operator:
-      root: operator/
-      glob: "*.rs"
-      run: cargo fmt --all --check
-    fmt-connectors:
-      root: connectors/
-      glob: "*.rs"
-      run: cargo fmt --all --check
-    fmt-workflows:
-      root: workflows/
-      glob: "*.rs"
-      run: cargo fmt --all --check
-    fmt-realtime:
-      root: realtime/
-      glob: "*.rs"
-      run: cargo fmt --all --check
-    fmt-sandbox-proxy:
-      root: sandbox-proxy/
-      glob: "*.rs"
-      run: cargo fmt --all --check
-    fmt-sandbox-container:
-      root: sandbox-container/
-      glob: "*.rs"
-      run: cargo fmt --all --check
-    fmt-updater:
-      root: updater/
+    fmt:
       glob: "*.rs"
       run: cargo fmt --all --check
     cargo-deps:
-      glob: "{Cargo.toml,Cargo.lock,**/Cargo.toml,**/Cargo.lock}"
+      glob: "{Cargo.toml,Cargo.lock,rust-toolchain.toml,**/Cargo.toml,**/Cargo.lock,**/rust-toolchain.toml}"
       run: scripts/monorepo/check-cargo-deps.sh
     tool-pins:
       glob: "{mise.toml,mise.*.toml,*/mise.toml,*/Dockerfile,*/rust-toolchain.toml,kubernetes/hack/versions.env}"
@@ -48,6 +19,9 @@ pre-commit:
       root: ui/
       glob: "*"
       run: '[ -d node_modules ] || { echo "ui: node_modules missing, running npm ci"; npm ci; }; npm run lint'
+    graph-fresh:
+      glob: "{Cargo.toml,**/Cargo.toml,**/package.json,scripts/monorepo/components.json,scripts/monorepo/gen-graph.sh,scripts/monorepo/graph.generated.sh}"
+      run: scripts/monorepo/gen-graph.sh --check
     shellcheck:
       glob: "{.mise/tasks/**,.mise/lib/*.sh,.github/scripts/*.sh,scripts/**,*.sh}"
       run: shellcheck {staged_files}
@@ -56,8 +30,8 @@ pre-commit:
       glob: "*"
       run: mise run lint
 
-# Only the components affected by the push (scripts/monorepo/affected.sh, same paths as the CI
-# `paths:` filters, downstream components included) are checked; the per-component commands are
+# Only the components affected by the push (scripts/monorepo/affected.sh, the same graph the CI
+# `changes` job uses, downstream components included) are checked; the per-component commands are
 # in scripts/monorepo/pre-push.sh.
 pre-push:
   commands:

@@ -3,6 +3,7 @@
 	import { POD_SHAPE_QUEUED_COPY } from '#lib/pending-change.ts';
 	import { pendingChangeSteps } from '#lib/projects.ts';
 	import Notice from './ui/Notice.svelte';
+	import RollNowButton from './RollNowButton.svelte';
 	import StepList, { type StepItem } from './ui/StepList.svelte';
 
 	const READY_HOLD_MS = 5000;
@@ -12,8 +13,16 @@
 	 * clears `pendingChange` on completion, so the last change is kept to show the applied state
 	 * briefly before the banner hides.
 	 */
-	let { change, runningJobs }: { change?: PendingChange | null; runningJobs: number | null } =
-		$props();
+	let {
+		change,
+		runningJobs,
+		roll
+	}: {
+		change?: PendingChange | null;
+		runningJobs: number | null;
+		/** Owner action: restart now for this generation. Without it no button is shown. */
+		roll?: (generation: number) => Promise<void>;
+	} = $props();
 
 	let last = $state<PendingChange | null>(null);
 	let applied = $state(false);
@@ -63,5 +72,8 @@
 			{/if}
 		</Notice>
 		<StepList {items} label="Sandbox change progress" />
+		{#if change && roll}
+			<div><RollNowButton generation={change.generation} {roll} /></div>
+		{/if}
 	</div>
 {/if}

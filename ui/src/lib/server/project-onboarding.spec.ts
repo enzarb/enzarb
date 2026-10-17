@@ -59,6 +59,7 @@ function fakeStore(initial: Project[] = []) {
 		get: vi.fn(async (n) => items.get(n) ?? null),
 		create: vi.fn(realCreate),
 		update: vi.fn(async (n) => items.get(n)!),
+		annotate: vi.fn(async (n) => items.get(n)!),
 		delete: vi.fn(async () => {})
 	};
 	return store;

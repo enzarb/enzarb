@@ -11,7 +11,8 @@
 //! * reap-all (pid 1, or `ENZARB_REAP_ALL=1`): `waitpid(-1)` on every SIGCHLD;
 //!   statuses of registered pids are delivered, orphans are discarded;
 //! * registered-only (everything else, e.g. tests): only registered pids are
-//!   waited on, so the host process's other children are left alone.
+//!   waited on, so the host process's other children are left alone. The
+//!   reap-all tests live in `tests/reaper_all.rs`, a separate test binary.
 
 use std::collections::HashMap;
 use std::io;
@@ -227,63 +228,33 @@ mod tests {
     use super::*;
     use std::process::Command;
 
-    // Reap-all mode steals every child's status, so tests that spawn children
-    // in this binary take this lock.
-    static SERIAL: Mutex<()> = Mutex::new(());
-
-    fn gone(pid: u32) -> bool {
-        // A zombie still answers kill(pid, 0); a reaped pid does not.
-        matches!(kill(Pid::from_raw(pid as i32), None), Err(Errno::ESRCH))
-    }
-
     #[test]
-    fn reap_all_reaps_unregistered_orphans() {
-        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let reaper = Reaper::new(true);
-        let child = Command::new("true").spawn().unwrap();
-        let pid = child.id();
-        std::mem::forget(child); // never waited: becomes a zombie
+    fn registered_only_delivers_exit_status() {
+        let reaper = Reaper::new(false);
+        let (child, mut rx) = reaper
+            .spawn_with(|| {
+                let c = Command::new("sh").args(["-c", "exit 7"]).spawn()?;
+                let pid = c.id();
+                Ok((c, pid))
+            })
+            .unwrap();
+        assert_eq!(reaper.registered(), 1);
+        let mut got = None;
         for _ in 0..100 {
             reaper.reap();
-            if gone(pid) {
+            if let Ok(st) = rx.try_recv() {
+                got = Some(st);
                 break;
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert!(gone(pid), "zombie {pid} was not reaped");
-    }
-
-    #[test]
-    fn delivers_exit_status_of_registered_children() {
-        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        for reap_all in [false, true] {
-            let reaper = Reaper::new(reap_all);
-            let (child, mut rx) = reaper
-                .spawn_with(|| {
-                    let c = Command::new("sh").args(["-c", "exit 7"]).spawn()?;
-                    let pid = c.id();
-                    Ok((c, pid))
-                })
-                .unwrap();
-            assert_eq!(reaper.registered(), 1);
-            let mut got = None;
-            for _ in 0..100 {
-                reaper.reap();
-                if let Ok(st) = rx.try_recv() {
-                    got = Some(st);
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            assert_eq!(got, Some(ExitStatus::Exited(7)), "reap_all={reap_all}");
-            assert_eq!(reaper.registered(), 0);
-            drop(child);
-        }
+        assert_eq!(got, Some(ExitStatus::Exited(7)));
+        assert_eq!(reaper.registered(), 0);
+        drop(child);
     }
 
     #[test]
     fn terminate_all_signals_registered_children() {
-        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
