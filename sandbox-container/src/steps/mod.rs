@@ -340,8 +340,35 @@ impl StepManager {
         self.inner.cfg.workspace.join(".enzarb/steps")
     }
 
+    /// `/workspace/.enzarb` belongs to the sandbox user (0700): step git, clones and agent
+    /// homes run as that user and must be able to enter it. Only `steps/` (per-run state with
+    /// secrets) is root's. A fresh volume would otherwise get a root-owned `.enzarb` from the
+    /// first `steps/` mkdir; an existing root-owned one is repaired.
+    fn ensure_state_dir(&self) {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = self.inner.cfg.workspace.join(".enzarb");
+        if let Err(e) = crate::privs::create_dir_all_mode(&dir, Some(0o700)) {
+            tracing::warn!(path = %dir.display(), error = %e, "cannot create the state directory");
+            return;
+        }
+        if crate::privs::is_root()
+            && std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir() && m.uid() == 0)
+        {
+            match crate::privs::own(&dir) {
+                Ok(()) => {
+                    tracing::info!(path = %dir.display(), "gave the state directory to the sandbox user")
+                }
+                Err(e) => {
+                    tracing::warn!(path = %dir.display(), error = %e, "cannot chown the state directory")
+                }
+            }
+            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+
     /// Load persisted runs; a step that was running is now `interrupted`.
     pub fn recover(&self) {
+        self.ensure_state_dir();
         let Ok(rd) = std::fs::read_dir(self.steps_dir()) else {
             return;
         };
