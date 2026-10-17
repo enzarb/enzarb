@@ -5,7 +5,8 @@
 //! runtime class, operator-defined mounts) differs from the running pod, the change is queued as
 //! `status.pendingChange` and the pod is left alone. It is deleted (never the Sandbox or PVCs)
 //! only when the Project annotation `enzarb.dev/drained-generation` equals the pending
-//! generation, when the sandbox reports no active sessions, or when the drain timeout expires.
+//! generation, when the owner asked for it with `enzarb.dev/roll-now-generation` (the same
+//! exact match), when the sandbox reports no active sessions, or when the drain timeout expires.
 //! `decide` is pure; `roll_step` does the API calls.
 //!
 //! A new field joins the queue by adding one line to `shape_of`.
@@ -14,7 +15,9 @@ use crate::conditions::RollPending;
 use crate::desired::{self, Defaults};
 use crate::quantity;
 use enzarb_crds::upstream::sandbox::Sandbox;
-use enzarb_crds::{ANNOTATION_DRAINED_GENERATION, PendingChange, Project};
+use enzarb_crds::{
+    ANNOTATION_DRAINED_GENERATION, ANNOTATION_ROLL_NOW_GENERATION, PendingChange, Project,
+};
 use k8s_openapi::api::core::v1::Pod;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use k8s_openapi::jiff::Timestamp;
@@ -175,6 +178,8 @@ pub struct Input<'a> {
     pub pending: Option<&'a PendingChange>,
     /// Parsed `enzarb.dev/drained-generation`; `None` when absent or not an integer.
     pub ack: Option<i64>,
+    /// Parsed `enzarb.dev/roll-now-generation`; `None` when absent or not an integer.
+    pub roll_now: Option<i64>,
     pub now: Timestamp,
     pub timeout: Duration,
 }
@@ -182,6 +187,7 @@ pub struct Input<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Why {
     Ack,
+    Manual,
     Idle,
     Timeout,
 }
@@ -219,7 +225,8 @@ pub fn decide(i: &Input) -> Decision {
     let ack = i.ack.filter(|a| *a < i64::MAX);
     // Generations only ever exceed any ack already on the Project, so a stale ack left from an
     // earlier episode can never release a new one.
-    let floor = ack.map_or(1, |a| a.saturating_add(1).max(1));
+    let roll_now = i.roll_now.filter(|a| *a < i64::MAX);
+    let floor = ack.max(roll_now).map_or(1, |a| a.saturating_add(1).max(1));
     let next = match i.pending {
         None => fresh(floor, i.now, reason),
         // The pod was recreated after this episode began: it already had its roll.
@@ -239,6 +246,8 @@ pub fn decide(i: &Input) -> Decision {
     };
     let why = if ack == Some(next.generation) {
         Some(Why::Ack)
+    } else if roll_now == Some(next.generation) {
+        Some(Why::Manual)
     } else if i.activity == Activity::Active(0) {
         Some(Why::Idle)
     } else if i.now.as_second() >= deadline(next.since.0, i.timeout).as_second() {
@@ -274,8 +283,10 @@ fn message(c: &PendingChange, activity: Activity, due: Timestamp) -> String {
         _ => String::new(),
     };
     format!(
-        "generation {}: {}; applied when drained (annotation {ANNOTATION_DRAINED_GENERATION}={}) or after {due}{busy}",
-        c.generation, c.reason, c.generation
+        "generation {}: {}; applied when drained (annotation {ANNOTATION_DRAINED_GENERATION}={g}), on roll now (annotation {ANNOTATION_ROLL_NOW_GENERATION}={g}) or after {due}{busy}",
+        c.generation,
+        c.reason,
+        g = c.generation
     )
 }
 
@@ -330,6 +341,10 @@ pub async fn roll_step(
         .annotations()
         .get(ANNOTATION_DRAINED_GENERATION)
         .and_then(|v| v.trim().parse::<i64>().ok());
+    let roll_now = p
+        .annotations()
+        .get(ANNOTATION_ROLL_NOW_GENERATION)
+        .and_then(|v| v.trim().parse::<i64>().ok());
     let input = Input {
         diff: &diff,
         template_matches: self::diff(&want, &template).is_empty(),
@@ -337,6 +352,7 @@ pub async fn roll_step(
         activity,
         pending,
         ack,
+        roll_now,
         now: now.0,
         timeout,
     };
@@ -410,6 +426,7 @@ mod tests {
             activity: Activity::Unknown,
             pending,
             ack: None,
+            roll_now: None,
             now: ts(1000),
             timeout: T,
         }
@@ -497,6 +514,75 @@ mod tests {
             i.ack = ack;
             assert_eq!(decide(&i), Decision::Defer(p.clone()), "{ack:?}");
         }
+    }
+
+    #[test]
+    fn roll_now_for_the_pending_generation_releases() {
+        let d = diff_of(D);
+        let p = pc(2, 500, "image/sandbox: a -> b");
+        let mut i = base(&d, Some(&p));
+        i.roll_now = Some(2);
+        assert_eq!(decide(&i), Decision::Roll(p.clone(), Why::Manual));
+        // An ack wins when both match.
+        i.ack = Some(2);
+        assert_eq!(decide(&i), Decision::Roll(p, Why::Ack));
+    }
+
+    #[test]
+    fn stale_future_and_garbage_roll_nows_are_ignored() {
+        let d = diff_of(D);
+        let p = pc(2, 500, "image/sandbox: a -> b");
+        for v in [Some(1), Some(3), Some(0), Some(-2), Some(i64::MAX), None] {
+            let mut i = base(&d, Some(&p));
+            i.roll_now = v;
+            assert_eq!(decide(&i), Decision::Defer(p.clone()), "{v:?}");
+        }
+    }
+
+    #[test]
+    fn roll_now_without_a_change_is_settled() {
+        let mut i = base(&[], None);
+        i.roll_now = Some(1);
+        assert_eq!(decide(&i), Decision::Settled);
+    }
+
+    #[test]
+    fn leftover_roll_now_never_releases_a_new_episode() {
+        let d = diff_of(D);
+        let mut i = base(&d, None);
+        i.roll_now = Some(1);
+        assert_eq!(
+            decide(&i),
+            Decision::Defer(pc(2, 1000, "image/sandbox: a -> b"))
+        );
+        i.ack = Some(4);
+        i.roll_now = Some(7);
+        assert_eq!(
+            decide(&i),
+            Decision::Defer(pc(8, 1000, "image/sandbox: a -> b"))
+        );
+    }
+
+    #[test]
+    fn newer_change_invalidates_old_roll_now() {
+        let d = diff_of(&["image/sandbox: a -> c"]);
+        let p = pc(1, 500, "image/sandbox: a -> b");
+        let mut i = base(&d, Some(&p));
+        i.roll_now = Some(1);
+        assert_eq!(
+            decide(&i),
+            Decision::Defer(pc(2, 500, "image/sandbox: a -> c"))
+        );
+    }
+
+    #[test]
+    fn young_pod_is_not_rolled_by_roll_now() {
+        let d = diff_of(D);
+        let p = pc(1, 1000, "image/sandbox: a -> b");
+        let mut i = base(&d, Some(&p));
+        i.roll_now = Some(1);
+        i.pod = PodState::Running { created: ts(950) };
+        assert!(matches!(decide(&i), Decision::Defer(_)));
     }
 
     #[test]

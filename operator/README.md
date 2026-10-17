@@ -32,7 +32,7 @@ Each flag has an environment variable; the flag wins.
 | Flag | Env | Default | Meaning |
 |---|---|---|---|
 | `--sandbox-image` | `ENZARB_SANDBOX_IMAGE` | empty | Image when `spec.sandbox.image` is empty. If both are empty the Project is invalid. |
-| `--sandbox-roll-drain-timeout` | `ENZARB_SANDBOX_ROLL_DRAIN_TIMEOUT` | `2h` | How long a pending pod-shape change waits for the drain ack or idleness before the pod is deleted anyway. Accepts `30s`, `10m`, `2h` or plain seconds. |
+| `--sandbox-roll-drain-timeout` | `ENZARB_SANDBOX_ROLL_DRAIN_TIMEOUT` | `30m` | How long a pending pod-shape change waits for the drain ack, a roll-now or idleness before the pod is deleted anyway. Accepts `30s`, `10m`, `2h` or plain seconds. |
 | `--default-storage` | `ENZARB_DEFAULT_STORAGE` | `20Gi` | PVC size when `spec.sandbox.storage` is empty. |
 | `--release-namespace` | `ENZARB_RELEASE_NAMESPACE` | pod namespace | Namespace enzarb is released into (where the sandbox clients and the executor run); used for the default ingress namespace label. |
 | `--sandbox-namespace` | `ENZARB_SANDBOX_NAMESPACE` | `enzarb-sandboxes` | Shared namespace for all Projects' objects. Must exist (Helm chart). |
@@ -68,8 +68,9 @@ Updating the Sandbox template does not recreate a running pod. The operator comp
 On a difference the pod is **left alone** and the change is queued: `status.pendingChange = {generation, since, reason}` plus the informational condition `SandboxChangePending` (not part of the UI checklist, no effect on `Ready`; this replaces `SandboxImageRoll`). The pod is deleted (with a UID precondition; never the Sandbox or the PVCs) only when one of these holds, and the pod is at least two minutes old:
 
 1. the Project annotation `enzarb.dev/drained-generation` equals `status.pendingChange.generation` (the drain ack; set by workflows after it has drained the sandbox). Any other value, including an old, future or non-numeric one, is ignored. A new pending change always gets a generation above any ack already on the Project, so a stale ack never releases it;
-2. the pod carries `enzarb.dev/active-sessions` = `0` (idle);
-3. `--sandbox-roll-drain-timeout` (default `2h`) has passed since `pendingChange.since`.
+2. the Project annotation `enzarb.dev/roll-now-generation` equals `status.pendingChange.generation` (the owner's explicit "Roll now" in the UI; same exact-match and stale-value rules as the ack, so a newer change needs a fresh click, ADR-0023);
+3. the pod carries `enzarb.dev/active-sessions` = `0` (idle);
+4. `--sandbox-roll-drain-timeout` (default `30m`) has passed since `pendingChange.since`.
 
 A further spec change while one is pending bumps `generation` (so an ack for the older one no longer applies) and keeps `since`, so a stream of edits cannot postpone the apply forever. `pendingChange` stays until the recreated pod matches the template, then it and the condition are cleared. A pod that was recreated and still differs is not deleted again for the same difference.
 

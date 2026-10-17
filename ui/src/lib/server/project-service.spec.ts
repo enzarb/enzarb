@@ -37,6 +37,19 @@ function fakeStore(): ProjectStore & { items: Map<string, Project> } {
 			items.set(name, next);
 			return next;
 		},
+		async annotate(name, annotations) {
+			const p = items.get(name);
+			if (!p) throw new KubeError('not-found', 'nope');
+			const next = {
+				...p,
+				metadata: {
+					...p.metadata,
+					annotations: mergePatch(p.metadata.annotations, annotations) as Record<string, string>
+				}
+			};
+			items.set(name, next);
+			return next;
+		},
 		async delete(name) {
 			if (!items.delete(name)) throw new KubeError('not-found', 'nope');
 		}
@@ -140,6 +153,39 @@ describe('projectService', () => {
 				alice.setSandboxResources('a-proj', { cpu: null, memory: null, storage: '30Gi' })
 			).rejects.toMatchObject({ kind: 'invalid' });
 			expect(spy).not.toHaveBeenCalled();
+		});
+	});
+	describe('rollNow', () => {
+		const pend = (name: string, generation: number) => {
+			const p = store.items.get(name)!;
+			store.items.set(name, {
+				...p,
+				status: { pendingChange: { generation, since: '2026-10-17T00:00:00Z', reason: 'r' } }
+			});
+		};
+		it('annotates with the pending generation and touches nothing else', async () => {
+			pend('a-proj', 2);
+			const before = store.items.get('a-proj')!;
+			const update = vi.spyOn(store, 'update');
+			await projectService(store, 'alice').rollNow('a-proj', 2);
+			const after = store.items.get('a-proj')!;
+			expect(after.metadata.annotations).toEqual({ 'enzarb.dev/roll-now-generation': '2' });
+			expect({ ...after, metadata: before.metadata }).toEqual(before);
+			expect(update).not.toHaveBeenCalled();
+		});
+		it('is not-found for other owners and missing projects', async () => {
+			pend('bobs', 1);
+			const alice = projectService(store, 'alice');
+			await expect(alice.rollNow('bobs', 1)).rejects.toMatchObject({ kind: 'not-found' });
+			await expect(alice.rollNow('nope', 1)).rejects.toMatchObject({ kind: 'not-found' });
+			expect(store.items.get('bobs')!.metadata.annotations).toBeUndefined();
+		});
+		it('conflicts without a pending change or on a generation mismatch', async () => {
+			const alice = projectService(store, 'alice');
+			await expect(alice.rollNow('a-proj', 1)).rejects.toMatchObject({ kind: 'conflict' });
+			pend('a-proj', 3);
+			await expect(alice.rollNow('a-proj', 2)).rejects.toMatchObject({ kind: 'conflict' });
+			expect(store.items.get('a-proj')!.metadata.annotations).toBeUndefined();
 		});
 	});
 	it('deletes own projects', async () => {

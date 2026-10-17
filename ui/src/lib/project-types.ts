@@ -45,7 +45,12 @@ export interface ProjectStatus {
 export interface Project {
 	apiVersion: 'enzarb.dev/v1alpha1';
 	kind: 'Project';
-	metadata: { name: string; creationTimestamp?: string; generation?: number };
+	metadata: {
+		name: string;
+		creationTimestamp?: string;
+		generation?: number;
+		annotations?: Record<string, string>;
+	};
 	spec: ProjectSpec;
 	status?: ProjectStatus | null;
 }
