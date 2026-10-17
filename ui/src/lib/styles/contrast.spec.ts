@@ -90,3 +90,9 @@ describe('brand palette', () => {
 		expect(dark[name]).toBe(hex);
 	});
 });
+
+describe('stylesheet tokens', () => {
+	it('does not reference the undefined --ez-accent-contrast token', () => {
+		expect(scss).not.toMatch(/--ez-accent-contrast/);
+	});
+});

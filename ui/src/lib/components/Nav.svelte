@@ -23,7 +23,7 @@
 				? 'page'
 				: undefined}
 			>{item.label}{#if item.href === '/tasks' && needsYou > 0}<span
-					class="ez-badge"
+					class="ez-nav__count"
 					role="img"
 					aria-label={needsYouMore
 						? `${needsYou} or more items need you`
