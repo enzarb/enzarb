@@ -7,7 +7,6 @@ import { getConfig } from '#lib/server/config.ts';
 import { buildIntent, signIntent } from '#lib/server/create-repo-intent.ts';
 import { DISPLAY_NAME_MAX, MaxRunsSchema } from '#lib/projects.ts';
 import { SandboxResourcesSchema } from '#lib/sandbox-resources.ts';
-import { getSql } from '#lib/server/db.ts';
 import { KubeError, getProjectStore } from '#lib/server/kube.ts';
 import { projectCache } from '#lib/server/project-cache.ts';
 import {
@@ -16,7 +15,8 @@ import {
 	setRepositories as setRepositoriesFor,
 	repositoryChoices as repositoryChoicesFor
 } from '#lib/server/project-onboarding.ts';
-import { getUserRepositorySnapshot } from '#lib/server/user-repositories.ts';
+import { getRepositoryAccess } from '#lib/server/repo-access.ts';
+import type { UserRepositoryList } from '#lib/server/user-repositories.ts';
 import { projectService } from '#lib/server/project-service.ts';
 
 function service() {
@@ -41,13 +41,47 @@ export const getProject = query(NameArg, async (name) => {
 	return project;
 });
 
-/** Repositories the user may pick (their snapshot) and which of them are already in a Project. */
+/** The live list for display; a GitHub failure becomes an empty list with a problem. */
+async function liveList(login: string, refresh = false) {
+	try {
+		return { list: await getRepositoryAccess().list(login, { refresh }), failed: false };
+	} catch (e) {
+		console.error('could not list repositories from GitHub:', (e as Error).message);
+		const list: UserRepositoryList = { repositories: [], fetchedAt: new Date() };
+		return { list, failed: true };
+	}
+}
+
+/**
+ * Repositories the user may pick (live from GitHub through the App, cached about a minute for
+ * display) and which of them are already in a Project.
+ */
 export const repositoryChoices = query(async () => {
 	const { user } = getRequestEvent().locals;
 	if (!user) error(401, 'Not signed in');
-	const snapshot = await getUserRepositorySnapshot(getSql(), user.id);
-	return repositoryChoicesFor(snapshot, await getProjectStore().list(), user.login);
+	const { list, failed } = await liveList(user.login);
+	const choices = repositoryChoicesFor(list, await getProjectStore().list(), user.login);
+	if (failed)
+		return {
+			...choices,
+			problem: {
+				code: 'unavailable',
+				message: 'Could not read your repositories from GitHub. Use Refresh to try again.'
+			}
+		};
+	return choices;
 });
+
+/** The picker's Refresh: asks GitHub again, bypassing the display cache. */
+export const refreshRepositoryChoices = command(async () => {
+	const { user } = getRequestEvent().locals;
+	if (!user) error(401, 'Not signed in');
+	await liveList(user.login, true);
+	await repositoryChoices().refresh();
+});
+
+/** Live authorization for the signed-in user, used when a repository is added to a Project. */
+const liveCheck = (login: string) => (key: string) => getRepositoryAccess().check(login, key);
 
 const PlanSchema = v.object({
 	name: v.pipe(v.string(), v.maxLength(200)),
@@ -62,15 +96,20 @@ const CreateProjectsSchema = v.object({
 });
 
 /**
- * Creates one or many Projects. Repositories are accepted only as keys that match the caller's
- * fresh repository snapshot (see `createProjects`); URLs are never taken from the browser.
+ * Creates one or many Projects. Repositories are accepted only as keys, each checked live with
+ * GitHub for the caller (see `createProjects`); URLs are never taken from the browser.
  */
 export const createProjects = command(CreateProjectsSchema, async (input) => {
 	const { user } = getRequestEvent().locals;
 	if (!user) error(401, 'Not signed in');
-	const snapshot = await getUserRepositorySnapshot(getSql(), user.id);
+	if (!getRepositoryAccess().configured)
+		return {
+			ok: false as const,
+			code: 'unavailable' as const,
+			message: 'The GitHub App is not configured, so repositories cannot be checked.'
+		};
 	const outcome = await createProjectsFor(
-		{ store: getProjectStore(), owner: user.login, snapshot },
+		{ store: getProjectStore(), owner: user.login, check: liveCheck(user.login) },
 		input.plans,
 		input.triggers
 	);
@@ -101,7 +140,7 @@ export const startCreateRepo = command(StartCreateRepoSchema, async (input) => {
 	const built = buildIntent(
 		{
 			user,
-			snapshot: await getUserRepositorySnapshot(getSql(), user.id),
+			list: (await liveList(user.login)).list,
 			projects: await getProjectStore().list(),
 			returnPath: CREATE_REPO_RETURN
 		},
@@ -146,8 +185,8 @@ export const setSandboxResources = command(
 );
 
 /**
- * Owner-only: replaces the Project's repositories. Keys only, checked against the caller's fresh
- * snapshot (see `setRepositories`). Applies without a sandbox restart or drain.
+ * Owner-only: replaces the Project's repositories. Keys only; added ones are checked live with
+ * GitHub (see `setRepositories`). Applies without a sandbox restart or drain.
  */
 export const setRepositories = command(
 	v.object({
@@ -166,7 +205,7 @@ export const setRepositories = command(
 				store: getProjectStore(),
 				owner: user.login,
 				// Tasks of removed repositories are the engine's to end (ADR-0022); the UI decides nothing.
-				snapshot: await getUserRepositorySnapshot(getSql(), user.id)
+				check: liveCheck(user.login)
 			},
 			name,
 			repositories

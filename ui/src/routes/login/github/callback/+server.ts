@@ -23,7 +23,7 @@ import {
 } from '#lib/server/create-repo-intent.ts';
 import { getSql } from '#lib/server/db.ts';
 import { OAUTH_RETURN_COOKIE, safeReturnPath } from '#lib/server/return-path.ts';
-import { syncUserRepositories } from '#lib/server/user-repositories.ts';
+import { getRepositoryAccess } from '#lib/server/repo-access.ts';
 import type { RequestHandler } from './$types';
 
 /** `path` with the create-repository result added; `repoResult` is always from the fixed enum. */
@@ -49,7 +49,7 @@ export const GET: RequestHandler = async ({ url, cookies, locals }) => {
 	deleteCreateRepoIntentCookie(cookies);
 	// GitHub sends the user here without `state` after an App install when "Request user
 	// authorization during installation" is on. That code has no CSRF protection, so it is never
-	// exchanged: start a normal state-protected sign-in instead (it also refreshes the snapshot).
+	// exchanged: start a normal state-protected sign-in instead.
 	if (!state && (url.searchParams.has('setup_action') || url.searchParams.has('installation_id')))
 		redirect(303, '/login/github?refresh=1');
 	if (!code || !state || !expected || state !== expected) error(400, 'Invalid OAuth state');
@@ -71,7 +71,7 @@ export const GET: RequestHandler = async ({ url, cookies, locals }) => {
 	const sql = getSql();
 	const profile = await fetchGitHubProfile(accessToken);
 	// The browser may have authorized as another GitHub account than the one that asked for the
-	// repository. Refuse before any database write: no user row, session or snapshot for them,
+	// repository. Refuse before any database write: no user row or session for them,
 	// and the current session stays.
 	if (intent && !intentMatchesProfile(intent, profile))
 		redirect(303, withResult(intent.ret, { code: 'identity-mismatch' }));
@@ -79,17 +79,16 @@ export const GET: RequestHandler = async ({ url, cookies, locals }) => {
 	const userId = await upsertUser(sql, profile);
 	let outcome: RepoOutcome | null = null;
 	if (intent) {
-		// Creates the repository, then re-syncs the snapshot with the same token.
-		outcome = await runCreateRepo(sql, userId, accessToken, intent);
-	} else {
-		// The token is used for the snapshot only and then dropped; failures never block sign-in.
-		await syncUserRepositories(sql, userId, accessToken);
+		// Creates the repository with the user token, then confirms it with the App's live check.
+		outcome = await runCreateRepo(getRepositoryAccess(), accessToken, intent);
 	}
+	// Otherwise the user token is only used for the profile and then dropped: the repository list
+	// is read live through the GitHub App.
 	const { token, session } = await createSession(sql, userId);
 	setSessionCookie(cookies, token, session.expiresAt);
 	// A previous user's stream cookie must not survive an account switch.
 	deleteRealtimeCookie(cookies);
-	// Re-authenticating (e.g. repository refresh): drop the session this replaces.
+	// Re-authenticating (e.g. after an App install): drop the session this replaces.
 	if (locals.session && locals.session.id !== session.id)
 		await invalidateSession(sql, locals.session.id);
 	redirect(303, intent && outcome ? withResult(intent.ret, outcome) : returnTo);

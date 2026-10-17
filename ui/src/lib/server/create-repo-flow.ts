@@ -1,5 +1,4 @@
 import type { RepoResult } from '#lib/repo-names.ts';
-import type { Sql } from './db.ts';
 import type { CreateRepoIntent } from './create-repo-intent.ts';
 import {
 	RepoCreateError,
@@ -8,11 +7,7 @@ import {
 	installationCoversAll,
 	sameOwner
 } from './github-repos.ts';
-import {
-	getUserRepositorySnapshot,
-	syncUserRepositories,
-	waitForRepository
-} from './user-repositories.ts';
+import type { RepositoryAccess } from './user-repositories.ts';
 
 type FetchFn = typeof fetch;
 
@@ -24,32 +19,47 @@ export interface RepoOutcome {
 	key?: string;
 }
 
-/** Poll budget for the snapshot after creating; tests shrink it. */
+/** Poll budget for the new repository to become visible to the App; tests shrink it. */
 export const pollDefaults = { tries: 5, delayMs: 2000 };
+
+/**
+ * Polls the live access check until `key` is visible to the App with write access for `login`
+ * (GitHub can lag). Bounded: `tries` checks, `delayMs` apart. Returns whether it appeared.
+ */
+async function waitForRepository(
+	access: RepositoryAccess,
+	login: string,
+	key: string
+): Promise<boolean> {
+	for (let attempt = 0; attempt < pollDefaults.tries; attempt++) {
+		if (attempt > 0) await new Promise((r) => setTimeout(r, pollDefaults.delayMs));
+		if (await access.check(login, key)) return true;
+	}
+	return false;
+}
 
 /**
  * The GitHub side of a create-repository callback. Runs only after the callback has verified the
  * state, the intent and the identity. `token` is the user-to-server token: it makes at most the
- * creation, the optional installation add and the snapshot reads, and is never stored or logged.
- * Whatever happens, the user's snapshot is re-synced once so sign-in stays current.
+ * creation and the optional installation add, and is never stored or logged. The owner is
+ * re-validated against the user's live repository list, and the result is confirmed with the
+ * live access check.
  */
 export async function runCreateRepo(
-	sql: Sql,
-	userId: number,
+	access: RepositoryAccess,
 	token: string,
 	intent: CreateRepoIntent,
 	fetchFn: FetchFn = fetch
 ): Promise<RepoOutcome> {
-	let synced = false;
-	const finish = async (outcome: RepoOutcome): Promise<RepoOutcome> => {
-		if (!synced) await syncUserRepositories(sql, userId, token, fetchFn);
+	const finish = (outcome: RepoOutcome): RepoOutcome => {
 		console.log(`create-repo github:${intent.owner}/${intent.name} ${outcome.code}`.toLowerCase());
 		return outcome;
 	};
 
-	// Re-validate the owner against this user's installations (the intent is only a request).
-	const snapshot = await getUserRepositorySnapshot(sql, userId);
-	const account = snapshot.repositories.find((r) => sameOwner(r.accountLogin, intent.owner));
+	// Re-validate the owner against the installations the user can write to (the intent is only a
+	// request). A GitHub failure refuses the owner.
+	const list = await access.list(intent.login, { refresh: true }).catch(() => null);
+	const account = list?.repositories.find((r) => sameOwner(r.accountLogin, intent.owner));
 	if (!account) return finish({ code: 'owner-not-allowed' });
 
 	let created;
@@ -81,7 +91,6 @@ export async function runCreateRepo(
 		try {
 			await addRepoToInstallation(token, account.installationId, created.id, fetchFn);
 		} catch (e) {
-			// `synced` is still false, so `finish` does the single snapshot sync here.
 			return finish({
 				code: 'created-not-installed',
 				status: e instanceof RepoCreateError ? e.status : undefined,
@@ -89,7 +98,8 @@ export async function runCreateRepo(
 			});
 		}
 	}
-	synced = true; // waitForRepository syncs on every try
-	const appeared = await waitForRepository(sql, userId, token, key, { ...pollDefaults, fetchFn });
+	const appeared = await waitForRepository(access, intent.login, key);
+	// Refresh the display cache so the picker lists the new repository.
+	if (appeared) await access.list(intent.login, { refresh: true }).catch(() => null);
 	return finish({ code: appeared ? 'created' : 'timeout', key });
 }

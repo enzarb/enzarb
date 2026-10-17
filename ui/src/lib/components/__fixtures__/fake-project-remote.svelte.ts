@@ -47,6 +47,7 @@ export const repositoryChoices = () => ({
 	current: { repositories: [], taken: {}, problem: null },
 	refresh: async () => {}
 });
+export const refreshRepositoryChoices = async () => {};
 export const claudeCredential = () =>
 	fakeQuery(() => ({
 		value: behavior.settingsError ? undefined : { configured: false, updatedAt: null },

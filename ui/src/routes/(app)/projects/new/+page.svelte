@@ -6,11 +6,13 @@
 	import Card from '#lib/components/ui/Card.svelte';
 	import PageHeader from '#lib/components/ui/PageHeader.svelte';
 	import Skeleton from '#lib/components/ui/Skeleton.svelte';
-	import type { PlanResult } from '#lib/onboarding.ts';
+	import RefreshRepositoriesButton from '#lib/components/RefreshRepositoriesButton.svelte';
+	import { REPOSITORY_LIST_HELP, type PlanResult } from '#lib/onboarding.ts';
 	import { parseRepoResult } from '#lib/repo-names.ts';
 	import {
 		createProjects,
 		listProjects,
+		refreshRepositoryChoices,
 		repositoryChoices,
 		startCreateRepo
 	} from '#lib/projects.remote.ts';
@@ -20,13 +22,11 @@
 
 	let results = $state<PlanResult[] | null>(null);
 
-	// The refresh flow re-reads the user's installations and comes back here.
 	// The create-repository round trip comes back with `?newRepo=<key>&repoResult=<code>`.
 	const repoCode = $derived(parseRepoResult(page.url.searchParams.get('repoResult')));
 	const repoStatus = $derived(Number(page.url.searchParams.get('repoStatus')) || undefined);
-	const refreshHref = $derived(
-		`/login/github?refresh=1&return=${encodeURIComponent(page.url.pathname)}`
-	);
+	// Refresh asks GitHub again (skipping the short display cache) and updates `choices`.
+	const refresh = () => refreshRepositoryChoices();
 </script>
 
 <svelte:head><title>New project · enzarb</title></svelte:head>
@@ -45,17 +45,18 @@
 	/>
 {:else if choices.current}
 	{#if choices.current.repositories.length === 0}
-		<!-- The layout shows the install notice (InstallBanner) when the snapshot is empty. -->
+		<!-- The layout also shows the install notice (InstallBanner) when the list is empty. -->
 		<Card>
 			<EmptyState
 				title="No repositories are available yet"
-				description="Install the GitHub App, then refresh the repository list."
+				description={`${choices.current.problem?.code === 'unavailable' ? choices.current.problem.message : REPOSITORY_LIST_HELP} Install the GitHub App or ask for write access, then refresh the list.`}
 			/>
+			<RefreshRepositoriesButton {refresh} />
 		</Card>
 	{:else}
 		<NewProjectForm
 			choices={choices.current}
-			{refreshHref}
+			{refresh}
 			startCreateRepo={(input) => startCreateRepo(input)}
 			newRepo={page.url.searchParams.get('newRepo')}
 			repoResult={repoCode ? { code: repoCode, status: repoStatus } : null}

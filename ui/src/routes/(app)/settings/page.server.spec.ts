@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 const snapshot = vi.hoisted(() => ({
-	value: { repositories: [] as unknown[], fetchedAt: null as Date | null }
+	value: { repositories: [] as unknown[], fetchedAt: new Date() } as
+		{ repositories: unknown[]; fetchedAt: Date } | Error
 }));
 const projects = vi.hoisted(() => ({
 	list: async (): Promise<unknown[]> => [],
@@ -14,11 +15,14 @@ vi.mock('#lib/server/project-service.ts', () => ({
 		return { list: () => projects.list() };
 	}
 }));
-vi.mock('#lib/server/db.ts', () => ({ getSql: () => ({}) }));
 vi.mock('#lib/server/config.ts', () => ({ getConfig: () => ({ githubAppSlug: 'my-app' }) }));
-vi.mock('#lib/server/user-repositories.ts', async (orig) => ({
-	...(await orig<typeof import('#lib/server/user-repositories.ts')>()),
-	getUserRepositorySnapshot: async () => snapshot.value
+vi.mock('#lib/server/repo-access.ts', () => ({
+	getRepositoryAccess: () => ({
+		list: async () => {
+			if (snapshot.value instanceof Error) throw snapshot.value;
+			return snapshot.value;
+		}
+	})
 }));
 
 import { load } from './+page.server.ts';
@@ -54,8 +58,10 @@ describe('settings load', () => {
 		expect(data.account.login).toBe('octo');
 	});
 
-	it('handles an empty snapshot', async () => {
-		snapshot.value = { repositories: [], fetchedAt: null };
+	it('handles an empty list and a GitHub failure', async () => {
+		snapshot.value = { repositories: [], fetchedAt: new Date('2026-10-11T10:00:00Z') };
+		expect((await run(user)).installations).toEqual([]);
+		snapshot.value = new Error('github down');
 		const data = await run(user);
 		expect(data.installations).toEqual([]);
 		expect(data.fetchedAt).toBeNull();

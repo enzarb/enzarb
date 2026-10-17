@@ -6,6 +6,34 @@ import { migrate } from '../../../../../scripts/migrate.ts';
 import { OAUTH_STATE_COOKIE } from '#lib/server/auth.ts';
 import { signIntent, type CreateRepoIntent } from '#lib/server/create-repo-intent.ts';
 import { OAUTH_RETURN_COOKIE } from '#lib/server/return-path.ts';
+import type { UserRepository } from '#lib/server/user-repositories.ts';
+
+/** The App-side live repository source (GitHub App installation token in production). */
+const fake = vi.hoisted(() => ({
+	repos: (): UserRepository[] => [],
+	listCalls: 0,
+	checks: [] as string[]
+}));
+vi.mock('#lib/server/repo-access.ts', () => ({
+	getRepositoryAccess: () => ({
+		configured: true,
+		list: async () => {
+			fake.listCalls++;
+			return { repositories: fake.repos(), fetchedAt: new Date() };
+		},
+		check: async (_login: string, key: string) => {
+			fake.checks.push(key);
+			return fake.repos().find((r) => r.repo === key) ?? null;
+		}
+	})
+}));
+const octo = (name: string): UserRepository => ({
+	repo: `github:octo/${name}`,
+	installationId: 5,
+	accountLogin: 'Octo',
+	private: true,
+	defaultBranch: 'main'
+});
 
 let container: StartedPostgreSqlContainer;
 let sql: postgres.Sql;
@@ -17,7 +45,7 @@ const json = (body: unknown, status = 200) =>
 		headers: { 'content-type': 'application/json' }
 	});
 
-function stubGitHub(opts: { reposStatus?: number }) {
+function stubGitHub() {
 	vi.stubGlobal(
 		'fetch',
 		vi.fn(async (input: RequestInfo | URL) => {
@@ -26,14 +54,6 @@ function stubGitHub(opts: { reposStatus?: number }) {
 				return json({ access_token: TOKEN, token_type: 'bearer' });
 			if (url === 'https://api.github.com/user')
 				return json({ id: 99, login: 'octo', name: 'Octo', avatar_url: null });
-			if (url.startsWith('https://api.github.com/user/installations?'))
-				return json({ installations: [{ id: 5, account: { login: 'Octo' } }] });
-			if (url.startsWith('https://api.github.com/user/installations/5/repositories'))
-				return opts.reposStatus
-					? new Response('x', { status: opts.reposStatus })
-					: json({
-							repositories: [{ full_name: 'Octo/Repo', private: true, default_branch: 'main' }]
-						});
 			return new Response('unexpected ' + url, { status: 500 });
 		})
 	);
@@ -88,22 +108,26 @@ afterAll(async () => {
 });
 
 describe('GET /login/github/callback', () => {
-	it('stores the repository snapshot, never the token, and returns to the requested page', async () => {
+	it('signs in without storing the token or any repository snapshot, and returns to the requested page', async () => {
 		const logs = vi.spyOn(console, 'error').mockImplementation(() => {});
-		stubGitHub({});
+		stubGitHub();
+		fake.listCalls = 0;
 		const { thrown, jar } = await callback('/projects');
 		expect(isRedirect(thrown)).toBe(true);
 		expect(thrown).toMatchObject({ status: 303, location: '/projects' });
 		expect(jar.has(OAUTH_RETURN_COOKIE)).toBe(false);
 		// a previous user's realtime stream cookie is cleared at login (same Path it was set with)
 		expect(jar.get('deleted:enzarb_live')).toBe('/live/');
-		const rows = await sql`SELECT repo, account_login, private FROM app.user_repositories`;
-		expect(rows).toEqual([{ repo: 'github:octo/repo', account_login: 'Octo', private: true }]);
+		// The repository list is live: sign-in neither writes the deprecated table nor lists.
+		expect(await sql`SELECT * FROM app.user_repositories`).toHaveLength(0);
+		expect(fake.listCalls).toBe(0);
+		expect(
+			vi.mocked(fetch).mock.calls.some((c) => String(c[0]).includes('/user/installations'))
+		).toBe(false);
 		// The token appears nowhere in the database.
 		const dump = JSON.stringify({
 			users: await sql`SELECT * FROM app.users`,
-			sessions: await sql`SELECT * FROM app.sessions`,
-			repos: await sql`SELECT * FROM app.user_repositories`
+			sessions: await sql`SELECT * FROM app.sessions`
 		});
 		expect(dump).not.toContain(TOKEN);
 		expect(JSON.stringify([...jar])).not.toContain(TOKEN);
@@ -111,21 +135,15 @@ describe('GET /login/github/callback', () => {
 		logs.mockRestore();
 	});
 
-	it('does not block sign-in when the GitHub API fails, and keeps the old snapshot', async () => {
-		const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
-		stubGitHub({ reposStatus: 500 });
+	it('sends an unsafe return path home', async () => {
+		stubGitHub();
 		const { thrown } = await callback('https://evil.example');
 		expect(thrown).toMatchObject({ status: 303, location: '/' });
-		expect((await sql`SELECT repo FROM app.user_repositories`).map((r) => r.repo)).toEqual([
-			'github:octo/repo'
-		]);
 		expect((await sql`SELECT count(*)::int AS n FROM app.sessions`)[0].n).toBe(2);
-		expect(JSON.stringify(spy.mock.calls)).not.toContain(TOKEN);
-		spy.mockRestore();
 	});
 
 	it('invalidates the session it replaces when re-authenticating', async () => {
-		stubGitHub({});
+		stubGitHub();
 		const [old] = await sql`SELECT id FROM app.sessions ORDER BY created_at LIMIT 1`;
 		const before = (await sql`SELECT count(*)::int AS n FROM app.sessions`)[0].n;
 		await callback('/', old.id);
@@ -194,26 +212,22 @@ describe('GET /login/github/callback', () => {
 						added = true;
 						return new Response(null, { status: 204 });
 					}
+					// installationCoversAll (user token): the installation's repository selection.
 					if (url.startsWith('https://api.github.com/user/installations?'))
 						return json({
 							installations: [
 								{ id: 5, account: { login: 'Octo' }, repository_selection: selection }
 							]
 						});
-					if (url.startsWith('https://api.github.com/user/installations/5/repositories')) {
-						const visible = created && o.appear !== false && (selection === 'all' || added);
-						return json({
-							repositories: [
-								{ full_name: 'Octo/Repo', private: true, default_branch: 'main' },
-								...(visible
-									? [{ full_name: 'Octo/fresh', private: true, default_branch: 'main' }]
-									: [])
-							]
-						});
-					}
 					return new Response('unexpected ' + url, { status: 500 });
 				})
 			);
+			// What the App can see: the existing repository, plus the new one once installed.
+			fake.repos = () => [
+				octo('repo'),
+				...(created && o.appear !== false && (selection === 'all' || added) ? [octo('fresh')] : [])
+			];
+			fake.checks = [];
 			const writes = () =>
 				calls.filter((c) => c.method !== 'GET' && !c.url.includes('/login/oauth'));
 			return { calls, writes };
@@ -286,9 +300,6 @@ describe('GET /login/github/callback', () => {
 			userId = Number(row.id);
 		});
 		beforeEach(async () => {
-			await sql`DELETE FROM app.user_repositories WHERE user_id = ${userId}`;
-			await sql`INSERT INTO app.user_repositories (user_id, repo, installation_id, account_login, private, default_branch)
-				VALUES (${userId}, 'github:octo/repo', 5, 'Octo', true, 'main')`;
 			vi.spyOn(console, 'log').mockImplementation(() => {});
 			vi.spyOn(console, 'error').mockImplementation(() => {});
 		});
@@ -310,15 +321,11 @@ describe('GET /login/github/callback', () => {
 			expect(jar.has('enzarb_create_repo')).toBe(false);
 			expect(sets.some((s) => s.startsWith('enzarb_session='))).toBe(true);
 			expect(await sql`SELECT id FROM app.sessions WHERE id = ${old.id}`).toHaveLength(0);
-			expect(
-				(await sql`SELECT repo FROM app.user_repositories WHERE user_id = ${userId}`).map(
-					(r) => r.repo
-				)
-			).toContain('github:octo/fresh');
+			// Confirmed with the App's live check, not a stored snapshot.
+			expect(fake.checks).toContain('github:octo/fresh');
 			const dump = JSON.stringify({
 				users: await sql`SELECT * FROM app.users`,
 				sessions: await sql`SELECT * FROM app.sessions`,
-				repos: await sql`SELECT * FROM app.user_repositories`,
 				sets,
 				logs: [vi.mocked(console.log).mock.calls, vi.mocked(console.error).mock.calls]
 			});
@@ -364,7 +371,7 @@ describe('GET /login/github/callback', () => {
 			expect(sets.some((s) => s.startsWith('enzarb_session='))).toBe(true);
 		});
 
-		it('gives the timeout result when the repository does not reach the snapshot', async () => {
+		it('gives the timeout result when the App never sees the repository', async () => {
 			stubCreate({ appear: false });
 			const { location, jar } = await run();
 			expect(location?.searchParams.get('repoResult')).toBe('timeout');
@@ -375,19 +382,14 @@ describe('GET /login/github/callback', () => {
 			const gh = stubCreate({ profile: { id: 100, login: 'mallory' } });
 			const [old] = await sql`SELECT id FROM app.sessions ORDER BY created_at LIMIT 1`;
 			const before = await counts();
-			const snapshotBefore = JSON.stringify(
-				await sql`SELECT * FROM app.user_repositories ORDER BY user_id, repo`
-			);
 			const { location, jar, sets } = await run({}, {}, undefined, old.id);
 			expect(location?.searchParams.get('repoResult')).toBe('identity-mismatch');
 			expect(location?.pathname).toBe('/projects/new');
 			expect(gh.writes()).toHaveLength(0);
 			expect(await counts()).toEqual(before); // no user row, no session
 			expect(await sql`SELECT 1 FROM app.users WHERE github_id = 100`).toHaveLength(0);
-			expect(
-				JSON.stringify(await sql`SELECT * FROM app.user_repositories ORDER BY user_id, repo`)
-			).toBe(snapshotBefore);
-			expect(gh.calls.some((c) => c.url.includes('/user/installations'))).toBe(false); // no sync
+			expect(gh.calls.some((c) => c.url.includes('/user/installations'))).toBe(false);
+			expect(fake.checks).toEqual([]);
 			expect(sets.some((s) => s.startsWith('enzarb_session='))).toBe(false);
 			expect(await sql`SELECT 1 FROM app.sessions WHERE id = ${old.id}`).toHaveLength(1);
 			expect(jar.has('enzarb_create_repo')).toBe(false);
@@ -478,7 +480,7 @@ describe('GET /login/github/callback', () => {
 
 	describe('install-time callback', () => {
 		it('without state redirects to the refresh flow; no token exchange, no session', async () => {
-			stubGitHub({});
+			stubGitHub();
 			const fetchMock = vi.mocked(fetch);
 			fetchMock.mockClear();
 			const before = (await sql`SELECT count(*)::int AS n FROM app.sessions`)[0].n;
