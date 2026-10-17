@@ -11,11 +11,14 @@ vi.mock('#lib/server/config.ts', () => ({
 	getConfig: () => ({ componentVersions: versions.value })
 }));
 const tok = vi.hoisted(() => ({ get: vi.fn(), invalidate: vi.fn() }));
-vi.mock('#lib/server/github-app-token.ts', () => ({
-	getInstallationToken: tok.get,
-	invalidateInstallationToken: tok.invalidate
+vi.mock('#lib/server/github-app.ts', () => ({
+	token: tok.get,
+	invalidateToken: tok.invalidate
 }));
-vi.mock('#lib/server/releases.ts', () => ({ cachedReleases: releases.fn }));
+vi.mock('#lib/server/releases.ts', () => ({
+	RELEASES_REPO: 'enzarb/enzarb',
+	cachedReleases: releases.fn
+}));
 const rollout = vi.hoisted(() => ({ fn: vi.fn() }));
 vi.mock('#lib/server/updater-status.ts', () => ({ fetchChartRollout: rollout.fn }));
 
@@ -72,8 +75,11 @@ describe('about load', () => {
 		const data = await run(user);
 		expect(releases.fn).toHaveBeenCalledWith(
 			'ui',
-			expect.objectContaining({ token: 'ghs_secret', onTokenRejected: tok.invalidate })
+			expect.objectContaining({ token: 'ghs_secret', onTokenRejected: expect.any(Function) })
 		);
+		expect(tok.get).toHaveBeenCalledWith('enzarb/enzarb', { contents: 'read' });
+		releases.fn.mock.calls[0][1].onTokenRejected();
+		expect(tok.invalidate).toHaveBeenCalledWith('enzarb/enzarb', { contents: 'read' });
 		expect(JSON.stringify(data)).not.toContain('ghs_secret');
 	});
 
