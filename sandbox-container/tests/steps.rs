@@ -614,3 +614,64 @@ async fn shutdown_interrupts_a_running_step_and_it_resumes() {
     assert!(evs.len() > before.len());
     assert_eq!(texts(&evs[before.len()..], "user"), CONTINUE_PROMPT);
 }
+
+/// Step outputs under `.enzarb/out/` are collected but never committed, and a later step on the
+/// same task workspace checks out cleanly (no "local changes would be overwritten").
+#[tokio::test]
+async fn step_outputs_are_not_committed_and_the_next_step_checks_out() {
+    let env = Env::new();
+    let addr = env.server().await;
+    let (s, mut ev) = connect(addr).await;
+    let mut st = step(
+        "out-1",
+        StepExec::Command {
+            run: "mkdir -p .enzarb/out && echo plan > .enzarb/out/plan.md && echo code > code.txt"
+                .into(),
+            tools: vec![],
+        },
+        vec![env.workspace("feature/out")],
+    );
+    st.outputs = [(
+        "plan".to_string(),
+        StepOutput {
+            file: ".enzarb/out/plan.md".into(),
+            format: None,
+            optional: false,
+        },
+    )]
+    .into();
+    start(&s, &mut ev, st).await;
+    let (_, fin) = collect(&mut ev, "out-1", |_| false).await;
+    let fin = fin.unwrap();
+    assert_eq!(fin.exit, "success", "{fin:?}");
+    assert_eq!(fin.outputs["plan"], "plan\n");
+    let files = git(
+        &env.bare,
+        &["ls-tree", "-r", "--name-only", "refs/heads/feature/out"],
+    );
+    assert!(files.contains("code.txt"), "{files}");
+    assert!(
+        !files.contains(".enzarb/out"),
+        "outputs were committed: {files}"
+    );
+
+    // A second step of the same task on the same branch: the stale output must not block it.
+    let st2 = step(
+        "out-2",
+        StepExec::Command {
+            run:
+                "mkdir -p .enzarb/out && echo plan2 > .enzarb/out/plan.md && echo more >> code.txt"
+                    .into(),
+            tools: vec![],
+        },
+        vec![env.workspace("feature/out")],
+    );
+    start(&s, &mut ev, st2).await;
+    let (_, fin2) = collect(&mut ev, "out-2", |_| false).await;
+    assert_eq!(fin2.unwrap().exit, "success");
+    let files = git(
+        &env.bare,
+        &["ls-tree", "-r", "--name-only", "refs/heads/feature/out"],
+    );
+    assert!(!files.contains(".enzarb/out"), "{files}");
+}

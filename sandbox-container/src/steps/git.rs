@@ -258,6 +258,20 @@ impl Git<'_> {
             let _ = std::fs::remove_dir_all(dir);
             self.clone(ctl, ws, dir).await?;
         }
+        // Step outputs (`.enzarb/out/`) are collected after each step and never belong in the
+        // repository: drop stale ones (a branch that committed them then checks out cleanly)
+        // and keep new ones out of commits.
+        let _ = std::fs::remove_dir_all(dir.join(OUTPUT_DIR));
+        // The workspace's `.git` may be a file (separate git dir): ask git where its exclude is.
+        let out = self
+            .local(ctl, dir, &["rev-parse", "--git-path", "info/exclude"])
+            .await?;
+        if out.success() {
+            let rel = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !rel.is_empty() {
+                exclude(&dir.join(rel), &format!("/{OUTPUT_DIR}/"));
+            }
+        }
         let remote = self
             .rev(ctl, dir, &format!("refs/remotes/origin/{}", ws.branch))
             .await?;
@@ -294,6 +308,15 @@ impl Git<'_> {
                 .await?;
             }
         }
+        // A branch that already tracks outputs (committed before they were excluded): untrack
+        // them so the next commit removes them from the change.
+        let _ = self
+            .local(
+                ctl,
+                dir,
+                &["rm", "-r", "-q", "--cached", "--ignore-unmatch", OUTPUT_DIR],
+            )
+            .await?;
         Ok(lease
             .map(str::to_string)
             .unwrap_or_else(|| remote.unwrap_or_default()))
@@ -394,4 +417,32 @@ impl Git<'_> {
 /// `<ws>/tasks/<task_id>/<owner>/<repo>`.
 pub fn workspace_dir(root: &Path, task_id: &str, repo: &str) -> PathBuf {
     root.join("tasks").join(task_id).join(repo)
+}
+
+/// Where steps write their declared output files, relative to the workspace.
+pub const OUTPUT_DIR: &str = ".enzarb/out";
+
+/// Add `pattern` to the repository's local exclude file (`path`, from `git rev-parse
+/// --git-path info/exclude`) once.
+fn exclude(path: &Path, pattern: &str) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let cur = std::fs::read_to_string(path).unwrap_or_default();
+    if cur.lines().any(|l| l == pattern) {
+        return;
+    }
+    use std::io::Write as _;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let sep = if cur.is_empty() || cur.ends_with('\n') {
+            ""
+        } else {
+            "\n"
+        };
+        let _ = writeln!(f, "{sep}{pattern}");
+    }
 }
