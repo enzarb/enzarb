@@ -21,7 +21,7 @@ on:
         type: string
         default: ""
       context:
-        description: Docker build context (`.`, the repo root: every Rust image builds the root workspace)
+        description: Docker build context (`.`, the repo root, since every Rust image builds the root workspace)
         type: string
         default: ""
       postgres:
