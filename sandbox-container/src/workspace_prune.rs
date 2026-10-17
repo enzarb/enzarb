@@ -10,6 +10,7 @@
 //! one. Best-effort: failures are logged.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use tokio_util::sync::CancellationToken;
@@ -91,7 +92,11 @@ impl WorkspacePruner {
                 let ws = self.workspace.clone();
                 let steps = self.steps.clone();
                 let min = self.cfg.min_free_percent;
-                let _ = tokio::task::spawn_blocking(move || prune_once(&ws, &steps, min)).await;
+                let stop2 = stop.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    prune_once_until(&ws, &steps, min, &|| stop2.is_cancelled())
+                })
+                .await;
                 tokio::select! {
                     _ = stop.cancelled() => return,
                     _ = tokio::time::sleep(self.cfg.interval) => {}
@@ -103,6 +108,18 @@ impl WorkspacePruner {
 
 /// One pass: returns the number of cache directories removed.
 pub fn prune_once(workspace: &Path, steps: &StepManager, min_free_percent: u8) -> usize {
+    prune_once_until(workspace, steps, min_free_percent, &|| false)
+}
+
+/// Unique names for renamed-aside caches.
+static SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn prune_once_until(
+    workspace: &Path,
+    steps: &StepManager,
+    min_free_percent: u8,
+    stopped: &dyn Fn() -> bool,
+) -> usize {
     let trash = workspace.join(TRASH);
     empty_trash(&trash);
     let low = || disk_usage(workspace).is_some_and(|d| d.is_low(min_free_percent));
@@ -111,7 +128,13 @@ pub fn prune_once(workspace: &Path, steps: &StepManager, min_free_percent: u8) -
     }
     let mut removed = 0;
     for task in tasks_by_age(&workspace.join("tasks")) {
-        let caches = cache_dirs(&task, MAX_DEPTH);
+        if stopped() {
+            break;
+        }
+        let caches: Vec<PathBuf> = cache_dirs(&task, MAX_DEPTH)
+            .into_iter()
+            .filter(|c| !tag_is_tracked(c))
+            .collect();
         if caches.is_empty() {
             continue;
         }
@@ -121,16 +144,22 @@ pub fn prune_once(workspace: &Path, steps: &StepManager, min_free_percent: u8) -
             .unwrap_or_default();
         // Renamed aside while no step can start, then deleted outside the lock.
         let moved = steps.with_busy_tasks(|busy| {
-            if busy.is_none_or(|b| b.contains(&name)) {
+            if busy.contains(&name) {
                 return Vec::new();
             }
             let _ = std::fs::create_dir_all(&trash);
             caches
                 .iter()
-                .enumerate()
-                .filter_map(|(i, c)| {
-                    let to = trash.join(format!("{name}-{i}-{}", std::process::id()));
-                    std::fs::rename(c, &to).ok().map(|_| to)
+                .filter_map(|c| {
+                    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+                    let to = trash.join(format!("{name}-{}-{n}", std::process::id()));
+                    match std::fs::rename(c, &to) {
+                        Ok(()) => Some(to),
+                        Err(e) => {
+                            tracing::warn!(path = %c.display(), error = %e, "could not move a cache aside");
+                            None
+                        }
+                    }
                 })
                 .collect::<Vec<_>>()
         });
@@ -209,6 +238,17 @@ pub fn cache_dirs(root: &Path, depth: usize) -> Vec<PathBuf> {
     out
 }
 
+/// A `CACHEDIR.TAG` committed to the repository marks tracked content, not a build cache.
+fn tag_is_tracked(dir: &Path) -> bool {
+    let mut c = std::process::Command::new("git");
+    c.args(["-c", "safe.directory=*", "ls-files", "--error-unmatch", TAG])
+        .current_dir(dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    crate::privs::as_sandbox_user(&mut c);
+    c.status().is_ok_and(|s| s.success())
+}
+
 fn is_cache(dir: &Path) -> bool {
     std::fs::read(dir.join(TAG)).is_ok_and(|b| b.starts_with(SIGNATURE))
 }
@@ -234,6 +274,31 @@ mod tests {
         std::fs::write(r.join("o/r/fake").join(TAG), "not a signature").unwrap();
         tag(&r.join("o/r/.git/x")); // never inside .git
         assert_eq!(cache_dirs(r, MAX_DEPTH), vec![r.join("o/r/target")]);
+    }
+
+    #[test]
+    fn a_committed_tag_is_tracked_content() {
+        let t = tempfile::tempdir().unwrap();
+        let r = t.path();
+        let git = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                    .args(args)
+                    .current_dir(r)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            )
+        };
+        git(&["init", "-q"]);
+        tag(&r.join("vendored"));
+        tag(&r.join("target"));
+        git(&["add", "vendored"]);
+        git(&["commit", "-q", "-m", "x"]);
+        assert!(tag_is_tracked(&r.join("vendored")));
+        assert!(!tag_is_tracked(&r.join("target")));
     }
 
     #[test]

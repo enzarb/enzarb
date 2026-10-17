@@ -441,7 +441,12 @@ impl StepManager {
                     let _ = session.accept_step(&id, phase, true);
                     return;
                 }
-                // The engine's resume after a restart: same run, fresh secrets.
+                // The engine's resume after a restart: same run, fresh secrets. Marked running
+                // under the registry lock, so the workspace pruner sees it as busy.
+                {
+                    let _runs = self.inner.runs.lock().unwrap();
+                    run.inner.lock().unwrap().phase = StepPhase::Running;
+                }
                 let _ = session.accept_step(&id, StepPhase::Running, true);
                 self.launch(run, Arc::new(start), true);
                 return;
@@ -453,7 +458,9 @@ impl StepManager {
                 let run = Arc::new(Run::new(&id, dir));
                 write_json(&run.dir.join("start.json"), &blank(&start));
                 {
-                    let g = run.inner.lock().unwrap();
+                    // Known from registration on, so the workspace pruner sees the task as busy.
+                    let mut g = run.inner.lock().unwrap();
+                    g.stored = Some(blank(&start));
                     run.persist(&g);
                 }
                 self.inner
@@ -598,27 +605,21 @@ impl StepManager {
     }
 
     /// Runs `f` with the task ids of running steps while no step can start or end (the run
-    /// registry is locked). `None` when a running step's task is not known yet.
-    pub fn with_busy_tasks<R>(
-        &self,
-        f: impl FnOnce(Option<&std::collections::HashSet<String>>) -> R,
-    ) -> R {
+    /// registry is locked). Runs without a task (chat sessions reported through the sink)
+    /// do not count; a new step's task is known from its registration on.
+    pub fn with_busy_tasks<R>(&self, f: impl FnOnce(&std::collections::HashSet<String>) -> R) -> R {
         let runs = self.inner.runs.lock().unwrap();
         let mut busy = std::collections::HashSet::new();
-        let mut known = true;
         for r in runs.values() {
             let g = r.inner.lock().unwrap();
             if g.phase != StepPhase::Running {
                 continue;
             }
-            match g.start.as_deref().or(g.stored.as_ref()) {
-                Some(s) => {
-                    busy.insert(s.task_id.clone());
-                }
-                None => known = false,
+            if let Some(s) = g.start.as_deref().or(g.stored.as_ref()) {
+                busy.insert(s.task_id.clone());
             }
         }
-        f(known.then_some(&busy))
+        f(&busy)
     }
 
     /// CTRL `step_resume`.
