@@ -16,7 +16,6 @@ permissions:
   contents: write
   packages: write
 env:
-  MISE_CEILING_PATHS: ${{ github.workspace }}
   MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
 jobs:
   chart:

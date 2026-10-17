@@ -47,6 +47,8 @@ jobs:
           MISE_ENV: ansible
       - name: Lint and syntax-check the host roles
         working-directory: kubernetes/rke2
+        env:
+          MISE_ENV: ansible
         run: |
           set -euo pipefail
           ansible-galaxy collection install -r requirements.yml -p collections
