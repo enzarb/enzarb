@@ -294,6 +294,9 @@ struct Inner {
     activity: ActivityGate,
     self_exe: PathBuf,
     runs: Mutex<HashMap<String, Arc<Run>>>,
+    /// Set by [`StepManager::interrupt_all`]: steps that end now are interrupted by the
+    /// sandbox's own shutdown and stay resumable (no `step_finished` is reported).
+    shutting_down: std::sync::atomic::AtomicBool,
 }
 
 /// The step executor. Cheap to clone.
@@ -312,6 +315,7 @@ impl StepManager {
                 activity: ActivityGate::default(),
                 self_exe: std::env::current_exe().unwrap_or_else(|_| "sandbox-init".into()),
                 runs: Mutex::default(),
+                shutting_down: Default::default(),
             }),
         }
     }
@@ -552,6 +556,44 @@ impl StepManager {
         let g = run.inner.lock().unwrap();
         if let Some(c) = &g.control {
             let _ = c.stop.send(true);
+        }
+    }
+
+    /// Sandbox shutdown (SIGTERM, a pod roll): stop every running step at its next checkpoint
+    /// so it ends `interrupted` and stays resumable, waiting up to `grace`. Their result is
+    /// not reported to the engine; after the restart the engine's `step_status` sees
+    /// `interrupted` and re-sends `step_start`, which resumes the same agent session.
+    pub async fn interrupt_all(&self, grace: Duration) {
+        use std::sync::atomic::Ordering;
+        self.inner.shutting_down.store(true, Ordering::SeqCst);
+        let running: Vec<Arc<Run>> = self
+            .inner
+            .runs
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|r| r.inner.lock().unwrap().phase == StepPhase::Running)
+            .cloned()
+            .collect();
+        if running.is_empty() {
+            return;
+        }
+        tracing::info!(
+            steps = running.len(),
+            "interrupting running steps for shutdown"
+        );
+        for r in &running {
+            if let Some(c) = &r.inner.lock().unwrap().control {
+                let _ = c.stop.send(true);
+            }
+        }
+        let deadline = tokio::time::Instant::now() + grace;
+        while running
+            .iter()
+            .any(|r| r.inner.lock().unwrap().phase == StepPhase::Running)
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
@@ -1159,6 +1201,15 @@ impl Inner {
         if g.phase == StepPhase::Finished {
             // Done for good: the secrets go.
             g.start = None;
+        }
+        if g.phase == StepPhase::Interrupted
+            && self.shutting_down.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            // Interrupted by our own shutdown: resumable, so neither a result nor
+            // `step_finished` (the engine resumes it after the restart).
+            run.persist(&g);
+            tracing::info!(run = %run.id, "step interrupted by shutdown");
+            return;
         }
         write_json(&run.dir.join("finished.json"), &fin);
         run.persist(&g);

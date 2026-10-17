@@ -47,6 +47,9 @@ export interface PushEntry {
  * functions) or the project owner (the notifier), never client input.
  */
 export function pushStore(sql: Sql) {
+	// Data-access layer for `app_api.push_*`. The SQL still names its task parameter `work_item_id`
+	// (migrations 0006/0007, a shared contract); the functions are called positionally, so this file
+	// is the only place that maps the old SQL name to `taskId`.
 	return {
 		/** False when the endpoint already belongs to another owner (nothing is changed). */
 		async upsert(owner: string, s: NewSubscription): Promise<boolean> {
@@ -93,45 +96,45 @@ export function pushStore(sql: Sql) {
 
 		async claim(
 			owner: string,
-			workItemId: number,
+			taskId: number,
 			category: string,
 			stateKey: string,
 			windowSecs: number
 		): Promise<Claim> {
 			const [row] = await sql<{ claimed: boolean; recent: number }[]>`
-				SELECT claimed, recent FROM app_api.push_claim(${owner}, ${workItemId}, ${category}, ${stateKey}, ${windowSecs})`;
+				SELECT claimed, recent FROM app_api.push_claim(${owner}, ${taskId}, ${category}, ${stateKey}, ${windowSecs})`;
 			return { claimed: row?.claimed ?? false, recent: row?.recent ?? 0 };
 		},
 
 		/** Gives a claim back after a delivery in which every send failed transiently. */
 		async release(
 			owner: string,
-			workItemId: number,
+			taskId: number,
 			category: string,
 			stateKey: string
 		): Promise<boolean> {
 			const [row] = await sql<{ ok: boolean }[]>`
-				SELECT app_api.push_claim_release(${owner}, ${workItemId}, ${category}, ${stateKey}) AS ok`;
+				SELECT app_api.push_claim_release(${owner}, ${taskId}, ${category}, ${stateKey}) AS ok`;
 			return row?.ok ?? false;
 		},
 
-		/** The open "needs you" entry of a work item for this owner, if any. */
-		async entry(owner: string, workItemId: number): Promise<PushEntry | null> {
+		/** The open "needs you" entry of a task for this owner, if any. */
+		async entry(owner: string, taskId: number): Promise<PushEntry | null> {
 			const [row] = await sql<{ category: string; state_key: string; shown: boolean }[]>`
-				SELECT category, state_key, shown FROM app_api.push_item_get(${owner}, ${workItemId})`;
+				SELECT category, state_key, shown FROM app_api.push_item_get(${owner}, ${taskId})`;
 			return row
 				? { category: row.category as string, stateKey: row.state_key, shown: row.shown }
 				: null;
 		},
 
-		async setEntry(owner: string, workItemId: number, entry: PushEntry): Promise<void> {
-			await sql`SELECT app_api.push_item_set(${owner}, ${workItemId}, ${entry.category}, ${entry.stateKey}, ${entry.shown})`;
+		async setEntry(owner: string, taskId: number, entry: PushEntry): Promise<void> {
+			await sql`SELECT app_api.push_item_set(${owner}, ${taskId}, ${entry.category}, ${entry.stateKey}, ${entry.shown})`;
 		},
 
 		/** Closes the open entry; true for the one caller that should send the clear push. */
-		async clearEntry(owner: string, workItemId: number): Promise<boolean> {
+		async clearEntry(owner: string, taskId: number): Promise<boolean> {
 			const [row] = await sql<{ ok: boolean }[]>`
-				SELECT app_api.push_item_clear(${owner}, ${workItemId}) AS ok`;
+				SELECT app_api.push_item_clear(${owner}, ${taskId}) AS ok`;
 			return row?.ok ?? false;
 		},
 

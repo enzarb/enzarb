@@ -456,7 +456,7 @@ describe('setRepositories', () => {
 		expect(await setRepos(store, ['github:acme/web'])).toMatchObject({ code: 'not-found' });
 	});
 
-	describe('work items of removed repositories', () => {
+	describe('tasks of removed repositories', () => {
 		const withWork = (
 			store: ProjectStore,
 			keys: string[],
