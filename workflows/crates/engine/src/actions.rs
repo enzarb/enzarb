@@ -3,7 +3,8 @@
 //! blocks a workflow calls by name.
 
 use enzarb_connector::{
-    ChangeRequestSpec, CloseReason, Error as CError, MergeOutcome, UpdateBranchOutcome, WorkItemKey,
+    ChangeRequestSpec, CloseReason, Connector, Error as CError, MergeOutcome, UpdateBranchOutcome,
+    WorkItemKey,
 };
 use enzarb_flow::interp::TaskState;
 use serde_json::{Map, Value, json};
@@ -172,38 +173,7 @@ pub async fn call(
                 MergeOutcome::NotMergeable { reason } => Err(ActionError::Refused(reason)),
             }
         }
-        "create_issues" => {
-            let r = target_repo(repo, args);
-            let mut out = Vec::new();
-            let issues = args
-                .get("issues")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            for (i, is) in issues.iter().enumerate() {
-                let title = is.get("title").and_then(Value::as_str).unwrap_or("");
-                let body = is.get("body").and_then(Value::as_str).unwrap_or("");
-                let ls: Vec<String> = is
-                    .get("labels")
-                    .and_then(Value::as_array)
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|v| v.as_str().map(str::to_string))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let k = c
-                    .create_issue(&repo_key(&r), title, body, &ls, &format!("{key}:{i}"))
-                    .await
-                    .map_err(transient)?;
-                out.push(
-                    json!({"kind": "issue", "repo": r, "number": k.number, "title": title,
-                                "url": format!("https://github.com/{r}/issues/{}", k.number),
-                                "key": subject_key(&r, k.number)}),
-                );
-            }
-            Ok(json!({"issues": out}))
-        }
+        "create_issues" => create_issues(c.as_ref(), &target_repo(repo, args), args, key).await,
         "close_issue" => {
             let reason = if s(args, "reason") == Some("not_planned") {
                 CloseReason::NotPlanned
@@ -390,4 +360,303 @@ pub async fn fact(
         }
         other => return Err(format!("unknown fact `{other}`")),
     })
+}
+
+/// `create_issues`: creates `issues` ([{key, title, body, labels?, depends_on?}]) in `repo`,
+/// then for each one replaces `{{issue:<key>}}` in its body with `#<number> (<title>)`, appends
+/// `footer`, links it as a sub-issue of `parent` and records its `depends_on` keys as
+/// blocked-by relations. Every call is idempotent, so a retried job converges.
+/// Returns `{issues: [{kind, key, repo, number, title, url}]}` in input order.
+pub(crate) async fn create_issues(
+    c: &dyn Connector,
+    r: &str,
+    args: &Map<String, Value>,
+    key: &str,
+) -> Result<Value, ActionError> {
+    let issues = args
+        .get("issues")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let str_of = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let parent = match args.get("parent") {
+        Some(Value::Number(n)) => n.as_u64(),
+        Some(Value::String(t)) => t.trim().trim_start_matches('#').parse().ok(),
+        _ => None,
+    };
+    let footer = s(args, "footer").unwrap_or("").trim();
+    let with_footer = |body: String| {
+        if footer.is_empty() {
+            body
+        } else {
+            format!("{}\n\n{footer}", body.trim_end())
+        }
+    };
+    let keys: Vec<String> = issues.iter().map(|is| str_of(is, "key")).collect();
+    let deps_of = |is: &Value| -> Vec<String> {
+        is.get("depends_on")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    // Each issue is created complete as far as possible: dependencies first, so its body
+    // already names them, and its sub-issue link and blocked-by relations follow at once. Its
+    // task starts from the `opened` webhook, and its `dependencies` phase must see them.
+    let order = topo_order(&keys, &issues.iter().map(deps_of).collect::<Vec<_>>());
+    let mut made: Vec<Option<WorkItemKey>> = vec![None; issues.len()];
+    let mut by_key: std::collections::HashMap<String, (u64, String)> = Default::default();
+    for &i in &order {
+        let is = &issues[i];
+        let ls: Vec<String> = is
+            .get("labels")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let body = with_footer(resolve_issue_refs(&str_of(is, "body"), &by_key));
+        let k = c
+            .create_issue(
+                &repo_key(r),
+                &str_of(is, "title"),
+                &body,
+                &ls,
+                &format!("{key}:{i}"),
+            )
+            .await
+            .map_err(transient)?;
+        if !keys[i].is_empty() {
+            by_key.insert(keys[i].clone(), (k.number, str_of(is, "title")));
+        }
+        for d in deps_of(is) {
+            let Some((n, _)) = by_key.get(&d) else {
+                continue;
+            };
+            if *n == k.number {
+                continue;
+            }
+            c.add_dependency(
+                &k,
+                &WorkItemKey::new(repo_key(r), *n),
+                &format!("{key}:{i}:dep:{d}"),
+            )
+            .await
+            .map_err(transient)?;
+        }
+        if let Some(p) = parent {
+            c.link_sub_issue(&WorkItemKey::new(repo_key(r), p), &k)
+                .await
+                .map_err(transient)?;
+        }
+        made[i] = Some(k);
+    }
+    let made: Vec<WorkItemKey> = made
+        .into_iter()
+        .map(|k| k.expect("every issue created"))
+        .collect();
+    // References to issues created later (and dependencies in a cycle) are filled in now.
+    for (i, is) in issues.iter().enumerate() {
+        let body = with_footer(resolve_issue_refs(&str_of(is, "body"), &by_key));
+        if body
+            != with_footer(resolve_issue_refs(
+                &str_of(is, "body"),
+                &prefix(&order, i, &keys, &by_key),
+            ))
+        {
+            c.update_issue(&made[i], &body).await.map_err(transient)?;
+        }
+        for d in deps_of(is) {
+            let Some((n, _)) = by_key.get(&d) else {
+                continue;
+            };
+            let before = order.iter().position(|&j| j == i).unwrap_or(0);
+            let created_earlier = order[..before].iter().any(|&j| keys[j] == d);
+            if *n != made[i].number && !created_earlier {
+                c.add_dependency(
+                    &made[i],
+                    &WorkItemKey::new(repo_key(r), *n),
+                    &format!("{key}:{i}:dep:{d}"),
+                )
+                .await
+                .map_err(transient)?;
+            }
+        }
+    }
+    let out: Vec<Value> = issues
+        .iter()
+        .zip(&made)
+        .map(|(is, k)| {
+            json!({"kind": "issue", "repo": r, "number": k.number, "title": str_of(is, "title"),
+                   "url": format!("https://github.com/{r}/issues/{}", k.number),
+                   "key": subject_key(r, k.number)})
+        })
+        .collect();
+    Ok(json!({"issues": out}))
+}
+
+/// Indices in dependency order (a dependency before its dependents), stable otherwise;
+/// members of a cycle and unknown keys keep their input order.
+fn topo_order(keys: &[String], deps: &[Vec<String>]) -> Vec<usize> {
+    let mut done = vec![false; keys.len()];
+    let mut out = Vec::with_capacity(keys.len());
+    while out.len() < keys.len() {
+        let ready = (0..keys.len()).find(|&i| {
+            !done[i]
+                && deps[i].iter().all(|d| {
+                    d == &keys[i] || !keys.iter().enumerate().any(|(j, k)| k == d && !done[j])
+                })
+        });
+        // A cycle: take the first remaining issue.
+        let i = ready.unwrap_or_else(|| (0..keys.len()).find(|&i| !done[i]).unwrap());
+        done[i] = true;
+        out.push(i);
+    }
+    out
+}
+
+/// The keys created before issue `i` (what its body was resolved against at creation).
+fn prefix(
+    order: &[usize],
+    i: usize,
+    keys: &[String],
+    by_key: &std::collections::HashMap<String, (u64, String)>,
+) -> std::collections::HashMap<String, (u64, String)> {
+    let at = order.iter().position(|&j| j == i).unwrap_or(0);
+    order[..at]
+        .iter()
+        .filter_map(|&j| by_key.get(&keys[j]).map(|v| (keys[j].clone(), v.clone())))
+        .collect()
+}
+
+/// Replaces `{{issue:<key>}}` (spaces inside the braces allowed) with `#<number> (<title>)`;
+/// unknown keys are left as written.
+fn resolve_issue_refs(
+    body: &str,
+    by_key: &std::collections::HashMap<String, (u64, String)>,
+) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut rest = body;
+    while let Some(start) = rest.find("{{") {
+        let Some(len) = rest[start..].find("}}") else {
+            break;
+        };
+        let inner = rest[start + 2..start + len].trim();
+        out.push_str(&rest[..start]);
+        match inner
+            .strip_prefix("issue:")
+            .map(str::trim)
+            .and_then(|k| by_key.get(k))
+        {
+            Some((n, t)) => out.push_str(&format!("#{n} ({t})")),
+            None => out.push_str(&rest[start..start + len + 2]),
+        }
+        rest = &rest[start + len + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
+#[cfg(test)]
+mod create_issues_tests {
+    use super::*;
+    use enzarb_connector::fake::FakeConnector;
+
+    fn args(v: Value) -> Map<String, Value> {
+        v.as_object().unwrap().clone()
+    }
+
+    #[tokio::test]
+    async fn resolves_refs_appends_the_footer_links_and_records_dependencies() {
+        let c = FakeConnector::default();
+        c.set_next_issue_number(10);
+        let a = args(json!({
+            "parent": "7",
+            "footer": "Part of the epic #7",
+            "issues": [
+                {"key": "ci", "title": "CI job", "body": "Uses {{issue:gen}} and {{ issue:nope }}.",
+                 "depends_on": ["gen", "missing"]},
+                {"key": "gen", "title": "Generator", "body": "Builds the graph; see {{issue:ci}}.", "depends_on": []}
+            ]
+        }));
+        let out = match create_issues(&c, "o/r", &a, "t1:call-4").await {
+            Ok(v) => v,
+            Err(_) => panic!("create_issues failed"),
+        };
+        // The dependency ("gen") is created first; the result keeps the input order.
+        assert_eq!(out["issues"][0]["number"], 11);
+        assert_eq!(out["issues"][1]["number"], 10);
+        let created = c.created_issues();
+        assert_eq!(
+            created[0].2,
+            "Builds the graph; see #11 (CI job).\n\nPart of the epic #7"
+        );
+        assert_eq!(
+            created[1].2,
+            "Uses #10 (Generator) and {{ issue:nope }}.\n\nPart of the epic #7"
+        );
+        // The dependent was created with its final body, and its dependency was recorded
+        // right after it, before anything else.
+        let calls: Vec<String> = c.calls().iter().map(|r| format!("{:?}", r.call)).collect();
+        let create_ci = calls
+            .iter()
+            .position(|c| c.contains("CreateIssue") && c.contains("CI job"))
+            .unwrap();
+        assert!(
+            calls[create_ci].contains("Uses #10 (Generator)"),
+            "{}",
+            calls[create_ci]
+        );
+        assert!(
+            calls[create_ci + 1].contains("AddDependency"),
+            "{}",
+            calls[create_ci + 1]
+        );
+        let parent = WorkItemKey::new(repo_key("o/r"), 7);
+        assert_eq!(
+            c.sub_issues(&parent),
+            vec![created[0].0.clone(), created[1].0.clone()]
+        );
+        let deps = c.list_dependencies(&created[1].0).await.unwrap();
+        assert_eq!(deps, vec![created[0].0.clone()]);
+        assert!(c.list_dependencies(&created[0].0).await.unwrap().is_empty());
+
+        // A retried job converges: no new issues, same bodies, links and dependencies.
+        let again = create_issues(&c, "o/r", &a, "t1:call-4")
+            .await
+            .ok()
+            .unwrap();
+        assert_eq!(again, out);
+        assert_eq!(c.created_issues(), created);
+        assert_eq!(c.sub_issues(&parent).len(), 2);
+        assert_eq!(c.list_dependencies(&created[1].0).await.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn dependencies_come_first_and_cycles_keep_input_order() {
+        let k = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            topo_order(&k(&["a", "b", "c"]), &[k(&["c"]), k(&[]), k(&["b"])]),
+            vec![1, 2, 0]
+        );
+        assert_eq!(
+            topo_order(&k(&["a", "b"]), &[k(&["b"]), k(&["a"])]),
+            vec![0, 1]
+        );
+        assert_eq!(topo_order(&k(&["a"]), &[k(&["a", "zz"])]), vec![0]);
+    }
+
+    #[test]
+    fn unterminated_braces_are_kept() {
+        let m = std::collections::HashMap::from([("a".to_string(), (1, "A".to_string()))]);
+        assert_eq!(
+            resolve_issue_refs("x {{issue:a}} {{ y", &m),
+            "x #1 (A) {{ y"
+        );
+    }
 }
