@@ -75,7 +75,10 @@ export function checkNaming(root, allowlist = ALLOWLIST) {
 	const used = new Set();
 	for (const file of listFiles(root)) {
 		const parts = file.split('/');
-		if (parts.some((/** @type {string} */ p) => SKIP_DIRS.has(p)) || SKIP_FILES.has(parts.at(-1)))
+		if (
+			parts.some((/** @type {string} */ p) => SKIP_DIRS.has(p)) ||
+			SKIP_FILES.has(parts.at(-1) ?? '')
+		)
 			continue;
 		let text;
 		try {
