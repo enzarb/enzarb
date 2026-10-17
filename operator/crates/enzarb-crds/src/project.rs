@@ -34,6 +34,10 @@ pub const COND_SANDBOX_CHANGE_PENDING: &str = "SandboxChangePending";
 /// Project annotation set (by workflows) to the `status.pendingChange.generation` it has drained
 /// for. The operator applies the change only when it equals the pending generation.
 pub const ANNOTATION_DRAINED_GENERATION: &str = "enzarb.dev/drained-generation";
+/// Project annotation set (by the UI, on an owner's explicit "Roll now") to the
+/// `status.pendingChange.generation` they saw. Like the drain ack, only an exact match releases
+/// the roll, so a newer change needs a fresh click.
+pub const ANNOTATION_ROLL_NOW_GENERATION: &str = "enzarb.dev/roll-now-generation";
 /// Longest Project name: `sb-<name>-workspace` must fit a 63-character label (ADR-0013).
 pub const MAX_PROJECT_NAME_LEN: usize = 50;
 
