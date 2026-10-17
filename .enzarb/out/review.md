@@ -1,19 +1,17 @@
-## Review of #248
+## Review of PR #253
 
-**Verdict: comment.** I found no must-fix problems in the diff. I could not get a clean `npm test` run in this sandbox, so I can't approve on checks alone.
+The pin check and its self-test pass, and the design matches the plan. One must-fix remains.
 
-### The change
-- Renaming the second `.ez-badge` rule to `.ez-nav__count` (`ui/src/lib/styles/global.scss:1437`) and switching to `var(--ez-accent-fg)` is correct. `--ez-accent-contrast` was undefined, so the text always fell back to `#fff`. `--ez-accent-fg` is covered by the existing contrast spec in both themes.
-- `Nav.svelte:26` is the only user of the count style. A grep of `ui/src` for `ez-badge` finds only `Badge.svelte`, `StepRuns`, `WorkflowViewer`, `SessionInspector` and `SessionEventView`, which are status chips. Nothing else needs updating.
-- The rename also stops the old rule from overriding the status chips with its cyan background and white text. Those chips now use the token-driven rule at `global.scss:812`. This is a visible change for them, and the PR says it wasn't checked in a browser. It is the intended outcome, and a person can confirm it.
-- The guard test in `contrast.spec.ts` is simple and targets the root cause.
-
-### Checks
-- `npm run check` passed (0 errors, 0 warnings).
-- `npm run lint` passed (prettier and eslint).
-- `npx vitest run --project server src/lib/styles` passed (64 tests, including the new guard).
-- Full `npm test` did **not** pass. It ended with 16 failed tests in 13 files and 1054 passed. The failures I could see were Playwright/chromium timeouts, such as `RemoteForm.svelte.test.ts` hitting the 15s limit. The PR author saw 8 failures in different suites. The differing counts and the timeouts suggest a slow or flaky browser environment rather than this change, since no test touches the Nav or the count class. I did not run the suite on the base commit, so I can't prove that.
+### Must-fix
+1. `.claude/settings.local.json` is committed (33 added lines). It is a local agent permission allowlist and it records this run's shell commands, for example the `sed -i` and `git commit` patterns. It is not part of the feature. Remove it from the PR and add it to `.gitignore` if that is not already done.
 
 ### Optional suggestions
-- Render the Nav with a count and the Badge gallery in both themes before merge (the PR admits it didn't).
-- The `.ez-nav__count` selector is a BEM element of `.ez-nav`. That is fine if `.ez-nav` is the nav's block class, which I did not check.
+- `ci-kubernetes.yml` and `ci-helm.yml` now take their tools from the root `mise.toml`. Their `paths:` filters (`kubernetes/**`, `helm/**`) do not include `mise.toml` or `mise.*.toml`. A root pin bump therefore will not trigger those jobs. The kubernetes job also now installs the whole root toolset (rust, python, claude, npm:cf and others), which adds install time. Consider adding the root files to the filters. If you do, keep `affected.sh` in step. `test-affected.sh` guards that.
+- For the ansible job, `MISE_ENV: ansible` is set only on the `mise-action` step. Later steps rely on the PATH that step exports. CI must confirm that `ansible-lint` resolves there and that the cache key includes `mise.ansible.toml`.
+- The PR description says it carries unrelated commits (`.enzarb/out/plan.md` and others). Check that only intended files remain.
+
+### Checks
+- `scripts/monorepo/check-tool-pins.sh` passes on the repo.
+- `scripts/monorepo/test-tool-pins.sh` passes. It covers the passing case and the failure fixtures. It is slow in this sandbox.
+- `scripts/monorepo/test-affected.sh` passes.
+- I did not run the per-component suites, `actionlint`, `shellcheck` or the Docker build. The author did not re-run them either. CI runs the per-component jobs and the monorepo jobs.

@@ -27,7 +27,14 @@
       "Bash(git add *)",
       "Bash(git commit -q -m 'feat\\(monorepo\\): pin every tool in the root mise.toml and check Dockerfile ARGs against it *)",
       "Bash(git commit -q -m 'ci\\(monorepo\\): run the tool-pin check, read node from the root pin, document it *)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(bash scripts/monorepo/check-tool-pins.sh)",
+      "Bash(timeout 40 bash -x scripts/monorepo/test-tool-pins.sh)",
+      "Bash(timeout 30 bash -x scripts/monorepo/test-tool-pins.sh)",
+      "Read(//tmp/**)",
+      "Bash(cat > *)",
+      "Bash(scripts/monorepo/check-tool-pins.sh)",
+      "Bash(scripts/monorepo/test-tool-pins.sh)"
     ]
   }
 }
