@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Generates scripts/monorepo/graph.generated.sh: per-component dependency closure, the affected.sh
 # RULES, the release path lists (next-version.sh deps_of) and the image table (image-components.sh).
+# It also rewrites the `# BEGIN generated:copy` .. `# END generated:copy` block of each image Dockerfile
+# (every workspace member for Rust images, the `file:` dependency closure for ui, minus .dockerignore).
 #
-#   scripts/monorepo/gen-graph.sh                 write the generated file
-#   scripts/monorepo/gen-graph.sh --check         fail when the committed file is stale
+#   scripts/monorepo/gen-graph.sh                 write the generated file and the Dockerfile COPY blocks
+#   scripts/monorepo/gen-graph.sh --check         fail when a committed generated file is stale
 #   scripts/monorepo/gen-graph.sh --root <dir>    operate on another tree (tests)
 #
 # Inputs: `cargo metadata` path deps (root workspace), package.json `file:` deps, and the hand-written
@@ -58,6 +60,16 @@ while IFS= read -r pj; do
   done < <(jq -r '[.dependencies, .devDependencies, .optionalDependencies, .peerDependencies] | map(select(. != null) | .[]) | .[] | select(startswith("file:"))' "$root/$pj")
 done < <(cd "$root" && find . \( -name .git -o -name node_modules -o -name target \) -prune -o -name package.json -print | sed 's|^\./||')
 edges=$(sed '/^$/d' <<<"$edges" | sort -u)
+# npm `file:` edges only (the ui Dockerfile copies those packages, not the Cargo path deps)
+npm_edges=$(
+  while IFS= read -r pj; do
+    dir=$(dirname "$pj")
+    while IFS= read -r v; do
+      [ -n "$v" ] || continue
+      echo "${dir#./} $(realpath -m --relative-to="$root" "$root/$dir/${v#file:}")"
+    done < <(jq -r '[.dependencies, .devDependencies, .optionalDependencies, .peerDependencies] | map(select(. != null) | .[]) | .[] | select(startswith("file:"))' "$root/$pj")
+  done < <(cd "$root" && find . \( -name .git -o -name node_modules -o -name target \) -prune -o -name package.json -print | sed 's|^\./||') | sort -u
+)
 
 is_granular() { local g; for g in "${granular[@]}"; do [ "$g" = "$1" ] && return 0; done; return 1; }
 
@@ -94,6 +106,74 @@ closure() { # <component>: sorted entries of the transitive dependency closure, 
 }
 
 has_crate() { local k; for k in "${crates[@]}"; do under "$k" "$1" && return 0; done; return 1; }
+
+# --- Dockerfile COPY blocks ------------------------------------------------------------------------
+mapfile -t dockerignored < <(sed -e 's/#.*//' -e 's/[[:space:]]*$//' -e '/^$/d' "$root/.dockerignore" 2>/dev/null || true)
+copyable() { local i; for i in "${dockerignored[@]}"; do [ "$i" = "$1" ] && return 1; done; return 0; } # not in .dockerignore
+
+npm_closure() { # <dir>: transitive `file:` dependency dirs
+  local queue=("$1") seen=" $1 " cur f t
+  while [ ${#queue[@]} -gt 0 ]; do
+    cur=${queue[0]}
+    queue=("${queue[@]:1}")
+    while read -r f t; do
+      [ "$f" = "$cur" ] || continue
+      case $seen in *" $t "*) continue ;; esac
+      seen="$seen$t "
+      queue+=("$t")
+      echo "$t"
+    done <<<"$npm_edges"
+  done | sort -u
+}
+
+docker_kind() { # <component>: rust, npm or none
+  if has_crate "$1"; then echo rust
+  elif [ -n "$(npm_closure "$1")" ]; then echo npm
+  else echo none; fi
+}
+
+docker_block() { # <component>: COPY lines
+  local c=$1 d s
+  local -a src
+  case $(docker_kind "$c") in
+    rust)
+      echo "COPY $(m '.rust_root_files | join(" ")') ./"
+      { printf '%s\n' "${crates[@]}"; m '.docker_extra_dirs[]?'; } | sort -u | while IFS= read -r d; do
+        if copyable "$d" && [ -d "$root/$d" ]; then echo "COPY $d $d"; fi
+      done
+      ;;
+    npm)
+      while IFS= read -r d; do
+        if [ -f "$root/$d/package-lock.json" ]; then echo "COPY $d/package.json $d/package-lock.json /repo/$d/"; else echo "COPY $d/package.json /repo/$d/"; fi
+        mapfile -t src < <(m --arg c "$c" --arg d "$d" '.components[$c].docker_npm_src[$d][]?')
+        if [ ${#src[@]} -eq 0 ]; then echo "COPY $d /repo/$d"; else for s in "${src[@]}"; do echo "COPY $d/$s /repo/$d/$s"; done; fi
+      done < <(npm_closure "$c")
+      ;;
+  esac
+}
+
+# render_dockerfile <component>: the Dockerfile with its generated block replaced
+render_dockerfile() {
+  local c=$1 f=$root/$1/Dockerfile bf
+  if ! { grep -q '^# BEGIN generated:copy' "$f" && grep -q '^# END generated:copy' "$f"; }; then
+    echo "error: ${f#"$root"/} has no '# BEGIN generated:copy' / '# END generated:copy' markers" >&2
+    return 1
+  fi
+  bf=$(mktemp)
+  docker_block "$c" >"$bf"
+  awk -v bf="$bf" '/^# BEGIN generated:copy/ { print; while ((getline l < bf) > 0) print l; close(bf); skip = 1; next }
+    /^# END generated:copy/ { skip = 0 } !skip { print }' "$f"
+  rm -f "$bf"
+}
+
+dockerfile_components() { # image components that have a Dockerfile to generate a block for
+  local c
+  for c in "${order[@]}"; do
+    [ "$(m --arg c "$c" '.components[$c].image != null')" = true ] || continue
+    [ -f "$root/$c/Dockerfile" ] || continue
+    [ "$(docker_kind "$c")" = none ] || echo "$c"
+  done
+}
 
 generate() {
   local c table="" var g
@@ -133,16 +213,29 @@ generate() {
   echo "IMAGE_TABLE='${table%$'\n'}'"
 }
 
+mapfile -t dockerfiles < <(dockerfile_components)
+
 if [ "$check" -eq 1 ]; then
   tmp=$(mktemp)
   trap 'rm -f "$tmp"' EXIT
+  stale=0
   generate >"$tmp"
-  if ! diff -u "$out" "$tmp"; then
-    echo "error: ${out#"$root"/} is stale: run 'mise run graph:gen' and commit the result" >&2
+  diff -u "$out" "$tmp" || stale=1
+  for c in "${dockerfiles[@]}"; do
+    render_dockerfile "$c" >"$tmp" || exit 1
+    diff -u "$root/$c/Dockerfile" "$tmp" || stale=1
+  done
+  if [ "$stale" -eq 1 ]; then
+    echo "error: generated files are stale: run 'mise run graph:gen' and commit the result" >&2
     exit 1
   fi
-  echo "ok: ${out#"$root"/} is up to date"
+  echo "ok: ${out#"$root"/} and the Dockerfile COPY blocks are up to date"
 else
   generate >"$out.tmp"
   mv "$out.tmp" "$out"
+  for c in "${dockerfiles[@]}"; do
+    render_dockerfile "$c" >"$root/$c/Dockerfile.tmp" || { rm -f "$root/$c/Dockerfile.tmp"; exit 1; }
+    cat "$root/$c/Dockerfile.tmp" >"$root/$c/Dockerfile" # keeps the file mode
+    rm -f "$root/$c/Dockerfile.tmp"
+  done
 fi

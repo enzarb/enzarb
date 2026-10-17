@@ -8,6 +8,7 @@
 #      manifest is stale;
 #   4. the known disagreements stay fixed (ui inputs, sandbox-container -> ui/package-lock.json);
 #   5. a manifest glob that matches no file makes the generator fail.
+#   6. the Dockerfile COPY blocks are generated: a fake path dep lands in them, a hand edit is detected.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -70,6 +71,8 @@ contains "cargo: release paths" fakecrate "$(paths_of "$t" updater)"
 ok "cargo: image table" "enzarb-updater" "$(bash "$t/.github/scripts/image-components.sh" updater | jq -r .image)"
 ok "cargo: image table (new component)" "enzarb-fake" "$(bash "$t/.github/scripts/image-components.sh" fakecrate | jq -r .image)"
 ok "cargo: release version" "0.2.0" "$(bump_after "$t" updater fakecrate/src/lib.rs)"
+grep -qx "COPY fakecrate fakecrate" "$t/updater/Dockerfile" || { echo "FAIL: cargo: fakecrate missing from the updater Dockerfile COPY block" >&2; fail=1; }
+contains "cargo: Dockerfile COPY block" "COPY fakecrate fakecrate" "$(grep "^COPY fakecrate" "$t/updater/Dockerfile" | paste -sd" " -)"
 
 # --- 2. fake npm file: dependency -------------------------------------------------------------
 t=$(scratch)
@@ -83,6 +86,7 @@ ok "npm: affected" "ui" "$(affected "$t" fakepkg/index.js)"
 contains "npm: release paths" fakepkg "$(paths_of "$t" ui)"
 ok "npm: image table" "enzarb-ui" "$(bash "$t/.github/scripts/image-components.sh" ui | jq -r .image)"
 ok "npm: release version" "0.2.0" "$(bump_after "$t" ui fakepkg/index.js)"
+grep -qx "COPY fakepkg /repo/fakepkg" "$t/ui/Dockerfile" || { echo "FAIL: npm: fakepkg missing from the ui Dockerfile COPY block" >&2; fail=1; }
 
 # --- 3. freshness -----------------------------------------------------------------------------
 t=$(scratch)
@@ -123,5 +127,18 @@ if bash "$t/scripts/monorepo/gen-graph.sh" --root "$t" >/dev/null 2>&1; then
   fail=1
 fi
 
+
+# --- 6. Dockerfile COPY blocks ----------------------------------------------------------------
+t=$(scratch)
+sed -i 's|^COPY updater updater$|COPY updater updater\nCOPY hand edited|' "$t/operator/Dockerfile"
+if bash "$t/scripts/monorepo/gen-graph.sh" --check --root "$t" >/dev/null 2>&1; then
+  echo "FAIL: dockerfile: hand-edited COPY block not detected" >&2
+  fail=1
+fi
+bash "$t/scripts/monorepo/gen-graph.sh" --root "$t"
+if ! bash "$t/scripts/monorepo/gen-graph.sh" --check --root "$t" >/dev/null 2>&1; then
+  echo "FAIL: dockerfile: regenerating did not repair the COPY block" >&2
+  fail=1
+fi
 [ "$fail" -eq 0 ] || exit 1
 echo "ok: gen-graph.sh picks up cargo and npm path deps and is checked for freshness"

@@ -15,17 +15,17 @@ DEPS_updater=( )
 DEPS_kubernetes=( )
 DEPS_helm=( )
 RULES=(
-  'proto|Cargo.toml Cargo.lock rust-toolchain.toml proto/** .github/workflows/ci-proto.yml'
-  'operator|Cargo.toml Cargo.lock rust-toolchain.toml operator/** .github/workflows/ci-operator.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
-  'connectors|Cargo.toml Cargo.lock rust-toolchain.toml connectors/** workflows/crates/flow/** .github/workflows/ci-connectors.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
-  'workflows|Cargo.toml Cargo.lock rust-toolchain.toml workflows/** connectors/** operator/** proto/** .github/workflows/ci-workflows.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
-  'realtime|Cargo.toml Cargo.lock rust-toolchain.toml realtime/** .github/workflows/ci-realtime.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
-  'sandbox-proxy|Cargo.toml Cargo.lock rust-toolchain.toml sandbox-proxy/** operator/** proto/** .github/workflows/ci-sandbox-proxy.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
-  'sandbox-container|Cargo.toml Cargo.lock rust-toolchain.toml sandbox-container/** proto/** ui/package-lock.json .github/workflows/ci-sandbox-container.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
-  'ui|ui/** proto/** workflows/migrations/** workflows/crates/engine/tests/stdlib/prompts/** workflows/crates/flow/tests/fixtures/** docs/workflows/examples/** .github/workflows/ci-ui.yml .github/workflows/_docker.yml .github/actions/ui-install/**'
-  'updater|Cargo.toml Cargo.lock rust-toolchain.toml updater/** .github/workflows/ci-updater.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
-  'kubernetes|kubernetes/** .github/workflows/ci-kubernetes.yml'
-  'helm|helm/** .github/workflows/ci-helm.yml'
+  'proto|Cargo.toml Cargo.lock rust-toolchain.toml proto/** .github/workflows/ci-proto.yml .github/workflows/_changes.yml'
+  'operator|Cargo.toml Cargo.lock rust-toolchain.toml operator/** .github/workflows/ci-operator.yml .github/workflows/_changes.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
+  'connectors|Cargo.toml Cargo.lock rust-toolchain.toml connectors/** workflows/crates/flow/** .github/workflows/ci-connectors.yml .github/workflows/_changes.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
+  'workflows|Cargo.toml Cargo.lock rust-toolchain.toml workflows/** connectors/** operator/** proto/** .github/workflows/ci-workflows.yml .github/workflows/_changes.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
+  'realtime|Cargo.toml Cargo.lock rust-toolchain.toml realtime/** .github/workflows/ci-realtime.yml .github/workflows/_changes.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
+  'sandbox-proxy|Cargo.toml Cargo.lock rust-toolchain.toml sandbox-proxy/** operator/** proto/** .github/workflows/ci-sandbox-proxy.yml .github/workflows/_changes.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
+  'sandbox-container|Cargo.toml Cargo.lock rust-toolchain.toml sandbox-container/** proto/** ui/package-lock.json .github/workflows/ci-sandbox-container.yml .github/workflows/_changes.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
+  'ui|ui/** proto/** workflows/migrations/** workflows/crates/engine/tests/stdlib/prompts/** workflows/crates/flow/tests/fixtures/** docs/workflows/examples/** .github/workflows/ci-ui.yml .github/workflows/_changes.yml .github/workflows/_docker.yml .github/actions/ui-install/**'
+  'updater|Cargo.toml Cargo.lock rust-toolchain.toml updater/** .github/workflows/ci-updater.yml .github/workflows/_changes.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
+  'kubernetes|kubernetes/** .github/workflows/ci-kubernetes.yml .github/workflows/_changes.yml'
+  'helm|helm/** .github/workflows/ci-helm.yml .github/workflows/_changes.yml'
   'monorepo|scripts/** .mise/tasks/** .mise/lib/** .github/workflows/** Cargo.toml Cargo.lock **/Cargo.toml **/package.json'
 )
 IMAGE_TABLE='operator enzarb-sandbox-operator operator - 30
