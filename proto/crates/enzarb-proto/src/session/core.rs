@@ -77,6 +77,8 @@ pub struct CredentialInfo {
 }
 
 /// Unsolicited inbound CTRL traffic, in arrival order.
+// Events are moved once off a channel; boxing `Ctrl` would break every consumer's patterns.
+#[allow(clippy::large_enum_variant)]
 pub enum Event {
     /// (server) The client wants a channel: [`OpenRequest::accept`] or [`OpenRequest::reject`].
     Open(OpenRequest),
