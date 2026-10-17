@@ -1,41 +1,47 @@
+**Changes from the previous version:** I took the maintainer's answers on board. The plan is otherwise unchanged.
+- The `PR_SET_CHILD_SUBREAPER` fallback is dropped entirely. It is no longer a "next step", only a follow-up if a real failure shows up.
+- The file-local `SERIAL` in the new binary stays, for plain `cargo test`.
+- CI runs `cargo nextest run` (one process per test), so it never saw the flake. The bug only shows with plain `cargo test` (local runs, git hooks). The flake check now uses plain `cargo test`, not nextest.
+- Removing the lib `SERIAL` and the unused `gone` helper is confirmed.
+
 ## Summary
-
-In dark mode the cyan count pill in the nav (the "items need you" badge on the Work link) has white text on `#00f0ff`, about 1.3:1. I found the cause: `ui/src/lib/styles/global.scss` has a second, older `.ez-badge` rule (~line 1437, "Count of items waiting on the user"). It overrides the status-chip `.ez-badge` rule (~line 812) with `background: var(--ez-accent)` and `color: var(--ez-accent-contrast, #fff)`. `--ez-accent-contrast` is not defined in any theme, so the colour always falls back to `#fff`. That is fine on the light theme's dark-cyan accent, but unreadable on the dark theme's bright cyan. The theme already defines the correct token, `--ez-accent-fg` (`#0b0f17` in dark, `#fff` in light). The fix is to use it.
-
-The same rule also leaks into every other `.ez-badge` (Badge.svelte, tasks views), because the two rules share a class. Those chips get the cyan background and `#fff` text too, wherever the status rule doesn't set `background` and `color` itself. I haven't rendered the page to confirm this, so the implementation should check it.
+Reap-all mode calls `waitpid(-1)`, which steals the exit status of any child in the process. Two tests in the `sandbox_init` lib test binary use `Reaper::new(true)`. Under plain `cargo test` they run in parallel with other lib tests that use `Command::output()` (`retarget.rs`, `agent.rs`, `docker_prune.rs`, `chat/tests.rs`), and those get ECHILD. The fix is to move the reap-all tests into their own integration-test binary, `sandbox-container/tests/reaper_all.rs`. Production code is unchanged.
 
 ## Approach
-
-- Give the nav count pill its own class (`ez-nav__count`) instead of reusing `.ez-badge`. Its styles use the `--ez-accent` / `--ez-accent-fg` token pair, which already passes the contrast checks in both themes.
-- Rejected: only changing `--ez-accent-contrast, #fff` to `--ez-accent-fg`. This fixes the contrast, but the colliding class would still override the status badges and could change their appearance. Splitting the class is the cleaner fix.
-- Rejected: defining a new `--ez-accent-contrast` token. It would duplicate `--ez-accent-fg`.
-- The change stays token-based, in the single `global.scss`, with no new CSS. Both the `[data-theme='dark']` and `prefers-color-scheme` paths use the `theme-dark` mixin, so the token fix covers both.
+- Cargo builds each `tests/*.rs` as a separate binary and runs binaries one after another, so a reap-all test no longer shares a process with the lib tests. The existing `tests/*.rs` already use `Reaper::new(false)` through the public `sandbox_init` API, so no Cargo changes are needed.
+- Inside the new binary, tests run in parallel by default and both reap-all tests call `waitpid(-1)`. They would steal each other's children, so they take a file-local `static SERIAL: Mutex<()>`. Rejected: merging them into one `#[test]`, which is less readable and gives worse failure output.
+- `delivers_exit_status_of_registered_children` loops over `reap_all in [false, true]`. Split it. The `false` case stays in `src/reaper.rs`, because registered-only mode only waits on its own pids. The `true` case moves to the new binary.
+- Rejected: the forked child with `PR_SET_CHILD_SUBREAPER`. Not needed, and CI is not gVisor, so it is left out entirely.
+- No test-only reaper modes exist. `reap_all` is a production flag (`for_current_process`, `ENZARB_REAP_ALL`), so no `Reaper` API is removed. The only thing that becomes unnecessary is the lib `SERIAL` mutex and its comment, plus the `gone` helper if unused.
 
 ## Changes
-
-- `ui/src/lib/styles/global.scss`
-  - Rename the ~line 1437 rule from `.ez-badge` to `.ez-nav__count`. Change its colour to `var(--ez-accent-fg)` and drop the `--ez-accent-contrast` fallback. Keep the layout properties.
-  - Check that the status `.ez-badge` rule (~line 812) now applies cleanly to `Badge.svelte`, `StepRuns`, `WorkflowViewer`, `SessionInspector` and `SessionEventView`.
-- `ui/src/lib/components/Nav.svelte`: change `class="ez-badge"` to `class="ez-nav__count"` on the count span.
-- Grep for other users of the nav-count style (for example tests or other components that query `.ez-badge` for the count) and update them.
+- `sandbox-container/tests/reaper_all.rs` (new):
+  - Module doc comment: this file must stay a separate binary, because reap-all steals every child's status and must not share a process with tests that spawn children.
+  - `static SERIAL: Mutex<()>` and a `gone(pid)` helper (`kill(pid, None)` gives ESRCH).
+  - `reap_all_reaps_unregistered_orphans`, moved as is.
+  - `reap_all_delivers_exit_status_of_registered_children`: the `true` half of the old test, asserting `Exited(7)` and `registered() == 0`.
+  - Imports follow `tests/mux.rs` (I will check the exact module path for `Reaper` and `ExitStatus` there).
+- `sandbox-container/src/reaper.rs`, `#[cfg(test)] mod tests`:
+  - Remove `reap_all_reaps_unregistered_orphans`, the `gone` helper (it is unused after the move), and the `SERIAL` static and its guards.
+  - `delivers_exit_status_of_registered_children` becomes a single registered-only case, renamed `registered_only_delivers_exit_status`.
+  - Keep `terminate_all_signals_registered_children` (uses `Reaper::new(false)`).
+  - Fix imports so clippy reports no unused imports. The top-level `Mutex` import stays because `Reaper` uses it.
+  - Update the module doc line "registered-only (everything else, e.g. tests)" to point at `tests/reaper_all.rs` for the reap-all tests.
 
 ## Tests
-
-- `ui/src/lib/styles/contrast.spec.ts` already asserts `accent-fg` on `accent` ≥ 4.5:1 for both themes.
-- Add a guard test that fails on the root cause, alongside the existing assertions: `global.scss` must not reference `--ez-accent-contrast`. Use a regex over the file, or assert that every `var(--ez-…)` name used is defined in a theme mixin.
-- If `Nav.svelte` has a component test, update it for the new class.
-- Run in `ui/`: `npm run check && npm run lint && npm test`.
-- Manually render the Nav with a count and the Badge gallery in both `data-theme='dark'` and the OS dark preference. I haven't done this yet.
+- Acceptance check: `grep -rn "Reaper::new(true)\|reaps_all" sandbox-container/src` should match no test code.
+- In `sandbox-container/`: `cargo clippy --all-targets && cargo test`.
+- Flake check with plain `cargo test` (where the bug lived), not nextest: `for i in $(seq 20); do cargo test 2>&1 | grep -E "ECHILD|No child processes|FAILED" && break; done`. I will report the actual outcome. A stress loop cannot prove the absence of flakes, and I will say so.
+- Only `sandbox-container/` is touched. There is no Dockerfile, proto or Helm impact.
 
 ## Risks and open questions
-
-- The issue has no description. I'm assuming "cyan pills with white text" means the nav count pill (the only white-on-cyan combination I found). If the maintainer means something else, such as the accent-tone `Badge`, please say so. The accent tone in dark uses `#00f0ff` text on `#0a2833`, which looks fine.
-- The stray `.ez-badge` override may have been changing other badges. Visually check them after the split, in both themes.
-- The new nav-count styles use bright cyan with dark text in dark mode. That is the same pairing as the primary button, so it should look consistent.
+- **Binary ordering:** relies on plain `cargo test` running test binaries sequentially, which is its default. Nextest gives each test its own process, so it is safe too.
+- **Orphans in the new binary:** `waitpid(-1)` also reaps any child of the harness. The tests are serialised and the harness spawns no children, so `waitpid(-1)` only sees that test's own children.
+- **Assumption:** "lib test binary has no reap-all `waitpid(-1)`" means no `src/` test drives `reap()` on a reap-all `Reaper`. The maintainer confirmed this.
 
 ## Out of scope
-
-- A broader audit or redesign of badge tones or the colour palette.
-- Any changes outside `ui/`.
+- Changes to `Reaper` production behaviour or API (`for_current_process`, `ENZARB_REAP_ALL`).
+- Any `PR_SET_CHILD_SUBREAPER` / fork approach.
+- Other test flakiness in `sandbox-container`, and CI config changes.
 
 Reply with feedback to revise this plan, or comment /approve to start the implementation.
