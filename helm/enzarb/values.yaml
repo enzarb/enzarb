@@ -321,7 +321,7 @@ operator:
     tag: 0.12.0
     pullPolicy: ""
   # Default sandbox image for Projects (ENZARB_SANDBOX_IMAGE).
-  sandboxImage: ghcr.io/enzarb/enzarb-sandbox:0.30.2
+  sandboxImage: ghcr.io/enzarb/enzarb-sandbox:0.30.3
   defaultStorage: 20Gi
   # RuntimeClass of every sandbox pod (ENZARB_SANDBOX_RUNTIME_CLASS). Cluster-admin
   # setting; Projects cannot choose. Must be in docker.runtimeClasses.
