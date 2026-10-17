@@ -41,6 +41,7 @@ export const getProject = () =>
 export const deleteProject = async () => {};
 export const setMaxRuns = async () => {};
 export const setSandboxResources = async () => {};
+export const rollSandboxNow = async () => {};
 export const setDisplayName = async () => ({ ok: true as const });
 export const setRepositories = async () => ({ ok: true as const });
 export const repositoryChoices = () => ({
