@@ -675,3 +675,53 @@ async fn step_outputs_are_not_committed_and_the_next_step_checks_out() {
     );
     assert!(!files.contains(".enzarb/out"), "{files}");
 }
+
+/// Branches that still track `.enzarb/out/` (committed before outputs were excluded): a step on
+/// one, then a step on another whose tracked copy differs, checks out cleanly.
+#[tokio::test]
+async fn tracked_step_outputs_do_not_block_switching_branches() {
+    let env = Env::new();
+    let seed = env.dir.path().join("seed");
+    for (branch, text) in [("feature/t1", "one\n"), ("feature/t2", "two\n")] {
+        git(&seed, &["checkout", "-q", "-B", branch, "main"]);
+        std::fs::create_dir_all(seed.join(".enzarb/out")).unwrap();
+        std::fs::write(seed.join(".enzarb/out/plan.md"), text).unwrap();
+        git(&seed, &["add", "-f", "."]);
+        git(&seed, &["commit", "-q", "-m", branch]);
+        git(&seed, &["push", "-q", env.bare.to_str().unwrap(), branch]);
+    }
+    let addr = env.server().await;
+    let (s, mut ev) = connect(addr).await;
+    let mut ws1 = env.workspace("feature/t1");
+    ws1.push = false;
+    let st1 = step(
+        "tr-1",
+        StepExec::Command {
+            run: "mkdir -p .enzarb/out && echo ctx > .enzarb/out/context.json".into(),
+            tools: vec![],
+        },
+        vec![ws1],
+    );
+    start(&s, &mut ev, st1).await;
+    let (_, fin1) = collect(&mut ev, "tr-1", |_| false).await;
+    assert_eq!(fin1.unwrap().exit, "success");
+
+    let st2 = step(
+        "tr-2",
+        StepExec::Command {
+            run: "echo code > code.txt".into(),
+            tools: vec![],
+        },
+        vec![env.workspace("feature/t2")],
+    );
+    start(&s, &mut ev, st2).await;
+    let (_, fin2) = collect(&mut ev, "tr-2", |_| false).await;
+    let fin2 = fin2.unwrap();
+    assert_eq!(fin2.exit, "success", "{fin2:?}");
+    let files = git(
+        &env.bare,
+        &["ls-tree", "-r", "--name-only", "refs/heads/feature/t2"],
+    );
+    assert!(files.contains("code.txt"), "{files}");
+    assert!(!files.contains(".enzarb/out"), "{files}");
+}
