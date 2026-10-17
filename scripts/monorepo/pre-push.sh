@@ -89,6 +89,7 @@ for c in $components; do
       echo "pre-push: kubernetes: checked in CI only"
       ;;
     monorepo)
+      bash scripts/monorepo/gen-graph.sh --check
       bash scripts/monorepo/test-affected.sh
       ;;
   esac

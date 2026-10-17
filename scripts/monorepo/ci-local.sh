@@ -46,9 +46,11 @@ for g in $groups; do
   case $g in
     monorepo)
       step "check-cargo-deps" . scripts/monorepo/check-cargo-deps.sh
+      step "graph-fresh" . scripts/monorepo/gen-graph.sh --check
+      step "test-graph" . scripts/monorepo/test-graph.sh
       step "test-affected" . scripts/monorepo/test-affected.sh
       step "test-mechanical" . bash scripts/monorepo/test-mechanical.sh
-      step "shellcheck" . shellcheck --exclude=SC1091 scripts/monorepo/*.sh .mise/tasks/test/pg
+      step "shellcheck" . shellcheck --exclude=SC1091 scripts/monorepo/*.sh .github/scripts/*.sh .mise/tasks/test/pg .mise/tasks/graph/gen
       step "actionlint" . docker run --rm -v "$ROOT:/repo" -w /repo rhysd/actionlint:1.7.7 -color
       ;;
     proto)
