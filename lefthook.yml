@@ -27,8 +27,8 @@ pre-commit:
       glob: "*"
       run: mise run lint
 
-# Only the components affected by the push (scripts/monorepo/affected.sh, same paths as the CI
-# `paths:` filters, downstream components included) are checked; the per-component commands are
+# Only the components affected by the push (scripts/monorepo/affected.sh, the same graph the CI
+# `changes` job uses, downstream components included) are checked; the per-component commands are
 # in scripts/monorepo/pre-push.sh.
 pre-push:
   commands:
