@@ -16,11 +16,8 @@ for c in $comps; do
   spec="$(image_spec "$c")" || die "unknown component '$c' (one of: $ALL_COMPONENTS)"
   dir="${spec% *}"; image="${spec#* }:dev"
   [ -f "$ROOT/$dir/Dockerfile" ] || die "$dir/Dockerfile missing"
-  # Components that use path deps on sibling dirs build with the repo root as context.
-  case "$dir" in
-    ui | sandbox-proxy | sandbox-container | workflows | connectors) ctx="$ROOT" ;;
-    *) ctx="$ROOT/$dir" ;;
-  esac
+  # Every image builds with the repo root as context (one Cargo workspace, path deps).
+  ctx="$ROOT"
   log "building $image from $dir"
   docker build -f "$ROOT/$dir/Dockerfile" -t "$image" "$ctx"
   log "loading $image into kind/$CLUSTER_NAME"

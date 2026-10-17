@@ -3,44 +3,44 @@
 # Build from the monorepo root (in-repo path deps on proto/, operator/, connectors/):
 #   docker build -f workflows/Dockerfile .
 #
-# Stages (cargo-chef): planner -> cook (dependency layer, cached) -> build (workspace crates only).
+# One Cargo workspace at the root. Stages (cargo-chef): planner -> cook (dependency layer, cached) -> build.
 FROM rust:1-bookworm AS chef
 # cmake + clang: aws-lc-sys (via rustls/jsonwebtoken/reqwest).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends cmake clang \
  && rm -rf /var/lib/apt/lists/*
 RUN cargo install cargo-chef --locked --version ^0.1
-WORKDIR /src/workflows
+WORKDIR /src
 
 FROM chef AS planner
-# cargo metadata needs the path deps to resolve.
-COPY proto/Cargo.toml proto/Cargo.lock /src/proto/
-COPY proto/crates /src/proto/crates
-COPY operator/Cargo.toml operator/Cargo.lock /src/operator/
-COPY operator/crates /src/operator/crates
-COPY connectors/Cargo.toml connectors/Cargo.lock /src/connectors/
-COPY connectors/crates /src/connectors/crates
-COPY connectors/bin /src/connectors/bin
-COPY workflows/ .
+# Every workspace member is part of the recipe: the root workspace resolves as a whole. The recipe
+# only changes when a manifest or Cargo.lock does, so the cook layer below survives source edits.
+COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
+COPY proto/crates proto/crates
+COPY operator/crates operator/crates
+COPY connectors/crates connectors/crates
+COPY connectors/bin connectors/bin
+COPY workflows/crates workflows/crates
+COPY realtime/Cargo.toml realtime/Cargo.toml
+COPY realtime/src realtime/src
+COPY sandbox-container/Cargo.toml sandbox-container/Cargo.toml
+COPY sandbox-container/src sandbox-container/src
+COPY sandbox-proxy/Cargo.toml sandbox-proxy/Cargo.toml
+COPY sandbox-proxy/src sandbox-proxy/src
+COPY updater/Cargo.toml updater/Cargo.toml
+COPY updater/src updater/src
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS build
-# Path deps outside this workspace are not in the chef recipe; copy them before cooking.
-COPY proto/Cargo.toml proto/Cargo.lock /src/proto/
-COPY proto/crates /src/proto/crates
-COPY operator/Cargo.toml operator/Cargo.lock /src/operator/
-COPY operator/crates /src/operator/crates
-COPY connectors/Cargo.toml connectors/Cargo.lock /src/connectors/
-COPY connectors/crates /src/connectors/crates
-COPY connectors/bin /src/connectors/bin
-COPY --from=planner /src/workflows/recipe.json recipe.json
-# connectors (a path dep) compiles against the flow crate, so the skeleton of crates/flow is
-# replaced by the real crate before the dependency layer builds.
-RUN cargo chef cook --release --locked --recipe-path recipe.json -p enzarb-workflows --no-build
-COPY workflows/crates/flow crates/flow
-# Not --locked: the skeleton manifests differ from the real ones; the final build is locked.
-RUN cargo build --release -p enzarb-workflows
-COPY workflows/ .
+COPY rust-toolchain.toml ./
+COPY --from=planner /src/recipe.json recipe.json
+# Dependency layer: every workspace member is a stub here, so nothing compiles against a partial crate.
+RUN cargo chef cook --release --locked --recipe-path recipe.json -p enzarb-workflows
+COPY Cargo.toml Cargo.lock ./
+COPY proto/crates proto/crates
+COPY operator/crates operator/crates
+COPY connectors/crates connectors/crates
+COPY workflows/crates workflows/crates
 RUN cargo build --release --locked -p enzarb-workflows \
  && cp target/release/enzarb-workflows /enzarb-workflows
 

@@ -3,12 +3,18 @@ on:
   push:
     branches: [main]
     paths:
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
       - 'realtime/**'
       - .github/workflows/ci-realtime.yml
       - .github/workflows/_rust.yml
       - .github/workflows/_docker.yml
   pull_request:
     paths:
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
       - 'realtime/**'
       - .github/workflows/ci-realtime.yml
       - .github/workflows/_rust.yml
@@ -26,5 +32,7 @@ jobs:
       packages: write
     with:
       dir: realtime
+      cargo-args: -p enzarb-realtime
       image: enzarb-realtime
+      context: .
       postgres: true

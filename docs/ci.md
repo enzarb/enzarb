@@ -15,22 +15,23 @@ The monorepo's GitHub Actions setup (root `.github/`) follows these rules. Each 
 - **Tools:** come from `jdx/mise-action` with `cache: true`, reading the repo's `mise.toml`. No `curl | bash` installers.
 
 ## Rust repos
-- **Toolchain:** pin an exact version in `rust-toolchain.toml` (e.g. `channel = "1.99.0"`), never `stable`. Runners resolve `stable` to different versions, which changes rust-cache's environment hash so every run misses. Install it via `actions-rust-lang/setup-rust-toolchain` with its built-in cache off (`cache: false`); we use rust-cache.
+- **One workspace:** the root `Cargo.toml` is a virtual workspace with every crate as a member, one `Cargo.lock` and one `rust-toolchain.toml`. Per-component `Cargo.lock`/`rust-toolchain.toml` files and nested `[workspace]` tables are not allowed (`scripts/monorepo/check-cargo-deps.sh` enforces this). Dependencies stay declared per crate, so each component keeps its own feature set. A change to the root `Cargo.toml`, `Cargo.lock` or `rust-toolchain.toml` triggers every Rust component. Select a component's crates with `-p` flags: a bare `cargo clippy` at the root would unify features across all 13 crates.
+- **Toolchain:** pin an exact version in the root `rust-toolchain.toml` (e.g. `channel = "1.99.0"`), never `stable`. Runners resolve `stable` to different versions, which changes rust-cache's environment hash so every run misses. Install it via `actions-rust-lang/setup-rust-toolchain` with its built-in cache off (`cache: false`); we use rust-cache.
 - **Separate, parallel jobs:**
-  - `fmt`: `cargo fmt --check` plus a guard that no `[patch]` and no git dependency on an enzarb repo remains (enzarb crates are path deps, `../<dir>`). No cache, no deps fetch.
-  - `clippy`: `cargo clippy --all-targets [--all-features] -- -D warnings`.
+  - `fmt`: `cargo fmt --all --check` plus the Cargo guard (`check-cargo-deps.sh`): no `[patch]`, no git dependency on an enzarb repo (enzarb crates are path deps), one lockfile and toolchain file. No cache, no deps fetch.
+  - `clippy`: `cargo clippy --all-targets <cargo-args> -- -D warnings`, where `cargo-args` is the `-p` list of the component (plus `--all-features` where set).
   - `test`: `cargo nextest run` (installed with `taiki-e/install-action@nextest`) plus `cargo test --doc` if the crate has doctests. Integration tests that need Docker run here.
 - **Cache:** `Swatinem/rust-cache@v2` in clippy and test.
-  - `workspaces: <dir> -> target` and a distinct `key` per component and job (`<dir>-clippy`, `<dir>-test`), because clippy and test build different artifacts.
+  - `workspaces: . -> target` (the single root `target/`) and a distinct `key` per component and job (`<dir>-clippy`, `<dir>-test`), because clippy and test build different artifacts.
   - Set `save-if: ${{ github.ref == 'refs/heads/main' }}`. PRs read the main cache but don't write, so cache churn stays low.
-- **Toolchain file per component:** `setup-rust-toolchain` gets `rust-src-dir: <dir>`; jobs run with `working-directory: <dir>`.
+- **Toolchain file:** `setup-rust-toolchain` gets `rust-src-dir: .`; jobs run at the repo root and select crates with `-p` (the `cargo-args` input).
 
 ## Git hooks
 `lefthook.yml` (opt-in, `mise run hooks:install`, see `docs/dev.md`) runs the same checks locally. Keep the two in sync when you change either.
 
 | Hook | Command | CI job |
 |---|---|---|
-| pre-commit | `cargo fmt --all --check` per Rust component | `_rust.yml` `fmt` |
+| pre-commit | `cargo fmt --all --check` at the root | `_rust.yml` `fmt` |
 | pre-commit | `scripts/monorepo/check-cargo-deps.sh` (shared script) | `_rust.yml` `fmt` |
 | pre-commit | `npm run lint` in `ui/` | `ci-ui.yml` `check` |
 | pre-commit | `shellcheck` on staged scripts | (no dedicated job) |
@@ -42,7 +43,7 @@ The monorepo's GitHub Actions setup (root `.github/`) follows these rules. Each 
 | pre-push | `mise run compat` in `helm/` | `ci-helm.yml` |
 | pre-push | `scripts/monorepo/test-affected.sh` | `ci-monorepo.yml` |
 
-The pre-push hook runs `scripts/monorepo/pre-push.sh`, which checks only the components reported by `affected.sh` (below). `<cargo-args>` mirror each component's `cargo-args` in its `ci-<dir>.yml`: `--workspace --all-features` (connectors), `--all-features` (operator), `--workspace` (workflows), `--locked` (sandbox-container), none for the rest. Update `scripts/monorepo/pre-push.sh` when those change.
+The pre-push hook runs `scripts/monorepo/pre-push.sh`, which checks only the components reported by `affected.sh` (below). `<cargo-args>` mirror each component's `cargo-args` in its `ci-<dir>.yml`: the `-p` list of its crates (`-p enzarb-connector -p enzarb-connector-github -p enzarb-receiver --all-features` for connectors, `-p enzarb-crds -p enzarb-sandbox-operator --all-features` for operator, `-p engine -p enzarb-workflows -p enzarb-flow` for workflows, `--locked -p sandbox-init` for sandbox-container, one `-p` for the rest). Update `scripts/monorepo/pre-push.sh` when those change.
 
 ## Affected components
 `scripts/monorepo/affected.sh <base>` (or `--files-from -` with paths on stdin) maps `git diff --name-only <base>...HEAD` to components, one per line in dependency order. Its rule table is the same as the `paths:` filters of `ci-<component>.yml`, including downstream components via path deps (e.g. `proto/**` also affects `workflows`, `sandbox-proxy`, `sandbox-container` and `ui`), and the shared workflow files (`_rust.yml`, `_docker.yml`). `monorepo` is a pseudo-component for the plumbing itself (`scripts/**`, `.mise/tasks/**`, any workflow). Files matching nothing (`docs/**`, root files) affect no component. The pre-push hook and the reviewer prompt use it; CI keeps its own `paths:` filters.
@@ -56,7 +57,7 @@ Integration tests that need Postgres (`workflows`, `connectors` receiver, `realt
 - **Build once per commit.** One `docker` job in `ci.yml`:
   - **On PRs:** build, and smoke-test if the repo has a smoke script. No push.
   - **On push to `main`:** build, then push to GHCR with the `main` and `sha-` tags. There are no tag builds (the `ci-*` workflows have no `<dir>/v*` trigger): the version and `latest` tags come from `release.yml` / `rebuild-all`.
-  - Components with path deps (`sandbox-proxy`, `sandbox-container`, `workflows`, `ui`) build from the repo root (`-f <dir>/Dockerfile .`); the others use their dir as context.
+  - Every image builds from the repo root (`-f <dir>/Dockerfile .`): the Rust images build the root workspace.
   - **Remove the separate `image.yml`**, so main isn't built twice.
 - **Layer cache:** BuildKit GHA cache with a stable scope per image.
   ```
@@ -67,7 +68,9 @@ Integration tests that need Postgres (`workflows`, `connectors` receiver, `realt
   - Pass secrets with `--secret id=<name>_key,env=VAR` (contracts §11), never build-push-action's `secrets:` input.
 - **Rust Dockerfiles use [cargo-chef](https://github.com/LukeMathWalker/cargo-chef).**
   - The planner and `cargo chef cook --release` stages build the dependency layer, which the GHA layer cache keeps between runs.
-  - The final `cargo build` only compiles workspace crates.
+  - The planner copies every workspace member and writes a workspace-wide `recipe.json`; `cook -p <crate>` builds only that crate's dependency graph. The recipe changes only when a `Cargo.toml` or `Cargo.lock` does, so a manifest change in any crate invalidates the cook layer of every Rust image (source-only changes do not).
+  - The final `cargo build -p <crate>` only compiles workspace crates, from the sources that crate needs.
+  - Per-directory `.dockerignore` files do not apply with the root context; exclusions live in the root `.dockerignore`.
   - BuildKit cache mounts (`--mount=type=cache`) for the cargo registry are fine but do **not** persist on hosted runners. Don't rely on them.
 - **Node Dockerfiles:** copy `package.json`/`package-lock.json` and run `npm ci` before copying sources, so the deps layer caches.
 

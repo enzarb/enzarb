@@ -2,7 +2,7 @@
 name = "enzarb-workflows"
 version = "0.1.0"
 edition.workspace = true
-publish.workspace = true
+publish = false
 
 [lib]
 name = "enzarb_workflows"
@@ -17,13 +17,13 @@ engine = { path = "../engine" }
 enzarb-connector = { path = "../../../connectors/crates/connector" }
 enzarb-connector-github = { path = "../../../connectors/crates/connector-github" }
 clap = { version = "4", features = ["derive", "env"] }
-tokio = { workspace = true, features = ["signal", "net"] }
-axum.workspace = true
-kube.workspace = true
-rustls.workspace = true
-sqlx.workspace = true
-thiserror.workspace = true
-tracing.workspace = true
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal", "net"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+kube = { version = "4.2", default-features = false, features = ["client", "runtime", "rustls-tls", "ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "migrate", "macros", "json", "chrono"] }
+thiserror = "2"
+tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 
 [dev-dependencies]

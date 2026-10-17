@@ -9,11 +9,11 @@ set -euo pipefail
 table='operator enzarb-sandbox-operator operator - 30
 connectors enzarb-connectors-receiver . - 30
 workflows enzarb-workflows . - 30
-realtime enzarb-realtime realtime - 30
+realtime enzarb-realtime . - 30
 sandbox-proxy enzarb-sandbox-proxy . - 30
 sandbox-container enzarb-sandbox . scripts/smoke.sh 40
 ui enzarb-ui . - 20
-updater enzarb-updater updater - 30'
+updater enzarb-updater . - 30'
 
 if [ $# -eq 0 ]; then echo "$table"; exit 0; fi
 while read -r dir image context smoke timeout; do

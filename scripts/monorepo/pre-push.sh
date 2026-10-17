@@ -21,7 +21,8 @@ if [ -z "$components" ]; then
 fi
 echo "pre-push: affected relative to $base: $(echo "$components" | paste -sd' ' -)"
 
-# run <dir> <command...>: run a check inside a component directory.
+# run <dir> <command...>: run a check inside a directory (`.` for the root Cargo workspace, whose
+# packages are picked with -p).
 run() {
   local dir=$1
   shift
@@ -41,29 +42,37 @@ npm_ready() {
 for c in $components; do
   case "$c" in
     proto)
-      run proto cargo clippy --all-targets -- -D warnings
-      run proto cargo test
+      run . cargo clippy -p enzarb-proto --all-targets -- -D warnings
+      run . cargo test -p enzarb-proto
       run proto bash ../.mise/tasks/proto/gen --check
       ;;
     operator)
-      run operator cargo clippy --all-targets --all-features -- -D warnings
-      run operator cargo test --all-features
+      run . cargo clippy -p enzarb-crds -p enzarb-sandbox-operator --all-targets --all-features -- -D warnings
+      run . cargo test -p enzarb-crds -p enzarb-sandbox-operator --all-features
       ;;
     connectors)
-      run connectors cargo clippy --all-targets --workspace --all-features -- -D warnings
-      run connectors cargo test --workspace --all-features
+      run . cargo clippy -p enzarb-connector -p enzarb-connector-github -p enzarb-receiver --all-targets --all-features -- -D warnings
+      run . cargo test -p enzarb-connector -p enzarb-connector-github -p enzarb-receiver --all-features
       ;;
     workflows)
-      run workflows cargo clippy --all-targets --workspace -- -D warnings
-      run workflows cargo test --workspace
+      run . cargo clippy -p engine -p enzarb-workflows -p enzarb-flow --all-targets -- -D warnings
+      run . cargo test -p engine -p enzarb-workflows -p enzarb-flow
       ;;
-    realtime | sandbox-proxy | updater)
-      run "$c" cargo clippy --all-targets -- -D warnings
-      run "$c" cargo test
+    realtime)
+      run . cargo clippy -p enzarb-realtime --all-targets -- -D warnings
+      run . cargo test -p enzarb-realtime
+      ;;
+    sandbox-proxy)
+      run . cargo clippy -p enzarb-sandbox-proxy --all-targets -- -D warnings
+      run . cargo test -p enzarb-sandbox-proxy
+      ;;
+    updater)
+      run . cargo clippy -p enzarb-updater --all-targets -- -D warnings
+      run . cargo test -p enzarb-updater
       ;;
     sandbox-container)
-      run sandbox-container cargo clippy --all-targets --locked -- -D warnings
-      run sandbox-container cargo test --locked
+      run . cargo clippy -p sandbox-init --all-targets --locked -- -D warnings
+      run . cargo test -p sandbox-init --locked
       ;;
     ui)
       if npm_ready ui; then

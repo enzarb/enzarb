@@ -3,30 +3,43 @@
 # Build from the monorepo root (in-repo path dep on proto/):
 #   docker build -f sandbox-container/Dockerfile -t enzarb-sandbox .
 FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
-WORKDIR /src/sandbox-container
+WORKDIR /src
 
-# Dependency recipe: only changes when Cargo.toml/Cargo.lock change.
+# Dependency recipe: only changes when a Cargo.toml/Cargo.lock changes.
 FROM chef AS planner
-COPY sandbox-container/rust-toolchain.toml sandbox-container/Cargo.toml sandbox-container/Cargo.lock ./
-COPY sandbox-container/src ./src
+# Every workspace member is part of the recipe: the root workspace resolves as a whole. The recipe
+# only changes when a manifest or Cargo.lock does, so the cook layer below survives source edits.
+COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
+COPY proto/crates proto/crates
+COPY operator/crates operator/crates
+COPY connectors/crates connectors/crates
+COPY connectors/bin connectors/bin
+COPY workflows/crates workflows/crates
+COPY realtime/Cargo.toml realtime/Cargo.toml
+COPY realtime/src realtime/src
+COPY sandbox-container/Cargo.toml sandbox-container/Cargo.toml
+COPY sandbox-container/src sandbox-container/src
+COPY sandbox-proxy/Cargo.toml sandbox-proxy/Cargo.toml
+COPY sandbox-proxy/src sandbox-proxy/src
+COPY updater/Cargo.toml updater/Cargo.toml
+COPY updater/src updater/src
 RUN cargo chef prepare --recipe-path recipe.json
 
 # Dependency layer (cargo-chef cook): cached by the GHA layer cache while recipe.json is unchanged.
 FROM chef AS build
-# Path deps outside this workspace are not in the chef recipe; copy them before cooking.
-COPY proto/Cargo.toml proto/Cargo.lock /src/proto/
-COPY proto/crates /src/proto/crates
-COPY --from=planner /src/sandbox-container/recipe.json recipe.json
-COPY sandbox-container/rust-toolchain.toml ./
+COPY --from=planner /src/recipe.json recipe.json
+COPY rust-toolchain.toml ./
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo chef cook --release --locked --recipe-path recipe.json
-# Workspace crates only.
-COPY sandbox-container/Cargo.toml sandbox-container/Cargo.lock ./
-COPY sandbox-container/src ./src
+    cargo chef cook --release --locked --recipe-path recipe.json -p sandbox-init
+# The real crate plus its in-repo path dep.
+COPY Cargo.toml Cargo.lock ./
+COPY proto/crates proto/crates
+COPY sandbox-container/Cargo.toml sandbox-container/Cargo.toml
+COPY sandbox-container/src sandbox-container/src
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo build --release --locked --bin sandbox-init \
+    cargo build --release --locked -p sandbox-init --bin sandbox-init \
  && cp target/release/sandbox-init /sandbox-init
 
 # Node stage: download node, install the adapter, drop what the runtime does not need.

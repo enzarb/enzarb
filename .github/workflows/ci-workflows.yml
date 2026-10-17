@@ -3,6 +3,9 @@ on:
   push:
     branches: [main]
     paths:
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
       - 'workflows/**'
       - 'operator/**'
       - 'connectors/**'
@@ -12,6 +15,9 @@ on:
       - .github/workflows/_docker.yml
   pull_request:
     paths:
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
       - 'workflows/**'
       - 'operator/**'
       - 'connectors/**'
@@ -32,7 +38,7 @@ jobs:
       packages: write
     with:
       dir: workflows
-      cargo-args: --workspace
+      cargo-args: -p engine -p enzarb-workflows -p enzarb-flow
       postgres: true
       image: enzarb-workflows
       context: .
