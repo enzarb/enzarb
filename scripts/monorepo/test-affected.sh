@@ -65,12 +65,24 @@ for wf in .github/workflows/ci-*.yml; do
     echo "FAIL: $wf: the changes job does not pass component: $component" >&2
     fail=1
   fi
-  jobs=$(awk '/^jobs:/ { in_jobs = 1; next } in_jobs && /^  [a-z][a-z-]*:$/ { n++ } END { print n + 0 }' "$wf")
-  gated=$(grep -c "^    if: needs.changes.outputs.run == 'true'\$" "$wf" || true)
-  if [ "$gated" -ne $((jobs - 1)) ]; then
-    echo "FAIL: $wf: $gated of $((jobs - 1)) jobs are gated on needs.changes.outputs.run" >&2
+  # Per job block: every job except `changes` has both `needs: changes` and the `if:` line.
+  bad=$(awk '
+    function flush() {
+      if (job != "" && job != "changes" && !(needs && gate)) print job
+    }
+    /^jobs:/ { in_jobs = 1; next }
+    in_jobs && /^[^ #]/ { flush(); job = ""; in_jobs = 0 }
+    in_jobs && /^  [A-Za-z0-9_-]+:[ ]*$/ {
+      flush(); job = $1; sub(/:$/, "", job); needs = 0; gate = 0; next
+    }
+    in_jobs && /^    needs: changes[ ]*$/ { needs = 1 }
+    in_jobs && /^    if: needs.changes.outputs.run == .true.[ ]*$/ { gate = 1 }
+    END { flush() }
+  ' "$wf")
+  for job in $bad; do
+    echo "FAIL: $wf: job $job lacks 'needs: changes' and/or the needs.changes.outputs.run gate" >&2
     fail=1
-  fi
+  done
 done
 
 # Every component of the graph has a ci-<component>.yml and vice versa.

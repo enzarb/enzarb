@@ -56,6 +56,8 @@ jobs:
 
   # Chat smoke test in a real browser against the dev server; Postgres comes from a testcontainer.
   test-e2e:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
