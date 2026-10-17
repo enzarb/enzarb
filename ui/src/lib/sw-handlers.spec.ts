@@ -101,7 +101,7 @@ describe('planFetch', () => {
 
 	it('never touches remote functions, the realtime stream or auth routes', () => {
 		for (const p of [
-			'/_app/remote/abc/getWorkItem',
+			'/_app/remote/abc/getTask',
 			'/live/',
 			'/live/ws',
 			'/login/github',

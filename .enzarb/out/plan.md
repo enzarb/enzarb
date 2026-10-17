@@ -1,41 +1,64 @@
+# Plan: finish the work item → task rename in `ui/` and add a guard (#237)
+
 ## Summary
-
-In dark mode the cyan count pill in the nav (the "items need you" badge on the Work link) has white text on `#00f0ff`, about 1.3:1. I found the cause: `ui/src/lib/styles/global.scss` has a second, older `.ez-badge` rule (~line 1437, "Count of items waiting on the user"). It overrides the status-chip `.ez-badge` rule (~line 812) with `background: var(--ez-accent)` and `color: var(--ez-accent-contrast, #fff)`. `--ez-accent-contrast` is not defined in any theme, so the colour always falls back to `#fff`. That is fine on the light theme's dark-cyan accent, but unreadable on the dark theme's bright cyan. The theme already defines the correct token, `--ez-accent-fg` (`#0b0f17` in dark, `#fff` in light). The fix is to use it.
-
-The same rule also leaks into every other `.ez-badge` (Badge.svelte, tasks views), because the two rules share a class. Those chips get the cyan background and `#fff` text too, wherever the status rule doesn't set `background` and `color` itself. I haven't rendered the page to confirm this, so the implementation should check it.
+The issue's numbers are stale. Earlier work (#114, #229) already renamed the files, remote functions, components and routes. On `main`, `ui/` still has about 41 case-insensitive matches of `work[ _-]?item`, in about 12 files, and most are comments or SQL names. This PR renames the leftover identifiers and text. It keeps the shared SQL and wire names behind explicit, commented allowlist entries. It also adds a guard script to `npm run lint` that fails if the old name reappears. This is one PR touching `ui/` only.
 
 ## Approach
-
-- Give the nav count pill its own class (`ez-nav__count`) instead of reusing `.ez-badge`. Its styles use the `--ez-accent` / `--ez-accent-fg` token pair, which already passes the contrast checks in both themes.
-- Rejected: only changing `--ez-accent-contrast, #fff` to `--ez-accent-fg`. This fixes the contrast, but the colliding class would still override the status badges and could change their appearance. Splitting the class is the cleaner fix.
-- Rejected: defining a new `--ez-accent-contrast` token. It would duplicate `--ez-accent-fg`.
-- The change stays token-based, in the single `global.scss`, with no new CSS. Both the `[data-theme='dark']` and `prefers-color-scheme` paths use the `theme-dark` mixin, so the token fix covers both.
+- **Rename mechanically.** Identifiers, comments, UI text and tests become "task".
+- **Single data-access layer.** `src/lib/server/push-store.ts` is the only code that calls the `app_api.push_*` functions. Their SQL parameter `work_item_id` (migrations 0006/0007) is a shared contract and stays unchanged. In TS the parameter becomes `taskId`. The SQL is called positionally (`push_claim(${owner}, ${taskId}, …)`), so the rename is safe. A comment at the top of `createPushStore` explains that the SQL still says `work_item` and this file is the only mapping point.
+- **Realtime frame topic `'work_item'`** (`live.ts:134`) is a wire contract. Deployed components roll out independently, so it is kept and its existing comment is expanded. It is allowlisted.
+- **Routes.** `/work` and `/work/[id]` already 308-redirect to `/tasks` and `/task/[id]`. They are kept, because old push notifications and PR comments link there. The regex needs "work" followed by "item", so the `/work/...` paths never match and need no allowlist entry. The PR description will record the decision: redirects are retained, with no route changes.
+- **Guard.** `ui/scripts/check-naming.mjs`, run from `lint` as `prettier --check . && eslint . && node scripts/check-naming.mjs`. It follows the existing `scripts/*.mjs` style.
+  - It lists files with `git ls-files -z -- .` run inside `ui/`, which avoids `node_modules` and build output. It falls back to a directory walk if git is unavailable, as in the Docker context.
+  - It skips `migrations/` (immutable), `package-lock.json` and binary files.
+  - Pattern: `/work[ _-]?item/i`. This also covers `WorkItem`, `workItem`, `work-item`, `work_item` and "work items". A camelCase `workItemId` is caught by the same pattern.
+  - The allowlist is a small in-script array of `{ file, pattern, why }` entries. A line is allowed only if it matches that file's pattern. Entries:
+    - `src/lib/live.ts` and `src/lib/live.spec.ts`: the `work_item` frame topic.
+    - `src/lib/usage.ts`: the comment citing `work_item_v.usage_totals`.
+    - `src/lib/server/push-store.ts`: the SQL-mapping comment.
+    - The script itself and its spec: the pattern text.
+  - It prints `file:line: text` for each violation and exits 1. It also fails if an allowlist entry matches nothing (stale entry), so the list cannot rot.
+- **Rejected alternatives:**
+  - An ESLint custom rule or `no-restricted-syntax`: it misses comments, markdown and SQL strings.
+  - A bare `grep` in package.json: it is not portable, and it can't express per-file allowlists.
+  - Renaming SQL names: forbidden by the issue and by the shared-contract rule in CLAUDE.md.
 
 ## Changes
-
-- `ui/src/lib/styles/global.scss`
-  - Rename the ~line 1437 rule from `.ez-badge` to `.ez-nav__count`. Change its colour to `var(--ez-accent-fg)` and drop the `--ez-accent-contrast` fallback. Keep the layout properties.
-  - Check that the status `.ez-badge` rule (~line 812) now applies cleanly to `Badge.svelte`, `StepRuns`, `WorkflowViewer`, `SessionInspector` and `SessionEventView`.
-- `ui/src/lib/components/Nav.svelte`: change `class="ez-badge"` to `class="ez-nav__count"` on the count span.
-- Grep for other users of the nav-count style (for example tests or other components that query `.ez-badge` for the count) and update them.
+- `ui/scripts/check-naming.mjs` (new): the guard described above. It exports the check function so a spec can import it.
+- `ui/scripts/check-naming.spec.ts` (new): see Tests. Check that vitest's `include` picks up `scripts/`; otherwise place the spec under `src/lib/`.
+- `ui/package.json`: add the guard to the `lint` script.
+- `ui/src/lib/server/push-store.ts`: `workItemId` → `taskId` (4 places, lines ~96–134). Doc comment "work item" → "task". Add the SQL-mapping comment.
+- `ui/src/lib/live.ts` (~134): expand the comment saying `work_item` is the legacy frame name kept for the realtime contract.
+- `ui/src/lib/usage.ts:3`: keep the SQL view name and add a note that it is a SQL name. Allowlisted.
+- `ui/src/lib/components/ui/StepList.svelte:30`: comment "work item's history" → "task's history".
+- `ui/src/lib/server/project-onboarding.ts:206,282`: "work items" → "tasks", in the comment and the log message. Update any test that asserts on the log text.
+- `ui/src/lib/server/project-onboarding.spec.ts:459`: the `describe` title.
+- `ui/src/lib/sw-handlers.spec.ts:104`: `getWorkItem` → `getTask`. That remote function exists in `tasks.remote.ts`, and `getWorkItem` does not. The `/work/...` URLs in this spec and in `push.spec.ts` stay as legacy-URL fixtures.
+- `ui/README.md:37`: reword the "work item" mention.
+- Not edited: `migrations/0006–0008` (excluded by the guard).
 
 ## Tests
-
-- `ui/src/lib/styles/contrast.spec.ts` already asserts `accent-fg` on `accent` ≥ 4.5:1 for both themes.
-- Add a guard test that fails on the root cause, alongside the existing assertions: `global.scss` must not reference `--ez-accent-contrast`. Use a regex over the file, or assert that every `var(--ez-…)` name used is defined in a theme mixin.
-- If `Nav.svelte` has a component test, update it for the new class.
+- Guard spec: use a temp directory fixture.
+  - A clean tree passes.
+  - A file containing `WorkItem`, `work-item`, `work item` or `workItemId` fails.
+  - An allowlisted line passes.
+  - A stale allowlist entry fails.
+  - Migrations are ignored.
+- Manual acceptance check: add `// WorkItem` to a `src/` file, confirm `npm run lint` fails with `file:line`, then revert.
+- Existing specs cover `push-store`, `live`, `sw-handlers` and `project-onboarding` after the renames. Check that `work/[id]/page.server.spec.ts` still passes.
 - Run in `ui/`: `npm run check && npm run lint && npm test`.
-- Manually render the Nav with a count and the Badge gallery in both `data-theme='dark'` and the OS dark preference. I haven't done this yet.
 
 ## Risks and open questions
-
-- The issue has no description. I'm assuming "cyan pills with white text" means the nav count pill (the only white-on-cyan combination I found). If the maintainer means something else, such as the accent-tone `Badge`, please say so. The accent tone in dark uses `#00f0ff` text on `#0a2833`, which looks fine.
-- The stray `.ez-badge` override may have been changing other badges. Visually check them after the split, in both themes.
-- The new nav-count styles use bright cyan with dark text in dark mode. That is the same pairing as the primary button, so it should look consistent.
+- **`app_api` calls.** The only risk is a typo in the `push-store.ts` rename. The existing push-store tests, plus `npm run check`, should catch it.
+- **Realtime.** The `work_item` topic must keep being handled. The `live.spec.ts` test stays as is.
+- **Assumption:** keeping the `/work` redirects permanently is acceptable. Say so if you want them removed after some deprecation window.
+- **Assumption:** `git ls-files` is available in CI. `actions/checkout` provides it, and the fallback walk covers Docker.
+- **Wording to confirm:** whether the "tasks" in `project-onboarding` messages should say "tasks" or "workflow tasks". I plan plain "tasks".
 
 ## Out of scope
-
-- A broader audit or redesign of badge tones or the colour palette.
-- Any changes outside `ui/`.
+- Renaming SQL objects, columns or migrations in `workflows_api` / `app_api`.
+- Changing the realtime frame topic.
+- `docs/`, `connectors/` and `workflows/` occurrences of the term, which belong to the shared contract.
+- Any change to the `/work` redirects.
 
 Reply with feedback to revise this plan, or comment /approve to start the implementation.

@@ -203,7 +203,7 @@ export interface SetRepositoriesDeps {
 	owner: string;
 	/** Live access check for the requesting user (added repositories only). */
 	check: CheckRepository;
-	/** Cancels the open work items of repositories that left the Project (best effort). */
+	/** Cancels the open tasks of repositories that left the Project (best effort). */
 	work?: {
 		cancelForRemovedRepos(project: string, removedKeys: string[]): Promise<unknown>;
 	};
@@ -279,7 +279,7 @@ export async function setRepositories(
 				await deps.work.cancelForRemovedRepos(name, removed);
 			} catch (e) {
 				console.warn(
-					`could not cancel work items of removed repositories in ${name}:`,
+					`could not cancel tasks of removed repositories in ${name}:`,
 					(e as Error).message
 				);
 			}
