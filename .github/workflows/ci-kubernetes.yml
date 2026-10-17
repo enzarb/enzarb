@@ -4,10 +4,14 @@ on:
     branches: [main]
     paths:
       - 'kubernetes/**'
+      - mise.toml
+      - 'mise.*.toml'
       - .github/workflows/ci-kubernetes.yml
   pull_request:
     paths:
       - 'kubernetes/**'
+      - mise.toml
+      - 'mise.*.toml'
       - .github/workflows/ci-kubernetes.yml
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

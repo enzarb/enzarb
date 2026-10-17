@@ -25,8 +25,8 @@ RULES=(
   'sandbox-container|sandbox-container/** proto/** ui/package-lock.json .github/workflows/ci-sandbox-container.yml .github/workflows/_rust.yml .github/workflows/_docker.yml .github/actions/setup-node/**'
   'ui|ui/** proto/** workflows/migrations/** .github/workflows/ci-ui.yml .github/workflows/_docker.yml .github/actions/ui-install/** .github/actions/setup-node/**'
   'updater|updater/** .github/workflows/ci-updater.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
-  'kubernetes|kubernetes/** .github/workflows/ci-kubernetes.yml'
-  'helm|helm/** .github/workflows/ci-helm.yml'
+  'kubernetes|kubernetes/** mise.toml mise.*.toml .github/workflows/ci-kubernetes.yml'
+  'helm|helm/** mise.toml .github/workflows/ci-helm.yml'
   'monorepo|scripts/** .mise/tasks/** .mise/lib/** .github/workflows/** mise.toml mise.*.toml */mise.toml */Dockerfile */rust-toolchain.toml kubernetes/hack/versions.env'
 )
 

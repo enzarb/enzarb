@@ -30,7 +30,7 @@ check() { # check <description> <expected> <paths...>
 # --- 1. sample diffs -------------------------------------------------------------------------
 check "docs only" "" docs/architecture.md
 check "root files" "" lefthook.yml CLAUDE.md
-check "tool pins feed the pin check" "monorepo" mise.toml
+check "tool pins feed the pin check and tool-using jobs" "kubernetes helm monorepo" mise.toml
 check "component Dockerfile ARGs feed the pin check" "sandbox-container monorepo" sandbox-container/Dockerfile
 check "workflows only" "workflows" workflows/crates/engine/src/lib.rs
 check "proto fans out" "proto workflows sandbox-proxy sandbox-container ui" proto/crates/enzarb-proto/src/lib.rs

@@ -4,10 +4,12 @@ on:
     branches: [main]
     paths:
       - 'helm/**'
+      - mise.toml
       - .github/workflows/ci-helm.yml
   pull_request:
     paths:
       - 'helm/**'
+      - mise.toml
       - .github/workflows/ci-helm.yml
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
