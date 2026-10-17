@@ -307,12 +307,7 @@ pub async fn fact(
             None => json!([]),
         },
         "mergeable" => match &pr_key {
-            Some(k) => json!(
-                c.get_merge_readiness(k, k.number)
-                    .await
-                    .map_err(|e| e.to_string())?
-                    .mergeable
-            ),
+            Some(k) => json!(mergeable(c.as_ref(), k, MERGEABLE_POLL).await?),
             None => Value::Null,
         },
         "merged" => json!(
@@ -658,5 +653,77 @@ mod create_issues_tests {
             resolve_issue_refs("x {{issue:a}} {{ y", &m),
             "x #1 (A) {{ y"
         );
+    }
+}
+
+/// GitHub computes mergeability in the background: the first read starts it and reports
+/// unknown (`None`). Read again a few times, so a conflict is seen instead of an unknown that
+/// nothing would refresh (a conflicting PR runs no CI, so no CI event follows).
+const MERGEABLE_POLL: &[std::time::Duration] = &[
+    std::time::Duration::from_secs(2),
+    std::time::Duration::from_secs(3),
+    std::time::Duration::from_secs(5),
+    std::time::Duration::from_secs(10),
+];
+
+async fn mergeable(
+    c: &dyn Connector,
+    k: &WorkItemKey,
+    delays: &[std::time::Duration],
+) -> Result<Option<bool>, String> {
+    let mut m = c
+        .get_merge_readiness(k, k.number)
+        .await
+        .map_err(|e| e.to_string())?
+        .mergeable;
+    for d in delays {
+        if m.is_some() {
+            break;
+        }
+        tokio::time::sleep(*d).await;
+        m = c
+            .get_merge_readiness(k, k.number)
+            .await
+            .map_err(|e| e.to_string())?
+            .mergeable;
+    }
+    Ok(m)
+}
+
+#[cfg(test)]
+mod mergeable_tests {
+    use super::*;
+    use enzarb_connector::{CiState, MergeReadiness};
+
+    fn readiness(mergeable: Option<bool>) -> MergeReadiness {
+        MergeReadiness {
+            head_sha: "h".into(),
+            base_sha: None,
+            mergeable,
+            mergeable_state: String::new(),
+            ci: CiState::Pending,
+        }
+    }
+    use enzarb_connector::fake::FakeConnector;
+
+    #[tokio::test]
+    async fn an_unknown_mergeable_is_read_again() {
+        let c = FakeConnector::default();
+        let k = WorkItemKey::new(repo_key("o/r"), 5);
+        c.set_merge_readiness(k.clone(), readiness(None));
+        let d = [std::time::Duration::from_millis(1); 2];
+        // Still unknown after every read: unknown.
+        assert_eq!(mergeable(&c, &k, &d).await.unwrap(), None);
+        let reads = |c: &FakeConnector| {
+            c.calls()
+                .iter()
+                .filter(|r| format!("{:?}", r.call).contains("MergeReadiness"))
+                .count()
+        };
+        assert_eq!(reads(&c), 3);
+        // Known: returned at once.
+        c.set_merge_readiness(k.clone(), readiness(Some(false)));
+        assert_eq!(mergeable(&c, &k, &d).await.unwrap(), Some(false));
+        assert_eq!(reads(&c), 4);
     }
 }
