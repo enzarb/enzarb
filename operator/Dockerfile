@@ -26,8 +26,8 @@ COPY rust-toolchain.toml ./
 COPY --from=planner /src/recipe.json recipe.json
 # Dependency layer: cached until the dependency set changes.
 RUN cargo chef cook --release --locked -p enzarb-sandbox-operator --recipe-path recipe.json
-COPY Cargo.toml Cargo.lock ./
-COPY operator/crates operator/crates
+# Real sources of every workspace member (the planner copied them all), not cargo-chef 0.0.1 stubs: --locked fails otherwise.
+COPY --from=planner /src/ ./
 RUN cargo build --release --locked -p enzarb-sandbox-operator
 
 FROM alpine:3.24

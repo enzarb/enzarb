@@ -5,6 +5,7 @@
 #   - exactly one Cargo.lock and one rust-toolchain.toml, both at the repo root;
 #   - no member Cargo.toml declares its own [workspace];
 #   - every Cargo.toml is a member of the root workspace (cargo metadata lists it).
+#   - the cargo-chef planner COPY block is identical in every Rust Dockerfile;
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 fail=0
@@ -38,5 +39,15 @@ for manifest in $(files '*/Cargo.toml'); do
     fail=1
   fi
 done
+
+# The planner stage of every Rust Dockerfile copies the same member set (the build stage reuses it).
+planner_sums=$(for f in $(files "*/Dockerfile"); do
+  grep -q "AS planner" "$f" || continue
+  sed -n "/AS planner/,/cargo chef prepare/p" "$f" | grep "^COPY" | sha256sum
+done | sort -u | wc -l)
+if [ "$planner_sums" -gt 1 ]; then
+  echo "::error::the planner-stage COPY blocks differ between Dockerfiles; keep them identical"
+  fail=1
+fi
 
 exit "$fail"

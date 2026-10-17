@@ -29,11 +29,8 @@ FROM chef AS build
 COPY rust-toolchain.toml ./
 COPY --from=planner /src/recipe.json recipe.json
 RUN cargo chef cook --release --locked -p enzarb-sandbox-proxy --recipe-path recipe.json
-COPY Cargo.toml Cargo.lock ./
-COPY proto/crates proto/crates
-COPY operator/crates operator/crates
-COPY sandbox-proxy/Cargo.toml sandbox-proxy/Cargo.toml
-COPY sandbox-proxy/src sandbox-proxy/src
+# Real sources of every workspace member (the planner copied them all), not cargo-chef 0.0.1 stubs: --locked fails otherwise.
+COPY --from=planner /src/ ./
 RUN cargo build --release --locked -p enzarb-sandbox-proxy --bin enzarb-sandbox-proxy
 
 FROM gcr.io/distroless/static-debian12:nonroot

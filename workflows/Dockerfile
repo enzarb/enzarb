@@ -36,11 +36,8 @@ COPY rust-toolchain.toml ./
 COPY --from=planner /src/recipe.json recipe.json
 # Dependency layer: every workspace member is a stub here, so nothing compiles against a partial crate.
 RUN cargo chef cook --release --locked --recipe-path recipe.json -p enzarb-workflows
-COPY Cargo.toml Cargo.lock ./
-COPY proto/crates proto/crates
-COPY operator/crates operator/crates
-COPY connectors/crates connectors/crates
-COPY workflows/crates workflows/crates
+# Real sources of every workspace member (the planner copied them all), not cargo-chef 0.0.1 stubs: --locked fails otherwise.
+COPY --from=planner /src/ ./
 RUN cargo build --release --locked -p enzarb-workflows \
  && cp target/release/enzarb-workflows /enzarb-workflows
 

@@ -27,21 +27,8 @@ COPY rust-toolchain.toml ./
 COPY --from=planner /src/recipe.json recipe.json
 # Dependency layer: cached until the dependency graph changes.
 RUN cargo chef cook --release --locked --recipe-path recipe.json -p enzarb-receiver --bin receiver
-# Every workspace member's real manifest, not cargo-chef's 0.0.1 stub: --locked fails otherwise.
-COPY Cargo.toml Cargo.lock ./
-COPY proto/crates proto/crates
-COPY operator/crates operator/crates
-COPY connectors/crates connectors/crates
-COPY connectors/bin connectors/bin
-COPY workflows/crates workflows/crates
-COPY realtime/Cargo.toml realtime/Cargo.toml
-COPY realtime/src realtime/src
-COPY sandbox-container/Cargo.toml sandbox-container/Cargo.toml
-COPY sandbox-container/src sandbox-container/src
-COPY sandbox-proxy/Cargo.toml sandbox-proxy/Cargo.toml
-COPY sandbox-proxy/src sandbox-proxy/src
-COPY updater/Cargo.toml updater/Cargo.toml
-COPY updater/src updater/src
+# Real sources of every workspace member (the planner copied them all), not cargo-chef 0.0.1 stubs: --locked fails otherwise.
+COPY --from=planner /src/ ./
 RUN cargo build --release --locked -p enzarb-receiver --bin receiver
 
 FROM debian:bookworm-slim
