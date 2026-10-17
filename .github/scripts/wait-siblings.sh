@@ -32,7 +32,7 @@ say() { echo "$*" | tee -a "$SUMMARY"; }
 
 pending=()
 while read -r dir _; do
-  [ -n "$dir" ] && [ "$dir" != "$SELF" ] || continue
+  if [ -z "$dir" ] || [ "$dir" = "$SELF" ]; then continue; fi
   v=$(next_version "$dir" "$SHA")
   [ -n "$v" ] || continue
   git rev-parse -q --verify "refs/tags/$dir/v$v" >/dev/null && continue

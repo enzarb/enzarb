@@ -55,7 +55,7 @@
     },
     "monorepo": {
       "pseudo": true,
-      "globs": ["scripts/**", ".mise/tasks/**", ".mise/lib/**", ".github/workflows/**"]
+      "globs": ["scripts/**", ".mise/tasks/**", ".mise/lib/**", ".github/workflows/**", "Cargo.toml", "Cargo.lock", "**/Cargo.toml", "**/package.json"]
     }
   }
 }

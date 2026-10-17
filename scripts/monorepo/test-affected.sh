@@ -31,7 +31,7 @@ check() { # check <description> <expected> <paths...>
 check "docs only" "" docs/architecture.md
 check "root files" "" mise.toml lefthook.yml CLAUDE.md
 check "generated graph is read by the monorepo checks" "monorepo" scripts/monorepo/graph.generated.sh
-check "root cargo files select every rust component" "proto operator connectors workflows realtime sandbox-proxy sandbox-container updater" Cargo.lock
+check "root cargo files select every rust component" "proto operator connectors workflows realtime sandbox-proxy sandbox-container updater monorepo" Cargo.lock
 check "root toolchain file" "proto operator connectors workflows realtime sandbox-proxy sandbox-container updater" rust-toolchain.toml
 check "workflows only" "workflows" workflows/crates/engine/src/lib.rs
 check "proto fans out" "proto workflows sandbox-proxy sandbox-container ui" proto/crates/enzarb-proto/src/lib.rs

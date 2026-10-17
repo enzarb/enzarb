@@ -26,7 +26,7 @@ RULES=(
   'updater|Cargo.toml Cargo.lock rust-toolchain.toml updater/** .github/workflows/ci-updater.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
   'kubernetes|kubernetes/** .github/workflows/ci-kubernetes.yml'
   'helm|helm/** .github/workflows/ci-helm.yml'
-  'monorepo|scripts/** .mise/tasks/** .mise/lib/** .github/workflows/**'
+  'monorepo|scripts/** .mise/tasks/** .mise/lib/** .github/workflows/** Cargo.toml Cargo.lock **/Cargo.toml **/package.json'
 )
 IMAGE_TABLE='operator enzarb-sandbox-operator operator - 30
 connectors enzarb-connectors-receiver . - 30

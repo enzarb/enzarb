@@ -9,12 +9,20 @@ on:
       - '.mise/tasks/**'
       - '.mise/lib/**'
       - '.github/workflows/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '**/Cargo.toml'
+      - '**/package.json'
   pull_request:
     paths:
       - 'scripts/**'
       - '.mise/tasks/**'
       - '.mise/lib/**'
       - '.github/workflows/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '**/Cargo.toml'
+      - '**/package.json'
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
