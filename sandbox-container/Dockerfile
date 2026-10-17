@@ -33,10 +33,21 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     cargo chef cook --release --locked --recipe-path recipe.json -p sandbox-init
 # The real crate plus its in-repo path dep.
+# Every workspace member's real manifest, not cargo-chef's 0.0.1 stub: --locked fails otherwise.
 COPY Cargo.toml Cargo.lock ./
 COPY proto/crates proto/crates
+COPY operator/crates operator/crates
+COPY connectors/crates connectors/crates
+COPY connectors/bin connectors/bin
+COPY workflows/crates workflows/crates
+COPY realtime/Cargo.toml realtime/Cargo.toml
+COPY realtime/src realtime/src
 COPY sandbox-container/Cargo.toml sandbox-container/Cargo.toml
 COPY sandbox-container/src sandbox-container/src
+COPY sandbox-proxy/Cargo.toml sandbox-proxy/Cargo.toml
+COPY sandbox-proxy/src sandbox-proxy/src
+COPY updater/Cargo.toml updater/Cargo.toml
+COPY updater/src updater/src
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     cargo build --release --locked -p sandbox-init --bin sandbox-init \
