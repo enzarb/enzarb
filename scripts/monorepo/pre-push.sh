@@ -43,6 +43,7 @@ for c in $components; do
     proto)
       run proto cargo clippy --all-targets -- -D warnings
       run proto cargo test
+      run proto bash ../.mise/tasks/proto/gen --check
       ;;
     operator)
       run operator cargo clippy --all-targets --all-features -- -D warnings

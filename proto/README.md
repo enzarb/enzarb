@@ -9,6 +9,7 @@ See [docs/architecture.md](https://github.com/enzarb/enzarb/blob/main/docs/archi
 - `docs/protocol.md`: wire format spec and session rules.
 - `crates/enzarb-proto`: Rust codec (`Frame`, `FrameHeader`), typed `Ctrl` messages, `FlowControl`, and (feature `tokio`) the `session` runtime.
 - `ts/`: the `@enzarb/proto` TypeScript package (codec, CTRL types, flow control, browser `Session`).
+  `ts/src/ctrl.gen.ts` is generated from the Rust `Ctrl` types (`mise run proto:gen`; CI checks it is up to date), see `CLAUDE.md`, "Adding or changing a `Ctrl` variant".
 - `vectors/`: test vectors shared by the Rust and TS suites.
 
 ## Rust
@@ -71,3 +72,7 @@ npm ci && npm run check && npm test
 ```
 
 Regenerate vectors with `ENZARB_UPDATE_VECTORS=1 cargo test -p enzarb-proto --test vectors`.
+
+## Generated TypeScript
+
+`ts/src/ctrl.gen.ts` (the `Ctrl` union, payload types, `CTRL_TYPES` and the `SECRET_PATHS` table) is generated from the Rust types with ts-rs and schemars behind the `codegen` feature: `mise run proto:gen`, or `mise run proto:gen -- --check` to verify it is current. `Ctrl::tag()` and `Ctrl::allowed_from(ClientKind)` come from one direction table in `ctrl.rs`.

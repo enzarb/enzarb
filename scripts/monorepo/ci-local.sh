@@ -54,6 +54,7 @@ for g in $groups; do
     proto)
       step "proto fmt" proto cargo fmt --all --check
       step "proto clippy" proto cargo clippy --workspace --all-targets -- -D warnings
+      step "proto ctrl.gen.ts" proto bash ../.mise/tasks/proto/gen --check
       step "proto clippy all-features" proto cargo clippy --workspace --all-targets --all-features -- -D warnings
       step "proto nextest" proto nextest run --workspace
       step "proto nextest all-features" proto nextest run --workspace --all-features
