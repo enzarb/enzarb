@@ -11,10 +11,13 @@ FROM chef AS planner
 # only changes when a manifest or Cargo.lock does, so the cook layer below survives source edits.
 COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
 COPY proto/crates proto/crates
+COPY proto/vectors proto/vectors
 COPY operator/crates operator/crates
+COPY operator/deploy operator/deploy
 COPY connectors/crates connectors/crates
 COPY connectors/bin connectors/bin
 COPY workflows/crates workflows/crates
+COPY workflows/migrations workflows/migrations
 COPY realtime/Cargo.toml realtime/Cargo.toml
 COPY realtime/src realtime/src
 COPY sandbox-container/Cargo.toml sandbox-container/Cargo.toml
