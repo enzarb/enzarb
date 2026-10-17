@@ -1,9 +1,8 @@
 # enzarb/enzarb's repo layer of the workflow bindings (ADR-0022). Everything is inherited from
 # the standard library (enzarb/workflows@v1); only the `issues` binding is overridden.
 #
-# release_when stays empty (tasks end at merged) until the enzarb GitHub App subscribes to the
-# `release` webhook event; then set it to [release.published] (component releases publish
-# GitHub releases `<dir>/vX.Y.Z`).
+# Issue tasks end when a component release containing the merge is published (component
+# releases publish GitHub releases `<dir>/vX.Y.Z`; the App receives `release` events).
 version: 1
 imports: {std: enzarb/workflows@v1}
 bindings:
@@ -12,6 +11,6 @@ bindings:
     if: "event.action == 'opened'"
     use: std/workflows/issue
     with:
-      release_when: []
+      release_when: [release.published]
       max_rounds: 4
       epic_allowed: "{{ relations | selectattr('kind', 'eq', 'parent') | list | length == 0 }}"

@@ -35,6 +35,7 @@ default_permissions:
   contents: write
   checks: write
   actions: read
+  deployments: read
   packages: read
   statuses: read
   metadata: read
@@ -47,5 +48,11 @@ default_events:
   - check_suite
   - check_run
   - status
+  - push
+  - create
+  - release
+  - workflow_run
+  - registry_package
+  - deployment_status
   - installation
   - installation_repositories
