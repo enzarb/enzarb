@@ -7,6 +7,7 @@ import ArtifactViewer from './ArtifactViewer.svelte';
 import NeedsYouList from './NeedsYouList.svelte';
 import SecretsForm from './SecretsForm.svelte';
 import SessionInspector from './SessionInspector.svelte';
+import StepRuns from './StepRuns.svelte';
 import TaskBoard from './TaskBoard.svelte';
 import TaskControls from './TaskControls.svelte';
 import WorkflowViewer from './WorkflowViewer.svelte';
@@ -164,6 +165,70 @@ describe('SessionInspector', () => {
 		render(SessionInspector, { load, live: true, pollMs: 50 });
 		await expect.element(page.getByText('assistant reply')).toBeVisible();
 		await expect.element(page.getByText('live')).toBeVisible();
+	});
+});
+
+describe('SessionInspector failures', () => {
+	it('shows a notice when the session cannot be loaded', async () => {
+		render(SessionInspector, {
+			load: async () => {
+				throw new Error('down');
+			}
+		});
+		await expect.element(page.getByText('Could not load the session.')).toBeVisible();
+	});
+
+	it('pages on while a page is full', async () => {
+		const full = Array.from({ length: 500 }, (_, i) => ({
+			seq: i + 1,
+			at: '2026-10-16T12:00:00.000Z',
+			kind: 'system',
+			payload: { text: `n${i + 1}` },
+			truncated: false
+		}));
+		const load = vi.fn(async (after: number) =>
+			after === 0 ? full : after === 500 ? [{ ...full[0], seq: 501 }] : []
+		);
+		render(SessionInspector, { load });
+		await expect.element(page.getByText('501 events')).toBeVisible();
+		expect(load).toHaveBeenCalledWith(500);
+	});
+});
+
+describe('StepRuns', () => {
+	const run = (runId: string, endedAt: string | null) => ({
+		runId,
+		node: 'n',
+		step: `step-${runId}`,
+		attempt: 1,
+		runtime: null,
+		model: null,
+		startedAt: null,
+		endedAt,
+		activeSecs: null,
+		queueSecs: null,
+		exit: endedAt ? 'ok' : null,
+		tokens: null,
+		costUsd: null,
+		resumes: 0,
+		stalls: 0,
+		steers: 0
+	});
+
+	it('opens a running step live and keeps ended steps collapsed', async () => {
+		const load = vi.fn(async () => []);
+		render(StepRuns, { runs: [run('a', '2026-10-16T12:00:00.000Z'), run('b', null)], load });
+		await expect.element(page.getByText('live')).toBeVisible();
+		await expect.element(page.getByRole('button', { name: 'Hide transcript' })).toBeVisible();
+		await expect.element(page.getByRole('button', { name: 'Show transcript' })).toBeVisible();
+		expect(load).toHaveBeenCalledWith('b', 0);
+		expect(load).not.toHaveBeenCalledWith('a', 0);
+	});
+
+	it('shows an empty state for an ended step without events', async () => {
+		render(StepRuns, { runs: [run('a', '2026-10-16T12:00:00.000Z')], load: async () => [] });
+		await page.getByRole('button', { name: 'Show transcript' }).click();
+		await expect.element(page.getByText('No session events captured.')).toBeVisible();
 	});
 });
 
