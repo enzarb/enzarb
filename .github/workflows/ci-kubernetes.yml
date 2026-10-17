@@ -2,13 +2,7 @@ name: ci-kubernetes
 on:
   push:
     branches: [main]
-    paths:
-      - 'kubernetes/**'
-      - .github/workflows/ci-kubernetes.yml
   pull_request:
-    paths:
-      - 'kubernetes/**'
-      - .github/workflows/ci-kubernetes.yml
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -22,7 +16,13 @@ defaults:
   run:
     working-directory: kubernetes
 jobs:
+  changes:
+    uses: ./.github/workflows/_changes.yml
+    with:
+      component: kubernetes
   validate:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     name: render + kubeconform
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -36,6 +36,8 @@ jobs:
         run: ./hack/validate.sh
 
   ansible:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     name: ansible-lint + syntax
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -55,6 +57,8 @@ jobs:
           ansible-playbook reset.yml --syntax-check
 
   vendored-drift:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     name: vendored bases drift
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -74,6 +78,8 @@ jobs:
           git diff --exit-code -- base || { echo "::error::vendored bases drifted; run hack/refresh-vendored.sh"; exit 1; }
 
   installer-image:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     name: gvisor installer image
     runs-on: ubuntu-latest
     timeout-minutes: 20

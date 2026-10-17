@@ -2,34 +2,20 @@ name: ci-sandbox-proxy
 on:
   push:
     branches: [main]
-    paths:
-      - Cargo.toml
-      - Cargo.lock
-      - rust-toolchain.toml
-      - 'sandbox-proxy/**'
-      - 'proto/**'
-      - 'operator/**'
-      - .github/workflows/ci-sandbox-proxy.yml
-      - .github/workflows/_rust.yml
-      - .github/workflows/_docker.yml
   pull_request:
-    paths:
-      - Cargo.toml
-      - Cargo.lock
-      - rust-toolchain.toml
-      - 'sandbox-proxy/**'
-      - 'proto/**'
-      - 'operator/**'
-      - .github/workflows/ci-sandbox-proxy.yml
-      - .github/workflows/_rust.yml
-      - .github/workflows/_docker.yml
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
+  changes:
+    uses: ./.github/workflows/_changes.yml
+    with:
+      component: sandbox-proxy
   ci:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     uses: ./.github/workflows/_rust.yml
     permissions:
       contents: read

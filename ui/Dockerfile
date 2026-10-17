@@ -3,8 +3,10 @@
 FROM node:24-slim AS build
 WORKDIR /repo/ui
 # proto's TS package is built by ui's `prepare` script (npm run proto:build) during npm ci.
+# BEGIN generated:copy
 COPY proto/package.json proto/package-lock.json /repo/proto/
 COPY proto/ts /repo/proto/ts
+# END generated:copy
 COPY ui/package.json ui/package-lock.json ui/.npmrc ./
 RUN npm ci
 COPY ui/ .

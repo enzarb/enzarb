@@ -6,9 +6,9 @@
 #   scripts/monorepo/affected.sh --files-from FILE
 #
 # The rules are generated (scripts/monorepo/graph.generated.sh, from cargo metadata, package.json
-# `file:` deps and scripts/monorepo/components.json; `mise run graph:gen`). They mirror the `paths:`
-# filters of .github/workflows/ci-<component>.yml (including downstream components via path deps,
-# e.g. `proto/**` triggers ui); scripts/monorepo/test-affected.sh fails when the two drift apart.
+# `file:` deps and scripts/monorepo/components.json; `mise run graph:gen`). They drive the `changes` job of
+# .github/workflows/_changes.yml (via changes.sh) that gates ci-<component>.yml, including downstream
+# components via path deps (e.g. `proto/**` triggers ui); test-affected.sh checks the wiring.
 # Files matching no rule (docs/**, root files such as mise.toml or lefthook.yml) trigger no
 # component CI, so they print nothing; the root Cargo.toml, Cargo.lock and rust-toolchain.toml are
 # the exception (one workspace): they trigger every Rust component. `monorepo` is the

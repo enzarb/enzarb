@@ -9,23 +9,25 @@ WORKDIR /src
 FROM chef AS planner
 # Every workspace member is part of the recipe: the root workspace resolves as a whole. The recipe
 # only changes when a manifest or Cargo.lock does, so the cook layer below survives source edits.
-COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
-COPY proto/crates proto/crates
-COPY proto/vectors proto/vectors
-COPY operator/crates operator/crates
+# BEGIN generated:copy
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY connectors/bin/receiver connectors/bin/receiver
+COPY connectors/crates/connector connectors/crates/connector
+COPY connectors/crates/connector-github connectors/crates/connector-github
+COPY operator/crates/enzarb-crds operator/crates/enzarb-crds
+COPY operator/crates/operator operator/crates/operator
 COPY operator/deploy operator/deploy
-COPY connectors/crates connectors/crates
-COPY connectors/bin connectors/bin
-COPY workflows/crates workflows/crates
+COPY proto/crates/enzarb-proto proto/crates/enzarb-proto
+COPY proto/vectors proto/vectors
+COPY realtime realtime
+COPY sandbox-container sandbox-container
+COPY sandbox-proxy sandbox-proxy
+COPY updater updater
+COPY workflows/crates/engine workflows/crates/engine
+COPY workflows/crates/enzarb-workflows workflows/crates/enzarb-workflows
+COPY workflows/crates/flow workflows/crates/flow
 COPY workflows/migrations workflows/migrations
-COPY realtime/Cargo.toml realtime/Cargo.toml
-COPY realtime/src realtime/src
-COPY sandbox-container/Cargo.toml sandbox-container/Cargo.toml
-COPY sandbox-container/src sandbox-container/src
-COPY sandbox-proxy/Cargo.toml sandbox-proxy/Cargo.toml
-COPY sandbox-proxy/src sandbox-proxy/src
-COPY updater/Cargo.toml updater/Cargo.toml
-COPY updater/src updater/src
+# END generated:copy
 RUN cargo chef prepare --recipe-path recipe.json
 
 # Dependency layer (cargo-chef cook): cached by the GHA layer cache while recipe.json is unchanged.

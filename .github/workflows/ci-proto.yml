@@ -4,19 +4,7 @@ name: ci-proto
 on:
   push:
     branches: [main]
-    paths:
-      - Cargo.toml
-      - Cargo.lock
-      - rust-toolchain.toml
-      - 'proto/**'
-      - .github/workflows/ci-proto.yml
   pull_request:
-    paths:
-      - Cargo.toml
-      - Cargo.lock
-      - rust-toolchain.toml
-      - 'proto/**'
-      - .github/workflows/ci-proto.yml
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -25,7 +13,13 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 jobs:
+  changes:
+    uses: ./.github/workflows/_changes.yml
+    with:
+      component: proto
   fmt:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -40,6 +34,8 @@ jobs:
         run: scripts/monorepo/check-cargo-deps.sh
 
   clippy:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     name: clippy (${{ matrix.features }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -69,6 +65,8 @@ jobs:
         run: cargo clippy -p enzarb-proto --all-targets ${FLAGS:+$FLAGS} -- -D warnings
 
   test:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     name: test (${{ matrix.features }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -102,6 +100,8 @@ jobs:
         run: cargo test -p enzarb-proto --doc ${FLAGS:+$FLAGS}
 
   gen:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     name: ctrl.gen.ts is up to date
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -120,6 +120,8 @@ jobs:
       - run: bash .mise/tasks/proto/gen --check
 
   ts:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:

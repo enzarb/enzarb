@@ -37,7 +37,7 @@ The Rust components form one Cargo workspace at the root (`Cargo.toml`, one `Car
 - **Helm values:** never remove a values key in one release; deprecate it as an accepted, ignored key first (`docs/ci.md`, "Values compatibility"; `mise run compat` in `helm/` enforces it).
 - **Releases:** PRs squash-merge with a Conventional Commit title (`feat(ui): …`, `fix(workflows): …`). Each component releases independently with tags `<dir>/vX.Y.Z` (e.g. `ui/v0.4.1`, `helm/v0.9.0`); image names are unchanged (`ghcr.io/enzarb/enzarb-ui`, …).
 - **Dockerfiles** live in the directory of the component they build.
-- **CI** follows `docs/ci.md`: per-component path-filtered jobs, rust-cache/npm/Playwright caches, cargo-chef + GHA layer cache, docker push on main.
+- **CI** follows `docs/ci.md`: per-component jobs gated by the generated `changes` job, rust-cache/npm/Playwright caches, cargo-chef + GHA layer cache, docker push on main.
 - **Tooling comes from mise.** Workspace tools are pinned in the root `mise.toml`. A component that needs another tool adds it to its own `mise.toml` (`mise use <tool>@<version>`); no `curl | bash` or global installs.
 
 ## Conventions
