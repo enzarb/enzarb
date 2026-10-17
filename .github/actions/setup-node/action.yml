@@ -1,0 +1,22 @@
+name: setup-node
+description: >-
+  actions/setup-node at the node version pinned in the root mise.toml (the only pin site,
+  scripts/monorepo/check-tool-pins.sh), since setup-node cannot read mise.toml itself.
+inputs:
+  cache:
+    description: Package manager to cache (passed to actions/setup-node)
+    default: ""
+  cache-dependency-path:
+    description: Lockfile for the cache (passed to actions/setup-node)
+    default: ""
+runs:
+  using: composite
+  steps:
+    - id: pin
+      shell: bash
+      run: echo "version=$(sed -n 's/^node = "\(.*\)"$/\1/p' "$GITHUB_WORKSPACE/mise.toml")" >> "$GITHUB_OUTPUT"
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ steps.pin.outputs.version }}
+        cache: ${{ inputs.cache }}
+        cache-dependency-path: ${{ inputs.cache-dependency-path }}

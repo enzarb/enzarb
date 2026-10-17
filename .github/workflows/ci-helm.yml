@@ -31,7 +31,6 @@ jobs:
       - uses: jdx/mise-action@v2
         with:
           cache: true
-          working_directory: helm
       - run: pip install jsonschema pyyaml
       - run: mise run lint
       - run: mise run compat

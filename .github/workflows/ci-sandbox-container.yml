@@ -9,6 +9,7 @@ on:
       - .github/workflows/ci-sandbox-container.yml
       - .github/workflows/_rust.yml
       - .github/workflows/_docker.yml
+      - .github/actions/setup-node/**
   pull_request:
     paths:
       - 'sandbox-container/**'
@@ -17,6 +18,7 @@ on:
       - .github/workflows/ci-sandbox-container.yml
       - .github/workflows/_rust.yml
       - .github/workflows/_docker.yml
+      - .github/actions/setup-node/**
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -36,7 +38,7 @@ jobs:
     with:
       dir: sandbox-container
       cargo-args: --locked
-      node: '24'
+      node: true
       image: enzarb-sandbox
       context: .
       smoke: scripts/smoke.sh

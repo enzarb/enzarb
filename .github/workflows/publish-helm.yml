@@ -38,7 +38,6 @@ jobs:
       - uses: jdx/mise-action@v2
         with:
           cache: true
-          working_directory: helm
       - name: Package and push oci://ghcr.io/enzarb/charts/enzarb
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

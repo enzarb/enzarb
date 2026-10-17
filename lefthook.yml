@@ -41,6 +41,9 @@ pre-commit:
     cargo-deps:
       glob: "{Cargo.toml,Cargo.lock,**/Cargo.toml,**/Cargo.lock}"
       run: scripts/monorepo/check-cargo-deps.sh
+    tool-pins:
+      glob: "{mise.toml,mise.*.toml,*/mise.toml,*/Dockerfile,*/rust-toolchain.toml,kubernetes/hack/versions.env}"
+      run: scripts/monorepo/check-tool-pins.sh
     ui-lint:
       root: ui/
       glob: "*"

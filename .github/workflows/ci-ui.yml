@@ -9,6 +9,7 @@ on:
       - .github/workflows/ci-ui.yml
       - .github/workflows/_docker.yml
       - .github/actions/ui-install/**
+      - .github/actions/setup-node/**
   pull_request:
     paths:
       - 'ui/**'
@@ -17,6 +18,7 @@ on:
       - .github/workflows/ci-ui.yml
       - .github/workflows/_docker.yml
       - .github/actions/ui-install/**
+      - .github/actions/setup-node/**
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -31,9 +33,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
+      - uses: ./.github/actions/setup-node
       - uses: ./.github/actions/ui-install
       - run: npm run check
       - run: npm run lint
@@ -44,9 +44,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
+      - uses: ./.github/actions/setup-node
       - uses: ./.github/actions/ui-install
       - id: pw
         run: echo "version=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
@@ -66,9 +64,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
+      - uses: ./.github/actions/setup-node
       - uses: ./.github/actions/ui-install
       - id: pw
         run: echo "version=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
@@ -97,9 +93,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
+      - uses: ./.github/actions/setup-node
       - uses: ./.github/actions/ui-install
       - run: npm run test:unit -- --run --project server
 

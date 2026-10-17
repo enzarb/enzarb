@@ -9,12 +9,24 @@ on:
       - '.mise/tasks/**'
       - '.mise/lib/**'
       - '.github/workflows/**'
+      - mise.toml
+      - 'mise.*.toml'
+      - '*/mise.toml'
+      - '*/Dockerfile'
+      - '*/rust-toolchain.toml'
+      - kubernetes/hack/versions.env
   pull_request:
     paths:
       - 'scripts/**'
       - '.mise/tasks/**'
       - '.mise/lib/**'
       - '.github/workflows/**'
+      - mise.toml
+      - 'mise.*.toml'
+      - '*/mise.toml'
+      - '*/Dockerfile'
+      - '*/rust-toolchain.toml'
+      - kubernetes/hack/versions.env
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -30,6 +42,10 @@ jobs:
         run: scripts/monorepo/test-affected.sh
       - name: Mechanical-delta classifier
         run: bash scripts/monorepo/test-mechanical.sh
+      - name: Tool pins are only in the root mise.toml and match the Dockerfile ARGs
+        run: scripts/monorepo/check-tool-pins.sh
+      - name: Tool-pin check self-test
+        run: bash scripts/monorepo/test-tool-pins.sh
       - name: shellcheck (preinstalled on ubuntu-latest)
         run: shellcheck --exclude=SC1091 scripts/monorepo/*.sh .mise/tasks/test/pg
   actionlint:

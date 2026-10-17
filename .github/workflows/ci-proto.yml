@@ -7,10 +7,12 @@ on:
     paths:
       - 'proto/**'
       - .github/workflows/ci-proto.yml
+      - .github/actions/setup-node/**
   pull_request:
     paths:
       - 'proto/**'
       - .github/workflows/ci-proto.yml
+      - .github/actions/setup-node/**
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -124,9 +126,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup-node
         with:
-          node-version: lts/*
           cache: npm
           cache-dependency-path: proto/package-lock.json
       # `npm ci` runs `prepare`, which builds ts/ -> ts/dist with tsc.
