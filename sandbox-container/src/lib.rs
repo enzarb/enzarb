@@ -39,6 +39,7 @@ pub mod repos;
 pub mod server;
 pub mod stats;
 pub mod steps;
+pub mod workspace_prune;
 
 pub use config::{ChatMode, Config};
 pub use server::{AppState, router, serve};

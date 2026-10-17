@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use crate::docker_prune::PruneConfig;
 use crate::dockerd::DockerdConfig;
+use crate::workspace_prune::WorkspacePruneConfig;
 
 /// Runtime configuration of sandbox-init.
 #[derive(Debug, Clone)]
@@ -80,6 +81,8 @@ pub struct Config {
     pub dockerd: DockerdConfig,
     /// `ENZARB_DOCKER_PRUNE*`, `ENZARB_DOCKER_BIN`: automatic Docker pruning (ADR-0016).
     pub docker_prune: PruneConfig,
+    /// `ENZARB_WORKSPACE_PRUNE*`: build caches in task workspaces are removed when space runs low.
+    pub workspace_prune: WorkspacePruneConfig,
 }
 
 /// A chat permission mode sandbox-init lets a chat be in.
@@ -142,6 +145,7 @@ impl Default for Config {
             cgroup_root: "/sys/fs/cgroup".into(),
             dockerd: DockerdConfig::default(),
             docker_prune: PruneConfig::default(),
+            workspace_prune: WorkspacePruneConfig::default(),
         }
     }
 }
@@ -286,6 +290,7 @@ impl Config {
         }
         c.dockerd = DockerdConfig::from_lookup(&get)?;
         c.docker_prune = PruneConfig::from_lookup(&get, &c.dockerd)?;
+        c.workspace_prune = WorkspacePruneConfig::from_lookup(&get)?;
         Ok(c)
     }
 }

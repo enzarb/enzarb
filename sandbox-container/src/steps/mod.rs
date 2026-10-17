@@ -597,6 +597,30 @@ impl StepManager {
         }
     }
 
+    /// Runs `f` with the task ids of running steps while no step can start or end (the run
+    /// registry is locked). `None` when a running step's task is not known yet.
+    pub fn with_busy_tasks<R>(
+        &self,
+        f: impl FnOnce(Option<&std::collections::HashSet<String>>) -> R,
+    ) -> R {
+        let runs = self.inner.runs.lock().unwrap();
+        let mut busy = std::collections::HashSet::new();
+        let mut known = true;
+        for r in runs.values() {
+            let g = r.inner.lock().unwrap();
+            if g.phase != StepPhase::Running {
+                continue;
+            }
+            match g.start.as_deref().or(g.stored.as_ref()) {
+                Some(s) => {
+                    busy.insert(s.task_id.clone());
+                }
+                None => known = false,
+            }
+        }
+        f(known.then_some(&busy))
+    }
+
     /// CTRL `step_resume`.
     pub fn resume(&self, session: &Session, run_id: &str) {
         let Some(run) = self.get(run_id) else {
