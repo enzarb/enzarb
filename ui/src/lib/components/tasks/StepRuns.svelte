@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import Button from '#lib/components/form/Button.svelte';
 	import { formatDuration } from '#lib/duration.ts';
 	import type { SessionEvent, StepRun } from '#lib/tasks.ts';
@@ -14,7 +15,8 @@
 		load: (runId: string, afterSeq: number) => Promise<SessionEvent[]>;
 	} = $props();
 
-	let open = $state<string | null>(null);
+	// A running step opens its transcript (tailing live) so progress shows without a click.
+	let open = $state<string | null>(untrack(() => runs.find((r) => !r.endedAt)?.runId ?? null));
 </script>
 
 {#each runs as r (r.runId)}
@@ -59,7 +61,7 @@
 			variant="ghost"
 			aria-expanded={open === r.runId}
 			onclick={() => (open = open === r.runId ? null : r.runId)}
-			>{open === r.runId ? 'Hide session' : 'Inspect session'}</Button
+			>{open === r.runId ? 'Hide transcript' : 'Show transcript'}</Button
 		>
 		{#if open === r.runId}
 			<SessionInspector load={(after) => load(r.runId, after)} live={!r.endedAt} />

@@ -23,7 +23,7 @@ An enzarb deployment that works on its own repositories:
 ## Deferred (post-MVP)
 - `fresh` run mode and warm pools. MVP is `worktree` only; the CRD field exists.
 - Kubernetes API access from sandboxes: none for now; when added, only to other namespaces (ADR-0013).
-- Transcript object storage. MVP keeps transcripts on the sandbox PVC and only a summary in `jobs.output`.
+- Transcript object storage. Each step's transcript is stored in Postgres (`engine.session_events`, ADR-0022) and shown on the task page; `jobs.output` keeps only the summary.
 - `app_api.identity_v` (enzarb user ↔ GitHub identity) for trigger authorization. MVP authorizes with `Connector::check_permission` (write access).
 - Connectors other than GitHub, proxy HA/reconnect, gVisor/Kata (the RuntimeClass is configurable, unset on kind), observability beyond structured logs.
 
