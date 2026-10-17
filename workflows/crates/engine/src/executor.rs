@@ -663,3 +663,27 @@ async fn store_session_events(pool: sqlx::PgPool, mut rx: mpsc::UnboundedReceive
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn small_payloads_pass_through() {
+        let p = json!({"text": "hi"});
+        assert_eq!(cap_payload(p.clone()), (p, false));
+    }
+
+    #[test]
+    fn oversized_payloads_keep_head_and_tail() {
+        let text = format!("start{}end", "é".repeat(MAX_PAYLOAD));
+        let (capped, cut) = cap_payload(json!({ "text": text }));
+        assert!(cut);
+        let head = capped["head"].as_str().unwrap();
+        let tail = capped["tail"].as_str().unwrap();
+        assert!(head.contains("start"));
+        assert!(tail.ends_with("end\"}"));
+        assert!(head.len() + tail.len() < MAX_PAYLOAD);
+        assert!(capped["bytes"].as_u64().unwrap() as usize > MAX_PAYLOAD);
+    }
+}
