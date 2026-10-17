@@ -1,12 +1,15 @@
 import { redirect } from '@sveltejs/kit';
 import type { AboutComponent, AboutRelease } from '#lib/about-types.ts';
 import { getConfig } from '#lib/server/config.ts';
-import { getInstallationToken, invalidateInstallationToken } from '#lib/server/github-app-token.ts';
+import { invalidateToken, token as appToken } from '#lib/server/github-app.ts';
 import { renderMarkdown } from '#lib/server/markdown.ts';
-import { cachedReleases } from '#lib/server/releases.ts';
+import { RELEASES_REPO, cachedReleases } from '#lib/server/releases.ts';
 import { fetchChartRollout } from '#lib/server/updater-status.ts';
 import { COMPONENTS, displayVersion, componentDirUrl } from '#lib/versions.ts';
 import type { PageServerLoad } from './$types';
+
+// Releases are public: the token exists for rate limits, not access.
+const RELEASES_PERMS = { contents: 'read' } as const;
 
 export const load: PageServerLoad = async ({ locals }) => {
 	if (!locals.user) redirect(303, '/login');
@@ -20,8 +23,11 @@ export const load: PageServerLoad = async ({ locals }) => {
 		.map((name) => ({ name, label: name, dir: null, repoUrl: null }));
 
 	// Server-side only: the token is never put in the returned page data.
-	const token = (await getInstallationToken().catch(() => null)) ?? undefined;
-	const releaseOpts = { token, onTokenRejected: invalidateInstallationToken };
+	const token = (await appToken(RELEASES_REPO, RELEASES_PERMS).catch(() => null)) ?? undefined;
+	const releaseOpts = {
+		token,
+		onTokenRejected: () => invalidateToken(RELEASES_REPO, RELEASES_PERMS)
+	};
 
 	// Started now so it overlaps the GitHub release fetches; null when the updater is unavailable.
 	const chartRolloutPromise = fetchChartRollout();

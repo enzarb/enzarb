@@ -80,6 +80,10 @@ impl Env {
     }
 
     async fn server(&self) -> SocketAddr {
+        self.server_with_steps().await.0
+    }
+
+    async fn server_with_steps(&self) -> (SocketAddr, StepManager) {
         let config = Config {
             listen: ([127, 0, 0, 1], 0).into(),
             auth_token_file: self.dir.path().join("token"),
@@ -96,9 +100,9 @@ impl Env {
         steps.recover();
         let listener = tokio::net::TcpListener::bind(config.listen).await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let state = AppState::new(config, reaper).with_steps(steps);
+        let state = AppState::new(config, reaper).with_steps(steps.clone());
         tokio::spawn(serve(listener, Arc::new(state)));
-        addr
+        (addr, steps)
     }
 
     fn workspace(&self, branch: &str) -> StepWorkspace {
@@ -563,4 +567,111 @@ async fn the_starting_session_receives_events_and_the_result() {
         !events.is_empty(),
         "session events reach the starting session"
     );
+}
+
+/// A sandbox shutdown (SIGTERM, pod roll) interrupts a running agent step without reporting a
+/// result; after the restart the step is `interrupted`, and `step_start` resumes the session.
+#[tokio::test]
+async fn shutdown_interrupts_a_running_step_and_it_resumes() {
+    let env = Env::new();
+    let (a, steps_a) = env.server_with_steps().await;
+    let (s, mut ev) = connect(a).await;
+    start(
+        &s,
+        &mut ev,
+        step("ag-sd", agent_exec(&env, "wait", None), vec![]),
+    )
+    .await;
+    let (before, _) = collect(&mut ev, "ag-sd", |e| e.kind == "assistant").await;
+
+    steps_a.interrupt_all(Duration::from_secs(5)).await;
+    // No result reaches the engine's session.
+    let late = timeout(Duration::from_millis(800), async {
+        loop {
+            if let Event::Ctrl(Ctrl::StepFinished(f)) = ev.next().await.unwrap()
+                && f.run_id == "ag-sd"
+            {
+                return f;
+            }
+        }
+    })
+    .await;
+    assert!(late.is_err(), "no step_finished on shutdown: {late:?}");
+    assert!(!env.ws.join(".enzarb/steps/ag-sd/finished.json").exists());
+
+    // Restart on the same workspace: interrupted, and step_start resumes it.
+    let b = env.server().await;
+    let (s2, mut ev2) = connect(b).await;
+    let acc = start(
+        &s2,
+        &mut ev2,
+        step("ag-sd", agent_exec(&env, "wait", None), vec![]),
+    )
+    .await;
+    assert_eq!(acc, (StepPhase::Running, true));
+    let (evs, fin) = collect(&mut ev2, "ag-sd", |_| false).await;
+    assert_eq!(fin.unwrap().exit, "success");
+    assert!(evs.len() > before.len());
+    assert_eq!(texts(&evs[before.len()..], "user"), CONTINUE_PROMPT);
+}
+
+/// Step outputs under `.enzarb/out/` are collected but never committed, and a later step on the
+/// same task workspace checks out cleanly (no "local changes would be overwritten").
+#[tokio::test]
+async fn step_outputs_are_not_committed_and_the_next_step_checks_out() {
+    let env = Env::new();
+    let addr = env.server().await;
+    let (s, mut ev) = connect(addr).await;
+    let mut st = step(
+        "out-1",
+        StepExec::Command {
+            run: "mkdir -p .enzarb/out && echo plan > .enzarb/out/plan.md && echo code > code.txt"
+                .into(),
+            tools: vec![],
+        },
+        vec![env.workspace("feature/out")],
+    );
+    st.outputs = [(
+        "plan".to_string(),
+        StepOutput {
+            file: ".enzarb/out/plan.md".into(),
+            format: None,
+            optional: false,
+        },
+    )]
+    .into();
+    start(&s, &mut ev, st).await;
+    let (_, fin) = collect(&mut ev, "out-1", |_| false).await;
+    let fin = fin.unwrap();
+    assert_eq!(fin.exit, "success", "{fin:?}");
+    assert_eq!(fin.outputs["plan"], "plan\n");
+    let files = git(
+        &env.bare,
+        &["ls-tree", "-r", "--name-only", "refs/heads/feature/out"],
+    );
+    assert!(files.contains("code.txt"), "{files}");
+    assert!(
+        !files.contains(".enzarb/out"),
+        "outputs were committed: {files}"
+    );
+
+    // A second step of the same task on the same branch: the stale output must not block it.
+    let st2 = step(
+        "out-2",
+        StepExec::Command {
+            run:
+                "mkdir -p .enzarb/out && echo plan2 > .enzarb/out/plan.md && echo more >> code.txt"
+                    .into(),
+            tools: vec![],
+        },
+        vec![env.workspace("feature/out")],
+    );
+    start(&s, &mut ev, st2).await;
+    let (_, fin2) = collect(&mut ev, "out-2", |_| false).await;
+    assert_eq!(fin2.unwrap().exit, "success");
+    let files = git(
+        &env.bare,
+        &["ls-tree", "-r", "--name-only", "refs/heads/feature/out"],
+    );
+    assert!(!files.contains(".enzarb/out"), "{files}");
 }

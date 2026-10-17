@@ -1,7 +1,8 @@
 import { createPrivateKey } from 'node:crypto';
 import { SignJWT } from 'jose';
+import { getConfig } from './config.ts';
 
-export const GITHUB_API = 'https://api.github.com';
+const GITHUB_API = 'https://api.github.com';
 const JWT_BACKDATE_S = 60;
 const JWT_TTL_S = 9 * 60;
 const TIMEOUT_MS = 10_000;
@@ -21,14 +22,36 @@ export async function signAppJwt(appId: string, privateKey: string, now: number)
 		.sign(createPrivateKey(privateKey));
 }
 
-export function githubHeaders(token: string): Record<string, string> {
+export function githubHeaders(token?: string): Record<string, string> {
 	return {
 		Accept: 'application/vnd.github+json',
 		'Content-Type': 'application/json',
 		'User-Agent': 'enzarb-ui',
 		'X-GitHub-Api-Version': '2022-11-28',
-		Authorization: `Bearer ${token}`
+		...(token ? { Authorization: `Bearer ${token}` } : {})
 	};
+}
+
+export type GithubFetchInit = RequestInit & { token?: string; fetch?: typeof fetch };
+
+/**
+ * `fetch` against the GitHub API, the one place that knows its base URL. `path` starts with `/`,
+ * or is an absolute URL on the API (pagination links); anything else throws so a token is never
+ * sent elsewhere. Sets the standard headers (`init.headers` override them) and `Authorization`
+ * when `token` is given. Timeouts, redirects and error handling stay with the caller.
+ */
+export function githubFetch(
+	path: string,
+	{ token, fetch: doFetch = fetch, headers, ...init }: GithubFetchInit = {}
+): Promise<Response> {
+	let url: string;
+	if (path.startsWith('/')) url = `${GITHUB_API}${path}`;
+	else if (path.startsWith(`${GITHUB_API}/`)) url = path;
+	else throw new Error('unexpected GitHub URL');
+	return doFetch(url, {
+		...init,
+		headers: { ...githubHeaders(token), ...(headers as Record<string, string> | undefined) }
+	});
 }
 
 export interface RepoTokenOptions {
@@ -72,10 +95,11 @@ export function createRepoTokenSource({
 		const [owner, repo] = fullName.split('/');
 		try {
 			const jwt = await signAppJwt(appId, privateKey, now());
-			const call = (url: string, init: RequestInit) =>
-				doFetch(url, {
+			const call = (path: string, init: RequestInit) =>
+				githubFetch(path, {
 					...init,
-					headers: githubHeaders(jwt),
+					token: jwt,
+					fetch: doFetch,
 					redirect: 'error',
 					signal: AbortSignal.timeout(TIMEOUT_MS)
 				});
@@ -83,7 +107,7 @@ export function createRepoTokenSource({
 			let inst = installations.get(instKey);
 			if (!inst || inst.until <= now()) {
 				const res = await call(
-					`${GITHUB_API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/installation`,
+					`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/installation`,
 					{ method: 'GET' }
 				);
 				if (!res.ok) return null;
@@ -92,7 +116,7 @@ export function createRepoTokenSource({
 				inst = { id, until: now() + INSTALLATION_TTL_MS };
 				installations.set(instKey, inst);
 			}
-			const res = await call(`${GITHUB_API}/app/installations/${inst.id}/access_tokens`, {
+			const res = await call(`/app/installations/${inst.id}/access_tokens`, {
 				method: 'POST',
 				body: JSON.stringify({ repositories: [repo], permissions })
 			});
@@ -132,4 +156,27 @@ export function createRepoTokenSource({
 			tokens.delete(cacheKey(fullName, permissions));
 		}
 	};
+}
+
+let shared: ReturnType<typeof createRepoTokenSource> | undefined;
+
+const source = () => {
+	if (!shared) {
+		const { githubAppId, githubAppPrivateKey } = getConfig();
+		shared = createRepoTokenSource({ appId: githubAppId, privateKey: githubAppPrivateKey });
+	}
+	return shared;
+};
+
+/** The process's installation token for `owner/repo` with `perms`, or `null`. Never throws. */
+export const token = (repo: string, perms: RepoPermissions): Promise<string | null> =>
+	source().get(repo, perms);
+
+/** Forget the process's cached token after GitHub rejected it. */
+export const invalidateToken = (repo: string, perms: RepoPermissions): void =>
+	source().invalidate(repo, perms);
+
+/** Test hook: drop the singleton (and its caches) so config is read again. */
+export function resetTokenSingleton(): void {
+	shared = undefined;
 }

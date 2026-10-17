@@ -5,9 +5,10 @@ import {
 	type RepoResult
 } from '#lib/repo-names.ts';
 
+import { githubFetch } from './github-app.ts';
+
 export { sameOwner, validateDescription, validateRepoName };
 
-const API = 'https://api.github.com';
 export const CREATE_TIMEOUT_MS = 15_000;
 
 type FetchFn = typeof fetch;
@@ -42,16 +43,6 @@ export interface CreateRepositoryInput {
 	description: string;
 }
 
-function headers(token: string): Record<string, string> {
-	return {
-		Authorization: `Bearer ${token}`,
-		Accept: 'application/vnd.github+json',
-		'Content-Type': 'application/json',
-		'X-GitHub-Api-Version': '2022-11-28',
-		'User-Agent': 'enzarb-ui'
-	};
-}
-
 async function githubMessage(res: Response): Promise<string> {
 	try {
 		const body = (await res.json()) as {
@@ -76,9 +67,10 @@ async function send(
 	timeoutMs: number
 ): Promise<Response> {
 	try {
-		return await fetchFn(`${API}${path}`, {
+		return await githubFetch(path, {
 			method,
-			headers: headers(token),
+			token,
+			fetch: fetchFn,
 			body: body === undefined ? undefined : JSON.stringify(body),
 			redirect: 'error',
 			signal: AbortSignal.timeout(timeoutMs)
@@ -194,8 +186,9 @@ export async function installationCoversAll(
 ): Promise<boolean | null> {
 	try {
 		for (let page = 1; page <= 10; page++) {
-			const res = await fetchFn(`${API}/user/installations?per_page=100&page=${page}`, {
-				headers: headers(token),
+			const res = await githubFetch(`/user/installations?per_page=100&page=${page}`, {
+				token,
+				fetch: fetchFn,
 				redirect: 'error',
 				signal: AbortSignal.timeout(timeoutMs)
 			});

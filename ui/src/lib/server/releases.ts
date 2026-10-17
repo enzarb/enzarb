@@ -1,3 +1,5 @@
+import { githubFetch } from './github-app.ts';
+
 export const RELEASE_CACHE_TTL_MS = 10 * 60_000;
 export const RELEASE_FETCH_TIMEOUT_MS = 5_000;
 
@@ -67,13 +69,9 @@ export async function fetchReleases({
 	onTokenRejected
 }: FetchReleasesOptions = {}): Promise<Release[]> {
 	const request = (bearer?: string) => {
-		const headers: Record<string, string> = {
-			Accept: 'application/vnd.github+json',
-			'User-Agent': 'enzarb-ui'
-		};
-		if (bearer) headers.Authorization = `Bearer ${bearer}`;
-		return doFetch(`https://api.github.com/repos/${RELEASES_REPO}/releases?per_page=100`, {
-			headers,
+		return githubFetch(`/repos/${RELEASES_REPO}/releases?per_page=100`, {
+			token: bearer,
+			fetch: doFetch,
 			signal: signal ?? AbortSignal.timeout(RELEASE_FETCH_TIMEOUT_MS)
 		});
 	};

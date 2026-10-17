@@ -162,3 +162,21 @@ describe('installationCoversAll', () => {
 		expect(await installationCoversAll(TOKEN, 5, stub(reply(500)))).toBeNull();
 	});
 });
+
+describe('GitHub API requests', () => {
+	it('send the API URL, Bearer token and redirect: error on writes and reads', async () => {
+		const w = stub(reply(201, created));
+		await createRepository(TOKEN, input, w as unknown as typeof fetch);
+		const r = stub(reply(200, { installations: [{ id: 5, repository_selection: 'all' }] }));
+		expect(await installationCoversAll(TOKEN, 5, r as unknown as typeof fetch)).toBe(true);
+		for (const f of [w, r]) {
+			const { url, init } = call(f);
+			expect(url).toMatch(/^https:\/\/api\.github\.com\//);
+			expect(init.redirect).toBe('error');
+			expect(init.headers).toMatchObject({
+				Authorization: `Bearer ${TOKEN}`,
+				Accept: 'application/vnd.github+json'
+			});
+		}
+	});
+});

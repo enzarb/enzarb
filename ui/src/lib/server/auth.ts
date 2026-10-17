@@ -3,6 +3,7 @@ import type { Cookies } from '@sveltejs/kit';
 import { GitHub } from 'arctic';
 import { getConfig } from './config.ts';
 import type { Sql } from './db.ts';
+import { githubFetch } from './github-app.ts';
 import { REALTIME_COOKIE } from './realtime-jwt.ts';
 import { OAUTH_RETURN_COOKIE } from './return-path.ts';
 
@@ -171,9 +172,7 @@ export function githubClient(): GitHub {
 
 /** Fetches the authenticated user's profile with an OAuth access token. */
 export async function fetchGitHubProfile(accessToken: string): Promise<GitHubProfile> {
-	const res = await fetch('https://api.github.com/user', {
-		headers: { Authorization: `Bearer ${accessToken}`, 'User-Agent': 'enzarb-ui' }
-	});
+	const res = await githubFetch('/user', { token: accessToken });
 	if (!res.ok) throw new Error(`GitHub /user returned ${res.status}`);
 	const u = (await res.json()) as {
 		id: number;
