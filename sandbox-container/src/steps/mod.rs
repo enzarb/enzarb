@@ -441,7 +441,12 @@ impl StepManager {
                     let _ = session.accept_step(&id, phase, true);
                     return;
                 }
-                // The engine's resume after a restart: same run, fresh secrets.
+                // The engine's resume after a restart: same run, fresh secrets. Marked running
+                // under the registry lock, so the workspace pruner sees it as busy.
+                {
+                    let _runs = self.inner.runs.lock().unwrap();
+                    run.inner.lock().unwrap().phase = StepPhase::Running;
+                }
                 let _ = session.accept_step(&id, StepPhase::Running, true);
                 self.launch(run, Arc::new(start), true);
                 return;
@@ -453,7 +458,9 @@ impl StepManager {
                 let run = Arc::new(Run::new(&id, dir));
                 write_json(&run.dir.join("start.json"), &blank(&start));
                 {
-                    let g = run.inner.lock().unwrap();
+                    // Known from registration on, so the workspace pruner sees the task as busy.
+                    let mut g = run.inner.lock().unwrap();
+                    g.stored = Some(blank(&start));
                     run.persist(&g);
                 }
                 self.inner
@@ -595,6 +602,24 @@ impl StepManager {
         {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
+
+    /// Runs `f` with the task ids of running steps while no step can start or end (the run
+    /// registry is locked). Runs without a task (chat sessions reported through the sink)
+    /// do not count; a new step's task is known from its registration on.
+    pub fn with_busy_tasks<R>(&self, f: impl FnOnce(&std::collections::HashSet<String>) -> R) -> R {
+        let runs = self.inner.runs.lock().unwrap();
+        let mut busy = std::collections::HashSet::new();
+        for r in runs.values() {
+            let g = r.inner.lock().unwrap();
+            if g.phase != StepPhase::Running {
+                continue;
+            }
+            if let Some(s) = g.start.as_deref().or(g.stored.as_ref()) {
+                busy.insert(s.task_id.clone());
+            }
+        }
+        f(&busy)
     }
 
     /// CTRL `step_resume`.
