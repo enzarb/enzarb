@@ -1,53 +1,68 @@
-# Plan: live repository list (#227)
-
 ## Summary
-Replace the sign-in snapshot (`app.user_repositories`) with a live list: the repository picker reads from GitHub when it opens or when **Refresh** is clicked, and write access is re-checked live when a repository is added. This is option 1 from the issue. No user token is stored.
-
-Commit `a4a5949` on `origin/fix/live-repo-list` already implements most of this. I could only read it from the local object store (`git fetch` failed here with no GitHub credentials), so it may be slightly behind the remote. I have not run it. It is not on `main`, and I can't tell whether a PR exists for it. The plan is to rebase that commit onto current `main`, close the gaps below, and verify. I would not rewrite it.
+Make Rust the single source of truth for the `Ctrl` frame set. (1) Generate `proto/ts/src/ctrl.gen.ts` (types, the list of `type` tags, and a table of secret field paths) from `enzarb-proto`, with a CI staleness check. (2) Give `Ctrl` `tag()` and `allowed_from(ClientKind)` from one exhaustive table in `enzarb-proto`, and use them in `sandbox-proxy/src/guard.rs` and the session core. (3) Replace the `credential_captured` byte scan with a minimal `{type}` serde decode. Wire format does not change; the JSON vectors are the guard. One PR: proto → sandbox-proxy → ui (per CLAUDE.md order).
 
 ## Approach
-- **Live list.** The branch reads the repositories every App installation can access (installation token from `github-app.ts`). It keeps the ones where the user has `write`, `maintain` or `admin`. This is done in a new `lib/server/repo-access.ts` plus a rewritten `lib/server/user-repositories.ts`.
-- **Display cache.** The list is cached per user for about 60 s, for display only. Refresh bypasses the cache. Authorization never reads it. This keeps the permission-check cost (one GitHub call per repository) down while the picker is open.
-- **Live check at add time.** `createProjects`, `setRepositories` and `startCreateRepo` call `getRepositoryAccess().check(login, key)` instead of reading a snapshot. Revoked access is refused immediately. There is no age limit any more.
-- **Snapshot table.** Migration `0008_user_repositories_deprecated.sql` marks it deprecated. It is not dropped, because the old UI may still be running during a rolling deploy (`app_api`/`app` changes must be additive per CLAUDE.md). The table is no longer read or written. A follow-up migration drops it later.
-- **Rejected alternatives.** Option 2 (store the refresh token) means more secret handling, plus expiry and revocation. Option 3 (OAuth round-trip on Refresh) adds a redirect on every refresh.
+**Direction table (proto).**
+- Add `strum` (`IntoStaticStr`, or `AsRefStr`) on `Ctrl` for `tag() -> &'static str`. It must follow `rename_all = "snake_case"`: `#[strum(serialize_all = "snake_case")]`. A unit test checks `tag()` equals the serialized `type` for every vector, so strum and serde cannot drift.
+- Add `Ctrl::allowed_from(&self, ClientKind) -> bool`. It is a single exhaustive `match` with no `_` arm, so a new variant does not compile until it is classified. Each arm names the allowed senders. The set of senders for a variant is: UI, Executor, Sandbox (server). I'll first check what `ClientKind` has (`ctrl.rs:12`) and whether "server → client" frames need a separate `Direction` enum. If so, the table is `fn direction(&self) -> Direction { ClientToServer(&'static [ClientKind]) | ServerToClient }`, and `allowed_from(kind)` is derived from it.
+- Today's rules: UI may send `open`, `resize`, `error`, `credential_status`, `credential_clear`. `step_*` requests are executor-only (ADR-0022). Replies and sandbox-originated frames are server → client only. `hello` is the handshake only, so the guard denies it after the handshake.
+- Replace `ctrl_name` in `session/core.rs:~700` with `tag()`. Fix the direction comment on `Event::Ctrl` (`core.rs:~84`) to point at the table. Add a test that the documented server-side and client-side event sets match the table.
+
+**Guard (sandbox-proxy).**
+- `ctrl_allowed` becomes `if !ctrl.allowed_from(ClientKind::Ui) { Err(ctrl.tag()) }`. Default-deny comes from the table.
+- Delete `is_captured_type`. The fallback at `guard.rs:~247` decodes `#[derive(Deserialize)] struct TypeOnly<'a>{ #[serde(rename="type")] ty: &'a str }` from the payload and compares it with `"credential_captured"`.
+- Behaviour change to flag: the byte scan also matched a captured frame that is not valid JSON or has a mangled `type`. The serde decode drops only payloads that parse as an object with that `type`. A payload that fails full `Ctrl` decode but has a valid `type` string is still dropped, which is the case the comment cares about (a malformed `token` field). Garbage that is not JSON is relayed as it is today for non-captured garbage. I'll check this against the existing guard tests and add cases for malformed token and non-JSON. If the maintainers prefer fail-closed, drop any CTRL frame from the sandbox that fails to decode. That is stricter, and I'd keep it only if no vector or test needs a pass-through.
+
+**TS generation (tool choice).**
+- ts-rs derives TS types but has no notion of "secret fields". schemars can carry a marker: `Secret` implements `JsonSchema` with a custom keyword (`"x-secret": true`), and the paths can be found by walking the schema. Neither tool alone does both well, and a full JSON-Schema→TS emitter is more code to own than a small secret walker.
+- Decision: **ts-rs for types, schemars for the secret table.** Both are derived behind a new optional `codegen` feature of `enzarb-proto`, so runtime consumers (`sandbox-proxy`, `workflows`, `sandbox-container`) never compile them. `schemars` 1 is already in the workspace.
+- `Secret` has a manual `TS` impl that renders as `SecretLike`, the existing type in `secret.ts`.
+- The generator is an example, `crates/enzarb-proto/examples/gen_ts.rs`, run as `cargo run -p enzarb-proto --features codegen --example gen_ts`. It writes `ts/src/ctrl.gen.ts` containing:
+  - the `Ctrl` union and the payload types it uses (`StepStart`, `StepFinished`, `SessionEvent`, `SandboxStats`, `StepPhase`, `CredentialKind`, …);
+  - `CTRL_TYPES` (from the schema's `oneOf` tags), replacing `TYPES`;
+  - `SECRET_PATHS: Record<string, string[][]>`, with `*` for map values and array items, e.g. `step_start: [["workspaces","*","token"],["env","*"],["files","*"],["github_token"]]`, `open: [["claude_token"]]`, `credential_captured: [["token"]]`.
+- The file header says "generated, do not edit".
+- Alternatives rejected: schemars-only (needs our own TS emitter); ts-rs-only with a hand secret list (that is the duplication we are removing); a bare regex over `Secret` fields (brittle).
+
+**Hand-written TS.**
+- `ctrl.ts` shrinks to what is not generated: `UnknownCtrlType`, `asCtrl`, `parseCtrl`, and the `Secret` wrapping. `asCtrl` walks `SECRET_PATHS[t]` generically, replacing the special-cased `wrapStepStart` and the `credential_captured`/`open` branch. It re-exports the generated types, so the `index.ts` exports and ui imports keep their names.
+- `session.ts` stays hand-written and is covered by the vectors and `session.test.ts`.
+- Any shape difference between the generated types and today's hand types (optional `?` vs `| null`, intersection `& StepStart` vs inlined fields, `bigint` for `u64`) is handled with ts-rs attributes (`#[ts(optional)]`, `#[ts(type = "number")]`) so the public type stays compatible. If something cannot be matched exactly, I'll list it in the PR and let the `ui` `npm run check` decide.
+
+**CI staleness.**
+- Add `mise run proto:gen` (`.mise/tasks/proto/gen`), which runs the generator, with a `--check` mode that regenerates and `git diff --exit-code`s `ctrl.gen.ts`.
+- Add a step to the proto job in `.github/workflows/ci-proto.yml`. Update the lefthook pre-push entry and `docs/ci.md`, and `proto/README.md` / `proto/CLAUDE.md` ("adding a Ctrl variant").
+- Check whether `scripts/monorepo/affected.sh` needs a change. It should not, since no `paths:` filter changes.
 
 ## Changes
-1. Rebase `a4a5949` onto `main`. Expect conflicts in the `ui/` files it touches: `+layout.svelte`, `settings/+page.svelte`, `projects/[name]/settings/+page.svelte`, and the fake-project-remote fixture. `main` has moved on with the workflow engine rewrite (#229) and dependency bumps. Check the migration number is still free after the rebase.
-2. **Gap: "App isn't installed on a repository".** The branch only lists repositories the App can reach, so a repository the user can write to but the App can't see is simply absent. The picker needs to say so.
-   - **Mechanism (to confirm with the maintainer).** GitHub gives no direct way to list "repos I can write to that lack the App". The approach below only finds an unreachable repository once the user names it, so it covers repositories created through enzarb and a typed or pasted `owner/name`:
-     - when a repository is absent or `check()` returns "no installation", show "enzarb GitHub App is not installed on `<owner>/<repo>`" with a link to the installation settings;
-     - for an org: `https://github.com/organizations/<org>/settings/installations`;
-     - for a user: `https://github.com/settings/installations`;
-     - or the App's install URL, which `InstallBanner` already uses.
-   - Add a distinct result code (for example `app-not-installed`) in `repo-access.ts` and surface it in `RepositoriesForm.svelte` and `NewProjectForm.svelte`.
-   - Check what `GitHubInstallations.svelte` already shows and reuse it.
-3. Pagination and multiple installations in the list call. Make sure `GET /installation/repositories` follows paging (`per_page=100`, all pages), covers every installation, and runs the permission checks with bounded concurrency.
-4. Failures. A GitHub failure must show "could not read your repositories, use Refresh" (already in `projects.remote.ts`) and must never fall back to a stale allow-list. If the App is not configured, `createProjects` returns `unavailable`.
-5. Leftover references. `grep` for `user_repositories`, `syncUserRepositories` and `getUserRepositorySnapshot`. Nothing should read or write the table, and the login callback should keep not storing the user token.
-6. Docs: `docs/contracts.md` and `docs/oldie.md` (already edited on the branch). Re-read them after the rebase. Mention the 60 s display cache and the live check.
+- `proto/Cargo.toml`, `proto/crates/enzarb-proto/Cargo.toml`: add `strum` (and `strum_macros`, if needed); optional `ts-rs`/`schemars` under feature `codegen`.
+- `proto/crates/enzarb-proto/src/ctrl.rs`: derive `strum`; `tag()`, `allowed_from()`, the direction table; `Secret` `TS` and `JsonSchema` impls and derives behind `codegen`.
+- `proto/crates/enzarb-proto/src/step.rs` (and `ctrl.rs` types it uses): `cfg_attr(feature = "codegen", derive(TS, JsonSchema))`.
+- `proto/crates/enzarb-proto/examples/gen_ts.rs`: the generator.
+- `proto/crates/enzarb-proto/src/session/core.rs`: use `tag()`; fix the direction comment.
+- `proto/ts/src/ctrl.gen.ts` (new, committed), `proto/ts/src/ctrl.ts`, `proto/ts/src/index.ts`.
+- `sandbox-proxy/src/guard.rs` (+ its tests).
+- `.mise/tasks/proto/gen`, `.github/workflows/ci-proto.yml`, `lefthook.yml` / `scripts/monorepo/pre-push.sh` if needed, `docs/ci.md`, `proto/README.md`, `proto/CLAUDE.md`.
+- `ui/`: only fixes needed if type-checking against the regenerated package finds a difference. The `ui` lockfile should not change.
 
 ## Tests
-- **Branch specs.** Rebase and fix these: `user-repositories.spec.ts`, `project-onboarding.spec.ts`, `projects.remote.spec.ts`, `create-repo-intent.spec.ts`, `callback.spec.ts`, `settings/page.server.spec.ts`, `RefreshRepositoriesButton`, `InstallBanner`, `GitHubInstallations`, `NewProjectForm`, `RepositoriesForm`, `migrate.spec.ts`, `auth.spec.ts`.
-- **New.**
-  - Paged `/installation/repositories` across several installations.
-  - Write, maintain and admin are kept; read and triage are dropped.
-  - A failed permission check for one repository does not hide the rest.
-  - The cache is bypassed by Refresh.
-  - Revoked access is refused at add time even while the cache is warm.
-  - The "App not installed on `<repo>`" message and link, for both a user and an org owner.
-- **Checks.** In `ui/`: `npm run check && npm run lint && npm test`. Also run the Playwright e2e suite (stubs in `ui/e2e/stubs/repo-access.ts`) if the environment allows. The branch changed `ui/e2e/serve.ts`, `ui/e2e/constants.ts` and `ui/vite.e2e.config.ts`, so check they still work after the rebase.
+- proto (Rust): `tag()` matches the serde tag for all vectors; the direction table is checked against the vectors (e.g. each variant's `allowed_from` for each `ClientKind`, with the UI set pinned to the 5 current variants); existing `vectors.rs` and session tests unchanged.
+- proto (TS): `vectors.test.ts` keeps passing. Add a test that `CTRL_TYPES` equals the vector tag set and that `SECRET_PATHS`-driven wrapping yields `Secret` for every secret in the vectors (`open_claude_token`, `credential_captured_token`, and the `step_start` fields).
+- sandbox-proxy: existing guard tests; add malformed/non-JSON `credential_captured` cases and a UI-allowed table test.
+- Staleness: `mise run proto:gen -- --check` on a clean tree passes and fails after a deliberate Rust edit.
+- Checks to run: `proto/`: `cargo test`, `cargo test --features codegen`, `npm test`, `npm run check`; `sandbox-proxy/`: `cargo clippy --all-targets && cargo test`; `ui/`: `npm run check && npm run lint && npm test`. Also `workflows/` and `sandbox-container/`, because they depend on proto: `cargo clippy --all-targets && cargo test`.
 
 ## Risks and open questions
-- **Rate limits.** One permission call per repository on each uncached list. The 60 s cache and bounded concurrency reduce this. An account with hundreds of repositories may still be slow; consider a cap or progressive loading if it shows up.
-- **Not-installed message.** As described in item 2, the message can only appear for a repository the user names or just created. Is that enough for the "Done when" item?
-- **Cache is per process.** Another UI replica won't see a Refresh on this one. That is acceptable for a display-only cache.
-- **Rolling deploy.** The old UI still reads the snapshot, so the table stays until a later release.
-- **Assumptions.** Option 1; table deprecated and not dropped; a short display cache is acceptable.
+- Generated TS may differ in shape from the hand-written types; ui type-check is the test. Wire stays unchanged.
+- The `{type}` decode narrows the byte-scan's behaviour on non-JSON input (see above). Confirm fail-open vs fail-closed for undecodable sandbox CTRL frames.
+- Two derive crates (ts-rs and schemars) is a deliberate trade-off. Both are behind `codegen`, but the generated output depends on their versions, so the lockfile is pinned and a version bump may regenerate the file.
+- Placement of the direction table: it is protocol knowledge, so it lives in proto, not in sandbox-proxy.
+- If the generator proves much larger than expected, split into (a) tag/`allowed_from` + guard refactor and (b) TS generation + CI check.
 
 ## Out of scope
-- Dropping `app.user_repositories` (separate follow-up release).
-- Storing user tokens (options 2 and 3).
-- Any change to `workflows_api` or other components.
+- Generating `session.ts`, `frame.ts`, `flow.ts` or the other hand-written TS.
+- Any wire or schema change, new frames, or changes to the `workflows_api`/`app_api` schemas.
+- Generating the other direction of the docs (`docs/protocol.md`).
+- Other `Ctrl` consumers in `workflows` / `sandbox-container` beyond what compilation requires.
 
 Reply with feedback to revise this plan, or comment /approve to start the implementation.
