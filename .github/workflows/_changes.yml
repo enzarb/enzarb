@@ -1,0 +1,32 @@
+# Reusable: does this component's CI need to run for this push / pull request? Called as the first
+# job of every ci-<dir>.yml; the component jobs there `need` it and run only when `run` is true.
+# The decision is scripts/monorepo/changes.sh over the generated graph (docs/ci.md, "Changes job").
+name: changes
+on:
+  workflow_call:
+    inputs:
+      component:
+        description: Component name as in scripts/monorepo/components.json (the <dir> of ci-<dir>.yml)
+        type: string
+        required: true
+    outputs:
+      run:
+        description: "'true' when the component or one of its path dependencies changed (or the base is unknown)"
+        value: ${{ jobs.changes.outputs.run }}
+permissions:
+  contents: read
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.select.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: select
+        env:
+          COMPONENT: ${{ inputs.component }}
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: scripts/monorepo/changes.sh "$COMPONENT" "$BASE" "$GITHUB_SHA" >> "$GITHUB_OUTPUT"

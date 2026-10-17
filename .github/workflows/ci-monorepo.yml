@@ -1,35 +1,23 @@
 name: ci-monorepo
-# Monorepo plumbing: scripts/monorepo/*, shell scripts, workflow syntax, and the drift check that
-# keeps scripts/monorepo/affected.sh in step with the paths: filters of ci-*.yml (docs/ci.md).
+# Monorepo plumbing: scripts/monorepo/*, shell scripts, workflow syntax, and the checks that keep the
+# generated graph, affected.sh and changes.sh consistent (docs/ci.md).
 on:
   push:
     branches: [main]
-    paths:
-      - 'scripts/**'
-      - '.mise/tasks/**'
-      - '.mise/lib/**'
-      - '.github/workflows/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '**/Cargo.toml'
-      - '**/package.json'
   pull_request:
-    paths:
-      - 'scripts/**'
-      - '.mise/tasks/**'
-      - '.mise/lib/**'
-      - '.github/workflows/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '**/Cargo.toml'
-      - '**/package.json'
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
+  changes:
+    uses: ./.github/workflows/_changes.yml
+    with:
+      component: monorepo
   scripts:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -38,13 +26,15 @@ jobs:
         run: scripts/monorepo/gen-graph.sh --check
       - name: Dependency graph generator picks up cargo and npm path deps
         run: scripts/monorepo/test-graph.sh
-      - name: Affected-components mapping matches the CI path filters
+      - name: Affected-components mapping, ci-*.yml wiring and changes.sh
         run: scripts/monorepo/test-affected.sh
       - name: Mechanical-delta classifier
         run: bash scripts/monorepo/test-mechanical.sh
       - name: shellcheck (preinstalled on ubuntu-latest)
         run: shellcheck --exclude=SC1091 scripts/monorepo/*.sh .github/scripts/*.sh .mise/tasks/test/pg .mise/tasks/graph/gen
   actionlint:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

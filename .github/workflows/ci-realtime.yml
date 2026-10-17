@@ -2,30 +2,20 @@ name: ci-realtime
 on:
   push:
     branches: [main]
-    paths:
-      - Cargo.toml
-      - Cargo.lock
-      - rust-toolchain.toml
-      - 'realtime/**'
-      - .github/workflows/ci-realtime.yml
-      - .github/workflows/_rust.yml
-      - .github/workflows/_docker.yml
   pull_request:
-    paths:
-      - Cargo.toml
-      - Cargo.lock
-      - rust-toolchain.toml
-      - 'realtime/**'
-      - .github/workflows/ci-realtime.yml
-      - .github/workflows/_rust.yml
-      - .github/workflows/_docker.yml
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
+  changes:
+    uses: ./.github/workflows/_changes.yml
+    with:
+      component: realtime
   ci:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     uses: ./.github/workflows/_rust.yml
     permissions:
       contents: read
