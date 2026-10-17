@@ -1,8 +1,11 @@
 # Reusable: release one image component at a fixed version in a single run with GITHUB_TOKEN
-# (docs/ci.md "Releases"). Builds ghcr.io/enzarb/<image> at <sha> (same names, contexts and smoke test as
-# _docker.yml), pushes <version>, latest and sha-<short>, then creates the annotated <dir>/v<version>
-# tag and a --latest=false GitHub Release. Used by release.yml (one component) and rebuild-all.yml (matrix).
-# dry_run builds with --load and pushes, tags and releases nothing.
+# (docs/ci.md "Releases"). With retag, first looks for the CI image ghcr.io/enzarb/<image>:sha-<short> built
+# from <sha> and, if found, adds <version> and latest to it (same digest, no rebuild). Otherwise builds it at
+# <sha> (same names, contexts and smoke test as _docker.yml) and pushes <version>, latest and sha-<short>.
+# Either way it then creates the annotated <dir>/v<version> tag (only once the image tags exist) and a
+# --latest=false GitHub Release; the log says which path was taken. Used by release.yml (one component)
+# and rebuild-all.yml (matrix). dry_run reports the path (would retag) or builds with --load; it pushes,
+# tags and releases nothing.
 name: release-image
 on:
   workflow_call:
@@ -15,6 +18,10 @@ on:
       version: {type: string, required: true}
       sha: {type: string, required: true}
       dry_run: {type: boolean, default: false}
+      retag:
+        description: Reuse the CI sha- image when it was built from this sha (else build)
+        type: boolean
+        default: false
       note:
         description: Suffix for the tag message, e.g. " (rebuild-all)"
         type: string
@@ -37,6 +44,7 @@ jobs:
       SMOKE: ${{ inputs.smoke }}
       VERSION: ${{ inputs.version }}
       DRY_RUN: ${{ inputs.dry_run }}
+      RETAG: ${{ inputs.retag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -50,7 +58,14 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Choose retag or build
+        id: path
+        run: .github/scripts/retag-or-build.sh check
+      - name: Retag the CI image
+        if: steps.path.outputs.mode == 'retag' && !inputs.dry_run
+        run: .github/scripts/retag-or-build.sh retag
       - name: Build (and push unless dry run)
+        if: steps.path.outputs.mode == 'build'
         run: |
           set -euo pipefail
           tags=("$IMAGE:$VERSION" "$IMAGE:latest" "$IMAGE:sha-${SHA::7}")
@@ -66,11 +81,11 @@ jobs:
           fi
           docker buildx build "${args[@]}" "$CONTEXT"
       - name: Smoke test
-        if: inputs.smoke != ''
+        if: steps.path.outputs.mode == 'build' && inputs.smoke != ''
         working-directory: ${{ inputs.dir }}
         run: ./"$SMOKE" "$IMAGE:ci"
       - name: Tag and push the smoke-tested image
-        if: inputs.smoke != '' && !inputs.dry_run
+        if: steps.path.outputs.mode == 'build' && inputs.smoke != '' && !inputs.dry_run
         run: |
           set -euo pipefail
           for t in "$IMAGE:$VERSION" "$IMAGE:latest" "$IMAGE:sha-${SHA::7}"; do

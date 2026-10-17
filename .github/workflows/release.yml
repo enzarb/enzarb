@@ -4,7 +4,8 @@
 # version of THAT component is computed by .github/scripts/next-version.sh from the Conventional Commits
 # since its last `<dir>/vX.Y.Z` tag that touch <dir> or one of its path-dependency dirs. Nothing
 # releasable -> stop. Otherwise:
-#   image  _release-image.yml builds + pushes ghcr.io/enzarb/<image>:<version>, tags <dir>/v<version>
+#   image  _release-image.yml retags the CI sha- image as ghcr.io/enzarb/<image>:<version> (or builds + pushes
+#          it when CI has no image for the sha), tags <dir>/v<version>
 #          and creates a --latest=false GitHub Release
 #   settle wait-siblings.sh waits (bounded) for the other components releasable from the same commit,
 #          so one chart version pins them all
@@ -94,6 +95,7 @@ jobs:
       timeout: ${{ fromJSON(needs.plan.outputs.component).timeout }}
       version: ${{ needs.plan.outputs.version }}
       sha: ${{ needs.plan.outputs.sha }}
+      retag: true
 
   settle:
     # Wait for the other components released from the same commit, so one chart pins them all.
