@@ -90,7 +90,7 @@ async fn run() -> anyhow::Result<()> {
     let capture = ClaudeTokenCapture::new(config.claude_token_file.clone());
     let state = Arc::new(
         AppState::new(config, reaper.clone())
-            .with_steps(steps)
+            .with_steps(steps.clone())
             .with_chats(chats.clone())
             .with_observer(Arc::new(capture))
             .with_dockerd(dockerd.clone())
@@ -103,7 +103,10 @@ async fn run() -> anyhow::Result<()> {
         _ = sigint.recv() => tracing::info!("SIGINT received"),
     }
 
-    // Chats first: `CLOSE shutdown` to each browser, then their agents stop.
+    // Steps first: each running step is interrupted at a checkpoint and stays resumable
+    // (the engine resumes it after the restart), instead of being killed into a failure.
+    steps.interrupt_all(grace).await;
+    // Chats next: `CLOSE shutdown` to each browser, then their agents stop.
     chats.shutdown(grace).await;
     prune_stop.cancel();
     let _ = prune_task.await;
