@@ -1,4 +1,4 @@
-import { GITHUB_API as API, githubHeaders, signAppJwt } from './github-app.ts';
+import { githubFetch, signAppJwt } from './github-app.ts';
 
 /**
  * Live list of the repositories a user may put in a Project: every repository an installation of
@@ -101,11 +101,8 @@ export function createRepositoryAccess({
 	const cache = new Map<string, { value: UserRepositoryList; until: number }>();
 	const inflight = new Map<string, Promise<UserRepositoryList>>();
 
-	const call = (url: string, token: string, signal: AbortSignal, init: RequestInit = {}) => {
-		// Never send a token anywhere but the GitHub API.
-		if (!url.startsWith(`${API}/`)) throw new Error('unexpected GitHub URL');
-		return doFetch(url, { ...init, headers: githubHeaders(token), signal, redirect: 'error' });
-	};
+	const call = (path: string, token: string, signal: AbortSignal, init: RequestInit = {}) =>
+		githubFetch(path, { ...init, token, fetch: doFetch, signal, redirect: 'error' });
 
 	async function paginate<T>(
 		token: string,
@@ -114,7 +111,7 @@ export function createRepositoryAccess({
 		signal: AbortSignal
 	): Promise<T[]> {
 		const out: T[] = [];
-		let url: string | null = `${API}${path}${path.includes('?') ? '&' : '?'}per_page=100`;
+		let url: string | null = `${path}${path.includes('?') ? '&' : '?'}per_page=100`;
 		for (let page = 0; url; page++) {
 			if (page >= MAX_PAGES) throw new Error(`GitHub ${path} has more than ${MAX_PAGES} pages`);
 			const res: Response = await call(url, token, signal);
@@ -130,7 +127,7 @@ export function createRepositoryAccess({
 	async function installationToken(id: number, signal: AbortSignal): Promise<string> {
 		const hit = tokens.get(id);
 		if (hit && now() < hit.refreshAt) return hit.token;
-		const res = await call(`${API}/app/installations/${id}/access_tokens`, await appJwt(), signal, {
+		const res = await call(`/app/installations/${id}/access_tokens`, await appJwt(), signal, {
 			method: 'POST',
 			body: JSON.stringify({ permissions: { metadata: 'read' } })
 		});
@@ -152,7 +149,7 @@ export function createRepositoryAccess({
 		signal: AbortSignal
 	): Promise<string> {
 		const res = await call(
-			`${API}/repos/${enc(owner)}/${enc(repo)}/collaborators/${enc(login)}/permission`,
+			`/repos/${enc(owner)}/${enc(repo)}/collaborators/${enc(login)}/permission`,
 			token,
 			signal
 		);
@@ -236,7 +233,7 @@ export function createRepositoryAccess({
 			if (!parts || !appId || !privateKey) return null;
 			try {
 				const signal = AbortSignal.timeout(timeoutMs);
-				const base = `${API}/repos/${enc(parts.owner)}/${enc(parts.repo)}`;
+				const base = `/repos/${enc(parts.owner)}/${enc(parts.repo)}`;
 				const instRes = await call(`${base}/installation`, await appJwt(), signal);
 				if (!instRes.ok) return null;
 				const inst = (await instRes.json()) as RawInstallation;
