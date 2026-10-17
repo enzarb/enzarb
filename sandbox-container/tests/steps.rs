@@ -588,10 +588,10 @@ async fn shutdown_interrupts_a_running_step_and_it_resumes() {
     // No result reaches the engine's session.
     let late = timeout(Duration::from_millis(800), async {
         loop {
-            if let Event::Ctrl(Ctrl::StepFinished(f)) = ev.next().await.unwrap() {
-                if f.run_id == "ag-sd" {
-                    return f;
-                }
+            if let Event::Ctrl(Ctrl::StepFinished(f)) = ev.next().await.unwrap()
+                && f.run_id == "ag-sd"
+            {
+                return f;
             }
         }
     })
