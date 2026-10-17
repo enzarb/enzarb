@@ -262,6 +262,14 @@ impl Git<'_> {
         // repository: drop stale ones (a branch that committed them then checks out cleanly)
         // and keep new ones out of commits.
         let _ = std::fs::remove_dir_all(dir.join(OUTPUT_DIR));
+        // Copies tracked by HEAD (and the staged untracking of an earlier step) would count as
+        // local changes and abort the checkout: restore them to HEAD first.
+        let _ = self
+            .local(ctl, dir, &["reset", "-q", "--", OUTPUT_DIR])
+            .await?;
+        let _ = self
+            .local(ctl, dir, &["checkout", "-q", "HEAD", "--", OUTPUT_DIR])
+            .await?;
         // The workspace's `.git` may be a file (separate git dir): ask git where its exclude is.
         let out = self
             .local(ctl, dir, &["rev-parse", "--git-path", "info/exclude"])
@@ -317,6 +325,8 @@ impl Git<'_> {
                 &["rm", "-r", "-q", "--cached", "--ignore-unmatch", OUTPUT_DIR],
             )
             .await?;
+        // The branch's tracked copies are stale for this step.
+        let _ = std::fs::remove_dir_all(dir.join(OUTPUT_DIR));
         Ok(lease
             .map(str::to_string)
             .unwrap_or_else(|| remote.unwrap_or_default()))

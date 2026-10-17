@@ -1,6 +1,6 @@
 /**
  * Token usage and cost of agent jobs, as `workflows_api` exposes them (`job_v.usage`,
- * `work_item_v.usage_totals`; contracts §6). Every field is optional: absent means "not reported",
+ * `work_item_v.usage_totals`, a SQL name; contracts §6). Every field is optional: absent means "not reported",
  * never 0. `costUsd` is the cost as reported by Claude, not an estimate.
  */
 export interface Usage {

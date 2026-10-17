@@ -131,7 +131,8 @@ export function createLiveWatcher(
 				return;
 			}
 			if (frame === null || typeof frame !== 'object') return;
-			// `task` is the engine v2 topic (NOTIFY engine_projection); `work_item` is the frame name the
+			// Wire contract: `work_item` is the legacy realtime frame topic, kept because components roll out
+			// independently. `task` is the engine v2 topic (NOTIFY engine_projection); `work_item` is the name the
 			// realtime service used before it was re-pointed, with the same id meaning (a task id).
 			if ((frame.topic === 'task' || frame.topic === 'work_item') && typeof frame.id === 'number')
 				onChange(frame.id);

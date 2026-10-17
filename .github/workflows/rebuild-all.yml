@@ -99,6 +99,7 @@ jobs:
       sha: ${{ needs.plan.outputs.sha }}
       dry_run: ${{ inputs.dry_run }}
       note: " (rebuild-all)"
+      # retag stays false: rebuild-all deliberately rebuilds instead of reusing the CI image
 
   installer:
     # kubernetes' gvisor installer image, as ci-kubernetes builds it (amd64 smoke test, amd64+arm64 push).
