@@ -24,7 +24,7 @@ enzarb-connector-github = { path = "../connectors/crates/connector-github" }
 Shared choices across the Rust components:
 - tokio, axum 0.8, tracing + tracing-subscriber (JSON logs), serde, thiserror/anyhow;
 - sqlx (postgres, runtime-tokio, tls-rustls), kube + k8s-openapi (latest k8s feature), reqwest (rustls), jsonwebtoken;
-- toolchain: stable, pinned in `rust-toolchain.toml` in each component dir, edition 2024.
+- toolchain: pinned in the single `rust-toolchain.toml` at the repo root (one Cargo workspace, one `Cargo.lock`), edition 2024.
 
 ## 2. `Project` CRD (`enzarb.dev/v1alpha1`, **cluster-scoped**)
 
@@ -437,7 +437,7 @@ Removed by ADR-0015. With path dependencies inside the monorepo, CI and Docker b
 
 ### Docker builds
 
-Components with path dependencies (`ui`, `sandbox-proxy`, `sandbox-container`, `workflows`) build with the repo root as context: `docker build -f <dir>/Dockerfile .`. No build secrets are needed (ADR-0015).
+Every image (the Rust components share one root Cargo workspace; `ui` has path deps too) builds with the repo root as context: `docker build -f <dir>/Dockerfile .`. No build secrets are needed (ADR-0015).
 
 ## 13. Container images (GHCR)
 

@@ -3,6 +3,9 @@ on:
   push:
     branches: [main]
     paths:
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
       - 'connectors/**'
       - 'workflows/crates/flow/**'
       - .github/workflows/ci-connectors.yml
@@ -10,6 +13,9 @@ on:
       - .github/workflows/_docker.yml
   pull_request:
     paths:
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
       - 'connectors/**'
       - 'workflows/crates/flow/**'
       - .github/workflows/ci-connectors.yml
@@ -28,7 +34,7 @@ jobs:
       packages: write
     with:
       dir: connectors
-      cargo-args: --workspace --all-features
+      cargo-args: -p enzarb-connector -p enzarb-connector-github -p enzarb-receiver --all-features
       postgres: true
       image: enzarb-connectors-receiver
       context: .

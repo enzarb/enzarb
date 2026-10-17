@@ -364,7 +364,7 @@ fn agent_exec(env: &Env, prompt: &str, schema: Option<Value>) -> StepExec {
         "/tests/fixtures/fake-step-agent.mjs"
     );
     StepExec::Agent {
-        runtime: Runtime {
+        runtime: Box::new(Runtime {
             name: "fake".into(),
             install: vec![],
             protocol: "acp".into(),
@@ -379,7 +379,7 @@ fn agent_exec(env: &Env, prompt: &str, schema: Option<Value>) -> StepExec {
             )]
             .into(),
             capabilities: json!({}),
-        },
+        }),
         model: Some("claude-test-model".into()),
         prompt: prompt.into(),
         result_schema: schema,

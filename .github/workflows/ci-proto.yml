@@ -5,10 +5,16 @@ on:
   push:
     branches: [main]
     paths:
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
       - 'proto/**'
       - .github/workflows/ci-proto.yml
   pull_request:
     paths:
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
       - 'proto/**'
       - .github/workflows/ci-proto.yml
 concurrency:
@@ -18,9 +24,6 @@ permissions:
   contents: read
 env:
   CARGO_TERM_COLOR: always
-defaults:
-  run:
-    working-directory: proto
 jobs:
   fmt:
     runs-on: ubuntu-latest
@@ -31,13 +34,10 @@ jobs:
         with:
           cache: false
           components: rustfmt
-          rust-src-dir: proto
+          rust-src-dir: .
       - run: cargo fmt --all --check
-      - name: No [patch] and no git deps on enzarb repos
-        run: |
-          if grep -rnE --include=Cargo.toml --include=Cargo.lock --exclude-dir=target --exclude-dir=node_modules '^\[+patch|git\+(https|ssh)://[^"]*enzarb|git *= *"[^"]*enzarb' .; then
-            echo "::error::use path deps for enzarb crates"; exit 1
-          fi
+      - name: No [patch], no git deps on enzarb repos, one lockfile and toolchain file
+        run: scripts/monorepo/check-cargo-deps.sh
 
   clippy:
     name: clippy (${{ matrix.features }})
@@ -57,16 +57,16 @@ jobs:
         with:
           cache: false
           components: clippy
-          rust-src-dir: proto
+          rust-src-dir: .
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: proto -> target
+          workspaces: . -> target
           key: proto-clippy-${{ matrix.features }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: clippy
         env:
           FLAGS: ${{ matrix.flags }}
-        run: cargo clippy --workspace --all-targets ${FLAGS:+$FLAGS} -- -D warnings
+        run: cargo clippy -p enzarb-proto --all-targets ${FLAGS:+$FLAGS} -- -D warnings
 
   test:
     name: test (${{ matrix.features }})
@@ -85,21 +85,21 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
-          rust-src-dir: proto
+          rust-src-dir: .
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: proto -> target
+          workspaces: . -> target
           key: proto-test-${{ matrix.features }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@nextest
       - name: nextest
         env:
           FLAGS: ${{ matrix.flags }}
-        run: cargo nextest run --workspace ${FLAGS:+$FLAGS}
+        run: cargo nextest run -p enzarb-proto ${FLAGS:+$FLAGS}
       - name: doctests
         env:
           FLAGS: ${{ matrix.flags }}
-        run: cargo test --workspace --doc ${FLAGS:+$FLAGS}
+        run: cargo test -p enzarb-proto --doc ${FLAGS:+$FLAGS}
 
   gen:
     name: ctrl.gen.ts is up to date
@@ -110,18 +110,21 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
-          rust-src-dir: proto
+          rust-src-dir: .
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: proto -> target
+          workspaces: . -> target
           key: proto-gen
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # Same as `mise run proto:gen -- --check`.
-      - run: bash ../.mise/tasks/proto/gen --check
+      - run: bash .mise/tasks/proto/gen --check
 
   ts:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: proto
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

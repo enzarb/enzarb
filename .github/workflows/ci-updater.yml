@@ -3,12 +3,18 @@ on:
   push:
     branches: [main]
     paths:
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
       - 'updater/**'
       - .github/workflows/ci-updater.yml
       - .github/workflows/_rust.yml
       - .github/workflows/_docker.yml
   pull_request:
     paths:
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
       - 'updater/**'
       - .github/workflows/ci-updater.yml
       - .github/workflows/_rust.yml
@@ -26,4 +32,6 @@ jobs:
       packages: write
     with:
       dir: updater
+      cargo-args: -p enzarb-updater
       image: enzarb-updater
+      context: .

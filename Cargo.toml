@@ -1,0 +1,22 @@
+[workspace]
+resolver = "3"
+members = [
+    "proto/crates/enzarb-proto",
+    "operator/crates/enzarb-crds",
+    "operator/crates/operator",
+    "connectors/crates/connector",
+    "connectors/crates/connector-github",
+    "connectors/bin/receiver",
+    "workflows/crates/engine",
+    "workflows/crates/enzarb-workflows",
+    "workflows/crates/flow",
+    "realtime",
+    "sandbox-container",
+    "sandbox-proxy",
+    "updater",
+]
+
+# Dependencies are declared per crate: the components release independently and
+# their feature sets differ (docs/ci.md, "One Rust workspace").
+[workspace.package]
+edition = "2024"

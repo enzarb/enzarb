@@ -378,7 +378,7 @@ impl Engine {
                 model,
                 prompt,
             } => StepExec::Agent {
-                runtime: Runtime {
+                runtime: Box::new(Runtime {
                     name: runtime.name.clone(),
                     install: runtime.file.install.mise.clone(),
                     protocol: match runtime.file.launch.protocol {
@@ -389,7 +389,7 @@ impl Engine {
                     env: runtime.file.launch.env.clone(),
                     capabilities: serde_json::to_value(runtime.file.capabilities)
                         .unwrap_or_default(),
-                },
+                }),
                 model: model.clone(),
                 prompt: prompt.clone(),
                 result_schema: rs.result.as_ref().map(|r| r.schema.clone()),

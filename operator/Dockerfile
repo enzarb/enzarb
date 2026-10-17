@@ -3,8 +3,25 @@ RUN apk add --no-cache musl-dev
 WORKDIR /src
 
 FROM chef AS planner
+# Every workspace member is part of the recipe: the root workspace resolves as a whole. The recipe
+# only changes when a manifest or Cargo.lock does, so the cook layer below survives source edits.
 COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
-COPY crates ./crates
+COPY proto/crates proto/crates
+COPY proto/vectors proto/vectors
+COPY operator/crates operator/crates
+COPY operator/deploy operator/deploy
+COPY connectors/crates connectors/crates
+COPY connectors/bin connectors/bin
+COPY workflows/crates workflows/crates
+COPY workflows/migrations workflows/migrations
+COPY realtime/Cargo.toml realtime/Cargo.toml
+COPY realtime/src realtime/src
+COPY sandbox-container/Cargo.toml sandbox-container/Cargo.toml
+COPY sandbox-container/src sandbox-container/src
+COPY sandbox-proxy/Cargo.toml sandbox-proxy/Cargo.toml
+COPY sandbox-proxy/src sandbox-proxy/src
+COPY updater/Cargo.toml updater/Cargo.toml
+COPY updater/src updater/src
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS build
@@ -12,8 +29,8 @@ COPY rust-toolchain.toml ./
 COPY --from=planner /src/recipe.json recipe.json
 # Dependency layer: cached until the dependency set changes.
 RUN cargo chef cook --release --locked -p enzarb-sandbox-operator --recipe-path recipe.json
-COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
-COPY crates ./crates
+# Real sources of every workspace member (the planner copied them all), not cargo-chef 0.0.1 stubs: --locked fails otherwise.
+COPY --from=planner /src/ ./
 RUN cargo build --release --locked -p enzarb-sandbox-operator
 
 FROM alpine:3.24

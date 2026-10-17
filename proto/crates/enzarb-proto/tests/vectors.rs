@@ -75,14 +75,14 @@ fn step_start_agent() -> StepStart {
         task_id: "task-1".into(),
         workspaces: vec![workspace()],
         exec: StepExec::Agent {
-            runtime: Runtime {
+            runtime: Box::new(Runtime {
                 name: "claude".into(),
                 install: vec!["npm:@agentclientprotocol/claude-agent-acp@0.5".into()],
                 protocol: "acp".into(),
                 command: vec!["claude-agent-acp".into()],
                 env: Default::default(),
                 capabilities: json!({"sessions": true, "resume": true}),
-            },
+            }),
             model: Some("claude-sonnet-5-5".into()),
             prompt: "Fix the bug \u{1f41b}".into(),
             result_schema: Some(json!({"type": "object"})),

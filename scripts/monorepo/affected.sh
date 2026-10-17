@@ -9,22 +9,23 @@
 # mirrors the `paths:` filters of .github/workflows/ci-<component>.yml (including downstream
 # components via path deps, e.g. `proto/**` triggers ui); scripts/monorepo/test-affected.sh fails
 # when the two drift apart. Files matching no row (docs/**, root files such as mise.toml or
-# lefthook.yml) trigger no component CI, so they print nothing. `monorepo` is the pseudo-component
+# lefthook.yml) trigger no component CI, so they print nothing; the root Cargo.toml, Cargo.lock and
+# rust-toolchain.toml are the exception (one workspace): they trigger every Rust component. `monorepo` is the pseudo-component
 # for the repo plumbing itself (scripts, mise tasks, any workflow file): shellcheck, actionlint
 # and the drift test, see .github/workflows/ci-monorepo.yml.
 set -euo pipefail
 
 # component|space-separated globs (bash `case` patterns; `*` also matches `/`)
 RULES=(
-  'proto|proto/** .github/workflows/ci-proto.yml'
-  'operator|operator/** .github/workflows/ci-operator.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
-  'connectors|connectors/** workflows/crates/flow/** .github/workflows/ci-connectors.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
-  'workflows|workflows/** operator/** connectors/** proto/** .github/workflows/ci-workflows.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
-  'realtime|realtime/** .github/workflows/ci-realtime.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
-  'sandbox-proxy|sandbox-proxy/** proto/** operator/** .github/workflows/ci-sandbox-proxy.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
-  'sandbox-container|sandbox-container/** proto/** ui/package-lock.json .github/workflows/ci-sandbox-container.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
+  'proto|Cargo.toml Cargo.lock rust-toolchain.toml proto/** .github/workflows/ci-proto.yml'
+  'operator|Cargo.toml Cargo.lock rust-toolchain.toml operator/** .github/workflows/ci-operator.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
+  'connectors|Cargo.toml Cargo.lock rust-toolchain.toml connectors/** workflows/crates/flow/** .github/workflows/ci-connectors.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
+  'workflows|Cargo.toml Cargo.lock rust-toolchain.toml workflows/** operator/** connectors/** proto/** .github/workflows/ci-workflows.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
+  'realtime|Cargo.toml Cargo.lock rust-toolchain.toml realtime/** .github/workflows/ci-realtime.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
+  'sandbox-proxy|Cargo.toml Cargo.lock rust-toolchain.toml sandbox-proxy/** proto/** operator/** .github/workflows/ci-sandbox-proxy.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
+  'sandbox-container|Cargo.toml Cargo.lock rust-toolchain.toml sandbox-container/** proto/** ui/package-lock.json .github/workflows/ci-sandbox-container.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
   'ui|ui/** proto/** workflows/migrations/** .github/workflows/ci-ui.yml .github/workflows/_docker.yml .github/actions/ui-install/**'
-  'updater|updater/** .github/workflows/ci-updater.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
+  'updater|Cargo.toml Cargo.lock rust-toolchain.toml updater/** .github/workflows/ci-updater.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
   'kubernetes|kubernetes/** .github/workflows/ci-kubernetes.yml'
   'helm|helm/** .github/workflows/ci-helm.yml'
   'monorepo|scripts/** .mise/tasks/** .mise/lib/** .github/workflows/**'

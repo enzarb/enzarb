@@ -3,6 +3,9 @@ on:
   push:
     branches: [main]
     paths:
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
       - 'sandbox-container/**'
       - 'proto/**'
       - ui/package-lock.json
@@ -11,6 +14,9 @@ on:
       - .github/workflows/_docker.yml
   pull_request:
     paths:
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
       - 'sandbox-container/**'
       - 'proto/**'
       - ui/package-lock.json
@@ -35,7 +41,7 @@ jobs:
       packages: write
     with:
       dir: sandbox-container
-      cargo-args: --locked
+      cargo-args: --locked -p sandbox-init
       node: '24'
       image: enzarb-sandbox
       context: .

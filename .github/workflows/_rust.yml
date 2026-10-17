@@ -1,5 +1,6 @@
 # Reusable: fmt / clippy / test for one Rust component (docs/ci.md "Rust repos"), plus its image.
-# Every job runs inside the component dir; rust-cache is keyed per component and job.
+# One Cargo workspace at the repo root: jobs run at the root and select the component's crates with
+# `-p` flags (cargo-args); rust-cache is keyed per component and job.
 name: rust
 on:
   workflow_call:
@@ -8,7 +9,7 @@ on:
         type: string
         required: true
       cargo-args:
-        description: Extra args for clippy, nextest and doctests (e.g. `--workspace --all-features`)
+        description: Package selection and extra args for clippy, nextest and doctests (e.g. `-p enzarb-updater --all-features`); always pass `-p`, a bare root run covers every crate
         type: string
         default: ""
       node:
@@ -20,7 +21,7 @@ on:
         type: string
         default: ""
       context:
-        description: Docker build context (`.` when the Dockerfile needs path deps, else the dir)
+        description: Docker build context (`.`, the repo root, since every Rust image builds the root workspace)
         type: string
         default: ""
       postgres:
@@ -41,58 +42,48 @@ jobs:
   fmt:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    defaults:
-      run:
-        working-directory: ${{ inputs.dir }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
           components: rustfmt
-          rust-src-dir: ${{ inputs.dir }}
+          rust-src-dir: .
       - run: cargo fmt --all --check
-      - name: No [patch] and no git deps on enzarb repos (path deps only in the monorepo)
-        working-directory: .
+      - name: No [patch], no git deps on enzarb repos, one lockfile and toolchain file
         run: scripts/monorepo/check-cargo-deps.sh
   clippy:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: ${{ inputs.dir }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
           components: clippy
-          rust-src-dir: ${{ inputs.dir }}
+          rust-src-dir: .
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: ${{ inputs.dir }} -> target
+          workspaces: . -> target
           key: ${{ inputs.dir }}-clippy
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --all-targets ${{ inputs.cargo-args }} -- -D warnings
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    defaults:
-      run:
-        working-directory: ${{ inputs.dir }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
-          rust-src-dir: ${{ inputs.dir }}
+          rust-src-dir: .
       - uses: actions/setup-node@v4
         if: inputs.node != ''
         with:
           node-version: ${{ inputs.node }}
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: ${{ inputs.dir }} -> target
+          workspaces: . -> target
           key: ${{ inputs.dir }}-test
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@nextest
