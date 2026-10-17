@@ -29,7 +29,9 @@ check() { # check <description> <expected> <paths...>
 
 # --- 1. sample diffs -------------------------------------------------------------------------
 check "docs only" "" docs/architecture.md
-check "root files" "" mise.toml lefthook.yml CLAUDE.md
+check "root files" "" lefthook.yml CLAUDE.md
+check "tool pins feed the pin check" "monorepo" mise.toml
+check "component Dockerfile ARGs feed the pin check" "sandbox-container monorepo" sandbox-container/Dockerfile
 check "workflows only" "workflows" workflows/crates/engine/src/lib.rs
 check "proto fans out" "proto workflows sandbox-proxy sandbox-container ui" proto/crates/enzarb-proto/src/lib.rs
 check "operator fans out" "operator workflows sandbox-proxy" operator/crates/enzarb-crds/src/lib.rs
@@ -42,6 +44,7 @@ check "helm only" "helm" helm/enzarb/values.yaml
 check "dependency order" "proto operator workflows sandbox-proxy sandbox-container ui" ui/a.ts operator/b.rs proto/c.rs
 check "shared rust workflow" "operator connectors workflows realtime sandbox-proxy sandbox-container updater monorepo" .github/workflows/_rust.yml
 check "own ci file (also re-runs the drift check)" "ui monorepo" .github/workflows/ci-ui.yml
+check "ui/proto/sandbox node setup action" "proto sandbox-container ui" .github/actions/setup-node/action.yml
 check "ci change runs the drift check" "monorepo" scripts/monorepo/affected.sh
 check "release workflow only needs actionlint" "monorepo" .github/workflows/release.yml
 

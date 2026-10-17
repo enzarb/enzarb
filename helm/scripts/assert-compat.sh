@@ -11,9 +11,10 @@ repo="$tmp/repo"
 mkdir -p "$repo/helm"
 cp -r "$here/enzarb" "$repo/helm/enzarb"
 cp -r "$here/scripts" "$repo/helm/scripts"
-# helm is a mise shim: the temp repo needs the same tool pins.
+# helm is a mise shim: the temp repo needs the same (root) tool pins.
 cp "$here/mise.toml" "$repo/helm/mise.toml"
-export MISE_TRUSTED_CONFIG_PATHS="$repo/helm"
+cp "$here/../mise.toml" "$repo/mise.toml"
+export MISE_TRUSTED_CONFIG_PATHS="$repo"
 git -C "$repo" init -q
 git -C "$repo" config user.email t@example.com
 git -C "$repo" config user.name t

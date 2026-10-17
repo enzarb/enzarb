@@ -1,0 +1,5 @@
+# Ansible pins, activated with MISE_ENV=ansible (oldie:host, oldie:reset, the CI ansible job).
+# Kept out of the root [tools] because pipx builds would slow every task and sandbox start-up.
+[tools]
+"pipx:ansible-core" = "2.21.5"
+"pipx:ansible-lint" = "26.9.0"

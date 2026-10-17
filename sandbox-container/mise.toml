@@ -1,5 +1,0 @@
-# Tools for this repo's checks only: the fake ACP agent in tests/fixtures is a node script,
-# and python backs the policy test that runs a repo python script.
-[tools]
-node = "24"
-python = "3.13"
