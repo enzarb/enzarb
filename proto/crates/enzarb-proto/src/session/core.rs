@@ -80,7 +80,8 @@ pub struct CredentialInfo {
 pub enum Event {
     /// (server) The client wants a channel: [`OpenRequest::accept`] or [`OpenRequest::reject`].
     Open(OpenRequest),
-    /// Any other CTRL message not consumed internally:
+    /// Any other CTRL message not consumed internally (who may send what is
+    /// [`Ctrl::direction`]; a test pins these lists to it):
     /// * server: `step_start`, `step_status`, `step_steer`, `step_stop`, `step_resume`, `credential_status` (answer with `send_ctrl(Ctrl::CredentialState{..})`), `credential_clear`, `credential_state` (a client's ack of a legacy `credential_captured`), `resize` (for an open channel), `error`;
     /// * client: unsolicited `step_state`, `session_event`, `step_finished`, `credential_captured`, unsolicited `credential_state`, unattributed `error`.
     Ctrl(Ctrl),
@@ -636,7 +637,7 @@ impl Inner {
                     &format!(
                         "unexpected message for the {:?} side: {}",
                         self.role,
-                        ctrl_name(&m)
+                        m.tag()
                     ),
                 );
             }
@@ -694,33 +695,6 @@ impl Inner {
             }
             None => false,
         }
-    }
-}
-
-fn ctrl_name(m: &Ctrl) -> &'static str {
-    match m {
-        Ctrl::Hello { .. } => "hello",
-        Ctrl::Welcome { .. } => "welcome",
-        Ctrl::Open { .. } => "open",
-        Ctrl::Opened { .. } => "opened",
-        Ctrl::OpenError { .. } => "open_error",
-        Ctrl::Resize { .. } => "resize",
-        Ctrl::StepStart(_) => "step_start",
-        Ctrl::StepAccepted { .. } => "step_accepted",
-        Ctrl::StepSteer { .. } => "step_steer",
-        Ctrl::StepStop { .. } => "step_stop",
-        Ctrl::StepResume { .. } => "step_resume",
-        Ctrl::StepStatus { .. } => "step_status",
-        Ctrl::StepState { .. } => "step_state",
-        Ctrl::SessionEvent(_) => "session_event",
-        Ctrl::StepFinished(_) => "step_finished",
-        Ctrl::CredentialCaptured { .. } => "credential_captured",
-        Ctrl::CredentialStatus => "credential_status",
-        Ctrl::CredentialState { .. } => "credential_state",
-        Ctrl::CredentialClear { .. } => "credential_clear",
-        Ctrl::StatsRequest => "stats_request",
-        Ctrl::Stats(_) => "stats",
-        Ctrl::Error { .. } => "error",
     }
 }
 

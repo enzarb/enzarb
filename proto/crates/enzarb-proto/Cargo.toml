@@ -14,9 +14,12 @@ bytes.workspace = true
 futures-util = { version = "0.3", optional = true, default-features = false, features = ["sink", "std"] }
 serde.workspace = true
 serde_json.workspace = true
+strum = { version = "0.28", features = ["derive"] }
 thiserror.workspace = true
 tokio = { version = "1", features = ["rt", "sync", "io-util", "macros", "time"], optional = true }
 tokio-tungstenite = { version = "0.30.0", optional = true, default-features = false, features = ["connect", "handshake"] }
+ts-rs = { version = "12", optional = true, features = ["serde-compat", "serde-json-impl"] }
+schemars = { version = "1", optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
@@ -29,3 +32,9 @@ default = []
 tokio = ["dep:tokio", "dep:futures-util", "dep:tokio-tungstenite"]
 # `Client::connect` to wss:// URLs (rustls, webpki roots).
 tls = ["tokio", "tokio-tungstenite/rustls-tls-webpki-roots"]
+# Derive TS types and JSON Schema for the CTRL frames; only `examples/gen_ts.rs` (mise run proto:gen) needs it.
+codegen = ["dep:ts-rs", "dep:schemars"]
+
+[[example]]
+name = "gen_ts"
+required-features = ["codegen"]

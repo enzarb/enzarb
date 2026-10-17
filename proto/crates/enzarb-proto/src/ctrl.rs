@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Who is connecting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS, schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ClientKind {
     Ui,
@@ -17,6 +18,7 @@ pub enum ClientKind {
 
 /// Channel kinds that can be opened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ChannelKind {
     Pty,
@@ -130,6 +132,45 @@ impl std::fmt::Debug for Secret {
     }
 }
 
+// Codegen: a `Secret` is a plain string on the wire; TS wraps it (`SecretLike`, secret.ts). The
+// `x-secret` schema keyword is how the generator finds every secret field (`examples/gen_ts.rs`).
+#[cfg(feature = "codegen")]
+impl ts_rs::TS for Secret {
+    type WithoutGenerics = Self;
+    type OptionInnerType = Self;
+
+    fn name(_: &ts_rs::Config) -> String {
+        "SecretLike".into()
+    }
+
+    fn inline(cfg: &ts_rs::Config) -> String {
+        Self::name(cfg)
+    }
+
+    fn decl(_: &ts_rs::Config) -> String {
+        panic!("SecretLike is declared in secret.ts")
+    }
+
+    fn decl_concrete(_: &ts_rs::Config) -> String {
+        panic!("SecretLike is declared in secret.ts")
+    }
+}
+
+#[cfg(feature = "codegen")]
+impl schemars::JsonSchema for Secret {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Secret".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({ "type": "string", "x-secret": true })
+    }
+
+    fn inline_schema() -> bool {
+        true
+    }
+}
+
 /// Known `credential_state.scope` values. Unknown values must be tolerated.
 pub mod credential_scope {
     /// The credential is the user's own (per-user Claude token).
@@ -138,6 +179,7 @@ pub mod credential_scope {
 
 /// Credential kinds reported by `credential_captured` and `credential_state`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS, schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialKind {
     ClaudeOauth,
@@ -161,6 +203,7 @@ pub mod error_code {
 /// optional and omitted when absent: `None` means unknown, not zero. `cost_usd`
 /// is whatever the agent reported; nothing here estimates it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS, schemars::JsonSchema), ts(optional_fields = nullable))]
 pub struct Usage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<u64>,
@@ -172,6 +215,7 @@ pub struct Usage {
     pub cache_creation_input_tokens: Option<u64>,
     /// Models that served the run, when known. Omitted when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "codegen", ts(as = "Option<Vec<String>>", optional))]
     pub models: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
@@ -197,6 +241,7 @@ impl Usage {
 /// could not be read: absent means unknown, never 0. Consumers compute rates
 /// from two snapshots.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS, schemars::JsonSchema), ts(optional_fields = nullable))]
 pub struct SandboxStats {
     /// Unix time of the snapshot in milliseconds.
     pub ts_ms: u64,
@@ -227,7 +272,9 @@ pub struct SandboxStats {
 }
 
 /// Every CTRL message.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, strum::IntoStaticStr)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS, schemars::JsonSchema), ts(optional_fields = nullable))]
+#[strum(serialize_all = "snake_case")]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Ctrl {
     Hello {
@@ -248,6 +295,7 @@ pub enum Ctrl {
     },
     Open {
         channel: u32,
+        #[cfg_attr(feature = "codegen", ts(type = "\"pty\" | \"acp\" | (string & {})"))]
         kind: ChannelKind,
         cols: u16,
         rows: u16,
@@ -309,6 +357,7 @@ pub enum Ctrl {
     StepStatus {
         run_id: String,
         #[serde(default)]
+        #[cfg_attr(feature = "codegen", ts(as = "Option<u64>", optional))]
         after_seq: u64,
     },
     StepState {
@@ -365,4 +414,199 @@ pub enum Ctrl {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         channel: Option<u32>,
     },
+}
+
+/// Who may send a CTRL message, and in which direction it travels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    /// Only in the handshake (`hello`, `welcome`); never afterwards.
+    Handshake,
+    /// Client -> server, from these client kinds.
+    ClientToServer(&'static [ClientKind]),
+    /// Server -> client only; no client may send it.
+    ServerToClient,
+}
+
+const ANY_CLIENT: &[ClientKind] = &[ClientKind::Ui, ClientKind::Proxy, ClientKind::Executor];
+
+impl Ctrl {
+    /// The wire `type` of this message (`"step_start"`, ...), as serialized.
+    pub fn tag(&self) -> &'static str {
+        self.into()
+    }
+
+    /// Who sends this message. The one direction table: the session core and
+    /// sandbox-proxy's browser guard both derive their rules from it. The
+    /// `match` is exhaustive on purpose, so a new variant does not compile
+    /// until it is classified here.
+    ///
+    /// A variant that also travels as a reply (`error`, `credential_state`)
+    /// is listed by its client -> server senders.
+    pub fn direction(&self) -> Direction {
+        use ClientKind::{Executor, Proxy, Ui};
+        match self {
+            Ctrl::Hello { .. } | Ctrl::Welcome { .. } => Direction::Handshake,
+            Ctrl::Open { .. } | Ctrl::Resize { .. } | Ctrl::Error { .. } => {
+                Direction::ClientToServer(ANY_CLIENT)
+            }
+            Ctrl::CredentialStatus | Ctrl::CredentialClear { .. } => {
+                Direction::ClientToServer(&[Ui, Proxy])
+            }
+            // The ack of a legacy `credential_captured`, sent by sandbox-proxy.
+            Ctrl::CredentialState { .. } | Ctrl::StatsRequest => {
+                Direction::ClientToServer(&[Proxy])
+            }
+            // Steps are engine-only (ADR-0022).
+            Ctrl::StepStart(_)
+            | Ctrl::StepSteer { .. }
+            | Ctrl::StepStop { .. }
+            | Ctrl::StepResume { .. }
+            | Ctrl::StepStatus { .. } => Direction::ClientToServer(&[Executor]),
+            Ctrl::Opened { .. }
+            | Ctrl::OpenError { .. }
+            | Ctrl::StepAccepted { .. }
+            | Ctrl::StepState { .. }
+            | Ctrl::SessionEvent(_)
+            | Ctrl::StepFinished(_)
+            | Ctrl::CredentialCaptured { .. }
+            | Ctrl::Stats(_) => Direction::ServerToClient,
+        }
+    }
+
+    /// True when a client of this kind may send the message after the
+    /// handshake. Default-deny: handshake and server -> client messages are
+    /// allowed from nobody.
+    pub fn allowed_from(&self, kind: ClientKind) -> bool {
+        matches!(self.direction(), Direction::ClientToServer(kinds) if kinds.contains(&kind))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One message of every `type`, from the CTRL vectors.
+    fn vectors() -> Vec<(String, Ctrl)> {
+        let all: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("../../../vectors/ctrl.json")).unwrap();
+        all.into_iter()
+            .map(|v| {
+                let ty = v["message"]["type"].as_str().unwrap().to_string();
+                (ty, serde_json::from_value(v["message"].clone()).unwrap())
+            })
+            .collect()
+    }
+
+    fn allowed(kind: ClientKind) -> Vec<&'static str> {
+        let mut v: Vec<_> = vectors()
+            .iter()
+            .filter(|(_, m)| m.allowed_from(kind))
+            .map(|(_, m)| m.tag())
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
+    #[test]
+    fn tag_is_the_serialized_type() {
+        let vectors = vectors();
+        assert!(!vectors.is_empty());
+        for (ty, m) in &vectors {
+            assert_eq!(m.tag(), ty);
+            assert_eq!(serde_json::to_value(m).unwrap()["type"], *ty);
+        }
+    }
+
+    #[test]
+    fn vectors_cover_every_variant() {
+        // `tag()` is exhaustive by construction; this pins that the vectors cover them all.
+        let mut tags: Vec<_> = vectors().into_iter().map(|(ty, _)| ty).collect();
+        tags.sort_unstable();
+        tags.dedup();
+        assert_eq!(tags.len(), 22, "{tags:?}");
+    }
+
+    #[test]
+    fn browser_may_send_five_messages() {
+        assert_eq!(
+            allowed(ClientKind::Ui),
+            [
+                "credential_clear",
+                "credential_status",
+                "error",
+                "open",
+                "resize"
+            ]
+        );
+    }
+
+    #[test]
+    fn steps_are_executor_only() {
+        let steps = [
+            "step_resume",
+            "step_start",
+            "step_status",
+            "step_steer",
+            "step_stop",
+        ];
+        let exec = allowed(ClientKind::Executor);
+        for s in steps {
+            assert!(exec.contains(&s), "{s}");
+            assert!(!allowed(ClientKind::Ui).contains(&s), "{s}");
+            assert!(!allowed(ClientKind::Proxy).contains(&s), "{s}");
+        }
+    }
+
+    #[test]
+    fn handshake_and_replies_are_allowed_from_nobody() {
+        for kind in [ClientKind::Ui, ClientKind::Proxy, ClientKind::Executor] {
+            let a = allowed(kind);
+            for t in [
+                "hello",
+                "welcome",
+                "opened",
+                "open_error",
+                "step_accepted",
+                "step_state",
+                "session_event",
+                "step_finished",
+                "credential_captured",
+                "stats",
+            ] {
+                assert!(!a.contains(&t), "{kind:?} {t}");
+            }
+        }
+    }
+
+    /// The session core documents which messages each side receives
+    /// (`Event::Ctrl`); the server-side list must be exactly what some client
+    /// may send, bar `open` (its own `Event::Open`).
+    #[test]
+    fn server_side_events_match_the_table() {
+        let mut server: Vec<_> = vectors()
+            .iter()
+            .filter(|(_, m)| matches!(m.direction(), Direction::ClientToServer(_)))
+            .map(|(_, m)| m.tag())
+            .filter(|t| *t != "open")
+            .collect();
+        server.sort_unstable();
+        server.dedup();
+        assert_eq!(
+            server,
+            [
+                "credential_clear",
+                "credential_state",
+                "credential_status",
+                "error",
+                "resize",
+                "stats_request",
+                "step_resume",
+                "step_start",
+                "step_status",
+                "step_steer",
+                "step_stop",
+            ]
+        );
+    }
 }

@@ -28,7 +28,7 @@
 
 use bytes::Bytes;
 use enzarb_proto::{
-    ChannelKind, Ctrl, Frame, FrameType, MAX_REPO_LEN, MAX_RESUME_LEN, Secret, feature,
+    ChannelKind, ClientKind, Ctrl, Frame, FrameType, MAX_REPO_LEN, MAX_RESUME_LEN, Secret, feature,
     open_error_code,
 };
 
@@ -273,39 +273,25 @@ impl Guard {
     }
 }
 
-fn is_captured_type(payload: &[u8]) -> bool {
-    payload
-        .windows(b"credential_captured".len())
-        .any(|w| w == b"credential_captured")
+/// The `type` of a CTRL payload that may fail the full `Ctrl` decode.
+#[derive(serde::Deserialize)]
+struct TypeOnly<'a> {
+    #[serde(rename = "type", borrow)]
+    ty: std::borrow::Cow<'a, str>,
 }
 
-/// CTRL messages a browser (`client: "ui"`) may send after the handshake.
+/// True when the payload names the `credential_captured` type, whatever else is wrong with it.
+fn is_captured_type(payload: &[u8]) -> bool {
+    serde_json::from_slice::<TypeOnly>(payload).is_ok_and(|t| t.ty == "credential_captured")
+}
+
+/// CTRL messages a browser (`client: "ui"`) may send after the handshake: the
+/// ones [`Ctrl::allowed_from`] lets `ui` send. Default-deny.
 fn ctrl_allowed(m: &Ctrl) -> Result<(), &'static str> {
-    match m {
-        Ctrl::Open { .. }
-        | Ctrl::Resize { .. }
-        | Ctrl::Error { .. }
-        | Ctrl::CredentialStatus
-        | Ctrl::CredentialClear { .. } => Ok(()),
-        Ctrl::Hello { .. } => Err("hello"),
-        Ctrl::Welcome { .. } => Err("welcome"),
-        Ctrl::Opened { .. } => Err("opened"),
-        Ctrl::OpenError { .. } => Err("open_error"),
-        // Steps are engine-only (ADR-0022): browsers neither start nor drive them,
-        // and never send the server's replies.
-        Ctrl::StepStart(_) => Err("step_start"),
-        Ctrl::StepSteer { .. } => Err("step_steer"),
-        Ctrl::StepStop { .. } => Err("step_stop"),
-        Ctrl::StepResume { .. } => Err("step_resume"),
-        Ctrl::StepStatus { .. } => Err("step_status"),
-        Ctrl::StepAccepted { .. } => Err("step_accepted"),
-        Ctrl::StepState { .. } => Err("step_state"),
-        Ctrl::SessionEvent(_) => Err("session_event"),
-        Ctrl::StepFinished(_) => Err("step_finished"),
-        Ctrl::CredentialCaptured { .. } => Err("credential_captured"),
-        Ctrl::CredentialState { .. } => Err("credential_state"),
-        Ctrl::StatsRequest => Err("stats_request"),
-        Ctrl::Stats(_) => Err("stats"),
+    if m.allowed_from(ClientKind::Ui) {
+        Ok(())
+    } else {
+        Err(m.tag())
     }
 }
 
@@ -740,6 +726,61 @@ mod tests {
             .to_bytes()
             .unwrap();
         assert_eq!(g.intercept_sandbox_message(&d), SandboxFrame::Relay);
+    }
+
+    #[test]
+    fn undecodable_captured_frames_are_dropped_by_type() {
+        let mut g = acp_guard();
+        let raw = |p: &[u8]| {
+            Frame::new(FrameType::Ctrl, 0, Bytes::copy_from_slice(p))
+                .to_bytes()
+                .unwrap()
+        };
+        // A malformed `token` still names the type: dropped, token not extracted.
+        let bad_token = raw(br#"{"type":"credential_captured","kind":"claude_oauth","token":42}"#);
+        assert!(matches!(
+            g.intercept_sandbox_message(&bad_token),
+            SandboxFrame::Captured { token: None, .. }
+        ));
+        // Not JSON, or another type: relayed as before.
+        for p in [
+            &b"credential_captured"[..],
+            &b"not json"[..],
+            br#"{"type":"nope"}"#,
+            br#"{"type":["credential_captured"]}"#,
+            br#"{"message":"credential_captured"}"#,
+        ] {
+            assert_eq!(g.intercept_sandbox_message(&raw(p)), SandboxFrame::Relay);
+        }
+    }
+
+    #[test]
+    fn browser_may_send_only_the_ui_frames_of_the_table() {
+        let mut g = acp_guard();
+        let all: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("../../proto/vectors/ctrl.json")).unwrap();
+        let mut allowed = Vec::new();
+        for v in all {
+            let m: Ctrl = serde_json::from_value(v["message"].clone()).unwrap();
+            let framed = ctrl(&m);
+            if !matches!(m, Ctrl::Hello { .. }) && g.check_browser_message(&framed).is_ok() {
+                allowed.push(m.tag());
+            } else if let Err(Reject::ForbiddenCtrl(tag)) = g.check_browser_message(&framed) {
+                assert_eq!(tag, m.tag());
+            }
+        }
+        allowed.sort_unstable();
+        allowed.dedup();
+        assert_eq!(
+            allowed,
+            [
+                "credential_clear",
+                "credential_status",
+                "error",
+                "open",
+                "resize"
+            ]
+        );
     }
 
     #[test]
