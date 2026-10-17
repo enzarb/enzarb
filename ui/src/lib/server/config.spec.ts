@@ -150,6 +150,18 @@ describe('parseConfig', () => {
 		);
 	});
 
+	it('reports several missing variables in schema order, ignoring input order', () => {
+		expect(() =>
+			parseConfig({
+				ENZARB_PUBLIC_URL: 'not a url',
+				GITHUB_OAUTH_CLIENT_ID: valid.GITHUB_OAUTH_CLIENT_ID,
+				ENZARB_SESSION_JWT_SECRET: valid.ENZARB_SESSION_JWT_SECRET
+			})
+		).toThrow(
+			/^Missing required environment variables: DATABASE_URL, ENZARB_REALTIME_JWT_SECRET, GITHUB_OAUTH_CLIENT_SECRET$/
+		);
+	});
+
 	it('reports missing variables before invalid values', () => {
 		expect(() =>
 			parseConfig({ ...valid, DATABASE_URL: undefined, ENZARB_STATS_RETENTION: 'x' })
