@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description="Regenerate scripts/monorepo/graph.generated.sh from cargo metadata, package.json and components.json (--check: fail if stale)"
+set -euo pipefail
+exec "${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}/scripts/monorepo/gen-graph.sh" "$@"

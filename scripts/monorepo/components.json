@@ -1,0 +1,61 @@
+{
+  "rust_root_files": ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"],
+  "crate_granular": ["workflows/crates/flow"],
+  "components": {
+    "proto": {
+      "image": null,
+      "workflow_files": [".github/workflows/ci-proto.yml"]
+    },
+    "operator": {
+      "image": "enzarb-sandbox-operator", "context": "operator", "smoke": null, "timeout": 30,
+      "workflow_files": [".github/workflows/ci-operator.yml", ".github/workflows/_rust.yml", ".github/workflows/_docker.yml"]
+    },
+    "connectors": {
+      "image": "enzarb-connectors-receiver", "context": ".", "smoke": null, "timeout": 30,
+      "workflow_files": [".github/workflows/ci-connectors.yml", ".github/workflows/_rust.yml", ".github/workflows/_docker.yml"]
+    },
+    "workflows": {
+      "image": "enzarb-workflows", "context": ".", "smoke": null, "timeout": 30,
+      "workflow_files": [".github/workflows/ci-workflows.yml", ".github/workflows/_rust.yml", ".github/workflows/_docker.yml"]
+    },
+    "realtime": {
+      "image": "enzarb-realtime", "context": ".", "smoke": null, "timeout": 30,
+      "workflow_files": [".github/workflows/ci-realtime.yml", ".github/workflows/_rust.yml", ".github/workflows/_docker.yml"]
+    },
+    "sandbox-proxy": {
+      "image": "enzarb-sandbox-proxy", "context": ".", "smoke": null, "timeout": 30,
+      "workflow_files": [".github/workflows/ci-sandbox-proxy.yml", ".github/workflows/_rust.yml", ".github/workflows/_docker.yml"]
+    },
+    "sandbox-container": {
+      "image": "enzarb-sandbox", "context": ".", "smoke": "scripts/smoke.sh", "timeout": 40,
+      "extra_inputs": ["ui/package-lock.json"],
+      "workflow_files": [".github/workflows/ci-sandbox-container.yml", ".github/workflows/_rust.yml", ".github/workflows/_docker.yml"]
+    },
+    "ui": {
+      "image": "enzarb-ui", "context": ".", "smoke": null, "timeout": 20,
+      "extra_inputs": [
+        "workflows/migrations/**",
+        "workflows/crates/engine/tests/stdlib/prompts/**",
+        "workflows/crates/flow/tests/fixtures/**",
+        "docs/workflows/examples/**"
+      ],
+      "workflow_files": [".github/workflows/ci-ui.yml", ".github/workflows/_docker.yml", ".github/actions/ui-install/**"]
+    },
+    "updater": {
+      "image": "enzarb-updater", "context": ".", "smoke": null, "timeout": 30,
+      "workflow_files": [".github/workflows/ci-updater.yml", ".github/workflows/_rust.yml", ".github/workflows/_docker.yml"]
+    },
+    "kubernetes": {
+      "image": null,
+      "workflow_files": [".github/workflows/ci-kubernetes.yml"]
+    },
+    "helm": {
+      "image": null,
+      "workflow_files": [".github/workflows/ci-helm.yml"]
+    },
+    "monorepo": {
+      "pseudo": true,
+      "globs": ["scripts/**", ".mise/tasks/**", ".mise/lib/**", ".github/workflows/**"]
+    }
+  }
+}

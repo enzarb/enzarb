@@ -6,6 +6,9 @@ on:
       - 'ui/**'
       - 'proto/**'
       - 'workflows/migrations/**'
+      - 'workflows/crates/engine/tests/stdlib/prompts/**'
+      - 'workflows/crates/flow/tests/fixtures/**'
+      - 'docs/workflows/examples/**'
       - .github/workflows/ci-ui.yml
       - .github/workflows/_docker.yml
       - .github/actions/ui-install/**
@@ -14,6 +17,9 @@ on:
       - 'ui/**'
       - 'proto/**'
       - 'workflows/migrations/**'
+      - 'workflows/crates/engine/tests/stdlib/prompts/**'
+      - 'workflows/crates/flow/tests/fixtures/**'
+      - 'docs/workflows/examples/**'
       - .github/workflows/ci-ui.yml
       - .github/workflows/_docker.yml
       - .github/actions/ui-install/**
