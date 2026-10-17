@@ -758,12 +758,23 @@ async fn workspace_prune_spares_tasks_with_a_running_step() {
     )
     .await;
     // 100% free required: always "low", so every idle cache goes.
+    // Like a full disk: nothing new can be created at the workspace root.
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&env.ws, std::fs::Permissions::from_mode(0o555)).unwrap();
     let removed = sandbox_init::workspace_prune::prune_once(&env.ws, &steps, 100);
+    std::fs::set_permissions(&env.ws, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(removed, 1);
     assert!(cache("task-1").exists(), "the busy task kept its cache");
     assert!(
         !cache("task-idle").exists(),
         "the idle task's cache was removed"
+    );
+    assert!(
+        std::fs::read_dir(env.ws.join("tasks/task-idle/o/r"))
+            .unwrap()
+            .flatten()
+            .all(|e| !e.file_name().to_string_lossy().contains("enzarb-prune")),
+        "nothing left aside"
     );
     assert!(
         env.ws.join("tasks/task-idle/o/r/src").exists(),

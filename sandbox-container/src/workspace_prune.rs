@@ -24,8 +24,10 @@ pub const CHECK_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const MAX_DEPTH: usize = 5;
 const TAG: &str = "CACHEDIR.TAG";
 const SIGNATURE: &[u8] = b"Signature: 8a477f597d28d172789f06886806bc55";
-/// Renamed-aside caches waiting for deletion.
-const TRASH: &str = ".enzarb-prune";
+/// Suffix of a cache renamed aside next to where it was, waiting for deletion. Renaming within
+/// its own directory needs no new directory, so it works on a full disk; a leftover (a crash
+/// mid-delete) still holds its tag and is found again by the next pass.
+const ASIDE: &str = ".enzarb-prune-";
 
 #[derive(Debug, Clone)]
 pub struct WorkspacePruneConfig {
@@ -120,8 +122,6 @@ fn prune_once_until(
     min_free_percent: u8,
     stopped: &dyn Fn() -> bool,
 ) -> usize {
-    let trash = workspace.join(TRASH);
-    empty_trash(&trash);
     let low = || disk_usage(workspace).is_some_and(|d| d.is_low(min_free_percent));
     if !low() {
         return 0;
@@ -147,12 +147,15 @@ fn prune_once_until(
             if busy.contains(&name) {
                 return Vec::new();
             }
-            let _ = std::fs::create_dir_all(&trash);
             caches
                 .iter()
                 .filter_map(|c| {
+                    if c.file_name().is_some_and(|f| f.to_string_lossy().contains(ASIDE)) {
+                        return Some(c.clone()); // already aside
+                    }
                     let n = SEQ.fetch_add(1, Ordering::Relaxed);
-                    let to = trash.join(format!("{name}-{}-{n}", std::process::id()));
+                    let base = c.file_name()?.to_string_lossy().into_owned();
+                    let to = c.with_file_name(format!(".{base}{ASIDE}{}-{n}", std::process::id()));
                     match std::fs::rename(c, &to) {
                         Ok(()) => Some(to),
                         Err(e) => {
@@ -177,14 +180,6 @@ fn prune_once_until(
         }
     }
     removed
-}
-
-fn empty_trash(trash: &Path) {
-    if let Ok(rd) = std::fs::read_dir(trash) {
-        for e in rd.flatten() {
-            let _ = std::fs::remove_dir_all(e.path());
-        }
-    }
 }
 
 /// Task directories, least recently modified first (by their newest entry two levels down).
