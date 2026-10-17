@@ -14,6 +14,7 @@ use crate::ctrl::{Secret, Usage};
 
 /// Lifecycle of a step in the sandbox.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS, schemars::JsonSchema), ts(optional_fields = nullable))]
 #[serde(rename_all = "snake_case")]
 pub enum StepPhase {
     Running,
@@ -26,6 +27,7 @@ pub enum StepPhase {
 
 /// `read` or `write`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS, schemars::JsonSchema), ts(optional_fields = nullable))]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
     Read,
@@ -35,6 +37,7 @@ pub enum Mode {
 /// A repository checked out for the step under `/workspace/tasks/<task_id>/<owner>/<repo>`.
 /// The first workspace is the primary one (the step's working directory).
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS, schemars::JsonSchema), ts(optional_fields = nullable))]
 pub struct StepWorkspace {
     /// `owner/repo`.
     pub repo: String,
@@ -48,6 +51,7 @@ pub struct StepWorkspace {
     /// Commit and push `branch` after the step (write workspaces only), with a
     /// lease on the remote head seen when the step started.
     #[serde(default)]
+    #[cfg_attr(feature = "codegen", ts(as = "Option<bool>", optional))]
     pub push: bool,
     /// Short-lived token for fetching and pushing this repo.
     pub token: Secret,
@@ -67,23 +71,31 @@ impl std::fmt::Debug for StepWorkspace {
 
 /// An agent runtime, resolved by the engine from the library's runtime file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS, schemars::JsonSchema), ts(optional_fields = nullable))]
 pub struct Runtime {
     pub name: String,
     /// mise tool specs to install (`npm:@agentclientprotocol/claude-agent-acp@0.5`).
     #[serde(default)]
+    #[cfg_attr(feature = "codegen", ts(as = "Option<Vec<String>>", optional))]
     pub install: Vec<String>,
     /// `acp` or `stdio-json`.
     pub protocol: String,
     /// argv of the agent process (run with `mise exec`).
     pub command: Vec<String>,
     #[serde(default)]
+    #[cfg_attr(
+        feature = "codegen",
+        ts(as = "Option<BTreeMap<String, String>>", optional)
+    )]
     pub env: BTreeMap<String, String>,
     /// `{sessions, resume, steering, interactive, structured_output}`.
     #[serde(default)]
+    #[cfg_attr(feature = "codegen", ts(as = "Option<Value>", optional))]
     pub capabilities: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS, schemars::JsonSchema), ts(optional_fields = nullable))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StepExec {
     Agent {
@@ -99,23 +111,27 @@ pub enum StepExec {
         run: String,
         /// mise tool specs installed before the command.
         #[serde(default)]
+        #[cfg_attr(feature = "codegen", ts(as = "Option<Vec<String>>", optional))]
         tools: Vec<String>,
     },
 }
 
 /// A declared output file, read from the primary workspace after the step.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS, schemars::JsonSchema), ts(optional_fields = nullable))]
 pub struct StepOutput {
     pub file: String,
     /// `markdown`, `json` (parsed) or `text`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
     #[serde(default)]
+    #[cfg_attr(feature = "codegen", ts(as = "Option<bool>", optional))]
     pub optional: bool,
 }
 
 /// Body of `step_start`.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS, schemars::JsonSchema), ts(optional_fields = nullable))]
 pub struct StepStart {
     pub run_id: String,
     pub attempt: u32,
@@ -124,13 +140,25 @@ pub struct StepStart {
     pub workspaces: Vec<StepWorkspace>,
     pub exec: StepExec,
     #[serde(default)]
+    #[cfg_attr(
+        feature = "codegen",
+        ts(as = "Option<BTreeMap<String, StepOutput>>", optional)
+    )]
     pub outputs: BTreeMap<String, StepOutput>,
     /// Named secrets as environment variables (injected into this step's process only).
     #[serde(default)]
+    #[cfg_attr(
+        feature = "codegen",
+        ts(as = "Option<BTreeMap<String, Secret>>", optional)
+    )]
     pub env: BTreeMap<String, Secret>,
     /// Named secrets as files: path relative to the primary workspace (mode 0600, excluded from
     /// commits, removed when the step ends). Additive.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[cfg_attr(
+        feature = "codegen",
+        ts(as = "Option<BTreeMap<String, Secret>>", optional)
+    )]
     pub files: BTreeMap<String, Secret>,
     /// Short-lived GitHub token with exactly the step's requested permissions (`GH_TOKEN`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -181,6 +209,7 @@ pub mod session_kind {
 
 /// One captured, redacted session event. `seq` starts at 1 and is dense per run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS, schemars::JsonSchema), ts(optional_fields = nullable))]
 pub struct SessionEvent {
     pub run_id: String,
     pub seq: u64,
@@ -189,11 +218,13 @@ pub struct SessionEvent {
     pub kind: String,
     pub payload: Value,
     #[serde(default)]
+    #[cfg_attr(feature = "codegen", ts(as = "Option<bool>", optional))]
     pub truncated: bool,
 }
 
 /// Git state of one write workspace after the step, as the sandbox saw it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS, schemars::JsonSchema), ts(optional_fields = nullable))]
 pub struct StepGit {
     pub repo: String,
     pub branch: String,
@@ -203,16 +234,19 @@ pub struct StepGit {
 
 /// Body of `step_finished` (and `step_state.result`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS, schemars::JsonSchema), ts(optional_fields = nullable))]
 pub struct StepFinished {
     pub run_id: String,
     /// `success`, `failure` or `interrupted` (see [`exit`]).
     pub exit: String,
     #[serde(default)]
+    #[cfg_attr(feature = "codegen", ts(as = "Option<Map<String, Value>>", optional))]
     pub outputs: Map<String, Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
     /// One entry per write workspace, in `step_start.workspaces` order.
     #[serde(default)]
+    #[cfg_attr(feature = "codegen", ts(as = "Option<Vec<StepGit>>", optional))]
     pub git: Vec<StepGit>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,

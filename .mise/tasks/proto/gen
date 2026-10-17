@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+#MISE description="Regenerate proto/ts/src/ctrl.gen.ts from the Rust CTRL types (--check: fail if it is stale)"
+set -euo pipefail
+cd "${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}/proto"
+out=ts/src/ctrl.gen.ts
+case "${1:-}" in
+  --check)
+    tmp="$(mktemp)"
+    trap 'rm -f "$tmp"' EXIT
+    cargo run --quiet -p enzarb-proto --features codegen --example gen_ts -- "$tmp"
+    if ! diff -u "$out" "$tmp"; then
+      echo "::error file=proto/$out::stale: run 'mise run proto:gen' and commit the result" >&2
+      exit 1
+    fi
+    ;;
+  "")
+    cargo run --quiet -p enzarb-proto --features codegen --example gen_ts
+    ;;
+  *)
+    echo "usage: proto:gen [--check]" >&2
+    exit 2
+    ;;
+esac

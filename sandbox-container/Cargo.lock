@@ -528,6 +528,7 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
+ "strum",
  "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite 0.30.0",
