@@ -50,7 +50,9 @@ retag() {
   : "${VERSION:?}"
   local want got t
   want=$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$src")
-  docker buildx imagetools create -t "$IMAGE:$VERSION" -t "$IMAGE:latest" "$src"
+  # --prefer-index=false: a single-manifest source stays that manifest (same digest) instead of
+  # being wrapped in a new index; an index source is copied as is either way.
+  docker buildx imagetools create --prefer-index=false -t "$IMAGE:$VERSION" -t "$IMAGE:latest" "$src"
   for t in "$IMAGE:$VERSION" "$IMAGE:latest"; do
     got=$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$t")
     if [ "$got" != "$want" ]; then

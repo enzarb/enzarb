@@ -13,14 +13,19 @@ cat > "$tmp/bin/docker" <<'STUB'
 #      STUB_BAD_DIGEST=1 (tags resolve to another digest after create)
 echo "$*" >> "$STUB_LOG"
 case "$*" in
-  *"imagetools create"*) touch "$STUB_LOG.created"; exit 0 ;;
+  # Like buildx: a single-manifest source is wrapped in a new index (another digest) unless
+  # --prefer-index=false keeps it as is.
+  *"imagetools create"*) touch "$STUB_LOG.created"
+    case "$*" in *"--prefer-index=false"*) ;; *) touch "$STUB_LOG.wrapped" ;; esac
+    exit 0 ;;
   *"{{json .Image}}"*)
     cfg="{\"config\":{\"Labels\":{\"org.opencontainers.image.revision\":\"$STUB_REVISION\"}}}"
     if [ "${STUB_INDEX:-}" = 1 ]; then echo "{\"linux/amd64\":$cfg}"; else echo "$cfg"; fi ;;
   *"{{.Manifest.Digest}}"*)
     case "$*" in
       *":sha-"*) [ "${STUB_FAIL:-}" = 1 ] && exit 1; echo sha256:ci ;;
-      *) if [ -f "$STUB_LOG.created" ] && [ "${STUB_BAD_DIGEST:-}" = 1 ]; then echo sha256:other; else echo sha256:ci; fi ;;
+      *) if [ -f "$STUB_LOG.created" ] && { [ "${STUB_BAD_DIGEST:-}" = 1 ] || [ -f "$STUB_LOG.wrapped" ]; }; then
+           echo sha256:other; else echo sha256:ci; fi ;;
     esac ;;
 esac
 STUB
@@ -30,7 +35,7 @@ sha=0123456789abcdef0123456789abcdef01234567
 fail=0
 run() { # <mode> [VAR=value...]   -> stdout in $out, status in $rc
   local mode=$1; shift
-  rm -f "$tmp/log" "$tmp/log.created"; : > "$tmp/log"
+  rm -f "$tmp/log" "$tmp/log.created" "$tmp/log.wrapped"; : > "$tmp/log"
 
   out=$(env PATH="$tmp/bin:$PATH" STUB_LOG="$tmp/log" STUB_REVISION="$sha" IMAGE=ghcr.io/x/y SHA="$sha" \
     VERSION=1.2.3 RETAG=true DRY_RUN=false "$@" "$script" "$mode" 2>/dev/null)
@@ -48,7 +53,7 @@ run check STUB_REVISION=deadbeef;    [ "$out" = build ];                 expect 
 run check RETAG=false;               [ "$out" = build ];                 expect "RETAG=false -> build" $?
 run check DRY_RUN=true;              [ "$out" = retag ] && ! grep -q create "$tmp/log"
 expect "dry run check makes no create call" $?
-run retag;                           [ $rc = 0 ] && grep -q "create -t ghcr.io/x/y:1.2.3 -t ghcr.io/x/y:latest ghcr.io/x/y:sha-0123456" "$tmp/log"
+run retag;                           [ $rc = 0 ] && grep -q "create --prefer-index=false -t ghcr.io/x/y:1.2.3 -t ghcr.io/x/y:latest ghcr.io/x/y:sha-0123456" "$tmp/log"
 expect "retag creates version and latest" $?
 run retag STUB_BAD_DIGEST=1;         [ $rc != 0 ];                       expect "digest mismatch after retag fails" $?
 exit "$fail"
