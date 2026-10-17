@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 
-import { parseConfig } from './config.ts';
+import { parseConfig, type Config, type VapidConfig } from './config.ts';
 
 const valid = {
 	DATABASE_URL: 'postgres://u:p@h:5432/enzarb',
@@ -148,6 +148,54 @@ describe('parseConfig', () => {
 		expect(() => parseConfig({ DATABASE_URL: valid.DATABASE_URL })).toThrow(
 			/ENZARB_SESSION_JWT_SECRET, ENZARB_REALTIME_JWT_SECRET, GITHUB_OAUTH_CLIENT_ID, GITHUB_OAUTH_CLIENT_SECRET, ENZARB_PUBLIC_URL/
 		);
+	});
+
+	it('reports missing variables before invalid values', () => {
+		expect(() =>
+			parseConfig({ ...valid, DATABASE_URL: undefined, ENZARB_STATS_RETENTION: 'x' })
+		).toThrow(/^Missing required environment variables: DATABASE_URL$/);
+	});
+
+	it('drops a malformed GitHub App key without echoing it, and needs both halves', () => {
+		const secret = 'super-secret-garbage';
+		const c = parseConfig({
+			...valid,
+			ENZARB_GITHUB_APP_ID: '123',
+			ENZARB_GITHUB_APP_PRIVATE_KEY: secret
+		});
+		expect(JSON.stringify(c)).not.toContain(secret);
+		expect(parseConfig({ ...valid, ENZARB_GITHUB_APP_ID: '123' }).githubAppId).toBeUndefined();
+	});
+
+	it('accepts the legacy flag case-insensitively and defaults blank optionals', () => {
+		const c = parseConfig({
+			...valid,
+			ENZARB_REALTIME_LEGACY_TOKEN_URL: 'TRUE',
+			ENZARB_STATS_RETENTION: ' ',
+			NEEDS_YOU_STALE_HOURS: ' '
+		});
+		expect(c.realtimeLegacyTokenUrl).toBe(true);
+		expect(c.sandboxStatsRetentionDays).toBe(90);
+		expect(c.needsYouStaleHours).toBe(24);
+		expect(
+			parseConfig({ ...valid, ENZARB_REALTIME_LEGACY_TOKEN_URL: ' False ' }).realtimeLegacyTokenUrl
+		).toBe(false);
+	});
+
+	it('defaults the VAPID subject to the normalised origin', () => {
+		const c = parseConfig({
+			...valid,
+			ENZARB_PUBLIC_URL: 'https://enzarb.example.com/a/b',
+			ENZARB_VAPID_PUBLIC_KEY: 'pub',
+			ENZARB_VAPID_PRIVATE_KEY: 'priv'
+		});
+		expect(c.vapid?.subject).toBe('https://enzarb.example.com');
+	});
+
+	it('derives optional keys as optional in the Config type', () => {
+		expectTypeOf<Config['githubAppId']>().toEqualTypeOf<string | undefined>();
+		expectTypeOf<Config['vapid']>().toEqualTypeOf<VapidConfig | undefined>();
+		expect(parseConfig(valid).vapid).toBeUndefined();
 	});
 
 	it('treats blank values as missing', () => {
