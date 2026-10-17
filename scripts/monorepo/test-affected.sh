@@ -30,7 +30,8 @@ check() { # check <description> <expected> <paths...>
 # --- 1. sample diffs -------------------------------------------------------------------------
 check "docs only" "" docs/architecture.md
 check "root files" "" mise.toml lefthook.yml CLAUDE.md
-check "root cargo files select every rust component" "proto operator connectors workflows realtime sandbox-proxy sandbox-container updater" Cargo.lock
+check "generated graph is read by the monorepo checks" "monorepo" scripts/monorepo/graph.generated.sh
+check "root cargo files select every rust component" "proto operator connectors workflows realtime sandbox-proxy sandbox-container updater monorepo" Cargo.lock
 check "root toolchain file" "proto operator connectors workflows realtime sandbox-proxy sandbox-container updater" rust-toolchain.toml
 check "workflows only" "workflows" workflows/crates/engine/src/lib.rs
 check "proto fans out" "proto workflows sandbox-proxy sandbox-container ui" proto/crates/enzarb-proto/src/lib.rs
@@ -38,6 +39,9 @@ check "operator fans out" "operator workflows sandbox-proxy" operator/crates/enz
 check "connectors fans out" "connectors workflows" connectors/bin/receiver/src/main.rs
 check "realtime only" "realtime" realtime/src/lib.rs
 check "ui only" "ui" ui/src/routes/+page.svelte
+check "engine prompts feed the ui tests" "workflows ui" workflows/crates/engine/tests/stdlib/prompts/plan.md
+check "graph fixtures feed the ui tests" "connectors workflows ui" workflows/crates/flow/tests/fixtures/app/x.yaml
+check "workflow examples feed the ui tests" "ui" docs/workflows/examples/issue.yaml
 check "engine migrations feed the ui tests" "workflows ui" workflows/migrations/20261016000002_engine_api.sql
 check "flow crate is compiled into connectors" "connectors workflows" workflows/crates/flow/src/lib.rs
 check "helm only" "helm" helm/enzarb/values.yaml
@@ -115,11 +119,13 @@ for path in $(printf '%s\n' "${probes[@]}" | sort -u); do
   check "CI filters vs affected.sh for $path" "${expected# }" "$path"
 done
 
-# Every component with a ci-<component>.yml must be known to affected.sh (and vice versa).
-known=$(grep -o "^  '[a-z-]*|" "$AFFECTED" | tr -d " '|" | sort | paste -sd' ' -)
+# Every component with a ci-<component>.yml must be known to the generated rules (and vice versa;
+# the monorepo pseudo-component and the unfiltered ones are the only extras).
+source scripts/monorepo/graph.generated.sh
+known=$(printf '%s\n' "${COMPONENT_ORDER[@]}" | sort | paste -sd' ' -)
 have=$(for c in "${!ci_globs[@]}"; do echo "$c"; done | sort | paste -sd' ' -)
 if [ "$known" != "$have" ]; then
-  echo "FAIL: components in affected.sh [$known] differ from ci-*.yml [$have]" >&2
+  echo "FAIL: components in graph.generated.sh [$known] differ from ci-*.yml [$have]" >&2
   fail=1
 fi
 

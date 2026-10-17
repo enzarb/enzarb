@@ -16,6 +16,9 @@ pre-commit:
       root: ui/
       glob: "*"
       run: '[ -d node_modules ] || { echo "ui: node_modules missing, running npm ci"; npm ci; }; npm run lint'
+    graph-fresh:
+      glob: "{Cargo.toml,**/Cargo.toml,**/package.json,scripts/monorepo/components.json,scripts/monorepo/gen-graph.sh,scripts/monorepo/graph.generated.sh}"
+      run: scripts/monorepo/gen-graph.sh --check
     shellcheck:
       glob: "{.mise/tasks/**,.mise/lib/*.sh,.github/scripts/*.sh,scripts/**,*.sh}"
       run: shellcheck {staged_files}
