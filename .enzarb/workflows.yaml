@@ -8,7 +8,7 @@ imports: {std: enzarb/workflows@v1}
 bindings:
   - id: issues
     on: issue
-    if: "event.action == 'opened'"
+    if: "event.action in ['opened', 'reopened']"
     use: std/workflows/issue
     with:
       release_when: [release.published]

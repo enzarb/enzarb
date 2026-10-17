@@ -1,64 +1,84 @@
-# Plan: finish the work item → task rename in `ui/` and add a guard (#237)
-
 ## Summary
-The issue's numbers are stale. Earlier work (#114, #229) already renamed the files, remote functions, components and routes. On `main`, `ui/` still has about 41 case-insensitive matches of `work[ _-]?item`, in about 12 files, and most are comments or SQL names. This PR renames the leftover identifiers and text. It keeps the shared SQL and wire names behind explicit, commented allowlist entries. It also adds a guard script to `npm run lint` that fails if the old name reappears. This is one PR touching `ui/` only.
+
+In `ui/`, replace the two GitHub App token minters with one `token(repo, perms)` singleton. It has one JWT signer and one cache. Add one `githubFetch` helper that owns `https://api.github.com`, and use it in `auth.ts`, `github-repos.ts`, `releases.ts` and `user-repositories.ts`. Delete `github-app-token.ts` and its spec, and move its coverage into `github-app.spec.ts` and `github-repos.spec.ts`.
 
 ## Approach
-- **Rename mechanically.** Identifiers, comments, UI text and tests become "task".
-- **Single data-access layer.** `src/lib/server/push-store.ts` is the only code that calls the `app_api.push_*` functions. Their SQL parameter `work_item_id` (migrations 0006/0007) is a shared contract and stays unchanged. In TS the parameter becomes `taskId`. The SQL is called positionally (`push_claim(${owner}, ${taskId}, …)`), so the rename is safe. A comment at the top of `createPushStore` explains that the SQL still says `work_item` and this file is the only mapping point.
-- **Realtime frame topic `'work_item'`** (`live.ts:134`) is a wire contract. Deployed components roll out independently, so it is kept and its existing comment is expanded. It is allowlisted.
-- **Routes.** `/work` and `/work/[id]` already 308-redirect to `/tasks` and `/task/[id]`. They are kept, because old push notifications and PR comments link there. The regex needs "work" followed by "item", so the `/work/...` paths never match and need no allowlist entry. The PR description will record the decision: redirects are retained, with no route changes.
-- **Guard.** `ui/scripts/check-naming.mjs`, run from `lint` as `prettier --check . && eslint . && node scripts/check-naming.mjs`. It follows the existing `scripts/*.mjs` style.
-  - It lists files with `git ls-files -z -- .` run inside `ui/`, which avoids `node_modules` and build output. It falls back to a directory walk if git is unavailable, as in the Docker context.
-  - It skips `migrations/` (immutable), `package-lock.json` and binary files.
-  - Pattern: `/work[ _-]?item/i`. This also covers `WorkItem`, `workItem`, `work-item`, `work_item` and "work items". A camelCase `workItemId` is caught by the same pattern.
-  - The allowlist is a small in-script array of `{ file, pattern, why }` entries. A line is allowed only if it matches that file's pattern. Entries:
-    - `src/lib/live.ts` and `src/lib/live.spec.ts`: the `work_item` frame topic.
-    - `src/lib/usage.ts`: the comment citing `work_item_v.usage_totals`.
-    - `src/lib/server/push-store.ts`: the SQL-mapping comment.
-    - The script itself and its spec: the pattern text.
-  - It prints `file:line: text` for each violation and exits 1. It also fails if an allowlist entry matches nothing (stale entry), so the list cannot rot.
-- **Rejected alternatives:**
-  - An ESLint custom rule or `no-restricted-syntax`: it misses comments, markdown and SQL strings.
-  - A bare `grep` in package.json: it is not portable, and it can't express per-file allowlists.
-  - Renaming SQL names: forbidden by the issue and by the shared-contract rule in CLAUDE.md.
+
+- **Where `githubFetch` goes.** It goes in `github-app.ts`, next to `githubHeaders` and `signAppJwt`. That file already owns `GITHUB_API`, which becomes private, so no new module is needed. Signature: `githubFetch(path, init & { token?: string; fetch?: typeof fetch }): Promise<Response>`.
+  - **Request and headers.** It builds `API + path` and sets the standard headers from `githubHeaders`, with `Authorization` only when a token is given. `init.headers` can override them. It passes `redirect`, `signal` and the rest of `init` through.
+  - **Callers keep their own policy.** Timeouts, `redirect: 'error'` and error mapping stay with the caller, so nothing changes silently.
+  - **Absolute URLs.** It accepts either a path starting with `/` or an absolute URL that starts with `${API}/`. Anything else throws. This keeps the "never send a token anywhere but the GitHub API" guard from `user-repositories.ts`, and `nextLink` pagination URLs are absolute.
+- **Singleton.**
+  - `createRepoTokenSource` stays as the injectable factory, so tests keep working.
+  - `github-app.ts` gains a lazy module-level instance built from `getConfig()` (`githubAppId`, `githubAppPrivateKey`), with exports `token(repo, perms)` and `invalidateToken(repo, perms)`.
+  - Its cache and permission semantics are exactly today's `createRepoTokenSource`: per-repo installation id with a 1h TTL, tokens keyed by repo (lowercased) and sorted permissions, a 5 min refresh margin, a shared in-flight mint, `null` on any failure, no caching of failures, and `redirect: 'error'` with a 10s timeout.
+  - The factory's internal calls move onto `githubFetch`, so there is a single JWT signer (`signAppJwt`) in the minter.
+- **Releases token.**
+  - `getInstallationToken` becomes `token(RELEASES_REPO, { contents: 'read' })`. `invalidateInstallationToken` becomes `invalidateToken(RELEASES_REPO, { contents: 'read' })`. The `about` route calls these directly, or through two tiny helpers in `releases.ts`.
+  - **Import cycle.** `github-app-token.ts` currently imports `RELEASES_REPO` from `releases.ts`. After the change `releases.ts` imports `githubFetch` from `github-app.ts`. If `github-app.ts` does not import `releases.ts`, there is no cycle, because the `about` route is the only place that combines them.
+- **`user-repositories.ts`.**
+  - It has no literal URL, but it imports `GITHUB_API` and builds its own `${API}/…` URLs. It also has its own JWT call and a per-installation-id token cache (`metadata: read`, not repo-scoped).
+  - That token is a different kind: an installation-scoped token with no `repositories` filter, used to list everything an installation can see. `token(repo, perms)` cannot express it.
+  - Scope here is therefore limited. It switches to `githubFetch` and drops its local `API` const and URL guard (now inside the helper). It keeps `signAppJwt` and its installation-token cache, with the same behaviour. It does not use `token()`.
+  - **Rejected alternative:** a second `installationToken(id, perms)` method on the minter. That would be new API surface beyond the issue and would change that file's cache semantics.
+- **`releases.ts`.** `request()` calls `githubFetch(`/repos/${RELEASES_REPO}/releases?per_page=100`, { token: bearer, fetch: doFetch, signal })`. Its headers are unchanged except for the `X-GitHub-Api-Version` header and `Content-Type`, which the shared headers add. The 401/403 retry stays as is.
+- **`auth.ts`.** `githubFetch('/user', { token: accessToken })`. The `GET` call now also sends the shared headers, which is harmless.
+- **`github-repos.ts`.**
+  - Delete the local `API` const and `headers()`. `send()` and `installationCoversAll` call `githubFetch` with `token`, `fetch`, `redirect: 'error'` and a timeout.
+  - `Content-Type: application/json` is now sent on GETs too (the existing minter already does this).
+  - Error-to-`RepoCreateError` mapping is unchanged.
+
+## Behaviour differences (all on the releases token only)
+
+| Aspect | Before | After |
+|---|---|---|
+| Mint timeout | 5s | 10s |
+| Redirects | followed | `redirect: 'error'` |
+| Installation id | number or string | number only |
+| Cache | single entry | per-repo cache, same 5 min margin |
+
+Failures still resolve `null`, and the about page falls back to unauthenticated fetches as it does today.
 
 ## Changes
-- `ui/scripts/check-naming.mjs` (new): the guard described above. It exports the check function so a spec can import it.
-- `ui/scripts/check-naming.spec.ts` (new): see Tests. Check that vitest's `include` picks up `scripts/`; otherwise place the spec under `src/lib/`.
-- `ui/package.json`: add the guard to the `lint` script.
-- `ui/src/lib/server/push-store.ts`: `workItemId` → `taskId` (4 places, lines ~96–134). Doc comment "work item" → "task". Add the SQL-mapping comment.
-- `ui/src/lib/live.ts` (~134): expand the comment saying `work_item` is the legacy frame name kept for the realtime contract.
-- `ui/src/lib/usage.ts:3`: keep the SQL view name and add a note that it is a SQL name. Allowlisted.
-- `ui/src/lib/components/ui/StepList.svelte:30`: comment "work item's history" → "task's history".
-- `ui/src/lib/server/project-onboarding.ts:206,282`: "work items" → "tasks", in the comment and the log message. Update any test that asserts on the log text.
-- `ui/src/lib/server/project-onboarding.spec.ts:459`: the `describe` title.
-- `ui/src/lib/sw-handlers.spec.ts:104`: `getWorkItem` → `getTask`. That remote function exists in `tasks.remote.ts`, and `getWorkItem` does not. The `/work/...` URLs in this spec and in `push.spec.ts` stay as legacy-URL fixtures.
-- `ui/README.md:37`: reword the "work item" mention.
-- Not edited: `migrations/0006–0008` (excluded by the guard).
+
+- `ui/src/lib/server/github-app.ts`:
+  - add `githubFetch`;
+  - make `GITHUB_API` private;
+  - route the minter through `githubFetch`;
+  - add the lazy singleton with `token` and `invalidateToken`;
+  - add a test-only reset hook for the singleton, e.g. `resetTokenSingleton()`.
+- `ui/src/lib/server/github-app-token.ts` and `github-app-token.spec.ts`: delete.
+- `ui/src/lib/server/auth.ts`, `github-repos.ts`, `releases.ts`, `user-repositories.ts`: use `githubFetch`, as above.
+- `ui/src/routes/(app)/about/+page.server.ts` and `page.server.spec.ts`: switch the import and mock to `github-app.ts` (`token` and `invalidateToken`).
 
 ## Tests
-- Guard spec: use a temp directory fixture.
-  - A clean tree passes.
-  - A file containing `WorkItem`, `work-item`, `work item` or `workItemId` fails.
-  - An allowlisted line passes.
-  - A stale allowlist entry fails.
-  - Migrations are ignored.
-- Manual acceptance check: add `// WorkItem` to a `src/` file, confirm `npm run lint` fails with `file:line`, then revert.
-- Existing specs cover `push-store`, `live`, `sw-handlers` and `project-onboarding` after the renames. Check that `work/[id]/page.server.spec.ts` still passes.
-- Run in `ui/`: `npm run check && npm run lint && npm test`.
+
+- **`github-app.spec.ts`** gains the cases it lacks from the deleted spec:
+  - the minted token is down-scoped to the repository with `contents: read`, and the JWT is RS256 with a 60s backdate;
+  - refresh happens after `expires_at - margin`;
+  - `invalidate` forces a re-mint;
+  - the in-flight mint is shared;
+  - 404 and mint errors give `null` and are not cached;
+  - no credentials means no GitHub call;
+  - a bad key or network error gives `null` with no key material in the result;
+  - the singleton reads config lazily and reuses one cache;
+  - `githubFetch` has its own cases: base URL and headers, optional auth, rejection of a foreign absolute URL.
+- **`github-repos.spec.ts`:** `githubFetch` is covered via the existing `createRepository` / `installationCoversAll` cases. Add a case that a mocked `fetch` receives `https://api.github.com…` URLs with the Bearer header and `redirect: 'error'`.
+- **`releases.spec.ts`, `auth.spec.ts`, `user-repositories.spec.ts`, about `page.server.spec.ts`:** keep passing, and adjust only the headers or mocks they assert on.
+- **Checks:** in `ui/`, run `npm run check && npm run lint && npm test`. Then run `git grep -n "api.github.com" ui/src`. It should show only the helper, plus spec mock URLs, which may stay.
 
 ## Risks and open questions
-- **`app_api` calls.** The only risk is a typo in the `push-store.ts` rename. The existing push-store tests, plus `npm run check`, should catch it.
-- **Realtime.** The `work_item` topic must keep being handled. The `live.spec.ts` test stays as is.
-- **Assumption:** keeping the `/work` redirects permanently is acceptable. Say so if you want them removed after some deprecation window.
-- **Assumption:** `git ls-files` is available in CI. `actions/checkout` provides it, and the fallback walk covers Docker.
-- **Wording to confirm:** whether the "tasks" in `project-onboarding` messages should say "tasks" or "workflow tasks". I plan plain "tasks".
+
+- "Cache and permission semantics identical to today" is read as the repo-token source's behaviour. That is the source of the releases-token differences listed above. If a maintainer wants the releases mint to keep its 5s timeout, `createRepoTokenSource` can take a `timeoutMs` option.
+- The `user-repositories.ts` scoping above is an interpretation of "use it in the four files". The issue says `token(repo, perms)` is the only minter, but that file's unscoped installation tokens do not fit the signature. Please confirm leaving them there is acceptable.
+- The singleton holds process-global state, so specs must reset it between cases. The test-only reset hook covers this.
+- No cross-component contracts or Helm values are touched. This should be one PR, typed `refactor(ui): …` or `fix(ui): …`.
 
 ## Out of scope
-- Renaming SQL objects, columns or migrations in `workflows_api` / `app_api`.
-- Changing the realtime frame topic.
-- `docs/`, `connectors/` and `workflows/` occurrences of the term, which belong to the shared contract.
-- Any change to the `/work` redirects.
+
+- Moving `user-repositories.ts` installation tokens onto the new minter.
+- Changing token TTLs, permissions or the `RepoPermissions` type.
+- Any change to OAuth flows, retry policy or release-fetch caching.
+- Other components.
 
 Reply with feedback to revise this plan, or comment /approve to start the implementation.
