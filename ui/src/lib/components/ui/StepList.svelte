@@ -27,7 +27,7 @@
 
 	/**
 	 * The step checklist: the way every long operation shows progress (boot, terminal connection,
-	 * credential check) and how a work item's history reads. Fixed glyphs per state, never an
+	 * credential check) and how a task's history reads. Fixed glyphs per state, never an
 	 * open-ended spinner. `label` names the list for assistive tech.
 	 */
 	let { items, label, ...rest }: { items: StepItem[]; label: string; 'data-state'?: string } =
