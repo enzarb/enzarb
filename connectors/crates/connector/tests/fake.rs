@@ -364,3 +364,33 @@ async fn close_issue_records_the_reason_and_replays() {
     assert!(!calls[0].replayed);
     assert!(calls[1].replayed);
 }
+
+#[tokio::test]
+async fn upsert_issue_dedupes_by_key_and_updates_changed_text() {
+    let f = FakeConnector::new();
+    let repo = item().repo;
+    let a = f.upsert_issue(&repo, "T", "B", &[], "k1").await.unwrap();
+    assert_eq!(a.outcome, UpsertOutcome::Created);
+    let b = f.upsert_issue(&repo, "T", "B", &[], "k1").await.unwrap();
+    assert_eq!(
+        (b.item.clone(), b.outcome),
+        (a.item.clone(), UpsertOutcome::Unchanged)
+    );
+    assert_eq!(f.created_issues().len(), 1);
+    let c = f.upsert_issue(&repo, "T2", "B", &[], "k1").await.unwrap();
+    assert_eq!(
+        (c.item.clone(), c.outcome),
+        (a.item.clone(), UpsertOutcome::Updated)
+    );
+    let d = f.upsert_issue(&repo, "T2", "B2", &[], "k1").await.unwrap();
+    assert_eq!(d.outcome, UpsertOutcome::Updated);
+    let issues = f.created_issues();
+    assert_eq!(issues.len(), 1);
+    assert_eq!((issues[0].1.as_str(), issues[0].2.as_str()), ("T2", "B2"));
+    let e = f.upsert_issue(&repo, "T", "B", &[], "k2").await.unwrap();
+    assert_eq!(e.outcome, UpsertOutcome::Created);
+    assert_ne!(e.item, a.item);
+    assert_eq!(f.created_issues().len(), 2);
+    let replayed: Vec<bool> = f.calls().iter().map(|c| c.replayed).collect();
+    assert_eq!(replayed, [false, true, false, false, false]);
+}

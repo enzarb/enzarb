@@ -2,6 +2,7 @@
 //! subjects; `args.number` (and `args.repo`) override. No workflow knowledge: these are building
 //! blocks a workflow calls by name.
 
+use enzarb_connector::file_issue::file_issue_key;
 use enzarb_connector::{
     ChangeRequestSpec, CloseReason, Connector, Error as CError, MergeOutcome, UpdateBranchOutcome,
     WorkItemKey,
@@ -174,6 +175,7 @@ pub async fn call(
             }
         }
         "create_issues" => create_issues(c.as_ref(), &target_repo(repo, args), args, key).await,
+        "file_issue" => file_issue(c.as_ref(), &target_repo(repo, args), args).await,
         "close_issue" => {
             let reason = if s(args, "reason") == Some("not_planned") {
                 CloseReason::NotPlanned
@@ -355,6 +357,50 @@ pub async fn fact(
         }
         other => return Err(format!("unknown fact `{other}`")),
     })
+}
+
+/// `file_issue`: files one issue (`title`, `body`, optional `labels`) in `repo` under the
+/// stable `key`. The first call creates it; later calls with the same key update that issue's
+/// title and body, and do nothing when they are unchanged. The key is scoped to the repo, not
+/// to the job, so it dedupes across runs.
+pub(crate) async fn file_issue(
+    c: &dyn Connector,
+    r: &str,
+    args: &Map<String, Value>,
+) -> Result<Value, ActionError> {
+    let key = s(args, "key").map(str::trim).unwrap_or("");
+    if key.is_empty() {
+        return Err(ActionError::Refused(
+            "file_issue needs a non-empty `key`".into(),
+        ));
+    }
+    let title = s(args, "title").map(str::trim).unwrap_or("");
+    if title.is_empty() {
+        return Err(ActionError::Refused("file_issue needs a `title`".into()));
+    }
+    let body = s(args, "body").unwrap_or("");
+    let labels: Vec<String> = args
+        .get("labels")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let up = c
+        .upsert_issue(&repo_key(r), title, body, &labels, &file_issue_key(r, key))
+        .await
+        .map_err(transient)?;
+    Ok(json!({
+        "kind": "issue",
+        "repo": r,
+        "number": up.item.number,
+        "title": title,
+        "url": format!("https://github.com/{r}/issues/{}", up.item.number),
+        "key": key,
+        "outcome": up.outcome.as_str(),
+    }))
 }
 
 /// `create_issues`: creates `issues` ([{key, title, body, labels?, depends_on?}]) in `repo`,
@@ -555,6 +601,67 @@ fn resolve_issue_refs(
     }
     out.push_str(rest);
     out
+}
+
+#[cfg(test)]
+mod file_issue_tests {
+    use super::*;
+    use enzarb_connector::fake::FakeConnector;
+
+    fn args(v: Value) -> Map<String, Value> {
+        v.as_object().unwrap().clone()
+    }
+
+    async fn file(c: &FakeConnector, v: Value) -> Value {
+        match file_issue(c, "o/r", &args(v)).await {
+            Ok(v) => v,
+            Err(_) => panic!("file_issue failed"),
+        }
+    }
+
+    #[tokio::test]
+    async fn one_key_one_issue_and_a_new_key_a_second() {
+        let c = FakeConnector::default();
+        let a = file(&c, json!({"key": "k1", "title": "T", "body": "B"})).await;
+        assert_eq!(a["outcome"], "created");
+        assert_eq!(a["kind"], "issue");
+        let b = file(&c, json!({"key": "k1", "title": "T", "body": "B"})).await;
+        assert_eq!(b["outcome"], "unchanged");
+        assert_eq!(b["number"], a["number"]);
+        assert_eq!(c.created_issues().len(), 1);
+        let d = file(&c, json!({"key": "k2", "title": "T", "body": "B"})).await;
+        assert_eq!(d["outcome"], "created");
+        assert_ne!(d["number"], a["number"]);
+        assert_eq!(c.created_issues().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn changed_text_updates_the_same_issue() {
+        let c = FakeConnector::default();
+        let a = file(&c, json!({"key": "k1", "title": "T", "body": "B"})).await;
+        let b = file(&c, json!({"key": "k1", "title": "T2", "body": "B2"})).await;
+        assert_eq!(b["outcome"], "updated");
+        assert_eq!(b["number"], a["number"]);
+        let issues = c.created_issues();
+        assert_eq!(issues.len(), 1);
+        assert_eq!((issues[0].1.as_str(), issues[0].2.as_str()), ("T2", "B2"));
+    }
+
+    #[tokio::test]
+    async fn a_missing_or_empty_key_is_refused() {
+        let c = FakeConnector::default();
+        for v in [
+            json!({"title": "T"}),
+            json!({"key": "  ", "title": "T"}),
+            json!({"key": "k"}),
+        ] {
+            assert!(matches!(
+                file_issue(&c, "o/r", &args(v)).await,
+                Err(ActionError::Refused(_))
+            ));
+        }
+        assert!(c.created_issues().is_empty());
+    }
 }
 
 #[cfg(test)]

@@ -3,6 +3,7 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
+use enzarb_connector::file_issue::IDEM_MARKER_PREFIX;
 use enzarb_connector::{
     Actor, ChangeRequestSpec, CheckSummary, CiIgnore, CloseReason, CommentKind, CommentRef,
     CommitRef, Connector, CredScope, Error, ItemRef, MergeOutcome, MergeReadiness, Permission,
@@ -10,6 +11,7 @@ use enzarb_connector::{
     StatusSummary, Thread, ThreadComment, UpdateBranchOutcome, WorkItemKey, aggregate_ci,
     aggregate_statuses,
 };
+use enzarb_connector::{UpsertOutcome, UpsertedIssue};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -87,7 +89,7 @@ fn idem_marker(key: &str) -> Result<String> {
     if key.is_empty() || key.contains("-->") || key.contains(['\n', '\r']) {
         return Err(Error::Invalid(format!("bad idempotency key {key:?}")));
     }
-    Ok(format!("<!-- enzarb:idem:{key} -->"))
+    Ok(format!("{IDEM_MARKER_PREFIX}{key} -->"))
 }
 
 /// `body` with `line` in its managed task list, or `None` when the list already has it. The
@@ -432,6 +434,30 @@ impl GitHubConnector {
             }
         }
         Ok(None)
+    }
+
+    /// POSTs an issue whose `body` already carries its marker and returns its number.
+    async fn create_issue_raw(
+        &self,
+        repo: &RepoKey,
+        title: &str,
+        body: &str,
+        labels: &[String],
+    ) -> Result<u64> {
+        #[derive(Deserialize)]
+        struct Created {
+            number: u64,
+        }
+        let resp = self
+            .call(
+                repo,
+                "create issue",
+                Method::POST,
+                &format!("/repos/{}/issues", repo.full_name()),
+                Some(json!({ "title": title, "body": body, "labels": labels })),
+            )
+            .await?;
+        Ok(resp.json::<Created>()?.number)
     }
 
     /// Fallback link: list `child` as `- [ ] #N` in the managed task list of `parent`'s body.
@@ -1171,32 +1197,69 @@ impl Connector for GitHubConnector {
         labels: &[String],
         idempotency_key: &str,
     ) -> Result<WorkItemKey> {
-        #[derive(Deserialize)]
-        struct Created {
-            number: u64,
-        }
         github_repo(repo)?;
         let marker = idem_marker(idempotency_key)?;
         if let Some(number) = self.find_idem_issue(repo, &marker).await? {
             return Ok(WorkItemKey::new(repo.clone(), number));
         }
-        let resp = self
-            .call(
-                repo,
-                "create issue",
-                Method::POST,
-                &format!("/repos/{}/issues", repo.full_name()),
-                Some(json!({
-                    "title": title,
-                    "body": format!("{body}\n\n{marker}"),
-                    "labels": labels,
-                })),
-            )
+        let number = self
+            .create_issue_raw(repo, title, &format!("{body}\n\n{marker}"), labels)
             .await?;
-        Ok(WorkItemKey::new(
-            repo.clone(),
-            resp.json::<Created>()?.number,
-        ))
+        Ok(WorkItemKey::new(repo.clone(), number))
+    }
+
+    async fn upsert_issue(
+        &self,
+        repo: &RepoKey,
+        title: &str,
+        body: &str,
+        labels: &[String],
+        dedupe_key: &str,
+    ) -> Result<UpsertedIssue> {
+        #[derive(Deserialize)]
+        struct Current {
+            #[serde(default)]
+            title: String,
+            #[serde(default)]
+            body: Option<String>,
+        }
+        github_repo(repo)?;
+        let marker = idem_marker(dedupe_key)?;
+        let new_body = format!("{body}\n\n{marker}");
+        let Some(number) = self.find_idem_issue(repo, &marker).await? else {
+            let created = self
+                .create_issue_raw(repo, title, &new_body, labels)
+                .await?;
+            return Ok(UpsertedIssue {
+                item: WorkItemKey::new(repo.clone(), created),
+                outcome: UpsertOutcome::Created,
+            });
+        };
+        let item = WorkItemKey::new(repo.clone(), number);
+        let path = format!("/repos/{}/issues/{number}", repo.full_name());
+        let current: Current = self
+            .call(repo, "get issue", Method::GET, &path, None)
+            .await?
+            .json()?;
+        if current.title == title && current.body.as_deref() == Some(new_body.as_str()) {
+            return Ok(UpsertedIssue {
+                item,
+                outcome: UpsertOutcome::Unchanged,
+            });
+        }
+        // Title and body only: the state, labels and comments belong to the people working it.
+        self.call(
+            repo,
+            "update issue",
+            Method::PATCH,
+            &path,
+            Some(json!({ "title": title, "body": new_body })),
+        )
+        .await?;
+        Ok(UpsertedIssue {
+            item,
+            outcome: UpsertOutcome::Updated,
+        })
     }
 
     async fn close_issue(&self, item: &WorkItemKey, reason: CloseReason) -> Result<()> {
@@ -1230,7 +1293,7 @@ impl Connector for GitHubConnector {
         let marker = current
             .body
             .as_deref()
-            .and_then(|b| b.rfind("<!-- enzarb:idem:").map(|i| &b[i..]))
+            .and_then(|b| b.rfind(IDEM_MARKER_PREFIX).map(|i| &b[i..]))
             .and_then(|t| t.find("-->").map(|e| &t[..e + 3]));
         let new = match marker {
             Some(m) => format!("{body}\n\n{m}"),

@@ -6,6 +6,31 @@ use crate::{
     ShortLivedCred, Status, Thread, UpdateBranchOutcome, WorkItemKey,
 };
 
+/// What [`Connector::upsert_issue`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpsertOutcome {
+    Created,
+    Updated,
+    Unchanged,
+}
+
+impl UpsertOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::Updated => "updated",
+            Self::Unchanged => "unchanged",
+        }
+    }
+}
+
+/// The issue [`Connector::upsert_issue`] created or found, and what it did to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpsertedIssue {
+    pub item: WorkItemKey,
+    pub outcome: UpsertOutcome,
+}
+
 /// Outbound operations against a provider.
 ///
 /// Every call that changes provider state takes an `idempotency_key`: repeating
@@ -199,6 +224,22 @@ pub trait Connector: Send + Sync {
     /// The default implementation reports the capability as unsupported.
     async fn update_issue(&self, _item: &WorkItemKey, _body: &str) -> Result<()> {
         Err(Error::Invalid("updating issues is not supported".into()))
+    }
+
+    /// Files an issue under a stable `dedupe_key`. The first call creates it (with `labels`);
+    /// later calls with the same key find that issue, whatever its state, and replace its
+    /// title and description when they differ, never its state, labels or comments. A call
+    /// that changes nothing makes no write. The default implementation reports the
+    /// capability as unsupported.
+    async fn upsert_issue(
+        &self,
+        _repo: &RepoKey,
+        _title: &str,
+        _body: &str,
+        _labels: &[String],
+        _dedupe_key: &str,
+    ) -> Result<UpsertedIssue> {
+        Err(Error::Invalid("filing issues is not supported".into()))
     }
 
     /// Closes an issue with `reason`. Closing an issue that is already closed succeeds
