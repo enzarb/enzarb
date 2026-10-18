@@ -913,6 +913,7 @@ impl Inner {
         let id = &start.run_id;
         *run.evidence.lock().unwrap() = environment::Evidence {
             oom_before: environment::oom_kill_count(&self.memory_events()),
+            pressure_start: environment::system_pressure(),
             ..environment::Evidence::default()
         };
         run.emit(
@@ -941,6 +942,7 @@ impl Inner {
                     if *ctl.cancel.borrow() {
                         return finished(id, exit::INTERRUPTED, None);
                     }
+                    run.evidence.lock().unwrap().phase = Some(environment::Phase::Fetch);
                     return finished(id, exit::FAILURE, e.as_str().map(String::from));
                 }
             }
@@ -1061,6 +1063,7 @@ impl Inner {
             let ex = if *ctl.cancel.borrow() {
                 exit::INTERRUPTED
             } else {
+                run.evidence.lock().unwrap().phase = Some(environment::Phase::Install);
                 exit::FAILURE
             };
             return finished(id, ex, Some(e));
@@ -1104,6 +1107,10 @@ impl Inner {
                 Ok(o) => {
                     ev.text = o.stderr.clone();
                     ev.we_killed = o.stop.is_some();
+                    ev.timed_out = o.stop == Some(exec::Stop::TimedOut);
+                    if ev.timed_out {
+                        ev.pressure_kill = environment::system_pressure();
+                    }
                     ev.sigkilled = matches!(
                         o.status,
                         Some(ExitStatus::Signaled(9) | ExitStatus::Exited(137))
@@ -1156,6 +1163,7 @@ impl Inner {
             let ex = if *ctl.cancel.borrow() {
                 exit::INTERRUPTED
             } else {
+                run.evidence.lock().unwrap().phase = Some(environment::Phase::Install);
                 exit::FAILURE
             };
             return finished(id, ex, Some(e));
@@ -1269,7 +1277,7 @@ impl Inner {
         fin
     }
 
-    /// Disk full or OOM behind a failed step (`environment::classify`).
+    /// Disk full, OOM, toolchain/network or load behind a failed step (`environment::classify`).
     fn classify(
         &self,
         run: &Arc<Run>,
