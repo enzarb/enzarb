@@ -10,10 +10,12 @@ mod config;
 mod connector;
 mod http;
 mod payload;
+mod resolve;
 mod webhook;
 
 pub use catalog::{MapError, Mapped};
 pub use config::{BotIdentity, ConfigError, GitHubConfig, RetryPolicy};
 pub use connector::GitHubConnector;
 pub use payload::{InstallationChange, SOURCE, installation_change};
+pub use resolve::{CommentPermissions, PERMISSION_TTL};
 pub use webhook::{sign, verify_signature};

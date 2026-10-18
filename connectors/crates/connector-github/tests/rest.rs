@@ -2266,3 +2266,128 @@ async fn ahead_by_unknown_ref_is_none_and_errors_propagate() {
     let (got, _) = ahead_by_with("main", "x", ResponseTemplate::new(500)).await;
     assert!(got.is_err());
 }
+
+// ---- can_write on comment events ----
+
+fn comment_hook(login: &str, on_pr: bool) -> Vec<u8> {
+    let mut issue = json!({"number": 7, "title": "t", "body": "", "state": "open", "labels": []});
+    if on_pr {
+        issue["pull_request"] =
+            json!({"url": "https://api.github.com/repos/enzarb/enzarb-ui/pulls/7"});
+    }
+    serde_json::to_vec(&json!({
+        "action": "created",
+        "issue": issue,
+        "comment": {"id": 9, "body": "/retry", "created_at": "2026-10-17T10:00:00Z",
+                    "user": {"login": login, "type": "User"}},
+        "repository": {"full_name": "enzarb/enzarb-ui"},
+        "sender": {"login": login, "type": "User"}
+    }))
+    .unwrap()
+}
+
+async fn mount_role(server: &MockServer, login: &str, role: Value, times: u64) {
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/repos/enzarb/enzarb-ui/collaborators/{login}/permission"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(role))
+        .expect(times)
+        .mount(server)
+        .await;
+}
+
+async fn can_write_of(
+    perms: &enzarb_connector_github::CommentPermissions<GitHubConnector>,
+    login: &str,
+    on_pr: bool,
+) -> bool {
+    let bot = enzarb_connector_github::BotIdentity::default();
+    let mut mapped = bot
+        .map("issue_comment", "d-1", &comment_hook(login, on_pr))
+        .unwrap();
+    assert_eq!(mapped.len(), 1);
+    perms.resolve(&mut mapped).await;
+    mapped[0].1.actor.as_ref().unwrap().can_write
+}
+
+#[tokio::test]
+async fn comment_can_write_follows_the_repo_permission() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    mount_role(
+        &server,
+        "boss",
+        json!({"permission": "admin", "role_name": "admin"}),
+        2,
+    )
+    .await;
+    mount_role(
+        &server,
+        "dev",
+        json!({"permission": "write", "role_name": "write"}),
+        2,
+    )
+    .await;
+    mount_role(
+        &server,
+        "lurker",
+        json!({"permission": "read", "role_name": "read"}),
+        2,
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/repos/enzarb/enzarb-ui/collaborators/ghost/permission",
+        ))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "Not Found"})))
+        .mount(&server)
+        .await;
+    // TTL zero: every lookup reaches the (mock) API.
+    let perms =
+        enzarb_connector_github::CommentPermissions::with_ttl(connector(&server), Duration::ZERO);
+    for on_pr in [false, true] {
+        assert!(
+            can_write_of(&perms, "boss", on_pr).await,
+            "admin pr={on_pr}"
+        );
+        assert!(
+            can_write_of(&perms, "dev", on_pr).await,
+            "writer pr={on_pr}"
+        );
+        assert!(
+            !can_write_of(&perms, "lurker", on_pr).await,
+            "reader pr={on_pr}"
+        );
+        assert!(
+            !can_write_of(&perms, "ghost", on_pr).await,
+            "unknown pr={on_pr}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn comment_permission_is_cached_and_errors_are_not() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    mount_role(
+        &server,
+        "boss",
+        json!({"permission": "admin", "role_name": "admin"}),
+        1,
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/repos/enzarb/enzarb-ui/collaborators/flaky/permission",
+        ))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({"message": "denied"})))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let perms = enzarb_connector_github::CommentPermissions::new(connector(&server));
+    assert!(can_write_of(&perms, "boss", false).await);
+    assert!(can_write_of(&perms, "BOSS", true).await);
+    assert!(!can_write_of(&perms, "flaky", false).await);
+    assert!(!can_write_of(&perms, "flaky", false).await);
+}

@@ -1,6 +1,7 @@
 //! GitHub webhook payload -> standard event catalog (`enzarb_flow::events`, ADR-0022 §5).
 //!
-//! Pure: no I/O. The engine fills `actor.can_write` and may enrich pull request
+//! Pure: no I/O. `actor.can_write` is `false` here; [`crate::CommentPermissions`] fills it
+//! on comment events, and the engine rechecks it. The engine may enrich pull request
 //! references with [`Connector::pr_references`](enzarb_connector::Connector::pr_references).
 
 use chrono::{SecondsFormat, Utc};

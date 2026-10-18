@@ -31,6 +31,8 @@ spec:
             {{- include "enzarb.dbEnv" (dict "ctx" . "role" "connectors") | nindent 12 }}
             {{- include "enzarb.secretEnv" (dict "name" "ENZARB_SECRETS_KEY" "secret" (include "enzarb.secretsKeySecret" .) "key" (include "enzarb.secretsKeyKey" .)) | nindent 12 }}
             {{- include "enzarb.secretEnv" (dict "name" "GITHUB_WEBHOOK_SECRET" "secret" (include "enzarb.githubSecret" .) "key" (include "enzarb.githubKey" (dict "ctx" . "key" "webhookSecret"))) | nindent 12 }}
+            {{- include "enzarb.secretEnv" (dict "name" "GITHUB_APP_ID" "optional" true "secret" (include "enzarb.githubSecret" .) "key" (include "enzarb.githubKey" (dict "ctx" . "key" "appId"))) | nindent 12 }}
+            {{- include "enzarb.secretEnv" (dict "name" "GITHUB_APP_PRIVATE_KEY" "optional" true "secret" (include "enzarb.githubSecret" .) "key" (include "enzarb.githubKey" (dict "ctx" . "key" "privateKey"))) | nindent 12 }}
             - { name: RECEIVER_LISTEN, value: 0.0.0.0:8080 }
             - { name: ENZARB_BOT_HANDLE, value: {{ $c.botHandle | quote }} }
             - { name: ENZARB_BOT_LOGIN, value: {{ $c.botLogin | quote }} }

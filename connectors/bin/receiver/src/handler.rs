@@ -14,7 +14,9 @@ use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
-use enzarb_connector_github::{BotIdentity, installation_change, verify_signature};
+use enzarb_connector_github::{
+    BotIdentity, CommentPermissions, GitHubConnector, installation_change, verify_signature,
+};
 use enzarb_flow::events::{Custom, Event, Payload, SubjectRef};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -42,6 +44,8 @@ struct Inner {
     bot: BotIdentity,
     events_secret_name: String,
     secrets_key: Option<SecretsKey>,
+    /// Fills `actor.can_write` on comment events; absent without GitHub App credentials.
+    permissions: Option<CommentPermissions<GitHubConnector>>,
 }
 
 impl AppState {
@@ -52,6 +56,17 @@ impl AppState {
             bot,
             events_secret_name: crate::config::DEFAULT_EVENTS_SECRET_NAME.into(),
             secrets_key: None,
+            permissions: None,
+        }))
+    }
+
+    /// Resolve `actor.can_write` of comment authors with this connector. Call before
+    /// the state is cloned.
+    pub fn with_permissions(self, connector: GitHubConnector) -> Self {
+        let inner = Arc::into_inner(self.0).expect("with_permissions before sharing the state");
+        Self(Arc::new(Inner {
+            permissions: Some(CommentPermissions::new(connector)),
+            ..inner
         }))
     }
 
@@ -139,7 +154,7 @@ async fn github(State(st): State<AppState>, headers: HeaderMap, body: Bytes) -> 
         }
     }
 
-    let mapped = match st.0.bot.map(event_name, delivery, &body) {
+    let mut mapped = match st.0.bot.map(event_name, delivery, &body) {
         Ok(m) => m,
         Err(e) => {
             tracing::warn!(delivery, event_name, "map: {e}");
@@ -148,6 +163,9 @@ async fn github(State(st): State<AppState>, headers: HeaderMap, body: Bytes) -> 
     };
     if mapped.is_empty() {
         return StatusCode::NO_CONTENT;
+    }
+    if let Some(p) = &st.0.permissions {
+        p.resolve(&mut mapped).await;
     }
     let events = mapped
         .into_iter()

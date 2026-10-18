@@ -239,11 +239,17 @@ impl Engine {
             id: 0,
             is_bot: false,
         };
-        self.permissions
-            .permission(&repo_key(repo), &actor)
-            .await
-            .map(|p| p.can_write())
-            .unwrap_or(false)
+        match self.permissions.permission(&repo_key(repo), &actor).await {
+            Ok(p) => p.can_write(),
+            Err(e) => {
+                tracing::warn!(
+                    repo,
+                    login,
+                    "permission lookup failed, treating as no write access: {e}"
+                );
+                false
+            }
+        }
     }
 
     async fn on_catalog_event(

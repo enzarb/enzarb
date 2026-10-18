@@ -3,6 +3,7 @@
 
 use std::process::ExitCode;
 
+use enzarb_connector_github::GitHubConnector;
 use enzarb_receiver::{Config, db};
 use tracing_subscriber::EnvFilter;
 
@@ -55,6 +56,13 @@ async fn serve() -> Result<(), BoxErr> {
     }
     let state = enzarb_receiver::AppState::new(pool, cfg.webhook_secret, cfg.bot)
         .with_custom_events(cfg.events_secret_name, cfg.secrets_key);
+    let state = match GitHubConnector::from_env() {
+        Ok(c) => state.with_permissions(c),
+        Err(e) => {
+            tracing::info!("no GitHub App credentials ({e}): comment events carry can_write=false");
+            state
+        }
+    };
     let app = enzarb_receiver::router(state);
     let listener = tokio::net::TcpListener::bind(&cfg.listen).await?;
     tracing::info!(addr = %cfg.listen, "receiver listening");
