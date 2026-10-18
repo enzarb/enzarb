@@ -47,7 +47,7 @@ use crate::config::Config;
 use crate::docker_prune::ActivityGate;
 use crate::exec::{self, CmdSpec, Ctl, LineSink};
 use crate::reaper::{ExitStatus, Reaper};
-use crate::repos::{RepoLocks, repo_dir_name};
+use crate::repos::{RepoLocks, repo_dir_name, shared_target_dir, target_dir_env};
 
 /// Largest serialized payload of one session event; bigger ones keep head and tail.
 pub const MAX_EVENT_PAYLOAD: usize = 1024 * 1024;
@@ -649,6 +649,31 @@ impl StepManager {
         f(&busy)
     }
 
+    /// Runs `f` with the shared build dirs (see [`shared_target_dir`]) of the repos of running
+    /// steps while no step can start or end.
+    pub fn with_busy_repos<R>(
+        &self,
+        workspace: &Path,
+        f: impl FnOnce(&std::collections::HashSet<PathBuf>) -> R,
+    ) -> R {
+        let runs = self.inner.runs.lock().unwrap();
+        let mut busy = std::collections::HashSet::new();
+        for r in runs.values() {
+            let g = r.inner.lock().unwrap();
+            if g.phase != StepPhase::Running {
+                continue;
+            }
+            if let Some(s) = g.start.as_deref().or(g.stored.as_ref()) {
+                busy.extend(
+                    s.workspaces
+                        .iter()
+                        .filter_map(|w| shared_target_dir(workspace, &w.repo)),
+                );
+            }
+        }
+        f(&busy)
+    }
+
     /// CTRL `step_resume`.
     pub fn resume(&self, session: &Session, run_id: &str) {
         let Some(run) = self.get(run_id) else {
@@ -839,6 +864,9 @@ impl Inner {
         env.push(("GIT_AUTHOR_EMAIL".into(), self.cfg.git_email.clone()));
         env.push(("GIT_COMMITTER_NAME".into(), self.cfg.git_name.clone()));
         env.push(("GIT_COMMITTER_EMAIL".into(), self.cfg.git_email.clone()));
+        // One Cargo build dir per repo (the first workspace's, like `cwd`), shared by all tasks.
+        let url = start.workspaces.first().map(|w| w.repo.as_str());
+        env.extend(target_dir_env(&self.cfg.workspace, url, &env));
         env
     }
 

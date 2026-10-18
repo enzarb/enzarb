@@ -1026,7 +1026,12 @@ impl ChatManager {
         let secrets = self.secrets(&token);
         let config_dir = self.cfg.workspace.join(".enzarb/chat-home/.claude");
         let _ = crate::privs::create_dir_all_mode(&config_dir, Some(0o700));
-        let env = self.agent_env(&token, &config_dir);
+        let mut env = self.agent_env(&token, &config_dir);
+        env.extend(crate::repos::target_dir_env(
+            &self.cfg.workspace,
+            req.repo.as_deref(),
+            &env,
+        ));
         let sink: LineSink = {
             let t = transcript.clone();
             let secrets = secrets.clone();
