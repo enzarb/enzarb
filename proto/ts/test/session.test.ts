@@ -298,9 +298,9 @@ describe("ctrl", () => {
     const { s, srv } = await connected();
     const pushed: Ctrl[] = [];
     s.onCtrl((m) => pushed.push(m));
-    srv.ctrl({ type: "stats", ts_ms: 5, memory_bytes: 7 });
+    srv.ctrl({ type: "stats", ts_ms: 5, memory_bytes: 7, memory_limit_bytes: 9 });
     await tick();
-    expect(pushed).toEqual([{ type: "stats", ts_ms: 5, memory_bytes: 7 }]);
+    expect(pushed).toEqual([{ type: "stats", ts_ms: 5, memory_bytes: 7, memory_limit_bytes: 9 }]);
   });
 
   it("credentialStatus resolves from credential_state; error rejects", async () => {
