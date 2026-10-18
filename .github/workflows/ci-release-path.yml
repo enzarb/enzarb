@@ -1,0 +1,74 @@
+name: ci-release-path
+# Runs the retag step of the release path in dry run mode against a real main sha- image
+# (.github/scripts/retag-or-build.sh verify, docs/ci.md). Nothing is pushed.
+on:
+  push:
+    branches: [main]
+  pull_request:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+permissions:
+  contents: read
+jobs:
+  changes:
+    uses: ./.github/workflows/_changes.yml
+    with:
+      component: release-path
+  verify-retag:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    env:
+      # Fork PRs have no registry access: every step below is skipped for them.
+      SAME_REPO: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - name: Skip fork PRs
+        if: env.SAME_REPO != 'true'
+        run: |
+          echo "Fork PR, no registry access: retag dry run skipped." | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/checkout@v4
+        if: env.SAME_REPO == 'true'
+        with:
+          fetch-depth: 50
+      - name: Fetch main
+        if: env.SAME_REPO == 'true'
+        run: git fetch --no-tags --depth=50 origin main
+      - uses: jdx/mise-action@v2
+        if: env.SAME_REPO == 'true'
+        with:
+          install_args: github:docker/buildx jq
+      - name: Install the pinned buildx as the docker CLI plugin
+        if: env.SAME_REPO == 'true'
+        run: |
+          mkdir -p ~/.docker/cli-plugins
+          bin=$(find "$(mise where github:docker/buildx)" -type f -name 'buildx*' | head -n1)
+          install -m 0755 "$bin" ~/.docker/cli-plugins/docker-buildx
+          docker buildx version
+      - uses: docker/login-action@v3
+        if: env.SAME_REPO == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Dry-run the retag against the latest main sha- image
+        if: env.SAME_REPO == 'true'
+        run: |
+          found=
+          for sha in $(git rev-list -n 20 origin/main); do
+            while read -r _ image _; do
+              [ -n "$image" ] || continue
+              mode=$(IMAGE="ghcr.io/enzarb/$image" SHA="$sha" RETAG=true .github/scripts/retag-or-build.sh check 2>/dev/null || true)
+              if [ "$mode" = retag ]; then found="$image $sha"; break 2; fi
+            done < <(.github/scripts/image-components.sh)
+          done
+          if [ -z "$found" ]; then
+            echo "No main commit of the last 20 has a retaggable sha- image; nothing to verify (the release path would rebuild)." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          read -r image sha <<<"$found"
+          IMAGE="ghcr.io/enzarb/$image" SHA="$sha" VERSION=0.0.0-dry-run RETAG=true DRY_RUN=true .github/scripts/retag-or-build.sh retag

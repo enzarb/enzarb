@@ -27,15 +27,24 @@ The monorepo's GitHub Actions setup (root `.github/`) follows these rules. Each 
 - **Toolchain file:** `setup-rust-toolchain` gets `rust-src-dir: .`; jobs run at the repo root and select crates with `-p` (the `cargo-args` input).
 
 ## Tool pins
-The root `mise.toml` is the only place tool versions are pinned (concrete versions, never `latest`/`lts`); component `mise.toml` files hold tasks only. Ansible is the exception in placement only: `mise.ansible.toml` at the root, activated with `MISE_ENV=ansible` (the `ci-kubernetes.yml` ansible job, `oldie:host`, `oldie:reset`), so its pipx builds do not slow every task. `setup-node` cannot read `mise.toml`, so jobs use the `.github/actions/setup-node` composite action, which reads the `node` pin.
+The root `mise.toml` is the only place tool versions are pinned (concrete versions, never `latest`/`lts`); component `mise.toml` files hold tasks only. Ansible is the exception in placement only: `mise.ansible.toml` at the root, activated with `MISE_ENV=ansible` (the `ci-kubernetes.yml` ansible job, `oldie:host`, `oldie:reset`), so its pipx builds do not slow every task. The buildx pin is used by `ci-release-path.yml`, which installs that binary as the docker CLI plugin (the release workflows keep `docker/setup-buildx-action`). `setup-node` cannot read `mise.toml`, so jobs use the `.github/actions/setup-node` composite action, which reads the `node` pin.
 
 `scripts/monorepo/check-tool-pins.sh` (job `scripts` in `ci-monorepo.yml`, and the pre-commit hook) fails when:
 - a component `mise.toml` has a `[tools]` section, or a root pin is `latest`/`lts`;
-- a Dockerfile `ARG` tool version differs from the root pin (mapping table at the top of the script: `NODE_VERSION` to `node`, `GH_VERSION` to `gh`; `PLAYWRIGHT_VERSION` is compared with `ui/package-lock.json`);
-- an `ARG *_VERSION` is in neither the mapped nor the explicitly unmapped list (docker, buildx, compose, sccache, mise, claude-agent-acp, gVisor), so the table cannot go stale;
+- a Dockerfile `ARG` tool version differs from the root pin (mapping table at the top of the script: `NODE_VERSION` to `node`, `GH_VERSION` to `gh`, `BUILDX_VERSION` to `github:docker/buildx`; `PLAYWRIGHT_VERSION` is compared with `ui/package-lock.json`);
+- an `ARG *_VERSION` is in neither the mapped nor the explicitly unmapped list (docker, compose, sccache, mise, claude-agent-acp, gVisor), so the table cannot go stale;
 - root `rust` differs from a `rust-toolchain.toml` channel, or `HELM_VERSION` in `kubernetes/hack/versions.env` differs from root `helm`.
 
 `scripts/monorepo/test-tool-pins.sh` tests the check against fixtures. To bump a tool, change the root pin and the matching Dockerfile `ARG` in the same PR.
+
+## Retag dry run on release-path PRs
+`ci-release-path.yml` runs the retag step of the release path in dry-run mode against real registry images, so a change that breaks it (for example dropping `--prefer-index=false`) fails the PR instead of the next release.
+
+- **Gating:** the `release-path` pseudo-component in `scripts/monorepo/components.json` (`.github/scripts/**`, `release.yml`, `_release-*.yml`, `rebuild-all.yml`, `ci-release-path.yml`, the graph files and their generator, `test-retag-or-build.sh`, `mise.toml`). Other PRs skip the job through `_changes.yml`.
+- **Forks:** PRs from forks have no registry access; the job runs but every step is skipped with a note in the summary, so it does not fail.
+- **Source image:** the first of the last 20 `main` commits and the images from `image-components.sh` for which `retag-or-build.sh check` says `retag` (the `sha-` image exists with a matching revision label). One image is enough, the code path does not depend on it; the summary shows which manifest type it was. If none qualifies, the job notes that and passes (the release would rebuild).
+- **Check:** `retag-or-build.sh verify` (also `DRY_RUN=true retag-or-build.sh retag`) runs the same `docker buildx imagetools create` as the real retag, shared in one function, with `--dry-run`. It hashes the manifest the command prints and fails unless its media type and digest equal the source's, i.e. a single-manifest source is not wrapped in an index. The summary lists source image, manifest type and digest.
+- **Buildx:** the version pinned in the root `mise.toml` (see "Tool pins").
 
 ## Git hooks
 `lefthook.yml` (opt-in, `mise run hooks:install`, see `docs/dev.md`) runs the same checks locally. Keep the two in sync when you change either.
@@ -134,4 +143,4 @@ A PR that changes CI states before/after wall-clock times for the PR run and the
 - It always rebuilds (`_release-image.yml` runs with `retag: false`), never reusing the CI `sha-` image.
 
 ## Testing the release path
-`scripts/monorepo/test-retag-or-build.sh` tests the retag decision and the digest check with a stub `docker` (retag, no CI image, revision mismatch, `retag=false`, dry run, digest mismatch). Both paths only run for real in Actions: dispatch `release.yml` for a component whose latest `main` sha has a CI image (retag; the digest of `:<version>` equals `:sha-<short>`), and for a sha without one, or `rebuild-all` with `dry_run`, to see the rebuild path. `dry_run` with a CI image only logs `would retag`.
+`scripts/monorepo/test-retag-or-build.sh` tests the retag decision and the digest check with a stub `docker` (retag, no CI image, revision mismatch, `retag=false`, dry run, digest mismatch, `verify` for single-manifest and index sources, and a negative test where the script without `--prefer-index=false` must fail). The `scripts` job of `ci-monorepo.yml` runs it. Both paths only run for real in Actions: dispatch `release.yml` for a component whose latest `main` sha has a CI image (retag; the digest of `:<version>` equals `:sha-<short>`), and for a sha without one, or `rebuild-all` with `dry_run`, to see the rebuild path. `dry_run` with a CI image only logs `would retag`.

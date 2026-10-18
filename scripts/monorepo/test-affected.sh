@@ -27,9 +27,9 @@ check() { # check <description> <expected> <paths...>
 # --- 1. sample diffs -------------------------------------------------------------------------
 check "docs only" "" docs/architecture.md
 check "root files" "" lefthook.yml CLAUDE.md
-check "tool pins feed the pin check and tool-using jobs" "kubernetes helm monorepo" mise.toml
+check "tool pins feed the pin check and tool-using jobs" "kubernetes helm monorepo release-path" mise.toml
 check "component Dockerfile ARGs feed the pin check" "sandbox-container monorepo" sandbox-container/Dockerfile
-check "generated graph is read by the monorepo checks" "monorepo" scripts/monorepo/graph.generated.sh
+check "generated graph is read by the monorepo checks" "monorepo release-path" scripts/monorepo/graph.generated.sh
 check "root cargo files select every rust component" "proto operator connectors workflows realtime sandbox-proxy sandbox-container updater monorepo" Cargo.lock
 check "root toolchain file" "proto operator connectors workflows realtime sandbox-proxy sandbox-container updater monorepo" rust-toolchain.toml
 check "workflows only" "workflows" workflows/crates/engine/src/lib.rs
@@ -46,10 +46,11 @@ check "flow crate is compiled into connectors" "connectors workflows" workflows/
 check "helm only" "helm" helm/enzarb/values.yaml
 check "dependency order" "proto operator workflows sandbox-proxy sandbox-container ui" ui/a.ts operator/b.rs proto/c.rs
 check "shared rust workflow" "operator connectors workflows realtime sandbox-proxy sandbox-container updater monorepo" .github/workflows/_rust.yml
+check "retag script selects the release-path check" "release-path" .github/scripts/retag-or-build.sh
 check "own ci file (also re-runs the drift check)" "ui monorepo" .github/workflows/ci-ui.yml
 check "ui/proto/sandbox node setup action" "proto sandbox-container ui" .github/actions/setup-node/action.yml
 check "ci change runs the drift check" "monorepo" scripts/monorepo/affected.sh
-check "release workflow only needs actionlint" "monorepo" .github/workflows/release.yml
+check "release workflow only needs actionlint" "monorepo release-path" .github/workflows/release.yml
 
 # --- 2. the ci-*.yml files are wired to the graph ----------------------------------------------
 # No hand-written `paths:` filters; each file runs the `changes` job for its own component and
