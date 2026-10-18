@@ -27,8 +27,8 @@ pub use frame::{
     MAX_PAYLOAD_LEN, close_code,
 };
 pub use step::{
-    Mode, Runtime, SessionEvent, StepExec, StepFinished, StepGit, StepOutput, StepPhase, StepStart,
-    StepWorkspace,
+    EnvironmentKind, Mode, Runtime, SessionEvent, StepEnvironment, StepExec, StepFinished, StepGit,
+    StepOutput, StepPhase, StepStart, StepWorkspace,
 };
 
 /// Current (and only) protocol version.

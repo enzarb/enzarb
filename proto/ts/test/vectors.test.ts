@@ -7,6 +7,7 @@ import {
   asCtrl,
   ctrlFrame,
   decodeFrame,
+  environmentKind,
   encodeFrame,
   frameTypeName,
   parseCtrl,
@@ -66,6 +67,14 @@ describe("ctrl.json", () => {
 });
 
 describe("step vectors", () => {
+  it("step_finished with environment round-trips; without it the key is absent", () => {
+    const f = load("ctrl.json").find((v) => v.name === "step_finished_environment")!;
+    const m: any = asCtrl(f.message);
+    expect(m.environment).toEqual({ kind: "disk_full", detail: "/workspace: 0 bytes free" });
+    expect(JSON.parse(JSON.stringify(m))).toEqual(f.message);
+    const plain = load("ctrl.json").find((v) => v.name === "step_finished")!;
+    expect("environment" in plain.message).toBe(false);
+  });
   it("step_start carries the step fields; step_finished carries git facts", () => {
     const ss = load("ctrl.json").find((v) => v.name === "step_start_agent")!;
     expect(ss.message).toMatchObject({ run_id: "run-123", exec: { kind: "agent" }, github_token: "ghs_step" });
@@ -113,10 +122,19 @@ describe("ctrl_compat.json", () => {
   it("has vectors", () => expect(vectors.length).toBeGreaterThan(0));
   for (const v of vectors) {
     it(`${v.name}: decodes and the shared fields agree`, () => {
-      const m = asCtrl(JSON.parse(v.payload));
+      const m: any = asCtrl(JSON.parse(v.payload));
+      if (m.environment) m.environment.kind = environmentKind(m.environment.kind);
       expect(m).toMatchObject(v.expect);
     });
   }
+  it("an unknown environment kind decodes, normalises to unknown and keeps the rest", () => {
+    const v = vectors.find((x) => x.name === "step_finished_environment_unknown_kind")!;
+    const m: any = asCtrl(JSON.parse(v.payload));
+    expect(m.environment.kind).toBe("gpu_lost");
+    expect(environmentKind(m.environment.kind)).toBe("unknown");
+    expect(environmentKind("disk_full")).toBe("disk_full");
+    expect(m).toMatchObject({ exit: "failure", usage: { input_tokens: 5 }, environment: { detail: "device fell off the bus" } });
+  });
 });
 
 describe("json_types.json", () => {

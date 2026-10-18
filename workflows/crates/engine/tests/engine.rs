@@ -249,6 +249,7 @@ fn finished(run_id: &str, exit: &str) -> StepFinished {
         result: None,
         git: vec![],
         usage: None,
+        environment: None,
         error: None,
     }
 }

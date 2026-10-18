@@ -393,6 +393,7 @@ mod tests {
                 result: None,
                 git: vec![],
                 usage: None,
+                environment: None,
                 error: None,
             }),
             Ctrl::Hello {

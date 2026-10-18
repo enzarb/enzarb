@@ -410,6 +410,7 @@ impl StepManager {
                         result: None,
                         git: vec![],
                         usage: None,
+                        environment: None,
                         error: Some("the sandbox restarted".into()),
                     });
                     run.persist(&g);
@@ -780,6 +781,7 @@ fn finished(run_id: &str, exit: &str, error: Option<String>) -> StepFinished {
         result: None,
         git: vec![],
         usage: None,
+        environment: None,
         error,
     }
 }
