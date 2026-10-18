@@ -1003,6 +1003,32 @@ async fn enospc_in_the_output_is_disk_full() {
     assert!(!e.detail.is_empty());
 }
 
+#[tokio::test]
+async fn exit_127_in_the_step_is_not_an_environment_failure() {
+    let env = Env::new();
+    let fin = run_cmd(
+        &env,
+        "env-127",
+        "echo 'sh: x: command not found' >&2; exit 127".into(),
+    )
+    .await;
+    assert_eq!(fin.exit, "failure", "{fin:?}");
+    assert_eq!(fin.environment, None);
+}
+
+#[tokio::test]
+async fn a_hostname_error_in_the_step_output_is_a_code_failure() {
+    let env = Env::new();
+    let fin = run_cmd(
+        &env,
+        "env-host",
+        "echo 'curl: Could not resolve host: example.invalid' >&2; exit 1".into(),
+    )
+    .await;
+    assert_eq!(fin.exit, "failure", "{fin:?}");
+    assert_eq!(fin.environment, None);
+}
+
 /// A real full filesystem needs a mount; skipped where that is not permitted.
 #[tokio::test]
 async fn a_full_workspace_is_disk_full() {
