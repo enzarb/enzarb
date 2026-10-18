@@ -83,3 +83,5 @@ Defined in `proto/crates/enzarb-proto/src/step.rs` and mirrored in `proto/ts`; f
   - `reviews`, `mergeable`, `merged`, `git`, `dependencies`; `contained_in_tag` (see Facts above).
 - **Instance:** task documents carry `instance: {bot: {login, handle}, url}` from `ENZARB_BOT_LOGIN`, `ENZARB_BOT_HANDLE`, `ENZARB_PUBLIC_URL`; a comment's `mentioned` is recomputed with `ENZARB_BOT_HANDLE`.
 - **Auto-upgrade:** the definition is re-resolved (with the binding's `with:` params) at each wait and before each step (also when the event finishes the step or action in flight); a running step keeps its definition.
+
+Contract tests and the registry that maps each action promise to its test: `docs/workflows/contract-tests.md`.

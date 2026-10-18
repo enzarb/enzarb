@@ -3,6 +3,8 @@
 
 pub mod actions;
 pub mod claude_credential;
+#[cfg(test)]
+mod contract_tests;
 pub mod db;
 pub mod effects;
 pub mod engine;
