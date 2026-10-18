@@ -1228,6 +1228,74 @@ async fn idle_external_wait_files_one_issue() {
     assert_ne!(young, idle);
 }
 
+/// Sets the body of the task's source issue, as the reducer stores it.
+async fn set_issue_body(h: &H, task: i64, body: &str) {
+    sqlx::query("UPDATE engine.tasks SET state = $2 WHERE id = $1")
+        .bind(task)
+        .bind(json!({"doc": {"subjects": {"issue": {"body": body}}}}))
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+}
+
+async fn age_task(h: &H, task: i64) {
+    sqlx::query("UPDATE engine.tasks SET created_at = now() - interval '2 days' WHERE id = $1")
+        .bind(task)
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+}
+
+/// The task born from a finding's issue gets its own finding, but no second issue.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn finding_issue_does_not_file_another() {
+    let Some(h) = start(false).await else {
+        return;
+    };
+    let idle = seed_task(&h, "merge/wait", "external", None).await;
+    age_task(&h, idle).await;
+    passes(&h, 4).await;
+    run_jobs(&h).await;
+    let first = format!("finding:external-idle:{idle}");
+    assert_eq!(issue_jobs(&h).await.len(), 1);
+    let child = seed_task(&h, "merge/wait", "external", None).await;
+    age_task(&h, child).await;
+    let marker = enzarb_connector::file_issue::file_issue_key(APP, &first);
+    set_issue_body(
+        &h,
+        child,
+        &format!("Idle.\n\n<!-- enzarb:idem:{marker} -->"),
+    )
+    .await;
+    passes(&h, 4).await;
+    run_jobs(&h).await;
+    assert_eq!(open_checks(&h).await, ["external-idle", "external-idle"]);
+    assert_eq!(
+        issue_jobs(&h).await,
+        [(first, Some("created".into()))],
+        "no issue for task {child}"
+    );
+}
+
+/// Control: an issue without the `file_issue` marker (none, or an epic's) still files.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn issue_not_from_a_finding_still_files() {
+    let Some(h) = start(false).await else {
+        return;
+    };
+    let a = seed_task(&h, "merge/wait", "external", None).await;
+    let b = seed_task(&h, "merge/wait", "external", None).await;
+    let c = seed_task(&h, "merge/wait", "external", None).await;
+    for t in [a, b, c] {
+        age_task(&h, t).await;
+    }
+    set_issue_body(&h, b, "A plain issue").await;
+    set_issue_body(&h, c, "<!-- enzarb:idem:epic-1-a -->").await;
+    passes(&h, 4).await;
+    run_jobs(&h).await;
+    assert_eq!(issue_jobs(&h).await.len(), 3);
+}
+
 /// A fact that stays unknown across refreshes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fact_unknown_across_refreshes_files_one_issue() {
