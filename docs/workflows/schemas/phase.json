@@ -893,6 +893,13 @@
             }
           ],
           "description": "A timer set when the wait is entered; it fires a `timer` event."
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CommandDecl"
+          },
+          "description": "Commands this wait accepts besides the workflow's defaults (same name overrides).\nResolved: the full list, defaults and commands its `next:` rules match included."
         }
       },
       "required": [
@@ -962,6 +969,60 @@
         }
       ],
       "description": "An integer field: a number, `{param: <name>}`, or a string: a duration\n(`90s`, `15m`, `2h`, `14d`, `1w`, where durations are allowed) or a\ntemplate (`\"{{ params.rounds * 2 }}\"`) rendering to one."
+    },
+    "CommandDecl": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/TextField",
+          "description": "The command word without the slash (a text field: `{param: approve_command}`)."
+        },
+        "label": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextField"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Button and list label (default: the command)."
+        },
+        "description": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextField"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "One line for the UI and the reply to a command that does not apply."
+        },
+        "from": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sender"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Who may send it (default `writer`)."
+        },
+        "to": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The route, see above."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "description": "A command (`/name` in a comment, or a UI button) a wait accepts.\n\n`to` is where the command goes: a node of the wait's phase, `exit:<name>` (leave the phase\nthrough that exit), `start` (the phase's first node), `self` (this wait again) or\n`goto:<phase id>` (enter a top-level phase). Without `to` the wait's own `next:` rules\nroute the command; the declaration only lists it. `/cancel` is engine-native."
     },
     "Action": {
       "type": "object",

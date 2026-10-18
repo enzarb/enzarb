@@ -55,6 +55,13 @@
         "$ref": "#/$defs/Handler"
       },
       "description": "Task-wide handlers, tried in order on every event in any phase, wait\nor running step; the first match wins."
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/CommandDecl"
+      },
+      "description": "Commands every wait accepts unless it declares its own of the same name (a default\nroute per command). Lint requires `retry` once this block exists."
     }
   },
   "required": [
@@ -352,6 +359,79 @@
         }
       ],
       "description": "Required sender of an event."
+    },
+    "CommandDecl": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/TextField",
+          "description": "The command word without the slash (a text field: `{param: approve_command}`)."
+        },
+        "label": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextField"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Button and list label (default: the command)."
+        },
+        "description": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextField"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "One line for the UI and the reply to a command that does not apply."
+        },
+        "from": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sender"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Who may send it (default `writer`)."
+        },
+        "to": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The route, see above."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "description": "A command (`/name` in a comment, or a UI button) a wait accepts.\n\n`to` is where the command goes: a node of the wait's phase, `exit:<name>` (leave the phase\nthrough that exit), `start` (the phase's first node), `self` (this wait again) or\n`goto:<phase id>` (enter a top-level phase). Without `to` the wait's own `next:` rules\nroute the command; the declaration only lists it. `/cancel` is engine-native."
+    },
+    "TextField": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "param": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "param"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "description": "A text field: a string (a MiniJinja template when it contains `{{`/`{%`)\nor `{param: <name>}`."
     }
   }
 }

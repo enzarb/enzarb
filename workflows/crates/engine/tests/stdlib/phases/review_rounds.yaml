@@ -85,6 +85,8 @@ nodes:
       text: "Approved by {{ instance.bot.handle or 'enzarb' }}; waiting for CI and mergeability"
       column: review
       waiting_on: external
+      commands:
+        - {name: retry, label: Retry, description: Fresh fix rounds and a new review cycle, to: retry}
     max_visits: 500
     on_limit: human
     next:
@@ -132,7 +134,8 @@ nodes:
   address_human:
     step: {use: steps/address, with: {prompt: {param: address_prompt}}}
     max_visits: 50
-    set_on_exit: {fix_rounds: 0}
+    # The round has seen the feedback up to this comment: the next one starts after it.
+    set_on_exit: {fix_rounds: 0, feedback_since: "event.at or vars.feedback_since"}
     next:
       - {if: "last.exit == 'success' and outputs.address.decision == 'done' and facts.git.pushed", to: post_human}
       - {else: human}

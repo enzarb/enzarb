@@ -10,6 +10,7 @@ use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 
 mod blocks;
+mod commands;
 
 const LIB: &str = "lib/std";
 const APP: &str = "acme/app";
@@ -828,7 +829,10 @@ fn happy_path() {
 
     // A non-writer's command and an unrelated comment are ignored.
     r.on(comment("/start", false));
-    assert_eq!((r.at(), r.kinds().len()), ("gate/wait".into(), 0));
+    assert_eq!(
+        (r.at(), r.kinds()),
+        ("gate/wait".into(), vec!["reply".to_string()])
+    );
     r.on(comment("/plan", true));
     assert_eq!(r.at(), "gate/wait");
 

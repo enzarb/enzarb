@@ -134,6 +134,28 @@ impl Engine {
                     .await?;
             }
             Effect::UpdateProjection(p) => self.write_projection(tx, task, p).await?,
+            Effect::Reply { number, body } => {
+                // The `comment` action posts it (idempotent per event); its result event is
+                // ignored by the interpreter, no node waits on this call.
+                let st = &task.state.doc.subjects;
+                let number = number
+                    .or_else(|| st.pull_requests.last().map(|p| p.number))
+                    .or_else(|| st.issue.as_ref().map(|i| i.number));
+                if let Some(number) = number {
+                    self.queue_job(
+                        tx,
+                        task,
+                        "call_action",
+                        json!({"call_id": format!("reply-{ev}"), "name": "comment",
+                               "args": {"number": number, "body": body}}),
+                        &format!("reply:{}:{ev}", task.id),
+                        5,
+                        None,
+                        None,
+                    )
+                    .await?;
+                }
+            }
         }
         Ok(())
     }
@@ -219,21 +241,22 @@ impl Engine {
         sqlx::query(
             "INSERT INTO engine.projection (task_id, project, repo, workflow, title, subjects, status,
                  end_status, phase, node, \"column\", waiting_on, reason, text, actions, artifacts,
-                 needs_you, cost_usd, updated_at)
+                 needs_you, cost_usd, updated_at, commands)
              SELECT t.id, t.project, t.repo, t.workflow_ref, $2,
                  COALESCE((SELECT jsonb_agg(jsonb_build_object('kind', s.kind, 'key', s.key, 'url', s.url)
                                             ORDER BY s.linked_at)
                            FROM engine.subjects s WHERE s.task_id = t.id), '[]'),
                  $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
                  COALESCE((SELECT sum(cost_usd) FROM engine.step_runs r WHERE r.task_id = t.id), 0),
-                 now()
+                 now(), $14
              FROM engine.tasks t WHERE t.id = $1
              ON CONFLICT (task_id) DO UPDATE SET title = EXCLUDED.title, subjects = EXCLUDED.subjects,
                  status = EXCLUDED.status, end_status = EXCLUDED.end_status, phase = EXCLUDED.phase,
                  node = EXCLUDED.node, \"column\" = EXCLUDED.\"column\", waiting_on = EXCLUDED.waiting_on,
                  reason = EXCLUDED.reason, text = EXCLUDED.text, actions = EXCLUDED.actions,
                  artifacts = EXCLUDED.artifacts, needs_you = EXCLUDED.needs_you,
-                 cost_usd = EXCLUDED.cost_usd, updated_at = now()",
+                 cost_usd = EXCLUDED.cost_usd, updated_at = now(),
+                 commands = EXCLUDED.commands",
         )
         .bind(task.id)
         .bind(title)
@@ -248,6 +271,7 @@ impl Engine {
         .bind(serde_json::to_value(&p.actions).unwrap_or_default())
         .bind(serde_json::to_value(&p.artifacts).unwrap_or_default())
         .bind(p.needs_you)
+        .bind(serde_json::to_value(&p.commands).unwrap_or_default())
         .execute(&mut **tx)
         .await?;
         Ok(())

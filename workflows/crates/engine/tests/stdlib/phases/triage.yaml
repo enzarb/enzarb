@@ -35,7 +35,7 @@ nodes:
   answers:
     wait:
       events:
-        - {event: comment, if: "not event.actor.bot and (event.actor.login == subjects.issue.author or event.actor.can_write)"}
+        - {event: comment, if: "not event.actor.bot and not event.command and (event.actor.login == subjects.issue.author or event.actor.can_write)"}
         - {event: issue, if: "event.action == 'closed'"}
         - timer
       timer: {seconds: {param: stale_after}}
@@ -50,7 +50,7 @@ nodes:
   stale:
     wait:
       events:
-        - {event: comment, if: "not event.actor.bot and (event.actor.login == subjects.issue.author or event.actor.can_write)"}
+        - {event: comment, if: "not event.actor.bot and not event.command and (event.actor.login == subjects.issue.author or event.actor.can_write)"}
         - {event: issue, if: "event.action == 'closed'"}
       reason: stale
       text: "No answer to the triage questions for {{ params.stale_after }}; comment to pick it up again"

@@ -2,11 +2,12 @@
 //! `step(resolved, state, event) -> (state, effects)`. No IO, no clock:
 //! time and every result arrive as events.
 
+use crate::commands::CommandRoute;
 use crate::document::{Artifact, GitFacts, Relation, Subject, TaskDocument};
-use crate::events::{Event, SubjectKind};
+use crate::events::{Event, Payload, SubjectKind};
 use crate::format::{
-    Access, Action, CANCELLED, Concurrency, HandlerDo, Matcher, MatcherSpec, NumField, Output,
-    ResultSpec, Secret, Sender, SubjectLink, TextField, Tools, UiAction, Wait, WaitingOn,
+    Access, Action, CANCELLED, CommandInfo, Concurrency, HandlerDo, Matcher, MatcherSpec, NumField,
+    Output, ResultSpec, Secret, Sender, SubjectLink, TextField, Tools, UiAction, Wait, WaitingOn,
     parse_duration,
 };
 use crate::resolve::{EXIT_LIMIT, Exec, RKind, RNode, RPhase, RRuntime, RStep, Resolved, Route};
@@ -229,6 +230,12 @@ pub enum Effect {
         number: u64,
     },
     UpdateProjection(Box<Projection>),
+    /// Answer a comment on `number` (the task's issue or pull request when unset), as the
+    /// bot: a command the wait does not accept.
+    Reply {
+        number: Option<u64>,
+        body: String,
+    },
 }
 
 /// A step ready to run: templates rendered, permissions and secrets by name.
@@ -292,6 +299,9 @@ pub struct Projection {
     pub reason: Option<String>,
     pub text: Option<String>,
     pub actions: Vec<UiAction>,
+    /// The commands that apply now (`from: writer` ones only count for writers).
+    #[serde(default)]
+    pub commands: Vec<CommandInfo>,
     pub artifacts: Vec<Artifact>,
     pub needs_you: bool,
 }
@@ -307,6 +317,50 @@ pub fn step(res: &Resolved, state: &TaskState, ev: &TaskEvent) -> (TaskState, Ve
     };
     m.apply(ev);
     (m.s, m.fx)
+}
+
+/// The commands the task accepts now: the active wait's commands (declared, inherited and
+/// matched by its own rules), its buttons, and the engine-native `/cancel`. Empty once the task
+/// ended. The reducer's reply and the projection both read this.
+pub fn accepted_commands(res: &Resolved, state: &TaskState) -> Vec<CommandInfo> {
+    let cancel = || CommandInfo {
+        name: "cancel".into(),
+        label: "Cancel".into(),
+        description: Some("Stop the task".into()),
+        from: Sender::Writer,
+    };
+    let node = res
+        .phase(&state.phase_path())
+        .zip(state.frames.last())
+        .and_then(|(p, f)| p.nodes.get(&f.node));
+    match (&state.status, node.map(|n| &n.kind)) {
+        (Status::Waiting, Some(RKind::Wait(w))) => {
+            let mut out: Vec<CommandInfo> = w
+                .commands
+                .iter()
+                .map(|c| {
+                    let name = c.name.as_str().to_string();
+                    CommandInfo {
+                        label: c
+                            .label
+                            .as_ref()
+                            .map(|l| l.as_str().to_string())
+                            .filter(|l| !l.is_empty() && !template::is_template(l))
+                            .unwrap_or_else(|| format!("/{name}")),
+                        description: c.description.as_ref().map(|d| d.as_str().to_string()),
+                        from: c.from.unwrap_or(Sender::Writer),
+                        name,
+                    }
+                })
+                .collect();
+            if !out.iter().any(|c| c.name == "cancel") {
+                out.push(cancel());
+            }
+            out
+        }
+        (Status::Running, _) => vec![cancel()],
+        _ => Vec::new(),
+    }
 }
 
 struct Machine<'a> {
@@ -460,6 +514,7 @@ impl<'a> Machine<'a> {
 
     fn ctx(&self, params: &Map<String, Value>, extra: &[(&str, Value)]) -> Value {
         let mut v = serde_json::to_value(&self.s.doc).unwrap_or_else(|_| json!({}));
+        crate::document::add_feedback(&mut v);
         let o = v.as_object_mut().expect("document is an object");
         o.insert("params".into(), Value::Object(params.clone()));
         o.insert("last".into(), self.s.last.clone());
@@ -516,6 +571,15 @@ impl<'a> Machine<'a> {
         if self.s.status != Status::New && self.handle(&ty, &ev, can_write, event) {
             return;
         }
+        // `/cancel` from a writer is engine-native: it ends the task wherever it is.
+        if can_write
+            && self.s.status != Status::New
+            && let Payload::Comment(c) = &event.payload
+            && c.command.as_deref() == Some("cancel")
+        {
+            self.dispatch(&TaskEvent::Cancel);
+            return;
+        }
         if let Some(Pending::Step { run_id, .. }) = self.s.pending.clone() {
             let Some(RKind::Step(st)) = self.node().map(|n| &n.kind) else {
                 return;
@@ -539,8 +603,117 @@ impl<'a> Machine<'a> {
             }
             return;
         }
-        if self.s.status == Status::Waiting {
-            self.wait_event(&ty, &ev, can_write, Some(event));
+        if self.s.status == Status::Waiting && !self.wait_event(&ty, &ev, can_write, Some(event)) {
+            self.reply_unaccepted(event, can_write);
+        }
+    }
+
+    /// Answers a person's command the wait did not take: what is accepted instead.
+    fn reply_unaccepted(&mut self, event: &Event, can_write: bool) {
+        let Payload::Comment(c) = &event.payload else {
+            return;
+        };
+        let Some(cmd) = c.command.as_deref() else {
+            return;
+        };
+        if event.actor.as_ref().is_none_or(|a| a.bot) {
+            return;
+        }
+        let all = accepted_commands(self.res, &self.s);
+        let usable: Vec<&CommandInfo> = all
+            .iter()
+            .filter(|i| i.from == Sender::Anyone || can_write)
+            .collect();
+        let list = if usable.is_empty() {
+            "none".to_string()
+        } else {
+            usable
+                .iter()
+                .map(|i| format!("`/{}`", i.name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let body = if all.iter().any(|i| i.name == cmd) {
+            format!(
+                "`/{cmd}` needs write access to the repository. Accepted from you here: {list}."
+            )
+        } else {
+            format!("`/{cmd}` does not apply right now. Accepted here: {list}.")
+        };
+        let number = event.subject.as_ref().map(|s| s.number).filter(|n| *n > 0);
+        self.fx.push(Effect::Reply { number, body });
+    }
+
+    /// Routes a declared command of the active wait. False when the wait declares no route
+    /// for it or the sender may not use it.
+    fn command_route(&mut self, event: &Event, can_write: bool, ev: &Value) -> bool {
+        let Payload::Comment(c) = &event.payload else {
+            return false;
+        };
+        let Some(cmd) = c.command.as_deref() else {
+            return false;
+        };
+        let (Some(node), Some(phase)) = (self.node(), self.phase()) else {
+            return false;
+        };
+        let RKind::Wait(w) = &node.kind else {
+            return false;
+        };
+        let Some(decl) = w.commands.iter().find(|d| d.name.as_str() == cmd) else {
+            return false;
+        };
+        let (Some(to), from) = (&decl.to, decl.from.unwrap_or(Sender::Writer)) else {
+            return false;
+        };
+        if from == Sender::Writer && !can_write {
+            return false;
+        }
+        let Ok(route) = CommandRoute::parse(to, |n| phase.nodes.contains_key(n)) else {
+            return false;
+        };
+        let here = self
+            .s
+            .frames
+            .last()
+            .map(|f| f.node.clone())
+            .unwrap_or_default();
+        let flow = match route {
+            CommandRoute::Node(n) => Flow::Enter(n),
+            CommandRoute::Exit(e) => Flow::Exit(e),
+            CommandRoute::Start => Flow::Enter(phase.start.clone()),
+            CommandRoute::Own => Flow::Enter(here),
+            CommandRoute::Goto(p) => {
+                self.apply_leave_sets(&[("event", ev.clone())]);
+                self.s.doc.event = Some(event.clone());
+                self.s.pending = None;
+                self.s.timer = None;
+                self.s.status = Status::Running;
+                self.enter_phase(&p, 0);
+                return true;
+            }
+        };
+        self.s.doc.event = Some(event.clone());
+        self.s.timer = None;
+        self.s.status = Status::Running;
+        let flow = match flow {
+            Flow::Enter(n) => self.leave(n, &[("event", ev.clone())]),
+            other => {
+                // `leave` applies `set_on_exit`; do the same before leaving by an exit.
+                self.apply_leave_sets(&[("event", ev.clone())]);
+                other
+            }
+        };
+        self.run(flow);
+        true
+    }
+
+    /// The `set_on_exit` of the current node.
+    fn apply_leave_sets(&mut self, extra: &[(&str, Value)]) {
+        let (Some(node), Some(phase)) = (self.node(), self.phase()) else {
+            return;
+        };
+        if let Err(e) = self.apply_set(&node.set_on_exit, &phase.params, extra) {
+            self.s.notes.push(format!("set_on_exit: {e}"));
         }
     }
 
@@ -705,44 +878,58 @@ impl<'a> Machine<'a> {
         Ok(())
     }
 
-    /// Offers an event to the current wait.
-    fn wait_event(&mut self, ty: &str, ev: &Value, can_write: bool, event: Option<&Event>) {
+    /// Offers an event to the current wait. True when it moved the task: through the wait's
+    /// own `next:` rules, else through a command the wait declares.
+    fn wait_event(&mut self, ty: &str, ev: &Value, can_write: bool, event: Option<&Event>) -> bool {
         let (Some(node), Some(phase)) = (self.node(), self.phase()) else {
-            return;
+            return false;
         };
-        let RKind::Wait(w) = &node.kind else { return };
+        let RKind::Wait(w) = &node.kind else {
+            return false;
+        };
         let from = w.from.unwrap_or_default();
-        if !w
+        let admitted = w
             .events
             .iter()
-            .any(|m| self.matches(m, ty, ev, can_write, from, &phase.params))
-        {
-            if let (Some(e), Some(run)) = (event, self.s.last_agent_run.clone())
-                && w.steer
-                    .iter()
-                    .any(|m| self.matches(m, ty, ev, can_write, from, &phase.params))
-            {
-                self.fx.push(Effect::Steer {
-                    run_id: run,
-                    event: e.clone(),
-                });
-            }
-            return;
-        }
-        let ctx = self.ctx(&phase.params, &[("event", ev.clone())]);
-        match follow(&node.next, &ctx) {
-            Ok(Some(to)) => {
-                if let Some(e) = event {
-                    self.s.doc.event = Some(e.clone());
+            .any(|m| self.matches(m, ty, ev, can_write, from, &phase.params));
+        if admitted {
+            let ctx = self.ctx(&phase.params, &[("event", ev.clone())]);
+            match follow(&node.next, &ctx) {
+                Ok(Some(to)) => {
+                    if let Some(e) = event {
+                        self.s.doc.event = Some(e.clone());
+                    }
+                    self.s.timer = None;
+                    self.s.status = Status::Running;
+                    let f = self.leave(to, &[("event", ev.clone())]);
+                    self.run(f);
+                    return true;
                 }
-                self.s.timer = None;
-                self.s.status = Status::Running;
-                let f = self.leave(to, &[("event", ev.clone())]);
-                self.run(f);
+                Ok(None) => {} // not for the rules: a declared command may take it
+                Err(e) => {
+                    self.pause(format!("condition error: {e}"), None);
+                    return true;
+                }
             }
-            Ok(None) => {} // keep waiting
-            Err(e) => self.pause(format!("condition error: {e}"), None),
         }
+        if let Some(e) = event
+            && self.command_route(e, can_write, ev)
+        {
+            return true;
+        }
+        if !admitted
+            && let (Some(e), Some(run)) = (event, self.s.last_agent_run.clone())
+            && w.steer
+                .iter()
+                .any(|m| self.matches(m, ty, ev, can_write, from, &phase.params))
+        {
+            self.fx.push(Effect::Steer {
+                run_id: run,
+                event: e.clone(),
+            });
+            return true;
+        }
+        false
     }
 
     fn unpause_for_result(&mut self) {
@@ -1259,6 +1446,7 @@ impl<'a> Machine<'a> {
             reason: None,
             text: None,
             actions: Vec::new(),
+            commands: accepted_commands(self.res, &self.s),
             artifacts: self.s.doc.artifacts.clone(),
             needs_you: false,
         };

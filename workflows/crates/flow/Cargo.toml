@@ -22,4 +22,5 @@ serde_path_to_error = "0.1"
 yaml-rust2 = "0.10"
 minijinja = { version = "2", features = ["unstable_machinery", "json"] }
 regex = "1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 schemars = "1"

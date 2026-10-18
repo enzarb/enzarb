@@ -12,6 +12,11 @@ params:
   stale_after: {type: string, default: 14d, description: Triage questions go stale after this long}
   release_when: {type: list, items: string, default: [], description: Release events that end the task; empty ends it at the merge}
   max_rounds: {type: integer, default: 3, description: Automatic fix rounds on the review's must-fix findings}
+# Every wait accepts these unless it declares or matches its own `retry` / `restart`; `/cancel`
+# is handled by the engine. Meaning lives here, not in the engine.
+commands:
+  - {name: retry, label: Retry, description: Run the current step of the task again, to: start}
+  - {name: restart, label: Restart, description: Start the task over from its first phase, to: "goto:dependencies"}
 on:
   # Closing the issue or closing the pull request without merging ends the task anywhere,
   # stopping a running step first. An issue closed by the merge itself does not.

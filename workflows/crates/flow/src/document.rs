@@ -162,6 +162,10 @@ pub struct Subject {
     pub merge_sha: Option<String>,
     #[serde(default)]
     pub comments: Vec<SubjectComment>,
+    /// When the engine linked the object to the task, if it created it for the task (RFC 3339):
+    /// comments older than this are not feedback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
@@ -170,6 +174,57 @@ pub struct SubjectComment {
     pub body: String,
     #[serde(default)]
     pub at: String,
+    /// The command the comment is (`/approve` is `approve`), parsed when the thread was read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Written by a bot (the instance's own comments included).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bot: bool,
+}
+
+/// Adds `feedback` to every subject of a serialized document: its comments written by people,
+/// that are not commands and are newer than `vars.feedback_since` (an RFC 3339 time a
+/// workflow sets when a feedback round starts or ends) and than the subject's `linked_at`;
+/// without either time, all of them.
+pub fn add_feedback(doc: &mut Value) {
+    let time = |v: Option<&Value>| {
+        v.and_then(Value::as_str)
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+    };
+    let watermark = time(doc.pointer("/vars/feedback_since"));
+    let subjects = match doc.get_mut("subjects") {
+        Some(Value::Object(o)) => o,
+        _ => return,
+    };
+    let mut fill = |s: &mut Value| {
+        let Some(comments) = s.get("comments").and_then(Value::as_array) else {
+            return;
+        };
+        let since = watermark.max(time(s.get("linked_at")));
+        let feedback: Vec<Value> = comments
+            .iter()
+            .filter(|c| c.get("command").is_none_or(Value::is_null))
+            .filter(|c| !c.get("bot").and_then(Value::as_bool).unwrap_or(false))
+            .filter(|c| {
+                let at = c
+                    .get("at")
+                    .and_then(Value::as_str)
+                    .and_then(|a| chrono::DateTime::parse_from_rfc3339(a).ok());
+                match (since, at) {
+                    (Some(since), Some(at)) => at > since,
+                    _ => true,
+                }
+            })
+            .cloned()
+            .collect();
+        s["feedback"] = Value::Array(feedback);
+    };
+    if let Some(i) = subjects.get_mut("issue") {
+        fill(i);
+    }
+    if let Some(Value::Array(prs)) = subjects.get_mut("pull_requests") {
+        prs.iter_mut().for_each(&mut fill);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]

@@ -4,6 +4,9 @@ board: board
 params:
   release_when: {type: list, items: string, default: [], description: Release events that end the task; empty ends it at the merge}
   max_rounds: {type: integer, default: 3, description: Automatic fix rounds on the review's must-fix findings}
+commands:
+  - {name: retry, label: Retry, description: Run the current step of the task again, to: start}
+  - {name: restart, label: Restart, description: Start the task over from the review, to: "goto:review"}
 on:
   # Closing the pull request without merging ends the task anywhere, stopping a running step first.
   - {events: [{event: pull_request, if: "event.action == 'closed' and not event.merged"}], do: "end:closed"}

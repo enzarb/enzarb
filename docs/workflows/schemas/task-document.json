@@ -203,6 +203,13 @@
             "$ref": "#/$defs/SubjectComment"
           },
           "default": []
+        },
+        "linked_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "When the engine linked the object to the task, if it created it for the task (RFC 3339):\ncomments older than this are not feedback."
         }
       },
       "required": [
@@ -222,6 +229,17 @@
         "at": {
           "type": "string",
           "default": ""
+        },
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The command the comment is (`/approve` is `approve`), parsed when the thread was read."
+        },
+        "bot": {
+          "type": "boolean",
+          "description": "Written by a bot (the instance's own comments included)."
         }
       },
       "required": [

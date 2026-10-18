@@ -54,6 +54,7 @@ The GitHub objects linked to the task.
 | `base` | string |  |  |
 | `merge_sha` | string |  | Merged pull requests: the merge commit (verified, from GitHub). |
 | `comments` | list of SubjectComment |  |  |
+| `linked_at` | string |  | When the engine linked the object to the task, if it created it for the task (RFC 3339): comments older than this are not feedback. |
 
 ## `SubjectComment`
 
@@ -62,6 +63,8 @@ The GitHub objects linked to the task.
 | `author` | string | yes |  |
 | `body` | string | yes |  |
 | `at` | string |  |  |
+| `command` | string |  | The command the comment is (`/approve` is `approve`), parsed when the thread was read. |
+| `bot` | boolean |  | Written by a bot (the instance's own comments included). |
 
 ## `Comment`
 

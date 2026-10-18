@@ -1,2 +1,8 @@
 Snapshot of the standard library (enzarb/workflows, commit 2b5ae0d) for engine tests that
 route and run real workflow definitions. Refresh by copying the library files again.
+
+Differences from that commit (issue #273): the workflow-level `commands:` defaults
+(workflows/issue.yaml, workflows/pull_request.yaml), the `retry` override of the `checks` wait
+(phases/review_rounds.yaml), the `feedback_since` watermark of `address_human` and
+the `not event.command` guard of the triage answer waits and prompts/address.md rendering `pr.feedback`. The library repo gets the same change as its own PR;
+until then this snapshot is ahead of it.

@@ -14,6 +14,7 @@
 //! - [`lint`] / [`scenario`]: what the `enzarb-lint` binary runs.
 //! - [`schema`]: generated JSON Schemas and reference docs.
 
+pub mod commands;
 pub mod diag;
 pub mod document;
 pub mod events;
