@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use enzarb_updater::{
     app,
     charts::KubeCharts,
+    history::KubeHistory,
     poll::{self, PollHealth},
     registry::OciRegistry,
     rollout,
@@ -46,6 +47,7 @@ async fn main() -> Result<()> {
     let ns = env_or("ENZARB_UPDATER_NAMESPACE", "kube-system");
 
     let client = kube::Client::try_default().await?;
+    let history = Arc::new(KubeHistory::new(client.clone(), &ns));
     let health = (poll_secs > 0).then(|| Arc::new(PollHealth::default()));
     let state = app::AppState {
         secret: secret.map(|s| Arc::new(s.into_bytes())),
@@ -60,6 +62,7 @@ async fn main() -> Result<()> {
     tokio::spawn(rollout::run(
         state.registry.clone(),
         state.charts.clone(),
+        history,
         state.status.clone(),
         Duration::from_secs(60),
     ));

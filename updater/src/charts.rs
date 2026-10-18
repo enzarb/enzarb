@@ -80,6 +80,15 @@ pub fn job_state(job: &Job) -> (Option<String>, bool) {
     (installed, failed && !succeeded)
 }
 
+/// When the succeeded helm-install Job completed (RFC 3339, UTC): the chart was deployed then.
+pub fn job_completed_at(job: &Job) -> Option<String> {
+    let st = job.status.as_ref()?;
+    if st.succeeded.unwrap_or(0) == 0 {
+        return None;
+    }
+    st.completion_time.as_ref().map(|t| t.0.to_string())
+}
+
 #[async_trait]
 impl Charts for KubeCharts {
     async fn current(&self) -> Result<Current> {
@@ -101,9 +110,14 @@ impl Charts for KubeCharts {
             .get_opt(&format!("helm-install-{}", self.name))
             .await?;
         let (installed, job_failed) = job.as_ref().map(job_state).unwrap_or((None, false));
+        let installed_at = installed
+            .as_ref()
+            .and(job.as_ref())
+            .and_then(job_completed_at);
         Ok(Rollout {
             desired,
             installed,
+            installed_at,
             job_failed,
         })
     }
@@ -152,6 +166,20 @@ mod tests {
             job_state(&job("0.9.0", 1, 2)),
             (Some("0.9.0".into()), false)
         );
+    }
+
+    #[test]
+    fn completion_time_is_reported_for_a_succeeded_job() {
+        let mut j = job("0.9.0", 1, 0);
+        assert_eq!(job_completed_at(&j), None);
+        j.status.as_mut().unwrap().completion_time =
+            serde_json::from_value(serde_json::json!("2026-10-12T03:05:00Z")).unwrap();
+        assert_eq!(
+            job_completed_at(&j).as_deref(),
+            Some("2026-10-12T03:05:00Z")
+        );
+        j.status.as_mut().unwrap().succeeded = Some(0);
+        assert_eq!(job_completed_at(&j), None);
     }
 
     #[test]

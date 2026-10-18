@@ -361,18 +361,23 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(
             json(res).await,
-            serde_json::json!({"installed": null, "desired": null, "latest": null, "stuck": false})
+            serde_json::json!({"installed": null, "desired": null, "latest": null, "stuck": false, "releases": []})
         );
         st.status.set_for_test(Status {
             installed: Some("0.9.0".into()),
             desired: Some("0.10.0".into()),
             latest: Some("0.10.0".into()),
             stuck: true,
+            releases: vec![crate::history::ReleaseTimes {
+                version: "0.9.0".into(),
+                deployed_at: "2026-10-12T03:05:00Z".into(),
+            }],
         });
         let res = router(st).oneshot(req()).await.unwrap();
         assert_eq!(
             json(res).await,
-            serde_json::json!({"installed": "0.9.0", "desired": "0.10.0", "latest": "0.10.0", "stuck": true})
+            serde_json::json!({"installed": "0.9.0", "desired": "0.10.0", "latest": "0.10.0", "stuck": true,
+                "releases": [{"version": "0.9.0", "deployedAt": "2026-10-12T03:05:00Z"}]})
         );
     }
 

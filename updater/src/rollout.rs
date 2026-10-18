@@ -3,13 +3,21 @@
 //! `/status` and logged when an upgrade is stuck. Nothing here changes the cluster.
 
 use std::{
-    sync::{Arc, RwLock},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
 use serde::Serialize;
 
-use crate::{charts::Charts, poll, registry::Registry};
+use crate::{
+    charts::Charts,
+    history::{self, History, ReleaseTimes},
+    poll,
+    registry::Registry,
+};
 
 /// What the cluster says about the HelmChart's rollout.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -18,6 +26,8 @@ pub struct Rollout {
     pub desired: Option<String>,
     /// The version of the last successful `helm-install-<name>` Job; `None` when unreadable.
     pub installed: Option<String>,
+    /// When that Job completed (RFC 3339); `None` when unknown.
+    pub installed_at: Option<String>,
     /// The `helm-install-<name>` Job is failing (`status.failed > 0`, or a backoff-limit condition).
     pub job_failed: bool,
 }
@@ -29,6 +39,9 @@ pub struct Status {
     pub desired: Option<String>,
     pub latest: Option<String>,
     pub stuck: bool,
+    /// When recent chart versions finished installing, oldest first. Additive: an older UI
+    /// ignores it.
+    pub releases: Vec<ReleaseTimes>,
 }
 
 impl Status {
@@ -41,20 +54,27 @@ impl Status {
             desired: r.desired.clone(),
             latest,
             stuck,
+            releases: Vec::new(),
         }
     }
 }
 
 /// Last computed status, served by `/status` without touching the cluster or the registry.
 #[derive(Default)]
-pub struct StatusCache(RwLock<Status>);
+pub struct StatusCache {
+    status: RwLock<Status>,
+    /// The stored history was read (an unread history must not be overwritten).
+    loaded: AtomicBool,
+    /// The list changed and the last save failed.
+    unsaved: AtomicBool,
+}
 
 impl StatusCache {
     pub fn get(&self) -> Status {
-        self.0.read().expect("status lock").clone()
+        self.status.read().expect("status lock").clone()
     }
     fn set(&self, s: Status) -> Status {
-        std::mem::replace(&mut *self.0.write().expect("status lock"), s)
+        std::mem::replace(&mut *self.status.write().expect("status lock"), s)
     }
     #[cfg(test)]
     pub(crate) fn set_for_test(&self, s: Status) {
@@ -64,7 +84,21 @@ impl StatusCache {
 
 /// One refresh: read the rollout and the latest tag, cache them and log stuck/recovered
 /// transitions. A failed read keeps the previous value of that part and is logged.
-pub async fn refresh(registry: &dyn Registry, charts: &dyn Charts, cache: &StatusCache) {
+pub async fn refresh(
+    registry: &dyn Registry,
+    charts: &dyn Charts,
+    history: &dyn History,
+    cache: &StatusCache,
+) {
+    if !cache.loaded.load(Ordering::SeqCst) {
+        match history.load().await {
+            Ok(list) => {
+                cache.status.write().expect("status lock").releases = list;
+                cache.loaded.store(true, Ordering::SeqCst);
+            }
+            Err(e) => tracing::warn!(error = %format!("{e:#}"), "cannot read release history"),
+        }
+    }
     let prev = cache.get();
     let rollout = match charts.rollout().await {
         Ok(r) => Some(r),
@@ -80,13 +114,34 @@ pub async fn refresh(registry: &dyn Registry, charts: &dyn Charts, cache: &Statu
             prev.latest.clone()
         }
     };
-    let next = match &rollout {
-        Some(r) => Status::new(r, latest),
+    let mut next = match &rollout {
+        Some(r) => Status {
+            releases: prev.releases.clone(),
+            ..Status::new(r, latest)
+        },
         None => Status {
             latest,
             ..prev.clone()
         },
     };
+    let installed = rollout
+        .as_ref()
+        .and_then(|r| r.installed.as_ref().zip(Some(r)));
+    if let (Some((v, r)), true) = (installed, cache.loaded.load(Ordering::SeqCst)) {
+        // Without the Job's completion time the first sighting is the best estimate.
+        let at = r.installed_at.clone().unwrap_or_else(now);
+        if history::record(&mut next.releases, v, &at) {
+            tracing::info!(version = %v, deployed_at = %at, "chart deployed");
+            cache.unsaved.store(true, Ordering::SeqCst);
+        }
+    }
+    if cache.unsaved.load(Ordering::SeqCst) {
+        match history.save(&next.releases).await {
+            Ok(()) => cache.unsaved.store(false, Ordering::SeqCst),
+            // Kept in memory and retried on the next refresh; /status is unaffected.
+            Err(e) => tracing::warn!(error = %format!("{e:#}"), "cannot save release history"),
+        }
+    }
     let was_stuck = cache.set(next.clone()).stuck;
     match (was_stuck, next.stuck) {
         (_, true) => {
@@ -116,10 +171,15 @@ pub async fn refresh(registry: &dyn Registry, charts: &dyn Charts, cache: &Statu
     }
 }
 
+fn now() -> String {
+    k8s_openapi::jiff::Timestamp::now().to_string()
+}
+
 /// Refresh forever every `every`, first refresh immediately.
 pub async fn run(
     registry: Arc<dyn Registry>,
     charts: Arc<dyn Charts>,
+    history: Arc<dyn History>,
     cache: Arc<StatusCache>,
     every: Duration,
 ) {
@@ -127,7 +187,7 @@ pub async fn run(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tick.tick().await;
-        refresh(&*registry, &*charts, &cache).await;
+        refresh(&*registry, &*charts, &*history, &cache).await;
     }
 }
 
@@ -138,6 +198,7 @@ mod tests {
 
     use super::*;
     use crate::charts::Current;
+    use std::sync::Mutex;
 
     struct Reg(Result<Vec<String>, String>);
     #[async_trait]
@@ -168,6 +229,7 @@ mod tests {
         Rollout {
             desired: desired.map(Into::into),
             installed: installed.map(Into::into),
+            installed_at: installed.map(|_| "2026-10-12T03:05:00Z".into()),
             job_failed,
         }
     }
@@ -176,9 +238,34 @@ mod tests {
         Ok(vec!["0.9.0".into(), "0.10.0".into(), "latest".into()])
     }
 
+    #[derive(Default)]
+    struct Hist {
+        stored: Mutex<Vec<ReleaseTimes>>,
+        fail_load: bool,
+        fail_save: bool,
+        saves: Mutex<usize>,
+    }
+    #[async_trait]
+    impl History for Hist {
+        async fn load(&self) -> Result<Vec<ReleaseTimes>> {
+            if self.fail_load {
+                return Err(anyhow!("load boom"));
+            }
+            Ok(self.stored.lock().unwrap().clone())
+        }
+        async fn save(&self, list: &[ReleaseTimes]) -> Result<()> {
+            if self.fail_save {
+                return Err(anyhow!("save boom"));
+            }
+            *self.saves.lock().unwrap() += 1;
+            *self.stored.lock().unwrap() = list.to_vec();
+            Ok(())
+        }
+    }
+
     async fn status(reg: Result<Vec<String>, String>, r: Result<Rollout, String>) -> Status {
         let cache = StatusCache::default();
-        refresh(&Reg(reg), &Ch(r), &cache).await;
+        refresh(&Reg(reg), &Ch(r), &Hist::default(), &cache).await;
         cache.get()
     }
 
@@ -191,7 +278,11 @@ mod tests {
                 installed: Some("0.9.0".into()),
                 desired: Some("0.9.0".into()),
                 latest: Some("0.10.0".into()),
-                stuck: false
+                stuck: false,
+                releases: vec![ReleaseTimes {
+                    version: "0.9.0".into(),
+                    deployed_at: "2026-10-12T03:05:00Z".into(),
+                }],
             }
         );
     }
@@ -234,19 +325,86 @@ mod tests {
         refresh(
             &Reg(tags()),
             &Ch(Ok(ro(Some("0.10.0"), Some("0.9.0"), true))),
+            &Hist::default(),
             &cache,
         )
         .await;
-        refresh(&Reg(Err("boom".into())), &Ch(Err("boom".into())), &cache).await;
+        refresh(
+            &Reg(Err("boom".into())),
+            &Ch(Err("boom".into())),
+            &Hist::default(),
+            &cache,
+        )
+        .await;
         let s = cache.get();
         assert!(s.stuck);
         assert_eq!(s.latest.as_deref(), Some("0.10.0"));
         refresh(
             &Reg(tags()),
             &Ch(Ok(ro(Some("0.10.0"), Some("0.10.0"), false))),
+            &Hist::default(),
             &cache,
         )
         .await;
         assert!(!cache.get().stuck);
+    }
+
+    async fn step(h: &Hist, cache: &StatusCache, installed: &str) {
+        let r = Ok(ro(Some(installed), Some(installed), false));
+        refresh(&Reg(tags()), &Ch(r), h, cache).await;
+    }
+
+    #[tokio::test]
+    async fn a_new_installed_version_is_recorded_once() {
+        let h = Hist::default();
+        let cache = StatusCache::default();
+        step(&h, &cache, "0.9.0").await;
+        step(&h, &cache, "0.9.0").await;
+        step(&h, &cache, "0.10.0").await;
+        step(&h, &cache, "0.10.0").await;
+        let versions: Vec<_> = cache
+            .get()
+            .releases
+            .into_iter()
+            .map(|r| r.version)
+            .collect();
+        assert_eq!(versions, ["0.9.0", "0.10.0"]);
+        assert_eq!(*h.saves.lock().unwrap(), 2);
+        assert_eq!(h.stored.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_restart_reloads_history_without_recording_again() {
+        let h = Hist::default();
+        step(&h, &StatusCache::default(), "0.9.0").await;
+        let restarted = StatusCache::default();
+        step(&h, &restarted, "0.9.0").await;
+        assert_eq!(restarted.get().releases.len(), 1);
+        assert_eq!(*h.saves.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn history_errors_do_not_break_status() {
+        let h = Hist {
+            fail_save: true,
+            ..Default::default()
+        };
+        let cache = StatusCache::default();
+        step(&h, &cache, "0.9.0").await;
+        let s = cache.get();
+        assert_eq!(s.installed.as_deref(), Some("0.9.0"));
+        assert_eq!(s.releases.len(), 1);
+
+        // An unreadable history is never overwritten with a partial list.
+        let h = Hist {
+            fail_load: true,
+            ..Default::default()
+        };
+        let cache = StatusCache::default();
+        step(&h, &cache, "0.9.0").await;
+        let s = cache.get();
+        assert_eq!(s.installed.as_deref(), Some("0.9.0"));
+        assert!(s.releases.is_empty());
+        assert_eq!(*h.saves.lock().unwrap(), 0);
     }
 }
