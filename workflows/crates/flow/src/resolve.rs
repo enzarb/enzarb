@@ -163,6 +163,8 @@ pub struct RStep {
     pub priority: Option<i32>,
     pub concurrency: Option<Concurrency>,
     pub retry: Option<Retry>,
+    /// Defaulted: task definitions stored before ADR-0026 have no `platform_wait`.
+    #[serde(default)]
     pub platform_wait: Vec<PlatformWaitRule>,
     pub steer: Vec<Matcher>,
     pub stop: Vec<Matcher>,
