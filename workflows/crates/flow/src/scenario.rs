@@ -55,6 +55,8 @@ pub struct Stub {
     pub result: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git: Option<crate::document::GitFacts>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<crate::interp::StepEnvironment>,
 }
 
 fn success() -> String {
@@ -240,6 +242,7 @@ fn finished(run_id: String, s: &Stub) -> TaskEvent {
         outputs: s.outputs.clone(),
         result: s.result.clone(),
         git: s.git.clone(),
+        environment: s.environment.clone(),
     })
 }
 

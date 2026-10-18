@@ -91,7 +91,7 @@ fn payload_doc(env: &Value, name: &str) -> Option<String> {
 
 fn task_document_md() -> String {
     let mut s = String::from(HEADER);
-    s.push_str("# Task document\n\nThe data every prompt template, `text`, action argument and condition reads (ADR-0022 §3). Templates may use these roots directly; anything else must be a declared step `input`. In conditions, `last` (the last finished step or action: `node`, `exit`, `outputs`, `result`, `git`, `missing_outputs`), `exit` (`last.exit`, or a nested phase's exit) and `params` are also defined; at waits, `event` is the candidate event. Schema: [`schemas/task-document.json`](schemas/task-document.json).\n\n## `TaskDocument`\n\n");
+    s.push_str("# Task document\n\nThe data every prompt template, `text`, action argument and condition reads (ADR-0022 §3). Templates may use these roots directly; anything else must be a declared step `input`. In conditions, `last` (the last finished step or action: `node`, `exit`, `outputs`, `result`, `git`, `environment`, `missing_outputs`), `exit` (`last.exit`, or a nested phase's exit) and `params` are also defined; at waits, `event` is the candidate event. Schema: [`schemas/task-document.json`](schemas/task-document.json).\n\n## `TaskDocument`\n\n");
     let doc = schema_for!(TaskDocument).to_value();
     table(&mut s, &doc, &[]);
     if let Some(defs) = doc["$defs"].as_object() {

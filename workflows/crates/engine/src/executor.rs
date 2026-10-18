@@ -524,6 +524,7 @@ impl Engine {
             outputs: f.outputs,
             result,
             git,
+            environment: f.environment.as_ref().map(flow_environment),
         })))
     }
 
@@ -702,6 +703,47 @@ async fn store_session_events(pool: sqlx::PgPool, mut rx: mpsc::UnboundedReceive
         .await;
         if let Err(err) = res {
             tracing::warn!(run = %e.run_id, seq = e.seq, "storing session event: {err}");
+        }
+    }
+}
+
+/// The flow-side form of the proto environment failure; `kind` is the contract's snake_case name.
+fn flow_environment(e: &enzarb_proto::StepEnvironment) -> enzarb_flow::interp::StepEnvironment {
+    use enzarb_proto::EnvironmentKind as K;
+    let kind = match e.kind {
+        K::DiskFull => "disk_full",
+        K::Oom => "oom",
+        K::ToolchainMissing => "toolchain_missing",
+        K::Network => "network",
+        K::Load => "load",
+        K::Unknown => "unknown",
+    };
+    enzarb_flow::interp::StepEnvironment {
+        kind: kind.into(),
+        detail: e.detail.clone(),
+    }
+}
+
+#[cfg(test)]
+mod environment_tests {
+    use super::*;
+    use enzarb_proto::{EnvironmentKind as K, StepEnvironment};
+
+    #[test]
+    fn maps_every_kind() {
+        for (k, want) in [
+            (K::DiskFull, "disk_full"),
+            (K::Oom, "oom"),
+            (K::ToolchainMissing, "toolchain_missing"),
+            (K::Network, "network"),
+            (K::Load, "load"),
+            (K::Unknown, "unknown"),
+        ] {
+            let f = flow_environment(&StepEnvironment {
+                kind: k,
+                detail: "d".into(),
+            });
+            assert_eq!((f.kind.as_str(), f.detail.as_str()), (want, "d"));
         }
     }
 }

@@ -864,6 +864,7 @@ fn happy_path() {
             pushed: true,
             ..Default::default()
         }),
+        environment: None,
     }));
     assert_eq!(r.at(), "work/check");
     let RunExec::Command { run, .. } = &r.run_step().exec else {
@@ -1167,6 +1168,10 @@ nodes:
         Status::Ended {
             status: "done".into()
         }
+    );
+    assert!(
+        r.s.last.get("environment").is_some_and(Value::is_null),
+        "a finished nested phase defines last.environment as null"
     );
     let mut r = Run::new(res);
     r.on(start()).on(label("reject"));

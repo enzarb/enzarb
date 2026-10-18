@@ -1463,8 +1463,36 @@
               "type": "null"
             }
           ]
+        },
+        "environment": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepEnvironment"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
+    },
+    "StepEnvironment": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "`disk_full`, `oom`, `toolchain_missing`, `network`, `load` or `unknown`."
+        },
+        "detail": {
+          "type": "string",
+          "description": "Free text saying what was observed."
+        }
+      },
+      "required": [
+        "kind",
+        "detail"
+      ],
+      "description": "What the sandbox observed about its environment (`last.environment`)."
     },
     "ActionStub": {
       "type": "object",
