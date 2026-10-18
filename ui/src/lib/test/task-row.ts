@@ -17,6 +17,7 @@ export const row = (over: Partial<TaskRow> = {}): TaskRow => ({
 	reason: null,
 	text: null,
 	actions: [],
+	commands: [],
 	artifacts: [],
 	needsYou: false,
 	costUsd: null,

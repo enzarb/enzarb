@@ -56,6 +56,7 @@ export interface SeedTask {
 	text?: string | null;
 	needsYou?: boolean;
 	actions?: { label: string; command: string }[];
+	commands?: { name: string; label: string; description?: string; from: 'writer' | 'anyone' }[];
 	artifacts?: { title: string; format: string; content: string; node?: string }[];
 	subjects?: { kind: string; key: string; url?: string }[];
 	costUsd?: number | null;
@@ -69,12 +70,12 @@ export async function seedTask(sql: Sql, t: SeedTask): Promise<number> {
 	const id = Number(row.id);
 	await sql`
 		INSERT INTO engine.projection (task_id, project, repo, workflow, title, subjects, status, end_status, phase, node,
-			"column", waiting_on, reason, text, actions, artifacts, needs_you, cost_usd)
+			"column", waiting_on, reason, text, actions, artifacts, needs_you, cost_usd, commands)
 		VALUES (${id}, ${t.project}, ${t.repo ?? 'acme/web'}, ${t.workflowRef ?? 'std/workflows/issue'}, ${t.title}, ${sql.json((t.subjects ?? []) as never)},
 			${t.status ?? 'running'}, ${t.endStatus ?? null}, ${t.phase ?? 'plan'}, ${t.node ?? 'plan'},
 			${t.column ?? null}, ${t.waitingOn ?? null}, ${t.reason ?? null}, ${t.text ?? null},
 			${sql.json((t.actions ?? []) as never)}, ${sql.json((t.artifacts ?? []) as never)},
-			${t.needsYou ?? false}, ${t.costUsd ?? 0})`;
+			${t.needsYou ?? false}, ${t.costUsd ?? 0}, ${sql.json((t.commands ?? []) as never)})`;
 	return id;
 }
 

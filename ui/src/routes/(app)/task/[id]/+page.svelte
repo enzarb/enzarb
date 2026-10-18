@@ -3,7 +3,7 @@
 	import ArtifactViewer from '#lib/components/tasks/ArtifactViewer.svelte';
 	import StepRuns from '#lib/components/tasks/StepRuns.svelte';
 	import SubjectLinks from '#lib/components/tasks/SubjectLinks.svelte';
-	import TaskActions from '#lib/components/tasks/TaskActions.svelte';
+	import TaskCommands from '#lib/components/tasks/TaskCommands.svelte';
 	import TaskControls from '#lib/components/tasks/TaskControls.svelte';
 	import TaskStatus from '#lib/components/tasks/TaskStatus.svelte';
 	import TaskTimeline from '#lib/components/tasks/TaskTimeline.svelte';
@@ -64,7 +64,8 @@
 				{#if t.costUsd !== null}<span class="ez-muted">{formatCost(t.costUsd)}</span>{/if}
 			{/snippet}
 			{#snippet actions()}
-				<TaskActions
+				<TaskCommands
+					commands={t.commands}
 					actions={t.actions}
 					oncommand={(command) => submitTask({ id: t.id, kind: 'command', data: { command } })}
 				/>

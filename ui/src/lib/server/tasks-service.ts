@@ -55,6 +55,7 @@ export function mapTask(r: Raw): TaskRow {
 		reason: (r.reason as string | null) ?? null,
 		text: (r.text as string | null) ?? null,
 		actions: arr(r.actions),
+		commands: arr(r.commands),
 		artifacts: arr(r.artifacts),
 		needsYou: r.needs_you === true,
 		costUsd: num(r.cost_usd),

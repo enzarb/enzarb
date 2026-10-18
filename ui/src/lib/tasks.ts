@@ -18,6 +18,17 @@ export interface UiAction {
 	command: string;
 }
 
+/**
+ * A command that applies to the task now (`task_v.commands`): posting `/name` as the user does
+ * what it says. `from: 'writer'` ones need write access to the repository.
+ */
+export interface TaskCommand {
+	name: string;
+	label: string;
+	description?: string | null;
+	from: 'writer' | 'anyone';
+}
+
 export interface ArtifactRef {
 	title: string;
 	format: string;
@@ -48,6 +59,8 @@ export interface TaskRow {
 	reason: string | null;
 	text: string | null;
 	actions: UiAction[];
+	/** Additive: absent (empty) from an older engine, whose `actions` are all there is. */
+	commands: TaskCommand[];
 	artifacts: ArtifactRef[];
 	needsYou: boolean;
 	costUsd: number | null;

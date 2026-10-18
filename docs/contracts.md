@@ -333,6 +333,8 @@ workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated
 
 Liveness findings (additive, [ADR-0024](adr/0024-liveness-findings.md)): `engine_api.task_v` gains the last column `findings` and computes `reason`/`text` from the top open finding when the interpreter has no reason; `engine_api.finding_v` lists open findings (task and platform scope). Details: [workflows/contracts-v2.md](workflows/contracts-v2.md).
 
+Commands (additive): `engine_api.task_v` gains the last column `commands` (`[{name, label, description?, from: writer|anyone}]`): what the task accepts now. A client shows them as buttons (`from: writer` only to writers) and posts the clicked one as `/name` through `engine_api.submit(..., 'command', ...)`. Comment events carry the actor's real `can_write`: the receiver asks the connector's permission check (cached 5 minutes) for issue, pull request and review comments; the engine rechecks it. Clients that do not know `commands` keep using `actions`.
+
 ## 7. Browser → proxy
 
 - **URL:** `wss://<host>/sandbox/v1/projects/<project>/mux?token=<jwt>`. Browsers can't set headers on websockets.

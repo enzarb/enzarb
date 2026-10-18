@@ -32,6 +32,10 @@ describe('tasksService against engine_api', () => {
 			text: 'Approve or comment.',
 			needsYou: true,
 			actions: [{ label: 'Approve', command: 'approve' }],
+			commands: [
+				{ name: 'approve', label: 'Approve', from: 'writer' },
+				{ name: 'retry', label: 'Retry', description: 'Run the step again', from: 'writer' }
+			],
 			artifacts: [
 				{ title: 'Plan', format: 'markdown', content: '## Plan\n- a', node: 'plan/plan' }
 			],
@@ -88,8 +92,13 @@ describe('tasksService against engine_api', () => {
 			needsYou: true,
 			reason: 'Plan awaiting approval',
 			actions: [{ label: 'Approve', command: 'approve' }],
+			commands: [
+				{ name: 'approve', label: 'Approve', from: 'writer' },
+				{ name: 'retry', label: 'Retry', description: 'Run the step again', from: 'writer' }
+			],
 			artifacts: [{ title: 'Plan', format: 'markdown', node: 'plan/plan' }]
 		});
+		expect((await svc().get(running))?.commands).toEqual([]);
 		expect(row?.artifacts[0]).not.toHaveProperty('content');
 		expect(await svc().get(theirs)).toBeNull();
 	});

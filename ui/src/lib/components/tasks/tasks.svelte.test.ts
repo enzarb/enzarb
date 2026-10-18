@@ -9,6 +9,7 @@ import SecretsForm from './SecretsForm.svelte';
 import SessionInspector from './SessionInspector.svelte';
 import StepRuns from './StepRuns.svelte';
 import TaskBoard from './TaskBoard.svelte';
+import TaskCommands from './TaskCommands.svelte';
 import TaskControls from './TaskControls.svelte';
 import WorkflowViewer from './WorkflowViewer.svelte';
 
@@ -322,5 +323,58 @@ describe('SecretsForm', () => {
 		await expect.element(page.getByLabelText('Value')).toHaveValue('');
 		await page.getByRole('button', { name: 'Delete NPM_TOKEN' }).click();
 		expect(ondelete).toHaveBeenCalledWith('NPM_TOKEN');
+	});
+});
+
+describe('TaskCommands', () => {
+	const commands = [
+		{ name: 'approve', label: 'Approve', description: 'Approve the plan', from: 'writer' as const },
+		{ name: 'retry', label: 'Retry', description: null, from: 'writer' as const },
+		{ name: 'help', label: '/help', description: null, from: 'anyone' as const },
+		{ name: 'cancel', label: 'Cancel', description: null, from: 'writer' as const }
+	];
+
+	it('lists the commands that apply now and posts the clicked one', async () => {
+		const oncommand = vi.fn(async () => {});
+		render(TaskCommands, {
+			commands,
+			actions: [{ label: 'Approve', command: 'approve' }],
+			oncommand
+		});
+		const group = page.getByRole('group', { name: 'Commands' });
+		await expect.element(group.getByRole('button', { name: 'Approve' })).toBeVisible();
+		await expect.element(group.getByRole('button', { name: 'Retry' })).toBeVisible();
+		// /cancel has its own confirmed button in the task controls.
+		await expect.element(group.getByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+		await group.getByRole('button', { name: 'Retry' }).click();
+		expect(oncommand).toHaveBeenCalledWith('retry');
+	});
+
+	it('shows a viewer without write access only the commands anyone may send', async () => {
+		render(TaskCommands, { commands, canWrite: false, oncommand: async () => {} });
+		const group = page.getByRole('group', { name: 'Commands' });
+		await expect.element(group.getByRole('button', { name: '/help' })).toBeVisible();
+		await expect.element(group.getByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+		await expect.element(group.getByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+	});
+
+	it('shows nothing when no command is left', async () => {
+		render(TaskCommands, {
+			commands: [commands[0]],
+			canWrite: false,
+			oncommand: async () => {}
+		});
+		await expect.element(page.getByRole('group', { name: 'Commands' })).not.toBeInTheDocument();
+	});
+
+	it('falls back to the declared buttons of an engine that sends no commands', async () => {
+		const oncommand = vi.fn(async () => {});
+		render(TaskCommands, {
+			commands: [],
+			actions: [{ label: 'Merge', command: 'merge' }],
+			oncommand
+		});
+		await page.getByRole('button', { name: 'Merge' }).click();
+		expect(oncommand).toHaveBeenCalledWith('merge');
 	});
 });
