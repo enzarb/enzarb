@@ -257,6 +257,12 @@ impl Git<'_> {
         } else {
             let _ = std::fs::remove_dir_all(dir);
             self.clone(ctl, ws, dir).await?;
+            // The clone is `--no-checkout`: its current branch (the default one) has an empty
+            // index, and checking out that same branch below would change nothing. Populate it
+            // now; a fresh clone has nothing local to lose. (An empty repository has no HEAD.)
+            let _ = self
+                .local(ctl, dir, &["reset", "-q", "--hard", "HEAD"])
+                .await?;
         }
         // Step outputs (`.enzarb/out/`) are collected after each step and never belong in the
         // repository: drop stale ones (a branch that committed them then checks out cleanly)

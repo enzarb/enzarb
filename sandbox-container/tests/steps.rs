@@ -782,3 +782,32 @@ async fn workspace_prune_spares_tasks_with_a_running_step() {
     );
     s.step_stop("busy-1").ok();
 }
+
+/// A fresh task workspace on the default branch itself (a read step: triage, plan) has the
+/// branch's files checked out. The clone is `--no-checkout`, and checking out the branch it is
+/// already on changes nothing.
+#[tokio::test]
+async fn a_fresh_workspace_on_the_default_branch_has_its_files() {
+    let env = Env::new();
+    let addr = env.server().await;
+    let (s, mut ev) = connect(addr).await;
+    let mut ws = env.workspace("main");
+    ws.mode = Mode::Read;
+    ws.push = false;
+    start(
+        &s,
+        &mut ev,
+        step(
+            "fresh-1",
+            StepExec::Command {
+                run: "test -f README.md".into(),
+                tools: vec![],
+            },
+            vec![ws],
+        ),
+    )
+    .await;
+    let (_, fin) = collect(&mut ev, "fresh-1", |_| false).await;
+    let fin = fin.unwrap();
+    assert_eq!(fin.exit, "success", "README.md is missing: {fin:?}");
+}
