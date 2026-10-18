@@ -54,3 +54,25 @@ describe('PendingChangeBanner roll now', () => {
 		await expect.element(page.getByRole('button', { name: 'Roll now' })).not.toBeInTheDocument();
 	});
 });
+
+describe('PendingChangeBanner drain countdown', () => {
+	it('shows the remaining time beside Roll now, and drops it when applied', async () => {
+		vi.useFakeTimers({
+			toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date']
+		});
+		vi.setSystemTime(new Date('2026-10-12T03:00:00Z'));
+		const roll = vi.fn().mockResolvedValue(undefined);
+		const withDeadline = { ...change, deadline: '2026-10-12T03:30:00Z' };
+		const view = render(PendingChangeBanner, { change: withDeadline, runningJobs: 1, roll });
+		await expect.element(page.getByTestId('drain-remaining')).toHaveTextContent('forced in 30m');
+		await expect.element(page.getByRole('button', { name: 'Roll now' })).toBeVisible();
+		await view.rerender({ change: null, runningJobs: 0, roll });
+		await expect.element(page.getByTestId('drain-remaining')).not.toBeInTheDocument();
+	});
+
+	it('shows no countdown without a deadline', async () => {
+		const roll = vi.fn().mockResolvedValue(undefined);
+		render(PendingChangeBanner, { change, runningJobs: 1, roll });
+		await expect.element(page.getByTestId('drain-remaining')).not.toBeInTheDocument();
+	});
+});

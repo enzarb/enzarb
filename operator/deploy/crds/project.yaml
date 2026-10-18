@@ -217,6 +217,13 @@ spec:
                 description: A pod-shape change waiting for the sandbox to drain. Absent when nothing is pending.
                 nullable: true
                 properties:
+                  deadline:
+                    description: |-
+                      When the drain timeout forces the roll (`since` plus the operator's drain timeout). Absent
+                      on objects written by an older operator.
+                    format: date-time
+                    nullable: true
+                    type: string
                   generation:
                     format: int64
                     type: integer

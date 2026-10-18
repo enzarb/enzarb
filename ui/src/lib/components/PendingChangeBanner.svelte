@@ -1,6 +1,10 @@
 <script lang="ts">
 	import type { PendingChange } from '#lib/project-types.ts';
-	import { POD_SHAPE_QUEUED_COPY } from '#lib/pending-change.ts';
+	import {
+		POD_SHAPE_QUEUED_COPY,
+		formatRemainingDrain,
+		remainingDrain
+	} from '#lib/pending-change.ts';
 	import { pendingChangeSteps } from '#lib/projects.ts';
 	import Notice from './ui/Notice.svelte';
 	import RollNowButton from './RollNowButton.svelte';
@@ -42,6 +46,15 @@
 		return () => clearTimeout(id);
 	});
 
+	let now = $state(Date.now());
+	$effect(() => {
+		if (!change?.deadline) return;
+		now = Date.now();
+		const id = setInterval(() => (now = Date.now()), 1000);
+		return () => clearInterval(id);
+	});
+	const remaining = $derived(change ? remainingDrain(change.deadline, now) : null);
+
 	const words = { pending: 'Pending', active: 'In progress', done: 'Done' } as const;
 	const shown = $derived(change ?? (applied ? last : null));
 	const items = $derived<StepItem[]>(
@@ -73,7 +86,16 @@
 		</Notice>
 		<StepList {items} label="Sandbox change progress" />
 		{#if change && roll}
-			<div><RollNowButton generation={change.generation} {roll} /></div>
+			<div>
+				<RollNowButton generation={change.generation} {roll} />
+				{#if remaining !== null}
+					<span class="ez-muted" data-testid="drain-remaining"
+						>{formatRemainingDrain(remaining)}</span
+					>
+				{/if}
+			</div>
+		{:else if change && remaining !== null}
+			<div class="ez-muted" data-testid="drain-remaining">{formatRemainingDrain(remaining)}</div>
 		{/if}
 	</div>
 {/if}
