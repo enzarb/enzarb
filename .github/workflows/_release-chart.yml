@@ -54,7 +54,6 @@ jobs:
       run:
         working-directory: helm
     env:
-      MISE_CEILING_PATHS: ${{ github.workspace }}
       MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
       VERSIONS: ${{ inputs.versions }}
       BUMP: ${{ inputs.bump }}
@@ -68,7 +67,6 @@ jobs:
       - uses: jdx/mise-action@v2
         with:
           cache: true
-          working_directory: helm
       - run: pip install jsonschema pyyaml
       - name: Sync component versions
         id: sync

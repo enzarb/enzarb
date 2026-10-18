@@ -31,7 +31,6 @@ permissions:
   packages: write
   actions: read
 env:
-  MISE_CEILING_PATHS: ${{ github.workspace }}
   MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
   BUMP: ${{ inputs.bump }}
   DRY_RUN: ${{ inputs.dry_run }}

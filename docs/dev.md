@@ -44,7 +44,8 @@ The `ENZARB_TEST_PG_URL` contract of `mise run test:pg`:
 - Stdout is one `export ENZARB_TEST_PG_URL=...` line (for `eval`); progress goes to stderr. It is safe to call repeatedly: a running container is reused, a stopped one is started.
 - If `ENZARB_TEST_PG_URL` is already set, it is printed unchanged and Docker is not touched. Use this to point the tests at a sidecar or an external server.
 - `ENZARB_TEST_PG_PORT` and `ENZARB_TEST_PG_NAME` are honoured. If `docker` is missing or its daemon is unreachable, the task exits 1 and names the escape hatch above.
-- In a sandbox the task uses Docker through the sandbox's `dockerd` (supervised by `sandbox-init`); there is no sidecar. The root `mise.toml` must stay free of tools that need a build step (such as `pipx:` packages), because mise installs every `[tools]` entry before running a task; component-only tools (ansible in `kubernetes/mise.toml`) belong in the component's own file.
+- In a sandbox the task uses Docker through the sandbox's `dockerd` (supervised by `sandbox-init`); there is no sidecar. The root `mise.toml` `[tools]` must stay free of tools that need a build step (such as `pipx:` packages), because mise installs every `[tools]` entry before running a task; those go in a root env file instead (ansible is in `mise.ansible.toml`, activated with `MISE_ENV=ansible`).
+- **Adding or bumping a tool:** all pins live in the root `mise.toml` (component `mise.toml` files hold tasks only). When a Dockerfile `ARG` mirrors a pin (node, gh), bump both in the same PR; `scripts/monorepo/check-tool-pins.sh` (CI and the pre-commit hook) fails on drift (`docs/ci.md`, "Tool pins").
 - Run preparation (below) starts the same container once per sandbox and exports the URL to the agent.
 
 ### Agent run preparation

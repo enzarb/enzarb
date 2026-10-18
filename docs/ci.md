@@ -12,7 +12,7 @@ The monorepo's GitHub Actions setup (root `.github/`) follows these rules. Each 
 - **Least privilege:** set `permissions` explicitly per workflow or job.
 - **Timeouts:** every job has `timeout-minutes`.
 - **Parallel by default:** independent checks are separate jobs with no `needs:`. Use `needs:` only for real data dependencies, such as pushing an image after its smoke test.
-- **Tools:** come from `jdx/mise-action` with `cache: true`, reading the repo's `mise.toml`. No `curl | bash` installers.
+- **Tools:** come from `jdx/mise-action` with `cache: true`, reading the root `mise.toml`. No `curl | bash` installers. See "Tool pins" below.
 
 ## Rust repos
 - **One workspace:** the root `Cargo.toml` is a virtual workspace with every crate as a member, one `Cargo.lock` and one `rust-toolchain.toml`. Per-component `Cargo.lock`/`rust-toolchain.toml` files and nested `[workspace]` tables are not allowed (`scripts/monorepo/check-cargo-deps.sh` enforces this). Dependencies stay declared per crate, so each component keeps its own feature set. A change to the root `Cargo.toml`, `Cargo.lock` or `rust-toolchain.toml` triggers every Rust component. Select a component's crates with `-p` flags: a bare `cargo clippy` at the root would unify features across all 13 crates.
@@ -26,6 +26,17 @@ The monorepo's GitHub Actions setup (root `.github/`) follows these rules. Each 
   - Set `save-if: ${{ github.ref == 'refs/heads/main' }}`. PRs read the main cache but don't write, so cache churn stays low.
 - **Toolchain file:** `setup-rust-toolchain` gets `rust-src-dir: .`; jobs run at the repo root and select crates with `-p` (the `cargo-args` input).
 
+## Tool pins
+The root `mise.toml` is the only place tool versions are pinned (concrete versions, never `latest`/`lts`); component `mise.toml` files hold tasks only. Ansible is the exception in placement only: `mise.ansible.toml` at the root, activated with `MISE_ENV=ansible` (the `ci-kubernetes.yml` ansible job, `oldie:host`, `oldie:reset`), so its pipx builds do not slow every task. `setup-node` cannot read `mise.toml`, so jobs use the `.github/actions/setup-node` composite action, which reads the `node` pin.
+
+`scripts/monorepo/check-tool-pins.sh` (job `scripts` in `ci-monorepo.yml`, and the pre-commit hook) fails when:
+- a component `mise.toml` has a `[tools]` section, or a root pin is `latest`/`lts`;
+- a Dockerfile `ARG` tool version differs from the root pin (mapping table at the top of the script: `NODE_VERSION` to `node`, `GH_VERSION` to `gh`; `PLAYWRIGHT_VERSION` is compared with `ui/package-lock.json`);
+- an `ARG *_VERSION` is in neither the mapped nor the explicitly unmapped list (docker, buildx, compose, sccache, mise, claude-agent-acp, gVisor), so the table cannot go stale;
+- root `rust` differs from a `rust-toolchain.toml` channel, or `HELM_VERSION` in `kubernetes/hack/versions.env` differs from root `helm`.
+
+`scripts/monorepo/test-tool-pins.sh` tests the check against fixtures. To bump a tool, change the root pin and the matching Dockerfile `ARG` in the same PR.
+
 ## Git hooks
 `lefthook.yml` (opt-in, `mise run hooks:install`, see `docs/dev.md`) runs the same checks locally. Keep the two in sync when you change either.
 
@@ -33,6 +44,7 @@ The monorepo's GitHub Actions setup (root `.github/`) follows these rules. Each 
 |---|---|---|
 | pre-commit | `cargo fmt --all --check` at the root | `_rust.yml` `fmt` |
 | pre-commit | `scripts/monorepo/check-cargo-deps.sh` (shared script) | `_rust.yml` `fmt` |
+| pre-commit | `scripts/monorepo/check-tool-pins.sh` (shared script) | `ci-monorepo.yml` `scripts` |
 | pre-commit | `scripts/monorepo/gen-graph.sh --check` when a `Cargo.toml`, `package.json` or the graph manifest is staged | `ci-monorepo.yml` |
 | pre-commit | `npm run lint` in `ui/` | `ci-ui.yml` `check` |
 | pre-commit | `shellcheck` on staged scripts | (no dedicated job) |

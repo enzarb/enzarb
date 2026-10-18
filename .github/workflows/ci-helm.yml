@@ -9,7 +9,6 @@ concurrency:
 permissions:
   contents: read
 env:
-  MISE_CEILING_PATHS: ${{ github.workspace }}
   MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
 jobs:
   changes:
@@ -31,7 +30,6 @@ jobs:
       - uses: jdx/mise-action@v2
         with:
           cache: true
-          working_directory: helm
       - run: pip install jsonschema pyyaml
       - run: mise run lint
       - run: mise run compat

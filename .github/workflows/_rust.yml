@@ -13,9 +13,9 @@ on:
         type: string
         default: ""
       node:
-        description: Node version to install for tests (empty = none)
-        type: string
-        default: ""
+        description: Install the node version pinned in the root mise.toml for tests
+        type: boolean
+        default: false
       image:
         description: Image name under ghcr.io/enzarb/ (empty = no docker job)
         type: string
@@ -77,10 +77,8 @@ jobs:
         with:
           cache: false
           rust-src-dir: .
-      - uses: actions/setup-node@v4
-        if: inputs.node != ''
-        with:
-          node-version: ${{ inputs.node }}
+      - uses: ./.github/actions/setup-node
+        if: inputs.node
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: . -> target

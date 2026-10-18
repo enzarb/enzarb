@@ -50,6 +50,8 @@ for g in $groups; do
       step "test-graph" . scripts/monorepo/test-graph.sh
       step "test-affected" . scripts/monorepo/test-affected.sh
       step "test-mechanical" . bash scripts/monorepo/test-mechanical.sh
+      step "check-tool-pins" . scripts/monorepo/check-tool-pins.sh
+      step "test-tool-pins" . bash scripts/monorepo/test-tool-pins.sh
       step "shellcheck" . shellcheck --exclude=SC1091 scripts/monorepo/*.sh .github/scripts/*.sh .mise/tasks/test/pg .mise/tasks/graph/gen
       step "actionlint" . docker run --rm -v "$ROOT:/repo" -w /repo rhysd/actionlint:1.7.7 -color
       ;;

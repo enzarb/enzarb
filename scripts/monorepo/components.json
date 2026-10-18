@@ -5,7 +5,7 @@
   "components": {
     "proto": {
       "image": null,
-      "workflow_files": [".github/workflows/ci-proto.yml", ".github/workflows/_changes.yml"]
+      "workflow_files": [".github/workflows/ci-proto.yml", ".github/workflows/_changes.yml", ".github/actions/setup-node/**"]
     },
     "operator": {
       "image": "enzarb-sandbox-operator", "context": "operator", "smoke": null, "timeout": 30,
@@ -30,7 +30,7 @@
     "sandbox-container": {
       "image": "enzarb-sandbox", "context": ".", "smoke": "scripts/smoke.sh", "timeout": 40,
       "extra_inputs": ["ui/package-lock.json"],
-      "workflow_files": [".github/workflows/ci-sandbox-container.yml", ".github/workflows/_changes.yml", ".github/workflows/_rust.yml", ".github/workflows/_docker.yml"]
+      "workflow_files": [".github/workflows/ci-sandbox-container.yml", ".github/workflows/_changes.yml", ".github/workflows/_rust.yml", ".github/workflows/_docker.yml", ".github/actions/setup-node/**"]
     },
     "ui": {
       "image": "enzarb-ui", "context": ".", "smoke": null, "timeout": 20,
@@ -41,7 +41,7 @@
         "workflows/crates/flow/tests/fixtures/**",
         "docs/workflows/examples/**"
       ],
-      "workflow_files": [".github/workflows/ci-ui.yml", ".github/workflows/_changes.yml", ".github/workflows/_docker.yml", ".github/actions/ui-install/**"]
+      "workflow_files": [".github/workflows/ci-ui.yml", ".github/workflows/_changes.yml", ".github/workflows/_docker.yml", ".github/actions/ui-install/**", ".github/actions/setup-node/**"]
     },
     "updater": {
       "image": "enzarb-updater", "context": ".", "smoke": null, "timeout": 30,
@@ -49,15 +49,17 @@
     },
     "kubernetes": {
       "image": null,
+      "extra_inputs": ["mise.toml", "mise.*.toml"],
       "workflow_files": [".github/workflows/ci-kubernetes.yml", ".github/workflows/_changes.yml"]
     },
     "helm": {
       "image": null,
+      "extra_inputs": ["mise.toml"],
       "workflow_files": [".github/workflows/ci-helm.yml", ".github/workflows/_changes.yml"]
     },
     "monorepo": {
       "pseudo": true,
-      "globs": ["scripts/**", ".mise/tasks/**", ".mise/lib/**", ".github/workflows/**", "Cargo.toml", "Cargo.lock", "**/Cargo.toml", "**/package.json"]
+      "globs": ["scripts/**", ".mise/tasks/**", ".mise/lib/**", ".github/workflows/**", "Cargo.toml", "Cargo.lock", "**/Cargo.toml", "**/package.json", "mise.toml", "mise.*.toml", "*/mise.toml", "*/Dockerfile", "rust-toolchain.toml", "kubernetes/hack/versions.env"]
     }
   }
 }

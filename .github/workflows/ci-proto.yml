@@ -129,9 +129,8 @@ jobs:
         working-directory: proto
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup-node
         with:
-          node-version: lts/*
           cache: npm
           cache-dependency-path: proto/package-lock.json
       # `npm ci` runs `prepare`, which builds ts/ -> ts/dist with tsc.

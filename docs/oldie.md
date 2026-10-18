@@ -19,7 +19,7 @@
 
 ## Prerequisites
 
-0. **Tooling**: `mise install` provides helm, kubectl and the pinned `cf` CLI, and `cd kubernetes && mise install` adds ansible (the tasks run under `kubernetes/mise.toml` themselves); log in once with `cf auth login` (the tunnel role uses it).
+0. **Tooling**: `mise install` provides helm, kubectl and the pinned `cf` CLI, and the oldie tasks run with `MISE_ENV=ansible` themselves, which adds the ansible pins from `mise.ansible.toml`; log in once with `cf auth login` (the tunnel role uses it).
 1. **ssh**: key access as `ruckc` with passwordless sudo on oldie (`rke2/inventory/oldie.yml`).
 2. **Public access through a Cloudflare Tunnel** (no inbound ports, so NAT and pinhole rules do not matter). `mise run oldie:host` converges it with the `cloudflare_tunnel` Ansible role, using your `cf` CLI login on this machine (`cf auth login`; the login needs Tunnel and DNS edit on the account):
    - creates the tunnel `enzarb-oldie` (remotely managed) if missing;

@@ -30,7 +30,7 @@ jobs:
     with:
       dir: sandbox-container
       cargo-args: --locked -p sandbox-init
-      node: '24'
+      node: true
       image: enzarb-sandbox
       context: .
       smoke: scripts/smoke.sh

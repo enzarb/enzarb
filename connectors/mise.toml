@@ -1,5 +1,2 @@
 # Same test runner as CI (`_rust.yml` runs `cargo nextest run`): run one test with
 # `cargo nextest run -E 'test(<name>)'`. Postgres for the tests: `mise run test:pg` (repo root).
-[tools]
-rust = "latest"
-"aqua:nextest-rs/nextest/cargo-nextest" = "latest"
