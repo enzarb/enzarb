@@ -3,7 +3,7 @@
 use crate::rollout::Rollout;
 use anyhow::Result;
 use async_trait::async_trait;
-use k8s_openapi::api::batch::v1::Job;
+use k8s_openapi::api::{apps::v1::Deployment, batch::v1::Job};
 use kube::{
     Api, Client,
     api::{Patch, PatchParams},
@@ -34,15 +34,17 @@ pub trait Charts: Send + Sync {
 pub struct KubeCharts {
     api: Api<DynamicObject>,
     jobs: Api<Job>,
+    deployments: Api<Deployment>,
     name: String,
 }
 
 impl KubeCharts {
-    pub fn new(client: Client, namespace: &str, name: &str) -> Self {
+    pub fn new(client: Client, namespace: &str, release_namespace: &str, name: &str) -> Self {
         let ar = ApiResource::from_gvk(&GroupVersionKind::gvk("helm.cattle.io", "v1", "HelmChart"));
         Self {
             api: Api::namespaced_with(client.clone(), namespace, &ar),
-            jobs: Api::namespaced(client, namespace),
+            jobs: Api::namespaced(client.clone(), namespace),
+            deployments: Api::namespaced(client, release_namespace),
             name: name.into(),
         }
     }
@@ -64,6 +66,34 @@ fn job_version(job: &Job) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
+pub const OPERATOR_DEPLOYMENT: &str = "enzarb-sandbox-operator";
+
+/// The `ENZARB_SANDBOX_IMAGE` env of the operator Deployment: the chart's `operator.sandboxImage`.
+pub fn deployment_sandbox_image(d: &Deployment) -> Option<String> {
+    d.spec
+        .as_ref()?
+        .template
+        .spec
+        .as_ref()?
+        .containers
+        .iter()
+        .flat_map(|c| c.env.iter().flatten())
+        .find(|e| e.name == "ENZARB_SANDBOX_IMAGE")
+        .and_then(|e| e.value.clone())
+        .filter(|v| !v.is_empty())
+}
+
+/// The tag of an image reference (`registry/name:1.2.3@sha256:...`) without a leading `v`.
+pub fn image_tag(image: &str) -> Option<String> {
+    let r = image.split('@').next()?;
+    let colon = r.rfind(':')?;
+    if colon < r.rfind('/').map_or(0, |s| s + 1) {
+        return None;
+    }
+    let tag = r[colon + 1..].trim_start_matches('v');
+    (!tag.is_empty()).then(|| tag.to_string())
+}
+
 /// `installed` and `job_failed` from the helm-install Job. A succeeded Job means its version is
 /// installed; a Job that never succeeded tells us nothing about what is installed.
 pub fn job_state(job: &Job) -> (Option<String>, bool) {
@@ -78,6 +108,15 @@ pub fn job_state(job: &Job) -> (Option<String>, bool) {
         });
     let installed = if succeeded { job_version(job) } else { None };
     (installed, failed && !succeeded)
+}
+
+/// When the succeeded helm-install Job completed (RFC 3339, UTC): the chart was deployed then.
+pub fn job_completed_at(job: &Job) -> Option<String> {
+    let st = job.status.as_ref()?;
+    if st.succeeded.unwrap_or(0) == 0 {
+        return None;
+    }
+    st.completion_time.as_ref().map(|t| t.0.to_string())
 }
 
 #[async_trait]
@@ -101,9 +140,28 @@ impl Charts for KubeCharts {
             .get_opt(&format!("helm-install-{}", self.name))
             .await?;
         let (installed, job_failed) = job.as_ref().map(job_state).unwrap_or((None, false));
+        let installed_at = installed
+            .as_ref()
+            .and(job.as_ref())
+            .and_then(job_completed_at);
+        // The chart's `operator.sandboxImage` reaches the operator as ENZARB_SANDBOX_IMAGE. Only
+        // read when a version is installed; a missing Deployment or RBAC just leaves it unknown.
+        let sandbox_image = if installed.is_some() {
+            match self.deployments.get_opt(OPERATOR_DEPLOYMENT).await {
+                Ok(d) => d.as_ref().and_then(deployment_sandbox_image),
+                Err(e) => {
+                    tracing::warn!(error = %e, "cannot read the operator Deployment");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         Ok(Rollout {
             desired,
             installed,
+            installed_at,
+            sandbox_image,
             job_failed,
         })
     }
@@ -152,6 +210,42 @@ mod tests {
             job_state(&job("0.9.0", 1, 2)),
             (Some("0.9.0".into()), false)
         );
+    }
+
+    #[test]
+    fn image_tags_are_extracted() {
+        assert_eq!(
+            image_tag("ghcr.io/enzarb/enzarb-sandbox:0.34.0").as_deref(),
+            Some("0.34.0")
+        );
+        assert_eq!(image_tag("h:5000/x:v1.2@sha256:ab").as_deref(), Some("1.2"));
+        assert_eq!(image_tag("h:5000/x"), None);
+        assert_eq!(image_tag("x"), None);
+    }
+
+    #[test]
+    fn deployment_image_is_read_from_env() {
+        let d: Deployment = serde_json::from_value(serde_json::json!({
+            "spec": {"selector": {}, "template": {"spec": {"containers": [
+                {"name": "operator", "env": [{"name": "ENZARB_SANDBOX_IMAGE", "value": "r/s:0.34.0"}]}
+            ]}}}
+        }))
+        .unwrap();
+        assert_eq!(deployment_sandbox_image(&d).as_deref(), Some("r/s:0.34.0"));
+    }
+
+    #[test]
+    fn completion_time_is_reported_for_a_succeeded_job() {
+        let mut j = job("0.9.0", 1, 0);
+        assert_eq!(job_completed_at(&j), None);
+        j.status.as_mut().unwrap().completion_time =
+            serde_json::from_value(serde_json::json!("2026-10-12T03:05:00Z")).unwrap();
+        assert_eq!(
+            job_completed_at(&j).as_deref(),
+            Some("2026-10-12T03:05:00Z")
+        );
+        j.status.as_mut().unwrap().succeeded = Some(0);
+        assert_eq!(job_completed_at(&j), None);
     }
 
     #[test]

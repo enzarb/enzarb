@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use enzarb_updater::{
     app,
     charts::KubeCharts,
+    history::KubeHistory,
     poll::{self, PollHealth},
     registry::OciRegistry,
     rollout,
@@ -44,14 +45,17 @@ async fn main() -> Result<()> {
     let listen: SocketAddr = env_or("ENZARB_UPDATER_LISTEN", "0.0.0.0:8080").parse()?;
     let name = env_or("ENZARB_UPDATER_HELMCHART", "enzarb");
     let ns = env_or("ENZARB_UPDATER_NAMESPACE", "kube-system");
+    // Where the chart is installed (the operator Deployment lives there).
+    let release_ns = env_or("ENZARB_UPDATER_RELEASE_NAMESPACE", "default");
 
     let client = kube::Client::try_default().await?;
+    let history = Arc::new(KubeHistory::new(client.clone(), &ns));
     let health = (poll_secs > 0).then(|| Arc::new(PollHealth::default()));
     let state = app::AppState {
         secret: secret.map(|s| Arc::new(s.into_bytes())),
         poll: health.clone(),
         registry: Arc::new(OciRegistry::new(&chart, token)?),
-        charts: Arc::new(KubeCharts::new(client, &ns, &name)),
+        charts: Arc::new(KubeCharts::new(client, &ns, &release_ns, &name)),
         lock: Default::default(),
         status: Default::default(),
     };
@@ -60,6 +64,7 @@ async fn main() -> Result<()> {
     tokio::spawn(rollout::run(
         state.registry.clone(),
         state.charts.clone(),
+        history,
         state.status.clone(),
         Duration::from_secs(60),
     ));

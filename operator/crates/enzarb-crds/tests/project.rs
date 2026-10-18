@@ -346,3 +346,31 @@ fn pending_change_deadline_is_optional() {
     assert_eq!(v["deadline"], "2026-10-12T03:30:00Z");
     assert!(enzarb_crds::project_crd_yaml().contains("deadline:"));
 }
+
+#[test]
+fn last_roll_round_trips_and_is_optional() {
+    let st: enzarb_crds::ProjectStatus = serde_json::from_value(serde_json::json!({
+        "conditions": [],
+        "pendingChange": { "generation": 1, "since": "2026-10-12T03:00:00Z", "reason": "r" }
+    }))
+    .unwrap();
+    assert!(st.last_roll.is_none());
+    assert!(serde_json::to_value(&st).unwrap().get("lastRoll").is_none());
+    let v = serde_json::json!({
+        "conditions": [],
+        "lastRoll": {
+            "at": "2026-10-12T03:40:00Z", "since": "2026-10-12T03:00:00Z",
+            "reason": "image/sandbox: a -> b", "image": "ghcr.io/enzarb/enzarb-sandbox:1.2.3"
+        }
+    });
+    let st: enzarb_crds::ProjectStatus = serde_json::from_value(v.clone()).unwrap();
+    assert_eq!(
+        st.last_roll.as_ref().unwrap().image,
+        "ghcr.io/enzarb/enzarb-sandbox:1.2.3"
+    );
+    assert_eq!(
+        serde_json::to_value(&st).unwrap()["lastRoll"],
+        v["lastRoll"]
+    );
+    assert!(project_crd_yaml().contains("lastRoll:"));
+}

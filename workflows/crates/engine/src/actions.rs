@@ -98,14 +98,26 @@ pub async fn call(
     args: &Map<String, Value>,
     key: &str,
 ) -> Result<Value, ActionError> {
-    let c = e.connector();
+    dispatch(e.connector().as_ref(), repo, state, name, args, key).await
+}
+
+/// Runs the kernel action `name` against `c`. Split from `call` so the contract tests can drive
+/// the actions with a `FakeConnector` and no `Engine`.
+pub(crate) async fn dispatch(
+    c: &dyn Connector,
+    repo: &str,
+    state: &TaskState,
+    name: &str,
+    args: &Map<String, Value>,
+    key: &str,
+) -> Result<Value, ActionError> {
     let task_branch = format!("enzarb/task-{}", state.doc.task.id);
     match name {
         "comment" => {
             let body = s(args, "body")
                 .ok_or_else(|| ActionError::Refused("comment needs `body`".into()))?;
             let r = c
-                .post_comment(&item(repo, state, args)?, body, key)
+                .post_comment(&item(repo, state, args)?, body, &mutation::rekey(key))
                 .await
                 .map_err(transient)?;
             Ok(json!({"id": r.id, "url": r.url}))
@@ -135,7 +147,10 @@ pub async fn call(
                 draft: args.get("draft").and_then(Value::as_bool).unwrap_or(false),
             };
             let title = spec.title.clone();
-            let it = c.open_change_request(spec, key).await.map_err(transient)?;
+            let it = c
+                .open_change_request(spec, &mutation::rekey(key))
+                .await
+                .map_err(transient)?;
             // `subject` makes the engine link the pull request to the task.
             Ok(
                 json!({"kind": "pull_request", "repo": r, "number": it.number, "title": title,
@@ -153,6 +168,7 @@ pub async fn call(
             let it = pr(repo, state, args)?;
             let head = match s(args, "expected_head") {
                 Some(h) => h.to_string(),
+                None if mutation::ignore_readiness_head() => String::new(),
                 None => {
                     c.get_merge_readiness(&it, it.number)
                         .await
@@ -174,14 +190,15 @@ pub async fn call(
                 MergeOutcome::NotMergeable { reason } => Err(ActionError::Refused(reason)),
             }
         }
-        "create_issues" => create_issues(c.as_ref(), &target_repo(repo, args), args, key).await,
-        "file_issue" => file_issue(c.as_ref(), &target_repo(repo, args), args).await,
+        "create_issues" => create_issues(c, &target_repo(repo, args), args, key).await,
+        "file_issue" => file_issue(c, &target_repo(repo, args), args).await,
         "close_issue" => {
-            let reason = if s(args, "reason") == Some("not_planned") {
-                CloseReason::NotPlanned
-            } else {
-                CloseReason::Completed
-            };
+            let reason =
+                if s(args, "reason") == Some("not_planned") && !mutation::ignore_close_reason() {
+                    CloseReason::NotPlanned
+                } else {
+                    CloseReason::Completed
+                };
             c.close_issue(&item(repo, state, args)?, reason)
                 .await
                 .map_err(transient)?;
@@ -218,7 +235,12 @@ pub async fn call(
         }
         "delete_branch" => {
             let r = target_repo(repo, args);
-            let b = s(args, "branch").map(str::to_string).unwrap_or(task_branch);
+            let default = if mutation::wrong_branch_default() {
+                state.doc.task.default_branch.clone()
+            } else {
+                task_branch
+            };
+            let b = s(args, "branch").map(str::to_string).unwrap_or(default);
             c.delete_branch(&repo_key(&r), &b, key)
                 .await
                 .map_err(transient)?;
@@ -406,7 +428,7 @@ pub(crate) async fn file_issue(
     }))
 }
 
-/// Test-only mutation switches for `create_issues` (`docs/workflows/contract-tests.md`): each
+/// Test-only mutation switches for the kernel actions (`docs/workflows/contract-tests.md`): each
 /// removes one documented behaviour so the contract tests can prove they notice. Compiled out
 /// of non-test builds, where every switch is a constant `false`.
 #[cfg(test)]
@@ -419,6 +441,10 @@ pub(crate) mod mutation {
         pub skip_dependencies: bool,
         pub skip_placeholders: bool,
         pub mergeable_known_on_first_read: bool,
+        pub fresh_keys: bool,
+        pub ignore_readiness_head: bool,
+        pub wrong_branch_default: bool,
+        pub ignore_close_reason: bool,
     }
 
     thread_local! {
@@ -449,6 +475,24 @@ pub(crate) mod mutation {
     }
     pub(crate) fn mergeable_known_on_first_read() -> bool {
         ACTIVE.with(|a| a.get().mergeable_known_on_first_read)
+    pub(crate) fn ignore_readiness_head() -> bool {
+        ACTIVE.with(|a| a.get().ignore_readiness_head)
+    }
+    pub(crate) fn wrong_branch_default() -> bool {
+        ACTIVE.with(|a| a.get().wrong_branch_default)
+    }
+    pub(crate) fn ignore_close_reason() -> bool {
+        ACTIVE.with(|a| a.get().ignore_close_reason)
+    }
+    /// The idempotency key to pass on; with `fresh_keys`, a new one every time.
+    pub(crate) fn rekey(key: &str) -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        if ACTIVE.with(|a| a.get().fresh_keys) {
+            format!("{key}~{}", N.fetch_add(1, Ordering::Relaxed))
+        } else {
+            key.to_string()
+        }
     }
 }
 
@@ -465,6 +509,18 @@ mod mutation {
     }
     pub(super) fn mergeable_known_on_first_read() -> bool {
         false
+    }
+    pub(super) fn ignore_readiness_head() -> bool {
+        false
+    }
+    pub(super) fn wrong_branch_default() -> bool {
+        false
+    }
+    pub(super) fn ignore_close_reason() -> bool {
+        false
+    }
+    pub(super) fn rekey(key: &str) -> String {
+        key.to_string()
     }
 }
 
