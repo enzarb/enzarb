@@ -139,6 +139,35 @@
   },
   {
     "expect": {
+      "environment": {
+        "detail": "killed",
+        "kind": "oom"
+      },
+      "exit": "failure",
+      "run_id": "r",
+      "type": "step_finished"
+    },
+    "name": "step_finished_environment_unknown_fields",
+    "payload": "{\"type\":\"step_finished\",\"run_id\":\"r\",\"exit\":\"failure\",\"environment\":{\"kind\":\"oom\",\"detail\":\"killed\",\"future\":1}}"
+  },
+  {
+    "expect": {
+      "environment": {
+        "detail": "device fell off the bus",
+        "kind": "unknown"
+      },
+      "exit": "failure",
+      "run_id": "r",
+      "type": "step_finished",
+      "usage": {
+        "input_tokens": 5
+      }
+    },
+    "name": "step_finished_environment_unknown_kind",
+    "payload": "{\"type\":\"step_finished\",\"run_id\":\"r\",\"exit\":\"failure\",\"usage\":{\"input_tokens\":5},\"environment\":{\"kind\":\"gpu_lost\",\"detail\":\"device fell off the bus\"}}"
+  },
+  {
+    "expect": {
       "ts_ms": 5,
       "type": "stats"
     },

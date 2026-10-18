@@ -250,9 +250,43 @@ pub struct StepFinished {
     pub git: Vec<StepGit>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
+    /// Set when the step failed because of its environment, not the code.
+    /// Additive: absent on the wire when `None`; old decoders ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<StepEnvironment>,
     /// Why the step failed, for humans.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+/// What the sandbox observed about its environment (`step_finished.environment`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS, schemars::JsonSchema), ts(optional_fields = nullable))]
+pub struct StepEnvironment {
+    pub kind: EnvironmentKind,
+    /// Free text saying what was observed.
+    pub detail: String,
+}
+
+/// Class of environment failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(ts_rs::TS, schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentKind {
+    /// A filesystem ran out of space or inodes.
+    DiskFull,
+    /// A process was killed for exceeding its memory limit.
+    Oom,
+    /// A tool the step needs is not installed.
+    ToolchainMissing,
+    /// A network operation failed (DNS, connect, timeout).
+    Network,
+    /// The node was too loaded for the step to finish in time.
+    Load,
+    /// A kind this consumer does not know; treat it as a generic environment
+    /// failure. Decode-only: it is never sent.
+    #[serde(other)]
+    Unknown,
 }
 
 /// `step_finished.exit` values.

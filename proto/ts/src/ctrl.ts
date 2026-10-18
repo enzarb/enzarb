@@ -2,7 +2,7 @@
 // crates/enzarb-proto/src/ctrl.rs.
 
 import { type Frame, FrameError, ctrlJson } from "./frame.js";
-import { type Ctrl, SECRET_PATHS, CTRL_TYPES } from "./ctrl.gen.js";
+import { type Ctrl, type EnvironmentKind, SECRET_PATHS, CTRL_TYPES } from "./ctrl.gen.js";
 import { Secret } from "./secret.js";
 
 export * from "./ctrl.gen.js";
@@ -21,6 +21,17 @@ export const CredentialScope = { User: "user" } as const;
  * kinds may be any string, so the type stays open.
  */
 export type ChannelKind = "pty" | "acp" | (string & {});
+
+const ENVIRONMENT_KINDS: ReadonlySet<string> = new Set(["disk_full", "oom", "toolchain_missing", "network", "load"]);
+
+/**
+ * Normalise a received `step_finished.environment.kind`. The decoder passes the wire string through, so a
+ * kind added later arrives as-is; anything outside the known set is `"unknown"` (treat it as a generic
+ * environment failure).
+ */
+export function environmentKind(k: unknown): EnvironmentKind {
+  return typeof k === "string" && ENVIRONMENT_KINDS.has(k) ? (k as EnvironmentKind) : "unknown";
+}
 
 /** Feature names advertised in `welcome.features`. */
 /** `ClaudeUserToken` is a client feature (`hello.features`), sent only by sandbox-proxy. */

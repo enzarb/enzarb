@@ -101,7 +101,20 @@ JSON objects with a `"type"` field, channel 0. Unknown fields are ignored; an un
 
 `SessionEvent`: `{run_id, seq, at: RFC 3339, kind, payload: any, truncated?: bool}`. `seq` starts at 1 and is dense per run. Kinds (open set): `prompt`, `user`, `assistant`, `thinking`, `tool_call`, `tool_result`, `usage`, `steer`, `system`, `stdout`, `stderr`. Payloads are capped (head and tail kept, `truncated: true`).
 
-`StepFinished`: `{run_id, exit: "success" | "failure" | "interrupted", outputs?: {[name]: any}, result?: any, git?: [StepGit], usage?: Usage, error?: string}`. `StepGit`: `{repo, branch, head_sha, pushed}`, one per write workspace in `step_start.workspaces` order. The engine re-verifies the git facts. A missing required output is left out (the engine reports it).
+`StepFinished`: `{run_id, exit: "success" | "failure" | "interrupted", outputs?: {[name]: any}, result?: any, git?: [StepGit], usage?: Usage, environment?: StepEnvironment, error?: string}`. `StepEnvironment`: `{kind, detail}`; optional and additive (omitted when absent, old decoders ignore it); the step failed because of its environment, not the code. `detail` is free text saying what was observed. Decoders must accept any `kind` string (an unrecognised one is `unknown`).
+
+| `environment.kind` | Meaning (typical `detail`) |
+|---|---|
+| `disk_full` | A filesystem ran out of space or inodes (`/workspace: 0 bytes free`) |
+| `oom` | A process was killed for exceeding its memory limit (`cargo killed by SIGKILL, oom_kill=1`) |
+| `toolchain_missing` | A tool the step needs is not installed (`cargo: command not found`) |
+| `network` | DNS, connect or timeout failure (`could not resolve github.com`) |
+| `load` | The node was too loaded to finish in time (`load average 40 on 4 CPUs`) |
+| `unknown` | A kind this consumer does not know; treat it as a generic environment failure. Decode-only: never sent |
+
+In TypeScript the decoder passes the wire string through; use `environmentKind()` to map anything outside the known set to `"unknown"`.
+
+`StepGit`: `{repo, branch, head_sha, pushed}`, one per write workspace in `step_start.workspaces` order. The engine re-verifies the git facts. A missing required output is left out (the engine reports it).
 
 `Usage` (on `StepFinished`, omitted when the agent reported none; old decoders ignore it):
 `{input_tokens?, output_tokens?, cache_read_input_tokens?, cache_creation_input_tokens?: integer, models?: string[], cost_usd?: number}`.

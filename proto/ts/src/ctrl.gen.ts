@@ -67,6 +67,8 @@ run_id?: string | null,
  */
 channel?: number | null, };
 
+export type EnvironmentKind = "disk_full" | "oom" | "toolchain_missing" | "network" | "load" | "unknown";
+
 export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]: JsonValue } | null;
 
 export type Mode = "read" | "write";
@@ -133,6 +135,12 @@ export type SessionEvent = { run_id: string, seq: number,
  */
 at: string, kind: string, payload: JsonValue, truncated?: boolean, };
 
+export type StepEnvironment = { kind: EnvironmentKind, 
+/**
+ * Free text saying what was observed.
+ */
+detail: string, };
+
 export type StepExec = { "kind": "agent", runtime: Runtime, model?: string | null, prompt: string, 
 /**
  * JSON Schema of the `submit_result` MCP tool; offered only when set.
@@ -152,6 +160,11 @@ exit: string, outputs?: { [key in string]: JsonValue }, result?: JsonValue | nul
  * One entry per write workspace, in `step_start.workspaces` order.
  */
 git?: Array<StepGit>, usage?: Usage | null, 
+/**
+ * Set when the step failed because of its environment, not the code.
+ * Additive: absent on the wire when `None`; old decoders ignore it.
+ */
+environment?: StepEnvironment | null, 
 /**
  * Why the step failed, for humans.
  */

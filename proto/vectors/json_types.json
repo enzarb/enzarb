@@ -23,6 +23,32 @@
   },
   {
     "json": {
+      "environment": {
+        "detail": "/workspace: 0 bytes free",
+        "kind": "disk_full"
+      },
+      "exit": "failure",
+      "git": [
+        {
+          "branch": "enzarb/issue-42",
+          "head_sha": "abc123",
+          "pushed": true,
+          "repo": "enzarb/enzarb"
+        }
+      ],
+      "outputs": {
+        "plan": "# Plan"
+      },
+      "result": {
+        "verdict": "approve"
+      },
+      "run_id": "run-123"
+    },
+    "name": "step_finished_environment",
+    "type": "StepFinished"
+  },
+  {
+    "json": {
       "error": "exit status 1",
       "exit": "failure",
       "git": [],

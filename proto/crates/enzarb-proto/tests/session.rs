@@ -44,6 +44,7 @@ fn finished(id: &str) -> StepFinished {
         result: None,
         git: vec![],
         usage: None,
+        environment: None,
         error: None,
     }
 }

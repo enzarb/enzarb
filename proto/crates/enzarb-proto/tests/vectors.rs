@@ -52,7 +52,15 @@ fn finished() -> StepFinished {
             pushed: true,
         }],
         usage: None,
+        environment: None,
         error: None,
+    }
+}
+
+fn env_disk_full() -> StepEnvironment {
+    StepEnvironment {
+        kind: EnvironmentKind::DiskFull,
+        detail: "/workspace: 0 bytes free".into(),
     }
 }
 
@@ -325,6 +333,15 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
         ),
         ("step_finished", Ctrl::StepFinished(finished())),
         (
+            "step_finished_environment",
+            Ctrl::StepFinished(StepFinished {
+                exit: "failure".into(),
+                error: Some("no space left on device".into()),
+                environment: Some(env_disk_full()),
+                ..finished()
+            }),
+        ),
+        (
             "credential_captured",
             Ctrl::CredentialCaptured {
                 kind: CredentialKind::ClaudeOauth,
@@ -483,8 +500,14 @@ fn json_type_vectors() {
         }),
         ..fin.clone()
     };
+    let with_environment = StepFinished {
+        exit: "failure".into(),
+        environment: Some(env_disk_full()),
+        ..fin.clone()
+    };
     let items = [
         ("step_finished", fin),
+        ("step_finished_environment", with_environment),
         ("step_finished_failure", failed),
         ("step_finished_usage", with_usage),
     ];
@@ -658,6 +681,10 @@ fn ctrl_compat_vectors() {
                "expect":{"type":"session_event","seq":3,"kind":"future_kind"}}),
         json!({"name":"step_finished_usage_unknown_fields","payload":r#"{"type":"step_finished","run_id":"r","exit":"success","usage":{"input_tokens":5,"future":1}}"#,
                "expect":{"type":"step_finished","run_id":"r","usage":{"input_tokens":5}}}),
+        json!({"name":"step_finished_environment_unknown_fields","payload":r#"{"type":"step_finished","run_id":"r","exit":"failure","environment":{"kind":"oom","detail":"killed","future":1}}"#,
+               "expect":{"type":"step_finished","run_id":"r","exit":"failure","environment":{"kind":"oom","detail":"killed"}}}),
+        json!({"name":"step_finished_environment_unknown_kind","payload":r#"{"type":"step_finished","run_id":"r","exit":"failure","usage":{"input_tokens":5},"environment":{"kind":"gpu_lost","detail":"device fell off the bus"}}"#,
+               "expect":{"type":"step_finished","run_id":"r","exit":"failure","usage":{"input_tokens":5},"environment":{"kind":"unknown","detail":"device fell off the bus"}}}),
         json!({"name":"stats_only_ts","payload":r#"{"type":"stats","ts_ms":5}"#,
                "expect":{"type":"stats","ts_ms":5}}),
         json!({"name":"stats_unknown_fields","payload":r#"{"type":"stats","ts_ms":5,"memory_bytes":7,"gpu_busy":1}"#,

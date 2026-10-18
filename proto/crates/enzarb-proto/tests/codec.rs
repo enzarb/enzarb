@@ -154,9 +154,99 @@ fn usage_is_additive_and_unknown_stays_absent() {
         result: None,
         git: vec![],
         usage: None,
+        environment: None,
         error: None,
     });
-    assert!(!serde_json::to_string(&m).unwrap().contains("usage"));
+    let wire = serde_json::to_string(&m).unwrap();
+    assert!(!wire.contains("usage"));
+    assert!(!wire.contains("environment"));
+}
+
+fn finished_with(environment: Option<enzarb_proto::StepEnvironment>) -> enzarb_proto::StepFinished {
+    enzarb_proto::StepFinished {
+        run_id: "r".into(),
+        exit: "failure".into(),
+        outputs: Default::default(),
+        result: None,
+        git: vec![],
+        usage: None,
+        environment,
+        error: None,
+    }
+}
+
+#[test]
+fn environment_kinds_round_trip_with_exact_wire_strings() {
+    use enzarb_proto::{EnvironmentKind as K, StepEnvironment};
+    for (kind, wire) in [
+        (K::DiskFull, "disk_full"),
+        (K::Oom, "oom"),
+        (K::ToolchainMissing, "toolchain_missing"),
+        (K::Network, "network"),
+        (K::Load, "load"),
+    ] {
+        let m = Ctrl::StepFinished(finished_with(Some(StepEnvironment {
+            kind,
+            detail: "seen".into(),
+        })));
+        let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(
+            v["environment"],
+            serde_json::json!({"kind": wire, "detail": "seen"})
+        );
+        assert_eq!(serde_json::from_value::<Ctrl>(v).unwrap(), m);
+    }
+}
+
+#[test]
+fn unknown_environment_kind_decodes_as_unknown() {
+    let f = Frame::new(
+        FrameType::Ctrl,
+        0,
+        &br#"{"type":"step_finished","run_id":"r","exit":"failure","outputs":{"a":1},"usage":{"input_tokens":5},"environment":{"kind":"gpu_lost","detail":"gone"}}"#[..],
+    );
+    let Ctrl::StepFinished(s) = f.ctrl_message().unwrap() else {
+        panic!("not step_finished")
+    };
+    let e = s.environment.unwrap();
+    assert_eq!(e.kind, enzarb_proto::EnvironmentKind::Unknown);
+    assert_eq!(e.detail, "gone");
+    assert_eq!(s.exit, "failure");
+    assert_eq!(s.usage.unwrap().input_tokens, Some(5));
+    assert_eq!(s.outputs["a"], serde_json::json!(1));
+}
+
+/// A decoder that predates `environment` must ignore the field. `OldStepFinished`
+/// is a frozen copy of the pre-`environment` struct; do not add fields to it.
+/// This fails if `deny_unknown_fields` is ever added to `StepFinished`.
+#[test]
+fn old_decoder_ignores_environment() {
+    use serde::Deserialize;
+    use serde_json::{Map, Value};
+    #[derive(Deserialize)]
+    struct OldStepFinished {
+        run_id: String,
+        exit: String,
+        #[serde(default)]
+        outputs: Map<String, Value>,
+        #[serde(default)]
+        result: Option<Value>,
+        #[serde(default)]
+        git: Vec<enzarb_proto::StepGit>,
+        #[serde(default)]
+        usage: Option<enzarb_proto::Usage>,
+        #[serde(default)]
+        error: Option<String>,
+    }
+    let new = finished_with(Some(enzarb_proto::StepEnvironment {
+        kind: enzarb_proto::EnvironmentKind::Oom,
+        detail: "killed".into(),
+    }));
+    let old: OldStepFinished = serde_json::from_value(serde_json::to_value(&new).unwrap()).unwrap();
+    assert_eq!(old.run_id, "r");
+    assert_eq!(old.exit, "failure");
+    assert!(old.outputs.is_empty() && old.result.is_none() && old.git.is_empty());
+    assert!(old.usage.is_none() && old.error.is_none());
 }
 
 #[test]
