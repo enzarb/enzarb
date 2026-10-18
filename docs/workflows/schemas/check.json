@@ -286,6 +286,19 @@
           ],
           "additionalProperties": false,
           "description": "A platform fact compared with a value (reads through the engine's provider)."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "platform_wait": {
+              "$ref": "#/$defs/PlatformWaitIs"
+            }
+          },
+          "required": [
+            "platform_wait"
+          ],
+          "additionalProperties": false,
+          "description": "The task is in a platform wait (ADR-0026), optionally for this failure kind."
         }
       ],
       "description": "A condition: combinators over leaf predicates. No scripting."
@@ -434,13 +447,22 @@
       ]
     },
     "PlatformFactName": {
-      "type": "string",
-      "enum": [
-        "workflow_run.status",
-        "chart.deploy_state",
-        "sandbox.disk_pct",
-        "sandbox.mem_pct",
-        "project.pending_change"
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "workflow_run.status",
+            "chart.deploy_state",
+            "sandbox.disk_pct",
+            "sandbox.mem_pct",
+            "project.pending_change"
+          ]
+        },
+        {
+          "type": "string",
+          "const": "sandbox.healthy",
+          "description": "The sandbox reported stats recently."
+        }
       ],
       "description": "Platform facts the engine can read. A fact whose source is missing is unknown and never\nmatches. `chart.deploy_state` has no source yet and is always unknown."
     },
@@ -454,6 +476,19 @@
         "lt",
         "le"
       ]
+    },
+    "PlatformWaitIs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`disk_full`, `oom`, ... Any kind when absent."
+        }
+      }
     }
   }
 }

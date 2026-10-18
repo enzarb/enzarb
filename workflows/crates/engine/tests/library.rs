@@ -823,6 +823,7 @@ fn stdlib_checks_are_valid_and_file_issues() {
             "epic-subissues-without-deps",
             "external-idle",
             "mergeable-unknown",
+            "platform-wait-long",
             "retry-ignored"
         ]
     );

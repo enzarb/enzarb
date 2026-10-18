@@ -24,3 +24,8 @@ workspaces:
     base: "{{ (subjects.pull_requests | last).base or task.default_branch }}"
 github: {contents: write, pull_requests: read}
 steer: [comment, review]
+platform_wait:
+  - kind: disk_full
+    until: {platform: {fact: sandbox.disk_pct, op: lt, value: 85}}
+  - kind: oom
+    until: {platform: {fact: sandbox.healthy, op: eq, value: true}}

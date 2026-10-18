@@ -132,6 +132,17 @@ impl PlatformFacts for DbPlatformFacts {
                     _ => Fact::Unknown,
                 }
             }
+            PlatformFactName::SandboxHealthy => {
+                let fresh: Result<bool, _> = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM engine.sandbox_stats
+                     WHERE project = $1 AND at > now() - make_interval(secs => $2))",
+                )
+                .bind(project)
+                .bind(self.max_age.as_secs_f64())
+                .fetch_one(&self.pool)
+                .await;
+                fresh.map_or(Fact::Unknown, Fact::Bool)
+            }
             PlatformFactName::ProjectPendingChange => match self.sandboxes.change_states().await {
                 Ok(states) => states
                     .iter()
@@ -158,6 +169,8 @@ pub struct TaskSnap {
     pub phase: String,
     pub node: String,
     pub waiting_on: Option<String>,
+    /// The failure kind of the platform wait the task is in (ADR-0026), if it is in one.
+    pub platform_wait: Option<String>,
     /// Stored facts by name.
     pub facts: BTreeMap<String, FactRow>,
     /// Relation rows the task holds, by kind (`blocked_by`, `child`, ...).
@@ -232,19 +245,43 @@ pub struct Evaluation {
 
 /// Which `(project, fact)` pairs the checks read, so the provider is asked once each.
 pub fn platform_reads(checks: &[CheckFile]) -> Vec<PlatformFactName> {
-    fn walk(w: &When, out: &mut Vec<PlatformFactName>) {
-        match w {
-            When::All(v) | When::Any(v) => v.iter().for_each(|w| walk(w, out)),
-            When::Not(w) => walk(w, out),
-            When::Platform(p) if !out.contains(&p.fact) => out.push(p.fact),
-            _ => {}
-        }
-    }
     let mut out = Vec::new();
     for c in checks {
-        walk(&c.when, &mut out);
+        when_reads(&c.when, &mut out);
     }
     out
+}
+
+/// The platform facts one condition names, added to `out` once each.
+pub fn when_reads(w: &When, out: &mut Vec<PlatformFactName>) {
+    match w {
+        When::All(v) | When::Any(v) => v.iter().for_each(|w| when_reads(w, out)),
+        When::Not(w) => when_reads(w, out),
+        When::Platform(p) if !out.contains(&p.fact) => out.push(p.fact),
+        _ => {}
+    }
+}
+
+/// Pure: does a platform-only condition hold for `project`? `None` when a fact it needs is
+/// unknown (a platform wait then keeps waiting).
+pub fn until_holds(
+    until: &When,
+    project: &str,
+    platform: &HashMap<(String, PlatformFactName), Fact>,
+) -> Option<bool> {
+    let snap = Snapshot {
+        platform: platform.clone(),
+        ..Snapshot::default()
+    };
+    let mut cx = Cx {
+        snap: &snap,
+        project,
+        task: None,
+        now: Utc::now(),
+        unknown: false,
+    };
+    let hit = cx.eval(until);
+    (!cx.unknown).then_some(hit)
 }
 
 /// Pure: no I/O, no clock, no side effects. Tasks are never touched.
@@ -425,6 +462,11 @@ impl Cx<'_> {
                 }
             }),
             When::Platform(p) => self.platform(p),
+            When::PlatformWait(w) => self.task.is_some_and(|t| {
+                t.platform_wait
+                    .as_ref()
+                    .is_some_and(|k| w.kind.as_ref().is_none_or(|want| want == k))
+            }),
         }
     }
 
@@ -717,6 +759,7 @@ pub async fn load_tasks(pool: &PgPool, projects: &[String]) -> Result<Vec<TaskSn
                 (SELECT max(x.at) FROM engine.transitions x
                  WHERE x.task_id = t.id
                    AND (x.from_state IS DISTINCT FROM x.to_state OR x.effects <> '[]'::jsonb)),
+                t.state#>>'{platform_wait,kind}',
                 t.state #>> '{doc,subjects,issue,body}'
          FROM engine.tasks t LEFT JOIN engine.projection p ON p.task_id = t.id
          LEFT JOIN LATERAL (
@@ -742,6 +785,7 @@ pub async fn load_tasks(pool: &PgPool, projects: &[String]) -> Result<Vec<TaskSn
             phase: r.get(2),
             node: r.get(3),
             waiting_on: r.get(4),
+            platform_wait: r.get(11),
             repo: r.get(7),
             facts: BTreeMap::new(),
             relations: BTreeMap::new(),
@@ -755,7 +799,7 @@ pub async fn load_tasks(pool: &PgPool, projects: &[String]) -> Result<Vec<TaskSn
             last_event_at: r.get(5),
             last_step_at: r.get(6),
             issue_from_finding: r
-                .get::<Option<String>, _>(11)
+                .get::<Option<String>, _>(12)
                 .is_some_and(|b| has_file_issue_marker(&b)),
         })
         .collect();
@@ -847,6 +891,7 @@ mod tests {
             phase: "review".into(),
             node: "review/wait".into(),
             waiting_on: Some("external".into()),
+            platform_wait: None,
             facts: BTreeMap::new(),
             relations: BTreeMap::new(),
             relations_in: BTreeMap::new(),
