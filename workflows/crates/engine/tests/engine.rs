@@ -1340,3 +1340,273 @@ async fn a_condition_that_never_clears_keeps_waiting_and_is_reported() {
         open_findings(&h).await
     );
 }
+
+// ---------------------------------------------------------------- failed events are retried
+
+/// Two open tasks; the first one's stored definition is broken, so any event for it fails to
+/// load its state. Returns both ids and the good definition.
+async fn broken_and_healthy(h: &H) -> (i64, i64, Value) {
+    h.open_issue(1, "A").await;
+    h.open_issue(2, "B").await;
+    while h.engine.process_next().await.unwrap() {}
+    let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM engine.tasks ORDER BY id")
+        .fetch_all(&h.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(ids.len(), 2, "{:#?}", h.notes().await);
+    let good: Value = sqlx::query_scalar("SELECT resolved FROM engine.tasks WHERE id = $1")
+        .bind(ids[0])
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+    set_resolved(h, ids[0], &json!({})).await;
+    (ids[0], ids[1], good)
+}
+
+async fn set_resolved(h: &H, task: i64, v: &Value) {
+    sqlx::query("UPDATE engine.tasks SET resolved = $2 WHERE id = $1")
+        .bind(task)
+        .bind(v)
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+}
+
+async fn ev_row(h: &H, id: i64) -> (i32, Option<String>, bool, bool) {
+    sqlx::query_as(
+        "SELECT attempts, last_error, processed_at IS NOT NULL, retry_at IS NOT NULL
+         FROM engine.events WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&h.db.pool)
+    .await
+    .unwrap()
+}
+
+async fn due(h: &H) {
+    sqlx::query("UPDATE engine.events SET retry_at = now() WHERE processed_at IS NULL AND retry_at IS NOT NULL")
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+}
+
+async fn cancel(h: &H, task: i64) -> i64 {
+    sqlx::query_scalar("SELECT engine_api.submit($1, '{\"login\": \"alice\"}', 'cancel', '{}')")
+        .bind(task)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failed_event_is_retried_in_task_order_and_blocks_only_its_task() {
+    let Some(h) = start(Duration::from_secs(3600), false).await else {
+        return;
+    };
+    let (a, b, good) = broken_and_healthy(&h).await;
+    let e1 = cancel(&h, a).await;
+    let e2: i64 = sqlx::query_scalar(
+        "SELECT engine_api.submit($1, '{\"login\": \"alice\"}', 'steer', '{\"body\": \"hi\"}')",
+    )
+    .bind(a)
+    .fetch_one(&h.db.pool)
+    .await
+    .unwrap();
+    let e3 = cancel(&h, a).await;
+    let eb = cancel(&h, b).await;
+    while h.engine.process_next().await.unwrap() {}
+
+    let (attempts, err, processed, has_retry) = ev_row(&h, e1).await;
+    assert_eq!((attempts, processed, has_retry), (1, false, true));
+    assert!(
+        err.unwrap().contains("definition"),
+        "{:#?}",
+        h.notes().await
+    );
+    // Behind the failing event: untouched, no attempt of their own.
+    for e in [e2, e3] {
+        assert_eq!(ev_row(&h, e).await, (0, None, false, false));
+    }
+    // Another task flowed.
+    assert!(ev_row(&h, eb).await.2);
+    assert_eq!(h.projection(b).await["end_status"], "cancelled");
+    // The failure shows on the task.
+    let (reason, text, _) = task_v(&h, a).await;
+    assert_eq!(reason.as_deref(), Some("event_failing"));
+    assert!(text.unwrap().contains("attempt 1"));
+
+    // Fix the fault; the event is applied, then the ones that waited, in order.
+    set_resolved(&h, a, &good).await;
+    due(&h).await;
+    while h.engine.process_next().await.unwrap() {}
+    let order: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM engine.events WHERE id = ANY($1) AND processed_at IS NOT NULL
+         ORDER BY processed_at, id",
+    )
+    .bind(vec![e1, e2, e3])
+    .fetch_all(&h.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(order, [e1, e2, e3], "{:#?}", h.notes().await);
+    assert_eq!(h.projection(a).await["end_status"], "cancelled");
+    let (reason, _, _) = task_v(&h, a).await;
+    assert_ne!(reason.as_deref(), Some("event_failing"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn permanently_failing_event_backs_off_forever_and_raises_a_finding() {
+    let Some(h) = start(Duration::from_secs(3600), false).await else {
+        return;
+    };
+    let (a, b, good) = broken_and_healthy(&h).await;
+    let e1 = cancel(&h, a).await;
+    for n in 1..=12 {
+        assert!(h.engine.process_next().await.unwrap());
+        let (attempts, _, processed, _) = ev_row(&h, e1).await;
+        assert_eq!((attempts, processed), (n, false));
+        let secs: f64 = sqlx::query_scalar(
+            "SELECT extract(epoch FROM retry_at - now())::float8 FROM engine.events WHERE id = $1",
+        )
+        .bind(e1)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+        let want = engine::reducer::retry_delay(n).as_secs_f64();
+        assert!(
+            secs <= want + 0.5 && secs > want - 5.0,
+            "attempt {n}: {secs} vs {want}"
+        );
+        // Not due yet: nothing to do, and other tasks are not held up.
+        assert!(!h.engine.process_next().await.unwrap());
+        if n == 3 {
+            let eb = cancel(&h, b).await;
+            assert!(h.engine.process_next().await.unwrap());
+            assert!(ev_row(&h, eb).await.2);
+        }
+        due(&h).await;
+    }
+    // The failure has been visible for a while: the finding opens.
+    sqlx::query("UPDATE engine.events SET received_at = now() - interval '1 hour' WHERE id = $1")
+        .bind(e1)
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+    for _ in 0..4 {
+        h.engine.findings_pass().await.unwrap();
+    }
+    let open = open_findings(&h).await;
+    assert_eq!(open.len(), 1, "{open:?}");
+    assert_eq!(open[0].0, format!("event-failing:{a}"));
+    // Fixed: the event goes through and the finding closes.
+    set_resolved(&h, a, &good).await;
+    due(&h).await;
+    while h.engine.process_next().await.unwrap() {}
+    for _ in 0..4 {
+        h.engine.findings_pass().await.unwrap();
+    }
+    assert!(open_findings(&h).await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn task_less_events_of_a_subject_wait_behind_a_failing_one() {
+    let Some(h) = start(Duration::from_secs(3600), false).await else {
+        return;
+    };
+    let skey = format!("github:{APP}#9");
+    let first = h
+        .ingest("t:1", Some(skey.clone()), "issue", json!({}))
+        .await
+        .unwrap();
+    let second = h
+        .ingest("t:2", Some(skey.clone()), "issue", json!({}))
+        .await
+        .unwrap();
+    let other = h
+        .ingest("t:3", Some(format!("github:{APP}#10")), "issue", json!({}))
+        .await
+        .unwrap();
+    // As if the first had failed once: backing off.
+    sqlx::query(
+        "UPDATE engine.events SET attempts = 1, last_error = 'boom', retry_at = now() + interval '1 hour' WHERE id = $1",
+    )
+    .bind(first)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    while h.engine.process_next().await.unwrap() {}
+    assert!(!ev_row(&h, first).await.2);
+    assert!(!ev_row(&h, second).await.2);
+    assert!(ev_row(&h, other).await.2);
+    due(&h).await;
+    while h.engine.process_next().await.unwrap() {}
+    assert!(ev_row(&h, first).await.2 && ev_row(&h, second).await.2);
+}
+
+const REQUEUE_SQL: &str = include_str!("../../../migrations/20261018000004_event_retry.sql");
+
+async fn seed_event(h: &H, key: &str, task: Option<i64>, note: &str, age_days: i32) -> i64 {
+    sqlx::query_scalar(
+        "INSERT INTO engine.events (dedupe_key, project, task_id, type, payload, received_at, processed_at, note)
+         VALUES ($1, 'p', $2, 'ui.command', '{}', now() - make_interval(days => $3), now(), $4)
+         RETURNING id",
+    )
+    .bind(key)
+    .bind(task)
+    .bind(age_days)
+    .bind(note)
+    .fetch_one(&h.db.pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn migration_requeues_only_recent_state_failures_of_live_tasks() {
+    let Some(h) = start(Duration::from_secs(3600), false).await else {
+        return;
+    };
+    let mk = |ended: bool| {
+        let q = if ended {
+            "INSERT INTO engine.tasks (project, repo, workflow_ref, state, resolved, ended_at)
+             VALUES ('p', 'o/r', 'wf', '{}', '{}', now()) RETURNING id"
+        } else {
+            "INSERT INTO engine.tasks (project, repo, workflow_ref, state, resolved)
+             VALUES ('p', 'o/r', 'wf', '{}', '{}') RETURNING id"
+        };
+        sqlx::query_scalar::<_, i64>(q)
+    };
+    let live = mk(false).fetch_one(&h.db.pool).await.unwrap();
+    let ended = mk(true).fetch_one(&h.db.pool).await.unwrap();
+    let st = "error: state: task 1 definition: missing field `platform_wait`";
+    let hit = seed_event(&h, "m:1", Some(live), st, 1).await;
+    let old_cmd = seed_event(&h, "m:2", Some(live), st, 10).await;
+    let ended_task = seed_event(&h, "m:3", Some(ended), st, 1).await;
+    let other_err = seed_event(&h, "m:4", Some(live), "error: database: boom", 1).await;
+    let no_task = seed_event(&h, "m:5", None, st, 1).await;
+    let fine = seed_event(&h, "m:6", Some(live), "no binding", 1).await;
+
+    let start_at = REQUEUE_SQL.find("DO $$").expect("DO block");
+    sqlx::raw_sql(&REQUEUE_SQL[start_at..])
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+
+    let (attempts, err, processed, _) = ev_row(&h, hit).await;
+    assert_eq!((attempts, processed), (0, false));
+    assert_eq!(err.as_deref(), Some(&st["error: ".len()..]));
+    let note: Option<String> = sqlx::query_scalar("SELECT note FROM engine.events WHERE id = $1")
+        .bind(hit)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(note, None);
+    for e in [old_cmd, ended_task, other_err, no_task, fine] {
+        let (processed, note): (bool, Option<String>) = sqlx::query_as(
+            "SELECT processed_at IS NOT NULL, note FROM engine.events WHERE id = $1",
+        )
+        .bind(e)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+        assert!(processed && note.is_some(), "event {e} must stay dropped");
+    }
+}

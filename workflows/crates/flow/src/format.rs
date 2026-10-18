@@ -1135,6 +1135,7 @@ pub struct IssueSpec {
 pub enum FindingKind {
     DeadWait,
     PlatformFailure,
+    EventFailing,
 }
 
 impl FindingKind {
@@ -1142,6 +1143,7 @@ impl FindingKind {
         match self {
             FindingKind::DeadWait => "dead_wait",
             FindingKind::PlatformFailure => "platform_failure",
+            FindingKind::EventFailing => "event_failing",
         }
     }
 }
@@ -1209,6 +1211,17 @@ pub enum When {
     Platform(PlatformCmp),
     /// The task is in a platform wait (ADR-0026), optionally for this failure kind.
     PlatformWait(PlatformWaitIs),
+    /// An inbox event of the task keeps failing (retried with backoff, ADR-0024), optionally
+    /// for at least this long.
+    EventFailing(EventFailingIs),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EventFailingIs {
+    /// How long the event has been failing (`5m`). Immediately when absent.
+    #[serde(default, rename = "for", skip_serializing_if = "Option::is_none")]
+    pub for_: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1429,6 +1442,16 @@ impl When {
             }
             When::Platform(_) => {}
             When::PlatformWait(_) => {
+                if scope == CheckScope::Platform {
+                    out.push("task conditions need `scope: task`".into());
+                }
+            }
+            When::EventFailing(e) => {
+                if let Some(d) = &e.for_
+                    && parse_duration(d).is_none_or(|s| s == 0)
+                {
+                    out.push(format!("`{d}` is not a duration (90s, 15m, 2h, 14d, 1w)"));
+                }
                 if scope == CheckScope::Platform {
                     out.push("task conditions need `scope: task`".into());
                 }

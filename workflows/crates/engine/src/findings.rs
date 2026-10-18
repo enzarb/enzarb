@@ -171,6 +171,8 @@ pub struct TaskSnap {
     pub waiting_on: Option<String>,
     /// The failure kind of the platform wait the task is in (ADR-0026), if it is in one.
     pub platform_wait: Option<String>,
+    /// Since when an inbox event of the task keeps failing, with its attempts and last error.
+    pub event_failing: Option<EventFailing>,
     /// Stored facts by name.
     pub facts: BTreeMap<String, FactRow>,
     /// Relation rows the task holds, by kind (`blocked_by`, `child`, ...).
@@ -188,6 +190,13 @@ pub struct TaskSnap {
     /// The task's own source issue was filed by a finding (it carries the `file_issue` marker).
     /// Findings on it are recorded but never file another issue (ADR-0024).
     pub issue_from_finding: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventFailing {
+    pub since: DateTime<Utc>,
+    pub attempts: i32,
+    pub error: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -381,6 +390,16 @@ impl Cx<'_> {
             .replace("{task}", &t.map_or(String::new(), |t| t.id.to_string()))
             .replace("{node}", t.map_or("", |t| t.node.as_str()))
             .replace("{phase}", t.map_or("", |t| t.phase.as_str()))
+            .replace(
+                "{attempts}",
+                &t.and_then(|t| t.event_failing.as_ref())
+                    .map_or(String::new(), |f| f.attempts.to_string()),
+            )
+            .replace(
+                "{error}",
+                t.and_then(|t| t.event_failing.as_ref())
+                    .map_or("", |f| f.error.as_str()),
+            )
     }
 
     fn eval(&mut self, w: &When) -> bool {
@@ -466,6 +485,15 @@ impl Cx<'_> {
                 t.platform_wait
                     .as_ref()
                     .is_some_and(|k| w.kind.as_ref().is_none_or(|want| want == k))
+            }),
+            When::EventFailing(e) => self.task.is_some_and(|t| {
+                t.event_failing.as_ref().is_some_and(|f| match &e.for_ {
+                    None => true,
+                    Some(d) => parse_duration(d).is_some_and(|secs| {
+                        (self.now - f.since).num_seconds()
+                            >= i64::try_from(secs).unwrap_or(i64::MAX)
+                    }),
+                })
             }),
         }
     }
@@ -760,7 +788,8 @@ pub async fn load_tasks(pool: &PgPool, projects: &[String]) -> Result<Vec<TaskSn
                  WHERE x.task_id = t.id
                    AND (x.from_state IS DISTINCT FROM x.to_state OR x.effects <> '[]'::jsonb)),
                 t.state#>>'{platform_wait,kind}',
-                t.state #>> '{doc,subjects,issue,body}'
+                t.state #>> '{doc,subjects,issue,body}',
+                f.since, f.attempts, f.last_error
          FROM engine.tasks t LEFT JOIN engine.projection p ON p.task_id = t.id
          LEFT JOIN LATERAL (
              SELECT e.received_at AS at,
@@ -772,6 +801,13 @@ pub async fn load_tasks(pool: &PgPool, projects: &[String]) -> Result<Vec<TaskSn
                     OR (e.type = 'ui.command' AND COALESCE(e.payload#>>'{data,command}', '') <> ''))
              ORDER BY e.id DESC LIMIT 1
          ) c ON true
+         LEFT JOIN LATERAL (
+             SELECT min(e.received_at) AS since,
+                    (array_agg(e.attempts ORDER BY e.id))[1] AS attempts,
+                    (array_agg(e.last_error ORDER BY e.id))[1] AS last_error
+             FROM engine.events e
+             WHERE e.task_id = t.id AND e.processed_at IS NULL AND e.attempts > 0
+         ) f ON true
          WHERE t.ended_at IS NULL AND t.project = ANY($1) ORDER BY t.id",
     )
     .bind(projects)
@@ -786,6 +822,13 @@ pub async fn load_tasks(pool: &PgPool, projects: &[String]) -> Result<Vec<TaskSn
             node: r.get(3),
             waiting_on: r.get(4),
             platform_wait: r.get(11),
+            event_failing: r
+                .get::<Option<DateTime<Utc>>, _>(13)
+                .map(|since| EventFailing {
+                    since,
+                    attempts: r.get::<Option<i32>, _>(14).unwrap_or(0),
+                    error: r.get::<Option<String>, _>(15).unwrap_or_default(),
+                }),
             repo: r.get(7),
             facts: BTreeMap::new(),
             relations: BTreeMap::new(),
@@ -892,6 +935,7 @@ mod tests {
             node: "review/wait".into(),
             waiting_on: Some("external".into()),
             platform_wait: None,
+            event_failing: None,
             facts: BTreeMap::new(),
             relations: BTreeMap::new(),
             relations_in: BTreeMap::new(),
@@ -985,6 +1029,30 @@ mod tests {
         ] {
             assert_eq!(!hits(&check(when.clone()), &s).is_empty(), want, "{when}");
         }
+    }
+
+    #[test]
+    fn event_failing_leaf_and_placeholders() {
+        let mut t = task(1);
+        t.event_failing = Some(EventFailing {
+            since: now() - chrono::Duration::minutes(10),
+            attempts: 4,
+            error: "boom".into(),
+        });
+        let failing = snap(vec![t]);
+        let healthy = snap(vec![task(1)]);
+        for (when, s, want) in [
+            (json!({"event_failing": {}}), &failing, true),
+            (json!({"event_failing": {"for": "5m"}}), &failing, true),
+            (json!({"event_failing": {"for": "30m"}}), &failing, false),
+            (json!({"event_failing": {}}), &healthy, false),
+        ] {
+            assert_eq!(!hits(&check(when.clone()), s).is_empty(), want, "{when}");
+        }
+        let mut c = check(json!({"event_failing": {}}));
+        c.text = "attempt {attempts}: {error}".into();
+        let e = evaluate(&[c], &failing, now());
+        assert_eq!(e.desired[0].text, "attempt 4: boom");
     }
 
     #[test]

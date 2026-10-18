@@ -29,6 +29,15 @@ pub(crate) struct TaskRow {
     pub resolved: Resolved,
 }
 
+/// Delay before retry number `attempts` (1-based) of a failing event: 2 s doubling to 5 min.
+/// There is no cap on attempts.
+pub fn retry_delay(attempts: i32) -> std::time::Duration {
+    let exp = u32::try_from(attempts.saturating_sub(1))
+        .unwrap_or(0)
+        .min(16);
+    std::time::Duration::from_secs((2u64 << exp).min(300))
+}
+
 impl Engine {
     /// Runs until shutdown: wakes on `NOTIFY engine_events` and on a poll interval.
     pub async fn run_reducer(&self, mut shutdown: watch::Receiver<bool>) -> Result<(), Error> {
@@ -48,12 +57,26 @@ impl Engine {
         }
     }
 
-    /// Processes one inbox event. `false` when the inbox is empty.
+    /// Processes one inbox event. `false` when nothing is due: the inbox is empty, or only
+    /// events waiting for their retry (or behind one) remain.
+    ///
+    /// A failing event stays unprocessed and is retried with backoff, forever (ADR-0024
+    /// amendment). Later events of the same task (else the same subject) wait behind it; other
+    /// tasks' events keep flowing.
     pub async fn process_next(&self) -> Result<bool, Error> {
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query(
-            "SELECT id, project, subject_key, task_id, type, payload FROM engine.events
-             WHERE processed_at IS NULL ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED",
+            "SELECT e.id, e.project, e.subject_key, e.task_id, e.type, e.payload, e.attempts
+             FROM engine.events e
+             WHERE e.processed_at IS NULL AND (e.retry_at IS NULL OR e.retry_at <= now())
+               AND NOT EXISTS (
+                   SELECT 1 FROM engine.events p
+                   WHERE p.processed_at IS NULL AND p.id < e.id
+                     AND ((e.task_id IS NOT NULL AND p.task_id = e.task_id)
+                          OR (e.task_id IS NULL AND e.subject_key IS NOT NULL
+                              AND p.task_id IS NULL AND p.subject_key = e.subject_key
+                              AND p.project IS NOT DISTINCT FROM e.project)))
+             ORDER BY e.id LIMIT 1 FOR UPDATE OF e SKIP LOCKED",
         )
         .fetch_optional(&mut *tx)
         .await?;
@@ -64,6 +87,9 @@ impl Engine {
         let ty: String = row.get("type");
         let payload: Value = row.get("payload");
         let task_id: Option<i64> = row.get("task_id");
+        let attempts: i32 = row.get("attempts");
+        // A savepoint, so a failure undoes the handler's writes but keeps the event's row lock.
+        sqlx::query("SAVEPOINT handler").execute(&mut *tx).await?;
         let note = if let Some(kind) = ty.strip_prefix("ui.") {
             self.on_ui_event(&mut tx, id, task_id, kind, payload).await
         } else if ty.starts_with(ENGINE_PREFIX) {
@@ -78,15 +104,56 @@ impl Engine {
         let (note, task) = match note {
             Ok(x) => x,
             Err(e) => {
-                // Never wedge the inbox: record and move on (the task, if any, is untouched).
-                tracing::error!(event = id, "processing failed: {e}");
-                tx.rollback().await?;
-                tx = self.pool.begin().await?;
-                (Some(format!("error: {e}")), None)
+                tracing::error!(
+                    event = id,
+                    attempts = attempts + 1,
+                    "processing failed: {e}"
+                );
+                sqlx::query("ROLLBACK TO SAVEPOINT handler")
+                    .execute(&mut *tx)
+                    .await?;
+                let attempts = attempts.saturating_add(1);
+                let err = e.to_string();
+                let delay = retry_delay(attempts);
+                sqlx::query(
+                    "UPDATE engine.events SET attempts = $2, last_error = $3,
+                            retry_at = now() + make_interval(secs => $4) WHERE id = $1",
+                )
+                .bind(id)
+                .bind(attempts)
+                .bind(&err)
+                .bind(delay.as_secs_f64())
+                .execute(&mut *tx)
+                .await?;
+                if let Some(task_id) = task_id {
+                    let text = format!("Event {ty} failing (attempt {attempts}): {err}");
+                    sqlx::query(
+                        "UPDATE engine.projection SET reason = 'event_failing', text = $2,
+                                updated_at = now() WHERE task_id = $1",
+                    )
+                    .bind(task_id)
+                    .bind(text)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                tx.commit().await?;
+                return Ok(true);
             }
         };
+        if attempts > 0
+            && let Some(t) = task.or(task_id)
+        {
+            // A retried event succeeded: drop the failure overlay if nothing rewrote it.
+            sqlx::query(
+                "UPDATE engine.projection SET reason = NULL, text = NULL
+                 WHERE task_id = $1 AND reason = 'event_failing'",
+            )
+            .bind(t)
+            .execute(&mut *tx)
+            .await?;
+        }
         sqlx::query(
-            "UPDATE engine.events SET processed_at = now(), note = $2,
+            "UPDATE engine.events SET processed_at = now(), note = $2, retry_at = NULL,
                     task_id = COALESCE(task_id, $3) WHERE id = $1",
         )
         .bind(id)
@@ -1359,4 +1426,21 @@ fn viewer_workflow(r: &Resolved) -> Value {
         "phases": phases,
         "origins": r.origins,
     })
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::retry_delay;
+    use std::time::Duration;
+
+    #[test]
+    fn backoff_doubles_to_a_plateau_without_overflow() {
+        let secs = |n| retry_delay(n).as_secs();
+        assert_eq!([secs(1), secs(2), secs(3), secs(4)], [2, 4, 8, 16]);
+        assert_eq!(secs(8), 256);
+        assert_eq!(secs(9), 300);
+        assert_eq!(retry_delay(i32::MAX), Duration::from_secs(300));
+        assert_eq!(retry_delay(0), Duration::from_secs(2));
+        assert_eq!(retry_delay(-5), Duration::from_secs(2));
+    }
 }
