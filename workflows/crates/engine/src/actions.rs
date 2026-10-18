@@ -722,8 +722,12 @@ mod mergeable_tests {
         };
         assert_eq!(reads(&c), 3);
         // Known: returned at once.
-        c.set_merge_readiness(k.clone(), readiness(Some(false)));
+        c.set_merge_readiness_immediate(k.clone(), readiness(Some(false)));
         assert_eq!(mergeable(&c, &k, &d).await.unwrap(), Some(false));
         assert_eq!(reads(&c), 4);
+        // Known only after GitHub computed it: the first read is unknown.
+        c.set_merge_readiness(k.clone(), readiness(Some(true)));
+        assert_eq!(mergeable(&c, &k, &d).await.unwrap(), Some(true));
+        assert_eq!(reads(&c), 6);
     }
 }

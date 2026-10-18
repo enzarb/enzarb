@@ -1,0 +1,10 @@
+{
+  "_source": "POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues. Adding a sub-issue that is already linked to the parent is answered with 422 Validation Failed. Message text is a hand-written approximation.",
+  "status": 422,
+  "body": {
+    "message": "Validation Failed",
+    "errors": ["sub-issue already exists"],
+    "documentation_url": "https://docs.github.com/rest/issues/sub-issues#add-sub-issue",
+    "status": "422"
+  }
+}
