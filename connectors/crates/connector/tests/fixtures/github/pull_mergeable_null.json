@@ -1,0 +1,9 @@
+{
+  "_source": "GET /repos/{owner}/{repo}/pulls/{pull_number}. GitHub computes mergeability lazily in the background: the first read after a push or open returns mergeable null and mergeable_state unknown (documented under 'Get a pull request').",
+  "number": 1,
+  "state": "open",
+  "mergeable": null,
+  "mergeable_state": "unknown",
+  "head": { "sha": "6dcb09b5b57875f334f61aebed695e2e4193db5e" },
+  "base": { "sha": "9a0b1c2d3e4f5061728394a5b6c7d8e9f0a1b2c3" }
+}

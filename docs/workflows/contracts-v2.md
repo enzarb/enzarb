@@ -76,6 +76,7 @@ Defined in `proto/crates/enzarb-proto/src/step.rs` and mirrored in `proto/ts`; f
   - `comment`, `label`, `unlabel`;
   - `open_pull_request` (links the PR as a subject), `update_pull_request`, `merge_pull_request`;
   - `create_issues` (result `{issues: [{kind: issue, repo, number, title, url, key}]}`), `open_pull_request` (result `{kind: pull_request, repo, number, title, url, subject}`), `close_issue`, `set_base`, `update_branch`, `delete_branch`;
+  - `file_issue` (args `repo?`, `title`, `body`, `key`, `labels?`; result `{kind: issue, repo, number, title, url, key, outcome: created|updated|unchanged}`): files one issue under a stable `key`; see `docs/contracts.md`, "`file_issue`";
   - `read_file`, `resolve_ref`.
 - **Facts:**
   - `ci` `{sha, state, failing: [{name, kind, url, conclusion, log_excerpt, actionable, job_id?, run_id?}]}` (ignore regex `ENZARB_CI_IGNORE_CHECKS`);

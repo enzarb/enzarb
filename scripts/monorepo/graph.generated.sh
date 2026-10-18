@@ -27,7 +27,7 @@ RULES=(
   'kubernetes|kubernetes/** mise.toml mise.*.toml .github/workflows/ci-kubernetes.yml .github/workflows/_changes.yml'
   'helm|helm/** mise.toml .github/workflows/ci-helm.yml .github/workflows/_changes.yml'
   'monorepo|scripts/** .mise/tasks/** .mise/lib/** .github/workflows/** Cargo.toml Cargo.lock **/Cargo.toml **/package.json mise.toml mise.*.toml */mise.toml */Dockerfile rust-toolchain.toml kubernetes/hack/versions.env'
-  'release-path|.github/scripts/** .github/workflows/release.yml .github/workflows/_release-*.yml .github/workflows/rebuild-all.yml .github/workflows/ci-release-path.yml scripts/monorepo/components.json scripts/monorepo/graph.generated.sh scripts/monorepo/gen-graph.sh scripts/monorepo/test-retag-or-build.sh mise.toml'
+  'release-path|.github/scripts/** .github/workflows/release.yml .github/workflows/_release-*.yml .github/workflows/rebuild-all.yml .github/workflows/ci-release-path.yml scripts/monorepo/components.json scripts/monorepo/graph.generated.sh scripts/monorepo/gen-graph.sh scripts/monorepo/test-retag-or-build.sh scripts/monorepo/fixtures/** mise.toml'
 )
 IMAGE_TABLE='operator enzarb-sandbox-operator operator - 30
 connectors enzarb-connectors-receiver . - 30

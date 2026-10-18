@@ -6,7 +6,7 @@ use chrono::{SecondsFormat, Utc};
 use enzarb_connector::{
     Actor, ChangeRequestSpec, CiState, CloseReason, CommentKind, CommitRef, Connector, CredScope,
     Error, ItemKind, MergeOutcome, MergeReadiness, Permission, Progress, ProgressTarget, RepoKey,
-    Status, StatusState, UpdateBranchOutcome, WorkItemKey,
+    Status, StatusState, UpdateBranchOutcome, UpsertOutcome, WorkItemKey,
 };
 use enzarb_connector_github::{GitHubConfig, GitHubConnector, RetryPolicy};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
@@ -2297,6 +2297,7 @@ async fn mount_role(server: &MockServer, login: &str, role: Value, times: u64) {
         .await;
 }
 
+
 async fn can_write_of(
     perms: &enzarb_connector_github::CommentPermissions<GitHubConnector>,
     login: &str,
@@ -2390,4 +2391,131 @@ async fn comment_permission_is_cached_and_errors_are_not() {
     assert!(can_write_of(&perms, "BOSS", true).await);
     assert!(!can_write_of(&perms, "flaky", false).await);
     assert!(!can_write_of(&perms, "flaky", false).await);
+}
+
+// ---- file_issue: upsert_issue ----
+
+const FILED_KEY: &str = "file_issue:enzarb/enzarb-ui:k1";
+
+async fn mount_filed_list(server: &MockServer, number: u64, state: &str) {
+    let mut existing = issue_json(number, false);
+    existing["state"] = json!(state);
+    existing["body"] = json!(format!("Old.\n\n<!-- enzarb:idem:{FILED_KEY} -->"));
+    Mock::given(method("GET"))
+        .and(path("/repos/enzarb/enzarb-ui/issues"))
+        .and(query_param("state", "all"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([existing])))
+        .mount(server)
+        .await;
+}
+
+
+async fn mount_filed_get(server: &MockServer, number: u64, title: &str, body: &str) {
+    let mut current = issue_json(number, false);
+    current["title"] = json!(title);
+    current["body"] = json!(format!("{body}\n\n<!-- enzarb:idem:{FILED_KEY} -->"));
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/enzarb/enzarb-ui/issues/{number}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(current))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn upsert_issue_creates_with_marker_and_labels() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/enzarb/enzarb-ui/issues"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([issue_json(7, false)])))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/enzarb/enzarb-ui/issues"))
+        .and(body_json(json!({
+            "title": "Finding",
+            "body": format!("Text.\n\n<!-- enzarb:idem:{FILED_KEY} -->"),
+            "labels": ["enzarb"],
+        })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(issue_json(8, false)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let got = connector(&server)
+        .upsert_issue(&repo(), "Finding", "Text.", &["enzarb".into()], FILED_KEY)
+        .await
+        .unwrap();
+    assert_eq!(got.item, item(8));
+    assert_eq!(got.outcome, UpsertOutcome::Created);
+}
+
+#[tokio::test]
+async fn upsert_issue_patches_title_and_body_only() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    mount_filed_list(&server, 9, "open").await;
+    mount_filed_get(&server, 9, "Old title", "Old.").await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/enzarb/enzarb-ui/issues/9"))
+        .and(body_json(json!({
+            "title": "New title",
+            "body": format!("New.\n\n<!-- enzarb:idem:{FILED_KEY} -->"),
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(issue_json(9, false)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(issue_json(11, false)))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let got = connector(&server)
+        .upsert_issue(&repo(), "New title", "New.", &["x".into()], FILED_KEY)
+        .await
+        .unwrap();
+    assert_eq!(got.item, item(9));
+    assert_eq!(got.outcome, UpsertOutcome::Updated);
+}
+
+#[tokio::test]
+async fn upsert_issue_skips_unchanged_text() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    mount_filed_list(&server, 9, "open").await;
+    mount_filed_get(&server, 9, "Same", "Same.").await;
+    Mock::given(method("PATCH"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(issue_json(9, false)))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let got = connector(&server)
+        .upsert_issue(&repo(), "Same", "Same.", &[], FILED_KEY)
+        .await
+        .unwrap();
+    assert_eq!(got.outcome, UpsertOutcome::Unchanged);
+}
+
+#[tokio::test]
+async fn upsert_issue_updates_a_closed_issue_without_reopening_it() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    mount_filed_list(&server, 9, "closed").await;
+    mount_filed_get(&server, 9, "Old title", "Old.").await;
+    // `body_json` matches the whole payload: no `state` key is allowed.
+    Mock::given(method("PATCH"))
+        .and(path("/repos/enzarb/enzarb-ui/issues/9"))
+        .and(body_json(json!({
+            "title": "Old title",
+            "body": format!("Changed.\n\n<!-- enzarb:idem:{FILED_KEY} -->"),
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(issue_json(9, false)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let got = connector(&server)
+        .upsert_issue(&repo(), "Old title", "Changed.", &[], FILED_KEY)
+        .await
+        .unwrap();
+    assert_eq!(got.outcome, UpsertOutcome::Updated);
 }

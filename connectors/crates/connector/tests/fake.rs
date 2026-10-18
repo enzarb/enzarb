@@ -364,3 +364,140 @@ async fn close_issue_records_the_reason_and_replays() {
     assert!(!calls[0].replayed);
     assert!(calls[1].replayed);
 }
+
+#[tokio::test]
+async fn upsert_issue_dedupes_by_key_and_updates_changed_text() {
+    let f = FakeConnector::new();
+    let repo = item().repo;
+    let a = f.upsert_issue(&repo, "T", "B", &[], "k1").await.unwrap();
+    assert_eq!(a.outcome, UpsertOutcome::Created);
+    let b = f.upsert_issue(&repo, "T", "B", &[], "k1").await.unwrap();
+    assert_eq!(
+        (b.item.clone(), b.outcome),
+        (a.item.clone(), UpsertOutcome::Unchanged)
+    );
+    assert_eq!(f.created_issues().len(), 1);
+    let c = f.upsert_issue(&repo, "T2", "B", &[], "k1").await.unwrap();
+    assert_eq!(
+        (c.item.clone(), c.outcome),
+        (a.item.clone(), UpsertOutcome::Updated)
+    );
+    let d = f.upsert_issue(&repo, "T2", "B2", &[], "k1").await.unwrap();
+    assert_eq!(d.outcome, UpsertOutcome::Updated);
+    let issues = f.created_issues();
+    assert_eq!(issues.len(), 1);
+    assert_eq!((issues[0].1.as_str(), issues[0].2.as_str()), ("T2", "B2"));
+    let e = f.upsert_issue(&repo, "T", "B", &[], "k2").await.unwrap();
+    assert_eq!(e.outcome, UpsertOutcome::Created);
+    assert_ne!(e.item, a.item);
+    assert_eq!(f.created_issues().len(), 2);
+    let replayed: Vec<bool> = f.calls().iter().map(|c| c.replayed).collect();
+    assert_eq!(replayed, [false, true, false, false, false]);
+}
+
+fn fixture(name: &str) -> serde_json::Value {
+    let path = format!(
+        "{}/tests/fixtures/github/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+fn readiness(mergeable: Option<bool>, state: &str) -> MergeReadiness {
+    MergeReadiness {
+        head_sha: "abc".into(),
+        base_sha: Some("def".into()),
+        mergeable,
+        mergeable_state: state.into(),
+        ci: CiState::Pending,
+    }
+}
+
+#[tokio::test]
+async fn mergeable_is_unknown_on_first_read() {
+    let f = FakeConnector::new();
+    f.set_merge_readiness(item(), readiness(Some(true), "clean"));
+    let first = f.get_merge_readiness(&item(), 1).await.unwrap();
+    assert_eq!(first.mergeable, None);
+    assert_eq!(first.mergeable_state, "unknown");
+    assert_eq!(first.head_sha, "abc");
+    let second = f.get_merge_readiness(&item(), 1).await.unwrap();
+    assert_eq!(second, readiness(Some(true), "clean"));
+}
+
+#[tokio::test]
+async fn reads_match_the_mergeable_fixtures() {
+    // Fixtures: pull_mergeable_null.json, pull_mergeable_known.json.
+    let null = fixture("pull_mergeable_null.json");
+    let known = fixture("pull_mergeable_known.json");
+    let f = FakeConnector::new();
+    f.set_merge_readiness(item(), readiness(Some(true), "clean"));
+    let first = f.get_merge_readiness(&item(), 1).await.unwrap();
+    let second = f.get_merge_readiness(&item(), 1).await.unwrap();
+    assert!(null["mergeable"].is_null());
+    assert_eq!(null["mergeable_state"], first.mergeable_state);
+    assert_eq!(known["mergeable"].as_bool(), second.mergeable);
+    assert_eq!(known["mergeable_state"], second.mergeable_state);
+}
+
+#[tokio::test]
+async fn immediate_setter_is_known_on_first_read() {
+    let f = FakeConnector::new();
+    f.set_merge_readiness_immediate(item(), readiness(Some(true), "clean"));
+    let r = f.get_merge_readiness(&item(), 1).await.unwrap();
+    assert_eq!(r.mergeable, Some(true));
+}
+
+#[tokio::test]
+async fn duplicate_sub_issue_link_is_a_422_and_edge_is_stored_once() {
+    // Fixture: sub_issue_duplicate_422.json.
+    let fx = fixture("sub_issue_duplicate_422.json");
+    let child: WorkItemKey = "github:o/r#2".parse().unwrap();
+    let f = FakeConnector::new();
+    f.link_sub_issue(&item(), &child).await.unwrap();
+    assert!(f.rejected_duplicates().is_empty());
+    f.link_sub_issue(&item(), &child).await.unwrap();
+    assert_eq!(f.sub_issues(&item()), vec![child]);
+    let rejected = f.rejected_duplicates();
+    assert_eq!(rejected.len(), 1);
+    assert_eq!(rejected[0].op, "link_sub_issue");
+    assert_eq!(
+        u64::from(rejected[0].status),
+        fx["status"].as_u64().unwrap()
+    );
+    assert!(
+        rejected[0]
+            .message
+            .starts_with(fx["body"]["message"].as_str().unwrap())
+    );
+}
+
+#[tokio::test]
+async fn duplicate_dependency_is_a_422_and_edge_is_stored_once() {
+    // Fixture: dependency_duplicate_422.json.
+    let fx = fixture("dependency_duplicate_422.json");
+    let blocker: WorkItemKey = "github:o/r#2".parse().unwrap();
+    let f = FakeConnector::new();
+    f.add_dependency(&item(), &blocker, "k1").await.unwrap();
+    f.add_dependency(&item(), &blocker, "k2").await.unwrap();
+    assert_eq!(f.dependencies(&item()), vec![blocker.clone()]);
+    assert_eq!(
+        f.list_dependencies(&item()).await.unwrap(),
+        vec![blocker.clone()]
+    );
+    let rejected = f.rejected_duplicates();
+    assert_eq!(rejected.len(), 1);
+    assert_eq!(rejected[0].op, "add_dependency");
+    assert_eq!(
+        u64::from(rejected[0].status),
+        fx["status"].as_u64().unwrap()
+    );
+    assert!(
+        rejected[0]
+            .message
+            .starts_with(fx["body"]["message"].as_str().unwrap())
+    );
+    // Replaying the same idempotency key is flagged as replayed.
+    f.add_dependency(&item(), &blocker, "k1").await.unwrap();
+    assert!(f.calls().last().unwrap().replayed);
+}
