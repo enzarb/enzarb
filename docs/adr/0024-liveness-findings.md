@@ -22,3 +22,6 @@ A task can wait for something that will not come (CI that never started, a fact 
 
 ## Consequences
 The change stream (`NOTIFY` on projection writes) does not push a raised or cleared finding; it appears on the next read or projection change. Production checks and UI rendering follow in the epic (#270).
+
+## Addendum: a finding may file one issue (#280)
+`reconcile` still never touches tasks, the projection, timers, step runs or transitions, but it may now also enqueue one `file_issue` job per newly opened finding whose check has an `issue:` block (`{title, body, labels?, repo?}`, any kind and scope). The job is inserted in the finding's transaction, keyed `finding:<check>:<subject>` (task id, or project for platform scope), and runs the existing `file_issue` action, which upserts by that key. The key carries no time, so a finding that clears and returns files no second issue. A library action node reacting to a finding was rejected: it would let findings drive transitions. `engine.jobs.task_id` becomes nullable (additive) for platform findings. Findings stay observation only; nothing is cancelled or restarted, and the issue is not closed when the finding clears.

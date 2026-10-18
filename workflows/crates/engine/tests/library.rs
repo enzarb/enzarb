@@ -794,3 +794,462 @@ async fn a_dependency_ending_notifies_the_blocked_task() {
         "the blocked task was not told that its dependency ended"
     );
 }
+
+// ---------------------------------------------------------------- dead-wait checks
+
+/// Every shipped check parses, validates and files an issue.
+#[test]
+fn stdlib_checks_are_valid_and_file_issues() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/stdlib/checks");
+    let mut ids = Vec::new();
+    for e in std::fs::read_dir(dir).unwrap() {
+        let p = e.unwrap().path();
+        let text = std::fs::read_to_string(&p).unwrap();
+        let name = p.file_name().unwrap().to_string_lossy().to_string();
+        let c: enzarb_flow::format::CheckFile = enzarb_flow::yaml::SourceFile::parse(&name, &text)
+            .unwrap_or_else(|d| panic!("{name}: {}", d.message))
+            .typed()
+            .unwrap_or_else(|d| panic!("{name}: {}", d.message));
+        assert!(c.problems().is_empty(), "{name}: {:?}", c.problems());
+        assert_eq!(format!("{}.yaml", c.id), name);
+        assert!(c.issue.is_some(), "{name} files no issue");
+        ids.push(c.id);
+    }
+    ids.sort();
+    assert_eq!(
+        ids,
+        [
+            "ci-never-started",
+            "epic-subissues-without-deps",
+            "external-idle",
+            "mergeable-unknown",
+            "retry-ignored"
+        ]
+    );
+}
+
+/// Seeds an open task at `node` (`phase/..`) waiting on `waiting_on`, created two hours ago with
+/// no event since. `subject` is the issue it owns, when it has one.
+async fn seed_task(h: &H, node: &str, waiting_on: &str, subject: Option<u64>) -> i64 {
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO engine.tasks (project, repo, workflow_ref, state, resolved, created_at)
+         VALUES ('p', $1, 'wf', '{}', '{}', now() - interval '2 hours') RETURNING id",
+    )
+    .bind(APP)
+    .fetch_one(&h.db.pool)
+    .await
+    .unwrap();
+    let phase = node.split('/').next().unwrap();
+    sqlx::query(
+        "INSERT INTO engine.projection (task_id, project, repo, workflow, status, phase, node, waiting_on)
+         VALUES ($1, 'p', $2, 'wf', 'waiting', $3, $4, $5)",
+    )
+    .bind(id)
+    .bind(APP)
+    .bind(phase)
+    .bind(node)
+    .bind(waiting_on)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    if let Some(n) = subject {
+        sqlx::query("INSERT INTO engine.subjects (task_id, kind, key) VALUES ($1, 'issue', $2)")
+            .bind(id)
+            .bind(format!("github:{APP}#{n}"))
+            .execute(&h.db.pool)
+            .await
+            .unwrap();
+    }
+    id
+}
+
+async fn set_fact(h: &H, task: i64, name: &str, value: Value, unknown_refreshes: i32) {
+    sqlx::query(
+        "INSERT INTO engine.facts (task_id, name, value, source, unknown_refreshes)
+         VALUES ($1, $2, $3, 'test', $4)
+         ON CONFLICT (task_id, name) DO UPDATE SET value = $3, unknown_refreshes = $4",
+    )
+    .bind(task)
+    .bind(name)
+    .bind(value)
+    .bind(unknown_refreshes)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+}
+
+/// A command comment routed to the task `minutes` ago.
+async fn command_event(h: &H, task: i64, command: &str, minutes: i32) {
+    sqlx::query(
+        "INSERT INTO engine.events (dedupe_key, project, task_id, type, payload, received_at, processed_at)
+         VALUES ($1, 'p', $2, 'comment', $3, now() - make_interval(mins => $4), now())",
+    )
+    .bind(format!("cmd-{task}-{minutes}"))
+    .bind(task)
+    .bind(json!({"type": "comment", "body": format!("/{command}"), "command": command,
+                 "repo": APP, "actor": {"login": "alice"}}))
+    .bind(minutes)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+}
+
+/// A transition `minutes` ago: `to_node` differs from the old node for a real one; an empty
+/// effect list with the same node is what an ignored event leaves behind.
+async fn transition(h: &H, task: i64, from_node: &str, to_node: &str, minutes: i32) {
+    sqlx::query(
+        "INSERT INTO engine.transitions (task_id, from_state, to_state, effects, at)
+         VALUES ($1, $2, $3, '[]', now() - make_interval(mins => $4))",
+    )
+    .bind(task)
+    .bind(json!({"status": "waiting", "node": from_node, "pending": null}))
+    .bind(json!({"status": "waiting", "node": to_node, "pending": null}))
+    .bind(minutes)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+}
+
+async fn passes(h: &H, n: usize) {
+    for _ in 0..n {
+        h.engine.findings_pass().await.unwrap();
+    }
+}
+
+/// Runs every queued job to completion.
+async fn run_jobs(h: &H) {
+    while let Some(job) = h.engine.claim().await.unwrap() {
+        h.engine.execute(job).await;
+    }
+}
+
+async fn open_checks(h: &H) -> Vec<String> {
+    sqlx::query_scalar("SELECT check_id FROM engine_api.finding_v ORDER BY key")
+        .fetch_all(&h.db.pool)
+        .await
+        .unwrap()
+}
+
+/// `(idempotency key, outcome)` of every `file_issue` job.
+async fn issue_jobs(h: &H) -> Vec<(String, Option<String>)> {
+    sqlx::query_as(
+        "SELECT idempotency_key, output->>'outcome' FROM engine.jobs WHERE kind = 'file_issue'
+         ORDER BY id",
+    )
+    .fetch_all(&h.db.pool)
+    .await
+    .unwrap()
+}
+
+/// The incident's whole life: nothing on the first pass, exactly one finding and one issue once
+/// it persists, nothing more however often the passes repeat, and no second issue when the
+/// finding clears (`fix`) and comes back (`restore`).
+async fn assert_one_finding_one_issue<F1, F2>(
+    h: &H,
+    check: &str,
+    key: &str,
+    title: &str,
+    fix: F1,
+    restore: F2,
+) where
+    F1: std::future::Future<Output = ()>,
+    F2: std::future::Future<Output = ()>,
+{
+    passes(h, 1).await;
+    assert!(open_checks(h).await.is_empty(), "raised on the first pass");
+    passes(h, 1).await;
+    assert_eq!(open_checks(h).await, [check]);
+    run_jobs(h).await;
+    assert_eq!(
+        issue_jobs(h).await,
+        [(key.to_string(), Some("created".into()))]
+    );
+    let made = h.gh.created_issues();
+    assert_eq!(made.len(), 1, "{made:?}");
+    assert_eq!(made[0].1, title);
+    assert!(made[0].2.contains("Nothing was cancelled or restarted"));
+    // Repeating adds nothing.
+    passes(h, 4).await;
+    run_jobs(h).await;
+    assert_eq!(open_checks(h).await, [check]);
+    assert_eq!(issue_jobs(h).await.len(), 1);
+    assert_eq!(h.gh.created_issues().len(), 1);
+    // Clear, then come back: the same finding row, the same issue.
+    fix.await;
+    passes(h, 1).await;
+    assert!(open_checks(h).await.is_empty());
+    restore.await;
+    passes(h, 2).await;
+    run_jobs(h).await;
+    assert_eq!(open_checks(h).await, [check]);
+    assert_eq!(issue_jobs(h).await.len(), 1);
+    assert_eq!(h.gh.created_issues().len(), 1);
+    // The task itself was never touched.
+    let jobs: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM engine.jobs WHERE kind <> 'file_issue'")
+            .fetch_one(&h.db.pool)
+            .await
+            .unwrap();
+    assert_eq!(jobs, 0);
+}
+
+/// A conflicting pull request never starts CI and `mergeable` stays unknown.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn conflicting_pr_without_check_runs_files_one_issue() {
+    let Some(h) = start(false).await else {
+        return;
+    };
+    let id = seed_task(&h, "review/rounds/checks", "external", None).await;
+    set_fact(&h, id, "ci", json!({"sha": "abc", "check_runs": []}), 0).await;
+    set_fact(&h, id, "mergeable", Value::Null, 1).await;
+    // The check runs arrive and the pull request is mergeable.
+    let healthy = async {
+        set_fact(&h, id, "ci", json!({"check_runs": [{"name": "test"}]}), 0).await;
+        set_fact(&h, id, "mergeable", json!(true), 0).await;
+    };
+    let broken = async {
+        set_fact(&h, id, "ci", json!({"check_runs": []}), 0).await;
+        set_fact(&h, id, "mergeable", json!(false), 0).await;
+    };
+    assert_one_finding_one_issue(
+        &h,
+        "ci-never-started",
+        &format!("finding:ci-never-started:{id}"),
+        &format!("Task {id} waits for CI that cannot start"),
+        healthy,
+        broken,
+    )
+    .await;
+    // The issue goes to the task's repo, with the check's labels.
+    let (repo, labels): (String, Value) = sqlx::query_as(
+        "SELECT input->>'repo', input->'labels' FROM engine.jobs WHERE kind = 'file_issue'",
+    )
+    .fetch_one(&h.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (repo.as_str(), labels),
+        (APP, json!(["liveness", "dead-wait"]))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn healthy_ci_files_nothing() {
+    let Some(h) = start(false).await else {
+        return;
+    };
+    let id = seed_task(&h, "review/rounds/checks", "external", None).await;
+    set_fact(&h, id, "ci", json!({"check_runs": [{"name": "test"}]}), 0).await;
+    set_fact(&h, id, "mergeable", json!(true), 0).await;
+    passes(&h, 4).await;
+    run_jobs(&h).await;
+    assert!(open_checks(&h).await.is_empty());
+    assert!(issue_jobs(&h).await.is_empty());
+    assert!(h.gh.created_issues().is_empty());
+}
+
+/// `/retry` reaches a node that does not act on it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ignored_retry_files_one_issue() {
+    let Some(h) = start(false).await else {
+        return;
+    };
+    let node = "review/rounds/checks";
+    let id = seed_task(&h, node, "human", None).await;
+    command_event(&h, id, "retry", 20).await;
+    // The event was processed and left a transition without a change and without effects.
+    transition(&h, id, node, node, 19).await;
+    assert_one_finding_one_issue(
+        &h,
+        "retry-ignored",
+        &format!("finding:retry-ignored:{id}"),
+        &format!("Task {id} ignored a command at {node}"),
+        // The task moved on.
+        transition(&h, id, node, "review/rounds/done", 18),
+        // A newer command that is ignored again.
+        command_event(&h, id, "retry", 16),
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retry_that_advanced_or_is_recent_files_nothing() {
+    let Some(h) = start(false).await else {
+        return;
+    };
+    let node = "review/rounds/checks";
+    // The retry restarted the node.
+    let moved = seed_task(&h, node, "human", None).await;
+    command_event(&h, moved, "retry", 20).await;
+    transition(&h, moved, node, "review/rounds/context", 19).await;
+    // A retry that only produced effects (answered).
+    let answered = seed_task(&h, node, "human", None).await;
+    command_event(&h, answered, "retry", 20).await;
+    sqlx::query(
+        "INSERT INTO engine.transitions (task_id, from_state, to_state, effects, at)
+         VALUES ($1, '{}', '{}', '[{\"kind\": \"call_action\"}]', now() - interval '19 minutes')",
+    )
+    .bind(answered)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    // Too recent to tell.
+    let recent = seed_task(&h, node, "human", None).await;
+    command_event(&h, recent, "retry", 2).await;
+    // Another node, however old the command.
+    let elsewhere = seed_task(&h, "review/rounds/human", "human", None).await;
+    command_event(&h, elsewhere, "retry", 20).await;
+    passes(&h, 4).await;
+    run_jobs(&h).await;
+    assert!(open_checks(&h).await.is_empty());
+    assert!(issue_jobs(&h).await.is_empty());
+}
+
+/// Sub-issues an epic created without dependencies.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn epic_subissue_without_dependencies_files_one_issue() {
+    let Some(h) = start(false).await else {
+        return;
+    };
+    let epic = seed_task(&h, "breakdown/wait", "human", Some(1)).await;
+    let sub = seed_task(&h, "start/wait", "human", Some(2)).await;
+    // The breakdown related the epic as `parent` of the sub-issue.
+    sqlx::query(
+        "INSERT INTO engine.relations (task_id, kind, target_key, source)
+         VALUES ($1, 'parent', $2, 'workflow')",
+    )
+    .bind(epic)
+    .bind(format!("github:{APP}#2"))
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    let depend = async {
+        sqlx::query(
+            "INSERT INTO engine.relations (task_id, kind, target_key, source)
+             VALUES ($1, 'blocked_by', $2, 'dependencies')",
+        )
+        .bind(sub)
+        .bind(format!("github:{APP}#3"))
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+    };
+    let undepend = async {
+        sqlx::query("DELETE FROM engine.relations WHERE task_id = $1 AND kind = 'blocked_by'")
+            .bind(sub)
+            .execute(&h.db.pool)
+            .await
+            .unwrap();
+    };
+    assert_one_finding_one_issue(
+        &h,
+        "epic-subissues-without-deps",
+        &format!("finding:epic-subissues-without-deps:{sub}"),
+        &format!("Sub-issue task {sub} was created without dependencies"),
+        depend,
+        undepend,
+    )
+    .await;
+    // The epic itself, and an ordinary issue, never match.
+    let tasks: Vec<Option<i64>> = sqlx::query_scalar("SELECT task_id FROM engine.findings")
+        .fetch_all(&h.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(tasks, [Some(sub)]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn subissues_with_dependencies_and_plain_issues_file_nothing() {
+    let Some(h) = start(false).await else {
+        return;
+    };
+    let epic = seed_task(&h, "breakdown/wait", "human", Some(1)).await;
+    let a = seed_task(&h, "start/wait", "human", Some(2)).await;
+    let b = seed_task(&h, "start/wait", "human", Some(3)).await;
+    let plain = seed_task(&h, "start/wait", "human", Some(4)).await;
+    for n in [2, 3] {
+        sqlx::query(
+            "INSERT INTO engine.relations (task_id, kind, target_key) VALUES ($1, 'parent', $2)",
+        )
+        .bind(epic)
+        .bind(format!("github:{APP}#{n}"))
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+    }
+    // Both sub-issues have their dependencies recorded; the plain issue is no sub-issue.
+    sqlx::query(
+        "INSERT INTO engine.relations (task_id, kind, target_key) VALUES ($1, 'blocked_by', $2)",
+    )
+    .bind(a)
+    .bind(format!("github:{APP}#3"))
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO engine.relations (task_id, kind, target_key) VALUES ($1, 'blocked_by', $2)",
+    )
+    .bind(b)
+    .bind(format!("github:{APP}#4"))
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    assert!(plain > 0);
+    passes(&h, 4).await;
+    run_jobs(&h).await;
+    assert!(open_checks(&h).await.is_empty());
+    assert!(issue_jobs(&h).await.is_empty());
+}
+
+/// An external wait with no event and no step for a day; a younger one is fine.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idle_external_wait_files_one_issue() {
+    let Some(h) = start(false).await else {
+        return;
+    };
+    let idle = seed_task(&h, "merge/wait", "external", None).await;
+    sqlx::query("UPDATE engine.tasks SET created_at = now() - interval '2 days' WHERE id = $1")
+        .bind(idle)
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+    let young = seed_task(&h, "merge/wait", "external", None).await;
+    passes(&h, 4).await;
+    run_jobs(&h).await;
+    assert_eq!(open_checks(&h).await, ["external-idle"]);
+    let jobs = issue_jobs(&h).await;
+    assert_eq!(
+        jobs,
+        [(
+            format!("finding:external-idle:{idle}"),
+            Some("created".into())
+        )]
+    );
+    assert_ne!(young, idle);
+}
+
+/// A fact that stays unknown across refreshes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fact_unknown_across_refreshes_files_one_issue() {
+    let Some(h) = start(false).await else {
+        return;
+    };
+    let id = seed_task(&h, "merge/wait", "human", None).await;
+    set_fact(&h, id, "mergeable", Value::Null, 2).await;
+    passes(&h, 3).await;
+    assert!(
+        open_checks(&h).await.is_empty(),
+        "two refreshes are not enough"
+    );
+    set_fact(&h, id, "mergeable", Value::Null, 3).await;
+    passes(&h, 3).await;
+    run_jobs(&h).await;
+    assert_eq!(open_checks(&h).await, ["mergeable-unknown"]);
+    assert_eq!(
+        issue_jobs(&h).await,
+        [(
+            format!("finding:mergeable-unknown:{id}"),
+            Some("created".into())
+        )]
+    );
+}
