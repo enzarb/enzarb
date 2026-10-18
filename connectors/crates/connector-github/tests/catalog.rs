@@ -13,6 +13,8 @@ const CASES: &[(&str, &str)] = &[
     ("issues", "issues_closed"),
     ("issues", "issues_opened_by_bot"),
     ("issues", "issues_opened_epic_child"),
+    ("issues", "issues_opened_file_issue"),
+    ("issues", "issues_edited_file_issue_by_bot"),
     ("issues", "issues_labeled_other"),
     ("issues", "issues_labeled_by_bot"),
     ("issue_comment", "issue_comment_created"),

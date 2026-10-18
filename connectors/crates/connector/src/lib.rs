@@ -13,6 +13,7 @@ mod error;
 mod event;
 #[cfg(feature = "fake")]
 pub mod fake;
+pub mod file_issue;
 mod keys;
 mod types;
 
@@ -21,7 +22,7 @@ pub use ci::{
     MergeReadiness, StatusSummary, UpdateBranchOutcome, aggregate_ci, aggregate_statuses,
     check_state,
 };
-pub use connector::Connector;
+pub use connector::{Connector, UpsertOutcome, UpsertedIssue};
 pub use error::{Error, Result};
 pub use event::{CiInfo, Event, EventData, EventType, Review};
 pub use keys::{KeyError, RepoKey, WorkItemKey};

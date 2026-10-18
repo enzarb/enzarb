@@ -5,6 +5,7 @@
 
 use chrono::{SecondsFormat, Utc};
 use enzarb_connector::epic::parse_epic_marker;
+use enzarb_connector::file_issue::has_file_issue_marker;
 use enzarb_flow::events::{
     Actor, CheckRun, CiStatus, Comment, Deployment, Event, Issue, Label, Package, Payload,
     PullRequest, Push, Release, Review, SubjectKind, SubjectRef, Tag, WorkflowRun,
@@ -134,12 +135,13 @@ pub fn map(
             if !i.is_object() {
                 return Err(missing("issue"));
             }
-            // A sub-issue enzarb created for an epic is the one bot issue that passes.
-            let epic_child = action == "opened"
+            // An epic sub-issue or an issue the `file_issue` action opened are the bot issues
+            // that pass, on `opened` only: the action's own edits must not start work.
+            let bot_opened_passes = action == "opened"
                 && i["body"]
                     .as_str()
-                    .is_some_and(|b| parse_epic_marker(b).is_some());
-            if from_bot && !epic_child {
+                    .is_some_and(|b| parse_epic_marker(b).is_some() || has_file_issue_marker(b));
+            if from_bot && !bot_opened_passes {
                 return Ok(Vec::new());
             }
             let payload = Payload::Issue(Issue {
