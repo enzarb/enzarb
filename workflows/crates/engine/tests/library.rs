@@ -729,3 +729,60 @@ async fn library_commands_are_answered_and_feedback_rounds_see_only_new_comments
         "{feedback}"
     );
 }
+
+/// A task blocked by another issue is told when that issue's task ends (`dependency_changed`),
+/// through the `blocked_by` relation recorded with its `dependencies` fact.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_dependency_ending_notifies_the_blocked_task() {
+    let Some(h) = start(true).await else {
+        return;
+    };
+    h.gh.set_dependencies(
+        WorkItemKey::new(rk(APP), 8),
+        vec![WorkItemKey::new(rk(APP), 9)],
+    );
+    h.open_issue(9, &[]).await;
+    h.open_issue(8, &[]).await;
+    let (a, b) = loop {
+        if let (Some((a, ..)), Some((b, ..))) = (h.task_of(8).await, h.task_of(9).await) {
+            break (a, b);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    h.wait(a, "blocked", |p| p["reason"] == "blocked_by_dependencies")
+        .await;
+    let rel: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM engine.relations WHERE task_id = $1 AND kind = 'blocked_by'
+         AND target_key = $2",
+    )
+    .bind(a)
+    .bind(format!("github:{APP}#9"))
+    .fetch_one(&h.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(rel, 1, "the dependency is recorded as a relation");
+    // End the dependency's task.
+    sqlx::query("SELECT engine_api.submit($1, '{\"login\": \"alice\"}', 'cancel', '{}')")
+        .bind(b)
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+    let mut notified = 0i64;
+    for _ in 0..200 {
+        notified = sqlx::query_scalar(
+            "SELECT count(*) FROM engine.events WHERE task_id = $1 AND type = 'dependency_changed'",
+        )
+        .bind(a)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+        if notified > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        notified > 0,
+        "the blocked task was not told that its dependency ended"
+    );
+}

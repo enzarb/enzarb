@@ -332,6 +332,30 @@ pub async fn fact(
                 .list_dependencies(&WorkItemKey::new(rk.clone(), issue.number))
                 .await
                 .map_err(|e| e.to_string())?;
+            // Record them as `blocked_by` relations first, so a dependency that ends after the
+            // read below still notifies this task (`dependency_changed`) and the fact is
+            // refreshed. Relations for dependencies that were removed go.
+            let keys: Vec<String> = deps.iter().map(|d| d.to_string()).collect();
+            sqlx::query(
+                "DELETE FROM engine.relations WHERE task_id = $1 AND kind = 'blocked_by'
+                 AND source = 'dependencies' AND NOT (target_key = ANY($2))",
+            )
+            .bind(task_id)
+            .bind(&keys)
+            .execute(&e.pool)
+            .await
+            .map_err(|e| e.to_string())?;
+            for k in &keys {
+                sqlx::query(
+                    "INSERT INTO engine.relations (task_id, kind, target_key, source)
+                     VALUES ($1, 'blocked_by', $2, 'dependencies') ON CONFLICT DO NOTHING",
+                )
+                .bind(task_id)
+                .bind(k)
+                .execute(&e.pool)
+                .await
+                .map_err(|e| e.to_string())?;
+            }
             let mut out = Vec::new();
             for d in deps {
                 let key = d.to_string();
