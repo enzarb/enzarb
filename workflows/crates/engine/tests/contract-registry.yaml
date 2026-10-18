@@ -63,6 +63,7 @@ entries:
     name: 'state'
     source: 'docs/workflows/contracts-v2.md#facts'
     tests: [contract_tests::facts::ci_shape]
+  - kind: action
     action: close_issue
     name: 'close_issue'
     source: 'docs/workflows/contracts-v2.md#kernel-actions'
@@ -197,6 +198,11 @@ entries:
     name: 'issues[].url'
     source: 'docs/workflows/contracts-v2.md#kernel-actions'
     tests: [contract_tests::create_issues::result_shape_and_order]
+  - kind: action
+    action: delete_branch
+    name: 'delete_branch'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::delete_branch::deleting_a_missing_branch_succeeds, contract_tests::delete_branch::replay_with_the_same_key_is_recorded_as_replayed, contract_tests::delete_branch::transient_failure_then_retry_converges]
   - kind: arg
     action: delete_branch
     name: 'branch'
@@ -377,10 +383,6 @@ entries:
     name: '[].state'
     source: 'docs/workflows/contracts-v2.md#facts'
     tests: [contract_tests::facts::reviews_is_the_list]
-    action: delete_branch
-    name: 'delete_branch'
-    source: 'docs/workflows/contracts-v2.md#kernel-actions'
-    tests: [contract_tests::delete_branch::deleting_a_missing_branch_succeeds, contract_tests::delete_branch::replay_with_the_same_key_is_recorded_as_replayed, contract_tests::delete_branch::transient_failure_then_retry_converges]
   - kind: action
     action: update_branch
     name: 'update_branch'

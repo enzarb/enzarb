@@ -475,6 +475,7 @@ pub(crate) mod mutation {
     }
     pub(crate) fn mergeable_known_on_first_read() -> bool {
         ACTIVE.with(|a| a.get().mergeable_known_on_first_read)
+    }
     pub(crate) fn ignore_readiness_head() -> bool {
         ACTIVE.with(|a| a.get().ignore_readiness_head)
     }
