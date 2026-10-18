@@ -1395,6 +1395,7 @@ spec:
             - { name: ENZARB_BOT_HANDLE, value: "enzarb" }
             - { name: ENZARB_BOT_LOGIN, value: "enzarb[bot]" }
             - { name: ENZARB_STATS_RETENTION, value: "90" }
+            - { name: ENZARB_UPDATER_STATUS_URL, value: "http://enzarb-updater:8080/status" }
             - { name: RUST_LOG, value: "info" }
           readinessProbe:
             httpGet: { path: /healthz, port: health }
