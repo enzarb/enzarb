@@ -882,6 +882,71 @@ async fn workspace_prune_spares_tasks_with_a_running_step() {
     s.step_stop("busy-1").ok();
 }
 
+/// Steps of different tasks on one repo get the same `CARGO_TARGET_DIR`; `start.env` wins.
+#[tokio::test]
+async fn steps_share_one_cargo_target_dir_per_repo() {
+    let env = Env::new();
+    let addr = env.server().await;
+    let (s, mut ev) = connect(addr).await;
+    let want = env.ws.join(".cache/target/o/r");
+    let check = format!("test \"$CARGO_TARGET_DIR\" = {}", want.display());
+    for (id, task, branch) in [
+        ("sh-1", "task-a", "feature/a"),
+        ("sh-2", "task-b", "feature/b"),
+    ] {
+        let mut st = step(
+            id,
+            StepExec::Command {
+                run: check.clone(),
+                tools: vec![],
+            },
+            vec![env.workspace(branch)],
+        );
+        st.task_id = task.into();
+        start(&s, &mut ev, st).await;
+        let (_, fin) = collect(&mut ev, id, |_| false).await;
+        let fin = fin.unwrap();
+        assert_eq!(fin.exit, "success", "{fin:?}");
+    }
+    assert!(want.is_dir());
+}
+
+/// The shared target dir is pruned last, only when idle, and not while a build is recent.
+#[tokio::test]
+async fn workspace_prune_frees_idle_shared_target_dirs() {
+    let env = Env::new();
+    let (_addr, steps) = env.server_with_steps().await;
+    let dir = env.ws.join(".cache/target/o/r");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55\n",
+    )
+    .unwrap();
+    // Just written: a build may be running.
+    assert_eq!(
+        sandbox_init::workspace_prune::prune_once(&env.ws, &steps, 100),
+        0
+    );
+    assert!(dir.exists());
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    std::fs::File::open(&dir)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    // Not low: untouched.
+    assert_eq!(
+        sandbox_init::workspace_prune::prune_once(&env.ws, &steps, 1),
+        0
+    );
+    assert!(dir.exists());
+    assert_eq!(
+        sandbox_init::workspace_prune::prune_once(&env.ws, &steps, 100),
+        1
+    );
+    assert!(!dir.exists());
+}
+
 /// A fresh task workspace on the default branch itself (a read step: triage, plan) has the
 /// branch's files checked out. The clone is `--no-checkout`, and checking out the branch it is
 /// already on changes nothing.

@@ -343,6 +343,7 @@ async fn chat_end_to_end() {
         .chain([
             "CLAUDE_CODE_OAUTH_TOKEN",
             "CLAUDE_CONFIG_DIR",
+            "CARGO_TARGET_DIR",
             "GIT_TERMINAL_PROMPT",
             "GIT_AUTHOR_NAME",
             "GIT_AUTHOR_EMAIL",

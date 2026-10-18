@@ -16,7 +16,7 @@ Only system components:
 - `mise`
 - `build-essential`, `pkg-config`, `libssl-dev`
 - `git`, `curl`, `ca-certificates`, `openssh-client`, `procps`
-- `sccache` (pinned musl release, sha256-checked). `RUSTC_WRAPPER=sccache`, `SCCACHE_DIR=/workspace/.cache/sccache` and `SCCACHE_CACHE_SIZE=8G` (the cache lives on the workspace PVC next to every task worktree, so it stays small; `src/workspace_prune.rs` cannot free it) are image `ENV`, so compiles share a cache on the PVC; `CARGO_TARGET_DIR` stays unset (`target/` is per worktree). A repo that sets its own `RUSTC_WRAPPER` overrides it. `npm_config_cache=/workspace/.cache/npm`.
+- `sccache` (pinned musl release, sha256-checked). `RUSTC_WRAPPER=sccache`, `SCCACHE_DIR=/workspace/.cache/sccache` and `SCCACHE_CACHE_SIZE=8G` (the cache lives on the workspace PVC next to every task worktree, so it stays small; `src/workspace_prune.rs` cannot free it) are image `ENV`, so compiles share a cache on the PVC; `CARGO_TARGET_DIR` is set per step and chat by `sandbox-init` (not image `ENV`): see [Shared Rust build directory](#shared-rust-build-directory). A repo that sets its own `RUSTC_WRAPPER` overrides it. `npm_config_cache=/workspace/.cache/npm`.
 - Chromium (and chromium-headless-shell) for Playwright in `/opt/ms-playwright` (outside the PVC, so the mount does not hide it), with its runtime libraries. `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright` and `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`, so the `ui` browser tests download nothing. The Playwright npm package itself is not in the image.
 - These cache and Playwright variables are also in `PASS_ENV` (`src/chat.rs`), so chat agents (which get a scrubbed environment) see them.
 
@@ -55,6 +55,7 @@ All user and project toolchains are installed by mise onto the `/workspace` PVC,
 | `MISE_YES=1` | never prompt (there is no tty) |
 | `MISE_TRUSTED_CONFIG_PATHS=/workspace` | repo `mise.toml` files under `/workspace` are trusted (without it mise refuses to read them) |
 | `MISE_IDIOMATIC_VERSION_FILE_ENABLE_TOOLS=rust` | read `rust-toolchain.toml` (idiomatic version files are off by default) |
+| `CARGO_TARGET_DIR` | set per step and chat to `/workspace/.cache/target/<owner>/<repo>` (see below); a value from the step env or image wins |
 | `PATH` | `/usr/local/bin`, then `/workspace/.toolchains/mise/shims`, then the system dirs |
 
 `sandbox-init` passes its environment on to the run agent and to PTY shells, so agents see the shims and run project tools (`cargo`, `node`, ...) once those are installed. Chat agents get a scrubbed environment instead (see [Chat](#chat)).
@@ -119,3 +120,11 @@ Claude token (per user, ADR-0004 amendment 2026-10-13): each chat uses `open.cla
 `open_error` codes: `chat_disabled`, `chat_limit`, `no_credential` (neither `open.claude_token` nor a legacy token file), `repo_not_cloned` (`open.repo` names a repo no job has cloned yet; without `repo` the first clone is used), `invalid_request` (malformed `repo`/`resume`) and `unsupported_kind`.
 
 `CLOSE` reasons: `idle`, `superseded`, `shutdown` (SIGTERM), `limit`, and `exit:<n>` / `signal:<n>` when the agent dies.
+
+## Shared Rust build directory
+
+Every task worktree used to build its own multi-GB `target/`, which filled the workspace PVC. `sandbox-init` now sets `CARGO_TARGET_DIR=/workspace/.cache/target/<owner>/<repo>` for each step (the first workspace's repo) and chat, derived from the repo URL (no repo-specific logic; an unparsable URL leaves it unset, so `target/` stays per worktree). A `CARGO_TARGET_DIR` in the step env or image wins. Cargo keys artefacts by hash, so tasks on different branches share what is identical and rebuild only the changed units. The key is the repo only, not the toolchain: a different `rustc` or `RUSTFLAGS` rebuilds just those units (sccache softens that).
+
+- **Concurrency:** Cargo serialises builds on the dir's lock ("Blocking waiting for file lock on build directory"); a second step waits instead of failing. A step that only runs tests also takes the lock while Cargo builds.
+- **Pruning:** the directory carries a `CACHEDIR.TAG`, so `src/workspace_prune.rs` frees it as a last resort, after the task caches, and only when no running step is on that repo, no `.cargo-lock` is held and nothing in it changed in the last 10 minutes (chats hold no step, hence the lock and mtime check).
+- **Recovery:** if the directory is corrupt, delete it (`rm -rf /workspace/.cache/target/<owner>/<repo>` or `cargo clean`); the next build recreates it.
