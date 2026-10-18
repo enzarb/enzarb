@@ -3,6 +3,7 @@
 # Ansible lives in mise.ansible.toml (MISE_ENV=ansible) so it is not built for every task.
 [tools]
 "aqua:nextest-rs/nextest/cargo-nextest" = "0.9.148"
+"github:docker/buildx" = "0.38.0"
 claude = "2.1.296"
 gh = "2.76.2"
 helm = "4.3.0"

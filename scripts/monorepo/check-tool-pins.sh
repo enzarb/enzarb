@@ -16,6 +16,7 @@ cd "$root"
 MAPPED=(
   'sandbox-container/Dockerfile|NODE_VERSION|node'
   'sandbox-container/Dockerfile|GH_VERSION|gh'
+  'sandbox-container/Dockerfile|BUILDX_VERSION|github:docker/buildx'
 )
 # Dockerfile|ARG: checked by a dedicated script (playwright is an npm package, not a mise tool)
 DELEGATED=(
@@ -26,7 +27,6 @@ UNMAPPED=(
   'sandbox-container/Dockerfile|CLAUDE_AGENT_ACP_VERSION'
   'sandbox-container/Dockerfile|MISE_VERSION'
   'sandbox-container/Dockerfile|DOCKER_VERSION'
-  'sandbox-container/Dockerfile|BUILDX_VERSION'
   'sandbox-container/Dockerfile|COMPOSE_VERSION'
   'sandbox-container/Dockerfile|SCCACHE_VERSION'
   'kubernetes/installer/Dockerfile|GVISOR_VERSION'
@@ -40,7 +40,8 @@ err() {
 
 # pin <file> <tool>: the version pinned under [tools] (quotes around the key optional), or empty.
 pin() {
-  sed -n "/^\[tools\]/,/^\[/{s/^\"\{0,1\}$2\"\{0,1\} *= *\"\(.*\)\"\$/\1/p}" "$1" | head -n1
+  local key=${2//\//\\/}
+  sed -n "/^\[tools\]/,/^\[/{s/^\"\{0,1\}$key\"\{0,1\} *= *\"\(.*\)\"\$/\1/p}" "$1" | head -n1
 }
 
 in_list() { # in_list <needle> <list entries...>
