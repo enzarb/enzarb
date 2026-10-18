@@ -31,6 +31,8 @@ export interface PendingChange {
 	generation: number;
 	/** RFC 3339 timestamp. */
 	since: string;
+	/** RFC 3339 timestamp when the drain timeout forces the roll; absent from older operators. */
+	deadline?: string;
 	reason: string;
 }
 

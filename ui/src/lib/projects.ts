@@ -84,11 +84,14 @@ export function buildProject(input: NewProject, owner: string): Project {
 export function toPendingChange(p: Project): PendingChange | null {
 	const raw = p.status?.pendingChange;
 	if (raw && typeof raw === 'object') {
-		const { generation, since, reason } = raw;
+		const { generation, since, reason, deadline } = raw;
 		if (typeof since === 'string' && since && typeof reason === 'string') {
 			return {
 				generation: typeof generation === 'number' && Number.isFinite(generation) ? generation : 0,
 				since,
+				...(typeof deadline === 'string' && !Number.isNaN(Date.parse(deadline))
+					? { deadline }
+					: {}),
 				reason
 			};
 		}

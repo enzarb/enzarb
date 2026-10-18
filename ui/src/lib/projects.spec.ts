@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import * as v from 'valibot';
+import { formatRemainingDrain, remainingDrain } from './pending-change.ts';
 import {
 	MaxRunsSchema,
 	buildProject,
 	normalizeRepoKey,
 	pendingChangeSteps,
+	toPendingChange,
 	toView,
 	type NewProject
 } from './projects.ts';
@@ -190,5 +192,30 @@ describe('pendingChangeSteps', () => {
 			'pending',
 			'pending'
 		]);
+	});
+});
+
+describe('drain deadline', () => {
+	const base = { metadata: { name: 'p' }, spec: {} } as never;
+	const withPending = (pendingChange: object) =>
+		({ ...(base as object), status: { pendingChange } }) as never;
+	const pc = { generation: 2, since: '2026-10-12T03:00:00Z', reason: 'r' };
+
+	it('carries a valid deadline only', () => {
+		const d = '2026-10-12T03:30:00Z';
+		expect(toPendingChange(withPending({ ...pc, deadline: d }))?.deadline).toBe(d);
+		expect(toPendingChange(withPending({ ...pc, deadline: 'nope' }))?.deadline).toBeUndefined();
+		expect(toPendingChange(withPending(pc))?.deadline).toBeUndefined();
+	});
+
+	it('computes and formats the remaining time', () => {
+		const now = Date.parse('2026-10-12T03:00:00Z');
+		expect(remainingDrain(undefined, now)).toBeNull();
+		expect(remainingDrain('bad', now)).toBeNull();
+		expect(remainingDrain('2026-10-12T03:30:00Z', now)).toBe(30 * 60_000);
+		expect(formatRemainingDrain(24 * 60_000)).toBe('forced in 24m');
+		expect(formatRemainingDrain(65 * 60_000)).toBe('forced in 1h 5m');
+		expect(formatRemainingDrain(40_000)).toBe('forced in 40s');
+		expect(formatRemainingDrain(-5)).toBe('any moment');
 	});
 });
