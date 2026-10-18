@@ -126,6 +126,9 @@ Deploys (notably oldie's HelmChart `valuesContent`, set once by `mise run oldie:
 - **`mise run compat`** (in `helm/`, part of `mise run test`, run by `ci-helm` with full history so tags are present) lints and templates the current chart with the latest `helm/v*` tag's `values.yaml` and `values-oldie.yaml` (read with `git show`), each passed alone as `-f`, as the HelmChart does. A key removed in a PR but still set by the previous release fails. With no `helm/v*` tag it prints a skip notice and passes. It checks the repo-tracked files only, not the live HelmChart `valuesContent`. **Limitation:** the schema root has `additionalProperties: true`, so a removed *top-level* key is silently accepted and not caught; only keys inside the strict sub-objects (`ui`, `operator`, `updater`, `secrets.*`, …) are. The 0.82–0.84 keys (`operator.docker.*`) were nested, so they are covered.
 - **Visibility.** The updater serves `GET /status` (`installed`, `desired`, `latest`, `stuck`) and logs a failing upgrade; the UI About page shows it.
 
+## Private library checkout (`contracts-v1`)
+`ci-workflows.yml` `contracts-v1` lints the private `enzarb/workflows@v1`. `GITHUB_TOKEN` cannot read it, so the job mints a token with `actions/create-github-app-token` from the repository variable `ENZARB_CI_APP_ID` and the secret `ENZARB_CI_APP_PRIVATE_KEY`. The App must be installed on `enzarb/workflows` with `contents: read`. A failed mint or checkout fails the job. Fork PRs get no secrets, so the job is skipped for them (`contracts-stdlib` still runs). Dependabot runs read a separate secret store and fail at the token step until the secrets are added there, or the job is skipped for them.
+
 ## Reporting
 A PR that changes CI states before/after wall-clock times for the PR run and the main run, taken from the Actions UI or `gh run view --json jobs`.
 
