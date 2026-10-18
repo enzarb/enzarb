@@ -8,6 +8,7 @@ pub mod effects;
 pub mod engine;
 pub mod error;
 pub mod executor;
+pub mod findings;
 pub mod index;
 pub mod library;
 pub mod permission;
@@ -24,6 +25,7 @@ pub mod ticker;
 
 pub use engine::{Engine, EngineConfig};
 pub use error::Error;
+pub use findings::{FakePlatformFacts, Findings, PlatformFacts};
 pub use index::{KubeProjectIndex, ProjectIndex, ProjectInfo, StaticProjectIndex};
 pub use library::Library;
 pub use permission::{

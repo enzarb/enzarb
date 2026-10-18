@@ -1045,7 +1045,9 @@ impl FindingKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
     Info,
@@ -1145,7 +1147,7 @@ pub struct PlatformCmp {
 
 /// Platform facts the engine can read. A fact whose source is missing is unknown and never
 /// matches. `chart.deploy_state` has no source yet and is always unknown.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum PlatformFactName {
     #[serde(rename = "workflow_run.status")]
     WorkflowRunStatus,
@@ -1236,9 +1238,7 @@ impl When {
                 }
                 for d in [&i.no_event, &i.no_step].into_iter().flatten() {
                     if parse_duration(d).is_none_or(|s| s == 0) {
-                        out.push(format!(
-                            "`{d}` is not a duration (90s, 15m, 2h, 14d, 1w)"
-                        ));
+                        out.push(format!("`{d}` is not a duration (90s, 15m, 2h, 14d, 1w)"));
                     }
                 }
                 if scope == CheckScope::Platform {

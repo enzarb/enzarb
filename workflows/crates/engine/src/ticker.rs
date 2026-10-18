@@ -1,6 +1,6 @@
 //! The ticker: generic time-based building blocks only. Timers become `Timer` events, quiet
 //! running steps become `StallDetected`, session partitions are created ahead, pending secrets are
-//! encrypted, sandbox drain holds are reconciled, and the adopt pass runs once on start.
+//! encrypted, sandbox drain holds are reconciled, liveness findings are evaluated (observation only), and the adopt pass runs once on start.
 
 use enzarb_flow::events::{Adopted, Event, Payload, SubjectKind, SubjectRef};
 use enzarb_flow::interp::TaskEvent;
@@ -101,6 +101,9 @@ impl Engine {
         }
         if let Err(e) = self.reconcile_holds().await {
             tracing::warn!("sandbox holds: {e}");
+        }
+        if let Err(e) = self.run_findings().await {
+            tracing::warn!("findings: {e}");
         }
         Ok(st)
     }

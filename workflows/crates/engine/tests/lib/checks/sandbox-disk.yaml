@@ -1,0 +1,8 @@
+version: 1
+id: sandbox-disk
+kind: platform_failure
+severity: critical
+scope: platform
+text: "The sandbox of {project} is nearly out of disk"
+when:
+  platform: {fact: sandbox.disk_pct, op: ge, value: 90}

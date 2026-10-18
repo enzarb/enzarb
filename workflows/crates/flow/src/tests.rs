@@ -1470,17 +1470,22 @@ fn check_file_parses_and_validates() {
 
 #[test]
 fn check_file_problems() {
-    let bad = CI_CHECK
-        .replace("30m", "soon")
-        .replace("eq: 0", "eq: 0}\n    - fact_unknown_for: {name: x, refreshes: 0");
+    let bad = CI_CHECK.replace("30m", "soon").replace(
+        "eq: 0",
+        "eq: 0}\n    - fact_unknown_for: {name: x, refreshes: 0",
+    );
     let p = check(&bad).problems();
-    assert!(p.iter().any(|m| m.contains("`soon` is not a duration")), "{p:?}");
+    assert!(
+        p.iter().any(|m| m.contains("`soon` is not a duration")),
+        "{p:?}"
+    );
     assert!(p.iter().any(|m| m.contains("at least 1")), "{p:?}");
     let platform = check(
         "version: 1\nid: x\nkind: platform_failure\nseverity: info\nscope: platform\ntext: t\nwhen: {waiting_on: external}\n",
     );
     assert!(platform.problems()[0].contains("scope: task"));
-    let empty = check("version: 1\nid: x\nkind: dead_wait\nseverity: info\ntext: t\nwhen: {all: []}\n");
+    let empty =
+        check("version: 1\nid: x\nkind: dead_wait\nseverity: info\ntext: t\nwhen: {all: []}\n");
     assert!(empty.problems()[0].contains("at least one"));
 }
 
@@ -1500,11 +1505,7 @@ fn lint_checks_directory() {
     let dir = std::env::temp_dir().join(format!("enzarb-flow-checks-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("checks")).unwrap();
     std::fs::write(dir.join("checks/ci.yaml"), CI_CHECK).unwrap();
-    std::fs::write(
-        dir.join("checks/bad.yaml"),
-        CI_CHECK.replace("30m", "soon"),
-    )
-    .unwrap();
+    std::fs::write(dir.join("checks/bad.yaml"), CI_CHECK.replace("30m", "soon")).unwrap();
     let ws = crate::lint::Workspace::new(crate::lint::Config {
         dir: dir.clone(),
         repo: APP.into(),

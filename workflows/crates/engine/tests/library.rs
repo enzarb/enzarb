@@ -87,6 +87,7 @@ async fn start(background: bool) -> Option<H> {
         sandboxes: Arc::new(StaticSandboxResolver::new()),
         secrets_key: None,
         claude: None,
+        findings: engine::Findings::none(),
         cfg: EngineConfig {
             stall: Duration::from_secs(3600),
             poll: Duration::from_millis(50),
