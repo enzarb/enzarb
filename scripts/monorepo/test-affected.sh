@@ -80,7 +80,7 @@ for wf in .github/workflows/ci-*.yml; do
       flush(); job = $1; sub(/:$/, "", job); needs = 0; gate = 0; next
     }
     in_jobs && /^    needs: changes[ ]*$/ { needs = 1 }
-    in_jobs && /^    if: needs.changes.outputs.run == .true.[ ]*$/ { gate = 1 }
+    in_jobs && /^    if: needs.changes.outputs.run == .true.([ ]+&&.*)?[ ]*$/ { gate = 1 }
     END { flush() }
   ' "$wf")
   for job in $bad; do

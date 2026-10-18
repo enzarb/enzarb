@@ -126,6 +126,9 @@ Deploys (notably oldie's HelmChart `valuesContent`, set once by `mise run oldie:
 - **`mise run compat`** (in `helm/`, part of `mise run test`, run by `ci-helm` with full history so tags are present) lints and templates the current chart with the latest `helm/v*` tag's `values.yaml` and `values-oldie.yaml` (read with `git show`), each passed alone as `-f`, as the HelmChart does. A key removed in a PR but still set by the previous release fails. With no `helm/v*` tag it prints a skip notice and passes. It checks the repo-tracked files only, not the live HelmChart `valuesContent`. **Limitation:** the schema root has `additionalProperties: true`, so a removed *top-level* key is silently accepted and not caught; only keys inside the strict sub-objects (`ui`, `operator`, `updater`, `secrets.*`, …) are. The 0.82–0.84 keys (`operator.docker.*`) were nested, so they are covered.
 - **Visibility.** The updater serves `GET /status` (`installed`, `desired`, `latest`, `stuck`) and logs a failing upgrade; the UI About page shows it.
 
+## Library checkout (`contracts-v1`)
+`ci-workflows.yml` `contracts-v1` lints `enzarb/workflows@v1`. The repo is public, so it is checked out with plain `actions/checkout` (no token, no secret, no App). A failed checkout fails the job. The job is `continue-on-error: true` until the library passes the check.
+
 ## Reporting
 A PR that changes CI states before/after wall-clock times for the PR run and the main run, taken from the Actions UI or `gh run view --json jobs`.
 
