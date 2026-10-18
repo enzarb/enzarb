@@ -1561,6 +1561,233 @@ async fn healthy_platform_facts_file_nothing() {
     assert!(h.gh.created_issues().is_empty());
 }
 
+// ---------------------------------------------------------------- whole-set checks
+
+/// The ids of every shipped check, from the stdlib directory.
+fn stdlib_check_ids() -> Vec<String> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/stdlib/checks");
+    let mut ids: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| {
+            let p = e.unwrap().path();
+            p.file_stem().unwrap().to_string_lossy().to_string()
+        })
+        .collect();
+    ids.sort();
+    ids
+}
+
+async fn seed_unprocessed_failing_event(h: &H, task: i64) {
+    sqlx::query(
+        "INSERT INTO engine.events (dedupe_key, project, task_id, type, payload, received_at,
+                                    attempts, last_error)
+         VALUES ($1, 'p', $2, 'comment', '{}', now() - interval '1 hour', 4, 'boom')",
+    )
+    .bind(format!("failing-{task}"))
+    .bind(task)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+}
+
+/// A task of every kind, in the state each check's task-scope condition does not match.
+async fn seed_healthy_tasks(h: &H) {
+    let node = "review/rounds/checks";
+    let ci = seed_task(h, node, "external", None).await;
+    set_fact(h, ci, "ci", json!({"check_runs": [{"name": "test"}]}), 0).await;
+    set_fact(h, ci, "mergeable", json!(true), 0).await;
+    // A retry that advanced the task.
+    let moved = seed_task(h, node, "human", None).await;
+    command_event(h, moved, "retry", 20).await;
+    transition(h, moved, node, "review/rounds/context", 19).await;
+    // An epic whose sub-issues have their dependencies.
+    let epic = seed_task(h, "breakdown/wait", "human", Some(1)).await;
+    let sub = seed_task(h, "start/wait", "human", Some(2)).await;
+    for (task, kind, n) in [(epic, "parent", 2), (sub, "blocked_by", 3)] {
+        sqlx::query("INSERT INTO engine.relations (task_id, kind, target_key) VALUES ($1, $2, $3)")
+            .bind(task)
+            .bind(kind)
+            .bind(format!("github:{APP}#{n}"))
+            .execute(&h.db.pool)
+            .await
+            .unwrap();
+    }
+    // A recent external wait, and a task whose mergeable fact is known.
+    seed_task(h, "merge/wait", "external", None).await;
+    let known = seed_task(h, "merge/wait", "human", None).await;
+    set_fact(h, known, "mergeable", json!(true), 0).await;
+}
+
+fn set_healthy_platform_facts(f: &FakePlatformFacts) {
+    f.set_arg("p", F::WorkflowRunStatus, RELEASE, text("success"));
+    f.set_arg("p", F::WorkflowRunStatus, REBUILD, text("success"));
+    f.set("p", F::ChartDeployState, text("deployed"));
+    f.set("p", F::SandboxDiskPct, Fact::Num(35.0));
+    f.set("p", F::SandboxMemWorkingSetPct, Fact::Num(50.0));
+    f.set("p", F::ProjectPendingChange, Fact::Bool(false));
+}
+
+/// A full healthy run, with a case for every shipped check, files nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn all_checks_healthy_file_nothing() {
+    let Some((h, f)) = platform_harness().await else {
+        return;
+    };
+    seed_healthy_tasks(&h).await;
+    set_healthy_platform_facts(&f);
+    // The checks this test has a healthy case for; a new check must add one.
+    let covered = [
+        "chart-not-deployed",
+        "ci-never-started",
+        "epic-subissues-without-deps",
+        "event-failing",
+        "external-idle",
+        "mergeable-unknown",
+        "platform-wait-long",
+        "rebuild-all-failed",
+        "release-failed",
+        "retry-ignored",
+        "sandbox-change-unapplied",
+        "sandbox-disk-full",
+        "sandbox-disk-high",
+        "sandbox-memory-high",
+    ];
+    assert_eq!(
+        stdlib_check_ids(),
+        covered,
+        "add a healthy case for the new check"
+    );
+    passes(&h, 4).await;
+    run_jobs(&h).await;
+    assert!(open_checks(&h).await.is_empty());
+    assert!(issue_jobs(&h).await.is_empty());
+    assert!(h.gh.created_issues().is_empty());
+}
+
+/// Everything the checks could change if they acted: the tasks and their projections as rows, and
+/// the number of rows in the tables a cancel, stop or restart would write to.
+async fn task_world(h: &H) -> (Value, Value, Vec<i64>) {
+    let tasks: Value = sqlx::query_scalar(
+        "SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY id), '[]') FROM engine.tasks t",
+    )
+    .fetch_one(&h.db.pool)
+    .await
+    .unwrap();
+    let projection: Value = sqlx::query_scalar(
+        "SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY task_id), '[]') FROM engine.projection p",
+    )
+    .fetch_one(&h.db.pool)
+    .await
+    .unwrap();
+    let mut counts = Vec::new();
+    for t in [
+        "transitions",
+        "events",
+        "step_runs",
+        "timers",
+        "facts",
+        "relations",
+    ] {
+        counts.push(
+            sqlx::query_scalar(&format!("SELECT count(*) FROM engine.{t}"))
+                .fetch_one(&h.db.pool)
+                .await
+                .unwrap(),
+        );
+    }
+    (tasks, projection, counts)
+}
+
+/// With every check firing, the only thing that happens is issues being filed: no task changes,
+/// no job but `file_issue`, no connector write but the issue upsert.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn no_check_cancels_stops_or_restarts() {
+    let Some((h, f)) = platform_harness().await else {
+        return;
+    };
+    let node = "review/rounds/checks";
+    // ci-never-started
+    let ci = seed_task(&h, node, "external", None).await;
+    set_fact(&h, ci, "ci", json!({"check_runs": []}), 0).await;
+    set_fact(&h, ci, "mergeable", json!(false), 0).await;
+    // retry-ignored
+    let ignored = seed_task(&h, node, "human", None).await;
+    command_event(&h, ignored, "retry", 20).await;
+    transition(&h, ignored, node, node, 19).await;
+    // epic-subissues-without-deps
+    let epic = seed_task(&h, "breakdown/wait", "human", Some(1)).await;
+    seed_task(&h, "start/wait", "human", Some(2)).await;
+    sqlx::query(
+        "INSERT INTO engine.relations (task_id, kind, target_key, source)
+         VALUES ($1, 'parent', $2, 'workflow')",
+    )
+    .bind(epic)
+    .bind(format!("github:{APP}#2"))
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    // external-idle
+    let idle = seed_task(&h, "merge/wait", "external", None).await;
+    age_task(&h, idle).await;
+    // mergeable-unknown
+    let unknown = seed_task(&h, "merge/wait", "human", None).await;
+    set_fact(&h, unknown, "mergeable", Value::Null, 3).await;
+    // platform-wait-long
+    let waiting = seed_task(&h, "implement/wait", "enzarb", None).await;
+    sqlx::query(
+        "UPDATE engine.tasks SET state = '{\"platform_wait\": {\"kind\": \"disk_full\"}}'
+         WHERE id = $1",
+    )
+    .bind(waiting)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    // event-failing
+    let failing = seed_task(&h, "implement/wait", "enzarb", None).await;
+    seed_unprocessed_failing_event(&h, failing).await;
+    // The platform checks, the disk ones one after the other as they exclude each other.
+    f.set_arg("p", F::WorkflowRunStatus, RELEASE, text("failure"));
+    f.set_arg("p", F::WorkflowRunStatus, REBUILD, text("failure"));
+    f.set("p", F::ChartDeployState, text("stuck"));
+    f.set("p", F::SandboxDiskPct, Fact::Num(100.0));
+    f.set("p", F::SandboxMemWorkingSetPct, Fact::Num(95.0));
+    f.set("p", F::ProjectPendingChange, Fact::Bool(true));
+
+    let before = task_world(&h).await;
+    let mut raised = std::collections::BTreeSet::new();
+    passes(&h, 4).await;
+    raised.extend(open_checks(&h).await);
+    f.set("p", F::SandboxDiskPct, Fact::Num(93.0));
+    passes(&h, 4).await;
+    raised.extend(open_checks(&h).await);
+    run_jobs(&h).await;
+
+    // Every check fired.
+    assert_eq!(raised.into_iter().collect::<Vec<_>>(), stdlib_check_ids());
+    // Filing issues is all that was queued.
+    let kinds: Vec<String> = sqlx::query_scalar("SELECT DISTINCT kind FROM engine.jobs")
+        .fetch_all(&h.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(kinds, ["file_issue"]);
+    // No task, projection or event row changed, and nothing was written beside them.
+    assert_eq!(task_world(&h).await, before);
+    assert_observation_only(&h);
+    assert!(h.runner.stops().is_empty());
+    assert!(h.runner.started().is_empty());
+    // Every issue says it is a report only.
+    let made = h.gh.created_issues();
+    assert_eq!(made.len(), stdlib_check_ids().len(), "{made:?}");
+    for (_, title, body, ..) in &made {
+        assert!(
+            ["Nothing was cancelled", "never dropped"]
+                .iter()
+                .any(|s| body.contains(s)),
+            "{title}: {body}"
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unknown_platform_facts_leave_findings_alone_and_file_nothing() {
     let Some((h, f)) = platform_harness().await else {
