@@ -1003,3 +1003,249 @@ pub enum Trigger {
     /// A cron schedule (fires `schedule` events).
     Schedule { schedule: String },
 }
+
+// ---------------------------------------------------------------- checks
+
+/// A liveness check (`checks/*.yaml` in a library): a data-driven condition the engine's
+/// periodic `platform` pass evaluates. While it holds, the engine keeps one **finding** open
+/// per task (or per Project for `platform` scope); when it stops holding, the finding clears.
+/// A finding is observation only: it never cancels, stops, restarts or times anything out.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CheckFile {
+    /// Format version. Always `1`.
+    pub version: u32,
+    /// Unique id; the finding key is `<id>:<task id>` (or `<id>:<project>`).
+    pub id: String,
+    /// `dead_wait` (a task waits for something that will not come) or `platform_failure`.
+    pub kind: FindingKind,
+    pub severity: Severity,
+    /// `task` (evaluated per open task) or `platform` (per Project).
+    #[serde(default)]
+    pub scope: CheckScope,
+    /// The finding text. `{task}`, `{node}`, `{phase}` and `{project}` are replaced.
+    pub text: String,
+    /// When this holds the finding is open.
+    pub when: When,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingKind {
+    DeadWait,
+    PlatformFailure,
+}
+
+impl FindingKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FindingKind::DeadWait => "dead_wait",
+            FindingKind::PlatformFailure => "platform_failure",
+        }
+    }
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    Info,
+    Warning,
+    Critical,
+}
+
+impl Severity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Severity::Info => "info",
+            Severity::Warning => "warning",
+            Severity::Critical => "critical",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckScope {
+    #[default]
+    Task,
+    Platform,
+}
+
+/// A condition: combinators over leaf predicates. No scripting.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum When {
+    /// Every condition holds.
+    All(Vec<When>),
+    /// At least one condition holds.
+    Any(Vec<When>),
+    /// The condition does not hold.
+    Not(Box<When>),
+    /// The task's `waiting_on` equals this (`external`, `human`, ...).
+    WaitingOn(String),
+    /// The task's current node (`phase/node`) equals this.
+    Node(String),
+    /// The task's phase equals this.
+    Phase(String),
+    /// A stored fact's value: `is: unknown` (never fetched or null), `is: false`, or any value.
+    Fact(FactIs),
+    /// The fact was refreshed to an unknown value at least this many times in a row.
+    FactUnknownFor(FactUnknownFor),
+    /// A count in a fact: `name` is the fact, optionally followed by a dotted path
+    /// (`ci.check_runs`). A list counts its items, a number is itself, an absent value is not
+    /// counted (the condition does not hold).
+    FactCount(FactCount),
+    /// No event reached the task, and/or no step ran for it, for this long.
+    IdleFor(IdleFor),
+    /// A platform fact compared with a value (reads through the engine's provider).
+    Platform(PlatformCmp),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FactIs {
+    pub name: String,
+    /// `unknown`, `false`, `true` or a literal value.
+    pub is: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FactUnknownFor {
+    pub name: String,
+    /// Consecutive unknown refreshes (at least 1).
+    pub refreshes: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FactCount {
+    pub name: String,
+    pub eq: u64,
+}
+
+/// At least one field. A duration is `90s`, `15m`, `2h`, `14d` or `1w`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IdleFor {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_event: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_step: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlatformCmp {
+    pub fact: PlatformFactName,
+    #[serde(default)]
+    pub op: CmpOp,
+    pub value: Value,
+}
+
+/// Platform facts the engine can read. A fact whose source is missing is unknown and never
+/// matches. `chart.deploy_state` has no source yet and is always unknown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+pub enum PlatformFactName {
+    #[serde(rename = "workflow_run.status")]
+    WorkflowRunStatus,
+    #[serde(rename = "chart.deploy_state")]
+    ChartDeployState,
+    #[serde(rename = "sandbox.disk_pct")]
+    SandboxDiskPct,
+    #[serde(rename = "sandbox.mem_pct")]
+    SandboxMemPct,
+    #[serde(rename = "project.pending_change")]
+    ProjectPendingChange,
+}
+
+impl PlatformFactName {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WorkflowRunStatus => "workflow_run.status",
+            Self::ChartDeployState => "chart.deploy_state",
+            Self::SandboxDiskPct => "sandbox.disk_pct",
+            Self::SandboxMemPct => "sandbox.mem_pct",
+            Self::ProjectPendingChange => "project.pending_change",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CmpOp {
+    #[default]
+    Eq,
+    Ne,
+    Gt,
+    Ge,
+    Lt,
+    Le,
+}
+
+impl CheckFile {
+    /// Static problems: unsupported version, empty ids or combinators, bad durations, scope
+    /// mismatches, `refreshes: 0`.
+    pub fn problems(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.version != 1 {
+            out.push(format!("unsupported version {} (expected 1)", self.version));
+        }
+        if self.id.trim().is_empty() || self.id.contains(':') {
+            out.push("`id` must be non-empty and contain no `:`".into());
+        }
+        if self.text.trim().is_empty() {
+            out.push("`text` must not be empty".into());
+        }
+        self.when.problems(self.scope, &mut out);
+        out
+    }
+}
+
+impl When {
+    fn problems(&self, scope: CheckScope, out: &mut Vec<String>) {
+        match self {
+            When::All(v) | When::Any(v) => {
+                if v.is_empty() {
+                    out.push("`all`/`any` need at least one condition".into());
+                }
+                v.iter().for_each(|w| w.problems(scope, out));
+            }
+            When::Not(w) => w.problems(scope, out),
+            When::WaitingOn(_) | When::Node(_) | When::Phase(_) | When::Fact(_) => {
+                if scope == CheckScope::Platform {
+                    out.push("task conditions need `scope: task`".into());
+                }
+            }
+            When::FactUnknownFor(f) => {
+                if f.refreshes == 0 {
+                    out.push("`refreshes` must be at least 1".into());
+                }
+                if scope == CheckScope::Platform {
+                    out.push("task conditions need `scope: task`".into());
+                }
+            }
+            When::FactCount(_) => {
+                if scope == CheckScope::Platform {
+                    out.push("task conditions need `scope: task`".into());
+                }
+            }
+            When::IdleFor(i) => {
+                if i.no_event.is_none() && i.no_step.is_none() {
+                    out.push("`idle_for` needs `no_event` and/or `no_step`".into());
+                }
+                for d in [&i.no_event, &i.no_step].into_iter().flatten() {
+                    if parse_duration(d).is_none_or(|s| s == 0) {
+                        out.push(format!("`{d}` is not a duration (90s, 15m, 2h, 14d, 1w)"));
+                    }
+                }
+                if scope == CheckScope::Platform {
+                    out.push("task conditions need `scope: task`".into());
+                }
+            }
+            When::Platform(_) => {}
+        }
+    }
+}

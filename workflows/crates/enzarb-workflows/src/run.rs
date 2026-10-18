@@ -3,9 +3,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use engine::findings::DbPlatformFacts;
 use engine::sandbox_poller::{MuxStatsClient, PgPollLock, PgSampleSink, SandboxPoller};
 use engine::{
-    CachedPermissions, ConnectorPermissions, Engine, EngineConfig, KubeProjectIndex,
+    CachedPermissions, ConnectorPermissions, Engine, EngineConfig, Findings, KubeProjectIndex,
     KubeSandboxResolver, Library, MuxStepRunner,
 };
 use enzarb_connector::Connector;
@@ -61,6 +62,11 @@ pub async fn run(cfg: Config) -> Result<(), Error> {
         sandboxes: sandboxes.clone(),
         secrets_key: cfg.secrets_key.clone(),
         claude: cfg.claude.clone(),
+        findings: Findings::new(Arc::new(DbPlatformFacts::new(
+            pool.clone(),
+            sandboxes.clone(),
+        )))
+        .with_interval(Duration::from_secs(cfg.findings_secs)),
         cfg: EngineConfig {
             bot_handle: cfg.bot_handle.clone(),
             bot_login: cfg.bot_login.clone(),

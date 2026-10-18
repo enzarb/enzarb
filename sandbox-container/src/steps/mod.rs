@@ -52,6 +52,11 @@ const MAX_FINISHED: usize = 900 * 1024;
 /// The user turn sent when an interrupted agent session is resumed.
 pub const CONTINUE_PROMPT: &str = "The sandbox restarted and your previous turn was interrupted. \
     Continue the task where you left off.";
+/// The user turn sent when a turn ends without the step's result.
+pub const NO_RESULT_PROMPT: &str = "Your turn ended but this step has no result yet. \
+    If you started work in the background, wait for it in the foreground until it finishes. \
+    Then submit the result with `submit_result`, or report that you are blocked and why, \
+    as the schema allows.";
 /// Error code of `step_resume` when the secrets are gone (sandbox restart).
 pub const SECRETS_REQUIRED: &str = "secrets_required";
 
@@ -1174,6 +1179,15 @@ impl Inner {
             resume: resume_sid,
             mcp_servers,
             cancel_grace: self.cfg.cancel_grace,
+            result_ready: result_schema.as_ref().map(|schema| {
+                let schema = schema.clone();
+                let file = result_file.clone();
+                Box::new(move || {
+                    read_json::<Value>(&file)
+                        .is_some_and(|v| crate::mcp::validate(&schema, &v).is_empty())
+                }) as Box<dyn Fn() -> bool + Send + Sync>
+            }),
+            continuation: NO_RESULT_PROMPT.to_string(),
         };
         let r = run.clone();
         let emit = move |kind: &str, payload: Value| r.emit(kind, payload);

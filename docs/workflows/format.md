@@ -295,6 +295,37 @@ bindings:
 - **Routing context:** `if` and `with` read only `event` and `relations` (`RoutingContext`). The engine fills `relations` with a summary of the live tasks the event's object is related to (e.g. the task of an issue a new PR references): `{kind, task, workflow, status, phase, node, vars, subject}` each.
 - **`with`** gives the bound workflow's `params`. String leaves are templates over the routing context (a sole `{{ expr }}` keeps its JSON type). `select_binding_in(&bindings, &routing)` returns the binding and the rendered params for `resolve_with`. Lint checks `with` keys against the workflow's declared params.
 
+## Checks
+
+Schema: [`schemas/check.json`](schemas/check.json). `checks/*.yaml` in a library (ADR-0024). Each file is one liveness check that the engine's periodic `platform` pass evaluates; while it holds, one **finding** is open. A finding only shows (on the task's `reason`/`text`, in `task_v.findings` and in `finding_v`); it never acts. Thresholds are data: the engine has no defaults.
+
+```yaml
+version: 1
+id: ci-never-started
+kind: dead_wait            # or platform_failure
+severity: warning          # info | warning | critical
+scope: task                # task (default, per open task) | platform (per Project)
+text: "Waiting on CI at {node}, but the head has no check runs"   # {task} {node} {phase} {project}
+when:
+  all:
+    - waiting_on: external
+    - fact_count: {name: ci.check_runs, eq: 0}
+    - any:
+        - fact: {name: mergeable, is: unknown}
+        - fact: {name: mergeable, is: false}
+    - idle_for: {no_event: 30m}
+```
+
+`when` is `all`, `any`, `not` over these leaves (no scripting):
+- `waiting_on: <x>`, `node: <phase/node>`, `phase: <id>`: the task's projection.
+- `fact: {name, is}`: a stored fact. `is: unknown` holds when the fact is missing or null; otherwise `is` is compared with the value. `name` may descend a JSON value with dots (`ci.sha`).
+- `fact_unknown_for: {name, refreshes: N}`: the fact was refreshed to null at least N times in a row.
+- `fact_count: {name, eq: N}`: a list's length or a number. A missing or null value does not match.
+- `idle_for: {no_event: <dur>, no_step: <dur>}`: no event reached the task and/or no step ran for that long (a running step counts as now). Durations: `90s`, `15m`, `2h`, `14d`, `1w`.
+- `platform: {fact, op, value}` (`op`: `eq` default, `ne`, `gt`, `ge`, `lt`, `le`): `workflow_run.status`, `chart.deploy_state`, `sandbox.disk_pct`, `sandbox.mem_pct` or `project.pending_change`. An unknown platform fact makes the check undetermined: it raises nothing and leaves an open finding as it is.
+
+Finding keys are `<id>:<task id>` (task scope) or `<id>:<project>` (platform scope); two checks on one task give two findings. `enzarb-lint` validates `checks/` (unknown leaves, bad durations, task leaves in platform scope).
+
 ## Templates and conditions
 
 - **One language:** prompts, `text`, action `args`, workspace repos, `concurrency.group` and `command.run` are [MiniJinja](https://docs.rs/minijinja) templates; `if` conditions are MiniJinja expressions over the same context.

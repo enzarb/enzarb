@@ -27,3 +27,4 @@ Format: Context / Decision / Consequences. Status is `Accepted` unless noted. AD
 | [0021](0021-shared-workflow-library.md) | Shared workflow library: steps, prompts and graphs as data, nothing compiled in | 2026-10-16 |
 | [0022](0022-workflow-engine-rewrite.md) | Workflow engine rewrite: a generic interpreter, every workflow in YAML (proposed; supersedes 0020, 0021) | 2026-10-16 |
 | [0023](0023-manual-sandbox-roll.md) | Manual sandbox roll: a generation-bound annotation and a 30m drain timeout | 2026-10-17 |
+| [0024](0024-liveness-findings.md) | Liveness findings: pure evaluation, a periodic `platform` source, observation only | 2026-10-18 |

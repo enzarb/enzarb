@@ -96,6 +96,7 @@ async fn start(stall: Duration, background: bool) -> Option<H> {
         sandboxes: Arc::new(StaticSandboxResolver::new()),
         secrets_key: Some(key),
         claude: None,
+        findings: engine::Findings::none(),
         cfg: EngineConfig {
             stall,
             poll: Duration::from_millis(50),
@@ -883,4 +884,314 @@ async fn every_step_run_is_recorded_and_read_steps_get_a_token() {
         .await;
     assert_ne!(rows[0].0, rows[1].0);
     assert!(rows.iter().all(|(_, _, e)| e == "success"));
+}
+
+// ---------------------------------------------------------------- liveness findings
+
+use engine::findings::Fact;
+use enzarb_flow::format::PlatformFactName;
+
+/// An open task waiting on `external` since two hours ago, with the given facts.
+async fn waiting_task(h: &H, ci: Value, mergeable: Value, unknown_refreshes: i32) -> i64 {
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO engine.tasks (project, repo, workflow_ref, state, resolved, created_at)
+         VALUES ('p', $1, 'wf', '{}', '{}', now() - interval '2 hours') RETURNING id",
+    )
+    .bind(APP)
+    .fetch_one(&h.db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO engine.projection (task_id, project, repo, workflow, status, phase, node, waiting_on)
+         VALUES ($1, 'p', $2, 'wf', 'waiting', 'review', 'review/wait', 'external')",
+    )
+    .bind(id)
+    .bind(APP)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    set_fact(h, id, "ci", ci, 0).await;
+    set_fact(h, id, "mergeable", mergeable, unknown_refreshes).await;
+    id
+}
+
+async fn set_fact(h: &H, task: i64, name: &str, value: Value, unknown_refreshes: i32) {
+    sqlx::query(
+        "INSERT INTO engine.facts (task_id, name, value, source, unknown_refreshes)
+         VALUES ($1, $2, $3, 'test', $4)
+         ON CONFLICT (task_id, name) DO UPDATE SET value = $3, unknown_refreshes = $4",
+    )
+    .bind(task)
+    .bind(name)
+    .bind(value)
+    .bind(unknown_refreshes)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+}
+
+async fn open_findings(h: &H) -> Vec<(String, Option<i64>, String)> {
+    sqlx::query_as("SELECT key, task_id, severity FROM engine_api.finding_v ORDER BY key")
+        .fetch_all(&h.db.pool)
+        .await
+        .unwrap()
+}
+
+async fn task_v(h: &H, id: i64) -> (Option<String>, Option<String>, Value) {
+    sqlx::query_as("SELECT reason, text, findings FROM engine_api.task_v WHERE task_id = $1")
+        .bind(id)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn stuck_task_yields_exactly_one_finding_in_the_projection() {
+    let Some(h) = start(Duration::from_secs(3600), false).await else {
+        return;
+    };
+    let id = waiting_task(&h, json!({"sha": "abc", "check_runs": []}), Value::Null, 1).await;
+    // Raised only once the condition held on two consecutive passes.
+    h.engine.findings_pass().await.unwrap();
+    assert!(open_findings(&h).await.is_empty());
+    for _ in 0..4 {
+        h.engine.findings_pass().await.unwrap();
+    }
+    let open = open_findings(&h).await;
+    assert_eq!(
+        open,
+        [(format!("ci-never-started:{id}"), Some(id), "warning".into())]
+    );
+    let (reason, text, findings) = task_v(&h, id).await;
+    assert_eq!(reason.as_deref(), Some("ci-never-started"));
+    assert!(text.unwrap().contains("no check runs"));
+    assert_eq!(findings.as_array().unwrap().len(), 1);
+    assert_eq!(findings[0]["kind"], "dead_wait");
+    // task_detail carries the same.
+    let detail: Value = sqlx::query_scalar("SELECT engine_api.task_detail($1)")
+        .bind(id)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(detail["findings"].as_array().unwrap().len(), 1);
+    // The task itself is untouched.
+    let (status, ended): (String, Option<chrono::DateTime<chrono::Utc>>) =
+        sqlx::query_as("SELECT p.status, t.ended_at FROM engine.projection p JOIN engine.tasks t ON t.id = p.task_id WHERE t.id = $1")
+            .bind(id)
+            .fetch_one(&h.db.pool)
+            .await
+            .unwrap();
+    assert_eq!((status.as_str(), ended), ("waiting", None));
+}
+
+#[tokio::test]
+async fn healthy_task_yields_no_finding() {
+    let Some(h) = start(Duration::from_secs(3600), false).await else {
+        return;
+    };
+    let id = waiting_task(
+        &h,
+        json!({"sha": "abc", "check_runs": [{"name": "test"}]}),
+        json!(true),
+        0,
+    )
+    .await;
+    for _ in 0..3 {
+        h.engine.findings_pass().await.unwrap();
+    }
+    assert!(open_findings(&h).await.is_empty());
+    let (reason, text, findings) = task_v(&h, id).await;
+    assert_eq!((reason, text), (None, None));
+    assert_eq!(findings, json!([]));
+}
+
+#[tokio::test]
+async fn resolved_condition_clears_the_finding() {
+    let Some(h) = start(Duration::from_secs(3600), false).await else {
+        return;
+    };
+    let id = waiting_task(&h, json!({"check_runs": []}), json!(false), 0).await;
+    for _ in 0..2 {
+        h.engine.findings_pass().await.unwrap();
+    }
+    assert_eq!(open_findings(&h).await.len(), 1);
+    // Check runs arrive.
+    set_fact(&h, id, "ci", json!({"check_runs": [{"name": "test"}]}), 0).await;
+    h.engine.findings_pass().await.unwrap();
+    assert!(open_findings(&h).await.is_empty());
+    let (reason, text, findings) = task_v(&h, id).await;
+    assert_eq!((reason, text, findings), (None, None, json!([])));
+    // Kept for history.
+    let cleared: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM engine.findings WHERE key = $1 AND cleared_at IS NOT NULL",
+    )
+    .bind(format!("ci-never-started:{id}"))
+    .fetch_one(&h.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(cleared, 1);
+    // The condition returns: the same key reopens (after two passes), once.
+    set_fact(&h, id, "ci", json!({"check_runs": []}), 0).await;
+    for _ in 0..2 {
+        h.engine.findings_pass().await.unwrap();
+    }
+    assert_eq!(open_findings(&h).await.len(), 1);
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM engine.findings")
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 1);
+}
+
+#[tokio::test]
+async fn finding_survives_projection_rewrites_and_interpreter_reasons_win() {
+    let Some(h) = start(Duration::from_secs(3600), false).await else {
+        return;
+    };
+    let id = waiting_task(&h, json!({"check_runs": []}), Value::Null, 1).await;
+    for _ in 0..2 {
+        h.engine.findings_pass().await.unwrap();
+    }
+    let before = task_v(&h, id).await;
+    assert!(before.1.is_some());
+    // A reducer transition rewrites the projection (same upsert as `write_projection`).
+    sqlx::query(
+        "UPDATE engine.projection SET status = 'waiting', node = 'review/wait', reason = NULL,
+             text = NULL, updated_at = now() WHERE task_id = $1",
+    )
+    .bind(id)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(task_v(&h, id).await, before);
+    // The interpreter has a reason: it wins, the finding stays listed.
+    sqlx::query("UPDATE engine.projection SET reason = 'awaiting_ci', text = 'Waiting for CI' WHERE task_id = $1")
+        .bind(id)
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+    let (reason, text, findings) = task_v(&h, id).await;
+    assert_eq!(reason.as_deref(), Some("awaiting_ci"));
+    assert_eq!(text.as_deref(), Some("Waiting for CI"));
+    assert_eq!(findings.as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn two_checks_on_one_task_show_the_highest_severity() {
+    let Some(h) = start(Duration::from_secs(3600), false).await else {
+        return;
+    };
+    // `mergeable-unknown` (info) and `ci-never-started` (warning) both match.
+    let id = waiting_task(&h, json!({"check_runs": []}), Value::Null, 3).await;
+    for _ in 0..2 {
+        h.engine.findings_pass().await.unwrap();
+    }
+    assert_eq!(open_findings(&h).await.len(), 2);
+    let (reason, _, findings) = task_v(&h, id).await;
+    assert_eq!(reason.as_deref(), Some("ci-never-started"));
+    assert_eq!(findings[0]["severity"], "warning");
+    assert_eq!(findings[1]["severity"], "info");
+}
+
+#[tokio::test]
+async fn findings_pass_only_writes_findings() {
+    let Some(h) = start(Duration::from_secs(3600), false).await else {
+        return;
+    };
+    waiting_task(&h, json!({"check_runs": []}), Value::Null, 3).await;
+    let dump = || async {
+        let mut all = Vec::new();
+        for t in [
+            "tasks",
+            "projection",
+            "transitions",
+            "events",
+            "timers",
+            "jobs",
+            "step_runs",
+            "facts",
+            "subjects",
+            "relations",
+        ] {
+            let v: Value = sqlx::query_scalar(&format!(
+                "SELECT COALESCE(jsonb_agg(to_jsonb(t)), '[]') FROM engine.{t} t"
+            ))
+            .fetch_one(&h.db.pool)
+            .await
+            .unwrap();
+            all.push((t, v));
+        }
+        all
+    };
+    let before = dump().await;
+    for _ in 0..3 {
+        h.engine.findings_pass().await.unwrap();
+    }
+    assert_eq!(open_findings(&h).await.len(), 2);
+    assert_eq!(dump().await, before);
+}
+
+#[tokio::test]
+async fn platform_findings_follow_the_platform_facts() {
+    let Some(mut h) = start(Duration::from_secs(3600), false).await else {
+        return;
+    };
+    let facts = engine::FakePlatformFacts::new();
+    h.engine.findings = engine::Findings::new(Arc::new(facts.clone()));
+    // Unknown: nothing is raised.
+    for _ in 0..3 {
+        h.engine.findings_pass().await.unwrap();
+    }
+    assert!(open_findings(&h).await.is_empty());
+    facts.set("p", PlatformFactName::SandboxDiskPct, Fact::Num(95.0));
+    for _ in 0..3 {
+        h.engine.findings_pass().await.unwrap();
+    }
+    assert_eq!(
+        open_findings(&h).await,
+        [("sandbox-disk:p".to_string(), None, "critical".to_string())]
+    );
+    // The source goes away: the finding stays as it is.
+    facts.set("p", PlatformFactName::SandboxDiskPct, Fact::Unknown);
+    h.engine.findings_pass().await.unwrap();
+    assert_eq!(open_findings(&h).await.len(), 1);
+    facts.set("p", PlatformFactName::SandboxDiskPct, Fact::Num(40.0));
+    h.engine.findings_pass().await.unwrap();
+    assert!(open_findings(&h).await.is_empty());
+}
+
+#[tokio::test]
+async fn ticker_runs_findings_on_its_interval() {
+    let Some(mut h) = start(Duration::from_secs(3600), false).await else {
+        return;
+    };
+    h.engine.findings = engine::Findings::none().with_interval(Duration::from_secs(3600));
+    assert!(h.engine.run_findings().await.unwrap().is_some());
+    assert!(h.engine.run_findings().await.unwrap().is_none());
+    h.engine.tick().await.unwrap();
+}
+
+#[tokio::test]
+async fn refreshing_a_fact_counts_unknown_refreshes() {
+    let Some(h) = start(Duration::from_secs(3600), false).await else {
+        return;
+    };
+    let id = waiting_task(&h, json!({}), Value::Null, 0).await;
+    let refresh = |v: Value| {
+        let pool = h.db.pool.clone();
+        async move {
+            engine::executor::store_fact(&pool, id, "mergeable", &v)
+                .await
+                .unwrap();
+            sqlx::query_scalar::<_, i32>("SELECT unknown_refreshes FROM engine.facts WHERE task_id = $1 AND name = 'mergeable'")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(refresh(Value::Null).await, 1);
+    assert_eq!(refresh(Value::Null).await, 2);
+    assert_eq!(refresh(json!(true)).await, 0);
+    assert_eq!(refresh(Value::Null).await, 1);
 }

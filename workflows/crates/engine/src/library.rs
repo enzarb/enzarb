@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use enzarb_connector::{Connector, RepoKey};
-use enzarb_flow::format::BindingsFile;
+use enzarb_flow::format::{BindingsFile, CheckFile};
 use enzarb_flow::resolve::{self, Entry, Layer, Loaded, Loader, Options, RBinding, Resolved};
 use enzarb_flow::yaml::SourceFile;
 use futures::StreamExt;
@@ -45,6 +45,8 @@ struct Cache {
     complete: HashSet<(String, String)>,
     /// `(repo, sha)` already listed (successfully or not), so a commit is listed once.
     listed: HashSet<(String, String)>,
+    /// Parsed `checks/*.yaml` per `(repo, sha)`.
+    checks: HashMap<(String, String), Arc<Vec<CheckFile>>>,
 }
 
 /// Shared definition source. Cheap to clone.
@@ -318,6 +320,68 @@ impl Library {
                 })
         })
         .await?
+    }
+
+    /// The valid liveness checks (`checks/*.yaml`) of the Project's library (the instance default
+    /// unless the Project names one), cached by sha. A file that does not parse or validate is
+    /// skipped with a warning, so one bad check never silences the others. An empty list when
+    /// the connector cannot list files.
+    pub async fn checks(&self, p: &ProjectInfo) -> Result<Arc<Vec<CheckFile>>, String> {
+        let lib = p.library.as_deref().unwrap_or(&self.default_library);
+        let (lrepo, lref) = lib
+            .split_once('@')
+            .ok_or_else(|| format!("library `{lib}` must be owner/repo@ref"))?;
+        let sha = self.sha_of(lrepo, lref).await?;
+        let k = (lrepo.to_string(), sha.clone());
+        if let Some(c) = self.cache.lock().expect("cache").checks.get(&k) {
+            return Ok(c.clone());
+        }
+        let listing = self
+            .connector
+            .list_files(&repo_key(lrepo)?, &sha)
+            .await
+            .map_err(|e| format!("{lrepo}@{sha}: listing files: {e}"))?;
+        let mut paths: Vec<String> = listing
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(path, _)| path)
+            .filter(|path| {
+                path.strip_prefix("checks/").is_some_and(|r| {
+                    !r.contains('/') && (r.ends_with(".yaml") || r.ends_with(".yml"))
+                })
+            })
+            .collect();
+        paths.sort();
+        let libraries = [lib.to_string()];
+        let mut out: Vec<CheckFile> = Vec::new();
+        for path in paths {
+            let (_, bytes) = self.read_in(lrepo, &sha, &path, &libraries).await?;
+            let Some(bytes) = bytes else { continue };
+            let parsed = std::str::from_utf8(&bytes)
+                .map_err(|e| e.to_string())
+                .and_then(|t| SourceFile::parse(&path, t).map_err(|d| d.message))
+                .and_then(|f| f.typed::<CheckFile>().map_err(|d| d.message));
+            match parsed {
+                Ok(c) => {
+                    let problems = c.problems();
+                    if !problems.is_empty() {
+                        tracing::warn!("{lrepo}@{sha}:{path}: {}", problems.join("; "));
+                    } else if out.iter().any(|o| o.id == c.id) {
+                        tracing::warn!("{lrepo}@{sha}:{path}: duplicate check id `{}`", c.id);
+                    } else {
+                        out.push(c);
+                    }
+                }
+                Err(e) => tracing::warn!("{lrepo}@{sha}:{path}: {e}"),
+            }
+        }
+        let out = Arc::new(out);
+        self.cache
+            .lock()
+            .expect("cache")
+            .checks
+            .insert(k, out.clone());
+        Ok(out)
     }
 
     /// The merged bindings for `repo` of Project `p` (highest layer first).

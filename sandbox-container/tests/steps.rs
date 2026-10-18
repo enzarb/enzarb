@@ -2,6 +2,8 @@
 //! executor's client session, git against local bare repos and a fake ACP
 //! agent (`fixtures/fake-step-agent.mjs`, run with node).
 
+mod common;
+
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -15,7 +17,7 @@ use enzarb_proto::{
 };
 use sandbox_init::reaper::Reaper;
 use sandbox_init::repos::RepoLocks;
-use sandbox_init::steps::{CONTINUE_PROMPT, StepManager};
+use sandbox_init::steps::{CONTINUE_PROMPT, NO_RESULT_PROMPT, StepManager};
 use sandbox_init::{AppState, Config, serve};
 use serde_json::{Value, json};
 use tokio::time::timeout;
@@ -439,6 +441,97 @@ async fn agent_step_events_redaction_and_submit_result() {
 }
 
 #[tokio::test]
+async fn agent_step_continues_until_the_result_is_submitted() {
+    let env = Env::new();
+    let addr = env.server().await;
+    let (s, mut ev) = connect(addr).await;
+    let schema = json!({"type": "object", "required": ["verdict"],
+        "properties": {"verdict": {"enum": ["approve", "reject"]}}});
+    start(
+        &s,
+        &mut ev,
+        step("ag-c", agent_exec(&env, "bg run", Some(schema)), vec![]),
+    )
+    .await;
+    let (evs, fin) = collect(&mut ev, "ag-c", |_| false).await;
+    let fin = fin.unwrap();
+    assert_eq!(fin.exit, "success", "{fin:?}");
+    assert_eq!(fin.result, Some(json!({"verdict": "approve"})));
+    assert_eq!(texts(&evs, "prompt"), "bg run");
+    let users: Vec<&str> = evs
+        .iter()
+        .filter(|e| e.kind == "user")
+        .map(|e| e.payload["text"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(users, [NO_RESULT_PROMPT]);
+    let sessions = evs
+        .iter()
+        .filter(|e| e.payload["event"] == "session")
+        .count();
+    assert_eq!(sessions, 1);
+    // Usage of both turns is summed into the one step_finished.
+    assert_eq!(fin.usage.unwrap().input_tokens, Some(7));
+}
+
+#[tokio::test]
+async fn agent_step_without_tool_calls_is_not_continued() {
+    let env = Env::new();
+    let addr = env.server().await;
+    let (s, mut ev) = connect(addr).await;
+    let schema = json!({"type": "object"});
+    start(
+        &s,
+        &mut ev,
+        step("ag-q", agent_exec(&env, "quiet", Some(schema)), vec![]),
+    )
+    .await;
+    let (evs, fin) = collect(&mut ev, "ag-q", |_| false).await;
+    let fin = fin.unwrap();
+    assert_eq!(fin.exit, "success", "{fin:?}");
+    assert_eq!(fin.result, None);
+    assert_eq!(evs.iter().filter(|e| e.kind == "user").count(), 0);
+}
+
+#[tokio::test]
+async fn agent_step_stops_after_a_turn_without_tool_calls() {
+    let env = Env::new();
+    let addr = env.server().await;
+    let (s, mut ev) = connect(addr).await;
+    let schema = json!({"type": "object"});
+    start(
+        &s,
+        &mut ev,
+        step("ag-t", agent_exec(&env, "twice", Some(schema)), vec![]),
+    )
+    .await;
+    let (evs, fin) = collect(&mut ev, "ag-t", |_| false).await;
+    let fin = fin.unwrap();
+    assert_eq!(fin.exit, "success", "{fin:?}");
+    assert_eq!(fin.result, None);
+    assert!(
+        !evs.iter()
+            .any(|e| e.payload["event"] == "invalid_result_file")
+    );
+    assert_eq!(evs.iter().filter(|e| e.kind == "user").count(), 1);
+}
+
+#[tokio::test]
+async fn agent_step_without_schema_is_not_continued() {
+    let env = Env::new();
+    let addr = env.server().await;
+    let (s, mut ev) = connect(addr).await;
+    start(
+        &s,
+        &mut ev,
+        step("ag-n", agent_exec(&env, "bg run", None), vec![]),
+    )
+    .await;
+    let (evs, fin) = collect(&mut ev, "ag-n", |_| false).await;
+    assert_eq!(fin.unwrap().exit, "success");
+    assert_eq!(evs.iter().filter(|e| e.kind == "user").count(), 0);
+}
+
+#[tokio::test]
 async fn agent_step_steer_and_stop() {
     let env = Env::new();
     let addr = env.server().await;
@@ -759,10 +852,9 @@ async fn workspace_prune_spares_tasks_with_a_running_step() {
     .await;
     // 100% free required: always "low", so every idle cache goes.
     // Like a full disk: nothing new can be created at the workspace root.
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&env.ws, std::fs::Permissions::from_mode(0o555)).unwrap();
-    let removed = sandbox_init::workspace_prune::prune_once(&env.ws, &steps, 100);
-    std::fs::set_permissions(&env.ws, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let removed = common::read_only(&env.ws, || {
+        sandbox_init::workspace_prune::prune_once(&env.ws, &steps, 100)
+    });
     assert_eq!(removed, 1);
     assert!(cache("task-1").exists(), "the busy task kept its cache");
     assert!(
@@ -810,4 +902,50 @@ async fn a_fresh_workspace_on_the_default_branch_has_its_files() {
     let (_, fin) = collect(&mut ev, "fresh-1", |_| false).await;
     let fin = fin.unwrap();
     assert_eq!(fin.exit, "success", "README.md is missing: {fin:?}");
+}
+
+/// Uncommitted changes left on the default branch (a read step, or a clone never checked out)
+/// do not block a later step on the task branch.
+#[tokio::test]
+async fn leftovers_on_the_default_branch_do_not_block_the_task_branch() {
+    let env = Env::new();
+    let seed = env.dir.path().join("seed");
+    git(&seed, &["checkout", "-q", "-B", "feature/y", "main"]);
+    std::fs::write(seed.join("README.md"), "changed on the branch\n").unwrap();
+    git(&seed, &["commit", "-q", "-am", "y"]);
+    git(
+        &seed,
+        &["push", "-q", env.bare.to_str().unwrap(), "feature/y"],
+    );
+    let addr = env.server().await;
+    let (s, mut ev) = connect(addr).await;
+    // A read step on its own branch off main (as `enzarb/task-<id>`), which leaves README.md
+    // modified and a file deleted from the index (like a clone that was never checked out).
+    let mut ws = env.workspace("task/read");
+    ws.mode = Mode::Read;
+    ws.push = false;
+    let st = step(
+        "left-1",
+        StepExec::Command {
+            run: "echo scribble >> README.md && git rm -q --cached README.md".into(),
+            tools: vec![],
+        },
+        vec![ws],
+    );
+    start(&s, &mut ev, st).await;
+    let (_, fin) = collect(&mut ev, "left-1", |_| false).await;
+    assert_eq!(fin.unwrap().exit, "success");
+    // The task branch, whose README.md differs: the checkout must not abort.
+    let st2 = step(
+        "left-2",
+        StepExec::Command {
+            run: "grep -q 'changed on the branch' README.md".into(),
+            tools: vec![],
+        },
+        vec![env.workspace("feature/y")],
+    );
+    start(&s, &mut ev, st2).await;
+    let (_, fin2) = collect(&mut ev, "left-2", |_| false).await;
+    let fin2 = fin2.unwrap();
+    assert_eq!(fin2.exit, "success", "{fin2:?}");
 }

@@ -1,0 +1,337 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "description": "Format version. Always `1`."
+    },
+    "id": {
+      "type": "string",
+      "description": "Unique id; the finding key is `<id>:<task id>` (or `<id>:<project>`)."
+    },
+    "kind": {
+      "$ref": "#/$defs/FindingKind",
+      "description": "`dead_wait` (a task waits for something that will not come) or `platform_failure`."
+    },
+    "severity": {
+      "$ref": "#/$defs/Severity"
+    },
+    "scope": {
+      "$ref": "#/$defs/CheckScope",
+      "description": "`task` (evaluated per open task) or `platform` (per Project).",
+      "default": "task"
+    },
+    "text": {
+      "type": "string",
+      "description": "The finding text. `{task}`, `{node}`, `{phase}` and `{project}` are replaced."
+    },
+    "when": {
+      "$ref": "#/$defs/When",
+      "description": "When this holds the finding is open."
+    }
+  },
+  "required": [
+    "version",
+    "id",
+    "kind",
+    "severity",
+    "text",
+    "when"
+  ],
+  "description": "A liveness check (`checks/*.yaml` in a library): a data-driven condition the engine's\nperiodic `platform` pass evaluates. While it holds, the engine keeps one **finding** open\nper task (or per Project for `platform` scope); when it stops holding, the finding clears.\nA finding is observation only: it never cancels, stops, restarts or times anything out.",
+  "title": "CheckFile",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "FindingKind": {
+      "type": "string",
+      "enum": [
+        "dead_wait",
+        "platform_failure"
+      ]
+    },
+    "Severity": {
+      "type": "string",
+      "enum": [
+        "info",
+        "warning",
+        "critical"
+      ]
+    },
+    "CheckScope": {
+      "type": "string",
+      "enum": [
+        "task",
+        "platform"
+      ]
+    },
+    "When": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "all": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/When"
+              }
+            }
+          },
+          "required": [
+            "all"
+          ],
+          "additionalProperties": false,
+          "description": "Every condition holds."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "any": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/When"
+              }
+            }
+          },
+          "required": [
+            "any"
+          ],
+          "additionalProperties": false,
+          "description": "At least one condition holds."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "not": {
+              "$ref": "#/$defs/When"
+            }
+          },
+          "required": [
+            "not"
+          ],
+          "additionalProperties": false,
+          "description": "The condition does not hold."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "waiting_on": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "waiting_on"
+          ],
+          "additionalProperties": false,
+          "description": "The task's `waiting_on` equals this (`external`, `human`, ...)."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "node": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "node"
+          ],
+          "additionalProperties": false,
+          "description": "The task's current node (`phase/node`) equals this."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "phase": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "phase"
+          ],
+          "additionalProperties": false,
+          "description": "The task's phase equals this."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "fact": {
+              "$ref": "#/$defs/FactIs"
+            }
+          },
+          "required": [
+            "fact"
+          ],
+          "additionalProperties": false,
+          "description": "A stored fact's value: `is: unknown` (never fetched or null), `is: false`, or any value."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "fact_unknown_for": {
+              "$ref": "#/$defs/FactUnknownFor"
+            }
+          },
+          "required": [
+            "fact_unknown_for"
+          ],
+          "additionalProperties": false,
+          "description": "The fact was refreshed to an unknown value at least this many times in a row."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "fact_count": {
+              "$ref": "#/$defs/FactCount"
+            }
+          },
+          "required": [
+            "fact_count"
+          ],
+          "additionalProperties": false,
+          "description": "A count in a fact: `name` is the fact, optionally followed by a dotted path\n(`ci.check_runs`). A list counts its items, a number is itself, an absent value is not\ncounted (the condition does not hold)."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "idle_for": {
+              "$ref": "#/$defs/IdleFor"
+            }
+          },
+          "required": [
+            "idle_for"
+          ],
+          "additionalProperties": false,
+          "description": "No event reached the task, and/or no step ran for it, for this long."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "platform": {
+              "$ref": "#/$defs/PlatformCmp"
+            }
+          },
+          "required": [
+            "platform"
+          ],
+          "additionalProperties": false,
+          "description": "A platform fact compared with a value (reads through the engine's provider)."
+        }
+      ],
+      "description": "A condition: combinators over leaf predicates. No scripting."
+    },
+    "FactIs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "is": {
+          "description": "`unknown`, `false`, `true` or a literal value."
+        }
+      },
+      "required": [
+        "name",
+        "is"
+      ]
+    },
+    "FactUnknownFor": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "refreshes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Consecutive unknown refreshes (at least 1)."
+        }
+      },
+      "required": [
+        "name",
+        "refreshes"
+      ]
+    },
+    "FactCount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "eq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "name",
+        "eq"
+      ]
+    },
+    "IdleFor": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "no_event": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "no_step": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "description": "At least one field. A duration is `90s`, `15m`, `2h`, `14d` or `1w`."
+    },
+    "PlatformCmp": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fact": {
+          "$ref": "#/$defs/PlatformFactName"
+        },
+        "op": {
+          "$ref": "#/$defs/CmpOp",
+          "default": "eq"
+        },
+        "value": true
+      },
+      "required": [
+        "fact",
+        "value"
+      ]
+    },
+    "PlatformFactName": {
+      "type": "string",
+      "enum": [
+        "workflow_run.status",
+        "chart.deploy_state",
+        "sandbox.disk_pct",
+        "sandbox.mem_pct",
+        "project.pending_change"
+      ],
+      "description": "Platform facts the engine can read. A fact whose source is missing is unknown and never\nmatches. `chart.deploy_state` has no source yet and is always unknown."
+    },
+    "CmpOp": {
+      "type": "string",
+      "enum": [
+        "eq",
+        "ne",
+        "gt",
+        "ge",
+        "lt",
+        "le"
+      ]
+    }
+  }
+}

@@ -104,6 +104,7 @@ Changing repositories: the owner may replace `spec.repositories` after creation 
 - **Permissions:** every `session/request_permission` is allowed (`allow_always` if offered, else `allow_once`; `cancelled` when the request has no allow option) and recorded as a `permission` transcript record with `decision: "allow"`, `rule: "sandbox"`. There are no command allow-lists or deny-lists: the sandbox (gVisor, the Project's egress NetworkPolicy, no Kubernetes API access, scoped tokens) is the security boundary (ADR-0011 amendment 2026-10-15).
 - **Summary:** the verbatim agent text of the turn. `exit_code` is 0 on `end_turn`, the agent's code on a crash, and null when cancelled or timed out.
 - **Cancel:** `session/cancel`, then a grace period, then the process group is killed.
+- **Continuation (steps with a `result_schema`):** when a turn ends (`end_turn`) without a valid `submit_result`, sandbox-init continues the same ACP session with a fixed user turn (wait in the foreground for background work, then `submit_result` or report blocked), recorded as a `user` session event. It repeats while the previous turn made at least one `tool_call`/`tool_call_update`; a turn with no tool calls and no result ends the step as before (`success`, no result). There is no count or time limit; cancel/stop ends it. It is one run: one session, one transcript, one `step_finished`, with usage summed over all turns.
 
 **Interactive chat (ACP, ADR-0014; [design](design/chat-tab.md)):**
 - One `acp` mux channel is one `claude-agent-acp` child, in its own process group. DATA_BIN carries newline-delimited JSON-RPC (max line 4 MiB). sandbox-init is a filtering relay: it forces `clientCapabilities` to none, `cwd` to the chat worktree and `mcpServers` to `[]`, allows only `initialize`, `session/new`, `session/load` (registered sessions only), `session/prompt`, `session/cancel` and `session/set_mode` (`default` or `plan`), and redacts the Claude token.
@@ -342,6 +343,8 @@ workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated
   - **Waiting rule:** transitions carry no wait marker; only the current wait is stored (`state_data.wait`). An open state whose item is waiting now is therefore never an active sample: it is counted in `wait_count` with its elapsed time in `wait_s`, with or without `p_include_open`. **Limit:** waits that already ended (including session-limit waits) are inside the closed durations and cannot be separated.
   - `job` rows: jobs of the project's items by `jobs.kind`, `updated_at - created_at`, window on `jobs.created_at`, finished jobs only (`succeeded`, `failed`, `cancelled`); `open_excluded` and `wait_count` are 0.
 
+Liveness findings (additive, [ADR-0024](adr/0024-liveness-findings.md)): `engine_api.task_v` gains the last column `findings` and computes `reason`/`text` from the top open finding when the interpreter has no reason; `engine_api.finding_v` lists open findings (task and platform scope). Details: [workflows/contracts-v2.md](workflows/contracts-v2.md).
+
 ## 7. Browser → proxy
 
 - **URL:** `wss://<host>/sandbox/v1/projects/<project>/mux?token=<jwt>`. Browsers can't set headers on websockets.
@@ -387,6 +390,7 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 | Var | Used by |
 |---|---|
 | `DATABASE_URL` | ui, receiver, workflows (`postgres:///enzarb` plus `PG*` env vars from pgop Role secret `enzarb-pg-<role>-credentials`; see database.md) |
+| `ENZARB_FINDINGS_SECS` (60) | workflows (how often liveness checks run; no chart value, default only) |
 | `ENZARB_SESSION_JWT_SECRET` | ui, sandbox-proxy |
 | `ENZARB_REALTIME_JWT_SECRET` | ui, enzarb-realtime |
 | `ENZARB_REALTIME_LISTEN` (`0.0.0.0:8080`), `ENZARB_REALTIME_PING_SECS` (15), `ENZARB_REALTIME_BUFFER` (256), `ENZARB_REALTIME_MAX_TOKEN_TTL_SECS` (300), `ENZARB_REALTIME_ALLOWED_ORIGINS` (comma-separated `scheme://host[:port]`; unset means `Origin` must equal `Host`; cookie auth only) | enzarb-realtime |
