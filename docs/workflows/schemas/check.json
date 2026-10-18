@@ -60,7 +60,8 @@
       "type": "string",
       "enum": [
         "dead_wait",
-        "platform_failure"
+        "platform_failure",
+        "event_failing"
       ]
     },
     "Severity": {
@@ -286,6 +287,32 @@
           ],
           "additionalProperties": false,
           "description": "A platform fact compared with a value (reads through the engine's provider)."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "platform_wait": {
+              "$ref": "#/$defs/PlatformWaitIs"
+            }
+          },
+          "required": [
+            "platform_wait"
+          ],
+          "additionalProperties": false,
+          "description": "The task is in a platform wait (ADR-0026), optionally for this failure kind."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "event_failing": {
+              "$ref": "#/$defs/EventFailingIs"
+            }
+          },
+          "required": [
+            "event_failing"
+          ],
+          "additionalProperties": false,
+          "description": "An inbox event of the task keeps failing (retried with backoff, ADR-0024), optionally\nfor at least this long."
         }
       ],
       "description": "A condition: combinators over leaf predicates. No scripting."
@@ -441,13 +468,22 @@
       ]
     },
     "PlatformFactName": {
-      "type": "string",
-      "enum": [
-        "workflow_run.status",
-        "chart.deploy_state",
-        "sandbox.disk_pct",
-        "sandbox.mem_working_set_pct",
-        "project.pending_change"
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "workflow_run.status",
+            "chart.deploy_state",
+            "sandbox.disk_pct",
+            "sandbox.mem_working_set_pct",
+            "project.pending_change"
+          ]
+        },
+        {
+          "type": "string",
+          "const": "sandbox.healthy",
+          "description": "The sandbox reported stats recently."
+        }
       ],
       "description": "Platform facts the engine can read. A fact whose source is missing or failed is unknown and\nnever matches. Values: `workflow_run.status` is the conclusion of the latest finished run\n(`success`, `failure`, ...; takes `arg`); `chart.deploy_state` is `deployed`, `pending` or\n`stuck`; `sandbox.disk_pct` and `sandbox.mem_working_set_pct` are percentages; `project.pending_change`\nis a boolean."
     },
@@ -461,6 +497,32 @@
         "lt",
         "le"
       ]
+    },
+    "PlatformWaitIs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`disk_full`, `oom`, ... Any kind when absent."
+        }
+      }
+    },
+    "EventFailingIs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "for": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "How long the event has been failing (`5m`). Immediately when absent."
+        }
+      }
     }
   }
 }

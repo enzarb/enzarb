@@ -1,15 +1,18 @@
 //! The ticker: generic time-based building blocks only. Timers become `Timer` events, quiet
 //! running steps become `StallDetected`, session partitions are created ahead, pending secrets are
-//! encrypted, sandbox drain holds are reconciled, liveness findings are evaluated (observation only), and the adopt pass runs once on start.
+//! encrypted, sandbox drain holds are reconciled, platform waits are woken (ADR-0026), liveness findings are evaluated (observation only), and the adopt pass runs once on start.
 
 use enzarb_flow::events::{Adopted, Event, Payload, SubjectKind, SubjectRef};
-use enzarb_flow::interp::TaskEvent;
+use enzarb_flow::format::PlatformFactName;
+use enzarb_flow::interp::{PlatformWait, TaskEvent};
 use serde_json::json;
 use sqlx::Row;
+use std::collections::HashMap;
 use tokio::sync::watch;
 
 use crate::engine::{Engine, repo_key, subject_key};
 use crate::error::Error;
+use crate::findings::{Fact, until_holds, when_reads};
 use crate::reducer::ENGINE_PREFIX;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -102,6 +105,9 @@ impl Engine {
         if let Err(e) = self.reconcile_holds().await {
             tracing::warn!("sandbox holds: {e}");
         }
+        if let Err(e) = self.wake_platform_waits().await {
+            tracing::warn!("platform waits: {e}");
+        }
         if let Err(e) = self.run_findings().await {
             tracing::warn!("findings: {e}");
         }
@@ -177,6 +183,55 @@ impl Engine {
                     .await?;
                     n += done.rows_affected();
                 }
+            }
+        }
+        Ok(n)
+    }
+
+    /// Wakes tasks in a platform wait (ADR-0026): level-triggered, every tick. The wait's `until`
+    /// condition is read against the platform facts; when it holds, a `platform_cleared` event
+    /// (keyed by task and wake count, so repeats and racing tickers collapse) makes the
+    /// interpreter re-send `step_start` for the same run. An unknown fact keeps the wait. There
+    /// is no age limit: a condition that never clears leaves the task waiting.
+    pub async fn wake_platform_waits(&self) -> Result<u64, Error> {
+        let rows = sqlx::query(
+            "SELECT id, project, state->'platform_wait', state#>>'{pending,run_id}' FROM engine.tasks
+             WHERE ended_at IS NULL AND state->'platform_wait' IS NOT NULL
+               AND state#>>'{status,phase}' <> 'paused'
+             ORDER BY id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut cache: HashMap<(String, PlatformFactName), Fact> = HashMap::new();
+        let mut n = 0;
+        for r in rows {
+            let (task, project, wait, run): (i64, String, serde_json::Value, Option<String>) =
+                (r.get(0), r.get(1), r.get(2), r.get(3));
+            let (Ok(wait), Some(run_id)) = (serde_json::from_value::<PlatformWait>(wait), run)
+            else {
+                continue;
+            };
+            let mut reads = Vec::new();
+            when_reads(&wait.until, &mut reads);
+            for f in reads {
+                if let std::collections::hash_map::Entry::Vacant(e) =
+                    cache.entry((project.clone(), f))
+                {
+                    e.insert(self.findings.facts.get(&project, f).await);
+                }
+            }
+            if until_holds(&wait.until, &project, &cache) == Some(true) {
+                self.emit(
+                    &format!("wake:{task}:{}", wait.waits),
+                    &project,
+                    task,
+                    &TaskEvent::PlatformCleared {
+                        run_id,
+                        wait: wait.waits,
+                    },
+                )
+                .await?;
+                n += 1;
             }
         }
         Ok(n)

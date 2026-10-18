@@ -163,6 +163,9 @@ pub struct RStep {
     pub priority: Option<i32>,
     pub concurrency: Option<Concurrency>,
     pub retry: Option<Retry>,
+    /// Defaulted: task definitions stored before ADR-0026 have no `platform_wait`.
+    #[serde(default)]
+    pub platform_wait: Vec<PlatformWaitRule>,
     pub steer: Vec<Matcher>,
     pub stop: Vec<Matcher>,
 }
@@ -2441,6 +2444,31 @@ impl<'l> Resolver<'l> {
                 );
             }
         }
+        for (i, r) in sf.platform_wait.iter().enumerate() {
+            let at = At {
+                file: k,
+                path: p(&format!("platform_wait[{i}]")),
+            };
+            if !PLATFORM_WAIT_KINDS.contains(&r.kind.as_str()) {
+                self.err(
+                    &at,
+                    format!(
+                        "`kind` `{}` cannot be waited on (one of {})",
+                        r.kind,
+                        PLATFORM_WAIT_KINDS.join(", ")
+                    ),
+                );
+            }
+            if sf.platform_wait[..i].iter().any(|o| o.kind == r.kind) {
+                self.err(&at, format!("`kind` `{}` is listed twice", r.kind));
+            }
+            if !r.until.platform_only() {
+                self.err(
+                    &at,
+                    "`until` takes only `platform` conditions under `all`/`any`/`not`",
+                );
+            }
+        }
         scope.names.insert("event".into());
         self.check_matchers(k, &p("steer"), &sf.steer, &scope);
         if let Some(stop) = &sf.stop {
@@ -2460,6 +2488,7 @@ impl<'l> Resolver<'l> {
             priority: sf.priority,
             concurrency: sf.concurrency.clone(),
             retry: sf.retry.clone(),
+            platform_wait: sf.platform_wait.clone(),
             steer: sf.steer.clone(),
             stop: sf.stop.clone().unwrap_or_else(default_stop),
         })

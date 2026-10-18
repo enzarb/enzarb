@@ -1196,3 +1196,417 @@ async fn refreshing_a_fact_counts_unknown_refreshes() {
     assert_eq!(refresh(json!(true)).await, 0);
     assert_eq!(refresh(Value::Null).await, 1);
 }
+
+// ---------------------------------------------------------------- platform wait (ADR-0026)
+
+fn env_finished(run_id: &str) -> StepFinished {
+    let mut f = finished(run_id, "failure");
+    f.environment = Some(enzarb_proto::StepEnvironment {
+        kind: enzarb_proto::EnvironmentKind::DiskFull,
+        detail: "/workspace: 0 bytes free".into(),
+    });
+    f
+}
+
+async fn count(h: &H, sql: &str) -> i64 {
+    sqlx::query_scalar(sql).fetch_one(&h.db.pool).await.unwrap()
+}
+
+async fn wait_for_platform_wait(h: &H) -> i64 {
+    h.set_secret("API_KEY", "k").await;
+    h.open_issue(5, "Disk").await;
+    let task = h.first_task().await;
+    let first = h.started(1).await;
+    h.runner.finish(env_finished(&first.run_id));
+    let p = h
+        .wait_status(task, |p| p["reason"] == "platform_wait", "platform wait")
+        .await;
+    assert_eq!(p["waiting_on"], "external", "{p}");
+    assert_eq!(p["needs_you"], false, "no person involved: {p}");
+    task
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn disk_full_waits_then_resumes_the_same_run() {
+    let Some(mut h) = start(Duration::from_secs(3600), true).await else {
+        return;
+    };
+    let facts = engine::FakePlatformFacts::new();
+    h.engine.findings = engine::Findings::new(Arc::new(facts.clone()));
+    let task = wait_for_platform_wait(&h).await;
+    let run_id = h.runner.started()[0].run_id.clone();
+
+    // Disk still full, then unknown: the task keeps waiting.
+    facts.set("p", PlatformFactName::SandboxDiskPct, Fact::Num(97.0));
+    for _ in 0..3 {
+        assert_eq!(h.engine.wake_platform_waits().await.unwrap(), 0);
+    }
+    facts.set("p", PlatformFactName::SandboxDiskPct, Fact::Unknown);
+    assert_eq!(h.engine.wake_platform_waits().await.unwrap(), 0);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(h.runner.started().len(), 1);
+    assert_eq!(h.projection(task).await["reason"], "platform_wait");
+
+    // Space returns. Two ticks make one wake-up.
+    facts.set("p", PlatformFactName::SandboxDiskPct, Fact::Num(40.0));
+    h.engine.wake_platform_waits().await.unwrap();
+    h.engine.wake_platform_waits().await.unwrap();
+    let again = h.started(2).await;
+    assert_eq!(again.run_id, run_id, "same run, not a new one");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(h.runner.started().len(), 2, "one resume only");
+    assert_eq!(
+        count(
+            &h,
+            "SELECT count(*) FROM engine.events WHERE dedupe_key LIKE 'wake:%'"
+        )
+        .await,
+        1
+    );
+    assert_eq!(h.engine.wake_platform_waits().await.unwrap(), 0);
+
+    // The step continues and finishes; the flow moves on.
+    let mut f = finished(&run_id, "success");
+    f.result = Some(json!({"summary": "ok"}));
+    h.runner.finish(f);
+    h.wait_status(task, |p| p["reason"] == "awaiting_approval", "approval")
+        .await;
+    let resumes: i32 = sqlx::query_scalar("SELECT resumes FROM engine.step_runs WHERE run_id = $1")
+        .bind(&run_id)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(resumes, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_condition_that_never_clears_keeps_waiting_and_is_reported() {
+    let Some(mut h) = start(Duration::from_secs(1), true).await else {
+        return;
+    };
+    let facts = engine::FakePlatformFacts::new();
+    facts.set("p", PlatformFactName::SandboxDiskPct, Fact::Num(99.0));
+    h.engine.findings = engine::Findings::new(Arc::new(facts.clone()));
+    let task = wait_for_platform_wait(&h).await;
+    while h.engine.process_next().await.unwrap() {}
+    // A year goes by.
+    for sql in [
+        "UPDATE engine.tasks SET created_at = created_at - interval '1 year'",
+        "UPDATE engine.events SET received_at = received_at - interval '1 year'",
+        "UPDATE engine.step_runs SET queued_at = queued_at - interval '1 year',
+             started_at = started_at - interval '1 year', ended_at = ended_at - interval '1 year'",
+    ] {
+        sqlx::query(sql).execute(&h.db.pool).await.unwrap();
+    }
+    let state_before: Value = sqlx::query_scalar("SELECT state FROM engine.tasks WHERE id = $1")
+        .bind(task)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+    let events_before = count(&h, "SELECT count(*) FROM engine.events").await;
+    for _ in 0..20 {
+        h.engine.tick().await.unwrap();
+    }
+    for _ in 0..3 {
+        h.engine.findings_pass().await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    h.engine.tick().await.unwrap();
+    assert_eq!(
+        count(&h, "SELECT count(*) FROM engine.events").await,
+        events_before
+    );
+    assert_eq!(count(&h, "SELECT count(*) FROM engine.timers").await, 0);
+    assert_eq!(h.runner.started().len(), 1);
+    assert!(h.runner.stops().is_empty());
+    let p = h.projection(task).await;
+    assert_eq!(p["reason"], "platform_wait", "{p}");
+    let state_after: Value = sqlx::query_scalar("SELECT state FROM engine.tasks WHERE id = $1")
+        .bind(task)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        state_after, state_before,
+        "findings and ticks never change the task"
+    );
+    // The long wait is visible to the liveness checks.
+    assert!(
+        open_findings(&h)
+            .await
+            .iter()
+            .any(|(k, t, _)| k == &format!("platform-wait-long:{task}") && *t == Some(task)),
+        "{:?}",
+        open_findings(&h).await
+    );
+}
+
+// ---------------------------------------------------------------- failed events are retried
+
+/// Two open tasks; the first one's stored definition is broken, so any event for it fails to
+/// load its state. Returns both ids and the good definition.
+async fn broken_and_healthy(h: &H) -> (i64, i64, Value) {
+    h.open_issue(1, "A").await;
+    h.open_issue(2, "B").await;
+    while h.engine.process_next().await.unwrap() {}
+    let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM engine.tasks ORDER BY id")
+        .fetch_all(&h.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(ids.len(), 2, "{:#?}", h.notes().await);
+    let good: Value = sqlx::query_scalar("SELECT resolved FROM engine.tasks WHERE id = $1")
+        .bind(ids[0])
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+    set_resolved(h, ids[0], &json!({})).await;
+    (ids[0], ids[1], good)
+}
+
+async fn set_resolved(h: &H, task: i64, v: &Value) {
+    sqlx::query("UPDATE engine.tasks SET resolved = $2 WHERE id = $1")
+        .bind(task)
+        .bind(v)
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+}
+
+async fn ev_row(h: &H, id: i64) -> (i32, Option<String>, bool, bool) {
+    sqlx::query_as(
+        "SELECT attempts, last_error, processed_at IS NOT NULL, retry_at IS NOT NULL
+         FROM engine.events WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&h.db.pool)
+    .await
+    .unwrap()
+}
+
+async fn due(h: &H) {
+    sqlx::query("UPDATE engine.events SET retry_at = now() WHERE processed_at IS NULL AND retry_at IS NOT NULL")
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+}
+
+async fn cancel(h: &H, task: i64) -> i64 {
+    sqlx::query_scalar("SELECT engine_api.submit($1, '{\"login\": \"alice\"}', 'cancel', '{}')")
+        .bind(task)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failed_event_is_retried_in_task_order_and_blocks_only_its_task() {
+    let Some(h) = start(Duration::from_secs(3600), false).await else {
+        return;
+    };
+    let (a, b, good) = broken_and_healthy(&h).await;
+    let e1 = cancel(&h, a).await;
+    let e2: i64 = sqlx::query_scalar(
+        "SELECT engine_api.submit($1, '{\"login\": \"alice\"}', 'steer', '{\"body\": \"hi\"}')",
+    )
+    .bind(a)
+    .fetch_one(&h.db.pool)
+    .await
+    .unwrap();
+    let e3 = cancel(&h, a).await;
+    let eb = cancel(&h, b).await;
+    while h.engine.process_next().await.unwrap() {}
+
+    let (attempts, err, processed, has_retry) = ev_row(&h, e1).await;
+    assert_eq!((attempts, processed, has_retry), (1, false, true));
+    assert!(
+        err.unwrap().contains("definition"),
+        "{:#?}",
+        h.notes().await
+    );
+    // Behind the failing event: untouched, no attempt of their own.
+    for e in [e2, e3] {
+        assert_eq!(ev_row(&h, e).await, (0, None, false, false));
+    }
+    // Another task flowed.
+    assert!(ev_row(&h, eb).await.2);
+    assert_eq!(h.projection(b).await["end_status"], "cancelled");
+    // The failure shows on the task.
+    let (reason, text, _) = task_v(&h, a).await;
+    assert_eq!(reason.as_deref(), Some("event_failing"));
+    assert!(text.unwrap().contains("attempt 1"));
+
+    // Fix the fault; the event is applied, then the ones that waited, in order.
+    set_resolved(&h, a, &good).await;
+    due(&h).await;
+    while h.engine.process_next().await.unwrap() {}
+    let order: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM engine.events WHERE id = ANY($1) AND processed_at IS NOT NULL
+         ORDER BY processed_at, id",
+    )
+    .bind(vec![e1, e2, e3])
+    .fetch_all(&h.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(order, [e1, e2, e3], "{:#?}", h.notes().await);
+    assert_eq!(h.projection(a).await["end_status"], "cancelled");
+    let (reason, _, _) = task_v(&h, a).await;
+    assert_ne!(reason.as_deref(), Some("event_failing"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn permanently_failing_event_backs_off_forever_and_raises_a_finding() {
+    let Some(h) = start(Duration::from_secs(3600), false).await else {
+        return;
+    };
+    let (a, b, good) = broken_and_healthy(&h).await;
+    let e1 = cancel(&h, a).await;
+    for n in 1..=12 {
+        assert!(h.engine.process_next().await.unwrap());
+        let (attempts, _, processed, _) = ev_row(&h, e1).await;
+        assert_eq!((attempts, processed), (n, false));
+        let secs: f64 = sqlx::query_scalar(
+            "SELECT extract(epoch FROM retry_at - now())::float8 FROM engine.events WHERE id = $1",
+        )
+        .bind(e1)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+        let want = engine::reducer::retry_delay(n).as_secs_f64();
+        assert!(
+            secs <= want + 0.5 && secs > want - 5.0,
+            "attempt {n}: {secs} vs {want}"
+        );
+        // Not due yet: nothing to do, and other tasks are not held up.
+        assert!(!h.engine.process_next().await.unwrap());
+        if n == 3 {
+            let eb = cancel(&h, b).await;
+            assert!(h.engine.process_next().await.unwrap());
+            assert!(ev_row(&h, eb).await.2);
+        }
+        due(&h).await;
+    }
+    // The failure has been visible for a while: the finding opens.
+    sqlx::query("UPDATE engine.events SET received_at = now() - interval '1 hour' WHERE id = $1")
+        .bind(e1)
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+    for _ in 0..4 {
+        h.engine.findings_pass().await.unwrap();
+    }
+    let open = open_findings(&h).await;
+    assert_eq!(open.len(), 1, "{open:?}");
+    assert_eq!(open[0].0, format!("event-failing:{a}"));
+    // Fixed: the event goes through and the finding closes.
+    set_resolved(&h, a, &good).await;
+    due(&h).await;
+    while h.engine.process_next().await.unwrap() {}
+    for _ in 0..4 {
+        h.engine.findings_pass().await.unwrap();
+    }
+    assert!(open_findings(&h).await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn task_less_events_of_a_subject_wait_behind_a_failing_one() {
+    let Some(h) = start(Duration::from_secs(3600), false).await else {
+        return;
+    };
+    let skey = format!("github:{APP}#9");
+    let first = h
+        .ingest("t:1", Some(skey.clone()), "issue", json!({}))
+        .await
+        .unwrap();
+    let second = h
+        .ingest("t:2", Some(skey.clone()), "issue", json!({}))
+        .await
+        .unwrap();
+    let other = h
+        .ingest("t:3", Some(format!("github:{APP}#10")), "issue", json!({}))
+        .await
+        .unwrap();
+    // As if the first had failed once: backing off.
+    sqlx::query(
+        "UPDATE engine.events SET attempts = 1, last_error = 'boom', retry_at = now() + interval '1 hour' WHERE id = $1",
+    )
+    .bind(first)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    while h.engine.process_next().await.unwrap() {}
+    assert!(!ev_row(&h, first).await.2);
+    assert!(!ev_row(&h, second).await.2);
+    assert!(ev_row(&h, other).await.2);
+    due(&h).await;
+    while h.engine.process_next().await.unwrap() {}
+    assert!(ev_row(&h, first).await.2 && ev_row(&h, second).await.2);
+}
+
+const REQUEUE_SQL: &str = include_str!("../../../migrations/20261018000004_event_retry.sql");
+
+async fn seed_event(h: &H, key: &str, task: Option<i64>, note: &str, age_days: i32) -> i64 {
+    sqlx::query_scalar(
+        "INSERT INTO engine.events (dedupe_key, project, task_id, type, payload, received_at, processed_at, note)
+         VALUES ($1, 'p', $2, 'ui.command', '{}', now() - make_interval(days => $3), now(), $4)
+         RETURNING id",
+    )
+    .bind(key)
+    .bind(task)
+    .bind(age_days)
+    .bind(note)
+    .fetch_one(&h.db.pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn migration_requeues_only_recent_state_failures_of_live_tasks() {
+    let Some(h) = start(Duration::from_secs(3600), false).await else {
+        return;
+    };
+    let mk = |ended: bool| {
+        let q = if ended {
+            "INSERT INTO engine.tasks (project, repo, workflow_ref, state, resolved, ended_at)
+             VALUES ('p', 'o/r', 'wf', '{}', '{}', now()) RETURNING id"
+        } else {
+            "INSERT INTO engine.tasks (project, repo, workflow_ref, state, resolved)
+             VALUES ('p', 'o/r', 'wf', '{}', '{}') RETURNING id"
+        };
+        sqlx::query_scalar::<_, i64>(q)
+    };
+    let live = mk(false).fetch_one(&h.db.pool).await.unwrap();
+    let ended = mk(true).fetch_one(&h.db.pool).await.unwrap();
+    let st = "error: state: task 1 definition: missing field `platform_wait`";
+    let hit = seed_event(&h, "m:1", Some(live), st, 1).await;
+    let old_cmd = seed_event(&h, "m:2", Some(live), st, 10).await;
+    let ended_task = seed_event(&h, "m:3", Some(ended), st, 1).await;
+    let other_err = seed_event(&h, "m:4", Some(live), "error: database: boom", 1).await;
+    let no_task = seed_event(&h, "m:5", None, st, 1).await;
+    let fine = seed_event(&h, "m:6", Some(live), "no binding", 1).await;
+
+    let start_at = REQUEUE_SQL.find("DO $$").expect("DO block");
+    sqlx::raw_sql(&REQUEUE_SQL[start_at..])
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+
+    let (attempts, err, processed, _) = ev_row(&h, hit).await;
+    assert_eq!((attempts, processed), (0, false));
+    assert_eq!(err.as_deref(), Some(&st["error: ".len()..]));
+    let note: Option<String> = sqlx::query_scalar("SELECT note FROM engine.events WHERE id = $1")
+        .bind(hit)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(note, None);
+    for e in [old_cmd, ended_task, other_err, no_task, fine] {
+        let (processed, note): (bool, Option<String>) = sqlx::query_as(
+            "SELECT processed_at IS NOT NULL, note FROM engine.events WHERE id = $1",
+        )
+        .bind(e)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+        assert!(processed && note.is_some(), "event {e} must stay dropped");
+    }
+}

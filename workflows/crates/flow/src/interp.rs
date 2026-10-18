@@ -8,7 +8,7 @@ use crate::events::{Event, Payload, SubjectKind};
 use crate::format::{
     Access, Action, CANCELLED, CommandInfo, Concurrency, HandlerDo, Matcher, MatcherSpec, NumField,
     Output, ResultSpec, Secret, Sender, SubjectLink, TextField, Tools, UiAction, Wait, WaitingOn,
-    parse_duration,
+    When, parse_duration,
 };
 use crate::resolve::{EXIT_LIMIT, Exec, RKind, RNode, RPhase, RRuntime, RStep, Resolved, Route};
 use crate::template;
@@ -73,6 +73,23 @@ pub enum Pending {
     Action { call_id: String },
 }
 
+/// A step that ended with an environment failure the task waits out (ADR-0026). The status
+/// stays `running` and `pending` keeps the run id, so older readers of the state still decode it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PlatformWait {
+    pub kind: String,
+    pub detail: String,
+    /// The wake condition, resolved from the step when the wait began.
+    pub until: When,
+    /// Wake-ups so far: the idempotency token of the next `platform_cleared`.
+    #[serde(default)]
+    pub waits: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
 /// Everything the interpreter keeps per task (persisted by the engine).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
 pub struct TaskState {
@@ -103,6 +120,12 @@ pub struct TaskState {
     pub pinned: Option<String>,
     #[serde(default)]
     pub notes: Vec<String>,
+    /// Set while the task waits for the platform; resumes the pending step's run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform_wait: Option<PlatformWait>,
+    /// Platform waits that ended with a wake-up (the next wait's token).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub platform_waits: u32,
 }
 
 impl TaskState {
@@ -165,6 +188,12 @@ pub enum TaskEvent {
     /// A writer cancelled the task (engine-native, not a workflow handler): any running step
     /// is stopped and the task ends `cancelled`.
     Cancel,
+    /// A platform wait's condition holds (engine-internal, from the ticker). Ignored unless the
+    /// task is in the wait of this run and `wait` is its current wake-up count.
+    PlatformCleared {
+        run_id: String,
+        wait: u32,
+    },
     /// The engine could not start the pending step (a missing secret, a token the provider
     /// refuses): nothing ran. The step is forgotten and the task pauses at its node, so a
     /// resume (on a possibly re-resolved definition) starts it afresh.
@@ -255,6 +284,10 @@ pub enum Effect {
 pub struct RunStep {
     pub run_id: String,
     pub attempt: u32,
+    /// Platform waits that ended for this run: non-zero when the run continues after a wait
+    /// (same `run_id`), so the job key differs per wake-up.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub resume: u32,
     /// `phase/…/node`.
     pub node: String,
     /// The step's `use` reference (or `inline`).
@@ -465,6 +498,7 @@ impl<'a> Machine<'a> {
                 let here = self.s.frames.last().map(|f| f.node.clone());
                 self.pause(reason.clone(), here);
             }
+            TaskEvent::PlatformCleared { run_id, wait } => self.on_platform_cleared(run_id, *wait),
             TaskEvent::Event { event } => self.on_event(event),
             TaskEvent::StepFinished(f) => self.on_step_finished(f),
             TaskEvent::ActionFinished {
@@ -597,7 +631,20 @@ impl<'a> Machine<'a> {
                 return;
             };
             let params = &st.params;
-            if st
+            if self.s.platform_wait.is_some() {
+                // Nothing runs: a stop ends the step as interrupted, a steer has no session.
+                if st
+                    .stop
+                    .iter()
+                    .any(|m| self.matches(m, &ty, &ev, can_write, Sender::Anyone, params))
+                {
+                    self.s.pending = None;
+                    self.s.platform_wait = None;
+                    let pos = self.s.position().unwrap_or_default();
+                    self.s.last = json!({"node": pos, "exit": "interrupted", "outputs": {}, "result": null, "git": null, "environment": null, "missing_outputs": []});
+                    self.after_finish();
+                }
+            } else if st
                 .stop
                 .iter()
                 .any(|m| self.matches(m, &ty, &ev, can_write, Sender::Anyone, params))
@@ -955,6 +1002,33 @@ impl<'a> Machine<'a> {
         }
     }
 
+    fn on_platform_cleared(&mut self, run_id: &str, wait: u32) {
+        let Some(w) = &self.s.platform_wait else {
+            return;
+        };
+        let Some(Pending::Step {
+            run_id: pending,
+            attempt,
+        }) = self.s.pending.clone()
+        else {
+            return;
+        };
+        if w.waits != wait || pending != run_id || matches!(self.s.status, Status::Paused { .. }) {
+            return;
+        }
+        let Some(RKind::Step(st)) = self.node().map(|n| &n.kind) else {
+            return;
+        };
+        let st: &RStep = st;
+        self.s.platform_wait = None;
+        self.s.platform_waits += 1;
+        self.s.notes.push(format!(
+            "{}: platform wait cleared; resuming run {pending}",
+            self.s.position().unwrap_or_default()
+        ));
+        self.send_step(st, attempt, Some(pending));
+    }
+
     fn on_step_finished(&mut self, f: &StepFinished) {
         let Some(Pending::Step { run_id, attempt }) = self.s.pending.clone() else {
             return;
@@ -975,6 +1049,30 @@ impl<'a> Machine<'a> {
             .map(|f| f.node.clone())
             .unwrap_or_default();
         let pos = self.s.position().unwrap_or_default();
+        // An environment failure the step waits out: no edge, no retry, no attempt used. The
+        // pending run stays so the wake-up continues it.
+        if let Some(env) = &f.environment
+            && let Some(rule) = st.platform_wait.iter().find(|r| r.kind == env.kind)
+        {
+            self.s.pending = Some(Pending::Step { run_id, attempt });
+            self.s.last = json!({
+                "node": pos, "exit": f.exit, "outputs": f.outputs, "result": f.result,
+                "git": f.git, "environment": f.environment, "missing_outputs": [],
+            });
+            self.s.notes.push(format!(
+                "{pos}: platform wait on `{}` ({})",
+                env.kind, env.detail
+            ));
+            self.s.platform_wait = Some(PlatformWait {
+                kind: env.kind.clone(),
+                detail: env.detail.clone(),
+                until: rule.until.clone(),
+                waits: self.s.platform_waits,
+            });
+            self.s.status = Status::Running;
+            self.project();
+            return;
+        }
         // Retry before recording anything.
         if let Some(r) = &st.retry {
             let retried = if r.on.is_empty() {
@@ -1289,6 +1387,12 @@ impl<'a> Machine<'a> {
     }
 
     fn start_step(&mut self, st: &RStep, attempt: u32) {
+        self.send_step(st, attempt, None);
+    }
+
+    /// Renders and emits the step. `again` is the run to continue (a platform wait ended): same
+    /// run id, so the sandbox resumes the session instead of starting a new run.
+    fn send_step(&mut self, st: &RStep, attempt: u32, again: Option<String>) {
         let here = self.s.frames.last().map(|f| f.node.clone());
         let mut extra: Vec<(String, Value)> = Vec::new();
         for (name, input) in &st.inputs {
@@ -1370,9 +1474,15 @@ impl<'a> Machine<'a> {
         };
         // Run ids are global (step_runs, session events, the Project's sandbox): qualify them
         // with the task so two tasks never share one.
-        let run_id = match self.s.doc.task.id.as_str() {
-            "" => self.next_id("run"),
-            t => self.next_id(&format!("task-{t}-run")),
+        let resume = if again.is_some() {
+            self.s.platform_waits
+        } else {
+            0
+        };
+        let run_id = match (again, self.s.doc.task.id.as_str()) {
+            (Some(r), _) => r,
+            (None, "") => self.next_id("run"),
+            (None, t) => self.next_id(&format!("task-{t}-run")),
         };
         if matches!(exec, RunExec::Agent { .. }) {
             self.s.last_agent_run = Some(run_id.clone());
@@ -1385,6 +1495,7 @@ impl<'a> Machine<'a> {
         self.fx.push(Effect::RunStep(Box::new(RunStep {
             run_id,
             attempt,
+            resume,
             node: self.s.position().unwrap_or_default(),
             step: st.name.clone(),
             exec,
@@ -1404,6 +1515,7 @@ impl<'a> Machine<'a> {
             status: status.into(),
         };
         self.s.pending = None;
+        self.s.platform_wait = None;
         self.s.timer = None;
         self.project();
     }
@@ -1528,6 +1640,16 @@ impl<'a> Machine<'a> {
                         WaitingOn::External => board.waiting_external.clone(),
                     });
                 }
+            }
+            Status::Running if self.s.platform_wait.is_some() => {
+                let w = self.s.platform_wait.as_ref().expect("checked");
+                p.waiting_on = Some(WaitingOn::External);
+                p.reason = Some("platform_wait".into());
+                p.text = Some(format!(
+                    "Waiting for the sandbox: {} ({})",
+                    w.kind, w.detail
+                ));
+                p.column = board.waiting_external.clone();
             }
             Status::Running | Status::New => {
                 p.waiting_on = Some(WaitingOn::Agent);

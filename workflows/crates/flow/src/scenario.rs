@@ -92,6 +92,9 @@ pub struct Item {
     pub stall: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub resume: bool,
+    /// The pending platform wait's condition holds: the step resumes on the same run.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub platform_cleared: bool,
     /// Finishes the pending step with this result (instead of a stub).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step_finished: Option<Stub>,
@@ -209,6 +212,19 @@ pub fn run(res: &Resolved, sc: &Scenario) -> Vec<Failure> {
             Some(TaskEvent::StallDetected { reason: None })
         } else if item.resume {
             Some(TaskEvent::Resume)
+        } else if item.platform_cleared {
+            match (&r.state.pending, &r.state.platform_wait) {
+                (Some(crate::interp::Pending::Step { run_id, .. }), Some(w)) => {
+                    Some(TaskEvent::PlatformCleared {
+                        run_id: run_id.clone(),
+                        wait: w.waits,
+                    })
+                }
+                _ => {
+                    r.fail(&base, "no platform wait");
+                    None
+                }
+            }
         } else if let Some(s) = &item.step_finished {
             match &r.state.pending {
                 Some(crate::interp::Pending::Step { run_id, .. }) => {

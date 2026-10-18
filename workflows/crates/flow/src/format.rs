@@ -686,6 +686,11 @@ pub struct StepFile {
     pub concurrency: Option<Concurrency>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry: Option<Retry>,
+    /// Environment failures (`step_finished.environment.kind`) the task waits out instead of
+    /// routing on: no retry budget, no timeout. The step resumes on the same run when `until`
+    /// holds (ADR-0026). A kind not listed behaves as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub platform_wait: Vec<PlatformWaitRule>,
     /// Events delivered into the running agent session as user turns.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steer: Vec<Matcher>,
@@ -887,6 +892,32 @@ pub struct Retry {
     /// Exits that are retried (default `failure`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub on: Vec<String>,
+}
+
+/// Environment failure kinds the sandbox can resume a run after (`step_finished.environment`).
+pub const PLATFORM_WAIT_KINDS: [&str; 4] = ["disk_full", "oom", "network", "load"];
+
+/// One `platform_wait` entry: wait on this failure kind until the condition holds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlatformWaitRule {
+    /// `disk_full`, `oom`, `network` or `load`.
+    pub kind: String,
+    /// The wake condition: `platform` leaves under `all`/`any`/`not` (the `checks/*.yaml`
+    /// vocabulary). An unknown fact keeps the task waiting.
+    pub until: When,
+}
+
+impl When {
+    /// Only `platform` leaves and combinators over them.
+    pub fn platform_only(&self) -> bool {
+        match self {
+            When::All(v) | When::Any(v) => !v.is_empty() && v.iter().all(When::platform_only),
+            When::Not(w) => w.platform_only(),
+            When::Platform(_) => true,
+            _ => false,
+        }
+    }
 }
 
 // ---------------------------------------------------------------- runtime
@@ -1104,6 +1135,7 @@ pub struct IssueSpec {
 pub enum FindingKind {
     DeadWait,
     PlatformFailure,
+    EventFailing,
 }
 
 impl FindingKind {
@@ -1111,6 +1143,7 @@ impl FindingKind {
         match self {
             FindingKind::DeadWait => "dead_wait",
             FindingKind::PlatformFailure => "platform_failure",
+            FindingKind::EventFailing => "event_failing",
         }
     }
 }
@@ -1176,6 +1209,27 @@ pub enum When {
     RelationCount(RelationCount),
     /// A platform fact compared with a value (reads through the engine's provider).
     Platform(PlatformCmp),
+    /// The task is in a platform wait (ADR-0026), optionally for this failure kind.
+    PlatformWait(PlatformWaitIs),
+    /// An inbox event of the task keeps failing (retried with backoff, ADR-0024), optionally
+    /// for at least this long.
+    EventFailing(EventFailingIs),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EventFailingIs {
+    /// How long the event has been failing (`5m`). Immediately when absent.
+    #[serde(default, rename = "for", skip_serializing_if = "Option::is_none")]
+    pub for_: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlatformWaitIs {
+    /// `disk_full`, `oom`, ... Any kind when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -1267,6 +1321,9 @@ pub enum PlatformFactName {
     SandboxMemWorkingSetPct,
     #[serde(rename = "project.pending_change")]
     ProjectPendingChange,
+    /// The sandbox reported stats recently.
+    #[serde(rename = "sandbox.healthy")]
+    SandboxHealthy,
 }
 
 impl PlatformFactName {
@@ -1277,6 +1334,7 @@ impl PlatformFactName {
             Self::SandboxDiskPct => "sandbox.disk_pct",
             Self::SandboxMemWorkingSetPct => "sandbox.mem_working_set_pct",
             Self::ProjectPendingChange => "project.pending_change",
+            Self::SandboxHealthy => "sandbox.healthy",
         }
     }
 }
@@ -1403,6 +1461,21 @@ impl When {
                     ),
                     (PlatformFactName::WorkflowRunStatus, true, _) | (_, _, false) => {}
                     (f, _, true) => out.push(format!("`{}` takes no `arg`", f.as_str())),
+                }
+            }
+            When::PlatformWait(_) => {
+                if scope == CheckScope::Platform {
+                    out.push("task conditions need `scope: task`".into());
+                }
+            }
+            When::EventFailing(e) => {
+                if let Some(d) = &e.for_
+                    && parse_duration(d).is_none_or(|s| s == 0)
+                {
+                    out.push(format!("`{d}` is not a duration (90s, 15m, 2h, 14d, 1w)"));
+                }
+                if scope == CheckScope::Platform {
+                    out.push("task conditions need `scope: task`".into());
                 }
             }
         }

@@ -34,3 +34,8 @@ workspaces:
     base: "{{ task.default_branch }}"
 github: {contents: write}
 steer: [comment]
+platform_wait:
+  - kind: disk_full
+    until: {platform: {fact: sandbox.disk_pct, op: lt, value: 85}}
+  - kind: oom
+    until: {platform: {fact: sandbox.healthy, op: eq, value: true}}

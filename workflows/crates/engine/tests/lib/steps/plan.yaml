@@ -8,3 +8,6 @@ result:
   schema: {type: object, required: [summary], properties: {summary: {type: string}}}
 secrets: [API_KEY]
 steer: [comment]
+platform_wait:
+  - kind: disk_full
+    until: {platform: {fact: sandbox.disk_pct, op: lt, value: 85}}

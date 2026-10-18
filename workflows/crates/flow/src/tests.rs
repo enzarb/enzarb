@@ -243,6 +243,25 @@ type Case = (
     usize,
 );
 
+/// Task definitions are stored resolved; ones stored before a field existed must still load.
+#[test]
+fn stored_definitions_without_platform_wait_still_load() {
+    fn strip(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(m) => {
+                m.remove("platform_wait");
+                m.values_mut().for_each(strip);
+            }
+            serde_json::Value::Array(a) => a.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    let mut v = serde_json::to_value(resolved(&base())).unwrap();
+    strip(&mut v);
+    let back: Resolved = serde_json::from_value(v).expect("an old stored definition loads");
+    assert!(!back.phases.is_empty());
+}
+
 #[test]
 fn resolution_errors_have_locations() {
     let wf = ".enzarb/workflows/issue.yaml";
@@ -1475,6 +1494,26 @@ fn check_file_parses_and_validates() {
     assert_eq!(c.id, "ci-never-started");
     assert_eq!(c.scope, crate::format::CheckScope::Task);
     assert!(c.problems().is_empty(), "{:?}", c.problems());
+}
+
+#[test]
+fn event_failing_check_round_trips_and_validates() {
+    let head = "version: 1\nid: x\nkind: event_failing\nseverity: info\ntext: t\n";
+    let c = check(&format!("{head}when: {{event_failing: {{for: 5m}}}}\n"));
+    assert_eq!(c.kind, crate::format::FindingKind::EventFailing);
+    assert!(c.problems().is_empty(), "{:?}", c.problems());
+    let back: crate::format::CheckFile =
+        serde_json::from_value(serde_json::to_value(&c).unwrap()).unwrap();
+    assert_eq!(back.when, c.when);
+    assert!(
+        check(&format!("{head}when: {{event_failing: {{}}}}\n"))
+            .problems()
+            .is_empty()
+    );
+    let bad = check(&format!("{head}when: {{event_failing: {{for: soon}}}}\n")).problems();
+    assert!(bad[0].contains("not a duration"), "{bad:?}");
+    let schema = serde_json::to_string(&schemars::schema_for!(crate::format::CheckFile)).unwrap();
+    assert!(schema.contains("event_failing"));
 }
 
 #[test]
