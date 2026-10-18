@@ -4,7 +4,7 @@ Contract tests pin the documented behaviour of each kernel action (`docs/workflo
 
 ## Registry
 
-`workflows/crates/engine/tests/contract-registry.yaml` maps every action, argument, result field and prompt promise to the test(s) that cover it. A later check reads it to require coverage.
+`workflows/crates/engine/tests/contract-registry.yaml` maps every action, argument, result field and prompt promise to the test(s) that cover it. `enzarb-lint contracts` reads it to require coverage (see "Library check").
 
 ```yaml
 version: 1
@@ -30,3 +30,29 @@ One promise per test, named after it (`sub_issue_links_created`); cite the doc a
 ## Mutation checks
 
 Tests are written as `check_*` helpers over the fake's final state. A `mutation_tests` module re-runs the action with one behaviour switched off and requires the helper to fail. The switches are `#[cfg(test)]` only (`actions::mutation`, a thread-local `Mutation` set with `activate(..)`, restored on drop); non-test builds see constant `false`. To cover a new behaviour, add a field to `Mutation`, guard the behaviour with it, and add a `removing_*_fails_the_contract` test.
+
+## Library check
+
+```
+enzarb-lint contracts <library-dir> --registry workflows/crates/engine/tests/contract-registry.yaml [--tests-dir <dir>] [--format text|github]
+```
+
+It reads the library's workflow YAML (`phases/`, `steps/`, `workflows/`, also under `.enzarb/`) and prompts (`prompts/*.md`), and diffs them against the registry. It does not run the tests; `cargo test -p engine` does. The registry is also the list of kernel actions: `enzarb-flow` cannot depend on `engine`, so an action is "implemented" when it has a `kind: action` entry.
+
+**What is extracted.** Each `action: {name, args}` gives an action and one arg per top-level key of `args` (`issues[].x` for item keys of a literal list). Result fields are references `result.<path>` or `last.result.<path>` in the same node, and `outputs.<as>.<path>` anywhere in the file when `<as>` names an action; indexes are normalised to `[]` (`result.issues[0].number` is `issues[].number`). Extraction is textual, so a reference reached dynamically (`result[field]`) is only reported as a warning.
+
+**Prompt promises** are explicit markers, one per line, never scanned from prose:
+
+```
+<!-- promise: create_issues.title_format -->
+```
+
+`<action>.<id>` is the `action` and `name` of a `kind: prompt_promise` entry. Set that entry's `source` to the prompt path in the library (`prompts/breakdown.md`); entries whose `source` is not a prompt of the checked library are ignored by the carried-by-the-prompt rule, so the snapshot and `enzarb/workflows@v1` share one registry.
+
+**Errors** (exit 1): a used action, arg, result field or marker with no registry entry; an entry with no `tests` or a test path that is not a `fn` under `--tests-dir` (default `<registry dir>/../src/contract_tests`); a `prompt_promise` whose `source` is a prompt of the library that does not carry the marker.
+
+**Warnings** (exit 0): a used item that matches a `gaps` entry (printed with its reason; a documented gap excuses missing behaviour, not a missing entry for an item you do not list as a gap), and dynamic references. `--format github` prints them as `::warning`.
+
+**Where the manifest lives.** In this repo, next to the contract tests, so the library repo needs no schema change and the test ids are checked beside the tests.
+
+**CI** (`ci-workflows.yml`): `contracts-stdlib` runs the check on `workflows/crates/engine/tests/stdlib` and blocks. `contracts-v1` checks out `enzarb/workflows` at `v1` into `.lib/workflows` and runs the same command with `continue-on-error: true`, because the library prompts carry no markers yet. Make it blocking once `v1` carries them.

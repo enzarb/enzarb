@@ -69,3 +69,6 @@ Previous version of the breakdown (empty for the first one):
 # Result
 
 Write the markdown breakdown to `.enzarb/out/breakdown.md` (it is posted on the issue for you), then call the `submit_result` tool once with `issues`: the list of sub-issues (`key`, `title`, `body`, `depends_on`), matching the readable list exactly. It is what gets created on approval.
+
+<!-- promise: create_issues.children_relate_to_result_issues -->
+<!-- promise: create_issues.sub_issues_wait_on_dependencies -->

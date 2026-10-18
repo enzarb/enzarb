@@ -15,6 +15,7 @@
 //! - [`schema`]: generated JSON Schemas and reference docs.
 
 pub mod commands;
+pub mod contracts;
 pub mod diag;
 pub mod document;
 pub mod events;

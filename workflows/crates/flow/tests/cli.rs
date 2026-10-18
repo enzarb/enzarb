@@ -79,3 +79,96 @@ fn usage_errors_exit_2() {
     assert_eq!(lint(&["check", "app", "--format", "xml"]).0, 2);
     assert_eq!(lint(&["check", "does-not-exist"]).0, 2);
 }
+
+fn contracts(case: &str, extra: &[&str]) -> (i32, String, String) {
+    let reg = format!("contracts/{case}/registry.yaml");
+    let lib = format!("contracts/{case}/lib");
+    let mut args = vec![
+        "contracts",
+        lib.as_str(),
+        "--registry",
+        reg.as_str(),
+        "--tests-dir",
+        "contracts/tests",
+    ];
+    args.extend_from_slice(extra);
+    lint(&args)
+}
+
+#[test]
+fn contracts_pass() {
+    let (code, _, err) = contracts("ok", &[]);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("0 error(s), 0 warning(s)"), "{err}");
+}
+
+#[test]
+fn contracts_unknown_action_arg_and_result_field() {
+    let (code, _, err) = contracts("unknown_action", &[]);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.contains("action `frobnicate.frobnicate` has no `action` entry"),
+        "{err}"
+    );
+    assert!(err.contains("p.yaml:4:"), "{err}");
+    let (code, _, err) = contracts("unknown_arg", &[]);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.contains("argument `comment.colour` has no `arg` entry"),
+        "{err}"
+    );
+    let (code, _, err) = contracts("unknown_result", &[]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("result field `comment.nope`"), "{err}");
+}
+
+#[test]
+fn contracts_entry_without_or_with_dangling_test() {
+    let (code, _, err) = contracts("no_test", &[]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("has no contract test"), "{err}");
+    let (code, _, err) = contracts("dangling_test", &[]);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.contains("`contract_tests::a::gone` is not a test function"),
+        "{err}"
+    );
+}
+
+#[test]
+fn contracts_prompt_promises_both_ways() {
+    let (code, _, err) = contracts("missing_promise", &[]);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.contains("prompt promise `comment.farewell` has no `prompt_promise` entry"),
+        "{err}"
+    );
+    assert!(err.contains("p.md:2:"), "{err}");
+    let (code, _, err) = contracts("dangling_promise", &[]);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.contains("`comment.greeting` is not carried by `prompts/p.md`"),
+        "{err}"
+    );
+}
+
+#[test]
+fn contracts_gap_warns_and_passes() {
+    let (code, _, err) = contracts("gap", &[]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        err.contains("warning: `comment.colour`: documented gap (colour is not tested yet)"),
+        "{err}"
+    );
+}
+
+#[test]
+fn contracts_github_format_and_usage() {
+    let (code, out, _) = contracts("gap", &["--format", "github"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("::warning file="), "{out}");
+    let (code, out, _) = contracts("unknown_arg", &["--format", "github"]);
+    assert_eq!(code, 1);
+    assert!(out.contains("::error file="), "{out}");
+    assert_eq!(lint(&["contracts", "contracts/ok/lib"]).0, 2);
+}

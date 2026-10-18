@@ -1,0 +1,27 @@
+version: 1
+entries:
+  - kind: action
+    action: comment
+    name: 'comment'
+    source: 'docs/x.md'
+    tests: [contract_tests::a::t1]
+  - kind: arg
+    action: comment
+    name: 'body'
+    source: 'docs/x.md'
+    tests: [contract_tests::a::t1]
+  - kind: arg
+    action: comment
+    name: 'number'
+    source: 'docs/x.md'
+    tests: [contract_tests::a::t1]
+  - kind: prompt_promise
+    action: comment
+    name: 'greeting'
+    source: 'prompts/p.md'
+    tests: [contract_tests::a::t1]
+  - kind: result_field
+    action: comment
+    name: 'url'
+    source: 'docs/x.md'
+    tests: [contract_tests::a::t1]

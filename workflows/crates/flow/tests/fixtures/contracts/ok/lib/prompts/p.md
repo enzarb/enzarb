@@ -1,0 +1,2 @@
+Hello
+<!-- promise: comment.greeting -->
