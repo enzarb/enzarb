@@ -34,6 +34,7 @@ case "$*" in
   *"imagetools create"*) touch "$STUB_LOG.created"
     case "$*" in *"--prefer-index=false"*) ;; *) touch "$STUB_LOG.wrapped" ;; esac
     exit 0 ;;
+  *"inspect --raw"*) printf '%s\n' "$src_json" ;;
   *"{{json .Image}}"*)
     cfg="{\"config\":{\"Labels\":{\"org.opencontainers.image.revision\":\"$STUB_REVISION\"}}}"
     if [ "${STUB_INDEX:-}" = 1 ]; then echo "{\"linux/amd64\":$cfg}"; else echo "$cfg"; fi ;;

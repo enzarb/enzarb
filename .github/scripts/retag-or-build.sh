@@ -88,7 +88,13 @@ verify() {
     # A descriptor ({mediaType, digest, size}) rather than the manifest body.
     got_digest=$(jq -r '.digest // ""' "$plan")
   else
-    got_digest="sha256:$(sha256sum "$plan" | cut -d' ' -f1)"
+    # The printed body is re-serialised by buildx, so its bytes need not hash to the source digest:
+    # compare the canonical JSON with the source manifest, and report the source digest if equal.
+    if [ "$(jq -S -c . "$plan")" = "$(docker buildx imagetools inspect --raw "$src" | jq -S -c .)" ]; then
+      got_digest=$want_digest
+    else
+      got_digest="sha256:$(sha256sum "$plan" | cut -d' ' -f1)"
+    fi
   fi
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     {
