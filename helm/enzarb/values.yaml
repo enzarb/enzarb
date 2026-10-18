@@ -160,7 +160,7 @@ workflows:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-workflows
-    tag: 0.58.0
+    tag: 0.59.0
     pullPolicy: ""
   # Roles for `run`: reducer, executor, ticker.
   roles: reducer,executor,ticker
@@ -210,7 +210,7 @@ connectors:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-connectors-receiver
-    tag: 0.20.0
+    tag: 0.21.0
     pullPolicy: ""
   botHandle: enzarb
   botLogin: enzarb[bot]
