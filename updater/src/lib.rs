@@ -5,6 +5,7 @@
 pub mod app;
 pub mod charts;
 pub mod filter;
+pub mod history;
 pub mod poll;
 pub mod registry;
 pub mod rollout;

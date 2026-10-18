@@ -72,6 +72,8 @@ On a difference the pod is **left alone** and the change is queued: `status.pend
 3. the pod carries `enzarb.dev/active-sessions` = `0` (idle). Nothing in this repo writes that annotation yet; an idle sandbox is released in practice by (1), because workflows acks on its next tick once no `run_step` job runs;
 4. `--sandbox-roll-drain-timeout` (default `30m`) has passed since `pendingChange.since`; `pendingChange.deadline` is that instant (`since` + timeout), which the UI shows as the remaining drain time. Objects written by an older operator lack it until the next reconcile.
 
+On a roll (the pod delete succeeded) the operator also writes `status.lastRoll {at, since, reason, image}` in the same status patch. Deferrals and holds do not touch it, and later reconciles keep it until a newer roll replaces it.
+
 A further spec change while one is pending bumps `generation` (so an ack for the older one no longer applies) and keeps `since`, so a stream of edits cannot postpone the apply forever. `pendingChange` stays until the recreated pod matches the template, then it and the condition are cleared. A pod that was recreated and still differs is not deleted again for the same difference.
 
 ## Docker in the sandbox (ADR-0012, ADR-0016)

@@ -16,7 +16,7 @@ use crate::desired::{self, Defaults};
 use crate::quantity;
 use enzarb_crds::upstream::sandbox::Sandbox;
 use enzarb_crds::{
-    ANNOTATION_DRAINED_GENERATION, ANNOTATION_ROLL_NOW_GENERATION, PendingChange, Project,
+    ANNOTATION_DRAINED_GENERATION, ANNOTATION_ROLL_NOW_GENERATION, LastRoll, PendingChange, Project,
 };
 use k8s_openapi::api::core::v1::Pod;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
@@ -305,6 +305,16 @@ fn spec_value<T: serde::Serialize>(t: &T) -> Value {
     serde_json::to_value(t).unwrap_or(Value::Null)
 }
 
+/// The `status.lastRoll` for `change` applied at `now`, rolling to `image`.
+pub fn last_roll(change: &PendingChange, now: &Time, image: String) -> LastRoll {
+    LastRoll {
+        at: now.clone(),
+        since: Some(change.since.clone()),
+        reason: change.reason.clone(),
+        image,
+    }
+}
+
 /// What the step concluded for status.
 #[derive(Debug)]
 pub enum Outcome {
@@ -367,7 +377,7 @@ pub async fn roll_step(
         now: now.0,
         timeout,
     };
-    let report = |c: PendingChange| {
+    let report = |c: PendingChange, rolled: Option<LastRoll>| {
         let due = deadline(c.since.0, timeout);
         RollPending {
             message: message(&c, activity, due),
@@ -375,12 +385,13 @@ pub async fn roll_step(
                 u64::try_from(due.as_second() - now.0.as_second()).unwrap_or(0),
             ),
             change: c,
+            rolled,
         }
     };
     match decide(&input) {
         Decision::Settled => Ok(Outcome::Clear),
         Decision::Hold => Ok(Outcome::Keep),
-        Decision::Defer(c) => Ok(Outcome::Pending(report(c))),
+        Decision::Defer(c) => Ok(Outcome::Pending(report(c, None))),
         Decision::Roll(c, why) => {
             let uid = pod.as_ref().and_then(|p| p.metadata.uid.clone());
             let dp = DeleteParams {
@@ -390,8 +401,10 @@ pub async fn roll_step(
                 }),
                 ..Default::default()
             };
+            let mut rolled = None;
             match pods.delete(&name, &dp).await {
                 Ok(_) => {
+                    rolled = Some(last_roll(&c, now, desired::image(p, d)));
                     info!(project = %p.name_any(), generation = c.generation, ?why, reason = %c.reason, "rolled sandbox pod");
                     if why == Why::Timeout {
                         warn!(project = %p.name_any(), "drain timeout expired; applied without a drain ack");
@@ -404,7 +417,7 @@ pub async fn roll_step(
                 Err(e) => return Err(e),
             }
             // Pending stays published until the recreated pod matches.
-            Ok(Outcome::Pending(report(c)))
+            Ok(Outcome::Pending(report(c, rolled)))
         }
     }
 }

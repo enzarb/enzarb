@@ -21,6 +21,10 @@ The `HelmChart` is never created by the updater (the RBAC grants no `create`): i
 
 Every decision is logged as one JSON line (`decision` = `ping|ignore|reject|retry|noop|patched|error`).
 
+## Deploy history
+
+`GET /status` also returns `releases: [{version, deployedAt}]` (oldest first, last 20): when each chart version finished installing, taken from the completion time of the helm-install Job. The list is persisted in the ConfigMap `enzarb-updater-releases` (in `ENZARB_UPDATER_NAMESPACE`) so a restart does not lose it or record "now". A version is recorded once when `installed` changes. A ConfigMap read or write error is logged and never fails `/status`; an unreadable history is never overwritten.
+
 ## Configuration
 
 | Var | Default | |
@@ -35,6 +39,8 @@ Every decision is logged as one JSON line (`decision` = `ping|ignore|reject|retr
 | `RUST_LOG` | `info` | JSON logs |
 
 ## RBAC
+
+The Role also grants `get`/`patch` on ConfigMap `enzarb-updater-releases` and `create` on ConfigMaps (not limitable by name) for the deploy history.
 
 A Role (and RoleBinding to the updater's ServiceAccount) in the HelmChart namespace:
 

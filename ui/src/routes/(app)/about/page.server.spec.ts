@@ -19,6 +19,8 @@ vi.mock('#lib/server/releases.ts', () => ({
 	RELEASES_REPO: 'enzarb/enzarb',
 	cachedReleases: releases.fn
 }));
+const store = vi.hoisted(() => ({ list: vi.fn() }));
+vi.mock('#lib/server/kube.ts', () => ({ getProjectStore: () => ({ list: store.list }) }));
 const rollout = vi.hoisted(() => ({ fn: vi.fn() }));
 vi.mock('#lib/server/updater-status.ts', () => ({ fetchChartRollout: rollout.fn }));
 
@@ -41,6 +43,8 @@ beforeEach(() => {
 	tok.get.mockResolvedValue(null);
 	rollout.fn.mockReset();
 	rollout.fn.mockResolvedValue(null);
+	store.list.mockReset();
+	store.list.mockResolvedValue([]);
 	versions.value = {
 		chart: '0.4.1',
 		components: { 'enzarb-ui': 'v1.0.0', 'enzarb-extra': '2.0.0' }
@@ -93,7 +97,13 @@ describe('about load', () => {
 
 	it('includes the updater chart rollout, or null when unavailable', async () => {
 		releases.fn.mockResolvedValue([]);
-		const status = { installed: '0.9.0', desired: '0.10.0', latest: '0.10.0', stuck: true };
+		const status = {
+			installed: '0.9.0',
+			desired: '0.10.0',
+			latest: '0.10.0',
+			stuck: true,
+			releases: []
+		};
 		rollout.fn.mockResolvedValue(status);
 		expect((await run(user)).chartRollout).toEqual(status);
 		rollout.fn.mockResolvedValue(null);
@@ -118,5 +128,84 @@ describe('about load', () => {
 		expect(data.components.length).toBeGreaterThan(1);
 		expect(data.components.every((c: { releases: unknown }) => c.releases === null)).toBe(true);
 		expect(data.components[0].deployed).toBe('v1.0.0');
+	});
+
+	it('joins helm releases, the updater history and project rolls into releaseTimings', async () => {
+		releases.fn.mockImplementation(async (dir: string) =>
+			dir === 'helm' ? [{ ...release('v0.9.0'), publishedAt: '2026-10-01T10:00:00Z' }] : []
+		);
+		rollout.fn.mockResolvedValue({
+			installed: '0.9.0',
+			desired: '0.9.0',
+			latest: '0.9.0',
+			stuck: false,
+			releases: [{ version: '0.9.0', deployedAt: '2026-10-01T10:03:00Z' }]
+		});
+		store.list.mockResolvedValue([
+			{ status: { lastRoll: { at: '2026-10-01T10:20:00Z', reason: 'r' } } },
+			{ status: null }
+		]);
+		const data = await run(user);
+		expect(data.releaseTimings).toHaveLength(1);
+		expect(data.releaseTimings[0]).toMatchObject({
+			version: 'v0.9.0',
+			mergeToDeployedSeconds: 180,
+			sandboxAppliedAt: '2026-10-01T10:20:00.000Z'
+		});
+	});
+
+	it('joins each Project roll to its release by the recorded sandbox image version', async () => {
+		releases.fn.mockImplementation(async (dir: string) =>
+			dir === 'helm'
+				? [
+						{ ...release('v0.10.0'), publishedAt: '2026-10-02T10:00:00Z' },
+						{ ...release('v0.9.0'), publishedAt: '2026-10-01T10:00:00Z' }
+					]
+				: []
+		);
+		rollout.fn.mockResolvedValue({
+			installed: '0.10.0',
+			desired: '0.10.0',
+			latest: '0.10.0',
+			stuck: false,
+			releases: [
+				{ version: '0.9.0', deployedAt: '2026-10-01T10:03:00Z', sandboxImageVersion: '0.34.0' },
+				{ version: '0.10.0', deployedAt: '2026-10-02T10:03:00Z', sandboxImageVersion: '0.35.0' }
+			]
+		});
+		// Two Projects roll at different times; the 0.34.0 roll of project b happens after the
+		// 0.10.0 deploy, where a time window alone would credit it to the wrong release.
+		store.list.mockResolvedValue([
+			{
+				status: {
+					lastRoll: { at: '2026-10-02T10:40:00Z', reason: 'r', image: 'r/sandbox:0.35.0' }
+				}
+			},
+			{
+				status: {
+					lastRoll: { at: '2026-10-02T10:20:00Z', reason: 'r', image: 'r/sandbox:0.35.0' }
+				}
+			},
+			{
+				status: {
+					lastRoll: { at: '2026-10-02T10:30:00Z', reason: 'r', image: 'r/sandbox:0.34.0' }
+				}
+			}
+		]);
+		const data = await run(user);
+		expect(data.releaseTimings[0]).toMatchObject({
+			version: 'v0.10.0',
+			sandboxAppliedAt: '2026-10-02T10:20:00.000Z'
+		});
+		expect(data.releaseTimings[1]).toMatchObject({
+			version: 'v0.9.0',
+			sandboxAppliedAt: '2026-10-02T10:30:00.000Z'
+		});
+	});
+
+	it('returns no timings when the sources fail', async () => {
+		releases.fn.mockRejectedValue(new Error('offline'));
+		store.list.mockRejectedValue(new Error('forbidden'));
+		expect((await run(user)).releaseTimings).toEqual([]);
 	});
 });

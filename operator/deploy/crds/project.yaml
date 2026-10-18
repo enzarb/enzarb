@@ -205,6 +205,32 @@ spec:
                   - type
                   type: object
                 type: array
+              lastRoll:
+                description: |-
+                  The latest pod-shape change the operator applied by recreating the sandbox pod. Kept until
+                  a newer roll replaces it.
+                nullable: true
+                properties:
+                  at:
+                    description: When the pod was rolled.
+                    format: date-time
+                    type: string
+                  image:
+                    description: The sandbox image the recreated pod runs.
+                    type: string
+                  reason:
+                    description: '`pendingChange.reason` of the change.'
+                    type: string
+                  since:
+                    description: '`pendingChange.since` of the change this roll completed: the drain wait is `at - since`.'
+                    format: date-time
+                    nullable: true
+                    type: string
+                required:
+                - at
+                - image
+                - reason
+                type: object
               namespace:
                 description: The shared sandbox namespace (ADR-0013), e.g. `enzarb-sandboxes`.
                 nullable: true
