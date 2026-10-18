@@ -1,0 +1,90 @@
+# Contract-test registry: every documented promise of a kernel action and the contract test
+# that covers it. Format and rules: docs/workflows/contract-tests.md.
+# Keep `entries` sorted by (action, kind, name).
+version: 1
+entries:
+  - kind: action
+    action: create_issues
+    name: 'create_issues'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::create_issues::sub_issue_links_created, contract_tests::create_issues::depends_on_recorded_as_blocked_by, contract_tests::create_issues::placeholders_resolve_to_number_and_title, contract_tests::create_issues::retry_creates_no_duplicates, contract_tests::create_issues::duplicate_edge_422_is_absorbed, contract_tests::create_issues::transient_failure_then_retry_converges]
+  - kind: arg
+    action: create_issues
+    name: 'body'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::create_issues::placeholders_resolve_to_number_and_title]
+  - kind: arg
+    action: create_issues
+    name: 'depends_on'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::create_issues::depends_on_recorded_as_blocked_by]
+  - kind: arg
+    action: create_issues
+    name: 'footer'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::create_issues::placeholders_resolve_to_number_and_title]
+  - kind: arg
+    action: create_issues
+    name: 'issues'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::create_issues::dependencies_are_created_first, contract_tests::create_issues::result_shape_and_order]
+  - kind: arg
+    action: create_issues
+    name: 'key'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::create_issues::placeholders_resolve_to_number_and_title]
+  - kind: arg
+    action: create_issues
+    name: 'labels'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::create_issues::labels_are_passed_to_the_issue]
+  - kind: arg
+    action: create_issues
+    name: 'parent'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::create_issues::sub_issue_links_created, contract_tests::create_issues::sub_issue_parent_as_number, contract_tests::create_issues::no_parent_creates_no_sub_issue_link]
+  - kind: arg
+    action: create_issues
+    name: 'title'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::create_issues::placeholders_resolve_to_number_and_title]
+  - kind: prompt_promise
+    action: create_issues
+    name: 'children_relate_to_result_issues'
+    source: 'workflows/crates/engine/tests/stdlib/phases/breakdown.yaml (create: relate from result.issues)'
+    tests: [contract_tests::create_issues::result_shape_and_order]
+  - kind: prompt_promise
+    action: create_issues
+    name: 'sub_issues_wait_on_dependencies'
+    source: 'workflows/crates/engine/tests/stdlib/steps/breakdown.yaml (create_issues takes the breakdown list)'
+    tests: [contract_tests::create_issues::depends_on_recorded_as_blocked_by]
+  - kind: result_field
+    action: create_issues
+    name: 'issues[].key'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::create_issues::result_shape_and_order]
+  - kind: result_field
+    action: create_issues
+    name: 'issues[].kind'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::create_issues::result_shape_and_order]
+  - kind: result_field
+    action: create_issues
+    name: 'issues[].number'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::create_issues::result_shape_and_order]
+  - kind: result_field
+    action: create_issues
+    name: 'issues[].repo'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::create_issues::result_shape_and_order]
+  - kind: result_field
+    action: create_issues
+    name: 'issues[].title'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::create_issues::result_shape_and_order]
+  - kind: result_field
+    action: create_issues
+    name: 'issues[].url'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::create_issues::result_shape_and_order]
