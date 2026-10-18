@@ -62,11 +62,51 @@ export interface TaskRow {
 	/** Additive: absent (empty) from an older engine, whose `actions` are all there is. */
 	commands: TaskCommand[];
 	artifacts: ArtifactRef[];
+	/** Open liveness findings on this task (additive; empty from an older engine). */
+	findings: TaskFinding[];
 	needsYou: boolean;
 	costUsd: number | null;
 	createdAt: string;
 	updatedAt: string;
 	endedAt: string | null;
+}
+
+/** An open liveness finding as `task_v.findings` carries it (ADR-0024). */
+export interface TaskFinding {
+	key: string;
+	checkId: string;
+	kind: string;
+	severity: string;
+	text: string;
+	firstSeen: string;
+	lastSeen: string;
+}
+
+/** A row of `engine_api.finding_v`: an open finding, task scope (`taskId`) or platform scope. */
+export interface FindingRow extends TaskFinding {
+	taskId: number | null;
+	project: string;
+	/** No source yet: `finding_v` has no issue column (docs/gaps.md). */
+	issueUrl: string | null;
+}
+
+const SEVERITY_RANK: Record<string, number> = { critical: 3, warning: 2, info: 1 };
+
+/** Higher is worse; an unknown severity ranks below `info`. */
+export const severityRank = (severity: string): number => SEVERITY_RANK[severity] ?? 0;
+
+/** Style modifier for a severity; unknown values get the neutral one. */
+export const severityClass = (severity: string): string =>
+	severity in SEVERITY_RANK ? severity : 'unknown';
+
+/** Where a finding points: its task, or the project and check for a platform-scope finding. */
+export function findingTarget(f: Pick<FindingRow, 'taskId' | 'project' | 'checkId'>): {
+	href: string | null;
+	label: string;
+} {
+	return f.taskId === null
+		? { href: null, label: `${f.project} · ${f.checkId}` }
+		: { href: `/task/${f.taskId}`, label: `Task #${f.taskId}` };
 }
 
 export interface TransitionSummary {

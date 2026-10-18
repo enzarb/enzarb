@@ -1,6 +1,8 @@
 import type { Sql } from './db.ts';
 import type {
 	Board,
+	FindingRow,
+	TaskFinding,
 	ChatRow,
 	MetricsRow,
 	SecretName,
@@ -38,6 +40,27 @@ const arr = <T>(x: unknown): T[] => (Array.isArray(x) ? (x as T[]) : []);
 
 type Raw = Record<string, unknown>;
 
+function mapTaskFinding(r: Raw): TaskFinding {
+	return {
+		key: String(r.key),
+		checkId: String(r.check ?? r.check_id ?? ''),
+		kind: String(r.kind ?? ''),
+		severity: String(r.severity ?? ''),
+		text: String(r.text ?? ''),
+		firstSeen: iso(r.first_seen) ?? '',
+		lastSeen: iso(r.last_seen) ?? ''
+	};
+}
+
+export function mapFinding(r: Raw): FindingRow {
+	return {
+		...mapTaskFinding(r),
+		taskId: num(r.task_id),
+		project: String(r.project),
+		issueUrl: null
+	};
+}
+
 export function mapTask(r: Raw): TaskRow {
 	return {
 		id: Number(r.task_id),
@@ -57,6 +80,7 @@ export function mapTask(r: Raw): TaskRow {
 		actions: arr(r.actions),
 		commands: arr(r.commands),
 		artifacts: arr(r.artifacts),
+		findings: arr<Raw>(r.findings).map(mapTaskFinding),
 		needsYou: r.needs_you === true,
 		costUsd: num(r.cost_usd),
 		createdAt: iso(r.created_at) ?? '',
@@ -138,6 +162,18 @@ export function tasksService(sql: Sql, projects: readonly string[]) {
 				SELECT * FROM engine_api.task_v WHERE project = ANY(${list}) AND needs_you
 				ORDER BY updated_at ASC LIMIT 500`;
 			return rows.map(mapTask);
+		},
+
+		/** Open findings of the caller's projects (or one), worst first. */
+		async findings(project?: string): Promise<FindingRow[]> {
+			if (project !== undefined && !owned.has(project)) return [];
+			const scope = project === undefined ? list : [project];
+			if (scope.length === 0) return [];
+			const rows = await sql<Raw[]>`
+				SELECT * FROM engine_api.finding_v WHERE project = ANY(${scope})
+				ORDER BY CASE severity WHEN 'critical' THEN 3 WHEN 'warning' THEN 2 ELSE 1 END DESC,
+					first_seen, key LIMIT 500`;
+			return rows.map(mapFinding);
 		},
 
 		/** One row, or null when missing or in another user's project. */
