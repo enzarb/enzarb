@@ -14,3 +14,6 @@ Each file has a `_source` field naming the endpoint and the behaviour it models.
 
 The real connector absorbs the 422s into `Ok(())`, so the fake records them
 (`rejected_duplicates()`) instead of returning an error.
+
+`connector-github/tests/fixture_parity.rs` serves these same files to the real
+connector and compares it with `FakeConnector`, so edit them with care.
