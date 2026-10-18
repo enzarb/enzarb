@@ -81,7 +81,7 @@ Defined in `proto/crates/enzarb-proto/src/step.rs` and mirrored in `proto/ts`; f
   - `read_file`, `resolve_ref`.
 - **Facts:**
   - `ci` `{sha, state, failing: [{name, kind, url, conclusion, log_excerpt, actionable, job_id?, run_id?}]}` (ignore regex `ENZARB_CI_IGNORE_CHECKS`);
-  - `reviews`, `mergeable`, `merged`, `git`, `dependencies`; `contained_in_tag` (see Facts above).
+  - `reviews` (the list `[{author, state, body}]`: latest review per author, lowercase state), `mergeable` (`null` until GitHub has computed it), `merged`, `git`, `dependencies`; `contained_in_tag` (see Facts above).
 - **Instance:** task documents carry `instance: {bot: {login, handle}, url}` from `ENZARB_BOT_LOGIN`, `ENZARB_BOT_HANDLE`, `ENZARB_PUBLIC_URL`; a comment's `mentioned` is recomputed with `ENZARB_BOT_HANDLE`.
 - **Auto-upgrade:** the definition is re-resolved (with the binding's `with:` params) at each wait and before each step (also when the event finishes the step or action in flight); a running step keeps its definition.
 
