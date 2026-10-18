@@ -4,8 +4,8 @@
 
 use enzarb_connector::file_issue::file_issue_key;
 use enzarb_connector::{
-    ChangeRequestSpec, CloseReason, Connector, Error as CError, MergeOutcome, UpdateBranchOutcome,
-    WorkItemKey,
+    ChangeRequestSpec, CloseReason, Connector, Error as CError, MergeOutcome, RepoKey,
+    UpdateBranchOutcome, WorkItemKey,
 };
 use enzarb_flow::interp::TaskState;
 use serde_json::{Map, Value, json};
@@ -290,28 +290,9 @@ pub async fn fact(
             };
             json!({"branch": branch, "head": h.clone().unwrap_or_default(), "pushed": h.is_some(), "ahead": ahead})
         }
-        "ci" => match head {
-            Some(sha) => {
-                let mut v = c.ci_details(&rk, &sha).await.map_err(|e| e.to_string())?;
-                if let Some(o) = v.as_object_mut() {
-                    o.insert("sha".into(), json!(sha));
-                }
-                v
-            }
-            None => Value::Null,
-        },
-        "reviews" => match &pr_key {
-            Some(k) => {
-                let v = c.list_reviews(k).await.map_err(|e| e.to_string())?;
-                // The interpreter's `reviews` fact is the list.
-                v.get("reviews").cloned().unwrap_or(v)
-            }
-            None => json!([]),
-        },
-        "mergeable" => match &pr_key {
-            Some(k) => json!(mergeable(c.as_ref(), k, MERGEABLE_POLL).await?),
-            None => Value::Null,
-        },
+        "ci" => ci_fact(c.as_ref(), &rk, head.as_deref()).await?,
+        "reviews" => reviews_fact(c.as_ref(), pr_key.as_ref()).await?,
+        "mergeable" => mergeable_fact(c.as_ref(), pr_key.as_ref(), MERGEABLE_POLL).await?,
         "merged" => json!(
             state
                 .doc
@@ -328,10 +309,8 @@ pub async fn fact(
                 return Ok(json!([]));
             };
             // An error is "unknown", never "none".
-            let deps = c
-                .list_dependencies(&WorkItemKey::new(rk.clone(), issue.number))
-                .await
-                .map_err(|e| e.to_string())?;
+            let deps =
+                dependencies_fact(c.as_ref(), &WorkItemKey::new(rk.clone(), issue.number)).await?;
             // Record them as `blocked_by` relations first, so a dependency that ends after the
             // read below still notifies this task (`dependency_changed`) and the fact is
             // refreshed. Relations for dependencies that were removed go.
@@ -439,6 +418,7 @@ pub(crate) mod mutation {
         pub skip_sub_issue_link: bool,
         pub skip_dependencies: bool,
         pub skip_placeholders: bool,
+        pub mergeable_known_on_first_read: bool,
     }
 
     thread_local! {
@@ -467,6 +447,9 @@ pub(crate) mod mutation {
     pub(crate) fn skip_placeholders() -> bool {
         ACTIVE.with(|a| a.get().skip_placeholders)
     }
+    pub(crate) fn mergeable_known_on_first_read() -> bool {
+        ACTIVE.with(|a| a.get().mergeable_known_on_first_read)
+    }
 }
 
 #[cfg(not(test))]
@@ -478,6 +461,9 @@ mod mutation {
         false
     }
     pub(super) fn skip_placeholders() -> bool {
+        false
+    }
+    pub(super) fn mergeable_known_on_first_read() -> bool {
         false
     }
 }
@@ -860,16 +846,69 @@ const MERGEABLE_POLL: &[std::time::Duration] = &[
     std::time::Duration::from_secs(10),
 ];
 
-async fn mergeable(
+/// The `ci` fact: the connector's check summary for the PR head `sha`, tagged with it; `null`
+/// without a PR.
+pub(crate) async fn ci_fact(
+    c: &dyn Connector,
+    rk: &RepoKey,
+    sha: Option<&str>,
+) -> Result<Value, String> {
+    let Some(sha) = sha else {
+        return Ok(Value::Null);
+    };
+    let mut v = c.ci_details(rk, sha).await.map_err(|e| e.to_string())?;
+    if let Some(o) = v.as_object_mut() {
+        o.insert("sha".into(), json!(sha));
+    }
+    Ok(v)
+}
+
+/// The `reviews` fact is the list (the connector wraps it as `{sha, reviews}`); `[]` without a PR.
+pub(crate) async fn reviews_fact(
+    c: &dyn Connector,
+    pr: Option<&WorkItemKey>,
+) -> Result<Value, String> {
+    let Some(pr) = pr else {
+        return Ok(json!([]));
+    };
+    let v = c.list_reviews(pr).await.map_err(|e| e.to_string())?;
+    Ok(v.get("reviews").cloned().unwrap_or(v))
+}
+
+/// The `mergeable` fact: `true`/`false` once known, `null` while unknown or without a PR.
+pub(crate) async fn mergeable_fact(
+    c: &dyn Connector,
+    pr: Option<&WorkItemKey>,
+    delays: &[std::time::Duration],
+) -> Result<Value, String> {
+    match pr {
+        Some(k) => Ok(json!(mergeable(c, k, delays).await?)),
+        None => Ok(Value::Null),
+    }
+}
+
+/// The blocked-by edges of `issue`. An error is "unknown", never "none".
+pub(crate) async fn dependencies_fact(
+    c: &dyn Connector,
+    issue: &WorkItemKey,
+) -> Result<Vec<WorkItemKey>, String> {
+    c.list_dependencies(issue).await.map_err(|e| e.to_string())
+}
+
+pub(crate) async fn mergeable(
     c: &dyn Connector,
     k: &WorkItemKey,
     delays: &[std::time::Duration],
 ) -> Result<Option<bool>, String> {
-    let mut m = c
+    let first = c
         .get_merge_readiness(k, k.number)
         .await
-        .map_err(|e| e.to_string())?
-        .mergeable;
+        .map_err(|e| e.to_string())?;
+    // Mutation: a fake that reports the first read as known (GitHub never does).
+    let mut m = match (mutation::mergeable_known_on_first_read(), first.mergeable) {
+        (true, None) if first.mergeable_state == "unknown" => Some(true),
+        (_, m) => m,
+    };
     for d in delays {
         if m.is_some() {
             break;

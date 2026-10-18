@@ -1,6 +1,6 @@
 # Contract tests and the registry
 
-Contract tests pin the documented behaviour of each kernel action (`docs/workflows/contracts-v2.md`, `docs/contracts.md`, ADR-0021, ADR-0022) against `FakeConnector`. They live in `workflows/crates/engine/src/contract_tests/<action>.rs`, one `#[tokio::test]` per promise. Today: `create_issues`.
+Contract tests pin the documented behaviour of each kernel action (`docs/workflows/contracts-v2.md`, `docs/contracts.md`, ADR-0021, ADR-0022) against `FakeConnector`. They live in `workflows/crates/engine/src/contract_tests/<action>.rs`, one `#[tokio::test]` per promise. Today: `create_issues` and the facts `ci`, `mergeable`, `reviews` and `dependencies`. A fact is registered as a `kind: action` entry plus one `kind: result_field` entry per field (`action` holds the fact name); `contract_tests/facts.rs` runs them through the helpers `actions::fact` calls.
 
 ## Registry
 

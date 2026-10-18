@@ -3,4 +3,5 @@
 //! its test; see `docs/workflows/contract-tests.md`.
 
 mod create_issues;
+mod facts;
 mod registry;
