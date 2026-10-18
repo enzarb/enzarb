@@ -4,6 +4,7 @@
 	import StepRuns from '#lib/components/tasks/StepRuns.svelte';
 	import SubjectLinks from '#lib/components/tasks/SubjectLinks.svelte';
 	import TaskCommands from '#lib/components/tasks/TaskCommands.svelte';
+	import TaskFindings from '#lib/components/tasks/TaskFindings.svelte';
 	import TaskControls from '#lib/components/tasks/TaskControls.svelte';
 	import TaskStatus from '#lib/components/tasks/TaskStatus.svelte';
 	import TaskTimeline from '#lib/components/tasks/TaskTimeline.svelte';
@@ -77,6 +78,12 @@
 				{#if t.text}<p>{t.text}</p>{/if}
 				{#if t.waitingOn}<span class="ez-muted">waiting on {t.waitingOn}</span>{/if}
 			</div>
+		{/if}
+
+		{#if t.findings.length}
+			<Section title="Findings">
+				<TaskFindings findings={t.findings} />
+			</Section>
 		{/if}
 
 		<Section title="Subjects">

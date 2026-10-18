@@ -51,6 +51,10 @@ export const listTasks = query(v.optional(NameArg), async (project) =>
 
 export const listNeedsYou = query(async () => (await service()).tasks.needsYou());
 
+export const listFindings = query(v.optional(NameArg), async (project) =>
+	(await service()).tasks.findings(project)
+);
+
 export const getTask = query(Id, async (id) => {
 	const row = await (await service()).tasks.get(id);
 	if (!row) error(404, 'Task not found');
