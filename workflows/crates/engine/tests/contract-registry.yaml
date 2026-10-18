@@ -412,4 +412,5 @@ gaps:
   - {kind: arg, action: merge_pull_request, name: head_sha, reason: 'the stdlib merge phase passes head_sha where the registry lists expected_head; no contract test covers it yet (#292 follow-up)'}
   - {kind: arg, action: merge_pull_request, name: method, reason: 'the stdlib merge phase passes method but no contract test covers it yet (#292 follow-up)'}
   - {kind: arg, action: open_pull_request, name: issue, reason: 'the stdlib implement phase passes issue but no contract test covers it yet (#292 follow-up)'}
+  - {kind: result_field, action: merge_pull_request, name: error, reason: 'the stdlib merge phase routes on result.error but no contract test covers it yet (#292 follow-up)'}
   - {kind: result_field, action: merge_pull_request, name: reason, reason: 'the stdlib merge phase routes on result.reason but no contract test covers it yet (#292 follow-up)'}
