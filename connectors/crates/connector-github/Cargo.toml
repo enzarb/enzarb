@@ -25,5 +25,6 @@ tokio = { version = "1", features = ["time"] }
 tracing = "0.1.44"
 
 [dev-dependencies]
+enzarb-connector = { path = "../connector", features = ["fake"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 wiremock = "0.6.5"
