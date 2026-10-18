@@ -36,6 +36,8 @@ jobs:
         run: bash scripts/monorepo/test-tool-pins.sh
       - name: Retag dry-run check, with a stubbed docker
         run: bash scripts/monorepo/test-retag-or-build.sh
+      - name: Next-version diff, on a scratch repo
+        run: bash scripts/monorepo/test-next-version-diff.sh
       - name: shellcheck (preinstalled on ubuntu-latest)
         run: shellcheck --exclude=SC1091 scripts/monorepo/*.sh .github/scripts/*.sh .mise/tasks/test/pg .mise/tasks/graph/gen
   actionlint:
