@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use enzarb_connector::file_issue::has_file_issue_marker;
 use enzarb_flow::format::{
     CheckFile, CheckScope, CmpOp, FindingKind, IssueSpec, PlatformCmp, PlatformFactName, Severity,
     When, parse_duration,
@@ -184,6 +185,9 @@ pub struct TaskSnap {
     pub last_event_at: DateTime<Utc>,
     /// The last step activity, else the task's creation. A running step counts as `now`.
     pub last_step_at: DateTime<Utc>,
+    /// The task's own source issue was filed by a finding (it carries the `file_issue` marker).
+    /// Findings on it are recorded but never file another issue (ADR-0024).
+    pub issue_from_finding: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -346,7 +350,13 @@ impl Cx<'_> {
                 kind: c.kind,
                 severity: c.severity,
                 text: self.render(&c.text),
-                issue: c.issue.as_ref().map(|i| self.render_issue(i, &key)),
+                // A task born from a finding's issue must not file another one: that loops
+                // (finding -> issue -> task -> finding -> ...). The finding is still recorded.
+                issue: c
+                    .issue
+                    .as_ref()
+                    .filter(|_| !self.task.is_some_and(|t| t.issue_from_finding))
+                    .map(|i| self.render_issue(i, &key)),
                 key,
             });
         }
@@ -749,7 +759,8 @@ pub async fn load_tasks(pool: &PgPool, projects: &[String]) -> Result<Vec<TaskSn
                 (SELECT max(x.at) FROM engine.transitions x
                  WHERE x.task_id = t.id
                    AND (x.from_state IS DISTINCT FROM x.to_state OR x.effects <> '[]'::jsonb)),
-                t.state#>>'{platform_wait,kind}'
+                t.state#>>'{platform_wait,kind}',
+                t.state #>> '{doc,subjects,issue,body}'
          FROM engine.tasks t LEFT JOIN engine.projection p ON p.task_id = t.id
          LEFT JOIN LATERAL (
              SELECT e.received_at AS at,
@@ -787,6 +798,9 @@ pub async fn load_tasks(pool: &PgPool, projects: &[String]) -> Result<Vec<TaskSn
             last_handled_at: r.get(10),
             last_event_at: r.get(5),
             last_step_at: r.get(6),
+            issue_from_finding: r
+                .get::<Option<String>, _>(12)
+                .is_some_and(|b| has_file_issue_marker(&b)),
         })
         .collect();
     let ids: Vec<i64> = tasks.iter().map(|t| t.id).collect();
@@ -885,6 +899,7 @@ mod tests {
             last_handled_at: None,
             last_event_at: now() - chrono::Duration::hours(2),
             last_step_at: now() - chrono::Duration::hours(3),
+            issue_from_finding: false,
         }
     }
 
@@ -1046,6 +1061,24 @@ mod tests {
             let sn = snap(vec![task_]);
             assert_eq!(!hits(&check(when.clone()), &sn).is_empty(), want);
         }
+    }
+
+    #[test]
+    fn issue_from_a_finding_is_not_filed_again() {
+        let mut c = check(json!({"waiting_on": "external"}));
+        c.issue = Some(IssueSpec {
+            title: "t".into(),
+            body: "b".into(),
+            labels: vec![],
+            repo: None,
+        });
+        let mut t = task(7);
+        let e = evaluate(std::slice::from_ref(&c), &snap(vec![t.clone()]), now());
+        assert!(e.desired[0].issue.is_some());
+        t.issue_from_finding = true;
+        let e = evaluate(std::slice::from_ref(&c), &snap(vec![t]), now());
+        assert_eq!(e.desired.len(), 1);
+        assert!(e.desired[0].issue.is_none());
     }
 
     #[test]
