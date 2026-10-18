@@ -69,7 +69,7 @@ JSON objects with a `"type"` field, channel 0. Unknown fields are ignored; an un
 | `opened` | server -> client | `channel` |
 | `open_error` | server -> client | `channel`, `message`, `code?: string` |
 | `resize` | client -> server | `channel`, `cols`, `rows` |
-| `step_start` | client -> server (only after `steps`) | `StepStart` (below). Idempotent on `run_id`: a repeat is answered `step_accepted{existing: true}` |
+| `step_start` | client -> server (only after `steps`) | `StepStart` (below). Idempotent on `run_id`: a repeat is answered `step_accepted{existing: true}` and replays the run. Exceptions, which continue the run with the new secrets (same workspace, same agent session via `session/load`, state `running`, events continuing the `seq`): an `interrupted` run, and a `finished` run whose `step_finished` carried `environment` (`disk_full`, `oom`). A run that finished for code reasons is only replayed |
 | `step_accepted` | server -> client | `run_id`, `state: StepPhase`, `existing: bool` |
 | `step_status` | client -> server | `run_id`, `after_seq?: u64` (default 0). The server replays `session_event`s with `seq > after_seq`, then answers `step_state`, and subscribes the session to the run's further `session_event`s and `step_finished` |
 | `step_state` | server -> client (reply to `step_status`) | `run_id`, `state: StepPhase`, `result?: StepFinished` (terminal steps) |
