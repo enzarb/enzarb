@@ -255,6 +255,11 @@ entries:
     tests: [contract_tests::merge_pull_request::already_merged_reports_already]
   - kind: result_field
     action: merge_pull_request
+    name: 'error'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::merge_pull_request::conflict_refusal_is_ok_false_with_provider_text, contract_tests::merge_pull_request::base_modified_refusal_is_ok_false_with_provider_text]
+  - kind: result_field
+    action: merge_pull_request
     name: 'merged'
     source: 'docs/workflows/contracts-v2.md#kernel-actions'
     tests: [contract_tests::merge_pull_request::merged_result_is_merged_and_sha, contract_tests::merge_pull_request::already_merged_reports_already]
@@ -412,4 +417,5 @@ gaps:
   - {kind: arg, action: merge_pull_request, name: head_sha, reason: 'the stdlib merge phase passes head_sha where the registry lists expected_head; no contract test covers it yet (#292 follow-up)'}
   - {kind: arg, action: merge_pull_request, name: method, reason: 'the stdlib merge phase passes method but no contract test covers it yet (#292 follow-up)'}
   - {kind: arg, action: open_pull_request, name: issue, reason: 'the stdlib implement phase passes issue but no contract test covers it yet (#292 follow-up)'}
-  - {kind: result_field, action: merge_pull_request, name: reason, reason: 'the stdlib merge phase routes on result.reason but no contract test covers it yet (#292 follow-up)'}
+  - {kind: result_field, action: merge_pull_request, name: reason, reason: 'the stdlib merge phase routes on result.reason, but the kernel never emits it; a refusal carries its text in result.error'}
+  - {kind: result_field, action: merge_pull_request, name: message, reason: 'never set by the kernel; the library should read only result.error (#341)'}
