@@ -60,9 +60,20 @@ echo
 echo "| Component | main last tag | main next | PR last tag | PR next | Changed |"
 echo "|---|---|---|---|---|---|"
 changed=0
+failed=0
 for c in "${components[@]}"; do
-  read -r ml mn <<<"$(version_of "$tmp/.github/scripts/next-version.sh" "$c" "${main_vars[@]}")"
-  read -r pl pn <<<"$(version_of .github/scripts/next-version.sh "$c" "${pr_vars[@]}")"
+  # A failing next-version.sh is an error, never "no difference": capture the output and the
+  # status separately (`read <<<"$(…)"` would hide the failure).
+  if ! out=$(version_of "$tmp/.github/scripts/next-version.sh" "$c" "${main_vars[@]}"); then
+    out="error error"; failed=$((failed + 1))
+    echo "::error title=next-version failed::$c: next-version.sh on $main_ref failed" >&2
+  fi
+  read -r ml mn <<<"$out"
+  if ! out=$(version_of .github/scripts/next-version.sh "$c" "${pr_vars[@]}"); then
+    out="error error"; failed=$((failed + 1))
+    echo "::error title=next-version failed::$c: next-version.sh on the PR failed" >&2
+  fi
+  read -r pl pn <<<"$out"
   mark=
   if [ "$ml $mn" != "$pl $pn" ]; then
     mark="**changed**"
@@ -72,4 +83,8 @@ for c in "${components[@]}"; do
   echo "| $c | $ml | $mn | $pl | $pn | $mark |"
 done
 echo
+if [ "$failed" -gt 0 ]; then
+  echo "$failed next-version.sh run(s) failed; the comparison is incomplete."
+  exit 1
+fi
 if [ "$changed" -eq 0 ]; then echo "No differences."; else echo "$changed component(s) differ."; fi

@@ -6,7 +6,8 @@
 #   2. a PR edit of next-version.sh changes one component's version: only that row is flagged;
 #   3. a component added to the graph is (absent) on the main side and flagged;
 #   4. a new path dependency in the graph changes the dependent component;
-#   5. header and row count match the union of the components.
+#   5. a failing next-version.sh is an error (exit 1, ::error), never "No differences";
+#   6. header and row count match the union of the components.
 set -euo pipefail
 
 src=$(cd "$(dirname "$0")/../.." && pwd)
@@ -48,7 +49,8 @@ G
 run() { # <repo>   sets out (stdout) and err (stderr)
   local errf
   errf=$(mktemp)
-  out=$(cd "$1" && bash scripts/monorepo/next-version-diff.sh --main-ref base --sha HEAD 2>"$errf")
+  rc=0
+  out=$(cd "$1" && bash scripts/monorepo/next-version-diff.sh --main-ref base --sha HEAD 2>"$errf") || rc=$?
   err=$(cat "$errf")
   rm -f "$errf"
 }
@@ -95,7 +97,20 @@ run "$r"
 ok "deps: a changed" "| a | a/v0.1.0 | 0.1.1 | a/v0.1.0 | 0.2.0 | **changed** |" "$(row a)"
 ok "deps: b unchanged" "| b | b/v0.2.0 | 0.3.0 | b/v0.2.0 | 0.3.0 |  |" "$(row b)"
 
-# 5. table shape
+# 5. next-version.sh fails on both sides: an error, never "No differences"
+r=$(new_repo)
+(
+  cd "$r"
+  sed -i '2i exit 3' .github/scripts/next-version.sh
+  git add -A && git commit -qm "ci: break next-version"
+  git branch -f base
+)
+run "$r"
+ok "failing: exit status" "1" "$rc"
+ok "failing: not reported as no differences" "0" "$(grep -c 'No differences' <<<"$out" || true)"
+ok "failing: errors raised" "1" "$( [ "$(grep -c '^::error' <<<"$err")" -gt 0 ] && echo 1 || echo 0)"
+
+# 6. table shape
 ok "header" "| Component | main last tag | main next | PR last tag | PR next | Changed |" "$(grep '^| Component' <<<"$out")"
 
 if [ "$fail" = 0 ]; then echo "next-version-diff: all tests passed"; fi
