@@ -292,15 +292,16 @@ impl Git<'_> {
         let local = self
             .rev(ctl, dir, &format!("refs/heads/{}", ws.branch))
             .await?;
-        // Uncommitted changes on the default branch are never work: steps commit and push only
-        // on their own task branch. They are left by a read step, or by a clone that was never
-        // checked out (before the fix to `clone` above), and would block switching to the task
-        // branch. Discard them before leaving the default branch.
+        // A step starts from a clean tree. Uncommitted changes on a branch other than this
+        // step's are never work: steps commit (and push) everything they keep on their own
+        // branch, and an interrupted step resumes on that same branch, untouched here. They are
+        // left by a read step, or by a clone that was never checked out (before the fix to
+        // `clone` above), and would block the switch. Commits are kept.
         let current = self
             .local(ctl, dir, &["symbolic-ref", "--short", "-q", "HEAD"])
             .await?;
         let current = String::from_utf8_lossy(&current.stdout).trim().to_string();
-        if current == ws.base && current != ws.branch {
+        if current != ws.branch {
             let _ = self
                 .local(ctl, dir, &["reset", "-q", "--hard", "HEAD"])
                 .await?;
