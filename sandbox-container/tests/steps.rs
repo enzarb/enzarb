@@ -2,6 +2,8 @@
 //! executor's client session, git against local bare repos and a fake ACP
 //! agent (`fixtures/fake-step-agent.mjs`, run with node).
 
+mod common;
+
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -759,10 +761,9 @@ async fn workspace_prune_spares_tasks_with_a_running_step() {
     .await;
     // 100% free required: always "low", so every idle cache goes.
     // Like a full disk: nothing new can be created at the workspace root.
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&env.ws, std::fs::Permissions::from_mode(0o555)).unwrap();
-    let removed = sandbox_init::workspace_prune::prune_once(&env.ws, &steps, 100);
-    std::fs::set_permissions(&env.ws, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let removed = common::read_only(&env.ws, || {
+        sandbox_init::workspace_prune::prune_once(&env.ws, &steps, 100)
+    });
     assert_eq!(removed, 1);
     assert!(cache("task-1").exists(), "the busy task kept its cache");
     assert!(
