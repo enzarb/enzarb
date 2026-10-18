@@ -1,0 +1,7 @@
+version: 1
+id: mergeable-unknown
+kind: dead_wait
+severity: info
+text: "Mergeability is still unknown after several refreshes"
+when:
+  fact_unknown_for: {name: mergeable, refreshes: 3}

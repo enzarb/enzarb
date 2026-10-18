@@ -589,18 +589,34 @@ impl Engine {
         let value = crate::actions::fact(self, job.task_id, &repo, &state, &fact)
             .await
             .map_err(StepError::Unavailable)?;
-        sqlx::query(
-            "INSERT INTO engine.facts (task_id, name, value, source) VALUES ($1, $2, $3, 'github')
-             ON CONFLICT (task_id, name) DO UPDATE SET value = EXCLUDED.value, at = now()",
-        )
-        .bind(job.task_id)
-        .bind(&fact)
-        .bind(&value)
-        .execute(&self.pool)
-        .await
-        .map_err(db)?;
+        store_fact(&self.pool, job.task_id, &fact, &value)
+            .await
+            .map_err(db)?;
         Ok(Done::Event(TaskEvent::FactUpdated { fact, value }))
     }
+}
+
+/// Stores a refreshed fact. `unknown_refreshes` counts consecutive refreshes that left the fact
+/// unknown (null) and resets on a known value (liveness checks, ADR-0024).
+pub async fn store_fact(
+    pool: &sqlx::PgPool,
+    task: i64,
+    name: &str,
+    value: &Value,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO engine.facts (task_id, name, value, source, unknown_refreshes)
+         VALUES ($1, $2, $3, 'github', CASE WHEN $3::jsonb = 'null'::jsonb THEN 1 ELSE 0 END)
+         ON CONFLICT (task_id, name) DO UPDATE SET value = EXCLUDED.value, at = now(),
+             unknown_refreshes = CASE WHEN EXCLUDED.value = 'null'::jsonb
+                                      THEN engine.facts.unknown_refreshes + 1 ELSE 0 END",
+    )
+    .bind(task)
+    .bind(name)
+    .bind(value)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 /// A provider refusal that retrying the same request cannot fix (GitHub 4xx such as

@@ -6,6 +6,7 @@ use std::time::Duration;
 use enzarb_connector::{Connector, RepoKey, WorkItemKey};
 use sqlx::PgPool;
 
+use crate::findings::Findings;
 use crate::index::ProjectIndex;
 use crate::library::Library;
 use crate::permission::PermissionResolver;
@@ -64,6 +65,8 @@ pub struct Engine {
     pub secrets_key: Option<SecretsKey>,
     /// The UI-captured per-user Claude token store, as a user-scope secret source.
     pub claude: Option<crate::secrets::ClaudeSource>,
+    /// The periodic `platform` pass that raises and clears liveness findings.
+    pub findings: Findings,
     pub cfg: EngineConfig,
 }
 

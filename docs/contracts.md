@@ -331,6 +331,8 @@ workflows_api.job_v(id, work_item_id, kind, status, attempt, created_at, updated
   - **Waiting rule:** transitions carry no wait marker; only the current wait is stored (`state_data.wait`). An open state whose item is waiting now is therefore never an active sample: it is counted in `wait_count` with its elapsed time in `wait_s`, with or without `p_include_open`. **Limit:** waits that already ended (including session-limit waits) are inside the closed durations and cannot be separated.
   - `job` rows: jobs of the project's items by `jobs.kind`, `updated_at - created_at`, window on `jobs.created_at`, finished jobs only (`succeeded`, `failed`, `cancelled`); `open_excluded` and `wait_count` are 0.
 
+Liveness findings (additive, [ADR-0024](adr/0024-liveness-findings.md)): `engine_api.task_v` gains the last column `findings` and computes `reason`/`text` from the top open finding when the interpreter has no reason; `engine_api.finding_v` lists open findings (task and platform scope). Details: [workflows/contracts-v2.md](workflows/contracts-v2.md).
+
 ## 7. Browser → proxy
 
 - **URL:** `wss://<host>/sandbox/v1/projects/<project>/mux?token=<jwt>`. Browsers can't set headers on websockets.
@@ -376,6 +378,7 @@ Internal only: `enzarb-workflows-executor:8081` (`/v1/runs/{id}/finished`, `/hea
 | Var | Used by |
 |---|---|
 | `DATABASE_URL` | ui, receiver, workflows (`postgres:///enzarb` plus `PG*` env vars from pgop Role secret `enzarb-pg-<role>-credentials`; see database.md) |
+| `ENZARB_FINDINGS_SECS` (60) | workflows (how often liveness checks run; no chart value, default only) |
 | `ENZARB_SESSION_JWT_SECRET` | ui, sandbox-proxy |
 | `ENZARB_REALTIME_JWT_SECRET` | ui, enzarb-realtime |
 | `ENZARB_REALTIME_LISTEN` (`0.0.0.0:8080`), `ENZARB_REALTIME_PING_SECS` (15), `ENZARB_REALTIME_BUFFER` (256), `ENZARB_REALTIME_MAX_TOKEN_TTL_SECS` (300), `ENZARB_REALTIME_ALLOWED_ORIGINS` (comma-separated `scheme://host[:port]`; unset means `Origin` must equal `Host`; cookie auth only) | enzarb-realtime |

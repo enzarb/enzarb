@@ -1434,3 +1434,86 @@ expect:
     assert!(errs[0].github().starts_with("::error file="));
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ---------------------------------------------------------------- checks
+
+const CI_CHECK: &str = r#"
+version: 1
+id: ci-never-started
+kind: dead_wait
+severity: warning
+text: "{task} waits on CI that has not started"
+when:
+  all:
+    - waiting_on: external
+    - fact_count: {name: ci.check_runs, eq: 0}
+    - any:
+        - fact: {name: mergeable, is: unknown}
+        - fact: {name: mergeable, is: false}
+    - idle_for: {no_event: 30m}
+"#;
+
+fn check(text: &str) -> crate::format::CheckFile {
+    crate::yaml::SourceFile::parse("c.yaml", text)
+        .unwrap()
+        .typed()
+        .unwrap()
+}
+
+#[test]
+fn check_file_parses_and_validates() {
+    let c = check(CI_CHECK);
+    assert_eq!(c.id, "ci-never-started");
+    assert_eq!(c.scope, crate::format::CheckScope::Task);
+    assert!(c.problems().is_empty(), "{:?}", c.problems());
+}
+
+#[test]
+fn check_file_problems() {
+    let bad = CI_CHECK.replace("30m", "soon").replace(
+        "eq: 0",
+        "eq: 0}\n    - fact_unknown_for: {name: x, refreshes: 0",
+    );
+    let p = check(&bad).problems();
+    assert!(
+        p.iter().any(|m| m.contains("`soon` is not a duration")),
+        "{p:?}"
+    );
+    assert!(p.iter().any(|m| m.contains("at least 1")), "{p:?}");
+    let platform = check(
+        "version: 1\nid: x\nkind: platform_failure\nseverity: info\nscope: platform\ntext: t\nwhen: {waiting_on: external}\n",
+    );
+    assert!(platform.problems()[0].contains("scope: task"));
+    let empty =
+        check("version: 1\nid: x\nkind: dead_wait\nseverity: info\ntext: t\nwhen: {all: []}\n");
+    assert!(empty.problems()[0].contains("at least one"));
+}
+
+#[test]
+fn check_file_rejects_unknown_leaves() {
+    let r = crate::yaml::SourceFile::parse(
+        "c.yaml",
+        "version: 1\nid: x\nkind: dead_wait\nseverity: info\ntext: t\nwhen: {run_script: 'x'}\n",
+    )
+    .unwrap()
+    .typed::<crate::format::CheckFile>();
+    assert!(r.is_err());
+}
+
+#[test]
+fn lint_checks_directory() {
+    let dir = std::env::temp_dir().join(format!("enzarb-flow-checks-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("checks")).unwrap();
+    std::fs::write(dir.join("checks/ci.yaml"), CI_CHECK).unwrap();
+    std::fs::write(dir.join("checks/bad.yaml"), CI_CHECK.replace("30m", "soon")).unwrap();
+    let ws = crate::lint::Workspace::new(crate::lint::Config {
+        dir: dir.clone(),
+        repo: APP.into(),
+        libraries: vec![],
+    })
+    .unwrap();
+    let errs: Vec<_> = ws.check().into_iter().filter(|d| d.is_error()).collect();
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(errs[0].file.ends_with("checks/bad.yaml"));
+    std::fs::remove_dir_all(&dir).ok();
+}
