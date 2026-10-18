@@ -1169,6 +1169,10 @@ nodes:
             status: "done".into()
         }
     );
+    assert!(
+        r.s.last.get("environment").is_some_and(Value::is_null),
+        "a finished nested phase defines last.environment as null"
+    );
     let mut r = Run::new(res);
     r.on(start()).on(label("reject"));
     assert_eq!(

@@ -233,6 +233,10 @@ fn action_results_become_outputs_subjects_relations() {
         ok: true,
         result: json!({"kind": "pull_request", "number": 12, "repo": "acme/app", "url": "u"}),
     });
+    assert!(
+        r.s.last.get("environment").is_some_and(Value::is_null),
+        "an action result defines last.environment as null"
+    );
     assert_eq!(
         r.kinds(),
         ["link_subject", "create_relations", "call_action"]

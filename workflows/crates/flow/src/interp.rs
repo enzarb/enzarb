@@ -482,7 +482,7 @@ impl<'a> Machine<'a> {
                 self.unpause_for_result();
                 self.s.pending = None;
                 let node = self.s.position().unwrap_or_default();
-                self.s.last = json!({"node": node, "exit": if *ok { "success" } else { "failure" }, "ok": ok, "result": result});
+                self.s.last = json!({"node": node, "exit": if *ok { "success" } else { "failure" }, "ok": ok, "result": result, "environment": null});
                 if *ok
                     && let Some(RKind::Action(a)) = self.node().map(|n| &n.kind)
                     && let Err(e) = self.action_results(a, result)
@@ -1274,7 +1274,7 @@ impl<'a> Machine<'a> {
             return Flow::Stop;
         };
         let ctx = self.ctx(&phase.params, &[("exit", json!(exit))]);
-        self.s.last = json!({"node": self.s.position(), "exit": exit});
+        self.s.last = json!({"node": self.s.position(), "exit": exit, "environment": null});
         match follow(&node.next, &ctx) {
             Ok(Some(to)) => self.leave(to, &[("exit", json!(exit))]),
             Ok(None) => {
