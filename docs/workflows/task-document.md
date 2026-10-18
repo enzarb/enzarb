@@ -2,7 +2,7 @@
 
 # Task document
 
-The data every prompt template, `text`, action argument and condition reads (ADR-0022 §3). Templates may use these roots directly; anything else must be a declared step `input`. In conditions, `last` (the last finished step or action: `node`, `exit`, `outputs`, `result`, `git`, `missing_outputs`), `exit` (`last.exit`, or a nested phase's exit) and `params` are also defined; at waits, `event` is the candidate event. Schema: [`schemas/task-document.json`](schemas/task-document.json).
+The data every prompt template, `text`, action argument and condition reads (ADR-0022 §3). Templates may use these roots directly; anything else must be a declared step `input`. In conditions, `last` (the last finished step or action: `node`, `exit`, `outputs`, `result`, `git`, `environment`, `missing_outputs`), `exit` (`last.exit`, or a nested phase's exit) and `params` are also defined; at waits, `event` is the candidate event. Schema: [`schemas/task-document.json`](schemas/task-document.json).
 
 ## `TaskDocument`
 

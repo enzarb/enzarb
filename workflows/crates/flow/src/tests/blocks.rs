@@ -472,3 +472,76 @@ fn mentions_parsed() {
     assert!(Comment::parsed("@enzarb /plan", Some("enzarb")).mentioned);
     assert!(!Comment::parsed("/plan", Some("enzarb")).mentioned);
 }
+
+const ENV_PHASE: &str = r#"version: 1
+exits: [disk]
+start: build
+nodes:
+  build:
+    step: {inline: {command: {run: make}}}
+    next:
+      - {if: "last.environment.kind == 'disk_full'", to: disk}
+      - {if: "last.environment == none", to: done}
+      - {else: done}
+  disk: {end: {status: disk}}
+  done: {end: {status: done}}
+"#;
+
+fn env_res() -> Resolved {
+    let m = base().put(APP, ".enzarb/phases/envp.yaml", ENV_PHASE).put(
+        APP,
+        ".enzarb/workflows/e.yaml",
+        "version: 1\nphases:\n  - {use: .enzarb/phases/envp, exits: {disk: {end: disk}}}\n",
+    );
+    match resolve(&entry(".enzarb/workflows/e.yaml"), &m, &opts()) {
+        Ok((r, _)) => r,
+        Err(d) => panic!("{d}"),
+    }
+}
+
+fn env_scenario(stub: &str, expect: &str) -> Vec<crate::scenario::Failure> {
+    let sc: crate::scenario::Scenario = crate::yaml::SourceFile::parse(
+        "s",
+        &format!(
+            "workflow: .enzarb/workflows/e.yaml\nstart: {{type: issue, action: opened, number: 7}}\nstubs:\n  envp/build: [{stub}]\nexpect: {expect}\n"
+        ),
+    )
+    .unwrap()
+    .typed()
+    .unwrap();
+    crate::scenario::run(&env_res(), &sc)
+}
+
+#[test]
+fn last_environment_kind_is_readable() {
+    let f = env_scenario(
+        "{exit: failure, environment: {kind: disk_full, detail: \"/workspace: 0 bytes free\"}}",
+        "{status: \"ended:disk\", path: [envp/build, envp/disk]}",
+    );
+    assert!(f.is_empty(), "{f:?}");
+}
+
+#[test]
+fn last_environment_is_null_when_absent() {
+    let f = env_scenario(
+        "{exit: failure}",
+        "{status: \"ended:done\", path: [envp/build, envp/done]}",
+    );
+    assert!(f.is_empty(), "{f:?}");
+    let mut r = Run::new(env_res());
+    r.on(start());
+    let run_id = r.run_id();
+    r.on(TaskEvent::StepFinished(StepFinished {
+        run_id,
+        exit: "failure".into(),
+        environment: Some(crate::interp::StepEnvironment {
+            kind: "oom".into(),
+            detail: "killed".into(),
+        }),
+        ..Default::default()
+    }));
+    assert_eq!(
+        r.s.last["environment"],
+        json!({"kind": "oom", "detail": "killed"})
+    );
+}

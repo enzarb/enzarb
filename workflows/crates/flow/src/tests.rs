@@ -864,6 +864,7 @@ fn happy_path() {
             pushed: true,
             ..Default::default()
         }),
+        environment: None,
     }));
     assert_eq!(r.at(), "work/check");
     let RunExec::Command { run, .. } = &r.run_step().exec else {
