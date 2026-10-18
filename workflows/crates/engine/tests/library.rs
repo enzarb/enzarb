@@ -5,6 +5,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use engine::findings::Fact;
 use engine::testing::TestDb;
 use engine::{
     Engine, EngineConfig, FakeStepRunner, Library, ProjectInfo, StaticPermissions,
@@ -12,6 +13,7 @@ use engine::{
 };
 use enzarb_connector::fake::FakeConnector;
 use enzarb_connector::{MergeReadiness, Permission, RepoKey, WorkItemKey};
+use enzarb_flow::format::PlatformFactName;
 use enzarb_proto::{StepFinished, StepGit};
 use serde_json::{Value, json};
 use tokio::sync::watch;
@@ -319,6 +321,14 @@ fn finished(run_id: &str) -> StepFinished {
 
 /// Fake sandbox: answers each step by its node.
 fn spawn_responder(h: &H) -> tokio::task::JoinHandle<()> {
+    spawn_responder_with(h, |_, _| {})
+}
+
+/// [`spawn_responder`] with a hook that edits each answer (`leaf` is the step's node name).
+fn spawn_responder_with(
+    h: &H,
+    tweak: impl Fn(&str, &mut StepFinished) + Send + 'static,
+) -> tokio::task::JoinHandle<()> {
     let runner = h.runner.clone();
     let pool = h.db.pool.clone();
     let gh = h.gh.clone();
@@ -375,6 +385,7 @@ fn spawn_responder(h: &H) -> tokio::task::JoinHandle<()> {
                     }
                     _ => {}
                 }
+                tweak(&leaf, &mut f);
                 runner.finish(f);
             }
             done = started.len();
@@ -1321,4 +1332,269 @@ async fn fact_unknown_across_refreshes_files_one_issue() {
             Some("created".into())
         )]
     );
+}
+
+// ------------------------------------------------ environment failures (ADR-0026, issue #300)
+
+/// One way to reach a library agent step with the issue workflow.
+#[derive(Clone, Copy)]
+struct Reach {
+    /// The step's node name (`implement`, `review`, `address`, `ci_fix`, `resolve`).
+    leaf: &'static str,
+    /// The review asks for changes (reaches `address`).
+    must_fix: bool,
+    /// CI is red on the head (reaches `ci_fix`).
+    ci_failing: bool,
+    /// The head conflicts with the base (reaches `resolve`).
+    conflict: bool,
+    /// Where a failure with no `environment` ends up (reason of the wait).
+    code_reason: &'static str,
+}
+
+const REACH: [Reach; 5] = [
+    Reach {
+        leaf: "implement",
+        must_fix: false,
+        ci_failing: false,
+        conflict: false,
+        code_reason: "implement_blocked",
+    },
+    Reach {
+        leaf: "review",
+        must_fix: false,
+        ci_failing: false,
+        conflict: false,
+        code_reason: "awaiting_review",
+    },
+    Reach {
+        leaf: "address",
+        must_fix: true,
+        ci_failing: false,
+        conflict: false,
+        code_reason: "awaiting_review",
+    },
+    Reach {
+        leaf: "ci_fix",
+        must_fix: false,
+        ci_failing: true,
+        conflict: false,
+        code_reason: "ci_failed",
+    },
+    Reach {
+        leaf: "resolve",
+        must_fix: false,
+        ci_failing: false,
+        conflict: true,
+        code_reason: "conflict_parked",
+    },
+];
+
+fn failure_of(kind: Option<enzarb_proto::EnvironmentKind>, f: &mut StepFinished) {
+    f.exit = "failure".into();
+    f.result = None;
+    f.environment = kind.map(|kind| enzarb_proto::StepEnvironment {
+        kind,
+        detail: "test".into(),
+    });
+}
+
+/// Runs the issue workflow until the agent step `r.leaf` fails with `kind` (no `environment`
+/// for a code failure). Returns the task and the run id of the failed step.
+async fn fail_step(h: &H, r: Reach, kind: Option<enzarb_proto::EnvironmentKind>) -> (i64, String) {
+    h.open_issue(7, &[]).await;
+    let task = loop {
+        if let Some((t, ..)) = h.task_of(7).await {
+            break t;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    h.wait(task, "start gate", |p| p["reason"] == "awaiting_start")
+        .await;
+    let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let _responder = spawn_responder_with(h, move |leaf, f| {
+        if leaf == "review" && r.must_fix && f.exit == "success" {
+            f.result = Some(json!({"verdict": "request_changes", "must_fix": ["a bug"],
+                                   "body": "Fix it", "checks": []}));
+        }
+        if leaf == r.leaf {
+            let n = hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // An environment failure happens once (the resume succeeds); a code failure
+            // repeats, as `resolve` retries until its attempts run out.
+            if kind.is_none() || n == 0 {
+                failure_of(kind, f);
+            }
+        }
+    });
+    h.comment("plan", 7, "issue", "/plan", "alice").await;
+    h.wait(task, "plan approval", |p| {
+        p["reason"] == "awaiting_approval"
+    })
+    .await;
+    let ci = if r.ci_failing {
+        json!({"state": "failure", "failing": [{"name": "build",
+               "url": format!("https://github.com/{APP}/actions/runs/1")}]})
+    } else {
+        json!({"state": "success", "failing": []})
+    };
+    h.gh.set_ci(rk(APP), HEAD, ci);
+    h.comment("approve", 7, "issue", "/approve", "alice").await;
+    if r.leaf != "implement" {
+        let pr = loop {
+            if let Some(pr) = h.gh.change_requests().first().map(|p| p.number) {
+                break pr;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        h.gh.set_merge_readiness(
+            WorkItemKey::new(rk(APP), pr),
+            MergeReadiness {
+                head_sha: HEAD.into(),
+                base_sha: None,
+                mergeable: Some(!r.conflict),
+                mergeable_state: if r.conflict { "dirty" } else { "clean" }.into(),
+                ci: if r.ci_failing {
+                    enzarb_connector::CiState::Failure
+                } else {
+                    enzarb_connector::CiState::Success
+                },
+            },
+        );
+    }
+    let run_id = loop {
+        let run: Option<String> = sqlx::query_scalar(
+            "SELECT run_id FROM engine.step_runs WHERE task_id = $1 AND node LIKE $2
+             AND ended_at IS NOT NULL ORDER BY started_at LIMIT 1",
+        )
+        .bind(task)
+        .bind(format!("%/{}", r.leaf))
+        .fetch_optional(&h.db.pool)
+        .await
+        .unwrap();
+        if let Some(run) = run {
+            break run;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    (task, run_id)
+}
+
+async fn vars_of(h: &H, task: i64) -> Value {
+    sqlx::query_scalar("SELECT state->'doc'->'vars' FROM engine.tasks WHERE id = $1")
+        .bind(task)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap()
+}
+
+/// The environment failure of every agent step on the review and implement paths goes to the
+/// platform wait: no fix round, no `human`, no `blocked`; the node, `fix_rounds` and
+/// `reviewed_sha` stay as they were. When the condition clears, the same run resumes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn library_environment_failure_waits_on_the_review_and_implement_paths() {
+    use enzarb_proto::EnvironmentKind::{DiskFull, Oom};
+    for (r, kind) in REACH
+        .into_iter()
+        .zip([DiskFull, Oom, DiskFull, Oom, DiskFull])
+    {
+        let Some(mut h) = start(true).await else {
+            return;
+        };
+        let facts = engine::FakePlatformFacts::new();
+        h.engine.findings = engine::Findings::new(Arc::new(facts.clone()));
+        let (task, run_id) = fail_step(&h, r, Some(kind)).await;
+        let p = h
+            .wait(task, r.leaf, |p| p["reason"] == "platform_wait")
+            .await;
+        let leaf = r.leaf;
+        assert_eq!(p["node"], leaf, "node did not move: {p:#}");
+        assert_eq!(p["status"], "running", "{leaf}: {p:#}");
+        assert_eq!(p["waiting_on"], "external", "{leaf}: {p:#}");
+        assert_eq!(p["needs_you"], false, "{leaf}: {p:#}");
+        let vars = vars_of(&h, task).await;
+        assert_eq!(
+            vars["fix_rounds"].as_i64().unwrap_or(0),
+            0,
+            "{leaf}: {vars:#}"
+        );
+        assert!(
+            vars["reviewed_sha"].is_null() || leaf != "review",
+            "{leaf}: {vars:#}"
+        );
+        let runs: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM engine.step_runs WHERE task_id = $1 AND node LIKE $2",
+        )
+        .bind(task)
+        .bind(format!("%/{leaf}"))
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+        assert_eq!(runs, 1, "{leaf}: no new run while waiting");
+
+        // The condition clears: the same run resumes and the flow moves on.
+        let fact = match kind {
+            DiskFull => PlatformFactName::SandboxDiskPct,
+            _ => PlatformFactName::SandboxHealthy,
+        };
+        facts.set(
+            "p",
+            fact,
+            match kind {
+                DiskFull => Fact::Num(40.0),
+                _ => Fact::Bool(true),
+            },
+        );
+        h.engine.wake_platform_waits().await.unwrap();
+        h.engine.wake_platform_waits().await.unwrap();
+        for _ in 0..200 {
+            let again = h
+                .runner
+                .started()
+                .iter()
+                .filter(|s| s.run_id == run_id)
+                .count();
+            if again == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let resumed = h
+            .runner
+            .started()
+            .iter()
+            .filter(|s| s.run_id == run_id)
+            .count();
+        assert_eq!(resumed, 2, "{leaf}: same run, started again once");
+        h.wait(task, leaf, |p| p["reason"] != "platform_wait").await;
+    }
+}
+
+/// A failure with no `environment` keeps the routes of the library: `human`, `blocked`,
+/// `ci_failed`, `conflict_parked`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn library_code_failure_keeps_its_routes() {
+    for r in REACH {
+        let Some(h) = start(true).await else {
+            return;
+        };
+        let (task, _) = fail_step(&h, r, None).await;
+        let p = h.wait(task, r.leaf, |p| p["reason"] == r.code_reason).await;
+        assert_ne!(p["reason"], "platform_wait", "{p:#}");
+        assert_eq!(p["needs_you"], true, "{}: {p:#}", r.leaf);
+    }
+}
+
+/// `toolchain_missing`, `network`, `load` and `unknown` do not wait: they follow the edges.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn library_other_environment_kinds_keep_their_routes() {
+    use enzarb_proto::EnvironmentKind::{Load, Network, ToolchainMissing, Unknown};
+    for kind in [ToolchainMissing, Network, Load, Unknown] {
+        for r in [REACH[0], REACH[1]] {
+            let Some(h) = start(true).await else {
+                return;
+            };
+            let (task, _) = fail_step(&h, r, Some(kind)).await;
+            let p = h.wait(task, r.leaf, |p| p["reason"] == r.code_reason).await;
+            assert_eq!(p["needs_you"], true, "{}: {p:#}", r.leaf);
+        }
+    }
 }
