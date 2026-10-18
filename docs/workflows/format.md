@@ -229,6 +229,9 @@ secrets:
 priority: 10
 concurrency: {group: "{{ task.repo }}", max: 1}
 retry: {max: 2, on: [failure]}       # extra attempts; default `on` is [failure]
+platform_wait:                         # ADR-0026: wait out an environment failure, then resume the same run
+  - kind: disk_full                  # disk_full | oom | network | load
+    until: {platform: {fact: sandbox.disk_pct, op: lt, value: 85}}
 steer: [comment, review]             # delivered into the running session
 stop: [{event: comment, from: writer, if: "event.command == 'stop'"}]  # this is the default
 ```
@@ -341,6 +344,7 @@ when:
 - `fact_unknown_for: {name, refreshes: N}`: the fact was refreshed to null at least N times in a row.
 - `fact_count: {name, eq: N}`: a list's length or a number. A missing or null value does not match.
 - `idle_for: {no_event: <dur>, no_step: <dur>}`: no event reached the task and/or no step ran for that long (a running step counts as now). Durations: `90s`, `15m`, `2h`, `14d`, `1w`.
+- `platform_wait: {kind?}`: the task is in a platform wait (ADR-0026), optionally for this failure kind (`disk_full`, `oom`, ...).
 - `command_ignored: {for: <dur>, command: <name>}`: a command (a comment's `/retry`, or one from the UI) reached the task at least `for` ago and nothing has happened to the task since: no change of node or status and no effect. `command` (without the slash) restricts it to that command; any command otherwise. Only the latest command counts.
 - `relation_count: {kind, inbound, eq|gt}`: the number of `engine.relations` rows of that `kind` the task holds (`blocked_by`, `child`, ...), or with `inbound: true` the rows other tasks hold towards its subjects (an epic's `parent` rows naming a sub-issue). Exactly one of `eq` and `gt`.
 - `platform: {fact, op, value}` (`op`: `eq` default, `ne`, `gt`, `ge`, `lt`, `le`): `workflow_run.status`, `chart.deploy_state`, `sandbox.disk_pct`, `sandbox.mem_pct` or `project.pending_change`. An unknown platform fact makes the check undetermined: it raises nothing and leaves an open finding as it is.

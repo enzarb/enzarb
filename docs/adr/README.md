@@ -28,3 +28,4 @@ Format: Context / Decision / Consequences. Status is `Accepted` unless noted. AD
 | [0022](0022-workflow-engine-rewrite.md) | Workflow engine rewrite: a generic interpreter, every workflow in YAML (proposed; supersedes 0020, 0021) | 2026-10-16 |
 | [0023](0023-manual-sandbox-roll.md) | Manual sandbox roll: a generation-bound annotation and a 30m drain timeout | 2026-10-17 |
 | [0024](0024-liveness-findings.md) | Liveness findings: pure evaluation, a periodic `platform` source, observation only | 2026-10-18 |
+| [0026](0026-platform-wait.md) | Platform wait: the engine polls platform facts, the step resumes on the same run, nothing times out | 2026-10-18 |
