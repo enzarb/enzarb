@@ -371,6 +371,7 @@ mod tests {
             releases: vec![crate::history::ReleaseTimes {
                 version: "0.9.0".into(),
                 deployed_at: "2026-10-12T03:05:00Z".into(),
+                sandbox_image_version: None,
             }],
         });
         let res = router(st).oneshot(req()).await.unwrap();

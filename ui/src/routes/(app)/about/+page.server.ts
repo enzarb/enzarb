@@ -13,7 +13,7 @@ import { RELEASES_REPO, cachedReleases } from '#lib/server/releases.ts';
 import { fetchChartRollout } from '#lib/server/updater-status.ts';
 import { releaseTimings } from '#lib/release-timing.ts';
 import type { LastRoll } from '#lib/project-types.ts';
-import { COMPONENTS, displayVersion, componentDirUrl } from '#lib/versions.ts';
+import { COMPONENTS, displayVersion, componentDirUrl, normalizeTag } from '#lib/versions.ts';
 import type { PageServerLoad } from './$types';
 
 // Releases are public: the token exists for rate limits, not access.
@@ -85,7 +85,13 @@ async function recentTimings(
 		p.status?.lastRoll ? [p.status.lastRoll as LastRoll] : []
 	);
 	return releaseTimings(
-		chartReleases.map((r) => ({ version: r.tag, url: r.url, publishedAt: r.publishedAt })),
+		chartReleases.map((r) => ({
+			version: r.tag,
+			url: r.url,
+			publishedAt: r.publishedAt,
+			sandboxImageVersion: deployed.find((d) => normalizeTag(d.version) === normalizeTag(r.tag))
+				?.sandboxImageVersion
+		})),
 		deployed,
 		rolls
 	);

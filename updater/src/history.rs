@@ -22,17 +22,27 @@ pub const MAX_RELEASES: usize = 20;
 pub struct ReleaseTimes {
     pub version: String,
     pub deployed_at: String,
+    /// The sandbox image tag the chart ships (`operator.sandboxImage`); lets the UI join a
+    /// sandbox roll to this release. Absent for entries recorded before it was captured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_image_version: Option<String>,
 }
 
 /// Appends `version` unless it is already the newest entry, then keeps the last `MAX_RELEASES`.
 /// Returns whether the list changed. The list is ordered oldest first.
-pub fn record(list: &mut Vec<ReleaseTimes>, version: &str, deployed_at: &str) -> bool {
+pub fn record(
+    list: &mut Vec<ReleaseTimes>,
+    version: &str,
+    deployed_at: &str,
+    sandbox_image_version: Option<String>,
+) -> bool {
     if list.last().is_some_and(|r| r.version == version) {
         return false;
     }
     list.push(ReleaseTimes {
         version: version.into(),
         deployed_at: deployed_at.into(),
+        sandbox_image_version,
     });
     let extra = list.len().saturating_sub(MAX_RELEASES);
     list.drain(..extra);
@@ -95,8 +105,8 @@ mod tests {
     #[test]
     fn records_a_version_once() {
         let mut l = Vec::new();
-        assert!(record(&mut l, "0.9.0", "2026-10-01T00:00:00Z"));
-        assert!(!record(&mut l, "0.9.0", "2026-10-02T00:00:00Z"));
+        assert!(record(&mut l, "0.9.0", "2026-10-01T00:00:00Z", None));
+        assert!(!record(&mut l, "0.9.0", "2026-10-02T00:00:00Z", None));
         assert_eq!(l.len(), 1);
         assert_eq!(l[0].deployed_at, "2026-10-01T00:00:00Z");
     }
@@ -105,7 +115,7 @@ mod tests {
     fn is_bounded_to_the_newest_entries() {
         let mut l = Vec::new();
         for i in 0..(MAX_RELEASES + 5) {
-            record(&mut l, &format!("0.{i}.0"), "2026-10-01T00:00:00Z");
+            record(&mut l, &format!("0.{i}.0"), "2026-10-01T00:00:00Z", None);
         }
         assert_eq!(l.len(), MAX_RELEASES);
         assert_eq!(l[0].version, "0.5.0");
@@ -120,8 +130,15 @@ mod tests {
         let v = serde_json::to_value(ReleaseTimes {
             version: "1".into(),
             deployed_at: "t".into(),
+            sandbox_image_version: Some("0.3.0".into()),
         })
         .unwrap();
-        assert_eq!(v, serde_json::json!({"version": "1", "deployedAt": "t"}));
+        assert_eq!(
+            v,
+            serde_json::json!({"version": "1", "deployedAt": "t", "sandboxImageVersion": "0.3.0"})
+        );
+        let old: ReleaseTimes =
+            serde_json::from_str(r#"{"version":"1","deployedAt":"t"}"#).unwrap();
+        assert_eq!(old.sandbox_image_version, None);
     }
 }

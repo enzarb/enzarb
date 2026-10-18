@@ -45,6 +45,8 @@ async fn main() -> Result<()> {
     let listen: SocketAddr = env_or("ENZARB_UPDATER_LISTEN", "0.0.0.0:8080").parse()?;
     let name = env_or("ENZARB_UPDATER_HELMCHART", "enzarb");
     let ns = env_or("ENZARB_UPDATER_NAMESPACE", "kube-system");
+    // Where the chart is installed (the operator Deployment lives there).
+    let release_ns = env_or("ENZARB_UPDATER_RELEASE_NAMESPACE", "default");
 
     let client = kube::Client::try_default().await?;
     let history = Arc::new(KubeHistory::new(client.clone(), &ns));
@@ -53,7 +55,7 @@ async fn main() -> Result<()> {
         secret: secret.map(|s| Arc::new(s.into_bytes())),
         poll: health.clone(),
         registry: Arc::new(OciRegistry::new(&chart, token)?),
-        charts: Arc::new(KubeCharts::new(client, &ns, &name)),
+        charts: Arc::new(KubeCharts::new(client, &ns, &release_ns, &name)),
         lock: Default::default(),
         status: Default::default(),
     };

@@ -68,6 +68,30 @@ rules:
     resources: [configmaps]
     verbs: [create]
 ---
+{{- /* Read-only: the deployed chart's operator.sandboxImage (the operator's env) is recorded with
+       each release so the UI can join sandbox rolls to releases by version. */}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: enzarb-updater-operator
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-updater") | nindent 4 }}
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [enzarb-sandbox-operator]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: enzarb-updater-operator
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-updater") | nindent 4 }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: enzarb-updater-operator }
+subjects:
+  - { kind: ServiceAccount, name: enzarb-updater, namespace: {{ .Release.Namespace }} }
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -112,6 +136,8 @@ spec:
             {{- if include "enzarb.updaterHasRegistryToken" . }}
             {{- include "enzarb.secretEnv" (dict "name" "ENZARB_UPDATER_REGISTRY_TOKEN" "secret" (include "enzarb.updaterTokenSecret" .) "key" (include "enzarb.updaterTokenKey" .)) | nindent 12 }}
             {{- end }}
+            - name: ENZARB_UPDATER_RELEASE_NAMESPACE
+              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
             - { name: ENZARB_UPDATER_POLL_SECS, value: {{ $pollSecs | quote }} }
             - { name: ENZARB_UPDATER_LISTEN, value: {{ printf "0.0.0.0:%v" $c.port | quote }} }
             - { name: RUST_LOG, value: {{ .Values.rustLog | quote }} }

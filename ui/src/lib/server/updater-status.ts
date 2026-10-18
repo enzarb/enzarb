@@ -12,7 +12,15 @@ function parseReleases(v: unknown): ChartRelease[] {
 	return v.flatMap((e: unknown) => {
 		const r = (typeof e === 'object' && e !== null ? e : {}) as Record<string, unknown>;
 		return typeof r.version === 'string' && r.version && ts(r.deployedAt)
-			? [{ version: r.version, deployedAt: r.deployedAt as string }]
+			? [
+					{
+						version: r.version,
+						deployedAt: r.deployedAt as string,
+						...(typeof r.sandboxImageVersion === 'string' && r.sandboxImageVersion
+							? { sandboxImageVersion: r.sandboxImageVersion }
+							: {})
+					}
+				]
 			: [];
 	});
 }

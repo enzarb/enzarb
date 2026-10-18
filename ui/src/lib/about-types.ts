@@ -36,6 +36,8 @@ export interface ChartRelease {
 	version: string;
 	/** RFC 3339. */
 	deployedAt: string;
+	/** The sandbox image tag that chart configures (`operator.sandboxImage`), when recorded. */
+	sandboxImageVersion?: string;
 }
 
 /**

@@ -24,7 +24,11 @@ describe('fetchChartRollout', () => {
 			fetch: json({
 				stuck: false,
 				releases: [
-					{ version: '0.9.0', deployedAt: '2026-10-01T10:03:00Z' },
+					{
+						version: '0.9.0',
+						deployedAt: '2026-10-01T10:03:00Z',
+						sandboxImageVersion: '0.34.0'
+					},
 					{ version: '', deployedAt: '2026-10-01T10:03:00Z' },
 					{ version: '0.8.0', deployedAt: 'yesterday' },
 					'junk',
@@ -32,7 +36,9 @@ describe('fetchChartRollout', () => {
 				]
 			})
 		});
-		expect(r?.releases).toEqual([{ version: '0.9.0', deployedAt: '2026-10-01T10:03:00Z' }]);
+		expect(r?.releases).toEqual([
+			{ version: '0.9.0', deployedAt: '2026-10-01T10:03:00Z', sandboxImageVersion: '0.34.0' }
+		]);
 		const bad = await fetchChartRollout({ fetch: json({ stuck: false, releases: 'x' }) });
 		expect(bad?.releases).toEqual([]);
 	});

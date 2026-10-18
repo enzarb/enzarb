@@ -28,6 +28,8 @@ pub struct Rollout {
     pub installed: Option<String>,
     /// When that Job completed (RFC 3339); `None` when unknown.
     pub installed_at: Option<String>,
+    /// The sandbox image the installed chart configures (`operator.sandboxImage`); `None` when unknown.
+    pub sandbox_image: Option<String>,
     /// The `helm-install-<name>` Job is failing (`status.failed > 0`, or a backoff-limit condition).
     pub job_failed: bool,
 }
@@ -130,7 +132,11 @@ pub async fn refresh(
     if let (Some((v, r)), true) = (installed, cache.loaded.load(Ordering::SeqCst)) {
         // Without the Job's completion time the first sighting is the best estimate.
         let at = r.installed_at.clone().unwrap_or_else(now);
-        if history::record(&mut next.releases, v, &at) {
+        let sandbox = r
+            .sandbox_image
+            .as_deref()
+            .and_then(crate::charts::image_tag);
+        if history::record(&mut next.releases, v, &at, sandbox) {
             tracing::info!(version = %v, deployed_at = %at, "chart deployed");
             cache.unsaved.store(true, Ordering::SeqCst);
         }
@@ -230,6 +236,7 @@ mod tests {
             desired: desired.map(Into::into),
             installed: installed.map(Into::into),
             installed_at: installed.map(|_| "2026-10-12T03:05:00Z".into()),
+            sandbox_image: installed.map(|v| format!("r/sandbox:{v}")),
             job_failed,
         }
     }
@@ -282,6 +289,7 @@ mod tests {
                 releases: vec![ReleaseTimes {
                     version: "0.9.0".into(),
                     deployed_at: "2026-10-12T03:05:00Z".into(),
+                    sandbox_image_version: Some("0.9.0".into()),
                 }],
             }
         );
