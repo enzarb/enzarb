@@ -143,8 +143,20 @@ pub struct RecordedCall {
     pub replayed: bool,
 }
 
+/// A request the provider rejected, which the connector then absorbed (the
+/// real connector turns a 422 on an existing edge into `Ok(())`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Rejection {
+    /// The operation, e.g. `link_sub_issue` or `add_dependency`.
+    pub op: &'static str,
+    pub status: u16,
+    pub message: String,
+}
+
 #[derive(Default)]
 struct State {
+    mergeable_reads: HashMap<WorkItemKey, u32>,
+    rejections: Vec<Rejection>,
     calls: Vec<RecordedCall>,
     threads: HashMap<WorkItemKey, Thread>,
     permissions: HashMap<(RepoKey, String), Permission>,
@@ -291,8 +303,37 @@ impl FakeConnector {
     }
 
     /// Seed the readiness returned for `item` (repeatable; last one wins).
+    ///
+    /// Like GitHub, which computes mergeability lazily, the first read after
+    /// seeding a known `mergeable` reports `mergeable: None` and
+    /// `mergeable_state: "unknown"`; later reads return the seeded value. A
+    /// seeded `mergeable: None` stays unknown on every read.
     pub fn set_merge_readiness(&self, item: WorkItemKey, readiness: MergeReadiness) {
-        self.st().readiness.insert(item, readiness);
+        let mut st = self.st();
+        st.mergeable_reads.remove(&item);
+        st.readiness.insert(item, readiness);
+    }
+
+    /// Seed the readiness with mergeability already computed: the first read
+    /// returns it as is.
+    pub fn set_merge_readiness_immediate(&self, item: WorkItemKey, readiness: MergeReadiness) {
+        let mut st = self.st();
+        st.mergeable_reads.insert(item.clone(), 1);
+        st.readiness.insert(item, readiness);
+    }
+
+    /// Requests the provider answered with 422 (duplicate edges), in order.
+    pub fn rejected_duplicates(&self) -> Vec<Rejection> {
+        self.st().rejections.clone()
+    }
+
+    /// The dependencies (blocked-by edges) of `item`, in order.
+    pub fn dependencies(&self, item: &WorkItemKey) -> Vec<WorkItemKey> {
+        self.st()
+            .dependencies
+            .get(item)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Seed the head sha returned by `branch_head` (unseeded branches are `None`).
@@ -625,10 +666,18 @@ impl Connector for FakeConnector {
         };
         Self::take_failure(&mut st, call.clone())?;
         Self::record(&mut st, call, false);
-        st.readiness
+        let mut r = st
+            .readiness
             .get(item)
             .cloned()
-            .ok_or_else(|| Error::NotFound(format!("{item} readiness")))
+            .ok_or_else(|| Error::NotFound(format!("{item} readiness")))?;
+        let reads = st.mergeable_reads.entry(item.clone()).or_default();
+        *reads += 1;
+        if *reads == 1 && r.mergeable.is_some() {
+            r.mergeable = None;
+            r.mergeable_state = "unknown".into();
+        }
+        Ok(r)
     }
 
     async fn update_branch(
@@ -805,7 +854,13 @@ impl Connector for FakeConnector {
         let replayed = !st.seen_keys.insert(idempotency_key.to_string());
         Self::record(&mut st, call, replayed);
         let deps = st.dependencies.entry(item.clone()).or_default();
-        if !deps.contains(depends_on) {
+        if deps.contains(depends_on) {
+            st.rejections.push(Rejection {
+                op: "add_dependency",
+                status: 422,
+                message: "Validation Failed: dependency already exists".into(),
+            });
+        } else {
             deps.push(depends_on.clone());
         }
         Ok(())
@@ -908,6 +963,13 @@ impl Connector for FakeConnector {
         let replayed = linked.contains(child);
         if !replayed {
             linked.push(child.clone());
+        }
+        if replayed {
+            st.rejections.push(Rejection {
+                op: "link_sub_issue",
+                status: 422,
+                message: "Validation Failed: sub-issue already exists".into(),
+            });
         }
         Self::record(&mut st, call, replayed);
         Ok(())
