@@ -827,14 +827,15 @@ async fn leftovers_on_the_default_branch_do_not_block_the_task_branch() {
     );
     let addr = env.server().await;
     let (s, mut ev) = connect(addr).await;
-    // A read step on main, which leaves README.md modified.
-    let mut ws = env.workspace("main");
+    // A read step on its own branch off main (as `enzarb/task-<id>`), which leaves README.md
+    // modified and a file deleted from the index (like a clone that was never checked out).
+    let mut ws = env.workspace("task/read");
     ws.mode = Mode::Read;
     ws.push = false;
     let st = step(
         "left-1",
         StepExec::Command {
-            run: "echo scribble >> README.md".into(),
+            run: "echo scribble >> README.md && git rm -q --cached README.md".into(),
             tools: vec![],
         },
         vec![ws],
