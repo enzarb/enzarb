@@ -43,6 +43,21 @@ pub enum Status {
     },
 }
 
+/// Longest agent-reported environment detail kept (characters).
+const AGENT_ENVIRONMENT_DETAIL_MAX: usize = 500;
+
+/// The agent's advisory `result.environment.detail`: a non-empty string, truncated. Untrusted
+/// text, only ever displayed.
+fn agent_environment_detail(result: &Option<Value>) -> Option<String> {
+    let d = result
+        .as_ref()?
+        .get("environment")?
+        .get("detail")?
+        .as_str()?
+        .trim();
+    (!d.is_empty()).then(|| d.chars().take(AGENT_ENVIRONMENT_DETAIL_MAX).collect())
+}
+
 impl Status {
     pub fn label(&self) -> &'static str {
         match self {
@@ -1059,13 +1074,17 @@ impl<'a> Machine<'a> {
                 "node": pos, "exit": f.exit, "outputs": f.outputs, "result": f.result,
                 "git": f.git, "environment": f.environment, "missing_outputs": [],
             });
-            self.s.notes.push(format!(
-                "{pos}: platform wait on `{}` ({})",
-                env.kind, env.detail
-            ));
+            // The agent's own report is advisory: it only adds detail, never routes.
+            let detail = match agent_environment_detail(&f.result) {
+                Some(agent) => format!("{}; agent: {agent}", env.detail),
+                None => env.detail.clone(),
+            };
+            self.s
+                .notes
+                .push(format!("{pos}: platform wait on `{}` ({detail})", env.kind));
             self.s.platform_wait = Some(PlatformWait {
                 kind: env.kind.clone(),
-                detail: env.detail.clone(),
+                detail,
                 until: rule.until.clone(),
                 waits: self.s.platform_waits,
             });

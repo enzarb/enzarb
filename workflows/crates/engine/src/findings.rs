@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use enzarb_connector::file_issue::has_file_issue_marker;
+use enzarb_connector::{Connector, RepoKey};
 use enzarb_flow::format::{
     CheckFile, CheckScope, CmpOp, FindingKind, IssueSpec, PlatformCmp, PlatformFactName, Severity,
     When, parse_duration,
@@ -47,6 +48,12 @@ pub enum Fact {
 #[async_trait]
 pub trait PlatformFacts: Send + Sync {
     async fn get(&self, project: &str, fact: PlatformFactName) -> Fact;
+
+    /// A fact that takes an argument (`workflow_run.status`: `<owner>/<repo>:<workflow file>`).
+    /// The default has no source for it.
+    async fn get_arg(&self, _project: &str, _fact: PlatformFactName, _arg: &str) -> Fact {
+        Fact::Unknown
+    }
 }
 
 /// Every fact is unknown: no platform check ever fires.
@@ -60,10 +67,13 @@ impl PlatformFacts for NoPlatformFacts {
     }
 }
 
+type ArgFacts = HashMap<(String, PlatformFactName, String), Fact>;
+
 /// A map-backed provider for tests.
 #[derive(Debug, Clone, Default)]
 pub struct FakePlatformFacts {
     facts: Arc<Mutex<HashMap<(String, PlatformFactName), Fact>>>,
+    args: Arc<Mutex<ArgFacts>>,
 }
 
 impl FakePlatformFacts {
@@ -77,6 +87,13 @@ impl FakePlatformFacts {
             .expect("facts")
             .insert((project.to_string(), fact), value);
     }
+
+    pub fn set_arg(&self, project: &str, fact: PlatformFactName, arg: &str, value: Fact) {
+        self.args
+            .lock()
+            .expect("facts")
+            .insert((project.to_string(), fact, arg.to_string()), value);
+    }
 }
 
 #[async_trait]
@@ -89,17 +106,119 @@ impl PlatformFacts for FakePlatformFacts {
             .cloned()
             .unwrap_or(Fact::Unknown)
     }
+
+    async fn get_arg(&self, project: &str, fact: PlatformFactName, arg: &str) -> Fact {
+        self.args
+            .lock()
+            .expect("facts")
+            .get(&(project.to_string(), fact, arg.to_string()))
+            .cloned()
+            .unwrap_or(Fact::Unknown)
+    }
 }
 
-/// The real provider: disk use from the latest sandbox sample and the pending sandbox change
-/// from the Project. Workflow run status, chart deploy state and memory percentage have no
-/// source yet and stay unknown (sandbox samples carry no memory limit; the connector has no
-/// workflow run call; nothing reports the chart deploy).
+/// How long a connector or updater answer is reused: longer than one pass over every Project,
+/// shorter than the pass interval, so each pass asks once however many Projects there are.
+const FACT_TTL: Duration = Duration::from_secs(30);
+
+/// Where the chart deploy state comes from.
+#[async_trait]
+pub trait DeployStateSource: Send + Sync {
+    /// `deployed`, `pending` or `stuck` as text; `Unknown` when it cannot be told.
+    async fn state(&self) -> Fact;
+}
+
+/// No source configured: the deploy state is unknown.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoDeployState;
+
+#[async_trait]
+impl DeployStateSource for NoDeployState {
+    async fn state(&self) -> Fact {
+        Fact::Unknown
+    }
+}
+
+/// Reads the updater's `GET /status` (`{installed, desired, latest, stuck}`).
+pub struct HttpDeployState {
+    url: String,
+    client: reqwest::Client,
+}
+
+impl HttpDeployState {
+    pub fn new(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(3))
+                .build()
+                .unwrap_or_default(),
+        }
+    }
+}
+
+#[async_trait]
+impl DeployStateSource for HttpDeployState {
+    async fn state(&self) -> Fact {
+        let body: Result<Value, _> = async {
+            self.client
+                .get(&self.url)
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await
+        }
+        .await;
+        match body {
+            Ok(v) => deploy_state(&v),
+            Err(e) => {
+                tracing::debug!("findings: updater status: {e}");
+                Fact::Unknown
+            }
+        }
+    }
+}
+
+/// `x.y.z` (optional `v` prefix, pre-release and build suffixes dropped) as numbers.
+fn version_parts(v: &str) -> Option<Vec<u64>> {
+    let core = v.trim().trim_start_matches('v');
+    let core = core.split(['-', '+']).next()?;
+    core.split('.').map(|p| p.parse().ok()).collect()
+}
+
+/// The updater's status as a deploy state: `stuck` when it says so, `deployed` when the
+/// installed chart is the latest (or newer), `pending` when a newer one exists. A missing
+/// field, or versions that cannot be compared, is unknown.
+pub fn deploy_state(status: &Value) -> Fact {
+    if status.get("stuck").and_then(Value::as_bool) == Some(true) {
+        return Fact::Text("stuck".into());
+    }
+    let field = |k: &str| status.get(k).and_then(Value::as_str);
+    let (Some(installed), Some(latest)) = (field("installed"), field("latest")) else {
+        return Fact::Unknown;
+    };
+    if installed == latest {
+        return Fact::Text("deployed".into());
+    }
+    match (version_parts(installed), version_parts(latest)) {
+        (Some(i), Some(l)) if i >= l => Fact::Text("deployed".into()),
+        (Some(_), Some(_)) => Fact::Text("pending".into()),
+        _ => Fact::Unknown,
+    }
+}
+
+/// The real provider: disk and memory use from the latest sandbox sample, the pending sandbox
+/// change from the Project, the latest workflow run from the connector and the chart deploy
+/// state from the updater. A source that is missing, failed or has no answer is `Unknown`.
 pub struct DbPlatformFacts {
     pub pool: PgPool,
     pub sandboxes: Arc<dyn SandboxResolver>,
     /// A sample older than this is not a fact.
     pub max_age: Duration,
+    connector: Option<Arc<dyn Connector>>,
+    deploy: Arc<dyn DeployStateSource>,
+    cache: Mutex<HashMap<String, (Instant, Fact)>>,
 }
 
 impl DbPlatformFacts {
@@ -108,12 +227,84 @@ impl DbPlatformFacts {
             pool,
             sandboxes,
             max_age: Duration::from_secs(600),
+            connector: None,
+            deploy: Arc::new(NoDeployState),
+            cache: Mutex::default(),
         }
+    }
+
+    /// The connector `workflow_run.status` reads through.
+    pub fn with_connector(mut self, connector: Arc<dyn Connector>) -> Self {
+        self.connector = Some(connector);
+        self
+    }
+
+    pub fn with_deploy_state(mut self, source: Arc<dyn DeployStateSource>) -> Self {
+        self.deploy = source;
+        self
+    }
+
+    fn cached(&self, key: &str) -> Option<Fact> {
+        let c = self.cache.lock().expect("cache");
+        c.get(key)
+            .filter(|(at, _)| at.elapsed() < FACT_TTL)
+            .map(|(_, f)| f.clone())
+    }
+
+    fn remember(&self, key: String, fact: &Fact) {
+        self.cache
+            .lock()
+            .expect("cache")
+            .insert(key, (Instant::now(), fact.clone()));
+    }
+
+    async fn workflow_run(&self, arg: &str) -> Fact {
+        let Some(connector) = &self.connector else {
+            return Fact::Unknown;
+        };
+        let key = format!("run:{arg}");
+        if let Some(f) = self.cached(&key) {
+            return f;
+        }
+        let Some((repo, file)) = arg.split_once(':') else {
+            return Fact::Unknown;
+        };
+        // `owner/repo` is a GitHub repository, as everywhere else in the engine.
+        let Some((owner, name)) = repo.split_once('/') else {
+            return Fact::Unknown;
+        };
+        let repo = RepoKey::new("github", owner, name);
+        let fact = match connector.latest_workflow_run(&repo, file, None).await {
+            Ok(Some(run)) => Fact::Text(run.conclusion),
+            Ok(None) => Fact::Unknown,
+            Err(e) => {
+                tracing::debug!("findings: latest run of {arg}: {e}");
+                Fact::Unknown
+            }
+        };
+        self.remember(key, &fact);
+        fact
+    }
+
+    async fn chart_state(&self) -> Fact {
+        if let Some(f) = self.cached("chart") {
+            return f;
+        }
+        let fact = self.deploy.state().await;
+        self.remember("chart".into(), &fact);
+        fact
     }
 }
 
 #[async_trait]
 impl PlatformFacts for DbPlatformFacts {
+    async fn get_arg(&self, _project: &str, fact: PlatformFactName, arg: &str) -> Fact {
+        match fact {
+            PlatformFactName::WorkflowRunStatus => self.workflow_run(arg).await,
+            _ => Fact::Unknown,
+        }
+    }
+
     async fn get(&self, project: &str, fact: PlatformFactName) -> Fact {
         match fact {
             PlatformFactName::SandboxDiskPct => {
@@ -129,6 +320,26 @@ impl PlatformFacts for DbPlatformFacts {
                 .await;
                 match row {
                     Ok(Some((used, total))) => Fact::Num(used as f64 * 100.0 / total as f64),
+                    _ => Fact::Unknown,
+                }
+            }
+            PlatformFactName::SandboxMemWorkingSetPct => {
+                // The working set (`memory.current` less the reclaimable `inactive_file` page
+                // cache) over the limit. Unknown without a limit (an unlimited cgroup or an
+                // older sandbox); a sandbox not reporting `inactive_file` counts it as 0.
+                let row: Result<Option<(i64, i64)>, _> = sqlx::query_as(
+                    "SELECT GREATEST(memory_bytes - COALESCE(memory_inactive_file_bytes, 0), 0),
+                            memory_limit_bytes FROM engine.sandbox_stats
+                     WHERE project = $1 AND at > now() - make_interval(secs => $2)
+                       AND memory_bytes IS NOT NULL AND memory_limit_bytes > 0
+                     ORDER BY at DESC LIMIT 1",
+                )
+                .bind(project)
+                .bind(self.max_age.as_secs_f64())
+                .fetch_optional(&self.pool)
+                .await;
+                match row {
+                    Ok(Some((used, limit))) => Fact::Num(used as f64 * 100.0 / limit as f64),
                     _ => Fact::Unknown,
                 }
             }
@@ -152,7 +363,8 @@ impl PlatformFacts for DbPlatformFacts {
                     }),
                 Err(_) => Fact::Unknown,
             },
-            _ => Fact::Unknown,
+            PlatformFactName::ChartDeployState => self.chart_state().await,
+            PlatformFactName::WorkflowRunStatus => Fact::Unknown,
         }
     }
 }
@@ -214,6 +426,8 @@ pub struct Snapshot {
     pub projects: Vec<String>,
     /// Platform facts, fetched ahead for the checks that name them.
     pub platform: HashMap<(String, PlatformFactName), Fact>,
+    /// Platform facts that take an argument, by `(project, fact, arg)`.
+    pub platform_args: HashMap<(String, PlatformFactName, String), Fact>,
 }
 
 // ------------------------------------------------------------------ evaluate
@@ -266,9 +480,32 @@ pub fn when_reads(w: &When, out: &mut Vec<PlatformFactName>) {
     match w {
         When::All(v) | When::Any(v) => v.iter().for_each(|w| when_reads(w, out)),
         When::Not(w) => when_reads(w, out),
-        When::Platform(p) if !out.contains(&p.fact) => out.push(p.fact),
+        When::Platform(p) if p.arg.is_none() && !out.contains(&p.fact) => out.push(p.fact),
         _ => {}
     }
+}
+
+/// The `(fact, arg)` pairs the checks read with an argument.
+pub fn platform_arg_reads(checks: &[CheckFile]) -> Vec<(PlatformFactName, String)> {
+    fn walk(w: &When, out: &mut Vec<(PlatformFactName, String)>) {
+        match w {
+            When::All(v) | When::Any(v) => v.iter().for_each(|w| walk(w, out)),
+            When::Not(w) => walk(w, out),
+            When::Platform(p) => {
+                if let Some(a) = &p.arg
+                    && !out.iter().any(|(f, x)| *f == p.fact && x == a)
+                {
+                    out.push((p.fact, a.clone()));
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for c in checks {
+        walk(&c.when, &mut out);
+    }
+    out
 }
 
 /// Pure: does a platform-only condition hold for `project`? `None` when a fact it needs is
@@ -499,11 +736,15 @@ impl Cx<'_> {
     }
 
     fn platform(&mut self, p: &PlatformCmp) -> bool {
-        let fact = self
-            .snap
-            .platform
-            .get(&(self.project.to_string(), p.fact))
-            .unwrap_or(&Fact::Unknown);
+        let fact = match &p.arg {
+            Some(arg) => {
+                self.snap
+                    .platform_args
+                    .get(&(self.project.to_string(), p.fact, arg.clone()))
+            }
+            None => self.snap.platform.get(&(self.project.to_string(), p.fact)),
+        }
+        .unwrap_or(&Fact::Unknown);
         match compare(fact, p.op, &p.value) {
             Some(b) => b,
             None => {
@@ -742,6 +983,10 @@ impl Engine {
                 let v = self.findings.facts.get(project, fact).await;
                 snap.platform.insert((project.clone(), fact), v);
             }
+            for (fact, arg) in platform_arg_reads(c) {
+                let v = self.findings.facts.get_arg(project, fact, &arg).await;
+                snap.platform_args.insert((project.clone(), fact, arg), v);
+            }
         }
         snap.tasks = load_tasks(&self.pool, &evaluated).await?;
         let now = Utc::now();
@@ -758,6 +1003,7 @@ impl Engine {
                     .collect(),
                 projects: vec![project.clone()],
                 platform: snap.platform.clone(),
+                platform_args: snap.platform_args.clone(),
             };
             let e = evaluate(&checks, &one, now);
             eval.desired.extend(e.desired);
@@ -962,6 +1208,7 @@ mod tests {
             tasks,
             projects: vec!["p".into()],
             platform: HashMap::new(),
+            platform_args: HashMap::new(),
         }
     }
 
@@ -1244,9 +1491,13 @@ mod tests {
         assert!(hits(&disk, &s).is_empty());
 
         let mem = platform_check(
-            json!({"platform": {"fact": "sandbox.mem_pct", "op": "gt", "value": 80}}),
+            json!({"platform": {"fact": "sandbox.mem_working_set_pct", "op": "gt", "value": 80}}),
         );
-        put(&mut s, PlatformFactName::SandboxMemPct, Fact::Num(80.5));
+        put(
+            &mut s,
+            PlatformFactName::SandboxMemWorkingSetPct,
+            Fact::Num(80.5),
+        );
         assert_eq!(hits(&mem, &s), ["c:p"]);
 
         let pending =
@@ -1339,6 +1590,79 @@ mod tests {
                 PlatformFactName::SandboxDiskPct,
                 PlatformFactName::ProjectPendingChange
             ]
+        );
+    }
+
+    #[test]
+    fn deploy_state_from_the_updater_status() {
+        let st = |v: Value| deploy_state(&v);
+        let text = |s: &str| Fact::Text(s.into());
+        let base =
+            json!({"installed": "0.62.0", "desired": "0.62.0", "latest": "0.62.0", "stuck": false});
+        assert_eq!(st(base), text("deployed"));
+        assert_eq!(
+            st(json!({"installed": "0.9.0", "latest": "0.10.0", "stuck": false})),
+            text("pending")
+        );
+        assert_eq!(
+            st(json!({"installed": "v0.10.0", "latest": "0.9.0"})),
+            text("deployed")
+        );
+        assert_eq!(
+            st(json!({"installed": "0.1.0", "latest": "0.2.0", "stuck": true})),
+            text("stuck")
+        );
+        assert_eq!(
+            st(json!({"installed": "0.1.0", "stuck": false})),
+            Fact::Unknown
+        );
+        assert_eq!(st(json!({"latest": "0.1.0"})), Fact::Unknown);
+        assert_eq!(
+            st(json!({"installed": "abc", "latest": "def"})),
+            Fact::Unknown
+        );
+    }
+
+    /// Serves `body` once per connection with `status` on a local port.
+    async fn stub(status: u16, body: &'static str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/status", l.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = l.accept().await {
+                let mut buf = [0u8; 2048];
+                let _ = s.read(&mut buf).await;
+                let r = format!(
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = s.write_all(r.as_bytes()).await;
+            }
+        });
+        url
+    }
+
+    #[tokio::test]
+    async fn http_deploy_state_maps_the_status_and_errors_are_unknown() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let url = stub(
+            200,
+            r#"{"installed":"0.1.0","desired":"0.2.0","latest":"0.2.0","stuck":false}"#,
+        )
+        .await;
+        assert_eq!(
+            HttpDeployState::new(url).state().await,
+            Fact::Text("pending".into())
+        );
+        let url = stub(500, "{}").await;
+        assert_eq!(HttpDeployState::new(url).state().await, Fact::Unknown);
+        let url = stub(200, "not json").await;
+        assert_eq!(HttpDeployState::new(url).state().await, Fact::Unknown);
+        assert_eq!(
+            HttpDeployState::new("http://127.0.0.1:1/status")
+                .state()
+                .await,
+            Fact::Unknown
         );
     }
 }

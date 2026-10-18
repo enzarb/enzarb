@@ -10,7 +10,7 @@ use crate::{
     Actor, ChangeRequestSpec, CloseReason, CommentRef, CommitRef, Connector, CredScope, Error,
     ItemKind, ItemRef, MergeOutcome, MergeReadiness, Permission, Progress, ProgressTarget,
     ReadCred, RepoKey, Result, ShortLivedCred, Status, Thread, ThreadComment, UpdateBranchOutcome,
-    UpsertOutcome, UpsertedIssue, WorkItemKey,
+    UpsertOutcome, UpsertedIssue, WorkItemKey, WorkflowRunInfo,
 };
 
 /// One call made against the fake, with its arguments.
@@ -201,6 +201,8 @@ struct State {
     ci: HashMap<(RepoKey, String), serde_json::Value>,
     reviews: HashMap<WorkItemKey, serde_json::Value>,
     contains: HashMap<(RepoKey, String, String), bool>,
+    workflow_runs: HashMap<(RepoKey, String, String), WorkflowRunInfo>,
+    default_branches: HashMap<RepoKey, String>,
 }
 
 /// Records every call and keeps simple in-memory state. Cheap to share by
@@ -251,6 +253,24 @@ impl FakeConnector {
         self.st()
             .contains
             .insert((repo, sha.to_string(), git_ref.to_string()), yes);
+    }
+
+    /// Seed `latest_workflow_run` for `workflow` on `branch`.
+    pub fn set_workflow_run(
+        &self,
+        repo: RepoKey,
+        workflow: &str,
+        branch: &str,
+        run: WorkflowRunInfo,
+    ) {
+        self.st()
+            .workflow_runs
+            .insert((repo, workflow.to_string(), branch.to_string()), run);
+    }
+
+    /// The default branch `latest_workflow_run(.., None)` resolves to (`main` when unset).
+    pub fn set_default_branch(&self, repo: RepoKey, branch: &str) {
+        self.st().default_branches.insert(repo, branch.to_string());
     }
 
     /// Current labels set through `add_label`/`remove_label`.
@@ -1214,6 +1234,26 @@ impl Connector for FakeConnector {
             .contains
             .get(&(repo.clone(), sha.to_string(), git_ref.to_string()))
             .copied())
+    }
+
+    async fn latest_workflow_run(
+        &self,
+        repo: &RepoKey,
+        workflow: &str,
+        branch: Option<&str>,
+    ) -> Result<Option<WorkflowRunInfo>> {
+        let st = self.generic(
+            "latest_workflow_run",
+            serde_json::json!({"repo": repo.to_string(), "workflow": workflow, "branch": branch}),
+        )?;
+        let branch = branch
+            .map(str::to_string)
+            .or_else(|| st.default_branches.get(repo).cloned())
+            .unwrap_or_else(|| "main".to_string());
+        Ok(st
+            .workflow_runs
+            .get(&(repo.clone(), workflow.to_string(), branch))
+            .cloned())
     }
 
     async fn mint_step_token(

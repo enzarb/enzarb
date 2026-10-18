@@ -18,6 +18,10 @@ vi.mock('#lib/chat.remote.ts', () => ({
 vi.mock('#lib/claude.remote.ts', () => ({
 	claudeCredential: () => ({ current: chat.credential, error: undefined })
 }));
+vi.mock('#lib/tasks.remote.ts', () => ({
+	listChats: () => ({ current: [], error: undefined }),
+	getChatSession: () => ({ current: [], refresh: async () => {} })
+}));
 vi.mock('$app/state', () => ({
 	page: { params: { name: 'alpha' }, url: new URL('http://localhost/projects/alpha/chat') }
 }));

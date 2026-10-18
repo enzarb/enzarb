@@ -808,6 +808,40 @@ async fn a_dependency_ending_notifies_the_blocked_task() {
 
 // ---------------------------------------------------------------- dead-wait checks
 
+/// The `review` and `implement` result schemas take an optional, advisory `environment`.
+#[test]
+fn stdlib_result_schemas_accept_an_optional_environment() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/stdlib/steps");
+    let cases = [
+        (
+            "review",
+            json!({"verdict": "approve", "must_fix": [], "body": "ok", "checks": []}),
+        ),
+        ("implement", json!({"decision": "done", "body": "ok"})),
+    ];
+    for (step, base) in cases {
+        let y: Value = serde_yaml::from_str(
+            &std::fs::read_to_string(dir.join(format!("{step}.yaml"))).unwrap(),
+        )
+        .unwrap();
+        let schema = &y["result"]["schema"];
+        assert!(
+            !schema["required"].to_string().contains("environment"),
+            "{step}"
+        );
+        let with = |env: Value| {
+            let mut v = base.clone();
+            v["environment"] = env;
+            v
+        };
+        engine::schema::validate(schema, &base).unwrap();
+        engine::schema::validate(schema, &with(json!({"detail": "disk full"}))).unwrap();
+        engine::schema::validate(schema, &with(json!({"kind": "oom", "detail": "killed"})))
+            .unwrap();
+        assert!(engine::schema::validate(schema, &with(json!({"kind": "oom"}))).is_err());
+    }
+}
+
 /// Every shipped check parses, validates and files an issue.
 #[test]
 fn stdlib_checks_are_valid_and_file_issues() {
@@ -830,13 +864,20 @@ fn stdlib_checks_are_valid_and_file_issues() {
     assert_eq!(
         ids,
         [
+            "chart-not-deployed",
             "ci-never-started",
             "epic-subissues-without-deps",
             "event-failing",
             "external-idle",
             "mergeable-unknown",
             "platform-wait-long",
-            "retry-ignored"
+            "rebuild-all-failed",
+            "release-failed",
+            "retry-ignored",
+            "sandbox-change-unapplied",
+            "sandbox-disk-full",
+            "sandbox-disk-high",
+            "sandbox-memory-high"
         ]
     );
 }
@@ -1335,6 +1376,303 @@ async fn fact_unknown_across_refreshes_files_one_issue() {
     );
 }
 
+// ---------------------------------------------------------------- platform checks
+
+use engine::findings::{DbPlatformFacts, FakePlatformFacts};
+use enzarb_flow::format::PlatformFactName as F;
+
+const RELEASE: &str = "enzarb/enzarb:release.yml";
+const REBUILD: &str = "enzarb/enzarb:rebuild-all.yml";
+
+/// A harness whose platform facts are `facts` (all unknown until set).
+async fn platform_harness() -> Option<(H, FakePlatformFacts)> {
+    let mut h = start(false).await?;
+    let facts = FakePlatformFacts::new();
+    h.engine.findings = engine::Findings::new(Arc::new(facts.clone()));
+    Some((h, facts))
+}
+
+fn text(s: &str) -> Fact {
+    Fact::Text(s.into())
+}
+
+/// Checks only read: besides library reads (recorded as generic calls), the one write the whole
+/// run made was the issue upsert.
+fn assert_observation_only(h: &H) {
+    use enzarb_connector::fake::Call;
+    for c in h.gh.applied_calls() {
+        assert!(
+            matches!(
+                c,
+                Call::UpsertIssue { .. } | Call::Generic { .. } | Call::GetFile { .. }
+            ),
+            "{c:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_release_run_files_one_issue() {
+    let Some((h, f)) = platform_harness().await else {
+        return;
+    };
+    f.set_arg("p", F::WorkflowRunStatus, RELEASE, text("failure"));
+    f.set_arg("p", F::WorkflowRunStatus, REBUILD, text("success"));
+    let (f1, f2) = (f.clone(), f.clone());
+    assert_one_finding_one_issue(
+        &h,
+        "release-failed",
+        "finding:release-failed:p",
+        "The release workflow failed on main",
+        async move { f1.set_arg("p", F::WorkflowRunStatus, RELEASE, text("success")) },
+        async move { f2.set_arg("p", F::WorkflowRunStatus, RELEASE, text("failure")) },
+    )
+    .await;
+    let repo: String =
+        sqlx::query_scalar("SELECT input->>'repo' FROM engine.jobs WHERE kind = 'file_issue'")
+            .fetch_one(&h.db.pool)
+            .await
+            .unwrap();
+    assert_eq!(repo, "enzarb/enzarb");
+    assert_observation_only(&h);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_rebuild_all_run_files_one_issue() {
+    let Some((h, f)) = platform_harness().await else {
+        return;
+    };
+    f.set_arg("p", F::WorkflowRunStatus, RELEASE, text("success"));
+    f.set_arg("p", F::WorkflowRunStatus, REBUILD, text("failure"));
+    let (f1, f2) = (f.clone(), f.clone());
+    assert_one_finding_one_issue(
+        &h,
+        "rebuild-all-failed",
+        "finding:rebuild-all-failed:p",
+        "The rebuild-all workflow failed on main",
+        async move { f1.set_arg("p", F::WorkflowRunStatus, REBUILD, text("success")) },
+        async move { f2.set_arg("p", F::WorkflowRunStatus, REBUILD, text("failure")) },
+    )
+    .await;
+    assert_observation_only(&h);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn full_sandbox_workspace_files_one_critical_issue() {
+    let Some((h, f)) = platform_harness().await else {
+        return;
+    };
+    f.set("p", F::SandboxDiskPct, Fact::Num(100.0));
+    let (f1, f2) = (f.clone(), f.clone());
+    assert_one_finding_one_issue(
+        &h,
+        "sandbox-disk-full",
+        "finding:sandbox-disk-full:p",
+        "Sandbox of project p has a full workspace",
+        async move { f1.set("p", F::SandboxDiskPct, Fact::Num(40.0)) },
+        async move { f2.set("p", F::SandboxDiskPct, Fact::Num(100.0)) },
+    )
+    .await;
+    let sev: String = sqlx::query_scalar("SELECT severity FROM engine_api.finding_v")
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(sev, "critical");
+    assert_observation_only(&h);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn nearly_full_workspace_and_high_memory_are_separate_warnings() {
+    let Some((h, f)) = platform_harness().await else {
+        return;
+    };
+    f.set("p", F::SandboxDiskPct, Fact::Num(93.0));
+    f.set("p", F::SandboxMemWorkingSetPct, Fact::Num(95.0));
+    passes(&h, 2).await;
+    run_jobs(&h).await;
+    assert_eq!(
+        open_checks(&h).await,
+        ["sandbox-disk-high", "sandbox-memory-high"]
+    );
+    assert_eq!(h.gh.created_issues().len(), 2);
+    // At 100% only the full check holds; the high check clears.
+    f.set("p", F::SandboxDiskPct, Fact::Num(100.0));
+    passes(&h, 2).await;
+    assert_eq!(
+        open_checks(&h).await,
+        ["sandbox-disk-full", "sandbox-memory-high"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn undeployed_chart_files_one_issue() {
+    let Some((h, f)) = platform_harness().await else {
+        return;
+    };
+    f.set("p", F::ChartDeployState, text("stuck"));
+    let (f1, f2) = (f.clone(), f.clone());
+    assert_one_finding_one_issue(
+        &h,
+        "chart-not-deployed",
+        "finding:chart-not-deployed:p",
+        "A released chart version did not deploy",
+        async move { f1.set("p", F::ChartDeployState, text("deployed")) },
+        async move { f2.set("p", F::ChartDeployState, text("stuck")) },
+    )
+    .await;
+    assert_observation_only(&h);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unapplied_sandbox_change_files_one_issue() {
+    let Some((h, f)) = platform_harness().await else {
+        return;
+    };
+    f.set("p", F::ProjectPendingChange, Fact::Bool(true));
+    let (f1, f2) = (f.clone(), f.clone());
+    assert_one_finding_one_issue(
+        &h,
+        "sandbox-change-unapplied",
+        "finding:sandbox-change-unapplied:p",
+        "Sandbox of project p has not applied a pending change",
+        async move { f1.set("p", F::ProjectPendingChange, Fact::Bool(false)) },
+        async move { f2.set("p", F::ProjectPendingChange, Fact::Bool(true)) },
+    )
+    .await;
+    assert_observation_only(&h);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn healthy_platform_facts_file_nothing() {
+    let Some((h, f)) = platform_harness().await else {
+        return;
+    };
+    f.set_arg("p", F::WorkflowRunStatus, RELEASE, text("success"));
+    f.set_arg("p", F::WorkflowRunStatus, REBUILD, text("success"));
+    // A rollout in progress is normal: `pending` files nothing.
+    f.set("p", F::ChartDeployState, text("pending"));
+    f.set("p", F::SandboxDiskPct, Fact::Num(35.0));
+    f.set("p", F::SandboxMemWorkingSetPct, Fact::Num(50.0));
+    f.set("p", F::ProjectPendingChange, Fact::Bool(false));
+    passes(&h, 4).await;
+    run_jobs(&h).await;
+    assert!(open_checks(&h).await.is_empty());
+    assert!(issue_jobs(&h).await.is_empty());
+    assert!(h.gh.created_issues().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unknown_platform_facts_leave_findings_alone_and_file_nothing() {
+    let Some((h, f)) = platform_harness().await else {
+        return;
+    };
+    // Nothing is known: nothing is raised.
+    passes(&h, 3).await;
+    assert!(open_checks(&h).await.is_empty());
+    // An open finding stays open while its fact is unknown, and files nothing more.
+    f.set("p", F::ChartDeployState, text("stuck"));
+    passes(&h, 2).await;
+    run_jobs(&h).await;
+    assert_eq!(open_checks(&h).await, ["chart-not-deployed"]);
+    f.set("p", F::ChartDeployState, Fact::Unknown);
+    passes(&h, 3).await;
+    run_jobs(&h).await;
+    assert_eq!(open_checks(&h).await, ["chart-not-deployed"]);
+    assert_eq!(h.gh.created_issues().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn db_facts_read_the_workflow_run_and_the_memory_percentage() {
+    let Some(h) = start(false).await else {
+        return;
+    };
+    // The run is read from the repository's default branch, not a hard-coded `main`.
+    h.gh.set_default_branch(rk("enzarb/enzarb"), "trunk");
+    h.gh.set_workflow_run(
+        rk("enzarb/enzarb"),
+        "release.yml",
+        "trunk",
+        enzarb_connector::WorkflowRunInfo {
+            id: 5,
+            conclusion: "failure".into(),
+            url: None,
+        },
+    );
+    let facts = DbPlatformFacts::new(h.db.pool.clone(), Arc::new(StaticSandboxResolver::new()))
+        .with_connector(h.gh.clone());
+    use engine::findings::PlatformFacts;
+    assert_eq!(
+        facts.get_arg("p", F::WorkflowRunStatus, RELEASE).await,
+        text("failure")
+    );
+    // No run, an unsupported workflow and a malformed argument are unknown.
+    assert_eq!(
+        facts.get_arg("p", F::WorkflowRunStatus, REBUILD).await,
+        Fact::Unknown
+    );
+    assert_eq!(
+        facts.get_arg("p", F::WorkflowRunStatus, "nonsense").await,
+        Fact::Unknown
+    );
+    // One connector read per workflow however often (or for however many Projects) it is asked.
+    facts.get_arg("q", F::WorkflowRunStatus, RELEASE).await;
+    assert_eq!(h.gh.generic_calls("latest_workflow_run").len(), 2);
+
+    let stat = |ts_ms, mem, limit| enzarb_proto::SandboxStats {
+        ts_ms,
+        memory_bytes: mem,
+        memory_limit_bytes: limit,
+        ..Default::default()
+    };
+    let now = chrono::Utc::now().timestamp_millis() as u64;
+    // Unknown without a limit (older sandbox, or `max`), and with a zero limit.
+    engine::db::insert_sandbox_stats(&h.db.pool, "p", "pod", &stat(now - 3000, Some(50), None))
+        .await
+        .unwrap();
+    assert_eq!(
+        facts.get("p", F::SandboxMemWorkingSetPct).await,
+        Fact::Unknown
+    );
+    engine::db::insert_sandbox_stats(&h.db.pool, "p", "pod", &stat(now - 2000, Some(50), Some(0)))
+        .await
+        .unwrap();
+    assert_eq!(
+        facts.get("p", F::SandboxMemWorkingSetPct).await,
+        Fact::Unknown
+    );
+    engine::db::insert_sandbox_stats(
+        &h.db.pool,
+        "p",
+        "pod",
+        &stat(now - 1000, Some(900), Some(1000)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        facts.get("p", F::SandboxMemWorkingSetPct).await,
+        Fact::Num(90.0)
+    );
+    // Page cache (`inactive_file`) is not counted: 900 used, 800 of it reclaimable, of 1000.
+    engine::db::insert_sandbox_stats(
+        &h.db.pool,
+        "p",
+        "pod",
+        &enzarb_proto::SandboxStats {
+            ts_ms: now,
+            memory_bytes: Some(900),
+            memory_limit_bytes: Some(1000),
+            memory_inactive_file_bytes: Some(800),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        facts.get("p", F::SandboxMemWorkingSetPct).await,
+        Fact::Num(10.0)
+    );
+}
+
 // ------------------------------------------------ environment failures (ADR-0026, issue #300)
 
 /// One way to reach a library agent step with the issue workflow.
@@ -1390,6 +1728,12 @@ const REACH: [Reach; 5] = [
     },
 ];
 
+static AGENT_ENV_RESULT: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
+    // Valid for both the implement and the review result schemas.
+    json!({"decision": "done", "body": "stuck", "verdict": "approve", "must_fix": [], "checks": [],
+               "environment": {"kind": "disk_full", "detail": "agent: /tmp is full"}})
+});
+
 fn failure_of(kind: Option<enzarb_proto::EnvironmentKind>, f: &mut StepFinished) {
     f.exit = "failure".into();
     f.result = None;
@@ -1402,6 +1746,16 @@ fn failure_of(kind: Option<enzarb_proto::EnvironmentKind>, f: &mut StepFinished)
 /// Runs the issue workflow until the agent step `r.leaf` fails with `kind` (no `environment`
 /// for a code failure). Returns the task and the run id of the failed step.
 async fn fail_step(h: &H, r: Reach, kind: Option<enzarb_proto::EnvironmentKind>) -> (i64, String) {
+    fail_step_with(h, r, kind, false).await
+}
+
+/// [`fail_step`]; `agent_env` makes the failed step's result carry an agent-reported `environment`.
+async fn fail_step_with(
+    h: &H,
+    r: Reach,
+    kind: Option<enzarb_proto::EnvironmentKind>,
+    agent_env: bool,
+) -> (i64, String) {
     h.open_issue(7, &[]).await;
     let task = loop {
         if let Some((t, ..)) = h.task_of(7).await {
@@ -1423,6 +1777,9 @@ async fn fail_step(h: &H, r: Reach, kind: Option<enzarb_proto::EnvironmentKind>)
             // repeats, as `resolve` retries until its attempts run out.
             if kind.is_none() || n == 0 {
                 failure_of(kind, f);
+                if agent_env {
+                    f.result = Some(AGENT_ENV_RESULT.clone());
+                }
             }
         }
     });
@@ -1597,5 +1954,82 @@ async fn library_other_environment_kinds_keep_their_routes() {
             let p = h.wait(task, r.leaf, |p| p["reason"] == r.code_reason).await;
             assert_eq!(p["needs_you"], true, "{}: {p:#}", r.leaf);
         }
+    }
+}
+
+/// An agent-reported `environment` with no sandbox detection is only data: the review and
+/// implement steps follow their usual edges and never wait.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn library_agent_environment_without_detection_does_not_route() {
+    let Some(h) = start(true).await else {
+        return;
+    };
+    h.open_issue(7, &[]).await;
+    let task = loop {
+        if let Some((t, ..)) = h.task_of(7).await {
+            break t;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    h.wait(task, "start gate", |p| p["reason"] == "awaiting_start")
+        .await;
+    let _responder = spawn_responder_with(&h, |leaf, f| {
+        let report = json!({"kind": "disk_full", "detail": "no space left"});
+        if let ("implement" | "review", Some(r)) = (leaf, f.result.as_mut()) {
+            r["environment"] = report;
+        }
+    });
+    h.comment("plan", 7, "issue", "/plan", "alice").await;
+    h.wait(task, "plan approval", |p| {
+        p["reason"] == "awaiting_approval"
+    })
+    .await;
+    h.gh.set_ci(rk(APP), HEAD, json!({"state": "success", "failing": []}));
+    h.comment("approve", 7, "issue", "/approve", "alice").await;
+    // The review ran and approved; the task never entered a platform wait.
+    for leaf in ["implement", "review"] {
+        loop {
+            let done: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM engine.step_runs WHERE task_id = $1 AND node LIKE $2
+                 AND ended_at IS NOT NULL",
+            )
+            .bind(task)
+            .bind(format!("%/{leaf}"))
+            .fetch_one(&h.db.pool)
+            .await
+            .unwrap();
+            if done > 0 {
+                break;
+            }
+            let p = h.projection(task).await;
+            assert_ne!(p["reason"], "platform_wait", "{leaf}: {p:#}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    let wait: Option<Value> =
+        sqlx::query_scalar("SELECT state->'platform_wait' FROM engine.tasks WHERE id = $1")
+            .bind(task)
+            .fetch_one(&h.db.pool)
+            .await
+            .unwrap();
+    assert!(wait.as_ref().is_none_or(Value::is_null), "{wait:#?}");
+}
+
+/// When the sandbox also detected the failure, the agent's report adds detail to the wait.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn library_agent_environment_adds_detail_to_a_detected_wait() {
+    use enzarb_proto::EnvironmentKind::DiskFull;
+    for r in [REACH[0], REACH[1]] {
+        let Some(mut h) = start(true).await else {
+            return;
+        };
+        let facts = engine::FakePlatformFacts::new();
+        h.engine.findings = engine::Findings::new(Arc::new(facts));
+        let (task, _) = fail_step_with(&h, r, Some(DiskFull), true).await;
+        let p = h
+            .wait(task, r.leaf, |p| p["reason"] == "platform_wait")
+            .await;
+        let text = p["text"].to_string();
+        assert!(text.contains("test; agent: agent: /tmp is full"), "{text}");
     }
 }

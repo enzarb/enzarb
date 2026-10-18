@@ -6,7 +6,7 @@ use chrono::{SecondsFormat, Utc};
 use enzarb_connector::{
     Actor, ChangeRequestSpec, CiState, CloseReason, CommentKind, CommitRef, Connector, CredScope,
     Error, ItemKind, MergeOutcome, MergeReadiness, Permission, Progress, ProgressTarget, RepoKey,
-    Status, StatusState, UpdateBranchOutcome, UpsertOutcome, WorkItemKey,
+    Status, StatusState, UpdateBranchOutcome, UpsertOutcome, WorkItemKey, WorkflowRunInfo,
 };
 use enzarb_connector_github::{GitHubConfig, GitHubConnector, RetryPolicy};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
@@ -2516,4 +2516,93 @@ async fn upsert_issue_updates_a_closed_issue_without_reopening_it() {
         .await
         .unwrap();
     assert_eq!(got.outcome, UpsertOutcome::Updated);
+}
+
+// ---- latest_workflow_run ----
+
+async fn latest_run_with(
+    resp: ResponseTemplate,
+) -> (Result<Option<WorkflowRunInfo>, Error>, String) {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/repos/enzarb/enzarb-ui/actions/workflows/release.yml/runs",
+        ))
+        .respond_with(resp)
+        .mount(&server)
+        .await;
+    let got = connector(&server)
+        .latest_workflow_run(&repo(), "release.yml", Some("main"))
+        .await;
+    let query = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path().ends_with("/runs"))
+        .filter_map(|r| r.url.query().map(str::to_string))
+        .next()
+        .unwrap_or_default();
+    (got, query)
+}
+
+#[tokio::test]
+async fn latest_workflow_run_reads_the_latest_completed_run() {
+    let (got, query) = latest_run_with(ResponseTemplate::new(200).set_body_json(json!({
+        "total_count": 1,
+        "workflow_runs": [{"id": 77, "status": "completed", "conclusion": "failure",
+                           "html_url": "https://github.com/enzarb/enzarb-ui/actions/runs/77"}]
+    })))
+    .await;
+    let run = got.unwrap().expect("a run");
+    assert_eq!((run.id, run.conclusion.as_str()), (77, "failure"));
+    assert_eq!(
+        run.url.as_deref(),
+        Some("https://github.com/enzarb/enzarb-ui/actions/runs/77")
+    );
+    assert_eq!(query, "branch=main&status=completed&per_page=1");
+}
+
+#[tokio::test]
+async fn latest_workflow_run_none_without_runs_or_workflow() {
+    let (got, _) = latest_run_with(
+        ResponseTemplate::new(200).set_body_json(json!({"total_count": 0, "workflow_runs": []})),
+    )
+    .await;
+    assert_eq!(got.unwrap(), None);
+    let (got, _) =
+        latest_run_with(ResponseTemplate::new(404).set_body_json(json!({"message": "Not Found"})))
+            .await;
+    assert_eq!(got.unwrap(), None);
+    let (got, _) = latest_run_with(ResponseTemplate::new(500)).await;
+    assert!(got.is_err());
+}
+
+#[tokio::test]
+async fn latest_workflow_run_without_branch_uses_the_default_branch() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/enzarb/enzarb-ui"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"default_branch": "trunk"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/repos/enzarb/enzarb-ui/actions/workflows/release.yml/runs",
+        ))
+        .and(wiremock::matchers::query_param("branch", "trunk"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "total_count": 1,
+            "workflow_runs": [{"id": 5, "status": "completed", "conclusion": "success"}]
+        })))
+        .mount(&server)
+        .await;
+    let run = connector(&server)
+        .latest_workflow_run(&repo(), "release.yml", None)
+        .await
+        .unwrap()
+        .expect("a run");
+    assert_eq!(run.id, 5);
 }

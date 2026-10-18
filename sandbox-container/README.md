@@ -41,7 +41,7 @@ The image contains `dockerd`, `containerd`, `runc` and the `docker` CLI (static 
 
 ## Stats snapshot
 
-A `stats_request` ctrl message (advertised as the `stats` feature in `welcome`) is answered with `stats`: raw cgroup v2 counters (`cpu.stat`, `memory.current`, `io.stat`, read under `ENZARB_CGROUP_ROOT`, default `/sys/fs/cgroup`) and used/total bytes of the workspace filesystem (statvfs of `ENZARB_WORKSPACE`), plus `ts_ms`. It is read on demand only (`src/stats.rs`): no sampling, no push. A missing or oddly formatted file makes that field absent; it never produces an error and never affects the session or other channels. Field meanings are in `docs/contracts.md` §4.
+A `stats_request` ctrl message (advertised as the `stats` feature in `welcome`) is answered with `stats`: raw cgroup v2 counters (`cpu.stat`, `memory.current`, `memory.max` (the limit, absent when `max`), `io.stat`, read under `ENZARB_CGROUP_ROOT`, default `/sys/fs/cgroup`) and used/total bytes of the workspace filesystem (statvfs of `ENZARB_WORKSPACE`), plus `ts_ms`. It is read on demand only (`src/stats.rs`): no sampling, no push. A missing or oddly formatted file makes that field absent; it never produces an error and never affects the session or other channels. Field meanings are in `docs/contracts.md` §4.
 
 ## Toolchains come from mise
 

@@ -71,3 +71,5 @@ Finish by calling the `submit_result` tool once:
 - `title` (for `done`): the pull request title, a Conventional Commit with a scope (at most 100 characters). The pull request is squash-merged with it, so it decides the release version: `feat` is a minor release, `fix`/`perf`/`revert` a patch, `!` a breaking change.
 - `body`: the pull request description in markdown: summary, notable decisions and deviations from the plan, and Testing. End it with `Closes #{{ issue.number }}`.
 - `checks`: every check you ran or tried, `{name, status: passed|failed|not_run, reason}`.
+
+Environment problems: if you could not do your work because of the environment (disk full, out of memory, a tool missing from the sandbox), say so in the optional `environment` field of the result (`{kind, detail}`), not as a code problem (`blocked`, a failed check). The field is advisory: the sandbox decides what happens next.

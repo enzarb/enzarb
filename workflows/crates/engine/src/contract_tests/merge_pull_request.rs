@@ -23,6 +23,37 @@ fn check_head_from_readiness(c: &FakeConnector) -> Result<(), String> {
     ensure(ok, || format!("merge calls {calls:?}"))
 }
 
+/// A refused merge is `ok: false` with the provider's text in `result.error` (the library routes
+/// on it).
+fn check_refusal_error_text(out: &(bool, serde_json::Value), text: &str) -> Result<(), String> {
+    ensure(!out.0 && out.1["error"] == json!(text), || {
+        format!("outcome {out:?}, wanted ok false and error {text:?}")
+    })
+}
+
+async fn refused_outcome(text: &str) -> (bool, serde_json::Value) {
+    let c = FakeConnector::default();
+    with_readiness(&c, "abc");
+    c.queue_merge_outcome(MergeOutcome::NotMergeable {
+        reason: text.into(),
+    });
+    run_outcome(&c, "merge_pull_request", json!({}), JOB)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn conflict_refusal_is_ok_false_with_provider_text() {
+    let text = "Pull Request has merge conflicts";
+    check_refusal_error_text(&refused_outcome(text).await, text).unwrap();
+}
+
+#[tokio::test]
+async fn base_modified_refusal_is_ok_false_with_provider_text() {
+    let text = "Base branch was modified";
+    check_refusal_error_text(&refused_outcome(text).await, text).unwrap();
+}
+
 #[tokio::test]
 async fn merged_result_is_merged_and_sha() {
     let c = FakeConnector::default();
@@ -175,5 +206,15 @@ mod mutation_tests {
         with_readiness(&c, "abc");
         run(&c, "merge_pull_request", json!({}), JOB).await.unwrap();
         assert!(check_head_from_readiness(&c).is_err());
+    }
+
+    #[tokio::test]
+    async fn dropping_the_refusal_text_fails_the_contract() {
+        let _g = activate(Mutation {
+            drop_refusal_text: true,
+            ..Default::default()
+        });
+        let text = "Pull Request has merge conflicts";
+        assert!(check_refusal_error_text(&refused_outcome(text).await, text).is_err());
     }
 }

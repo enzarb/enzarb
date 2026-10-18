@@ -29,6 +29,13 @@ result:
             name: {type: string}
             status: {type: string, enum: [passed, failed, not_run]}
             reason: {type: string, enum: [refused, missing_tool, timeout, not_attempted, covered_by_ci]}
+      environment:
+        type: object
+        description: Advisory report of an environment problem (disk full, OOM, missing tool); the sandbox decides the routing
+        required: [detail]
+        properties:
+          kind: {type: string}
+          detail: {type: string}
 github: {contents: read, pull_requests: read, actions: read, checks: read}
 steer: [comment]
 platform_wait:

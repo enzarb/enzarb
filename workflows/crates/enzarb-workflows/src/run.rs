@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use engine::findings::DbPlatformFacts;
+use engine::findings::{DbPlatformFacts, HttpDeployState};
 use engine::sandbox_poller::{MuxStatsClient, PgPollLock, PgSampleSink, SandboxPoller};
 use engine::{
     CachedPermissions, ConnectorPermissions, Engine, EngineConfig, Findings, KubeProjectIndex,
@@ -50,6 +50,11 @@ pub async fn run(cfg: Config) -> Result<(), Error> {
     tracing::info!("waiting for the Project index");
     index.wait_ready().await;
     let sandboxes = Arc::new(KubeSandboxResolver::new(kube.clone()));
+    let mut facts =
+        DbPlatformFacts::new(pool.clone(), sandboxes.clone()).with_connector(gh.clone());
+    if let Some(url) = &cfg.updater_status_url {
+        facts = facts.with_deploy_state(Arc::new(HttpDeployState::new(url)));
+    }
     let engine = Engine {
         pool: pool.clone(),
         index: Arc::new(index),
@@ -62,11 +67,8 @@ pub async fn run(cfg: Config) -> Result<(), Error> {
         sandboxes: sandboxes.clone(),
         secrets_key: cfg.secrets_key.clone(),
         claude: cfg.claude.clone(),
-        findings: Findings::new(Arc::new(DbPlatformFacts::new(
-            pool.clone(),
-            sandboxes.clone(),
-        )))
-        .with_interval(Duration::from_secs(cfg.findings_secs)),
+        findings: Findings::new(Arc::new(facts))
+            .with_interval(Duration::from_secs(cfg.findings_secs)),
         cfg: EngineConfig {
             bot_handle: cfg.bot_handle.clone(),
             bot_login: cfg.bot_login.clone(),

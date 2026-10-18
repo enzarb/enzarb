@@ -113,6 +113,15 @@ cpu_system_usec?: number | null,
  */
 memory_bytes?: number | null, 
 /**
+ * Cgroup `memory.max` in bytes. Omitted when the cgroup is unlimited (`max`) or unreadable.
+ */
+memory_limit_bytes?: number | null, 
+/**
+ * `memory.stat` `inactive_file` in bytes: reclaimable page cache that `memory.current`
+ * includes. `memory_bytes - memory_inactive_file_bytes` is the working set.
+ */
+memory_inactive_file_bytes?: number | null, 
+/**
  * `io.stat` `rbytes` summed over devices.
  */
 io_read_bytes?: number | null, 

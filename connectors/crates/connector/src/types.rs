@@ -191,6 +191,18 @@ pub struct ShortLivedCred {
     pub expires_at: DateTime<Utc>,
 }
 
+/// The latest finished run of a CI workflow, as [`crate::Connector::latest_workflow_run`]
+/// reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowRunInfo {
+    pub id: u64,
+    /// `success`, `failure`, `cancelled`, `timed_out`, ... (the run's conclusion).
+    pub conclusion: String,
+    /// Link to the run, when the provider has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
 /// A short-lived, read-only credential covering several repos (for fetching
 /// private dependencies). Never used for push. `Debug` redacts the token.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]

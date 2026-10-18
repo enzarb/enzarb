@@ -140,7 +140,7 @@ ui:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-ui
-    tag: 0.74.0
+    tag: 0.76.0
     pullPolicy: ""
   # HTTP probes (/healthz liveness, /readyz readiness). false falls back to TCP probes.
   probes:
@@ -160,7 +160,7 @@ workflows:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-workflows
-    tag: 0.68.0
+    tag: 0.69.0
     pullPolicy: ""
   # Roles for `run`: reducer, executor, ticker.
   roles: reducer,executor,ticker
@@ -210,7 +210,7 @@ connectors:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-connectors-receiver
-    tag: 0.26.0
+    tag: 0.28.0
     pullPolicy: ""
   botHandle: enzarb
   botLogin: enzarb[bot]
@@ -321,7 +321,7 @@ operator:
     tag: 0.15.0
     pullPolicy: ""
   # Default sandbox image for Projects (ENZARB_SANDBOX_IMAGE).
-  sandboxImage: ghcr.io/enzarb/enzarb-sandbox:0.37.0
+  sandboxImage: ghcr.io/enzarb/enzarb-sandbox:0.38.0
   defaultStorage: 20Gi
   # RuntimeClass of every sandbox pod (ENZARB_SANDBOX_RUNTIME_CLASS). Cluster-admin
   # setting; Projects cannot choose. Must be in docker.runtimeClasses.

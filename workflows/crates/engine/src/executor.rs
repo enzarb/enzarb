@@ -571,14 +571,10 @@ impl Engine {
         let args = job.input["args"].as_object().cloned().unwrap_or_default();
         let (repo, _, state) = self.task_state(job.task_id).await?;
         let key = format!("{}:{call_id}", job.task_id);
-        let (ok, result) = match crate::actions::call(self, &repo, &state, &name, &args, &key).await
-        {
-            Ok(v) => (true, v),
-            Err(crate::actions::ActionError::Refused(why)) => (false, json!({"error": why})),
-            Err(crate::actions::ActionError::Transient(e)) => {
-                return Err(StepError::Unavailable(e));
-            }
-        };
+        let (ok, result) = crate::actions::finish(
+            crate::actions::call(self, &repo, &state, &name, &args, &key).await,
+        )
+        .map_err(StepError::Unavailable)?;
         Ok(Done::Event(TaskEvent::ActionFinished {
             call_id,
             ok,
