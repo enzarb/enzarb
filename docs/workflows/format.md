@@ -320,6 +320,11 @@ kind: dead_wait            # or platform_failure
 severity: warning          # info | warning | critical
 scope: task                # task (default, per open task) | platform (per Project)
 text: "Waiting on CI at {node}, but the head has no check runs"   # {task} {node} {phase} {project}
+issue:                     # optional: file one issue when the finding opens
+  title: "Task {task} waits for CI that cannot start"
+  body: "Task {task} in {project} waits at `{node}` ..."
+  labels: [liveness, dead-wait]
+  # repo: owner/name       # defaults to the task's repo; required for scope: platform
 when:
   all:
     - waiting_on: external
@@ -336,7 +341,11 @@ when:
 - `fact_unknown_for: {name, refreshes: N}`: the fact was refreshed to null at least N times in a row.
 - `fact_count: {name, eq: N}`: a list's length or a number. A missing or null value does not match.
 - `idle_for: {no_event: <dur>, no_step: <dur>}`: no event reached the task and/or no step ran for that long (a running step counts as now). Durations: `90s`, `15m`, `2h`, `14d`, `1w`.
+- `command_ignored: {for: <dur>, command: <name>}`: a command (a comment's `/retry`, or one from the UI) reached the task at least `for` ago and nothing has happened to the task since: no change of node or status and no effect. `command` (without the slash) restricts it to that command; any command otherwise. Only the latest command counts.
+- `relation_count: {kind, inbound, eq|gt}`: the number of `engine.relations` rows of that `kind` the task holds (`blocked_by`, `child`, ...), or with `inbound: true` the rows other tasks hold towards its subjects (an epic's `parent` rows naming a sub-issue). Exactly one of `eq` and `gt`.
 - `platform: {fact, op, value}` (`op`: `eq` default, `ne`, `gt`, `ge`, `lt`, `le`): `workflow_run.status`, `chart.deploy_state`, `sandbox.disk_pct`, `sandbox.mem_pct` or `project.pending_change`. An unknown platform fact makes the check undetermined: it raises nothing and leaves an open finding as it is.
+
+**`issue:`** (any check kind and scope) files one issue the first time the finding opens: `{title, body, labels?, repo?}`, with the `text` placeholders. The engine queues a `file_issue` job in the same transaction as the finding, keyed `finding:<finding key>`. The key carries no time and is scoped to the repo, so a finding that clears and opens again, or a repeated pass, updates the same issue and never files a second one. `repo` defaults to the task's repo and is required for `scope: platform` (there is no task). Nothing closes the issue when the finding clears.
 
 Finding keys are `<id>:<task id>` (task scope) or `<id>:<project>` (platform scope); two checks on one task give two findings. `enzarb-lint` validates `checks/` (unknown leaves, bad durations, task leaves in platform scope).
 

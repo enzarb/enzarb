@@ -28,6 +28,17 @@
       "type": "string",
       "description": "The finding text. `{task}`, `{node}`, `{phase}` and `{project}` are replaced."
     },
+    "issue": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/IssueSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "File one issue when the finding opens (deduplicated by `finding:<id>:<subject>`)."
+    },
     "when": {
       "$ref": "#/$defs/When",
       "description": "When this holds the finding is open."
@@ -66,6 +77,38 @@
         "task",
         "platform"
       ]
+    },
+    "IssueSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Issue title. `{task}`, `{node}`, `{phase}` and `{project}` are replaced."
+        },
+        "body": {
+          "type": "string",
+          "description": "Issue body, with the same replacements."
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "repo": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`owner/name`. Defaults to the task's repo; required for `scope: platform`."
+        }
+      },
+      "required": [
+        "title",
+        "body"
+      ],
+      "description": "The issue a check files once when its finding opens. The key is `finding:<check id>:<task\nid>` (`<project>` for `platform` scope) and never carries a time, so a finding that clears\nand returns updates the same issue instead of filing another. Nothing closes it."
     },
     "When": {
       "oneOf": [
@@ -208,6 +251,32 @@
         {
           "type": "object",
           "properties": {
+            "command_ignored": {
+              "$ref": "#/$defs/CommandIgnored"
+            }
+          },
+          "required": [
+            "command_ignored"
+          ],
+          "additionalProperties": false,
+          "description": "A command (`/retry`, ...) reached the task and nothing has happened to the task since:\nno change of node or status and no effect."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "relation_count": {
+              "$ref": "#/$defs/RelationCount"
+            }
+          },
+          "required": [
+            "relation_count"
+          ],
+          "additionalProperties": false,
+          "description": "The number of relation rows of one kind (`blocked_by`, `parent`, `child`, ...)."
+        },
+        {
+          "type": "object",
+          "properties": {
             "platform": {
               "$ref": "#/$defs/PlatformCmp"
             }
@@ -292,6 +361,59 @@
         }
       },
       "description": "At least one field. A duration is `90s`, `15m`, `2h`, `14d` or `1w`."
+    },
+    "CommandIgnored": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "for": {
+          "type": "string",
+          "description": "How long ago the command arrived (`15m`)."
+        },
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Only this command (without the slash). Any command when absent."
+        }
+      },
+      "required": [
+        "for"
+      ]
+    },
+    "RelationCount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "inbound": {
+          "type": "boolean",
+          "description": "Count the rows other tasks hold towards this task's subjects (an epic's `parent` rows\nnaming the sub-issue) instead of the rows this task holds itself."
+        },
+        "eq": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "gt": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "description": "Exactly one of `eq` and `gt`."
     },
     "PlatformCmp": {
       "type": "object",
