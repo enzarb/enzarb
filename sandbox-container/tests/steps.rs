@@ -15,7 +15,7 @@ use enzarb_proto::{
 };
 use sandbox_init::reaper::Reaper;
 use sandbox_init::repos::RepoLocks;
-use sandbox_init::steps::{CONTINUE_PROMPT, StepManager};
+use sandbox_init::steps::{CONTINUE_PROMPT, NO_RESULT_PROMPT, StepManager};
 use sandbox_init::{AppState, Config, serve};
 use serde_json::{Value, json};
 use tokio::time::timeout;
@@ -436,6 +436,97 @@ async fn agent_step_events_redaction_and_submit_result() {
         "tools=submit_result invalid=true valid=false"
     );
     assert_eq!(fin.result, Some(json!({"verdict": "approve"})));
+}
+
+#[tokio::test]
+async fn agent_step_continues_until_the_result_is_submitted() {
+    let env = Env::new();
+    let addr = env.server().await;
+    let (s, mut ev) = connect(addr).await;
+    let schema = json!({"type": "object", "required": ["verdict"],
+        "properties": {"verdict": {"enum": ["approve", "reject"]}}});
+    start(
+        &s,
+        &mut ev,
+        step("ag-c", agent_exec(&env, "bg run", Some(schema)), vec![]),
+    )
+    .await;
+    let (evs, fin) = collect(&mut ev, "ag-c", |_| false).await;
+    let fin = fin.unwrap();
+    assert_eq!(fin.exit, "success", "{fin:?}");
+    assert_eq!(fin.result, Some(json!({"verdict": "approve"})));
+    assert_eq!(texts(&evs, "prompt"), "bg run");
+    let users: Vec<&str> = evs
+        .iter()
+        .filter(|e| e.kind == "user")
+        .map(|e| e.payload["text"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(users, [NO_RESULT_PROMPT]);
+    let sessions = evs
+        .iter()
+        .filter(|e| e.payload["event"] == "session")
+        .count();
+    assert_eq!(sessions, 1);
+    // Usage of both turns is summed into the one step_finished.
+    assert_eq!(fin.usage.unwrap().input_tokens, Some(7));
+}
+
+#[tokio::test]
+async fn agent_step_without_tool_calls_is_not_continued() {
+    let env = Env::new();
+    let addr = env.server().await;
+    let (s, mut ev) = connect(addr).await;
+    let schema = json!({"type": "object"});
+    start(
+        &s,
+        &mut ev,
+        step("ag-q", agent_exec(&env, "quiet", Some(schema)), vec![]),
+    )
+    .await;
+    let (evs, fin) = collect(&mut ev, "ag-q", |_| false).await;
+    let fin = fin.unwrap();
+    assert_eq!(fin.exit, "success", "{fin:?}");
+    assert_eq!(fin.result, None);
+    assert_eq!(evs.iter().filter(|e| e.kind == "user").count(), 0);
+}
+
+#[tokio::test]
+async fn agent_step_stops_after_a_turn_without_tool_calls() {
+    let env = Env::new();
+    let addr = env.server().await;
+    let (s, mut ev) = connect(addr).await;
+    let schema = json!({"type": "object"});
+    start(
+        &s,
+        &mut ev,
+        step("ag-t", agent_exec(&env, "twice", Some(schema)), vec![]),
+    )
+    .await;
+    let (evs, fin) = collect(&mut ev, "ag-t", |_| false).await;
+    let fin = fin.unwrap();
+    assert_eq!(fin.exit, "success", "{fin:?}");
+    assert_eq!(fin.result, None);
+    assert!(
+        !evs.iter()
+            .any(|e| e.payload["event"] == "invalid_result_file")
+    );
+    assert_eq!(evs.iter().filter(|e| e.kind == "user").count(), 1);
+}
+
+#[tokio::test]
+async fn agent_step_without_schema_is_not_continued() {
+    let env = Env::new();
+    let addr = env.server().await;
+    let (s, mut ev) = connect(addr).await;
+    start(
+        &s,
+        &mut ev,
+        step("ag-n", agent_exec(&env, "bg run", None), vec![]),
+    )
+    .await;
+    let (evs, fin) = collect(&mut ev, "ag-n", |_| false).await;
+    assert_eq!(fin.unwrap().exit, "success");
+    assert_eq!(evs.iter().filter(|e| e.kind == "user").count(), 0);
 }
 
 #[tokio::test]

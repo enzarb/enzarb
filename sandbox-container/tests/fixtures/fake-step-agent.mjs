@@ -42,11 +42,35 @@ function mcpCall(server, calls) {
   });
 }
 
+const modes = new Map(); // sessionId -> first word of its first prompt
+
 async function prompt(id, params) {
   const sid = params.sessionId;
   const text = params.prompt.map((b) => b.text ?? "").join("");
-  const word = text.split(/\s+/)[0];
-  if (word === "echo") {
+  let word = text.split(/\s+/)[0];
+  if (word === "Your") {
+    // The continuation prompt: behave per the mode of the first prompt.
+    word = `${modes.get(sid)}-continued`;
+  } else if (!modes.has(sid)) {
+    modes.set(sid, word);
+  }
+  if (word === "bg" || word === "twice") {
+    // Starts background work and ends the turn without a result.
+    update(sid, { sessionUpdate: "tool_call", toolCallId: "bg1", title: "Bash", kind: "execute", status: "pending" });
+    say(sid, "waiting for it");
+    reply(id, { stopReason: "end_turn", usage: { inputTokens: 3, outputTokens: 1 } });
+  } else if (word === "bg-continued") {
+    update(sid, { sessionUpdate: "tool_call", toolCallId: "bg2", title: "submit_result", kind: "other", status: "pending" });
+    const server = (servers.get(sid) ?? [])[0];
+    await mcpCall(server, [
+      { method: "initialize", params: { protocolVersion: "2025-06-18" } },
+      { method: "tools/call", params: { name: "submit_result", arguments: { verdict: "approve" } } },
+    ]);
+    reply(id, { stopReason: "end_turn", usage: { inputTokens: 4, outputTokens: 2 } });
+  } else if (word === "quiet" || word === "twice-continued") {
+    say(sid, "nothing to do");
+    reply(id, { stopReason: "end_turn" });
+  } else if (word === "echo") {
     say(sid, "hello ");
     say(sid, "world");
     update(sid, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking" } });
