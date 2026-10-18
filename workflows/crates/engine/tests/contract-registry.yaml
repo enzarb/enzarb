@@ -161,12 +161,12 @@ entries:
   - kind: prompt_promise
     action: create_issues
     name: 'children_relate_to_result_issues'
-    source: 'workflows/crates/engine/tests/stdlib/phases/breakdown.yaml (create: relate from result.issues)'
+    source: 'prompts/breakdown.md'
     tests: [contract_tests::create_issues::result_shape_and_order]
   - kind: prompt_promise
     action: create_issues
     name: 'sub_issues_wait_on_dependencies'
-    source: 'workflows/crates/engine/tests/stdlib/steps/breakdown.yaml (create_issues takes the breakdown list)'
+    source: 'prompts/breakdown.md'
     tests: [contract_tests::create_issues::depends_on_recorded_as_blocked_by]
   - kind: result_field
     action: create_issues
@@ -407,3 +407,9 @@ gaps:
   - {kind: arg, action: open_pull_request, name: existing_pull_request_same_head_base, reason: 'FakeConnector keys pull request creation on the idempotency key only; it does not return an existing pull request for the same head and base as the provider does, so only the same-key retry is tested'}
   - {kind: arg, action: update_branch, name: idempotency_key, reason: 'FakeConnector::update_branch takes no idempotency key; only "calling it again succeeds" is asserted'}
   - {kind: result_field, action: read_file, name: content_of_missing_file, reason: 'a missing file gives content null (get_file returns None); docs do not say whether that should instead be a refusal'}
+  - {kind: arg, action: comment, name: verdict, reason: 'the stdlib review phase passes verdict but no contract test covers it yet (#292 follow-up)'}
+  - {kind: arg, action: merge_pull_request, name: delete_branch, reason: 'the stdlib merge phase passes delete_branch but no contract test covers it yet (#292 follow-up)'}
+  - {kind: arg, action: merge_pull_request, name: head_sha, reason: 'the stdlib merge phase passes head_sha where the registry lists expected_head; no contract test covers it yet (#292 follow-up)'}
+  - {kind: arg, action: merge_pull_request, name: method, reason: 'the stdlib merge phase passes method but no contract test covers it yet (#292 follow-up)'}
+  - {kind: arg, action: open_pull_request, name: issue, reason: 'the stdlib implement phase passes issue but no contract test covers it yet (#292 follow-up)'}
+  - {kind: result_field, action: merge_pull_request, name: reason, reason: 'the stdlib merge phase routes on result.reason but no contract test covers it yet (#292 follow-up)'}

@@ -1,0 +1,7 @@
+states:
+  a:
+    action:
+      name: comment
+      args: {number: "{{ x }}", body: "hi", colour: "red"}
+      as: c
+    next: "{{ outputs.c.url }}"

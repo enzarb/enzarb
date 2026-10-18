@@ -26,3 +26,34 @@ jobs:
       postgres: true
       image: enzarb-workflows
       context: .
+  # `enzarb-lint contracts`: library YAML and prompt markers against the contract-test
+  # registry (docs/workflows/contract-tests.md, "Library check").
+  contracts-stdlib:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - run: cargo run -p enzarb-flow --bin enzarb-lint -- contracts workflows/crates/engine/tests/stdlib --registry workflows/crates/engine/tests/contract-registry.yaml --format github
+  contracts-v1:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    # Non-blocking for now: the prompts of enzarb/workflows@v1 carry no promise markers yet and
+    # that repo is changed separately. Make this blocking (drop continue-on-error) once v1
+    # carries them. The checkout is skipped-through when the repo is not reachable by this token.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - id: library
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          repository: enzarb/workflows
+          ref: v1
+          path: .lib/workflows
+      - if: steps.library.outcome == 'success'
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - if: steps.library.outcome == 'success'
+        run: cargo run -p enzarb-flow --bin enzarb-lint -- contracts .lib/workflows --registry workflows/crates/engine/tests/contract-registry.yaml --format github

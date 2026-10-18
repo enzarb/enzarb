@@ -4,6 +4,7 @@
 //! enzarb-lint check <dir> [--library <alias|owner/repo>=<path>]... [--repo owner/repo] [--format text|github]
 //! enzarb-lint test  <dir> [same options]
 //! enzarb-lint schemas <docs/workflows dir>
+//! enzarb-lint contracts <library dir> --registry <contract-registry.yaml> [--tests-dir <dir>] [--format text|github]
 //! ```
 //!
 //! Exit codes: 0 clean, 1 errors or failing scenarios, 2 usage or IO error.
@@ -16,7 +17,8 @@ use std::process::ExitCode;
 const USAGE: &str = "usage:
   enzarb-lint check <dir> [--library <alias|owner/repo>=<path>]... [--repo <owner/repo>] [--format text|github]
   enzarb-lint test  <dir> [--library ...] [--repo ...] [--format ...]
-  enzarb-lint schemas <docs/workflows dir>";
+  enzarb-lint schemas <docs/workflows dir>
+  enzarb-lint contracts <library dir> --registry <contract-registry.yaml> [--tests-dir <dir>] [--format text|github]";
 
 fn main() -> ExitCode {
     match run(std::env::args().skip(1).collect()) {
@@ -39,6 +41,8 @@ fn run(args: Vec<String>) -> Result<ExitCode, String> {
     let mut libraries = Vec::new();
     let mut repo = "local/repo".to_string();
     let mut github = false;
+    let mut registry = None;
+    let mut tests_dir = None;
     while let Some(a) = it.next() {
         let mut val = |name: &str| it.next().ok_or(format!("{name} needs a value"));
         match a.as_str() {
@@ -47,6 +51,8 @@ fn run(args: Vec<String>) -> Result<ExitCode, String> {
                 let (k, p) = v.split_once('=').ok_or("--library takes <alias>=<path>")?;
                 libraries.push((k.to_string(), PathBuf::from(p)));
             }
+            "--registry" => registry = Some(PathBuf::from(val("--registry")?)),
+            "--tests-dir" => tests_dir = Some(PathBuf::from(val("--tests-dir")?)),
             "--repo" => repo = val("--repo")?,
             "--format" => match val("--format")?.as_str() {
                 "github" => github = true,
@@ -66,6 +72,24 @@ fn run(args: Vec<String>) -> Result<ExitCode, String> {
             std::fs::write(&p, text).map_err(|e| format!("{}: {e}", p.display()))?;
         }
         return Ok(ExitCode::SUCCESS);
+    }
+    if cmd == "contracts" {
+        let registry = registry.ok_or("contracts needs --registry <contract-registry.yaml>")?;
+        let ds = enzarb_flow::contracts::check(&dir, &registry, tests_dir.as_deref())?;
+        for d in &ds {
+            if github {
+                println!("{}", d.github());
+            } else {
+                eprintln!("{d}");
+            }
+        }
+        let errors = ds.iter().filter(|d| d.is_error()).count();
+        eprintln!("{errors} error(s), {} warning(s)", ds.len() - errors);
+        return Ok(if errors > 0 {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        });
     }
     let ws = Workspace::new(Config {
         dir,
