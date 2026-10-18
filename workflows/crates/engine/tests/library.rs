@@ -808,6 +808,40 @@ async fn a_dependency_ending_notifies_the_blocked_task() {
 
 // ---------------------------------------------------------------- dead-wait checks
 
+/// The `review` and `implement` result schemas take an optional, advisory `environment`.
+#[test]
+fn stdlib_result_schemas_accept_an_optional_environment() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/stdlib/steps");
+    let cases = [
+        (
+            "review",
+            json!({"verdict": "approve", "must_fix": [], "body": "ok", "checks": []}),
+        ),
+        ("implement", json!({"decision": "done", "body": "ok"})),
+    ];
+    for (step, base) in cases {
+        let y: Value = serde_yaml::from_str(
+            &std::fs::read_to_string(dir.join(format!("{step}.yaml"))).unwrap(),
+        )
+        .unwrap();
+        let schema = &y["result"]["schema"];
+        assert!(
+            !schema["required"].to_string().contains("environment"),
+            "{step}"
+        );
+        let with = |env: Value| {
+            let mut v = base.clone();
+            v["environment"] = env;
+            v
+        };
+        engine::schema::validate(schema, &base).unwrap();
+        engine::schema::validate(schema, &with(json!({"detail": "disk full"}))).unwrap();
+        engine::schema::validate(schema, &with(json!({"kind": "oom", "detail": "killed"})))
+            .unwrap();
+        assert!(engine::schema::validate(schema, &with(json!({"kind": "oom"}))).is_err());
+    }
+}
+
 /// Every shipped check parses, validates and files an issue.
 #[test]
 fn stdlib_checks_are_valid_and_file_issues() {
@@ -1390,6 +1424,10 @@ const REACH: [Reach; 5] = [
     },
 ];
 
+static AGENT_ENV_RESULT: std::sync::LazyLock<Value> = std::sync::LazyLock::new(
+    || json!({"environment": {"kind": "disk_full", "detail": "agent: /tmp is full"}}),
+);
+
 fn failure_of(kind: Option<enzarb_proto::EnvironmentKind>, f: &mut StepFinished) {
     f.exit = "failure".into();
     f.result = None;
@@ -1402,6 +1440,16 @@ fn failure_of(kind: Option<enzarb_proto::EnvironmentKind>, f: &mut StepFinished)
 /// Runs the issue workflow until the agent step `r.leaf` fails with `kind` (no `environment`
 /// for a code failure). Returns the task and the run id of the failed step.
 async fn fail_step(h: &H, r: Reach, kind: Option<enzarb_proto::EnvironmentKind>) -> (i64, String) {
+    fail_step_with(h, r, kind, false).await
+}
+
+/// [`fail_step`]; `agent_env` makes the failed step's result carry an agent-reported `environment`.
+async fn fail_step_with(
+    h: &H,
+    r: Reach,
+    kind: Option<enzarb_proto::EnvironmentKind>,
+    agent_env: bool,
+) -> (i64, String) {
     h.open_issue(7, &[]).await;
     let task = loop {
         if let Some((t, ..)) = h.task_of(7).await {
@@ -1423,6 +1471,9 @@ async fn fail_step(h: &H, r: Reach, kind: Option<enzarb_proto::EnvironmentKind>)
             // repeats, as `resolve` retries until its attempts run out.
             if kind.is_none() || n == 0 {
                 failure_of(kind, f);
+                if agent_env {
+                    f.result = Some(AGENT_ENV_RESULT.clone());
+                }
             }
         }
     });
@@ -1597,5 +1648,82 @@ async fn library_other_environment_kinds_keep_their_routes() {
             let p = h.wait(task, r.leaf, |p| p["reason"] == r.code_reason).await;
             assert_eq!(p["needs_you"], true, "{}: {p:#}", r.leaf);
         }
+    }
+}
+
+/// An agent-reported `environment` with no sandbox detection is only data: the review and
+/// implement steps follow their usual edges and never wait.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn library_agent_environment_without_detection_does_not_route() {
+    let Some(h) = start(true).await else {
+        return;
+    };
+    h.open_issue(7, &[]).await;
+    let task = loop {
+        if let Some((t, ..)) = h.task_of(7).await {
+            break t;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    h.wait(task, "start gate", |p| p["reason"] == "awaiting_start")
+        .await;
+    let _responder = spawn_responder_with(&h, |leaf, f| {
+        let report = json!({"kind": "disk_full", "detail": "no space left"});
+        if let ("implement" | "review", Some(r)) = (leaf, f.result.as_mut()) {
+            r["environment"] = report;
+        }
+    });
+    h.comment("plan", 7, "issue", "/plan", "alice").await;
+    h.wait(task, "plan approval", |p| {
+        p["reason"] == "awaiting_approval"
+    })
+    .await;
+    h.gh.set_ci(rk(APP), HEAD, json!({"state": "success", "failing": []}));
+    h.comment("approve", 7, "issue", "/approve", "alice").await;
+    // The review ran and approved; the task never entered a platform wait.
+    for leaf in ["implement", "review"] {
+        loop {
+            let done: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM engine.step_runs WHERE task_id = $1 AND node LIKE $2
+                 AND ended_at IS NOT NULL",
+            )
+            .bind(task)
+            .bind(format!("%/{leaf}"))
+            .fetch_one(&h.db.pool)
+            .await
+            .unwrap();
+            if done > 0 {
+                break;
+            }
+            let p = h.projection(task).await;
+            assert_ne!(p["reason"], "platform_wait", "{leaf}: {p:#}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    let wait: Value =
+        sqlx::query_scalar("SELECT state->'platform_wait' FROM engine.tasks WHERE id = $1")
+            .bind(task)
+            .fetch_one(&h.db.pool)
+            .await
+            .unwrap();
+    assert!(wait.is_null(), "{wait:#}");
+}
+
+/// When the sandbox also detected the failure, the agent's report adds detail to the wait.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn library_agent_environment_adds_detail_to_a_detected_wait() {
+    use enzarb_proto::EnvironmentKind::DiskFull;
+    for r in [REACH[0], REACH[1]] {
+        let Some(mut h) = start(true).await else {
+            return;
+        };
+        let facts = engine::FakePlatformFacts::new();
+        h.engine.findings = engine::Findings::new(Arc::new(facts));
+        let (task, _) = fail_step_with(&h, r, Some(DiskFull), true).await;
+        let p = h
+            .wait(task, r.leaf, |p| p["reason"] == "platform_wait")
+            .await;
+        let text = p["text"].to_string();
+        assert!(text.contains("test; agent: agent: /tmp is full"), "{text}");
     }
 }

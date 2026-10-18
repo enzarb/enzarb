@@ -15,3 +15,9 @@ run instead of following the phase's edges (`review/rounds/human`, a fix round,
 any failure with no `environment`. `checks`, `prepare` and `context` never wait. `tests/library.rs`
 (`library_environment_*`, `library_code_failure_*`) covers the routing. The upstream
 `enzarb/workflows` v1.6.0 carries the same `platform_wait` lists.
+
+Agent-reported environment (issue #301): `review` and `implement` accept an optional, advisory
+`environment` object (`{kind?, detail}`) in their result, and their prompts ask for it. It never
+routes: only the sandbox's `step_finished.environment` does. When the sandbox also detected a
+failure, the agent's detail is appended to the platform-wait detail. The library repo gets the same
+change as its own PR; until then this snapshot is ahead of it.

@@ -624,6 +624,64 @@ fn platform_wait_holds_the_step_without_edges_or_retry() {
     assert_eq!(r.run_id(), first.run_id);
 }
 
+fn env_fail_with(run_id: String, kind: &str, result: Option<Value>) -> TaskEvent {
+    TaskEvent::StepFinished(StepFinished {
+        run_id,
+        exit: "failure".into(),
+        result,
+        environment: Some(crate::interp::StepEnvironment {
+            kind: kind.into(),
+            detail: "no space".into(),
+        }),
+        ..Default::default()
+    })
+}
+
+fn wait_detail(kind: &str, result: Option<Value>) -> Option<String> {
+    let mut r = Run::new(wait_res());
+    r.on(start());
+    let first = r.run_step();
+    r.on(env_fail_with(first.run_id, kind, result));
+    r.s.platform_wait.map(|w| w.detail)
+}
+
+#[test]
+fn agent_environment_detail_is_appended_only_to_a_matching_wait() {
+    let agent = |env: Value| Some(json!({"environment": env}));
+    assert_eq!(
+        wait_detail("disk_full", agent(json!({"detail": "/tmp full"}))).as_deref(),
+        Some("no space; agent: /tmp full")
+    );
+    for none in [
+        None,
+        Some(json!({})),
+        agent(json!({"detail": ""})),
+        agent(json!({"detail": 3})),
+        agent(json!("text")),
+    ] {
+        assert_eq!(wait_detail("disk_full", none).as_deref(), Some("no space"));
+    }
+    let long = "x".repeat(900);
+    let d = wait_detail("disk_full", agent(json!({"detail": long}))).unwrap();
+    assert_eq!(d.len(), "no space; agent: ".len() + 500);
+    // No matching rule: no wait, so the agent's text goes nowhere.
+    assert_eq!(wait_detail("oom", agent(json!({"detail": "x"}))), None);
+}
+
+#[test]
+fn agent_environment_alone_does_not_wait() {
+    let mut r = Run::new(wait_res());
+    r.on(start());
+    let first = r.run_step();
+    r.on(TaskEvent::StepFinished(StepFinished {
+        run_id: first.run_id,
+        exit: "failure".into(),
+        result: Some(json!({"environment": {"kind": "disk_full", "detail": "full"}})),
+        ..Default::default()
+    }));
+    assert!(r.s.platform_wait.is_none());
+}
+
 #[test]
 fn platform_cleared_resumes_the_same_run() {
     let mut r = Run::new(wait_res());

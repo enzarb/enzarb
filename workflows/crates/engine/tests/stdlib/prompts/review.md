@@ -69,3 +69,5 @@ The approved plan, if there was one:
 # Result
 
 Write the markdown review to `.enzarb/out/review.md`, then call the `submit_result` tool once with `verdict` (`approve`, `request_changes` or `comment`), `must_fix` (one string per must-fix problem, `[]` when there is none), `body` (the same markdown review) and `checks` (every check you ran or tried, `{name, status: passed|failed|not_run, reason}`; every `not_run` needs a `reason`: `refused`, `missing_tool`, `timeout`, `not_attempted` or `covered_by_ci`).
+
+Environment problems: if you could not do your work because of the environment (disk full, out of memory, a tool missing from the sandbox), say so in the optional `environment` field of the result (`{kind, detail}`), not as a code problem (`must_fix`, a failed check). The field is advisory: the sandbox decides what happens next.
