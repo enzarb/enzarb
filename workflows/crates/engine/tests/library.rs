@@ -1424,9 +1424,11 @@ const REACH: [Reach; 5] = [
     },
 ];
 
-static AGENT_ENV_RESULT: std::sync::LazyLock<Value> = std::sync::LazyLock::new(
-    || json!({"environment": {"kind": "disk_full", "detail": "agent: /tmp is full"}}),
-);
+static AGENT_ENV_RESULT: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
+    // Valid for both the implement and the review result schemas.
+    json!({"decision": "done", "body": "stuck", "verdict": "approve", "must_fix": [], "checks": [],
+               "environment": {"kind": "disk_full", "detail": "agent: /tmp is full"}})
+});
 
 fn failure_of(kind: Option<enzarb_proto::EnvironmentKind>, f: &mut StepFinished) {
     f.exit = "failure".into();
@@ -1700,13 +1702,13 @@ async fn library_agent_environment_without_detection_does_not_route() {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
-    let wait: Value =
+    let wait: Option<Value> =
         sqlx::query_scalar("SELECT state->'platform_wait' FROM engine.tasks WHERE id = $1")
             .bind(task)
             .fetch_one(&h.db.pool)
             .await
             .unwrap();
-    assert!(wait.is_null(), "{wait:#}");
+    assert!(wait.as_ref().is_none_or(Value::is_null), "{wait:#?}");
 }
 
 /// When the sandbox also detected the failure, the agent's report adds detail to the wait.
