@@ -1,0 +1,20 @@
+version: 1
+id: chart-not-deployed
+kind: platform_failure
+severity: warning
+scope: platform
+text: "A released chart version is not deployed"
+issue:
+  repo: enzarb/enzarb
+  title: "A released chart version did not deploy"
+  body: |
+    The updater reports that the latest published chart is not the installed one (`pending`),
+    or that its install is failing (`stuck`). Check `GET /status` of the updater and the
+    helm-controller Job of the `enzarb` HelmChart.
+
+    Nothing was cancelled or restarted; this issue only reports what the platform check read.
+  labels: [platform, platform-failure]
+when:
+  any:
+    - platform: {fact: chart.deploy_state, op: eq, value: pending}
+    - platform: {fact: chart.deploy_state, op: eq, value: stuck}

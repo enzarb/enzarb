@@ -53,6 +53,9 @@ pub struct Config {
     pub resolve_budget_secs: u64,
     /// `ENZARB_FINDINGS_SECS` (default 60): how often liveness checks are evaluated.
     pub findings_secs: u64,
+    /// `ENZARB_UPDATER_STATUS_URL` (optional): the updater's `/status`, the source of the
+    /// `chart.deploy_state` platform fact. Unset: the fact is unknown.
+    pub updater_status_url: Option<String>,
 }
 
 impl std::fmt::Debug for Config {
@@ -220,6 +223,7 @@ impl Config {
             max_steps_per_project: positive(get, "ENZARB_MAX_STEPS_PER_PROJECT", 4)?,
             resolve_budget_secs: positive(get, "ENZARB_RESOLVE_BUDGET_SECS", 30)?,
             findings_secs: positive(get, "ENZARB_FINDINGS_SECS", 60)?,
+            updater_status_url: nonempty(get, "ENZARB_UPDATER_STATUS_URL"),
         })
     }
 }
@@ -240,6 +244,7 @@ mod tests {
         assert_eq!(c.default_library, DEFAULT_LIBRARY);
         assert_eq!(c.stall_secs, 1800);
         assert_eq!(c.findings_secs, 60);
+        assert_eq!(c.updater_status_url, None);
         assert_eq!(c.resolve_budget_secs, 30);
         assert_eq!(c.health_listen.port(), 8082);
         assert!(c.secrets_key.is_none());

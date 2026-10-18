@@ -1241,13 +1241,20 @@ pub struct IdleFor {
 #[serde(deny_unknown_fields)]
 pub struct PlatformCmp {
     pub fact: PlatformFactName,
+    /// Argument of a fact that needs one: `workflow_run.status` takes `<owner>/<repo>:<workflow
+    /// file>` (the latest finished run on `main`). Other facts take none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arg: Option<String>,
     #[serde(default)]
     pub op: CmpOp,
     pub value: Value,
 }
 
-/// Platform facts the engine can read. A fact whose source is missing is unknown and never
-/// matches. `chart.deploy_state` has no source yet and is always unknown.
+/// Platform facts the engine can read. A fact whose source is missing or failed is unknown and
+/// never matches. Values: `workflow_run.status` is the conclusion of the latest finished run
+/// (`success`, `failure`, ...; takes `arg`); `chart.deploy_state` is `deployed`, `pending` or
+/// `stuck`; `sandbox.disk_pct` and `sandbox.mem_pct` are percentages; `project.pending_change`
+/// is a boolean.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum PlatformFactName {
     #[serde(rename = "workflow_run.status")]
@@ -1382,7 +1389,22 @@ impl When {
                     out.push("task conditions need `scope: task`".into());
                 }
             }
-            When::Platform(_) => {}
+            When::Platform(p) => {
+                let ok_arg = p.arg.as_deref().is_some_and(|a| {
+                    a.split_once(':').is_some_and(|(repo, file)| {
+                        repo.split_once('/')
+                            .is_some_and(|(o, n)| !o.is_empty() && !n.is_empty())
+                            && !file.is_empty()
+                    })
+                });
+                match (p.fact, ok_arg, p.arg.is_some()) {
+                    (PlatformFactName::WorkflowRunStatus, false, _) => out.push(
+                        "`workflow_run.status` needs `arg: <owner>/<repo>:<workflow file>`".into(),
+                    ),
+                    (PlatformFactName::WorkflowRunStatus, true, _) | (_, _, false) => {}
+                    (f, _, true) => out.push(format!("`{}` takes no `arg`", f.as_str())),
+                }
+            }
         }
     }
 }

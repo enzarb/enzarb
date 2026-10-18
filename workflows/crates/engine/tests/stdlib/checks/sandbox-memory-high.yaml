@@ -1,0 +1,17 @@
+version: 1
+id: sandbox-memory-high
+kind: platform_failure
+severity: warning
+scope: platform
+text: "Sandbox {project} uses over 90% of its memory limit"
+issue:
+  repo: enzarb/enzarb
+  title: "Sandbox of project {project} is close to its memory limit"
+  body: |
+    The sandbox of project `{project}` uses more than 90% of its cgroup memory limit and may be
+    OOM-killed.
+
+    Nothing was cancelled or restarted; this issue only reports what the platform check read.
+  labels: [platform, platform-failure]
+when:
+  platform: {fact: sandbox.mem_pct, op: gt, value: 90}

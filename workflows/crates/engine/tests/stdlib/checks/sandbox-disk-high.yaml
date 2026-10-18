@@ -1,0 +1,19 @@
+version: 1
+id: sandbox-disk-high
+kind: platform_failure
+severity: warning
+scope: platform
+text: "Sandbox {project} workspace is over 90% full"
+issue:
+  repo: enzarb/enzarb
+  title: "Sandbox of project {project} is running out of disk"
+  body: |
+    The workspace of the sandbox of project `{project}` is at least 90% full. Builds and git
+    operations will fail with out-of-space errors when it reaches 100%.
+
+    Nothing was cancelled or restarted; this issue only reports what the platform check read.
+  labels: [platform, platform-failure]
+when:
+  all:
+    - platform: {fact: sandbox.disk_pct, op: ge, value: 90}
+    - platform: {fact: sandbox.disk_pct, op: lt, value: 100}
