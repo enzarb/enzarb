@@ -47,7 +47,53 @@ pub struct WorkflowFile {
     /// or running step; the first match wins.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub on: Vec<Handler>,
+    /// Commands every wait accepts unless it declares its own of the same name (a default
+    /// route per command). Lint requires `retry` once this block exists.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<CommandDecl>,
 }
+
+/// A command (`/name` in a comment, or a UI button) a wait accepts.
+///
+/// `to` is where the command goes: a node of the wait's phase, `exit:<name>` (leave the phase
+/// through that exit), `start` (the phase's first node), `self` (this wait again) or
+/// `goto:<phase id>` (enter a top-level phase). Without `to` the wait's own `next:` rules
+/// route the command; the declaration only lists it. `/cancel` is engine-native.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CommandDecl {
+    /// The command word without the slash (a text field: `{param: approve_command}`).
+    pub name: TextField,
+    /// Button and list label (default: the command).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<TextField>,
+    /// One line for the UI and the reply to a command that does not apply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<TextField>,
+    /// Who may send it (default `writer`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<Sender>,
+    /// The route, see above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+}
+
+/// A command that applies now (the projection's `commands`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CommandInfo {
+    /// Command word without the slash.
+    pub name: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub from: Sender,
+}
+
+/// Commands the engine always handles itself (writers only).
+pub const NATIVE_COMMANDS: [&str; 1] = ["cancel"];
+
+/// Commands every wait must accept.
+pub const COMMON_COMMANDS: [&str; 2] = ["retry", "cancel"];
 
 /// A task-wide event handler (`on:` of a workflow).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -451,6 +497,10 @@ pub struct Wait {
     /// A timer set when the wait is entered; it fires a `timer` event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timer: Option<Timer>,
+    /// Commands this wait accepts besides the workflow's defaults (same name overrides).
+    /// Resolved: the full list, defaults and commands its `next:` rules match included.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<CommandDecl>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

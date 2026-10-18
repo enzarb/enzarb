@@ -848,6 +848,18 @@ spec:
                 secretKeyRef:
                   name: enzarb-github
                   key: webhook-secret
+            - name: GITHUB_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-github
+                  key: app-id
+                  optional: true
+            - name: GITHUB_APP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-github
+                  key: private-key
+                  optional: true
             - { name: RECEIVER_LISTEN, value: 0.0.0.0:8080 }
             - { name: ENZARB_BOT_HANDLE, value: "enzarb" }
             - { name: ENZARB_BOT_LOGIN, value: "enzarb[bot]" }

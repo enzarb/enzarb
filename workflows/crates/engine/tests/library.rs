@@ -317,38 +317,12 @@ fn finished(run_id: &str) -> StepFinished {
     }
 }
 
-/// `workflows/issue` from the library, end to end: dependencies (none) → start gate (/plan) →
-/// triage → plan (/approve) → implement (push) → checks → PR → review (approve) → CI green →
-/// merge (button) → done.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn library_issue_workflow_happy_path() {
-    let Some(h) = start(true).await else {
-        return;
-    };
-    h.open_issue(7, &[]).await;
-    let task = loop {
-        if let Some((t, ..)) = h.task_of(7).await {
-            break t;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
-    let p = h
-        .wait(task, "start gate", |p| p["reason"] == "awaiting_start")
-        .await;
-    assert_eq!(p["needs_you"], true, "{p:#}");
-    let facts: Value =
-        sqlx::query_scalar("SELECT state->'doc'->'facts' FROM engine.tasks WHERE id = $1")
-            .bind(task)
-            .fetch_one(&h.db.pool)
-            .await
-            .unwrap();
-    assert_eq!(facts["dependencies"], json!([]), "known empty, not unknown");
-
-    // Fake sandbox: answer each step by its node.
+/// Fake sandbox: answers each step by its node.
+fn spawn_responder(h: &H) -> tokio::task::JoinHandle<()> {
     let runner = h.runner.clone();
     let pool = h.db.pool.clone();
     let gh = h.gh.clone();
-    let responder = tokio::spawn(async move {
+    tokio::spawn(async move {
         let mut done = 0;
         loop {
             let started = runner.started();
@@ -406,7 +380,37 @@ async fn library_issue_workflow_happy_path() {
             done = started.len();
             tokio::time::sleep(Duration::from_millis(30)).await;
         }
-    });
+    })
+}
+
+/// `workflows/issue` from the library, end to end: dependencies (none) → start gate (/plan) →
+/// triage → plan (/approve) → implement (push) → checks → PR → review (approve) → CI green →
+/// merge (button) → done.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn library_issue_workflow_happy_path() {
+    let Some(h) = start(true).await else {
+        return;
+    };
+    h.open_issue(7, &[]).await;
+    let task = loop {
+        if let Some((t, ..)) = h.task_of(7).await {
+            break t;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let p = h
+        .wait(task, "start gate", |p| p["reason"] == "awaiting_start")
+        .await;
+    assert_eq!(p["needs_you"], true, "{p:#}");
+    let facts: Value =
+        sqlx::query_scalar("SELECT state->'doc'->'facts' FROM engine.tasks WHERE id = $1")
+            .bind(task)
+            .fetch_one(&h.db.pool)
+            .await
+            .unwrap();
+    assert_eq!(facts["dependencies"], json!([]), "known empty, not unknown");
+
+    let responder = spawn_responder(&h);
 
     h.comment("plan-bob", 7, "issue", "/plan", "bob").await;
     h.comment("plan", 7, "issue", "/plan", "alice").await;
@@ -509,4 +513,219 @@ async fn library_issue_workflow_happy_path() {
     assert_eq!(doc["instance"]["bot"]["handle"], "enzarb");
     assert_eq!(doc["instance"]["url"], "https://enzarb.test");
     assert_eq!(doc["vars"]["merged"], true, "{:#}", doc["vars"]);
+}
+
+fn bot_comments(h: &H, key: &WorkItemKey) -> Vec<String> {
+    h.gh.calls()
+        .iter()
+        .filter_map(|c| match &c.call {
+            enzarb_connector::fake::Call::PostComment { item, body, .. } if item == key => {
+                Some(body.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+async fn pr_prompts(h: &H, node_suffix: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for s in h.runner.started() {
+        let node: String =
+            sqlx::query_scalar("SELECT node FROM engine.step_runs WHERE run_id = $1")
+                .bind(&s.run_id)
+                .fetch_one(&h.db.pool)
+                .await
+                .unwrap();
+        if node.ends_with(node_suffix)
+            && let enzarb_proto::StepExec::Agent { prompt, .. } = &s.exec
+        {
+            out.push(prompt.clone());
+        }
+    }
+    out
+}
+
+/// One command model: a command the wait does not take gets exactly one reply naming the
+/// accepted ones; a stale `/approve` is neither feedback nor a round; the address round sees
+/// only the new, command-free comments.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn library_commands_are_answered_and_feedback_rounds_see_only_new_comments() {
+    let Some(h) = start(true).await else {
+        return;
+    };
+    h.open_issue(7, &[]).await;
+    let task = loop {
+        if let Some((t, ..)) = h.task_of(7).await {
+            break t;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    h.wait(task, "start gate", |p| p["reason"] == "awaiting_start")
+        .await;
+    let responder = spawn_responder(&h);
+    let issue = WorkItemKey::new(rk(APP), 7);
+
+    // The projection lists what applies now; at the start gate that includes the defaults.
+    let p = h.projection(task).await;
+    let names: Vec<String> = p["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(names, ["retry", "restart", "plan", "cancel"], "{p:#}");
+
+    // An unknown command: one reply, even when GitHub delivers it twice; a bot's gets none.
+    h.comment("odd", 7, "issue", "/frobnicate", "alice").await;
+    h.comment("odd", 7, "issue", "/frobnicate", "alice").await;
+    h.comment("odd-bot", 7, "issue", "/frobnicate", "enzarb[bot]")
+        .await;
+    h.comment("chat", 7, "issue", "just a thought", "alice")
+        .await;
+    for _ in 0..200 {
+        if !bot_comments(&h, &issue).is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let replies = bot_comments(&h, &issue);
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    for want in [
+        "`/frobnicate` does not apply",
+        "`/plan`",
+        "`/retry`",
+        "`/cancel`",
+    ] {
+        assert!(replies[0].contains(want), "{want} in {}", replies[0]);
+    }
+
+    h.comment("plan", 7, "issue", "/plan", "alice").await;
+    h.wait(task, "plan approval", |p| {
+        p["reason"] == "awaiting_approval"
+    })
+    .await;
+    // `/retry` at the approval wait plans again (the default route is the phase start).
+    h.comment("retry", 7, "issue", "/retry", "alice").await;
+    let mut plans = 0;
+    for _ in 0..300 {
+        plans = sqlx::query_scalar(
+            "SELECT count(*) FROM engine.step_runs WHERE task_id = $1 AND node LIKE '%plan/plan'",
+        )
+        .bind(task)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+        if plans >= 2 && h.projection(task).await["reason"] == "awaiting_approval" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(plans, 2_i64);
+
+    // Approve: the pull request opens, is reviewed and waits for CI (unknown here).
+    h.comment("approve", 7, "issue", "/approve", "alice").await;
+    let pr = loop {
+        if let Some(pr) = h.gh.change_requests().first().map(|p| p.number) {
+            break pr;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let pr_key = WorkItemKey::new(rk(APP), pr);
+    h.wait(task, "waiting for CI", |p| p["reason"] == "awaiting_ci")
+        .await;
+
+    // The pull request thread: an old `/approve` and the plan discussion, then new feedback.
+    let before = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+    let after = (chrono::Utc::now() + chrono::Duration::minutes(1)).to_rfc3339();
+    let said = |id: u64, who: &str, body: &str, at: &str| enzarb_connector::ThreadComment {
+        author: enzarb_connector::Actor {
+            login: who.into(),
+            id: 1,
+            is_bot: false,
+        },
+        comment: enzarb_connector::CommentRef {
+            id,
+            kind: enzarb_connector::CommentKind::Conversation,
+            body: body.into(),
+            url: String::new(),
+        },
+        created_at: Some(at.parse().unwrap()),
+    };
+    h.gh.add_thread(
+        pr_key.clone(),
+        enzarb_connector::Thread {
+            item: enzarb_connector::ItemRef {
+                kind: enzarb_connector::ItemKind::ChangeRequest,
+                number: pr,
+                url: String::new(),
+                title: "fix: no crash".into(),
+                body: "Closes #7".into(),
+                author: "enzarb[bot]".into(),
+                head_ref: Some("enzarb/task".into()),
+                base_ref: Some("main".into()),
+                head_sha: Some(HEAD.into()),
+            },
+            comments: vec![
+                said(1, "alice", "/approve", &before),
+                said(2, "alice", "plan note that was answered long ago", &before),
+                said(3, "alice", "please rename the helper", &after),
+            ],
+        },
+    );
+
+    // A stale `/approve` on the PR starts no round and gets a reply.
+    h.comment("stale", pr, "pull_request", "/approve", "alice")
+        .await;
+    for _ in 0..200 {
+        if bot_comments(&h, &pr_key)
+            .iter()
+            .any(|b| b.contains("does not apply"))
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        bot_comments(&h, &pr_key)
+            .iter()
+            .any(|b| b.contains("`/approve` does not apply")),
+        "{:?}",
+        bot_comments(&h, &pr_key)
+    );
+    assert!(pr_prompts(&h, "address_human").await.is_empty());
+
+    // New feedback starts a round whose prompt has that comment and nothing older or command-like.
+    let mut ev = serde_json::json!({
+        "type": "comment", "body": "please rename the helper", "repo": APP,
+        "actor": {"login": "alice"}, "at": after,
+        "subject": {"kind": "pull_request", "number": pr}});
+    ev["command"] = Value::Null;
+    h.ingest(
+        "feedback",
+        Some(format!("github:{APP}#{pr}")),
+        "comment",
+        ev,
+    )
+    .await;
+    for _ in 0..300 {
+        if !pr_prompts(&h, "address_human").await.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let prompts = pr_prompts(&h, "address_human").await;
+    assert_eq!(prompts.len(), 1, "one round");
+    responder.abort();
+    let prompt = &prompts[0];
+    let feedback = prompt
+        .split("New feedback since the last round")
+        .nth(1)
+        .expect("feedback section");
+    assert!(feedback.contains("please rename the helper"), "{feedback}");
+    assert!(!feedback.contains("/approve"), "{feedback}");
+    assert!(
+        !feedback.contains("plan note that was answered"),
+        "{feedback}"
+    );
 }

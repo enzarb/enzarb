@@ -21,7 +21,7 @@ Description:
 The feedback that started this round:
 
 <untrusted>
-{% if event.type == 'comment' and not event.actor.bot %}Comment by @{{ event.actor.login }}:
+{% if event.type == 'comment' and not event.actor.bot and not event.command %}Comment by @{{ event.actor.login }}:
 {{ event.body }}
 {% elif event.type == 'review' %}Review ({{ event.state }}) by @{{ event.actor.login }}:
 {{ event.body }}
@@ -32,10 +32,10 @@ The feedback that started this round:
 {% else %}(none)
 {% endif %}</untrusted>
 
-All discussion so far (oldest first). Other unresolved comments may be here; address those too:
+New feedback since the last round (oldest first; commands and bot comments are left out). Address these too:
 
 <untrusted>
-{% for c in pr.comments %}@{{ c.author }}{% if c.at %} ({{ c.at }}){% endif %}:
+{% for c in pr.feedback %}@{{ c.author }}{% if c.at %} ({{ c.at }}){% endif %}:
 {{ c.body }}
 
 {% else %}(none)
@@ -44,7 +44,7 @@ All discussion so far (oldest first). Other unresolved comments may be here; add
 # What to do
 
 1. Read the repository's own guidance (`CLAUDE.md`, `README.md`, contributing notes) and follow its conventions.
-2. List every actionable point from the feedback above and from the unresolved comments in the discussion. Ignore points that were already addressed or are plainly resolved.
+2. List every actionable point from the feedback above and from the new feedback list. Ignore points that were already addressed or are plainly resolved.
 3. For each point, make the change, or, if you disagree or it is out of scope, push back and say why in your final body. Do not make changes you believe are wrong just because they were requested; do not ignore a point silently.
 4. Add or update tests where behaviour changes. Before finishing, run the repository's own checks (its `CLAUDE.md`, `README.md`, `mise.toml` and `.github/workflows` name them). Run each command on its own as a simple single command: no `&&` or `;` chains, no `$` expansion, no heredocs. Run the checks of exactly the affected components:
 {% for a in context.affected %}   - `{{ a }}`

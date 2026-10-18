@@ -239,11 +239,17 @@ impl Engine {
             id: 0,
             is_bot: false,
         };
-        self.permissions
-            .permission(&repo_key(repo), &actor)
-            .await
-            .map(|p| p.can_write())
-            .unwrap_or(false)
+        match self.permissions.permission(&repo_key(repo), &actor).await {
+            Ok(p) => p.can_write(),
+            Err(e) => {
+                tracing::warn!(
+                    repo,
+                    login,
+                    "permission lookup failed, treating as no write access: {e}"
+                );
+                false
+            }
+        }
     }
 
     async fn on_catalog_event(
@@ -266,6 +272,13 @@ impl Engine {
         // can_write comes from GitHub, never from the payload.
         if let (Some(repo), Some(actor)) = (ev.repo.clone(), ev.actor.as_mut()) {
             actor.can_write = !actor.login.is_empty() && self.can_write(&repo, &actor.login).await;
+        }
+        // The instance's own comments are bot comments whatever the sender said, so they are
+        // never answered (no reply loop).
+        if let Some(actor) = ev.actor.as_mut()
+            && actor.login.eq_ignore_ascii_case(&self.cfg.bot_login)
+        {
+            actor.bot = true;
         }
         let repo = ev.repo.clone().map(|r| r.to_ascii_lowercase());
         let info = match (&project, &repo) {
@@ -819,7 +832,7 @@ impl Engine {
         if kind == "pull_request" {
             let item = WorkItemKey::new(repo_key(repo), n);
             let subj = match self.connector().fetch_thread(&item).await {
-                Ok(t) => thread_subject(repo, &t, "open"),
+                Ok(t) => thread_subject(repo, &self.cfg.bot_handle, &t, "open"),
                 Err(_) => Subject {
                     repo: repo.into(),
                     number: n,
@@ -827,6 +840,11 @@ impl Engine {
                     state: "open".into(),
                     ..Default::default()
                 },
+            };
+            // Created for this task: what was said before is not feedback.
+            let subj = Subject {
+                linked_at: Some(chrono::Utc::now().to_rfc3339()),
+                ..subj
             };
             let prs = &mut task.state.doc.subjects.pull_requests;
             prs.retain(|p| !(p.repo == subj.repo && p.number == subj.number));
@@ -850,7 +868,7 @@ impl Engine {
         };
         let fetched = self.connector().fetch_thread(&item).await.ok();
         let mut subj = match &fetched {
-            Some(t) => thread_subject(&repo, t, state),
+            Some(t) => thread_subject(&repo, &self.cfg.bot_handle, t, state),
             None => Subject {
                 repo: repo.clone(),
                 number: s.number,
@@ -892,6 +910,17 @@ impl Engine {
             }
             _ => {}
         }
+        // Set once, when the engine linked the object; a refresh keeps it.
+        subj.linked_at = match s.kind {
+            SubjectKind::Issue => doc.subjects.issue.as_ref(),
+            SubjectKind::PullRequest => doc
+                .subjects
+                .pull_requests
+                .iter()
+                .find(|x| x.repo == repo && x.number == s.number),
+        }
+        .filter(|x| x.repo == repo && x.number == s.number)
+        .and_then(|x| x.linked_at.clone());
         match s.kind {
             SubjectKind::Issue => {
                 if doc
@@ -1250,7 +1279,12 @@ fn open_pr_head_sha(task: &TaskRow) -> Option<String> {
     task.state.doc.facts.git.as_ref().map(|g| g.head.clone())
 }
 
-pub(crate) fn thread_subject(repo: &str, t: &enzarb_connector::Thread, state: &str) -> Subject {
+pub(crate) fn thread_subject(
+    repo: &str,
+    bot_handle: &str,
+    t: &enzarb_connector::Thread,
+    state: &str,
+) -> Subject {
     Subject {
         repo: repo.to_string(),
         number: t.item.number,
@@ -1263,6 +1297,7 @@ pub(crate) fn thread_subject(repo: &str, t: &enzarb_connector::Thread, state: &s
         head: t.item.head_ref.clone(),
         base: t.item.base_ref.clone(),
         merge_sha: None,
+        linked_at: None,
         comments: t
             .comments
             .iter()
@@ -1270,6 +1305,9 @@ pub(crate) fn thread_subject(repo: &str, t: &enzarb_connector::Thread, state: &s
                 author: c.author.login.clone(),
                 body: c.comment.body.clone(),
                 at: c.created_at.map(|t| t.to_rfc3339()).unwrap_or_default(),
+                command: enzarb_flow::events::parse_command(&c.comment.body, Some(bot_handle))
+                    .map(|(command, _)| command),
+                bot: c.author.is_bot,
             })
             .collect(),
     }

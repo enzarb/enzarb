@@ -180,6 +180,20 @@ These fields accept `{param: <name>}` and templates, so phase params drive them:
 - **`actions`** are UI buttons; each posts `/command` as the clicking user, so it arrives as a `comment` event like a typed command.
 - **Re-rendering:** while the task stays at a wait, any event that changes what its `reason`, `text`, `column` or buttons render to (a `fact_updated`, a handler's `set`) emits `update_projection` without re-entering the node. Nothing is emitted when the rendering is unchanged.
 
+### Commands
+
+A command is `/name` in a comment (or the UI button that posts it). The kernel only provides the blocks; what a command *does* is declared in YAML.
+
+- **Workflow `commands:`** are defaults every wait inherits: `{name, label?, description?, from?: writer|anyone (default writer), to}`. `name`, `label` and `description` are text fields (`{param: x}` works).
+- **Wait `commands:`** adds to or overrides the defaults by `name`. Without `to` the wait's own `next:` rules route the command and the entry only lists it.
+- **`to`** is a node of the wait's phase, `exit:<name>` (leave the phase), `start` (the phase's first node), `self` (the wait again) or `goto:<phase id>` (enter a top-level phase). A default whose `to` cannot route in a phase (a node or exit that phase lacks) is skipped there.
+- **Order:** the wait's `events:` + `next:` rules run first; a command they leave unrouted goes to its declared route, if the sender may use it (`from: writer` needs `actor.can_write`). `/cancel` is engine-native for writers and ends the task.
+- **Commands the `next:` rules match** (`event.command == 'x'`, `== params.p`, `in [...]`) are listed automatically, so libraries that declare no `commands:` keep working.
+- **Reply:** a comment with a command the active wait does not take gets one reply from the bot: `` `/x` does not apply right now. Accepted here: ... ``, or "needs write access" when the sender may not use it. Bots, plain text and tasks that are not waiting get none.
+- **Projection:** `commands: [{name, label, description?, from}]` lists the commands that apply now (the wait's, its buttons, and `cancel`).
+- **Lint:** once the workflow declares `commands:` (or a wait does), every wait must accept `retry` (an error; a warning for a library that declares none). A declared command needs a route that exists; a `from` other than `writer`/`anyone` is rejected.
+- **Feedback:** `subjects.*.feedback` holds the comments by people that are not commands and are newer than both `vars.feedback_since` and the subject's `linked_at` (set when the engine opens a pull request for the task). A feedback round sets `feedback_since` when it ends.
+
 ## Step file
 
 Schema: [`schemas/step.json`](schemas/step.json). Exactly one of `agent` and `command`.

@@ -329,6 +329,14 @@ struct Resolver<'l> {
     /// Text loaded from a file through a prompt param → that file's key, so
     /// template errors point into the file.
     text_origin: BTreeMap<String, String>,
+    /// The workflow's `commands:` defaults (names rendered), inherited by every wait.
+    default_commands: Vec<CommandDecl>,
+    /// Phase ids of the workflow being resolved (targets of `goto:`).
+    phase_ids: Vec<String>,
+    /// A whole workflow is being resolved: waits are held to the common command set.
+    command_lint: bool,
+    /// The workflow declares commands somewhere: missing common commands are errors.
+    commands_declared: bool,
 }
 
 fn key(repo: &str, rref: &str, path: &str) -> String {
@@ -360,6 +368,10 @@ impl<'l> Resolver<'l> {
             custom_events: None,
             board: BoardFile::default(),
             text_origin: BTreeMap::new(),
+            default_commands: Vec::new(),
+            phase_ids: Vec::new(),
+            command_lint: false,
+            commands_declared: false,
         }
     }
 
@@ -640,6 +652,11 @@ impl<'l> Resolver<'l> {
                 "a workflow needs at least one phase",
             );
         }
+
+        self.phase_ids = ids.clone();
+        self.command_lint = true;
+        self.commands_declared = !wf.commands.is_empty();
+        self.default_commands = self.default_commands(&file, &wf.commands, &wparams);
 
         let mut phases = Vec::new();
         for (i, p) in wf.phases.iter().enumerate() {
@@ -1664,6 +1681,19 @@ impl<'l> Resolver<'l> {
                 "max_visits must be at least 1",
             );
         }
+        let mut kind = kind;
+        if let RKind::Wait(w) = &mut kind {
+            self.wait_commands(
+                file,
+                &format!("{base}.wait"),
+                w,
+                &next,
+                params,
+                &scope,
+                exits,
+                all,
+            );
+        }
         Some(RNode {
             kind,
             next,
@@ -1672,6 +1702,274 @@ impl<'l> Resolver<'l> {
             set,
             set_on_exit,
         })
+    }
+
+    /// Renders the workflow's `commands:` defaults.
+    fn default_commands(
+        &mut self,
+        file: &str,
+        decls: &[CommandDecl],
+        params: &Map<String, Value>,
+    ) -> Vec<CommandDecl> {
+        let scope = Scope {
+            names: BTreeSet::new(),
+            params: params.keys().cloned().collect(),
+        };
+        let mut out: Vec<CommandDecl> = Vec::new();
+        for (i, d) in decls.iter().enumerate() {
+            let base = format!("commands[{i}]");
+            let Some(d) = self.render_command(file, &base, d, params, &scope) else {
+                continue;
+            };
+            if out.iter().any(|o| o.name == d.name) {
+                self.err(
+                    &At {
+                        file,
+                        path: format!("{base}.name"),
+                    },
+                    format!("command `{}` is declared twice", d.name.as_str()),
+                );
+                continue;
+            }
+            match d.to.as_deref() {
+                None => self.err(
+                    &At {
+                        file,
+                        path: format!("{base}.to"),
+                    },
+                    "a default command needs a route (`to`)",
+                ),
+                Some(t) => {
+                    if let Some(p) = t.strip_prefix("goto:")
+                        && !self.phase_ids.iter().any(|i| i == p.trim())
+                    {
+                        self.err(
+                            &At {
+                                file,
+                                path: format!("{base}.to"),
+                            },
+                            format!(
+                                "`goto:{p}`: not a phase id (phases: {})",
+                                self.phase_ids.join(", ")
+                            ),
+                        );
+                    }
+                }
+            }
+            out.push(d);
+        }
+        out
+    }
+
+    /// Substitutes params in a command's text fields and checks its name.
+    fn render_command(
+        &mut self,
+        file: &str,
+        base: &str,
+        d: &CommandDecl,
+        params: &Map<String, Value>,
+        scope: &Scope,
+    ) -> Option<CommandDecl> {
+        let text = |this: &mut Self, f: &TextField, what: &str| {
+            this.text(f, params, file, &format!("{base}.{what}"), scope)
+        };
+        let name = text(self, &d.name, "name");
+        let word = name.as_str().trim_start_matches('/').to_ascii_lowercase();
+        if !crate::commands::is_command_word(&word) && !(self.placeholders && word.is_empty()) {
+            self.err(
+                &At {
+                    file,
+                    path: format!("{base}.name"),
+                },
+                "a command is a single word without the leading `/`",
+            );
+            return None;
+        }
+        Some(CommandDecl {
+            name: TextField::Value(word),
+            label: d.label.as_ref().map(|l| text(self, l, "label")),
+            description: d.description.as_ref().map(|l| text(self, l, "description")),
+            from: d.from,
+            to: d.to.clone(),
+        })
+    }
+
+    /// A wait's final command list: its own declarations, the workflow defaults it does not
+    /// override (those that can route in this phase), then the commands its `events:` and
+    /// `next:` conditions already match (listed, routed by the wait itself, `to` unset).
+    /// Lint: every wait must end up accepting `retry` (`cancel` is engine-native).
+    #[allow(clippy::too_many_arguments)]
+    fn wait_commands(
+        &mut self,
+        file: &str,
+        base: &str,
+        w: &mut Wait,
+        next: &[REdge],
+        params: &Map<String, Value>,
+        scope: &Scope,
+        exits: &[String],
+        all: &BTreeMap<String, Node>,
+    ) {
+        use crate::commands::{CommandRoute, literal_commands};
+        // What the wait's own conditions handle.
+        let mut handled: Vec<(String, bool)> = Vec::new();
+        for m in &w.events {
+            if let Matcher::Full(MatcherSpec {
+                event,
+                from,
+                cond: Some(c),
+            }) = m
+                && event == "comment"
+            {
+                let writer = *from == Some(Sender::Writer) || w.from == Some(Sender::Writer);
+                for (name, w2) in literal_commands(c, params) {
+                    handled.push((name, writer || w2));
+                }
+            }
+        }
+        for e in next {
+            if let Some(c) = &e.cond {
+                handled.extend(literal_commands(c, params));
+            }
+        }
+        let explicit = std::mem::take(&mut w.commands);
+        let had_explicit = !explicit.is_empty();
+        let mut out: Vec<CommandDecl> = Vec::new();
+        for (i, d) in explicit.iter().enumerate() {
+            let cbase = format!("{base}.commands[{i}]");
+            let Some(mut d) = self.render_command(file, &cbase, d, params, scope) else {
+                continue;
+            };
+            if out.iter().any(|o| o.name == d.name) {
+                self.err(
+                    &At {
+                        file,
+                        path: format!("{cbase}.name"),
+                    },
+                    format!("command `{}` is declared twice", d.name.as_str()),
+                );
+                continue;
+            }
+            match d.to.clone() {
+                Some(to) => match CommandRoute::parse(&to, |n| all.contains_key(n)) {
+                    Ok(CommandRoute::Exit(e)) if !exits.contains(&e) => self.err(
+                        &At {
+                            file,
+                            path: format!("{cbase}.to"),
+                        },
+                        format!(
+                            "`exit:{e}`: the phase has no such exit (exits: {})",
+                            exits.join(", ")
+                        ),
+                    ),
+                    Ok(CommandRoute::Goto(p)) if !self.phase_ids.contains(&p) => self.err(
+                        &At {
+                            file,
+                            path: format!("{cbase}.to"),
+                        },
+                        format!(
+                            "`goto:{p}`: not a phase id (phases: {})",
+                            self.phase_ids.join(", ")
+                        ),
+                    ),
+                    Ok(_) => {}
+                    Err(m) => self.err(
+                        &At {
+                            file,
+                            path: format!("{cbase}.to"),
+                        },
+                        m,
+                    ),
+                },
+                None => {
+                    if !handled.iter().any(|(n, _)| n == d.name.as_str()) {
+                        self.err(
+                            &At {
+                                file,
+                                path: format!("{cbase}.to"),
+                            },
+                            format!(
+                                "command `{}` has no route: set `to`, or match it in `next:`",
+                                d.name.as_str()
+                            ),
+                        );
+                    }
+                }
+            }
+            d.from.get_or_insert(Sender::Writer);
+            out.push(d);
+        }
+        for d in &self.default_commands {
+            if out.iter().any(|o| o.name == d.name) {
+                continue;
+            }
+            let routable = match CommandRoute::parse(d.to.as_deref().unwrap_or_default(), |n| {
+                all.contains_key(n)
+            }) {
+                Ok(CommandRoute::Exit(e)) => exits.contains(&e),
+                Ok(_) => true,
+                Err(_) => false,
+            };
+            if routable {
+                let mut d = d.clone();
+                d.from.get_or_insert(Sender::Writer);
+                out.push(d);
+            }
+        }
+        for (name, writer) in handled {
+            match out.iter().position(|o| o.name.as_str() == name) {
+                Some(_) => {}
+                None => out.push(CommandDecl {
+                    name: TextField::Value(name),
+                    label: None,
+                    description: None,
+                    from: Some(if writer {
+                        Sender::Writer
+                    } else {
+                        Sender::Anyone
+                    }),
+                    to: None,
+                }),
+            }
+        }
+        for a in &w.actions {
+            let name = a
+                .command
+                .as_str()
+                .trim_start_matches('/')
+                .to_ascii_lowercase();
+            if !name.is_empty() && !out.iter().any(|o| o.name.as_str() == name) {
+                out.push(CommandDecl {
+                    name: TextField::Value(name),
+                    label: Some(a.label.clone()),
+                    description: None,
+                    from: Some(Sender::Writer),
+                    to: None,
+                });
+            }
+        }
+        if self.command_lint && !self.placeholders {
+            for common in COMMON_COMMANDS {
+                if NATIVE_COMMANDS.contains(&common)
+                    || out.iter().any(|o| o.name.as_str() == common)
+                {
+                    continue;
+                }
+                let msg = format!(
+                    "wait does not accept `/{common}`: declare it in `commands:` or add a default to the workflow"
+                );
+                let at = At {
+                    file,
+                    path: base.to_string(),
+                };
+                if self.commands_declared || had_explicit {
+                    self.err(&at, msg);
+                } else {
+                    self.warn(&at, msg);
+                }
+            }
+        }
+        w.commands = out;
     }
 
     fn check_matchers(&mut self, file: &str, base: &str, ms: &[Matcher], scope: &Scope) {

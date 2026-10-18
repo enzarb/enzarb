@@ -146,6 +146,9 @@ pub struct ExpectProjection {
     /// Button labels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actions: Option<Vec<String>>,
+    /// Names of the commands that apply, in order (`retry`, `cancel`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commands: Option<Vec<String>>,
     /// Artifact titles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifacts: Option<Vec<String>>,
@@ -439,6 +442,15 @@ impl Runner<'_> {
                     .collect::<Vec<_>>()
                     .join(", "),
                 want.actions.as_ref().map(|a| a.join(", ")),
+            );
+            cmp(
+                "commands",
+                p.commands
+                    .iter()
+                    .map(|c| c.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                want.commands.as_ref().map(|a| a.join(", ")),
             );
             cmp(
                 "artifacts",
