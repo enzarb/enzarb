@@ -6,7 +6,8 @@
 //! permission request is allowed (the sandbox is the boundary), steering
 //! texts become further user turns after the current one, and a stop sends
 //! `session/cancel` and ends the step `interrupted` once the turn ended (or
-//! after the cancel grace).
+//! after the cancel grace). A turn that made tool calls and ended without the
+//! step's result is continued with a fixed prompt in the same session.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -40,6 +41,11 @@ pub struct AgentSpec {
     /// `mcpServers` of the session.
     pub mcp_servers: Vec<Value>,
     pub cancel_grace: Duration,
+    /// Whether the step's result is already there. `None`: the step has no
+    /// result and its turns are never continued.
+    pub result_ready: Option<Box<dyn Fn() -> bool + Send + Sync>>,
+    /// The user turn sent when a turn ends without the result.
+    pub continuation: String,
 }
 
 pub struct AgentEnd {
@@ -64,6 +70,8 @@ struct Driver<'a> {
     emit: Emit<'a>,
     chunk: Option<(&'static str, String)>,
     usage: UsageCollector,
+    /// `tool_call`/`tool_call_update` updates since the last prompt.
+    turn_tool_calls: u32,
 }
 
 impl Driver<'_> {
@@ -124,6 +132,9 @@ impl Driver<'_> {
             }
             return self.event(k, update.clone());
         }
+        if matches!(kind, "tool_call" | "tool_call_update") {
+            self.turn_tool_calls += 1;
+        }
         let kind = match kind {
             "tool_call" => session_kind::TOOL_CALL,
             "tool_call_update" => match update.get("status").and_then(Value::as_str) {
@@ -138,6 +149,7 @@ impl Driver<'_> {
 
     fn prompt(&mut self, sid: &str, text: &str) -> u64 {
         self.flush();
+        self.turn_tool_calls = 0;
         self.request(
             "session/prompt",
             json!({"sessionId": sid, "prompt": [{"type": "text", "text": text}]}),
@@ -192,6 +204,7 @@ pub async fn run(
         emit,
         chunk: None,
         usage: UsageCollector::default(),
+        turn_tool_calls: 0,
     };
 
     let init_id = d.request(
@@ -291,7 +304,16 @@ pub async fn run(
                                         let s = sid.clone().unwrap_or_default();
                                         wait_id = d.prompt(&s, &t);
                                     }
-                                    None => break Ok(()),
+                                    None => {
+                                        let missing = spec.result_ready.as_ref().is_some_and(|ready| !ready());
+                                        if stop_reason == "end_turn" && missing && d.turn_tool_calls > 0 {
+                                            let s = sid.clone().unwrap_or_default();
+                                            d.event(session_kind::USER, json!({"text": spec.continuation}));
+                                            wait_id = d.prompt(&s, &spec.continuation);
+                                        } else {
+                                            break Ok(());
+                                        }
+                                    }
                                 }
                             }
                         }
