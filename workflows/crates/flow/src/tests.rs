@@ -243,6 +243,25 @@ type Case = (
     usize,
 );
 
+/// Task definitions are stored resolved; ones stored before a field existed must still load.
+#[test]
+fn stored_definitions_without_platform_wait_still_load() {
+    fn strip(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(m) => {
+                m.remove("platform_wait");
+                m.values_mut().for_each(strip);
+            }
+            serde_json::Value::Array(a) => a.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    let mut v = serde_json::to_value(resolved(&base())).unwrap();
+    strip(&mut v);
+    let back: Resolved = serde_json::from_value(v).expect("an old stored definition loads");
+    assert!(!back.phases.is_empty());
+}
+
 #[test]
 fn resolution_errors_have_locations() {
     let wf = ".enzarb/workflows/issue.yaml";
