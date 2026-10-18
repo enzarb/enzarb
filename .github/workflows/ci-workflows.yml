@@ -40,10 +40,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
-    # Non-blocking only because enzarb/workflows@v1 does not pass the check yet. Drop
-    # continue-on-error once it does. The library is public, so no token is needed; a failed
-    # checkout fails its step (and the job), it does not skip the lint.
-    continue-on-error: true
+    # Blocking: enzarb/workflows@v1 passes the check (0 errors; documented gaps are warnings).
+    # The library is public, so no token is needed; a failed checkout fails the job.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4

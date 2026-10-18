@@ -127,7 +127,7 @@ Deploys (notably oldie's HelmChart `valuesContent`, set once by `mise run oldie:
 - **Visibility.** The updater serves `GET /status` (`installed`, `desired`, `latest`, `stuck`) and logs a failing upgrade; the UI About page shows it.
 
 ## Library checkout (`contracts-v1`)
-`ci-workflows.yml` `contracts-v1` lints `enzarb/workflows@v1`. The repo is public, so it is checked out with plain `actions/checkout` (no token, no secret, no App). A failed checkout fails the job. The job is `continue-on-error: true` until the library passes the check.
+`ci-workflows.yml` `contracts-v1` lints `enzarb/workflows@v1`. The repo is public, so it is checked out with plain `actions/checkout` (no token, no secret, no App). A failed checkout fails the job. The job blocks (the library passes the check).
 
 ## Reporting
 A PR that changes CI states before/after wall-clock times for the PR run and the main run, taken from the Actions UI or `gh run view --json jobs`.
