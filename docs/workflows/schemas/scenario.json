@@ -1542,6 +1542,10 @@
         "resume": {
           "type": "boolean"
         },
+        "platform_cleared": {
+          "type": "boolean",
+          "description": "The pending platform wait's condition holds: the step resumes on the same run."
+        },
         "step_finished": {
           "anyOf": [
             {

@@ -549,3 +549,243 @@ fn last_environment_is_null_when_absent() {
         json!({"kind": "oom", "detail": "killed"})
     );
 }
+
+// ---------------------------------------------------------------- platform wait
+
+const WAIT_PHASE: &str = r#"version: 1
+exits: [disk]
+start: build
+nodes:
+  build:
+    step:
+      inline:
+        command: {run: make}
+        retry: {max: 2}
+        platform_wait:
+          - kind: disk_full
+            until: {platform: {fact: sandbox.disk_pct, op: lt, value: 85}}
+    next:
+      - {if: "last.environment.kind == 'disk_full'", to: disk}
+      - {if: "last.environment.kind == 'oom'", to: disk}
+      - {if: "exit == 'success'", to: done}
+      - {else: done}
+  disk: {end: {status: disk}}
+  done: {end: {status: done}}
+"#;
+
+fn wait_res() -> Resolved {
+    let m = base().put(APP, ".enzarb/phases/wp.yaml", WAIT_PHASE).put(
+        APP,
+        ".enzarb/workflows/w.yaml",
+        "version: 1\nphases:\n  - {use: .enzarb/phases/wp, exits: {disk: {end: disk}}}\n",
+    );
+    match resolve(&entry(".enzarb/workflows/w.yaml"), &m, &opts()) {
+        Ok((r, _)) => r,
+        Err(d) => panic!("{d}"),
+    }
+}
+
+fn env_fail(run_id: String, kind: &str) -> TaskEvent {
+    TaskEvent::StepFinished(StepFinished {
+        run_id,
+        exit: "failure".into(),
+        environment: Some(crate::interp::StepEnvironment {
+            kind: kind.into(),
+            detail: "no space".into(),
+        }),
+        ..Default::default()
+    })
+}
+
+fn cleared(r: &Run, wait: u32) -> TaskEvent {
+    TaskEvent::PlatformCleared {
+        run_id: r.run_id(),
+        wait,
+    }
+}
+
+#[test]
+fn platform_wait_holds_the_step_without_edges_or_retry() {
+    let mut r = Run::new(wait_res());
+    r.on(start());
+    let first = r.run_step();
+    r.on(env_fail(first.run_id.clone(), "disk_full"));
+    assert!(r.kinds().is_empty(), "no RunStep, no edge: {:?}", r.kinds());
+    assert_eq!(r.at(), "wp/build");
+    assert_eq!(r.s.status, Status::Running);
+    assert_eq!(r.s.platform_wait.as_ref().unwrap().kind, "disk_full");
+    assert_eq!(r.s.platform_wait.as_ref().unwrap().waits, 0);
+    let p = r.projection();
+    assert_eq!(p.waiting_on, Some(WaitingOn::External));
+    assert_eq!(p.reason.as_deref(), Some("platform_wait"));
+    assert!(!p.needs_you);
+    assert!(p.text.unwrap().contains("disk_full"));
+    // The run id survives; nothing was retried.
+    assert_eq!(r.run_id(), first.run_id);
+}
+
+#[test]
+fn platform_cleared_resumes_the_same_run() {
+    let mut r = Run::new(wait_res());
+    r.on(start());
+    let first = r.run_step();
+    r.on(env_fail(first.run_id.clone(), "disk_full"));
+    let c = cleared(&r, 0);
+    r.on(c);
+    let again = r.run_step();
+    assert_eq!(again.run_id, first.run_id);
+    assert_eq!(again.attempt, first.attempt);
+    assert!(r.s.platform_wait.is_none());
+    assert_eq!(r.s.platform_waits, 1);
+    assert_eq!(r.projection().waiting_on, Some(WaitingOn::Agent));
+    r.on(TaskEvent::StepFinished(StepFinished {
+        run_id: first.run_id,
+        exit: "success".into(),
+        ..Default::default()
+    }));
+    assert_eq!(
+        r.s.status,
+        Status::Ended {
+            status: "done".into()
+        }
+    );
+}
+
+#[test]
+fn duplicate_and_stale_wakes_are_ignored() {
+    let mut r = Run::new(wait_res());
+    r.on(start());
+    // Not waiting yet.
+    let c = cleared(&r, 0);
+    r.on(c);
+    assert!(r.kinds().is_empty());
+    let id = r.run_id();
+    r.on(env_fail(id.clone(), "disk_full"));
+    // Wrong run, wrong count.
+    r.on(TaskEvent::PlatformCleared {
+        run_id: "other".into(),
+        wait: 0,
+    });
+    assert!(r.kinds().is_empty());
+    r.on(TaskEvent::PlatformCleared {
+        run_id: id.clone(),
+        wait: 3,
+    });
+    assert!(r.kinds().is_empty());
+    assert!(r.s.platform_wait.is_some());
+    r.on(TaskEvent::PlatformCleared {
+        run_id: id.clone(),
+        wait: 0,
+    });
+    assert_eq!(r.kinds(), ["run_step"]);
+    // The same wake again is a no-op.
+    r.on(TaskEvent::PlatformCleared {
+        run_id: id,
+        wait: 0,
+    });
+    assert!(r.kinds().is_empty());
+}
+
+#[test]
+fn refailing_reenters_the_wait_with_no_cap() {
+    let mut r = Run::new(wait_res());
+    r.on(start());
+    let id = r.run_id();
+    for n in 0..6 {
+        r.on(env_fail(id.clone(), "disk_full"));
+        assert!(r.kinds().is_empty());
+        assert_eq!(r.s.platform_wait.as_ref().unwrap().waits, n);
+        r.on(TaskEvent::PlatformCleared {
+            run_id: id.clone(),
+            wait: n,
+        });
+        assert_eq!(r.kinds(), ["run_step"]);
+        assert_eq!(r.run_step().attempt, 1, "the wait is not an attempt");
+    }
+}
+
+#[test]
+fn other_kinds_and_plain_failures_behave_as_before() {
+    let mut r = Run::new(wait_res());
+    r.on(start());
+    let id = r.run_id();
+    r.on(env_fail(id, "oom")); // not opted in: the step's retry applies as before
+    assert!(r.s.platform_wait.is_none());
+    assert_eq!(r.run_step().attempt, 2);
+    // A plain failure still retries.
+    let mut r = Run::new(wait_res());
+    r.on(start());
+    let id = r.run_id();
+    r.on(TaskEvent::StepFinished(StepFinished {
+        run_id: id,
+        exit: "failure".into(),
+        ..Default::default()
+    }));
+    assert_eq!(r.kinds(), ["run_step"]);
+    assert_eq!(r.run_step().attempt, 2);
+}
+
+#[test]
+fn cancel_ends_a_platform_wait() {
+    let mut r = Run::new(wait_res());
+    r.on(start());
+    let id = r.run_id();
+    r.on(env_fail(id, "disk_full"));
+    r.on(TaskEvent::Cancel);
+    assert_eq!(
+        r.s.status,
+        Status::Ended {
+            status: "cancelled".into()
+        }
+    );
+    assert!(r.s.platform_wait.is_none());
+}
+
+#[test]
+fn platform_wait_lint() {
+    let bad = |wait: &str| {
+        let phase = WAIT_PHASE.replace(
+            "        platform_wait:\n          - kind: disk_full\n            until: {platform: {fact: sandbox.disk_pct, op: lt, value: 85}}\n",
+            wait,
+        );
+        let m = base().put(APP, ".enzarb/phases/wp.yaml", &phase).put(
+            APP,
+            ".enzarb/workflows/w.yaml",
+            "version: 1\nphases:\n  - {use: .enzarb/phases/wp, exits: {disk: {end: disk}}}\n",
+        );
+        resolve(&entry(".enzarb/workflows/w.yaml"), &m, &opts())
+            .map(|_| ())
+            .map_err(|d| d.to_string())
+    };
+    let e = bad("        platform_wait: [{kind: toolchain_missing, until: {platform: {fact: sandbox.healthy, value: true}}}]\n").unwrap_err();
+    assert!(e.contains("cannot be waited on"), "{e}");
+    let e = bad("        platform_wait: [{kind: oom, until: {node: x}}]\n").unwrap_err();
+    assert!(e.contains("only `platform`"), "{e}");
+    bad("        platform_wait: [{kind: oom, until: {platform: {fact: sandbox.healthy, value: true}}}]\n").unwrap();
+}
+
+#[test]
+fn platform_wait_scenario_continues_the_same_run() {
+    let sc: crate::scenario::Scenario = crate::yaml::SourceFile::parse(
+        "s",
+        r#"workflow: .enzarb/workflows/w.yaml
+start: {type: issue, action: opened, number: 7}
+stubs:
+  wp/build: [{exit: failure, environment: {kind: disk_full, detail: "0 bytes free"}}]
+events:
+  - expect:
+      status: running
+      at: wp/build
+      projection: {waiting_on: external, reason: platform_wait, needs_you: false}
+  - platform_cleared: true
+    expect: {effects: [run_step], status: running}
+  - step_finished: {exit: success}
+    expect: {status: "ended:done"}
+"#,
+    )
+    .unwrap()
+    .typed()
+    .unwrap();
+    let f = crate::scenario::run(&wait_res(), &sc);
+    assert!(f.is_empty(), "{f:?}");
+}
