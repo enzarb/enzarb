@@ -22,5 +22,8 @@ A step can end with `step_finished.environment` (`disk_full`, `oom`, ...): the c
 - **Default-on waiting for `disk_full`/`oom`.** It would change existing workflows; opting in keeps them as they are. The stdlib agent steps opt in.
 - **A wait deadline that pauses the task.** The issue forbids timeouts and escalation by age.
 
+## Agent-reported environment (advisory)
+`review` and `implement` results may carry an optional `environment` object (`{kind?, detail}`). It is advisory and never routes: only `step_finished.environment` decides edges, waits and retries. When the sandbox also detected a failure that the step waits out, the agent's `detail` (truncated to 500 characters, shown as text only) is appended to the wait detail as `<sandbox detail>; agent: <agent detail>`.
+
 ## Consequences
 Wake latency is the stats poll interval (ADR-0019) plus the ticker interval; nothing here is time-critical. Flapping (wake, refill, fail again) loops by design; each cycle produces events, so the `idle_for` of `platform-wait-long` restarts, and a check keyed on the wait's age instead is future work. Memory, chart-deploy and workflow-run facts stay unknown (ADR-0024).
