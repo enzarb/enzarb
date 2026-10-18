@@ -2297,7 +2297,6 @@ async fn mount_role(server: &MockServer, login: &str, role: Value, times: u64) {
         .await;
 }
 
-
 async fn can_write_of(
     perms: &enzarb_connector_github::CommentPermissions<GitHubConnector>,
     login: &str,
@@ -2408,7 +2407,6 @@ async fn mount_filed_list(server: &MockServer, number: u64, state: &str) {
         .mount(server)
         .await;
 }
-
 
 async fn mount_filed_get(server: &MockServer, number: u64, title: &str, body: &str) {
     let mut current = issue_json(number, false);
