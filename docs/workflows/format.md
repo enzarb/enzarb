@@ -236,6 +236,8 @@ steer: [comment, review]             # delivered into the running session
 stop: [{event: comment, from: writer, if: "event.command == 'stop'"}]  # this is the default
 ```
 
+A step that lists a `platform_wait` kind sends that environment failure to the wait before any edge, `retry`, `set_on_exit` or `max_visits` applies; the task stays `running` and the node does not move. What stays on edges: a kind not listed (`toolchain_missing` and `unknown` cannot wait; the library also leaves `network` and `load` out, see gaps.md #22), and a failure with no `environment`. A wait is level-triggered and has no timeout. The standard library opts in `disk_full` and `oom` on every agent step.
+
 ```yaml
 version: 1
 command:
