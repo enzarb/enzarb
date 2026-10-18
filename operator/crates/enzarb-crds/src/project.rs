@@ -195,6 +195,25 @@ pub struct ProjectStatus {
     /// A pod-shape change waiting for the sandbox to drain. Absent when nothing is pending.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_change: Option<PendingChange>,
+    /// The latest pod-shape change the operator applied by recreating the sandbox pod. Kept until
+    /// a newer roll replaces it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_roll: Option<LastRoll>,
+}
+
+/// A pending change that was applied (the sandbox pod was deleted for recreation).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LastRoll {
+    /// When the pod was rolled.
+    pub at: Time,
+    /// `pendingChange.since` of the change this roll completed: the drain wait is `at - since`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<Time>,
+    /// `pendingChange.reason` of the change.
+    pub reason: String,
+    /// The sandbox image the recreated pod runs.
+    pub image: String,
 }
 
 /// See `ANNOTATION_DRAINED_GENERATION`. `generation` is a counter local to the pending change
