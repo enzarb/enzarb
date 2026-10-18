@@ -82,7 +82,7 @@ Defined in `proto/crates/enzarb-proto/src/step.rs` and mirrored in `proto/ts`; f
 - **Event catalog:** `connector-github::catalog::map` maps each webhook to a `flow::events` catalog event; the receiver calls `engine_api.ingest`. Signed custom events: `POST /v1/events/<project>`, `X-Enzarb-Signature: sha256=<hex hmac>`, key = Project secret `ENZARB_EVENTS_SECRET_NAME` (default `events_hmac`); payloads are validated against the workflow's declared schema by the engine.
 - **Generic actions** (engine `actions.rs`; targets default to the task's subjects, `number`/`repo` override):
   - `comment`, `label`, `unlabel`;
-  - `open_pull_request` (links the PR as a subject), `update_pull_request`, `merge_pull_request`;
+  - `open_pull_request` (links the PR as a subject), `update_pull_request`, `merge_pull_request` (a refused merge, e.g. "Pull Request has merge conflicts" or "Base branch was modified", finishes `ok: false` with the provider's text in `result.error`; no `message` or `reason` is set);
   - `create_issues` (result `{issues: [{kind: issue, repo, number, title, url, key}]}`), `open_pull_request` (result `{kind: pull_request, repo, number, title, url, subject}`), `close_issue`, `set_base`, `update_branch`, `delete_branch`;
   - `file_issue` (args `repo?`, `title`, `body`, `key`, `labels?`; result `{kind: issue, repo, number, title, url, key, outcome: created|updated|unchanged}`): files one issue under a stable `key`; see `docs/contracts.md`, "`file_issue`";
   - `read_file`, `resolve_ref`.

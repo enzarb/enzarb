@@ -52,6 +52,16 @@ pub async fn run(c: &FakeConnector, name: &str, a: Value, key: &str) -> Result<V
     }
 }
 
+/// Runs `name` through the executor's outcome mapping: `(ok, result)` as the workflow sees it.
+pub async fn run_outcome(
+    c: &FakeConnector,
+    name: &str,
+    a: Value,
+    key: &str,
+) -> Result<(bool, Value), String> {
+    crate::actions::finish(dispatch(c, "o/r", &state(), name, &args(a), key).await)
+}
+
 pub fn readiness(head: &str) -> MergeReadiness {
     MergeReadiness {
         head_sha: head.into(),

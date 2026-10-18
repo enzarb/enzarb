@@ -428,6 +428,23 @@ pub(crate) async fn file_issue(
     }))
 }
 
+/// The `ActionFinished` outcome of an action: `(true, result)`, or `(false, {error})` for a
+/// refusal, which the workflow routes on. A transient failure is returned for the caller to retry.
+pub(crate) fn finish(r: Result<Value, ActionError>) -> Result<(bool, Value), String> {
+    match r {
+        Ok(v) => Ok((true, v)),
+        Err(ActionError::Refused(why)) => {
+            let why = if mutation::drop_refusal_text() {
+                String::new()
+            } else {
+                why
+            };
+            Ok((false, json!({"error": why})))
+        }
+        Err(ActionError::Transient(e)) => Err(e),
+    }
+}
+
 /// Test-only mutation switches for the kernel actions (`docs/workflows/contract-tests.md`): each
 /// removes one documented behaviour so the contract tests can prove they notice. Compiled out
 /// of non-test builds, where every switch is a constant `false`.
@@ -445,6 +462,7 @@ pub(crate) mod mutation {
         pub ignore_readiness_head: bool,
         pub wrong_branch_default: bool,
         pub ignore_close_reason: bool,
+        pub drop_refusal_text: bool,
     }
 
     thread_local! {
@@ -485,6 +503,9 @@ pub(crate) mod mutation {
     pub(crate) fn ignore_close_reason() -> bool {
         ACTIVE.with(|a| a.get().ignore_close_reason)
     }
+    pub(crate) fn drop_refusal_text() -> bool {
+        ACTIVE.with(|a| a.get().drop_refusal_text)
+    }
     /// The idempotency key to pass on; with `fresh_keys`, a new one every time.
     pub(crate) fn rekey(key: &str) -> String {
         use std::sync::atomic::{AtomicU64, Ordering};
@@ -518,6 +539,9 @@ mod mutation {
         false
     }
     pub(super) fn ignore_close_reason() -> bool {
+        false
+    }
+    pub(super) fn drop_refusal_text() -> bool {
         false
     }
     pub(super) fn rekey(key: &str) -> String {
