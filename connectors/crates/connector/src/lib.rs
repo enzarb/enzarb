@@ -29,5 +29,5 @@ pub use keys::{KeyError, RepoKey, WorkItemKey};
 pub use types::{
     Actor, ChangeRequestSpec, CloseReason, CommentKind, CommentRef, CommitRef, CredScope, ItemKind,
     ItemRef, Permission, Progress, ProgressTarget, ReadCred, ShortLivedCred, Status, StatusState,
-    Thread, ThreadComment,
+    Thread, ThreadComment, WorkflowRunInfo,
 };

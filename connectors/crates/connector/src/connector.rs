@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use crate::{
     Actor, ChangeRequestSpec, CloseReason, CommentRef, CommitRef, CredScope, Error, ItemRef,
     MergeOutcome, MergeReadiness, Permission, Progress, ProgressTarget, ReadCred, RepoKey, Result,
-    ShortLivedCred, Status, Thread, UpdateBranchOutcome, WorkItemKey,
+    ShortLivedCred, Status, Thread, UpdateBranchOutcome, WorkItemKey, WorkflowRunInfo,
 };
 
 /// What [`Connector::upsert_issue`] did.
@@ -343,6 +343,18 @@ pub trait Connector: Send + Sync {
     /// Whether commit `sha` is reachable from `git_ref`; `None` when unknown.
     async fn contains(&self, _repo: &RepoKey, _sha: &str, _git_ref: &str) -> Result<Option<bool>> {
         Ok(None)
+    }
+
+    /// The latest *finished* run of CI workflow file `workflow` (`release.yml`) on `branch`;
+    /// `None` when it has none. A run still in progress is skipped, so it never masks the
+    /// outcome before it. The default implementation reports the capability as unsupported.
+    async fn latest_workflow_run(
+        &self,
+        _repo: &RepoKey,
+        _workflow: &str,
+        _branch: &str,
+    ) -> Result<Option<WorkflowRunInfo>> {
+        Err(Error::Invalid("workflow runs are not supported".into()))
     }
 
     /// A short-lived token restricted to `repos` with exactly `permissions`
