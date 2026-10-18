@@ -260,6 +260,10 @@ pub struct SandboxStats {
     /// Cgroup `memory.max` in bytes. Omitted when the cgroup is unlimited (`max`) or unreadable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_limit_bytes: Option<u64>,
+    /// `memory.stat` `inactive_file` in bytes: reclaimable page cache that `memory.current`
+    /// includes. `memory_bytes - memory_inactive_file_bytes` is the working set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_inactive_file_bytes: Option<u64>,
     /// `io.stat` `rbytes` summed over devices.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub io_read_bytes: Option<u64>,

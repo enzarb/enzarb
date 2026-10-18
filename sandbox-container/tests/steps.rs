@@ -1003,6 +1003,32 @@ async fn enospc_in_the_output_is_disk_full() {
     assert!(!e.detail.is_empty());
 }
 
+#[tokio::test]
+async fn exit_127_in_the_step_is_not_an_environment_failure() {
+    let env = Env::new();
+    let fin = run_cmd(
+        &env,
+        "env-127",
+        "echo 'sh: x: command not found' >&2; exit 127".into(),
+    )
+    .await;
+    assert_eq!(fin.exit, "failure", "{fin:?}");
+    assert_eq!(fin.environment, None);
+}
+
+#[tokio::test]
+async fn a_hostname_error_in_the_step_output_is_a_code_failure() {
+    let env = Env::new();
+    let fin = run_cmd(
+        &env,
+        "env-host",
+        "echo 'curl: Could not resolve host: example.invalid' >&2; exit 1".into(),
+    )
+    .await;
+    assert_eq!(fin.exit, "failure", "{fin:?}");
+    assert_eq!(fin.environment, None);
+}
+
 /// A real full filesystem needs a mount; skipped where that is not permitted.
 #[tokio::test]
 async fn a_full_workspace_is_disk_full() {
@@ -1083,4 +1109,132 @@ async fn a_stopped_step_is_not_oom_even_if_the_counter_moved() {
     let fin = collect(&mut ev, "env-stop", |_| false).await.1.unwrap();
     assert_eq!(fin.exit, "interrupted");
     assert_eq!(fin.environment, None);
+}
+
+fn sys_events<'a>(
+    evs: &'a [SessionEvent],
+    name: &'a str,
+) -> impl Iterator<Item = &'a SessionEvent> {
+    evs.iter()
+        .filter(move |e| e.kind == "system" && e.payload["event"] == name)
+}
+
+#[tokio::test]
+async fn environment_failed_agent_step_resumes_on_step_start() {
+    let env = Env::new();
+    let addr = env.server().await;
+    let (s, mut ev) = connect(addr).await;
+    let exec = || agent_exec(&env, "enospc", None);
+    start(&s, &mut ev, step("ag-env", exec(), vec![])).await;
+    let (first, fin) = collect(&mut ev, "ag-env", |_| false).await;
+    let fin = fin.unwrap();
+    assert_eq!(fin.exit, "failure", "{fin:?}");
+    assert_eq!(fin.environment.unwrap().kind, EnvironmentKind::DiskFull);
+    let sid = sys_events(&first, "session").next().unwrap().payload["session_id"].clone();
+
+    // The engine re-sends step_start with the same run_id: the step continues.
+    let acc = start(&s, &mut ev, step("ag-env", exec(), vec![])).await;
+    assert_eq!(acc, (StepPhase::Running, true));
+    let (mut evs, fin) = collect(&mut ev, "ag-env", |_| false).await;
+    evs.sort_by_key(|e| e.seq);
+    let fin = fin.unwrap();
+    assert_eq!(fin.exit, "success", "{fin:?}");
+    assert_eq!(fin.environment, None);
+    for (i, e) in evs.iter().enumerate() {
+        assert_eq!(e.seq, i as u64 + 1);
+    }
+    let loaded: Vec<_> = sys_events(&evs, "session_loaded").collect();
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].payload["session_id"], sid);
+    assert_eq!(sys_events(&evs, "session").count(), 1);
+    assert!(texts(&evs[first.len()..], "assistant").contains("resumed"));
+    assert_eq!(texts(&evs[first.len()..], "user"), CONTINUE_PROMPT);
+}
+
+#[tokio::test]
+async fn code_failure_step_is_replayed_not_rerun() {
+    let env = Env::new();
+    let addr = env.server().await;
+    let (s, mut ev) = connect(addr).await;
+    let counter = env.dir.path().join("count");
+    let cmd = format!("echo x >> {}; exit 3", counter.display());
+    let exec = || StepExec::Command {
+        run: cmd.clone(),
+        tools: vec![],
+    };
+    start(&s, &mut ev, step("code-fail", exec(), vec![])).await;
+    let (first, fin) = collect(&mut ev, "code-fail", |_| false).await;
+    let fin = fin.unwrap();
+    assert_eq!(fin.exit, "failure");
+    assert_eq!(fin.environment, None);
+
+    let acc = start(&s, &mut ev, step("code-fail", exec(), vec![])).await;
+    assert_eq!(acc, (StepPhase::Finished, true));
+    // A replay: the logged events, then the unchanged result as `step_state`.
+    let mut again = Vec::new();
+    loop {
+        match timeout(T, ev.next()).await.unwrap().unwrap() {
+            Event::Ctrl(Ctrl::SessionEvent(e)) => again.push(e),
+            Event::Ctrl(Ctrl::StepState { state, result, .. }) => {
+                assert_eq!(state, StepPhase::Finished);
+                assert_eq!(result.unwrap(), fin);
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(again.len() <= first.len());
+    assert_eq!(sys_events(&again, "resumed").count(), 0);
+    assert_eq!(std::fs::read_to_string(&counter).unwrap(), "x\n");
+}
+
+/// A command that fails with ENOSPC once, then sleeps (marker file `m`).
+fn flaky_cmd(env: &Env) -> String {
+    let m = env.dir.path().join("m");
+    format!(
+        "if [ -e {m} ]; then echo again >> {m}; sleep 3; else touch {m}; \
+         echo 'No space left on device' >&2; exit 1; fi",
+        m = m.display()
+    )
+}
+
+#[tokio::test]
+async fn environment_failed_step_in_the_pruned_workspace_is_busy_again() {
+    let env = Env::new();
+    let (addr, steps) = env.server_with_steps().await;
+    let cache = env.ws.join("tasks/task-1/o/r/target");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(
+        cache.join("CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55\n",
+    )
+    .unwrap();
+    let (s, mut ev) = connect(addr).await;
+    let exec = || StepExec::Command {
+        run: flaky_cmd(&env),
+        tools: vec![],
+    };
+    start(&s, &mut ev, step("env-busy", exec(), vec![])).await;
+    let (_, fin) = collect(&mut ev, "env-busy", |_| false).await;
+    assert_eq!(
+        fin.unwrap().environment.unwrap().kind,
+        EnvironmentKind::DiskFull
+    );
+
+    // Finished: the workspace is idle, so its cache is pruned.
+    let acc = start(&s, &mut ev, step("env-busy", exec(), vec![])).await;
+    assert_eq!(acc, (StepPhase::Running, true));
+    let removed = common::read_only(&env.ws, || {
+        sandbox_init::workspace_prune::prune_once(&env.ws, &steps, 100)
+    });
+    assert_eq!(removed, 0);
+    assert!(cache.exists(), "the resumed step keeps its task busy");
+    // The command ran again in the same run, and finished for good.
+    let (_, fin) = collect(&mut ev, "env-busy", |_| false).await;
+    assert_eq!(fin.unwrap().exit, "success");
+    assert!(
+        std::fs::read_to_string(env.dir.path().join("m"))
+            .unwrap()
+            .contains("again")
+    );
 }

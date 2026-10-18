@@ -4,8 +4,8 @@
 
 use enzarb_connector::file_issue::file_issue_key;
 use enzarb_connector::{
-    ChangeRequestSpec, CloseReason, Connector, Error as CError, MergeOutcome, UpdateBranchOutcome,
-    WorkItemKey,
+    ChangeRequestSpec, CloseReason, Connector, Error as CError, MergeOutcome, RepoKey,
+    UpdateBranchOutcome, WorkItemKey,
 };
 use enzarb_flow::interp::TaskState;
 use serde_json::{Map, Value, json};
@@ -98,14 +98,26 @@ pub async fn call(
     args: &Map<String, Value>,
     key: &str,
 ) -> Result<Value, ActionError> {
-    let c = e.connector();
+    dispatch(e.connector().as_ref(), repo, state, name, args, key).await
+}
+
+/// Runs the kernel action `name` against `c`. Split from `call` so the contract tests can drive
+/// the actions with a `FakeConnector` and no `Engine`.
+pub(crate) async fn dispatch(
+    c: &dyn Connector,
+    repo: &str,
+    state: &TaskState,
+    name: &str,
+    args: &Map<String, Value>,
+    key: &str,
+) -> Result<Value, ActionError> {
     let task_branch = format!("enzarb/task-{}", state.doc.task.id);
     match name {
         "comment" => {
             let body = s(args, "body")
                 .ok_or_else(|| ActionError::Refused("comment needs `body`".into()))?;
             let r = c
-                .post_comment(&item(repo, state, args)?, body, key)
+                .post_comment(&item(repo, state, args)?, body, &mutation::rekey(key))
                 .await
                 .map_err(transient)?;
             Ok(json!({"id": r.id, "url": r.url}))
@@ -135,7 +147,10 @@ pub async fn call(
                 draft: args.get("draft").and_then(Value::as_bool).unwrap_or(false),
             };
             let title = spec.title.clone();
-            let it = c.open_change_request(spec, key).await.map_err(transient)?;
+            let it = c
+                .open_change_request(spec, &mutation::rekey(key))
+                .await
+                .map_err(transient)?;
             // `subject` makes the engine link the pull request to the task.
             Ok(
                 json!({"kind": "pull_request", "repo": r, "number": it.number, "title": title,
@@ -153,6 +168,7 @@ pub async fn call(
             let it = pr(repo, state, args)?;
             let head = match s(args, "expected_head") {
                 Some(h) => h.to_string(),
+                None if mutation::ignore_readiness_head() => String::new(),
                 None => {
                     c.get_merge_readiness(&it, it.number)
                         .await
@@ -174,14 +190,15 @@ pub async fn call(
                 MergeOutcome::NotMergeable { reason } => Err(ActionError::Refused(reason)),
             }
         }
-        "create_issues" => create_issues(c.as_ref(), &target_repo(repo, args), args, key).await,
-        "file_issue" => file_issue(c.as_ref(), &target_repo(repo, args), args).await,
+        "create_issues" => create_issues(c, &target_repo(repo, args), args, key).await,
+        "file_issue" => file_issue(c, &target_repo(repo, args), args).await,
         "close_issue" => {
-            let reason = if s(args, "reason") == Some("not_planned") {
-                CloseReason::NotPlanned
-            } else {
-                CloseReason::Completed
-            };
+            let reason =
+                if s(args, "reason") == Some("not_planned") && !mutation::ignore_close_reason() {
+                    CloseReason::NotPlanned
+                } else {
+                    CloseReason::Completed
+                };
             c.close_issue(&item(repo, state, args)?, reason)
                 .await
                 .map_err(transient)?;
@@ -218,7 +235,12 @@ pub async fn call(
         }
         "delete_branch" => {
             let r = target_repo(repo, args);
-            let b = s(args, "branch").map(str::to_string).unwrap_or(task_branch);
+            let default = if mutation::wrong_branch_default() {
+                state.doc.task.default_branch.clone()
+            } else {
+                task_branch
+            };
+            let b = s(args, "branch").map(str::to_string).unwrap_or(default);
             c.delete_branch(&repo_key(&r), &b, key)
                 .await
                 .map_err(transient)?;
@@ -290,28 +312,9 @@ pub async fn fact(
             };
             json!({"branch": branch, "head": h.clone().unwrap_or_default(), "pushed": h.is_some(), "ahead": ahead})
         }
-        "ci" => match head {
-            Some(sha) => {
-                let mut v = c.ci_details(&rk, &sha).await.map_err(|e| e.to_string())?;
-                if let Some(o) = v.as_object_mut() {
-                    o.insert("sha".into(), json!(sha));
-                }
-                v
-            }
-            None => Value::Null,
-        },
-        "reviews" => match &pr_key {
-            Some(k) => {
-                let v = c.list_reviews(k).await.map_err(|e| e.to_string())?;
-                // The interpreter's `reviews` fact is the list.
-                v.get("reviews").cloned().unwrap_or(v)
-            }
-            None => json!([]),
-        },
-        "mergeable" => match &pr_key {
-            Some(k) => json!(mergeable(c.as_ref(), k, MERGEABLE_POLL).await?),
-            None => Value::Null,
-        },
+        "ci" => ci_fact(c.as_ref(), &rk, head.as_deref()).await?,
+        "reviews" => reviews_fact(c.as_ref(), pr_key.as_ref()).await?,
+        "mergeable" => mergeable_fact(c.as_ref(), pr_key.as_ref(), MERGEABLE_POLL).await?,
         "merged" => json!(
             state
                 .doc
@@ -328,10 +331,8 @@ pub async fn fact(
                 return Ok(json!([]));
             };
             // An error is "unknown", never "none".
-            let deps = c
-                .list_dependencies(&WorkItemKey::new(rk.clone(), issue.number))
-                .await
-                .map_err(|e| e.to_string())?;
+            let deps =
+                dependencies_fact(c.as_ref(), &WorkItemKey::new(rk.clone(), issue.number)).await?;
             // Record them as `blocked_by` relations first, so a dependency that ends after the
             // read below still notifies this task (`dependency_changed`) and the fact is
             // refreshed. Relations for dependencies that were removed go.
@@ -427,7 +428,7 @@ pub(crate) async fn file_issue(
     }))
 }
 
-/// Test-only mutation switches for `create_issues` (`docs/workflows/contract-tests.md`): each
+/// Test-only mutation switches for the kernel actions (`docs/workflows/contract-tests.md`): each
 /// removes one documented behaviour so the contract tests can prove they notice. Compiled out
 /// of non-test builds, where every switch is a constant `false`.
 #[cfg(test)]
@@ -439,6 +440,11 @@ pub(crate) mod mutation {
         pub skip_sub_issue_link: bool,
         pub skip_dependencies: bool,
         pub skip_placeholders: bool,
+        pub mergeable_known_on_first_read: bool,
+        pub fresh_keys: bool,
+        pub ignore_readiness_head: bool,
+        pub wrong_branch_default: bool,
+        pub ignore_close_reason: bool,
     }
 
     thread_local! {
@@ -467,6 +473,28 @@ pub(crate) mod mutation {
     pub(crate) fn skip_placeholders() -> bool {
         ACTIVE.with(|a| a.get().skip_placeholders)
     }
+    pub(crate) fn mergeable_known_on_first_read() -> bool {
+        ACTIVE.with(|a| a.get().mergeable_known_on_first_read)
+    }
+    pub(crate) fn ignore_readiness_head() -> bool {
+        ACTIVE.with(|a| a.get().ignore_readiness_head)
+    }
+    pub(crate) fn wrong_branch_default() -> bool {
+        ACTIVE.with(|a| a.get().wrong_branch_default)
+    }
+    pub(crate) fn ignore_close_reason() -> bool {
+        ACTIVE.with(|a| a.get().ignore_close_reason)
+    }
+    /// The idempotency key to pass on; with `fresh_keys`, a new one every time.
+    pub(crate) fn rekey(key: &str) -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        if ACTIVE.with(|a| a.get().fresh_keys) {
+            format!("{key}~{}", N.fetch_add(1, Ordering::Relaxed))
+        } else {
+            key.to_string()
+        }
+    }
 }
 
 #[cfg(not(test))]
@@ -479,6 +507,21 @@ mod mutation {
     }
     pub(super) fn skip_placeholders() -> bool {
         false
+    }
+    pub(super) fn mergeable_known_on_first_read() -> bool {
+        false
+    }
+    pub(super) fn ignore_readiness_head() -> bool {
+        false
+    }
+    pub(super) fn wrong_branch_default() -> bool {
+        false
+    }
+    pub(super) fn ignore_close_reason() -> bool {
+        false
+    }
+    pub(super) fn rekey(key: &str) -> String {
+        key.to_string()
     }
 }
 
@@ -860,16 +903,69 @@ const MERGEABLE_POLL: &[std::time::Duration] = &[
     std::time::Duration::from_secs(10),
 ];
 
-async fn mergeable(
+/// The `ci` fact: the connector's check summary for the PR head `sha`, tagged with it; `null`
+/// without a PR.
+pub(crate) async fn ci_fact(
+    c: &dyn Connector,
+    rk: &RepoKey,
+    sha: Option<&str>,
+) -> Result<Value, String> {
+    let Some(sha) = sha else {
+        return Ok(Value::Null);
+    };
+    let mut v = c.ci_details(rk, sha).await.map_err(|e| e.to_string())?;
+    if let Some(o) = v.as_object_mut() {
+        o.insert("sha".into(), json!(sha));
+    }
+    Ok(v)
+}
+
+/// The `reviews` fact is the list (the connector wraps it as `{sha, reviews}`); `[]` without a PR.
+pub(crate) async fn reviews_fact(
+    c: &dyn Connector,
+    pr: Option<&WorkItemKey>,
+) -> Result<Value, String> {
+    let Some(pr) = pr else {
+        return Ok(json!([]));
+    };
+    let v = c.list_reviews(pr).await.map_err(|e| e.to_string())?;
+    Ok(v.get("reviews").cloned().unwrap_or(v))
+}
+
+/// The `mergeable` fact: `true`/`false` once known, `null` while unknown or without a PR.
+pub(crate) async fn mergeable_fact(
+    c: &dyn Connector,
+    pr: Option<&WorkItemKey>,
+    delays: &[std::time::Duration],
+) -> Result<Value, String> {
+    match pr {
+        Some(k) => Ok(json!(mergeable(c, k, delays).await?)),
+        None => Ok(Value::Null),
+    }
+}
+
+/// The blocked-by edges of `issue`. An error is "unknown", never "none".
+pub(crate) async fn dependencies_fact(
+    c: &dyn Connector,
+    issue: &WorkItemKey,
+) -> Result<Vec<WorkItemKey>, String> {
+    c.list_dependencies(issue).await.map_err(|e| e.to_string())
+}
+
+pub(crate) async fn mergeable(
     c: &dyn Connector,
     k: &WorkItemKey,
     delays: &[std::time::Duration],
 ) -> Result<Option<bool>, String> {
-    let mut m = c
+    let first = c
         .get_merge_readiness(k, k.number)
         .await
-        .map_err(|e| e.to_string())?
-        .mergeable;
+        .map_err(|e| e.to_string())?;
+    // Mutation: a fake that reports the first read as known (GitHub never does).
+    let mut m = match (mutation::mergeable_known_on_first_read(), first.mergeable) {
+        (true, None) if first.mergeable_state == "unknown" => Some(true),
+        (_, m) => m,
+    };
     for d in delays {
         if m.is_some() {
             break;

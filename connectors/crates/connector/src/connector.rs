@@ -345,14 +345,14 @@ pub trait Connector: Send + Sync {
         Ok(None)
     }
 
-    /// The latest *finished* run of CI workflow file `workflow` (`release.yml`) on `branch`;
-    /// `None` when it has none. A run still in progress is skipped, so it never masks the
+    /// The latest *finished* run of CI workflow file `workflow` (`release.yml`) on `branch`, or
+    /// on the repository's default branch when `branch` is `None`; `None` when it has none. A run still in progress is skipped, so it never masks the
     /// outcome before it. The default implementation reports the capability as unsupported.
     async fn latest_workflow_run(
         &self,
         _repo: &RepoKey,
         _workflow: &str,
-        _branch: &str,
+        _branch: Option<&str>,
     ) -> Result<Option<WorkflowRunInfo>> {
         Err(Error::Invalid("workflow runs are not supported".into()))
     }

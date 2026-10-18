@@ -427,7 +427,7 @@
             "string",
             "null"
           ],
-          "description": "Argument of a fact that needs one: `workflow_run.status` takes `<owner>/<repo>:<workflow\nfile>` (the latest finished run on `main`). Other facts take none."
+          "description": "Argument of a fact that needs one: `workflow_run.status` takes `<owner>/<repo>:<workflow\nfile>` (the latest finished run on the repository's default branch). Other facts take none."
         },
         "op": {
           "$ref": "#/$defs/CmpOp",
@@ -446,10 +446,10 @@
         "workflow_run.status",
         "chart.deploy_state",
         "sandbox.disk_pct",
-        "sandbox.mem_pct",
+        "sandbox.mem_working_set_pct",
         "project.pending_change"
       ],
-      "description": "Platform facts the engine can read. A fact whose source is missing or failed is unknown and\nnever matches. Values: `workflow_run.status` is the conclusion of the latest finished run\n(`success`, `failure`, ...; takes `arg`); `chart.deploy_state` is `deployed`, `pending` or\n`stuck`; `sandbox.disk_pct` and `sandbox.mem_pct` are percentages; `project.pending_change`\nis a boolean."
+      "description": "Platform facts the engine can read. A fact whose source is missing or failed is unknown and\nnever matches. Values: `workflow_run.status` is the conclusion of the latest finished run\n(`success`, `failure`, ...; takes `arg`); `chart.deploy_state` is `deployed`, `pending` or\n`stuck`; `sandbox.disk_pct` and `sandbox.mem_working_set_pct` are percentages; `project.pending_change`\nis a boolean."
     },
     "CmpOp": {
       "type": "string",

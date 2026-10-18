@@ -36,7 +36,19 @@ export interface PendingChange {
 	reason: string;
 }
 
+/** `status.lastRoll`: the latest pending change applied by recreating the sandbox pod. */
+export interface LastRoll {
+	/** RFC 3339: when the pod was rolled. */
+	at: string;
+	/** `pendingChange.since` of the change this roll completed. */
+	since?: string;
+	reason?: string;
+	/** The sandbox image the recreated pod runs. */
+	image?: string;
+}
+
 export interface ProjectStatus {
+	lastRoll?: LastRoll | null;
 	pendingChange?: Partial<PendingChange> | null;
 	namespace?: string | null;
 	sandbox?: { name?: string | null } | null;

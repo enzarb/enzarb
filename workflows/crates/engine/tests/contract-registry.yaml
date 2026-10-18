@@ -4,6 +4,116 @@
 version: 1
 entries:
   - kind: action
+    action: ci
+    name: 'ci'
+    source: 'docs/workflows/contracts-v2.md#facts'
+    tests: [contract_tests::facts::ci_shape, contract_tests::facts::ci_without_pr_is_null, contract_tests::facts::ci_ignore_regex_drops_matching_checks]
+  - kind: result_field
+    action: ci
+    name: 'failing'
+    source: 'docs/workflows/contracts-v2.md#facts'
+    tests: [contract_tests::facts::ci_shape]
+  - kind: result_field
+    action: ci
+    name: 'failing[].actionable'
+    source: 'docs/workflows/contracts-v2.md#facts'
+    tests: [contract_tests::facts::ci_shape]
+  - kind: result_field
+    action: ci
+    name: 'failing[].conclusion'
+    source: 'docs/workflows/contracts-v2.md#facts'
+    tests: [contract_tests::facts::ci_shape]
+  - kind: result_field
+    action: ci
+    name: 'failing[].job_id'
+    source: 'docs/workflows/contracts-v2.md#facts'
+    tests: [contract_tests::facts::ci_shape]
+  - kind: result_field
+    action: ci
+    name: 'failing[].kind'
+    source: 'docs/workflows/contracts-v2.md#facts'
+    tests: [contract_tests::facts::ci_shape]
+  - kind: result_field
+    action: ci
+    name: 'failing[].log_excerpt'
+    source: 'docs/workflows/contracts-v2.md#facts'
+    tests: [contract_tests::facts::ci_shape]
+  - kind: result_field
+    action: ci
+    name: 'failing[].name'
+    source: 'docs/workflows/contracts-v2.md#facts'
+    tests: [contract_tests::facts::ci_shape]
+  - kind: result_field
+    action: ci
+    name: 'failing[].run_id'
+    source: 'docs/workflows/contracts-v2.md#facts'
+    tests: [contract_tests::facts::ci_shape]
+  - kind: result_field
+    action: ci
+    name: 'failing[].url'
+    source: 'docs/workflows/contracts-v2.md#facts'
+    tests: [contract_tests::facts::ci_shape]
+  - kind: result_field
+    action: ci
+    name: 'sha'
+    source: 'docs/workflows/contracts-v2.md#facts'
+    tests: [contract_tests::facts::ci_shape]
+  - kind: result_field
+    action: ci
+    name: 'state'
+    source: 'docs/workflows/contracts-v2.md#facts'
+    tests: [contract_tests::facts::ci_shape]
+  - kind: action
+    action: close_issue
+    name: 'close_issue'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::close_issue::closing_a_closed_issue_succeeds_and_keeps_the_first_reason, contract_tests::close_issue::replay_with_the_same_key_is_a_no_op, contract_tests::close_issue::transient_failure_then_retry_converges]
+  - kind: arg
+    action: close_issue
+    name: 'number'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::close_issue::number_selects_the_issue_and_result_is_empty]
+  - kind: arg
+    action: close_issue
+    name: 'reason'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::close_issue::reason_not_planned_closes_as_not_planned, contract_tests::close_issue::any_other_reason_closes_as_completed]
+  - kind: action
+    action: comment
+    name: 'comment'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::comment::same_key_posts_once, contract_tests::comment::different_keys_post_twice, contract_tests::comment::transient_failure_then_retry_converges, contract_tests::comment::defaults_to_the_issue_subject]
+  - kind: arg
+    action: comment
+    name: 'body'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::comment::body_is_required]
+  - kind: arg
+    action: comment
+    name: 'number'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::comment::number_and_on_select_the_target]
+  - kind: arg
+    action: comment
+    name: 'on'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::comment::number_and_on_select_the_target]
+  - kind: arg
+    action: comment
+    name: 'repo'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::comment::defaults_to_the_issue_subject]
+  - kind: result_field
+    action: comment
+    name: 'id'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::comment::result_is_id_and_url]
+  - kind: result_field
+    action: comment
+    name: 'url'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::comment::result_is_id_and_url]
+  - kind: action
     action: create_issues
     name: 'create_issues'
     source: 'docs/workflows/contracts-v2.md#kernel-actions'
@@ -88,3 +198,212 @@ entries:
     name: 'issues[].url'
     source: 'docs/workflows/contracts-v2.md#kernel-actions'
     tests: [contract_tests::create_issues::result_shape_and_order]
+  - kind: action
+    action: delete_branch
+    name: 'delete_branch'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::delete_branch::deleting_a_missing_branch_succeeds, contract_tests::delete_branch::replay_with_the_same_key_is_recorded_as_replayed, contract_tests::delete_branch::transient_failure_then_retry_converges]
+  - kind: arg
+    action: delete_branch
+    name: 'branch'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::delete_branch::branch_defaults_to_the_task_branch, contract_tests::delete_branch::branch_and_repo_are_passed_through]
+  - kind: arg
+    action: delete_branch
+    name: 'repo'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::delete_branch::branch_and_repo_are_passed_through]
+  - kind: action
+    action: dependencies
+    name: 'dependencies'
+    source: 'docs/workflows/contracts-v2.md#facts'
+    tests: [contract_tests::facts::dependencies_null_until_known, contract_tests::facts::dependencies_empty_list_once_known, contract_tests::facts::dependencies_reflect_blocked_by_edges, contract_tests::facts::dependencies_reflect_edges_recorded_by_create_issues]
+  - kind: result_field
+    action: dependencies
+    name: '[]'
+    source: 'docs/workflows/contracts-v2.md#facts'
+    tests: [contract_tests::facts::dependencies_reflect_blocked_by_edges, contract_tests::facts::dependencies_reflect_edges_recorded_by_create_issues]
+  - kind: action
+    action: merge_pull_request
+    name: 'merge_pull_request'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::merge_pull_request::merged_result_is_merged_and_sha, contract_tests::merge_pull_request::head_moved_is_refused, contract_tests::merge_pull_request::not_mergeable_is_refused_with_the_reason, contract_tests::merge_pull_request::same_key_replays_the_outcome_and_merges_once, contract_tests::merge_pull_request::transient_failure_then_retry_converges]
+  - kind: arg
+    action: merge_pull_request
+    name: 'body'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::merge_pull_request::title_body_and_number_are_passed_through]
+  - kind: arg
+    action: merge_pull_request
+    name: 'expected_head'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::merge_pull_request::expected_head_is_passed_through, contract_tests::merge_pull_request::head_comes_from_readiness_without_expected_head]
+  - kind: arg
+    action: merge_pull_request
+    name: 'number'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::merge_pull_request::title_body_and_number_are_passed_through]
+  - kind: arg
+    action: merge_pull_request
+    name: 'title'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::merge_pull_request::title_body_and_number_are_passed_through]
+  - kind: result_field
+    action: merge_pull_request
+    name: 'already'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::merge_pull_request::already_merged_reports_already]
+  - kind: result_field
+    action: merge_pull_request
+    name: 'merged'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::merge_pull_request::merged_result_is_merged_and_sha, contract_tests::merge_pull_request::already_merged_reports_already]
+  - kind: result_field
+    action: merge_pull_request
+    name: 'sha'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::merge_pull_request::merged_result_is_merged_and_sha]
+  - kind: action
+    action: mergeable
+    name: 'mergeable'
+    source: 'docs/workflows/contracts-v2.md#facts'
+    tests: [contract_tests::facts::mergeable_unknown_on_first_read, contract_tests::facts::mergeable_known_on_later_read, contract_tests::facts::mergeable_stays_unknown_when_seeded_none, contract_tests::facts::mergeable_null_without_pr]
+  - kind: result_field
+    action: mergeable
+    name: 'value'
+    source: 'docs/workflows/contracts-v2.md#facts'
+    tests: [contract_tests::facts::mergeable_known_on_later_read, contract_tests::facts::mergeable_unknown_on_first_read]
+  - kind: action
+    action: open_pull_request
+    name: 'open_pull_request'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::open_pull_request::same_key_opens_one_pull_request, contract_tests::open_pull_request::different_keys_open_distinct_pull_requests, contract_tests::open_pull_request::transient_failure_then_retry_converges]
+  - kind: arg
+    action: open_pull_request
+    name: 'base'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::open_pull_request::head_and_base_default_to_task_branch_and_default_branch, contract_tests::open_pull_request::title_body_head_base_are_passed_through]
+  - kind: arg
+    action: open_pull_request
+    name: 'body'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::open_pull_request::title_body_head_base_are_passed_through]
+  - kind: arg
+    action: open_pull_request
+    name: 'draft'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::open_pull_request::draft_and_repo_are_passed_through]
+  - kind: arg
+    action: open_pull_request
+    name: 'head'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::open_pull_request::head_and_base_default_to_task_branch_and_default_branch, contract_tests::open_pull_request::title_body_head_base_are_passed_through]
+  - kind: arg
+    action: open_pull_request
+    name: 'repo'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::open_pull_request::draft_and_repo_are_passed_through]
+  - kind: arg
+    action: open_pull_request
+    name: 'title'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::open_pull_request::title_body_head_base_are_passed_through]
+  - kind: result_field
+    action: open_pull_request
+    name: 'kind'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::open_pull_request::result_shape_links_the_subject]
+  - kind: result_field
+    action: open_pull_request
+    name: 'number'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::open_pull_request::result_shape_links_the_subject]
+  - kind: result_field
+    action: open_pull_request
+    name: 'repo'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::open_pull_request::result_shape_links_the_subject]
+  - kind: result_field
+    action: open_pull_request
+    name: 'subject'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::open_pull_request::result_shape_links_the_subject]
+  - kind: result_field
+    action: open_pull_request
+    name: 'title'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::open_pull_request::result_shape_links_the_subject]
+  - kind: result_field
+    action: open_pull_request
+    name: 'url'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::open_pull_request::result_shape_links_the_subject]
+  - kind: action
+    action: read_file
+    name: 'read_file'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::read_file::reads_are_idempotent_and_cause_no_mutation, contract_tests::read_file::transient_failure_then_retry_converges, contract_tests::read_file::a_missing_file_has_null_content]
+  - kind: arg
+    action: read_file
+    name: 'path'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::read_file::path_is_required]
+  - kind: arg
+    action: read_file
+    name: 'ref'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::read_file::ref_defaults_to_the_task_default_branch]
+  - kind: arg
+    action: read_file
+    name: 'repo'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::read_file::repo_is_passed_through]
+  - kind: result_field
+    action: read_file
+    name: 'content'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::read_file::result_is_the_content, contract_tests::read_file::a_missing_file_has_null_content]
+  - kind: action
+    action: reviews
+    name: 'reviews'
+    source: 'docs/workflows/contracts-v2.md#facts'
+    tests: [contract_tests::facts::reviews_is_the_list, contract_tests::facts::reviews_empty_without_pr]
+  - kind: result_field
+    action: reviews
+    name: '[].author'
+    source: 'docs/workflows/contracts-v2.md#facts'
+    tests: [contract_tests::facts::reviews_is_the_list]
+  - kind: result_field
+    action: reviews
+    name: '[].body'
+    source: 'docs/workflows/contracts-v2.md#facts'
+    tests: [contract_tests::facts::reviews_is_the_list]
+  - kind: result_field
+    action: reviews
+    name: '[].state'
+    source: 'docs/workflows/contracts-v2.md#facts'
+    tests: [contract_tests::facts::reviews_is_the_list]
+  - kind: action
+    action: update_branch
+    name: 'update_branch'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::update_branch::result_is_updated_true, contract_tests::update_branch::refused_outcome_is_refused_with_the_reason, contract_tests::update_branch::calling_it_again_succeeds, contract_tests::update_branch::transient_failure_then_retry_succeeds]
+  - kind: arg
+    action: update_branch
+    name: 'expected_head'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::update_branch::expected_head_is_used_when_given, contract_tests::update_branch::head_comes_from_readiness_without_expected_head]
+  - kind: arg
+    action: update_branch
+    name: 'number'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::update_branch::number_selects_the_pull_request]
+  - kind: result_field
+    action: update_branch
+    name: 'updated'
+    source: 'docs/workflows/contracts-v2.md#kernel-actions'
+    tests: [contract_tests::update_branch::result_is_updated_true]
+gaps:
+  - {kind: arg, action: open_pull_request, name: existing_pull_request_same_head_base, reason: 'FakeConnector keys pull request creation on the idempotency key only; it does not return an existing pull request for the same head and base as the provider does, so only the same-key retry is tested'}
+  - {kind: arg, action: update_branch, name: idempotency_key, reason: 'FakeConnector::update_branch takes no idempotency key; only "calling it again succeeds" is asserted'}
+  - {kind: result_field, action: read_file, name: content_of_missing_file, reason: 'a missing file gives content null (get_file returns None); docs do not say whether that should instead be a refusal'}

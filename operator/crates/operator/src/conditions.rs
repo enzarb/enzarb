@@ -2,7 +2,7 @@
 
 use enzarb_crds::upstream::sandbox::Sandbox;
 use enzarb_crds::{
-    COND_READY, COND_RESOURCES_READY, COND_SANDBOX_CHANGE_PENDING, COND_SANDBOX_READY,
+    COND_READY, COND_RESOURCES_READY, COND_SANDBOX_CHANGE_PENDING, COND_SANDBOX_READY, LastRoll,
     PendingChange, REASON_INVALID_SPEC, REASON_RETRYING,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
@@ -121,6 +121,8 @@ pub struct RollPending {
     pub message: String,
     /// Time left until the drain timeout applies the change.
     pub remaining: std::time::Duration,
+    /// Set when this step deleted the pod: becomes `status.lastRoll`.
+    pub rolled: Option<LastRoll>,
 }
 
 /// The informational `SandboxChangePending` condition, appended after the checklist conditions
@@ -382,6 +384,7 @@ mod tests {
             },
             message: format!("generation 2: {reason}"),
             remaining: std::time::Duration::from_secs(60),
+            rolled: None,
         }
     }
 

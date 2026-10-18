@@ -1,11 +1,11 @@
 //! Applies the desired objects (see `desired`) and records status (see `conditions`).
 
-use crate::conditions::{self, Check, Observed};
+use crate::conditions::{self, Check, Observed, RollPending};
 use crate::desired::{self, Defaults, FIELD_MANAGER, Ownership};
 use crate::roll::{self, DEFER_POLL, Outcome};
 use enzarb_crds::upstream::sandbox::Sandbox;
 use enzarb_crds::{
-    COND_SANDBOX_CHANGE_PENDING, Project, ProjectStatus, REASON_WORKSPACE_RESIZE_FAILED,
+    COND_SANDBOX_CHANGE_PENDING, LastRoll, Project, ProjectStatus, REASON_WORKSPACE_RESIZE_FAILED,
     REASON_WORKSPACE_RESIZING,
 };
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Secret};
@@ -386,6 +386,8 @@ async fn write_status(
     let generation = p.metadata.generation.unwrap_or_default();
     let previous = std::mem::take(&mut status.conditions);
     status.conditions = conditions::compute(generation, obs, &previous, &now);
+    // Only a newer roll replaces the last one; every other outcome keeps it.
+    status.last_roll = next_last_roll(p.status.as_ref().and_then(|s| s.last_roll.as_ref()), roll);
     match roll {
         Outcome::Clear => status.pending_change = None,
         Outcome::Pending(r) => {
@@ -426,6 +428,16 @@ async fn write_status(
     )
     .await?;
     Ok(())
+}
+
+/// Only a roll in this step replaces `status.lastRoll`; every other outcome keeps it.
+fn next_last_roll(old: Option<&LastRoll>, roll: &Outcome) -> Option<LastRoll> {
+    match roll {
+        Outcome::Pending(RollPending {
+            rolled: Some(r), ..
+        }) => Some(r.clone()),
+        _ => old.cloned(),
+    }
 }
 
 /// Whether a check says an existing object cannot be reused (see `blocked`).
@@ -501,6 +513,71 @@ fn classify_pvc_error(what: &str, name: &str, e: &kube::Error) -> Option<Check> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn t(s: i64) -> Time {
+        Time(k8s_openapi::jiff::Timestamp::from_second(s).unwrap())
+    }
+
+    fn lr(at: i64) -> LastRoll {
+        LastRoll {
+            at: t(at),
+            since: Some(t(at - 60)),
+            reason: "image/sandbox: a -> b".into(),
+            image: "img:1".into(),
+        }
+    }
+
+    fn pending(rolled: Option<LastRoll>) -> Outcome {
+        Outcome::Pending(RollPending {
+            change: enzarb_crds::PendingChange {
+                generation: 1,
+                since: t(0),
+                deadline: None,
+                reason: "image/sandbox: a -> b".into(),
+            },
+            message: String::new(),
+            remaining: Duration::from_secs(1),
+            rolled,
+        })
+    }
+
+    #[test]
+    fn a_roll_sets_last_roll_and_replaces_the_old_one() {
+        let old = lr(100);
+        let new = lr(500);
+        assert_eq!(
+            next_last_roll(None, &pending(Some(new.clone()))),
+            Some(new.clone())
+        );
+        assert_eq!(
+            next_last_roll(Some(&old), &pending(Some(new.clone()))),
+            Some(new)
+        );
+    }
+
+    #[test]
+    fn deferral_hold_and_clear_keep_last_roll() {
+        let old = lr(100);
+        assert_eq!(next_last_roll(None, &pending(None)), None);
+        for o in [pending(None), Outcome::Keep, Outcome::Clear] {
+            assert_eq!(next_last_roll(Some(&old), &o), Some(old.clone()));
+        }
+    }
+
+    #[test]
+    fn last_roll_copies_the_pending_change() {
+        let c = enzarb_crds::PendingChange {
+            generation: 3,
+            since: t(10),
+            deadline: Some(t(70)),
+            reason: "image/sandbox: a -> b".into(),
+        };
+        let r = roll::last_roll(&c, &t(40), "img:2".into());
+        assert_eq!(r.at, t(40));
+        assert_eq!(r.since, Some(t(10)));
+        assert_eq!(r.reason, c.reason);
+        assert_eq!(r.image, "img:2");
+    }
 
     fn api_err(code: u16, message: &str) -> kube::Error {
         kube::Error::Api(Box::new(

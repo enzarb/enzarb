@@ -14,4 +14,4 @@ issue:
     Nothing was cancelled or restarted; this issue only reports what the platform check read.
   labels: [platform, platform-failure]
 when:
-  platform: {fact: sandbox.mem_pct, op: gt, value: 90}
+  platform: {fact: sandbox.mem_working_set_pct, op: gt, value: 90}

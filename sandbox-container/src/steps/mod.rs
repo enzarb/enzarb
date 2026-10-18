@@ -18,7 +18,10 @@
 //! the step with the fresh secrets (agent: `session/load` of the saved
 //! session plus a short "continue" turn; command: the command runs again).
 //! A step stopped by `step_stop` in the same process lifetime resumes with
-//! `step_resume` alone.
+//! `step_resume` alone. A finished run whose `step_finished` carried an
+//! `environment` failure (`disk_full`, `oom`) also resumes on `step_start` with
+//! the same `run_id`, in the same workspace and agent session; any other
+//! finished run is replayed.
 
 pub mod agent;
 pub mod environment;
@@ -314,6 +317,14 @@ pub struct StepManager {
     inner: Arc<Inner>,
 }
 
+/// A run `step_start` continues rather than replays: interrupted, or finished by an
+/// environment failure.
+fn resumable(g: &RunInner) -> bool {
+    g.phase == StepPhase::Interrupted
+        || (g.phase == StepPhase::Finished
+            && g.finished.as_ref().is_some_and(|f| f.environment.is_some()))
+}
+
 impl StepManager {
     pub fn new(cfg: Config, reaper: Arc<Reaper>, locks: RepoLocks) -> Self {
         Self {
@@ -444,10 +455,13 @@ impl StepManager {
         let existing = self.get(&id);
         let run = match existing {
             Some(run) => {
-                let phase = run.inner.lock().unwrap().phase;
+                let (phase, resumable) = {
+                    let g = run.inner.lock().unwrap();
+                    (g.phase, resumable(&g))
+                };
                 // An existing run is subscribed by `step_status`, which replays the logged events
                 // first, so the starting session sees them in order.
-                if phase != StepPhase::Interrupted {
+                if !resumable {
                     let _ = session.accept_step(&id, phase, true);
                     return;
                 }
@@ -496,7 +510,10 @@ impl StepManager {
         {
             let mut g = run.inner.lock().unwrap();
             g.phase = StepPhase::Running;
-            g.finished = None;
+            if g.finished.take().is_some() || resume {
+                // The old result must not be served again, not even after a restart.
+                let _ = std::fs::remove_file(run.dir.join("finished.json"));
+            }
             g.secrets = secret_forms(&start.secret_values());
             g.start = Some(start.clone());
             g.control = Some(Control {
@@ -896,6 +913,7 @@ impl Inner {
         let id = &start.run_id;
         *run.evidence.lock().unwrap() = environment::Evidence {
             oom_before: environment::oom_kill_count(&self.memory_events()),
+            pressure_start: environment::system_pressure(),
             ..environment::Evidence::default()
         };
         run.emit(
@@ -924,6 +942,7 @@ impl Inner {
                     if *ctl.cancel.borrow() {
                         return finished(id, exit::INTERRUPTED, None);
                     }
+                    run.evidence.lock().unwrap().phase = Some(environment::Phase::Fetch);
                     return finished(id, exit::FAILURE, e.as_str().map(String::from));
                 }
             }
@@ -1044,6 +1063,7 @@ impl Inner {
             let ex = if *ctl.cancel.borrow() {
                 exit::INTERRUPTED
             } else {
+                run.evidence.lock().unwrap().phase = Some(environment::Phase::Install);
                 exit::FAILURE
             };
             return finished(id, ex, Some(e));
@@ -1087,6 +1107,10 @@ impl Inner {
                 Ok(o) => {
                     ev.text = o.stderr.clone();
                     ev.we_killed = o.stop.is_some();
+                    ev.timed_out = o.stop == Some(exec::Stop::TimedOut);
+                    if ev.timed_out {
+                        ev.pressure_kill = environment::system_pressure();
+                    }
                     ev.sigkilled = matches!(
                         o.status,
                         Some(ExitStatus::Signaled(9) | ExitStatus::Exited(137))
@@ -1139,6 +1163,7 @@ impl Inner {
             let ex = if *ctl.cancel.borrow() {
                 exit::INTERRUPTED
             } else {
+                run.evidence.lock().unwrap().phase = Some(environment::Phase::Install);
                 exit::FAILURE
             };
             return finished(id, ex, Some(e));
@@ -1252,7 +1277,7 @@ impl Inner {
         fin
     }
 
-    /// Disk full or OOM behind a failed step (`environment::classify`).
+    /// Disk full, OOM, toolchain/network or load behind a failed step (`environment::classify`).
     fn classify(
         &self,
         run: &Arc<Run>,

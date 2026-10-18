@@ -368,6 +368,7 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
                 cpu_system_usec: Some(2_345_678),
                 memory_bytes: Some(268_435_456),
                 memory_limit_bytes: Some(1_073_741_824),
+                memory_inactive_file_bytes: Some(67_108_864),
                 io_read_bytes: Some(1024),
                 io_write_bytes: Some(2048),
                 storage_used_bytes: Some(5_000_000_000),

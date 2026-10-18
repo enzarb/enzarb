@@ -55,7 +55,7 @@ Grants (in the migration, re-asserted each tick by `engine.apply_grants()`): `en
 - **Evaluate** is pure (checks + a snapshot of task facts, clocks, relations, commands and platform facts → desired findings). **Reconcile** is the only writer and writes `engine.findings` (and the fact refresh keeps `facts.unknown_refreshes`). When a finding opens and its check has an `issue:`, reconcile also inserts one `engine.jobs` row of kind `file_issue` (`task_id` null for platform scope), idempotent on `finding:<finding key>`, in the same transaction. Tasks, projection, events, transitions, timers, step runs and other jobs are never written.
 - A finding is raised when the condition held on two consecutive passes, refreshed while it holds, and cleared (`cleared_at`) when it stops or the task ends. A check whose platform fact is unknown neither raises nor clears.
 - A finding never cancels, stops, restarts, nudges or times out anything, and sends no notification.
-- Platform facts (`workflow_run.status`, `chart.deploy_state`, `sandbox.disk_pct`, `sandbox.mem_pct`, `project.pending_change`) come from a provider. Wired: `sandbox.disk_pct` (latest `sandbox_stats` sample, at most 10 minutes old) and `project.pending_change`. Unwired and always unknown: `chart.deploy_state`, `workflow_run.status` (the connector has no workflow run call) and `sandbox.mem_pct` (samples carry no memory limit).
+- Platform facts (`workflow_run.status`, `chart.deploy_state`, `sandbox.disk_pct`, `sandbox.mem_working_set_pct`, `project.pending_change`) come from a provider. Wired: `sandbox.disk_pct` (latest `sandbox_stats` sample, at most 10 minutes old) and `project.pending_change`. Unwired and always unknown: `chart.deploy_state`, `workflow_run.status` (the connector has no workflow run call) and `sandbox.mem_working_set_pct` (samples carry no memory limit).
 - The change stream does not push when a finding is raised or cleared; it shows on the next read or projection change.
 
 ## Sandbox protocol (proto)
@@ -81,7 +81,7 @@ Defined in `proto/crates/enzarb-proto/src/step.rs` and mirrored in `proto/ts`; f
   - `read_file`, `resolve_ref`.
 - **Facts:**
   - `ci` `{sha, state, failing: [{name, kind, url, conclusion, log_excerpt, actionable, job_id?, run_id?}]}` (ignore regex `ENZARB_CI_IGNORE_CHECKS`);
-  - `reviews`, `mergeable`, `merged`, `git`, `dependencies`; `contained_in_tag` (see Facts above).
+  - `reviews` (the list `[{author, state, body}]`: latest review per author, lowercase state), `mergeable` (`null` until GitHub has computed it), `merged`, `git`, `dependencies`; `contained_in_tag` (see Facts above).
 - **Instance:** task documents carry `instance: {bot: {login, handle}, url}` from `ENZARB_BOT_LOGIN`, `ENZARB_BOT_HANDLE`, `ENZARB_PUBLIC_URL`; a comment's `mentioned` is recomputed with `ENZARB_BOT_HANDLE`.
 - **Auto-upgrade:** the definition is re-resolved (with the binding's `with:` params) at each wait and before each step (also when the event finishes the step or action in flight); a running step keeps its definition.
 

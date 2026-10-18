@@ -1,6 +1,6 @@
 //! On-demand sandbox stats snapshot (`stats_request` -> `stats`).
 //!
-//! Raw cgroup v2 counters (`cpu.stat`, `memory.current`, `memory.max`, `io.stat`) and used
+//! Raw cgroup v2 counters (`cpu.stat`, `memory.current`, `memory.max`, `memory.stat`, `io.stat`) and used
 //! storage (statvfs) with a timestamp. Nothing is sampled in the background:
 //! every request reads the files once. A missing or oddly formatted file makes
 //! its fields absent; it is never an error.
@@ -89,6 +89,14 @@ pub fn parse_memory_current(text: &str) -> Option<u64> {
     text.trim().parse().ok()
 }
 
+/// Parse `inactive_file` out of `memory.stat` (`key value` lines).
+pub fn parse_memory_stat_inactive_file(text: &str) -> Option<u64> {
+    text.lines().find_map(|l| {
+        let (k, v) = l.split_once(' ')?;
+        (k == "inactive_file").then(|| v.trim().parse().ok())?
+    })
+}
+
 /// Parse `io.stat` into `(read_bytes, write_bytes)`, each summed over all
 /// device lines (`8:0 rbytes=1 wbytes=2 rios=3 ...`). A side is `None` when no
 /// line carried a valid value for it; unparsable tokens are ignored.
@@ -135,6 +143,9 @@ pub fn snapshot(src: &dyn StatsSource) -> SandboxStats {
         memory_limit_bytes: src
             .read_file("memory.max")
             .and_then(|t| parse_memory_current(&t)),
+        memory_inactive_file_bytes: src
+            .read_file("memory.stat")
+            .and_then(|t| parse_memory_stat_inactive_file(&t)),
         io_read_bytes,
         io_write_bytes,
         storage_used_bytes: storage.map(|(used, _)| used),
@@ -198,6 +209,21 @@ mod tests {
     }
 
     #[test]
+    fn memory_stat_inactive_file() {
+        assert_eq!(
+            parse_memory_stat_inactive_file("anon 1\ninactive_file 512\nactive_file 9\n"),
+            Some(512)
+        );
+        // `total_inactive_file` (cgroup v1 spelling) is not `inactive_file`.
+        assert_eq!(
+            parse_memory_stat_inactive_file("total_inactive_file 5\n"),
+            None
+        );
+        assert_eq!(parse_memory_stat_inactive_file("inactive_file x\n"), None);
+        assert_eq!(parse_memory_stat_inactive_file(""), None);
+    }
+
+    #[test]
     fn memory_max_forms() {
         // The limit shares the parser: a number, or `max` (unlimited) and junk as `None`.
         assert_eq!(parse_memory_current("1073741824\n"), Some(1_073_741_824));
@@ -231,6 +257,8 @@ mod tests {
         f.files.insert("cpu.stat", CPU);
         f.files.insert("memory.current", "2048\n");
         f.files.insert("memory.max", "4096\n");
+        f.files
+            .insert("memory.stat", "anon 1\ninactive_file 512\nactive_file 9\n");
         f.files.insert("io.stat", "8:0 rbytes=10 wbytes=20\n");
         f.statfs = Some((30, 100));
         assert_eq!(
@@ -242,6 +270,7 @@ mod tests {
                 cpu_system_usec: Some(300),
                 memory_bytes: Some(2048),
                 memory_limit_bytes: Some(4096),
+                memory_inactive_file_bytes: Some(512),
                 io_read_bytes: Some(10),
                 io_write_bytes: Some(20),
                 storage_used_bytes: Some(30),

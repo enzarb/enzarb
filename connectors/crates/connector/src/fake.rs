@@ -202,6 +202,7 @@ struct State {
     reviews: HashMap<WorkItemKey, serde_json::Value>,
     contains: HashMap<(RepoKey, String, String), bool>,
     workflow_runs: HashMap<(RepoKey, String, String), WorkflowRunInfo>,
+    default_branches: HashMap<RepoKey, String>,
 }
 
 /// Records every call and keeps simple in-memory state. Cheap to share by
@@ -265,6 +266,11 @@ impl FakeConnector {
         self.st()
             .workflow_runs
             .insert((repo, workflow.to_string(), branch.to_string()), run);
+    }
+
+    /// The default branch `latest_workflow_run(.., None)` resolves to (`main` when unset).
+    pub fn set_default_branch(&self, repo: RepoKey, branch: &str) {
+        self.st().default_branches.insert(repo, branch.to_string());
     }
 
     /// Current labels set through `add_label`/`remove_label`.
@@ -1234,15 +1240,19 @@ impl Connector for FakeConnector {
         &self,
         repo: &RepoKey,
         workflow: &str,
-        branch: &str,
+        branch: Option<&str>,
     ) -> Result<Option<WorkflowRunInfo>> {
         let st = self.generic(
             "latest_workflow_run",
             serde_json::json!({"repo": repo.to_string(), "workflow": workflow, "branch": branch}),
         )?;
+        let branch = branch
+            .map(str::to_string)
+            .or_else(|| st.default_branches.get(repo).cloned())
+            .unwrap_or_else(|| "main".to_string());
         Ok(st
             .workflow_runs
-            .get(&(repo.clone(), workflow.to_string(), branch.to_string()))
+            .get(&(repo.clone(), workflow.to_string(), branch))
             .cloned())
     }
 

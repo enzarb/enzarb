@@ -1,8 +1,29 @@
-import type { ChartRollout } from '#lib/about-types.ts';
+import type { ChartRelease, ChartRollout } from '#lib/about-types.ts';
 
 export const UPDATER_STATUS_TIMEOUT_MS = 2_000;
 /** The updater Service the chart always creates (enzarb-updater, port 8080 by default). */
 export const DEFAULT_UPDATER_STATUS_URL = 'http://enzarb-updater:8080/status';
+
+const ts = (v: unknown) => typeof v === 'string' && !Number.isNaN(Date.parse(v));
+
+/** Entries without a version or a valid time are dropped; anything but a list is empty. */
+function parseReleases(v: unknown): ChartRelease[] {
+	if (!Array.isArray(v)) return [];
+	return v.flatMap((e: unknown) => {
+		const r = (typeof e === 'object' && e !== null ? e : {}) as Record<string, unknown>;
+		return typeof r.version === 'string' && r.version && ts(r.deployedAt)
+			? [
+					{
+						version: r.version,
+						deployedAt: r.deployedAt as string,
+						...(typeof r.sandboxImageVersion === 'string' && r.sandboxImageVersion
+							? { sandboxImageVersion: r.sandboxImageVersion }
+							: {})
+					}
+				]
+			: [];
+	});
+}
 
 const str = (v: unknown) => (typeof v === 'string' && v ? v : null);
 
@@ -27,7 +48,8 @@ export async function fetchChartRollout(
 			installed: str(b.installed),
 			desired: str(b.desired),
 			latest: str(b.latest),
-			stuck: b.stuck
+			stuck: b.stuck,
+			releases: parseReleases(b.releases)
 		};
 	} catch {
 		return null;

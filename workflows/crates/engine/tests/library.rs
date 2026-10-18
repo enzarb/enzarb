@@ -1235,6 +1235,74 @@ async fn idle_external_wait_files_one_issue() {
     assert_ne!(young, idle);
 }
 
+/// Sets the body of the task's source issue, as the reducer stores it.
+async fn set_issue_body(h: &H, task: i64, body: &str) {
+    sqlx::query("UPDATE engine.tasks SET state = $2 WHERE id = $1")
+        .bind(task)
+        .bind(json!({"doc": {"subjects": {"issue": {"body": body}}}}))
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+}
+
+async fn age_task(h: &H, task: i64) {
+    sqlx::query("UPDATE engine.tasks SET created_at = now() - interval '2 days' WHERE id = $1")
+        .bind(task)
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+}
+
+/// The task born from a finding's issue gets its own finding, but no second issue.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn finding_issue_does_not_file_another() {
+    let Some(h) = start(false).await else {
+        return;
+    };
+    let idle = seed_task(&h, "merge/wait", "external", None).await;
+    age_task(&h, idle).await;
+    passes(&h, 4).await;
+    run_jobs(&h).await;
+    let first = format!("finding:external-idle:{idle}");
+    assert_eq!(issue_jobs(&h).await.len(), 1);
+    let child = seed_task(&h, "merge/wait", "external", None).await;
+    age_task(&h, child).await;
+    let marker = enzarb_connector::file_issue::file_issue_key(APP, &first);
+    set_issue_body(
+        &h,
+        child,
+        &format!("Idle.\n\n<!-- enzarb:idem:{marker} -->"),
+    )
+    .await;
+    passes(&h, 4).await;
+    run_jobs(&h).await;
+    assert_eq!(open_checks(&h).await, ["external-idle", "external-idle"]);
+    assert_eq!(
+        issue_jobs(&h).await,
+        [(first, Some("created".into()))],
+        "no issue for task {child}"
+    );
+}
+
+/// Control: an issue without the `file_issue` marker (none, or an epic's) still files.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn issue_not_from_a_finding_still_files() {
+    let Some(h) = start(false).await else {
+        return;
+    };
+    let a = seed_task(&h, "merge/wait", "external", None).await;
+    let b = seed_task(&h, "merge/wait", "external", None).await;
+    let c = seed_task(&h, "merge/wait", "external", None).await;
+    for t in [a, b, c] {
+        age_task(&h, t).await;
+    }
+    set_issue_body(&h, b, "A plain issue").await;
+    set_issue_body(&h, c, "<!-- enzarb:idem:epic-1-a -->").await;
+    passes(&h, 4).await;
+    run_jobs(&h).await;
+    assert_eq!(issue_jobs(&h).await.len(), 3);
+}
+
 /// A fact that stays unknown across refreshes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fact_unknown_across_refreshes_files_one_issue() {
@@ -1372,7 +1440,7 @@ async fn nearly_full_workspace_and_high_memory_are_separate_warnings() {
         return;
     };
     f.set("p", F::SandboxDiskPct, Fact::Num(93.0));
-    f.set("p", F::SandboxMemPct, Fact::Num(95.0));
+    f.set("p", F::SandboxMemWorkingSetPct, Fact::Num(95.0));
     passes(&h, 2).await;
     run_jobs(&h).await;
     assert_eq!(
@@ -1394,7 +1462,7 @@ async fn undeployed_chart_files_one_issue() {
     let Some((h, f)) = platform_harness().await else {
         return;
     };
-    f.set("p", F::ChartDeployState, text("pending"));
+    f.set("p", F::ChartDeployState, text("stuck"));
     let (f1, f2) = (f.clone(), f.clone());
     assert_one_finding_one_issue(
         &h,
@@ -1434,9 +1502,10 @@ async fn healthy_platform_facts_file_nothing() {
     };
     f.set_arg("p", F::WorkflowRunStatus, RELEASE, text("success"));
     f.set_arg("p", F::WorkflowRunStatus, REBUILD, text("success"));
-    f.set("p", F::ChartDeployState, text("deployed"));
+    // A rollout in progress is normal: `pending` files nothing.
+    f.set("p", F::ChartDeployState, text("pending"));
     f.set("p", F::SandboxDiskPct, Fact::Num(35.0));
-    f.set("p", F::SandboxMemPct, Fact::Num(50.0));
+    f.set("p", F::SandboxMemWorkingSetPct, Fact::Num(50.0));
     f.set("p", F::ProjectPendingChange, Fact::Bool(false));
     passes(&h, 4).await;
     run_jobs(&h).await;
@@ -1470,10 +1539,12 @@ async fn db_facts_read_the_workflow_run_and_the_memory_percentage() {
     let Some(h) = start(false).await else {
         return;
     };
+    // The run is read from the repository's default branch, not a hard-coded `main`.
+    h.gh.set_default_branch(rk("enzarb/enzarb"), "trunk");
     h.gh.set_workflow_run(
         rk("enzarb/enzarb"),
         "release.yml",
-        "main",
+        "trunk",
         enzarb_connector::WorkflowRunInfo {
             id: 5,
             conclusion: "failure".into(),
@@ -1511,11 +1582,17 @@ async fn db_facts_read_the_workflow_run_and_the_memory_percentage() {
     engine::db::insert_sandbox_stats(&h.db.pool, "p", "pod", &stat(now - 3000, Some(50), None))
         .await
         .unwrap();
-    assert_eq!(facts.get("p", F::SandboxMemPct).await, Fact::Unknown);
+    assert_eq!(
+        facts.get("p", F::SandboxMemWorkingSetPct).await,
+        Fact::Unknown
+    );
     engine::db::insert_sandbox_stats(&h.db.pool, "p", "pod", &stat(now - 2000, Some(50), Some(0)))
         .await
         .unwrap();
-    assert_eq!(facts.get("p", F::SandboxMemPct).await, Fact::Unknown);
+    assert_eq!(
+        facts.get("p", F::SandboxMemWorkingSetPct).await,
+        Fact::Unknown
+    );
     engine::db::insert_sandbox_stats(
         &h.db.pool,
         "p",
@@ -1524,5 +1601,27 @@ async fn db_facts_read_the_workflow_run_and_the_memory_percentage() {
     )
     .await
     .unwrap();
-    assert_eq!(facts.get("p", F::SandboxMemPct).await, Fact::Num(90.0));
+    assert_eq!(
+        facts.get("p", F::SandboxMemWorkingSetPct).await,
+        Fact::Num(90.0)
+    );
+    // Page cache (`inactive_file`) is not counted: 900 used, 800 of it reclaimable, of 1000.
+    engine::db::insert_sandbox_stats(
+        &h.db.pool,
+        "p",
+        "pod",
+        &enzarb_proto::SandboxStats {
+            ts_ms: now,
+            memory_bytes: Some(900),
+            memory_limit_bytes: Some(1000),
+            memory_inactive_file_bytes: Some(800),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        facts.get("p", F::SandboxMemWorkingSetPct).await,
+        Fact::Num(10.0)
+    );
 }

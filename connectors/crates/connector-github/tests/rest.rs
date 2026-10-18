@@ -2533,7 +2533,7 @@ async fn latest_run_with(
         .mount(&server)
         .await;
     let got = connector(&server)
-        .latest_workflow_run(&repo(), "release.yml", "main")
+        .latest_workflow_run(&repo(), "release.yml", Some("main"))
         .await;
     let query = server
         .received_requests()
@@ -2577,4 +2577,32 @@ async fn latest_workflow_run_none_without_runs_or_workflow() {
     assert_eq!(got.unwrap(), None);
     let (got, _) = latest_run_with(ResponseTemplate::new(500)).await;
     assert!(got.is_err());
+}
+
+#[tokio::test]
+async fn latest_workflow_run_without_branch_uses_the_default_branch() {
+    let server = MockServer::start().await;
+    mount_auth(&server, 3600, 1, 1).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/enzarb/enzarb-ui"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"default_branch": "trunk"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/repos/enzarb/enzarb-ui/actions/workflows/release.yml/runs",
+        ))
+        .and(wiremock::matchers::query_param("branch", "trunk"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "total_count": 1,
+            "workflow_runs": [{"id": 5, "status": "completed", "conclusion": "success"}]
+        })))
+        .mount(&server)
+        .await;
+    let run = connector(&server)
+        .latest_workflow_run(&repo(), "release.yml", None)
+        .await
+        .unwrap()
+        .expect("a run");
+    assert_eq!(run.id, 5);
 }

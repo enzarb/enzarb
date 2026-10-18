@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use enzarb_connector::file_issue::has_file_issue_marker;
 use enzarb_connector::{Connector, RepoKey};
 use enzarb_flow::format::{
     CheckFile, CheckScope, CmpOp, FindingKind, IssueSpec, PlatformCmp, PlatformFactName, Severity,
@@ -273,7 +274,7 @@ impl DbPlatformFacts {
             return Fact::Unknown;
         };
         let repo = RepoKey::new("github", owner, name);
-        let fact = match connector.latest_workflow_run(&repo, file, "main").await {
+        let fact = match connector.latest_workflow_run(&repo, file, None).await {
             Ok(Some(run)) => Fact::Text(run.conclusion),
             Ok(None) => Fact::Unknown,
             Err(e) => {
@@ -322,10 +323,13 @@ impl PlatformFacts for DbPlatformFacts {
                     _ => Fact::Unknown,
                 }
             }
-            PlatformFactName::SandboxMemPct => {
-                // Unknown without a limit (an unlimited cgroup or an older sandbox).
+            PlatformFactName::SandboxMemWorkingSetPct => {
+                // The working set (`memory.current` less the reclaimable `inactive_file` page
+                // cache) over the limit. Unknown without a limit (an unlimited cgroup or an
+                // older sandbox); a sandbox not reporting `inactive_file` counts it as 0.
                 let row: Result<Option<(i64, i64)>, _> = sqlx::query_as(
-                    "SELECT memory_bytes, memory_limit_bytes FROM engine.sandbox_stats
+                    "SELECT GREATEST(memory_bytes - COALESCE(memory_inactive_file_bytes, 0), 0),
+                            memory_limit_bytes FROM engine.sandbox_stats
                      WHERE project = $1 AND at > now() - make_interval(secs => $2)
                        AND memory_bytes IS NOT NULL AND memory_limit_bytes > 0
                      ORDER BY at DESC LIMIT 1",
@@ -380,6 +384,9 @@ pub struct TaskSnap {
     pub last_event_at: DateTime<Utc>,
     /// The last step activity, else the task's creation. A running step counts as `now`.
     pub last_step_at: DateTime<Utc>,
+    /// The task's own source issue was filed by a finding (it carries the `file_issue` marker).
+    /// Findings on it are recorded but never file another issue (ADR-0024).
+    pub issue_from_finding: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -543,7 +550,13 @@ impl Cx<'_> {
                 kind: c.kind,
                 severity: c.severity,
                 text: self.render(&c.text),
-                issue: c.issue.as_ref().map(|i| self.render_issue(i, &key)),
+                // A task born from a finding's issue must not file another one: that loops
+                // (finding -> issue -> task -> finding -> ...). The finding is still recorded.
+                issue: c
+                    .issue
+                    .as_ref()
+                    .filter(|_| !self.task.is_some_and(|t| t.issue_from_finding))
+                    .map(|i| self.render_issue(i, &key)),
                 key,
             });
         }
@@ -949,7 +962,8 @@ pub async fn load_tasks(pool: &PgPool, projects: &[String]) -> Result<Vec<TaskSn
                 c.at, c.name,
                 (SELECT max(x.at) FROM engine.transitions x
                  WHERE x.task_id = t.id
-                   AND (x.from_state IS DISTINCT FROM x.to_state OR x.effects <> '[]'::jsonb))
+                   AND (x.from_state IS DISTINCT FROM x.to_state OR x.effects <> '[]'::jsonb)),
+                t.state #>> '{doc,subjects,issue,body}'
          FROM engine.tasks t LEFT JOIN engine.projection p ON p.task_id = t.id
          LEFT JOIN LATERAL (
              SELECT e.received_at AS at,
@@ -986,6 +1000,9 @@ pub async fn load_tasks(pool: &PgPool, projects: &[String]) -> Result<Vec<TaskSn
             last_handled_at: r.get(10),
             last_event_at: r.get(5),
             last_step_at: r.get(6),
+            issue_from_finding: r
+                .get::<Option<String>, _>(11)
+                .is_some_and(|b| has_file_issue_marker(&b)),
         })
         .collect();
     let ids: Vec<i64> = tasks.iter().map(|t| t.id).collect();
@@ -1083,6 +1100,7 @@ mod tests {
             last_handled_at: None,
             last_event_at: now() - chrono::Duration::hours(2),
             last_step_at: now() - chrono::Duration::hours(3),
+            issue_from_finding: false,
         }
     }
 
@@ -1248,6 +1266,24 @@ mod tests {
     }
 
     #[test]
+    fn issue_from_a_finding_is_not_filed_again() {
+        let mut c = check(json!({"waiting_on": "external"}));
+        c.issue = Some(IssueSpec {
+            title: "t".into(),
+            body: "b".into(),
+            labels: vec![],
+            repo: None,
+        });
+        let mut t = task(7);
+        let e = evaluate(std::slice::from_ref(&c), &snap(vec![t.clone()]), now());
+        assert!(e.desired[0].issue.is_some());
+        t.issue_from_finding = true;
+        let e = evaluate(std::slice::from_ref(&c), &snap(vec![t]), now());
+        assert_eq!(e.desired.len(), 1);
+        assert!(e.desired[0].issue.is_none());
+    }
+
+    #[test]
     fn issue_is_rendered_with_a_stable_key_and_the_task_repo() {
         let mut c = check(json!({"waiting_on": "external"}));
         c.issue = Some(IssueSpec {
@@ -1342,9 +1378,13 @@ mod tests {
         assert!(hits(&disk, &s).is_empty());
 
         let mem = platform_check(
-            json!({"platform": {"fact": "sandbox.mem_pct", "op": "gt", "value": 80}}),
+            json!({"platform": {"fact": "sandbox.mem_working_set_pct", "op": "gt", "value": 80}}),
         );
-        put(&mut s, PlatformFactName::SandboxMemPct, Fact::Num(80.5));
+        put(
+            &mut s,
+            PlatformFactName::SandboxMemWorkingSetPct,
+            Fact::Num(80.5),
+        );
         assert_eq!(hits(&mem, &s), ["c:p"]);
 
         let pending =
