@@ -21,6 +21,7 @@
 //! `step_resume` alone.
 
 pub mod agent;
+pub mod environment;
 pub mod git;
 
 use std::collections::HashMap;
@@ -42,7 +43,7 @@ use crate::chat::filter::{redact_value, token_forms};
 use crate::config::Config;
 use crate::docker_prune::ActivityGate;
 use crate::exec::{self, CmdSpec, Ctl, LineSink};
-use crate::reaper::Reaper;
+use crate::reaper::{ExitStatus, Reaper};
 use crate::repos::{RepoLocks, repo_dir_name};
 
 /// Largest serialized payload of one session event; bigger ones keep head and tail.
@@ -102,6 +103,8 @@ struct Run {
     id: String,
     dir: PathBuf,
     inner: Mutex<RunInner>,
+    /// What the step left behind for the environment classifier.
+    evidence: Mutex<environment::Evidence>,
 }
 
 /// A safe id (`run_id`, `task_id`).
@@ -216,6 +219,7 @@ impl Run {
         Self {
             id: id.into(),
             dir,
+            evidence: Mutex::new(environment::Evidence::default()),
             inner: Mutex::new(RunInner {
                 phase: StepPhase::Running,
                 start: None,
@@ -873,6 +877,10 @@ impl Inner {
         (self.cfg.mise_bin.clone(), args)
     }
 
+    fn memory_events(&self) -> PathBuf {
+        self.cfg.cgroup_root.join("memory.events")
+    }
+
     async fn work(
         self: &Arc<Self>,
         run: &Arc<Run>,
@@ -886,6 +894,10 @@ impl Inner {
             deadline: None,
         };
         let id = &start.run_id;
+        *run.evidence.lock().unwrap() = environment::Evidence {
+            oom_before: environment::oom_kill_count(&self.memory_events()),
+            ..environment::Evidence::default()
+        };
         run.emit(
             session_kind::SYSTEM,
             json!({"event": if resume { "resumed" } else { "started" }, "attempt": start.attempt}),
@@ -1068,6 +1080,20 @@ impl Inner {
         .await;
         ticker.abort();
         batch.flush();
+        {
+            let mut ev = run.evidence.lock().unwrap();
+            match &out {
+                Err(e) => ev.text = e.to_string(),
+                Ok(o) => {
+                    ev.text = o.stderr.clone();
+                    ev.we_killed = o.stop.is_some();
+                    ev.sigkilled = matches!(
+                        o.status,
+                        Some(ExitStatus::Signaled(9) | ExitStatus::Exited(137))
+                    );
+                }
+            }
+        }
         match out {
             Err(e) => finished(
                 id,
@@ -1226,11 +1252,31 @@ impl Inner {
         fin
     }
 
+    /// Disk full or OOM behind a failed step (`environment::classify`).
+    fn classify(
+        &self,
+        run: &Arc<Run>,
+        fin: &StepFinished,
+    ) -> Option<enzarb_proto::StepEnvironment> {
+        let mut ev = run.evidence.lock().unwrap().clone();
+        ev.failed = true;
+        if let Some(e) = &fin.error {
+            ev.text.push('\n');
+            ev.text.push_str(e);
+        }
+        ev.oom_after = environment::oom_kill_count(&self.memory_events());
+        ev.workspace_full = environment::workspace_full(&self.cfg.workspace);
+        environment::classify(&ev)
+    }
+
     fn finalize(&self, run: &Arc<Run>, mut fin: StepFinished) {
+        if fin.exit == exit::FAILURE && fin.environment.is_none() {
+            fin.environment = self.classify(run, &fin);
+        }
         fit(&mut fin);
         run.emit(
             session_kind::SYSTEM,
-            json!({"event": "finished", "exit": fin.exit, "error": fin.error}),
+            json!({"event": "finished", "exit": fin.exit, "error": fin.error, "environment": fin.environment}),
         );
         let mut g = run.inner.lock().unwrap();
         g.phase = if fin.exit == exit::INTERRUPTED {

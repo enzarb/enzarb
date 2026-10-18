@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use enzarb_proto::session::{Client, Event, Events, Session};
 use enzarb_proto::{
-    ClientKind, Ctrl, Mode, Runtime, Secret, SessionEvent, StepExec, StepFinished, StepOutput,
-    StepPhase, StepStart, StepWorkspace,
+    ClientKind, Ctrl, EnvironmentKind, Mode, Runtime, Secret, SessionEvent, StepExec, StepFinished,
+    StepOutput, StepPhase, StepStart, StepWorkspace,
 };
 use sandbox_init::reaper::Reaper;
 use sandbox_init::repos::RepoLocks;
@@ -63,6 +63,12 @@ impl Env {
         let ws = dir.path().join("workspace");
         std::fs::create_dir(&ws).unwrap();
         std::fs::write(dir.path().join("token"), AUTH).unwrap();
+        std::fs::create_dir(dir.path().join("cgroup")).unwrap();
+        std::fs::write(
+            dir.path().join("cgroup/memory.events"),
+            "oom 0\noom_kill 0\n",
+        )
+        .unwrap();
         let bare = dir.path().join("remote.git");
         git(
             dir.path(),
@@ -93,6 +99,7 @@ impl Env {
             claude_token_file: self.dir.path().join("no-claude-token"),
             cancel_grace: Duration::from_secs(3),
             net_retry_delays: vec![],
+            cgroup_root: self.dir.path().join("cgroup"),
             ..Config::default()
         };
         let reaper = Reaper::new(false);
@@ -948,4 +955,132 @@ async fn leftovers_on_the_default_branch_do_not_block_the_task_branch() {
     let (_, fin2) = collect(&mut ev, "left-2", |_| false).await;
     let fin2 = fin2.unwrap();
     assert_eq!(fin2.exit, "success", "{fin2:?}");
+}
+
+/// Run a command step with no workspaces; returns how it finished.
+async fn run_cmd(env: &Env, id: &str, cmd: String) -> StepFinished {
+    let addr = env.server().await;
+    let (s, mut ev) = connect(addr).await;
+    start(
+        &s,
+        &mut ev,
+        step(
+            id,
+            StepExec::Command {
+                run: cmd,
+                tools: vec![],
+            },
+            vec![],
+        ),
+    )
+    .await;
+    collect(&mut ev, id, |_| false).await.1.unwrap()
+}
+
+#[tokio::test]
+async fn code_failure_has_no_environment() {
+    let env = Env::new();
+    let fin = run_cmd(&env, "env-code", "exit 3".into()).await;
+    assert_eq!(fin.exit, "failure", "{fin:?}");
+    assert_eq!(fin.environment, None);
+    let ok = run_cmd(&env, "env-ok", "true".into()).await;
+    assert_eq!(ok.exit, "success");
+    assert_eq!(ok.environment, None);
+}
+
+#[tokio::test]
+async fn enospc_in_the_output_is_disk_full() {
+    let env = Env::new();
+    let fin = run_cmd(
+        &env,
+        "env-disk",
+        "echo 'write error: No space left on device' >&2; exit 1".into(),
+    )
+    .await;
+    assert_eq!(fin.exit, "failure", "{fin:?}");
+    let e = fin.environment.expect("environment");
+    assert_eq!(e.kind, EnvironmentKind::DiskFull);
+    assert!(!e.detail.is_empty());
+}
+
+/// A real full filesystem needs a mount; skipped where that is not permitted.
+#[tokio::test]
+async fn a_full_workspace_is_disk_full() {
+    let env = Env::new();
+    let mounted = Command::new("mount")
+        .args(["-t", "tmpfs", "-o", "size=64k"])
+        .arg("tmpfs")
+        .arg(&env.ws)
+        .status()
+        .is_ok_and(|s| s.success());
+    if !mounted {
+        eprintln!("skipped: cannot mount a tmpfs here");
+        return;
+    }
+    let fin = run_cmd(
+        &env,
+        "env-full",
+        "dd if=/dev/zero of=big bs=1k count=1024 2>/dev/null; exit 1".into(),
+    )
+    .await;
+    let _ = Command::new("umount").arg(&env.ws).status();
+    assert_eq!(fin.exit, "failure", "{fin:?}");
+    assert_eq!(fin.environment.unwrap().kind, EnvironmentKind::DiskFull);
+}
+
+fn bump_oom(env: &Env) -> String {
+    let f = env.dir.path().join("cgroup/memory.events");
+    format!("printf 'oom 1\\noom_kill 1\\n' > {}", f.display())
+}
+
+#[tokio::test]
+async fn an_oom_kill_is_reported() {
+    let env = Env::new();
+    let fin = run_cmd(&env, "env-oom", format!("{}; kill -9 $$", bump_oom(&env))).await;
+    assert_eq!(fin.exit, "failure", "{fin:?}");
+    let e = fin.environment.expect("environment");
+    assert_eq!(e.kind, EnvironmentKind::Oom);
+    assert!(e.detail.contains("oom_kill 0→1"), "{}", e.detail);
+}
+
+#[tokio::test]
+async fn a_bare_sigkill_is_not_oom() {
+    let env = Env::new();
+    let fin = run_cmd(&env, "env-kill", "kill -9 $$".into()).await;
+    assert_eq!(fin.exit, "failure", "{fin:?}");
+    assert_eq!(fin.environment, None);
+}
+
+#[tokio::test]
+async fn a_stopped_step_is_not_oom_even_if_the_counter_moved() {
+    let env = Env::new();
+    let addr = env.server().await;
+    let (s, mut ev) = connect(addr).await;
+    let cmd = format!("{}; echo ready; sleep 60", bump_oom(&env));
+    start(
+        &s,
+        &mut ev,
+        step(
+            "env-stop",
+            StepExec::Command {
+                run: cmd,
+                tools: vec![],
+            },
+            vec![],
+        ),
+    )
+    .await;
+    collect(&mut ev, "env-stop", |e| {
+        e.payload["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("ready"))
+    })
+    .await;
+    s.send_ctrl(&Ctrl::StepStop {
+        run_id: "env-stop".into(),
+    })
+    .unwrap();
+    let fin = collect(&mut ev, "env-stop", |_| false).await.1.unwrap();
+    assert_eq!(fin.exit, "interrupted");
+    assert_eq!(fin.environment, None);
 }
