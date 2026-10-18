@@ -11,7 +11,7 @@ use enzarb_connector::{
     StatusSummary, Thread, ThreadComment, UpdateBranchOutcome, WorkItemKey, aggregate_ci,
     aggregate_statuses,
 };
-use enzarb_connector::{UpsertOutcome, UpsertedIssue};
+use enzarb_connector::{UpsertOutcome, UpsertedIssue, WorkflowRunInfo};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -1860,6 +1860,70 @@ impl Connector for GitHubConnector {
                 r.json::<Comparison>()?.status.as_str(),
                 "identical" | "ahead"
             ))),
+            Err(Error::NotFound(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn latest_workflow_run(
+        &self,
+        repo: &RepoKey,
+        workflow: &str,
+        branch: Option<&str>,
+    ) -> Result<Option<WorkflowRunInfo>> {
+        #[derive(Deserialize)]
+        struct RepoInfo {
+            default_branch: String,
+        }
+        #[derive(Deserialize)]
+        struct Run {
+            id: u64,
+            conclusion: Option<String>,
+            html_url: Option<String>,
+        }
+        #[derive(Deserialize)]
+        struct Runs {
+            workflow_runs: Vec<Run>,
+        }
+        github_repo(repo)?;
+        self.token(repo).await?;
+        let branch = match branch {
+            Some(b) => b.to_string(),
+            None => {
+                let path = format!("/repos/{}", repo.full_name());
+                match self
+                    .call(repo, "get repository", Method::GET, &path, None)
+                    .await
+                {
+                    Ok(r) => r.json::<RepoInfo>()?.default_branch,
+                    Err(Error::NotFound(_)) => return Ok(None),
+                    Err(e) => return Err(e),
+                }
+            }
+        };
+        // `status=completed` skips a run in progress, so it never masks an earlier failure.
+        let path = format!(
+            "/repos/{}/actions/workflows/{}/runs?branch={}&status=completed&per_page=1",
+            repo.full_name(),
+            encode_path(workflow),
+            encode_path(branch.as_str())
+        );
+        match self
+            .call(repo, "list workflow runs", Method::GET, &path, None)
+            .await
+        {
+            Ok(r) => Ok(r
+                .json::<Runs>()?
+                .workflow_runs
+                .into_iter()
+                .next()
+                .and_then(|run| {
+                    Some(WorkflowRunInfo {
+                        id: run.id,
+                        conclusion: run.conclusion?,
+                        url: run.html_url,
+                    })
+                })),
             Err(Error::NotFound(_)) => Ok(None),
             Err(e) => Err(e),
         }

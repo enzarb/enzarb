@@ -49,6 +49,9 @@ spec:
             - { name: ENZARB_BOT_HANDLE, value: {{ $c.botHandle | quote }} }
             - { name: ENZARB_BOT_LOGIN, value: {{ $c.botLogin | quote }} }
             - { name: ENZARB_STATS_RETENTION, value: {{ .Values.sandboxStatsRetentionDays | default 90 | quote }} }
+            {{- if .Values.updater.enabled }}
+            - { name: ENZARB_UPDATER_STATUS_URL, value: {{ printf "http://enzarb-updater:%v/status" .Values.updater.port | quote }} }
+            {{- end }}
             - { name: RUST_LOG, value: {{ .Values.rustLog | quote }} }
             {{- with $c.extraEnv }}
             {{- toYaml . | nindent 12 }}

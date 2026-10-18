@@ -1,0 +1,17 @@
+version: 1
+id: rebuild-all-failed
+kind: platform_failure
+severity: warning
+scope: platform
+text: "The latest rebuild-all run on main failed"
+issue:
+  repo: enzarb/enzarb
+  title: "The rebuild-all workflow failed on main"
+  body: |
+    The latest finished run of `rebuild-all.yml` on `main` concluded with `failure`. Some
+    component images may not have been rebuilt or retagged. Check the run in the Actions tab.
+
+    Nothing was cancelled or restarted; this issue only reports what the platform check read.
+  labels: [platform, platform-failure]
+when:
+  platform: {fact: workflow_run.status, arg: "enzarb/enzarb:rebuild-all.yml", op: eq, value: failure}

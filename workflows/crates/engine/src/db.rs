@@ -50,11 +50,12 @@ pub async fn insert_sandbox_stats(
     let done = sqlx::query(
         "INSERT INTO engine.sandbox_stats
             (project, sandbox, at, run_ids, cpu_usage_usec, cpu_user_usec, cpu_system_usec,
-             memory_bytes, io_read_bytes, io_write_bytes, storage_used_bytes, storage_total_bytes)
+             memory_bytes, io_read_bytes, io_write_bytes, storage_used_bytes, storage_total_bytes,
+             memory_limit_bytes, memory_inactive_file_bytes)
          VALUES ($1, $2, $3,
             COALESCE((SELECT array_agg(run_id) FROM engine.step_runs
                       WHERE project = $1 AND started_at IS NOT NULL AND ended_at IS NULL), '{}'),
-            $4, $5, $6, $7, $8, $9, $10, $11)
+            $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
          ON CONFLICT (project, sandbox, at) DO NOTHING",
     )
     .bind(project)
@@ -68,6 +69,8 @@ pub async fn insert_sandbox_stats(
     .bind(stat_i64(s.io_write_bytes))
     .bind(stat_i64(s.storage_used_bytes))
     .bind(stat_i64(s.storage_total_bytes))
+    .bind(stat_i64(s.memory_limit_bytes))
+    .bind(stat_i64(s.memory_inactive_file_bytes))
     .execute(pool)
     .await?;
     Ok(done.rows_affected() == 1)
