@@ -4,7 +4,9 @@
 //!
 //! Two steps, so evaluation can be tested without a database and cannot touch tasks:
 //! - [`evaluate`] is pure: checks + a [`Snapshot`] of facts and clocks -> desired findings.
-//! - [`reconcile`] is the only writer, and writes only `engine.findings`.
+//! - [`reconcile`] is the only writer. It writes `engine.findings` and, when a finding opens
+//!   and its check has an `issue:`, enqueues one `file_issue` job in the same transaction.
+//!   It never touches tasks, the projection, timers, step runs or transitions.
 //!
 //! [`Engine::run_findings`] (called from the ticker) loads the snapshot (reads only), evaluates
 //! and reconciles.
@@ -16,8 +18,8 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use enzarb_flow::format::{
-    CheckFile, CheckScope, CmpOp, FindingKind, PlatformCmp, PlatformFactName, Severity, When,
-    parse_duration,
+    CheckFile, CheckScope, CmpOp, FindingKind, IssueSpec, PlatformCmp, PlatformFactName, Severity,
+    When, parse_duration,
 };
 use serde_json::Value;
 use sqlx::{PgPool, Row};
@@ -150,11 +152,21 @@ impl PlatformFacts for DbPlatformFacts {
 pub struct TaskSnap {
     pub id: i64,
     pub project: String,
+    /// The task's repo, where its issues are filed unless the check names one.
+    pub repo: String,
     pub phase: String,
     pub node: String,
     pub waiting_on: Option<String>,
     /// Stored facts by name.
     pub facts: BTreeMap<String, FactRow>,
+    /// Relation rows the task holds, by kind (`blocked_by`, `child`, ...).
+    pub relations: BTreeMap<String, u64>,
+    /// Relation rows other tasks hold towards the task's subjects, by kind (`parent`, ...).
+    pub relations_in: BTreeMap<String, u64>,
+    /// The latest command event routed to the task, and its name (no slash).
+    pub last_command: Option<(DateTime<Utc>, String)>,
+    /// The last transition that changed the task's node or status, or had effects.
+    pub last_handled_at: Option<DateTime<Utc>>,
     /// The last event routed to the task, else its creation.
     pub last_event_at: DateTime<Utc>,
     /// The last step activity, else the task's creation. A running step counts as `now`.
@@ -190,6 +202,19 @@ pub struct Desired {
     pub kind: FindingKind,
     pub severity: Severity,
     pub text: String,
+    /// The issue to file when the finding opens.
+    pub issue: Option<DesiredIssue>,
+}
+
+/// A rendered `issue:` block. `repo` is `None` for a task without one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DesiredIssue {
+    /// `finding:<finding key>`: stable, so the connector dedupes by it.
+    pub key: String,
+    pub repo: Option<String>,
+    pub title: String,
+    pub body: String,
+    pub labels: Vec<String>,
 }
 
 /// The outcome of [`evaluate`].
@@ -284,8 +309,22 @@ impl Cx<'_> {
                 kind: c.kind,
                 severity: c.severity,
                 text: self.render(&c.text),
+                issue: c.issue.as_ref().map(|i| self.render_issue(i, &key)),
                 key,
             });
+        }
+    }
+
+    fn render_issue(&self, i: &IssueSpec, key: &str) -> DesiredIssue {
+        DesiredIssue {
+            key: format!("finding:{key}"),
+            repo: i
+                .repo
+                .clone()
+                .or_else(|| self.task.map(|t| t.repo.clone()).filter(|r| !r.is_empty())),
+            title: self.render(&i.title),
+            body: self.render(&i.body),
+            labels: i.labels.clone(),
         }
     }
 
@@ -347,6 +386,33 @@ impl Cx<'_> {
                     }),
                 };
                 idle(t.last_event_at, &i.no_event) && idle(t.last_step_at, &i.no_step)
+            }),
+            When::CommandIgnored(c) => self.task.is_some_and(|t| {
+                let Some((at, name)) = &t.last_command else {
+                    return false;
+                };
+                let named = c
+                    .command
+                    .as_ref()
+                    .is_none_or(|w| w.trim_start_matches('/').eq_ignore_ascii_case(name));
+                let handled = t.last_handled_at.is_some_and(|h| h > *at);
+                let old = parse_duration(&c.for_).is_some_and(|secs| {
+                    (self.now - *at).num_seconds() >= i64::try_from(secs).unwrap_or(i64::MAX)
+                });
+                named && old && !handled
+            }),
+            When::RelationCount(r) => self.task.is_some_and(|t| {
+                let n = if r.inbound {
+                    &t.relations_in
+                } else {
+                    &t.relations
+                };
+                let n = n.get(&r.kind).copied().unwrap_or(0);
+                match (r.eq, r.gt) {
+                    (Some(eq), _) => n == eq,
+                    (_, Some(gt)) => n > gt,
+                    _ => false,
+                }
             }),
             When::Platform(p) => self.platform(p),
         }
@@ -436,6 +502,9 @@ pub async fn reconcile(
         if updated > 0 {
             st.refreshed += 1;
         } else if candidates.contains(&d.key) {
+            // The finding and its issue job commit together, so a failed enqueue leaves no open
+            // finding and the next pass tries again.
+            let mut tx = pool.begin().await?;
             let r = sqlx::query(
                 "INSERT INTO engine.findings (key, task_id, project, check_id, kind, severity, text)
                  VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -449,14 +518,23 @@ pub async fn reconcile(
             .bind(d.kind.as_str())
             .bind(d.severity.as_str())
             .bind(&d.text)
-            .execute(pool)
+            .execute(&mut *tx)
             .await;
             match r {
-                Ok(_) => st.raised += 1,
+                Ok(_) => {}
                 // The task was deleted since the snapshot.
-                Err(sqlx::Error::Database(e)) if e.is_foreign_key_violation() => {}
+                Err(sqlx::Error::Database(e)) if e.is_foreign_key_violation() => continue,
                 Err(e) => return Err(e.into()),
             }
+            if let Some(issue) = &d.issue
+                && let Err(e) = enqueue_issue(&mut tx, d, issue).await
+            {
+                tracing::warn!(key = %d.key, "findings: enqueuing the issue: {e}");
+                next.insert(d.key.clone());
+                continue;
+            }
+            tx.commit().await?;
+            st.raised += 1;
         } else {
             next.insert(d.key.clone());
         }
@@ -478,6 +556,33 @@ pub async fn reconcile(
     .rows_affected();
     *candidates = next;
     Ok(st)
+}
+
+/// Queues the `file_issue` job of a finding that just opened. The job's idempotency key is the
+/// issue key, so a finding that clears and opens again never queues a second one. A task
+/// without a repo keeps its finding and files nothing.
+async fn enqueue_issue(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    d: &Desired,
+    issue: &DesiredIssue,
+) -> Result<(), sqlx::Error> {
+    let Some(repo) = &issue.repo else {
+        return Ok(());
+    };
+    sqlx::query(
+        "INSERT INTO engine.jobs (task_id, project, kind, input, idempotency_key, priority)
+         VALUES ($1, $2, 'file_issue', $3, $4, 1) ON CONFLICT (idempotency_key) DO NOTHING",
+    )
+    .bind(d.task_id)
+    .bind(&d.project)
+    .bind(serde_json::json!({
+        "repo": repo, "key": issue.key, "title": issue.title, "body": issue.body,
+        "labels": issue.labels, "finding": d.key,
+    }))
+    .bind(&issue.key)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 // ------------------------------------------------------------------ the engine's pass
@@ -596,8 +701,23 @@ pub async fn load_tasks(pool: &PgPool, projects: &[String]) -> Result<Vec<TaskSn
                      THEN now()
                      ELSE GREATEST(t.created_at, (SELECT max(GREATEST(s.queued_at, s.started_at, s.ended_at, s.last_activity_at))
                                                   FROM engine.step_runs s WHERE s.task_id = t.id))
-                END
+                END,
+                t.repo,
+                c.at, c.name,
+                (SELECT max(x.at) FROM engine.transitions x
+                 WHERE x.task_id = t.id
+                   AND (x.from_state IS DISTINCT FROM x.to_state OR x.effects <> '[]'::jsonb))
          FROM engine.tasks t LEFT JOIN engine.projection p ON p.task_id = t.id
+         LEFT JOIN LATERAL (
+             SELECT e.received_at AS at,
+                    CASE WHEN e.type = 'comment' THEN e.payload->>'command'
+                         ELSE e.payload#>>'{data,command}' END AS name
+             FROM engine.events e
+             WHERE e.task_id = t.id
+               AND ((e.type = 'comment' AND COALESCE(e.payload->>'command', '') <> '')
+                    OR (e.type = 'ui.command' AND COALESCE(e.payload#>>'{data,command}', '') <> ''))
+             ORDER BY e.id DESC LIMIT 1
+         ) c ON true
          WHERE t.ended_at IS NULL AND t.project = ANY($1) ORDER BY t.id",
     )
     .bind(projects)
@@ -611,7 +731,16 @@ pub async fn load_tasks(pool: &PgPool, projects: &[String]) -> Result<Vec<TaskSn
             phase: r.get(2),
             node: r.get(3),
             waiting_on: r.get(4),
+            repo: r.get(7),
             facts: BTreeMap::new(),
+            relations: BTreeMap::new(),
+            relations_in: BTreeMap::new(),
+            last_command: r.get::<Option<DateTime<Utc>>, _>(8).map(|at| {
+                let name: Option<String> = r.get(9);
+                let name = name.unwrap_or_default();
+                (at, name.trim_start_matches('/').to_ascii_lowercase())
+            }),
+            last_handled_at: r.get(10),
             last_event_at: r.get(5),
             last_step_at: r.get(6),
         })
@@ -633,6 +762,39 @@ pub async fn load_tasks(pool: &PgPool, projects: &[String]) -> Result<Vec<TaskSn
                     unknown_refreshes: r.get(3),
                 },
             );
+        }
+    }
+    // Relation rows: the ones each task holds, and the ones other tasks hold towards its
+    // subjects (`task:<id>` too).
+    let held = sqlx::query(
+        "SELECT task_id, kind, count(*) FROM engine.relations WHERE task_id = ANY($1)
+         GROUP BY task_id, kind",
+    )
+    .bind(&ids)
+    .fetch_all(pool)
+    .await?;
+    for r in held {
+        if let Some(&i) = index.get(&r.get::<i64, _>(0)) {
+            tasks[i]
+                .relations
+                .insert(r.get(1), u64::try_from(r.get::<i64, _>(2)).unwrap_or(0));
+        }
+    }
+    let towards = sqlx::query(
+        "SELECT k.task_id, r.kind, count(DISTINCT (r.task_id, r.kind, r.target_key))
+         FROM (SELECT task_id, key FROM engine.subjects WHERE task_id = ANY($1)
+               UNION SELECT id, 'task:' || id FROM engine.tasks WHERE id = ANY($1)) k
+         JOIN engine.relations r ON r.target_key = k.key AND r.task_id <> k.task_id
+         GROUP BY k.task_id, r.kind",
+    )
+    .bind(&ids)
+    .fetch_all(pool)
+    .await?;
+    for r in towards {
+        if let Some(&i) = index.get(&r.get::<i64, _>(0)) {
+            tasks[i]
+                .relations_in
+                .insert(r.get(1), u64::try_from(r.get::<i64, _>(2)).unwrap_or(0));
         }
     }
     Ok(tasks)
@@ -667,10 +829,15 @@ mod tests {
         TaskSnap {
             id,
             project: "p".into(),
+            repo: "o/r".into(),
             phase: "review".into(),
             node: "review/wait".into(),
             waiting_on: Some("external".into()),
             facts: BTreeMap::new(),
+            relations: BTreeMap::new(),
+            relations_in: BTreeMap::new(),
+            last_command: None,
+            last_handled_at: None,
             last_event_at: now() - chrono::Duration::hours(2),
             last_step_at: now() - chrono::Duration::hours(3),
         }
@@ -758,6 +925,125 @@ mod tests {
         ] {
             assert_eq!(!hits(&check(when.clone()), &s).is_empty(), want, "{when}");
         }
+    }
+
+    #[test]
+    fn command_ignored_and_relation_leaves() {
+        let mut t = task(1);
+        t.last_command = Some((now() - chrono::Duration::minutes(20), "retry".into()));
+        t.relations_in.insert("parent".into(), 1);
+        t.relations.insert("child".into(), 2);
+        let s = snap(vec![t.clone()]);
+        let mut handled = t.clone();
+        handled.last_handled_at = Some(now() - chrono::Duration::minutes(5));
+        let mut earlier = t.clone();
+        earlier.last_handled_at = Some(now() - chrono::Duration::minutes(30));
+        let mut recent = t.clone();
+        recent.last_command = Some((now() - chrono::Duration::minutes(5), "retry".into()));
+        let mut none = t.clone();
+        none.last_command = None;
+        for (when, snap_, want) in [
+            (json!({"command_ignored": {"for": "15m"}}), &s, true),
+            (json!({"command_ignored": {"for": "30m"}}), &s, false),
+            (
+                json!({"command_ignored": {"for": "15m", "command": "retry"}}),
+                &s,
+                true,
+            ),
+            (
+                json!({"command_ignored": {"for": "15m", "command": "/Retry"}}),
+                &s,
+                true,
+            ),
+            (
+                json!({"command_ignored": {"for": "15m", "command": "plan"}}),
+                &s,
+                false,
+            ),
+            (
+                json!({"relation_count": {"kind": "parent", "inbound": true, "gt": 0}}),
+                &s,
+                true,
+            ),
+            (
+                json!({"relation_count": {"kind": "parent", "gt": 0}}),
+                &s,
+                false,
+            ),
+            (
+                json!({"relation_count": {"kind": "blocked_by", "eq": 0}}),
+                &s,
+                true,
+            ),
+            (
+                json!({"relation_count": {"kind": "child", "eq": 2}}),
+                &s,
+                true,
+            ),
+            (
+                json!({"relation_count": {"kind": "child", "gt": 2}}),
+                &s,
+                false,
+            ),
+        ] {
+            let sn = snap(vec![snap_.tasks[0].clone()]);
+            assert_eq!(!hits(&check(when.clone()), &sn).is_empty(), want, "{when}");
+        }
+        // A transition after the command (a change or an effect) means it was not ignored; one
+        // before it does not.
+        let when = json!({"command_ignored": {"for": "15m"}});
+        for (task_, want) in [
+            (handled, false),
+            (earlier, true),
+            (recent, false),
+            (none, false),
+        ] {
+            let sn = snap(vec![task_]);
+            assert_eq!(!hits(&check(when.clone()), &sn).is_empty(), want);
+        }
+    }
+
+    #[test]
+    fn issue_is_rendered_with_a_stable_key_and_the_task_repo() {
+        let mut c = check(json!({"waiting_on": "external"}));
+        c.issue = Some(IssueSpec {
+            title: "Task {task} at {node}".into(),
+            body: "in {project}".into(),
+            labels: vec!["liveness".into()],
+            repo: None,
+        });
+        let s = snap(vec![task(7)]);
+        let e = evaluate(std::slice::from_ref(&c), &s, now());
+        let i = e.desired[0].issue.clone().unwrap();
+        assert_eq!(
+            (
+                i.key.as_str(),
+                i.repo.as_deref(),
+                i.title.as_str(),
+                i.body.as_str()
+            ),
+            ("finding:c:7", Some("o/r"), "Task 7 at review/wait", "in p")
+        );
+        // Stable across evaluations; an explicit repo wins.
+        assert_eq!(e, evaluate(std::slice::from_ref(&c), &s, now()));
+        c.issue.as_mut().unwrap().repo = Some("x/y".into());
+        let e = evaluate(std::slice::from_ref(&c), &s, now());
+        assert_eq!(
+            e.desired[0].issue.as_ref().unwrap().repo.as_deref(),
+            Some("x/y")
+        );
+        // Platform scope: keyed by project.
+        let mut p = platform_check(
+            json!({"platform": {"fact": "sandbox.disk_pct", "op": "ge", "value": 90}}),
+        );
+        p.issue = c.issue.clone();
+        let mut s = snap(vec![]);
+        s.platform.insert(
+            ("p".into(), PlatformFactName::SandboxDiskPct),
+            Fact::Num(95.0),
+        );
+        let e = evaluate(&[p], &s, now());
+        assert_eq!(e.desired[0].issue.as_ref().unwrap().key, "finding:c:p");
     }
 
     #[test]

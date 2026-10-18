@@ -104,3 +104,23 @@ export async function seedSessionEvent(
 	await sql`INSERT INTO engine.session_events (run_id, seq, at, kind, payload)
 		VALUES (${runId}, ${seq}, now(), ${kind}, ${sql.json(payload as never)})`;
 }
+
+export interface SeedFinding {
+	key: string;
+	project: string;
+	taskId?: number | null;
+	checkId?: string;
+	kind?: string;
+	severity?: string;
+	text?: string;
+	firstSeen?: string;
+	cleared?: boolean;
+}
+
+export async function seedFinding(sql: Sql, f: SeedFinding): Promise<void> {
+	await sql`
+		INSERT INTO engine.findings (key, task_id, project, check_id, kind, severity, text, first_seen, cleared_at)
+		VALUES (${f.key}, ${f.taskId ?? null}, ${f.project}, ${f.checkId ?? 'dead_wait'},
+			${f.kind ?? 'dead_wait'}, ${f.severity ?? 'warning'}, ${f.text ?? 'Stuck'},
+			${f.firstSeen ?? new Date().toISOString()}, ${f.cleared ? new Date().toISOString() : null})`;
+}

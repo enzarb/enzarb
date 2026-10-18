@@ -72,3 +72,19 @@ jobs:
           fi
           read -r image sha <<<"$found"
           IMAGE="ghcr.io/enzarb/$image" SHA="$sha" VERSION=0.0.0-dry-run RETAG=true DRY_RUN=true .github/scripts/retag-or-build.sh retag
+  next-version-diff:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Fetch main
+        run: git fetch --no-tags origin main
+      - name: Compare next versions of PR and main scripts over the real tag history
+        run: scripts/monorepo/next-version-diff.sh | tee -a "$GITHUB_STEP_SUMMARY"

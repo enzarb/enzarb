@@ -87,7 +87,7 @@ pub struct TaskState {
     #[serde(default)]
     pub entries: BTreeMap<String, u32>,
     pub doc: TaskDocument,
-    /// The last finished step or action: `{node, exit, outputs, result, git, missing_outputs}`.
+    /// The last finished step or action: `{node, exit, outputs, result, git, environment, missing_outputs}`.
     #[serde(default)]
     pub last: Value,
     #[serde(default)]
@@ -189,6 +189,18 @@ pub struct StepFinished {
     /// Git facts the executor verified against the remote.
     #[serde(default)]
     pub git: Option<GitFacts>,
+    /// Set when the step failed because of its environment, not the code.
+    #[serde(default)]
+    pub environment: Option<StepEnvironment>,
+}
+
+/// What the sandbox observed about its environment (`last.environment`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct StepEnvironment {
+    /// `disk_full`, `oom`, `toolchain_missing`, `network`, `load` or `unknown`.
+    pub kind: String,
+    /// Free text saying what was observed.
+    pub detail: String,
 }
 
 // ---------------------------------------------------------------- effects
@@ -470,7 +482,7 @@ impl<'a> Machine<'a> {
                 self.unpause_for_result();
                 self.s.pending = None;
                 let node = self.s.position().unwrap_or_default();
-                self.s.last = json!({"node": node, "exit": if *ok { "success" } else { "failure" }, "ok": ok, "result": result});
+                self.s.last = json!({"node": node, "exit": if *ok { "success" } else { "failure" }, "ok": ok, "result": result, "environment": null});
                 if *ok
                     && let Some(RKind::Action(a)) = self.node().map(|n| &n.kind)
                     && let Err(e) = self.action_results(a, result)
@@ -1015,7 +1027,7 @@ impl<'a> Machine<'a> {
         }
         self.s.last = json!({
             "node": pos, "exit": f.exit, "outputs": f.outputs, "result": f.result,
-            "git": f.git, "missing_outputs": missing,
+            "git": f.git, "environment": f.environment, "missing_outputs": missing,
         });
         self.after_finish();
     }
@@ -1262,7 +1274,7 @@ impl<'a> Machine<'a> {
             return Flow::Stop;
         };
         let ctx = self.ctx(&phase.params, &[("exit", json!(exit))]);
-        self.s.last = json!({"node": self.s.position(), "exit": exit});
+        self.s.last = json!({"node": self.s.position(), "exit": exit, "environment": null});
         match follow(&node.next, &ctx) {
             Ok(Some(to)) => self.leave(to, &[("exit", json!(exit))]),
             Ok(None) => {

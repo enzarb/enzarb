@@ -1,0 +1,21 @@
+version: 1
+id: epic-subissues-without-deps
+kind: dead_wait
+severity: info
+text: "A sub-issue of an epic waits at {node} with no dependencies recorded"
+issue:
+  title: "Sub-issue task {task} was created without dependencies"
+  body: |
+    Task {task} in project {project} is a sub-issue of an epic, but it has no `blocked_by`
+    dependencies and has been waiting for more than 10 minutes at `{node}`. Epic breakdowns
+    normally order their sub-issues; one without dependencies can start before the work it
+    needs.
+
+    Nothing was cancelled or restarted. If the sub-issue really is independent, ignore this;
+    otherwise add the missing dependencies on GitHub.
+  labels: [liveness, dead-wait]
+when:
+  all:
+    - relation_count: {kind: parent, inbound: true, gt: 0}
+    - relation_count: {kind: blocked_by, eq: 0}
+    - idle_for: {no_event: 10m}

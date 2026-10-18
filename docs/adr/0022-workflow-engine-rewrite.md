@@ -204,7 +204,7 @@ M1 (`workflows/crates/flow`, crate `enzarb-flow`) settles details the decision l
   - `{param: <name>}` passes an enclosing phase's param down.
 - **Outputs:**
   - `outputs` is one flat, task-wide map by output name. A step `result` is stored under `result.as` (default: the node id).
-  - Edges read the last finished step or action as `last` (`exit`, `outputs`, `result`, `git`, `missing_outputs`).
+  - Edges read the last finished step or action as `last` (`exit`, `outputs`, `result`, `git`, `environment`, `missing_outputs`).
   - A missing required output is reported in `last.missing_outputs` and doesn't change the exit.
 - **Bindings files** are `{version, imports, bindings: [...]}`, not a bare list, so `use` can name an alias.
   - `on` is optional only with `disabled: true`.

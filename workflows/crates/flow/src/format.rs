@@ -1075,8 +1075,28 @@ pub struct CheckFile {
     pub scope: CheckScope,
     /// The finding text. `{task}`, `{node}`, `{phase}` and `{project}` are replaced.
     pub text: String,
+    /// File one issue when the finding opens (deduplicated by `finding:<id>:<subject>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue: Option<IssueSpec>,
     /// When this holds the finding is open.
     pub when: When,
+}
+
+/// The issue a check files once when its finding opens. The key is `finding:<check id>:<task
+/// id>` (`<project>` for `platform` scope) and never carries a time, so a finding that clears
+/// and returns updates the same issue instead of filing another. Nothing closes it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IssueSpec {
+    /// Issue title. `{task}`, `{node}`, `{phase}` and `{project}` are replaced.
+    pub title: String,
+    /// Issue body, with the same replacements.
+    pub body: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<String>,
+    /// `owner/name`. Defaults to the task's repo; required for `scope: platform`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1149,6 +1169,11 @@ pub enum When {
     FactCount(FactCount),
     /// No event reached the task, and/or no step ran for it, for this long.
     IdleFor(IdleFor),
+    /// A command (`/retry`, ...) reached the task and nothing has happened to the task since:
+    /// no change of node or status and no effect.
+    CommandIgnored(CommandIgnored),
+    /// The number of relation rows of one kind (`blocked_by`, `parent`, `child`, ...).
+    RelationCount(RelationCount),
     /// A platform fact compared with a value (reads through the engine's provider).
     Platform(PlatformCmp),
 }
@@ -1174,6 +1199,32 @@ pub struct FactUnknownFor {
 pub struct FactCount {
     pub name: String,
     pub eq: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CommandIgnored {
+    /// How long ago the command arrived (`15m`).
+    #[serde(rename = "for")]
+    pub for_: String,
+    /// Only this command (without the slash). Any command when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+}
+
+/// Exactly one of `eq` and `gt`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RelationCount {
+    pub kind: String,
+    /// Count the rows other tasks hold towards this task's subjects (an epic's `parent` rows
+    /// naming the sub-issue) instead of the rows this task holds itself.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub inbound: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eq: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gt: Option<u64>,
 }
 
 /// At least one field. A duration is `90s`, `15m`, `2h`, `14d` or `1w`.
@@ -1249,6 +1300,23 @@ impl CheckFile {
         if self.text.trim().is_empty() {
             out.push("`text` must not be empty".into());
         }
+        if let Some(i) = &self.issue {
+            if i.title.trim().is_empty() || i.body.trim().is_empty() {
+                out.push("`issue` needs a non-empty `title` and `body`".into());
+            }
+            match i.repo.as_deref() {
+                None if self.scope == CheckScope::Platform => {
+                    out.push("`issue.repo` is required for `scope: platform`".into());
+                }
+                Some(r)
+                    if r.split_once('/')
+                        .is_none_or(|(o, n)| o.is_empty() || n.is_empty() || n.contains('/')) =>
+                {
+                    out.push(format!("`issue.repo` `{r}` is not `owner/name`"));
+                }
+                _ => {}
+            }
+        }
         self.when.problems(self.scope, &mut out);
         out
     }
@@ -1290,6 +1358,25 @@ impl When {
                     if parse_duration(d).is_none_or(|s| s == 0) {
                         out.push(format!("`{d}` is not a duration (90s, 15m, 2h, 14d, 1w)"));
                     }
+                }
+                if scope == CheckScope::Platform {
+                    out.push("task conditions need `scope: task`".into());
+                }
+            }
+            When::CommandIgnored(c) => {
+                if parse_duration(&c.for_).is_none_or(|s| s == 0) {
+                    out.push(format!(
+                        "`{}` is not a duration (90s, 15m, 2h, 14d, 1w)",
+                        c.for_
+                    ));
+                }
+                if scope == CheckScope::Platform {
+                    out.push("task conditions need `scope: task`".into());
+                }
+            }
+            When::RelationCount(r) => {
+                if r.eq.is_some() == r.gt.is_some() {
+                    out.push("`relation_count` needs exactly one of `eq` and `gt`".into());
                 }
                 if scope == CheckScope::Platform {
                     out.push("task conditions need `scope: task`".into());

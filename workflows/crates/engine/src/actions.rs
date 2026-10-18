@@ -427,6 +427,69 @@ pub(crate) async fn file_issue(
     }))
 }
 
+/// Test-only mutation switches for `create_issues` (`docs/workflows/contract-tests.md`): each
+/// removes one documented behaviour so the contract tests can prove they notice. Compiled out
+/// of non-test builds, where every switch is a constant `false`.
+#[cfg(test)]
+pub(crate) mod mutation {
+    use std::cell::Cell;
+
+    #[derive(Clone, Copy, Default)]
+    pub(crate) struct Mutation {
+        pub skip_sub_issue_link: bool,
+        pub skip_dependencies: bool,
+        pub skip_placeholders: bool,
+    }
+
+    thread_local! {
+        static ACTIVE: Cell<Mutation> = Cell::new(Mutation::default());
+    }
+
+    /// Restores the previous switches on drop.
+    pub(crate) struct Guard(Mutation);
+
+    pub(crate) fn activate(m: Mutation) -> Guard {
+        Guard(ACTIVE.with(|a| a.replace(m)))
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            ACTIVE.with(|a| a.set(self.0));
+        }
+    }
+
+    pub(crate) fn skip_sub_issue_link() -> bool {
+        ACTIVE.with(|a| a.get().skip_sub_issue_link)
+    }
+    pub(crate) fn skip_dependencies() -> bool {
+        ACTIVE.with(|a| a.get().skip_dependencies)
+    }
+    pub(crate) fn skip_placeholders() -> bool {
+        ACTIVE.with(|a| a.get().skip_placeholders)
+    }
+}
+
+#[cfg(not(test))]
+mod mutation {
+    pub(super) fn skip_sub_issue_link() -> bool {
+        false
+    }
+    pub(super) fn skip_dependencies() -> bool {
+        false
+    }
+    pub(super) fn skip_placeholders() -> bool {
+        false
+    }
+}
+
+fn resolve_refs(body: &str, by_key: &std::collections::HashMap<String, (u64, String)>) -> String {
+    if mutation::skip_placeholders() {
+        body.to_string()
+    } else {
+        resolve_issue_refs(body, by_key)
+    }
+}
+
 /// `create_issues`: creates `issues` ([{key, title, body, labels?, depends_on?}]) in `repo`,
 /// then for each one replaces `{{issue:<key>}}` in its body with `#<number> (<title>)`, appends
 /// `footer`, links it as a sub-issue of `parent` and records its `depends_on` keys as
@@ -485,7 +548,7 @@ pub(crate) async fn create_issues(
                     .collect()
             })
             .unwrap_or_default();
-        let body = with_footer(resolve_issue_refs(&str_of(is, "body"), &by_key));
+        let body = with_footer(resolve_refs(&str_of(is, "body"), &by_key));
         let k = c
             .create_issue(
                 &repo_key(r),
@@ -500,7 +563,7 @@ pub(crate) async fn create_issues(
             by_key.insert(keys[i].clone(), (k.number, str_of(is, "title")));
         }
         for d in deps_of(is) {
-            let Some((n, _)) = by_key.get(&d) else {
+            let Some((n, _)) = by_key.get(&d).filter(|_| !mutation::skip_dependencies()) else {
                 continue;
             };
             if *n == k.number {
@@ -514,7 +577,7 @@ pub(crate) async fn create_issues(
             .await
             .map_err(transient)?;
         }
-        if let Some(p) = parent {
+        if let Some(p) = parent.filter(|_| !mutation::skip_sub_issue_link()) {
             c.link_sub_issue(&WorkItemKey::new(repo_key(r), p), &k)
                 .await
                 .map_err(transient)?;
@@ -527,9 +590,9 @@ pub(crate) async fn create_issues(
         .collect();
     // References to issues created later (and dependencies in a cycle) are filled in now.
     for (i, is) in issues.iter().enumerate() {
-        let body = with_footer(resolve_issue_refs(&str_of(is, "body"), &by_key));
+        let body = with_footer(resolve_refs(&str_of(is, "body"), &by_key));
         if body
-            != with_footer(resolve_issue_refs(
+            != with_footer(resolve_refs(
                 &str_of(is, "body"),
                 &prefix(&order, i, &keys, &by_key),
             ))
@@ -537,7 +600,7 @@ pub(crate) async fn create_issues(
             c.update_issue(&made[i], &body).await.map_err(transient)?;
         }
         for d in deps_of(is) {
-            let Some((n, _)) = by_key.get(&d) else {
+            let Some((n, _)) = by_key.get(&d).filter(|_| !mutation::skip_dependencies()) else {
                 continue;
             };
             let before = order.iter().position(|&j| j == i).unwrap_or(0);

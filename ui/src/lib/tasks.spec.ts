@@ -8,7 +8,10 @@ import {
 	groupByProject,
 	originLabel,
 	originUrl,
-	placeCards
+	placeCards,
+	findingTarget,
+	severityClass,
+	severityRank
 } from './tasks.ts';
 import { row } from './test/task-row.ts';
 
@@ -100,5 +103,26 @@ describe('session helpers', () => {
 		expect(isError(e(1, 'assistant', { text: 'x' }))).toBe(false);
 		expect(matches(e(1, 'assistant', { text: 'Hello World' }), 'world')).toBe(true);
 		expect(matches(e(1, 'assistant', { text: 'Hello' }), 'nope')).toBe(false);
+	});
+});
+
+describe('findings helpers', () => {
+	it('ranks severities and tolerates unknown ones', () => {
+		expect(severityRank('critical')).toBeGreaterThan(severityRank('warning'));
+		expect(severityRank('warning')).toBeGreaterThan(severityRank('info'));
+		expect(severityRank('fatal')).toBe(0);
+		expect(severityClass('critical')).toBe('critical');
+		expect(severityClass('fatal')).toBe('unknown');
+	});
+
+	it('targets the task, or the project and check', () => {
+		expect(findingTarget({ taskId: 4, project: 'web', checkId: 'c' })).toEqual({
+			href: '/task/4',
+			label: 'Task #4'
+		});
+		expect(findingTarget({ taskId: null, project: 'web', checkId: 'c' })).toEqual({
+			href: null,
+			label: 'web · c'
+		});
 	});
 });

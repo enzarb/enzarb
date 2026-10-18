@@ -864,6 +864,7 @@ fn happy_path() {
             pushed: true,
             ..Default::default()
         }),
+        environment: None,
     }));
     assert_eq!(r.at(), "work/check");
     let RunExec::Command { run, .. } = &r.run_step().exec else {
@@ -1167,6 +1168,10 @@ nodes:
         Status::Ended {
             status: "done".into()
         }
+    );
+    assert!(
+        r.s.last.get("environment").is_some_and(Value::is_null),
+        "a finished nested phase defines last.environment as null"
     );
     let mut r = Run::new(res);
     r.on(start()).on(label("reject"));
@@ -1491,6 +1496,45 @@ fn check_file_problems() {
     let empty =
         check("version: 1\nid: x\nkind: dead_wait\nseverity: info\ntext: t\nwhen: {all: []}\n");
     assert!(empty.problems()[0].contains("at least one"));
+}
+
+#[test]
+fn check_issue_block_and_new_leaves() {
+    let ok = check(
+        "version: 1\nid: x\nkind: dead_wait\nseverity: info\ntext: t\n\
+         issue: {title: 'T {task}', body: b, labels: [liveness]}\n\
+         when:\n  all:\n    - command_ignored: {for: 15m, command: retry}\n    \
+         - relation_count: {kind: parent, inbound: true, gt: 0}\n    \
+         - relation_count: {kind: blocked_by, eq: 0}\n",
+    );
+    assert!(ok.problems().is_empty(), "{:?}", ok.problems());
+    assert_eq!(ok.issue.as_ref().unwrap().labels, ["liveness"]);
+    let bad = check(
+        "version: 1\nid: x\nkind: dead_wait\nseverity: info\ntext: t\n\
+         issue: {title: t, body: b, repo: nope}\n\
+         when:\n  all:\n    - command_ignored: {for: soon}\n    \
+         - relation_count: {kind: parent}\n    - relation_count: {kind: p, eq: 1, gt: 1}\n",
+    );
+    let p = bad.problems().join("\n");
+    assert!(p.contains("`nope` is not `owner/name`"), "{p}");
+    assert!(p.contains("`soon` is not a duration"), "{p}");
+    assert_eq!(p.matches("exactly one of `eq` and `gt`").count(), 2, "{p}");
+}
+
+#[test]
+fn platform_issue_needs_a_repo() {
+    let head =
+        "version: 1\nid: x\nkind: platform_failure\nseverity: info\nscope: platform\ntext: t\n";
+    let when = "when: {platform: {fact: sandbox.disk_pct, op: ge, value: 90}}\n";
+    let without = check(&format!("{head}issue: {{title: t, body: b}}\n{when}"));
+    assert_eq!(
+        without.problems(),
+        ["`issue.repo` is required for `scope: platform`"]
+    );
+    let with = check(&format!(
+        "{head}issue: {{title: t, body: b, repo: o/r}}\n{when}"
+    ));
+    assert!(with.problems().is_empty(), "{:?}", with.problems());
 }
 
 #[test]

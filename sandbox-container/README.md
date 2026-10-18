@@ -16,7 +16,7 @@ Only system components:
 - `mise`
 - `build-essential`, `pkg-config`, `libssl-dev`
 - `git`, `curl`, `ca-certificates`, `openssh-client`, `procps`
-- `sccache` (pinned musl release, sha256-checked). `RUSTC_WRAPPER=sccache`, `SCCACHE_DIR=/workspace/.cache/sccache` and `SCCACHE_CACHE_SIZE=20G` are image `ENV`, so compiles share a cache on the PVC; `CARGO_TARGET_DIR` stays unset (`target/` is per worktree). A repo that sets its own `RUSTC_WRAPPER` overrides it. `npm_config_cache=/workspace/.cache/npm`.
+- `sccache` (pinned musl release, sha256-checked). `RUSTC_WRAPPER=sccache`, `SCCACHE_DIR=/workspace/.cache/sccache` and `SCCACHE_CACHE_SIZE=8G` (the cache lives on the workspace PVC next to every task worktree, so it stays small; `src/workspace_prune.rs` cannot free it) are image `ENV`, so compiles share a cache on the PVC; `CARGO_TARGET_DIR` stays unset (`target/` is per worktree). A repo that sets its own `RUSTC_WRAPPER` overrides it. `npm_config_cache=/workspace/.cache/npm`.
 - Chromium (and chromium-headless-shell) for Playwright in `/opt/ms-playwright` (outside the PVC, so the mount does not hide it), with its runtime libraries. `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright` and `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`, so the `ui` browser tests download nothing. The Playwright npm package itself is not in the image.
 - These cache and Playwright variables are also in `PASS_ENV` (`src/chat.rs`), so chat agents (which get a scrubbed environment) see them.
 

@@ -29,6 +29,7 @@ pub const MAX_PAYLOAD: usize = 1 << 20;
 #[derive(Debug, Clone)]
 pub struct Job {
     pub id: i64,
+    /// `0` for a job without a task (`file_issue` of a platform finding).
     pub task_id: i64,
     pub project: String,
     pub kind: String,
@@ -93,7 +94,7 @@ impl Engine {
                           AND g.status = 'running' AND g.lease_until >= now() AND g.id <> c.id) < c.concurrency_max)))
                ORDER BY c.priority DESC, c.run_after, c.id
                FOR UPDATE SKIP LOCKED LIMIT 1)
-             RETURNING j.id, j.task_id, j.project, j.kind, j.input, j.attempt, j.created_at",
+             RETURNING j.id, COALESCE(j.task_id, 0) AS task_id, j.project, j.kind, j.input, j.attempt, j.created_at",
         )
         .bind(&self.cfg.worker_id)
         .bind(LEASE.as_secs_f64())
@@ -133,6 +134,7 @@ impl Engine {
             "stop_step" => self.stop_step(&job).await,
             "call_action" => self.call_action(&job).await,
             "refresh_fact" => self.refresh_fact(&job).await,
+            "file_issue" => self.file_issue(&job).await,
             k => Err(StepError::Other(format!("unknown job kind {k}"))),
         };
         let _ = stop_tx.send(true);
@@ -522,6 +524,7 @@ impl Engine {
             outputs: f.outputs,
             result,
             git,
+            environment: f.environment.as_ref().map(flow_environment),
         })))
     }
 
@@ -581,6 +584,30 @@ impl Engine {
             ok,
             result,
         }))
+    }
+
+    /// A finding's issue: upserted by the job's key, so a retry or a second finding with the
+    /// same key never files twice. The outcome (`created`, `updated`, `unchanged`) is kept in
+    /// the job's `output`. A refusal is final: it is recorded on the job and not retried.
+    async fn file_issue(&self, job: &Job) -> Result<Done, StepError> {
+        let repo = job.input["repo"].as_str().unwrap_or_default();
+        let args = job.input.as_object().cloned().unwrap_or_default();
+        let (output, error) =
+            match crate::actions::file_issue(self.connector().as_ref(), repo, &args).await {
+                Ok(v) => (v, None),
+                Err(crate::actions::ActionError::Refused(why)) => (json!({}), Some(why)),
+                Err(crate::actions::ActionError::Transient(e)) => {
+                    return Err(StepError::Unavailable(e));
+                }
+            };
+        sqlx::query("UPDATE engine.jobs SET output = $2, error = $3 WHERE id = $1")
+            .bind(job.id)
+            .bind(output)
+            .bind(error)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(Done::Quiet)
     }
 
     async fn refresh_fact(&self, job: &Job) -> Result<Done, StepError> {
@@ -676,6 +703,47 @@ async fn store_session_events(pool: sqlx::PgPool, mut rx: mpsc::UnboundedReceive
         .await;
         if let Err(err) = res {
             tracing::warn!(run = %e.run_id, seq = e.seq, "storing session event: {err}");
+        }
+    }
+}
+
+/// The flow-side form of the proto environment failure; `kind` is the contract's snake_case name.
+fn flow_environment(e: &enzarb_proto::StepEnvironment) -> enzarb_flow::interp::StepEnvironment {
+    use enzarb_proto::EnvironmentKind as K;
+    let kind = match e.kind {
+        K::DiskFull => "disk_full",
+        K::Oom => "oom",
+        K::ToolchainMissing => "toolchain_missing",
+        K::Network => "network",
+        K::Load => "load",
+        K::Unknown => "unknown",
+    };
+    enzarb_flow::interp::StepEnvironment {
+        kind: kind.into(),
+        detail: e.detail.clone(),
+    }
+}
+
+#[cfg(test)]
+mod environment_tests {
+    use super::*;
+    use enzarb_proto::{EnvironmentKind as K, StepEnvironment};
+
+    #[test]
+    fn maps_every_kind() {
+        for (k, want) in [
+            (K::DiskFull, "disk_full"),
+            (K::Oom, "oom"),
+            (K::ToolchainMissing, "toolchain_missing"),
+            (K::Network, "network"),
+            (K::Load, "load"),
+            (K::Unknown, "unknown"),
+        ] {
+            let f = flow_environment(&StepEnvironment {
+                kind: k,
+                detail: "d".into(),
+            });
+            assert_eq!((f.kind.as_str(), f.detail.as_str()), (want, "d"));
         }
     }
 }

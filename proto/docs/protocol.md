@@ -114,6 +114,8 @@ JSON objects with a `"type"` field, channel 0. Unknown fields are ignored; an un
 
 In TypeScript the decoder passes the wire string through; use `environmentKind()` to map anything outside the known set to `"unknown"`.
 
+sandbox-init currently emits `disk_full` (ENOSPC in the step output, or no free blocks/inodes in the workspace) and `oom` (the cgroup `oom_kill` counter rose during a failed step we did not stop ourselves); code failures, successes and interrupts carry none.
+
 `StepGit`: `{repo, branch, head_sha, pushed}`, one per write workspace in `step_start.workspaces` order. The engine re-verifies the git facts. A missing required output is left out (the engine reports it).
 
 `Usage` (on `StepFinished`, omitted when the agent reported none; old decoders ignore it):

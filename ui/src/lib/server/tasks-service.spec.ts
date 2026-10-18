@@ -6,6 +6,7 @@ import { createItemHandler, loadItemFrom } from './notifier.ts';
 import {
 	applyEngineSchema,
 	seedBoard,
+	seedFinding,
 	seedWorkflowView,
 	seedSessionEvent,
 	seedStepRun,
@@ -65,6 +66,25 @@ describe('tasksService against engine_api', () => {
 			workflows: [],
 			lint: [{ level: 'error', message: 'bad' }]
 		});
+		await seedFinding(sql, {
+			key: 'w1',
+			project: 'web',
+			taskId: waiting,
+			severity: 'info',
+			text: 'Stale',
+			firstSeen: '2026-10-18T01:00:00Z'
+		});
+		await seedFinding(sql, {
+			key: 'p1',
+			project: 'web',
+			checkId: 'platform_failure:web',
+			kind: 'platform_failure',
+			severity: 'critical',
+			text: 'Sandbox down',
+			firstSeen: '2026-10-18T02:00:00Z'
+		});
+		await seedFinding(sql, { key: 'x1', project: 'other', text: 'Not yours' });
+		await seedFinding(sql, { key: 'c1', project: 'web', taskId: waiting, cleared: true });
 		await sql`INSERT INTO engine.chats (run_id, "user", project, title) VALUES ('chat-1', 'octo', 'web', 'Hi')`;
 		await seedSessionEvent(sql, 'chat-1', 1, 'user', { text: 'hello' });
 	}, 120_000);
@@ -105,6 +125,21 @@ describe('tasksService against engine_api', () => {
 
 	it('lists needs_you rows', async () => {
 		expect((await svc().needsYou()).map((r) => r.id)).toEqual([waiting]);
+	});
+
+	it('lists open findings of owned projects, worst first', async () => {
+		const f = await svc().findings();
+		expect(f.map((r) => r.key)).toEqual(['p1', 'w1']);
+		expect(f[0]).toMatchObject({ taskId: null, severity: 'critical', issueUrl: null });
+		expect(f[1]).toMatchObject({ taskId: waiting, checkId: 'dead_wait' });
+		expect(await svc().findings('other')).toEqual([]);
+	});
+
+	it('maps task_v.findings onto the task', async () => {
+		const t = await svc().get(waiting);
+		expect(t?.findings.map((x) => x.key)).toEqual(['w1']);
+		expect(t?.findings[0]).toMatchObject({ checkId: 'dead_wait', severity: 'info' });
+		expect((await svc().detail(waiting))?.findings).toHaveLength(1);
 	});
 
 	it('reads the detail with transitions, step runs and artifact content', async () => {

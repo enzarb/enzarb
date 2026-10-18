@@ -46,6 +46,16 @@ The root `mise.toml` is the only place tool versions are pinned (concrete versio
 - **Check:** `retag-or-build.sh verify` (also `DRY_RUN=true retag-or-build.sh retag`) runs the same `docker buildx imagetools create` as the real retag, shared in one function, with `--dry-run`. It hashes the manifest the command prints and fails unless its media type and digest equal the source's, i.e. a single-manifest source is not wrapped in an index. The summary lists source image, manifest type and digest.
 - **Buildx:** the version pinned in the root `mise.toml` (see "Tool pins").
 
+## Next-version diff on release-path PRs
+The `next-version-diff` job of `ci-release-path.yml` shows what a change to `next-version.sh`, `image-components.sh` or the graph does to the computed versions, on the real tag history.
+
+- **Gating:** the same `release-path` component as the retag dry run (the globs also list `next-version-diff.sh` and its test). PRs outside it skip the job.
+- **Two runs, one sha:** `scripts/monorepo/next-version-diff.sh [--main-ref origin/main] [--sha HEAD]` runs `next-version.sh` for every component at the checked-out commit (on a PR, the merge commit with `main`), once with the PR's `.github/scripts/` and graph and once with those from `origin/main` (extracted with `git archive`). Only the script and graph differ, so a difference is an effect of the change, not of other commits. The checkout uses `fetch-depth: 0` and tags; `origin/main` is fetched separately.
+- **Components:** the union of the `DEPS_*` entries of both graphs, including non-image ones. A component missing on one side shows `(absent)` there.
+- **Output:** a markdown table (last tag and next version for main and for the PR) in the job summary; every row where either differs is marked and gets a `::warning::`. A difference does not fail the job (a legitimate change can alter versions); only a failing run does.
+- **Forks:** work, only git data is read.
+- **Local:** run the script from a full clone with tags. `scripts/monorepo/test-next-version-diff.sh` tests it on a scratch repo.
+
 ## Git hooks
 `lefthook.yml` (opt-in, `mise run hooks:install`, see `docs/dev.md`) runs the same checks locally. Keep the two in sync when you change either.
 
@@ -132,7 +142,7 @@ A PR that changes CI states before/after wall-clock times for the PR run and the
 - **Safety net.** `sync-components.yml` (6-hourly schedule and manual dispatch) runs the same chart job against `main`, publishing a chart in the same run if it pinned anything or found releasable `helm/` commits. `publish-helm.yml` is manual only: it republishes an existing `helm/vX.Y.Z` tag to GHCR and makes its release latest.
 - **Branch protection:** the chart job pushes to `main` with `GITHUB_TOKEN`. A protection rule or ruleset that blocks that push (required PRs or status checks without a bypass for GitHub Actions) breaks the chart step.
 - `proto` and `kubernetes` are not released. `proto` is consumed in-tree (Rust path deps, `ui` via `file:../proto`), so `@enzarb/proto` is no longer published to GitHub Packages. `kubernetes` pushes its gvisor installer image on `main` (`main` and `sha-` tags) and, with version and `latest` tags, via `rebuild-all`'s installer job.
-- Local check: `.github/scripts/next-version.sh <dir> [<sha>]` prints a component's last tag and next version for the real history. Its path list (`release_paths`) is generated, see "Affected components".
+- Local check: `.github/scripts/next-version.sh <dir> [<sha>]` prints a component's last tag and next version for the real history (`scripts/monorepo/next-version-diff.sh` compares it with `main` for every component). Its path list (`release_paths`) is generated, see "Affected components".
 - Version detection reads Conventional Commit subjects. Squash-merge titles count; git's default `Revert "..."` subject does not match `revert:`, so write reverts as `revert: ...` if they should release.
 
 ## Rebuild everything
