@@ -8,7 +8,8 @@ const base: ChartRollout = {
 	installed: '0.9.0',
 	desired: '0.9.0',
 	latest: '0.9.0',
-	stuck: false
+	stuck: false,
+	releases: []
 };
 
 describe('ChartRolloutStatus', () => {
@@ -26,7 +27,13 @@ describe('ChartRolloutStatus', () => {
 
 	it('warns when the upgrade is stuck', async () => {
 		render(ChartRolloutStatus, {
-			rollout: { installed: '0.9.0', desired: '0.10.0', latest: '0.10.0', stuck: true }
+			rollout: {
+				installed: '0.9.0',
+				desired: '0.10.0',
+				latest: '0.10.0',
+				stuck: true,
+				releases: []
+			}
 		});
 		await expect.element(page.getByText('Chart upgrade failing')).toBeVisible();
 		expect(document.body.textContent).not.toMatch(/upgrade pending/);

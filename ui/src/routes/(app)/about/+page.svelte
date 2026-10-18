@@ -1,6 +1,7 @@
 <script lang="ts">
 	import ChartRolloutStatus from '#lib/components/ChartRolloutStatus.svelte';
 	import ComponentVersionCard from '#lib/components/ComponentVersionCard.svelte';
+	import ReleaseTimings from '#lib/components/ReleaseTimings.svelte';
 	import PageHeader from '#lib/components/ui/PageHeader.svelte';
 	import type { PageProps } from './$types';
 
@@ -13,6 +14,8 @@
 
 <p>Chart version: <code>{data.chart}</code></p>
 <ChartRolloutStatus rollout={data.chartRollout} />
+
+<ReleaseTimings timings={data.releaseTimings} />
 
 {#each data.components as component (component.name)}
 	<ComponentVersionCard {component} />

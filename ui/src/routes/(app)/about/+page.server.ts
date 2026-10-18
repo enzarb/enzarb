@@ -1,10 +1,18 @@
 import { redirect } from '@sveltejs/kit';
-import type { AboutComponent, AboutRelease } from '#lib/about-types.ts';
+import type {
+	AboutComponent,
+	AboutRelease,
+	ChartRelease,
+	ReleaseTiming
+} from '#lib/about-types.ts';
+import { getProjectStore } from '#lib/server/kube.ts';
 import { getConfig } from '#lib/server/config.ts';
 import { invalidateToken, token as appToken } from '#lib/server/github-app.ts';
 import { renderMarkdown } from '#lib/server/markdown.ts';
 import { RELEASES_REPO, cachedReleases } from '#lib/server/releases.ts';
 import { fetchChartRollout } from '#lib/server/updater-status.ts';
+import { releaseTimings } from '#lib/release-timing.ts';
+import type { LastRoll } from '#lib/project-types.ts';
 import { COMPONENTS, displayVersion, componentDirUrl } from '#lib/versions.ts';
 import type { PageServerLoad } from './$types';
 
@@ -57,5 +65,28 @@ export const load: PageServerLoad = async ({ locals }) => {
 			};
 		})
 	);
-	return { chart: displayVersion(chart), chartRollout: await chartRolloutPromise, components };
+	const chartRollout = await chartRolloutPromise;
+	const timings = await recentTimings(chartRollout?.releases ?? [], releaseOpts);
+	return { chart: displayVersion(chart), chartRollout, components, releaseTimings: timings };
 };
+
+/** Merge-to-deployed of the last chart releases. A failed source just leaves its stage empty. */
+async function recentTimings(
+	deployed: ChartRelease[],
+	releaseOpts: Parameters<typeof cachedReleases>[1]
+): Promise<ReleaseTiming[]> {
+	const [chartReleases, projects] = await Promise.all([
+		cachedReleases('helm', releaseOpts).catch(() => []),
+		getProjectStore()
+			.list()
+			.catch(() => [])
+	]);
+	const rolls = projects.flatMap((p) =>
+		p.status?.lastRoll ? [p.status.lastRoll as LastRoll] : []
+	);
+	return releaseTimings(
+		chartReleases.map((r) => ({ version: r.tag, url: r.url, publishedAt: r.publishedAt })),
+		deployed,
+		rolls
+	);
+}
