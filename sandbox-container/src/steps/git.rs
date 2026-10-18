@@ -292,6 +292,19 @@ impl Git<'_> {
         let local = self
             .rev(ctl, dir, &format!("refs/heads/{}", ws.branch))
             .await?;
+        // Uncommitted changes on the default branch are never work: steps commit and push only
+        // on their own task branch. They are left by a read step, or by a clone that was never
+        // checked out (before the fix to `clone` above), and would block switching to the task
+        // branch. Discard them before leaving the default branch.
+        let current = self
+            .local(ctl, dir, &["symbolic-ref", "--short", "-q", "HEAD"])
+            .await?;
+        let current = String::from_utf8_lossy(&current.stdout).trim().to_string();
+        if current == ws.base && current != ws.branch {
+            let _ = self
+                .local(ctl, dir, &["reset", "-q", "--hard", "HEAD"])
+                .await?;
+        }
         match (&local, &remote) {
             (Some(_), r) => {
                 self.local_ok(ctl, dir, &["checkout", "-q", &ws.branch])

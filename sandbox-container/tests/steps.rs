@@ -811,3 +811,48 @@ async fn a_fresh_workspace_on_the_default_branch_has_its_files() {
     let fin = fin.unwrap();
     assert_eq!(fin.exit, "success", "README.md is missing: {fin:?}");
 }
+
+/// Uncommitted changes left on the default branch (a read step, or a clone never checked out)
+/// do not block a later step on the task branch.
+#[tokio::test]
+async fn leftovers_on_the_default_branch_do_not_block_the_task_branch() {
+    let env = Env::new();
+    let seed = env.dir.path().join("seed");
+    git(&seed, &["checkout", "-q", "-B", "feature/y", "main"]);
+    std::fs::write(seed.join("README.md"), "changed on the branch\n").unwrap();
+    git(&seed, &["commit", "-q", "-am", "y"]);
+    git(
+        &seed,
+        &["push", "-q", env.bare.to_str().unwrap(), "feature/y"],
+    );
+    let addr = env.server().await;
+    let (s, mut ev) = connect(addr).await;
+    // A read step on main, which leaves README.md modified.
+    let mut ws = env.workspace("main");
+    ws.mode = Mode::Read;
+    ws.push = false;
+    let st = step(
+        "left-1",
+        StepExec::Command {
+            run: "echo scribble >> README.md".into(),
+            tools: vec![],
+        },
+        vec![ws],
+    );
+    start(&s, &mut ev, st).await;
+    let (_, fin) = collect(&mut ev, "left-1", |_| false).await;
+    assert_eq!(fin.unwrap().exit, "success");
+    // The task branch, whose README.md differs: the checkout must not abort.
+    let st2 = step(
+        "left-2",
+        StepExec::Command {
+            run: "grep -q 'changed on the branch' README.md".into(),
+            tools: vec![],
+        },
+        vec![env.workspace("feature/y")],
+    );
+    start(&s, &mut ev, st2).await;
+    let (_, fin2) = collect(&mut ev, "left-2", |_| false).await;
+    let fin2 = fin2.unwrap();
+    assert_eq!(fin2.exit, "success", "{fin2:?}");
+}
