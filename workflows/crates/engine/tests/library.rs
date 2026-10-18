@@ -751,15 +751,23 @@ async fn a_dependency_ending_notifies_the_blocked_task() {
     };
     h.wait(a, "blocked", |p| p["reason"] == "blocked_by_dependencies")
         .await;
-    let rel: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM engine.relations WHERE task_id = $1 AND kind = 'blocked_by'
-         AND target_key = $2",
-    )
-    .bind(a)
-    .bind(format!("github:{APP}#9"))
-    .fetch_one(&h.db.pool)
-    .await
-    .unwrap();
+    // The wait shows first; the fact refresh (which records the relation) runs as a job.
+    let mut rel = 0i64;
+    for _ in 0..200 {
+        rel = sqlx::query_scalar(
+            "SELECT count(*) FROM engine.relations WHERE task_id = $1 AND kind = 'blocked_by'
+             AND target_key = $2",
+        )
+        .bind(a)
+        .bind(format!("github:{APP}#9"))
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+        if rel > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     assert_eq!(rel, 1, "the dependency is recorded as a relation");
     // End the dependency's task.
     sqlx::query("SELECT engine_api.submit($1, '{\"login\": \"alice\"}', 'cancel', '{}')")
