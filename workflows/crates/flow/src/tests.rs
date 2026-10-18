@@ -1497,6 +1497,26 @@ fn check_file_parses_and_validates() {
 }
 
 #[test]
+fn event_failing_check_round_trips_and_validates() {
+    let head = "version: 1\nid: x\nkind: event_failing\nseverity: info\ntext: t\n";
+    let c = check(&format!("{head}when: {{event_failing: {{for: 5m}}}}\n"));
+    assert_eq!(c.kind, crate::format::FindingKind::EventFailing);
+    assert!(c.problems().is_empty(), "{:?}", c.problems());
+    let back: crate::format::CheckFile =
+        serde_json::from_value(serde_json::to_value(&c).unwrap()).unwrap();
+    assert_eq!(back.when, c.when);
+    assert!(
+        check(&format!("{head}when: {{event_failing: {{}}}}\n"))
+            .problems()
+            .is_empty()
+    );
+    let bad = check(&format!("{head}when: {{event_failing: {{for: soon}}}}\n")).problems();
+    assert!(bad[0].contains("not a duration"), "{bad:?}");
+    let schema = serde_json::to_string(&schemars::schema_for!(crate::format::CheckFile)).unwrap();
+    assert!(schema.contains("event_failing"));
+}
+
+#[test]
 fn check_file_problems() {
     let bad = CI_CHECK.replace("30m", "soon").replace(
         "eq: 0",

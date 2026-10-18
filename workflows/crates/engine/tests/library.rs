@@ -832,6 +832,7 @@ fn stdlib_checks_are_valid_and_file_issues() {
         [
             "ci-never-started",
             "epic-subissues-without-deps",
+            "event-failing",
             "external-idle",
             "mergeable-unknown",
             "platform-wait-long",
