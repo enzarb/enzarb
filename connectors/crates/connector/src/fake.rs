@@ -10,7 +10,7 @@ use crate::{
     Actor, ChangeRequestSpec, CloseReason, CommentRef, CommitRef, Connector, CredScope, Error,
     ItemKind, ItemRef, MergeOutcome, MergeReadiness, Permission, Progress, ProgressTarget,
     ReadCred, RepoKey, Result, ShortLivedCred, Status, Thread, ThreadComment, UpdateBranchOutcome,
-    WorkItemKey,
+    UpsertOutcome, UpsertedIssue, WorkItemKey,
 };
 
 /// One call made against the fake, with its arguments.
@@ -119,6 +119,13 @@ pub enum Call {
     UpdateIssue {
         item: WorkItemKey,
         body: String,
+    },
+    UpsertIssue {
+        repo: RepoKey,
+        title: String,
+        body: String,
+        labels: Vec<String>,
+        dedupe_key: String,
     },
     LinkSubIssue {
         parent: WorkItemKey,
@@ -935,6 +942,58 @@ impl Connector for FakeConnector {
         entry.2 = body.to_string();
         Self::record(&mut st, call, replayed);
         Ok(())
+    }
+
+    async fn upsert_issue(
+        &self,
+        repo: &RepoKey,
+        title: &str,
+        body: &str,
+        labels: &[String],
+        dedupe_key: &str,
+    ) -> Result<UpsertedIssue> {
+        let mut st = self.st();
+        let call = Call::UpsertIssue {
+            repo: repo.clone(),
+            title: title.to_string(),
+            body: body.to_string(),
+            labels: labels.to_vec(),
+            dedupe_key: dedupe_key.to_string(),
+        };
+        Self::take_failure(&mut st, call.clone())?;
+        if let Some(existing) = st.seen_issues.get(dedupe_key).cloned() {
+            let entry = st
+                .created_issues
+                .iter_mut()
+                .find(|(k, _, _)| *k == existing)
+                .expect("a seen issue was created");
+            let unchanged = entry.1 == title && entry.2 == body;
+            entry.1 = title.to_string();
+            entry.2 = body.to_string();
+            Self::record(&mut st, call, unchanged);
+            let outcome = if unchanged {
+                UpsertOutcome::Unchanged
+            } else {
+                UpsertOutcome::Updated
+            };
+            return Ok(UpsertedIssue {
+                item: existing,
+                outcome,
+            });
+        }
+        Self::record(&mut st, call, false);
+        if st.next_issue == 0 {
+            st.next_issue = 1000;
+        }
+        let key = WorkItemKey::new(repo.clone(), st.next_issue);
+        st.next_issue += 1;
+        st.seen_issues.insert(dedupe_key.to_string(), key.clone());
+        st.created_issues
+            .push((key.clone(), title.to_string(), body.to_string()));
+        Ok(UpsertedIssue {
+            item: key,
+            outcome: UpsertOutcome::Created,
+        })
     }
 
     async fn close_issue(&self, item: &WorkItemKey, reason: CloseReason) -> Result<()> {
