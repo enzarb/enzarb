@@ -200,7 +200,10 @@ impl Engine {
             task,
             "run_step",
             json!({"step": rs}),
-            &format!("run:{}:{}:{}", task.id, rs.run_id, rs.attempt),
+            &match rs.resume {
+                0 => format!("run:{}:{}:{}", task.id, rs.run_id, rs.attempt),
+                n => format!("run:{}:{}:{}:r{n}", task.id, rs.run_id, rs.attempt),
+            },
             rs.priority,
             rs.concurrency.as_ref().map(|c| c.group.as_str()),
             rs.concurrency.as_ref().map(|c| c.max as i32),

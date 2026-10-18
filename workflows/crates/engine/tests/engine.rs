@@ -1196,3 +1196,147 @@ async fn refreshing_a_fact_counts_unknown_refreshes() {
     assert_eq!(refresh(json!(true)).await, 0);
     assert_eq!(refresh(Value::Null).await, 1);
 }
+
+// ---------------------------------------------------------------- platform wait (ADR-0026)
+
+fn env_finished(run_id: &str) -> StepFinished {
+    let mut f = finished(run_id, "failure");
+    f.environment = Some(enzarb_proto::StepEnvironment {
+        kind: enzarb_proto::EnvironmentKind::DiskFull,
+        detail: "/workspace: 0 bytes free".into(),
+    });
+    f
+}
+
+async fn count(h: &H, sql: &str) -> i64 {
+    sqlx::query_scalar(sql).fetch_one(&h.db.pool).await.unwrap()
+}
+
+async fn wait_for_platform_wait(h: &H) -> i64 {
+    h.set_secret("API_KEY", "k").await;
+    h.open_issue(5, "Disk").await;
+    let task = h.first_task().await;
+    let first = h.started(1).await;
+    h.runner.finish(env_finished(&first.run_id));
+    let p = h
+        .wait_status(task, |p| p["reason"] == "platform_wait", "platform wait")
+        .await;
+    assert_eq!(p["waiting_on"], "external", "{p}");
+    assert_eq!(p["needs_you"], false, "no person involved: {p}");
+    task
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn disk_full_waits_then_resumes_the_same_run() {
+    let Some(mut h) = start(Duration::from_secs(3600), true).await else {
+        return;
+    };
+    let facts = engine::FakePlatformFacts::new();
+    h.engine.findings = engine::Findings::new(Arc::new(facts.clone()));
+    let task = wait_for_platform_wait(&h).await;
+    let run_id = h.runner.started()[0].run_id.clone();
+
+    // Disk still full, then unknown: the task keeps waiting.
+    facts.set("p", PlatformFactName::SandboxDiskPct, Fact::Num(97.0));
+    for _ in 0..3 {
+        assert_eq!(h.engine.wake_platform_waits().await.unwrap(), 0);
+    }
+    facts.set("p", PlatformFactName::SandboxDiskPct, Fact::Unknown);
+    assert_eq!(h.engine.wake_platform_waits().await.unwrap(), 0);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(h.runner.started().len(), 1);
+    assert_eq!(h.projection(task).await["reason"], "platform_wait");
+
+    // Space returns. Two ticks make one wake-up.
+    facts.set("p", PlatformFactName::SandboxDiskPct, Fact::Num(40.0));
+    h.engine.wake_platform_waits().await.unwrap();
+    h.engine.wake_platform_waits().await.unwrap();
+    let again = h.started(2).await;
+    assert_eq!(again.run_id, run_id, "same run, not a new one");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(h.runner.started().len(), 2, "one resume only");
+    assert_eq!(
+        count(
+            &h,
+            "SELECT count(*) FROM engine.events WHERE dedupe_key LIKE 'wake:%'"
+        )
+        .await,
+        1
+    );
+    assert_eq!(h.engine.wake_platform_waits().await.unwrap(), 0);
+
+    // The step continues and finishes; the flow moves on.
+    let mut f = finished(&run_id, "success");
+    f.result = Some(json!({"summary": "ok"}));
+    h.runner.finish(f);
+    h.wait_status(task, |p| p["reason"] == "awaiting_approval", "approval")
+        .await;
+    let resumes: i32 = sqlx::query_scalar("SELECT resumes FROM engine.step_runs WHERE run_id = $1")
+        .bind(&run_id)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(resumes, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_condition_that_never_clears_keeps_waiting_and_is_reported() {
+    let Some(mut h) = start(Duration::from_secs(1), true).await else {
+        return;
+    };
+    let facts = engine::FakePlatformFacts::new();
+    facts.set("p", PlatformFactName::SandboxDiskPct, Fact::Num(99.0));
+    h.engine.findings = engine::Findings::new(Arc::new(facts.clone()));
+    let task = wait_for_platform_wait(&h).await;
+    while h.engine.process_next().await.unwrap() {}
+    // A year goes by.
+    for sql in [
+        "UPDATE engine.tasks SET created_at = created_at - interval '1 year'",
+        "UPDATE engine.events SET received_at = received_at - interval '1 year'",
+        "UPDATE engine.step_runs SET queued_at = queued_at - interval '1 year',
+             started_at = started_at - interval '1 year', ended_at = ended_at - interval '1 year'",
+    ] {
+        sqlx::query(sql).execute(&h.db.pool).await.unwrap();
+    }
+    let state_before: Value = sqlx::query_scalar("SELECT state FROM engine.tasks WHERE id = $1")
+        .bind(task)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+    let events_before = count(&h, "SELECT count(*) FROM engine.events").await;
+    for _ in 0..20 {
+        h.engine.tick().await.unwrap();
+    }
+    for _ in 0..3 {
+        h.engine.findings_pass().await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    h.engine.tick().await.unwrap();
+    assert_eq!(
+        count(&h, "SELECT count(*) FROM engine.events").await,
+        events_before
+    );
+    assert_eq!(count(&h, "SELECT count(*) FROM engine.timers").await, 0);
+    assert_eq!(h.runner.started().len(), 1);
+    assert!(h.runner.stops().is_empty());
+    let p = h.projection(task).await;
+    assert_eq!(p["reason"], "platform_wait", "{p}");
+    let state_after: Value = sqlx::query_scalar("SELECT state FROM engine.tasks WHERE id = $1")
+        .bind(task)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        state_after, state_before,
+        "findings and ticks never change the task"
+    );
+    // The long wait is visible to the liveness checks.
+    assert!(
+        open_findings(&h)
+            .await
+            .iter()
+            .any(|(k, t, _)| k == &format!("platform-wait-long:{task}") && *t == Some(task)),
+        "{:?}",
+        open_findings(&h).await
+    );
+}

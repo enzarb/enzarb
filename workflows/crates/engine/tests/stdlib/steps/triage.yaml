@@ -18,3 +18,8 @@ result:
       body: {type: string, description: Markdown; posted for questions and duplicate, else the summary for planning}
 github: {contents: read, issues: read}
 steer: [comment]
+platform_wait:
+  - kind: disk_full
+    until: {platform: {fact: sandbox.disk_pct, op: lt, value: 85}}
+  - kind: oom
+    until: {platform: {fact: sandbox.healthy, op: eq, value: true}}

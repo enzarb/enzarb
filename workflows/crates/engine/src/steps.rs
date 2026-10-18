@@ -256,6 +256,18 @@ impl StepRunner for FakeStepRunner {
     ) -> Result<RunOutcome, StepError> {
         let run_id = start.run_id.clone();
         let resumed = self.lock().started.iter().any(|s| s.run_id == run_id);
+        if resumed {
+            // Like the sandbox: re-sending `step_start` for a run that ended with an
+            // environment failure continues it, so the old result no longer stands.
+            let mut st = self.lock();
+            if st
+                .results
+                .get(&run_id)
+                .is_some_and(|f| f.environment.is_some())
+            {
+                st.results.remove(&run_id);
+            }
+        }
         self.lock().started.push(start);
         let mut sent = after_seq;
         loop {
