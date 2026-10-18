@@ -205,6 +205,10 @@ pub struct PendingChange {
     pub generation: i64,
     /// When the first change of this pending episode was detected (drain timeout runs from here).
     pub since: Time,
+    /// When the drain timeout forces the roll (`since` plus the operator's drain timeout). Absent
+    /// on objects written by an older operator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline: Option<Time>,
     /// Human-readable summary of what differs.
     pub reason: String,
 }

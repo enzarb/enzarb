@@ -377,6 +377,7 @@ mod tests {
             change: PendingChange {
                 generation: 2,
                 since: t(10),
+                deadline: None,
                 reason: reason.into(),
             },
             message: format!("generation 2: {reason}"),

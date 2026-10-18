@@ -323,3 +323,26 @@ fn cpu_memory_and_pending_change_are_optional_and_bounded() {
             .is_none()
     );
 }
+
+#[test]
+fn pending_change_deadline_is_optional() {
+    let old: enzarb_crds::PendingChange = serde_json::from_value(serde_json::json!({
+        "generation": 1, "since": "2026-10-12T03:00:00Z", "reason": "r"
+    }))
+    .unwrap();
+    assert!(old.deadline.is_none());
+    assert!(
+        serde_json::to_value(&old)
+            .unwrap()
+            .get("deadline")
+            .is_none()
+    );
+    let new: enzarb_crds::PendingChange = serde_json::from_value(serde_json::json!({
+        "generation": 1, "since": "2026-10-12T03:00:00Z",
+        "deadline": "2026-10-12T03:30:00Z", "reason": "r"
+    }))
+    .unwrap();
+    let v = serde_json::to_value(&new).unwrap();
+    assert_eq!(v["deadline"], "2026-10-12T03:30:00Z");
+    assert!(enzarb_crds::project_crd_yaml().contains("deadline:"));
+}

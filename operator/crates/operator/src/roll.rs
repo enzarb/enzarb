@@ -29,7 +29,8 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 /// Pod annotation reporting the number of active agent sessions/connections. Written by the
-/// sandbox runtime (not yet by anything in this repo). Absent or unparsable means unknown.
+/// sandbox runtime (not yet by anything in this repo). Absent or unparsable means unknown. Until
+/// a producer exists, an idle sandbox is released by the workflows drain ack instead.
 pub const ANNOTATION_ACTIVE_SESSIONS: &str = "enzarb.dev/active-sessions";
 /// Upper bound on the requeue delay while a change is pending.
 pub const DEFER_POLL: Duration = Duration::from_secs(30);
@@ -228,19 +229,28 @@ pub fn decide(i: &Input) -> Decision {
     let roll_now = i.roll_now.filter(|a| *a < i64::MAX);
     let floor = ack.max(roll_now).map_or(1, |a| a.saturating_add(1).max(1));
     let next = match i.pending {
-        None => fresh(floor, i.now, reason),
+        None => fresh(floor, i.now, i.timeout, reason),
         // The pod was recreated after this episode began: it already had its roll.
         Some(p) if created > p.since.0 => {
             if p.reason == reason {
                 return Decision::Hold;
             }
-            fresh(floor.max(p.generation.saturating_add(1)), i.now, reason)
+            fresh(
+                floor.max(p.generation.saturating_add(1)),
+                i.now,
+                i.timeout,
+                reason,
+            )
         }
-        Some(p) if p.reason == reason => p.clone(),
+        Some(p) if p.reason == reason => PendingChange {
+            deadline: Some(Time(deadline(p.since.0, i.timeout))),
+            ..p.clone()
+        },
         // A newer change: new generation, the drain clock keeps running from the first one.
         Some(p) => PendingChange {
             generation: floor.max(p.generation.saturating_add(1)),
             since: p.since.clone(),
+            deadline: Some(Time(deadline(p.since.0, i.timeout))),
             reason,
         },
     };
@@ -262,10 +272,11 @@ pub fn decide(i: &Input) -> Decision {
     }
 }
 
-fn fresh(generation: i64, now: Timestamp, reason: String) -> PendingChange {
+fn fresh(generation: i64, now: Timestamp, timeout: Duration, reason: String) -> PendingChange {
     PendingChange {
         generation,
         since: Time(now),
+        deadline: Some(Time(deadline(now, timeout))),
         reason,
     }
 }
@@ -414,6 +425,7 @@ mod tests {
         PendingChange {
             generation,
             since: Time(ts(since)),
+            deadline: Some(Time(ts(since + 7200))),
             reason: reason.into(),
         }
     }
@@ -486,6 +498,70 @@ mod tests {
         assert_eq!(decide(&base(&d, Some(&p))), Decision::Defer(p.clone()));
         // Idempotent.
         assert_eq!(decide(&base(&d, Some(&p))), decide(&base(&d, Some(&p))));
+    }
+
+    #[test]
+    fn deadline_is_since_plus_timeout_and_survives_a_newer_change() {
+        let d = diff_of(D);
+        let Decision::Defer(c) = decide(&base(&d, None)) else {
+            panic!("expected defer")
+        };
+        assert_eq!(c.deadline, Some(Time(ts(1000 + 7200))));
+        let p = pc(1, 500, "image/sandbox: x -> y");
+        let Decision::Defer(n) = decide(&base(&d, Some(&p))) else {
+            panic!("expected defer")
+        };
+        assert_eq!(n.since, p.since);
+        assert_eq!(n.deadline, Some(Time(ts(500 + 7200))));
+        // An object from an older operator gains the deadline.
+        let mut old = pc(1, 500, "image/sandbox: a -> b");
+        old.deadline = None;
+        assert_eq!(
+            decide(&base(&d, Some(&old))),
+            Decision::Defer(pc(1, 500, "image/sandbox: a -> b"))
+        );
+    }
+
+    #[test]
+    fn idle_sandbox_rolls_at_once_once_old_enough() {
+        let d = diff_of(D);
+        let mut i = base(&d, None);
+        i.activity = Activity::Active(0);
+        i.pod = PodState::Running {
+            created: ts(1000 - MIN_POD_AGE_SECS),
+        };
+        assert_eq!(
+            decide(&i),
+            Decision::Roll(pc(1, 1000, "image/sandbox: a -> b"), Why::Idle)
+        );
+    }
+
+    #[test]
+    fn idle_young_pod_defers_until_min_age() {
+        let d = diff_of(D);
+        let mut i = base(&d, None);
+        i.activity = Activity::Active(0);
+        i.pod = PodState::Running {
+            created: ts(1000 - MIN_POD_AGE_SECS + 1),
+        };
+        assert!(matches!(decide(&i), Decision::Defer(_)));
+        let p = pc(1, 1000, "image/sandbox: a -> b");
+        i.pending = Some(&p);
+        i.now = ts(1001);
+        assert!(matches!(decide(&i), Decision::Roll(_, Why::Idle)));
+    }
+
+    #[test]
+    fn busy_or_unknown_waits_for_the_deadline() {
+        let d = diff_of(D);
+        let p = pc(1, 500, "image/sandbox: a -> b");
+        for a in [Activity::Active(2), Activity::Unknown] {
+            let mut i = base(&d, Some(&p));
+            i.activity = a;
+            assert!(matches!(decide(&i), Decision::Defer(_)));
+            i.now = ts(500 + 7200);
+            assert!(matches!(decide(&i), Decision::Roll(_, Why::Timeout)));
+        }
     }
 
     #[test]
