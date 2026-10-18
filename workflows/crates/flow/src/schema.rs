@@ -23,6 +23,7 @@ pub fn generated() -> Vec<(String, String)> {
     put("runtime", schema_for!(RuntimeFile));
     put("board", schema_for!(BoardFile));
     put("bindings", schema_for!(BindingsFile));
+    put("check", schema_for!(CheckFile));
     put("event", schema_for!(Event));
     put("task-document", schema_for!(TaskDocument));
     put("scenario", schema_for!(Scenario));
@@ -51,6 +52,8 @@ fn events_md() -> String {
     let env = schema_for!(Event).to_value();
     table(&mut s, &env, &["type"]);
     s.push_str("\nTwo more types exist only inside the engine and can be waited on: `timer` (a wait's `timer` fired; `event.timer_id`) and `fact` (a refreshed fact; `event.fact`, `event.value`).\n");
+    s.push_str("\nThe periodic `platform` source (liveness checks, [format.md](format.md#checks)) is internal: it carries no task event and never reaches the interpreter. It raises and clears findings only.\n");
+    s.push_str("\nThe periodic `platform` source (liveness checks, [format.md](format.md#checks)) is internal: it carries no task event and never reaches the interpreter. It raises and clears findings only.\n");
     s.push_str("\n## Types\n");
     for (name, ty, schema) in catalog_schemas() {
         let v = schema.to_value();

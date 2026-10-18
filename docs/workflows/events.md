@@ -18,6 +18,10 @@ Every event has these fields next to `type` and the payload fields.
 
 Two more types exist only inside the engine and can be waited on: `timer` (a wait's `timer` fired; `event.timer_id`) and `fact` (a refreshed fact; `event.fact`, `event.value`).
 
+The periodic `platform` source (liveness checks, [format.md](format.md#checks)) is internal: it carries no task event and never reaches the interpreter. It raises and clears findings only.
+
+The periodic `platform` source (liveness checks, [format.md](format.md#checks)) is internal: it carries no task event and never reaches the interpreter. It raises and clears findings only.
+
 ## Types
 
 ### `comment`

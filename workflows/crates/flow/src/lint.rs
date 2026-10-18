@@ -4,7 +4,7 @@
 //! resolver.
 
 use crate::diag::Diagnostic;
-use crate::format::{BindingsFile, BoardFile, RuntimeFile, Trigger};
+use crate::format::{BindingsFile, BoardFile, CheckFile, RuntimeFile, Trigger};
 use crate::resolve::{self, ENGINE_EVENTS, Entry, Loaded, Loader, Options};
 use crate::scenario::{self, Scenario};
 use crate::template;
@@ -155,6 +155,8 @@ impl Workspace {
                 push(diags(resolve::resolve_step_file(&e, &self.loader, &opts)));
             } else if Self::under(f, &["runtimes", ".enzarb/runtimes"]) {
                 push(self.typed::<RuntimeFile>(f).err().into_iter().collect());
+            } else if Self::under(f, &["checks", ".enzarb/checks"]) {
+                push(self.check_check_file(f));
             } else if f == "board.yaml" || f == ".enzarb/board.yaml" || Self::under(f, &["boards"])
             {
                 push(self.typed::<BoardFile>(f).err().into_iter().collect());
@@ -185,6 +187,17 @@ impl Workspace {
             .map_err(|e| Diagnostic::error(f, (0, 0), e.to_string()))?;
         let sf = SourceFile::parse(f, &text)?;
         Ok((sf.typed::<T>()?, sf))
+    }
+
+    fn check_check_file(&self, f: &str) -> Vec<Diagnostic> {
+        match self.typed::<CheckFile>(f) {
+            Ok((c, _)) => c
+                .problems()
+                .into_iter()
+                .map(|m| Diagnostic::error(f, (0, 0), m))
+                .collect(),
+            Err(d) => vec![d],
+        }
     }
 
     fn check_bindings(&self, f: &str, workflows: &mut BTreeSet<String>) -> Vec<Diagnostic> {
