@@ -112,6 +112,9 @@ async function prompt(id, params) {
     await new Promise((r) => setTimeout(r, 1500));
     say(sid, "slow done");
     reply(id, { stopReason: "end_turn" });
+  } else if (word === "enospc") {
+    say(sid, "writing");
+    send({ id, error: { code: -32000, message: "write error: No space left on device" } });
   } else if (word === "The") {
     say(sid, "resumed");
     reply(id, { stopReason: "end_turn" });
