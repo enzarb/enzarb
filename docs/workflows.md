@@ -225,6 +225,42 @@ A repository opts in with `.enzarb/workflows/change_request.yaml` on its default
 - **Rollout.** The example uses events (`pushed`, `conflict`) and actions that an older `enzarb-graph` does not know, so sandbox-init must be updated before a repository commits a change request definition (an older sandbox rejects the definition and the segment fails).
 - **Not in this slice:** built-in default graphs, retiring the compiled machines, stacked change requests as graphs, and a UI detail page for graph change requests beyond Needs you, the board and the generic fields.
 
+## Liveness checks
+
+Checks watch for work that is stuck and report it as a GitHub issue. They only observe: a check never cancels, stops, restarts, nudges or times out a task or a sandbox. Decisions: [ADR-0024](adr/0024-liveness-findings.md) (findings) and [ADR-0026](adr/0026-platform-wait.md) (platform waits). Interfaces: [workflows/contracts-v2.md](workflows/contracts-v2.md), the YAML shape in [workflows/format.md](workflows/format.md) and the schema `workflows/schemas/check.json`.
+
+- The ticker's `findings_pass` (every `ENZARB_FINDINGS_SECS`, 60) evaluates each check's `when:` once per open task (`scope: task`, the default) or once per Project (`scope: platform`).
+- A finding is raised when the condition held on two consecutive passes, and cleared when it stops holding or the task ends. An unknown fact (for example an unreachable updater) leaves existing findings alone and raises nothing.
+- A raising finding queues one `file_issue` job. The filing key is `finding:<finding key>`, where the finding key is `<check id>:<task id>` (task scope) or `<check id>:<project>` (platform scope); the connector dedupes on `file_issue:{repo}:{key}`. A returning condition reopens the same finding and updates the same issue. A task born from a finding's issue records its finding but files no second issue.
+- Task checks file to the task's repo; platform checks name `repo` in the YAML. Checks are YAML files in `workflows/crates/engine/tests/stdlib/checks/`.
+
+| Check | Kind / severity | Scope | Fires when | Issue title; labels |
+|---|---|---|---|---|
+| `ci-never-started` | dead_wait / warning | task | `waiting_on: external`, `ci.check_runs` empty, `mergeable` unknown or false, no event for 30 min | `Task {task} waits for CI that cannot start`; `liveness`, `dead-wait` |
+| `retry-ignored` | dead_wait / warning | task | at `review/rounds/checks`, a command (such as `/retry`) was ignored (no node change, no effects) for 15 min | `Task {task} ignored a command at {node}`; `liveness`, `dead-wait` |
+| `epic-subissues-without-deps` | dead_wait / info | task | the task has an inbound `parent` relation, no `blocked_by`, no event for 10 min | `Sub-issue task {task} was created without dependencies`; `liveness`, `dead-wait` |
+| `external-idle` | dead_wait / info | task | `waiting_on: external` with no event and no step for 24 h | `Task {task} has waited a day for an external event`; `liveness`, `dead-wait` |
+| `mergeable-unknown` | dead_wait / info | task | `mergeable` unknown across 3 refreshes | `Task {task} cannot learn whether its pull request is mergeable`; `liveness`, `dead-wait` |
+| `platform-wait-long` | platform_failure / warning | task | in a platform wait (ADR-0026) and no event for 1 h | `Task {task} has waited on the platform for over an hour`; `liveness`, `platform` |
+| `event-failing` | event_failing / warning | task | an event of the task has been failing for 5 min | `Task {task} has an event that keeps failing`; `liveness`, `engine` |
+| `release-failed` | platform_failure / warning | platform | `workflow_run.status` of `enzarb/enzarb:release.yml` is `failure` | `The release workflow failed on main`; `platform`, `platform-failure` |
+| `rebuild-all-failed` | platform_failure / warning | platform | `workflow_run.status` of `enzarb/enzarb:rebuild-all.yml` is `failure` | `The rebuild-all workflow failed on main`; `platform`, `platform-failure` |
+| `chart-not-deployed` | platform_failure / warning | platform | `chart.deploy_state` is `stuck` (`pending` is a normal rollout) | `A released chart version did not deploy`; `platform`, `platform-failure` |
+| `sandbox-change-unapplied` | platform_failure / warning | platform | `project.pending_change` is true | `Sandbox of project {project} has not applied a pending change`; `platform`, `platform-failure` |
+| `sandbox-disk-full` | platform_failure / critical | platform | `sandbox.disk_pct` >= 100 | `Sandbox of project {project} has a full workspace`; `platform`, `platform-failure` |
+| `sandbox-disk-high` | platform_failure / warning | platform | `sandbox.disk_pct` >= 90 and < 100 | `Sandbox of project {project} is running out of disk`; `platform`, `platform-failure` |
+| `sandbox-memory-high` | platform_failure / warning | platform | `sandbox.mem_working_set_pct` > 90 | `Sandbox of project {project} is close to its memory limit`; `platform`, `platform-failure` |
+
+The platform facts come from the connector (`workflow_run.status`), the updater's `GET /status` (`chart.deploy_state`) and the sandbox stats and Project spec (the rest); see `file_issue` in [contracts.md](contracts.md).
+
+### Add a check
+
+1. Create `<id>.yaml` in the checks directory with `version: 1`, `id` (the file name), `kind`, `severity`, `text`, `scope` (`platform` for Project-wide checks) and `when`. Add `issue` with `title`, `body`, `labels` (and `repo` for platform scope). Titles and bodies may use `{task}`, `{project}`, `{node}`; the body must say that nothing was cancelled or restarted (`event-failing` and `platform-wait-long` word it as their reassurance). Add no action: a check can only file an issue.
+2. Choose the threshold from the existing conditions: `waiting_on`, `node`, `fact`, `fact_count`, `fact_unknown_for`, `relation_count`, `idle_for`, `command_ignored`, `platform_wait`, `event_failing`, `platform: {fact, arg, op, value}`, combined with `all` / `any`. A new platform fact needs a `PlatformFactName` and a source in `PlatformFacts`.
+3. Pick the dedupe key. It comes from the check id and the task or Project (the finding key), never from the issue being worked; two checks must not share an id.
+4. Validate the file against `check.json`, then run the enzarb-lint contracts check.
+5. Add a firing test (using `assert_one_finding_one_issue`) and a healthy test in `workflows/crates/engine/tests/library.rs`. Add the id and a healthy case to `all_checks_healthy_file_nothing`, and a firing case to `no_check_cancels_stops_or_restarts`; both compare against the checks directory and fail until you do.
+
 ## Progress feedback
 Whenever a transition **accepts** an event, the reducer queues a high-priority `set_progress` job:
 - Received → 👀
