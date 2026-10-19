@@ -1207,6 +1207,74 @@ async fn task_v_reports_parent_and_children() {
     assert_eq!(children, json!([]));
     let (parent, children) = row(plain).await;
     assert_eq!((parent, children), (None, json!([])));
+
+    // Another project's task is never resolved: a `parent` relation to its issue shows as a
+    // bare key, and a task of another project that names this one as `child` is no sub-issue.
+    let other: i64 = sqlx::query_scalar(
+        "INSERT INTO engine.tasks (project, repo, workflow_ref, state, resolved)
+         VALUES ('q', 'o/r', 'wf', '{}', '{}') RETURNING id",
+    )
+    .fetch_one(&h.db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO engine.projection (task_id, project, repo, workflow, title, status)
+         VALUES ($1, 'q', 'o/r', 'wf', 'Secret', 'waiting')",
+    )
+    .bind(other)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO engine.subjects (task_id, kind, key) VALUES ($1, 'issue', 'github:o/r#9')",
+    )
+    .bind(other)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO engine.relations (task_id, kind, target_key, source)
+         VALUES ($1, 'parent', 'github:o/r#9', 'workflow'), ($2, 'child', $3, 'workflow')",
+    )
+    .bind(epic)
+    .bind(other)
+    .bind(format!("task:{plain}"))
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    let (_, children) = row(epic).await;
+    let nine = children
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["key"] == "github:o/r#9")
+        .expect("bare key");
+    assert_eq!(nine["task_id"], Value::Null);
+    assert_eq!(nine["title"], Value::Null);
+    let (parent, children) = row(plain).await;
+    assert_eq!((parent, children), (None, json!([])));
+
+    // A child naming its epic by `task:<id>` only (no subject) still shows, once.
+    let bare = seed_task(&h, "start/wait", "human", None).await;
+    sqlx::query(
+        "INSERT INTO engine.relations (task_id, kind, target_key, source)
+         VALUES ($1, 'child', $2, 'workflow')",
+    )
+    .bind(bare)
+    .bind(format!("task:{epic}"))
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    let (_, children) = row(epic).await;
+    let listed = children
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["task_id"] == bare)
+        .count();
+    assert_eq!(listed, 1, "{children}");
+    let (parent, _) = row(bare).await;
+    assert_eq!(parent.unwrap()["task_id"], epic);
 }
 
 /// Sub-issues an epic created without dependencies.

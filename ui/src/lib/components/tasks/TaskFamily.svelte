@@ -13,7 +13,8 @@
 	}: { parent: TaskLink | null; subIssues: TaskLink[]; compact?: boolean } = $props();
 
 	const progress = $derived(childProgress(subIssues));
-	const label = (l: TaskLink) => l.title || (l.key ?? '').replace(/^[a-z]+:/, '');
+	const label = (l: TaskLink) =>
+		l.title || (l.key ?? '').replace(/^[a-z]+:/, '') || (l.taskId ? `Task #${l.taskId}` : '');
 </script>
 
 {#if compact}

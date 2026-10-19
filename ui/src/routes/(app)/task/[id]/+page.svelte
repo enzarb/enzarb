@@ -88,7 +88,13 @@
 		{/if}
 
 		{#if t.parent || t.children.length}
-			<Section title={t.children.length ? 'Sub-issues' : 'Epic'}>
+			<Section
+				title={t.parent && t.children.length
+					? 'Epic and sub-issues'
+					: t.children.length
+						? 'Sub-issues'
+						: 'Epic'}
+			>
 				<TaskFamily parent={t.parent} subIssues={t.children} />
 			</Section>
 		{/if}

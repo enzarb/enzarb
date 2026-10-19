@@ -7,6 +7,8 @@
 --             and the statuses are null while the target has no task of its own.
 --   parent:   `{task_id, title, status, end_status}` of the task that is `parent` of one of this
 --             task's subjects (or that this task names in a `child` row), else null.
+-- Only tasks of the same project are resolved: the view reads every project, so a link to a task
+-- of another project shows as a bare key (children) or not at all (parent).
 CREATE OR REPLACE VIEW engine_api.task_v AS
 SELECT p.task_id, p.project, t.repo, t.workflow_ref, p.title, p.subjects, p.status, p.end_status,
        p.phase, p.node, p."column", p.waiting_on,
@@ -23,31 +25,47 @@ SELECT p.task_id, p.project, t.repo, t.workflow_ref, p.title, p.subjects, p.stat
        p.commands,
        (SELECT jsonb_build_object('task_id', pt.task_id, 'title', pt.title, 'status', pt.status,
                                   'end_status', pt.end_status)
-          FROM engine.projection pt
-         WHERE pt.task_id <> p.task_id
-           AND (EXISTS (SELECT 1 FROM engine.relations r JOIN engine.subjects s ON s.key = r.target_key
-                         WHERE r.task_id = pt.task_id AND r.kind = 'parent' AND s.task_id = p.task_id)
-             OR EXISTS (SELECT 1 FROM engine.relations r
-                         WHERE r.task_id = p.task_id AND r.kind = 'child'
-                           AND (r.target_key = 'task:' || pt.task_id
-                                OR r.target_key IN (SELECT s.key FROM engine.subjects s WHERE s.task_id = pt.task_id))))
+          FROM (SELECT r.task_id AS pid
+                  FROM engine.subjects s
+                  JOIN engine.relations r ON r.target_key = s.key AND r.kind = 'parent'
+                 WHERE s.task_id = p.task_id
+                UNION ALL
+                SELECT CASE WHEN r.target_key ~ '^task:[0-9]+$' THEN substr(r.target_key, 6)::bigint
+                            ELSE (SELECT s.task_id FROM engine.subjects s WHERE s.key = r.target_key
+                                   ORDER BY s.ended, s.linked_at DESC LIMIT 1) END
+                  FROM engine.relations r
+                 WHERE r.task_id = p.task_id AND r.kind = 'child') c
+          JOIN engine.projection pt ON pt.task_id = c.pid
+         WHERE pt.task_id <> p.task_id AND pt.project = p.project
          ORDER BY pt.task_id LIMIT 1) AS parent,
        COALESCE((SELECT jsonb_agg(jsonb_build_object(
-                     'key', c.key, 'task_id', c.task_id, 'title', cp.title, 'status', cp.status,
-                     'end_status', cp.end_status) ORDER BY c.key)
-                FROM (SELECT r.target_key AS key,
-                             (SELECT s.task_id FROM engine.subjects s
-                               WHERE s.key = r.target_key ORDER BY s.ended, s.linked_at DESC LIMIT 1) AS task_id
-                        FROM engine.relations r WHERE r.task_id = p.task_id AND r.kind = 'parent'
-                      UNION
-                      SELECT (SELECT s.key FROM engine.subjects s WHERE s.task_id = r.task_id ORDER BY s.linked_at LIMIT 1),
-                             r.task_id
-                        FROM engine.relations r
-                       WHERE r.kind = 'child'
-                         AND (r.target_key = 'task:' || p.task_id
-                              OR r.target_key IN (SELECT s.key FROM engine.subjects s WHERE s.task_id = p.task_id))) c
-                LEFT JOIN engine.projection cp ON cp.task_id = c.task_id
-               WHERE c.key IS NOT NULL), '[]') AS children
+                     'key', d.key, 'task_id', d.task_id, 'title', d.title, 'status', d.status,
+                     'end_status', d.end_status) ORDER BY d.key)
+                FROM (SELECT DISTINCT ON (COALESCE(cp.task_id::text, c.key))
+                             c.key, cp.task_id, cp.title, cp.status, cp.end_status
+                        FROM (SELECT r.target_key AS key,
+                                     (SELECT s.task_id FROM engine.subjects s WHERE s.key = r.target_key
+                                       ORDER BY s.ended, s.linked_at DESC LIMIT 1) AS task_id
+                                FROM engine.relations r WHERE r.task_id = p.task_id AND r.kind = 'parent'
+                              UNION ALL
+                              SELECT COALESCE((SELECT s.key FROM engine.subjects s WHERE s.task_id = r.task_id
+                                                ORDER BY s.linked_at LIMIT 1), 'task:' || r.task_id),
+                                     r.task_id
+                                FROM engine.relations r
+                               WHERE r.kind = 'child' AND r.target_key = 'task:' || p.task_id
+                                 AND EXISTS (SELECT 1 FROM engine.projection x
+                                              WHERE x.task_id = r.task_id AND x.project = p.project)
+                              UNION ALL
+                              SELECT COALESCE((SELECT s2.key FROM engine.subjects s2 WHERE s2.task_id = r.task_id
+                                                ORDER BY s2.linked_at LIMIT 1), 'task:' || r.task_id),
+                                     r.task_id
+                                FROM engine.subjects s JOIN engine.relations r
+                                     ON r.target_key = s.key AND r.kind = 'child'
+                                 AND EXISTS (SELECT 1 FROM engine.projection x
+                                              WHERE x.task_id = r.task_id AND x.project = p.project)
+                               WHERE s.task_id = p.task_id) c
+                        LEFT JOIN engine.projection cp ON cp.task_id = c.task_id AND cp.project = p.project
+                       ORDER BY COALESCE(cp.task_id::text, c.key), c.key) d), '[]') AS children
 FROM engine.projection p JOIN engine.tasks t ON t.id = p.task_id
 LEFT JOIN LATERAL (
     SELECT f.check_id, f.text FROM engine.findings f
