@@ -4,6 +4,7 @@
 	import StepRuns from '#lib/components/tasks/StepRuns.svelte';
 	import SubjectLinks from '#lib/components/tasks/SubjectLinks.svelte';
 	import TaskCommands from '#lib/components/tasks/TaskCommands.svelte';
+	import TaskFamily from '#lib/components/tasks/TaskFamily.svelte';
 	import TaskFindings from '#lib/components/tasks/TaskFindings.svelte';
 	import TaskControls from '#lib/components/tasks/TaskControls.svelte';
 	import TaskStatus from '#lib/components/tasks/TaskStatus.svelte';
@@ -83,6 +84,12 @@
 		{#if t.findings.length}
 			<Section title="Findings">
 				<TaskFindings findings={t.findings} />
+			</Section>
+		{/if}
+
+		{#if t.parent || t.children.length}
+			<Section title={t.children.length ? 'Sub-issues' : 'Epic'}>
+				<TaskFamily parent={t.parent} subIssues={t.children} />
 			</Section>
 		{/if}
 

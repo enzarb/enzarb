@@ -1159,6 +1159,56 @@ async fn retry_that_advanced_or_is_recent_files_nothing() {
     assert!(issue_jobs(&h).await.is_empty());
 }
 
+/// `task_v` places a task in its epic: the epic lists its children (a sub-issue without a task
+/// yet has only its key), and a sub-issue names its parent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn task_v_reports_parent_and_children() {
+    let Some(h) = start(false).await else {
+        return;
+    };
+    let epic = seed_task(&h, "children/wait", "children", Some(1)).await;
+    let sub = seed_task(&h, "start/wait", "human", Some(2)).await;
+    let plain = seed_task(&h, "start/wait", "human", Some(4)).await;
+    for n in [2, 3] {
+        sqlx::query(
+            "INSERT INTO engine.relations (task_id, kind, target_key, source)
+             VALUES ($1, 'parent', $2, 'workflow')",
+        )
+        .bind(epic)
+        .bind(format!("github:{APP}#{n}"))
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+    }
+    let row = |id: i64| {
+        let pool = h.db.pool.clone();
+        async move {
+            sqlx::query_as::<_, (Option<Value>, Value)>(
+                "SELECT parent, children FROM engine_api.task_v WHERE task_id = $1",
+            )
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let (parent, children) = row(epic).await;
+    assert_eq!(parent, None);
+    let children = children.as_array().unwrap();
+    assert_eq!(children.len(), 2, "{children:?}");
+    assert_eq!(children[0]["key"], format!("github:{APP}#2"));
+    assert_eq!(children[0]["task_id"], sub);
+    assert_eq!(children[0]["status"], "waiting");
+    assert_eq!(children[1]["key"], format!("github:{APP}#3"));
+    assert_eq!(children[1]["task_id"], Value::Null);
+
+    let (parent, children) = row(sub).await;
+    assert_eq!(parent.unwrap()["task_id"], epic);
+    assert_eq!(children, json!([]));
+    let (parent, children) = row(plain).await;
+    assert_eq!((parent, children), (None, json!([])));
+}
+
 /// Sub-issues an epic created without dependencies.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn epic_subissue_without_dependencies_files_one_issue() {

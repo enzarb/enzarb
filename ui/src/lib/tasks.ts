@@ -64,11 +64,35 @@ export interface TaskRow {
 	artifacts: ArtifactRef[];
 	/** Open liveness findings on this task (additive; empty from an older engine). */
 	findings: TaskFinding[];
+	/** The epic this task is a sub-issue of (additive; null from an older engine). */
+	parent: TaskLink | null;
+	/** The sub-issues of an epic, in key order (additive; empty from an older engine). */
+	children: TaskLink[];
 	needsYou: boolean;
 	costUsd: number | null;
 	createdAt: string;
 	updatedAt: string;
 	endedAt: string | null;
+}
+
+/**
+ * A task in an epic family, as `task_v.parent` / `task_v.children` carry it. A sub-issue that
+ * has no task yet has only its `key`.
+ */
+export interface TaskLink {
+	key: string | null;
+	taskId: number | null;
+	title: string | null;
+	status: string | null;
+	endStatus: string | null;
+}
+
+/** A sub-issue is finished when its task ended as `done`. */
+export const linkDone = (l: TaskLink): boolean => l.status === 'ended' && l.endStatus === 'done';
+
+/** `[done, total]` over the sub-issues of an epic. */
+export function childProgress(children: readonly TaskLink[]): [number, number] {
+	return [children.filter(linkDone).length, children.length];
 }
 
 /** An open liveness finding as `task_v.findings` carries it (ADR-0024). */

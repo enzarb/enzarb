@@ -2852,6 +2852,7 @@ textarea.ez-control {
 
 .ez-task-card__artifacts,
 .ez-task-subjects,
+.ez-task-family__list,
 .ez-secrets {
 	display: flex;
 	flex-wrap: wrap;
@@ -2860,6 +2861,19 @@ textarea.ez-control {
 	padding: 0;
 	list-style: none;
 	font-size: var(--ez-text-sm);
+}
+
+.ez-task-family {
+	margin: 0;
+	font-size: var(--ez-text-sm);
+}
+
+.ez-task-family__list {
+	flex-direction: column;
+}
+
+.ez-task-family__done a {
+	text-decoration: line-through;
 }
 
 .ez-secrets {

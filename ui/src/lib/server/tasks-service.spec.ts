@@ -142,6 +142,24 @@ describe('tasksService against engine_api', () => {
 		expect((await svc().detail(waiting))?.findings).toHaveLength(1);
 	});
 
+	it('maps the epic family: children on the parent, parent on the child', async () => {
+		const sub = await seedTask(sql, { project: 'web', title: 'Sub-issue' });
+		await sql`INSERT INTO engine.subjects (task_id, kind, key)
+			VALUES (${sub}, 'issue', 'github:acme/web#2')`;
+		await sql`INSERT INTO engine.relations (task_id, kind, target_key, source) VALUES
+			(${waiting}, 'parent', 'github:acme/web#2', 'workflow'),
+			(${waiting}, 'parent', 'github:acme/web#3', 'workflow')`;
+		const epic = await svc().get(waiting);
+		expect(epic?.parent).toBeNull();
+		expect(epic?.children.map((c) => [c.key, c.taskId, c.title])).toEqual([
+			['github:acme/web#2', sub, 'Sub-issue'],
+			['github:acme/web#3', null, null]
+		]);
+		expect((await svc().get(sub))?.parent).toMatchObject({ taskId: waiting, title: 'Add search' });
+		expect((await svc().detail(sub))?.parent?.taskId).toBe(waiting);
+		expect(await svc().get(running)).toMatchObject({ parent: null, children: [] });
+	});
+
 	it('reads the detail with transitions, step runs and artifact content', async () => {
 		const d = await svc().detail(waiting);
 		expect(d?.artifacts[0].content).toBe('## Plan\n- a');
