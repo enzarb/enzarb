@@ -81,6 +81,23 @@
 			</div>
 		{/if}
 
+		{#if t.description?.body}
+			<Section title="Description">
+				{#if t.description.author || t.description.url}
+					<p class="ez-muted">
+						{#if t.description.author}opened by {t.description.author}{/if}
+						{#if t.description.url}<a
+								href={t.description.url}
+								target="_blank"
+								rel="noopener noreferrer">view on GitHub</a
+							>{/if}
+					</p>
+				{/if}
+				<!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized server-side (renderMarkdown) -->
+				<div class="ez-markdown" data-testid="task-description">{@html t.description.html}</div>
+			</Section>
+		{/if}
+
 		{#if t.findings.length}
 			<Section title="Findings">
 				<TaskFindings findings={t.findings} />

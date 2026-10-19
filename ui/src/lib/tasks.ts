@@ -160,7 +160,22 @@ export interface StepRun {
 	steers: number;
 }
 
+/** The issue (or pull request) a task works on, from `task_detail.description`. */
+export interface TaskDescription {
+	title: string;
+	/** Untrusted markdown. */
+	body: string;
+	author: string | null;
+	url: string | null;
+	state: string | null;
+	labels: string[];
+	/** Sanitized HTML of `body`, rendered server-side. */
+	html?: string;
+}
+
 export interface TaskDetail extends Omit<TaskRow, 'artifacts'> {
+	/** Additive: null from an older engine, or for a task with no issue or pull request. */
+	description: TaskDescription | null;
 	artifacts: Artifact[];
 	transitions: TransitionSummary[];
 	stepRuns: StepRun[];

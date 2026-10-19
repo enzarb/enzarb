@@ -10,6 +10,7 @@ import type {
 	SessionHit,
 	StepRun,
 	SubmitKind,
+	TaskDescription,
 	TaskDetail,
 	TaskLink,
 	TaskRow,
@@ -123,10 +124,24 @@ function mapStepRun(r: Raw): StepRun {
 	};
 }
 
+function mapDescription(x: unknown): TaskDescription | null {
+	if (!x || typeof x !== 'object') return null;
+	const r = x as Raw;
+	return {
+		title: String(r.title ?? ''),
+		body: String(r.body ?? ''),
+		author: (r.author as string | null) ?? null,
+		url: (r.url as string | null) ?? null,
+		state: (r.state as string | null) ?? null,
+		labels: arr<unknown>(r.labels).map(String)
+	};
+}
+
 export function mapDetail(d: Raw): TaskDetail {
 	const base = mapTask(d);
 	return {
 		...base,
+		description: mapDescription(d.description),
 		artifacts: arr(d.artifacts),
 		transitions: arr<Raw>(d.transitions).map((t) => ({
 			at: iso(t.at) ?? '',
