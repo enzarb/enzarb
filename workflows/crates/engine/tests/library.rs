@@ -1172,6 +1172,175 @@ async fn retry_that_advanced_or_is_recent_files_nothing() {
     assert!(issue_jobs(&h).await.is_empty());
 }
 
+/// `task_v` places a task in its epic: the epic lists its children (a sub-issue without a task
+/// yet has only its key), and a sub-issue names its parent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn task_v_reports_parent_and_children() {
+    let Some(h) = start(false).await else {
+        return;
+    };
+    let epic = seed_task(&h, "children/wait", "children", Some(1)).await;
+    let sub = seed_task(&h, "start/wait", "human", Some(2)).await;
+    let plain = seed_task(&h, "start/wait", "human", Some(4)).await;
+    for n in [2, 3] {
+        sqlx::query(
+            "INSERT INTO engine.relations (task_id, kind, target_key, source)
+             VALUES ($1, 'parent', $2, 'workflow')",
+        )
+        .bind(epic)
+        .bind(format!("github:{APP}#{n}"))
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+    }
+    let row = |id: i64| {
+        let pool = h.db.pool.clone();
+        async move {
+            sqlx::query_as::<_, (Option<Value>, Value)>(
+                "SELECT parent, children FROM engine_api.task_v WHERE task_id = $1",
+            )
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let (parent, children) = row(epic).await;
+    assert_eq!(parent, None);
+    let children = children.as_array().unwrap();
+    assert_eq!(children.len(), 2, "{children:?}");
+    assert_eq!(children[0]["key"], format!("github:{APP}#2"));
+    assert_eq!(children[0]["task_id"], sub);
+    assert_eq!(children[0]["status"], "waiting");
+    assert_eq!(children[1]["key"], format!("github:{APP}#3"));
+    assert_eq!(children[1]["task_id"], Value::Null);
+
+    let (parent, children) = row(sub).await;
+    assert_eq!(parent.unwrap()["task_id"], epic);
+    assert_eq!(children, json!([]));
+    let (parent, children) = row(plain).await;
+    assert_eq!((parent, children), (None, json!([])));
+
+    // Another project's task is never resolved: a `parent` relation to its issue shows as a
+    // bare key, and a task of another project that names this one as `child` is no sub-issue.
+    let other: i64 = sqlx::query_scalar(
+        "INSERT INTO engine.tasks (project, repo, workflow_ref, state, resolved)
+         VALUES ('q', 'o/r', 'wf', '{}', '{}') RETURNING id",
+    )
+    .fetch_one(&h.db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO engine.projection (task_id, project, repo, workflow, title, status)
+         VALUES ($1, 'q', 'o/r', 'wf', 'Secret', 'waiting')",
+    )
+    .bind(other)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO engine.subjects (task_id, kind, key) VALUES ($1, 'issue', 'github:o/r#9')",
+    )
+    .bind(other)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO engine.relations (task_id, kind, target_key, source)
+         VALUES ($1, 'parent', 'github:o/r#9', 'workflow'), ($2, 'child', $3, 'workflow')",
+    )
+    .bind(epic)
+    .bind(other)
+    .bind(format!("task:{plain}"))
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    let (_, children) = row(epic).await;
+    let nine = children
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["key"] == "github:o/r#9")
+        .expect("bare key");
+    assert_eq!(nine["task_id"], Value::Null);
+    assert_eq!(nine["title"], Value::Null);
+    let (parent, children) = row(plain).await;
+    assert_eq!((parent, children), (None, json!([])));
+
+    // A child naming its epic by `task:<id>` only (no subject) still shows, once.
+    let bare = seed_task(&h, "start/wait", "human", None).await;
+    sqlx::query(
+        "INSERT INTO engine.relations (task_id, kind, target_key, source)
+         VALUES ($1, 'child', $2, 'workflow')",
+    )
+    .bind(bare)
+    .bind(format!("task:{epic}"))
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    let (_, children) = row(epic).await;
+    let listed = children
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["task_id"] == bare)
+        .count();
+    assert_eq!(listed, 1, "{children}");
+    let (parent, _) = row(bare).await;
+    assert_eq!(parent.unwrap()["task_id"], epic);
+}
+
+/// The distinct `engine_projection` payloads that arrive until 300 ms pass quietly, sorted.
+async fn drain_notifications(listener: &mut sqlx::postgres::PgListener) -> Vec<String> {
+    let mut got = Vec::new();
+    while let Ok(Ok(n)) = tokio::time::timeout(Duration::from_millis(300), listener.recv()).await {
+        got.push(n.payload().to_string());
+    }
+    got.sort();
+    got.dedup();
+    got
+}
+
+/// A sub-issue's status change announces its epic too (the epic's row carries the progress);
+/// a change to other columns does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sub_issue_status_change_notifies_the_epic() {
+    let Some(h) = start(false).await else {
+        return;
+    };
+    let epic = seed_task(&h, "children/wait", "children", Some(1)).await;
+    let sub = seed_task(&h, "start/wait", "human", Some(2)).await;
+    sqlx::query(
+        "INSERT INTO engine.relations (task_id, kind, target_key, source)
+         VALUES ($1, 'parent', $2, 'workflow')",
+    )
+    .bind(epic)
+    .bind(format!("github:{APP}#2"))
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    let mut listener = sqlx::postgres::PgListener::connect_with(&h.db.pool)
+        .await
+        .unwrap();
+    listener.listen("engine_projection").await.unwrap();
+    sqlx::query("UPDATE engine.projection SET needs_you = true WHERE task_id = $1")
+        .bind(sub)
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(drain_notifications(&mut listener).await, [sub.to_string()]);
+    sqlx::query(
+        "UPDATE engine.projection SET status = 'ended', end_status = 'done' WHERE task_id = $1",
+    )
+    .bind(sub)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    let mut want = [sub.to_string(), epic.to_string()];
+    want.sort();
+    assert_eq!(drain_notifications(&mut listener).await, want);
+}
+
 /// Sub-issues an epic created without dependencies.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn epic_subissue_without_dependencies_files_one_issue() {

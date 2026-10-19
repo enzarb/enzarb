@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { TaskRow } from '#lib/tasks.ts';
 	import { formatCost } from '#lib/usage.ts';
+	import TaskFamily from './TaskFamily.svelte';
 	import SubjectLinks from './SubjectLinks.svelte';
 	import TaskActions from './TaskActions.svelte';
 	import TaskStatus from './TaskStatus.svelte';
@@ -41,6 +42,7 @@
 			{/each}
 		</ul>
 	{/if}
+	<TaskFamily parent={task.parent} subIssues={task.children} compact />
 	<SubjectLinks subjects={task.subjects} />
 	{#if task.costUsd !== null}<p class="ez-muted ez-card__usage">
 			{formatCost(task.costUsd)}

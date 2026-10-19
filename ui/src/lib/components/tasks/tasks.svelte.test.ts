@@ -10,6 +10,7 @@ import SessionInspector from './SessionInspector.svelte';
 import StepRuns from './StepRuns.svelte';
 import TaskBoard from './TaskBoard.svelte';
 import TaskCommands from './TaskCommands.svelte';
+import TaskFamily from './TaskFamily.svelte';
 import TaskControls from './TaskControls.svelte';
 import WorkflowViewer from './WorkflowViewer.svelte';
 
@@ -376,5 +377,53 @@ describe('TaskCommands', () => {
 		});
 		await page.getByRole('button', { name: 'Merge' }).click();
 		expect(oncommand).toHaveBeenCalledWith('merge');
+	});
+});
+
+describe('TaskFamily', () => {
+	const link = (over: object) => ({
+		key: 'github:acme/web#2',
+		taskId: 2,
+		title: 'Sub',
+		status: 'waiting',
+		endStatus: null,
+		...over
+	});
+
+	it('lists the sub-issues of an epic with progress and a key-only row for one without a task', async () => {
+		render(TaskFamily, {
+			parent: null,
+			subIssues: [
+				link({}),
+				link({
+					key: 'github:acme/web#3',
+					taskId: 3,
+					title: 'Done one',
+					status: 'ended',
+					endStatus: 'done'
+				}),
+				link({ key: 'github:acme/web#4', taskId: null, title: null, status: null })
+			]
+		});
+		await expect
+			.element(page.getByTestId('task-progress'))
+			.toHaveTextContent('1 of 3 sub-issues done');
+		await expect
+			.element(page.getByRole('link', { name: 'Sub' }))
+			.toHaveAttribute('href', '/task/2');
+		await expect
+			.element(page.getByTestId('task-children'))
+			.toHaveTextContent('acme/web#4 no task yet');
+	});
+
+	it('links a sub-issue to its epic, and shows the one-line form on a card', async () => {
+		render(TaskFamily, {
+			parent: link({ taskId: 9, title: 'The epic' }),
+			subIssues: [],
+			compact: true
+		});
+		await expect
+			.element(page.getByRole('link', { name: 'The epic' }))
+			.toHaveAttribute('href', '/task/9');
 	});
 });

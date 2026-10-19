@@ -11,6 +11,7 @@ import type {
 	StepRun,
 	SubmitKind,
 	TaskDetail,
+	TaskLink,
 	TaskRow,
 	WorkflowViewDoc
 } from '#lib/tasks.ts';
@@ -61,6 +62,16 @@ export function mapFinding(r: Raw): FindingRow {
 	};
 }
 
+function mapLink(r: Raw): TaskLink {
+	return {
+		key: (r.key as string | null) ?? null,
+		taskId: num(r.task_id),
+		title: (r.title as string | null) ?? null,
+		status: (r.status as string | null) ?? null,
+		endStatus: (r.end_status as string | null) ?? null
+	};
+}
+
 export function mapTask(r: Raw): TaskRow {
 	return {
 		id: Number(r.task_id),
@@ -81,6 +92,8 @@ export function mapTask(r: Raw): TaskRow {
 		commands: arr(r.commands),
 		artifacts: arr(r.artifacts),
 		findings: arr<Raw>(r.findings).map(mapTaskFinding),
+		parent: r.parent && typeof r.parent === 'object' ? mapLink(r.parent as Raw) : null,
+		children: arr<Raw>(r.children).map(mapLink),
 		needsYou: r.needs_you === true,
 		costUsd: num(r.cost_usd),
 		createdAt: iso(r.created_at) ?? '',
