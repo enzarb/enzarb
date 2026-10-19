@@ -1341,6 +1341,64 @@ async fn sub_issue_status_change_notifies_the_epic() {
     assert_eq!(drain_notifications(&mut listener).await, want);
 }
 
+/// `task_detail` carries the description: the issue's body from the task document, else the
+/// first pull request's, else null. `task_v` stays small and has none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn task_detail_carries_the_description() {
+    let Some(h) = start(false).await else {
+        return;
+    };
+    let with_issue = seed_task(&h, "start/wait", "human", Some(1)).await;
+    let with_pr = seed_task(&h, "review/wait", "human", None).await;
+    let bare = seed_task(&h, "start/wait", "human", None).await;
+    for (id, subjects) in [
+        (
+            with_issue,
+            json!({"issue": {"title": "Add search", "body": "## Why\nBecause.", "author": "alice",
+                             "url": "https://github.com/acme/app/issues/1", "state": "open",
+                             "labels": ["bug"]},
+                   "pull_requests": [{"body": "not this one"}]}),
+        ),
+        (
+            with_pr,
+            json!({"issue": null, "pull_requests": [{"title": "PR", "body": "Fixes it"}]}),
+        ),
+        (bare, json!({"issue": null, "pull_requests": []})),
+    ] {
+        sqlx::query("UPDATE engine.tasks SET state = jsonb_build_object('doc', jsonb_build_object('subjects', $2::jsonb)) WHERE id = $1")
+            .bind(id)
+            .bind(subjects)
+            .execute(&h.db.pool)
+            .await
+            .unwrap();
+    }
+    let detail = |id: i64| {
+        let pool = h.db.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, Value>("SELECT engine_api.task_detail($1)->'description'")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    let d = detail(with_issue).await;
+    assert_eq!(d["body"], "## Why\nBecause.");
+    assert_eq!(
+        (d["author"].as_str(), d["labels"].clone()),
+        (Some("alice"), json!(["bug"]))
+    );
+    assert_eq!(detail(with_pr).await["body"], "Fixes it");
+    assert_eq!(detail(bare).await, Value::Null);
+    let in_view: Value =
+        sqlx::query_scalar("SELECT to_jsonb(v) FROM engine_api.task_v v WHERE task_id = $1")
+            .bind(with_issue)
+            .fetch_one(&h.db.pool)
+            .await
+            .unwrap();
+    assert!(in_view.get("description").is_none());
+}
+
 /// Sub-issues an epic created without dependencies.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn epic_subissue_without_dependencies_files_one_issue() {

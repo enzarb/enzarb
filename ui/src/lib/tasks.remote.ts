@@ -66,6 +66,9 @@ export const getTaskDetail = query(Id, async (id) => {
 	if (!d) error(404, 'Task not found');
 	return {
 		...d,
+		description: d.description
+			? { ...d.description, html: renderMarkdown(d.description.body) }
+			: null,
 		artifacts: d.artifacts.map((a) =>
 			a.format === 'markdown' ? { ...a, html: renderMarkdown(a.content ?? '') } : a
 		)

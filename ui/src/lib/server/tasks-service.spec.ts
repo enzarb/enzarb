@@ -160,6 +160,33 @@ describe('tasksService against engine_api', () => {
 		expect(await svc().get(running)).toMatchObject({ parent: null, children: [] });
 	});
 
+	it('maps the description from the task document, only on the detail', async () => {
+		await sql`UPDATE engine.tasks SET state = ${sql.json({
+			doc: {
+				subjects: {
+					issue: {
+						title: 'Add search',
+						body: '## Why\nBecause.',
+						author: 'alice',
+						url: 'https://github.com/acme/web/issues/1',
+						state: 'open',
+						labels: ['bug']
+					}
+				}
+			}
+		} as never)} WHERE id = ${waiting}`;
+		expect((await svc().detail(waiting))?.description).toEqual({
+			title: 'Add search',
+			body: '## Why\nBecause.',
+			author: 'alice',
+			url: 'https://github.com/acme/web/issues/1',
+			state: 'open',
+			labels: ['bug']
+		});
+		expect((await svc().detail(running))?.description).toBeNull();
+		expect(await svc().get(waiting)).not.toHaveProperty('description');
+	});
+
 	it('reads the detail with transitions, step runs and artifact content', async () => {
 		const d = await svc().detail(waiting);
 		expect(d?.artifacts[0].content).toBe('## Plan\n- a');
