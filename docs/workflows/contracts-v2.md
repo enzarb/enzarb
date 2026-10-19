@@ -32,7 +32,7 @@ Facts: `facts.dependencies` is `null` until known and a list (possibly `[]`) onc
 
 Steering: a UI `steer` while a step runs (and the step's or wait's `steer` matches) reaches the agent as a user turn. At a wait there is no session: the steer is a `comment` event on the task (body = the text) and the wait decides; e.g. the library's plan approval treats it as feedback and revises the plan.
 
-NOTIFY channels: `engine_projection` (task id), `engine_events` (inbox id, wakes the reducer), `engine_session` (`<run_id>:<seq>`).
+NOTIFY channels: `engine_projection` (task id; a sub-issue's status or title change also announces its epic, whose `children` carry the progress), `engine_events` (inbox id, wakes the reducer), `engine_session` (`<run_id>:<seq>`).
 
 ## Read and write API (schema `engine_api`, SQL, SECURITY DEFINER)
 - **Projection reads:**

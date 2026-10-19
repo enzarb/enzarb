@@ -1277,6 +1277,57 @@ async fn task_v_reports_parent_and_children() {
     assert_eq!(parent.unwrap()["task_id"], epic);
 }
 
+/// The distinct `engine_projection` payloads that arrive until 300 ms pass quietly, sorted.
+async fn drain_notifications(listener: &mut sqlx::postgres::PgListener) -> Vec<String> {
+    let mut got = Vec::new();
+    while let Ok(Ok(n)) = tokio::time::timeout(Duration::from_millis(300), listener.recv()).await {
+        got.push(n.payload().to_string());
+    }
+    got.sort();
+    got.dedup();
+    got
+}
+
+/// A sub-issue's status change announces its epic too (the epic's row carries the progress);
+/// a change to other columns does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sub_issue_status_change_notifies_the_epic() {
+    let Some(h) = start(false).await else {
+        return;
+    };
+    let epic = seed_task(&h, "children/wait", "children", Some(1)).await;
+    let sub = seed_task(&h, "start/wait", "human", Some(2)).await;
+    sqlx::query(
+        "INSERT INTO engine.relations (task_id, kind, target_key, source)
+         VALUES ($1, 'parent', $2, 'workflow')",
+    )
+    .bind(epic)
+    .bind(format!("github:{APP}#2"))
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    let mut listener = sqlx::postgres::PgListener::connect_with(&h.db.pool)
+        .await
+        .unwrap();
+    listener.listen("engine_projection").await.unwrap();
+    sqlx::query("UPDATE engine.projection SET needs_you = true WHERE task_id = $1")
+        .bind(sub)
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(drain_notifications(&mut listener).await, [sub.to_string()]);
+    sqlx::query(
+        "UPDATE engine.projection SET status = 'ended', end_status = 'done' WHERE task_id = $1",
+    )
+    .bind(sub)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    let mut want = [sub.to_string(), epic.to_string()];
+    want.sort();
+    assert_eq!(drain_notifications(&mut listener).await, want);
+}
+
 /// Sub-issues an epic created without dependencies.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn epic_subissue_without_dependencies_files_one_issue() {

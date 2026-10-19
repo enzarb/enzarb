@@ -72,3 +72,32 @@ LEFT JOIN LATERAL (
     WHERE f.task_id = p.task_id AND f.cleared_at IS NULL
     ORDER BY f.severity_rank DESC, f.first_seen, f.key LIMIT 1
 ) top ON true;
+
+-- An epic's row carries its sub-issues' progress (`children`), so when a sub-issue's status or
+-- title changes the epic is announced as changed too. Same channel and payload (a task id);
+-- listeners already refetch the row by id.
+CREATE OR REPLACE FUNCTION engine.notify_projection() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+    epic bigint;
+BEGIN
+    PERFORM pg_notify('engine_projection', NEW.task_id::text);
+    IF TG_OP = 'UPDATE' THEN
+        IF OLD.status IS NOT DISTINCT FROM NEW.status
+           AND OLD.end_status IS NOT DISTINCT FROM NEW.end_status
+           AND OLD.title IS NOT DISTINCT FROM NEW.title THEN
+            RETURN NEW;
+        END IF;
+    END IF;
+    FOR epic IN
+        SELECT r.task_id FROM engine.subjects s
+          JOIN engine.relations r ON r.target_key = s.key AND r.kind = 'parent'
+         WHERE s.task_id = NEW.task_id AND r.task_id <> NEW.task_id
+        UNION
+        SELECT substr(r.target_key, 6)::bigint FROM engine.relations r
+         WHERE r.task_id = NEW.task_id AND r.kind = 'child' AND r.target_key ~ '^task:[0-9]+$'
+    LOOP
+        PERFORM pg_notify('engine_projection', epic::text);
+    END LOOP;
+    RETURN NEW;
+END
+$$;
