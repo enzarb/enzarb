@@ -108,7 +108,11 @@ impl Engine {
                 .execute(&mut **tx)
                 .await?;
             }
-            Effect::CreateRelations { kind, targets } => {
+            Effect::CreateRelations {
+                kind,
+                targets,
+                created,
+            } => {
                 for t in targets {
                     if let Some(key) = relation_key(&task.repo, t) {
                         sqlx::query(
@@ -120,7 +124,7 @@ impl Engine {
                         .bind(&key)
                         .execute(&mut **tx)
                         .await?;
-                        if kind == "parent" {
+                        if *created && kind == "parent" {
                             adopt_child(self.index.as_ref(), tx, task.id, &task.project, &key)
                                 .await?;
                         }
