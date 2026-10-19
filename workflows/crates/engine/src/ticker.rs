@@ -156,31 +156,14 @@ impl Engine {
                 };
                 for i in issues {
                     let key = subject_key(repo, i.number);
-                    let ev = Event {
-                        id: Some(format!("adopt:{key}")),
-                        repo: Some(repo.clone()),
-                        actor: None,
-                        subject: Some(SubjectRef {
-                            kind: SubjectKind::Issue,
-                            number: i.number,
-                        }),
-                        at: Some(chrono::Utc::now().to_rfc3339()),
-                        ..Event::new(Payload::Adopted(Adopted {
-                            reason: "first start".into(),
-                        }))
-                    };
-                    let done = sqlx::query(
-                        "INSERT INTO engine.events (dedupe_key, project, subject_key, type, payload)
-                         SELECT $1, $2, $3, 'adopted', $4
-                         WHERE NOT EXISTS (SELECT 1 FROM engine.subjects WHERE key = $3)
-                         ON CONFLICT (dedupe_key) DO NOTHING",
-                    )
-                    .bind(format!("adopt:{key}"))
-                    .bind(&p.name)
-                    .bind(&key)
-                    .bind(serde_json::to_value(&ev).unwrap_or_else(|_| json!({})))
-                    .execute(&self.pool)
-                    .await?;
+                    let ev = adopted_event(repo, i.number, "first start");
+                    let done = sqlx::query(ADOPT_SQL)
+                        .bind(format!("adopt:{key}"))
+                        .bind(&p.name)
+                        .bind(&key)
+                        .bind(serde_json::to_value(&ev).unwrap_or_else(|_| json!({})))
+                        .execute(&self.pool)
+                        .await?;
                     n += done.rows_affected();
                 }
             }
@@ -282,5 +265,31 @@ impl Engine {
             }
         }
         Ok(())
+    }
+}
+
+/// Inserts an `adopted` event for an issue that has no task; a no-op when one exists or the
+/// event was already queued (dedupe key `adopt:<key>`). Binds: dedupe key, project, subject key,
+/// payload.
+pub(crate) const ADOPT_SQL: &str =
+    "INSERT INTO engine.events (dedupe_key, project, subject_key, type, payload)
+     SELECT $1, $2, $3, 'adopted', $4
+     WHERE NOT EXISTS (SELECT 1 FROM engine.subjects WHERE key = $3)
+     ON CONFLICT (dedupe_key) DO NOTHING";
+
+/// The `adopted` event for issue `number` of `repo`; bindings decide what runs.
+pub(crate) fn adopted_event(repo: &str, number: u64, reason: &str) -> Event {
+    Event {
+        id: Some(format!("adopt:{}", subject_key(repo, number))),
+        repo: Some(repo.to_string()),
+        actor: None,
+        subject: Some(SubjectRef {
+            kind: SubjectKind::Issue,
+            number,
+        }),
+        at: Some(chrono::Utc::now().to_rfc3339()),
+        ..Event::new(Payload::Adopted(Adopted {
+            reason: reason.into(),
+        }))
     }
 }
