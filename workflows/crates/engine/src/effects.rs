@@ -328,6 +328,8 @@ async fn adopt_child(
     let Some((repo, number)) = parse_subject_key(key) else {
         return Ok(());
     };
+    // The canonical (lowercase) key, as `engine.subjects` stores it.
+    let key = &subject_key(&repo, number);
     if !index
         .get(project)
         .is_some_and(|p| p.default_branch(&repo).is_some())
@@ -395,6 +397,8 @@ mod tests {
         adopt(&db, &index, "github:acme/app#5").await;
         adopt(&db, &index, "github:acme/app#5").await;
         adopt(&db, &index, "github:acme/app#9").await;
+        adopt(&db, &index, "github:Acme/App#9").await;
+        adopt(&db, &index, "github:Acme/App#5").await;
         adopt(&db, &index, "github:other/repo#1").await;
         adopt(&db, &index, "task:3").await;
         assert_eq!(queued(&db).await, ["github:acme/app#5"]);

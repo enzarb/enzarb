@@ -27,6 +27,8 @@ bindings:
     on: adopted
     if: "event.subject.kind == 'issue'"
     use: workflows/issue
+    with:
+      epic_allowed: "{{ relations | selectattr('kind', 'eq', 'parent') | list | length == 0 }}"
   # A PR that references an issue joins that issue's task; only the others start one.
   - id: pull_requests
     on: pull_request

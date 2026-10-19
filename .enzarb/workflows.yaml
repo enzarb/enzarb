@@ -14,3 +14,11 @@ bindings:
       release_when: [release.published]
       max_rounds: 4
       epic_allowed: "{{ relations | selectattr('kind', 'eq', 'parent') | list | length == 0 }}"
+  # A sub-issue an epic created reaches the engine as `adopted` (enzarb opened it, so its
+  # webhook is dropped); it cannot become an epic either.
+  - id: adopted_issues
+    on: adopted
+    if: "event.subject.kind == 'issue'"
+    use: std/workflows/issue
+    with:
+      epic_allowed: "{{ relations | selectattr('kind', 'eq', 'parent') | list | length == 0 }}"
