@@ -287,11 +287,24 @@ async fn library_bindings_route_by_relations_and_mentions() {
         base_ref: None,
         head_sha: None,
     };
-    h.gh.set_open_issues(rk(APP), vec![issue(1), issue(50)]);
-    assert_eq!(h.engine.adopt().await.unwrap(), 1);
+    // #51 is a sub-issue of the epic task (#2): adopted like the others, but never an epic.
+    sqlx::query(
+        "INSERT INTO engine.relations (task_id, kind, target_key, source) VALUES ($1, 'parent', $2, 'workflow')",
+    )
+    .bind(epic)
+    .bind(format!("github:{APP}#51"))
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    h.gh.set_open_issues(rk(APP), vec![issue(1), issue(50), issue(51)]);
+    assert_eq!(h.engine.adopt().await.unwrap(), 2);
     h.drain().await;
-    let (t50, _, binding, _) = h.task_of(50).await.expect("adopted");
+    let (t50, _, binding, params) = h.task_of(50).await.expect("adopted");
     assert_eq!(binding.as_deref(), Some("adopted_issues"));
+    assert_eq!(params["epic_allowed"], json!(true), "{params}");
+    let (_, _, binding, params) = h.task_of(51).await.expect("adopted sub-issue");
+    assert_eq!(binding.as_deref(), Some("adopted_issues"));
+    assert_eq!(params["epic_allowed"], json!(false), "{params}");
     let p = h.projection(t50).await;
     // Waiting (the dependencies refresh job is not run in this foreground test, or at the start
     // gate once `decide` passes on a known-empty fact); never running a step.

@@ -241,6 +241,11 @@ fn action_results_become_outputs_subjects_relations() {
         r.kinds(),
         ["link_subject", "create_relations", "call_action"]
     );
+    assert!(
+        r.fx.iter()
+            .any(|e| matches!(e, Effect::CreateRelations { created: true, .. })),
+        "relate.from targets are what the successful call created"
+    );
     assert!(r.fx.contains(&Effect::LinkSubject {
         kind: crate::events::SubjectKind::PullRequest,
         repo: APP.into(),

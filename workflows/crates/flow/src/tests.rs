@@ -907,6 +907,11 @@ fn happy_path() {
         })),
     });
     assert_eq!(r.kinds(), ["create_relations", "call_action"]);
+    assert!(
+        r.fx.iter()
+            .any(|e| matches!(e, Effect::CreateRelations { created: false, .. })),
+        "targets named before the call are not objects the call created"
+    );
     let Some(Effect::CallAction {
         call_id,
         args,

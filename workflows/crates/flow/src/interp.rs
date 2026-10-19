@@ -278,6 +278,11 @@ pub enum Effect {
     CreateRelations {
         kind: String,
         targets: Vec<Value>,
+        /// Set when the targets are objects the successful action just created (`relate.from`):
+        /// the engine then gives a `parent` target that has no task one. Targets named before the
+        /// call (`relate.targets`) are never adopted, so a failing action adopts nothing.
+        #[serde(default)]
+        created: bool,
     },
     /// Link a GitHub object an action returned as a subject of the task.
     LinkSubject {
@@ -946,6 +951,7 @@ impl<'a> Machine<'a> {
                 self.fx.push(Effect::CreateRelations {
                     kind: rel.kind.clone(),
                     targets,
+                    created: true,
                 });
             }
         }
@@ -1305,6 +1311,7 @@ impl<'a> Machine<'a> {
                             self.fx.push(Effect::CreateRelations {
                                 kind: rel.kind.clone(),
                                 targets,
+                                created: false,
                             });
                         }
                         Ok(Value::Null) => {}

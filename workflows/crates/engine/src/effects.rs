@@ -5,9 +5,11 @@ use enzarb_flow::interp::{Effect, Projection, RunExec, RunStep};
 use serde_json::{Value, json};
 use sqlx::{Postgres, Transaction};
 
-use crate::engine::{Engine, subject_key};
+use crate::engine::{Engine, parse_subject_key, subject_key};
 use crate::error::Error;
+use crate::index::ProjectIndex;
 use crate::reducer::TaskRow;
+use crate::ticker::{ADOPT_SQL, adopted_event};
 
 type Tx<'a> = Transaction<'a, Postgres>;
 
@@ -106,7 +108,11 @@ impl Engine {
                 .execute(&mut **tx)
                 .await?;
             }
-            Effect::CreateRelations { kind, targets } => {
+            Effect::CreateRelations {
+                kind,
+                targets,
+                created,
+            } => {
                 for t in targets {
                     if let Some(key) = relation_key(&task.repo, t) {
                         sqlx::query(
@@ -115,9 +121,13 @@ impl Engine {
                         )
                         .bind(task.id)
                         .bind(kind)
-                        .bind(key)
+                        .bind(&key)
                         .execute(&mut **tx)
                         .await?;
+                        if *created && kind == "parent" {
+                            adopt_child(self.index.as_ref(), tx, task.id, &task.project, &key)
+                                .await?;
+                        }
                     }
                 }
             }
@@ -305,5 +315,96 @@ fn relation_key(repo: &str, t: &Value) -> Option<String> {
             Some(subject_key(r, n))
         }
         _ => None,
+    }
+}
+
+/// A task that is the `parent` of an issue (an epic's sub-issue) gets that issue a task of its
+/// own. The sub-issue is opened by enzarb, so its webhook is dropped as the bot's own event;
+/// without this it would only get a task at the next restart's adopt pass. A target outside the
+/// task's Project, or one that already has a task, is left alone.
+async fn adopt_child(
+    index: &dyn ProjectIndex,
+    tx: &mut Tx<'_>,
+    task_id: i64,
+    project: &str,
+    key: &str,
+) -> Result<(), Error> {
+    let Some((repo, number)) = parse_subject_key(key) else {
+        return Ok(());
+    };
+    // The canonical (lowercase) key, as `engine.subjects` stores it.
+    let key = &subject_key(&repo, number);
+    if !index
+        .get(project)
+        .is_some_and(|p| p.default_branch(&repo).is_some())
+    {
+        return Ok(());
+    }
+    let ev = adopted_event(&repo, number, &format!("sub-issue of task {task_id}"));
+    sqlx::query(ADOPT_SQL)
+        .bind(format!("adopt:{key}"))
+        .bind(project)
+        .bind(key)
+        .bind(serde_json::to_value(&ev).unwrap_or_else(|_| json!({})))
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index::{ProjectInfo, StaticProjectIndex};
+    use crate::testing::TestDb;
+
+    async fn adopt(db: &TestDb, index: &StaticProjectIndex, key: &str) {
+        let mut tx = db.pool.begin().await.unwrap();
+        adopt_child(index, &mut tx, 1, "p", key).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    async fn queued(db: &TestDb) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT subject_key FROM engine.events WHERE type = 'adopted' ORDER BY id",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .unwrap()
+    }
+
+    /// An epic's `parent` relation to a new sub-issue queues one `adopted` event, once; targets
+    /// outside the Project and issues that already have a task queue nothing.
+    #[tokio::test]
+    async fn parent_relation_adopts_the_sub_issue_once() {
+        let Some(db) = TestDb::start().await else {
+            return;
+        };
+        let index = StaticProjectIndex::shared();
+        index.insert(ProjectInfo {
+            name: "p".into(),
+            owner: "alice".into(),
+            repos: vec![("acme/app".into(), "main".into())],
+            ..Default::default()
+        });
+        sqlx::query(
+            "INSERT INTO engine.tasks (id, project, repo, workflow_ref, state, resolved)
+             VALUES (1, 'p', 'acme/app', 'wf', '{}', '{}'), (2, 'p', 'acme/app', 'wf', '{}', '{}')",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO engine.subjects (task_id, kind, key) VALUES (2, 'issue', 'github:acme/app#9')")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        adopt(&db, &index, "github:acme/app#5").await;
+        adopt(&db, &index, "github:acme/app#5").await;
+        adopt(&db, &index, "github:acme/app#9").await;
+        adopt(&db, &index, "github:Acme/App#9").await;
+        adopt(&db, &index, "github:Acme/App#5").await;
+        adopt(&db, &index, "github:other/repo#1").await;
+        adopt(&db, &index, "task:3").await;
+        assert_eq!(queued(&db).await, ["github:acme/app#5"]);
     }
 }
