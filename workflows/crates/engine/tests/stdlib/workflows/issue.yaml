@@ -22,17 +22,9 @@ on:
   # stopping a running step first. An issue closed by the merge itself does not.
   - {events: [{event: issue, if: "event.action == 'closed' and not vars.merged"}], do: "end:closed"}
   - {events: [{event: pull_request, if: "event.action == 'closed' and not event.merged"}], do: "end:closed"}
-  # The pull request merged outside the merge phase (by hand, or by another task): record it and
-  # continue with the release phase, stopping a running step first.
-  - {events: [{event: pull_request, if: "event.action == 'closed' and event.merged and not vars.merged"}], set: {merged: true}, do: "goto:release"}
   # The epic label added later is remembered for triage and plan.
   - events: [{event: label, from: writer, if: "event.action == 'added' and event.label == params.epic_label and params.epic_allowed"}]
     set: {epic: true}
-  # `/cancel` from a writer (also the UI's Cancel button) ends the task, stopping a running step.
-  - {events: [{event: comment, from: writer, if: "event.command == 'cancel'"}], do: cancel}
-  # `/restart` from a writer restarts the current stage, also when the task is paused.
-  - {events: [{event: comment, from: writer, if: "event.command == 'restart' and subjects.pull_requests | length > 0"}], do: "goto:review"}
-  - {events: [{event: comment, from: writer, if: "event.command == 'restart' and subjects.pull_requests | length == 0"}], do: "goto:implement"}
 phases:
   - {use: phases/dependencies}
   - {use: phases/start_gate, with: {check_dependencies: true}}

@@ -1155,18 +1155,28 @@ pub async fn load_tasks(pool: &PgPool, projects: &[String]) -> Result<Vec<TaskSn
     // What each sub-issue's epic breakdown declared for it: the epic's `children` result lists
     // the created issues in the order of its `breakdown` issues, which carry `depends_on`.
     let declared = sqlx::query(
-        "SELECT k.task_id,
-                COALESCE(max(jsonb_array_length(CASE WHEN jsonb_typeof(b.issue->'depends_on') = 'array'
-                                                THEN b.issue->'depends_on' ELSE '[]'::jsonb END)), 0)
+        "WITH epics AS (
+             SELECT e.id,
+                    CASE WHEN jsonb_typeof(e.state->'doc'->'outputs'->'children'->'issues') = 'array'
+                         THEN e.state->'doc'->'outputs'->'children'->'issues' ELSE '[]'::jsonb END AS made,
+                    CASE WHEN jsonb_typeof(e.state->'doc'->'outputs'->'breakdown'->'issues') = 'array'
+                         THEN e.state->'doc'->'outputs'->'breakdown'->'issues' ELSE '[]'::jsonb END AS plan
+               FROM engine.tasks e
+              WHERE e.id IN (SELECT r.task_id FROM engine.relations r
+                              JOIN engine.subjects k ON k.key = r.target_key
+                             WHERE r.kind = 'parent' AND k.task_id = ANY($1))
+         )
+         SELECT k.task_id,
+                COALESCE(max(CASE WHEN jsonb_typeof(b.issue->'depends_on') = 'array'
+                                  THEN jsonb_array_length(b.issue->'depends_on') ELSE 0 END), 0)
          FROM (SELECT task_id, key FROM engine.subjects WHERE task_id = ANY($1)) k
          JOIN engine.relations r ON r.target_key = k.key AND r.kind = 'parent' AND r.task_id <> k.task_id
-         JOIN engine.tasks e ON e.id = r.task_id
-         CROSS JOIN LATERAL jsonb_array_elements(COALESCE(e.state->'doc'->'outputs'->'children'->'issues', '[]'::jsonb))
-                    WITH ORDINALITY AS c(issue, n)
-         JOIN LATERAL (SELECT x.issue FROM jsonb_array_elements(
-                           COALESCE(e.state->'doc'->'outputs'->'breakdown'->'issues', '[]'::jsonb))
-                       WITH ORDINALITY AS x(issue, n) WHERE x.n = c.n) b ON true
-         WHERE c.issue->>'key' = k.key
+         JOIN epics e ON e.id = r.task_id
+         CROSS JOIN LATERAL jsonb_array_elements(e.made) WITH ORDINALITY AS c(issue, n)
+         JOIN LATERAL (SELECT x.issue FROM jsonb_array_elements(e.plan) WITH ORDINALITY AS x(issue, n)
+                        WHERE x.n = c.n AND jsonb_typeof(x.issue) = 'object') b
+              ON c.issue->>'title' IS NOT DISTINCT FROM b.issue->>'title'
+         WHERE jsonb_typeof(c.issue) = 'object' AND c.issue->>'key' = k.key
          GROUP BY k.task_id",
     )
     .bind(&ids)

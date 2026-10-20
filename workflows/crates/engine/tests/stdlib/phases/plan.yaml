@@ -13,9 +13,7 @@ params:
   check_dependencies: {type: boolean, default: false, description: Re-check the issue's dependencies before the command takes effect (the issue workflow turns it on)}
   done_statuses: {type: list, items: string, default: [done, merged, released], description: End statuses that count as finished}
   unblock_command: {type: string, default: unblock}
-  retry_command: {type: string, default: retry, description: Command (and button) that runs a failed step again}
-  retry_label: {type: string, default: Retry, description: Label of the retry button}
-exits: [epic, closed]
+exits: [epic, closed, failed]
 start: check
 nodes:
   check:
@@ -27,7 +25,7 @@ nodes:
     step: {use: steps/plan, with: {prompt: {param: prompt}, approve_command: {param: approve_command}}}
     next:
       - {if: "last.exit == 'success' and outputs.plan and not last.missing_outputs", to: post}
-      - {else: plan_failed}
+      - {else: failed}
   post:
     action:
       name: comment
@@ -69,25 +67,11 @@ nodes:
     next:
       - {if: "event.type == 'issue'", to: closed}
       - {if: "event.type == 'comment'", to: done}
-      - {if: "(facts.dependencies or []) | rejectattr('status', 'in', params.done_statuses) | list | length == 0", to: done}
+      - {if: "facts.dependencies is not none and facts.dependencies | rejectattr('status', 'in', params.done_statuses) | list | length == 0", to: done}
       - {if: "event.type == 'dependency_changed'", to: verify}
   done: {end: {status: done}}
   epic:
     set: {epic: true}
     end: {status: epic}
   closed: {end: {status: closed}}
-  # Planning failed: wait for a writer's /retry (or the Retry button) instead of ending the task.
-  plan_failed:
-    wait:
-      events:
-        - {event: comment, from: writer, if: "event.command == params.retry_command"}
-        - {event: issue, if: "event.action == 'closed'"}
-      reason: step_failed
-      text: "Planning failed (details in its session on the task page). /{{ params.retry_command }} to try again"
-      column: blocked
-      waiting_on: human
-      actions: [{label: {param: retry_label}, command: {param: retry_command}}]
-    max_visits: 50
-    next:
-      - {if: "event.type == 'issue'", to: closed}
-      - {else: plan}
+  failed: {end: {status: failed}}

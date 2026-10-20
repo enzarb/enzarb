@@ -75,7 +75,7 @@ nodes:
       - {if: "event.type == 'pull_request' and event.action == 'closed'", to: closed}
       - {if: "event.type == 'pull_request'", to: changed}
       - {if: "event.type == 'comment'", to: merge}
-      - {if: "(facts.dependencies or []) | rejectattr('status', 'in', params.done_statuses) | list | length == 0", to: merge}
+      - {if: "facts.dependencies is not none and facts.dependencies | rejectattr('status', 'in', params.done_statuses) | list | length == 0", to: merge}
       - {if: "event.type == 'dependency_changed'", to: verify}
   merge:
     action:
@@ -89,14 +89,7 @@ nodes:
     max_visits: 10
     next:
       - {if: "last.ok", to: done}
-      # A refused merge is `ok: false` with the reason in `result.error` (the only field the kernel
-      # sets; enzarb#341 pins it): "head moved" (a newer head than CI passed on), or the
-      # provider's text.
-      - {if: "(last.result.error or '') | lower == 'head moved'", to: changed}
-      # GitHub refuses a conflicted PR with only a message ("Pull Request has merge conflicts").
-      - {if: "'conflict' in ((last.result.error or '') | lower)", to: changed}
-      # Another merge landed between our check and this call: check again and merge.
-      - {if: "'base branch was modified' in ((last.result.error or '') | lower)", to: check}
+      - {if: "last.result.reason in ['head_moved', 'updated_branch', 'not_mergeable']", to: changed}
       - {else: failed}
   failed:
     wait:
@@ -104,7 +97,7 @@ nodes:
         - {event: comment, from: writer, if: "event.command in [params.retry_command, params.command]"}
         - {event: pull_request, if: "event.action in ['synchronize', 'closed']"}
       reason: merge_failed
-      text: "The merge failed{{ ': ' ~ last.result.error if last.result.error else '' }}; /retry to check again"
+      text: "The merge failed{{ ': ' ~ last.result.message if last.result.message else '' }}; /retry to check again"
       column: blocked
       waiting_on: human
       actions: [{label: {param: retry_label}, command: {param: retry_command}}]

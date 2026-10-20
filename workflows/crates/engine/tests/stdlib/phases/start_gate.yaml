@@ -46,7 +46,7 @@ nodes:
     next:
       - {if: "event.type == 'issue'", to: closed}
       - {if: "event.type == 'comment'", to: done}
-      - {if: "(facts.dependencies or []) | rejectattr('status', 'in', params.done_statuses) | list | length == 0", to: done}
+      - {if: "facts.dependencies is not none and facts.dependencies | rejectattr('status', 'in', params.done_statuses) | list | length == 0", to: done}
       - {if: "event.type == 'dependency_changed'", to: verify}
   done: {end: {status: done}}
   closed: {end: {status: closed}}
