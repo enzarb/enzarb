@@ -17,6 +17,7 @@ params:
   ci_ignore: {type: string, default: "(?i)copilot", description: Regex; failing checks whose name matches it are ignored}
   retry_command: {type: string, default: retry}
   retry_label: {type: string, default: Retry}
+  review_label: {type: string, default: Review, description: Label of the button at `awaiting_review` (opens the pull request's files page)}
   max_rounds: {type: integer, default: 3, description: Automatic fix rounds on the review's must-fix findings}
   max_ci_rounds: {type: integer, default: 3, description: Automatic CI-fix rounds per cycle}
   max_conflict_attempts: {type: integer, default: 2, description: Conflict resolution attempts per base sha}
@@ -157,7 +158,12 @@ nodes:
       text: "The review by {{ instance.bot.handle or 'enzarb' }} needs a person: reply with feedback, or /{{ params.retry_command }}"
       column: review
       waiting_on: human
-      actions: &retry [{label: {param: retry_label}, command: {param: retry_command}}]
+      # A person has to look at the pull request: the button opens its review page. Retrying the
+      # automatic review would give the same verdict, so the inherited Retry button is hidden
+      # (a typed `/retry` still restarts the cycle).
+      commands:
+        - {name: {param: retry_command}, hidden: true}
+      actions: [{label: {param: review_label}, link: "{{ (subjects.pull_requests | last).url }}/files"}]
     max_visits: 100
     next: &human_next
       - {if: "event.type == 'pull_request' and event.action == 'closed' and event.merged", to: merged}
@@ -173,7 +179,7 @@ nodes:
       text: "{{ params.max_rounds }} automatic fix rounds did not settle the review: reply with feedback, or /{{ params.retry_command }}"
       column: review
       waiting_on: human
-      actions: *retry
+      actions: &retry [{label: {param: retry_label}, command: {param: retry_command}}]
     max_visits: 100
     next: *human_next
   ci_failed:

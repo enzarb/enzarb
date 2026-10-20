@@ -15,8 +15,15 @@ export interface Subject {
 /** A declared wait button: submitting it posts `/command` as the user (`submit` kind `command`). */
 export interface UiAction {
 	label: string;
-	command: string;
+	/** Posted as `/command` (submit kind `command`). Absent on a link button. */
+	command?: string | null;
+	/** A page the button opens instead of posting a command (http or https only). */
+	link?: string | null;
 }
+
+/** A link button's URL when it is a safe one. */
+export const safeLink = (a: UiAction): string | null =>
+	a.link && /^https?:\/\//i.test(a.link) ? a.link : null;
 
 /**
  * A command that applies to the task now (`task_v.commands`): posting `/name` as the user does

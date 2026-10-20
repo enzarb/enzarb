@@ -76,7 +76,8 @@ fn decide_vars_templated_literals_and_rerender() {
         p.actions,
         [UiAction {
             label: "Go".into(),
-            command: "go0".into()
+            command: Some("go0".into()),
+            link: None
         }]
     );
     // A fact the text reads changes: re-render without re-entering.
@@ -851,4 +852,90 @@ events:
     .unwrap();
     let f = crate::scenario::run(&wait_res(), &sc);
     assert!(f.is_empty(), "{f:?}");
+}
+
+const LINKS: &str = r#"
+version: 1
+start: hold
+nodes:
+  hold:
+    wait:
+      events: [comment]
+      reason: review
+      commands:
+        - {name: retry, hidden: true, to: start}
+      actions:
+        - {label: Review, link: "https://github.com/{{ task.repo }}/pull/7/files"}
+        - {label: Nowhere, link: "{{ vars.missing }}"}
+        - {label: Elsewhere, link: "javascript:alert(1)"}
+        - {label: Go, command: go}
+    next:
+      - {if: "event.type == 'comment'", to: done}
+  done: {end: {status: done}}
+"#;
+
+#[test]
+fn link_actions_render_to_urls_and_hidden_commands_are_not_offered() {
+    let m = base().put(APP, ".enzarb/phases/links.yaml", LINKS).put(
+        APP,
+        ".enzarb/workflows/k.yaml",
+        "version: 1\nphases:\n  - {use: .enzarb/phases/links}\n",
+    );
+    let res = match resolve(&entry(".enzarb/workflows/k.yaml"), &m, &opts()) {
+        Ok((r, _)) => r,
+        Err(d) => panic!("{d}"),
+    };
+    let mut r = Run::new(res);
+    r.s.doc.task.repo = APP.into();
+    r.on(start());
+    let p = r.projection();
+    assert_eq!(
+        p.actions,
+        [
+            UiAction {
+                label: "Review".into(),
+                command: None,
+                link: Some(format!("https://github.com/{APP}/pull/7/files"))
+            },
+            UiAction {
+                label: "Go".into(),
+                command: Some("go".into()),
+                link: None
+            }
+        ],
+        "a link that does not render to http(s) is left out"
+    );
+    let names: Vec<_> = p.commands.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["go", "cancel"], "retry is hidden from the buttons");
+    // Typed, it is still accepted (the wait's own routing decides what it does).
+    assert!(
+        accepted_commands(&r.res, &r.s)
+            .iter()
+            .any(|c| c.name == "retry" && c.hidden)
+    );
+}
+
+#[test]
+fn an_action_needs_exactly_one_of_command_and_link() {
+    for actions in [
+        "[{label: A}]",
+        "[{label: A, command: go, link: \"https://x.test\"}]",
+    ] {
+        let phase = format!(
+            "version: 1\nstart: hold\nnodes:\n  hold:\n    wait: {{events: [comment], reason: r, actions: {actions}}}\n    next: [{{else: done}}]\n  done: {{end: {{status: done}}}}\n"
+        );
+        let m = base().put(APP, ".enzarb/phases/a.yaml", &phase).put(
+            APP,
+            ".enzarb/workflows/a.yaml",
+            "version: 1\nphases:\n  - {use: .enzarb/phases/a}\n",
+        );
+        let err = resolve(&entry(".enzarb/workflows/a.yaml"), &m, &opts())
+            .err()
+            .map(|d| d.to_string())
+            .unwrap_or_default();
+        assert!(
+            err.contains("exactly one of `command` and `link`"),
+            "{actions}: {err}"
+        );
+    }
 }

@@ -407,6 +407,10 @@
             "null"
           ],
           "description": "The route, see above."
+        },
+        "hidden": {
+          "type": "boolean",
+          "description": "Still accepted when typed, but not offered as a button (left out of the projection's\n`commands`). Hides an inherited default such as `retry` where it makes no sense."
         }
       },
       "required": [
