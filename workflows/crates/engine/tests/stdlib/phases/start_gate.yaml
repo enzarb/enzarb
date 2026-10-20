@@ -6,6 +6,9 @@ params:
   command: {type: string, default: plan, description: Command word that starts the work}
   label: {type: string, default: plan, description: Label that starts the work}
   button: {type: string, default: Start planning, description: Label of the start button}
+  check_dependencies: {type: boolean, default: false, description: Re-check the issue's dependencies before the command takes effect (the issue workflow turns it on)}
+  done_statuses: {type: list, items: string, default: [done, merged, released], description: End statuses that count as finished}
+  unblock_command: {type: string, default: unblock}
 exits: [closed]
 start: wait
 nodes:
@@ -22,6 +25,28 @@ nodes:
       actions: [{label: {param: button}, command: {param: command}}]
     next:
       - {if: "event.type == 'issue'", to: closed}
+      - {if: "params.check_dependencies", to: verify}
       - {else: done}
+  # The sub-issue may have gained a dependency since it passed `dependencies`: before the
+  # command takes effect, refresh the fact and wait until nothing it depends on is unfinished.
+  verify:
+    wait:
+      events:
+        - {event: fact, if: "event.fact == 'dependencies'"}
+        - dependency_changed
+        - {event: comment, from: writer, if: "event.command == params.unblock_command"}
+        - {event: issue, if: "event.action == 'closed'"}
+      refresh: [dependencies]
+      reason: blocked_by_dependencies
+      text: "Waiting for the issues this one depends on to finish"
+      column: blocked
+      waiting_on: external
+      actions: [{label: Start anyway, command: {param: unblock_command}}]
+    max_visits: 500
+    next:
+      - {if: "event.type == 'issue'", to: closed}
+      - {if: "event.type == 'comment'", to: done}
+      - {if: "(facts.dependencies or []) | rejectattr('status', 'in', params.done_statuses) | list | length == 0", to: done}
+      - {if: "event.type == 'dependency_changed'", to: verify}
   done: {end: {status: done}}
   closed: {end: {status: closed}}

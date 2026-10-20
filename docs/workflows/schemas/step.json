@@ -740,6 +740,19 @@
         {
           "type": "object",
           "properties": {
+            "declared_dependencies": {
+              "$ref": "#/$defs/CountIs"
+            }
+          },
+          "required": [
+            "declared_dependencies"
+          ],
+          "additionalProperties": false,
+          "description": "How many `depends_on` entries the epic's breakdown declared for this sub-issue. Zero for\na task that is not a sub-issue, or whose epic holds no breakdown for it."
+        },
+        {
+          "type": "object",
+          "properties": {
             "platform": {
               "$ref": "#/$defs/PlatformCmp"
             }
@@ -902,6 +915,29 @@
       "required": [
         "kind"
       ],
+      "description": "Exactly one of `eq` and `gt`."
+    },
+    "CountIs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "eq": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "gt": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
       "description": "Exactly one of `eq` and `gt`."
     },
     "PlatformCmp": {

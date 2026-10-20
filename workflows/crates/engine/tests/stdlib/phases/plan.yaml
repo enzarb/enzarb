@@ -10,7 +10,12 @@ params:
   approve_label: {type: string, default: Approve, description: Label of the approve button}
   epic_command: {type: string, default: epic}
   epic_allowed: {type: boolean, default: true}
-exits: [epic, closed, failed]
+  check_dependencies: {type: boolean, default: false, description: Re-check the issue's dependencies before the command takes effect (the issue workflow turns it on)}
+  done_statuses: {type: list, items: string, default: [done, merged, released], description: End statuses that count as finished}
+  unblock_command: {type: string, default: unblock}
+  retry_command: {type: string, default: retry, description: Command (and button) that runs a failed step again}
+  retry_label: {type: string, default: Retry, description: Label of the retry button}
+exits: [epic, closed]
 start: check
 nodes:
   check:
@@ -22,7 +27,7 @@ nodes:
     step: {use: steps/plan, with: {prompt: {param: prompt}, approve_command: {param: approve_command}}}
     next:
       - {if: "last.exit == 'success' and outputs.plan and not last.missing_outputs", to: post}
-      - {else: failed}
+      - {else: plan_failed}
   post:
     action:
       name: comment
@@ -40,13 +45,49 @@ nodes:
       actions: [{label: {param: approve_label}, command: {param: approve_command}}]
     next:
       - {if: "event.type == 'issue'", to: closed}
+      - {if: "event.command == params.approve_command and event.actor.can_write and params.check_dependencies", to: verify}
       - {if: "event.command == params.approve_command and event.actor.can_write", to: done}
       - {if: "event.command == params.epic_command and event.actor.can_write and params.epic_allowed", to: epic}
       # A command from someone without write access, or another command, is not feedback.
       - {if: "not event.command", to: plan}
+  # The sub-issue may have gained a dependency since it passed `dependencies`: before the
+  # command takes effect, refresh the fact and wait until nothing it depends on is unfinished.
+  verify:
+    wait:
+      events:
+        - {event: fact, if: "event.fact == 'dependencies'"}
+        - dependency_changed
+        - {event: comment, from: writer, if: "event.command == params.unblock_command"}
+        - {event: issue, if: "event.action == 'closed'"}
+      refresh: [dependencies]
+      reason: blocked_by_dependencies
+      text: "Waiting for the issues this one depends on to finish"
+      column: blocked
+      waiting_on: external
+      actions: [{label: Start anyway, command: {param: unblock_command}}]
+    max_visits: 500
+    next:
+      - {if: "event.type == 'issue'", to: closed}
+      - {if: "event.type == 'comment'", to: done}
+      - {if: "(facts.dependencies or []) | rejectattr('status', 'in', params.done_statuses) | list | length == 0", to: done}
+      - {if: "event.type == 'dependency_changed'", to: verify}
   done: {end: {status: done}}
   epic:
     set: {epic: true}
     end: {status: epic}
   closed: {end: {status: closed}}
-  failed: {end: {status: failed}}
+  # Planning failed: wait for a writer's /retry (or the Retry button) instead of ending the task.
+  plan_failed:
+    wait:
+      events:
+        - {event: comment, from: writer, if: "event.command == params.retry_command"}
+        - {event: issue, if: "event.action == 'closed'"}
+      reason: step_failed
+      text: "Planning failed (details in its session on the task page). /{{ params.retry_command }} to try again"
+      column: blocked
+      waiting_on: human
+      actions: [{label: {param: retry_label}, command: {param: retry_command}}]
+    max_visits: 50
+    next:
+      - {if: "event.type == 'issue'", to: closed}
+      - {else: plan}
