@@ -170,7 +170,68 @@ fn prune_once_until(
     if low() && !stopped() {
         removed += prune_shared_targets(workspace, steps);
     }
+    if low() && !stopped() {
+        let top = breakdown(workspace, BREAKDOWN_TOP);
+        let fmt = |v: &[(String, u64)]| {
+            v.iter()
+                .map(|(n, b)| format!("{n}={}MiB", b / (1024 * 1024)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        tracing::warn!(
+            min_free_percent,
+            removed,
+            largest = %fmt(&top),
+            "low_disk: workspace still short of free space after pruning; the largest top-level entries are not pruned automatically"
+        );
+    }
     removed
+}
+
+/// How many entries the `low_disk` warning lists.
+const BREAKDOWN_TOP: usize = 8;
+
+/// Disk use of `tasks/*` and `.cache/*` (relative names), largest first, at most `top` entries.
+/// Best-effort; symlinks are counted as themselves, never followed.
+fn breakdown(workspace: &Path, top: usize) -> Vec<(String, u64)> {
+    let mut v = Vec::new();
+    for group in ["tasks", ".cache"] {
+        for e in std::fs::read_dir(workspace.join(group))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let name = format!("{group}/{}", e.file_name().to_string_lossy());
+            v.push((name, disk_bytes(&e.path())));
+        }
+    }
+    v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    v.truncate(top);
+    v
+}
+
+/// Allocated bytes under `p`, without following symlinks or crossing filesystems.
+fn disk_bytes(p: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    fn walk(p: &Path, dev: u64) -> u64 {
+        let Ok(m) = std::fs::symlink_metadata(p) else {
+            return 0;
+        };
+        if m.dev() != dev {
+            return 0;
+        }
+        let mut n = m.blocks() * 512;
+        if m.is_dir() {
+            for e in std::fs::read_dir(p).into_iter().flatten().flatten() {
+                n += walk(&e.path(), dev);
+            }
+        }
+        n
+    }
+    match std::fs::symlink_metadata(p) {
+        Ok(m) => walk(p, m.dev()),
+        Err(_) => 0,
+    }
 }
 
 /// Renames a cache next to itself (see [`ASIDE`]); a cache already aside is returned as is.
@@ -353,6 +414,26 @@ mod tests {
         git(&["commit", "-q", "-m", "x"]);
         assert!(tag_is_tracked(&r.join("vendored")));
         assert!(!tag_is_tracked(&r.join("target")));
+    }
+
+    #[test]
+    fn breakdown_lists_largest_first_without_following_symlinks() {
+        let t = tempfile::tempdir().unwrap();
+        let r = t.path();
+        std::fs::create_dir_all(r.join("tasks/a")).unwrap();
+        std::fs::create_dir_all(r.join("tasks/b")).unwrap();
+        std::fs::create_dir_all(r.join(".cache/sccache")).unwrap();
+        std::fs::write(r.join("tasks/a/big"), vec![1u8; 256 * 1024]).unwrap();
+        std::fs::write(r.join("tasks/b/small"), vec![1u8; 4096]).unwrap();
+        // A link to the big dir must not count its content.
+        std::os::unix::fs::symlink(r.join("tasks/a"), r.join(".cache/sccache/link")).unwrap();
+        let v = breakdown(r, 2);
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].0, "tasks/a");
+        assert!(v[0].1 >= 256 * 1024);
+        let all = breakdown(r, 10);
+        let cache = all.iter().find(|(n, _)| n == ".cache/sccache").unwrap();
+        assert!(cache.1 < 64 * 1024);
     }
 
     #[test]
