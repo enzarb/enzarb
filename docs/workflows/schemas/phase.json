@@ -1398,15 +1398,32 @@
           "$ref": "#/$defs/TextField"
         },
         "command": {
-          "$ref": "#/$defs/TextField",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextField"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "description": "Command word posted as `/command` (without the slash)."
+        },
+        "link": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextField"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A URL the button opens (a template). The button is left out when it does not render to a\nnon-empty `http(s)` URL."
         }
       },
       "required": [
-        "label",
-        "command"
+        "label"
       ],
-      "description": "A UI button as declared at a wait: `label` and `command` are text fields."
+      "description": "A UI button as declared at a wait: `label` and `command` are text fields. Exactly one of\n`command` (posts `/command` as the user) and `link` (opens a page; a template over the task\ndocument, for example a pull request's URL) is set."
     },
     "Timer": {
       "type": "object",
@@ -1492,6 +1509,10 @@
             "null"
           ],
           "description": "The route, see above."
+        },
+        "hidden": {
+          "type": "boolean",
+          "description": "Still accepted when typed, but not offered as a button (left out of the projection's\n`commands`). Hides an inherited default such as `retry` where it makes no sense."
         }
       },
       "required": [

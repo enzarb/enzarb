@@ -393,6 +393,7 @@ pub fn accepted_commands(res: &Resolved, state: &TaskState) -> Vec<CommandInfo> 
         label: "Cancel".into(),
         description: Some("Stop the task".into()),
         from: Sender::Writer,
+        hidden: false,
     };
     let node = res
         .phase(&state.phase_path())
@@ -414,6 +415,7 @@ pub fn accepted_commands(res: &Resolved, state: &TaskState) -> Vec<CommandInfo> 
                             .unwrap_or_else(|| format!("/{name}")),
                         description: c.description.as_ref().map(|d| d.as_str().to_string()),
                         from: c.from.unwrap_or(Sender::Writer),
+                        hidden: c.hidden,
                         name,
                     }
                 })
@@ -1596,7 +1598,10 @@ impl<'a> Machine<'a> {
             reason: None,
             text: None,
             actions: Vec::new(),
-            commands: accepted_commands(self.res, &self.s),
+            commands: accepted_commands(self.res, &self.s)
+                .into_iter()
+                .filter(|c| !c.hidden)
+                .collect(),
             artifacts: self.s.doc.artifacts.clone(),
             needs_you: false,
         };
@@ -1652,12 +1657,24 @@ impl<'a> Machine<'a> {
                         .actions
                         .iter()
                         .filter_map(|a| {
-                            Some(UiAction {
-                                label: short(&a.label)?,
-                                command: short(&a.command)?,
+                            let label = short(&a.label)?;
+                            if let Some(l) = &a.link {
+                                let url = template::render(l.as_str(), &ctx).ok()?;
+                                let url = url.trim().to_string();
+                                let ok = url.starts_with("https://") || url.starts_with("http://");
+                                return ok.then_some(UiAction {
+                                    label,
+                                    command: None,
+                                    link: Some(url),
+                                });
+                            }
+                            let command = short(a.command.as_ref()?)?;
+                            (!command.is_empty()).then_some(UiAction {
+                                label,
+                                command: Some(command),
+                                link: None,
                             })
                         })
-                        .filter(|a| !a.command.is_empty())
                         .collect();
                     let col = w.column.as_ref().and_then(short).filter(|s| !s.is_empty());
                     p.column = col.or_else(|| match on {

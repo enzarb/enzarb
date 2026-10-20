@@ -166,6 +166,7 @@ These fields accept `{param: <name>}` and templates, so phase params drive them:
       column: review
       waiting_on: human         # default: human with actions or writer-only events, else external
       actions: [{label: Approve, command: approve}, {label: Reject, command: reject}]
+                                # or a link button: {label: Review, link: "{{ (subjects.pull_requests | last).url }}/files"}
       steer: [comment]          # forwarded into the task's last agent session
       refresh: [ci, mergeable]  # facts refreshed on entry
       timer: {seconds: 86400}   # fires a `timer` event
@@ -178,7 +179,7 @@ These fields accept `{param: <name>}` and templates, so phase params drive them:
 - **Matchers:** a type name, or `{event, from, if}`. Types are the [catalog](events.md) types, the workflow's declared custom events, `timer` and `fact` (a refreshed fact: `event.fact`, `event.value`).
 - **`from: writer`** requires `event.actor.can_write`, which the engine fills from GitHub; it is never taken from a payload.
 - **Accepting an event** sets `event` in the document to it (timers and facts don't), then follows `next`.
-- **`actions`** are UI buttons; each posts `/command` as the clicking user, so it arrives as a `comment` event like a typed command.
+- **`actions`** are UI buttons. `{label, command}` posts `/command` as the clicking user, so it arrives as a `comment` event like a typed command. `{label, link}` opens a page instead: `link` is a template over the task document, rendered each time the projection is, and the button is left out when it does not render to an `http(s)` URL. Exactly one of `command` and `link`.
 - **Re-rendering:** while the task stays at a wait, any event that changes what its `reason`, `text`, `column` or buttons render to (a `fact_updated`, a handler's `set`) emits `update_projection` without re-entering the node. Nothing is emitted when the rendering is unchanged.
 
 ### Commands
@@ -187,6 +188,7 @@ A command is `/name` in a comment (or the UI button that posts it). The kernel o
 
 - **Workflow `commands:`** are defaults every wait inherits: `{name, label?, description?, from?: writer|anyone (default writer), to}`. `name`, `label` and `description` are text fields (`{param: x}` works).
 - **Wait `commands:`** adds to or overrides the defaults by `name`. Without `to` the wait's own `next:` rules route the command and the entry only lists it.
+  - `hidden: true` keeps the command accepted when typed but leaves it out of the projection's `commands` (no button). Use it to drop an inherited default such as `retry` from a wait where it makes no sense; the wait still needs a route for it.
 - **`to`** is a node of the wait's phase, `exit:<name>` (leave the phase), `start` (the phase's first node), `self` (the wait again) or `goto:<phase id>` (enter a top-level phase). A default whose `to` cannot route in a phase (a node or exit that phase lacks) is skipped there.
 - **Order:** the wait's `events:` + `next:` rules run first; a command they leave unrouted goes to its declared route, if the sender may use it (`from: writer` needs `actor.can_write`). `/cancel` is engine-native for writers and ends the task.
 - **Commands the `next:` rules match** (`event.command == 'x'`, `== params.p`, `in [...]`) are listed automatically, so libraries that declare no `commands:` keep working.

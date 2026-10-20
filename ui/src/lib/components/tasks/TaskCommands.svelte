@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Button from '#lib/components/form/Button.svelte';
-	import type { TaskCommand, UiAction } from '#lib/tasks.ts';
+	import LinkButton from '#lib/components/ui/LinkButton.svelte';
+	import { safeLink, type TaskCommand, type UiAction } from '#lib/tasks.ts';
 
 	/**
 	 * The commands that apply to the task now (`task.commands`, from the engine's projection), as
@@ -21,16 +22,16 @@
 		oncommand: (command: string) => Promise<unknown>;
 	} = $props();
 
-	const declared = $derived(new Set(actions.map((a) => a.command)));
+	const links = $derived(actions.filter((a) => safeLink(a)));
+	const declared = $derived(new Set(actions.flatMap((a) => (a.command ? [a.command] : []))));
 	const items = $derived(
 		commands.length
 			? commands.filter((c) => c.name !== 'cancel' && (c.from === 'anyone' || canWrite))
-			: actions.map((a) => ({
-					name: a.command,
-					label: a.label,
-					description: null,
-					from: 'anyone' as const
-				}))
+			: actions.flatMap((a) =>
+					a.command
+						? [{ name: a.command, label: a.label, description: null, from: 'anyone' as const }]
+						: []
+				)
 	);
 
 	let pending = $state<string | null>(null);
@@ -49,8 +50,17 @@
 	}
 </script>
 
-{#if items.length}
+{#if items.length || links.length}
 	<div class="ez-cluster" role="group" aria-label="Commands">
+		{#each links as a, i (String(i) + a.link)}
+			<LinkButton
+				variant="primary"
+				size="sm"
+				href={safeLink(a)!}
+				target="_blank"
+				rel="noopener noreferrer">{a.label}</LinkButton
+			>
+		{/each}
 		{#each items as c (c.name)}
 			<Button
 				variant={declared.has(c.name) ? 'primary' : 'secondary'}

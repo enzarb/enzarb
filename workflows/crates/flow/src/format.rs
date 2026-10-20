@@ -76,6 +76,10 @@ pub struct CommandDecl {
     /// The route, see above.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<String>,
+    /// Still accepted when typed, but not offered as a button (left out of the projection's
+    /// `commands`). Hides an inherited default such as `retry` where it makes no sense.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub hidden: bool,
 }
 
 /// A command that applies now (the projection's `commands`).
@@ -87,6 +91,9 @@ pub struct CommandInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub from: Sender,
+    /// Accepted but not offered as a button; the projection leaves it out.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub hidden: bool,
 }
 
 /// Commands the engine always handles itself (writers only).
@@ -557,13 +564,20 @@ impl Matcher {
     }
 }
 
-/// A UI button as declared at a wait: `label` and `command` are text fields.
+/// A UI button as declared at a wait: `label` and `command` are text fields. Exactly one of
+/// `command` (posts `/command` as the user) and `link` (opens a page; a template over the task
+/// document, for example a pull request's URL) is set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UiActionSpec {
     pub label: TextField,
     /// Command word posted as `/command` (without the slash).
-    pub command: TextField,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<TextField>,
+    /// A URL the button opens (a template). The button is left out when it does not render to a
+    /// non-empty `http(s)` URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<TextField>,
 }
 
 /// A rendered UI button (the projection's `actions`).
@@ -572,7 +586,11 @@ pub struct UiActionSpec {
 pub struct UiAction {
     pub label: String,
     /// Command word posted as `/command` (without the slash).
-    pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// The URL the button opens, instead of a command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
 }
 
 /// A generic connector call made by the engine.

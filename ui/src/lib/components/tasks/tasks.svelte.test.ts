@@ -335,6 +335,32 @@ describe('TaskCommands', () => {
 		{ name: 'cancel', label: 'Cancel', description: null, from: 'writer' as const }
 	];
 
+	it('shows a link action as a button that opens its page, and no Retry the engine hid', async () => {
+		render(TaskCommands, {
+			commands: [
+				{ name: 'help', label: '/help', description: null, from: 'anyone' as const },
+				{ name: 'cancel', label: 'Cancel', description: null, from: 'writer' as const }
+			],
+			actions: [
+				{ label: 'Review', link: 'https://github.com/acme/web/pull/7/files' },
+				{ label: 'Sneaky', link: 'javascript:alert(1)' },
+				{ label: 'Rel', link: '//evil.test/x' },
+				{ label: 'Dup', link: 'https://github.com/acme/web/pull/7/files' }
+			],
+			oncommand: async () => {}
+		});
+		const review = page.getByRole('link', { name: 'Review' });
+		await expect
+			.element(review)
+			.toHaveAttribute('href', 'https://github.com/acme/web/pull/7/files');
+		await expect.element(review).toHaveAttribute('target', '_blank');
+		await expect.element(page.getByRole('link', { name: 'Sneaky' })).not.toBeInTheDocument();
+		await expect.element(page.getByRole('link', { name: 'Rel' })).not.toBeInTheDocument();
+		await expect.element(page.getByRole('link', { name: 'Dup' })).toBeVisible();
+		await expect.element(page.getByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+		await expect.element(page.getByRole('button', { name: '/help' })).toBeVisible();
+	});
+
 	it('lists the commands that apply now and posts the clicked one', async () => {
 		const oncommand = vi.fn(async () => {});
 		render(TaskCommands, {

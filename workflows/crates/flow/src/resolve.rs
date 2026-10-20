@@ -1794,6 +1794,7 @@ impl<'l> Resolver<'l> {
             description: d.description.as_ref().map(|l| text(self, l, "description")),
             from: d.from,
             to: d.to.clone(),
+            hidden: d.hidden,
         })
     }
 
@@ -1932,12 +1933,15 @@ impl<'l> Resolver<'l> {
                         Sender::Anyone
                     }),
                     to: None,
+                    hidden: false,
                 }),
             }
         }
         for a in &w.actions {
-            let name = a
-                .command
+            let Some(command) = &a.command else {
+                continue;
+            };
+            let name = command
                 .as_str()
                 .trim_start_matches('/')
                 .to_ascii_lowercase();
@@ -1948,6 +1952,7 @@ impl<'l> Resolver<'l> {
                     description: None,
                     from: Some(Sender::Writer),
                     to: None,
+                    hidden: false,
                 });
             }
         }
@@ -2037,13 +2042,19 @@ impl<'l> Resolver<'l> {
                 &format!("{base}.actions[{i}].label"),
                 scope,
             );
-            out.actions[i].command = self.text(
-                &a.command,
-                params,
-                file,
-                &format!("{base}.actions[{i}].command"),
-                scope,
-            );
+            if let Some(c) = &a.command {
+                out.actions[i].command = Some(self.text(
+                    c,
+                    params,
+                    file,
+                    &format!("{base}.actions[{i}].command"),
+                    scope,
+                ));
+            }
+            if let Some(l) = &a.link {
+                out.actions[i].link =
+                    Some(self.text(l, params, file, &format!("{base}.actions[{i}].link"), scope));
+            }
         }
         if let Some(t) = &w.timer {
             let at = At {
@@ -2103,7 +2114,16 @@ impl<'l> Resolver<'l> {
             }
         }
         for (i, a) in w.actions.iter().enumerate() {
-            let c = a.command.as_str();
+            if a.command.is_some() == a.link.is_some() {
+                self.err(
+                    &At {
+                        file,
+                        path: format!("{base}.actions[{i}]"),
+                    },
+                    "an action needs exactly one of `command` and `link`",
+                );
+            }
+            let c = a.command.as_ref().map(|c| c.as_str()).unwrap_or("x");
             if !template::is_template(c)
                 && !(self.placeholders && c.is_empty())
                 && (c.is_empty() || c.starts_with('/') || c.contains(char::is_whitespace))

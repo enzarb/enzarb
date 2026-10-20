@@ -844,7 +844,7 @@ fn happy_path() {
             true
         )
     );
-    assert_eq!(p.actions[0].command, "start");
+    assert_eq!(p.actions[0].command.as_deref(), Some("start"));
 
     // A non-writer's command and an unrelated comment are ignored.
     r.on(comment("/start", false));
