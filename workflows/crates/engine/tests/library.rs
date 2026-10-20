@@ -1172,6 +1172,28 @@ async fn retry_that_advanced_or_is_recent_files_nothing() {
     assert!(issue_jobs(&h).await.is_empty());
 }
 
+/// The epic's stored breakdown and created issues, as the `breakdown` phase leaves them:
+/// `issues[i]` of the breakdown became `children.issues[i]`.
+async fn seed_breakdown(h: &H, epic: i64, subs: &[(&str, u64, &[&str])]) {
+    let breakdown: Vec<Value> = subs
+        .iter()
+        .map(|(k, _, deps)| json!({"key": k, "title": k, "body": "", "depends_on": deps}))
+        .collect();
+    let children: Vec<Value> = subs
+        .iter()
+        .map(|(k, n, _)| json!({"key": format!("github:{APP}#{n}"), "number": n, "title": k}))
+        .collect();
+    sqlx::query("UPDATE engine.tasks SET state = $2 WHERE id = $1")
+        .bind(epic)
+        .bind(
+            json!({"doc": {"outputs": {"breakdown": {"issues": breakdown},
+                                           "children": {"issues": children}}}}),
+        )
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+}
+
 /// `task_v` places a task in its epic: the epic lists its children (a sub-issue without a task
 /// yet has only its key), and a sub-issue names its parent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1407,6 +1429,8 @@ async fn epic_subissue_without_dependencies_files_one_issue() {
     };
     let epic = seed_task(&h, "breakdown/wait", "human", Some(1)).await;
     let sub = seed_task(&h, "start/wait", "human", Some(2)).await;
+    // The approved breakdown ordered #2 after #3 (`b` after `a`).
+    seed_breakdown(&h, epic, &[("b", 2, &["a"]), ("a", 3, &[])]).await;
     // The breakdown related the epic as `parent` of the sub-issue.
     sqlx::query(
         "INSERT INTO engine.relations (task_id, kind, target_key, source)
@@ -1439,7 +1463,7 @@ async fn epic_subissue_without_dependencies_files_one_issue() {
         &h,
         "epic-subissues-without-deps",
         &format!("finding:epic-subissues-without-deps:{sub}"),
-        &format!("Sub-issue task {sub} was created without dependencies"),
+        &format!("Sub-issue task {sub}: the breakdown's dependencies were not recorded"),
         depend,
         undepend,
     )
@@ -1452,6 +1476,57 @@ async fn epic_subissue_without_dependencies_files_one_issue() {
     assert_eq!(tasks, [Some(sub)]);
 }
 
+/// A malformed epic state (non-array `children`/`breakdown`, children that no longer line up with
+/// the breakdown) neither aborts the findings pass nor invents declared dependencies.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn malformed_epic_state_declares_nothing_and_does_not_abort_the_pass() {
+    let Some(h) = start(false).await else {
+        return;
+    };
+    let epic = seed_task(&h, "breakdown/wait", "human", Some(1)).await;
+    seed_task(&h, "start/wait", "human", Some(2)).await;
+    sqlx::query(
+        "INSERT INTO engine.relations (task_id, kind, target_key, source)
+         VALUES ($1, 'parent', $2, 'workflow')",
+    )
+    .bind(epic)
+    .bind(format!("github:{APP}#2"))
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    let declared = |h: &H| {
+        let pool = h.db.pool.clone();
+        async move {
+            engine::findings::load_tasks(&pool, &["p".to_string()])
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|t| t.declared_dependencies)
+                .max()
+                .unwrap_or(0)
+        }
+    };
+    for state in [
+        json!({"doc": {"outputs": {"children": {"issues": {"not": "a list"}}, "breakdown": {"issues": 3}}}}),
+        json!({"doc": {"outputs": {"children": {"issues": [{"key": format!("github:{APP}#2"), "title": "other"}]},
+                                    "breakdown": {"issues": [{"key": "b", "title": "b", "depends_on": ["a"]}]}}}}),
+        json!({"doc": {"outputs": {"children": {"issues": [{"key": format!("github:{APP}#2"), "title": "b"}]},
+                                    "breakdown": {"issues": [{"key": "b", "title": "b", "depends_on": "a"}]}}}}),
+    ] {
+        sqlx::query("UPDATE engine.tasks SET state = $2 WHERE id = $1")
+            .bind(epic)
+            .bind(state)
+            .execute(&h.db.pool)
+            .await
+            .unwrap();
+        assert_eq!(declared(&h).await, 0);
+        passes(&h, 1).await;
+    }
+    // And a well-formed one still counts.
+    seed_breakdown(&h, epic, &[("b", 2, &["a"]), ("a", 3, &[])]).await;
+    assert_eq!(declared(&h).await, 1);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn subissues_with_dependencies_and_plain_issues_file_nothing() {
     let Some(h) = start(false).await else {
@@ -1461,7 +1536,15 @@ async fn subissues_with_dependencies_and_plain_issues_file_nothing() {
     let a = seed_task(&h, "start/wait", "human", Some(2)).await;
     let b = seed_task(&h, "start/wait", "human", Some(3)).await;
     let plain = seed_task(&h, "start/wait", "human", Some(4)).await;
-    for n in [2, 3] {
+    // #5 is a sub-issue the breakdown declared independent: no dependency, and no finding.
+    seed_task(&h, "start/wait", "human", Some(5)).await;
+    seed_breakdown(
+        &h,
+        epic,
+        &[("a", 2, &["b"]), ("b", 3, &["c"]), ("c", 5, &[])],
+    )
+    .await;
+    for n in [2, 3, 5] {
         sqlx::query(
             "INSERT INTO engine.relations (task_id, kind, target_key) VALUES ($1, 'parent', $2)",
         )
@@ -1957,6 +2040,7 @@ async fn no_check_cancels_stops_or_restarts() {
     // epic-subissues-without-deps
     let epic = seed_task(&h, "breakdown/wait", "human", Some(1)).await;
     seed_task(&h, "start/wait", "human", Some(2)).await;
+    seed_breakdown(&h, epic, &[("b", 2, &["a"]), ("a", 3, &[])]).await;
     sqlx::query(
         "INSERT INTO engine.relations (task_id, kind, target_key, source)
          VALUES ($1, 'parent', $2, 'workflow')",

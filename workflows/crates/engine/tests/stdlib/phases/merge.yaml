@@ -12,6 +12,9 @@ params:
   retry_command: {type: string, default: retry}
   merge_label: {type: string, default: Merge}
   retry_label: {type: string, default: Retry}
+  check_dependencies: {type: boolean, default: false, description: Re-check the issue's dependencies before merging (the issue workflow turns it on)}
+  done_statuses: {type: list, items: string, default: [done, merged, released], description: End statuses that count as finished}
+  unblock_command: {type: string, default: unblock}
 exits: [changed, closed]
 start: check
 nodes:
@@ -36,6 +39,8 @@ nodes:
       - {if: "event.type == 'pull_request'", to: changed}
       - {if: "event.type in ['ci_status', 'check_run']", to: check}
       - {if: "facts.ci.state == 'failure' or facts.mergeable == false", to: changed}
+      - {if: "params.check_dependencies and facts.ci.state == 'success' and facts.mergeable and params.mode == 'auto_when_green'", to: verify}
+      - {if: "params.check_dependencies and facts.ci.state == 'success' and facts.mergeable and event.type == 'comment'", to: verify}
       - {if: "facts.ci.state == 'success' and facts.mergeable and params.mode == 'auto_when_green'", to: merge}
       - {if: "facts.ci.state == 'success' and facts.mergeable and event.type == 'comment'", to: merge}
       - {if: "facts.ci.state == 'success' and facts.mergeable", to: ready}
@@ -49,6 +54,29 @@ nodes:
       actions: [{label: {param: merge_label}, command: {param: command}}]
     max_visits: 500
     next: *next
+  # The issue may have gained a dependency since it passed `dependencies`: before merging,
+  # refresh the fact and wait until nothing it depends on is unfinished (`/unblock` merges anyway).
+  verify:
+    wait:
+      events:
+        - {event: fact, if: "event.fact == 'dependencies'"}
+        - dependency_changed
+        - {event: comment, from: writer, if: "event.command == params.unblock_command"}
+        - {event: pull_request, if: "event.action in ['synchronize', 'closed']"}
+      refresh: [dependencies]
+      reason: blocked_by_dependencies
+      text: "Waiting for the issues this one depends on to finish before merging"
+      column: blocked
+      waiting_on: external
+      actions: [{label: Start anyway, command: {param: unblock_command}}]
+    max_visits: 500
+    next:
+      - {if: "event.type == 'pull_request' and event.action == 'closed' and event.merged", to: done}
+      - {if: "event.type == 'pull_request' and event.action == 'closed'", to: closed}
+      - {if: "event.type == 'pull_request'", to: changed}
+      - {if: "event.type == 'comment'", to: merge}
+      - {if: "facts.dependencies is not none and facts.dependencies | rejectattr('status', 'in', params.done_statuses) | list | length == 0", to: merge}
+      - {if: "event.type == 'dependency_changed'", to: verify}
   merge:
     action:
       name: merge_pull_request

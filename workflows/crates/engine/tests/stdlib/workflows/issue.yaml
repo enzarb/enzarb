@@ -27,13 +27,13 @@ on:
     set: {epic: true}
 phases:
   - {use: phases/dependencies}
-  - {use: phases/start_gate}
+  - {use: phases/start_gate, with: {check_dependencies: true}}
   - use: phases/triage
     with: {epic: {param: epic}, epic_allowed: {param: epic_allowed}, stale_after: {param: stale_after}}
     exits: {epic: breakdown}
-  - {use: phases/plan, with: {epic_allowed: {param: epic_allowed}}, exits: {epic: breakdown}}
+  - {use: phases/plan, with: {epic_allowed: {param: epic_allowed}, check_dependencies: true}, exits: {epic: breakdown}}
   - {use: phases/implement}
   - {use: phases/review, with: {max_rounds: {param: max_rounds}}, exits: {merged: release}, max_entries: 10}
-  - {use: phases/merge, exits: {changed: review}, max_entries: 10}
+  - {use: phases/merge, with: {check_dependencies: true}, exits: {changed: review}, max_entries: 10}
   - {use: phases/release, with: {when: {param: release_when}}, exits: {done: {end: done}}}
   - {use: phases/breakdown}

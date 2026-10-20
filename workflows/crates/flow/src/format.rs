@@ -1207,6 +1207,9 @@ pub enum When {
     CommandIgnored(CommandIgnored),
     /// The number of relation rows of one kind (`blocked_by`, `parent`, `child`, ...).
     RelationCount(RelationCount),
+    /// How many `depends_on` entries the epic's breakdown declared for this sub-issue. Zero for
+    /// a task that is not a sub-issue, or whose epic holds no breakdown for it.
+    DeclaredDependencies(CountIs),
     /// A platform fact compared with a value (reads through the engine's provider).
     Platform(PlatformCmp),
     /// The task is in a platform wait (ADR-0026), optionally for this failure kind.
@@ -1275,6 +1278,16 @@ pub struct RelationCount {
     /// naming the sub-issue) instead of the rows this task holds itself.
     #[serde(default, skip_serializing_if = "is_false")]
     pub inbound: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eq: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gt: Option<u64>,
+}
+
+/// Exactly one of `eq` and `gt`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CountIs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eq: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1442,6 +1455,14 @@ impl When {
             When::RelationCount(r) => {
                 if r.eq.is_some() == r.gt.is_some() {
                     out.push("`relation_count` needs exactly one of `eq` and `gt`".into());
+                }
+                if scope == CheckScope::Platform {
+                    out.push("task conditions need `scope: task`".into());
+                }
+            }
+            When::DeclaredDependencies(c) => {
+                if c.eq.is_some() == c.gt.is_some() {
+                    out.push("`declared_dependencies` needs exactly one of `eq` and `gt`".into());
                 }
                 if scope == CheckScope::Platform {
                     out.push("task conditions need `scope: task`".into());

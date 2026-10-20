@@ -391,6 +391,8 @@ pub struct TaskSnap {
     pub relations: BTreeMap<String, u64>,
     /// Relation rows other tasks hold towards the task's subjects, by kind (`parent`, ...).
     pub relations_in: BTreeMap<String, u64>,
+    /// The `depends_on` entries the epic's breakdown declared for this sub-issue.
+    pub declared_dependencies: u64,
     /// The latest command event routed to the task, and its name (no slash).
     pub last_command: Option<(DateTime<Utc>, String)>,
     /// The last transition that changed the task's node or status, or had effects.
@@ -716,6 +718,11 @@ impl Cx<'_> {
                     (_, Some(gt)) => n > gt,
                     _ => false,
                 }
+            }),
+            When::DeclaredDependencies(c) => self.task.is_some_and(|t| match (c.eq, c.gt) {
+                (Some(eq), _) => t.declared_dependencies == eq,
+                (_, Some(gt)) => t.declared_dependencies > gt,
+                _ => false,
             }),
             When::Platform(p) => self.platform(p),
             When::PlatformWait(w) => self.task.is_some_and(|t| {
@@ -1079,6 +1086,7 @@ pub async fn load_tasks(pool: &PgPool, projects: &[String]) -> Result<Vec<TaskSn
             facts: BTreeMap::new(),
             relations: BTreeMap::new(),
             relations_in: BTreeMap::new(),
+            declared_dependencies: 0,
             last_command: r.get::<Option<DateTime<Utc>>, _>(8).map(|at| {
                 let name: Option<String> = r.get(9);
                 let name = name.unwrap_or_default();
@@ -1144,6 +1152,41 @@ pub async fn load_tasks(pool: &PgPool, projects: &[String]) -> Result<Vec<TaskSn
                 .insert(r.get(1), u64::try_from(r.get::<i64, _>(2)).unwrap_or(0));
         }
     }
+    // What each sub-issue's epic breakdown declared for it: the epic's `children` result lists
+    // the created issues in the order of its `breakdown` issues, which carry `depends_on`.
+    let declared = sqlx::query(
+        "WITH epics AS (
+             SELECT e.id,
+                    CASE WHEN jsonb_typeof(e.state->'doc'->'outputs'->'children'->'issues') = 'array'
+                         THEN e.state->'doc'->'outputs'->'children'->'issues' ELSE '[]'::jsonb END AS made,
+                    CASE WHEN jsonb_typeof(e.state->'doc'->'outputs'->'breakdown'->'issues') = 'array'
+                         THEN e.state->'doc'->'outputs'->'breakdown'->'issues' ELSE '[]'::jsonb END AS plan
+               FROM engine.tasks e
+              WHERE e.id IN (SELECT r.task_id FROM engine.relations r
+                              JOIN engine.subjects k ON k.key = r.target_key
+                             WHERE r.kind = 'parent' AND k.task_id = ANY($1))
+         )
+         SELECT k.task_id,
+                COALESCE(max(CASE WHEN jsonb_typeof(b.issue->'depends_on') = 'array'
+                                  THEN jsonb_array_length(b.issue->'depends_on') ELSE 0 END), 0)
+         FROM (SELECT task_id, key FROM engine.subjects WHERE task_id = ANY($1)) k
+         JOIN engine.relations r ON r.target_key = k.key AND r.kind = 'parent' AND r.task_id <> k.task_id
+         JOIN epics e ON e.id = r.task_id
+         CROSS JOIN LATERAL jsonb_array_elements(e.made) WITH ORDINALITY AS c(issue, n)
+         JOIN LATERAL (SELECT x.issue FROM jsonb_array_elements(e.plan) WITH ORDINALITY AS x(issue, n)
+                        WHERE x.n = c.n AND jsonb_typeof(x.issue) = 'object') b
+              ON c.issue->>'title' IS NOT DISTINCT FROM b.issue->>'title'
+         WHERE jsonb_typeof(c.issue) = 'object' AND c.issue->>'key' = k.key
+         GROUP BY k.task_id",
+    )
+    .bind(&ids)
+    .fetch_all(pool)
+    .await?;
+    for r in declared {
+        if let Some(&i) = index.get(&r.get::<i64, _>(0)) {
+            tasks[i].declared_dependencies = u64::try_from(r.get::<i32, _>(1)).unwrap_or(0);
+        }
+    }
     Ok(tasks)
 }
 
@@ -1185,6 +1228,7 @@ mod tests {
             facts: BTreeMap::new(),
             relations: BTreeMap::new(),
             relations_in: BTreeMap::new(),
+            declared_dependencies: 0,
             last_command: None,
             last_handled_at: None,
             last_event_at: now() - chrono::Duration::hours(2),
@@ -1300,6 +1344,24 @@ mod tests {
         c.text = "attempt {attempts}: {error}".into();
         let e = evaluate(&[c], &failing, now());
         assert_eq!(e.desired[0].text, "attempt 4: boom");
+    }
+
+    #[test]
+    fn declared_dependencies_leaf() {
+        let mut t = task(1);
+        let none = snap(vec![t.clone()]);
+        t.declared_dependencies = 2;
+        let two = snap(vec![t]);
+        for (when, snap_, want) in [
+            (json!({"declared_dependencies": {"gt": 0}}), &none, false),
+            (json!({"declared_dependencies": {"gt": 0}}), &two, true),
+            (json!({"declared_dependencies": {"gt": 2}}), &two, false),
+            (json!({"declared_dependencies": {"eq": 2}}), &two, true),
+            (json!({"declared_dependencies": {"eq": 0}}), &none, true),
+        ] {
+            let got = !hits(&check(when.clone()), snap_).is_empty();
+            assert_eq!(got, want, "{when}");
+        }
     }
 
     #[test]

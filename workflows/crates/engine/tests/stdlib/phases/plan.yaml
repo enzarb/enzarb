@@ -10,6 +10,9 @@ params:
   approve_label: {type: string, default: Approve, description: Label of the approve button}
   epic_command: {type: string, default: epic}
   epic_allowed: {type: boolean, default: true}
+  check_dependencies: {type: boolean, default: false, description: Re-check the issue's dependencies before the command takes effect (the issue workflow turns it on)}
+  done_statuses: {type: list, items: string, default: [done, merged, released], description: End statuses that count as finished}
+  unblock_command: {type: string, default: unblock}
 exits: [epic, closed, failed]
 start: check
 nodes:
@@ -40,10 +43,32 @@ nodes:
       actions: [{label: {param: approve_label}, command: {param: approve_command}}]
     next:
       - {if: "event.type == 'issue'", to: closed}
+      - {if: "event.command == params.approve_command and event.actor.can_write and params.check_dependencies", to: verify}
       - {if: "event.command == params.approve_command and event.actor.can_write", to: done}
       - {if: "event.command == params.epic_command and event.actor.can_write and params.epic_allowed", to: epic}
       # A command from someone without write access, or another command, is not feedback.
       - {if: "not event.command", to: plan}
+  # The sub-issue may have gained a dependency since it passed `dependencies`: before the
+  # command takes effect, refresh the fact and wait until nothing it depends on is unfinished.
+  verify:
+    wait:
+      events:
+        - {event: fact, if: "event.fact == 'dependencies'"}
+        - dependency_changed
+        - {event: comment, from: writer, if: "event.command == params.unblock_command"}
+        - {event: issue, if: "event.action == 'closed'"}
+      refresh: [dependencies]
+      reason: blocked_by_dependencies
+      text: "Waiting for the issues this one depends on to finish"
+      column: blocked
+      waiting_on: external
+      actions: [{label: Start anyway, command: {param: unblock_command}}]
+    max_visits: 500
+    next:
+      - {if: "event.type == 'issue'", to: closed}
+      - {if: "event.type == 'comment'", to: done}
+      - {if: "facts.dependencies is not none and facts.dependencies | rejectattr('status', 'in', params.done_statuses) | list | length == 0", to: done}
+      - {if: "event.type == 'dependency_changed'", to: verify}
   done: {end: {status: done}}
   epic:
     set: {epic: true}
