@@ -868,6 +868,10 @@ nodes:
         - {label: Review, link: "https://github.com/{{ task.repo }}/pull/7/files"}
         - {label: Nowhere, link: "{{ vars.missing }}"}
         - {label: Elsewhere, link: "javascript:alert(1)"}
+        - {label: Spaced, link: " javascript:alert(1)"}
+        - {label: Relative, link: "//evil.test/x"}
+        - {label: Data, link: "data:text/html,x"}
+        - {label: Upper, link: "HTTPS://example.test/x"}
         - {label: Go, command: go}
     next:
       - {if: "event.type == 'comment'", to: done}

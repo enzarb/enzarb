@@ -52,7 +52,7 @@
 
 {#if items.length || links.length}
 	<div class="ez-cluster" role="group" aria-label="Commands">
-		{#each links as a (a.link)}
+		{#each links as a, i (String(i) + a.link)}
 			<LinkButton
 				variant="primary"
 				size="sm"

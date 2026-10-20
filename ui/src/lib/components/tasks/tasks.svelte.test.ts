@@ -343,7 +343,9 @@ describe('TaskCommands', () => {
 			],
 			actions: [
 				{ label: 'Review', link: 'https://github.com/acme/web/pull/7/files' },
-				{ label: 'Sneaky', link: 'javascript:alert(1)' }
+				{ label: 'Sneaky', link: 'javascript:alert(1)' },
+				{ label: 'Rel', link: '//evil.test/x' },
+				{ label: 'Dup', link: 'https://github.com/acme/web/pull/7/files' }
 			],
 			oncommand: async () => {}
 		});
@@ -353,6 +355,8 @@ describe('TaskCommands', () => {
 			.toHaveAttribute('href', 'https://github.com/acme/web/pull/7/files');
 		await expect.element(review).toHaveAttribute('target', '_blank');
 		await expect.element(page.getByRole('link', { name: 'Sneaky' })).not.toBeInTheDocument();
+		await expect.element(page.getByRole('link', { name: 'Rel' })).not.toBeInTheDocument();
+		await expect.element(page.getByRole('link', { name: 'Dup' })).toBeVisible();
 		await expect.element(page.getByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
 		await expect.element(page.getByRole('button', { name: '/help' })).toBeVisible();
 	});
