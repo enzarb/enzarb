@@ -26,6 +26,7 @@ COPY proto/vectors proto/vectors
 COPY realtime realtime
 COPY sandbox-container sandbox-container
 COPY sandbox-proxy sandbox-proxy
+COPY tracks tracks
 COPY updater updater
 # END generated:copy
 RUN cargo chef prepare --recipe-path recipe.json

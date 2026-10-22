@@ -9,6 +9,7 @@ members = [
     "sandbox-container",
     "sandbox-proxy",
     "updater",
+    "tracks",
     "ez/crates/ez-acp",
     "ez/crates/ez-claude",
     "ez/crates/ez-cli",

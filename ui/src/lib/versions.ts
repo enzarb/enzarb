@@ -14,7 +14,8 @@ export const COMPONENTS: readonly ComponentInfo[] = [
 	{ name: 'enzarb-sandbox-proxy', label: 'Sandbox proxy', dir: 'sandbox-proxy' },
 	{ name: 'enzarb-sandbox-operator', label: 'Operator', dir: 'operator' },
 	{ name: 'enzarb-sandbox-container', label: 'Sandbox', dir: 'sandbox-container' },
-	{ name: 'enzarb-updater', label: 'Updater', dir: 'updater' }
+	{ name: 'enzarb-updater', label: 'Updater', dir: 'updater' },
+	{ name: 'enzarb-tracks', label: 'Tracks', dir: 'tracks' }
 ];
 
 export const UNKNOWN_VERSION = 'unknown';

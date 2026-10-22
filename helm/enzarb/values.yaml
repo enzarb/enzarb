@@ -76,6 +76,11 @@ secrets:
   realtimeJwt:
     existingSecret: ""
     key: realtime-jwt-secret
+  # Bearer token the ui sends to enzarb-tracks (ENZARB_TRACKS_TOKEN, at least 32 bytes).
+  # Generated (and kept across upgrades via lookup) unless existingSecret is set.
+  tracksToken:
+    existingSecret: ""
+    key: tracks-token
   # Deprecated (ADR-0022 removed the executor HTTP callback): accepted and ignored.
   executorCallback:
     existingSecret: ""
@@ -241,6 +246,23 @@ realtime:
   # Empty means https://<host> (or publicUrl reduced to its origin). Entries must be bare origins,
   # scheme://host[:port]; realtime refuses to start on a malformed entry.
   allowedOrigins: []
+  resources: {}
+  extraEnv: []
+
+# enzarb-tracks validates, renders and dry-runs .ez/modes.toml and .ez/workflows.toml for the
+# designer pages (ADR-0029). Cluster-internal: only the ui calls it, with secrets.tracksToken.
+# Off until its first release publishes the image.
+tracks:
+  enabled: false
+  replicaCount: 1
+  terminationGracePeriodSeconds: 30
+  rollout: { maxSurge: 1, maxUnavailable: 0 }
+  preStopSeconds: 5
+  image:
+    repository: ghcr.io/enzarb/enzarb-tracks
+    # scripts/sync-components.sh pins the released enzarb-tracks tag here.
+    tag: 0.0.0
+    pullPolicy: ""
   resources: {}
   extraEnv: []
 

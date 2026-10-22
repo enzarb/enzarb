@@ -1,0 +1,29 @@
+[package]
+name = "enzarb-tracks"
+version = "0.1.0"
+edition = "2024"
+description = "Runs ez workflows (.ez/workflows.toml) for enzarb projects; today the validation, rendering and dry-run API behind the designers (ADR-0029)"
+
+[lib]
+name = "enzarb_tracks"
+path = "src/lib.rs"
+
+[[bin]]
+name = "enzarb-tracks"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+ez-core = { path = "../ez/crates/ez-core" }
+ez-workflow = { path = "../ez/crates/ez-workflow" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+subtle = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }

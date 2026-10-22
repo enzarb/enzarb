@@ -18,6 +18,16 @@ metadata:
     {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-realtime") | nindent 4 }}
 ---
 {{- end }}
+{{- if .Values.tracks.enabled }}
+{{- /* tracks: no Kubernetes API access, so no Role or ClusterRole. */}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: enzarb-tracks
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-tracks") | nindent 4 }}
+---
+{{- end }}
 {{- /* ui: create/list/delete Project CRs, and patch their spec (max runs, sandbox resources, repositories). */}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole

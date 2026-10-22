@@ -38,6 +38,10 @@
       "image": "enzarb-updater", "context": ".", "smoke": null, "timeout": 30,
       "workflow_files": [".github/workflows/ci-updater.yml", ".github/workflows/_changes.yml", ".github/workflows/_rust.yml", ".github/workflows/_docker.yml"]
     },
+    "tracks": {
+      "image": "enzarb-tracks", "context": ".", "smoke": null, "timeout": 30,
+      "workflow_files": [".github/workflows/ci-tracks.yml", ".github/workflows/_changes.yml", ".github/workflows/_rust.yml", ".github/workflows/_docker.yml"]
+    },
     "ez": {
       "image": null,
       "workflow_files": [".github/workflows/ci-ez.yml", ".github/workflows/_changes.yml", ".github/workflows/_rust.yml"]

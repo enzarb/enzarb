@@ -66,6 +66,10 @@ for c in $components; do
       run . cargo clippy -p enzarb-updater --all-targets -- -D warnings
       run . cargo test -p enzarb-updater
       ;;
+    tracks)
+      run . cargo clippy -p enzarb-tracks --all-targets -- -D warnings
+      run . cargo test -p enzarb-tracks
+      ;;
     ez)
       run . cargo clippy -p ez-acp -p ez-claude -p ez-cli -p ez-core -p ez-hooks -p ez-llm -p ez-mcp -p ez-mise -p ez-tools -p ez-workflow --all-targets -- -D warnings
       run . cargo test -p ez-acp -p ez-claude -p ez-cli -p ez-core -p ez-hooks -p ez-llm -p ez-mcp -p ez-mise -p ez-tools -p ez-workflow

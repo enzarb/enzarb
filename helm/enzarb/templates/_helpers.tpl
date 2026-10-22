@@ -79,6 +79,8 @@ imagePullSecrets:
 {{- define "enzarb.jwtSecret" -}}{{ .Values.secrets.sessionJwt.existingSecret | default (include "enzarb.generatedSecret" .) }}{{- end }}
 {{- define "enzarb.realtimeJwtSecret" -}}{{ .Values.secrets.realtimeJwt.existingSecret | default (include "enzarb.generatedSecret" .) }}{{- end }}
 {{- define "enzarb.realtimeJwtKey" -}}{{ if .Values.secrets.realtimeJwt.existingSecret }}{{ .Values.secrets.realtimeJwt.key }}{{ else }}realtime-jwt-secret{{ end }}{{- end }}
+{{- define "enzarb.tracksTokenSecret" -}}{{ .Values.secrets.tracksToken.existingSecret | default (include "enzarb.generatedSecret" .) }}{{- end }}
+{{- define "enzarb.tracksTokenKey" -}}{{ if .Values.secrets.tracksToken.existingSecret }}{{ .Values.secrets.tracksToken.key }}{{ else }}tracks-token{{ end }}{{- end }}
 {{- define "enzarb.jwtKey" -}}{{ if .Values.secrets.sessionJwt.existingSecret }}{{ .Values.secrets.sessionJwt.key }}{{ else }}session-jwt-secret{{ end }}{{- end }}
 {{/* Per-user Claude token keyring (release namespace only; never in the sandbox namespace). */}}
 {{- define "enzarb.claudeKeySecret" -}}{{ .Values.secrets.claudeKey.existingSecret | default "enzarb-claude-key" }}{{- end }}
@@ -228,6 +230,7 @@ initContainers:
 {{- $out := dict "enzarb-ui" $v.ui.image.tag "enzarb-connectors" $v.connectors.image.tag "enzarb-sandbox-proxy" $v.sandboxProxy.image.tag "enzarb-sandbox-operator" $v.operator.image.tag -}}
 {{- if $v.realtime.enabled }}{{- $_ := set $out "enzarb-realtime" $v.realtime.image.tag -}}{{- end -}}
 {{- if $v.updater.enabled }}{{- $_ := set $out "enzarb-updater" $v.updater.image.tag -}}{{- end -}}
+{{- if $v.tracks.enabled }}{{- $_ := set $out "enzarb-tracks" $v.tracks.image.tag -}}{{- end -}}
 {{- /* sandboxImage is a full reference: drop any @digest, then take the tag after the last ":" (no tag -> whole ref). */ -}}
 {{- $ref := index (splitList "@" $v.operator.sandboxImage) 0 -}}
 {{- $tag := $ref | splitList ":" | last -}}

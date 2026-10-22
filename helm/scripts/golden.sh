@@ -6,7 +6,7 @@ set -euo pipefail
 export RENDER_PIN_VERSIONS=1
 here="$(cd "$(dirname "$0")/.." && pwd)"
 rc=0
-for s in default dev oldie updater-webhook realtime realtime-replicas realtime-off realtime-btp realtime-origins; do
+for s in default dev oldie updater-webhook realtime realtime-replicas realtime-off realtime-btp realtime-origins tracks; do
   out="$here/tests/golden/$s.yaml"
   if [ "${1:-}" = "--update" ]; then
     "$here/scripts/render.sh" "$s" > "$out"; echo "updated $out"

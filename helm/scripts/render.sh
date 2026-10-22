@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Render the chart for a named scenario to stdout. Scenarios: default, dev, oldie, updater-webhook, realtime, realtime-replicas, realtime-off, realtime-btp, realtime-origins
+# Render the chart for a named scenario to stdout. Scenarios: default, dev, oldie, updater-webhook, realtime, realtime-replicas, realtime-off, realtime-btp, realtime-origins, tracks
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 case "${1:?scenario}" in
@@ -12,6 +12,7 @@ case "${1:?scenario}" in
   realtime-origins) extra=(-f "$here/enzarb/values-oldie.yaml" --set 'realtime.allowedOrigins={https://a.example,https://b.example}') ;;
   realtime-off)extra=(-f "$here/enzarb/values-oldie.yaml" --set realtime.enabled=false) ;;
   realtime-btp) extra=(-f "$here/enzarb/values-oldie.yaml" --set route.backendTrafficPolicy.enabled=true) ;;
+  tracks) extra=(-f "$here/enzarb/values-oldie.yaml" --set tracks.enabled=true) ;;
   *) echo "unknown scenario $1" >&2; exit 2 ;;
 esac
 # RENDER_PIN_VERSIONS=1 (set by golden.sh) masks released component versions (image tags,
@@ -26,6 +27,6 @@ pin() {
 }
 # generated secret values are random; mask them so snapshots are stable
 helm template enzarb "$here/enzarb" --namespace enzarb "${extra[@]}" \
-  | sed -E 's/[ \t]+$//; s/^  [0-9a-f]{16}: .*/  <key-id>: <generated>/; s/^  active: .*/  active: <generated>/; s/^(  (session-jwt-secret|callback-secret|realtime-jwt-secret|updater-webhook-secret|secrets-key)): .*/\1: <generated>/' \
+  | sed -E 's/[ \t]+$//; s/^  [0-9a-f]{16}: .*/  <key-id>: <generated>/; s/^  active: .*/  active: <generated>/; s/^(  (session-jwt-secret|callback-secret|realtime-jwt-secret|tracks-token|updater-webhook-secret|secrets-key)): .*/\1: <generated>/' \
   | pin \
   | cat -s

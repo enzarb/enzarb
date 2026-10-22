@@ -1,0 +1,67 @@
+{{- if .Values.tracks.enabled }}
+{{- $c := .Values.tracks }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: enzarb-tracks
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-tracks") | nindent 4 }}
+spec:
+  # Stateless: validation, rendering and dry runs are pure functions of the request.
+  replicas: {{ $c.replicaCount }}
+  {{- include "enzarb.rollout" $c | nindent 2 }}
+  selector:
+    matchLabels:
+      {{- include "enzarb.selector" (dict "ctx" . "name" "enzarb-tracks") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-tracks") | nindent 8 }}
+    spec:
+      serviceAccountName: enzarb-tracks
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ $c.terminationGracePeriodSeconds }}
+      {{- include "enzarb.pullSecrets" . | nindent 6 }}
+      containers:
+        - name: tracks
+          image: {{ include "enzarb.image" $c }}
+          imagePullPolicy: {{ include "enzarb.pullPolicy" (dict "ctx" . "c" $c) }}
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            {{- include "enzarb.secretEnv" (dict "name" "ENZARB_TRACKS_TOKEN" "secret" (include "enzarb.tracksTokenSecret" .) "key" (include "enzarb.tracksTokenKey" .)) | nindent 12 }}
+            - { name: RUST_LOG, value: {{ .Values.rustLog | quote }} }
+            {{- with $c.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 2
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+          {{- with include "enzarb.preStop" $c }}
+          {{- . | nindent 10 }}
+          {{- end }}
+          {{- with $c.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext: {{ include "enzarb.securityContext" (dict "ctx" . "uid" 10001) | fromYaml | toJson }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: enzarb-tracks
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-tracks") | nindent 4 }}
+spec:
+  selector:
+    {{- include "enzarb.selector" (dict "ctx" . "name" "enzarb-tracks") | nindent 4 }}
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+{{- end }}

@@ -17,14 +17,14 @@ name: release
 on:
   workflow_run:
     # Every ci workflow of a released component (proto and kubernetes are not released).
-    workflows: [ci-operator, ci-connectors, ci-realtime, ci-sandbox-proxy, ci-sandbox-container, ci-ui, ci-updater, ci-helm]
+    workflows: [ci-operator, ci-connectors, ci-realtime, ci-tracks, ci-sandbox-proxy, ci-sandbox-container, ci-ui, ci-updater, ci-helm]
     types: [completed]
   workflow_dispatch:
     inputs:
       component:
         description: Component dir to release from main (helm releases only the chart)
         type: choice
-        options: [operator, connectors, realtime, sandbox-proxy, sandbox-container, ui, updater, helm]
+        options: [operator, connectors, realtime, tracks, sandbox-proxy, sandbox-container, ui, updater, helm]
 # One release at a time per component. Runs that are filtered out (PR ci, failures) get their own
 # group, so they can never replace a pending real release.
 concurrency:

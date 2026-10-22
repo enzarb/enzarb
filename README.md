@@ -14,4 +14,4 @@ The `enzarb` monorepo: AI coding agents running in Kubernetes sandboxes against 
 - [docs/gaps.md](docs/gaps.md): open questions
 - [docs/adr/](docs/adr/): decision records
 
-Each component lives in its own top-level directory (`proto/`, `operator/`, `connectors/`, `realtime/`, `sandbox-proxy/`, `sandbox-container/`, `ui/`, `updater/`, `kubernetes/`, `helm/`) with its own checks and release tags `<dir>/vX.Y.Z`; see [CLAUDE.md](CLAUDE.md) and [ADR-0015](docs/adr/0015-monorepo.md).
+Each component lives in its own top-level directory (`proto/`, `operator/`, `connectors/`, `realtime/`, `sandbox-proxy/`, `sandbox-container/`, `ui/`, `ez/`, `tracks/`, `updater/`, `kubernetes/`, `helm/`) with its own checks and release tags `<dir>/vX.Y.Z`; see [CLAUDE.md](CLAUDE.md) and [ADR-0015](docs/adr/0015-monorepo.md).

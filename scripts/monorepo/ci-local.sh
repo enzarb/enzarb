@@ -5,7 +5,7 @@
 #   scripts/monorepo/ci-local.sh                 # everything
 #   scripts/monorepo/ci-local.sh realtime ui    # selected groups
 # Groups: monorepo proto operator connectors realtime sandbox-proxy sandbox-container
-#         updater ui helm kubernetes docker
+#         updater tracks ui helm kubernetes docker
 # Needs docker (shared Postgres, actionlint, image builds). nextest comes from mise
 # (cargo:cargo-nextest). Skipped (CI only): kubernetes ansible-lint, vendored-drift, image smoke.
 set -uo pipefail
@@ -41,7 +41,7 @@ rust() { # rust <name> <cargo-args...>   (_rust.yml: fmt, check-cargo-deps, clip
 
 pg() { [ -n "${ENZARB_TEST_PG_URL:-}" ] || eval "$(mise run test:pg)"; export ENZARB_TEST_PG_URL; }
 
-groups=${*:-monorepo proto operator connectors realtime sandbox-proxy sandbox-container updater ui helm kubernetes docker}
+groups=${*:-monorepo proto operator connectors realtime sandbox-proxy sandbox-container updater tracks ui helm kubernetes docker}
 for g in $groups; do
   case $g in
     monorepo)
@@ -76,6 +76,7 @@ for g in $groups; do
       rust sandbox-container --locked -p sandbox-init
       ;;
     updater) rust updater -p enzarb-updater ;;
+    tracks) rust tracks -p enzarb-tracks ;;
     ui)
       step "ui pnpm install" ui pnpm install --frozen-lockfile
       step "ui check" ui pnpm run check
@@ -92,7 +93,7 @@ for g in $groups; do
       ;;
     kubernetes) step "kubernetes validate" kubernetes ./hack/validate.sh ;;
     docker)
-      for d in operator connectors realtime sandbox-proxy sandbox-container ui updater; do
+      for d in operator connectors realtime sandbox-proxy sandbox-container ui updater tracks; do
         ctx=$(bash .github/scripts/image-components.sh "$d" | jq -r .context)
         step "docker $d" . docker build -q -f "$d/Dockerfile" -t "ci-local/$d" "$ctx"
       done

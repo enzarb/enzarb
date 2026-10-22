@@ -36,6 +36,10 @@ spec:
             {{- if .Values.realtime.enabled }}
             {{- include "enzarb.secretEnv" (dict "name" "ENZARB_REALTIME_JWT_SECRET" "secret" (include "enzarb.realtimeJwtSecret" .) "key" (include "enzarb.realtimeJwtKey" .)) | nindent 12 }}
             {{- end }}
+            {{- if .Values.tracks.enabled }}
+            - { name: ENZARB_TRACKS_URL, value: "http://enzarb-tracks:8080" }
+            {{- include "enzarb.secretEnv" (dict "name" "ENZARB_TRACKS_TOKEN" "secret" (include "enzarb.tracksTokenSecret" .) "key" (include "enzarb.tracksTokenKey" .)) | nindent 12 }}
+            {{- end }}
             # Web Push keys. Optional so pods start (notifications off) until the keypair exists.
             - name: ENZARB_VAPID_PUBLIC_KEY
               valueFrom: { secretKeyRef: { name: {{ include "enzarb.vapidKeySecret" . | quote }}, key: public-key, optional: true } }

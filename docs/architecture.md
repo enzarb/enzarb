@@ -17,6 +17,7 @@ All components live in one monorepo, github.com/enzarb/enzarb ([ADR-0015](adr/00
 | `proto/` | Mux protocol: frame codec, credit-based flow control, `docs/protocol.md`, shared test vectors | Rust crate + npm package |
 | `connectors/` | The `receiver` binary: verifies GitHub webhooks and logs each delivery in `connectors.events` | Rust, container image |
 | `ez/` | enzarb's coding agent (ADR-0028): one configuration of modes (system prompt, tools, mise tasks, hooks, model) for every backend; a `claude-code` driver (Claude Code through `claude-agent-acp`, with the setup-token) and a `native` driver (Anthropic API key or OpenAI-compatible endpoints). Speaks ACP; planned to run in the sandbox image | Rust (binary `ez`) |
+| `tracks/` | Runs ez workflows (`.ez/workflows.toml`, [ADR-0029](adr/0029-ez-workflows.md)). Today a stateless, cluster-internal API the UI calls to parse, validate and render `.ez/modes.toml` and `.ez/workflows.toml` and to dry-run workflows against logged events; all rules come from the `ez-workflow` crate and ez-core. Event routing, run state and real runs come later | Rust, container image (opt-in in the chart) |
 | `updater/` | Tiny stateless service: polls the chart registry and patches `spec.version` of the RKE2 `HelmChart` to the highest published version (never downgrades; optional release webhook) | Rust, container image |
 | `realtime/` | Stateless change stream: `LISTEN connector_event`, pushes `event` / `resync` frames to browsers over an authenticated websocket (`/live/v1/stream`), filtered by repository; the UI refetches via remote functions | Rust, container image |
 | `kubernetes/` | Cluster prerequisites: kind config, Envoy Gateway, agent-sandbox (v0.5.x), RuntimeClasses, pgop (Capsule is installed but unused since ADR-0013) | YAML / kustomize |
@@ -62,6 +63,8 @@ flowchart LR
   PG -- NOTIFY connector_event --> RT[enzarb-realtime]
   RT -- event frames --> B
   UI -- read connectors.event_v, app --> PG
+
+  UI -- validate / render / dry run --> TR[enzarb-tracks<br/>opt-in]
 
   UI -- Project CRs --> API[kube-apiserver]
   OP[sandbox-operator] -- watch / reconcile --> API

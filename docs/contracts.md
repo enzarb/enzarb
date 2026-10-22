@@ -240,6 +240,8 @@ connectors.event_v(id bigint, source text, delivery_id text, event text, action 
 | `ENZARB_REALTIME_JWT_SECRET` | ui, enzarb-realtime |
 | `ENZARB_REALTIME_LISTEN` (`0.0.0.0:8080`), `ENZARB_REALTIME_PING_SECS` (15), `ENZARB_REALTIME_BUFFER` (256), `ENZARB_REALTIME_MAX_TOKEN_TTL_SECS` (300), `ENZARB_REALTIME_ALLOWED_ORIGINS` (comma-separated `scheme://host[:port]`; unset means `Origin` must equal `Host`; cookie auth only) | enzarb-realtime |
 | `ENZARB_REALTIME_LEGACY_TOKEN_URL` (`true`/`false`, default `false`; when on, the ui also puts the token in the URL as `?token=`) | ui |
+| `ENZARB_TRACKS_URL` (e.g. `http://enzarb-tracks:8080`; unset means the designers are off), `ENZARB_TRACKS_TOKEN` | ui (only when `tracks.enabled`) |
+| `ENZARB_TRACKS_TOKEN` (required, at least 32 bytes; shared with the ui), `ENZARB_TRACKS_LISTEN` (`0.0.0.0:8080`), `ENZARB_TRACKS_MAX_BODY_BYTES` (8 MiB, at least 64 KiB) | enzarb-tracks |
 | `GITHUB_WEBHOOK_SECRET` | receiver |
 | `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` | ui |
 | `ENZARB_GITHUB_APP_SLUG` (optional, default `enzarb`; chart value `githubApp.slug`) | ui (the "install the App" link `https://github.com/apps/<slug>/installations/new`) |
@@ -277,6 +279,7 @@ Every image (the Rust components share one root Cargo workspace; `ui` has path d
 | `ghcr.io/enzarb/enzarb-connectors-receiver` | `connectors/` | 8080 |
 | `ghcr.io/enzarb/enzarb-updater` | `updater/` | 8080 |
 | `ghcr.io/enzarb/enzarb-realtime` | `realtime/` | 8080 |
+| `ghcr.io/enzarb/enzarb-tracks` | `tracks/` | 8080 |
 
 - **Tags:** `main`, `sha-<short>`, and `<version>`/`latest` on `<dir>/v*` release tags (the dir prefix is stripped).
 - **Visibility:** private. Pulling requires an image pull secret (or `kind load` in dev).
@@ -293,3 +296,7 @@ The UI is an installable PWA (`/manifest.webmanifest`, service worker `service-w
 ## Updater `/status` (additive)
 
 `GET /status` on the updater: `{installed, desired, latest, stuck, releases}`. `releases` is `[{version, deployedAt}]`, oldest first, at most 20: when each chart version finished installing (`deployedAt` is the helm-install Job's completion time, RFC 3339). It is kept in the ConfigMap `enzarb-updater-releases` and only covers versions installed after it shipped. Consumers must tolerate its absence (older updater). See ADR-0025.
+
+## Tracks API (additive)
+
+Cluster-internal HTTP API of `enzarb-tracks` ([ADR-0029](adr/0029-ez-workflows.md)), called only by the ui server after its own access check; there is no Gateway route. Every `/v1` route needs `Authorization: Bearer $ENZARB_TRACKS_TOKEN`; errors are `{"error": {"code", "message"}}` (plus `issues` on 422 `invalid_modes`). Routes: `GET /v1/modes/catalog`, `POST /v1/modes/{parse,validate,render}`, `POST /v1/workflows/{check,render}` and `POST /v1/dry-run` (events passed inline as `{id, event, action?, payload}` rows of `connectors.event_v`, 1-50 per request). Request and response shapes are in the [tracks README](../tracks/README.md). Changes are additive: new fields are optional and consumers ignore unknown ones.

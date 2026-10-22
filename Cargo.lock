@@ -1496,6 +1496,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "enzarb-tracks"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "ez-core",
+ "ez-workflow",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "subtle",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "enzarb-updater"
 version = "0.1.0"
 dependencies = [

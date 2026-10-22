@@ -9,6 +9,7 @@ components:
   - { dir: connectors,        image: enzarb-connectors-receiver, path: .connectors.image.tag }
   - { dir: realtime,          image: enzarb-realtime,            path: .realtime.image.tag }
   - { dir: updater,           image: enzarb-updater,             path: .updater.image.tag }
+  - { dir: tracks,            image: enzarb-tracks,              path: .tracks.image.tag }
   - { dir: sandbox-proxy,     image: enzarb-sandbox-proxy,       path: .sandboxProxy.image.tag }
   - { dir: operator,          image: enzarb-sandbox-operator,    path: .operator.image.tag, crd: true }
   - { dir: sandbox-container, image: enzarb-sandbox,             path: .operator.sandboxImage, prefix: "ghcr.io/enzarb/enzarb-sandbox:" }
