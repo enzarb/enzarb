@@ -251,9 +251,9 @@ realtime:
 
 # enzarb-tracks validates, renders and dry-runs .ez/modes.toml and .ez/workflows.toml for the
 # designer pages (ADR-0029). Cluster-internal: only the ui calls it, with secrets.tracksToken.
-# Off until its first release publishes the image.
+# Without it the Modes and Workflows designers show "unavailable".
 tracks:
-  enabled: false
+  enabled: true
   replicaCount: 1
   terminationGracePeriodSeconds: 30
   rollout: { maxSurge: 1, maxUnavailable: 0 }

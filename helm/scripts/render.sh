@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Render the chart for a named scenario to stdout. Scenarios: default, dev, oldie, updater-webhook, realtime, realtime-replicas, realtime-off, realtime-btp, realtime-origins, tracks
+# Render the chart for a named scenario to stdout. Scenarios: default, dev, oldie, updater-webhook, realtime, realtime-replicas, realtime-off, realtime-btp, realtime-origins, tracks, tracks-off
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 case "${1:?scenario}" in
@@ -13,6 +13,7 @@ case "${1:?scenario}" in
   realtime-off)extra=(-f "$here/enzarb/values-oldie.yaml" --set realtime.enabled=false) ;;
   realtime-btp) extra=(-f "$here/enzarb/values-oldie.yaml" --set route.backendTrafficPolicy.enabled=true) ;;
   tracks) extra=(-f "$here/enzarb/values-oldie.yaml" --set tracks.enabled=true) ;;
+  tracks-off) extra=(-f "$here/enzarb/values-oldie.yaml" --set tracks.enabled=false) ;;
   *) echo "unknown scenario $1" >&2; exit 2 ;;
 esac
 # RENDER_PIN_VERSIONS=1 (set by golden.sh) masks released component versions (image tags,
