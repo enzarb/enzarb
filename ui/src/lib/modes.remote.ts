@@ -102,6 +102,5 @@ export const saveModesFile = command(SaveModesSchema, async ({ name, ...input })
 		...input,
 		doc: input.doc as ModesDoc | undefined
 	});
-	if (r.ok && !r.unchanged) await getModes({ name, repo: input.repo }).refresh();
 	return r;
 });

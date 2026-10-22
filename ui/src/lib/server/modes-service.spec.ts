@@ -60,7 +60,10 @@ beforeEach(() => {
 			text: '[modes.plan]\nprompt = "x"\n',
 			issues: [],
 			rewritten: []
-		}))
+		})),
+		checkWorkflows: vi.fn(),
+		renderWorkflows: vi.fn(),
+		dryRun: vi.fn()
 	};
 	deps = {
 		tracks: tracks as unknown as TracksClient,

@@ -10,7 +10,7 @@ All components live in one monorepo, github.com/enzarb/enzarb ([ADR-0015](adr/00
 
 | Dir | Role | Language / artifact |
 |---|---|---|
-| `ui/` | SvelteKit web app; remote functions are the logic layer. Login, Project management, terminal and chat tabs, per-project Events tab, Modes tab (the modes designer: edits `.ez/modes.toml` through tracks and commits it to the default branch) | TypeScript, container image |
+| `ui/` | SvelteKit web app; remote functions are the logic layer. Login, Project management, terminal and chat tabs, per-project Events tab, Modes tab (the modes designer: edits `.ez/modes.toml` through tracks and commits it to the default branch), Workflows tab (the workflow designer: graph, TOML and dry run over logged events for `.ez/workflows.toml`, validated by tracks, committed the same way) | TypeScript, container image |
 | `sandbox-proxy/` | Takes the browser's single websocket, checks authorization, routes mux frames to the right sandbox's pid-1 | Rust, container image |
 | `sandbox-container/` | Sandbox image plus pid-1 `sandbox-init`: supervises terminals, chats, git worktrees and dockerd; captures the Claude token | Rust + Dockerfile |
 | `operator/` | Reconciles `Project` (`enzarb.dev/v1alpha1`) into an agent-sandbox `Sandbox`, its auth Secret, volumes and NetworkPolicy in the shared sandbox namespace (ADR-0013); publishes the CRD types as a library crate | Rust (kube-rs), container image |

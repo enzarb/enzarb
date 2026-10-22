@@ -3005,3 +3005,222 @@ textarea.ez-control {
 .ez-max-select {
 	max-width: 24rem;
 }
+
+/* Workflow designer (Project → Workflows) */
+.ez-wf-layout {
+	display: grid;
+	grid-template-columns: minmax(10rem, 14rem) minmax(0, 1fr) minmax(18rem, 28rem);
+	gap: var(--ez-space-5);
+	align-items: start;
+
+	@media (max-width: 72rem) {
+		grid-template-columns: minmax(10rem, 14rem) minmax(0, 1fr);
+
+		.ez-wf-panel {
+			grid-column: 1 / -1;
+		}
+	}
+
+	@media (max-width: 48rem) {
+		grid-template-columns: minmax(0, 1fr);
+	}
+}
+
+.ez-wf-canvas {
+	min-width: 0;
+}
+
+.ez-wf-graph {
+	overflow: auto;
+	max-height: 70vh;
+	border: var(--ez-border-width) solid var(--ez-border);
+	border-radius: var(--ez-radius-md);
+	background: var(--ez-surface-sunken);
+
+	svg {
+		display: block;
+	}
+
+	&__arrow {
+		fill: var(--ez-border-strong);
+	}
+}
+
+.ez-wf-edge {
+	path {
+		fill: none;
+		stroke: var(--ez-border-strong);
+		stroke-width: 1.5;
+	}
+
+	text {
+		fill: var(--ez-text-muted);
+		font-family: var(--ez-mono);
+		font-size: var(--ez-text-xs);
+		paint-order: stroke;
+		stroke: var(--ez-surface-sunken);
+		stroke-width: 4px;
+	}
+
+	&--taken path {
+		stroke: var(--ez-accent);
+		stroke-width: 2.5;
+	}
+}
+
+.ez-wf-node {
+	cursor: pointer;
+
+	rect {
+		fill: var(--ez-surface);
+		stroke: var(--ez-border-strong);
+		stroke-width: 1.5;
+	}
+
+	&__id {
+		fill: var(--ez-text);
+		font-family: var(--ez-mono);
+		font-size: var(--ez-text-sm);
+		font-weight: 600;
+	}
+
+	&__sub {
+		fill: var(--ez-text-muted);
+		font-size: var(--ez-text-xs);
+	}
+
+	&__start {
+		fill: var(--ez-accent);
+	}
+
+	&--end rect {
+		fill: var(--ez-surface-sunken);
+	}
+
+	&--orphan rect {
+		stroke-dasharray: 4 3;
+	}
+
+	&--visited rect {
+		fill: var(--ez-accent-soft);
+	}
+
+	&--error rect {
+		stroke: var(--ez-danger-fg);
+	}
+
+	&--selected rect {
+		stroke: var(--ez-accent);
+		stroke-width: 3;
+	}
+
+	&:hover rect {
+		stroke: var(--ez-accent-hover);
+	}
+
+	&:focus-visible {
+		outline: none;
+
+		rect {
+			stroke: var(--ez-accent);
+			stroke-width: 3;
+			stroke-dasharray: 3 2;
+		}
+	}
+}
+
+.ez-wf-edge-row {
+	display: grid;
+	grid-template-columns: minmax(0, 2fr) minmax(8rem, 1fr);
+	gap: var(--ez-space-2) var(--ez-space-3);
+	align-items: end;
+	padding-bottom: var(--ez-space-3);
+	border-bottom: var(--ez-border-width) solid var(--ez-border);
+
+	> .ez-cluster {
+		grid-column: 1 / -1;
+	}
+}
+
+.ez-wf-events {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-1);
+	max-height: 18rem;
+	overflow: auto;
+}
+
+.ez-wf-result {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-3);
+	padding: var(--ez-space-4);
+	border: var(--ez-border-width) solid var(--ez-border);
+	border-radius: var(--ez-radius-md);
+
+	&__title {
+		margin: 0;
+		font-size: var(--ez-text-base);
+	}
+}
+
+.ez-wf-triggers,
+.ez-wf-trace__edges {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-1);
+	margin: 0;
+	padding: 0;
+	list-style: none;
+
+	li {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: var(--ez-space-2);
+	}
+}
+
+.ez-wf-trace {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-2);
+	padding-top: var(--ez-space-3);
+	border-top: var(--ez-border-width) solid var(--ez-border);
+
+	&__steps {
+		display: flex;
+		flex-direction: column;
+		gap: var(--ez-space-1);
+		margin: 0;
+		padding-left: var(--ez-space-5);
+
+		summary {
+			display: flex;
+			flex-wrap: wrap;
+			gap: var(--ez-space-2);
+			cursor: pointer;
+		}
+	}
+
+	&__details {
+		display: grid;
+		grid-template-columns: max-content minmax(0, 1fr);
+		gap: var(--ez-space-1) var(--ez-space-3);
+		margin: var(--ez-space-2) 0;
+
+		dt {
+			color: var(--ez-text-muted);
+		}
+
+		dd {
+			margin: 0;
+		}
+
+		pre {
+			margin: 0;
+			white-space: pre-wrap;
+			overflow-wrap: anywhere;
+		}
+	}
+}

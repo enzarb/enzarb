@@ -63,4 +63,33 @@ describe('tracks client', () => {
 		const e2 = (await html.modesCatalog().catch((e) => e)) as TracksError;
 		expect([e2.status, e2.code]).toEqual([502, 'unavailable']);
 	});
+
+	it('maps the workflows routes to their snake_case bodies and flattens the report', async () => {
+		const diagnostics = [{ severity: 'warning', path: 'workflows.a', message: 'm' }];
+		const f = vi.fn(async () => json(200, { report: { diagnostics }, file: { version: 1 } }));
+		const c = createTracksClient(cfg, f as unknown as typeof fetch);
+		const body = (n: number) =>
+			JSON.parse((f.mock.calls[n] as unknown as [string, RequestInit])[1].body as string);
+		const url = (n: number) => (f.mock.calls[n] as unknown as [string])[0];
+
+		expect(await c.checkWorkflows('version = 1', null)).toEqual({
+			diagnostics,
+			file: { version: 1 }
+		});
+		expect(url(0)).toBe('http://tracks:8080/v1/workflows/check');
+		expect(body(0)).toEqual({ workflows_toml: 'version = 1' });
+
+		f.mockResolvedValueOnce(json(200, { text: 'version = 1\n', report: { diagnostics: [] } }));
+		expect(await c.renderWorkflows({ version: 1 }, '[modes.a]')).toEqual({
+			text: 'version = 1\n',
+			diagnostics: []
+		});
+		expect(body(1)).toEqual({ file: { version: 1 }, modes_toml: '[modes.a]' });
+
+		f.mockResolvedValueOnce(json(200, { report: { diagnostics: [] }, results: [] }));
+		const events = [{ id: 7, event: 'issues', action: 'labeled', payload: {} }];
+		await c.dryRun({ text: 't', modes: null, events, options: { assume: { a: {} } } });
+		expect(url(2)).toBe('http://tracks:8080/v1/dry-run');
+		expect(body(2)).toEqual({ workflows_toml: 't', events, options: { assume: { a: {} } } });
+	});
 });
