@@ -19,10 +19,10 @@ v="$(raw <<<"$def")"
 check "default: valid JSON" "$(yq -p=json '. | tag' <<<"$v")" '!!map'
 vd() { yq -p=json "$1" <<<"$v"; }
 check "default: top-level keys" "$(vd 'keys | join(",")')" chart,components
-check "default: component keys" "$(vd '.components | keys | join(",")')" enzarb-connectors,enzarb-realtime,enzarb-sandbox-container,enzarb-sandbox-operator,enzarb-sandbox-proxy,enzarb-ui
+check "default: component keys" "$(vd '.components | keys | join(",")')" enzarb-connectors,enzarb-realtime,enzarb-sandbox-container,enzarb-sandbox-operator,enzarb-sandbox-proxy,enzarb-tracks,enzarb-ui
 check "default: no empty values" "$(vd '[.components[] | select(. == "" or . == null)] | length')" 0
 check "default: no updater (disabled)" "$(vd '.components | has("enzarb-updater")')" false
-check "default: no tracks (disabled)" "$(vd '.components | has("enzarb-tracks")')" false
+check "default: enzarb-tracks" "$(vd '.components["enzarb-tracks"]')" "$(vals .tracks.image.tag)"
 check "default: enzarb-ui" "$(vd '.components["enzarb-ui"]')" "$(vals .ui.image.tag)"
 check "default: enzarb-connectors" "$(vd '.components["enzarb-connectors"]')" "$(vals .connectors.image.tag)"
 check "default: enzarb-realtime" "$(vd '.components["enzarb-realtime"]')" "$(vals .realtime.image.tag)"
@@ -41,6 +41,7 @@ upd="$("$here/scripts/render.sh" updater-webhook)"
 check "updater on: enzarb-updater" "$(yq -p=json '.components["enzarb-updater"]' <<<"$(raw <<<"$upd")")" "$(vals .updater.image.tag)"
 
 trk="$("$here/scripts/render.sh" tracks)"
+check "tracks off: no enzarb-tracks" "$(yq -p=json '.components | has("enzarb-tracks")' <<<"$(raw <<<"$("$here/scripts/render.sh" tracks-off)")")" false
 check "tracks on: enzarb-tracks" "$(yq -p=json '.components["enzarb-tracks"]' <<<"$(raw <<<"$trk")")" "$(vals .tracks.image.tag)"
 
 # A registry port, a digest, or a missing tag in operator.sandboxImage must not corrupt the sandbox version.
