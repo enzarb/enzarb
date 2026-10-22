@@ -409,11 +409,24 @@
 		<DryRunPanel api={dryRun} workflows={doc.workflows} {currentText} show={showTrace} />
 	</Section>
 
+	<Section title="Test run">
+		<div class="ez-stack">
+			<p class="ez-muted" id="ez-wf-test-run-help">
+				Test runs (a real, contained run in the Project's sandbox from a past event, never pushed)
+				need tracks to execute workflow steps, which it does not do yet. Use the dry run above until
+				then.
+			</p>
+			<div>
+				<Button disabled aria-describedby="ez-wf-test-run-help">Test run</Button>
+			</div>
+		</div>
+	</Section>
+
 	<Section title="Save">
 		<div class="ez-stack">
 			<TextField
 				label="Commit message"
-				placeholder="chore(ez): update .ez/workflows.toml"
+				placeholder="chore(ez): update .ez/workflows.toml from enzarb"
 				maxlength={200}
 				bind:value={message}
 				disabled={saving}

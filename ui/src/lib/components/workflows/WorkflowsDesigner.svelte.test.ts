@@ -179,6 +179,48 @@ describe('WorkflowsDesigner', () => {
 		await expect.element(page.getByRole('button', { name: 'Clear the trace' })).toBeInTheDocument();
 	});
 
+	it('adds a node and points an edge at it', async () => {
+		const api = fakeApi();
+		render(WorkflowsDesigner, { file: file(), api, dryRun: fakeDryRun(), saved: vi.fn() });
+		await page.getByRole('button', { name: /New node type/ }).click();
+		await page.getByRole('option', { name: 'end', exact: true }).click();
+		await page.getByRole('button', { name: 'Add node' }).click();
+		await expect.element(node('end')).toBeInTheDocument();
+		await expect.element(page.getByRole('textbox', { name: 'Node id' })).toHaveValue('end');
+
+		await node('open_pr').click();
+		await page.getByRole('button', { name: /Go to/ }).click();
+		await page.getByRole('option', { name: 'end', exact: true }).click();
+		await commit().click();
+		await expect.poll(() => vi.mocked(api.save).mock.calls.length).toBe(1);
+		const wf = vi.mocked(api.save).mock.calls[0][0].file!.workflows!['fix-issue'];
+		expect(wf.nodes.end).toMatchObject({ type: 'end' });
+		expect(wf.nodes.open_pr).toMatchObject({ next: 'end' });
+	});
+
+	it('round-trips the graph through the TOML tab via tracks', async () => {
+		const api = fakeApi();
+		render(WorkflowsDesigner, { file: file(), api, dryRun: fakeDryRun(), saved: vi.fn() });
+		await page.getByRole('tab', { name: 'TOML' }).click();
+		const editor = page.getByRole('textbox', { name: '.ez/workflows.toml' });
+		await expect.element(editor).toHaveValue('version = 1\n# rendered\n');
+		expect(vi.mocked(api.render).mock.calls.at(-1)?.[0]).toEqual(wire);
+
+		await page.getByRole('tab', { name: 'Graph' }).click();
+		await expect.element(node('triage')).toBeInTheDocument();
+		expect(vi.mocked(api.check)).toHaveBeenCalledWith('version = 1\n# rendered\n');
+	});
+
+	it('shows test runs as not available yet', async () => {
+		render(WorkflowsDesigner, {
+			file: file(),
+			api: fakeApi(),
+			dryRun: fakeDryRun(),
+			saved: vi.fn()
+		});
+		await expect.element(page.getByRole('button', { name: 'Test run' })).toBeDisabled();
+	});
+
 	it('starts a missing file from the example', async () => {
 		render(WorkflowsDesigner, {
 			file: file({ sha: null, text: null, file: { version: 1 } }),
