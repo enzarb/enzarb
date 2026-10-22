@@ -1,0 +1,6 @@
+# Same test runner as CI (`_rust.yml` runs `cargo nextest run`). python backs the fake MCP
+# server used by the ez-mcp integration tests.
+[tools]
+rust = "latest"
+"aqua:nextest-rs/nextest/cargo-nextest" = "latest"
+python = "3.13"

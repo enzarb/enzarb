@@ -1,0 +1,21 @@
+[package]
+name = "ez-tools"
+description = "Built-in tools for the ez agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+globset.workspace = true
+ignore.workspace = true
+regex.workspace = true
+ez-llm.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

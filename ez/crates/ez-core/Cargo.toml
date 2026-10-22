@@ -1,0 +1,34 @@
+[package]
+name = "ez-core"
+description = "Agent loop, sessions, modes, permissions and config for ez"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+globset.workspace = true
+regex.workspace = true
+ez-hooks.workspace = true
+ez-claude.workspace = true
+ez-llm.workspace = true
+ez-mcp.workspace = true
+ez-mise.workspace = true
+ez-tools.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+similar.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

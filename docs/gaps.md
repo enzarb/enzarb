@@ -35,3 +35,8 @@ The owning repo is in brackets. Resolve 2–5 first: they shape the CRDs, the pr
 22. (removed)
 23. (removed)
 24. **Workspace data outside tagged caches is never pruned** [sandbox-container]: the workspace pruner (`workspace_prune.rs`) removes only directories with a valid `CACHEDIR.TAG` and the shared `.cache/target` dirs. Clones, step workspaces, `node_modules`, sccache and the npm cache stay, so a workspace can sit near full with nothing left to prune. When a pass ends still short, the pruner logs a `low_disk` warning with the largest `tasks/*` and `.cache/*` entries. Whether sccache/npm caches should be pruned too is open until that log shows a gap.
+25. **ez `claude-code` driver limits** [ez] ([ADR-0028](adr/0028-ez-coding-agent.md)): the driver (`ez/crates/ez-claude`) is tested only against a fake claude-agent-acp (`ez/crates/ez-core/tests/fixtures/fake_claude_acp.py`), not yet end to end with a real Claude Code and token. Known limits:
+    - the system prompt is fixed when the first prompt starts the child, so a mid-session mode switch changes the tools (the next `tools/list`) but not the prompt; Claude Code may also cache the tool list, and a stateless MCP server can't send `tools/list_changed`;
+    - `session/load` (resume after a sandbox-init restart) starts a fresh Claude Code session without the earlier conversation;
+    - Claude Code compacts its own context, so ez's compaction settings don't apply;
+    - usage is per `session/prompt` (summed over Claude Code's internal requests); `model_requests` counts prompts, not model calls.

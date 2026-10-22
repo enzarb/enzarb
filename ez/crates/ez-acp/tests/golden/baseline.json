@@ -1,0 +1,563 @@
+{
+  "initialize": {
+    "agentCapabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": false
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": true,
+        "image": false
+      }
+    },
+    "agentInfo": {
+      "name": "ez",
+      "version": "0.1.0"
+    },
+    "authMethods": [],
+    "protocolVersion": 1
+  },
+  "list_sessions_ext": {
+    "sessions": [
+      {
+        "createdAt": "TS",
+        "firstPrompt": "do things",
+        "id": "SID",
+        "mode": "b",
+        "updatedAt": "TS"
+      }
+    ]
+  },
+  "live_events": [
+    {
+      "agent_notification": "session/update",
+      "params": {
+        "sessionId": "SID",
+        "update": {
+          "kind": "edit",
+          "locations": [
+            {
+              "path": "CWD/out.txt"
+            }
+          ],
+          "rawInput": {
+            "content": "new body",
+            "file_path": "CWD/out.txt"
+          },
+          "sessionUpdate": "tool_call",
+          "status": "pending",
+          "title": "Write CWD/out.txt",
+          "toolCallId": "t1"
+        }
+      }
+    },
+    {
+      "agent_request": "session/request_permission",
+      "params": {
+        "options": [
+          {
+            "kind": "allow_once",
+            "name": "Allow",
+            "optionId": "allow_once"
+          },
+          {
+            "kind": "allow_always",
+            "name": "Always allow",
+            "optionId": "allow_always"
+          },
+          {
+            "kind": "reject_once",
+            "name": "Reject",
+            "optionId": "reject_once"
+          }
+        ],
+        "sessionId": "SID",
+        "toolCall": {
+          "kind": "edit",
+          "rawInput": {
+            "content": "new body",
+            "file_path": "CWD/out.txt"
+          },
+          "status": "pending",
+          "title": "Write CWD/out.txt",
+          "toolCallId": "t1"
+        }
+      }
+    },
+    {
+      "agent_notification": "session/update",
+      "params": {
+        "sessionId": "SID",
+        "update": {
+          "content": [],
+          "sessionUpdate": "tool_call_update",
+          "status": "in_progress",
+          "toolCallId": "t1"
+        }
+      }
+    },
+    {
+      "agent_notification": "session/update",
+      "params": {
+        "sessionId": "SID",
+        "update": {
+          "content": [
+            {
+              "content": {
+                "text": "Created CWD/out.txt (1 lines)",
+                "type": "text"
+              },
+              "type": "content"
+            },
+            {
+              "newText": "new body",
+              "oldText": null,
+              "path": "CWD/out.txt",
+              "type": "diff"
+            }
+          ],
+          "sessionUpdate": "tool_call_update",
+          "status": "completed",
+          "toolCallId": "t1"
+        }
+      }
+    },
+    {
+      "agent_notification": "session/update",
+      "params": {
+        "sessionId": "SID",
+        "update": {
+          "kind": "think",
+          "rawInput": {
+            "todos": [
+              {
+                "activeForm": "Doing first",
+                "content": "first",
+                "status": "in_progress"
+              },
+              {
+                "activeForm": "Doing second",
+                "content": "second",
+                "status": "pending"
+              }
+            ]
+          },
+          "sessionUpdate": "tool_call",
+          "status": "pending",
+          "title": "Update plan",
+          "toolCallId": "t2"
+        }
+      }
+    },
+    {
+      "agent_notification": "session/update",
+      "params": {
+        "sessionId": "SID",
+        "update": {
+          "content": [],
+          "sessionUpdate": "tool_call_update",
+          "status": "in_progress",
+          "toolCallId": "t2"
+        }
+      }
+    },
+    {
+      "agent_notification": "session/update",
+      "params": {
+        "sessionId": "SID",
+        "update": {
+          "entries": [
+            {
+              "content": "first",
+              "priority": "medium",
+              "status": "in_progress"
+            },
+            {
+              "content": "second",
+              "priority": "medium",
+              "status": "pending"
+            }
+          ],
+          "sessionUpdate": "plan"
+        }
+      }
+    },
+    {
+      "agent_notification": "session/update",
+      "params": {
+        "sessionId": "SID",
+        "update": {
+          "content": [
+            {
+              "content": {
+                "text": "Plan updated (0/2 completed)",
+                "type": "text"
+              },
+              "type": "content"
+            }
+          ],
+          "sessionUpdate": "tool_call_update",
+          "status": "completed",
+          "toolCallId": "t2"
+        }
+      }
+    },
+    {
+      "agent_notification": "session/update",
+      "params": {
+        "sessionId": "SID",
+        "update": {
+          "kind": "execute",
+          "rawInput": {
+            "command": "true"
+          },
+          "sessionUpdate": "tool_call",
+          "status": "pending",
+          "title": "true",
+          "toolCallId": "t3"
+        }
+      }
+    },
+    {
+      "agent_request": "session/request_permission",
+      "params": {
+        "options": [
+          {
+            "kind": "allow_once",
+            "name": "Allow",
+            "optionId": "allow_once"
+          },
+          {
+            "kind": "allow_always",
+            "name": "Always allow",
+            "optionId": "allow_always"
+          },
+          {
+            "kind": "reject_once",
+            "name": "Reject",
+            "optionId": "reject_once"
+          }
+        ],
+        "sessionId": "SID",
+        "toolCall": {
+          "kind": "execute",
+          "rawInput": {
+            "command": "true"
+          },
+          "status": "pending",
+          "title": "true",
+          "toolCallId": "t3"
+        }
+      }
+    },
+    {
+      "agent_notification": "session/update",
+      "params": {
+        "sessionId": "SID",
+        "update": {
+          "content": [],
+          "sessionUpdate": "tool_call_update",
+          "status": "in_progress",
+          "toolCallId": "t3"
+        }
+      }
+    },
+    {
+      "agent_notification": "session/update",
+      "params": {
+        "sessionId": "SID",
+        "update": {
+          "content": [
+            {
+              "content": {
+                "text": "(no output)",
+                "type": "text"
+              },
+              "type": "content"
+            }
+          ],
+          "sessionUpdate": "tool_call_update",
+          "status": "completed",
+          "toolCallId": "t3"
+        }
+      }
+    },
+    {
+      "agent_notification": "session/update",
+      "params": {
+        "sessionId": "SID",
+        "update": {
+          "content": {
+            "text": "all done",
+            "type": "text"
+          },
+          "sessionUpdate": "agent_message_chunk"
+        }
+      }
+    },
+    {
+      "agent_notification": "session/update",
+      "params": {
+        "sessionId": "SID",
+        "update": {
+          "currentModeId": "b",
+          "sessionUpdate": "current_mode_update"
+        }
+      }
+    },
+    {
+      "agent_notification": "session/update",
+      "params": {
+        "sessionId": "SID",
+        "update": {
+          "content": {
+            "text": "\n> model set to pinned-model for this session\n",
+            "type": "text"
+          },
+          "sessionUpdate": "agent_message_chunk"
+        }
+      }
+    }
+  ],
+  "prompt_response": {
+    "stopReason": "end_turn"
+  },
+  "replay_events": [
+    {
+      "agent_notification": "session/update",
+      "params": {
+        "sessionId": "SID",
+        "update": {
+          "content": {
+            "text": "do things",
+            "type": "text"
+          },
+          "sessionUpdate": "user_message_chunk"
+        }
+      }
+    },
+    {
+      "agent_notification": "session/update",
+      "params": {
+        "sessionId": "SID",
+        "update": {
+          "kind": "edit",
+          "locations": [
+            {
+              "path": "CWD/out.txt"
+            }
+          ],
+          "rawInput": {
+            "content": "new body",
+            "file_path": "CWD/out.txt"
+          },
+          "sessionUpdate": "tool_call",
+          "status": "pending",
+          "title": "Write CWD/out.txt",
+          "toolCallId": "t1"
+        }
+      }
+    },
+    {
+      "agent_notification": "session/update",
+      "params": {
+        "sessionId": "SID",
+        "update": {
+          "content": [
+            {
+              "content": {
+                "text": "Created CWD/out.txt (1 lines)",
+                "type": "text"
+              },
+              "type": "content"
+            },
+            {
+              "newText": "new body\n",
+              "oldText": null,
+              "path": "CWD/out.txt",
+              "type": "diff"
+            }
+          ],
+          "sessionUpdate": "tool_call_update",
+          "status": "completed",
+          "toolCallId": "t1"
+        }
+      }
+    },
+    {
+      "agent_notification": "session/update",
+      "params": {
+        "sessionId": "SID",
+        "update": {
+          "kind": "think",
+          "rawInput": {
+            "todos": [
+              {
+                "activeForm": "Doing first",
+                "content": "first",
+                "status": "in_progress"
+              },
+              {
+                "activeForm": "Doing second",
+                "content": "second",
+                "status": "pending"
+              }
+            ]
+          },
+          "sessionUpdate": "tool_call",
+          "status": "pending",
+          "title": "Update plan",
+          "toolCallId": "t2"
+        }
+      }
+    },
+    {
+      "agent_notification": "session/update",
+      "params": {
+        "sessionId": "SID",
+        "update": {
+          "entries": [
+            {
+              "content": "first",
+              "priority": "medium",
+              "status": "in_progress"
+            },
+            {
+              "content": "second",
+              "priority": "medium",
+              "status": "pending"
+            }
+          ],
+          "sessionUpdate": "plan"
+        }
+      }
+    },
+    {
+      "agent_notification": "session/update",
+      "params": {
+        "sessionId": "SID",
+        "update": {
+          "content": [
+            {
+              "content": {
+                "text": "Plan updated (0/2 completed)",
+                "type": "text"
+              },
+              "type": "content"
+            }
+          ],
+          "sessionUpdate": "tool_call_update",
+          "status": "completed",
+          "toolCallId": "t2"
+        }
+      }
+    },
+    {
+      "agent_notification": "session/update",
+      "params": {
+        "sessionId": "SID",
+        "update": {
+          "kind": "execute",
+          "rawInput": {
+            "command": "true"
+          },
+          "sessionUpdate": "tool_call",
+          "status": "pending",
+          "title": "true",
+          "toolCallId": "t3"
+        }
+      }
+    },
+    {
+      "agent_notification": "session/update",
+      "params": {
+        "sessionId": "SID",
+        "update": {
+          "content": [
+            {
+              "content": {
+                "text": "(no output)",
+                "type": "text"
+              },
+              "type": "content"
+            }
+          ],
+          "sessionUpdate": "tool_call_update",
+          "status": "completed",
+          "toolCallId": "t3"
+        }
+      }
+    },
+    {
+      "agent_notification": "session/update",
+      "params": {
+        "sessionId": "SID",
+        "update": {
+          "content": {
+            "text": "all done",
+            "type": "text"
+          },
+          "sessionUpdate": "agent_message_chunk"
+        }
+      }
+    },
+    {
+      "agent_notification": "session/update",
+      "params": {
+        "sessionId": "SID",
+        "update": {
+          "currentModeId": "b",
+          "sessionUpdate": "current_mode_update"
+        }
+      }
+    },
+    {
+      "agent_notification": "session/update",
+      "params": {
+        "sessionId": "SID",
+        "update": {
+          "content": {
+            "text": "\n> model set to pinned-model for this session\n",
+            "type": "text"
+          },
+          "sessionUpdate": "agent_message_chunk"
+        }
+      }
+    }
+  ],
+  "session_load": {
+    "modes": {
+      "availableModes": [
+        {
+          "description": "Mode A",
+          "id": "a",
+          "name": "A"
+        },
+        {
+          "id": "b",
+          "name": "B"
+        }
+      ],
+      "currentModeId": "b"
+    }
+  },
+  "session_new": {
+    "modes": {
+      "availableModes": [
+        {
+          "description": "Mode A",
+          "id": "a",
+          "name": "A"
+        },
+        {
+          "id": "b",
+          "name": "B"
+        }
+      ],
+      "currentModeId": "a"
+    },
+    "sessionId": "SID"
+  }
+}

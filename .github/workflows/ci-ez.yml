@@ -1,0 +1,28 @@
+name: ci-ez
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ez/**'
+      - .github/workflows/ci-ez.yml
+      - .github/workflows/_rust.yml
+  pull_request:
+    paths:
+      - 'ez/**'
+      - .github/workflows/ci-ez.yml
+      - .github/workflows/_rust.yml
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+permissions:
+  contents: read
+jobs:
+  # No image: ez is built into the sandbox image from source (ADR-0023).
+  ci:
+    uses: ./.github/workflows/_rust.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      dir: ez
+      cargo-args: --workspace

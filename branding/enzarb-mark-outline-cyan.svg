@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="260 56 680 680">
+  <g fill="none" stroke="#00f0ff" stroke-width="5.5" stroke-linejoin="round" stroke-linecap="round">
+    <!-- E outer & inner 3D bevel wireframe -->
+    <polygon points="342,235 600,86 859,236 780,244 600,138 392,264 392,390 600,269 565,342 392,442 392,514 482,566 508,640 342,543" />
+    <polyline points="780,244 756,260 600,168 417,279 417,375" stroke-opacity="0.65" />
+    <polyline points="600,269 576,392 417,480 417,498 470,530 508,640" stroke-opacity="0.65" />
+    <line x1="565" y1="342" x2="576" y2="392" stroke-opacity="0.65" />
+    <line x1="392" y1="442" x2="417" y2="480" stroke-opacity="0.65" />
+    <line x1="392" y1="514" x2="417" y2="498" stroke-opacity="0.65" />
+    <line x1="600" y1="138" x2="600" y2="168" stroke-opacity="0.65" />
+    <!-- Z straight 3D diagonal, corner step & clean bottom bar wireframe -->
+    <polygon points="756,260 780,244 859,236 859,288 652,600 859,480 859,538 594,688 524,644 524,600" />
+    <polyline points="780,244 544,608 524,600" />
+    <polyline points="859,236 594,632 594,688" />
+    <polyline points="544,608 594,632 652,600" />
+    <polyline points="652,600 679,559 859,455 859,480" stroke-opacity="0.65" />
+  </g>
+</svg>

@@ -1,0 +1,211 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="250 46 700 700" width="512" height="512">
+  <defs>
+    <filter id="dropShadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="22" stdDeviation="22" flood-color="#000000" flood-opacity="0.85" />
+      <feDropShadow dx="0" dy="6" stdDeviation="6" flood-color="#000000" flood-opacity="0.65" />
+    </filter>
+
+    <!-- Soft Glow for Specular Ridge Corner -->
+    <radialGradient id="kneeGlare" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.95" />
+      <stop offset="30%" stop-color="#d1fae5" stop-opacity="0.55" />
+      <stop offset="70%" stop-color="#34d399" stop-opacity="0.15" />
+      <stop offset="100%" stop-color="#10b981" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Primary E + Top Arch + Crossbar Flat Face -->
+    <linearGradient id="eTopFace" x1="342" y1="580" x2="820" y2="160" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#189ef2" />
+      <stop offset="24%" stop-color="#00c8f8" />
+      <stop offset="50%" stop-color="#00f0ff" />
+      <stop offset="74%" stop-color="#14f1c6" />
+      <stop offset="100%" stop-color="#1ed78b" />
+    </linearGradient>
+
+    <!-- E Inner Bevel Step (Top-Left & Upper-Right Arch) -->
+    <linearGradient id="eArchBevel" x1="392" y1="280" x2="780" y2="244" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0ea5e9" />
+      <stop offset="45%" stop-color="#0891b2" />
+      <stop offset="100%" stop-color="#0d9488" />
+    </linearGradient>
+
+    <!-- E Deep Inner Roof Soffit (Dark Recessed Extrusion) -->
+    <linearGradient id="eRoofSoffitLeft" x1="417" y1="280" x2="600" y2="168" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0a3b5c" />
+      <stop offset="100%" stop-color="#082f49" />
+    </linearGradient>
+
+    <linearGradient id="eRoofSoffitRight" x1="600" y1="168" x2="740" y2="268" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#073247" />
+      <stop offset="100%" stop-color="#04222c" />
+    </linearGradient>
+
+    <!-- E Crossbar Lower Front Bevel -->
+    <linearGradient id="spearLowerBevel" x1="392" y1="460" x2="576" y2="365" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0284c7" />
+      <stop offset="65%" stop-color="#0369a1" />
+      <stop offset="100%" stop-color="#0ea5e9" />
+    </linearGradient>
+
+    <!-- E Lower Foot Lit Inner Bevel -->
+    <linearGradient id="eFootBevel" x1="392" y1="514" x2="508" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0ea5e9" />
+      <stop offset="55%" stop-color="#22d3ee" />
+      <stop offset="100%" stop-color="#38bdf8" />
+    </linearGradient>
+
+    <!-- E Bottom Outer 3D Drop Wall -->
+    <linearGradient id="eBottomDropWall" x1="342" y1="543" x2="508" y2="658" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0c4a6e" />
+      <stop offset="65%" stop-color="#075985" />
+      <stop offset="100%" stop-color="#082f49" />
+    </linearGradient>
+
+    <!-- Z Straight Diagonal Main Face (With bright specular hot-spot at the raised 3D knee ridge) -->
+    <linearGradient id="zDiagFace" x1="825" y1="230" x2="565" y2="625" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1ed78b" />
+      <stop offset="32%" stop-color="#26d796" />
+      <stop offset="66%" stop-color="#6ee7b7" />
+      <stop offset="88%" stop-color="#bbf7d0" />
+      <stop offset="100%" stop-color="#ecfdf5" />
+    </linearGradient>
+
+    <!-- Z Diagonal Left 45-Degree Bevel Plane (Deep teal-to-emerald relief) -->
+    <linearGradient id="zDiagLeftBevel" x1="756" y1="260" x2="524" y2="600" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0b5551" />
+      <stop offset="45%" stop-color="#0f766e" />
+      <stop offset="85%" stop-color="#0d9488" />
+      <stop offset="100%" stop-color="#10b981" />
+    </linearGradient>
+
+    <!-- Z Diagonal Long Right Bevel Face (High-contrast shaded emerald 3D facet) -->
+    <linearGradient id="zDiagRightBevel" x1="859" y1="236" x2="594" y2="632" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#059669" />
+      <stop offset="45%" stop-color="#047857" />
+      <stop offset="78%" stop-color="#0d9488" />
+      <stop offset="100%" stop-color="#064e3b" />
+    </linearGradient>
+
+    <!-- Z Bottom-Left 3D Step Pillar (Tall sculptural front face below the raised diagonal ridge) -->
+    <linearGradient id="zCornerStep" x1="560" y1="600" x2="560" y2="692" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#6ee7b7" />
+      <stop offset="22%" stop-color="#10b981" />
+      <stop offset="65%" stop-color="#0f766e" />
+      <stop offset="100%" stop-color="#064e3b" />
+    </linearGradient>
+
+    <!-- Z Bottom Bar Main Face (Clean 30° bar without upward flourish) -->
+    <linearGradient id="zBottomBarFace" x1="594" y1="680" x2="859" y2="510" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0f766e" />
+      <stop offset="38%" stop-color="#0d9488" />
+      <stop offset="75%" stop-color="#1fd694" />
+      <stop offset="100%" stop-color="#4adeaa" />
+    </linearGradient>
+
+    <!-- Z Bottom Bar Top Inner Bevel Shelf -->
+    <linearGradient id="zInnerShelf" x1="652" y1="600" x2="859" y2="480" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#065f46" />
+      <stop offset="50%" stop-color="#0d9488" />
+      <stop offset="100%" stop-color="#34d399" />
+    </linearGradient>
+  </defs>
+  <rect x="258" y="54" width="684" height="684" rx="148" fill="#0b0f17" stroke="#1e293b" stroke-width="6" />
+  <g transform="translate(600, 396) scale(0.82) translate(-600, -396)">
+  <g id="enzarb-emblem" filter="url(#dropShadow)">
+
+    <!-- =============================================================== -->
+    <!-- LAYER 1: DEEP 3D EXTRUSION / SOFFIT / DROP WALLS                -->
+    <!-- =============================================================== -->
+    <!-- E Bottom-Left 3D Drop Wall -->
+    <polygon points="342,543 508,640 508,658 342,562" fill="url(#eBottomDropWall)" />
+
+    <!-- E Upper Cavity Deep Recessed Walls -->
+    <polygon points="417,279 600,168 600,206 446,298" fill="url(#eRoofSoffitLeft)" />
+    <polygon points="600,168 756,260 734,292 600,210" fill="url(#eRoofSoffitRight)" />
+    <polygon points="417,279 446,298 446,358 417,375" fill="#0c4a6e" />
+
+    <!-- E Lower Cavity Deep Recessed Walls -->
+    <polygon points="417,480 576,392 560,420 446,484" fill="#06283d" />
+    <polygon points="417,480 446,484 446,494 417,498" fill="#0c4a6e" />
+    <polygon points="417,498 446,494 486,518 508,640 470,530" fill="#075985" />
+
+    <!-- Z Left Side Deep 3D Extrusion Wall (Full-length dark 3D wall along left of Z diagonal) -->
+    <polygon points="734,292 756,260 524,600 524,644 508,634 508,592" fill="#042628" />
+
+    <!-- Z Diagonal Right Underside Dark Extrusion Wall -->
+    <polygon points="859,288 859,318 698,558 679,559" fill="#032221" />
+
+    <!-- Z Bottom Bar Upper Recessed Extrusion Wall -->
+    <polygon points="679,559 698,530 859,437 859,455" fill="#042f2e" />
+
+    <!-- Z Bottom Outer 3D Drop Walls -->
+    <polygon points="524,644 594,688 594,708 524,664" fill="#03261e" />
+    <polygon points="594,688 859,538 859,558 594,708" fill="#04392e" />
+
+    <!-- =============================================================== -->
+    <!-- LAYER 2: 45-DEGREE CHAMFER / BEVEL FACETS                       -->
+    <!-- =============================================================== -->
+    <!-- E Upper Inner Bevel Frame -->
+    <polygon points="392,264 600,138 780,244 756,260 600,168 417,279 417,375 392,390" fill="url(#eArchBevel)" />
+
+    <!-- E Crossbar Lower Front Bevel & Right Chisel Tip -->
+    <polygon points="392,442 565,342 576,392 417,480" fill="url(#spearLowerBevel)" />
+    <polygon points="600,269 576,392 565,342" fill="#7dd3fc" />
+
+    <!-- E Lower Spine & Foot Inner Bevel -->
+    <polygon points="392,442 417,480 417,498 392,514" fill="#0284c7" />
+    <polygon points="392,514 417,498 470,530 508,640 482,566" fill="url(#eFootBevel)" />
+
+    <!-- Z Diagonal Wide Left 45-Degree Bevel Plane -->
+    <polygon points="756,260 780,244 544,608 524,600" fill="url(#zDiagLeftBevel)" />
+
+    <!-- Z Diagonal Wide Right 45-Degree Bevel Plane -->
+    <polygon points="859,236 859,288 652,600 594,632" fill="url(#zDiagRightBevel)" />
+
+    <!-- Z Bottom Bar Top 45-Degree Bevel Shelf (Clean to x=859) -->
+    <polygon points="652,600 679,559 859,455 859,480" fill="url(#zInnerShelf)" />
+
+    <!-- =============================================================== -->
+    <!-- LAYER 3: PRIMARY TOP-FACING INTERLOCKING "E" & "Z" SURFACES     -->
+    <!-- =============================================================== -->
+    <!-- E Primary Continuous Flat Face -->
+    <polygon points="342,235 600,86 859,236 780,244 600,138 392,264 392,390 600,269 565,342 392,442 392,514 482,566 508,640 342,543" fill="url(#eTopFace)" />
+
+    <!-- Z Main Straight Diagonal Ribbon (Raised 3D Top Face) -->
+    <polygon points="780,244 859,236 594,632 544,608" fill="url(#zDiagFace)" />
+
+    <!-- Z Raised 3D Corner Step (Tall Sculptural Vertical Pillar below the Straight Diagonal) -->
+    <polygon points="524,600 544,608 594,632 594,688 524,644" fill="url(#zCornerStep)" />
+
+    <!-- Z Bottom Bar Main Face (Clean 30° Bar to Hex Edge - No Upward Flourish) -->
+    <polygon points="594,632 652,600 859,480 859,538 594,688" fill="url(#zBottomBarFace)" />
+
+    <!-- =============================================================== -->
+    <!-- LAYER 4: RAZOR SPECULAR HIGHLIGHTS & EDGE GLEAMS                -->
+    <!-- =============================================================== -->
+    <!-- Outer Hexagon Top Crest & Left Edge Highlight -->
+    <polyline points="342,543 342,235 600,86 859,236" fill="none" stroke="#a5f3fc" stroke-width="2.5" stroke-linejoin="round" opacity="0.95" />
+
+    <!-- E Bottom-Left Foot Neon Edge -->
+    <line x1="342" y1="543" x2="508" y2="640" stroke="#7dd3fc" stroke-width="2.8" stroke-linecap="round" />
+
+    <!-- E Inner Frame Edge Highlight -->
+    <polyline points="780,244 600,138 392,264 392,390 600,269" fill="none" stroke="#67e8f9" stroke-width="1.8" stroke-linejoin="round" opacity="0.85" />
+    <polyline points="600,269 565,342 392,442 392,514 482,566 508,640" fill="none" stroke="#bae6fd" stroke-width="2" stroke-linejoin="round" opacity="0.9" />
+    <polyline points="565,342 576,392 600,269" fill="none" stroke="#e0f2fe" stroke-width="1.8" stroke-linejoin="round" />
+
+    <!-- Z Straight Diagonal Specular Ridges & Raised 3D Step Ridge -->
+    <polyline points="859,236 594,632 594,688" fill="none" stroke="#ecfdf5" stroke-width="2.8" stroke-linejoin="round" />
+    <polyline points="780,244 544,608 524,600 524,644" fill="none" stroke="#a7f3d0" stroke-width="2" stroke-linejoin="round" opacity="0.9" />
+    <polyline points="524,600 544,608 594,632 652,600" fill="none" stroke="#ffffff" stroke-width="3" stroke-linejoin="round" />
+
+    <!-- Z Bottom Bar Crisp Bevel Highlights -->
+    <polyline points="859,480 859,538 594,688 524,644" fill="none" stroke="#a7f3d0" stroke-width="2.2" stroke-linejoin="round" opacity="0.9" />
+    <polyline points="859,236 859,288 652,600 859,480" fill="none" stroke="#d1fae5" stroke-width="2" stroke-linejoin="round" opacity="0.9" />
+    <polyline points="679,559 859,455 859,480" fill="none" stroke="#a7f3d0" stroke-width="1.6" stroke-linejoin="round" opacity="0.85" />
+
+    <!-- Specular Starburst Glare on the Raised 3D Z Corner Ridge (594, 632) -->
+    <circle cx="594" cy="632" r="28" fill="url(#kneeGlare)" />
+  </g>
+  </g>
+</svg>

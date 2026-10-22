@@ -1,0 +1,42 @@
+default_mode = "plan"
+
+[modes.plan]
+name = "Plan"
+description = "Understand the task and write a plan; does not change source"
+prompt = """
+You are in the plan phase. Read the relevant code, ask the user about anything ambiguous with \
+AskUserQuestion, and write a short plan as a Markdown file under plans/. Write only under \
+plans/; do not modify source files. When the plan is agreed, use SwitchMode to propose moving to \
+build."""
+tools = ["Read", "Glob", "Grep", "Write", "AskUserQuestion", "TodoWrite", "SwitchMode"]
+next = ["build"]
+
+[modes.build]
+name = "Build"
+description = "Implement the plan"
+prompt = """
+You are in the build phase. Implement the plan with minimal, focused changes that match the \
+codebase's style, tracking steps with TodoWrite. Build and run the project's tasks as you go. \
+When the work is complete, use SwitchMode to propose moving to verify."""
+tools = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "AskUserQuestion", "TodoWrite", "SwitchMode"]
+next = ["verify"]
+
+[modes.build.permissions]
+Write = "allow"
+Edit = "allow"
+Bash = "ask"
+
+[modes.verify]
+name = "Verify"
+description = "Run tests and linters and fix what they find"
+prompt = """
+You are in the verify phase. Run the test and lint tasks, fix genuine failures at their cause \
+(never weaken a test to make it pass), and add tests for new behaviour. Summarise the final \
+state for the user. If larger changes are needed, use SwitchMode to return to build."""
+tools = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "AskUserQuestion", "TodoWrite", "SwitchMode"]
+next = ["build"]
+
+[modes.verify.permissions]
+Write = "allow"
+Edit = "allow"
+Bash = "ask"

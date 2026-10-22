@@ -1,0 +1,26 @@
+[package]
+name = "ez-acp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+agent-client-protocol.workspace = true
+agent-client-protocol-schema.workspace = true
+futures.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+ez-core.workspace = true
+ez-mcp.workspace = true
+ez-tools.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util = { workspace = true, features = ["compat"] }
+tracing.workspace = true
+
+[dev-dependencies]
+ez-llm.workspace = true
+tempfile.workspace = true
