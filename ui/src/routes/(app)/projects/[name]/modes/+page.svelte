@@ -83,7 +83,15 @@
 			</Notice>
 		{/if}
 		{#key `${r.repo}@${r.sha}`}
-			<ModesDesigner file={r} api={api(r)} saved={(s) => (committed = s)} />
+			<ModesDesigner
+				file={r}
+				api={api(r)}
+				saved={(s) => {
+					committed = s;
+					// Picks up the new blob sha; the page's own query, whatever repo key it uses.
+					if (!s.unchanged) void modes.refresh();
+				}}
+			/>
 		{/key}
 	</div>
 {/if}

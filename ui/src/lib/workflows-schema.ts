@@ -1,7 +1,6 @@
 import * as v from 'valibot';
 import { NameArg } from '#lib/server/owned-project.ts';
-import { MAX_DRY_RUN_EVENTS } from '#lib/server/workflows-service.ts';
-import type { WorkflowsFileWire } from '#lib/workflows-types.ts';
+import { MAX_DRY_RUN_EVENTS, type WorkflowsFileWire } from '#lib/workflows-types.ts';
 
 /**
  * Input schemas of the workflow designer's remote functions (`workflows.remote.ts` may export only

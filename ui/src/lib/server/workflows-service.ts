@@ -1,6 +1,7 @@
 import type { ProjectView } from '#lib/project-types.ts';
 import {
 	hasErrorDiagnostics,
+	MAX_DRY_RUN_EVENTS,
 	type Diagnostic,
 	type DryRunOptions,
 	type DryRunResponse,
@@ -30,7 +31,6 @@ import { TracksError, type TracksClient } from './tracks.ts';
 
 export const WORKFLOWS_PATH = '.ez/workflows.toml';
 export const DEFAULT_WORKFLOWS_SUBJECT = 'chore(ez): update .ez/workflows.toml from enzarb';
-export const MAX_DRY_RUN_EVENTS = 50;
 
 export interface WorkflowsDeps extends DesignerDeps {
 	tracks: TracksClient;
@@ -40,7 +40,7 @@ export type Failure = DesignerFailure<Diagnostic>;
 const fail = (code: Failure['code'], message: string, issues?: Diagnostic[]): Failure =>
 	failWith(code, message, issues);
 
-function tracksFailure(e: unknown): Failure {
+export function tracksFailure(e: unknown): Failure {
 	if (e instanceof TracksError) {
 		if (e.status === 422 || e.status === 400) return fail('invalid', e.message);
 		return fail('tracks', 'The workflows service (enzarb-tracks) is not available.');

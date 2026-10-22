@@ -15,11 +15,12 @@ import { projectRepoKeys } from '#lib/server/designer-files.ts';
 import { invalidateToken, token } from '#lib/server/github-app.ts';
 import { NameArg, ownedProject } from '#lib/server/owned-project.ts';
 import { getRepositoryAccess } from '#lib/server/repo-access.ts';
-import { getTracks, TracksError } from '#lib/server/tracks.ts';
+import { getTracks } from '#lib/server/tracks.ts';
 import {
 	dryRunWorkflows as dryRun,
 	loadWorkflows,
 	saveWorkflows,
+	tracksFailure,
 	type WorkflowsDeps
 } from '#lib/server/workflows-service.ts';
 
@@ -61,16 +62,7 @@ async function withTracks<T>(name: string, run: (d: WorkflowsDeps) => Promise<T>
 	try {
 		return await run(d);
 	} catch (e) {
-		if (e instanceof TracksError) {
-			if (e.status === 422 || e.status === 400)
-				return { ok: false as const, code: 'invalid' as const, message: e.message };
-			return {
-				ok: false as const,
-				code: 'tracks' as const,
-				message: 'The workflows service (enzarb-tracks) is not available.'
-			};
-		}
-		throw e;
+		return tracksFailure(e);
 	}
 }
 
@@ -109,7 +101,6 @@ export const saveWorkflowsFile = command(SaveWorkflowsSchema, async ({ name, ...
 	const r = await saveWorkflows(d, user, project, {
 		...input
 	});
-	if (r.ok && !r.unchanged) await getWorkflows({ name, repo: input.repo }).refresh();
 	return r;
 });
 

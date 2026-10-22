@@ -90,7 +90,16 @@
 			</Notice>
 		{/if}
 		{#key `${r.repo}@${r.sha}`}
-			<WorkflowsDesigner file={r} api={api(r)} dryRun={dryRun(r)} saved={(s) => (committed = s)} />
+			<WorkflowsDesigner
+				file={r}
+				api={api(r)}
+				dryRun={dryRun(r)}
+				saved={(s) => {
+					committed = s;
+					// Picks up the new blob sha; the page's own query, whatever repo key it uses.
+					if (!s.unchanged) void workflows.refresh();
+				}}
+			/>
 		{/key}
 	</div>
 {/if}

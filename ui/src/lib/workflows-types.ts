@@ -641,3 +641,6 @@ export function exampleWorkflow(id: string): WorkflowDoc {
 		}
 	}).workflows[0];
 }
+
+/** Most events one dry run takes. */
+export const MAX_DRY_RUN_EVENTS = 50;
