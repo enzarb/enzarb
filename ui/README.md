@@ -8,9 +8,9 @@ Pages: GitHub login; projects (create, settings, sandbox, repositories); per-pro
 
 ```sh
 cp .env.example .env     # see docs/contracts.md section 9 in the enzarb repo
-npm run migrate          # applies migrations/*.sql, tracked in app._migrations
-npm run dev              # loads .env if present
-npm run check && npm run lint && npm test   # tests need Docker (testcontainers)
+pnpm run migrate         # applies migrations/*.sql, tracked in app._migrations
+pnpm run dev            # loads .env if present
+pnpm run check && pnpm run lint && pnpm test   # tests need Docker (testcontainers)
 ```
 
 GitHub login needs an OAuth app whose callback URL is `$ENZARB_PUBLIC_URL/login/github/callback`.
@@ -21,15 +21,15 @@ The container image also carries `scripts/migrate.ts`; run it with `node scripts
 ## End-to-end test
 
 ```sh
-npx playwright install chromium   # once
-npm run test:e2e                  # needs Docker (a Postgres testcontainer)
+pnpm exec playwright install chromium   # once
+pnpm run test:e2e               # needs Docker (a Postgres testcontainer)
 ```
 
 A Playwright smoke test (`e2e/chat.spec.ts`) opens the chat page, waits for it to connect, sends a message and checks the agent's reply. It runs against `vite dev` with an in-memory project store (`vite.e2e.config.ts`, `e2e/stubs/kube.ts`) and a signed-in session seeded by `e2e/serve.ts`. The sandbox websocket is faked in the browser (`e2e/fake-sandbox.ts`), so no cluster or GitHub is involved. Set `E2E_DATABASE_URL` to use your own Postgres instead of Docker.
 
 ## Icons
 
-The brand assets in `static/brand/`, `src/lib/brand.generated.ts` (inlined by `Logo.svelte`) and the icon set in `static/` (`favicon-ez.svg`/`.ico`, `apple-touch-icon-ez.png`, `icon-ez-*.png`, `icon-ez-maskable-*.png`, `badge-ez.png`) are all generated from `scripts/mark-geometry.mjs` (the overlaid EZ mark) and the Jost 700 font by `scripts/build-brand.mjs` and `scripts/generate-icons.mjs` (placement in `scripts/icon-lib.mjs`; `npm run icons:preview` renders the preview sheet). Run `mise run ui:icons` (or `npm run brand && npm run icons`) and commit the results; the output is byte-stable. See `docs/brand.md`.
+The brand assets in `static/brand/`, `src/lib/brand.generated.ts` (inlined by `Logo.svelte`) and the icon set in `static/` (`favicon-ez.svg`/`.ico`, `apple-touch-icon-ez.png`, `icon-ez-*.png`, `icon-ez-maskable-*.png`, `badge-ez.png`) are all generated from `scripts/mark-geometry.mjs` (the overlaid EZ mark) and the Jost 700 font by `scripts/build-brand.mjs` and `scripts/generate-icons.mjs` (placement in `scripts/icon-lib.mjs`; `pnpm run icons:preview` renders the preview sheet). Run `mise run ui:icons` (or `pnpm run brand && pnpm run icons`) and commit the results; the output is byte-stable. See `docs/brand.md`.
 
 ## Deployment notes
 

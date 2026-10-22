@@ -20,13 +20,13 @@ jobs:
     needs: changes
     if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-node
       - uses: ./.github/actions/ui-install
-      - run: npm run check
-      - run: npm run lint
+      - run: pnpm run check
+      - run: pnpm run lint
 
   # Component tests on a plain runner: browser cached, system libs via install-deps.
   test-client:
@@ -46,9 +46,9 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
       - if: steps.pw-cache.outputs.cache-hit != 'true'
-        run: npx playwright install chromium
-      - run: npx playwright install-deps chromium
-      - run: npm run test:unit -- --run --project client
+        run: pnpm exec playwright install chromium
+      - run: pnpm exec playwright install-deps chromium
+      - run: pnpm run test:unit --run --project client
 
   # Chat smoke test in a real browser against the dev server; Postgres comes from a testcontainer.
   test-e2e:
@@ -68,11 +68,11 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
       - if: steps.pw-cache.outputs.cache-hit != 'true'
-        run: npx playwright install chromium
-      - run: npx playwright install-deps chromium
-      - run: npm run test:e2e
+        run: pnpm exec playwright install chromium
+      - run: pnpm exec playwright install-deps chromium
+      - run: pnpm run test:e2e
       # Again against the production build: some client bugs only show in optimized code.
-      - run: npm run test:e2e:prod
+      - run: pnpm run test:e2e:prod
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
@@ -91,7 +91,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-node
       - uses: ./.github/actions/ui-install
-      - run: npm run test:unit -- --run --project server
+      - run: pnpm run test:unit --run --project server
 
   docker:
     needs: changes

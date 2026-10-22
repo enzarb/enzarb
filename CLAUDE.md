@@ -14,13 +14,13 @@ The Rust components form one Cargo workspace at the root (`Cargo.toml`, one `Car
 
 | Dir | What | Check / test |
 |---|---|---|
-| `proto/` | Mux protocol spec + Rust crate + TS package | `cargo test -p enzarb-proto`, `npm test` |
+| `proto/` | Mux protocol spec + Rust crate + TS package | `cargo test -p enzarb-proto`, `pnpm test` |
 | `operator/` | `Project` CRD types crate + operator | `cargo clippy -p enzarb-crds -p enzarb-sandbox-operator --all-targets && cargo test -p enzarb-crds -p enzarb-sandbox-operator` |
 | `connectors/` | GitHub webhook receiver that logs each delivery in `connectors.events` | `cargo clippy -p enzarb-receiver --all-targets && cargo test -p enzarb-receiver` |
 | `realtime/` | Postgres `NOTIFY` (`connector_event`) to browser websocket change stream | `cargo clippy -p enzarb-realtime --all-targets && cargo test -p enzarb-realtime` |
 | `sandbox-proxy/` | Browser websocket → sandbox router | `cargo clippy -p enzarb-sandbox-proxy --all-targets && cargo test -p enzarb-sandbox-proxy` |
 | `sandbox-container/` | Sandbox image + pid-1 `sandbox-init` | `cargo test -p sandbox-init`; `docker build -f sandbox-container/Dockerfile .` (from the root) |
-| `ui/` | SvelteKit app (remote functions = logic layer) | `npm run check && npm run lint && npm test` |
+| `ui/` | SvelteKit app (remote functions = logic layer) | `pnpm run check && pnpm run lint && pnpm test` |
 | `updater/` | Webhook service that patches the RKE2 `HelmChart` version on chart release | `cargo clippy -p enzarb-updater --all-targets && cargo test -p enzarb-updater` |
 | `kubernetes/` | Cluster prerequisites (kind, Gateway, agent-sandbox, pgop; Capsule installed but unused, ADR-0013) | `kubectl kustomize` |
 | `helm/` | Umbrella chart | `helm lint enzarb` |
@@ -32,7 +32,7 @@ The Rust components form one Cargo workspace at the root (`Cargo.toml`, one `Car
 - **Run the checks of every component you touch** (table above) before calling a change done.
 - **Shared contracts:** the `proto/` frames, the `connectors.event_v` view and the `app_api` Postgres schema. Make additive changes, or add a new versioned object; never break a consumer silently (deployed components roll out independently).
 - **One Cargo workspace.** New crates are added to `members` in the root `Cargo.toml`; do not add a `Cargo.lock`, `rust-toolchain.toml` or `[workspace]` in a component (`scripts/monorepo/check-cargo-deps.sh`). Dependencies are declared per crate. Select crates with `-p`: a bare root `cargo clippy` unifies features across all crates.
-- **Cross-component deps are path deps** (`path = "../proto/crates/..."` in Cargo, `file:../proto` in `ui/package.json`). Docker builds of every Rust component and `ui` use the repo root as context: `docker build -f <dir>/Dockerfile .`.
+- **Cross-component deps are path deps** (`path = "../proto/crates/..."` in Cargo, `link:../proto` in `ui/package.json`). Docker builds of every Rust component and `ui` use the repo root as context: `docker build -f <dir>/Dockerfile .`.
 - **Helm values:** never remove a values key in one release; deprecate it as an accepted, ignored key first (`docs/ci.md`, "Values compatibility"; `mise run compat` in `helm/` enforces it).
 - **Releases:** PRs squash-merge with a Conventional Commit title (`feat(ui): …`, `fix(connectors): …`). Each component releases independently with tags `<dir>/vX.Y.Z` (e.g. `ui/v0.4.1`, `helm/v0.9.0`); image names are unchanged (`ghcr.io/enzarb/enzarb-ui`, …).
 - **Dockerfiles** live in the directory of the component they build.

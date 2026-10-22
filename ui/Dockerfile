@@ -1,17 +1,23 @@
-# Build from the monorepo root (in-repo dep on proto/ via "file:../proto"):
+# syntax=docker/dockerfile:1
+# Build from the monorepo root (in-repo dep on proto/ via "link:../proto"):
 #   docker build -f ui/Dockerfile .
 FROM node:24-slim AS build
+# pnpm at the version in package.json "packageManager" (corepack ships with node 24).
+ENV PNPM_HOME=/pnpm COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable
 WORKDIR /repo/ui
-# proto's TS package is built by ui's `prepare` script (npm run proto:build) during npm ci.
+# proto's TS package is built by ui's `prepare` script (pnpm run proto:build) during pnpm install.
 # BEGIN generated:copy
-COPY proto/package.json proto/package-lock.json /repo/proto/
+COPY proto/package.json proto/pnpm-lock.yaml proto/.npmrc /repo/proto/
 COPY proto/ts /repo/proto/ts
 # END generated:copy
-COPY ui/package.json ui/package-lock.json ui/.npmrc ./
-RUN npm ci
+COPY ui/package.json ui/pnpm-lock.yaml ui/.npmrc ./
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+    pnpm config set store-dir /pnpm/store --location=global && pnpm install --frozen-lockfile
 COPY ui/ .
-RUN npm run build
-RUN npm prune --omit=dev
+RUN pnpm run build
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+    pnpm prune --prod --ignore-scripts
 
 FROM node:24-slim
 ENV NODE_ENV=production PORT=3000 HOST=0.0.0.0 PROTOCOL_HEADER=x-forwarded-proto

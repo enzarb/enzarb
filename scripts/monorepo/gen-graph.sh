@@ -8,7 +8,7 @@
 #   scripts/monorepo/gen-graph.sh --check         fail when a committed generated file is stale
 #   scripts/monorepo/gen-graph.sh --root <dir>    operate on another tree (tests)
 #
-# Inputs: `cargo metadata` path deps (root workspace), package.json `file:` deps, and the hand-written
+# Inputs: `cargo metadata` path deps (root workspace), package.json `file:`/`link:` deps, and the hand-written
 # scripts/monorepo/components.json (images, non-code inputs, workflow files). Needs cargo and jq; no network.
 # shellcheck disable=SC2016 # jq programs, not shell expansions
 set -euo pipefail
@@ -56,18 +56,18 @@ while IFS= read -r pj; do
   dir=$(dirname "$pj")
   while IFS= read -r v; do
     [ -n "$v" ] || continue
-    printf -v edges '%s\n%s %s' "$edges" "${dir#./}" "$(realpath -m --relative-to="$root" "$root/$dir/${v#file:}")"
-  done < <(jq -r '[.dependencies, .devDependencies, .optionalDependencies, .peerDependencies] | map(select(. != null) | .[]) | .[] | select(startswith("file:"))' "$root/$pj")
+    printf -v edges '%s\n%s %s' "$edges" "${dir#./}" "$(realpath -m --relative-to="$root" "$root/$dir/${v#*:}")"
+  done < <(jq -r '[.dependencies, .devDependencies, .optionalDependencies, .peerDependencies] | map(select(. != null) | .[]) | .[] | select(startswith("file:") or startswith("link:"))' "$root/$pj")
 done < <(cd "$root" && find . \( -name .git -o -name node_modules -o -name target \) -prune -o -name package.json -print | sed 's|^\./||')
 edges=$(sed '/^$/d' <<<"$edges" | sort -u)
-# npm `file:` edges only (the ui Dockerfile copies those packages, not the Cargo path deps)
+# npm `file:`/`link:` edges only (the ui Dockerfile copies those packages, not the Cargo path deps)
 npm_edges=$(
   while IFS= read -r pj; do
     dir=$(dirname "$pj")
     while IFS= read -r v; do
       [ -n "$v" ] || continue
-      echo "${dir#./} $(realpath -m --relative-to="$root" "$root/$dir/${v#file:}")"
-    done < <(jq -r '[.dependencies, .devDependencies, .optionalDependencies, .peerDependencies] | map(select(. != null) | .[]) | .[] | select(startswith("file:"))' "$root/$pj")
+      echo "${dir#./} $(realpath -m --relative-to="$root" "$root/$dir/${v#*:}")"
+    done < <(jq -r '[.dependencies, .devDependencies, .optionalDependencies, .peerDependencies] | map(select(. != null) | .[]) | .[] | select(startswith("file:") or startswith("link:"))' "$root/$pj")
   done < <(cd "$root" && find . \( -name .git -o -name node_modules -o -name target \) -prune -o -name package.json -print | sed 's|^\./||') | sort -u
 )
 
@@ -144,7 +144,7 @@ docker_block() { # <component>: COPY lines
       ;;
     npm)
       while IFS= read -r d; do
-        if [ -f "$root/$d/package-lock.json" ]; then echo "COPY $d/package.json $d/package-lock.json /repo/$d/"; else echo "COPY $d/package.json /repo/$d/"; fi
+        if [ -f "$root/$d/pnpm-lock.yaml" ]; then echo "COPY $d/package.json $d/pnpm-lock.yaml $d/.npmrc /repo/$d/"; else echo "COPY $d/package.json /repo/$d/"; fi
         mapfile -t src < <(m --arg c "$c" --arg d "$d" '.components[$c].docker_npm_src[$d][]?')
         if [ ${#src[@]} -eq 0 ]; then echo "COPY $d /repo/$d"; else for s in "${src[@]}"; do echo "COPY $d/$s /repo/$d/$s"; done; fi
       done < <(npm_closure "$c")

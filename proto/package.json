@@ -12,6 +12,7 @@
     "url": "git+https://github.com/enzarb/enzarb.git",
     "directory": "proto"
   },
+  "packageManager": "pnpm@10.34.7",
   "type": "module",
   "sideEffects": false,
   "main": "./ts/dist/index.js",
@@ -30,7 +31,7 @@
   ],
   "scripts": {
     "build": "tsc -p ts/tsconfig.json",
-    "prepack": "npm run build",
+    "prepack": "pnpm run build",
     "check": "tsc -p ts/tsconfig.test.json",
     "test": "vitest run"
   },

@@ -30,12 +30,12 @@ run() {
   (cd "$dir" && "$@")
 }
 
-# JS checks need installed dependencies; install them with `npm ci` when missing rather than
+# JS checks need installed dependencies; install them with `pnpm install --frozen-lockfile` when missing rather than
 # skipping the checks (a skip let a lint failure through to CI).
 npm_ready() {
   [ -d "$1/node_modules" ] || {
-    echo "pre-push: $1: node_modules missing, running npm ci"
-    run "$1" npm ci || return 1
+    echo "pre-push: $1: node_modules missing, running pnpm install"
+    run "$1" pnpm install --frozen-lockfile || return 1
   }
 }
 
@@ -72,9 +72,9 @@ for c in $components; do
       ;;
     ui)
       if npm_ready ui; then
-        run ui npm run lint
-        run ui npm run check
-        run ui npm run test:unit -- --run --project server
+        run ui pnpm run lint
+        run ui pnpm run check
+        run ui pnpm run test:unit --run --project server
       fi
       ;;
     helm)

@@ -15,7 +15,7 @@ fresh() {
   (cd "$src" && cp --parents mise.toml rust-toolchain.toml ./*/mise.toml ./*/Dockerfile kubernetes/installer/Dockerfile \
     kubernetes/hack/versions.env sandbox-container/scripts/check-playwright-version.sh "$1") 2>/dev/null || true
   mkdir -p "$1/ui"
-  cp "$src/ui/package-lock.json" "$1/ui/"
+  cp "$src/ui/pnpm-lock.yaml" "$1/ui/"
 }
 
 expect() { # expect <pass|fail> <description> <dir>

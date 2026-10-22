@@ -68,7 +68,7 @@ The TS `Session` is the client role only (ui, and Node clients). The codec (`dec
 cargo fmt --all --check
 cargo clippy -p enzarb-proto --all-targets --all-features -- -D warnings
 cargo test -p enzarb-proto --all-features
-npm ci && npm run check && npm test
+pnpm install --frozen-lockfile && pnpm run check && pnpm test
 ```
 
 Regenerate vectors with `ENZARB_UPDATE_VECTORS=1 cargo test -p enzarb-proto --test vectors`.

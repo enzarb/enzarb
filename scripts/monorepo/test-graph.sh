@@ -6,7 +6,7 @@
 #   2. the same for a fake npm `file:` dependency;
 #   3. the freshness check passes on the committed tree and fails when the generated file or the
 #      manifest is stale;
-#   4. the known disagreements stay fixed (ui inputs, sandbox-container -> ui/package-lock.json);
+#   4. the known disagreements stay fixed (ui inputs, sandbox-container -> ui/pnpm-lock.yaml);
 #   5. a manifest glob that matches no file makes the generator fail.
 #   6. the Dockerfile COPY blocks are generated: a fake path dep lands in them, a hand edit is detected.
 set -euo pipefail
@@ -108,8 +108,8 @@ if bash "$t/scripts/monorepo/gen-graph.sh" --check --root "$t" >/dev/null 2>&1; 
 fi
 
 # --- 4. known disagreements -------------------------------------------------------------------
-contains "sandbox-container affected by the Playwright pin" sandbox-container "$(affected "$src" ui/package-lock.json)"
-contains "sandbox-container release paths" ui/package-lock.json "$(paths_of "$src" sandbox-container)"
+contains "sandbox-container affected by the Playwright pin" sandbox-container "$(affected "$src" ui/pnpm-lock.yaml)"
+contains "sandbox-container release paths" ui/pnpm-lock.yaml "$(paths_of "$src" sandbox-container)"
 
 # --- 5. manifest hygiene ----------------------------------------------------------------------
 t=$(scratch)

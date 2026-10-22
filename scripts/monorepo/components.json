@@ -25,7 +25,7 @@
     },
     "sandbox-container": {
       "image": "enzarb-sandbox", "context": ".", "smoke": "scripts/smoke.sh", "timeout": 40,
-      "extra_inputs": ["ui/package-lock.json"],
+      "extra_inputs": ["ui/pnpm-lock.yaml"],
       "workflow_files": [".github/workflows/ci-sandbox-container.yml", ".github/workflows/_changes.yml", ".github/workflows/_rust.yml", ".github/workflows/_docker.yml", ".github/actions/setup-node/**"]
     },
     "ui": {

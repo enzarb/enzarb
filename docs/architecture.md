@@ -33,7 +33,7 @@ flowchart LR
   init[sandbox-container<br/>sandbox-init] --> proto
 ```
 
-Dependencies are path dependencies inside the monorepo (Cargo `path = "../proto/..."`, npm `file:../proto`).
+Dependencies are path dependencies inside the monorepo (Cargo `path = "../proto/..."`, pnpm `link:../proto`).
 
 `proto/` is its own component because three programs speak it: the browser, the proxy and sandbox-init. It also defines generic step, session and run frames that no orchestrator drives at the moment. See [ADR-0003](adr/0003-mux-protocol.md).
 
