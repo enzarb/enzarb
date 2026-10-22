@@ -454,6 +454,7 @@ crates/
   ez-hooks    hook config, matching, runner, fix-turn feedback
   ez-acp      ACP agent server + client plumbing (official ACP SDK for JSON-RPC)
   ez-cli      `ez` binary: TUI, headless `-p`, `ez acp`, `ez init`
+  ez-workflow `.ez/workflows.toml`: schema, validation, templates, run stepping, dry runs (ADR-0029)
 ```
 
 ## Development
@@ -461,8 +462,8 @@ crates/
 ez's crates are members of the enzarb root Cargo workspace. From the repo root:
 
 ```sh
-cargo test -p ez-acp -p ez-claude -p ez-cli -p ez-core -p ez-hooks -p ez-llm -p ez-mcp -p ez-mise -p ez-tools
-cargo clippy -p ez-acp -p ez-claude -p ez-cli -p ez-core -p ez-hooks -p ez-llm -p ez-mcp -p ez-mise -p ez-tools --all-targets -- -D warnings
+cargo test -p ez-acp -p ez-claude -p ez-cli -p ez-core -p ez-hooks -p ez-llm -p ez-mcp -p ez-mise -p ez-tools -p ez-workflow
+cargo clippy -p ez-acp -p ez-claude -p ez-cli -p ez-core -p ez-hooks -p ez-llm -p ez-mcp -p ez-mise -p ez-tools -p ez-workflow --all-targets -- -D warnings
 cargo fmt --all
 ```
 

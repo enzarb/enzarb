@@ -18,6 +18,7 @@ members = [
     "ez/crates/ez-mcp",
     "ez/crates/ez-mise",
     "ez/crates/ez-tools",
+    "ez/crates/ez-workflow",
 ]
 
 # Dependencies are declared per crate: the components release independently and

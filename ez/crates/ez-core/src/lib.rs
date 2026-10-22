@@ -6,7 +6,7 @@ pub mod init;
 pub mod keys;
 pub mod modes;
 pub mod modes_api;
-mod modes_edit;
+pub mod modes_edit;
 pub mod permissions;
 pub mod setup;
 pub mod setup_api;

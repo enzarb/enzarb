@@ -1,0 +1,10 @@
+default_mode = "triage"
+
+[modes.triage]
+description = "Understand an issue"
+tools = ["Read", "Glob", "Grep"]
+
+[modes.implement]
+description = "Make the change"
+tools = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]
+mise_tasks = ["test*"]

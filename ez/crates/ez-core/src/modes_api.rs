@@ -710,7 +710,10 @@ fn catalog_templates() -> Vec<TemplateInfo> {
     out
 }
 
-pub async fn catalog(project: &Path, user_dir: Option<&Path>) -> Catalog {
+/// The project-independent part of the catalog: built-in tools, hook events, permission and
+/// `on_failure` values and the lifecycle templates. Mise tasks, MCP servers and profiles are
+/// empty (they come from a project; see [`catalog`]).
+pub fn base_catalog() -> Catalog {
     let mut builtin: Vec<ToolInfo> = ez_tools::builtin_tools()
         .iter()
         .map(|t| ToolInfo {
@@ -725,9 +728,22 @@ pub async fn catalog(project: &Path, user_dir: Option<&Path>) -> Catalog {
         kind: "switch_mode".into(),
         read_only: true,
     });
-    let cfg = Config::load(project, user_dir).ok();
     Catalog {
         builtin_tools: builtin,
+        mise_tasks: Vec::new(),
+        mcp_servers: Vec::new(),
+        profiles: Vec::new(),
+        default_profile: None,
+        hook_events: event_info(),
+        permission_values: ["allow", "ask", "deny"].map(String::from).to_vec(),
+        on_failure_values: ["ignore", "block", "fix_turn"].map(String::from).to_vec(),
+        templates: catalog_templates(),
+    }
+}
+
+pub async fn catalog(project: &Path, user_dir: Option<&Path>) -> Catalog {
+    let cfg = Config::load(project, user_dir).ok();
+    Catalog {
         mise_tasks: ez_mise::discover(project)
             .await
             .into_iter()
@@ -753,10 +769,7 @@ pub async fn catalog(project: &Path, user_dir: Option<&Path>) -> Catalog {
             })
             .unwrap_or_default(),
         default_profile: cfg.map(|c| c.default_profile),
-        hook_events: event_info(),
-        permission_values: ["allow", "ask", "deny"].map(String::from).to_vec(),
-        on_failure_values: ["ignore", "block", "fix_turn"].map(String::from).to_vec(),
-        templates: catalog_templates(),
+        ..base_catalog()
     }
 }
 

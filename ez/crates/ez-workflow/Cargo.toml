@@ -1,0 +1,15 @@
+[package]
+name = "ez-workflow"
+version = "0.1.0"
+edition.workspace = true
+license = "MIT"
+description = "ez workflows (.ez/workflows.toml): schema, validation, templates, graph stepping and dry runs (ADR-0029)"
+
+# Pure: no I/O, no async. tracks, the dry run and the UI's validation all go through this crate.
+[dependencies]
+humantime = "2"
+indexmap = { version = "2", features = ["serde"] }
+minijinja = { version = "2.24", default-features = false, features = ["builtins", "serde", "json", "fuel", "std_collections", "preserve_order", "adjacent_loop_items"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = { version = "1.1", features = ["preserve_order"] }

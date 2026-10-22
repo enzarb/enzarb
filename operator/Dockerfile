@@ -17,6 +17,7 @@ COPY ez/crates/ez-llm ez/crates/ez-llm
 COPY ez/crates/ez-mcp ez/crates/ez-mcp
 COPY ez/crates/ez-mise ez/crates/ez-mise
 COPY ez/crates/ez-tools ez/crates/ez-tools
+COPY ez/crates/ez-workflow ez/crates/ez-workflow
 COPY operator/crates/enzarb-crds operator/crates/enzarb-crds
 COPY operator/crates/operator operator/crates/operator
 COPY operator/deploy operator/deploy

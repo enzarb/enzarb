@@ -67,8 +67,8 @@ for c in $components; do
       run . cargo test -p enzarb-updater
       ;;
     ez)
-      run . cargo clippy -p ez-acp -p ez-claude -p ez-cli -p ez-core -p ez-hooks -p ez-llm -p ez-mcp -p ez-mise -p ez-tools --all-targets -- -D warnings
-      run . cargo test -p ez-acp -p ez-claude -p ez-cli -p ez-core -p ez-hooks -p ez-llm -p ez-mcp -p ez-mise -p ez-tools
+      run . cargo clippy -p ez-acp -p ez-claude -p ez-cli -p ez-core -p ez-hooks -p ez-llm -p ez-mcp -p ez-mise -p ez-tools -p ez-workflow --all-targets -- -D warnings
+      run . cargo test -p ez-acp -p ez-claude -p ez-cli -p ez-core -p ez-hooks -p ez-llm -p ez-mcp -p ez-mise -p ez-tools -p ez-workflow
       ;;
     sandbox-container)
       run . cargo clippy -p sandbox-init --all-targets --locked -- -D warnings

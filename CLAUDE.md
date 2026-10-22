@@ -21,7 +21,7 @@ The Rust components form one Cargo workspace at the root (`Cargo.toml`, one `Car
 | `sandbox-proxy/` | Browser websocket → sandbox router | `cargo clippy -p enzarb-sandbox-proxy --all-targets && cargo test -p enzarb-sandbox-proxy` |
 | `sandbox-container/` | Sandbox image + pid-1 `sandbox-init` | `cargo test -p sandbox-init`; `docker build -f sandbox-container/Dockerfile .` (from the root) |
 | `ui/` | SvelteKit app (remote functions = logic layer) | `pnpm run check && pnpm run lint && pnpm test` |
-| `ez/` | enzarb's coding agent `ez` (ACP agent, TUI, `ez -p`; ADR-0028) | `cargo clippy -p ez-acp -p ez-claude -p ez-cli -p ez-core -p ez-hooks -p ez-llm -p ez-mcp -p ez-mise -p ez-tools --all-targets && cargo test -p ez-acp -p ez-claude -p ez-cli -p ez-core -p ez-hooks -p ez-llm -p ez-mcp -p ez-mise -p ez-tools` |
+| `ez/` | enzarb's coding agent `ez` (ACP agent, TUI, `ez -p`; ADR-0028) | `cargo clippy -p ez-acp -p ez-claude -p ez-cli -p ez-core -p ez-hooks -p ez-llm -p ez-mcp -p ez-mise -p ez-tools -p ez-workflow --all-targets && cargo test -p ez-acp -p ez-claude -p ez-cli -p ez-core -p ez-hooks -p ez-llm -p ez-mcp -p ez-mise -p ez-tools -p ez-workflow` |
 | `updater/` | Webhook service that patches the RKE2 `HelmChart` version on chart release | `cargo clippy -p enzarb-updater --all-targets && cargo test -p enzarb-updater` |
 | `kubernetes/` | Cluster prerequisites (kind, Gateway, agent-sandbox, pgop; Capsule installed but unused, ADR-0013) | `kubectl kustomize` |
 | `helm/` | Umbrella chart | `helm lint enzarb` |

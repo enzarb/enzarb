@@ -1,0 +1,59 @@
+version = 1
+
+[workflows.fix-issue]
+description = "Fix issues labelled ez and open a pull request"
+on = ["issues.labeled"]                        # event[.action] from connectors.event_v
+if = "event.label.name == 'ez'"                # optional filter expression
+start = "triage"
+
+[workflows.fix-issue.nodes.triage]
+type = "agent"
+mode = "triage"                                # a mode in .ez/modes.toml (same commit)
+instruction = """
+Issue #{{ event.issue.number }}: {{ event.issue.title }}
+
+{{ event.issue.body }}"""
+result = { decision = { enum = ["fix", "needs_info"] }, summary = { type = "string" } }
+next = [
+  { if = "result.decision == 'fix'", to = "implement" },
+  { to = "ask" },
+]
+
+[workflows.fix-issue.nodes.ask]
+type = "action"
+action = "comment"
+body = "{{ nodes.triage.result.summary }}"
+next = "wait_reply"
+
+[workflows.fix-issue.nodes.wait_reply]
+type = "wait"
+on = ["issue_comment.created"]                 # events about the run's subject only
+if = "event.comment.user.login == subject.author"
+timeout = "7d"
+next = [{ if = "timed_out", to = "end_stale" }, { to = "triage" }]
+
+[workflows.fix-issue.nodes.implement]
+type = "agent"
+mode = "implement"
+instruction = "Fix issue #{{ event.issue.number }}. Plan: {{ nodes.triage.result.summary }}"
+push = true                                    # push the run branch when the node succeeds
+next = [{ if = "git.pushed", to = "open_pr" }, { to = "end_failed" }]
+
+[workflows.fix-issue.nodes.open_pr]
+type = "action"
+action = "open_pull_request"
+title = "Fix #{{ event.issue.number }}: {{ event.issue.title }}"
+body = "Closes #{{ event.issue.number }}"
+next = "end_done"
+
+[workflows.fix-issue.nodes.end_done]
+type = "end"
+status = "done"
+
+[workflows.fix-issue.nodes.end_failed]
+type = "end"
+status = "failed"
+
+[workflows.fix-issue.nodes.end_stale]
+type = "end"
+status = "cancelled"
