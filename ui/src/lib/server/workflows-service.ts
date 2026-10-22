@@ -29,7 +29,7 @@ import { TracksError, type TracksClient } from './tracks.ts';
  */
 
 export const WORKFLOWS_PATH = '.ez/workflows.toml';
-export const DEFAULT_WORKFLOWS_SUBJECT = 'chore(ez): update .ez/workflows.toml';
+export const DEFAULT_WORKFLOWS_SUBJECT = 'chore(ez): update .ez/workflows.toml from enzarb';
 export const MAX_DRY_RUN_EVENTS = 50;
 
 export interface WorkflowsDeps extends DesignerDeps {
@@ -168,6 +168,8 @@ export interface LoggedEvent {
 
 export interface DryRunDeps {
 	tracks: TracksClient;
+	/** Live write-permission check: only writers may dry run (ADR-0029 §6). */
+	checkAccess: DesignerDeps['checkAccess'];
 	/** The events with these ids that belong to `repo` (`owner/repo`), any order. */
 	events: (repo: string, ids: number[]) => Promise<LoggedEvent[]>;
 }
@@ -180,6 +182,7 @@ export type DryRunLoad = DryRunResponse & { ok: true; missing: number[] };
  */
 export async function dryRunWorkflows(
 	deps: DryRunDeps,
+	login: string,
 	project: Pick<ProjectView, 'repositories'>,
 	input: {
 		repo: string;
@@ -193,6 +196,8 @@ export async function dryRunWorkflows(
 	const key = input.repo.toLowerCase();
 	if (!keys.includes(key))
 		return fail('no_repository', 'This project has no such GitHub repository.');
+	if (!(await deps.checkAccess(login, key)))
+		return fail('forbidden', `Dry runs need write access on ${key.replace(/^github:/, '')}.`);
 	const ids = [...new Set(input.eventIds)];
 	if (ids.length === 0 || ids.length > MAX_DRY_RUN_EVENTS)
 		return fail('invalid', `Choose 1-${MAX_DRY_RUN_EVENTS} events.`);

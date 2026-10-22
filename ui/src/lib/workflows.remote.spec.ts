@@ -121,6 +121,18 @@ describe('workflows remote functions', () => {
 		await run(listRepoEvents, { name: 'p', repo: 'github:acme/w' });
 		expect(events.list).toHaveBeenCalledWith(['acme/w'], undefined);
 
+		check.mockResolvedValue(null);
+		expect(
+			await run(dryRunWorkflows, {
+				name: 'p',
+				repo: 'github:acme/w',
+				text: 'version = 1',
+				modesToml: null,
+				eventIds: [3]
+			})
+		).toMatchObject({ ok: false, code: 'forbidden' });
+		expect(events.withPayloads).not.toHaveBeenCalled();
+		check.mockResolvedValue({ repo: 'github:acme/w', defaultBranch: 'main' });
 		events.withPayloads.mockResolvedValue([{ id: 3, event: 'push', action: null, payload: {} }]);
 		expect(
 			await run(dryRunWorkflows, {

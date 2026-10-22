@@ -123,12 +123,18 @@ export const listRepoEvents = query(RepoEventsSchema, async ({ name, repo, befor
 
 /** Dry-runs the (unsaved) workflows against logged events: no sandbox, GitHub or model calls. */
 export const dryRunWorkflows = command(DryRunSchema, async ({ name, ...input }) => {
-	const { project } = await ownedProject(name);
+	const { user, project } = await ownedProject(name);
 	const tracks = getTracks();
 	if (!tracks) return UNAVAILABLE;
 	const events = eventsService(getSql());
+	const access = getRepositoryAccess();
 	return dryRun(
-		{ tracks, events: (repo, ids) => events.withPayloads([repo], ids) },
+		{
+			tracks,
+			checkAccess: (login, key) => access.check(login, key),
+			events: (repo, ids) => events.withPayloads([repo], ids)
+		},
+		user.login,
 		project,
 		input
 	);

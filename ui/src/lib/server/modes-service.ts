@@ -110,7 +110,7 @@ export type SaveResult =
 	| { ok: true; unchanged: boolean; sha: string | null; commitUrl: string | null; text: string }
 	| Failure;
 
-export const DEFAULT_COMMIT_SUBJECT = 'chore(ez): update .ez/modes.toml';
+export const DEFAULT_COMMIT_SUBJECT = 'chore(ez): update .ez/modes.toml from enzarb';
 
 export async function saveModes(
 	deps: ModesDeps,

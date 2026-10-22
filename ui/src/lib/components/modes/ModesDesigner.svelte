@@ -282,7 +282,7 @@
 		<div class="ez-stack">
 			<TextField
 				label="Commit message"
-				placeholder="chore(ez): update .ez/modes.toml"
+				placeholder="chore(ez): update .ez/modes.toml from enzarb"
 				maxlength={200}
 				bind:value={message}
 				disabled={saving}

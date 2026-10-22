@@ -167,12 +167,13 @@ describe('dryRunWorkflows', () => {
 	beforeEach(() => {
 		dd = {
 			tracks: tracks as unknown as TracksClient,
+			checkAccess: deps.checkAccess,
 			events: vi.fn(async () => [ev])
 		};
 	});
 
 	it("sends the repository's events in the chosen order and reports missing ones", async () => {
-		const r = await dryRunWorkflows(dd, project, {
+		const r = await dryRunWorkflows(dd, 'octo', project, {
 			repo: 'github:Acme/Widgets',
 			text: 't',
 			modesToml: null,
@@ -191,16 +192,36 @@ describe('dryRunWorkflows', () => {
 
 	it('refuses other repositories, empty selections and unknown events', async () => {
 		const input = { text: 't', modesToml: null, eventIds: [5] };
-		expect(await dryRunWorkflows(dd, project, { ...input, repo: 'github:evil/x' })).toMatchObject({
+		expect(
+			await dryRunWorkflows(dd, 'octo', project, { ...input, repo: 'github:evil/x' })
+		).toMatchObject({
 			code: 'no_repository'
 		});
 		expect(
-			await dryRunWorkflows(dd, project, { ...input, repo: 'github:acme/widgets', eventIds: [] })
+			await dryRunWorkflows(dd, 'octo', project, {
+				...input,
+				repo: 'github:acme/widgets',
+				eventIds: []
+			})
 		).toMatchObject({ code: 'invalid' });
 		vi.mocked(dd.events).mockResolvedValueOnce([]);
 		expect(
-			await dryRunWorkflows(dd, project, { ...input, repo: 'github:acme/widgets' })
+			await dryRunWorkflows(dd, 'octo', project, { ...input, repo: 'github:acme/widgets' })
 		).toMatchObject({ code: 'invalid' });
+		expect(tracks.dryRun).not.toHaveBeenCalled();
+	});
+
+	it('is only for users with write access, checked live', async () => {
+		vi.mocked(dd.checkAccess).mockResolvedValueOnce(null);
+		const r = await dryRunWorkflows(dd, 'octo', project, {
+			repo: 'github:acme/widgets',
+			text: 't',
+			modesToml: null,
+			eventIds: [5]
+		});
+		expect(r).toMatchObject({ ok: false, code: 'forbidden' });
+		expect(dd.checkAccess).toHaveBeenCalledWith('octo', 'github:acme/widgets');
+		expect(dd.events).not.toHaveBeenCalled();
 		expect(tracks.dryRun).not.toHaveBeenCalled();
 	});
 });
