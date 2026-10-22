@@ -17,3 +17,5 @@ helm
 kubernetes
 .cloudflare
 sandbox-container/tests
+.claude
+.ruckcode
