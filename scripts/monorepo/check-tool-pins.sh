@@ -100,10 +100,10 @@ for row in "${MAPPED[@]}" "${DELEGATED[@]}" "${UNMAPPED[@]}"; do
   grep -q "^ARG $arg\b" "$df" 2>/dev/null || err "check-tool-pins.sh lists $df ARG $arg, which no longer exists"
 done
 
-# Playwright is resolved from ui/package-lock.json.
+# Playwright is resolved from ui/pnpm-lock.yaml.
 if [ -e sandbox-container/scripts/check-playwright-version.sh ]; then
-  bash sandbox-container/scripts/check-playwright-version.sh sandbox-container/Dockerfile ui/package-lock.json >/dev/null ||
-    err "sandbox-container/Dockerfile: PLAYWRIGHT_VERSION differs from ui/package-lock.json (sandbox-container/scripts/check-playwright-version.sh)"
+  bash sandbox-container/scripts/check-playwright-version.sh sandbox-container/Dockerfile ui/pnpm-lock.yaml >/dev/null ||
+    err "sandbox-container/Dockerfile: PLAYWRIGHT_VERSION differs from ui/pnpm-lock.yaml (sandbox-container/scripts/check-playwright-version.sh)"
 fi
 
 # 4. Root rust equals every rust-toolchain.toml channel.

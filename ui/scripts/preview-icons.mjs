@@ -1,5 +1,5 @@
 // Renders the brand mark at 16, 32, 48, 180 and 512px on light and dark grounds into one PNG
-// (docs/brand-preview.png), with the 16px renders enlarged without smoothing. Run: npm run icons:preview
+// (docs/brand-preview.png), with the 16px renders enlarged without smoothing. Run: pnpm run icons:preview
 import { writeFileSync } from 'node:fs';
 import { png, render } from './icon-lib.mjs';
 import { COLORS, markBody } from './mark-geometry.mjs';

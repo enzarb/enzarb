@@ -130,18 +130,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-node
+      - uses: pnpm/action-setup@v4
         with:
-          cache: npm
-          cache-dependency-path: proto/package-lock.json
-      # `npm ci` runs `prepare`, which builds ts/ -> ts/dist with tsc.
-      - run: npm ci
-      - run: npm run check
-      - run: npm test
-      - name: npm pack produces a working package (ui installs it via file:../proto)
+          package_json_file: proto/package.json
+      - id: pnpm
+        run: echo "store=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm.outputs.store }}
+          key: pnpm-store-proto-${{ runner.os }}-${{ hashFiles('proto/pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-proto-${{ runner.os }}-
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - run: pnpm run check
+      - run: pnpm test
+      - name: pnpm pack produces a working package (ui installs it via file:../proto)
         run: |
           set -euo pipefail
           out="$(mktemp -d)"
-          npm pack --silent --pack-destination "$out"
+          pnpm pack --pack-destination "$out" >/dev/null
           tarball="$(ls "$out"/*.tgz)"
           tar -tzf "$tarball" > "$out/list.txt"
           grep -q '^package/ts/dist/index.js$' "$out/list.txt"

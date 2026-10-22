@@ -2,4 +2,4 @@
 #MISE description="Render the brand mark at 16-512px on dark and light into docs/brand-preview.png"
 set -euo pipefail
 cd "${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}/ui"
-npm run icons:preview
+pnpm run icons:preview

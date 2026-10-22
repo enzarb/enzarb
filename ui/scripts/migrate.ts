@@ -1,4 +1,4 @@
-// Plain-SQL migration runner: `npm run migrate` (node strips the types).
+// Plain-SQL migration runner: `pnpm run migrate` (node strips the types).
 // Applies migrations/*.sql in filename order inside one transaction each,
 // tracked in app._migrations. Run with the schema owner's DATABASE_URL (the role need not own the
 // database, only the `app` schema).

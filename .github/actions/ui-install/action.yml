@@ -1,25 +1,26 @@
 name: ui-install
 description: >-
-  Restore ui/node_modules and proto/node_modules from cache (keyed on both lockfiles + node version);
-  npm ci on a miss (ui's `prepare` builds proto/ts/dist), otherwise just rebuild proto's TS package.
+  pnpm (version from ui/package.json "packageManager"), the pnpm store restored from cache (keyed on
+  both lockfiles + node version, with a prefix fallback so a dependency change only downloads the
+  difference), then `pnpm install --frozen-lockfile` in ui; its `prepare` installs proto and builds
+  proto/ts/dist. Fetch timeout and retries come from ui/.npmrc and proto/.npmrc.
 runs:
   using: composite
   steps:
-    - id: node
-      shell: bash
-      run: echo "version=$(node --version)" >> "$GITHUB_OUTPUT"
-    - id: cache
-      uses: actions/cache@v4
+    - uses: pnpm/action-setup@v4
       with:
-        path: |
-          ui/node_modules
-          proto/node_modules
-        key: node_modules-${{ runner.os }}-${{ steps.node.outputs.version }}-${{ hashFiles('ui/package-lock.json', 'proto/package-lock.json') }}
-    - if: steps.cache.outputs.cache-hit != 'true'
+        package_json_file: ui/package.json
+    - id: pnpm
       shell: bash
+      run: |
+        echo "node=$(node --version)" >> "$GITHUB_OUTPUT"
+        echo "store=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@v4
+      with:
+        path: ${{ steps.pnpm.outputs.store }}
+        key: pnpm-store-${{ runner.os }}-${{ steps.pnpm.outputs.node }}-${{ hashFiles('ui/pnpm-lock.yaml', 'proto/pnpm-lock.yaml') }}
+        restore-keys: |
+          pnpm-store-${{ runner.os }}-${{ steps.pnpm.outputs.node }}-
+    - shell: bash
       working-directory: ui
-      run: npm ci
-    - if: steps.cache.outputs.cache-hit == 'true'
-      shell: bash
-      working-directory: ui
-      run: npm --prefix ../proto run build
+      run: pnpm install --frozen-lockfile

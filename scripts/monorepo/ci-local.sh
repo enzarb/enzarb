@@ -63,9 +63,9 @@ for g in $groups; do
       step "proto nextest" . nextest run -p enzarb-proto
       step "proto nextest all-features" . nextest run -p enzarb-proto --all-features
       step "proto doctests" . cargo test -p enzarb-proto --doc --all-features
-      step "proto npm ci" proto npm ci
-      step "proto npm check" proto npm run check
-      step "proto npm test" proto npm test
+      step "proto pnpm install" proto pnpm install --frozen-lockfile
+      step "proto check" proto pnpm run check
+      step "proto test" proto pnpm test
       ;;
     operator) rust operator -p enzarb-crds -p enzarb-sandbox-operator --all-features ;;
     connectors) pg; rust connectors -p enzarb-receiver --all-features ;;
@@ -77,13 +77,13 @@ for g in $groups; do
       ;;
     updater) rust updater -p enzarb-updater ;;
     ui)
-      step "ui npm ci" ui npm ci
-      step "ui check" ui npm run check
-      step "ui lint" ui npm run lint
-      step "ui test client" ui npm run test:unit -- --run --project client
-      step "ui test server" ui npm run test:unit -- --run --project server
-      step "ui e2e" ui npm run test:e2e
-      step "ui e2e prod" ui npm run test:e2e:prod
+      step "ui pnpm install" ui pnpm install --frozen-lockfile
+      step "ui check" ui pnpm run check
+      step "ui lint" ui pnpm run lint
+      step "ui test client" ui pnpm run test:unit --run --project client
+      step "ui test server" ui pnpm run test:unit --run --project server
+      step "ui e2e" ui pnpm run test:e2e
+      step "ui e2e prod" ui pnpm run test:e2e:prod
       ;;
     helm)
       for t in lint compat golden componentversions npmtoken kubeconform pgop; do

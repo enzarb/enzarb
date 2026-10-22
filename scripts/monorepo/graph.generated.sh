@@ -8,7 +8,7 @@ DEPS_operator=( )
 DEPS_connectors=( )
 DEPS_realtime=( )
 DEPS_sandbox_proxy=( 'operator' 'proto' )
-DEPS_sandbox_container=( 'proto' 'ui/package-lock.json' )
+DEPS_sandbox_container=( 'proto' 'ui/pnpm-lock.yaml' )
 DEPS_ui=( 'proto' 'connectors/bin/receiver/migrations' )
 DEPS_updater=( )
 DEPS_kubernetes=( 'mise.toml' 'mise.*.toml' )
@@ -19,7 +19,7 @@ RULES=(
   'connectors|Cargo.toml Cargo.lock rust-toolchain.toml connectors/** .github/workflows/ci-connectors.yml .github/workflows/_changes.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
   'realtime|Cargo.toml Cargo.lock rust-toolchain.toml realtime/** .github/workflows/ci-realtime.yml .github/workflows/_changes.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
   'sandbox-proxy|Cargo.toml Cargo.lock rust-toolchain.toml sandbox-proxy/** operator/** proto/** .github/workflows/ci-sandbox-proxy.yml .github/workflows/_changes.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
-  'sandbox-container|Cargo.toml Cargo.lock rust-toolchain.toml sandbox-container/** proto/** ui/package-lock.json .github/workflows/ci-sandbox-container.yml .github/workflows/_changes.yml .github/workflows/_rust.yml .github/workflows/_docker.yml .github/actions/setup-node/**'
+  'sandbox-container|Cargo.toml Cargo.lock rust-toolchain.toml sandbox-container/** proto/** ui/pnpm-lock.yaml .github/workflows/ci-sandbox-container.yml .github/workflows/_changes.yml .github/workflows/_rust.yml .github/workflows/_docker.yml .github/actions/setup-node/**'
   'ui|ui/** proto/** connectors/bin/receiver/migrations/** .github/workflows/ci-ui.yml .github/workflows/_changes.yml .github/workflows/_docker.yml .github/actions/ui-install/** .github/actions/setup-node/**'
   'updater|Cargo.toml Cargo.lock rust-toolchain.toml updater/** .github/workflows/ci-updater.yml .github/workflows/_changes.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
   'kubernetes|kubernetes/** mise.toml mise.*.toml .github/workflows/ci-kubernetes.yml .github/workflows/_changes.yml'

@@ -1,20 +1,21 @@
 {
 	"name": "enzarb-ui",
 	"private": true,
+	"packageManager": "pnpm@10.34.7",
 	"version": "0.0.1",
 	"type": "module",
 	"scripts": {
 		"dev": "node --env-file-if-exists=.env node_modules/vite/bin/vite.js dev",
 		"build": "vite build",
 		"preview": "vite preview",
-		"proto:build": "npm --prefix ../proto ci --ignore-scripts && npm --prefix ../proto run build",
-		"prepare": "npm run proto:build && (svelte-kit sync || echo '')",
+		"proto:build": "pnpm --dir ../proto install --frozen-lockfile --ignore-scripts && pnpm --dir ../proto run build",
+		"prepare": "pnpm run proto:build && (svelte-kit sync || echo '')",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && tsc -p src/service-worker/tsconfig.json --noEmit",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"lint": "prettier --check . && eslint .",
 		"format": "prettier --write .",
 		"test:unit": "vitest",
-		"test": "npm run test:unit -- --run",
+		"test": "pnpm run test:unit --run",
 		"brand": "node scripts/build-brand.mjs",
 		"icons": "node scripts/generate-icons.mjs",
 		"icons:preview": "node scripts/preview-icons.mjs",
@@ -52,6 +53,14 @@
 		"vitest": "^4.1.8",
 		"vitest-browser-svelte": "^2.1.1"
 	},
+	"pnpm": {
+		"ignoredBuiltDependencies": [
+			"@parcel/watcher",
+			"cpu-features",
+			"protobufjs",
+			"ssh2"
+		]
+	},
 	"imports": {
 		"#lib": "./src/lib/index.js",
 		"#lib/*": "./src/lib/*"
@@ -59,7 +68,7 @@
 	"dependencies": {
 		"@agentclientprotocol/sdk": "^1.8.0",
 		"@dagrejs/dagre": "^3.1.1",
-		"@enzarb/proto": "file:../proto",
+		"@enzarb/proto": "link:../proto",
 		"@fontsource/jost": "^5.3.0",
 		"@kubernetes/client-node": "^2.0.0",
 		"@types/web-push": "^3.6.4",

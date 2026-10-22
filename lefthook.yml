@@ -18,7 +18,7 @@ pre-commit:
     ui-lint:
       root: ui/
       glob: "*"
-      run: '[ -d node_modules ] || { echo "ui: node_modules missing, running npm ci"; npm ci; }; npm run lint'
+      run: '[ -d node_modules ] || { echo "ui: node_modules missing, running pnpm install"; pnpm install --frozen-lockfile; }; pnpm run lint'
     graph-fresh:
       glob: "{Cargo.toml,**/Cargo.toml,**/package.json,scripts/monorepo/components.json,scripts/monorepo/gen-graph.sh,scripts/monorepo/graph.generated.sh}"
       run: scripts/monorepo/gen-graph.sh --check

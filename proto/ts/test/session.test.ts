@@ -386,7 +386,7 @@ describe("ctrl", () => {
   });
 
   it("a DOM WebSocket is assignable to WebSocketLike without a cast", () => {
-    // Type-level: fails `npm run check` if the DOM lib's WebSocket stops fitting.
+    // Type-level: fails `pnpm run check` if the DOM lib's WebSocket stops fitting.
     const accepts = (_: WebSocketLike) => {};
     const dom = null as unknown as WebSocket;
     accepts(dom);

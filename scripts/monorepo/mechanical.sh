@@ -70,8 +70,8 @@ format_only() {
     ui/*.ts | ui/*.js | ui/*.svelte | ui/*.css | ui/*.scss | ui/*.json | ui/*.md)
       [ -d ui/node_modules ] || return 1
       local rel=${file#ui/}
-      a=$(git show "$prev:$file" | (cd ui && npx --no-install prettier --stdin-filepath "$rel") 2>/dev/null) || return 1
-      b=$(git show "$head:$file" | (cd ui && npx --no-install prettier --stdin-filepath "$rel") 2>/dev/null) || return 1
+      a=$(git show "$prev:$file" | (cd ui && pnpm exec prettier --stdin-filepath "$rel") 2>/dev/null) || return 1
+      b=$(git show "$head:$file" | (cd ui && pnpm exec prettier --stdin-filepath "$rel") 2>/dev/null) || return 1
       ;;
     *) return 1 ;;
   esac

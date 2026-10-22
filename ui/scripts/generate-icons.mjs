@@ -1,4 +1,4 @@
-// Renders the favicon and app icon set from the overlaid EZ mark (mark-geometry.mjs). Run: npm run icons
+// Renders the favicon and app icon set from the overlaid EZ mark (mark-geometry.mjs). Run: pnpm run icons
 // File names carry `-ez` so browsers and installed apps fetch the new set instead of a cached old one.
 import { writeFileSync } from 'node:fs';
 import pngToIco from 'png-to-ico';

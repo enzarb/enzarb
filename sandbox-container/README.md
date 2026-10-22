@@ -20,7 +20,7 @@ Only system components:
 - Chromium (and chromium-headless-shell) for Playwright in `/opt/ms-playwright` (outside the PVC, so the mount does not hide it), with its runtime libraries. `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright` and `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`, so the `ui` browser tests download nothing. The Playwright npm package itself is not in the image.
 - These cache and Playwright variables are also in `PASS_ENV` (`src/chat.rs`), so chat agents (which get a scrubbed environment) see them.
 
-**Bumping Playwright:** when `ui/package-lock.json` resolves a new `playwright`, set `ARG PLAYWRIGHT_VERSION` in the `Dockerfile` to the same version. `scripts/check-playwright-version.sh` (CI job `playwright-version`) fails on drift.
+**Bumping Playwright:** when `ui/pnpm-lock.yaml` resolves a new `playwright`, set `ARG PLAYWRIGHT_VERSION` in the `Dockerfile` to the same version. `scripts/check-playwright-version.sh` (CI job `playwright-version`) fails on drift.
 - Docker: `dockerd`, `containerd`, `runc`, the `docker` CLI, buildx and compose (see [Docker and privileges](#docker-and-privileges-adr-0016))
 
 There is no rustup/Rust, npm, ripgrep, jq or other CLI tool, and no `HEALTHCHECK` (Kubernetes probes `/healthz`). `scripts/smoke.sh` asserts both what is present and what is absent.
