@@ -11,8 +11,6 @@
 	import Skeleton from '#lib/components/ui/Skeleton.svelte';
 	import { getProject, rollSandboxNow } from '#lib/projects.remote.ts';
 	import { setProjectContext } from '#lib/project-context.svelte.ts';
-	import { watchTasks } from '#lib/live.ts';
-	import { listTasks } from '#lib/tasks.remote.ts';
 
 	let { children }: { children: Snippet } = $props();
 
@@ -33,13 +31,6 @@
 		}
 	});
 
-	const tasks = $derived(listTasks(page.params.name!));
-	// Tasks the engine reports as running a step; only zero/non-zero is used. null until loaded, so
-	// the banner does not claim the steps are finished.
-	const runningJobs = $derived(
-		tasks.current ? tasks.current.filter((t) => t.status === 'running').length : null
-	);
-
 	// Poll while the project is not Ready, has a change pending or a sandbox-resources change is in
 	// flight (no timers when idle). A failed poll is ignored until the next tick; it must not replace
 	// the page.
@@ -54,12 +45,6 @@
 			project.refresh().catch(() => {});
 		}, POLL_MS);
 		return () => clearInterval(id);
-	});
-
-	// Refresh the job count promptly while a change is pending.
-	$effect(() => {
-		if (!project.current?.pendingChange) return;
-		return watchTasks(() => void tasks.refresh());
 	});
 
 	// A different project starts with a clean slate.
@@ -97,7 +82,7 @@
 			/>
 			<PendingChangeBanner
 				change={p.pendingChange}
-				{runningJobs}
+				runningJobs={0}
 				roll={(generation) => rollSandboxNow({ name: p.name, generation })}
 			/>
 			<div class="ez-tabnav-panel">

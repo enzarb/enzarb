@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #MISE description="Start (or reuse) one Postgres 18 for the test suites and print the ENZARB_TEST_PG_URL to export"
 # One server per run instead of one container per test (docs/dev.md, "Shared test Postgres").
-#   eval "$(mise run test:pg)"     # then: cargo nextest run / cargo test in workflows/, connectors/, realtime/
+#   eval "$(mise run test:pg)"     # then: cargo nextest run / cargo test in connectors/, realtime/
 # Contract: stdout is exactly one line, `export ENZARB_TEST_PG_URL=...`; everything else goes to stderr.
 # Safe to call repeatedly (reuses the container), so run preparation can call it once per sandbox.
 # Env: ENZARB_TEST_PG_URL (already set: printed unchanged, Docker untouched; use it for a sidecar or external server),

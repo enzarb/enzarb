@@ -1,3 +1,0 @@
-version: 1
-bindings:
-  - {id: issues, on: issue, if: "event.action == 'opened'", use: workflows/issue}

@@ -3,7 +3,7 @@
 Status: **Superseded** by [ADR-0015](0015-monorepo.md) (2026-10-13): all components now live in one repo, github.com/enzarb/enzarb, one directory each. The text below is kept as written.
 
 ## Context
-The components ship separately (UI, proxy, sandbox image, operator, connectors, workflow engine, chart) and run on different schedules. There were no commits yet, so the split cost nothing.
+The components ship separately (UI, proxy, sandbox image, operator, connectors, chart) and run on different schedules. There were no commits yet, so the split cost nothing.
 
 ## Decision
 - One git repo per component, listed in [architecture.md](../architecture.md#repositories).
@@ -15,5 +15,5 @@ The components ship separately (UI, proxy, sandbox image, operator, connectors, 
 - Dockerfiles live in the repo of the component they build.
 
 ## Consequences
-- Changes to `enzarb-proto` or `workflows_api` that cross repos need versioning discipline: semver for the libraries, and for the API schema, additive changes or a new versioned view/function.
+- Changes to `enzarb-proto` or a shared database schema that cross repos need versioning discipline: semver for the libraries, and for the API schema, additive changes or a new versioned view/function.
 - Local development needs every repo checked out side by side; `mise run repos:init` handles that.

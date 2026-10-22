@@ -1,4 +1,0 @@
-version: 1
-install: {mise: ["npm:@agentclientprotocol/claude-agent-acp@1"]}
-launch: {protocol: acp, command: [claude-agent-acp]}
-capabilities: {sessions: true, resume: true, steering: true}

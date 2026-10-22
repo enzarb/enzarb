@@ -6,7 +6,7 @@ A browser session needs several concurrent streams to one sandbox: terminals, th
 ## Decision
 - **One browser websocket** → `enzarb-sandbox-proxy` → the sandbox's pid-1 (`sandbox-init`).
 - **Custom binary mux protocol:** frame types `CTRL`, `DATA_BIN`, `DATA_JSON`, `WINDOW`, `CLOSE`, with **credit-based flow control** for each channel.
-- **Its own repo, `enzarb-proto`:** the spec (`docs/protocol.md`), a Rust crate, a TS package, and shared test vectors. Four programs speak it: the browser, the proxy, sandbox-init, and the workflow executor, which uses it to start runs (`StartRun`/`RunFinished`).
+- **Its own repo, `enzarb-proto`:** the spec (`docs/protocol.md`), a Rust crate, a TS package, and shared test vectors. Three programs speak it: the browser, the proxy and sandbox-init.
 
 ## Consequences
 - The proxy can parse frames, which allows per-channel authorization and metrics.

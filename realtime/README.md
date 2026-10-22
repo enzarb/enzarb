@@ -1,6 +1,6 @@
 # enzarb-realtime
 
-Realtime change stream for the enzarb UI. One Postgres connection `LISTEN`s on `work_item_changed`; each notification is mapped to its project and pushed to the browsers that may see that project over a websocket. The UI then refetches via its remote functions. No state, one binary, one replica is enough (each replica holds its own LISTEN connection, so more replicas also work).
+Realtime change stream for the enzarb UI. One Postgres connection `LISTEN`s on `connector_event` (sent by the connectors receiver for each logged webhook delivery); each notification is mapped to the event's repository and pushed to the browsers that may see that repository over a websocket. The UI then refetches via its remote functions. No state, one binary, one replica is enough (each replica holds its own LISTEN connection, so more replicas also work).
 
 `GET /live/v1/stream` (websocket), `GET /healthz`, `GET /readyz` on `:8080`.
 
@@ -11,12 +11,12 @@ Realtime change stream for the enzarb UI. One Postgres connection `LISTEN`s on `
   2. the `enzarb_live` cookie (browsers: the page's origin sends it on the upgrade automatically). The first `enzarb_live` pair is used, verbatim. Needs an allowed `Origin` (below), checked before the token, else **403**. The cookie's `HttpOnly` / `Secure` / `SameSite` / `Path=/live/` attributes are set by whatever issues it, not by this service.
   3. `?token=<jwt>` in the query string: **deprecated**, it ends up in logs and history. Each successful use logs a warning with `deprecated_total` (a counter, no token) and the `sub`. Remove it once enzarb-ui#71 is released and the counter has stayed at 0 for 7 days in the oldie logs; only then open the removal issue.
 - **Origin check (cookie auth only, CSWSH protection):** a missing or disallowed `Origin` gets 403 before the upgrade. The `Origin` must be exactly `scheme://host[:port]` (`http`/`https`); `null`, a path (even `/`), query, fragment or userinfo is rejected. Scheme and host compare case-insensitively, the port exactly (`https://h` and `https://h:443` differ; browsers omit default ports, so list `https://host`). With `ENZARB_REALTIME_ALLOWED_ORIGINS` set, the `Origin` must equal an entry. When unset it must match the request `Host` header (only that header; `X-Forwarded-Host` is ignored). The Host default is for dev: behind Cloudflare Tunnel / Envoy `Host` may be rewritten, so **production must set the allowlist**.
-- **Auth:** HS256, secret `ENZARB_REALTIME_JWT_SECRET`, claims `sub`, `projects` (array of project names the user can see), `aud: "enzarb-realtime"`, `exp`. Signature, audience and `exp` are checked at connect (no leeway) -> 401 otherwise. If `iat` is present, `exp - iat` must be at most `ENZARB_REALTIME_MAX_TOKEN_TTL_SECS` (300). The socket never outlives `min(exp, now + max ttl)`.
+- **Auth:** HS256, secret `ENZARB_REALTIME_JWT_SECRET`, claims `sub`, `repos` (array of lowercase `owner/repo` keys of the repositories of the projects the user can see), `projects` (array of project names; accepted, not used for filtering), `aud: "enzarb-realtime"`, `exp`. Signature, audience and `exp` are checked at connect (no leeway) -> 401 otherwise. If `iat` is present, `exp - iat` must be at most `ENZARB_REALTIME_MAX_TOKEN_TTL_SECS` (300). The socket never outlives `min(exp, now + max ttl)`.
 - **Expiry:** at that point the server closes with code **4001** (`token expired; reconnect with a fresh token`). The client fetches a new token and reconnects, then refetches (treat a reconnect like `resync`).
 - **Frames** (server -> client, JSON text):
-  - `{"topic":"work_item","id":123,"project":"enzarb"}`, only for projects in the token's `projects`;
+  - `{"topic":"event","id":123,"repo":"enzarb/enzarb"}`, only for repositories in the token's `repos`;
   - `{"topic":"resync"}`, sent to everyone: refetch everything.
-- **Resync is sent when:** the LISTEN connection was lost and re-established (changes may have been missed), a work item's project cannot be resolved (lookup failed or no row), or a client's buffer overflowed (`ENZARB_REALTIME_BUFFER` frames; the client lagged).
+- **Resync is sent when:** the LISTEN connection was lost and re-established (changes may have been missed), an event's repository cannot be resolved (lookup failed, no row, or the delivery names no repository), or a client's buffer overflowed (`ENZARB_REALTIME_BUFFER` frames; the client lagged).
 - **Keepalive:** a ping every 15 s; a client that has not ponged for 1.5 intervals is dropped (close **1001** `ping timeout`). Client messages are ignored.
 - **Close codes:** **1001** on graceful shutdown (SIGTERM) and ping timeout, **1011** on an internal error, **4001** on token expiry. Reconnect on any of them.
 - **Connection cap:** at most `ENZARB_REALTIME_MAX_CONNECTIONS` concurrent websockets; beyond that (after auth) the upgrade is refused with **503** and `Retry-After: 1`, logged and counted.
@@ -26,7 +26,7 @@ Realtime change stream for the enzarb UI. One Postgres connection `LISTEN`s on `
 
 `DATABASE_URL` is the same pattern as the other services (`postgres:///enzarb` plus `PG*` env vars; see `docs/database.md` in the workspace). The runtime role needs:
 
-- `CONNECT` on the database, `USAGE` on schema `workflows_api`, and `SELECT` on **`workflows_api.work_item_project_v (id, project)`** (a view exposing only those two columns; the service reads only `project`). Nothing else. The view ships with enzarb-workflows#40; deploy that migration before this service.
+- `CONNECT` on the database, `USAGE` on schema `connectors`, and `SELECT` on **`connectors.event_v`** (the service reads only `id` and `repo`). Nothing else. The connectors migration grants it when the role exists.
 - `LISTEN` needs no grant.
 
 TLS (rustls, ring backend, bundled webpki roots) is controlled by `sslmode` / `PGSSLMODE` and `sslrootcert` / `PGSSLROOTCERT`:
@@ -35,7 +35,7 @@ TLS (rustls, ring backend, bundled webpki roots) is controlled by `sslmode` / `P
 - `verify-ca` / `verify-full` validate against the bundled public roots, so certificates from a public CA need no `sslrootcert`;
 - a private CA (e.g. cert-manager) needs `sslrootcert` (or `PGSSLROOTCERT`) pointing at a CA file mounted into the container.
 
-The NOTIFY payload is only the work item id, so each notification costs one `SELECT project FROM workflows_api.work_item_project_v WHERE id = $1` on a 2-connection pool.
+The NOTIFY payload is only the event id, so each notification costs one `SELECT repo FROM connectors.event_v WHERE id = $1` on a 2-connection pool.
 
 ## Configuration
 

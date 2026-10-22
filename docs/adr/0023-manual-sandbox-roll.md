@@ -10,7 +10,7 @@ A pod-shape change (new sandbox image, env, resources) is queued as `status.pend
 - **Operator.** An exact match with the pending generation releases the roll (`Why::Manual`), ranked after the ack and before idle and timeout. The 120s minimum pod age still applies. Stale, future, non-numeric or `i64::MAX` values are ignored, and new generations start above any ack or roll-now already on the Project, so a leftover value never releases a later episode.
 - **Default timeout: 30m** (was 2h). The key, flag (`--sandbox-roll-drain-timeout`) and env (`ENZARB_SANDBOX_ROLL_DRAIN_TIMEOUT`) are unchanged. No Helm key exists or is added.
 - **Remaining drain time.** `status.pendingChange` carries an optional `deadline` (`since` + the drain timeout, so it follows the operator's configuration). The UI shows the time left next to "Roll now" and nothing when `deadline` is absent. The roll still waits for the 120s pod age and the 30s requeue.
-- **Idle.** Nothing writes the `enzarb.dev/active-sessions` pod annotation yet. An idle sandbox is released through the workflows drain ack: workflows acks on its next tick once no `run_step` job runs.
+- **Idle.** Nothing writes the `enzarb.dev/active-sessions` pod annotation yet. The drained-generation ack has no producer at the moment, so a roll happens through Roll now, idleness or the drain timeout.
 
 ## Alternatives rejected
 - A `spec` field (`spec.sandbox.rollNow`): needs a CRD change and puts a one-shot action into desired state.

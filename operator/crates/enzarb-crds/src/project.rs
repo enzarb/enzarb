@@ -31,7 +31,7 @@ pub const REASON_WORKSPACE_RESIZING: &str = "WorkspaceResizing";
 /// Informational condition, `True` only while a pod-shape change (image, env, resources, ...) waits
 /// for the sandbox to drain. Replaces the former `SandboxImageRoll`. Does not affect `Ready`.
 pub const COND_SANDBOX_CHANGE_PENDING: &str = "SandboxChangePending";
-/// Project annotation set (by workflows) to the `status.pendingChange.generation` it has drained
+/// Project annotation set (by a drain controller) to the `status.pendingChange.generation` it has drained
 /// for. The operator applies the change only when it equals the pending generation.
 pub const ANNOTATION_DRAINED_GENERATION: &str = "enzarb.dev/drained-generation";
 /// Project annotation set (by the UI, on an owner's explicit "Roll now") to the
@@ -78,21 +78,6 @@ pub struct ProjectSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1, max = 16))]
     pub max_runs: Option<u32>,
-    /// Workflow settings (ADR-0022 §4): the library and the Project's bindings layer.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workflows: Option<ProjectWorkflows>,
-}
-
-/// `spec.workflows` (ADR-0022 §4).
-#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectWorkflows {
-    /// Library to inherit from, `owner/repo@ref` (default: the instance's `defaultLibrary`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub library: Option<String>,
-    /// A bindings file (YAML text, `{version, imports, bindings}`) layered over the library's.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bindings: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]

@@ -1,9 +1,0 @@
-{ "specversion": "1.0", "source": "github", "id": "72d3162e-cc78-11e3-81ab-4c9367dc0958", "type": "CommentAdded",
-  "subject": "github:enzarb/enzarb-ui#42", "time": "2026-10-08T12:00:00Z",
-  "data": {
-    "repo": "github:enzarb/enzarb-ui",
-    "actor": { "login": "ruckc", "id": 42, "is_bot": false },
-    "item": { "kind": "issue", "number": 42, "url": "https://github.com/enzarb/enzarb-ui/issues/42", "title": "Add dark mode", "body": "Please.", "author": "ruckc", "head_ref": null, "base_ref": null, "head_sha": null },
-    "comment": { "id": 987,
-      "kind": "conversation", "body": "Looks good", "url": "https://github.com/enzarb/enzarb-ui/issues/42#issuecomment-987" }
-  } }

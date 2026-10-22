@@ -31,16 +31,6 @@ vi.mock('#lib/projects.remote.ts', () => ({
 		refresh: async () => {}
 	})
 }));
-vi.mock('#lib/tasks.remote.ts', () => ({
-	listTasks: () => ({ current: [], refresh: async () => {} }),
-	listSecrets: () => ({ current: [] }),
-	setSecret: async () => {},
-	deleteSecret: async () => {},
-	listChats: () => ({ current: [] }),
-	getChatSession: () => ({ current: [], refresh: async () => {} }),
-	getWorkflowView: () => ({ current: null }),
-	getBoard: () => ({ current: { columns: [] } })
-}));
 vi.mock('#lib/claude.remote.ts', () => ({
 	claudeCredential: () => ({ current: { configured: true, updatedAt: null } })
 }));
@@ -92,8 +82,8 @@ describe('project layout and tabs', () => {
 			.element(nav.getByRole('link', { name: 'Settings' }))
 			.toHaveAttribute('href', '/projects/alpha/settings');
 		await expect
-			.element(nav.getByRole('link', { name: 'Metrics' }))
-			.toHaveAttribute('href', '/projects/alpha/metrics');
+			.element(nav.getByRole('link', { name: 'Events' }))
+			.toHaveAttribute('href', '/projects/alpha/events');
 		await expect
 			.element(nav.getByRole('link', { name: 'Overview' }))
 			.toHaveAttribute('aria-current', 'page');
@@ -127,11 +117,11 @@ describe('project layout and tabs', () => {
 			.not.toHaveAttribute('aria-current');
 	});
 
-	it('keeps the Metrics tab current on a nested metrics route', async () => {
-		h.path = '/projects/alpha/metrics/timing';
+	it('keeps the Events tab current on the events route', async () => {
+		h.path = '/projects/alpha/events';
 		mount(Settings);
 		await expect
-			.element(browser.getByRole('link', { name: 'Metrics' }))
+			.element(browser.getByRole('link', { name: 'Events' }))
 			.toHaveAttribute('aria-current', 'page');
 		await expect
 			.element(browser.getByRole('link', { name: 'Overview' }))

@@ -3,7 +3,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./kube.ts', () => ({ getProjectStore: () => ({}) }));
 vi.mock('./project-cache.ts', () => ({
-	projectCache: { list: vi.fn(async () => [{ name: 'alpha' }, { name: 'beta' }]) }
+	projectCache: {
+		list: vi.fn(async () => [
+			{ name: 'alpha', repositories: [{ url: 'https://github.com/Octo/App.git' }] },
+			{ name: 'beta', repositories: [{ url: 'https://github.com/octo/app' }, { url: 'junk' }] }
+		])
+	}
 }));
 
 const ENV = {
@@ -50,6 +55,7 @@ describe('issueRealtimeConnection', () => {
 		});
 		expect(payload.sub).toBe('octocat');
 		expect(payload.projects).toEqual(['alpha', 'beta']);
+		expect(payload.repos).toEqual(['octo/app']);
 		expect(payload.exp! - payload.iat!).toBe(opts.maxAge);
 		expect(res).toEqual({ url: 'wss://enzarb.example.com/live/v1/stream', expiresInSeconds: 300 });
 		expect(JSON.stringify(res)).not.toContain(token);

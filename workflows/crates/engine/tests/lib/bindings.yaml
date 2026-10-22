@@ -1,5 +1,0 @@
-version: 1
-bindings:
-  - {id: issues, on: issue, if: "event.action == 'opened'", use: workflows/issue}
-  - {id: adopted, on: adopted, use: workflows/issue}
-  - {id: prs, on: pull_request, if: "event.action == 'opened'", use: workflows/pr}

@@ -13,11 +13,6 @@ vi.mock('$app/state', () => ({
 	page: { params: { name: 'alpha' }, url: new URL('http://localhost/projects/alpha/settings') }
 }));
 vi.mock('$app/navigation', () => ({ goto: async () => {} }));
-vi.mock('#lib/tasks.remote.ts', () => ({
-	listSecrets: () => ({ current: [], error: undefined }),
-	setSecret: async () => {},
-	deleteSecret: async () => {}
-}));
 
 const project = {
 	name: 'alpha',

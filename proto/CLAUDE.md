@@ -2,7 +2,7 @@
 
 The `proto/` component of the enzarb monorepo (github.com/enzarb/enzarb). The repo root holds the architecture docs and shared conventions: see `../CLAUDE.md` and `../docs/architecture.md`. Releases are tagged `proto/vX.Y.Z`.
 
-Run this component's own build/test commands from this directory. Changes to shared contracts (`proto/` frames, `workflows_api`/`app_api` schemas) must stay backward compatible.
+Run this component's own build/test commands from this directory. Changes to shared contracts (`proto/` frames, `connectors.event_v` view, `app_api` schema) must stay backward compatible.
 
 ## Adding or changing a `Ctrl` variant
 

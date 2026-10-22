@@ -54,15 +54,15 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('createLiveWatcher', () => {
-	it('maps work_item and resync frames and ignores junk', async () => {
+	it('maps event and resync frames and ignores junk', async () => {
 		const { onChange } = start();
 		await vi.advanceTimersByTimeAsync(0);
 		last().open();
-		last().send('{"topic":"work_item","id":7,"project":"p"}');
+		last().send('{"topic":"event","id":7,"repo":"o/r"}');
 		last().send('{"topic":"resync"}');
 		last().send('not json');
 		last().send('{"topic":"other","id":1}');
-		last().send('{"topic":"work_item","id":"7"}');
+		last().send('{"topic":"event","id":"7"}');
 		last().send('null');
 		expect(onChange.mock.calls).toEqual([[7], [null]]);
 	});

@@ -1,0 +1,82 @@
+<script lang="ts">
+	import type { EventRow } from '#lib/events.ts';
+	import Button from './form/Button.svelte';
+	import EmptyState from './ui/EmptyState.svelte';
+	import Notice from './ui/Notice.svelte';
+	import Section from './ui/Section.svelte';
+	import Skeleton from './ui/Skeleton.svelte';
+
+	/**
+	 * Webhook deliveries logged for a project's repositories, newest first. Nothing acts on them;
+	 * a row expands to the raw payload.
+	 */
+	let {
+		rows,
+		failed = false,
+		payload,
+		retry
+	}: {
+		/** `undefined` while the first load is in flight. */
+		rows: EventRow[] | undefined;
+		failed?: boolean;
+		payload: (id: number) => Promise<unknown>;
+		retry: () => void;
+	} = $props();
+
+	let open = $state<Record<number, { json?: string; error?: boolean } | undefined>>({});
+
+	async function toggle(id: number, isOpen: boolean) {
+		if (!isOpen) return;
+		if (open[id]?.json) return;
+		open[id] = {};
+		try {
+			const p = await payload(id);
+			open[id] = { json: JSON.stringify(p, null, 2) };
+		} catch {
+			open[id] = { error: true };
+		}
+	}
+
+	const label = (r: EventRow) => (r.action ? `${r.event} ${r.action}` : r.event);
+</script>
+
+{#if failed}
+	<Notice tone="error" title="Could not load events">
+		Something went wrong while loading the events.
+		{#snippet actions()}<Button onclick={retry}>Retry</Button>{/snippet}
+	</Notice>
+{:else if rows === undefined}
+	<Skeleton label="Loading events" rows={3} />
+{:else if rows.length === 0}
+	<EmptyState
+		title="No events yet"
+		description="GitHub deliveries for this project's repositories are logged here. Nothing acts on them."
+	/>
+{:else}
+	<Section title="Events" description="Logged only; nothing acts on these.">
+		<ul class="ez-event-log" data-testid="event-log">
+			{#each rows as r (r.id)}
+				<li>
+					<details ontoggle={(e) => toggle(r.id, e.currentTarget.open)}>
+						<summary>
+							<strong>{label(r)}</strong>
+							<span class="ez-muted">{r.repo}</span>
+							{#if r.summary}<span>{r.summary}</span>{/if}
+							<span class="ez-muted">
+								{#if r.sender}{r.sender} ·{/if}
+								<time datetime={r.receivedAt}>{new Date(r.receivedAt).toLocaleString()}</time>
+							</span>
+						</summary>
+						{#if open[r.id]?.json}
+							<pre>{open[r.id]!.json}</pre>
+						{:else if open[r.id]?.error}
+							<p class="ez-muted">Could not load the payload.</p>
+						{:else}
+							<p class="ez-muted">Loading…</p>
+						{/if}
+					</details>
+				</li>
+			{/each}
+		</ul>
+	</Section>
+{/if}

@@ -30,7 +30,7 @@ use tracing::{info, warn};
 
 /// Pod annotation reporting the number of active agent sessions/connections. Written by the
 /// sandbox runtime (not yet by anything in this repo). Absent or unparsable means unknown. Until
-/// a producer exists, an idle sandbox is released by the workflows drain ack instead.
+/// a producer exists, an idle sandbox is released by the drain ack or the drain timeout instead.
 pub const ANNOTATION_ACTIVE_SESSIONS: &str = "enzarb.dev/active-sessions";
 /// Upper bound on the requeue delay while a change is pending.
 pub const DEFER_POLL: Duration = Duration::from_secs(30);
@@ -701,7 +701,7 @@ mod tests {
             decide(&i),
             Decision::Defer(pc(2, 500, "image/sandbox: a -> c"))
         );
-        // The stored generation 2 is what workflows reads and acks.
+        // The stored generation 2 is what a drain ack must echo.
         let p2 = pc(2, 500, "image/sandbox: a -> c");
         let mut j = base(&d, Some(&p2));
         j.ack = Some(1);

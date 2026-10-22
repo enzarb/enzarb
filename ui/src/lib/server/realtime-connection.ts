@@ -1,6 +1,7 @@
 import { error, type RequestEvent } from '@sveltejs/kit';
 import { getConfig } from './config.ts';
 import { getProjectStore } from './kube.ts';
+import { projectRepoKeys } from './events-service.ts';
 import { projectCache } from './project-cache.ts';
 import {
 	mintRealtimeToken,
@@ -29,6 +30,7 @@ export async function issueRealtimeConnection({
 		config.realtimeJwtSecret,
 		user.login,
 		projects.map((p) => p.name),
+		[...new Set(projects.flatMap(projectRepoKeys))],
 		nowSeconds
 	);
 	cookies.set(REALTIME_COOKIE, token, realtimeCookieOptions());

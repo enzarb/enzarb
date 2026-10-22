@@ -22,7 +22,7 @@ jobs:
       packages: write
     with:
       dir: connectors
-      cargo-args: -p enzarb-connector -p enzarb-connector-github -p enzarb-receiver --all-features
+      cargo-args: -p enzarb-receiver --all-features
       postgres: true
       image: enzarb-connectors-receiver
       context: .

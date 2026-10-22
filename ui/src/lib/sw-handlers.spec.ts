@@ -28,14 +28,14 @@ const win = (url: string, navigate = vi.fn(async () => null)) => ({
 
 describe('safeTargetUrl', () => {
 	it('keeps in-app paths', () => {
-		expect(safeTargetUrl('/work/3', ORIGIN)).toBe('/work/3');
-		expect(safeTargetUrl('/work?x=1#a', ORIGIN)).toBe('/work?x=1#a');
-		expect(safeTargetUrl(`${ORIGIN}/work/3`, ORIGIN)).toBe('/work/3');
+		expect(safeTargetUrl('/projects/3', ORIGIN)).toBe('/projects/3');
+		expect(safeTargetUrl('/projects?x=1#a', ORIGIN)).toBe('/projects?x=1#a');
+		expect(safeTargetUrl(`${ORIGIN}/projects/3`, ORIGIN)).toBe('/projects/3');
 	});
 
 	it('rejects other origins and non-urls', () => {
 		for (const u of [
-			'https://evil.example/work/3',
+			'https://evil.example/projects/3',
 			'//evil.example/work',
 			'/\\evil.example',
 			'javascript:alert(1)',
@@ -52,24 +52,24 @@ describe('openOrFocus (notificationclick)', () => {
 	it('focuses and navigates an existing window of the app', async () => {
 		const w = win(`${ORIGIN}/projects`);
 		const clients = fakeClients([win('https://other.example/'), w]);
-		await openOrFocus(clients, { url: '/work/9' }, ORIGIN);
+		await openOrFocus(clients, { url: '/projects/9' }, ORIGIN);
 		expect(w.focus).toHaveBeenCalledOnce();
-		expect(w.navigate).toHaveBeenCalledWith('/work/9');
+		expect(w.navigate).toHaveBeenCalledWith('/projects/9');
 		expect(clients.openWindow).not.toHaveBeenCalled();
 	});
 
 	it('opens a window when none is open', async () => {
 		const clients = fakeClients([win('https://other.example/')]);
-		await openOrFocus(clients, { url: '/work/9' }, ORIGIN);
-		expect(clients.openWindow).toHaveBeenCalledExactlyOnceWith('/work/9');
+		await openOrFocus(clients, { url: '/projects/9' }, ORIGIN);
+		expect(clients.openWindow).toHaveBeenCalledExactlyOnceWith('/projects/9');
 	});
 
 	it('never opens a cross-origin url from the payload', async () => {
 		const clients = fakeClients([]);
 		await openOrFocus(clients, { url: 'https://evil.example/phish' }, ORIGIN);
-		expect(clients.openWindow).toHaveBeenCalledExactlyOnceWith('/work');
+		expect(clients.openWindow).toHaveBeenCalledExactlyOnceWith('/projects');
 		await openOrFocus(clients, undefined, ORIGIN);
-		expect(clients.openWindow).toHaveBeenLastCalledWith('/work');
+		expect(clients.openWindow).toHaveBeenLastCalledWith('/projects');
 	});
 
 	it('opens a window when navigating the existing one fails', async () => {
@@ -78,9 +78,9 @@ describe('openOrFocus (notificationclick)', () => {
 			vi.fn(async () => Promise.reject(new Error('no')))
 		);
 		const clients = fakeClients([w]);
-		await openOrFocus(clients, { url: '/work/1' }, ORIGIN);
+		await openOrFocus(clients, { url: '/projects/1' }, ORIGIN);
 		expect(w.focus).toHaveBeenCalled();
-		expect(clients.openWindow).toHaveBeenCalledWith('/work/1');
+		expect(clients.openWindow).toHaveBeenCalledWith('/projects/1');
 	});
 });
 
@@ -95,8 +95,8 @@ describe('planFetch', () => {
 	});
 
 	it('only falls back to the offline page for navigations', () => {
-		expect(plan('/work', 'GET', 'navigate')).toBe('navigate');
-		expect(plan('/work/3', 'GET', 'cors')).toBe('bypass');
+		expect(plan('/projects', 'GET', 'navigate')).toBe('navigate');
+		expect(plan('/projects/3', 'GET', 'cors')).toBe('bypass');
 	});
 
 	it('never touches remote functions, the realtime stream or auth routes', () => {
@@ -115,23 +115,23 @@ describe('planFetch', () => {
 
 	it('ignores non-GET and cross-origin requests', () => {
 		expect(plan('/_app/immutable/a.js', 'POST')).toBe('bypass');
-		expect(plan('/work', 'PUT', 'navigate')).toBe('bypass');
+		expect(plan('/projects', 'PUT', 'navigate')).toBe('bypass');
 		expect(plan('/_app/immutable/a.js', 'GET', 'cors', 'https://cdn.example')).toBe('bypass');
 	});
 });
 
 describe('parsePush', () => {
 	it('parses a payload and defaults the optional fields', () => {
-		expect(parsePush('{"title":"T","body":"B","url":"/work/1","tag":"work-1"}')).toEqual({
+		expect(parsePush('{"title":"T","body":"B","url":"/projects/1","tag":"work-1"}')).toEqual({
 			title: 'T',
 			body: 'B',
-			url: '/work/1',
+			url: '/projects/1',
 			tag: 'work-1'
 		});
 		expect(parsePush('{"title":"T"}')).toEqual({
 			title: 'T',
 			body: '',
-			url: '/work',
+			url: '/projects',
 			tag: 'enzarb'
 		});
 	});
@@ -162,10 +162,10 @@ describe('handlePush', () => {
 
 	it('shows a notification with its tag and url', async () => {
 		const r = reg([]);
-		await handlePush(r, { title: 'T', body: 'B', url: '/work?highlight=1', tag: 'item-1' });
+		await handlePush(r, { title: 'T', body: 'B', url: '/projects?highlight=1', tag: 'item-1' });
 		expect(r.showNotification).toHaveBeenCalledWith(
 			'T',
-			expect.objectContaining({ tag: 'item-1', data: { url: '/work?highlight=1' } })
+			expect.objectContaining({ tag: 'item-1', data: { url: '/projects?highlight=1' } })
 		);
 	});
 

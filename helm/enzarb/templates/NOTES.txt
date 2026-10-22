@@ -2,13 +2,13 @@ enzarb {{ .Chart.Version }} installed in namespace {{ .Release.Namespace }}.
 
 URL: {{ include "enzarb.publicUrl" . }}  (routes: / -> ui, /sandbox/ -> sandbox-proxy, /hooks/ -> connectors{{ if .Values.realtime.enabled }}, /live/ -> realtime{{ end }})
 
-Migrations run as Jobs ordered workflows -> connectors -> ui; runtime pods wait for them:
+Migrations run as Jobs ordered legacy -> connectors -> ui; runtime pods wait for them:
   kubectl -n {{ .Release.Namespace }} get jobs -l app.kubernetes.io/component=migrate
 {{- if not .Values.secrets.github.existingSecret }}
 {{- if not .Values.secrets.github.privateKey }}
 
 WARNING: secrets.github.* is empty. Set secrets.github.existingSecret (or the inline values);
-workflows and the receiver cannot work without the GitHub App credentials.
+the UI cannot reach GitHub without the GitHub App credentials.
 {{- end }}
 {{- end }}
 

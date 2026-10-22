@@ -2,17 +2,17 @@
 
 > Written before the monorepo ([ADR-0015](../adr/0015-monorepo.md)). Repo names such as `enzarb-proto` or `enzarb-ui` now mean the `proto/` and `ui/` directories of github.com/enzarb/enzarb; issue links (`enzarb-ui#66`) point at the archived repos. File paths below use the current directories.
 
-Status: proposed (2026-10-12). Scope: a Chat page in the project view that talks to Claude through ACP inside the Project's sandbox. It covers enzarb-proto, enzarb-sandbox-container, enzarb-sandbox-proxy, enzarb-ui, enzarb-helm and root docs. enzarb-workflows and enzarb-sandbox-operator need no code changes (see section 4).
+Status: proposed (2026-10-12). Scope: a Chat page in the project view that talks to Claude through ACP inside the Project's sandbox. It covers enzarb-proto, enzarb-sandbox-container, enzarb-sandbox-proxy, enzarb-ui, enzarb-helm and root docs. enzarb-sandbox-operator needs no code changes (see section 4).
 
-This builds on enzarb's plan in the issue (separate routes under a shared layout, `@agentclientprotocol/sdk` rather than `@zed-industries/*`, no job-running notice) and settles the "to confirm" points.
+This builds on enzarb's plan in the issue (separate routes under a shared layout, `@agentclientprotocol/sdk` rather than `@zed-industries/*`) and settles the "to confirm" points.
 
 ## What exists today (facts this design relies on)
 
-- **Agent runs** (ADR-0011): sandbox-init is an ACP *client* of `claude-agent-acp` (`ENZARB_ACP_AGENT_BIN`). It is spawned per run in its own process group (`sandbox-container/src/acp.rs`), offers no client capabilities, runs in `/workspace/worktrees/run-<id>`, and gets `CLAUDE_CODE_OAUTH_TOKEN` from `/workspace/.enzarb/claude-token` today (`agent.rs` ~l.1184). Under the ADR-0004 amendment 2026-10-13 it comes from `RunStart.claude_token` (the owner's token, from Postgres, per run), with the legacy file as a rollout fallback. Every `session/request_permission` is answered by `Policy::decide` (`policy.rs`), with `allow_once`/`reject_once` only. A `Semaphore` of `ENZARB_MAX_RUNS` (default 2) limits concurrent runs.
+- **Agent steps** (ADR-0011): sandbox-init is an ACP *client* of `claude-agent-acp` (`ENZARB_ACP_AGENT_BIN`). It is spawned per step in its own process group (`sandbox-container/src/acp.rs`), offers no client capabilities, and gets `CLAUDE_CODE_OAUTH_TOKEN` in its environment (the owner's token, from Postgres, ADR-0004 amendment 2026-10-13, with the legacy file as a rollout fallback). Every `session/request_permission` is allowed (ADR-0011 amendment).
 - **Mux** (`proto/docs/protocol.md`): `open` has `kind: "pty"` only. `ChannelKind` is a closed Rust enum with `Pty` only (`crates/enzarb-proto/src/ctrl.rs`). `welcome` carries only `version`. Frames are at most 1 MiB, and each channel has a 256 KiB credit window.
 - **Proxy** (`sandbox-proxy/src/relay.rs`, `guard.rs`): the proxy completes the sandbox handshake itself and answers the browser's `hello` locally with `welcome{version}`. It then decodes every browser frame and allowlists CTRL (`open`, `resize`, `error`, `credential_status`). **A frame that fails to decode closes the socket with 1008.** So an old proxy given `open{kind:"acp"}` kills the terminal-style connection. The proxy also has an `idle_timeout`.
 - **UI**: `terminalConnection(name)` (`src/lib/terminal.remote.ts`) mints a 5-minute HS256 JWT (`sub`, `project`, `aud: enzarb-sandbox-proxy`) and returns `wss://<host>/sandbox/v1/projects/<p>/mux?token=…`. `Terminal.svelte` then runs `Session.connect(ws,{client:'ui'})` and `openPty`.
-- **Drain** (`workflows/crates/engine/src/executor/sandbox_change.rs`): the drain hold stops new job claims, and the drained annotation is set once no *job* is `running`. It knows nothing about interactive sessions.
+- **Drain:** the operator queues pod-shape changes and releases them on an ack, idleness or the drain timeout (ADR-0023). It knows nothing about interactive sessions.
 - Claude's own session files live under `HOME=/home/enzarb`, which is **not** on the PVC (Dockerfile).
 
 ---
@@ -57,13 +57,13 @@ Wire changes (all additive, protocol version stays 1):
 - Each chat gets its own worktree, `/workspace/worktrees/chat-<chat_id>`. `chat_id` is a random 16-hex id that sandbox-init generates on `session/new`.
 - The worktree is detached at `origin/<default branch>` of the chosen clone. The clone is `open.repo`, which must already exist under `/workspace/repos/`; otherwise the open fails with `repo_not_cloned`. Without `repo`, the first existing clone is used.
 - If the agent commits, it commits on the local branch `enzarb/chat-<chat_id>`.
-- Run pruning (`prune_worktrees`) only touches `run-*`, which is already the case. Add a `chat-*` sweep that removes chat worktrees with no live channel and no activity for 7 days (`ENZARB_CHAT_RETENTION_DAYS`).
+- Add a `chat-*` sweep that removes chat worktrees with no live channel and no activity for 7 days (`ENZARB_CHAT_RETENTION_DAYS`).
 - Registry: `/workspace/.enzarb/chats/<chat_id>/{meta.json, transcript.jsonl}`. `meta.json` holds `{acp_session_id, repo, worktree, created, last_active}`.
 
 **Environment.**
 - The child gets the same base env as runs (toolchain paths, `PATH`) plus `CLAUDE_CODE_OAUTH_TOKEN` taken from the `claude_token` field of the `open` frame at spawn time (ADR-0004 amendment 2026-10-13). The proxy sets that field from the owner's Postgres row; sandbox-init keeps it in the child's environment only, falling back to the legacy token file when the field is absent.
 - Set `CLAUDE_CONFIG_DIR=/workspace/.enzarb/chat-home/.claude` so Claude's session files persist on the PVC, which `session/load` across pod restarts needs. Verify the env name against the pinned adapter version.
-- **No** `clone_token`, `deps_token` or `npm_token`. Those exist only inside a run. So the chat agent **cannot push** (structurally, not only by policy), and it cannot `npm ci` private `@enzarb/*` packages (open question Q2).
+- **No** clone, deps or npm token. So the chat agent **cannot push** (structurally, not only by policy), and it cannot `npm ci` private `@enzarb/*` packages (open question Q2).
 - No new credential reaches the browser.
 
 **Rewrites applied by sandbox-init.**
@@ -90,7 +90,7 @@ Every message in both directions is appended, redacted, to the chat's `transcrip
 - **Stop (browser closes the channel or the websocket drops):** send `session/cancel` for active sessions, wait `cancel_grace` (as for runs), close stdin, then SIGTERM/SIGKILL the process group. A websocket drop goes through `session_closed`, already present in `agent.rs`, extended to the chat manager.
 - **Idle:** if there is no browser→agent message and no agent output for `ENZARB_CHAT_IDLE_SECS` (default 1800), close with `idle`. A pending permission does **not** keep the session alive: it times out to `cancelled`, never to allowed.
 - **Hard ceiling:** `ENZARB_CHAT_MAX_SECS` (default 8 h), then close with `limit`.
-- **Shutdown:** on SIGTERM, sandbox-init sends `CLOSE shutdown` to every chat channel, then cancels and kills the children before the existing run handling.
+- **Shutdown:** on SIGTERM, sandbox-init sends `CLOSE shutdown` to every chat channel, then cancels and kills the children before the existing shutdown handling.
 - **Resume:** the UI keeps `{acp_session_id}` in `sessionStorage` under `enzarb.chat.<project>`. On reconnect it calls `session/load` if `loadSession` is advertised. The agent replays history as `session/update`, and the reducer rebuilds the transcript. If load is unsupported or fails, the UI starts `session/new` and shows "previous conversation not restored".
   - `claude-agent-acp` advertises `loadSession` in recent versions; check it at the pinned version.
   - Resume across a pod restart works only with the `CLAUDE_CONFIG_DIR` on the PVC described above.
@@ -127,11 +127,11 @@ Decisions:
 - **Chat does not consume `maxRuns` slots.** It has its own cap, `ENZARB_MAX_CHATS` (default 1, `0` disables), set in sandbox-init config only. No Project spec field in v1, so the operator is unchanged; add `spec.maxChats` later only if someone asks.
 - Projects have exactly one owner, and the proxy only admits `spec.owner`. So "1 per Project per user" is the same as "1 per sandbox".
 - **Last tab wins.** An `open{kind:"acp"}` at the cap closes the existing chat channel with `superseded` and then opens the new one. This handles a second tab and stale half-open sockets without a lock-out. The superseded tab shows "Chat opened in another tab", with a "Take over" button that reconnects.
-- **Working tree isolation:** the chat worktree is separate from run worktrees and the clone's checked-out branch. The chat branch name is `enzarb/chat-*`, which no workflow uses. Edits by a job and a chat never touch the same directory. Git operations on the shared clone go through the existing per-repo `repo_lock` when creating or removing chat worktrees.
+- **Working tree isolation:** the chat worktree is separate from step workspaces and the clone's checked-out branch. The chat branch name is `enzarb/chat-*`. Git operations on the shared clone go through the existing per-repo `repo_lock` when creating or removing chat worktrees.
 - **No push:** there are no push credentials (section 2), and `git push` is hard-denied. Pushing a chat branch or opening a PR from chat is out of scope for v1.
-- **Credential contention:** chat and jobs share the owner's Claude subscription and rate limits. See open question Q1.
+- **Credential contention:** chats share the owner's Claude subscription and rate limits. See open question Q1.
 - **Resources:** the chat child runs inside the sandbox container's existing CPU/memory limits (`spec.sandbox.cpu`/`memory`). Memory guidance in the docs: about +0.5 to 1 GiB per live chat agent on top of `maxRuns` agents. No new knobs.
-- **Drain: chat does not block drain.** Interactive sessions can be open indefinitely, and the drain hold must not depend on a browser tab. Workflows and the operator stay unchanged.
+- **Drain: chat does not block drain.** Interactive sessions can be open indefinitely, and the drain hold must not depend on a browser tab. The operator stays unchanged.
   - Graceful handling: the layout already shows `PendingChangeBanner`. On the Chat page, it adds "The sandbox will restart to apply a change; this chat will reconnect afterwards."
   - On pod deletion, sandbox-init's SIGTERM path sends `CLOSE shutdown`. The UI shows "Sandbox restarting", reconnects with backoff, and `session/load`s the session, which persists on the PVC.
   - Work in the chat worktree survives on the PVC; only an in-flight turn is lost.
@@ -246,7 +246,7 @@ Tests (Vitest, `*.svelte.test.ts`):
 - [ ] sandbox-init forces `clientCapabilities` to none, `cwd` to the chat worktree and `mcpServers: []` on every `session/new`/`load`. A browser cannot point the agent at another cwd, MCP server or session id outside the registry.
 - [ ] `session/set_mode` limited to `bypassPermissions` (only while `ENZARB_CHAT_ALLOW_BYPASS`), `default` and `plan` (amendment 2026-10-12; was `default`/`plan`); `acceptEdits`/`auto`/`dontAsk`, `authenticate` and unknown methods refused.
 - [ ] Bypass default (amendment 2026-10-12): hard deny and permission prompts apply only in `default`/`plan`; the bounds are the scrubbed env, forced cwd/worktree, no MCP, gVisor, egress NetworkPolicy, redaction, non-dumpable sandbox-init and `.enzarb` 0700. Kill switches `ENZARB_CHAT_PERMISSION_MODE=default|plan`, `ENZARB_CHAT_ALLOW_BYPASS=false`, `ENZARB_MAX_CHATS=0`.
-- [ ] Open residual risk: a bypass chat agent shares the sandbox-init uid and can write the shared clone's `.git/config`/`.git/hooks` used by authenticated `fetch`/`push`, and read the mux token, run callback files and job `/proc/<pid>/environ`; git-call hardening is a follow-up.
+- [ ] Open residual risk: a bypass chat agent shares the sandbox-init uid and can write the shared clone's `.git/config`/`.git/hooks` used by authenticated `fetch`/`push`, and read the mux token and other processes' `/proc/<pid>/environ`; git-call hardening is a follow-up.
 - [ ] Permission responses validated against the outstanding request: `*_always` and unknown ids become reject; there is no auto-approve path in UI or sandbox, and no timeout leads to allow.
 - [ ] In `default`/`plan` mode, hard deny covers the Claude token file, `/var/run/enzarb/auth/token`, `.enzarb/`, secret paths, writes outside the chat worktree, `git push`, and fetch hosts outside the allowlist.
 - [ ] No push/clone/deps/npm tokens in the chat agent env.
@@ -318,12 +318,12 @@ Tests (Vitest, `*.svelte.test.ts`):
 - Scope: mirror enzarb-realtime#8 / enzarb-ui#71.
 - Deps: those land.
 
-Explicitly no changes: enzarb-workflows (drain ignores chat by design), enzarb-sandbox-operator (no spec field), enzarb-connectors.
+Explicitly no changes: enzarb-sandbox-operator (no spec field).
 
 ## Open questions for the maintainer
 
-- **Q1. Shared Claude quota.** Chat and jobs draw on the same subscription and rate limits. Is it acceptable that heavy chat use can slow or fail queued jobs? The alternative is pausing chat while `maxRuns` slots are full, which I do not recommend.
-- **Q2. Private packages in chat.** The chat agent has no `npm_token`/`deps_token`, so `npm ci` of private `@enzarb/*` packages and same-Project git deps fail in a chat worktree. Should the executor's long-lived npm token be made available to the sandbox for chat? That would be a new standing secret in the sandbox. Recommendation: no for v1.
-- **Q3. Pushing from chat.** v1 never pushes. Do you want a later "push branch / open PR from this chat" action? It would go through workflows with a fresh `clone_token`, not through the sandbox.
+- **Q1. Shared Claude quota.** Chats draw on the owner's subscription and rate limits. Accepted.
+- **Q2. Private packages in chat.** The chat agent has no `npm_token`/`deps_token`, so `npm ci` of private `@enzarb/*` packages and same-Project git deps fail in a chat worktree. Should a long-lived npm token be made available to the sandbox for chat? That would be a new standing secret in the sandbox. Recommendation: no for v1.
+- **Q3. Pushing from chat.** v1 never pushes. Do you want a later "push branch / open PR from this chat" action? It would use a fresh clone token, not a token held by the sandbox.
 
 Everything else above is decided, with the reasoning given.

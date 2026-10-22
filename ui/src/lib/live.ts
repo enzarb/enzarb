@@ -27,7 +27,7 @@ export interface LiveDeps {
 export const REFRESH_FRACTION = 0.8;
 
 /**
- * Keeps a websocket to enzarb-realtime open. `onChange(id)` fires per changed task (projection row);
+ * Keeps a websocket to enzarb-realtime open. `onChange(id)` fires per logged event;
  * `onChange(null)` means "refresh everything": a `resync` frame, any reconnect (changes may have
  * been missed) and, while disconnected, a poll every minute. Each (re)connect renews the auth
  * cookie first, and it is renewed again before it expires.
@@ -131,11 +131,7 @@ export function createLiveWatcher(
 				return;
 			}
 			if (frame === null || typeof frame !== 'object') return;
-			// Wire contract: `work_item` is the legacy realtime frame topic, kept because components roll out
-			// independently. `task` is the engine v2 topic (NOTIFY engine_projection); `work_item` is the name the
-			// realtime service used before it was re-pointed, with the same id meaning (a task id).
-			if ((frame.topic === 'task' || frame.topic === 'work_item') && typeof frame.id === 'number')
-				onChange(frame.id);
+			if (frame.topic === 'event' && typeof frame.id === 'number') onChange(frame.id);
 			else if (frame.topic === 'resync') onChange(null);
 		};
 		ws.onclose = (e) => fail(e.code);
@@ -159,14 +155,14 @@ export function createLiveWatcher(
 	};
 }
 
-/** Subscribe to task (projection) changes over the realtime websocket. */
-export function watchTasks(onChange: (id: number | null) => void): () => void {
+/** Subscribe to logged events over the realtime websocket. */
+export function watchEvents(onChange: (id: number | null) => void): () => void {
 	if (typeof WebSocket === 'undefined') return () => {};
 	return createLiveWatcher(
 		{
 			WebSocket: WebSocket as unknown as LiveDeps['WebSocket'],
 			// imported lazily so the watcher stays testable without the SvelteKit runtime
-			refresh: async () => await (await import('#lib/tasks.remote.ts')).realtimeConnection(),
+			refresh: async () => await (await import('#lib/events.remote.ts')).realtimeConnection(),
 			setTimeout: (fn, ms) => setTimeout(fn, ms),
 			clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
 			random: Math.random

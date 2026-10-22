@@ -151,11 +151,13 @@ ui:
   # 0 omits the hook. Must be below terminationGracePeriodSeconds, which also covers the drain.
   preStopSeconds: 10
   terminationGracePeriodSeconds: 30
-  # Hours a change request blocked on review or checks may sit idle before it counts as "Needs you".
+  # DEPRECATED, accepted and ignored.
   needsYouStaleHours: 24
   resources: {}
   extraEnv: []
 
+# DEPRECATED: the workflow engine is removed; no workflows Deployment is rendered. Every key of
+# this block is accepted and ignored so values files of earlier releases keep working.
 workflows:
   replicaCount: 1
   image:
@@ -220,9 +222,9 @@ connectors:
   resources: {}
   extraEnv: []
 
-# enzarb-realtime streams work item changes over websockets at /live/ (stateless; each replica
-# holds its own LISTEN). Grants on the database are applied by enzarb-workflows (at startup and
-# from its ticker), not by the chart. Needs route.enabled for /live/.
+# enzarb-realtime streams logged webhook events over websockets at /live/ (stateless; each replica
+# holds its own LISTEN). Its read grant on connectors.event_v comes from the connectors migration.
+# Needs route.enabled for /live/.
 realtime:
   enabled: true
   replicaCount: 2
@@ -348,7 +350,7 @@ operator:
       age: 24h
       minFree: 15
   # Comma-separated app.kubernetes.io/name of pods allowed to reach sandboxes on 7070.
-  # Empty = operator default (enzarb-sandbox-proxy,enzarb-workflows, matching this chart).
+  # Empty = operator default (enzarb-sandbox-proxy, matching this chart).
   netpolIngressPodNames: ""
   resources: {}
   extraEnv: []

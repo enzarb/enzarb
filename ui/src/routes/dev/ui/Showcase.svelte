@@ -11,8 +11,6 @@
 	import TextArea from '#lib/components/form/TextArea.svelte';
 	import TextField from '#lib/components/form/TextField.svelte';
 	import StatusBadge from '#lib/components/StatusBadge.svelte';
-	import TaskStatus from '#lib/components/tasks/TaskStatus.svelte';
-	import TaskTimeline from '#lib/components/tasks/TaskTimeline.svelte';
 	import Avatar from '#lib/components/ui/Avatar.svelte';
 	import Badge from '#lib/components/ui/Badge.svelte';
 	import Card from '#lib/components/ui/Card.svelte';
@@ -106,31 +104,13 @@
 		cond('ResourcesReady', 'True'),
 		cond('SandboxReady', 'False', 'quota exceeded')
 	];
-	const at = '2026-10-08T12:00:00.000Z';
-	const transitions = [
-		{
-			at,
-			eventType: 'issue',
-			from: { status: null, node: null },
-			to: { status: 'running', node: 'plan/plan' },
-			effects: 1
-		},
-		{
-			at,
-			eventType: 'step_finished',
-			from: { status: 'running', node: 'plan/plan' },
-			to: { status: 'waiting', node: 'plan/approve' },
-			effects: 0
-		}
-	];
-
 	async function fakeConfirm() {
 		await new Promise((r) => setTimeout(r, 600));
 	}
 </script>
 
 {#snippet nameCell(r: Row)}<a href="#row-{r.id}">{r.name}</a>{/snippet}
-{#snippet stateCell(r: Row)}<TaskStatus status={r.state} />{/snippet}
+{#snippet stateCell(r: Row)}<Badge plain>{r.state}</Badge>{/snippet}
 {#snippet whenCell(r: Row)}<time>{r.when}</time>{/snippet}
 {#snippet rowActions(r: Row)}
 	<Button size="sm" variant="ghost">View</Button>
@@ -222,11 +202,6 @@
 	<div class="ez-cluster">
 		<StatusBadge state="pending" /><StatusBadge state="in-progress" /><StatusBadge state="done" />
 		<StatusBadge state="failed" />
-	</div>
-	<div class="ez-cluster">
-		{#each ['running', 'waiting', 'paused', 'ended'] as s (s)}
-			<TaskStatus status={s} endStatus={s === 'ended' ? 'done' : null} />
-		{/each}
 	</div>
 {/snippet}
 
@@ -379,14 +354,14 @@
 {/snippet}
 
 {#snippet tables()}
-	<DataTable label="Tasks" items={rows} {columns} rowKey={(r) => r.id} {rowActions} />
+	<DataTable label="Rows" items={rows} {columns} rowKey={(r) => r.id} {rowActions} />
 	<DataTable
 		label="Empty"
 		items={[]}
 		{columns}
 		rowKey={(r: Row) => r.id}
-		emptyTitle="No tasks yet"
-		emptyDescription="Work appears here when an issue reaches a project."
+		emptyTitle="Nothing here yet"
+		emptyDescription="Rows appear here once there is something to list."
 	>
 		{#snippet emptyActions()}<Button variant="primary" size="sm">Create project</Button>{/snippet}
 	</DataTable>
@@ -396,7 +371,6 @@
 {#snippet steps()}
 	<ConditionChecklist conditions={bootConditions} />
 	<ConditionChecklist conditions={failedConditions} />
-	<TaskTimeline {transitions} />
 	<StepList
 		label="All states"
 		items={[
@@ -416,7 +390,7 @@
 
 {#snippet layoutPieces()}
 	<PageHeader title="Page header" description="A description line under the title.">
-		{#snippet meta()}<TaskStatus status="running" /><code>acme/web#12</code>{/snippet}
+		{#snippet meta()}<Badge tone="success">running</Badge><code>acme/web#12</code>{/snippet}
 		{#snippet actions()}<Button variant="primary">Primary action</Button><Button>Secondary</Button
 			>{/snippet}
 	</PageHeader>

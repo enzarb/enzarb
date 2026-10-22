@@ -9,7 +9,8 @@
   (dict "name" "ui-owner" "role" "enzarb_ui_owner")
   (dict "name" "ui" "role" "enzarb_ui")
   (dict "name" "sandbox-proxy" "role" "enzarb_sandbox_proxy") }}
-{{- /* realtime owns no objects; its grants are applied by enzarb-workflows (startup and ticker reconciliation). */}}
+{{- /* realtime owns no objects; it reads connectors.event_v (granted by the connectors migration). */}}
+{{- /* The workflows roles are legacy: enzarb_workflows_owner stays the Database owner and runs the one-off drop of the removed engine schemas (migrations.yaml). */}}
 {{- if .Values.realtime.enabled }}
 {{- $roles = append $roles (dict "name" "realtime" "role" "enzarb_realtime") }}
 {{- end }}
@@ -67,32 +68,14 @@ spec:
   # schemas[].owner and grants[].role are raw PostgreSQL role names. Object-level grants
   # (views, functions, default privileges) are written by each owner's migrations.
   schemas:
-    - name: workflows
-      owner: enzarb_workflows_owner
-      grants:
-        - { role: enzarb_workflows, privileges: [USAGE] }
-    - name: workflows_api
-      owner: enzarb_workflows_owner
-      grants:
-        - { role: enzarb_workflows, privileges: [USAGE] }
-        - { role: enzarb_connectors, privileges: [USAGE] }
-        - { role: enzarb_ui, privileges: [USAGE] }
-    - name: engine
-      owner: enzarb_workflows_owner
-      grants:
-        - { role: enzarb_workflows, privileges: [USAGE] }
-    - name: engine_api
-      owner: enzarb_workflows_owner
-      grants:
-        - { role: enzarb_workflows, privileges: [USAGE] }
-        - { role: enzarb_connectors, privileges: [USAGE] }
-        - { role: enzarb_ui, privileges: [USAGE] }
-        - { role: enzarb_sandbox_proxy, privileges: [USAGE] }
     - name: connectors
       owner: enzarb_connectors_owner
       grants:
         - { role: enzarb_connectors, privileges: [USAGE] }
-        - { role: enzarb_workflows, privileges: [USAGE] }
+        - { role: enzarb_ui, privileges: [USAGE] }
+        {{- if .Values.realtime.enabled }}
+        - { role: enzarb_realtime, privileges: [USAGE] }
+        {{- end }}
     - name: app
       owner: enzarb_ui_owner
       grants:
@@ -101,6 +84,5 @@ spec:
       owner: enzarb_ui_owner
       grants:
         - { role: enzarb_ui, privileges: [USAGE] }
-        - { role: enzarb_workflows, privileges: [USAGE] }
         - { role: enzarb_sandbox_proxy, privileges: [USAGE] }
 {{- end }}

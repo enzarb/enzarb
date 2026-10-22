@@ -1,6 +1,6 @@
 # enzarb mux protocol, version 1
 
-One websocket carries many multiplexed channels between a client (browser `ui`, `proxy`, workflows `executor`) and `sandbox-init`. Reference implementation: `crates/enzarb-proto`. Shared test vectors: `vectors/`.
+One websocket carries many multiplexed channels between a client (browser `ui`, `proxy`, or a non-browser `executor` client) and `sandbox-init`. Reference implementation: `crates/enzarb-proto`. Shared test vectors: `vectors/`.
 
 ## 1. Transport
 
@@ -81,18 +81,20 @@ JSON objects with a `"type"` field, channel 0. Unknown fields are ignored; an un
 | `credential_captured` | server -> client | `kind: "claude_oauth"`, `token?: string`, `legacy?: bool` |
 | `credential_status` | client -> server | none; asks whether the sandbox holds a credential |
 | `credential_state` | server -> client (reply to `credential_status`); client -> server (ack of a `legacy` `credential_captured`) | `kind: "claude_oauth"`, `configured: bool`, `scope?: string` (known: `"user"`; unknown values must be tolerated) |
-| `stats_request` | client -> server | none; asks for a utilization sample. Send only after `welcome.features` contains `stats`. [ADR-0019](../../docs/adr/0019-sandbox-utilization-polling.md) |
+| `stats_request` | client -> server | none; asks for a utilization sample. Send only after `welcome.features` contains `stats`. |
 | `stats` | server -> client (reply to `stats_request`) | `ts_ms` (unix ms, the sandbox's clock) and optional non-negative integers: counters `cpu_usage_usec`, `cpu_user_usec`, `cpu_system_usec` (`cpu.stat`), `io_read_bytes`, `io_write_bytes` (`io.stat`, summed over devices); gauges `memory_bytes` (`memory.current`), `memory_limit_bytes` (`memory.max`; omitted when unlimited), `memory_inactive_file_bytes` (`memory.stat` `inactive_file`), `storage_used_bytes`, `storage_total_bytes` (statfs of the workspace). Counters are cumulative and restart near 0 when the sandbox container restarts (new cgroup); absent means "not reported", never 0 |
 | `credential_clear` | client -> server | `kind: "claude_oauth"`; no reply. A peer that does not know it answers `unknown_message` |
 
 `claude_token` (on `open`) and `credential_captured.token` carry a per-user Claude token as a plain string. They are optional and additive (protocol version stays 1; old peers ignore them). Implementations must not log them: the Rust `Secret` type and the TS `Secret` class redact `Debug`/`inspect`/`String()`/`JSON.stringify`, and the wire encoder writes the plain value.
 | `error` | both | `code`, `message`, optional `run_id`, optional `channel` (omitted when absent) |
 
-### Steps (ADR-0022)
+### Steps
+
+Generic sandbox primitives: the sandbox runs a step (an agent or a command in prepared workspaces) and streams its session. No orchestrator drives them at the moment ([ADR-0027](../../docs/adr/0027-workflow-clean-slate.md)).
 
 `StepPhase` is `running | interrupted | finished | unknown` (`unknown`: the sandbox does not know the run).
 
-`StepStart`: `{run_id, attempt, task_id, workspaces: [StepWorkspace], exec: StepExec, outputs?: {[name]: StepOutput}, env?: {[NAME]: string}, github_token?: string}`.
+`StepStart`: `{run_id, attempt, task_id (an opaque id that names the workspace directory), workspaces: [StepWorkspace], exec: StepExec, outputs?: {[name]: StepOutput}, env?: {[NAME]: string}, github_token?: string}`.
 
 - `StepWorkspace`: `{repo: "owner/repo", url, mode: "read" | "write", branch, base, push?: bool, token: string}`. Checked out under `/workspace/tasks/<task_id>/<owner>/<repo>`; the first workspace is the primary one (working directory). `branch` is created from `origin/<base>` when missing remotely. With `push`, the sandbox commits all changes and pushes `branch` with a lease on the remote head it saw when the step started.
 - `StepExec`: `{kind: "agent", runtime: Runtime, model?, prompt, result_schema?}` or `{kind: "command", run, tools?: [mise tool spec]}`. `Runtime`: `{name, install?: [mise tool spec], protocol: "acp" | "stdio-json", command: [argv], env?, capabilities?}`. With `result_schema`, the agent is offered an MCP tool `submit_result` whose input schema it is (validated at call time).
@@ -116,7 +118,7 @@ In TypeScript the decoder passes the wire string through; use `environmentKind()
 
 sandbox-init currently emits `disk_full` (ENOSPC in the step output, or no free blocks/inodes in the workspace) and `oom` (the cgroup `oom_kill` counter rose during a failed step we did not stop ourselves); code failures, successes and interrupts carry none.
 
-`StepGit`: `{repo, branch, head_sha, pushed}`, one per write workspace in `step_start.workspaces` order. The engine re-verifies the git facts. A missing required output is left out (the engine reports it).
+`StepGit`: `{repo, branch, head_sha, pushed}`, one per write workspace in `step_start.workspaces` order. A client should re-verify the git facts. A missing required output is left out.
 
 `Usage` (on `StepFinished`, omitted when the agent reported none; old decoders ignore it):
 `{input_tokens?, output_tokens?, cache_read_input_tokens?, cache_creation_input_tokens?: integer, models?: string[], cost_usd?: number}`.

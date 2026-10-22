@@ -3,8 +3,8 @@
 # and the reusable _rust.yml / _docker.yml. Prints a PASS/FAIL table; exits 1 on any failure.
 #
 #   scripts/monorepo/ci-local.sh                 # everything
-#   scripts/monorepo/ci-local.sh workflows ui    # selected groups
-# Groups: monorepo proto operator connectors workflows realtime sandbox-proxy sandbox-container
+#   scripts/monorepo/ci-local.sh realtime ui    # selected groups
+# Groups: monorepo proto operator connectors realtime sandbox-proxy sandbox-container
 #         updater ui helm kubernetes docker
 # Needs docker (shared Postgres, actionlint, image builds). nextest comes from mise
 # (cargo:cargo-nextest). Skipped (CI only): kubernetes ansible-lint, vendored-drift, image smoke.
@@ -41,7 +41,7 @@ rust() { # rust <name> <cargo-args...>   (_rust.yml: fmt, check-cargo-deps, clip
 
 pg() { [ -n "${ENZARB_TEST_PG_URL:-}" ] || eval "$(mise run test:pg)"; export ENZARB_TEST_PG_URL; }
 
-groups=${*:-monorepo proto operator connectors workflows realtime sandbox-proxy sandbox-container updater ui helm kubernetes docker}
+groups=${*:-monorepo proto operator connectors realtime sandbox-proxy sandbox-container updater ui helm kubernetes docker}
 for g in $groups; do
   case $g in
     monorepo)
@@ -68,8 +68,7 @@ for g in $groups; do
       step "proto npm test" proto npm test
       ;;
     operator) rust operator -p enzarb-crds -p enzarb-sandbox-operator --all-features ;;
-    connectors) pg; rust connectors -p enzarb-connector -p enzarb-connector-github -p enzarb-receiver --all-features ;;
-    workflows) pg; rust workflows -p engine -p enzarb-workflows -p enzarb-flow ;;
+    connectors) pg; rust connectors -p enzarb-receiver --all-features ;;
     realtime) pg; rust realtime -p enzarb-realtime ;;
     sandbox-proxy) rust sandbox-proxy -p enzarb-sandbox-proxy ;;
     sandbox-container)
@@ -93,7 +92,7 @@ for g in $groups; do
       ;;
     kubernetes) step "kubernetes validate" kubernetes ./hack/validate.sh ;;
     docker)
-      for d in operator connectors workflows realtime sandbox-proxy sandbox-container ui updater; do
+      for d in operator connectors realtime sandbox-proxy sandbox-container ui updater; do
         ctx=$(bash .github/scripts/image-components.sh "$d" | jq -r .context)
         step "docker $d" . docker build -q -f "$d/Dockerfile" -t "ci-local/$d" "$ctx"
       done

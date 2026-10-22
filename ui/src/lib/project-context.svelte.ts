@@ -21,10 +21,8 @@ export const getProjectContext = () => getContext<ProjectContext>(KEY);
  */
 export const PROJECT_TABS = [
 	{ slug: '', label: 'Overview' },
-	{ slug: 'tasks', label: 'Tasks' },
 	{ slug: 'terminal', label: 'Terminal' },
 	{ slug: 'chat', label: 'Chat' },
-	{ slug: 'workflows', label: 'Workflows' },
-	{ slug: 'metrics', label: 'Metrics' },
+	{ slug: 'events', label: 'Events' },
 	{ slug: 'settings', label: 'Settings' }
 ] as const;

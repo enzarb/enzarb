@@ -108,13 +108,6 @@ if bash "$t/scripts/monorepo/gen-graph.sh" --check --root "$t" >/dev/null 2>&1; 
 fi
 
 # --- 4. known disagreements -------------------------------------------------------------------
-for p in workflows/crates/flow/tests/fixtures/app/x docs/workflows/examples/x workflows/crates/engine/tests/stdlib/prompts/x.md; do
-  contains "ui inputs: $p" ui "$(affected "$src" "$p")"
-done
-ui_paths=$(paths_of "$src" ui)
-for d in workflows/crates/flow/tests/fixtures docs/workflows/examples workflows/crates/engine/tests/stdlib/prompts; do
-  contains "ui release paths" "$d" "$ui_paths"
-done
 contains "sandbox-container affected by the Playwright pin" sandbox-container "$(affected "$src" ui/package-lock.json)"
 contains "sandbox-container release paths" ui/package-lock.json "$(paths_of "$src" sandbox-container)"
 

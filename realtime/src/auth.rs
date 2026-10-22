@@ -12,6 +12,10 @@ pub struct Claims {
     pub sub: String,
     /// Project names the user can see.
     pub projects: Vec<String>,
+    /// Lowercase `owner/repo` keys of the repositories of those projects; event frames are
+    /// filtered by these.
+    #[serde(default)]
+    pub repos: Vec<String>,
     pub exp: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub iat: Option<u64>,
@@ -127,6 +131,7 @@ mod tests {
         let c = Claims {
             sub: "a".into(),
             projects: vec![],
+            repos: vec![],
             exp: now() + 3600,
             iat: None,
         };

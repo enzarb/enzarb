@@ -1,9 +1,0 @@
-{
-  "_source": "GET /repos/{owner}/{repo}/pulls/{pull_number}. The same pull request read again once GitHub's background mergeability computation has finished.",
-  "number": 1,
-  "state": "open",
-  "mergeable": true,
-  "mergeable_state": "clean",
-  "head": { "ref": "feature", "sha": "6dcb09b5b57875f334f61aebed695e2e4193db5e" },
-  "base": { "ref": "main", "sha": "9a0b1c2d3e4f5061728394a5b6c7d8e9f0a1b2c3" }
-}

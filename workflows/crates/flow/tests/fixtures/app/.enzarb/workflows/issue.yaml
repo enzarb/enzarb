@@ -1,7 +1,0 @@
-version: 1
-imports: {std: lib/std@v1}
-board: std/board
-phases:
-  - {use: std/phases/gate}
-  - {id: work, use: std/phases/work, with: {max_rounds: 2}, exits: {failed: gate}, max_entries: 2}
-  - {use: .enzarb/phases/release}

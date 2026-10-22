@@ -13,7 +13,7 @@ tpl() { # extra helm args
 }
 
 on="$("$here/scripts/render.sh" oldie)"
-for d in enzarb-ui enzarb-sandbox-proxy enzarb-connectors enzarb-workflows enzarb-realtime enzarb-sandbox-operator; do
+for d in enzarb-ui enzarb-sandbox-proxy enzarb-connectors enzarb-realtime enzarb-sandbox-operator; do
   s="$(dep "$d")"
   check "$d strategy type" "$(q "$s | .spec.strategy.type" <<<"$on")" RollingUpdate
   check "$d maxUnavailable" "$(q "$s | .spec.strategy.rollingUpdate.maxUnavailable" <<<"$on")" 0
@@ -24,7 +24,7 @@ for d in enzarb-ui enzarb-sandbox-proxy enzarb-connectors enzarb-workflows enzar
     echo "assert-rollout: $d: grace period '$grace' must exceed preStop sleep '$sleep_s'" >&2; fail=1
   fi
 done
-for d in enzarb-ui enzarb-sandbox-proxy enzarb-connectors enzarb-workflows enzarb-realtime; do
+for d in enzarb-ui enzarb-sandbox-proxy enzarb-connectors enzarb-realtime; do
   check "$d preStop sleep" "$(q "$(dep "$d") | .spec.template.spec.containers[0].lifecycle.preStop.sleep.seconds" <<<"$on")" 10
   check "$d readiness period" "$(q "$(dep "$d") | .spec.template.spec.containers[0].readinessProbe.periodSeconds" <<<"$on")" 2
 done
@@ -39,7 +39,7 @@ check "ui tcp readiness port" "$(q "$ui | .tcpSocket.port" <<<"$tcp")" http
 check "ui tcp readiness period" "$(q "$ui | .periodSeconds" <<<"$tcp")" 2
 
 # preStopSeconds=0 omits the hook.
-for c in ui:enzarb-ui sandboxProxy:enzarb-sandbox-proxy connectors:enzarb-connectors workflows:enzarb-workflows; do
+for c in ui:enzarb-ui sandboxProxy:enzarb-sandbox-proxy connectors:enzarb-connectors; do
   key="${c%%:*}"; name="${c##*:}"
   off="$(tpl --set "$key.preStopSeconds=0")"
   check "$name preStopSeconds=0" "$(q "$(dep "$name") | .spec.template.spec.containers[0] | has(\"lifecycle\")" <<<"$off")" false

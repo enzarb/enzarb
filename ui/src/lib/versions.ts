@@ -9,7 +9,6 @@ export interface ComponentInfo {
 /** What the About page lists; a component the chart omits still shows, as "unknown". */
 export const COMPONENTS: readonly ComponentInfo[] = [
 	{ name: 'enzarb-ui', label: 'UI', dir: 'ui' },
-	{ name: 'enzarb-workflows', label: 'Workflows', dir: 'workflows' },
 	{ name: 'enzarb-connectors', label: 'Connectors', dir: 'connectors' },
 	{ name: 'enzarb-realtime', label: 'Realtime', dir: 'realtime' },
 	{ name: 'enzarb-sandbox-proxy', label: 'Sandbox proxy', dir: 'sandbox-proxy' },

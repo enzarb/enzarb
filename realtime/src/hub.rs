@@ -9,19 +9,17 @@ use tokio::sync::broadcast;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "topic", rename_all = "snake_case")]
 pub enum Frame {
-    Task {
-        id: i64,
-        project: String,
-    },
+    /// A webhook delivery was logged in `connectors.events` for `repo` (lowercase `owner/repo`).
+    Event { id: i64, repo: String },
     /// Changes may have been missed: refetch everything.
     Resync,
 }
 
 impl Frame {
-    /// Whether a client allowed to see `projects` should receive this frame.
-    pub fn visible_to(&self, projects: &[String]) -> bool {
+    /// Whether a client allowed to see the repositories `repos` should receive this frame.
+    pub fn visible_to(&self, repos: &[String]) -> bool {
         match self {
-            Frame::Task { project, .. } => projects.iter().any(|p| p == project),
+            Frame::Event { repo, .. } => repos.iter().any(|r| r == repo),
             Frame::Resync => true,
         }
     }
@@ -61,13 +59,13 @@ mod tests {
 
     #[test]
     fn frame_format() {
-        let f = Frame::Task {
+        let f = Frame::Event {
             id: 123,
-            project: "enzarb".into(),
+            repo: "enzarb/enzarb".into(),
         };
         assert_eq!(
             serde_json::to_string(&f).unwrap(),
-            r#"{"topic":"task","id":123,"project":"enzarb"}"#
+            r#"{"topic":"event","id":123,"repo":"enzarb/enzarb"}"#
         );
         assert_eq!(
             serde_json::to_string(&Frame::Resync).unwrap(),
@@ -76,10 +74,10 @@ mod tests {
     }
 
     #[test]
-    fn project_filtering() {
-        let f = Frame::Task {
+    fn repo_filtering() {
+        let f = Frame::Event {
             id: 1,
-            project: "a".into(),
+            repo: "a".into(),
         };
         assert!(f.visible_to(&["a".into(), "b".into()]));
         assert!(!f.visible_to(&["b".into()]));

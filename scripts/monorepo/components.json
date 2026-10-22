@@ -1,7 +1,7 @@
 {
   "rust_root_files": ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"],
-  "crate_granular": ["workflows/crates/flow"],
-  "docker_extra_dirs": ["proto/vectors", "operator/deploy", "workflows/migrations"],
+  "crate_granular": [],
+  "docker_extra_dirs": ["proto/vectors", "operator/deploy"],
   "components": {
     "proto": {
       "image": null,
@@ -14,10 +14,6 @@
     "connectors": {
       "image": "enzarb-connectors-receiver", "context": ".", "smoke": null, "timeout": 30,
       "workflow_files": [".github/workflows/ci-connectors.yml", ".github/workflows/_changes.yml", ".github/workflows/_rust.yml", ".github/workflows/_docker.yml"]
-    },
-    "workflows": {
-      "image": "enzarb-workflows", "context": ".", "smoke": null, "timeout": 30,
-      "workflow_files": [".github/workflows/ci-workflows.yml", ".github/workflows/_changes.yml", ".github/workflows/_rust.yml", ".github/workflows/_docker.yml"]
     },
     "realtime": {
       "image": "enzarb-realtime", "context": ".", "smoke": null, "timeout": 30,
@@ -35,12 +31,7 @@
     "ui": {
       "image": "enzarb-ui", "context": ".", "smoke": null, "timeout": 20,
       "docker_npm_src": {"proto": ["ts"]},
-      "extra_inputs": [
-        "workflows/migrations/**",
-        "workflows/crates/engine/tests/stdlib/prompts/**",
-        "workflows/crates/flow/tests/fixtures/**",
-        "docs/workflows/examples/**"
-      ],
+      "extra_inputs": ["connectors/bin/receiver/migrations/**"],
       "workflow_files": [".github/workflows/ci-ui.yml", ".github/workflows/_changes.yml", ".github/workflows/_docker.yml", ".github/actions/ui-install/**", ".github/actions/setup-node/**"]
     },
     "updater": {

@@ -57,7 +57,7 @@ export function parsePush(text: string | null): NotificationData | ClearData | n
 	return {
 		title: r.title,
 		body: typeof r.body === 'string' ? r.body : '',
-		url: typeof r.url === 'string' ? r.url : '/work',
+		url: typeof r.url === 'string' ? r.url : '/projects',
 		tag: typeof r.tag === 'string' ? r.tag : 'enzarb'
 	};
 }
@@ -108,7 +108,7 @@ export async function openOrFocus(
 	origin: string
 ): Promise<void> {
 	const raw = (data as { url?: unknown } | null | undefined)?.url;
-	const path = safeTargetUrl(raw, origin) ?? '/work';
+	const path = safeTargetUrl(raw, origin) ?? '/projects';
 	const windows = await clients.matchAll({ type: 'window', includeUncontrolled: true });
 	const existing = windows.find((w) => new URL(w.url).origin === origin);
 	if (existing) {

@@ -2,7 +2,7 @@
 # lefthook pre-push: run the checks of the components affected by the commits being pushed
 # (scripts/monorepo/affected.sh). Keep the commands in sync with docs/ci.md ("Git hooks").
 #
-# Base: the upstream branch, else origin/main. Postgres suites (workflows, connectors, realtime)
+# Base: the upstream branch, else origin/main. Postgres suites (connectors, realtime)
 # use ENZARB_TEST_PG_URL when it is exported (`eval "$(mise run test:pg)"`), else one container
 # per test.
 set -euo pipefail
@@ -51,12 +51,8 @@ for c in $components; do
       run . cargo test -p enzarb-crds -p enzarb-sandbox-operator --all-features
       ;;
     connectors)
-      run . cargo clippy -p enzarb-connector -p enzarb-connector-github -p enzarb-receiver --all-targets --all-features -- -D warnings
-      run . cargo test -p enzarb-connector -p enzarb-connector-github -p enzarb-receiver --all-features
-      ;;
-    workflows)
-      run . cargo clippy -p engine -p enzarb-workflows -p enzarb-flow --all-targets -- -D warnings
-      run . cargo test -p engine -p enzarb-workflows -p enzarb-flow
+      run . cargo clippy -p enzarb-receiver --all-targets --all-features -- -D warnings
+      run . cargo test -p enzarb-receiver --all-features
       ;;
     realtime)
       run . cargo clippy -p enzarb-realtime --all-targets -- -D warnings

@@ -108,13 +108,13 @@ async fn notify_to_frame() {
                  ALTER ROLE enzarb_realtime LOGIN PASSWORD 'rt';
                END IF;
              END $$;
-             CREATE SCHEMA engine_api;
-             CREATE TABLE public.wi (id bigint PRIMARY KEY, project text NOT NULL);
-             CREATE VIEW engine_api.secret_v AS SELECT id, project, 'secret' AS other FROM public.wi;
-             CREATE VIEW engine_api.task_v AS SELECT id AS task_id, project FROM public.wi;
-             INSERT INTO public.wi VALUES (7, 'enzarb');
-             GRANT USAGE ON SCHEMA engine_api TO enzarb_realtime;
-             GRANT SELECT ON engine_api.task_v TO enzarb_realtime;",
+             CREATE SCHEMA connectors;
+             CREATE TABLE public.ev (id bigint PRIMARY KEY, repo text NOT NULL, payload text);
+             CREATE VIEW connectors.secret_v AS SELECT id, repo, payload FROM public.ev;
+             CREATE VIEW connectors.event_v AS SELECT id, repo FROM public.ev;
+             INSERT INTO public.ev VALUES (7, 'enzarb/enzarb', 'secret');
+             GRANT USAGE ON SCHEMA connectors TO enzarb_realtime;
+             GRANT SELECT ON connectors.event_v TO enzarb_realtime;",
         )
         .await
         .unwrap();
@@ -136,7 +136,7 @@ async fn notify_to_frame() {
     }
     assert!(hub.is_ready());
     admin
-        .execute("SELECT pg_notify('engine_projection', '7')")
+        .execute("SELECT pg_notify('connector_event', '7')")
         .await
         .unwrap();
     let f = tokio::time::timeout(Duration::from_secs(10), rx.recv())
@@ -145,9 +145,9 @@ async fn notify_to_frame() {
         .unwrap();
     assert_eq!(
         f,
-        Frame::Task {
+        Frame::Event {
             id: 7,
-            project: "enzarb".into()
+            repo: "enzarb/enzarb".into()
         }
     );
 }

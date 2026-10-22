@@ -6,7 +6,6 @@
 #   crd:     the component also owns the chart's crds/project.yaml (synced from <dir>/deploy/crds/project.yaml at the tag)
 components:
   - { dir: ui,                image: enzarb-ui,                  path: .ui.image.tag }
-  - { dir: workflows,         image: enzarb-workflows,           path: .workflows.image.tag }
   - { dir: connectors,        image: enzarb-connectors-receiver, path: .connectors.image.tag }
   - { dir: realtime,          image: enzarb-realtime,            path: .realtime.image.tag }
   - { dir: updater,           image: enzarb-updater,             path: .updater.image.tag }

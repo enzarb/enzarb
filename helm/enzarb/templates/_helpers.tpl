@@ -5,7 +5,7 @@ app.kubernetes.io/instance: {{ .ctx.Release.Name }}
 {{- end }}
 
 {{/* Common labels. app.kubernetes.io/name must equal the component name: the operator's
-     sandbox NetworkPolicy matches enzarb-sandbox-proxy and enzarb-workflows by it. */}}
+     sandbox NetworkPolicy matches enzarb-sandbox-proxy by it. */}}
 {{- define "enzarb.labels" -}}
 {{ include "enzarb.selector" . }}
 app.kubernetes.io/part-of: enzarb
@@ -77,13 +77,9 @@ imagePullSecrets:
 {{- define "enzarb.generatedSecret" -}}enzarb-generated{{- end }}
 {{- define "enzarb.githubSecret" -}}{{ .Values.secrets.github.existingSecret | default "enzarb-github" }}{{- end }}
 {{- define "enzarb.jwtSecret" -}}{{ .Values.secrets.sessionJwt.existingSecret | default (include "enzarb.generatedSecret" .) }}{{- end }}
-{{- define "enzarb.secretsKeySecret" -}}{{ .Values.secrets.engineSecretsKey.existingSecret | default (include "enzarb.generatedSecret" .) }}{{- end }}
-{{- define "enzarb.secretsKeyKey" -}}{{ if .Values.secrets.engineSecretsKey.existingSecret }}{{ .Values.secrets.engineSecretsKey.key }}{{ else }}secrets-key{{ end }}{{- end }}
-{{- define "enzarb.callbackSecret" -}}{{ .Values.secrets.executorCallback.existingSecret | default (include "enzarb.generatedSecret" .) }}{{- end }}
 {{- define "enzarb.realtimeJwtSecret" -}}{{ .Values.secrets.realtimeJwt.existingSecret | default (include "enzarb.generatedSecret" .) }}{{- end }}
 {{- define "enzarb.realtimeJwtKey" -}}{{ if .Values.secrets.realtimeJwt.existingSecret }}{{ .Values.secrets.realtimeJwt.key }}{{ else }}realtime-jwt-secret{{ end }}{{- end }}
 {{- define "enzarb.jwtKey" -}}{{ if .Values.secrets.sessionJwt.existingSecret }}{{ .Values.secrets.sessionJwt.key }}{{ else }}session-jwt-secret{{ end }}{{- end }}
-{{- define "enzarb.callbackKey" -}}{{ if .Values.secrets.executorCallback.existingSecret }}{{ .Values.secrets.executorCallback.key }}{{ else }}callback-secret{{ end }}{{- end }}
 {{/* Per-user Claude token keyring (release namespace only; never in the sandbox namespace). */}}
 {{- define "enzarb.claudeKeySecret" -}}{{ .Values.secrets.claudeKey.existingSecret | default "enzarb-claude-key" }}{{- end }}
 {{- define "enzarb.claudeKeyVolume" -}}
@@ -141,7 +137,7 @@ postgres.js reads PGHOST/PGPORT/PGUSER/PGPASSWORD for missing URL parts but NOT
 PGSSLMODE (it reads PGSSL), so with "urlSslmode" true the sslmode (not a secret, always
 URL-safe) goes into the URL as `?sslmode=$(PGSSLMODE)`.
 pgop's Role Secret `uri` points at the `postgres` database, hence PGDATABASE from values.
-Usage: include "enzarb.dbEnv" (dict "ctx" . "role" "workflows" "urlSslmode" false)
+Usage: include "enzarb.dbEnv" (dict "ctx" . "role" "connectors" "urlSslmode" false)
 */}}
 {{- define "enzarb.dbEnv" -}}
 {{- $s := printf "%s-%s-credentials" .ctx.Values.postgres.clusterName .role }}
@@ -166,15 +162,16 @@ Usage: include "enzarb.migrateJob" (dict "ctx" . "comp" "ui")
 {{- define "enzarb.migrateJob" -}}
 {{- $ctx := .ctx -}}
 {{- $v := $ctx.Values -}}
-{{- $c := index $v .comp -}}
+{{- /* "legacy" is the one-off drop of the removed engine schemas; it runs the connectors image. */ -}}
+{{- $c := ternary $v.connectors (index $v .comp) (eq .comp "legacy") -}}
 {{- $after := "" -}}
-{{- if eq .comp "connectors" }}{{- $after = include "enzarb.migrateJob" (dict "ctx" $ctx "comp" "workflows") }}{{- end -}}
+{{- if eq .comp "connectors" }}{{- $after = include "enzarb.migrateJob" (dict "ctx" $ctx "comp" "legacy") }}{{- end -}}
 {{- if eq .comp "ui" }}{{- $after = include "enzarb.migrateJob" (dict "ctx" $ctx "comp" "connectors") }}{{- end -}}
-{{- $spec := dict "rev" 2 "comp" .comp "after" $after "image" (include "enzarb.image" $c) "pull" (include "enzarb.pullPolicy" (dict "ctx" $ctx "c" $c)) "cluster" $v.postgres.clusterName "db" $v.postgres.databaseName "waitImage" $v.waitImage "waitTimeout" $v.waitTimeout "pullSecrets" $v.imagePullSecrets "sc" $v.securityContext "rustLog" $v.rustLog -}}
+{{- $spec := dict "rev" 3 "comp" .comp "after" $after "image" (include "enzarb.image" $c) "pull" (include "enzarb.pullPolicy" (dict "ctx" $ctx "c" $c)) "cluster" $v.postgres.clusterName "db" $v.postgres.databaseName "waitImage" $v.waitImage "waitTimeout" $v.waitTimeout "pullSecrets" $v.imagePullSecrets "sc" $v.securityContext "rustLog" $v.rustLog -}}
 enzarb-migrate-{{ .comp }}-{{ toJson $spec | sha256sum | trunc 10 }}
 {{- end }}
 
-{{/* The last Job in the chain (workflows -> connectors -> ui); runtime pods wait for it. */}}
+{{/* The last Job in the chain (legacy -> connectors -> ui); runtime pods wait for it. */}}
 {{- define "enzarb.lastMigrateJob" -}}
 {{ include "enzarb.migrateJob" (dict "ctx" . "comp" "ui") }}
 {{- end }}
@@ -228,7 +225,7 @@ initContainers:
 {{/* JSON {"chart": version, "components": {repo name: tag}}, for the UI About page (ENZARB_COMPONENT_VERSIONS). */}}
 {{- define "enzarb.componentVersions" -}}
 {{- $v := .Values -}}
-{{- $out := dict "enzarb-ui" $v.ui.image.tag "enzarb-workflows" $v.workflows.image.tag "enzarb-connectors" $v.connectors.image.tag "enzarb-sandbox-proxy" $v.sandboxProxy.image.tag "enzarb-sandbox-operator" $v.operator.image.tag -}}
+{{- $out := dict "enzarb-ui" $v.ui.image.tag "enzarb-connectors" $v.connectors.image.tag "enzarb-sandbox-proxy" $v.sandboxProxy.image.tag "enzarb-sandbox-operator" $v.operator.image.tag -}}
 {{- if $v.realtime.enabled }}{{- $_ := set $out "enzarb-realtime" $v.realtime.image.tag -}}{{- end -}}
 {{- if $v.updater.enabled }}{{- $_ := set $out "enzarb-updater" $v.updater.image.tag -}}{{- end -}}
 {{- /* sandboxImage is a full reference: drop any @digest, then take the tag after the last ":" (no tag -> whole ref). */ -}}

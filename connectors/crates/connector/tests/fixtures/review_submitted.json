@@ -1,8 +1,0 @@
-{ "specversion": "1.0", "source": "github", "id": "d2", "type": "ReviewSubmitted",
-  "subject": "github:enzarb/enzarb-ui#43", "time": "2026-10-08T12:45:00Z",
-  "data": {
-    "repo": "github:enzarb/enzarb-ui",
-    "actor": { "login": "reviewer", "id": 7, "is_bot": false },
-    "item": { "kind": "change_request", "number": 43, "url": "https://github.com/enzarb/enzarb-ui/pull/43", "title": "Dark mode", "body": "", "author": "enzarb[bot]", "head_ref": "enzarb/issue-42", "base_ref": "main", "head_sha": "abc123" },
-    "review": { "id": 555, "state": "changes_requested", "body": "Please fix" }
-  } }

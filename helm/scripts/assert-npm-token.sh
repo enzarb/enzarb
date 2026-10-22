@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# `workflows.npmToken` is deprecated (ADR-0022: accepted and ignored). Assert that the keys are
-# still accepted and that ENZARB_NPM_TOKEN is never rendered, whatever they say.
+# The workflow engine is removed: `workflows.*` values are accepted and ignored. Assert that they
+# still render and that no enzarb-workflows Deployment is ever produced, whatever they say.
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 fail=0
@@ -10,10 +10,10 @@ check() { # description, actual, expected
 render() { # extra helm args
   helm template enzarb "$here/enzarb" --namespace enzarb -f "$here/enzarb/values-oldie.yaml" "$@"
 }
-npm_env() { yq eval-all 'select(.kind=="Deployment" and .metadata.name=="enzarb-workflows") | .spec.template.spec.containers[0].env[] | select(.name=="ENZARB_NPM_TOKEN") | '"$1" -; }
+npm_env() { yq eval-all 'select(.kind=="Deployment" and .metadata.name=="enzarb-workflows") | .metadata.name' -; }
 
-check "default" "$(render | npm_env .name)" ""
+check "default" "$(render | npm_env)" ""
 check "override accepted, ignored" \
-  "$(render --set workflows.npmToken.existingSecret=other --set workflows.npmToken.key=tok | npm_env .name)" ""
-check "disabled accepted" "$(render --set workflows.npmToken.enabled=false | npm_env .name)" ""
+  "$(render --set workflows.npmToken.existingSecret=other --set workflows.npmToken.key=tok | npm_env)" ""
+check "disabled accepted" "$(render --set workflows.npmToken.enabled=false | npm_env)" ""
 exit $fail

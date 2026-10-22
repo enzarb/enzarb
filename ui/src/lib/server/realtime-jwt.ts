@@ -4,14 +4,18 @@ export const REALTIME_AUDIENCE = 'enzarb-realtime';
 /** enzarb-realtime accepts tokens for at most 5 minutes (contracts §7a). */
 export const REALTIME_TTL_SECONDS = 300;
 
-/** Browser -> enzarb-realtime token: HS256, claims sub/projects/aud/exp. */
+/**
+ * Browser -> enzarb-realtime token: HS256, claims sub/projects/repos/aud/exp. Event frames are
+ * filtered by `repos` (lowercase `owner/repo` of the projects' repositories).
+ */
 export async function mintRealtimeToken(
 	secret: string,
 	login: string,
 	projects: string[],
+	repos: string[],
 	nowSeconds = Math.floor(Date.now() / 1000)
 ): Promise<string> {
-	return new SignJWT({ projects })
+	return new SignJWT({ projects, repos })
 		.setProtectedHeader({ alg: 'HS256' })
 		.setSubject(login)
 		.setAudience(REALTIME_AUDIENCE)

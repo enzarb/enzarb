@@ -49,7 +49,6 @@ describe('app.claude_credentials migration', () => {
 
 		await root.unsafe(`CREATE ROLE enzarb_ui`);
 		await root.unsafe(`CREATE ROLE enzarb_sandbox_proxy`);
-		await root.unsafe(`CREATE ROLE enzarb_workflows`);
 		await root.unsafe(`CREATE ROLE somebody_else`);
 		await root.unsafe(`CREATE DATABASE enzarb OWNER cc_owner`);
 		await root.end();
@@ -124,14 +123,6 @@ describe('app.claude_credentials migration', () => {
 				}
 			} finally {
 				await root.end().catch(() => {});
-			}
-		});
-
-		it('lets the workflows role execute get only', async () => {
-			for (const fn of ALL) {
-				const [r] = await admin`
-					SELECT has_function_privilege('enzarb_workflows', ${fn}, 'EXECUTE') AS ok`;
-				expect(r.ok, fn).toBe(fn === FUNCTIONS.get);
 			}
 		});
 
@@ -288,20 +279,6 @@ describe('app.claude_credentials migration', () => {
 			expect(await get('b')).toHaveLength(1);
 			expect(await del('a')).toBe(false);
 			expect(await get('b')).toHaveLength(1);
-		});
-
-		it('lets the workflows role get but not put', async () => {
-			const rows = await as(
-				'enzarb_workflows',
-				(tx) => tx`SELECT * FROM app_api.claude_credential_get('bob')`
-			);
-			expect(rows).toHaveLength(1);
-			await expect(
-				as(
-					'enzarb_workflows',
-					(tx) => tx`SELECT app_api.claude_credential_put('eve', 'k', ${bytes('x')}, false)`
-				)
-			).rejects.toThrow(/permission denied/);
 		});
 	});
 });

@@ -40,3 +40,17 @@ pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
         .await?;
     MIGRATOR.run(&mut *conn).await
 }
+
+/// Schemas of the removed workflow engine and its event hooks.
+const LEGACY_SCHEMAS: [&str; 4] = ["workflows_api", "workflows", "engine_api", "engine"];
+
+/// Drops the legacy schemas. `DROP SCHEMA ... CASCADE` only touches schemas the connected role
+/// owns, so this must run as `enzarb_workflows_owner`; schemas that are absent are skipped.
+pub async fn drop_legacy(pool: &PgPool) -> Result<(), sqlx::Error> {
+    for schema in LEGACY_SCHEMAS {
+        sqlx::query(&format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
+}

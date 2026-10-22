@@ -37,8 +37,7 @@ image_spec() {
     sandbox) echo "sandbox-container ghcr.io/enzarb/enzarb-sandbox" ;;
     operator) echo "operator ghcr.io/enzarb/enzarb-sandbox-operator" ;;
     receiver) echo "connectors ghcr.io/enzarb/enzarb-connectors-receiver" ;;
-    workflows) echo "workflows ghcr.io/enzarb/enzarb-workflows" ;;
     *) return 1 ;;
   esac
 }
-ALL_COMPONENTS="ui sandbox-proxy sandbox operator receiver workflows"
+ALL_COMPONENTS="ui sandbox-proxy sandbox operator receiver"

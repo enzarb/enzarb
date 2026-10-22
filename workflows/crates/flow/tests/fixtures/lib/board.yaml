@@ -1,7 +1,0 @@
-version: 1
-columns:
-  - {id: waiting, title: Waiting}
-  - {id: doing, title: Doing}
-  - {id: done, title: Done}
-  - {id: stuck, title: Stuck}
-defaults: {running: doing, waiting_human: waiting, waiting_external: waiting, paused: stuck, ended: done}

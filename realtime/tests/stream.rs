@@ -27,7 +27,7 @@ fn now() -> u64 {
 }
 
 fn token(projects: &[&str], ttl: u64) -> String {
-    let c = json!({"sub":"alice","projects":projects,"aud":AUDIENCE,"exp":now()+ttl,"iat":now()});
+    let c = json!({"sub":"alice","projects":["p"],"repos":projects,"aud":AUDIENCE,"exp":now()+ttl,"iat":now()});
     encode(&Header::default(), &c, &EncodingKey::from_secret(SECRET)).unwrap()
 }
 
@@ -185,10 +185,7 @@ async fn text(
 }
 
 fn wi(id: i64, p: &str) -> Frame {
-    Frame::Task {
-        id,
-        project: p.into(),
-    }
+    Frame::Event { id, repo: p.into() }
 }
 
 #[tokio::test]
@@ -204,7 +201,7 @@ async fn filters_by_project_and_formats_frames() {
     hub.publish(Frame::Resync);
     assert_eq!(
         text(&mut ws).await,
-        r#"{"topic":"task","id":123,"project":"enzarb"}"#
+        r#"{"topic":"event","id":123,"repo":"enzarb"}"#
     );
     assert_eq!(text(&mut ws).await, r#"{"topic":"resync"}"#);
 }

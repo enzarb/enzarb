@@ -203,7 +203,6 @@ mod tests {
                 triggers: Default::default(),
                 sandbox: Default::default(),
                 max_runs: None,
-                workflows: None,
             },
         );
         p.status = status;

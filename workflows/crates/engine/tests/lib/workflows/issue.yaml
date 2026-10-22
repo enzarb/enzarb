@@ -1,5 +1,0 @@
-version: 1
-board: board
-phases:
-  - {id: plan, use: phases/plan}
-  - {id: build, use: phases/build}

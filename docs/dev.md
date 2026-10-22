@@ -7,7 +7,7 @@ The tasks are in `.mise/tasks/dev/`:
 | Task | What it does |
 |---|---|
 | `mise run dev:cluster` | Creates kind cluster `enzarb` (from `kubernetes/kind/cluster.yaml`) if missing, installs gVisor into the nodes (`hack/kind-install-gvisor.sh`) and checks it with a `dmesg` probe pod. Applies `kubernetes/` in the staged order with `kubectl wait`, and runs a NetworkPolicy enforcement probe. |
-| `mise run dev:images [component...]` | Builds the images as `:dev` (repo root as context) and `kind load`s them. Components: `ui sandbox-proxy sandbox operator receiver workflows`. No argument builds all six. |
+| `mise run dev:images [component...]` | Builds the images as `:dev` (repo root as context) and `kind load`s them. Components: `ui sandbox-proxy sandbox operator receiver`. No argument builds all five. |
 | `mise run dev:secrets` | Creates namespace `enzarb` and Secret `enzarb-github` from `.env.dev`. |
 | `mise run dev:helm-deploy` | `dev:cluster`, `dev:images`, `dev:secrets`, then `helm upgrade --install enzarb helm/enzarb -f values-dev.yaml --set secrets.github.existingSecret=enzarb-github --wait`. Prints a checklist. |
 | `mise run dev:webhook-relay` | Relays smee.io deliveries to `https://enzarb.local/hooks/github`. |
@@ -30,14 +30,14 @@ Optional [lefthook](https://lefthook.dev) hooks (config: `lefthook.yml`, tool pi
 
 ## Shared test Postgres
 
-The Postgres integration tests (`workflows/`, `connectors/` receiver, `realtime/`) start one `postgres:18` container per test by default. Share one server instead:
+The Postgres integration tests (`connectors/` receiver, `realtime/`) start one `postgres:18` container per test by default. Share one server instead:
 
 ```
 eval "$(mise run test:pg)"   # starts (or reuses) container enzarb-test-pg, exports ENZARB_TEST_PG_URL
-cargo nextest run -p engine -p enzarb-workflows -p enzarb-flow
+cargo nextest run -p enzarb-receiver -p enzarb-realtime
 ```
 
-`mise run test:pg` prints `export ENZARB_TEST_PG_URL=postgres://postgres:postgres@127.0.0.1:55432/postgres` (port via `ENZARB_TEST_PG_PORT`, container name via `ENZARB_TEST_PG_NAME`) and leaves the container running. With the variable set, `engine::testing::TestDb` creates the runtime roles and a migrated template database `enzarb_template` once per server (rebuilt when the migrations change), and gives each test `CREATE DATABASE test_<unique> TEMPLATE enzarb_template`, dropped when the test ends. Tests that need a pristine cluster (the `enzarb-workflows` role check) still use their own container. Unset the variable to get the per-test containers back.
+`mise run test:pg` prints `export ENZARB_TEST_PG_URL=postgres://postgres:postgres@127.0.0.1:55432/postgres` (port via `ENZARB_TEST_PG_PORT`, container name via `ENZARB_TEST_PG_NAME`) and leaves the container running. With the variable set, the tests share that server (each test gets its own database) instead of starting one container each. Unset the variable to get the per-test containers back.
 
 The `ENZARB_TEST_PG_URL` contract of `mise run test:pg`:
 
@@ -46,15 +46,6 @@ The `ENZARB_TEST_PG_URL` contract of `mise run test:pg`:
 - `ENZARB_TEST_PG_PORT` and `ENZARB_TEST_PG_NAME` are honoured. If `docker` is missing or its daemon is unreachable, the task exits 1 and names the escape hatch above.
 - In a sandbox the task uses Docker through the sandbox's `dockerd` (supervised by `sandbox-init`); there is no sidecar. The root `mise.toml` `[tools]` must stay free of tools that need a build step (such as `pipx:` packages), because mise installs every `[tools]` entry before running a task; those go in a root env file instead (ansible is in `mise.ansible.toml`, activated with `MISE_ENV=ansible`).
 - **Adding or bumping a tool:** all pins live in the root `mise.toml` (component `mise.toml` files hold tasks only). When a Dockerfile `ARG` mirrors a pin (node, gh), bump both in the same PR; `scripts/monorepo/check-tool-pins.sh` (CI and the pre-commit hook) fails on drift (`docs/ci.md`, "Tool pins").
-- Run preparation (below) starts the same container once per sandbox and exports the URL to the agent.
-
-### Agent run preparation
-
-Before the agent starts, sandbox-init (`sandbox-container/src/prepare.rs`) prepares the worktree so the agent installs nothing. For the root and every top-level directory with a `package-lock.json` or `mise.toml`: `mise install`, then `npm ci --prefer-offline --no-audit --no-fund` (through `mise exec --`, so the pinned node is used). A `mise install` or `npm ci` failure fails the run and names the step. Postgres is started once per sandbox with the same recipe as `mise run test:pg` (when the repo has `workflows/`, `connectors/`, `realtime/` or a `test:pg` task) and its URL is exported to the agent as `ENZARB_TEST_PG_URL`; a Postgres failure is logged and the run goes on without the variable.
-
-`npm ci` is skipped when the lockfile hash matches an earlier install: installs are cached under `<workspace>/cache/npm/<repo>/<component>/<sha256 of package-lock.json>/node_modules` (the last two hashes per component are kept) and restored into the worktree with a hardlink copy. Do not edit files inside `node_modules` in place: they share inodes with the cache.
-
-The run log shows the timing, and the transcript has a `prepare` event with `total_ms` and the steps: `prepare: 41.2s (mise install ui 8.0s, npm ci ui 30.1s, postgres 2.3s)`. Settings: `ENZARB_PREPARE_STEP_SECS` (cap per step, default 600), `ENZARB_NPM_BIN`, `ENZARB_DOCKER_BIN`, `ENZARB_TEST_PG_NAME`, `ENZARB_TEST_PG_PORT`.
 
 ## Prerequisites
 
@@ -73,7 +64,7 @@ The run log shows the timing, and the transcript has a `prepare` event with `tot
 
 ## Create the GitHub App
 
-enzarb needs one **GitHub App**: webhooks, API access as the bot, clone tokens, and UI login (user authorization).
+enzarb needs one **GitHub App**: webhooks, API access for the repository picker, and UI login (user authorization).
 
 1. Create a smee channel at <https://smee.io/new> and put its URL in `.env.dev` as `SMEE_URL` (copy `.env.dev.example` first).
 2. Edit a copy of the manifest so `hook_attributes.url` is your smee URL. The permissions and events are in [github-app.yml](github-app.yml) (contracts.md section 10). Convert it to JSON:
@@ -95,7 +86,7 @@ enzarb needs one **GitHub App**: webhooks, API access as the bot, clone tokens, 
    jq '{id, slug, webhook_secret}' /tmp/app-conversion.json
    ```
 6. Fill `.env.dev`: `GITHUB_APP_ID` (the `id`), `GITHUB_APP_PRIVATE_KEY` (the path to the pem file), `GITHUB_WEBHOOK_SECRET` (the `webhook_secret`). Delete `/tmp/app.json` and `/tmp/app-conversion.json`.
-7. Note the App's slug. Its bot login is `<slug>[bot]`; the chart defaults to `enzarb[bot]` and handle `enzarb`. If your App has another name, set `connectors.botLogin`, `workflows.botLogin` and the handles via `--set` in `dev:helm-deploy` (or rename the App to `enzarb`). The dev manifest names the App `enzarb-dev`, so also set `githubApp.slug` (`ENZARB_GITHUB_APP_SLUG`) to the App's slug, or the UI's install link points at the wrong App. Otherwise the bot's own comments are not recognised and can trigger loops.
+7. The dev manifest names the App `enzarb-dev`, so set `githubApp.slug` (`ENZARB_GITHUB_APP_SLUG`) to the App's slug, or the UI's install link points at the wrong App.
 
 ## Sign in with GitHub (UI login)
 
@@ -108,7 +99,7 @@ cp .env.dev.example .env.dev   # fill it in as above
 mise run dev:helm-deploy
 ```
 
-The first run takes a while (cluster, six image builds, pgop provisioning Postgres, three migration Jobs in order). It ends with a checklist; fix anything that is not Running or Completed (see Troubleshooting). Iterate on one component with `mise run dev:images workflows` followed by `kubectl --context kind-enzarb -n enzarb rollout restart deploy/<name>`.
+The first run takes a while (cluster, five image builds, pgop provisioning Postgres, three migration Jobs in order (legacy, connectors, ui)). It ends with a checklist; fix anything that is not Running or Completed (see Troubleshooting). Iterate on one component with `mise run dev:images ui` followed by `kubectl --context kind-enzarb -n enzarb rollout restart deploy/<name>`.
 
 In a second terminal keep the relay running:
 
@@ -126,11 +117,11 @@ Open <https://enzarb.local> and log in with GitHub.
    ```
    claude setup-token
    ```
-   Complete the browser step, paste the code back. The sandbox captures the `sk-ant-oat01-` token (the UI shows the credential as configured). The token is per user: the proxy stores it encrypted in Postgres (it needs the key Secret `enzarb-claude-key`; the chart or `dev:secrets` must provision it, to be added with the component PRs) and every Project you own uses it (jobs get it per run, chats at open, so a change applies to the next run or chat). Agent runs fail with "owner has no Claude credential" until this is done. To verify on kind, capture in Project A, then confirm Project B's runs work; re-capture, then remove it (UI "Remove") and confirm new runs fail.
+   Complete the browser step, paste the code back. The sandbox captures the `sk-ant-oat01-` token (the UI shows the credential as configured). The token is per user: the proxy stores it encrypted in Postgres (it needs the key Secret `enzarb-claude-key`; the chart or `dev:secrets` must provision it, to be added with the component PRs) and every Project you own uses it (chats get it at open, so a change applies to the next chat). Chats fail with "owner has no Claude credential" until this is done. To verify on kind, capture in Project A, then confirm Project B's chat works; re-capture, then remove it (UI "Remove") and confirm new chats fail.
 
 ## Push notifications (optional)
 
-The chart generates the VAPID keypair (`enzarb-vapid-key`, a pre-install/pre-upgrade Job running the UI image, so the `:dev` UI image must include `scripts/vapid-secret.ts`). Without it the UI starts with notifications off and Settings says so. Browsers only allow push on `https://` origins or `localhost`; `https://enzarb.local` works once its certificate is trusted. To try it, turn notifications on under Settings, Notifications, send a test, then move an issue to "plan awaiting approval" (or open an item that needs you) and watch for the notification. Browser subscriptions are tied to the keypair: after `dev:down` creates a new one, turn notifications on again.
+The chart generates the VAPID keypair (`enzarb-vapid-key`, a pre-install/pre-upgrade Job running the UI image, so the `:dev` UI image must include `scripts/vapid-secret.ts`). Without it the UI starts with notifications off and Settings says so. Browsers only allow push on `https://` origins or `localhost`; `https://enzarb.local` works once its certificate is trusted. To try it, turn notifications on under Settings, Notifications, and send a test. Browser subscriptions are tied to the keypair: after `dev:down` creates a new one, turn notifications on again.
 
 ## Sandboxes run under gVisor, with Docker
 
@@ -149,23 +140,21 @@ The first run pulls the image through the sandbox's NetworkPolicy (443 and DNS o
 
 > The chart sets the operator's runtime class (`operator.sandboxRuntimeClass: gvisor`) and, in `values-dev.yaml`, a 5Gi `docker` PVC per Project. Every Project has two PVCs (`workspace` and `docker`).
 
-## First dogfood
+## First events
 
-1. Install the GitHub App on an enzarb repo (App settings, Install App, choose the repo). The `installation` webhook should arrive in the relay output and be answered `2xx`.
-2. Open an issue on that repo. Watch the work item in the UI go triage, then plan. The bot comments on the issue (questions, or a plan).
-3. Reply with `/approve` on its own line (or add the label `enzarb:approved`). The implement step runs in the sandbox, pushes `enzarb/issue-<n>` and opens a PR.
-4. Review comments on the PR trigger review and address-comments steps. `@enzarb <request>` in a comment starts an ad-hoc task.
+1. Install the GitHub App on a repository of the Project (App settings, Install App, choose the repo). The `installation` webhook should arrive in the relay output and be answered `2xx`.
+2. Open an issue or push a commit on that repository. The delivery appears in the Project's Events tab within a moment (it is logged in `connectors.events` and pushed through realtime). Nothing else happens to it.
 
 ## Configuration notes
 
 - `ENZARB_DEV_CNI=calico mise run dev:cluster` creates the cluster with Calico instead of kindnet (see below). Other overrides: `ENZARB_DEV_CLUSTER` (cluster name), `ENZARB_DEV_CALICO_VERSION`, `ENZARB_DEV_HOOK_TARGET` (relay target).
-- **CNI decision.** The default is **kindnet**. kind v0.32's node networking uses kindnetd `v20260528`, and recent kindnetd releases implement `NetworkPolicy` (via kube-network-policies), so no extra CNI is installed. Because that is version-dependent, `dev:cluster` always runs a functional probe: it creates a pod, applies a deny-all ingress policy and fails the task if the pod is still reachable. If it fails, run `mise run dev:down` and then `ENZARB_DEV_CNI=calico mise run dev:cluster`, which adds `networking.disableDefaultCNI: true` to a temporary copy of the kind config (`kubernetes/` is untouched) and installs Calico. The operator relies on enforcement: only the proxy and workflows executor may reach a sandbox on port 7070.
+- **CNI decision.** The default is **kindnet**. kind v0.32's node networking uses kindnetd `v20260528`, and recent kindnetd releases implement `NetworkPolicy` (via kube-network-policies), so no extra CNI is installed. Because that is version-dependent, `dev:cluster` always runs a functional probe: it creates a pod, applies a deny-all ingress policy and fails the task if the pod is still reachable. If it fails, run `mise run dev:down` and then `ENZARB_DEV_CNI=calico mise run dev:cluster`, which adds `networking.disableDefaultCNI: true` to a temporary copy of the kind config (`kubernetes/` is untouched) and installs Calico. The operator relies on enforcement: only the proxy may reach a sandbox on port 7070.
 
 ## Troubleshooting
 
 - **Image pull errors (`ErrImagePull`, `ImagePullBackOff`).** The images are private on GHCR and need no pull secret in kind: `values-dev.yaml` sets `imagePullPolicy: Never` and the `:dev` tags are `kind load`ed. If a pod pulls anyway, the image was not loaded (rerun `dev:images <component>`) or the pod uses a non-dev tag. The sandbox image is `ghcr.io/enzarb/enzarb-sandbox:dev`; Projects with an explicit `sandbox.image` need their own load. A real cluster needs `imagePullSecrets`.
-- **Database login failures after pgop creates roles.** pgop generates passwords, and the chart builds `DATABASE_URL` from the credential Secret with `$(VAR)` expansion. If a password contains URL-reserved characters (`@ : / ? # %`) the URL is parsed wrongly and sqlx or node-postgres fail to connect or authenticate. Check `kubectl -n enzarb get secret enzarb-pg-workflows-credentials -o jsonpath='{.data.password}' | base64 -d`; if it has such a character, delete the Secret/Role so pgop regenerates it, or file a chart issue to percent-encode.
-- **Websocket (terminal or run log) drops after a while.** Idle connections are cut by the proxy (`PROXY_IDLE_TIMEOUT_SECS`, default 2100, chart value `sandboxProxy.idleTimeoutSecs`; the proxy pings the browser every 30 s via `PROXY_PING_INTERVAL_SECS` and never goes below the chat idle `ENZARB_CHAT_IDLE_SECS`, 1800), by Envoy (`BackendTrafficPolicy` connection idle timeout and the `/sandbox/` route request timeout in the chart's `route.*` values) and by any browser extension or VPN in front. Raise the chart values consistently: Envoy idle (`route.backendTrafficPolicy.connectionIdleTimeout`, default 2400s) must exceed the proxy idle, which must be at least the chat idle. The UI reconnects, but long-lived idle sessions need all three aligned.
+- **Database login failures after pgop creates roles.** pgop generates passwords, and the chart builds `DATABASE_URL` from the credential Secret with `$(VAR)` expansion. If a password contains URL-reserved characters (`@ : / ? # %`) the URL is parsed wrongly and sqlx or node-postgres fail to connect or authenticate. Check `kubectl -n enzarb get secret enzarb-pg-ui-credentials -o jsonpath='{.data.password}' | base64 -d`; if it has such a character, delete the Secret/Role so pgop regenerates it, or file a chart issue to percent-encode.
+- **Websocket (terminal or chat) drops after a while.** Idle connections are cut by the proxy (`PROXY_IDLE_TIMEOUT_SECS`, default 2100, chart value `sandboxProxy.idleTimeoutSecs`; the proxy pings the browser every 30 s via `PROXY_PING_INTERVAL_SECS` and never goes below the chat idle `ENZARB_CHAT_IDLE_SECS`, 1800), by Envoy (`BackendTrafficPolicy` connection idle timeout and the `/sandbox/` route request timeout in the chart's `route.*` values) and by any browser extension or VPN in front. Raise the chart values consistently: Envoy idle (`route.backendTrafficPolicy.connectionIdleTimeout`, default 2400s) must exceed the proxy idle, which must be at least the chat idle. The UI reconnects, but long-lived idle sessions need all three aligned.
 - **Project stuck at ResourcesReady.** The operator lacks permissions in the sandbox namespace, or the chart-created pieces are missing (namespace `enzarb-sandboxes`, ServiceAccount `enzarb-sandbox`, the Pod Security label, the `default-deny` policy): `kubectl get ns,sa,netpol -n enzarb-sandboxes` and `kubectl -n enzarb logs deploy/enzarb-sandbox-operator`. Reason `Terminating` means objects of a deleted Project with the same name are still being removed. `InvalidSpec` means the Project name is not a DNS label of at most 50 characters, or its repository is also listed by an older Project.
 - **Sandboxes are reachable from where they should not be.** The CNI does not enforce NetworkPolicy. Rerun `dev:cluster` (it probes) or switch to Calico as described above.
 - **Webhooks never arrive.** Check the smee channel URL matches the App's webhook URL, that `dev:webhook-relay` is running, and App settings, Advanced, Recent deliveries. A `401` from the receiver means `GITHUB_WEBHOOK_SECRET` does not match the App's secret; re-run `dev:secrets` and restart the receiver.

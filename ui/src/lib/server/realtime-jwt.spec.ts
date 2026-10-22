@@ -14,7 +14,7 @@ const key = new TextEncoder().encode('s3cret');
 describe('mintRealtimeToken', () => {
 	it('signs HS256 with sub, projects, aud and exp within 5 minutes', async () => {
 		const now = 1_700_000_000;
-		const token = await mintRealtimeToken('s3cret', 'octocat', ['a', 'b'], now);
+		const token = await mintRealtimeToken('s3cret', 'octocat', ['a', 'b'], ['o/a'], now);
 		const { payload, protectedHeader } = await jwtVerify(token, key, {
 			audience: REALTIME_AUDIENCE,
 			currentDate: new Date(now * 1000)
@@ -22,13 +22,14 @@ describe('mintRealtimeToken', () => {
 		expect(protectedHeader.alg).toBe('HS256');
 		expect(payload.sub).toBe('octocat');
 		expect(payload.projects).toEqual(['a', 'b']);
+		expect(payload.repos).toEqual(['o/a']);
 		expect(payload.iat).toBe(now);
 		expect(payload.exp).toBe(now + REALTIME_TTL_SECONDS);
 		expect(REALTIME_TTL_SECONDS).toBeLessThanOrEqual(300);
 	});
 
 	it('does not verify with another secret', async () => {
-		const token = await mintRealtimeToken('s3cret', 'octocat', []);
+		const token = await mintRealtimeToken('s3cret', 'octocat', [], []);
 		await expect(jwtVerify(token, new TextEncoder().encode('other'))).rejects.toThrow();
 	});
 });
@@ -48,7 +49,7 @@ describe('realtimeCookieOptions', () => {
 
 	it('expires with the token', async () => {
 		const now = 1_700_000_000;
-		const token = await mintRealtimeToken('s3cret', 'octocat', [], now);
+		const token = await mintRealtimeToken('s3cret', 'octocat', [], [], now);
 		const { payload } = await jwtVerify(token, key, { currentDate: new Date(now * 1000) });
 		expect(realtimeCookieOptions().maxAge).toBe(payload.exp! - payload.iat!);
 	});

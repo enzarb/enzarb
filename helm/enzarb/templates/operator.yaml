@@ -32,7 +32,6 @@ spec:
               valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
             - { name: ENZARB_SANDBOX_NAMESPACE, value: {{ .Values.sandbox.namespace | quote }} }
             - { name: ENZARB_SANDBOX_SERVICE_ACCOUNT, value: {{ .Values.sandbox.serviceAccount | quote }} }
-            - { name: ENZARB_EXECUTOR_CALLBACK_PORT, value: {{ .Values.sandbox.executorCallbackPort | quote }} }
             - { name: ENZARB_SANDBOX_EGRESS_EXCLUDE_CIDRS, value: {{ join "," (required "sandbox.egress.clusterCIDRs is required: set the cluster's pod, service and node CIDRs (they contain the API server endpoint); sandbox egress on 443 excludes them" (.Values.sandbox.egress.clusterCIDRs | join "," | default "" | splitList "," | compact | default nil)) | quote }} }
             {{- with .Values.sandbox.dnsCIDRs }}
             - { name: ENZARB_SANDBOX_DNS_CIDRS, value: {{ join "," . | quote }} }

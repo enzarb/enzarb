@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #MISE description="Build the enzarb images as :dev and kind-load them: mise run dev:images [component...]"
-#MISE usage='arg "[component]..." help="ui|sandbox-proxy|sandbox|operator|receiver|workflows (default: all)"'
+#MISE usage='arg "[component]..." help="ui|sandbox-proxy|sandbox|operator|receiver (default: all)"'
 set -euo pipefail
 # shellcheck source=/dev/null
 . "${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}/.mise/lib/dev.sh"

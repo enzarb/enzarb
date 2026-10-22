@@ -1,7 +1,0 @@
-states:
-  a:
-    action:
-      name: frobnicate
-      args: {number: "{{ x }}", body: "hi"}
-      as: c
-    next: "{{ outputs.c.url }}"

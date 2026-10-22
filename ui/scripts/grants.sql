@@ -8,7 +8,7 @@ DO $$
 DECLARE
 	r text;
 BEGIN
-	FOREACH r IN ARRAY ARRAY['enzarb_sandbox_proxy', 'enzarb_workflows', 'enzarb_ui'] LOOP
+	FOREACH r IN ARRAY ARRAY['enzarb_sandbox_proxy', 'enzarb_ui'] LOOP
 		IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
 			RAISE NOTICE 'role % does not exist; its grants are skipped until the next migrate run', r;
 		END IF;
@@ -21,11 +21,6 @@ BEGIN
 		GRANT EXECUTE ON FUNCTION app_api.claude_credential_get(text) TO enzarb_sandbox_proxy;
 		GRANT EXECUTE ON FUNCTION app_api.claude_credential_list_stale(text) TO enzarb_sandbox_proxy;
 		GRANT EXECUTE ON FUNCTION app_api.claude_credential_rekey(text, text, text, bytea) TO enzarb_sandbox_proxy;
-	END IF;
-
-	IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'enzarb_workflows') THEN
-		GRANT USAGE ON SCHEMA app_api TO enzarb_workflows;
-		GRANT EXECUTE ON FUNCTION app_api.claude_credential_get(text) TO enzarb_workflows;
 	END IF;
 
 	IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'enzarb_ui') THEN

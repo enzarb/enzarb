@@ -1,5 +1,5 @@
 {{- /* ServiceAccounts */}}
-{{- range tuple "enzarb-ui" "enzarb-workflows" "enzarb-connectors" "enzarb-sandbox-proxy" "enzarb-sandbox-operator" "enzarb-migrate" }}
+{{- range tuple "enzarb-ui" "enzarb-connectors" "enzarb-sandbox-proxy" "enzarb-sandbox-operator" "enzarb-migrate" }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -39,28 +39,6 @@ metadata:
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: enzarb-ui }
 subjects:
   - { kind: ServiceAccount, name: enzarb-ui, namespace: {{ .Release.Namespace }} }
----
-{{- /* workflows: project index (cluster-wide; patch = drained-generation annotation) + sandbox auth Secrets (sandbox namespace Role below). */}}
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: enzarb-workflows
-  labels:
-    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-workflows") | nindent 4 }}
-rules:
-  - apiGroups: [enzarb.dev]
-    resources: [projects]
-    verbs: [get, list, watch, patch]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: enzarb-workflows
-  labels:
-    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-workflows") | nindent 4 }}
-roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: enzarb-workflows }
-subjects:
-  - { kind: ServiceAccount, name: enzarb-workflows, namespace: {{ .Release.Namespace }} }
 ---
 {{- /* sandbox-proxy */}}
 apiVersion: rbac.authorization.k8s.io/v1
@@ -152,7 +130,7 @@ roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: enzarb-sandbox
 subjects:
   - { kind: ServiceAccount, name: enzarb-sandbox-operator, namespace: {{ .Release.Namespace }} }
 ---
-{{- /* workflows executor and sandbox-proxy read the per-Project auth Secret. */}}
+{{- /* sandbox-proxy reads the per-Project auth Secret. */}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -174,7 +152,6 @@ metadata:
     {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb") | nindent 4 }}
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: enzarb-sandbox-auth-reader }
 subjects:
-  - { kind: ServiceAccount, name: enzarb-workflows, namespace: {{ .Release.Namespace }} }
   - { kind: ServiceAccount, name: enzarb-sandbox-proxy, namespace: {{ .Release.Namespace }} }
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -222,7 +199,7 @@ metadata:
     {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb") | nindent 4 }}
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: enzarb-wait }
 subjects:
-  {{- range tuple "enzarb-ui" "enzarb-workflows" "enzarb-connectors" "enzarb-migrate" }}
+  {{- range tuple "enzarb-ui" "enzarb-connectors" "enzarb-migrate" }}
   - { kind: ServiceAccount, name: {{ . }}, namespace: {{ $.Release.Namespace }} }
   {{- end }}
   {{- if .Values.realtime.enabled }}

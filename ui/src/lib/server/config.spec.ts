@@ -23,7 +23,6 @@ describe('parseConfig', () => {
 			githubAppSlug: 'enzarb',
 			realtimeLegacyTokenUrl: false,
 			componentVersions: { components: {} },
-			needsYouStaleHours: 24,
 			sandboxStatsRetentionDays: 90
 		});
 	});
@@ -35,14 +34,6 @@ describe('parseConfig', () => {
 		for (const bad of ['0', '-1', '1.5', 'abc'])
 			expect(() => parseConfig({ ...valid, ENZARB_STATS_RETENTION: bad })).toThrow(
 				/ENZARB_STATS_RETENTION/
-			);
-	});
-
-	it('reads NEEDS_YOU_STALE_HOURS and rejects non-positive values', () => {
-		expect(parseConfig({ ...valid, NEEDS_YOU_STALE_HOURS: '6.5' }).needsYouStaleHours).toBe(6.5);
-		for (const bad of ['0', '-1', 'abc'])
-			expect(() => parseConfig({ ...valid, NEEDS_YOU_STALE_HOURS: bad })).toThrow(
-				/NEEDS_YOU_STALE_HOURS/
 			);
 	});
 
@@ -183,12 +174,10 @@ describe('parseConfig', () => {
 		const c = parseConfig({
 			...valid,
 			ENZARB_REALTIME_LEGACY_TOKEN_URL: 'TRUE',
-			ENZARB_STATS_RETENTION: ' ',
-			NEEDS_YOU_STALE_HOURS: ' '
+			ENZARB_STATS_RETENTION: ' '
 		});
 		expect(c.realtimeLegacyTokenUrl).toBe(true);
 		expect(c.sandboxStatsRetentionDays).toBe(90);
-		expect(c.needsYouStaleHours).toBe(24);
 		expect(
 			parseConfig({ ...valid, ENZARB_REALTIME_LEGACY_TOKEN_URL: ' False ' }).realtimeLegacyTokenUrl
 		).toBe(false);

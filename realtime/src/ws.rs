@@ -297,7 +297,7 @@ async fn client(
     mut shutdown: watch::Receiver<bool>,
     _permit: OwnedSemaphorePermit, // released when the task ends
 ) {
-    tracing::info!(sub = %claims.sub, projects = claims.projects.len(), "stream open");
+    tracing::info!(sub = %claims.sub, repos = claims.repos.len(), "stream open");
     let mut ping = tokio::time::interval_at(Instant::now() + ping_every, ping_every);
     let pong_window = ping_every * 3 / 2;
     let pong_deadline = tokio::time::sleep_until(Instant::now() + pong_window);
@@ -334,7 +334,7 @@ async fn client(
             },
             f = rx.recv() => {
                 let ok = match f {
-                    Ok(f) if f.visible_to(&claims.projects) => send_frame(&mut sock, &f).await,
+                    Ok(f) if f.visible_to(&claims.repos) => send_frame(&mut sock, &f).await,
                     Ok(_) => true,
                     Err(RecvError::Lagged(n)) => {
                         tracing::warn!(sub = %claims.sub, skipped = n, "client lagged; resync");

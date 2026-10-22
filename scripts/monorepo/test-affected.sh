@@ -30,22 +30,16 @@ check "root files" "" lefthook.yml CLAUDE.md
 check "tool pins feed the pin check and tool-using jobs" "kubernetes helm monorepo release-path" mise.toml
 check "component Dockerfile ARGs feed the pin check" "sandbox-container monorepo" sandbox-container/Dockerfile
 check "generated graph is read by the monorepo checks" "monorepo release-path" scripts/monorepo/graph.generated.sh
-check "root cargo files select every rust component" "proto operator connectors workflows realtime sandbox-proxy sandbox-container updater monorepo" Cargo.lock
-check "root toolchain file" "proto operator connectors workflows realtime sandbox-proxy sandbox-container updater monorepo" rust-toolchain.toml
-check "workflows only" "workflows" workflows/crates/engine/src/lib.rs
-check "proto fans out" "proto workflows sandbox-proxy sandbox-container ui" proto/crates/enzarb-proto/src/lib.rs
-check "operator fans out" "operator workflows sandbox-proxy" operator/crates/enzarb-crds/src/lib.rs
-check "connectors fans out" "connectors workflows" connectors/bin/receiver/src/main.rs
+check "root cargo files select every rust component" "proto operator connectors realtime sandbox-proxy sandbox-container updater monorepo" Cargo.lock
+check "root toolchain file" "proto operator connectors realtime sandbox-proxy sandbox-container updater monorepo" rust-toolchain.toml
+check "proto fans out" "proto sandbox-proxy sandbox-container ui" proto/crates/enzarb-proto/src/lib.rs
+check "operator fans out" "operator sandbox-proxy" operator/crates/enzarb-crds/src/lib.rs
+check "connectors only" "connectors" connectors/bin/receiver/src/main.rs
 check "realtime only" "realtime" realtime/src/lib.rs
 check "ui only" "ui" ui/src/routes/+page.svelte
-check "engine prompts feed the ui tests" "workflows ui" workflows/crates/engine/tests/stdlib/prompts/plan.md
-check "graph fixtures feed the ui tests" "connectors workflows ui" workflows/crates/flow/tests/fixtures/app/x.yaml
-check "workflow examples feed the ui tests" "ui" docs/workflows/examples/issue.yaml
-check "engine migrations feed the ui tests" "workflows ui" workflows/migrations/20261016000002_engine_api.sql
-check "flow crate is compiled into connectors" "connectors workflows" workflows/crates/flow/src/lib.rs
 check "helm only" "helm" helm/enzarb/values.yaml
-check "dependency order" "proto operator workflows sandbox-proxy sandbox-container ui" ui/a.ts operator/b.rs proto/c.rs
-check "shared rust workflow" "operator connectors workflows realtime sandbox-proxy sandbox-container updater monorepo" .github/workflows/_rust.yml
+check "dependency order" "proto operator sandbox-proxy sandbox-container ui" ui/a.ts operator/b.rs proto/c.rs
+check "shared rust workflow" "operator connectors realtime sandbox-proxy sandbox-container updater monorepo" .github/workflows/_rust.yml
 check "retag script selects the release-path check" "release-path" .github/scripts/retag-or-build.sh
 check "own ci file (also re-runs the drift check)" "ui monorepo" .github/workflows/ci-ui.yml
 check "ui/proto/sandbox node setup action" "proto sandbox-container ui" .github/actions/setup-node/action.yml

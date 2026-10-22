@@ -1,17 +1,14 @@
 # 0007. Source-agnostic connectors
 
-## Context
-GitHub is the first system that triggers workflows, but GitLab, Forgejo, Jira, Slack and others are expected.
+Status: **Superseded** by [ADR-0027](0027-workflow-clean-slate.md). The Connector trait, the normalized event catalog and source-neutral work item keys are gone; the text below is the original intent.
 
-## Decision
-- A new `enzarb-connectors` repo: a `Connector` trait, one connector per source, and a webhook `receiver` binary.
-- Inbound payloads are normalized into a fixed set of events (`WorkItemOpened`, `CommentAdded`, `Mentioned`, `ApprovalGranted`, `ChangeRequestOpened`, `ChangeRequestUpdated`, `ReviewSubmitted`, `WorkItemClosed`) using CloudEvents attributes.
-- Work items use source-neutral keys (`github:org/repo#123`).
-- Workflows never import a provider SDK.
+## Context
+GitHub is the first system that sends events to enzarb, but GitLab, Forgejo, Jira, Slack and others were expected.
+
+## Decision (original)
+- A `connectors` component: a `Connector` trait, one connector per source, and a webhook `receiver` binary.
+- Inbound payloads normalized into a fixed set of events, using CloudEvents attributes.
 - The name avoids terms that already mean something in Kubernetes: ingress, gateway, router, proxy, controller, scheduler.
 
-See [connectors.md](../connectors.md).
-
-## Consequences
-- Each new source means one connector, plus the trait conformance suite.
-- Behaviour specific to a provider (such as how approval is detected) stays inside its connector.
+## Today
+`connectors/` is only the `receiver`: it verifies the GitHub signature and logs each delivery in `connectors.events`. See [connectors.md](../connectors.md).

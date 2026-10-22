@@ -1,18 +1,19 @@
 {{- /*
-Migration Jobs, ordered workflows -> connectors -> ui. These are ordinary resources (not
+Migration Jobs, ordered legacy -> connectors -> ui. These are ordinary resources (not
 Helm hooks, so `helm install --wait` cannot deadlock on pods that need migrated schemas).
 Ordering is enforced with init containers (`kubectl wait`):
-  workflows  waits for the pgop Cluster, Database and all six Roles to be ready
-             (`migrate --require-roles` needs the runtime roles to exist);
-  connectors waits for the workflows Job;
+  legacy     waits for the pgop Cluster, Database and all Roles to be ready, then drops the
+             schemas of the removed workflow engine (receiver drop-legacy, idempotent, as the
+             old schema owner);
+  connectors waits for the legacy Job;
   ui         waits for the connectors Job;
   runtime Deployments wait for the ui Job (the end of the chain).
 Job names carry a hash of the rendered Job inputs (see enzarb.migrateJob), so any change gets a fresh Job.
 */}}
 {{- if .Values.postgres.enabled }}
 {{- $steps := list
-  (dict "comp" "workflows" "c" .Values.workflows "uid" 65532 "role" "workflows-owner" "tmp" false)
-  (dict "comp" "connectors" "c" .Values.connectors "uid" 10001 "role" "connectors-owner" "wait" (include "enzarb.migrateJob" (dict "ctx" $ "comp" "workflows")))
+  (dict "comp" "legacy" "c" .Values.connectors "uid" 10001 "role" "workflows-owner")
+  (dict "comp" "connectors" "c" .Values.connectors "uid" 10001 "role" "connectors-owner" "wait" (include "enzarb.migrateJob" (dict "ctx" $ "comp" "legacy")))
   (dict "comp" "ui" "c" .Values.ui "uid" 1000 "role" "ui-owner" "wait" (include "enzarb.migrateJob" (dict "ctx" $ "comp" "connectors"))) }}
 {{- range $i, $s := $steps }}
 {{- if $i }}
@@ -46,8 +47,8 @@ spec:
         - name: migrate
           image: {{ include "enzarb.image" $s.c }}
           imagePullPolicy: {{ include "enzarb.pullPolicy" (dict "ctx" $ "c" $s.c) }}
-          {{- if eq $s.comp "workflows" }}
-          args: [migrate, --require-roles]
+          {{- if eq $s.comp "legacy" }}
+          args: [drop-legacy]
           {{- else if eq $s.comp "connectors" }}
           args: [migrate]
           {{- else }}

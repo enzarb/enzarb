@@ -19,11 +19,10 @@ v="$(raw <<<"$def")"
 check "default: valid JSON" "$(yq -p=json '. | tag' <<<"$v")" '!!map'
 vd() { yq -p=json "$1" <<<"$v"; }
 check "default: top-level keys" "$(vd 'keys | join(",")')" chart,components
-check "default: component keys" "$(vd '.components | keys | join(",")')" enzarb-connectors,enzarb-realtime,enzarb-sandbox-container,enzarb-sandbox-operator,enzarb-sandbox-proxy,enzarb-ui,enzarb-workflows
+check "default: component keys" "$(vd '.components | keys | join(",")')" enzarb-connectors,enzarb-realtime,enzarb-sandbox-container,enzarb-sandbox-operator,enzarb-sandbox-proxy,enzarb-ui
 check "default: no empty values" "$(vd '[.components[] | select(. == "" or . == null)] | length')" 0
 check "default: no updater (disabled)" "$(vd '.components | has("enzarb-updater")')" false
 check "default: enzarb-ui" "$(vd '.components["enzarb-ui"]')" "$(vals .ui.image.tag)"
-check "default: enzarb-workflows" "$(vd '.components["enzarb-workflows"]')" "$(vals .workflows.image.tag)"
 check "default: enzarb-connectors" "$(vd '.components["enzarb-connectors"]')" "$(vals .connectors.image.tag)"
 check "default: enzarb-realtime" "$(vd '.components["enzarb-realtime"]')" "$(vals .realtime.image.tag)"
 check "default: enzarb-sandbox-proxy" "$(vd '.components["enzarb-sandbox-proxy"]')" "$(vals .sandboxProxy.image.tag)"

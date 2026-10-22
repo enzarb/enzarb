@@ -1,4 +1,0 @@
-version: 1
-command:
-  run: "make fix ISSUE={{ subjects.issue.number }}"
-github: {contents: write}

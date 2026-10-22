@@ -1,4 +1,4 @@
-//! enzarb-realtime: Postgres `NOTIFY engine_projection` to an authenticated browser websocket.
+//! enzarb-realtime: Postgres `NOTIFY connector_event` to an authenticated browser websocket.
 
 pub mod auth;
 pub mod config;

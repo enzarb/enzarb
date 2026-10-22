@@ -1,5 +1,0 @@
-version: 1
-description: "@enzarb mention: answer it and post the reply."
-board: board
-phases:
-  - {use: phases/mention}

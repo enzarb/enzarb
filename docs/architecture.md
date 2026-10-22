@@ -1,8 +1,8 @@
 # enzarb architecture
 
-enzarb runs AI coding agents in isolated Kubernetes sandboxes against code repositories. Work starts in two ways: a person in the web UI, or an event from a remote system such as a GitHub issue, PR or comment. Events drive durable workflows (triage → plan → approve → implement → review), and each agent step runs inside a sandbox.
+enzarb runs AI coding agents in isolated Kubernetes sandboxes against code repositories. People work in the sandboxes through the web UI (terminals and a chat with the agent). Webhook deliveries from GitHub are logged per repository and shown live in the project's Events tab. Nothing acts on those events yet; workflows and tasks were removed to be redesigned ([ADR-0027](adr/0027-workflow-clean-slate.md)).
 
-**Scope.** Sandboxes, receiving events, and running workflows in sandboxes against repos. Deploying user environments is out of scope (see [ADR-0006](adr/0006-scope-no-environments.md)).
+**Scope.** Sandboxes against repos, and logging the events those repos send. Deploying user environments is out of scope (see [ADR-0006](adr/0006-scope-no-environments.md)).
 
 ## Repositories
 
@@ -10,15 +10,14 @@ All components live in one monorepo, github.com/enzarb/enzarb ([ADR-0015](adr/00
 
 | Dir | Role | Language / artifact |
 |---|---|---|
-| `ui/` | SvelteKit web app; remote functions are the logic layer. Login, Project management, workflow/run views, terminal client | TypeScript, container image |
+| `ui/` | SvelteKit web app; remote functions are the logic layer. Login, Project management, terminal and chat tabs, per-project Events tab | TypeScript, container image |
 | `sandbox-proxy/` | Takes the browser's single websocket, checks authorization, routes mux frames to the right sandbox's pid-1 | Rust, container image |
-| `sandbox-container/` | Sandbox image plus pid-1 `sandbox-init`: supervises terminals, git worktrees and headless `claude -p` runs; captures the Claude token | Rust + Dockerfile |
+| `sandbox-container/` | Sandbox image plus pid-1 `sandbox-init`: supervises terminals, chats, git worktrees and dockerd; captures the Claude token | Rust + Dockerfile |
 | `operator/` | Reconciles `Project` (`enzarb.dev/v1alpha1`) into an agent-sandbox `Sandbox`, its auth Secret, volumes and NetworkPolicy in the shared sandbox namespace (ADR-0013); publishes the CRD types as a library crate | Rust (kube-rs), container image |
 | `proto/` | Mux protocol: frame codec, credit-based flow control, `docs/protocol.md`, shared test vectors | Rust crate + npm package |
-| `connectors/` | The `Connector` trait and one connector per source (GitHub first) as a library, plus the `receiver` binary that accepts webhooks | Rust library + container image |
-| `workflows/` | The in-house Postgres workflow engine: migrations, state machines, reducer, executors, ticker | Rust, container image |
+| `connectors/` | The `receiver` binary: verifies GitHub webhooks and logs each delivery in `connectors.events` | Rust, container image |
 | `updater/` | Tiny stateless service: polls the chart registry and patches `spec.version` of the RKE2 `HelmChart` to the highest published version (never downgrades; optional release webhook) | Rust, container image |
-| `realtime/` | Stateless change stream: `LISTEN work_item_changed`, pushes per-project `work_item` / `resync` frames to browsers over an authenticated websocket (`/live/v1/stream`); the UI refetches via remote functions | Rust, container image |
+| `realtime/` | Stateless change stream: `LISTEN connector_event`, pushes `event` / `resync` frames to browsers over an authenticated websocket (`/live/v1/stream`), filtered by repository; the UI refetches via remote functions | Rust, container image |
 | `kubernetes/` | Cluster prerequisites: kind config, Envoy Gateway, agent-sandbox (v0.5.x), RuntimeClasses, pgop (Capsule is installed but unused since ADR-0013) | YAML / kustomize |
 | `helm/` | Umbrella chart: all services, CRDs, HTTPRoutes, RBAC, pgop `Cluster`/`Role`/`Database`, migration Jobs | Helm |
 
@@ -28,21 +27,15 @@ All components live in one monorepo, github.com/enzarb/enzarb ([ADR-0015](adr/00
 flowchart LR
   proto[proto]
   crds[operator<br/>CRD types crate]
-  conn[connectors<br/>library]
   ui[ui] --> proto
   px[sandbox-proxy] --> proto
   px --> crds
   init[sandbox-container<br/>sandbox-init] --> proto
-  wf[workflows] --> proto
-  wf --> conn
-  wf --> crds
-  rcv[connectors<br/>receiver] --> conn
-  rcv --> crds
 ```
 
 Dependencies are path dependencies inside the monorepo (Cargo `path = "../proto/..."`, npm `file:../proto`).
 
-`proto/` is its own component because four programs speak it: the browser, the proxy, sandbox-init, and the workflow executor. The executor is a non-browser client that starts agent runs. See [ADR-0003](adr/0003-mux-protocol.md).
+`proto/` is its own component because three programs speak it: the browser, the proxy and sandbox-init. It also defines generic step, session and run frames that no orchestrator drives at the moment. See [ADR-0003](adr/0003-mux-protocol.md).
 
 ### Self-update chain
 
@@ -58,28 +51,16 @@ flowchart LR
   B -- one websocket, enzarb-proto --> GW
   GW --> UI[enzarb-ui]
   GW --> PX[sandbox-proxy]
-  SRC[GitHub / later GitLab, Jira…] -- webhooks --> GW --> RCV[connectors receiver]
+  SRC[GitHub] -- webhooks --> GW --> RCV[connectors receiver]
 
   subgraph DB[pgop Cluster enzarb-pg]
-    PG[(database enzarb<br/>schemas: workflows, workflows_api,<br/>connectors, app)]
+    PG[(database enzarb<br/>schemas: connectors, app, app_api)]
   end
 
-  RCV -- ingest_event --> PG
-  UI -- submit_action / read views --> PG
-  PG -- NOTIFY work_item_changed --> UI
-
-  subgraph WF[enzarb-workflows]
-    RED[reducer]
-    EXE[executors]
-    TCK[ticker]
-  end
-  PG <--> RED
-  PG <--> EXE
-  TCK --> PG
-
-  EXE -- Connector: comment, PR, status, reactions --> SRC
-  EXE -- enzarb-proto: ensure worktree, start run --> SB
-  SB -- RunFinished --> EXE
+  RCV -- INSERT event + NOTIFY connector_event --> PG
+  PG -- NOTIFY connector_event --> RT[enzarb-realtime]
+  RT -- event frames --> B
+  UI -- read connectors.event_v, app --> PG
 
   UI -- Project CRs --> API[kube-apiserver]
   OP[sandbox-operator] -- watch / reconcile --> API
@@ -87,7 +68,7 @@ flowchart LR
   PX --> SB
 
   subgraph T[Shared namespace enzarb-sandboxes, one sandbox per Project, no Kubernetes API access]
-    SB[Sandbox pod: one container<br/>sandbox-init pid-1 as root supervises dockerd<br/>agents and git run as uid 1000<br/>git worktrees, claude -p<br/>gVisor/Kata in prod]
+    SB[Sandbox pod: one container<br/>sandbox-init pid-1 as root supervises dockerd<br/>agents and git run as uid 1000<br/>git worktrees, claude (ACP)<br/>gVisor/Kata in prod]
   end
   SB -- git --> SRC
   SB -- Claude API --> AN[Anthropic]
@@ -96,7 +77,7 @@ flowchart LR
 ## Key flows
 
 ### 1. Create a Project
-1. In the UI, the user creates a Project: linked repo remotes, sandbox template, and run mode (`worktree` or `fresh`).
+1. In the UI, the user creates a Project: linked repo remotes and sandbox template.
 2. A remote function writes the `Project` CR.
 3. The operator creates the project's auth Secret, volumes, NetworkPolicy and `Sandbox` CR in the shared sandbox namespace ([ADR-0013](adr/0013-shared-sandbox-namespace.md)).
 4. The UI shows a **step-by-step boot checklist** built from the Project/Sandbox status conditions. Every step is a named condition; there are no open-ended spinners.
@@ -104,25 +85,22 @@ flowchart LR
 ### 2. Interactive terminal
 1. The browser opens one websocket to `sandbox-proxy` with a session token issued by the UI.
 2. The proxy checks the token, resolves the Project's sandbox, and dials sandbox-init.
-3. Frames are multiplexed: terminals, the `claude` session, status events, file transfer. Each is a channel with credit-based flow control.
+3. Frames are multiplexed: terminals, chats, status events, file transfer. Each is a channel with credit-based flow control.
 
 **Chat.** The Chat page uses the same socket with an `acp` channel ([ADR-0014](adr/0014-chat-tab-acp-over-mux.md), [design](design/chat-tab.md)): sandbox-init runs one `claude-agent-acp` per chat in its own worktree and relays ACP JSON-RPC through a filter; sandbox-init allows permission requests itself (only leaving plan mode is asked of the user): the sandbox (gVisor, network policy, no Kubernetes API, scoped tokens) is the security boundary, not a command allow-list.
 
 ### 3. Claude credentials
-The user runs a guided `claude setup-token` in the terminal of any of their sandboxes, and pid-1 captures the `sk-ant-oat01-` token. The token is per user, not per Project: pid-1 hands it to the proxy over the mux connection, and the proxy stores it encrypted in Postgres (one row per user, key from a Secret mounted only into the proxy and workflows). Workflows sends the Project owner's token with each job's `RunStart`, and the proxy hands it to the sandbox when a chat opens; the sandbox keeps no copy on disk. The token never reaches the browser or the UI. Third-party OAuth against Claude subscriptions is not allowed by Anthropic's terms ([ADR-0004](adr/0004-claude-credentials.md)).
+The user runs a guided `claude setup-token` in the terminal of any of their sandboxes, and pid-1 captures the `sk-ant-oat01-` token. The token is per user, not per Project: pid-1 hands it to the proxy over the mux connection, and the proxy stores it encrypted in Postgres (one row per user, key from a Secret mounted only into the proxy). The proxy hands the token to the sandbox when a chat opens; the sandbox keeps no copy on disk. The token never reaches the browser or the UI. Third-party OAuth against Claude subscriptions is not allowed by Anthropic's terms ([ADR-0004](adr/0004-claude-credentials.md)).
 
-### 4. Event-driven workflow (e.g. a new GitHub issue)
-1. GitHub → `connectors receiver`: it checks the signature, normalizes the payload, calls `workflows_api.ingest_event`, and returns 200 within 10s.
-2. The reducer applies the `issue` state machine. It queues a high-priority `set_progress(Received)` job (👀) and a `triage` agent job.
-3. An executor starts the triage run in the Project's sandbox, in a new worktree or a fresh sandbox, over enzarb-proto. sandbox-init reports `RunFinished`, which becomes an event.
-4. The workflow continues: questions → plan → `/approve` → implement → PR → review loop. Details in [workflows.md](workflows.md).
+### 4. Webhook events
+1. GitHub → `connectors receiver` (`POST /hooks/github`): it checks `X-Hub-Signature-256`, inserts one row into `connectors.events` (a redelivery is a no-op), runs `pg_notify('connector_event', id)` and returns 200.
+2. `enzarb-realtime` receives the notification, looks up the event's repository in `connectors.event_v` and pushes `{"topic":"event","id":N,"repo":"owner/repo"}` to the browsers whose `repos` claim contains it.
+3. The project's Events tab lists the events of the project's repositories, newest first, and refetches on a frame.
 
-### 5. Sandbox utilization
-sandbox-init never pushes metrics. The workflows executor polls each ready sandbox every 30 s over the mux (`stats_request`/`stats`, authenticated like run dispatch) and stores the raw cgroup counters in Postgres; the UI reads bucketed windows through `workflows_api` ([ADR-0019](adr/0019-sandbox-utilization-polling.md)).
+Nothing else happens to an event: no routing, no workflow, no comments.
 
 ## Further reading
-- [workflows.md](workflows.md): the workflow engine
-- [connectors.md](connectors.md): connector contract and normalized events
+- [connectors.md](connectors.md): the webhook receiver and the event log
 - [database.md](database.md): shared Postgres, schemas and roles via pgop
 - [gaps.md](gaps.md): open questions and known gaps
 - [adr/](adr/): architecture decision records

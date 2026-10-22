@@ -1,8 +1,5 @@
 import * as v from 'valibot';
 
-/** Deprecated: the engine decides `needs_you` (ADR-0022); still parsed so old values stay valid. */
-const NEEDS_YOU_STALE_HOURS_DEFAULT = 24;
-
 export const DEFAULT_GITHUB_APP_SLUG = 'enzarb';
 
 const B64URL = /^[A-Za-z0-9_-]+$/;
@@ -89,15 +86,13 @@ const ConfigOutputSchema = v.object({
 	 * `{"chart": "0.4.1", "components": {"enzarb-ui": "v0.9.0"}}`). Empty when unset.
 	 */
 	componentVersions: ComponentVersionsSchema,
-	/** Deprecated and unused since ADR-0022 (NEEDS_YOU_STALE_HOURS, default 24); accepted for compatibility. */
-	needsYouStaleHours: v.number(),
 	/**
 	 * Web Push (ENZARB_VAPID_PUBLIC_KEY, ENZARB_VAPID_PRIVATE_KEY, ENZARB_VAPID_SUBJECT, all optional).
 	 * Absent when no keys are set: notifications are then off. The private key is read only by
 	 * `server/push.ts` and never sent to the browser.
 	 */
 	vapid: v.optional(VapidSchema),
-	/** Days of sandbox utilization samples kept (ENZARB_STATS_RETENTION, default 90; the workflows poller reads the same setting). */
+	/** Days of sandbox utilization samples kept (ENZARB_STATS_RETENTION, default 90). */
 	sandboxStatsRetentionDays: v.number()
 });
 
@@ -142,13 +137,6 @@ export const ConfigSchema = v.pipe(
 				return fail('ENZARB_REALTIME_LEGACY_TOKEN_URL must be true or false');
 			}
 			return flag === 'true';
-		}),
-		NEEDS_YOU_STALE_HOURS: field((value, fail) => {
-			const hours = value ? Number(value) : NEEDS_YOU_STALE_HOURS_DEFAULT;
-			if (!Number.isFinite(hours) || hours <= 0) {
-				return fail('NEEDS_YOU_STALE_HOURS must be a positive number');
-			}
-			return hours;
 		}),
 		ENZARB_STATS_RETENTION: field((value, fail) => {
 			const days = value ? Number(value) : 90;
@@ -230,7 +218,6 @@ export const ConfigSchema = v.pipe(
 			...(validId && validKey ? { githubAppId: validId, githubAppPrivateKey: validKey } : {}),
 			realtimeLegacyTokenUrl: env.ENZARB_REALTIME_LEGACY_TOKEN_URL,
 			componentVersions: env.ENZARB_COMPONENT_VERSIONS,
-			needsYouStaleHours: env.NEEDS_YOU_STALE_HOURS,
 			...(vapid ? { vapid } : {}),
 			sandboxStatsRetentionDays: env.ENZARB_STATS_RETENTION
 		};

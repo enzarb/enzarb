@@ -23,7 +23,7 @@ check "active present" "$(secret '.data | has("active")' <<<"$on")" true
 active="$(secret '.data.active' <<<"$on" | base64 -d)"
 check "active names a key" "$(secret ".data.\"$active\" | length > 0" <<<"$on")" true
 check "key is 32 bytes" "$(secret ".data.\"$active\"" <<<"$on" | base64 -d | wc -c | tr -d ' ')" 32
-for d in enzarb-sandbox-proxy enzarb-workflows; do
+for d in enzarb-sandbox-proxy; do
   check "$d secret" "$(vol $d .secret.secretName <<<"$on")" enzarb-claude-key
   check "$d mode" "$(vol $d .secret.defaultMode <<<"$on")" 0440
   # root-owned key files must be group-readable by the non-root uid
@@ -33,20 +33,14 @@ done
 check "proxy db role" "$(yq eval-all 'select(.kind=="Deployment" and .metadata.name=="enzarb-sandbox-proxy") | .spec.template.spec.containers[0].env[] | select(.name=="PGUSER") | .valueFrom.secretKeyRef.name' - <<<"$on")" enzarb-pg-sandbox-proxy-credentials
 check "pgop role" "$(yq eval-all 'select(.kind=="Role" and .metadata.name=="sandbox-proxy") | .spec.roleName' - <<<"$on")" enzarb_sandbox_proxy
 
-# Not for workflows pods without the executor role.
-noexec="$(render --set "workflows.roles=reducer\,ticker")"
-check "no executor: volume" "$(vol enzarb-workflows .name <<<"$noexec")" ""
-check "no executor: mount" "$(mnt enzarb-workflows .name <<<"$noexec")" ""
-
 # Never in the sandbox namespace.
 check "sandbox ns refs" "$(yq eval-all 'select(.metadata.namespace=="enzarb-sandboxes")' - <<<"$on" | grep -c enzarb-claude-key || true)" 0
-check "no other deployment mounts it" "$(yq eval-all 'select(.kind=="Deployment" and .metadata.name!="enzarb-sandbox-proxy" and .metadata.name!="enzarb-workflows") | .spec.template.spec.volumes[].secret.secretName' - <<<"$on" | grep -c enzarb-claude-key || true)" 0
+check "no other deployment mounts it" "$(yq eval-all 'select(.kind=="Deployment" and .metadata.name!="enzarb-sandbox-proxy") | .spec.template.spec.volumes[].secret.secretName' - <<<"$on" | grep -c enzarb-claude-key || true)" 0
 
 # Bring-your-own keyring: nothing rendered, mounts point at it.
 ex="$(render --set secrets.claudeKey.existingSecret=mine)"
 check "existing: no secret" "$(yq eval-all 'select(.kind=="Secret" and (.metadata.name=="enzarb-claude-key" or .metadata.name=="mine")) | .metadata.name' - <<<"$ex")" ""
 check "existing: proxy mount" "$(vol enzarb-sandbox-proxy .secret.secretName <<<"$ex")" mine
-check "existing: workflows mount" "$(vol enzarb-workflows .secret.secretName <<<"$ex")" mine
 
 # Rekey Job: absent by default, gated, no RBAC on the keyring.
 job() { yq eval-all 'select(.kind=="Job" and (.metadata.name | test("^enzarb-claude-rekey-")))' - ; }

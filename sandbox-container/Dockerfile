@@ -12,8 +12,6 @@ FROM chef AS planner
 # BEGIN generated:copy
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY connectors/bin/receiver connectors/bin/receiver
-COPY connectors/crates/connector connectors/crates/connector
-COPY connectors/crates/connector-github connectors/crates/connector-github
 COPY operator/crates/enzarb-crds operator/crates/enzarb-crds
 COPY operator/crates/operator operator/crates/operator
 COPY operator/deploy operator/deploy
@@ -23,10 +21,6 @@ COPY realtime realtime
 COPY sandbox-container sandbox-container
 COPY sandbox-proxy sandbox-proxy
 COPY updater updater
-COPY workflows/crates/engine workflows/crates/engine
-COPY workflows/crates/enzarb-workflows workflows/crates/enzarb-workflows
-COPY workflows/crates/flow workflows/crates/flow
-COPY workflows/migrations workflows/migrations
 # END generated:copy
 RUN cargo chef prepare --recipe-path recipe.json
 

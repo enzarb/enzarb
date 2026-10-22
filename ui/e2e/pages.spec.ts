@@ -19,14 +19,22 @@ async function installFakeLive(page: Page) {
 		const timer = setInterval(() => {
 			n++;
 			ws.send(
-				JSON.stringify(n % 3 === 0 ? { topic: 'resync' } : { topic: 'task', id: (n % 2) + 1 })
+				JSON.stringify(
+					n % 3 === 0
+						? { topic: 'resync' }
+						: { topic: 'event', id: (n % 2) + 1, repo: 'e2e-org/app' }
+				)
 			);
 		}, 250);
 		ws.onClose(() => clearInterval(timer));
 	});
 }
 
-for (const path of [`/projects/${E2E_PROJECT}`, `/projects/${E2E_PROJECT}/settings`, '/tasks']) {
+for (const path of [
+	`/projects/${E2E_PROJECT}`,
+	`/projects/${E2E_PROJECT}/settings`,
+	`/projects/${E2E_PROJECT}/events`
+]) {
 	test(`${path} renders without client errors`, async ({ page }) => {
 		const errors = collectErrors(page);
 		await installFakeSandbox(page);
@@ -38,26 +46,25 @@ for (const path of [`/projects/${E2E_PROJECT}`, `/projects/${E2E_PROJECT}/settin
 	});
 }
 
-test('the project board does not scroll sideways on a phone', async ({ page }) => {
+test('the events tab lists the logged deliveries and expands a payload', async ({ page }) => {
+	const errors = collectErrors(page);
+	await installFakeSandbox(page);
+	await installFakeLive(page);
+	await page.goto(`/projects/${E2E_PROJECT}/events`);
+	const log = page.getByTestId('event-log');
+	await expect(log.getByText('issues opened')).toBeVisible();
+	await expect(log.getByText('Add search')).toBeVisible();
+	await log.getByText('push').first().click();
+	await expect(log.getByText('refs/heads/main').first()).toBeVisible();
+	expect(errors).toEqual([]);
+});
+
+test('the events tab does not scroll sideways on a phone', async ({ page }) => {
 	await page.setViewportSize({ width: 360, height: 740 });
 	await installFakeSandbox(page);
 	await installFakeLive(page);
-	await page.goto(`/projects/${E2E_PROJECT}/tasks`);
-	const board = page.getByRole('group', { name: 'Task board' });
-	await expect(board).toBeVisible();
-	await page.waitForTimeout(1500);
-	// Columns stack: every column starts at the board's left edge, one below the other.
-	const boxes = await board.locator('.ez-board__col').evaluateAll((cols) =>
-		cols.map((c) => {
-			const r = c.getBoundingClientRect();
-			return { x: r.x, y: r.y };
-		})
-	);
-	expect(boxes.length).toBeGreaterThan(1);
-	for (const [i, b] of boxes.entries()) {
-		expect(b.x).toBe(boxes[0].x);
-		if (i > 0) expect(b.y).toBeGreaterThan(boxes[i - 1].y);
-	}
+	await page.goto(`/projects/${E2E_PROJECT}/events`);
+	await expect(page.getByTestId('event-log')).toBeVisible();
 	const { scrollWidth, clientWidth } = await page.evaluate(() => ({
 		scrollWidth: document.documentElement.scrollWidth,
 		clientWidth: document.documentElement.clientWidth
@@ -75,7 +82,7 @@ test('serves the web app manifest and its icons without a session', async ({
 		expect(res.ok()).toBe(true);
 		const manifest = await res.json();
 		expect(manifest.display).toBe('standalone');
-		expect(manifest.start_url).toBe('/work');
+		expect(manifest.start_url).toBe('/projects');
 		for (const icon of manifest.icons) expect((await ctx.request.get(icon.src)).ok()).toBe(true);
 	} finally {
 		await ctx.close();
@@ -114,8 +121,7 @@ test('hovering links does not crash', async ({ page }) => {
 	for (const start of [
 		`/projects/${E2E_PROJECT}`,
 		`/projects/${E2E_PROJECT}/settings`,
-		'/tasks',
-		`/projects/${E2E_PROJECT}/tasks`,
+		`/projects/${E2E_PROJECT}/events`,
 		'/projects'
 	]) {
 		await page.goto(start);
@@ -142,9 +148,9 @@ test('client-side navigation does not crash', async ({ page }) => {
 	await page.getByRole('link', { name: 'Settings' }).last().click();
 	await expect(page.getByRole('button', { name: 'Edit repositories' })).toBeVisible();
 	await page.getByRole('link', { name: 'Overview' }).click();
-	await page.getByRole('link', { name: /Tasks/ }).first().hover();
+	await page.getByRole('link', { name: /Events/ }).first().hover();
 	await page.waitForTimeout(500);
-	await page.getByRole('link', { name: /Tasks/ }).first().click();
+	await page.getByRole('link', { name: /Events/ }).first().click();
 	await page.waitForTimeout(1500);
 	await page.getByRole('link', { name: 'Projects' }).click();
 	await page

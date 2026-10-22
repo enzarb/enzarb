@@ -19,10 +19,10 @@ describe('ProjectNav', () => {
 		await expect.element(link).toHaveAttribute('aria-current', 'page');
 	});
 
-	it('keeps the Metrics tab current on a nested route and Overview off', async () => {
-		render(ProjectNav, { name: 'alpha', pathname: '/projects/alpha/metrics/timing' });
+	it('keeps the Events tab current and Overview off', async () => {
+		render(ProjectNav, { name: 'alpha', pathname: '/projects/alpha/events' });
 		await expect
-			.element(page.getByRole('link', { name: 'Metrics' }))
+			.element(page.getByRole('link', { name: 'Events' }))
 			.toHaveAttribute('aria-current', 'page');
 		await expect
 			.element(page.getByRole('link', { name: 'Overview' }))

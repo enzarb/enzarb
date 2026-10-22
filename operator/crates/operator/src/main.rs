@@ -59,7 +59,7 @@ struct Args {
         default_value = "enzarb-sandbox"
     )]
     sandbox_service_account: String,
-    /// TCP port of the workflows executor callback listener; sandboxes may reach it (egress).
+    /// Deprecated and ignored: the workflow executor is gone.
     #[arg(long, env = "ENZARB_EXECUTOR_CALLBACK_PORT", default_value_t = 8081)]
     executor_callback_port: u16,
     /// Comma-separated CIDRs sandboxes must not reach on TCP 443: the cluster's pod, service
@@ -83,7 +83,7 @@ struct Args {
         long,
         env = "ENZARB_NETPOL_INGRESS_POD_NAMES",
         value_delimiter = ',',
-        default_value = "enzarb-sandbox-proxy,enzarb-workflows"
+        default_value = "enzarb-sandbox-proxy"
     )]
     netpol_ingress_pod_names: Vec<String>,
     /// RuntimeClass of every sandbox pod (required; recommended `gvisor`). Must be in

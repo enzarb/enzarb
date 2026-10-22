@@ -33,8 +33,6 @@ pub const AUTH_MOUNT_DIR: &str = "/var/run/enzarb/auth";
 /// uid/gid of user `enzarb` in the sandbox image (enzarb-sandbox-container).
 pub const SANDBOX_UID: i64 = 1000;
 pub const WORKSPACE_MOUNT: &str = "/workspace";
-/// `app.kubernetes.io/name` of the workflows executor pods (egress callback target).
-pub const EXECUTOR_POD_NAME: &str = "enzarb-workflows";
 
 /// Operator-wide defaults supplied by flags.
 #[derive(Clone, Debug)]
@@ -56,7 +54,8 @@ pub struct NetpolConfig {
     pub ingress_namespace_label: (String, String),
     /// Allowed client pods: `app.kubernetes.io/name in (...)`.
     pub ingress_pod_names: Vec<String>,
-    /// TCP port of the workflows executor callback listener (egress rule).
+    /// Deprecated and ignored (the workflow executor is gone); kept so older flags and chart
+    /// values still parse.
     pub executor_callback_port: u16,
     /// CIDRs excluded from the TCP 443 egress rule (cluster pod, service, node networks).
     pub egress_exclude_cidrs: Vec<String>,
@@ -68,7 +67,7 @@ impl NetpolConfig {
     pub const DEFAULT_CALLBACK_PORT: u16 = 8081;
 
     pub fn default_pod_names() -> Vec<String> {
-        vec!["enzarb-sandbox-proxy".into(), "enzarb-workflows".into()]
+        vec!["enzarb-sandbox-proxy".into()]
     }
 
     /// Default: clients live in the release namespace.
@@ -428,7 +427,7 @@ pub fn docker_pvc(p: &Project, d: &Defaults) -> PersistentVolumeClaim {
 /// Ingress: TCP 7070 only from the configured client pods/namespaces.
 /// Egress: DNS to kube-dns (plus optional extra DNS CIDRs); TCP 443 to any address except the
 /// cluster's pod, service and node CIDRs (`--egress-exclude-cidrs`, required, so the API
-/// server endpoint is excluded); the workflows executor callback port.
+/// server endpoint is excluded).
 ///
 /// The Kubernetes API server is deliberately not reachable (ADR-0013). Policies are evaluated
 /// after DNAT, so the `kubernetes` Service address (443) is covered by the service CIDR
@@ -485,14 +484,6 @@ pub fn network_policy(p: &Project, d: &Defaults) -> NetworkPolicy {
                 {
                     "to": [ip_block("0.0.0.0/0", &v4), ip_block("::/0", &v6)],
                     "ports": [{"protocol": "TCP", "port": 443}],
-                },
-                // Run callbacks to the workflows executor.
-                {
-                    "to": [{
-                        "namespaceSelector": {"matchLabels": {ns_key: ns_val}},
-                        "podSelector": {"matchLabels": {"app.kubernetes.io/name": EXECUTOR_POD_NAME}},
-                    }],
-                    "ports": [{"protocol": "TCP", "port": c.executor_callback_port}],
                 },
             ],
         },
@@ -624,7 +615,6 @@ pub(crate) mod tests {
                 triggers: Default::default(),
                 sandbox: SandboxSpec::default(),
                 max_runs: None,
-                workflows: None,
             },
         );
         p.metadata.uid = Some("uid-1".into());
@@ -946,16 +936,13 @@ pub(crate) mod tests {
         let expr = &from[0]["podSelector"]["matchExpressions"][0];
         assert_eq!(expr["key"], "app.kubernetes.io/name");
         assert_eq!(expr["operator"], "In");
-        assert_eq!(
-            expr["values"],
-            json!(["enzarb-sandbox-proxy", "enzarb-workflows"])
-        );
+        assert_eq!(expr["values"], json!(["enzarb-sandbox-proxy"]));
         assert_eq!(
             spec["ingress"][0]["ports"],
             json!([{"protocol": "TCP", "port": 7070}])
         );
         let eg = spec["egress"].as_array().unwrap();
-        assert_eq!(eg.len(), 3);
+        assert_eq!(eg.len(), 2);
         assert_eq!(
             eg[0],
             json!({
@@ -974,16 +961,6 @@ pub(crate) mod tests {
                     {"ipBlock": {"cidr": "::/0", "except": ["fd00::/8"]}},
                 ],
                 "ports": [{"protocol": "TCP", "port": 443}],
-            })
-        );
-        assert_eq!(
-            eg[2],
-            json!({
-                "to": [{
-                    "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "enzarb"}},
-                    "podSelector": {"matchLabels": {"app.kubernetes.io/name": "enzarb-workflows"}},
-                }],
-                "ports": [{"protocol": "TCP", "port": 8081}],
             })
         );
         // No rule opens 6443 or any other port to the API server.
@@ -1023,12 +1000,7 @@ pub(crate) mod tests {
                 {"ipBlock": {"cidr": "::/0"}},
             ])
         );
-        let cb = &eg[2];
-        assert_eq!(cb["ports"], json!([{"protocol": "TCP", "port": 9000}]));
-        assert_eq!(
-            cb["to"][0]["namespaceSelector"]["matchLabels"],
-            json!({"team": "platform"})
-        );
+        assert_eq!(eg.as_array().unwrap().len(), 2, "DNS and HTTPS only");
     }
 
     #[test]
