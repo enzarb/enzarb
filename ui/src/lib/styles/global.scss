@@ -2921,3 +2921,87 @@ textarea.ez-control {
 		padding-left: 1.25rem;
 	}
 }
+
+// Modes designer (Project → Modes): mode list beside the selected mode's form.
+.ez-modes-layout {
+	display: grid;
+	grid-template-columns: minmax(12rem, 16rem) minmax(0, 1fr);
+	gap: var(--ez-space-5);
+	align-items: start;
+
+	@media (max-width: 48rem) {
+		grid-template-columns: minmax(0, 1fr);
+	}
+}
+
+.ez-modes-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-1);
+	margin: 0;
+	padding: 0;
+	list-style: none;
+
+	&__item {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--ez-space-2);
+		width: 100%;
+		padding: var(--ez-space-2) var(--ez-space-3);
+		border: var(--ez-border-width) solid transparent;
+		border-radius: var(--ez-radius-md);
+		background: none;
+		color: inherit;
+		font: inherit;
+		text-align: left;
+		cursor: pointer;
+
+		&:hover {
+			background: var(--ez-surface-hover);
+		}
+
+		&[aria-current='true'] {
+			border-color: var(--ez-accent-soft-border);
+			background: var(--ez-accent-soft);
+		}
+	}
+}
+
+.ez-modes-tools {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+	gap: var(--ez-space-1) var(--ez-space-4);
+}
+
+.ez-modes-hook-event {
+	--ez-gap: var(--ez-space-2);
+}
+
+.ez-modes-hook {
+	--ez-gap: var(--ez-space-2);
+
+	padding: var(--ez-space-3);
+	border: var(--ez-border-width) solid var(--ez-border);
+	border-radius: var(--ez-radius-md);
+}
+
+.ez-modes-issues {
+	display: flex;
+	flex-direction: column;
+	gap: var(--ez-space-2);
+	margin: 0;
+	padding: 0;
+	list-style: none;
+
+	li {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: var(--ez-space-2);
+	}
+}
+
+.ez-max-select {
+	max-width: 24rem;
+}

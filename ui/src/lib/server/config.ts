@@ -60,6 +60,17 @@ const VapidSchema = v.object({
 });
 export type VapidConfig = v.InferOutput<typeof VapidSchema>;
 
+const TracksSchema = v.object({
+	/** Base URL of enzarb-tracks, e.g. `http://enzarb-tracks:8080` (no trailing slash). */
+	url: v.string(),
+	/** Bearer token shared with enzarb-tracks; never sent to the browser. */
+	token: v.string()
+});
+export type TracksConfig = v.InferOutput<typeof TracksSchema>;
+
+/** enzarb-tracks refuses shorter tokens. */
+const TRACKS_TOKEN_MIN = 32;
+
 /** The parsed configuration; documents each setting. */
 const ConfigOutputSchema = v.object({
 	databaseUrl: v.string(),
@@ -92,6 +103,11 @@ const ConfigOutputSchema = v.object({
 	 * `server/push.ts` and never sent to the browser.
 	 */
 	vapid: v.optional(VapidSchema),
+	/**
+	 * enzarb-tracks (ENZARB_TRACKS_URL, ENZARB_TRACKS_TOKEN, both optional, set together): validates
+	 * and renders `.ez/modes.toml` for the modes designer (ADR-0029). Absent: the designer is off.
+	 */
+	tracks: v.optional(TracksSchema),
 	/** Days of sandbox utilization samples kept (ENZARB_STATS_RETENTION, default 90). */
 	sandboxStatsRetentionDays: v.number()
 });
@@ -176,7 +192,9 @@ export const ConfigSchema = v.pipe(
 		}),
 		ENZARB_VAPID_PUBLIC_KEY: trimmed,
 		ENZARB_VAPID_PRIVATE_KEY: trimmed,
-		ENZARB_VAPID_SUBJECT: trimmed
+		ENZARB_VAPID_SUBJECT: trimmed,
+		ENZARB_TRACKS_URL: trimmed,
+		ENZARB_TRACKS_TOKEN: trimmed
 	}),
 	v.rawTransform(({ dataset, addIssue, NEVER }): v.InferInput<typeof ConfigOutputSchema> => {
 		const env = dataset.value;
@@ -207,6 +225,30 @@ export const ConfigSchema = v.pipe(
 			vapid = { publicKey, privateKey, subject };
 		}
 
+		let tracks: TracksConfig | undefined;
+		if (env.ENZARB_TRACKS_URL || env.ENZARB_TRACKS_TOKEN) {
+			const fail = (message: string) => {
+				addIssue({ message });
+				return NEVER;
+			};
+			if (!env.ENZARB_TRACKS_URL || !env.ENZARB_TRACKS_TOKEN) {
+				return fail('ENZARB_TRACKS_URL and ENZARB_TRACKS_TOKEN must be set together');
+			}
+			let url: URL;
+			try {
+				url = new URL(env.ENZARB_TRACKS_URL);
+			} catch {
+				return fail('ENZARB_TRACKS_URL must be an absolute URL');
+			}
+			if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+				return fail('ENZARB_TRACKS_URL must be an http(s) URL');
+			}
+			if (env.ENZARB_TRACKS_TOKEN.length < TRACKS_TOKEN_MIN) {
+				return fail(`ENZARB_TRACKS_TOKEN must be at least ${TRACKS_TOKEN_MIN} characters`);
+			}
+			tracks = { url: url.href.replace(/\/+$/, ''), token: env.ENZARB_TRACKS_TOKEN };
+		}
+
 		return {
 			databaseUrl: env.DATABASE_URL,
 			sessionJwtSecret: env.ENZARB_SESSION_JWT_SECRET,
@@ -219,6 +261,7 @@ export const ConfigSchema = v.pipe(
 			realtimeLegacyTokenUrl: env.ENZARB_REALTIME_LEGACY_TOKEN_URL,
 			componentVersions: env.ENZARB_COMPONENT_VERSIONS,
 			...(vapid ? { vapid } : {}),
+			...(tracks ? { tracks } : {}),
 			sandboxStatsRetentionDays: env.ENZARB_STATS_RETENTION
 		};
 	}),

@@ -24,5 +24,6 @@ export const PROJECT_TABS = [
 	{ slug: 'terminal', label: 'Terminal' },
 	{ slug: 'chat', label: 'Chat' },
 	{ slug: 'events', label: 'Events' },
+	{ slug: 'modes', label: 'Modes' },
 	{ slug: 'settings', label: 'Settings' }
 ] as const;

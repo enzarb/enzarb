@@ -108,6 +108,41 @@ describe('parseConfig', () => {
 		);
 	});
 
+	describe('tracks', () => {
+		const token = 't'.repeat(32);
+		const parse = (extra: Record<string, string>) => parseConfig({ ...valid, ...extra }).tracks;
+
+		it('is absent when neither variable is set', () => {
+			expect(parse({})).toBeUndefined();
+		});
+
+		it('reads the URL (without a trailing slash) and the token', () => {
+			expect(
+				parse({ ENZARB_TRACKS_URL: 'http://enzarb-tracks:8080/', ENZARB_TRACKS_TOKEN: token })
+			).toEqual({ url: 'http://enzarb-tracks:8080', token });
+		});
+
+		it('rejects half a configuration, bad URLs and short tokens without echoing the token', () => {
+			expect(() => parse({ ENZARB_TRACKS_URL: 'http://t' })).toThrow(/set together/);
+			expect(() => parse({ ENZARB_TRACKS_TOKEN: token })).toThrow(/set together/);
+			expect(() => parse({ ENZARB_TRACKS_URL: 'tracks', ENZARB_TRACKS_TOKEN: token })).toThrow(
+				/absolute URL/
+			);
+			expect(() => parse({ ENZARB_TRACKS_URL: 'ftp://t', ENZARB_TRACKS_TOKEN: token })).toThrow(
+				/http\(s\)/
+			);
+			const err = (() => {
+				try {
+					parse({ ENZARB_TRACKS_URL: 'http://t', ENZARB_TRACKS_TOKEN: 'short-secret' });
+				} catch (e) {
+					return (e as Error).message;
+				}
+			})();
+			expect(err).toMatch(/at least 32/);
+			expect(err).not.toContain('short-secret');
+		});
+	});
+
 	describe('VAPID keys', () => {
 		const keys = { ENZARB_VAPID_PUBLIC_KEY: 'BPub_-1', ENZARB_VAPID_PRIVATE_KEY: 'priv_-2' };
 		const parse = (extra: Record<string, string>) => parseConfig({ ...valid, ...extra }).vapid;

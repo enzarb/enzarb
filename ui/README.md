@@ -2,7 +2,7 @@
 
 SvelteKit (adapter-node) app for enzarb. Remote functions (`*.remote.ts`) are the logic layer.
 
-Pages: GitHub login; projects (create, settings, sandbox, repositories); per-project terminal tab, chat tab (ACP) and Events tab (the webhook deliveries logged for the project's repositories, newest first, read from `connectors.event_v` and refreshed live through enzarb-realtime); metrics; about and platform pages; notification settings.
+Pages: GitHub login; projects (create, settings, sandbox, repositories); per-project terminal tab, chat tab (ACP) and Events tab (the webhook deliveries logged for the project's repositories, newest first, read from `connectors.event_v` and refreshed live through enzarb-realtime) and Modes tab (the modes designer for each repository's `.ez/modes.toml`: a form per mode and a TOML editor, validated by enzarb-tracks, saved as a commit to the default branch; off unless `ENZARB_TRACKS_URL` is set); metrics; about and platform pages; notification settings.
 
 ## Develop
 
