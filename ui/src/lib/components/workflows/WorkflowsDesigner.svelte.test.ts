@@ -166,7 +166,9 @@ describe('WorkflowsDesigner', () => {
 			options: {}
 		});
 		const outputs = page.getByRole('textbox', { name: /Assumed outputs of triage/ });
-		await expect.element(outputs).toHaveValue(/"decision": "fix"/);
+		await expect
+			.poll(() => (outputs.element() as HTMLTextAreaElement).value)
+			.toMatch(/"decision": "fix"/);
 		await page.getByRole('button', { name: 'Assume and continue' }).click();
 		await expect.poll(() => vi.mocked(dryRun.run).mock.calls.length).toBe(2);
 		const second = vi.mocked(dryRun.run).mock.calls[1][0];
