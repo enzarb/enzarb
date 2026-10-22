@@ -142,8 +142,8 @@ export async function handlePush(reg: RegistrationLike, data: NotificationData |
 	await reg.showNotification(data.title, {
 		body: data.body,
 		tag: data.tag,
-		icon: '/icon-192.png',
-		badge: '/badge.png',
+		icon: '/icon-ez-192.png',
+		badge: '/badge-ez.png',
 		data: { url: data.url }
 	});
 }

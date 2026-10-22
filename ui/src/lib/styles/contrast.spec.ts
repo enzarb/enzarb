@@ -72,22 +72,50 @@ describe.each([
 
 	it('logo wordmark is readable on the page background', () => {
 		expect(ratio(t['logo-ink'], t['bg'])).toBeGreaterThanOrEqual(4.5);
-		expect(ratio(t['logo-dev'], t['bg'])).toBeGreaterThanOrEqual(4.5);
+		// The orange Z and the mark are large graphics: 3:1 (WCAG 1.4.11).
+		expect(ratio(t['logo-z'], t['bg'])).toBeGreaterThanOrEqual(3);
+		expect(ratio(t['logo-overlap'], t['bg'])).toBeGreaterThanOrEqual(3);
 	});
 });
 
-describe('brand palette', () => {
-	const dark = theme('theme-dark');
-	it.each([
-		['bg', '#0b0f17'],
-		['surface', '#131b2b'],
-		['border', '#232f46'],
-		['accent', '#00f0ff'],
-		['success-fg', '#10b981'],
-		['text', '#f8fafc'],
-		['text-muted', '#94a3b8']
-	])('dark %s is the brand value', (name, hex) => {
-		expect(dark[name]).toBe(hex);
+describe.each([
+	[
+		'light',
+		'theme-light',
+		{
+			bg: '#f4f5f7',
+			surface: '#ffffff',
+			'surface-sunken': '#eceef2',
+			border: '#d9dde4',
+			text: '#14161b',
+			'text-muted': '#5f6878',
+			accent: '#ff4d1f',
+			'accent-fg': '#14161b',
+			'danger-fg': '#d1242f'
+		}
+	],
+	[
+		'dark',
+		'theme-dark',
+		{
+			bg: '#0d0f14',
+			surface: '#151922',
+			'surface-sunken': '#1d222d',
+			border: '#262c38',
+			text: '#e9ecf1',
+			'text-muted': '#8a96ad',
+			accent: '#ff4d1f',
+			'accent-fg': '#0d0f14',
+			'info-fg': '#ff6a3d',
+			'danger-fg': '#ff6369',
+			'success-fg': '#3ccf91',
+			'warning-fg': '#f2c14e'
+		}
+	]
+])('Steel palette, %s', (_, mixin, values) => {
+	const t = theme(mixin);
+	it.each(Object.entries(values))('%s is %s', (name, hex) => {
+		expect(t[name]).toBe(hex);
 	});
 });
 

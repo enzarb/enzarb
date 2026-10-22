@@ -1,5 +1,6 @@
 <script lang="ts">
-	import favicon from '#lib/assets/favicon.svg';
+	import favicon from '#lib/assets/favicon-ez.svg';
+	import '@fontsource/jost/latin-700.css';
 	import '#lib/styles/global.scss';
 	import ToastRegion from '#lib/components/ui/ToastRegion.svelte';
 	import type { LayoutProps } from './$types';

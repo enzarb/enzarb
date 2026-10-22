@@ -20,106 +20,111 @@
 @mixin theme-light {
 	color-scheme: light;
 
+	// Steel palette (docs/brand.md): steel-grey neutrals, one signal orange.
 	// Neutral surfaces and lines
-	--ez-bg: #f8f8fa;
+	--ez-bg: #f4f5f7;
 	--ez-surface: #ffffff;
-	--ez-surface-sunken: #f1f1f5;
-	--ez-surface-hover: #f4f4f8;
-	--ez-border: #e5e5eb;
-	--ez-border-strong: #cfcfd9;
+	--ez-surface-sunken: #eceef2;
+	--ez-surface-hover: #eff1f4;
+	--ez-border: #d9dde4;
+	--ez-border-strong: #c3c9d3;
 	// Boundary of form controls: 3:1 against the surface (WCAG 1.4.11).
-	--ez-control-border: #878796;
+	--ez-control-border: #848d9c;
 
 	// Text
-	--ez-text: #16161a;
-	--ez-text-muted: #4c4c58;
-	--ez-text-subtle: #666674;
+	--ez-text: #14161b;
+	--ez-text-muted: #5f6878;
+	--ez-text-subtle: #5f6878;
 
-	// The one accent
-	// Cyan, darkened for light surfaces: brand #00f0ff (and #0891b2 at 3.7:1) fail AA for text on white.
-	--ez-accent: #0e7490;
-	--ez-accent-hover: #155e75;
-	--ez-accent-fg: #ffffff;
-	--ez-accent-text: #0e7490;
-	--ez-accent-soft: #e4f6fa;
-	--ez-accent-soft-border: #a5dbe6;
+	// The one accent: signal orange. Filled (primary buttons, focus ring) with dark text on it;
+	// accent text is the text colour, since #ff4d1f is only about 3:1 on the light grounds.
+	--ez-accent: #ff4d1f;
+	--ez-accent-hover: #ff6a3d;
+	--ez-accent-fg: #14161b;
+	--ez-accent-text: #14161b;
+	--ez-accent-soft: #ffece5;
+	--ez-accent-soft-border: #ffc2ad;
 
-	// Logo wordmark: ink on light, cyan ".dev".
-	--ez-logo-ink: #0b0f17;
-	--ez-logo-dev: #0e7490;
+	// Logo: E steel, Z orange, their overlap ink; the wordmark is ink with an orange Z.
+	--ez-logo-e: #8a94a6;
+	--ez-logo-z: #ff4d1f;
+	--ez-logo-overlap: #14161b;
+	--ez-logo-ink: #14161b;
 
 	// Semantic colours: -fg text/icon on the -bg tint, -border for outlines, -solid for filled buttons.
-	--ez-success-fg: #047857;
-	--ez-success-bg: #e5f6ef;
-	--ez-success-border: #a6dcc6;
-	--ez-warning-fg: #84500a;
-	--ez-warning-bg: #fcf2de;
+	// success = passed, warning = needs you, danger = error, info = running.
+	--ez-success-fg: #187a4c;
+	--ez-success-bg: #e8f5ee;
+	--ez-success-border: #a3d6bb;
+	--ez-warning-fg: #946600;
+	--ez-warning-bg: #fcf3df;
 	--ez-warning-border: #ecd29b;
-	--ez-danger-fg: #b0261e;
-	--ez-danger-bg: #fcebe9;
-	--ez-danger-border: #f1bcb7;
-	--ez-danger-solid: #c9302c;
-	--ez-danger-solid-hover: #ab2623;
+	--ez-danger-fg: #d1242f;
+	--ez-danger-bg: #fdeeee;
+	--ez-danger-border: #f3b8bc;
+	--ez-danger-solid: #d1242f;
+	--ez-danger-solid-hover: #b51f29;
 	--ez-danger-solid-fg: #ffffff;
-	--ez-info-fg: #1a5a9e;
-	--ez-info-bg: #e8f0fa;
-	--ez-info-border: #b9d2ee;
+	--ez-info-fg: #c93b10;
+	--ez-info-bg: #fdf0eb;
+	--ez-info-border: #f5c3ae;
 
-	--ez-overlay: rgb(15 15 25 / 0.45);
-	--ez-terminal-bg: #0e0f14;
-	--ez-terminal-fg: #e6e6ec;
+	--ez-overlay: rgb(20 22 27 / 0.45);
+	--ez-terminal-bg: #0d0f14;
+	--ez-terminal-fg: #e9ecf1;
 
 	// Elevation
-	--ez-shadow-sm: 0 1px 2px rgb(16 16 30 / 0.06);
-	--ez-shadow-md: 0 4px 14px rgb(16 16 30 / 0.08), 0 1px 3px rgb(16 16 30 / 0.06);
-	--ez-shadow-lg: 0 16px 40px rgb(16 16 30 / 0.16), 0 2px 6px rgb(16 16 30 / 0.08);
+	--ez-shadow-sm: 0 1px 2px rgb(20 22 27 / 0.06);
+	--ez-shadow-md: 0 4px 14px rgb(20 22 27 / 0.08), 0 1px 3px rgb(20 22 27 / 0.06);
+	--ez-shadow-lg: 0 16px 40px rgb(20 22 27 / 0.16), 0 2px 6px rgb(20 22 27 / 0.08);
 }
 
 @mixin theme-dark {
 	color-scheme: dark;
 
-	// Brand palette (docs/brand.md): obsidian canvas, navy slate surface, steel border.
-	--ez-bg: #0b0f17;
-	--ez-surface: #131b2b;
-	--ez-surface-sunken: #0e1420;
-	--ez-surface-hover: #1a2438;
-	--ez-border: #232f46;
-	--ez-border-strong: #34425e;
-	--ez-control-border: #6b7a96;
+	--ez-bg: #0d0f14;
+	--ez-surface: #151922;
+	--ez-surface-sunken: #1d222d;
+	--ez-surface-hover: #1d222d;
+	--ez-border: #262c38;
+	--ez-border-strong: #353d4c;
+	--ez-control-border: #6b7588;
 
-	--ez-text: #f8fafc;
-	--ez-text-muted: #94a3b8;
-	--ez-text-subtle: #8795ab;
+	--ez-text: #e9ecf1;
+	--ez-text-muted: #8a96ad;
+	--ez-text-subtle: #8a96ad;
 
-	--ez-accent: #00f0ff;
-	--ez-accent-hover: #5cf5ff;
-	--ez-accent-fg: #0b0f17;
-	--ez-accent-text: #00f0ff;
-	--ez-accent-soft: #0a2833;
-	--ez-accent-soft-border: #0f4a5a;
+	--ez-accent: #ff4d1f;
+	--ez-accent-hover: #ff6a3d;
+	--ez-accent-fg: #0d0f14;
+	--ez-accent-text: #e9ecf1;
+	--ez-accent-soft: #2a1710;
+	--ez-accent-soft-border: #5c2a17;
 
-	--ez-logo-ink: #f1f5f9;
-	--ez-logo-dev: #00e5ff;
+	--ez-logo-e: #8a96ad;
+	--ez-logo-z: #ff4d1f;
+	--ez-logo-overlap: #f2f2ee;
+	--ez-logo-ink: #e9ecf1;
 
-	--ez-success-fg: #10b981;
-	--ez-success-bg: #0c2a25;
-	--ez-success-border: #14503f;
-	--ez-warning-fg: #f1b74f;
+	--ez-success-fg: #3ccf91;
+	--ez-success-bg: #0e2a1e;
+	--ez-success-border: #17513a;
+	--ez-warning-fg: #f2c14e;
 	--ez-warning-bg: #2a1f0b;
 	--ez-warning-border: #5d4416;
-	--ez-danger-fg: #ff8c82;
+	--ez-danger-fg: #ff6369;
 	--ez-danger-bg: #2c1314;
 	--ez-danger-border: #632a2c;
-	--ez-danger-solid: #ff7367;
-	--ez-danger-solid-hover: #ff8e84;
-	--ez-danger-solid-fg: #190a0a;
-	--ez-info-fg: #80b8f4;
-	--ez-info-bg: #0f1c2e;
-	--ez-info-border: #1f4066;
+	--ez-danger-solid: #ff6369;
+	--ez-danger-solid-hover: #ff7f84;
+	--ez-danger-solid-fg: #0d0f14;
+	--ez-info-fg: #ff6a3d;
+	--ez-info-bg: #2a1710;
+	--ez-info-border: #5c2a17;
 
 	--ez-overlay: rgb(0 0 0 / 0.62);
 	--ez-terminal-bg: #08090c;
-	--ez-terminal-fg: #e6e6ec;
+	--ez-terminal-fg: #e9ecf1;
 
 	--ez-shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
 	--ez-shadow-md: 0 6px 18px rgb(0 0 0 / 0.45), 0 1px 3px rgb(0 0 0 / 0.4);
@@ -154,6 +159,9 @@
 	--ez-font:
 		Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
 		sans-serif;
+	// Headings and page titles: Jost 700, self-hosted via @fontsource/jost (imported in +layout.svelte).
+	--ez-font-display: Jost, var(--ez-font);
+	--ez-weight-display: 700;
 	--ez-mono:
 		'JetBrains Mono', 'Fira Code', ui-monospace, 'SFMono-Regular', 'Cascadia Code', Menlo, Consolas,
 		'Liberation Mono', monospace;
@@ -249,6 +257,14 @@ h4 {
 	letter-spacing: -0.012em;
 }
 
+h1,
+h2,
+h3 {
+	font-family: var(--ez-font-display);
+	font-weight: var(--ez-weight-display);
+	letter-spacing: 0;
+}
+
 h1 {
 	font-size: var(--ez-text-2xl);
 }
@@ -266,7 +282,7 @@ p {
 }
 
 a {
-	color: var(--ez-accent-text);
+	color: var(--ez-text);
 	text-decoration: underline;
 	text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
 	text-underline-offset: 0.2em;
@@ -652,6 +668,16 @@ img {
 	&__mark,
 	&__word {
 		display: block;
+	}
+
+	&__name {
+		font-family: var(--ez-font-display);
+		font-weight: var(--ez-weight-display);
+		letter-spacing: 0.04em;
+	}
+
+	&__z {
+		color: var(--ez-logo-z);
 	}
 
 	&__word {
