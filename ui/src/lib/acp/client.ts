@@ -6,16 +6,29 @@ import {
 	type Client,
 	type InitializeResponse
 } from '@agentclientprotocol/sdk';
-import { MAX_PENDING, MAX_PROMPT_BYTES, MODE_IDS, type ModeId } from './types.ts';
+import {
+	MAX_MODE_ID_LEN,
+	MAX_PENDING,
+	MAX_PROMPT_BYTES,
+	type ModeId,
+	type QuestionAnswer
+} from './types.ts';
 import type { PermissionOutcome } from './permissions.ts';
 
 /** The only extension notification the browser trusts. */
 export const EXT_PERMISSION_DENIED = '_enzarb/permission_denied';
 /** The sandbox's mode notification: `{sessionId, modeId, bypassAllowed}`. */
 export const EXT_MODE = '_enzarb/mode';
-export { MODE_IDS };
-/** `session/set_mode` is limited to these. */
+/** ez's question request (agent -> client); the browser advertises it in `initialize`. */
+export const EXT_ASK_USER_QUESTION = '_ez/ask_user_question';
+/** A mode id the agent offered; the sandbox refuses any other. */
 export type SessionMode = ModeId;
+
+/** The result of `_ez/ask_user_question`. */
+export interface QuestionResult {
+	answers: QuestionAnswer[];
+	cancelled: boolean;
+}
 
 /** The byte streams of an `openAcp` channel (a `ByteChannel`). */
 export interface AcpStreams {
@@ -34,6 +47,8 @@ export interface AcpHandlers {
 	}): Promise<PermissionOutcome>;
 	permissionDenied(params: unknown): void;
 	modeChanged(params: unknown): void;
+	/** `_ez/ask_user_question`; must settle with `cancelled` when the connection goes away. */
+	askUserQuestion(params: unknown): Promise<QuestionResult>;
 }
 
 export interface AcpClient {
@@ -86,7 +101,9 @@ export function createAcpClient(
 		releaseTerminal: reject('terminal/release'),
 		waitForTerminalExit: reject('terminal/wait_for_exit'),
 		killTerminal: reject('terminal/kill'),
-		extMethod(method) {
+		async extMethod(method, params) {
+			if (method === EXT_ASK_USER_QUESTION)
+				return (await handlers.askUserQuestion(params)) as unknown as Record<string, unknown>;
 			throw RequestError.methodNotFound(method);
 		},
 		extNotification(method, params) {
@@ -115,7 +132,8 @@ export function createAcpClient(
 			track(() =>
 				conn.initialize({
 					protocolVersion: PROTOCOL_VERSION,
-					clientCapabilities: {},
+					// ez asks its questions through `_ez/ask_user_question` (claude ignores it).
+					clientCapabilities: { _meta: { ez: { askUserQuestion: true } } },
 					clientInfo: { name: 'enzarb-ui', version: '0.0.1' }
 				})
 			),
@@ -139,7 +157,7 @@ export function createAcpClient(
 		},
 		cancel: (sessionId) => conn.cancel({ sessionId }),
 		setMode: (sessionId, mode) => {
-			if (!(MODE_IDS as readonly string[]).includes(mode)) {
+			if (!mode || mode.length > MAX_MODE_ID_LEN) {
 				return Promise.reject(new AcpLimitError('unsupported mode'));
 			}
 			return track(async () => {

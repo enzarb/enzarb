@@ -6,7 +6,13 @@ import {
 	type ChatProgress,
 	type ChatStepId
 } from '../chat-steps.ts';
-import { createAcpClient, type AcpClient, type AcpHandlers, type AcpStreams } from './client.ts';
+import {
+	createAcpClient,
+	type AcpClient,
+	type AcpHandlers,
+	type AcpStreams,
+	type QuestionResult
+} from './client.ts';
 import {
 	PermissionRegistry,
 	policyHint,
@@ -16,6 +22,7 @@ import {
 import {
 	addNotice,
 	addPermission,
+	addQuestion,
 	addUserMessage,
 	applyModeUpdate,
 	applyPermissionDenied,
@@ -24,8 +31,10 @@ import {
 	offeredModes,
 	parseModeNotification,
 	parseModeUpdate,
+	parseQuestions,
 	parseSessionModes,
 	resolvePermission,
+	resolveQuestion,
 	toolView,
 	type ModeEvent
 } from './reducer.ts';
@@ -34,8 +43,11 @@ import {
 	type ChatState,
 	type ModeId,
 	type ModeState,
-	type PermissionChoice
+	type PermissionChoice,
+	type QuestionAnswer
 } from './types.ts';
+
+const CANCELLED_QUESTION: QuestionResult = { answers: [], cancelled: true };
 
 export const BACKOFF_BASE_MS = 1_000;
 export const BACKOFF_MAX_MS = 30_000;
@@ -210,6 +222,8 @@ export interface ChatConnection {
 	/** `session/set_mode`; the mode only changes when the sandbox confirms it. */
 	setMode(modeId: ModeId): void;
 	answer(id: string, choice: PermissionChoice, epoch: number): void;
+	/** Answer an ez question; `answers: null` cancels it. */
+	answerQuestion(id: string, answers: QuestionAnswer[] | null, epoch: number): void;
 	dispose(): void;
 }
 
@@ -219,6 +233,8 @@ export function createChatConnection(
 ): ChatConnection {
 	const openTimeout = deps.openTimeoutMs ?? OPEN_TIMEOUT_MS;
 	const registry = new PermissionRegistry();
+	/** Pending ez questions: the epoch they arrived on and their resolver. */
+	const questions = new Map<string, { epoch: number; settle: (r: QuestionResult) => void }>();
 	let s: ConnectionState = {
 		phase: 'idle',
 		progress: initialChatProgress,
@@ -267,6 +283,8 @@ export function createChatConnection(
 	/** Every pending permission becomes cancelled and its resolver settles. */
 	function cancelAllPermissions(): void {
 		registry.cancelAll();
+		for (const q of questions.values()) q.settle(CANCELLED_QUESTION);
+		questions.clear();
 		setChat(cancelPending(s.chat));
 	}
 
@@ -308,6 +326,17 @@ export function createChatConnection(
 			permissionDenied(params) {
 				if (stale(epoch)) return;
 				setChat(applyPermissionDenied(s.chat, params, s.sessionId));
+			},
+			askUserQuestion(params) {
+				const sid = (params as { sessionId?: unknown } | null)?.sessionId;
+				if (stale(epoch) || sid !== s.sessionId) return Promise.resolve(CANCELLED_QUESTION);
+				const qs = parseQuestions(params);
+				if (!qs) return Promise.resolve(CANCELLED_QUESTION);
+				const id = `question-${++permSeq}`;
+				setChat(addQuestion(s.chat, id, qs));
+				return new Promise<QuestionResult>((resolve) => {
+					questions.set(id, { epoch, settle: resolve });
+				});
 			},
 			requestPermission(req) {
 				const cancelled: PermissionOutcome = { outcome: 'cancelled' };
@@ -617,7 +646,7 @@ export function createChatConnection(
 			const c = client;
 			const sessionId = s.sessionId;
 			if (!c || !sessionId || !s.mode || s.phase !== 'ready' || s.switching) return;
-			if (!offeredModes(s.mode).includes(modeId)) return;
+			if (!offeredModes(s.mode).some((m) => m.id === modeId)) return;
 			const epoch = s.epoch;
 			set({ switching: true, error: '' });
 			// A confirmation clears `switching` too; settling here covers a sandbox that never confirms.
@@ -634,6 +663,13 @@ export function createChatConnection(
 			const status = registry.answer(id, choice, epoch);
 			if (status === 'allowed' || status === 'denied')
 				setChat(resolvePermission(s.chat, id, status));
+		},
+		answerQuestion(id, answers, epoch) {
+			const q = questions.get(id);
+			if (!q || q.epoch !== epoch || stale(epoch)) return;
+			questions.delete(id);
+			q.settle(answers ? { answers, cancelled: false } : CANCELLED_QUESTION);
+			setChat(resolveQuestion(s.chat, id, answers ? 'answered' : 'cancelled'));
 		},
 		dispose() {
 			if (disposed) return;

@@ -68,7 +68,7 @@ use tokio::time::Instant;
 
 use crate::acp::{self, AcpError, Spawned};
 use crate::capture::write_atomic;
-use crate::config::Config;
+use crate::config::{ChatAgent, Config};
 use crate::docker_prune::ActivityGate;
 use crate::exec::{self, CmdSpec, Ctl, LineSink, terminate};
 use crate::reaper::{ExitStatus, Reaper};
@@ -373,11 +373,18 @@ pub(crate) fn find_executable(bin: &str) -> bool {
 }
 
 /// The chat agent's argv: `acp_bin` when it is installed, else `mise exec
-/// <chat_runtime_tool> -- acp_bin` (mise installs the runtime on first use).
-/// `None` when neither is available.
+/// <chat_runtime_tool> -- acp_bin` (mise installs the runtime on first use);
+/// ez gets its `acp` subcommand. `None` when neither is available.
 pub(crate) fn chat_command(cfg: &Config) -> Option<(String, Vec<String>)> {
+    let agent_args: &[&str] = match cfg.chat_agent {
+        ChatAgent::Ez => &["acp"],
+        ChatAgent::Claude => &[],
+    };
     if find_executable(&cfg.acp_bin) {
-        return Some((cfg.acp_bin.clone(), Vec::new()));
+        return Some((
+            cfg.acp_bin.clone(),
+            agent_args.iter().map(|s| s.to_string()).collect(),
+        ));
     }
     if cfg.mise_bin.is_empty()
         || cfg.chat_runtime_tool.is_empty()
@@ -393,8 +400,41 @@ pub(crate) fn chat_command(cfg: &Config) -> Option<(String, Vec<String>)> {
     ];
     Some((
         cfg.mise_bin.clone(),
-        args.iter().map(|s| s.to_string()).collect(),
+        args.iter()
+            .chain(agent_args)
+            .map(|s| s.to_string())
+            .collect(),
     ))
+}
+
+/// ez's user config for chats: the built-in `claude` profile (claude-code
+/// driver, the chat's Claude token) as the default. A repository's
+/// `.ez/config.toml` and a mode's `profile` still take precedence.
+pub(crate) fn ez_config(model: &str) -> String {
+    let model = toml_string(model);
+    format!(
+        "# Written by sandbox-init for chats (ADR-0028). Do not edit: rewritten on every chat.\n\
+         default_profile = \"claude\"\n\n\
+         [profiles.claude]\n\
+         provider = \"claude-code\"\n\
+         model = {model}\n"
+    )
+}
+
+/// A TOML basic string.
+fn toml_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 impl ChatManager {
@@ -930,6 +970,31 @@ impl ChatManager {
         }
     }
 
+    /// ez's config and session directories for chat `chat_id`:
+    /// `<ws>/.enzarb/ez-config` (written here) and
+    /// `<ws>/.enzarb/chats/<chat_id>/ez-sessions`, kept with the chat record so
+    /// `session/load` finds the transcript after the chat repo is gone.
+    fn ez_dirs(&self, chat_id: &str) -> Vec<(String, String)> {
+        let conf = self.cfg.workspace.join(".enzarb/ez-config");
+        let sessions = self.chats_dir().join(chat_id).join("ez-sessions");
+        let _ = crate::privs::create_dir_all_mode(&conf, Some(0o700));
+        let _ = crate::privs::create_dir_all_mode(&sessions, Some(0o700));
+        if let Err(e) = write_atomic(
+            &conf.join("config.toml"),
+            ez_config(&self.cfg.chat_model).as_bytes(),
+            0o600,
+        ) {
+            tracing::warn!(error = %e, "cannot write the ez chat config");
+        }
+        vec![
+            ("EZ_CONFIG_DIR".into(), conf.to_string_lossy().into_owned()),
+            (
+                "EZ_SESSIONS_DIR".into(),
+                sessions.to_string_lossy().into_owned(),
+            ),
+        ]
+    }
+
     /// The agent's whole environment.
     fn agent_env(&self, token: &str, config_dir: &Path) -> Vec<(String, String)> {
         let mut env: Vec<(String, String)> = PASS_ENV
@@ -1027,6 +1092,9 @@ impl ChatManager {
         let config_dir = self.cfg.workspace.join(".enzarb/chat-home/.claude");
         let _ = crate::privs::create_dir_all_mode(&config_dir, Some(0o700));
         let mut env = self.agent_env(&token, &config_dir);
+        if self.cfg.chat_agent == ChatAgent::Ez {
+            env.extend(self.ez_dirs(&chat_id));
+        }
         env.extend(crate::repos::target_dir_env(
             &self.cfg.workspace,
             req.repo.as_deref(),
@@ -1068,13 +1136,16 @@ impl ChatManager {
             "lifecycle",
             json!({"event": "opened", "resume": resume_sid.is_some()}),
         );
-        let filter = Filter::new(
-            self.cfg.chat_permission_mode,
-            self.cfg.chat_allow_bypass,
-            wt.clone(),
-            secrets,
-            resume_sid,
-        );
+        let filter = match self.cfg.chat_agent {
+            ChatAgent::Ez => Filter::ez(wt.clone(), secrets, resume_sid),
+            ChatAgent::Claude => Filter::new(
+                self.cfg.chat_permission_mode,
+                self.cfg.chat_allow_bypass,
+                wt.clone(),
+                secrets,
+                resume_sid,
+            ),
+        };
         let registry = {
             let this = self.clone();
             let base = meta.clone();

@@ -315,7 +315,13 @@ Limits today: the system prompt is fixed when the session's first prompt starts 
 
 ## In enzarb sandboxes
 
-> The behaviour in this section is decided ([ADR-0028](../../docs/adr/0028-ez-coding-agent.md)) but not built yet. What starts runs (events, workflows) is being redesigned ([ADR-0027](../../docs/adr/0027-workflow-clean-slate.md)).
+**Chat (built).** The project's Chat tab runs `ez acp` in the sandbox, in the chat's own checkout of the repository:
+- **Modes** come from that checkout's `.ez/modes.toml` (else ez's built-in mode). The Chat tab's mode menu lists them by `name`; the session starts in `default_mode`.
+- **Model.** sandbox-init gives ez a `claude` profile (the claude-code driver with the project's Claude token) as the default. A mode's `profile`/`model`, or the repository's `.ez/config.toml`, can choose another.
+- **Permissions.** Every tool call a mode offers is allowed; the sandbox is the boundary. `SwitchMode` asks the user in the chat, and `AskUserQuestion` shows its questions in the chat.
+- **Transcripts** are kept outside the checkout (`EZ_SESSIONS_DIR`), so nothing under `.ez/sessions` is written to the repository.
+
+**Unattended runs.** The behaviour below is decided ([ADR-0028](../../docs/adr/0028-ez-coding-agent.md)) but not built yet. What starts runs (events, workflows) is being redesigned ([ADR-0027](../../docs/adr/0027-workflow-clean-slate.md)).
 
 When enzarb runs ez unattended in a sandbox:
 - **Modes come from the default branch.** The run uses `.ez/modes.toml` (and `AGENTS.md`, `CLAUDE.md`, `.ez/INSTRUCTIONS.md`) from the default-branch head, pinned for the run and passed to ez. Edits to these files on the branch being worked on don't affect that branch's own runs.

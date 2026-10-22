@@ -160,8 +160,24 @@ pub fn new_session_id() -> String {
     )
 }
 
+/// Environment variable naming the directory that holds session transcripts instead of
+/// `<project>/.ez/sessions` (enzarb sandboxes keep them out of the worktree).
+pub const SESSIONS_DIR_ENV: &str = "EZ_SESSIONS_DIR";
+
+/// `$EZ_SESSIONS_DIR` when set and non-empty, else `<project>/.ez/sessions`.
 pub fn sessions_dir(project: &Path) -> PathBuf {
-    project.join(".ez/sessions")
+    sessions_dir_with(
+        project,
+        std::env::var_os(SESSIONS_DIR_ENV).map(PathBuf::from),
+    )
+}
+
+/// [`sessions_dir`] with the override passed in (tests).
+pub fn sessions_dir_with(project: &Path, over: Option<PathBuf>) -> PathBuf {
+    match over {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => project.join(".ez/sessions"),
+    }
 }
 
 pub fn session_path(project: &Path, id: &str) -> PathBuf {
@@ -374,6 +390,20 @@ mod tests {
             model: "m".into(),
             mode: "default".into(),
         }
+    }
+
+    #[test]
+    fn sessions_dir_override() {
+        let p = Path::new("/proj");
+        assert_eq!(sessions_dir_with(p, None), Path::new("/proj/.ez/sessions"));
+        assert_eq!(
+            sessions_dir_with(p, Some(PathBuf::new())),
+            Path::new("/proj/.ez/sessions")
+        );
+        assert_eq!(
+            sessions_dir_with(p, Some("/elsewhere".into())),
+            Path::new("/elsewhere")
+        );
     }
 
     #[test]

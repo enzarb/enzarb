@@ -18,4 +18,9 @@ describe('ChatModeBadge', () => {
 		await expect.element(page.getByText(label)).toBeVisible();
 		expect(document.querySelector('.ez-chat-mode--bypass')).toBeNull();
 	});
+
+	it("shows an ez mode's name", async () => {
+		render(ChatModeBadge, { modeId: 'build', name: 'Build' });
+		await expect.element(page.getByText('Build')).toBeVisible();
+	});
 });

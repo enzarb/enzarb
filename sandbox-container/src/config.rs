@@ -21,14 +21,22 @@ pub struct Config {
     pub shell: String,
     /// `ENZARB_GRACE_SECS`, default 25: how long children get after SIGTERM before SIGKILL.
     pub grace: Duration,
-    /// `ENZARB_ACP_AGENT_BIN`, default `claude-agent-acp`: the chat ACP agent
-    /// (stdio JSON-RPC). Used as is when it is on `PATH`, else through
+    /// `ENZARB_CHAT_AGENT`, default `ez`: which ACP agent chats run (ADR-0028).
+    pub chat_agent: ChatAgent,
+    /// `ENZARB_ACP_AGENT_BIN`, default `ez` (`claude-agent-acp` for the claude
+    /// agent): the chat ACP agent (stdio JSON-RPC; `ez` gets the `acp`
+    /// argument). Used as is when it is on `PATH`, else through
     /// `mise exec <chat_runtime_tool> --`.
     pub acp_bin: String,
-    /// `ENZARB_CHAT_RUNTIME_TOOL`, default
-    /// `npm:@agentclientprotocol/claude-agent-acp`: the mise tool that provides
-    /// `acp_bin` when it is not installed in the image. Empty disables.
+    /// `ENZARB_CHAT_RUNTIME_TOOL`: the mise tool that provides `acp_bin` when it
+    /// is not installed in the image. Empty (the default for ez, which the image
+    /// ships) disables; the claude agent defaults to
+    /// `npm:@agentclientprotocol/claude-agent-acp`.
     pub chat_runtime_tool: String,
+    /// `ENZARB_CHAT_MODEL`, default empty (the adapter's default): the model of
+    /// ez's built-in `claude` profile (claude-code driver). A repository's
+    /// `.ez/config.toml` or a mode's `profile`/`model` can still pick another.
+    pub chat_model: String,
     /// `ENZARB_CANCEL_GRACE_SECS`, default 10: how long the agent gets to end
     /// its turn after `session/cancel` (cancel or timeout) before it is killed.
     pub cancel_grace: Duration,
@@ -67,12 +75,14 @@ pub struct Config {
     /// `ENZARB_CHAT_RETENTION_DAYS`, default 7: chat records (transcripts)
     /// untouched for this long are deleted at startup.
     pub chat_retention: Duration,
-    /// `ENZARB_CHAT_PERMISSION_MODE`: the permission mode every chat session
-    /// starts in (`bypassPermissions`, `default` or `plan`). Default
-    /// `bypassPermissions`, or `default` when bypass is not allowed.
+    /// `ENZARB_CHAT_PERMISSION_MODE` (claude agent only): the permission mode
+    /// every chat session starts in (`bypassPermissions`, `default` or `plan`).
+    /// Default `bypassPermissions`, or `default` when bypass is not allowed.
+    /// ez chats start in ez's own default mode.
     pub chat_permission_mode: ChatMode,
-    /// `ENZARB_CHAT_ALLOW_BYPASS`, default true: chats may run in (or switch
-    /// to) `bypassPermissions`. False keeps them in `default`/`plan`.
+    /// `ENZARB_CHAT_ALLOW_BYPASS` (claude agent only), default true: chats may
+    /// run in (or switch to) `bypassPermissions`. False keeps them in
+    /// `default`/`plan`.
     pub chat_allow_bypass: bool,
     /// `ENZARB_CGROUP_ROOT`, default `/sys/fs/cgroup`: the cgroup v2 directory
     /// read for `stats_request` (the container's own cgroup).
@@ -84,6 +94,29 @@ pub struct Config {
     /// `ENZARB_WORKSPACE_PRUNE*`: build caches in task workspaces are removed when space runs low.
     pub workspace_prune: WorkspacePruneConfig,
 }
+
+/// The ACP agent a chat runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatAgent {
+    /// `ez acp` (ADR-0028): modes come from ez (`.ez/modes.toml`).
+    Ez,
+    /// `claude-agent-acp`: Claude Code's `bypassPermissions`/`default`/`plan`.
+    Claude,
+}
+
+impl ChatAgent {
+    /// Parse `ENZARB_CHAT_AGENT`.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "ez" => Some(ChatAgent::Ez),
+            "claude" => Some(ChatAgent::Claude),
+            _ => None,
+        }
+    }
+}
+
+/// The mise tool providing claude-agent-acp when it is not in the image.
+pub const CLAUDE_RUNTIME_TOOL: &str = "npm:@agentclientprotocol/claude-agent-acp";
 
 /// A chat permission mode sandbox-init lets a chat be in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,8 +158,10 @@ impl Default for Config {
             workspace: "/workspace".into(),
             shell: "/bin/bash".into(),
             grace: Duration::from_secs(25),
-            acp_bin: "claude-agent-acp".into(),
-            chat_runtime_tool: "npm:@agentclientprotocol/claude-agent-acp".into(),
+            chat_agent: ChatAgent::Ez,
+            acp_bin: "ez".into(),
+            chat_runtime_tool: String::new(),
+            chat_model: String::new(),
             cancel_grace: Duration::from_secs(10),
             claude_token_file: "/workspace/.enzarb/claude-token".into(),
             git_bin: "git".into(),
@@ -176,6 +211,17 @@ impl Config {
         }
         if let Some(v) = get("ENZARB_CGROUP_ROOT").filter(|s| !s.is_empty()) {
             c.cgroup_root = v.into();
+        }
+        if let Some(v) = get("ENZARB_CHAT_AGENT").filter(|s| !s.trim().is_empty()) {
+            c.chat_agent = ChatAgent::parse(v.trim())
+                .ok_or_else(|| anyhow::anyhow!("ENZARB_CHAT_AGENT={v:?}: must be ez or claude"))?;
+        }
+        if c.chat_agent == ChatAgent::Claude {
+            c.acp_bin = "claude-agent-acp".into();
+            c.chat_runtime_tool = CLAUDE_RUNTIME_TOOL.into();
+        }
+        if let Some(v) = get("ENZARB_CHAT_MODEL") {
+            c.chat_model = v.trim().to_string();
         }
         if let Some(v) = get("ENZARB_ACP_AGENT_BIN").filter(|s| !s.is_empty()) {
             c.acp_bin = v;
@@ -319,18 +365,36 @@ mod tests {
     }
 
     #[test]
-    fn step_settings() {
+    fn chat_agent_settings() {
         let c = Config::from_lookup(|_| None).unwrap();
-        assert_eq!(
-            c.chat_runtime_tool,
-            "npm:@agentclientprotocol/claude-agent-acp"
-        );
+        assert_eq!(c.chat_agent, ChatAgent::Ez);
+        assert_eq!(c.acp_bin, "ez");
+        assert!(c.chat_runtime_tool.is_empty());
+        assert!(c.chat_model.is_empty());
         let c = Config::from_lookup(|k| match k {
+            "ENZARB_CHAT_AGENT" => Some("claude".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(c.chat_agent, ChatAgent::Claude);
+        assert_eq!(c.acp_bin, "claude-agent-acp");
+        assert_eq!(c.chat_runtime_tool, CLAUDE_RUNTIME_TOOL);
+        let c = Config::from_lookup(|k| match k {
+            "ENZARB_CHAT_AGENT" => Some("claude".into()),
             "ENZARB_CHAT_RUNTIME_TOOL" => Some(String::new()),
             _ => None,
         })
         .unwrap();
         assert!(c.chat_runtime_tool.is_empty());
+        let c = Config::from_lookup(|k| match k {
+            "ENZARB_CHAT_MODEL" => Some(" claude-sonnet-5 ".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(c.chat_model, "claude-sonnet-5");
+        assert!(
+            Config::from_lookup(|k| (k == "ENZARB_CHAT_AGENT").then(|| "codex".into())).is_err()
+        );
     }
 
     #[test]
@@ -458,7 +522,7 @@ mod tests {
     #[test]
     fn acp_settings() {
         let c = Config::from_lookup(|_| None).unwrap();
-        assert_eq!(c.acp_bin, "claude-agent-acp");
+        assert_eq!(c.acp_bin, "ez");
         assert_eq!(c.cancel_grace, Duration::from_secs(10));
         let c = Config::from_lookup(|k| match k {
             "ENZARB_ACP_AGENT_BIN" => Some("/opt/acp".into()),

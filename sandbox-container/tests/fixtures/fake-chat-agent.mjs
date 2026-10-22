@@ -69,6 +69,9 @@ async function prompt(id, params) {
       cwd: process.cwd(),
       env: Object.keys(process.env).sort(),
       configDir: process.env.CLAUDE_CONFIG_DIR ?? null,
+      argv: process.argv.slice(2),
+      ezConfigDir: process.env.EZ_CONFIG_DIR ?? null,
+      ezSessionsDir: process.env.EZ_SESSIONS_DIR ?? null,
       pid: process.pid,
     }));
     return reply(id, { stopReason: "end_turn" });

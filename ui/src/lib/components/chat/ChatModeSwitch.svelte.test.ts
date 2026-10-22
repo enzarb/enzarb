@@ -12,13 +12,38 @@ const mode = (over: Partial<ModeState> = {}): ModeState => ({
 });
 const options = () =>
 	[...document.querySelectorAll('option')].map((o) => ({ value: o.value, disabled: o.disabled }));
-const select = () => page.getByRole('combobox', { name: 'Permission mode' });
+const select = () => page.getByRole('combobox', { name: 'Mode' });
+const opts = (...ids: string[]) => ids.map((id) => ({ id, name: id }));
 
 describe('ChatModeSwitch', () => {
 	it('limits the options to the advertised modes', async () => {
-		render(ChatModeSwitch, { mode: mode({ available: ['default', 'plan'] }), onSelect: vi.fn() });
+		render(ChatModeSwitch, {
+			mode: mode({ available: opts('default', 'plan') }),
+			onSelect: vi.fn()
+		});
 		await expect.element(select()).toBeVisible();
 		expect(options().map((o) => o.value)).toEqual(['default', 'plan']);
+	});
+
+	it("lists ez's modes by name and selects any of them without a confirm", async () => {
+		const onSelect = vi.fn();
+		render(ChatModeSwitch, {
+			mode: mode({
+				modeId: 'plan',
+				available: [
+					{ id: 'plan', name: 'Plan', description: 'Read-only' },
+					{ id: 'build', name: 'Build' }
+				]
+			}),
+			onSelect
+		});
+		await expect.element(select()).toHaveValue('plan');
+		expect([...document.querySelectorAll('option')].map((o) => o.textContent)).toEqual([
+			'Plan',
+			'Build'
+		]);
+		await select().selectOptions('build');
+		expect(onSelect).toHaveBeenCalledWith('build');
 	});
 
 	it('omits bypass when it is not allowed and offers it when allowed', async () => {

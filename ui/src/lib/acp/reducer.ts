@@ -1,9 +1,14 @@
 import {
-	MODE_IDS,
+	BYPASS_MODE,
+	CLAUDE_MODES,
+	MAX_MODE_ID_LEN,
 	type ChatItem,
 	type ChatState,
 	type ModeId,
+	type ModeOption,
 	type ModeState,
+	type QuestionStatus,
+	type QuestionView,
 	type PermissionOption,
 	type PermissionStatus,
 	type PlanEntry,
@@ -183,11 +188,13 @@ export function resolvePermission(
 
 /** Every pending permission becomes `cancelled` (close, reconnect, Stop, unmount). */
 export function cancelPending(state: ChatState): ChatState {
-	if (!state.items.some((it) => it.kind === 'permission' && it.status === 'pending')) return state;
+	const pending = (it: ChatItem) =>
+		(it.kind === 'permission' || it.kind === 'question') && it.status === 'pending';
+	if (!state.items.some(pending)) return state;
 	return {
 		...state,
 		items: state.items.map((it) =>
-			it.kind === 'permission' && it.status === 'pending' ? { ...it, status: 'cancelled' } : it
+			pending(it) ? ({ ...it, status: 'cancelled' } as ChatItem) : it
 		)
 	};
 }
@@ -216,12 +223,30 @@ export function applyPermissionDenied(
 	});
 }
 
-const MAX_AVAILABLE_MODES = 16;
+const MAX_AVAILABLE_MODES = 64;
+const MAX_MODE_NAME = 64;
+const MAX_MODE_DESCRIPTION = 200;
 
+/** A mode id: a non-empty string of at most `MAX_MODE_ID_LEN` printable characters. */
 function modeId(v: unknown): ModeId | undefined {
-	return typeof v === 'string' && (MODE_IDS as readonly string[]).includes(v)
-		? (v as ModeId)
+	return typeof v === 'string' &&
+		v.length > 0 &&
+		v.length <= MAX_MODE_ID_LEN &&
+		// eslint-disable-next-line no-control-regex
+		!/[\u0000-\u001f\u007f]/.test(v)
+		? v
 		: undefined;
+}
+
+function modeOption(raw: unknown): ModeOption | undefined {
+	const o = obj(raw);
+	const id = modeId(o?.id);
+	if (!o || !id) return undefined;
+	const name = typeof o.name === 'string' && o.name.trim() ? o.name.trim() : id;
+	const opt: ModeOption = { id, name: name.slice(0, MAX_MODE_NAME) };
+	if (typeof o.description === 'string' && o.description.trim())
+		opt.description = o.description.trim().slice(0, MAX_MODE_DESCRIPTION);
+	return opt;
 }
 
 /**
@@ -232,12 +257,12 @@ export function parseSessionModes(raw: unknown): ModeState | null {
 	const m = obj(raw);
 	const current = modeId(m?.currentModeId);
 	if (!m || !current) return null;
-	let available: ModeId[] | null = null;
+	let available: ModeOption[] | null = null;
 	if (Array.isArray(m.availableModes)) {
 		available = [];
 		for (const entry of m.availableModes.slice(0, MAX_AVAILABLE_MODES)) {
-			const id = modeId(obj(entry)?.id);
-			if (id && !available.includes(id)) available.push(id);
+			const opt = modeOption(entry);
+			if (opt && !available.some((a) => a.id === opt.id)) available.push(opt);
 		}
 	}
 	return { modeId: current, bypassAllowed: false, available };
@@ -276,7 +301,69 @@ export function applyModeUpdate(mode: ModeState | null, ev: ModeEvent): ModeStat
 }
 
 /** The modes the switch may request. The active mode is shown as selected regardless. */
-export function offeredModes(mode: ModeState): ModeId[] {
-	const base = mode.available ?? [...MODE_IDS];
-	return base.filter((id) => id !== 'bypassPermissions' || mode.bypassAllowed);
+export function offeredModes(mode: ModeState): ModeOption[] {
+	const base = mode.available ?? CLAUDE_MODES;
+	return base.filter((m) => m.id !== BYPASS_MODE || mode.bypassAllowed);
+}
+
+/** The display name of `id`: the agent's name for it, Claude's, or the id itself. */
+export function modeName(mode: ModeState | null, id: ModeId): string {
+	return (
+		mode?.available?.find((m) => m.id === id)?.name ??
+		CLAUDE_MODES.find((m) => m.id === id)?.name ??
+		id
+	);
+}
+
+const MAX_QUESTIONS = 8;
+const MAX_QUESTION_OPTIONS = 16;
+const MAX_QUESTION_TEXT = 500;
+const MAX_LABEL = 200;
+
+function clip(v: unknown, max: number): string {
+	return typeof v === 'string' ? v.slice(0, max) : '';
+}
+
+/**
+ * The questions of an `_ez/ask_user_question` request; null when malformed (the caller answers
+ * `cancelled`). Labels are kept exactly: the answer must repeat them.
+ */
+export function parseQuestions(params: unknown): QuestionView[] | null {
+	const p = obj(params);
+	if (!p || !Array.isArray(p.questions) || p.questions.length === 0) return null;
+	if (p.questions.length > MAX_QUESTIONS) return null;
+	const out: QuestionView[] = [];
+	for (const raw of p.questions) {
+		const q = obj(raw);
+		if (!q || typeof q.question !== 'string' || !q.question) return null;
+		if (q.question.length > MAX_QUESTION_TEXT || !Array.isArray(q.options)) return null;
+		const options: QuestionView['options'] = [];
+		for (const o of q.options.slice(0, MAX_QUESTION_OPTIONS)) {
+			const r = obj(o);
+			if (!r || typeof r.label !== 'string' || !r.label || r.label.length > MAX_LABEL) return null;
+			if (options.some((x) => x.label === r.label)) return null;
+			options.push({ label: r.label, description: clip(r.description, MAX_QUESTION_TEXT) });
+		}
+		out.push({
+			question: q.question,
+			header: clip(q.header, MAX_LABEL),
+			multiSelect: q.multiSelect === true,
+			options
+		});
+	}
+	return out;
+}
+
+export function addQuestion(state: ChatState, id: string, questions: QuestionView[]): ChatState {
+	return {
+		items: [...state.items, { kind: 'question', id, questions, status: 'pending' }],
+		nextId: state.nextId
+	};
+}
+
+export function resolveQuestion(state: ChatState, id: string, status: QuestionStatus): ChatState {
+	const i = state.items.findIndex((it) => it.kind === 'question' && it.id === id);
+	const item = state.items[i];
+	if (i < 0 || item?.kind !== 'question' || item.status !== 'pending') return state;
+	return replaceAt(state, i, { ...item, status });
 }

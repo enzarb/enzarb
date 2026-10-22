@@ -2882,3 +2882,42 @@ textarea.ez-control {
 		font-size: 0.85em;
 	}
 }
+
+// ez's AskUserQuestion in the chat transcript.
+.ez-chat-question {
+	&__group {
+		display: grid;
+		gap: var(--ez-space-2);
+		margin: var(--ez-space-2) 0;
+		padding: var(--ez-space-2) var(--ez-space-3);
+		border: var(--ez-border-width) solid var(--ez-border);
+		border-radius: var(--ez-radius-md);
+
+		legend {
+			padding: 0 var(--ez-space-1);
+			font-weight: var(--ez-weight-medium);
+		}
+	}
+
+	&__header {
+		margin-right: var(--ez-space-2);
+		color: var(--ez-text-muted);
+		font-size: var(--ez-text-sm);
+	}
+
+	&__option {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: var(--ez-space-2);
+
+		input {
+			accent-color: var(--ez-accent);
+		}
+	}
+
+	&__summary {
+		margin: var(--ez-space-1) 0;
+		padding-left: 1.25rem;
+	}
+}

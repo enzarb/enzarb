@@ -8,6 +8,7 @@
 	import type { ConnectionDeps } from '#lib/acp/connection.ts';
 	import { sandboxConnector, type MuxSession } from '#lib/acp/sandbox-connect.ts';
 	import * as sessionStore from '#lib/acp/session-store.ts';
+	import { modeName } from '#lib/acp/reducer.ts';
 	import Notice from '#lib/components/ui/Notice.svelte';
 	import { chatConnection } from '#lib/chat.remote.ts';
 	import ChatModeBadge from './ChatModeBadge.svelte';
@@ -81,7 +82,7 @@
 				onclick={() => chat.newChat()}>New chat</button
 			>
 			{#if st.mode}
-				<ChatModeBadge modeId={st.mode.modeId} />
+				<ChatModeBadge modeId={st.mode.modeId} name={modeName(st.mode, st.mode.modeId)} />
 				<ChatModeSwitch
 					mode={st.mode}
 					disabled={st.phase !== 'ready' || st.switching}
@@ -92,7 +93,12 @@
 		{#if st.phase !== 'ready'}
 			<ChatStatus progress={st.progress} message={st.message} action={st.action} {onAction} />
 		{/if}
-		<ChatTranscript items={st.chat.items} epoch={st.epoch} onAnswer={chat.answer} />
+		<ChatTranscript
+			items={st.chat.items}
+			epoch={st.epoch}
+			onAnswer={chat.answer}
+			onAnswerQuestion={chat.answerQuestion}
+		/>
 		{#if st.error}<p class="ez-muted" role="alert">{st.error}</p>{/if}
 		<Composer
 			busy={st.busy}

@@ -54,5 +54,5 @@ A Project points at an external OpenAI-compatible endpoint with a URL and key (P
 1. Done: `ez/` import (rename, trim, edition 2024, CI).
 2. Done (spike, tested against a fake child): the `claude-code` driver and the in-process MCP tool server (`ez/crates/ez-claude`); open items in [gaps.md](../gaps.md) #25.
 3. ez for unattended use: inline pinned modes, keys from the environment in managed mode, sessions outside the worktree, `submit_result` as an ez tool, usage in the shapes sandbox-init reads.
-4. sandbox-container: build ez into the image, run `ez acp` for agent runs and chats.
+4. sandbox-container: build ez into the image, run `ez acp` for agent runs and chats. Chats: done (`ENZARB_CHAT_AGENT=ez` default; ez's modes in the Chat tab; `_ez/ask_user_question` relayed; [contracts](../contracts.md)). Agent runs: with step 3.
 5. With the ADR-0027 redesign: a mode on run start (additive proto change), resolving and pinning `.ez/modes.toml` from the default branch, Project secrets for local-model endpoints, and enzarb's own `.ez/modes.toml`.

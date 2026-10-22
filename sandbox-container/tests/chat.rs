@@ -15,6 +15,7 @@ use nix::errno::Errno;
 use nix::sys::signal::kill;
 use nix::unistd::Pid;
 use sandbox_init::chat::{ChatManager, PASS_ENV};
+use sandbox_init::config::ChatAgent;
 use sandbox_init::reaper::Reaper;
 use sandbox_init::repos::repo_dir_name;
 use sandbox_init::{AppState, ChatMode, Config, serve};
@@ -141,6 +142,8 @@ async fn start_with(tweak: impl FnOnce(&mut Config)) -> Server {
         grace: Duration::from_secs(2),
         acp_bin: agent.to_string_lossy().into_owned(),
         cancel_grace: Duration::from_secs(2),
+        // The fake agent behaves like claude-agent-acp; ez has its own tests.
+        chat_agent: ChatAgent::Claude,
         // The permission tests below are for `default`; bypass has its own.
         chat_permission_mode: ChatMode::Default,
         chat_allow_bypass: false,
@@ -307,6 +310,58 @@ async fn info(acp: &mut Acp, sid: &str) -> Value {
     let (r, text) = acp.prompt(sid, "INFO").await;
     assert_eq!(r["result"]["stopReason"], "end_turn");
     serde_json::from_str(&text).unwrap()
+}
+
+/// The ez agent: `acp` argument, ez's config and session directories outside
+/// the worktree, the question capability, and the agent's own modes.
+#[tokio::test]
+async fn ez_chat_runs_ez_acp_with_its_dirs_and_modes() {
+    let s = start_with(|c| {
+        c.chat_agent = ChatAgent::Ez;
+        c.chat_model = "claude-test".into();
+    })
+    .await;
+    let (session, _ev) = s.connect().await;
+    let mut acp = open(&s, &session).await;
+    let sid = acp.start_session().await;
+    let wt = s.chat_worktrees()[0].clone();
+    let i = info(&mut acp, &sid).await;
+    assert_eq!(i["argv"], json!(["acp"]));
+    assert_eq!(
+        i["init"]["clientCapabilities"]["_meta"],
+        json!({"ez": {"askUserQuestion": true}})
+    );
+    assert!(i["newParams"].get("_meta").is_none(), "{}", i["newParams"]);
+    let conf = s.ws.join(".enzarb/ez-config");
+    assert_eq!(i["ezConfigDir"], json!(conf));
+    let sessions = PathBuf::from(i["ezSessionsDir"].as_str().unwrap());
+    assert!(sessions.starts_with(s.ws.join(".enzarb/chats")));
+    assert!(sessions.ends_with("ez-sessions") && sessions.is_dir());
+    assert!(!sessions.starts_with(&wt));
+    let toml = std::fs::read_to_string(conf.join("config.toml")).unwrap();
+    assert!(toml.contains("default_profile = \"claude\""), "{toml}");
+    assert!(toml.contains("provider = \"claude-code\""), "{toml}");
+    assert!(toml.contains("model = \"claude-test\""), "{toml}");
+
+    // Modes are the agent's: `acceptEdits` is offered by the fake agent, so it is
+    // allowed for ez (claude chats refuse it); an unknown id is refused.
+    let id = acp
+        .request(
+            "session/set_mode",
+            json!({"sessionId": sid, "modeId": "acceptEdits"}),
+        )
+        .await;
+    let (r, _) = acp.response(id).await;
+    assert!(r.get("result").is_some(), "{r}");
+    let id = acp
+        .request(
+            "session/set_mode",
+            json!({"sessionId": sid, "modeId": "nope"}),
+        )
+        .await;
+    let (r, _) = acp.response(id).await;
+    assert_eq!(r["error"]["code"], -32602, "{r}");
+    drop(acp);
 }
 
 #[tokio::test]

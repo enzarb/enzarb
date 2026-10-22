@@ -722,7 +722,82 @@ describe('permissions', () => {
 	});
 });
 
+describe('ez questions', () => {
+	const ask = (h: Harness, sessionId = h.conn.state().sessionId, id = 60) =>
+		h.channels[0].send({
+			jsonrpc: '2.0',
+			id,
+			method: '_ez/ask_user_question',
+			params: {
+				sessionId,
+				questions: [{ question: 'Which DB?', options: [{ label: 'sqlite' }, { label: 'pg' }] }]
+			}
+		});
+	const item = (h: Harness) =>
+		h.conn.state().chat.items.find((i) => i.kind === 'question') as
+			(import('./types.ts').ChatItem & { kind: 'question' }) | undefined;
+	const result = (h: Harness, id = 60) =>
+		h.channels[0].received.find((m) => m.id === id && 'result' in m)?.result;
+	const answers = [{ question: 'Which DB?', selected: ['pg'], other: null }];
+
+	it('shows the question and sends the answer once', async () => {
+		const h = harness();
+		await ready(h);
+		ask(h);
+		await flush();
+		const q = item(h)!;
+		expect(q.status).toBe('pending');
+		expect(q.questions[0].options.map((o) => o.label)).toEqual(['sqlite', 'pg']);
+		expect(result(h)).toBeUndefined();
+		const epoch = h.conn.state().epoch;
+		h.conn.answerQuestion(q.id, answers, epoch);
+		h.conn.answerQuestion(q.id, null, epoch);
+		await flush();
+		expect(result(h)).toEqual({ answers, cancelled: false });
+		expect(h.channels[0].received.filter((m) => m.id === 60 && 'result' in m)).toHaveLength(1);
+		expect(item(h)!.status).toBe('answered');
+	});
+
+	it('skip cancels', async () => {
+		const h = harness();
+		await ready(h);
+		ask(h);
+		await flush();
+		h.conn.answerQuestion(item(h)!.id, null, h.conn.state().epoch);
+		await flush();
+		expect(result(h)).toEqual({ answers: [], cancelled: true });
+		expect(item(h)!.status).toBe('cancelled');
+	});
+
+	it('cancels questions for another session, malformed ones, and on Stop', async () => {
+		const h = harness();
+		await ready(h);
+		ask(h, 'other', 61);
+		h.channels[0].send({
+			jsonrpc: '2.0',
+			id: 62,
+			method: '_ez/ask_user_question',
+			params: { sessionId: h.conn.state().sessionId, questions: [] }
+		});
+		await flush();
+		expect(result(h, 61)).toEqual({ answers: [], cancelled: true });
+		expect(result(h, 62)).toEqual({ answers: [], cancelled: true });
+		expect(item(h)).toBeUndefined();
+		ask(h);
+		await flush();
+		const { id } = item(h)!;
+		const epoch = h.conn.state().epoch;
+		h.conn.stop();
+		await flush();
+		expect(result(h)).toEqual({ answers: [], cancelled: true });
+		expect(item(h)!.status).toBe('cancelled');
+		h.conn.answerQuestion(id, answers, epoch);
+		expect(item(h)!.status).toBe('cancelled');
+	});
+});
+
 describe('permission mode', () => {
+	const opts = (...ids: string[]) => ids.map((id) => ({ id, name: id }));
 	const modes = (current: string, ids = ['bypassPermissions', 'default', 'plan']) => ({
 		currentModeId: current,
 		availableModes: ids.map((id) => ({ id, name: id }))
@@ -750,12 +825,12 @@ describe('permission mode', () => {
 		expect(h.conn.state().mode).toEqual({
 			modeId: 'bypassPermissions',
 			bypassAllowed: false,
-			available: ['bypassPermissions', 'default', 'plan']
+			available: opts('bypassPermissions', 'default', 'plan')
 		});
 	});
 
 	it('ignores an invalid response mode', async () => {
-		const h = harness({ agent: { modes: modes('evil') } });
+		const h = harness({ agent: { modes: modes('') } });
 		await ready(h);
 		expect(h.conn.state().mode).toBeNull();
 	});
@@ -766,7 +841,10 @@ describe('permission mode', () => {
 			initialSessionId: 'saved'
 		});
 		await ready(h);
-		expect(h.conn.state().mode).toMatchObject({ modeId: 'plan', available: ['default', 'plan'] });
+		expect(h.conn.state().mode).toMatchObject({
+			modeId: 'plan',
+			available: opts('default', 'plan')
+		});
 	});
 
 	it('holds a mode event that precedes the session/new response and applies it on a match', async () => {
@@ -783,7 +861,7 @@ describe('permission mode', () => {
 		expect(h.conn.state().mode).toEqual({
 			modeId: 'default',
 			bypassAllowed: true,
-			available: ['bypassPermissions', 'default', 'plan']
+			available: opts('bypassPermissions', 'default', 'plan')
 		});
 	});
 
@@ -805,7 +883,7 @@ describe('permission mode', () => {
 		const h = harness({ agent: { sessionId: 'sess-1', modes: modes('bypassPermissions') } });
 		await ready(h);
 		h.channels[0].send(modeMsg('other', 'plan'));
-		h.channels[0].send(modeMsg('sess-1', 'evil'));
+		h.channels[0].send(modeMsg('sess-1', ''));
 		await flush();
 		expect(h.conn.state().mode?.modeId).toBe('bypassPermissions');
 		h.channels[0].send(modeMsg('sess-1', 'plan', true));
@@ -842,7 +920,7 @@ describe('permission mode', () => {
 		expect(h.conn.state().mode).toEqual({
 			modeId: 'plan',
 			bypassAllowed: true,
-			available: ['default', 'plan']
+			available: opts('default', 'plan')
 		});
 	});
 

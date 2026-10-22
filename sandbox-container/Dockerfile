@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Sandbox image: sandbox-init (pid 1), node + the ACP adapter, mise, Docker (dockerd + CLI, buildx, compose; dockerd is supervised by sandbox-init), a C toolchain, sccache (RUSTC_WRAPPER, cache on the PVC) and Chromium for Playwright (/opt/ms-playwright). Language toolchains come from mise at runtime.
+# Sandbox image: sandbox-init (pid 1), ez (the chat agent, ADR-0028), node + the ACP adapter (ez's claude-code driver), mise, Docker (dockerd + CLI, buildx, compose; dockerd is supervised by sandbox-init), a C toolchain, sccache (RUSTC_WRAPPER, cache on the PVC) and Chromium for Playwright (/opt/ms-playwright). Language toolchains come from mise at runtime.
 # Build from the monorepo root (in-repo path dep on proto/):
 #   docker build -f sandbox-container/Dockerfile -t enzarb-sandbox .
 FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
@@ -39,13 +39,14 @@ COPY --from=planner /src/recipe.json recipe.json
 COPY rust-toolchain.toml ./
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo chef cook --release --locked --recipe-path recipe.json -p sandbox-init
+    cargo chef cook --release --locked --recipe-path recipe.json -p sandbox-init -p ez-cli
 # Real sources of every workspace member (the planner copied them all), not cargo-chef 0.0.1 stubs: --locked fails otherwise.
 COPY --from=planner /src/ ./
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo build --release --locked -p sandbox-init --bin sandbox-init \
- && cp target/release/sandbox-init /sandbox-init
+    cargo build --release --locked -p sandbox-init -p ez-cli --bin sandbox-init --bin ez \
+ && cp target/release/sandbox-init /sandbox-init \
+ && cp target/release/ez /ez
 
 # Node stage: download node, install the adapter, drop what the runtime does not need.
 FROM ubuntu:26.04 AS node
@@ -239,6 +240,9 @@ ENV HOME=/home/enzarb \
     PATH=/usr/local/bin:/workspace/.toolchains/mise/shims:/usr/bin:/bin:/usr/sbin:/sbin
 
 COPY --from=build /sandbox-init /usr/local/bin/sandbox-init
+# ez: chats run `ez acp` (ENZARB_CHAT_AGENT, default ez); its claude-code driver starts claude-agent-acp.
+COPY --from=build /ez /usr/local/bin/ez
+RUN ez --version
 WORKDIR /workspace
 EXPOSE 7070
 ENTRYPOINT ["/usr/local/bin/sandbox-init"]

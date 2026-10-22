@@ -1051,3 +1051,248 @@ fn set_mode_matrix() {
         assert_eq!(browser_msgs(&outs).len(), 1);
     }
 }
+
+// ---- ez agent ----
+
+/// An ez chat with a session offering `plan`/`build` (current `plan`);
+/// `asks`: the browser advertised the question capability.
+fn ez_ready(asks: bool) -> Filter {
+    let mut f = Filter::ez(wt(), filter::token_forms(TOKEN), None);
+    let caps = if asks {
+        json!({"_meta": {"ez": {"askUserQuestion": true}}})
+    } else {
+        json!({})
+    };
+    let outs = f.from_browser(&line(json!({
+        "jsonrpc": "2.0", "id": 0, "method": "initialize",
+        "params": {"protocolVersion": 1, "clientCapabilities": caps},
+    })));
+    // ez always gets the capability: sandbox-init answers when the browser cannot
+    assert_eq!(
+        agent_msgs(&outs)[0]["params"]["clientCapabilities"],
+        json!({"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false,
+               "_meta": {"ez": {"askUserQuestion": true}}})
+    );
+    f.from_agent(&line(json!({"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}})));
+    let outs = f.from_browser(&line(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "session/new",
+        "params": {"cwd": "/", "mcpServers": [], "_meta": {"x": 1}},
+    })));
+    assert_eq!(
+        agent_msgs(&outs)[0]["params"],
+        json!({"cwd": wt(), "mcpServers": []})
+    );
+    let outs = f.from_agent(&line(json!({
+        "jsonrpc": "2.0", "id": 1,
+        "result": {"sessionId": "20261022-101500-abc123", "modes": {"currentModeId": "plan",
+            "availableModes": [{"id": "plan", "name": "Plan"}, {"id": "build", "name": "Build"}]}},
+    })));
+    // no starting mode is enforced: the response goes straight to the browser
+    assert!(agent_msgs(&outs).is_empty());
+    let b = browser_msgs(&outs);
+    assert_eq!(b[0]["result"]["modes"]["currentModeId"], "plan");
+    assert_eq!(b[1]["method"], filter::MODE);
+    assert_eq!(b[1]["params"]["modeId"], "plan");
+    assert_eq!(b[1]["params"]["bypassAllowed"], false);
+    assert_eq!(f.session(), Some("20261022-101500-abc123"));
+    f
+}
+
+fn set_mode(f: &mut Filter, id: i64, mode: &str) -> Vec<Out> {
+    f.from_browser(&line(json!({
+        "jsonrpc": "2.0", "id": id, "method": "session/set_mode",
+        "params": {"sessionId": "20261022-101500-abc123", "modeId": mode},
+    })))
+}
+
+#[test]
+fn ez_modes_are_the_agents() {
+    let mut f = ez_ready(false);
+    let outs = set_mode(&mut f, 5, "build");
+    assert_eq!(agent_msgs(&outs)[0]["params"]["modeId"], "build");
+    let outs = f.from_agent(&line(json!({"jsonrpc":"2.0","id":5,"result":{}})));
+    let b = browser_msgs(&outs);
+    assert_eq!(b[1]["params"]["modeId"], "build");
+    for bad in ["bypassPermissions", "default", "nope", ""] {
+        let outs = set_mode(&mut f, 6, bad);
+        assert_eq!(error_code_of(&outs), Some(code::INVALID_PARAMS), "{bad}");
+        assert!(agent_msgs(&outs).is_empty());
+    }
+}
+
+fn question(id: i64) -> Vec<u8> {
+    line(json!({
+        "jsonrpc": "2.0", "id": id, "method": filter::ASK_USER_QUESTION,
+        "params": {"sessionId": "20261022-101500-abc123", "questions": [
+            {"question": "Which DB?", "header": "DB", "multiSelect": false,
+             "options": [{"label": "sqlite", "description": ""}, {"label": "postgres", "description": ""}]},
+            {"question": "Extras?", "header": "X", "multiSelect": true,
+             "options": [{"label": "a"}, {"label": "b"}]},
+        ]},
+    }))
+}
+
+fn answer(f: &mut Filter, id: i64, result: Value) -> Value {
+    let outs = f.from_browser(&line(json!({"jsonrpc": "2.0", "id": id, "result": result})));
+    agent_msgs(&outs)[0]["result"].clone()
+}
+
+#[test]
+fn ez_questions_without_browser_support_are_cancelled() {
+    let mut f = ez_ready(false);
+    let outs = f.from_agent(&question(70));
+    assert!(browser_msgs(&outs).is_empty());
+    assert_eq!(
+        agent_msgs(&outs)[0]["result"],
+        json!({"answers": [], "cancelled": true})
+    );
+}
+
+#[test]
+fn ez_questions_go_to_the_browser_and_answers_are_rebuilt() {
+    let mut f = ez_ready(true);
+    let outs = f.from_agent(&question(70));
+    assert!(agent_msgs(&outs).is_empty());
+    assert_eq!(browser_msgs(&outs)[0]["method"], filter::ASK_USER_QUESTION);
+    assert_eq!(f.pending_permissions(), 1);
+    let r = answer(
+        &mut f,
+        70,
+        json!({"answers": [
+            {"question": "Which DB?", "selected": ["postgres"], "other": null, "evil": 1},
+            {"question": "Extras?", "selected": ["a", "b"], "other": "and c"},
+        ], "cancelled": false, "_meta": {"x": 1}}),
+    );
+    assert_eq!(
+        r,
+        json!({"answers": [
+            {"question": "Which DB?", "selected": ["postgres"], "other": null},
+            {"question": "Extras?", "selected": ["a", "b"], "other": "and c"},
+        ], "cancelled": false})
+    );
+    assert_eq!(f.pending_permissions(), 0);
+    // a second answer to the same request is dropped
+    let outs = f.from_browser(&line(
+        json!({"jsonrpc":"2.0","id":70,"result":{"answers":[],"cancelled":false}}),
+    ));
+    assert!(agent_msgs(&outs).is_empty());
+}
+
+#[test]
+fn ez_invalid_answers_become_cancelled() {
+    let cancelled = json!({"answers": [], "cancelled": true});
+    let both = |db: Value, extras: Value| json!({"answers": [db, extras], "cancelled": false});
+    let ok_extras = json!({"question": "Extras?", "selected": ["a"]});
+    for bad in [
+        // an unknown label, two answers to a single-select, a duplicate, nothing chosen
+        both(
+            json!({"question": "Which DB?", "selected": ["mysql"]}),
+            ok_extras.clone(),
+        ),
+        both(
+            json!({"question": "Which DB?", "selected": ["sqlite", "postgres"]}),
+            ok_extras.clone(),
+        ),
+        both(
+            json!({"question": "Which DB?", "selected": ["sqlite"]}),
+            json!({"question": "Extras?", "selected": ["a", "a"]}),
+        ),
+        both(
+            json!({"question": "Which DB?", "selected": []}),
+            ok_extras.clone(),
+        ),
+        // a missing question, an oversized free-text answer
+        json!({"answers": [ok_extras.clone()], "cancelled": false}),
+        both(
+            json!({"question": "Which DB?", "selected": [], "other": "x".repeat(filter::MAX_ANSWER_LEN + 1)}),
+            ok_extras.clone(),
+        ),
+        json!({"cancelled": true}),
+        json!("junk"),
+    ] {
+        let mut f = ez_ready(true);
+        f.from_agent(&question(70));
+        assert_eq!(answer(&mut f, 70, bad.clone()), cancelled, "{bad}");
+    }
+    // an error response cancels too
+    let mut f = ez_ready(true);
+    f.from_agent(&question(70));
+    let outs = f.from_browser(&line(
+        json!({"jsonrpc":"2.0","id":70,"error":{"code":-32601,"message":"no"}}),
+    ));
+    assert_eq!(agent_msgs(&outs)[0]["result"], cancelled);
+}
+
+#[test]
+fn ez_pending_questions_are_cancelled_on_cancel() {
+    let mut f = ez_ready(true);
+    f.from_agent(&question(70));
+    let outs = f.cancel_permissions();
+    assert_eq!(
+        agent_msgs(&outs)[0],
+        &json!({"jsonrpc": "2.0", "id": 70, "result": {"answers": [], "cancelled": true}})
+    );
+    assert_eq!(f.pending_permissions(), 0);
+}
+
+#[test]
+fn ez_permission_requests_follow_the_sandbox_rules() {
+    let mut f = ez_ready(true);
+    // ordinary tools are allowed here; SwitchMode (kind switch_mode) asks the user
+    let outs = f.from_agent(&permission_request(
+        80,
+        json!({"toolCallId": "t2", "kind": "execute", "title": "Bash"}),
+    ));
+    assert_eq!(
+        agent_msgs(&outs)[0]["result"]["outcome"]["optionId"],
+        "always"
+    );
+    let outs = f.from_agent(&permission_request(81, ask_tool()));
+    assert!(agent_msgs(&outs).is_empty());
+    assert_eq!(
+        browser_msgs(&outs)[0]["method"],
+        "session/request_permission"
+    );
+}
+
+#[test]
+fn ez_question_text_is_redacted() {
+    let mut f = ez_ready(true);
+    let outs = f.from_agent(&line(json!({
+        "jsonrpc": "2.0", "id": 90, "method": filter::ASK_USER_QUESTION,
+        "params": {"sessionId": "20261022-101500-abc123", "questions": [
+            {"question": format!("use {TOKEN}?"), "options": [{"label": "yes"}]}]},
+    })));
+    assert!(!browser_msgs(&outs)[0].to_string().contains(TOKEN));
+}
+
+#[test]
+fn ez_chat_command_passes_acp() {
+    let cfg = Config {
+        acp_bin: "/bin/sh".into(),
+        ..Config::default()
+    };
+    assert_eq!(
+        chat_command(&cfg),
+        Some(("/bin/sh".to_string(), vec!["acp".to_string()]))
+    );
+    let cfg = Config {
+        chat_agent: crate::config::ChatAgent::Claude,
+        acp_bin: "/bin/sh".into(),
+        ..Config::default()
+    };
+    assert_eq!(chat_command(&cfg), Some(("/bin/sh".to_string(), vec![])));
+}
+
+#[test]
+fn ez_config_is_valid_toml_with_an_escaped_model() {
+    let t: toml::Table = ez_config("a\"b\\c\n").parse().unwrap();
+    assert_eq!(t["default_profile"].as_str(), Some("claude"));
+    assert_eq!(
+        t["profiles"]["claude"]["provider"].as_str(),
+        Some("claude-code")
+    );
+    assert_eq!(t["profiles"]["claude"]["model"].as_str(), Some("a\"b\\c\n"));
+    let t: toml::Table = ez_config("").parse().unwrap();
+    assert_eq!(t["profiles"]["claude"]["model"].as_str(), Some(""));
+}

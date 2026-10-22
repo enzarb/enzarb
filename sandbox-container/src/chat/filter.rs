@@ -1,8 +1,20 @@
 //! The chat relay's JSON-RPC filter: pure (no I/O), one instance per chat
 //! channel.
 //!
-//! sandbox-init sits between the browser (an ACP *client*) and
-//! `claude-agent-acp` (the ACP *agent*). Every NDJSON line from either side
+//! sandbox-init sits between the browser (an ACP *client*) and the ACP
+//! *agent*: `ez acp` (the default, ADR-0028) or `claude-agent-acp`
+//! ([`ChatAgent`]). The rules below are the claude rules; ez differs in:
+//! * `initialize` advertises `clientCapabilities._meta.ez.askUserQuestion`,
+//!   and `session/new`/`load` carry no `_meta` (ez reads none);
+//! * modes are ez's (`.ez/modes.toml`): `session/set_mode` accepts exactly the
+//!   ids the agent listed in `modes.availableModes`, and no starting mode is
+//!   enforced (the agent's default mode is used);
+//! * `_ez/ask_user_question` requests go to the browser when it advertised
+//!   `clientCapabilities._meta.ez.askUserQuestion: true`, and are answered
+//!   `cancelled` otherwise; the browser's answer is rebuilt from the
+//!   question's own labels (anything invalid becomes `cancelled`).
+//!
+//!  Every NDJSON line from either side
 //! is parsed here and turned into [`Out`] actions. Nothing is passed through
 //! verbatim from the browser: each allowed request is rebuilt from the fields
 //! sandbox-init knows, so unknown fields (`_meta` in particular, which the
@@ -53,7 +65,7 @@ use std::path::PathBuf;
 
 use serde_json::{Map, Value, json};
 
-use crate::config::ChatMode;
+use crate::config::{ChatAgent, ChatMode};
 
 /// Largest total text of one `session/prompt`.
 pub const MAX_PROMPT_BYTES: usize = 256 * 1024;
@@ -64,6 +76,14 @@ pub const MAX_PENDING_REQUESTS: usize = 64;
 /// Modes the browser may switch to (`bypassPermissions` only while bypass is
 /// allowed). `acceptEdits`, `auto` and `dontAsk` are refused.
 pub const ALLOWED_MODES: &[&str] = &["bypassPermissions", "default", "plan"];
+/// Most modes taken from an agent's `availableModes`.
+pub const MAX_MODES: usize = 64;
+/// Longest mode id accepted from the agent.
+pub const MAX_MODE_ID_LEN: usize = 64;
+/// ez's question request (agent -> client).
+pub const ASK_USER_QUESTION: &str = "_ez/ask_user_question";
+/// Longest free-text answer to a question.
+pub const MAX_ANSWER_LEN: usize = 4096;
 /// The browser notification carrying the active permission mode.
 pub const MODE: &str = "_enzarb/mode";
 /// Id prefix of the `session/set_mode` requests sandbox-init sends itself.
@@ -108,6 +128,15 @@ enum Pending {
     Enforce(Box<Map<String, Value>>, String),
 }
 
+/// An `_ez/ask_user_question` forwarded to the browser.
+#[derive(Debug, Clone)]
+struct QuestionReq {
+    /// The agent's request id, echoed in the answer.
+    id: Value,
+    /// `(question, multiSelect, option labels)` per question.
+    questions: Vec<(String, bool, Vec<String>)>,
+}
+
 #[derive(Debug, Clone)]
 struct PermReq {
     /// The agent's request id, echoed in the answer.
@@ -129,6 +158,12 @@ pub fn valid_session_id(s: &str) -> bool {
 
 /// Per-channel filter state.
 pub struct Filter {
+    agent: ChatAgent,
+    /// Mode ids the agent offered (ez); `session/set_mode` accepts only these.
+    modes: Vec<String>,
+    /// The browser answers `_ez/ask_user_question`.
+    browser_asks: bool,
+    questions: HashMap<String, QuestionReq>,
     mode: ChatMode,
     allow_bypass: bool,
     own_ids: u64,
@@ -199,9 +234,44 @@ impl Filter {
         secrets: Vec<String>,
         resume: Option<String>,
     ) -> Self {
-        Self {
+        Self::with_agent(
+            ChatAgent::Claude,
             mode,
-            allow_bypass: allow_bypass || mode == ChatMode::Bypass,
+            allow_bypass,
+            worktree,
+            secrets,
+            resume,
+        )
+    }
+
+    /// An ez chat ([`Filter::new`] is the claude one).
+    pub fn ez(worktree: PathBuf, secrets: Vec<String>, resume: Option<String>) -> Self {
+        Self::with_agent(
+            ChatAgent::Ez,
+            ChatMode::Default,
+            false,
+            worktree,
+            secrets,
+            resume,
+        )
+    }
+
+    fn with_agent(
+        agent: ChatAgent,
+        mode: ChatMode,
+        allow_bypass: bool,
+        worktree: PathBuf,
+        secrets: Vec<String>,
+        resume: Option<String>,
+    ) -> Self {
+        let claude = agent == ChatAgent::Claude;
+        Self {
+            agent,
+            modes: Vec::new(),
+            browser_asks: false,
+            questions: HashMap::new(),
+            mode,
+            allow_bypass: claude && (allow_bypass || mode == ChatMode::Bypass),
             own_ids: 0,
             worktree,
             secrets: secrets.into_iter().filter(|s| s.len() >= 8).collect(),
@@ -227,9 +297,21 @@ impl Filter {
         self.prompting > 0
     }
 
-    /// Permission requests waiting for the browser.
+    /// Permission requests and questions waiting for the browser.
     pub fn pending_permissions(&self) -> usize {
-        self.permissions.len()
+        self.permissions.len() + self.questions.len()
+    }
+
+    fn is_ez(&self) -> bool {
+        self.agent == ChatAgent::Ez
+    }
+
+    /// `_meta` of `session/new`/`load`: claude's options, nothing for ez.
+    fn session_params(&self, mut params: Value) -> Value {
+        if !self.is_ez() {
+            params["_meta"] = session_meta(self.mode, self.allow_bypass);
+        }
+        params
     }
 
     /// Redact the secrets from every string (and key) of `v`.
@@ -362,6 +444,15 @@ impl Filter {
                         "terminal": false,
                     },
                 });
+                if self.is_ez() {
+                    self.browser_asks = p
+                        .and_then(|p| p.get("clientCapabilities"))
+                        .and_then(|c| c.pointer("/_meta/ez/askUserQuestion"))
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    params["clientCapabilities"]["_meta"] =
+                        json!({"ez": {"askUserQuestion": true}});
+                }
                 if let Some(info) = p
                     .and_then(|p| p.get("clientInfo"))
                     .and_then(Value::as_object)
@@ -392,11 +483,10 @@ impl Filter {
                     );
                 }
                 self.establishing = true;
-                let params = json!({
+                let params = self.session_params(json!({
                     "cwd": self.worktree,
                     "mcpServers": [],
-                    "_meta": session_meta(self.mode, self.allow_bypass),
-                });
+                }));
                 self.forward(id, method, params, Pending::New)
             }
             "session/load" => {
@@ -422,12 +512,11 @@ impl Filter {
                 }
                 let sid = sid.to_string();
                 self.establishing = true;
-                let params = json!({
+                let params = self.session_params(json!({
                     "sessionId": sid,
                     "cwd": self.worktree,
                     "mcpServers": [],
-                    "_meta": session_meta(self.mode, self.allow_bypass),
-                });
+                }));
                 self.forward(id, method, params, Pending::Load(sid))
             }
             "session/prompt" => {
@@ -461,6 +550,18 @@ impl Filter {
                     Err(e) => return self.refuse(id, method, code::INVALID_PARAMS, e),
                 };
                 let mode = str_field(p, "modeId").unwrap_or_default();
+                if self.is_ez() {
+                    if !self.modes.iter().any(|m| m == mode) {
+                        return self.refuse(
+                            id,
+                            method,
+                            code::INVALID_PARAMS,
+                            "mode not offered by the agent",
+                        );
+                    }
+                    let params = json!({"sessionId": sid, "modeId": mode});
+                    return self.forward(id, method, params, Pending::SetMode(mode.to_string()));
+                }
                 if !ALLOWED_MODES.contains(&mode) {
                     return self.refuse(
                         id,
@@ -511,6 +612,9 @@ impl Filter {
     }
 
     fn browser_response(&mut self, id: Value, m: &Map<String, Value>) -> Vec<Out> {
+        if let Some(q) = self.questions.remove(&id_key(&id)) {
+            return self.question_answer(q, m.get("result"));
+        }
         let Some(req) = self.permissions.remove(&id_key(&id)) else {
             return vec![self.dropped("browser", "response to no outstanding permission request")];
         };
@@ -674,6 +778,41 @@ impl Filter {
         out
     }
 
+    /// An ez `session/new`/`load` response: remember the offered modes and
+    /// hand it over as is (no starting mode is enforced).
+    fn establish_ez(&mut self, m: Map<String, Value>, sid: String) -> Vec<Out> {
+        let modes = m.get("result").and_then(|r| r.get("modes"));
+        self.modes = modes
+            .and_then(|r| r.get("availableModes"))
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.get("id")?.as_str())
+                    .filter(|id| !id.is_empty() && id.len() <= MAX_MODE_ID_LEN)
+                    .take(MAX_MODES)
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let current = modes
+            .and_then(|r| r.get("currentModeId"))
+            .and_then(Value::as_str)
+            .filter(|c| self.modes.iter().any(|m| m == c))
+            .map(String::from);
+        self.session = Some(sid.clone());
+        let msg = self.redact(Value::Object(m));
+        let mut out = vec![
+            Out::Session(sid.clone()),
+            Out::Record("agent", json!({"response": "result"})),
+            Out::Browser(msg),
+        ];
+        if let Some(c) = current {
+            out.push(Out::Record("mode", json!({"mode": c})));
+            out.push(Out::Browser(self.mode_note(&sid, &c)));
+        }
+        out
+    }
+
     fn mode_note(&self, sid: &str, mode: &str) -> Value {
         json!({
             "jsonrpc": "2.0",
@@ -686,6 +825,9 @@ impl Filter {
     /// it to the browser when the agent is in the configured mode, otherwise
     /// switch the mode first.
     fn establish(&mut self, m: Map<String, Value>, sid: String) -> Vec<Out> {
+        if self.is_ez() {
+            return self.establish_ez(m, sid);
+        }
         let current = m
             .get("result")
             .and_then(|r| r.get("modes"))
@@ -732,6 +874,9 @@ impl Filter {
     }
 
     fn agent_request(&mut self, method: &str, id: Value, m: &Map<String, Value>) -> Vec<Out> {
+        if self.is_ez() && method == ASK_USER_QUESTION {
+            return self.agent_question(id, m);
+        }
         if method != "session/request_permission" {
             return vec![
                 Out::Agent(rpc_error(
@@ -825,26 +970,154 @@ impl Filter {
         ]
     }
 
+    /// An `_ez/ask_user_question` from the agent.
+    fn agent_question(&mut self, id: Value, m: &Map<String, Value>) -> Vec<Out> {
+        let key = id_key(&id);
+        let cancelled = |reason: &str| {
+            vec![
+                Out::Agent(
+                    json!({"jsonrpc": "2.0", "id": id, "result": {"answers": [], "cancelled": true}}),
+                ),
+                Out::Record(
+                    "question",
+                    json!({"decision": "cancelled", "reason": reason}),
+                ),
+            ]
+        };
+        if !self.browser_asks {
+            return cancelled("the chat client cannot answer questions");
+        }
+        if self.questions.contains_key(&key)
+            || self.permissions.len() + self.questions.len() >= MAX_PENDING_PERMISSIONS
+        {
+            return cancelled("question id in use or too many pending");
+        }
+        let qs: Option<Vec<(String, bool, Vec<String>)>> = m
+            .get("params")
+            .and_then(|p| p.get("questions"))
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|q| {
+                        let text = q.get("question")?.as_str()?.to_string();
+                        let multi = q
+                            .get("multiSelect")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        let labels = q
+                            .get("options")?
+                            .as_array()?
+                            .iter()
+                            .filter_map(|o| Some(o.get("label")?.as_str()?.to_string()))
+                            .collect();
+                        Some((text, multi, labels))
+                    })
+                    .collect()
+            });
+        let Some(qs) = qs.filter(|q| !q.is_empty()) else {
+            return cancelled("no questions");
+        };
+        self.questions.insert(
+            key,
+            QuestionReq {
+                id: id.clone(),
+                questions: qs,
+            },
+        );
+        let msg = self.redact(Value::Object(m.clone()));
+        vec![
+            Out::Record(
+                "question",
+                json!({"decision": "ask", "params": msg.get("params").cloned().unwrap_or(Value::Null)}),
+            ),
+            Out::Browser(msg),
+        ]
+    }
+
+    /// Rebuild the browser's answer to `q` from the question's own labels.
+    fn question_answer(&self, q: QuestionReq, result: Option<&Value>) -> Vec<Out> {
+        let answers = (|| -> Option<Vec<Value>> {
+            let r = result?.as_object()?;
+            if r.get("cancelled").and_then(Value::as_bool) == Some(true) {
+                return None;
+            }
+            let given = r.get("answers")?.as_array()?;
+            let mut out = Vec::with_capacity(q.questions.len());
+            for (text, multi, labels) in &q.questions {
+                let a = given
+                    .iter()
+                    .find(|a| a.get("question").and_then(Value::as_str) == Some(text))?;
+                let selected: Vec<&str> = a
+                    .get("selected")
+                    .and_then(Value::as_array)
+                    .map(|s| s.iter().filter_map(Value::as_str).collect())
+                    .unwrap_or_default();
+                if selected.iter().any(|s| !labels.iter().any(|l| l == s))
+                    || (!multi && selected.len() > 1)
+                {
+                    return None;
+                }
+                let mut seen: Vec<&str> = selected.clone();
+                seen.sort_unstable();
+                seen.dedup();
+                if seen.len() != selected.len() {
+                    return None;
+                }
+                let other = match a.get("other") {
+                    None | Some(Value::Null) => Value::Null,
+                    Some(Value::String(s)) if s.len() <= MAX_ANSWER_LEN => Value::String(s.clone()),
+                    _ => return None,
+                };
+                if selected.is_empty() && other.is_null() {
+                    return None;
+                }
+                out.push(json!({"question": text, "selected": selected, "other": other}));
+            }
+            Some(out)
+        })();
+        let (result, decision) = match answers {
+            Some(a) => (json!({"answers": a, "cancelled": false}), "answered"),
+            None => (json!({"answers": [], "cancelled": true}), "cancelled"),
+        };
+        vec![
+            Out::Record(
+                "question",
+                self.redact(json!({"decision": decision, "result": result})),
+            ),
+            Out::Agent(json!({"jsonrpc": "2.0", "id": q.id, "result": result})),
+        ]
+    }
+
     // ---- shutdown ----
 
     /// Answer every outstanding permission request `cancelled` (close, idle,
     /// cancel). Late browser answers are then dropped.
     pub fn cancel_permissions(&mut self) -> Vec<Out> {
+        let mut qs: Vec<QuestionReq> = self.questions.drain().map(|(_, r)| r).collect();
+        qs.sort_by_key(|r| r.id.to_string());
+        let questions = qs.into_iter().flat_map(|q| {
+            [
+                Out::Record("question", json!({"decision": "cancelled"})),
+                Out::Agent(json!({
+                    "jsonrpc": "2.0", "id": q.id, "result": {"answers": [], "cancelled": true}
+                })),
+            ]
+        });
         let mut reqs: Vec<PermReq> = self.permissions.drain().map(|(_, r)| r).collect();
         reqs.sort_by_key(|r| r.id.to_string());
-        reqs.into_iter()
-            .flat_map(|r| {
-                [
-                    Out::Record(
-                        "permission",
-                        json!({"tool_call_id": r.tool_call_id, "decision": "cancelled"}),
-                    ),
-                    Out::Agent(json!({
-                        "jsonrpc": "2.0", "id": r.id, "result": {"outcome": {"outcome": "cancelled"}}
-                    })),
-                ]
-            })
-            .collect()
+        let mut out: Vec<Out> = questions.collect();
+        out.extend(reqs.into_iter().flat_map(|r| {
+            [
+                Out::Record(
+                    "permission",
+                    json!({"tool_call_id": r.tool_call_id, "decision": "cancelled"}),
+                ),
+                Out::Agent(json!({
+                    "jsonrpc": "2.0", "id": r.id, "result": {"outcome": {"outcome": "cancelled"}}
+                })),
+            ]
+        }));
+        out
     }
 
     /// `session/cancel` for the established session.

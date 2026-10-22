@@ -1,18 +1,21 @@
 <script lang="ts">
-	import type { ChatItem, PermissionChoice } from '#lib/acp/types.ts';
+	import type { ChatItem, PermissionChoice, QuestionAnswer } from '#lib/acp/types.ts';
 	import ChatMessage from './ChatMessage.svelte';
 	import PermissionRequest from './PermissionRequest.svelte';
+	import QuestionRequest from './QuestionRequest.svelte';
 	import ToolCall from './ToolCall.svelte';
 
 	/** The conversation: a polite live region so new messages are announced. */
 	let {
 		items,
 		epoch,
-		onAnswer
+		onAnswer,
+		onAnswerQuestion = () => {}
 	}: {
 		items: ChatItem[];
 		epoch: number;
 		onAnswer: (id: string, choice: PermissionChoice, epoch: number) => void;
+		onAnswerQuestion?: (id: string, answers: QuestionAnswer[] | null, epoch: number) => void;
 	} = $props();
 </script>
 
@@ -43,6 +46,14 @@
 				reason={item.reason}
 				{epoch}
 				{onAnswer}
+			/>
+		{:else if item.kind === 'question'}
+			<QuestionRequest
+				id={item.id}
+				questions={item.questions}
+				status={item.status}
+				{epoch}
+				onAnswer={onAnswerQuestion}
 			/>
 		{:else if item.kind === 'notice'}
 			<div class="ez-chat-notice" role="note">{item.text}</div>

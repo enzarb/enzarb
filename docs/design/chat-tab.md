@@ -2,6 +2,8 @@
 
 > Written before the monorepo ([ADR-0015](../adr/0015-monorepo.md)). Repo names such as `enzarb-proto` or `enzarb-ui` now mean the `proto/` and `ui/` directories of github.com/enzarb/enzarb; issue links (`enzarb-ui#66`) point at the archived repos. File paths below use the current directories.
 
+> **Amended 2026-10-22 (ADR-0028):** chats run `ez acp` by default (`ENZARB_CHAT_AGENT`), with ez's modes instead of Claude's `bypassPermissions`/`default`/`plan`, and ez's `_ez/ask_user_question` relayed to the browser. The claude path below stays available with `ENZARB_CHAT_AGENT=claude`. Current rules: [contracts.md](../contracts.md), "Interactive chat".
+
 Status: proposed (2026-10-12). Scope: a Chat page in the project view that talks to Claude through ACP inside the Project's sandbox. It covers enzarb-proto, enzarb-sandbox-container, enzarb-sandbox-proxy, enzarb-ui, enzarb-helm and root docs. enzarb-sandbox-operator needs no code changes (see section 4).
 
 This builds on enzarb's plan in the issue (separate routes under a shared layout, `@agentclientprotocol/sdk` rather than `@zed-industries/*`) and settles the "to confirm" points.

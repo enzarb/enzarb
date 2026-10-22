@@ -36,6 +36,7 @@ check() {
   echo "-- $*"
   docker exec "$name" "$@"
 }
+check ez --version
 check claude-agent-acp --version
 check claude --version
 check git --version

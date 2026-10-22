@@ -46,7 +46,30 @@ export type ChatItem =
 			/** Why the sandbox blocked the action (`blocked` items). */
 			reason?: string;
 	  }
+	| {
+			kind: 'question';
+			id: string;
+			questions: QuestionView[];
+			status: QuestionStatus;
+	  }
 	| { kind: 'notice'; id: string; code: 'not_restored'; text: string };
+
+export type QuestionStatus = 'pending' | 'answered' | 'cancelled';
+
+/** One question of ez's `_ez/ask_user_question`; plain text only. */
+export interface QuestionView {
+	question: string;
+	header: string;
+	multiSelect: boolean;
+	options: { label: string; description: string }[];
+}
+
+/** The answer to one question, sent back as is (the sandbox checks it against the labels). */
+export interface QuestionAnswer {
+	question: string;
+	selected: string[];
+	other: string | null;
+}
 
 export interface ChatState {
 	items: ChatItem[];
@@ -55,15 +78,35 @@ export interface ChatState {
 
 export const initialChat: ChatState = { items: [], nextId: 1 };
 
-/** The permission modes the browser knows; anything else from the agent is dropped. */
-export const MODE_IDS = ['bypassPermissions', 'default', 'plan'] as const;
-export type ModeId = (typeof MODE_IDS)[number];
+/**
+ * A mode id from the agent: ez's modes (`.ez/modes.toml`, ADR-0028) or, on sandboxes still running
+ * claude-agent-acp, Claude's `bypassPermissions` / `default` / `plan`. The sandbox decides which
+ * ids `session/set_mode` accepts.
+ */
+export type ModeId = string;
+/** Longest mode id the browser accepts (the sandbox's limit). */
+export const MAX_MODE_ID_LEN = 64;
+/** Claude's bypass mode: switching to it asks for confirmation. */
+export const BYPASS_MODE = 'bypassPermissions';
 
-/** The chat permission mode; `null` elsewhere means unknown (old sandbox or fresh connection). */
+export interface ModeOption {
+	id: ModeId;
+	name: string;
+	description?: string;
+}
+
+/** Claude's modes, offered when the agent listed none (sandboxes before ez). */
+export const CLAUDE_MODES: readonly ModeOption[] = [
+	{ id: BYPASS_MODE, name: 'Bypass' },
+	{ id: 'default', name: 'Default' },
+	{ id: 'plan', name: 'Plan' }
+];
+
+/** The chat mode; `null` elsewhere means unknown (old sandbox or fresh connection). */
 export interface ModeState {
 	modeId: ModeId;
 	/** Advisory only: the sandbox enforces it. */
 	bypassAllowed: boolean;
 	/** Modes the agent advertised; `null` when the response had none. */
-	available: ModeId[] | null;
+	available: ModeOption[] | null;
 }

@@ -10,6 +10,7 @@ function setup(agent: AgentOpts = {}, over: Partial<AcpHandlers> = {}) {
 		requestPermission: vi.fn(async () => ({ outcome: 'cancelled' as const })),
 		permissionDenied: vi.fn(),
 		modeChanged: vi.fn(),
+		askUserQuestion: vi.fn(async () => ({ answers: [], cancelled: true })),
 		...over
 	};
 	return { ch, handlers, client: createAcpClient(ch, handlers) };
@@ -18,7 +19,7 @@ function setup(agent: AgentOpts = {}, over: Partial<AcpHandlers> = {}) {
 const tick = () => new Promise((r) => setTimeout(r, 10));
 
 describe('outbound surface', () => {
-	it('advertises no fs or terminal capabilities and never sends _meta or authenticate', async () => {
+	it('advertises only the ez question capability and never sends other _meta or authenticate', async () => {
 		const { ch, client } = setup();
 		await client.initialize();
 		await client.newSession();
@@ -26,8 +27,8 @@ describe('outbound surface', () => {
 		await client.cancel('sess-new');
 		await tick();
 		const init = ch.received.find((m) => m.method === 'initialize')!;
-		expect(init.params?.clientCapabilities).toEqual({});
-		const wire = ch.lines.join('\n');
+		expect(init.params?.clientCapabilities).toEqual({ _meta: { ez: { askUserQuestion: true } } });
+		const wire = ch.lines.filter((l) => !l.includes('"initialize"')).join('\n');
 		expect(wire).not.toContain('_meta');
 		expect(wire).not.toContain('authenticate');
 		expect(wire).not.toContain('"fs"');
@@ -58,13 +59,31 @@ describe('outbound surface', () => {
 		expect(ch.received.at(-1)!.id).toBeUndefined();
 	});
 
-	it('set_mode accepts only the three known modes', async () => {
+	it('set_mode sends any agent mode id and refuses empty or oversized ones', async () => {
 		const { ch, client } = setup();
 		await client.setMode('s', 'plan');
-		await client.setMode('s', 'default');
+		await client.setMode('s', 'build');
 		await client.setMode('s', 'bypassPermissions');
-		await expect(client.setMode('s', 'acceptEdits' as never)).rejects.toBeInstanceOf(AcpLimitError);
+		await expect(client.setMode('s', '')).rejects.toBeInstanceOf(AcpLimitError);
+		await expect(client.setMode('s', 'x'.repeat(65))).rejects.toBeInstanceOf(AcpLimitError);
 		expect(ch.received.filter((m) => m.method === 'session/set_mode')).toHaveLength(3);
+	});
+
+	it('answers _ez/ask_user_question through the handler, and other ext methods with not found', async () => {
+		const result = {
+			answers: [{ question: 'Q', selected: ['a'], other: null }],
+			cancelled: false
+		};
+		const ask = vi.fn(async () => result);
+		const { ch } = setup({}, { askUserQuestion: ask });
+		const params = { sessionId: 's', questions: [{ question: 'Q', options: [{ label: 'a' }] }] };
+		ch.send({ jsonrpc: '2.0', id: 900, method: '_ez/ask_user_question', params });
+		ch.send({ jsonrpc: '2.0', id: 901, method: '_ez/other', params: {} });
+		await tick();
+		expect(ask).toHaveBeenCalledWith(params);
+		const replies = ch.lines.map((l) => JSON.parse(l)).filter((m) => m.id === 900 || m.id === 901);
+		expect(replies.find((m) => m.id === 900)?.result).toEqual(result);
+		expect(replies.find((m) => m.id === 901)?.error?.code).toBe(-32601);
 	});
 
 	it('surfaces the raw modes of the session/new and session/load responses', async () => {

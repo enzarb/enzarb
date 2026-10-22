@@ -8,22 +8,29 @@ import {
 	applyUpdate,
 	cancelPending,
 	offeredModes,
+	addQuestion,
+	modeName,
 	parseModeNotification,
 	parseModeUpdate,
+	parseQuestions,
 	parseSessionModes,
-	resolvePermission
+	resolvePermission,
+	resolveQuestion
 } from './reducer.ts';
 import { initialChat, type ChatState, type ModeState, type ToolView } from './types.ts';
 
 describe('mode events', () => {
 	const ok = { sessionId: 's', modeId: 'plan', bypassAllowed: true };
 
-	it('accepts a valid _enzarb/mode', () => {
+	it('accepts a valid _enzarb/mode, including ez mode ids', () => {
 		expect(parseModeNotification(ok)).toEqual(ok);
+		expect(parseModeNotification({ ...ok, modeId: 'build' })).toEqual({ ...ok, modeId: 'build' });
 	});
 
 	it.each([
-		['unknown modeId', { ...ok, modeId: 'acceptEdits' }],
+		['empty modeId', { ...ok, modeId: '' }],
+		['oversized modeId', { ...ok, modeId: 'x'.repeat(65) }],
+		['control characters', { ...ok, modeId: 'a\nb' }],
 		['non-string modeId', { ...ok, modeId: 3 }],
 		['non-boolean bypassAllowed', { ...ok, bypassAllowed: 'yes' }],
 		['missing bypassAllowed', { sessionId: 's', modeId: 'plan' }],
@@ -36,20 +43,21 @@ describe('mode events', () => {
 
 	it('parses current_mode_update and validates the id', () => {
 		expect(
-			parseModeUpdate({ sessionUpdate: 'current_mode_update', currentModeId: 'default' }, 's')
-		).toEqual({ sessionId: 's', modeId: 'default' });
+			parseModeUpdate({ sessionUpdate: 'current_mode_update', currentModeId: 'verify' }, 's')
+		).toEqual({ sessionId: 's', modeId: 'verify' });
 		expect(
-			parseModeUpdate({ sessionUpdate: 'current_mode_update', currentModeId: 'x' }, 's')
+			parseModeUpdate({ sessionUpdate: 'current_mode_update', currentModeId: '' }, 's')
 		).toBeNull();
 		expect(parseModeUpdate({ sessionUpdate: 'plan' }, 's')).toBeNull();
 	});
 
 	it('a current_mode_update keeps bypassAllowed and available, or uses false when unseen', () => {
-		const seen: ModeState = { modeId: 'default', bypassAllowed: true, available: ['default'] };
+		const available = [{ id: 'default', name: 'Default' }];
+		const seen: ModeState = { modeId: 'default', bypassAllowed: true, available };
 		expect(applyModeUpdate(seen, { sessionId: 's', modeId: 'plan' })).toEqual({
 			modeId: 'plan',
 			bypassAllowed: true,
-			available: ['default']
+			available
 		});
 		expect(applyModeUpdate(null, { sessionId: 's', modeId: 'plan' })).toEqual({
 			modeId: 'plan',
@@ -67,48 +75,53 @@ describe('mode events', () => {
 });
 
 describe('parseSessionModes', () => {
-	it('reads the current and advertised modes; bypassAllowed starts false', () => {
+	it('reads the current and advertised modes with names; bypassAllowed starts false', () => {
 		expect(
 			parseSessionModes({
-				currentModeId: 'bypassPermissions',
-				availableModes: [{ id: 'default' }, { id: 'plan' }]
+				currentModeId: 'plan',
+				availableModes: [
+					{ id: 'plan', name: 'Plan', description: 'Read-only planning' },
+					{ id: 'build' }
+				]
 			})
 		).toEqual({
-			modeId: 'bypassPermissions',
+			modeId: 'plan',
 			bypassAllowed: false,
-			available: ['default', 'plan']
+			available: [
+				{ id: 'plan', name: 'Plan', description: 'Read-only planning' },
+				{ id: 'build', name: 'build' }
+			]
 		});
 	});
 
 	it('is null for an invalid currentModeId or non-object', () => {
-		expect(parseSessionModes({ currentModeId: 'nope', availableModes: [] })).toBeNull();
+		expect(parseSessionModes({ currentModeId: '', availableModes: [] })).toBeNull();
 		expect(parseSessionModes({ availableModes: [] })).toBeNull();
 		expect(parseSessionModes('plan')).toBeNull();
 		expect(parseSessionModes(undefined)).toBeNull();
 	});
 
-	it('drops unknown and malformed entries and duplicates', () => {
+	it('drops malformed entries and duplicates, and clips names', () => {
 		const m = parseSessionModes({
 			currentModeId: 'default',
 			availableModes: [
-				{ id: 'default' },
-				{ id: 'evil' },
+				{ id: 'default', name: 'N'.repeat(100) },
 				'plan',
 				null,
 				{ id: 7 },
+				{ id: '' },
 				{ id: 'default' }
 			]
 		});
-		expect(m?.available).toEqual(['default']);
+		expect(m?.available).toEqual([{ id: 'default', name: 'N'.repeat(64) }]);
 	});
 
 	it('caps the list and keeps available null when absent', () => {
 		expect(parseSessionModes({ currentModeId: 'plan' })?.available).toBeNull();
-		const many = Array.from({ length: 100 }, () => ({ id: 'x' }));
+		const many = Array.from({ length: 100 }, (_, i) => ({ id: `m${i}` }));
 		expect(
-			parseSessionModes({ currentModeId: 'plan', availableModes: [...many, { id: 'default' }] })
-				?.available
-		).toEqual([]);
+			parseSessionModes({ currentModeId: 'plan', availableModes: many })?.available
+		).toHaveLength(64);
 	});
 });
 
@@ -119,28 +132,88 @@ describe('offeredModes', () => {
 		available: null,
 		...over
 	});
+	const ids = (s: ModeState) => offeredModes(s).map((o) => o.id);
+	const opts = (...list: string[]) => list.map((id) => ({ id, name: id }));
 
-	it('intersects with the advertised modes', () => {
-		expect(offeredModes(m({ available: ['plan'] }))).toEqual(['plan']);
+	it('offers exactly the advertised modes (ez)', () => {
+		expect(ids(m({ available: opts('plan', 'build', 'verify') }))).toEqual([
+			'plan',
+			'build',
+			'verify'
+		]);
 	});
 
 	it('gates bypass on bypassAllowed', () => {
-		const all = ['bypassPermissions', 'default', 'plan'] as const;
-		expect(offeredModes(m({ available: [...all] }))).toEqual(['default', 'plan']);
-		expect(offeredModes(m({ available: [...all], bypassAllowed: true }))).toEqual([...all]);
-	});
-
-	it('falls back to the allow-list minus bypass when nothing is advertised', () => {
-		expect(offeredModes(m({}))).toEqual(['default', 'plan']);
-		expect(offeredModes(m({ bypassAllowed: true }))).toEqual([
+		const all = opts('bypassPermissions', 'default', 'plan');
+		expect(ids(m({ available: all }))).toEqual(['default', 'plan']);
+		expect(ids(m({ available: all, bypassAllowed: true }))).toEqual([
 			'bypassPermissions',
 			'default',
 			'plan'
 		]);
 	});
 
+	it("falls back to Claude's modes minus bypass when nothing is advertised", () => {
+		expect(ids(m({}))).toEqual(['default', 'plan']);
+		expect(ids(m({ bypassAllowed: true }))).toEqual(['bypassPermissions', 'default', 'plan']);
+	});
+
 	it('does not offer bypass even when it is the active mode and not allowed', () => {
-		expect(offeredModes(m({ modeId: 'bypassPermissions' }))).not.toContain('bypassPermissions');
+		expect(ids(m({ modeId: 'bypassPermissions' }))).not.toContain('bypassPermissions');
+	});
+});
+
+describe('modeName', () => {
+	it("uses the agent's name, then Claude's, then the id", () => {
+		const mode: ModeState = {
+			modeId: 'build',
+			bypassAllowed: false,
+			available: [{ id: 'build', name: 'Build it' }]
+		};
+		expect(modeName(mode, 'build')).toBe('Build it');
+		expect(modeName(null, 'plan')).toBe('Plan');
+		expect(modeName(mode, 'other')).toBe('other');
+	});
+});
+
+describe('questions', () => {
+	const q = {
+		question: 'Which DB?',
+		header: 'DB',
+		multiSelect: false,
+		options: [
+			{ label: 'sqlite', description: 'file' },
+			{ label: 'postgres', description: '' }
+		]
+	};
+
+	it('parses an _ez/ask_user_question', () => {
+		expect(parseQuestions({ sessionId: 's', questions: [q] })).toEqual([q]);
+		expect(parseQuestions({ questions: [{ question: 'Q', options: [{ label: 'a' }] }] })).toEqual([
+			{ question: 'Q', header: '', multiSelect: false, options: [{ label: 'a', description: '' }] }
+		]);
+	});
+
+	it.each([
+		['no questions', { questions: [] }],
+		['not a list', { questions: 'x' }],
+		['empty question', { questions: [{ ...q, question: '' }] }],
+		['empty label', { questions: [{ ...q, options: [{ label: '' }] }] }],
+		['duplicate labels', { questions: [{ ...q, options: [{ label: 'a' }, { label: 'a' }] }] }],
+		['too many questions', { questions: Array.from({ length: 9 }, () => q) }],
+		['null', null]
+	])('rejects %s', (_n, params) => {
+		expect(parseQuestions(params)).toBeNull();
+	});
+
+	it('adds, resolves and cancels question items', () => {
+		let s = addQuestion(initialChat, 'question-1', [q]);
+		expect(s.items[0]).toMatchObject({ kind: 'question', status: 'pending' });
+		expect(cancelPending(s).items[0]).toMatchObject({ status: 'cancelled' });
+		s = resolveQuestion(s, 'question-1', 'answered');
+		expect(s.items[0]).toMatchObject({ status: 'answered' });
+		// only pending items change
+		expect(resolveQuestion(s, 'question-1', 'cancelled')).toBe(s);
 	});
 });
 

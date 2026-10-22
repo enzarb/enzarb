@@ -181,6 +181,51 @@ describe('Chat permission mode', () => {
 			params: { sessionId: 's-1', modeId: 'bypassPermissions', bypassAllowed: true }
 		});
 		await expect.element(page.getByText('Bypass – no permission prompts')).toBeVisible();
-		await expect.element(page.getByRole('combobox', { name: 'Permission mode' })).toBeEnabled();
+		await expect.element(page.getByRole('combobox', { name: 'Mode' })).toBeEnabled();
+	});
+
+	it("shows ez's modes by name from the session/new response", async () => {
+		const ch = fakeAgentChannel({
+			sessionId: 's-1',
+			modes: {
+				currentModeId: 'plan',
+				availableModes: [
+					{ id: 'plan', name: 'Plan' },
+					{ id: 'build', name: 'Build' }
+				]
+			}
+		});
+		const { connect } = multi(ch);
+		render(Chat, { project: 'alpha', connect });
+		const select = page.getByRole('combobox', { name: 'Mode' });
+		await expect.element(select).toHaveValue('plan');
+		await select.selectOptions('build');
+		await expect
+			.poll(() => ch.received.find((m) => m.method === 'session/set_mode')?.params)
+			.toEqual({ sessionId: 's-1', modeId: 'build' });
+	});
+
+	it('answers an ez question from the transcript', async () => {
+		const ch = fakeAgentChannel({ sessionId: 's-1' });
+		const { connect } = multi(ch);
+		render(Chat, { project: 'alpha', connect });
+		await expect.element(page.getByRole('textbox', { name: 'Message' })).toBeEnabled();
+		ch.send({
+			jsonrpc: '2.0',
+			id: 910,
+			method: '_ez/ask_user_question',
+			params: {
+				sessionId: 's-1',
+				questions: [{ question: 'Proceed?', options: [{ label: 'yes' }, { label: 'no' }] }]
+			}
+		});
+		await page.getByRole('radio', { name: 'yes' }).click();
+		await page.getByRole('button', { name: 'Answer' }).click();
+		await expect
+			.poll(() => ch.received.find((m) => m.id === 910 && 'result' in m)?.result)
+			.toEqual({
+				answers: [{ question: 'Proceed?', selected: ['yes'], other: null }],
+				cancelled: false
+			});
 	});
 });

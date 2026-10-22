@@ -12,6 +12,7 @@ scripts/smoke.sh enzarb-sandbox:dev
 Only system components:
 
 - `sandbox-init` (entrypoint)
+- ez (`/usr/local/bin/ez`, built from `ez/` in this repo): the chat agent (`ez acp`, ADR-0028).
 - node 24, `@agentclientprotocol/claude-agent-acp` (pinned) and the glibc `claude` binary, installed directly (not through mise). `claude-agent-acp` and `claude` are symlinks in `/usr/local/bin`.
 - `mise`
 - `build-essential`, `pkg-config`, `libssl-dev`
@@ -79,9 +80,11 @@ There is no permission policy (ADR-0011 amendment 2026-10-15). sandbox-init answ
 
 ## Chat
 
-The Chat page of the UI talks to Claude in the sandbox over an `acp` mux channel (ADR-0014, `docs/design/chat-tab.md` in the root repo). `welcome.features` contains `acp` only when chat is enabled and `claude-agent-acp` is installed.
+The Chat page of the UI talks to an agent in the sandbox over an `acp` mux channel (ADR-0014, `docs/design/chat-tab.md` in the root repo). `welcome.features` contains `acp` only when chat is enabled and the agent is installed.
 
-For each `acp` channel, sandbox-init starts its own `claude-agent-acp` in `/workspace/worktrees/chat-<id>`, on branch `enzarb/chat-<id>`. It then filters the NDJSON JSON-RPC in both directions (`src/chat/filter.rs`):
+**ez (default, `ENZARB_CHAT_AGENT=ez`, ADR-0028).** Chats run `ez acp`. sandbox-init writes `/workspace/.enzarb/ez-config/config.toml` (default profile `claude`: the claude-code driver, so ez's prompts and tools run on Claude Code's loop with the chat's Claude token; model `ENZARB_CHAT_MODEL`) and passes it as `EZ_CONFIG_DIR`, and keeps ez's transcripts in `/workspace/.enzarb/chats/<id>/ez-sessions` (`EZ_SESSIONS_DIR`), so `session/load` works after the chat repo is gone. A repository's `.ez/modes.toml` and `.ez/config.toml` in the chat's checkout apply. The filter differs from the claude rules below in three ways: modes are ez's (`session/set_mode` accepts exactly the agent's `modes.availableModes` ids, and no starting mode is enforced); `session/new`/`load` carry no `_meta`; and ez's `_ez/ask_user_question` goes to the browser when the browser advertised `clientCapabilities._meta.ez.askUserQuestion`, with the answer rebuilt from the question's own labels (anything invalid, or a browser without the capability, gets `cancelled`). Permission requests follow the same rule as for claude: allowed by sandbox-init, except `switch_mode` (ez's `SwitchMode`), which the user answers.
+
+**claude (`ENZARB_CHAT_AGENT=claude`).** For each `acp` channel, sandbox-init starts its own `claude-agent-acp` in `/workspace/worktrees/chat-<id>`, on branch `enzarb/chat-<id>`. It then filters the NDJSON JSON-RPC in both directions (`src/chat/filter.rs`):
 
 - **Browser to agent.** `initialize` gets no client capabilities (no fs, no terminal). `session/new` and `session/load` get the chat worktree as `cwd` and no MCP servers. `session/load` works only for the session id the chat was resumed with, and only if the agent advertises `loadSession`. `session/prompt` accepts `text` and `resource_link` blocks, up to 256 KiB. `session/set_mode` accepts `bypassPermissions` (only while `ENZARB_CHAT_ALLOW_BYPASS` is true), `default` and `plan`; `acceptEdits`, `auto` and `dontAsk` are refused. `session/cancel` passes. Every request is rebuilt from known fields, so browser `_meta` never reaches the agent. Any other method gets `-32601`.
 - **Agent to browser.** Only responses, `session/update` and `session/request_permission` are relayed, and the Claude token (and its base64 forms, and anything shaped like `sk-ant-…`) is redacted from them.
@@ -109,8 +112,10 @@ What this does not fix: the chat agent still has the same uid, so it can still w
 | `ENZARB_MAX_CHATS` | `1` | Live chats at once. A new open at the cap closes the oldest chat with `superseded`. `0` disables chat: no `acp` feature, and opens get `chat_disabled`. |
 | `ENZARB_CHAT_IDLE_SECS` | `1800` | No message in either direction for this long closes the chat with `idle`. A pending permission does not keep it alive. |
 | `ENZARB_CHAT_MAX_SECS` | `28800` (8 h) | Total lifetime of one chat channel, then `limit`. |
-| `ENZARB_CHAT_PERMISSION_MODE` | `bypassPermissions` | Mode every chat session starts in: `bypassPermissions`, `default` or `plan`. Any other value fails startup. Defaults to `default` when `ENZARB_CHAT_ALLOW_BYPASS=false`. |
-| `ENZARB_CHAT_ALLOW_BYPASS` | `true` | `false` makes `bypassPermissions` unavailable: the adapter is told not to offer it and `session/set_mode` to it is refused. Combined with `ENZARB_CHAT_PERMISSION_MODE=bypassPermissions` it fails startup. |
+| `ENZARB_CHAT_AGENT` | `ez` | `ez` runs `ez acp` (ez's modes); `claude` runs `claude-agent-acp`. Any other value fails startup. |
+| `ENZARB_CHAT_MODEL` | (empty) | ez only: the model of the `claude` profile; empty uses the adapter's default. |
+| `ENZARB_CHAT_PERMISSION_MODE` | `bypassPermissions` | claude only. Mode every chat session starts in: `bypassPermissions`, `default` or `plan`. Any other value fails startup. Defaults to `default` when `ENZARB_CHAT_ALLOW_BYPASS=false`. |
+| `ENZARB_CHAT_ALLOW_BYPASS` | `true` | claude only. `false` makes `bypassPermissions` unavailable: the adapter is told not to offer it and `session/set_mode` to it is refused. Combined with `ENZARB_CHAT_PERMISSION_MODE=bypassPermissions` it fails startup. |
 | `ENZARB_CHAT_RETENTION_DAYS` | `7` | Chat records (meta, transcript) untouched for this long are deleted at startup. |
 
 Fixed limits: an NDJSON line over 4 MiB in either direction closes the chat with `limit`, and a socket gets one `acp` channel (`chat_limit`).
