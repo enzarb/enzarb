@@ -32,7 +32,7 @@ check "ui readiness" "$(q "$(dep enzarb-ui) | .spec.template.spec.containers[0].
 check "sandbox-proxy readiness" "$(q "$(dep enzarb-sandbox-proxy) | .spec.template.spec.containers[0].readinessProbe.httpGet.path" <<<"$on")" /healthz
 check "operator: no preStop" "$(q "$(dep enzarb-sandbox-operator) | .spec.template.spec.containers[0] | has(\"lifecycle\")" <<<"$on")" false
 
-# enzarb-tracks (opt-in): same rollout guarantees, a short preStop, no service account token.
+# enzarb-tracks (on by default): same rollout guarantees, a short preStop, no service account token.
 trk="$("$here/scripts/render.sh" tracks)"
 t="$(dep enzarb-tracks)"
 check "enzarb-tracks strategy type" "$(q "$t | .spec.strategy.type" <<<"$trk")" RollingUpdate
@@ -45,7 +45,7 @@ tok="$(q "$t | .spec.template.spec.containers[0].env[] | select(.name==\"ENZARB_
 check "ui tracks token == tracks token" "$(q "$(dep enzarb-ui) | .spec.template.spec.containers[0].env[] | select(.name==\"ENZARB_TRACKS_TOKEN\") | .valueFrom.secretKeyRef" <<<"$trk")" "$tok"
 check "ui tracks url" "$(q "$(dep enzarb-ui) | .spec.template.spec.containers[0].env[] | select(.name==\"ENZARB_TRACKS_URL\") | .value" <<<"$trk")" http://enzarb-tracks:8080
 check "tracks token generated" "$(q 'select(.kind=="Secret" and .metadata.name=="enzarb-generated") | .data | has("tracks-token")' <<<"$trk")" true
-if grep -q tracks <<<"$on"; then echo "assert-rollout: tracks rendered while disabled" >&2; fail=1; fi
+if grep -q tracks <<<"$("$here/scripts/render.sh" tracks-off)"; then echo "assert-rollout: tracks rendered while disabled" >&2; fail=1; fi
 
 # ui.probes.http=false falls back to TCP readiness, still polled every 2s.
 tcp="$(tpl --set ui.probes.http=false)"

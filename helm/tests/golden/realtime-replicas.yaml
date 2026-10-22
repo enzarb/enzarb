@@ -141,6 +141,19 @@ metadata:
     helm.sh/chart: enzarb-0.0.0
 
 ---
+# Source: enzarb/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: enzarb-tracks
+  labels:
+    app.kubernetes.io/name: enzarb-tracks
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+
+---
 # Source: enzarb/templates/sandbox-namespace.yaml
 # Created with the release, so it exists before any Sandbox (the operator never creates it).
 # Sandbox pods run as this ServiceAccount: no token mounted and no Role/RoleBinding, so
@@ -208,6 +221,7 @@ type: Opaque
 data:
   session-jwt-secret: <generated>
   realtime-jwt-secret: <generated>
+  tracks-token: <generated>
 
 ---
 # Source: enzarb/templates/rbac.yaml
@@ -767,6 +781,25 @@ spec:
     - { name: http, port: 8080, targetPort: http }
 
 ---
+# Source: enzarb/templates/tracks.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: enzarb-tracks
+  labels:
+    app.kubernetes.io/name: enzarb-tracks
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+spec:
+  selector:
+    app.kubernetes.io/name: enzarb-tracks
+    app.kubernetes.io/instance: enzarb
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+
+---
 # Source: enzarb/templates/ui.yaml
 apiVersion: v1
 kind: Service
@@ -1175,6 +1208,72 @@ spec:
             defaultMode: 0440
 
 ---
+# Source: enzarb/templates/tracks.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: enzarb-tracks
+  labels:
+    app.kubernetes.io/name: enzarb-tracks
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+spec:
+  # Stateless: validation, rendering and dry runs are pure functions of the request.
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: enzarb-tracks
+      app.kubernetes.io/instance: enzarb
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: enzarb-tracks
+        app.kubernetes.io/instance: enzarb
+        app.kubernetes.io/part-of: enzarb
+        app.kubernetes.io/managed-by: Helm
+        helm.sh/chart: enzarb-0.0.0
+    spec:
+      serviceAccountName: enzarb-tracks
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+
+      containers:
+        - name: tracks
+          image: ghcr.io/enzarb/enzarb-tracks:0.0.0-golden
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - name: ENZARB_TRACKS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-generated
+                  key: tracks-token
+            - { name: RUST_LOG, value: "info" }
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 2
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
+          securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":10001,"seccompProfile":{"type":"RuntimeDefault"}}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+
+---
 # Source: enzarb/templates/ui.yaml
 apiVersion: apps/v1
 kind: Deployment
@@ -1284,13 +1383,19 @@ spec:
                 secretKeyRef:
                   name: enzarb-generated
                   key: realtime-jwt-secret
+            - { name: ENZARB_TRACKS_URL, value: "http://enzarb-tracks:8080" }
+            - name: ENZARB_TRACKS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-generated
+                  key: tracks-token
             # Web Push keys. Optional so pods start (notifications off) until the keypair exists.
             - name: ENZARB_VAPID_PUBLIC_KEY
               valueFrom: { secretKeyRef: { name: "enzarb-vapid-key", key: public-key, optional: true } }
             - name: ENZARB_VAPID_PRIVATE_KEY
               valueFrom: { secretKeyRef: { name: "enzarb-vapid-key", key: private-key, optional: true } }
             - { name: ENZARB_PUBLIC_URL, value: "https://enzarb.dev" }
-            - { name: ENZARB_COMPONENT_VERSIONS, value: "{\"chart\":\"0.0.0\",\"components\":{\"enzarb-connectors\":\"0.0.0-golden\",\"enzarb-realtime\":\"0.0.0-golden\",\"enzarb-sandbox-container\":\"0.0.0-golden\",\"enzarb-sandbox-operator\":\"0.0.0-golden\",\"enzarb-sandbox-proxy\":\"0.0.0-golden\",\"enzarb-ui\":\"0.0.0-golden\",\"enzarb-updater\":\"0.0.0-golden\"}}" }
+            - { name: ENZARB_COMPONENT_VERSIONS, value: "{\"chart\":\"0.0.0\",\"components\":{\"enzarb-connectors\":\"0.0.0-golden\",\"enzarb-realtime\":\"0.0.0-golden\",\"enzarb-sandbox-container\":\"0.0.0-golden\",\"enzarb-sandbox-operator\":\"0.0.0-golden\",\"enzarb-sandbox-proxy\":\"0.0.0-golden\",\"enzarb-tracks\":\"0.0.0-golden\",\"enzarb-ui\":\"0.0.0-golden\",\"enzarb-updater\":\"0.0.0-golden\"}}" }
             - { name: ENZARB_STATS_RETENTION, value: "90" }
             - { name: ENZARB_GITHUB_APP_SLUG, value: "enzarb" }
             # adapter-node derives the origin for its CSRF check from this header; the Gateway forwards it.
