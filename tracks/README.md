@@ -12,7 +12,7 @@ Cluster-internal. The UI calls it after its own access checks (write permission 
 |---|---|---|
 | `GET /healthz`, `GET /readyz` | | `ok` (no auth) |
 | `GET /v1/modes/catalog` | | ez's built-in tools, hook events, permission and `on_failure` values, and the `ez init` templates (`Catalog`; mise tasks, MCP servers and profiles are empty) |
-| `POST /v1/modes/parse` | `{text}`: a `.ez/modes.toml` | `{doc: ModesDoc, issues}`; 422 `invalid_modes_toml` when it doesn't parse |
+| `POST /v1/modes/parse` | `{text}`: a `.ez/modes.toml` | `{doc: ModesDoc, issues}`, every mode with `originalId` = its id (keep it when renaming, so render rewrites the section in place); 422 `invalid_modes_toml` when it doesn't parse |
 | `POST /v1/modes/validate` | `{doc}` | `{issues}` (`severity`: `error` blocks saving, `warning`, `info`) |
 | `POST /v1/modes/render` | `{old?, doc}`: `old` is the file the editor loaded | `{text, issues, rewritten}`: the new file, changing only what was edited (comments kept); 422 `invalid_modes` (with `issues`) when the doc has errors, so an invalid file is never produced |
 | `POST /v1/workflows/check` | `{workflows_toml, modes_toml?}` | `{report: {diagnostics: [{severity, path, message}]}, file?}`; `file` is the parsed document for the graph designer |

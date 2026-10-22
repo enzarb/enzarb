@@ -105,6 +105,22 @@ async fn modes_parse_validate_and_render_keep_comments() {
     );
     assert!(out.contains("description = \"Build it\""), "{out}");
 
+    // Parse marks every mode with its on-disk id, so a rename (id changed, originalId kept,
+    // references updated as the designer does) rewrites the section in place with its comment.
+    assert_eq!(v["doc"]["modes"][0]["originalId"], "plan");
+    let mut renamed = doc.clone();
+    renamed["defaultMode"] = json!("scout");
+    renamed["modes"][0]["id"] = json!("scout");
+    let (s, r) = post("/v1/modes/render", json!({"old": text, "doc": renamed})).await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    let out = r["text"].as_str().unwrap();
+    assert!(
+        out.contains("[modes.scout]") && !out.contains("[modes.plan]"),
+        "{out}"
+    );
+    assert!(out.contains("# planning only"), "{out}");
+    assert!(out.contains("default_mode = \"scout\""), "{out}");
+
     // A dangling `next` is an error: validate reports it and render refuses.
     let mut bad = doc.clone();
     bad["modes"][0]["next"] = json!(["ghost"]);

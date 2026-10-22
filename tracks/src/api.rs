@@ -161,13 +161,18 @@ async fn modes_parse(
     body: Result<Json<ModesParseReq>, JsonRejection>,
 ) -> ApiResult<ModesParseResp> {
     let Json(req) = body?;
-    let doc = modes_api::parse_doc(&req.text).map_err(|e| {
+    let mut doc = modes_api::parse_doc(&req.text).map_err(|e| {
         ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
             "invalid_modes_toml",
             format!("{e:#}"),
         )
     })?;
+    // As ez's own loader does: the on-disk id lets `render` follow a rename (section headers are
+    // rewritten in place instead of the mode being dropped and re-added).
+    for m in &mut doc.modes {
+        m.original_id = Some(m.id.clone());
+    }
     let issues = modes_api::validate_doc(&doc, None);
     Ok(Json(ModesParseResp { doc, issues }))
 }
