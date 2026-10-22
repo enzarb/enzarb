@@ -12,6 +12,15 @@ FROM chef AS planner
 # BEGIN generated:copy
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY connectors/bin/receiver connectors/bin/receiver
+COPY ez/crates/ez-acp ez/crates/ez-acp
+COPY ez/crates/ez-claude ez/crates/ez-claude
+COPY ez/crates/ez-cli ez/crates/ez-cli
+COPY ez/crates/ez-core ez/crates/ez-core
+COPY ez/crates/ez-hooks ez/crates/ez-hooks
+COPY ez/crates/ez-llm ez/crates/ez-llm
+COPY ez/crates/ez-mcp ez/crates/ez-mcp
+COPY ez/crates/ez-mise ez/crates/ez-mise
+COPY ez/crates/ez-tools ez/crates/ez-tools
 COPY operator/crates/enzarb-crds operator/crates/enzarb-crds
 COPY operator/crates/operator operator/crates/operator
 COPY operator/deploy operator/deploy

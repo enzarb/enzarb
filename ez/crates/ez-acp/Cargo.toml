@@ -1,26 +1,25 @@
 [package]
 name = "ez-acp"
-version.workspace = true
+version = "0.1.0"
 edition.workspace = true
-license.workspace = true
-repository.workspace = true
+license = "MIT"
 
 [dependencies]
-agent-client-protocol.workspace = true
-agent-client-protocol-schema.workspace = true
-futures.workspace = true
-anyhow.workspace = true
-async-trait.workspace = true
-ez-core.workspace = true
-ez-mcp.workspace = true
-ez-tools.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-thiserror.workspace = true
-tokio.workspace = true
-tokio-util = { workspace = true, features = ["compat"] }
-tracing.workspace = true
+agent-client-protocol = { version = "3.4", default-features = false }
+agent-client-protocol-schema = { version = "=1.12.0", default-features = false }
+futures = "0.3"
+anyhow = "1"
+async-trait = "0.1"
+ez-core = { path = "../ez-core" }
+ez-mcp = { path = "../ez-mcp" }
+ez-tools = { path = "../ez-tools" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+tracing = "0.1"
 
 [dev-dependencies]
-ez-llm.workspace = true
-tempfile.workspace = true
+ez-llm = { path = "../ez-llm" }
+tempfile = "3"

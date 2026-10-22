@@ -9,6 +9,15 @@ members = [
     "sandbox-container",
     "sandbox-proxy",
     "updater",
+    "ez/crates/ez-acp",
+    "ez/crates/ez-claude",
+    "ez/crates/ez-cli",
+    "ez/crates/ez-core",
+    "ez/crates/ez-hooks",
+    "ez/crates/ez-llm",
+    "ez/crates/ez-mcp",
+    "ez/crates/ez-mise",
+    "ez/crates/ez-tools",
 ]
 
 # Dependencies are declared per crate: the components release independently and

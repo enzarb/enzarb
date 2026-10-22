@@ -458,10 +458,12 @@ crates/
 
 ## Development
 
+ez's crates are members of the enzarb root Cargo workspace. From the repo root:
+
 ```sh
-mise run test    # cargo test --workspace
-mise run lint    # cargo clippy --workspace --all-targets -- -D warnings
-mise run fmt     # cargo fmt --all
+cargo test -p ez-acp -p ez-claude -p ez-cli -p ez-core -p ez-hooks -p ez-llm -p ez-mcp -p ez-mise -p ez-tools
+cargo clippy -p ez-acp -p ez-claude -p ez-cli -p ez-core -p ez-hooks -p ez-llm -p ez-mcp -p ez-mise -p ez-tools --all-targets -- -D warnings
+cargo fmt --all
 ```
 
 Set `EZ_LOG=debug` for logs (the TUI logs to `~/.cache/ez/ez.log`). Provider tests run

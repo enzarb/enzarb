@@ -1,23 +1,23 @@
 [package]
 name = "ez-mcp"
 description = "MCP (Model Context Protocol) client support for the ez agent"
-version.workspace = true
+version = "0.1.0"
 edition.workspace = true
-license.workspace = true
+license = "MIT"
 
 [dependencies]
-anyhow.workspace = true
-async-trait.workspace = true
-globset.workspace = true
+anyhow = "1"
+async-trait = "0.1"
+globset = "0.4"
 http = "1"
-futures.workspace = true
-rmcp.workspace = true
-ez-tools.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-tokio.workspace = true
-tokio-util.workspace = true
-tracing.workspace = true
+futures = "0.3"
+rmcp = { version = "3.6", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest"] }
+ez-tools = { path = "../ez-tools" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+tracing = "0.1"
 
 [dev-dependencies]
-tempfile.workspace = true
+tempfile = "3"

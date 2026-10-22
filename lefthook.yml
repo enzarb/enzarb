@@ -9,10 +9,6 @@ pre-commit:
     fmt:
       glob: "*.rs"
       run: cargo fmt --all --check
-    fmt-ez:
-      root: ez/
-      glob: "*.rs"
-      run: cargo fmt --all --check
     cargo-deps:
       glob: "{Cargo.toml,Cargo.lock,rust-toolchain.toml,**/Cargo.toml,**/Cargo.lock,**/rust-toolchain.toml}"
       run: scripts/monorepo/check-cargo-deps.sh
