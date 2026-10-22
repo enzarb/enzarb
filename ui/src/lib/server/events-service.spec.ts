@@ -65,4 +65,19 @@ describe('eventsService (connectors.event_v)', () => {
 		expect(await svc().payload(['octo/other'], id)).toBeNull();
 		expect(await svc().payload([], id)).toBeNull();
 	});
+
+	it('returns events with payloads by id, only for the given repositories', async () => {
+		const a = await seedEvent(sql as unknown as Sql, {
+			repo: 'octo/app',
+			event: 'issues',
+			action: 'labeled',
+			payload: { label: { name: 'ez' } }
+		});
+		const other = await seedEvent(sql as unknown as Sql, { repo: 'octo/other', event: 'push' });
+		const rows = await svc().withPayloads(['octo/app'], [a, other, 999_999]);
+		expect(rows).toEqual([
+			{ id: a, event: 'issues', action: 'labeled', payload: { label: { name: 'ez' } } }
+		]);
+		expect(await svc().withPayloads(['octo/app'], [])).toEqual([]);
+	});
 });

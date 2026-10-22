@@ -54,6 +54,22 @@ export function eventsService(sql: Sql) {
 				SELECT payload FROM connectors.event_v
 				WHERE id = ${id} AND repo = ANY(${sql.array(repos, 25)})`;
 			return rows[0]?.payload ?? null;
+		},
+		/** Events by id with their payloads (workflow dry runs), only those that belong to `repos`. */
+		async withPayloads(
+			repos: string[],
+			ids: number[]
+		): Promise<{ id: number; event: string; action: string | null; payload: unknown }[]> {
+			if (repos.length === 0 || ids.length === 0) return [];
+			const rows = await sql<Pick<Row, 'id' | 'event' | 'action' | 'payload'>[]>`
+				SELECT id, event, action, payload FROM connectors.event_v
+				WHERE id = ANY(${sql.array(ids, 20)}) AND repo = ANY(${sql.array(repos, 25)})`;
+			return rows.map((r) => ({
+				id: Number(r.id),
+				event: r.event,
+				action: r.action,
+				payload: r.payload
+			}));
 		}
 	};
 }
