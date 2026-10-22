@@ -33,7 +33,7 @@
 		"@testcontainers/postgresql": "^12.2.0",
 		"@types/node": "^24",
 		"@types/sanitize-html": "^2.16.2",
-		"@vitest/browser-playwright": "^4.1.8",
+		"@vitest/browser-playwright": "^4.1.12",
 		"eslint": "^10.4.1",
 		"eslint-config-prettier": "^10.1.8",
 		"eslint-plugin-svelte": "^3.19.0",
@@ -50,7 +50,7 @@
 		"typescript": "^6.0.3",
 		"typescript-eslint": "^8.60.1",
 		"vite": "^8.3.0",
-		"vitest": "^4.1.8",
+		"vitest": "^4.1.12",
 		"vitest-browser-svelte": "^2.1.1"
 	},
 	"pnpm": {
@@ -80,7 +80,7 @@
 		"jose": "^6.2.12",
 		"marked": "^18.1.0",
 		"postgres": "^3.4.9",
-		"sanitize-html": "^2.18.0",
+		"sanitize-html": "^2.18.1",
 		"valibot": "^1.5.0",
 		"web-push": "^3.6.7",
 		"yaml": "^2.9.1"
