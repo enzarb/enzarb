@@ -145,7 +145,7 @@ ui:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-ui
-    tag: 0.83.0
+    tag: 0.84.0
     pullPolicy: ""
   # HTTP probes (/healthz liveness, /readyz readiness). false falls back to TCP probes.
   probes:
@@ -217,7 +217,7 @@ connectors:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-connectors-receiver
-    tag: 0.32.0
+    tag: 0.33.0
     pullPolicy: ""
   botHandle: enzarb
   botLogin: enzarb[bot]
@@ -240,7 +240,7 @@ realtime:
   image:
     repository: ghcr.io/enzarb/enzarb-realtime
     # scripts/sync-components.sh pins the released enzarb-realtime tag here.
-    tag: 0.9.0
+    tag: 0.10.0
     pullPolicy: ""
   # Origins allowed to open the cookie-authenticated websocket (ENZARB_REALTIME_ALLOWED_ORIGINS).
   # Empty means https://<host> (or publicUrl reduced to its origin). Entries must be bare origins,
@@ -261,7 +261,7 @@ tracks:
   image:
     repository: ghcr.io/enzarb/enzarb-tracks
     # scripts/sync-components.sh pins the released enzarb-tracks tag here.
-    tag: 0.0.0
+    tag: 0.1.0
     pullPolicy: ""
   resources: {}
   extraEnv: []
@@ -284,7 +284,7 @@ updater:
   terminationGracePeriodSeconds: 30
   image:
     repository: ghcr.io/enzarb/enzarb-updater
-    tag: 0.7.0
+    tag: 0.8.0
     pullPolicy: ""
   resources: {}
   extraEnv: []
@@ -293,7 +293,7 @@ sandboxProxy:
   replicaCount: 1
   image:
     repository: ghcr.io/enzarb/enzarb-sandbox-proxy
-    tag: 0.26.0
+    tag: 0.27.0
     pullPolicy: ""
   # Must stay >= the chat idle (ENZARB_CHAT_IDLE_SECS, 1800); the proxy clamps lower values and
   # logs a warning. Envoy idle timeouts (route.backendTrafficPolicy) must exceed this.
@@ -342,7 +342,7 @@ operator:
   terminationGracePeriodSeconds: 30
   image:
     repository: ghcr.io/enzarb/enzarb-sandbox-operator
-    tag: 0.16.0
+    tag: 0.17.0
     pullPolicy: ""
   # Default sandbox image for Projects (ENZARB_SANDBOX_IMAGE).
   sandboxImage: ghcr.io/enzarb/enzarb-sandbox:0.43.0
