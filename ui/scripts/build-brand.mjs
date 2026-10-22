@@ -1,51 +1,104 @@
-// Derives the logo assets in static/brand/ from the maintainer's logo sheet. Run: npm run brand
-// enzarb-sheet.svg is the source of truth and is never rewritten; enzarb-mark-flat.svg and enzarb-mark-tiny.svg are hand-authored.
+// Writes static/brand/ (mark, wordmark and lockup, each on light and on dark ground) and
+// src/lib/brand.generated.ts (the paths Logo.svelte inlines). Run: npm run brand
+// The mark comes from mark-geometry.mjs; the wordmark is ENZARB in Jost 700, outlined from the
+// @fontsource/jost woff so the assets need no font. Output is deterministic; commit it.
 import { readFileSync, writeFileSync } from 'node:fs';
+import opentype from 'opentype.js';
+import { format, resolveConfig } from 'prettier';
+import { COLORS, MARK_VIEWBOX, markBody, markPaths } from './mark-geometry.mjs';
 
-const dir = (name) => new URL(`../static/brand/${name}`, import.meta.url);
-const sheet = readFileSync(dir('enzarb-sheet.svg'), 'utf8');
+const fontFile = new URL(
+	'../node_modules/@fontsource/jost/files/jost-latin-700-normal.woff',
+	import.meta.url
+);
+const buf = readFileSync(fontFile);
+const font = opentype.parse(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
 
-function group(id) {
-	const start = sheet.indexOf(`<g id="${id}"`);
-	const end = sheet.indexOf('</g>', start) + '</g>'.length;
-	if (start < 0 || end < start) throw new Error(`#${id} not found in the sheet`);
-	// No drop-shadow: it needs a filter region and blurs at small sizes.
-	return sheet
-		.slice(start, end)
-		.replace(/\sfilter="[^"]*"/, '')
-		.replace(/\stransform="translate\(0, ?0\)"/, '');
+const WORD = 'ENZARB';
+/** Cap height of the outlined wordmark in its own units. */
+const CAP = 24;
+/** Extra tracking between letters, as a fraction of the cap height. */
+const TRACKING = 0.08;
+
+const capUnits = font.tables.os2.sCapHeight || 700;
+const size = (CAP * font.unitsPerEm) / capUnits;
+const r = (/** @type {number} */ n) => +n.toFixed(2);
+
+/** One path per letter, baseline at y = CAP, cap top at y = 0. */
+function wordLetters() {
+	/** @type {{ char: string, d: string }[]} */
+	const letters = [];
+	let x = 0;
+	let prev = null;
+	const box = { x0: Infinity, x1: -Infinity, y0: Infinity, y1: -Infinity };
+	for (const char of WORD) {
+		const glyph = font.charToGlyph(char);
+		if (prev) x += (font.getKerningValue(prev, glyph) * size) / font.unitsPerEm;
+		const path = glyph.getPath(x, CAP, size);
+		path.commands.forEach((c) => {
+			for (const k of ['x', 'y', 'x1', 'y1', 'x2', 'y2'])
+				if (k in c) /** @type {Record<string, number>} */ (c)[k] = r(c[k]);
+		});
+		const bb = path.getBoundingBox();
+		box.x0 = Math.min(box.x0, bb.x1);
+		box.x1 = Math.max(box.x1, bb.x2);
+		box.y0 = Math.min(box.y0, bb.y1);
+		box.y1 = Math.max(box.y1, bb.y2);
+		letters.push({ char, d: path.toPathData(2) });
+		x += (glyph.advanceWidth * size) / font.unitsPerEm + CAP * TRACKING;
+		prev = glyph;
+	}
+	// Jost's pointed vertices (N, A) overshoot the cap height and the baseline a little.
+	return { letters, box: { x0: r(box.x0), x1: r(box.x1), y0: r(box.y0), y1: r(box.y1) } };
 }
 
-function gradients(body) {
-	const ids = new Set([...body.matchAll(/url\(#([^)]+)\)/g)].map((m) => m[1]));
-	const blocks = [
-		...sheet.matchAll(/<(linearGradient|radialGradient) id="([^"]+)"[\s\S]*?<\/\1>/g)
-	];
-	return blocks
-		.filter((m) => ids.has(m[2]))
-		.map((m) => m[0])
-		.join('\n    ');
-}
+const { letters, box: WB } = wordLetters();
+const WORD_WIDTH = r(WB.x1 - WB.x0);
+const WORD_HEIGHT = r(WB.y1 - WB.y0);
+const zPath = letters.find((l) => l.char === 'Z')?.d ?? '';
+const inkPath = letters
+	.filter((l) => l.char !== 'Z')
+	.map((l) => l.d)
+	.join('');
 
-function svg(viewBox, body) {
-	const defs = gradients(body);
-	const defsBlock = defs ? `  <defs>\n    ${defs}\n  </defs>\n` : '';
-	return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}">\n${defsBlock}  ${body}\n</svg>\n`;
-}
+/** @param {{ ink: string, z: string }} fills */
+const wordBody = (fills) =>
+	`<path fill="${fills.ink}" d="${inkPath}"/><path fill="${fills.z}" d="${zPath}"/>`;
 
-const emblem = group('enzarb-emblem');
-const wordmark = group('enzarb-wordmark');
-// The sheet's wordmark is near-white on dark; the on-light variant swaps in ink and a darker cyan.
-const onLight = wordmark.replaceAll('#f1f5f9', '#0b0f17').replaceAll('#00e5ff', '#0e7490');
+const svg = (/** @type {string} */ viewBox, /** @type {string} */ body) =>
+	`<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}">${body}</svg>\n`;
 
-const MARK_BOX = '330 64 541 664';
-const WORDMARK_BOX = '280 750 650 74';
-const LOCKUP_BOX = '280 64 650 762';
+const INK = { light: '#14161b', dark: '#e9ecf1' };
+const WORD_VIEWBOX = `${WB.x0} ${WB.y0} ${WORD_WIDTH} ${WORD_HEIGHT}`;
+// Lockup: the mark's 48-unit box at x 8..56, the wordmark (cap height 24) centred on it from x 68.
+const LOCKUP_GAP = 12;
+const lockupWord = (/** @type {'light' | 'dark'} */ g) =>
+	`<g transform="translate(${r(56 + LOCKUP_GAP - WB.x0)} 20)">${wordBody({ ink: INK[g], z: COLORS[g].z })}</g>`;
+const LOCKUP_VIEWBOX = `8 8 ${r(48 + LOCKUP_GAP + WORD_WIDTH)} 48`;
 
+const dir = (/** @type {string} */ name) => new URL(`../static/brand/${name}`, import.meta.url);
 const files = {
-	'enzarb-mark.svg': svg(MARK_BOX, emblem),
-	'enzarb-wordmark.svg': svg(WORDMARK_BOX, wordmark),
-	'enzarb-wordmark-on-light.svg': svg(WORDMARK_BOX, onLight),
-	'enzarb-lockup.svg': svg(LOCKUP_BOX, `${emblem}\n  ${wordmark}`)
+	'enzarb-mark.svg': svg(MARK_VIEWBOX, markBody(COLORS.light)),
+	'enzarb-mark-on-dark.svg': svg(MARK_VIEWBOX, markBody(COLORS.dark)),
+	'enzarb-wordmark.svg': svg(WORD_VIEWBOX, wordBody({ ink: INK.light, z: COLORS.light.z })),
+	'enzarb-wordmark-on-dark.svg': svg(WORD_VIEWBOX, wordBody({ ink: INK.dark, z: COLORS.dark.z })),
+	'enzarb-lockup.svg': svg(LOCKUP_VIEWBOX, markBody(COLORS.light) + lockupWord('light')),
+	'enzarb-lockup-on-dark.svg': svg(LOCKUP_VIEWBOX, markBody(COLORS.dark) + lockupWord('dark'))
 };
 for (const [name, content] of Object.entries(files)) writeFileSync(dir(name), content);
+
+const { E, Z, overlap } = markPaths();
+const ts = `// Generated by scripts/build-brand.mjs; do not edit. Run: npm run brand
+export const MARK_VIEWBOX = '${MARK_VIEWBOX}';
+export const MARK_E = '${E}';
+export const MARK_Z = '${Z}';
+export const MARK_OVERLAP = '${overlap}';
+export const WORD_VIEWBOX = '${WORD_VIEWBOX}';
+/** E, N, A, R, B of ENZARB in Jost 700. */
+export const WORD_INK = '${inkPath}';
+/** The Z of ENZARB in Jost 700. */
+export const WORD_Z = '${zPath}';
+`;
+const tsFile = new URL('../src/lib/brand.generated.ts', import.meta.url);
+const config = await resolveConfig(tsFile);
+writeFileSync(tsFile, await format(ts, { ...config, filepath: tsFile.pathname }));

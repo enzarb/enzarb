@@ -1,133 +1,75 @@
-// Shared by generate-icons.mjs, preview-icons.mjs and the icon tests: reads the brand marks and
-// places their glyph on the 64x64 canvases the icon set is drawn on.
-import { readFileSync } from 'node:fs';
+// Shared by generate-icons.mjs, preview-icons.mjs and the icon tests: places the overlaid EZ mark
+// (mark-geometry.mjs) on the 64x64 canvases the icon set is drawn on.
 import { Resvg } from '@resvg/resvg-js';
+import { COLORS, ezPaths, markBody, pathPoints } from './mark-geometry.mjs';
 
-export const BG = '#0b0f17';
+/** Installable icons sit on white with the light-ground colours. */
+export const BG = '#ffffff';
 export const CANVAS = 64;
-/** Fraction of the canvas the glyph's longer side fills on `any` and touch icons. */
+/** Fraction of the canvas the mark's 48-unit box fills on `any` and touch icons. */
 export const FILL = 0.8;
-/** Maskable icons keep the whole glyph inside this radius (fraction of the side): the 80% safe circle. */
+/** Maskable icons keep the whole mark inside this radius (fraction of the side): the 80% safe circle. */
 export const SAFE_RADIUS = 0.4;
 
-/**
- * @typedef {{ x0: number, x1: number, y0: number, y1: number }} BBox
- * @typedef {{
- *   name: string,
- *   url: URL,
- *   svg: string,
- *   viewBox: number[],
- *   rect: string,
- *   glyph: string,
- *   points: number[][],
- *   bbox: BBox
- * }} Mark
- */
+/** The mark's box in its own 64x64 viewBox. */
+const BOX = { x0: 8, x1: 56, y0: 8, y1: 56 };
+const POINTS = Object.values(ezPaths()).flatMap(pathPoints);
 
-/** @param {string} name */
-const markUrl = (name) => new URL(`../static/brand/enzarb-mark-${name}.svg`, import.meta.url);
-
-/**
- * Reads `flat` or `tiny`: viewBox, squircle rect, glyph markup and the glyph's path vertices.
- * @param {string} name
- * @returns {Mark}
- */
-export function loadMark(name) {
-	const svg = readFileSync(markUrl(name), 'utf8');
-	const viewBox = (svg.match(/viewBox="([^"]+)"/)?.[1] ?? '').split(/\s+/).map(Number);
-	const body = svg.slice(svg.indexOf('>') + 1, svg.lastIndexOf('</svg>'));
-	const rect = body.match(/<rect[^>]*\/>/)?.[0] ?? '';
-	const glyph = body.replace(rect, '').trim();
-	const points = [...glyph.matchAll(/ d="([^"]+)"/g)].flatMap(([, d]) =>
-		[...d.matchAll(/(-?[\d.]+),(-?[\d.]+)/g)].map(([, x, y]) => [Number(x), Number(y)])
-	);
-	const xs = points.map((p) => p[0]);
-	const ys = points.map((p) => p[1]);
-	const bbox = {
-		x0: Math.min(...xs),
-		x1: Math.max(...xs),
-		y0: Math.min(...ys),
-		y1: Math.max(...ys)
-	};
-	return { name, url: markUrl(name), svg, viewBox, rect, glyph, points, bbox };
-}
-
-/**
- * `translate scale` that centres the glyph's bounding box on the canvas at scale `s`.
- * @param {Mark} mark
- * @param {number} s
- */
-const place = (mark, s) => {
-	const { x0, x1, y0, y1 } = mark.bbox;
-	const tx = CANVAS / 2 - (s * (x0 + x1)) / 2;
-	const ty = CANVAS / 2 - (s * (y0 + y1)) / 2;
-	return `translate(${+tx.toFixed(4)} ${+ty.toFixed(4)}) scale(${+s.toFixed(6)})`;
+/** @param {number} s */
+const place = (s) => {
+	const t = CANVAS / 2 - (s * (BOX.x0 + BOX.x1)) / 2;
+	return `translate(${+t.toFixed(4)} ${+t.toFixed(4)}) scale(${+s.toFixed(6)})`;
 };
 
-/**
- * Glyph scaled so its longer side is `FILL` of the canvas.
- * @param {Mark} mark
- */
-export const anyTransform = (mark) => {
-	const { x0, x1, y0, y1 } = mark.bbox;
-	return place(mark, (FILL * CANVAS) / Math.max(x1 - x0, y1 - y0));
-};
+/** Mark scaled so its box is `FILL` of the canvas. */
+export const anyTransform = () => place((FILL * CANVAS) / (BOX.x1 - BOX.x0));
 
-/**
- * Glyph scaled so its farthest vertex (a hexagon corner) sits on the safe circle.
- * @param {Mark} mark
- */
-export function maskableTransform(mark) {
-	const { x0, x1, y0, y1 } = mark.bbox;
-	const cx = (x0 + x1) / 2;
-	const cy = (y0 + y1) / 2;
-	const far = Math.max(...mark.points.map(([x, y]) => Math.hypot(x - cx, y - cy)));
+/** Mark scaled so its farthest vertex (a box corner) sits on the safe circle. */
+export function maskableTransform() {
+	const c = (BOX.x0 + BOX.x1) / 2;
+	const far = Math.max(...POINTS.map(([x, y]) => Math.hypot(x - c, y - c)));
 	// Round down so rounding the printed scale can never push a corner outside the circle.
-	const s = Math.floor(((SAFE_RADIUS * CANVAS) / far) * 1e6) / 1e6;
-	return place(mark, s);
+	return place(Math.floor(((SAFE_RADIUS * CANVAS) / far) * 1e6) / 1e6);
 }
 
 /** @param {string} inner */
 const wrap = (inner) =>
 	`<svg xmlns="http://www.w3.org/2000/svg" width="${CANVAS}" height="${CANVAS}" viewBox="0 0 ${CANVAS} ${CANVAS}">${inner}</svg>`;
 const bg = `<rect width="${CANVAS}" height="${CANVAS}" fill="${BG}" />`;
+const light = markBody(COLORS.light);
 
 /**
- * Squircle icon with the glyph at 80% (or the glyph alone when `glyphOnly`, for tests).
- * @param {Mark} mark
- * @param {boolean} [glyphOnly]
+ * Rounded white tile with the mark at 80% (or the mark alone when `markOnly`, for tests).
+ * @param {boolean} [markOnly]
  */
-export const anySvg = (mark, glyphOnly = false) =>
+export const anySvg = (markOnly = false) =>
 	wrap(
-		`${glyphOnly ? '' : `<rect width="${CANVAS}" height="${CANVAS}" rx="14" fill="${BG}" />`}<g transform="${anyTransform(mark)}">${mark.glyph}</g>`
+		`${markOnly ? '' : `<rect width="${CANVAS}" height="${CANVAS}" rx="14" fill="${BG}" />`}<g transform="${anyTransform()}">${light}</g>`
 	);
 /**
- * Full-bleed background, glyph inside the safe circle (or alone when `glyphOnly`, for tests).
- * @param {Mark} mark
- * @param {boolean} [glyphOnly]
+ * Full-bleed white, mark inside the safe circle (or alone when `markOnly`, for tests).
+ * @param {boolean} [markOnly]
  */
-export const maskableSvg = (mark, glyphOnly = false) =>
-	wrap(`${glyphOnly ? '' : bg}<g transform="${maskableTransform(mark)}">${mark.glyph}</g>`);
-/**
- * iOS rounds the corners itself, so the touch icon is full-bleed too.
- * @param {Mark} mark
- */
-export const touchSvg = (mark) =>
-	wrap(`${bg}<g transform="${anyTransform(mark)}">${mark.glyph}</g>`);
-/**
- * Notification badges are alpha masks: one white silhouette on transparent, no background.
- * @param {Mark} mark
- */
-export const badgeSvg = (mark) =>
+export const maskableSvg = (markOnly = false) =>
+	wrap(`${markOnly ? '' : bg}<g transform="${maskableTransform()}">${light}</g>`);
+/** iOS rounds the corners itself, so the touch icon is full-bleed too. */
+export const touchSvg = () => wrap(`${bg}<g transform="${anyTransform()}">${light}</g>`);
+/** Notification badges are alpha masks: one white silhouette (E and Z) on transparent. */
+export const badgeSvg = () =>
 	wrap(
-		`<g transform="${anyTransform(mark)}">${mark.glyph.replace(/fill="#[0-9a-f]{6}"/gi, 'fill="#ffffff"')}</g>`
+		`<g transform="${anyTransform()}">${markBody({ e: '#ffffff', z: '#ffffff', overlap: '#ffffff' })}</g>`
 	);
-/**
- * The glyph alone in the mark's own viewBox, transparent.
- * @param {Mark} mark
- */
-export const glyphSvg = (mark) =>
-	`<svg xmlns="http://www.w3.org/2000/svg" viewBox="${mark.viewBox.join(' ')}">${mark.glyph}</svg>`;
+/** The mark alone on transparent, light-ground colours (favicon.ico frames, preview). */
+export const markSvg = () => wrap(`<g transform="${anyTransform()}">${light}</g>`);
+
+/** favicon-ez.svg: transparent, colours follow the system theme. */
+export const faviconSvg = () =>
+	`<svg xmlns="http://www.w3.org/2000/svg" viewBox="8 8 48 48"><style>.e{fill:${COLORS.light.e}}.z{fill:${COLORS.light.z}}.o{fill:${COLORS.light.overlap}}@media (prefers-color-scheme: dark){.e{fill:${COLORS.dark.e}}.z{fill:${COLORS.dark.z}}.o{fill:${COLORS.dark.overlap}}}</style>${markBody(
+		{ e: '', z: '', overlap: '' }
+	)
+		.replace('fill=""', 'class="e"')
+		.replace('fill=""', 'class="z"')
+		.replace('fill=""', 'class="o"')}</svg>\n`;
 
 /**
  * @param {string} svg

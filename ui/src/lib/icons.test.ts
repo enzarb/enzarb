@@ -5,11 +5,11 @@ import {
 	SAFE_RADIUS,
 	anySvg,
 	badgeSvg,
-	glyphSvg,
-	loadMark,
+	faviconSvg,
 	maskableSvg,
 	render
 } from '../../scripts/icon-lib.mjs';
+import { COLORS } from '../../scripts/mark-geometry.mjs';
 
 const root = new URL('../../', import.meta.url);
 const read = (path: string) => readFileSync(new URL(path, root));
@@ -19,6 +19,23 @@ function pngSize(buf: Buffer) {
 	return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
 }
 
+/** Bounding box of the drawn (alpha > 0) pixels. */
+function drawnBox({ width, height, pixels }: { width: number; height: number; pixels: Buffer }) {
+	let x0 = width,
+		x1 = 0,
+		y0 = height,
+		y1 = 0;
+	for (let y = 0; y < height; y++)
+		for (let x = 0; x < width; x++)
+			if (pixels[(y * width + x) * 4 + 3] > 0) {
+				x0 = Math.min(x0, x);
+				x1 = Math.max(x1, x);
+				y0 = Math.min(y0, y);
+				y1 = Math.max(y1, y);
+			}
+	return { x0, x1, y0, y1 };
+}
+
 describe('generated icons', () => {
 	beforeAll(() => {
 		// Regenerate so the test also proves the script runs; outputs are deterministic.
@@ -26,18 +43,18 @@ describe('generated icons', () => {
 	});
 
 	it.each([
-		['apple-touch-icon.png', 180],
-		['icon-192.png', 192],
-		['icon-maskable-192.png', 192],
-		['icon-512.png', 512],
-		['icon-maskable-512.png', 512],
-		['badge.png', 96]
+		['apple-touch-icon-ez.png', 180],
+		['icon-ez-192.png', 192],
+		['icon-ez-maskable-192.png', 192],
+		['icon-ez-512.png', 512],
+		['icon-ez-maskable-512.png', 512],
+		['badge-ez.png', 96]
 	])('%s is %i px square', (file, size) => {
 		expect(pngSize(read(`static/${file}`))).toEqual({ width: size, height: size });
 	});
 
-	it('favicon.ico holds 16, 32 and 48 px images', () => {
-		const ico = read('static/favicon.ico');
+	it('favicon-ez.ico holds 16, 32 and 48 px images', () => {
+		const ico = read('static/favicon-ez.ico');
 		expect(ico.readUInt16LE(0)).toBe(0);
 		expect(ico.readUInt16LE(2)).toBe(1);
 		const count = ico.readUInt16LE(4);
@@ -45,10 +62,9 @@ describe('generated icons', () => {
 		expect(sizes.sort((a, b) => a - b)).toEqual([16, 32, 48]);
 	});
 
-	it.each(['flat', 'tiny'])('keeps the %s maskable glyph inside the 80%% safe circle', (name) => {
-		// Same transform as generate-icons.mjs, glyph only so just the mark has alpha.
+	it('keeps the maskable mark inside the 80% safe circle', () => {
 		const size = 640;
-		const { width, pixels } = render(maskableSvg(loadMark(name), true), size);
+		const { width, pixels } = render(maskableSvg(true), size);
 		const limit = size * SAFE_RADIUS;
 		let drawn = 0;
 		for (let i = 0; i < pixels.length; i += 4) {
@@ -63,71 +79,24 @@ describe('generated icons', () => {
 	});
 
 	it('fills about 80% of the any icon', () => {
-		const { width, height, pixels } = render(anySvg(loadMark('flat'), true), 640);
-		let min = width;
-		let max = 0;
-		let minY = height;
-		let maxY = 0;
-		for (let y = 0; y < height; y++)
-			for (let x = 0; x < width; x++)
-				if (pixels[(y * width + x) * 4 + 3] > 0) {
-					min = Math.min(min, x);
-					max = Math.max(max, x);
-					minY = Math.min(minY, y);
-					maxY = Math.max(maxY, y);
-				}
-		const longer = Math.max(max - min, maxY - minY + 1);
-		expect(longer / width).toBeGreaterThan(0.78);
-		expect(longer / width).toBeLessThan(0.82);
+		const img = render(anySvg(true), 640);
+		const { x0, x1, y0, y1 } = drawnBox(img);
+		const longer = Math.max(x1 - x0 + 1, y1 - y0 + 1);
+		expect(longer / img.width).toBeGreaterThan(0.78);
+		expect(longer / img.width).toBeLessThan(0.82);
 	});
 
-	describe('merged marks', () => {
-		// Source coordinates (viewBox 250 46 700 700) along the edges the old separate shapes shared.
-		const seams = [
-			...[400, 420, 440, 460].map((y) => [376, y]), // E bar meets the E face
-			...[560, 600, 640].map((y) => [582, y]), // Z pillar meets the hook
-			...[0.25, 0.5, 0.75].map((t) => [534 + 48 * t, 522 + 16 * t]) // Z diagonal meets the pillar
-		];
-		it('flat has no hairline seams', () => {
-			const size = 1400;
-			const { width, pixels } = render(glyphSvg(loadMark('flat')), size);
-			for (const [x, y] of seams) {
-				const px = Math.round(((x - 250) / 700) * size);
-				const py = Math.round(((y - 46) / 700) * size);
-				for (const dx of [-1, 0, 1])
-					expect(pixels[(py * width + px + dx) * 4 + 3], `seam at ${x},${y}`).toBe(255);
-			}
-		});
+	it('puts installable icons on a white ground with the light-ground colours', () => {
+		for (const svg of [anySvg(), maskableSvg()]) {
+			expect(svg).toContain('fill="#ffffff"');
+			for (const c of Object.values(COLORS.light)) expect(svg).toContain(`fill="${c}"`);
+		}
+		const { pixels } = render(maskableSvg(), 64);
+		expect([...pixels.subarray(0, 4)]).toEqual([255, 255, 255, 255]);
 	});
 
-	describe('tiny mark at 16px', () => {
-		const img = render(glyphSvg(loadMark('tiny')), 16);
-		// Alpha of the pixel holding a source-coordinate point (viewBox 250 46 700 700).
-		const alpha = (x: number, y: number) => {
-			const px = Math.floor(((x - 250) * 16) / 700);
-			const py = Math.floor(((y - 46) * 16) / 700);
-			return img.pixels[(py * 16 + px) * 4 + 3];
-		};
-
-		it.each([
-			['hexagon left side', 377, 420],
-			['hexagon apex', 600, 115],
-			['hexagon upper left', 480, 200],
-			['E middle bar', 447, 418],
-			['Z diagonal', 730, 326],
-			['Z stem', 613, 600]
-		])('keeps the %s visible', (_, x, y) => {
-			expect(alpha(x, y)).toBeGreaterThanOrEqual(200);
-		});
-
-		it('keeps the gap between the E and the Z open', () => {
-			expect(alpha(530, 610)).toBe(0);
-			expect(alpha(530, 640)).toBe(0);
-		});
-	});
-
-	it('draws badge.png in one colour', () => {
-		const { pixels } = render(badgeSvg(loadMark('tiny')), 96);
+	it('draws badge-ez.png in one colour', () => {
+		const { pixels } = render(badgeSvg(), 96);
 		let solid = 0;
 		for (let i = 0; i < pixels.length; i += 4) {
 			if (pixels[i + 3] === 0) continue;
@@ -136,7 +105,17 @@ describe('generated icons', () => {
 			for (const c of [0, 1, 2]) expect(pixels[i + c]).toBe(pixels[i + 3]);
 		}
 		expect(solid).toBeGreaterThan(0);
-		expect(badgeSvg(loadMark('tiny'))).not.toMatch(/fill="#(?!ffffff)/i);
+		expect(badgeSvg()).not.toMatch(/fill="#(?!ffffff)/i);
+	});
+
+	it('favicon-ez.svg follows the system theme on a transparent ground', () => {
+		const svg = read('static/favicon-ez.svg').toString();
+		expect(svg).toBe(faviconSvg());
+		expect(svg).toContain('@media (prefers-color-scheme: dark)');
+		for (const c of [...Object.values(COLORS.light), ...Object.values(COLORS.dark)])
+			expect(svg).toContain(c);
+		expect(svg).not.toMatch(/<rect/);
+		expect(read('src/lib/assets/favicon-ez.svg').toString()).toBe(svg);
 	});
 
 	it('lists only existing icons in the manifest', () => {
@@ -150,6 +129,28 @@ describe('generated icons', () => {
 		]);
 		for (const icon of manifest.icons) {
 			expect(existsSync(new URL(`static${icon.src}`, root))).toBe(true);
+		}
+	});
+
+	it('renames every icon so caches and installed apps refresh', () => {
+		const old = [
+			'favicon.svg',
+			'favicon.ico',
+			'apple-touch-icon.png',
+			'icon-192.png',
+			'icon-512.png',
+			'icon-maskable-192.png',
+			'icon-maskable-512.png',
+			'badge.png'
+		];
+		const manifest = JSON.parse(read('static/manifest.webmanifest').toString());
+		const html = read('src/app.html').toString();
+		const sw = read('src/lib/sw-handlers.ts').toString();
+		for (const icon of manifest.icons) expect(old).not.toContain(icon.src.replace(/^\//, ''));
+		for (const name of old) {
+			expect(existsSync(new URL(`static/${name}`, root))).toBe(false);
+			expect(html).not.toContain(`"/${name}"`);
+			expect(sw).not.toContain(`'/${name}'`);
 		}
 	});
 });
