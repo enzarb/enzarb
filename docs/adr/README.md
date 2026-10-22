@@ -24,3 +24,4 @@ ADRs 0008, 0010, 0017–0022, 0024 and 0026 described the removed workflow engin
 | [0025](0025-release-timing.md) | Release timing: updater ConfigMap and Project `status.lastRoll` | 2026-10-18 |
 | [0027](0027-workflow-clean-slate.md) | Workflow clean slate: delete the engine, event hooks and tasks | 2026-10-21 |
 | [0028](0028-ez-coding-agent.md) | `ez`: enzarb's own coding agent, one configuration for every model (proposed) | 2026-10-22 |
+| [0029](0029-ez-workflows.md) | ez workflows: graphs in `.ez/workflows.toml`, the `tracks` service, replay and test runs | 2026-10-22 |
