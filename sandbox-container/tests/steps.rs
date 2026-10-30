@@ -963,9 +963,6 @@ async fn workspace_prune_frees_idle_shared_target_dirs() {
     assert!(!dir.exists());
 }
 
-/// A fresh task workspace on the default branch itself (a read step: triage, plan) has the
-/// branch's files checked out. The clone is `--no-checkout`, and checking out the branch it is
-/// already on changes nothing.
 /// A workspace with `start_ref` starts the new branch at that ref (a pull request head, which
 /// is not a branch), `base` is still fetched so `git diff origin/<base>...HEAD` works, and
 /// nothing is pushed while the branch has no commits of its own.
@@ -1032,6 +1029,9 @@ fn start_ref_validation() {
     }
 }
 
+/// A fresh task workspace on the default branch itself (a read step: triage, plan) has the
+/// branch's files checked out. The clone is `--no-checkout`, and checking out the branch it is
+/// already on changes nothing.
 #[tokio::test]
 async fn a_fresh_workspace_on_the_default_branch_has_its_files() {
     let env = Env::new();
