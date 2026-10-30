@@ -121,6 +121,16 @@ describe('projectTasks', () => {
 		expect(tasks).toEqual([]);
 	});
 
+	it('takes the first (newest) run per subject and workflow: an older failure is not shown', async () => {
+		// tracks orders runs by created_at DESC (tracks/src/runs_api.rs).
+		const tracks = fakeTracks([
+			run({ id: '66666666-6666-4666-8666-666666666666', workflow: 'fix', status: 'done' }),
+			run({ id: '77777777-7777-4777-8777-777777777777', workflow: 'fix', status: 'failed' })
+		]);
+		const { tasks } = await projectTasks({ tracks, github: github() }, project);
+		expect(tasks.filter((t) => t.kind === 'failed')).toEqual([]);
+	});
+
 	it('carries notes for GitHub limits and a tracks outage', async () => {
 		const tracks = fakeTracks([]);
 		tracks.runs = vi.fn(async () => {

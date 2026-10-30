@@ -193,3 +193,5 @@ Only users with write permission on the repository can dry run or test run.
 - Workflows are live as soon as they are saved on the default branch; there is no enable flag.
 
 - **Manual starts and Tasks (2026-10-30).** `on = ["manual"]` is a synthetic event (like `workflow_dispatch`) that tracks creates for `POST /v1/runs` (negative `event_id`, same one-live-run-per-subject rule). Expressions gained the generic `regex_match` filter, so one workflow can list several triggers and tell them apart in its `if`. The UI Tasks pages are derived views (waiting runs, failed runs, `ez/*` pull requests, `triage` issues without an implement run); nothing is stored.
+
+  Trigger permissions in the implement template: the comment trigger requires `author_association` OWNER, MEMBER or COLLABORATOR; the assignee trigger is broader, since anyone with triage access can assign an issue, and `ez-agent` is a placeholder login to edit. The label trigger needs triage access too.

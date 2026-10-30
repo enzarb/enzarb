@@ -91,7 +91,7 @@
 				"comment": {
 					"type": "action",
 					"action": "comment",
-					"body": "{{ nodes.triage.result.summary }}\n\n---\nTo start implementing this, comment `/ez implement` (at the start of a line) or click Implement on the [Tasks page](https://enzarb.dev/tasks).",
+					"body": "{{ nodes.triage.result.summary }}\n\n---\nTo start implementing this, comment `/ez implement` (at the start of a line) or click Implement on the project's Tasks page in enzarb.",
 					"next": "done"
 				},
 				"done": {
@@ -104,7 +104,7 @@
 	{
 		"id": "implement-labeled-issues",
 		"title": "Implement issues on request",
-		"description": "Plan the fix, implement it and open a pull request when an issue gets the ez label, is assigned to the agent user, gets a /ez implement comment, or Implement is clicked in enzarb.",
+		"description": "Plan the fix, implement it and open a pull request when an issue gets the ez label, is assigned to the agent user (`ez-agent`, a placeholder: edit the `if` to your agent's login; anyone with triage access can assign, unlike the comment trigger, which needs write access), gets a /ez implement comment, or Implement is clicked in enzarb.",
 		"modes": [
 			{
 				"id": "planner",

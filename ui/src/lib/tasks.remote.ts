@@ -111,7 +111,11 @@ export const retryTaskRun = command(
 	}
 );
 
-/** Stop a run parked at a wait. */
+/**
+ * Stop a run parked at a wait. Owner only, like Stop on the Runs tab (`runs.remote.ts`): stopping
+ * only cancels our own run and writes nothing to GitHub, so unlike Implement and Retry (which act
+ * on GitHub as the signed-in user) it needs no live write-access check.
+ */
 export const stopTaskRun = command(
 	v.object({ name: NameArg, id: IdArg }),
 	async ({ name, id }): Promise<ActionResult> => {
