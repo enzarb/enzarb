@@ -5,6 +5,7 @@ import type { GithubReads } from '../../src/lib/server/tasks-github.ts';
 export * from '../../src/lib/server/tasks-github.ts';
 
 const reads: GithubReads = {
+	openSubjects: async () => ({ open: null }),
 	pulls: async (repo) => ({
 		items:
 			repo === 'e2e-org/app'

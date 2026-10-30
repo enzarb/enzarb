@@ -33,6 +33,8 @@ export interface OpenIssue {
 export interface GithubReads {
 	pulls(repo: string): Promise<{ items: OpenPull[]; note?: string }>;
 	issues(repo: string, label: string): Promise<{ items: OpenIssue[]; note?: string }>;
+	/** Numbers of every open issue and pull request; `open` is null when GitHub could not tell. */
+	openSubjects(repo: string): Promise<{ open: Set<number> | null; note?: string }>;
 }
 
 export interface GithubReadsDeps {
@@ -131,6 +133,15 @@ export function createGithubReads({
 	const enc = (repo: string) => repo.split('/').map(encodeURIComponent).join('/');
 
 	return {
+		openSubjects: async (repo) => {
+			const r = await list<number>(
+				repo,
+				{ issues: 'read', pull_requests: 'read' },
+				`/repos/${enc(repo)}/issues?state=open&sort=updated&direction=desc`,
+				(raw) => (typeof raw.number === 'number' ? raw.number : null)
+			);
+			return r.note ? { open: null, note: r.note } : { open: new Set(r.items) };
+		},
 		pulls: (repo) =>
 			list<OpenPull>(
 				repo,
