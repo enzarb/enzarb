@@ -84,6 +84,11 @@ export interface EventDecision {
 	decidedAt: string;
 }
 
+/** Whether the event started or resumed a run (an undecided event did neither). */
+export function isActive(d?: Pick<EventDecision, 'outcome'>): boolean {
+	return d?.outcome === 'started' || d?.outcome === 'resumed';
+}
+
 /** "Resumed run 1111aaaa (fix-issue, wait_reply)", one per run the event resumed. */
 export function resumedText(d: Pick<EventDecision, 'resumed'>): string {
 	return d.resumed

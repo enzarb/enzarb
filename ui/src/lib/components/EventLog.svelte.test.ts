@@ -118,6 +118,42 @@ describe('EventLog', () => {
 		await expect.element(page.getByText('Resumed run 11111111 (fix, w)')).toBeVisible();
 	});
 
+	it('can show only events that started or resumed a run', async () => {
+		const d = (eventId: number, outcome: EventDecision['outcome']): EventDecision => ({
+			eventId,
+			outcome,
+			project: 'p',
+			sha: 'abc1234',
+			started: [],
+			reasons: [],
+			errors: [],
+			resumed: [],
+			decidedAt: '2026-10-21T12:00:01.000Z'
+		});
+		render(EventLog, {
+			...base,
+			rows: [
+				row({ id: 1, event: 'push', action: null }),
+				row({ id: 2, event: 'issues', action: 'opened' }),
+				row({ id: 3, event: 'issue_comment', action: 'created' }),
+				row({ id: 4, event: 'pull_request', action: 'closed' })
+			],
+			decisions: { 1: d(1, 'no_match'), 2: d(2, 'started'), 3: d(3, 'resumed') }
+		});
+		await expect.element(page.getByText('push', { exact: true })).toBeVisible();
+		await page.getByRole('checkbox', { name: 'Only runs started or resumed' }).click();
+		await expect.element(page.getByText('push', { exact: true })).not.toBeInTheDocument();
+		await expect.element(page.getByText('pull_request closed')).not.toBeInTheDocument();
+		await expect.element(page.getByText('issues opened')).toBeVisible();
+		await expect.element(page.getByText('issue_comment created')).toBeVisible();
+	});
+
+	it('says so when the filter hides every event', async () => {
+		render(EventLog, { ...base, rows: [row()], decisions: {} });
+		await page.getByRole('checkbox', { name: 'Only runs started or resumed' }).click();
+		await expect.element(page.getByText('No runs started or resumed')).toBeVisible();
+	});
+
 	it('shows no decision for an event tracks has not decided yet', async () => {
 		render(EventLog, { ...base, rows: [row()], decisions: {} });
 		await expect.element(page.getByText('issues opened')).toBeVisible();
