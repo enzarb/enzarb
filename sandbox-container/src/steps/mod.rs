@@ -730,13 +730,25 @@ fn validate(s: &StepStart) -> Result<(), String> {
     for o in s.outputs.values() {
         safe_rel(&o.file).ok_or_else(|| format!("invalid output path {:?}", o.file))?;
     }
-    if let StepExec::Agent { runtime, .. } = &s.exec
+    if let StepExec::Agent { runtime, ez, .. } = &s.exec
+        && ez.is_none()
         && (runtime.command.is_empty() || runtime.protocol != "acp")
     {
         return Err(format!(
             "unsupported runtime {:?} (protocol {:?}): only acp with a command",
             runtime.name, runtime.protocol
         ));
+    }
+    if let StepExec::Agent { ez: Some(ez), .. } = &s.exec {
+        for f in ez.instruction_files.keys() {
+            let ok = safe_rel(f).is_some_and(|p| {
+                !p.components()
+                    .any(|c| c.as_os_str() == ".git" || c.as_os_str() == ".enzarb")
+            });
+            if !ok {
+                return Err(format!("invalid ez instruction file path {f:?}"));
+            }
+        }
     }
     Ok(())
 }
@@ -992,6 +1004,19 @@ impl Inner {
         };
         // Secret files: 0600, kept out of commits, removed when the step ends.
         let secret_files = write_secret_files(&cwd, start);
+        // ez steps: the pinned modes and instruction files win over the branch's own.
+        if let StepExec::Agent { ez: Some(ez), .. } = &start.exec {
+            let mut files: Vec<(String, &str)> =
+                vec![(".ez/modes.toml".into(), ez.modes_toml.as_str())];
+            files.extend(
+                ez.instruction_files
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.as_str())),
+            );
+            if let Err(e) = g.pin_files(&mut ctl, &cwd, &files).await {
+                return finished(id, exit::FAILURE, Some(e));
+            }
+        }
         // Execute.
         let fin = match &start.exec {
             StepExec::Command { run: cmd, tools } => {
@@ -1183,11 +1208,14 @@ impl Inner {
             model,
             prompt,
             result_schema,
+            mode,
+            ez,
         } = &start.exec
         else {
             unreachable!()
         };
-        if let Err(e) = self.mise_install(run, ctl, cwd, &runtime.install).await {
+        let install: &[String] = if ez.is_some() { &[] } else { &runtime.install };
+        if let Err(e) = self.mise_install(run, ctl, cwd, install).await {
             let ex = if *ctl.cancel.borrow() {
                 exit::INTERRUPTED
             } else {
@@ -1198,6 +1226,12 @@ impl Inner {
         }
         let mut env = self.base_env(start);
         env.extend(runtime.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+        if let Some(ez) = ez {
+            match self.ez_env(id, model.as_deref(), ez) {
+                Ok(e) => env.extend(e),
+                Err(e) => return finished(id, exit::FAILURE, Some(e)),
+            }
+        }
         let home = self.cfg.workspace.join(".enzarb/step-home/.claude");
         let _ = crate::privs::create_dir_all_mode(&home, Some(0o700));
         env.push((
@@ -1250,8 +1284,24 @@ impl Inner {
         } else {
             prompt.clone()
         };
-        let (bin, args) = self.with_mise(&runtime.install, runtime.command.clone());
+        let (bin, args) = if ez.is_some() {
+            let mut c = self.cfg.clone();
+            if c.chat_agent != crate::config::ChatAgent::Ez {
+                c.chat_agent = crate::config::ChatAgent::Ez;
+                c.acp_bin = "ez".into();
+                c.chat_runtime_tool.clear();
+            }
+            match crate::chat::chat_command(&c) {
+                Some(b) => b,
+                None => {
+                    return finished(id, exit::FAILURE, Some("ez is not installed".into()));
+                }
+            }
+        } else {
+            self.with_mise(&runtime.install, runtime.command.clone())
+        };
         let spec = agent::AgentSpec {
+            mode: mode.clone(),
             bin,
             args,
             cwd: cwd.to_path_buf(),
@@ -1303,6 +1353,38 @@ impl Inner {
             }
         }
         fin
+    }
+
+    /// Environment of an `ez_steps` agent: a per-node `EZ_CONFIG_DIR` (the profile like
+    /// chats get, plus the pinned `modes.toml`), `EZ_SESSIONS_DIR` (kept across resumes of the
+    /// node) and `EZ_UNATTENDED` (no AskUserQuestion, no SwitchMode).
+    fn ez_env(
+        &self,
+        run_id: &str,
+        model: Option<&str>,
+        ez: &enzarb_proto::EzSpec,
+    ) -> Result<Vec<(String, String)>, String> {
+        let base = self.cfg.workspace.join(".enzarb/ez").join(run_id);
+        let (conf, sessions) = (base.join("config"), base.join("sessions"));
+        for d in [&conf, &sessions] {
+            crate::privs::create_dir_all_mode(d, Some(0o700))
+                .map_err(|e| format!("cannot create {}: {e}", d.display()))?;
+        }
+        let model = model.unwrap_or(&self.cfg.chat_model);
+        let write = |name: &str, text: &str| {
+            crate::capture::write_atomic(&conf.join(name), text.as_bytes(), 0o600)
+                .map_err(|e| format!("cannot write the ez {name}: {e}"))
+        };
+        write("config.toml", &crate::chat::ez_config(model))?;
+        write("modes.toml", &ez.modes_toml)?;
+        Ok(vec![
+            ("EZ_CONFIG_DIR".into(), conf.to_string_lossy().into_owned()),
+            (
+                "EZ_SESSIONS_DIR".into(),
+                sessions.to_string_lossy().into_owned(),
+            ),
+            ("EZ_UNATTENDED".into(), "1".into()),
+        ])
     }
 
     /// Disk full, OOM, toolchain/network or load behind a failed step (`environment::classify`).

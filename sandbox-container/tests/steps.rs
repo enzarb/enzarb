@@ -92,7 +92,11 @@ impl Env {
     }
 
     async fn server_with_steps(&self) -> (SocketAddr, StepManager) {
-        let config = Config {
+        self.server_cfg(|_| {}).await
+    }
+
+    async fn server_cfg(&self, tweak: impl FnOnce(&mut Config)) -> (SocketAddr, StepManager) {
+        let mut config = Config {
             listen: ([127, 0, 0, 1], 0).into(),
             auth_token_file: self.dir.path().join("token"),
             workspace: self.ws.clone(),
@@ -102,6 +106,7 @@ impl Env {
             cgroup_root: self.dir.path().join("cgroup"),
             ..Config::default()
         };
+        tweak(&mut config);
         let reaper = Reaper::new(false);
         tokio::spawn(reaper.clone().run());
         let steps = StepManager::new(config.clone(), reaper.clone(), RepoLocks::default())
@@ -392,6 +397,8 @@ fn agent_exec(env: &Env, prompt: &str, schema: Option<Value>) -> StepExec {
         model: Some("claude-test-model".into()),
         prompt: prompt.into(),
         result_schema: schema,
+        mode: None,
+        ez: None,
     }
 }
 
@@ -1301,5 +1308,270 @@ async fn environment_failed_step_in_the_pruned_workspace_is_busy_again() {
         std::fs::read_to_string(env.dir.path().join("m"))
             .unwrap()
             .contains("again")
+    );
+}
+
+// ---- ez_steps (ADR-0029 rollout step 4) ----
+
+const MODES: &str = "default_mode = \"implement\"\n[modes.implement]\ndescription = \"x\"\n[modes.review]\ndescription = \"y\"\n";
+
+impl Env {
+    /// A server whose `ez` is the fake ACP agent and whose `mise` records its argv.
+    async fn ez_server(&self) -> SocketAddr {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/fake-step-agent.mjs"
+        );
+        let ez = self.dir.path().join("ez");
+        std::fs::write(
+            &ez,
+            format!(
+                "#!/bin/sh\n[ \"$1\" = acp ] || exit 2\nFAKE_STATE={} exec node {fixture}\n",
+                self.dir.path().join("agent-state").display()
+            ),
+        )
+        .unwrap();
+        let mise = self.dir.path().join("mise");
+        std::fs::write(
+            &mise,
+            format!(
+                "#!/bin/sh\necho \"$@\" >> {}\n",
+                self.dir.path().join("mise.log").display()
+            ),
+        )
+        .unwrap();
+        for p in [&ez, &mise] {
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let (addr, _) = self
+            .server_cfg(|c| {
+                c.acp_bin = ez.to_string_lossy().into_owned();
+                c.mise_bin = mise.to_string_lossy().into_owned();
+            })
+            .await;
+        addr
+    }
+}
+
+fn ez_exec(prompt: &str, mode: Option<&str>, schema: Option<Value>) -> StepExec {
+    StepExec::Agent {
+        runtime: Box::new(Runtime {
+            name: "ez".into(),
+            install: vec![],
+            protocol: "acp".into(),
+            command: vec!["ez".into(), "acp".into()],
+            env: Default::default(),
+            capabilities: json!({}),
+        }),
+        model: None,
+        prompt: prompt.into(),
+        result_schema: schema,
+        mode: mode.map(String::from),
+        ez: Some(enzarb_proto::EzSpec {
+            modes_toml: MODES.into(),
+            instruction_files: [("AGENTS.md".to_string(), "pinned rules\n".to_string())].into(),
+        }),
+    }
+}
+
+fn ez_step(id: &str, exec: StepExec, ws: StepWorkspace) -> StepStart {
+    let mut s = step(id, exec, vec![ws]);
+    s.task_id = "wf-run-1".into();
+    s
+}
+
+async fn run_one(addr: SocketAddr, st: StepStart) -> (Vec<SessionEvent>, StepFinished) {
+    let (s, mut ev) = connect(addr).await;
+    let id = st.run_id.clone();
+    start(&s, &mut ev, st).await;
+    let (evs, fin) = collect(&mut ev, &id, |_| false).await;
+    (evs, fin.unwrap())
+}
+
+#[tokio::test]
+async fn ez_step_refuses_an_unknown_mode() {
+    let env = Env::new();
+    let addr = env.ez_server().await;
+    let ws = env.workspace("ez/wf/run-1");
+    let (_, fin) = run_one(
+        addr,
+        ez_step("m-1", ez_exec("ezwork", Some("nope"), None), ws),
+    )
+    .await;
+    assert_eq!(fin.exit, "failure", "{fin:?}");
+    let e = fin.error.unwrap();
+    assert!(
+        e.contains("unknown mode \"nope\"") && e.contains("implement, review"),
+        "{e}"
+    );
+    assert!(!env.dir.path().join("agent-state/mode-set").exists());
+}
+
+#[tokio::test]
+async fn ez_step_runs_in_the_mode_with_pinned_config_and_pushes_the_run_branch() {
+    let env = Env::new();
+    let addr = env.ez_server().await;
+    let (evs, fin) = run_one(
+        addr,
+        ez_step(
+            "m-2",
+            ez_exec("ezwork a.txt", Some("review"), None),
+            env.workspace("ez/wf/run-1"),
+        ),
+    )
+    .await;
+    assert_eq!(fin.exit, "success", "{fin:?}");
+    assert_eq!(
+        std::fs::read_to_string(env.dir.path().join("agent-state/mode-set")).unwrap(),
+        "review"
+    );
+    assert_eq!(texts(&evs, "prompt"), "ezwork a.txt");
+    let e: Value = serde_json::from_slice(
+        &std::fs::read(env.dir.path().join("agent-state/ezenv.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(e["unattended"], "1");
+    let conf = e["config"].as_str().unwrap();
+    assert!(conf.ends_with(".enzarb/ez/m-2/config"), "{conf}");
+    assert!(
+        e["sessions"]
+            .as_str()
+            .unwrap()
+            .ends_with(".enzarb/ez/m-2/sessions")
+    );
+    assert_eq!(
+        std::fs::read_to_string(format!("{conf}/modes.toml")).unwrap(),
+        MODES
+    );
+    assert!(
+        std::fs::read_to_string(format!("{conf}/config.toml"))
+            .unwrap()
+            .contains("claude-code")
+    );
+    // Pinned copies are in the worktree but never committed; the agent's file is.
+    let wt = env.ws.join("tasks/wf-run-1/o/r");
+    assert_eq!(
+        std::fs::read_to_string(wt.join("AGENTS.md")).unwrap(),
+        "pinned rules\n"
+    );
+    assert!(fin.git[0].pushed, "{fin:?}");
+    let files = git(&env.bare, &["ls-tree", "-r", "--name-only", "ez/wf/run-1"]);
+    assert!(
+        files.contains("a.txt") && !files.contains("AGENTS.md") && !files.contains(".ez"),
+        "{files}"
+    );
+}
+
+#[tokio::test]
+async fn ez_nodes_of_one_run_share_the_worktree_and_branch() {
+    let env = Env::new();
+    let addr = env.ez_server().await;
+    let (_, f1) = run_one(
+        addr,
+        ez_step(
+            "n-1",
+            ez_exec("ezwork one.txt", Some("implement"), None),
+            env.workspace("ez/wf/run-2"),
+        ),
+    )
+    .await;
+    assert_eq!(f1.exit, "success", "{f1:?}");
+    // The second node sees the first one's (pushed) work in the same checkout.
+    let marker = env.ws.join("tasks/wf-run-1/o/r/one.txt");
+    assert!(marker.exists());
+    std::fs::write(env.ws.join("tasks/wf-run-1/o/r/.same-checkout"), "x").unwrap();
+    let (_, f2) = run_one(
+        addr,
+        ez_step(
+            "n-2",
+            ez_exec("ezwork two.txt", Some("review"), None),
+            env.workspace("ez/wf/run-2"),
+        ),
+    )
+    .await;
+    assert_eq!(f2.exit, "success", "{f2:?}");
+    assert!(env.ws.join("tasks/wf-run-1/o/r/.same-checkout").exists());
+    assert!(env.ws.join("tasks/wf-run-1/o/r/one.txt").exists());
+    let log = git(&env.bare, &["log", "--format=%s", "ez/wf/run-2"]);
+    assert_eq!(
+        log.lines()
+            .filter(|l| l.starts_with("enzarb: changes"))
+            .count(),
+        2,
+        "{log}"
+    );
+    assert_eq!(f2.git[0].branch, "ez/wf/run-2");
+}
+
+#[tokio::test]
+async fn ez_step_captures_the_submitted_result() {
+    let env = Env::new();
+    let addr = env.ez_server().await;
+    let schema = json!({"type": "object", "required": ["verdict"],
+        "properties": {"verdict": {"enum": ["approve", "reject"]}}});
+    let (_, fin) = run_one(
+        addr,
+        ez_step(
+            "r-1",
+            ez_exec("submit it", Some("implement"), Some(schema)),
+            env.workspace("ez/wf/run-3"),
+        ),
+    )
+    .await;
+    assert_eq!(fin.exit, "success", "{fin:?}");
+    assert_eq!(fin.result, Some(json!({"verdict": "approve"})));
+}
+
+#[tokio::test]
+async fn ez_step_without_push_never_pushes() {
+    let env = Env::new();
+    let addr = env.ez_server().await;
+    let mut ws = env.workspace("ez/wf/run-4");
+    ws.push = false;
+    let (_, fin) = run_one(
+        addr,
+        ez_step("p-1", ez_exec("ezwork np.txt", Some("implement"), None), ws),
+    )
+    .await;
+    assert_eq!(fin.exit, "success", "{fin:?}");
+    assert!(!fin.git[0].pushed);
+    let refs = git(&env.bare, &["branch", "--list", "ez/*"]);
+    assert!(refs.is_empty(), "{refs}");
+}
+
+#[tokio::test]
+async fn ez_command_node_runs_in_the_run_worktree() {
+    let env = Env::new();
+    let addr = env.ez_server().await;
+    let (_, f1) = run_one(
+        addr,
+        ez_step(
+            "c-0",
+            ez_exec("ezwork made.txt", None, None),
+            env.workspace("ez/wf/run-5"),
+        ),
+    )
+    .await;
+    assert_eq!(f1.exit, "success", "{f1:?}");
+    let cmd = StepExec::Command {
+        run: format!(
+            "{}/mise run test -- 'a b' && test -f made.txt && pwd > where.txt",
+            env.dir.path().display()
+        ),
+        tools: vec![],
+    };
+    let (_, f2) = run_one(addr, ez_step("c-1", cmd, env.workspace("ez/wf/run-5"))).await;
+    assert_eq!(f2.exit, "success", "{f2:?}");
+    assert_eq!(
+        std::fs::read_to_string(env.dir.path().join("mise.log"))
+            .unwrap()
+            .trim(),
+        "run test -- a b"
+    );
+    assert!(
+        std::fs::read_to_string(env.ws.join("tasks/wf-run-1/o/r/where.txt"))
+            .unwrap()
+            .contains("wf-run-1")
     );
 }

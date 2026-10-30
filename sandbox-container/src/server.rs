@@ -232,6 +232,7 @@ async fn session_loop(state: Arc<AppState>, socket: WebSocket) {
                     f.push(feature::STATS.to_string());
                     f.push(feature::FILE_READ.to_string());
                     f.push(feature::STEPS.to_string());
+                    f.push(feature::EZ_STEPS.to_string());
                     f
                 },
                 ..ServerOptions::default()

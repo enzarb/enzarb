@@ -251,6 +251,72 @@
     "name": "step_start_command"
   },
   {
+    "hex": "0100000000000000033a7b2274797065223a22737465705f7374617274222c2272756e5f6964223a2272756e2d313234222c22617474656d7074223a312c227461736b5f6964223a2277662d72756e2d39222c22776f726b737061636573223a5b7b227265706f223a22656e7a6172622f656e7a617262222c2275726c223a2268747470733a2f2f6769746875622e636f6d2f656e7a6172622f656e7a617262222c226d6f6465223a227772697465222c226272616e6368223a22656e7a6172622f69737375652d3432222c2262617365223a226d61696e222c2270757368223a747275652c22746f6b656e223a226768735f636c6f6e65227d5d2c2265786563223a7b226b696e64223a226167656e74222c2272756e74696d65223a7b226e616d65223a22636c61756465222c22696e7374616c6c223a5b226e706d3a406167656e74636c69656e7470726f746f636f6c2f636c617564652d6167656e742d61637040302e35225d2c2270726f746f636f6c223a22616370222c22636f6d6d616e64223a5b22636c617564652d6167656e742d616370225d2c22656e76223a7b7d2c226361706162696c6974696573223a7b22726573756d65223a747275652c2273657373696f6e73223a747275657d7d2c2270726f6d7074223a22466978206973737565202337222c22726573756c745f736368656d61223a7b2270726f70657274696573223a7b2276657264696374223a7b2274797065223a22737472696e67227d7d2c2274797065223a226f626a656374227d2c226d6f6465223a22696d706c656d656e74222c22657a223a7b226d6f6465735f746f6d6c223a2264656661756c745f6d6f6465203d205c22696d706c656d656e745c225c6e5b6d6f6465732e696d706c656d656e745d5c6e222c22696e737472756374696f6e5f66696c6573223a7b224147454e54532e6d64223a2242652062726965662e5c6e227d7d7d2c226f757470757473223a7b22706c616e223a7b2266696c65223a22706c616e2e6d64222c22666f726d6174223a226d61726b646f776e222c226f7074696f6e616c223a66616c73657d7d2c22656e76223a7b224150495f4b4559223a22733363726574227d2c226769746875625f746f6b656e223a226768735f73746570227d",
+    "message": {
+      "attempt": 1,
+      "env": {
+        "API_KEY": "s3cret"
+      },
+      "exec": {
+        "ez": {
+          "instruction_files": {
+            "AGENTS.md": "Be brief.\n"
+          },
+          "modes_toml": "default_mode = \"implement\"\n[modes.implement]\n"
+        },
+        "kind": "agent",
+        "mode": "implement",
+        "prompt": "Fix issue #7",
+        "result_schema": {
+          "properties": {
+            "verdict": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "runtime": {
+          "capabilities": {
+            "resume": true,
+            "sessions": true
+          },
+          "command": [
+            "claude-agent-acp"
+          ],
+          "env": {},
+          "install": [
+            "npm:@agentclientprotocol/claude-agent-acp@0.5"
+          ],
+          "name": "claude",
+          "protocol": "acp"
+        }
+      },
+      "github_token": "ghs_step",
+      "outputs": {
+        "plan": {
+          "file": "plan.md",
+          "format": "markdown",
+          "optional": false
+        }
+      },
+      "run_id": "run-124",
+      "task_id": "wf-run-9",
+      "type": "step_start",
+      "workspaces": [
+        {
+          "base": "main",
+          "branch": "enzarb/issue-42",
+          "mode": "write",
+          "push": true,
+          "repo": "enzarb/enzarb",
+          "token": "ghs_clone",
+          "url": "https://github.com/enzarb/enzarb"
+        }
+      ]
+    },
+    "name": "step_start_ez"
+  },
+  {
     "hex": "0100000000000000004e7b2274797065223a22737465705f6163636570746564222c2272756e5f6964223a2272756e2d313233222c227374617465223a2272756e6e696e67222c226578697374696e67223a66616c73657d",
     "message": {
       "existing": false,

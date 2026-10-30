@@ -352,6 +352,41 @@ impl Git<'_> {
             .unwrap_or_else(|| remote.unwrap_or_default()))
     }
 
+    /// Write pinned files (`rel` under `dir`) and keep them out of commits: tracked ones are
+    /// marked `skip-worktree`, untracked ones excluded. Rewritten at every step, so the pins
+    /// always win over what the branch holds.
+    pub async fn pin_files(
+        &self,
+        ctl: &mut Ctl,
+        dir: &Path,
+        files: &[(String, &str)],
+    ) -> Result<(), String> {
+        for (rel, text) in files {
+            let path = dir.join(rel);
+            if let Some(p) = path.parent() {
+                crate::privs::create_dir_all(p).map_err(|e| format!("cannot pin {rel}: {e}"))?;
+            }
+            // A tracked file marked skip-worktree before: let git see it again for the write.
+            let tracked = self.local(ctl, dir, &["ls-files", "--", rel]).await?;
+            let tracked = !tracked.stdout.iter().all(u8::is_ascii_whitespace);
+            crate::capture::write_atomic(&path, text.as_bytes(), 0o644)
+                .map_err(|e| format!("cannot pin {rel}: {e}"))?;
+            if tracked {
+                self.local_ok(ctl, dir, &["update-index", "--skip-worktree", "--", rel])
+                    .await?;
+            } else {
+                let out = self
+                    .local(ctl, dir, &["rev-parse", "--git-path", "info/exclude"])
+                    .await?;
+                let ex = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if out.success() && !ex.is_empty() {
+                    exclude(&dir.join(ex), &format!("/{rel}"));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Commit everything (when `push`) and push `branch` with the lease.
     pub async fn finish(
         &self,

@@ -143,11 +143,11 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
 | Message | Direction | Fields |
 |---|---|---|
 | `hello` | client → server | `versions: [1]`, `client: "ui" \| "proxy" \| "executor"` |
-| `welcome` | server → client | `version`, `features?: [string]` (optional; `"acp"` when chat is enabled, `"steps"`, `"stats"`, `"file_read"`, `"file_read_chat"`; absent means none) |
+| `welcome` | server → client | `version`, `features?: [string]` (optional; `"acp"` when chat is enabled, `"steps"`, `"ez_steps"` (agent steps may carry `mode` and `ez`, ADR-0029; implies `"steps"`), `"stats"`, `"file_read"`, `"file_read_chat"`; absent means none) |
 | `open` | client → server | `channel`, `kind: "pty" \| "acp"`, `cols`, `rows`, `command?: [..]`, `repo?`, `resume?`, `claude_token?` (acp only; set by the proxy) (see below) |
 | `opened` / `open_error` | server → client | `channel` / `channel, message, code?` |
 | `resize` | client → server | `channel`, `cols`, `rows` |
-| `step_start`, `step_accepted`, `step_status`, `step_state`, `step_steer`, `step_stop`, `step_resume`, `session_event`, `step_finished` | both | Generic step/session primitives, gated by `welcome.features` `steps`; fields in `proto/docs/protocol.md`. No orchestrator drives them at the moment ([ADR-0027](adr/0027-workflow-clean-slate.md)); the proxy does not relay them to browsers |
+| `step_start` (ez fields gated by `ez_steps`), `step_accepted`, `step_status`, `step_state`, `step_steer`, `step_stop`, `step_resume`, `session_event`, `step_finished` | both | Generic step/session primitives, gated by `welcome.features` `steps`; fields in `proto/docs/protocol.md`. No orchestrator drives them at the moment ([ADR-0027](adr/0027-workflow-clean-slate.md)); the proxy does not relay them to browsers |
 | `credential_captured` | server → client | `kind: "claude_oauth"`, `token?` (the captured token; **proxy-only**: the proxy consumes the frame, encrypts and stores the token in Postgres, never forwards it to the browser and never logs it), `legacy?: bool` (a promoted legacy file: store only if the user has no token) |
 | `credential_status` | client → server | (none); browsers may send it |
 | `credential_state` | server → client | `kind: "claude_oauth"`, `configured: bool`, `scope?: "user"` (the Claude token is per user, ADR-0004 amendment 2026-10-13). The proxy also sends it to the sandbox as the answer to a `legacy` capture |

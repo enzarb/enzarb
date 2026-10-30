@@ -1813,11 +1813,26 @@ fn notify_blocked(s: &SessionState, client: &Arc<dyn Client>, outcomes: &[HookOu
     }
 }
 
+/// `EZ_UNATTENDED` (set by sandbox-init for workflow steps): nobody can answer, so the session
+/// offers neither `AskUserQuestion` nor `SwitchMode`.
+pub const UNATTENDED_ENV: &str = "EZ_UNATTENDED";
+
+fn unattended() -> bool {
+    std::env::var(UNATTENDED_ENV).is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
+/// Whether `name` is an interactive tool that unattended sessions never offer.
+fn interactive_tool(name: &str) -> bool {
+    matches!(name, "AskUserQuestion" | SWITCH_MODE)
+}
+
 /// Tools for the session's current mode.
 fn build_tools(s: &SessionState) -> Vec<Arc<dyn Tool>> {
     let mode = s.mode_def();
+    let unattended = unattended();
     let mut tools: Vec<Arc<dyn Tool>> = ez_tools::builtin_tools()
         .into_iter()
+        .filter(|t| !(unattended && interactive_tool(t.name())))
         .filter(|t| {
             mode.tools
                 .as_ref()
@@ -1837,7 +1852,7 @@ fn build_tools(s: &SessionState) -> Vec<Arc<dyn Tool>> {
             )
         })
         .collect();
-    if !targets.is_empty() {
+    if !targets.is_empty() && !unattended {
         tools.push(Arc::new(SwitchModeTool { targets }));
     }
     if let Some(mcp) = &s.mcp {
@@ -2053,5 +2068,16 @@ fn replay(cwd: &Path, session_id: &str, records: &[transcript::Stamped], client:
             ),
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod unattended_tests {
+    use super::interactive_tool;
+
+    #[test]
+    fn unattended_drops_only_the_interactive_tools() {
+        assert!(interactive_tool("AskUserQuestion") && interactive_tool("SwitchMode"));
+        assert!(!interactive_tool("Bash") && !interactive_tool("Read"));
     }
 }
