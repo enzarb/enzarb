@@ -360,6 +360,33 @@ fn ctrl_messages() -> Vec<(&'static str, Ctrl)> {
         ("credential_status", Ctrl::CredentialStatus),
         ("stats_request", Ctrl::StatsRequest),
         (
+            "file_read",
+            Ctrl::FileRead {
+                id: "f1".into(),
+                path: ".ez/workflows.toml".into(),
+            },
+        ),
+        (
+            "file_ok",
+            Ctrl::File {
+                id: "f1".into(),
+                path: ".ez/workflows.toml".into(),
+                content: Some("[[rule]]\n".into()),
+                code: None,
+                message: None,
+            },
+        ),
+        (
+            "file_error",
+            Ctrl::File {
+                id: "f2".into(),
+                path: "../etc/passwd".into(),
+                content: None,
+                code: Some("outside_workspace".into()),
+                message: Some("path escapes /workspace".into()),
+            },
+        ),
+        (
             "stats",
             Ctrl::Stats(SandboxStats {
                 ts_ms: 1_760_000_000_000,

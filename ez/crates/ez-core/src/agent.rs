@@ -1394,7 +1394,15 @@ impl Agent {
     ) -> (ContentBlock, bool) {
         let tool = tools.get(name).cloned();
         let (title, kind, locations) = match &tool {
-            Some(t) => (t.title(input), t.kind(), t.locations(input)),
+            // Absolute, so clients can open the file without knowing the session's cwd.
+            Some(t) => (
+                t.title(input),
+                t.kind(),
+                t.locations(input)
+                    .into_iter()
+                    .map(|p| s.cwd.join(p).to_string_lossy().into_owned())
+                    .collect(),
+            ),
             None => (name.to_string(), ToolKind::Other, vec![]),
         };
         client.send_event(
@@ -1976,8 +1984,9 @@ fn replay(cwd: &Path, session_id: &str, records: &[transcript::Stamped], client:
             } => {
                 let locations = ["file_path", "path"]
                     .iter()
-                    .filter_map(|k| input.get(*k).and_then(Value::as_str).map(String::from))
+                    .filter_map(|k| input.get(*k).and_then(Value::as_str))
                     .take(1)
+                    .map(|p| cwd.join(p).to_string_lossy().into_owned())
                     .collect();
                 client.send_event(
                     session_id,

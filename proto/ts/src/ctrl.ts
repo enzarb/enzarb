@@ -36,8 +36,10 @@ export function environmentKind(k: unknown): EnvironmentKind {
 /** Feature names advertised in `welcome.features`. */
 /** `ClaudeUserToken` is a client feature (`hello.features`), sent only by sandbox-proxy. */
 /** `Stats`: the server answers `stats_request` with `stats`; send the request only after seeing it. */
+/** `FileRead`: the server answers `file_read` with `file`; send the request only after seeing it. */
+/** `FileReadChat`: `file_read` on a chat's mux session resolves relative paths against the chat worktree; implies `FileRead`. */
 /** `Steps`: the server runs ADR-0022 steps (`step_*`, `session_event`); send `step_*` only after seeing it. */
-export const Feature = { Acp: "acp", ClaudeUserToken: "claude_user_token", Stats: "stats", Steps: "steps" } as const;
+export const Feature = { Acp: "acp", ClaudeUserToken: "claude_user_token", FileRead: "file_read", FileReadChat: "file_read_chat", Stats: "stats", Steps: "steps" } as const;
 /** Decoders keep at most this many features and drop any longer than `MAX_FEATURE_LEN` bytes. */
 export const MAX_FEATURES = 64;
 export const MAX_FEATURE_LEN = 64;

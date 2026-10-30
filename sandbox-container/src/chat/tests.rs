@@ -811,8 +811,43 @@ fn disabled_chat_has_no_feature() {
     };
     assert_eq!(
         ChatManager::new(cfg, Reaper::new(false), RepoLocks::default()).features(),
-        vec!["acp".to_string()]
+        vec!["acp".to_string(), "file_read_chat".to_string()]
     );
+}
+
+#[test]
+fn worktree_of_follows_the_live_chat_of_a_mux_session() {
+    let cfg = Config {
+        acp_bin: "/bin/sh".into(),
+        workspace: "/ws".into(),
+        ..Config::default()
+    };
+    let m = ChatManager::new(cfg, Reaper::new(false), RepoLocks::default());
+    let live = |mux, id: Option<&str>, closing| {
+        let (stop, _) = watch::channel(None);
+        let (_, done) = watch::channel(());
+        Live {
+            conn: mux,
+            mux_session: mux,
+            chat_id: id.map(str::to_string),
+            closing: Arc::new(AtomicBool::new(closing)),
+            stop,
+            done,
+        }
+    };
+    {
+        let mut st = m.state.lock().unwrap();
+        st.live.push(live(1, Some("00000000000000aa"), false));
+        st.live.push(live(2, None, false));
+        st.live.push(live(3, Some("00000000000000bb"), true));
+    }
+    assert_eq!(
+        m.worktree_of(1),
+        Some(PathBuf::from("/ws/worktrees/chat-00000000000000aa"))
+    );
+    assert_eq!(m.worktree_of(2), None);
+    assert_eq!(m.worktree_of(3), None);
+    assert_eq!(m.worktree_of(9), None);
 }
 
 #[test]

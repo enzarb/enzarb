@@ -5,8 +5,9 @@
 		browserVisibility,
 		createChatSession
 	} from '#lib/acp/chat-session.svelte.ts';
-	import type { ConnectionDeps } from '#lib/acp/connection.ts';
+	import type { AcpSession, ConnectionDeps } from '#lib/acp/connection.ts';
 	import { sandboxConnector, type MuxSession } from '#lib/acp/sandbox-connect.ts';
+	import type { ChatItem } from '#lib/acp/types.ts';
 	import * as sessionStore from '#lib/acp/session-store.ts';
 	import { modeName } from '#lib/acp/reducer.ts';
 	import Notice from '#lib/components/ui/Notice.svelte';
@@ -19,12 +20,37 @@
 
 	let {
 		project,
-		connect
+		connect,
+		wrapFirst,
+		onSession,
+		onItems,
+		onBusy
 	}: {
 		project: string;
 		/** Override the sandbox connection (tests); defaults to the chat's token + websocket path. */
 		connect?: ConnectionDeps['connect'];
+		/** Rewrites the first message sent in this mount (e.g. to prepend context). */
+		wrapFirst?: (text: string) => string;
+		/** Called with each mux session the chat connects over. */
+		onSession?: (session: AcpSession) => void;
+		/** Called whenever the transcript changes. */
+		onItems?: (items: ChatItem[]) => void;
+		/** Called when a prompt turn starts (true) or ends (false). */
+		onBusy?: (busy: boolean) => void;
 	} = $props();
+
+	let first = true;
+	const send = (text: string) => {
+		const wrap = untrack(() => wrapFirst);
+		const out = first && wrap ? wrap(text) : text;
+		first = false;
+		chat.send(out);
+	};
+	/** Send a message from outside (the composer is the usual way). */
+	export function say(text: string): void {
+		first = false;
+		chat.send(text);
+	}
 
 	// One connection per mount: the page keys this component by project name.
 	const connector = sandboxConnector(
@@ -42,7 +68,11 @@
 	);
 
 	const chat = createChatSession({
-		connect: untrack(() => connect) ?? connector.connect,
+		connect: async (report) => {
+			const s = await (untrack(() => connect) ?? connector.connect)(report);
+			untrack(() => onSession)?.(s);
+			return s;
+		},
 		initialSessionId: sessionStore.load(untrack(() => project)),
 		onSessionId: (id) => {
 			const name = untrack(() => project);
@@ -62,6 +92,14 @@
 	});
 
 	const st = $derived(chat.state);
+	$effect(() => {
+		const items = st.chat.items;
+		untrack(() => onItems)?.(items);
+	});
+	$effect(() => {
+		const b = st.busy;
+		untrack(() => onBusy)?.(b);
+	});
 	const onAction = (a: 'retry' | 'reconnect' | 'take_over') => {
 		void a;
 		chat.reconnect();
@@ -103,7 +141,7 @@
 		<Composer
 			busy={st.busy}
 			disabled={st.phase !== 'ready' && st.phase !== 'disconnected'}
-			onSend={chat.send}
+			onSend={send}
 			onStop={chat.stop}
 		/>
 	{/if}
