@@ -35,7 +35,14 @@ check "pgop role" "$(yq eval-all 'select(.kind=="Role" and .metadata.name=="sand
 
 # Never in the sandbox namespace.
 check "sandbox ns refs" "$(yq eval-all 'select(.metadata.namespace=="enzarb-sandboxes")' - <<<"$on" | grep -c enzarb-claude-key || true)" 0
-check "no other deployment mounts it" "$(yq eval-all 'select(.kind=="Deployment" and .metadata.name!="enzarb-sandbox-proxy") | .spec.template.spec.volumes[].secret.secretName' - <<<"$on" | grep -c enzarb-claude-key || true)" 0
+check "no other deployment mounts it" "$(yq eval-all 'select(.kind=="Deployment" and .metadata.name!="enzarb-sandbox-proxy" and .metadata.name!="enzarb-tracks") | .spec.template.spec.volumes[].secret.secretName' - <<<"$on" | grep -c enzarb-claude-key || true)" 0
+# tracks (run executor, ADR-0029) reads the Project owner's token too: read-only mount, same key Secret.
+for d in enzarb-tracks; do
+  check "$d secret" "$(vol $d .secret.secretName <<<"$on")" enzarb-claude-key
+  check "$d readOnly" "$(mnt $d .readOnly <<<"$on")" true
+done
+off="$(render --set tracks.executor.enabled=false)"
+check "tracks without executor mounts no key" "$(yq eval-all 'select(.kind=="Deployment" and .metadata.name=="enzarb-tracks") | .spec.template.spec.volumes[].secret.secretName' - <<<"$off" | grep -c enzarb-claude-key || true)" 0
 
 # Bring-your-own keyring: nothing rendered, mounts point at it.
 ex="$(render --set secrets.claudeKey.existingSecret=mine)"

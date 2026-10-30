@@ -727,6 +727,7 @@ metadata:
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: enzarb-sandbox-auth-reader }
 subjects:
   - { kind: ServiceAccount, name: enzarb-sandbox-proxy, namespace: enzarb }
+  - { kind: ServiceAccount, name: enzarb-tracks, namespace: enzarb }
 
 ---
 # Source: enzarb/templates/rbac.yaml
@@ -1069,6 +1070,7 @@ spec:
             - { name: ENZARB_DOCKER_PRUNE, value: "on" }
             - { name: ENZARB_DOCKER_PRUNE_AGE, value: "24h" }
             - { name: ENZARB_DOCKER_PRUNE_MIN_FREE, value: "15" }
+            - { name: ENZARB_NETPOL_INGRESS_POD_NAMES, value: "enzarb-sandbox-proxy,enzarb-tracks" }
             - { name: RUST_LOG, value: "info" }
           readinessProbe:
             httpGet: { path: /readyz, port: health }
@@ -1326,6 +1328,8 @@ spec:
           imagePullPolicy: IfNotPresent
           args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-tracks-2fb2e36a97]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
+      # the keyring files are root-owned; fsGroup makes them group-readable by the non-root uid
+      securityContext: { fsGroup: 10001 }
       containers:
         - name: tracks
           image: ghcr.io/enzarb/enzarb-tracks:0.0.0-golden
@@ -1382,6 +1386,9 @@ spec:
                   optional: true
             - { name: ENZARB_TRACKS_ROUTING, value: "true" }
             - { name: ENZARB_TRACKS_CONCURRENCY, value: "4" }
+            - { name: ENZARB_TRACKS_EXECUTOR, value: "true" }
+            - { name: ENZARB_TRACKS_RUN_CONCURRENCY, value: "4" }
+            - { name: ENZARB_CLAUDE_KEYRING_DIR, value: /etc/enzarb/claude-key }
             - { name: RUST_LOG, value: "info" }
           readinessProbe:
             httpGet: { path: /readyz, port: http }
@@ -1396,8 +1403,13 @@ spec:
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":10001,"seccompProfile":{"type":"RuntimeDefault"}}
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
+            - { name: claude-key, mountPath: /etc/enzarb/claude-key, readOnly: true }
       volumes:
         - { name: tmp, emptyDir: {} }
+        - name: claude-key
+          secret:
+            secretName: enzarb-claude-key
+            defaultMode: 0440
 
 ---
 # Source: enzarb/templates/ui.yaml

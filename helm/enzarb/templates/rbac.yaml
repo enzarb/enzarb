@@ -164,7 +164,7 @@ roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: enzarb-sandbox
 subjects:
   - { kind: ServiceAccount, name: enzarb-sandbox-operator, namespace: {{ .Release.Namespace }} }
 ---
-{{- /* sandbox-proxy reads the per-Project auth Secret. */}}
+{{- /* sandbox-proxy (and, when it executes runs, tracks) read the per-Project auth Secret. Kubernetes cannot pin the names (sb-<project>-auth is per Project), so this is `get` on Secrets of the dedicated sandbox namespace; `list`/`watch` are not granted. */}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -187,6 +187,9 @@ metadata:
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: enzarb-sandbox-auth-reader }
 subjects:
   - { kind: ServiceAccount, name: enzarb-sandbox-proxy, namespace: {{ .Release.Namespace }} }
+  {{- if include "enzarb.tracksExecutor" . }}
+  - { kind: ServiceAccount, name: enzarb-tracks, namespace: {{ .Release.Namespace }} }
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

@@ -1,5 +1,6 @@
 import { getConfig, type TracksConfig } from './config.ts';
 import type { EventDecision } from '#lib/events.ts';
+import type { NodeRun, RunDetail, RunSummary } from '#lib/runs.ts';
 import type { ModeIssue, ModesCatalog, ModesDoc } from '#lib/modes-types.ts';
 import type {
 	Diagnostic,
@@ -56,6 +57,12 @@ export interface TracksClient {
 	): Promise<{ text: string; diagnostics: Diagnostic[] }>;
 	/** What routing decided about each event; events with no decision yet are absent. */
 	decisions(eventIds: number[]): Promise<EventDecision[]>;
+	/** Runs of a Project (newest first), or the runs the given events started. */
+	runs(query: { project: string; eventIds?: number[] }): Promise<RunSummary[]>;
+	/** One run with its node runs; null when it does not exist. */
+	run(id: string): Promise<RunDetail | null>;
+	/** Ask the executor to cancel the run; resolves false when it had already ended. */
+	stopRun(id: string): Promise<boolean>;
 	/** Triggers and traces of `text` for 1-50 logged events; no side effects. */
 	dryRun(input: {
 		text: string;
@@ -75,6 +82,72 @@ interface WireDecision {
 	errors: string[];
 	decided_at: string;
 }
+
+interface WireRun {
+	id: string;
+	workflow: string;
+	project: string;
+	repo: string;
+	subject: RunSummary['subject'];
+	event_id: number;
+	sha: string;
+	status: RunSummary['status'];
+	test: boolean;
+	current_node: string | null;
+	reason: string | null;
+	stop_requested: boolean;
+	created_at: string;
+	updated_at: string;
+	finished_at: string | null;
+	node_runs?: {
+		node: string;
+		visit: number;
+		status: string;
+		rendered: NodeRun['rendered'];
+		mode: string | null;
+		outputs: NodeRun['outputs'];
+		usage: NodeRun['usage'];
+		git: NodeRun['git'];
+		error: string | null;
+		started_at: string | null;
+		finished_at: string | null;
+	}[];
+}
+
+const toRun = (r: WireRun): RunSummary => ({
+	id: r.id,
+	workflow: r.workflow,
+	project: r.project,
+	repo: r.repo,
+	subject: r.subject,
+	eventId: r.event_id,
+	sha: r.sha,
+	status: r.status,
+	test: r.test,
+	currentNode: r.current_node,
+	reason: r.reason,
+	stopRequested: r.stop_requested,
+	createdAt: r.created_at,
+	updatedAt: r.updated_at,
+	finishedAt: r.finished_at
+});
+
+const toDetail = (r: WireRun): RunDetail => ({
+	...toRun(r),
+	nodeRuns: (r.node_runs ?? []).map((n) => ({
+		node: n.node,
+		visit: n.visit,
+		status: n.status,
+		rendered: n.rendered,
+		mode: n.mode,
+		outputs: n.outputs,
+		usage: n.usage,
+		git: n.git,
+		error: n.error,
+		startedAt: n.started_at,
+		finishedAt: n.finished_at
+	}))
+});
 
 const withModes = (modes: string | null) => (modes === null ? {} : { modes_toml: modes });
 
@@ -156,6 +229,30 @@ export function createTracksClient(
 				errors: d.errors,
 				decidedAt: d.decided_at
 			}));
+		},
+		runs: async ({ project, eventIds }) => {
+			const q = new URLSearchParams({ project });
+			if (eventIds) q.set('event_ids', eventIds.join(','));
+			if (eventIds && eventIds.length === 0) return [];
+			const r = await call<{ runs: WireRun[] }>(`/v1/runs?${q}`);
+			return r.runs.map(toRun);
+		},
+		run: async (id) => {
+			try {
+				return toDetail((await call<{ run: WireRun }>(`/v1/runs/${encodeURIComponent(id)}`)).run);
+			} catch (e) {
+				if (e instanceof TracksError && e.status === 404) return null;
+				throw e;
+			}
+		},
+		stopRun: async (id) => {
+			try {
+				await call(`/v1/runs/${encodeURIComponent(id)}/stop`, {});
+				return true;
+			} catch (e) {
+				if (e instanceof TracksError && e.status === 409) return false;
+				throw e;
+			}
 		},
 		dryRun: ({ text, modes, events, options }) =>
 			call(

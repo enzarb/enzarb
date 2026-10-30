@@ -25,6 +25,10 @@ pub struct Config {
     pub concurrency: usize,
     /// Seconds between catch-up sweeps (`ENZARB_TRACKS_SWEEP_SECS`).
     pub sweep_secs: u64,
+    /// Execute pending runs in the Projects' sandboxes (`ENZARB_TRACKS_EXECUTOR`); needs routing.
+    pub executor: bool,
+    /// Runs driven at once (`ENZARB_TRACKS_RUN_CONCURRENCY`).
+    pub run_concurrency: usize,
 }
 
 impl std::fmt::Debug for Config {
@@ -38,6 +42,8 @@ impl std::fmt::Debug for Config {
             .field("github_app_private_key", &"<redacted>")
             .field("concurrency", &self.concurrency)
             .field("sweep_secs", &self.sweep_secs)
+            .field("executor", &self.executor)
+            .field("run_concurrency", &self.run_concurrency)
             .finish()
     }
 }
@@ -91,6 +97,23 @@ impl Config {
             sweep_secs >= 1,
             "ENZARB_TRACKS_SWEEP_SECS must be at least 1"
         );
+        let executor = match get("ENZARB_TRACKS_EXECUTOR").as_deref() {
+            None | Some("false") | Some("0") => false,
+            Some("true") | Some("1") => true,
+            Some(v) => anyhow::bail!("invalid ENZARB_TRACKS_EXECUTOR {v:?} (true or false)"),
+        };
+        ensure!(
+            !executor || routing,
+            "ENZARB_TRACKS_EXECUTOR needs ENZARB_TRACKS_ROUTING"
+        );
+        let run_concurrency = match get("ENZARB_TRACKS_RUN_CONCURRENCY") {
+            Some(v) => v.parse().context("invalid ENZARB_TRACKS_RUN_CONCURRENCY")?,
+            None => 4,
+        };
+        ensure!(
+            (1..=64).contains(&run_concurrency),
+            "ENZARB_TRACKS_RUN_CONCURRENCY must be 1-64"
+        );
         Ok(Self {
             listen,
             token,
@@ -100,6 +123,8 @@ impl Config {
             github_app_private_key: get("ENZARB_GITHUB_APP_PRIVATE_KEY"),
             concurrency,
             sweep_secs,
+            executor,
+            run_concurrency,
         })
     }
 }

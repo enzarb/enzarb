@@ -83,6 +83,10 @@ imagePullSecrets:
 {{- define "enzarb.tracksRouting" -}}
 {{- if and .Values.postgres.enabled .Values.tracks.enabled .Values.tracks.routing.enabled }}true{{ end }}
 {{- end }}
+{{/* Non-empty when tracks executes runs: routing plus tracks.executor.enabled. Needs the sandbox auth Secrets, the Claude keyring and the sandbox NetworkPolicy allowance. */}}
+{{- define "enzarb.tracksExecutor" -}}
+{{- if and (include "enzarb.tracksRouting" .) .Values.tracks.executor.enabled }}true{{ end }}
+{{- end }}
 {{- define "enzarb.tracksTokenSecret" -}}{{ .Values.secrets.tracksToken.existingSecret | default (include "enzarb.generatedSecret" .) }}{{- end }}
 {{- define "enzarb.tracksTokenKey" -}}{{ if .Values.secrets.tracksToken.existingSecret }}{{ .Values.secrets.tracksToken.key }}{{ else }}tracks-token{{ end }}{{- end }}
 {{- define "enzarb.jwtKey" -}}{{ if .Values.secrets.sessionJwt.existingSecret }}{{ .Values.secrets.sessionJwt.key }}{{ else }}session-jwt-secret{{ end }}{{- end }}

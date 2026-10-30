@@ -1503,6 +1503,8 @@ dependencies = [
  "async-trait",
  "axum",
  "enzarb-crds",
+ "enzarb-proto",
+ "enzarb-sandbox-proxy",
  "ez-core",
  "ez-workflow",
  "http-body-util",

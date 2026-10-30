@@ -1,6 +1,6 @@
 # enzarb-tracks
 
-Runs ez workflows (`.ez/workflows.toml`) for enzarb projects ([ADR-0029](../docs/adr/0029-ez-workflows.md)). It serves the API behind the UI's modes and workflow designers and, with routing on, routes every connector event to the owning Project's workflows and records a decision (rollout step 3). Runs are created `pending`; executing them is a later step.
+Runs ez workflows (`.ez/workflows.toml`) for enzarb projects ([ADR-0029](../docs/adr/0029-ez-workflows.md)). It serves the API behind the UI's modes and workflow designers and, with routing on, routes every connector event to the owning Project's workflows and records a decision (rollout step 3). Runs are created `pending`; with the executor on, tracks runs their `agent`, `command` and `end` nodes in the Project's sandbox (rollout step 4).
 
 All workflow semantics come from [`ez-workflow`](../ez/crates/ez-workflow) and all mode editing from ez-core (`modes_api`, `modes_edit`), so the UI never re-implements a rule.
 
@@ -11,6 +11,9 @@ Cluster-internal. The UI calls it after its own access checks (write permission 
 | Route | Request | Response |
 |---|---|---|
 | `GET /healthz`, `GET /readyz` | | `ok` (no auth) |
+| `GET /v1/runs?project=&repo=&event_ids=&limit=` | at least one filter | `{runs: [...]}` newest first (max 200) |
+| `GET /v1/runs/{id}` | | `{run}` with `node_runs: [{node, visit, status, rendered, mode, outputs, usage, git, error, started_at, finished_at}]`; 404 `not_found` |
+| `POST /v1/runs/{id}/stop` | | `{stopping: true}`; the executor interrupts the step and ends the run `cancelled` (`reason: stopped`); 409 `run_finished` |
 | `GET /v1/modes/catalog` | | ez's built-in tools, hook events, permission and `on_failure` values, and the `ez init` templates (`Catalog`; mise tasks, MCP servers and profiles are empty) |
 | `POST /v1/modes/parse` | `{text}`: a `.ez/modes.toml` | `{doc: ModesDoc, issues}`, every mode with `originalId` = its id (keep it when renaming, so render rewrites the section in place); 422 `invalid_modes_toml` when it doesn't parse |
 | `POST /v1/modes/validate` | `{doc}` | `{issues}` (`severity`: `error` blocks saving, `warning`, `info`) |
@@ -34,11 +37,23 @@ Cluster-internal. The UI calls it after its own access checks (write permission 
 | `ENZARB_GITHUB_APP_ID`, `ENZARB_GITHUB_APP_PRIVATE_KEY` | | GitHub App used to read `.ez/*.toml` at the default branch head; without it every event gets an `error` decision |
 | `ENZARB_TRACKS_CONCURRENCY` | 4 | Events routed at once (1-64) |
 | `ENZARB_TRACKS_SWEEP_SECS` | 30 | Catch-up sweep interval |
+| `ENZARB_TRACKS_EXECUTOR` | `false` (chart: `tracks.executor.enabled`, default on) | Execute pending runs; needs routing, the Claude keyring (`ENZARB_CLAUDE_KEYRING_DIR`, default `/etc/enzarb/claude-key`) and Kubernetes access to Projects and the `sb-*-auth` Secrets |
+| `ENZARB_TRACKS_RUN_CONCURRENCY` | 4 | Runs driven at once per replica (1-64) |
 | `RUST_LOG` | `info` | JSON logs |
 
 ## Routing
 
 `LISTEN connector_event` -> read `connectors.event_v` -> find the Project listing the repo (`get`/`list` on Project CRs) -> read `.ez/workflows.toml` and `.ez/modes.toml` at the default branch head (sha pinned) through the GitHub App -> evaluate every workflow's `on` / `if` with `ez-workflow` -> one transaction writes `tracks.event_decisions` and a `pending` `tracks.runs` row per match. `event_decisions.event_id` is the primary key, so an event is decided at most once; a sweep after every (re)connect and periodically catches up events missed while down (everything past `tracks.router_state.floor`, set to the newest event id the first time tracks runs). Schema: [contracts.md](../docs/contracts.md) section 6a. Migrations: `enzarb-tracks migrate` (the chart's `enzarb-migrate-tracks` Job).
+
+## Executing runs
+
+`exec.rs`. Several replicas may run it; every run is driven by one at a time.
+
+- **Claiming.** `UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1)` takes a lease (`lease_owner`, `lease_until`, 30 s) on the oldest `pending`/`running` run whose lease is free or expired. The driver renews it every 10 s; a replica that loses it stops at once, and all run writes check `lease_owner`. A crashed replica's runs are taken over when the lease expires.
+- **One node.** Render with `ez-workflow` -> write the `node_runs` row (with `step_run_id`) -> dial the sandbox (`ez_steps` required) -> `step_start` -> wait for `step_finished` (pushed, with a `step_status` poll as backstop) -> in ONE transaction write the node's outputs/usage/git and the `advance`d run state.
+- **Restart.** A `node_runs` row without a finish means the step may be running: tracks re-attaches with `step_status` (running: keep waiting; interrupted: `step_resume`; finished: take the result) and sends `step_start` again only when the sandbox answers `unknown`. `step_start` is idempotent per `run_id` as well.
+- **Limits.** `max_visits` and the edge rules are `ez-workflow`'s; `timeout` becomes `runs.deadline` (past it the step is stopped and the run fails `timeout`); `max_runs` is checked, under an advisory lock, when a `pending` run becomes `running`.
+- **Failures.** A step that fails still advances with its outputs (`exit`, `exit_code`), so edges can branch on it. A missing Claude token ends the run `failed` (`no_credential`); an `action`/`wait` node ends it `failed` ("node type not supported yet"). Sandbox or GitHub trouble pauses the run (the lease is held for 15 s) and retries; it does not fail it.
 
 ## Checks
 

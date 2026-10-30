@@ -9,9 +9,12 @@
 pub mod api;
 pub mod config;
 pub mod db;
+pub mod exec;
 pub mod github;
 pub mod projects;
 pub mod router;
+pub mod runs_api;
+pub mod sandbox;
 
 /// Selects rustls' `ring` provider for the process. kube and sqlx use `ring`, but reqwest 0.13
 /// (through ez-core) enables `aws-lc-rs` too, and with both present rustls refuses to pick one

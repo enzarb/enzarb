@@ -17,13 +17,15 @@ anyhow = "1"
 async-trait = "0.1"
 axum = "0.8"
 enzarb-crds = { path = "../operator/crates/enzarb-crds" }
+enzarb-proto = { path = "../proto/crates/enzarb-proto", features = ["tokio"] }
+enzarb-sandbox-proxy = { path = "../sandbox-proxy" }
 ez-core = { path = "../ez/crates/ez-core" }
 ez-workflow = { path = "../ez/crates/ez-workflow" }
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto", "use_pem"] }
 k8s-openapi = { version = "0.28", default-features = false, features = ["latest"] }
 kube = { version = "4.2", default-features = false, features = ["client", "rustls-tls", "ring"] }
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "migrate", "macros", "json", "tls-rustls-ring-webpki"] }

@@ -32,7 +32,7 @@ check "component Dockerfile ARGs feed the pin check" "sandbox-container monorepo
 check "generated graph is read by the monorepo checks" "monorepo release-path" scripts/monorepo/graph.generated.sh
 check "root cargo files select every rust component" "proto operator connectors realtime sandbox-proxy sandbox-container updater tracks ez monorepo" Cargo.lock
 check "root toolchain file" "proto operator connectors realtime sandbox-proxy sandbox-container updater tracks ez monorepo" rust-toolchain.toml
-check "proto fans out" "proto sandbox-proxy sandbox-container ui" proto/crates/enzarb-proto/src/lib.rs
+check "proto fans out (tracks reuses the proxy lib and enzarb-proto)" "proto sandbox-proxy sandbox-container ui tracks" proto/crates/enzarb-proto/src/lib.rs
 check "operator fans out" "operator sandbox-proxy tracks" operator/crates/enzarb-crds/src/lib.rs
 check "connectors only" "connectors" connectors/bin/receiver/src/main.rs
 check "realtime only" "realtime" realtime/src/lib.rs

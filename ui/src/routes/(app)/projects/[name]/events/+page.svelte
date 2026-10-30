@@ -3,6 +3,7 @@
 	import EventLog from '#lib/components/EventLog.svelte';
 	import { watchEvents } from '#lib/live.ts';
 	import { getEventPayload, listDecisions, listEvents } from '#lib/events.remote.ts';
+	import { listRunsForEvents } from '#lib/runs.remote.ts';
 
 	const name = $derived(page.params.name!);
 	const events = $derived(listEvents({ name }));
@@ -13,13 +14,28 @@
 		Object.fromEntries((decided?.current ?? []).map((d) => [d.eventId, d]))
 	);
 
+	const started = $derived(ids.length > 0 ? listRunsForEvents({ name, ids }) : undefined);
+	const runLinks = $derived.by(() => {
+		const out: Record<number, { id: string; workflow: string; href: string }[]> = {};
+		for (const r of started?.current ?? [])
+			(out[r.eventId] ??= []).push({
+				id: r.id,
+				workflow: r.workflow,
+				href: `/projects/${encodeURIComponent(name)}/runs/${r.id}`
+			});
+		return out;
+	});
+
 	// A new delivery arrives as a realtime frame; the list is refetched (a reconnect refetches too).
 	$effect(() =>
 		watchEvents(() => {
 			void events.refresh();
 			// Routing finishes a moment after the delivery is logged: look again shortly.
 			void decided?.refresh();
-			setTimeout(() => void decided?.refresh(), 3000);
+			setTimeout(() => {
+				void decided?.refresh();
+				void started?.refresh();
+			}, 3000);
 		})
 	);
 </script>
@@ -29,6 +45,7 @@
 <EventLog
 	rows={events.current}
 	{decisions}
+	{runLinks}
 	failed={!!events.error && !events.current}
 	payload={async (id) => {
 		const q = getEventPayload({ name, id });

@@ -28,6 +28,10 @@ spec:
       {{- if $routing }}
       {{- include "enzarb.waitMigrations" . | nindent 6 }}
       {{- end }}
+      {{- if include "enzarb.tracksExecutor" . }}
+      # the keyring files are root-owned; fsGroup makes them group-readable by the non-root uid
+      securityContext: { fsGroup: 10001 }
+      {{- end }}
       containers:
         - name: tracks
           image: {{ include "enzarb.image" $c }}
@@ -42,6 +46,11 @@ spec:
             {{- include "enzarb.secretEnv" (dict "name" "ENZARB_GITHUB_APP_PRIVATE_KEY" "optional" true "secret" (include "enzarb.githubSecret" .) "key" (include "enzarb.githubKey" (dict "ctx" . "key" "privateKey"))) | nindent 12 }}
             - { name: ENZARB_TRACKS_ROUTING, value: "true" }
             - { name: ENZARB_TRACKS_CONCURRENCY, value: {{ $c.routing.concurrency | quote }} }
+            {{- if include "enzarb.tracksExecutor" . }}
+            - { name: ENZARB_TRACKS_EXECUTOR, value: "true" }
+            - { name: ENZARB_TRACKS_RUN_CONCURRENCY, value: {{ $c.executor.concurrency | quote }} }
+            {{- include "enzarb.claudeKeyEnv" . | nindent 12 }}
+            {{- end }}
             {{- end }}
             - { name: RUST_LOG, value: {{ .Values.rustLog | quote }} }
             {{- with $c.extraEnv }}
@@ -63,8 +72,14 @@ spec:
           securityContext: {{ include "enzarb.securityContext" (dict "ctx" . "uid" 10001) | fromYaml | toJson }}
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
+            {{- if include "enzarb.tracksExecutor" . }}
+            {{- include "enzarb.claudeKeyMount" . | nindent 12 }}
+            {{- end }}
       volumes:
         - { name: tmp, emptyDir: {} }
+        {{- if include "enzarb.tracksExecutor" . }}
+        {{- include "enzarb.claudeKeyVolume" . | nindent 8 }}
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service
