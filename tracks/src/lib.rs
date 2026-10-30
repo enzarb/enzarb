@@ -12,3 +12,10 @@ pub mod db;
 pub mod github;
 pub mod projects;
 pub mod router;
+
+/// Selects rustls' `ring` provider for the process. kube and sqlx use `ring`, but reqwest 0.13
+/// (through ez-core) enables `aws-lc-rs` too, and with both present rustls refuses to pick one
+/// and panics on the first TLS connection. Call once at startup, before any client is built.
+pub fn install_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}

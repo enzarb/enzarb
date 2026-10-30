@@ -14,6 +14,7 @@ fn database_url() -> Result<String> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    enzarb_tracks::install_crypto_provider();
     tracing_subscriber::fmt()
         .json()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))

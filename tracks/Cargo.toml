@@ -22,6 +22,7 @@ ez-workflow = { path = "../ez/crates/ez-workflow" }
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto", "use_pem"] }
 k8s-openapi = { version = "0.28", default-features = false, features = ["latest"] }
 kube = { version = "4.2", default-features = false, features = ["client", "rustls-tls", "ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
