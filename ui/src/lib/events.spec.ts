@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { decisionHeadline, repoKeyFromUrl, summarizeEvent } from './events.ts';
+import { decisionHeadline, isActive, repoKeyFromUrl, summarizeEvent } from './events.ts';
+
+describe('isActive', () => {
+	it('is true only for events that started or resumed a run', () => {
+		expect(isActive({ outcome: 'started' })).toBe(true);
+		expect(isActive({ outcome: 'resumed' })).toBe(true);
+		for (const outcome of ['no_match', 'skipped', 'error'] as const) {
+			expect(isActive({ outcome })).toBe(false);
+		}
+		expect(isActive(undefined)).toBe(false);
+	});
+});
 
 describe('repoKeyFromUrl', () => {
 	it('lowercases owner and repo and drops .git', () => {

@@ -1,7 +1,8 @@
 <script lang="ts">
-	import type { EventDecision as Decision, EventRow } from '#lib/events.ts';
+	import { type EventDecision as Decision, type EventRow, isActive } from '#lib/events.ts';
 	import EventDecision from './EventDecision.svelte';
 	import Button from './form/Button.svelte';
+	import Checkbox from './form/Checkbox.svelte';
 	import EmptyState from './ui/EmptyState.svelte';
 	import Notice from './ui/Notice.svelte';
 	import Section from './ui/Section.svelte';
@@ -44,6 +45,9 @@
 		}
 	}
 
+	let activeOnly = $state(false);
+	const shown = $derived(activeOnly ? rows?.filter((r) => isActive(decisions[r.id])) : rows);
+
 	const label = (r: EventRow) => (r.action ? `${r.event} ${r.action}` : r.event);
 </script>
 
@@ -61,8 +65,15 @@
 	/>
 {:else}
 	<Section title="Events" description="Each delivery and the workflow it started, if any.">
+		<Checkbox label="Only runs started or resumed" bind:checked={activeOnly} />
+		{#if shown?.length === 0}
+			<EmptyState
+				title="No runs started or resumed"
+				description="None of the loaded events started or resumed a run."
+			/>
+		{/if}
 		<ul class="ez-event-log" data-testid="event-log">
-			{#each rows as r (r.id)}
+			{#each shown ?? [] as r (r.id)}
 				<li>
 					<details ontoggle={(e) => toggle(r.id, e.currentTarget.open)}>
 						<summary>
