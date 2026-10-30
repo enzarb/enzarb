@@ -29,6 +29,13 @@ describe('ProjectHeader', () => {
 	const nameHint = /Kubernetes name, used in URLs and keys/;
 	const sandboxHint = /sandbox pod that runs this Project's agents/;
 
+	// A fresh headless page has no focus (document.hasFocus() is false), so a bare Tab does
+	// nothing and these tests only passed when an earlier test had focused the page. Click the
+	// heading first: it focuses the page and starts sequential navigation before the first stop.
+	async function focusPage() {
+		await userEvent.click(page.getByRole('heading', { name: 'Alpha' }));
+	}
+
 	it('shows the name tooltip on hover', async () => {
 		render(ProjectHeader, props);
 		await userEvent.hover(page.getByText('alpha', { exact: true }));
@@ -37,6 +44,7 @@ describe('ProjectHeader', () => {
 
 	it('shows on keyboard focus, hides on Escape and on blur', async () => {
 		render(ProjectHeader, props);
+		await focusPage();
 		await userEvent.tab();
 		await expect.element(page.getByRole('tooltip')).toHaveTextContent(nameHint);
 		await userEvent.keyboard('{Escape}');
@@ -49,6 +57,7 @@ describe('ProjectHeader', () => {
 
 	it('links the trigger to the tooltip with aria-describedby', async () => {
 		render(ProjectHeader, props);
+		await focusPage();
 		await userEvent.tab();
 		const tip = await vi.waitUntil(() => document.querySelector('[role="tooltip"]'));
 		const trigger = document.activeElement;
