@@ -3,7 +3,7 @@
 // The first word of a prompt selects the behaviour. Sessions are recorded in
 // $FAKE_STATE so `session/load` works across "restarts".
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
@@ -42,6 +42,15 @@ function mcpCall(server, calls) {
   });
 }
 
+const cwds = new Map(); // sessionId -> cwd
+// ez-like modes: the `[modes.<id>]` tables of $EZ_CONFIG_DIR/modes.toml (when set).
+function ezModes() {
+  const dir = process.env.EZ_CONFIG_DIR;
+  if (!dir) return undefined;
+  const text = readFileSync(join(dir, "modes.toml"), "utf8");
+  const ids = [...text.matchAll(/^\[modes\.([A-Za-z0-9_-]+)\]/gm)].map((m) => m[1]);
+  return { currentModeId: ids[0], availableModes: ids.map((id) => ({ id, name: id })) };
+}
 const modes = new Map(); // sessionId -> first word of its first prompt
 
 async function prompt(id, params) {
@@ -98,6 +107,16 @@ async function prompt(id, params) {
     say(sid, `tools=${res[1].result.tools.map((t) => t.name).join(",")}`);
     say(sid, ` invalid=${res[2].result.isError} valid=${res[3].result.isError}`);
     reply(id, { stopReason: "end_turn" });
+  } else if (word === "ezwork") {
+    // Writes a file in the session's cwd; the file name is the second word.
+    const name = text.split(/\s+/)[1] ?? "ez-out.txt";
+    writeFileSync(join(cwds.get(sid), name), `by ${process.env.EZ_CONFIG_DIR}\n`);
+    writeFileSync(
+      join(state, "ezenv.json"),
+      JSON.stringify({ config: process.env.EZ_CONFIG_DIR, sessions: process.env.EZ_SESSIONS_DIR, unattended: process.env.EZ_UNATTENDED, cwd: cwds.get(sid), gh: process.env.GH_TOKEN ?? null }),
+    );
+    say(sid, "wrote it");
+    reply(id, { stopReason: "end_turn" });
   } else if (word === "wait") {
     say(sid, "waiting");
     await new Promise((resolve) => {
@@ -136,8 +155,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     case "session/new": {
       const sid = `sess-${process.pid}`;
       servers.set(sid, m.params.mcpServers);
+      cwds.set(sid, m.params.cwd);
       writeFileSync(join(state, sid), JSON.stringify(m.params));
-      return reply(m.id, { sessionId: sid });
+      return reply(m.id, { sessionId: sid, modes: ezModes() });
     }
     case "session/load": {
       const sid = m.params.sessionId;
@@ -145,6 +165,14 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       servers.set(sid, m.params.mcpServers);
       // History replay; must not land in the step's log again.
       update(sid, { sessionUpdate: "user_message_chunk", content: { type: "text", text: "REPLAYED" } });
+      return reply(m.id, {});
+    }
+    case "session/set_mode": {
+      const ms = ezModes();
+      if (!ms?.availableModes.some((x) => x.id === m.params.modeId)) {
+        return send({ id: m.id, error: { code: -32602, message: `no mode ${m.params.modeId}` } });
+      }
+      writeFileSync(join(state, "mode-set"), m.params.modeId);
       return reply(m.id, {});
     }
     case "session/prompt":
