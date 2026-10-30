@@ -75,6 +75,10 @@ impl Report {
 pub struct ModeCatalog {
     /// Mode id → its built-in `tools` allowlist (`None`: all built-ins), in file order.
     pub modes: IndexMap<String, Option<Vec<String>>>,
+    /// Mode id → its `mcp_tools` globs, when the file sets them (absent: ez's default, every
+    /// MCP tool).
+    #[serde(default)]
+    pub mcp_tools: IndexMap<String, Vec<String>>,
 }
 
 impl ModeCatalog {
@@ -85,6 +89,7 @@ impl ModeCatalog {
             .parse()
             .map_err(|e: toml::de::Error| format!("modes.toml: {}", e.to_string().trim_end()))?;
         let mut modes = IndexMap::new();
+        let mut mcp_tools = IndexMap::new();
         if let Some(t) = table.get("modes") {
             let t = t.as_table().ok_or("modes.toml: `modes` must be a table")?;
             for (id, v) in t {
@@ -103,18 +108,61 @@ impl ModeCatalog {
                             .collect(),
                     ),
                 };
+                if let Some(v) = def.get("mcp_tools") {
+                    let globs = v
+                        .as_array()
+                        .ok_or_else(|| {
+                            format!("modes.toml: `modes.{id}.mcp_tools` must be a list")
+                        })?
+                        .iter()
+                        .filter_map(|t| t.as_str().map(str::to_string))
+                        .collect();
+                    mcp_tools.insert(id.clone(), globs);
+                }
                 modes.insert(id.clone(), tools);
             }
         }
         if modes.is_empty() {
             return Err("modes.toml defines no modes".into());
         }
-        Ok(Self { modes })
+        Ok(Self { modes, mcp_tools })
+    }
+
+    /// Whether ez offers `mcp__enzarb__submit_result` in mode `id`: its `mcp_tools` globs must
+    /// match the tool name (no `mcp_tools` key means ez's default `mcp__*`).
+    pub fn allows_submit_result(&self, id: &str) -> bool {
+        match self.mcp_tools.get(id) {
+            None => true,
+            Some(globs) => globs.iter().any(|g| glob_matches(g, SUBMIT_RESULT_TOOL)),
+        }
     }
 
     pub fn contains(&self, id: &str) -> bool {
         self.modes.contains_key(id)
     }
+}
+
+/// The MCP tool sandbox-init serves for a node's `result`.
+pub const SUBMIT_RESULT_TOOL: &str = "mcp__enzarb__submit_result";
+
+/// `*` matches any run of characters; everything else is literal.
+fn glob_matches(glob: &str, name: &str) -> bool {
+    let parts: Vec<&str> = glob.split('*').collect();
+    if parts.len() == 1 {
+        return glob == name;
+    }
+    let (first, last) = (parts[0], parts[parts.len() - 1]);
+    if !name.starts_with(first) || name.len() < first.len() + last.len() || !name.ends_with(last) {
+        return false;
+    }
+    let mut rest = &name[first.len()..name.len() - last.len()];
+    for mid in &parts[1..parts.len() - 1] {
+        match rest.find(mid) {
+            Some(i) => rest = &rest[i + mid.len()..],
+            None => return false,
+        }
+    }
+    true
 }
 
 /// Parses and validates in one go: the file (if it parsed) and every finding.
@@ -400,6 +448,19 @@ fn validate_node(
                     ),
                     Some(_) => {}
                 },
+            }
+            if a.result.is_some()
+                && let Some(m) = modes
+                && m.contains(&a.mode)
+                && !m.allows_submit_result(&a.mode)
+            {
+                r.error(
+                    format!("{np}.mode"),
+                    format!(
+                        "mode `{}` does not allow `{SUBMIT_RESULT_TOOL}` in `mcp_tools` (add it or `mcp__*`), so ez would hide the tool this node's `result` needs",
+                        a.mode
+                    ),
+                );
             }
             if a.instruction.trim().is_empty() {
                 r.error(format!("{np}.instruction"), "must not be empty");

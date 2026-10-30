@@ -2,9 +2,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use enzarb_tracks::exec::{ExecConfig, Executor};
 use enzarb_tracks::github::{GithubApp, NoApp, RepoSource};
 use enzarb_tracks::projects::KubeProjects;
 use enzarb_tracks::router::Router;
+use enzarb_tracks::sandbox::{KubeSandboxes, StoredTokens};
 use enzarb_tracks::{api, config::Config, db};
 use tracing_subscriber::EnvFilter;
 
@@ -31,6 +33,7 @@ async fn main() -> Result<()> {
     let mut state = api::AppState::new(cfg.token.clone());
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let mut router_task = None;
+    let mut exec_task = None;
     if cfg.routing {
         let pool = db::connect(&database_url()?, (cfg.concurrency as u32 + 4).min(32)).await?;
         let source: Arc<dyn RepoSource> = match (&cfg.github_app_id, &cfg.github_app_private_key) {
@@ -41,6 +44,28 @@ async fn main() -> Result<()> {
             }
         };
         let projects = Arc::new(KubeProjects::new().await.context("Kubernetes client")?);
+        if cfg.executor {
+            let dir = std::env::var("ENZARB_CLAUDE_KEYRING_DIR")
+                .unwrap_or_else(|_| "/etc/enzarb/claude-key".into());
+            let keyring =
+                enzarb_sandbox_proxy::credential::Keyring::load(std::path::Path::new(&dir))
+                    .context("Claude keyring")?;
+            let store = Arc::new(enzarb_sandbox_proxy::store::PgStore::from_env()?);
+            let creds = enzarb_sandbox_proxy::store::Credentials::new(store, Arc::new(keyring));
+            let ex = Arc::new(Executor::new(
+                pool.clone(),
+                source.clone(),
+                projects.clone(),
+                Arc::new(KubeSandboxes::new().await.context("Kubernetes client")?),
+                Arc::new(StoredTokens::new(creds).await?),
+                ExecConfig {
+                    concurrency: cfg.run_concurrency,
+                    ..ExecConfig::default()
+                },
+            ));
+            exec_task = Some(tokio::spawn(ex.run(stop_rx.clone())));
+            tracing::info!(concurrency = cfg.run_concurrency, "run executor on");
+        }
         let r = Arc::new(Router::new(
             pool.clone(),
             source,
@@ -66,6 +91,9 @@ async fn main() -> Result<()> {
         })
         .await?;
     let _ = stop_tx.send(true);
+    if let Some(t) = exec_task {
+        let _ = tokio::time::timeout(Duration::from_secs(25), t).await;
+    }
     if let Some(t) = router_task {
         let _ = tokio::time::timeout(Duration::from_secs(25), t).await;
     }

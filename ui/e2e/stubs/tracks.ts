@@ -3,6 +3,8 @@
 // the UI's own commit, refresh and render path against the real SvelteKit remote functions.
 import type { ModesDoc } from '../../src/lib/modes-types.ts';
 import type { WorkflowsFileWire } from '../../src/lib/workflows-types.ts';
+import { E2E_PROJECT } from '../constants.ts';
+import type { RunDetail } from '../../src/lib/runs.ts';
 import { TracksError, type TracksClient } from '../../src/lib/server/tracks.ts';
 
 export * from '../../src/lib/server/tracks.ts';
@@ -15,7 +17,69 @@ const parse = <T>(text: string): T => {
 	}
 };
 
+/** One seeded run: an agent node then a command node, still running until Stop. */
+export const E2E_RUN_ID = '11111111-1111-4111-8111-111111111111';
+const NOW = '2026-10-30T12:00:00.000Z';
+const run: RunDetail = {
+	id: E2E_RUN_ID,
+	workflow: 'fix-issue',
+	project: E2E_PROJECT,
+	repo: 'e2e-org/app',
+	subject: { kind: 'issue', number: 7 },
+	eventId: 1,
+	sha: 'abc1234def',
+	status: 'running',
+	test: false,
+	currentNode: 'build',
+	reason: null,
+	stopRequested: false,
+	createdAt: NOW,
+	updatedAt: NOW,
+	finishedAt: null,
+	nodeRuns: [
+		{
+			node: 'triage',
+			visit: 1,
+			status: 'done',
+			rendered: { type: 'agent', mode: 'triage', instruction: 'Triage issue #7', push: true },
+			mode: 'triage',
+			outputs: { result: { decision: 'go' }, exit: 'success' },
+			usage: { input_tokens: 11, output_tokens: 22 },
+			git: [
+				{ repo: 'e2e-org/app', branch: 'ez/fix-issue/x', head_sha: 'deadbeefcafe', pushed: true }
+			],
+			error: null,
+			startedAt: NOW,
+			finishedAt: NOW
+		},
+		{
+			node: 'build',
+			visit: 1,
+			status: 'running',
+			rendered: { type: 'command', task: 'build', args: ['go'] },
+			mode: null,
+			outputs: null,
+			usage: null,
+			git: null,
+			error: null,
+			startedAt: NOW,
+			finishedAt: null
+		}
+	]
+};
+
 const client: TracksClient = {
+	runs: async ({ project, eventIds }) =>
+		project === E2E_PROJECT && (!eventIds || eventIds.includes(run.eventId)) ? [run] : [],
+	run: async (id) => (id === E2E_RUN_ID ? structuredClone(run) : null),
+	stopRun: async (id) => {
+		if (id !== E2E_RUN_ID || run.status !== 'running') return false;
+		run.status = 'cancelled';
+		run.reason = 'stopped';
+		run.finishedAt = NOW;
+		run.nodeRuns[1]!.status = 'failed';
+		return true;
+	},
 	modesCatalog: async () => ({
 		builtinTools: [],
 		hookEvents: [],

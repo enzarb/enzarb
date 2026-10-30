@@ -296,3 +296,40 @@ fn files_round_trip_through_toml() {
     assert_eq!(file, again, "{text}");
     assert!(validate(&Engine::new(), &again, Some(&modes())).is_ok());
 }
+
+#[test]
+fn result_needs_submit_result_in_mcp_tools() {
+    let modes = ModeCatalog::from_modes_toml(
+        "[modes.none]\ndescription = \"x\"\nmcp_tools = []\n\
+         [modes.other]\ndescription = \"x\"\nmcp_tools = [\"mcp__github__*\"]\n\
+         [modes.all]\ndescription = \"x\"\nmcp_tools = [\"mcp__*\"]\n\
+         [modes.exact]\ndescription = \"x\"\nmcp_tools = [\"mcp__enzarb__submit_result\"]\n\
+         [modes.dflt]\ndescription = \"x\"\n",
+    )
+    .unwrap();
+    let node = |mode: &str, result: bool| {
+        wf(&format!(
+            "[workflows.w.nodes.a]\ntype = \"agent\"\nmode = \"{mode}\"\ninstruction = \"go\"\n{}next = \"end\"",
+            if result {
+                "result = { ok = { type = \"boolean\" } }\n"
+            } else {
+                ""
+            }
+        ))
+    };
+    let errs = |text: &str| {
+        let (_, r) = check(&Engine::new(), text, Some(&modes));
+        r.errors()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    for bad in ["none", "other"] {
+        let e = errs(&node(bad, true));
+        assert!(e.contains("submit_result"), "{bad}: {e}");
+        assert_eq!(errs(&node(bad, false)), "", "no result, no tool needed");
+    }
+    for good in ["all", "exact", "dflt"] {
+        assert_eq!(errs(&node(good, true)), "", "{good}");
+    }
+}

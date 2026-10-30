@@ -8,7 +8,7 @@ DO $$
 DECLARE
 	r text;
 BEGIN
-	FOREACH r IN ARRAY ARRAY['enzarb_sandbox_proxy', 'enzarb_ui'] LOOP
+	FOREACH r IN ARRAY ARRAY['enzarb_sandbox_proxy', 'enzarb_tracks', 'enzarb_ui'] LOOP
 		IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
 			RAISE NOTICE 'role % does not exist; its grants are skipped until the next migrate run', r;
 		END IF;
@@ -21,6 +21,12 @@ BEGIN
 		GRANT EXECUTE ON FUNCTION app_api.claude_credential_get(text) TO enzarb_sandbox_proxy;
 		GRANT EXECUTE ON FUNCTION app_api.claude_credential_list_stale(text) TO enzarb_sandbox_proxy;
 		GRANT EXECUTE ON FUNCTION app_api.claude_credential_rekey(text, text, text, bytea) TO enzarb_sandbox_proxy;
+	END IF;
+
+	IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'enzarb_tracks') THEN
+		-- tracks reads the Project owner's encrypted Claude token to run agent nodes (ADR-0029 section 5).
+		GRANT USAGE ON SCHEMA app_api TO enzarb_tracks;
+		GRANT EXECUTE ON FUNCTION app_api.claude_credential_get(text) TO enzarb_tracks;
 	END IF;
 
 	IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'enzarb_ui') THEN

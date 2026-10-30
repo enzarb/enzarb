@@ -265,6 +265,14 @@ tracks:
     enabled: true
     # Events routed at once.
     concurrency: 4
+  # Execute the runs routing creates: agent, command and end nodes in the Project's sandbox
+  # (ADR-0029 step 4). Needs routing. Gives tracks `get` on the sb-*-auth Secrets in the sandbox
+  # namespace, the Claude keyring (the Project owner's token) and admits tracks pods in the
+  # sandbox NetworkPolicy.
+  executor:
+    enabled: true
+    # Runs driven at once.
+    concurrency: 4
   image:
     repository: ghcr.io/enzarb/enzarb-tracks
     # scripts/sync-components.sh pins the released enzarb-tracks tag here.

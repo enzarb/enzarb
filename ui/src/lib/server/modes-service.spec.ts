@@ -54,6 +54,9 @@ beforeEach(() => {
 	});
 	tracks = {
 		decisions: vi.fn(async () => []),
+		runs: vi.fn(async () => []),
+		run: vi.fn(async () => null),
+		stopRun: vi.fn(async () => false),
 		modesCatalog: vi.fn(async () => catalog),
 		parseModes: vi.fn(async () => ({ doc, issues: [] })),
 		validateModes: vi.fn(async () => []),

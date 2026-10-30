@@ -56,6 +56,9 @@ pub fn router(state: AppState, max_body_bytes: usize) -> Router {
         .route("/v1/workflows/render", post(workflows_render))
         .route("/v1/dry-run", post(dry_run))
         .route("/v1/decisions", get(decisions))
+        .route("/v1/runs", get(crate::runs_api::list))
+        .route("/v1/runs/{id}", get(crate::runs_api::get))
+        .route("/v1/runs/{id}/stop", post(crate::runs_api::stop))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth));
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -78,7 +81,7 @@ pub struct ApiError {
 }
 
 impl ApiError {
-    fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
         Self {
             status,
             code,
@@ -115,7 +118,7 @@ impl From<JsonRejection> for ApiError {
     }
 }
 
-type ApiResult<T> = Result<Json<T>, ApiError>;
+pub(crate) type ApiResult<T> = Result<Json<T>, ApiError>;
 
 async fn auth(State(s): State<AppState>, req: Request, next: Next) -> Response {
     let ok = req
@@ -469,7 +472,7 @@ async fn dry_run(
 /// Most event ids in one `/v1/decisions` request.
 pub const MAX_DECISION_IDS: usize = 200;
 
-fn no_database() -> ApiError {
+pub(crate) fn no_database() -> ApiError {
     ApiError::new(
         StatusCode::SERVICE_UNAVAILABLE,
         "routing_disabled",
@@ -477,7 +480,7 @@ fn no_database() -> ApiError {
     )
 }
 
-fn db_error(e: sqlx::Error) -> ApiError {
+pub(crate) fn db_error(e: sqlx::Error) -> ApiError {
     tracing::error!(error = %e, "database error");
     ApiError::new(
         StatusCode::INTERNAL_SERVER_ERROR,

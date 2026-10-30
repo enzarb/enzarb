@@ -43,6 +43,9 @@ beforeEach(() => {
 	});
 	tracks = {
 		decisions: vi.fn(async () => []),
+		runs: vi.fn(async () => []),
+		run: vi.fn(async () => null),
+		stopRun: vi.fn(async () => false),
 		modesCatalog: vi.fn(),
 		parseModes: vi.fn(async () => ({
 			doc: { defaultMode: 'plan', modes: [{ id: 'plan' }] },

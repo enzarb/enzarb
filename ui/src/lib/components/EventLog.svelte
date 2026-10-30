@@ -16,8 +16,11 @@
 		failed = false,
 		payload,
 		retry,
-		decisions = {}
+		decisions = {},
+		runLinks = {}
 	}: {
+		/** Runs each event started (by event id), linked to their detail page. */
+		runLinks?: Record<number, { id: string; workflow: string; href: string }[] | undefined>;
 		/** Routing decisions by event id; an event without one shows none yet. */
 		decisions?: Record<number, Decision | undefined>;
 		/** `undefined` while the first load is in flight. */
@@ -82,6 +85,9 @@
 					{#if decisions[r.id]}
 						<EventDecision decision={decisions[r.id]!} />
 					{/if}
+					{#each runLinks[r.id] ?? [] as run (run.id)}
+						<a class="ez-event-log__run" href={run.href}>View run of {run.workflow}</a>
+					{/each}
 				</li>
 			{/each}
 		</ul>

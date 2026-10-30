@@ -17,6 +17,8 @@ anyhow = "1"
 async-trait = "0.1"
 axum = "0.8"
 enzarb-crds = { path = "../operator/crates/enzarb-crds" }
+enzarb-proto = { path = "../proto/crates/enzarb-proto", features = ["tokio"] }
+enzarb-sandbox-proxy = { path = "../sandbox-proxy" }
 ez-core = { path = "../ez/crates/ez-core" }
 ez-workflow = { path = "../ez/crates/ez-workflow" }
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto", "use_pem"] }

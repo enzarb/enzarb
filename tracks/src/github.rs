@@ -49,6 +49,27 @@ impl std::fmt::Display for SourceError {
 pub trait RepoSource: Send + Sync {
     /// Head of `branch` and the two `.ez` files at that commit.
     async fn snapshot(&self, repo: &str, branch: &str) -> Result<Snapshot, SourceError>;
+
+    /// A file at commit `sha` (`None`: it does not exist there). Used for the instruction files
+    /// ez folds into the prompt, pinned with the run.
+    async fn file_at(
+        &self,
+        _repo: &str,
+        _sha: &str,
+        _path: &str,
+    ) -> Result<Option<String>, SourceError> {
+        Err(SourceError::Permanent(
+            "reading files is not supported by this source".into(),
+        ))
+    }
+
+    /// A short-lived installation token scoped to `repo` with `contents: read` (clone) or
+    /// `contents: write` (`write`, push). Minted fresh, never cached, so it is short-lived.
+    async fn clone_token(&self, _repo: &str, _write: bool) -> Result<String, SourceError> {
+        Err(SourceError::Permanent(
+            "minting tokens is not supported by this source".into(),
+        ))
+    }
 }
 
 /// A source for installations without a GitHub App: every read is a permanent error.
@@ -185,6 +206,32 @@ impl GithubApp {
         Ok(id)
     }
 
+    async fn mint(&self, repo: &str, permission: &str) -> Result<String, SourceError> {
+        let id = self.installation(repo).await?;
+        let name = repo.split_once('/').map_or(repo, |(_, n)| n);
+        let res = self
+            .http
+            .post(format!(
+                "{}/app/installations/{id}/access_tokens",
+                self.base
+            ))
+            .bearer_auth(self.jwt()?)
+            .header("Accept", "application/vnd.github+json")
+            .json(&json!({ "repositories": [name], "permissions": { "contents": permission } }))
+            .send()
+            .await
+            .map_err(|e| transient("token mint", e))?;
+        if !res.status().is_success() {
+            self.installations.lock().unwrap().remove(repo);
+            return Err(Self::classify(res.status(), "token mint"));
+        }
+        Ok(res
+            .json::<Token>()
+            .await
+            .map_err(|e| transient("token mint", e))?
+            .token)
+    }
+
     async fn token(&self, repo: &str) -> Result<String, SourceError> {
         if let Some((t, until)) = self.tokens.lock().unwrap().get(repo)
             && *until > Instant::now()
@@ -299,6 +346,20 @@ impl RepoSource for GithubApp {
             workflows,
             modes,
         })
+    }
+
+    async fn file_at(
+        &self,
+        repo: &str,
+        sha: &str,
+        path: &str,
+    ) -> Result<Option<String>, SourceError> {
+        let token = self.token(repo).await?;
+        self.file(repo, &token, sha, path).await
+    }
+
+    async fn clone_token(&self, repo: &str, write: bool) -> Result<String, SourceError> {
+        self.mint(repo, if write { "write" } else { "read" }).await
     }
 }
 
