@@ -276,7 +276,7 @@ tracks:
   image:
     repository: ghcr.io/enzarb/enzarb-tracks
     # scripts/sync-components.sh pins the released enzarb-tracks tag here.
-    tag: 0.7.1
+    tag: 0.7.2
     pullPolicy: ""
   resources: {}
   extraEnv: []
