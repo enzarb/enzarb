@@ -10,6 +10,8 @@
 	} from '#lib/components/workflows/WorkflowsDesigner.svelte';
 	import Notice from '#lib/components/ui/Notice.svelte';
 	import Skeleton from '#lib/components/ui/Skeleton.svelte';
+	import type { TemplatesApi } from '#lib/components/workflows/RulesView.svelte';
+	import { getModes, renderModesText, saveModesFile } from '#lib/modes.remote.ts';
 	import {
 		checkWorkflowsText,
 		dryRunWorkflows,
@@ -39,12 +41,35 @@
 
 	type Loaded = { repo: string; sha: string | null; modesToml: string | null };
 	const api = (r: Loaded): WorkflowsApi => ({
-		render: (file) => renderWorkflowsFile({ name, file, modesToml: r.modesToml }),
+		render: (file, modesToml) =>
+			renderWorkflowsFile({
+				name,
+				file,
+				modesToml: modesToml === undefined ? r.modesToml : modesToml
+			}),
 		check: (text) => checkWorkflowsText({ name, text, modesToml: r.modesToml }),
 		save: (input) => saveWorkflowsFile({ name, repo: r.repo, baseSha: r.sha, ...input }),
 		reload: () => {
 			committed = null;
 			void workflows.refresh();
+		}
+	});
+	const templatesApi = (r: Loaded): TemplatesApi => ({
+		load: async () => {
+			const m = await getModes({ name, repo: r.repo });
+			if (!m.ok) throw new Error(m.message);
+			if (m.parseError) throw new Error(m.parseError);
+			return { doc: m.doc, sha: m.sha, text: m.text };
+		},
+		renderModes: async (doc, old) => {
+			const res = await renderModesText({ name, doc, old });
+			if (!res.ok) return { ok: false, message: res.message };
+			const bad = res.issues.find((i) => i.severity === 'error');
+			return bad ? { ok: false, message: bad.message } : { ok: true, text: res.text };
+		},
+		saveModes: async (input) => {
+			const res = await saveModesFile({ name, repo: r.repo, ...input });
+			return res.ok ? { ok: true } : { ok: false, message: res.message };
 		}
 	});
 	const dryRun = (r: Loaded): DryRunApi => ({
@@ -110,6 +135,7 @@
 					file={r}
 					api={api(r)}
 					dryRun={dryRun(r)}
+					templates={templatesApi(r)}
 					advanced={(id) => setView(id)}
 					saved={(s) => {
 						committed = s;

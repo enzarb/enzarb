@@ -90,3 +90,43 @@ describe('RulesView', () => {
 		expect(advanced).toHaveBeenCalledWith('fix-issue');
 	});
 });
+
+describe('RulesView templates', () => {
+	const empty: WorkflowsFile = {
+		...file,
+		sha: null,
+		text: null,
+		file: null,
+		modesToml: null,
+		modeIds: []
+	};
+	const tpl = () => ({
+		load: vi.fn(async () => ({ doc: { defaultMode: '', modes: [] }, sha: null, text: null })),
+		renderModes: vi.fn(async () => ({ ok: true as const, text: 'modes' })),
+		saveModes: vi.fn(async () => ({ ok: true as const }))
+	});
+
+	it('offers an unchecked pick-list first and enables nothing until chosen', async () => {
+		const a = api();
+		const t = tpl();
+		const saved = vi.fn();
+		render(RulesView, {
+			file: empty,
+			api: a,
+			dryRun: dry(),
+			saved,
+			advanced: vi.fn(),
+			templates: t
+		});
+		const enable = page.getByRole('button', { name: 'Enable selected' });
+		await expect.element(enable).toBeDisabled();
+		expect(t.saveModes).not.toHaveBeenCalled();
+		await page.getByRole('checkbox', { name: 'Review pull requests' }).click();
+		await enable.click();
+		await expect.poll(() => saved.mock.calls.length).toBe(1);
+		expect(t.saveModes).toHaveBeenCalledTimes(1);
+		expect(vi.mocked(a.save).mock.calls[0][0].file?.workflows).toHaveProperty(
+			'review-pull-requests'
+		);
+	});
+});

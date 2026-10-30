@@ -39,7 +39,9 @@
 	export type WorkflowsApi = {
 		/** The graph as TOML with tracks' report. */
 		render: (
-			file: WorkflowsFileWire
+			file: WorkflowsFileWire,
+			/** Check against these modes instead of the loaded file's (templates add modes). */
+			modesToml?: string | null
 		) => Promise<{ ok: true; text: string; diagnostics: Diagnostic[] } | Fail>;
 		/** TOML to the graph (null when it does not parse) with tracks' report. */
 		check: (
