@@ -43,6 +43,22 @@ describe('tasks GitHub reads', () => {
 		expect(f).toHaveBeenCalledTimes(2);
 	});
 
+	it('reports open subjects, or unknown when the list was cut off', async () => {
+		const { reads } = setup(async () => json([{ number: 7 }, { number: 9 }]));
+		expect([...((await reads.openSubjects('o/r')).open ?? [])]).toEqual([7, 9]);
+
+		// Every page links to a next one: more than MAX_PAGES, so the open set is incomplete.
+		const many = setup(async () =>
+			json([{ number: 1 }], {
+				headers: {
+					'content-type': 'application/json',
+					link: '<https://api.github.com/repos/o/r/issues?page=2>; rel="next"'
+				}
+			})
+		);
+		expect((await many.reads.openSubjects('o/r')).open).toBeNull();
+	});
+
 	it('shares one request between concurrent callers', async () => {
 		const { reads, f } = setup(async () => json([pr(1, 'ez/a/b')]));
 		await Promise.all([reads.pulls('o/r'), reads.pulls('o/r'), reads.pulls('o/r')]);
