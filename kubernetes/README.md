@@ -70,7 +70,7 @@ restart and would revert `spec.version` patches made in-cluster by `enzarb-updat
 | pgop | chart/app 0.9.1 | `oci://ghcr.io/ruckc/charts/pgop`, vendored | same |
 | RKE2 | v1.35.9+rke2r1 | rancher/rke2 release tarball, sha256-verified by the Ansible role | edit `RKE2_VERSION` in `versions.env`, run `mise run oldie:host` |
 | OpenEBS LVM LocalPV | v1.10.1 | release `lvm-operator.yaml`; the floating `openebs/lvm-driver:ci` image is pinned to `1.10.1` in `base/openebs-lvm` | edit URL and `images:` in `base/openebs-lvm/kustomization.yaml` + `OPENEBS_LVM_VERSION` |
-| cloudflared | 2026.10.0 | `docker.io/cloudflare/cloudflared` image in `base/cloudflared` | edit the image tag + `CLOUDFLARED_VERSION` |
+| cloudflared | 2026.10.7 | `docker.io/cloudflare/cloudflared` image in `base/cloudflared` | edit the image tag + `CLOUDFLARED_VERSION` |
 
 agent-sandbox: v0.5.x exists (v0.5.6 is the last; v1.0.x is out) and ADR-0002 pins v0.5.x, so v0.5.6 is used.
 Vendored bases are generated with Helm hooks disabled (the CRD-lifecycle, post-install and
