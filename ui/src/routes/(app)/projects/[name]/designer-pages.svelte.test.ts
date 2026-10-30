@@ -40,6 +40,17 @@ const save = vi.hoisted(() =>
 		return { ok: true as const, unchanged: false, commitUrl: null };
 	})
 );
+// A command's `.updates(...)`: the server refreshes the named queries with the response.
+const saveCommand = vi.hoisted(() => (input: { baseSha: string | null }) => {
+	const p = save(input);
+	return Object.assign(p, {
+		updates: async (...qs: { refresh?: () => Promise<void> }[]) => {
+			const r = await p;
+			await Promise.all(qs.map((q) => q.refresh?.()));
+			return r;
+		}
+	});
+});
 
 vi.mock('#lib/workflows.remote.ts', () => ({
 	getWorkflows: query(() => ({
@@ -57,7 +68,7 @@ vi.mock('#lib/workflows.remote.ts', () => ({
 	})),
 	checkWorkflowsText: vi.fn(async () => ({ ok: true, diagnostics: [], file: null })),
 	renderWorkflowsFile: vi.fn(async () => ({ ok: true, text: '', diagnostics: [] })),
-	saveWorkflowsFile: save,
+	saveWorkflowsFile: saveCommand,
 	listRepoEvents: vi.fn(async () => []),
 	dryRunWorkflows: vi.fn()
 }));
@@ -85,7 +96,7 @@ vi.mock('#lib/modes.remote.ts', () => ({
 	parseModesText: vi.fn(),
 	renderModesText: vi.fn(),
 	validateModes: vi.fn(async () => ({ ok: true, issues: [] })),
-	saveModesFile: save
+	saveModesFile: saveCommand
 }));
 
 import Workflows from './workflows/+page.svelte';

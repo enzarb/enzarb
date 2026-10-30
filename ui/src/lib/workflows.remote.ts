@@ -12,6 +12,7 @@ import {
 import { getSql } from '#lib/server/db.ts';
 import { eventsService } from '#lib/server/events-service.ts';
 import { projectRepoKeys } from '#lib/server/designer-files.ts';
+import { updateRequested } from '#lib/server/designer-sync.ts';
 import { invalidateToken, token } from '#lib/server/github-app.ts';
 import { NameArg, ownedProject } from '#lib/server/owned-project.ts';
 import { getRepositoryAccess } from '#lib/server/repo-access.ts';
@@ -98,10 +99,19 @@ export const saveWorkflowsFile = command(SaveWorkflowsSchema, async ({ name, ...
 	const d = deps();
 	if (!d) return UNAVAILABLE;
 	if (!user.githubId) error(400, 'Your session has no GitHub id; sign in again');
-	const r = await saveWorkflows(d, user, project, {
-		...input
-	});
-	return r;
+	const r = await saveWorkflows(d, user, project, { ...input });
+	if (!r.ok) return r;
+	const { loaded, ...result } = r;
+	// Single flight: the page's own query instances are set from the committed content and sha.
+	if (!r.unchanged)
+		await updateRequested(
+			getWorkflows,
+			name,
+			input.repo.toLowerCase(),
+			projectRepoKeys(project)[0],
+			loaded
+		);
+	return result;
 });
 
 /** Events logged for one of the Project's repositories (the dry run's event picker). */
