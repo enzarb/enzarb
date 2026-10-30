@@ -126,6 +126,7 @@ impl Env {
             mode: Mode::Write,
             branch: branch.into(),
             base: "main".into(),
+            start_ref: None,
             push: true,
             token: Secret::new(WS_TOKEN),
         }
@@ -960,6 +961,72 @@ async fn workspace_prune_frees_idle_shared_target_dirs() {
         1
     );
     assert!(!dir.exists());
+}
+
+/// A workspace with `start_ref` starts the new branch at that ref (a pull request head, which
+/// is not a branch), `base` is still fetched so `git diff origin/<base>...HEAD` works, and
+/// nothing is pushed while the branch has no commits of its own.
+#[tokio::test]
+async fn start_ref_starts_the_branch_at_the_pull_request_head_and_fetches_base() {
+    let env = Env::new();
+    let seed = env.dir.path().join("seed");
+    git(&seed, &["checkout", "-q", "-b", "feat"]);
+    std::fs::write(seed.join("pr.txt"), "from the pr\n").unwrap();
+    git(&seed, &["add", "."]);
+    git(&seed, &["commit", "-q", "-m", "pr"]);
+    let head = git(&seed, &["rev-parse", "HEAD"]);
+    git(
+        &seed,
+        &[
+            "push",
+            "-q",
+            env.bare.to_str().unwrap(),
+            "HEAD:refs/pull/7/head",
+        ],
+    );
+    let addr = env.server().await;
+    let (s, mut ev) = connect(addr).await;
+    let mut ws = env.workspace("ez/wf/run-9");
+    ws.start_ref = Some("refs/pull/7/head".into());
+    start(
+        &s,
+        &mut ev,
+        step(
+            "sr-1",
+            StepExec::Command {
+                run: "test -f pr.txt && git diff --name-only origin/main...HEAD | grep -qx pr.txt"
+                    .into(),
+                tools: vec![],
+            },
+            vec![ws],
+        ),
+    )
+    .await;
+    let (_, fin) = collect(&mut ev, "sr-1", |_| false).await;
+    let fin = fin.unwrap();
+    assert_eq!(fin.exit, "success", "{fin:?}");
+    assert_eq!(fin.git[0].head_sha, head);
+    assert!(!fin.git[0].pushed, "{fin:?}");
+    let refs = git(&env.bare, &["for-each-ref", "refs/heads/ez"]);
+    assert!(refs.is_empty(), "{refs}");
+}
+
+#[test]
+fn start_ref_validation() {
+    use sandbox_init::steps::git::valid_start_ref;
+    assert!(valid_start_ref("refs/pull/7/head"));
+    assert!(valid_start_ref("refs/heads/feat/x"));
+    for bad in [
+        "refs/pull//head",
+        "refs/pull/x/head",
+        "refs/pull/7/merge",
+        "HEAD",
+        "refs/heads/..",
+        "-x",
+        "refs/pull/7/head:x",
+    ] {
+        assert!(!valid_start_ref(bad), "{bad}");
+    }
 }
 
 /// A fresh task workspace on the default branch itself (a read step: triage, plan) has the

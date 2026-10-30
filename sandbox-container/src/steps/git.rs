@@ -43,6 +43,20 @@ pub fn valid_branch(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/'))
 }
 
+/// Local ref a workspace's `start_ref` is fetched into.
+const START_LOCAL: &str = "refs/remotes/enzarb-start/head";
+
+/// A `start_ref` sandbox-init accepts: `refs/pull/<n>/head` or `refs/heads/<branch>`.
+pub fn valid_start_ref(s: &str) -> bool {
+    if let Some(n) = s
+        .strip_prefix("refs/pull/")
+        .and_then(|r| r.strip_suffix("/head"))
+    {
+        return !n.is_empty() && n.len() <= 12 && n.bytes().all(|b| b.is_ascii_digit());
+    }
+    s.strip_prefix("refs/heads/").is_some_and(valid_branch)
+}
+
 /// `owner/repo` with safe segments.
 pub fn valid_repo(s: &str) -> bool {
     let mut parts = s.split('/');
@@ -179,39 +193,40 @@ impl Git<'_> {
     async fn fetch(&self, ctl: &mut Ctl, ws: &StepWorkspace, dir: &Path) -> Result<(), String> {
         let env = self.net_env(ws)?;
         let net = self.net_repo(ctl, "fetch", dir).await?;
+        let start = ws
+            .start_ref
+            .as_deref()
+            .map(|r| format!("+{r}:{START_LOCAL}"));
+        let mut args = vec![
+            "fetch",
+            "--no-tags",
+            "--no-write-fetch-head",
+            "--",
+            &ws.url,
+            "+refs/heads/*:refs/remotes/origin/*",
+        ];
+        if let Some(s) = &start {
+            args.push(s);
+        }
         let out = self
-            .net(
-                ctl,
-                &env,
-                &net.0,
-                &[
-                    "fetch",
-                    "--no-tags",
-                    "--no-write-fetch-head",
-                    "--",
-                    &ws.url,
-                    "+refs/heads/*:refs/remotes/origin/*",
-                ],
-                self.cfg.fetch_attempt_cap,
-            )
+            .net(ctl, &env, &net.0, &args, self.cfg.fetch_attempt_cap)
             .await?;
         if !out.success() {
             return Err(format!("git fetch failed: {}", out.stderr.trim()));
         }
         let n = net.0.to_string_lossy().into_owned();
-        self.local_ok(
-            ctl,
-            dir,
-            &[
-                "fetch",
-                "--prune",
-                "--no-tags",
-                "--",
-                &n,
-                "+refs/remotes/origin/*:refs/remotes/origin/*",
-            ],
-        )
-        .await?;
+        let mut args = vec![
+            "fetch",
+            "--prune",
+            "--no-tags",
+            "--",
+            &n,
+            "+refs/remotes/origin/*:refs/remotes/origin/*",
+        ];
+        if ws.start_ref.is_some() {
+            args.push("+refs/remotes/enzarb-start/head:refs/remotes/enzarb-start/head");
+        }
+        self.local_ok(ctl, dir, &args).await?;
         Ok(())
     }
 
@@ -263,6 +278,10 @@ impl Git<'_> {
             let _ = self
                 .local(ctl, dir, &["reset", "-q", "--hard", "HEAD"])
                 .await?;
+            // The clone has no pull request refs: fetch the start ref too.
+            if ws.start_ref.is_some() {
+                self.fetch(ctl, ws, dir).await?;
+            }
         }
         // Step outputs (`.enzarb/out/`) are collected after each step and never belong in the
         // repository: drop stale ones (a branch that committed them then checks out cleanly)
@@ -328,10 +347,21 @@ impl Git<'_> {
                 if self.rev(ctl, dir, &base).await?.is_none() {
                     return Err(format!("base branch {:?} does not exist", ws.base));
                 }
+                let from = if ws.start_ref.is_some() {
+                    if self.rev(ctl, dir, START_LOCAL).await?.is_none() {
+                        return Err(format!(
+                            "start ref {:?} does not exist",
+                            ws.start_ref.as_deref().unwrap_or_default()
+                        ));
+                    }
+                    START_LOCAL
+                } else {
+                    &base
+                };
                 self.local_ok(
                     ctl,
                     dir,
-                    &["checkout", "-q", "--no-track", "-B", &ws.branch, &base],
+                    &["checkout", "-q", "--no-track", "-B", &ws.branch, from],
                 )
                 .await?;
             }
@@ -429,11 +459,11 @@ impl Git<'_> {
         }
         let unchanged = if lease.is_empty() {
             // A new branch with nothing on top of its base is not created.
-            self.rev(ctl, dir, &format!("refs/remotes/origin/{}", ws.base))
-                .await
-                .ok()
-                .flatten()
-                .as_deref()
+            let from = match ws.start_ref {
+                Some(_) => START_LOCAL.to_string(),
+                None => format!("refs/remotes/origin/{}", ws.base),
+            };
+            self.rev(ctl, dir, &from).await.ok().flatten().as_deref()
                 == Some(fact.head_sha.as_str())
         } else {
             lease == fact.head_sha

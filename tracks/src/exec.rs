@@ -1143,12 +1143,41 @@ impl Executor {
         } else {
             format!("ez/{}/{}", run.workflow, run.id)
         };
+        // A run about a pull request starts from the PR head (`refs/pull/N/head` exists in the
+        // base repository for forks too) and diffs against the PR's base branch. A PR whose head
+        // repository is not this one (or is unknown) is read-only: never pushed.
+        let pr = state
+            .subject
+            .as_ref()
+            .filter(|s| s.kind == ez_workflow::SubjectKind::PullRequest)
+            .map(|s| s.number);
+        let (base, start_ref, push) = match pr {
+            Some(n) => {
+                let ev = &state.event;
+                let base_ref = ev
+                    .pointer("/pull_request/base/ref")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or(base);
+                let same_repo = ev
+                    .pointer("/pull_request/head/repo/full_name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|h| h.eq_ignore_ascii_case(&run.repo));
+                (
+                    base_ref,
+                    Some(format!("refs/pull/{n}/head")),
+                    push && same_repo,
+                )
+            }
+            None => (base, None, push),
+        };
         let ws = StepWorkspace {
             repo: run.repo.clone(),
             url: format!("https://github.com/{}.git", run.repo),
             mode: Mode::Write,
             branch,
             base,
+            start_ref,
             push,
             token: Secret::new(token),
         };
@@ -1190,7 +1219,20 @@ impl Executor {
                         capabilities: Value::Null,
                     }),
                     model: None,
-                    prompt: instruction.clone(),
+                    prompt: match (pr, &ws.start_ref) {
+                        (Some(n), Some(_)) => format!(
+                            "{instruction}\n\n---\nWorkspace: this checkout is the head of pull request #{n} (branch `{}`, started at `refs/pull/{n}/head`). Its base branch is `origin/{}`, already fetched: see the change with `git diff origin/{}...HEAD`.{}",
+                            ws.branch,
+                            ws.base,
+                            ws.base,
+                            if ws.push {
+                                ""
+                            } else {
+                                " This pull request is read-only for you: nothing you commit is pushed."
+                            }
+                        ),
+                        _ => instruction.clone(),
+                    },
                     result_schema: result_schema.clone(),
                     mode: Some(mode.clone()),
                     ez: Some(EzSpec {

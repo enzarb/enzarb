@@ -40,7 +40,7 @@ export function environmentKind(k: unknown): EnvironmentKind {
 /** `FileReadChat`: `file_read` on a chat's mux session resolves relative paths against the chat worktree; implies `FileRead`. */
 /** `Steps`: the server runs ADR-0022 steps (`step_*`, `session_event`); send `step_*` only after seeing it. */
 /** `EzSteps`: steps may carry `agent.mode`/`agent.ez` (ADR-0029); implies `Steps`. */
-export const Feature = { Acp: "acp", ClaudeUserToken: "claude_user_token", FileRead: "file_read", EzSteps: "ez_steps", FileReadChat: "file_read_chat", Stats: "stats", Steps: "steps" } as const;
+export const Feature = { Acp: "acp", ClaudeUserToken: "claude_user_token", FileRead: "file_read", EzSteps: "ez_steps", StepStartRef: "step_start_ref", FileReadChat: "file_read_chat", Stats: "stats", Steps: "steps" } as const;
 /** Decoders keep at most this many features and drop any longer than `MAX_FEATURE_LEN` bytes. */
 export const MAX_FEATURES = 64;
 export const MAX_FEATURE_LEN = 64;

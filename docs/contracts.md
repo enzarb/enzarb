@@ -143,7 +143,7 @@ CTRL payloads are JSON objects tagged by `"type"` and use channel 0:
 | Message | Direction | Fields |
 |---|---|---|
 | `hello` | client → server | `versions: [1]`, `client: "ui" \| "proxy" \| "executor"` |
-| `welcome` | server → client | `version`, `features?: [string]` (optional; `"acp"` when chat is enabled, `"steps"`, `"ez_steps"` (agent steps may carry `mode` and `ez`, ADR-0029; implies `"steps"`), `"stats"`, `"file_read"`, `"file_read_chat"`; absent means none) |
+| `welcome` | server → client | `version`, `features?: [string]` (optional; `"acp"` when chat is enabled, `"steps"`, `"step_start_ref"` (`StepWorkspace.start_ref`), `"ez_steps"` (agent steps may carry `mode` and `ez`, ADR-0029; implies `"steps"`), `"stats"`, `"file_read"`, `"file_read_chat"`; absent means none) |
 | `open` | client → server | `channel`, `kind: "pty" \| "acp"`, `cols`, `rows`, `command?: [..]`, `repo?`, `resume?`, `claude_token?` (acp only; set by the proxy) (see below) |
 | `opened` / `open_error` | server → client | `channel` / `channel, message, code?` |
 | `resize` | client → server | `channel`, `cols`, `rows` |

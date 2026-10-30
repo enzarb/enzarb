@@ -436,7 +436,11 @@ impl Sandboxes for Dial {
         let ((client, cev), (server, mut sev)) = session_pair_with(
             ClientKind::Executor,
             ServerOptions {
-                features: vec![feature::STEPS.into(), feature::EZ_STEPS.into()],
+                features: vec![
+                    feature::STEPS.into(),
+                    feature::EZ_STEPS.into(),
+                    feature::STEP_START_REF.into(),
+                ],
                 ..ServerOptions::default()
             },
         )
@@ -650,6 +654,96 @@ fn agent_ok(go: bool) -> StepFinished {
     f
 }
 
+const PR_WF: &str = r#"
+version = 1
+[workflows.wf]
+on = ["pull_request.opened"]
+start = "review"
+[workflows.wf.nodes.review]
+type = "agent"
+mode = "triage"
+instruction = "Review #{{ subject.number }}"
+push = true
+next = "done"
+[workflows.wf.nodes.done]
+type = "end"
+status = "done"
+"#;
+
+/// Inserts a pending `wf` run of `PR_WF` for a `pull_request.opened` event whose head repo is
+/// `head_repo`, base branch `develop`.
+async fn pending_pr_run(pool: &PgPool, head_repo: &str) -> String {
+    let file = ez_workflow::parse(PR_WF).unwrap();
+    let event = WfEvent::new(
+        "pull_request",
+        Some("opened".into()),
+        json!({"action": "opened", "pull_request": {"number": 9, "title": "T", "body": "", "user": {"login": "a"},
+            "html_url": "u", "base": {"ref": "develop", "sha": "b".repeat(40)},
+            "head": {"ref": "feat", "sha": "c".repeat(40), "repo": {"full_name": head_repo}}}}),
+    );
+    let id: String = sqlx::query_scalar("SELECT gen_random_uuid()::text")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    let state = RunState::start(
+        &file,
+        "wf",
+        &event,
+        RunInfo {
+            id: id.clone(),
+            attempt: 1,
+            test: false,
+        },
+    )
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO tracks.runs (id, workflow, project, repo, subject_key, event_id, sha, status, test, current_node, visits, state)
+         VALUES ($1::uuid, 'wf', 'p', 'o/r', 'o/r#9', 1, 'abc1234', 'pending', false, $2, $3, $4)",
+    )
+    .bind(&id)
+    .bind(state.current())
+    .bind(serde_json::to_value(&state.visits).unwrap())
+    .bind(serde_json::to_value(&state).unwrap())
+    .execute(pool)
+    .await
+    .unwrap();
+    id
+}
+
+/// A run about a pull request works on the PR's code: the workspace starts at
+/// `refs/pull/N/head`, `base` is the PR's base branch, the prompt says so, and a PR from a fork is
+/// read-only.
+#[tokio::test]
+async fn a_pull_request_run_starts_from_the_pr_head_and_forks_are_read_only() {
+    for (head_repo, push) in [("o/r", true), ("fork/r", false)] {
+        let env = db_setup().await;
+        let fake = Fake::new(Box::new(|_| Some(agent_ok(false))));
+        let ex = executor(&env, PR_WF, &fake, Some("tok"));
+        let id = pending_pr_run(&env.pool, head_repo).await;
+        let stop = start_loop(&ex);
+        let (st, reason) = wait_for(&env.pool, &id, "done").await;
+        assert_eq!((st.as_str(), reason), ("done", None));
+        let _ = stop.send(true);
+        let starts = fake.started();
+        let ws = &starts[0].workspaces[0];
+        assert_eq!(ws.start_ref.as_deref(), Some("refs/pull/9/head"));
+        assert_eq!(ws.base, "develop");
+        assert_eq!(ws.branch, format!("ez/wf/{id}"));
+        assert_eq!(ws.push, push, "{head_repo}");
+        match &starts[0].exec {
+            StepExec::Agent { prompt, .. } => {
+                assert!(prompt.starts_with("Review #9"), "{prompt}");
+                assert!(
+                    prompt.contains("git diff origin/develop...HEAD"),
+                    "{prompt}"
+                );
+                assert_eq!(prompt.contains("read-only"), !push, "{prompt}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
 #[tokio::test]
 async fn agent_command_end_path_feeds_results_into_edges() {
     let env = db_setup().await;
@@ -674,6 +768,7 @@ async fn agent_command_end_path_feeds_results_into_edges() {
     assert_eq!(ws.url, "https://github.com/o/r.git");
     assert_eq!(ws.branch, format!("ez/wf/{id}"));
     assert_eq!(ws.base, "main");
+    assert_eq!(ws.start_ref, None);
     assert!(ws.push);
     assert_eq!(ws.token.expose(), "write-token");
     assert_eq!(

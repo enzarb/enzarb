@@ -48,6 +48,13 @@ pub struct StepWorkspace {
     pub branch: String,
     /// Branch to start from when `branch` does not exist yet.
     pub base: String,
+    /// Ref of the remote to start `branch` from instead of `origin/<base>` when `branch` does
+    /// not exist yet (`refs/pull/<n>/head`, `refs/heads/<name>`). Fetched with the workspace
+    /// token, so it works for a pull request from a fork. `base` is still fetched, and must
+    /// exist, so a step can diff against it offline. Send only after seeing
+    /// `welcome.features` `step_start_ref`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_ref: Option<String>,
     /// Commit and push `branch` after the step (write workspaces only), with a
     /// lease on the remote head seen when the step started.
     #[serde(default)]
@@ -64,6 +71,7 @@ impl std::fmt::Debug for StepWorkspace {
             .field("mode", &self.mode)
             .field("branch", &self.branch)
             .field("base", &self.base)
+            .field("start_ref", &self.start_ref)
             .field("push", &self.push)
             .finish_non_exhaustive()
     }

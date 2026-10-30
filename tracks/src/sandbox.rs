@@ -99,6 +99,13 @@ fn transient(e: impl std::fmt::Display) -> LinkError {
 #[async_trait]
 impl Link for SessionLink {
     async fn start(&self, step: StepStart) -> Result<StepPhase, LinkError> {
+        if step.workspaces.iter().any(|w| w.start_ref.is_some())
+            && !self.session.has_feature(feature::STEP_START_REF)
+        {
+            return Err(LinkError::Permanent(
+                "the sandbox image does not support step_start_ref, which a pull request run needs (update the Project's sandbox)".into(),
+            ));
+        }
         let a = self.session.step_start(step).await.map_err(transient)?;
         Ok(a.state)
     }

@@ -26,7 +26,7 @@
 				"review": {
 					"type": "agent",
 					"mode": "reviewer",
-					"instruction": "Review pull request #{{ event.pull_request.number }}: {{ event.pull_request.title }}\n\n{{ event.pull_request.body }}",
+					"instruction": "Review pull request #{{ event.pull_request.number }}: {{ event.pull_request.title }}\n\n{{ event.pull_request.body }}\n\nThe checkout is the pull request head. Review exactly its change: `git diff origin/{{ event.pull_request.base.ref }}...HEAD`.",
 					"result": {
 						"summary": {
 							"type": "string"
