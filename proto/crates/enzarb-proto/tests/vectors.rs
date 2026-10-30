@@ -71,6 +71,7 @@ fn workspace() -> StepWorkspace {
         mode: Mode::Write,
         branch: "enzarb/issue-42".into(),
         base: "main".into(),
+        start_ref: None,
         push: true,
         token: Secret::new("ghs_clone"),
     }
@@ -675,6 +676,24 @@ fn ez_steps_fields_are_additive() {
     // Absent when unset: old peers see the same bytes as before.
     let s = serde_json::to_value(step_start_agent().exec).unwrap();
     assert!(s.get("mode").is_none() && s.get("ez").is_none());
+}
+
+/// `start_ref` is additive: absent decodes to `None` and is not serialized when unset; set, it
+/// round-trips.
+#[test]
+fn workspace_start_ref_is_additive() {
+    let mut v = serde_json::to_value(workspace()).unwrap();
+    assert!(v.get("start_ref").is_none());
+    let w: StepWorkspace = serde_json::from_value(v.clone()).unwrap();
+    assert_eq!(w.start_ref, None);
+    v["start_ref"] = json!("refs/pull/7/head");
+    let w: StepWorkspace = serde_json::from_value(v).unwrap();
+    assert_eq!(w.start_ref.as_deref(), Some("refs/pull/7/head"));
+    assert_eq!(
+        serde_json::to_value(&w).unwrap()["start_ref"],
+        "refs/pull/7/head"
+    );
+    assert_eq!(feature::STEP_START_REF, "step_start_ref");
 }
 
 #[test]

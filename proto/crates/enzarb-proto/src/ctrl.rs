@@ -51,6 +51,8 @@ pub mod feature {
     pub const STEPS: &str = "steps";
     /// Steps may run ez workflow nodes: `StepExec::Agent.mode`/`.ez`. Implies [`STEPS`]; send those fields only after seeing it.
     pub const EZ_STEPS: &str = "ez_steps";
+    /// `StepWorkspace.start_ref` is honoured. Implies [`STEPS`]; send it only after seeing it (an old server ignores the field and starts from `base`).
+    pub const STEP_START_REF: &str = "step_start_ref";
     /// Client feature (`hello.features`): the client stores per-user Claude
     /// tokens from `credential_captured.token` and never relays them, and acks
     /// `legacy` captures. Only sandbox-proxy sends it.

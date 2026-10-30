@@ -714,6 +714,12 @@ fn validate(s: &StepStart) -> Result<(), String> {
         if !git::valid_branch(&w.branch) || !git::valid_branch(&w.base) {
             return Err(format!("invalid branch of {}", w.repo));
         }
+        if w.start_ref
+            .as_deref()
+            .is_some_and(|r| !git::valid_start_ref(r))
+        {
+            return Err(format!("invalid start_ref of {}", w.repo));
+        }
         crate::netgit::scheme(&w.url)?;
     }
     for name in s.env.keys() {

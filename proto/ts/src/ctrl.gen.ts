@@ -246,6 +246,14 @@ branch: string,
  */
 base: string, 
 /**
+ * Ref of the remote to start `branch` from instead of `origin/<base>` when `branch` does
+ * not exist yet (`refs/pull/<n>/head`, `refs/heads/<name>`). Fetched with the workspace
+ * token, so it works for a pull request from a fork. `base` is still fetched, and must
+ * exist, so a step can diff against it offline. Send only after seeing
+ * `welcome.features` `step_start_ref`.
+ */
+start_ref?: string | null, 
+/**
  * Commit and push `branch` after the step (write workspaces only), with a
  * lease on the remote head seen when the step started.
  */
