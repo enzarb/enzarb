@@ -721,6 +721,7 @@ subjects:
   - { kind: ServiceAccount, name: enzarb-connectors, namespace: enzarb }
   - { kind: ServiceAccount, name: enzarb-migrate, namespace: enzarb }
   - { kind: ServiceAccount, name: enzarb-realtime, namespace: enzarb }
+  - { kind: ServiceAccount, name: enzarb-tracks, namespace: enzarb }
 
 ---
 # Source: enzarb/templates/connectors.yaml
