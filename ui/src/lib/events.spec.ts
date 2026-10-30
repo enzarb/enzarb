@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { repoKeyFromUrl, summarizeEvent } from './events.ts';
+import { decisionHeadline, repoKeyFromUrl, summarizeEvent } from './events.ts';
 
 describe('repoKeyFromUrl', () => {
 	it('lowercases owner and repo and drops .git', () => {
@@ -25,5 +25,28 @@ describe('summarizeEvent', () => {
 		expect(summarizeEvent({ issue: { title: 'x'.repeat(300) } })!.length).toBe(160);
 		expect(summarizeEvent({ zen: 'Keep it logically awesome.' })).toBeNull();
 		expect(summarizeEvent(null)).toBeNull();
+	});
+});
+
+describe('decisionHeadline', () => {
+	const base = {
+		eventId: 1,
+		project: 'p',
+		sha: 'abc1234',
+		started: [],
+		reasons: [],
+		errors: [],
+		decidedAt: '2026-10-30T00:00:00.000Z'
+	};
+	it('names the started workflows', () => {
+		expect(decisionHeadline({ ...base, outcome: 'started', started: ['a', 'b'] })).toEqual({
+			text: 'Started a, b',
+			tone: 'ok'
+		});
+	});
+	it('says when no rule matched, when routing failed and when it was skipped', () => {
+		expect(decisionHeadline({ ...base, outcome: 'no_match' }).text).toBe('No rule matched');
+		expect(decisionHeadline({ ...base, outcome: 'error' }).tone).toBe('error');
+		expect(decisionHeadline({ ...base, outcome: 'skipped' }).tone).toBe('muted');
 	});
 });

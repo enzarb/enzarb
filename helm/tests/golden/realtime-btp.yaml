@@ -228,6 +228,23 @@ data:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
+  name: enzarb-tracks
+  labels:
+    app.kubernetes.io/name: enzarb-tracks
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+rules:
+  - apiGroups: [enzarb.dev]
+    resources: [projects]
+    verbs: [get, list]
+
+---
+# Source: enzarb/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
   name: enzarb-ui
   labels:
     app.kubernetes.io/name: enzarb-ui
@@ -279,6 +296,22 @@ rules:
   - apiGroups: [enzarb.dev]
     resources: [projects/finalizers]
     verbs: [update]
+
+---
+# Source: enzarb/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: enzarb-tracks
+  labels:
+    app.kubernetes.io/name: enzarb-tracks
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: enzarb-tracks }
+subjects:
+  - { kind: ServiceAccount, name: enzarb-tracks, namespace: enzarb }
 
 ---
 # Source: enzarb/templates/rbac.yaml
@@ -486,6 +519,46 @@ spec:
   clusterRef:
     name: enzarb-pg
   roleName: enzarb_realtime
+  login: true
+
+---
+# Source: enzarb/templates/pgop.yaml
+apiVersion: pgop.ruck.io/v1alpha1
+kind: Role
+metadata:
+  name: tracks-owner
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    app.kubernetes.io/name: enzarb-postgres
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+spec:
+  clusterRef:
+    name: enzarb-pg
+  roleName: enzarb_tracks_owner
+  login: true
+
+---
+# Source: enzarb/templates/pgop.yaml
+apiVersion: pgop.ruck.io/v1alpha1
+kind: Role
+metadata:
+  name: tracks
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    app.kubernetes.io/name: enzarb-postgres
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+spec:
+  clusterRef:
+    name: enzarb-pg
+  roleName: enzarb_tracks
   login: true
 
 ---
@@ -873,10 +946,10 @@ spec:
       terminationGracePeriodSeconds: 30
 
       initContainers:
-        - name: wait-enzarb-migrate-ui-4ebb127bf5
+        - name: wait-enzarb-migrate-tracks-bf7e3d7440
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-4ebb127bf5]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-tracks-bf7e3d7440]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: receiver
@@ -1040,10 +1113,10 @@ spec:
       terminationGracePeriodSeconds: 30
 
       initContainers:
-        - name: wait-enzarb-migrate-ui-4ebb127bf5
+        - name: wait-enzarb-migrate-tracks-bf7e3d7440
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-4ebb127bf5]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-tracks-bf7e3d7440]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: realtime
@@ -1220,7 +1293,8 @@ metadata:
     app.kubernetes.io/managed-by: Helm
     helm.sh/chart: enzarb-0.0.0
 spec:
-  # Stateless: validation, rendering and dry runs are pure functions of the request.
+  # The API is stateless; routing is safe with several replicas (each event is decided once, by
+  # the primary key of tracks.event_decisions), though one is plenty.
   replicas: 1
   strategy:
     type: RollingUpdate
@@ -1241,9 +1315,16 @@ spec:
         helm.sh/chart: enzarb-0.0.0
     spec:
       serviceAccountName: enzarb-tracks
-      automountServiceAccountToken: false
+      # Routing reads Project CRs through the API server; without it tracks needs no API access.
+      automountServiceAccountToken: true
       terminationGracePeriodSeconds: 30
 
+      initContainers:
+        - name: wait-enzarb-migrate-tracks-bf7e3d7440
+          image: registry.k8s.io/kubectl:v1.34.0
+          imagePullPolicy: IfNotPresent
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-tracks-bf7e3d7440]
+          securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: tracks
           image: ghcr.io/enzarb/enzarb-tracks:0.0.0-golden
@@ -1256,6 +1337,50 @@ spec:
                 secretKeyRef:
                   name: enzarb-generated
                   key: tracks-token
+
+            - name: PGHOST
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-pg-tracks-credentials
+                  key: host
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-pg-tracks-credentials
+                  key: password
+            - name: PGPORT
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-pg-tracks-credentials
+                  key: port
+            - name: PGSSLMODE
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-pg-tracks-credentials
+                  key: sslmode
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-pg-tracks-credentials
+                  key: username
+            - name: PGDATABASE
+              value: "enzarb"
+            - name: DATABASE_URL
+              value: "postgres:///enzarb"
+            - name: ENZARB_GITHUB_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-github
+                  key: app-id
+                  optional: true
+            - name: ENZARB_GITHUB_APP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-github
+                  key: private-key
+                  optional: true
+            - { name: ENZARB_TRACKS_ROUTING, value: "true" }
+            - { name: ENZARB_TRACKS_CONCURRENCY, value: "4" }
             - { name: RUST_LOG, value: "info" }
           readinessProbe:
             httpGet: { path: /readyz, port: http }
@@ -1309,10 +1434,10 @@ spec:
       terminationGracePeriodSeconds: 30
 
       initContainers:
-        - name: wait-enzarb-migrate-ui-4ebb127bf5
+        - name: wait-enzarb-migrate-tracks-bf7e3d7440
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-4ebb127bf5]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-tracks-bf7e3d7440]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: ui
@@ -1488,7 +1613,7 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: enzarb-migrate-legacy-ec355c7106
+  name: enzarb-migrate-legacy-1c6482505d
   labels:
     app.kubernetes.io/name: enzarb-migrate-legacy
     app.kubernetes.io/instance: enzarb
@@ -1525,6 +1650,8 @@ spec:
             - role.pgop.ruck.io/ui-owner
             - role.pgop.ruck.io/ui
             - role.pgop.ruck.io/realtime
+            - role.pgop.ruck.io/tracks-owner
+            - role.pgop.ruck.io/tracks
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: migrate
@@ -1574,7 +1701,7 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: enzarb-migrate-connectors-0f0baa8a1e
+  name: enzarb-migrate-connectors-649c20119d
   labels:
     app.kubernetes.io/name: enzarb-migrate-connectors
     app.kubernetes.io/instance: enzarb
@@ -1595,10 +1722,10 @@ spec:
       restartPolicy: OnFailure
 
       initContainers:
-        - name: wait-enzarb-migrate-legacy-ec355c7106
+        - name: wait-enzarb-migrate-legacy-1c6482505d
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-legacy-ec355c7106]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-legacy-1c6482505d]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: migrate
@@ -1648,7 +1775,7 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: enzarb-migrate-ui-4ebb127bf5
+  name: enzarb-migrate-ui-fd798acdf6
   labels:
     app.kubernetes.io/name: enzarb-migrate-ui
     app.kubernetes.io/instance: enzarb
@@ -1669,10 +1796,10 @@ spec:
       restartPolicy: OnFailure
 
       initContainers:
-        - name: wait-enzarb-migrate-connectors-0f0baa8a1e
+        - name: wait-enzarb-migrate-connectors-649c20119d
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-connectors-0f0baa8a1e]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-connectors-649c20119d]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: migrate
@@ -1712,6 +1839,80 @@ spec:
               value: "postgres:///enzarb?sslmode=$(PGSSLMODE)"
             - { name: RUST_LOG, value: "info" }
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":1000,"seccompProfile":{"type":"RuntimeDefault"}}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+
+---
+# Source: enzarb/templates/migrations.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: enzarb-migrate-tracks-bf7e3d7440
+  labels:
+    app.kubernetes.io/name: enzarb-migrate-tracks
+    app.kubernetes.io/instance: enzarb
+    app.kubernetes.io/part-of: enzarb
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: enzarb-0.0.0
+    app.kubernetes.io/component: migrate
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: enzarb-migrate-tracks
+        app.kubernetes.io/instance: enzarb
+        app.kubernetes.io/component: migrate
+    spec:
+      serviceAccountName: enzarb-migrate
+      restartPolicy: OnFailure
+
+      initContainers:
+        - name: wait-enzarb-migrate-ui-fd798acdf6
+          image: registry.k8s.io/kubectl:v1.34.0
+          imagePullPolicy: IfNotPresent
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-fd798acdf6]
+          securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
+      containers:
+        - name: migrate
+          image: ghcr.io/enzarb/enzarb-tracks:0.0.0-golden
+          imagePullPolicy: IfNotPresent
+          args: [migrate]
+          env:
+
+            - name: PGHOST
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-pg-tracks-owner-credentials
+                  key: host
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-pg-tracks-owner-credentials
+                  key: password
+            - name: PGPORT
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-pg-tracks-owner-credentials
+                  key: port
+            - name: PGSSLMODE
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-pg-tracks-owner-credentials
+                  key: sslmode
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: enzarb-pg-tracks-owner-credentials
+                  key: username
+            - name: PGDATABASE
+              value: "enzarb"
+            - name: DATABASE_URL
+              value: "postgres:///enzarb"
+            - { name: RUST_LOG, value: "info" }
+          securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":10001,"seccompProfile":{"type":"RuntimeDefault"}}
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
       volumes:
@@ -1805,6 +2006,7 @@ spec:
         - { role: enzarb_connectors, privileges: [USAGE] }
         - { role: enzarb_ui, privileges: [USAGE] }
         - { role: enzarb_realtime, privileges: [USAGE] }
+        - { role: enzarb_tracks, privileges: [USAGE] }
     - name: app
       owner: enzarb_ui_owner
       grants:
@@ -1814,6 +2016,10 @@ spec:
       grants:
         - { role: enzarb_ui, privileges: [USAGE] }
         - { role: enzarb_sandbox_proxy, privileges: [USAGE] }
+    - name: tracks
+      owner: enzarb_tracks_owner
+      grants:
+        - { role: enzarb_tracks, privileges: [USAGE] }
 
 ---
 # Source: enzarb/templates/httproute.yaml

@@ -79,6 +79,10 @@ imagePullSecrets:
 {{- define "enzarb.jwtSecret" -}}{{ .Values.secrets.sessionJwt.existingSecret | default (include "enzarb.generatedSecret" .) }}{{- end }}
 {{- define "enzarb.realtimeJwtSecret" -}}{{ .Values.secrets.realtimeJwt.existingSecret | default (include "enzarb.generatedSecret" .) }}{{- end }}
 {{- define "enzarb.realtimeJwtKey" -}}{{ if .Values.secrets.realtimeJwt.existingSecret }}{{ .Values.secrets.realtimeJwt.key }}{{ else }}realtime-jwt-secret{{ end }}{{- end }}
+{{/* Non-empty when tracks routes connector events (needs tracks, routing and Postgres). */}}
+{{- define "enzarb.tracksRouting" -}}
+{{- if and .Values.postgres.enabled .Values.tracks.enabled .Values.tracks.routing.enabled }}true{{ end }}
+{{- end }}
 {{- define "enzarb.tracksTokenSecret" -}}{{ .Values.secrets.tracksToken.existingSecret | default (include "enzarb.generatedSecret" .) }}{{- end }}
 {{- define "enzarb.tracksTokenKey" -}}{{ if .Values.secrets.tracksToken.existingSecret }}{{ .Values.secrets.tracksToken.key }}{{ else }}tracks-token{{ end }}{{- end }}
 {{- define "enzarb.jwtKey" -}}{{ if .Values.secrets.sessionJwt.existingSecret }}{{ .Values.secrets.sessionJwt.key }}{{ else }}session-jwt-secret{{ end }}{{- end }}
@@ -169,13 +173,14 @@ Usage: include "enzarb.migrateJob" (dict "ctx" . "comp" "ui")
 {{- $after := "" -}}
 {{- if eq .comp "connectors" }}{{- $after = include "enzarb.migrateJob" (dict "ctx" $ctx "comp" "legacy") }}{{- end -}}
 {{- if eq .comp "ui" }}{{- $after = include "enzarb.migrateJob" (dict "ctx" $ctx "comp" "connectors") }}{{- end -}}
-{{- $spec := dict "rev" 3 "comp" .comp "after" $after "image" (include "enzarb.image" $c) "pull" (include "enzarb.pullPolicy" (dict "ctx" $ctx "c" $c)) "cluster" $v.postgres.clusterName "db" $v.postgres.databaseName "waitImage" $v.waitImage "waitTimeout" $v.waitTimeout "pullSecrets" $v.imagePullSecrets "sc" $v.securityContext "rustLog" $v.rustLog -}}
+{{- if eq .comp "tracks" }}{{- $after = include "enzarb.migrateJob" (dict "ctx" $ctx "comp" "ui") }}{{- end -}}
+{{- $spec := dict "rev" 4 "comp" .comp "after" $after "image" (include "enzarb.image" $c) "pull" (include "enzarb.pullPolicy" (dict "ctx" $ctx "c" $c)) "cluster" $v.postgres.clusterName "db" $v.postgres.databaseName "waitImage" $v.waitImage "waitTimeout" $v.waitTimeout "pullSecrets" $v.imagePullSecrets "sc" $v.securityContext "rustLog" $v.rustLog -}}
 enzarb-migrate-{{ .comp }}-{{ toJson $spec | sha256sum | trunc 10 }}
 {{- end }}
 
-{{/* The last Job in the chain (legacy -> connectors -> ui); runtime pods wait for it. */}}
+{{/* The last Job in the chain (legacy -> connectors -> ui [-> tracks]); runtime pods wait for it. */}}
 {{- define "enzarb.lastMigrateJob" -}}
-{{ include "enzarb.migrateJob" (dict "ctx" . "comp" "ui") }}
+{{ include "enzarb.migrateJob" (dict "ctx" . "comp" (ternary "tracks" "ui" (eq (include "enzarb.tracksRouting" .) "true"))) }}
 {{- end }}
 
 {{/* initContainer: wait for a Job. Usage: include "enzarb.waitJob" (dict "ctx" . "job" "name") */}}
@@ -203,6 +208,10 @@ enzarb-migrate-{{ .comp }}-{{ toJson $spec | sha256sum | trunc 10 }}
     {{- end }}
     {{- if .Values.realtime.enabled }}
     - role.pgop.ruck.io/realtime
+    {{- end }}
+    {{- if include "enzarb.tracksRouting" . }}
+    - role.pgop.ruck.io/tracks-owner
+    - role.pgop.ruck.io/tracks
     {{- end }}
   securityContext: {{ include "enzarb.securityContext" (dict "ctx" . "uid" 65532) | fromYaml | toJson }}
 {{- end }}

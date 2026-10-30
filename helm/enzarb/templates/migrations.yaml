@@ -1,5 +1,5 @@
 {{- /*
-Migration Jobs, ordered legacy -> connectors -> ui. These are ordinary resources (not
+Migration Jobs, ordered legacy -> connectors -> ui -> tracks (tracks only with event routing). These are ordinary resources (not
 Helm hooks, so `helm install --wait` cannot deadlock on pods that need migrated schemas).
 Ordering is enforced with init containers (`kubectl wait`):
   legacy     waits for the pgop Cluster, Database and all Roles to be ready, then drops the
@@ -7,7 +7,8 @@ Ordering is enforced with init containers (`kubectl wait`):
              old schema owner);
   connectors waits for the legacy Job;
   ui         waits for the connectors Job;
-  runtime Deployments wait for the ui Job (the end of the chain).
+  tracks     waits for the ui Job (schema `tracks`, ADR-0029);
+  runtime Deployments wait for the last Job of the chain.
 Job names carry a hash of the rendered Job inputs (see enzarb.migrateJob), so any change gets a fresh Job.
 */}}
 {{- if .Values.postgres.enabled }}
@@ -15,6 +16,9 @@ Job names carry a hash of the rendered Job inputs (see enzarb.migrateJob), so an
   (dict "comp" "legacy" "c" .Values.connectors "uid" 10001 "role" "workflows-owner")
   (dict "comp" "connectors" "c" .Values.connectors "uid" 10001 "role" "connectors-owner" "wait" (include "enzarb.migrateJob" (dict "ctx" $ "comp" "legacy")))
   (dict "comp" "ui" "c" .Values.ui "uid" 1000 "role" "ui-owner" "wait" (include "enzarb.migrateJob" (dict "ctx" $ "comp" "connectors"))) }}
+{{- if include "enzarb.tracksRouting" . }}
+{{- $steps = append $steps (dict "comp" "tracks" "c" .Values.tracks "uid" 10001 "role" "tracks-owner" "wait" (include "enzarb.migrateJob" (dict "ctx" $ "comp" "ui"))) }}
+{{- end }}
 {{- range $i, $s := $steps }}
 {{- if $i }}
 ---
@@ -49,7 +53,7 @@ spec:
           imagePullPolicy: {{ include "enzarb.pullPolicy" (dict "ctx" $ "c" $s.c) }}
           {{- if eq $s.comp "legacy" }}
           args: [drop-legacy]
-          {{- else if eq $s.comp "connectors" }}
+          {{- else if or (eq $s.comp "connectors") (eq $s.comp "tracks") }}
           args: [migrate]
           {{- else }}
           command: [node, scripts/migrate.ts]

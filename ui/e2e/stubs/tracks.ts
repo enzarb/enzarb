@@ -28,7 +28,8 @@ const client: TracksClient = {
 	renderModes: async (doc) => ({ text: JSON.stringify(doc), issues: [], rewritten: [] }),
 	checkWorkflows: async (text) => ({ diagnostics: [], file: parse<WorkflowsFileWire>(text) }),
 	renderWorkflows: async (file) => ({ text: JSON.stringify(file), diagnostics: [] }),
-	dryRun: async () => ({ results: [] }) as never
+	dryRun: async () => ({ results: [] }) as never,
+	decisions: async () => []
 };
 
 export const getTracks = (): TracksClient => client;

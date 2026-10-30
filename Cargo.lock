@@ -1500,13 +1500,21 @@ name = "enzarb-tracks"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
+ "enzarb-crds",
  "ez-core",
  "ez-workflow",
  "http-body-util",
+ "jsonwebtoken",
+ "k8s-openapi",
+ "kube",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sqlx",
  "subtle",
+ "testcontainers-modules",
  "tokio",
  "tower",
  "tracing",
@@ -2924,12 +2932,14 @@ dependencies = [
  "js-sys",
  "p256",
  "p384",
+ "pem",
  "rand 0.8.8",
  "rsa",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "signature",
+ "simple_asn1",
  "zeroize",
 ]
 
@@ -5131,6 +5141,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4f66ca1f7aca2474dc10c942eb22feffc897735f54cd1db90138c2fddb490987"
 dependencies = [
  "bstr",
+]
+
+[[package]]
+name = "simple_asn1"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d585997b0ac10be3c5ee635f1bab02d512760d14b7c468801ac8a01d9ae5f1d"
+dependencies = [
+ "num-bigint",
+ "num-traits",
+ "thiserror 2.0.21",
+ "time",
 ]
 
 [[package]]

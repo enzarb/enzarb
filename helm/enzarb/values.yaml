@@ -258,6 +258,13 @@ tracks:
   terminationGracePeriodSeconds: 30
   rollout: { maxSurge: 1, maxUnavailable: 0 }
   preStopSeconds: 5
+  # Route every connector event to the owning Project's workflows and record the decision
+  # (ADR-0029 step 3). Needs postgres.enabled and the GitHub App; gives the pod Project read
+  # access and a migration Job for schema `tracks`. Off = the stateless designer API only.
+  routing:
+    enabled: true
+    # Events routed at once.
+    concurrency: 4
   image:
     repository: ghcr.io/enzarb/enzarb-tracks
     # scripts/sync-components.sh pins the released enzarb-tracks tag here.

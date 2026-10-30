@@ -2,7 +2,7 @@
 name = "enzarb-tracks"
 version = "0.1.0"
 edition = "2024"
-description = "Runs ez workflows (.ez/workflows.toml) for enzarb projects; today the validation, rendering and dry-run API behind the designers (ADR-0029)"
+description = "Runs ez workflows (.ez/workflows.toml) for enzarb projects: routes connector events to workflows and records the decisions, plus the validation, rendering and dry-run API behind the designers (ADR-0029)"
 
 [lib]
 name = "enzarb_tracks"
@@ -14,16 +14,24 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+async-trait = "0.1"
 axum = "0.8"
+enzarb-crds = { path = "../operator/crates/enzarb-crds" }
 ez-core = { path = "../ez/crates/ez-core" }
 ez-workflow = { path = "../ez/crates/ez-workflow" }
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto", "use_pem"] }
+k8s-openapi = { version = "0.28", default-features = false, features = ["latest"] }
+kube = { version = "4.2", default-features = false, features = ["client", "rustls-tls", "ring"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "migrate", "macros", "json", "tls-rustls-ring-webpki"] }
 subtle = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "time", "sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 
 [dev-dependencies]
 http-body-util = "0.1"
+testcontainers-modules = { version = "0.15", features = ["postgres"] }
 tower = { version = "0.5", features = ["util"] }

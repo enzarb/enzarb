@@ -2892,6 +2892,18 @@ textarea.ez-control {
 	}
 }
 
+// What tracks decided about an event (Events tab).
+.ez-decision {
+	margin-top: var(--space-1, 0.25rem);
+	overflow-wrap: anywhere;
+
+	&__why {
+		margin: var(--space-1, 0.25rem) 0 0;
+		padding-left: 1.25rem;
+		font-size: 0.85em;
+	}
+}
+
 // ez's AskUserQuestion in the chat transcript.
 .ez-chat-question {
 	&__group {

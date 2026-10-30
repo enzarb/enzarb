@@ -193,7 +193,21 @@ connectors.event_v(id bigint, source text, delivery_id text, event text, action 
 - View columns are append-only; consumers select by name.
 - **NOTIFY channel:** `connector_event` (payload: the new event id), sent by the receiver in the insert transaction; not sent for a redelivery.
 - **Grants:** `enzarb_ui` and `enzarb_realtime` get `USAGE` on schema `connectors` and `SELECT` on `connectors.event_v`; `enzarb_connectors` reads and writes the table.
+- **Reader added:** `enzarb_tracks` also gets `USAGE` on schema `connectors` and `SELECT` on `connectors.event_v` (migration `20261030000001_tracks_grant.sql`; skipped where the role does not exist).
 - The legacy schemas `workflows`, `workflows_api`, `engine`, `engine_api` are dropped by the chart's first migration Job.
+
+## 6a. Tracks schema (`tracks`, Postgres, owned by `tracks/`)
+
+Owner role `enzarb_tracks_owner` (pgop schema `tracks`), runtime role `enzarb_tracks`; migrations are embedded in the `enzarb-tracks` image (`enzarb-tracks migrate`) and run by the chart's migration Job after `connectors` and `ui` (history in `tracks._sqlx_migrations`). Nothing outside tracks reads these tables: the ui goes through the tracks API (`GET /v1/decisions`). Changes are additive.
+
+| Table | Holds |
+|---|---|
+| `tracks.event_decisions` | One row per routed connector event (PK `event_id`, which makes routing at-most-once): `repo`, `project` (NULL when none owns the repo), `sha` (default-branch head the files were read at), `outcome` (`started`, `no_match`, `skipped`, `error`), `matched` (ids of the workflows that started a run), `reasons` (`[{workflow, matched, on, reason}]` for every workflow: the `on` / `if` evaluation), `errors` (invalid file, missing project, GitHub errors), `event_received_at`, `decided_at` |
+| `tracks.router_state` | Single row: `floor`, the highest event id when tracks first ran. Events at or below it are history and are never routed |
+| `tracks.runs` | A workflow run (ADR-0029 section 5): `id` (uuid), `workflow`, `project`, `repo`, `subject_key` (`owner/repo#number`), `subject`, `event_id`, `sha` (pinned), `status` (`pending`, `running`, `waiting`, `done`, `failed`, `cancelled`), `test`, `current_node`, `visits`, `state` (ez-workflow `RunState`), `reason`, timestamps. Unique on `(event_id, workflow, test)`. Routing only inserts `pending` rows; nothing executes them yet |
+| `tracks.node_runs` | One row per node visit (`run_id`, `node`, `visit`, `inputs`, `outputs`, `usage`, `error`, timestamps); written by run execution (rollout step 4) |
+
+**Routing.** tracks `LISTEN`s on `connector_event` (section 6), reads the event from `connectors.event_v`, finds the Project whose `spec.repositories` lists the repo (read-only `get`/`list` on Project CRs; several: the first by name), reads `.ez/workflows.toml` and `.ez/modes.toml` at the head of the repository's `defaultBranch` through the GitHub App (installation token scoped to the repo, `contents: read`), evaluates every workflow's `on` / `if` with `ez-workflow`, and in one transaction writes the decision and a `pending` run per matching workflow. A subject (`owner/repo#number`) with a live run of the same workflow starts no second one (the reason says so). A sweep (at start, after every reconnect, every `ENZARB_TRACKS_SWEEP_SECS`) decides events past the floor that have no decision, so events missed while down are caught up; transient failures (GitHub 5xx, API server) are retried, up to 5 attempts, then recorded as an `error` decision.
 
 ## 7. Browser → proxy
 
@@ -243,7 +257,7 @@ connectors.event_v(id bigint, source text, delivery_id text, event text, action 
 | `ENZARB_REALTIME_LISTEN` (`0.0.0.0:8080`), `ENZARB_REALTIME_PING_SECS` (15), `ENZARB_REALTIME_BUFFER` (256), `ENZARB_REALTIME_MAX_TOKEN_TTL_SECS` (300), `ENZARB_REALTIME_ALLOWED_ORIGINS` (comma-separated `scheme://host[:port]`; unset means `Origin` must equal `Host`; cookie auth only) | enzarb-realtime |
 | `ENZARB_REALTIME_LEGACY_TOKEN_URL` (`true`/`false`, default `false`; when on, the ui also puts the token in the URL as `?token=`) | ui |
 | `ENZARB_TRACKS_URL` (e.g. `http://enzarb-tracks:8080`; unset means the designers are off), `ENZARB_TRACKS_TOKEN` | ui (only when `tracks.enabled`) |
-| `ENZARB_TRACKS_TOKEN` (required, at least 32 bytes; shared with the ui), `ENZARB_TRACKS_LISTEN` (`0.0.0.0:8080`), `ENZARB_TRACKS_MAX_BODY_BYTES` (8 MiB, at least 64 KiB) | enzarb-tracks |
+| `ENZARB_TRACKS_TOKEN` (required, at least 32 bytes; shared with the ui), `ENZARB_TRACKS_LISTEN` (`0.0.0.0:8080`), `ENZARB_TRACKS_MAX_BODY_BYTES` (8 MiB, at least 64 KiB); with routing: `ENZARB_TRACKS_ROUTING=true`, `DATABASE_URL` + `PG*` (role `enzarb_tracks`), `ENZARB_GITHUB_APP_ID`, `ENZARB_GITHUB_APP_PRIVATE_KEY`, `ENZARB_TRACKS_CONCURRENCY` (4), `ENZARB_TRACKS_SWEEP_SECS` (30) | enzarb-tracks |
 | `GITHUB_WEBHOOK_SECRET` | receiver |
 | `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` | ui |
 | `ENZARB_GITHUB_APP_SLUG` (optional, default `enzarb`; chart value `githubApp.slug`) | ui (the "install the App" link `https://github.com/apps/<slug>/installations/new`) |
@@ -302,4 +316,4 @@ The UI is an installable PWA (`/manifest.webmanifest`, service worker `service-w
 
 ## Tracks API (additive)
 
-Cluster-internal HTTP API of `enzarb-tracks` ([ADR-0029](adr/0029-ez-workflows.md)), called only by the ui server after its own access check; there is no Gateway route. Every `/v1` route needs `Authorization: Bearer $ENZARB_TRACKS_TOKEN`; errors are `{"error": {"code", "message"}}` (plus `issues` on 422 `invalid_modes`). Routes: `GET /v1/modes/catalog`, `POST /v1/modes/{parse,validate,render}`, `POST /v1/workflows/{check,render}` and `POST /v1/dry-run` (events passed inline as `{id, event, action?, payload}` rows of `connectors.event_v`, 1-50 per request). Request and response shapes are in the [tracks README](../tracks/README.md). Changes are additive: new fields are optional and consumers ignore unknown ones.
+Cluster-internal HTTP API of `enzarb-tracks` ([ADR-0029](adr/0029-ez-workflows.md)), called only by the ui server after its own access check; there is no Gateway route. Every `/v1` route needs `Authorization: Bearer $ENZARB_TRACKS_TOKEN`; errors are `{"error": {"code", "message"}}` (plus `issues` on 422 `invalid_modes`). Routes: `GET /v1/modes/catalog`, `POST /v1/modes/{parse,validate,render}`, `POST /v1/workflows/{check,render}` and `POST /v1/dry-run` (events passed inline as `{id, event, action?, payload}` rows of `connectors.event_v`, and/or `event_ids` that tracks reads from `connectors.event_v` itself when routing is on; 1-50 per request in total) and `GET /v1/decisions?event_ids=1,2,3` (1-200 ids; `{decisions: [{event_id, repo, project, sha, outcome, matched, reasons, errors, decided_at}]}`, events with no decision yet are absent; 503 `routing_disabled` without routing). Request and response shapes are in the [tracks README](../tracks/README.md). Changes are additive: new fields are optional and consumers ignore unknown ones.

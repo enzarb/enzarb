@@ -1,5 +1,6 @@
 <script lang="ts">
-	import type { EventRow } from '#lib/events.ts';
+	import type { EventDecision as Decision, EventRow } from '#lib/events.ts';
+	import EventDecision from './EventDecision.svelte';
 	import Button from './form/Button.svelte';
 	import EmptyState from './ui/EmptyState.svelte';
 	import Notice from './ui/Notice.svelte';
@@ -7,15 +8,18 @@
 	import Skeleton from './ui/Skeleton.svelte';
 
 	/**
-	 * Webhook deliveries logged for a project's repositories, newest first. Nothing acts on them;
-	 * a row expands to the raw payload.
+	 * Webhook deliveries logged for a project's repositories, newest first. Each row shows what
+	 * enzarb-tracks decided about it (once it has), and expands to the raw payload.
 	 */
 	let {
 		rows,
 		failed = false,
 		payload,
-		retry
+		retry,
+		decisions = {}
 	}: {
+		/** Routing decisions by event id; an event without one shows none yet. */
+		decisions?: Record<number, Decision | undefined>;
 		/** `undefined` while the first load is in flight. */
 		rows: EventRow[] | undefined;
 		failed?: boolean;
@@ -50,10 +54,10 @@
 {:else if rows.length === 0}
 	<EmptyState
 		title="No events yet"
-		description="GitHub deliveries for this project's repositories are logged here. Nothing acts on them."
+		description="GitHub deliveries for this project's repositories are logged here, with what was decided about each."
 	/>
 {:else}
-	<Section title="Events" description="Logged only; nothing acts on these.">
+	<Section title="Events" description="Each delivery and the workflow it started, if any.">
 		<ul class="ez-event-log" data-testid="event-log">
 			{#each rows as r (r.id)}
 				<li>
@@ -75,6 +79,9 @@
 							<p class="ez-muted">Loading…</p>
 						{/if}
 					</details>
+					{#if decisions[r.id]}
+						<EventDecision decision={decisions[r.id]!} />
+					{/if}
 				</li>
 			{/each}
 		</ul>

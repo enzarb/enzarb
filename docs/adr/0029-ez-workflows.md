@@ -173,7 +173,7 @@ Only users with write permission on the repository can dry run or test run.
 ### 8. Rollout
 1. This ADR (review), then `ez-workflow` with the schema, validation, rendering and `advance`, fully unit tested.
 2. Modes designer and direct-commit save. The UI validates through tracks, so a stateless tracks comes first: no database, no Kubernetes access, endpoints to parse, validate and render `.ez/modes.toml` and `.ez/workflows.toml`, and the dry run with the events passed inline (`events: [{id, event, action, payload}]`, which the UI reads from `connectors.event_v` after its access check) instead of `event_ids`.
-3. tracks schema, routing and decisions (the dry run then also accepts `event_ids`); workflow designer with dry run.
+3. tracks schema, routing and decisions (the dry run then also accepts `event_ids`); workflow designer with dry run. **Done** (schema `tracks`, chart migration Job, routing loop and `GET /v1/decisions`, the Events tab shows each decision; routing creates `pending` runs but nothing executes them, and the per-workflow `max_runs` limit is not enforced yet).
 4. ez step execution in sandbox-init (the additive proto fields, ADR-0028 rollout steps 3 and 5); tracks runs `agent`, `command` and `end` nodes; test runs.
 5. `action` and `wait` nodes; real runs start for every saved workflow.
 6. Per-mode backends with Project secrets (the native driver).

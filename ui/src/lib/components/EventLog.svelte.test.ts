@@ -1,7 +1,7 @@
 import { page } from 'vitest/browser';
 import { describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
-import type { EventRow } from '#lib/events.ts';
+import type { EventDecision, EventRow } from '#lib/events.ts';
 import EventLog from './EventLog.svelte';
 
 const row = (over: Partial<EventRow> = {}): EventRow => ({
@@ -48,5 +48,57 @@ describe('EventLog', () => {
 		await page.getByText('push', { exact: true }).click();
 		await expect.element(page.getByText(/refs\/heads\/main/)).toBeVisible();
 		expect(payload).toHaveBeenCalledWith(2);
+	});
+
+	it('shows what tracks decided: the started workflow, or why no rule matched', async () => {
+		const d = (over: Partial<EventDecision>): EventDecision => ({
+			eventId: 1,
+			outcome: 'no_match',
+			project: 'p',
+			sha: 'abc1234',
+			started: [],
+			reasons: [],
+			errors: [],
+			decidedAt: '2026-10-21T12:00:01.000Z',
+			...over
+		});
+		render(EventLog, {
+			...base,
+			rows: [row(), row({ id: 2, event: 'push', action: null, summary: null })],
+			decisions: {
+				1: d({
+					outcome: 'started',
+					started: ['fix-issue'],
+					reasons: [
+						{
+							workflow: 'fix-issue',
+							matched: true,
+							on: 'issues.opened',
+							reason: 'on `issues.opened`'
+						}
+					]
+				}),
+				2: d({
+					eventId: 2,
+					reasons: [
+						{
+							workflow: 'fix-issue',
+							matched: false,
+							on: null,
+							reason: '`push` is not in on = [issues.opened]'
+						}
+					]
+				})
+			}
+		});
+		await expect.element(page.getByText('Started fix-issue')).toBeVisible();
+		await expect.element(page.getByText('No rule matched')).toBeVisible();
+		await expect.element(page.getByText(/`push` is not in on/)).toBeVisible();
+	});
+
+	it('shows no decision for an event tracks has not decided yet', async () => {
+		render(EventLog, { ...base, rows: [row()], decisions: {} });
+		await expect.element(page.getByText('issues opened')).toBeVisible();
+		await expect.element(page.getByTestId('event-decision')).not.toBeInTheDocument();
 	});
 });

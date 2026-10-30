@@ -92,4 +92,38 @@ describe('tracks client', () => {
 		expect(url(2)).toBe('http://tracks:8080/v1/dry-run');
 		expect(body(2)).toEqual({ workflows_toml: 't', events, options: { assume: { a: {} } } });
 	});
+
+	it('reads decisions and maps them to camelCase', async () => {
+		const f = vi.fn(async () =>
+			json(200, {
+				decisions: [
+					{
+						event_id: 7,
+						repo: 'o/r',
+						project: 'p',
+						sha: 'abc1234',
+						outcome: 'started',
+						matched: ['fix'],
+						reasons: [{ workflow: 'fix', matched: true, on: 'issues', reason: 'on `issues`' }],
+						errors: [],
+						decided_at: '2026-10-30T00:00:00.000Z'
+					}
+				]
+			})
+		);
+		const c = createTracksClient(cfg, f as unknown as typeof fetch);
+		expect(await c.decisions([])).toEqual([]);
+		expect(f).not.toHaveBeenCalled();
+		const [d] = await c.decisions([7, 8]);
+		expect((f.mock.calls[0] as unknown as [string, RequestInit])[0]).toBe(
+			'http://tracks:8080/v1/decisions?event_ids=7,8'
+		);
+		expect(d).toMatchObject({ eventId: 7, outcome: 'started', started: ['fix'], sha: 'abc1234' });
+		expect(d.reasons[0]).toEqual({
+			workflow: 'fix',
+			matched: true,
+			on: 'issues',
+			reason: 'on `issues`'
+		});
+	});
 });

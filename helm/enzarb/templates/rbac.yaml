@@ -19,7 +19,7 @@ metadata:
 ---
 {{- end }}
 {{- if .Values.tracks.enabled }}
-{{- /* tracks: no Kubernetes API access, so no Role or ClusterRole. */}}
+{{- /* tracks: no Kubernetes API access unless event routing is on (then read-only Projects, below). */}}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -27,6 +27,30 @@ metadata:
   labels:
     {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-tracks") | nindent 4 }}
 ---
+{{- if include "enzarb.tracksRouting" . }}
+{{- /* Routing finds the Project that owns a repository: read-only on Project CRs, nothing else. */}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: enzarb-tracks
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-tracks") | nindent 4 }}
+rules:
+  - apiGroups: [enzarb.dev]
+    resources: [projects]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: enzarb-tracks
+  labels:
+    {{- include "enzarb.labels" (dict "ctx" . "name" "enzarb-tracks") | nindent 4 }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: enzarb-tracks }
+subjects:
+  - { kind: ServiceAccount, name: enzarb-tracks, namespace: {{ .Release.Namespace }} }
+---
+{{- end }}
 {{- end }}
 {{- /* ui: create/list/delete Project CRs, and patch their spec (max runs, sandbox resources, repositories). */}}
 apiVersion: rbac.authorization.k8s.io/v1

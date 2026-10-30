@@ -11,7 +11,7 @@ DEPS_sandbox_proxy=( 'operator' 'proto' )
 DEPS_sandbox_container=( 'proto' 'ui/pnpm-lock.yaml' 'ez/crates' )
 DEPS_ui=( 'proto' 'connectors/bin/receiver/migrations' )
 DEPS_updater=( )
-DEPS_tracks=( 'ez' )
+DEPS_tracks=( 'ez' 'operator' )
 DEPS_ez=( )
 DEPS_kubernetes=( 'mise.toml' 'mise.*.toml' )
 DEPS_helm=( 'mise.toml' )
@@ -24,7 +24,7 @@ RULES=(
   'sandbox-container|Cargo.toml Cargo.lock rust-toolchain.toml sandbox-container/** proto/** ui/pnpm-lock.yaml ez/crates/** .github/workflows/ci-sandbox-container.yml .github/workflows/_changes.yml .github/workflows/_rust.yml .github/workflows/_docker.yml .github/actions/setup-node/**'
   'ui|ui/** proto/** connectors/bin/receiver/migrations/** .github/workflows/ci-ui.yml .github/workflows/_changes.yml .github/workflows/_docker.yml .github/actions/ui-install/** .github/actions/setup-node/**'
   'updater|Cargo.toml Cargo.lock rust-toolchain.toml updater/** .github/workflows/ci-updater.yml .github/workflows/_changes.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
-  'tracks|Cargo.toml Cargo.lock rust-toolchain.toml tracks/** ez/** .github/workflows/ci-tracks.yml .github/workflows/_changes.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
+  'tracks|Cargo.toml Cargo.lock rust-toolchain.toml tracks/** ez/** operator/** .github/workflows/ci-tracks.yml .github/workflows/_changes.yml .github/workflows/_rust.yml .github/workflows/_docker.yml'
   'ez|Cargo.toml Cargo.lock rust-toolchain.toml ez/** .github/workflows/ci-ez.yml .github/workflows/_changes.yml .github/workflows/_rust.yml'
   'kubernetes|kubernetes/** mise.toml mise.*.toml .github/workflows/ci-kubernetes.yml .github/workflows/_changes.yml'
   'helm|helm/** mise.toml .github/workflows/ci-helm.yml .github/workflows/_changes.yml'

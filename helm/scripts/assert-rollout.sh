@@ -40,7 +40,7 @@ check "enzarb-tracks maxUnavailable" "$(q "$t | .spec.strategy.rollingUpdate.max
 check "enzarb-tracks preStop sleep" "$(q "$t | .spec.template.spec.containers[0].lifecycle.preStop.sleep.seconds" <<<"$trk")" 5
 check "enzarb-tracks readiness" "$(q "$t | .spec.template.spec.containers[0].readinessProbe.httpGet.path" <<<"$trk")" /readyz
 check "enzarb-tracks liveness" "$(q "$t | .spec.template.spec.containers[0].livenessProbe.httpGet.path" <<<"$trk")" /healthz
-check "enzarb-tracks no SA token" "$(q "$t | .spec.template.spec.automountServiceAccountToken" <<<"$trk")" false
+check "enzarb-tracks SA token (routing reads Projects)" "$(q "$t | .spec.template.spec.automountServiceAccountToken" <<<"$trk")" true
 tok="$(q "$t | .spec.template.spec.containers[0].env[] | select(.name==\"ENZARB_TRACKS_TOKEN\") | .valueFrom.secretKeyRef" <<<"$trk")"
 check "ui tracks token == tracks token" "$(q "$(dep enzarb-ui) | .spec.template.spec.containers[0].env[] | select(.name==\"ENZARB_TRACKS_TOKEN\") | .valueFrom.secretKeyRef" <<<"$trk")" "$tok"
 check "ui tracks url" "$(q "$(dep enzarb-ui) | .spec.template.spec.containers[0].env[] | select(.name==\"ENZARB_TRACKS_URL\") | .value" <<<"$trk")" http://enzarb-tracks:8080

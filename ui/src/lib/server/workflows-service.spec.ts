@@ -42,6 +42,7 @@ beforeEach(() => {
 		return f ? blob(f.text, f.sha) : json(404, {});
 	});
 	tracks = {
+		decisions: vi.fn(async () => []),
 		modesCatalog: vi.fn(),
 		parseModes: vi.fn(async () => ({
 			doc: { defaultMode: 'plan', modes: [{ id: 'plan' }] },

@@ -694,6 +694,19 @@
         "preStopSeconds": {
           "$ref": "#/$defs/preStopSeconds"
         },
+        "routing": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "concurrency": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 64
+            }
+          }
+        },
         "replicaCount": {
           "type": "integer",
           "minimum": 0
