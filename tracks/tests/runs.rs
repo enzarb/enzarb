@@ -840,6 +840,118 @@ async fn a_result_can_route_to_the_failure_end() {
     assert_eq!(fake.started().len(), 1, "the command node never ran");
 }
 
+/// A failed end without a reason gets a generic one naming the end node and the node before it.
+#[tokio::test]
+async fn a_failed_end_without_a_reason_records_a_generic_one() {
+    let env = db_setup().await;
+    let fake = Fake::new(Box::new(|_| Some(agent_ok(false))));
+    let ex = executor(&env, WORKFLOWS, &fake, Some("t"));
+    let id = pending_run(&env.pool, "wf", 1).await;
+    let _stop = start_loop(&ex);
+    let (_, reason) = wait_for(&env.pool, &id, "failed").await;
+    assert_eq!(
+        reason.as_deref(),
+        Some("ended at `bad` (failed) after `triage`")
+    );
+}
+
+const END_REASON_WF: &str = r#"
+version = 1
+[workflows.wf]
+on = ["issues.labeled"]
+start = "triage"
+[workflows.wf.nodes.triage]
+type = "agent"
+mode = "triage"
+instruction = "Issue #{{ event.issue.number }}"
+result = { decision = { enum = ["go", "stop"] } }
+next = "bad"
+[workflows.wf.nodes.bad]
+type = "end"
+status = "failed"
+reason = "nothing to do: {{ nodes.triage.result.decision }}"
+"#;
+
+#[tokio::test]
+async fn a_custom_end_reason_is_rendered_into_the_run() {
+    let env = db_setup().await;
+    let fake = Fake::new(Box::new(|_| Some(agent_ok(false))));
+    let ex = executor(&env, END_REASON_WF, &fake, Some("t"));
+    let id = pending_run_with(&env.pool, END_REASON_WF, 1, false).await;
+    let _stop = start_loop(&ex);
+    let (_, reason) = wait_for(&env.pool, &id, "failed").await;
+    assert_eq!(reason.as_deref(), Some("nothing to do: stop"));
+}
+
+const WR_WF: &str = r#"
+version = 1
+[workflows.wf]
+on = ["workflow_run.completed"]
+start = "fix"
+[workflows.wf.nodes.fix]
+type = "agent"
+mode = "triage"
+instruction = "Fix"
+push = true
+next = "done"
+[workflows.wf.nodes.done]
+type = "end"
+status = "done"
+"#;
+
+/// A `workflow_run` run starts from the failing branch when it lives in this repository; a fork's
+/// does not.
+#[tokio::test]
+async fn a_workflow_run_starts_from_the_failing_branch_unless_it_is_a_fork() {
+    for (head_repo, want) in [("o/r", Some("refs/heads/feat/x")), ("fork/r", None)] {
+        let env = db_setup().await;
+        let fake = Fake::new(Box::new(|_| Some(agent_ok(false))));
+        let ex = executor(&env, WR_WF, &fake, Some("tok"));
+        let file = ez_workflow::parse(WR_WF).unwrap();
+        let event = WfEvent::new(
+            "workflow_run",
+            Some("completed".into()),
+            json!({"action": "completed", "workflow_run": {"name": "CI", "conclusion": "failure",
+                "head_branch": "feat/x", "head_sha": "c".repeat(40), "html_url": "u",
+                "head_repository": {"full_name": head_repo}}}),
+        );
+        let id: String = sqlx::query_scalar("SELECT gen_random_uuid()::text")
+            .fetch_one(&env.pool)
+            .await
+            .unwrap();
+        let state = RunState::start(
+            &file,
+            "wf",
+            &event,
+            RunInfo {
+                id: id.clone(),
+                attempt: 1,
+                test: false,
+            },
+        )
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO tracks.runs (id, workflow, project, repo, event_id, sha, status, test, current_node, visits, state)
+             VALUES ($1::uuid, 'wf', 'p', 'o/r', 1, 'abc1234', 'pending', false, $2, $3, $4)",
+        )
+        .bind(&id)
+        .bind(state.current())
+        .bind(serde_json::to_value(&state.visits).unwrap())
+        .bind(serde_json::to_value(&state).unwrap())
+        .execute(&env.pool)
+        .await
+        .unwrap();
+        let stop = start_loop(&ex);
+        wait_for(&env.pool, &id, "done").await;
+        let _ = stop.send(true);
+        let starts = fake.started();
+        let ws = &starts[0].workspaces[0];
+        assert_eq!(ws.start_ref.as_deref(), want, "{head_repo}");
+        assert_eq!(ws.base, "main");
+        assert_eq!(ws.branch, format!("ez/wf/{id}"));
+    }
+}
+
 #[tokio::test]
 async fn a_failing_command_follows_its_edge_with_the_exit_code() {
     let env = db_setup().await;

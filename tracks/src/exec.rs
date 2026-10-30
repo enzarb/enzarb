@@ -390,8 +390,8 @@ impl Executor {
                         StepOutcome::Ended => return Ok(()),
                     }
                 }
-                Rendered::End { status } => {
-                    return self.end_run(&run, Some(state), status, String::new()).await;
+                Rendered::End { status, reason } => {
+                    return self.end_run(&run, Some(state), status, reason).await;
                 }
             }
         }
@@ -1169,7 +1169,12 @@ impl Executor {
                     push && same_repo,
                 )
             }
-            None => (base, None, push),
+            None => match workflow_run_branch(&state.event, &run.repo) {
+                // CI failed on a branch of this repository: start from that branch. The run
+                // branch stays `ez/<wf>/<run>` and its pull request targets the default branch.
+                Some(b) => (base, Some(format!("refs/heads/{b}")), push),
+                None => (base, None, push),
+            },
         };
         let ws = StepWorkspace {
             repo: run.repo.clone(),
@@ -1337,4 +1342,21 @@ pub fn outputs_of(rendered: &Rendered, fin: &StepFinished) -> Value {
             json!({ "exit_code": code, "output": "", "json": Value::Null })
         }
     }
+}
+
+/// The `head_branch` of a `workflow_run` event whose head repository is `repo` itself (a fork's
+/// branch is not fetchable from here, and its name may collide with ours).
+pub(crate) fn workflow_run_branch(event: &Value, repo: &str) -> Option<String> {
+    let same_repo = event
+        .pointer("/workflow_run/head_repository/full_name")
+        .and_then(Value::as_str)
+        .is_some_and(|h| h.eq_ignore_ascii_case(repo));
+    if !same_repo {
+        return None;
+    }
+    event
+        .pointer("/workflow_run/head_branch")
+        .and_then(Value::as_str)
+        .filter(|b| !b.is_empty())
+        .map(str::to_string)
 }

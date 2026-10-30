@@ -596,7 +596,17 @@ fn validate_node(
             }
             check_duration(r, &format!("{np}.timeout"), w.timeout.as_deref());
         }
-        Node::End(_) => {}
+        Node::End(e) => {
+            if let Some(reason) = &e.reason {
+                refs.template(
+                    r,
+                    &format!("{np}.reason"),
+                    TemplateKind::Text,
+                    reason,
+                    NODE_ROOTS,
+                );
+            }
+        }
     }
 }
 

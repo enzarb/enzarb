@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use crate::event::{Event, Subject};
 use crate::expr::{Engine, TemplateKind};
-use crate::schema::{ActionKind, EndStatus, Node, NodeType, Workflow, WorkflowsFile};
+use crate::schema::{ActionKind, EndNode, EndStatus, Node, NodeType, Workflow, WorkflowsFile};
 
 /// Identity of a run, visible to templates as `run`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +53,9 @@ pub struct RunState {
     /// Latest outputs per node id (the `nodes` variable).
     pub nodes: Map<String, Value>,
     pub visits: BTreeMap<String, u32>,
+    /// The node the last edge was taken from (for the generic end reason).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<String>,
     pub status: RunStatus,
 }
 
@@ -141,6 +144,10 @@ pub enum Rendered {
     },
     End {
         status: EndStatus,
+        /// The rendered `reason`, or for `failed`/`cancelled` ends without one a generic
+        /// reason; empty for `done`.
+        #[serde(default)]
+        reason: String,
     },
 }
 
@@ -174,6 +181,7 @@ impl RunState {
             subject: event.subject(),
             nodes: Map::new(),
             visits: BTreeMap::new(),
+            previous: None,
             status: RunStatus::At {
                 node: wf.start.clone(),
             },
@@ -278,10 +286,35 @@ impl RunState {
                     condition: w.condition.clone(),
                     timeout_secs: w.wait_timeout().map(|d| d.as_secs()),
                 },
-                Node::End(e) => Rendered::End { status: e.status },
+                Node::End(e) => Rendered::End {
+                    status: e.status,
+                    reason: self.end_reason(engine, &id, e)?,
+                },
             })
         })();
         Ok(rendered)
+    }
+
+    /// The reason an `end` node records: its rendered `reason`, else for `failed`/`cancelled` a
+    /// generic one naming the node and the one before it; empty for `done`.
+    fn end_reason(&self, engine: &Engine, id: &str, e: &EndNode) -> Result<String, String> {
+        let custom = match &e.reason {
+            Some(src) => engine
+                .render(TemplateKind::Text, src, &self.context())
+                .map_err(|m| format!("node `{id}` reason: {m}"))?,
+            None => String::new(),
+        };
+        let custom = custom.trim();
+        Ok(if !custom.is_empty() {
+            custom.to_string()
+        } else if e.status == EndStatus::Done {
+            String::new()
+        } else {
+            match &self.previous {
+                Some(p) => format!("ended at `{id}` ({}) after `{p}`", e.status.as_str()),
+                None => format!("ended at `{id}` ({})", e.status.as_str()),
+            }
+        })
     }
 
     /// Whether `event` resumes the current `wait` node (`on` and `if`). The caller has already
@@ -356,7 +389,23 @@ impl RunState {
                     return Ok(self.end(EndStatus::Failed, None, Some(reason)));
                 }
                 let to = edge.to.clone();
+                self.previous = Some(id.clone());
                 self.enter(wf, &to);
+                if let (RunStatus::Ended { node: Some(n), .. }, Some(Node::End(e))) =
+                    (&self.status, wf.nodes.get(&to))
+                {
+                    let n = n.clone();
+                    let (reason, ok) = match self.end_reason(engine, &n, e) {
+                        Ok(r) => (r, true),
+                        Err(m) => (m, false),
+                    };
+                    let status = if ok { e.status } else { EndStatus::Failed };
+                    self.status = RunStatus::Ended {
+                        status,
+                        node: Some(n),
+                        reason: (!reason.is_empty()).then_some(reason),
+                    };
+                }
                 if let RunStatus::Ended {
                     status,
                     node: None,

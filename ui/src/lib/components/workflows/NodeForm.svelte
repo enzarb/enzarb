@@ -220,6 +220,15 @@
 			options={statusOptions}
 			bind:value={() => node.status, (v) => (node.status = v as NodeDoc['status'])}
 		/>
+		{#if node.status !== 'done'}
+			<TextArea
+				label="Reason"
+				help="A template shown as the run's reason; empty records which node the run ended at."
+				rows={2}
+				bind:value={node.reason}
+				issues={issuesOf('reason')}
+			/>
+		{/if}
 	{/if}
 
 	{#if node.type !== 'end'}

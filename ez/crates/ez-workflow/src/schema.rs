@@ -278,6 +278,10 @@ impl WaitNode {
 #[serde(deny_unknown_fields)]
 pub struct EndNode {
     pub status: EndStatus,
+    /// Why the run ends here (a template, rendered with the run's context). A `failed` or
+    /// `cancelled` end without one gets a generic reason naming this node and the previous one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
