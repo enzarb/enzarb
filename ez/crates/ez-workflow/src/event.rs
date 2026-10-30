@@ -28,6 +28,7 @@ pub const KNOWN_EVENTS: &[&str] = &[
     "issue_comment",
     "issues",
     "label",
+    "manual",
     "member",
     "merge_group",
     "meta",
@@ -106,7 +107,7 @@ impl Event {
     pub fn subject(&self) -> Option<Subject> {
         let p = &self.payload;
         let (obj, kind) = match self.name.as_str() {
-            "issues" | "issue_comment" => {
+            "issues" | "issue_comment" | "manual" => {
                 let issue = p.get("issue")?;
                 let kind = if issue.get("pull_request").is_some_and(|v| !v.is_null()) {
                     SubjectKind::PullRequest
@@ -302,6 +303,22 @@ mod tests {
                 .subject()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn manual_events_have_a_subject_and_match_by_name() {
+        let m = Event::new(
+            "manual",
+            None,
+            json!({"issue": {"number": 5, "user": {"login": "a"}, "html_url": "u"},
+                   "sender": {"login": "bob"}}),
+        );
+        assert!(m.matches("manual"));
+        assert!(!m.matches("manual.created"));
+        let s = m.subject().unwrap();
+        assert_eq!((s.kind, s.number), (SubjectKind::Issue, 5));
+        assert!(valid_pattern("manual"));
+        assert!(KNOWN_EVENTS.contains(&"manual"));
     }
 
     #[test]

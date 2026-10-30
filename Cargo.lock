@@ -1795,6 +1795,7 @@ dependencies = [
  "humantime",
  "indexmap 2.14.2",
  "minijinja",
+ "regex",
  "serde",
  "serde_json",
  "toml",

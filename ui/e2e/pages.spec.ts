@@ -35,6 +35,8 @@ for (const path of [
 	`/projects/${E2E_PROJECT}/settings`,
 	`/projects/${E2E_PROJECT}/events`,
 	`/projects/${E2E_PROJECT}/runs`,
+	`/projects/${E2E_PROJECT}/tasks`,
+	'/tasks',
 	`/projects/${E2E_PROJECT}/modes`,
 	`/projects/${E2E_PROJECT}/workflows`
 ]) {

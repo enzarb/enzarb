@@ -191,3 +191,5 @@ Only users with write permission on the repository can dry run or test run.
 - Real runs use the Project owner's Claude token; test runs use the token of the person who started them.
 - `command` nodes may run a mise task or a shell string.
 - Workflows are live as soon as they are saved on the default branch; there is no enable flag.
+
+- **Manual starts and Tasks (2026-10-30).** `on = ["manual"]` is a synthetic event (like `workflow_dispatch`) that tracks creates for `POST /v1/runs` (negative `event_id`, same one-live-run-per-subject rule). Expressions gained the generic `regex_match` filter, so one workflow can list several triggers and tell them apart in its `if`. The UI Tasks pages are derived views (waiting runs, failed runs, `ez/*` pull requests, `triage` issues without an implement run); nothing is stored.

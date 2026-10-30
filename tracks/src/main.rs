@@ -95,13 +95,13 @@ async fn main() -> Result<()> {
         }
         let r = Arc::new(Router::new(
             pool.clone(),
-            source,
-            projects,
+            source.clone(),
+            projects.clone(),
             cfg.concurrency,
             Duration::from_secs(cfg.sweep_secs),
         ));
         router_task = Some(tokio::spawn(r.run(stop_rx)));
-        state = state.with_pool(pool);
+        state = state.with_pool(pool).with_routing(source, projects);
         tracing::info!(concurrency = cfg.concurrency, "event routing on");
     } else {
         tracing::info!("event routing off");

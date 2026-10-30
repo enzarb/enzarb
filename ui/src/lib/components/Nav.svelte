@@ -1,7 +1,13 @@
 <script lang="ts">
 	import { page } from '$app/state';
 
-	const items = [{ href: '/projects', label: 'Projects' }];
+	/** `count`: tasks waiting on the user (the Tasks link shows it when above zero). */
+	let { count = 0 }: { count?: number } = $props();
+
+	const items = $derived([
+		{ href: '/projects', label: 'Projects' },
+		{ href: '/tasks', label: 'Tasks', count }
+	]);
 </script>
 
 <nav class="ez-nav" aria-label="Main">
@@ -11,7 +17,10 @@
 			href={item.href}
 			aria-current={page.url.pathname === item.href || page.url.pathname.startsWith(item.href + '/')
 				? 'page'
-				: undefined}>{item.label}</a
+				: undefined}
+			aria-label={item.count ? `${item.label}, ${item.count} waiting` : undefined}
+			>{item.label}{#if item.count}<span class="ez-nav__count" aria-hidden="true">{item.count}</span
+				>{/if}</a
 		>
 	{/each}
 </nav>

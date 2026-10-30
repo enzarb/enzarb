@@ -63,7 +63,7 @@ export interface RepoTokenOptions {
 
 /** Permissions a repository token may ask for (`contents`, `pull_requests`, `metadata`). */
 export type RepoPermissions = Partial<
-	Record<'contents' | 'pull_requests' | 'metadata', 'read' | 'write'>
+	Record<'contents' | 'pull_requests' | 'issues' | 'metadata', 'read' | 'write'>
 >;
 
 const cacheKey = (fullName: string, permissions: RepoPermissions) =>

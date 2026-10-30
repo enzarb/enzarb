@@ -106,6 +106,18 @@ pub trait RepoSource: Send + Sync {
         ))
     }
 
+    /// The issue or pull request `number` as GitHub's `GET /repos/{repo}/issues/{n}` returns it
+    /// (`None`: it does not exist). Used to build the event of a run started by hand.
+    async fn issue(
+        &self,
+        _repo: &str,
+        _number: u64,
+    ) -> Result<Option<serde_json::Value>, SourceError> {
+        Err(SourceError::Permanent(
+            "reading issues is not supported by this source".into(),
+        ))
+    }
+
     /// A short-lived installation token scoped to `repo` with `contents: read` (clone) or
     /// `contents: write` (`write`, push). Minted fresh, never cached, so it is short-lived.
     async fn clone_token(&self, _repo: &str, _write: bool) -> Result<String, SourceError> {
@@ -579,6 +591,31 @@ impl RepoSource for GithubApp {
     ) -> Result<Option<String>, SourceError> {
         let token = self.token(repo).await?;
         self.file(repo, &token, sha, path).await
+    }
+
+    async fn issue(
+        &self,
+        repo: &str,
+        number: u64,
+    ) -> Result<Option<serde_json::Value>, SourceError> {
+        let token = self.mint(repo, json!({ "issues": "read" })).await?;
+        let res = self
+            .send("issue", || {
+                self.http
+                    .get(format!(
+                        "{}/repos/{}/issues/{number}",
+                        self.base,
+                        enc_path(repo)
+                    ))
+                    .bearer_auth(&token)
+                    .header("Accept", "application/vnd.github+json")
+            })
+            .await?;
+        match res.status() {
+            s if s.is_success() => Ok(Some(res.json().await.map_err(|e| transient("issue", e))?)),
+            StatusCode::NOT_FOUND | StatusCode::GONE => Ok(None),
+            s => Err(Self::classify(s, "issue")),
+        }
     }
 
     async fn clone_token(&self, repo: &str, write: bool) -> Result<String, SourceError> {

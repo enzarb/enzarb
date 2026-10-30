@@ -108,10 +108,56 @@ const run: RunDetail = {
 	]
 };
 
+/** Runs the stub was asked to start, newest first (the Tasks e2e reads them through the page). */
+export const started: { repo: string; number: number; workflow: string }[] = [];
+
+export const E2E_WAIT_RUN_ID = '44444444-4444-4444-8444-444444444444';
+export const E2E_FAILED_RUN_ID = '55555555-5555-4555-8555-555555555555';
+const waitRun: RunDetail = {
+	...run,
+	id: E2E_WAIT_RUN_ID,
+	workflow: 'ask-first',
+	subject: { kind: 'issue', number: 11 },
+	eventId: 2,
+	status: 'waiting',
+	currentNode: 'ask',
+	waitUntil: '2026-11-06T12:00:00.000Z',
+	nodeRuns: [
+		{
+			...run.nodeRuns[2]!,
+			node: 'ask',
+			wait: {
+				on: ['issue_comment.created'],
+				if: "event.comment.body == 'go'",
+				timeout_secs: 604800,
+				until: '2026-11-06T12:00:00.000Z'
+			}
+		}
+	]
+};
+const failedRun: RunDetail = {
+	...run,
+	id: E2E_FAILED_RUN_ID,
+	workflow: 'fix-ci',
+	subject: { kind: 'issue', number: 12 },
+	eventId: 3,
+	status: 'failed',
+	reason: 'timeout',
+	currentNode: null,
+	finishedAt: NOW,
+	nodeRuns: []
+};
+const more: RunDetail[] = [waitRun, failedRun];
+
 const client: TracksClient = {
 	runs: async ({ project, eventIds }) =>
-		project === E2E_PROJECT && (!eventIds || eventIds.includes(run.eventId)) ? [run] : [],
-	run: async (id) => (id === E2E_RUN_ID ? structuredClone(run) : null),
+		project === E2E_PROJECT
+			? [run, ...more].filter((r) => !eventIds || eventIds.includes(r.eventId))
+			: [],
+	run: async (id) => {
+		const r = [run, ...more].find((x) => x.id === id);
+		return r ? structuredClone(r) : null;
+	},
 	stopRun: async (id) => {
 		if (id !== E2E_RUN_ID || run.status !== 'running') return false;
 		run.status = 'cancelled';
@@ -132,6 +178,20 @@ const client: TracksClient = {
 	renderModes: async (doc) => ({ text: JSON.stringify(doc), issues: [], rewritten: [] }),
 	checkWorkflows: async (text) => ({ diagnostics: [], file: parse<WorkflowsFileWire>(text) }),
 	renderWorkflows: async (file) => ({ text: JSON.stringify(file), diagnostics: [] }),
+	startRun: async ({ repo, number, workflow }) => {
+		started.unshift({ repo, number, workflow });
+		more.unshift({
+			...run,
+			id: crypto.randomUUID(),
+			workflow,
+			repo,
+			subject: { kind: 'issue', number },
+			eventId: -started.length,
+			status: 'running',
+			nodeRuns: []
+		});
+		return { id: '33333333-3333-4333-8333-333333333333', alreadyRunning: false };
+	},
 	dryRun: async () => ({ results: [] }) as never,
 	decisions: async () => []
 };
