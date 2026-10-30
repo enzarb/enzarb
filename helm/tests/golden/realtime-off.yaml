@@ -728,6 +728,7 @@ subjects:
   - { kind: ServiceAccount, name: enzarb-ui, namespace: enzarb }
   - { kind: ServiceAccount, name: enzarb-connectors, namespace: enzarb }
   - { kind: ServiceAccount, name: enzarb-migrate, namespace: enzarb }
+  - { kind: ServiceAccount, name: enzarb-tracks, namespace: enzarb }
 
 ---
 # Source: enzarb/templates/updater.yaml
@@ -893,10 +894,10 @@ spec:
       terminationGracePeriodSeconds: 30
 
       initContainers:
-        - name: wait-enzarb-migrate-tracks-bf7e3d7440
+        - name: wait-enzarb-migrate-tracks-b7dd5a4f5f
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-tracks-bf7e3d7440]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-tracks-b7dd5a4f5f]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: receiver
@@ -1165,10 +1166,10 @@ spec:
       terminationGracePeriodSeconds: 30
 
       initContainers:
-        - name: wait-enzarb-migrate-tracks-bf7e3d7440
+        - name: wait-enzarb-migrate-tracks-b7dd5a4f5f
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-tracks-bf7e3d7440]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-tracks-b7dd5a4f5f]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       # the keyring files are root-owned; fsGroup makes them group-readable by the non-root uid
       securityContext: { fsGroup: 10001 }
@@ -1289,10 +1290,10 @@ spec:
       terminationGracePeriodSeconds: 30
 
       initContainers:
-        - name: wait-enzarb-migrate-tracks-bf7e3d7440
+        - name: wait-enzarb-migrate-tracks-b7dd5a4f5f
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-tracks-bf7e3d7440]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-tracks-b7dd5a4f5f]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: ui
@@ -1463,7 +1464,7 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: enzarb-migrate-legacy-1c6482505d
+  name: enzarb-migrate-legacy-7fc4ae561d
   labels:
     app.kubernetes.io/name: enzarb-migrate-legacy
     app.kubernetes.io/instance: enzarb
@@ -1550,7 +1551,7 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: enzarb-migrate-connectors-649c20119d
+  name: enzarb-migrate-connectors-14bf26920d
   labels:
     app.kubernetes.io/name: enzarb-migrate-connectors
     app.kubernetes.io/instance: enzarb
@@ -1571,10 +1572,10 @@ spec:
       restartPolicy: OnFailure
 
       initContainers:
-        - name: wait-enzarb-migrate-legacy-1c6482505d
+        - name: wait-enzarb-migrate-legacy-7fc4ae561d
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-legacy-1c6482505d]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-legacy-7fc4ae561d]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: migrate
@@ -1624,7 +1625,7 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: enzarb-migrate-ui-fd798acdf6
+  name: enzarb-migrate-ui-405569dff1
   labels:
     app.kubernetes.io/name: enzarb-migrate-ui
     app.kubernetes.io/instance: enzarb
@@ -1645,10 +1646,10 @@ spec:
       restartPolicy: OnFailure
 
       initContainers:
-        - name: wait-enzarb-migrate-connectors-649c20119d
+        - name: wait-enzarb-migrate-connectors-14bf26920d
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-connectors-649c20119d]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-connectors-14bf26920d]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: migrate
@@ -1698,7 +1699,7 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: enzarb-migrate-tracks-bf7e3d7440
+  name: enzarb-migrate-tracks-b7dd5a4f5f
   labels:
     app.kubernetes.io/name: enzarb-migrate-tracks
     app.kubernetes.io/instance: enzarb
@@ -1719,10 +1720,10 @@ spec:
       restartPolicy: OnFailure
 
       initContainers:
-        - name: wait-enzarb-migrate-ui-fd798acdf6
+        - name: wait-enzarb-migrate-ui-405569dff1
           image: registry.k8s.io/kubectl:v1.34.0
           imagePullPolicy: IfNotPresent
-          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-fd798acdf6]
+          args: [wait, --for=condition=complete, --timeout=900s, job/enzarb-migrate-ui-405569dff1]
           securityContext: {"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}}
       containers:
         - name: migrate

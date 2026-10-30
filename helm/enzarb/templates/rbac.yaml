@@ -242,4 +242,7 @@ subjects:
   {{- if .Values.realtime.enabled }}
   - { kind: ServiceAccount, name: enzarb-realtime, namespace: {{ .Release.Namespace }} }
   {{- end }}
+  {{- if include "enzarb.tracksRouting" . }}
+  - { kind: ServiceAccount, name: enzarb-tracks, namespace: {{ .Release.Namespace }} }
+  {{- end }}
 {{- end }}
