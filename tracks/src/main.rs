@@ -70,9 +70,11 @@ async fn main() -> Result<()> {
                     .context("Claude keyring")?;
             let store = Arc::new(enzarb_sandbox_proxy::store::PgStore::from_env()?);
             let creds = enzarb_sandbox_proxy::store::Credentials::new(store, Arc::new(keyring));
-            let actions: Arc<dyn Actions> = match &cfg.github_app_id {
-                Some(_) => Arc::new(GithubActions::new(source.clone(), &api)?),
-                None => Arc::new(NoActions),
+            // Same condition as `source`: without both id and key there is no App to act with.
+            let actions: Arc<dyn Actions> = match (&cfg.github_app_id, &cfg.github_app_private_key)
+            {
+                (Some(_), Some(_)) => Arc::new(GithubActions::new(source.clone(), &api)?),
+                _ => Arc::new(NoActions),
             };
             let ex = Arc::new(
                 Executor::new(
